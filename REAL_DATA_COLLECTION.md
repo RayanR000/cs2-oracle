@@ -51,7 +51,30 @@ API Endpoints (returns analyzed data)
 - Maintains historical data for analysis
 - Enables trend calculations and predictions
 
-## Starting the System
+## Tracked Items
+
+The system automatically collects real price data for **49 popular CS2 items** across multiple categories:
+
+### Weapon Skins (~35 items)
+- **AK-47**: Phantom Disruptor, Neon Ride, Frontside Misty, Legion of Anubis, Nightwish
+- **M4A4/M4A1-S**: Asiimov, Poseidon, Hyper Beast, Masterpiece, Point Disarray, Nightmare
+- **AWP**: Dragon Lore, Asiimov, Medusa, Pink DDPAT, Kumicho Dragon
+- **Knives**: Karambit (Doppler, Marble), Butterfly Fade, Bayonet Doppler, Bowie Fade
+- **Pistols**: Desert Eagle (Crimson Web, Blaze), USP-S Neo-Noir, Glock-18 Dragon Tattoo
+- **Budget Options**: P250, FAMAS, UMP, MP9, and others
+
+### Cases (5 items)
+- CS2 Weapon Case, Operation Bravo Case, Spectrum 2 Case, Shadow Case, Clutch Case
+
+### Team Stickers (5 items)
+- Navi, Astralis, FaZe Clan, Team Liquid, SK Gaming
+
+### Premium/Collectible (4 items)
+- Dragon Lore variants, Souvenir packages, and special releases
+
+## Data Collection Schedule
+
+All 49 items are tracked on the same schedule:
 
 ### Automatic Collection (On App Startup)
 
@@ -136,8 +159,8 @@ Response:
 
 ### Collection Process
 
-For each collection cycle:
-1. Query all 8 CS2 items from database
+For each collection cycle (every 1 hour):
+1. Query all 49 CS2 items from database
 2. Fetch current price/volume from Steam API for each item
 3. Validate data (check anomalies, bounds)
 4. Clean and normalize values
@@ -147,15 +170,27 @@ For each collection cycle:
 ### Example Collection Cycle
 
 ```
-13:00 - Collection cycle started for 8 items
+13:00 - Collection cycle started for 49 items
 13:00 - Collecting: AK-47 | Phantom Disruptor
-13:02 - Collected: $28.50 (vol: 1200) ✓
-13:04 - Collecting: Dragon Lore
-13:06 - Collected: $2400.00 (vol: 5) ✓
+13:01 - Collected: $28.50 (vol: 1200) ✓
+13:02 - Collecting: AWP | Dragon Lore
+13:02 - Collected: $2400.00 (vol: 5) ✓
 ...
-13:15 - Collection complete: 8 successful, 0 failed
-14:15 - Next collection cycle starts
+13:15 - Collecting: Clutch Case
+13:15 - Collected: $0.75 (vol: 5000) ✓
+...
+13:49 - Collection complete: 49 successful, 0 failed
+14:00 - Next collection cycle starts
 ```
+
+### Data Accumulation Rate
+
+- **Per cycle**: 49 new price records
+- **Per day**: 49 × 24 = 1,176 records
+- **Per week**: 1,176 × 7 = 8,232 records
+- **Per month**: 1,176 × 30 = 35,280 records
+
+Over time, you'll have comprehensive historical data for trend analysis and predictions across 49 items.
 
 ## Data Quality
 
