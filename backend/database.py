@@ -54,19 +54,21 @@ class Item(Base):
 class PriceHistory(Base):
     """Price history model - time-series price data"""
     __tablename__ = "price_history"
-    
+
     id = Column(Integer, primary_key=True)
     item_id = Column(Integer, ForeignKey("items.id"), nullable=False, index=True)
     timestamp = Column(DateTime, nullable=False, index=True)
     price = Column(Float, nullable=False)
     volume = Column(Integer, nullable=True)
     median_price = Column(Float, nullable=True)
+    source = Column(String(50), nullable=False, default="steam")
     created_at = Column(DateTime, default=datetime.utcnow)
-    
+
     item = relationship("Item", back_populates="price_histories")
-    
+
     __table_args__ = (
         Index('idx_price_history_item_timestamp', 'item_id', 'timestamp'),
+        Index('idx_price_history_source', 'source'),
     )
 
 class Event(Base):
@@ -103,3 +105,14 @@ class TrendIndicator(Base):
     __table_args__ = (
         Index('idx_trend_item_timestamp', 'item_id', 'timestamp'),
     )
+
+class User(Base):
+    """User model - Steam authentication"""
+    __tablename__ = "users"
+    
+    id = Column(Integer, primary_key=True)
+    steam_id = Column(String(50), unique=True, nullable=False, index=True)
+    username = Column(String(255), nullable=True)
+    avatar_url = Column(String(500), nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    last_login = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
