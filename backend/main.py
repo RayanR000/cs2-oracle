@@ -33,7 +33,7 @@ app.add_middleware(
 )
 
 @app.on_event("startup")
-async def startup_event():
+async def startup_event() -> None:
     """Initialize database and load data on startup"""
     logger.info("Initializing database...")
     init_db()
@@ -47,11 +47,18 @@ async def startup_event():
         logger.info(f"  Price records: {stats.get('price_records_added', 0)}")
         logger.info(f"  Events: {stats.get('events_added', 0)}")
     except Exception as e:
+        # Allow app to start even if initial data load fails.
+        # The real-time data collection will populate the database over time,
+        # so the app can function with an empty database initially.
         logger.error(f"Error loading data: {e}", exc_info=True)
 
     logger.info("Starting real-time market data collection...")
-    start_real_data_collection()
-    logger.info("Real-time data collection started")
+    try:
+        start_real_data_collection()
+        logger.info("Real-time data collection started")
+    except Exception as e:
+        logger.error(f"Error starting data collection pipeline: {e}", exc_info=True)
+        raise
 
 @app.on_event("shutdown")
 def shutdown_event():
