@@ -10,22 +10,26 @@ from repositories import EventRepository
 
 router = APIRouter(prefix="/events", tags=["events"])
 
-@router.get("/")
+@router.get("/", response_model=dict)
 async def list_events(
     type: str = Query(None, description="Filter by type: major, update, case_drop, operation"),
-    skip: int = Query(0, ge=0),
-    limit: int = Query(50, ge=1, le=100),
+    skip: int = Query(0, ge=0, description="Number of events to skip (pagination)"),
+    limit: int = Query(50, ge=1, le=100, description="Number of events to return"),
     db: Session = Depends(get_db)
 ):
-    """List market events"""
+    """List market events with pagination"""
     if type:
         events = EventRepository.get_events_by_type(db, type, limit)
+        events = events[skip:skip + limit]
     else:
         events = EventRepository.get_all_events(db, skip, limit)
     
     return {
         "events": events,
-        "total": len(events)
+        "total": len(events),
+        "skip": skip,
+        "limit": limit,
+        "has_more": len(events) >= limit
     }
 
 @router.get("/timeline")

@@ -15,13 +15,14 @@ router = APIRouter(prefix="/items", tags=["items"])
 @router.get("/", response_model=dict)
 async def list_items(
     type: str = Query(None, description="Filter by type: skin, case, sticker"),
-    skip: int = Query(0, ge=0),
-    limit: int = Query(50, ge=1, le=100),
+    skip: int = Query(0, ge=0, description="Number of items to skip (pagination)"),
+    limit: int = Query(50, ge=1, le=100, description="Number of items to return"),
     db: Session = Depends(get_db)
 ):
-    """List all items with optional filtering"""
+    """List all items with optional filtering and pagination"""
     if type:
-        items = ItemRepository.get_items_by_type(db, type, limit)
+        items = ItemRepository.get_items_by_type(db, type, skip + limit)
+        items = items[skip:skip + limit]
     else:
         items = ItemRepository.get_all_items(db, skip, limit)
     
@@ -40,7 +41,8 @@ async def list_items(
         ],
         "total": total,
         "skip": skip,
-        "limit": limit
+        "limit": limit,
+        "has_more": (skip + limit) < total
     }
 
 @router.get("/search", response_model=dict)
