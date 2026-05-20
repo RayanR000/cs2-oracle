@@ -31,6 +31,7 @@ class RealDataCollector:
         self.cleaner = DataCleaner()
         self.is_running = False
         self.collection_thread = None
+        self._thread_lock = threading.Lock()
     
     def collect_item_data(self, item: Item) -> Optional[PriceHistory]:
         """
@@ -167,24 +168,30 @@ class RealDataCollector:
         if not self.enabled:
             logger.info("Real data collection is disabled")
             return
-        
-        if self.is_running:
-            logger.warning("Collection loop already running")
-            return
-        
-        self.collection_thread = threading.Thread(
-            target=self.run_collection_loop,
-            args=(interval_seconds,),
-            daemon=True
-        )
-        self.collection_thread.start()
-        logger.info("Background data collection started")
+
+        with self._thread_lock:
+            if self.is_running:
+                logger.warning("Collection loop already running")
+                return
+
+            self.is_running = True
+            self.collection_thread = threading.Thread(
+                target=self.run_collection_loop,
+                args=(interval_seconds,),
+                daemon=True
+            )
+            self.collection_thread.start()
+            logger.info("Background data collection started")
     
     def stop_background_collection(self):
         """Stop the background collection thread"""
-        self.is_running = False
-        if self.collection_thread:
-            self.collection_thread.join(timeout=5)
+        with self._thread_lock:
+            self.is_running = False
+            thread = self.collection_thread
+            self.collection_thread = None
+
+        if thread:
+            thread.join(timeout=5)
         logger.info("Background data collection stopped")
 
 

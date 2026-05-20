@@ -1,6 +1,9 @@
 """
-Comprehensive data loader for CS2 items and historical data
-Handles bulk loading of complete catalog with historical backfill
+Comprehensive data loader for CS2 items and historical data.
+
+Loads the CS2 catalog plus optional demo history. Production startup should
+use the catalog without synthetic backfill; demo/local runs can opt into the
+generated history path.
 """
 
 import logging
@@ -26,13 +29,13 @@ class ComprehensiveDataLoader:
         self.events_loaded = 0
     
     def load_complete_catalog(self, 
-                             generate_history: bool = True,
+                             generate_history: bool = False,
                              history_days: int = 365) -> dict:
         """
         Load complete CS2 item catalog with optional historical data
         
         Args:
-            generate_history: Whether to generate historical price data
+            generate_history: Whether to generate synthetic historical price data
             history_days: Number of days of history to generate
             
         Returns:
@@ -276,9 +279,14 @@ class ComprehensiveDataLoader:
         return stats
 
 
-def load_all_cs2_data(db: Optional[Session] = None) -> dict:
+def load_all_cs2_data(
+    db: Optional[Session] = None,
+    generate_history: bool = False,
+    history_days: int = 365
+) -> dict:
     """
-    Convenience function to load complete CS2 data
+    Convenience function to load the CS2 catalog, demo events, and optional
+    synthetic history.
     
     Args:
         db: Database session (uses default if not provided)
@@ -288,13 +296,27 @@ def load_all_cs2_data(db: Optional[Session] = None) -> dict:
     """
     loader = ComprehensiveDataLoader(db)
     return loader.load_complete_catalog(
-        generate_history=True,
-        history_days=365
+        generate_history=generate_history,
+        history_days=history_days
     )
+
+
+def load_demo_cs2_data(db: Optional[Session] = None, history_days: int = 365) -> dict:
+    """
+    Convenience function to load the CS2 catalog with synthetic demo history.
+    """
+    return load_all_cs2_data(db=db, generate_history=True, history_days=history_days)
+
+
+def load_catalog_only(db: Optional[Session] = None) -> dict:
+    """
+    Convenience function to load the CS2 catalog and events without backfill.
+    """
+    return load_all_cs2_data(db=db, generate_history=False)
 
 
 if __name__ == "__main__":
     # Can be run standalone for one-time data load
     logging.basicConfig(level=logging.INFO)
-    stats = load_all_cs2_data()
+    stats = load_demo_cs2_data()
     print(f"Data load statistics: {stats}")

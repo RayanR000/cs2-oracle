@@ -2,7 +2,9 @@
 
 ## Overview
 
-The CS2 Market Intelligence Platform now includes **automatic real-time data collection** from the Steam Community Market API. The system collects actual CS2 item prices, volumes, and trends automatically.
+The CS2 Market Intelligence Platform includes **automatic real-time data collection** from the Steam Community Market API. The system collects actual CS2 item prices, volumes, and trends automatically.
+
+Demo and development environments can also seed synthetic catalog/history data for local testing. That synthetic history is not live market data and should not be described as such.
 
 ## Architecture
 
@@ -53,7 +55,7 @@ API Endpoints (returns analyzed data)
 
 ## Tracked Items
 
-The system automatically collects real price data for **49 popular CS2 items** across multiple categories:
+The demo catalog currently covers **49 popular CS2 items** across multiple categories so local development has a populated item universe:
 
 ### Weapon Skins (~35 items)
 - **AK-47**: Phantom Disruptor, Neon Ride, Frontside Misty, Legion of Anubis, Nightwish
@@ -74,7 +76,7 @@ The system automatically collects real price data for **49 popular CS2 items** a
 
 ## Data Collection Schedule
 
-All 49 items are tracked on the same schedule:
+All 49 demo catalog items are tracked on the same schedule when the collector is active:
 
 ### Automatic Collection (On App Startup)
 
@@ -85,9 +87,10 @@ python3 -m uvicorn main:app --reload
 
 The application will:
 1. Initialize the database
-2. Seed with 8 sample CS2 items
-3. **Automatically start real-time data collection from Steam API**
-4. Collection runs every 1 hour in the background
+2. Load the catalog
+3. In demo/development environments, seed synthetic history for local exploration
+4. **Automatically start real-time data collection from Steam API**
+5. Collection runs every 1 hour in the background
 
 ### Manual Collection
 
@@ -215,19 +218,20 @@ Each price record goes through:
 
 ## Real Data in API Endpoints
 
-All API endpoints now use **real, collected data**:
+Production API endpoints use **real, collected data**. Demo and development
+environments may still surface synthetic bootstrap history for local testing:
 
 ### Items Endpoint
 ```bash
 GET /items/
 ```
-Returns items with real price data collected from Steam
+Returns items with live price data in production, or synthetic bootstrap data in demo/dev
 
 ### Trends Analysis
 ```bash
 GET /items/{item_id}/trends
 ```
-Analyzes real price data for:
+Analyzes the available price history for:
 - Moving averages (SMA 7/30)
 - RSI (Relative Strength Index)
 - Bollinger Bands
@@ -238,13 +242,13 @@ Analyzes real price data for:
 ```bash
 GET /items/{item_id}/prediction?period=7_days
 ```
-Forecasts future prices based on real historical data
+Forecasts future prices based on the available historical data
 
 ### Opportunities Detection
 ```bash
 GET /opportunities/undervalued
 ```
-Identifies undervalued items using real baseline trends
+Identifies undervalued items using the available baseline trends
 
 ## Configuration
 

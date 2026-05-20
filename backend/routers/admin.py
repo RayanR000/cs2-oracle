@@ -5,6 +5,7 @@ Admin endpoints for data collection management
 from fastapi import APIRouter, Query, HTTPException
 from datetime import datetime
 from collectors.real_data_collector import get_collector
+from config import settings
 from database import SessionLocal, Item, PriceHistory
 
 router = APIRouter(prefix="/admin", tags=["admin"])
@@ -40,6 +41,8 @@ async def get_collection_status():
             "is_running": collector.is_running,
             "latest_collection": latest_timestamp,
             "total_price_records": total_records,
+            "environment": settings.environment,
+            "synthetic_history_enabled": settings.demo_bootstrap_enabled(),
             "status": "active" if collector.is_running else "inactive"
         }
     finally:

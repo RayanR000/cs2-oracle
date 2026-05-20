@@ -31,4 +31,17 @@ class Settings(BaseSettings):
         case_sensitive = False
         extra = "allow"
 
+    def is_production(self) -> bool:
+        """Return True when the app should avoid demo bootstrap behavior."""
+        return self.environment.lower() in {"production", "prod"}
+
+    def demo_bootstrap_enabled(self) -> bool:
+        """
+        Return True when synthetic catalog/history bootstrap should run.
+
+        Demo and development environments keep the synthetic backfill available
+        for local iteration, while production stays on the live collection path.
+        """
+        return not self.is_production()
+
 settings = Settings()

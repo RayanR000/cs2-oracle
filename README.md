@@ -20,7 +20,7 @@ See [PROJECT_OVERVIEW.md](PROJECT_OVERVIEW.md) for detailed feature descriptions
 - **Backend**: FastAPI (Python) with SQLAlchemy ORM
 - **Database**: Supabase (PostgreSQL)
 - **Data Pipeline**: Real-time data collection from Steam Community Market API
-- **Data Source**: ✨ **LIVE data** collected automatically from Steam (not synthetic)
+- **Data Source**: ✨ **LIVE Steam collection** with explicit demo bootstrap for local synthetic history only
 
 ## Project Structure
 
@@ -136,15 +136,17 @@ The frontend will be available at `http://localhost:3000`
 
 ## Real-Time Data Collection 🎯
 
-The platform now automatically collects **real price data from Steam Community Market API**:
+The platform collects **real price data from Steam Community Market API** in both demo and production modes:
 
 - ✨ **Automatic collection** starts on app startup
 - 📊 **Every 1 hour** prices are fetched for all tracked items
 - ✅ **Validated data** with anomaly detection before storage
 - 🔗 **Integrated** with trend analysis and predictions
-- 📈 **Real endpoints** return real, analyzed data (not synthetic)
+- 📈 **Production endpoints** return real, analyzed data; demo/dev may still show synthetic bootstrap history
 
-All API endpoints now use actual market data from Steam. See [REAL_DATA_COLLECTION.md](REAL_DATA_COLLECTION.md) for details.
+Demo and development environments also load a synthetic catalog/history backfill so the UI has data to render locally. Production startup skips the synthetic history and relies on live Steam collection.
+
+See [REAL_DATA_COLLECTION.md](REAL_DATA_COLLECTION.md) for details.
 
 **Quick Start:**
 ```bash

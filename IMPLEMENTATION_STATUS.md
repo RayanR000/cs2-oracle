@@ -2,13 +2,13 @@
 
 ## Quick Summary
 
-✅ **Phase 1**: Foundation Complete (2,413 lines of code)
+✅ **Phase 1**: Foundation Complete, with env-driven bootstrap in progress (2,413 lines of code)
 ✅ **Phase 2**: Data Pipeline Complete (1,702 new lines of code)
 ✅ **Phase 3**: API Endpoints Complete (569 lines, 15 endpoints)
 ✅ **Phase 3+**: Real Data Collection Active (225 lines)
 📋 **Phases 4-8**: Planned & Ready to Execute
 
-**Data Source**: Real-time Steam Community Market API ✨
+**Data Source**: Real-time Steam Community Market API, with synthetic demo bootstrap retained for local development ✨
 
 ---
 
@@ -28,6 +28,7 @@
 ✅ React components (Header, ItemCard, Search, StatCard)
 ✅ Pydantic schemas for request/response validation
 ✅ Environment configuration
+✅ Environment-driven bootstrap mode separating demo synthetic history from production startup
 
 ### Key Architecture Decisions
 - **Backend**: FastAPI for high performance async APIs

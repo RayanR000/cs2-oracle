@@ -1,6 +1,9 @@
 """
 Seed data and database initialization
-Populates initial data for testing and demonstration
+Populates initial data for testing and demonstration only.
+
+This module intentionally generates synthetic market history for local/demo
+runs. Production bootstrap should avoid using these helpers.
 """
 
 from datetime import datetime, timedelta
@@ -116,7 +119,7 @@ SAMPLE_EVENTS = [
 
 def generate_sample_price_history(item_id: str, num_days: int = 90) -> List[Dict]:
     """
-    Generate realistic sample price history with market patterns
+    Generate realistic synthetic price history with market patterns.
     
     Args:
         item_id: Item identifier
@@ -306,7 +309,7 @@ class DatabaseSeeder:
     @staticmethod
     def seed_all(session) -> Dict[str, int]:
         """
-        Seed all tables with initial data
+        Seed all tables with synthetic demo data.
         
         Args:
             session: SQLAlchemy session

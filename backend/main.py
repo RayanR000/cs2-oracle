@@ -7,7 +7,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from starlette.middleware.sessions import SessionMiddleware
 from routers import items, opportunities, events, auth, portfolio
-from database import init_db, SessionLocal
+from database import init_db
 from config import settings
 from collectors.comprehensive_loader import load_all_cs2_data
 from collectors.real_data_collector import start_real_data_collection, stop_real_data_collection
@@ -44,17 +44,21 @@ async def startup_event() -> None:
     init_db()
     logger.info("Database initialized successfully")
 
-    logger.info("Loading CS2 catalog and synthetic history...")
+    demo_bootstrap = settings.demo_bootstrap_enabled()
+    logger.info(
+        "Bootstrapping catalog data in %s mode (%s history)",
+        settings.environment,
+        "synthetic demo" if demo_bootstrap else "no synthetic"
+    )
     try:
-        stats = load_all_cs2_data()
+        stats = load_all_cs2_data(generate_history=demo_bootstrap)
         logger.info(f"Data load complete: {stats}")
         logger.info(f"  Items: {stats.get('items_added', 0)} added, {stats.get('items_skipped', 0)} skipped")
         logger.info(f"  Price records: {stats.get('price_records_added', 0)}")
         logger.info(f"  Events: {stats.get('events_added', 0)}")
     except Exception as e:
         # Allow app to start even if initial data load fails.
-        # The real-time data collection will populate the database over time,
-        # so the app can function with an empty database initially.
+        # Live collection can still populate data over time.
         logger.error(f"Error loading data: {e}", exc_info=True)
 
     logger.info("Starting real-time market data collection...")
@@ -95,7 +99,9 @@ def root():
         "message": "CS2 Market Intelligence API",
         "version": "0.1.0",
         "docs": "/api/docs",
-        "data_source": "Real-time Steam API + Initial seed data"
+        "data_source": "Real-time Steam API",
+        "bootstrap_mode": "demo" if settings.demo_bootstrap_enabled() else "production",
+        "synthetic_history": settings.demo_bootstrap_enabled()
     }
 
 if __name__ == "__main__":
