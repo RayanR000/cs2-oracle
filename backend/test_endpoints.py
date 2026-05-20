@@ -9,6 +9,7 @@ from datetime import datetime
 from main import app
 from database import SessionLocal, init_db
 from seed_data import DatabaseSeeder
+from routers import admin as admin_router
 
 client = TestClient(app)
 
@@ -298,6 +299,98 @@ class TestHealthEndpoints:
         assert "message" in data
         assert "version" in data
         assert "docs" in data
+
+
+class TestAdminEndpoints:
+    """Tests for admin collection endpoints"""
+
+    @pytest.fixture
+    def fake_collector(self):
+        class FakeCollector:
+            enabled = True
+            is_running = False
+
+            def collect_all_items(self):
+                now = datetime.utcnow().isoformat()
+                return {
+                    "total_items": 3,
+                    "successful": 2,
+                    "failed": 1,
+                    "timestamp": now,
+                    "started_at": now,
+                    "finished_at": now,
+                    "duration_seconds": 0.123,
+                }
+
+            def get_collection_metrics(self):
+                now = datetime.utcnow().isoformat()
+                return {
+                    "last_run_started_at": now,
+                    "last_run_finished_at": now,
+                    "last_success_at": now,
+                    "last_error_at": None,
+                    "last_error": None,
+                    "last_run_duration_seconds": 0.123,
+                    "last_run_total_items": 3,
+                    "last_run_successful": 2,
+                    "last_run_failed": 1,
+                    "total_runs": 4,
+                    "successful_runs": 3,
+                    "failed_runs": 1,
+                    "total_items_collected": 10,
+                    "total_items_failed": 2,
+                    "thread_alive": False,
+                    "collection_enabled": True,
+                    "is_running": False,
+                    "status": "idle",
+                }
+
+        return FakeCollector()
+
+    def test_collect_now_returns_metrics(self, monkeypatch, fake_collector):
+        """Test POST /admin/collect-now includes collection metrics"""
+        monkeypatch.setattr(admin_router, "get_collector", lambda: fake_collector)
+
+        response = client.post("/admin/collect-now")
+        assert response.status_code == 200
+
+        data = response.json()
+        assert data["status"] == "completed"
+        assert "stats" in data
+        assert "metrics" in data
+        assert data["stats"]["successful"] == 2
+        assert data["metrics"]["last_run_duration_seconds"] == 0.123
+        assert data["metrics"]["successful_runs"] == 3
+
+    def test_collection_status_exposes_health(self, monkeypatch, fake_collector):
+        """Test GET /admin/collection-status includes runtime health fields"""
+        monkeypatch.setattr(admin_router, "get_collector", lambda: fake_collector)
+
+        response = client.get("/admin/collection-status")
+        assert response.status_code == 200
+
+        data = response.json()
+        assert data["collection_enabled"] is True
+        assert data["is_running"] is False
+        assert data["thread_alive"] is False
+        assert data["status"] == "idle"
+        assert "latest_persisted_run" in data
+        assert "metrics" in data
+        assert "synthetic_history_enabled" in data
+
+    def test_data_stats_includes_source_breakdown_and_collector(self, monkeypatch, fake_collector):
+        """Test GET /admin/data-stats includes collector metrics and source breakdown"""
+        monkeypatch.setattr(admin_router, "get_collector", lambda: fake_collector)
+
+        response = client.get("/admin/data-stats")
+        assert response.status_code == 200
+
+        data = response.json()
+        assert "collector" in data
+        assert "source_breakdown" in data
+        assert "total_collection_runs" in data
+        assert data["collector"]["status"] == "idle"
+        assert "steam" in data["source_breakdown"]
 
 
 class TestErrorHandling:

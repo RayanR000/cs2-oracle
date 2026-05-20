@@ -4,13 +4,14 @@ Fetches real CS2 market data from Steam API
 """
 
 import logging
-from datetime import datetime, timedelta
-from typing import Optional, List, Dict
+from datetime import datetime
+from typing import Optional, Dict, Any
 import threading
 import time
+from copy import deepcopy
 from collectors.steam_market import SteamMarketCollector
 from collectors.data_validation import DataValidator, DataCleaner
-from database import SessionLocal, Item, PriceHistory, Event
+from database import SessionLocal, Item, PriceHistory, CollectionRun
 from sqlalchemy.exc import SQLAlchemyError
 
 logger = logging.getLogger(__name__)
@@ -32,6 +33,101 @@ class RealDataCollector:
         self.is_running = False
         self.collection_thread = None
         self._thread_lock = threading.Lock()
+        self._stop_event = threading.Event()
+        self._collection_stats = {
+            'last_run_started_at': None,
+            'last_run_finished_at': None,
+            'last_success_at': None,
+            'last_error_at': None,
+            'last_error': None,
+            'last_run_duration_seconds': None,
+            'last_run_total_items': 0,
+            'last_run_successful': 0,
+            'last_run_failed': 0,
+            'total_runs': 0,
+            'successful_runs': 0,
+            'failed_runs': 0,
+            'total_items_collected': 0,
+            'total_items_failed': 0,
+        }
+
+    def _record_run_start(self) -> None:
+        with self._thread_lock:
+            self._collection_stats['last_run_started_at'] = datetime.utcnow()
+            self._collection_stats['last_run_finished_at'] = None
+            self._collection_stats['last_run_duration_seconds'] = None
+            self._collection_stats['last_run_total_items'] = 0
+            self._collection_stats['last_run_successful'] = 0
+            self._collection_stats['last_run_failed'] = 0
+            self._collection_stats['last_error'] = None
+            self._collection_stats['total_runs'] += 1
+
+    def _record_run_result(self, stats: Dict[str, Any], duration_seconds: float, success: bool, error: Optional[str] = None) -> None:
+        now = datetime.utcnow()
+        with self._thread_lock:
+            self._collection_stats['last_run_finished_at'] = now
+            self._collection_stats['last_run_duration_seconds'] = round(duration_seconds, 3)
+            self._collection_stats['last_run_total_items'] = stats.get('total_items', 0)
+            self._collection_stats['last_run_successful'] = stats.get('successful', 0)
+            self._collection_stats['last_run_failed'] = stats.get('failed', 0)
+            self._collection_stats['total_items_collected'] += stats.get('successful', 0)
+            self._collection_stats['total_items_failed'] += stats.get('failed', 0)
+
+            if success:
+                self._collection_stats['successful_runs'] += 1
+                self._collection_stats['last_success_at'] = now
+            else:
+                self._collection_stats['failed_runs'] += 1
+                self._collection_stats['last_error_at'] = now
+                self._collection_stats['last_error'] = error
+
+    def _persist_collection_run(
+        self,
+        started_at: datetime,
+        finished_at: datetime,
+        stats: Dict[str, Any],
+        success: bool,
+        error: Optional[str] = None
+    ) -> None:
+        """Persist a completed collection run for durability across restarts."""
+        db = SessionLocal()
+        try:
+            run = CollectionRun(
+                started_at=started_at,
+                finished_at=finished_at,
+                status="success" if success else "failed",
+                total_items=stats.get('total_items', 0),
+                successful=stats.get('successful', 0),
+                failed=stats.get('failed', 0),
+                duration_seconds=stats.get('duration_seconds'),
+                error_message=error,
+                source_breakdown={
+                    "steam": stats.get('successful', 0)
+                }
+            )
+            db.add(run)
+            db.commit()
+        except SQLAlchemyError as db_error:
+            db.rollback()
+            logger.error(f"Database error persisting collection run: {db_error}", exc_info=True)
+        finally:
+            db.close()
+
+    def get_collection_metrics(self) -> Dict[str, Any]:
+        """Return a snapshot of the current collector health and counters."""
+        with self._thread_lock:
+            metrics = deepcopy(self._collection_stats)
+
+            thread = self.collection_thread
+            metrics['thread_alive'] = bool(thread and thread.is_alive())
+            metrics['collection_enabled'] = self.enabled
+            metrics['is_running'] = self.is_running
+            metrics['status'] = (
+                'active' if self.is_running and metrics['thread_alive']
+                else 'idle' if self.enabled
+                else 'disabled'
+            )
+            return metrics
     
     def collect_item_data(self, item: Item) -> Optional[PriceHistory]:
         """
@@ -83,7 +179,8 @@ class RealDataCollector:
                     timestamp=timestamp,
                     price=cleaned_price,
                     volume=cleaned_volume,
-                    median_price=cleaned_price
+                    median_price=cleaned_price,
+                    source="steam"
                 )
                 db.add(price_history)
                 db.commit()
@@ -109,11 +206,17 @@ class RealDataCollector:
         Returns:
             Dictionary with collection statistics
         """
+        started_at = datetime.utcnow()
+        self._record_run_start()
+
         stats = {
             'total_items': 0,
             'successful': 0,
             'failed': 0,
-            'timestamp': datetime.utcnow().isoformat()
+            'timestamp': started_at.isoformat(),
+            'started_at': started_at.isoformat(),
+            'finished_at': None,
+            'duration_seconds': None
         }
         
         db = SessionLocal()
@@ -129,9 +232,22 @@ class RealDataCollector:
                     stats['successful'] += 1
                 else:
                     stats['failed'] += 1
-            
+
+            finished_at = datetime.utcnow()
+            stats['finished_at'] = finished_at.isoformat()
+            stats['duration_seconds'] = round((finished_at - started_at).total_seconds(), 3)
             logger.info(f"Collection complete: {stats['successful']} successful, {stats['failed']} failed")
+            self._record_run_result(stats, stats['duration_seconds'], success=True)
+            self._persist_collection_run(started_at, finished_at, stats, success=True)
             return stats
+        except Exception as e:
+            finished_at = datetime.utcnow()
+            stats['finished_at'] = finished_at.isoformat()
+            stats['duration_seconds'] = round((finished_at - started_at).total_seconds(), 3)
+            self._record_run_result(stats, stats['duration_seconds'], success=False, error=str(e))
+            self._persist_collection_run(started_at, finished_at, stats, success=False, error=str(e))
+            logger.error(f"Error collecting all items: {e}", exc_info=True)
+            raise
         
         finally:
             db.close()
@@ -144,19 +260,25 @@ class RealDataCollector:
             interval_seconds: Seconds between collection cycles (default: 1 hour)
         """
         logger.info(f"Starting real data collection loop (interval: {interval_seconds}s)")
+        self._stop_event.clear()
         self.is_running = True
         
-        while self.is_running:
+        while not self._stop_event.is_set():
             try:
                 logger.info("Running scheduled data collection")
                 self.collect_all_items()
                 
                 logger.info(f"Sleeping for {interval_seconds}s until next collection")
-                time.sleep(interval_seconds)
+                if self._stop_event.wait(interval_seconds):
+                    break
             
             except Exception as e:
                 logger.error(f"Error in collection loop: {e}")
-                time.sleep(60)  # Sleep 1 minute on error before retrying
+                if self._stop_event.wait(60):
+                    break
+
+        self.is_running = False
+        logger.info("Collection loop exited")
     
     def start_background_collection(self, interval_seconds: int = 3600):
         """
@@ -170,10 +292,11 @@ class RealDataCollector:
             return
 
         with self._thread_lock:
-            if self.is_running:
+            if self.collection_thread and self.collection_thread.is_alive():
                 logger.warning("Collection loop already running")
                 return
 
+            self._stop_event.clear()
             self.is_running = True
             self.collection_thread = threading.Thread(
                 target=self.run_collection_loop,
@@ -186,12 +309,20 @@ class RealDataCollector:
     def stop_background_collection(self):
         """Stop the background collection thread"""
         with self._thread_lock:
+            self._stop_event.set()
             self.is_running = False
             thread = self.collection_thread
-            self.collection_thread = None
+            thread_alive = bool(thread and thread.is_alive())
+            if not thread_alive:
+                self.collection_thread = None
 
-        if thread:
+        if thread and thread_alive:
             thread.join(timeout=5)
+
+        with self._thread_lock:
+            if self.collection_thread and not self.collection_thread.is_alive():
+                self.collection_thread = None
+
         logger.info("Background data collection stopped")
 
 

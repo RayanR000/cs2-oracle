@@ -2,7 +2,7 @@
 Database models for CS2 Market Intelligence Platform
 """
 
-from sqlalchemy import create_engine, Column, Integer, String, Float, DateTime, ForeignKey, Index
+from sqlalchemy import create_engine, Column, Integer, String, Float, DateTime, ForeignKey, Index, JSON
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import relationship, sessionmaker
 from datetime import datetime
@@ -69,6 +69,27 @@ class PriceHistory(Base):
     __table_args__ = (
         Index('idx_price_history_item_timestamp', 'item_id', 'timestamp'),
         Index('idx_price_history_source', 'source'),
+    )
+
+class CollectionRun(Base):
+    """Collection run model - persisted collector health and run metadata"""
+    __tablename__ = "collection_runs"
+
+    id = Column(Integer, primary_key=True)
+    started_at = Column(DateTime, nullable=False, index=True)
+    finished_at = Column(DateTime, nullable=True, index=True)
+    status = Column(String(50), nullable=False, index=True)
+    total_items = Column(Integer, nullable=False, default=0)
+    successful = Column(Integer, nullable=False, default=0)
+    failed = Column(Integer, nullable=False, default=0)
+    duration_seconds = Column(Float, nullable=True)
+    error_message = Column(String(1000), nullable=True)
+    source_breakdown = Column(JSON, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+    __table_args__ = (
+        Index('idx_collection_runs_started_at', 'started_at'),
+        Index('idx_collection_runs_status', 'status'),
     )
 
 class Event(Base):
