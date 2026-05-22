@@ -4,7 +4,7 @@ on:
   schedule:
     # Run every day at 2 AM UTC (adjust to your preference)
     - cron: '0 2 * * *'
-  workflow_dispatch:  # Allow manual trigger
+  workflow_dispatch: # Updated to trigger schedule recognition  # Allow manual trigger
 
 jobs:
   collect-data:
