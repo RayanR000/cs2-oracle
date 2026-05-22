@@ -1,0 +1,60 @@
+{
+  "prices": [
+    {
+      "item_name": "AK-47 | Phantom Disruptor",
+      "timestamp": "2023-01-15T10:00:00",
+      "price": 3.50,
+      "volume": 1200,
+      "source": "bitskins"
+    },
+    {
+      "item_name": "AK-47 | Phantom Disruptor",
+      "timestamp": "2023-02-15T10:00:00",
+      "price": 3.45,
+      "volume": 1350,
+      "source": "bitskins"
+    },
+    {
+      "item_name": "AK-47 | Phantom Disruptor",
+      "timestamp": "2023-03-15T10:00:00",
+      "price": 3.60,
+      "volume": 1100,
+      "source": "bitskins"
+    },
+    {
+      "item_name": "M4A4 | Uncharted",
+      "timestamp": "2023-01-15T10:00:00",
+      "price": 4.25,
+      "volume": 850,
+      "source": "steam_market"
+    },
+    {
+      "item_name": "M4A4 | Uncharted",
+      "timestamp": "2023-02-15T10:00:00",
+      "price": 4.30,
+      "volume": 920,
+      "source": "steam_market"
+    },
+    {
+      "item_name": "AWP Dragon Lore",
+      "timestamp": "2023-01-15T10:00:00",
+      "price": 2000.00,
+      "volume": 5,
+      "source": "csgo_float"
+    },
+    {
+      "item_name": "Sticker | NAVI",
+      "timestamp": "2023-01-15T10:00:00",
+      "price": 0.15,
+      "volume": 5000,
+      "source": "steam_market"
+    },
+    {
+      "item_name": "Operation Breakout Pass",
+      "timestamp": "2023-01-15T10:00:00",
+      "price": 4.99,
+      "volume": 2000,
+      "source": "steam_market"
+    }
+  ]
+}
