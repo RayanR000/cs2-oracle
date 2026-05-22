@@ -1,0 +1,55 @@
+name: Daily Market Data Collection
+
+on:
+  schedule:
+    # Run every day at 2 AM UTC (adjust to your preference)
+    - cron: '0 2 * * *'
+  workflow_dispatch:  # Allow manual trigger
+
+jobs:
+  collect-data:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        working-directory: ./backend
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Run data collection
+        working-directory: ./backend
+        env:
+          DATABASE_URL: ${{ secrets.SUPABASE_DATABASE_URL }}
+          STEAM_API_KEY: ${{ secrets.STEAM_API_KEY }}
+          CS2SH_API_KEY: ${{ secrets.CS2SH_API_KEY }}
+          ENVIRONMENT: production
+        run: |
+          python -c "
+          import sys
+          sys.path.insert(0, '.')
+          from collectors.real_data_collector import start_real_data_collection
+          from config import settings
+
+          print('[Collection] Starting daily data collection...')
+          try:
+              start_real_data_collection()
+              print('[Collection] ✓ Collection completed successfully')
+          except Exception as e:
+              print(f'[Collection] ✗ Collection failed: {e}')
+              sys.exit(1)
+          "
+
+      - name: Notify on failure
+        if: failure()
+        run: |
+          echo "Collection failed! Check the logs above for details."
+          exit 1
