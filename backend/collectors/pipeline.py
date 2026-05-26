@@ -91,86 +91,91 @@ class DataPipeline:
             logger.info("Data pipeline stopped")
     
     def run_daily_collection(self):
-        """Execute daily market data collection"""
+        """Execute daily market data collection using high-efficiency batch method"""
         try:
-            logger.info("Starting daily market data collection")
+            logger.info("Starting daily market data collection (Batch Method)")
             
-            # Import here to avoid circular dependencies
             from collectors.steam_market import SteamMarketCollector
-            from collectors.data_validation import DataValidator, DataCleaner
             from database import Item, PriceHistory
             
-            collector = SteamMarketCollector(rate_limit_delay=1.5)
-            validator = DataValidator()
-            cleaner = DataCleaner()
+            # Using 20.0s delay as requested for safety
+            collector = SteamMarketCollector(rate_limit_delay=20.0)
             
             if not self.db_session:
                 logger.error("Database session not available")
                 return {"status": "failed", "error": "No database session"}
             
-            # Get all items to collect
-            items = self.db_session.query(Item).all()
-            logger.info(f"Collecting data for {len(items)} items")
+            # Pre-load all items for mapping
+            logger.info("Loading items from database...")
+            all_items = self.db_session.query(Item).all()
+            # Map item_id (hash_name) to database internal ID
+            item_id_map = {item.item_id: item.id for item in all_items}
+            logger.info(f"Loaded {len(item_id_map)} items for mapping")
             
             successful_collections = 0
-            failed_collections = 0
+            total_processed = 0
+            start_index = 0
+            batch_size = 100
             
-            for item in items:
-                try:
-                    # Collect price data
-                    result = collector.get_item_price_history(item.name)
-                    if result:
-                        price, volume, timestamp = result
-                        
-                        # Validate data
-                        price_record = {
-                            'price': price,
-                            'volume': volume,
-                            'timestamp': timestamp,
-                            'item_name': item.name
-                        }
-                        
-                        is_valid, error = validator.validate_price_record(price_record)
-                        if not is_valid:
-                            logger.warning(f"Validation failed for {item.name}: {error}")
-                            failed_collections += 1
-                            continue
-                        
-                        # Check for anomalies
-                        anomaly_score = validator.compute_anomaly_score(
-                            price, 
-                            [h.price for h in item.price_histories[-30:]] if item.price_histories else []
-                        )
-                        
-                        if anomaly_score > 0.9:
-                            logger.warning(f"High anomaly score ({anomaly_score}) for {item.name}")
-                        
-                        # Store in database
-                        price_history = PriceHistory(
-                            item_id=item.id,
-                            timestamp=timestamp,
-                            price=price,
-                            volume=volume
-                        )
-                        self.db_session.add(price_history)
-                        successful_collections += 1
-                        logger.info(f"Collected price for {item.name}: ${price}")
-                    else:
-                        failed_collections += 1
-                        logger.warning(f"Failed to collect price for {item.name}")
+            while True:
+                logger.info(f"Fetching batch: items {start_index} to {start_index + batch_size}...")
                 
-                except Exception as item_error:
-                    failed_collections += 1
-                    logger.error(f"Error collecting {item.name}: {item_error}")
-            
-            self.db_session.commit()
-            
-            logger.info(f"Daily collection completed: {successful_collections} successful, {failed_collections} failed")
+                batch_data = collector.get_market_listings(start=start_index, count=batch_size)
+                
+                if not batch_data or not batch_data.get('results'):
+                    logger.info("No more items found or request failed.")
+                    break
+                
+                results = batch_data['results']
+                total_on_steam = batch_data.get('total_count', 0)
+                
+                price_records = []
+                now = datetime.utcnow()
+                
+                for res in results:
+                    total_processed += 1
+                    hash_name = res['hash_name']
+                    
+                    # Map to our DB
+                    internal_id = item_id_map.get(hash_name)
+                    if not internal_id:
+                        # Log but don't stop; might be a new item
+                        logger.debug(f"Steam item not in database: {hash_name}")
+                        continue
+                    
+                    if res['price'] > 0:
+                        price_records.append(PriceHistory(
+                            item_id=internal_id,
+                            timestamp=now,
+                            price=res['price'],
+                            volume=res['volume'],
+                            source='steam_batch'
+                        ))
+                        successful_collections += 1
+                
+                # Bulk insert this batch
+                if price_records:
+                    try:
+                        self.db_session.bulk_save_objects(price_records)
+                        self.db_session.commit()
+                        logger.info(f"  → Committed {len(price_records)} prices.")
+                    except Exception as e:
+                        logger.error(f"Failed to commit batch: {e}")
+                        self.db_session.rollback()
+                
+                # Check if we've reached the end
+                if start_index + batch_size >= total_on_steam or len(results) < batch_size:
+                    logger.info("Reached end of Steam market catalog.")
+                    break
+                    
+                start_index += batch_size
+                
+            logger.info(f"Daily collection completed: {successful_collections} successful, {total_processed} items seen")
             return {
                 "status": "success",
                 "timestamp": datetime.utcnow(),
                 "successful": successful_collections,
-                "failed": failed_collections
+                "total_seen": total_processed
             }
             
         except Exception as e:

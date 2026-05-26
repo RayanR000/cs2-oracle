@@ -44,6 +44,11 @@ async def startup_event() -> None:
     init_db()
     logger.info("Database initialized successfully")
 
+    # Production/Optimized startup: Skip heavy bootstrapping if not explicitly requested
+    if settings.environment.lower() == "production" or not settings.debug:
+        logger.info("Skipping heavy bootstrapping (Production/Non-Debug mode)")
+        return
+
     demo_bootstrap = settings.demo_bootstrap_enabled()
     logger.info(
         "Bootstrapping catalog data in %s mode (%s history)",
@@ -51,23 +56,28 @@ async def startup_event() -> None:
         "synthetic demo" if demo_bootstrap else "no synthetic"
     )
     try:
-        stats = load_all_cs2_data(generate_history=demo_bootstrap)
-        logger.info(f"Data load complete: {stats}")
-        logger.info(f"  Items: {stats.get('items_added', 0)} added, {stats.get('items_skipped', 0)} skipped")
-        logger.info(f"  Price records: {stats.get('price_records_added', 0)}")
-        logger.info(f"  Events: {stats.get('events_added', 0)}")
+        # Only run this if the database is truly empty
+        from database import SessionLocal, Item
+        db = SessionLocal()
+        item_count = db.query(Item).count()
+        db.close()
+        
+        if item_count == 0:
+            logger.info("Database empty, running initial catalog load...")
+            stats = load_all_cs2_data(generate_history=demo_bootstrap)
+            logger.info(f"Initial load complete: {stats}")
+        else:
+            logger.info(f"Database already has {item_count} items. Skipping initial load.")
+            
     except Exception as e:
-        # Allow app to start even if initial data load fails.
-        # Live collection can still populate data over time.
-        logger.error(f"Error loading data: {e}", exc_info=True)
+        logger.error(f"Error checking/loading initial data: {e}")
 
-    logger.info("Starting real-time market data collection...")
-    try:
-        start_real_data_collection()
-        logger.info("Real-time data collection started")
-    except Exception as e:
-        logger.error(f"Error starting data collection pipeline: {e}", exc_info=True)
-        raise
+    # Real-time collection is now recommended to be run as a separate process: 
+    # python scripts/background_collect.py
+    # We will only start it here if specifically configured, to keep API startup fast.
+    if settings.debug:
+        logger.info("Running in debug mode: Real-time collection thread will NOT start automatically.")
+        logger.info("Run 'python scripts/background_collect.py' in a separate terminal for live updates.")
 
 @app.on_event("shutdown")
 def shutdown_event():

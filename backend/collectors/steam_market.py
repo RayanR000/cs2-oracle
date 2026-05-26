@@ -183,29 +183,58 @@ class SteamMarketCollector:
         logger.warning(f"No price data available for: {hash_name}")
         return None
     
+    def _parse_price(self, price_str: str) -> float:
+        """Parse currency string like '$1,234.56' to float 1234.56"""
+        if not price_str:
+            return 0.0
+        try:
+            # Remove currency symbols and thousands separators
+            clean_str = ''.join(c for c in price_str if c.isdigit() or c == '.')
+            return float(clean_str)
+        except ValueError:
+            return 0.0
+
     def get_market_listings(self, start: int = 0, count: int = 100) -> Optional[Dict]:
         """
-        Get market listings
+        Get market listings for CS2 (AppID 730)
         
         Args:
             start: Starting index
-            count: Number of items to fetch
+            count: Number of items to fetch (max 100)
             
         Returns:
-            Market listings data or None if failed
+            Dictionary containing processed results and total count
         """
         url = f"{self.BASE_URL}/search/render/"
         params = {
+            'query': '',
             'appid': 730,
             'search_descriptions': 0,
-            'sort_column': 'price',
+            'sort_column': 'name',
             'sort_dir': 'asc',
             'start': start,
-            'count': count,
-            'norender': 1
+            'count': min(count, 100),
+            'norender': 1,
+            'currency': 1  # USD
         }
         
-        return self._make_request(url, params)
+        data = self._make_request(url, params)
+        if not data or not data.get('success') or 'results' not in data:
+            return None
+            
+        processed_results = []
+        for res in data['results']:
+            processed_results.append({
+                'hash_name': res.get('hash_name'),
+                'price': self._parse_price(res.get('sell_price_text')),
+                'volume': int(res.get('sell_listings', 0)),
+                'median_price': self._parse_price(res.get('sell_price_text')) # Render doesn't give median easily
+            })
+            
+        return {
+            'total_count': data.get('total_count', 0),
+            'results': processed_results
+        }
     
     def get_item_name_id(self, item_name: str) -> Optional[int]:
         """

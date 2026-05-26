@@ -30,13 +30,15 @@ class ComprehensiveDataLoader:
     
     def load_complete_catalog(self, 
                              generate_history: bool = False,
-                             history_days: int = 365) -> dict:
+                             history_days: int = 365,
+                             force_refresh: bool = False) -> dict:
         """
         Load complete CS2 item catalog with optional historical data
         
         Args:
             generate_history: Whether to generate synthetic historical price data
             history_days: Number of days of history to generate
+            force_refresh: Whether to force a refresh of items even if they exist
             
         Returns:
             Dictionary with statistics about loaded data
@@ -50,11 +52,17 @@ class ComprehensiveDataLoader:
         }
         
         try:
-            # Load items
-            stats.update(self._load_items())
+            # Skip item load if items already exist and force_refresh is False
+            item_count = self.db.query(Item).count()
+            if item_count > 0 and not force_refresh:
+                logger.info(f"Database already has {item_count} items. Skipping catalog load.")
+                stats['items_skipped'] = item_count
+            else:
+                # Load items
+                stats.update(self._load_items())
             
-            # Load historical data if requested
-            if generate_history:
+            # NEVER generate history if items exist, unless explicitly forced
+            if generate_history and (item_count == 0 or force_refresh):
                 stats.update(self._load_historical_data(history_days))
             
             # Load game events
@@ -75,55 +83,53 @@ class ComprehensiveDataLoader:
         return stats
     
     def _load_items(self) -> dict:
-        """Load all items from catalog"""
+        """Load all items from catalog using efficient batch checks"""
         stats = {'items_added': 0, 'items_skipped': 0}
         
         try:
             catalog_items = CS2ItemCatalog.get_all_items()
-            logger.info(f"Loading {len(catalog_items)} items from catalog")
+            logger.info(f"Checking catalog of {len(catalog_items)} items against database...")
             
+            # Fetch all existing item names in one query
+            existing_names = set(
+                name for (name,) in self.db.query(Item.name).all()
+            )
+            logger.info(f"Found {len(existing_names)} existing items in DB")
+            
+            new_items = []
             for catalog_item in catalog_items:
-                try:
-                    # Check if item already exists
-                    existing = self.db.query(Item).filter(
-                        Item.name == catalog_item['name']
-                    ).first()
-                    
-                    if existing:
-                        stats['items_skipped'] += 1
-                        continue
-                    
-                    # Create new item
-                    item = Item(
-                        item_id=self._generate_item_id(catalog_item['name']),
-                        name=catalog_item['name'],
-                        type=catalog_item['type'],
-                        release_date=catalog_item['release_date'],
-                        current_price=HistoricalDataGenerator._get_base_price(
-                            catalog_item['name']
-                        )
-                    )
-                    
-                    self.db.add(item)
-                    stats['items_added'] += 1
-                    
-                    if stats['items_added'] % 100 == 0:
-                        logger.info(f"Loaded {stats['items_added']} items...")
-                    
-                except Exception as e:
-                    logger.error(f"Error loading item {catalog_item['name']}: {e}")
+                if catalog_item['name'] in existing_names:
+                    stats['items_skipped'] += 1
                     continue
+                
+                # Create new item
+                item = Item(
+                    item_id=self._generate_item_id(catalog_item['name']),
+                    name=catalog_item['name'],
+                    type=catalog_item['type'],
+                    release_date=catalog_item['release_date'],
+                    current_price=HistoricalDataGenerator._get_base_price(
+                        catalog_item['name']
+                    )
+                )
+                new_items.append(item)
+                stats['items_added'] += 1
             
-            self.db.flush()
+            # Batch insert new items
+            if new_items:
+                logger.info(f"Batch inserting {len(new_items)} new items...")
+                self.db.bulk_save_objects(new_items)
+                self.db.flush()
+            
             logger.info(f"Items load complete: {stats}")
             
         except Exception as e:
-            logger.error(f"Error loading items: {e}")
+            logger.error(f"Error loading items: {e}", exc_info=True)
         
         return stats
     
     def _load_historical_data(self, history_days: int = 365) -> dict:
-        """Generate and load historical price data for all items"""
+        """Generate and load historical price data for all items using efficient batch checks"""
         stats = {'price_records_added': 0}
         
         try:
@@ -131,15 +137,17 @@ class ComprehensiveDataLoader:
             items = self.db.query(Item).all()
             logger.info(f"Generating historical data for {len(items)} items")
             
+            # Fetch all items that ALREADY have price history in one query
+            items_with_history = set(
+                item_id for (item_id,) in self.db.query(PriceHistory.item_id).distinct().all()
+            )
+            logger.info(f"Found {len(items_with_history)} items with existing history")
+            
+            all_new_prices = []
             for idx, item in enumerate(items):
                 try:
-                    # Check if item already has price history
-                    existing_count = self.db.query(PriceHistory).filter(
-                        PriceHistory.item_id == item.id
-                    ).count()
-                    
-                    if existing_count > 0:
-                        logger.debug(f"Item {item.name} already has price history, skipping")
+                    # Skip if item already has price history
+                    if item.id in items_with_history:
                         continue
                     
                     # Generate historical prices
@@ -150,76 +158,81 @@ class ComprehensiveDataLoader:
                         history_days
                     )
                     
-                    # Add to database
+                    # Add to batch
                     for timestamp, price, volume in prices:
                         price_record = PriceHistory(
                             item_id=item.id,
                             timestamp=timestamp,
                             price=price,
                             volume=volume,
-                            median_price=price
+                            median_price=price,
+                            source="synthetic_bootstrap"
                         )
-                        self.db.add(price_record)
+                        all_new_prices.append(price_record)
                     
                     stats['price_records_added'] += len(prices)
                     
-                    if (idx + 1) % 50 == 0:
+                    # Flush occasionally to keep memory usage in check
+                    if len(all_new_prices) > 10000:
+                        logger.info(f"Batch inserting {len(all_new_prices)} synthetic records...")
+                        self.db.bulk_save_objects(all_new_prices)
                         self.db.flush()
-                        logger.info(f"Generated history for {idx + 1}/{len(items)} items "
-                                   f"({stats['price_records_added']} price records)")
+                        all_new_prices = []
                     
                 except Exception as e:
                     logger.error(f"Error generating history for item {item.name}: {e}")
                     continue
             
-            self.db.flush()
-            logger.info(f"Historical data load complete: {stats['price_records_added']} records")
+            # Final flush
+            if all_new_prices:
+                logger.info(f"Batch inserting {len(all_new_prices)} final synthetic records...")
+                self.db.bulk_save_objects(all_new_prices)
+                self.db.flush()
+                
+            logger.info(f"Historical data load complete: {stats['price_records_added']} records added")
             
         except Exception as e:
-            logger.error(f"Error loading historical data: {e}")
+            logger.error(f"Error loading historical data: {e}", exc_info=True)
         
         return stats
     
     def _load_game_events(self) -> dict:
-        """Load game events"""
+        """Load game events using batch checks"""
         stats = {'events_added': 0}
         
         try:
             events = CS2GameEvents.get_all_events()
             logger.info(f"Loading {len(events)} game events")
             
-            for event_data in events:
-                try:
-                    # Check if event already exists
-                    existing = self.db.query(Event).filter(
-                        Event.event_type == event_data['type'],
-                        Event.event_name == event_data['name']
-                    ).first()
-                    
-                    if existing:
-                        logger.debug(f"Event {event_data['name']} already exists")
-                        continue
-                    
-                    # Create new event
-                    event = Event(
-                        event_type=event_data['type'],
-                        event_name=event_data['name'],
-                        description=event_data['description'],
-                        timestamp=event_data['date']
-                    )
-                    
-                    self.db.add(event)
-                    stats['events_added'] += 1
-                    
-                except Exception as e:
-                    logger.error(f"Error loading event {event_data['name']}: {e}")
-                    continue
+            # Fetch existing events (tuple of type and name for uniqueness)
+            existing_events = set(
+                (e.event_type, e.event_name) 
+                for e in self.db.query(Event.event_type, Event.event_name).all()
+            )
             
-            self.db.flush()
-            logger.info(f"Events load complete: {stats['events_added']} events")
+            new_events = []
+            for event_data in events:
+                if (event_data['type'], event_data['name']) in existing_events:
+                    continue
+                
+                # Create new event
+                event = Event(
+                    event_type=event_data['type'],
+                    event_name=event_data['name'],
+                    description=event_data['description'],
+                    timestamp=event_data['date']
+                )
+                new_events.append(event)
+                stats['events_added'] += 1
+            
+            if new_events:
+                self.db.bulk_save_objects(new_events)
+                self.db.flush()
+                
+            logger.info(f"Events load complete: {stats['events_added']} events added")
             
         except Exception as e:
-            logger.error(f"Error loading events: {e}")
+            logger.error(f"Error loading events: {e}", exc_info=True)
         
         return stats
     
