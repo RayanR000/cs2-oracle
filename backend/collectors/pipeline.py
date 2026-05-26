@@ -39,12 +39,21 @@ class DataPipeline:
         try:
             self.scheduler = scheduler or BackgroundScheduler()
             
-            # Schedule daily data collection at 1 AM UTC
+            # Schedule priority data collection (Top 2000) every 6 hours
+            self.scheduler.add_job(
+                self.run_priority_collection,
+                CronTrigger(hour='0,6,12,18', minute=30),
+                id='priority_collection',
+                name='Priority market data collection (Top 2000)',
+                replace_existing=True
+            )
+            
+            # Schedule full daily data collection at 1 AM UTC
             self.scheduler.add_job(
                 self.run_daily_collection,
                 CronTrigger(hour=1, minute=0),
                 id='daily_collection',
-                name='Daily market data collection',
+                name='Full daily market data collection',
                 replace_existing=True
             )
             
@@ -90,6 +99,60 @@ class DataPipeline:
             self.is_running = False
             logger.info("Data pipeline stopped")
     
+    def run_priority_collection(self):
+        """Execute priority collection for top 2000 items every 6 hours"""
+        try:
+            logger.info("Starting priority market data collection (Top 2000)")
+            
+            from collectors.csgotrader_aggregator import CSGOTraderAggregator
+            from repositories import ItemRepository
+            from database import PriceHistory
+            
+            if not self.db_session:
+                logger.error("Database session not available")
+                return {"status": "failed", "error": "No database session"}
+                
+            # 1. Identify top 2000 items
+            logger.info("Identifying top 2000 items based on liquidity...")
+            top_items = ItemRepository.get_top_items(self.db_session, limit=2000)
+            if not top_items:
+                logger.warning("No items found to update.")
+                return {"status": "skipped", "reason": "no_items"}
+                
+            # 2. Fetch prices from aggregator
+            aggregator = CSGOTraderAggregator()
+            item_names = [item.name for item in top_items]
+            results = aggregator.collect_batch_items(item_names)
+            
+            # 3. Store results
+            price_records = []
+            now = datetime.utcnow()
+            
+            for item in top_items:
+                res = results.get(item.name)
+                if res and res[0] > 0:
+                    price_records.append(PriceHistory(
+                        item_id=item.id,
+                        timestamp=now,
+                        price=res[0],
+                        volume=res[1],
+                        source='aggregator_priority'
+                    ))
+            
+            if price_records:
+                self.db_session.bulk_save_objects(price_records)
+                self.db_session.commit()
+                logger.info(f"Priority collection complete: {len(price_records)} items updated.")
+                return {"status": "success", "count": len(price_records)}
+                
+            return {"status": "success", "count": 0}
+            
+        except Exception as e:
+            if self.db_session:
+                self.db_session.rollback()
+            logger.error(f"Error in priority collection: {e}", exc_info=True)
+            return {"status": "failed", "error": str(e)}
+
     def run_daily_collection(self):
         """Execute daily market data collection using high-efficiency batch method"""
         try:

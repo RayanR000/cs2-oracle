@@ -79,6 +79,27 @@ class ItemRepository:
             for item in latest_prices
         ][:limit]
 
+    @staticmethod
+    def get_top_items(db: Session, limit: int = 2000) -> List[Item]:
+        """
+        Identify priority items based on volume and price.
+        Returns the top items that should be scraped more frequently.
+        """
+        # Use a subquery to find the latest price history record for every item
+        latest_history_ids = db.query(
+            func.max(PriceHistory.id)
+        ).group_by(PriceHistory.item_id).subquery()
+        
+        # Return items joined with their latest stats, ordered by volume then price
+        return db.query(Item).join(
+            PriceHistory, Item.id == PriceHistory.item_id
+        ).filter(
+            PriceHistory.id.in_(latest_history_ids)
+        ).order_by(
+            desc(PriceHistory.volume),
+            desc(PriceHistory.price)
+        ).limit(limit).all()
+
 
 class PriceHistoryRepository:
     """Repository for price history operations"""
