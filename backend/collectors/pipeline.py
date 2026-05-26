@@ -66,6 +66,15 @@ class DataPipeline:
                 replace_existing=True
             )
             
+            # Schedule weekly database pruning at 3 AM UTC every Sunday
+            self.scheduler.add_job(
+                self.run_database_pruning,
+                CronTrigger(day_of_week='sun', hour=3, minute=0),
+                id='weekly_pruning',
+                name='Weekly database pruning',
+                replace_existing=True
+            )
+            
             self.scheduler.start()
             self.is_running = True
             logger.info("Data pipeline started successfully")
@@ -287,6 +296,41 @@ class DataPipeline:
             
         except Exception as e:
             logger.error(f"Error in trend analysis: {e}", exc_info=True)
+            return {"status": "failed", "error": str(e)}
+
+    def run_database_pruning(self):
+        """Execute weekly database pruning and downsampling"""
+        try:
+            logger.info("Starting weekly database pruning")
+            
+            from scripts.prune_database import prune_price_history, prune_trend_indicators, downsample_price_history
+            
+            if not self.db_session:
+                logger.error("Database session not available")
+                return {"status": "failed", "error": "No database session"}
+            
+            # Use defaults: 1 year for history, 180 days for trends, 30 days for granularity
+            pruned_history = prune_price_history(self.db_session, days_to_keep=365, dry_run=False)
+            pruned_trends = prune_trend_indicators(self.db_session, days_to_keep=180, dry_run=False)
+            downsampled = downsample_price_history(self.db_session, days_to_keep_granular=30, dry_run=False)
+            
+            logger.info(f"Database pruning completed: "
+                      f"Deleted {pruned_history} old history, "
+                      f"{pruned_trends} old trends, "
+                      f"{downsampled} redundant history records")
+            
+            return {
+                "status": "success",
+                "timestamp": datetime.utcnow(),
+                "pruned_history": pruned_history,
+                "pruned_trends": pruned_trends,
+                "downsampled": downsampled
+            }
+            
+        except Exception as e:
+            if self.db_session:
+                self.db_session.rollback()
+            logger.error(f"Error in database pruning: {e}", exc_info=True)
             return {"status": "failed", "error": str(e)}
     
     def get_scheduled_jobs(self) -> List[Dict]:

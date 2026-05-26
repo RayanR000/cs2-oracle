@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+1#!/usr/bin/env python3
 """
 Find and download CS:GO/CS2 historical price datasets from Kaggle.
 

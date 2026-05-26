@@ -41,6 +41,18 @@ yarn-error.log*
 *.sqlite
 *.sqlite3
 
+# Data Files
+backend/data/items/
+backend/data/*.csv
+backend/data/*.json
+!backend/data/historical_prices_template.json
+!backend/data/historical_prices_template.csv
+
+# Maintenance Scripts
+backend/scripts/check_db_health.py
+backend/scripts/prune_database.py
+backend/scripts/vacuum_db.py
+
 # OS
 Thumbs.db
 .DS_Store
