@@ -130,10 +130,98 @@ class TrendIndicator(Base):
 class User(Base):
     """User model - Steam authentication"""
     __tablename__ = "users"
-    
+
     id = Column(Integer, primary_key=True)
     steam_id = Column(String(50), unique=True, nullable=False, index=True)
     username = Column(String(255), nullable=True)
     avatar_url = Column(String(500), nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)
     last_login = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+class EventImpact(Base):
+    """Event impact model - historical price movements around events"""
+    __tablename__ = "event_impacts"
+
+    id = Column(Integer, primary_key=True)
+    event_id = Column(Integer, ForeignKey("events.id"), nullable=False, index=True)
+    item_id = Column(Integer, ForeignKey("items.id"), nullable=True, index=True)
+    price_day_before = Column(Float, nullable=True)
+    price_day_1 = Column(Float, nullable=True)
+    price_day_3 = Column(Float, nullable=True)
+    price_day_7 = Column(Float, nullable=True)
+    impact_pct_1day = Column(Float, nullable=True)
+    impact_pct_3day = Column(Float, nullable=True)
+    impact_pct_7day = Column(Float, nullable=True)
+    peak_impact_pct = Column(Float, nullable=True)
+    peak_impact_day = Column(Integer, nullable=True)
+    duration_days = Column(Integer, nullable=True)
+    z_score = Column(Float, nullable=True)  # Statistical significance
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+    __table_args__ = (
+        Index('idx_event_impact_event_item', 'event_id', 'item_id'),
+    )
+
+
+class EventPattern(Base):
+    """Event pattern model - learned patterns from historical events"""
+    __tablename__ = "event_patterns"
+
+    id = Column(Integer, primary_key=True)
+    event_type = Column(String(50), nullable=False, index=True)
+    item_id = Column(Integer, ForeignKey("items.id"), nullable=True, index=True)
+    sample_size = Column(Integer, nullable=False, default=0)
+    avg_impact_1day = Column(Float, nullable=True)
+    avg_impact_3day = Column(Float, nullable=True)
+    avg_impact_7day = Column(Float, nullable=True)
+    std_dev = Column(Float, nullable=True)
+    consistency_score = Column(Float, nullable=True)  # 0-1: how consistent is the pattern
+    holdout_accuracy = Column(Float, nullable=True)  # 0-1: validation accuracy
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    __table_args__ = (
+        Index('idx_event_pattern_type_item', 'event_type', 'item_id'),
+    )
+
+
+class EventCorrelation(Base):
+    """Event correlation model - causal analysis with statistical rigor"""
+    __tablename__ = "event_correlations"
+
+    id = Column(Integer, primary_key=True)
+    event_id = Column(Integer, ForeignKey("events.id"), nullable=False, index=True)
+    item_id = Column(Integer, ForeignKey("items.id"), nullable=True, index=True)
+
+    # Raw measurements
+    price_change_pct = Column(Float, nullable=True)
+    control_group_change_pct = Column(Float, nullable=True)
+
+    # 6-point statistical rigor checks
+    significance_test_zscore = Column(Float, nullable=True)  # Is change > 2x baseline variance?
+    significance_passed = Column(Integer, default=0)  # 0/1
+
+    control_group_diff = Column(Float, nullable=True)  # Affected - Control
+    control_group_passed = Column(Integer, default=0)  # 0/1: Is affected > control?
+
+    pattern_consistency_score = Column(Float, nullable=True)  # 0-1: Does pattern repeat?
+    pattern_passed = Column(Integer, default=0)  # 0/1: > 0.7 consistency?
+
+    confounding_events_count = Column(Integer, default=0)  # Events same day?
+    confounding_passed = Column(Integer, default=0)  # 0/1: Only 1 event on date?
+
+    lag_analysis_peak_day = Column(Integer, nullable=True)  # When is impact strongest?
+    lag_passed = Column(Integer, default=0)  # 0/1: Peak within expected window?
+
+    holdout_validation_accuracy = Column(Float, nullable=True)  # How well does pattern work on new data?
+    validation_passed = Column(Integer, default=0)  # 0/1: > 0.6 accuracy?
+
+    # Final confidence score
+    confidence_score = Column(Float, nullable=True)  # 0-1: Weighted average of 6 checks
+
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+    __table_args__ = (
+        Index('idx_event_correlation_event_item', 'event_id', 'item_id'),
+    )
