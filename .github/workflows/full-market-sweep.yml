@@ -1,0 +1,36 @@
+name: Full Daily Market Sweep (Reddit Method)
+
+on:
+  schedule:
+    # Once daily at 3:00 AM EST (Post-update settlement)
+    # 03:00 AM EST = 07:00 UTC
+    - cron: '0 7 * * *'
+  workflow_dispatch: # Allow manual trigger
+
+jobs:
+  full-sweep:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        working-directory: ./backend
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Run Full Steam Sweep
+        working-directory: ./backend
+        env:
+          DATABASE_URL: ${{ secrets.SUPABASE_DATABASE_URL }}
+          ENVIRONMENT: production
+          DEBUG: false
+        # This task takes ~70 minutes but only runs once a day
+        run: python scripts/run_task.py daily

@@ -35,6 +35,11 @@ def run_task(task_name):
             result = pipeline.run_priority_collection()
             print(f"RESULT: {result}")
             
+        elif task_name == "daily":
+            logger.info("Task: Full Steam Sweep (The Reddit Method - Price + Volume)")
+            result = pipeline.run_daily_collection()
+            print(f"RESULT: {result}")
+            
         elif task_name == "prune":
             logger.info("Task: Database Pruning & Downsampling")
             result = pipeline.run_database_pruning()
