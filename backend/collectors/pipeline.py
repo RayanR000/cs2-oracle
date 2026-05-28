@@ -449,10 +449,16 @@ class DataPipeline:
                 logger.error("Database session not available")
                 return {"status": "failed", "error": "No database session"}
 
-            # Use defaults: 1 year for history, 180 days for trends, 7 days for granularity
-            pruned_history = prune_price_history(self.db_session, days_to_keep=365, dry_run=False)
-            pruned_trends = prune_trend_indicators(self.db_session, days_to_keep=180, dry_run=False)
+            # Downsample with tiered retention:
+            # - 0-7 days: All data (6hr granularity)
+            # - 7-30 days: Daily average
+            # - 30-365 days: Weekly average
+            # - 365+ days: Monthly average (kept indefinitely)
             downsampled = downsample_price_history(self.db_session, days_to_keep_granular=7, dry_run=False)
+
+            # Delete very old trend indicators (keep 180 days)
+            pruned_trends = prune_trend_indicators(self.db_session, days_to_keep=180, dry_run=False)
+            pruned_history = 0  # Price history is preserved (just downsampled), not deleted
 
             # Record the run
             end_time = datetime.utcnow()
