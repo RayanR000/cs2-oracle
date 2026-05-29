@@ -213,6 +213,15 @@ class DataPipeline:
                     len(items),
                     sample_missing,
                 )
+                diagnostic_targets = sample_missing[:5]
+                diagnostic_map = {
+                    missing_name: aggregator.find_source_key_candidates(missing_name, limit=5)
+                    for missing_name in diagnostic_targets
+                }
+                logger.warning(
+                    "Aggregator source-key diagnostics for missing sample: %s",
+                    diagnostic_map,
+                )
 
             # 5. Record collection run for monitoring
             end_time = datetime.utcnow()
@@ -240,6 +249,10 @@ class DataPipeline:
                 "duplicate_names": duplicate_name_count,
                 "duplicate_name_sample": duplicate_name_sample,
                 "missing_name_sample": missing_names[:20],
+                "missing_name_diagnostics": {
+                    name: aggregator.find_source_key_candidates(name, limit=5)
+                    for name in missing_names[:5]
+                } if missing_names else {},
                 "duration_seconds": duration_seconds
             }
 

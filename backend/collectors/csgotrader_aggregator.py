@@ -32,6 +32,93 @@ class CSGOTraderAggregator:
         normalized = re.sub(r"\s+", " ", normalized).strip()
         return normalized
 
+    @staticmethod
+    def _is_sticker_name(name: str) -> bool:
+        return name.lower().startswith("sticker | ")
+
+    @staticmethod
+    def _sticker_variants(name: str) -> List[str]:
+        """
+        Generate progressively shorter sticker variants.
+
+        Example:
+            Sticker | noway (Holo) | Shanghai 2024
+            -> Sticker | noway (Holo) | Shanghai 2024
+            -> Sticker | noway (Holo)
+        """
+        parts = [part.strip() for part in name.split(" | ")]
+        if len(parts) < 3 or parts[0].lower() != "sticker":
+            return []
+
+        variants = []
+        current = parts[:]
+        while len(current) > 2:
+            current = current[:-1]
+            candidate = " | ".join(current).strip()
+            if candidate:
+                variants.append(candidate)
+        return variants
+
+    @staticmethod
+    def _diagnostic_terms(name: str) -> List[str]:
+        """
+        Extract informative tokens for approximate source-key diagnostics.
+        """
+        normalized = CSGOTraderAggregator._normalize_name(name)
+        stop_terms = {
+            "sticker",
+            "holo",
+            "foil",
+            "glitter",
+            "gold",
+            "paper",
+            "team",
+            "capsule",
+            "legends",
+            "challengers",
+            "contenders",
+            "2021",
+            "2022",
+            "2023",
+            "2024",
+            "2025",
+            "rio",
+            "stockholm",
+            "antwerp",
+            "paris",
+            "copenhagen",
+            "shanghai",
+        }
+        tokens = []
+        for token in re.split(r"[^a-z0-9]+", normalized):
+            if len(token) < 4 or token in stop_terms:
+                continue
+            tokens.append(token)
+        return tokens
+
+    def find_source_key_candidates(self, name: str, limit: int = 10) -> List[str]:
+        """
+        Find probable source keys that may correspond to a missing item name.
+
+        This is a diagnostic helper used to understand whether a miss is due to
+        naming drift or a true source-coverage gap.
+        """
+        if not self._price_cache:
+            self._price_cache = self.fetch_all_prices()
+
+        terms = self._diagnostic_terms(name)
+        if not terms:
+            return []
+
+        candidates: List[str] = []
+        for source_key in self._price_cache.keys():
+            normalized_key = self._normalize_name(source_key)
+            if any(term in normalized_key for term in terms):
+                candidates.append(source_key)
+                if len(candidates) >= limit:
+                    break
+        return candidates
+
     def fetch_all_prices(self) -> Dict[str, float]:
         """Fetch latest prices from public endpoints and merge them."""
         prices = {}
@@ -80,6 +167,19 @@ class CSGOTraderAggregator:
                 found_key = cache_keys[name_lower]
             elif normalized_name in normalized_cache_keys:
                 found_key = normalized_cache_keys[normalized_name]
+            elif self._is_sticker_name(name):
+                # Stickers often include event/capsule suffixes in the DB that
+                # may not exist in the external feed. Try shorter sticker keys
+                # before falling back to a miss.
+                for candidate in self._sticker_variants(name):
+                    candidate_lower = candidate.lower()
+                    normalized_candidate = self._normalize_name(candidate)
+                    if candidate_lower in cache_keys:
+                        found_key = cache_keys[candidate_lower]
+                        break
+                    if normalized_candidate in normalized_cache_keys:
+                        found_key = normalized_cache_keys[normalized_candidate]
+                        break
             else:
                 # 2. Try adding quality suffix
                 for q in qualities:
