@@ -2,86 +2,66 @@
 
 ## Philosophy
 
-**Analytical dashboard, not gaming platform.** Bloomberg Terminal meets modern data visualization. Focus: clarity, density, precision. Every element serves information hierarchy. Serious traders, professional appearance.
+**Modern Analytical Boutique.** The precision of a high-end trading tool with the visual richness of a premium game showcase. Every data point is grounded by visual context. We prioritize breathing room and clarity over raw data density to ensure a "relaxed" analytical experience.
 
 ## Color Strategy
 
-**Restrained:** Neutral grayscale + single accent. Minimal color, maximum data clarity.
+**Soft Charcoal & Navy:** A sophisticated dark theme designed for comfort and long sessions. We use depth and subtle tints rather than harsh blacks.
 
-### Palette
+### Palette (OKLCH)
 
-**Base:** Professional dark background, neutral grays.
-- **Background-primary:** `#0f1419` — near-black, professional
-- **Background-secondary:** `#131820` — minimal contrast, structural
-- **Surface:** `#1a1f2e` — data tables, price panels
-- **Text (primary):** `#d1d5db` — light gray (high contrast, readable)
-- **Text (secondary):** `#6b7280` — muted gray (secondary info)
-- **Border:** `#2d3748` — subtle structural dividers
-- **Grid:** `#242d3a` — table striping
+**Base:**
+- **Background-primary:** `oklch(18% 0.02 260)` — Deep charcoal with a hint of navy.
+- **Background-secondary:** `oklch(22% 0.02 260)` — Elevation for cards and panels.
+- **Surface:** `oklch(26% 0.03 260)` — High-elevation surfaces, active states.
+- **Text-primary:** `oklch(90% 0.01 260)` — Off-white for high readability without glare.
+- **Text-secondary:** `oklch(70% 0.02 260)` — Muted gray-blue for secondary labels.
+- **Border:** `oklch(35% 0.03 260)` — Subtle separators that define space without clutter.
 
-**Accent:** Minimal, structural use only.
-- **Data-up:** `#10b981` — muted green (gains, volume, positive)
-- **Data-down:** `#ef4444` — muted red (losses, negative)
-- **Interactive:** `#3b82f6` — restrained blue (links, focus)
+**Accents:**
+- **Gain:** `oklch(75% 0.15 150)` — Soft mint green for positive trends.
+- **Loss:** `oklch(65% 0.15 20)` — Muted rose for negative trends.
+- **Action:** `oklch(70% 0.12 245)` — Soft blue for interactive elements.
 
-**Theme:** Dark mode (traders use 8+ hours, reduce eye strain, professional fintech standard).
+**Theme:** Dark (Default). Softer than pitch black to reduce eye strain.
 
 ## Typography
 
-- **Font stack:** 'IBM Plex Mono' for data (professional, precise), Inter for UI (clean, modern)
-- **Headline:** Inter, 600 weight, sentence case (no unnecessary caps)
-- **Body:** Inter, 14px, 1.5 line-height, letter-spacing: normal
-- **Data:** IBM Plex Mono or system monospace, 13px (prices, numbers)
+- **Font Stack:** 'Inter' for UI (modern, clean), 'JetBrains Mono' or 'IBM Plex Mono' for data (tabular, precise).
+- **Headline:** Inter, 500-600 weight, tight tracking.
+- **Body:** Inter, 15px, 1.6 line-height for comfort.
+- **Data:** Monospace, 14px, for prices and trends.
 - **Scale:**
-  - H1: 28px, 600 weight
-  - H2: 20px, 600 weight
-  - H3: 16px, 500 weight
-  - Body: 14px, 400 weight
-  - Label: 12px, 500 weight (color: text-secondary)
-  - Data: 13px, monospace (prices, tickers)
+  - H1: 32px, 600 weight (Hero headers)
+  - H2: 24px, 500 weight (Section headers)
+  - Body: 15px, 400 weight
+  - Small: 12px, 500 weight (Labels/Secondary)
 
 ## Spacing & Layout
 
-- **Base unit:** 8px
-- **Common intervals:** 8px, 16px, 24px, 32px
-- **No unnecessary containers:** Tables flow naturally, minimal padding waste
-- **Grid:** 12-column, 16px gaps on desktop; natural flow on mobile
-- **Data density:** Tight spacing in tables (8px padding), loose spacing between sections (32px)
+- **Base Unit:** 4px (Scaling to 8, 16, 24, 32, 48, 64).
+- **Breathing Room:** Minimum 24px padding for main containers. Avoid "compact" modes.
+- **Grid:** Fluid 12-column grid. Large gutters (24px) to prevent information crowding.
+- **Alignment:** Data is right-aligned in tables; text is left-aligned.
 
 ## Components & Patterns
 
-- **Buttons:** Subtle. Blue accent, thin border, minimal padding. Hover: opacity 0.9, no scale.
-- **Inputs:** 1px border (#2d3748), clean background, thin focus state.
-- **Tables:** Minimal styling. Striped rows (#242d3a), mono font for prices, 1px borders only.
-- **Charts:** Light grid lines (#2d3748), thin lines, muted accent for data series.
-- **Status:** Green (#10b981) for gains/positive, red (#ef4444) for losses/negative. No icons; rely on color + number.
-- **Price display:** Monospace, right-aligned, no decoration.
-- **Links:** Blue (#3b82f6), underline on hover.
+- **Skin Cards:** Large, high-quality asset displays. Use subtle background gradients or glows based on item rarity (e.g., Covert = subtle red tint).
+- **Charts:** Clean, minimalist line charts. Use the Gain/Loss colors for the line. No heavy grids; just essential axes.
+- **Search:** Prominent, centered, with large hit areas. 
+- **Buttons:** Slightly rounded (8px radius). Flat with subtle hover elevation.
+- **Tables:** Generous row height (48px+). Soft striping. No vertical borders.
 
 ## Visual Hierarchy
 
-- **Emphasis via size + weight:** Not color. Larger = more important.
-- **Secondary info:** Gray text (#6b7280), smaller, monospace if numeric.
-- **Critical data:** Bold, larger, primary color (#d1d5db).
-- **Grouped info:** Whitespace separation, not borders.
-
-## Responsive
-
-- **Desktop:** Full data density, tables with all columns visible.
-- **Tablet:** Essential columns (name, price, change, volume).
-- **Mobile:** Compact, single column, simplified numbers.
-
-## Accessibility
-
-- **Contrast:** Text ≥4.5:1 on dark (meets WCAG AA)
-- **No color alone:** Always pair with text or label
-- **Focus:** Subtle blue outline, visible and professional
-- **Motion:** Only on interaction (hover, focus), no auto-animation
+- **Primary:** High-res skin image (The "What").
+- **Secondary:** Large price/trend chart (The "Value").
+- **Tertiary:** Supporting metadata (Wear, Volume, etc.).
+- **Focus:** Use elevation (Background-secondary) and whitespace rather than color to group elements.
 
 ## Anti-patterns to avoid
 
-- No neon colors (breaks professional tone)
-- No gradient text or decorative effects
-- No oversized badges or icons
-- No unnecessary visual depth or shadows
-- No gaming aesthetics (glows, scales, enthusiastic animation)
+- **Information Overload:** Do not show 20 columns of data at once.
+- **Harsh Contrast:** Avoid `#000` background with pure `#fff` text.
+- **Generic Slop:** Avoid standard shadcn/tailwind defaults without custom OKLCH adjustments.
+- **Gamer Cliche:** No aggressive "tactical" UI or neon glows. Keep it "Boutique."
