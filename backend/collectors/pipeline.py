@@ -5,9 +5,11 @@ Manages scheduled data collection, validation, and storage
 
 import logging
 from datetime import datetime, timedelta
+from collections import defaultdict
 from typing import Optional, List, Dict, Callable
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.cron import CronTrigger
+from sqlalchemy import func
 
 logger = logging.getLogger(__name__)
 
@@ -315,6 +317,47 @@ class DataPipeline:
                 self.db_session.rollback()
             logger.error(f"Error in daily collection: {e}", exc_info=True)
             return {"status": "failed", "error": str(e)}
+
+    def _load_recent_price_histories(self, item_ids, days: int = 90):
+        """Load recent price history for many items in one query."""
+        from database import PriceHistory
+
+        if not item_ids:
+            return {}
+
+        cutoff = datetime.utcnow() - timedelta(days=days)
+        rows = self.db_session.query(
+            PriceHistory.item_id,
+            PriceHistory.timestamp,
+            PriceHistory.price
+        ).filter(
+            PriceHistory.item_id.in_(item_ids),
+            PriceHistory.timestamp >= cutoff
+        ).order_by(PriceHistory.item_id, PriceHistory.timestamp).all()
+
+        histories = defaultdict(list)
+        for item_id, timestamp, price in rows:
+            histories[item_id].append((timestamp, price))
+
+        return histories
+
+    def _load_recent_price_counts(self, item_ids, days: int = 90):
+        """Load recent price counts for many items in one grouped query."""
+        from database import PriceHistory
+
+        if not item_ids:
+            return {}
+
+        cutoff = datetime.utcnow() - timedelta(days=days)
+        rows = self.db_session.query(
+            PriceHistory.item_id,
+            func.count(PriceHistory.id)
+        ).filter(
+            PriceHistory.item_id.in_(item_ids),
+            PriceHistory.timestamp >= cutoff
+        ).group_by(PriceHistory.item_id).all()
+
+        return {item_id: count for item_id, count in rows}
     
     def run_feature_computation(self):
         """Execute feature computation for trend analysis"""
@@ -328,14 +371,19 @@ class DataPipeline:
                 logger.error("Database session not available")
                 return {"status": "failed", "error": "No database session"}
             
-            items = self.db_session.query(Item).all()
+            items = self.db_session.query(Item.id, Item.name).all()
+            item_ids = [item_id for item_id, _ in items]
+            recent_counts = self._load_recent_price_counts(item_ids, days=90)
+            recent_histories = self._load_recent_price_histories(
+                [item_id for item_id, _ in items if recent_counts.get(item_id, 0) >= 7],
+                days=90
+            )
             features_computed = 0
             
-            for item in items:
+            for item_id, item_name in items:
                 try:
-                    # Get recent price history
-                    prices = sorted([h.price for h in item.price_histories[-90:]], 
-                                   key=lambda p: p.timestamp if hasattr(p, 'timestamp') else 0)
+                    prices_with_timestamps = recent_histories.get(item_id, [])
+                    prices = [price for _, price in prices_with_timestamps]
                     
                     if len(prices) < 7:
                         continue
@@ -344,26 +392,21 @@ class DataPipeline:
                     sma_7 = TrendAnalyzer.compute_sma(prices, 7)
                     sma_30 = TrendAnalyzer.compute_sma(prices, 30)
                     volatility = TrendAnalyzer.compute_volatility(prices)
-                    rsi = TrendAnalyzer.compute_rsi(prices)
-                    bollinger = TrendAnalyzer.compute_bollinger_bands(prices)
-                    macd = TrendAnalyzer.compute_macd(prices)
-                    support_resist = TrendAnalyzer.compute_support_resistance(prices)
                     
                     # Store features
                     if sma_7 or sma_30:
                         trend_indicator = TrendIndicator(
-                            item_id=item.id,
+                            item_id=item_id,
                             sma_7=sma_7,
                             sma_30=sma_30,
                             volatility=volatility,
-                            rsi=rsi,
                             timestamp=datetime.utcnow()
                         )
                         self.db_session.add(trend_indicator)
                         features_computed += 1
                 
                 except Exception as item_error:
-                    logger.error(f"Error computing features for {item.name}: {item_error}")
+                    logger.error(f"Error computing features for {item_name}: {item_error}")
             
             self.db_session.commit()
             
@@ -388,14 +431,19 @@ class DataPipeline:
                 logger.error("Database session not available")
                 return {"status": "failed", "error": "No database session"}
             
-            items = self.db_session.query(Item).all()
+            items = self.db_session.query(Item.id, Item.name).all()
+            item_ids = [item_id for item_id, _ in items]
+            recent_counts = self._load_recent_price_counts(item_ids, days=90)
+            recent_histories = self._load_recent_price_histories(
+                [item_id for item_id, _ in items if recent_counts.get(item_id, 0) >= 7],
+                days=90
+            )
             opportunities_detected = 0
             
-            for item in items:
+            for item_id, item_name in items:
                 try:
-                    # Get price history
-                    price_history = sorted(item.price_histories, key=lambda h: h.timestamp)
-                    prices = [h.price for h in price_history[-90:]]
+                    price_history = recent_histories.get(item_id, [])
+                    prices = [price for _, price in price_history]
                     
                     if len(prices) < 7:
                         continue
@@ -416,13 +464,13 @@ class DataPipeline:
                             
                             if is_undervalued or is_overheated or has_momentum:
                                 opportunities_detected += 1
-                                logger.info(f"{item.name}: {direction} ({confidence}) | "
+                                logger.info(f"{item_name}: {direction} ({confidence}) | "
                                           f"Undervalued: {is_undervalued} | "
                                           f"Overheated: {is_overheated} | "
                                           f"Momentum: {has_momentum}")
                 
                 except Exception as item_error:
-                    logger.error(f"Error analyzing {item.name}: {item_error}")
+                    logger.error(f"Error analyzing {item_name}: {item_error}")
             
             logger.info(f"Trend analysis completed: {opportunities_detected} opportunities detected")
             return {

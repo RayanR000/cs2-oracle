@@ -9,13 +9,11 @@ import logging
 from pathlib import Path
 from datetime import datetime, timedelta
 import numpy as np
-from scipy import stats
-from collections import defaultdict
+from collections import Counter, defaultdict
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from database import SessionLocal, Event, Item, PriceHistory, EventImpact, EventPattern, EventCorrelation
-from sqlalchemy import text
 
 logging.basicConfig(
     level=logging.INFO,
@@ -29,6 +27,7 @@ class EventAnalyzer:
         self.db = db_session
         self.analysis_date = datetime.utcnow().date()
         self.price_cache = {}  # Cache prices to avoid repeated queries
+        self.control_group_cache = {}
 
     def batch_load_prices(self, item_ids, start_date, end_date):
         """
@@ -66,18 +65,37 @@ class EventAnalyzer:
 
         return None
 
+    def compute_control_group_average(self, event_date):
+        """Compute a reusable control-group average for an event date."""
+        if event_date in self.control_group_cache:
+            return self.control_group_cache[event_date]
+
+        day_before = event_date - timedelta(days=1)
+        day_after = event_date + timedelta(days=1)
+        control_changes = []
+
+        for item_id in self.price_cache:
+            price_before = self.get_price_on_date(item_id, day_before)
+            price_after = self.get_price_on_date(item_id, day_after)
+
+            if price_before is None or price_after is None or price_before == 0:
+                continue
+
+            change = ((price_after - price_before) / price_before) * 100
+            control_changes.append(change)
+
+        control_avg = float(np.mean(control_changes)) if control_changes else None
+        self.control_group_cache[event_date] = control_avg
+        return control_avg
+
     def get_price_change_percentage(self, price_before, price_after):
         """Calculate percentage change between two prices."""
         if price_before is None or price_after is None or price_before == 0:
             return None
         return ((price_after - price_before) / price_before) * 100
 
-    def record_event_impact(self, event_id, item_id=None):
+    def record_event_impact(self, event, item_id=None):
         """Record price changes around an event for an item."""
-        event = self.db.query(Event).filter_by(id=event_id).first()
-        if not event:
-            return None
-
         event_date = event.timestamp.date()
         day_before = event_date - timedelta(days=1)
         day_1 = event_date
@@ -95,11 +113,10 @@ class EventAnalyzer:
         impact_7day = self.get_price_change_percentage(price_before, price_day_7)
 
         # Find peak impact and duration
-        prices_after_event = self.db.query(PriceHistory).filter(
-            PriceHistory.item_id == item_id,
-            PriceHistory.timestamp >= datetime.combine(day_1, datetime.min.time()),
-            PriceHistory.timestamp <= datetime.combine(day_7, datetime.max.time())
-        ).order_by(PriceHistory.timestamp).all()
+        prices_after_event = sorted([
+            price for price in self.price_cache.get(item_id, [])
+            if day_1 <= price.timestamp.date() <= day_7
+        ], key=lambda price: price.timestamp)
 
         peak_impact_pct = None
         peak_impact_day = None
@@ -132,7 +149,7 @@ class EventAnalyzer:
             z_score = abs(impact_1day) / baseline_volatility
 
         impact = EventImpact(
-            event_id=event_id,
+            event_id=event.id,
             item_id=item_id,
             price_day_before=price_before,
             price_day_1=price_day_1,
@@ -149,62 +166,60 @@ class EventAnalyzer:
 
         return impact
 
-    def learn_event_patterns(self, event_type, item_id=None):
-        """Learn patterns from historical events of a type using database aggregations."""
-        # Use database aggregations instead of pulling all impacts to Python
-        query_sql = """
-        SELECT
-            COUNT(*) as sample_size,
-            AVG(impact_pct_1day) as avg_1day,
-            AVG(impact_pct_3day) as avg_3day,
-            AVG(impact_pct_7day) as avg_7day,
-            STDDEV_POP(impact_pct_1day) as std_dev
-        FROM event_impacts
-        JOIN events ON event_impacts.event_id = events.id
-        WHERE events.type = :event_type
-        """
+    def build_event_patterns(self):
+        """Build event patterns from recorded impacts in one grouped pass."""
+        impact_rows = self.db.query(
+            Event.type,
+            EventImpact.item_id,
+            EventImpact.impact_pct_1day,
+            EventImpact.impact_pct_3day,
+            EventImpact.impact_pct_7day
+        ).join(
+            Event, EventImpact.event_id == Event.id
+        ).filter(
+            EventImpact.item_id.isnot(None)
+        ).all()
 
-        params = {'event_type': event_type}
+        grouped = defaultdict(list)
+        for event_type, item_id, impact_1day, impact_3day, impact_7day in impact_rows:
+            grouped[(event_type, item_id)].append((impact_1day, impact_3day, impact_7day))
 
-        if item_id is not None:
-            query_sql += " AND event_impacts.item_id = :item_id"
-            params['item_id'] = item_id
+        patterns = {}
+        for (event_type, item_id), impacts in grouped.items():
+            if len(impacts) < 2:
+                continue
 
-        result = self.db.execute(text(query_sql), params).fetchone()
+            impact_1day_values = [row[0] for row in impacts if row[0] is not None]
+            if not impact_1day_values:
+                continue
 
-        if not result or result[0] < 2:
-            return None  # Not enough data
+            avg_1day = float(np.mean(impact_1day_values))
+            avg_3day_values = [row[1] for row in impacts if row[1] is not None]
+            avg_7day_values = [row[2] for row in impacts if row[2] is not None]
+            std_dev = float(np.std(impact_1day_values)) if len(impact_1day_values) > 1 else 0.0
 
-        sample_size, avg_1day, avg_3day, avg_7day, std_dev = result
+            if avg_1day != 0:
+                cv = abs(std_dev / avg_1day)
+                consistency_score = float(np.clip(1.0 - min(cv, 1.0), 0, 1))
+            else:
+                consistency_score = 0.5
 
-        if avg_1day is None:
-            return None
+            pattern = EventPattern(
+                event_type=event_type,
+                item_id=item_id,
+                sample_size=len(impacts),
+                avg_impact_1day=avg_1day,
+                avg_impact_3day=float(np.mean(avg_3day_values)) if avg_3day_values else None,
+                avg_impact_7day=float(np.mean(avg_7day_values)) if avg_7day_values else None,
+                std_dev=std_dev,
+                consistency_score=consistency_score,
+                holdout_accuracy=consistency_score
+            )
+            patterns[(event_type, item_id)] = pattern
 
-        avg_1day = float(avg_1day)
-        std_dev = float(std_dev) if std_dev else 0.0
+        return patterns
 
-        # Consistency score: inverse of coefficient of variation
-        if avg_1day != 0:
-            cv = abs(std_dev / avg_1day)
-            consistency_score = float(np.clip(1.0 - min(cv, 1.0), 0, 1))
-        else:
-            consistency_score = 0.5
-
-        pattern = EventPattern(
-            event_type=event_type,
-            item_id=item_id,
-            sample_size=int(sample_size),
-            avg_impact_1day=avg_1day,
-            avg_impact_3day=float(avg_3day) if avg_3day else None,
-            avg_impact_7day=float(avg_7day) if avg_7day else None,
-            std_dev=std_dev,
-            consistency_score=consistency_score,
-            holdout_accuracy=consistency_score
-        )
-
-        return pattern
-
-    def validate_event_correlation(self, event_id, item_id=None):
+    def validate_event_correlation(self, event, item_id=None, impact=None, pattern=None, control_avg=None, same_day_events=0):
         """
         Run 6-point statistical rigor validation for event-item correlation.
 
@@ -215,21 +230,11 @@ class EventAnalyzer:
         5. Lag analysis: Is the peak impact within expected timing?
         6. Holdout validation: Does the learned pattern work on new data?
         """
-        event = self.db.query(Event).filter_by(id=event_id).first()
-        if not event:
-            return None
-
-        # Get impact data
-        impact = self.db.query(EventImpact).filter_by(
-            event_id=event_id,
-            item_id=item_id
-        ).first()
-
         if not impact:
             return None
 
         correlation = EventCorrelation(
-            event_id=event_id,
+            event_id=event.id,
             item_id=item_id,
             price_change_pct=impact.impact_pct_1day
         )
@@ -242,44 +247,20 @@ class EventAnalyzer:
             correlation.significance_passed = 0
 
         # 2. CONTROL GROUP: Compare to unaffected items
-        # Get average price change for items NOT affected by this event
-        event_date = event.timestamp.date()
-        control_items = self.db.query(PriceHistory).filter(
-            PriceHistory.timestamp >= datetime.combine(event_date - timedelta(days=1), datetime.min.time()),
-            PriceHistory.timestamp <= datetime.combine(event_date + timedelta(days=1), datetime.max.time()),
-            PriceHistory.item_id != item_id
-        ).all()
+        if control_avg is not None:
+            correlation.control_group_change_pct = control_avg
 
-        if control_items:
-            control_changes = []
-            for i in range(len(control_items) - 1):
-                if control_items[i].price != 0:
-                    change = ((control_items[i + 1].price - control_items[i].price) / control_items[i].price) * 100
-                    control_changes.append(change)
-
-            if control_changes:
-                control_avg = float(np.mean(control_changes))
-                correlation.control_group_change_pct = control_avg
-
-                if impact.impact_pct_1day is not None:
-                    correlation.control_group_diff = impact.impact_pct_1day - control_avg
-                    # Affected should move more than control
-                    correlation.control_group_passed = 1 if (
-                        impact.impact_pct_1day > control_avg + 1.0  # At least 1% more
-                    ) else 0
-                else:
-                    correlation.control_group_passed = 0
+            if impact.impact_pct_1day is not None:
+                correlation.control_group_diff = impact.impact_pct_1day - control_avg
+                correlation.control_group_passed = 1 if (
+                    impact.impact_pct_1day > control_avg + 1.0
+                ) else 0
             else:
                 correlation.control_group_passed = 0
         else:
             correlation.control_group_passed = 0
 
         # 3. PATTERN CONSISTENCY: Does this event type show consistent patterns?
-        pattern = self.db.query(EventPattern).filter_by(
-            event_type=event.type,
-            item_id=item_id
-        ).first()
-
         if pattern and pattern.consistency_score is not None:
             correlation.pattern_consistency_score = pattern.consistency_score
             correlation.pattern_passed = 1 if pattern.consistency_score > 0.7 else 0
@@ -287,12 +268,6 @@ class EventAnalyzer:
             correlation.pattern_passed = 0
 
         # 4. CONFOUNDING VARIABLES: Other events on same day?
-        same_day_events = self.db.query(Event).filter(
-            Event.timestamp >= datetime.combine(event_date, datetime.min.time()),
-            Event.timestamp <= datetime.combine(event_date, datetime.max.time()),
-            Event.id != event_id
-        ).count()
-
         correlation.confounding_events_count = same_day_events
         correlation.confounding_passed = 1 if same_day_events == 0 else 0
 
@@ -351,17 +326,26 @@ class EventAnalyzer:
             end_date = latest_event + timedelta(days=7)
             self.batch_load_prices(item_ids, start_date, end_date)
 
+        same_day_counts = Counter(event.timestamp.date() for event in events)
+        control_avg_by_date = {}
+        for event in events:
+            event_date = event.timestamp.date()
+            if event_date not in control_avg_by_date:
+                control_avg_by_date[event_date] = self.compute_control_group_average(event_date)
+
         impacts_recorded = 0
         patterns_learned = 0
         correlations_validated = 0
+        impact_lookup = {}
 
         # 1. Record impacts for each event-item pair
         for event in events:
             for item_id in item_ids:
                 try:
-                    impact = self.record_event_impact(event.id, item_id)
+                    impact = self.record_event_impact(event, item_id)
                     if impact:
                         self.db.add(impact)
+                        impact_lookup[(event.id, item_id)] = impact
                         impacts_recorded += 1
                 except Exception as e:
                     logger.warning(f"Error recording impact for event {event.id}, item {item_id}: {e}")
@@ -370,17 +354,11 @@ class EventAnalyzer:
             self.db.commit()
             logger.info(f"Recorded {impacts_recorded} event impacts")
 
-        # 2. Learn patterns from events by type
-        event_types = self.db.query(Event.type).distinct().all()
-        for (event_type,) in event_types:
-            for item_id in item_ids:
-                try:
-                    pattern = self.learn_event_patterns(event_type, item_id)
-                    if pattern:
-                        self.db.add(pattern)
-                        patterns_learned += 1
-                except Exception as e:
-                    logger.warning(f"Error learning pattern for {event_type}, item {item_id}: {e}")
+        # 2. Learn patterns from events by type in one grouped pass
+        patterns = self.build_event_patterns()
+        for pattern in patterns.values():
+            self.db.add(pattern)
+            patterns_learned += 1
 
         if patterns_learned > 0:
             self.db.commit()
@@ -388,9 +366,19 @@ class EventAnalyzer:
 
         # 3. Validate correlations for each event-item pair
         for event in events:
+            event_date = event.timestamp.date()
+            control_avg = control_avg_by_date.get(event_date)
+            same_day_events = max(0, same_day_counts[event_date] - 1)
             for item_id in item_ids:
                 try:
-                    correlation = self.validate_event_correlation(event.id, item_id)
+                    correlation = self.validate_event_correlation(
+                        event,
+                        item_id,
+                        impact=impact_lookup.get((event.id, item_id)),
+                        pattern=patterns.get((event.type, item_id)),
+                        control_avg=control_avg,
+                        same_day_events=same_day_events
+                    )
                     if correlation:
                         self.db.add(correlation)
                         correlations_validated += 1
