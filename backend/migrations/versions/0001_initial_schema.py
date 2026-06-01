@@ -93,7 +93,7 @@ def upgrade() -> None:
             sa.Column("price", sa.Float(), nullable=False),
             sa.Column("volume", sa.Integer(), nullable=True),
             sa.Column("median_price", sa.Float(), nullable=True),
-            sa.Column("source", sa.String(length=50), nullable=False, server_default="steam"),
+            sa.Column("source", sa.String(length=255), nullable=False, server_default="steam"),
             sa.Column("created_at", sa.DateTime(), nullable=True),
         )
         op.create_index("ix_price_history_timestamp", "price_history", ["timestamp"])

@@ -67,7 +67,7 @@ class PriceHistory(Base):
     price = Column(Float, nullable=False)
     volume = Column(Integer, nullable=True)
     median_price = Column(Float, nullable=True)
-    source = Column(String(50), nullable=False, default="steam")
+    source = Column(String(255), nullable=False, default="steam")
     created_at = Column(DateTime, default=utcnow_naive)
 
     item = relationship("Item", back_populates="price_histories")

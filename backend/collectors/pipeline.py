@@ -13,6 +13,14 @@ from sqlalchemy import func
 
 logger = logging.getLogger(__name__)
 
+
+def _historical_fallback_source(source: str) -> str:
+    """Normalize fallback source labels so retries do not stack prefixes."""
+    while source.startswith("historical_fallback:"):
+        source = source[len("historical_fallback:"):]
+    return f"historical_fallback:{source}"
+
+
 class DataPipeline:
     """Orchestrates data collection and processing pipeline"""
     
@@ -232,7 +240,7 @@ class DataPipeline:
                             timestamp=now,
                             price=recovered_row.price,
                             volume=recovered_row.volume,
-                            source=f"historical_fallback:{recovered_row.source}",
+                            source=_historical_fallback_source(recovered_row.source),
                         ))
                         fallback_items_collected += 1
 

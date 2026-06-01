@@ -89,3 +89,46 @@ def test_full_aggregator_collection_recovers_exact_item_from_history(monkeypatch
         }
     finally:
         db.close()
+
+
+def test_full_aggregator_collection_does_not_stack_fallback_prefix(monkeypatch):
+    db = database_module.SessionLocal()
+    try:
+        item = Item(
+            item_id="sticker-pilot-holo",
+            name="Sticker | P1L0T (Holo)",
+            type="sticker",
+            release_date=datetime(2024, 1, 1),
+        )
+        db.add(item)
+        db.commit()
+
+        db.add(
+            PriceHistory(
+                item_id=item.id,
+                timestamp=datetime.utcnow() - timedelta(days=1),
+                price=1.25,
+                volume=3,
+                source="historical_fallback:steam_batch",
+            )
+        )
+        db.commit()
+
+        monkeypatch.setattr(aggregator_module, "CSGOTraderAggregator", FakeAggregator)
+
+        pipeline = DataPipeline(db_session=db)
+        result = pipeline.run_full_aggregator_collection()
+
+        assert result["status"] == "success"
+
+        latest_row = (
+            db.query(PriceHistory)
+            .filter(PriceHistory.item_id == item.id)
+            .order_by(PriceHistory.timestamp.desc(), PriceHistory.id.desc())
+            .first()
+        )
+        assert latest_row is not None
+        assert latest_row.source == "historical_fallback:steam_batch"
+        assert len(latest_row.source) < 50
+    finally:
+        db.close()
