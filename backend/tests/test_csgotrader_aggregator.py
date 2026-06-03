@@ -102,3 +102,34 @@ def test_collect_batch_items_matches_stattrak_without_trademark_symbol(monkeypat
     results = aggregator.collect_batch_items(["StatTrak™ M249 | Hypnosis (Factory New)"])
 
     assert results["StatTrak™ M249 | Hypnosis (Factory New)"][0] == 12.5
+
+
+def test_collect_batch_items_matches_knife_without_leading_star(monkeypatch):
+    aggregator = CSGOTraderAggregator()
+    monkeypatch.setattr(
+        aggregator,
+        "fetch_all_prices",
+        lambda: {"Skeleton Knife | Damascus Steel (Well-Worn)": 88.8},
+    )
+    aggregator._price_cache = {}
+
+    results = aggregator.collect_batch_items(["★ Skeleton Knife | Damascus Steel (Well-Worn)"])
+
+    assert results["★ Skeleton Knife | Damascus Steel (Well-Worn)"][0] == 88.8
+
+
+def test_collect_batch_items_prefers_exact_starred_knife_match(monkeypatch):
+    aggregator = CSGOTraderAggregator()
+    monkeypatch.setattr(
+        aggregator,
+        "fetch_all_prices",
+        lambda: {
+            "Skeleton Knife | Damascus Steel (Well-Worn)": 88.8,
+            "★ Skeleton Knife | Damascus Steel (Well-Worn)": 99.9,
+        },
+    )
+    aggregator._price_cache = {}
+
+    results = aggregator.collect_batch_items(["★ Skeleton Knife | Damascus Steel (Well-Worn)"])
+
+    assert results["★ Skeleton Knife | Damascus Steel (Well-Worn)"][0] == 99.9

@@ -118,6 +118,16 @@ class CSGOTraderAggregator:
         # Keep ordering stable while removing duplicates.
         return list(dict.fromkeys(candidate.strip() for candidate in candidates if candidate.strip()))
 
+    @staticmethod
+    def _general_match_candidates(name: str) -> List[str]:
+        """Generate conservative non-sticker aliases for known source formatting drift."""
+        candidates = [name]
+
+        if name.startswith("★ "):
+            candidates.append(name[2:].strip())
+
+        return list(dict.fromkeys(candidate.strip() for candidate in candidates if candidate.strip()))
+
     def fetch_all_prices(self) -> Dict[str, float]:
         """Fetch latest prices from public endpoints and merge them."""
         prices = {}
@@ -167,15 +177,27 @@ class CSGOTraderAggregator:
             elif normalized_name in normalized_cache_keys:
                 found_key = normalized_cache_keys[normalized_name]
             elif not self._is_sticker_name(name):
-                # 2. Try adding quality suffix
-                for q in qualities:
-                    candidate = f"{name_lower} {q.lower()}".replace("  ", " ")
-                    if candidate in cache_keys:
-                        found_key = cache_keys[candidate]
+                # 2. Try conservative aliases and quality suffixes.
+                for candidate_name in self._general_match_candidates(name):
+                    candidate_lower = candidate_name.lower()
+                    if candidate_lower in cache_keys:
+                        found_key = cache_keys[candidate_lower]
                         break
-                    normalized_candidate = self._normalize_name(f"{name} {q}")
+                    normalized_candidate = self._normalize_name(candidate_name)
                     if normalized_candidate in normalized_cache_keys:
                         found_key = normalized_cache_keys[normalized_candidate]
+                        break
+
+                    for q in qualities:
+                        candidate = f"{candidate_lower} {q.lower()}".replace("  ", " ")
+                        if candidate in cache_keys:
+                            found_key = cache_keys[candidate]
+                            break
+                        normalized_candidate = self._normalize_name(f"{candidate_name} {q}")
+                        if normalized_candidate in normalized_cache_keys:
+                            found_key = normalized_cache_keys[normalized_candidate]
+                            break
+                    if found_key:
                         break
             else:
                 # 2. Sticker-specific fallback: strip finish variants while keeping event suffix.
