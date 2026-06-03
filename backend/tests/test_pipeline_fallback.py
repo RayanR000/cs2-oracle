@@ -135,6 +135,51 @@ def test_full_aggregator_collection_does_not_stack_fallback_prefix(monkeypatch):
         db.close()
 
 
+def test_full_aggregator_collection_recovers_from_previous_aggregator_sync(monkeypatch):
+    db = database_module.SessionLocal()
+    try:
+        item = Item(
+            item_id="sticker-lux-shanghai-2024",
+            name="Sticker | lux | Shanghai 2024",
+            type="sticker",
+            release_date=datetime(2024, 1, 1),
+        )
+        db.add(item)
+        db.commit()
+
+        db.add(
+            PriceHistory(
+                item_id=item.id,
+                timestamp=datetime.utcnow() - timedelta(days=1),
+                price=4.2,
+                volume=11,
+                source="aggregator_sync",
+            )
+        )
+        db.commit()
+
+        monkeypatch.setattr(aggregator_module, "CSGOTraderAggregator", FakeAggregator)
+
+        pipeline = DataPipeline(db_session=db)
+        result = pipeline.run_full_aggregator_collection()
+
+        assert result["status"] == "success"
+        assert result["items_collected"] >= 1
+        assert result["errors"] >= 0
+
+        latest_row = (
+            db.query(PriceHistory)
+            .filter(PriceHistory.item_id == item.id)
+            .order_by(PriceHistory.timestamp.desc(), PriceHistory.id.desc())
+            .first()
+        )
+        assert latest_row is not None
+        assert latest_row.source == "historical_fallback:aggregator_sync"
+        assert latest_row.price == 4.2
+    finally:
+        db.close()
+
+
 def test_missing_name_report_groups_by_conservative_pattern():
     pipeline = DataPipeline(db_session=None)
     item_map = {

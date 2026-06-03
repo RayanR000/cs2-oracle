@@ -50,6 +50,8 @@ def _filter_daily_analysis_row(row):
     return {key: value for key, value in row.items() if key in DAILY_ANALYSIS_WRITE_COLUMNS}
 
 class TrendAnalyzer:
+    MIN_REQUIRED_HISTORY_POINTS = 2
+
     def __init__(self, db_session):
         self.db = db_session
         self.analysis_date = datetime.utcnow().date()
@@ -232,7 +234,7 @@ class TrendAnalyzer:
             if prices is None:
                 prices = self.get_item_price_history(item_id, days=90)
 
-            if not prices or len(prices) < 7:
+            if not prices or len(prices) < self.MIN_REQUIRED_HISTORY_POINTS:
                 return None  # Not enough data
 
             current_price = prices[-1][1]
@@ -326,10 +328,14 @@ class TrendAnalyzer:
 
         eligible_item_ids = [
             item_id for item_id in item_ids
-            if ninety_day_counts.get(item_id, 0) >= 7
+            if ninety_day_counts.get(item_id, 0) >= self.MIN_REQUIRED_HISTORY_POINTS
         ]
 
-        logger.info(f"Eligible items with enough recent history: {len(eligible_item_ids)}")
+        logger.info(
+            "Eligible items with at least %s recent data points: %s",
+            self.MIN_REQUIRED_HISTORY_POINTS,
+            len(eligible_item_ids),
+        )
 
         prices_by_item = self.get_recent_price_history_bulk(eligible_item_ids, days=90)
 

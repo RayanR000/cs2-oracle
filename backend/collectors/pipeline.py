@@ -220,7 +220,14 @@ class DataPipeline:
                     missing_names.append(name)
 
             if missing_names:
-                historical_prices = self._load_latest_non_aggregator_prices(
+                non_aggregator_prices = self._load_latest_non_aggregator_prices(
+                    {
+                        item.id
+                        for missing_name in missing_names
+                        for item in item_map[missing_name]
+                    }
+                )
+                latest_any_source_prices = self._load_latest_prices(
                     {
                         item.id
                         for missing_name in missing_names
@@ -233,12 +240,21 @@ class DataPipeline:
                     matched_items = item_map[name]
                     recovered_row = next(
                         (
-                            historical_prices.get(item.id)
+                            non_aggregator_prices.get(item.id)
                             for item in matched_items
-                            if historical_prices.get(item.id) is not None
+                            if non_aggregator_prices.get(item.id) is not None
                         ),
                         None,
                     )
+                    if recovered_row is None:
+                        recovered_row = next(
+                            (
+                                latest_any_source_prices.get(item.id)
+                                for item in matched_items
+                                if latest_any_source_prices.get(item.id) is not None
+                            ),
+                            None,
+                        )
 
                     if recovered_row is None:
                         still_missing_names.append(name)
@@ -398,6 +414,31 @@ class DataPipeline:
                 PriceHistory.item_id.in_(item_ids),
                 PriceHistory.source != 'aggregator_sync',
             )
+            .order_by(
+                PriceHistory.item_id,
+                PriceHistory.timestamp.desc(),
+                PriceHistory.id.desc(),
+            )
+            .all()
+        )
+
+        latest_by_item_id = {}
+        for row in rows:
+            if row.item_id not in latest_by_item_id:
+                latest_by_item_id[row.item_id] = row
+
+        return latest_by_item_id
+
+    def _load_latest_prices(self, item_ids):
+        """Load the latest price snapshot for each exact item id from any source."""
+        from database import PriceHistory
+
+        if not item_ids:
+            return {}
+
+        rows = (
+            self.db_session.query(PriceHistory)
+            .filter(PriceHistory.item_id.in_(item_ids))
             .order_by(
                 PriceHistory.item_id,
                 PriceHistory.timestamp.desc(),
