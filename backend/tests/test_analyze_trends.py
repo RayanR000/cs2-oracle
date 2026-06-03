@@ -50,3 +50,10 @@ def test_daily_analysis_upsert_uses_reflected_table():
     assert "sa.Table(table.name, sa.MetaData(), autoload_with=bind)" in source
     assert "insert_stmt(target_table).values(filtered_rows)" in source
     assert "updated_at" not in source.split("DAILY_ANALYSIS_WRITE_COLUMNS = (", 1)[1].split(")", 1)[0]
+
+
+def test_min_required_history_points_remains_accuracy_threshold():
+    module_path = Path(__file__).resolve().parents[1] / "scripts" / "analyze_trends.py"
+    source = module_path.read_text()
+
+    assert "MIN_REQUIRED_HISTORY_POINTS = 7" in source

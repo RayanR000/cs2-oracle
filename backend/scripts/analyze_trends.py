@@ -50,7 +50,7 @@ def _filter_daily_analysis_row(row):
     return {key: value for key, value in row.items() if key in DAILY_ANALYSIS_WRITE_COLUMNS}
 
 class TrendAnalyzer:
-    MIN_REQUIRED_HISTORY_POINTS = 2
+    MIN_REQUIRED_HISTORY_POINTS = 7
 
     def __init__(self, db_session):
         self.db = db_session
