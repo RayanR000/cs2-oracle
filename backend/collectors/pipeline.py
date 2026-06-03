@@ -287,10 +287,30 @@ class DataPipeline:
                     missing_name: aggregator.find_source_key_candidates(missing_name, limit=5)
                     for missing_name in diagnostic_targets
                 }
+                souvenir_charm_samples = []
+                for bucket in missing_name_report.get("buckets", []):
+                    if bucket.get("key") == "skin_variant_items":
+                        for subgroup in bucket.get("subgroups", []):
+                            if subgroup.get("key") == "stattrak_souvenir_items":
+                                for nested in subgroup.get("subgroups", []):
+                                    if nested.get("key") == "souvenir_charm_items":
+                                        souvenir_charm_samples = nested.get("sample", [])[:5]
+                                        break
+                                break
+                        break
+                souvenir_charm_diagnostics = {
+                    missing_name: aggregator.find_source_key_candidates(missing_name, limit=5)
+                    for missing_name in souvenir_charm_samples
+                } if souvenir_charm_samples else {}
                 logger.warning(
                     "Aggregator source-key diagnostics for missing sample: %s",
                     diagnostic_map,
                 )
+                if souvenir_charm_diagnostics:
+                    logger.warning(
+                        "Souvenir Charm source-key diagnostics: %s",
+                        souvenir_charm_diagnostics,
+                    )
             elif fallback_items_collected:
                 logger.info(
                     "Recovered %s items from historical fallback sources",
