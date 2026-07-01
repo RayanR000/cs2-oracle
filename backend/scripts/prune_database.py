@@ -44,6 +44,46 @@ def prune_trend_indicators(db_session, days_to_keep=180, dry_run=False):
     return count
 
 
+def prune_daily_analysis(db_session, days_to_keep=90, dry_run=False):
+    """Delete daily analysis records older than days_to_keep."""
+    from database import DailyAnalysis
+    cutoff_date = datetime.utcnow() - timedelta(days=days_to_keep)
+
+    query = db_session.query(DailyAnalysis).filter(
+        DailyAnalysis.analysis_date < cutoff_date.date()
+    )
+
+    count = query.count()
+
+    if count > 0 and not dry_run:
+        query.delete()
+        db_session.commit()
+        logger.info(f"Deleted {count} daily analysis records older than {days_to_keep} days")
+
+    return count
+
+
+def prune_event_analyses(db_session, days_to_keep=365, dry_run=False):
+    """Delete event impact and correlation records older than days_to_keep."""
+    from database import EventImpact, EventCorrelation
+    cutoff_date = datetime.utcnow() - timedelta(days=days_to_keep)
+
+    total = 0
+
+    for model_cls, label in [(EventImpact, "event impacts"), (EventCorrelation, "event correlations")]:
+        query = db_session.query(model_cls).filter(
+            model_cls.created_at < cutoff_date
+        )
+        count = query.count()
+        if count > 0 and not dry_run:
+            query.delete()
+            db_session.commit()
+            logger.info(f"Deleted {count} {label} older than {days_to_keep} days")
+        total += count
+
+    return total
+
+
 def prune_price_history(db_session, days_to_keep_granular=7, dry_run=False):
     """Backward-compatible alias for the current downsampling routine."""
     return downsample_price_history(
@@ -201,11 +241,15 @@ if __name__ == "__main__":
 
         downsampled = downsample_price_history(db, dry_run=False)
         pruned_trends = prune_trend_indicators(db, dry_run=False)
+        pruned_daily = prune_daily_analysis(db, days_to_keep=90, dry_run=False)
+        pruned_events = prune_event_analyses(db, days_to_keep=365, dry_run=False)
 
-        total = downsampled + pruned_trends
+        total = downsampled + pruned_trends + pruned_daily + pruned_events
         print(f"\n✅ Maintenance complete:")
-        print(f"  Downsampled records: {downsampled:,}")
-        print(f"  Deleted old trends: {pruned_trends:,}")
+        print(f"  Downsampled price records: {downsampled:,}")
+        print(f"  Deleted old trend indicators: {pruned_trends:,}")
+        print(f"  Deleted old daily analyses: {pruned_daily:,}")
+        print(f"  Deleted old event records: {pruned_events:,}")
         print(f"  Total records processed: {total:,}")
         print("=" * 70)
 

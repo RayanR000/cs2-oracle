@@ -923,7 +923,10 @@ class DataPipeline:
 
     def run_database_pruning(self):
         """Execute weekly database pruning and downsampling with run tracking"""
-        from scripts.prune_database import prune_trend_indicators, downsample_price_history
+        from scripts.prune_database import (
+            prune_trend_indicators, prune_daily_analysis, prune_event_analyses,
+            downsample_price_history,
+        )
         from database import CollectionRun
 
         start_time = datetime.utcnow()
@@ -944,12 +947,19 @@ class DataPipeline:
 
             # Delete very old trend indicators (keep 180 days)
             pruned_trends = prune_trend_indicators(self.db_session, days_to_keep=180, dry_run=False)
+
+            # Delete old daily analysis records (keep 90 days)
+            pruned_daily = prune_daily_analysis(self.db_session, days_to_keep=90, dry_run=False)
+
+            # Delete old event impact/correlation records (keep 365 days)
+            pruned_events = prune_event_analyses(self.db_session, days_to_keep=365, dry_run=False)
+
             pruned_history = 0  # Price history is preserved (just downsampled), not deleted
+            total_pruned = pruned_history + pruned_trends + pruned_daily + pruned_events + downsampled
 
             # Record the run
             end_time = datetime.utcnow()
             duration_seconds = (end_time - start_time).total_seconds()
-            total_pruned = pruned_history + pruned_trends + downsampled
 
             collection_run = CollectionRun(
                 started_at=start_time,
@@ -959,7 +969,13 @@ class DataPipeline:
                 successful=total_pruned,
                 failed=0,
                 duration_seconds=duration_seconds,
-                source_breakdown={'pruned_history': pruned_history, 'pruned_trends': pruned_trends, 'downsampled': downsampled}
+                source_breakdown={
+                    'pruned_history': pruned_history,
+                    'pruned_trends': pruned_trends,
+                    'pruned_daily': pruned_daily,
+                    'pruned_events': pruned_events,
+                    'downsampled': downsampled,
+                }
             )
             self.db_session.add(collection_run)
             self.db_session.commit()
@@ -967,7 +983,9 @@ class DataPipeline:
             logger.info(f"✅ Database pruning completed: "
                       f"Deleted {pruned_history} old history, "
                       f"{pruned_trends} old trends, "
-                      f"{downsampled} redundant records in {duration_seconds:.1f}s")
+                      f"{pruned_daily} old daily analyses, "
+                      f"{pruned_events} old event records, "
+                      f"{downsampled} redundant price records in {duration_seconds:.1f}s")
 
             return {
                 "status": "success",
