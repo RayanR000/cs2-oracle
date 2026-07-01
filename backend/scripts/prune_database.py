@@ -112,10 +112,11 @@ def downsample_price_history(db_session, days_to_keep_granular=7, dry_run=False)
     total_deleted = 0
 
     # Tier 1: 7-30 days → Daily average
+    # (start must be earlier than end: month_ago < week_ago)
     deleted = _downsample_tier(
         db_session,
-        week_ago,
         month_ago,
+        week_ago,
         "date(timestamp)::text",
         "daily averages (7-30 days)",
         dry_run
@@ -123,10 +124,11 @@ def downsample_price_history(db_session, days_to_keep_granular=7, dry_run=False)
     total_deleted += deleted
 
     # Tier 2: 30-365 days → Weekly average
+    # (start must be earlier than end: year_ago < month_ago)
     deleted = _downsample_tier(
         db_session,
-        month_ago,
         year_ago,
+        month_ago,
         "to_char(timestamp, 'YYYY-WW')",
         "weekly averages (30-365 days)",
         dry_run
