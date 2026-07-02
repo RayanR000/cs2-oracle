@@ -10,9 +10,21 @@ on:
     - cron: '0 1,9,15,21 * * *'
   workflow_dispatch: # Allow manual trigger
 
+defaults:
+  run:
+    shell: bash
+
+permissions:
+  issues: write
+  contents: read
+
 jobs:
   collect-data:
     runs-on: ubuntu-latest
+    timeout-minutes: 60
+    concurrency:
+      group: ${{ github.workflow }}-${{ github.ref }}
+      cancel-in-progress: true
 
     steps:
       - name: Checkout code
@@ -38,8 +50,6 @@ jobs:
         run: |
           echo "🚀 Starting aggregator market update..."
           python scripts/run_task.py aggregate 2>&1 | tee aggregator.log
-          EXIT_CODE=$?
-          echo "✅ Aggregator task completed with exit code: $EXIT_CODE"
 
       - name: Notify on failure
         if: failure() && github.event_name == 'schedule'

@@ -76,6 +76,8 @@ class PriceHistory(Base):
     __table_args__ = (
         Index('idx_price_history_item_timestamp', 'item_id', 'timestamp'),
         Index('idx_price_history_source', 'source'),
+        UniqueConstraint('item_id', 'timestamp', 'source',
+                         name='uq_price_history_item_timestamp_source'),
     )
 
 class CollectionRun(Base):

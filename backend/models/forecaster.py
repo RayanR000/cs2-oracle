@@ -44,6 +44,8 @@ class ItemForecaster:
             SELECT item_id, timestamp, price, volume
             FROM price_history
             WHERE timestamp >= :cutoff
+              AND source NOT LIKE 'synthetic_demo'
+              AND source NOT LIKE 'historical_fallback:%'
             ORDER BY item_id, timestamp
         """), {"cutoff": cutoff}).fetchall()
         df = pd.DataFrame(rows, columns=["item_id", "timestamp", "price", "volume"])
@@ -158,7 +160,7 @@ class ItemForecaster:
             df["events_next_30d"] = 0
             return df
 
-        for event_type in ["major", "operation", "case_drop", "game_update"]:
+        for event_type in ["major", "operation", "case_drop", "update"]:
             type_events = events_df[events_df["type"] == event_type].sort_values("date")
 
             if type_events.empty:
@@ -192,7 +194,17 @@ class ItemForecaster:
 
     def engineer_features(self, price_df: pd.DataFrame,
                           events_df: pd.DataFrame) -> pd.DataFrame:
-        df = self._compute_price_features(price_df)
+        # Resample to one row per item per day before feature engineering.
+        # Raw price_history has multiple rows per day (collection runs every 6h).
+        # Without resampling, "lag_1d" is really ~6h and "mean_7d" covers ~2 days.
+        if "date" in price_df.columns:
+            daily = price_df.groupby(["item_id", "date"], as_index=False).agg(
+                price=("price", "mean"),
+                volume=("volume", "sum"),
+            )
+        else:
+            daily = price_df
+        df = self._compute_price_features(daily)
         df = self._add_temporal_features(df)
         df = self._add_event_features(df, events_df)
         return df
@@ -360,12 +372,6 @@ class ItemForecaster:
         price_df = self.fetch_price_history(days_back=90)
         events_df = self.fetch_events()
 
-        # Latest date per item
-        latest = price_df.groupby("item_id").last().reset_index()
-
-        if item_ids:
-            latest = latest[latest["item_id"].isin(item_ids)]
-
         df = self.engineer_features(price_df, events_df)
 
         # Merge daily_analysis
@@ -392,6 +398,9 @@ class ItemForecaster:
         # Get latest feature row per item
         df = df.sort_values(["item_id", "date"])
         latest_rows = df.groupby("item_id").last().reset_index()
+
+        if item_ids:
+            latest_rows = latest_rows[latest_rows["item_id"].isin(item_ids)]
 
         X_batch = latest_rows[self.feature_cols].fillna(0)
 

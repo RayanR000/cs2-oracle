@@ -16,9 +16,21 @@ on:
           - train-only
           - full
 
+defaults:
+  run:
+    shell: bash
+
+permissions:
+  issues: write
+  contents: write
+
 jobs:
   forecast:
     runs-on: ubuntu-latest
+    timeout-minutes: 120
+    concurrency:
+      group: ${{ github.workflow }}-${{ github.ref }}
+      cancel-in-progress: true
 
     steps:
       - name: Checkout code
@@ -66,8 +78,15 @@ jobs:
               python scripts/forecast_prices.py 2>&1 | tee forecast.log
               ;;
           esac
-          EXIT_CODE=$?
-          echo "✅ Price forecast completed with exit code: $EXIT_CODE"
+
+      - name: Commit retrained models
+        if: steps.mode.outputs.mode == 'full'
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add backend/models/saved_models/
+          git diff --quiet && git diff --staged --quiet || git commit -m "chore: update ML models [skip ci]"
+          git push
 
       - name: Notify on failure
         if: failure() && github.event_name == 'schedule'

@@ -12,6 +12,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, Iterable, List, Optional
 
+from sqlalchemy import text
 from database import Event, Item, PriceHistory, SessionLocal
 
 logger = logging.getLogger(__name__)
@@ -120,6 +121,11 @@ class FreeDataBackfillImporter:
 
             items_payload = archive_payload.get("items", {})
             now = _utcnow_naive()
+
+            # Build batch inserts to avoid re-inserting duplicates on re-run
+            archive_rows = []
+            synthetic_rows = []
+
             for item in items:
                 item_payload = (
                     items_payload.get(item.name)
@@ -138,15 +144,13 @@ class FreeDataBackfillImporter:
                         continue
 
                     timestamp = _parse_iso8601(bucket)
-                    db.add(
-                        PriceHistory(
-                            item_id=item.id,
-                            timestamp=timestamp,
-                            price=float(price),
-                            volume=int(aggregate.get("hourly_volume") or aggregate.get("sample_count") or 0),
-                            source="cs2sh_archive",
-                        )
-                    )
+                    archive_rows.append({
+                        "item_id": item.id,
+                        "timestamp": timestamp,
+                        "price": float(price),
+                        "volume": int(aggregate.get("hourly_volume") or aggregate.get("sample_count") or 0),
+                        "source": "cs2sh_archive",
+                    })
                     archive_rows_added += 1
 
                 if item.release_date is None:
@@ -154,22 +158,40 @@ class FreeDataBackfillImporter:
 
                 synthetic_end = min(history_start - timedelta(days=1), now)
                 if synthetic_end >= item.release_date:
-                    synthetic_rows = HistoricalDataGenerator.generate_historical_prices(
+                    syn_rows = HistoricalDataGenerator.generate_historical_prices(
                         item.name,
                         item.release_date,
                         end_date=synthetic_end,
                     )
-                    for timestamp, price, volume in synthetic_rows:
-                        db.add(
-                            PriceHistory(
-                                item_id=item.id,
-                                timestamp=timestamp,
-                                price=float(price),
-                                volume=int(volume or 0),
-                                source="synthetic_demo",
-                            )
-                        )
+                    for timestamp, sp, vol in syn_rows:
+                        synthetic_rows.append({
+                            "item_id": item.id,
+                            "timestamp": timestamp,
+                            "price": float(sp),
+                            "volume": int(vol or 0),
+                            "source": "synthetic_demo",
+                        })
                         synthetic_rows_added += 1
+
+            if archive_rows:
+                db.execute(
+                    text("""
+                        INSERT INTO price_history (item_id, timestamp, price, volume, source)
+                        VALUES (:item_id, :timestamp, :price, :volume, :source)
+                        ON CONFLICT (item_id, timestamp, source) DO NOTHING
+                    """),
+                    archive_rows,
+                )
+
+            if synthetic_rows:
+                db.execute(
+                    text("""
+                        INSERT INTO price_history (item_id, timestamp, price, volume, source)
+                        VALUES (:item_id, :timestamp, :price, :volume, :source)
+                        ON CONFLICT (item_id, timestamp, source) DO NOTHING
+                    """),
+                    synthetic_rows,
+                )
 
             db.commit()
             return {

@@ -6,9 +6,21 @@ on:
     - cron: '0 3 * * *'
   workflow_dispatch: # Allow manual trigger
 
+defaults:
+  run:
+    shell: bash
+
+permissions:
+  issues: write
+  contents: read
+
 jobs:
   analyze:
     runs-on: ubuntu-latest
+    timeout-minutes: 60
+    concurrency:
+      group: ${{ github.workflow }}-${{ github.ref }}
+      cancel-in-progress: true
 
     steps:
       - name: Checkout code
@@ -34,8 +46,6 @@ jobs:
         run: |
           echo "📊 Starting daily trend analysis..."
           python scripts/run_task.py trends 2>&1 | tee analysis.log
-          EXIT_CODE=$?
-          echo "✅ Trend analysis completed with exit code: $EXIT_CODE"
 
       - name: Notify on failure
         if: failure() && github.event_name == 'schedule'

@@ -9,7 +9,8 @@ from collections import Counter, defaultdict
 from typing import Any, Optional, List, Dict, Callable
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.cron import CronTrigger
-from sqlalchemy import func
+from sqlalchemy import func, text
+from sqlalchemy.orm import scoped_session
 
 logger = logging.getLogger(__name__)
 
@@ -43,6 +44,13 @@ class DataPipeline:
         self.db_session = db_session
         self.scheduler: Optional[BackgroundScheduler] = None
         self.is_running = False
+
+    def _ensure_session(self):
+        """Return a thread-safe session. Creates a thread-local one if none was injected."""
+        if self.db_session is None:
+            from database import SessionLocal
+            self.db_session = scoped_session(SessionLocal)
+        return self.db_session
     
     def start(self, scheduler: Optional[BackgroundScheduler] = None):
         """
@@ -275,7 +283,24 @@ class DataPipeline:
 
             # 4. Save prices
             if price_records:
-                self.db_session.bulk_save_objects(price_records)
+                rows_as_dicts = [
+                    {
+                        "item_id": r.item_id,
+                        "timestamp": r.timestamp,
+                        "price": r.price,
+                        "volume": r.volume,
+                        "source": r.source,
+                    }
+                    for r in price_records
+                ]
+                self.db_session.execute(
+                    text("""
+                        INSERT INTO price_history (item_id, timestamp, price, volume, source)
+                        VALUES (:item_id, :timestamp, :price, :volume, :source)
+                        ON CONFLICT (item_id, timestamp, source) DO NOTHING
+                    """),
+                    rows_as_dicts,
+                )
                 logger.info(f"Saving {len(price_records)} price records...")
 
             if missing_names:
@@ -413,6 +438,8 @@ class DataPipeline:
             .filter(
                 PriceHistory.item_id.in_(item_ids),
                 PriceHistory.source != 'aggregator_sync',
+                ~PriceHistory.source.like('synthetic_demo'),
+                ~PriceHistory.source.like('historical_fallback:%'),
             )
             .order_by(
                 PriceHistory.item_id,
@@ -438,7 +465,11 @@ class DataPipeline:
 
         rows = (
             self.db_session.query(PriceHistory)
-            .filter(PriceHistory.item_id.in_(item_ids))
+            .filter(
+                PriceHistory.item_id.in_(item_ids),
+                ~PriceHistory.source.like('synthetic_demo'),
+                ~PriceHistory.source.like('historical_fallback:%'),
+            )
             .order_by(
                 PriceHistory.item_id,
                 PriceHistory.timestamp.desc(),
@@ -728,7 +759,24 @@ class DataPipeline:
                 # Bulk insert this batch
                 if price_records:
                     try:
-                        self.db_session.bulk_save_objects(price_records)
+                        rows_as_dicts = [
+                            {
+                                "item_id": r.item_id,
+                                "timestamp": r.timestamp,
+                                "price": r.price,
+                                "volume": r.volume,
+                                "source": r.source,
+                            }
+                            for r in price_records
+                        ]
+                        self.db_session.execute(
+                            text("""
+                                INSERT INTO price_history (item_id, timestamp, price, volume, source)
+                                VALUES (:item_id, :timestamp, :price, :volume, :source)
+                                ON CONFLICT (item_id, timestamp, source) DO NOTHING
+                            """),
+                            rows_as_dicts,
+                        )
                         self.db_session.commit()
                         logger.info(f"  → Committed {len(price_records)} prices.")
                     except Exception as e:
@@ -770,7 +818,9 @@ class DataPipeline:
             PriceHistory.price
         ).filter(
             PriceHistory.item_id.in_(item_ids),
-            PriceHistory.timestamp >= cutoff
+            PriceHistory.timestamp >= cutoff,
+            ~PriceHistory.source.like('synthetic_demo'),
+            ~PriceHistory.source.like('historical_fallback:%'),
         ).order_by(PriceHistory.item_id, PriceHistory.timestamp).all()
 
         histories = defaultdict(list)
@@ -792,7 +842,9 @@ class DataPipeline:
             func.count(PriceHistory.id)
         ).filter(
             PriceHistory.item_id.in_(item_ids),
-            PriceHistory.timestamp >= cutoff
+            PriceHistory.timestamp >= cutoff,
+            ~PriceHistory.source.like('synthetic_demo'),
+            ~PriceHistory.source.like('historical_fallback:%'),
         ).group_by(PriceHistory.item_id).all()
 
         return {item_id: count for item_id, count in rows}
@@ -832,7 +884,7 @@ class DataPipeline:
                     volatility = TrendAnalyzer.compute_volatility(prices)
                     
                     # Store features
-                    if sma_7 or sma_30:
+                    if sma_7 is not None and sma_30 is not None:
                         trend_indicator = TrendIndicator(
                             item_id=item_id,
                             sma_7=sma_7,

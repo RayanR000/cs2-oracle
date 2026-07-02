@@ -97,7 +97,9 @@ class TrendAnalyzer:
 
         prices = self.db.query(PriceHistory).filter(
             PriceHistory.item_id == item_id,
-            PriceHistory.timestamp >= cutoff_date
+            PriceHistory.timestamp >= cutoff_date,
+            ~PriceHistory.source.like('synthetic_demo'),
+            ~PriceHistory.source.like('historical_fallback:%'),
         ).order_by(PriceHistory.timestamp).all()
 
         return [(p.timestamp, p.price) for p in prices]
@@ -114,7 +116,9 @@ class TrendAnalyzer:
             PriceHistory.price
         ).filter(
             PriceHistory.item_id.in_(item_ids),
-            PriceHistory.timestamp >= cutoff_date
+            PriceHistory.timestamp >= cutoff_date,
+            ~PriceHistory.source.like('synthetic_demo'),
+            ~PriceHistory.source.like('historical_fallback:%'),
         ).order_by(PriceHistory.item_id, PriceHistory.timestamp).all()
 
         prices_by_item = defaultdict(list)
@@ -133,7 +137,9 @@ class TrendAnalyzer:
             func.count(PriceHistory.id)
         ).filter(
             PriceHistory.item_id.in_(item_ids),
-            PriceHistory.timestamp >= start_dt
+            PriceHistory.timestamp >= start_dt,
+            ~PriceHistory.source.like('synthetic_demo'),
+            ~PriceHistory.source.like('historical_fallback:%'),
         )
 
         if end_dt is not None:
@@ -322,7 +328,9 @@ class TrendAnalyzer:
             func.count(PriceHistory.id)
         ).filter(
             PriceHistory.item_id.in_(item_ids),
-            PriceHistory.timestamp >= ninety_day_cutoff
+            PriceHistory.timestamp >= ninety_day_cutoff,
+            ~PriceHistory.source.like('synthetic_demo'),
+            ~PriceHistory.source.like('historical_fallback:%'),
         ).group_by(PriceHistory.item_id).all()
         ninety_day_counts = {item_id: count for item_id, count in ninety_day_counts}
 

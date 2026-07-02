@@ -117,7 +117,7 @@ def downsample_price_history(db_session, days_to_keep_granular=7, dry_run=False)
         db_session,
         month_ago,
         week_ago,
-        "date(timestamp)::text",
+        "CAST(date(timestamp) AS TEXT)",
         "daily averages (7-30 days)",
         dry_run
     )
@@ -129,7 +129,7 @@ def downsample_price_history(db_session, days_to_keep_granular=7, dry_run=False)
         db_session,
         year_ago,
         month_ago,
-        "to_char(timestamp, 'YYYY-WW')",
+        "to_char(timestamp, 'IYYY-IW')",
         "weekly averages (30-365 days)",
         dry_run
     )
@@ -164,12 +164,17 @@ def _downsample_tier(db_session, start_date, end_date, group_expr, desc, dry_run
         pass
 
     if end_date:
-        raw_filter = f"timestamp >= '{start_date}' AND timestamp < '{end_date}'"
+        raw_filter = "timestamp >= :start_date AND timestamp < :end_date"
     else:
-        raw_filter = f"timestamp < '{start_date}'"
+        raw_filter = "timestamp < :start_date"
+
+    params = {"start_date": start_date}
+    if end_date:
+        params["end_date"] = end_date
 
     total_in_tier = db_session.execute(
-        text(f"SELECT COUNT(*) FROM price_history WHERE {raw_filter}")
+        text(f"SELECT COUNT(*) FROM price_history WHERE {raw_filter}"),
+        params,
     ).scalar() or 0
 
     if total_in_tier == 0:
@@ -214,19 +219,21 @@ def _downsample_tier(db_session, start_date, end_date, group_expr, desc, dry_run
     # Single-pass: try full range first
     try:
         delete_sql = build_delete_sql()
-        result = db_session.execute(text(delete_sql))
+        result = db_session.execute(text(delete_sql), params)
         db_session.commit()
         deleted = result.rowcount
         logger.info(f"Downsampled {deleted:,} records to {desc}")
         return deleted
-    except Exception:
+    except Exception as e:
         db_session.rollback()
+        logger.warning(f"Single-pass downsample failed, falling back to per-item batching: {e}")
 
     # Fallback: per-item batching (handles large tiers without timeout)
     total_deleted = 0
-    item_ids = db_session.execute(text(f"""
-        SELECT DISTINCT item_id FROM price_history WHERE {raw_filter}
-    """)).fetchall()
+    item_ids = db_session.execute(
+        text(f"SELECT DISTINCT item_id FROM price_history WHERE {raw_filter}"),
+        params,
+    ).fetchall()
     item_ids = [r[0] for r in item_ids]
     logger.info(f"  Processing {len(item_ids)} items in batches of 20 for {desc}...")
 
@@ -235,8 +242,9 @@ def _downsample_tier(db_session, start_date, end_date, group_expr, desc, dry_run
         id_list = list(batch)
         delete_batch_sql = build_delete_sql("AND item_id = ANY(:id_list)")
         try:
+            batch_params = {**params, "id_list": id_list}
             result = db_session.execute(
-                text(delete_batch_sql), {'id_list': id_list}
+                text(delete_batch_sql), batch_params
             )
             db_session.commit()
             total_deleted += result.rowcount

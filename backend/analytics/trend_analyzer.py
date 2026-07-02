@@ -340,7 +340,7 @@ class OpportunityDetector:
     # Thresholds
     UNDERVALUED_THRESHOLD = 0.85  # Below 85% of trend
     OVERHEATED_THRESHOLD = 1.20  # Above 120% of trend
-    MOMENTUM_MIN_CHANGE = 0.05    # 5% change minimum
+    MOMENTUM_MIN_CHANGE = 5.0    # 5% change minimum (change is already in percent units)
     
     @staticmethod
     def compute_baseline_trend(prices: List[float], window: int = 30) -> Optional[float]:

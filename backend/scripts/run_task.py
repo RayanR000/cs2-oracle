@@ -23,29 +23,18 @@ logging.basicConfig(
 logger = logging.getLogger("task_runner")
 
 def run_migrations(revision="head"):
-    """Run Alembic migrations explicitly as a maintenance task."""
-    alembic_cmds = [
-        [str(Path(__file__).parent.parent / "venv" / "bin" / "alembic"), "upgrade", revision],
-        [sys.executable, "-m", "alembic", "upgrade", revision],
-    ]
+    """Run Alembic migrations using the current Python interpreter."""
+    cmd = [sys.executable, "-m", "alembic", "upgrade", revision]
 
-    last_error = None
-    for cmd in alembic_cmds:
-        try:
-            logger.info(f"Running migrations: {' '.join(cmd)}")
-            result = subprocess.run(cmd, check=True, cwd=str(Path(__file__).parent.parent))
-            return {"status": "success", "revision": revision, "returncode": result.returncode}
-        except FileNotFoundError as e:
-            last_error = e
-            continue
-        except subprocess.CalledProcessError as e:
-            last_error = e
-            break
-
-    logger.error(
-        "Migration command failed. Install backend requirements and retry."
-    )
-    raise RuntimeError(f"Could not run migrations to {revision}: {last_error}")
+    try:
+        logger.info(f"Running migrations: {' '.join(cmd)}")
+        result = subprocess.run(cmd, check=True, cwd=str(Path(__file__).parent.parent))
+        return {"status": "success", "revision": revision, "returncode": result.returncode}
+    except (FileNotFoundError, subprocess.CalledProcessError) as e:
+        logger.error(
+            "Migration command failed. Install backend requirements and retry."
+        )
+        raise RuntimeError(f"Could not run migrations to {revision}: {e}")
 
 def run_task(task_name):
     db = SessionLocal()
@@ -95,6 +84,10 @@ def run_task(task_name):
             # Also run daily analysis for DailyAnalysis table
             from scripts.analyze_trends import main as daily_analysis
             result3 = daily_analysis()
+            if isinstance(result3, dict) and result3.get("status") == "success":
+                logger.info("✅ Daily analysis completed")
+            else:
+                logger.warning(f"Daily analysis returned non-success: {result3}")
             print(f"RESULT: {result}, {result2}, {result3}")
 
         elif task_name == "long_term_trends":

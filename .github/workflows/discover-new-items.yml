@@ -6,9 +6,21 @@ on:
     - cron: '0 22 * * 0'
   workflow_dispatch: # Allow manual trigger if needed
 
+defaults:
+  run:
+    shell: bash
+
+permissions:
+  issues: write
+  contents: read
+
 jobs:
   discover:
     runs-on: ubuntu-latest
+    timeout-minutes: 60
+    concurrency:
+      group: ${{ github.workflow }}-${{ github.ref }}
+      cancel-in-progress: true
 
     steps:
       - name: Checkout code
@@ -34,8 +46,6 @@ jobs:
         run: |
           echo "🔍 Starting item discovery..."
           python scripts/discover_steam_items.py 2>&1 | tee discovery.log
-          EXIT_CODE=$?
-          echo "✅ Item discovery completed with exit code: $EXIT_CODE"
 
       - name: Notify on failure
         if: failure() && github.event_name == 'schedule'
