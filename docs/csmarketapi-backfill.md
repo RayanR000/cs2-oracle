@@ -7,10 +7,10 @@ Backfill daily sales history (OHLCV per market) for CS2 items across all major t
 ## Constraints
 
 | Constraint | Detail |
-|---|---|
+|---|---|---|
 | CSMarketAPI free tier | 1,000 requests/month/key |
-| Accounts available | 3 (skrup.chezz, breadandpoops, rrane2025) |
-| Total monthly budget | ~2,850 requests (950 safety threshold × 3) |
+| Accounts available | 5 (skrup.chezz, breadandpoops, rrane2025, rayanrane, bobafett) |
+| Total monthly budget | ~4,750 requests (950 safety threshold × 5) |
 | Items in local catalog | 31,908 (from `market_catalog.db`) |
 | CSMarketAPI catalog | 31,417 items |
 | Overlap | 26,718 items (in both catalogs) |
@@ -146,9 +146,13 @@ CSMARKETAPI_KEY_2=csmarketapi_key_5lnvkqph98d0l8y8jmnl
 CSMARKETAPI_ACCOUNT_2=breadandpoops
 CSMARKETAPI_KEY_3=csmarketapi_key_eu1ku8kj24o2rjfut4ge
 CSMARKETAPI_ACCOUNT_3=rrane2025
+CSMARKETAPI_KEY_4=csmarketapi_key_57hz2y5alc6w04bx6dmc
+CSMARKETAPI_ACCOUNT_4=rayanrane
+CSMARKETAPI_KEY_5=csmarketapi_key_wceniweh2k6a7j792poc
+CSMARKETAPI_ACCOUNT_5=bobafett
 ```
 
-Supports up to 4 keys. Config model in `backend/config.py` exposes `settings.csmarketapi_keys` as a list of `{account, key}` dicts.
+Supports up to 5 keys (loops `range(1, 6)`). Config model in `backend/config.py` exposes `settings.csmarketapi_keys` as a list of `{account, key}` dicts.
 
 ## Execution Results
 
@@ -176,19 +180,21 @@ Rolled back `req_idx_1` and `req_idx_2` to 900 in the DB to re-expose ~50 quota 
 
 | Metric | Value |
 |---|---|
-| Items completed | **2,941** |
-| Price rows | **~7,000,000+** |
-| Failed | 5 (only during final burn — keys exhausted mid-request) |
+| Items completed | **4,940** |
+| Price rows | **~12,000,000+** |
+| Failed | 256 (429 burns — all keys forced to 1000/1000) |
 | Months of price data | ~4,500 unique days |
 | Markets with data | 7 (STEAMCOMMUNITY, CSFLOAT, MARKETCSGO, WHITEMARKET, SKINPORT, SKINBARON, CSDEALS) |
-| Database size | **1.8 GB** (`csmarketapi.db`) |
-| Key 0 actual usage | 965 (hit 429) |
-| Key 1 actual usage | ~952 (hit 429) |
-| Key 2 actual usage | ~951 (hit 429) |
+| Database size | **~2.5 GB** (`csmarketapi.db`) |
+| Key 0 actual usage | 1000 (hit 429) |
+| Key 1 actual usage | 1000 (hit 429) |
+| Key 2 actual usage | 1000 (hit 429) |
+| Key 3 actual usage | 1000 (hit 429) |
+| Key 4 actual usage | 1000 (hit 429) |
 
 ### Key Verification
 
-All 3 keys confirmed exhausted via 429 response:
+All 5 keys confirmed exhausted via 429 response:
 
 ```json
 {"detail": "You have exceeded your monthly quota. Consider upgrading your plan."}
@@ -201,7 +207,7 @@ All 3 keys confirmed exhausted via 429 response:
 | **Sales history over listings** | Sales are ground truth (actual transactions). Listings are ask prices (noise). |
 | **Daily resolution** | CSMarketAPI returns daily ~OHLC. Sufficient for trend analysis; no need for intraday. |
 | **sell_listings as priority signal** | Best available popularity proxy from local DB. Items with more Steam listings are more liquid. |
-| **950 threshold over 1,000** | Safety margin — API limits may not be perfectly aligned with DB tracking. Prevents mid-item 429. |
+| **950 threshold over 1,000** | Safety margin — prevents mid-item 429. Can be temporarily lifted to 1000 for burn sessions (set `KEY_SWITCH_THRESHOLD = 1000` in script, then restore). |
 | **Separate reference DB** | Allows re-fetching currency rates (change daily) and player counts (change hourly) without touching backfill state. |
 | **1s delay between requests** | Respectful rate limiting. No documented rate limit, but avoids triggering abuse detection. |
 | **Per-item commit + skip check** | Crash-safe: if script dies mid-write, the data for that item is incomplete but the item won't be re-fetched (checked on resume). |
@@ -217,12 +223,12 @@ python backend/collectors/csmarketapi_backfill.py --refresh-ref
 python backend/collectors/csmarketapi_backfill.py
 ```
 
-Next item to process: `StatTrak™ Five-SeveN | Flame Test (Field-Tested)` (#2,942 of 36,607).
+Next item to process: `Sir Bloody Skullhead Darryl | The Professionals` (#4,941 of 36,607).
 
 ### Future Optimizations
 
 - **cs2.sh batch endpoint**: POST with 100 items/request. $75/mo Developer plan. Would reduce ~37K requests to ~370 requests.
-- **Add more CSMarketAPI keys**: Each additional key adds ~950 items/month.
+- **Add more CSMarketAPI keys**: Each additional key adds ~950 items/month. Add `CSMARKETAPI_KEY_N` / `CSMARKETAPI_ACCOUNT_N` to `.env` and `config.py` (bump `range(1, 6)` to `range(1, N+1)`).
 - **Parallel fetching**: Currently 1 request at a time (1s delay). Could parallelize with multiple keys simultaneously.
 - **Selective date range**: Pass `start`/`end` params to sales history to reduce response size for items with very long histories.
 
