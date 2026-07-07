@@ -76,20 +76,22 @@ class TrendAnalyzer:
 
         filtered_rows = [_filter_daily_analysis_row(row) for row in rows]
 
-        stmt = insert_stmt(target_table).values(filtered_rows)
-        excluded = stmt.excluded
-        update_columns = {
-            column.name: getattr(excluded, column.name)
-            for column in target_table.columns
-            if column.name in actual_columns
-            and column.name not in {"id", "item_id", "analysis_date", "created_at"}
-        }
-
-        stmt = stmt.on_conflict_do_update(
-            index_elements=["item_id", "analysis_date"],
-            set_=update_columns,
-        )
-        self.db.execute(stmt)
+        CHUNK_SIZE = 500
+        for i in range(0, len(filtered_rows), CHUNK_SIZE):
+            chunk = filtered_rows[i:i + CHUNK_SIZE]
+            stmt = insert_stmt(target_table).values(chunk)
+            excluded = stmt.excluded
+            update_columns = {
+                column.name: getattr(excluded, column.name)
+                for column in target_table.columns
+                if column.name in actual_columns
+                and column.name not in {"id", "item_id", "analysis_date", "created_at"}
+            }
+            stmt = stmt.on_conflict_do_update(
+                index_elements=["item_id", "analysis_date"],
+                set_=update_columns,
+            )
+            self.db.execute(stmt)
 
     def get_item_price_history(self, item_id, days=90):
         """Fetch price history for an item."""
