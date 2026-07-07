@@ -2,12 +2,13 @@ name: Aggregator Market Update (17k Items)
 
 on:
   schedule:
-    # Every 6 hours — runs 2h before daily trend analysis (03:00 UTC) and forecast (04:00 UTC)
-    # 9:00 PM EDT   = 01:00 UTC (previous day)
-    # 5:00 AM EDT   = 09:00 UTC
-    # 11:00 AM EDT  = 15:00 UTC
-    # 5:00 PM EDT   = 21:00 UTC
-    - cron: '0 1,9,15,21 * * *'
+    # Once daily at 23:00 UTC (7:00 PM EDT). CSGOTrader regenerates its price
+    # dumps once a day around ~21:40 UTC (verified via Last-Modified headers
+    # and 5 weeks of collected data — extra same-day runs always returned
+    # identical prices). 23:00 leaves buffer for upstream drift and Actions
+    # cron delay, keeps timestamps on the same calendar day as the prices,
+    # and runs 4h before daily trend analysis (03:00 UTC) / forecast (04:00 UTC).
+    - cron: '0 23 * * *'
   workflow_dispatch: # Allow manual trigger
 
 defaults:
