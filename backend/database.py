@@ -110,7 +110,7 @@ def backfilled_item_clause():
     enough data for charts and analysis; snapshot-tier items stay reachable
     by direct link but are not listed.
     """
-    return Item.is_backfilled == True
+    return Item.is_backfilled == 1
 
 
 class CollectionRun(Base):
