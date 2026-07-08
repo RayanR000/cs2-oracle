@@ -68,16 +68,14 @@ def run_task(task_name):
             logger.info("="*60)
             logger.info("TASK: Trend Analysis & Opportunity Detection (90-day)")
             logger.info("="*60)
-            result = pipeline.run_feature_computation()
-            result2 = pipeline.run_trend_analysis()
-            # Also run daily analysis for DailyAnalysis table
+            result = pipeline.run_trend_analysis()
             from scripts.analyze_trends import main as daily_analysis
-            result3 = daily_analysis()
-            if isinstance(result3, dict) and result3.get("status") == "success":
+            result2 = daily_analysis()
+            if isinstance(result2, dict) and result2.get("status") == "success":
                 logger.info("✅ Daily analysis completed")
             else:
-                logger.warning(f"Daily analysis returned non-success: {result3}")
-            print(f"RESULT: {result}, {result2}, {result3}")
+                logger.warning(f"Daily analysis returned non-success: {result2}")
+            print(f"RESULT: {result}, {result2}")
 
         elif task_name == "long_term_trends":
             logger.info("="*60)

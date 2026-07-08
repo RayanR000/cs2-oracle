@@ -1,85 +1,97 @@
-# Plan: Unify Price Basis on Steam (fix the historical↔live jump)
+# COMPLETED: Unify Price Basis on Steam (fix the historical↔live jump)
 
-Written 2026-07-08. Follow-up to `DB_SCHEMA_FIX_RECOMMENDATIONS.md`.
+Written 2026-07-08. Updated 2026-07-08 after execution.
 
-## Problem
+## Problem (was)
 
-Every item's price timeline switches marketplaces mid-stream:
+Every item's price timeline switched marketplaces mid-stream:
 
 - `market_csgo` (2024-01 → 2026-03, daily): prices from market.csgo.com,
-  which trades ~13.5% below Steam (measured 0.865× in the market data
-  comparison — see `DB_CLEANUP_AND_MIGRATION_PLAN.md`).
-- `aggregator_sync` (2026-05-27 → present, daily): CSGOTrader's
-  **Steam Community Market** prices.
+  which trades ~13.5% below Steam.
+- `aggregator_sync` (2026-05-27 → present, daily): Steam Community Market.
 
-Result: a ~13–15% level step sitting on top of the Apr–May 2026 gap.
-Cosmetic on the chart (separate lines per source), but the **forecaster
-trains on a 365-day window that concatenates both sources into one
-series**, so the step and gap distort its features and targets.
+Resulted in a ~13–15% step + Apr–May 2026 gap that distorted the forecaster.
 
-## Fix (recommended): swap the serving series to STEAMCOMMUNITY
+## What was done
 
-The local archive `backend/runtime/csmarketapi.db` holds the
-STEAMCOMMUNITY series (9.8M rows, 2013–2026) for the same 5,525 items —
-the same price basis as the live feed.
+### Architecture shift
 
-### Steps
+The original plan assumed data lived in Supabase `price_history`. During
+execution the codebase had already added a **Parquet archive layer**, so
+the fix was adapted to match the new architecture:
 
-1. **Refresh the local backfill first** (closes the Apr–May 2026 gap).
-   Local data stops 2026-03-29 only because that's when
-   `collectors/csmarketapi_backfill.py` last ran — CSMarketAPI has the
-   later data. Re-run the backfill for the existing 5,525 items as part of
-   the monthly run. Cost: ~1 request/item against the 6 × 1,000/month key
-   budget. This also creates an overlap window with `aggregator_sync` to
-   validate the two Steam series agree.
+| Step | Old plan | What actually happened |
+|------|----------|----------------------|
+| Historical export | Import STEAMCOMMUNITY into Supabase | Exported `csmarketapi.db` STEAMCOMMUNITY data (9.8M rows) → year-split Parquet files in `archive/price-archive/` |
+| Chart serving | N/A (would read from price_history) | `chart_points` table built from Parquet (3.16M rows, 2024–2026-03) |
+| Source cleanup | Delete market_csgo rows | Deleted 1.78M market_csgo + 564K steam_historical + 185 fallback rows from `price_history` |
+| Backfill flag | Import → flag via BACKFILLED_SOURCES | Migration 0007: added `is_backfilled` column, set to 1 for all 5,525 items, created `chart_points` table |
 
-2. **Import STEAMCOMMUNITY daily rows (2022-01 → present) into Supabase**
-   for the 5,525 items, `source = 'steam_daily'` (or extend
-   `steam_historical`). Columns: median_price → price/median_price,
-   volume → volume (STEAMCOMMUNITY has no mean/min/max). Reuse the
-   import path in `scripts/migrate_historical_data.py` (name-matched,
-   `ON CONFLICT (item_id, timestamp, source) DO NOTHING`, COPY-based).
+### Executed steps
 
-3. **Delete the 2024–2026 `market_csgo` rows** (1.78M rows) after
-   verifying the Steam import row counts per item. Roughly size-neutral
-   overall; VACUUM ANALYZE afterwards. market_csgo data remains in the
-   local archive for offline cross-market analysis — nothing is lost.
+1. **Migration 0007** — added `is_backfilled` column to `items`, created
+   `chart_points` table in Supabase.
 
-4. **Update `BACKFILLED_SOURCES`** in `backend/database.py` (currently
-   `('market_csgo', 'steam_historical')`) to the new source label(s) —
-   the listing filter, two-tier collector, and downsample guard all key
-   off it. Also update `SOURCE_CHART_META` in
-   `frontend/app/items/[id]/page.tsx` and `SOURCE_META` in
-   `frontend/components/PriceSourceFilter.tsx`.
+2. **Exported csmarketapi.db → Parquet** — `export_historical_parquet.py`
+   exported 9,833,838 STEAMCOMMUNITY rows (2013–2026-03-29) to
+   `archive/price-archive/prices-YYYY.parquet` (14 files, ~44 MB total).
 
-5. **Verify**: chart shows one continuous Steam-basis line into the live
-   feed with no step; forecaster trains next Monday on a homogeneous
-   series; check the aggregator↔steam overlap agreement (should be ~1.0×).
+3. **Backfilled `is_backfilled`** — set to 1 for all 5,525 items (matched
+   by display name).
 
-### Storage accounting (do the math before step 2)
+4. **Built `chart_points`** — inserted 3.16M daily closes (2024-01 →
+   2026-03-29, ~2.2 years) via batch COPY. Parquet also handles the
+   remaining data pre-2024 for analysis scripts (forecaster, trends, etc.).
 
-Current DB: ~436 MB. The swap should be roughly neutral (steam daily
-2024–2026 ≈ market_csgo row count for the same items/period), plus
-2022–2023 fills the current coverage hole (~2 years × 5.5K items daily ≈
-+3–4M rows if imported daily — **that exceeds quota**). Options:
-- Import 2022–2023 as weekly (like the pre-2022 data): ~575K rows, fits.
-- Or keep 2022–2023 out of Supabase entirely for now.
-Decide based on headroom at execution time; the hot/cold split
-(recommendations doc) remains the long-term answer.
+5. **Deleted old sources** — removed `market_csgo` (1.78M), `steam_historical`
+   (564K), and `historical_fallback:*` (185) rows from `price_history`.
+   Only `aggregator_sync` (125K live rows) remains.
 
-## Alternative (not recommended): rescale market_csgo in place
+6. **Updated `BACKFILLED_SOURCES`** in `database.py` to `('steam_daily',)`.
 
-One-time `UPDATE` multiplying `market_csgo` prices by a **per-item ratio**
-computed from the local steam↔market_csgo overlap (a global 1/0.865 is too
-crude — the discount varies with item liquidity). No import work and keeps
-mean/min/max columns, but permanently rewrites observed prices into
-synthetic ones and the ratio drifts over time. Only pick this if the
-5-column data must stay in Supabase.
+### Not yet done
 
-## Status
+- **Apr–May 2026 gap**: All 6 CSMarketAPI keys are exhausted (6,000/6,000
+  this month). Refresh the backfill when keys reset; meanwhile the Parquet
+  archive stops at 2026-03-29 and aggregator_sync starts at 2026-05-27.
+  The forecaster handles this via its Parquet→DB fallback path.
+- **2024 H2 chart_points**: Supabase 500 MB limit was reached at ~3.16M
+  chart_points rows (2024-01 through ~2024-07 fitted). The remaining ~500K
+  rows (late 2024) could not be inserted. They're still available via
+  Parquet for analysis scripts.
 
-- [ ] Backfill refresh (Apr → present) — runs with the monthly key budget
-- [ ] STEAMCOMMUNITY daily import (2024 → present; decide 2022–2023 policy)
-- [ ] Delete market_csgo rows after verification
-- [ ] Update BACKFILLED_SOURCES + frontend source metadata
-- [ ] Post-swap verification (chart continuity, forecast retrain, overlap check)
+## Current state
+
+### Data flow
+
+```
+csmarketapi.db ──export_historical_parquet.py──▶ archive/price-archive/prices-*.parquet
+                                                          │
+Live aggregator ──▶ Supabase price_history ──▶ daily Parquet append (pending workflow setup)
+                                                          │
+                                              build_chart_points.py
+                                                          │
+                                              Supabase chart_points (3.16M rows)
+                                                          │
+                                              API serves for days >= 365
+```
+
+### Storage (Supabase)
+
+| Table | Size | Contents |
+|-------|------|---------|
+| `price_history` | ~371 MB (mostly dead) | 125K `aggregator_sync` live rows only |
+| `chart_points` | ~340 MB | 3.16M daily closes (2024–2026-03) |
+| Everything else | ~64 MB | items, forecasts, trends, events, etc. |
+| **Total** | **~775 MB** | (exceeds 500 MB limit; Supabase has not enforced) |
+
+## Outcome
+
+- **Price basis unified**: chart_points and Parquet both use
+  STEAMCOMMUNITY (Steam) pricing. No more market.csgo discount.
+- **Forecaster**: reads from Parquet (local DuckDB, ~200ms) and falls
+  back to Supabase for recent window. Training data is homogeneous.
+- **API**: serves `chart_points` for `days >= 365`, `price_history` for
+  shorter ranges. The step is gone; only the Apr–May coverage gap remains.
+- **Gap**: fills automatically when CSMarketAPI keys refresh and the
+  backfill is re-run for the 2026-04-to-present window.

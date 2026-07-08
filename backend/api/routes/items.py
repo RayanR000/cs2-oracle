@@ -8,7 +8,7 @@ import re
 import math
 
 from database import (
-    get_db, Item, PriceHistory, ChartPoint, TrendIndicator, DailyAnalysis, ItemForecast,
+    get_db, Item, PriceHistory, ChartPoint, DailyAnalysis, ItemForecast,
     Event, EventImpact, backfilled_item_clause,
 )
 from api.cache import get_or_build
@@ -298,12 +298,6 @@ def get_item_trends(item_id: str, db: Session = Depends(get_db)):
         .order_by(desc(DailyAnalysis.analysis_date))
         .first()
     )
-    latest_ti = (
-        db.query(TrendIndicator)
-        .filter(TrendIndicator.item_id == item.id)
-        .order_by(desc(TrendIndicator.timestamp))
-        .first()
-    )
     latest_price = (
         db.query(PriceHistory)
         .filter(PriceHistory.item_id == item.id)
@@ -321,26 +315,24 @@ def get_item_trends(item_id: str, db: Session = Depends(get_db)):
     else:
         current_price = latest_price.price
     trend_dir = "neutral"
-    confidence = "low"
     sma_7 = None
     sma_30 = None
     volatility = None
     trend_score = None
 
-    if latest_ti:
-        trend_dir = latest_ti.trend_direction or "neutral"
-        confidence = latest_ti.confidence or "low"
-        sma_7 = latest_ti.sma_7
-        sma_30 = latest_ti.sma_30
-        volatility = latest_ti.volatility
-        trend_score = latest_ti.trend_score
-    elif latest_analysis:
+    if latest_analysis:
         trend_dir = latest_analysis.trend_direction or "neutral"
-        confidence = "medium" if latest_analysis.opportunity_score else "low"
         sma_7 = latest_analysis.ma_7day
         sma_30 = latest_analysis.ma_30day
         volatility = latest_analysis.volatility
         trend_score = latest_analysis.momentum_score
+
+    confidence = "low"
+    if trend_score is not None:
+        if abs(trend_score) > 50:
+            confidence = "high"
+        elif abs(trend_score) > 20:
+            confidence = "medium"
 
     explanation = _build_trend_explanation(trend_dir, confidence, sma_7, current_price)
     return TrendAnalysisOut(

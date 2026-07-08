@@ -747,66 +747,6 @@ class DataPipeline:
 
         return {item_id: count for item_id, count in rows}
     
-    def run_feature_computation(self):
-        """Execute feature computation for trend analysis"""
-        try:
-            logger.info("Starting feature computation")
-            
-            from analytics.trend_analyzer import TrendAnalyzer
-            from database import Item, TrendIndicator
-            
-            if not self.db_session:
-                logger.error("Database session not available")
-                return {"status": "failed", "error": "No database session"}
-            
-            items = self.db_session.query(Item.id, Item.name).all()
-            item_ids = [item_id for item_id, _ in items]
-            recent_counts = self._load_recent_price_counts(item_ids, days=90)
-            recent_histories = self._load_recent_price_histories(
-                [item_id for item_id, _ in items if recent_counts.get(item_id, 0) >= 7],
-                days=90
-            )
-            features_computed = 0
-            
-            for item_id, item_name in items:
-                try:
-                    prices_with_timestamps = recent_histories.get(item_id, [])
-                    prices = [price for _, price in prices_with_timestamps]
-                    
-                    if len(prices) < 7:
-                        continue
-                    
-                    # Compute indicators
-                    sma_7 = TrendAnalyzer.compute_sma(prices, 7)
-                    sma_30 = TrendAnalyzer.compute_sma(prices, 30)
-                    volatility = TrendAnalyzer.compute_volatility(prices)
-                    
-                    # Store features
-                    if sma_7 is not None and sma_30 is not None:
-                        trend_indicator = TrendIndicator(
-                            item_id=item_id,
-                            sma_7=sma_7,
-                            sma_30=sma_30,
-                            volatility=volatility,
-                            timestamp=datetime.utcnow()
-                        )
-                        self.db_session.add(trend_indicator)
-                        features_computed += 1
-                
-                except Exception as item_error:
-                    logger.error(f"Error computing features for {item_name}: {item_error}")
-            
-            self.db_session.commit()
-            
-            logger.info(f"Feature computation completed: {features_computed} items processed")
-            return {"status": "success", "timestamp": datetime.utcnow(), "items_processed": features_computed}
-            
-        except Exception as e:
-            if self.db_session:
-                self.db_session.rollback()
-            logger.error(f"Error in feature computation: {e}", exc_info=True)
-            return {"status": "failed", "error": str(e)}
-    
     def run_trend_analysis(self):
         """Execute trend scoring and opportunity detection"""
         try:

@@ -39,17 +39,17 @@ def main():
 
     db = SessionLocal()
 
-    # Build slug → item_id mapping
+    # Build name → item_id mapping (parquet item_slug = display name)
     slug_map_rows = db.execute(text(
-        "SELECT id, item_id FROM items WHERE is_backfilled = 1"
+        "SELECT id, name FROM items WHERE is_backfilled = 1"
     )).fetchall()
-    slug_to_id = {row.item_id: row.id for row in slug_map_rows}
+    slug_to_id = {row.name: row.id for row in slug_map_rows}
 
     if not slug_to_id:
         print("No backfilled items found. Run the backfill migration first.")
         sys.exit(1)
 
-    print(f"Loaded {len(slug_to_id)} backfilled item mappings")
+    print(f"Loaded {len(slug_to_id)} backfilled item mappings (by display name)")
 
     con = duckdb.connect()
     parquet_files = sorted(parquet_dir.glob("prices-*.parquet"))

@@ -1,8 +1,11 @@
 #!/usr/bin/env python3
 """
-One-time export: read csmarketapi.db → year-split Parquet files.
+One-time export: read csmarketapi.db STEAMCOMMUNITY data → year-split Parquet files.
 
-Columns: item_slug, day, mean_price, min_price, max_price, median_price, volume
+Exports only STEAMCOMMUNITY-market data (Steam Community Market price basis).
+MarketCSGO rows (~13.5% below Steam) are excluded.
+
+Columns: item_slug, day, mean_price, median_price, volume
 Writes to archive/price-archive/prices-YYYY.parquet.
 
 Usage:
@@ -15,26 +18,6 @@ from pathlib import Path
 
 import duckdb
 import pandas as pd
-
-CSMARKETAPI_SCHEMA = """
-    SELECT
-        item_slug,
-        day,
-        market,
-        mean_price,
-        min_price,
-        max_price,
-        median_price,
-        volume
-    FROM read_csv_auto('{db_path}')
-"""
-
-EXPORT_SQL = """
-    COPY (
-        SELECT item_slug, day, market, mean_price, min_price, max_price, median_price, volume
-        FROM read_csv_auto('{db_path}')
-    ) TO '{out_path}' (FORMAT PARQUET, PER_THREAD_OUTPUT false)
-"""
 
 
 def main():
@@ -64,15 +47,26 @@ def main():
 
     try:
         con.execute(f"ATTACH '{db_path}' AS src (TYPE sqlite)")
-        df = con.sql("SELECT * FROM src.ohlcv_history").fetchdf()
-    except Exception:
-        df = con.sql(f"SELECT * FROM '{db_path}'").fetchdf()
-
-    required = {"item_slug", "day", "mean_price", "min_price", "max_price", "median_price", "volume"}
-    missing = required - set(df.columns)
-    if missing:
-        print(f"ERROR: missing columns {missing} in source data", file=sys.stderr)
+        df = con.sql("""
+            SELECT
+                market_hash_name AS item_slug,
+                day,
+                COALESCE(mean_price, median_price) AS mean_price,
+                median_price,
+                volume
+            FROM src.sales_history
+            WHERE market = 'STEAMCOMMUNITY'
+              AND median_price IS NOT NULL
+        """).fetchdf()
+    except Exception as e:
+        print(f"SQLite query failed: {e}", file=sys.stderr)
         sys.exit(1)
+
+    if df.empty:
+        print("No STEAMCOMMUNITY rows found")
+        sys.exit(1)
+
+    print(f"Read {len(df):,} STEAMCOMMUNITY rows from {db_path.name}")
 
     df["day"] = pd.to_datetime(df["day"])
     df["year"] = df["day"].dt.year

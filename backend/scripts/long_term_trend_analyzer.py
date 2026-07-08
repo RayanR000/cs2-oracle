@@ -7,6 +7,9 @@ Time window strategy:
 - New items (60-365 days old): Use all data since release
 - Mature items (365+ days old): Use last 3 years (most predictive)
 - Skip very new items (< 60 days old)
+
+Writes results to daily_analysis table (upsert), replacing the
+90-day-window results from the daily run with more accurate values.
 """
 
 import sys
@@ -18,8 +21,10 @@ from statistics import mean, stdev
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from database import SessionLocal, Item, PriceHistory, TrendIndicator, utcnow_naive
+from database import SessionLocal, Item, PriceHistory, utcnow_naive
 from sqlalchemy import func
+from sqlalchemy.dialects.postgresql import insert as pg_insert
+from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 
 logging.basicConfig(
     level=logging.INFO,
@@ -27,9 +32,17 @@ logging.basicConfig(
 )
 logger = logging.getLogger("long_term_analyzer")
 
+DAILY_ANALYSIS_COLUMNS = (
+    "item_id", "analysis_date", "current_price",
+    "ma_7day", "ma_30day", "ma_90day",
+    "momentum_7day", "momentum_30day",
+    "volatility", "trend_direction",
+    "momentum_score", "opportunity_score",
+    "price_stability",
+)
+
 
 class LongTermTrendAnalyzer:
-    # Items fetched per bulk history query; bounds memory usage.
     ITEM_CHUNK_SIZE = 500
 
     def __init__(self, db_session):
@@ -37,13 +50,9 @@ class LongTermTrendAnalyzer:
         self.analysis_date = utcnow_naive()
         self.min_data_points = 7
         self.min_age_days = 60
-        self.max_lookback_days = 365 * 3  # 3 years
+        self.max_lookback_days = 365 * 3
 
     def get_first_seen_bulk(self):
-        """Get first price timestamp for every item.
-
-        Reads from Parquet archive when available, otherwise Supabase.
-        """
         archive_dir = Path(__file__).parent.parent.parent / "archive" / "price-archive"
         if archive_dir.exists():
             import duckdb
@@ -76,10 +85,6 @@ class LongTermTrendAnalyzer:
         return {item_id: first_seen for item_id, first_seen in rows}
 
     def get_price_history_bulk(self, item_ids):
-        """Fetch daily price history for a chunk of items.
-
-        Reads from Parquet archive when available, otherwise Supabase.
-        """
         if not item_ids:
             return {}
 
@@ -135,53 +140,36 @@ class LongTermTrendAnalyzer:
         }
 
     def calculate_moving_average(self, prices, days):
-        """Calculate moving average for last N days."""
         if not prices or len(prices) < days:
             return None
-
         recent_prices = [p[1] for p in prices[-days:]]
         return mean(recent_prices)
 
     def calculate_momentum(self, prices, days):
-        """Calculate % change over N days."""
         if not prices or len(prices) < days:
             return None
-
         old_price = prices[-days][1]
         new_price = prices[-1][1]
-
         if old_price == 0:
             return 0
-
         return ((new_price - old_price) / old_price) * 100
 
     def calculate_volatility(self, prices):
-        """Calculate price volatility as a percentage of the mean price.
-
-        Using the coefficient of variation keeps the value comparable across
-        cheap and expensive items and keeps price_stability (100 - volatility)
-        meaningful.
-        """
         if not prices or len(prices) < 2:
             return 0
-
         price_list = [p[1] for p in prices]
         mean_price = mean(price_list)
         if mean_price == 0:
             return 0
-
         try:
             volatility_pct = (stdev(price_list) / mean_price) * 100
         except Exception:
             return 0
-
         return min(volatility_pct, 100.0)
 
     def determine_trend(self, ma_7, ma_30):
-        """Determine trend direction based on moving averages."""
         if ma_7 is None or ma_30 is None:
             return "neutral"
-
         if ma_7 > ma_30 * 1.02:
             return "bullish"
         elif ma_7 < ma_30 * 0.98:
@@ -189,59 +177,39 @@ class LongTermTrendAnalyzer:
         return "neutral"
 
     def calculate_momentum_score(self, momentum_7, momentum_30):
-        """Score momentum strength (-100 to +100)."""
         if momentum_7 is None or momentum_30 is None:
             return 0
-
         avg_momentum = (momentum_7 + momentum_30) / 2
         return max(-100, min(100, avg_momentum))
 
     def calculate_opportunity_score(self, current_price, ma_30, momentum_score, volatility):
-        """Score investment opportunity (-100 to +100)."""
         if ma_30 is None:
             return 0
-
-        # Price deviation from 30-day MA
         deviation = ((current_price - ma_30) / ma_30) * 100
-
-        # Combine momentum and deviation
         opportunity = (momentum_score * 0.6) + (deviation * 0.4)
-
-        # Adjust for volatility (higher volatility = more risk)
         if volatility > 0:
             opportunity = opportunity / (1 + (volatility / 100))
-
         return max(-100, min(100, opportunity))
 
     def analyze_item(self, item_id, prices, age_days):
-        """Analyze a single item using its (pre-fetched) daily history."""
         try:
             if age_days < self.min_age_days:
                 return None
-
-            # Need at least minimum data points
             if not prices or len(prices) < self.min_data_points:
                 return None
 
             current_price = prices[-1][1]
-
-            # Calculate moving averages
             ma_7 = self.calculate_moving_average(prices, 7)
             ma_30 = self.calculate_moving_average(prices, 30)
             ma_90 = self.calculate_moving_average(prices, 90)
-
-            # Calculate momentum
             momentum_7 = self.calculate_momentum(prices, 7)
             momentum_30 = self.calculate_momentum(prices, 30)
             volatility = self.calculate_volatility(prices)
-
-            # Determine trend
             trend = self.determine_trend(ma_7, ma_30)
             momentum_score = self.calculate_momentum_score(momentum_7, momentum_30)
             opportunity_score = self.calculate_opportunity_score(
                 current_price, ma_30, momentum_score, volatility
             )
-
             price_stability = max(0, 100 - volatility)
 
             return {
@@ -258,22 +226,46 @@ class LongTermTrendAnalyzer:
                 'momentum_score': momentum_score,
                 'opportunity_score': opportunity_score,
                 'price_stability': price_stability,
-                'data_points': len(prices),
-                'age_days': age_days
             }
 
         except Exception as e:
             logger.warning(f"Error analyzing item {item_id}: {e}")
             return None
 
+    def _daily_analysis_upsert(self, rows):
+        if not rows:
+            return
+
+        bind = self.db.get_bind()
+        dialect_name = bind.dialect.name if bind is not None else "sqlite"
+        insert_stmt = sqlite_insert if dialect_name == "sqlite" else pg_insert
+
+        from database import DailyAnalysis
+        table = DailyAnalysis.__table__
+
+        CHUNK_SIZE = 500
+        for i in range(0, len(rows), CHUNK_SIZE):
+            chunk = rows[i:i + CHUNK_SIZE]
+            filtered = [{k: v for k, v in row.items() if k in DAILY_ANALYSIS_COLUMNS} for row in chunk]
+            stmt = insert_stmt(table).values(filtered)
+            update_columns = {
+                c.name: getattr(stmt.excluded, c.name)
+                for c in table.columns
+                if c.name in DAILY_ANALYSIS_COLUMNS
+                and c.name not in {"item_id", "analysis_date"}
+            }
+            stmt = stmt.on_conflict_do_update(
+                index_elements=["item_id", "analysis_date"],
+                set_=update_columns,
+            )
+            self.db.execute(stmt)
+
     def run_analysis(self):
-        """Run analysis for all eligible items."""
         logger.info("=" * 60)
         logger.info("LONG-TERM TREND ANALYSIS (Full Item History)")
         logger.info(f"Date: {self.analysis_date}")
         logger.info("=" * 60)
 
-        # Get all items
         all_items = self.db.query(Item.id).all()
         total_items = len(all_items)
         logger.info(f"Total items in database: {total_items}")
@@ -293,7 +285,7 @@ class LongTermTrendAnalyzer:
         logger.info(f"Eligible items (>= {self.min_age_days} days old): {len(eligible)}")
 
         analyzed = 0
-        indicator_rows = []
+        results = []
 
         for start in range(0, len(eligible), self.ITEM_CHUNK_SIZE):
             chunk = eligible[start:start + self.ITEM_CHUNK_SIZE]
@@ -303,16 +295,7 @@ class LongTermTrendAnalyzer:
                 result = self.analyze_item(item_id, prices_by_item.get(item_id, []), age_days)
 
                 if result:
-                    indicator_rows.append({
-                        'item_id': item_id,
-                        'timestamp': self.analysis_date,
-                        'sma_7': result['ma_7day'],
-                        'sma_30': result['ma_30day'],
-                        'volatility': result['volatility'],
-                        'trend_score': result['momentum_score'],
-                        'trend_direction': result['trend_direction'],
-                        'confidence': 'high' if result['data_points'] > 100 else 'medium'
-                    })
+                    results.append(result)
                     analyzed += 1
 
                     if analyzed % 500 == 0:
@@ -320,20 +303,19 @@ class LongTermTrendAnalyzer:
                 else:
                     skipped += 1
 
-        if indicator_rows:
-            self.db.bulk_insert_mappings(TrendIndicator, indicator_rows)
+        self._daily_analysis_upsert(results)
         self.db.commit()
 
         logger.info(f"\n✅ Analysis complete:")
         logger.info(f"  Analyzed: {analyzed} items")
         logger.info(f"  Skipped: {skipped} items (too new or insufficient data)")
-        logger.info(f"  Records created: {len(indicator_rows)}")
+        logger.info(f"  Records upserted: {len(results)}")
 
         return {
             'status': 'success',
             'analyzed': analyzed,
             'skipped': skipped,
-            'records_created': len(indicator_rows)
+            'records_upserted': len(results)
         }
 
 

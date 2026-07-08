@@ -54,7 +54,6 @@ class Item(Base):
     is_backfilled = Column(Integer, default=0)  # boolean: has CSMarketAPI historical series
     
     price_histories = relationship("PriceHistory", back_populates="item", cascade="all, delete-orphan")
-    trend_indicators = relationship("TrendIndicator", back_populates="item", cascade="all, delete-orphan")
     daily_analyses = relationship("DailyAnalysis", back_populates="item", cascade="all, delete-orphan")
     forecasts = relationship("ItemForecast", back_populates="item", cascade="all, delete-orphan")
     
@@ -94,13 +93,14 @@ class ChartPoint(Base):
     item = relationship("Item")
 
     __table_args__ = (
-        Index('idx_chart_point_item_day', 'item_id', 'day'),
     )
 
 
 # Sources whose presence marks an item as "backfilled": it has a real
-# historical price series (from CSMarketAPI), not just a live snapshot.
-BACKFILLED_SOURCES = ("market_csgo", "steam_historical")
+# historical price series (from CSMarketAPI STEAMCOMMUNITY data), not just a
+# live snapshot. Kept for backward compat; the canonical filter is now
+# Item.is_backfilled == True.
+BACKFILLED_SOURCES = ("steam_daily",)
 
 
 def backfilled_item_clause():
@@ -147,29 +147,6 @@ class Event(Base):
     __table_args__ = (
         Index('idx_event_type_timestamp', 'type', 'timestamp'),
     )
-
-class TrendIndicator(Base):
-    """Trend indicators model - computed analytics"""
-    __tablename__ = "trend_indicators"
-    
-    id = Column(Integer, primary_key=True)
-    item_id = Column(Integer, ForeignKey("items.id"), nullable=False)
-    timestamp = Column(DateTime, nullable=False)
-    sma_7 = Column(Float, nullable=True)  # 7-day simple moving average
-    sma_30 = Column(Float, nullable=True)  # 30-day simple moving average
-    volatility = Column(Float, nullable=True)  # Volatility measure
-    trend_score = Column(Float, nullable=True)  # -1 (bearish) to 1 (bullish)
-    trend_direction = Column(String(20), nullable=True)  # bullish, neutral, bearish
-    confidence = Column(String(20), nullable=True)  # low, medium, high
-    created_at = Column(DateTime, default=utcnow_naive)
-    
-    item = relationship("Item", back_populates="trend_indicators")
-    
-    __table_args__ = (
-        Index('idx_trend_item_timestamp', 'item_id', 'timestamp'),
-        UniqueConstraint('item_id', 'timestamp', name='uq_trend_indicator_item_timestamp'),
-    )
-
 
 class DailyAnalysis(Base):
     """Daily analysis model - per-item daily computed signals."""
