@@ -17,7 +17,7 @@ defaults:
 
 permissions:
   issues: write
-  contents: read
+  contents: write # push daily price dumps to the data-archive branch
 
 jobs:
   collect-data:
@@ -51,6 +51,32 @@ jobs:
         run: |
           echo "🚀 Starting aggregator market update..."
           python scripts/run_task.py aggregate 2>&1 | tee aggregator.log
+
+      # Snapshot-tier items keep only their latest row in Supabase, so each
+      # day's collection is dumped to the data-archive branch as the durable
+      # record of their price history.
+      - name: Checkout data-archive branch
+        uses: actions/checkout@v4
+        with:
+          ref: data-archive
+          path: archive
+
+      - name: Export daily price snapshot
+        working-directory: ./backend
+        env:
+          DATABASE_URL: ${{ secrets.SUPABASE_DATABASE_URL }}
+          ENVIRONMENT: production
+          DEBUG: false
+        run: python scripts/export_daily_snapshot.py --out-dir ../archive
+
+      - name: Commit snapshot to data-archive
+        working-directory: ./archive
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add price-archive
+          git commit -m "archive: prices $(date -u +%F)" || echo "nothing to commit"
+          git push
 
       - name: Notify on failure
         if: failure() && github.event_name == 'schedule'
