@@ -9,7 +9,7 @@ from collections import Counter, defaultdict
 from typing import Any, Optional, List, Dict, Callable
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.cron import CronTrigger
-from sqlalchemy import func, text
+from sqlalchemy import bindparam, func, text
 from sqlalchemy.orm import scoped_session
 
 logger = logging.getLogger(__name__)
@@ -283,6 +283,33 @@ class DataPipeline:
 
             # 4. Save prices
             if price_records:
+                # Two-tier storage: items with an imported historical series
+                # (market_csgo / steam_historical) accumulate daily history.
+                # Items without one keep only their latest snapshot — prior
+                # live rows are replaced each run, since CSMarketAPI provides
+                # the full daily series when an item is eventually promoted
+                # by a monthly backfill run.
+                hist_item_ids = {
+                    row[0]
+                    for row in self.db_session.execute(text(
+                        "SELECT DISTINCT item_id FROM price_history "
+                        "WHERE source IN ('market_csgo', 'steam_historical')"
+                    ))
+                }
+                snapshot_ids = list({
+                    r.item_id for r in price_records
+                    if r.item_id not in hist_item_ids
+                })
+                for i in range(0, len(snapshot_ids), 1000):
+                    self.db_session.execute(
+                        text(
+                            "DELETE FROM price_history "
+                            "WHERE item_id IN :ids "
+                            "AND source NOT IN ('market_csgo', 'steam_historical')"
+                        ).bindparams(bindparam("ids", expanding=True)),
+                        {"ids": snapshot_ids[i:i + 1000]},
+                    )
+
                 rows_as_dicts = [
                     {
                         "item_id": r.item_id,

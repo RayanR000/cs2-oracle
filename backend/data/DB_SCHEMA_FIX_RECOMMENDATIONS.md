@@ -92,6 +92,30 @@ DB. This respects the "don't downsample, don't delete years" decisions — nothi
 destroyed; it just doesn't all live in the 500 MB tier. It also dissolves the Aiven
 performance concerns, since heavy scans never touch the hosted DB.
 
+## Two-tier price collection (applied 2026-07-08)
+
+Only 5,525 of 19,321 items have CSMarketAPI historical data; 12,328 more had
+only live aggregator snapshots (247K rows) that can't support analysis.
+
+- Their live rows were **archived** to `runtime/archived_live_prices_2026-07-08.db`
+  (35.5 MB, includes item names/slugs for re-import) and deleted from Supabase.
+- The aggregator collector is now **two-tier**: items with a historical series
+  (`market_csgo`/`steam_historical`) accumulate daily history; all other items
+  keep a single latest-snapshot row, replaced each run. Promotion is automatic —
+  once a monthly CSMarketAPI run imports history for an item, the next
+  collection starts accumulating for it, and CSMarketAPI backfills the
+  un-collected gap.
+- Also applied the same day: collection schedule cut from 4×/day to once at
+  23:00 UTC (CSGOTrader refreshes ~21:40 UTC; the extra runs were 100%
+  duplicates), and 117,990 existing intraday duplicates deleted.
+- Daily write volume: ~71K rows → ~5.5K history rows + ~12K replaced snapshots.
+
+**Open question**: local CSMarketAPI data covers only ~5.5K distinct items so
+far. If that's CSMarketAPI's catalog ceiling (check `failed_items` and the next
+monthly run) rather than backfill progress, most snapshot-tier items will never
+be promoted — revisit whether the app should chart aggregator history for them
+(the archive preserves what was collected through 2026-07-08).
+
 ## On the hosting options
 
 - **Supabase Pro ($25/mo)**: right call only if zero engineering time is worth
