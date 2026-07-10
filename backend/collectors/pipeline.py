@@ -775,7 +775,7 @@ class DataPipeline:
                 WHERE item_slug IN ({placeholders})
                   AND day >= DATE ?
                 ORDER BY item_slug, day
-            """, [*slug_list, cutoff.isoformat()]).fetchall()
+            """, params=[*slug_list, cutoff.isoformat()]).fetchall()
 
             histories = defaultdict(list)
             for slug, day, price in rows:

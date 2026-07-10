@@ -65,7 +65,7 @@ class EventAnalyzer:
                       AND day >= DATE ?
                       AND day <= DATE ?
                     ORDER BY item_slug, day
-                """, [*slug_set, start_date.strftime("%Y-%m-%d"), end_date.strftime("%Y-%m-%d")]).fetchall()
+                """, params=[*slug_set, start_date.strftime("%Y-%m-%d"), end_date.strftime("%Y-%m-%d")]).fetchall()
 
                 for slug, day, price in rows:
                     item_id = slug_to_int.get(slug)

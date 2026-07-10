@@ -82,7 +82,7 @@ def _load_from_parquet(item_ids, days=90):
             WHERE item_slug IN ({placeholders})
               AND day >= DATE ?
             ORDER BY item_slug, day
-        """, [*slug_list, cutoff.isoformat()]).fetchall()
+        """, params=[*slug_list, cutoff.isoformat()]).fetchall()
 
         raw = defaultdict(list)
         for slug, day, price in rows:

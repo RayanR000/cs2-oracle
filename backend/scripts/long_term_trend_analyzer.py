@@ -107,7 +107,7 @@ class LongTermTrendAnalyzer:
                     WHERE item_slug IN ({placeholders})
                       AND day >= DATE ?
                     ORDER BY item_slug, day
-                """, [*slug_set, lookback_date.strftime("%Y-%m-%d")]).fetchall()
+                """, params=[*slug_set, lookback_date.strftime("%Y-%m-%d")]).fetchall()
 
                 daily = defaultdict(list)
                 for slug, day, price in rows:
