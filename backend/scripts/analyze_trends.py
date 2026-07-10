@@ -80,7 +80,7 @@ def _load_from_parquet(item_ids, days=90):
             SELECT item_slug, day, mean_price AS price
             FROM read_parquet('{ARCHIVE_DIR}/*.parquet')
             WHERE item_slug IN ({placeholders})
-              AND day >= DATE ?
+              AND day >= ?
             ORDER BY item_slug, day
         """, params=[*slug_list, cutoff.isoformat()]).fetchall()
 

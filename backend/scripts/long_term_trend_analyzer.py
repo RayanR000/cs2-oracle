@@ -105,7 +105,7 @@ class LongTermTrendAnalyzer:
                     SELECT item_slug, day, mean_price AS price
                     FROM read_parquet('{archive_dir}/*.parquet')
                     WHERE item_slug IN ({placeholders})
-                      AND day >= DATE ?
+                      AND day >= ?
                     ORDER BY item_slug, day
                 """, params=[*slug_set, lookback_date.strftime("%Y-%m-%d")]).fetchall()
 

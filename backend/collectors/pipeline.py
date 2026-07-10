@@ -773,7 +773,7 @@ class DataPipeline:
                 SELECT item_slug, day, mean_price AS price
                 FROM read_parquet('../price-archive/prices-*.parquet')
                 WHERE item_slug IN ({placeholders})
-                  AND day >= DATE ?
+                  AND day >= ?
                 ORDER BY item_slug, day
             """, params=[*slug_list, cutoff.isoformat()]).fetchall()
 

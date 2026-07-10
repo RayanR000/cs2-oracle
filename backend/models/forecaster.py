@@ -60,9 +60,9 @@ class ItemForecaster:
                 rows = con.sql("""
                     SELECT item_slug, day, mean_price AS price, volume
                     FROM read_parquet('{}/*.parquet')
-                    WHERE day >= DATE ?
+                    WHERE day >= ?
                     ORDER BY item_slug, day
-                """.format(archive_dir), [cutoff]).fetchall()
+                """.format(archive_dir), params=[cutoff]).fetchall()
                 df = pd.DataFrame(rows, columns=["item_id", "timestamp", "price", "volume"])
                 df["timestamp"] = pd.to_datetime(df["timestamp"])
                 df["date"] = df["timestamp"].dt.date
