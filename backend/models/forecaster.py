@@ -382,62 +382,63 @@ class ItemForecaster:
             )
         return pruned
 
-    def _grid_search_params(self, X_train, y_train, X_val, y_val) -> Dict[str, Any]:
-        """Simple grid search over key hyperparameters for quantile regression.
+    def _optuna_search_params(self, X_train, y_train, X_val, y_val) -> Dict[str, Any]:
+        """Bayesian hyperparameter search via Optuna.
 
-        Searches over num_leaves, learning_rate, lambda_l1, lambda_l2 using
-        validation quantile loss to pick the best combination.
+        Searches over 6 key params using TPE pruning, with early
+        termination of unpromising trials (median pruner).
         """
-        grid = {
-            "num_leaves": [15, 31, 63],
-            "learning_rate": [0.01, 0.03, 0.05],
-            "lambda_l1": [0.0, 0.5, 1.0],
-            "lambda_l2": [0.0, 0.5, 1.0],
+        import optuna
+
+        n_trials = 30
+
+        def objective(trial):
+            params = {
+                "objective": "quantile",
+                "alpha": 0.5,
+                "metric": "quantile",
+                "boosting_type": "gbdt",
+                "verbosity": -1,
+                "n_jobs": -1,
+                "random_state": 42,
+                "num_leaves": trial.suggest_int("num_leaves", 15, 63, step=8),
+                "learning_rate": trial.suggest_float("learning_rate", 0.005, 0.08, log=True),
+                "lambda_l1": trial.suggest_float("lambda_l1", 0.0, 2.0, step=0.5),
+                "lambda_l2": trial.suggest_float("lambda_l2", 0.0, 2.0, step=0.5),
+                "max_depth": trial.suggest_int("max_depth", 3, 8),
+                "min_data_in_leaf": trial.suggest_int("min_data_in_leaf", 5, 30, step=5),
+                "min_gain_to_split": 0.1,
+                "feature_fraction": 0.7,
+                "bagging_fraction": 0.7,
+                "bagging_freq": 5,
+            }
+            dtrain = lgb.Dataset(X_train, y_train)
+            dval = lgb.Dataset(X_val, y_val, reference=dtrain)
+            model = lgb.train(
+                params, dtrain,
+                num_boost_round=200,
+                valid_sets=[dval],
+                callbacks=[lgb.early_stopping(20), lgb.log_evaluation(0)]
+            )
+            return model.best_score["valid_0"]["quantile"]
+
+        sampler = optuna.samplers.TPESampler(seed=42)
+        pruner = optuna.pruners.MedianPruner(n_startup_trials=5, n_warmup_steps=10)
+        study = optuna.create_study(direction="minimize", sampler=sampler, pruner=pruner)
+        study.optimize(objective, n_trials=n_trials, show_progress_bar=False)
+
+        best = study.best_trial
+        best_params = {
+            "num_leaves": best.params["num_leaves"],
+            "learning_rate": best.params["learning_rate"],
+            "lambda_l1": best.params["lambda_l1"],
+            "lambda_l2": best.params["lambda_l2"],
+            "max_depth": best.params["max_depth"],
+            "min_data_in_leaf": best.params["min_data_in_leaf"],
         }
 
-        best_params = None
-        best_loss = float("inf")
-
-        n_trials = 0
-        for nl in grid["num_leaves"]:
-            for lr in grid["learning_rate"]:
-                for l1 in grid["lambda_l1"]:
-                    for l2 in grid["lambda_l2"]:
-                        n_trials += 1
-                        params = {
-                            "objective": "quantile",
-                            "alpha": 0.5,
-                            "metric": "quantile",
-                            "boosting_type": "gbdt",
-                            "num_leaves": nl,
-                            "max_depth": 5,
-                            "min_data_in_leaf": 15,
-                            "min_gain_to_split": 0.1,
-                            "learning_rate": lr,
-                            "feature_fraction": 0.7,
-                            "bagging_fraction": 0.7,
-                            "bagging_freq": 5,
-                            "lambda_l1": l1,
-                            "lambda_l2": l2,
-                            "verbosity": -1,
-                            "random_state": 42,
-                            "n_jobs": -1,
-                        }
-                        dtrain = lgb.Dataset(X_train, y_train)
-                        dval = lgb.Dataset(X_val, y_val, reference=dtrain)
-                        model = lgb.train(
-                            params, dtrain,
-                            num_boost_round=200,
-                            valid_sets=[dval],
-                            callbacks=[lgb.early_stopping(20), lgb.log_evaluation(0)]
-                        )
-                        loss = model.best_score["valid_0"]["quantile"]
-                        if loss < best_loss:
-                            best_loss = loss
-                            best_params = params.copy()
-
         logger.info(
-            f"  Grid search ({n_trials} combos): best loss={best_loss:.6f} "
+            f"  Optuna search ({n_trials} trials): best loss={best.value:.6f} "
             f"params={best_params}"
         )
         return best_params
@@ -574,9 +575,9 @@ class ItemForecaster:
             X_val = val_set[self.feature_cols].fillna(feature_medians)
             y_val = val_set[f"target_return_{horizon}d"]
 
-            # Grid search for best hyperparameters
-            logger.info(f"  Grid searching hyperparameters for {horizon}d...")
-            best_params = self._grid_search_params(X_train, y_train, X_val, y_val)
+            # Bayesian hyperparameter search via Optuna
+            logger.info(f"  Searching hyperparameters for {horizon}d (Optuna)...")
+            best_params = self._optuna_search_params(X_train, y_train, X_val, y_val)
 
             for q in self.QUANTILES:
                 logger.info(f"Training {horizon}d p{int(q*100)} ensemble ({self.N_ENSEMBLES} members)...")
@@ -586,8 +587,6 @@ class ItemForecaster:
                     "alpha": q,
                     "metric": "quantile",
                     "boosting_type": "gbdt",
-                    "max_depth": 5,
-                    "min_data_in_leaf": 15,
                     "min_gain_to_split": 0.1,
                     "feature_fraction": 0.7,
                     "bagging_fraction": 0.7,
@@ -595,9 +594,10 @@ class ItemForecaster:
                     "verbosity": -1,
                     "n_jobs": -1,
                 }
-                # Merge grid search results into base params
+                # Merge Optuna results into base params
                 if best_params:
-                    for k in ("num_leaves", "learning_rate", "lambda_l1", "lambda_l2"):
+                    for k in ("num_leaves", "learning_rate", "lambda_l1", "lambda_l2",
+                              "max_depth", "min_data_in_leaf"):
                         if k in best_params:
                             base_params[k] = best_params[k]
                 else:
@@ -605,6 +605,8 @@ class ItemForecaster:
                     base_params["learning_rate"] = 0.03
                     base_params["lambda_l1"] = 0.5
                     base_params["lambda_l2"] = 0.5
+                    base_params["max_depth"] = 5
+                    base_params["min_data_in_leaf"] = 15
 
                 ensemble_models = []
                 for ei in range(self.N_ENSEMBLES):
