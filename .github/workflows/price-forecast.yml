@@ -109,10 +109,22 @@ jobs:
           Trigger: ${{ github.event_name }}" \
             --label "automation" 2>/dev/null || true
 
-      - name: Upload forecast logs
+      - name: Run accuracy backtesting
+        working-directory: ./backend
+        env:
+          DATABASE_URL: ${{ secrets.SUPABASE_DATABASE_URL }}
+          ENVIRONMENT: production
+          DEBUG: false
+        run: |
+          echo "📊 Running forecast accuracy backtest..."
+          python scripts/backtest_accuracy.py --type forecast 2>&1 | tee -a backtest.log
+
+      - name: Upload logs
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: forecast-logs-${{ github.run_id }}
-          path: backend/forecast.log
+          path: |
+            backend/forecast.log
+            backend/backtest.log
           retention-days: 30

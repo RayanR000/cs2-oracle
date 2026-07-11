@@ -300,6 +300,47 @@ export async function logout() {
   return response.json();
 }
 
+// Accuracy / Metrics API
+export interface AccuracyRecord {
+  id: number;
+  prediction_type: string;
+  evaluation_date: string;
+  horizon_days: number | null;
+  model_version: string | null;
+  evaluation_window_days: number | null;
+  sample_count: number;
+  metrics: Record<string, unknown>;
+  created_at: string;
+}
+
+export async function getAccuracy(
+  predictionType?: string,
+  limit = 50
+): Promise<AccuracyRecord[]> {
+  const url = new URL(`${API_URL}/accuracy/`);
+  if (predictionType) url.searchParams.append('prediction_type', predictionType);
+  url.searchParams.append('limit', limit.toString());
+  const response = await fetch(url.toString());
+  if (!response.ok) throw new Error('Failed to fetch accuracy');
+  return response.json();
+}
+
+export async function getLatestAccuracy(predictionType?: string) {
+  const url = new URL(`${API_URL}/accuracy/latest`);
+  if (predictionType) url.searchParams.append('prediction_type', predictionType);
+  const response = await fetch(url.toString());
+  if (!response.ok) throw new Error('Failed to fetch latest accuracy');
+  return response.json();
+}
+
+export async function getAccuracySummary(predictionType?: string) {
+  const url = new URL(`${API_URL}/accuracy/summary`);
+  if (predictionType) url.searchParams.append('prediction_type', predictionType);
+  const response = await fetch(url.toString());
+  if (!response.ok) throw new Error('Failed to fetch accuracy summary');
+  return response.json();
+}
+
 // Portfolio API
 export async function getInventory() {
   const response = await fetch(`${API_URL}/portfolio/inventory`, {

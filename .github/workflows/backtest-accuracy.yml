@@ -1,10 +1,23 @@
-name: Daily Trend Analysis
+name: Backtest Accuracy
 
 on:
-  schedule:
-    # Every day at 3:00 AM UTC (11:00 PM EDT previous day)
-    - cron: '0 3 * * *'
-  workflow_dispatch: # Allow manual trigger
+  # Chain off forecast generation — the backtest needs mature forecasts
+  # (forecasts made N days ago where N >= horizon) to evaluate.
+  workflow_run:
+    workflows: ["Price Forecast"]
+    types: [completed]
+  workflow_dispatch:
+    inputs:
+      type:
+        description: 'Backtest type (leave empty for all)'
+        required: false
+        default: ''
+        type: choice
+        options:
+          - ''
+          - forecast
+          - trend_direction
+          - opportunity
 
 defaults:
   run:
@@ -12,15 +25,12 @@ defaults:
 
 permissions:
   issues: write
-  contents: read
 
 jobs:
-  analyze:
+  backtest:
+    if: github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success'
     runs-on: ubuntu-latest
     timeout-minutes: 60
-    concurrency:
-      group: ${{ github.workflow }}-${{ github.ref }}
-      cancel-in-progress: true
 
     steps:
       - name: Checkout code
@@ -37,19 +47,23 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
-      - name: Run trend analysis
+      - name: Run backtesting
         working-directory: ./backend
         env:
           DATABASE_URL: ${{ secrets.SUPABASE_DATABASE_URL }}
           ENVIRONMENT: production
           DEBUG: false
         run: |
-          set -o pipefail
-          echo "📊 Starting daily trend analysis..."
-          python scripts/run_task.py trends 2>&1 | tee analysis.log
+          if [ -n "${{ inputs.type }}" ]; then
+            echo "Running backtest for: ${{ inputs.type }}"
+            python scripts/backtest_accuracy.py --type ${{ inputs.type }} 2>&1 | tee backtest.log
+          else
+            echo "Running full backtest (all types)..."
+            python scripts/backtest_accuracy.py 2>&1 | tee backtest.log
+          fi
 
       - name: Notify on failure
-        if: failure() && github.event_name == 'schedule'
+        if: failure() && github.event_name == 'workflow_run'
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
@@ -62,24 +76,10 @@ jobs:
           Trigger: ${{ github.event_name }}" \
             --label "automation" 2>/dev/null || true
 
-      - name: Run trend & opportunity backtesting
-        working-directory: ./backend
-        env:
-          DATABASE_URL: ${{ secrets.SUPABASE_DATABASE_URL }}
-          ENVIRONMENT: production
-          DEBUG: false
-        run: |
-          echo "📊 Running trend direction backtest..."
-          python scripts/backtest_accuracy.py --type trend_direction 2>&1 | tee -a backtest.log
-          echo "📊 Running opportunity backtest..."
-          python scripts/backtest_accuracy.py --type opportunity 2>&1 | tee -a backtest.log
-
-      - name: Upload analysis logs
+      - name: Upload backtest logs
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: analysis-logs-${{ github.run_id }}
-          path: |
-            backend/analysis.log
-            backend/backtest.log
+          name: backtest-logs-${{ github.run_id }}
+          path: backend/backtest.log
           retention-days: 30

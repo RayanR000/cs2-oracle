@@ -263,6 +263,40 @@ class EventPattern(Base):
     )
 
 
+class PredictionAccuracy(Base):
+    """Accuracy tracking for all prediction/analysis types.
+
+    Stores aggregated accuracy metrics computed by the backtesting system.
+    prediction_type: forecast | trend_direction | opportunity | event_impact
+    metrics JSON schema varies by type:
+      - forecast:      {mae, rmse, mape, directional_accuracy, interval_coverage,
+                        confidence_accuracy_low, confidence_accuracy_medium,
+                        confidence_accuracy_high, sample_count, horizon_days}
+      - trend_direction: {overall_accuracy, confusion_matrix, sample_count,
+                         avg_subsequent_return, avg_subsequent_return_days}
+      - opportunity:     {undervalued_precision, undervalued_recall, overheated_precision,
+                         overheated_recall, momentum_precision, avg_return, sample_count}
+      - event_impact:    {mae, rmse, directional_accuracy, sample_count}
+    """
+    __tablename__ = "prediction_accuracy"
+
+    id = Column(Integer, primary_key=True)
+    prediction_type = Column(String(50), nullable=False, index=True)
+    evaluation_date = Column(Date, nullable=False, index=True)
+    horizon_days = Column(Integer, nullable=True)
+    model_version = Column(String(50), nullable=True)
+    evaluation_window_days = Column(Integer, nullable=True)
+    sample_count = Column(Integer, nullable=False, default=0)
+    metrics = Column(JSON, nullable=False)
+    created_at = Column(DateTime, default=utcnow_naive)
+
+    __table_args__ = (
+        Index('idx_accuracy_type_date', 'prediction_type', 'evaluation_date'),
+        UniqueConstraint('prediction_type', 'evaluation_date', 'horizon_days', 'model_version',
+                         name='uq_accuracy_type_date_horizon_model'),
+    )
+
+
 class EventCorrelation(Base):
     """Event correlation model - causal analysis with statistical rigor"""
     __tablename__ = "event_correlations"

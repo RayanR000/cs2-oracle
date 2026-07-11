@@ -405,6 +405,7 @@ export default function Home() {
             <div className="flex gap-8">
               <Link href="/market" className="text-xs text-tertiary hover:text-primary transition-colors">Market</Link>
               <Link href="/portfolio" className="text-xs text-tertiary hover:text-primary transition-colors">Portfolio</Link>
+              <Link href="/accuracy" className="text-xs text-tertiary hover:text-primary transition-colors">Accuracy</Link>
             </div>
           </div>
           <div className="mt-8 pt-6 border-t border-border/50">

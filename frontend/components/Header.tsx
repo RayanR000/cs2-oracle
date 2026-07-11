@@ -30,6 +30,7 @@ export default function Header() {
           <nav className="hidden md:flex gap-10">
             <NavLink href="/market" label="MARKET" />
             <NavLink href="/portfolio" label="PORTFOLIO" />
+            <NavLink href="/accuracy" label="ACCURACY" />
           </nav>
 
           <div className="flex items-center gap-5">
