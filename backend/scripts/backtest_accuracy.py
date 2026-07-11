@@ -512,7 +512,7 @@ def _load_parquet_items(con):
                MIN(day) AS first_day,
                MAX(day) AS last_day,
                COUNT(*) AS row_count
-        FROM read_parquet('{}/*.parquet')
+        FROM read_parquet('{}/prices-*.parquet')
         GROUP BY item_slug
         HAVING row_count >= 90
         ORDER BY row_count DESC
@@ -656,7 +656,7 @@ def backtest_historical(db, today=None):
                 # Load all prices for this item
                 rows = con.sql("""
                     SELECT day, mean_price
-                    FROM read_parquet('{}/*.parquet')
+                    FROM read_parquet('{}/prices-*.parquet')
                     WHERE item_slug = ?
                     ORDER BY day
                 """.format(ARCHIVE_DIR), params=[item_slug]).fetchall()

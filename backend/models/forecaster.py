@@ -59,7 +59,7 @@ class ItemForecaster:
             try:
                 rows = con.sql("""
                     SELECT item_slug, day, mean_price AS price, volume
-                    FROM read_parquet('{}/*.parquet')
+                    FROM read_parquet('{}/prices-*.parquet')
                     WHERE day >= ?
                     ORDER BY item_slug, day
                 """.format(archive_dir), params=[cutoff]).fetchall()

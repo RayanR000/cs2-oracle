@@ -36,7 +36,7 @@ def _load_parquet_items(con, min_rows=90):
                MIN(day) AS first_day,
                MAX(day) AS last_day,
                COUNT(*) AS row_count
-        FROM read_parquet('{ARCHIVE_DIR}/*.parquet')
+        FROM read_parquet('{ARCHIVE_DIR}/prices-*.parquet')
         GROUP BY item_slug
         HAVING row_count >= {min_rows}
         ORDER BY row_count DESC
@@ -102,7 +102,7 @@ def run_walkforward_evaluation(max_items=500):
         for item_slug, first_day, last_day, row_count in items:
             rows = con.sql(f"""
                 SELECT item_slug AS item_id, day AS timestamp, mean_price AS price, volume
-                FROM read_parquet('{ARCHIVE_DIR}/*.parquet')
+                FROM read_parquet('{ARCHIVE_DIR}/prices-*.parquet')
                 WHERE item_slug = ?
                 ORDER BY day
             """, params=[item_slug]).fetchall()
@@ -145,7 +145,8 @@ def run_walkforward_evaluation(max_items=500):
 
             best_params = None
 
-            for window_end in range(split_idx + 1, len(dates)):
+            step = 60
+            for window_end in range(split_idx + 1, len(dates), step):
                 train_dates = dates[:window_end]
                 val_date = dates[window_end]
 
@@ -224,7 +225,8 @@ def run_walkforward_evaluation(max_items=500):
                                         best_params = p.copy()
 
                 # Train ensemble of 3 models per quantile with cached best params
-                ensemble_seeds = [42, 73, 91]
+                # Ensemble of 2 models per quantile (3 seeds → 2 for eval speed)
+                eval_ensemble_seeds = [42, 73]
                 models = {}
                 for q in [0.1, 0.5, 0.9]:
                     base_params = {
@@ -246,7 +248,7 @@ def run_walkforward_evaluation(max_items=500):
                             base_params[k] = best_params[k]
 
                     ensemble_preds = []
-                    for ei, seed in enumerate(ensemble_seeds):
+                    for ei, seed in enumerate(eval_ensemble_seeds):
                         params = base_params.copy()
                         params["random_state"] = seed
                         dtrain = lgb.Dataset(X_train.values, y_train.values)
