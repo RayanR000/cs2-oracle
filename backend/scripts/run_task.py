@@ -93,6 +93,22 @@ def run_task(task_name):
             result = run_migrations("head")
             print(f"RESULT: {result}")
 
+        elif task_name == "backtest":
+            logger.info("="*60)
+            logger.info("TASK: Backtest Accuracy (All Types)")
+            logger.info("="*60)
+            from scripts.backtest_accuracy import run_backtest
+            result = run_backtest()
+            print(f"RESULT: {result}")
+
+        elif task_name == "backtest_historical":
+            logger.info("="*60)
+            logger.info("TASK: Historical Walk-Forward Backtest")
+            logger.info("="*60)
+            from scripts.backtest_accuracy import run_backtest
+            result = run_backtest(types=["historical"])
+            print(f"RESULT: {result}")
+
         else:
             logger.error(f"Unknown task: {task_name}")
             sys.exit(1)

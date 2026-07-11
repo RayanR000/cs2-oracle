@@ -58,11 +58,14 @@ function ForecastSection({ records }: { records: AccuracyRecord[] }) {
   return (
     <div className="mb-10">
       <div className="flex items-baseline justify-between mb-4">
-        <h3 className="text-sm font-semibold text-primary">
-          {latest.horizon_days}-Day Forecast{latest.model_version ? ` (${latest.model_version})` : ''}
-        </h3>
+        <div className="flex items-center gap-3">
+          <h3 className="text-sm font-semibold text-primary">
+            {latest.horizon_days}-Day Forecast
+          </h3>
+          <SourceBadge record={latest} />
+        </div>
         <span className="text-[10px] font-data text-muted">
-          {latest.sample_count} samples &middot; {latest.evaluation_date}
+          {latest.sample_count.toLocaleString()} samples &middot; {latest.evaluation_date}
         </span>
       </div>
       <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3">
@@ -83,6 +86,19 @@ function ForecastSection({ records }: { records: AccuracyRecord[] }) {
   );
 }
 
+function SourceBadge({ record }: { record: AccuracyRecord }) {
+  const isHistorical = record.model_version === 'historical_walkforward';
+  return (
+    <span className={`text-[9px] font-bold uppercase tracking-[0.15em] px-2 py-0.5 rounded-sm ${
+      isHistorical
+        ? 'bg-surface text-accent border border-accent/30'
+        : 'bg-background-tertiary text-tertiary'
+    }`}>
+      {isHistorical ? '13-YR WALKFORWARD' : 'LIVE'}
+    </span>
+  );
+}
+
 function TrendSection({ records }: { records: AccuracyRecord[] }) {
   const latest = getLatest(records);
   if (!latest) return null;
@@ -92,11 +108,14 @@ function TrendSection({ records }: { records: AccuracyRecord[] }) {
   return (
     <div className="mb-10">
       <div className="flex items-baseline justify-between mb-4">
-        <h3 className="text-sm font-semibold text-primary">
-          {latest.evaluation_window_days}-Day Trend Direction
-        </h3>
+        <div className="flex items-center gap-3">
+          <h3 className="text-sm font-semibold text-primary">
+            {latest.evaluation_window_days}-Day Trend Direction
+          </h3>
+          <SourceBadge record={latest} />
+        </div>
         <span className="text-[10px] font-data text-muted">
-          {latest.sample_count} samples &middot; {latest.evaluation_date}
+          {latest.sample_count.toLocaleString()} samples &middot; {latest.evaluation_date}
         </span>
       </div>
       <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 mb-4">
@@ -150,11 +169,14 @@ function OpportunitySection({ records }: { records: AccuracyRecord[] }) {
   return (
     <div className="mb-10">
       <div className="flex items-baseline justify-between mb-4">
-        <h3 className="text-sm font-semibold text-primary">
-          {latest.evaluation_window_days}-Day Opportunity Signals
-        </h3>
+        <div className="flex items-center gap-3">
+          <h3 className="text-sm font-semibold text-primary">
+            {latest.evaluation_window_days}-Day Opportunity Signals
+          </h3>
+          <SourceBadge record={latest} />
+        </div>
         <span className="text-[10px] font-data text-muted">
-          {latest.sample_count} samples &middot; {latest.evaluation_date}
+          {latest.sample_count.toLocaleString()} samples &middot; {latest.evaluation_date}
         </span>
       </div>
       <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 mb-4">
@@ -216,7 +238,11 @@ export default function AccuracyPage() {
         <div className="mb-10">
           <h1 className="text-2xl font-semibold tracking-tight text-primary">Prediction Accuracy</h1>
           <p className="text-sm text-secondary mt-1 max-w-lg">
-            How well each signal type performs against actual market outcomes. Updated daily.
+            How well each signal type performs against actual market outcomes.
+            <span className="block text-tertiary text-[11px] mt-1">
+              <span className="text-accent font-semibold">13-YR WALKFORWARD</span> = retroactively evaluated across 500 items &times; 13 years of parquet archive data.
+              <span className="text-tertiary ml-2">LIVE</span> = predictions made by the live system.
+            </span>
           </p>
         </div>
 
@@ -228,7 +254,7 @@ export default function AccuracyPage() {
           <div className="widget-block p-10 text-center">
             <p className="text-sm text-secondary">No accuracy data yet.</p>
             <p className="text-[11px] text-tertiary mt-2">
-              Run <code className="font-data text-accent">python scripts/backtest_accuracy.py</code> to generate the first metrics.
+              Run <code className="font-data text-accent">python scripts/backtest_accuracy.py</code> or <code className="font-data text-accent">python scripts/backtest_accuracy.py --type historical</code> to generate metrics.
             </p>
           </div>
         ) : (
@@ -253,12 +279,12 @@ export default function AccuracyPage() {
           })
         )}
 
-        {/* History chart placeholder for future */}
+        {/* Footer */}
         {data.length > 0 && (
           <div className="mt-12 border-t border-border pt-8">
             <p className="text-[10px] font-data text-muted">
-              Accuracy records are generated by the daily backtesting pipeline.
-              Metrics compare past predictions against actual close prices from chart_points and price_history.
+              <span className="font-semibold text-secondary">LIVE</span> metrics compare stored predictions against actual close prices.
+              <span className="ml-3 font-semibold text-secondary">13-YR WALKFORWARD</span> simulates MA-crossover and opportunity signals at every 7th day across 500 high-history items from the parquet archive (2013&ndash;2026), then checks outcomes at 7/14/30 day horizons. &mdash; Updated daily/weekly via the backtesting pipeline.
             </p>
           </div>
         )}

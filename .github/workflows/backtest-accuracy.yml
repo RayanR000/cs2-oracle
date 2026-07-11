@@ -1,11 +1,13 @@
 name: Backtest Accuracy
 
 on:
-  # Chain off forecast generation — the backtest needs mature forecasts
-  # (forecasts made N days ago where N >= horizon) to evaluate.
+  # Daily: evaluate live forecasts & recent trend/opportunity signals
   workflow_run:
     workflows: ["Price Forecast"]
     types: [completed]
+  # Weekly (Sunday): run full historical walk-forward through parquet archive
+  schedule:
+    - cron: '0 8 * * 0'
   workflow_dispatch:
     inputs:
       type:
@@ -18,6 +20,7 @@ on:
           - forecast
           - trend_direction
           - opportunity
+          - historical
 
 defaults:
   run:
@@ -47,20 +50,52 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
-      - name: Run backtesting
+      - name: Determine run mode
+        id: mode
+        run: |
+          if [ -n "${{ inputs.type }}" ]; then
+            echo "type=${{ inputs.type }}" >> $GITHUB_OUTPUT
+          elif [ "$(date +%u)" = "7" ]; then
+            # Sunday: include full historical walk-forward (computationally expensive)
+            echo "type=historical" >> $GITHUB_OUTPUT
+          else
+            echo "type=live" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Run live backtesting (forecast + trend + opportunity)
+        if: steps.mode.outputs.type == 'live' || steps.mode.outputs.type == 'full'
         working-directory: ./backend
         env:
           DATABASE_URL: ${{ secrets.SUPABASE_DATABASE_URL }}
           ENVIRONMENT: production
           DEBUG: false
         run: |
-          if [ -n "${{ inputs.type }}" ]; then
-            echo "Running backtest for: ${{ inputs.type }}"
-            python scripts/backtest_accuracy.py --type ${{ inputs.type }} 2>&1 | tee backtest.log
-          else
-            echo "Running full backtest (all types)..."
-            python scripts/backtest_accuracy.py 2>&1 | tee backtest.log
-          fi
+          echo "Running live backtest (forecast, trend_direction, opportunity)..."
+          python scripts/backtest_accuracy.py --type forecast 2>&1 | tee backtest.log
+          python scripts/backtest_accuracy.py --type trend_direction 2>&1 | tee -a backtest.log
+          python scripts/backtest_accuracy.py --type opportunity 2>&1 | tee -a backtest.log
+
+      - name: Run historical walk-forward backtest (weekly)
+        if: steps.mode.outputs.type == 'historical'
+        working-directory: ./backend
+        env:
+          DATABASE_URL: ${{ secrets.SUPABASE_DATABASE_URL }}
+          ENVIRONMENT: production
+          DEBUG: false
+        run: |
+          echo "Running historical walk-forward backtest..."
+          python scripts/backtest_accuracy.py --type historical 2>&1 | tee backtest.log
+
+      - name: Run single-type backtest (manual dispatch)
+        if: steps.mode.outputs.type != 'live' && steps.mode.outputs.type != 'historical'
+        working-directory: ./backend
+        env:
+          DATABASE_URL: ${{ secrets.SUPABASE_DATABASE_URL }}
+          ENVIRONMENT: production
+          DEBUG: false
+        run: |
+          echo "Running backtest for: ${{ steps.mode.outputs.type }}"
+          python scripts/backtest_accuracy.py --type ${{ steps.mode.outputs.type }} 2>&1 | tee backtest.log
 
       - name: Notify on failure
         if: failure() && github.event_name == 'workflow_run'

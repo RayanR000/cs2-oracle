@@ -4,15 +4,16 @@ Backtesting system for all prediction and analysis types.
 Computes accuracy metrics by comparing past predictions against actual outcomes.
 
 Analysis types:
-  - forecast:         ML price forecasts (7d / 30d horizons)
+  - forecast:         ML price forecasts (7d / 30d horizons) from live DB
   - trend_direction:  Trend direction signals from daily_analysis
   - opportunity:      Opportunity signals from daily_analysis
+  - historical:       Retroactive walk-forward evaluation of trend & opportunity
+                      signals across 13 years of parquet archive data (2013-2026)
 
 Usage:
     python scripts/backtest_accuracy.py
     python scripts/backtest_accuracy.py --type forecast
-    python scripts/backtest_accuracy.py --type trend_direction
-    python scripts/backtest_accuracy.py --type opportunity
+    python scripts/backtest_accuracy.py --type historical
 """
 
 import sys
@@ -509,13 +510,307 @@ def backtest_opportunities(db, today=None):
 
 
 # ---------------------------------------------------------------------------
+# 4. Historical walk-forward backtesting (parquet archive)
+# ---------------------------------------------------------------------------
+
+ARCHIVE_DIR = Path(__file__).parent.parent.parent / "price-archive"
+
+
+def _load_parquet_items(con):
+    """Get item list with date range from parquet archive."""
+    rows = con.sql("""
+        SELECT item_slug,
+               MIN(day) AS first_day,
+               MAX(day) AS last_day,
+               COUNT(*) AS row_count
+        FROM read_parquet('{}/*.parquet')
+        GROUP BY item_slug
+        HAVING row_count >= 90
+        ORDER BY row_count DESC
+    """.format(ARCHIVE_DIR)).fetchall()
+    return rows
+
+
+def _compute_trend_at_date(prices, idx, ma_short=7, ma_long=30):
+    """Compute trend direction at a historical point in the price series.
+
+    Returns (direction: 'up'|'down'|'flat', ma_short_val, ma_long_val, current_price)
+    """
+    if idx < ma_long:
+        return "flat", None, None, prices[idx][1]
+
+    short_prices = [p[1] for p in prices[idx - ma_short + 1:idx + 1]]
+    long_prices = [p[1] for p in prices[idx - ma_long + 1:idx + 1]]
+
+    if len(short_prices) < ma_short or len(long_prices) < ma_long:
+        return "flat", None, None, prices[idx][1]
+
+    ma_s = sum(short_prices) / ma_short
+    ma_l = sum(long_prices) / ma_long
+    current = prices[idx][1]
+
+    if ma_s > ma_l * 1.02:
+        direction = "up"
+    elif ma_s < ma_l * 0.98:
+        direction = "down"
+    else:
+        direction = "flat"
+
+    return direction, ma_s, ma_l, current
+
+
+def _compute_opportunity_at_date(prices, idx, window=30):
+    """Compute opportunity score at a historical point.
+
+    Uses same logic as TrendAnalyzer.calculate_opportunity_score.
+    """
+    if idx < window:
+        return 0, 0
+
+    recent = [p[1] for p in prices[idx - window + 1:idx + 1]]
+    if len(recent) < window:
+        return 0, 0
+
+    current = prices[idx][1]
+    ma_30 = sum(recent) / window
+
+    # Momentum: 7-day % change
+    if idx >= 7:
+        price_7d_ago = prices[idx - 7][1]
+        momentum_7 = ((current - price_7d_ago) / price_7d_ago * 100) if price_7d_ago > 0 else 0
+    else:
+        momentum_7 = 0
+
+    if idx >= 30:
+        price_30d_ago = prices[idx - 30][1]
+        momentum_30 = ((current - price_30d_ago) / price_30d_ago * 100) if price_30d_ago > 0 else 0
+    else:
+        momentum_30 = 0
+
+    momentum_score = (momentum_7 + momentum_30) / 2
+    momentum_score = max(-100, min(100, momentum_score))
+
+    # Volatility
+    if len(recent) >= 2:
+        mean_p = sum(recent) / len(recent)
+        if mean_p > 0:
+            variance = sum((p - mean_p) ** 2 for p in recent) / len(recent)
+            vol = (variance ** 0.5 / mean_p) * 100
+        else:
+            vol = 0
+    else:
+        vol = 0
+
+    deviation = ((current - ma_30) / ma_30) * 100
+    if deviation < -10:
+        opportunity = 50 + (momentum_score * 0.5)
+    elif deviation > 15:
+        opportunity = -50 + (momentum_score * 0.3)
+    else:
+        opportunity = momentum_score * 0.7
+    if vol > 10:
+        opportunity *= 0.8
+    opportunity = max(-100, min(100, opportunity))
+
+    return opportunity, momentum_score
+
+
+def backtest_historical(db, today=None):
+    """Walk through the parquet archive simulating trend+opportunity signals."""
+    today = today or date.today()
+    logger.info("=" * 60)
+    logger.info("HISTORICAL WALK-FORWARD BACKTEST (Parquet Archive)")
+    logger.info("=" * 60)
+
+    if not ARCHIVE_DIR.exists():
+        logger.warning(f"  Parquet archive not found at {ARCHIVE_DIR}")
+        return []
+
+    import duckdb
+    import numpy as np
+    from datetime import datetime as dt
+
+    con = duckdb.connect()
+    try:
+        items = _load_parquet_items(con)
+        logger.info(f"  {len(items)} items with >= 90 days of history in archive")
+
+        # Use up to 500 items with richest history for statistically meaningful results
+        MAX_ITEMS = 500
+        items = items[:MAX_ITEMS]
+        logger.info(f"  Using top {len(items)} items by row count")
+
+        eval_windows = [7, 14, 30]
+        all_results = []
+
+        for window_days in eval_windows:
+            logger.info(f"  Evaluating {window_days}d forward window...")
+
+            confusion = {"up_up": 0, "up_down": 0, "up_flat": 0,
+                          "down_up": 0, "down_down": 0, "down_flat": 0,
+                          "flat_up": 0, "flat_down": 0, "flat_flat": 0}
+            trend_total = 0
+            trend_correct = 0
+            trend_return_total = 0.0
+            trend_return_count = 0
+
+            opp_undervalued_hits = 0
+            opp_undervalued_total = 0
+            opp_overheated_hits = 0
+            opp_overheated_total = 0
+            opp_momentum_hits = 0
+            opp_momentum_total = 0
+            opp_return_total = 0.0
+            opp_return_count = 0
+
+            for item_slug, first_day, last_day, row_count in items:
+                # Load all prices for this item
+                rows = con.sql("""
+                    SELECT day, mean_price
+                    FROM read_parquet('{}/*.parquet')
+                    WHERE item_slug = ?
+                    ORDER BY day
+                """.format(ARCHIVE_DIR), params=[item_slug]).fetchall()
+
+                if len(rows) < 90:
+                    continue
+
+                prices = [(r[0], float(r[1])) for r in rows if r[1] > 0]
+                if len(prices) < 90:
+                    continue
+
+                # Walk through every 7th day starting from day 90
+                step = 7
+                n = len(prices)
+                for idx in range(90, n - window_days, step):
+                    signal_date = prices[idx][0]
+
+                    # Trend direction
+                    direction, ma_s, ma_l, current = _compute_trend_at_date(prices, idx)
+                    if direction == "flat":
+                        continue  # flat means no signal — skip for cleaner metrics
+
+                    # Look forward
+                    target_price = prices[idx + window_days][1]
+                    if current <= 0 or target_price <= 0:
+                        continue
+
+                    actual_move = ((target_price - current) / current) * 100
+                    actual_dir = "up" if actual_move > 2 else "down" if actual_move < -2 else "flat"
+
+                    key = f"{direction}_{actual_dir}"
+                    if key in confusion:
+                        confusion[key] = confusion.get(key, 0) + 1
+
+                    if direction == actual_dir:
+                        trend_correct += 1
+                    trend_total += 1
+                    trend_return_total += actual_move
+                    trend_return_count += 1
+
+                    # Opportunity signals
+                    opportunity, momentum = _compute_opportunity_at_date(prices, idx)
+
+                    if opportunity <= -30:
+                        opp_undervalued_total += 1
+                        if actual_move > 2:
+                            opp_undervalued_hits += 1
+                    if opportunity >= 30:
+                        opp_overheated_total += 1
+                        if actual_move < -2:
+                            opp_overheated_hits += 1
+                    if abs(momentum) >= 40:
+                        opp_momentum_total += 1
+                        if (momentum > 0 and actual_move > 3) or (momentum < 0 and actual_move < -3):
+                            opp_momentum_hits += 1
+
+                    opp_return_total += actual_move
+                    opp_return_count += 1
+
+            # Store trend direction results
+            if trend_total > 0:
+                accuracy = trend_correct / trend_total * 100
+                avg_ret = trend_return_total / trend_return_count if trend_return_count > 0 else 0
+                metrics = {
+                    "overall_accuracy": round(accuracy, 2),
+                    "avg_subsequent_return_pct": round(avg_ret, 2),
+                    "avg_subsequent_return_days": window_days,
+                    "confusion_matrix": confusion,
+                    "source": "historical_parquet",
+                }
+                all_results.append({
+                    "prediction_type": "trend_direction",
+                    "evaluation_date": today,
+                    "horizon_days": None,
+                    "model_version": "historical_walkforward",
+                    "evaluation_window_days": window_days,
+                    "sample_count": trend_total,
+                    "metrics": metrics,
+                    "created_at": datetime.now(timezone.utc).replace(tzinfo=None),
+                })
+                logger.info(
+                    f"    Trend [{window_days}d]: {trend_total:,} samples — "
+                    f"Acc={accuracy:.1f}% AvgRet={avg_ret:+.2f}%"
+                )
+
+            # Store opportunity results
+            if opp_return_count > 0:
+                avg_ret = opp_return_total / opp_return_count
+                metrics = {
+                    "avg_return_pct": round(avg_ret, 2),
+                    "evaluation_window_days": window_days,
+                    "total_signals": opp_undervalued_total + opp_overheated_total + opp_momentum_total,
+                    "source": "historical_parquet",
+                    "undervalued": {
+                        "total": opp_undervalued_total,
+                        "correct": opp_undervalued_hits,
+                        "precision": round(opp_undervalued_hits / opp_undervalued_total * 100, 2) if opp_undervalued_total > 0 else 0,
+                    },
+                    "overheated": {
+                        "total": opp_overheated_total,
+                        "correct": opp_overheated_hits,
+                        "precision": round(opp_overheated_hits / opp_overheated_total * 100, 2) if opp_overheated_total > 0 else 0,
+                    },
+                    "momentum": {
+                        "total": opp_momentum_total,
+                        "correct": opp_momentum_hits,
+                        "precision": round(opp_momentum_hits / opp_momentum_total * 100, 2) if opp_momentum_total > 0 else 0,
+                    },
+                }
+                all_results.append({
+                    "prediction_type": "opportunity",
+                    "evaluation_date": today,
+                    "horizon_days": None,
+                    "model_version": "historical_walkforward",
+                    "evaluation_window_days": window_days,
+                    "sample_count": opp_return_count,
+                    "metrics": metrics,
+                    "created_at": datetime.now(timezone.utc).replace(tzinfo=None),
+                })
+                logger.info(
+                    f"    Opportunity [{window_days}d]: {opp_return_count:,} samples — "
+                    f"AvgRet={avg_ret:+.2f}% "
+                    f"UnderP={metrics['undervalued']['precision']:.1f}% "
+                    f"OverP={metrics['overheated']['precision']:.1f}%"
+                )
+
+        if all_results:
+            _upsert_accuracy(db, all_results)
+            logger.info(f"  Stored {len(all_results)} historical accuracy records")
+        return all_results
+
+    finally:
+        con.close()
+
+
+# ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
 
 def run_backtest(types=None):
     db = SessionLocal()
     today = date.today()
-    all_types = ["forecast", "trend_direction", "opportunity"]
+    all_types = ["forecast", "trend_direction", "opportunity", "historical"]
     types = types or all_types
 
     try:
@@ -527,6 +822,8 @@ def run_backtest(types=None):
                 results["trend_direction"] = backtest_trends(db, today)
             elif t == "opportunity":
                 results["opportunity"] = backtest_opportunities(db, today)
+            elif t == "historical":
+                results["historical"] = backtest_historical(db, today)
             else:
                 logger.warning(f"Unknown backtest type: {t}")
 
@@ -551,7 +848,7 @@ def main():
         if idx < len(sys.argv):
             types = [sys.argv[idx]]
         else:
-            logger.error("--type requires: forecast, trend_direction, or opportunity")
+            logger.error("--type requires: forecast, trend_direction, opportunity, or historical")
             sys.exit(1)
     result = run_backtest(types)
     print(f"RESULT: {json.dumps(result, default=str)}")
