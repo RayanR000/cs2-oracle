@@ -82,20 +82,6 @@ class PriceHistory(Base):
         Index('idx_price_history_source', 'source'),
     )
 
-class ChartPoint(Base):
-    """Daily close price per item for all-time price charts."""
-    __tablename__ = "chart_points"
-
-    item_id = Column(Integer, ForeignKey("items.id"), primary_key=True)
-    day = Column(Date, primary_key=True)
-    close = Column(Float, nullable=False)
-
-    item = relationship("Item")
-
-    __table_args__ = (
-    )
-
-
 # Sources whose presence marks an item as "backfilled": it has a real
 # historical price series (from CSMarketAPI STEAMCOMMUNITY data), not just a
 # live snapshot. Kept for backward compat; the canonical filter is now

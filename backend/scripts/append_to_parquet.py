@@ -62,11 +62,6 @@ def main():
         "--backfilled-csv",
         help="Backward compat: CSV of backfilled item Steam 24h prices (item_slug, day, price, volume)",
     )
-    parser.add_argument(
-        "--skip-chart-points",
-        action="store_true",
-        help="Skip the chart_points sync step",
-    )
     args = parser.parse_args()
 
     day_start = datetime.strptime(args.date, "%Y-%m-%d")
@@ -110,7 +105,8 @@ def main():
                 backfilled_df = pd.read_csv(csv_path)
                 if not backfilled_df.empty:
                     backfilled_df["median_price"] = None
-                    backfilled_df["source"] = "aggregator_sync"
+                    if "source" not in backfilled_df.columns:
+                        backfilled_df["source"] = "aggregator_sync"
                     legacy_frames.append(backfilled_df)
                     print(f"Read {len(backfilled_df)} backfilled rows from {csv_path.name}")
                 else:
@@ -118,15 +114,22 @@ def main():
             else:
                 print(f"Warning: --backfilled-csv path does not exist: {csv_path} — skipping OHLCV Parquet")
 
-    # ── Write prices-YYYY.parquet (Steam OHLCV) ────────────────────────
-    if snapshots_df is not None:
-        steam_24h = snapshots_df[snapshots_df["source"] == "aggregator_sync"].copy()
-    else:
-        steam_24h = None
+    # ── Write prices-YYYY.parquet (OHLCV, all sources) ──────────────────
+    if snapshots_df is not None and not snapshots_df.empty:
+        daily = snapshots_df.groupby(["item_slug", "day", "source"]).agg(
+            mean_price=("price", "mean"),
+            min_price=("price", "min"),
+            max_price=("price", "max"),
+            median_price=("median_price", "mean") if "median_price" in snapshots_df.columns else ("price", "mean"),
+            volume=("volume", "sum"),
+        ).reset_index()
+        daily["day"] = pd.to_datetime(daily["day"])
+        _append_parquet(out_dir / f"prices-{year}.parquet", daily, ["item_slug", "day", "source"])
+        print(f"Appended {len(daily)} OHLCV rows to prices-{year}.parquet")
 
     if legacy_frames:
         df = pd.concat(legacy_frames, ignore_index=True)
-        daily = df.groupby(["item_slug", "day"]).agg(
+        daily = df.groupby(["item_slug", "day", "source"]).agg(
             mean_price=("price", "mean"),
             min_price=("price", "min"),
             max_price=("price", "max"),
@@ -134,20 +137,8 @@ def main():
             volume=("volume", "sum"),
         ).reset_index()
         daily["day"] = pd.to_datetime(daily["day"])
-        _append_parquet(out_dir / f"prices-{year}.parquet", daily, ["item_slug", "day"])
+        _append_parquet(out_dir / f"prices-{year}.parquet", daily, ["item_slug", "day", "source"])
         print(f"Appended {len(daily)} OHLCV rows to prices-{year}.parquet (legacy path)")
-
-    if steam_24h is not None and not steam_24h.empty:
-        daily = steam_24h.groupby(["item_slug", "day"]).agg(
-            mean_price=("price", "mean"),
-            min_price=("price", "min"),
-            max_price=("price", "max"),
-            median_price=("median_price", "mean") if "median_price" in steam_24h.columns else ("price", "mean"),
-            volume=("volume", "sum"),
-        ).reset_index()
-        daily["day"] = pd.to_datetime(daily["day"])
-        _append_parquet(out_dir / f"prices-{year}.parquet", daily, ["item_slug", "day"])
-        print(f"Appended {len(daily)} OHLCV rows to prices-{year}.parquet")
 
     # ── Write snapshots-YYYY.parquet (all sources) ─────────────────────
     if snapshots_df is not None and not snapshots_df.empty:
@@ -161,17 +152,6 @@ def main():
         print(f"No data found for {args.date}")
         sys.exit(0)
 
-    # ── Sync to chart_points ──────────────────────────────────────────
-    if not args.skip_chart_points:
-        import subprocess
-        script_path = Path(__file__).parent / "build_chart_points.py"
-        result = subprocess.run(
-            [sys.executable, str(script_path), "--parquet-dir", str(out_dir), "--date", args.date],
-            capture_output=False,
-        )
-        if result.returncode != 0:
-            print(f"Warning: chart_points sync exited with code {result.returncode}")
-
     print(f"Done: {args.date}")
 
 
@@ -181,6 +161,9 @@ def _append_parquet(path: Path, new_data: pd.DataFrame, dedup_keys: list):
     try:
         if path.exists():
             existing = con.sql(f"SELECT * FROM read_parquet('{path}')").fetchdf()
+            # Migrate old schema: add source column if missing
+            if "source" not in existing.columns and "source" in new_data.columns:
+                existing["source"] = "aggregator_sync"
             combined = pd.concat([existing, new_data], ignore_index=True)
             combined = combined.drop_duplicates(subset=dedup_keys, keep="last")
             combined.to_parquet(path, index=False)

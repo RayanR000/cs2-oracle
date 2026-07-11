@@ -63,27 +63,8 @@ def _upsert_accuracy(db, rows):
     db.commit()
 
 
-def _load_actual_prices_chartpoints(db, item_ids, dates):
-    """Load actual close prices from chart_points for (item_id, date) pairs."""
-    if not item_ids or not dates:
-        return {}
-
-    min_date = min(dates)
-    max_date = max(dates)
-
-    # Use SQLAlchemy ORM to avoid dialect issues with ANY()
-    from database import ChartPoint
-    rows = db.query(ChartPoint).filter(
-        ChartPoint.item_id.in_(item_ids),
-        ChartPoint.day >= min_date,
-        ChartPoint.day <= max_date,
-    ).all()
-
-    return {(r.item_id, r.day): r.close for r in rows}
-
-
-def _load_actual_prices_history(db, item_ids, dates):
-    """Fallback: average price from price_history for missing dates."""
+def _load_actual_prices(db, item_ids, dates):
+    """Load actual prices from price_history, averaged to daily closes."""
     if not item_ids or not dates:
         return {}
 
@@ -104,8 +85,6 @@ def _load_actual_prices_history(db, item_ids, dates):
         PriceHistory.item_id.in_(list(item_ids)),
         PriceHistory.timestamp >= start_dt,
         PriceHistory.timestamp <= end_dt,
-        ~PriceHistory.source.like('synthetic_demo'),
-        ~PriceHistory.source.like('historical_fallback:%'),
     ).order_by(PriceHistory.item_id, PriceHistory.timestamp).all()
 
     by_key = defaultdict(list)
@@ -114,15 +93,6 @@ def _load_actual_prices_history(db, item_ids, dates):
         by_key[(r.item_id, day)].append(r.price)
 
     return {k: sum(v) / len(v) for k, v in by_key.items()}
-
-
-def _load_actual_prices(db, item_ids, dates):
-    """Load actual prices from chart_points, falling back to price_history."""
-    prices = _load_actual_prices_chartpoints(db, item_ids, dates)
-    if len(prices) < len(dates):
-        fallback = _load_actual_prices_history(db, item_ids, dates)
-        prices.update(fallback)
-    return prices
 
 
 # ---------------------------------------------------------------------------

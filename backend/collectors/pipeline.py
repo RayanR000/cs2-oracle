@@ -246,20 +246,19 @@ class DataPipeline:
                             writer.writerow([slug, agg_date, d["source"], d["price"], d.get("volume", 0)])
                 logger.info("Wrote %s snapshot rows to %s (all sources)", len(rows_as_dicts), snapshot_csv_path)
 
-                # ── Write only aggregator_sync rows to backfilled CSV (for OHLCV Parquet) ──
+                # ── Write all sources for backfilled items to CSV (for OHLCV Parquet) ──
                 backfilled_dicts = [d for d in rows_as_dicts if d["item_id"] in hist_item_ids]
-                parquet_rows = [d for d in backfilled_dicts if d["source"] == "aggregator_sync"]
-                if parquet_rows:
+                if backfilled_dicts:
                     csv_path = f"/tmp/aggregator-backfilled-{agg_date}.csv"
                     with open(csv_path, "w", newline="") as f:
                         writer = csv.writer(f)
-                        writer.writerow(["item_slug", "day", "price", "volume"])
-                        for d in parquet_rows:
+                        writer.writerow(["item_slug", "day", "source", "price", "volume"])
+                        for d in backfilled_dicts:
                             slug = id_to_slug.get(d["item_id"])
                             if slug:
-                                writer.writerow([slug, agg_date, d["price"], d.get("volume", 0)])
+                                writer.writerow([slug, agg_date, d["source"], d["price"], d.get("volume", 0)])
                     backfilled_csv_path = csv_path
-                    logger.info("Wrote %s backfilled rows to %s (Steam 24h for OHLCV)", len(parquet_rows), csv_path)
+                    logger.info("Wrote %s backfilled rows to %s (all sources)", len(backfilled_dicts), csv_path)
 
                 # ── Write aggregator_sync + historical_fallback to Supabase ──
                 supabase_rows = [d for d in rows_as_dicts

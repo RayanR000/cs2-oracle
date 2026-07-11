@@ -8,7 +8,7 @@ import re
 import math
 
 from database import (
-    get_db, Item, PriceHistory, ChartPoint, DailyAnalysis, ItemForecast,
+    get_db, Item, PriceHistory, DailyAnalysis, ItemForecast,
     Event, EventImpact, backfilled_item_clause,
 )
 from api.cache import get_or_build
@@ -73,29 +73,17 @@ def trending_items(
 
 
 def _latest_prices(db: Session, item_ids: list[int]) -> dict[int, float]:
-    """Latest price per item from chart_points, falling back to price_history for snapshot items."""
+    """Latest price per item from price_history."""
     prices = {}
-
-    cp_rows = (
-        db.query(ChartPoint.item_id, ChartPoint.close)
-        .filter(ChartPoint.item_id.in_(item_ids))
-        .distinct(ChartPoint.item_id)
-        .order_by(ChartPoint.item_id, desc(ChartPoint.day))
-        .all()
-    )
-    prices.update({r.item_id: r.close for r in cp_rows})
-
-    remaining = [iid for iid in item_ids if iid not in prices]
-    if remaining:
-        ph_rows = (
-            db.query(PriceHistory.item_id, PriceHistory.price)
-            .filter(PriceHistory.item_id.in_(remaining))
-            .distinct(PriceHistory.item_id)
-            .order_by(PriceHistory.item_id, desc(PriceHistory.timestamp))
-            .all()
+    for iid in item_ids:
+        ph = (
+            db.query(PriceHistory.price)
+            .filter(PriceHistory.item_id == iid)
+            .order_by(desc(PriceHistory.timestamp))
+            .first()
         )
-        prices.update({r.item_id: r.price for r in ph_rows})
-
+        if ph:
+            prices[iid] = ph.price
     return prices
 
 
@@ -246,47 +234,21 @@ def get_price_history(
 ):
     item = _resolve_item(item_id, db)
 
-    # Use chart_points for deep history (>= 365 days) or all-time range
-    if days >= 365:
-        cutoff_date = datetime.now(timezone.utc).date() - timedelta(days=days)
-        records = (
-            db.query(ChartPoint)
-            .filter(
-                ChartPoint.item_id == item.id,
-                ChartPoint.day >= cutoff_date,
-            )
-            .order_by(ChartPoint.day)
-            .all()
+    cutoff = datetime.now(timezone.utc) - timedelta(days=days)
+    all_records = (
+        db.query(PriceHistory)
+        .filter(
+            PriceHistory.item_id == item.id,
+            PriceHistory.timestamp >= cutoff,
         )
-        all_prices = [r.close for r in records]
+        .order_by(PriceHistory.timestamp)
+        .all()
+    )
+    all_prices = [r.price for r in all_records]
+    if all_records:
+        records = all_records[skip:skip + limit]
     else:
-        cutoff = datetime.now(timezone.utc) - timedelta(days=days)
-        all_records = (
-            db.query(PriceHistory)
-            .filter(
-                PriceHistory.item_id == item.id,
-                PriceHistory.timestamp >= cutoff,
-            )
-            .order_by(PriceHistory.timestamp)
-            .all()
-        )
-        all_prices = [r.price for r in all_records]
-        # Fall back to chart_points when PriceHistory is empty
-        if not all_records:
-            cutoff_date = datetime.now(timezone.utc).date() - timedelta(days=min(days, 365))
-            cp_records = (
-                db.query(ChartPoint)
-                .filter(
-                    ChartPoint.item_id == item.id,
-                    ChartPoint.day >= cutoff_date,
-                )
-                .order_by(ChartPoint.day)
-                .all()
-            )
-            all_prices = [r.close for r in cp_records]
-            records = cp_records
-        else:
-            records = all_records[skip:skip + limit]
+        records = []
 
     sma_7 = None
     sma_30 = None
@@ -297,14 +259,12 @@ def get_price_history(
 
     records_slice = records[skip:skip + limit]
 
-    is_chartpoint = days >= 365 or (len(records) > 0 and hasattr(records[0], 'close'))
-
     return [
         PricePointOut(
-            timestamp=r.timestamp if not is_chartpoint else datetime.combine(r.day, datetime.min.time()),
-            price=r.close if is_chartpoint else r.price,
-            volume=None if is_chartpoint else r.volume,
-            median_price=None if is_chartpoint else r.median_price,
+            timestamp=r.timestamp,
+            price=r.price,
+            volume=r.volume,
+            median_price=r.median_price,
             sma_7=sma_7,
             sma_30=sma_30,
         )
@@ -375,16 +335,7 @@ def get_item_trends(item_id: str, db: Session = Depends(get_db)):
         .order_by(desc(PriceHistory.timestamp))
         .first()
     )
-    if latest_price is None:
-        cp = (
-            db.query(ChartPoint.close)
-            .filter(ChartPoint.item_id == item.id)
-            .order_by(desc(ChartPoint.day))
-            .first()
-        )
-        current_price = cp.close if cp else 0.0
-    else:
-        current_price = latest_price.price
+    current_price = latest_price.price if latest_price else 0.0
     trend_dir = "neutral"
     sma_7 = None
     sma_30 = None
@@ -415,14 +366,6 @@ def get_item_trends(item_id: str, db: Session = Depends(get_db)):
             .all()
         )
     ]
-    if not price_points:
-        cp_records = (
-            db.query(ChartPoint)
-            .filter(ChartPoint.item_id == item.id)
-            .order_by(ChartPoint.day)
-            .all()
-        )
-        price_points = [r.close for r in cp_records]
 
     bollinger_upper, bollinger_middle, bollinger_lower = _compute_bollinger_bands(price_points)
     rsi = _compute_rsi(price_points)
@@ -501,16 +444,7 @@ def get_item_prediction(
         .order_by(desc(PriceHistory.timestamp))
         .first()
     )
-    if latest_price is None:
-        cp = (
-            db.query(ChartPoint.close)
-            .filter(ChartPoint.item_id == item.id)
-            .order_by(desc(ChartPoint.day))
-            .first()
-        )
-        current_price = cp.close if cp else 0.0
-    else:
-        current_price = latest_price.price
+    current_price = latest_price.price if latest_price else 0.0
 
     if forecast:
         fl = forecast.price_low or current_price * 0.9
@@ -577,92 +511,9 @@ def get_multi_source_prices(
     item = _resolve_item(item_id, db)
     requested = [s.strip() for s in source.split(",") if s.strip()]
 
-    # Use chart_points for deep history (>= 365 days) or historical source
-    if days >= 365 or "historical" in requested:
-        cutoff_date = datetime.now(timezone.utc).date() - timedelta(days=days)
-        records = (
-            db.query(ChartPoint)
-            .filter(
-                ChartPoint.item_id == item.id,
-                ChartPoint.day >= cutoff_date,
-            )
-            .order_by(ChartPoint.day)
-            .all()
-        )
-        data: dict[str, list[SourcePriceOut]] = {"historical": [
-            SourcePriceOut(
-                timestamp=datetime.combine(r.day, datetime.min.time()),
-                price=r.close,
-                volume=None,
-                median_price=None,
-            )
-            for r in records
-        ]}
-
-        # Merge recent price_history data (last 90 days) so live aggregator
-        # sources appear alongside the historical series.
-        recent_cutoff = datetime.now(timezone.utc) - timedelta(days=90)
-        recent = (
-            db.query(PriceHistory)
-            .filter(
-                PriceHistory.item_id == item.id,
-                PriceHistory.timestamp >= recent_cutoff,
-                ~PriceHistory.source.like("synthetic_demo"),
-                ~PriceHistory.source.like("historical_fallback:%"),
-            )
-            .order_by(PriceHistory.timestamp)
-            .all()
-        )
-        for r in recent:
-            data.setdefault(r.source, []).append(
-                SourcePriceOut(
-                    timestamp=r.timestamp,
-                    price=r.price,
-                    volume=r.volume,
-                    median_price=r.median_price,
-                )
-            )
-
-        sources = [s for s in data if data[s]]
-        if "historical" in sources:
-            sources.remove("historical")
-            sources.insert(0, "historical")
-
-        return MultiSourcePricesOut(
-            item_id=item.item_id,
-            name=item.name,
-            sources=sources,
-            data=data,
-        )
-
     cutoff = datetime.now(timezone.utc) - timedelta(days=days)
-    cutoff_date = cutoff.date()
-
-    # Include chart_points filtered to the requested window so each timeline
-    # (24h, 7d, 30d) shows the correct range instead of the full history.
-    cp_records = (
-        db.query(ChartPoint)
-        .filter(
-            ChartPoint.item_id == item.id,
-            ChartPoint.day >= cutoff_date,
-        )
-        .order_by(ChartPoint.day)
-        .all()
-    )
     data: dict[str, list[SourcePriceOut]] = {}
-    if cp_records:
-        data["historical"] = [
-            SourcePriceOut(
-                timestamp=datetime.combine(r.day, datetime.min.time()),
-                price=r.close,
-                volume=None,
-                median_price=None,
-            )
-            for r in cp_records
-        ]
 
-    # Single query for all requested sources instead of one per source.
-    # Synthetic and fallback rows are copies/placeholders, never charted.
     query = (
         db.query(PriceHistory)
         .filter(
@@ -687,9 +538,6 @@ def get_multi_source_prices(
         )
 
     sources = [s for s in data if data[s]]
-    if "historical" in sources:
-        sources.remove("historical")
-        sources.insert(0, "historical")
 
     return MultiSourcePricesOut(
         item_id=item.item_id,
