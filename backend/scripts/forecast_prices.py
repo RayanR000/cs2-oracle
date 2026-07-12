@@ -138,7 +138,11 @@ def run_forecast(train_only: bool = False, predict_only: bool = False):
             insert_stmt = sqlite_insert if dialect_name == "sqlite" else pg_insert
             table = ItemForecast.__table__
 
-            batch_size = 5000
+            # SQLite has a default limit of 999 variables per query
+            # (~90 rows with 11 columns). PostgreSQL handles 5000+.
+            bind = db.get_bind()
+            is_sqlite = bind is not None and bind.dialect.name == "sqlite"
+            batch_size = 90 if is_sqlite else 5000
             for i in range(0, len(forecast_rows), batch_size):
                 batch = forecast_rows[i:i + batch_size]
                 stmt = insert_stmt(table).values(batch)

@@ -157,7 +157,8 @@ def backtest_forecasts(db, today=None):
     # Filter for mature forecasts (forecast_date + horizon <= today)
     mature = []
     for r in rows:
-        maturity_date = r.forecast_date + timedelta(days=r.horizon_days)
+        forecast_date = r.forecast_date if isinstance(r.forecast_date, date) else date.fromisoformat(r.forecast_date)
+        maturity_date = forecast_date + timedelta(days=r.horizon_days)
         if maturity_date <= today:
             mature.append(r)
 
