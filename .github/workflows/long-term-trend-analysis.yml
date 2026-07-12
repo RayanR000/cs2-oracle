@@ -38,6 +38,16 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
+      - name: Checkout price archive
+        uses: actions/checkout@v4
+        with:
+          ref: data-archive
+          path: archive
+          fetch-depth: 1
+
+      - name: Link price-archive
+        run: ln -s $PWD/archive/price-archive price-archive
+
       - name: Run Long-Term Trend Analysis
         working-directory: ./backend
         env:

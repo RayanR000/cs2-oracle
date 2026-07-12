@@ -55,6 +55,19 @@ slug_to_id = {r.name: r.id for r in slug_rows}
 
 Items that exist in the parquet but not in the DB (17 items — old/renamed Steam items) are skipped with a warning.
 
+### 6. GitHub Workflows — data-archive checkout
+
+The `price-archive/` directory is only on the `data-archive` branch, not the default branch. All 5 workflows that read parquet files now checkout the `data-archive` branch into an `archive/` subdirectory and create a symlink (`price-archive -> archive/price-archive`) so all existing `Path(__file__).parent.parent.parent / "price-archive"` references resolve correctly.
+
+Workflows updated:
+- `price-forecast.yml` — runs `forecast_prices.py`
+- `backtest-accuracy.yml` — runs `backtest_accuracy.py` (historical mode)
+- `daily-trend-analysis.yml` — runs `run_task.py trends` → `analyze_trends.py`
+- `long-term-trend-analysis.yml` — runs `long_term_trend_analyzer.py`
+- `event-correlation-analysis.yml` — runs `event_analyzer.py`
+
+The `aggregator-update.yml` already had the dual checkout (it both reads and writes the archive). The `discover-new-items.yml` does not read parquet and was left unchanged.
+
 ## Items in Production DB
 
 The Supabase `items` table contains **5,525 items** (all backfilled). The 31,908-item catalog from `build_market_catalog.py` is in a separate SQLite database and has never been imported into Supabase. All production queries filter through `is_backfilled = 1`.
@@ -100,4 +113,9 @@ New items (from the 31,908 catalog not yet tracked) should not be added to the t
 | `backend/models/forecaster.py` | Added `backfilled_only` to `fetch_price_history`, `build_training_data`, `train`, `predict` |
 | `backend/scripts/forecast_prices.py` | Added slug→ID mapping via `items.name` column |
 | `backend/models/saved_models/` | Cleaned up old single-model files (pre-ensemble format) |
+| `.github/workflows/price-forecast.yml` | Added data-archive checkout + symlink |
+| `.github/workflows/backtest-accuracy.yml` | Added data-archive checkout + symlink |
+| `.github/workflows/daily-trend-analysis.yml` | Added data-archive checkout + symlink |
+| `.github/workflows/long-term-trend-analysis.yml` | Added data-archive checkout + symlink |
+| `.github/workflows/event-correlation-analysis.yml` | Added data-archive checkout + symlink |
 | `docs/2026-07-11-backfilled-item-training.md` | This file |
