@@ -33,6 +33,9 @@ class ItemForecaster:
     N_ENSEMBLES = 3
     ENSEMBLE_SEEDS = [42, 73, 91]
     PRUNE_CORRELATION_THRESHOLD = 0.95
+    # Expanding-window cross-validation
+    CV_STEP_DAYS = 120        # Days between each fold's validation window
+    CV_MIN_TRAIN_DAYS = 200   # Minimum unique dates before first validation fold
 
     def __init__(self, db_session, model_dir: str = None):
         self.db = db_session
@@ -42,6 +45,8 @@ class ItemForecaster:
         # Per-horizon confidence thresholds: {horizon: {"high_range": ..., "high_change": ..., "high_accuracy": ...}}
         self.confidence_thresholds: Dict[int, Dict[str, float]] = {}
         self.feature_medians: pd.Series = pd.Series(dtype=np.float64)
+        # Expanding-window CV results per horizon: {horizon: {fold_count, fold_accs, per_fold, ...}}
+        self.cv_results: Dict[int, Dict] = {}
 
     # ------------------------------------------------------------------
     # Data fetching
@@ -456,6 +461,25 @@ class ItemForecaster:
             )
         return pruned
 
+    def _compute_cv_splits(self, sorted_dates):
+        """Compute expanding-window CV fold boundaries.
+
+        Returns list of (train_date_list, val_date_list) tuples.
+        Each fold trains on an expanding window and validates on a fixed-width
+        window of VALIDATION_WINDOW_DAYS at the end.
+        """
+        val_window = self.VALIDATION_WINDOW_DAYS  # 21 days
+        step = self.CV_STEP_DAYS  # 120 days
+        min_train = self.CV_MIN_TRAIN_DAYS
+
+        folds = []
+        for end in range(min_train, len(sorted_dates) - val_window + 1, step):
+            train_d = sorted_dates[:end]
+            val_d = sorted_dates[end:end + val_window]
+            if len(val_d) >= 7:
+                folds.append((list(train_d), list(val_d)))
+        return folds
+
     def _optuna_search_params(self, X_train, y_train, X_val, y_val,
                                quantile: float = 0.5) -> Dict[str, Any]:
         """Bayesian hyperparameter search via Optuna.
@@ -655,6 +679,7 @@ class ItemForecaster:
             X_val = val_set[self.feature_cols].replace([np.inf, -np.inf], np.nan).fillna(feature_medians)
             y_val = val_set[f"target_return_{horizon}d"]
 
+            per_quantile_params = {}
             for q in self.QUANTILES:
                 logger.info(f"  Searching hyperparams for {horizon}d p{int(q*100)} (Optuna)...")
                 best_params = self._optuna_search_params(X_train, y_train, X_val, y_val, quantile=q)
@@ -686,6 +711,8 @@ class ItemForecaster:
                     base_params["max_depth"] = 5
                     base_params["min_data_in_leaf"] = 15
 
+                per_quantile_params[q] = dict(base_params)
+
                 ensemble_models = []
                 for ei in range(self.N_ENSEMBLES):
                     params = base_params.copy()
@@ -705,8 +732,36 @@ class ItemForecaster:
                 fi = self._get_feature_importance(ensemble_models[0])
                 logger.info(f"  Top features: {fi['feature'].head(5).tolist()}")
 
-            # Calibrate confidence thresholds from validation set
-            self._calibrate_confidence(X_val, y_val, val_set, horizon)
+            # Expanding-window CV evaluation using the best hyperparams
+            oof_records, cv_metrics = self._cv_evaluate_horizon(tdf, horizon, per_quantile_params)
+
+            # Calibrate confidence thresholds on pooled OOF predictions from CV
+            # (more robust than a single 21-day holdout)
+            if oof_records:
+                records_df = pd.DataFrame(oof_records)
+                logger.info(f"  Calibrating on {len(records_df)} pooled OOF predictions "
+                            f"({len(cv_metrics)} folds)")
+                self._calibrate_confidence(horizon=horizon, records_df=records_df)
+            else:
+                logger.warning(f"  CV produced no OOF records; falling back to single-split calibration")
+                self._calibrate_confidence(horizon=horizon, X_val=X_val, y_val=y_val, val_set=val_set)
+
+            # Log CV fold-level metrics
+            if cv_metrics:
+                fold_accs = [m["directional_accuracy"] for m in cv_metrics]
+                mean_acc = np.mean(fold_accs)
+                std_acc = np.std(fold_accs)
+                logger.info(f"  CV ({len(cv_metrics)} folds): "
+                            f"mean={mean_acc:.1f}% sd={std_acc:.1f}% "
+                            f"range=[{min(fold_accs):.1f}%, {max(fold_accs):.1f}%]")
+                self.cv_results[horizon] = {
+                    "fold_count": len(cv_metrics),
+                    "per_fold": cv_metrics,
+                    "mean_dir_acc": round(mean_acc, 1),
+                    "std_dir_acc": round(std_acc, 1) if len(fold_accs) > 1 else 0,
+                    "min_dir_acc": round(min(fold_accs), 1),
+                    "max_dir_acc": round(max(fold_accs), 1),
+                }
 
         self.save_models()
         logger.info("Training complete.")
@@ -923,7 +978,151 @@ class ItemForecaster:
             preds = ensemble.predict(X)
         return preds
 
-    def _calibrate_confidence(self, X_val, y_val, val_set, horizon):
+    def _cv_evaluate_horizon(self, tdf, horizon, per_quantile_params):
+        """Run expanding-window CV for a single horizon.
+
+        Trains a single model (no ensemble) per fold using the best hyperparams
+        found by Optuna, collects OOF predictions, and returns pooled records
+        for confidence calibration plus fold-level metrics.
+
+        Args:
+            tdf: DataFrame with features + targets (from prepare_targets).
+            horizon: Horizon in days.
+            per_quantile_params: Dict {q: base_params} with best HP merged.
+
+        Returns:
+            (oof_records, fold_metrics) where oof_records is a list of dicts
+            with range_pct/change_pct/hit for calibration, and fold_metrics
+            is a list of per-fold accuracy dicts.
+        """
+        sorted_dates = sorted(tdf["date"].unique())
+        splits = self._compute_cv_splits(sorted_dates)
+        if len(splits) < 2:
+            logger.warning(f"  Not enough data for CV ({len(splits)} fold{'s' if splits else 's'}); skipping")
+            return [], []
+
+        oof_records = []
+        fold_metrics = []
+
+        for fold_id, (train_dates, val_dates) in enumerate(splits):
+            train_df = tdf[tdf["date"].isin(train_dates)]
+            val_df = tdf[tdf["date"].isin(val_dates)]
+
+            if len(val_df) < 50:
+                continue
+
+            fold_p50 = None
+            fold_p10 = None
+            fold_p90 = None
+
+            for q in self.QUANTILES:
+                params = per_quantile_params.get(q, {}).copy()
+                params["objective"] = "quantile"
+                params["alpha"] = q
+                params["metric"] = "quantile"
+                params["verbosity"] = -1
+                params["n_jobs"] = -1
+                params["random_state"] = 42
+
+                X_train_pre = train_df[self.feature_cols].replace([np.inf, -np.inf], np.nan)
+                fold_medians = X_train_pre.median()
+                X_train = X_train_pre.fillna(fold_medians)
+                y_train = train_df[f"target_return_{horizon}d"]
+
+                X_val = val_df[self.feature_cols].replace([np.inf, -np.inf], np.nan).fillna(fold_medians)
+                y_val = val_df[f"target_return_{horizon}d"]
+
+                dtrain = lgb.Dataset(X_train, y_train)
+                dval = lgb.Dataset(X_val, y_val, reference=dtrain)
+                model = lgb.train(
+                    params, dtrain,
+                    num_boost_round=200,
+                    valid_sets=[dval],
+                    callbacks=[lgb.early_stopping(20), lgb.log_evaluation(0)]
+                )
+                pred = model.predict(X_val)
+                if q == 0.5:
+                    fold_p50 = pred
+                elif q == 0.1:
+                    fold_p10 = pred
+                elif q == 0.9:
+                    fold_p90 = pred
+
+            if fold_p50 is None or fold_p10 is None or fold_p90 is None:
+                continue
+
+            # Quantile crossing fix (same logic as _calibrate_confidence)
+            crossing_mask = (fold_p10 > fold_p50) | (fold_p50 > fold_p90)
+            non_crossing = ~crossing_mask
+            low_pred = np.minimum(fold_p10, fold_p50)
+            high_pred = np.maximum(fold_p90, fold_p50)
+            if non_crossing.any():
+                avg_hw = np.mean([
+                    np.mean(fold_p50[non_crossing] - fold_p10[non_crossing]),
+                    np.mean(fold_p90[non_crossing] - fold_p50[non_crossing]),
+                ])
+                if avg_hw > 0:
+                    low_pred[crossing_mask] = fold_p50[crossing_mask] - avg_hw
+                    high_pred[crossing_mask] = fold_p50[crossing_mask] + avg_hw
+            low_pred = np.minimum(low_pred, fold_p50)
+            high_pred = np.maximum(high_pred, fold_p50)
+
+            current_prices = val_df["price"].values
+            actual_returns = y_val.values
+
+            # Fold-level directional accuracy
+            fold_hits = 0
+            for i in range(len(val_df)):
+                actual_ret = float(actual_returns[i])
+                mid_ret = float(fold_p50[i])
+                actual_dir = "up" if actual_ret > 0 else "down" if actual_ret < 0 else "flat"
+                pred_dir = "up" if mid_ret > 0 else "down" if mid_ret < 0 else "flat"
+                if pred_dir == actual_dir:
+                    fold_hits += 1
+
+            fold_acc = round(fold_hits / len(val_df) * 100, 1)
+            fold_metrics.append({
+                "fold": fold_id + 1,
+                "train_start": str(train_dates[0]),
+                "train_end": str(train_dates[-1]),
+                "val_start": str(val_dates[0]),
+                "val_end": str(val_dates[-1]),
+                "n_train": len(train_df),
+                "n_val": len(val_df),
+                "directional_accuracy": fold_acc,
+            })
+
+            # Build per-row records for pooled calibration
+            for i in range(len(val_df)):
+                mid_ret = float(fold_p50[i])
+                low_ret = float(low_pred[i])
+                high_ret = float(high_pred[i])
+                curr = float(current_prices[i])
+                actual_ret = float(actual_returns[i])
+
+                mid_price = curr * (1 + mid_ret / 100)
+                low_price = curr * (1 + low_ret / 100)
+                high_price = curr * (1 + high_ret / 100)
+
+                if mid_price == 0 or curr == 0:
+                    continue
+
+                range_pct = (high_price - low_price) / mid_price
+                change_pct = abs(mid_price - curr) / curr
+                actual_dir = "up" if actual_ret > 0 else "down" if actual_ret < 0 else "flat"
+                pred_dir = "up" if mid_ret > 0 else "down" if mid_ret < 0 else "flat"
+                hit = 1.0 if pred_dir == actual_dir else 0.0
+
+                oof_records.append({
+                    "range_pct": range_pct,
+                    "change_pct": change_pct,
+                    "hit": hit,
+                })
+
+        return oof_records, fold_metrics
+
+    def _calibrate_confidence(self, horizon, X_val=None, y_val=None, val_set=None,
+                               records_df=None):
         """Calibrate confidence thresholds from validation set predictions.
 
         Binary confidence (high/low only):
@@ -931,66 +1130,72 @@ class ItemForecaster:
           >= target_accuracy (default 80%) while maximizing coverage.
         - A change_pct floor prevents marking near-zero-move predictions as
           "high" confidence (they're correct but uninformative).
+
+        If records_df is provided (from CV OOF predictions), it skips the
+        prediction-computation step and uses the pre-built records directly.
         """
         target_accuracy = 0.80
         min_coverage_pct = 0.05
 
-        p50_pred = self._get_ensemble_prediction(horizon, 0.5, X_val.values)
-        p10_pred = self._get_ensemble_prediction(horizon, 0.1, X_val.values)
-        p90_pred = self._get_ensemble_prediction(horizon, 0.9, X_val.values)
-        if p50_pred is None or p10_pred is None or p90_pred is None:
-            return
+        if records_df is not None:
+            df = records_df
+        else:
+            p50_pred = self._get_ensemble_prediction(horizon, 0.5, X_val.values)
+            p10_pred = self._get_ensemble_prediction(horizon, 0.1, X_val.values)
+            p90_pred = self._get_ensemble_prediction(horizon, 0.9, X_val.values)
+            if p50_pred is None or p10_pred is None or p90_pred is None:
+                return
 
-        current_prices = val_set["price"].values
-        actual_returns = y_val.values
+            current_prices = val_set["price"].values
+            actual_returns = y_val.values
 
-        # Apply the same crossing-aware monotonicity correction for calibration
-        crossing_mask_cal = (p10_pred > p50_pred) | (p50_pred > p90_pred)
-        non_crossing_cal = ~crossing_mask_cal
-        low_pred = np.minimum(p10_pred, p50_pred)
-        high_pred = np.maximum(p90_pred, p50_pred)
-        if non_crossing_cal.any():
-            avg_half_width_cal = np.mean([
-                np.mean(p50_pred[non_crossing_cal] - p10_pred[non_crossing_cal]),
-                np.mean(p90_pred[non_crossing_cal] - p50_pred[non_crossing_cal]),
-            ])
-            if avg_half_width_cal > 0:
-                low_pred[crossing_mask_cal] = p50_pred[crossing_mask_cal] - avg_half_width_cal
-                high_pred[crossing_mask_cal] = p50_pred[crossing_mask_cal] + avg_half_width_cal
-        low_pred = np.minimum(low_pred, p50_pred)
-        high_pred = np.maximum(high_pred, p50_pred)
+            # Apply the same crossing-aware monotonicity correction for calibration
+            crossing_mask_cal = (p10_pred > p50_pred) | (p50_pred > p90_pred)
+            non_crossing_cal = ~crossing_mask_cal
+            low_pred = np.minimum(p10_pred, p50_pred)
+            high_pred = np.maximum(p90_pred, p50_pred)
+            if non_crossing_cal.any():
+                avg_half_width_cal = np.mean([
+                    np.mean(p50_pred[non_crossing_cal] - p10_pred[non_crossing_cal]),
+                    np.mean(p90_pred[non_crossing_cal] - p50_pred[non_crossing_cal]),
+                ])
+                if avg_half_width_cal > 0:
+                    low_pred[crossing_mask_cal] = p50_pred[crossing_mask_cal] - avg_half_width_cal
+                    high_pred[crossing_mask_cal] = p50_pred[crossing_mask_cal] + avg_half_width_cal
+            low_pred = np.minimum(low_pred, p50_pred)
+            high_pred = np.maximum(high_pred, p50_pred)
 
-        records = []
-        for i in range(len(val_set)):
-            mid_ret = float(p50_pred[i])
-            low_ret = float(low_pred[i])
-            high_ret = float(high_pred[i])
-            curr = float(current_prices[i])
-            actual_ret = float(actual_returns[i])
+            records = []
+            for i in range(len(val_set)):
+                mid_ret = float(p50_pred[i])
+                low_ret = float(low_pred[i])
+                high_ret = float(high_pred[i])
+                curr = float(current_prices[i])
+                actual_ret = float(actual_returns[i])
 
-            mid_price = curr * (1 + mid_ret / 100)
-            low_price = curr * (1 + low_ret / 100)
-            high_price = curr * (1 + high_ret / 100)
+                mid_price = curr * (1 + mid_ret / 100)
+                low_price = curr * (1 + low_ret / 100)
+                high_price = curr * (1 + high_ret / 100)
 
-            if mid_price == 0 or curr == 0:
-                continue
+                if mid_price == 0 or curr == 0:
+                    continue
 
-            range_pct = (high_price - low_price) / mid_price
-            change_pct = abs(mid_price - curr) / curr
-            actual_dir = "up" if actual_ret > 0 else "down" if actual_ret < 0 else "flat"
-            pred_dir = "up" if mid_ret > 0 else "down" if mid_ret < 0 else "flat"
-            hit = 1.0 if pred_dir == actual_dir else 0.0
+                range_pct = (high_price - low_price) / mid_price
+                change_pct = abs(mid_price - curr) / curr
+                actual_dir = "up" if actual_ret > 0 else "down" if actual_ret < 0 else "flat"
+                pred_dir = "up" if mid_ret > 0 else "down" if mid_ret < 0 else "flat"
+                hit = 1.0 if pred_dir == actual_dir else 0.0
 
-            records.append({
-                "range_pct": range_pct,
-                "change_pct": change_pct,
-                "hit": hit,
-            })
+                records.append({
+                    "range_pct": range_pct,
+                    "change_pct": change_pct,
+                    "hit": hit,
+                })
 
-        if len(records) < 50:
-            return
+            if len(records) < 50:
+                return
 
-        df = pd.DataFrame(records)
+            df = pd.DataFrame(records)
 
         # Find the widest range_pct threshold where accuracy >= target.
         # Wider threshold = more items get "high" confidence → better coverage.
@@ -1194,6 +1399,11 @@ class ItemForecaster:
                 sorted_fi = sorted(avg.items(), key=lambda x: x[1], reverse=True)[:20]
                 feature_importance[str(horizon)] = [{"feature": f, "importance": round(v, 4)} for f, v in sorted_fi]
 
+        # Serialize CV results (convert int keys to str for JSON)
+        cv_serial = {}
+        for h_str, cvdata in self.cv_results.items():
+            cv_serial[str(h_str)] = cvdata
+
         meta = {
             "feature_cols": self.feature_cols,
             "trained_at": str(self._now()),
@@ -1201,6 +1411,7 @@ class ItemForecaster:
             "feature_medians": medians_serial,
             "n_ensembles": self.N_ENSEMBLES,
             "feature_importance": feature_importance,
+            "cv_results": cv_serial,
         }
         with open(os.path.join(self.model_dir, "meta.json"), "w") as f:
             json.dump(meta, f)
