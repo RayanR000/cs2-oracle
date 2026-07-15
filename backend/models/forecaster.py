@@ -18,6 +18,30 @@ from models.item_parser import parse_item_name
 
 logger = logging.getLogger(__name__)
 
+RNG = np.random.RandomState(42)
+
+
+def _feature_group(name: str) -> str:
+    if any(name.startswith(p) for p in ("price_", "return_", "log_return_", "bb_",
+                                         "rsi_", "macd_", "vol_", "trend_",
+                                         "price_accel_", "autocorr_", "support_",
+                                         "volume_", "vol_price_")):
+        return "price_technicals"
+    if name.startswith("players_"):
+        return "player_counts"
+    if any(name.startswith(p) for p in ("is_", "quality_rank")):
+        return "item_identity"
+    if name.startswith("type_"):
+        return "item_metadata"
+    if any(name.startswith(p) for p in ("day_", "month_", "quarter_", "week_",
+                                         "item_age", "weekend")):
+        return "temporal"
+    if name.startswith("event_"):
+        return "events"
+    if any(name.startswith(p) for p in ("market_", "market_regime_")):
+        return "cross_sectional"
+    return "other"
+
 
 class ItemForecaster:
     HORIZONS = [3, 7, 14, 30]
@@ -38,11 +62,12 @@ class ItemForecaster:
     CV_STEP_DAYS = 200        # Days between each fold's validation window
     CV_MIN_TRAIN_DAYS = 200   # Minimum unique dates before first validation fold
 
-    def __init__(self, db_session, model_dir: str = None):
+    def __init__(self, db_session, model_dir: str = None, prune_failed_groups: bool = True):
         self.db = db_session
         self.model_dir = model_dir or str(Path(__file__).parent / "saved_models")
         self.models: Dict[Tuple[int, float], lgb.Booster] = {}
         self.feature_cols: List[str] = []
+        self.prune_failed_groups = prune_failed_groups
         # Per-horizon confidence thresholds: {horizon: {"high_range": ..., "high_change": ..., "high_accuracy": ...}}
         self.confidence_thresholds: Dict[int, Dict[str, float]] = {}
         self.feature_medians: pd.Series = pd.Series(dtype=np.float64)
@@ -714,6 +739,79 @@ class ItemForecaster:
             )
         return pruned
 
+    def _validate_feature_groups(
+        self, X_val: np.ndarray, y_val: np.ndarray,
+        feature_names: List[str], horizon: int = 7,
+        n_shuffles: int = 20, min_drop_pp: float = 0.5,
+    ) -> Dict[str, Dict]:
+        """Validate feature groups via permutation importance.
+
+        For each feature group, shuffles its columns on the validation set
+        and measures the directional accuracy drop vs the unshuffled baseline.
+        Groups with drops below `min_drop_pp` are flagged as non-contributing.
+
+        Uses the p50 (median) quantile model for the given horizon.
+
+        Returns:
+            {group_name: {"drop_pp": float, "base_acc": float,
+                          "shuffled_acc": float, "passed": bool,
+                          "feature_count": int, "features": [str]}}
+        """
+        model_key = (horizon, 0.5)
+        if model_key not in self.models:
+            return {}
+
+        model = self.models[model_key]
+        if isinstance(model, list):
+            model = model[0]
+
+        groups: Dict[str, List[str]] = {}
+        for i, name in enumerate(feature_names):
+            g = _feature_group(name)
+            groups.setdefault(g, []).append(name)
+
+        col_to_idx = {name: i for i, name in enumerate(feature_names)}
+        group_indices: Dict[str, List[int]] = {}
+        for g, feats in groups.items():
+            idxs = [col_to_idx[f] for f in feats if f in col_to_idx]
+            if idxs:
+                group_indices[g] = idxs
+
+        p50_idx = np.squeeze(model.predict(X_val))
+        base_acc = np.mean((p50_idx > 0) == (y_val > 0)) * 100
+
+        results = {}
+        for group, idxs in group_indices.items():
+            shuffled_accs = []
+            for _ in range(n_shuffles):
+                X_shuf = X_val.copy()
+                for i in idxs:
+                    RNG.shuffle(X_shuf[:, i])
+                p50_shuf = np.squeeze(model.predict(X_shuf))
+                acc = np.mean((p50_shuf > 0) == (y_val > 0)) * 100
+                shuffled_accs.append(acc)
+
+            mean_shuf = np.mean(shuffled_accs)
+            drop_pp = base_acc - mean_shuf
+            passed = drop_pp >= min_drop_pp
+            results[group] = {
+                "drop_pp": round(drop_pp, 2),
+                "base_acc": round(base_acc, 2),
+                "shuffled_acc": round(mean_shuf, 2),
+                "passed": passed,
+                "feature_count": len(idxs),
+                "features": groups[group],
+            }
+
+            status = "PASS" if passed else "WARN"
+            logger.info(
+                f"  [feat group] {group}: {drop_pp:+.2f}pp when shuffled "
+                f"({base_acc:.1f}% -> {mean_shuf:.1f}%) "
+                f"[{status}]"
+            )
+
+        return results
+
     def _compute_cv_splits(self, sorted_dates):
         """Compute expanding-window CV fold boundaries.
 
@@ -906,119 +1004,160 @@ class ItemForecaster:
             tdf = tdf.dropna(subset=[f"target_return_{horizon}d"]).copy()
             tdf = tdf.sort_values("date")
 
-            # Proper temporal walk-forward split (using actual data dates):
-            # Hold out the last VALIDATION_WINDOW_DAYS of calendar data.
-            max_date = pd.to_datetime(tdf["date"].max())
-            split_date = max_date - timedelta(days=self.VALIDATION_WINDOW_DAYS)
-            train_set = tdf[pd.to_datetime(tdf["date"]) < split_date]
-            val_set = tdf[pd.to_datetime(tdf["date"]) >= split_date]
+            for attempt in range(2):
+                if attempt == 1:
+                    logger.info(f"  Retry {horizon}d — pruned feature groups")
 
-            # Cap training size (keep most recent data)
-            if len(train_set) > max_rows:
-                train_set = train_set.tail(max_rows)
+                # Proper temporal walk-forward split (using actual data dates):
+                # Hold out the last VALIDATION_WINDOW_DAYS of calendar data.
+                max_date = pd.to_datetime(tdf["date"].max())
+                split_date = max_date - timedelta(days=self.VALIDATION_WINDOW_DAYS)
+                train_set = tdf[pd.to_datetime(tdf["date"]) < split_date]
+                val_set = tdf[pd.to_datetime(tdf["date"]) >= split_date]
 
-            if len(val_set) < 100:
-                logger.warning(f"  Validation set for {horizon}d has only {len(val_set)} rows; "
-                               "using last 20% of training data as fallback.")
-                split_idx = int(len(tdf) * 0.8)
-                train_set = tdf.iloc[:split_idx]
-                val_set = tdf.iloc[split_idx:]
+                # Cap training size (keep most recent data)
+                if len(train_set) > max_rows:
+                    train_set = train_set.tail(max_rows)
 
-            logger.info(f"  {horizon}d: {len(train_set)} train, {len(val_set)} val")
+                if len(val_set) < 100:
+                    logger.warning(f"  Validation set for {horizon}d has only {len(val_set)} rows; "
+                                   "using last 20% of training data as fallback.")
+                    split_idx = int(len(tdf) * 0.8)
+                    train_set = tdf.iloc[:split_idx]
+                    val_set = tdf.iloc[split_idx:]
 
-            # Replace INF with NaN before imputation (division-by-zero artifacts)
-            X_train_pre = train_set[self.feature_cols].replace([np.inf, -np.inf], np.nan)
-            feature_medians = X_train_pre.median()
-            self.feature_medians = feature_medians
-            X_train = X_train_pre.fillna(feature_medians)
-            y_train = train_set[f"target_return_{horizon}d"]
+                if attempt == 0:
+                    logger.info(f"  {horizon}d: {len(train_set)} train, {len(val_set)} val")
 
-            X_val = val_set[self.feature_cols].replace([np.inf, -np.inf], np.nan).fillna(feature_medians)
-            y_val = val_set[f"target_return_{horizon}d"]
+                # Replace INF with NaN before imputation (division-by-zero artifacts)
+                X_train_pre = train_set[self.feature_cols].replace([np.inf, -np.inf], np.nan)
+                feature_medians = X_train_pre.median()
+                self.feature_medians = feature_medians
+                X_train = X_train_pre.fillna(feature_medians)
+                y_train = train_set[f"target_return_{horizon}d"]
 
-            per_quantile_params = {}
-            for q in self.QUANTILES:
-                logger.info(f"  Searching hyperparams for {horizon}d p{int(q*100)} (Optuna)...")
-                best_params = self._optuna_search_params(X_train, y_train, X_val, y_val, quantile=q)
-                logger.info(f"Training {horizon}d p{int(q*100)} ensemble ({self.N_ENSEMBLES} members)...")
+                X_val = val_set[self.feature_cols].replace([np.inf, -np.inf], np.nan).fillna(feature_medians)
+                y_val = val_set[f"target_return_{horizon}d"]
 
-                base_params = {
-                    "objective": "quantile",
-                    "alpha": q,
-                    "metric": "quantile",
-                    "boosting_type": "gbdt",
-                    "min_gain_to_split": 0.1,
-                    "feature_fraction": 0.7,
-                    "bagging_fraction": 0.7,
-                    "bagging_freq": 5,
-                    "verbosity": -1,
-                    "n_jobs": -1,
-                }
-                # Merge Optuna results into base params
-                if best_params:
-                    for k in ("num_leaves", "learning_rate", "lambda_l1", "lambda_l2",
-                              "max_depth", "min_data_in_leaf"):
-                        if k in best_params:
-                            base_params[k] = best_params[k]
+                per_quantile_params = {}
+                for q in self.QUANTILES:
+                    logger.info(f"  Searching hyperparams for {horizon}d p{int(q*100)} (Optuna)...")
+                    best_params = self._optuna_search_params(X_train, y_train, X_val, y_val, quantile=q)
+                    logger.info(f"Training {horizon}d p{int(q*100)} ensemble ({self.N_ENSEMBLES} members)...")
+
+                    base_params = {
+                        "objective": "quantile",
+                        "alpha": q,
+                        "metric": "quantile",
+                        "boosting_type": "gbdt",
+                        "min_gain_to_split": 0.1,
+                        "feature_fraction": 0.7,
+                        "bagging_fraction": 0.7,
+                        "bagging_freq": 5,
+                        "verbosity": -1,
+                        "n_jobs": -1,
+                    }
+                    # Merge Optuna results into base params
+                    if best_params:
+                        for k in ("num_leaves", "learning_rate", "lambda_l1", "lambda_l2",
+                                  "max_depth", "min_data_in_leaf"):
+                            if k in best_params:
+                                base_params[k] = best_params[k]
+                    else:
+                        base_params["num_leaves"] = 31
+                        base_params["learning_rate"] = 0.03
+                        base_params["lambda_l1"] = 0.5
+                        base_params["lambda_l2"] = 0.5
+                        base_params["max_depth"] = 5
+                        base_params["min_data_in_leaf"] = 15
+
+                    per_quantile_params[q] = dict(base_params)
+
+                    ensemble_models = []
+                    for ei in range(self.N_ENSEMBLES):
+                        params = base_params.copy()
+                        params["random_state"] = self.ENSEMBLE_SEEDS[ei]
+
+                        dtrain = lgb.Dataset(X_train, y_train)
+                        dval = lgb.Dataset(X_val, y_val, reference=dtrain)
+                        model = lgb.train(
+                            params, dtrain,
+                            num_boost_round=1000,
+                            valid_sets=[dval],
+                            callbacks=[lgb.early_stopping(50), lgb.log_evaluation(0)]
+                        )
+                        ensemble_models.append(model)
+
+                    self.models[(horizon, q)] = ensemble_models
+                    fi = self._get_feature_importance(ensemble_models[0])
+                    logger.info(f"  Top features: {fi['feature'].head(5).tolist()}")
+
+                # Expanding-window CV evaluation using the best hyperparams
+                oof_records, cv_metrics = self._cv_evaluate_horizon(tdf, horizon, per_quantile_params)
+
+                # Calibrate confidence thresholds on pooled OOF predictions from CV
+                # (more robust than a single 21-day holdout)
+                if oof_records:
+                    records_df = pd.DataFrame(oof_records)
+                    logger.info(f"  Calibrating on {len(records_df)} pooled OOF predictions "
+                                f"({len(cv_metrics)} folds)")
+                    self._calibrate_confidence(horizon=horizon, records_df=records_df)
                 else:
-                    base_params["num_leaves"] = 31
-                    base_params["learning_rate"] = 0.03
-                    base_params["lambda_l1"] = 0.5
-                    base_params["lambda_l2"] = 0.5
-                    base_params["max_depth"] = 5
-                    base_params["min_data_in_leaf"] = 15
+                    logger.warning(f"  CV produced no OOF records; falling back to single-split calibration")
+                    self._calibrate_confidence(horizon=horizon, X_val=X_val, y_val=y_val, val_set=val_set)
 
-                per_quantile_params[q] = dict(base_params)
+                # Log CV fold-level metrics
+                if cv_metrics:
+                    fold_accs = [m["directional_accuracy"] for m in cv_metrics]
+                    mean_acc = np.mean(fold_accs)
+                    std_acc = np.std(fold_accs)
+                    logger.info(f"  CV ({len(cv_metrics)} folds): "
+                                f"mean={mean_acc:.1f}% sd={std_acc:.1f}% "
+                                f"range=[{min(fold_accs):.1f}%, {max(fold_accs):.1f}%]")
+                    self.cv_results[horizon] = {
+                        "fold_count": len(cv_metrics),
+                        "per_fold": cv_metrics,
+                        "mean_dir_acc": round(mean_acc, 1),
+                        "std_dir_acc": round(std_acc, 1) if len(fold_accs) > 1 else 0,
+                        "min_dir_acc": round(min(fold_accs), 1),
+                        "max_dir_acc": round(max(fold_accs), 1),
+                    }
 
-                ensemble_models = []
-                for ei in range(self.N_ENSEMBLES):
-                    params = base_params.copy()
-                    params["random_state"] = self.ENSEMBLE_SEEDS[ei]
-
-                    dtrain = lgb.Dataset(X_train, y_train)
-                    dval = lgb.Dataset(X_val, y_val, reference=dtrain)
-                    model = lgb.train(
-                        params, dtrain,
-                        num_boost_round=1000,
-                        valid_sets=[dval],
-                        callbacks=[lgb.early_stopping(50), lgb.log_evaluation(0)]
+                # Validate feature groups: permutation test on the held-out set
+                need_retrain = False
+                try:
+                    X_val_np = X_val.values if hasattr(X_val, "values") else X_val
+                    y_val_np = y_val.values if hasattr(y_val, "values") else y_val
+                    fv = self._validate_feature_groups(
+                        X_val_np, y_val_np, self.feature_cols,
+                        horizon=horizon, n_shuffles=20, min_drop_pp=0.5,
                     )
-                    ensemble_models.append(model)
+                    self.cv_results[horizon]["feature_validation"] = fv
+                    failed = [g for g, r in fv.items() if not r["passed"]]
+                    if failed:
+                        if self.prune_failed_groups and attempt == 0:
+                            failed_cols = set()
+                            for g in failed:
+                                for f in fv[g]["features"]:
+                                    failed_cols.add(f)
+                            pre_count = len(self.feature_cols)
+                            self.feature_cols = [c for c in self.feature_cols
+                                                  if c not in failed_cols]
+                            logger.warning(
+                                f"  Pruned {len(failed_cols)} features from non-causal groups "
+                                f"{failed} ({pre_count} -> {len(self.feature_cols)}). Retraining."
+                            )
+                            need_retrain = True
+                        else:
+                            logger.warning(
+                                f"  Feature groups with no causal signal: {failed}. "
+                                f"({'Auto-prune disabled' if not self.prune_failed_groups else 'Already re-trained.'})"
+                            )
+                except Exception as e:
+                    logger.warning(f"  Feature validation skipped: {e}")
 
-                self.models[(horizon, q)] = ensemble_models
-                fi = self._get_feature_importance(ensemble_models[0])
-                logger.info(f"  Top features: {fi['feature'].head(5).tolist()}")
-
-            # Expanding-window CV evaluation using the best hyperparams
-            oof_records, cv_metrics = self._cv_evaluate_horizon(tdf, horizon, per_quantile_params)
-
-            # Calibrate confidence thresholds on pooled OOF predictions from CV
-            # (more robust than a single 21-day holdout)
-            if oof_records:
-                records_df = pd.DataFrame(oof_records)
-                logger.info(f"  Calibrating on {len(records_df)} pooled OOF predictions "
-                            f"({len(cv_metrics)} folds)")
-                self._calibrate_confidence(horizon=horizon, records_df=records_df)
-            else:
-                logger.warning(f"  CV produced no OOF records; falling back to single-split calibration")
-                self._calibrate_confidence(horizon=horizon, X_val=X_val, y_val=y_val, val_set=val_set)
-
-            # Log CV fold-level metrics
-            if cv_metrics:
-                fold_accs = [m["directional_accuracy"] for m in cv_metrics]
-                mean_acc = np.mean(fold_accs)
-                std_acc = np.std(fold_accs)
-                logger.info(f"  CV ({len(cv_metrics)} folds): "
-                            f"mean={mean_acc:.1f}% sd={std_acc:.1f}% "
-                            f"range=[{min(fold_accs):.1f}%, {max(fold_accs):.1f}%]")
-                self.cv_results[horizon] = {
-                    "fold_count": len(cv_metrics),
-                    "per_fold": cv_metrics,
-                    "mean_dir_acc": round(mean_acc, 1),
-                    "std_dir_acc": round(std_acc, 1) if len(fold_accs) > 1 else 0,
-                    "min_dir_acc": round(min(fold_accs), 1),
-                    "max_dir_acc": round(max(fold_accs), 1),
-                }
+                if not need_retrain:
+                    break
 
             del tdf
 

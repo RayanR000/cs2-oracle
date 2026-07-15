@@ -54,8 +54,8 @@ Real and shuffled accuracy are **identical** to within 0.03pp. The +3pp A/B delt
 |--------|---------|
 | `scripts/backfill_player_counts_to_parquet.py` | One-time: SQLite DB → `player-counts-*.parquet` |
 | `scripts/ab_test_player_counts.py` | Reusable A/B harness |
-| `scripts/permutation_test_player_counts.py` | Permutation importance test |
 | `collectors/player_counts.py` | Ongoing hourly/daily collection from Steam API |
+| `models/forecaster.py` | `_validate_feature_groups()` — built-in permutation test during train |
 | `.github/workflows/aggregator-update.yml` | Daily append to Parquet (via `--player-counts-csv`) |
 
 ## Remaining Items

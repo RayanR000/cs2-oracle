@@ -38,17 +38,15 @@ The model has no concept of supply constraints. Items from rare collections (Dis
 
 ---
 
-### 3. SHAP-based feature elimination
+### 3. Permutation-based feature validation + auto-prune (DONE ✅)
 
-Current feature pruning is correlation-only (removes pairs with r > 0.95). SHAP importance would identify features with near-zero predictive contribution and remove them, reducing noise.
+**Replaces:** the original SHAP-based elimination idea.
 
-**Implementation:**
-- After training, compute SHAP values on validation set
-- Remove features in the bottom N% of mean absolute SHAP
-- Retrain with pruned feature set
+Built into `train()`: after CV, `_validate_feature_groups()` runs a fast permutation test on each feature group (e.g., `player_counts`, `price_technicals`, `events`) using the held-out validation set. Groups that drop less than 0.5pp when shuffled are flagged.
 
-**Effort:** Low (add SHAP computation post-training, prune bottom features)
-**Impact estimate:** +1-3pp (noise reduction, better generalization)
+`prune_failed_groups=True` (default): when a group fails validation, its features are removed and the horizon is **retrained** without them. This prevents the spurious-accuracy-from-extra-capacity problem automatically.
+
+**Configuration:** `ItemForecaster(db, prune_failed_groups=False)` to disable auto-prune during debugging.
 
 ---
 
@@ -161,17 +159,19 @@ Currently 15 Optuna trials per quantile per horizon (60 total). Increasing to 30
 
 ## Summary priority matrix
 
-| # | Improvement | Effort | Impact | Data needed? | Already noted? |
-|---|-------------|--------|--------|-------------|----------------|
-| 1 | Player count | Low | +1-3pp | Collected | brainstorm #8 |
-| 2 | Supply-side features | Medium | +3-6pp | Schema change | No |
-| 3 | SHAP pruning | Low | +1-3pp | No | **No** |
-| 4 | Event decay opt | Low | +1-2pp | No | brainstorm #7 |
-| 5 | Multi-horizon | Medium | +2-4pp | No | brainstorm #13 |
-| 6 | Listing count | Medium | +3-8pp | New collection | **No** |
-| 7 | Sub-models | High | +2-5pp | No | brainstorm #14 |
-| 8 | Conformal pred | Medium | Intervals only | No | brainstorm #12 |
-| 9 | More training data | Low | +1-2pp | Collected | No |
-| 10 | More HP trials | Trivial | +0.5-1pp | No | No |
+| # | Improvement | Effort | Impact | Data needed? | Already noted? | Status |
+|---|-------------|--------|--------|-------------|----------------|--------|
+| 1 | Player count | Low | +1-3pp | Collected | brainstorm #8 | **Done** — zero causal impact |
+| 2 | Supply-side features | Medium | +3-6pp | Schema change | No | Pending |
+| 3 | Permutation-based auto-prune | Low | Prevents overfit | No | **No** | **Done** |
+| 4 | Event decay opt | Low | +1-2pp | No | brainstorm #7 | Pending |
+| 5 | Multi-horizon | Medium | +2-4pp | No | brainstorm #13 | Pending |
+| 6 | Listing count | Medium | +3-8pp | New collection | **No** | Pending |
+| 7 | Sub-models | High | +2-5pp | No | brainstorm #14 | Pending |
+| 8 | Conformal pred | Medium | Intervals only | No | brainstorm #12 | Pending |
+| 9 | More training data | Low | +1-2pp | Collected | No | Pending |
+| 10 | More HP trials | Trivial | +0.5-1pp | No | No | Pending |
 
-**Top recommendation:** Start with **#3 (SHAP pruning)** and **#1 (player count)** — both are low-effort, no new data collection needed, and together could add 2-6pp.
+**Top recommendation:** Start with **#2 (supply-side features)** — highest remaining impact opportunity.
+
+**Guardrail:** Any new feature group must pass `_validate_feature_groups()` (built-in permutation test during `train()`) or it will be auto-pruned. This applies to all items above.
