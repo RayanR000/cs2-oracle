@@ -127,9 +127,11 @@ def run_walkforward_evaluation(max_items=500):
         for horizon in ItemForecaster.HORIZONS:
             logger.info(f"\n  Evaluating {horizon}d horizon...")
 
-            # Build features for all items
+            # Build features for all items (must match build_training_data order)
             df = forecaster.engineer_features(all_prices, events_df)
+            df = forecaster._add_weapon_type_cross_sectional_features(df)
             df = forecaster._add_cross_sectional_features(df)
+            df = forecaster._add_player_count_features(df)
 
             # Prepare targets (date-based)
             tdf = forecaster.prepare_targets(df, horizon)

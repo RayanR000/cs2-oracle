@@ -1482,8 +1482,9 @@ class ItemForecaster:
                         if cf is None:
                             continue
                         cf[key] = float(vals[i])
-                        cf["direction"] = "flat"
-                        cf["confidence"] = "low"
+                        if key == "mid":
+                            cf["direction"] = "flat"
+                            cf["confidence"] = "low"
         if "volume" in result_df.columns:
             zero_vol = result_df["volume"].fillna(0) == 0
             if zero_vol.any():
