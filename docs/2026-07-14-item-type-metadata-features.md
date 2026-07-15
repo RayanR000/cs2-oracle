@@ -65,4 +65,6 @@ Walk-forward evaluation on 50 items across 2022-2026 parquet archive (26 expandi
 ## Next Steps
 
 - The type feature is a simple one-hot encoding. A richer representation (e.g., learned embeddings via category-wise feature interactions in LightGBM's categorical support) could yield more.
-- Item metadata could be extended with rarity (blue/purple/pink/red/gold), collection name, or weapon type — parsed from the `name` field or added to the `items` table schema.
+- ~~Item metadata could be extended with rarity (blue/purple/pink/red/gold), collection name, or weapon type — parsed from the `name` field or added to the `items` table schema.~~
+- **✅ Done:** Rarity and weapon_type features implemented (2026-07-15). See `docs/changelog/2026-07-15-supply-side-features.md`. Impact: +0.66pp avg directional accuracy.
+- **Outstanding:** Collection name parsing — requires `csmarketapi_reference.db` backfill which was never run.

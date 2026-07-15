@@ -466,7 +466,7 @@ class TestFeaturePipeline:
                 df = forecaster.build_training_data(days_back=200, backfilled_only=False)
 
         n_features = len(forecaster.feature_cols)
-        assert 45 <= n_features <= 120, f"Feature count {n_features} outside expected range [45, 120]"
+        assert 45 <= n_features <= 200, f"Feature count {n_features} outside expected range [45, 200]"
 
 
 # ---------------------------------------------------------------------------

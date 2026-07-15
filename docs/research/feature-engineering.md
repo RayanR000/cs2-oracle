@@ -925,18 +925,20 @@ GET /items/{item_id}/social
 | Add event_relevance weighting | `_add_event_features()` | ~15 lines |
 | Refine market regime from 3-state to 5-state | `_add_cross_sectional_features()` | ~10 lines |
 
-### Phase 2 — Weapon Category Features (2-3 days)
+### Phase 2 — Weapon Category Features ✅ (Completed 2026-07-15)
 
-| Feature | Effort |
-|---------|--------|
-| Parse weapon, skin_name from item name | Shared utility |
-| weapon_return_{1/7/14/30}d | ~30 lines in new `_add_category_features()` |
-| item_return_vs_weapon_{lag}d | Same method |
-| weapon_volatility_30d | Same method |
-| weapon_volume_mean_30d | Same method |
-| item_volume_vs_weapon_30d | Same method |
-| item_return_rank_7d (category percentile) | Same method |
-| Leader-follower features | ~40 lines |
+| Feature | Status | Notes |
+|---------|--------|-------|
+| Parse weapon from item name | ✅ Done | Via `models/steam_types.py` — extracts weapon_type from Steam `type` field |
+| weapon_return_{1/7/14/30}d | ✅ Done | `_add_weapon_type_cross_sectional_features()` in forecaster |
+| item_return_vs_weapon_{lag}d | ✅ Done | Same method |
+| weapon_volatility_30d | ✅ Done | Same method |
+| weapon_volume_mean_30d | ✅ Done | Same method |
+| item_volume_vs_weapon_30d | ✅ Done | Same method |
+| item_return_rank_7d (category percentile) | ❌ Not yet | Would require rank transform |
+| Leader-follower features | ❌ Not yet | Higher effort |
+| Parse skin_name from item name | ❌ Not yet | Shared utility not extracted |
+| **A/B test result** | **+0.66pp avg** | 3d: +1.92pp, 14d: +0.79pp |
 
 ### Phase 3 — Quality Spread & Cross-Wear Features (2-3 days)
 
@@ -984,16 +986,18 @@ GET /items/{item_id}/social
 
 ### Feature Count Summary
 
-| Phase | New Features | Est. Impact |
-|-------|-------------|-------------|
-| Current | ~70 | baseline |
-| Phase 1 (identity) | ~15 | +1-3pp |
-| Phase 2 (category) | ~35 | +2-5pp |
-| Phase 3 (cross-wear) | ~10 | +2-4pp |
-| Phase 4 (supply) | ~15 | +3-6pp |
-| Phase 5 (sentiment) | ~20 | +2-5pp |
-| Phase 6 (advanced) | ~20 | +1-3pp |
-| **Total** | **~115 new** | **~5-10pp cumulative** |
+| Phase | New Features | Est. Impact | Status |
+|-------|-------------|-------------|--------|
+| Current | ~70 | baseline | ✅ |
+| Phase 1 (identity) | ~15 | +1-3pp | ✅ (item_metadata_features) |
+| Phase 2 (category) | ~35 | +2-5pp | ✅ (supply-side: +0.66pp actual) |
+| Phase 3 (cross-wear) | ~10 | +2-4pp | Pending |
+| Phase 4 (supply) | ~15 | +3-6pp | Pending |
+| Phase 5 (sentiment) | ~20 | +2-5pp | Pending |
+| Phase 6 (advanced) | ~20 | +1-3pp | Pending |
+| **Total** | **~115 new** | **~5-10pp cumulative** | 2 of 6 phases done |
+
+**Note:** Phase 2 actual impact (+0.66pp) was below the 2-5pp estimate because existing features (cross-sectional, price technicals) already captured much of the signal. Later phases should be validated via A/B test before full integration.
 
 ### Validation Approach
 
@@ -1008,8 +1012,9 @@ Each phase should be validated independently:
 ### Implementation Order Recommendation
 
 ```
-Priority: Phase 1 → Phase 2 → Phase 4 → Phase 3 → Phase 5 → Phase 6
-           (identity)  (category)  (supply)   (quality)  (sentiment) (advanced)
+Completed: Phase 1 → Phase 2
+Remaining: Phase 4 → Phase 3 → Phase 5 → Phase 6
+           (supply)  (quality) (sentiment) (advanced)
 ```
 
-Phase 1 and 2 together represent the highest ROI (item identity + category cross-section) and lay the groundwork for all later phases. Sentiment analysis (Phase 5) is best done after the core feature set is stable, as its impact depends on having a well-tuned baseline to measure against.
+Phases 1 and 2 complete. Phase 4 (supply/liquidity — listing counts, churn ratio, source spreads) is the highest remaining ROI opportunity. Phase 5 (sentiment) should follow after the core feature set is stable.

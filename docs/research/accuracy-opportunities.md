@@ -96,11 +96,13 @@ Date: 2026-07-14
 
 ## Priority Order
 
-1. **Category features + Regime-switching models** — biggest win, moderate effort
-2. **Increase Optuna trials + per-cluster models** — better fit for diverse item types
-3. **Steam player count + listing volume** — new external signals
-4. **Directional smoothing + ensemble expansion** — quick post-processing wins
-5. **Neural model hybrid (N-BEATS/TFT)** — longer-term investment
+1. **⚠️ Completed: Supply-side features** — rarity + weapon_type + weapon-type cross-sectional. Actual impact +0.66pp avg (below 3-6pp estimate).
+2. **⚠️ Completed: Player count** — zero causal impact (permutation test).
+3. **🔥 Top remaining: Event decay optimization** + **Multi-horizon joint training** — moderate effort, 2-4pp potential each.
+4. **Listing volume / supply depth** — new external data collection needed.
+5. **Regime-switching models / per-cluster models** — moderate-to-high effort, 3-8pp potential.
+6. **Directional smoothing + ensemble expansion** — quick post-processing wins.
+7. **Neural model hybrid (N-BEATS/TFT)** — longer-term investment.
 
 ---
 

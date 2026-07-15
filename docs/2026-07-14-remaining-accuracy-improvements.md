@@ -22,19 +22,17 @@ Below are the remaining opportunities, grouped by estimated impact and effort.
 
 ---
 
-## High Impact (~3-8pp potential)
+### 2. Supply-side features (rarity, weapon_type, weapon-type cross-sectional) ✅
 
-### 2. Supply-side features (collection rarity, wear tiers)
+**Status:** Implemented and A/B tested. See `docs/changelog/2026-07-15-supply-side-features.md`.
 
-The model has no concept of supply constraints. Items from rare collections (Disco Volante, etc.) or high-wear tiers have fundamentally different supply dynamics than common skins. If the `items` table can be extended with `rarity`, `collection`, or `weapon_type`, these would be high-value features.
+**Actual impact:** **+0.66pp avg** directional accuracy (3d: +1.92pp, 7d: -0.16pp, 14d: +0.79pp, 30d: +0.08pp). Below the 3-6pp estimate because existing features already capture much of the signal. Impact concentrated at short horizons.
 
-**Implementation:**
-- Add columns to items table or parse from item name
-- One-hot encode as categorical features
-- Alternatively, collect float/pattern distribution data from third-party markets
-
-**Effort:** Medium (needs schema change or name parsing)
-**Impact estimate:** +3-6pp
+**Key files:**
+- `models/steam_types.py` — Steam type field parser (rarity + weapon_type extraction)
+- `scripts/backfill_supply_metadata.py` — backfill script (catalog → Parquet + DB)
+- `models/forecaster.py` — `_fetch_supply_metadata()`, `_add_supply_side_features()`, `_add_weapon_type_cross_sectional_features()`
+- `price-archive/item-metadata.parquet` — 8,691 items, 109 KB
 
 ---
 
@@ -162,7 +160,7 @@ Currently 15 Optuna trials per quantile per horizon (60 total). Increasing to 30
 | # | Improvement | Effort | Impact | Data needed? | Already noted? | Status |
 |---|-------------|--------|--------|-------------|----------------|--------|
 | 1 | Player count | Low | +1-3pp | Collected | brainstorm #8 | **Done** — zero causal impact |
-| 2 | Supply-side features | Medium | +3-6pp | Schema change | No | Pending |
+| 2 | Supply-side features | Medium | +3-6pp | Schema change | No | **Done** — +0.66pp actual |
 | 3 | Permutation-based auto-prune | Low | Prevents overfit | No | **No** | **Done** |
 | 4 | Event decay opt | Low | +1-2pp | No | brainstorm #7 | Pending |
 | 5 | Multi-horizon | Medium | +2-4pp | No | brainstorm #13 | Pending |
@@ -172,6 +170,6 @@ Currently 15 Optuna trials per quantile per horizon (60 total). Increasing to 30
 | 9 | More training data | Low | +1-2pp | Collected | No | Pending |
 | 10 | More HP trials | Trivial | +0.5-1pp | No | No | Pending |
 
-**Top recommendation:** Start with **#2 (supply-side features)** — highest remaining impact opportunity.
+**Top recommendation:** **#4 (event decay optimization)** or **#5 (multi-horizon)** — highest remaining impact opportunities now that supply-side is done.
 
 **Guardrail:** Any new feature group must pass `_validate_feature_groups()` (built-in permutation test during `train()`) or it will be auto-pruned. This applies to all items above.

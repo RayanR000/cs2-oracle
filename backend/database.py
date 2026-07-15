@@ -52,12 +52,19 @@ class Item(Base):
     created_at = Column(DateTime, default=utcnow_naive)
     updated_at = Column(DateTime, default=utcnow_naive, onupdate=utcnow_naive)
     is_backfilled = Column(Integer, default=0)  # boolean: has CSMarketAPI historical series
-    
+
+    # Supply-side metadata (populated from Steam Market type field)
+    rarity = Column(String(50), nullable=True)       # e.g. covert, milspec, restricted, classified, consumer, industrial, base, etc.
+    rarity_rank = Column(Integer, nullable=True)      # ordinal 0-6 (higher = rarer)
+    weapon_type = Column(String(50), nullable=True)   # e.g. rifle, pistol, smg, knife, glove, sticker, case, charm, etc.
+
     price_histories = relationship("PriceHistory", back_populates="item", cascade="all, delete-orphan")
     forecasts = relationship("ItemForecast", back_populates="item", cascade="all, delete-orphan")
-    
+
     __table_args__ = (
         Index('idx_item_type', 'type'),
+        Index('idx_item_rarity', 'rarity'),
+        Index('idx_item_weapon_type', 'weapon_type'),
     )
 
 class PriceHistory(Base):
