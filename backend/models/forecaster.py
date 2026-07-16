@@ -1028,7 +1028,14 @@ class ItemForecaster:
         """
         import optuna
 
-        n_trials = 15
+        n_trials = 8
+
+        # Build the binned Dataset once and reuse across all trials. Only tree
+        # params (num_leaves, learning_rate, ...) vary between trials; the data
+        # and its binning (max_bin) are constant, so there's no need to re-bin.
+        ds_params = {"max_bin": 127}
+        dtrain = lgb.Dataset(X_train, y_train, params=ds_params)
+        dval = lgb.Dataset(X_val, y_val, reference=dtrain, params=ds_params)
 
         def objective(trial):
             params = {
@@ -1039,6 +1046,7 @@ class ItemForecaster:
                 "verbosity": -1,
                 "n_jobs": -1,
                 "random_state": 42,
+                "max_bin": 127,
                 "num_leaves": trial.suggest_int("num_leaves", 15, 63, step=8),
                 "learning_rate": trial.suggest_float("learning_rate", 0.005, 0.08, log=True),
                 "lambda_l1": trial.suggest_float("lambda_l1", 0.0, 2.0, step=0.5),
@@ -1050,8 +1058,6 @@ class ItemForecaster:
                 "bagging_fraction": 0.7,
                 "bagging_freq": 5,
             }
-            dtrain = lgb.Dataset(X_train, y_train)
-            dval = lgb.Dataset(X_val, y_val, reference=dtrain)
             model = lgb.train(
                 params, dtrain,
                 num_boost_round=200,
@@ -1061,7 +1067,7 @@ class ItemForecaster:
             return model.best_score["valid_0"]["quantile"]
 
         sampler = optuna.samplers.TPESampler(seed=42)
-        pruner = optuna.pruners.MedianPruner(n_startup_trials=5, n_warmup_steps=10)
+        pruner = optuna.pruners.MedianPruner(n_startup_trials=3, n_warmup_steps=10)
         study = optuna.create_study(direction="minimize", sampler=sampler, pruner=pruner)
         study.optimize(objective, n_trials=n_trials, show_progress_bar=False)
 
@@ -1287,6 +1293,14 @@ class ItemForecaster:
                 X_val = val_set[self.feature_cols].replace([np.inf, -np.inf], np.nan).fillna(feature_medians)
                 y_val = val_set[f"target_return_{horizon}d"]
 
+                # Build the binned Dataset once per horizon and reuse it across
+                # all quantiles and ensemble members. X/y and binning are
+                # identical for every quantile (only the objective's alpha
+                # changes), so rebuilding per fit just re-bins the same matrix.
+                ds_params = {"max_bin": 127}
+                dtrain = lgb.Dataset(X_train, y_train, params=ds_params)
+                dval = lgb.Dataset(X_val, y_val, reference=dtrain, params=ds_params)
+
                 per_quantile_params = {}
                 for q in self.QUANTILES:
                     logger.info(f"  Searching hyperparams for {horizon}d p{int(q*100)} (Optuna)...")
@@ -1302,6 +1316,7 @@ class ItemForecaster:
                         "feature_fraction": 0.7,
                         "bagging_fraction": 0.7,
                         "bagging_freq": 5,
+                        "max_bin": 127,
                         "verbosity": -1,
                         "n_jobs": -1,
                     }
@@ -1326,8 +1341,6 @@ class ItemForecaster:
                         params = base_params.copy()
                         params["random_state"] = self.ENSEMBLE_SEEDS[ei]
 
-                        dtrain = lgb.Dataset(X_train, y_train)
-                        dval = lgb.Dataset(X_val, y_val, reference=dtrain)
                         model = lgb.train(
                             params, dtrain,
                             num_boost_round=1000,
@@ -1682,6 +1695,11 @@ class ItemForecaster:
             X_val = val_df[self.feature_cols].replace([np.inf, -np.inf], np.nan).fillna(fold_medians)
             y_val = val_df[f"target_return_{horizon}d"]
 
+            # Build the fold's binned Dataset once; reuse across all quantiles.
+            ds_params = {"max_bin": 127}
+            dtrain = lgb.Dataset(X_train, y_train, params=ds_params)
+            dval = lgb.Dataset(X_val, y_val, reference=dtrain, params=ds_params)
+
             for q in self.QUANTILES:
                 lgb_preds = []
 
@@ -1694,8 +1712,6 @@ class ItemForecaster:
                 params["n_jobs"] = -1
                 params["random_state"] = 42
 
-                dtrain = lgb.Dataset(X_train, y_train)
-                dval = lgb.Dataset(X_val, y_val, reference=dtrain)
                 model = lgb.train(
                     params, dtrain,
                     num_boost_round=200,
