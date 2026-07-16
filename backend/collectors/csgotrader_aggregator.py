@@ -105,6 +105,19 @@ class CSGOTraderAggregator:
             candidates.append(name[2:].strip())
         if name.lower().startswith("souvenir charm | "):
             candidates.append("Souvenir | " + name.split("| ", 1)[1])
+
+        stripped_stattrak = re.sub(
+            r"^\s*(★\s*)?StatTrak™\s*", "", name, flags=re.IGNORECASE
+        ).strip()
+        if stripped_stattrak != name:
+            candidates.append(stripped_stattrak)
+
+        stripped_souvenir = re.sub(
+            r"^\s*Souvenir\s+", "", name, flags=re.IGNORECASE
+        ).strip()
+        if stripped_souvenir != name and stripped_souvenir not in candidates:
+            candidates.append(stripped_souvenir)
+
         return list(dict.fromkeys(candidate.strip() for candidate in candidates if candidate.strip()))
 
     def fetch_all_market_data(self) -> Dict[str, Dict[str, dict]]:
@@ -266,15 +279,23 @@ class CSGOTraderAggregator:
 
                 if src_name == "steam":
                     p24 = _get_safe(info.get("last_24h"))
+                    p7 = _get_safe(info.get("last_7d"))
+                    p30 = _get_safe(info.get("last_30d"))
+                    p90 = _get_safe(info.get("last_90d"))
+
                     if p24 is not None:
                         sources["steam"] = (p24, 0, now)
-                    p7 = _get_safe(info.get("last_7d"))
+                    elif p7 is not None:
+                        sources["steam"] = (p7, 0, now)
+                    elif p30 is not None:
+                        sources["steam"] = (p30, 0, now)
+                    elif p90 is not None:
+                        sources["steam"] = (p90, 0, now)
+
                     if p7 is not None:
                         sources["steam_7d"] = (p7, None, now)
-                    p30 = _get_safe(info.get("last_30d"))
                     if p30 is not None:
                         sources["steam_30d"] = (p30, None, now)
-                    p90 = _get_safe(info.get("last_90d"))
                     if p90 is not None:
                         sources["steam_90d"] = (p90, None, now)
 
