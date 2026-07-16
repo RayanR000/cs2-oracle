@@ -100,8 +100,8 @@ Date: 2026-07-14
 2. **✅ Completed: Player count** — **Removed**. +3.0pp A/B but **0pp** causal (extra model capacity inflation). Permutation test: shuffled = real to within 0.03pp.
 3. **✅ Completed: Event decay optimization** — **0pp**. Coordinate-wise tau grid search found defaults were already optimal. Walk-forward A/B: "optimal" taus degraded by -0.57pp.
 4. **✅ Completed: Auto-prune (permutation-based feature validation)** — prevents overfit by removing feature groups that fail permutation test.
-5. **🔥 Multi-source outlier voting** — highest remaining ROI. Not a feature group (no diminishing returns), improves quality of ALL existing features.
-6. **Listing volume / supply depth** — new external data collection. Novel signal (current features have zero supply-side data).
+5. **✅ Completed: Multi-source outlier voting** — **0pp on training, essential for inference**. 99.6% of training data is single-source STEAMCOMMUNITY backfill; voting only affects 0.4% of rows. At inference, 96.4% of items see >0.5% price correction on current_price. See `docs/2026-07-14-remaining-accuracy-improvements.md` for full analysis.
+6. **🔥 Listing volume / supply depth** — highest remaining ROI. New external data collection. Novel signal (current features have zero supply-side data).
 7. **Regime-switching models** — moderate effort, 2-4pp during volatile periods (lower averaged).
 8. **Multi-horizon joint training** — moderate effort, 1-2pp potential.
 9. **Quality spread / cross-wear features** — genuinely new signal, 1-2pp potential.
@@ -130,6 +130,7 @@ Every completed feature group was measured. The pattern is consistent:
 | Player counts | +2-4pp | **0pp** (spurious +3pp A/B) | — |
 | Event decay optimization | Small | **0pp** | — |
 | CatBoost | not est. | **-18 to -20pp** | — |
+| Multi-source outlier voting | +2-4pp | **0pp train / essential inference** | Pre-backfill estimate; 99.6% training data now single-source |
 
 ### Root Causes
 
@@ -144,7 +145,7 @@ Every completed feature group was measured. The pattern is consistent:
 For any new feature group added to the current ~70-feature set:
 - **Novel signal** (genuinely new information like supply listings, source spreads): expect **30-50% of pre-estimate**, floor 1pp
 - **Proxied signal** (information the model can infer from price behavior): expect **10-20% of pre-estimate**, floor 0pp
-- **Data quality improvements** (outlier voting, source reliability): **not subject to diminishing returns** — improves ALL existing features. Keep original estimate.
+- **Data quality improvements** (outlier voting, source reliability): **not subject to diminishing returns** — improves ALL existing features. BUT: if 99%+ of training data is already single-source backfill, the training impact is ~0pp. Impact concentrated at inference time (latest multi-source prices).
 
 ### Cumulative Ceiling
 

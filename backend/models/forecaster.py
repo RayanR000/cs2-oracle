@@ -108,17 +108,24 @@ class ItemForecaster:
                         """).fetchall()
                     }
                 rows = con.sql(f"""
-                    SELECT item_slug, day, mean_price AS price, volume
+                    SELECT item_slug, day, source, mean_price AS price, volume
                     FROM read_parquet('{archive_dir}/prices-*.parquet')
                     WHERE day >= ?
-                    ORDER BY item_slug, day
+                      AND source NOT LIKE 'historical_fallback:%'
+                    ORDER BY item_slug, day, source
                 """, params=[cutoff]).fetchall()
                 if backfilled_slugs is not None:
                     rows = [r for r in rows if r[0] in backfilled_slugs]
-                df = pd.DataFrame(rows, columns=["item_id", "timestamp", "price", "volume"])
+                df = pd.DataFrame(rows, columns=["item_id", "timestamp", "price", "volume", "source"])
                 df["timestamp"] = pd.to_datetime(df["timestamp"])
                 df["date"] = df["timestamp"].dt.date
-                logger.info(f"  {len(df):,} rows (Parquet), {df.item_id.nunique():,} items")
+                n_before = len(df)
+                n_sources_before = df["source"].nunique() if "source" in df.columns else 1
+                df = self._apply_multi_source_voting(df)
+                n_after = len(df)
+                logger.info(f"  {n_after:,} rows (Parquet, voted from {n_before:,} rows "
+                            f"across {n_sources_before} sources), "
+                            f"{df.item_id.nunique():,} items")
                 if backfilled_only:
                     logger.info(f"  Filtered to STEAMCOMMUNITY-backfilled items only")
                 return df
@@ -127,19 +134,91 @@ class ItemForecaster:
 
         cutoff = self._now() - timedelta(days=days_back)
         rows = self.db.execute(text("""
-            SELECT item_id, date(timestamp) AS day, AVG(price) AS price, SUM(volume) AS volume
+            SELECT item_id, date(timestamp) AS day, source, AVG(price) AS price, SUM(volume) AS volume
             FROM price_history
             WHERE timestamp >= :cutoff
               AND source NOT LIKE 'synthetic_demo'
               AND source NOT LIKE 'historical_fallback:%'
-            GROUP BY item_id, date(timestamp)
+            GROUP BY item_id, date(timestamp), source
             ORDER BY item_id, day
         """), {"cutoff": cutoff}).fetchall()
-        df = pd.DataFrame(rows, columns=["item_id", "timestamp", "price", "volume"])
+        if not rows:
+            logger.info("  No DB price history rows found")
+            return pd.DataFrame(columns=["item_id", "timestamp", "price", "volume", "date"])
+        df = pd.DataFrame(rows, columns=["item_id", "timestamp", "price", "volume", "source"])
         df["timestamp"] = pd.to_datetime(df["timestamp"])
         df["date"] = df["timestamp"].dt.date
-        logger.info(f"  {len(df):,} rows, {df.item_id.nunique():,} items")
+        n_before = len(df)
+        n_sources_before = df["source"].nunique() if "source" in df.columns else 1
+        df = self._apply_multi_source_voting(df)
+        n_after = len(df)
+        logger.info(f"  {n_after:,} rows (DB, voted from {n_before:,} rows "
+                    f"across {n_sources_before} sources), "
+                    f"{df.item_id.nunique():,} items")
         return df
+
+    @staticmethod
+    def _apply_multi_source_voting(df: pd.DataFrame) -> pd.DataFrame:
+        """Apply multi-source outlier voting to get a single consensus price per item per day.
+
+        For each (item_id, date) with >= 3 sources:
+        - Compute median and std of source prices
+        - Reject sources > 2 std from the median consensus
+        - Use median of remaining sources
+        For < 3 sources: use simple median.
+
+        This is a data quality improvement — not a new feature dimension.
+        Reducing noise in the target price improves ALL downstream features
+        (lags, returns, rolling stats, Bollinger, RSI, MACD, volume features).
+        """
+        if "source" not in df.columns:
+            unique_rows = df.groupby(["item_id", "date"]).size()
+            already_single = not (unique_rows > 1).any()
+            if already_single:
+                return df
+            return df.groupby(["item_id", "date"], as_index=False).agg(
+                price=("price", "mean"),
+                volume=("volume", "sum"),
+            )
+
+        unique_rows = df.groupby(["item_id", "date"]).size()
+        already_single = not (unique_rows > 1).any()
+        if already_single:
+            return df.drop(columns=["source"], errors="ignore")
+
+        def vote(group):
+            prices = group["price"].values
+            n_sources = len(prices)
+
+            if n_sources >= 3:
+                consensus = np.median(prices)
+            else:
+                consensus = np.median(prices)
+                return pd.Series({
+                    "price": consensus,
+                    "volume": group["volume"].sum() if "volume" in group.columns else 0,
+                })
+
+            median = consensus
+            std = np.std(prices, ddof=0)
+            if std > 0:
+                mask = np.abs(prices - median) <= 2.0 * std
+                kept = mask.sum()
+                if kept >= 1:
+                    consensus = np.median(prices[mask])
+                else:
+                    consensus = median
+            else:
+                consensus = median
+
+            return pd.Series({
+                "price": consensus,
+                "volume": group["volume"].sum() if "volume" in group.columns else 0,
+            })
+
+        result = df.groupby(["item_id", "date"], as_index=False).apply(vote).reset_index(drop=True)
+        result = result.drop(columns=[c for c in result.columns if c.startswith("_")], errors="ignore")
+        return result
 
     def fetch_events(self) -> pd.DataFrame:
         if hasattr(self, "_events_cache") and self._events_cache is not None:

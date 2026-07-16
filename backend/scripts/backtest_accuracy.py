@@ -180,7 +180,8 @@ def backtest_forecasts(db, today=None):
         target_dates = set()
         item_ids = set()
         for f in forecasts:
-            target_dates.add(f.forecast_date + timedelta(days=horizon))
+            f_date = f.forecast_date if isinstance(f.forecast_date, date) else date.fromisoformat(f.forecast_date)
+            target_dates.add(f_date + timedelta(days=horizon))
             item_ids.add(f.item_id)
 
         actual_prices = _load_actual_prices(db, item_ids, target_dates)
@@ -193,7 +194,8 @@ def backtest_forecasts(db, today=None):
         confidence_buckets = defaultdict(lambda: {"hits": 0, "total": 0})
 
         for f in forecasts:
-            target_date = f.forecast_date + timedelta(days=horizon)
+            f_date = f.forecast_date if isinstance(f.forecast_date, date) else date.fromisoformat(f.forecast_date)
+            target_date = f_date + timedelta(days=horizon)
             actual = actual_prices.get((f.item_id, target_date))
             if actual is None or actual <= 0:
                 continue

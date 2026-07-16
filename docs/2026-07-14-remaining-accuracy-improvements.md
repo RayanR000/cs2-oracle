@@ -75,14 +75,26 @@ Built into `train()`: after CV, `_validate_feature_groups()` runs a fast permuta
 
 ## Moderate Impact (~1-3pp potential)
 
-### 5. Multi-source outlier voting
+### 5. Multi-source outlier voting ✅
 
-Currently, the aggregator fetches from 7 sources and uses the values directly. Nothing prevents a stale/spoofed source from corrupting a train or inference row. Voting (e.g., median or trimmed-mean after rejecting sources more than 2 std from consensus) would reduce label noise.
+**Status:** Implemented and A/B tested. See `backend/models/forecaster.py` — `_apply_multi_source_voting()`.
 
 **Why this is different from feature groups:** It's a data quality improvement, not a new feature dimension. Reducing noise in existing price features improves ALL downstream features (lagged prices, returns, rolling stats, Bollinger, RSI, MACD, volume features). This avoids the diminishing returns pattern that plagues new feature groups.
 
+**Training impact: 0pp** on full historical dataset (1.4M rows). 99.6% of training data is single-source STEAMCOMMUNITY backfill, so voting only affects 0.4% of rows. Average price change on affected rows is $0.19 — insufficient to move LightGBM directional accuracy.
+
+**Inference impact: essential.** 100% of items with live aggregator data have ≥3 sources. Voting changes the latest price by:
+- >0.5% on **96.4%** of items
+- >5% on **74.4%** of items
+- Up to **$34.28** (max outlier correction)
+
+This directly cleans the `current_price` used to convert return predictions into dollar forecasts. Without voting, stale/spoofed source readings propagate into every forecast's price level.
+
+**Key files:**
+- `models/forecaster.py` — `fetch_price_history()` loads per-source data; `_apply_multi_source_voting()` applies consensus
+
 **Effort:** Low
-**Impact estimate:** +2-4pp (keep original — not subject to diminishing returns)
+**Net impact:** 0pp on training accuracy, critical for inference quality
 
 ---
 
@@ -207,7 +219,7 @@ Currently 15 Optuna trials per quantile per horizon (60 total). Increasing to 30
 | Supply-side | +0.66pp | **+0.66pp** actual | +5-10% | Backfill script, Parquet (109 KB) |
 | Auto-prune | Prevents overfit | **Prevents overfit** | +10-20% | Validation after each horizon |
 | Event decay | 0pp (reverted) | **0pp** ✅ tested | — | None (script-only) |
-| Multi-source outlier voting | +2-4pp | **+2-4pp** (keep) | None | Negligible |
+| Multi-source outlier voting | +2-4pp | **0pp train / essential inference** | None | Negligible |
 | Multi-horizon | +2-4pp est. | **+1-2pp** | +300-400% | Structural refactor |
 | Listing count / supply depth | +3-8pp est. | **+1-3pp** | +1-2% | New data collection pipeline |
 | Regime-switching models | +3-8pp est. | **+1-2pp** avg | +200% | 3x model count |
@@ -227,7 +239,7 @@ Training time is roughly linear in feature count, row count, and model count. Pa
 | 2 | Supply-side features | Medium | +0.66pp | **+0.66pp** actual | +5-10% | **Done** |
 | 3 | Auto-prune | Low | Prevents overfit | **Prevents overfit** | +10-20% | **Done** |
 | 4 | Event decay opt | Low | 0pp | **0pp** ✅ tested | None | **Done** |
-| 5 | Multi-source outlier voting | Low | +2-4pp | **+2-4pp** (keep) | None | Pending |
+| 5 | Multi-source outlier voting | Low | +2-4pp | **0pp train / essential inference** | None | **Done** |
 | 6 | Listing count / supply depth | Medium | +3-8pp | **+1-3pp** | +1-2% | Pending |
 | 7 | Multi-horizon joint training | Medium | +2-4pp | **+1-2pp** | +300-400% | Pending |
 | 8 | Regime-switching models | Medium | +3-8pp | **+1-2pp** avg | +200% | Pending |
@@ -237,6 +249,6 @@ Training time is roughly linear in feature count, row count, and model count. Pa
 | 12 | More training data (730d→1460d) | Low | +1-2pp | **+0-1pp** | +100% | Pending |
 | 13 | More HP trials (15→50) | Trivial | +0.5-1pp | **+0.5-1pp** | +200-300% | Pending |
 
-**Top recommendation:** **#5 (multi-source outlier voting)** — not subject to diminishing returns. Improves quality of all existing price features.
+**Top recommendation:** **#6 (listing count / supply depth)** — highest remaining potential from genuinely novel signal (supply-side data). Needs aggregator changes + new table.
 
 **Guardrail:** Any new feature group must pass `_validate_feature_groups()` (built-in permutation test during `train()`) or it will be auto-pruned. This applies to all items above. A/B test deltas without permutation confirmation should be treated as upper bounds, not guarantees.
