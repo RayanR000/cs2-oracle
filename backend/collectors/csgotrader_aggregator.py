@@ -52,7 +52,8 @@ class CSGOTraderAggregator:
 
     @staticmethod
     def _is_sticker_name(name: str) -> bool:
-        return name.lower().startswith("sticker | ")
+        lower = name.lower()
+        return lower.startswith("sticker | ") or lower.startswith("sticker slab | ")
 
     @staticmethod
     def _diagnostic_terms(name: str) -> List[str]:
