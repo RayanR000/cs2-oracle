@@ -35,4 +35,4 @@ Without voting, every forecast's `current_price` (used to convert return % → d
 
 **KEEP.** 0pp training impact but critical for inference quality. The documented +2-4pp estimate was made before the STEAMCOMMUNITY backfill (which provides 99.6% of training data). The voting is retained because it prevents corrupted current_prices from propagating into forecasts.
 
-The highest-ROI remaining improvement is now **listing count / supply depth** (#6).
+The highest-ROI remaining improvement was **listing count / supply depth** (#6) as of this writing. 🛑 **Subsequently DROPPED on 2026-07-16** — see `docs/research/accuracy-opportunities.md` §1 DECISION. Top remaining work is now regime-switching models.

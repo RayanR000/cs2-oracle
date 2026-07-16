@@ -6,7 +6,7 @@
 |---|---|---|---|---|---|
 | CSGOTrader aggregator | JSON API | Every 6h | 24h avg of Steam sales (stale) | None | **Active (primary)** |
 | Steam Market (scraped) | Web scrape | Daily | Live snapshot but rate-limited | Cookies (for pricehistory) | **Active (secondary)** |
-| Steam Market supply scraper | Burst scrape | Daily | Live sell_listings count (burst-limited) | None | **Active** |
+| Steam Market supply scraper | Burst scrape | Daily | Live sell_listings count (burst-limited) | None | **Active** (output unused — supply depth **dropped** from accuracy roadmap 2026-07-16) |
 | CSFloat API | REST API | Not running | Live listings | API key not configured | **Degraded** |
 | Steam Web API | REST API | Manual only | Item schema/icons | STEAM_API_KEY | **Active (manual)** |
 | Skinport (via aggregator) | JSON API | Every 6h | Broken — reads wrong keys (`last_24h` instead of `starting_at`) | None | **Broken** |

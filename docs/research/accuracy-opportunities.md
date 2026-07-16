@@ -20,7 +20,7 @@ Date: 2026-07-14
 | Feature | Rationale | Est. Impact | Calibrated | Effort |
 |---------|-----------|-------------|-------------|--------|
 | Category/collection features (same weapon group, collection, case) | Items in same category move together — category returns, volatility | 2-5pp | **0pp** ✅ tested | Low |
-| Steam active listing count (vs. trade volume) | Supply indicator; listings/trades ratio = liquidity | 3-6pp | 1-3pp | Medium |
+| Steam active listing count (vs. trade volume) | 🛑 **DROPPED** — supply-side, but only change/velocity variant is directionally predictive and needs 30d history/paid backfill; free source too slow. See §1 DECISION. | 3-6pp est | 0pp pursued | — |
 | Item liquidity score (volume churn ratio) | Low-liquidity items have larger price impact per trade | 2-4pp | 1-2pp | Low |
 | Steam player count | Core demand driver — correlates with market activity | 2-4pp | **0pp** ✅ tested | Low |
 | Tournament/major timeline + results | Skins of winning teams/players spike in price | 3-8pp | 1-3pp | Medium |
@@ -31,6 +31,8 @@ Date: 2026-07-14
 
 > ⚠️ **CRITICAL DISTINCTION — "listing volume" ≠ "trade volume".**
 > The supply-depth features above (active *sell_listings* count, listing density, supply-to-volume ratio) are **supply-side** signals and are the genuinely novel remaining input. They are **NOT** the same as **trade volume** (units *sold*), which was audited on 2026-07-16 and found to add **ZERO predictive lift** — every trade-volume feature correlates with forward returns at **|r| < 0.002** (statistical noise). See `docs/research/volume-data.md:25-29` and `docs/references/data-sources.md:75-83`. Trade volume's only value in this stack is confidence/liquidity weighting, never forecasting. If a future contributor reads "listing volume" and adds *sales* volume, that is the mistake to avoid — use `sell_listings` from the `supply_scraper` / `supply_snapshots` table, not traded-volume.
+>
+> 🛑 **DECISION (2026-07-16): Supply depth is DROPPED as a prediction-accuracy improvement.** Rationale: (1) only the *change/velocity* variant (`supply_change_7d`, `supply_listings_zscore`) is mechanistically predictive of direction — the *level* feature is a liquidity signal that does not move directional accuracy (CS2Cap: "liquidity is a tradability signal, not a price forecast"); (2) the change features require 30+ days of `supply_snapshots` history or a paid historical backfill (CS2Cap candles `q`); (3) the only free source is the Steam full-catalog scrape (~115 min/day) — deemed too slow/high-effort, and no free bulk listing-count source exists; paid APIs (CSMarketCap $9.99/mo, CS2Cap $19/mo) were rejected. Expected lift was only ~+1-2pp directional. Remaining accuracy work shifts to model architecture (regime-switching, Ridge head) on existing data. The `_add_supply_depth_features` code remains but is excluded from the accuracy roadmap.
 
 ---
 
@@ -93,7 +95,7 @@ Date: 2026-07-14
 | Twitch/YouTube CS2 category metrics | Hype cycles, content trends | Medium |
 | Liquipedia tournament schedule + results | Major/event anticipation & reaction | Medium |
 | Reddit r/GlobalOffensive, r/csgomarketforum | Sentiment (early hype) | High |
-| Steam Community Market listing count API | Supply depth | Medium |
+| Steam Community Market listing count API | 🛑 **DROPPED** — supply depth not pursued (2026-07-16); paid bulk APIs (CSMarketCap $9.99, CS2Cap $19) rejected | — |
 
 ---
 
@@ -104,18 +106,21 @@ Date: 2026-07-14
 3. **✅ Completed: Event decay optimization** — **0pp**. Coordinate-wise tau grid search found defaults were already optimal. Walk-forward A/B: "optimal" taus degraded by -0.57pp.
 4. **✅ Completed: Auto-prune (permutation-based feature validation)** — prevents overfit by removing feature groups that fail permutation test.
 5. **✅ Completed: Multi-source outlier voting** — **0pp on training, essential for inference**. 99.6% of training data is single-source STEAMCOMMUNITY backfill; voting only affects 0.4% of rows. At inference, 96.4% of items see >0.5% price correction on current_price. See `docs/2026-07-14-remaining-accuracy-improvements.md` for full analysis.
-6. **🔥 Supply depth (active `sell_listings` count)** — highest remaining ROI. New external data collection via `supply_scraper` → `supply_snapshots`. **Supply-side signal, NOT trade/sales volume** (trade volume was audited as 0pp predictive — see warning in §1). Novel signal (current features have zero supply-side data).
-7. **Regime-switching models** — moderate effort, 2-4pp during volatile periods (lower averaged).
-8. **Multi-horizon joint training** — moderate effort, 1-2pp potential.
-9. **Quality spread / cross-wear features** — genuinely new signal, 1-2pp potential.
-10. **Directional smoothing + ensemble expansion** — quick post-processing wins.
+### Dropped
+- 🛑 **Supply depth (active `sell_listings` count)** — **DROPPED (2026-07-16).** Was the top remaining ROI. Dropped because: only the *change/velocity* variant is directionally predictive (the level is a liquidity signal, not a forecast); change features need 30+ days of `supply_snapshots` history or a paid backfill; the only free source is a ~115 min/day Steam scrape (too slow) and no free bulk listing-count source exists; paid APIs were rejected. Expected lift was only ~+1-2pp. Full rationale in the §1 DECISION note.
+
+### Remaining (re-prioritized — regime-switching is now the top item)
+6. **Regime-switching models** — moderate effort, 2-4pp during volatile periods (lower averaged). **Now the top remaining item.**
+7. **Multi-horizon joint training** — moderate effort, 1-2pp potential.
+8. **Quality spread / cross-wear features** — genuinely new signal, 1-2pp potential.
+9. **Directional smoothing + ensemble expansion** — quick post-processing wins.
 
 ---
 
 ## Notes
 
 - CatBoost was tested and removed (Jul 2026) — degraded accuracy by 18-20pp — do not revisit
-- **Do NOT add trade/sales volume as a predictive feature** — audited 2026-07-16, |r| < 0.002 with forward returns (0pp). Use *supply depth* (`sell_listings`) if adding a volume-like signal; see warning in §1.
+- **Do NOT add trade/sales volume as a predictive feature** — audited 2026-07-16, |r| < 0.002 with forward returns (0pp). Supply depth (`sell_listings`) was also evaluated and **dropped (2026-07-16)** as an accuracy improvement (see §1 DECISION): only its change/velocity variant is mechanistically predictive but requires 30+ days of history or a paid backfill, which was not pursued.
 - Trend analyzer was deprecated and removed (Jul 2026)
 - Grid search replaced by Optuna Bayesian (Jul 2026)
 - Model version is `lgbm-v2`; any architecture change should increment to `lgbm-v3`
@@ -147,7 +152,7 @@ Every completed feature group was measured. The pattern is consistent:
 ### Calibrated Rule
 
 For any new feature group added to the current ~70-feature set:
-- **Novel signal** (genuinely new information like supply listings, source spreads): expect **30-50% of pre-estimate**, floor 1pp
+- **Novel signal** (genuinely new information like source spreads): expect **30-50% of pre-estimate**, floor 1pp
 - **Proxied signal** (information the model can infer from price behavior): expect **10-20% of pre-estimate**, floor 0pp
 - **Data quality improvements** (outlier voting, source reliability): **not subject to diminishing returns** — improves ALL existing features. BUT: if 99%+ of training data is already single-source backfill, the training impact is ~0pp. Impact concentrated at inference time (latest multi-source prices).
 

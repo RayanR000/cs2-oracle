@@ -995,7 +995,7 @@ GET /items/{item_id}/social
 | Phase 1 (identity) | ~15 | +1-3pp | +0-1pp | ✅ |
 | Phase 2 (category) | ~35 | +2-5pp | **+0.66pp** actual (rarity only; weapon-type removed) | ✅ |
 | Phase 3 (cross-wear) | ~10 | +2-4pp | **1-2pp** | Pending |
-| Phase 4 (supply) | ~15 | +3-6pp | **1-3pp** | Pending |
+| Phase 4 (supply) | ~15 | +3-6pp | **1-3pp** | 🛑 **Dropped (2026-07-16)** |
 | Phase 5 (sentiment) | ~20 | +2-5pp | **1-3pp** | Pending |
 | Phase 6 (advanced) | ~20 | +1-3pp | **0-2pp** | Pending |
 | **Total** | **~115 new** | **~5-10pp cumulative** | **~3-7pp** | 2 of 6 phases done |
@@ -1020,4 +1020,4 @@ Remaining: Phase 4 → Phase 3 → Phase 5 → Phase 6
            (supply)  (quality) (sentiment) (advanced)
 ```
 
-Phases 1 and 2 complete. Phase 4 (supply/liquidity — listing counts, churn ratio, source spreads) is the highest remaining ROI opportunity. Phase 5 (sentiment) should follow after the core feature set is stable.
+Phases 1 and 2 complete. ~~Phase 4 (supply/liquidity — listing counts, churn ratio, source spreads) was the highest remaining ROI opportunity~~ 🛑 **Dropped (2026-07-16)** — see `docs/research/accuracy-opportunities.md` §1 DECISION and `docs/changelog/2026-07-16-drop-supply-depth.md`. Top remaining work is now model architecture (regime-switching, Ridge head). Phase 5 (sentiment) remains lower priority.

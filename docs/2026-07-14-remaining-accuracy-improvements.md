@@ -240,7 +240,7 @@ Training time is roughly linear in feature count, row count, and model count. Pa
 | 3 | Auto-prune | Low | Prevents overfit | **Prevents overfit** | +10-20% | **Done** |
 | 4 | Event decay opt | Low | 0pp | **0pp** ✅ tested | None | **Done** |
 | 5 | Multi-source outlier voting | Low | +2-4pp | **0pp train / essential inference** | None | **Done** |
-| 6 | Listing count / supply depth | Medium | +3-8pp | **+1-3pp** | +1-2% | Pending |
+| 6 | Listing count / supply depth | Medium | +3-8pp | **+1-3pp** | +1-2% | 🛑 **Dropped (2026-07-16)** |
 | 7 | Multi-horizon joint training | Medium | +2-4pp | **+1-2pp** | +300-400% | Pending |
 | 8 | Regime-switching models | Medium | +3-8pp | **+1-2pp** avg | +200% | Pending |
 | 9 | Quality spreads (cross-wear) | Medium | +2-4pp | **+1-2pp** | +1-2% | Pending |
@@ -249,6 +249,6 @@ Training time is roughly linear in feature count, row count, and model count. Pa
 | 12 | More training data (730d→1460d) | Low | +1-2pp | **+0-1pp** | +100% | Pending |
 | 13 | More HP trials (15→50) | Trivial | +0.5-1pp | **+0.5-1pp** | +200-300% | Pending |
 
-**Top recommendation:** **#6 (listing count / supply depth)** — highest remaining potential from genuinely novel signal (supply-side data). Needs aggregator changes + new table.
+**Top recommendation (as of 2026-07-14):** **#6 (listing count / supply depth)** — highest remaining potential from genuinely novel signal. 🛑 **Subsequently DROPPED on 2026-07-16** — see `docs/research/accuracy-opportunities.md` §1 DECISION and `docs/changelog/2026-07-16-drop-supply-depth.md`. Top remaining work is now regime-switching models.
 
 **Guardrail:** Any new feature group must pass `_validate_feature_groups()` (built-in permutation test during `train()`) or it will be auto-pruned. This applies to all items above. A/B test deltas without permutation confirmation should be treated as upper bounds, not guarantees.
