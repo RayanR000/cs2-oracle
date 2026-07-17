@@ -1095,7 +1095,7 @@ class ItemForecaster:
         """
         import optuna
 
-        n_trials = 20
+        n_trials = 50
 
         # Build the binned Dataset once and reuse across all trials. Only tree
         # params (num_leaves, learning_rate, ...) vary between trials; the data
@@ -1349,22 +1349,25 @@ class ItemForecaster:
         logger.info(f"  fetch_price_history took {(datetime.now() - _t0).total_seconds():.0f}s")
         price_df = self._filter_dead_items(price_df)
         corrupt_items = self._flag_corrupt_items(price_df)
+
+        # Distribution-shift guard: exclude incomplete 2026 data.
+        # Run BEFORE stratified subsample so the subsample budget isn't wasted
+        # on 2026 rows, and so the 7d validation window doesn't land on sparse
+        # mid-2026 data (~352 items, single calendar day) where permutation
+        # tests produce pure noise.
+        if "date" in price_df.columns:
+            dates_2026 = pd.to_datetime(price_df["date"]).dt.year == 2026
+            n_2026 = dates_2026.sum()
+            if n_2026 > 0:
+                price_df = price_df[~dates_2026].copy()
+                logger.info(f"  Excluded {n_2026:,} incomplete 2026 rows")
+
         if max_feature_rows:
             price_df = self._stratified_item_subsample(
                 price_df, max_feature_rows, exclude_items=corrupt_items
             )
         else:
             price_df = price_df[~price_df["item_id"].isin(corrupt_items)].copy()
-
-        # Distribution-shift guard: exclude incomplete 2026 data.
-        if "date" in price_df.columns:
-            dates_2026 = pd.to_datetime(price_df.loc[
-                pd.to_datetime(price_df["date"]).dt.year == 2026, "date"
-            ])
-            if len(dates_2026) > 0 and dates_2026.max().month < 6:
-                n_2026 = len(dates_2026)
-                price_df = price_df[pd.to_datetime(price_df["date"]).dt.year != 2026].copy()
-                logger.info(f"  Excluded {n_2026:,} incomplete 2026 rows (ends {dates_2026.max().date()})")
 
         _t1 = datetime.now()
         events_df = self.fetch_events()
@@ -1480,9 +1483,12 @@ class ItemForecaster:
                     train_set = train_set.sample(
                         n=max_rows, random_state=42).sort_values("date")
 
-                if len(val_set) < 100:
-                    logger.warning(f"  Validation set for {horizon}d has only {len(val_set)} rows; "
-                                   "using last 20% of training data as fallback.")
+                val_dates = val_set["date"].nunique() if "date" in val_set.columns else 0
+                if len(val_set) < 2000 or val_dates < 7:
+                    logger.warning(
+                        f"  Validation set for {horizon}d has only {len(val_set)} rows "
+                        f"({val_dates} distinct dates); using last 20% of training data as fallback."
+                    )
                     split_idx = int(len(tdf) * 0.8)
                     train_set = tdf.iloc[:split_idx]
                     val_set = tdf.iloc[split_idx:]
@@ -1629,52 +1635,63 @@ class ItemForecaster:
                     "max_dir_acc": round(max(fold_accs), 1) if fold_accs else 0,
                 }
 
-                # Validate feature groups: permutation test on the held-out set
+                # Validate feature groups: permutation test on the held-out set.
+                # Skip entirely when the validation window is thin (same threshold
+                # as the temporal-split floor above) — permutation tests on <2000
+                # rows or <7 distinct dates are pure noise and cause false-positive
+                # pruning that collapses 14d/30d models to ~4 features.
+                val_dates = val_set["date"].nunique() if "date" in val_set.columns else 0
                 need_retrain = False
-                try:
-                    X_val_np = X_val.values if hasattr(X_val, "values") else X_val
-                    y_val_np = y_val.values if hasattr(y_val, "values") else y_val
-                    fv = self._validate_feature_groups(
-                        X_val_np, y_val_np, self.feature_cols,
-                        horizon=horizon, n_shuffles=20, min_drop_pp=0.5,
+                if len(val_set) < 2000 or val_dates < 7:
+                    logger.info(
+                        f"  Skipping feature-group validation ({len(val_set)} rows, "
+                        f"{val_dates} dates — below minimum threshold)"
                     )
-                    self.cv_results[horizon]["feature_validation"] = fv
-                    failed = [g for g, r in fv.items() if not r["passed"]]
-                    if failed:
-                        if self.prune_failed_groups and attempt == 0:
-                            failed_cols = set()
-                            for g in failed:
-                                for f in fv[g]["features"]:
-                                    failed_cols.add(f)
-                            pre_count = len(self.feature_cols)
-                            self.feature_cols = [c for c in self.feature_cols
-                                                  if c not in failed_cols]
-                            # Safety net: if all features were pruned, fall
-                            # back to a minimal core set so LightGBM doesn't
-                            # crash with 0 columns.
-                            if not self.feature_cols and pre_count > 0:
-                                safe = ["price_log", "price_lag_1d", "price_lag_3d",
-                                        "price_return_1d", "price_return_3d",
-                                        "price_return_7d", "price_std_7d"]
-                                self.feature_cols = [c for c in safe if c in tdf.columns]
-                                if not self.feature_cols:
-                                    self.feature_cols = tdf.select_dtypes(include=[np.number]).columns[:1].tolist()
+                else:
+                    try:
+                        X_val_np = X_val.values if hasattr(X_val, "values") else X_val
+                        y_val_np = y_val.values if hasattr(y_val, "values") else y_val
+                        fv = self._validate_feature_groups(
+                            X_val_np, y_val_np, self.feature_cols,
+                            horizon=horizon, n_shuffles=20, min_drop_pp=0.5,
+                        )
+                        self.cv_results[horizon]["feature_validation"] = fv
+                        failed = [g for g, r in fv.items() if not r["passed"]]
+                        if failed:
+                            if self.prune_failed_groups and attempt == 0:
+                                failed_cols = set()
+                                for g in failed:
+                                    for f in fv[g]["features"]:
+                                        failed_cols.add(f)
+                                pre_count = len(self.feature_cols)
+                                self.feature_cols = [c for c in self.feature_cols
+                                                      if c not in failed_cols]
+                                # Safety net: if all features were pruned, fall
+                                # back to a minimal core set so LightGBM doesn't
+                                # crash with 0 columns.
+                                if not self.feature_cols and pre_count > 0:
+                                    safe = ["price_log", "price_lag_1d", "price_lag_3d",
+                                            "price_return_1d", "price_return_3d",
+                                            "price_return_7d", "price_std_7d"]
+                                    self.feature_cols = [c for c in safe if c in tdf.columns]
+                                    if not self.feature_cols:
+                                        self.feature_cols = tdf.select_dtypes(include=[np.number]).columns[:1].tolist()
+                                    logger.warning(
+                                        f"  All features pruned — falling back to "
+                                        f"{len(self.feature_cols)} core features as safety net"
+                                    )
                                 logger.warning(
-                                    f"  All features pruned — falling back to "
-                                    f"{len(self.feature_cols)} core features as safety net"
+                                    f"  Pruned {len(failed_cols)} features from non-causal groups "
+                                    f"{failed} ({pre_count} -> {len(self.feature_cols)}). Retraining."
                                 )
-                            logger.warning(
-                                f"  Pruned {len(failed_cols)} features from non-causal groups "
-                                f"{failed} ({pre_count} -> {len(self.feature_cols)}). Retraining."
-                            )
-                            need_retrain = True
-                        else:
-                            logger.warning(
-                                f"  Feature groups with no causal signal: {failed}. "
-                                f"({'Auto-prune disabled' if not self.prune_failed_groups else 'Already re-trained.'})"
-                            )
-                except Exception as e:
-                    logger.warning(f"  Feature validation skipped: {e}")
+                                need_retrain = True
+                            else:
+                                logger.warning(
+                                    f"  Feature groups with no causal signal: {failed}. "
+                                    f"({'Auto-prune disabled' if not self.prune_failed_groups else 'Already re-trained.'})"
+                                )
+                    except Exception as e:
+                        logger.warning(f"  Feature validation skipped: {e}")
 
                 if not need_retrain:
                     break
@@ -2034,8 +2051,12 @@ class ItemForecaster:
         sorted_dates = sorted(tdf["date"].unique())
         splits = self._compute_cv_splits(sorted_dates)
         if len(splits) < 2:
-            logger.warning(f"  Not enough data for CV ({len(splits)} fold{'s' if splits else 's'}); skipping")
-            return [], []
+            raise RuntimeError(
+                f"CV produced {len(splits)} fold{'s' if splits else 's'} "
+                f"(need >=2). Cannot evaluate {horizon}d horizon — "
+                f"check that training data has enough distinct dates "
+                f"({len(sorted_dates)} available)."
+            )
 
         oof_records = []
         fold_metrics = []
