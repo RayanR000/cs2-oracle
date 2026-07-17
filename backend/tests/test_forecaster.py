@@ -260,10 +260,10 @@ class TestTargetPreparation:
         assert "target_7d" in result.columns
         assert len(result) == len(df)
         # Forward target: row with date=Jan 1 gets price at Jan 1+7=Jan 8.
-        # price_Jan1=1, price_Jan8=8 → return = (8-1)/1*100 = 700
+        # price_Jan1=1, price_Jan8=8 → return = (8-1)/1*100 = 700, winsorized to 500
         a_rows = result[result["item_id"] == "a"].sort_values("date")
         row_jan1 = a_rows[a_rows["date"] == date(2026, 1, 1)]
-        assert row_jan1["target_return_7d"].iloc[0] == 700.0
+        assert row_jan1["target_return_7d"].iloc[0] == 500.0
         # Last 7 rows per item have no forward target → NaN
         last_rows = a_rows.tail(7)
         assert last_rows["target_return_7d"].isna().all()

@@ -1149,14 +1149,89 @@ class ItemForecaster:
         df[f"target_return_{horizon}d"] = (
             (df[f"target_{horizon}d"] - df["price"]) / df["price"].replace(0, np.nan) * 100
         )
+        # Winsorize extreme returns at ±500% to prevent API corruption artifacts
+        # from polluting gradient estimates. The audit found 11,044 jumps >1000%,
+        # 84% of which revert the next day (definitive corruption).
+        winsorized = df[f"target_return_{horizon}d"].clip(-500.0, 500.0)
+        n_clipped = (winsorized != df[f"target_return_{horizon}d"]).sum()
+        if n_clipped:
+            logger.info(
+                f"  Winsorized {n_clipped} extreme targets for {horizon}d "
+                f"(±500% clip)"
+            )
+            df[f"target_return_{horizon}d"] = winsorized
         return df
 
     # ------------------------------------------------------------------
     # Build training dataset
     # ------------------------------------------------------------------
 
+    @staticmethod
+    def _filter_dead_items(price_df: pd.DataFrame) -> pd.DataFrame:
+        """Remove items that never meaningfully move (dead items at Steam floor).
+
+        An item is 'dead' if its max price is <= $0.05 (Steam floor) AND its
+        lifetime price range is < 5%. These items constitute ~41% of training
+        rows but provide zero predictive signal — they dilute the model and
+        waste gradient steps on constant targets.
+
+        Also filters items where mean_price <= 0 (division-by-zero safety).
+        """
+        pre = len(price_df)
+        price_df = price_df[price_df["price"] > 0].copy()
+        if pre != len(price_df):
+            logger.info(f"  Removed {pre - len(price_df)} rows with zero/negative price")
+
+        item_stats = price_df.groupby("item_id")["price"].agg(["min", "max"])
+        dead_mask = (
+            (item_stats["max"] <= 0.05)
+            & ((item_stats["max"] - item_stats["min"]) / item_stats["min"] < 0.05)
+        )
+        dead_items = set(item_stats[dead_mask].index)
+        if not dead_items:
+            return price_df
+
+        filtered = price_df[~price_df["item_id"].isin(dead_items)].copy()
+        removed_rows = len(price_df) - len(filtered)
+        logger.info(
+            f"  Filtered {len(dead_items)} dead items "
+            f"({removed_rows:,} rows, {removed_rows / max(len(price_df), 1) * 100:.1f}%)"
+        )
+        return filtered
+
+    def _flag_corrupt_items(self, price_df: pd.DataFrame,
+                            jump_threshold: float = 500.0,
+                            max_jumps: int = 10) -> set:
+        """Identify items with frequent extreme price jumps (API corruption).
+
+        Counts how many times each item's daily price jumps exceed
+        ``jump_threshold`` percent. Items with more than ``max_jumps`` such
+        events are flagged as corrupt and excluded from training.
+
+        The audit found 84% of >1000% jumps revert the next day — definitive
+        API corruption, not real market movement. 905 items are affected,
+        151 with 10+ events.
+        """
+        pdf = price_df.sort_values(["item_id", "date"]).copy()
+        pdf["_prev"] = pdf.groupby("item_id")["price"].shift(1)
+        pdf["_pct"] = (pdf["price"] - pdf["_prev"]) / pdf["_prev"].replace(0, np.nan) * 100
+        is_first = pdf.groupby("item_id").cumcount() == 0
+        pdf.loc[is_first, "_pct"] = 0.0
+
+        bad = pdf.groupby("item_id")["_pct"].apply(
+            lambda s: int((s.abs() > jump_threshold).sum())
+        )
+        bad_items = set(bad[bad > max_jumps].index)
+        if bad_items:
+            logger.info(
+                f"  Flagged {len(bad_items)} corrupt items "
+                f"(>{max_jumps} jumps >{jump_threshold:.0f}%)"
+            )
+        return bad_items
+
     def _stratified_item_subsample(self, price_df: pd.DataFrame,
-                                   max_rows: int, seed: int = 42) -> pd.DataFrame:
+                                   max_rows: int, seed: int = 42,
+                                   exclude_items: set = None) -> pd.DataFrame:
         """Subsample whole-item histories to bound the row count *before*
         feature engineering, while preserving per-item time-series continuity
         and the full calendar window.
@@ -1172,6 +1247,12 @@ class ItemForecaster:
         are retained proportionally, and keeps every calendar date intact so CV
         has enough distinct dates.
         """
+        if exclude_items:
+            pre = len(price_df)
+            price_df = price_df[~price_df["item_id"].isin(exclude_items)].copy()
+            if len(price_df) != pre:
+                logger.info(f"  Excluded {pre - len(price_df)} corrupt-item rows")
+
         total_rows = len(price_df)
         if total_rows <= max_rows or "item_id" not in price_df.columns:
             return price_df
@@ -1211,8 +1292,29 @@ class ItemForecaster:
                              backfilled_only: bool = False,
                              max_feature_rows: int = 400_000) -> pd.DataFrame:
         price_df = self.fetch_price_history(days_back=days_back, backfilled_only=backfilled_only)
+        price_df = self._filter_dead_items(price_df)
+        corrupt_items = self._flag_corrupt_items(price_df)
         if max_feature_rows:
-            price_df = self._stratified_item_subsample(price_df, max_feature_rows)
+            price_df = self._stratified_item_subsample(
+                price_df, max_feature_rows, exclude_items=corrupt_items
+            )
+        else:
+            price_df = price_df[~price_df["item_id"].isin(corrupt_items)].copy()
+
+        # Distribution-shift guard: exclude incomplete 2026 data.
+        # The STEAMCOMMUNITY backfill ends 2026-03-29 but prediction runs on
+        # aggregator data starting 2026-07-09 — a 3-month gap means the market
+        # regime may have shifted. Remove 2026 rows when the archive doesn't
+        # cover past June 1 (incomplete year).
+        if "date" in price_df.columns:
+            dates_2026 = pd.to_datetime(price_df.loc[
+                pd.to_datetime(price_df["date"]).dt.year == 2026, "date"
+            ])
+            if len(dates_2026) > 0 and dates_2026.max().month < 6:
+                n_2026 = len(dates_2026)
+                price_df = price_df[pd.to_datetime(price_df["date"]).dt.year != 2026].copy()
+                logger.info(f"  Excluded {n_2026:,} incomplete 2026 rows (ends {dates_2026.max().date()})")
+
         events_df = self.fetch_events()
 
         df = self.engineer_features(price_df, events_df)
@@ -1254,6 +1356,26 @@ class ItemForecaster:
         fi = pd.DataFrame({"feature": self.feature_cols, "importance": importance})
         fi = fi.sort_values("importance", ascending=False).head(20)
         return fi
+
+    @staticmethod
+    def _compute_sample_weights(tdf: pd.DataFrame, horizon: int) -> Optional[np.ndarray]:
+        """Compute sample weights proportional to item price variance.
+
+        Items that move more get higher gradient weight; flat/dead items
+        get down-weighted. Uses 30-day rolling std of daily returns as the
+        weight signal, clipped to [0.1, 99th percentile].
+
+        This prevents the ~41% of historically flat items from dominating
+        the loss even after dead-item filtering removes the extreme cases.
+        """
+        if tdf.empty or "price" not in tdf.columns:
+            return None
+        vol = tdf.groupby("item_id", group_keys=False)["price"].transform(
+            lambda x: x.pct_change().rolling(30, min_periods=5).std()
+        ).fillna(1.0).values
+        vol = np.clip(vol, 0.1, np.percentile(vol, 99))
+        vol = vol / max(np.mean(vol), 1e-8)
+        return vol.astype(np.float32)
 
     def train(self, max_rows: int = 700_000):
         logger.info("=" * 60)
@@ -1308,13 +1430,24 @@ class ItemForecaster:
                 X_val = val_set[self.feature_cols].replace([np.inf, -np.inf], np.nan).fillna(feature_medians)
                 y_val = val_set[f"target_return_{horizon}d"]
 
+                # Sample weights: down-weight historically flat items so the
+                # model focuses on items with meaningful price movement.
+                train_weights = self._compute_sample_weights(train_set, horizon)
+                val_weights = self._compute_sample_weights(val_set, horizon)
+
                 # Build the binned Dataset once per horizon and reuse it across
                 # all quantiles and ensemble members. X/y and binning are
                 # identical for every quantile (only the objective's alpha
                 # changes), so rebuilding per fit just re-bins the same matrix.
                 ds_params = {"max_bin": self.MAX_BIN, "feature_pre_filter": False}
-                dtrain = lgb.Dataset(X_train, y_train, params=ds_params)
-                dval = lgb.Dataset(X_val, y_val, reference=dtrain, params=ds_params)
+                dtrain_kw = dict(params=ds_params)
+                if train_weights is not None:
+                    dtrain_kw["weight"] = train_weights
+                dval_kw = dict(params=ds_params)
+                if val_weights is not None:
+                    dval_kw["weight"] = val_weights
+                dtrain = lgb.Dataset(X_train, y_train, **dtrain_kw)
+                dval = lgb.Dataset(X_val, y_val, reference=dtrain, **dval_kw)
 
                 per_quantile_params = {}
                 cached_hp = self.tuned_params.get(horizon, {})
@@ -1821,10 +1954,20 @@ class ItemForecaster:
             X_val = val_df[self.feature_cols].replace([np.inf, -np.inf], np.nan).fillna(fold_medians)
             y_val = val_df[f"target_return_{horizon}d"]
 
+            # Sample weights (same as main training loop)
+            train_w = self._compute_sample_weights(train_df, horizon)
+            val_w = self._compute_sample_weights(val_df, horizon)
+
             # Build the fold's binned Dataset once; reuse across all quantiles.
             ds_params = {"max_bin": self.MAX_BIN, "feature_pre_filter": False}
-            dtrain = lgb.Dataset(X_train, y_train, params=ds_params)
-            dval = lgb.Dataset(X_val, y_val, reference=dtrain, params=ds_params)
+            dtrain_kw = dict(params=ds_params)
+            if train_w is not None:
+                dtrain_kw["weight"] = train_w
+            dval_kw = dict(params=ds_params)
+            if val_w is not None:
+                dval_kw["weight"] = val_w
+            dtrain = lgb.Dataset(X_train, y_train, **dtrain_kw)
+            dval = lgb.Dataset(X_val, y_val, reference=dtrain, **dval_kw)
 
             for q in self.QUANTILES:
                 lgb_preds = []
