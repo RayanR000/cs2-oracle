@@ -703,4 +703,81 @@ class TestTrainingWindow:
 # ---------------------------------------------------------------------------
 
 
+# ---------------------------------------------------------------------------
+# Forecast blending / directional smoothing (2026-07-16 quick wins)
+# ---------------------------------------------------------------------------
+
+
+class TestForecastBlending:
+    def test_ensemble_constants(self, forecaster):
+        """Ensemble expansion must use 9 diversified members."""
+        assert forecaster.N_ENSEMBLES == 9
+        assert len(forecaster.ENSEMBLE_SEEDS) == 9
+        assert len(forecaster.ENSEMBLE_FEATURE_FRACTIONS) == 9
+        # Fractions should span a diversification range (not all identical).
+        assert len(set(forecaster.ENSEMBLE_FEATURE_FRACTIONS)) > 1
+        assert 0.0 < forecaster.FORECAST_BLEND_WEIGHT < 1.0
+
+    def test_prior_forecast_empty_when_no_rows(self, forecaster):
+        forecaster.db = MagicMock()
+        forecaster.db.execute.return_value.fetchall.return_value = []
+        out = forecaster._fetch_prior_forecasts(np.array([1, 2, 3]), horizon=7)
+        assert out["mask"].shape == (3,)
+        assert not out["mask"].any()
+        assert np.all(np.isnan(out["mid_ret"]))
+
+    def test_prior_forecast_parses_return_space(self, forecaster):
+        forecaster.db = MagicMock()
+        rows = [
+            MagicMock(item_id=1, price_low=11.0, price_mid=12.0, price_high=13.0,
+                      current_price=10.0, forecast_date=date(2026, 7, 15)),
+            # Older forecast for the same item — must be ignored.
+            MagicMock(item_id=1, price_low=10.5, price_mid=11.0, price_high=12.5,
+                      current_price=10.0, forecast_date=date(2026, 7, 14)),
+            MagicMock(item_id=2, price_low=9.0, price_mid=10.0, price_high=11.0,
+                      current_price=20.0, forecast_date=date(2026, 7, 15)),
+        ]
+        forecaster.db.execute.return_value.fetchall.return_value = rows
+        out = forecaster._fetch_prior_forecasts(np.array([1, 2, 3]), horizon=7)
+
+        assert out["mask"][0] and out["mask"][1] and not out["mask"][2]
+        # Item 1 latest: current=10, mid=12 -> +20% return.
+        assert abs(out["mid_ret"][0] - 20.0) < 1e-6
+        assert abs(out["low_ret"][0] - 10.0) < 1e-6
+        assert abs(out["high_ret"][0] - 30.0) < 1e-6
+        # Item 2: current=20, mid=10 -> -50% return.
+        assert abs(out["mid_ret"][1] - (-50.0)) < 1e-6
+        # Item 3 has no prior -> NaN.
+        assert np.isnan(out["mid_ret"][2])
+
+    def test_blend_moves_prediction_toward_prior(self, forecaster):
+        w = forecaster.FORECAST_BLEND_WEIGHT
+        current = np.array([5.0, -5.0])
+        prior = {
+            "mask": np.array([True, True]),
+            "low_ret": np.array([15.0, 5.0]),
+            "mid_ret": np.array([15.0, 5.0]),
+            "high_ret": np.array([15.0, 5.0]),
+        }
+        low, mid, high = forecaster._blend_returns_with_prior(
+            current.copy(), current.copy(), current.copy(), prior, w)
+        # Blended value lies strictly between current and prior (toward prior).
+        assert np.all(mid > current) and np.all(mid < prior["mid_ret"])
+        # With weight 0 the prediction is unchanged.
+        low0, mid0, high0 = forecaster._blend_returns_with_prior(
+            current.copy(), current.copy(), current.copy(), prior, 0.0)
+        assert np.all(mid0 == current)
+
+    def test_blend_noop_without_prior(self, forecaster):
+        current = np.array([5.0, -5.0])
+        prior = {
+            "mask": np.array([False, False]),
+            "low_ret": np.full(2, np.nan),
+            "mid_ret": np.full(2, np.nan),
+            "high_ret": np.full(2, np.nan),
+        }
+        low, mid, high = forecaster._blend_returns_with_prior(
+            current.copy(), current.copy(), current.copy(), prior, 0.15)
+        assert np.all(mid == current)
+
 

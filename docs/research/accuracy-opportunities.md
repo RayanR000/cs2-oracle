@@ -10,7 +10,7 @@ Date: 2026-07-14
 - **Feature categories**: Price technicals (lags, rolling stats, Bollinger, RSI, MACD, support/resistance, volume), temporal (cyclic time features), events (5 types with exponential decay), cross-sectional (market returns, regime flags)
 - **Drift threshold**: 60% directional accuracy on 7-day sliding window
 - **Confidence calibration**: 80% target accuracy, min 5% coverage
-- **Training data**: 730 days backfilled from Parquet archive (2013-2026). Row count is bounded by a pre-feature-engineering item-stratified subsample (`max_feature_rows=500K`) that preserves the full 730-day calendar window; a post-split safety cap (`max_rows`, default 600K) samples randomly rather than truncating recent data. (Previously a `tail(200K)` cap silently truncated training to ~51 days — fixed 2026-07-16, see `docs/2026-07-16-training-window-audit.md`.)
+- **Training data**: 1460 days backfilled from Parquet archive (2013-2026). Row count is bounded by a pre-feature-engineering item-stratified subsample (`max_feature_rows=700K`) that preserves the full 1460-day calendar window; a post-split safety cap (`max_rows`, default 700K) samples randomly rather than truncating recent data. (Previously a `tail(200K)` cap silently truncated training to ~51 days — fixed 2026-07-16, see `docs/2026-07-16-training-window-audit.md`. Window expanded 730d→1460d 2026-07-16, see `docs/changelog/2026-07-16-quick-postprocessing-wins.md`.)
 - **Retrain schedule**: Full retrain Mondays, predict other days, auto-retrain on drift
 
 ---

@@ -77,10 +77,10 @@ Fold 5: train [0..680d] → val [681..701d]
 Confidence calibration uses pooled out-of-fold predictions across all folds. Added Jul 2026 (was single 21-day holdout, which was sensitive to specific events in that window).
 
 ### Training Window
-730 days of backfilled data from Parquet archive. Changed from 365d to 730d Jul 2026 to improve 30d horizon signal. Max 200K rows subsampled for speed.
+1460 days of backfilled data from Parquet archive. Changed from 365d→730d (Jul 2026) then 730d→1460d (2026-07-16) to improve long-horizon signal. Row count bounded by a pre-feature-engineering item-stratified subsample (max 700K rows).
 
 ### Retrain Schedule
-- Full retrain: Monday (Optuna + 36 ensemble models)
+- Full retrain: Monday (Optuna + 108 ensemble models: 4 horizons × 3 quantiles × 9 seeds)
 - Predict-only: Tue-Sun (load saved models)
 - Drift-triggered: auto-retrain if directional accuracy drops below 60% on 7-day sliding window
 
@@ -164,7 +164,7 @@ Measured via walk-forward evaluation on 50 items, 26 expanding windows (60-day s
 | 3d | ✅ Active | Short-term momentum, smooths weekend gaps |
 | 7d | ✅ Active | Primary horizon, strongest mid-term signal |
 | 14d | ✅ Active | Natural midpoint, many CS2 cycles run ~2 weeks |
-| 30d | ✅ Active | Longest horizon, benefits most from 730d training window |
+| 30d | ✅ Active | Longest horizon, benefits most from 1460d training window |
 | 60d | ❌ Not yet | Would require more data and richer long-term features |
 
 ---

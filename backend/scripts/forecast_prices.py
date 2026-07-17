@@ -28,7 +28,7 @@ logging.basicConfig(
 )
 logger = logging.getLogger("forecast_prices")
 
-MODEL_VERSION = "lgbm-v2"
+MODEL_VERSION = "lgbm-v3"
 
 
 def run_forecast(train_only: bool = False, predict_only: bool = False):
@@ -42,7 +42,7 @@ def run_forecast(train_only: bool = False, predict_only: bool = False):
                 logger.info("Saved models found, retraining...")
             else:
                 logger.info("No saved models found, training from scratch...")
-            forecaster.train(max_rows=200_000)
+            forecaster.train(max_rows=700_000)
             has_models = True
             # Training takes ~10 min and Supabase may drop idle connections.
             # Refresh the DB session before prediction.
@@ -78,7 +78,7 @@ def run_forecast(train_only: bool = False, predict_only: bool = False):
                     f"Drift detected for horizons {drifted_horizons} — "
                     f"triggering auto-retrain before prediction."
                 )
-                forecaster.train(max_rows=200_000)
+                forecaster.train(max_rows=700_000)
                 has_models = True
                 try:
                     db.close()

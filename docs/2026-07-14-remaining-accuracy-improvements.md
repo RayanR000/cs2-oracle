@@ -246,7 +246,7 @@ Training time is roughly linear in feature count, row count, and model count. Pa
 | 9 | Quality spreads (cross-wear) | Medium | +2-4pp | **+1-2pp** | +1-2% | Pending |
 | 10 | Sub-models (per-category) | High | +2-5pp | **+1-3pp** | +500% | Pending |
 | 11 | Conformal prediction | Medium | Intervals only | Intervals only | Negligible | Pending |
-| 12 | More training data (730d→1460d) | Low | +1-2pp | **+0-1pp** | +100% | Pending |
+| 12 | More training data (730d→1460d) | Low | +1-2pp | **+0-1pp** | +100% | **Done** (2026-07-16, with ensemble expansion + blending — see `docs/changelog/2026-07-16-quick-postprocessing-wins.md`) |
 | 13 | More HP trials (15→50) | Trivial | +0.5-1pp | **+0.5-1pp** | +200-300% | Pending |
 
 **Top recommendation (as of 2026-07-14):** **#6 (listing count / supply depth)** — highest remaining potential from genuinely novel signal. 🛑 **Subsequently DROPPED on 2026-07-16** — see `docs/research/accuracy-opportunities.md` §1 DECISION and `docs/changelog/2026-07-16-drop-supply-depth.md`. Top remaining work is now regime-switching models.

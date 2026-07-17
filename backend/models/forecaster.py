@@ -55,8 +55,15 @@ class ItemForecaster:
     # A relative split stays valid as data accumulates (a fixed date would
     # eventually leave the validation set covering all new data).
     VALIDATION_WINDOW_DAYS = 21
-    N_ENSEMBLES = 3
-    ENSEMBLE_SEEDS = [42, 73, 91]
+    N_ENSEMBLES = 9
+    # Distinct bagging seeds give each member a different row bootstrap; the
+    # matching feature_fraction spread (below) adds column-subsampling
+    # variation so members diversify along BOTH axes, not just row bagging.
+    ENSEMBLE_SEEDS = [42, 73, 91, 13, 57, 128, 256, 7, 33]
+    ENSEMBLE_FEATURE_FRACTIONS = [0.6, 0.65, 0.7, 0.7, 0.75, 0.8, 0.8, 0.85, 0.9]
+    # Weight given to the previous day's forecast when smoothing/blending
+    # current predictions to reduce daily direction flip-flopping.
+    FORECAST_BLEND_WEIGHT = 0.15
     PRUNE_CORRELATION_THRESHOLD = 0.95
     # Expanding-window cross-validation
     CV_STEP_DAYS = 200        # Days between each fold's validation window
@@ -1036,7 +1043,7 @@ class ItemForecaster:
         """
         import optuna
 
-        n_trials = 8
+        n_trials = 20
 
         # Build the binned Dataset once and reuse across all trials. Only tree
         # params (num_leaves, learning_rate, ...) vary between trials; the data
@@ -1202,7 +1209,7 @@ class ItemForecaster:
 
     def build_training_data(self, days_back: int = 365,
                             backfilled_only: bool = False,
-                            max_feature_rows: int = 500_000) -> pd.DataFrame:
+                            max_feature_rows: int = 700_000) -> pd.DataFrame:
         price_df = self.fetch_price_history(days_back=days_back, backfilled_only=backfilled_only)
         if max_feature_rows:
             price_df = self._stratified_item_subsample(price_df, max_feature_rows)
@@ -1248,12 +1255,12 @@ class ItemForecaster:
         fi = fi.sort_values("importance", ascending=False).head(20)
         return fi
 
-    def train(self, max_rows: int = 600_000):
+    def train(self, max_rows: int = 700_000):
         logger.info("=" * 60)
         logger.info("TRAINING LIGHTGBM FORECASTER (ensemble, HP search, walk-forward)")
         logger.info("=" * 60)
 
-        df = self.build_training_data(days_back=730, backfilled_only=True)
+        df = self.build_training_data(days_back=1460, backfilled_only=True)
 
         for horizon in self.HORIZONS:
             tdf = self.prepare_targets(df, horizon)
@@ -1348,6 +1355,9 @@ class ItemForecaster:
                     for ei in range(self.N_ENSEMBLES):
                         params = base_params.copy()
                         params["random_state"] = self.ENSEMBLE_SEEDS[ei]
+                        # Column-subsampling variation per member (diversifies
+                        # the ensemble beyond row bagging alone).
+                        params["feature_fraction"] = self.ENSEMBLE_FEATURE_FRACTIONS[ei]
 
                         model = lgb.train(
                             params, dtrain,
@@ -1439,10 +1449,76 @@ class ItemForecaster:
     # Prediction
     # ------------------------------------------------------------------
 
+    def _blend_returns_with_prior(self, low_ret_arr: np.ndarray, mid_ret_arr: np.ndarray,
+                                  high_ret_arr: np.ndarray, prior: Dict[str, np.ndarray],
+                                  weight: float) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+        """Blend current return-space predictions toward the prior day's.
+
+        Returns the (low, mid, high) arrays after exponentially smoothing with
+        the previous forecast. Items without a prior are left untouched.
+        """
+        mask = prior["mask"]
+        if not mask.any() or weight <= 0:
+            return low_ret_arr, mid_ret_arr, high_ret_arr
+        mid_ret_arr = np.where(mask, (1 - weight) * mid_ret_arr + weight * prior["mid_ret"], mid_ret_arr)
+        low_ret_arr = np.where(mask, (1 - weight) * low_ret_arr + weight * prior["low_ret"], low_ret_arr)
+        high_ret_arr = np.where(mask, (1 - weight) * high_ret_arr + weight * prior["high_ret"], high_ret_arr)
+        return low_ret_arr, mid_ret_arr, high_ret_arr
+
+    def _fetch_prior_forecasts(self, item_ids: np.ndarray, horizon: int) -> Dict[str, np.ndarray]:
+        """Fetch the most recent prior-day forecast per item for blending.
+
+        Returns return-space predictions (percentage return vs the prior
+        ``current_price``) aligned to ``item_ids``, with NaN where no prior
+        forecast exists. Used by ``predict()`` to smooth daily flip-flopping.
+        """
+        result = {
+            "mask": np.zeros(len(item_ids), dtype=bool),
+            "low_ret": np.full(len(item_ids), np.nan),
+            "mid_ret": np.full(len(item_ids), np.nan),
+            "high_ret": np.full(len(item_ids), np.nan),
+        }
+        if self.db is None:
+            return result
+        today = date.today()
+        try:
+            rows = self.db.execute(text("""
+                SELECT item_id, price_low, price_mid, price_high, current_price, forecast_date
+                FROM item_forecasts
+                WHERE horizon_days = :h AND forecast_date < :today
+            """), {"h": horizon, "today": today}).fetchall()
+        except Exception as e:
+            logger.warning(f"  Prior-forecast fetch failed ({e}); skipping blend.")
+            return result
+        if not rows:
+            return result
+
+        # Keep the latest forecast_date seen per item.
+        best: Dict[int, tuple] = {}
+        for r in rows:
+            iid = int(r.item_id)
+            if iid not in best or r.forecast_date > best[iid][4]:
+                best[iid] = (r.price_low, r.price_mid, r.price_high, r.current_price, r.forecast_date)
+
+        id_to_idx = {int(iid): i for i, iid in enumerate(item_ids)}
+        for iid, vals in best.items():
+            idx = id_to_idx.get(iid)
+            if idx is None:
+                continue
+            low, mid, high, cur, _ = vals
+            if not cur or cur <= 0 or mid is None:
+                continue
+            result["mask"][idx] = True
+            cur_f = float(cur)
+            result["mid_ret"][idx] = (float(mid) / cur_f - 1.0) * 100.0
+            result["low_ret"][idx] = (float(low) / cur_f - 1.0) * 100.0 if low is not None else result["mid_ret"][idx]
+            result["high_ret"][idx] = (float(high) / cur_f - 1.0) * 100.0 if high is not None else result["mid_ret"][idx]
+        return result
+
     def predict(self, item_ids: List[int] = None) -> pd.DataFrame:
         logger.info("Generating forecasts...")
 
-        price_df = self.fetch_price_history(days_back=730, backfilled_only=True)
+        price_df = self.fetch_price_history(days_back=1460, backfilled_only=True)
 
         # Skip items without a real recent series: snapshot-tier items keep
         # only a single latest row, and a "forecast" from one data point is
@@ -1575,6 +1651,14 @@ class ItemForecaster:
             low_ret_arr = np.minimum(low_ret_arr, p50_ret)
             high_ret_arr = np.maximum(high_ret_arr, p50_ret)
             mid_ret_arr = p50_ret
+
+            # Forecast blending / directional smoothing: blend the current
+            # return-space predictions with the previous day's forecast for the
+            # same item+horizon. Reduces daily direction flip-flopping. No-ops
+            # when no prior forecast exists (first run / retrain).
+            prior = self._fetch_prior_forecasts(item_id_arr, horizon)
+            low_ret_arr, mid_ret_arr, high_ret_arr = self._blend_returns_with_prior(
+                low_ret_arr, mid_ret_arr, high_ret_arr, prior, self.FORECAST_BLEND_WEIGHT)
 
             # Diagnostic: log crossing rate
             crossing_rate = np.mean(crossing_mask)
@@ -2098,6 +2182,9 @@ class ItemForecaster:
             "confidence_thresholds": thresholds_serial,
             "feature_medians": medians_serial,
             "n_ensembles": self.N_ENSEMBLES,
+            "ensemble_seeds": self.ENSEMBLE_SEEDS,
+            "ensemble_feature_fractions": self.ENSEMBLE_FEATURE_FRACTIONS,
+            "training_window_days": 1460,
             "feature_importance": feature_importance,
             "cv_results": cv_serial,
         }
