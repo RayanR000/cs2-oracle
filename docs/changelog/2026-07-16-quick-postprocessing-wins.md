@@ -28,6 +28,8 @@ only 30-50% of its pre-estimate).
   fresh `lgbm-v3` retrain is forced rather than serving mismatched artifacts.
 - Full retrain completed locally (2026-07-16). CV directional accuracy measured below.
 
+> **⚠️ INVALIDATED by `2026-07-17-column-order-bug.md`** — All lgbm-v2 and lgbm-v3 models were trained on volume data due to a column-ordering bug in `fetch_price_history`. These accuracy figures are not representative of real price-forecasting performance.
+
 ## Measured CV accuracy (lgbm-v3)
 
 All figures are from expanding-window **6-fold** CV spanning the full 1460-day

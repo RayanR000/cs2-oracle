@@ -77,6 +77,12 @@ Fixed by adding `"feature_pre_filter": False` to all `ds_params` dicts (Optuna, 
 | `.github/workflows/price-forecast.yml` | `SKIP_CV: "1"` env |
 | `tests/test_forecaster.py` | `test_ensemble_constants` → 6, `test_tuned_params_roundtrip` added |
 
+## ⚠️ Critical column-ordering bug: ALL prior metrics INVALIDATED
+
+The cold retrain's CV metrics (below) and ALL previous model versions (lgbm-v2, lgbm-v3) are affected by a **column-ordering bug in `fetch_price_history`** that swapped `price` and `volume` data. A new changelog (`2026-07-17-column-order-bug.md`) documents the discovery, fix, and impact in detail.
+
+Until a fresh retrain is run with the fix, every accuracy figure is measuring performance on **volume data, not price data**.
+
 ## Expected combined speedup (within ~0.6–1.2pp accuracy budget)
 
 | Scenario | Before (estimated) | After (estimated) |
@@ -89,5 +95,6 @@ Fixed by adding `"feature_pre_filter": False` to all `ds_params` dicts (Optuna, 
 
 ## Remaining
 
-- The `num_boost_round` cap (1000) in the final ensemble fit is kept at 1000; measuring typical tree depth per horizon could allow a lower cap (e.g., 600) for further speed. Not applied to avoid unmeasured accuracy regression.
-- `feature_pre_filter=False` should be validated against the historical walk-forward backtest (`scripts/backtest_accuracy.py`) to confirm no accuracy shift.
+- **Retrain from scratch** with all bugfixes to get valid price-based accuracy metrics
+- Validate `feature_pre_filter=False` against the historical walk-forward backtest
+- Consider reducing `num_boost_round` cap (1000) after new baseline established

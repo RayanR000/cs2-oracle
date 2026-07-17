@@ -107,24 +107,55 @@ class ItemForecaster:
             try:
                 backfilled_slugs = None
                 if backfilled_only:
-                    backfilled_slugs = {
-                        r[0] for r in con.sql(f"""
-                            SELECT DISTINCT item_slug
-                            FROM read_parquet('{archive_dir}/prices-*.parquet')
-                        """).fetchall()
-                    }
+                    try:
+                        slug_rows = self.db.execute(text("""
+                            SELECT item_id FROM items WHERE is_backfilled = 1
+                        """)).fetchall()
+                        backfilled_slugs = {r[0] for r in slug_rows}
+                        logger.info(f"  Backfilled items filter: {len(backfilled_slugs)} items from DB")
+                    except Exception as e:
+                        logger.warning(f"  Could not fetch backfilled items from DB, using all: {e}")
+                        backfilled_slugs = {
+                            r[0] for r in con.sql("""
+                                SELECT DISTINCT item_slug
+                                FROM read_parquet(?)
+                            """, params=[str(archive_dir / "prices-*.parquet")]).fetchall()
+                        }
+                # Load Parquet files, handling schema mismatch (older files lack 'source' column)
+                pq_files = sorted([str(p) for p in archive_dir.glob("prices-*.parquet")])
+                pq_queries = []
+                for pqf in pq_files:
+                    cols = con.sql(f"DESCRIBE SELECT * FROM read_parquet('{pqf}')").fetchall()
+                    col_names = {r[0] for r in cols}
+                    if "source" in col_names:
+                        pq_queries.append(f"SELECT * FROM read_parquet('{pqf}')")
+                    else:
+                        pq_queries.append(f"SELECT *, NULL::VARCHAR AS source FROM read_parquet('{pqf}')")
+                union_sql = " UNION ALL BY NAME ".join(pq_queries)
+
+                # Filter to backfilled slugs via a temp table JOIN (handles special chars safely)
+                if backfilled_slugs is not None:
+                    con.sql("CREATE TEMP TABLE _backfilled (slug VARCHAR)")
+                    con.executemany("INSERT INTO _backfilled VALUES (?)",
+                                    [(s,) for s in backfilled_slugs])
+                    logger.info(f"  Filtering to {len(backfilled_slugs)} backfilled items via temp table")
+
+                slug_join = "JOIN _backfilled b ON sub.item_slug = b.slug" if backfilled_slugs is not None else ""
+
                 rows = con.sql(f"""
-                    SELECT item_slug, day, source, mean_price AS price, volume
-                    FROM read_parquet('{archive_dir}/prices-*.parquet')
+                    SELECT item_slug, day, mean_price AS price, volume, source
+                    FROM ({union_sql}) sub
+                    {slug_join}
                     WHERE day >= ?
-                      AND source NOT LIKE 'historical_fallback:%'
+                      AND (source IS NULL OR source NOT LIKE 'historical_fallback:%')
                     ORDER BY item_slug, day, source
                 """, params=[cutoff]).fetchall()
-                if backfilled_slugs is not None:
-                    rows = [r for r in rows if r[0] in backfilled_slugs]
+                logger.info(f"  DuckDB query returned {len(rows):,} rows")
                 # Column order MUST match the SELECT above
-                # (item_slug, day, source, mean_price, volume).
-                df = pd.DataFrame(rows, columns=["item_id", "timestamp", "source", "price", "volume"])
+                # (item_slug, day, mean_price, volume, source).
+                df = pd.DataFrame(rows, columns=["item_id", "timestamp", "price", "volume", "source"])
+                del rows  # free memory
+                logger.info(f"  DataFrame created, converting types...")
                 df["timestamp"] = pd.to_datetime(df["timestamp"])
                 df["date"] = df["timestamp"].dt.date
                 # Some Parquet years store mean_price/volume as VARCHAR; the
@@ -133,8 +164,10 @@ class ItemForecaster:
                 df["price"] = pd.to_numeric(df["price"], errors="coerce")
                 df["volume"] = pd.to_numeric(df["volume"], errors="coerce")
                 df = df.dropna(subset=["price"])
+                logger.info(f"  After parsing: {len(df):,} rows, {df.item_id.nunique():,} items")
                 n_before = len(df)
                 n_sources_before = df["source"].nunique() if "source" in df.columns else 1
+                logger.info(f"  Applying multi-source voting ({n_sources_before} sources)...")
                 df = self._apply_multi_source_voting(df)
                 n_after = len(df)
                 logger.info(f"  {n_after:,} rows (Parquet, voted from {n_before:,} rows "
@@ -195,10 +228,21 @@ class ItemForecaster:
                 volume=("volume", "sum"),
             )
 
-        unique_rows = df.groupby(["item_id", "date"]).size()
-        already_single = not (unique_rows > 1).any()
-        if already_single:
+        # Speedup: split into single-source (≤1 row per item/date) and multi-source groups.
+        # Single-source rows use fast groupby agg; multi-source uses the vote function.
+        # This avoids calling a Python function millions of times.
+        item_date_counts = df.groupby(["item_id", "date"], as_index=False).size()
+        multi_groups = item_date_counts[item_date_counts["size"] > 1]
+        if multi_groups.empty:
             return df.drop(columns=["source"], errors="ignore")
+
+        multi_keys = multi_groups[["item_id", "date"]].drop_duplicates()
+        is_multi = df.set_index(["item_id", "date"]).index.isin(
+            multi_keys.set_index(["item_id", "date"]).index
+        )
+
+        single_df = df[~is_multi].copy()
+        multi_df = df[is_multi].copy()
 
         def vote(group):
             prices = group["price"].values
@@ -230,8 +274,24 @@ class ItemForecaster:
                 "volume": group["volume"].sum() if "volume" in group.columns else 0,
             })
 
-        result = df.groupby(["item_id", "date"], as_index=False).apply(vote).reset_index(drop=True)
-        result = result.drop(columns=[c for c in result.columns if c.startswith("_")], errors="ignore")
+        # Fast path: single-source rows
+        if len(single_df) > 0:
+            result_single = single_df.groupby(["item_id", "date"], as_index=False).agg(
+                price=("price", "mean"),
+                volume=("volume", "sum"),
+            )
+        else:
+            result_single = pd.DataFrame(columns=["item_id", "date", "price", "volume"])
+
+        # Slow path: multi-source rows (small subset, typically <2% of groups)
+        if len(multi_df) > 0:
+            result_multi = multi_df.groupby(["item_id", "date"], as_index=False).apply(
+                vote
+            ).reset_index(drop=True)
+        else:
+            result_multi = pd.DataFrame(columns=["item_id", "date", "price", "volume"])
+
+        result = pd.concat([result_single, result_multi], ignore_index=True)
         return result
 
     def fetch_events(self) -> pd.DataFrame:
@@ -796,17 +856,10 @@ class ItemForecaster:
             ).cumcount() + 1
 
         # Market return percentile vs rolling 365-day history
+        # Uses rolling rank (fast Cython) instead of rolling+apply (slow Python loop).
         if "market_return_30d" in df.columns:
-            def _pct_rank_365(series):
-                return series.rolling(365, min_periods=30).apply(
-                    lambda x: (x.iloc[-1] > x[:-1]).sum() / max(len(x) - 1, 1),
-                    raw=False
-                )
             df["market_return_30d_percentile"] = df.groupby("item_id")["market_return_30d"].transform(
-                lambda x: x.rolling(365, min_periods=30).apply(
-                    lambda s: (s.iloc[-1] > s[:-1]).sum() / max(len(s) - 1, 1),
-                    raw=False
-                )
+                lambda x: x.rolling(365, min_periods=30).rank(pct=True)
             )
 
         return df
@@ -1210,15 +1263,26 @@ class ItemForecaster:
     def build_training_data(self, days_back: int = 365,
                              backfilled_only: bool = False,
                              max_feature_rows: int = 400_000) -> pd.DataFrame:
+        _t0 = datetime.now()
         price_df = self.fetch_price_history(days_back=days_back, backfilled_only=backfilled_only)
+        logger.info(f"  fetch_price_history took {(datetime.now() - _t0).total_seconds():.0f}s")
         if max_feature_rows:
             price_df = self._stratified_item_subsample(price_df, max_feature_rows)
+            logger.info(f"  Stratified subsample: {len(price_df):,} rows")
+        _t1 = datetime.now()
         events_df = self.fetch_events()
+        logger.info(f"  fetch_events took {(datetime.now() - _t1).total_seconds():.0f}s")
 
+        _t2 = datetime.now()
         df = self.engineer_features(price_df, events_df)
+        logger.info(f"  engineer_features took {(datetime.now() - _t2).total_seconds():.0f}s, "
+                    f"result: {len(df):,} rows, {len(df.columns)} cols")
+        del price_df, events_df
 
         # Add cross-sectional (market-regime) features
+        _t3 = datetime.now()
         df = self._add_cross_sectional_features(df)
+        logger.info(f"  cross_sectional_features took {(datetime.now() - _t3).total_seconds():.0f}s")
 
         # Add supply depth features (sell_listings, skinport_quantity)
         df = self._add_supply_depth_features(df)
@@ -1251,7 +1315,10 @@ class ItemForecaster:
 
     def _get_feature_importance(self, model: lgb.Booster) -> pd.DataFrame:
         importance = model.feature_importance(importance_type="gain")
-        fi = pd.DataFrame({"feature": self.feature_cols, "importance": importance})
+        feature_names = model.feature_name()
+        if len(feature_names) != len(importance):
+            feature_names = self.feature_cols[:len(importance)]
+        fi = pd.DataFrame({"feature": feature_names, "importance": importance})
         fi = fi.sort_values("importance", ascending=False).head(20)
         return fi
 
@@ -1260,9 +1327,17 @@ class ItemForecaster:
         logger.info("TRAINING LIGHTGBM FORECASTER (ensemble, HP search, walk-forward)")
         logger.info("=" * 60)
 
+        _train_start = datetime.now()
         df = self.build_training_data(days_back=1460, backfilled_only=True)
 
-        for horizon in self.HORIZONS:
+        self.horizon_feature_cols = {}
+
+        for hi, horizon in enumerate(self.HORIZONS, 1):
+            logger.info(f"\n{'='*60}")
+            logger.info(f"HORIZON {horizon}d ({hi}/{len(self.HORIZONS)})")
+            logger.info(f"{'='*60}")
+            _hz_start = datetime.now()
+
             tdf = self.prepare_targets(df, horizon)
 
             # Drop NaN targets (use percentage return as primary target)
@@ -1365,11 +1440,14 @@ class ItemForecaster:
                         q: dict(per_quantile_params[q]) for q in self.QUANTILES
                     }
 
+                # Train ensemble models for each quantile using the (cached or searched) params
+                for q in self.QUANTILES:
+                    pq = per_quantile_params[q]
                     logger.info(f"  Training {horizon}d p{int(q*100)} ensemble ({self.N_ENSEMBLES} members)...")
-
+                    _ens_start = datetime.now()
                     ensemble_models = []
                     for ei in range(self.N_ENSEMBLES):
-                        params = base_params.copy()
+                        params = pq.copy()
                         params["random_state"] = self.ENSEMBLE_SEEDS[ei]
                         # Column-subsampling variation per member (diversifies
                         # the ensemble beyond row bagging alone).
@@ -1384,8 +1462,9 @@ class ItemForecaster:
                         ensemble_models.append(model)
 
                     self.models[(horizon, q)] = ensemble_models
+                    _ens_elapsed = (datetime.now() - _ens_start).total_seconds()
                     fi = self._get_feature_importance(ensemble_models[0])
-                    logger.info(f"  Top features: {fi['feature'].head(5).tolist()}")
+                    logger.info(f"  Done in {_ens_elapsed:.0f}s — Top features: {fi['feature'].head(5).tolist()}")
 
                 # Expanding-window CV evaluation using the best hyperparams
                 if os.environ.get("SKIP_CV") == "1":
@@ -1472,12 +1551,24 @@ class ItemForecaster:
                 if not need_retrain:
                     break
 
+            self.horizon_feature_cols[horizon] = list(self.feature_cols)
+
+            _hz_elapsed = (datetime.now() - _hz_start).total_seconds()
+            logger.info(f"  Horizon {horizon}d done in {_hz_elapsed:.0f}s")
+            if self.cv_results.get(horizon):
+                cv = self.cv_results[horizon]
+                logger.info(f"  CV summary: mean={cv.get('mean_dir_acc', '?'):}% "
+                            f"std={cv.get('std_dir_acc', '?'):}% "
+                            f"range=[{cv.get('min_dir_acc', '?'):}%, {cv.get('max_dir_acc', '?'):}%]")
             del tdf
 
         del df
 
+        _train_elapsed = (datetime.now() - _train_start).total_seconds()
         self.save_models()
-        logger.info("Training complete.")
+        logger.info(f"\n{'='*60}")
+        logger.info(f"TRAINING COMPLETE in {_train_elapsed:.0f}s ({_train_elapsed/60:.1f}min)")
+        logger.info(f"{'='*60}")
 
     # ------------------------------------------------------------------
     # Prediction
@@ -1534,7 +1625,20 @@ class ItemForecaster:
             if iid not in best or r.forecast_date > best[iid][4]:
                 best[iid] = (r.price_low, r.price_mid, r.price_high, r.current_price, r.forecast_date)
 
-        id_to_idx = {int(iid): i for i, iid in enumerate(item_ids)}
+        # Map Parquet string slugs → integer DB IDs
+        try:
+            slug_rows = self.db.execute(
+                text("SELECT id, item_id FROM items WHERE is_backfilled = 1")
+            ).fetchall()
+            slug_to_id = {r.item_id: r.id for r in slug_rows}
+        except Exception:
+            slug_to_id = {}
+
+        id_to_idx = {}
+        for i, slug in enumerate(item_ids):
+            iid = slug_to_id.get(str(slug))
+            if iid is not None:
+                id_to_idx[iid] = i
         for iid, vals in best.items():
             idx = id_to_idx.get(iid)
             if idx is None:
@@ -1608,15 +1712,19 @@ class ItemForecaster:
         if item_ids:
             latest_rows = latest_rows[latest_rows["item_id"].isin(item_ids)]
 
-        # Replace INF with NaN (division-by-zero artifacts), then median imputation
-        latest_clean = latest_rows[self.feature_cols].replace([np.inf, -np.inf], np.nan)
+        # Build the full feature matrix with the union of all per-horizon feature
+        # sets (each horizon may have pruned different features).
+        all_feature_cols = sorted(set().union(
+            *[set(cols) for cols in self.horizon_feature_cols.values()]
+        )) if self.horizon_feature_cols else self.feature_cols
+
+        latest_clean = latest_rows[all_feature_cols].replace([np.inf, -np.inf], np.nan)
         if not self.feature_medians.empty:
-            medians_aligned = self.feature_medians.reindex(self.feature_cols)
+            medians_aligned = self.feature_medians.reindex(all_feature_cols)
             medians_aligned = medians_aligned.where(medians_aligned.notna(), latest_clean.median())
             X_batch = latest_clean.fillna(medians_aligned)
         else:
-            feature_medians = latest_clean.median()
-            X_batch = latest_clean.fillna(feature_medians)
+            X_batch = latest_clean.fillna(latest_clean.median())
 
         item_id_arr = latest_rows["item_id"].to_numpy()
         current_price_arr = latest_rows["price"].to_numpy()
@@ -1634,19 +1742,21 @@ class ItemForecaster:
         }
 
         for horizon in self.HORIZONS:
+            h_features = self.horizon_feature_cols.get(horizon, self.feature_cols)
+            X_horizon = X_batch[h_features]
             preds = {}
             for q in self.QUANTILES:
                 all_preds = []
 
-                # LGB predictions
+                # LGB predictions (use horizon-specific features)
                 key = (horizon, q)
                 if key in self.models:
                     ensemble = self.models[key]
                     if isinstance(ensemble, list):
                         for m in ensemble:
-                            all_preds.append(m.predict(X_batch))
+                            all_preds.append(m.predict(X_horizon))
                     else:
-                        all_preds.append(ensemble.predict(X_batch))
+                        all_preds.append(ensemble.predict(X_horizon))
 
                 if all_preds:
                     preds[q] = np.mean(all_preds, axis=0)
@@ -2218,6 +2328,9 @@ class ItemForecaster:
 
         meta = {
             "feature_cols": self.feature_cols,
+            "horizon_feature_cols": {
+                str(h): cols for h, cols in self.horizon_feature_cols.items()
+            },
             "trained_at": str(self._now()),
             "confidence_thresholds": thresholds_serial,
             "feature_medians": medians_serial,
@@ -2306,6 +2419,15 @@ class ItemForecaster:
                     path = os.path.join(self.model_dir, f"lgb_{horizon}d_q{int(q*100)}.txt")
                     if os.path.exists(path):
                         self.models[(horizon, q)] = lgb.Booster(model_file=path)
+
+        # Build per-horizon feature sets from the loaded models.
+        # Each model internally stores the feature names it was trained with.
+        self.horizon_feature_cols = {}
+        for (horizon, q), ensemble in self.models.items():
+            if horizon in self.horizon_feature_cols:
+                continue
+            model = ensemble[0] if isinstance(ensemble, list) else ensemble
+            self.horizon_feature_cols[horizon] = model.feature_name()
 
         total_groups = len(self.models)
         logger.info(f"Loaded {total_groups} model groups from {self.model_dir}")
