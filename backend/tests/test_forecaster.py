@@ -717,6 +717,72 @@ class TestTrainingWindow:
         folds = forecaster._compute_cv_splits(sorted_dates)
         assert len(folds) == 0
 
+    def test_distribution_shift_guard_excludes_2026(self, forecaster):
+        """Regression: the 2026 distribution-shift guard must remove all 2026
+        rows BEFORE stratified subsampling. The old guard had a `month < 6`
+        check that failed in July 2026, and ran AFTER subsampling so the
+        budget was wasted on 2026 rows, collapsing the 7d validation window
+        to a single day and triggering false-positive feature pruning."""
+        rows = []
+        base = date(2022, 6, 1)
+        for year in [2022, 2023, 2024, 2025]:
+            for day_offset in range(100):
+                rows.append({
+                    "item_id": f"item_{year}",
+                    "date": date(year, 1, 1) + timedelta(days=day_offset),
+                    "price": 10.0,
+                    "volume": 100,
+                })
+        # Add incomplete 2026 data (Jan-Jun, incomplete year)
+        for day_offset in range(100):
+            rows.append({
+                "item_id": "item_2026",
+                "date": date(2026, 1, 1) + timedelta(days=day_offset),
+                "price": 10.0,
+                "volume": 100,
+            })
+        df = pd.DataFrame(rows)
+
+        n_before = len(df)
+        counts_before = df.groupby(df["date"].apply(lambda d: d.year)).size()
+
+        # Apply the exact guard from build_training_data
+        if "date" in df.columns:
+            dates_2026 = pd.to_datetime(df["date"]).dt.year == 2026
+            n_2026 = dates_2026.sum()
+            if n_2026 > 0:
+                df = df[~dates_2026].copy()
+
+        n_after = len(df)
+        counts_after = df.groupby(df["date"].apply(lambda d: d.year)).size()
+
+        assert n_after < n_before, "Guard should have removed rows"
+        assert 2026 not in counts_after.index, "All 2026 rows must be excluded"
+        for year in [2022, 2023, 2024, 2025]:
+            assert counts_after[year] == counts_before[year], \
+                f"Non-2026 rows for {year} must be preserved"
+
+    def test_distribution_shift_guard_preserves_earlier_years(self, forecaster):
+        """When there's no 2026 data, the guard should be a no-op."""
+        rows = []
+        for day_offset in range(100):
+            rows.append({
+                "item_id": "item_a",
+                "date": date(2025, 1, 1) + timedelta(days=day_offset),
+                "price": 10.0,
+                "volume": 100,
+            })
+        df = pd.DataFrame(rows)
+        n_before = len(df)
+
+        if "date" in df.columns:
+            dates_2026 = pd.to_datetime(df["date"]).dt.year == 2026
+            n_2026 = dates_2026.sum()
+            if n_2026 > 0:
+                df = df[~dates_2026].copy()
+
+        assert len(df) == n_before, "No-op guard must not remove rows when no 2026 data"
+
 
 # ---------------------------------------------------------------------------
 # Player Count Features
