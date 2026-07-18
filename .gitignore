@@ -1,7 +1,8 @@
 # Environment variables (secrets - never commit)
 .env
 .env.local
-.env.*.local
+.env.*
+!.env.example
 # NOTE: .env.example is NOT ignored - it's committed as a template
 backend/.env
 
@@ -34,6 +35,9 @@ frontend/.turbo/
 *.swo
 *~
 .DS_Store
+
+# Tooling (local dev artifacts)
+.impeccable/
 
 # Logs
 logs/
