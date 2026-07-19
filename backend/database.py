@@ -147,7 +147,7 @@ class ItemForecast(Base):
     id = Column(Integer, primary_key=True)
     item_id = Column(Integer, ForeignKey("items.id"), nullable=False)
     forecast_date = Column(Date, nullable=False)
-    horizon_days = Column(Integer, nullable=False)  # 7 or 30
+    horizon_days = Column(Integer, nullable=False)  # 3, 7, 14, or 30
     price_low = Column(Float, nullable=True)  # p10 quantile
     price_mid = Column(Float, nullable=True)  # p50 quantile (median)
     price_high = Column(Float, nullable=True)  # p90 quantile

@@ -424,11 +424,11 @@ def _build_trend_explanation(direction: str, confidence: str, current_price) -> 
 @router.get("/{item_id}/prediction", response_model=PredictionOut)
 def get_item_prediction(
     item_id: str,
-    period: str = Query("7_days", pattern="^(7_days|30_days)$"),
+    period: str = Query("7_days", pattern="^(3_days|7_days|14_days|30_days)$"),
     db: Session = Depends(get_db),
 ):
     item = _resolve_item(item_id, db)
-    horizon = 7 if period == "7_days" else 30
+    horizon = {"3_days": 3, "7_days": 7, "14_days": 14, "30_days": 30}[period]
 
     forecast = (
         db.query(ItemForecast)

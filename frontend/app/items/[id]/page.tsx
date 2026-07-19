@@ -190,6 +190,7 @@ export default function ItemDetailPage() {
   const [multiSourceData, setMultiSourceData] = useState<MultiSourcePrices | null>(null);
   const [selectedSources, setSelectedSources] = useState<string[]>([]);
   const [timeRange, setTimeRange] = useState<TimeRange>('30d');
+  const [forecastPeriod, setForecastPeriod] = useState<string>('7_days');
   const [eventImpacts, setEventImpacts] = useState<EventImpact[]>([]);
   const [featureImportance, setFeatureImportance] = useState<FeatureImportance | null>(null);
   const [isLoading, setIsLoading] = useState(true);
@@ -214,7 +215,7 @@ export default function ItemDetailPage() {
           getItemVariants(itemId).catch(() => []),
           getPriceHistory(itemId, 5000, 0, 500),
           getItemTrends(itemId),
-          getItemPrediction(itemId, '7_days'),
+          getItemPrediction(itemId, forecastPeriod),
           getMultiSourcePrices(itemId, ['all'], days),
           getItemEventImpacts(itemId).catch(() => [] as EventImpact[]),
           getItemFeatureImportance(itemId).catch(() => null),
@@ -250,7 +251,7 @@ export default function ItemDetailPage() {
             mid: predictionResponse?.forecast_mid ?? 0,
             high: predictionResponse?.forecast_high ?? 0,
           },
-          period_label: predictionResponse?.forecast_period ?? '7_days',
+          period_label: predictionResponse?.forecast_period ?? forecastPeriod,
           trend_direction: predictionResponse?.trend_direction,
           confidence: predictionResponse?.confidence,
         } as PredictionResponse);
@@ -271,7 +272,7 @@ export default function ItemDetailPage() {
 
     loadItemData();
     return () => { cancelled = true; };
-  }, [itemId, timeRange]);
+  }, [itemId, timeRange, forecastPeriod]);
 
   const sourceChartData = useMemo(
     () => buildSourceChartData(multiSourceData, selectedSources, timeRange),
@@ -528,8 +529,23 @@ export default function ItemDetailPage() {
                   <CountUpNumber from={forecast.mid} to={forecast.mid} decimals={2} formatFn={formatCurrency} />
                 ) : '\u2014'}
               </div>
+              <div className="flex gap-1 mt-2">
+                {(['3_days', '7_days', '14_days', '30_days'] as const).map((p) => (
+                  <button
+                    key={p}
+                    onClick={() => setForecastPeriod(p)}
+                    className={`text-[10px] uppercase tracking-wider px-1.5 py-0.5 rounded-xs transition-colors ${
+                      forecastPeriod === p
+                        ? 'bg-accent/20 text-accent'
+                        : 'text-muted hover:text-secondary'
+                    }`}
+                  >
+                    {p.replace('_', ' ')}
+                  </button>
+                ))}
+              </div>
               <div className="text-xs text-tertiary mt-1">
-                {hasPriceData ? (prediction?.period_label || '7_days') + ' forecast' : 'Insufficient data'}
+                {hasPriceData ? (prediction?.period_label || forecastPeriod) + ' forecast' : 'Insufficient data'}
               </div>
             </div>
 
