@@ -233,9 +233,12 @@ class PredictionAccuracy(Base):
     Stores aggregated accuracy metrics computed by the backtesting system.
     prediction_type: forecast
     metrics JSON schema:
-      - forecast: {mae, rmse, mape, directional_accuracy, interval_coverage,
-                   confidence_accuracy_low, confidence_accuracy_medium,
-                   confidence_accuracy_high, sample_count, horizon_days}
+      - forecast: {mae, rmse, mape, wmape, mape_by_tier, directional_accuracy,
+                   interval_coverage, baseline_directional_accuracy,
+                   improvement_over_baseline_pp, skill_vs_baseline,
+                   conf_gap_pp, conf_high_interval_cov, conf_calibration_error,
+                   directional_accuracy_ci_lower, directional_accuracy_ci_upper,
+                   mae_ci_lower, mae_ci_upper, sample_count, horizon_days}
     """
     __tablename__ = "prediction_accuracy"
 

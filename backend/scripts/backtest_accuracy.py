@@ -21,14 +21,59 @@ from collections import defaultdict
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
+import numpy as np
+import pandas as pd
 from database import SessionLocal, PredictionAccuracy
 from sqlalchemy import text
+from models.forecaster import ItemForecaster
 
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 )
 logger = logging.getLogger("backtest_accuracy")
+
+FLAT_TOLERANCE = 0.005
+PRICE_TIER_BOUNDS = [1.0, 5.0, 20.0, 100.0]
+N_BOOTSTRAP = 1000
+BOOTSTRAP_CI = 95
+BOOTSTRAP_RNG_SEED = 42
+
+
+def _direction_from_return(ret: float) -> str:
+    if ret > FLAT_TOLERANCE:
+        return "up"
+    if ret < -FLAT_TOLERANCE:
+        return "down"
+    return "flat"
+
+
+def _price_tier(price: float) -> int:
+    if price >= 100:
+        return 4
+    if price >= 20:
+        return 3
+    if price >= 5:
+        return 2
+    if price >= 1:
+        return 1
+    return 0
+
+
+def _bootstrap_ci(values, n_resamples=N_BOOTSTRAP, ci=BOOTSTRAP_CI):
+    if len(values) < 10:
+        return None, None
+    rng = np.random.default_rng(BOOTSTRAP_RNG_SEED)
+    stats = np.empty(n_resamples)
+    n = len(values)
+    arr = np.array(values)
+    for i in range(n_resamples):
+        sample = rng.choice(arr, size=n, replace=True)
+        stats[i] = np.mean(sample)
+    alpha = (100 - ci) / 2
+    lower = float(np.percentile(stats, alpha))
+    upper = float(np.percentile(stats, 100 - alpha))
+    return round(lower, 4), round(upper, 4)
 
 
 def _upsert_accuracy(db, rows):
@@ -63,6 +108,10 @@ def _load_actual_prices(db, item_ids, dates):
 
     The DB price_history table only holds live aggregator data (recent dates).
     For full historical backtesting we read directly from the Parquet archive.
+
+    Applies the same multi-source voting logic as the forecaster's training
+    pipeline (median of sources within 2 std of consensus) so that backtest
+    actuals consistently match the target prices the model was trained on.
     """
     if not item_ids or not dates:
         return {}
@@ -97,27 +146,44 @@ def _load_actual_prices(db, item_ids, dates):
         for pqf in pq_files:
             cols = con.sql(f"DESCRIBE SELECT * FROM read_parquet('{pqf}')").fetchall()
             col_names = {r[0] for r in cols}
-            pq_queries.append(f"SELECT item_slug, CAST(day AS DATE) AS day, mean_price FROM read_parquet('{pqf}')")
+            if "source" in col_names:
+                pq_queries.append(f"SELECT item_slug, CAST(day AS DATE) AS day, mean_price AS price, source, volume FROM read_parquet('{pqf}')")
+            else:
+                pq_queries.append(f"SELECT item_slug, CAST(day AS DATE) AS day, mean_price AS price, NULL::VARCHAR AS source, volume FROM read_parquet('{pqf}')")
         union_sql = " UNION ALL BY NAME ".join(pq_queries)
 
-        # Load all data matching our slugs and dates into a temp table
+        # Load all data matching our slugs and dates
         slug_list = ", ".join(f"'{s.replace(chr(39), chr(39)+chr(39))}'" for s in target_slugs)
         date_list = ", ".join(f"'{d}'" for d in date_strs)
         rows = con.sql(f"""
-            SELECT item_slug, day, mean_price
+            SELECT item_slug, day, price, source, volume
             FROM ({union_sql})
             WHERE item_slug IN ({slug_list})
               AND CAST(day AS DATE) IN ({date_list})
         """).fetchall()
 
-        by_key = {}
-        for slug, day_val, price in rows:
-            item_id = slug_to_id.get(slug)
-            if item_id is not None:
-                if price is not None:
-                    by_key[(item_id, day_val)] = float(price)
+        if not rows:
+            logger.warning("  No matching Parquet rows found")
+            return {}
 
-        logger.info(f"  Loaded {len(by_key)} actual price points from Parquet")
+        df = pd.DataFrame(rows, columns=["item_id", "timestamp", "price", "source", "volume"])
+        df["timestamp"] = pd.to_datetime(df["timestamp"])
+        df["date"] = df["timestamp"].dt.date
+        df["price"] = pd.to_numeric(df["price"], errors="coerce")
+        df = df.dropna(subset=["price"])
+
+        n_before = len(df)
+        df = ItemForecaster._apply_multi_source_voting(df)
+        logger.info(f"  Loaded {len(df)} actual price points from Parquet "
+                    f"(voted from {n_before} source-rows)")
+
+        by_key = {}
+        for _, row in df.iterrows():
+            slug = row["item_id"]
+            item_id = slug_to_id.get(slug)
+            if item_id is not None and pd.notna(row["price"]):
+                by_key[(item_id, row["date"])] = float(row["price"])
+
         return by_key
     finally:
         con.close()
@@ -175,6 +241,12 @@ def backtest_forecasts(db, today=None):
 
     Stores both aggregate accuracy metrics (prediction_accuracy) and
     per-forecast outcome records (forecast_outcomes).
+
+    Metrics breakdown:
+      - Point error:      MAE, RMSE, MAPE, wMAPE (dollar-weighted), MAPE by price tier
+      - Direction:        directional_accuracy, baseline comp, bootstrap CI
+      - Probabilistic:    interval_coverage, conf_gap_pp, conf_calibration_error
+      - Skill:            skill_vs_baseline (Theil's U analog, <1 beats persistence)
     """
     today = today or date.today()
     logger.info("=" * 60)
@@ -222,13 +294,8 @@ def backtest_forecasts(db, today=None):
 
         actual_prices = _load_actual_prices(db, item_ids, target_dates)
 
-        errors = []
-        directional_hits = 0
-        directional_total = 0
-        interval_hits = 0
-        interval_total = 0
-        confidence_buckets = defaultdict(lambda: {"hits": 0, "total": 0})
-
+        # Per-forecast records for aggregation and bootstrap
+        records = []
         for f in forecasts:
             f_date = f.forecast_date if isinstance(f.forecast_date, date) else date.fromisoformat(f.forecast_date)
             target_date = f_date + timedelta(days=horizon)
@@ -245,33 +312,36 @@ def backtest_forecasts(db, today=None):
                 continue
 
             abs_error = abs(mid - actual)
-            pct_error = abs(abs_error / actual) * 100 if actual > 0 else 0
-            errors.append({
-                "abs_error": abs_error,
-                "pct_error": pct_error,
-                "sq_error": (mid - actual) ** 2,
-            })
 
-            actual_direction = "up" if actual > current else "down" if actual < current else "flat"
-            predicted_direction = f.direction or "flat"
+            pred_ret = (mid - current) / current
+            actual_ret = (actual - current) / current
+            predicted_direction = _direction_from_return(pred_ret)
+            actual_direction = _direction_from_return(actual_ret)
             direction_correct = 1 if predicted_direction == actual_direction else 0
-            if direction_correct:
-                directional_hits += 1
-            directional_total += 1
 
             in_interval = None
             if low is not None and high is not None:
                 in_interval = 1 if low <= actual <= high else 0
-                if in_interval:
-                    interval_hits += 1
-                interval_total += 1
 
             conf = f.confidence or "low"
-            if direction_correct:
-                confidence_buckets[conf]["hits"] += 1
-            confidence_buckets[conf]["total"] += 1
+            tier = _price_tier(current)
 
-            # Record per-forecast outcome
+            records.append({
+                "abs_error": abs_error,
+                "pct_error": abs(abs_error / current) * 100 if current > 0 else 0,
+                "sq_error": (mid - actual) ** 2,
+                "direction_correct": direction_correct,
+                "predicted_direction": predicted_direction,
+                "actual_direction": actual_direction,
+                "in_interval": in_interval,
+                "confidence": conf,
+                "current_price": current,
+                "actual_price": actual,
+                "price_tier": tier,
+                "item_id": f.item_id,
+            })
+
+            # Record per-forecast outcome for DB storage
             fcast_date = f.forecast_date if isinstance(f.forecast_date, date) else date.fromisoformat(str(f.forecast_date)[:10])
             all_outcomes.append({
                 "forecast_id": f.id,
@@ -289,33 +359,124 @@ def backtest_forecasts(db, today=None):
                 "direction_correct": direction_correct,
                 "in_interval": in_interval,
                 "abs_error": round(abs_error, 4),
-                "pct_error": round(pct_error, 2),
+                "pct_error": abs(abs_error / current) * 100 if current > 0 else 0,
                 "model_version": model_version,
             })
 
-        if not errors:
+        if not records:
             logger.info(f"  [{horizon}d / {model_version}] No valid comparisons")
             continue
 
-        n = len(errors)
-        mae = sum(e["abs_error"] for e in errors) / n
-        rmse = math.sqrt(sum(e["sq_error"] for e in errors) / n)
-        mape = sum(e["pct_error"] for e in errors) / n
-        directional_accuracy = (directional_hits / directional_total * 100) if directional_total > 0 else 0
+        n = len(records)
+        # ------------------------------------------------------------------
+        # 1. Standard point-error metrics
+        # ------------------------------------------------------------------
+        mae = sum(r["abs_error"] for r in records) / n
+        rmse = math.sqrt(sum(r["sq_error"] for r in records) / n)
+        mape = sum(r["pct_error"] for r in records) / n
+
+        # ------------------------------------------------------------------
+        # 2. Directional accuracy
+        # ------------------------------------------------------------------
+        directional_hits = sum(r["direction_correct"] for r in records)
+        directional_accuracy = directional_hits / n * 100
+
+        # ------------------------------------------------------------------
+        # 3. Interval coverage
+        # ------------------------------------------------------------------
+        interval_records = [r for r in records if r["in_interval"] is not None]
+        interval_total = len(interval_records)
+        interval_hits = sum(r["in_interval"] for r in interval_records)
         interval_coverage = (interval_hits / interval_total * 100) if interval_total > 0 else 0
 
+        # ------------------------------------------------------------------
+        # 4. wMAPE (dollar-weighted MAPE)
+        # ------------------------------------------------------------------
+        total_actual = sum(r["actual_price"] for r in records)
+        wmape = (sum(r["abs_error"] for r in records) / total_actual * 100) if total_actual > 0 else 0
+
+        # ------------------------------------------------------------------
+        # 5. MAPE by price tier
+        # ------------------------------------------------------------------
+        tier_errors = defaultdict(list)
+        for r in records:
+            tier_errors[r["price_tier"]].append(r["pct_error"])
+        mape_by_tier = {}
+        for tier_num, errors_list in sorted(tier_errors.items()):
+            mape_by_tier[f"tier_{tier_num}"] = round(sum(errors_list) / len(errors_list), 2)
+
+        # ------------------------------------------------------------------
+        # 6. Naive baseline: persistence forecast
+        #    Predicts current_price as the future price (zero change).
+        #    Direction is always "flat" — so baseline directional accuracy
+        #    is the proportion of items whose actual return is within ±FLAT_TOLERANCE.
+        # ------------------------------------------------------------------
+        baseline_hits = sum(1 for r in records if r["actual_direction"] == "flat")
+        baseline_directional_accuracy = baseline_hits / n * 100
+
+        baseline_mae = sum(abs(r["current_price"] - r["actual_price"]) for r in records) / n
+
+        improvement_over_baseline_pp = round(directional_accuracy - baseline_directional_accuracy, 2)
+        skill_vs_baseline = round(mae / baseline_mae, 4) if baseline_mae > 0 else None
+
+        # ------------------------------------------------------------------
+        # 7. Confidence calibration metrics
+        # ------------------------------------------------------------------
+        high_conf = [r for r in records if r["confidence"] == "high"]
+        low_conf = [r for r in records if r["confidence"] == "low"]
+        med_conf = [r for r in records if r["confidence"] == "medium"]
+
+        high_dir_acc = sum(r["direction_correct"] for r in high_conf) / len(high_conf) * 100 if high_conf else 0
+        low_dir_acc = sum(r["direction_correct"] for r in low_conf) / len(low_conf) * 100 if low_conf else 0
+
+        conf_gap_pp = round(high_dir_acc - low_dir_acc, 2)
+
+        high_interval_records = [r for r in high_conf if r["in_interval"] is not None]
+        high_int_hits = sum(r["in_interval"] for r in high_interval_records)
+        high_int_total = len(high_interval_records)
+        conf_high_interval_cov = round(high_int_hits / high_int_total * 100, 2) if high_int_total > 0 else 0
+
+        # Calibration error: |high_conf_dir_acc - target_accuracy (80%)|
+        # The target_accuracy is the binary confidence target from forecaster._calibrate_confidence
+        target_accuracy = 80.0
+        conf_calibration_error = round(abs(high_dir_acc - target_accuracy), 2)
+
+        # ------------------------------------------------------------------
+        # 8. Bootstrap confidence intervals
+        # ------------------------------------------------------------------
+        dir_acc_vals = [r["direction_correct"] for r in records]
+        mae_vals = [r["abs_error"] for r in records]
+
+        dir_ci_lower, dir_ci_upper = _bootstrap_ci(dir_acc_vals)
+        mae_ci_lower, mae_ci_upper = _bootstrap_ci(mae_vals)
+
+        # ------------------------------------------------------------------
+        # Assemble metrics dict
+        # ------------------------------------------------------------------
         metrics = {
+            # point error
             "mae": round(mae, 4),
             "rmse": round(rmse, 4),
             "mape": round(mape, 2),
+            "wmape": round(wmape, 2),
+            "mape_by_tier": mape_by_tier,
+            # directional
             "directional_accuracy": round(directional_accuracy, 2),
             "interval_coverage": round(interval_coverage, 2),
-            "confidence_accuracy_low": round(
-                confidence_buckets["low"]["hits"] / confidence_buckets["low"]["total"] * 100, 2
-            ) if confidence_buckets["low"]["total"] > 0 else 0,
-            "confidence_accuracy_high": round(
-                confidence_buckets["high"]["hits"] / confidence_buckets["high"]["total"] * 100, 2
-            ) if confidence_buckets["high"]["total"] > 0 else 0,
+            # baseline comparison
+            "baseline_directional_accuracy": round(baseline_directional_accuracy, 2),
+            "improvement_over_baseline_pp": improvement_over_baseline_pp,
+            "baseline_mae": round(baseline_mae, 4),
+            "skill_vs_baseline": skill_vs_baseline,
+            # confidence calibration
+            "conf_gap_pp": conf_gap_pp,
+            "conf_high_interval_cov": conf_high_interval_cov,
+            "conf_calibration_error": conf_calibration_error,
+            # bootstrap CIs
+            "directional_accuracy_ci_lower": dir_ci_lower,
+            "directional_accuracy_ci_upper": dir_ci_upper,
+            "mae_ci_lower": mae_ci_lower,
+            "mae_ci_upper": mae_ci_upper,
         }
 
         results.append({
@@ -329,11 +490,17 @@ def backtest_forecasts(db, today=None):
             "created_at": datetime.now(timezone.utc).replace(tzinfo=None),
         })
 
+        ci_str = ""
+        if dir_ci_lower is not None:
+            ci_str = f" [CI: {dir_ci_lower:.1f}–{dir_ci_upper:.1f}]"
         logger.info(
             f"  [{horizon}d / {model_version}] {n} samples — "
             f"MAE=${metrics['mae']:.2f} MAPE={metrics['mape']:.1f}% "
-            f"DirAcc={metrics['directional_accuracy']:.1f}% "
-            f"IntCov={metrics['interval_coverage']:.1f}%"
+            f"wMAPE={metrics['wmape']:.1f}% "
+            f"DirAcc={metrics['directional_accuracy']:.1f}%{ci_str} "
+            f"IntCov={metrics['interval_coverage']:.1f}% "
+            f"Gap={metrics['conf_gap_pp']:.1f}pp "
+            f"Skill={metrics['skill_vs_baseline']}"
         )
 
     if results:
@@ -344,8 +511,6 @@ def backtest_forecasts(db, today=None):
         _store_forecast_outcomes(db, all_outcomes)
 
     return results
-
-
 
 
 

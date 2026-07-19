@@ -28,6 +28,7 @@ except ImportError:
 logger = logging.getLogger(__name__)
 
 RNG = np.random.RandomState(42)
+DIRECTION_FLAT_TOLERANCE_PCT = 0.5
 
 
 def _gpu_available() -> bool:
@@ -78,17 +79,16 @@ class ItemForecaster:
     REGIMES = ["bear", "range", "bull"]
     REGIME_RETURN_THRESHOLD_BEAR = -3.0   # market_return_30d < -3% → bear
     REGIME_RETURN_THRESHOLD_BULL = 3.0    # market_return_30d > 3% → bull
-    N_ENSEMBLES = 6
-    ENSEMBLE_SEEDS = [42, 73, 91, 13, 57, 128]
-    ENSEMBLE_FEATURE_FRACTIONS = [0.6, 0.65, 0.7, 0.75, 0.8, 0.85]
+    N_ENSEMBLES = 3
+    ENSEMBLE_SEEDS = [42, 73, 91]
+    ENSEMBLE_FEATURE_FRACTIONS = [0.6, 0.7, 0.8]
     MAX_BIN = 63
     # Per-horizon boosting configuration.
-    # Longer horizons (14d, 30d) use DART (Dropout Additive Regression Trees)
-    # to reduce overfitting on noisy longer-range signals.
-    # Note: LightGBM does not support early stopping in DART mode, so
-    # num_boost_round is reduced to compensate for the full training.
+    # GBDT used for all horizons (feature-ablation study showed 14d/30d
+    # carry stronger signal than 3d/7d — DART's dropout overhead is not
+    # justified). DART left available for future experiments.
     WEAK_HORIZONS = [14, 30]
-    BOOSTING_TYPE_MAP = {3: "gbdt", 7: "gbdt", 14: "dart", 30: "dart"}
+    BOOSTING_TYPE_MAP = {3: "gbdt", 7: "gbdt", 14: "gbdt", 30: "gbdt"}
     DART_PARAMS = {
         "drop_rate": 0.1,
         "max_drop": 50,
@@ -97,6 +97,14 @@ class ItemForecaster:
         "uniform_drop": False,
     }
     DART_NUM_BOOST_ROUND = 500
+    # Horizon-specific feature exclusions based on ablation study
+    # (2026-07-19-feature-contribution-by-horizon.md):
+    # - Cross-sectional features actively harm 14d (−0.9pp) and 30d (−3.5pp)
+    # - Event features harm 30d (−3.0pp) but help 14d (+2.0pp)
+    HORIZON_EXCLUDED_GROUPS = {
+        14: ["cross_sectional"],
+        30: ["cross_sectional", "events"],
+    }
     # Residual stacking: train a Ridge regression on LightGBM residuals
     # after ensemble training to correct systematic bias. Applied only
     # to weak horizons by default.
@@ -1845,54 +1853,57 @@ class ItemForecaster:
                     elif self.STACK_RESIDUALS and not _sklearn_available and horizon in self.WEAK_HORIZONS:
                         logger.warning(f"  sklearn not available — skipping residual stacking for {horizon}d")
 
-                # Train regime-specific models
-                for regime in self.REGIMES:
-                    if regime == "global":
-                        continue
-                    r_train = train_set[train_set["_regime"] == regime]
-                    r_val = val_set[val_set["_regime"] == regime]
-                    MIN_REGIME_TRAIN = 500
-                    MIN_REGIME_VAL = 50
-                    if len(r_train) < MIN_REGIME_TRAIN or len(r_val) < MIN_REGIME_VAL:
-                        logger.info(f"  Skipping {regime} regime ({len(r_train)} train, {len(r_val)} val — "
-                                    f"below minimum)")
-                        continue
+                # Train regime-specific models (optional: SKIP_REGIMES=1 to skip)
+                if os.environ.get("SKIP_REGIMES") == "1":
+                    logger.info(f"  Regime models skipped (SKIP_REGIMES=1)")
+                else:
+                    for regime in self.REGIMES:
+                        if regime == "global":
+                            continue
+                        r_train = train_set[train_set["_regime"] == regime]
+                        r_val = val_set[val_set["_regime"] == regime]
+                        MIN_REGIME_TRAIN = 500
+                        MIN_REGIME_VAL = 50
+                        if len(r_train) < MIN_REGIME_TRAIN or len(r_val) < MIN_REGIME_VAL:
+                            logger.info(f"  Skipping {regime} regime ({len(r_train)} train, {len(r_val)} val — "
+                                        f"below minimum)")
+                            continue
 
-                    # Use global HP params (reuse Optuna results from global)
-                    r_X_train = r_train[self.feature_cols].replace([np.inf, -np.inf], np.nan).fillna(feature_medians)
-                    r_y_train = r_train[f"target_return_{horizon}d"]
-                    r_X_val = r_val[self.feature_cols].replace([np.inf, -np.inf], np.nan).fillna(feature_medians)
-                    r_y_val = r_val[f"target_return_{horizon}d"]
+                        # Use global HP params (reuse Optuna results from global)
+                        r_X_train = r_train[self.feature_cols].replace([np.inf, -np.inf], np.nan).fillna(feature_medians)
+                        r_y_train = r_train[f"target_return_{horizon}d"]
+                        r_X_val = r_val[self.feature_cols].replace([np.inf, -np.inf], np.nan).fillna(feature_medians)
+                        r_y_val = r_val[f"target_return_{horizon}d"]
 
-                    r_train_weights = self._compute_sample_weights(r_train, horizon)
-                    r_val_weights = self._compute_sample_weights(r_val, horizon)
+                        r_train_weights = self._compute_sample_weights(r_train, horizon)
+                        r_val_weights = self._compute_sample_weights(r_val, horizon)
 
-                    r_ds_params = {"max_bin": self.MAX_BIN, "feature_pre_filter": False}
-                    r_dtrain_kw = dict(params=r_ds_params)
-                    if r_train_weights is not None:
-                        r_dtrain_kw["weight"] = r_train_weights
-                    r_dval_kw = dict(params=r_ds_params)
-                    if r_val_weights is not None:
-                        r_dval_kw["weight"] = r_val_weights
-                    r_dtrain = lgb.Dataset(r_X_train, r_y_train, **r_dtrain_kw)
-                    r_dval = lgb.Dataset(r_X_val, r_y_val, reference=r_dtrain, **r_dval_kw)
+                        r_ds_params = {"max_bin": self.MAX_BIN, "feature_pre_filter": False}
+                        r_dtrain_kw = dict(params=r_ds_params)
+                        if r_train_weights is not None:
+                            r_dtrain_kw["weight"] = r_train_weights
+                        r_dval_kw = dict(params=r_ds_params)
+                        if r_val_weights is not None:
+                            r_dval_kw["weight"] = r_val_weights
+                        r_dtrain = lgb.Dataset(r_X_train, r_y_train, **r_dtrain_kw)
+                        r_dval = lgb.Dataset(r_X_val, r_y_val, reference=r_dtrain, **r_dval_kw)
 
-                    logger.info(f"  Training {regime} regime models ({horizon}d, "
-                                f"{len(r_train):,} train, {len(r_val):,} val)...")
-                    for q in self.QUANTILES:
-                        pq = per_quantile_params[q]
-                        r_ensemble = []
-                        for ei in range(self.N_ENSEMBLES):
-                            params = pq.copy()
-                            params["random_state"] = self.ENSEMBLE_SEEDS[ei]
-                            params["feature_fraction"] = self.ENSEMBLE_FEATURE_FRACTIONS[ei]
-                            model = self._train_ensemble_member(params, r_dtrain, r_dval)
-                            r_ensemble.append(model)
-                        self.regime_models[(regime, horizon, q)] = r_ensemble
+                        logger.info(f"  Training {regime} regime models ({horizon}d, "
+                                    f"{len(r_train):,} train, {len(r_val):,} val)...")
+                        for q in self.QUANTILES:
+                            pq = per_quantile_params[q]
+                            r_ensemble = []
+                            for ei in range(self.N_ENSEMBLES):
+                                params = pq.copy()
+                                params["random_state"] = self.ENSEMBLE_SEEDS[ei]
+                                params["feature_fraction"] = self.ENSEMBLE_FEATURE_FRACTIONS[ei]
+                                model = self._train_ensemble_member(params, r_dtrain, r_dval)
+                                r_ensemble.append(model)
+                            self.regime_models[(regime, horizon, q)] = r_ensemble
 
-                    self.regime_feature_cols[(horizon, regime)] = list(self.feature_cols)
-                    logger.info(f"  {regime} regime models for {horizon}d done "
-                                f"({len(r_train)} train, {len(r_val)} val)")
+                        self.regime_feature_cols[(horizon, regime)] = list(self.feature_cols)
+                        logger.info(f"  {regime} regime models for {horizon}d done "
+                                    f"({len(r_train)} train, {len(r_val)} val)")
 
                 # Expanding-window CV evaluation using the best hyperparams
                 if os.environ.get("SKIP_CV") == "1":
@@ -2017,7 +2028,21 @@ class ItemForecaster:
                 if not need_retrain:
                     break
 
-            self.horizon_feature_cols[horizon] = list(self.feature_cols)
+            base_features = list(self.feature_cols)
+            excluded_groups = self.HORIZON_EXCLUDED_GROUPS.get(horizon, [])
+            if excluded_groups:
+                horizon_features = [
+                    c for c in base_features
+                    if _feature_group(c) not in excluded_groups
+                ]
+                logger.info(
+                    f"  {horizon}d: excluded {len(base_features) - len(horizon_features)} features "
+                    f"from groups {excluded_groups} "
+                    f"({len(base_features)} -> {len(horizon_features)} features)"
+                )
+                self.horizon_feature_cols[horizon] = horizon_features
+            else:
+                self.horizon_feature_cols[horizon] = base_features
 
             _hz_elapsed = (datetime.now() - _hz_start).total_seconds()
             logger.info(f"  Horizon {horizon}d done in {_hz_elapsed:.0f}s")
@@ -2366,7 +2391,7 @@ class ItemForecaster:
                     "low": price_low,
                     "mid": price_mid,
                     "high": price_high,
-                    "direction": "up" if mid_ret > 0 else "down" if mid_ret < 0 else "flat",
+                    "direction": "up" if mid_ret > DIRECTION_FLAT_TOLERANCE_PCT else "down" if mid_ret < -DIRECTION_FLAT_TOLERANCE_PCT else "flat",
                     "confidence": self._compute_confidence(price_mid, price_low, price_high,
                                                             current_price, horizon=horizon),
                 }
@@ -2552,8 +2577,8 @@ class ItemForecaster:
             for i in range(len(val_df)):
                 actual_ret = float(actual_returns[i])
                 mid_ret = float(fold_p50[i])
-                actual_dir = "up" if actual_ret > 0 else "down" if actual_ret < 0 else "flat"
-                pred_dir = "up" if mid_ret > 0 else "down" if mid_ret < 0 else "flat"
+                actual_dir = "up" if actual_ret > DIRECTION_FLAT_TOLERANCE_PCT else "down" if actual_ret < -DIRECTION_FLAT_TOLERANCE_PCT else "flat"
+                pred_dir = "up" if mid_ret > DIRECTION_FLAT_TOLERANCE_PCT else "down" if mid_ret < -DIRECTION_FLAT_TOLERANCE_PCT else "flat"
                 if pred_dir == actual_dir:
                     fold_hits += 1
 
@@ -2586,8 +2611,8 @@ class ItemForecaster:
 
                 range_pct = (high_price - low_price) / mid_price
                 change_pct = abs(mid_price - curr) / curr
-                actual_dir = "up" if actual_ret > 0 else "down" if actual_ret < 0 else "flat"
-                pred_dir = "up" if mid_ret > 0 else "down" if mid_ret < 0 else "flat"
+                actual_dir = "up" if actual_ret > DIRECTION_FLAT_TOLERANCE_PCT else "down" if actual_ret < -DIRECTION_FLAT_TOLERANCE_PCT else "flat"
+                pred_dir = "up" if mid_ret > DIRECTION_FLAT_TOLERANCE_PCT else "down" if mid_ret < -DIRECTION_FLAT_TOLERANCE_PCT else "flat"
                 hit = 1.0 if pred_dir == actual_dir else 0.0
 
                 oof_records.append({
