@@ -2,7 +2,7 @@
 
 ## Overview
 
-Two-layer `ItemForecaster` containing **~252 LightGBM models** — a global ensemble and per-regime ensembles:
+Two-layer `ItemForecaster` containing **~144 LightGBM models** — a global ensemble and per-regime ensembles:
 
 ### Global models (always available)
 
@@ -26,7 +26,7 @@ Separate ensembles for each detectable market regime (bear / range / bull), each
 | bull | `return_30d > 3%` | Fully trained |
 
 **Model version:** `lgbm-v3-regime` (regime-enabled) / `lgbm-v3-global-only` (A/B comparison)
-**Files:** `lgb_{horizon}d_q{q}_e{ei}.txt` (global) + `lgb_{horizon}d_q{q}_{regime}_e{ei}.txt` (regime) + `meta.json` in `backend/models/saved_models/`
+**Files:** `lgb_{horizon}d_q{q}_e{ei}.txt` (global) + `lgb_{horizon}d_q{q}_{regime}_e{ei}.txt` (regime) + `residual_{horizon}d_q{int(q*100)}.pkl` (Ridge residual models) + `meta.json` in `backend/models/saved_models/`
 
 ---
 
@@ -135,12 +135,24 @@ Fold 5: train [0..680d] → val [681..701d]
 Confidence calibration uses pooled out-of-fold predictions across all folds. Added Jul 2026 (was single 21-day holdout, which was sensitive to specific events in that window).
 
 ### Training Window
-1460 days of backfilled data from Parquet archive. Changed from 365d→730d (Jul 2026) then 730d→1460d (2026-07-16) to improve long-horizon signal. Row count bounded by a pre-feature-engineering item-stratified subsample (max 700K rows).
+1460 days of backfilled data from Parquet archive. Changed from 365d→730d (Jul 2026) then 730d→1460d (2026-07-16) to improve long-horizon signal. Row count bounded by a pre-feature-engineering item-stratified subsample (max 400K rows) plus a post-feature-engineering safety cap (max 700K rows).
 
 ### Retrain Schedule
 - Full retrain Monday: Optuna + 72 global ensemble models + ~180 regime ensemble models (~53 min total on Mac with SKIP_CV)
 - Predict-only Tue-Sun: load saved models (global + regime both loaded)
 - Drift-triggered: auto-retrain if directional accuracy drops below 60% on 7-day sliding window
+
+### Boosting Strategy
+
+Short horizons (3d, 7d) use standard **GBDT**. Longer horizons (14d, 30d) use **DART** (Dropout Additive Regression Trees) to reduce overfitting on noisy longer-range signals. DART uses 500 boost rounds (vs 1000 for GBDT) and adds three Optuna-tuned hyperparameters (`drop_rate`, `max_drop`, `skip_drop`).
+
+### Residual Stacking
+
+After ensemble training for weak horizons (14d, 30d), a **Ridge regression** model (`alpha=5.0`) is trained on the ensemble residuals to correct systematic bias. At prediction time, the Ridge correction is added to the ensemble prediction. Models saved as `residual_{horizon}d_q{int(q*100)}.pkl`.
+
+### Forecast Blending
+
+A `FORECAST_BLEND_WEIGHT = 0.15` is applied to smooth predictions day-over-day, reducing direction flip-flopping by blending the current forecast with the previous day's.
 
 ### Parameters
 
@@ -151,12 +163,16 @@ Confidence calibration uses pooled out-of-fold predictions across all folds. Add
 | `min_data_in_leaf` | 15 |
 | `min_gain_to_split` | 0.1 |
 | `learning_rate` | 0.03 |
-| `num_boost_round` | 1000 |
+| `num_boost_round` | 1000 (GBDT) / 500 (DART) |
 | `early_stopping` | 50 |
 | `feature_fraction` | 0.7 |
 | `bagging_fraction` | 0.7 |
 | `lambda_l1` | 0.5 |
 | `lambda_l2` | 0.5 |
+| `boosting_type` | `gbdt` (3d/7d) / `dart` (14d/30d) |
+| `drop_rate` | 0.05–0.3 (DART, Optuna-tuned) |
+| `max_drop` | 10–100 (DART, Optuna-tuned) |
+| `skip_drop` | 0.2–0.8 (DART, Optuna-tuned) |
 
 ### Training Time (Mac)
 ~53 min full retrain with regime models (~30 min global + ~23 min regime). ~17–20 min of Optuna on cold start. With SKIP_CV+HP reuse: ~30 min global + ~23 min regime.
@@ -277,6 +293,9 @@ All three issues were fixed in the 2026-07-17 changelog. Full details in `docs/c
 | 60d rolling features + 730d training window | 2026-07-12 | Medium |
 | Concept drift monitoring | Jul 2026 | Medium |
 | **Regime-switching models** (bear/range/bull per horizon) | **2026-07-18** | **High** — captures regime-specific price dynamics |
+| **DART boosting for 14d/30d** | Pending | **Medium** — reduces overfitting on noisy long horizons |
+| **Residual stacking** (Ridge on LGB residuals) | Pending | **Medium** — corrects systematic bias for weak horizons |
+| **Forecast blending** (`FORECAST_BLEND_WEIGHT=0.15`) | Pending | **Low** — reduces daily direction flip-flopping |
 | Prediction sanity checks (clamp, zero-volume) | 2026-07-12 | Low |
 | 41 unit tests for forecaster | 2026-07-12 | Foundation |
 | **Dead item filter** (remove $0.03 floor items) | 2026-07-17 | High — +2-5pp estimated, 41% less training noise |
@@ -304,5 +323,5 @@ All three issues were fixed in the 2026-07-17 changelog. Full details in `docs/c
 | `backend/scripts/backfill_supply_metadata.py` | — | Backfill supply metadata from catalog → Parquet + DB |
 | `backend/scripts/ab_test_supply_side.py` | — | A/B test: with vs without supply-side features (archived) |
 | `backend/scripts/ab_test_player_counts.py` | — | A/B test: with vs without player count features (archived) |
-| `backend/tests/test_forecaster.py` | 1,118 | 69 unit tests (54 global + 15 regime-switching) |
+| `backend/tests/test_forecaster.py` | 1,118 | 69+ unit tests (global + regime-switching) |
 | `price-archive/item-metadata.parquet` | 8,691 rows | Supply metadata cache (rarity, weapon_type per item) |

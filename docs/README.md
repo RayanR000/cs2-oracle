@@ -30,7 +30,7 @@
 
 ## Changelog (`changelog/`)
 
-Dated execution logs, bug fixes, and audit findings. See `changelog/` directory for the full list (27 entries).
+Dated execution logs, bug fixes, and audit findings. See `changelog/` directory for the full list (28 entries).
 
 ## Root-level docs moved here
 

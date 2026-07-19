@@ -16,13 +16,15 @@ data-archive branch:
   └─ snapshots-YYYY.parquet — Raw multi-source snapshots
   └─ exchange-rates-YYYY.parquet — Currency rates
 
-Supabase (~70 MB):
+Supabase (~68 MB):
   └─ items (+ is_backfilled flag)
-  └─ price_history           — Last 7 days of aggregator snapshots
+  └─ price_history           — Stale (aggregator writes only to Parquet)
   └─ supply_snapshots        — Daily Steam sell_listings (supply scraper)
-  └─ daily_analysis
   └─ item_forecasts
   └─ events / event_impacts / event_correlations
+  └─ collection_runs         — Run tracking
+  └─ prediction_accuracy / forecast_outcomes / accuracy_alerts
+  └─ users
 ```
 
 ### Data Flow
@@ -47,13 +49,17 @@ API serving:
 | Table | Size | Rows | Growth |
 |-------|------|------|--------|
 | `items` | ~2 MB | 5,525 | Static |
-| `price_history` | ~1 MB | few hundred | 7-day rolling |
-| `supply_snapshots` | ~2 MB | 35,037 | 35K rows/day (7 MB/day) |
-| `daily_analysis` | ~1.8 MB | 4,313 | UPSERT, bounded |
+| `price_history` | ~1 MB | few hundred | Stale (aggregator writes to Parquet only) |
+| `supply_snapshots` | ~2 MB | 35,037 | ~11K rows/day |
 | `item_forecasts` | ~8.4 MB | 10,970 | UPSERT, bounded |
 | `event_correlations` | ~17 MB | 67,211 | Weekly rebuild |
 | `event_impacts` | ~15 MB | 67,211 | Weekly rebuild |
-| Others | ~11 MB | — | Static |
+| `collection_runs` | ~1 MB | ~1,000 | 1 row/day |
+| `prediction_accuracy` | ~2 MB | ~5,000 | UPSERT, bounded |
+| `forecast_outcomes` | ~4 MB | ~50,000 | UPSERT, bounded |
+| `accuracy_alerts` | ~1 MB | ~100 | UPSERT, bounded |
+| `users` | ~0.1 MB | few | Static |
+| Others | ~8 MB | — | Static |
 | **Total** | **~68 MB** | | |
 
 ### Performance
@@ -90,11 +96,22 @@ After: `Item.is_backfilled == True`
 
 | Migration | What it does |
 |-----------|-------------|
+| 0001 | Initial schema: items, price_history, daily_analysis, events |
+| 0002 | Expand price_history source column, add supply_snapshots |
+| 0003 | Add unique constraint on price_history, item_forecasts table |
+| 0004 | Add item metadata images columns |
+| 0005 | Add performance indexes |
 | 0006 | Composite PK on price_history |
 | 0007 | Add `is_backfilled` + create `chart_points` (later dropped) |
 | 0008 | Drop redundant chart_point index, clean stale price_history rows |
 | 0009-0010 | Prune and drop `trend_indicators` table |
+| 0011 | Add `prediction_accuracy` table |
 | 0012 | Drop `chart_points` table (data lives in Parquet) |
+| 0013 | Add `accuracy_alerts` table |
+| 0014 | Add `forecast_outcomes` table |
+| 0015 | **Drop `daily_analysis` table** (data in Parquet + item_forecasts) |
+| 0016 | Add `supply_snapshots` table |
+| 0017 | Add item rarity columns |
 
 ---
 
@@ -111,14 +128,15 @@ After: `Item.is_backfilled == True`
 ```
 GitHub Actions (23:00 UTC)
   └─ run_task.py aggregate
-       ├─ Fetch all sources from CSGOTraderAggregator
-       ├─ Prices → /tmp/aggregator-backfilled-{date}.csv
-       └─ Record CollectionRun
+       ├─ Fetch all 7 sources from CSGOTraderAggregator
+       ├─ Snapshots CSV → /tmp/aggregator-snapshot-{date}.csv
+       ├─ Backfilled CSV → /tmp/aggregator-backfilled-{date}.csv
+       └─ Record CollectionRun (no prices written to Supabase)
 
   └─ append_to_parquet.py
        ├─ Collapse to daily OHLCV
        ├─ Append to archive/price-archive/prices-YYYY.parquet
-       └─ Also writes snapshots and exchange rates
+       └─ Also writes snapshots, exchange rates, and player counts
 ```
 
 ---
@@ -141,8 +159,13 @@ GitHub Actions (23:00 UTC)
 - Dropped `trend_indicators` table (redundant with `daily_analysis`)
 
 ### 2026-07-11: Multi-source storage
-- All 8 CSGOTrader sources now written to Parquet instead of just `aggregator_sync`
+- All 7 CSGOTrader sources now written to Parquet instead of just `aggregator_sync`
 - Dropped `chart_points` table (freed 290 MB; data in Parquet)
 - Parquet schema: `item_slug, day, source, mean_price, min_price, max_price, median_price, volume`
 - Added exchange rates to archive
-- Supabase: 66 MB total
+- Supabase: ~68 MB total
+
+### 2026-07-16: Drop `daily_analysis` table
+- Table removed entirely (migration 0015)
+- Functionality superseded by item_forecasts + Parquet-based analysis
+- Storage Breakdown updated to reflect current state

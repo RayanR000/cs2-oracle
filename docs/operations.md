@@ -2,7 +2,7 @@
 
 ## Overview
 
-The backend runs entirely on GitHub Actions scheduled workflows. All workflows have:
+The backend runs entirely on GitHub Actions scheduled workflows. Most workflows have:
 
 - **`set -o pipefail`** in every run step (failure = red, not green)
 - **`concurrency` groups** (no overlapping runs)
@@ -15,22 +15,27 @@ The backend runs entirely on GitHub Actions scheduled workflows. All workflows h
 | Workflow | Schedule | Purpose | Writes to |
 |----------|----------|---------|-----------|
 | `supply-scraper` | 22:00 UTC daily | Steam sell_listings supply snapshots | `supply_snapshots` |
-| `aggregator-update` | 23:00 UTC daily | Full item data collection from CSGOTrader (7 sources) | Parquet (`data-archive` branch), `price_history` (snapshot only), `collection_runs` |
+| `aggregator-update` | 23:00 UTC daily | Full item data collection from CSGOTrader (7 sources) | Parquet (`data-archive` branch), `collection_runs` |
+| `player-count-hourly` | Every 2h | Steam player-count tracking | Supabase `player_counts`, Parquet archive |
 | `price-forecast` | Chained off aggregator | ML price predictions (full retrain Mondays) | `item_forecasts` |
 | `backtest-accuracy` | Chained off forecast + 08:00 UTC Mon-Sat | Evaluate forecast accuracy, detect concept drift | `prediction_accuracy`, `forecast_outcomes`, `accuracy_alerts` |
-| `discover-new-items` | Manual dispatch only | Steam discovery — disabled since Jul 2026 | `items` |
+| `event-correlation-analysis` | Weekly Sun 04:00 UTC | Quantifies market-event price impacts | `event_correlations`, `event_impacts` |
+| `discover-new-items` | Manual dispatch only | Steam discovery — dead (catalog curated via backfill) | `items` |
 
 ### Data flow
 
 ```
+Every 2h  Player Count Hourly → Steam active players → player_counts (Supabase + Parquet)
+
 22:00  Supply Scraper → Steam burst scrape → supply_snapshots (sell_listings)
 
 23:00  Aggregator → prices → CSV → Parquet (data-archive branch)
-                                  → chart_points (daily closes for API serving)
         └─▶ Price Forecast (chained) → Parquet (all-time) → item_forecasts
               └─▶ Backtest Accuracy (chained) → prediction_accuracy
                                                   forecast_outcomes
                                                   accuracy_alerts
+
+Sun 04:00  Event Correlation Analysis → event_correlations, event_impacts
 ```
 
 ## How to check workflow status
@@ -89,6 +94,7 @@ git log origin/data-archive --oneline -5
 - ❌ Frequent failures — check the auto-created issues
 - ⏳ Runs missing at expected times — GitHub Actions may be degraded
 - Aggregator collecting 0 items — likely CSGOTrader upstream issue
+- Player count hourly failing silently — check logs (no failure notification on this workflow)
 - Accuracy tables not growing — forecast job may have failed; check logs
 
 ## Troubleshooting
@@ -115,6 +121,15 @@ git log origin/data-archive --oneline -5
 - Check `alembic current` matches the latest migration
 - Run `python scripts/run_task.py migrate` manually
 
+### Workflows without concurrency / failure notification
+
+| Workflow | Missing concurrency | Missing failure notification |
+|----------|:-------------------:|:---------------------------:|
+| `backtest-accuracy` | ✅ absent | — |
+| `player-count-hourly` | — | ✅ absent |
+
+`discover-new-items` has a failure notification step with a `schedule` trigger condition, but the workflow has no schedule trigger — the step can never fire.
+
 ## Manual testing
 
 ```bash
@@ -135,4 +150,10 @@ python scripts/forecast_prices.py --compare-regime
 
 # Backtest forecast accuracy
 python scripts/backtest_accuracy.py --type forecast
+
+# Player count snapshot
+python -m collectors.player_counts
+
+# Supply scraper
+python scripts/run_supply_scraper.py
 ```

@@ -48,11 +48,11 @@ CS2 Market Analyzer is a full-stack analytics platform that collects, validates,
 
 - **Multi-Source Collection** — daily aggregator fetches prices from 7 market sources (Steam, Skinport, Buff163, CSFloat, CSMoney, CSGOTrader, Youpin)
 - **Parquet Price Archive** — complete historical price data from 2013 onward, queryable via DuckDB
-- **ML Price Forecasts** — LightGBM quantile regression (q10/q50/q90) across 3, 7, 14, and 30-day horizons, trained as a 9-member diversified ensemble with walk-forward validation and Optuna hyperparameter tuning over a 1460-day window
+- **ML Price Forecasts** — LightGBM quantile regression (q10/q50/q90) across 3, 7, 14, and 30-day horizons, trained as a 6-member diversified ensemble with walk-forward validation and Optuna hyperparameter tuning over a 1460-day window
 - **Forecast Accuracy Tracking** — automated daily backtesting with MAE, MAPE, directional accuracy, and concept drift alerts
 - **Model Explainability** — per-item feature importance exposes which signals drive each forecast
 - **Event Impact Analysis** — quantifies how market events (operations, cases, pro matches) move individual item prices
-- **Player Count & Supply Signals** — Steam player counts and listing supply depth are collected and fed into forecasts as market-regime features
+- **Player Count & Supply Signals** — Steam player counts and listing supply depth are collected (supply depth used in forecasts; player counts separately archived)
 - **Technical Signals** — SMA, Bollinger Bands, RSI, MACD, support/resistance computed per item
 - **Market Opportunities** — undervalued, overheated, and momentum signals derived from ML forecasts
 - **Quality Variant Grouping** — items grouped by base name with all wear levels and special variants
@@ -67,8 +67,8 @@ CS2 Market Analyzer is a full-stack analytics platform that collects, validates,
 | **Frontend** | Next.js 16, React 19, TypeScript, Tailwind CSS 4, Recharts, Framer Motion |
 | **Backend** | Python 3.11, FastAPI, SQLAlchemy, Alembic, Pydantic Settings |
 | **Data** | PostgreSQL / Supabase, DuckDB, Parquet, Pandas, NumPy, SciPy |
-| **ML** | LightGBM, Optuna (hyperparameter tuning, 20 trials) |
-| **Storage** | Git LFS / data-archive branch for Parquet price archive |
+| **ML** | LightGBM, Optuna (hyperparameter tuning, 15–30 trials) |
+| **Storage** | Git data-archive branch for Parquet price archive |
 | **Automation** | GitHub Actions (7 workflows) |
 
 ## Repository Structure
@@ -84,7 +84,7 @@ CS2 Market Analyzer is a full-stack analytics platform that collects, validates,
 │   ├── models/           # SQLAlchemy ORM models + LightGBM forecaster (models retrained on schedule, not committed)
 │   ├── migrations/       # Alembic migration scripts
 │   ├── scripts/          # Task runners, backtest, forecast, Parquet export
-│   ├── tests/            # pytest suite (118 tests)
+   │   ├── tests/            # pytest suite (~170 tests)
 │   ├── main.py           # FastAPI app entry point
 │   ├── config.py         # Pydantic settings
 │   └── database.py       # All SQLAlchemy models + session management
@@ -93,7 +93,7 @@ CS2 Market Analyzer is a full-stack analytics platform that collects, validates,
 │   ├── components/       # Header, Search, StatCard, ItemCard, etc.
 │   └── lib/              # API client, ThemeContext, UserContext
 ├── price-archive/        # Parquet price data (13 years of history)
-├── .github/workflows/    # 4 CI/CD workflows
+├── .github/workflows/    # 7 scheduled workflows
 ├── docs/                 # Architecture, research, changelogs, and reference docs
 │   ├── architecture/     # Data architecture, model architecture, pipeline
 │   ├── references/       # Steam API, data sources, catalog build, backfill
@@ -217,7 +217,7 @@ npm run lint    # Run ESLint
 | GET | `/items/{id}` | Item details |
 | GET | `/items/{id}/price-history` | Price history (SMA included) |
 | GET | `/items/{id}/trends` | Technical signals (RSI, Bollinger, MACD, support/resistance) |
-| GET | `/items/{id}/prediction` | ML price forecast (3d, 7d, 14d, or 30d) |
+| GET | `/items/{id}/prediction` | ML price forecast (7d or 30d) |
 | GET | `/items/{id}/variants` | Quality variants grouped by base name |
 | GET | `/items/{id}/prices` | Multi-source price data |
 | GET | `/items/{id}/events` | Market events affecting item |
@@ -240,6 +240,8 @@ npm run lint    # Run ESLint
 | GET | `/auth/callback` | Steam auth callback |
 | POST | `/auth/logout` | Logout |
 | GET | `/portfolio/inventory` | User portfolio |
+| GET | `/ab-test/regime` | Regime vs global-only model A/B comparison |
+| GET | `/ab-test/ensemble` | Ensemble size A/B comparison (3 vs 6) |
 
 ### Testing
 
@@ -247,7 +249,7 @@ npm run lint    # Run ESLint
 cd backend && source venv/bin/activate && pytest
 ```
 
-> 119 tests across collection, forecasting, backtesting, and API layers.
+> ~170 tests across collection, forecasting, backtesting, and API layers.
 
 ### Pre-commit Checks
 
@@ -291,7 +293,7 @@ Seven GitHub Actions workflows handle recurring operations:
 | `price-forecast` | Chained off aggregator | LightGBM predictions (predict-only Tue–Sun, full retrain Mon) |
 | `backtest-accuracy` | Chained off forecast + cron 08:00 UTC (Mon–Sat) | Daily forecast accuracy evaluation |
 | `event-correlation-analysis` | Weekly Sun 04:00 UTC | Quantifies market-event price impacts |
-| `discover-new-items` | Manual dispatch only | Steam item discovery (disabled — catalog is curated via backfill) |
+| `discover-new-items` | Manual dispatch only | Steam item discovery (dead — catalog curated via backfill) |
 
 ### Data Flow
 
@@ -299,7 +301,7 @@ Seven GitHub Actions workflows handle recurring operations:
 22:00  Supply Scraper → listing supply depth → Supabase
 23:00  Aggregator → 7 source prices → CSV → Parquet (data-archive branch)
                                         → Supabase (aggregator_sync only)
-Every 2h  Player Count → Steam active players → Supabase
+Every 2h  Player Count → Steam active players → Supabase + Parquet
 Chained  Forecast → LightGBM ensemble → item_forecasts table
 Chained  Backtest → accuracy tracking → prediction_accuracy + forecast_outcomes
 Weekly   Event Correlation → event-impact analysis

@@ -41,7 +41,7 @@ price-archive/      — Parquet price data (13 years)
 ## Important Gotchas
 
 - **Next.js 16 has breaking changes.** Read `node_modules/next/dist/docs/` before writing any new code. Do not assume APIs match training data.
-- **The `daily_analysis` table in production is missing the `updated_at` column.** The model in `database.py` has been patched to match. Ensure schema alignment when adding migrations or columns.
+- **The `daily_analysis` table was dropped** (migration 0015). Do not reference it in code or queries. Functionality superseded by `item_forecasts` + Parquet-based analysis.
 - **API client lives in `frontend/lib/api.ts`.** When adding routes, update both the backend router and this client.
 - **Use CSS custom properties from `frontend/app/globals.css`** — never inline hex values. OKLCH color space.
 - **Use Tabular-nums on all numeric content.** Inter for UI, JetBrains Mono for data.

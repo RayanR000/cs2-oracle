@@ -49,10 +49,13 @@ source venv/bin/activate && uvicorn main:app --host 0.0.0.0 --port 8000
 
 It connects to Supabase (production DB) and serves all data endpoints:
 - `GET /health` — health check
-- `GET /items/`, `/items/search`, `/items/trending`, `/items/{item_id}` — items
-- `GET /items/{item_id}/price-history`, `/trends`, `/prediction`, `/events`, `/prices`
+- `GET /items/`, `/items/count`, `/items/search`, `/items/trending`, `/items/{item_id}` — items
+- `GET /items/{item_id}/price-history`, `/trends`, `/prediction`, `/events`, `/prices`, `/variants`, `/event-impacts`, `/feature-importance`
+- `GET /market/summary` — grouped market view (paginated, cached)
 - `GET /opportunities/`, `/undervalued`, `/overheated`, `/momentum`
 - `GET /events/`, `/events/recent`
+- `GET /accuracy/`, `/accuracy/latest`, `/accuracy/summary`, `/accuracy/outcomes`, `/accuracy/outcomes/stats`
+- `GET /ab-test/regime`, `/ab-test/ensemble` — A/B test comparisons
 - `GET /auth/me`, `/auth/steam/login`, `POST /auth/logout`
 - `GET /portfolio/inventory`
 
