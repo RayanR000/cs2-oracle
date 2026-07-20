@@ -203,13 +203,17 @@ Binary: `high` or `low`. Threshold-calibrated per horizon from holdout predictio
 
 ## Accuracy
 
-### Current (Post-Fix, Genuine)
+### Summary
+
+The model has two accuracy evaluation methods. The **production backtest** (below) is the canonical metric — it runs against 5,500 full-batch forecasts on real Parquet data with bootstrap CIs and baseline comparison. The walk-forward eval is a historical reference from an earlier 50-item test.
+
+### Walk-Forward Evaluation (Historical — 50-item test)
 
 | Horizon | Directional Accuracy | vs 50% baseline | Interval Coverage | MAE |
 |---------|:--------------------:|:---------------:|:-----------------:|:---:|
-| **3d**  | **61.4%**            | **+11.4pp**     | 85.7%             | $0.20 |
+| **3d**  | 61.4%                | +11.4pp         | 85.7%             | $0.20 |
 | **7d**  | 60.9%                | +10.9pp         | 86.2%             | $0.25 |
-| **14d** | **60.2%**            | **+10.2pp**     | 86.1%             | $0.34 |
+| **14d** | 60.2%                | +10.2pp         | 86.1%             | $0.34 |
 | **30d** | 68.1%                | +18.1pp         | 82.6%             | $0.53 |
 
 Measured via walk-forward evaluation on 50 items, 26 expanding windows (60-day steps), ~27k samples per horizon. Fixed LightGBM params (no ensemble — conservative estimate). Rarity features enabled. Lift from complete supply-side bundle: +0.66pp avg (3d: +1.92pp, 7d: -0.16pp, 14d: +0.79pp, 30d: +0.08pp) — later permutation testing showed signal came entirely from rarity; weapon_type and cross-sectional were dead weight and removed.
@@ -224,6 +228,27 @@ Measured via walk-forward evaluation on 50 items, 26 expanding windows (60-day s
 | After Jul '26 round 2 | 87.0% | 83.0% | **Buggy** — target inversion inflated |
 | After target inversion fix | **61.1%** | **65.8%** | **Genuine** — 9-16pp above 50% baseline |
 
+### Production Backtest Pipeline
+
+The `backtest_accuracy.py` script evaluates mature forecasts from `item_forecasts` against actual prices from the Parquet archive (using the same multi-source voting as training). It stores aggregate metrics to `prediction_accuracy` and per-forecast outcomes to `forecast_outcomes`.
+
+**Latest verified results (v3, 2026-07-19, 5,300–5,500 forecasts per horizon):**
+
+| Horizon | DA | 95% CI | Baseline DA | vs Baseline | MAE | MAPE | wMAPE | IC |
+|---------|---:|--------|------------:|------------:|----:|-----:|------:|--:|
+| **3d** | **59.71%** | [58.3, 61.0] | 20.23% | **+39.48pp** | $0.73 | 33.84% | 30.80% | 46.75% |
+| **7d** | 46.51% | [45.3, 47.9] | 17.42% | +29.09pp | $0.73 | 44.43% | 30.91% | 40.42% |
+| **14d** | 45.95% | [44.6, 47.3] | 17.67% | +28.28pp | $0.74 | 53.20% | 31.15% | 48.79% |
+| **30d** | 46.87% | [45.5, 48.2] | 18.00% | +28.86pp | $0.77 | 36.43% | 31.99% | 56.16% |
+
+Baseline = persistence forecast (predicts zero change). Bootstrap CI = 95% percentile, 1,000 resamples. 3d high-confidence forecasts achieve ~78% accuracy vs ~43% low-confidence.
+
+**Metrics computed per horizon:**
+- Point error: MAE, RMSE, MAPE, wMAPE (dollar-weighted), MAPE by price tier
+- Directional: DA with bootstrap CI, interval coverage
+- Baseline: persistence forecast DA/MAE, improvement over baseline (pp), skill_vs_baseline (Theil's U analog)
+- Calibration: conf_gap_pp, conf_high_interval_cov, conf_calibration_error
+
 ### Known Limitations
 - Walk-forward eval runs on 50 items only (not all 8,691)
 - Fold variance is high (30d std=12.0%, range 42.5%–91.1%)
@@ -231,6 +256,7 @@ Measured via walk-forward evaluation on 50 items, 26 expanding windows (60-day s
 - Interval coverage drops in volatile periods
 - Rarity features have strong causal signal (+10-12pp permutation test). Weapon-type one-hot and cross-sectional were removed — they showed zero causal signal despite the +0.66pp A/B bundle delta
 - `_apply_multi_source_voting()` uses `groupby().apply()` on 5.5M rows — takes ~3-5 min. Could be vectorized for ~5s but voting logic is correct and this only affects training time, not accuracy
+- **Flat-bias on longer horizons:** The model predicts "flat" too often on 7d/14d/30d when uncertainty is high. In a trending market (Dec 2025: only ~18% of actuals were flat), this penalizes raw DA heavily — 43% of 7d forecasts predicted flat when the item actually moved. The model still adds +29pp over baseline, but confidence calibration tuning could reduce this bias.
 
 ### Data Quality Audit (2026-07-17)
 A comprehensive audit of the 9.8M-row training set revealed three data quality issues:
