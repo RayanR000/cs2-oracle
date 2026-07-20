@@ -914,14 +914,23 @@ class TestFeatureCache:
 
     def test_cache_stale_after_3_days(self, forecaster, tmp_path):
         """Cache older than 3 days triggers refresh (returns None)."""
+        import json
+        import os
+        import pyarrow.parquet as pq
         forecaster.model_dir = str(tmp_path)
         df = pd.DataFrame({
             "item_id": ["a"], "date": [date(2020, 1, 1)],
             "price": [10.0], "volume": [100],
             "feature_1": [0.1],
         })
-        df.attrs["_cache_date"] = "2020-01-01"
+        # _save_engineered_cache sets attrs to today; overwrite PANDAS_ATTRS manually
         forecaster._save_engineered_cache(df)
+        path = os.path.join(str(tmp_path), ItemForecaster.ENGINEERED_CACHE_NAME)
+        table = pq.read_table(path)
+        meta = dict(table.schema.metadata or {})
+        meta[b"PANDAS_ATTRS"] = json.dumps({"_cache_date": "2020-01-01"}).encode()
+        table = table.replace_schema_metadata(meta)
+        pq.write_table(table, path)
         result = forecaster._load_engineered_cache()
         assert result is None, "Stale cache (>3 days) should return None"
 

@@ -1,0 +1,30 @@
+{
+  "horizon": 3,
+  "n_trials": 20,
+  "results": {
+    "p10": {
+      "num_leaves": 23,
+      "learning_rate": 0.045825631227749575,
+      "lambda_l1": 1.5,
+      "lambda_l2": 2.0,
+      "max_depth": 8,
+      "min_data_in_leaf": 10
+    },
+    "p50": {
+      "num_leaves": 55,
+      "learning_rate": 0.012503384550421217,
+      "lambda_l1": 1.5,
+      "lambda_l2": 1.5,
+      "max_depth": 6,
+      "min_data_in_leaf": 10
+    },
+    "p90": {
+      "num_leaves": 15,
+      "learning_rate": 0.0755641725250223,
+      "lambda_l1": 1.0,
+      "lambda_l2": 2.0,
+      "max_depth": 6,
+      "min_data_in_leaf": 5
+    }
+  }
+}
