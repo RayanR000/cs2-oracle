@@ -257,14 +257,30 @@ class ItemForecaster:
         df["tier"] = df["current_price"].apply(self._get_price_tier)
         df["approx_mid_ret"] = (df["predicted_price_mid"] / df["current_price"] - 1) * 100
 
+        # Safety constants for threshold fitting
+        MIN_THRESHOLD_SAMPLE = 100       # require this many rows to trust percentile fit
+        MIN_FLAT_MARGIN = 0.3            # minimum flat-zone width in percentage points
+        DFLT_T_DOWN = -DIRECTION_FLAT_TOLERANCE_PCT
+        DFLT_T_UP = DIRECTION_FLAT_TOLERANCE_PCT
+
         for (horizon, tier), g in df.groupby(["horizon_days", "tier"]):
             n = len(g)
             if n < 20:
                 continue
 
+            mid_rets = g["approx_mid_ret"].values
+            if len(mid_rets) == 0:
+                continue
+
+            # Skip if predicted mid_ret distribution is too narrow — the
+            # model produces no usable directional signal for this tier/horizon.
+            iqr = float(np.percentile(mid_rets, 75) - np.percentile(mid_rets, 25))
+            if iqr < 0.5:
+                logger.info(f"  Threshold[{horizon}d, {tier}]: skipping (mid_ret IQR={iqr:.2f} < 0.5)")
+                continue
+
             actual_up = (g["direction_actual"] == "up").mean()
             actual_down = (g["direction_actual"] == "down").mean()
-            mid_rets = g["approx_mid_ret"].values
 
             # t_up: threshold above which pred is "up"
             # Want P(mid_ret > t_up) = actual_up → t_up = (1-actual_up) quantile
@@ -275,16 +291,32 @@ class ItemForecaster:
             t_down_est = float(np.percentile(
                 mid_rets, max(0, min(100, actual_down * 100))))
 
-            if t_down_est > t_up_est:
-                t_down_est = -DIRECTION_FLAT_TOLERANCE_PCT
-                t_up_est = DIRECTION_FLAT_TOLERANCE_PCT
-
+            # Clamp to [-3, 3]
             t_up_est = max(-3.0, min(3.0, t_up_est))
             t_down_est = max(-3.0, min(3.0, t_down_est))
 
+            # Enforce minimum flat-zone width
+            if t_up_est - t_down_est < MIN_FLAT_MARGIN:
+                center = (t_up_est + t_down_est) / 2.0
+                half = MIN_FLAT_MARGIN / 2.0
+                t_down_est = center - half
+                t_up_est = center + half
+                t_up_est = max(-3.0, min(3.0, t_up_est))
+                t_down_est = max(-3.0, min(3.0, t_down_est))
+
+            # If order flipped, fall back to defaults
+            if t_down_est >= t_up_est:
+                t_down_est, t_up_est = DFLT_T_DOWN, DFLT_T_UP
+
+            # Conservative shrinkage toward ±0.5 for small samples
+            if n < MIN_THRESHOLD_SAMPLE:
+                shrink = n / float(MIN_THRESHOLD_SAMPLE)
+                t_down_est = shrink * t_down_est + (1 - shrink) * DFLT_T_DOWN
+                t_up_est = shrink * t_up_est + (1 - shrink) * DFLT_T_UP
+
             current = self.bias_thresholds.get(horizon, {}).get(tier, {})
-            curr_t_down = current.get("t_down", -DIRECTION_FLAT_TOLERANCE_PCT)
-            curr_t_up = current.get("t_up", DIRECTION_FLAT_TOLERANCE_PCT)
+            curr_t_down = current.get("t_down", DFLT_T_DOWN)
+            curr_t_up = current.get("t_up", DFLT_T_UP)
 
             n_seen = self.bias_ewma_state.get(horizon, {}).get(tier, 0)
             if n_seen == 0:

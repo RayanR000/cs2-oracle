@@ -7,22 +7,22 @@ max_feature_idx=121
 objective=quantile
 feature_names=price_lag_1d price_lag_7d price_lag_14d price_lag_30d price_lag_60d return_1d return_3d return_7d return_14d return_30d return_60d price_std_7d price_std_14d price_std_20d price_min_20d price_max_20d price_std_30d price_mean_60d price_std_60d price_min_60d price_max_60d price_zscore_30d vol_regime_60_30 trend_divergence_30_60 price_accel_7d price_tier autocorr_1d autocorr_7d bb_pct_b macd_line macd_signal macd_histogram distance_to_support distance_to_resistance high_low_range_30d volume_missing volume_lag_1d volume_lag_7d volume_mean_7d volume_mean_30d volume_std_30d volume_mean_60d volume_std_60d volume_log_change_1d volume_log_change_7d volume_zscore_30d volume_price_conf_7d volume_price_conf_1d rsi_missing macd_missing is_weekend dow_sin dow_cos month_sin month_cos doy_cos item_age_days is_stattrak is_souvenir is_knife is_glove is_sticker is_case is_capsule is_agent is_music_kit is_graffiti is_charm is_patch quality_rank event_decay_major events_next_30d_major event_density_30d_major event_density_90d_major event_decay_operation events_next_30d_operation event_density_30d_operation event_density_90d_operation event_decay_case_drop events_next_30d_case_drop event_density_30d_case_drop event_density_90d_case_drop event_decay_update events_next_30d_update event_density_30d_update event_density_90d_update event_decay_game_update events_next_30d_game_update event_density_30d_game_update event_density_90d_game_update event_decay_major_weighted event_decay_operation_weighted event_decay_case_drop_weighted event_decay_update_weighted event_decay_game_update_weighted social_mentions_1d social_mentions_7d social_mention_velocity social_sentiment_7d social_score_7d market_return_1d item_return_vs_market_1d market_return_7d item_return_vs_market_7d market_return_14d item_return_vs_market_14d market_return_30d item_return_vs_market_30d market_volatility_30d market_volume_mean_30d market_regime_crash market_regime_bear market_regime_range market_regime_bull market_regime_mania market_regime_duration_days market_return_30d_percentile supply_listings_log supply_listings_zscore supply_change_7d supply_skinport_qty_log supply_to_volume_ratio
 feature_infos=[39.849998474121094:66.220001220703125] [39.849998474121094:66.220001220703125] [39.790000915527344:66.220001220703125] [40.729999542236328:66.569999694824219] [39.849998474121094:66.569999694824219] [-6.0415120124816895:5.3940391540527344] [-10.281366348266602:9.4368009567260742] [-17.372880935668945:14.35562801361084] [-21.531669616699219:24.511468887329102] [-24.868003845214844:39.543319702148438] [-29.951061248779297:26.519706726074219] [0.042426407337188721:3.2751080989837646] [0.042426407337188721:4.732576847076416] [0.042426407337188721:5.307133674621582] [39.790000915527344:61.619998931884766] [43.779998779296875:66.220001220703125] [0.042426407337188721:5.4625492095947266] [43.426834106445312:62.902332305908203] [0.042426407337188721:6.0651006698608398] [39.790000915527344:58.759998321533203] [47.880001068115234:66.569999694824219] [-3.4853887557983398:3.0036964416503906] [0.76277375221252441:3.9533336162567139] [-39.368843078613281:101.21376037597656] [-18.979106903076172:18.705087661743164] [3:3] [-16.605304718017578:24.183246612548828] [-78.099403381347656:134.03640747070312] [-0.21316516399383545:1.1863726377487183] [-3.1019792556762695:3.1830518245697021] [-2.2672655582427979:2.7412140369415283] [-1.2678171396255493:0.94621419906616211] [0.018351990729570389:39.335178375244141] [0.054525628685951233:31.854576110839844] [0.12307692319154739:39.335178375244141] none [163:245] [161:245] [176:219] [176:219] [4.0414519309997559:20.036775588989258] [176:219] [4.0414519309997559:19.928762435913086] [-0.28488487005233765:0.30276116728782654] [-0.26826399564743042:0.40341803431510925] [-2.4042847156524658:2.6703879833221436] [-17.372880935668945:14.35562801361084] [-6.0415120124816895:5.3940391540527344] [0:1] [0:1] [0:1] [-0.97492790222167969:0.97492790222167969] [-0.90096884965896606:1] [-0.86602538824081421:1] [-1:0.86602538824081421] [-1:0.99985265731811523] [0:215] none none none none none none none none none none none none none [0:0.96721607446670532] [0:1] [0:1] [0:1] none none none none none none none none none none none none none none none none none none none none none none none none none none [-1.9730401039123535:1.6730349063873291] [-4.7729063034057617:4.9617133140563965] [-4.9728598594665527:5.599886417388916] [-15.224418640136719:14.81980037689209] [-7.3588790893554688:5.6792440414428711] [-21.058666229248047:25.597810745239258] [-2.9261324405670166:2.6404297351837158] [-23.844234466552734:40.982707977294922] [0.43699198961257935:3.9010679721832275] [195.10000610351562:203.39999389648438] none none [0:1] none none [1:30] [0.040816325694322586:0.75268816947937012] none none none none none
-tree_sizes=830
+tree_sizes=841
 
 Tree=0
 num_leaves=7
 num_cat=0
 split_feature=14 15 18 3 30 55
-split_gain=3.09082 3.68706 11.1257 0.918897 1.12131 0.462353
+split_gain=3.19992 3.52815 11.1257 1.08225 1.34099 0.462353
 threshold=49.55999946594239 50.614999771118171 1.7438429594039919 48.844999313354499 1.0000000180025095e-35 -0.20454452931880948
 decision_type=2 2 2 2 2 2
 left_child=1 3 -3 4 -1 -4
 right_child=-2 2 5 -5 -6 -7
-leaf_value=14.524990378300815 14.5048105367728 14.545202157124649 14.472062412859557 14.50018617245901 14.498116994189477 14.58989300585597
+leaf_value=14.517339583296961 14.497339432782848 14.535923861040359 14.464398268085324 14.489808022909573 14.476189750919016 14.576335218139896
 leaf_weight=23.945122718811035 174.14634704589844 41.359757423400879 47.89024543762207 84.896344184875488 21.042683601379395 20.317073822021484
 leaf_count=33 150 39 66 54 29 28
-internal_value=14.5141 14.5145 14.5152 14.514 14.5145 14.514
-internal_weight=0 239.451 109.567 129.884 44.9878 68.2073
+internal_value=14.5067 14.5071 14.5077 14.5065 14.5071 14.5065
+internal_weight=413.598 239.451 109.567 129.884 44.9878 68.2073
 internal_count=399 249 133 116 62 94
 is_linear=0
 shrinkage=1
@@ -64,6 +64,7 @@ parameters:
 [neg_bagging_fraction: 1]
 [bagging_freq: 5]
 [bagging_seed: 5921]
+[bagging_by_query: 0]
 [feature_fraction: 0.7]
 [feature_fraction_bynode: 1]
 [feature_fraction_seed: 22355]
@@ -156,6 +157,7 @@ parameters:
 [machines: ]
 [gpu_platform_id: -1]
 [gpu_device_id: -1]
+[gpu_device_id_list: ]
 [gpu_use_dp: 0]
 [num_gpu: 1]
 
