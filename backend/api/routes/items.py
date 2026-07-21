@@ -517,14 +517,14 @@ def _prediction_parquet(item, period: str, horizon: int):
     r = _forecast_parquet(item.id, horizon)
     if r is None:
         return None
-    current_price = 0.0
+    current_price = r.current_price or 0.0
     fl = r.price_low or current_price * 0.9
     fh = r.price_high or current_price * 1.1
     fm = r.price_mid or (fl + fh) / 2
     return PredictionOut(
         item_id=item.id,
         item_name=item.name,
-        current_price=r.current_price or current_price,
+        current_price=current_price,
         forecast_low=fl,
         forecast_mid=fm,
         forecast_high=fh,

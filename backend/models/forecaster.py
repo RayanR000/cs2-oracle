@@ -105,7 +105,7 @@ def _train_horizon_worker(args):
     on a machine with nvidia-smi). Workers always train on CPU.
     """
     os.environ["CUDA_VISIBLE_DEVICES"] = ""
-    horizon, df, base_feature_cols, model_dir, existing_tuned_params, max_rows = args
+    horizon, df, base_feature_cols, model_dir, existing_tuned_params, max_rows, horizon_workers = args
 
     fc = ItemForecaster(db_session=None, model_dir=model_dir)
     fc._base_feature_cols = list(base_feature_cols)
@@ -113,7 +113,7 @@ def _train_horizon_worker(args):
     if existing_tuned_params:
         fc.tuned_params[horizon] = existing_tuned_params
 
-    fc._train_horizon_inline(horizon, df, max_rows)
+    fc._train_horizon_inline(horizon, df, max_rows, horizon_workers)
 
     models = {}
     for (h, q), ensemble in fc.models.items():
@@ -1777,12 +1777,23 @@ class ItemForecaster:
     # ------------------------------------------------------------------
 
     @staticmethod
-    def _train_ensemble_member(params: dict, dtrain: lgb.Dataset,
-                                dval: lgb.Dataset,
+    def _train_ensemble_member(params: dict,
+                                X_train, y_train, X_val, y_val,
+                                train_weights, val_weights, ds_params,
                                 num_boost_round: int = 1000) -> lgb.Booster:
-        """Train a single ensemble member.
+        """Train a single ensemble member with its own Dataset copy.
+        Constructs a fresh lgb.Dataset per worker to avoid race conditions
+        from lazy binning on shared Datasets across threads.
         Uses early_stopping for GBDT; DART disables it internally.
         """
+        dtrain_kw = dict(params=ds_params.copy())
+        if train_weights is not None:
+            dtrain_kw["weight"] = train_weights
+        dval_kw = dict(params=ds_params.copy())
+        if val_weights is not None:
+            dval_kw["weight"] = val_weights
+        dtrain = lgb.Dataset(X_train, y_train, **dtrain_kw)
+        dval = lgb.Dataset(X_val, y_val, reference=dtrain, **dval_kw)
         callbacks = [lgb.log_evaluation(0)]
         if params.get("boosting_type") != "dart":
             callbacks.insert(0, lgb.early_stopping(50))
@@ -2145,12 +2156,12 @@ class ItemForecaster:
             # copy-on-write efficiency. Fork+OpenMP can deadlock on macOS
             # but is generally safe on Linux; the timeout below provides a
             # safety net if a worker hangs.
-            _mp_ctx = "spawn" if os.name == "nt" else "fork"
+            _mp_ctx = "spawn"
             pool_ctx = mp.get_context(_mp_ctx)
             with pool_ctx.Pool(n_workers) as pool:
                 async_result = pool.map_async(_train_horizon_worker, [
                     (horizon, df, self._base_feature_cols, self.model_dir,
-                     self.tuned_params.get(horizon, {}), max_rows)
+                     self.tuned_params.get(horizon, {}), max_rows, n_workers)
                     for horizon in self.HORIZONS
                 ])
                 results = async_result.get(timeout=7200)  # 2h wall-clock for all horizons
@@ -2168,12 +2179,16 @@ class ItemForecaster:
         logger.info(f"TRAINING COMPLETE in {_train_elapsed:.0f}s ({_train_elapsed/60:.1f}min)")
         logger.info(f"{'='*60}")
 
-    def _train_horizon_inline(self, horizon: int, df: pd.DataFrame, max_rows: int = 300_000):
+    def _train_horizon_inline(self, horizon: int, df: pd.DataFrame,
+                               max_rows: int = 300_000, horizon_workers: int = 1):
         """Train all models for a single forecast horizon.
 
         Encapsulates the horizon loop body so it can run either inline
         (sequential) or in a child process (parallel via _train_horizon_worker).
         Stores results directly into self.models, self.regime_models, etc.
+
+        horizon_workers: number of concurrent horizon processes (1 = sequential).
+                         Used to cap inner parallelism to avoid CPU oversubscription.
         """
         logger.info(f"\n{'='*60}")
         logger.info(f"HORIZON {horizon}d")
@@ -2341,10 +2356,15 @@ class ItemForecaster:
                     q: dict(per_quantile_params[q]) for q in self.QUANTILES
                 }
 
-            # Train ensemble members in parallel with capped concurrency to
-            # avoid CPU oversubscription (each member uses n_jobs internally).
-            n_workers = min(self.N_ENSEMBLES, max(1, (os.cpu_count() or 4) // 2))
-            cpu_per_worker = max(1, (os.cpu_count() or 4) // n_workers)
+            # Train ensemble members with capped concurrency to avoid CPU
+            # oversubscription. When running parallel horizons (horizon_workers > 1),
+            # fall back to serial ensemble training with single-threaded LightGBM.
+            if horizon_workers > 1:
+                n_workers = 1
+                cpu_per_worker = 1
+            else:
+                n_workers = min(self.N_ENSEMBLES, max(1, (os.cpu_count() or 4) // 2))
+                cpu_per_worker = max(1, (os.cpu_count() or 4) // n_workers)
             boost_rounds = self.DART_NUM_BOOST_ROUND if boosting_type == "dart" else 1000
             for q in self.QUANTILES:
                 pq = per_quantile_params[q]
@@ -2358,7 +2378,11 @@ class ItemForecaster:
                         p["random_state"] = self.ENSEMBLE_SEEDS[ei]
                         p["feature_fraction"] = self.ENSEMBLE_FEATURE_FRACTIONS[ei]
                         p["n_jobs"] = cpu_per_worker
-                        futures.append(pool.submit(self._train_ensemble_member, p, dtrain, dval, boost_rounds))
+                        futures.append(pool.submit(
+                            self._train_ensemble_member, p,
+                            X_train, y_train, X_val, y_val,
+                            train_weights, val_weights, ds_params, boost_rounds,
+                        ))
                     for f in futures:
                         try:
                             ensemble_models.append(f.result(timeout=1800))
@@ -2418,14 +2442,6 @@ class ItemForecaster:
                     r_val_weights = self._compute_sample_weights(r_val, horizon)
 
                     r_ds_params = {"max_bin": self.MAX_BIN, "feature_pre_filter": False}
-                    r_dtrain_kw = dict(params=r_ds_params)
-                    if r_train_weights is not None:
-                        r_dtrain_kw["weight"] = r_train_weights
-                    r_dval_kw = dict(params=r_ds_params)
-                    if r_val_weights is not None:
-                        r_dval_kw["weight"] = r_val_weights
-                    r_dtrain = lgb.Dataset(r_X_train, r_y_train, **r_dtrain_kw)
-                    r_dval = lgb.Dataset(r_X_val, r_y_val, reference=r_dtrain, **r_dval_kw)
 
                     logger.info(f"  Training {regime} regime models ({horizon}d, "
                                 f"{len(r_train):,} train, {len(r_val):,} val)...")
@@ -2439,7 +2455,11 @@ class ItemForecaster:
                                 p["random_state"] = self.ENSEMBLE_SEEDS[ei]
                                 p["feature_fraction"] = self.ENSEMBLE_FEATURE_FRACTIONS[ei]
                                 p["n_jobs"] = cpu_per_worker
-                                futures.append(pool.submit(self._train_ensemble_member, p, r_dtrain, r_dval, boost_rounds))
+                                futures.append(pool.submit(
+                                    self._train_ensemble_member, p,
+                                    r_X_train, r_y_train, r_X_val, r_y_val,
+                                    r_train_weights, r_val_weights, r_ds_params, boost_rounds,
+                                ))
                             for f in futures:
                                 try:
                                     r_ensemble.append(f.result(timeout=1800))
