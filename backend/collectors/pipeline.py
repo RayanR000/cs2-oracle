@@ -445,6 +445,7 @@ class DataPipeline:
                 from db.parquet import append_table
                 import json
                 append_table("collection_runs", [{
+                    "id": collection_run.id,
                     "started_at": start_time,
                     "finished_at": end_time,
                     "status": "completed",
@@ -495,6 +496,7 @@ class DataPipeline:
 
             # Try to record failed run
             error_text = str(e)[:1000]
+            failed_run_id = None
             try:
                 from database import CollectionRun
                 failed_run = CollectionRun(
@@ -511,6 +513,7 @@ class DataPipeline:
                 self.db_session.rollback()
                 self.db_session.add(failed_run)
                 self.db_session.commit()
+                failed_run_id = failed_run.id
             except Exception as record_error:
                 logger.error(f"Could not record failed run: {record_error}")
 
@@ -518,6 +521,7 @@ class DataPipeline:
                 from db.parquet import append_table
                 import json
                 append_table("collection_runs", [{
+                    "id": failed_run_id,
                     "started_at": start_time,
                     "finished_at": end_time,
                     "status": "failed",

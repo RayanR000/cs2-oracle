@@ -19,8 +19,9 @@
 - `accuracy-opportunities.md` — Feature + architecture + training improvements with calibrated impact estimates
 - `volume-data.md` — Volume data evaluation: free source in archive, zero predictive lift verified
 - `competitor-analysis.md` — Landscape: CSMarketCap, SteamAnalyst, TradeUp Academy, differentiators
-- `model-critique.md` — Speed/accuracy audit after column-order-bug fix (2026-07-18)
-- `feature-contribution-by-horizon.md` — Ablation study: cross-sectional + events by horizon (2026-07-19)
+- `2026-07-14-remaining-accuracy-improvements.md` — Planning doc: completed + moderate + deeper accuracy items
+- `2026-07-18-model-critique.md` — Speed/accuracy audit after column-order-bug fix
+- `2026-07-19-feature-contribution-by-horizon.md` — Ablation study: cross-sectional + events by horizon
 
 ## Historical (`historical/`)
 
@@ -33,7 +34,7 @@ All historical docs are preserved as reference only — the issues they describe
 
 ## Changelog (`changelog/`)
 
-Dated execution logs for bug fixes, features, and audits. 28 entries covering Jul 2026 development.
+Dated execution logs for bug fixes, features, and audits. 34 entries covering Jul 2026 development.
 
 ## Other
 

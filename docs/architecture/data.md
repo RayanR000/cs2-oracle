@@ -24,6 +24,7 @@ Supabase (~68 MB):
   └─ events / event_impacts / event_correlations
   └─ collection_runs         — Run tracking
   └─ prediction_accuracy / forecast_outcomes / accuracy_alerts
+  └─ social_mentions         — Reddit mentions & sentiment (VADER)
   └─ users
 ```
 
@@ -61,6 +62,7 @@ API serving:
 | `prediction_accuracy` | ~2 MB | ~5,000 | UPSERT, bounded |
 | `forecast_outcomes` | ~4 MB | ~50,000 | UPSERT, bounded |
 | `accuracy_alerts` | ~1 MB | ~100 | UPSERT, bounded |
+| `social_mentions` | ~2 MB | ~8,000 | 4 rows/day (6-hourly) |
 | `users` | ~0.1 MB | few | Static |
 | Others | ~8 MB | — | Static |
 | **Supabase total** | **~68 MB** | | |
@@ -117,6 +119,7 @@ After: `Item.is_backfilled == True`
 | 0015 | **Drop `daily_analysis` table** (data in Parquet + item_forecasts) |
 | 0016 | Add `supply_snapshots` table |
 | 0017 | Add item rarity columns |
+| 0018 | Add `social_mentions` table — Reddit sentiment (VADER) |
 
 ---
 
@@ -142,7 +145,7 @@ GitHub Actions (23:00 UTC)
   └─ append_to_parquet.py
        ├─ Collapse to daily OHLCV
        ├─ Append to archive/price-archive/prices-YYYY.parquet
-       └─ Also writes snapshots, exchange rates, and player counts
+       └─ Also writes snapshots
 ```
 
 ---
@@ -155,4 +158,5 @@ See `docs/changelog/` for full detail. Major changes:
 - **2026-07-08**: Dropped `trend_indicators` table, cleared stale rows (~350 MB recovered)
 - **2026-07-11**: All 7 sources written to Parquet; dropped `chart_points` (freed 290 MB)
 - **2026-07-16**: Dropped `daily_analysis` table (migration 0015)
+- **2026-07-19**: Added `social_mentions` table (migration 0018) for Reddit sentiment collection
 - **2026-07-20**: Merged HF CS2 dataset (32K items, Mar 22 – Apr 15) into Parquet archive — filled 17 gap days, expanded 8 overlap days, 2.1M new OHLCV rows

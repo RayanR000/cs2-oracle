@@ -16,7 +16,7 @@ The backend runs entirely on GitHub Actions scheduled workflows. Most workflows 
 |----------|----------|---------|-----------|
 | `supply-scraper` | 22:00 UTC daily | Steam sell_listings supply snapshots | `supply_snapshots` |
 | `aggregator-update` | 23:00 UTC daily | Full item data collection from CSGOTrader (7 sources) | Parquet (`data-archive` branch), `collection_runs` |
-| `player-count-hourly` | Every 2h | Steam player-count tracking | Supabase `player_counts`, Parquet archive |
+| `reddit-sentiment` | 05/11/17/23 UTC (6-hourly) | Reddit CS2 skin mention collection + VADER scoring | `social_mentions`, `ops/social_mentions.parquet` |
 | `price-forecast` | Chained off aggregator | ML price predictions (full retrain Mondays) | `item_forecasts` |
 | `backtest-accuracy` | Chained off forecast + 08:00 UTC Mon-Sat | Evaluate forecast accuracy, detect concept drift | `prediction_accuracy`, `forecast_outcomes`, `accuracy_alerts` |
 | `event-correlation-analysis` | Weekly Sun 04:00 UTC | Quantifies market-event price impacts | `event_correlations`, `event_impacts` |
@@ -25,7 +25,7 @@ The backend runs entirely on GitHub Actions scheduled workflows. Most workflows 
 ### Data flow
 
 ```
-Every 2h  Player Count Hourly → Steam active players → player_counts (Supabase + Parquet)
+05/11/17/23  Reddit Sentiment → old.reddit.com scrape → social_mentions (Supabase + Parquet)
 
 22:00  Supply Scraper → Steam burst scrape → supply_snapshots (sell_listings)
 
@@ -82,11 +82,12 @@ git log origin/data-archive --oneline -5
 ### Healthy state
 
 - Aggregator runs once daily at ~23:00 UTC, ~5,525 items, ~60s
+- Reddit sentiment runs 4×/day at 05/11/17/23 UTC, ~5 min
+- Supply scraper runs once daily at 22:00 UTC, ~115 min
 - Forecast chains off aggregator automatically, ~2-5 min (predict-only) or ~53 min (Monday retrain with regime models)
 - Backtest chains off forecast automatically, ~1-2 min
 - A/B regime comparison: `python scripts/forecast_prices.py --compare-regime` (writes `lgbm-v3-regime` + `lgbm-v3-global-only` forecasts, runs backtest)
 - All tables (`item_forecasts`, `prediction_accuracy`, etc.) stay bounded by UPSERT
-- `chart_points` never pruned — bounded at ~4M rows (one close per item per day)
 - Parquet archive on `data-archive` grows by ~300 KB/day
 
 ### Warning signs
@@ -94,7 +95,7 @@ git log origin/data-archive --oneline -5
 - ❌ Frequent failures — check the auto-created issues
 - ⏳ Runs missing at expected times — GitHub Actions may be degraded
 - Aggregator collecting 0 items — likely CSGOTrader upstream issue
-- Player count hourly failing silently — check logs (no failure notification on this workflow)
+- Social mentions table not growing — reddit-sentiment workflow may have failed; check logs
 - Accuracy tables not growing — forecast job may have failed; check logs
 
 ## Troubleshooting
@@ -126,7 +127,6 @@ git log origin/data-archive --oneline -5
 | Workflow | Missing concurrency | Missing failure notification |
 |----------|:-------------------:|:---------------------------:|
 | `backtest-accuracy` | ✅ absent | — |
-| `player-count-hourly` | — | ✅ absent |
 
 `discover-new-items` has a failure notification step with a `schedule` trigger condition, but the workflow has no schedule trigger — the step can never fire.
 
@@ -151,9 +151,9 @@ python scripts/forecast_prices.py --compare-regime
 # Backtest forecast accuracy
 python scripts/backtest_accuracy.py --type forecast
 
-# Player count snapshot
-python -m collectors.player_counts
-
 # Supply scraper
 python scripts/run_supply_scraper.py
+
+# Reddit sentiment collection
+python scripts/run_task.py reddit_social
 ```

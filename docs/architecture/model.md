@@ -102,6 +102,11 @@ Rarity ordinal and one-hot dummies (11 categories: base, consumer, industrial, m
 
 **Removed after permutation test:** weapon_type one-hot dummies (22 cols) and weapon-type cross-sectional features (6 cols) — showed zero causal signal (shuffling changed accuracy by ≤0.05pp). Player count features (10 cols) also removed; earlier permutation test showed zero causal impact.
 
+### Social Sentiment Features (Added 2026-07-19)
+5 features sourced from the Reddit social sentiment collector (`collectors/social_sentiment.py`): `social_mentions_1d` (mention count past 24h), `social_mentions_7d` (rolling 7d), `social_mention_velocity` (1d→7d ratio), `social_sentiment_7d` (VADER compound score), `social_score_7d` (weighted sentiment × volume). Collector monitors 3 CS2 trading subreddits via old.reddit.com HTML (Reddit JSON API killed May 2026).
+
+**Known limitation:** VADER is a 2014 general-purpose lexicon that scores CS2 market jargon ("BFK CW MW low float") as neutral — social features do not rank in top 20 by gain importance across any horizon. See `docs/changelog/2026-07-22-social-feature-audit.md`. Recommendation: replace VADER with ModernFinBERT (ONNX INT8).
+
 ### Feature Pruning
 Correlation-based pruning at 0.95 threshold. Applied during training, pruned feature list saved to `meta.json`.
 
@@ -119,7 +124,9 @@ Optuna Bayesian (TPE sampler, MedianPruner). Replaced brute-force grid search Ju
 | Fixed discrete values | Continuous ranges with log-uniform sampling |
 | All trials to completion | MedianPruner kills bad trials early |
 
-**Per-horizon trial budget (2026-07-20):** 15 trials proved insufficient for the 3d horizon's 6D search space (~40k combinations). The 3d model's chosen depth=3 was an artifact of under-exploration, not a signal ceiling. Added `N_TRIALS_MAP = {3: 50, 7: 15, 14: 15, 30: 15}` — 50 trials for 3d, 15 for others. With 50 trials, Optuna chose depth=5-8 across quantiles (3d p50: depth=5, L2=1.5).
+**Per-horizon trial budget (2026-07-20):** 15 trials proved insufficient for the 3d horizon's 6D search space (~40k combinations). The 3d model's chosen depth=3 was an artifact of under-exploration, not a signal ceiling. Added `N_TRIALS_MAP = {3: 50, 7: 15, 14: 15, 30: 15}`. With 50 trials, Optuna chose depth=5-8 across quantiles (3d p50: depth=5, L2=1.5).
+
+**Optimized (2026-07-20):** 3d depth experiment showed 50 trials unnecessary — 20 trials + warm-start (depth=5, leaves=47, λ₂=1.5, lr=0.01) + horizon-aware bounds (max_depth 4-8, lambda_l2 0.5-2.0) reached same quality at 3 min instead of 7.5 min. Final: `N_TRIALS_MAP = {3: 20, 7: 15, 14: 15, 30: 15}`.
 
 **Bug fix (Jul 2026):** `_optuna_search_params` originally hardcoded `alpha=0.5`. The `quantile` parameter was never received — p10 and p90 models were tuned at alpha=0.5. Fixed by adding `quantile` to method signature.
 
@@ -175,6 +182,9 @@ A **Ridge regression** model (`alpha=5.0`) trained on ensemble residuals to corr
 | `drop_rate` | 0.05–0.3 (DART, Optuna-tuned) |
 | `max_drop` | 10–100 (DART, Optuna-tuned) |
 | `skip_drop` | 0.2–0.8 (DART, Optuna-tuned) |
+| `max_bin` | 63 (was 255, halved for speed) |
+| `feature_pre_filter` | `false` (LGB 4.6 compat) |
+| `N_ENSEMBLES` | 6 (was 9, reduced for speed) |
 
 ### Training Time (Mac)
 ~53 min full retrain with regime models (~30 min global + ~23 min regime). ~17–20 min of Optuna on cold start. With SKIP_CV+HP reuse: ~30 min global + ~23 min regime.
@@ -209,16 +219,18 @@ Binary: `high` or `low`. Threshold-calibrated per horizon from holdout predictio
 
 The model has two accuracy evaluation methods. The **production backtest** (below) is the canonical metric — it runs against 5,500 full-batch forecasts on real Parquet data with bootstrap CIs and baseline comparison. The walk-forward eval is a historical reference from an earlier 50-item test.
 
-### Walk-Forward Evaluation (Historical — 50-item test)
+### Walk-Forward Evaluation (200 items, tuned params)
 
 | Horizon | Directional Accuracy | vs 50% baseline | Interval Coverage | MAE |
 |---------|:--------------------:|:---------------:|:-----------------:|:---:|
-| **3d**  | 61.4%                | +11.4pp         | 85.7%             | $0.20 |
-| **7d**  | 60.9%                | +10.9pp         | 86.2%             | $0.25 |
-| **14d** | 60.2%                | +10.2pp         | 86.1%             | $0.34 |
-| **30d** | 68.1%                | +18.1pp         | 82.6%             | $0.53 |
+| **3d**  | 62.9%                | +12.9pp         | 86.1%             | $0.19 |
+| **7d**  | 65.5%                | +15.5pp         | 86.8%             | $0.24 |
+| **14d** | 67.7%                | +17.7pp         | 85.9%             | $0.32 |
+| **30d** | 67.4%                | +17.4pp         | 83.1%             | $0.50 |
 
-Measured via walk-forward evaluation on 50 items, 26 expanding windows (60-day steps), ~27k samples per horizon. Fixed LightGBM params (no ensemble — conservative estimate). Rarity features enabled. Lift from complete supply-side bundle: +0.66pp avg (3d: +1.92pp, 7d: -0.16pp, 14d: +0.79pp, 30d: +0.08pp) — later permutation testing showed signal came entirely from rarity; weapon_type and cross-sectional were dead weight and removed.
+Measured via `walkforward_backtest.py` on 200 data-rich items, 26 expanding windows (60-day steps), ~109K samples per horizon. Uses tuned params from `meta.json`. Walkforward numbers are 5-13pp higher than production backtest because they test on data-rich items vs all 8,691 items (including sparse-history and dead items).
+
+**Previous 50-item eval (archived):** 3d=61.4%, 7d=60.9%, 14d=60.2%, 30d=68.1% — Fixed LightGBM params (no ensemble).
 
 ### Historical Accuracy Timeline
 
@@ -228,22 +240,24 @@ Measured via walk-forward evaluation on 50 items, 26 expanding windows (60-day s
 | After P1/P2 fixes | 70.9% | 72.5% | Leakage fix, returns target, NaN fix |
 | After Jul '26 round 1 | 75.3% | 77.0% | Event decay, confidence calibration |
 | After Jul '26 round 2 | 87.0% | 83.0% | **Buggy** — target inversion inflated |
-| After target inversion fix | **61.1%** | **65.8%** | **Genuine** — 9-16pp above 50% baseline |
+| After target inversion fix | 61.1% | 65.8% | Genuine — 9-16pp above 50% baseline |
+| After data quality + shift guard | 57.4% | 55.2% | Dead item filter, winsorization, 2026 exclusion |
+| After 3d depth + walkforward | **52.8%** | **54.2%** | Production backtest (all 8,691 items) |
 
 ### Production Backtest Pipeline
 
 The `backtest_accuracy.py` script evaluates mature forecasts from `item_forecasts` against actual prices from the Parquet archive (using the same multi-source voting as training). It stores aggregate metrics to `prediction_accuracy` and per-forecast outcomes to `forecast_outcomes`.
 
-**Latest verified results (v3, 2026-07-19, 5,300–5,500 forecasts per horizon):**
+**Latest verified results (v3, 2026-07-20, 5,300–5,500 forecasts per horizon):**
 
 | Horizon | DA | 95% CI | Baseline DA | vs Baseline | MAE | MAPE | wMAPE | IC |
 |---------|---:|--------|------------:|------------:|----:|-----:|------:|--:|
-| **3d** | **59.71%** | [58.3, 61.0] | 20.23% | **+39.48pp** | $0.73 | 33.84% | 30.80% | 46.75% |
-| **7d** | 46.51% | [45.3, 47.9] | 17.42% | +29.09pp | $0.73 | 44.43% | 30.91% | 40.42% |
-| **14d** | 45.95% | [44.6, 47.3] | 17.67% | +28.28pp | $0.74 | 53.20% | 31.15% | 48.79% |
-| **30d** | 46.87% | [45.5, 48.2] | 18.00% | +28.86pp | $0.77 | 36.43% | 31.99% | 56.16% |
+| **3d** | **61.5%** | [60.2, 62.8] | 20.23% | **+41.27pp** | $0.73 | 33.2% | 30.5% | 47.1% |
+| **7d** | 52.8% | [51.5, 54.1] | 17.42% | +35.38pp | $0.73 | 43.8% | 30.8% | 41.2% |
+| **14d** | 55.7% | [54.3, 57.1] | 17.67% | +38.03pp | $0.74 | 51.9% | 30.9% | 49.8% |
+| **30d** | 54.2% | [52.8, 55.6] | 18.00% | +36.20pp | $0.77 | 35.8% | 31.7% | 57.0% |
 
-Baseline = persistence forecast (predicts zero change). Bootstrap CI = 95% percentile, 1,000 resamples. 3d high-confidence forecasts achieve ~78% accuracy vs ~43% low-confidence.
+Baseline = persistence forecast (predicts zero change). Bootstrap CI = 95% percentile, 1,000 resamples. 3d high-confidence forecasts achieve ~78% accuracy vs ~43% low-confidence. Improvements from 3d depth experiment (+1.8pp on 3d) and walkforward-guided fixes.
 
 **Metrics computed per horizon:**
 - Point error: MAE, RMSE, MAPE, wMAPE (dollar-weighted), MAPE by price tier
@@ -259,6 +273,7 @@ Baseline = persistence forecast (predicts zero change). Bootstrap CI = 95% perce
 - Rarity features have strong causal signal (+10-12pp permutation test). Weapon-type one-hot and cross-sectional were removed — they showed zero causal signal despite the +0.66pp A/B bundle delta
 - `_apply_multi_source_voting()` uses `groupby().apply()` on 5.5M rows — takes ~3-5 min. Could be vectorized for ~5s but voting logic is correct and this only affects training time, not accuracy
 - **Flat-bias on longer horizons:** The model predicts "flat" too often on 7d/14d/30d when uncertainty is high. In a trending market (Dec 2025: only ~18% of actuals were flat), this penalizes raw DA heavily — 43% of 7d forecasts predicted flat when the item actually moved. The model still adds +29pp over baseline, but confidence calibration tuning could reduce this bias.
+- **VADER social features not in top 20:** After 3 days of production data, none of the 5 social sentiment features rank in the top 20 by gain importance across 122 features. Root cause: VADER is a general-purpose lexicon that scores CS2 market jargon ("BFK CW MW low float") as neutral. Recommendation: replace with ModernFinBERT (ONNX INT8, ~88% accuracy on financial text).
 
 ### Data Quality Audit (2026-07-17)
 A comprehensive audit of the 9.8M-row training set revealed three data quality issues:
@@ -313,7 +328,11 @@ All three issues were fixed in the 2026-07-17 changelog. Full details in `docs/c
 | Feature pruning (correlation 0.95) | Jul 2026 | Medium |
 | Supply-side features (rarity one-hot) | 2026-07-15 | Low (+0.66pp bundle, refined to rarity-only Jul 16) |
 | Weapon-type features removed (22 one-hot + 6 cross-sectional) | 2026-07-16 | Zero causal signal (permutation test) |
-| Player count features removed (10 cols) | 2026-07-16 | Zero causal signal (permutation test) |
+| Multi-source outlier voting | 2026-07-16 | Medium — protects live inference from corrupted `current_price` |
+| Walk-forward backtest (`walkforward_backtest.py`) | 2026-07-20 | Medium — reusable 200-item, 26-fold walk-forward evaluation |
+| HF CS2 dataset merge (69.2M hourly rows) | 2026-07-20 | Medium — filled Mar 30–Apr 15 gap in Parquet archive |
+| Social sentiment features (5 cols, VADER) | 2026-07-19 | Low — not in top 20 gain importance; VADER ineffective on CS2 jargon |
+| 3d depth experiment (`N_TRIALS_MAP[3]: 50→20`) | 2026-07-20 | Medium — +1.8pp on 3d, 3 min vs 7.5 min Optuna |
 | 3-seed ensemble per quantile | Jul 2026 | Medium |
 | Binary confidence (dropped medium bucket) | Jul 2026 | Low |
 | CatBoost ensemble tested and removed | 2026-07-13 | Low (degraded accuracy) |
@@ -336,6 +355,7 @@ All three issues were fixed in the 2026-07-17 changelog. Full details in `docs/c
 - **Do not replace with a fine-tuned LLM** — worse at numerical time series, slower, harder to retrain
 - **Do not add neural forecasting models** (N-BEATS, PatchTST) unless accuracy plateaus and GPU training is manageable
 - **Do not revisit CatBoost** — tested Jul 2026, degraded accuracy by 18-20pp
+- **Do not ship VADER-based social features as-is** — 2014 general-purpose lexicon scores CS2 jargon as neutral. Replace with ModernFinBERT (ONNX INT8) first
 
 ---
 
@@ -343,13 +363,16 @@ All three issues were fixed in the 2026-07-17 changelog. Full details in `docs/c
 
 | File | Lines | Role |
 |------|-------|------|
-| `backend/models/forecaster.py` | ~2,250 | Core ML: ItemForecaster class, feature engineering, training, predict, regime-switching |
+| `backend/models/forecaster.py` | ~3,500 | Core ML: ItemForecaster, feature engineering, training, predict, regime-switching |
 | `backend/models/steam_types.py` | 130 | Steam type field parser (rarity + weapon_type extraction) |
 | `backend/scripts/forecast_prices.py` | 283 | Entry point: train + predict pipeline, `--compare-regime` A/B mode |
-| `backend/scripts/evaluate_forecaster.py` | 366 | Walk-forward accuracy evaluation |
-| `backend/scripts/backtest_accuracy.py` | 399 | Mature forecast backtesting |
+| `backend/scripts/backtest_accuracy.py` | 399 | Mature forecast backtesting (production) |
+| `backend/scripts/walkforward_backtest.py` | — | Standalone walk-forward evaluation (200 items, 26 folds) |
+| `backend/scripts/evaluate_forecaster.py` | 366 | Legacy walk-forward evaluation (archived) |
+| `backend/scripts/optuna_3d_search.py` | — | Optimized 3d horizon Optuna search (200 items, ~58s) |
+| `backend/scripts/3d_depth_experiment.py` | — | 3d depth hyperparameter depth experiment |
+| `backend/scripts/merge_hf_dataset.py` | — | Merge HuggingFace CS2 dataset into Parquet archive |
 | `backend/scripts/backfill_supply_metadata.py` | — | Backfill supply metadata from catalog → Parquet + DB |
-| `backend/scripts/ab_test_supply_side.py` | — | A/B test: with vs without supply-side features (archived) |
-| `backend/scripts/ab_test_player_counts.py` | — | A/B test: with vs without player count features (archived) |
+| `backend/collectors/social_sentiment.py` | — | Reddit sentiment collector (3 subreddits, VADER, 6-hourly) |
 | `backend/tests/test_forecaster.py` | 1,118 | 69+ unit tests (global + regime-switching) |
 | `price-archive/item-metadata.parquet` | 8,691 rows | Supply metadata cache (rarity, weapon_type per item) |
