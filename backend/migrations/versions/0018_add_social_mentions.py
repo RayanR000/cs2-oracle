@@ -1,7 +1,7 @@
 """Add social_mentions table for Reddit sentiment tracking
 
 Revision ID: 0018
-Revises: 0017
+Revises: 0017_add_item_rarity_columns
 Create Date: 2026-07-19
 
 """
@@ -10,7 +10,7 @@ from alembic import op
 import sqlalchemy as sa
 
 revision: str = "0018"
-down_revision: Union[str, None] = "0017"
+down_revision: Union[str, None] = "0017_add_item_rarity_columns"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 
