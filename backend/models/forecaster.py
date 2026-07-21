@@ -95,7 +95,8 @@ class ItemForecaster:
     # justified). DART left available for future experiments.
     WEAK_HORIZONS = [14, 30]
     BOOSTING_TYPE_MAP = {3: "gbdt", 7: "gbdt", 14: "gbdt", 30: "gbdt"}
-    N_TRIALS_MAP = {3: 20, 7: 50, 14: 50, 30: 50}
+    N_TRIALS_MAP = {3: 10, 7: 15}
+    SKIP_HP_HORIZONS = [14, 30]
     DART_PARAMS = {
         "drop_rate": 0.1,
         "max_drop": 50,
@@ -1813,7 +1814,7 @@ class ItemForecaster:
 
     def build_training_data(self, days_back: int = 365,
                              backfilled_only: bool = False,
-                             max_feature_rows: int = 400_000) -> pd.DataFrame:
+                             max_feature_rows: int = 200_000) -> pd.DataFrame:
         _t0 = datetime.now()
         price_df = self.fetch_price_history(days_back=days_back, backfilled_only=backfilled_only)
         logger.info(f"  fetch_price_history took {(datetime.now() - _t0).total_seconds():.0f}s")
@@ -1980,7 +1981,7 @@ class ItemForecaster:
         vol = vol / max(np.mean(vol), 1e-8)
         return vol.astype(np.float32)
 
-    def train(self, max_rows: int = 700_000):
+    def train(self, max_rows: int = 300_000):
         logger.info("=" * 60)
         logger.info("TRAINING LIGHTGBM FORECASTER (ensemble, HP search, walk-forward)")
         logger.info("=" * 60)
@@ -2099,16 +2100,9 @@ class ItemForecaster:
                         bp["boosting_type"] = boosting_type
                         per_quantile_params[q] = bp
                 else:
+                    skip_hp = horizon in self.SKIP_HP_HORIZONS
                     hz_trials = self.N_TRIALS_MAP.get(horizon, 15)
                     for q in self.QUANTILES:
-                        logger.info(f"  Searching hyperparams for {horizon}d p{int(q*100)} (Optuna, {boosting_type}, {hz_trials} trials)...")
-                        best_params = self._optuna_search_params(
-                            X_train, y_train, X_val, y_val, quantile=q,
-                            boosting_type=boosting_type,
-                            n_trials=hz_trials,
-                            horizon=horizon,
-                        )
-
                         device = "cuda" if _gpu_available() else "cpu"
                         base_params = {
                             "device": device,
@@ -2125,6 +2119,19 @@ class ItemForecaster:
                             "verbosity": -1,
                             "n_jobs": -1,
                         }
+
+                        if skip_hp:
+                            logger.info(f"  Skipping HP search for {horizon}d (SKIP_HP_HORIZONS)...")
+                            best_params = None
+                        else:
+                            logger.info(f"  Searching hyperparams for {horizon}d p{int(q*100)} (Optuna, {boosting_type}, {hz_trials} trials)...")
+                            best_params = self._optuna_search_params(
+                                X_train, y_train, X_val, y_val, quantile=q,
+                                boosting_type=boosting_type,
+                                n_trials=hz_trials,
+                                horizon=horizon,
+                            )
+
                         # Merge Optuna results into base params
                         if best_params:
                             merge_keys = ["num_leaves", "learning_rate", "lambda_l1",
