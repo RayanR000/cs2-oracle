@@ -1309,7 +1309,7 @@ class TestRegimeSwitching:
                 with patch.object(f, '_fetch_supply_metadata',
                                   return_value=pd.DataFrame(columns=["item_id", "rarity", "rarity_rank", "weapon_type"])):
                     with patch.object(f, '_fetch_item_metadata',
-                                      return_value=pd.DataFrame(columns=["item_id", "type"])):
+                                      return_value=pd.DataFrame(columns=["item_id", "name", "type"])):
                         with patch.dict('os.environ', {'SKIP_CV': '1', 'FORCE_HP_SEARCH': '1'}):
                             f.train(max_rows=100_000)
 

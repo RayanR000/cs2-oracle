@@ -30,6 +30,9 @@ logger = logging.getLogger(__name__)
 RNG = np.random.RandomState(42)
 DIRECTION_FLAT_TOLERANCE_PCT = 0.5
 
+# Cached result of GPU availability check (avoids repeated subprocess probes)
+_GPU_AVAILABLE_CACHE: Optional[bool] = None
+
 # Price tier boundaries for per-tier bias correction
 PRICE_TIER_BOUNDARIES = [(0, 1, "<$1"), (1, 5, "$1-5"), (5, 20, "$5-20"),
                          (20, 100, "$20-100"), (100, float("inf"), ">$100")]
@@ -42,12 +45,16 @@ DIRECTION_UPWEIGHT = 1.5
 
 
 def _gpu_available() -> bool:
+    global _GPU_AVAILABLE_CACHE
+    if _GPU_AVAILABLE_CACHE is not None:
+        return _GPU_AVAILABLE_CACHE
     try:
         import subprocess
         result = subprocess.run(
             ["nvidia-smi"], capture_output=True, text=True, timeout=5
         )
         if result.returncode != 0:
+            _GPU_AVAILABLE_CACHE = False
             return False
         # Verify LightGBM was compiled with CUDA by probing in a subprocess.
         # Directly calling lgb.train with device="cuda" can segfault if the
@@ -61,8 +68,10 @@ def _gpu_available() -> bool:
             [sys.executable, "-c", _probe_code],
             capture_output=True, text=True, timeout=30,
         )
-        return probe.returncode == 0
+        _GPU_AVAILABLE_CACHE = probe.returncode == 0
+        return _GPU_AVAILABLE_CACHE
     except (FileNotFoundError, subprocess.TimeoutExpired, Exception):
+        _GPU_AVAILABLE_CACHE = False
         return False
 
 
@@ -111,9 +120,8 @@ class ItemForecaster:
     ENSEMBLE_FEATURE_FRACTIONS = [0.6, 0.7, 0.8]
     MAX_BIN = 63
     # Per-horizon boosting configuration.
-    # GBDT used for all horizons (feature-ablation study showed 14d/30d
-    # carry stronger signal than 3d/7d — DART's dropout overhead is not
-    # justified). DART left available for future experiments.
+    # GBDT for short horizons (3d, 7d); DART for longer/noisier horizons
+    # (14d, 30d) where dropout regularization helps reduce overfitting.
     WEAK_HORIZONS = [14, 30]
     BOOSTING_TYPE_MAP = {3: "gbdt", 7: "gbdt", 14: "dart", 30: "dart"}
     N_TRIALS_MAP = {3: 50, 7: 15, 14: 15, 30: 15}
@@ -681,10 +689,11 @@ class ItemForecaster:
         # Rolling statistics (min_periods=1 so items with short history get partial estimates)
         for window in [7, 14, 20, 30, 60]:
             roll = grouped["price"].rolling(window, min_periods=1)
-            df[f"price_mean_{window}d"] = roll.mean().reset_index(level=0, drop=True)
-            df[f"price_std_{window}d"] = roll.std().reset_index(level=0, drop=True)
-            df[f"price_min_{window}d"] = roll.min().reset_index(level=0, drop=True)
-            df[f"price_max_{window}d"] = roll.max().reset_index(level=0, drop=True)
+            roll_agg = roll.agg(["mean", "std", "min", "max"])
+            df[f"price_mean_{window}d"] = roll_agg["mean"].values
+            df[f"price_std_{window}d"] = roll_agg["std"].values
+            df[f"price_min_{window}d"] = roll_agg["min"].values
+            df[f"price_max_{window}d"] = roll_agg["max"].values
 
         # Z-score vs 30d rolling
         mean_30 = df["price_mean_30d"]
@@ -836,11 +845,11 @@ class ItemForecaster:
             return self._item_meta_cache
         try:
             rows = self.db.execute(text("""
-                SELECT item_id, type FROM items
+                SELECT item_id, name, type FROM items
             """)).fetchall()
-            df = pd.DataFrame(rows, columns=["item_id", "type"])
+            df = pd.DataFrame(rows, columns=["item_id", "name", "type"])
         except Exception:
-            self._item_meta_cache = pd.DataFrame(columns=["item_id", "type"])
+            self._item_meta_cache = pd.DataFrame(columns=["item_id", "name", "type"])
             return self._item_meta_cache
         self._item_meta_cache = df
         logger.info(f"  item metadata: {len(df)} items loaded")
@@ -889,7 +898,6 @@ class ItemForecaster:
         features were removed — they showed zero causal signal.
         """
         logger.info("Adding supply-side features...")
-        df = df.copy()
 
         meta = self._fetch_supply_metadata()
         if meta.empty:
@@ -1242,7 +1250,6 @@ class ItemForecaster:
     def _add_cross_sectional_features(self, df: pd.DataFrame) -> pd.DataFrame:
         """Add market-level and category-level context features."""
         logger.info("Adding cross-sectional features...")
-        df = df.copy()
 
         # Market return: mean return across all items per date
         for lag in [1, 7, 14, 30]:
@@ -1312,16 +1319,10 @@ class ItemForecaster:
         features. Items not found in the DB get default (0) values.
         """
         logger.info("Adding item identity features...")
-        df = df.copy()
 
-        # Fetch item_id → (name, type) mapping from the DB
-        try:
-            items_rows = self.db.execute(text("""
-                SELECT item_id, name, type FROM items
-            """)).fetchall()
-            item_map = {r.item_id: r for r in items_rows}
-        except Exception:
-            logger.warning("  Could not fetch item names from DB; using default identity features")
+        meta_df = self._fetch_item_metadata()
+        if meta_df.empty:
+            logger.warning("  No item metadata available; using default identity features")
             identity_cols = [
                 "is_stattrak", "is_souvenir", "is_knife", "is_glove",
                 "is_sticker", "is_case", "is_capsule", "is_agent",
@@ -1331,6 +1332,10 @@ class ItemForecaster:
             for col in identity_cols:
                 df[col] = 0
             return df
+
+        item_map = {}
+        for _, r in meta_df.iterrows():
+            item_map[str(r["item_id"])] = r
 
         # Build identity features for each unique item
         identity_cache = {}
@@ -1346,8 +1351,8 @@ class ItemForecaster:
                 }
                 continue
 
-            name = item_row.name
-            db_type = item_row.type
+            name = item_row["name"]
+            db_type = item_row["type"]
             parsed = parse_item_name(name) if name else {}
 
             use_type = db_type or "skin"
@@ -1406,20 +1411,14 @@ class ItemForecaster:
 
         corr = df[self.feature_cols].corr().abs()
 
-        # Find all pairs with correlation above threshold using the stacked
-        # (melted) correlation matrix. Each unordered pair appears twice in
-        # the stack; we deduplicate by index order.
-        stacked = corr.stack()
-        high_pairs = stacked[
-            (stacked > self.PRUNE_CORRELATION_THRESHOLD)
-            & (stacked.index.get_level_values(0) != stacked.index.get_level_values(1))
-        ]
+        # Extract only the upper triangle (each unordered pair appears once)
+        upper = corr.where(np.triu(np.ones(corr.shape, dtype=bool), k=1))
+        high_pairs = upper.stack()
+        high_pairs = high_pairs[high_pairs > self.PRUNE_CORRELATION_THRESHOLD]
 
         to_drop = set()
         feature_index = {name: i for i, name in enumerate(self.feature_cols)}
         for feat_a, feat_b in high_pairs.index:
-            if feat_a in to_drop or feat_b in to_drop:
-                continue
             # Keep the earlier feature (lower index), drop the later one
             if feature_index[feat_a] < feature_index[feat_b]:
                 to_drop.add(feat_b)
