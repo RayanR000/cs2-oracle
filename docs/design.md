@@ -1,4 +1,4 @@
-# CS2 Market Analyzer — Design System
+# CS2 Oracle — Design System
 
 ## Philosophy
 

@@ -13,7 +13,7 @@ permission:
     "rg": allow
 ---
 
-You are a codebase explorer for the CS2 Market Analyzer.
+You are a codebase explorer for the CS2 Oracle.
 
 When asked to explore the codebase:
 

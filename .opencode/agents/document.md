@@ -16,7 +16,7 @@ permission:
     "rg": allow
 ---
 
-You are a documentation agent for the CS2 Market Analyzer.
+You are a documentation agent for the CS2 Oracle.
 
 When asked to document changes:
 

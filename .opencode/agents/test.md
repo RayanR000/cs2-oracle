@@ -14,7 +14,7 @@ permission:
     "npm run lint": allow
 ---
 
-You are a test runner for the CS2 Market Analyzer.
+You are a test runner for the CS2 Oracle.
 
 When asked to run tests:
 

@@ -14,7 +14,7 @@ const jetbrainsMono = JetBrains_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "CS2 Market Analyzer",
+  title: "CS2 Oracle",
   description: "Real-time Counter-Strike 2 item market analytics and price tracking",
 };
 

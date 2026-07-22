@@ -1,6 +1,6 @@
 <div align="center">
 
-# CS2 Market Analyzer
+# CS2 Oracle
 
 **Market intelligence platform for the Counter-Strike 2 skin economy**
 
@@ -13,17 +13,17 @@
 [![LightGBM](https://img.shields.io/badge/lightgbm-7D3C98?logo=python&logoColor=white&style=flat-square)](https://lightgbm.readthedocs.io)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue?style=flat-square)](https://opensource.org/licenses/MIT)
 
-[![Aggregator](https://img.shields.io/github/actions/workflow/status/RayanR000/cs2-market-analyzer/aggregator-update.yml?label=aggregator&style=flat-square&logo=github)](https://github.com/RayanR000/cs2-market-analyzer/actions/workflows/aggregator-update.yml)
-[![Forecast](https://img.shields.io/github/actions/workflow/status/RayanR000/cs2-market-analyzer/price-forecast.yml?label=forecast&style=flat-square&logo=github)](https://github.com/RayanR000/cs2-market-analyzer/actions/workflows/price-forecast.yml)
-[![Backtest](https://img.shields.io/github/actions/workflow/status/RayanR000/cs2-market-analyzer/backtest-accuracy.yml?label=backtest&style=flat-square&logo=github)](https://github.com/RayanR000/cs2-market-analyzer/actions/workflows/backtest-accuracy.yml)
-[![Supply](https://img.shields.io/github/actions/workflow/status/RayanR000/cs2-market-analyzer/supply-scraper.yml?label=supply&style=flat-square&logo=github)](https://github.com/RayanR000/cs2-market-analyzer/actions/workflows/supply-scraper.yml)
-[![Sentiment](https://img.shields.io/github/actions/workflow/status/RayanR000/cs2-market-analyzer/reddit-sentiment.yml?label=sentiment&style=flat-square&logo=github)](https://github.com/RayanR000/cs2-market-analyzer/actions/workflows/reddit-sentiment.yml)
+[![Aggregator](https://img.shields.io/github/actions/workflow/status/RayanR000/cs2-oracle/aggregator-update.yml?label=aggregator&style=flat-square&logo=github)](https://github.com/RayanR000/cs2-oracle/actions/workflows/aggregator-update.yml)
+[![Forecast](https://img.shields.io/github/actions/workflow/status/RayanR000/cs2-oracle/price-forecast.yml?label=forecast&style=flat-square&logo=github)](https://github.com/RayanR000/cs2-oracle/actions/workflows/price-forecast.yml)
+[![Backtest](https://img.shields.io/github/actions/workflow/status/RayanR000/cs2-oracle/backtest-accuracy.yml?label=backtest&style=flat-square&logo=github)](https://github.com/RayanR000/cs2-oracle/actions/workflows/backtest-accuracy.yml)
+[![Supply](https://img.shields.io/github/actions/workflow/status/RayanR000/cs2-oracle/supply-scraper.yml?label=supply&style=flat-square&logo=github)](https://github.com/RayanR000/cs2-oracle/actions/workflows/supply-scraper.yml)
+[![Sentiment](https://img.shields.io/github/actions/workflow/status/RayanR000/cs2-oracle/reddit-sentiment.yml?label=sentiment&style=flat-square&logo=github)](https://github.com/RayanR000/cs2-oracle/actions/workflows/reddit-sentiment.yml)
 
 </div>
 
 ---
 
-**CS2 Market Analyzer** is a full-stack analytics platform for the Counter-Strike 2 skin economy. A daily pipeline collects multi-source prices across **7 markets**, archives 13+ years of history to **Parquet**, and serves intelligence through a **FastAPI** REST API to a **Next.js** dashboard. ML price forecasts via **LightGBM quantile ensembles** replace naive trend analysis with probabilistic predictions.
+**CS2 Oracle** is a full-stack analytics platform for the Counter-Strike 2 skin economy. A daily pipeline collects multi-source prices across **7 markets**, archives 13+ years of history to **Parquet**, and serves intelligence through a **FastAPI** REST API to a **Next.js** dashboard. ML price forecasts via **LightGBM quantile ensembles** replace naive trend analysis with probabilistic predictions.
 
 ---
 
@@ -216,7 +216,7 @@ Weekly Sun    Event Correlation     → market-event price impacts  → analysis
 ## Project Structure
 
 ```
-cs2-market-analyzer/
+cs2-oracle/
 ├── backend/              # FastAPI server, routes, collectors, models, tests
 │   ├── api/              # Route handlers
 │   ├── collectors/       # Market data collectors (7 sources)

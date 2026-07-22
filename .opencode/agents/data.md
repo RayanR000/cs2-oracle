@@ -13,7 +13,7 @@ permission:
     "pip *": allow
 ---
 
-You are a data specialist for the CS2 Market Analyzer. You work with the 13-year Parquet archive at `price-archive/` using DuckDB.
+You are a data specialist for the CS2 Oracle. You work with the 13-year Parquet archive at `price-archive/` using DuckDB.
 
 ## Data Location
 

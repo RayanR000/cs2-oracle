@@ -8,6 +8,8 @@ import os
 import sys
 import json
 import logging
+import tempfile
+import uuid
 import multiprocessing as mp
 import numpy as np
 import pandas as pd
@@ -95,9 +97,11 @@ def _feature_group(name: str) -> str:
 def _train_horizon_worker(args):
     """Train a single horizon in a child process (multiprocessing worker).
 
-    Uses the spawn context on Windows (fork unavailable) or fork elsewhere
-    for copy-on-write efficiency. Each child creates its own ItemForecaster
-    since the horizon training body is self-contained (doesn't query DB after
+    Reads the training DataFrame from a temp Feather file (shared via OS
+    page cache) to avoid pickling the large DataFrame through spawn's OS
+    pipes, which can cause blocking read() stalls when 4 workers start
+    simultaneously. Each child creates its own ItemForecaster since the
+    horizon training body is self-contained (doesn't query DB after
     build_training_data). Models are serialized to strings for pickling.
 
     CUDA is disabled in the worker process because the parent's GPU check
@@ -105,7 +109,13 @@ def _train_horizon_worker(args):
     on a machine with nvidia-smi). Workers always train on CPU.
     """
     os.environ["CUDA_VISIBLE_DEVICES"] = ""
-    horizon, df, base_feature_cols, model_dir, existing_tuned_params, max_rows, horizon_workers = args
+    # Cap OpenMP threads to avoid CPU oversubscription when n_workers
+    # processes each run LightGBM parallel regions concurrently.
+    n_cpus = os.cpu_count() or 1
+    horizon, df_path, base_feature_cols, model_dir, existing_tuned_params, max_rows, horizon_workers = args
+    os.environ["OMP_NUM_THREADS"] = str(max(1, n_cpus // horizon_workers))
+    os.environ["OPENBLAS_NUM_THREADS"] = os.environ["OMP_NUM_THREADS"]
+    df = pd.read_feather(df_path)
 
     fc = ItemForecaster(db_session=None, model_dir=model_dir)
     fc._base_feature_cols = list(base_feature_cols)
@@ -2139,31 +2149,36 @@ class ItemForecaster:
 
         self.horizon_feature_cols = {}
 
-        # Train horizons in parallel via ProcessPoolExecutor.
-        # Each horizon is independent (different targets, feature subsets, models),
-        # so fork+separate processes avoids GIL contention and LightGBM's
-        # non-thread-safe C internals. DataFrames are shared via copy-on-write.
         n_workers = min(len(self.HORIZONS), max(1, (os.cpu_count() or 4) // 2))
         use_parallel = n_workers > 1 and os.cpu_count() is not None and os.cpu_count() >= 4
 
         if use_parallel:
             logger.info(f"Training {len(self.HORIZONS)} horizons in parallel "
                         f"({n_workers} workers on {os.cpu_count()} CPUs)")
-            # Use spawn on Windows (fork unavailable), fork elsewhere for
-            # copy-on-write efficiency. Fork+OpenMP can deadlock on macOS
-            # but is generally safe on Linux; the timeout below provides a
-            # safety net if a worker hangs.
-            _mp_ctx = "spawn"
-            pool_ctx = mp.get_context(_mp_ctx)
-            with pool_ctx.Pool(n_workers) as pool:
-                async_result = pool.map_async(_train_horizon_worker, [
-                    (horizon, df, self._base_feature_cols, self.model_dir,
-                     self.tuned_params.get(horizon, {}), max_rows, n_workers)
-                    for horizon in self.HORIZONS
-                ])
-                results = async_result.get(timeout=7200)  # 2h wall-clock for all horizons
-            for r in results:
-                self._merge_horizon_result(r)
+            # Use spawn (not fork) to avoid fork+OpenMP deadlock on macOS.
+            # DataFrame is written to a temp Feather file instead of being
+            # pickled through spawn's OS pipes — 4 workers deserializing a
+            # multi-hundred-MB blob simultaneously can cause pipe read stalls.
+            tmp_path = os.path.join(
+                tempfile.gettempdir(),
+                f"forecaster_df_{os.getpid()}_{uuid.uuid4().hex}.feather"
+            )
+            try:
+                df.to_feather(tmp_path)
+                _mp_ctx = "spawn"
+                pool_ctx = mp.get_context(_mp_ctx)
+                with pool_ctx.Pool(n_workers) as pool:
+                    async_result = pool.map_async(_train_horizon_worker, [
+                        (horizon, tmp_path, self._base_feature_cols, self.model_dir,
+                         self.tuned_params.get(horizon, {}), max_rows, n_workers)
+                        for horizon in self.HORIZONS
+                    ])
+                    results = async_result.get(timeout=7200)
+                for r in results:
+                    self._merge_horizon_result(r)
+            finally:
+                if os.path.exists(tmp_path):
+                    os.unlink(tmp_path)
         else:
             for hi, horizon in enumerate(self.HORIZONS, 1):
                 self._train_horizon_inline(horizon, df, max_rows)

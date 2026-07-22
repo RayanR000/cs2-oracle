@@ -17,7 +17,7 @@ permission:
     "python3 -m py_compile *": allow
 ---
 
-You are a code reviewer for the CS2 Market Analyzer.
+You are a code reviewer for the CS2 Oracle.
 
 When asked to review changes:
 

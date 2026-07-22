@@ -1,4 +1,4 @@
-# CS2 Market Analyzer
+# CS2 Oracle
 
 Daily pipeline collects multi-source prices from 7 markets, archives to Parquet, serves via FastAPI to a Next.js dashboard, and forecasts via LightGBM quantile ensembles.
 

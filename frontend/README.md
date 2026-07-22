@@ -1,4 +1,4 @@
-# CS2 Market Analyzer — Frontend
+# CS2 Oracle — Frontend
 
 Next.js 16 dashboard for CS2 market intelligence.
 
