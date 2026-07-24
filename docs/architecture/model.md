@@ -1,5 +1,14 @@
 # Model Architecture
 
+> **⚠ Pending overhaul (2026-07-24, branch `simplify-price-only-model`, not yet merged).**
+> A model critique + serving audit produced significant changes not yet reflected in the sections below. See `docs/changelog/2026-07-24-directional-classifier-and-honest-serving-audit.md` for the full record. Summary:
+> - **Directional classifier** — a per-horizon 3-class (down/flat/up) LightGBM (multiclass log-loss, mover-weighted) now supplies the served **direction + confidence**; quantile models supply only the interval. It beats momentum at every horizon in CV (3d/7d/14d/30d = 69.8/69.7/68.1/69.2%, +2–10pp over the best naive baseline). ~40% of that is correctly calling static ("flat") items; sign skill on real movers is ~55–57%.
+> - **Price-only features** — `FEATURE_GROUP_ALLOWLIST = ["price_technicals"]` (126 → 41–46 features). An ablation showed the 85 non-price features add ~0 directional accuracy and hurt 3d/30d.
+> - **Date-based, gap-robust features** — lag/return features now look up prices by *calendar date* (like targets), so data gaps yield NaN→neutral instead of fabricated multi-month returns.
+> - **Honest CV** — expanding-window folds now carry a `horizon`-day purge gap and report persistence/momentum baselines + `edge_vs_best_baseline`.
+> - **Regime models shelved**; momentum fallback retired; `predict()` guards against feature-count-mismatched (stale) models.
+> - **Serving is NOT production-ready:** blocked on a data gap (May–June 2026 missing) and a train/serve regime mismatch. The CV numbers above are 2022–2025 hold-out figures and overstate live performance until the data gap is fixed and the model is retrained + walk-forward-validated through the serving window.
+
 ## Overview
 
 Two-layer `ItemForecaster` containing **36–144 LightGBM models** — a global ensemble and optional per-regime ensembles:

@@ -111,7 +111,12 @@ class ItemForecaster:
     # Walk-forward validation split: most recent N days are held out.
     # A relative split stays valid as data accumulates (a fixed date would
     # eventually leave the validation set covering all new data).
-    VALIDATION_WINDOW_DAYS = 21
+    # Also the per-fold width for expanding-window CV: directional accuracy is
+    # dominated by market-wide regime moves, so the effective sample size is
+    # the number of independent validation DATES, not rows. A wider window
+    # (was 21) buys more market episodes per fold and more OOF points for
+    # conformal calibration.
+    VALIDATION_WINDOW_DAYS = 30
     REGIMES = ["bear", "range", "bull"]
     REGIME_RETURN_THRESHOLD_BEAR = -3.0   # market_return_30d < -3% → bear
     REGIME_RETURN_THRESHOLD_BULL = 3.0    # market_return_30d > 3% → bull
@@ -142,6 +147,28 @@ class ItemForecaster:
         14: ["cross_sectional"],
         30: ["cross_sectional", "events"],
     }
+    # Global feature-group allowlist. Set to a list of _feature_group() names to
+    # restrict the model to those groups; None uses every group.
+    # Ablation (2026-07-24, 7-fold purge-gap CV): the 85 non-price features add
+    # no measurable directional accuracy over price/technical features alone
+    # (full−price = −0.6/+0.1/+1.6/−1.3pp across 3/7/14/30d, all within fold
+    # noise) and hurt at 3d/30d. Restrict to price technicals; the momentum
+    # (return_Nd) features live in this group, so trend signal is retained.
+    FEATURE_GROUP_ALLOWLIST = ["price_technicals"]
+    # Horizons served as momentum (trailing return_Nd) instead of the ML median.
+    # Superseded by the directional classifier (2026-07-24), which beats
+    # momentum at every horizon including 30d — so this is now empty. Kept as a
+    # knob; _recenter_on_momentum still exists for it.
+    MOMENTUM_FALLBACK_HORIZONS = []
+    # Directional classifier (2026-07-24): a 3-class (down/flat/up) LightGBM
+    # trained on multiclass log-loss — optimizing the served metric directly —
+    # supplies the direction + confidence. Quantile models still supply the
+    # price interval. Training up-weights movers (|return| > flat tolerance) so
+    # the classifier spends capacity on the hard up/down calls rather than the
+    # easily-predicted flat mass.
+    DIRECTION_MOVER_WEIGHT = 3.0
+    # Max class probability at/above which a directional call is "high" confidence.
+    DIRECTION_CONFIDENCE_HIGH = 0.5
     # Residual stacking: train a Ridge regression on LightGBM residuals
     # after ensemble training to correct systematic bias. Applied only
     # to weak horizons by default.
@@ -151,9 +178,16 @@ class ItemForecaster:
     # current predictions to reduce daily direction flip-flopping.
     FORECAST_BLEND_WEIGHT = 0.15
     PRUNE_CORRELATION_THRESHOLD = 0.95
-    # Expanding-window cross-validation
-    CV_STEP_DAYS = 200        # Days between each fold's validation window
-    CV_MIN_TRAIN_DAYS = 200   # Minimum unique dates before first validation fold
+    # Expanding-window cross-validation.
+    # The archive spans ~1,256 distinct trading dates, so we can afford more,
+    # wider folds than the old 21d/200-step config (which gave only ~3-6 folds
+    # of 21 days). Directional accuracy is dominated by market-wide regime
+    # moves, so the effective sample size is the number of independent
+    # validation DATES, not rows — widening the window and adding folds is what
+    # actually tightens the CI on mean directional accuracy (and gives the
+    # conformal calibration more OOF points).
+    CV_STEP_DAYS = 150            # was 200; ~7 non-overlapping folds on real data
+    CV_MIN_TRAIN_DAYS = 200       # Minimum unique dates before first validation fold
 
     ENGINEERED_CACHE_NAME = "engineered_data.parquet"
 
@@ -162,6 +196,8 @@ class ItemForecaster:
         self.model_dir = model_dir or str(Path(__file__).parent / "saved_models")
         self.models: Dict[Tuple[int, float], lgb.Booster] = {}
         self.regime_models: Dict[Tuple[str, int, float], list] = {}
+        # Per-horizon 3-class directional classifier (down/flat/up).
+        self.direction_models: Dict[int, lgb.Booster] = {}
         self.regime_feature_cols: Dict[Tuple[int, str], List[str]] = {}
         self.feature_cols: List[str] = []
         self.residual_models: Dict[Tuple[int, float], Any] = {}
@@ -669,22 +705,37 @@ class ItemForecaster:
     def _compute_price_features(self, df: pd.DataFrame) -> pd.DataFrame:
         logger.info("Engineering price features...")
         df = df.sort_values(["item_id", "date"]).copy()
-        grouped = df.groupby("item_id")
 
-        # Lag prices
-        for lag in [1, 3, 7, 14, 30, 60]:
-            df[f"price_lag_{lag}d"] = grouped["price"].shift(lag)
+        # Lag prices — DATE-based, not row-based. A row-based shift(lag) spans
+        # any gap in an item's daily series (e.g. a multi-week ingestion hole),
+        # turning "return_14d" into a multi-month return and blowing the feature
+        # out of distribution at the serving edge. Look up the price exactly
+        # `lag` calendar days earlier instead; a missing date yields NaN (later
+        # imputed to the median → neutral) rather than a fabricated jump. This
+        # matches prepare_targets, which already uses a date-based lookup for
+        # the same reason. Longer lags (90/120/180) feed the trend features.
+        LAGS = [1, 3, 7, 14, 30, 60, 90, 120, 180]
+        df["_date_dt"] = pd.to_datetime(df["date"])
+        for lag in LAGS:
+            past = df[["item_id", "_date_dt", "price"]].rename(
+                columns={"price": f"price_lag_{lag}d"})
+            past["_date_dt"] = past["_date_dt"] + pd.Timedelta(days=lag)
+            # One row per (item, date) keeps the left join 1:1 even if the caller
+            # passed un-resampled (intraday-duplicate) rows.
+            past = past.drop_duplicates(subset=["item_id", "_date_dt"])
+            df = df.merge(past, on=["item_id", "_date_dt"], how="left")
 
-        # Returns
-        for lag in [1, 3, 7, 14, 30, 60]:
+        # Returns (winsorized at ±500% against residual data artifacts)
+        for lag in LAGS:
             col = f"price_lag_{lag}d"
-            df[f"return_{lag}d"] = (df["price"] - df[col]) / df[col].replace(0, np.nan) * 100
+            df[f"return_{lag}d"] = (
+                (df["price"] - df[col]) / df[col].replace(0, np.nan) * 100
+            ).clip(-500, 500)
 
-        # Winsorize extreme returns (>500%) which are likely data artifacts
-        for lag in [1, 3, 7, 14, 30, 60]:
-            col = f"return_{lag}d"
-            if col in df.columns:
-                df[col] = df[col].clip(-500, 500)
+        df = df.drop(columns=["_date_dt"])
+        # Re-bind groupby: the merges above returned new frames, so any earlier
+        # groupby handle is stale. All remaining row-based rolling ops use this.
+        grouped = df.groupby("item_id")
 
         # Rolling statistics (min_periods=1 so items with short history get partial estimates)
         for window in [7, 14, 20, 30, 60]:
@@ -783,6 +834,29 @@ class ItemForecaster:
                                          df["price"].replace(0, np.nan) * 100)
         df["high_low_range_30d"] = ((df["price_max_30d"] - df["price_min_30d"]).replace(0, np.nan) /
                                      df["price_min_30d"].replace(0, np.nan) * 100)
+
+        # =====================================================================
+        # Longer-horizon trend features (added 2026-07-24)
+        # Momentum out to ~30d beat the model at the 30d horizon, and the
+        # existing lookback topped out at 60d. Give the model the longer-trend
+        # signal it was losing to. All price-derived, so they stay inside the
+        # price_technicals allowlist group. (return_90/120/180d are computed
+        # date-based with the other lags above.)
+        # =====================================================================
+        # Distance from long-run moving averages (position within the long trend).
+        for window in [100, 200]:
+            ma = grouped["price"].rolling(window, min_periods=30).mean()
+            df[f"price_mean_{window}d"] = ma.values
+            ma_col = df[f"price_mean_{window}d"].replace(0, np.nan)
+            df[f"price_dist_ma{window}"] = (df["price"] - ma_col) / ma_col * 100
+
+        # Trend consistency: fraction of up-days over the last 30 sessions.
+        # High values = a persistent uptrend (what momentum exploits); ~0.5 = chop.
+        up_day = (df["return_1d"] > 0).astype(float)
+        df["trend_up_fraction_30d"] = (
+            up_day.groupby(df["item_id"]).rolling(30, min_periods=5).mean()
+            .reset_index(level=0, drop=True)
+        )
 
         # =====================================================================
         # Volume features
@@ -1522,12 +1596,25 @@ class ItemForecaster:
 
         return results
 
-    def _compute_cv_splits(self, sorted_dates):
+    def _compute_cv_splits(self, sorted_dates, purge_days: int = 0):
         """Compute expanding-window CV fold boundaries.
 
         Returns list of (train_date_list, val_date_list) tuples.
         Each fold trains on an expanding window and validates on a fixed-width
         window of VALIDATION_WINDOW_DAYS at the end.
+
+        Args:
+            purge_days: Embargo gap, in calendar days, applied between the
+                training window and the validation window. For an H-day
+                forecast horizon this MUST be set to H: a training row dated
+                T carries a target observed at T+H, so any train date within
+                H days of ``val_start`` has a label that overlaps the
+                validation period — classic horizon-forecasting leakage that
+                inflates both accuracy and conformal calibration. With
+                ``purge_days=H`` every purged train date's target lands
+                strictly before the first validation date. Default 0
+                reproduces the un-embargoed split (used only where the caller
+                has no horizon, e.g. unit tests).
         """
         val_window = self.VALIDATION_WINDOW_DAYS  # 21 days
         step = self.CV_STEP_DAYS  # 120 days
@@ -1535,10 +1622,20 @@ class ItemForecaster:
 
         folds = []
         for end in range(min_train, len(sorted_dates) - val_window + 1, step):
-            train_d = sorted_dates[:end]
             val_d = sorted_dates[end:end + val_window]
-            if len(val_d) >= 7:
-                folds.append((list(train_d), list(val_d)))
+            if len(val_d) < 7:
+                continue
+            val_start = val_d[0]
+            # Purge any train date whose target (train_date + purge_days) would
+            # land on or after the first validation date.
+            if purge_days > 0:
+                cutoff = val_start - timedelta(days=purge_days)
+                train_d = [d for d in sorted_dates[:end] if d < cutoff]
+            else:
+                train_d = list(sorted_dates[:end])
+            if not train_d:
+                continue
+            folds.append((train_d, list(val_d)))
         return folds
 
     def _optuna_search_params(self, X_train, y_train, X_val, y_val,
@@ -1929,6 +2026,16 @@ class ItemForecaster:
 
         # Prune highly correlated features to reduce noise
         self.feature_cols = self._prune_features(df)
+
+        # Restrict to the allowlisted feature groups (default: price technicals).
+        if self.FEATURE_GROUP_ALLOWLIST:
+            pre = len(self.feature_cols)
+            self.feature_cols = self._apply_feature_allowlist(
+                self.feature_cols, self.FEATURE_GROUP_ALLOWLIST)
+            logger.info(
+                f"Feature allowlist {self.FEATURE_GROUP_ALLOWLIST}: "
+                f"{pre} -> {len(self.feature_cols)} features"
+            )
         self._base_feature_cols = list(self.feature_cols)
 
         # Downcast features to float32 to halve feature matrix memory
@@ -2316,8 +2423,20 @@ class ItemForecaster:
                 elif self.STACK_RESIDUALS and not _sklearn_available and horizon in self.WEAK_HORIZONS:
                     logger.warning(f"  sklearn not available — skipping residual stacking for {horizon}d")
 
+            # Directional classifier: supplies the served up/flat/down call and
+            # confidence (the quantile models only supply the interval).
+            logger.info(f"  Training {horizon}d directional classifier (mover-weighted)...")
+            self.direction_models[horizon] = self._fit_direction_classifier(
+                X_train, y_train, X_val, y_val, boosting_type,
+                self._direction_tree_params(per_quantile_params),
+            )
+
             # Train regime-specific models (optional: SKIP_REGIMES=1 to skip)
             if os.environ.get("SKIP_REGIMES") == "1" or _warm_retrain:
+                # Drop any regime models this horizon carried in from load_models
+                # so a skip run never re-persists stale regime artifacts.
+                for key in [k for k in self.regime_models if k[1] == horizon]:
+                    del self.regime_models[key]
                 if _warm_retrain:
                     logger.info(f"  Regime models skipped (warm retrain)")
                 else:
@@ -2431,10 +2550,36 @@ class ItemForecaster:
             fold_accs = [m["directional_accuracy"] for m in cv_metrics]
             mean_acc = float(np.mean(fold_accs)) if fold_accs else float("nan")
             std_acc = float(np.std(fold_accs)) if len(fold_accs) > 1 else 0.0
+
+            # Aggregate naive baselines for direct comparison. The model only
+            # has a real directional edge if mean_dir_acc clears these.
+            persist_accs = [m["persistence_accuracy"] for m in cv_metrics
+                            if m.get("persistence_accuracy") is not None]
+            mom_accs = [m["momentum_accuracy"] for m in cv_metrics
+                        if m.get("momentum_accuracy") is not None]
+            mean_persist = round(float(np.mean(persist_accs)), 1) if persist_accs else None
+            mean_mom = round(float(np.mean(mom_accs)), 1) if mom_accs else None
+            best_baseline = max([b for b in (mean_persist, mean_mom) if b is not None],
+                                default=None)
+
+            # The directional classifier is the SERVED signal, so the edge and
+            # the trust warning are judged on it (not the quantile-median sign).
+            clf_accs = [m["classifier_accuracy"] for m in cv_metrics
+                        if m.get("classifier_accuracy") is not None]
+            mean_clf = round(float(np.mean(clf_accs)), 1) if clf_accs else None
+            served_acc = mean_clf if mean_clf is not None else mean_acc
+            edge = round(served_acc - best_baseline, 1) if best_baseline is not None else None
+
             if cv_metrics:
                 logger.info(f"  CV ({len(cv_metrics)} folds): "
-                            f"mean={mean_acc:.1f}% sd={std_acc:.1f}% "
-                            f"range=[{min(fold_accs):.1f}%, {max(fold_accs):.1f}%]")
+                            f"classifier={mean_clf}% quantile-sign={mean_acc:.1f}% "
+                            f"(sd={std_acc:.1f}%)")
+                logger.info(f"  Baselines: persistence={mean_persist}% "
+                            f"momentum={mean_mom}% → served(classifier) edge vs best={edge}pp")
+                if edge is not None and edge <= 0:
+                    logger.warning(
+                        f"  ⚠ {horizon}d served model does NOT beat naive baselines "
+                        f"(edge={edge}pp) — directional forecasts are not trustworthy.")
             self.cv_results[horizon] = {
                 "fold_count": len(cv_metrics),
                 "per_fold": cv_metrics,
@@ -2442,6 +2587,10 @@ class ItemForecaster:
                 "std_dir_acc": round(std_acc, 1) if len(fold_accs) > 1 else 0,
                 "min_dir_acc": round(min(fold_accs), 1) if fold_accs else 0,
                 "max_dir_acc": round(max(fold_accs), 1) if fold_accs else 0,
+                "mean_classifier_acc": mean_clf,
+                "mean_persistence_acc": mean_persist,
+                "mean_momentum_acc": mean_mom,
+                "edge_vs_best_baseline": edge,
             }
 
             # Validate feature groups: permutation test on the held-out set.
@@ -2551,6 +2700,131 @@ class ItemForecaster:
     # ------------------------------------------------------------------
     # Prediction
     # ------------------------------------------------------------------
+
+    @staticmethod
+    def _directional_accuracy(pred_returns, actual_returns) -> float:
+        """Percent of rows whose predicted return direction matches the actual.
+
+        Uses the same 3-class up/flat/down bucketing (DIRECTION_FLAT_TOLERANCE_PCT)
+        as model evaluation so baseline and model numbers are directly
+        comparable. Rows with NaN actuals are skipped. Returns 0.0 for an
+        empty comparison.
+        """
+        tol = DIRECTION_FLAT_TOLERANCE_PCT
+        pred = np.asarray(pred_returns, dtype=float)
+        actual = np.asarray(actual_returns, dtype=float)
+        hits = 0
+        n = 0
+        for p, a in zip(pred, actual):
+            if np.isnan(a):
+                continue
+            a_dir = "up" if a > tol else "down" if a < -tol else "flat"
+            p_dir = "up" if p > tol else "down" if p < -tol else "flat"
+            hits += int(p_dir == a_dir)
+            n += 1
+        return round(hits / n * 100, 1) if n else 0.0
+
+    @staticmethod
+    def _apply_feature_allowlist(feature_cols, allowlist):
+        """Keep only features whose _feature_group() is in ``allowlist``.
+
+        ``allowlist`` of None/empty is a no-op (returns all features).
+        """
+        if not allowlist:
+            return list(feature_cols)
+        allow = set(allowlist)
+        return [c for c in feature_cols if _feature_group(c) in allow]
+
+    @staticmethod
+    def _recenter_on_momentum(low_ret, mid_ret, high_ret, momentum_ret):
+        """Recenter quantile return forecasts on the trailing (momentum) return,
+        preserving each item's calibrated interval half-widths.
+
+        Where ``momentum_ret`` is NaN (insufficient history) the model's own
+        forecast is kept unchanged. Returns (low, mid, high) in return space.
+        Because the inputs are already monotone (low <= mid <= high), the
+        preserved non-negative offsets keep the recentred triple monotone too.
+        """
+        mid_ret = np.asarray(mid_ret, dtype=float)
+        low_ret = np.asarray(low_ret, dtype=float)
+        high_ret = np.asarray(high_ret, dtype=float)
+        momentum_ret = np.asarray(momentum_ret, dtype=float)
+        low_off = mid_ret - low_ret
+        high_off = high_ret - mid_ret
+        new_mid = np.where(np.isnan(momentum_ret), mid_ret, momentum_ret)
+        return new_mid - low_off, new_mid, new_mid + high_off
+
+    @staticmethod
+    def _direction_classes(returns) -> np.ndarray:
+        """Bucket % returns into 0=down, 1=flat, 2=up (±DIRECTION_FLAT_TOLERANCE_PCT)."""
+        r = np.asarray(returns, dtype=float)
+        return np.where(r > DIRECTION_FLAT_TOLERANCE_PCT, 2,
+                        np.where(r < -DIRECTION_FLAT_TOLERANCE_PCT, 0, 1)).astype(int)
+
+    @staticmethod
+    def _direction_sample_weights(returns, mover_weight: float) -> np.ndarray:
+        """Up-weight clearly-moving rows (|return| > flat tolerance) by
+        ``mover_weight``; flat rows keep weight 1.0."""
+        r = np.asarray(returns, dtype=float)
+        w = np.ones(len(r))
+        w[np.abs(r) > DIRECTION_FLAT_TOLERANCE_PCT] = mover_weight
+        return w
+
+    @classmethod
+    def _recenter_on_direction(cls, low_ret, mid_ret, high_ret, direction_class):
+        """Recenter forecasts so the median's sign matches the classifier's call,
+        preserving each item's interval half-widths.
+
+        down(0) -> -|mid|, flat(1) -> 0, up(2) -> +|mid|. Keeping |mid| as the
+        magnitude means the quantile model still sets *how much*; the classifier
+        only sets *which way*. Returns (low, mid, high).
+        """
+        mid_ret = np.asarray(mid_ret, dtype=float)
+        low_ret = np.asarray(low_ret, dtype=float)
+        high_ret = np.asarray(high_ret, dtype=float)
+        cls_arr = np.asarray(direction_class, dtype=int)
+        low_off = mid_ret - low_ret
+        high_off = high_ret - mid_ret
+        mag = np.abs(mid_ret)
+        new_mid = np.select(
+            [cls_arr == 2, cls_arr == 0, cls_arr == 1],
+            [mag, -mag, 0.0],
+            default=mid_ret,
+        )
+        return new_mid - low_off, new_mid, new_mid + high_off
+
+    def _fit_direction_classifier(self, X_train, y_train_ret, X_val, y_val_ret,
+                                   boosting_type: str, tree_params: dict,
+                                   num_boost_round: int = 200):
+        """Train a single 3-class (down/flat/up) LightGBM classifier on returns,
+        up-weighting movers. Early-stops on val multi-logloss for GBDT."""
+        ds = {"max_bin": self.MAX_BIN, "feature_pre_filter": False}
+        c_train = self._direction_classes(y_train_ret)
+        w_train = self._direction_sample_weights(y_train_ret, self.DIRECTION_MOVER_WEIGHT)
+        dtrain = lgb.Dataset(X_train, c_train, params=ds, weight=w_train)
+        params = dict(tree_params)
+        params.update(objective="multiclass", num_class=3, metric="multi_logloss",
+                      boosting_type=boosting_type, verbosity=-1, n_jobs=-1,
+                      random_state=42)
+        callbacks = [lgb.log_evaluation(0)]
+        valid_sets = None
+        if X_val is not None and y_val_ret is not None and len(X_val):
+            dval = lgb.Dataset(X_val, self._direction_classes(y_val_ret),
+                               reference=dtrain, params=ds)
+            valid_sets = [dval]
+            if boosting_type != "dart":
+                callbacks.insert(0, lgb.early_stopping(20))
+        return lgb.train(params, dtrain, num_boost_round=num_boost_round,
+                         valid_sets=valid_sets, callbacks=callbacks)
+
+    @staticmethod
+    def _direction_tree_params(per_quantile_params: dict) -> dict:
+        """Extract objective-agnostic tree params from the p50 quantile config
+        to seed the directional classifier."""
+        src = per_quantile_params.get(0.5, {}) if per_quantile_params else {}
+        keys = ("num_leaves", "learning_rate", "max_depth", "min_data_in_leaf",
+                "lambda_l1", "lambda_l2", "drop_rate", "max_drop", "skip_drop")
+        return {k: src[k] for k in keys if k in src}
 
     @staticmethod
     def _fix_quantile_crossing(low: np.ndarray, mid: np.ndarray,
@@ -2790,27 +3064,20 @@ class ItemForecaster:
             for q in self.QUANTILES:
                 all_preds = []
 
-                # Prefer regime-specific model, fall back to global
+                # Prefer regime-specific model, fall back to global. Skip any
+                # model whose feature count doesn't match the current matrix
+                # (e.g. stale models left in the dir from a prior feature set)
+                # so a feature-schema change can never crash prediction.
                 regime_key = (current_regime, horizon, q)
-                use_regime = (current_regime in self.REGIMES
-                              and regime_key in self.regime_models)
-                if use_regime:
-                    ensemble = self.regime_models[regime_key]
-                    if isinstance(ensemble, list):
-                        for m in ensemble:
-                            all_preds.append(m.predict(X_horizon))
-                    else:
-                        all_preds.append(ensemble.predict(X_horizon))
-                    regime_count += 1
-                else:
-                    key = (horizon, q)
-                    if key in self.models:
-                        ensemble = self.models[key]
-                        if isinstance(ensemble, list):
-                            for m in ensemble:
-                                all_preds.append(m.predict(X_horizon))
-                        else:
-                            all_preds.append(ensemble.predict(X_horizon))
+                if current_regime in self.REGIMES and regime_key in self.regime_models:
+                    all_preds = self._predict_ensemble_safe(
+                        self.regime_models[regime_key], X_horizon)
+                    if all_preds:
+                        regime_count += 1
+                if not all_preds and (horizon, q) in self.models:
+                    all_preds = self._predict_ensemble_safe(
+                        self.models[(horizon, q)], X_horizon)
+                    if all_preds:
                         global_count += 1
 
                 if all_preds:
@@ -2821,8 +3088,10 @@ class ItemForecaster:
                     # training. Only applies to weak horizons where the
                     # residual model was trained.
                     residual_key = (horizon, q)
-                    if residual_key in self.residual_models:
-                        res_correction = self.residual_models[residual_key].predict(X_horizon.values)
+                    res_model = self.residual_models.get(residual_key)
+                    if res_model is not None and getattr(
+                            res_model, "n_features_in_", X_horizon.shape[1]) == X_horizon.shape[1]:
+                        res_correction = res_model.predict(X_horizon.values)
                         preds[q] = preds[q] + res_correction
 
             if len(preds) != 3:
@@ -2839,6 +3108,28 @@ class ItemForecaster:
             low_ret_arr, high_ret_arr = self._fix_quantile_crossing(
                 p10_ret, p50_ret, p90_ret)
             mid_ret_arr = p50_ret
+
+            # Momentum fallback for weak horizons (14d/30d): serve the trailing
+            # return as the median, keeping the model's calibrated interval
+            # width. Ablation showed momentum >= the ML model at these horizons.
+            if horizon in self.MOMENTUM_FALLBACK_HORIZONS:
+                mom_col = f"return_{horizon}d"
+                if mom_col in latest_rows.columns:
+                    momentum_ret = latest_rows[mom_col].to_numpy(dtype=float)
+                    low_ret_arr, mid_ret_arr, high_ret_arr = self._recenter_on_momentum(
+                        low_ret_arr, mid_ret_arr, high_ret_arr, momentum_ret)
+
+            # Directional classifier: the served up/flat/down call + confidence.
+            # Probabilities computed now; the median is recentered on the call
+            # AFTER all return-space corrections below, so the price stays
+            # coherent with the reported direction.
+            dir_class_arr = None
+            dir_conf_arr = None
+            clf = self.direction_models.get(horizon)
+            if clf is not None:
+                probs = clf.predict(X_horizon)
+                dir_class_arr = probs.argmax(axis=1)
+                dir_conf_arr = probs.max(axis=1)
 
             # Conformal calibration: widen intervals by the CQR adjustment factor
             # learned from CV out-of-fold residuals. This pushes empirical coverage
@@ -2876,6 +3167,13 @@ class ItemForecaster:
                         low_ret_arr[i] += corr
                         high_ret_arr[i] += corr
 
+            # Recenter the median on the classifier's call so the served price
+            # is coherent with the reported direction. Applied last, after all
+            # return-space corrections, preserving interval half-widths.
+            if dir_class_arr is not None:
+                low_ret_arr, mid_ret_arr, high_ret_arr = self._recenter_on_direction(
+                    low_ret_arr, mid_ret_arr, high_ret_arr, dir_class_arr)
+
             # Diagnostic: log crossing rate
             crossing_mask = (p10_ret > p50_ret) | (p50_ret > p90_ret)
             crossing_rate = np.mean(crossing_mask)
@@ -2883,6 +3181,7 @@ class ItemForecaster:
                 logger.warning(f"  Quantile crossing rate: {crossing_rate:.3f} "
                                f"(corrected via PAV isotonic regression")
 
+            _dir_name = {0: "down", 1: "flat", 2: "up"}
             for i, iid in enumerate(item_id_arr):
                 low_ret, mid_ret, high_ret = (float(low_ret_arr[i]),
                                                float(mid_ret_arr[i]),
@@ -2894,26 +3193,32 @@ class ItemForecaster:
                 price_mid = round(current_price * (1 + mid_ret / 100), 2)
                 price_high = round(current_price * (1 + high_ret / 100), 2)
 
-                # Direction: use threshold-based correction when available
-                # (recalibrates classification boundaries to match true base rate
-                # instead of shifting mid_ret). Falls back to ±0.5 defaults.
-                tier = self._get_price_tier(float(current_price))
-                th = tier_thresholds.get(tier, {})
-                t_down = th.get("t_down", -DIRECTION_FLAT_TOLERANCE_PCT)
-                t_up = th.get("t_up", DIRECTION_FLAT_TOLERANCE_PCT)
-                if mid_ret > t_up:
-                    direction = "up"
-                elif mid_ret < t_down:
-                    direction = "down"
+                if dir_class_arr is not None:
+                    # Served signal: the directional classifier.
+                    direction = _dir_name[int(dir_class_arr[i])]
+                    confidence = ("high" if float(dir_conf_arr[i]) >= self.DIRECTION_CONFIDENCE_HIGH
+                                  else "low")
                 else:
-                    direction = "flat"
+                    # Fallback (no classifier): threshold-based on mid_ret.
+                    tier = self._get_price_tier(float(current_price))
+                    th = tier_thresholds.get(tier, {})
+                    t_down = th.get("t_down", -DIRECTION_FLAT_TOLERANCE_PCT)
+                    t_up = th.get("t_up", DIRECTION_FLAT_TOLERANCE_PCT)
+                    if mid_ret > t_up:
+                        direction = "up"
+                    elif mid_ret < t_down:
+                        direction = "down"
+                    else:
+                        direction = "flat"
+                    confidence = self._compute_confidence(
+                        price_mid, price_low, price_high, current_price, horizon=horizon)
+
                 agg[iid]["forecasts"][horizon] = {
                     "low": price_low,
                     "mid": price_mid,
                     "high": price_high,
                     "direction": direction,
-                    "confidence": self._compute_confidence(price_mid, price_low, price_high,
-                                                            current_price, horizon=horizon),
+                    "confidence": confidence,
                 }
 
         result_df = pd.DataFrame([r for r in agg.values() if r["forecasts"]])
@@ -2963,6 +3268,23 @@ class ItemForecaster:
             return {}
         return results.iloc[0].to_dict()
 
+    @staticmethod
+    def _predict_ensemble_safe(ensemble, X) -> list:
+        """Predict from each member of an ensemble, skipping any model whose
+        feature count doesn't match X (guards against stale models left in the
+        model dir from a different feature schema). Returns a list of arrays."""
+        models = ensemble if isinstance(ensemble, list) else [ensemble]
+        ncols = X.shape[1]
+        out = []
+        for m in models:
+            try:
+                if m.num_feature() != ncols:
+                    continue
+                out.append(m.predict(X))
+            except Exception as e:
+                logger.warning(f"  Skipping incompatible model in ensemble: {e}")
+        return out
+
     def _get_ensemble_prediction(self, horizon, q, X):
         """Get averaged prediction from LGB ensemble."""
         all_preds = []
@@ -2999,7 +3321,10 @@ class ItemForecaster:
             nonconformity_scores is a list of CQR scores for conformal calibration.
         """
         sorted_dates = sorted(tdf["date"].unique())
-        splits = self._compute_cv_splits(sorted_dates)
+        # Embargo train dates within `horizon` days of each validation window:
+        # a train row's target is observed `horizon` days later, so without
+        # this gap those labels overlap the validation period (leakage).
+        splits = self._compute_cv_splits(sorted_dates, purge_days=horizon)
         if len(splits) < 2:
             raise RuntimeError(
                 f"CV produced {len(splits)} fold{'s' if splits else 's'} "
@@ -3106,6 +3431,32 @@ class ItemForecaster:
                     fold_hits += 1
 
             fold_acc = round(fold_hits / len(val_df) * 100, 1)
+
+            # Naive baselines on the same val rows, for honest comparison:
+            #  - persistence: random walk in price → predict 0% return (flat).
+            #    Its accuracy is just the share of genuinely flat actuals.
+            #  - momentum: predict the sign of the item's trailing `horizon`-day
+            #    return (a backward-looking feature, no leakage). This is the
+            #    real bar a directional forecaster must clear.
+            persistence_acc = self._directional_accuracy(
+                np.zeros(len(actual_returns)), actual_returns)
+            momentum_acc = None
+            mom_col = f"return_{horizon}d"
+            if mom_col in val_df.columns:
+                momentum_acc = self._directional_accuracy(
+                    val_df[mom_col].to_numpy(dtype=float), actual_returns)
+
+            # Directional classifier — the actually-served signal. Trained the
+            # same way as the production model (mover-weighted 3-class) so this
+            # fold accuracy reflects what predict() will deliver.
+            boosting_type = self.BOOSTING_TYPE_MAP.get(horizon, "gbdt")
+            clf = self._fit_direction_classifier(
+                X_train, y_train, X_val, y_val, boosting_type,
+                self._direction_tree_params(per_quantile_params))
+            pred_cls = clf.predict(X_val).argmax(axis=1)
+            actual_cls = self._direction_classes(actual_returns)
+            classifier_acc = round(float((pred_cls == actual_cls).mean()) * 100, 1)
+
             fold_metrics.append({
                 "fold": fold_id + 1,
                 "train_start": str(train_dates[0]),
@@ -3115,6 +3466,9 @@ class ItemForecaster:
                 "n_train": len(train_df),
                 "n_val": len(val_df),
                 "directional_accuracy": fold_acc,
+                "classifier_accuracy": classifier_acc,
+                "persistence_accuracy": persistence_acc,
+                "momentum_accuracy": momentum_acc,
             })
 
             # Build per-row records for pooled calibration
@@ -3403,6 +3757,33 @@ class ItemForecaster:
                 )
                 ensemble.save_model(path)
 
+        # Save directional classifiers (one 3-class model per horizon)
+        for horizon, clf in self.direction_models.items():
+            clf.save_model(os.path.join(self.model_dir, f"clf_{horizon}d.txt"))
+        if self.direction_models:
+            logger.info(f"  Saved {len(self.direction_models)} directional classifiers")
+
+        # Remove orphaned regime-model files: any lgb_*_{regime}_*.txt on disk
+        # that isn't in the current self.regime_models. Without this, a
+        # regime-free (SKIP_REGIMES) run would leave stale regime artifacts
+        # behind, which load_models would then drag forward indefinitely.
+        import glob as _glob
+        expected = set()
+        for (regime, horizon, q), ensemble in self.regime_models.items():
+            members = ensemble if isinstance(ensemble, list) else [ensemble]
+            for ei in range(len(members)):
+                expected.add(f"lgb_{horizon}d_q{int(q*100)}_{regime}_e{ei}.txt")
+            expected.add(f"lgb_{horizon}d_q{int(q*100)}_{regime}.txt")
+        removed = 0
+        for regime in self.REGIMES:
+            for path in _glob.glob(os.path.join(self.model_dir, f"lgb_*_{regime}_*.txt")) \
+                    + _glob.glob(os.path.join(self.model_dir, f"lgb_*_{regime}.txt")):
+                if os.path.basename(path) not in expected:
+                    os.remove(path)
+                    removed += 1
+        if removed:
+            logger.info(f"  Removed {removed} orphaned regime model files")
+
         # Save residual stacking models (Ridge coefficients for weak horizons)
         if _sklearn_available and self.residual_models:
             import joblib
@@ -3616,6 +3997,17 @@ class ItemForecaster:
                                 logger.warning(f"  Corrupt regime model {path}, skipping: {e}")
                     if ensemble:
                         self.regime_models[(regime, horizon, q)] = ensemble
+
+        # Load directional classifiers (one 3-class model per horizon)
+        for horizon in self.HORIZONS:
+            cpath = os.path.join(self.model_dir, f"clf_{horizon}d.txt")
+            if os.path.exists(cpath):
+                try:
+                    self.direction_models[horizon] = lgb.Booster(model_file=cpath)
+                except (lgb.basic.LightGBMError, Exception) as e:
+                    logger.warning(f"  Corrupt classifier {cpath}, skipping: {e}")
+        if self.direction_models:
+            logger.info(f"  Loaded {len(self.direction_models)} directional classifiers")
 
         # Load residual stacking models (Ridge on LGB residuals for weak horizons)
         if _sklearn_available:

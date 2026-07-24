@@ -159,7 +159,7 @@ def run_forecast(train_only: bool = False, predict_only: bool = False,
                  update_bias: bool = False):
     db = SessionLocal()
     try:
-        forecaster = ItemForecaster(db_session=db)
+        forecaster = ItemForecaster(db_session=db, prune_failed_groups=False)
         has_models = forecaster.load_models()
 
         force_retrain = os.environ.get("FORCE_RETRAIN") == "1"

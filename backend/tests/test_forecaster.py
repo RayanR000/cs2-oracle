@@ -77,6 +77,51 @@ class TestFeatureEngineering:
         first_item_rows = df[df["item_id"] == "item_0"].head(1)
         assert first_item_rows["price_lag_1d"].isna().all()
 
+    def test_longer_trend_features_present_and_price_group(self, forecaster):
+        """New (2026-07-24) longer-lookback trend features must be computed and
+        classified into the price_technicals allowlist group."""
+        from models.forecaster import _feature_group
+        rows = []
+        price = 20.0
+        np.random.seed(0)
+        for d in range(250):
+            price *= 1 + np.random.randn() * 0.01
+            rows.append({"item_id": "a", "date": date(2025, 1, 1) + timedelta(days=d),
+                         "price": round(max(price, 0.01), 2), "volume": 100})
+        df = forecaster._compute_price_features(pd.DataFrame(rows))
+        new_cols = ["return_90d", "return_120d", "return_180d",
+                    "price_dist_ma100", "price_dist_ma200", "trend_up_fraction_30d"]
+        for c in new_cols:
+            assert c in df.columns, f"missing {c}"
+            assert _feature_group(c) == "price_technicals", f"{c} not in price group"
+        # Longer returns require enough history: NaN early, populated late.
+        assert df["return_180d"].head(180).isna().all()
+        assert df["return_180d"].tail(10).notna().all()
+        # Trend fraction is a probability in [0, 1].
+        tf = df["trend_up_fraction_30d"].dropna()
+        assert tf.between(0.0, 1.0).all()
+
+    def test_date_based_lags_are_gap_robust(self, forecaster):
+        """Returns must be computed by calendar date, not row position, so a gap
+        in an item's series yields NaN (→ neutral) instead of a return that
+        silently spans the hole (the 2026 May–June gap bug)."""
+        base = date(2026, 1, 1)
+        rows = []
+        # continuous days 0..19 at price 10, GAP days 20..39, then days 40..49 at price 20
+        for d in list(range(0, 20)) + list(range(40, 50)):
+            rows.append({"item_id": "a", "date": base + timedelta(days=d),
+                         "price": 10.0 if d < 20 else 20.0, "volume": 100})
+        df = forecaster._compute_price_features(pd.DataFrame(rows))
+        row = lambda d: df[df["date"] == base + timedelta(days=d)].iloc[0]
+        # day 45: return_14d looks for day 31 (inside the gap) -> NaN, NOT +100%
+        assert pd.isna(row(45)["return_14d"])
+        # within the post-gap block, day 45 vs day 44 (both present, price 20) -> 0%
+        assert row(45)["return_1d"] == 0.0
+        # a clean in-window return still computes: day 15 vs day 8 (both price 10) -> 0%
+        assert row(15)["return_7d"] == 0.0
+        # endpoints exactly 30 days apart that both EXIST still compute (10->20)
+        assert row(40)["return_30d"] == pytest.approx(100.0)  # day 40 vs day 10
+
     def test_returns_winsorized(self, forecaster):
         df = pd.DataFrame({
             "item_id": ["a"] * 10,
@@ -565,8 +610,10 @@ class TestFeaturePipeline:
         daily_counts = result.groupby(["item_id", "date"]).size()
         assert (daily_counts == 1).all(), "Should have exactly 1 row per item per day"
 
-    def test_build_training_data_includes_all_expected_features(self, forecaster):
-        """Verify the feature set includes all expected categories via build_training_data."""
+    def test_build_training_data_restricts_to_price_group(self, forecaster):
+        """After the 2026-07-24 simplification, build_training_data keeps only
+        price/technical features (FEATURE_GROUP_ALLOWLIST); event/social/
+        cross-sectional groups are excluded."""
         # Mock fetch_price_history and fetch_events to return synthetic data
         def mock_fetch(*args, **kwargs):
             np.random.seed(42)
@@ -594,14 +641,18 @@ class TestFeaturePipeline:
             with patch.object(forecaster, 'fetch_events', mock_events):
                 df = forecaster.build_training_data(days_back=200, backfilled_only=False)
 
-        # Check feature categories exist
+        # Price/technical categories must be present...
+        from models.forecaster import _feature_group
         feature_set = set(forecaster.feature_cols)
         assert any("return_" in c for c in feature_set), "Missing return features"
         assert any("bb_" in c for c in feature_set), "Missing Bollinger features"
         assert any("rsi" in c for c in feature_set), "Missing RSI features"
         assert any("macd" in c for c in feature_set), "Missing MACD features"
-        assert any("event_decay_" in c for c in feature_set), "Missing event features"
-        assert any("market_return_" in c for c in feature_set), "Missing market features"
+        # ...and non-price groups must be excluded by the allowlist.
+        assert not any(c.startswith("event_") for c in feature_set), "Event features leaked past allowlist"
+        assert not any(c.startswith("market_") for c in feature_set), "Market features leaked past allowlist"
+        assert all(_feature_group(c) == "price_technicals" for c in feature_set), \
+            f"Non-price feature groups present: {[c for c in feature_set if _feature_group(c) != 'price_technicals']}"
 
         # Check no float64 feature columns remain (memory optimization)
         float64_cols = [c for c in forecaster.feature_cols if c in df.columns and df[c].dtype == np.float64]
@@ -841,6 +892,24 @@ class TestModelPersistence:
         loaded = forecaster.load_models()
         assert loaded is False  # no model files to load
 
+    def test_save_removes_orphaned_regime_files(self, forecaster, tmp_path):
+        """A regime-free save must delete stale regime .txt files left on disk,
+        so SKIP_REGIMES runs don't perpetuate old regime artifacts."""
+        forecaster.model_dir = str(tmp_path)
+        forecaster.models = {}
+        forecaster.regime_models = {}
+        # simulate stale regime artifacts from a prior regime-enabled run
+        for name in ["lgb_14d_q50_bear_e0.txt", "lgb_7d_q10_bull_e1.txt",
+                     "lgb_30d_q90_range.txt"]:
+            (tmp_path / name).write_text("stale")
+        # a global model file must be left untouched
+        (tmp_path / "lgb_14d_q50_e0.txt").write_text("keep")
+        forecaster.save_models()
+        assert not (tmp_path / "lgb_14d_q50_bear_e0.txt").exists()
+        assert not (tmp_path / "lgb_7d_q10_bull_e1.txt").exists()
+        assert not (tmp_path / "lgb_30d_q90_range.txt").exists()
+        assert (tmp_path / "lgb_14d_q50_e0.txt").exists()  # global untouched
+
     def test_save_confidence_thresholds_serializable(self, forecaster, tmp_path):
         """Confirm thresholds round-trip through JSON."""
         forecaster.model_dir = str(tmp_path)
@@ -998,6 +1067,165 @@ class TestTrainingWindow:
         sorted_dates = [base + timedelta(days=i) for i in range(51)]
         folds = forecaster._compute_cv_splits(sorted_dates)
         assert len(folds) == 0
+
+    def test_cv_purge_default_is_noop(self, forecaster):
+        """purge_days=0 (default) must reproduce the un-purged splits exactly."""
+        base = date(2025, 1, 1)
+        sorted_dates = [base + timedelta(days=i) for i in range(500)]
+        assert (forecaster._compute_cv_splits(sorted_dates)
+                == forecaster._compute_cv_splits(sorted_dates, purge_days=0))
+
+    def test_cv_purge_gap_prevents_target_leakage(self, forecaster):
+        """With purge_days=H, no training row's target (train_date + H days)
+        may land inside its fold's validation window — the horizon-forecasting
+        embargo that keeps CV honest."""
+        base = date(2025, 1, 1)
+        sorted_dates = [base + timedelta(days=i) for i in range(500)]
+        horizon = 30
+        folds = forecaster._compute_cv_splits(sorted_dates, purge_days=horizon)
+        assert len(folds) >= 2
+        for train_d, val_d in folds:
+            latest_target = max(train_d) + timedelta(days=horizon)
+            assert latest_target < min(val_d)
+
+
+class TestDirectionalBaselines:
+    """The naive baselines a real forecaster must beat: predicting flat
+    (random walk in price) and predicting trailing-return momentum."""
+
+    def test_perfect_prediction_scores_100(self, forecaster):
+        actual = np.array([5.0, -5.0, 0.0, 8.0])
+        assert forecaster._directional_accuracy(actual.copy(), actual) == 100.0
+
+    def test_flat_tolerance_bucketing(self, forecaster):
+        # |ret| < 0.5 counts as flat; predicting 0 matches only the flat actual
+        actual = np.array([5.0, -5.0, 0.2])
+        pred_flat = np.zeros(3)
+        assert forecaster._directional_accuracy(pred_flat, actual) == pytest.approx(33.3, abs=0.1)
+
+    def test_ignores_nan_actuals(self, forecaster):
+        actual = np.array([5.0, np.nan, -5.0])
+        pred = np.array([5.0, 5.0, -5.0])
+        assert forecaster._directional_accuracy(pred, actual) == 100.0
+
+    def test_empty_returns_zero(self, forecaster):
+        assert forecaster._directional_accuracy(np.array([]), np.array([])) == 0.0
+
+
+class TestFeatureAllowlist:
+    """Restricting the model to price/technical features (2026-07-24 ablation)."""
+
+    def test_allowlist_keeps_only_price_group(self, forecaster):
+        cols = ["price_lag_1d", "return_7d", "rsi_14", "macd_line",
+                "event_decay_major", "social_mentions_7d", "market_return_30d",
+                "is_knife", "day_of_week", "supply_sell_listings"]
+        kept = forecaster._apply_feature_allowlist(cols, ["price_technicals"])
+        assert kept == ["price_lag_1d", "return_7d", "rsi_14", "macd_line"]
+
+    def test_allowlist_none_is_noop(self, forecaster):
+        cols = ["return_7d", "event_decay_major", "is_knife"]
+        assert forecaster._apply_feature_allowlist(cols, None) == cols
+        assert forecaster._apply_feature_allowlist(cols, []) == cols
+
+    def test_momentum_features_survive_allowlist(self, forecaster):
+        # The trailing-return (momentum) features must remain — they are the
+        # model's core signal after simplification.
+        cols = [f"return_{h}d" for h in (3, 7, 14, 30)] + ["event_decay_major"]
+        kept = forecaster._apply_feature_allowlist(cols, ["price_technicals"])
+        assert set(kept) == {f"return_{h}d" for h in (3, 7, 14, 30)}
+
+
+class TestMomentumRecenter:
+    """Serving weak horizons as momentum while preserving interval width."""
+
+    def test_recenters_on_momentum_preserving_width(self, forecaster):
+        low = np.array([-4.0, 0.0])
+        mid = np.array([0.0, 5.0])
+        high = np.array([6.0, 8.0])
+        mom = np.array([10.0, -2.0])
+        nl, nm, nh = forecaster._recenter_on_momentum(low, mid, high, mom)
+        # median becomes momentum
+        assert np.allclose(nm, mom)
+        # half-widths preserved: low_off=[4,5], high_off=[6,3]
+        assert np.allclose(nl, [6.0, -7.0])
+        assert np.allclose(nh, [16.0, 1.0])
+
+    def test_nan_momentum_keeps_model_forecast(self, forecaster):
+        low = np.array([-4.0]); mid = np.array([1.0]); high = np.array([6.0])
+        mom = np.array([np.nan])
+        nl, nm, nh = forecaster._recenter_on_momentum(low, mid, high, mom)
+        assert np.allclose([nl[0], nm[0], nh[0]], [-4.0, 1.0, 6.0])
+
+    def test_recentred_triple_stays_monotone(self, forecaster):
+        low = np.array([-4.0, -1.0]); mid = np.array([0.0, 2.0]); high = np.array([6.0, 3.0])
+        mom = np.array([10.0, -20.0])
+        nl, nm, nh = forecaster._recenter_on_momentum(low, mid, high, mom)
+        assert np.all(nl <= nm) and np.all(nm <= nh)
+
+
+class TestDirectionClassifierHelpers:
+    """Pure helpers backing the 3-class directional classifier."""
+
+    def test_direction_classes_bucketing(self, forecaster):
+        # tolerance is +/-0.5%
+        r = np.array([5.0, -5.0, 0.2, -0.2, 0.5, -0.5])
+        cls = forecaster._direction_classes(r)
+        # 5>0.5 up(2), -5<-0.5 down(0), |0.2|<=0.5 flat(1), 0.5 not >0.5 flat, -0.5 flat
+        assert list(cls) == [2, 0, 1, 1, 1, 1]
+
+    def test_mover_sample_weights(self, forecaster):
+        r = np.array([5.0, 0.1, -3.0, 0.0])
+        w = forecaster._direction_sample_weights(r, mover_weight=3.0)
+        assert list(w) == [3.0, 1.0, 3.0, 1.0]
+
+    def test_recenter_on_direction_sets_sign_keeps_magnitude_and_width(self, forecaster):
+        # mid magnitudes = [2, 2, 2]; classes down/flat/up
+        low = np.array([0.0, 0.0, 0.0])
+        mid = np.array([2.0, 2.0, 2.0])
+        high = np.array([5.0, 5.0, 5.0])
+        cls = np.array([0, 1, 2])  # down, flat, up
+        nl, nm, nh = forecaster._recenter_on_direction(low, mid, high, cls)
+        assert list(nm) == [-2.0, 0.0, 2.0]           # sign follows class, |mid| kept
+        # half-widths preserved: low_off=2, high_off=3
+        assert list(nl) == [-4.0, -2.0, 0.0]
+        assert list(nh) == [1.0, 3.0, 5.0]
+        assert np.all(nl <= nm) and np.all(nm <= nh)
+
+    def test_direction_tree_params_extracts_agnostic_keys(self, forecaster):
+        pqp = {0.5: {"num_leaves": 63, "learning_rate": 0.04, "objective": "quantile",
+                     "alpha": 0.5, "max_depth": 6, "drop_rate": 0.1}}
+        tp = forecaster._direction_tree_params(pqp)
+        assert tp == {"num_leaves": 63, "learning_rate": 0.04, "max_depth": 6, "drop_rate": 0.1}
+        assert "objective" not in tp and "alpha" not in tp
+
+
+class TestPredictEnsembleSafe:
+    """Guard against stale models left in the dir with a different feature count."""
+
+    class _FakeModel:
+        def __init__(self, nf, val):
+            self._nf = nf; self._val = val
+        def num_feature(self):
+            return self._nf
+        def predict(self, X):
+            return np.full(len(X), self._val)
+
+    def test_skips_feature_mismatched_models(self, forecaster):
+        X = pd.DataFrame(np.zeros((4, 3)))  # 3 features
+        ensemble = [self._FakeModel(3, 1.0), self._FakeModel(2, 9.0), self._FakeModel(3, 2.0)]
+        out = forecaster._predict_ensemble_safe(ensemble, X)
+        assert len(out) == 2                       # the 2-feature model is skipped
+        assert all(np.allclose(a, v) for a, v in zip(out, [1.0, 2.0]))
+
+    def test_all_incompatible_returns_empty(self, forecaster):
+        X = pd.DataFrame(np.zeros((4, 3)))
+        out = forecaster._predict_ensemble_safe([self._FakeModel(49, 1.0)], X)
+        assert out == []
+
+    def test_single_model_not_list(self, forecaster):
+        X = pd.DataFrame(np.zeros((2, 3)))
+        out = forecaster._predict_ensemble_safe(self._FakeModel(3, 5.0), X)
+        assert len(out) == 1 and np.allclose(out[0], 5.0)
 
     def test_distribution_shift_guard_excludes_2026(self, forecaster):
         """Regression: the 2026 distribution-shift guard must remove all 2026
