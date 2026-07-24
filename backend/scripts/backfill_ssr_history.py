@@ -61,16 +61,29 @@ logger = logging.getLogger("ssr_backfill")
 LOCAL_DB_PATH = Path(__file__).parent.parent / "runtime" / "ssr_history.db"
 CATALOG_LOCAL_DB_PATH = Path(__file__).parent.parent / "runtime" / "ssr_history_catalog.db"
 CATALOG_DB_PATH = Path(__file__).parent.parent / "runtime" / "market_catalog.db"
+
+# Price archive (repo root) — used by --modeled-only to find deep-history items
+PRICE_ARCHIVE_DIR = Path(__file__).parent.parent.parent / "price-archive"
+# "Deep-history backbone": items with >= 1 year of distinct days in the archive.
+# These are the ~4.8K items the forecaster most relies on (long-lookback features work).
+MODELED_MIN_HISTORY_DAYS = 365
 PROGRESS_FILE = Path(__file__).parent.parent / "runtime" / "ssr_backfill_progress.json"
 
-REQUEST_DELAY = 5.0  # seconds between API calls
-RETRY_ATTEMPTS = 5
+REQUEST_DELAY = 4.0  # seconds between API calls (~15 req/min — ArchiSteamFarm-safe rate)
+RETRY_ATTEMPTS = 5   # retries for genuine network errors (not 429s)
 RETRY_DELAY = 10.0
 BACKOFF_MULTIPLIER = 2.0
+# 429s are NOT hammered: hitting Steam during an IP cooldown *refreshes* the ban.
+# So we retry a 429 at most this many times, then surface it (RATE_LIMITED) and let the
+# consecutive-429 auto-pause take over. Set to 0 for fail-fast (session validation).
+MAX_429_RETRIES = 1
+
+# Sentinel: get_price_history returns this (distinct from None/[] ) when rate-limited.
+RATE_LIMITED = object()
 
 # Auto-pause thresholds (configurable via CLI)
 DEFAULT_MAX_CONSECUTIVE_FAILURES = 10
-DEFAULT_MAX_CONSECUTIVE_429 = 5
+DEFAULT_MAX_CONSECUTIVE_429 = 3   # pause fast on a real cooldown so we stop refreshing it
 DEFAULT_MAX_CONSECUTIVE_EMPTY_AFTER_OK = 50
 HEALTH_REPORT_INTERVAL = 500  # log health report every N items
 
@@ -331,6 +344,44 @@ def load_items_from_catalog() -> List[Dict]:
         conn.close()
 
 
+def load_modeled_item_slugs() -> set:
+    """Market_hash_names of the deep-history backbone.
+
+    Returns items with >= MODELED_MIN_HISTORY_DAYS distinct days in the price
+    archive (item_slug == market_hash_name). Empty set if the archive is missing,
+    in which case --modeled-only is a no-op (caller keeps the full list).
+    """
+    try:
+        import duckdb
+    except ImportError:
+        logger.warning("duckdb not installed — --modeled-only has no effect")
+        return set()
+
+    files = sorted(PRICE_ARCHIVE_DIR.glob("prices-*.parquet"))
+    if not files:
+        logger.warning("No price archive at %s — --modeled-only has no effect", PRICE_ARCHIVE_DIR)
+        return set()
+
+    flist = "['" + "','".join(str(f) for f in files) + "']"
+    con = duckdb.connect()
+    try:
+        rows = con.execute(
+            f"""
+            SELECT item_slug FROM read_parquet({flist}, union_by_name=true)
+            GROUP BY item_slug
+            HAVING COUNT(DISTINCT CAST(day AS DATE)) >= {MODELED_MIN_HISTORY_DAYS}
+            """
+        ).fetchall()
+    finally:
+        con.close()
+    slugs = {r[0] for r in rows if r[0]}
+    logger.info(
+        "Modeled backbone: %s items with >= %s days of history",
+        f"{len(slugs):,}", MODELED_MIN_HISTORY_DAYS,
+    )
+    return slugs
+
+
 def sync_items_to_local(prod_items: List[Dict], local_conn: sqlite3.Connection):
     """Copy item catalog from production to local SQLite."""
     local_conn.executemany(
@@ -354,6 +405,20 @@ class SteamPriceHistoryClient:
             "User-Agent": USER_AGENTS[0],
             "Referer": "https://steamcommunity.com/market/",
         })
+        # Attach login cookies for the authenticated pricehistory endpoint.
+        if settings.steam_login_secure:
+            self.session.cookies.set(
+                "steamLoginSecure", settings.steam_login_secure, domain="steamcommunity.com"
+            )
+        if settings.steam_session_id:
+            self.session.cookies.set(
+                "sessionid", settings.steam_session_id, domain="steamcommunity.com"
+            )
+        if not settings.steam_login_secure:
+            logger.warning(
+                "STEAM_LOGIN_SECURE not set in .env — pricehistory requests will be unauthenticated "
+                "and return empty. See config.py for how to grab the cookie."
+            )
         self.last_request_time = 0.0
         self._rotate_ua()
 
@@ -368,10 +433,16 @@ class SteamPriceHistoryClient:
             time.sleep(REQUEST_DELAY - elapsed)
         self.last_request_time = time.time()
 
-    def get_price_history(self, market_hash_name: str) -> Optional[List]:
+    def get_price_history(self, market_hash_name: str, max_429_retries: int = MAX_429_RETRIES):
         """
         Fetch full price history for an item.
-        Returns list of [date_str, price, volume_str] or None on failure.
+
+        Returns:
+            list  — [[date_str, price, volume_str], ...] (empty list = item has no history)
+            None  — hard failure (non-429 error)
+            RATE_LIMITED — got 429 after up to ``max_429_retries`` bounded retries. Surfaced
+                (not swallowed) so the caller can count consecutive 429s and auto-pause
+                instead of hammering Steam and refreshing the IP cooldown.
         """
         self._rate_limit()
 
@@ -379,12 +450,24 @@ class SteamPriceHistoryClient:
         params = {"appid": 730, "market_hash_name": market_hash_name}
 
         current_delay = RETRY_DELAY
-        for attempt in range(RETRY_ATTEMPTS):
+        net_attempts = 0
+        seen_429 = 0
+        while True:
             try:
                 resp = self.session.get(url, params=params, timeout=30)
 
                 if resp.status_code == 429:
-                    logger.warning(f"Rate limited (429) on {market_hash_name}, backing off {current_delay:.0f}s")
+                    if seen_429 >= max_429_retries:
+                        logger.warning(
+                            f"Rate limited (429) on {market_hash_name} — surfacing after "
+                            f"{seen_429} retr{'y' if seen_429 == 1 else 'ies'} (not hammering)"
+                        )
+                        return RATE_LIMITED
+                    seen_429 += 1
+                    logger.warning(
+                        f"Rate limited (429) on {market_hash_name}, backing off {current_delay:.0f}s "
+                        f"({seen_429}/{max_429_retries})"
+                    )
                     time.sleep(current_delay)
                     current_delay *= BACKOFF_MULTIPLIER
                     continue
@@ -407,27 +490,37 @@ class SteamPriceHistoryClient:
                     return None
 
             except requests.exceptions.RequestException as e:
-                logger.warning(f"Request failed (attempt {attempt + 1}/{RETRY_ATTEMPTS}): {e}")
-                if attempt < RETRY_ATTEMPTS - 1:
+                net_attempts += 1
+                logger.warning(f"Request failed (attempt {net_attempts}/{RETRY_ATTEMPTS}): {e}")
+                if net_attempts < RETRY_ATTEMPTS:
                     time.sleep(current_delay)
                     current_delay *= BACKOFF_MULTIPLIER
                 else:
                     return None
 
-        return None
+    def test_session(self) -> str:
+        """Validate session cookies. Returns 'valid', 'invalid', or 'rate_limited'.
 
-    def test_session(self) -> bool:
-        """Test if the session cookies are valid."""
+        Fails fast on 429 (max_429_retries=0) so we don't deepen an IP cooldown while
+        merely checking — and so the caller can tell "cooled down" apart from "bad cookie".
+        """
         try:
-            result = self.get_price_history("AK-47 | Redline (Field-Tested)")
-            if result is not None and len(result) > 0:
-                logger.info(f"Session valid — got {len(result)} records for test item")
-                return True
-            logger.error("Session invalid — got empty response")
-            return False
+            result = self.get_price_history("AK-47 | Redline (Field-Tested)", max_429_retries=0)
         except Exception as e:
             logger.error(f"Session test failed: {e}")
-            return False
+            return "invalid"
+
+        if result is RATE_LIMITED:
+            logger.error(
+                "Session test hit 429 (rate limited) — this is an IP cooldown, NOT a bad cookie. "
+                "Wait for the cooldown to clear (no Steam requests) and retry."
+            )
+            return "rate_limited"
+        if result is not None and len(result) > 0:
+            logger.info(f"Session valid — got {len(result)} records for test item")
+            return "valid"
+        logger.error("Session invalid — empty/None response (check STEAM_LOGIN_SECURE in .env)")
+        return "invalid"
 
 
 # ---------------------------------------------------------------------------
@@ -602,11 +695,14 @@ def run_backfill(
     max_consecutive_429: int = DEFAULT_MAX_CONSECUTIVE_429,
     max_consecutive_empty_after_ok: int = DEFAULT_MAX_CONSECUTIVE_EMPTY_AFTER_OK,
     source: str = "prod",
+    modeled_only: bool = False,
 ):
     """Run the SSR history backfill.
 
     Args:
         source: "prod" for production Supabase, "catalog" for local market_catalog.db
+        modeled_only: restrict to the deep-history backbone (>= MODELED_MIN_HISTORY_DAYS
+            days in the archive, ~4.8K items) — the set the forecaster relies on.
     """
     logger.info("=" * 70)
     logger.info("SSR History Backfill — Starting")
@@ -617,7 +713,14 @@ def run_backfill(
 
     # 1. Validate session
     client = SteamPriceHistoryClient()
-    if not client.test_session():
+    status = client.test_session()
+    if status == "rate_limited":
+        logger.error(
+            "Aborting: Steam IP is rate-limited (429). Wait for the cooldown to clear with NO "
+            "Steam requests, then retry. Your cookie was not validated but is likely fine."
+        )
+        return
+    if status != "valid":
         logger.error("Steam session is invalid. Update STEAM_SESSION_ID and STEAM_LOGIN_SECURE in .env")
         return
 
@@ -629,6 +732,17 @@ def run_backfill(
         logger.info("Loading items from production database...")
         prod_items = load_items_from_prod()
     logger.info(f"Loaded {len(prod_items)} items")
+
+    # 2b. Optional: restrict to the deep-history backbone
+    if modeled_only:
+        slugs = load_modeled_item_slugs()
+        if slugs:
+            before = len(prod_items)
+            prod_items = [it for it in prod_items if it["name"] in slugs]
+            logger.info(
+                f"--modeled-only: {before} -> {len(prod_items)} deep-history items "
+                f"(>= {MODELED_MIN_HISTORY_DAYS} days)"
+            )
 
     # 3. Initialize local DB
     local_conn = init_local_db(local_db_path)
@@ -722,10 +836,23 @@ def run_backfill(
                 break
             continue
 
-        # Track 429s — client retries internally, but if we still get None after retries,
-        # we need to distinguish. Let's re-check by looking at what happened.
-        # The client returns None for both 429 exhaustion and other errors.
-        # We'll track this by checking the response pattern.
+        # Rate limited: surfaced by the client (not swallowed) so we can pause fast.
+        # Deliberately do NOT save_progress here — leaving the checkpoint at the last
+        # good item means --resume re-fetches these on the next run instead of skipping them.
+        if prices is RATE_LIMITED:
+            logger.warning(f"429: {item_name} (rate limited — not advancing progress)")
+            health.record_429(item_name)
+            pause_reason = health.should_pause()
+            if pause_reason:
+                logger.critical(pause_reason)
+                logger.critical(
+                    f"Auto-paused at item {idx+1}/{total} on rate limits. Progress saved at last "
+                    f"good item. Wait for the cooldown to clear, then --resume."
+                )
+                paused = True
+                break
+            continue
+
         if prices is None:
             # API error after retries exhausted
             # Could be 429 exhaustion or other error — we treat as failure
@@ -879,6 +1006,11 @@ if __name__ == "__main__":
         help="Source of item list: prod (Supabase, 24k items) or catalog (local market_catalog.db, 32k items)"
     )
     parser.add_argument(
+        "--modeled-only", action="store_true",
+        help="Only backfill the deep-history backbone (>= 365 days in the archive, ~4.8K items) — "
+             "the forecaster's core set. ~8-9h at 4s/req vs ~2 days for the full catalog."
+    )
+    parser.add_argument(
         "--max-consecutive-failures", type=int, default=DEFAULT_MAX_CONSECUTIVE_FAILURES,
         help=f"Auto-pause after N consecutive failures (default: {DEFAULT_MAX_CONSECUTIVE_FAILURES})"
     )
@@ -903,4 +1035,5 @@ if __name__ == "__main__":
             max_consecutive_429=args.max_consecutive_429,
             max_consecutive_empty_after_ok=args.max_consecutive_empty_after_ok,
             source=args.source,
+            modeled_only=args.modeled_only,
         )

@@ -26,6 +26,14 @@ class Settings(BaseSettings):
     steam_api_key: Optional[str] = None
     cs2sh_api_key: Optional[str] = None
 
+    # Steam Community login cookies (for the authenticated /market/pricehistory/ endpoint).
+    # Grab from a logged-in browser: DevTools > Application > Cookies > steamcommunity.com.
+    #   STEAM_SESSION_ID   = cookie "sessionid"
+    #   STEAM_LOGIN_SECURE = cookie "steamLoginSecure"
+    # These expire (esp. steamLoginSecure) — refresh when the backfill reports session invalid.
+    steam_session_id: Optional[str] = None
+    steam_login_secure: Optional[str] = None
+
     # CSMarketAPI keys (https://csmarketapi.com)
     # Each key gets 1,000 free requests/month. Add account name for tracking.
     csmarketapi_key_1: Optional[str] = None
