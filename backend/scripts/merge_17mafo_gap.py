@@ -58,3 +58,21 @@ def prices_to_snapshots(prices: pd.DataFrame) -> pd.DataFrame:
     snaps = prices[["item_slug", "day", "source", "mean_price", "volume"]].copy()
     snaps = snaps.rename(columns={"mean_price": "price"})
     return snaps[SNAP_COLS]
+
+
+def gap_dates(start: str, end: str) -> list[str]:
+    """Inclusive list of YYYY-MM-DD date strings from start to end."""
+    rng = pd.date_range(start=start, end=end, freq="D")
+    return [d.strftime("%Y-%m-%d") for d in rng]
+
+
+def validate_coverage(prices: pd.DataFrame, expected_dates: list[str],
+                      min_items: int = 20000) -> None:
+    """Raise AssertionError if any expected day is missing or too sparse."""
+    present = {pd.Timestamp(d) for d in prices["day"].unique()}
+    for d in expected_dates:
+        ts = pd.Timestamp(d)
+        assert ts in present, f"missing day {d} in backfill"
+        count = prices.loc[prices["day"] == ts, "item_slug"].nunique()
+        assert count >= min_items, (
+            f"low item count for {d}: {count} < {min_items}")

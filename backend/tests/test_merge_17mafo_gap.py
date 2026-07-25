@@ -47,3 +47,41 @@ def test_prices_to_snapshots():
     assert snaps.iloc[0]["price"] == 47.63418
     assert snaps.iloc[0]["volume"] == 0
     assert snaps.iloc[0]["source"] == "aggregator_steam_17mafo"
+
+
+import pytest
+
+
+def _prices_for_dates(dates, n_items):
+    frames = []
+    for d in dates:
+        obj = {f"Item {i}": {"steam": {"last_24h": 1.0 + i}} for i in range(n_items)}
+        frames.append(m.transform_day(obj, d))
+    return pd.concat(frames, ignore_index=True)
+
+
+def test_gap_dates_inclusive():
+    dates = m.gap_dates("2026-04-16", "2026-07-08")
+    assert dates[0] == "2026-04-16"
+    assert dates[-1] == "2026-07-08"
+    assert len(dates) == 84
+
+
+def test_validate_coverage_passes():
+    dates = ["2026-04-16", "2026-04-17"]
+    prices = _prices_for_dates(dates, n_items=25)
+    m.validate_coverage(prices, dates, min_items=25)  # no raise
+
+
+def test_validate_coverage_missing_day_raises():
+    dates = ["2026-04-16", "2026-04-17"]
+    prices = _prices_for_dates(["2026-04-16"], n_items=25)  # 04-17 missing
+    with pytest.raises(AssertionError, match="2026-04-17"):
+        m.validate_coverage(prices, dates, min_items=25)
+
+
+def test_validate_coverage_low_count_raises():
+    dates = ["2026-04-16"]
+    prices = _prices_for_dates(dates, n_items=5)
+    with pytest.raises(AssertionError, match="item count"):
+        m.validate_coverage(prices, dates, min_items=25)
