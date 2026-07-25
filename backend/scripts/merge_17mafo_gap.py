@@ -49,7 +49,12 @@ def transform_day(day_obj: dict, day: str) -> pd.DataFrame:
         steam = val.get("steam")
         if not isinstance(steam, dict):
             continue
-        price = steam.get("last_24h")
+        price = None
+        for field in ("last_24h", "last_7d", "last_30d"):
+            val = steam.get(field)
+            if val is not None:
+                price = val
+                break
         if price is None:
             continue
         rows.append({
@@ -79,7 +84,7 @@ def gap_dates(start: str, end: str) -> list[str]:
 
 
 def validate_coverage(prices: pd.DataFrame, expected_dates: list[str],
-                      min_items: int = 20000) -> None:
+                      min_items: int = 24000) -> None:
     """Raise AssertionError if any expected day is missing or too sparse."""
     present = {pd.Timestamp(d) for d in prices["day"].unique()}
     for d in expected_dates:
@@ -112,7 +117,7 @@ def fetch_day(date: str, cache_dir: Path, refresh: bool = False,
 
 def run(start: str, end: str, out_dir: Path, cache_dir: Path,
         dry_run: bool = False, refresh: bool = False,
-        min_items: int = 20000, fetch=fetch_day) -> pd.DataFrame:
+        min_items: int = 24000, fetch=fetch_day) -> pd.DataFrame:
     dates = gap_dates(start, end)
     frames = []
     for d in dates:

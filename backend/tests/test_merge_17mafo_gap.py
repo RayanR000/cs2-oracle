@@ -38,6 +38,22 @@ def test_transform_day_columns_and_values():
     assert row["volume"] == 0
 
 
+def test_transform_day_coalesces_to_last_7d_then_30d():
+    day = {
+        "Liquid": {"steam": {"last_24h": 10.0, "last_7d": 11.0, "last_30d": 12.0}},
+        "Only7d": {"steam": {"last_24h": None, "last_7d": 20.0, "last_30d": 21.0}},
+        "Only30d": {"steam": {"last_24h": None, "last_7d": None, "last_30d": 30.0}},
+        "NoRecent": {"steam": {"last_24h": None, "last_7d": None, "last_30d": None,
+                               "last_90d": 99.0, "last_ever": 88.0}},
+    }
+    df = m.transform_day(day, "2026-04-16")
+    prices = dict(zip(df["item_slug"], df["mean_price"]))
+    assert prices["Liquid"] == 10.0     # prefers freshest
+    assert prices["Only7d"] == 20.0     # falls back to 7d
+    assert prices["Only30d"] == 30.0    # falls back to 30d
+    assert "NoRecent" not in prices     # 90d/ever NOT used -> skipped
+
+
 def test_prices_to_snapshots():
     prices = m.transform_day(SAMPLE_DAY, "2026-04-16")
     snaps = m.prices_to_snapshots(prices)
