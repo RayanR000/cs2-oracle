@@ -17,16 +17,13 @@ You are a data specialist for the CS2 Oracle. You work with the 13-year Parquet 
 
 ## Data Location
 
-The Parquet archive lives on the **`data-archive`** Git branch, not `main`. The `price-archive/` directory in the working tree is only available when:
-- The `data-archive` branch is checked out, OR
-- It has been fetched and symlinked (CI pattern: checkout `data-archive` to `archive/`, then `ln -s archive/price-archive price-archive`)
+The Parquet archive lives in the separate **[`cs2-oracle-data`](https://github.com/RayanR000/cs2-oracle-data)** repo (`main` branch), not in this repo. It has flat history — a single squashed commit, force-pushed by the aggregator each run — so always fetch a fresh shallow clone rather than pulling incrementally. The `price-archive/` directory in the working tree is only available when it has been cloned and symlinked (CI pattern: checkout `cs2-oracle-data` to `archive/`, then `ln -s archive/price-archive price-archive`).
 
 If `price-archive/` doesn't exist, run:
 ```
-git fetch origin data-archive
-git checkout origin/data-archive -- price-archive/
+git clone --depth 1 https://github.com/RayanR000/cs2-oracle-data.git ../cs2-oracle-data
+ln -s ../cs2-oracle-data/price-archive price-archive
 ```
-Or check out the branch directly if doing heavy data work.
 
 ## Parquet Archive Structure
 

@@ -51,7 +51,9 @@ jobs:
       - name: Checkout price archive
         uses: actions/checkout@v4
         with:
-          ref: data-archive
+          repository: RayanR000/cs2-oracle-data
+          ref: main
+          token: ${{ secrets.CS2_DATA_REPO_TOKEN }}
           path: archive
           fetch-depth: 1
 

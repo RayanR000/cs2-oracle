@@ -61,7 +61,7 @@ backend/data/*.json
 !backend/data/historical_prices_template.json
 !backend/data/historical_prices_template.csv
 
-# Price archive (lives on data-archive branch, not main)
+# Price archive (lives in the cs2-oracle-data repo; symlinked in locally)
 price-archive/
 
 # ML model artifacts (regenerated on each retrain)

@@ -17,7 +17,7 @@ defaults:
 
 permissions:
   issues: write
-  contents: write # push daily price dumps to the data-archive branch
+  contents: read # archive now lives in the cs2-oracle-data repo (pushed via CS2_DATA_REPO_TOKEN)
 
 jobs:
   collect-data:
@@ -64,13 +64,16 @@ jobs:
           python scripts/run_task.py aggregate 2>&1 | tee aggregator.log
 
       # Snapshot-tier items keep only their latest row in Supabase, so each
-      # day's collection is dumped to the data-archive branch as the durable
+      # day's collection is dumped to the cs2-oracle-data repo as the durable
       # record of their price history.
-      - name: Checkout data-archive branch
+      - name: Checkout data archive
         uses: actions/checkout@v4
         with:
-          ref: data-archive
+          repository: RayanR000/cs2-oracle-data
+          ref: main
+          token: ${{ secrets.CS2_DATA_REPO_TOKEN }}
           path: archive
+          fetch-depth: 1
 
       - name: Append to Parquet archive
         working-directory: ./backend
@@ -86,15 +89,18 @@ jobs:
           --backfilled-csv /tmp/aggregator-backfilled-$(date -u +%F).csv
           --exchange-rates-csv /tmp/exchange-rates-$(date -u +%F).csv
 
-      - name: Commit snapshot to data-archive
+      # The parquet files ARE the data (each holds full history), so git history
+      # of them has no value and only bloats the repo. Republish the archive as a
+      # single squashed commit each run via an orphan branch + force-push.
+      - name: Publish updated archive (flat history)
         working-directory: ./archive
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git pull --rebase origin data-archive || true
-          git add price-archive
-          git commit -m "archive: prices + exchange-rates $(date -u +%F)" || echo "nothing to commit"
-          git push
+          git checkout --orphan flat
+          git add -A
+          git commit -m "archive: prices + exchange-rates $(date -u +%F)"
+          git push --force origin HEAD:main
 
       - name: Notify on failure
         if: failure() && github.event_name == 'schedule'
