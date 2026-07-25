@@ -29,16 +29,20 @@ ln -s ../cs2-oracle-data/price-archive price-archive
 
 ```
 price-archive/
-├── prices-YYYY.parquet           — OHLCV per (item_slug, day, source)
-├── snapshots-YYYY.parquet        — All source snapshots (flat: item_slug, day, source, price, volume)
-├── exchange-rates-YYYY.parquet   — Currency rates (currency, rate, day)
+├── prices-YYYY.parquet           — OHLCV per (item_slug, day, source); frozen years ≤2025
+├── prices-YYYY-MM.parquet        — same schema, monthly partitions for 2026+ (100MB-limit)
+├── snapshots-YYYY.parquet        — All source snapshots (flat: item_slug, day, source, price, volume); ≤2025
+├── snapshots-YYYY-MM.parquet     — same, monthly for 2026+
+├── exchange-rates-YYYY.parquet   — Currency rates (currency, rate, day); stays yearly (tiny)
 ├── player-counts-YYYY.parquet    — CS2 concurrent players (day, mean_players, peak_players, min_players, reading_count, last_players)
 ├── item-metadata.parquet         — Item metadata (item_slug, rarity, weapon_type, collection, quality, etc.)
 ├── snapshot-tier-history-through-YYYY-MM-DD.csv.gz  — Tier history for snapshot-tier items
 └── YYYY/MM/prices-YYYY-MM-DD.csv.gz  — Daily raw dumps (gzipped CSV)
 ```
 
-The archive spans 2013–2026, with one file per year per data type.
+The archive spans 2013–2026. Query with the `prices-*.parquet` / `snapshots-*.parquet`
+glob (DuckDB `read_parquet`), which transparently covers both the frozen yearly files
+(≤2025) and the monthly partitions (2026+) — never hardcode a single yearly filename.
 
 ## Prices Schema (`prices-YYYY.parquet`)
 

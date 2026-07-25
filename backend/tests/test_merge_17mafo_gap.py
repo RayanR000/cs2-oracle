@@ -174,9 +174,11 @@ def test_run_writes_parquet_and_is_idempotent(tmp_path):
     m.run("2026-04-16", "2026-04-17", out_dir, cache_dir,
           min_items=30, fetch=fetch)
 
-    prices_path = out_dir / "prices-2026.parquet"
-    snaps_path = out_dir / "snapshots-2026.parquet"
+    # Apr dates -> monthly partition files
+    prices_path = out_dir / "prices-2026-04.parquet"
+    snaps_path = out_dir / "snapshots-2026-04.parquet"
     assert prices_path.exists() and snaps_path.exists()
+    assert not (out_dir / "prices-2026.parquet").exists()  # no yearly file
 
     con = duckdb.connect()
     n1 = con.sql(f"SELECT COUNT(*) FROM read_parquet('{prices_path}')").fetchone()[0]
@@ -198,7 +200,7 @@ def test_run_dry_run_writes_nothing(tmp_path):
 
     m.run("2026-04-16", "2026-04-16", out_dir, cache_dir,
           dry_run=True, min_items=30, fetch=fetch)
-    assert not (out_dir / "prices-2026.parquet").exists()
+    assert not (out_dir / "prices-2026-04.parquet").exists()
 
 
 def test_compute_basis_factors_missing_file(tmp_path):

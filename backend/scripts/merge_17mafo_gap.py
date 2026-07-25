@@ -25,7 +25,7 @@ import requests
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from db.parquet import _append_parquet
+from db.parquet import append_monthly
 
 SOURCE = "aggregator_steam_17mafo"
 PRICE_COLS = ["item_slug", "day", "source", "mean_price", "min_price",
@@ -133,16 +133,17 @@ def compute_basis_factors(prices_path, overlap_start: str = OVERLAP_START,
                 includes the extra sources switched on at the gap's far edge.
     Each global is the median of its per-item factors, or 1.0 if none available.
     """
-    prices_path = Path(prices_path)
-    if not prices_path.exists():
-        return {}, 1.0, {}, 1.0
+    # Accept a single file or a glob (e.g. prices-2026-*.parquet) so this works
+    # with the monthly-partitioned archive as well as a single yearly file.
+    prices_path = str(prices_path)
     import duckdb
     import statistics
     steam_list = ",".join(f"'{s}'" for s in STEAM_WINDOW_SOURCES)
     buff_list = ",".join(f"'{s}'" for s in BUFF_BASIS_SOURCES)
     con = duckdb.connect()
     try:
-        rows = con.sql(f"""
+        try:
+            rows = con.sql(f"""
             WITH ov AS (
               SELECT item_slug,
                 MEDIAN(CASE WHEN source IN ({buff_list}) THEN median_price END) AS buff_px,
@@ -158,6 +159,8 @@ def compute_basis_factors(prices_path, overlap_start: str = OVERLAP_START,
               AND buff_px IS NOT NULL AND buff_px > 0
               AND cons_px IS NOT NULL AND cons_px > 0
         """).fetchall()
+        except duckdb.Error:
+            rows = []  # no matching parquet files yet / unreadable
     finally:
         con.close()
     if not rows:
@@ -206,7 +209,7 @@ def run(start: str, end: str, out_dir: Path, cache_dir: Path,
     prices = pd.concat(frames, ignore_index=True)
     print(f"Transformed {len(prices):,} price rows over {len(dates)} days")
 
-    start_f, start_g, end_f, end_g = compute_basis_factors(out_dir / "prices-2026.parquet")
+    start_f, start_g, end_f, end_g = compute_basis_factors(out_dir / "prices-*.parquet")
     prices = apply_rescale(prices, start_f, start_g, end_f, end_g, start, end)
     print(f"Rescaled (ramp): {len(start_f):,} per-item factors, "
           f"start global {start_g:.3f}, end global {end_g:.3f}")
@@ -220,8 +223,10 @@ def run(start: str, end: str, out_dir: Path, cache_dir: Path,
 
     out_dir.mkdir(parents=True, exist_ok=True)
     snapshots = prices_to_snapshots(prices)
-    _append_parquet(out_dir / "prices-2026.parquet", prices[PRICE_COLS], DEDUP_KEYS)
-    _append_parquet(out_dir / "snapshots-2026.parquet", snapshots[SNAP_COLS], DEDUP_KEYS)
+    # Route rows into monthly partitions (prices-YYYY-MM.parquet); a gap can
+    # span several months so each row goes to the file for its own day.
+    append_monthly(out_dir, "prices", prices[PRICE_COLS], DEDUP_KEYS)
+    append_monthly(out_dir, "snapshots", snapshots[SNAP_COLS], DEDUP_KEYS)
     print(f"Done. Appended {start}..{end} as source={SOURCE}")
     return prices
 

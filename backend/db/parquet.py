@@ -104,6 +104,37 @@ def _append_parquet(path: Path, new_data: pd.DataFrame, dedup_keys: list[str]):
         con.close()
 
 
+def append_monthly(
+    out_dir: Path | str,
+    prefix: str,
+    df: pd.DataFrame,
+    dedup_keys: list[str],
+    day_col: str = "day",
+):
+    """Append rows to per-month Parquet files ``{prefix}-{YYYY-MM}.parquet``.
+
+    This is the canonical partitioner for the price archive: current-era
+    price/snapshot data is split by month so no single file approaches
+    GitHub's 100 MB-per-file limit and the daily rewrite stays small. Each row
+    is routed to the file for its own ``day_col`` month, so a frame spanning
+    several months fans out correctly. Readers glob ``{prefix}-*.parquet``, so
+    the monthly split is transparent to them (frozen pre-2026 yearly files,
+    e.g. ``prices-2025.parquet``, still match that glob and coexist).
+    """
+    if df is None or df.empty:
+        return
+    out_dir = Path(out_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    df = df.copy()
+    df[day_col] = pd.to_datetime(df[day_col])
+    for period, group in df.groupby(df[day_col].dt.strftime("%Y-%m")):
+        _append_parquet(
+            out_dir / f"{prefix}-{period}.parquet",
+            group.reset_index(drop=True),
+            dedup_keys,
+        )
+
+
 def read_table(table: str, columns: Optional[list[str]] = None) -> pd.DataFrame:
     """Return all rows from *table* as a DataFrame."""
     path = _table_path(table)

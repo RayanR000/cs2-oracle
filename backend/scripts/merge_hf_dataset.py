@@ -20,6 +20,10 @@ import duckdb
 import pandas as pd
 import requests
 
+sys.path.insert(0, str(Path(__file__).parent.parent))
+
+from db.parquet import append_monthly
+
 HF_URL = (
     "https://huggingface.co/datasets/"
     "idomanteu/cs2-historical-item-prices-hourly-march-april-2026/"
@@ -132,42 +136,14 @@ def main():
         snapshots = snapshots.rename(columns={"mean_price": "price"})
         snapshots = snapshots[SNAP_COLS]
 
-        # ── Append to archive ───────────────────────────────────────────
-        prices_path = out_dir / "prices-2026.parquet"
-        snaps_path = out_dir / "snapshots-2026.parquet"
-
-        _append_parquet(prices_path, daily[PRICE_COLS],
-                        ["item_slug", "day", "source"])
-        _append_parquet(snaps_path, snapshots,
-                        ["item_slug", "day", "source"])
+        # ── Append to archive (monthly partitions: prices-YYYY-MM.parquet) ──
+        append_monthly(out_dir, "prices", daily[PRICE_COLS],
+                       ["item_slug", "day", "source"])
+        append_monthly(out_dir, "snapshots", snapshots,
+                       ["item_slug", "day", "source"])
 
         print(f"Done. Merged {args.start_date} to {args.end_date}")
 
-    finally:
-        con.close()
-
-
-def _append_parquet(path: Path, new_data: pd.DataFrame, dedup_keys: list):
-    """Append new_data to an existing Parquet file, deduplicating on keys.
-
-    Mirrors append_to_parquet.py's _append_parquet logic for consistency.
-    """
-    con = duckdb.connect()
-    try:
-        if path.exists():
-            existing = con.sql(
-                f"SELECT * FROM read_parquet('{path}')"
-            ).fetchdf()
-            if "source" not in existing.columns and "source" in new_data.columns:
-                existing["source"] = "aggregator_sync"
-            combined = pd.concat([existing, new_data], ignore_index=True)
-            combined = combined.drop_duplicates(subset=dedup_keys, keep="last")
-            combined.to_parquet(path, index=False)
-            print(f"  {path.name}: {len(new_data):,} appended, "
-                  f"{len(combined):,} total")
-        else:
-            new_data.to_parquet(path, index=False)
-            print(f"  {path.name}: {len(new_data):,} written (new file)")
     finally:
         con.close()
 
