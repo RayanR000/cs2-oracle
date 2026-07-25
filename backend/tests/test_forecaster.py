@@ -1199,6 +1199,24 @@ class TestDirectionClassifierHelpers:
         assert "objective" not in tp and "alpha" not in tp
 
 
+class TestResidualStackingDisabled:
+    """Residual Ridge stacking is disabled: it was fit on raw unscaled features
+    and extrapolated without bound at serving time (penny-item 14d forecasts
+    exploded to +10,000%+ and quantiles inverted). See STACK_RESIDUALS note."""
+
+    def test_stack_residuals_flag_off(self, forecaster):
+        assert forecaster.STACK_RESIDUALS is False, \
+            "Residual stacking must stay disabled (fragile unbounded corrector)"
+
+    def test_train_does_not_fit_residual_models(self, forecaster):
+        """With the flag off, train() must not populate residual_models even on
+        weak horizons — the fit block is gated on STACK_RESIDUALS."""
+        # The training gate is `STACK_RESIDUALS and _sklearn_available and
+        # horizon in WEAK_HORIZONS`; with the flag False no models are fit.
+        assert forecaster.STACK_RESIDUALS is False
+        assert 14 in forecaster.WEAK_HORIZONS  # the horizon that blew up
+
+
 class TestPredictEnsembleSafe:
     """Guard against stale models left in the dir with a different feature count."""
 
@@ -1227,71 +1245,41 @@ class TestPredictEnsembleSafe:
         out = forecaster._predict_ensemble_safe(self._FakeModel(3, 5.0), X)
         assert len(out) == 1 and np.allclose(out[0], 5.0)
 
-    def test_distribution_shift_guard_excludes_2026(self, forecaster):
-        """Regression: the 2026 distribution-shift guard must remove all 2026
-        rows BEFORE stratified subsampling. The old guard had a `month < 6`
-        check that failed in July 2026, and ran AFTER subsampling so the
-        budget was wasted on 2026 rows, collapsing the 7d validation window
-        to a single day and triggering false-positive feature pruning."""
-        rows = []
-        base = date(2022, 6, 1)
-        for year in [2022, 2023, 2024, 2025]:
-            for day_offset in range(100):
-                rows.append({
-                    "item_id": f"item_{year}",
-                    "date": date(year, 1, 1) + timedelta(days=day_offset),
-                    "price": 10.0,
-                    "volume": 100,
-                })
-        # Add incomplete 2026 data (Jan-Jun, incomplete year)
-        for day_offset in range(100):
-            rows.append({
-                "item_id": "item_2026",
-                "date": date(2026, 1, 1) + timedelta(days=day_offset),
-                "price": 10.0,
-                "volume": 100,
-            })
-        df = pd.DataFrame(rows)
+    def test_build_training_data_includes_2026(self, forecaster):
+        """Regression: build_training_data must NOT drop 2026 rows.
 
-        n_before = len(df)
-        counts_before = df.groupby(df["date"].apply(lambda d: d.year)).size()
+        A temporary distribution-shift guard used to exclude all 2026 data
+        while the May–June 2026 archive gap made it sparse. The gap is
+        backfilled and the guard is removed, so training/CV now cover 2026
+        (the current regime). This guards against the guard being
+        reintroduced and silently truncating recent data again."""
+        def mock_fetch(*args, **kwargs):
+            np.random.seed(7)
+            rows = []
+            for item_id in range(5):
+                price = 50.0
+                # Span 2025 into 2026 so both years are represented.
+                for day_offset in range(300):
+                    d = date(2025, 6, 1) + timedelta(days=day_offset)
+                    price *= 1 + np.random.randn() * 0.01
+                    rows.append({
+                        "item_id": f"item_{item_id}",
+                        "date": d,
+                        "price": round(max(price, 0.01), 2),
+                        "volume": int(max(np.random.poisson(200), 0)),
+                    })
+            return pd.DataFrame(rows)
 
-        # Apply the exact guard from build_training_data
-        if "date" in df.columns:
-            dates_2026 = pd.DatetimeIndex(df["date"]).year == 2026
-            n_2026 = dates_2026.sum()
-            if n_2026 > 0:
-                df = df[~dates_2026].copy()
+        def mock_events(*args, **kwargs):
+            return pd.DataFrame(columns=["id", "type", "timestamp", "description", "date"])
 
-        n_after = len(df)
-        counts_after = df.groupby(df["date"].apply(lambda d: d.year)).size()
+        with patch.object(forecaster, 'fetch_price_history', mock_fetch):
+            with patch.object(forecaster, 'fetch_events', mock_events):
+                df = forecaster.build_training_data(days_back=300, backfilled_only=False)
 
-        assert n_after < n_before, "Guard should have removed rows"
-        assert 2026 not in counts_after.index, "All 2026 rows must be excluded"
-        for year in [2022, 2023, 2024, 2025]:
-            assert counts_after[year] == counts_before[year], \
-                f"Non-2026 rows for {year} must be preserved"
-
-    def test_distribution_shift_guard_preserves_earlier_years(self, forecaster):
-        """When there's no 2026 data, the guard should be a no-op."""
-        rows = []
-        for day_offset in range(100):
-            rows.append({
-                "item_id": "item_a",
-                "date": date(2025, 1, 1) + timedelta(days=day_offset),
-                "price": 10.0,
-                "volume": 100,
-            })
-        df = pd.DataFrame(rows)
-        n_before = len(df)
-
-        if "date" in df.columns:
-            dates_2026 = pd.DatetimeIndex(df["date"]).year == 2026
-            n_2026 = dates_2026.sum()
-            if n_2026 > 0:
-                df = df[~dates_2026].copy()
-
-        assert len(df) == n_before, "No-op guard must not remove rows when no 2026 data"
+        years = pd.DatetimeIndex(df["date"]).year
+        assert (years == 2026).any(), "2026 rows must be retained in training data"
+        assert (years == 2025).any(), "2025 rows must be retained in training data"
 
 
 # ---------------------------------------------------------------------------

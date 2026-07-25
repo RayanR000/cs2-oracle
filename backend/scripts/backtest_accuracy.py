@@ -218,11 +218,14 @@ def _store_forecast_outcomes(db, outcomes):
 
     evaluated_at = datetime.now(timezone.utc).replace(tzinfo=None)
 
-    # Delete existing records for these forecast_ids in one query,
-    # then bulk-insert everything — replaces per-row update loop (27k queries → 2).
-    if existing_ids:
+    # Delete existing records for these forecast_ids in batches (SQLite caps
+    # bound variables at 999), then bulk-insert everything — replaces per-row
+    # update loop (27k queries → a handful).
+    existing_ids = list(existing_ids)
+    for i in range(0, len(existing_ids), 900):
+        batch = existing_ids[i:i+900]
         db.query(ForecastOutcome).filter(
-            ForecastOutcome.forecast_id.in_(list(existing_ids))
+            ForecastOutcome.forecast_id.in_(batch)
         ).delete(synchronize_session=False)
 
     for o in outcomes:

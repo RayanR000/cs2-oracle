@@ -171,8 +171,19 @@ class ItemForecaster:
     DIRECTION_CONFIDENCE_HIGH = 0.5
     # Residual stacking: train a Ridge regression on LightGBM residuals
     # after ensemble training to correct systematic bias. Applied only
-    # to weak horizons by default.
-    STACK_RESIDUALS = True
+    # to weak horizons.
+    #
+    # DISABLED (2026-07-25): the Ridge was fit on RAW, unscaled feature values,
+    # so it extrapolates without bound at serving time — a penny item whose
+    # return_Nd feature is legitimately +900% gets a linear correction of
+    # +100,000%+. On the 2026-inclusive retrain the 14d residual over-corrected
+    # 99% of items across every price tier (median +184% for penny, -480% for
+    # mid-price) and inverted quantile ordering (100% crossing rate). The served
+    # direction now comes from the classifier and interval width from conformal
+    # calibration, so this legacy corrector is redundant as well as dangerous.
+    # Gated in both train() and predict() so previously-saved residual models
+    # stop being applied immediately.
+    STACK_RESIDUALS = False
     RESIDUAL_ALPHA = 5.0
     # Weight given to the previous day's forecast when smoothing/blending
     # current predictions to reduce daily direction flip-flopping.
@@ -1978,17 +1989,14 @@ class ItemForecaster:
         price_df = self._filter_dead_items(price_df)
         corrupt_items = self._flag_corrupt_items(price_df)
 
-        # Distribution-shift guard: exclude incomplete 2026 data.
-        # Run BEFORE stratified subsample so the subsample budget isn't wasted
-        # on 2026 rows, and so the 7d validation window doesn't land on sparse
-        # mid-2026 data (~352 items, single calendar day) where permutation
-        # tests produce pure noise.
-        if "date" in price_df.columns:
-            dates_2026 = pd.DatetimeIndex(price_df["date"]).year == 2026
-            n_2026 = dates_2026.sum()
-            if n_2026 > 0:
-                price_df = price_df[~dates_2026].copy()
-                logger.info(f"  Excluded {n_2026:,} incomplete 2026 rows")
+        # NOTE: A distribution-shift guard here previously excluded ALL 2026
+        # rows. It was a temporary patch for the May–June 2026 archive gap,
+        # which made 2026 sparse (some single-day, ~352-item slices where the
+        # 7d validation window collapsed to noise). That gap is now backfilled
+        # (2026 is continuous, ~5,360 items/day, zero <50-item days), so the
+        # guard was removed to let training/CV cover the current regime and
+        # add walk-forward folds through 2026. See the retrain changelog for
+        # the dry-run coverage evidence.
 
         if max_feature_rows:
             price_df = self._stratified_item_subsample(
@@ -3086,9 +3094,13 @@ class ItemForecaster:
                     # Residual stacking correction: add Ridge prediction
                     # to correct systematic bias patterns learned during
                     # training. Only applies to weak horizons where the
-                    # residual model was trained.
+                    # residual model was trained. Gated on STACK_RESIDUALS so
+                    # that disabling the (fragile, unbounded) corrector takes
+                    # effect immediately even when older residual models are
+                    # still present on disk — see STACK_RESIDUALS note above.
                     residual_key = (horizon, q)
-                    res_model = self.residual_models.get(residual_key)
+                    res_model = (self.residual_models.get(residual_key)
+                                 if self.STACK_RESIDUALS else None)
                     if res_model is not None and getattr(
                             res_model, "n_features_in_", X_horizon.shape[1]) == X_horizon.shape[1]:
                         res_correction = res_model.predict(X_horizon.values)
