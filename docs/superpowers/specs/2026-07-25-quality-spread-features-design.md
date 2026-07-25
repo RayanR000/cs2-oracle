@@ -51,6 +51,21 @@ Gated behind a default-off flag `ENABLE_QUALITY_SPREAD` (env `QUALITY_SPREAD=1`)
 With the flag off, no columns are added and behavior is byte-identical to
 current production.
 
+**Interaction with the feature allowlist (critical).** As of 2026-07-24 the
+model runs with `FEATURE_GROUP_ALLOWLIST = ["price_technicals"]` — every
+non-price feature group is filtered out at forecaster.py:2039 before training.
+The new features belong to a new `quality_spread` group (see `_feature_group`
+below), so they would be computed and then dropped unless the group is
+allowlisted. The `QUALITY_SPREAD=1` flag therefore does **two** things: (1)
+compute the columns, and (2) append `"quality_spread"` to the effective
+allowlist for that run. The flag is the single switch that turns the whole
+experiment on.
+
+The features route to the `quality_spread` group via a new branch in the
+module-level `_feature_group(name)` function (forecaster.py:78), matching name
+prefixes `wear_`, `stattrak_`, `souvenir_`, `has_wear`, `has_stattrak`,
+`has_souvenir`. This grouping serves both the allowlist and the permutation gate.
+
 ### Static per-item attributes
 
 Computed once from `parse_item_name` and cached (like the existing identity
@@ -101,8 +116,10 @@ distinguishes real signal from extra tree capacity.
 
 Two runs on identical data and seeds:
 
-1. Baseline — `QUALITY_SPREAD=0` (current production behavior).
-2. Treatment — `QUALITY_SPREAD=1`.
+1. Baseline — `QUALITY_SPREAD=0`, allowlist `["price_technicals"]` (current
+   production behavior).
+2. Treatment — `QUALITY_SPREAD=1`, effective allowlist
+   `["price_technicals", "quality_spread"]` (the flag appends the group).
 
 Compared on both metrics, since CV and the production backtest disagree by design:
 
