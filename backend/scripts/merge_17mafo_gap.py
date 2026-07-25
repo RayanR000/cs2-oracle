@@ -14,6 +14,7 @@ Usage:
     python scripts/merge_17mafo_gap.py --refresh       # re-download cached files
 """
 
+import argparse
 import json
 import sys
 from pathlib import Path
@@ -23,6 +24,8 @@ import requests
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
+from db.parquet import _append_parquet
+
 SOURCE = "aggregator_steam_17mafo"
 PRICE_COLS = ["item_slug", "day", "source", "mean_price", "min_price",
               "max_price", "median_price", "volume"]
@@ -30,6 +33,10 @@ SNAP_COLS = ["item_slug", "day", "source", "price", "volume"]
 RAW_URL_TEMPLATE = ("https://raw.githubusercontent.com/17mafo/cs-price-tracker/"
                     "main/static/prices/{date}.json")
 _SESSION = requests.Session()
+
+DEFAULT_START = "2026-04-16"
+DEFAULT_END = "2026-07-08"
+DEDUP_KEYS = ["item_slug", "day", "source"]
 
 
 def transform_day(day_obj: dict, day: str) -> pd.DataFrame:
@@ -101,3 +108,48 @@ def fetch_day(date: str, cache_dir: Path, refresh: bool = False,
         raise RuntimeError(f"fetch {date} failed: HTTP {resp.status_code}")
     path.write_bytes(resp.content)
     return path
+
+
+def run(start: str, end: str, out_dir: Path, cache_dir: Path,
+        dry_run: bool = False, refresh: bool = False,
+        min_items: int = 20000, fetch=fetch_day) -> pd.DataFrame:
+    dates = gap_dates(start, end)
+    frames = []
+    for d in dates:
+        path = fetch(d, cache_dir, refresh=refresh)
+        frames.append(transform_day(load_day(path), d))
+    prices = pd.concat(frames, ignore_index=True)
+    print(f"Transformed {len(prices):,} price rows over {len(dates)} days")
+
+    validate_coverage(prices, dates, min_items=min_items)
+    print("Coverage validation passed")
+
+    if dry_run:
+        print("Dry run — no files written")
+        return prices
+
+    out_dir.mkdir(parents=True, exist_ok=True)
+    snapshots = prices_to_snapshots(prices)
+    _append_parquet(out_dir / "prices-2026.parquet", prices[PRICE_COLS], DEDUP_KEYS)
+    _append_parquet(out_dir / "snapshots-2026.parquet", snapshots[SNAP_COLS], DEDUP_KEYS)
+    print(f"Done. Appended {start}..{end} as source={SOURCE}")
+    return prices
+
+
+def main():
+    ap = argparse.ArgumentParser(description=__doc__)
+    ap.add_argument("--start-date", default=DEFAULT_START)
+    ap.add_argument("--end-date", default=DEFAULT_END)
+    ap.add_argument("--out-dir", default="../price-archive")
+    ap.add_argument("--dry-run", action="store_true")
+    ap.add_argument("--refresh", action="store_true")
+    args = ap.parse_args()
+
+    out_dir = Path(args.out_dir)
+    cache_dir = out_dir / "raw" / "17mafo"
+    run(args.start_date, args.end_date, out_dir, cache_dir,
+        dry_run=args.dry_run, refresh=args.refresh)
+
+
+if __name__ == "__main__":
+    main()

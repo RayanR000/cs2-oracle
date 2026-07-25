@@ -128,3 +128,58 @@ def test_fetch_day_raises_on_error(tmp_path):
     sess = _FakeSession(404, {})
     with pytest.raises(RuntimeError, match="404"):
         m.fetch_day("2026-04-16", tmp_path, session=sess)
+
+
+import duckdb
+
+
+def _fake_fetch_factory(payloads_by_date, cache_dir):
+    """Return a fetch_day-compatible callable backed by in-memory payloads."""
+    def _fetch(date, cdir, refresh=False, session=None):
+        cdir.mkdir(parents=True, exist_ok=True)
+        p = cdir / f"{date}.json"
+        p.write_text(json.dumps(payloads_by_date[date]))
+        return p
+    return _fetch
+
+
+def _payloads(dates, n_items):
+    return {d: {f"Item {i}": {"steam": {"last_24h": float(i + 1)}}
+                for i in range(n_items)} for d in dates}
+
+
+def test_run_writes_parquet_and_is_idempotent(tmp_path):
+    dates = ["2026-04-16", "2026-04-17"]
+    payloads = _payloads(dates, n_items=30)
+    out_dir = tmp_path / "price-archive"
+    cache_dir = tmp_path / "raw"
+    fetch = _fake_fetch_factory(payloads, cache_dir)
+
+    m.run("2026-04-16", "2026-04-17", out_dir, cache_dir,
+          min_items=30, fetch=fetch)
+
+    prices_path = out_dir / "prices-2026.parquet"
+    snaps_path = out_dir / "snapshots-2026.parquet"
+    assert prices_path.exists() and snaps_path.exists()
+
+    con = duckdb.connect()
+    n1 = con.sql(f"SELECT COUNT(*) FROM read_parquet('{prices_path}')").fetchone()[0]
+    assert n1 == 60  # 2 days x 30 items
+
+    # re-run must not duplicate (dedup on item_slug, day, source)
+    m.run("2026-04-16", "2026-04-17", out_dir, cache_dir,
+          min_items=30, fetch=fetch)
+    n2 = con.sql(f"SELECT COUNT(*) FROM read_parquet('{prices_path}')").fetchone()[0]
+    assert n2 == 60
+
+
+def test_run_dry_run_writes_nothing(tmp_path):
+    dates = ["2026-04-16"]
+    payloads = _payloads(dates, n_items=30)
+    out_dir = tmp_path / "price-archive"
+    cache_dir = tmp_path / "raw"
+    fetch = _fake_fetch_factory(payloads, cache_dir)
+
+    m.run("2026-04-16", "2026-04-16", out_dir, cache_dir,
+          dry_run=True, min_items=30, fetch=fetch)
+    assert not (out_dir / "prices-2026.parquet").exists()
