@@ -19,6 +19,7 @@ import json
 import sys
 from pathlib import Path
 
+import numpy as np
 import pandas as pd
 import requests
 
@@ -120,18 +121,21 @@ def fetch_day(date: str, cache_dir: Path, refresh: bool = False,
     return path
 
 
-def compute_buff_factors(prices_path, overlap_start: str = OVERLAP_START,
-                         overlap_end: str = OVERLAP_END) -> tuple[dict, float]:
-    """Per-item BUFF/Steam price ratio from the post-gap overlap window.
+def compute_basis_factors(prices_path, overlap_start: str = OVERLAP_START,
+                          overlap_end: str = OVERLAP_END):
+    """Per-item Steam->basis factors from the post-gap overlap window.
 
-    Returns ({item_slug: factor}, global_factor) where
-    factor = median BUFF-basis price / median Steam-window price over the window.
-    global_factor is the median of per-item factors, or 1.0 if none available
-    (e.g. the archive file does not exist yet or has no overlap rows).
+    Returns (start_factors, start_global, end_factors, end_global):
+    - start_* : BUFF-basis factor (median BUFF / median Steam) — matches the
+                pre-gap consensus.
+    - end_*   : full-consensus factor (median of ALL non-fallback, non-backfill
+                sources / median Steam) — matches the post-gap consensus, which
+                includes the extra sources switched on at the gap's far edge.
+    Each global is the median of its per-item factors, or 1.0 if none available.
     """
     prices_path = Path(prices_path)
     if not prices_path.exists():
-        return {}, 1.0
+        return {}, 1.0, {}, 1.0
     import duckdb
     import statistics
     steam_list = ",".join(f"'{s}'" for s in STEAM_WINDOW_SOURCES)
@@ -141,32 +145,53 @@ def compute_buff_factors(prices_path, overlap_start: str = OVERLAP_START,
         rows = con.sql(f"""
             WITH ov AS (
               SELECT item_slug,
+                MEDIAN(CASE WHEN source IN ({buff_list}) THEN median_price END) AS buff_px,
                 MEDIAN(CASE WHEN source IN ({steam_list}) THEN median_price END) AS steam_px,
-                MEDIAN(CASE WHEN source IN ({buff_list}) THEN median_price END) AS buff_px
+                MEDIAN(CASE WHEN source NOT LIKE 'historical_fallback:%'
+                             AND source <> '{SOURCE}' THEN median_price END) AS cons_px
               FROM read_parquet('{prices_path}')
               WHERE day BETWEEN '{overlap_start}' AND '{overlap_end}'
               GROUP BY item_slug)
-            SELECT item_slug, buff_px / steam_px AS factor
+            SELECT item_slug, buff_px / steam_px AS f_start, cons_px / steam_px AS f_end
             FROM ov
-            WHERE steam_px IS NOT NULL AND buff_px IS NOT NULL
-              AND steam_px > 0 AND buff_px > 0
+            WHERE steam_px IS NOT NULL AND steam_px > 0
+              AND buff_px IS NOT NULL AND buff_px > 0
+              AND cons_px IS NOT NULL AND cons_px > 0
         """).fetchall()
     finally:
         con.close()
-    factors = {slug: float(factor) for slug, factor in rows}
-    if not factors:
-        return {}, 1.0
-    return factors, float(statistics.median(factors.values()))
+    if not rows:
+        return {}, 1.0, {}, 1.0
+    start_factors = {r[0]: float(r[1]) for r in rows}
+    end_factors = {r[0]: float(r[2]) for r in rows}
+    start_global = float(statistics.median(start_factors.values()))
+    end_global = float(statistics.median(end_factors.values()))
+    return start_factors, start_global, end_factors, end_global
 
 
-def apply_rescale(prices, factors: dict, global_factor: float):
-    """Multiply price columns by each item's BUFF-basis factor (global fallback)."""
+def apply_rescale(prices, start_factors: dict, start_global: float,
+                  end_factors: dict, end_global: float,
+                  start_date: str = DEFAULT_START, end_date: str = DEFAULT_END):
+    """Log-linearly ramp each item's Steam->basis factor across the gap.
+
+    factor(day) = f_start^(1-t) * f_end^t, t = (day-start)/(end-start) in [0,1].
+    On start_date the factor matches the pre-gap (BUFF) basis; on end_date the
+    post-gap full-consensus basis. Multiplies mean/median/min/max_price.
+    """
     if prices.empty:
         return prices
     out = prices.copy()
-    f = out["item_slug"].map(factors).fillna(global_factor)
+    span = (pd.Timestamp(end_date) - pd.Timestamp(start_date)).days
+    def _t(day):
+        if span <= 0:
+            return 0.0
+        return (day - pd.Timestamp(start_date)).days / span
+    t = out["day"].map(_t).clip(0.0, 1.0)
+    f_start = out["item_slug"].map(start_factors).fillna(start_global)
+    f_end = out["item_slug"].map(end_factors).fillna(end_global)
+    factor = np.exp((1.0 - t) * np.log(f_start) + t * np.log(f_end))
     for col in ("mean_price", "median_price", "min_price", "max_price"):
-        out[col] = out[col] * f
+        out[col] = out[col] * factor
     return out
 
 
@@ -181,10 +206,10 @@ def run(start: str, end: str, out_dir: Path, cache_dir: Path,
     prices = pd.concat(frames, ignore_index=True)
     print(f"Transformed {len(prices):,} price rows over {len(dates)} days")
 
-    factors, global_factor = compute_buff_factors(out_dir / "prices-2026.parquet")
-    prices = apply_rescale(prices, factors, global_factor)
-    print(f"Rescaled to BUFF basis: {len(factors):,} per-item factors, "
-          f"global fallback {global_factor:.3f}")
+    start_f, start_g, end_f, end_g = compute_basis_factors(out_dir / "prices-2026.parquet")
+    prices = apply_rescale(prices, start_f, start_g, end_f, end_g, start, end)
+    print(f"Rescaled (ramp): {len(start_f):,} per-item factors, "
+          f"start global {start_g:.3f}, end global {end_g:.3f}")
 
     validate_coverage(prices, dates, min_items=min_items)
     print("Coverage validation passed")

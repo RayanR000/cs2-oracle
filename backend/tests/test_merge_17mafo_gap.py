@@ -201,35 +201,53 @@ def test_run_dry_run_writes_nothing(tmp_path):
     assert not (out_dir / "prices-2026.parquet").exists()
 
 
-def test_compute_buff_factors_missing_file(tmp_path):
-    factors, gf = m.compute_buff_factors(tmp_path / "nope.parquet")
-    assert factors == {}
-    assert gf == 1.0
+def test_compute_basis_factors_missing_file(tmp_path):
+    sf, sg, ef, eg = m.compute_basis_factors(tmp_path / "nope.parquet")
+    assert sf == {} and sg == 1.0 and ef == {} and eg == 1.0
 
 
-def test_compute_buff_factors_and_apply_rescale(tmp_path):
+def test_compute_basis_factors_start_and_end(tmp_path):
     rows = []
-    for src, px in [("aggregator_steam_7d", 44.0),
-                    ("aggregator_buff163", 30.0), ("aggregator_csfloat", 30.0)]:
+    # item A overlap: buff=30, csfloat=30 (basis=30); steam_7d=44;
+    # plus a higher extra source csgotrader=42 so full-consensus median > buff.
+    for src, px in [("aggregator_buff163", 30.0), ("aggregator_csfloat", 30.0),
+                    ("aggregator_csgotrader", 42.0), ("aggregator_steam_7d", 44.0)]:
         rows.append({"item_slug": "A", "day": pd.Timestamp("2026-07-11"),
-                     "source": src, "mean_price": px, "min_price": px,
-                     "max_price": px, "median_price": px, "volume": 0})
-    for src, px in [("aggregator_steam_30d", 100.0), ("aggregator_youpin", 100.0)]:
-        rows.append({"item_slug": "B", "day": pd.Timestamp("2026-07-12"),
                      "source": src, "mean_price": px, "min_price": px,
                      "max_price": px, "median_price": px, "volume": 0})
     pth = tmp_path / "prices-2026.parquet"
     pd.DataFrame(rows).to_parquet(pth, index=False)
 
-    factors, gf = m.compute_buff_factors(pth)
-    assert factors["A"] == pytest.approx(30.0 / 44.0)
-    assert factors["B"] == pytest.approx(1.0)
-    assert gf == pytest.approx((30.0 / 44.0 + 1.0) / 2)  # median of 2 = mean
+    sf, sg, ef, eg = m.compute_basis_factors(pth)
+    # start = median(buff sources)/steam = 30/44
+    assert sf["A"] == pytest.approx(30.0 / 44.0)
+    # end = median(all non-fallback sources incl csgotrader)/steam
+    #   median of [30,30,42,44] = 36 -> 36/44
+    assert ef["A"] == pytest.approx(36.0 / 44.0)
+    assert sg == pytest.approx(30.0 / 44.0)
+    assert eg == pytest.approx(36.0 / 44.0)
 
-    gap = m.transform_day({"A": {"steam": {"last_24h": 44.0}},
-                           "C": {"steam": {"last_24h": 50.0}}}, "2026-05-01")
-    out = m.apply_rescale(gap, factors, gf)
-    pxA = out.loc[out.item_slug == "A", "mean_price"].iloc[0]
-    pxC = out.loc[out.item_slug == "C", "mean_price"].iloc[0]
-    assert pxA == pytest.approx(30.0)          # rescaled onto BUFF basis
-    assert pxC == pytest.approx(50.0 * gf)     # unknown item -> global fallback
+
+def test_apply_rescale_ramps_start_to_end(tmp_path):
+    start_f = {"A": 0.60}
+    end_f = {"A": 0.90}
+    gap = m.transform_day({"A": {"steam": {"last_24h": 100.0}}}, "2026-04-16")  # start day
+    out = m.apply_rescale(gap, start_f, 0.60, end_f, 0.90,
+                          start_date="2026-04-16", end_date="2026-07-08")
+    assert out.loc[0, "mean_price"] == pytest.approx(100.0 * 0.60)  # t=0 -> f_start
+
+    gap_end = m.transform_day({"A": {"steam": {"last_24h": 100.0}}}, "2026-07-08")  # end day
+    out_end = m.apply_rescale(gap_end, start_f, 0.60, end_f, 0.90,
+                              start_date="2026-04-16", end_date="2026-07-08")
+    assert out_end.loc[0, "mean_price"] == pytest.approx(100.0 * 0.90)  # t=1 -> f_end
+
+    # midpoint item uses global fallback + geometric interpolation
+    mid_day = "2026-05-27"  # ~halfway
+    gap_mid = m.transform_day({"Z": {"steam": {"last_24h": 100.0}}}, mid_day)
+    out_mid = m.apply_rescale(gap_mid, start_f, 0.60, end_f, 0.90,
+                              start_date="2026-04-16", end_date="2026-07-08")
+    import numpy as np
+    span = (pd.Timestamp("2026-07-08") - pd.Timestamp("2026-04-16")).days
+    tt = (pd.Timestamp(mid_day) - pd.Timestamp("2026-04-16")).days / span
+    expected = 100.0 * np.exp((1 - tt) * np.log(0.60) + tt * np.log(0.90))
+    assert out_mid.loc[0, "mean_price"] == pytest.approx(expected)
