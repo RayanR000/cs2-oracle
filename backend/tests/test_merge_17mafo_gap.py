@@ -85,3 +85,46 @@ def test_validate_coverage_low_count_raises():
     prices = _prices_for_dates(dates, n_items=5)
     with pytest.raises(AssertionError, match="item count"):
         m.validate_coverage(prices, dates, min_items=25)
+
+
+import json
+
+
+class _FakeResp:
+    def __init__(self, status_code, payload):
+        self.status_code = status_code
+        self._payload = payload
+        self.content = json.dumps(payload).encode()
+
+
+class _FakeSession:
+    def __init__(self, status_code=200, payload=None):
+        self.status_code = status_code
+        self.payload = payload or {}
+        self.calls = 0
+
+    def get(self, url, timeout=None):
+        self.calls += 1
+        return _FakeResp(self.status_code, self.payload)
+
+
+def test_fetch_day_downloads_when_absent(tmp_path):
+    sess = _FakeSession(200, {"Item A": {"steam": {"last_24h": 5.0}}})
+    path = m.fetch_day("2026-04-16", tmp_path, session=sess)
+    assert path.exists()
+    assert sess.calls == 1
+    assert m.load_day(path)["Item A"]["steam"]["last_24h"] == 5.0
+
+
+def test_fetch_day_uses_cache(tmp_path):
+    (tmp_path / "2026-04-16.json").write_text('{"Item A": {"steam": {"last_24h": 9.0}}}')
+    sess = _FakeSession(200, {})
+    path = m.fetch_day("2026-04-16", tmp_path, session=sess)
+    assert sess.calls == 0                      # cache hit, no network
+    assert m.load_day(path)["Item A"]["steam"]["last_24h"] == 9.0
+
+
+def test_fetch_day_raises_on_error(tmp_path):
+    sess = _FakeSession(404, {})
+    with pytest.raises(RuntimeError, match="404"):
+        m.fetch_day("2026-04-16", tmp_path, session=sess)

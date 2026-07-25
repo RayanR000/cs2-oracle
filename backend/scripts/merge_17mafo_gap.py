@@ -14,10 +14,12 @@ Usage:
     python scripts/merge_17mafo_gap.py --refresh       # re-download cached files
 """
 
+import json
 import sys
 from pathlib import Path
 
 import pandas as pd
+import requests
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
@@ -25,6 +27,9 @@ SOURCE = "aggregator_steam_17mafo"
 PRICE_COLS = ["item_slug", "day", "source", "mean_price", "min_price",
               "max_price", "median_price", "volume"]
 SNAP_COLS = ["item_slug", "day", "source", "price", "volume"]
+RAW_URL_TEMPLATE = ("https://raw.githubusercontent.com/17mafo/cs-price-tracker/"
+                    "main/static/prices/{date}.json")
+_SESSION = requests.Session()
 
 
 def transform_day(day_obj: dict, day: str) -> pd.DataFrame:
@@ -76,3 +81,23 @@ def validate_coverage(prices: pd.DataFrame, expected_dates: list[str],
         count = prices.loc[prices["day"] == ts, "item_slug"].nunique()
         assert count >= min_items, (
             f"low item count for {d}: {count} < {min_items}")
+
+
+def load_day(path: Path) -> dict:
+    with open(path) as fh:
+        return json.load(fh)
+
+
+def fetch_day(date: str, cache_dir: Path, refresh: bool = False,
+              session=None) -> Path:
+    """Return local path to <date>.json, downloading + caching if needed."""
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    path = cache_dir / f"{date}.json"
+    if path.exists() and not refresh:
+        return path
+    sess = session or _SESSION
+    resp = sess.get(RAW_URL_TEMPLATE.format(date=date), timeout=60)
+    if resp.status_code != 200:
+        raise RuntimeError(f"fetch {date} failed: HTTP {resp.status_code}")
+    path.write_bytes(resp.content)
+    return path
