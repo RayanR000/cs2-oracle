@@ -38,6 +38,11 @@ DEFAULT_START = "2026-04-16"
 DEFAULT_END = "2026-07-08"
 DEDUP_KEYS = ["item_slug", "day", "source"]
 
+OVERLAP_START = "2026-07-11"
+OVERLAP_END = "2026-07-17"
+STEAM_WINDOW_SOURCES = ("aggregator_steam_7d", "aggregator_steam_30d", "aggregator_steam_90d")
+BUFF_BASIS_SOURCES = ("aggregator_buff163", "aggregator_csfloat", "aggregator_youpin")
+
 
 def transform_day(day_obj: dict, day: str) -> pd.DataFrame:
     """Convert one day's 17mafo JSON object into PRICE_COLS rows."""
@@ -115,6 +120,56 @@ def fetch_day(date: str, cache_dir: Path, refresh: bool = False,
     return path
 
 
+def compute_buff_factors(prices_path, overlap_start: str = OVERLAP_START,
+                         overlap_end: str = OVERLAP_END) -> tuple[dict, float]:
+    """Per-item BUFF/Steam price ratio from the post-gap overlap window.
+
+    Returns ({item_slug: factor}, global_factor) where
+    factor = median BUFF-basis price / median Steam-window price over the window.
+    global_factor is the median of per-item factors, or 1.0 if none available
+    (e.g. the archive file does not exist yet or has no overlap rows).
+    """
+    prices_path = Path(prices_path)
+    if not prices_path.exists():
+        return {}, 1.0
+    import duckdb
+    import statistics
+    steam_list = ",".join(f"'{s}'" for s in STEAM_WINDOW_SOURCES)
+    buff_list = ",".join(f"'{s}'" for s in BUFF_BASIS_SOURCES)
+    con = duckdb.connect()
+    try:
+        rows = con.sql(f"""
+            WITH ov AS (
+              SELECT item_slug,
+                MEDIAN(CASE WHEN source IN ({steam_list}) THEN median_price END) AS steam_px,
+                MEDIAN(CASE WHEN source IN ({buff_list}) THEN median_price END) AS buff_px
+              FROM read_parquet('{prices_path}')
+              WHERE day BETWEEN '{overlap_start}' AND '{overlap_end}'
+              GROUP BY item_slug)
+            SELECT item_slug, buff_px / steam_px AS factor
+            FROM ov
+            WHERE steam_px IS NOT NULL AND buff_px IS NOT NULL
+              AND steam_px > 0 AND buff_px > 0
+        """).fetchall()
+    finally:
+        con.close()
+    factors = {slug: float(factor) for slug, factor in rows}
+    if not factors:
+        return {}, 1.0
+    return factors, float(statistics.median(factors.values()))
+
+
+def apply_rescale(prices, factors: dict, global_factor: float):
+    """Multiply price columns by each item's BUFF-basis factor (global fallback)."""
+    if prices.empty:
+        return prices
+    out = prices.copy()
+    f = out["item_slug"].map(factors).fillna(global_factor)
+    for col in ("mean_price", "median_price", "min_price", "max_price"):
+        out[col] = out[col] * f
+    return out
+
+
 def run(start: str, end: str, out_dir: Path, cache_dir: Path,
         dry_run: bool = False, refresh: bool = False,
         min_items: int = 24000, fetch=fetch_day) -> pd.DataFrame:
@@ -125,6 +180,11 @@ def run(start: str, end: str, out_dir: Path, cache_dir: Path,
         frames.append(transform_day(load_day(path), d))
     prices = pd.concat(frames, ignore_index=True)
     print(f"Transformed {len(prices):,} price rows over {len(dates)} days")
+
+    factors, global_factor = compute_buff_factors(out_dir / "prices-2026.parquet")
+    prices = apply_rescale(prices, factors, global_factor)
+    print(f"Rescaled to BUFF basis: {len(factors):,} per-item factors, "
+          f"global fallback {global_factor:.3f}")
 
     validate_coverage(prices, dates, min_items=min_items)
     print("Coverage validation passed")

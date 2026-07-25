@@ -199,3 +199,37 @@ def test_run_dry_run_writes_nothing(tmp_path):
     m.run("2026-04-16", "2026-04-16", out_dir, cache_dir,
           dry_run=True, min_items=30, fetch=fetch)
     assert not (out_dir / "prices-2026.parquet").exists()
+
+
+def test_compute_buff_factors_missing_file(tmp_path):
+    factors, gf = m.compute_buff_factors(tmp_path / "nope.parquet")
+    assert factors == {}
+    assert gf == 1.0
+
+
+def test_compute_buff_factors_and_apply_rescale(tmp_path):
+    rows = []
+    for src, px in [("aggregator_steam_7d", 44.0),
+                    ("aggregator_buff163", 30.0), ("aggregator_csfloat", 30.0)]:
+        rows.append({"item_slug": "A", "day": pd.Timestamp("2026-07-11"),
+                     "source": src, "mean_price": px, "min_price": px,
+                     "max_price": px, "median_price": px, "volume": 0})
+    for src, px in [("aggregator_steam_30d", 100.0), ("aggregator_youpin", 100.0)]:
+        rows.append({"item_slug": "B", "day": pd.Timestamp("2026-07-12"),
+                     "source": src, "mean_price": px, "min_price": px,
+                     "max_price": px, "median_price": px, "volume": 0})
+    pth = tmp_path / "prices-2026.parquet"
+    pd.DataFrame(rows).to_parquet(pth, index=False)
+
+    factors, gf = m.compute_buff_factors(pth)
+    assert factors["A"] == pytest.approx(30.0 / 44.0)
+    assert factors["B"] == pytest.approx(1.0)
+    assert gf == pytest.approx((30.0 / 44.0 + 1.0) / 2)  # median of 2 = mean
+
+    gap = m.transform_day({"A": {"steam": {"last_24h": 44.0}},
+                           "C": {"steam": {"last_24h": 50.0}}}, "2026-05-01")
+    out = m.apply_rescale(gap, factors, gf)
+    pxA = out.loc[out.item_slug == "A", "mean_price"].iloc[0]
+    pxC = out.loc[out.item_slug == "C", "mean_price"].iloc[0]
+    assert pxA == pytest.approx(30.0)          # rescaled onto BUFF basis
+    assert pxC == pytest.approx(50.0 * gf)     # unknown item -> global fallback
