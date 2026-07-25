@@ -2,9 +2,10 @@
 """
 Daily: append today's aggregator rows to the current year's Parquet files.
 
-Writes three Parquet files:
-  prices-YYYY.parquet          — OHLCV per (item_slug, day, source) from all sources
-  snapshots-YYYY.parquet       — All source snapshots (flat: item_slug, day, source, price, volume)
+Writes three Parquet files (prices/snapshots partitioned by month to stay
+well under GitHub's 100MB-per-file limit; exchange-rates stays yearly, it's tiny):
+  prices-YYYY-MM.parquet       — OHLCV per (item_slug, day, source) from all sources
+  snapshots-YYYY-MM.parquet    — All source snapshots (flat: item_slug, day, source, price, volume)
   exchange-rates-YYYY.parquet  — Currency exchange rates (flat: currency, rate, day)
 
 Input: a snapshot CSV written by the aggregator (or Supabase + backfilled CSV for backward compat).
@@ -72,6 +73,10 @@ def main():
     day_start = datetime.strptime(args.date, "%Y-%m-%d")
     day_end = day_start + timedelta(days=1)
     year = day_start.year
+    # Current-year prices/snapshots are partitioned by month so the hot file
+    # stays small (a day belongs to exactly one month). See
+    # docs/superpowers/specs/2026-07-25-monthly-parquet-partitioning-design.md
+    ym = f"{year}-{day_start.month:02d}"
     out_dir = Path(args.out_dir) / "price-archive"
     out_dir.mkdir(parents=True, exist_ok=True)
 
@@ -119,7 +124,7 @@ def main():
             else:
                 print(f"Warning: --backfilled-csv path does not exist: {csv_path} — skipping OHLCV Parquet")
 
-    # ── Write prices-YYYY.parquet (OHLCV, all sources) ──────────────────
+    # ── Write prices-YYYY-MM.parquet (OHLCV, all sources) ──────────────────
     if snapshots_df is not None and not snapshots_df.empty:
         daily = snapshots_df.groupby(["item_slug", "day", "source"]).agg(
             mean_price=("price", "mean"),
@@ -129,8 +134,8 @@ def main():
             volume=("volume", "sum"),
         ).reset_index()
         daily["day"] = pd.to_datetime(daily["day"])
-        _append_parquet(out_dir / f"prices-{year}.parquet", daily, ["item_slug", "day", "source"])
-        print(f"Appended {len(daily)} OHLCV rows to prices-{year}.parquet")
+        _append_parquet(out_dir / f"prices-{ym}.parquet", daily, ["item_slug", "day", "source"])
+        print(f"Appended {len(daily)} OHLCV rows to prices-{ym}.parquet")
 
     if legacy_frames:
         df = pd.concat(legacy_frames, ignore_index=True)
@@ -142,16 +147,16 @@ def main():
             volume=("volume", "sum"),
         ).reset_index()
         daily["day"] = pd.to_datetime(daily["day"])
-        _append_parquet(out_dir / f"prices-{year}.parquet", daily, ["item_slug", "day", "source"])
-        print(f"Appended {len(daily)} OHLCV rows to prices-{year}.parquet (legacy path)")
+        _append_parquet(out_dir / f"prices-{ym}.parquet", daily, ["item_slug", "day", "source"])
+        print(f"Appended {len(daily)} OHLCV rows to prices-{ym}.parquet (legacy path)")
 
-    # ── Write snapshots-YYYY.parquet (all sources) ─────────────────────
+    # ── Write snapshots-YYYY-MM.parquet (all sources) ─────────────────────
     if snapshots_df is not None and not snapshots_df.empty:
-        snap_path = out_dir / f"snapshots-{year}.parquet"
+        snap_path = out_dir / f"snapshots-{ym}.parquet"
         out_cols = ["item_slug", "day", "source", "price", "volume"]
         snap_data = snapshots_df[out_cols].copy()
         _append_parquet(snap_path, snap_data, ["item_slug", "day", "source"])
-        print(f"Appended {len(snap_data)} snapshot rows to snapshots-{year}.parquet")
+        print(f"Appended {len(snap_data)} snapshot rows to snapshots-{ym}.parquet")
 
     # ── Write exchange-rates-YYYY.parquet ────────────────────────────
     if args.exchange_rates_csv:
