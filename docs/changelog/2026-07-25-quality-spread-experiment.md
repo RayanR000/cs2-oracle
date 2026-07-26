@@ -45,5 +45,29 @@ set ENABLE_QUALITY_SPREAD=True.
 Otherwise SHELVE: leave code, flag off, and add a null-result row to
 docs/research/accuracy-opportunities.md's Reality Check table.
 
-## Results
-_(fill after the A/B run)_
+## Results (2026-07-26)
+
+Walk-forward ablation, `ab_test_quality_spread.py --max-items 1500`. 1,500
+items selected from multi-variant groups (of 2,620 eligible); 25 folds;
+~777k samples/horizon. Coverage: `has_wear_siblings` 93.4%, `has_stattrak_pair`
+23.3%, `has_souvenir_pair` 10.8%. 14 quality_spread features retained after
+correlation pruning (141 vs 127 features).
+
+| Horizon | full | no_quality_spread | delta |
+|---------|:----:|:-----------------:|:-----:|
+| 3d      | 53.78% | 54.56% | **−0.78pp** |
+| 7d      | 55.89% | 54.61% | **+1.28pp** |
+| 14d     | 56.50% | 55.74% | **+0.76pp** |
+| 30d     | 59.03% | 59.66% | **−0.63pp** |
+
+**Mixed:** helps the middle horizons (7d, 14d), slightly hurts the ends
+(3d, 30d). Per the pre-registered gate this *passes* (7d +1.28pp ≥ +0.5pp on a
+short horizon; worst regression −0.78pp is within the −1.5pp tolerance). The
+sign flips across horizons argue against pure capacity inflation.
+
+**Decision: qualified ship — enable quality_spread only where it helps.**
+Rather than a global flip, enable the group for 7d/14d and exclude it from 3d/30d
+via `HORIZON_EXCLUDED_GROUPS` (same mechanism already used to exclude
+cross_sectional at 14d/30d). This captures the +1.28/+0.76pp gains and avoids
+the −0.78/−0.63pp regressions. Net expected effect on served accuracy is
+positive on 7d/14d, neutral on 3d/30d.
