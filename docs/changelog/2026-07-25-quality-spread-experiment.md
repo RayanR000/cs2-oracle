@@ -1,7 +1,7 @@
 # Quality-spread / cross-wear features — experiment
 
 **Date:** 2026-07-25
-**Status:** Features implemented behind `QUALITY_SPREAD=1` (default off). A/B pending.
+**Status:** SHELVED (2026-07-26). Implemented behind `QUALITY_SPREAD=1` (default off); A/B ran, net-flat, feature disabled. See Results.
 **Spec:** docs/superpowers/specs/2026-07-25-quality-spread-features-design.md
 
 ## What shipped (code)
@@ -61,13 +61,27 @@ correlation pruning (141 vs 127 features).
 | 30d     | 59.03% | 59.66% | **−0.63pp** |
 
 **Mixed:** helps the middle horizons (7d, 14d), slightly hurts the ends
-(3d, 30d). Per the pre-registered gate this *passes* (7d +1.28pp ≥ +0.5pp on a
-short horizon; worst regression −0.78pp is within the −1.5pp tolerance). The
-sign flips across horizons argue against pure capacity inflation.
+(3d, 30d). Averaged across horizons the effect is **~+0.16pp — flat**. It moves
+accuracy between horizons rather than improving the model overall. The sign
+flips argue against pure capacity inflation (which would show uniform small
+positive deltas), so there is *some* real horizon-dependent signal — but small.
 
-**Decision: qualified ship — enable quality_spread only where it helps.**
-Rather than a global flip, enable the group for 7d/14d and exclude it from 3d/30d
-via `HORIZON_EXCLUDED_GROUPS` (same mechanism already used to exclude
-cross_sectional at 14d/30d). This captures the +1.28/+0.76pp gains and avoids
-the −0.78/−0.63pp regressions. Net expected effect on served accuracy is
-positive on 7d/14d, neutral on 3d/30d.
+**Training-speed cost** (measured, 1,500-item / 5.5M-row frame): the feature
+group adds **+77%** to the feature-engineering phase (66.4s → 117.8s) from the
+several full-frame groupby + rolling-window passes. This is paid on every
+training run.
+
+## Decision: SHELVE (2026-07-26)
+
+`ENABLE_QUALITY_SPREAD` stays **False** (default). The code remains in place,
+disabled, behind the flag; the A/B harness (`scripts/ab_test_quality_spread.py`)
+is kept for reproducibility.
+
+Rationale: a **net-flat** accuracy result (+0.16pp mean) does not justify **+77%**
+feature-build time plus the permanent complexity (14 features, item-metadata
+dependency, heavy rolling passes). The ~1pp gains on 7d/14d sit in the magnitude
+band that this project's calibration history repeatedly shows evaporating under
+permutation testing, and no permutation confirmation was run — so the burden of
+proof for adding permanent complexity is not met. If revisited, gate on a
+permutation test on the full production model before enabling, and consider a
+7d/14d-only enable via `HORIZON_EXCLUDED_GROUPS` (3d/30d excluded).

@@ -115,9 +115,16 @@ Date: 2026-07-14
 - 🛑 **Supply depth (`sell_listings` count)** — change/velocity variant is predictive but needs 30+ days history or paid backfill. Free source too slow. Rejected 2026-07-16.
 
 ### Remaining
-1. **Quality spread / cross-wear features** — genuinely new signal, 1-2pp.
-2. **Multi-horizon joint training** — all horizons in one model, 1-2pp.
-3. **Ensemble expansion** — more seeds with column subsampling, 1-2pp.
+1. **Multi-horizon joint training** — all horizons in one model, 1-2pp.
+2. **Ensemble expansion** — more seeds with column subsampling, 1-2pp.
+
+### Tested & shelved
+- 🛑 **Quality spread / cross-wear features** — built and A/B'd 2026-07-26
+  (`scripts/ab_test_quality_spread.py`, walk-forward, 1,500 variant-group items).
+  **Net-flat: +0.16pp mean** (3d −0.78 / 7d +1.28 / 14d +0.76 / 30d −0.63pp), and
+  **+77% feature-build time**. Helps 7d/14d, hurts 3d/30d. Code kept behind the
+  default-off `ENABLE_QUALITY_SPREAD` flag; not enabled. See
+  `docs/changelog/2026-07-25-quality-spread-experiment.md`.
 
 ---
 
@@ -146,6 +153,7 @@ Every completed feature group was measured. The pattern is consistent:
 | Event decay optimization | Small | **0pp** | — |
 | CatBoost | not est. | **-18 to -20pp** | — |
 | Multi-source outlier voting | +2-4pp | **0pp train / essential inference** | Pre-backfill estimate; 99.6% training data now single-source |
+| Quality spread / cross-wear | +1-2pp | **+0.16pp mean** (net-flat; +1.28/+0.76 on 7d/14d, −0.78/−0.63 on 3d/30d) | ~8-16% of estimate; shelved for +77% build cost |
 
 ### Root Causes
 
