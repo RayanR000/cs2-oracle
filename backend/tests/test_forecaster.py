@@ -1726,3 +1726,39 @@ class TestQualitySpreadWear:
             assert np.isfinite(out[c]).all()
 
 
+class TestQualitySpreadPremiums:
+    def _pair_df(self):
+        rows = []
+        base = date(2026, 1, 1)
+        for d in range(40):
+            rows.append({"item_id": "st", "date": base + timedelta(days=d), "price": 30.0})
+            rows.append({"item_id": "plain", "date": base + timedelta(days=d), "price": 10.0})
+            rows.append({"item_id": "loner", "date": base + timedelta(days=d), "price": 7.0})
+        return pd.DataFrame(rows)
+
+    def test_stattrak_premium(self, forecaster, monkeypatch):
+        monkeypatch.setenv("QUALITY_SPREAD", "1")
+        name_map = {
+            "st": "StatTrak™ AK-47 | Redline (Field-Tested)",
+            "plain": "AK-47 | Redline (Field-Tested)",
+            "loner": "AWP | Asiimov (Field-Tested)",
+        }
+        meta = pd.DataFrame([{"item_id": k, "name": v, "type": "skin"} for k, v in name_map.items()])
+        forecaster._fetch_item_metadata = lambda: meta
+        out = forecaster._add_quality_spread_features(self._pair_df())
+        r = lambda iid, d: out[(out.item_id == iid) &
+                               (out.date == date(2026, 1, 1) + timedelta(days=d))].iloc[0]
+        # premium = 30/10 = 3.0 on BOTH members
+        assert r("st", 5)["stattrak_premium"] == pytest.approx(3.0)
+        assert r("plain", 5)["stattrak_premium"] == pytest.approx(3.0)
+        assert r("st", 5)["has_stattrak_pair"] == 1
+        # lone AWP with no StatTrak sibling -> neutral
+        assert r("loner", 5)["has_stattrak_pair"] == 0
+        assert r("loner", 5)["stattrak_premium"] == 0.0
+        # constant premium -> zero change, finite z
+        import numpy as np
+        assert r("st", 20)["stattrak_premium_chg_7d"] == pytest.approx(0.0)
+        assert np.isfinite(out["souvenir_premium"]).all()
+        assert np.isfinite(out["stattrak_premium_z60"]).all()
+
+

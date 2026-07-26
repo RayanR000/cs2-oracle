@@ -1291,6 +1291,33 @@ class ItemForecaster:
         df["wear_spread_ratio_chg_14d"] = g.transform(lambda s: s - s.shift(14)).fillna(0.0)
         df["wear_spread_ratio"] = ratio.fillna(0.0)
 
+        # ── Premium axes (StatTrak, Souvenir) ──────────────────────
+        def _add_premium(df, group_col, flag_col, prefix, hi_mask):
+            # hi_mask marks the "numerator" variant (ST=1 / Souvenir=1).
+            hi = df["price"].where(hi_mask)
+            lo = df["price"].where(~hi_mask)
+            gk = [group_col, "date"]
+            hi_p = hi.groupby([df[group_col], df["date"]]).transform("max")
+            lo_p = lo.groupby([df[group_col], df["date"]]).transform("max")
+            has_pair = df[group_col].notna() & hi_p.notna() & lo_p.notna()
+            df[flag_col] = has_pair.astype(float)
+            prem = (hi_p / lo_p.replace(0, np.nan)).where(has_pair)
+            gg = df.assign(_p=prem).groupby("item_id")["_p"]
+            rmean = gg.transform(lambda s: s.rolling(60, min_periods=20).mean())
+            rstd = gg.transform(lambda s: s.rolling(60, min_periods=20).std())
+            z = (prem - rmean) / rstd.replace(0, np.nan)
+            df[f"{prefix}_z60"] = z.replace([np.inf, -np.inf], np.nan).fillna(0.0)
+            df[f"{prefix}_chg_7d"] = gg.transform(lambda s: s - s.shift(7)).fillna(0.0)
+            df[prefix] = prem.fillna(0.0)
+            return df
+
+        # is_stattrak / is_souvenir come from the attribute index. st_group and
+        # sv_group are already on df from the Task-3 merge (drop line removed below).
+        _st = df["item_id"].map(dict(zip(attrs["item_id"], attrs["is_stattrak"]))).fillna(0).astype(int)
+        _sv = df["item_id"].map(dict(zip(attrs["item_id"], attrs["is_souvenir"]))).fillna(0).astype(int)
+        df = _add_premium(df, "st_group", "has_stattrak_pair", "stattrak_premium", _st == 1)
+        df = _add_premium(df, "sv_group", "has_souvenir_pair", "souvenir_premium", _sv == 1)
+
         df = df.drop(columns=["wear_group", "st_group", "sv_group"])
         return df
 
