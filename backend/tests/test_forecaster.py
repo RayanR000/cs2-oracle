@@ -222,14 +222,50 @@ class TestFeatureEngineering:
             assert col in df.columns
             assert _feature_group(col) == "price_technicals"
 
-    def test_rsi_price_divergence_sign(self, forecaster, basic_price_df):
-        # With realistic price data (both ups and downs), verify rsi_price_divergence_7d
-        # is computed. The feature exists and should be finite where RSI can be computed.
-        df = forecaster._compute_price_features(basic_price_df)
-        # The feature should have some finite values (where RSI has sufficient history)
-        finite_mask = np.isfinite(df["rsi_price_divergence_7d"])
-        # With 100 rows per item, most should have finite values after the initial ramp-up
-        assert finite_mask.sum() > 0, "rsi_price_divergence_7d should have finite values in basic_price_df"
+    def test_rsi_price_divergence_sign(self, forecaster):
+        # Build a price series designed to trigger bearish divergence:
+        # large gains early, then deceleration with small gains/losses.
+        # This creates rows where price is still up (return_7d > 0) but RSI has
+        # fallen (rsi_divergence_7d < 0), the textbook bearish-divergence pattern.
+        rows = []
+        price = 100.0
+        # Phase 1: Days 0-15 — strong uptrend (large daily gains ~2%)
+        for d in range(16):
+            price *= 1.02
+            rows.append({
+                "item_id": "a",
+                "date": date(2026, 1, 1) + timedelta(days=d),
+                "price": round(price, 2),
+                "volume": 100,
+            })
+        # Phase 2: Days 16-40 — deceleration with small gains/losses (~0.3%)
+        # to let RSI fall while the 7-day return remains positive
+        rng = np.random.default_rng(0)
+        for d in range(16, 45):
+            move = rng.normal(0.003, 0.01)  # net positive but with small oscillations
+            price *= (1.0 + move)
+            rows.append({
+                "item_id": "a",
+                "date": date(2026, 1, 1) + timedelta(days=d),
+                "price": round(max(price, 100), 2),
+                "volume": 100,
+            })
+        df_in = pd.DataFrame(rows)
+        df = forecaster._compute_price_features(df_in)
+
+        # Filter to rows where bearish divergence is present:
+        # price rising (return_7d > 0) AND RSI falling (rsi_divergence_7d < 0)
+        bearish = df[(df["return_7d"] > 0) & (df["rsi_divergence_7d"] < 0)]
+        assert len(bearish) > 0, "Expected at least one row with bearish divergence (price up, RSI down)"
+        # In this condition, rsi_price_divergence_7d should be positive
+        assert (bearish["rsi_price_divergence_7d"] > 0).all(), \
+            f"Bearish divergence rows must have rsi_price_divergence_7d > 0; found min={bearish['rsi_price_divergence_7d'].min()}"
+
+        # Symmetric guard: bullish divergence (price down, RSI up) → negative
+        bullish = df[(df["return_7d"] < 0) & (df["rsi_divergence_7d"] > 0)]
+        if len(bullish) > 0:
+            assert (bullish["rsi_price_divergence_7d"] < 0).all(), \
+                "Bullish divergence rows should have rsi_price_divergence_7d < 0"
 
     def test_divergence_nan_on_short_history(self, forecaster):
         df_in = pd.DataFrame({
