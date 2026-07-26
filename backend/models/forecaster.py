@@ -96,6 +96,9 @@ def _feature_group(name: str) -> str:
         return "cross_sectional"
     if name.startswith("social_"):
         return "social"
+    if any(name.startswith(p) for p in ("wear_", "stattrak_", "souvenir_",
+                                         "has_wear", "has_stattrak", "has_souvenir")):
+        return "quality_spread"
     return "other"
 
 
@@ -185,6 +188,11 @@ class ItemForecaster:
     # stop being applied immediately.
     STACK_RESIDUALS = False
     RESIDUAL_ALPHA = 5.0
+    # Quality-spread / cross-wear experiment (2026-07-25). Default OFF.
+    # When enabled, _add_quality_spread_features computes cross-variant
+    # features AND "quality_spread" is appended to the feature allowlist so
+    # the columns reach the model. Env override: QUALITY_SPREAD=1.
+    ENABLE_QUALITY_SPREAD = False
     # Weight given to the previous day's forecast when smoothing/blending
     # current predictions to reduce daily direction flip-flopping.
     FORECAST_BLEND_WEIGHT = 0.15
@@ -2036,12 +2044,13 @@ class ItemForecaster:
         self.feature_cols = self._prune_features(df)
 
         # Restrict to the allowlisted feature groups (default: price technicals).
-        if self.FEATURE_GROUP_ALLOWLIST:
+        _allowlist = self._effective_allowlist()
+        if _allowlist:
             pre = len(self.feature_cols)
             self.feature_cols = self._apply_feature_allowlist(
-                self.feature_cols, self.FEATURE_GROUP_ALLOWLIST)
+                self.feature_cols, _allowlist)
             logger.info(
-                f"Feature allowlist {self.FEATURE_GROUP_ALLOWLIST}: "
+                f"Feature allowlist {_allowlist}: "
                 f"{pre} -> {len(self.feature_cols)} features"
             )
         self._base_feature_cols = list(self.feature_cols)
@@ -2731,6 +2740,15 @@ class ItemForecaster:
             hits += int(p_dir == a_dir)
             n += 1
         return round(hits / n * 100, 1) if n else 0.0
+
+    def _quality_spread_enabled(self) -> bool:
+        return bool(self.ENABLE_QUALITY_SPREAD) or os.environ.get("QUALITY_SPREAD") == "1"
+
+    def _effective_allowlist(self):
+        allow = self.FEATURE_GROUP_ALLOWLIST
+        if not allow or not self._quality_spread_enabled():
+            return allow
+        return list(allow) + (["quality_spread"] if "quality_spread" not in allow else [])
 
     @staticmethod
     def _apply_feature_allowlist(feature_cols, allowlist):

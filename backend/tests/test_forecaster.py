@@ -1613,3 +1613,25 @@ class TestRegimeSwitching:
             assert len(r_train) < 500 or regime == "range"
 
 
+class TestQualitySpreadPlumbing:
+    def test_feature_group_routes_quality_spread(self):
+        from models.forecaster import _feature_group
+        for name in ["wear_spread_ratio", "wear_spread_ratio_z60",
+                     "wear_ladder_dispersion", "stattrak_premium",
+                     "stattrak_premium_chg_7d", "souvenir_premium",
+                     "has_wear_siblings", "has_stattrak_pair", "has_souvenir_pair"]:
+            assert _feature_group(name) == "quality_spread", name
+        # existing routing is unaffected
+        assert _feature_group("return_7d") == "price_technicals"
+        assert _feature_group("is_stattrak") == "item_identity"
+
+    def test_flag_default_off(self, forecaster):
+        assert forecaster.ENABLE_QUALITY_SPREAD is False
+        assert forecaster._quality_spread_enabled() is False
+
+    def test_effective_allowlist_appends_when_on(self, forecaster, monkeypatch):
+        assert forecaster._effective_allowlist() == ["price_technicals"]
+        monkeypatch.setenv("QUALITY_SPREAD", "1")
+        assert forecaster._effective_allowlist() == ["price_technicals", "quality_spread"]
+
+
