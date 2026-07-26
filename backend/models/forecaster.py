@@ -1211,6 +1211,42 @@ class ItemForecaster:
         logger.info("  social sentiment features added")
         return df
 
+    def _build_variant_attributes(self, item_ids, name_map: dict) -> pd.DataFrame:
+        """Parse item names into cross-variant grouping keys.
+
+        Returns one row per item_id. Items whose name does not parse into
+        weapon+skin+quality get None group keys (they will receive neutral
+        feature values and flag-off indicators downstream).
+        """
+        recs = []
+        for iid in item_ids:
+            name = name_map.get(str(iid))
+            p = parse_item_name(name) if name else {}
+            weapon = p.get("weapon")
+            skin = p.get("skin_name")
+            quality = p.get("quality")
+            st = int(p.get("is_stattrak", False))
+            sv = int(p.get("is_souvenir", False))
+            if weapon and skin and quality:
+                recs.append({
+                    "item_id": iid,
+                    "quality_rank": int(p.get("quality_rank", 0)),
+                    "is_stattrak": st,
+                    "is_souvenir": sv,
+                    "wear_group": f"{weapon}|{skin}|{st}|{sv}",
+                    "st_group": f"{weapon}|{skin}|{quality}|{sv}",
+                    "sv_group": f"{weapon}|{skin}|{quality}|{st}",
+                })
+            else:
+                recs.append({
+                    "item_id": iid, "quality_rank": 0, "is_stattrak": 0,
+                    "is_souvenir": 0, "wear_group": None,
+                    "st_group": None, "sv_group": None,
+                })
+        return pd.DataFrame(recs, columns=[
+            "item_id", "quality_rank", "is_stattrak", "is_souvenir",
+            "wear_group", "st_group", "sv_group"])
+
     def _add_item_metadata_features(self, df: pd.DataFrame) -> pd.DataFrame:
         meta = self._fetch_item_metadata()
         if meta.empty:

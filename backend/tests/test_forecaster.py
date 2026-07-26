@@ -1635,3 +1635,32 @@ class TestQualitySpreadPlumbing:
         assert forecaster._effective_allowlist() == ["price_technicals", "quality_spread"]
 
 
+class TestVariantAttributes:
+    def test_groups_for_parseable_skins(self, forecaster):
+        name_map = {
+            "1": "AK-47 | Redline (Field-Tested)",
+            "2": "AK-47 | Redline (Factory New)",
+            "3": "StatTrak™ AK-47 | Redline (Field-Tested)",
+            "4": "Glove Case",  # no wear -> unparseable into a skin
+        }
+        attrs = forecaster._build_variant_attributes(["1", "2", "3", "4"], name_map)
+        by_id = {r["item_id"]: r for _, r in attrs.iterrows()}
+        # items 1 and 2 share a wear_group (same weapon+skin+ST+SV, differ by wear)
+        assert by_id["1"]["wear_group"] == by_id["2"]["wear_group"]
+        assert by_id["1"]["wear_group"] is not None
+        # item 3 (StatTrak) is a DIFFERENT wear_group but shares st_group with item 1
+        assert by_id["3"]["wear_group"] != by_id["1"]["wear_group"]
+        assert by_id["3"]["st_group"] == by_id["1"]["st_group"]
+        assert by_id["3"]["is_stattrak"] == 1
+        assert by_id["2"]["quality_rank"] == 5  # Factory New
+        # unparseable item -> all groups None
+        assert by_id["4"]["wear_group"] is None
+        assert by_id["4"]["st_group"] is None
+
+    def test_missing_name_yields_none_groups(self, forecaster):
+        attrs = forecaster._build_variant_attributes(["9"], {})
+        row = attrs.iloc[0]
+        assert row["wear_group"] is None
+        assert row["is_stattrak"] == 0
+
+
