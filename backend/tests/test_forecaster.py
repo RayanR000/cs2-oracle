@@ -1762,3 +1762,37 @@ class TestQualitySpreadPremiums:
         assert np.isfinite(out["stattrak_premium_z60"]).all()
 
 
+
+
+class TestQualitySpreadPipeline:
+    def _mini(self):
+        rows = []
+        base = date(2026, 1, 1)
+        for d in range(30):
+            rows.append({"item_id": "a", "date": base + timedelta(days=d), "price": 10.0 + d})
+            rows.append({"item_id": "b", "date": base + timedelta(days=d), "price": 20.0 + d})
+        return pd.DataFrame(rows)
+
+    def test_pipeline_call_present_at_both_sites(self):
+        import inspect
+        from models.forecaster import ItemForecaster
+        src = inspect.getsource(ItemForecaster)
+        assert src.count("_add_quality_spread_features(df)") >= 2
+
+    def test_no_future_leak(self, forecaster, monkeypatch):
+        monkeypatch.setenv("QUALITY_SPREAD", "1")
+        meta = pd.DataFrame([
+            {"item_id": "a", "name": "AK-47 | Redline (Field-Tested)", "type": "skin"},
+            {"item_id": "b", "name": "AK-47 | Redline (Factory New)", "type": "skin"},
+        ])
+        forecaster._fetch_item_metadata = lambda: meta
+        base_df = self._mini()
+        out1 = forecaster._add_quality_spread_features(base_df.copy())
+        # Perturb the LAST day's prices; a feature at day 10 must not change.
+        pert = base_df.copy()
+        last = pert["date"] == date(2026, 1, 30)
+        pert.loc[last, "price"] = pert.loc[last, "price"] * 5
+        out2 = forecaster._add_quality_spread_features(pert)
+        pick = lambda o: o[(o.item_id == "a") & (o.date == date(2026, 1, 11))].iloc[0]
+        for c in ["wear_spread_ratio", "wear_spread_ratio_z60", "wear_spread_ratio_chg_7d"]:
+            assert pick(out1)[c] == pytest.approx(pick(out2)[c]), c

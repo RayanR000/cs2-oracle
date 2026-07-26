@@ -2136,6 +2136,7 @@ class ItemForecaster:
         # Add cross-sectional (market-regime) features
         _t3 = datetime.now()
         df = self._add_cross_sectional_features(df)
+        df = self._add_quality_spread_features(df)
         logger.info(f"  cross_sectional_features took {(datetime.now() - _t3).total_seconds():.0f}s")
 
         # Add supply depth features (sell_listings, skinport_quantity)
@@ -3110,6 +3111,7 @@ class ItemForecaster:
 
             # Add cross-sectional features (same as training)
             df = self._add_cross_sectional_features(df)
+            df = self._add_quality_spread_features(df)
 
             # Add supply depth features (same as training)
             df = self._add_supply_depth_features(df)
