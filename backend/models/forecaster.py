@@ -948,6 +948,27 @@ class ItemForecaster:
         df["macd_histogram"] = df["macd_line"] - df["macd_signal"]
 
         # =====================================================================
+        # Volatility asymmetry (downside vs upside semi-deviation) — pure price.
+        # A symmetric std collapses panic (sharp downside) and froth (volatile
+        # upside) into one number; splitting them exposes the difference.
+        # =====================================================================
+        ret = df["return_1d"]
+        ret_neg = ret.where(ret < 0)
+        ret_pos = ret.where(ret > 0)
+        df["vol_semidev_down_30d"] = (
+            ret_neg.groupby(df["item_id"]).rolling(30, min_periods=5).std()
+            .reset_index(level=0, drop=True)
+        )
+        df["vol_semidev_up_30d"] = (
+            ret_pos.groupby(df["item_id"]).rolling(30, min_periods=5).std()
+            .reset_index(level=0, drop=True)
+        )
+        # Ratio > 1 => upside more volatile (froth); < 1 => downside sharper
+        # (panic). Clipped: near-zero downside vol otherwise blows the ratio up.
+        _semidev_down = df["vol_semidev_down_30d"].replace(0, np.nan)
+        df["vol_skew_30d"] = (df["vol_semidev_up_30d"] / _semidev_down).clip(0, 5)
+
+        # =====================================================================
         # Support / Resistance distances
         # =====================================================================
         df["distance_to_support"] = ((df["price"] - df["price_min_30d"]).replace(0, np.nan) /

@@ -185,6 +185,36 @@ class TestFeatureEngineering:
         df = forecaster._compute_price_features(no_vol)
         assert df["volume_missing"].iloc[0] == 1
 
+    def test_vol_asymmetry_present_and_price_group(self, forecaster, basic_price_df):
+        from models.forecaster import _feature_group
+        df = forecaster._compute_price_features(basic_price_df)
+        for col in ["vol_semidev_down_30d", "vol_semidev_up_30d", "vol_skew_30d"]:
+            assert col in df.columns
+            assert _feature_group(col) == "price_technicals"
+
+    def test_vol_skew_clip_bounds(self, forecaster, basic_price_df):
+        df = forecaster._compute_price_features(basic_price_df)
+        s = df["vol_skew_30d"].dropna()
+        assert (s >= 0).all() and (s <= 5).all()
+
+    def test_vol_skew_reflects_asymmetry(self, forecaster):
+        # Large, varied up-moves; small, varied down-moves => upside semidev >
+        # downside semidev => skew > 1. Both sides vary, so neither semidev is
+        # exactly zero (which would make the ratio NaN).
+        rng = np.random.default_rng(0)
+        price = 100.0
+        rows = []
+        for d in range(120):
+            if d % 2 == 0:
+                price *= 1 + rng.uniform(0.03, 0.06)    # big ups
+            else:
+                price *= 1 - rng.uniform(0.002, 0.006)  # tiny downs
+            rows.append({"item_id": "a",
+                         "date": date(2026, 1, 1) + timedelta(days=d),
+                         "price": round(price, 2), "volume": 100})
+        df = forecaster._compute_price_features(pd.DataFrame(rows))
+        assert df["vol_skew_30d"].dropna().iloc[-1] > 1.0
+
 
 class TestTemporalFeatures:
     def test_temporal_features_added(self, forecaster, basic_price_df):
