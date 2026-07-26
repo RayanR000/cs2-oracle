@@ -1296,7 +1296,6 @@ class ItemForecaster:
             # hi_mask marks the "numerator" variant (ST=1 / Souvenir=1).
             hi = df["price"].where(hi_mask)
             lo = df["price"].where(~hi_mask)
-            gk = [group_col, "date"]
             hi_p = hi.groupby([df[group_col], df["date"]]).transform("max")
             lo_p = lo.groupby([df[group_col], df["date"]]).transform("max")
             has_pair = df[group_col].notna() & hi_p.notna() & lo_p.notna()
