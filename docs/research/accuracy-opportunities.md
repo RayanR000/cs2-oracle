@@ -118,12 +118,13 @@ Date: 2026-07-14
 1. **Multi-horizon joint training** — all horizons in one model, 1-2pp.
 2. **Ensemble expansion** — more seeds with column subsampling, 1-2pp.
 
-### Tested & shelved
+### Tested & removed
 - 🛑 **Quality spread / cross-wear features** — built and A/B'd 2026-07-26
-  (`scripts/ab_test_quality_spread.py`, walk-forward, 1,500 variant-group items).
-  **Net-flat: +0.16pp mean** (3d −0.78 / 7d +1.28 / 14d +0.76 / 30d −0.63pp), and
-  **+77% feature-build time**. Helps 7d/14d, hurts 3d/30d. Code kept behind the
-  default-off `ENABLE_QUALITY_SPREAD` flag; not enabled. See
+  (walk-forward, 1,500 variant-group items). **Net-flat: +0.16pp mean**
+  (3d −0.78 / 7d +1.28 / 14d +0.76 / 30d −0.63pp), and **+77% feature-build
+  time**. Helps 7d/14d, hurts 3d/30d. **Feature code removed entirely** the same
+  day (net-flat did not justify the build cost + complexity). Design preserved in
+  `docs/superpowers/specs/2026-07-25-quality-spread-features-design.md`; result in
   `docs/changelog/2026-07-25-quality-spread-experiment.md`.
 
 ---

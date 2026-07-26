@@ -96,9 +96,6 @@ def _feature_group(name: str) -> str:
         return "cross_sectional"
     if name.startswith("social_"):
         return "social"
-    if any(name.startswith(p) for p in ("wear_", "stattrak_", "souvenir_",
-                                         "has_wear", "has_stattrak", "has_souvenir")):
-        return "quality_spread"
     return "other"
 
 
@@ -188,11 +185,6 @@ class ItemForecaster:
     # stop being applied immediately.
     STACK_RESIDUALS = False
     RESIDUAL_ALPHA = 5.0
-    # Quality-spread / cross-wear experiment (2026-07-25). Default OFF.
-    # When enabled, _add_quality_spread_features computes cross-variant
-    # features AND "quality_spread" is appended to the feature allowlist so
-    # the columns reach the model. Env override: QUALITY_SPREAD=1.
-    ENABLE_QUALITY_SPREAD = False
     # Weight given to the previous day's forecast when smoothing/blending
     # current predictions to reduce daily direction flip-flopping.
     FORECAST_BLEND_WEIGHT = 0.15
@@ -1211,115 +1203,6 @@ class ItemForecaster:
         logger.info("  social sentiment features added")
         return df
 
-    def _build_variant_attributes(self, item_ids, name_map: dict) -> pd.DataFrame:
-        """Parse item names into cross-variant grouping keys.
-
-        Returns one row per item_id. Items whose name does not parse into
-        weapon+skin+quality get None group keys (they will receive neutral
-        feature values and flag-off indicators downstream).
-        """
-        recs = []
-        for iid in item_ids:
-            name = name_map.get(str(iid))
-            p = parse_item_name(name) if name else {}
-            weapon = p.get("weapon")
-            skin = p.get("skin_name")
-            quality = p.get("quality")
-            st = int(p.get("is_stattrak", False))
-            sv = int(p.get("is_souvenir", False))
-            if weapon and skin and quality:
-                recs.append({
-                    "item_id": iid,
-                    "quality_rank": int(p.get("quality_rank", 0)),
-                    "is_stattrak": st,
-                    "is_souvenir": sv,
-                    "wear_group": f"{weapon}|{skin}|{st}|{sv}",
-                    "st_group": f"{weapon}|{skin}|{quality}|{sv}",
-                    "sv_group": f"{weapon}|{skin}|{quality}|{st}",
-                })
-            else:
-                recs.append({
-                    "item_id": iid, "quality_rank": 0, "is_stattrak": 0,
-                    "is_souvenir": 0, "wear_group": None,
-                    "st_group": None, "sv_group": None,
-                })
-        return pd.DataFrame(recs, columns=[
-            "item_id", "quality_rank", "is_stattrak", "is_souvenir",
-            "wear_group", "st_group", "sv_group"])
-
-    def _add_quality_spread_features(self, df: pd.DataFrame) -> pd.DataFrame:
-        """Cross-variant relative-value features (wear ladder; StatTrak/Souvenir
-        premiums added in a later step). Gated by _quality_spread_enabled().
-
-        All cross-item aggregates use SAME-DATE sibling prices (leak-safe);
-        z-scores and changes use only trailing per-item history. Items without
-        a sibling on an axis get 0.0 features and a 0 indicator flag.
-        """
-        if not self._quality_spread_enabled():
-            return df
-
-        logger.info("Adding quality-spread (cross-variant) features...")
-        meta = self._fetch_item_metadata()
-        name_map = {}
-        if meta is not None and not meta.empty:
-            name_map = dict(zip(meta["item_id"].astype(str), meta["name"]))
-        attrs = self._build_variant_attributes(df["item_id"].unique(), name_map)
-        df = df.merge(attrs[["item_id", "wear_group", "st_group", "sv_group"]],
-                      on="item_id", how="left")
-
-        df = df.sort_values(["item_id", "date"]).reset_index(drop=True)
-
-        # ── Wear axis ──────────────────────────────────────────────
-        gm = df.groupby(["wear_group", "date"])["price"]
-        group_mean = gm.transform("mean")
-        group_std = gm.transform("std")
-        group_n = gm.transform("count")
-        has_wear = df["wear_group"].notna() & (group_n >= 2)
-        df["has_wear_siblings"] = has_wear.astype(float)
-
-        ratio = df["price"] / group_mean.replace(0, np.nan)
-        ratio = ratio.where(has_wear)  # NaN where no sibling (kept out of rolling)
-        df["wear_ladder_dispersion"] = (group_std / group_mean.replace(0, np.nan)
-                                        ).where(has_wear).fillna(0.0)
-
-        g = df.assign(_r=ratio).groupby("item_id")["_r"]
-        roll_mean = g.transform(lambda s: s.rolling(60, min_periods=20).mean())
-        roll_std = g.transform(lambda s: s.rolling(60, min_periods=20).std())
-        z = (ratio - roll_mean) / roll_std.replace(0, np.nan)
-        df["wear_spread_ratio_z60"] = z.replace([np.inf, -np.inf], np.nan).fillna(0.0)
-        df["wear_spread_ratio_chg_7d"] = g.transform(lambda s: s - s.shift(7)).fillna(0.0)
-        df["wear_spread_ratio_chg_14d"] = g.transform(lambda s: s - s.shift(14)).fillna(0.0)
-        df["wear_spread_ratio"] = ratio.fillna(0.0)
-
-        # ── Premium axes (StatTrak, Souvenir) ──────────────────────
-        def _add_premium(df, group_col, flag_col, prefix, hi_mask):
-            # hi_mask marks the "numerator" variant (ST=1 / Souvenir=1).
-            hi = df["price"].where(hi_mask)
-            lo = df["price"].where(~hi_mask)
-            hi_p = hi.groupby([df[group_col], df["date"]]).transform("max")
-            lo_p = lo.groupby([df[group_col], df["date"]]).transform("max")
-            has_pair = df[group_col].notna() & hi_p.notna() & lo_p.notna()
-            df[flag_col] = has_pair.astype(float)
-            prem = (hi_p / lo_p.replace(0, np.nan)).where(has_pair)
-            gg = df.assign(_p=prem).groupby("item_id")["_p"]
-            rmean = gg.transform(lambda s: s.rolling(60, min_periods=20).mean())
-            rstd = gg.transform(lambda s: s.rolling(60, min_periods=20).std())
-            z = (prem - rmean) / rstd.replace(0, np.nan)
-            df[f"{prefix}_z60"] = z.replace([np.inf, -np.inf], np.nan).fillna(0.0)
-            df[f"{prefix}_chg_7d"] = gg.transform(lambda s: s - s.shift(7)).fillna(0.0)
-            df[prefix] = prem.fillna(0.0)
-            return df
-
-        # is_stattrak / is_souvenir come from the attribute index. st_group and
-        # sv_group are already on df from the Task-3 merge (drop line removed below).
-        _st = df["item_id"].map(dict(zip(attrs["item_id"], attrs["is_stattrak"]))).fillna(0).astype(int)
-        _sv = df["item_id"].map(dict(zip(attrs["item_id"], attrs["is_souvenir"]))).fillna(0).astype(int)
-        df = _add_premium(df, "st_group", "has_stattrak_pair", "stattrak_premium", _st == 1)
-        df = _add_premium(df, "sv_group", "has_souvenir_pair", "souvenir_premium", _sv == 1)
-
-        df = df.drop(columns=["wear_group", "st_group", "sv_group"])
-        return df
-
     def _add_item_metadata_features(self, df: pd.DataFrame) -> pd.DataFrame:
         meta = self._fetch_item_metadata()
         if meta.empty:
@@ -2135,7 +2018,6 @@ class ItemForecaster:
         # Add cross-sectional (market-regime) features
         _t3 = datetime.now()
         df = self._add_cross_sectional_features(df)
-        df = self._add_quality_spread_features(df)
         logger.info(f"  cross_sectional_features took {(datetime.now() - _t3).total_seconds():.0f}s")
 
         # Add supply depth features (sell_listings, skinport_quantity)
@@ -2154,13 +2036,12 @@ class ItemForecaster:
         self.feature_cols = self._prune_features(df)
 
         # Restrict to the allowlisted feature groups (default: price technicals).
-        _allowlist = self._effective_allowlist()
-        if _allowlist:
+        if self.FEATURE_GROUP_ALLOWLIST:
             pre = len(self.feature_cols)
             self.feature_cols = self._apply_feature_allowlist(
-                self.feature_cols, _allowlist)
+                self.feature_cols, self.FEATURE_GROUP_ALLOWLIST)
             logger.info(
-                f"Feature allowlist {_allowlist}: "
+                f"Feature allowlist {self.FEATURE_GROUP_ALLOWLIST}: "
                 f"{pre} -> {len(self.feature_cols)} features"
             )
         self._base_feature_cols = list(self.feature_cols)
@@ -2851,15 +2732,6 @@ class ItemForecaster:
             n += 1
         return round(hits / n * 100, 1) if n else 0.0
 
-    def _quality_spread_enabled(self) -> bool:
-        return bool(self.ENABLE_QUALITY_SPREAD) or os.environ.get("QUALITY_SPREAD") == "1"
-
-    def _effective_allowlist(self):
-        allow = self.FEATURE_GROUP_ALLOWLIST
-        if not allow or not self._quality_spread_enabled():
-            return allow
-        return list(allow) + (["quality_spread"] if "quality_spread" not in allow else [])
-
     @staticmethod
     def _apply_feature_allowlist(feature_cols, allowlist):
         """Keep only features whose _feature_group() is in ``allowlist``.
@@ -3110,7 +2982,6 @@ class ItemForecaster:
 
             # Add cross-sectional features (same as training)
             df = self._add_cross_sectional_features(df)
-            df = self._add_quality_spread_features(df)
 
             # Add supply depth features (same as training)
             df = self._add_supply_depth_features(df)

@@ -1,7 +1,7 @@
 # Quality-spread / cross-wear features — experiment
 
 **Date:** 2026-07-25
-**Status:** SHELVED (2026-07-26). Implemented behind `QUALITY_SPREAD=1` (default off); A/B ran, net-flat, feature disabled. See Results.
+**Status:** REMOVED (2026-07-26). Implemented, A/B'd (net-flat), then the feature code was deleted entirely. See Results & Decision.
 **Spec:** docs/superpowers/specs/2026-07-25-quality-spread-features-design.md
 
 ## What shipped (code)
@@ -71,17 +71,23 @@ group adds **+77%** to the feature-engineering phase (66.4s → 117.8s) from the
 several full-frame groupby + rolling-window passes. This is paid on every
 training run.
 
-## Decision: SHELVE (2026-07-26)
+## Decision: SHELVED then REMOVED (2026-07-26)
 
-`ENABLE_QUALITY_SPREAD` stays **False** (default). The code remains in place,
-disabled, behind the flag; the A/B harness (`scripts/ab_test_quality_spread.py`)
-is kept for reproducibility.
+The feature was first shelved (kept behind the default-off flag), then **removed
+entirely** the same day. Deleted: the `ENABLE_QUALITY_SPREAD` flag,
+`_quality_spread_enabled`/`_effective_allowlist`, `_build_variant_attributes`,
+`_add_quality_spread_features`, the `quality_spread` branch in `_feature_group`,
+both pipeline call sites, the 5 test classes, and the A/B harness
+(`scripts/ab_test_quality_spread.py`). The allowlist wiring was reverted to use
+`FEATURE_GROUP_ALLOWLIST` directly. This changelog and the roadmap keep the
+result on record.
 
 Rationale: a **net-flat** accuracy result (+0.16pp mean) does not justify **+77%**
 feature-build time plus the permanent complexity (14 features, item-metadata
 dependency, heavy rolling passes). The ~1pp gains on 7d/14d sit in the magnitude
 band that this project's calibration history repeatedly shows evaporating under
 permutation testing, and no permutation confirmation was run — so the burden of
-proof for adding permanent complexity is not met. If revisited, gate on a
+proof for keeping the complexity was not met. If revisited, the design lives in
+`docs/superpowers/specs/2026-07-25-quality-spread-features-design.md`; gate on a
 permutation test on the full production model before enabling, and consider a
 7d/14d-only enable via `HORIZON_EXCLUDED_GROUPS` (3d/30d excluded).
