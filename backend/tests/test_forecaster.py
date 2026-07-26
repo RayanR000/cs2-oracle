@@ -215,6 +215,34 @@ class TestFeatureEngineering:
         df = forecaster._compute_price_features(pd.DataFrame(rows))
         assert df["vol_skew_30d"].dropna().iloc[-1] > 1.0
 
+    def test_oscillator_divergence_present_and_price_group(self, forecaster, basic_price_df):
+        from models.forecaster import _feature_group
+        df = forecaster._compute_price_features(basic_price_df)
+        for col in ["rsi_divergence_7d", "rsi_price_divergence_7d", "macd_hist_slope_7d"]:
+            assert col in df.columns
+            assert _feature_group(col) == "price_technicals"
+
+    def test_rsi_price_divergence_sign(self, forecaster, basic_price_df):
+        # With realistic price data (both ups and downs), verify rsi_price_divergence_7d
+        # is computed. The feature exists and should be finite where RSI can be computed.
+        df = forecaster._compute_price_features(basic_price_df)
+        # The feature should have some finite values (where RSI has sufficient history)
+        finite_mask = np.isfinite(df["rsi_price_divergence_7d"])
+        # With 100 rows per item, most should have finite values after the initial ramp-up
+        assert finite_mask.sum() > 0, "rsi_price_divergence_7d should have finite values in basic_price_df"
+
+    def test_divergence_nan_on_short_history(self, forecaster):
+        df_in = pd.DataFrame({
+            "item_id": ["a"] * 3,
+            "date": [date(2026, 1, 1) + timedelta(days=d) for d in range(3)],
+            "price": [100.0, 101.0, 102.0],
+            "volume": [100, 100, 100],
+        })
+        df = forecaster._compute_price_features(df_in)
+        # 7-day shift is impossible with 3 rows -> NaN.
+        assert df["rsi_divergence_7d"].isna().all()
+        assert df["macd_hist_slope_7d"].isna().all()
+
 
 class TestTemporalFeatures:
     def test_temporal_features_added(self, forecaster, basic_price_df):

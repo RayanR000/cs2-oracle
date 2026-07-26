@@ -969,6 +969,24 @@ class ItemForecaster:
         df["vol_skew_30d"] = (df["vol_semidev_up_30d"] / _semidev_down).clip(0, 5)
 
         # =====================================================================
+        # Oscillator divergence — momentum of RSI/MACD, and price/RSI
+        # disagreement. The frame is already item/date-sorted (MACD block
+        # re-sorted it), so a groupby shift(7) is a clean 7-day lookback.
+        # =====================================================================
+        df["rsi_divergence_7d"] = (
+            df["rsi_14"] - df.groupby("item_id")["rsi_14"].shift(7)
+        )
+        # Positive => price up while RSI down (bearish divergence). return_7d is
+        # winsorized to +/-500; clip to +/-50 keeps typical moves on the same
+        # scale as the RSI term (RSI change is bounded to +/-100).
+        df["rsi_price_divergence_7d"] = (
+            df["return_7d"].clip(-50, 50) / 50.0 - df["rsi_divergence_7d"] / 100.0
+        )
+        df["macd_hist_slope_7d"] = (
+            df["macd_histogram"] - df.groupby("item_id")["macd_histogram"].shift(7)
+        )
+
+        # =====================================================================
         # Support / Resistance distances
         # =====================================================================
         df["distance_to_support"] = ((df["price"] - df["price_min_30d"]).replace(0, np.nan) /
