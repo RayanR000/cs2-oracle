@@ -1664,3 +1664,65 @@ class TestVariantAttributes:
         assert row["is_stattrak"] == 0
 
 
+class TestQualitySpreadWear:
+    def _ladder_df(self):
+        # Two wears of the same skin (item_a=FT, item_b=FN), 80 days.
+        # item_a trends up faster so its ratio to the group mean drifts.
+        rows = []
+        base = date(2026, 1, 1)
+        for d in range(80):
+            pa = 10.0 + 0.10 * d          # FT
+            pb = 20.0 + 0.02 * d          # FN
+            rows.append({"item_id": "a", "date": base + timedelta(days=d), "price": round(pa, 2)})
+            rows.append({"item_id": "b", "date": base + timedelta(days=d), "price": round(pb, 2)})
+        # a lone item with no sibling
+        for d in range(80):
+            rows.append({"item_id": "z", "date": base + timedelta(days=d), "price": 5.0})
+        return pd.DataFrame(rows)
+
+    def _patched(self, forecaster, name_map):
+        import pandas as pd
+        meta = pd.DataFrame([{"item_id": k, "name": v, "type": "skin"} for k, v in name_map.items()])
+        forecaster._fetch_item_metadata = lambda: meta
+        return forecaster
+
+    def test_disabled_is_noop(self, forecaster):
+        df = self._ladder_df()
+        out = forecaster._add_quality_spread_features(df.copy())
+        assert "wear_spread_ratio" not in out.columns
+        assert list(out.columns) == list(df.columns)
+
+    def test_wear_features_present_and_correct(self, forecaster, monkeypatch):
+        monkeypatch.setenv("QUALITY_SPREAD", "1")
+        name_map = {
+            "a": "AK-47 | Redline (Field-Tested)",
+            "b": "AK-47 | Redline (Factory New)",
+            "z": "Desert Eagle | Blaze (Factory New)",
+        }
+        self._patched(forecaster, name_map)
+        df = self._ladder_df()
+        out = forecaster._add_quality_spread_features(df)
+        for c in ["wear_spread_ratio", "wear_spread_ratio_z60",
+                  "wear_spread_ratio_chg_7d", "wear_spread_ratio_chg_14d",
+                  "wear_ladder_dispersion", "has_wear_siblings"]:
+            assert c in out.columns, c
+        row = lambda iid, d: out[(out.item_id == iid) &
+                                 (out.date == date(2026, 1, 1) + timedelta(days=d))].iloc[0]
+        # day 0: mean(10, 20) = 15 -> a ratio = 10/15 = 0.667
+        assert row("a", 0)["wear_spread_ratio"] == pytest.approx(10.0 / 15.0, abs=1e-3)
+        assert row("a", 0)["has_wear_siblings"] == 1
+        # lone item z: neutral everywhere
+        assert row("z", 40)["has_wear_siblings"] == 0
+        assert row("z", 40)["wear_spread_ratio"] == 0.0
+        assert row("z", 40)["wear_spread_ratio_z60"] == 0.0
+        # a's ratio rises over time (a outpaces b) -> positive z late in the series
+        assert row("a", 79)["wear_spread_ratio_z60"] > 0
+        # 7d change is finite and nonzero for a mid-series
+        assert abs(row("a", 40)["wear_spread_ratio_chg_7d"]) > 0
+        # no NaN/inf leaks into any feature column
+        import numpy as np
+        for c in ["wear_spread_ratio", "wear_spread_ratio_z60",
+                  "wear_spread_ratio_chg_7d", "wear_ladder_dispersion"]:
+            assert np.isfinite(out[c]).all()
+
+

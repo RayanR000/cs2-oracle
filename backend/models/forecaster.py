@@ -1247,6 +1247,53 @@ class ItemForecaster:
             "item_id", "quality_rank", "is_stattrak", "is_souvenir",
             "wear_group", "st_group", "sv_group"])
 
+    def _add_quality_spread_features(self, df: pd.DataFrame) -> pd.DataFrame:
+        """Cross-variant relative-value features (wear ladder; StatTrak/Souvenir
+        premiums added in a later step). Gated by _quality_spread_enabled().
+
+        All cross-item aggregates use SAME-DATE sibling prices (leak-safe);
+        z-scores and changes use only trailing per-item history. Items without
+        a sibling on an axis get 0.0 features and a 0 indicator flag.
+        """
+        if not self._quality_spread_enabled():
+            return df
+
+        logger.info("Adding quality-spread (cross-variant) features...")
+        meta = self._fetch_item_metadata()
+        name_map = {}
+        if meta is not None and not meta.empty:
+            name_map = dict(zip(meta["item_id"].astype(str), meta["name"]))
+        attrs = self._build_variant_attributes(df["item_id"].unique(), name_map)
+        df = df.merge(attrs[["item_id", "wear_group", "st_group", "sv_group"]],
+                      on="item_id", how="left")
+
+        df = df.sort_values(["item_id", "date"]).reset_index(drop=True)
+
+        # ── Wear axis ──────────────────────────────────────────────
+        gm = df.groupby(["wear_group", "date"])["price"]
+        group_mean = gm.transform("mean")
+        group_std = gm.transform("std")
+        group_n = gm.transform("count")
+        has_wear = df["wear_group"].notna() & (group_n >= 2)
+        df["has_wear_siblings"] = has_wear.astype(float)
+
+        ratio = df["price"] / group_mean.replace(0, np.nan)
+        ratio = ratio.where(has_wear)  # NaN where no sibling (kept out of rolling)
+        df["wear_ladder_dispersion"] = (group_std / group_mean.replace(0, np.nan)
+                                        ).where(has_wear).fillna(0.0)
+
+        g = df.assign(_r=ratio).groupby("item_id")["_r"]
+        roll_mean = g.transform(lambda s: s.rolling(60, min_periods=20).mean())
+        roll_std = g.transform(lambda s: s.rolling(60, min_periods=20).std())
+        z = (ratio - roll_mean) / roll_std.replace(0, np.nan)
+        df["wear_spread_ratio_z60"] = z.replace([np.inf, -np.inf], np.nan).fillna(0.0)
+        df["wear_spread_ratio_chg_7d"] = g.transform(lambda s: s - s.shift(7)).fillna(0.0)
+        df["wear_spread_ratio_chg_14d"] = g.transform(lambda s: s - s.shift(14)).fillna(0.0)
+        df["wear_spread_ratio"] = ratio.fillna(0.0)
+
+        df = df.drop(columns=["wear_group", "st_group", "sv_group"])
+        return df
+
     def _add_item_metadata_features(self, df: pd.DataFrame) -> pd.DataFrame:
         meta = self._fetch_item_metadata()
         if meta.empty:
