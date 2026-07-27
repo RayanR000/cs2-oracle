@@ -17,7 +17,7 @@
 | **Boost rounds** | GBDT: 1000 (early stop 50), DART: 500 (no early stop) |
 | **Features** | ~70–120 after correlation pruning (threshold 0.95), 8 groups |
 | **Rows** | `max_feature_rows = 100K` (stratified subsample) |
-| **HP search** | 3d skipped, 7d=10 trials, 14d=15 trials, 30d=15 trials |
+| **HP search** | 3d skipped (frozen, 50-trial winner), 7d=10 trials, 14d=15 trials, 30d=15 trials (as of 2026-07-26 — see below) |
 | **Warm retrain** | ~4–5 min (HP cached) |
 | **Cold retrain** | ~14–16 min (full Optuna + CV + regimes) |
 | **Inference** | ~1–2 min (with 3-day feature cache) |
@@ -131,7 +131,7 @@ These are NOT new levers — they're already in production:
 | `N_ENSEMBLES` | 3 | Was 6 (was 9) |
 | `MAX_BIN` | 63 | Was 255 |
 | `max_feature_rows` | 100K | Was 700K (was 400K) |
-| `SKIP_HP_HORIZONS` | [3, 14, 30] | Was [14, 30] |
+| `SKIP_HP_HORIZONS` | [3] | Was [3, 14, 30] (2026-07-26: re-enabled 15-trial Optuna search for 14d/30d DART; measured retrain 16m16s with `SKIP_REGIMES=1 FORCE_HP_SEARCH=1` — improved conformal calibration, see `docs/retrain-optimization-analysis.md`) |
 | `N_TRIALS_MAP[3]` | 50→20 (then 50) | Iterated |
 | Feature cache | 3-day TTL | Was none |
 | GOSS for q50 only | q50=GOSS, q10/q90=bagging | Was bagging for all |

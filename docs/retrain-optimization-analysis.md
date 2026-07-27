@@ -3,6 +3,12 @@
 Estimates and side-effect analysis for each proposed change to the training pipeline.
 Measured on MacBook Pro (10 cores, no GPU). Source: `backend/models/forecaster.py`.
 
+> **Update (2026-07-26):** `SKIP_HP_HORIZONS` narrowed from `[3, 14, 30]` to `[3]` — 14d/30d
+> DART now run Optuna HP search (15 trials) instead of `DART_PARAMS` defaults, and `subsample`
+> is tuned on the bagging branch. Measured retrain with `SKIP_REGIMES=1 FORCE_HP_SEARCH=1`:
+> **16m16s** wall-clock (`user 3115s` / `real 976s` ≈ 3.2× parallelism). See
+> [Measured Results: 14d/30d HP Search](#measured-results-14d30d-hp-search-2026-07-26) below.
+
 ---
 
 ## Current Retrain Times
@@ -147,6 +153,44 @@ This would likely produce a larger accuracy improvement than any of the optimiza
 
 ---
 
+## Measured Results: 14d/30d HP Search (2026-07-26)
+
+Ran `SKIP_REGIMES=1 FORCE_HP_SEARCH=1 python scripts/forecast_prices.py --train-only` with
+`SKIP_HP_HORIZONS=[3]` (previously `[3, 14, 30]`), on the same 10-core Mac, full 700K-row /
+1460-day window (production config, not the 200K subsample used for the estimates above).
+
+**Time: 16m16s real** (`user 3115s`, `sys 553s` — ~3.2× OpenMP parallelism). Faster than the
+14-16 min cold-retrain estimate despite adding two new 15-trial Optuna searches, because
+`SKIP_REGIMES=1` more than offset the added HP search cost.
+
+**Accuracy — before (old cached HP) vs. after (new Optuna-tuned HP), from `meta.json`
+`cv_results` / `conformal_calibration`:**
+
+| Horizon | Old dir-acc | New dir-acc | Edge vs. baseline (old→new) | Conformal q̂ (old→new) |
+|---|---|---|---|---|
+| 3d | n/a¹ | 64.0% ±5.9 (9 folds) | — → +9.1pp | — → 1.38 |
+| 7d | n/a¹ | 61.8% ±7.8 (9 folds) | — → +8.1pp | — → 1.36 |
+| **14d** *(tuned)* | 40.6% ±7.3 (4 folds) | 58.4% ±8.1 (9 folds) | +8.4 → +7.9pp | 8.53 → **6.86** |
+| **30d** *(tuned)* | 42.2% ±19.0 (4 folds) | 58.9% ±8.4 (8 folds) | +10.5 → +3.8pp | 13.34 → **5.69** |
+
+¹ Old model had `SKIP_CV=1` on GBDT horizons, so it recorded zero 3d/7d folds — no comparable baseline.
+
+**Read:**
+- **Calibration improved cleanly.** Conformal q̂ (interval widening needed to hit 90% coverage)
+  dropped on both tuned horizons — 30d roughly halved (13.34→5.69). This is fold-count-independent
+  and is the clearest evidence the new HP search helped.
+- **Directional accuracy is not a clean comparison.** Old run used 4 CV folds, new run uses 8-9 —
+  different validation periods, not apples-to-apples. The raw +17pp deltas are not attributable to
+  the HP change alone.
+- **Edge vs. baseline (fold-independent) is mixed.** 14d held roughly steady (+8.4→+7.9pp) but 30d's
+  edge shrank (+10.5→+3.8pp) even as its calibration improved.
+- **Verdict:** safe to keep — better-calibrated intervals, no directional regression vs. baselines —
+  but not yet a rigorously attributed accuracy gain. A same-fold-count A/B (old vs. new
+  `SKIP_HP_HORIZONS`, same seed/window) would be needed to isolate the effect, following the pattern
+  of the shelved quality-spread A/B (`docs/changelog`, commits `b7188e3`/`12d6c5e`).
+
+---
+
 ## Recommended Plan
 
 | Priority | Change | Time Saved | Accuracy Risk | Notes |
@@ -159,7 +203,9 @@ This would likely produce a larger accuracy improvement than any of the optimiza
 | 6 | 7d Optuna → 10 trials | ~10s | Low | Marginal gain |
 | 7 | Cap GBDT at 500 rounds | ~20s | Medium | Don't do this |
 
-**Target cold retrain with changes 1-4:** ~8-10 min (down from 14-16).
+**Target cold retrain with changes 1-4:** ~8-10 min (down from 14-16). Changes 2-4 are still
+open; only the `SKIP_HP_HORIZONS` narrowing (7d→7d/14d/30d) has been applied so far — see
+[Measured Results](#measured-results-14d30d-hp-search-2026-07-26).
 **Target warm retrain:** ~3-4 min (down from 4-5).
 
 ### Env var command (without code changes):
@@ -168,6 +214,11 @@ This would likely produce a larger accuracy improvement than any of the optimiza
 # Cold retrain with safe skips:
 SKIP_REGIMES=1 SKIP_CV=1 python scripts/forecast_prices.py --train-only
 
-# Force full HP search (7d only) on next Sunday or after data events:
+# Force full HP search (7d/14d/30d — 3d stays frozen via SKIP_HP_HORIZONS) on next
+# Sunday or after data events:
 SKIP_REGIMES=1 SKIP_CV=1 FORCE_HP_SEARCH=1 python scripts/forecast_prices.py --train-only
 ```
+
+Note: `SKIP_CV=1` is unsafe to combine with `FORCE_HP_SEARCH=1` on 14d/30d — CV drives their
+conformal calibration (see [item 2](#2-skip_cv1) above), which is the main thing the 2026-07-26
+run improved. Use `FORCE_HP_SEARCH=1` without `SKIP_CV=1` when re-tuning those horizons.

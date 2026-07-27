@@ -130,7 +130,10 @@ class ItemForecaster:
     WEAK_HORIZONS = [14, 30]
     BOOSTING_TYPE_MAP = {3: "gbdt", 7: "gbdt", 14: "dart", 30: "dart"}
     N_TRIALS_MAP = {3: 50, 7: 10, 14: 15, 30: 15}
-    SKIP_HP_HORIZONS = [3, 14, 30]
+    # 3d is frozen (50-trial search, winner warm-started in _optuna_search_params).
+    # 14d/30d run HP search so DART's drop_rate/max_drop/skip_drop get tuned
+    # rather than falling back to DART_PARAMS defaults.
+    SKIP_HP_HORIZONS = [3]
     DART_PARAMS = {
         "drop_rate": 0.1,
         "max_drop": 50,
@@ -1711,7 +1714,10 @@ class ItemForecaster:
                 params["other_rate"] = 0.1
             else:
                 params["data_sample_strategy"] = "bagging"
-                params["subsample"] = 0.8
+                # Row subsampling fraction — distinct regularization lever from
+                # feature_fraction. GOSS (median quantile) ignores bagging, so
+                # this is only searched on the bagging branch.
+                params["subsample"] = trial.suggest_float("subsample", 0.5, 0.9, step=0.1)
             # DART-specific hyperparameters
             if boosting_type == "dart":
                 params["drop_rate"] = trial.suggest_float("drop_rate", 0.05, 0.3, log=False)
@@ -1761,6 +1767,9 @@ class ItemForecaster:
             "max_depth": best.params["max_depth"],
             "min_data_in_leaf": best.params["min_data_in_leaf"],
         }
+        # Only present for non-median quantiles (median uses GOSS, no bagging).
+        if "subsample" in best.params:
+            best_params["subsample"] = best.params["subsample"]
 
         logger.info(
             f"  Optuna search ({n_trials} trials): best loss={best.value:.6f} "
@@ -2368,7 +2377,8 @@ class ItemForecaster:
                     # Merge Optuna results into base params
                     if best_params:
                         merge_keys = ["num_leaves", "learning_rate", "lambda_l1",
-                                      "lambda_l2", "max_depth", "min_data_in_leaf"]
+                                      "lambda_l2", "max_depth", "min_data_in_leaf",
+                                      "subsample"]
                         if boosting_type == "dart":
                             merge_keys += ["drop_rate", "max_drop", "skip_drop"]
                         for k in merge_keys:
