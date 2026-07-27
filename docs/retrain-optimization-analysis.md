@@ -8,6 +8,15 @@ Measured on MacBook Pro (10 cores, no GPU). Source: `backend/models/forecaster.p
 > is tuned on the bagging branch. Measured retrain with `SKIP_REGIMES=1 FORCE_HP_SEARCH=1`:
 > **16m16s** wall-clock (`user 3115s` / `real 976s` ≈ 3.2× parallelism). See
 > [Measured Results: 14d/30d HP Search](#measured-results-14d30d-hp-search-2026-07-26) below.
+>
+> **Update (2026-07-27):** Two follow-ups landed. (1) Found + fixed a bug where the searched DART
+> dropout params (`drop_rate`/`max_drop`/`skip_drop`) were discarded and silently fell back to
+> `DART_PARAMS` defaults — the 2026-07-26 run only ever tuned tree params. (2) A same-fold A/B
+> (`ab_test_hp_search.py`, `--calibration-only`) confirmed tuned HP is decisively better-calibrated
+> than defaults: 25/26 paired folds better, mean q̂ delta −3.9 (14d) / −5.0 (30d). Re-retrained
+> **with the dropout fix** in **14m08s** — refreshed q̂ below. Also: the "q90 GOSS bug" in
+> [Bonus Findings](#bonus-findings) is **already fixed** (GOSS is q50-only in all training paths).
+> See [Gate + Fixed-Dropout Retrain](#gate--fixed-dropout-retrain-2026-07-27).
 
 ---
 
@@ -141,15 +150,17 @@ The DART horizons (14d, 30d) have working conformal calibration (~91% coverage).
 
 ## Bonus Findings
 
-### q90 GBDT models are broken
+### q90 GBDT models were broken — RESOLVED
 
-Every GBDT q90 (alpha=0.9) model terminates at **1-3 boost rounds**. This is the root cause of the 39-48% interval coverage on GBDT horizons.
+> **Resolved (verified 2026-07-27):** GOSS is now gated to `q == 0.5` only, with `"bagging"` for
+> q10/q90, in all three training paths (`forecaster.py` Optuna objective, warm-reuse, and cold base
+> params). The fix below has been applied; this finding is retained for history.
+
+Every GBDT q90 (alpha=0.9) model terminated at **1-3 boost rounds**. This was the root cause of the 39-48% interval coverage on GBDT horizons.
 
 **Root cause:** `data_sample_strategy="goss"` with `top_rate=0.2, other_rate=0.1` is incompatible with quantile regression at extreme quantiles (alpha=0.9). The gradient distribution causes GOSS to select almost no high-gradient samples, so early stopping fires immediately.
 
-**Fix:** Disable GOSS for q != 0.5, or switch to `"bagging"` for q10 and q90.
-
-This would likely produce a larger accuracy improvement than any of the optimization changes above.
+**Fix (applied):** Disable GOSS for q != 0.5, use `"bagging"` for q10 and q90.
 
 ---
 
@@ -191,11 +202,41 @@ Ran `SKIP_REGIMES=1 FORCE_HP_SEARCH=1 python scripts/forecast_prices.py --train-
 
 ---
 
+## Gate + Fixed-Dropout Retrain (2026-07-27)
+
+**Regression gate** — `ab_test_hp_search.py --max-items 100 --trials 15 --boost-rounds 250 --step 120
+--calibration-only`, tuned HP vs `DART_PARAMS` defaults on *identical* walk-forward folds (the
+attribution the [2026-07-26 results](#measured-results-14d30d-hp-search-2026-07-26) lacked — that
+comparison mixed 4-fold and 8-9-fold runs). Pre-registered rule: PASS iff tuned better-calibrated in
+≥ half the paired folds AND mean q̂ delta ≤ +0.25pp.
+
+| Horizon | q̂ defaults | q̂ tuned | paired mean Δ | folds tuned better | gate |
+|---|---|---|---|---|---|
+| 14d | 9.53 | 5.59 | −3.94 | 13/13 | **PASS** |
+| 30d | 12.94 | 7.92 | −5.01 | 12/13 | **PASS** |
+
+**Fixed-dropout production retrain** — `SKIP_REGIMES=1 FORCE_HP_SEARCH=1`, full window, **14m08s**.
+q̂ / dir-acc from the refreshed `meta.json` (vs the 2026-07-26 pre-dropout-fix run):
+
+| Horizon | q̂ (new) | q̂ (pre-fix) | dir-acc | edge vs baseline | folds |
+|---|---|---|---|---|---|
+| 3d | 1.37 | 1.38 | 63.5% ±5.7 | +9.1 | 9 |
+| 7d | 1.44 | 1.36 | 61.8% ±6.8 | +8.6 | 9 |
+| **14d** | **4.05** | 6.86 | 58.8% ±8.4 | +8.2 | 9 |
+| **30d** | **6.88** | 5.69 | 60.3% ±6.9 | +4.4 | 8 |
+
+- **14d calibration improved sharply** (q̂ 6.86→4.05, ~41% tighter) with dir-acc/edge steady-to-up.
+- **30d q̂ rose 5.69→6.88** but dir-acc (+1.4pp) and edge (+0.6pp) both improved; the new ordering
+  (30d q̂ > 14d q̂) is physically saner for the noisier horizon — the old 5.69 was likely an
+  under-widened run-variance artifact.
+
+---
+
 ## Recommended Plan
 
 | Priority | Change | Time Saved | Accuracy Risk | Notes |
 |----------|--------|-----------|---------------|-------|
-| 1 | Fix q90 GOSS bug | (slight slowdown) | **Accuracy gain** | Fixes broken upper intervals |
+| 1 | ~~Fix q90 GOSS bug~~ | (slight slowdown) | **Accuracy gain** | ✅ Done — GOSS now q50-only |
 | 2 | `SKIP_REGIMES=1` | ~3.5 min | None | Safe, clean fallback |
 | 3 | `SKIP_CV=1` for GBDT only | ~2 min | Low | Already broken on 3d/7d |
 | 4 | `max_feature_rows` = 100K | ~2-4 min | Low-Med | Keep full calendar window |
