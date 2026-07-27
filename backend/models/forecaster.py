@@ -1770,6 +1770,12 @@ class ItemForecaster:
         # Only present for non-median quantiles (median uses GOSS, no bagging).
         if "subsample" in best.params:
             best_params["subsample"] = best.params["subsample"]
+        # DART dropout params are searched in the objective; propagate them so
+        # _train_horizon_inline's merge_keys can apply the tuned values instead
+        # of silently falling back to DART_PARAMS defaults.
+        for k in ("drop_rate", "max_drop", "skip_drop"):
+            if k in best.params:
+                best_params[k] = best.params[k]
 
         logger.info(
             f"  Optuna search ({n_trials} trials): best loss={best.value:.6f} "
