@@ -11,7 +11,6 @@
 [![TypeScript](https://img.shields.io/badge/typescript-3178C6?logo=typescript&logoColor=white&style=flat-square)](https://typescriptlang.org)
 [![Tailwind CSS v4](https://img.shields.io/badge/tailwind_v4-06B6D4?logo=tailwindcss&logoColor=white&style=flat-square)](https://tailwindcss.com)
 [![LightGBM](https://img.shields.io/badge/lightgbm-7D3C98?logo=python&logoColor=white&style=flat-square)](https://lightgbm.readthedocs.io)
-[![License: MIT](https://img.shields.io/badge/license-MIT-blue?style=flat-square)](https://opensource.org/licenses/MIT)
 
 [![Aggregator](https://img.shields.io/github/actions/workflow/status/RayanR000/cs2-oracle/aggregator-update.yml?label=aggregator&style=flat-square&logo=github)](https://github.com/RayanR000/cs2-oracle/actions/workflows/aggregator-update.yml)
 [![Forecast](https://img.shields.io/github/actions/workflow/status/RayanR000/cs2-oracle/price-forecast.yml?label=forecast&style=flat-square&logo=github)](https://github.com/RayanR000/cs2-oracle/actions/workflows/price-forecast.yml)
@@ -76,8 +75,8 @@
 
 ## Features
 
-| | | |
-|---|---|---|
+| | |
+|---|---|
 | **Multi-Source Collection** — Daily aggregator polling 7 CS2 skin markets in parallel | **Parquet Price Archive** — 13 years of history, queryable via DuckDB |
 | **ML Price Forecasts** — LightGBM quantile regression (q10/q50/q90) across 3/7/14/30d horizons. 6-member diversified ensemble with walk-forward validation & Optuna tuning | **Regime-Switching** — Separate models per market regime (bear / range / bull) |
 | **Accuracy Tracking** — Automated daily backtesting with MAE, MAPE, directional accuracy, drift alerts | **Model Explainability** — Per-item feature importance via SHAP-style analysis |
@@ -168,9 +167,13 @@ Run via `python scripts/run_task.py <task>`:
 |------|-------------|
 | `aggregate` | Full aggregator collection (all items, all sources) |
 | `priority` | Top 2000 items collection |
+| `supply_scrape` | Listing supply-depth collection |
 | `migrate` | Run pending Alembic migrations |
 | `backtest` | Run forecast accuracy backtest |
 | `backtest_historical` | Run historical walk-forward backtest |
+| `walkforward_report` | Generate walk-forward validation report |
+| `event_correlation` | Run market-event correlation analysis |
+| `reddit_social` | Run Reddit sentiment analysis |
 
 ### Frontend
 
@@ -198,6 +201,8 @@ Every 2h      Player Count          → Steam active players        → Supabase
 (chained)     Backtest              → accuracy tracking           → prediction_accuracy
 Weekly Sun    Event Correlation     → market-event price impacts  → analysis tables
 ```
+
+---
 
 ## Scheduled Workflows
 
@@ -252,9 +257,3 @@ cs2-oracle/
 4. Make changes and verify with tests: `pytest`
 5. Commit using conventional commit messages
 6. Open a pull request
-
----
-
-## License
-
-[MIT](https://opensource.org/licenses/MIT)
