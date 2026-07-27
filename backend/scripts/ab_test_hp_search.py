@@ -50,6 +50,10 @@ logger = logging.getLogger("ab_test_hp_search")
 ARCHIVE_DIR = Path(__file__).parent.parent.parent / "price-archive"
 
 ALPHA = 0.10          # target 90% conformal coverage
+# Pre-registered regression gate (decided before seeing results): the shipped
+# tuned HP PASSES iff it is not materially worse-calibrated than DART defaults —
+# better in at least half the paired folds AND mean q̂ delta ≤ this many pp.
+GATE_MAX_MEAN_DELTA_PP = 0.25
 VAL_WINDOW_DAYS = 21
 STEP = 60
 # Old hardcoded fallback tree params (forecaster.py `else` branch of the HP merge).
@@ -110,11 +114,11 @@ def _conformal_qhat(low_ret, high_ret, y) -> float:
     return float(np.quantile(nc, q_level))
 
 
-def _build_folds(dates):
+def _build_folds(dates, step=STEP):
     """Fixed walk-forward folds: (train_dates, val_dates), shared across arms."""
     split_idx = len(dates) * 2 // 3
     folds = []
-    for window_end in range(split_idx + 1, len(dates), STEP):
+    for window_end in range(split_idx + 1, len(dates), step):
         train_dates = dates[:window_end]
         val_dates = dates[window_end:window_end + VAL_WINDOW_DAYS]
         if len(val_dates) < 7:
@@ -182,7 +186,8 @@ def load_features(con, forecaster, events_df, max_items):
     return df, feat_cols
 
 
-def run(max_items, horizon_filter, trials, boost_rounds):
+def run(max_items, horizon_filter, trials, boost_rounds, step=STEP, calibration_only=False):
+    quantiles = [0.1, 0.9] if calibration_only else ItemForecaster.QUANTILES
     import duckdb
     con = duckdb.connect()
     db = SessionLocal()
@@ -207,7 +212,7 @@ def run(max_items, horizon_filter, trials, boost_rounds):
             continue
         available = [c for c in feat_cols if c in tdf.columns]
         dates = sorted(tdf["date"].unique())
-        folds = _build_folds(dates)
+        folds = _build_folds(dates, step)
         if not folds:
             logger.warning(f"  no folds for {horizon}d")
             continue
@@ -220,7 +225,7 @@ def run(max_items, horizon_filter, trials, boost_rounds):
         hp_va = pre[pre["date"] >= cut]
         med = hp_tr[available].median()
         best_by_q = {}
-        for q in ItemForecaster.QUANTILES:
+        for q in quantiles:
             logger.info(f"  Optuna search {horizon}d p{int(q*100)} ({trials} trials, dart)...")
             best_by_q[q] = forecaster._optuna_search_params(
                 hp_tr[available].fillna(med), hp_tr[tcol],
@@ -229,8 +234,8 @@ def run(max_items, horizon_filter, trials, boost_rounds):
             )
 
         arms = {
-            "defaults": {q: _apply_hp(_base_params(q), None) for q in ItemForecaster.QUANTILES},
-            "tuned":    {q: _apply_hp(_base_params(q), best_by_q[q]) for q in ItemForecaster.QUANTILES},
+            "defaults": {q: _apply_hp(_base_params(q), None) for q in quantiles},
+            "tuned":    {q: _apply_hp(_base_params(q), best_by_q[q]) for q in quantiles},
         }
 
         results[horizon] = {"folds": len(folds), "arms": {}, "per_fold_qhat": {}}
@@ -250,26 +255,35 @@ def run(max_items, horizon_filter, trials, boost_rounds):
 
                 preds = {q: _train_predict(params_by_q[q], X_train, train_df[tcol],
                                            X_val, boost_rounds)
-                         for q in ItemForecaster.QUANTILES}
-                p10, p50, p90 = preds[0.1], preds[0.5], preds[0.9]
-                low = np.minimum(p10, p50)
-                high = np.maximum(p90, p50)
+                         for q in quantiles}
+                p10, p90 = preds[0.1], preds[0.9]
+                if 0.5 in preds:
+                    p50 = preds[0.5]
+                    low = np.minimum(p10, p50)
+                    high = np.maximum(p90, p50)
+                    dir_acc = round(float(np.mean(np.sign(p50) == np.sign(y_val))) * 100, 1)
+                    mae = round(float(np.mean(np.abs(p50 - y_val))), 4)
+                else:
+                    # calibration-only: interval bounds come straight from p10/p90.
+                    low = np.minimum(p10, p90)
+                    high = np.maximum(p10, p90)
+                    dir_acc = None
+                    mae = None
 
                 qhat = _conformal_qhat(low, high, y_val)
                 cov = float(np.mean((y_val >= low) & (y_val <= high))) * 100
-                dir_acc = float(np.mean(np.sign(p50) == np.sign(y_val))) * 100
-                mae = float(np.mean(np.abs(p50 - y_val)))
                 per_fold.append({"fold": fi, "val_start": str(val_dates[0]),
                                  "qhat": round(qhat, 4), "int_cov": round(cov, 1),
-                                 "dir_acc": round(dir_acc, 1), "mae": round(mae, 4),
+                                 "dir_acc": dir_acc, "mae": mae,
                                  "n": len(val_df)})
 
             qhats = [f["qhat"] for f in per_fold]
+            has_dir = bool(per_fold) and per_fold[0]["dir_acc"] is not None
             results[horizon]["arms"][arm_name] = {
                 "mean_qhat": round(float(np.mean(qhats)), 4) if qhats else None,
                 "mean_int_cov": round(float(np.mean([f["int_cov"] for f in per_fold])), 1) if per_fold else None,
-                "mean_dir_acc": round(float(np.mean([f["dir_acc"] for f in per_fold])), 1) if per_fold else None,
-                "mean_mae": round(float(np.mean([f["mae"] for f in per_fold])), 4) if per_fold else None,
+                "mean_dir_acc": round(float(np.mean([f["dir_acc"] for f in per_fold])), 1) if has_dir else None,
+                "mean_mae": round(float(np.mean([f["mae"] for f in per_fold])), 4) if has_dir else None,
                 "n_folds": len(per_fold),
                 "per_fold": per_fold,
             }
@@ -291,21 +305,23 @@ def print_report(results):
             a = r["arms"].get(arm)
             if not a:
                 continue
-            print(f"  │ {arm:<10} {a['mean_qhat']:>18} {a['mean_int_cov']:>7}% "
-                  f"{a['mean_dir_acc']:>7}% {a['mean_mae']:>9}")
-        # Paired same-fold q̂ delta (the attributable number).
+            dir_s = f"{a['mean_dir_acc']:>7}%" if a['mean_dir_acc'] is not None else f"{'n/a':>8}"
+            mae_s = f"{a['mean_mae']:>9}" if a['mean_mae'] is not None else f"{'n/a':>9}"
+            print(f"  │ {arm:<10} {a['mean_qhat']:>18} {a['mean_int_cov']:>7}% {dir_s} {mae_s}")
+        # Paired same-fold q̂ delta (the attributable number) + pre-registered gate.
         d = results[horizon]["per_fold_qhat"].get("defaults", [])
         t = results[horizon]["per_fold_qhat"].get("tuned", [])
         if d and t and len(d) == len(t):
             deltas = np.array(t) - np.array(d)
             better = int(np.sum(deltas < 0))
+            mean_delta = float(deltas.mean())
             print(f"  │")
-            print(f"  │ Paired q̂ delta (tuned − defaults): mean {deltas.mean():+.4f}"
+            print(f"  │ Paired q̂ delta (tuned − defaults): mean {mean_delta:+.4f}"
                   f"  ({better}/{len(deltas)} folds better)")
-            verdict = ("tuned better-calibrated" if deltas.mean() < -0.05
-                       else "defaults better-calibrated" if deltas.mean() > 0.05
-                       else "no material difference")
-            print(f"  │ Verdict: {verdict}")
+            gate_pass = (better >= len(deltas) / 2) and (mean_delta <= GATE_MAX_MEAN_DELTA_PP)
+            gate = ("PASS (keep tuned)" if gate_pass
+                    else "FAIL (investigate — tuned materially worse-calibrated)")
+            print(f"  │ GATE [≥half folds better AND mean Δ ≤ +{GATE_MAX_MEAN_DELTA_PP}pp]: {gate}")
         print(f"  └{'─' * 66}┘")
 
 
@@ -316,14 +332,21 @@ def main():
     p.add_argument("--horizon", type=int, default=None, choices=[14, 30])
     p.add_argument("--trials", type=int, default=15)
     p.add_argument("--boost-rounds", type=int, default=ItemForecaster.DART_NUM_BOOST_ROUND)
+    p.add_argument("--step", type=int, default=STEP,
+                   help="Days between walk-forward fold starts (larger = fewer folds)")
+    p.add_argument("--calibration-only", action="store_true",
+                   help="Train only q10/q90 (skip q50); measures calibration q̂ only")
     args = p.parse_args()
 
     logger.info("=" * 70)
     logger.info("A/B TEST: 14d/30d DART HP search vs DART_PARAMS defaults")
-    logger.info(f"  max_items={args.max_items} trials={args.trials} boost_rounds={args.boost_rounds}")
+    logger.info(f"  max_items={args.max_items} trials={args.trials} "
+                f"boost_rounds={args.boost_rounds} step={args.step} "
+                f"calibration_only={args.calibration_only}")
     logger.info("=" * 70)
 
-    results = run(args.max_items, args.horizon, args.trials, args.boost_rounds)
+    results = run(args.max_items, args.horizon, args.trials, args.boost_rounds,
+                  step=args.step, calibration_only=args.calibration_only)
     print_report(results)
     print(f"\n  JSON: {json.dumps(results, indent=2, default=str)}")
     return 0
