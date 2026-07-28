@@ -1175,7 +1175,7 @@ class TestDirectionClassifierHelpers:
 
     def test_mover_sample_weights(self, forecaster):
         r = np.array([5.0, 0.1, -3.0, 0.0])
-        w = forecaster._direction_sample_weights(r, mover_weight=3.0)
+        w = forecaster._direction_sample_weights(r, 0.5, mover_weight=3.0)
         assert list(w) == [3.0, 1.0, 3.0, 1.0]
 
     def test_recenter_on_direction_sets_sign_keeps_magnitude_and_width(self, forecaster):
