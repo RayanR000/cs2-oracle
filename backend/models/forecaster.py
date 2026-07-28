@@ -30,6 +30,15 @@ logger = logging.getLogger(__name__)
 RNG = np.random.RandomState(42)
 DIRECTION_FLAT_TOLERANCE_PCT = 0.5
 
+# Vol-scaled directional labels (2026-07-27). The flat band is
+# clamp(k_h * sigma_daily * sqrt(h), floor, cap) in percent, replacing the
+# fixed ±DIRECTION_FLAT_TOLERANCE_PCT. sigma_daily is trailing std of
+# log_return_1d over DIRECTION_VOL_WINDOW rows. Used for labeling only.
+DIRECTION_VOL_WINDOW = 30
+DIRECTION_THRESHOLD_FLOOR_PCT = 0.2
+DIRECTION_THRESHOLD_CAP_PCT = 15.0
+DIRECTION_LABEL_VOL_COL = "label_vol_30d"
+
 # Cached result of GPU availability check (avoids repeated subprocess probes)
 _GPU_AVAILABLE_CACHE: Optional[bool] = None
 
@@ -169,7 +178,11 @@ class ItemForecaster:
     # price interval. Training up-weights movers (|return| > flat tolerance) so
     # the classifier spends capacity on the hard up/down calls rather than the
     # easily-predicted flat mass.
-    DIRECTION_MOVER_WEIGHT = 3.0
+    # Per-horizon directional-label knobs (2026-07-27). Defaults: mover-weight
+    # keeps the prior global 3.0; vol multiplier k=1.0 is a starting point the
+    # sweep (scripts/ab_test_direction_labels.py) tunes per horizon.
+    DIRECTION_MOVER_WEIGHT_MAP = {3: 3.0, 7: 3.0, 14: 3.0, 30: 3.0}
+    DIRECTION_VOL_MULTIPLIER_MAP = {3: 1.0, 7: 1.0, 14: 1.0, 30: 1.0}
     # Max class probability at/above which a directional call is "high" confidence.
     DIRECTION_CONFIDENCE_HIGH = 0.5
     # Residual stacking: train a Ridge regression on LightGBM residuals
@@ -2453,6 +2466,7 @@ class ItemForecaster:
             self.direction_models[horizon] = self._fit_direction_classifier(
                 X_train, y_train, X_val, y_val, boosting_type,
                 self._direction_tree_params(per_quantile_params),
+                horizon=horizon,
             )
 
             # Train regime-specific models (optional: SKIP_REGIMES=1 to skip)
@@ -2786,6 +2800,16 @@ class ItemForecaster:
                         np.where(r < -DIRECTION_FLAT_TOLERANCE_PCT, 0, 1)).astype(int)
 
     @staticmethod
+    def _direction_threshold(sigma, horizon: int, k: float,
+                             floor: float, cap: float) -> np.ndarray:
+        """Per-row flat-band threshold (percent) = clamp(k * sigma * sqrt(h),
+        floor, cap). ``sigma`` is trailing daily-return std in percent; scalar
+        or array. Always returns a float ndarray."""
+        s = np.atleast_1d(np.asarray(sigma, dtype=float))
+        raw = k * s * np.sqrt(float(horizon))
+        return np.clip(raw, floor, cap)
+
+    @staticmethod
     def _direction_sample_weights(returns, mover_weight: float) -> np.ndarray:
         """Up-weight clearly-moving rows (|return| > flat tolerance) by
         ``mover_weight``; flat rows keep weight 1.0."""
@@ -2819,12 +2843,13 @@ class ItemForecaster:
 
     def _fit_direction_classifier(self, X_train, y_train_ret, X_val, y_val_ret,
                                    boosting_type: str, tree_params: dict,
-                                   num_boost_round: int = 200):
+                                   num_boost_round: int = 200, horizon: Optional[int] = None):
         """Train a single 3-class (down/flat/up) LightGBM classifier on returns,
         up-weighting movers. Early-stops on val multi-logloss for GBDT."""
         ds = {"max_bin": self.MAX_BIN, "feature_pre_filter": False}
         c_train = self._direction_classes(y_train_ret)
-        w_train = self._direction_sample_weights(y_train_ret, self.DIRECTION_MOVER_WEIGHT)
+        mover_weight = self.DIRECTION_MOVER_WEIGHT_MAP.get(horizon, 3.0)
+        w_train = self._direction_sample_weights(y_train_ret, mover_weight)
         dtrain = lgb.Dataset(X_train, c_train, params=ds, weight=w_train)
         params = dict(tree_params)
         params.update(objective="multiclass", num_class=3, metric="multi_logloss",
@@ -3480,7 +3505,8 @@ class ItemForecaster:
             boosting_type = self.BOOSTING_TYPE_MAP.get(horizon, "gbdt")
             clf = self._fit_direction_classifier(
                 X_train, y_train, X_val, y_val, boosting_type,
-                self._direction_tree_params(per_quantile_params))
+                self._direction_tree_params(per_quantile_params),
+                horizon=horizon)
             pred_cls = clf.predict(X_val).argmax(axis=1)
             actual_cls = self._direction_classes(actual_returns)
             classifier_acc = round(float((pred_cls == actual_cls).mean()) * 100, 1)
