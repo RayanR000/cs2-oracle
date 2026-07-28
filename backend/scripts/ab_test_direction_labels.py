@@ -44,12 +44,17 @@ logger = logging.getLogger("ab_test_direction_labels")
 
 ARCHIVE_DIR = Path(__file__).parent.parent.parent / "price-archive"
 
-K_GRID = [0.5, 1.0, 1.5, 2.0]
-MOVER_WEIGHT_GRID = [1.5, 3.0, 5.0]
+K_GRID = [0.25, 0.5, 1.0]
+MOVER_WEIGHT_GRID = [3.0, 5.0, 8.0]
 HORIZONS = [3, 7, 14, 30]
 
 MIN_TRAIN_ROWS = 2000
 MIN_VAL_ROWS = 200
+
+# Recent folds are more live-relevant than 2013-era data; capping folds is
+# the main speedup lever (a prior 29-fold run over the full 2013-2026
+# history was too slow to iterate on).
+MAX_FOLDS = 8
 
 
 def score_fixed_yardstick(pred_cls, actual_returns):
@@ -144,10 +149,21 @@ def _run_horizon(fc, tdf, feat_cols, horizon, purge_days):
         logger.warning(f"  no folds for {horizon}d after purge gap")
         return
 
-    for k, mw in itertools.product(K_GRID, MOVER_WEIGHT_GRID):
+    # Cap to the most recent MAX_FOLDS folds: recent data is more
+    # live-relevant, and this is the main sweep-speedup lever.
+    folds = folds[-MAX_FOLDS:]
+
+    # Control cell first: k=None is the sentinel for "current production
+    # config" -- fixed ±0.5% band (sigma_train=sigma_val=None) with
+    # mover_weight=3.0. This is the apples-to-apples in-harness baseline
+    # that vol-scaled cells must beat.
+    combos = [(None, 3.0)] + list(itertools.product(K_GRID, MOVER_WEIGHT_GRID))
+
+    for k, mw in combos:
+        is_control = k is None
         # Process-local mutation of the class-level maps; fine for this
         # single-process CLI sweep (never persisted back to forecaster.py).
-        fc.DIRECTION_VOL_MULTIPLIER_MAP[horizon] = k
+        fc.DIRECTION_VOL_MULTIPLIER_MAP[horizon] = k if not is_control else 1.0
         fc.DIRECTION_MOVER_WEIGHT_MAP[horizon] = mw
         fold_overall, fold_movers = [], []
         for train_dates, val_dates in folds:
@@ -156,20 +172,26 @@ def _run_horizon(fc, tdf, feat_cols, horizon, purge_days):
             if len(tr) < MIN_TRAIN_ROWS or len(va) < MIN_VAL_ROWS:
                 continue
             X_tr, X_va = tr[feat_cols].fillna(0.0), va[feat_cols].fillna(0.0)
+            if is_control:
+                sigma_train = None
+                sigma_val = None
+            else:
+                sigma_train = tr[DIRECTION_LABEL_VOL_COL].to_numpy(dtype=float)
+                sigma_val = va[DIRECTION_LABEL_VOL_COL].to_numpy(dtype=float)
             clf = fc._fit_direction_classifier(
                 X_tr, tr[target_col].to_numpy(dtype=float),
                 X_va, va[target_col].to_numpy(dtype=float),
                 boosting_type,
                 fc._direction_tree_params({}),
                 horizon,
-                sigma_train=tr[DIRECTION_LABEL_VOL_COL].to_numpy(dtype=float),
-                sigma_val=va[DIRECTION_LABEL_VOL_COL].to_numpy(dtype=float))
+                sigma_train=sigma_train,
+                sigma_val=sigma_val)
             pred_cls = clf.predict(X_va).argmax(axis=1)
             ov, mv = score_fixed_yardstick(pred_cls, va[target_col].to_numpy(dtype=float))
             fold_overall.append(ov)
             fold_movers.append(mv)
         yield {
-            "horizon": horizon, "k": k, "mover_weight": mw,
+            "horizon": horizon, "k": "ctrl" if is_control else k, "mover_weight": mw,
             "overall_acc": round(100 * np.nanmean(fold_overall), 2) if fold_overall else None,
             "movers_acc": round(100 * np.nanmean(fold_movers), 2) if fold_movers else None,
             "n_folds": len(fold_overall),
@@ -206,13 +228,19 @@ def run(max_items, horizon_filter, purge_days_arg):
             continue
         purge_days = purge_days_arg if purge_days_arg is not None else horizon
 
-        best = None
+        best, control = None, None
         for row in _run_horizon(forecaster, tdf, feat_cols, horizon, purge_days):
             results.append(row)
-            print(f"{row['horizon']:>3} {row['k']:>4} {row['mover_weight']:>4} "
+            print(f"{row['horizon']:>3} {str(row['k']):>4} {row['mover_weight']:>4} "
                   f"{str(row['overall_acc']):>9} {str(row['movers_acc']):>8} {row['n_folds']:>6}")
+            if row["k"] == "ctrl":
+                control = row
+                continue
             if row["overall_acc"] is not None and (best is None or row["overall_acc"] > best["overall_acc"]):
                 best = row
+        if control:
+            print(f"  -> control {horizon}d: overall={control['overall_acc']}% "
+                  f"movers={control['movers_acc']}%")
         if best:
             print(f"  -> best {horizon}d: k={best['k']} mover_weight={best['mover_weight']} "
                   f"overall={best['overall_acc']}% movers={best['movers_acc']}%")

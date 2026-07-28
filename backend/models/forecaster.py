@@ -2475,12 +2475,15 @@ class ItemForecaster:
             # Directional classifier: supplies the served up/flat/down call and
             # confidence (the quantile models only supply the interval).
             logger.info(f"  Training {horizon}d directional classifier (mover-weighted)...")
+            # Vol-scaled labels were A/B-tested (2026-07-27) and did not beat
+            # the fixed-band control; production stays fixed-band. Tooling
+            # retained in scripts/ab_test_direction_labels.py.
             self.direction_models[horizon] = self._fit_direction_classifier(
                 X_train, y_train, X_val, y_val, boosting_type,
                 self._direction_tree_params(per_quantile_params),
                 horizon=horizon,
-                sigma_train=train_set[DIRECTION_LABEL_VOL_COL].to_numpy(dtype=float),
-                sigma_val=val_set[DIRECTION_LABEL_VOL_COL].to_numpy(dtype=float),
+                sigma_train=None,
+                sigma_val=None,
             )
 
             # Train regime-specific models (optional: SKIP_REGIMES=1 to skip)
@@ -3536,12 +3539,15 @@ class ItemForecaster:
             # same way as the production model (mover-weighted 3-class) so this
             # fold accuracy reflects what predict() will deliver.
             boosting_type = self.BOOSTING_TYPE_MAP.get(horizon, "gbdt")
+            # Vol-scaled labels were A/B-tested (2026-07-27) and did not beat
+            # the fixed-band control; production stays fixed-band. Tooling
+            # retained in scripts/ab_test_direction_labels.py.
             clf = self._fit_direction_classifier(
                 X_train, y_train, X_val, y_val, boosting_type,
                 self._direction_tree_params(per_quantile_params),
                 horizon=horizon,
-                sigma_train=train_df[DIRECTION_LABEL_VOL_COL].to_numpy(dtype=float),
-                sigma_val=val_df[DIRECTION_LABEL_VOL_COL].to_numpy(dtype=float))
+                sigma_train=None,
+                sigma_val=None)
             pred_cls = clf.predict(X_val).argmax(axis=1)
             actual_cls = self._direction_classes(actual_returns)  # FIXED ±0.5% yardstick
             classifier_acc = round(float((pred_cls == actual_cls).mean()) * 100, 1)

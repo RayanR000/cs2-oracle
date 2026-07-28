@@ -112,6 +112,14 @@ def test_sweep_grid_and_eval_are_importable():
     assert hasattr(mod, "score_fixed_yardstick")
 
 
+def test_sweep_max_folds_and_grids():
+    import importlib
+    mod = importlib.import_module("scripts.ab_test_direction_labels")
+    assert isinstance(mod.MAX_FOLDS, int)
+    assert mod.K_GRID == [0.25, 0.5, 1.0]
+    assert mod.MOVER_WEIGHT_GRID == [3.0, 5.0, 8.0]
+
+
 def test_score_fixed_yardstick_ignores_training_threshold():
     from scripts.ab_test_direction_labels import score_fixed_yardstick
     actual_returns = np.array([1.0, -1.0, 0.1])  # up, down, flat @0.5%

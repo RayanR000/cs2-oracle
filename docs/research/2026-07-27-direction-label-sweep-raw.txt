@@ -1,0 +1,577 @@
+2026-07-28 17:32:42,614 - ab_test_direction_labels - INFO - ======================================================================
+2026-07-28 17:32:42,614 - ab_test_direction_labels - INFO - SWEEP: directional classifier vol-multiplier k / mover-weight
+2026-07-28 17:32:42,614 - ab_test_direction_labels - INFO -   max_items=200 horizon=None purge_days=None
+2026-07-28 17:32:42,614 - ab_test_direction_labels - INFO - ======================================================================
+2026-07-28 17:32:44,411 - models.forecaster - INFO -   events: 79
+2026-07-28 17:32:44,546 - ab_test_direction_labels - INFO -   200 items for evaluation
+2026-07-28 17:32:47,662 - models.forecaster - INFO - Engineering price features...
+2026-07-28 17:32:51,768 - models.forecaster - INFO - Adding item identity features...
+2026-07-28 17:32:53,163 - models.forecaster - INFO -   item metadata: 35058 items loaded
+2026-07-28 17:32:53,781 - models.forecaster - INFO -   Added item identity features
+2026-07-28 17:32:54,398 - models.forecaster - INFO - Adding supply-side features...
+2026-07-28 17:32:54,463 - models.forecaster - INFO -   supply metadata: 8691 items loaded from Parquet
+2026-07-28 17:32:54,872 - models.forecaster - INFO -   social mentions: empty
+2026-07-28 17:32:54,877 - models.forecaster - INFO - Adding cross-sectional features...
+2026-07-28 17:33:14,911 - ab_test_direction_labels - INFO -   126 features after corr prune
+2026-07-28 17:33:14,954 - models.forecaster - INFO - Preparing 3d targets...
+2026-07-28 17:33:15,535 - models.forecaster - INFO -   Winsorized 2828 extreme targets for 3d (±500% clip)
+2026-07-28 17:38:23,908 - models.forecaster - INFO - Preparing 7d targets...
+2026-07-28 17:38:25,148 - models.forecaster - INFO -   Winsorized 3659 extreme targets for 7d (±500% clip)
+  h    k   mw  overall%  movers%  folds
+Training until validation scores don't improve for 20 rounds
+Early stopping, best iteration is:
+[28]	valid_0's multi_logloss: 0.641979
+Training until validation scores don't improve for 20 rounds
+Early stopping, best iteration is:
+[30]	valid_0's multi_logloss: 0.608644
+Training until validation scores don't improve for 20 rounds
+Early stopping, best iteration is:
+[29]	valid_0's multi_logloss: 0.627201
+Training until validation scores don't improve for 20 rounds
+Early stopping, best iteration is:
+[28]	valid_0's multi_logloss: 0.646241
+Training until validation scores don't improve for 20 rounds
+Early stopping, best iteration is:
+[29]	valid_0's multi_logloss: 0.660592
+Training until validation scores don't improve for 20 rounds
+Early stopping, best iteration is:
+[31]	valid_0's multi_logloss: 0.643965
+Training until validation scores don't improve for 20 rounds
+Early stopping, best iteration is:
+[29]	valid_0's multi_logloss: 0.640213
+Training until validation scores don't improve for 20 rounds
+Early stopping, best iteration is:
+[29]	valid_0's multi_logloss: 0.671723
+  3 ctrl  3.0     67.93    55.98      8
+Training until validation scores don't improve for 20 rounds
+Did not meet early stopping. Best iteration is:
+[200]	valid_0's multi_logloss: 0.714231
+Training until validation scores don't improve for 20 rounds
+Early stopping, best iteration is:
+[29]	valid_0's multi_logloss: 0.732866
+Training until validation scores don't improve for 20 rounds
+Early stopping, best iteration is:
+[26]	valid_0's multi_logloss: 0.718113
+Training until validation scores don't improve for 20 rounds
+Early stopping, best iteration is:
+[29]	valid_0's multi_logloss: 0.685014
+Training until validation scores don't improve for 20 rounds
+Early stopping, best iteration is:
+[31]	valid_0's multi_logloss: 0.69673
+Training until validation scores don't improve for 20 rounds
+Early stopping, best iteration is:
+[30]	valid_0's multi_logloss: 0.741513
+Training until validation scores don't improve for 20 rounds
+Early stopping, best iteration is:
+[23]	valid_0's multi_logloss: 0.7644
+Training until validation scores don't improve for 20 rounds
+Early stopping, best iteration is:
+[24]	valid_0's multi_logloss: 0.809102
+  3 0.25  3.0      67.3    54.43      8
+Training until validation scores don't improve for 20 rounds
+Did not meet early stopping. Best iteration is:
+[200]	valid_0's multi_logloss: 0.785316
+Training until validation scores don't improve for 20 rounds
+Early stopping, best iteration is:
+[25]	valid_0's multi_logloss: 0.782438
+Training until validation scores don't improve for 20 rounds
+Early stopping, best iteration is:
+[23]	valid_0's multi_logloss: 0.772092
+Training until validation scores don't improve for 20 rounds
+Early stopping, best iteration is:
+[24]	valid_0's multi_logloss: 0.732862
+Training until validation scores don't improve for 20 rounds
+Early stopping, best iteration is:
+[26]	valid_0's multi_logloss: 0.758112
+Training until validation scores don't improve for 20 rounds
+Early stopping, best iteration is:
+[21]	valid_0's multi_logloss: 0.806821
+Training until validation scores don't improve for 20 rounds
+Early stopping, best iteration is:
+[22]	valid_0's multi_logloss: 0.826774
+Training until validation scores don't improve for 20 rounds
+Early stopping, best iteration is:
+[23]	valid_0's multi_logloss: 0.871262
+  3 0.25  5.0     67.24    54.62      8
+Training until validation scores don't improve for 20 rounds
+Early stopping, best iteration is:
+[24]	valid_0's multi_logloss: 0.872695
+Training until validation scores don't improve for 20 rounds
+Early stopping, best iteration is:
+[27]	valid_0's multi_logloss: 0.844597
+Training until validation scores don't improve for 20 rounds
+Early stopping, best iteration is:
+[22]	valid_0's multi_logloss: 0.836272
+Training until validation scores don't improve for 20 rounds
+Early stopping, best iteration is:
+[23]	valid_0's multi_logloss: 0.788599
+Training until validation scores don't improve for 20 rounds
+Early stopping, best iteration is:
+[26]	valid_0's multi_logloss: 0.828109
+Training until validation scores don't improve for 20 rounds
+Early stopping, best iteration is:
+[22]	valid_0's multi_logloss: 0.880341
+Training until validation scores don't improve for 20 rounds
+Early stopping, best iteration is:
+[22]	valid_0's multi_logloss: 0.90006
+Training until validation scores don't improve for 20 rounds
+Early stopping, best iteration is:
+[20]	valid_0's multi_logloss: 0.950244
+  3 0.25  8.0     67.45    55.42      8
+Training until validation scores don't improve for 20 rounds
+Early stopping, best iteration is:
+[162]	valid_0's multi_logloss: 0.677535
+Training until validation scores don't improve for 20 rounds
+Early stopping, best iteration is:
+[30]	valid_0's multi_logloss: 0.732084
+Training until validation scores don't improve for 20 rounds
+Early stopping, best iteration is:
+[37]	valid_0's multi_logloss: 0.720884
+Training until validation scores don't improve for 20 rounds
+Early stopping, best iteration is:
+[27]	valid_0's multi_logloss: 0.711397
+Training until validation scores don't improve for 20 rounds
+Early stopping, best iteration is:
+[49]	valid_0's multi_logloss: 0.68401
+Training until validation scores don't improve for 20 rounds
+Did not meet early stopping. Best iteration is:
+[194]	valid_0's multi_logloss: 0.70451
+Training until validation scores don't improve for 20 rounds
+Early stopping, best iteration is:
+[23]	valid_0's multi_logloss: 0.74955
+Training until validation scores don't improve for 20 rounds
+Early stopping, best iteration is:
+[29]	valid_0's multi_logloss: 0.787552
+  3  0.5  3.0     65.99    51.22      8
+Training until validation scores don't improve for 20 rounds
+Did not meet early stopping. Best iteration is:
+[200]	valid_0's multi_logloss: 0.77544
+Training until validation scores don't improve for 20 rounds
+Early stopping, best iteration is:
+[26]	valid_0's multi_logloss: 0.80855
+Training until validation scores don't improve for 20 rounds
+Early stopping, best iteration is:
+[23]	valid_0's multi_logloss: 0.803536
+Training until validation scores don't improve for 20 rounds
+Early stopping, best iteration is:
+[24]	valid_0's multi_logloss: 0.792324
+Training until validation scores don't improve for 20 rounds
+Early stopping, best iteration is:
+[31]	valid_0's multi_logloss: 0.774916
+Training until validation scores don't improve for 20 rounds
+Early stopping, best iteration is:
+[31]	valid_0's multi_logloss: 0.814108
+Training until validation scores don't improve for 20 rounds
+Early stopping, best iteration is:
+[21]	valid_0's multi_logloss: 0.850183
+Training until validation scores don't improve for 20 rounds
+Early stopping, best iteration is:
+[27]	valid_0's multi_logloss: 0.882629
+  3  0.5  5.0      67.2    54.29      8
+Training until validation scores don't improve for 20 rounds
+Early stopping, best iteration is:
+[162]	valid_0's multi_logloss: 0.889175
+Training until validation scores don't improve for 20 rounds
+Early stopping, best iteration is:
+[26]	valid_0's multi_logloss: 0.89984
+Training until validation scores don't improve for 20 rounds
+Early stopping, best iteration is:
+[21]	valid_0's multi_logloss: 0.901925
+Training until validation scores don't improve for 20 rounds
+Early stopping, best iteration is:
+[20]	valid_0's multi_logloss: 0.879995
+Training until validation scores don't improve for 20 rounds
+Early stopping, best iteration is:
+[26]	valid_0's multi_logloss: 0.879482
+Training until validation scores don't improve for 20 rounds
+Early stopping, best iteration is:
+[28]	valid_0's multi_logloss: 0.925293
+Training until validation scores don't improve for 20 rounds
+Early stopping, best iteration is:
+[19]	valid_0's multi_logloss: 0.964099
+Training until validation scores don't improve for 20 rounds
+Early stopping, best iteration is:
+[23]	valid_0's multi_logloss: 0.998001
+  3  0.5  8.0     67.38    55.07      8
+Training until validation scores don't improve for 20 rounds
+Early stopping, best iteration is:
+[106]	valid_0's multi_logloss: 0.464379
+Training until validation scores don't improve for 20 rounds
+Early stopping, best iteration is:
+[70]	valid_0's multi_logloss: 0.5943012026-07-28 17:43:45,553 - models.forecaster - INFO - Preparing 14d targets...
+2026-07-28 17:43:46,443 - models.forecaster - INFO -   Winsorized 5070 extreme targets for 14d (±500% clip)
+Traceback (most recent call last):
+  File "<frozen runpy>", line 198, in _run_module_as_main
+  File "<frozen runpy>", line 88, in _run_code
+  File "/Users/rayanrane/personal-projects/cs2-analyzer/cs2-oracle/backend/scripts/ab_test_direction_labels.py", line 273, in <module>
+    sys.exit(main())
+             ~~~~^^
+  File "/Users/rayanrane/personal-projects/cs2-analyzer/cs2-oracle/backend/scripts/ab_test_direction_labels.py", line 268, in main
+    run(args.max_items, args.horizon, args.purge_days)
+    ~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/rayanrane/personal-projects/cs2-analyzer/cs2-oracle/backend/scripts/ab_test_direction_labels.py", line 232, in run
+    for row in _run_horizon(forecaster, tdf, feat_cols, horizon, purge_days):
+               ~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/rayanrane/personal-projects/cs2-analyzer/cs2-oracle/backend/scripts/ab_test_direction_labels.py", line 181, in _run_horizon
+    clf = fc._fit_direction_classifier(
+        X_tr, tr[target_col].to_numpy(dtype=float),
+    ...<4 lines>...
+        sigma_train=sigma_train,
+        sigma_val=sigma_val)
+  File "/Users/rayanrane/personal-projects/cs2-analyzer/cs2-oracle/backend/models/forecaster.py", line 2899, in _fit_direction_classifier
+    return lgb.train(params, dtrain, num_boost_round=num_boost_round,
+           ~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+                     valid_sets=valid_sets, callbacks=callbacks)
+                     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/rayanrane/personal-projects/cs2-analyzer/cs2-oracle/backend/venv/lib/python3.13/site-packages/lightgbm/engine.py", line 307, in train
+    booster.update(fobj=fobj)
+    ~~~~~~~~~~~~~~^^^^^^^^^^^
+  File "/Users/rayanrane/personal-projects/cs2-analyzer/cs2-oracle/backend/venv/lib/python3.13/site-packages/lightgbm/basic.py", line 4136, in update
+    _LIB.LGBM_BoosterUpdateOneIter(
+    ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^
+        self._handle,
+        ^^^^^^^^^^^^^
+        ctypes.byref(is_finished),
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^
+    )
+    ^
+KeyboardInterrupt
+
+Training until validation scores don't improve for 20 rounds
+Early stopping, best iteration is:
+[142]	valid_0's multi_logloss: 0.544857
+Training until validation scores don't improve for 20 rounds
+Early stopping, best iteration is:
+[23]	valid_0's multi_logloss: 0.573338
+Training until validation scores don't improve for 20 rounds
+Early stopping, best iteration is:
+[48]	valid_0's multi_logloss: 0.491544
+Training until validation scores don't improve for 20 rounds
+Did not meet early stopping. Best iteration is:
+[187]	valid_0's multi_logloss: 0.495671
+Training until validation scores don't improve for 20 rounds
+Early stopping, best iteration is:
+[18]	valid_0's multi_logloss: 0.544127
+Training until validation scores don't improve for 20 rounds
+Early stopping, best iteration is:
+[23]	valid_0's multi_logloss: 0.597948
+  3  1.0  3.0     47.23     7.27      8
+Training until validation scores don't improve for 20 rounds
+Early stopping, best iteration is:
+[139]	valid_0's multi_logloss: 0.561721
+Training until validation scores don't improve for 20 rounds
+Did not meet early stopping. Best iteration is:
+[185]	valid_0's multi_logloss: 0.670003
+Training until validation scores don't improve for 20 rounds
+Early stopping, best iteration is:
+[21]	valid_0's multi_logloss: 0.641678
+Training until validation scores don't improve for 20 rounds
+Early stopping, best iteration is:
+[18]	valid_0's multi_logloss: 0.659218
+Training until validation scores don't improve for 20 rounds
+Early stopping, best iteration is:
+[42]	valid_0's multi_logloss: 0.58259
+Training until validation scores don't improve for 20 rounds
+Did not meet early stopping. Best iteration is:
+[197]	valid_0's multi_logloss: 0.59231
+Training until validation scores don't improve for 20 rounds
+Early stopping, best iteration is:
+[16]	valid_0's multi_logloss: 0.64964
+Training until validation scores don't improve for 20 rounds
+Early stopping, best iteration is:
+[23]	valid_0's multi_logloss: 0.701194
+  3  1.0  5.0      52.9    20.09      8
+Training until validation scores don't improve for 20 rounds
+Did not meet early stopping. Best iteration is:
+[200]	valid_0's multi_logloss: 0.681687
+Training until validation scores don't improve for 20 rounds
+Early stopping, best iteration is:
+[27]	valid_0's multi_logloss: 0.783351
+Training until validation scores don't improve for 20 rounds
+Early stopping, best iteration is:
+[20]	valid_0's multi_logloss: 0.765618
+Training until validation scores don't improve for 20 rounds
+Early stopping, best iteration is:
+[19]	valid_0's multi_logloss: 0.773736
+Training until validation scores don't improve for 20 rounds
+Early stopping, best iteration is:
+[47]	valid_0's multi_logloss: 0.701558
+Training until validation scores don't improve for 20 rounds
+Early stopping, best iteration is:
+[116]	valid_0's multi_logloss: 0.725028
+Training until validation scores don't improve for 20 rounds
+Early stopping, best iteration is:
+[17]	valid_0's multi_logloss: 0.777818
+Training until validation scores don't improve for 20 rounds
+Early stopping, best iteration is:
+[19]	valid_0's multi_logloss: 0.838822
+  3  1.0  8.0     64.06    46.68      8
+  -> control 3d: overall=67.93% movers=55.98%
+  -> best 3d: k=0.25 mover_weight=8.0 overall=67.45% movers=55.42%
+Training until validation scores don't improve for 20 rounds
+Early stopping, best iteration is:
+[32]	valid_0's multi_logloss: 0.591183
+Training until validation scores don't improve for 20 rounds
+Early stopping, best iteration is:
+[32]	valid_0's multi_logloss: 0.58386
+Training until validation scores don't improve for 20 rounds
+Early stopping, best iteration is:
+[29]	valid_0's multi_logloss: 0.589688
+Training until validation scores don't improve for 20 rounds
+Early stopping, best iteration is:
+[28]	valid_0's multi_logloss: 0.582036
+Training until validation scores don't improve for 20 rounds
+Early stopping, best iteration is:
+[28]	valid_0's multi_logloss: 0.627437
+Training until validation scores don't improve for 20 rounds
+Early stopping, best iteration is:
+[36]	valid_0's multi_logloss: 0.590629
+Training until validation scores don't improve for 20 rounds
+Early stopping, best iteration is:
+[34]	valid_0's multi_logloss: 0.603215
+Training until validation scores don't improve for 20 rounds
+Early stopping, best iteration is:
+[32]	valid_0's multi_logloss: 0.626912
+  7 ctrl  3.0     68.61    54.78      8
+Training until validation scores don't improve for 20 rounds
+Did not meet early stopping. Best iteration is:
+[200]	valid_0's multi_logloss: 0.702024
+Training until validation scores don't improve for 20 rounds
+Early stopping, best iteration is:
+[31]	valid_0's multi_logloss: 0.726006
+Training until validation scores don't improve for 20 rounds
+Early stopping, best iteration is:
+[34]	valid_0's multi_logloss: 0.716559
+Training until validation scores don't improve for 20 rounds
+Early stopping, best iteration is:
+[24]	valid_0's multi_logloss: 0.672697
+Training until validation scores don't improve for 20 rounds
+Early stopping, best iteration is:
+[42]	valid_0's multi_logloss: 0.705802
+Training until validation scores don't improve for 20 rounds
+Early stopping, best iteration is:
+[41]	valid_0's multi_logloss: 0.736887
+Training until validation scores don't improve for 20 rounds
+Early stopping, best iteration is:
+[23]	valid_0's multi_logloss: 0.777632
+Training until validation scores don't improve for 20 rounds
+Early stopping, best iteration is:
+[32]	valid_0's multi_logloss: 0.816642
+  7 0.25  3.0     67.21    52.07      8
+Training until validation scores don't improve for 20 rounds
+Did not meet early stopping. Best iteration is:
+[195]	valid_0's multi_logloss: 0.774872
+Training until validation scores don't improve for 20 rounds
+Early stopping, best iteration is:
+[28]	valid_0's multi_logloss: 0.751199
+Training until validation scores don't improve for 20 rounds
+Early stopping, best iteration is:
+[26]	valid_0's multi_logloss: 0.765841
+Training until validation scores don't improve for 20 rounds
+Early stopping, best iteration is:
+[28]	valid_0's multi_logloss: 0.721739
+Training until validation scores don't improve for 20 rounds
+Early stopping, best iteration is:
+[29]	valid_0's multi_logloss: 0.77443
+Training until validation scores don't improve for 20 rounds
+Early stopping, best iteration is:
+[25]	valid_0's multi_logloss: 0.80398
+Training until validation scores don't improve for 20 rounds
+Early stopping, best iteration is:
+[23]	valid_0's multi_logloss: 0.83957
+Training until validation scores don't improve for 20 rounds
+Early stopping, best iteration is:
+[22]	valid_0's multi_logloss: 0.89169
+  7 0.25  5.0     67.45    52.78      8
+Training until validation scores don't improve for 20 rounds
+Did not meet early stopping. Best iteration is:
+[194]	valid_0's multi_logloss: 0.862805
+Training until validation scores don't improve for 20 rounds
+Early stopping, best iteration is:
+[27]	valid_0's multi_logloss: 0.78789
+Training until validation scores don't improve for 20 rounds
+Early stopping, best iteration is:
+[23]	valid_0's multi_logloss: 0.827571
+Training until validation scores don't improve for 20 rounds
+Early stopping, best iteration is:
+[25]	valid_0's multi_logloss: 0.770038
+Training until validation scores don't improve for 20 rounds
+Early stopping, best iteration is:
+[28]	valid_0's multi_logloss: 0.853609
+Training until validation scores don't improve for 20 rounds
+Early stopping, best iteration is:
+[23]	valid_0's multi_logloss: 0.878543
+Training until validation scores don't improve for 20 rounds
+Early stopping, best iteration is:
+[21]	valid_0's multi_logloss: 0.914135
+Training until validation scores don't improve for 20 rounds
+Early stopping, best iteration is:
+[22]	valid_0's multi_logloss: 0.981399
+  7 0.25  8.0     67.57    53.33      8
+Training until validation scores don't improve for 20 rounds
+Did not meet early stopping. Best iteration is:
+[200]	valid_0's multi_logloss: 0.661001
+Training until validation scores don't improve for 20 rounds
+Early stopping, best iteration is:
+[40]	valid_0's multi_logloss: 0.760819
+Training until validation scores don't improve for 20 rounds
+Early stopping, best iteration is:
+[22]	valid_0's multi_logloss: 0.732761
+Training until validation scores don't improve for 20 rounds
+Early stopping, best iteration is:
+[23]	valid_0's multi_logloss: 0.713409
+Training until validation scores don't improve for 20 rounds
+Early stopping, best iteration is:
+[34]	valid_0's multi_logloss: 0.681024
+Training until validation scores don't improve for 20 rounds
+Early stopping, best iteration is:
+[133]	valid_0's multi_logloss: 0.700897
+Training until validation scores don't improve for 20 rounds
+Early stopping, best iteration is:
+[20]	valid_0's multi_logloss: 0.763428
+Training until validation scores don't improve for 20 rounds
+Early stopping, best iteration is:
+[34]	valid_0's multi_logloss: 0.779377
+  7  0.5  3.0     64.53    46.58      8
+Training until validation scores don't improve for 20 rounds
+Did not meet early stopping. Best iteration is:
+[198]	valid_0's multi_logloss: 0.759622
+Training until validation scores don't improve for 20 rounds
+Early stopping, best iteration is:
+[23]	valid_0's multi_logloss: 0.802912
+Training until validation scores don't improve for 20 rounds
+Early stopping, best iteration is:
+[19]	valid_0's multi_logloss: 0.80584
+Training until validation scores don't improve for 20 rounds
+Early stopping, best iteration is:
+[21]	valid_0's multi_logloss: 0.774689
+Training until validation scores don't improve for 20 rounds
+Early stopping, best iteration is:
+[24]	valid_0's multi_logloss: 0.784891
+Training until validation scores don't improve for 20 rounds
+Early stopping, best iteration is:
+[109]	valid_0's multi_logloss: 0.801367
+Training until validation scores don't improve for 20 rounds
+Early stopping, best iteration is:
+[19]	valid_0's multi_logloss: 0.857781
+Training until validation scores don't improve for 20 rounds
+Early stopping, best iteration is:
+[28]	valid_0's multi_logloss: 0.886822
+  7  0.5  5.0     67.22    51.96      8
+Training until validation scores don't improve for 20 rounds
+Did not meet early stopping. Best iteration is:
+[200]	valid_0's multi_logloss: 0.878342
+Training until validation scores don't improve for 20 rounds
+Early stopping, best iteration is:
+[21]	valid_0's multi_logloss: 0.859613
+Training until validation scores don't improve for 20 rounds
+Early stopping, best iteration is:
+[18]	valid_0's multi_logloss: 0.896565
+Training until validation scores don't improve for 20 rounds
+Early stopping, best iteration is:
+[22]	valid_0's multi_logloss: 0.861646
+Training until validation scores don't improve for 20 rounds
+Early stopping, best iteration is:
+[33]	valid_0's multi_logloss: 0.90162
+Training until validation scores don't improve for 20 rounds
+Did not meet early stopping. Best iteration is:
+[198]	valid_0's multi_logloss: 0.901344
+Training until validation scores don't improve for 20 rounds
+Early stopping, best iteration is:
+[18]	valid_0's multi_logloss: 0.969244
+Training until validation scores don't improve for 20 rounds
+Early stopping, best iteration is:
+[23]	valid_0's multi_logloss: 1.02132
+  7  0.5  8.0     67.74     53.5      8
+Training until validation scores don't improve for 20 rounds
+Did not meet early stopping. Best iteration is:
+[191]	valid_0's multi_logloss: 0.456708
+Training until validation scores don't improve for 20 rounds
+Early stopping, best iteration is:
+[52]	valid_0's multi_logloss: 0.712717
+Training until validation scores don't improve for 20 rounds
+Early stopping, best iteration is:
+[28]	valid_0's multi_logloss: 0.601657
+Training until validation scores don't improve for 20 rounds
+Early stopping, best iteration is:
+[22]	valid_0's multi_logloss: 0.618947
+Training until validation scores don't improve for 20 rounds
+Early stopping, best iteration is:
+[46]	valid_0's multi_logloss: 0.466895
+Training until validation scores don't improve for 20 rounds
+Did not meet early stopping. Best iteration is:
+[196]	valid_0's multi_logloss: 0.506615
+Training until validation scores don't improve for 20 rounds
+Early stopping, best iteration is:
+[16]	valid_0's multi_logloss: 0.598497
+Training until validation scores don't improve for 20 rounds
+Early stopping, best iteration is:
+[51]	valid_0's multi_logloss: 0.598518
+  7  1.0  3.0     45.64     9.06      8
+Training until validation scores don't improve for 20 rounds
+Early stopping, best iteration is:
+[178]	valid_0's multi_logloss: 0.551372
+Training until validation scores don't improve for 20 rounds
+Early stopping, best iteration is:
+[31]	valid_0's multi_logloss: 0.745677
+Training until validation scores don't improve for 20 rounds
+Early stopping, best iteration is:
+[20]	valid_0's multi_logloss: 0.682643
+Training until validation scores don't improve for 20 rounds
+Early stopping, best iteration is:
+[20]	valid_0's multi_logloss: 0.709606
+Training until validation scores don't improve for 20 rounds
+Early stopping, best iteration is:
+[44]	valid_0's multi_logloss: 0.572422
+Training until validation scores don't improve for 20 rounds
+Did not meet early stopping. Best iteration is:
+[200]	valid_0's multi_logloss: 0.590174
+Training until validation scores don't improve for 20 rounds
+Early stopping, best iteration is:
+[17]	valid_0's multi_logloss: 0.700995
+Training until validation scores don't improve for 20 rounds
+Early stopping, best iteration is:
+[29]	valid_0's multi_logloss: 0.717123
+  7  1.0  5.0     53.19     23.9      8
+Training until validation scores don't improve for 20 rounds
+Did not meet early stopping. Best iteration is:
+[197]	valid_0's multi_logloss: 0.67337
+Training until validation scores don't improve for 20 rounds
+Early stopping, best iteration is:
+[90]	valid_0's multi_logloss: 0.809139
+Training until validation scores don't improve for 20 rounds
+Early stopping, best iteration is:
+[19]	valid_0's multi_logloss: 0.790018
+Training until validation scores don't improve for 20 rounds
+Early stopping, best iteration is:
+[13]	valid_0's multi_logloss: 0.827236
+Training until validation scores don't improve for 20 rounds
+Early stopping, best iteration is:
+[49]	valid_0's multi_logloss: 0.701719
+Training until validation scores don't improve for 20 rounds
+Did not meet early stopping. Best iteration is:
+[200]	valid_0's multi_logloss: 0.701638
+Training until validation scores don't improve for 20 rounds
+Early stopping, best iteration is:
+[15]	valid_0's multi_logloss: 0.827126
+Training until validation scores don't improve for 20 rounds
+Early stopping, best iteration is:
+[22]	valid_0's multi_logloss: 0.864222
+  7  1.0  8.0     63.84    44.69      8
+  -> control 7d: overall=68.61% movers=54.78%
+  -> best 7d: k=0.5 mover_weight=8.0 overall=67.74% movers=53.5%
+ 14 ctrl  3.0     67.49    52.03      8
+ 14 0.25  3.0     65.91    49.15      8
+ 14 0.25  5.0     66.31     50.1      8
+ 14 0.25  8.0     66.56    50.83      8
+ 14  0.5  3.0     63.58    44.45      8
+ 14  0.5  5.0     66.44    50.05      8
+ 14  0.5  8.0     67.05    51.45      8
+2026-07-28 22:50:43,475 - sqlalchemy.pool.impl.QueuePool - ERROR - Exception during reset or similar
+Traceback (most recent call last):
+  File "/Users/rayanrane/personal-projects/cs2-analyzer/cs2-oracle/backend/venv/lib/python3.13/site-packages/sqlalchemy/pool/base.py", line 986, in _finalize_fairy
+  File "/Users/rayanrane/personal-projects/cs2-analyzer/cs2-oracle/backend/venv/lib/python3.13/site-packages/sqlalchemy/pool/base.py", line 1441, in _reset
+  File "/Users/rayanrane/personal-projects/cs2-analyzer/cs2-oracle/backend/venv/lib/python3.13/site-packages/sqlalchemy/engine/default.py", line 712, in do_rollback
+psycopg2.OperationalError: could not receive data from server: Operation timed out
+SSL SYSCALL error: Operation timed out
+
