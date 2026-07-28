@@ -100,3 +100,22 @@ def test_fit_classifier_vol_scaling_changes_labels():
                                   floor=0.2, cap=15.0)
     scaled = fc._direction_classes(y, thr)
     assert (scaled == 1).sum() > (legacy == 1).sum()
+
+
+def test_sweep_grid_and_eval_are_importable():
+    import importlib
+    mod = importlib.import_module("scripts.ab_test_direction_labels")
+    # grid constants exist and are non-empty
+    assert len(mod.K_GRID) >= 2
+    assert len(mod.MOVER_WEIGHT_GRID) >= 2
+    # eval uses the fixed yardstick: a helper that scores preds vs fixed labels
+    assert hasattr(mod, "score_fixed_yardstick")
+
+
+def test_score_fixed_yardstick_ignores_training_threshold():
+    from scripts.ab_test_direction_labels import score_fixed_yardstick
+    actual_returns = np.array([1.0, -1.0, 0.1])  # up, down, flat @0.5%
+    pred_cls = np.array([2, 0, 1])                # all correct vs fixed band
+    acc, movers_acc = score_fixed_yardstick(pred_cls, actual_returns)
+    assert acc == 1.0
+    assert movers_acc == 1.0  # only the two movers, both correct
