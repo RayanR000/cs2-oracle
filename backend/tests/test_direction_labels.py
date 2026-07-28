@@ -76,3 +76,27 @@ def test_label_vol_column_is_trailing_and_grouped():
     # No leakage: first row per item has no trailing window -> NaN
     first_calm = out[out["item_id"] == "calm"][DIRECTION_LABEL_VOL_COL].iloc[0]
     assert np.isnan(first_calm)
+
+
+def test_fit_classifier_signature_accepts_horizon_and_sigma():
+    import inspect
+    sig = inspect.signature(ItemForecaster._fit_direction_classifier)
+    params = list(sig.parameters)
+    assert "horizon" in params
+    assert "sigma_train" in params and "sigma_val" in params
+
+
+def test_fit_classifier_vol_scaling_changes_labels():
+    # With a large per-row sigma, movers should collapse to flat, shrinking
+    # the number of up/down training labels vs the fixed-0.5% baseline.
+    fc = ItemForecaster(db_session=None)
+    rng = np.random.RandomState(0)
+    X = pd.DataFrame({"f0": rng.randn(400), "f1": rng.randn(400)})
+    y = rng.randn(400) * 2.0  # returns in percent, spread around 0
+    big_sigma = np.full(400, 50.0)  # huge vol -> band hits cap 15% -> most flat
+    legacy = fc._direction_classes(y)  # fixed 0.5%
+    thr = fc._direction_threshold(big_sigma, horizon=3,
+                                  k=fc.DIRECTION_VOL_MULTIPLIER_MAP[3],
+                                  floor=0.2, cap=15.0)
+    scaled = fc._direction_classes(y, thr)
+    assert (scaled == 1).sum() > (legacy == 1).sum()

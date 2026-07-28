@@ -2479,6 +2479,8 @@ class ItemForecaster:
                 X_train, y_train, X_val, y_val, boosting_type,
                 self._direction_tree_params(per_quantile_params),
                 horizon=horizon,
+                sigma_train=train_set[DIRECTION_LABEL_VOL_COL].to_numpy(dtype=float),
+                sigma_val=val_set[DIRECTION_LABEL_VOL_COL].to_numpy(dtype=float),
             )
 
             # Train regime-specific models (optional: SKIP_REGIMES=1 to skip)
@@ -2859,13 +2861,28 @@ class ItemForecaster:
 
     def _fit_direction_classifier(self, X_train, y_train_ret, X_val, y_val_ret,
                                    boosting_type: str, tree_params: dict,
-                                   num_boost_round: int = 200, horizon: Optional[int] = None):
-        """Train a single 3-class (down/flat/up) LightGBM classifier on returns,
-        up-weighting movers. Early-stops on val multi-logloss for GBDT."""
-        ds = {"max_bin": self.MAX_BIN, "feature_pre_filter": False}
-        c_train = self._direction_classes(y_train_ret, DIRECTION_FLAT_TOLERANCE_PCT)
+                                   horizon: Optional[int] = None,
+                                   sigma_train=None, sigma_val=None,
+                                   num_boost_round: int = 200):
+        """Train a 3-class (down/flat/up) LightGBM classifier on returns,
+        up-weighting movers. When ``sigma_train`` is given, the flat band is
+        vol-scaled per row (k_h * sigma * sqrt(h), clamped); otherwise the
+        legacy fixed ±DIRECTION_FLAT_TOLERANCE_PCT band is used. Early-stops on
+        val multi-logloss for GBDT."""
+        k = self.DIRECTION_VOL_MULTIPLIER_MAP.get(horizon, 1.0)
         mover_weight = self.DIRECTION_MOVER_WEIGHT_MAP.get(horizon, 3.0)
-        w_train = self._direction_sample_weights(y_train_ret, DIRECTION_FLAT_TOLERANCE_PCT, mover_weight)
+        floor, cap = DIRECTION_THRESHOLD_FLOOR_PCT, DIRECTION_THRESHOLD_CAP_PCT
+
+        def _thr(sigma):
+            if sigma is None:
+                return DIRECTION_FLAT_TOLERANCE_PCT
+            return self._direction_threshold(np.asarray(sigma, dtype=float),
+                                              horizon, k, floor, cap)
+
+        ds = {"max_bin": self.MAX_BIN, "feature_pre_filter": False}
+        thr_train = _thr(sigma_train)
+        c_train = self._direction_classes(y_train_ret, thr_train)
+        w_train = self._direction_sample_weights(y_train_ret, thr_train, mover_weight)
         dtrain = lgb.Dataset(X_train, c_train, params=ds, weight=w_train)
         params = dict(tree_params)
         params.update(objective="multiclass", num_class=3, metric="multi_logloss",
@@ -2874,7 +2891,7 @@ class ItemForecaster:
         callbacks = [lgb.log_evaluation(0)]
         valid_sets = None
         if X_val is not None and y_val_ret is not None and len(X_val):
-            dval = lgb.Dataset(X_val, self._direction_classes(y_val_ret),
+            dval = lgb.Dataset(X_val, self._direction_classes(y_val_ret, _thr(sigma_val)),
                                reference=dtrain, params=ds)
             valid_sets = [dval]
             if boosting_type != "dart":
@@ -3522,9 +3539,11 @@ class ItemForecaster:
             clf = self._fit_direction_classifier(
                 X_train, y_train, X_val, y_val, boosting_type,
                 self._direction_tree_params(per_quantile_params),
-                horizon=horizon)
+                horizon=horizon,
+                sigma_train=train_df[DIRECTION_LABEL_VOL_COL].to_numpy(dtype=float),
+                sigma_val=val_df[DIRECTION_LABEL_VOL_COL].to_numpy(dtype=float))
             pred_cls = clf.predict(X_val).argmax(axis=1)
-            actual_cls = self._direction_classes(actual_returns)
+            actual_cls = self._direction_classes(actual_returns)  # FIXED ±0.5% yardstick
             classifier_acc = round(float((pred_cls == actual_cls).mean()) * 100, 1)
 
             fold_metrics.append({
