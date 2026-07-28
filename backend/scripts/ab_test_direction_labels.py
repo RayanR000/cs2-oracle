@@ -17,7 +17,7 @@ models/forecaster.py. Nothing here writes model constants.
 
 Usage:
     python -m scripts.ab_test_direction_labels [--max-items 200] [--horizon 14]
-                                                [--step 60] [--purge-days N]
+                                                [--purge-days N]
 """
 import sys
 import itertools
@@ -48,8 +48,6 @@ K_GRID = [0.5, 1.0, 1.5, 2.0]
 MOVER_WEIGHT_GRID = [1.5, 3.0, 5.0]
 HORIZONS = [3, 7, 14, 30]
 
-VAL_WINDOW_DAYS = 21
-STEP = 60
 MIN_TRAIN_ROWS = 2000
 MIN_VAL_ROWS = 200
 
@@ -126,46 +124,20 @@ def load_features(con, forecaster, events_df, max_items):
     return df, feat_cols
 
 
-def _build_folds(dates, step=STEP):
-    """Fixed walk-forward folds: (train_dates, val_dates). Same windowing as
-    ab_test_hp_search.py's `_build_folds` (2/3 split, step-day stride,
-    VAL_WINDOW_DAYS validation window)."""
-    split_idx = len(dates) * 2 // 3
-    folds = []
-    for window_end in range(split_idx + 1, len(dates), step):
-        train_dates = dates[:window_end]
-        val_dates = dates[window_end:window_end + VAL_WINDOW_DAYS]
-        if len(val_dates) < 7:
-            continue
-        folds.append((train_dates, val_dates))
-    return folds
-
-
-def _apply_purge_gap(folds, dates, purge_days):
-    """Apply a purge/embargo gap of `purge_days` between the end of train and
-    the start of val in each fold, dropping any val dates that fall within
-    `purge_days` of the last train date. Prevents label leakage: a training
-    row's `horizon`-day-forward target can otherwise reach into the
-    validation window."""
-    dates = list(dates)
-    purged = []
-    for train_dates, val_dates in folds:
-        if len(train_dates) == 0:
-            continue
-        last_train = pd.Timestamp(train_dates[-1])
-        gapped_val = [d for d in val_dates if (pd.Timestamp(d) - last_train).days > purge_days]
-        if len(gapped_val) < 7:
-            continue
-        purged.append((train_dates, np.array(gapped_val)))
-    return purged
-
-
 def _run_horizon(fc, tdf, feat_cols, horizon, purge_days):
-    """Yield result dicts for every (k, mover_weight) combo at this horizon."""
+    """Yield result dicts for every (k, mover_weight) combo at this horizon.
+
+    CV folds come from the production method `ItemForecaster._compute_cv_splits`
+    (models/forecaster.py), the same purge-gap CV the design cites as the
+    acceptance gate. It purges the TRAIN side (drops train dates whose
+    horizon-day-forward target would land inside the val window), so the val
+    window width is unaffected by purge_days — unlike purging val dates,
+    which degenerates (or empties entirely) once purge_days exceeds the val
+    window width, as happens for horizon=30 > VAL_WINDOW_DAYS=21.
+    """
     target_col = f"target_return_{horizon}d"
     dates = np.array(sorted(tdf["date"].unique()))
-    folds = _build_folds(dates, STEP)
-    folds = _apply_purge_gap(folds, dates, purge_days)
+    folds = fc._compute_cv_splits(dates, purge_days=purge_days)
     boosting_type = fc.BOOSTING_TYPE_MAP.get(horizon, "gbdt")
 
     if not folds:
@@ -173,6 +145,8 @@ def _run_horizon(fc, tdf, feat_cols, horizon, purge_days):
         return
 
     for k, mw in itertools.product(K_GRID, MOVER_WEIGHT_GRID):
+        # Process-local mutation of the class-level maps; fine for this
+        # single-process CLI sweep (never persisted back to forecaster.py).
         fc.DIRECTION_VOL_MULTIPLIER_MAP[horizon] = k
         fc.DIRECTION_MOVER_WEIGHT_MAP[horizon] = mw
         fold_overall, fold_movers = [], []
