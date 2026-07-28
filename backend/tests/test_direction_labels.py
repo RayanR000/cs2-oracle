@@ -1,5 +1,6 @@
 import numpy as np
-from models.forecaster import ItemForecaster
+import pandas as pd
+from models.forecaster import ItemForecaster, DIRECTION_LABEL_VOL_COL
 
 
 def test_direction_threshold_scales_with_sqrt_horizon():
@@ -47,3 +48,31 @@ def test_direction_sample_weights_per_row_threshold():
     thr = np.array([0.5, 2.0])
     w = ItemForecaster._direction_sample_weights(r, thr, mover_weight=3.0)
     assert w.tolist() == [3.0, 1.0]
+
+
+def test_label_vol_column_is_trailing_and_grouped():
+    fc = ItemForecaster(db_session=None)
+    # two items; smooth-trend item -> low vol, noisy item -> higher vol
+    n = 60
+    dates = pd.date_range("2025-01-01", periods=n, freq="D")
+    calm = pd.DataFrame({"item_id": "calm", "date": dates,
+                         "price": np.linspace(10.0, 12.0, n)})
+    # ~1% daily oscillation -> should land on a PERCENT scale (~0.5-3), not ~0.01
+    noisy_price = 10.0 * (1 + 0.01 * np.sin(np.arange(n)))
+    noisy = pd.DataFrame({"item_id": "noisy", "date": dates, "price": noisy_price})
+    df = pd.concat([calm, noisy], ignore_index=True)
+    out = fc._compute_price_features(df)
+
+    assert DIRECTION_LABEL_VOL_COL in out.columns
+
+    calm_vol = out[out["item_id"] == "calm"][DIRECTION_LABEL_VOL_COL].iloc[-1]
+    noisy_vol = out[out["item_id"] == "noisy"][DIRECTION_LABEL_VOL_COL].iloc[-1]
+    assert noisy_vol > calm_vol
+
+    # Units check: ~1% daily moves should yield a vol on the order of ~1
+    # (percent units), not ~0.01 (raw log-return fraction units).
+    assert 0.3 <= noisy_vol <= 3.0
+
+    # No leakage: first row per item has no trailing window -> NaN
+    first_calm = out[out["item_id"] == "calm"][DIRECTION_LABEL_VOL_COL].iloc[0]
+    assert np.isnan(first_calm)

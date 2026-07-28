@@ -808,6 +808,18 @@ class ItemForecaster:
         df["log_return_1d"] = np.log(df["price"] / df["price_lag_1d"].replace(0, np.nan))
         df["log_return_7d"] = np.log(df["price"] / df["price_lag_7d"].replace(0, np.nan))
 
+        # Trailing daily-return volatility for vol-scaled direction labels
+        # (2026-07-27). Labeling only — excluded from model features (see
+        # `exclude` below). log_return_1d is a raw fractional log return
+        # (~0.01 for a 1% move); scale by 100 so this column is in PERCENT
+        # units, matching target_return_{h}d and the flat-band threshold
+        # (k * sigma * sqrt(h)) it feeds. Trailing only (no centering) —
+        # no future information leaks into the window.
+        df[DIRECTION_LABEL_VOL_COL] = (
+            df.groupby("item_id")["log_return_1d"]
+              .transform(lambda s: (s * 100.0).rolling(DIRECTION_VOL_WINDOW, min_periods=5).std())
+        )
+
         # Price autocorrelation proxy (direction agreement between lag-1 and lag-7 returns)
         df["autocorr_1d"] = df["return_1d"] * df["return_1d"].groupby(df["item_id"]).shift(1)
         df["autocorr_7d"] = df["return_7d"] * df["return_7d"].groupby(df["item_id"]).shift(7)
@@ -2053,7 +2065,7 @@ class ItemForecaster:
 
         # Define feature columns (exclude metadata and target columns)
         exclude = {"item_id", "date", "timestamp", "price", "volume",
-                   "name", "release_date"}
+                   "name", "release_date", DIRECTION_LABEL_VOL_COL}
         exclude |= {f"target_{h}d" for h in self.HORIZONS}
         exclude |= {f"target_return_{h}d" for h in self.HORIZONS}
 
