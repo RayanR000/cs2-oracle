@@ -22,3 +22,28 @@ def test_direction_threshold_accepts_scalar_sigma():
     t = ItemForecaster._direction_threshold(2.0, horizon=1, k=0.5, floor=0.0, cap=100.0)
     assert t.shape == (1,)
     np.testing.assert_allclose(t, 1.0, rtol=1e-6)
+
+
+def test_direction_classes_scalar_matches_legacy():
+    r = np.array([1.0, -1.0, 0.2, -0.2, 0.5, -0.5])
+    got = ItemForecaster._direction_classes(r, 0.5)
+    # >0.5 -> up(2), <-0.5 -> down(0), else flat(1); boundary 0.5 is flat
+    assert got.tolist() == [2, 0, 1, 1, 1, 1]
+
+
+def test_direction_classes_default_is_legacy_half_pct():
+    r = np.array([0.6, -0.6, 0.0])
+    assert ItemForecaster._direction_classes(r).tolist() == [2, 0, 1]
+
+
+def test_direction_classes_per_row_threshold():
+    r = np.array([1.0, 1.0])
+    thr = np.array([0.5, 2.0])  # same return, different bands
+    assert ItemForecaster._direction_classes(r, thr).tolist() == [2, 1]
+
+
+def test_direction_sample_weights_per_row_threshold():
+    r = np.array([1.0, 1.0])
+    thr = np.array([0.5, 2.0])
+    w = ItemForecaster._direction_sample_weights(r, thr, mover_weight=3.0)
+    assert w.tolist() == [3.0, 1.0]

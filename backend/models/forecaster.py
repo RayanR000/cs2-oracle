@@ -2793,11 +2793,13 @@ class ItemForecaster:
         return new_mid - low_off, new_mid, new_mid + high_off
 
     @staticmethod
-    def _direction_classes(returns) -> np.ndarray:
-        """Bucket % returns into 0=down, 1=flat, 2=up (±DIRECTION_FLAT_TOLERANCE_PCT)."""
+    def _direction_classes(returns, threshold=DIRECTION_FLAT_TOLERANCE_PCT) -> np.ndarray:
+        """Bucket % returns into 0=down, 1=flat, 2=up using a flat band of
+        ``threshold`` (scalar or per-row array, percent). Scalar reproduces the
+        legacy fixed-±DIRECTION_FLAT_TOLERANCE_PCT behavior."""
         r = np.asarray(returns, dtype=float)
-        return np.where(r > DIRECTION_FLAT_TOLERANCE_PCT, 2,
-                        np.where(r < -DIRECTION_FLAT_TOLERANCE_PCT, 0, 1)).astype(int)
+        thr = np.asarray(threshold, dtype=float)
+        return np.where(r > thr, 2, np.where(r < -thr, 0, 1)).astype(int)
 
     @staticmethod
     def _direction_threshold(sigma, horizon: int, k: float,
@@ -2810,12 +2812,14 @@ class ItemForecaster:
         return np.clip(raw, floor, cap)
 
     @staticmethod
-    def _direction_sample_weights(returns, mover_weight: float) -> np.ndarray:
-        """Up-weight clearly-moving rows (|return| > flat tolerance) by
-        ``mover_weight``; flat rows keep weight 1.0."""
+    def _direction_sample_weights(returns, threshold, mover_weight: float) -> np.ndarray:
+        """Up-weight clearly-moving rows (|return| > ``threshold``) by
+        ``mover_weight``; flat rows keep weight 1.0. ``threshold`` scalar or
+        per-row array (percent)."""
         r = np.asarray(returns, dtype=float)
+        thr = np.asarray(threshold, dtype=float)
         w = np.ones(len(r))
-        w[np.abs(r) > DIRECTION_FLAT_TOLERANCE_PCT] = mover_weight
+        w[np.abs(r) > thr] = mover_weight
         return w
 
     @classmethod
@@ -2847,9 +2851,9 @@ class ItemForecaster:
         """Train a single 3-class (down/flat/up) LightGBM classifier on returns,
         up-weighting movers. Early-stops on val multi-logloss for GBDT."""
         ds = {"max_bin": self.MAX_BIN, "feature_pre_filter": False}
-        c_train = self._direction_classes(y_train_ret)
+        c_train = self._direction_classes(y_train_ret, DIRECTION_FLAT_TOLERANCE_PCT)
         mover_weight = self.DIRECTION_MOVER_WEIGHT_MAP.get(horizon, 3.0)
-        w_train = self._direction_sample_weights(y_train_ret, mover_weight)
+        w_train = self._direction_sample_weights(y_train_ret, DIRECTION_FLAT_TOLERANCE_PCT, mover_weight)
         dtrain = lgb.Dataset(X_train, c_train, params=ds, weight=w_train)
         params = dict(tree_params)
         params.update(objective="multiclass", num_class=3, metric="multi_logloss",
