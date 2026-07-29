@@ -13,7 +13,7 @@ import lightgbm as lgb
 from datetime import date, datetime, timedelta, timezone
 from unittest.mock import MagicMock, patch
 
-from models.forecaster import ItemForecaster
+from models.forecaster import ItemForecaster, SAMPLE_WEIGHT_HALFLIFE_DAYS
 
 
 # ---------------------------------------------------------------------------
@@ -1274,6 +1274,95 @@ class TestQ50RowSampling:
         out = forecaster._apply_row_sampling(
             {"subsample": 0.7}, 0.5, subsample=0.7)
         assert out["subsample"] == 0.7
+
+
+class TestRecencyWeighting:
+    """Time-decayed sample weights — the mechanism, which ships DISABLED.
+
+    Diagnosed 2026-07-29: production trains on a 1460-day window in which only
+    ~14.5% of rows fall in the last 180 days, while the early-stopping
+    validation window (most recent 30 days) has ~2x the return spread of the
+    training data overall (std 35.1 vs 21.9, p10/p90 -14.4/+20.1 vs -9.1/+10.0).
+    Weights encode item volatility and direction only, so a 2022 row counts as
+    much as a 2026 one.
+
+    The decay knob was A/B'd and did not clear the gate (see
+    SAMPLE_WEIGHT_HALFLIFE_DAYS), so the production default is 0.0. These tests
+    set a half-life explicitly so the mechanism stays correct if it is ever
+    re-enabled; `test_production_default_is_disabled` pins the shipped value.
+    """
+
+    HALF_LIFE = 365
+
+    @pytest.fixture(autouse=True)
+    def _enable_decay(self, monkeypatch):
+        import models.forecaster as fmod
+        monkeypatch.setattr(fmod, "SAMPLE_WEIGHT_HALFLIFE_DAYS",
+                            float(self.HALF_LIFE))
+
+    def test_production_default_is_disabled(self):
+        """Guards the 2026-07-29 A/B decision: decay is off in production."""
+        assert SAMPLE_WEIGHT_HALFLIFE_DAYS == 0.0, (
+            "recency decay was A/B'd and failed its gate on 3 of 4 horizons; "
+            "re-enabling needs a fresh A/B, not a constant edit")
+
+    @staticmethod
+    def _frame(n_items=4, n_days=800, end="2026-07-18"):
+        dates = pd.date_range(end=end, periods=n_days, freq="D")
+        rows = []
+        for i in range(n_items):
+            for d in dates:
+                rows.append({"item_id": f"item_{i}", "date": d.date(),
+                             "price": 10.0 + (i + 1) * 0.01 * (d.dayofyear % 7),
+                             "target_return_7d": 1.0})
+        return pd.DataFrame(rows)
+
+    def test_recent_rows_weigh_more_than_old(self, forecaster):
+        df = self._frame()
+        w = forecaster._compute_sample_weights(df, 7)
+        assert w is not None
+        df = df.copy()
+        df["w"] = w
+        by_date = df.groupby("date")["w"].mean().sort_index()
+        # Newest day must carry strictly more gradient weight than the oldest.
+        assert by_date.iloc[-1] > by_date.iloc[0], (
+            f"no recency decay: newest={by_date.iloc[-1]:.4f} "
+            f"oldest={by_date.iloc[0]:.4f}")
+
+    def test_decay_matches_configured_half_life(self, forecaster):
+        # The price pattern repeats weekly, so the 30-day rolling vol is
+        # effectively constant in the interior — a flat price would instead
+        # zero the vol term entirely (clip(0, 0.1, 0)) and make every weight 0.
+        hl = self.HALF_LIFE
+        df = self._frame(n_items=2, n_days=2 * hl + 1)
+        w = forecaster._compute_sample_weights(df, 7)
+        df = df.copy(); df["w"] = w
+        by_date = df.groupby("date")["w"].mean().sort_index()
+        newest, one_half_life = by_date.iloc[-1], by_date.iloc[-1 - hl]
+        assert newest > 0
+        assert one_half_life / newest == pytest.approx(0.5, rel=0.05), (
+            f"expected ~0.5 at one half-life, got "
+            f"{one_half_life / newest:.4f}")
+
+    def test_weights_stay_mean_normalized(self, forecaster):
+        w = forecaster._compute_sample_weights(self._frame(), 7)
+        assert np.mean(w) == pytest.approx(1.0, rel=1e-6)
+
+    def test_decay_disabled_by_zero_half_life(self, forecaster, monkeypatch):
+        import models.forecaster as fmod
+        monkeypatch.setattr(fmod, "SAMPLE_WEIGHT_HALFLIFE_DAYS", 0)
+        df = self._frame()
+        w = forecaster._compute_sample_weights(df, 7)
+        df = df.copy(); df["w"] = w
+        by_date = df.groupby("date")["w"].mean().sort_index()
+        # With decay off, age must not matter: interior oldest ~= newest.
+        assert by_date.iloc[-1] == pytest.approx(by_date.iloc[40], rel=0.02), (
+            "half-life 0 must disable decay entirely")
+
+    def test_missing_date_column_is_tolerated(self, forecaster):
+        df = self._frame().drop(columns=["date"])
+        w = forecaster._compute_sample_weights(df, 7)
+        assert w is not None and len(w) == len(df)
 
 
 class TestPredictEnsembleSafe:

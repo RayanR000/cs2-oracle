@@ -52,6 +52,37 @@ BIAS_EWMA_ALPHA = 0.3
 # Applied in _compute_sample_weights before normalization.
 DIRECTION_UPWEIGHT = 1.5
 
+# Recency half-life, in days, for time-decayed sample weights: a row `h` days
+# older than the newest row in the frame carries 0.5× the gradient weight.
+# Set to 0 to disable decay entirely.
+#
+# Why (diagnosed 2026-07-29, see docs/changelog/2026-07-29-7d-q50-early-stop.md):
+# training spans 1460 days but only ~14.5% of rows fall in the last 180 days,
+# while the early-stopping validation window (most recent 30 days) has ~2× the
+# return spread of the training set overall (std 35.1 vs 21.9). The model was
+# therefore fit mostly on a calmer historical regime and validated against the
+# current volatile one, leaving the 7d q50 validation curve nearly flat (0.28%
+# total improvement) and its early-stopping round noise-determined.
+#
+# DISABLED (0.0) — A/B'd 2026-07-29 and it did not clear the gate.
+# `scripts/ab_test_recency_weights.py`, 8 purge-gap folds on the real 141-item
+# production frame, half-life 365d vs flat. q50 pinball: 3d −0.01% (5/8 folds),
+# 7d −0.63% (2/8), 14d −0.22% (5/8), 30d +1.23% (6/8, DA +1.17pp). Only 30d
+# passed, and 14d — also DART, also long-horizon — moved the other way, so the
+# 30d win reads as noise rather than mechanism.
+#
+# It also failed at the thing it was built for: the 7d q50 stopping-round sd
+# rose from 81 to 102. Recency weighting does NOT stabilise early stopping.
+#
+# Kept because the knob is cheap (a weight multiplier, zero training cost) and
+# the finding is worth preserving. Set to e.g. 365.0 to re-enable; a 30d-only
+# ship would need confirmation with the full 3-member ensemble first.
+#
+# 365d was deliberately mild: a 4-year-old row still carries 0.0625. The
+# roadmap's α^days_ago with α=0.99 would leave a 1460-day-old row at ~6e-7,
+# effectively truncating training to ~200 days.
+SAMPLE_WEIGHT_HALFLIFE_DAYS = 0.0
+
 
 def _gpu_available() -> bool:
     global _GPU_AVAILABLE_CACHE
@@ -2244,6 +2275,10 @@ class ItemForecaster:
         Positive-return samples are additionally upweighted by DIRECTION_UPWEIGHT
         to counter the model's conservative bias (underpredicts "up" by ~2×).
 
+        Weights then decay with row age at SAMPLE_WEIGHT_HALFLIFE_DAYS, so the
+        current market regime dominates the gradient instead of being outvoted
+        by four years of calmer history. See that constant for the measurements.
+
         This prevents the ~41% of historically flat items from dominating
         the loss even after dead-item filtering removes the extreme cases.
         """
@@ -2259,6 +2294,14 @@ class ItemForecaster:
             target_vals = tdf[target_col].values
             direction_mult = np.where(target_vals > 0, DIRECTION_UPWEIGHT, 1.0)
             vol = vol * direction_mult
+
+        # Recency decay. Age is measured against the newest row in THIS frame,
+        # not today, so CV folds and the final fit are each internally
+        # consistent (a fold ending in 2023 is not uniformly crushed).
+        if SAMPLE_WEIGHT_HALFLIFE_DAYS and "date" in tdf.columns:
+            dates = pd.to_datetime(tdf["date"])
+            age_days = (dates.max() - dates).dt.days.to_numpy(dtype=float)
+            vol = vol * np.power(0.5, age_days / float(SAMPLE_WEIGHT_HALFLIFE_DAYS))
 
         vol = vol / max(np.mean(vol), 1e-8)
         return vol.astype(np.float32)
