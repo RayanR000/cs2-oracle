@@ -1635,6 +1635,64 @@ class ItemForecaster:
 
         return results
 
+    # Row-sampling keys this class owns. Listed so _apply_row_sampling can
+    # strip every one before rewriting them — params cached in meta.json by an
+    # older build carry GOSS keys for q50 and must not leak through the warm
+    # retrain path.
+    _ROW_SAMPLING_KEYS = ("data_sample_strategy", "top_rate", "other_rate",
+                          "subsample", "bagging_fraction", "bagging_freq")
+
+    @classmethod
+    def _row_sampling_params(cls, quantile: float,
+                             subsample: float = 0.8) -> Dict[str, Any]:
+        """Row-sampling config for one quantile's LightGBM params.
+
+        Every quantile uses bagging. q50 previously used GOSS, which ranks
+        rows by |gradient| to decide which to keep — but the quantile
+        objective emits constant ±alpha gradients, so that ranking is
+        degenerate and the small-gradient rescaling injects bias instead of
+        signal. Shipped symptom: 7d q50 saved 1-2 trees per ensemble member
+        (best_iteration ~= 1), so the served median was effectively an
+        intercept; 3d fits were biased even when they ran the full 1000
+        rounds.
+
+        A/B 2026-07-29 (`scripts/ab_test_q50_sampling.py`, 8-fold purge-gap
+        CV, production params, 200 items): bagging improved q50 pinball by
+        +5.21% (3d) / +1.76% (7d), MAE by 0.244 / 0.068, and directional
+        accuracy by +1.13pp / +0.71pp, winning 7/8 and 5/8 paired folds —
+        passing all three pre-registered gate criteria.
+
+        `bagging_freq` MUST be >= 1: LightGBM's default is 0, which ignores
+        bagging_fraction/subsample entirely and trains on every row. It is
+        set for q50 only, because that is the exact configuration the A/B
+        validated. q10/q90 keep their existing (freq-unset, therefore no-op)
+        subsample — correcting that is a real but separate change and needs
+        its own A/B before shipping; do not "tidy" it in here.
+        """
+        params: Dict[str, Any] = {
+            "data_sample_strategy": "bagging",
+            "subsample": subsample,
+        }
+        if quantile == 0.5:
+            params["bagging_freq"] = 1
+        return params
+
+    @classmethod
+    def _apply_row_sampling(cls, params: dict, quantile: float,
+                            subsample: Optional[float] = None) -> dict:
+        """Overwrite any row-sampling keys in `params` with the current
+        strategy, mutating and returning `params`.
+
+        Strips every key in `_ROW_SAMPLING_KEYS` first so stale GOSS settings
+        from a previously-cached param dict cannot survive. Tree params are
+        left untouched.
+        """
+        keep = subsample if subsample is not None else params.get("subsample", 0.8)
+        for k in cls._ROW_SAMPLING_KEYS:
+            params.pop(k, None)
+        params.update(cls._row_sampling_params(quantile, keep))
+        return params
+
     def _compute_cv_splits(self, sorted_dates, purge_days: int = 0):
         """Compute expanding-window CV fold boundaries.
 
@@ -1733,16 +1791,12 @@ class ItemForecaster:
                 "min_gain_to_split": 0.1,
                 "feature_fraction": 0.7,
             }
-            if quantile == 0.5:
-                params["data_sample_strategy"] = "goss"
-                params["top_rate"] = 0.2
-                params["other_rate"] = 0.1
-            else:
-                params["data_sample_strategy"] = "bagging"
-                # Row subsampling fraction — distinct regularization lever from
-                # feature_fraction. GOSS (median quantile) ignores bagging, so
-                # this is only searched on the bagging branch.
-                params["subsample"] = trial.suggest_float("subsample", 0.5, 0.9, step=0.1)
+            # Row subsampling fraction — a distinct regularization lever from
+            # feature_fraction. Searched for every quantile now that q50 uses
+            # bagging too (see _row_sampling_params for the GOSS removal).
+            self._apply_row_sampling(
+                params, quantile,
+                subsample=trial.suggest_float("subsample", 0.5, 0.9, step=0.1))
             # DART-specific hyperparameters
             if boosting_type == "dart":
                 params["drop_rate"] = trial.suggest_float("drop_rate", 0.05, 0.3, log=False)
@@ -1792,7 +1846,7 @@ class ItemForecaster:
             "max_depth": best.params["max_depth"],
             "min_data_in_leaf": best.params["min_data_in_leaf"],
         }
-        # Only present for non-median quantiles (median uses GOSS, no bagging).
+        # Searched for every quantile (all use bagging).
         if "subsample" in best.params:
             best_params["subsample"] = best.params["subsample"]
         # DART dropout params are searched in the objective; propagate them so
@@ -2340,13 +2394,9 @@ class ItemForecaster:
                     bp["feature_pre_filter"] = False
                     bp["device"] = "cuda" if _gpu_available() else "cpu"
                     bp["boosting_type"] = boosting_type
-                    if q == 0.5:
-                        bp["data_sample_strategy"] = "goss"
-                        bp["top_rate"] = 0.2
-                        bp["other_rate"] = 0.1
-                    else:
-                        bp["data_sample_strategy"] = "bagging"
-                        bp["subsample"] = 0.8
+                    # Rewrites row sampling from the current strategy and drops
+                    # any GOSS keys a pre-2026-07-29 meta.json cached for q50.
+                    self._apply_row_sampling(bp, q)
                     per_quantile_params[q] = bp
             else:
                 _warm_retrain = False
@@ -2369,13 +2419,7 @@ class ItemForecaster:
                         "verbosity": -1,
                         "n_jobs": -1,
                     }
-                    if q == 0.5:
-                        base_params_by_q[q]["data_sample_strategy"] = "goss"
-                        base_params_by_q[q]["top_rate"] = 0.2
-                        base_params_by_q[q]["other_rate"] = 0.1
-                    else:
-                        base_params_by_q[q]["data_sample_strategy"] = "bagging"
-                        base_params_by_q[q]["subsample"] = 0.8
+                    self._apply_row_sampling(base_params_by_q[q], q)
 
                 if skip_hp:
                     logger.info(f"  Skipping HP search for {horizon}d (SKIP_HP_HORIZONS)...")

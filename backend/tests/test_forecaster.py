@@ -1224,6 +1224,58 @@ class TestResidualStackingDisabled:
         assert 14 in forecaster.WEAK_HORIZONS  # the horizon that blew up
 
 
+class TestQ50RowSampling:
+    """q50 uses bagging, not GOSS.
+
+    GOSS ranks rows by |gradient| to choose which to keep, but the quantile
+    objective emits constant ±alpha gradients, so the ranking is degenerate
+    and the small-gradient rescaling injects bias. Shipped symptom: 7d q50
+    saved 1-2 trees per ensemble member (best_iteration ~= 1), i.e. the served
+    median model was effectively an intercept. A/B 2026-07-29 (8-fold
+    purge-gap CV, production params): bagging improved pinball +5.21% (3d) /
+    +1.76% (7d), DA +1.13pp / +0.71pp, winning 7/8 and 5/8 folds.
+    """
+
+    def test_q50_uses_bagging(self, forecaster):
+        p = forecaster._row_sampling_params(0.5)
+        assert p["data_sample_strategy"] == "bagging"
+
+    def test_q50_has_no_goss_keys(self, forecaster):
+        p = forecaster._row_sampling_params(0.5)
+        assert "top_rate" not in p and "other_rate" not in p
+
+    def test_no_quantile_uses_goss(self, forecaster):
+        for q in forecaster.QUANTILES:
+            assert forecaster._row_sampling_params(q)["data_sample_strategy"] == "bagging"
+
+    def test_q50_sets_bagging_freq(self, forecaster):
+        """LightGBM ignores bagging_fraction/subsample unless bagging_freq >= 1
+        (default 0 disables bagging), so without this the switch away from GOSS
+        would silently train on every row — not the config the A/B validated."""
+        assert forecaster._row_sampling_params(0.5).get("bagging_freq", 0) >= 1
+
+    def test_subsample_is_honored(self, forecaster):
+        assert forecaster._row_sampling_params(0.5, subsample=0.6)["subsample"] == 0.6
+
+    def test_apply_strips_stale_goss_keys(self, forecaster):
+        """Params cached by an older build carry GOSS keys for q50; the warm
+        retrain path must not let them through."""
+        cached = {
+            "num_leaves": 47, "learning_rate": 0.01,
+            "data_sample_strategy": "goss", "top_rate": 0.2, "other_rate": 0.1,
+        }
+        out = forecaster._apply_row_sampling(dict(cached), 0.5)
+        assert out["data_sample_strategy"] == "bagging"
+        assert "top_rate" not in out and "other_rate" not in out
+        # tree params must survive untouched
+        assert out["num_leaves"] == 47 and out["learning_rate"] == 0.01
+
+    def test_apply_preserves_cached_subsample(self, forecaster):
+        out = forecaster._apply_row_sampling(
+            {"subsample": 0.7}, 0.5, subsample=0.7)
+        assert out["subsample"] == 0.7
+
+
 class TestPredictEnsembleSafe:
     """Guard against stale models left in the dir with a different feature count."""
 

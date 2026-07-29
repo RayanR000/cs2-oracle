@@ -13,7 +13,7 @@
 | **Models** | 36 global (4H × 3Q × 3E) + ≤108 regime (3R × 4H × 3Q × 3E) = **36–144 LightGBM models** |
 | **Ensemble size** | `N_ENSEMBLES = 3` (seeds 42, 73, 91; feature fractions 0.6, 0.7, 0.8) |
 | **Horizons** | 3d (GBDT), 7d (GBDT), 14d (DART), 30d (DART) |
-| **Quantiles** | p10 (0.1), p50 (0.5), p90 (0.9) — p90 GBDT is broken (1-3 rounds, GOSS incompatibility) |
+| **Quantiles** | p10 (0.1), p50 (0.5), p90 (0.9) — all bagging as of 2026-07-29. **Correction:** this row previously read "p90 GBDT is broken (1-3 rounds, GOSS incompatibility)" — that was backwards. p90 was the healthiest GBDT quantile; **q50** was the collapsed one (7d q50 saved 1–2 trees), because GOSS was applied to q50 only and is degenerate under the quantile objective's constant ±alpha gradients. Fixed — see `docs/changelog/2026-07-29-q50-row-sampling.md` |
 | **Boost rounds** | GBDT: 1000 (early stop 50), DART: 500 (no early stop) |
 | **Features** | ~70–120 after correlation pruning (threshold 0.95), 8 groups |
 | **Rows** | `max_feature_rows = 100K` (stratified subsample) |
@@ -134,7 +134,7 @@ These are NOT new levers — they're already in production:
 | `SKIP_HP_HORIZONS` | [3] | Was [3, 14, 30] (2026-07-26: re-enabled 15-trial Optuna search for 14d/30d DART; measured retrain 16m16s with `SKIP_REGIMES=1 FORCE_HP_SEARCH=1` — improved conformal calibration, see `docs/retrain-optimization-analysis.md`) |
 | `N_TRIALS_MAP[3]` | 50→20 (then 50) | Iterated |
 | Feature cache | 3-day TTL | Was none |
-| GOSS for q50 only | q50=GOSS, q10/q90=bagging | Was bagging for all |
+| Row sampling | **bagging for all quantiles** (2026-07-29) | Was q50=GOSS, q10/q90=bagging — GOSS reverted after A/B showed +5.21% (3d) / +1.76% (7d) pinball and +1.13pp / +0.71pp DA for bagging |
 | 2026 data exclusion | Active | Was all data |
 | Dead item filter | <$0.05, <5% range | Was none |
 | Target winsorization | ±500% clip | Was none |
