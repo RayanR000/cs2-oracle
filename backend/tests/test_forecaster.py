@@ -21,8 +21,15 @@ from models.forecaster import ItemForecaster
 # ---------------------------------------------------------------------------
 
 @pytest.fixture
-def forecaster():
-    f = ItemForecaster(db_session=MagicMock())
+def forecaster(tmp_path_factory):
+    """Forecaster pointed at a throwaway model_dir.
+
+    Never let the default model_dir (the real models/saved_models/) through:
+    anything that persists — train(), save_models() — would otherwise clobber
+    production artifacts, which are gitignored and so unrecoverable.
+    """
+    f = ItemForecaster(db_session=MagicMock(),
+                       model_dir=str(tmp_path_factory.mktemp("saved_models")))
     return f
 
 
@@ -1490,10 +1497,16 @@ class TestRegimeSwitching:
             # At least one regime type should be present
             assert tdf["_regime"].nunique() >= 1
 
-    def test_regime_models_populated_after_train(self):
+    def test_regime_models_populated_after_train(self, tmp_path):
         """After train(), regime_models should contain entries for regimes
-        with sufficient data."""
-        f = ItemForecaster(db_session=MagicMock())
+        with sufficient data.
+
+        NOTE: model_dir MUST be tmp_path. train() persists at the end, so
+        without this the test overwrites every artifact in the real
+        models/saved_models/ (which is gitignored, so unrecoverable) with
+        models fit on the 5 synthetic items below.
+        """
+        f = ItemForecaster(db_session=MagicMock(), model_dir=str(tmp_path))
         f._supply_meta_cache = pd.DataFrame(columns=["item_id", "rarity", "rarity_rank", "weapon_type"])
 
         def mock_fetch(*args, **kwargs):
