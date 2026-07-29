@@ -6,11 +6,11 @@
 
 ---
 
-## Current Baseline (2026-07-22)
+## Current Baseline (2026-07-29)
 
 | Metric | Value |
 |--------|-------|
-| **Models** | 36 global (4H × 3Q × 3E) + ≤108 regime (3R × 4H × 3Q × 3E) = **36–144 LightGBM models** |
+| **Models** | 36 global (4H × 3Q × 3E) + ≤108 regime (3R × 4H × 3Q × 3E) = **36–144 LightGBM models**. The 2026-07-29 retrain ran `SKIP_REGIMES=1`, so the current on-disk set is **40 files** (36 global + 4 directional classifiers, no regime models). `predict()` falls back to global cleanly and logs `no regime models trained, using global` |
 | **Ensemble size** | `N_ENSEMBLES = 3` (seeds 42, 73, 91; feature fractions 0.6, 0.7, 0.8) |
 | **Horizons** | 3d (GBDT), 7d (GBDT), 14d (DART), 30d (DART) |
 | **Quantiles** | p10 (0.1), p50 (0.5), p90 (0.9) — all bagging as of 2026-07-29. **Correction:** this row previously read "p90 GBDT is broken (1-3 rounds, GOSS incompatibility)" — that was backwards. p90 was the healthiest GBDT quantile; **q50** was the collapsed one (7d q50 saved 1–2 trees), because GOSS was applied to q50 only and is degenerate under the quantile objective's constant ±alpha gradients. Fixed — see `docs/changelog/2026-07-29-q50-row-sampling.md` |
@@ -19,9 +19,11 @@
 | **Rows** | `max_feature_rows = 100K` (stratified subsample) |
 | **HP search** | 3d skipped (frozen, 50-trial winner), 7d=10 trials, 14d=15 trials, 30d=15 trials (as of 2026-07-26 — see below) |
 | **Warm retrain** | ~4–5 min (HP cached) |
-| **Cold retrain** | ~14–16 min (full Optuna + CV + regimes) |
-| **Inference** | ~1–2 min (with 3-day feature cache) |
-| **Production DA** | 3d=61.5%, 7d=52.8%, 14d=55.7%, 30d=54.2% (+35–41pp vs baseline) |
+| **Cold retrain** | **12m30s** measured 2026-07-29 (`SKIP_REGIMES=1 FORCE_HP_SEARCH=1`, CV on, 3d HP frozen). ~14–16 min with regimes |
+| **Inference** | ~1–2 min with a warm 3-day feature cache; **~5 min on a cold cache** (rebuilds 6.1M voted rows from Parquet) |
+| **Production DA** | ⚠️ **STALE — measured pre-q50-fix.** 3d=61.5%, 7d=52.8%, 14d=55.7%, 30d=54.2% (+35–41pp vs baseline). These predate the 2026-07-29 q50 sampling fix and cannot be refreshed on demand: `backtest_accuracy.py` scores *stored* forecasts against matured actuals, so the current model will not appear in it until the forecasts written 2026-07-29 mature (3–30 days). For a fresh-model number, run `scripts/walkforward_backtest.py` (~60–90 min, all horizons) |
+| **Classifier CV DA** | 3d=68.2%, 7d=68.3%, 14d=68.8%, 30d=70.9% (9 folds; 8 for 30d) — measured during the 2026-07-29 retrain. This is the **served** direction signal (classifier, not quantile-sign, since 2026-07-24). A training-time diagnostic, **not** comparable to the Production DA row above |
+| **Quantile-sign CV DA** | 3d=61.0%, 7d=61.0%, 14d=60.8%, 30d=64.0% (same run; sd 5.2–8.9%) |
 
 ---
 
@@ -70,7 +72,7 @@
 
 | # | Lever | Change | Speed Gain | Model Reduction | Quality Impact |
 |---|-------|--------|-----------|----------------|----------------|
-| **17** | Drop p10/p90 quantiles | `QUANTILES = [0.5]` only | ~66% training + inference | −24 models (36→12) | Loses prediction intervals. Frontend uses `forecast_low/forecast_high` — needs UI change. p90 GBDT already broken (1-3 rounds). Interval coverage on GBDT: 39-48% (already poor) |
+| **17** | Drop p10/p90 quantiles | `QUANTILES = [0.5]` only | ~66% training + inference | −24 models (36→12) | Loses prediction intervals. Frontend uses `forecast_low/forecast_high` — needs UI change. **Correction (2026-07-29):** this cell previously read "p90 GBDT already broken (1-3 rounds)" — same error as the Quantiles row above, and false. Post-retrain p90 trains healthily (3d 330/305/281, 7d 270/188/85) and so does p10 (3d 226/176/174, 7d 286/237/206). Interval coverage on GBDT is genuinely poor (39–48% raw vs 80% nominal), but that is a calibration problem, not a collapsed model — and conformal q̂ already corrects it at serve time |
 | **18** | LightGBM → ONNX conversion | Convert to ONNX for inference | 0 train impact, ~2–5× faster inference | Smaller on-disk | ~0pp (if conversion is precise) |
 | **19** | Replace with CatBoost | CatBoost (tested Jul 2026, degraded 18-20pp) | — | — | **Already tested and rejected** |
 | **20** | Replace with neural forecast | N-BEATS / PatchTST / TFT | Slower training | — | Unknown, requires GPU |
@@ -108,17 +110,37 @@ After applying any change, verify:
 
 ```bash
 cd backend
-pytest tests/test_forecaster.py -x -q                    # unit tests pass
-SKIP_REGIMES=1 SKIP_CV=1 python scripts/forecast_prices.py --train-only  # retrain succeeds
-python scripts/backtest_accuracy.py                       # DA within 5pp of baseline
+pytest tests/test_forecaster.py -x -q                    # unit tests pass (114 as of 2026-07-29)
+SKIP_REGIMES=1 FORCE_HP_SEARCH=1 python scripts/forecast_prices.py --train-only   # retrain succeeds
+python scripts/walkforward_backtest.py                    # fresh-model DA (~60-90 min)
 ```
 
-| Horizon | Current DA | 90% Retention Floor |
-|---------|-----------|---------------------|
-| 3d      | 61.5%     | ≥55.4%              |
-| 7d      | 52.8%     | ≥47.5%              |
-| 14d     | 55.7%     | ≥50.1%              |
-| 30d     | 54.2%     | ≥48.8%              |
+**Do not use `SKIP_CV=1` when the quantile models change.** Conformal q̂ is
+derived from CV out-of-fold predictions (the CQR block that populates
+`ItemForecaster.conformal_calibration`), so skipping CV leaves a stale q̂
+calibrated against differently-shaped quantiles.
+
+**`--predict-only` can trigger an unwanted retrain.** It drift-checks every
+horizon and auto-retrains via `forecaster.train(max_rows=700_000)` — with no
+`SKIP_REGIMES` — if any horizon is below the 60% threshold. Drift is scored
+from *stored* forecasts, so a recent bad patch (e.g. the 2026-07-29 synthetic
+overwrite, which left 3d at 37.2% and 7d at 39.3%) will retrain a model that
+is minutes old. Check drift read-only via `forecaster.check_concept_drift`
+before running predict on a fresh model.
+
+**Which accuracy script to use:**
+
+| Script | Measures | Reflects a fresh model? |
+|---|---|---|
+| `walkforward_backtest.py` | Retrospective walk-forward folds using current tuned params | **Yes** — the fresh-model gate |
+| `backtest_accuracy.py` | Stored forecasts vs matured actuals | **No** — needs 3–30 days for forecasts to mature. This is what CI runs |
+
+| Horizon | Baseline DA (pre-q50-fix) | 90% Retention Floor |
+|---------|--------------------------|---------------------|
+| 3d      | 61.5%                    | ≥55.4%              |
+| 7d      | 52.8%                    | ≥47.5%              |
+| 14d     | 55.7%                    | ≥50.1%              |
+| 30d     | 54.2%                    | ≥48.8%              |
 
 ---
 
