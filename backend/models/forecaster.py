@@ -7,6 +7,7 @@ using price history, technical indicators, events, and item metadata.
 import os
 import sys
 import json
+import hashlib
 import logging
 import numpy as np
 import pandas as pd
@@ -249,9 +250,23 @@ class ItemForecaster:
 
     ENGINEERED_CACHE_NAME = "engineered_data.parquet"
 
+    # --- Voted price frame cache ---
+    # Bump VOTED_CACHE_VERSION whenever _fetch_voted_price_history or
+    # _apply_multi_source_voting changes shape or semantics. The key covers the
+    # archive contents and the query window, but it cannot see the code — this
+    # constant is the only thing standing between a logic change and a stale
+    # frame silently training the next model.
+    VOTED_CACHE_VERSION = 1
+    VOTED_CACHE_PREFIX = "voted_"
+    VOTED_CACHE_MAX_ENTRIES = 3
+
     def __init__(self, db_session, model_dir: str = None, prune_failed_groups: bool = True):
         self.db = db_session
         self.model_dir = model_dir or str(Path(__file__).parent / "saved_models")
+        # Kept off model_dir: that holds gitignored production model artifacts,
+        # and tests assert nothing else lands there.
+        self.cache_dir = str(Path(__file__).parent.parent / "data")
+        self.archive_dir = Path(__file__).parent.parent.parent / "price-archive"
         self.models: Dict[Tuple[int, float], lgb.Booster] = {}
         self.regime_models: Dict[Tuple[str, int, float], list] = {}
         # Per-horizon 3-class directional classifier (down/flat/up).
@@ -539,82 +554,29 @@ class ItemForecaster:
                             backfilled_only: bool = False) -> pd.DataFrame:
         logger.info(f"Fetching price history (last {days_back}d)...")
 
-        archive_dir = Path(__file__).parent.parent.parent / "price-archive"
-        if archive_dir.exists() and days_back > 14:
-            import duckdb
-            cutoff = (self._now() - timedelta(days=days_back)).strftime("%Y-%m-%d")
-            con = duckdb.connect()
-            try:
-                backfilled_slugs = None
-                if backfilled_only:
-                    try:
-                        slug_rows = self.db.execute(text("""
-                            SELECT item_id FROM items WHERE is_backfilled = 1
-                        """)).fetchall()
-                        backfilled_slugs = {r[0] for r in slug_rows}
-                        logger.info(f"  Backfilled items filter: {len(backfilled_slugs)} items from DB")
-                    except Exception as e:
-                        logger.warning(f"  Could not fetch backfilled items from DB, using all: {e}")
-                        backfilled_slugs = {
-                            r[0] for r in con.sql("""
-                                SELECT DISTINCT item_slug
-                                FROM read_parquet(?)
-                            """, params=[str(archive_dir / "prices-*.parquet")]).fetchall()
-                        }
-                # Load Parquet files, handling schema mismatch (older files lack 'source' column)
-                pq_files = sorted([str(p) for p in archive_dir.glob("prices-*.parquet")])
-                pq_queries = []
-                for pqf in pq_files:
-                    cols = con.sql(f"DESCRIBE SELECT * FROM read_parquet('{pqf}')").fetchall()
-                    col_names = {r[0] for r in cols}
-                    if "source" in col_names:
-                        pq_queries.append(f"SELECT * FROM read_parquet('{pqf}')")
-                    else:
-                        pq_queries.append(f"SELECT *, NULL::VARCHAR AS source FROM read_parquet('{pqf}')")
-                union_sql = " UNION ALL BY NAME ".join(pq_queries)
+        if self.archive_dir.exists() and days_back > 14:
+            backfilled_slugs = (self._resolve_backfilled_slugs()
+                                if backfilled_only else None)
 
-                # Filter to backfilled slugs via a temp table JOIN (handles special chars safely)
-                if backfilled_slugs is not None:
-                    con.sql("CREATE TEMP TABLE _backfilled (slug VARCHAR)")
-                    con.executemany("INSERT INTO _backfilled VALUES (?)",
-                                    [(s,) for s in backfilled_slugs])
-                    logger.info(f"  Filtering to {len(backfilled_slugs)} backfilled items via temp table")
+            # The voted frame is a pure function of the archive contents plus
+            # the query window, so repeated runs over an unchanged archive —
+            # walk-forward folds, A/B harnesses, retrain iteration — can skip
+            # the rebuild. Measured on the full archive: 35.5s cold, 0.3s
+            # cached. That is the whole win; it is not a retrain-time lever
+            # (a cold retrain is ~12m30s and almost entirely model fitting).
+            cache_key = self._voted_cache_key(days_back, backfilled_only,
+                                              backfilled_slugs)
+            cached = self._load_voted_cache(cache_key)
+            if cached is not None:
+                return cached
 
-                slug_join = "JOIN _backfilled b ON sub.item_slug = b.slug" if backfilled_slugs is not None else ""
-
-                df = con.sql(f"""
-                    SELECT item_slug, day, mean_price AS price, volume, source
-                    FROM ({union_sql}) sub
-                    {slug_join}
-                    WHERE day >= ?
-                      AND (source IS NULL OR source NOT LIKE 'historical_fallback:%')
-                    ORDER BY item_slug, day, source
-                """, params=[cutoff]).fetchdf()
-                logger.info(f"  DuckDB query returned {len(df):,} rows")
-                df = df.rename(columns={"item_slug": "item_id", "day": "timestamp"})
-                logger.info(f"  DataFrame created, converting types...")
-                df["timestamp"] = pd.to_datetime(df["timestamp"])
-                df["date"] = df["timestamp"].dt.date
-                # Some Parquet years store mean_price/volume as VARCHAR; the
-                # glob union then coerces the whole column to string. Force
-                # numeric so multi-source voting (np.median) works.
-                df["price"] = pd.to_numeric(df["price"], errors="coerce")
-                df["volume"] = pd.to_numeric(df["volume"], errors="coerce")
-                df = df.dropna(subset=["price"])
-                logger.info(f"  After parsing: {len(df):,} rows, {df.item_id.nunique():,} items")
-                n_before = len(df)
-                n_sources_before = df["source"].nunique() if "source" in df.columns else 1
-                logger.info(f"  Applying multi-source voting ({n_sources_before} sources)...")
-                df = self._apply_multi_source_voting(df)
-                n_after = len(df)
-                logger.info(f"  {n_after:,} rows (Parquet, voted from {n_before:,} rows "
-                            f"across {n_sources_before} sources), "
-                            f"{df.item_id.nunique():,} items")
-                if backfilled_only:
-                    logger.info(f"  Filtered to STEAMCOMMUNITY-backfilled items only")
-                return df
-            finally:
-                con.close()
+            df = self._fetch_voted_price_history(
+                days_back=days_back,
+                backfilled_only=backfilled_only,
+                backfilled_slugs=backfilled_slugs,
+            )
+            self._save_voted_cache(cache_key, df)
+            return df
 
         cutoff = self._now() - timedelta(days=days_back)
         rows = self.db.execute(text("""
@@ -640,6 +602,96 @@ class ItemForecaster:
                     f"across {n_sources_before} sources), "
                     f"{df.item_id.nunique():,} items")
         return df
+
+    def _resolve_backfilled_slugs(self) -> set:
+        """The set of STEAMCOMMUNITY-backfilled item slugs to train on.
+
+        Split out of ``fetch_price_history`` because the voted-frame cache key
+        has to include it — two runs with different backfill sets produce
+        different frames from an identical archive.
+        """
+        try:
+            slug_rows = self.db.execute(text("""
+                SELECT item_id FROM items WHERE is_backfilled = 1
+            """)).fetchall()
+            slugs = {r[0] for r in slug_rows}
+            logger.info(f"  Backfilled items filter: {len(slugs)} items from DB")
+            return slugs
+        except Exception as e:
+            logger.warning(f"  Could not fetch backfilled items from DB, using all: {e}")
+            import duckdb
+            with duckdb.connect() as con:
+                return {
+                    r[0] for r in con.sql("""
+                        SELECT DISTINCT item_slug
+                        FROM read_parquet(?)
+                    """, params=[str(self.archive_dir / "prices-*.parquet")]).fetchall()
+                }
+
+    def _fetch_voted_price_history(self, days_back: int,
+                                   backfilled_only: bool,
+                                   backfilled_slugs: set = None) -> pd.DataFrame:
+        """Read the Parquet archive and collapse it to one consensus price per
+        item per day. The expensive half of ``fetch_price_history``."""
+        archive_dir = self.archive_dir
+        import duckdb
+        cutoff = (self._now() - timedelta(days=days_back)).strftime("%Y-%m-%d")
+        con = duckdb.connect()
+        try:
+            # Load Parquet files, handling schema mismatch (older files lack 'source' column)
+            pq_files = sorted([str(p) for p in archive_dir.glob("prices-*.parquet")])
+            pq_queries = []
+            for pqf in pq_files:
+                cols = con.sql(f"DESCRIBE SELECT * FROM read_parquet('{pqf}')").fetchall()
+                col_names = {r[0] for r in cols}
+                if "source" in col_names:
+                    pq_queries.append(f"SELECT * FROM read_parquet('{pqf}')")
+                else:
+                    pq_queries.append(f"SELECT *, NULL::VARCHAR AS source FROM read_parquet('{pqf}')")
+            union_sql = " UNION ALL BY NAME ".join(pq_queries)
+
+            # Filter to backfilled slugs via a temp table JOIN (handles special chars safely)
+            if backfilled_slugs is not None:
+                con.sql("CREATE TEMP TABLE _backfilled (slug VARCHAR)")
+                con.executemany("INSERT INTO _backfilled VALUES (?)",
+                                [(s,) for s in backfilled_slugs])
+                logger.info(f"  Filtering to {len(backfilled_slugs)} backfilled items via temp table")
+
+            slug_join = "JOIN _backfilled b ON sub.item_slug = b.slug" if backfilled_slugs is not None else ""
+
+            df = con.sql(f"""
+                SELECT item_slug, day, mean_price AS price, volume, source
+                FROM ({union_sql}) sub
+                {slug_join}
+                WHERE day >= ?
+                  AND (source IS NULL OR source NOT LIKE 'historical_fallback:%')
+                ORDER BY item_slug, day, source
+            """, params=[cutoff]).fetchdf()
+            logger.info(f"  DuckDB query returned {len(df):,} rows")
+            df = df.rename(columns={"item_slug": "item_id", "day": "timestamp"})
+            logger.info(f"  DataFrame created, converting types...")
+            df["timestamp"] = pd.to_datetime(df["timestamp"])
+            df["date"] = df["timestamp"].dt.date
+            # Some Parquet years store mean_price/volume as VARCHAR; the
+            # glob union then coerces the whole column to string. Force
+            # numeric so multi-source voting (np.median) works.
+            df["price"] = pd.to_numeric(df["price"], errors="coerce")
+            df["volume"] = pd.to_numeric(df["volume"], errors="coerce")
+            df = df.dropna(subset=["price"])
+            logger.info(f"  After parsing: {len(df):,} rows, {df.item_id.nunique():,} items")
+            n_before = len(df)
+            n_sources_before = df["source"].nunique() if "source" in df.columns else 1
+            logger.info(f"  Applying multi-source voting ({n_sources_before} sources)...")
+            df = self._apply_multi_source_voting(df)
+            n_after = len(df)
+            logger.info(f"  {n_after:,} rows (Parquet, voted from {n_before:,} rows "
+                        f"across {n_sources_before} sources), "
+                        f"{df.item_id.nunique():,} items")
+            if backfilled_only:
+                logger.info(f"  Filtered to STEAMCOMMUNITY-backfilled items only")
+            return df
+        finally:
+            con.close()
 
     @staticmethod
     def _apply_multi_source_voting(df: pd.DataFrame) -> pd.DataFrame:
@@ -2182,6 +2234,105 @@ class ItemForecaster:
         return df
 
     # ------------------------------------------------------------------
+    # Voted price frame cache (shared by train, predict, and backtests)
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _voted_cache_enabled() -> bool:
+        return os.getenv("VOTED_CACHE", "1") != "0"
+
+    def _archive_fingerprint(self) -> str:
+        """Identify the archive by the size and mtime of every prices-*.parquet.
+
+        Only those files feed the voted frame — ops/ artifacts (forecasts,
+        accuracy) are written by the pipeline on every run and must not
+        invalidate the cache.
+        """
+        parts = []
+        for path in sorted(self.archive_dir.glob("prices-*.parquet")):
+            st = path.stat()
+            parts.append(f"{path.name}:{st.st_size}:{st.st_mtime_ns}")
+        return "|".join(parts)
+
+    def _voted_cache_key(self, days_back: int, backfilled_only: bool,
+                         backfilled_slugs: Optional[set]) -> str:
+        """Everything the voted frame depends on, hashed.
+
+        The query window is keyed by its resolved cutoff date rather than
+        ``days_back`` so a day rollover invalidates the entry — the frame is
+        anchored to a calendar date, not to a relative offset.
+        """
+        cutoff = (self._now() - timedelta(days=days_back)).strftime("%Y-%m-%d")
+        slug_digest = ""
+        if backfilled_slugs is not None:
+            # Sorted: the slug set arrives from an unordered DB query.
+            slug_digest = hashlib.sha256(
+                "|".join(sorted(str(s) for s in backfilled_slugs)).encode()
+            ).hexdigest()[:16]
+        payload = "\n".join([
+            f"v={self.VOTED_CACHE_VERSION}",
+            f"cutoff={cutoff}",
+            f"backfilled_only={int(backfilled_only)}",
+            f"slugs={slug_digest}",
+            f"archive={self._archive_fingerprint()}",
+        ])
+        return hashlib.sha256(payload.encode()).hexdigest()[:24]
+
+    def _voted_cache_path(self, key: str) -> str:
+        return os.path.join(self.cache_dir, f"{self.VOTED_CACHE_PREFIX}{key}.parquet")
+
+    def _load_voted_cache(self, key: str) -> Optional[pd.DataFrame]:
+        if not self._voted_cache_enabled():
+            return None
+        path = self._voted_cache_path(key)
+        if not os.path.exists(path):
+            return None
+        try:
+            df = pd.read_parquet(path)
+        except Exception as e:
+            logger.warning(f"  Voted cache at {path} unreadable ({e}) — rebuilding")
+            return None
+        if df.empty:
+            # An empty frame here would train the next model on zero rows.
+            logger.warning(f"  Voted cache at {path} is empty — rebuilding")
+            return None
+        logger.info(f"  Voted cache HIT ({len(df):,} rows, {df.item_id.nunique():,} "
+                    f"items) — skipping DuckDB read + multi-source voting")
+        return df
+
+    def _save_voted_cache(self, key: str, df: pd.DataFrame):
+        if not self._voted_cache_enabled():
+            return
+        path = self._voted_cache_path(key)
+        try:
+            os.makedirs(self.cache_dir, exist_ok=True)
+            df.to_parquet(path, index=False)
+            logger.info(f"  Saved voted cache ({len(df):,} rows) to {path}")
+            self._prune_voted_cache()
+        except Exception as e:
+            # A cache write failure must never fail a retrain.
+            logger.warning(f"  Could not write voted cache to {path}: {e}")
+
+    def _prune_voted_cache(self):
+        """Keep only the newest few entries.
+
+        Each is hundreds of MB on the real archive and the aggregator changes
+        the fingerprint daily, so entries would otherwise accumulate without
+        bound.
+        """
+        entries = sorted(
+            Path(self.cache_dir).glob(f"{self.VOTED_CACHE_PREFIX}*.parquet"),
+            key=lambda p: p.stat().st_mtime,
+            reverse=True,
+        )
+        for stale in entries[self.VOTED_CACHE_MAX_ENTRIES:]:
+            try:
+                stale.unlink()
+                logger.info(f"  Pruned stale voted cache {stale.name}")
+            except OSError as e:
+                logger.warning(f"  Could not prune {stale}: {e}")
+
+    # ------------------------------------------------------------------
     # Feature cache for predict speed
     # ------------------------------------------------------------------
 
@@ -2226,7 +2377,7 @@ class ItemForecaster:
             if not cache_date_str:
                 try:
                     import duckdb
-                    archive_dir = Path(__file__).parent.parent.parent / "price-archive"
+                    archive_dir = self.archive_dir
                     if archive_dir.exists():
                         with duckdb.connect() as con:
                             pq_files = sorted([str(p) for p in archive_dir.glob("prices-*.parquet")])

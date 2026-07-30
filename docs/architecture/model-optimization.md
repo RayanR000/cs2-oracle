@@ -52,7 +52,7 @@
 | **7** | Reduce `num_leaves` 47→31 | Simpler trees | ~15–20% per fit | — | ~0.3–0.5pp | Edit class constant (was 31 in old docs) |
 | **8** | Skip 7d HP search | Add 7 to `SKIP_HP_HORIZONS` | ~2 min (15 saved trials) | — | ~0.1–0.3pp (uses fallback params) | `SKIP_HP_HORIZONS = [3, 7, 14, 30]` |
 | **9** | Reduce Optuna trials 15→10 for 14d/30d | `N_TRIALS_MAP[14]=10, [30]=10` | ~1 min | — | ~0.1pp | Edit N_TRIALS_MAP |
-| **10** | Parallel ensemble training | ThreadPoolExecutor 2-wide | ~5 min (on cold retrain) | — | 0pp (identical training) | Implement in `_train_horizon_ensemble` (noted as safe after Dataset construction) |
+| **10** | ~~Parallel ensemble training~~ | 🛑 **DO NOT** — removed deliberately | — | — | — | Both the horizon `spawn` Pool and the ensemble `ThreadPoolExecutor` were deleted on 2026-07-21 (−209 lines) because they deadlocked under OpenMP and the timeouts were masking it. AGENTS.md now documents training as fully sequential. See `docs/changelog/2026-07-21-remove-training-parallelism.md`. Re-adding this reintroduces a fixed bug |
 | **11** | Drop horizon-excluded features at source | Skip computing cross-sectional/event features for 14d/30d | ~5–10s feature engineering | — | 0pp (already excluded from model) | Conditional in `engineer_features()` |
 
 ---
@@ -156,7 +156,8 @@ These are NOT new levers — they're already in production:
 | `max_feature_rows` | 100K | Was 700K (was 400K) |
 | `SKIP_HP_HORIZONS` | [3] | Was [3, 14, 30] (2026-07-26: re-enabled 15-trial Optuna search for 14d/30d DART; measured retrain 16m16s with `SKIP_REGIMES=1 FORCE_HP_SEARCH=1` — improved conformal calibration, see `docs/retrain-optimization-analysis.md`) |
 | `N_TRIALS_MAP[3]` | 50→20 (then 50) | Iterated |
-| Feature cache | 3-day TTL | Was none |
+| Feature cache (predict path) | 3-day TTL | Was none |
+| Voted frame cache (`fetch_price_history`) | On by default (2026-07-29); `VOTED_CACHE=0` disables | Was none. Saves **35s**, not the ~10 min `next-steps-tier1.md` §6 Lever A estimated — see the measured table there. **Bump `VOTED_CACHE_VERSION` when voting or the DuckDB query changes**, or a stale frame will silently train the next model |
 | Row sampling | **bagging for all quantiles** (2026-07-29) | Was q50=GOSS, q10/q90=bagging — GOSS reverted after A/B showed +5.21% (3d) / +1.76% (7d) pinball and +1.13pp / +0.71pp DA for bagging |
 | 2026 data exclusion | Active | Was all data |
 | Dead item filter | <$0.05, <5% range | Was none |

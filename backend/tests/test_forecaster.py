@@ -11,6 +11,7 @@ import numpy as np
 import pandas as pd
 import lightgbm as lgb
 from datetime import date, datetime, timedelta, timezone
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 from models.forecaster import ItemForecaster, SAMPLE_WEIGHT_HALFLIFE_DAYS
@@ -1765,3 +1766,192 @@ class TestRegimeSwitching:
             r_train = tdf[tdf["_regime"] == regime]
             # Both bear (30 rows) and bull (30 rows) should fail the 500-row minimum
             assert len(r_train) < 500 or regime == "range"
+
+
+# ---------------------------------------------------------------------------
+# Voted price frame cache
+# ---------------------------------------------------------------------------
+
+class TestVotedPriceCache:
+    """The voted frame dominates ``fetch_price_history`` and is a pure
+    function of the archive contents plus the query window, so repeated runs
+    on an unchanged archive — walk-forward folds, A/B harnesses, retrain
+    iteration — can skip the rebuild. Measured: 35.5s cold, 0.3s cached.
+    """
+
+    @pytest.fixture
+    def cached_forecaster(self, forecaster, tmp_path):
+        """Forecaster with a throwaway cache dir and a fake Parquet archive."""
+        cache_dir = tmp_path / "cache"
+        archive_dir = tmp_path / "price-archive"
+        archive_dir.mkdir()
+        (archive_dir / "prices-2025.parquet").write_bytes(b"fake-2025")
+        (archive_dir / "prices-2026.parquet").write_bytes(b"fake-2026")
+        forecaster.cache_dir = str(cache_dir)
+        forecaster.archive_dir = archive_dir
+        return forecaster
+
+    @pytest.fixture
+    def voted_df(self):
+        """A voted frame shaped like fetch_price_history's return value."""
+        return pd.DataFrame({
+            "item_id": ["ak47", "ak47", "awp"],
+            "timestamp": pd.to_datetime(["2026-01-01", "2026-01-02", "2026-01-01"]),
+            "date": [date(2026, 1, 1), date(2026, 1, 2), date(2026, 1, 1)],
+            "price": [10.5, 11.0, 99.9],
+            "volume": [100, 120, 5],
+            "source": ["steamcommunity", "steamcommunity", None],
+        })
+
+    # -- key derivation ---------------------------------------------------
+
+    def test_key_is_stable_for_unchanged_inputs(self, cached_forecaster):
+        f = cached_forecaster
+        k1 = f._voted_cache_key(1460, False, None)
+        k2 = f._voted_cache_key(1460, False, None)
+        assert k1 == k2
+
+    def test_key_changes_when_archive_content_changes(self, cached_forecaster):
+        f = cached_forecaster
+        before = f._voted_cache_key(1460, False, None)
+        # Aggregator appends a day: same filename, different size.
+        (f.archive_dir / "prices-2026.parquet").write_bytes(b"fake-2026-plus-a-new-day")
+        assert f._voted_cache_key(1460, False, None) != before
+
+    def test_key_changes_when_archive_gains_a_file(self, cached_forecaster):
+        f = cached_forecaster
+        before = f._voted_cache_key(1460, False, None)
+        (f.archive_dir / "prices-2027.parquet").write_bytes(b"fake-2027")
+        assert f._voted_cache_key(1460, False, None) != before
+
+    def test_key_ignores_non_price_files(self, cached_forecaster):
+        """Only prices-*.parquet feeds the voted frame; ops/ must not bust it."""
+        f = cached_forecaster
+        before = f._voted_cache_key(1460, False, None)
+        (f.archive_dir / "forecasts.parquet").write_bytes(b"unrelated")
+        assert f._voted_cache_key(1460, False, None) == before
+
+    def test_key_varies_with_query_window(self, cached_forecaster):
+        f = cached_forecaster
+        assert f._voted_cache_key(1460, False, None) != f._voted_cache_key(730, False, None)
+
+    def test_key_varies_with_backfilled_only(self, cached_forecaster):
+        f = cached_forecaster
+        assert f._voted_cache_key(1460, False, None) != f._voted_cache_key(1460, True, {"ak47"})
+
+    def test_key_varies_with_slug_set(self, cached_forecaster):
+        f = cached_forecaster
+        assert (f._voted_cache_key(1460, True, {"ak47"})
+                != f._voted_cache_key(1460, True, {"ak47", "awp"}))
+
+    def test_key_ignores_slug_set_ordering(self, cached_forecaster):
+        """The slug set comes from an unordered DB query."""
+        f = cached_forecaster
+        assert (f._voted_cache_key(1460, True, {"ak47", "awp"})
+                == f._voted_cache_key(1460, True, {"awp", "ak47"}))
+
+    def test_key_varies_with_cache_version(self, cached_forecaster):
+        """Bumping the version constant invalidates every entry — the escape
+        hatch for when voting or the DuckDB query itself changes."""
+        f = cached_forecaster
+        before = f._voted_cache_key(1460, False, None)
+        with patch.object(type(f), "VOTED_CACHE_VERSION", f.VOTED_CACHE_VERSION + 1):
+            assert f._voted_cache_key(1460, False, None) != before
+
+    # -- round trip -------------------------------------------------------
+
+    def test_roundtrip_preserves_frame_exactly(self, cached_forecaster, voted_df):
+        """Downstream code indexes df["date"] as datetime.date objects, so the
+        Parquet round trip must not silently promote them to Timestamps."""
+        f = cached_forecaster
+        key = f._voted_cache_key(1460, False, None)
+        f._save_voted_cache(key, voted_df)
+        loaded = f._load_voted_cache(key)
+        assert loaded is not None
+        pd.testing.assert_frame_equal(loaded, voted_df)
+        assert isinstance(loaded["date"].iloc[0], date)
+
+    def test_load_returns_none_on_miss(self, cached_forecaster):
+        f = cached_forecaster
+        assert f._load_voted_cache("nonexistent-key") is None
+
+    def test_load_returns_none_on_corrupt_file(self, cached_forecaster, voted_df):
+        f = cached_forecaster
+        key = f._voted_cache_key(1460, False, None)
+        f._save_voted_cache(key, voted_df)
+        Path(f._voted_cache_path(key)).write_bytes(b"not a parquet file")
+        assert f._load_voted_cache(key) is None
+
+    def test_load_returns_none_on_empty_frame(self, cached_forecaster, voted_df):
+        """An empty cached frame would silently train on zero rows."""
+        f = cached_forecaster
+        key = f._voted_cache_key(1460, False, None)
+        f._save_voted_cache(key, voted_df.iloc[0:0])
+        assert f._load_voted_cache(key) is None
+
+    def test_save_does_not_write_to_model_dir(self, cached_forecaster, voted_df):
+        """model_dir holds gitignored production artifacts — keep the cache out."""
+        f = cached_forecaster
+        f._save_voted_cache(f._voted_cache_key(1460, False, None), voted_df)
+        assert not list(Path(f.model_dir).glob("*.parquet"))
+
+    # -- disk bounds ------------------------------------------------------
+
+    def test_prunes_stale_entries(self, cached_forecaster, voted_df):
+        """Each entry is hundreds of MB in production and the archive changes
+        daily, so entries must not accumulate."""
+        f = cached_forecaster
+        for i in range(f.VOTED_CACHE_MAX_ENTRIES + 3):
+            f._save_voted_cache(f"key{i:03d}", voted_df)
+        entries = list(Path(f.cache_dir).glob("voted_*.parquet"))
+        assert len(entries) <= f.VOTED_CACHE_MAX_ENTRIES
+
+    def test_prune_keeps_the_newest_entry(self, cached_forecaster, voted_df):
+        f = cached_forecaster
+        for i in range(f.VOTED_CACHE_MAX_ENTRIES + 3):
+            key = f"key{i:03d}"
+            f._save_voted_cache(key, voted_df)
+        assert f._load_voted_cache(key) is not None
+
+    # -- kill switch ------------------------------------------------------
+
+    def test_disabled_by_env_skips_read_and_write(self, cached_forecaster, voted_df,
+                                                  monkeypatch):
+        f = cached_forecaster
+        key = f._voted_cache_key(1460, False, None)
+        f._save_voted_cache(key, voted_df)
+        monkeypatch.setenv("VOTED_CACHE", "0")
+        assert f._load_voted_cache(key) is None
+        f._save_voted_cache("another-key", voted_df)
+        assert f._load_voted_cache("another-key") is None
+
+    # -- integration with fetch_price_history ------------------------------
+
+    def test_fetch_price_history_skips_voting_on_cache_hit(self, cached_forecaster,
+                                                           voted_df):
+        """The whole point: a second fetch over an unchanged archive must not
+        re-run the DuckDB query or the voting pass."""
+        f = cached_forecaster
+        key = f._voted_cache_key(1460, False, None)
+        f._save_voted_cache(key, voted_df)
+
+        with patch.object(f, "_apply_multi_source_voting") as vote, \
+             patch("duckdb.connect") as connect:
+            out = f.fetch_price_history(days_back=1460, backfilled_only=False)
+
+        vote.assert_not_called()
+        connect.assert_not_called()
+        pd.testing.assert_frame_equal(out, voted_df)
+
+    def test_fetch_price_history_populates_cache_on_miss(self, cached_forecaster,
+                                                         voted_df, monkeypatch):
+        f = cached_forecaster
+        key = f._voted_cache_key(1460, False, None)
+        assert f._load_voted_cache(key) is None
+
+        monkeypatch.setattr(f, "_fetch_voted_price_history",
+                            lambda **kw: voted_df.copy())
+        out = f.fetch_price_history(days_back=1460, backfilled_only=False)
+
+        pd.testing.assert_frame_equal(out, voted_df)
+        assert f._load_voted_cache(key) is not None

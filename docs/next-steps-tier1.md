@@ -119,13 +119,29 @@ base_params = {
 
 The Monday CI retrain on `ubuntu-latest` (2 vCPU) is the bottleneck. Since GPU is off the table:
 
-### Lever A — Feature matrix caching (highest ROI code change)
+### Lever A — Feature matrix caching — ✅ DONE, but the premise was wrong
 
-Cache the voted+engineered feature matrix across retrains. The 10-min voting phase is a pure function of the input parquet archive — deterministic given the same data. Store the voted DataFrame as a parquet file in `actions/cache`, keyed by a hash of `prices-*.parquet` directory listing + modification timestamps.
+Implemented 2026-07-29 as a voted-frame cache in `fetch_price_history`
+(`VOTED_CACHE_*` constants, `VOTED_CACHE=0` to disable). Keyed on the
+`prices-*.parquet` fingerprint + cutoff date + backfill slug set + a version
+constant.
 
-**Why it works:** Aggregator updates prices daily, retrain runs Monday. The data is 1–6 days stale, which is fine — the model already trains on slightly stale data. Cache just avoids recomputing the same transformation.
+**The "10-min voting phase" in the original estimate below was never measured
+and is wrong.** Measured on the real archive (14 files, 18.2M raw rows):
 
-**Effort:** ~20 lines. A `CacheManager` or inline in `fetch_price_history`/`build_training_data`. Saves ~10 min of voting + ~1 min of feature engineering on every retrain.
+| Phase | Measured |
+|---|---|
+| `fetch_price_history` cold (DuckDB read + voting → 6.1M voted rows) | **35.5s** |
+| `fetch_price_history` cached | **0.3s** (116× — frame verified byte-identical) |
+| `build_training_data` total, warm cache | **6.1s** |
+
+So data prep is ~36s of a 12m30s cold retrain, not ~11 min. The cold retrain is
+essentially *all* model fitting (Optuna + CV + ensembles). **This lever saves
+~35s per invocation, not ~10 min** — worth keeping for the experiment loop, but
+it is not the CI bottleneck and was never going to be.
+
+Correcting the ROI claim matters more than the lever: any future "speed up the
+retrain" work should start from the fitting cost, not data prep.
 
 ### Lever B — Within accuracy budget
 
