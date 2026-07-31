@@ -69,6 +69,12 @@ backend/models/saved_models/*.txt
 backend/models/saved_models/*.pkl
 backend/models/saved_models/bias_corrections.json
 backend/models/saved_models/engineered_data.parquet
+# Rollback snapshots of the above (saved_models_pre2026_*, _bak_*, ...). The
+# rules above are path-exact, so a snapshot DIRECTORY escaped them: 8783c67
+# committed 1.8G this way, incl. a 1.7GB engineered_data.parquet that GitHub
+# rejects outright (100MB cap), which silently blocked every push for 5 days.
+# Does not match saved_models/ itself -- meta.json there stays tracked.
+backend/models/saved_models_*/
 
 # Generated parquet cache
 backend/data/*.parquet
