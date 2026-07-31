@@ -25,7 +25,8 @@ defaults:
 
 permissions:
   issues: write
-  contents: write
+  # Was write for the model-commit push, which no longer happens.
+  contents: read
 
 jobs:
   forecast:
@@ -78,6 +79,37 @@ jobs:
             echo "mode=predict-only" >> $GITHUB_OUTPUT
           fi
 
+      # Boosters are gitignored (.gitignore:68-71), so they cannot be persisted
+      # by committing them — that silently no-op'd and left predict-only runs
+      # with a meta.json and no models from 2026-07-14 to 2026-07-31. They ride
+      # the Actions cache instead. engineered_data.parquet is excluded: it is a
+      # ~2GB training intermediate that prediction does not read.
+      - name: Restore trained models
+        if: steps.mode.outputs.mode == 'predict-only'
+        uses: actions/cache/restore@v4
+        with:
+          path: |
+            backend/models/saved_models
+            !backend/models/saved_models/engineered_data.parquet
+          key: forecast-models-${{ github.run_id }}
+          restore-keys: |
+            forecast-models-
+
+      # Fail loudly here rather than 60s later with the opaque "No models
+      # available for prediction" that hid this breakage for 17 days.
+      - name: Verify models are present
+        if: steps.mode.outputs.mode == 'predict-only'
+        run: |
+          n=$(ls backend/models/saved_models/*.txt 2>/dev/null | wc -l | tr -d ' ')
+          echo "Restored $n booster files."
+          if [ "$n" -eq 0 ]; then
+            echo "::error::No boosters restored from the Actions cache. The" \
+                 "weekly retrain has not populated it yet, or the entry was" \
+                 "evicted. Re-run this workflow via workflow_dispatch with" \
+                 "mode=full to retrain and repopulate the cache."
+            exit 1
+          fi
+
       - name: Run ML price forecasting
         working-directory: ./backend
         env:
@@ -100,14 +132,17 @@ jobs:
               ;;
           esac
 
-      - name: Commit retrained models
-        if: steps.mode.outputs.mode == 'full'
-        run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add backend/models/saved_models/
-          git diff --quiet && git diff --staged --quiet || git commit -m "chore: update ML models [skip ci]"
-          git push
+      # run_id keys are unique, so this never collides; predict-only runs pick
+      # the newest via the forecast-models- restore-key prefix. Daily restores
+      # keep the entry warm against the 7-day eviction window.
+      - name: Save retrained models
+        if: steps.mode.outputs.mode == 'full' || steps.mode.outputs.mode == 'train-only'
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            backend/models/saved_models
+            !backend/models/saved_models/engineered_data.parquet
+          key: forecast-models-${{ github.run_id }}
 
       - name: Notify on failure
         if: failure() && github.event_name == 'workflow_run'
