@@ -10,7 +10,7 @@ from sqlalchemy.pool import StaticPool
 
 import database as database_module
 import collectors.csgotrader_aggregator as aggregator_module
-from collectors.pipeline import DataPipeline
+from collectors.pipeline import DataPipeline, FALLBACK_MAX_AGE_DAYS
 from database import Item, PriceHistory, CollectionRun
 
 
@@ -161,6 +161,87 @@ def test_full_aggregator_collection_recovers_from_previous_aggregator_sync(monke
         assert result["status"] == "success"
         assert result["items_collected"] >= 1
         assert result["errors"] >= 0
+    finally:
+        db.close()
+
+
+def test_split_fresh_and_stale_declines_items_whose_newest_price_is_too_old():
+    """The newest row per item decides freshness; older rows cannot rescue it."""
+    now = datetime.utcnow()
+    cutoff = now - timedelta(days=FALLBACK_MAX_AGE_DAYS)
+
+    rows = [
+        # Fresh item: newest row is inside the cap.
+        SimpleNamespace(item_id=1, timestamp=now - timedelta(days=1), price=1.0),
+        SimpleNamespace(item_id=1, timestamp=now - timedelta(days=40), price=9.0),
+        # Stale item: newest row predates the cutoff, so the older one is moot.
+        SimpleNamespace(item_id=2, timestamp=now - timedelta(days=20), price=2.0),
+        SimpleNamespace(item_id=2, timestamp=now - timedelta(days=50), price=8.0),
+        # Null timestamps are not treated as stale (no evidence either way).
+        SimpleNamespace(item_id=3, timestamp=None, price=3.0),
+    ]
+
+    fresh, stale = DataPipeline._split_fresh_and_stale(rows, cutoff)
+
+    assert set(fresh) == {1, 3}
+    assert fresh[1].price == 1.0, "must take the newest row, not the first fresh one"
+    assert stale == {2}
+
+    # Without a cutoff the cap is off entirely: every item resolves.
+    fresh_uncapped, stale_uncapped = DataPipeline._split_fresh_and_stale(rows, None)
+    assert set(fresh_uncapped) == {1, 2, 3}
+    assert stale_uncapped == set()
+
+
+def test_full_aggregator_collection_refuses_to_restamp_stale_price(monkeypatch):
+    """A price older than the cap must not be re-emitted as today's price."""
+    db = database_module.SessionLocal()
+    try:
+        item = Item(
+            item_id="sticker-stale-price-item",
+            name="Sticker | Stale Price | Antwerp 2022",
+            type="sticker",
+            release_date=datetime(2022, 1, 1),
+        )
+        db.add(item)
+        db.commit()
+
+        stale_at = datetime.utcnow() - timedelta(days=FALLBACK_MAX_AGE_DAYS + 13)
+        db.add(
+            PriceHistory(
+                item_id=item.id,
+                timestamp=stale_at,
+                price=99.0,
+                volume=1,
+                source="aggregator_sync",
+            )
+        )
+        db.commit()
+
+        monkeypatch.setattr(aggregator_module, "CSGOTraderAggregator", FakeAggregator)
+
+        run_started = datetime.utcnow()
+        pipeline = DataPipeline(db_session=db)
+        result = pipeline.run_full_aggregator_collection()
+
+        assert result["status"] == "success"
+        assert result["fallback_stale_declined"] >= 1
+
+        # No new row for this item — the stale 99.0 was not re-stamped as today.
+        restamped = (
+            db.query(PriceHistory)
+            .filter(
+                PriceHistory.item_id == item.id,
+                PriceHistory.timestamp >= run_started,
+            )
+            .all()
+        )
+        assert restamped == [], f"stale price was laundered forward: {restamped}"
+
+        # The original row is untouched.
+        remaining = db.query(PriceHistory).filter(PriceHistory.item_id == item.id).all()
+        assert len(remaining) == 1
+        assert remaining[0].price == 99.0
     finally:
         db.close()
 

@@ -23,6 +23,16 @@ QUALITY_SUFFIXES = (
 )
 SPECIAL_PREFIXES = ("StatTrak", "Souvenir")
 
+# The historical fallback re-emits an old price stamped `timestamp=now`, so an
+# uncapped lookup launders stale data into the current day. This was uncapped
+# until 2026-07-31, and prod `price_history` has been frozen since 2026-07-11
+# (daily data now goes only to CSV → Parquet). A total upstream outage would
+# therefore have written ~5.5K items' worth of 20-day-old prices as if current —
+# and kept `items_collected` non-zero, hiding the outage from the zero-row guard
+# in scripts/run_task.py. Prices older than this are dropped and counted as
+# errors instead, so the run reports the outage rather than papering over it.
+FALLBACK_MAX_AGE_DAYS = int(os.environ.get("FALLBACK_MAX_AGE_DAYS", "7"))
+
 
 def _historical_fallback_source(source: str) -> str:
     """Normalize fallback source labels so retries do not stack prefixes."""
@@ -66,6 +76,7 @@ class DataPipeline:
         start_time = datetime.utcnow()
         primary_items_collected = 0
         fallback_items_collected = 0
+        fallback_stale_items: set = set()
         errors_count = 0
         duplicate_name_count = 0
         duplicate_name_sample: List[str] = []
@@ -161,19 +172,21 @@ class DataPipeline:
                     missing_names.append(name)
 
             if missing_names:
-                non_aggregator_prices = self._load_latest_non_aggregator_prices(
-                    {
-                        item.id
-                        for missing_name in missing_names
-                        for item in item_map[missing_name]
-                    }
+                fallback_cutoff = now - timedelta(days=FALLBACK_MAX_AGE_DAYS)
+                missing_item_ids = {
+                    item.id
+                    for missing_name in missing_names
+                    for item in item_map[missing_name]
+                }
+                non_aggregator_prices, stale_non_aggregator = self._load_latest_non_aggregator_prices(
+                    missing_item_ids, cutoff=fallback_cutoff
                 )
-                latest_any_source_prices = self._load_latest_prices(
-                    {
-                        item.id
-                        for missing_name in missing_names
-                        for item in item_map[missing_name]
-                    }
+                latest_any_source_prices, stale_any_source = self._load_latest_prices(
+                    missing_item_ids, cutoff=fallback_cutoff
+                )
+                # Stale only where *neither* loader found anything fresh.
+                fallback_stale_items = (stale_non_aggregator | stale_any_source) - (
+                    set(non_aggregator_prices) | set(latest_any_source_prices)
                 )
                 still_missing_names = []
 
@@ -213,6 +226,16 @@ class DataPipeline:
 
                 missing_names = still_missing_names
                 errors_count = sum(len(item_map[name]) for name in missing_names)
+
+                if fallback_stale_items:
+                    logger.warning(
+                        "Historical fallback declined %s items: newest price is "
+                        "older than the %s-day cap (cutoff %s). These count as "
+                        "errors rather than being re-stamped as today's price.",
+                        len(fallback_stale_items),
+                        FALLBACK_MAX_AGE_DAYS,
+                        fallback_cutoff.isoformat(timespec="seconds"),
+                    )
 
             # 4. Save prices
             backfilled_csv_path = None
@@ -413,6 +436,11 @@ class DataPipeline:
             duration_seconds = (end_time - start_time).total_seconds()
             total_collected = primary_items_collected + fallback_items_collected
 
+            # NOTE: do not add keys here. collection_runs.parquet types
+            # source_breakdown as a fixed STRUCT, and an unknown key makes the
+            # append fail its cast — swallowed by the `except` below, so the
+            # Parquet copy would silently stop updating. Stale-fallback counts
+            # go in the returned dict and the log line instead.
             source_breakdown = {
                 'aggregator': primary_items_collected,
                 'historical_fallback': fallback_items_collected,
@@ -473,6 +501,8 @@ class DataPipeline:
                 "items_collected": total_collected,
                 "total_items": len(items),
                 "errors": errors_count,
+                "fallback_items_collected": fallback_items_collected,
+                "fallback_stale_declined": len(fallback_stale_items),
                 "duplicate_names": duplicate_name_count,
                 "duplicate_name_sample": duplicate_name_sample,
                 "missing_name_sample": missing_names[:20],
@@ -538,12 +568,17 @@ class DataPipeline:
             logger.error(f"❌ Aggregator collection failed: {e}", exc_info=True)
             return {"status": "failed", "error": str(e), "duration_seconds": duration_seconds}
 
-    def _load_latest_non_aggregator_prices(self, item_ids):
-        """Load the latest non-primary price snapshot for each exact item id."""
+    def _load_latest_non_aggregator_prices(self, item_ids, cutoff=None):
+        """Load the latest non-primary price snapshot for each exact item id.
+
+        Returns (fresh_by_item_id, stale_item_ids). When `cutoff` is given, an
+        item whose newest snapshot predates it is reported as stale rather than
+        recovered — see FALLBACK_MAX_AGE_DAYS.
+        """
         from database import PriceHistory
 
         if not item_ids:
-            return {}
+            return {}, set()
 
         rows = (
             self.db_session.query(PriceHistory)
@@ -562,19 +597,18 @@ class DataPipeline:
             .all()
         )
 
-        latest_by_item_id = {}
-        for row in rows:
-            if row.item_id not in latest_by_item_id:
-                latest_by_item_id[row.item_id] = row
+        return self._split_fresh_and_stale(rows, cutoff)
 
-        return latest_by_item_id
+    def _load_latest_prices(self, item_ids, cutoff=None):
+        """Load the latest price snapshot for each exact item id from any source.
 
-    def _load_latest_prices(self, item_ids):
-        """Load the latest price snapshot for each exact item id from any source."""
+        Returns (fresh_by_item_id, stale_item_ids); see
+        `_load_latest_non_aggregator_prices`.
+        """
         from database import PriceHistory
 
         if not item_ids:
-            return {}
+            return {}, set()
 
         rows = (
             self.db_session.query(PriceHistory)
@@ -592,12 +626,28 @@ class DataPipeline:
             .all()
         )
 
-        latest_by_item_id = {}
-        for row in rows:
-            if row.item_id not in latest_by_item_id:
-                latest_by_item_id[row.item_id] = row
+        return self._split_fresh_and_stale(rows, cutoff)
 
-        return latest_by_item_id
+    @staticmethod
+    def _split_fresh_and_stale(rows, cutoff=None):
+        """Pick the newest row per item, separating fresh from too-old.
+
+        `rows` must already be ordered newest-first within each item_id, so the
+        first row seen for an item decides both its price and its freshness: if
+        the newest snapshot is stale, every older one is too.
+        """
+        fresh_by_item_id = {}
+        stale_item_ids = set()
+
+        for row in rows:
+            if row.item_id in fresh_by_item_id or row.item_id in stale_item_ids:
+                continue
+            if cutoff is not None and row.timestamp is not None and row.timestamp < cutoff:
+                stale_item_ids.add(row.item_id)
+                continue
+            fresh_by_item_id[row.item_id] = row
+
+        return fresh_by_item_id, stale_item_ids
 
     @staticmethod
     def _classify_missing_name(name: str, matched_items: List[Any]) -> str:

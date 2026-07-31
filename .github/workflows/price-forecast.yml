@@ -132,11 +132,26 @@ jobs:
               ;;
           esac
 
+      # Deliberately NOT conditioned on success. Training finishes and writes
+      # valid boosters to disk minutes before the predict phase OOMs (exit 143 —
+      # see runs 30226424193, 29793571744, 30666903525, all killed at "Adding
+      # item identity features"). Discarding those boosters because a later
+      # phase died is what leaves the cache permanently empty, so every
+      # predict-only run then aborts on "No models available" and the predict
+      # OOM is never even reached. Save whatever training produced.
+      - name: Check for boosters to save
+        if: always() && (steps.mode.outputs.mode == 'full' || steps.mode.outputs.mode == 'train-only')
+        id: boosters
+        run: |
+          n=$(ls backend/models/saved_models/*.txt 2>/dev/null | wc -l | tr -d ' ')
+          echo "count=$n" >> $GITHUB_OUTPUT
+          echo "Training left $n booster files on disk."
+
       # run_id keys are unique, so this never collides; predict-only runs pick
       # the newest via the forecast-models- restore-key prefix. Daily restores
       # keep the entry warm against the 7-day eviction window.
       - name: Save retrained models
-        if: steps.mode.outputs.mode == 'full' || steps.mode.outputs.mode == 'train-only'
+        if: always() && steps.boosters.outputs.count != '0' && steps.boosters.outputs.count != ''
         uses: actions/cache/save@v4
         with:
           path: |
