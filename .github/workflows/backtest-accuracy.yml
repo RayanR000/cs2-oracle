@@ -68,6 +68,10 @@ jobs:
           DEBUG: false
         run: |
           echo "Running forecast backtest..."
+          # Without pipefail the step status is tee's, always 0, so this
+          # workflow could not report failure for any reason. The other
+          # workflows all set it before their `| tee`; this one did not.
+          set -o pipefail
           python scripts/backtest_accuracy.py --type forecast 2>&1 | tee backtest.log
 
       - name: Notify on failure

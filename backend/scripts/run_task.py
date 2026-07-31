@@ -148,16 +148,54 @@ def run_task(task_name):
             logger.error(f"❌ TASK '{task_name}' reported failure: {failures[0].get('error', failures[0])}")
             sys.exit(1)
 
-        # Treat zero-item results as failures (all endpoints likely down)
-        zero_items = [
-            r for r in (result, result2, result3)
-            if isinstance(r, dict) and r.get("items_collected") == 0
-            and r.get("status") == "success"
-        ]
-        if zero_items:
+        # Treat zero-row results as failures (all endpoints likely down).
+        #
+        # This guard used to key on `items_collected` alone — a field only
+        # collectors/pipeline.py sets. Every other task could therefore return
+        # status "success" with zero rows and still exit 0, which is exactly how
+        # the Steam supply scraper (429s from 2026-07-16) and the Reddit
+        # collector (403s, never stored a single row) both stayed dead behind a
+        # green CI badge. Check every count field any task actually returns, and
+        # fail when a task reports counts and all of them are zero.
+        ROW_COUNT_FIELDS = (
+            "items_collected",      # collectors/pipeline.py
+            "total_records",        # scripts/backtest_accuracy.py
+            "impacts_written",      # scripts/event_correlation_analysis.py
+            "patterns_written",     # scripts/event_correlation_analysis.py
+            "correlations_written", # scripts/event_correlation_analysis.py
+            "steam_items",          # collectors/supply_scraper.py
+            "total_mentions",       # collectors/social_sentiment.py
+            "inserted",             # collectors/social_sentiment.py
+        )
+
+        def _zero_row(r) -> bool:
+            """True if r reports row counts and every one of them is zero."""
+            if not isinstance(r, dict) or r.get("status") != "success":
+                return False
+            counts = [r[f] for f in ROW_COUNT_FIELDS
+                      if isinstance(r.get(f), (int, float))]
+            return bool(counts) and not any(counts)
+
+        zero_rows = [r for r in (result, result2, result3) if _zero_row(r)]
+        if zero_rows:
             logger.error(
-                f"❌ TASK '{task_name}' completed with ZERO items collected — "
-                "all upstream endpoints may be down"
+                f"❌ TASK '{task_name}' completed with ZERO rows written — "
+                "all upstream endpoints may be down or blocking this IP. "
+                f"Result: {zero_rows[0]}"
+            )
+            sys.exit(1)
+
+        # "skipped" passed both guards above: not a failure status, and no count
+        # fields to inspect. pipeline.py returns it when there are no items to
+        # update, which is itself a zero-row outcome worth surfacing.
+        skipped = [
+            r for r in (result, result2, result3)
+            if isinstance(r, dict) and r.get("status") == "skipped"
+        ]
+        if skipped:
+            logger.error(
+                f"❌ TASK '{task_name}' was SKIPPED and wrote nothing: "
+                f"{skipped[0].get('reason', skipped[0])}"
             )
             sys.exit(1)
 
