@@ -2,6 +2,42 @@
 
 Date: 2026-07-14
 
+> # 🛑 THIS LINE OF WORK IS CLOSED (2026-07-31)
+>
+> **Do not open a new feature or model experiment against this document.** The
+> accuracy roadmap is finished — not blocked, not paused. Read this box before
+> acting on anything below it; the tables are kept as a record of what was tried,
+> not as a backlog.
+>
+> **The argument, in three numbers:**
+>
+> 1. Every feature group ever measured here landed at **|effect| < 0.7pp** —
+>    +0.66, 0, 0, 0, +0.16, −1.10 (see Reality Check). Six consecutive results
+>    indistinguishable from zero.
+> 2. The A/B harness's minimum detectable effect is **1.15pp at 3d and
+>    2.76–7.13pp at 7d/14d/30d** (see Measurement Floor).
+> 3. To resolve effects of the size this project actually produces you would need
+>    an MDE near **0.3pp** — a **~9x** reduction, i.e. **~85x more folds**. Fold
+>    count is capped near 73 by disjoint-window independence. **It is not
+>    reachable**, and no amount of item count changes it.
+>
+> The gap is not a measurement bug to engineer around. It is what a model at its
+> practical ceiling looks like: the remaining roadmap items are estimated at
+> 1–2pp *calibrated*, which is below the floor even in the best case, and the
+> calibration history says the truth is nearer 0.2pp. Further harness work is a
+> way to look busy on a finished problem.
+>
+> **The binding constraint is input data, not model architecture and not
+> measurement.** The only remaining idea with a mechanism argument for clearing
+> 1pp was supply-depth change/velocity, and it requires a *paid historical
+> backfill* — see the Dropped section for why waiting for free history does not
+> work.
+>
+> **If you want to reopen this,** the bar is a data source that is genuinely new
+> (not inferable from price history) *and* has multi-year history so it can be
+> trained and A/B'd over the archive window. Absent that, spend the time on
+> product, ops, or reliability instead.
+
 ## Current Architecture
 
 - **Model**: LightGBM quantile regression — 4 horizons (3d, 7d, 14d, 30d) × 3 quantiles (p10, p50, p90) × 3 ensemble seeds = 36 models
@@ -113,15 +149,48 @@ Date: 2026-07-14
 
 ### Dropped
 - 🛑 **Supply depth (`sell_listings` count)** — change/velocity variant is predictive but needs 30+ days history or paid backfill. Free source too slow. Rejected 2026-07-16.
+  - **Re-checked 2026-07-31 — the 30-day gate did not expire, and cannot.** The
+    obvious hope was that 3.5 months of daily scraping had since accumulated the
+    history the 2026-07-16 decision lacked. It has not. Both prod Supabase and
+    `price-archive/ops/supply_snapshots.parquet` hold **exactly one day**
+    (2026-07-15, 35,037 items) — **zero days added in 16 days of green CI.**
+  - **Root cause:** Steam returns **429 on the first request** (`offset=0`) from
+    GitHub-hosted runner IPs. `supply_scraper` backs off 30s→60s→120s, logs
+    `Could not get total item count from Steam. Aborting.`, stores **0 snapshots**,
+    and **exits 0** — so the workflow is green daily and no failure issue is filed.
+    Verified in run `30589441873` (2026-07-30). The 4m30s runtime, vs the ~115 min
+    a real catalog walk takes, is the visible tell.
+  - **Consequence:** the free path does not merely run slowly, it **cannot run from
+    CI at all**. Waiting accumulates nothing. And even a fixed scraper only ever
+    grows history *forward* — a feature present for the last 30 days is untrainable
+    over a 1460-day window and unmeasurable in a 26-fold walk-forward A/B, where it
+    would be null for ~98% of rows. **Only a paid historical backfill (CS2Cap
+    candles `q`) could revive this**, which remains declined. Drop decision
+    reaffirmed and now permanent on data grounds, not cost grounds.
+  - **Ops follow-up (independent of accuracy):** the workflow burns ~4m30s/day to
+    store nothing, invisibly. Either disable `supply-scraper.yml` or make the abort
+    path exit non-zero so it fails loudly. Tracked in
+    `docs/changelog/2026-07-31-accuracy-work-closed.md`.
 
-### Remaining
-1. **Multi-horizon joint training** — all horizons in one model, 1-2pp.
-2. **Ensemble expansion** — more seeds with column subsampling, 1-2pp.
+### Remaining — none. Closed 2026-07-31.
+
+Formerly listed as remaining, now **abandoned unmeasurable**:
+
+1. ~~**Multi-horizon joint training**~~ — all horizons in one model, 1-2pp.
+2. ~~**Ensemble expansion**~~ — more seeds with column subsampling, 1-2pp.
 
 > ⚠️ **Both are at or below the A/B harness's minimum detectable effect** (1.15pp
 > at 3d, 2.76–7.13pp at 7d/14d/30d — see Measurement Floor). Even if they work,
-> the current design cannot confirm it. Fix the measurement before spending
-> compute on either, or accept shipping them on mechanism rather than evidence.
+> the current design cannot confirm it.
+>
+> **Resolved 2026-07-31: do not "fix the measurement first" either.** That was the
+> standing advice here and it was wrong — an earlier version of this note told the
+> next contributor to repair the harness before spending compute. The repair is not
+> affordable: closing the gap to the ~0.3pp effects this project actually produces
+> needs ~85x more folds, and disjoint-window independence caps folds near 73. Both
+> items are hereby abandoned as unmeasurable rather than deferred. Shipping them on
+> mechanism alone was considered and rejected — six prior groups had a mechanism
+> argument too, and all six measured ~0pp.
 
 ### Tested & removed
 - 🛑 **Pure-price technical primitives** (volatility asymmetry + oscillator
