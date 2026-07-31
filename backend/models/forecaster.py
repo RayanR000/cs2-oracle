@@ -199,6 +199,21 @@ class ItemForecaster:
     # noise) and hurt at 3d/30d. Restrict to price technicals; the momentum
     # (return_Nd) features live in this group, so trend signal is retained.
     FEATURE_GROUP_ALLOWLIST = ["price_technicals"]
+    # Features computed but withheld from training. These are price technicals by
+    # name, so the allowlist above would otherwise pull them straight into prod.
+    # Volatility-asymmetry and oscillator-divergence primitives (2026-07-26) are
+    # shelved: the A/B cleared no gate (see
+    # docs/changelog/2026-07-31-price-primitives-shelved.md). The columns are
+    # still engineered so ab_test_price_primitives.py -- which builds its own
+    # feature list from the frame -- can re-run the arms unchanged.
+    SHELVED_FEATURES = frozenset({
+        "vol_semidev_down_30d",
+        "vol_semidev_up_30d",
+        "vol_skew_30d",
+        "rsi_divergence_7d",
+        "rsi_price_divergence_7d",
+        "macd_hist_slope_7d",
+    })
     # Horizons served as momentum (trailing return_Nd) instead of the ML median.
     # Superseded by the directional classifier (2026-07-24), which beats
     # momentum at every horizon including 30d — so this is now empty. Kept as a
@@ -2244,6 +2259,8 @@ class ItemForecaster:
                    "name", "release_date", DIRECTION_LABEL_VOL_COL}
         exclude |= {f"target_{h}d" for h in self.HORIZONS}
         exclude |= {f"target_return_{h}d" for h in self.HORIZONS}
+
+        exclude |= set(self.SHELVED_FEATURES)
 
         self.feature_cols = [c for c in df.columns if c not in exclude
                              and df[c].dtype in (np.float64, np.float32, np.int64, int, float)]

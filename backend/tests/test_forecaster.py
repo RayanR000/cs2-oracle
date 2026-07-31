@@ -755,6 +755,13 @@ class TestFeaturePipeline:
         assert not any(c.startswith("market_") for c in feature_set), "Market features leaked past allowlist"
         assert all(_feature_group(c) == "price_technicals" for c in feature_set), \
             f"Non-price feature groups present: {[c for c in feature_set if _feature_group(c) != 'price_technicals']}"
+        # Shelved primitives are price technicals by name, so the allowlist alone
+        # would admit them. They must be engineered (the A/B reads them off the
+        # frame) but never trained on.
+        leaked = forecaster.SHELVED_FEATURES & feature_set
+        assert not leaked, f"Shelved features leaked into training: {sorted(leaked)}"
+        assert forecaster.SHELVED_FEATURES <= set(df.columns), \
+            "Shelved features must still be engineered for the A/B harness"
 
         # Check no float64 feature columns remain (memory optimization)
         float64_cols = [c for c in forecaster.feature_cols if c in df.columns and df[c].dtype == np.float64]
