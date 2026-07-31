@@ -61,5 +61,14 @@ this sample size. What the smoke does rule out is a large, obvious win.
 - Regression cover: `test_build_training_data_*` asserts the shelved names stay out of
   `feature_cols` while remaining in the engineered frame.
 
-**To revisit:** drop the names from `SHELVED_FEATURES` and re-run at decision scale
-(≥200 items) before shipping — the smoke result is not evidence either way.
+**To revisit:** ~~drop the names from `SHELVED_FEATURES` and re-run at decision scale
+(≥200 items) before shipping — the smoke result is not evidence either way.~~
+
+> **SUPERSEDED the same day.** The decision-scale re-run was done — see
+> `2026-07-31-price-primitives-decision-scale.md`. At 200 items the treatment arm
+> measures **negative at all four horizons** (pooled −1.10pp, 43/104 fold wins).
+> **Keep the primitives shelved and do not re-run at larger item counts** — fold
+> count is set by `step=60` and the archive date range, not by `--max-items`, so
+> more items cannot resolve this. That entry also shows the pre-registered gate was
+> never falsifiable: the design's minimum detectable effect is 1.15–7.13pp against
+> a ~0.5pp target.

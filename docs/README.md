@@ -34,7 +34,7 @@ All historical docs are preserved as reference only — the issues they describe
 
 ## Changelog (`changelog/`)
 
-Dated execution logs for bug fixes, features, and audits. 38 entries covering Jul 2026 development.
+Dated execution logs for bug fixes, features, and audits. 45 entries covering Jul 2026 development.
 
 ## Other
 

@@ -118,7 +118,22 @@ Date: 2026-07-14
 1. **Multi-horizon joint training** — all horizons in one model, 1-2pp.
 2. **Ensemble expansion** — more seeds with column subsampling, 1-2pp.
 
+> ⚠️ **Both are at or below the A/B harness's minimum detectable effect** (1.15pp
+> at 3d, 2.76–7.13pp at 7d/14d/30d — see Measurement Floor). Even if they work,
+> the current design cannot confirm it. Fix the measurement before spending
+> compute on either, or accept shipping them on mechanism rather than evidence.
+
 ### Tested & removed
+- 🛑 **Pure-price technical primitives** (volatility asymmetry + oscillator
+  divergence; 6 features) — built, A/B'd on a 40-item smoke and **shelved**, then
+  re-run at decision scale (200 items) 2026-07-31. Treatment measures **negative at
+  all four horizons**: 3d −0.69 / 7d −1.47 / 14d −0.88 / 30d −1.38pp, pooled
+  **−1.10pp**, 43/104 fold wins, p=0.136. **Kept shelved** — the columns are still
+  engineered but withheld from training via `ItemForecaster.SHELVED_FEATURES`.
+  **Do not re-run at larger item counts:** fold count is set by `step=60` and the
+  archive date range, not `--max-items`, so more items cannot resolve it. See
+  `docs/changelog/2026-07-31-price-primitives-decision-scale.md` — and the
+  measurement-floor section below, which that run produced.
 - 🛑 **Quality spread / cross-wear features** — built and A/B'd 2026-07-26
   (walk-forward, 1,500 variant-group items). **Net-flat: +0.16pp mean**
   (3d −0.78 / 7d +1.28 / 14d +0.76 / 30d −0.63pp), and **+77% feature-build
@@ -155,6 +170,7 @@ Every completed feature group was measured. The pattern is consistent:
 | CatBoost | not est. | **-18 to -20pp** | — |
 | Multi-source outlier voting | +2-4pp | **0pp train / essential inference** | Pre-backfill estimate; 99.6% training data now single-source |
 | Quality spread / cross-wear | +1-2pp | **+0.16pp mean** (net-flat; +1.28/+0.76 on 7d/14d, −0.78/−0.63 on 3d/30d) | ~8-16% of estimate; shelved for +77% build cost |
+| Price technical primitives (vol asymmetry + oscillator divergence) | +1-2pp | **−1.10pp pooled** (negative at all 4 horizons; 43/104 fold wins, p=0.136) | Below the harness noise floor — see Measurement Floor |
 
 ### Root Causes
 
@@ -171,6 +187,58 @@ For any new feature group added to the current ~70-feature set:
 - **Proxied signal** (information the model can infer from price behavior): expect **10-20% of pre-estimate**, floor 0pp
 - **Data quality improvements** (outlier voting, source reliability): **not subject to diminishing returns** — improves ALL existing features. The 2026-07-17 data quality audit proved this category is the most mispriced: removing 41% dead training rows and clipping corrupt targets improves every downstream gradient step, and these gains compound with feature/model improvements.
 - **Training data filtering** (dead item removal, target winsorization, corrupt item exclusion): **30-70% of pre-estimate**. Unlike feature additions, data filtering actually *removes noise* rather than adding capacity. The 41% row reduction allows the model to focus its limited leaves on signal. Initial estimates of +3-8pp are more likely to hit than feature additions because there's no "extra capacity inflation" effect.
+
+### Measurement Floor — what the A/B harness can actually detect
+
+**Added 2026-07-31.** The calibrated rule above says what gain to *expect*. This
+says what gain you can *measure*, and the two are in conflict: most ship gates in
+this repo are written around **0.5–1.5pp**, which is **below the noise floor of the
+harness that evaluates them**.
+
+Measured on `ab_test_price_primitives.py` at 200 items — paired per-fold
+directional-accuracy deltas between two arms on identical folds:
+
+| Horizon | paired fold sd | min detectable effect @ 26 folds (80% power) | folds needed for 0.5pp |
+|---------|:--------------:|:--------------------------------------------:|:----------------------:|
+| 3d  | 2.09pp  | 1.15pp | ~137 |
+| 7d  | 5.03pp  | 2.76pp | ~795 |
+| 14d | 5.70pp  | 3.13pp | ~1,020 |
+| 30d | 12.98pp | 7.13pp | ~5,290 |
+
+Two structural facts make those fold counts unreachable:
+
+1. **Fold count does not scale with `--max-items`.** It is set by the harness's
+   `step` (60) and the archive date range — 26 folds at 40 items and 26 at 200.
+   More items sharpen each fold's estimate; they never add a fold. *Scaling up a
+   null A/B by item count does not make it conclusive.*
+2. The most folds obtainable with **disjoint** 21-day validation windows is ~73
+   (`step=21`), which only lowers the 7d floor to ~1.65pp. Below `step=21` the
+   validation windows overlap and the folds stop being independent. Note that even
+   at `step=21`, folds are only *approximately* independent at 14d/30d, where
+   forward-return windows still overlap across folds.
+
+**Consequence for reading past results.** A reported delta smaller than the
+horizon's MDE is *not* evidence of "net-flat" or "no effect" — it is no evidence
+either way. The quality-spread result (+0.16pp mean, ±~1.3pp per horizon) and the
+price-primitives result (−1.10pp pooled) both sit inside the floor. Those changes
+were correctly declined on **cost and complexity** grounds; neither was actually
+*measured* to be flat, and the write-ups should not be cited as if they were.
+
+**Before running any feature A/B here:**
+
+1. Run two arms on **one** horizon (`--horizon 7 --arm baseline` / `--arm treatment`).
+2. Compute the paired per-fold delta sd from the `per_fold` arrays in the output JSON.
+3. Derive `MDE = 2.8 * sd / sqrt(n_folds)`.
+4. **If the gate's target is below the MDE, do not run the full experiment** — it
+   cannot return a decision. Either pursue an effect large enough to clear the
+   floor, or change the design (more folds, variance reduction, a paired test at
+   the row level with correlation-aware standard errors). Buying more items is not
+   the fix.
+
+This makes the shortest path to *any* further accuracy work a **measurement**
+problem, not a feature problem. The remaining roadmap items below are estimated at
+1–2pp calibrated — at or under the floor for 7d/14d/30d — so as things stand they
+cannot be validated even if they work.
 
 ### Cumulative Ceiling
 
