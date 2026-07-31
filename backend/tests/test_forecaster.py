@@ -2056,3 +2056,93 @@ class TestVotedPriceCache:
 
         pd.testing.assert_frame_equal(out, voted_df)
         assert f._load_voted_cache(key) is not None
+
+
+# ---------------------------------------------------------------------------
+# Chunked prediction (bounded-memory feature engineering)
+# ---------------------------------------------------------------------------
+
+class TestChunkedPrediction:
+    """The chunked predict path must be numerically identical to the whole-frame
+    path — it exists to bound peak memory, not to approximate."""
+
+    @staticmethod
+    def _wide_price_df(n_items=12, n_days=120):
+        np.random.seed(7)
+        rows = []
+        for item_id in range(n_items):
+            price = 10.0 + item_id * 5
+            for day_offset in range(n_days):
+                d = date(2026, 1, 1) + timedelta(days=day_offset)
+                trend = price * (1 + 0.001 * day_offset)
+                rows.append({
+                    "item_id": f"item_{item_id}",
+                    "date": d,
+                    "price": round(trend + np.random.normal(0, trend * 0.01), 2),
+                    "volume": int(np.random.poisson(100 + day_offset * 2)),
+                })
+        return pd.DataFrame(rows)
+
+    @staticmethod
+    def _no_db(forecaster):
+        """Stub the two DB reads the engineering path makes."""
+        forecaster._fetch_supply_snapshots = lambda *a, **k: pd.DataFrame()
+        forecaster._fetch_item_metadata = lambda *a, **k: pd.DataFrame()
+
+    def test_market_partials_combine_to_whole_frame_means(self, forecaster, empty_events_df):
+        """(sum, count) partials must reconstruct a global groupby(date).mean()."""
+        self._no_db(forecaster)
+        price_df = self._wide_price_df()
+        df = forecaster.engineer_features(price_df, empty_events_df)
+
+        whole = forecaster._market_from_partials(
+            [forecaster._accumulate_market_partials(df)]
+        )
+
+        items = sorted(df["item_id"].unique())
+        chunked = forecaster._market_from_partials([
+            forecaster._accumulate_market_partials(df[df["item_id"].isin(c)])
+            for c in (items[:5], items[5:9], items[9:])
+        ])
+
+        pd.testing.assert_frame_equal(
+            whole.sort_index(), chunked.sort_index(), check_like=True
+        )
+
+    def test_chunked_engineering_matches_whole_frame(self, forecaster, empty_events_df):
+        """End-to-end: chunked tails == whole-frame tails, value for value."""
+        self._no_db(forecaster)
+        price_df = self._wide_price_df()
+        eligible = sorted(price_df["item_id"].unique())
+
+        # Whole-frame path, then the same tail the chunked path retains.
+        whole = forecaster.engineer_features(price_df, empty_events_df)
+        whole = forecaster._add_cross_sectional_features(whole)
+        whole = forecaster._add_supply_depth_features(whole)
+        whole_tail = (
+            whole.sort_values(["item_id", "date"])
+            .groupby("item_id", sort=False)
+            .tail(forecaster.PREDICT_TAIL_ROWS)
+            .reset_index(drop=True)
+        )
+
+        # Chunked path, forced to several chunks.
+        import os as _os
+        _os.environ["PREDICT_CHUNK_ITEMS"] = "4"
+        try:
+            chunked = forecaster._engineer_features_chunked(
+                price_df, empty_events_df, eligible
+            )
+        finally:
+            _os.environ.pop("PREDICT_CHUNK_ITEMS", None)
+
+        chunked = chunked.sort_values(["item_id", "date"]).reset_index(drop=True)
+
+        assert len(chunked) == len(whole_tail)
+        pd.testing.assert_frame_equal(
+            whole_tail, chunked, check_like=True, rtol=1e-9, atol=1e-9
+        )
+
+    def test_chunking_disabled_by_zero(self, forecaster, monkeypatch):
+        monkeypatch.setenv("PREDICT_CHUNK_ITEMS", "0")
+        assert forecaster._predict_chunk_items == 0

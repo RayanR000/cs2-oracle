@@ -5,6 +5,7 @@ using price history, technical indicators, events, and item metadata.
 """
 
 import os
+import gc
 import sys
 import json
 import hashlib
@@ -1497,34 +1498,98 @@ class ItemForecaster:
 
         return df
 
+    # Every per-date market quantity below is a plain mean over all items on a
+    # date. That is what makes chunked prediction exact: a mean is recoverable
+    # from (sum, count) partials, so the identical table can be built one item
+    # chunk at a time without ever holding the whole frame. See
+    # _accumulate_market_partials / _market_from_partials.
+    MARKET_MEAN_COLS = ("return_1d", "return_7d", "return_14d", "return_30d",
+                        "price_std_30d", "volume")
+
+    @staticmethod
+    def _accumulate_market_partials(df: pd.DataFrame) -> Dict[str, pd.DataFrame]:
+        """Per-date (sum, count) for each market column present in this frame.
+
+        `count` excludes NaN, matching pandas' skipna mean, so combining
+        partials reproduces a global groupby(date).mean() exactly.
+        """
+        partials = {}
+        for col in ItemForecaster.MARKET_MEAN_COLS:
+            if col in df.columns:
+                partials[col] = df.groupby("date")[col].agg(["sum", "count"])
+        return partials
+
+    @staticmethod
+    def _market_from_partials(partial_list: List[Dict[str, pd.DataFrame]]) -> pd.DataFrame:
+        """Combine per-chunk partials into the per-date market table."""
+        present = set()
+        for p in partial_list:
+            present |= set(p)
+
+        market = pd.DataFrame()
+        for col in ItemForecaster.MARKET_MEAN_COLS:
+            if col not in present:
+                continue
+            frames = [p[col] for p in partial_list if col in p]
+            totals = pd.concat(frames).groupby(level=0).sum()
+            # count == 0 means every value for that date was NaN; pandas' mean
+            # yields NaN there, and 0/NaN does too.
+            mean = totals["sum"] / totals["count"].replace(0, np.nan)
+
+            if col == "volume":
+                # A date with no volume at all must not contribute to the
+                # rolling window, so keep NaN rather than filling.
+                market["daily_market_vol"] = mean
+                market["_volume_observed"] = totals["count"].sum() > 0
+            elif col == "price_std_30d":
+                market["market_volatility_30d"] = mean
+            else:
+                market[f"market_{col}"] = mean
+
+        if not market.empty:
+            market = market.sort_index()
+            if "daily_market_vol" in market.columns:
+                market["market_volume_mean_30d"] = market["daily_market_vol"].rolling(
+                    30, min_periods=1
+                ).mean()
+        return market
+
     def _add_cross_sectional_features(self, df: pd.DataFrame) -> pd.DataFrame:
         """Add market-level and category-level context features."""
+        market = self._market_from_partials([self._accumulate_market_partials(df)])
+        return self._apply_market_aggregates(df, market)
+
+    def _apply_market_aggregates(self, df: pd.DataFrame, market: pd.DataFrame) -> pd.DataFrame:
+        """Attach cross-sectional features given a precomputed per-date table.
+
+        Split out of _add_cross_sectional_features so the whole-frame path and
+        the chunked path share one implementation — the only difference is
+        where `market` came from.
+        """
         logger.info("Adding cross-sectional features...")
 
         # Market return: mean return across all items per date
         for lag in [1, 7, 14, 30]:
             ret_col = f"return_{lag}d"
-            if ret_col not in df.columns:
-                continue
             market_col = f"market_return_{lag}d"
-            df[market_col] = df.groupby("date")[ret_col].transform("mean")
+            if ret_col not in df.columns or market_col not in market.columns:
+                continue
+            df[market_col] = df["date"].map(market[market_col])
             df[f"item_return_vs_market_{lag}d"] = df[ret_col] - df[market_col]
 
         # Market volatility: mean of individual item volatilities per date
-        if "price_std_30d" in df.columns:
-            df["market_volatility_30d"] = df.groupby("date")["price_std_30d"].transform("mean")
+        if "market_volatility_30d" in market.columns:
+            df["market_volatility_30d"] = df["date"].map(market["market_volatility_30d"])
 
-        # Market volume: compute daily market mean, then rolling 30d of that
-        if "volume" in df.columns and df["volume"].notna().any():
-            daily_vol = df.groupby("date")["volume"].mean().to_frame("daily_market_vol")
-            daily_vol = daily_vol.sort_index()
-            daily_vol["market_volume_mean_30d"] = daily_vol["daily_market_vol"].rolling(
-                30, min_periods=1
-            ).mean()
-            df = df.merge(
-                daily_vol[["market_volume_mean_30d"]],
-                left_on="date", right_index=True, how="left"
-            )
+        # Market volume: daily market mean, then rolling 30d of that. Gated on
+        # whether volume was observed ACROSS ALL items, not just this chunk —
+        # a chunk with no volume must still get the global columns.
+        if "market_volume_mean_30d" in market.columns and bool(market["_volume_observed"].iloc[0]):
+            df["market_volume_mean_30d"] = df["date"].map(market["market_volume_mean_30d"])
+            # This branch used to be a df.merge(), which returns a fresh
+            # RangeIndex. map() preserves the index, so reset explicitly to keep
+            # the frame downstream of this function byte-for-byte as before.
+            df = df.reset_index(drop=True)
             df["item_volume_vs_market_30d"] = (
                 df["volume"] / df["market_volume_mean_30d"].replace(0, np.nan)
             )
@@ -3323,6 +3388,72 @@ class ItemForecaster:
             result["high_ret"][idx] = (float(high) / cur_f - 1.0) * 100.0 if high is not None else result["mid_ret"][idx]
         return result
 
+    # Prediction consumes only the last few rows per item (tail(3) for the
+    # smoothed current price, last() for the feature vector), yet the whole-frame
+    # path engineers all 1460 days for every item just to slice that tail off.
+    # At 8,691 items / 6.1M rows that peaks well past a 16GB CI runner and gets
+    # SIGKILLed — see docs and runs 30226424193 / 30666903525 / 30668690592.
+    PREDICT_TAIL_ROWS = 3
+
+    @property
+    def _predict_chunk_items(self) -> int:
+        """Items per chunk during prediction; 0 disables chunking."""
+        return int(os.getenv("PREDICT_CHUNK_ITEMS", "1000"))
+
+    def _engineer_features_chunked(self, price_df, events_df, eligible) -> pd.DataFrame:
+        """Engineer prediction features in item chunks with bounded memory.
+
+        Two passes are required because the cross-sectional features are per-date
+        means over ALL items: pass A accumulates those means from (sum, count)
+        partials, pass B applies the resulting table and keeps only each item's
+        tail. Costs ~2x the feature-engineering CPU to make peak memory a
+        function of chunk size rather than catalogue size. Results are identical
+        to the whole-frame path — both call _apply_market_aggregates with the
+        same table.
+        """
+        item_ids = list(eligible)
+        size = self._predict_chunk_items
+        chunks = [item_ids[i:i + size] for i in range(0, len(item_ids), size)]
+        logger.info(
+            f"  Chunked feature engineering: {len(item_ids):,} items "
+            f"in {len(chunks)} chunks of <= {size:,}"
+        )
+
+        def _chunk_frame(chunk):
+            return self.engineer_features(
+                price_df[price_df["item_id"].isin(chunk)], events_df
+            )
+
+        # Pass A — per-date market aggregates across every item.
+        partials = []
+        for n, chunk in enumerate(chunks, 1):
+            cdf = _chunk_frame(chunk)
+            partials.append(self._accumulate_market_partials(cdf))
+            del cdf
+            gc.collect()
+            logger.info(f"    market pass {n}/{len(chunks)}")
+        market = self._market_from_partials(partials)
+
+        # Pass B — apply the market table, then discard all but each item's tail.
+        tails = []
+        for n, chunk in enumerate(chunks, 1):
+            cdf = _chunk_frame(chunk)
+            cdf = self._apply_market_aggregates(cdf, market)
+            cdf = self._add_supply_depth_features(cdf)
+            cdf = (
+                cdf.sort_values(["item_id", "date"])
+                .groupby("item_id", sort=False)
+                .tail(self.PREDICT_TAIL_ROWS)
+            )
+            tails.append(cdf)
+            del cdf
+            gc.collect()
+            logger.info(f"    feature pass {n}/{len(chunks)}")
+
+        df = pd.concat(tails, ignore_index=True)
+        logger.info(f"  Chunked engineering complete: {len(df):,} tail rows retained")
+        return df
+
     def predict(self, item_ids: List[int] = None) -> pd.DataFrame:
         logger.info("Generating forecasts...")
 
@@ -3349,16 +3480,21 @@ class ItemForecaster:
 
             events_df = self.fetch_events()
 
-            df = self.engineer_features(price_df, events_df)
+            if self._predict_chunk_items and len(eligible) > self._predict_chunk_items:
+                df = self._engineer_features_chunked(price_df, events_df, eligible)
+            else:
+                df = self.engineer_features(price_df, events_df)
 
-            # Add cross-sectional features (same as training)
-            df = self._add_cross_sectional_features(df)
+                # Add cross-sectional features (same as training)
+                df = self._add_cross_sectional_features(df)
 
-            # Add supply depth features (same as training)
-            df = self._add_supply_depth_features(df)
+                # Add supply depth features (same as training)
+                df = self._add_supply_depth_features(df)
 
-            # Save to cache for next predict run
-            self._save_engineered_cache(df)
+                # Save to cache for next predict run. Only the whole-frame path
+                # writes it: the chunked frame is a per-item tail, not the full
+                # history the cache contract promises.
+                self._save_engineered_cache(df)
 
         # Align features with training columns (add missing, drop extras)
         for col in self.feature_cols:
