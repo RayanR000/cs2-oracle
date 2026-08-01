@@ -14,6 +14,7 @@ forecasts score 61.76% one day and 33.74% the next.
 from __future__ import annotations
 
 from datetime import date
+from pathlib import Path
 
 import pandas as pd
 
@@ -78,3 +79,74 @@ def smoothed_prices(
             resolved[(slug, anchor)] = float((prices[mid - 1] + prices[mid]) / 2)
 
     return resolved
+
+
+def load_voted_prices(
+    archive_dir: Path,
+    slugs: list[str],
+    min_date: date,
+    max_date: date,
+    max_span_days: int = MAX_WINDOW_SPAN_DAYS,
+) -> pd.DataFrame:
+    """Load voted daily prices from the Parquet archive.
+
+    Reaches back ``max_span_days`` before ``min_date``: resolving an anchor
+    needs the observations preceding it, not just the anchor's own day.
+
+    Raises FileNotFoundError when the archive is absent. The previous
+    behaviour — warn and return {} — produced a green run that evaluated zero
+    forecasts, which is exactly the silent-success shape commit 324cfff was
+    written to eliminate.
+    """
+    import duckdb
+    from models.forecaster import ItemForecaster
+
+    archive_dir = Path(archive_dir)
+    if not archive_dir.exists():
+        raise FileNotFoundError(f"price archive not found at {archive_dir}")
+
+    pq_files = sorted(str(p) for p in archive_dir.glob("prices-*.parquet"))
+    if not pq_files:
+        raise FileNotFoundError(f"price archive at {archive_dir} contains no prices-*.parquet")
+
+    if not slugs:
+        return pd.DataFrame(columns=["item_id", "date", "price"])
+
+    lookback_start = min_date - pd.Timedelta(days=max_span_days)
+
+    con = duckdb.connect()
+    try:
+        selects = []
+        for pqf in pq_files:
+            cols = {r[0] for r in con.sql(f"DESCRIBE SELECT * FROM read_parquet('{pqf}')").fetchall()}
+            source_expr = "source" if "source" in cols else "NULL::VARCHAR AS source"
+            selects.append(
+                f"SELECT item_slug, CAST(day AS DATE) AS day, mean_price AS price, "
+                f"{source_expr}, volume FROM read_parquet('{pqf}')"
+            )
+        union_sql = " UNION ALL BY NAME ".join(selects)
+
+        con.register("wanted_slugs", pd.DataFrame({"item_slug": slugs}))
+        rows = con.sql(
+            f"""
+            SELECT s.item_slug, s.day, s.price, s.source, s.volume
+            FROM ({union_sql}) s
+            JOIN wanted_slugs w ON w.item_slug = s.item_slug
+            WHERE s.day BETWEEN DATE '{lookback_start}' AND DATE '{max_date}'
+            """
+        ).fetchall()
+    finally:
+        con.close()
+
+    if not rows:
+        return pd.DataFrame(columns=["item_id", "date", "price"])
+
+    df = pd.DataFrame(rows, columns=["item_id", "timestamp", "price", "source", "volume"])
+    df["timestamp"] = pd.to_datetime(df["timestamp"])
+    df["date"] = df["timestamp"].dt.date
+    df["price"] = pd.to_numeric(df["price"], errors="coerce")
+    df = df.dropna(subset=["price"])
+
+    df = ItemForecaster._apply_multi_source_voting(df)
+
+    return df[["item_id", "date", "price"]].reset_index(drop=True)

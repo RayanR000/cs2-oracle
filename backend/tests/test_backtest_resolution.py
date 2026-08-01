@@ -1,12 +1,15 @@
 from __future__ import annotations
 
 from datetime import date
+from pathlib import Path
 
 import pandas as pd
+import pytest
 
 from backtest.price_resolution import (
     MAX_WINDOW_SPAN_DAYS,
     SMOOTH_WINDOW,
+    load_voted_prices,
     smoothed_prices,
 )
 
@@ -113,3 +116,50 @@ def test_constants_match_the_codebase_staleness_convention():
 
     assert SMOOTH_WINDOW == 3
     assert MAX_WINDOW_SPAN_DAYS == FALLBACK_MAX_AGE_DAYS
+
+
+def test_missing_archive_raises_rather_than_returning_empty(tmp_path):
+    """A green run with zero actuals is the failure shape 324cfff removed.
+    Resolution must fail loudly instead."""
+    with pytest.raises(FileNotFoundError, match="price archive"):
+        load_voted_prices(tmp_path / "nope", ["ak"], date(2026, 7, 1), date(2026, 7, 9))
+
+
+def test_loads_and_votes_multi_source_rows(tmp_path):
+    archive = tmp_path / "price-archive"
+    archive.mkdir()
+    pd.DataFrame(
+        {
+            "item_slug": ["ak", "ak", "ak"],
+            "day": pd.to_datetime([date(2026, 7, 1)] * 3),
+            "mean_price": [2.0, 2.1, 90.0],  # 90.0 is the outlier source
+            "volume": [10, 10, 10],
+            "source": ["a", "b", "c"],
+        }
+    ).to_parquet(archive / "prices-2026.parquet")
+
+    out = load_voted_prices(archive, ["ak"], date(2026, 7, 1), date(2026, 7, 1))
+
+    assert list(out.columns) == ["item_id", "date", "price"]
+    assert len(out) == 1  # one row per item-day after voting
+    assert out.iloc[0]["price"] < 10.0  # the 90.0 source was voted out
+
+
+def test_window_dates_before_the_range_are_loaded(tmp_path):
+    """Resolving an anchor needs the observations *before* it, so the loader
+    must reach back past min_date by the staleness cap."""
+    archive = tmp_path / "price-archive"
+    archive.mkdir()
+    days = pd.to_datetime([date(2026, 6, 28), date(2026, 6, 29), date(2026, 7, 1)])
+    pd.DataFrame(
+        {
+            "item_slug": ["ak"] * 3,
+            "day": days,
+            "mean_price": [1.0, 1.0, 1.0],
+            "volume": [1, 1, 1],
+            "source": ["a", "a", "a"],
+        }
+    ).to_parquet(archive / "prices-2026.parquet")
+
+    out = load_voted_prices(archive, ["ak"], date(2026, 7, 1), date(2026, 7, 1))
+    assert len(out) == 3
