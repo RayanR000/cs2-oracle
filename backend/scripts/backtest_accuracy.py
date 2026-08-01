@@ -20,10 +20,9 @@ from collections import defaultdict
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-import pandas as pd
 from database import SessionLocal, PredictionAccuracy
 from sqlalchemy import text
-from models.forecaster import ItemForecaster
+from backtest.price_resolution import load_voted_prices, smoothed_prices
 from backtest.scoring import (
     FLAT_TOLERANCE,
     bootstrap_ci,
@@ -31,6 +30,11 @@ from backtest.scoring import (
     price_tier,
     score_cohort,
 )
+
+# Above this rate of mature forecasts that can't be resolved by the shared
+# estimator, refuse to report a number rather than silently score a shrunken
+# cohort — that silent shrinkage is how the pre-fix metric moved unnoticed.
+MAX_UNRESOLVABLE_PCT = 10.0
 
 logging.basicConfig(
     level=logging.INFO,
@@ -68,92 +72,6 @@ def _upsert_accuracy(db, rows):
     if rows:
         from db.parquet import append_table
         append_table("prediction_accuracy", rows, ["prediction_type", "evaluation_date", "horizon_days", "model_version"])
-
-
-def _load_actual_prices(db, item_ids, dates):
-    """Load actual prices from Parquet files (DuckDB).
-
-    The DB price_history table only holds live aggregator data (recent dates).
-    For full historical backtesting we read directly from the Parquet archive.
-
-    Applies the same multi-source voting logic as the forecaster's training
-    pipeline (median of sources within 2 std of consensus) so that backtest
-    actuals consistently match the target prices the model was trained on.
-    """
-    if not item_ids or not dates:
-        return {}
-
-    logger.info("  Loading actual prices from Parquet archive...")
-    archive_dir = Path(__file__).parent.parent.parent / "price-archive"
-    if not archive_dir.exists():
-        logger.warning("  No price-archive directory found")
-        return {}
-
-    import duckdb
-
-    # Build item_id (int) -> slug (str) mapping from DB
-    slug_rows = db.execute(
-        text("SELECT id, item_id FROM items")
-    ).fetchall()
-    id_to_slug = {r.id: r.item_id for r in slug_rows}
-    slug_to_id = {s: i for i, s in id_to_slug.items()}
-
-    # Map the requested item_ids to slugs
-    target_slugs = [id_to_slug.get(iid) for iid in item_ids if id_to_slug.get(iid)]
-    if not target_slugs:
-        logger.warning("  No slug mappings found for requested item IDs")
-        return {}
-
-    date_strs = sorted({d.isoformat() if isinstance(d, date) else str(d)[:10] for d in dates})
-
-    con = duckdb.connect()
-    try:
-        pq_files = sorted([str(p) for p in archive_dir.glob("prices-*.parquet")])
-        pq_queries = []
-        for pqf in pq_files:
-            cols = con.sql(f"DESCRIBE SELECT * FROM read_parquet('{pqf}')").fetchall()
-            col_names = {r[0] for r in cols}
-            if "source" in col_names:
-                pq_queries.append(f"SELECT item_slug, CAST(day AS DATE) AS day, mean_price AS price, source, volume FROM read_parquet('{pqf}')")
-            else:
-                pq_queries.append(f"SELECT item_slug, CAST(day AS DATE) AS day, mean_price AS price, NULL::VARCHAR AS source, volume FROM read_parquet('{pqf}')")
-        union_sql = " UNION ALL BY NAME ".join(pq_queries)
-
-        # Load all data matching our slugs and dates
-        slug_list = ", ".join(f"'{s.replace(chr(39), chr(39)+chr(39))}'" for s in target_slugs)
-        date_list = ", ".join(f"'{d}'" for d in date_strs)
-        rows = con.sql(f"""
-            SELECT item_slug, day, price, source, volume
-            FROM ({union_sql})
-            WHERE item_slug IN ({slug_list})
-              AND CAST(day AS DATE) IN ({date_list})
-        """).fetchall()
-
-        if not rows:
-            logger.warning("  No matching Parquet rows found")
-            return {}
-
-        df = pd.DataFrame(rows, columns=["item_id", "timestamp", "price", "source", "volume"])
-        df["timestamp"] = pd.to_datetime(df["timestamp"])
-        df["date"] = df["timestamp"].dt.date
-        df["price"] = pd.to_numeric(df["price"], errors="coerce")
-        df = df.dropna(subset=["price"])
-
-        n_before = len(df)
-        df = ItemForecaster._apply_multi_source_voting(df)
-        logger.info(f"  Loaded {len(df)} actual price points from Parquet "
-                    f"(voted from {n_before} source-rows)")
-
-        by_key = {}
-        for _, row in df.iterrows():
-            slug = row["item_id"]
-            item_id = slug_to_id.get(slug)
-            if item_id is not None and pd.notna(row["price"]):
-                by_key[(item_id, row["date"])] = float(row["price"])
-
-        return by_key
-    finally:
-        con.close()
 
 
 # ---------------------------------------------------------------------------
@@ -252,76 +170,92 @@ def backtest_forecasts(db, today=None, min_price=0):
         key = (r.horizon_days, r.model_version or "unknown")
         groups[key].append(r)
 
+    archive_dir = Path(__file__).parent.parent.parent / "price-archive"
+
+    slug_rows = db.execute(text("SELECT id, item_id FROM items")).fetchall()
+    id_to_slug = {r.id: r.item_id for r in slug_rows}
+
     results = []
     all_outcomes = []
-    for (horizon, model_version), forecasts in sorted(groups.items()):
-        target_dates = set()
-        item_ids = set()
-        for f in forecasts:
-            f_date = f.forecast_date if isinstance(f.forecast_date, date) else date.fromisoformat(f.forecast_date)
-            target_dates.add(f_date + timedelta(days=horizon))
-            item_ids.add(f.item_id)
+    n_unresolvable = 0
+    n_considered = 0
 
-        actual_prices = _load_actual_prices(db, item_ids, target_dates)
+    for (horizon, model_version), forecasts in sorted(groups.items()):
+        anchors = set()
+        slugs = set()
+        for f in forecasts:
+            slug = id_to_slug.get(f.item_id)
+            if slug is None:
+                continue
+            f_date = f.forecast_date if isinstance(f.forecast_date, date) else date.fromisoformat(str(f.forecast_date)[:10])
+            slugs.add(slug)
+            anchors.add((slug, f_date))
+            anchors.add((slug, f_date + timedelta(days=horizon)))
+
+        if not anchors:
+            logger.info(f"  [{horizon}d / {model_version}] No slug mappings")
+            continue
+
+        anchor_dates = [a[1] for a in anchors]
+        voted = load_voted_prices(archive_dir, sorted(slugs), min(anchor_dates), max(anchor_dates))
+        prices = smoothed_prices(voted, anchors)
+        logger.info(f"  Resolved {len(prices):,} of {len(anchors):,} anchors")
 
         # Per-forecast records for aggregation and bootstrap
         records = []
         for f in forecasts:
-            f_date = f.forecast_date if isinstance(f.forecast_date, date) else date.fromisoformat(f.forecast_date)
+            n_considered += 1
+            slug = id_to_slug.get(f.item_id)
+            f_date = f.forecast_date if isinstance(f.forecast_date, date) else date.fromisoformat(str(f.forecast_date)[:10])
             target_date = f_date + timedelta(days=horizon)
-            actual = actual_prices.get((f.item_id, target_date))
-            if actual is None or actual <= 0:
+
+            base = prices.get((slug, f_date))
+            actual = prices.get((slug, target_date))
+            if base is None or actual is None or base <= 0 or actual <= 0:
+                n_unresolvable += 1
                 continue
 
-            mid = f.price_mid
-            low = f.price_low
-            high = f.price_high
-            current = f.current_price
-
-            if mid is None or current is None or current <= 0:
+            mid, low, high = f.price_mid, f.price_low, f.price_high
+            if mid is None:
+                n_unresolvable += 1
                 continue
-
-            if min_price > 0 and current < min_price:
+            if min_price > 0 and base < min_price:
                 continue
 
             abs_error = abs(mid - actual)
-
-            actual_ret = (actual - current) / current
+            actual_ret = (actual - base) / base
             predicted_direction = f.direction or "flat"
             actual_direction = direction_from_return(actual_ret)
             direction_correct = 1 if predicted_direction == actual_direction else 0
-
-            in_interval = None
-            if low is not None and high is not None:
-                in_interval = 1 if low <= actual <= high else 0
-
-            conf = f.confidence or "low"
-            tier = price_tier(current)
+            in_interval = None if (low is None or high is None) else (1 if low <= actual <= high else 0)
+            pct_error = abs(abs_error / base) * 100
 
             records.append({
                 "abs_error": abs_error,
-                "pct_error": abs(abs_error / current) * 100 if current > 0 else 0,
+                "pct_error": pct_error,
                 "sq_error": (mid - actual) ** 2,
                 "direction_correct": direction_correct,
                 "predicted_direction": predicted_direction,
                 "actual_direction": actual_direction,
                 "in_interval": in_interval,
-                "confidence": conf,
-                "base_price": current,
+                "confidence": f.confidence or "low",
+                "base_price": base,
                 "actual_price": actual,
-                "price_tier": tier,
+                "price_tier": price_tier(base),
                 "item_id": f.item_id,
             })
 
-            # Record per-forecast outcome for DB storage
-            fcast_date = f.forecast_date if isinstance(f.forecast_date, date) else date.fromisoformat(str(f.forecast_date)[:10])
             all_outcomes.append({
                 "forecast_id": f.id,
                 "item_id": f.item_id,
-                "forecast_date": fcast_date,
+                "forecast_date": f_date,
                 "horizon_days": horizon,
                 "target_date": target_date,
-                "current_price": current,
+                # current_price is retained for reference only; nothing reads
+                # it for scoring. It is NOT NULL on ForecastOutcome, so fall
+                # back to the resolved base price if serving-time never set it.
+                "current_price": f.current_price if f.current_price is not None else base,
+                "base_price": base,
                 "predicted_price_low": low,
                 "predicted_price_mid": mid,
                 "predicted_price_high": high,
@@ -331,7 +265,7 @@ def backtest_forecasts(db, today=None, min_price=0):
                 "direction_correct": direction_correct,
                 "in_interval": in_interval,
                 "abs_error": round(abs_error, 4),
-                "pct_error": abs(abs_error / current) * 100 if current > 0 else 0,
+                "pct_error": pct_error,
                 "model_version": model_version,
             })
 
@@ -370,6 +304,16 @@ def backtest_forecasts(db, today=None, min_price=0):
             f"Gap={metrics['conf_gap_pp']:.1f}pp "
             f"Skill={metrics['skill_vs_baseline']}"
         )
+
+    if n_considered:
+        unresolvable_pct = n_unresolvable / n_considered * 100
+        logger.info(f"  Unresolvable: {n_unresolvable:,}/{n_considered:,} ({unresolvable_pct:.1f}%)")
+        if unresolvable_pct > MAX_UNRESOLVABLE_PCT:
+            raise RuntimeError(
+                f"{unresolvable_pct:.1f}% of mature forecasts could not be resolved "
+                f"(cap {MAX_UNRESOLVABLE_PCT}%). Silent cohort shrinkage is how this "
+                f"metric moved unnoticed before — refusing to report a number."
+            )
 
     if results:
         _upsert_accuracy(db, results)

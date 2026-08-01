@@ -133,3 +133,44 @@ def test_score_cohort_uses_base_price_for_the_persistence_baseline():
     records = [_record(base_price=1.00, actual_price=1.50) for _ in range(10)]
     metrics, _ = score_cohort(records)
     assert metrics["baseline_mae"] == 0.5
+
+
+from datetime import timedelta
+
+from backtest.price_resolution import smoothed_prices
+
+
+def test_both_legs_use_the_same_estimator_so_a_flat_market_scores_flat():
+    """The end-to-end symmetry property. Under the old code the base leg was a
+    3-observation median and the actual leg a single-day price, so a perfectly
+    flat market could still produce non-flat direction labels."""
+    import pandas as pd
+
+    days = [date(2026, 7, 1) + timedelta(days=i) for i in range(12)]
+    voted = pd.DataFrame(
+        {"item_id": ["ak"] * 12, "date": days, "price": [3.0] * 12}
+    )
+
+    forecast_date, target_date = date(2026, 7, 5), date(2026, 7, 8)
+    prices = smoothed_prices(voted, {("ak", forecast_date), ("ak", target_date)})
+
+    base = prices[("ak", forecast_date)]
+    actual = prices[("ak", target_date)]
+    assert direction_from_return((actual - base) / base) == "flat"
+
+
+def test_resolution_drops_rather_than_falling_back_when_a_leg_is_unresolvable():
+    """Substituting a fallback for a missing leg would reintroduce exactly the
+    asymmetry this change removes."""
+    import pandas as pd
+
+    voted = pd.DataFrame(
+        {
+            "item_id": ["ak", "ak"],
+            "date": [date(2026, 5, 1), date(2026, 7, 8)],
+            "price": [3.0, 3.0],
+        }
+    )
+    prices = smoothed_prices(voted, {("ak", date(2026, 7, 8))})
+    # Only 2 observations, spanning 68 days — beyond the cap, so unresolvable.
+    assert ("ak", date(2026, 7, 8)) not in prices
