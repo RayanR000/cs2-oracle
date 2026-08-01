@@ -860,10 +860,15 @@ def test_a_scoring_fix_lands_on_frozen_rows_without_touching_the_archive(
     all_after = next(r for r in after if r["price_tier"] is None)
     assert all_after["metrics"]["directional_accuracy"] == 0.0
 
-    # The stored row is untouched — only the derivation moved.
+    # The frozen ACTUALS are untouched — only the derivation moved...
     frozen = session.query(ForecastOutcome).filter_by(forecast_id=1).one()
-    assert frozen.direction_actual == "flat"
-    assert frozen.direction_correct == 1
+    assert frozen.base_price == pytest.approx(3.00)
+    assert frozen.actual_price == pytest.approx(3.01)
+    # ...and as of Task 8c the stored VERDICT columns follow the derivation
+    # rather than staying at their write-time values. See
+    # test_a_scoring_change_refreshes_the_stored_verdict_columns below.
+    assert frozen.direction_actual == "up"
+    assert frozen.direction_correct == 0
 
 
 def test_gate_denominator_counts_only_forecasts_requiring_resolution(
@@ -1008,3 +1013,336 @@ def test_headline_log_line_handles_fewer_than_ten_samples_without_raising(
     assert all_row["sample_count"] == 3
     assert all_row["metrics"]["directional_accuracy_ci_lower"] is None
     assert all_row["metrics"]["directional_accuracy_ci_upper"] is None
+
+
+# ---------------------------------------------------------------------------
+# Task 8c: the stored VERDICT columns are refreshed to match current scoring.
+#
+# ForecastOutcome holds two kinds of column. The ACTUALS (base_price,
+# actual_price) are frozen observations. The VERDICTS (direction_actual,
+# direction_correct, in_interval, abs_error, pct_error) are metrics derived
+# from them. Task 8b made the reported metric re-derive the verdicts every run
+# but left the stored copies write-once, so the two consumers that read them as
+# authoritative — tiered_breakdown.py and, more seriously,
+# update_bias_corrections_from_outcomes, which fits PRODUCTION predict()
+# thresholds — would silently diverge from the headline the moment scoring
+# changed. The verdicts now follow the derivation; the actuals do not move.
+# ---------------------------------------------------------------------------
+
+
+def _capture_append(monkeypatch):
+    """Stub db.parquet.append_table and record its calls.
+
+    Human ruling: append_table writes to git-tracked production data under
+    price-archive/ops/. No test may reach the real one.
+    """
+    import db.parquet as parquet_mod
+
+    calls = []
+    monkeypatch.setattr(
+        parquet_mod,
+        "append_table",
+        lambda table, rows, dedup_keys: calls.append((table, rows, dedup_keys)),
+    )
+    return calls
+
+
+def _freeze_one_flat_forecast(session, tmp_path, monkeypatch):
+    """Run 1: "ak" moves 3.00 -> 3.01 (+0.33%), inside the 0.5% flat band, so
+    a "flat" prediction is frozen as correct. Returns the archive dir."""
+    rows = [("ak", date(2026, 7, d), 3.00) for d in (3, 4, 5)]
+    rows += [("ak", date(2026, 7, d), 3.01) for d in (6, 7, 8)]
+    archive = _write_archive(tmp_path, rows)
+
+    _seed(session, 1, "ak", current_price=3.0, price_mid=3.0,
+          price_low=2.0, price_high=4.0, direction="flat")
+    session.commit()
+
+    _run_backtest(session, archive, monkeypatch)
+
+    frozen = session.query(ForecastOutcome).filter_by(forecast_id=1).one()
+    assert frozen.direction_actual == "flat"
+    assert frozen.direction_correct == 1
+    return archive
+
+
+def _actuals_snapshot(session):
+    """The three columns the refresh must never write, plus their exact
+    values, for every stored outcome."""
+    return {
+        o.forecast_id: (o.base_price, o.actual_price, o.resolved_at)
+        for o in session.query(ForecastOutcome).all()
+    }
+
+
+def test_a_scoring_change_refreshes_the_stored_verdict_columns(
+    session, tmp_path, monkeypatch
+):
+    """Test 1 of the brief. Shrink FLAT_TOLERANCE so the frozen row reclassifies
+    from "flat" to "up", run the normal path, and the STORED verdict columns
+    must now match the new derivation — while base_price, actual_price and
+    resolved_at are identical to before, compared value-for-value."""
+    from scripts import backtest_accuracy
+    import backtest.scoring as scoring
+
+    archive = _freeze_one_flat_forecast(session, tmp_path, monkeypatch)
+
+    before_row = session.query(ForecastOutcome).filter_by(forecast_id=1).one()
+    before_verdict = (
+        before_row.direction_actual, before_row.direction_correct,
+        before_row.abs_error, before_row.pct_error,
+    )
+    actuals_before = _actuals_snapshot(session)
+
+    def explode(*a, **k):
+        raise AssertionError("refreshing a verdict must not need the archive")
+
+    monkeypatch.setattr(backtest_accuracy, "load_voted_prices", explode)
+    _capture_append(monkeypatch)
+    monkeypatch.setattr(scoring, "FLAT_TOLERANCE", 0.001)
+
+    backtest_accuracy.backtest_forecasts(session, today=EVAL_DATE)
+
+    session.expire_all()
+    after = session.query(ForecastOutcome).filter_by(forecast_id=1).one()
+
+    # +0.33% is now outside the 0.1% band, so the verdict flips.
+    assert after.direction_actual == "up"
+    assert after.direction_correct == 0
+    assert (after.direction_actual, after.direction_correct) != before_verdict[:2]
+
+    # The frozen actuals did not move. Asserted by comparing values, not by
+    # reading the UPDATE statement.
+    assert _actuals_snapshot(session) == actuals_before
+
+    # ...and the derived-from-actuals magnitudes are unchanged too, because the
+    # actuals they derive from are unchanged.
+    assert after.abs_error == pytest.approx(before_verdict[2])
+    assert after.pct_error == pytest.approx(before_verdict[3])
+
+    # The archive was never consulted (explode above would have fired).
+    assert archive.exists()
+
+
+def test_the_verdict_refresh_is_idempotent(session, tmp_path, monkeypatch):
+    """Test 2 of the brief. With no scoring change, a second pass refreshes
+    zero rows and writes nothing — including nothing to the Parquet mirror."""
+    from scripts import backtest_accuracy
+    import backtest.scoring as scoring
+
+    _freeze_one_flat_forecast(session, tmp_path, monkeypatch)
+    monkeypatch.setattr(scoring, "FLAT_TOLERANCE", 0.001)
+
+    calls = _capture_append(monkeypatch)
+
+    # First pass under the new scoring: one row reclassifies.
+    assert backtest_accuracy._refresh_verdict_columns(session) == 1
+    assert [c[0] for c in calls] == ["forecast_outcomes"]
+
+    # Second pass, same scoring: nothing to do, and no write at all.
+    calls.clear()
+    assert backtest_accuracy._refresh_verdict_columns(session) == 0
+    assert calls == []
+
+    # A third pass restricted to the same ids agrees.
+    assert backtest_accuracy._refresh_verdict_columns(session, forecast_ids=[1]) == 0
+
+
+def test_the_refresh_cannot_move_the_frozen_actuals(session, tmp_path, monkeypatch):
+    """Test 3 of the brief. Corrupt every verdict column on a frozen row and
+    refresh: all five must be rewritten from the actuals, while base_price,
+    actual_price and resolved_at come back byte-identical.
+
+    Asserted on values before and after, not by inspecting the SQL — a
+    whole-row write that happened to carry the same actuals would pass a code
+    reading and fail here the moment it stopped happening to."""
+    from scripts import backtest_accuracy
+
+    _freeze_one_flat_forecast(session, tmp_path, monkeypatch)
+    _capture_append(monkeypatch)
+
+    row = session.query(ForecastOutcome).filter_by(forecast_id=1).one()
+    actuals_before = (row.base_price, row.actual_price, row.resolved_at)
+    assert actuals_before[2] is not None
+
+    row.direction_actual = "down"
+    row.direction_correct = 0
+    row.in_interval = 0
+    row.abs_error = 999.0
+    row.pct_error = 999.0
+    session.commit()
+
+    assert backtest_accuracy._refresh_verdict_columns(session) == 1
+
+    session.expire_all()
+    after = session.query(ForecastOutcome).filter_by(forecast_id=1).one()
+
+    # Every verdict column is back on the derivation...
+    assert after.direction_actual == "flat"
+    assert after.direction_correct == 1
+    assert after.in_interval == 1
+    assert after.abs_error == pytest.approx(0.01, abs=1e-4)
+    assert after.pct_error == pytest.approx(abs(3.0 - 3.01) / 3.0 * 100, rel=1e-6)
+
+    # ...and the frozen actuals are exactly what they were.
+    assert (after.base_price, after.actual_price, after.resolved_at) == actuals_before
+
+
+def test_the_refresh_updates_the_parquet_mirror_with_the_frozen_actuals_intact(
+    session, tmp_path, monkeypatch
+):
+    """Test 4 of the brief. forecast_outcomes lives in the DB *and* in
+    price-archive/ops/forecast_outcomes.parquet, and the API reads Parquet
+    first with a DB fallback (backend/AGENTS.md). A DB-only refresh would leave
+    the served copy disagreeing with the headline.
+
+    append_table dedups on forecast_id — the refreshed row replaces the stale
+    one — so the whole row is supplied, with the frozen columns carried through
+    from the DB row verbatim."""
+    from scripts import backtest_accuracy
+    import backtest.scoring as scoring
+
+    _freeze_one_flat_forecast(session, tmp_path, monkeypatch)
+    frozen = session.query(ForecastOutcome).filter_by(forecast_id=1).one()
+    base_before, actual_before = frozen.base_price, frozen.actual_price
+    resolved_before = frozen.resolved_at
+
+    calls = _capture_append(monkeypatch)
+    monkeypatch.setattr(scoring, "FLAT_TOLERANCE", 0.001)
+    assert backtest_accuracy._refresh_verdict_columns(session) == 1
+
+    assert len(calls) == 1
+    table, rows, dedup_keys = calls[0]
+    assert table == "forecast_outcomes"
+    assert dedup_keys == ["forecast_id"]
+    assert len(rows) == 1
+
+    mirrored = rows[0]
+    assert mirrored["forecast_id"] == 1
+    # The refreshed verdict reaches the served copy...
+    assert mirrored["direction_actual"] == "up"
+    assert mirrored["direction_correct"] == 0
+    # ...carrying the frozen actuals unchanged, so the replace cannot lose or
+    # move them, and resolved_at is preserved rather than reset.
+    assert mirrored["base_price"] == pytest.approx(base_before)
+    assert mirrored["actual_price"] == pytest.approx(actual_before)
+    assert mirrored["resolved_at"] == resolved_before
+    # evaluated_at means "when this verdict was last computed", so it moves.
+    assert mirrored["evaluated_at"] >= resolved_before
+
+
+def test_the_rescore_path_also_refreshes_the_stored_verdicts(
+    session, tmp_path, monkeypatch
+):
+    """--rescore is the other path that derives records from frozen rows. It
+    must refresh too, otherwise `--rescore` reports one number while the
+    columns feeding production bias correction keep another."""
+    from scripts import backtest_accuracy
+    import backtest.scoring as scoring
+
+    _freeze_one_flat_forecast(session, tmp_path, monkeypatch)
+
+    _capture_append(monkeypatch)
+    monkeypatch.setattr(scoring, "FLAT_TOLERANCE", 0.001)
+
+    def explode(*a, **k):
+        raise AssertionError("--rescore must not read the archive")
+
+    monkeypatch.setattr(backtest_accuracy, "load_voted_prices", explode)
+
+    results = backtest_accuracy.backtest_forecasts(
+        session, today=EVAL_DATE, rescore=True
+    )
+    assert next(r for r in results if r["price_tier"] is None)[
+        "metrics"]["directional_accuracy"] == 0.0
+
+    session.expire_all()
+    after = session.query(ForecastOutcome).filter_by(forecast_id=1).one()
+    assert after.direction_actual == "up"
+    assert after.direction_correct == 0
+
+
+def test_reresolve_writes_current_verdicts_so_the_refresh_is_a_no_op(
+    session, tmp_path, monkeypatch
+):
+    """--reresolve rewrites the rows wholesale from the same derivation the
+    refresh uses, so the refresh must find nothing to do rather than
+    double-writing every row it just wrote."""
+    from scripts import backtest_accuracy
+
+    archive = _freeze_one_flat_forecast(session, tmp_path, monkeypatch)
+
+    real_loader = price_resolution.load_voted_prices
+
+    def loader(archive_dir, slugs, min_date, max_date, **kwargs):
+        return real_loader(archive, slugs, min_date, max_date, **kwargs)
+
+    monkeypatch.setattr(backtest_accuracy, "load_voted_prices", loader)
+    _capture_append(monkeypatch)
+
+    calls = []
+    real_refresh = backtest_accuracy._refresh_verdict_columns
+
+    def spy(db, forecast_ids=None):
+        n = real_refresh(db, forecast_ids=forecast_ids)
+        calls.append(n)
+        return n
+
+    monkeypatch.setattr(backtest_accuracy, "_refresh_verdict_columns", spy)
+
+    backtest_accuracy.backtest_forecasts(
+        session, today=EVAL_DATE, reresolve=True
+    )
+
+    assert calls == [0]
+    assert session.query(ForecastOutcome).count() == 1
+
+
+def test_the_refresh_logs_a_non_zero_count_legibly_and_is_quiet_at_zero(
+    session, tmp_path, monkeypatch, caplog
+):
+    """Zero refreshed is the normal daily case and must not add noise; a
+    non-zero count follows a scoring change and must say so."""
+    import logging
+
+    from scripts import backtest_accuracy
+    import backtest.scoring as scoring
+
+    _freeze_one_flat_forecast(session, tmp_path, monkeypatch)
+    _capture_append(monkeypatch)
+
+    caplog.clear()
+    with caplog.at_level(logging.INFO, logger="backtest_accuracy"):
+        assert backtest_accuracy._refresh_verdict_columns(session) == 0
+    assert "Refreshed verdict columns" not in caplog.text
+
+    monkeypatch.setattr(scoring, "FLAT_TOLERANCE", 0.001)
+    caplog.clear()
+    with caplog.at_level(logging.INFO, logger="backtest_accuracy"):
+        assert backtest_accuracy._refresh_verdict_columns(session) == 1
+    assert "Refreshed verdict columns on 1 frozen outcome(s)" in caplog.text
+    assert "were NOT touched" in caplog.text
+
+
+def test_the_refresh_skips_rows_it_cannot_derive_a_verdict_for(
+    session, tmp_path, monkeypatch
+):
+    """A legacy row with no usable base leg has no derivable verdict. It must
+    be left alone rather than crashing the refresh or having its verdict
+    columns nulled out — _records_from_frozen_outcomes already logs it."""
+    from scripts import backtest_accuracy
+
+    _freeze_one_flat_forecast(session, tmp_path, monkeypatch)
+    _capture_append(monkeypatch)
+
+    row = session.query(ForecastOutcome).filter_by(forecast_id=1).one()
+    row.base_price = None
+    row.direction_actual = "down"
+    session.commit()
+
+    assert backtest_accuracy._refresh_verdict_columns(session) == 0
+
+    session.expire_all()
+    after = session.query(ForecastOutcome).filter_by(forecast_id=1).one()
+    assert after.direction_actual == "down"
+    assert after.base_price is None

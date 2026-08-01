@@ -404,14 +404,16 @@ class ItemForecaster:
         Called after a backtest run.
         """
         try:
-            # WARNING: fo.direction_actual is write-time provenance, not the
-            # authoritative verdict — the backtest derives direction from
+            # NOTE: fo.direction_actual is a derived verdict, not an
+            # observation — the reported accuracy re-derives direction from
             # base_price/actual_price on every run (see
             # backtest_accuracy._records_from_frozen_outcomes) and never reads
-            # this column. After any scoring change it goes stale until a
-            # --reresolve rewrites it, and these production predict()
-            # thresholds would then be fitted against a label the reported
-            # accuracy no longer uses.
+            # this column. It is safe to fit production predict() thresholds on
+            # because every scoring run also refreshes the stored column to
+            # match that derivation
+            # (backtest_accuracy._refresh_verdict_columns). The residual window
+            # is one run: between a scoring change and the next backtest,
+            # thresholds fitted here use the previous labelling.
             rows = self.db.execute(text("""
                 SELECT fo.horizon_days, fo.current_price, fo.predicted_price_mid,
                        fo.direction_actual

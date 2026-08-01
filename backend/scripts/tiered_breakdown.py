@@ -10,12 +10,16 @@ from sqlalchemy import text
 
 db = SessionLocal()
 try:
-    # WARNING: direction_correct / direction_actual / abs_error below are
-    # write-time provenance, not the authoritative verdict — the reported
-    # metric derives those from base_price/actual_price on every run (see
-    # backtest_accuracy._records_from_frozen_outcomes). After any scoring
-    # change these columns go stale and this breakdown will silently disagree
-    # with the headline until a --reresolve rewrites them.
+    # NOTE: direction_correct / direction_actual / abs_error below are derived
+    # verdicts, not observations — the reported metric derives those from
+    # base_price/actual_price on every run (see
+    # backtest_accuracy._records_from_frozen_outcomes). Every scoring run also
+    # refreshes the stored columns to match that derivation
+    # (backtest_accuracy._refresh_verdict_columns), so this breakdown agrees
+    # with the headline as of the last backtest run rather than going stale
+    # until a --reresolve. Note the evaluated_at window below: a refresh bumps
+    # evaluated_at on the rows it changes, so after a scoring change the
+    # reclassified rows enter this 2-day window.
     sql = """
         SELECT horizon_days, tier, n, correct,
                ROUND((dir_acc_raw * 100)::numeric, 1) AS dir_acc,

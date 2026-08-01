@@ -40,6 +40,27 @@ from backtest.scoring import (
 # cohort — that silent shrinkage is how the pre-fix metric moved unnoticed.
 MAX_UNRESOLVABLE_PCT = 10.0
 
+# SQLite's bind-parameter cap is 999; every chunked statement in this file uses
+# the same conservative batch size.
+CHUNK = 900
+
+# The verdict columns: derived from the frozen actuals, never observations in
+# their own right. Task 8c refreshes exactly these (plus evaluated_at) whenever
+# the current scoring logic disagrees with what is stored.
+VERDICT_COLUMNS = (
+    "direction_actual",
+    "direction_correct",
+    "in_interval",
+    "abs_error",
+    "pct_error",
+)
+
+# Float comparison tolerance for deciding whether a stored verdict still agrees
+# with the derived one. The derivation is deterministic over the same stored
+# doubles, so a genuine no-change run compares bit-identical; the epsilon only
+# absorbs round-tripping through the DB driver.
+_VERDICT_EPS = 1e-9
+
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
@@ -84,6 +105,161 @@ def _upsert_accuracy(db, rows):
 # ---------------------------------------------------------------------------
 # 1. Forecast backtesting
 # ---------------------------------------------------------------------------
+
+def _derive_verdict(base, actual, mid, low, high, direction_predicted):
+    """The single derivation of the verdict columns from the frozen actuals.
+
+    Every path that produces a verdict — the first resolution, the re-derived
+    scoring records, and the Task 8c refresh of the stored columns — goes
+    through this one function, so a scoring change cannot land on some of them
+    and not others. Pure: no DB, no clock, no archive.
+    """
+    abs_error = abs(mid - actual)
+    predicted_direction = direction_predicted or "flat"
+    actual_direction = direction_from_return((actual - base) / base)
+    return {
+        "direction_actual": actual_direction,
+        "direction_correct": 1 if predicted_direction == actual_direction else 0,
+        "in_interval": (
+            None if (low is None or high is None)
+            else (1 if low <= actual <= high else 0)
+        ),
+        "abs_error": abs_error,
+        # Divided by the BASE leg, not the actual. Explicit human ruling.
+        "pct_error": abs(abs_error / base) * 100,
+    }
+
+
+def _verdict_for_storage(verdict):
+    """The verdict as it is written to the forecast_outcomes columns."""
+    stored = dict(verdict)
+    stored["abs_error"] = round(stored["abs_error"], 4)
+    return stored
+
+
+def _verdicts_differ(stored_row, derived):
+    """True if any stored verdict column disagrees with *derived*."""
+    for col in VERDICT_COLUMNS:
+        old = getattr(stored_row, col)
+        new = derived[col]
+        if old is None or new is None:
+            if old is not new:
+                return True
+            continue
+        if isinstance(new, float) or isinstance(old, float):
+            if abs(float(old) - float(new)) > _VERDICT_EPS:
+                return True
+        elif old != new:
+            return True
+    return False
+
+
+# The refresh statement. The SET clause names the five verdict columns and
+# evaluated_at and NOTHING else: base_price, actual_price and resolved_at are
+# the frozen actuals plus the freeze timestamp, and this operation is
+# structurally incapable of moving them. Only --reresolve may.
+_REFRESH_VERDICTS_SQL = text("""
+    UPDATE forecast_outcomes
+       SET direction_actual = :direction_actual,
+           direction_correct = :direction_correct,
+           in_interval = :in_interval,
+           abs_error = :abs_error,
+           pct_error = :pct_error,
+           evaluated_at = :evaluated_at
+     WHERE id = :id
+""")
+
+
+def _refresh_verdict_columns(db, forecast_ids=None) -> int:
+    """Bring the stored verdict columns back in line with current scoring.
+
+    The actuals (base_price, actual_price) are frozen observations; the verdict
+    columns (direction_actual, direction_correct, in_interval, abs_error,
+    pct_error) are *metrics* derived from them. Task 8b made the reported metric
+    re-derive them every run; this makes the stored copies follow, so the two
+    remaining consumers that read them as authoritative —
+    models/forecaster.py::update_bias_corrections_from_outcomes, which fits
+    production predict() thresholds, and scripts/tiered_breakdown.py — cannot
+    silently disagree with the headline after a scoring change.
+
+    Only rows whose stored verdict actually differs are written, so a run with
+    no scoring change issues no UPDATE at all and the operation is idempotent.
+    Rows that cannot be derived (no usable base/actual/mid) are left alone;
+    _records_from_frozen_outcomes already logs them loudly.
+
+    evaluated_at is bumped on refreshed rows only. It means "when this row's
+    verdict was last computed", which is exactly what a refresh changes, and
+    leaving untouched rows alone keeps tiered_breakdown.py's
+    `evaluated_at >= NOW() - INTERVAL '2 days'` window meaning what it meant
+    before — a blanket bump would drag the whole 65k-row history into it.
+
+    Returns the number of rows refreshed.
+    """
+    from database import ForecastOutcome
+
+    if forecast_ids is None:
+        rows = db.query(ForecastOutcome).all()
+    else:
+        ids = list(forecast_ids)
+        rows = []
+        for i in range(0, len(ids), CHUNK):
+            rows.extend(
+                db.query(ForecastOutcome)
+                .filter(ForecastOutcome.forecast_id.in_(ids[i:i + CHUNK]))
+                .all()
+            )
+
+    now = datetime.now(timezone.utc).replace(tzinfo=None)
+    updates = []
+    refreshed_rows = []
+    for r in rows:
+        base, actual, mid = r.base_price, r.actual_price, r.predicted_price_mid
+        if base is None or base <= 0 or actual is None or actual <= 0 or mid is None:
+            continue
+        derived = _verdict_for_storage(_derive_verdict(
+            base, actual, mid,
+            r.predicted_price_low, r.predicted_price_high, r.direction_predicted,
+        ))
+        if not _verdicts_differ(r, derived):
+            continue
+        updates.append(dict(derived, id=r.id, evaluated_at=now))
+        refreshed_rows.append((r, derived, now))
+
+    if not updates:
+        # The normal case. Quiet on purpose — a daily run says nothing here.
+        logger.debug("  Verdict columns already match current scoring")
+        return 0
+
+    for i in range(0, len(updates), CHUNK):
+        db.execute(_REFRESH_VERDICTS_SQL, updates[i:i + CHUNK])
+    db.commit()
+
+    # The Parquet mirror is what the API actually serves (Parquet first, DB
+    # fallback — see backend/AGENTS.md), so a DB-only refresh would leave the
+    # served copy disagreeing with the headline. append_table dedups on
+    # forecast_id, i.e. the refreshed row replaces the stale one, so the whole
+    # row must be supplied. The frozen columns are carried through verbatim
+    # from the DB row, which this function has not touched.
+    mirror = []
+    for r, derived, ts in refreshed_rows:
+        row = _outcome_to_mapping(r)
+        row.update(derived)
+        row["evaluated_at"] = ts
+        row["resolved_at"] = r.resolved_at
+        mirror.append(row)
+
+    from db.parquet import append_table
+    append_table("forecast_outcomes", mirror, ["forecast_id"])
+
+    logger.info(
+        f"  Refreshed verdict columns on {len(updates):,} frozen outcome(s) to "
+        f"match current scoring (the frozen actuals were NOT touched). A "
+        f"non-zero count here means the scoring logic moved since those rows "
+        f"were last evaluated — expected right after a scoring change, and a "
+        f"bug otherwise."
+    )
+    return len(updates)
+
 
 def _store_forecast_outcomes(db, outcomes, reresolve: bool = False) -> int:
     """Persist per-forecast outcomes. Insert-only unless *reresolve*.
@@ -150,7 +326,8 @@ def _records_from_frozen_outcomes(db, min_price=0, forecast_ids=None):
     direction_correct and in_interval columns are deliberately NOT read back —
     freezing the actuals rather than the metrics is what lets a later scoring
     fix (a different flat tolerance, say) land on historical rows with no
-    archive access at all.
+    archive access at all. Those stored columns are kept in step by
+    _refresh_verdict_columns rather than being authoritative here.
 
     This is the single derivation used by every scoring path: the daily run,
     --rescore and --reresolve all score through it, so they cannot drift apart.
@@ -202,20 +379,19 @@ def _records_from_frozen_outcomes(db, min_price=0, forecast_ids=None):
             n_below_min_price += 1
             continue
 
-        low, high = r.predicted_price_low, r.predicted_price_high
-        abs_error = abs(mid - actual)
-        predicted_direction = r.direction_predicted or "flat"
-        actual_direction = direction_from_return((actual - base) / base)
+        verdict = _derive_verdict(
+            base, actual, mid,
+            r.predicted_price_low, r.predicted_price_high, r.direction_predicted,
+        )
 
         groups[(r.horizon_days, r.model_version or "unknown")].append({
-            "abs_error": abs_error,
-            # Divided by the BASE leg, not the actual. Explicit human ruling.
-            "pct_error": abs(abs_error / base) * 100,
+            "abs_error": verdict["abs_error"],
+            "pct_error": verdict["pct_error"],
             "sq_error": (mid - actual) ** 2,
-            "direction_correct": 1 if predicted_direction == actual_direction else 0,
-            "predicted_direction": predicted_direction,
-            "actual_direction": actual_direction,
-            "in_interval": None if (low is None or high is None) else (1 if low <= actual <= high else 0),
+            "direction_correct": verdict["direction_correct"],
+            "predicted_direction": r.direction_predicted or "flat",
+            "actual_direction": verdict["direction_actual"],
+            "in_interval": verdict["in_interval"],
             "confidence": r.confidence or "low",
             "base_price": base,
             "actual_price": actual,
@@ -348,6 +524,7 @@ def backtest_forecasts(db, today=None, min_price=0, reresolve=False, rescore=Fal
 
     if rescore:
         logger.info("  --rescore: scoring from frozen outcomes, archive not read")
+        _refresh_verdict_columns(db)
         groups = _records_from_frozen_outcomes(db, min_price=min_price)
         results = _score_groups(groups, today)
         if results:
@@ -463,13 +640,12 @@ def backtest_forecasts(db, today=None, min_price=0, reresolve=False, rescore=Fal
             if min_price > 0 and base < min_price:
                 continue
 
-            abs_error = abs(mid - actual)
-            actual_ret = (actual - base) / base
-            predicted_direction = f.direction or "flat"
-            actual_direction = direction_from_return(actual_ret)
-            direction_correct = 1 if predicted_direction == actual_direction else 0
-            in_interval = None if (low is None or high is None) else (1 if low <= actual <= high else 0)
-            pct_error = abs(abs_error / base) * 100
+            # Same derivation the refresh and the scoring records use, so a
+            # freshly written row is by construction already "current" and the
+            # refresh below finds nothing to do for it.
+            verdict = _verdict_for_storage(
+                _derive_verdict(base, actual, mid, low, high, f.direction)
+            )
 
             new_outcomes.append({
                 "forecast_id": f.id,
@@ -490,12 +666,12 @@ def backtest_forecasts(db, today=None, min_price=0, reresolve=False, rescore=Fal
                 "predicted_price_mid": mid,
                 "predicted_price_high": high,
                 "actual_price": actual,
-                "direction_predicted": predicted_direction,
-                "direction_actual": actual_direction,
-                "direction_correct": direction_correct,
-                "in_interval": in_interval,
-                "abs_error": round(abs_error, 4),
-                "pct_error": pct_error,
+                "direction_predicted": f.direction or "flat",
+                "direction_actual": verdict["direction_actual"],
+                "direction_correct": verdict["direction_correct"],
+                "in_interval": verdict["in_interval"],
+                "abs_error": verdict["abs_error"],
+                "pct_error": verdict["pct_error"],
                 "model_version": model_version,
             })
 
@@ -520,6 +696,12 @@ def backtest_forecasts(db, today=None, min_price=0, reresolve=False, rescore=Fal
     all_outcomes = [_outcome_to_mapping(o) for o in frozen_rows] + new_outcomes
     if all_outcomes:
         _store_forecast_outcomes(db, all_outcomes, reresolve=reresolve)
+
+    # The actuals are frozen; the verdict columns are not, because they are
+    # metrics. Bring any that the current scoring logic disagrees with back in
+    # line before scoring. Under --reresolve the rows were just rewritten from
+    # this same derivation, so this is a no-op there rather than a double write.
+    _refresh_verdict_columns(db, forecast_ids=mature_ids)
 
     # Score the persisted cohort, not the freshly resolved values. Metrics are
     # re-derived every run from the frozen base/actual, so a scoring fix still
