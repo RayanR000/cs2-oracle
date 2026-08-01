@@ -309,11 +309,13 @@ class ForecastOutcome(Base):
     # UPDATE's SET clause — only --reresolve moves them.
     #
     # Consequence for readers: these columns are safe to read as the verdict as
-    # of the last backtest run. Two places do — scripts/tiered_breakdown.py and
-    # models/forecaster.py::update_bias_corrections_from_outcomes, the latter
-    # feeding production predict() thresholds. Between a scoring change and the
-    # next backtest run they are one run stale; they no longer go permanently
-    # stale awaiting a --reresolve.
+    # of the last backtest run, and no longer go permanently stale awaiting a
+    # --reresolve. Two places read them — models/forecaster.py::
+    # update_bias_corrections_from_outcomes, which feeds production predict()
+    # thresholds and which run_backtest() invokes in the same process right
+    # after the refresh (so it sees no staleness at all), and the manual
+    # scripts/tiered_breakdown.py, which sees whatever the last backtest run
+    # left behind.
     direction_actual = Column(String(10), nullable=True)
     direction_correct = Column(Integer, nullable=False, default=0)
     in_interval = Column(Integer, nullable=True)

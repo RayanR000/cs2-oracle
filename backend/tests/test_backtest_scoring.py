@@ -1346,3 +1346,206 @@ def test_the_refresh_skips_rows_it_cannot_derive_a_verdict_for(
     after = session.query(ForecastOutcome).filter_by(forecast_id=1).one()
     assert after.direction_actual == "down"
     assert after.base_price is None
+
+
+def test_a_failed_mirror_write_leaves_the_refresh_able_to_re_converge(
+    session, tmp_path, monkeypatch
+):
+    """Fix round 1, Finding 1. Idempotence keys off a DB-vs-derived diff, so if
+    the DB were committed before the Parquet mirror was written, an
+    append_table that raised — or a process killed between the two — would
+    leave the served copy stale AND the next run computing zero differences.
+    Permanent, silent divergence, reached by a crash rather than by a scoring
+    change. It matters most on Task 9's one-off ~65k-row run, the largest and
+    most interruptible write this code will ever do.
+
+    Parquet is therefore written first. This test kills the mirror write and
+    asserts the DB was NOT advanced past it, so the retry still sees the
+    difference and converges both copies. Under the reverse order the retry
+    would return 0 and write nothing."""
+    import db.parquet as parquet_mod
+    from scripts import backtest_accuracy
+    import backtest.scoring as scoring
+
+    _freeze_one_flat_forecast(session, tmp_path, monkeypatch)
+    monkeypatch.setattr(scoring, "FLAT_TOLERANCE", 0.001)
+
+    def boom(*a, **k):
+        raise RuntimeError("parquet mirror exploded")
+
+    monkeypatch.setattr(parquet_mod, "append_table", boom)
+
+    with pytest.raises(RuntimeError, match="parquet mirror exploded"):
+        backtest_accuracy._refresh_verdict_columns(session)
+
+    # The DB did not run ahead of the mirror, so the difference still exists.
+    session.rollback()
+    session.expire_all()
+    assert session.query(ForecastOutcome).filter_by(
+        forecast_id=1).one().direction_actual == "flat"
+
+    # The retry converges both copies.
+    calls = _capture_append(monkeypatch)
+    assert backtest_accuracy._refresh_verdict_columns(session) == 1
+    assert len(calls) == 1
+    assert calls[0][1][0]["direction_actual"] == "up"
+
+    session.expire_all()
+    assert session.query(ForecastOutcome).filter_by(
+        forecast_id=1).one().direction_actual == "up"
+
+
+def test_the_refresh_streams_in_bounded_flushes_and_never_re_reads_a_row(
+    session, tmp_path, monkeypatch
+):
+    """Fix round 1, Finding 2 + the memory note. The one-off historical refresh
+    is ~65k rows: it must not materialize the whole table, must not hold every
+    update and mirror row at once, and must not issue a SELECT per row on the
+    write side (the mirror rows are snapshotted during the diff, before any
+    commit, so an expire-on-commit cannot force a re-read).
+
+    Driven with 12 forecasts, REFRESH_FLUSH lowered to 5 and the read page to
+    3: the refresh must flush in several bounded writes rather than one big
+    one, and every row must still converge. A SELECT counter caps total queries
+    well below one per row."""
+    from scripts import backtest_accuracy
+    import backtest.scoring as scoring
+    from sqlalchemy import event
+
+    rows = []
+    for i in range(12):
+        rows += [(f"ak{i}", date(2026, 7, d), 3.00) for d in (3, 4, 5)]
+        rows += [(f"ak{i}", date(2026, 7, d), 3.01) for d in (6, 7, 8)]
+        _seed(session, i + 1, f"ak{i}", current_price=3.0, price_mid=3.0,
+              price_low=2.0, price_high=4.0, direction="flat")
+    session.commit()
+    archive = _write_archive(tmp_path, rows)
+    _run_backtest(session, archive, monkeypatch)
+    assert session.query(ForecastOutcome).count() == 12
+
+    calls = _capture_append(monkeypatch)
+    monkeypatch.setattr(scoring, "FLAT_TOLERANCE", 0.001)
+    monkeypatch.setattr(backtest_accuracy, "REFRESH_FLUSH", 5)
+    # Read pages smaller than the flush size, to prove flushes land on batch
+    # boundaries and the keyset walk survives the commits in between.
+    monkeypatch.setattr(backtest_accuracy, "CHUNK", 3)
+
+    selects = []
+    conn = session.connection().engine
+
+    @event.listens_for(conn, "before_cursor_execute")
+    def count(c, cursor, statement, params, context, executemany):
+        if statement.lstrip().upper().startswith("SELECT"):
+            selects.append(statement)
+
+    try:
+        assert backtest_accuracy._refresh_verdict_columns(session) == 12
+    finally:
+        event.remove(conn, "before_cursor_execute", count)
+
+    # Flushes land on the first read-page boundary at or past REFRESH_FLUSH, so
+    # with pages of 3 and a flush size of 5 that is 6 + 6: several bounded
+    # writes, never one write of the whole table and never one write per row.
+    flushed = [len(rows_) for _, rows_, _ in calls]
+    assert flushed == [6, 6]
+    assert sum(flushed) == 12
+    assert all(n <= backtest_accuracy.REFRESH_FLUSH + backtest_accuracy.CHUNK
+               for n in flushed)
+
+    # The write side re-reads nothing. Only the keyset walk selects: 12 rows at
+    # 3 per page is 4 pages plus the terminating empty page.
+    assert len(selects) <= 6, selects
+
+    session.expire_all()
+    stored = session.query(ForecastOutcome).all()
+    assert len(stored) == 12
+    assert all(o.direction_actual == "up" for o in stored)
+    assert all(o.direction_correct == 0 for o in stored)
+    # ...and every frozen actual survived the streamed rewrite.
+    assert all(o.base_price == pytest.approx(3.00) for o in stored)
+    assert all(o.actual_price == pytest.approx(3.01) for o in stored)
+
+
+def test_the_rescore_walk_does_not_materialize_the_whole_table(
+    session, tmp_path, monkeypatch
+):
+    """The unrestricted (--rescore) read is a keyset walk over the primary key,
+    not `SELECT *` into memory. Paging at 3 rows over 12 outcomes must still
+    visit every row exactly once — the keyset is stable because the refresh
+    never writes `id`."""
+    from scripts import backtest_accuracy
+
+    rows = []
+    for i in range(12):
+        rows += [(f"ak{i}", date(2026, 7, d), 3.0) for d in range(3, 9)]
+        _seed(session, i + 1, f"ak{i}", current_price=3.0, price_mid=3.0)
+    session.commit()
+    archive = _write_archive(tmp_path, rows)
+    _run_backtest(session, archive, monkeypatch)
+
+    seen = []
+    for batch in backtest_accuracy._iter_outcome_rows(session, batch=3):
+        assert len(batch) <= 3
+        seen.extend(r.forecast_id for r in batch)
+
+    assert sorted(seen) == list(range(1, 13))
+    assert len(seen) == len(set(seen))
+
+
+def test_the_refreshed_mirror_row_replaces_the_stale_one_in_a_real_parquet_file(
+    session, tmp_path, monkeypatch
+):
+    """A round trip through the REAL append_table, with the ops directory
+    redirected into tmp_path — the git-tracked price-archive/ops/ is never
+    touched.
+
+    Two things this catches that a stubbed append_table cannot. First, the
+    refreshed row must REPLACE the stale one on the forecast_id dedup key, not
+    append a second row — Task 9 rewrites ~65k rows and a duplicate-per-row
+    mirror would be discovered in production. Second, the mirror row's column
+    types must match what the insert path wrote: append_table intersects the
+    new frame's columns with the file's, so a column with a drifted type (or a
+    missing column) corrupts or silently drops data for the whole file."""
+    import db.parquet as parquet_mod
+    from scripts import backtest_accuracy
+    import backtest.scoring as scoring
+
+    real_append = parquet_mod.append_table
+
+    _freeze_one_flat_forecast(session, tmp_path, monkeypatch)
+
+    ops = tmp_path / "ops"
+    monkeypatch.setattr(parquet_mod, "OPS_DIR", ops)
+    monkeypatch.setattr(parquet_mod, "append_table", real_append)
+
+    # Seed the mirror exactly as the insert path does: the frozen row, with the
+    # write-time verdict on it.
+    frozen = session.query(ForecastOutcome).filter_by(forecast_id=1).one()
+    seed_row = backtest_accuracy._outcome_to_mapping(frozen)
+    seed_row["evaluated_at"] = frozen.evaluated_at
+    seed_row["resolved_at"] = frozen.resolved_at
+    real_append("forecast_outcomes", [seed_row], ["forecast_id"])
+
+    stored = parquet_mod.read_table("forecast_outcomes")
+    assert len(stored) == 1
+    assert stored.iloc[0]["direction_actual"] == "flat"
+
+    monkeypatch.setattr(scoring, "FLAT_TOLERANCE", 0.001)
+    assert backtest_accuracy._refresh_verdict_columns(session) == 1
+
+    stored = parquet_mod.read_table("forecast_outcomes")
+    # Replaced, not appended.
+    assert len(stored) == 1
+    row = stored.iloc[0]
+    assert row["direction_actual"] == "up"
+    assert row["direction_correct"] == 0
+    # The frozen actuals came through the round trip intact...
+    assert row["base_price"] == pytest.approx(3.00)
+    assert row["actual_price"] == pytest.approx(3.01)
+    # ...and the date/datetime columns did not drift to strings, which is what
+    # would quietly poison the schema of the real 65k-row file.
+    assert set(stored.columns) == set(seed_row)
+    assert pd.api.types.is_datetime64_any_dtype(stored["resolved_at"])
+    assert pd.api.types.is_datetime64_any_dtype(stored["evaluated_at"])
+    assert pd.api.types.is_datetime64_any_dtype(stored["target_date"])
+    assert not (tmp_path.parent / "price-archive").exists()

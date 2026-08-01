@@ -22,7 +22,7 @@ from collections import defaultdict
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from database import SessionLocal, PredictionAccuracy
-from sqlalchemy import bindparam, text
+from sqlalchemy import bindparam, select, text
 from backtest.price_resolution import load_voted_prices, smoothed_prices
 from backtest.scoring import (
     FLAT_TOLERANCE,
@@ -170,6 +170,92 @@ _REFRESH_VERDICTS_SQL = text("""
 """)
 
 
+# How many refreshed rows accumulate before they are flushed to Parquet and the
+# DB. Bounds peak memory on the one-off historical refresh (~65k rows) without
+# rewriting the whole Parquet file once per read page — append_table rewrites
+# the file wholesale, so the flush wants to be much coarser than the read and
+# UPDATE batching.
+REFRESH_FLUSH = 10_000
+
+
+def _iter_outcome_rows(db, forecast_ids=None, batch=None):
+    """Yield pages of at most *batch* forecast_outcomes rows.
+
+    Core selects over the mapped table, NOT ORM entities. Deliberate on both
+    counts: plain Rows have no identity map to grow across a 65k-row refresh,
+    and — unlike ORM instances under SessionLocal's default
+    expire_on_commit=True — they are not expired by the commits this walk
+    interleaves with, so nothing read from them afterwards can fire a per-row
+    SELECT. Core rather than raw text() because the table's column types come
+    with it: on SQLite a raw text() SELECT hands back dates and datetimes as
+    plain strings, which would then be written into the Parquet mirror as
+    VARCHAR against the existing TIMESTAMP columns.
+
+    With no id restriction the table is walked by keyset pagination on the
+    primary key rather than materialized whole — --rescore covers every row
+    ever resolved. The refresh never writes `id`, so the keyset is stable
+    across the commits that happen mid-walk.
+    """
+    from database import ForecastOutcome
+
+    tbl = ForecastOutcome.__table__
+    batch = batch or CHUNK
+
+    if forecast_ids is None:
+        last_id = -1
+        while True:
+            rows = db.execute(
+                select(tbl).where(tbl.c.id > last_id)
+                .order_by(tbl.c.id).limit(batch)
+            ).fetchall()
+            if not rows:
+                return
+            last_id = rows[-1].id
+            yield rows
+            if len(rows) < batch:
+                return
+    else:
+        ids = list(forecast_ids)
+        for i in range(0, len(ids), batch):
+            rows = db.execute(
+                select(tbl).where(tbl.c.forecast_id.in_(ids[i:i + batch]))
+            ).fetchall()
+            if rows:
+                yield rows
+
+
+def _flush_verdict_refresh(db, updates, mirror):
+    """Write one batch of refreshed verdicts to the Parquet mirror, then the DB.
+
+    ORDER IS LOAD-BEARING: Parquet first, DB commit second.
+
+    Idempotence keys off a DB-vs-derived diff. Under the reverse order, an
+    append_table that raised — or a process killed between the commit and the
+    write — would leave the DB refreshed and the served Parquet copy stale, and
+    the *next* run would compute zero differences, issue no write, and never
+    re-converge. That is the same "served copy disagrees with the headline"
+    failure this function exists to close, reached through a crash instead of a
+    scoring change, and it would be silent and permanent.
+
+    Written first, the worst case is a mirror that is briefly AHEAD of the DB:
+    the DB still holds the old verdict, so the next run recomputes the same
+    difference and rewrites both. Being ahead is benign in content, too — the
+    mirror would hold exactly the verdict the headline already reports, since
+    the reported metric is derived from the frozen actuals and never read from
+    these columns.
+
+    append_table dedups on forecast_id, so the refreshed row REPLACES the stale
+    one and the whole row must be supplied; re-writing the same row on a retry
+    is a replace, not a duplicate.
+    """
+    from db.parquet import append_table
+    append_table("forecast_outcomes", mirror, ["forecast_id"])
+
+    for i in range(0, len(updates), CHUNK):
+        db.execute(_REFRESH_VERDICTS_SQL, updates[i:i + CHUNK])
+    db.commit()
+
+
 def _refresh_verdict_columns(db, forecast_ids=None) -> int:
     """Bring the stored verdict columns back in line with current scoring.
 
@@ -193,72 +279,65 @@ def _refresh_verdict_columns(db, forecast_ids=None) -> int:
     `evaluated_at >= NOW() - INTERVAL '2 days'` window meaning what it meant
     before — a blanket bump would drag the whole 65k-row history into it.
 
+    Work is streamed in batches: rows are read by keyset pages, and the
+    refreshed ones accumulate only until REFRESH_FLUSH before being written and
+    committed. Nothing proportional to the whole table is held at once, and the
+    mirror row for each refreshed row is snapshotted into a plain dict at the
+    moment it is diffed — before any commit — so the flush cannot come back to
+    re-read it.
+
     Returns the number of rows refreshed.
     """
-    from database import ForecastOutcome
-
-    if forecast_ids is None:
-        rows = db.query(ForecastOutcome).all()
-    else:
-        ids = list(forecast_ids)
-        rows = []
-        for i in range(0, len(ids), CHUNK):
-            rows.extend(
-                db.query(ForecastOutcome)
-                .filter(ForecastOutcome.forecast_id.in_(ids[i:i + CHUNK]))
-                .all()
-            )
-
     now = datetime.now(timezone.utc).replace(tzinfo=None)
-    updates = []
-    refreshed_rows = []
-    for r in rows:
-        base, actual, mid = r.base_price, r.actual_price, r.predicted_price_mid
-        if base is None or base <= 0 or actual is None or actual <= 0 or mid is None:
-            continue
-        derived = _verdict_for_storage(_derive_verdict(
-            base, actual, mid,
-            r.predicted_price_low, r.predicted_price_high, r.direction_predicted,
-        ))
-        if not _verdicts_differ(r, derived):
-            continue
-        updates.append(dict(derived, id=r.id, evaluated_at=now))
-        refreshed_rows.append((r, derived, now))
+    updates, mirror = [], []
+    total = 0
 
-    if not updates:
+    for batch in _iter_outcome_rows(db, forecast_ids):
+        for r in batch:
+            base, actual, mid = r.base_price, r.actual_price, r.predicted_price_mid
+            if base is None or base <= 0 or actual is None or actual <= 0 or mid is None:
+                continue
+            derived = _verdict_for_storage(_derive_verdict(
+                base, actual, mid,
+                r.predicted_price_low, r.predicted_price_high, r.direction_predicted,
+            ))
+            if not _verdicts_differ(r, derived):
+                continue
+
+            updates.append(dict(derived, id=r.id, evaluated_at=now))
+            # The mirror row is built HERE, from the row already in hand. The
+            # frozen columns are carried through verbatim — this function does
+            # not touch them — and building it now rather than after the commit
+            # is what keeps the write side free of a per-row re-read.
+            mirror_row = _outcome_to_mapping(r)
+            mirror_row.update(derived)
+            mirror_row["evaluated_at"] = now
+            mirror_row["resolved_at"] = r.resolved_at
+            mirror.append(mirror_row)
+
+        # Flush only on a batch boundary, never mid-batch.
+        if len(updates) >= REFRESH_FLUSH:
+            _flush_verdict_refresh(db, updates, mirror)
+            total += len(updates)
+            updates, mirror = [], []
+
+    if updates:
+        _flush_verdict_refresh(db, updates, mirror)
+        total += len(updates)
+
+    if not total:
         # The normal case. Quiet on purpose — a daily run says nothing here.
         logger.debug("  Verdict columns already match current scoring")
         return 0
 
-    for i in range(0, len(updates), CHUNK):
-        db.execute(_REFRESH_VERDICTS_SQL, updates[i:i + CHUNK])
-    db.commit()
-
-    # The Parquet mirror is what the API actually serves (Parquet first, DB
-    # fallback — see backend/AGENTS.md), so a DB-only refresh would leave the
-    # served copy disagreeing with the headline. append_table dedups on
-    # forecast_id, i.e. the refreshed row replaces the stale one, so the whole
-    # row must be supplied. The frozen columns are carried through verbatim
-    # from the DB row, which this function has not touched.
-    mirror = []
-    for r, derived, ts in refreshed_rows:
-        row = _outcome_to_mapping(r)
-        row.update(derived)
-        row["evaluated_at"] = ts
-        row["resolved_at"] = r.resolved_at
-        mirror.append(row)
-
-    from db.parquet import append_table
-    append_table("forecast_outcomes", mirror, ["forecast_id"])
-
     logger.info(
-        f"  Refreshed verdict columns on {len(updates):,} frozen outcome(s) to "
+        f"  Refreshed verdict columns on {total:,} frozen outcome(s) to "
         f"match current scoring (the frozen actuals were NOT touched). A "
         f"non-zero count here means the scoring logic moved since those rows "
         f"were last evaluated — expected right after a scoring change, and a "
         f"bug otherwise."
     )
-    return len(updates)
+    return total
 
 
 def _store_forecast_outcomes(db, outcomes, reresolve: bool = False) -> int:
