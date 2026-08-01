@@ -89,6 +89,25 @@ def test_items_are_independent():
     assert out[("m4", date(2026, 7, 2))] == 50.0
 
 
+def test_span_is_measured_across_the_window_not_from_the_anchor():
+    """The span check measures from the oldest to newest observation in the
+    selected window, not from the anchor to the oldest observation. This matters
+    when the anchor has no exact observation and sits well after the window.
+    Observations tightly clustered within 2 days should resolve even if the
+    anchor is 7+ days later."""
+    rows = [
+        ("ak", date(2026, 7, 1), 1.0),
+        ("ak", date(2026, 7, 2), 2.0),
+        ("ak", date(2026, 7, 3), 3.0),
+    ]
+    # Anchor on 07-10 has no observation; selected window is 07-01 to 07-03 (2d span).
+    # Correct: span = 07-03 - 07-01 = 2d < 7d cap → resolves.
+    # Incorrect: span = 07-10 - 07-01 = 9d > 7d cap → unresolvable.
+    out = smoothed_prices(_frame(rows), {("ak", date(2026, 7, 10))})
+    assert ("ak", date(2026, 7, 10)) in out
+    assert out[("ak", date(2026, 7, 10))] == 2.0  # median(1.0, 2.0, 3.0)
+
+
 def test_constants_match_the_codebase_staleness_convention():
     from collectors.pipeline import FALLBACK_MAX_AGE_DAYS
 

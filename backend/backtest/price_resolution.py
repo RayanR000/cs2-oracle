@@ -17,13 +17,17 @@ from datetime import date
 
 import pandas as pd
 
+from collectors.pipeline import FALLBACK_MAX_AGE_DAYS
+
 # Mirrors ItemForecaster.predict()'s tail(3) median (forecaster.py:3513).
 SMOOTH_WINDOW = 3
 
 # The 3 observations must lie within this many calendar days of each other.
-# Matches collectors.pipeline.FALLBACK_MAX_AGE_DAYS so the codebase has one
-# staleness convention. Measured cost: ~0.74% of item-days.
-MAX_WINDOW_SPAN_DAYS = 7
+# Derived from collectors.pipeline.FALLBACK_MAX_AGE_DAYS to ensure a single
+# staleness convention across the codebase. If an operator overrides
+# FALLBACK_MAX_AGE_DAYS via environment variable, both sides (backtest and
+# production) will use the same value. Measured cost: ~0.74% of item-days.
+MAX_WINDOW_SPAN_DAYS = FALLBACK_MAX_AGE_DAYS
 
 
 def smoothed_prices(
