@@ -246,6 +246,9 @@ class PredictionAccuracy(Base):
     prediction_type = Column(String(50), nullable=False, index=True)
     evaluation_date = Column(Date, nullable=False, index=True)
     horizon_days = Column(Integer, nullable=True)
+    # Price tier of the cohort (0 = <$1 ... 4 = >=$100), or NULL for the
+    # all-tiers aggregate row.
+    price_tier = Column(Integer, nullable=True)
     model_version = Column(String(50), nullable=True)
     evaluation_window_days = Column(Integer, nullable=True)
     sample_count = Column(Integer, nullable=False, default=0)
@@ -279,6 +282,10 @@ class ForecastOutcome(Base):
     predicted_price_mid = Column(Float, nullable=False)
     predicted_price_high = Column(Float, nullable=True)
     actual_price = Column(Float, nullable=False)
+    # The forecast-time leg of actual_ret, resolved by the backtest with the
+    # same estimator as actual_price. Distinct from current_price, which is
+    # whatever the serving run happened to write and is no longer scored on.
+    base_price = Column(Float, nullable=True)
     direction_predicted = Column(String(10), nullable=True)
     direction_actual = Column(String(10), nullable=True)
     direction_correct = Column(Integer, nullable=False, default=0)
@@ -287,6 +294,9 @@ class ForecastOutcome(Base):
     pct_error = Column(Float, nullable=True)
     model_version = Column(String(50), nullable=True)
     evaluated_at = Column(DateTime, nullable=False, default=utcnow_naive)
+    # Set once, when the outcome is first resolved. base_price and
+    # actual_price are frozen from that moment; only --reresolve moves them.
+    resolved_at = Column(DateTime, nullable=True)
 
     __table_args__ = (
         Index("idx_outcome_forecast_id", "forecast_id"),
