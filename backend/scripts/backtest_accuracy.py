@@ -22,7 +22,7 @@ from collections import defaultdict
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from database import SessionLocal, PredictionAccuracy
-from sqlalchemy import text
+from sqlalchemy import bindparam, text
 from backtest.price_resolution import load_voted_prices, smoothed_prices
 from backtest.scoring import (
     FLAT_TOLERANCE,
@@ -158,30 +158,48 @@ def _records_from_frozen_outcomes(db, min_price=0, forecast_ids=None):
     `confidence` is not on ForecastOutcome, so it is joined back from
     item_forecasts.
 
-    forecast_ids: optional restriction to a set of forecast ids. Applied in
-        Python rather than as a SQL IN list — the mature cohort runs to
-        thousands of ids, past the SQLite bind-parameter limit.
+    forecast_ids: optional restriction to a set of forecast ids, applied as a
+        chunked SQL IN list (900 per batch, under the SQLite bind-parameter cap).
+
+    Rows that cannot be scored — a missing or non-positive base_price or
+    actual_price, or a missing predicted_price_mid — are dropped, but never
+    silently: they are counted and logged. A frozen row is no longer re-resolved
+    from the archive each day, so an unusable one would otherwise vanish from
+    both the metric and the unresolvable gate permanently, which is precisely
+    the silent cohort shrinkage this plan exists to eliminate. Deliberately a
+    log and not a raise — legacy rows predate the freeze and must not block the
+    backfill.
     """
-    rows = db.execute(text("""
+    select_sql = """
         SELECT o.forecast_id, o.item_id, o.horizon_days, o.model_version,
                o.base_price, o.actual_price, o.predicted_price_low,
                o.predicted_price_mid, o.predicted_price_high,
                o.direction_predicted, f.confidence
         FROM forecast_outcomes o
         LEFT JOIN item_forecasts f ON f.id = o.forecast_id
-        WHERE o.base_price IS NOT NULL AND o.base_price > 0
-    """)).fetchall()
+    """
+    if forecast_ids is None:
+        rows = db.execute(text(select_sql)).fetchall()
+    else:
+        stmt = text(select_sql + " WHERE o.forecast_id IN :ids").bindparams(
+            bindparam("ids", expanding=True)
+        )
+        ids = list(forecast_ids)
+        rows = []
+        for i in range(0, len(ids), 900):
+            rows.extend(db.execute(stmt, {"ids": ids[i:i + 900]}).fetchall())
 
-    wanted = None if forecast_ids is None else set(forecast_ids)
+    n_unusable = 0
+    n_below_min_price = 0
 
     groups = defaultdict(list)
     for r in rows:
-        if wanted is not None and r.forecast_id not in wanted:
-            continue
         base, actual, mid = r.base_price, r.actual_price, r.predicted_price_mid
-        if actual is None or actual <= 0 or mid is None:
+        if base is None or base <= 0 or actual is None or actual <= 0 or mid is None:
+            n_unusable += 1
             continue
         if min_price > 0 and base < min_price:
+            n_below_min_price += 1
             continue
 
         low, high = r.predicted_price_low, r.predicted_price_high
@@ -204,6 +222,25 @@ def _records_from_frozen_outcomes(db, min_price=0, forecast_ids=None):
             "price_tier": price_tier(base),
             "item_id": r.item_id,
         })
+
+    n_scored = sum(len(v) for v in groups.values())
+    logger.info(
+        f"  Frozen outcomes: {n_scored:,} scored of {len(rows):,} considered"
+    )
+    if n_below_min_price:
+        logger.info(
+            f"  {n_below_min_price:,} frozen outcome(s) below --min-price ${min_price:.2f}"
+        )
+    if n_unusable:
+        # Loud on purpose. These rows are re-resolved by nothing and counted by
+        # no gate — without this line a shrinking scored cohort is invisible.
+        logger.warning(
+            f"  {n_unusable:,} frozen outcome(s) UNUSABLE and dropped from scoring "
+            f"(base_price/actual_price missing or non-positive, or no "
+            f"predicted_price_mid). They are frozen, so they are never "
+            f"re-resolved and never counted by the unresolvable gate. "
+            f"Re-resolve them with --reresolve to bring them back into the metric."
+        )
     return groups
 
 

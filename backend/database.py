@@ -291,6 +291,25 @@ class ForecastOutcome(Base):
     # whatever the serving run happened to write and is no longer scored on.
     base_price = Column(Float, nullable=True)
     direction_predicted = Column(String(10), nullable=True)
+    # --- WRITE-TIME PROVENANCE, NOT THE AUTHORITATIVE VERDICT ---------------
+    # direction_actual, direction_correct, in_interval, abs_error and pct_error
+    # record what the scoring rules said at the moment the row was resolved.
+    # They are NOT the number the backtest reports. The authoritative values are
+    # DERIVED on every run from base_price/actual_price plus the prediction legs
+    # by scripts/backtest_accuracy.py::_records_from_frozen_outcomes, which
+    # deliberately does not read these columns.
+    #
+    # That is the whole point of the freeze: freeze the actuals, not the
+    # metrics, so a later scoring change (a different FLAT_TOLERANCE, a
+    # different interval rule) lands on historical rows with no archive access.
+    # The consequence is that these columns GO STALE relative to the reported
+    # metric after any such change, until a --reresolve rewrites them.
+    #
+    # Anything that reads them as the verdict will silently disagree with the
+    # headline. Two places still do — scripts/tiered_breakdown.py and
+    # models/forecaster.py::update_bias_corrections_from_outcomes, the latter
+    # feeding production predict() thresholds. Both are flagged in place; moving
+    # them onto the derivation is a deliberately deferred decision.
     direction_actual = Column(String(10), nullable=True)
     direction_correct = Column(Integer, nullable=False, default=0)
     in_interval = Column(Integer, nullable=True)

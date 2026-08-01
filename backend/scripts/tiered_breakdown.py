@@ -10,6 +10,12 @@ from sqlalchemy import text
 
 db = SessionLocal()
 try:
+    # WARNING: direction_correct / direction_actual / abs_error below are
+    # write-time provenance, not the authoritative verdict — the reported
+    # metric derives those from base_price/actual_price on every run (see
+    # backtest_accuracy._records_from_frozen_outcomes). After any scoring
+    # change these columns go stale and this breakdown will silently disagree
+    # with the headline until a --reresolve rewrites them.
     sql = """
         SELECT horizon_days, tier, n, correct,
                ROUND((dir_acc_raw * 100)::numeric, 1) AS dir_acc,

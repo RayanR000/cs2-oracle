@@ -901,6 +901,88 @@ def test_gate_denominator_counts_only_forecasts_requiring_resolution(
     assert session.query(ForecastOutcome).count() == 20
 
 
+def test_unusable_frozen_rows_are_counted_and_logged_not_swallowed(
+    session, tmp_path, monkeypatch, caplog
+):
+    """A frozen row with no usable base_price is dropped from scoring — and
+    because it is frozen it is never re-resolved and never reaches the
+    unresolvable gate either. That combination is invisible cohort shrinkage,
+    the exact failure mode this plan exists to eliminate, so the drop must be
+    counted and logged loudly rather than swallowed.
+
+    Deliberately a log and not a raise: legacy rows predate the freeze and must
+    not block Task 9's backfill."""
+    import logging
+
+    from scripts import backtest_accuracy
+
+    rows = [("ak", date(2026, 7, d), 3.0) for d in (3, 4, 5)]
+    rows += [("ak", date(2026, 7, d), 3.3) for d in (6, 7, 8)]
+    rows += [("awp", date(2026, 7, d), 10.0) for d in (3, 4, 5, 6, 7, 8)]
+    archive = _write_archive(tmp_path, rows)
+
+    _seed(session, 1, "ak", current_price=3.0, price_mid=3.6,
+          price_low=3.0, price_high=4.0, direction="up")
+    _seed(session, 2, "awp", current_price=10.0, price_mid=10.1,
+          price_low=9.0, price_high=11.0, direction="flat")
+    session.commit()
+
+    _run_backtest(session, archive, monkeypatch)
+    assert session.query(ForecastOutcome).count() == 2
+
+    # A legacy-shaped row: resolved once, but with no usable base leg.
+    stale = session.query(ForecastOutcome).filter_by(forecast_id=2).one()
+    stale.base_price = None
+    session.commit()
+
+    caplog.clear()
+    with caplog.at_level(logging.INFO, logger="backtest_accuracy"):
+        after = _run_backtest(session, archive, monkeypatch)
+
+    # Dropped from the metric...
+    assert next(r for r in after if r["price_tier"] is None)["sample_count"] == 1
+    # ...but not from the run's output.
+    assert "1 scored of 2 considered" in caplog.text
+    unusable = [
+        r for r in caplog.records
+        if "UNUSABLE" in r.message and r.levelno >= logging.WARNING
+    ]
+    assert len(unusable) == 1
+    assert "1 frozen outcome(s) UNUSABLE" in unusable[0].message
+
+    # Visibility, not enforcement — the run still reports a number.
+    assert backtest_accuracy.MAX_UNRESOLVABLE_PCT == 10.0
+
+
+def test_frozen_outcome_query_is_restricted_in_sql_not_in_python(
+    session, tmp_path, monkeypatch
+):
+    """The forecast_ids restriction must be a chunked SQL IN list, not a full
+    table scan filtered afterwards — forecast_outcomes is the largest table in
+    the daily path."""
+    from scripts import backtest_accuracy
+
+    rows = [("ak", date(2026, 7, d), 3.0) for d in (3, 4, 5)]
+    rows += [("ak", date(2026, 7, d), 3.3) for d in (6, 7, 8)]
+    archive = _write_archive(tmp_path, rows)
+    _seed(session, 1, "ak", current_price=3.0, price_mid=3.6,
+          price_low=3.0, price_high=4.0, direction="up")
+    session.commit()
+    _run_backtest(session, archive, monkeypatch)
+
+    groups = backtest_accuracy._records_from_frozen_outcomes(session, forecast_ids=[])
+    assert groups == {}
+
+    groups = backtest_accuracy._records_from_frozen_outcomes(session, forecast_ids=[1])
+    assert sum(len(v) for v in groups.values()) == 1
+
+    # 2,000 ids is past the SQLite 999-parameter cap; the chunking must hold.
+    groups = backtest_accuracy._records_from_frozen_outcomes(
+        session, forecast_ids=list(range(1, 2001))
+    )
+    assert sum(len(v) for v in groups.values()) == 1
+
+
 def test_headline_log_line_handles_fewer_than_ten_samples_without_raising(
     session, tmp_path, monkeypatch
 ):
