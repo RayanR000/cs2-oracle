@@ -368,6 +368,78 @@ def test_unresolvable_forecasts_count_toward_the_gate_denominator(
     assert backtest_accuracy.MAX_UNRESOLVABLE_PCT == 10.0
 
 
+def test_resolution_is_insert_only(session, monkeypatch):
+    import scripts.backtest_accuracy as bt
+    import db.parquet as parquet_mod
+
+    # Human ruling: append_table writes to git-tracked production data
+    # (price-archive/ops/forecast_outcomes.parquet). Never let a test touch it.
+    monkeypatch.setattr(parquet_mod, "append_table", lambda *a, **k: None)
+
+    outcome = {
+        "forecast_id": 7,
+        "item_id": 1,
+        "forecast_date": date(2026, 7, 1),
+        "horizon_days": 3,
+        "target_date": date(2026, 7, 4),
+        "current_price": 1.0,
+        "base_price": 1.0,
+        "predicted_price_low": 0.9,
+        "predicted_price_mid": 1.1,
+        "predicted_price_high": 1.3,
+        "actual_price": 1.2,
+        "direction_predicted": "up",
+        "direction_actual": "up",
+        "direction_correct": 1,
+        "in_interval": 1,
+        "abs_error": 0.1,
+        "pct_error": 10.0,
+        "model_version": "lgbm-v3-regime",
+    }
+    assert bt._store_forecast_outcomes(session, [dict(outcome)]) == 1
+
+    # The archive is revised: the same forecast now resolves to a different
+    # actual. Freezing means the stored row does not move.
+    revised = dict(outcome, actual_price=99.0, direction_actual="down", direction_correct=0)
+    assert bt._store_forecast_outcomes(session, [revised]) == 0
+
+    stored = session.query(ForecastOutcome).filter_by(forecast_id=7).one()
+    assert stored.actual_price == 1.2
+    assert stored.direction_correct == 1
+    assert stored.resolved_at is not None
+
+
+def test_reresolve_overrides_the_freeze(session, monkeypatch):
+    import scripts.backtest_accuracy as bt
+    import db.parquet as parquet_mod
+
+    monkeypatch.setattr(parquet_mod, "append_table", lambda *a, **k: None)
+
+    outcome = {
+        "forecast_id": 8,
+        "item_id": 1,
+        "forecast_date": date(2026, 7, 1),
+        "horizon_days": 3,
+        "target_date": date(2026, 7, 4),
+        "current_price": 1.0,
+        "base_price": 1.0,
+        "predicted_price_mid": 1.1,
+        "actual_price": 1.2,
+        "direction_predicted": "up",
+        "direction_actual": "up",
+        "direction_correct": 1,
+        "in_interval": 1,
+        "abs_error": 0.1,
+        "pct_error": 10.0,
+        "model_version": "lgbm-v3-regime",
+    }
+    bt._store_forecast_outcomes(session, [dict(outcome)])
+    revised = dict(outcome, actual_price=99.0)
+    assert bt._store_forecast_outcomes(session, [revised], reresolve=True) == 1
+
+    assert session.query(ForecastOutcome).filter_by(forecast_id=8).one().actual_price == 99.0
+
+
 def test_forecasts_with_no_slug_mapping_count_toward_the_gate(
     session, tmp_path, monkeypatch
 ):

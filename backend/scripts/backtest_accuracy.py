@@ -7,8 +7,9 @@ Analysis type:
   - forecast:  ML price forecasts (7d / 30d horizons) from live DB
 
 Usage:
-    python scripts/backtest_accuracy.py
-    python scripts/backtest_accuracy.py --type forecast
+    python scripts/backtest_accuracy.py                  # resolve new + score
+    python scripts/backtest_accuracy.py --rescore        # score frozen only
+    python scripts/backtest_accuracy.py --reresolve      # re-read the archive
 """
 
 import sys
@@ -78,50 +79,103 @@ def _upsert_accuracy(db, rows):
 # 1. Forecast backtesting
 # ---------------------------------------------------------------------------
 
-def _store_forecast_outcomes(db, outcomes):
-    """Bulk insert per-forecast outcome records.
+def _store_forecast_outcomes(db, outcomes, reresolve: bool = False) -> int:
+    """Persist per-forecast outcomes. Insert-only unless *reresolve*.
 
-    Replaces any existing outcome for the same forecast_id (so re-running
-    backtest updates rather than duplicates).
+    Resolved actuals are frozen: a forecast_id that already has a row keeps
+    its base_price and actual_price forever. Re-running the backtest after the
+    archive gains source rows for an old target date must not rewrite history
+    — that silent rewriting is why the same 5,512 forecasts scored 61.76% on
+    07-18 and 33.74% on 07-19. Metrics stay derived and are recomputed every
+    run, so a *scoring* fix still lands without --reresolve.
     """
     if not outcomes:
-        return
+        return 0
     from database import ForecastOutcome
 
     all_fids = [o["forecast_id"] for o in outcomes]
     existing_ids = set()
     for i in range(0, len(all_fids), 900):
-        batch = all_fids[i:i+900]
+        batch = all_fids[i:i + 900]
         rows = db.query(ForecastOutcome.forecast_id).filter(
             ForecastOutcome.forecast_id.in_(batch)
         ).all()
         existing_ids.update(r[0] for r in rows)
 
-    evaluated_at = datetime.now(timezone.utc).replace(tzinfo=None)
+    if reresolve:
+        stale = list(existing_ids)
+        for i in range(0, len(stale), 900):
+            batch = stale[i:i + 900]
+            db.query(ForecastOutcome).filter(
+                ForecastOutcome.forecast_id.in_(batch)
+            ).delete(synchronize_session=False)
+        to_write = outcomes
+    else:
+        to_write = [o for o in outcomes if o["forecast_id"] not in existing_ids]
 
-    # Delete existing records for these forecast_ids in batches (SQLite caps
-    # bound variables at 999), then bulk-insert everything — replaces per-row
-    # update loop (27k queries → a handful).
-    existing_ids = list(existing_ids)
-    for i in range(0, len(existing_ids), 900):
-        batch = existing_ids[i:i+900]
-        db.query(ForecastOutcome).filter(
-            ForecastOutcome.forecast_id.in_(batch)
-        ).delete(synchronize_session=False)
+    if not to_write:
+        db.commit()
+        logger.info(f"  All {len(outcomes):,} outcomes already resolved (frozen)")
+        return 0
 
-    for o in outcomes:
-        o["evaluated_at"] = evaluated_at
-    db.bulk_insert_mappings(ForecastOutcome, outcomes)
+    resolved_at = datetime.now(timezone.utc).replace(tzinfo=None)
+    for o in to_write:
+        o["evaluated_at"] = resolved_at
+        o["resolved_at"] = resolved_at
 
+    db.bulk_insert_mappings(ForecastOutcome, to_write)
     db.commit()
 
     from db.parquet import append_table
-    append_table("forecast_outcomes", outcomes, ["forecast_id"])
+    append_table("forecast_outcomes", to_write, ["forecast_id"])
 
-    logger.info(f"  Stored {len(outcomes)} forecast outcome records ({len(existing_ids)} replaced, {len(outcomes) - len(existing_ids)} new)")
+    logger.info(
+        f"  Resolved {len(to_write):,} new outcomes "
+        f"({len(outcomes) - len(to_write):,} already frozen)"
+    )
+    return len(to_write)
 
 
-def backtest_forecasts(db, today=None, min_price=0):
+def _records_from_frozen_outcomes(db, min_price=0):
+    """Rebuild scoring records from stored outcomes, without the archive.
+
+    `confidence` is not on ForecastOutcome, so it is joined back from
+    item_forecasts.
+    """
+    rows = db.execute(text("""
+        SELECT o.forecast_id, o.item_id, o.horizon_days, o.model_version,
+               o.base_price, o.actual_price, o.predicted_price_low,
+               o.predicted_price_mid, o.predicted_price_high,
+               o.direction_predicted, o.direction_actual, o.direction_correct,
+               o.in_interval, f.confidence
+        FROM forecast_outcomes o
+        LEFT JOIN item_forecasts f ON f.id = o.forecast_id
+        WHERE o.base_price IS NOT NULL AND o.base_price > 0
+    """)).fetchall()
+
+    groups = defaultdict(list)
+    for r in rows:
+        if min_price > 0 and r.base_price < min_price:
+            continue
+        abs_error = abs(r.predicted_price_mid - r.actual_price)
+        groups[(r.horizon_days, r.model_version or "unknown")].append({
+            "abs_error": abs_error,
+            "pct_error": abs(abs_error / r.base_price) * 100,
+            "sq_error": (r.predicted_price_mid - r.actual_price) ** 2,
+            "direction_correct": r.direction_correct,
+            "predicted_direction": r.direction_predicted,
+            "actual_direction": r.direction_actual,
+            "in_interval": r.in_interval,
+            "confidence": r.confidence or "low",
+            "base_price": r.base_price,
+            "actual_price": r.actual_price,
+            "price_tier": price_tier(r.base_price),
+            "item_id": r.item_id,
+        })
+    return groups
+
+
+def backtest_forecasts(db, today=None, min_price=0, reresolve=False, rescore=False):
     """Compare mature ML forecasts against actual prices.
 
     Stores both aggregate accuracy metrics (prediction_accuracy) and
@@ -135,11 +189,37 @@ def backtest_forecasts(db, today=None, min_price=0):
 
     Parameters:
         min_price: Minimum current_price to include (filter out cheap items).
+        reresolve: Overwrite already-frozen actuals with freshly resolved ones.
+        rescore: Recompute metrics from stored (frozen) outcomes only — does
+            not touch the archive at all.
     """
     today = today or date.today()
     logger.info("=" * 60)
     logger.info("BACKTEST: ML Forecasts")
     logger.info("=" * 60)
+
+    if rescore:
+        logger.info("  --rescore: scoring from frozen outcomes, archive not read")
+        groups = _records_from_frozen_outcomes(db, min_price=min_price)
+        results = []
+        for (horizon, model_version), records in sorted(groups.items()):
+            metrics, n = score_cohort(records)
+            if n == 0:
+                continue
+            results.append({
+                "prediction_type": "forecast",
+                "evaluation_date": today,
+                "horizon_days": horizon,
+                "model_version": model_version,
+                "evaluation_window_days": None,
+                "sample_count": n,
+                "metrics": metrics,
+                "created_at": datetime.now(timezone.utc).replace(tzinfo=None),
+            })
+        if results:
+            _upsert_accuracy(db, results)
+            logger.info(f"  Stored {len(results)} forecast accuracy records")
+        return results
 
     # Fetch all forecasts with a midpoint price, filter for maturity in Python
     rows = db.execute(text("""
@@ -323,7 +403,7 @@ def backtest_forecasts(db, today=None, min_price=0):
         logger.info(f"  Stored {len(results)} forecast accuracy records")
 
     if all_outcomes:
-        _store_forecast_outcomes(db, all_outcomes)
+        _store_forecast_outcomes(db, all_outcomes, reresolve=reresolve)
 
     return results
 
@@ -333,7 +413,7 @@ def backtest_forecasts(db, today=None, min_price=0):
 # Main
 # ---------------------------------------------------------------------------
 
-def run_backtest(types=None, min_price=0, update_bias=False):
+def run_backtest(types=None, min_price=0, update_bias=False, reresolve=False, rescore=False):
     db = SessionLocal()
     today = date.today()
     allowed = ["forecast"]
@@ -343,7 +423,9 @@ def run_backtest(types=None, min_price=0, update_bias=False):
         results = {}
         for t in types:
             if t == "forecast":
-                results["forecast"] = backtest_forecasts(db, today, min_price=min_price)
+                results["forecast"] = backtest_forecasts(
+                    db, today, min_price=min_price, reresolve=reresolve, rescore=rescore
+                )
             else:
                 logger.warning(f"Unknown backtest type: {t}")
 
@@ -379,6 +461,8 @@ def main():
     types = None
     min_price = 0.0
     update_bias = True
+    reresolve = "--reresolve" in args
+    rescore = "--rescore" in args
     i = 0
     while i < len(args):
         if args[i] == "--type" and i + 1 < len(args):
@@ -396,7 +480,10 @@ def main():
         logger.info(f"Filtering items with current_price >= ${min_price:.2f}")
     if update_bias:
         logger.info("Bias correction update enabled")
-    result = run_backtest(types, min_price=min_price, update_bias=update_bias)
+    result = run_backtest(
+        types, min_price=min_price, update_bias=update_bias,
+        reresolve=reresolve, rescore=rescore,
+    )
     print(f"RESULT: {json.dumps(result, default=str)}")
     return 0 if result.get("status") == "success" else 1
 
