@@ -277,7 +277,11 @@ class ForecastOutcome(Base):
     forecast_date = Column(Date, nullable=False)
     horizon_days = Column(Integer, nullable=False)
     target_date = Column(Date, nullable=False)
-    current_price = Column(Float, nullable=False)
+    # Nullable: written straight through from item_forecasts.current_price
+    # (itself nullable), which may be unset. Never synthesized — a null here
+    # means the serving-time snapshot is genuinely missing, distinct from
+    # base_price which is always archive-resolved when the row exists.
+    current_price = Column(Float, nullable=True)
     predicted_price_low = Column(Float, nullable=True)
     predicted_price_mid = Column(Float, nullable=False)
     predicted_price_high = Column(Float, nullable=True)

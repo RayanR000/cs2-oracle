@@ -1,13 +1,17 @@
 from __future__ import annotations
 
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
+from pathlib import Path
 
+import pandas as pd
 import pytest
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
-from database import Base, ForecastOutcome, PredictionAccuracy
+import backtest.price_resolution as price_resolution
+from backtest.price_resolution import smoothed_prices
+from database import Base, ForecastOutcome, Item, ItemForecast, PredictionAccuracy
 
 
 @pytest.fixture()
@@ -135,11 +139,6 @@ def test_score_cohort_uses_base_price_for_the_persistence_baseline():
     assert metrics["baseline_mae"] == 0.5
 
 
-from datetime import timedelta
-
-from backtest.price_resolution import smoothed_prices
-
-
 def test_both_legs_use_the_same_estimator_so_a_flat_market_scores_flat():
     """The end-to-end symmetry property. Under the old code the base leg was a
     3-observation median and the actual leg a single-day price, so a perfectly
@@ -174,3 +173,224 @@ def test_resolution_drops_rather_than_falling_back_when_a_leg_is_unresolvable():
     prices = smoothed_prices(voted, {("ak", date(2026, 7, 8))})
     # Only 2 observations, spanning 68 days — beyond the cap, so unresolvable.
     assert ("ak", date(2026, 7, 8)) not in prices
+
+
+# ---------------------------------------------------------------------------
+# End-to-end coverage of backtest_forecasts itself.
+#
+# The tests above exercise smoothed_prices in isolation. These drive the
+# function Task 5 actually changed, through a real in-memory SQLite session and
+# a real (tiny) Parquet archive under tmp_path. They never touch the git-tracked
+# price-archive/ at the repo root, and db.parquet.append_table is stubbed so
+# nothing is written to price-archive/ops/.
+# ---------------------------------------------------------------------------
+
+FORECAST_DATE = date(2026, 7, 5)
+TARGET_DATE = date(2026, 7, 8)
+HORIZON = 3
+EVAL_DATE = date(2026, 7, 20)
+
+
+def _write_archive(tmp_path, rows):
+    """rows: list of (slug, date, price). Returns the archive directory."""
+    archive = tmp_path / "price-archive"
+    archive.mkdir()
+    pd.DataFrame(
+        {
+            "item_slug": [r[0] for r in rows],
+            "day": pd.to_datetime([r[1] for r in rows]),
+            "mean_price": [float(r[2]) for r in rows],
+            "volume": [10] * len(rows),
+            "source": ["a"] * len(rows),
+        }
+    ).to_parquet(archive / "prices-2026.parquet")
+    return archive
+
+
+def _seed(session, pk, slug, *, current_price, price_mid, direction="flat",
+          price_low=None, price_high=None):
+    session.add(Item(id=pk, item_id=slug, name=slug, type="skin"))
+    session.add(
+        ItemForecast(
+            id=pk,
+            item_id=pk,
+            forecast_date=FORECAST_DATE,
+            horizon_days=HORIZON,
+            price_low=price_low,
+            price_mid=price_mid,
+            price_high=price_high,
+            current_price=current_price,
+            direction=direction,
+            confidence="high",
+            model_version="lgbm-test",
+        )
+    )
+
+
+def _run_backtest(session, archive, monkeypatch, today=EVAL_DATE):
+    """Run backtest_forecasts with the archive redirected to tmp_path.
+
+    backtest_forecasts hardcodes archive_dir to the repo-root price-archive/,
+    so the loader is wrapped to substitute the test archive. The real
+    load_voted_prices still runs — only the directory it reads is swapped.
+    """
+    from scripts import backtest_accuracy
+
+    real_loader = price_resolution.load_voted_prices
+
+    def loader(archive_dir, slugs, min_date, max_date, **kwargs):
+        assert Path(archive_dir).name == "price-archive"
+        return real_loader(archive, slugs, min_date, max_date, **kwargs)
+
+    monkeypatch.setattr(backtest_accuracy, "load_voted_prices", loader)
+
+    import db.parquet as parquet_mod
+    monkeypatch.setattr(parquet_mod, "append_table", lambda *a, **k: None)
+
+    return backtest_accuracy.backtest_forecasts(session, today=today)
+
+
+def test_backtest_scores_the_base_leg_from_the_archive_not_current_price(
+    session, tmp_path, monkeypatch
+):
+    """The base leg of actual_ret must be the archive-resolved smoothed price,
+    not item_forecasts.current_price.
+
+    current_price is stored at 99.0 while the archive sits at 3.0 rising to
+    3.3. Resolved correctly the return is (3.3-3.0)/3.0 = +10% -> "up". If the
+    base leg came from current_price instead it would be (3.3-99)/99 = -97%
+    -> "down", the tier would be 3 rather than 1, and MAPE would be 0.3%
+    rather than 10%. This is the pre-Task-5 behaviour.
+    """
+    archive = _write_archive(
+        tmp_path,
+        [("ak", date(2026, 7, d), 3.0) for d in (3, 4, 5)]
+        + [("ak", date(2026, 7, d), 3.3) for d in (6, 7, 8)],
+    )
+    _seed(
+        session, 1, "ak",
+        current_price=99.0,       # deliberately nothing like the archive
+        price_mid=3.6, price_low=3.0, price_high=4.0,
+        direction="up",
+    )
+    session.commit()
+
+    results = _run_backtest(session, archive, monkeypatch)
+
+    outcome = session.query(ForecastOutcome).one()
+    assert outcome.base_price == pytest.approx(3.0)
+    assert outcome.actual_price == pytest.approx(3.3)
+    # Written straight through for reference, never synthesized from base.
+    assert outcome.current_price == pytest.approx(99.0)
+    assert outcome.direction_actual == "up"
+    assert outcome.direction_correct == 1
+    # |3.6 - 3.3| / 3.0 * 100 — divided by the base leg.
+    assert outcome.pct_error == pytest.approx(10.0)
+
+    metrics = results[0]["metrics"]
+    assert results[0]["sample_count"] == 1
+    assert metrics["mape"] == pytest.approx(10.0)
+    # price_tier(3.0) == 1; price_tier(99.0) would be 3.
+    assert metrics["mape_by_tier"] == {"tier_1": 10.0}
+
+
+def test_missing_current_price_is_stored_as_null_not_synthesized_from_base(
+    session, tmp_path, monkeypatch
+):
+    """A forecast with no serving-time current_price must store NULL, not the
+    backtest-resolved base price. update_bias_corrections_from_outcomes reads
+    this column to compute approx_mid_ret, which feeds production predict()
+    thresholds — injecting base there would feed a backtest artefact into
+    serving. A genuine NULL is distinguishable; a stand-in is not."""
+    archive = _write_archive(
+        tmp_path, [("ak", date(2026, 7, d), 3.0) for d in range(3, 9)]
+    )
+    _seed(session, 1, "ak", current_price=None, price_mid=3.0)
+    session.commit()
+
+    _run_backtest(session, archive, monkeypatch)
+
+    outcome = session.query(ForecastOutcome).one()
+    assert outcome.current_price is None
+    assert outcome.base_price == pytest.approx(3.0)
+
+
+def test_backtest_drops_a_forecast_whose_base_leg_is_unresolvable(
+    session, tmp_path, monkeypatch
+):
+    """An unresolvable base leg must drop the forecast, not fall back to
+    current_price. The dropped item carries current_price=50.0, so a fallback
+    would silently produce an outcome row for it."""
+    rows = []
+    for i in range(10):
+        rows += [(f"ak{i}", date(2026, 7, d), 3.0) for d in range(3, 9)]
+        _seed(session, i + 1, f"ak{i}", current_price=3.0, price_mid=3.0)
+    # "gap" has no observation at or before the 07-05 forecast date, so its
+    # base leg is unresolvable even though its 07-08 target leg resolves.
+    rows += [("gap", date(2026, 7, d), 3.0) for d in (6, 7, 8)]
+    _seed(session, 11, "gap", current_price=50.0, price_mid=3.0)
+    session.commit()
+
+    archive = _write_archive(tmp_path, rows)
+
+    # 1 unresolvable of 11 considered = 9.1%, under MAX_UNRESOLVABLE_PCT.
+    results = _run_backtest(session, archive, monkeypatch)
+
+    stored = session.query(ForecastOutcome).all()
+    assert len(stored) == 10
+    assert 11 not in {o.forecast_id for o in stored}
+    assert results[0]["sample_count"] == 10
+
+
+def test_unresolvable_forecasts_count_toward_the_gate_denominator(
+    session, tmp_path, monkeypatch
+):
+    """Dropped forecasts must land in both the numerator and the denominator of
+    the unresolvable gate. 1 of 9 is 11.1%, over the 10% cap, so the run must
+    refuse to report a number rather than scoring the surviving 8."""
+    from scripts import backtest_accuracy
+
+    rows = []
+    for i in range(8):
+        rows += [(f"ak{i}", date(2026, 7, d), 3.0) for d in range(3, 9)]
+        _seed(session, i + 1, f"ak{i}", current_price=3.0, price_mid=3.0)
+    rows += [("gap", date(2026, 7, d), 3.0) for d in (6, 7, 8)]
+    _seed(session, 9, "gap", current_price=50.0, price_mid=3.0)
+    session.commit()
+
+    archive = _write_archive(tmp_path, rows)
+
+    with pytest.raises(RuntimeError, match="could not be resolved"):
+        _run_backtest(session, archive, monkeypatch)
+
+    # The gate fires before anything is persisted.
+    assert session.query(ForecastOutcome).count() == 0
+    assert backtest_accuracy.MAX_UNRESOLVABLE_PCT == 10.0
+
+
+def test_forecasts_with_no_slug_mapping_count_toward_the_gate(
+    session, tmp_path, monkeypatch
+):
+    """A whole group with no slug mappings yields no anchors and `continue`s
+    before the per-forecast loop. Those forecasts are still mature and still
+    unscored, so they must be counted — otherwise the gate divides by zero
+    considered and reports green over an empty cohort."""
+    session.add(
+        ItemForecast(
+            id=1,
+            item_id=4242,  # no matching row in items -> no slug
+            forecast_date=FORECAST_DATE,
+            horizon_days=HORIZON,
+            price_mid=3.0,
+            current_price=3.0,
+            direction="flat",
+            confidence="high",
+            model_version="lgbm-test",
+        )
+    )
+    session.commit()
+
+    archive = _write_archive(tmp_path, [("ak", date(2026, 7, 5), 3.0)])
+
+    with pytest.raises(RuntimeError, match="could not be resolved"):
+        _run_backtest(session, archive, monkeypatch)

@@ -194,6 +194,8 @@ def backtest_forecasts(db, today=None, min_price=0):
 
         if not anchors:
             logger.info(f"  [{horizon}d / {model_version}] No slug mappings")
+            n_considered += len(forecasts)
+            n_unresolvable += len(forecasts)
             continue
 
         anchor_dates = [a[1] for a in anchors]
@@ -216,9 +218,6 @@ def backtest_forecasts(db, today=None, min_price=0):
                 continue
 
             mid, low, high = f.price_mid, f.price_low, f.price_high
-            if mid is None:
-                n_unresolvable += 1
-                continue
             if min_price > 0 and base < min_price:
                 continue
 
@@ -252,9 +251,13 @@ def backtest_forecasts(db, today=None, min_price=0):
                 "horizon_days": horizon,
                 "target_date": target_date,
                 # current_price is retained for reference only; nothing reads
-                # it for scoring. It is NOT NULL on ForecastOutcome, so fall
-                # back to the resolved base price if serving-time never set it.
-                "current_price": f.current_price if f.current_price is not None else base,
+                # it for scoring, and it is never synthesized. Written through
+                # as-is (nullable) so it stays distinguishable from base_price,
+                # which is always archive-resolved. Downstream consumers
+                # (update_bias_corrections_from_outcomes, retro_bias_check,
+                # tiered_breakdown) still read this column and must see the
+                # real serving-time value or a genuine NULL, not a stand-in.
+                "current_price": f.current_price,
                 "base_price": base,
                 "predicted_price_low": low,
                 "predicted_price_mid": mid,
