@@ -142,43 +142,148 @@ def _store_forecast_outcomes(db, outcomes, reresolve: bool = False) -> int:
     return len(to_write)
 
 
-def _records_from_frozen_outcomes(db, min_price=0):
+def _records_from_frozen_outcomes(db, min_price=0, forecast_ids=None):
     """Rebuild scoring records from stored outcomes, without the archive.
+
+    Every metric input is *derived* here from the frozen base_price /
+    actual_price plus the frozen prediction legs. The stored direction_actual,
+    direction_correct and in_interval columns are deliberately NOT read back —
+    freezing the actuals rather than the metrics is what lets a later scoring
+    fix (a different flat tolerance, say) land on historical rows with no
+    archive access at all.
+
+    This is the single derivation used by every scoring path: the daily run,
+    --rescore and --reresolve all score through it, so they cannot drift apart.
 
     `confidence` is not on ForecastOutcome, so it is joined back from
     item_forecasts.
+
+    forecast_ids: optional restriction to a set of forecast ids. Applied in
+        Python rather than as a SQL IN list — the mature cohort runs to
+        thousands of ids, past the SQLite bind-parameter limit.
     """
     rows = db.execute(text("""
         SELECT o.forecast_id, o.item_id, o.horizon_days, o.model_version,
                o.base_price, o.actual_price, o.predicted_price_low,
                o.predicted_price_mid, o.predicted_price_high,
-               o.direction_predicted, o.direction_actual, o.direction_correct,
-               o.in_interval, f.confidence
+               o.direction_predicted, f.confidence
         FROM forecast_outcomes o
         LEFT JOIN item_forecasts f ON f.id = o.forecast_id
         WHERE o.base_price IS NOT NULL AND o.base_price > 0
     """)).fetchall()
 
+    wanted = None if forecast_ids is None else set(forecast_ids)
+
     groups = defaultdict(list)
     for r in rows:
-        if min_price > 0 and r.base_price < min_price:
+        if wanted is not None and r.forecast_id not in wanted:
             continue
-        abs_error = abs(r.predicted_price_mid - r.actual_price)
+        base, actual, mid = r.base_price, r.actual_price, r.predicted_price_mid
+        if actual is None or actual <= 0 or mid is None:
+            continue
+        if min_price > 0 and base < min_price:
+            continue
+
+        low, high = r.predicted_price_low, r.predicted_price_high
+        abs_error = abs(mid - actual)
+        predicted_direction = r.direction_predicted or "flat"
+        actual_direction = direction_from_return((actual - base) / base)
+
         groups[(r.horizon_days, r.model_version or "unknown")].append({
             "abs_error": abs_error,
-            "pct_error": abs(abs_error / r.base_price) * 100,
-            "sq_error": (r.predicted_price_mid - r.actual_price) ** 2,
-            "direction_correct": r.direction_correct,
-            "predicted_direction": r.direction_predicted,
-            "actual_direction": r.direction_actual,
-            "in_interval": r.in_interval,
+            # Divided by the BASE leg, not the actual. Explicit human ruling.
+            "pct_error": abs(abs_error / base) * 100,
+            "sq_error": (mid - actual) ** 2,
+            "direction_correct": 1 if predicted_direction == actual_direction else 0,
+            "predicted_direction": predicted_direction,
+            "actual_direction": actual_direction,
+            "in_interval": None if (low is None or high is None) else (1 if low <= actual <= high else 0),
             "confidence": r.confidence or "low",
-            "base_price": r.base_price,
-            "actual_price": r.actual_price,
-            "price_tier": price_tier(r.base_price),
+            "base_price": base,
+            "actual_price": actual,
+            "price_tier": price_tier(base),
             "item_id": r.item_id,
         })
     return groups
+
+
+def _score_groups(groups, today):
+    """Turn {(horizon, model_version): records} into prediction_accuracy rows."""
+    results = []
+    for (horizon, model_version), records in sorted(groups.items()):
+        tiered = score_by_tier(records)
+        if not tiered:
+            logger.info(f"  [{horizon}d / {model_version}] No valid comparisons")
+            continue
+
+        for tier, metrics, n in tiered:
+            results.append({
+                "prediction_type": "forecast",
+                "evaluation_date": today,
+                "horizon_days": horizon,
+                "model_version": model_version,
+                "price_tier": tier,
+                "evaluation_window_days": None,
+                "sample_count": n,
+                "metrics": metrics,
+                "created_at": datetime.now(timezone.utc).replace(tzinfo=None),
+            })
+
+        head_metrics, head_n = score_cohort(headline_records(records))
+        penny_metrics, penny_n = score_cohort(
+            [r for r in records if r["price_tier"] < HEADLINE_MIN_TIER]
+        )
+
+        if head_n:
+            head_ci_lower = head_metrics["directional_accuracy_ci_lower"]
+            head_ci_upper = head_metrics["directional_accuracy_ci_upper"]
+            ci_str = ""
+            if head_ci_lower is not None:
+                ci_str = f" [CI: {head_ci_lower * 100:.1f}–{head_ci_upper * 100:.1f}]"
+            logger.info(
+                f"  [{horizon}d / {model_version}] >=$1: {head_n:,} samples — "
+                f"MAE=${head_metrics['mae']:.2f} MAPE={head_metrics['mape']:.1f}% "
+                f"DirAcc={head_metrics['directional_accuracy']:.1f}%{ci_str} "
+                f"IntCov={head_metrics['interval_coverage']:.1f}% "
+                f"ConfGap={head_metrics['conf_gap_pp']:.1f}pp "
+                f"Skill={head_metrics['skill_vs_baseline']}"
+            )
+        if penny_n:
+            logger.info(
+                f"  [{horizon}d / {model_version}] <$1: {penny_n:,} samples — "
+                f"DirAcc={penny_metrics['directional_accuracy']:.1f}% (tick-dominated)"
+            )
+    return results
+
+
+def _outcome_to_mapping(row):
+    """An already-frozen ForecastOutcome ORM row as an outcome dict.
+
+    The whole mature cohort — frozen rows included — is handed to
+    _store_forecast_outcomes each run so that the freeze is enforced in exactly
+    one place and its "already frozen" count is the truth. Only the rows the
+    freeze lets through are written.
+    """
+    return {
+        "forecast_id": row.forecast_id,
+        "item_id": row.item_id,
+        "forecast_date": row.forecast_date,
+        "horizon_days": row.horizon_days,
+        "target_date": row.target_date,
+        "current_price": row.current_price,
+        "base_price": row.base_price,
+        "predicted_price_low": row.predicted_price_low,
+        "predicted_price_mid": row.predicted_price_mid,
+        "predicted_price_high": row.predicted_price_high,
+        "actual_price": row.actual_price,
+        "direction_predicted": row.direction_predicted,
+        "direction_actual": row.direction_actual,
+        "direction_correct": row.direction_correct,
+        "in_interval": row.in_interval,
+        "abs_error": row.abs_error,
+        "pct_error": row.pct_error,
+        "model_version": row.model_version,
+    }
 
 
 def backtest_forecasts(db, today=None, min_price=0, reresolve=False, rescore=False):
@@ -207,20 +312,7 @@ def backtest_forecasts(db, today=None, min_price=0, reresolve=False, rescore=Fal
     if rescore:
         logger.info("  --rescore: scoring from frozen outcomes, archive not read")
         groups = _records_from_frozen_outcomes(db, min_price=min_price)
-        results = []
-        for (horizon, model_version), records in sorted(groups.items()):
-            for tier, metrics, n in score_by_tier(records):
-                results.append({
-                    "prediction_type": "forecast",
-                    "evaluation_date": today,
-                    "horizon_days": horizon,
-                    "model_version": model_version,
-                    "price_tier": tier,
-                    "evaluation_window_days": None,
-                    "sample_count": n,
-                    "metrics": metrics,
-                    "created_at": datetime.now(timezone.utc).replace(tzinfo=None),
-                })
+        results = _score_groups(groups, today)
         if results:
             _upsert_accuracy(db, results)
             logger.info(f"  Stored {len(results)} forecast accuracy records")
@@ -249,19 +341,49 @@ def backtest_forecasts(db, today=None, min_price=0, reresolve=False, rescore=Fal
 
     logger.info(f"  Found {len(mature)} mature forecasts to evaluate")
 
-    # Group by horizon + model_version
+    from database import ForecastOutcome
+
+    mature_ids = [r.id for r in mature]
+
+    # Forecasts that already have a frozen outcome are NOT re-resolved. Their
+    # base_price/actual_price are final and the metric is derived from them, so
+    # the archive is only read for what is genuinely new. --reresolve is the
+    # deliberate exception: it re-reads the archive for the whole cohort and
+    # overwrites, which is what Task 9's backfill needs.
+    frozen_rows = []
+    if not reresolve:
+        for i in range(0, len(mature_ids), 900):
+            batch = mature_ids[i:i + 900]
+            frozen_rows.extend(
+                db.query(ForecastOutcome)
+                .filter(ForecastOutcome.forecast_id.in_(batch))
+                .all()
+            )
+    frozen_ids = {o.forecast_id for o in frozen_rows}
+    to_resolve = [r for r in mature if r.id not in frozen_ids]
+    logger.info(
+        f"  {len(frozen_ids):,} already frozen, {len(to_resolve):,} to resolve"
+    )
+
+    # Group by horizon + model_version. Only the unfrozen forecasts are grouped:
+    # a group with nothing new performs no archive read at all.
     groups = defaultdict(list)
-    for r in mature:
+    for r in to_resolve:
         key = (r.horizon_days, r.model_version or "unknown")
         groups[key].append(r)
 
     archive_dir = Path(__file__).parent.parent.parent / "price-archive"
 
-    slug_rows = db.execute(text("SELECT id, item_id FROM items")).fetchall()
-    id_to_slug = {r.id: r.item_id for r in slug_rows}
+    id_to_slug = {}
+    if to_resolve:
+        slug_rows = db.execute(text("SELECT id, item_id FROM items")).fetchall()
+        id_to_slug = {r.id: r.item_id for r in slug_rows}
 
-    results = []
-    all_outcomes = []
+    new_outcomes = []
+    # The gate measures resolution quality, so its denominator is the forecasts
+    # that actually required resolution this run. A frozen forecast was not
+    # resolved and belongs on neither side of the ratio; counting the frozen
+    # majority would dilute a genuinely broken resolution rate to nothing.
     n_unresolvable = 0
     n_considered = 0
 
@@ -288,8 +410,6 @@ def backtest_forecasts(db, today=None, min_price=0, reresolve=False, rescore=Fal
         prices = smoothed_prices(voted, anchors)
         logger.info(f"  Resolved {len(prices):,} of {len(anchors):,} anchors")
 
-        # Per-forecast records for aggregation and bootstrap
-        records = []
         for f in forecasts:
             n_considered += 1
             slug = id_to_slug.get(f.item_id)
@@ -314,22 +434,7 @@ def backtest_forecasts(db, today=None, min_price=0, reresolve=False, rescore=Fal
             in_interval = None if (low is None or high is None) else (1 if low <= actual <= high else 0)
             pct_error = abs(abs_error / base) * 100
 
-            records.append({
-                "abs_error": abs_error,
-                "pct_error": pct_error,
-                "sq_error": (mid - actual) ** 2,
-                "direction_correct": direction_correct,
-                "predicted_direction": predicted_direction,
-                "actual_direction": actual_direction,
-                "in_interval": in_interval,
-                "confidence": f.confidence or "low",
-                "base_price": base,
-                "actual_price": actual,
-                "price_tier": price_tier(base),
-                "item_id": f.item_id,
-            })
-
-            all_outcomes.append({
+            new_outcomes.append({
                 "forecast_id": f.id,
                 "item_id": f.item_id,
                 "forecast_date": f_date,
@@ -357,56 +462,14 @@ def backtest_forecasts(db, today=None, min_price=0, reresolve=False, rescore=Fal
                 "model_version": model_version,
             })
 
-        if not records:
-            logger.info(f"  [{horizon}d / {model_version}] No valid comparisons")
-            continue
-
-        tiered = score_by_tier(records)
-        if not tiered:
-            logger.info(f"  [{horizon}d / {model_version}] No valid comparisons")
-            continue
-
-        for tier, metrics, n in tiered:
-            results.append({
-                "prediction_type": "forecast",
-                "evaluation_date": today,
-                "horizon_days": horizon,
-                "model_version": model_version,
-                "price_tier": tier,
-                "evaluation_window_days": None,
-                "sample_count": n,
-                "metrics": metrics,
-                "created_at": datetime.now(timezone.utc).replace(tzinfo=None),
-            })
-
-        head = headline_records(records)
-        penny = [r for r in records if r["price_tier"] < HEADLINE_MIN_TIER]
-        head_metrics, head_n = score_cohort(head)
-        penny_metrics, penny_n = score_cohort(penny)
-
-        if head_n:
-            head_ci_lower = head_metrics["directional_accuracy_ci_lower"]
-            head_ci_upper = head_metrics["directional_accuracy_ci_upper"]
-            ci_str = ""
-            if head_ci_lower is not None:
-                ci_str = f" [CI: {head_ci_lower * 100:.1f}–{head_ci_upper * 100:.1f}]"
-            logger.info(
-                f"  [{horizon}d / {model_version}] >=$1: {head_n:,} samples — "
-                f"MAE=${head_metrics['mae']:.2f} MAPE={head_metrics['mape']:.1f}% "
-                f"DirAcc={head_metrics['directional_accuracy']:.1f}%{ci_str} "
-                f"IntCov={head_metrics['interval_coverage']:.1f}% "
-                f"ConfGap={head_metrics['conf_gap_pp']:.1f}pp "
-                f"Skill={head_metrics['skill_vs_baseline']}"
-            )
-        if penny_n:
-            logger.info(
-                f"  [{horizon}d / {model_version}] <$1: {penny_n:,} samples — "
-                f"DirAcc={penny_metrics['directional_accuracy']:.1f}% (tick-dominated)"
-            )
-
+    # A run with nothing new to resolve has an empty denominator; there is no
+    # resolution rate to gate on, and dividing here would raise.
     if n_considered:
         unresolvable_pct = n_unresolvable / n_considered * 100
-        logger.info(f"  Unresolvable: {n_unresolvable:,}/{n_considered:,} ({unresolvable_pct:.1f}%)")
+        logger.info(
+            f"  Unresolvable: {n_unresolvable:,}/{n_considered:,} "
+            f"({unresolvable_pct:.1f}% of forecasts requiring resolution)"
+        )
         if unresolvable_pct > MAX_UNRESOLVABLE_PCT:
             raise RuntimeError(
                 f"{unresolvable_pct:.1f}% of mature forecasts could not be resolved "
@@ -414,12 +477,27 @@ def backtest_forecasts(db, today=None, min_price=0, reresolve=False, rescore=Fal
                 f"metric moved unnoticed before — refusing to report a number."
             )
 
+    # The whole mature cohort goes through the freeze, which writes only what is
+    # new. Passing the frozen rows too keeps the freeze the single gate on the
+    # table, and the table is what gets scored below.
+    all_outcomes = [_outcome_to_mapping(o) for o in frozen_rows] + new_outcomes
+    if all_outcomes:
+        _store_forecast_outcomes(db, all_outcomes, reresolve=reresolve)
+
+    # Score the persisted cohort, not the freshly resolved values. Metrics are
+    # re-derived every run from the frozen base/actual, so a scoring fix still
+    # lands without --reresolve — but an archive revision cannot move a number
+    # that has already been reported. That separation is the point of the plan:
+    # before it, the same 5,512-forecast cohort scored 61.76%, 33.74%, 61.54%
+    # and 57.91% on four consecutive evaluation dates.
+    groups = _records_from_frozen_outcomes(
+        db, min_price=min_price, forecast_ids=mature_ids
+    )
+    results = _score_groups(groups, today)
+
     if results:
         _upsert_accuracy(db, results)
         logger.info(f"  Stored {len(results)} forecast accuracy records")
-
-    if all_outcomes:
-        _store_forecast_outcomes(db, all_outcomes, reresolve=reresolve)
 
     return results
 

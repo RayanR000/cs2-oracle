@@ -710,6 +710,197 @@ def test_backtest_forecasts_reports_identical_metrics_across_an_archive_revision
     assert outcomes[2] == (pytest.approx(10.0), pytest.approx(10.0))
 
 
+# ---------------------------------------------------------------------------
+# Task 8b: the normal (non---rescore) path must score the FROZEN outcomes, not
+# a fresh re-resolution of the whole mature cohort.
+#
+# Task 8's mutation check exposed the gap: the freeze gated what was written to
+# forecast_outcomes but never what was scored, so the daily headline number's
+# stability rested entirely on the estimator's window-median robustness. A
+# large enough archive revision could still move an already-reported number.
+# ---------------------------------------------------------------------------
+
+
+def _revise_archive(archive, rows):
+    """Overwrite the whole test archive with `rows` — a genuine revision, not
+    an added outlier source that voting would reject."""
+    pd.DataFrame(
+        {
+            "item_slug": [r[0] for r in rows],
+            "day": pd.to_datetime([r[1] for r in rows]),
+            "mean_price": [float(r[2]) for r in rows],
+            "volume": [10] * len(rows),
+            "source": ["a"] * len(rows),
+        }
+    ).to_parquet(archive / "prices-2026.parquet")
+
+
+def test_frozen_values_drive_the_metric_not_a_revised_archive(
+    session, tmp_path, monkeypatch
+):
+    """Run 1 freezes "ak" at base 3.0 -> actual 3.3 (MAPE 10%). The archive is
+    then rewritten so "ak" would now resolve to 30.0 at the target date — a
+    2-tier move that no amount of window-median robustness absorbs. A second,
+    unfrozen forecast ("awp", tier 2) is added so the archive genuinely IS
+    read on run 2; this is not passing merely because nothing was resolved.
+
+    The tier-1 row must still report the frozen 10%, not 880%."""
+    ak_rows = [("ak", date(2026, 7, d), 3.0) for d in (3, 4, 5)]
+    ak_rows += [("ak", date(2026, 7, d), 3.3) for d in (6, 7, 8)]
+    archive = _write_archive(tmp_path, ak_rows)
+
+    _seed(session, 1, "ak", current_price=3.0, price_mid=3.6,
+          price_low=3.0, price_high=4.0, direction="up")
+    session.commit()
+
+    before = _run_backtest(session, archive, monkeypatch)
+    tier1_before = next(r for r in before if r["price_tier"] == 1)
+    assert tier1_before["metrics"]["mape"] == pytest.approx(10.0)
+
+    # The archive is revised outright: "ak" now sits at 30.0 from 07-06 on.
+    revised = [("ak", date(2026, 7, d), 3.0) for d in (3, 4, 5)]
+    revised += [("ak", date(2026, 7, d), 30.0) for d in (6, 7, 8)]
+    revised += [("awp", date(2026, 7, d), 10.0) for d in (3, 4, 5, 6, 7, 8)]
+    _revise_archive(archive, revised)
+
+    _seed(session, 2, "awp", current_price=10.0, price_mid=10.1,
+          price_low=9.0, price_high=11.0, direction="flat")
+    session.commit()
+
+    after = _run_backtest(session, archive, monkeypatch)
+
+    tier1_after = next(r for r in after if r["price_tier"] == 1)
+    # Re-resolving "ak" would give |3.6-30|/3*100 = 880% and actual "up".
+    assert tier1_after["sample_count"] == 1
+    assert tier1_after["metrics"] == tier1_before["metrics"]
+
+    # The frozen row itself is untouched.
+    frozen = session.query(ForecastOutcome).filter_by(forecast_id=1).one()
+    assert frozen.actual_price == pytest.approx(3.3)
+
+    # ...and the new forecast was resolved and scored on its own tier.
+    tier2_after = next(r for r in after if r["price_tier"] == 2)
+    assert tier2_after["sample_count"] == 1
+    assert next(r for r in after if r["price_tier"] is None)["sample_count"] == 2
+    assert session.query(ForecastOutcome).count() == 2
+
+
+def test_archive_is_not_read_when_every_mature_forecast_is_frozen(
+    session, tmp_path, monkeypatch
+):
+    """Nothing new to resolve => no archive access at all, and no divide-by-zero
+    in the unresolvable gate over an empty denominator."""
+    from scripts import backtest_accuracy
+
+    rows = [("ak", date(2026, 7, d), 3.0) for d in (3, 4, 5)]
+    rows += [("ak", date(2026, 7, d), 3.3) for d in (6, 7, 8)]
+    archive = _write_archive(tmp_path, rows)
+
+    _seed(session, 1, "ak", current_price=3.0, price_mid=3.6,
+          price_low=3.0, price_high=4.0, direction="up")
+    session.commit()
+
+    before = _run_backtest(session, archive, monkeypatch)
+
+    def explode(*a, **k):
+        raise AssertionError("load_voted_prices was called with nothing to resolve")
+
+    monkeypatch.setattr(backtest_accuracy, "load_voted_prices", explode)
+    import db.parquet as parquet_mod
+    monkeypatch.setattr(parquet_mod, "append_table", lambda *a, **k: None)
+
+    after = backtest_accuracy.backtest_forecasts(session, today=EVAL_DATE)
+
+    def shape(results):
+        return {
+            (r["horizon_days"], r["model_version"], r["price_tier"]): (
+                r["sample_count"], r["metrics"],
+            )
+            for r in results
+        }
+
+    assert shape(before) == shape(after)
+    assert session.query(ForecastOutcome).count() == 1
+
+
+def test_a_scoring_fix_lands_on_frozen_rows_without_touching_the_archive(
+    session, tmp_path, monkeypatch
+):
+    """The reason records are re-derived rather than read back column-for-column
+    from forecast_outcomes: changing the flat tolerance must change the reported
+    directional accuracy of already-frozen rows, with no archive read.
+
+    "ak" moves 3.00 -> 3.01 (+0.33%), inside the 0.5% flat band, so a "flat"
+    prediction scores correct. Widen nothing and shrink FLAT_TOLERANCE to 0.1%
+    and the same frozen row is now "up" — and must score wrong."""
+    from scripts import backtest_accuracy
+    import backtest.scoring as scoring
+
+    rows = [("ak", date(2026, 7, d), 3.00) for d in (3, 4, 5)]
+    rows += [("ak", date(2026, 7, d), 3.01) for d in (6, 7, 8)]
+    archive = _write_archive(tmp_path, rows)
+
+    _seed(session, 1, "ak", current_price=3.0, price_mid=3.0,
+          price_low=2.0, price_high=4.0, direction="flat")
+    session.commit()
+
+    before = _run_backtest(session, archive, monkeypatch)
+    all_before = next(r for r in before if r["price_tier"] is None)
+    assert all_before["metrics"]["directional_accuracy"] == 100.0
+
+    def explode(*a, **k):
+        raise AssertionError("a scoring fix must not need the archive")
+
+    monkeypatch.setattr(backtest_accuracy, "load_voted_prices", explode)
+    import db.parquet as parquet_mod
+    monkeypatch.setattr(parquet_mod, "append_table", lambda *a, **k: None)
+    monkeypatch.setattr(scoring, "FLAT_TOLERANCE", 0.001)
+
+    after = backtest_accuracy.backtest_forecasts(session, today=EVAL_DATE)
+    all_after = next(r for r in after if r["price_tier"] is None)
+    assert all_after["metrics"]["directional_accuracy"] == 0.0
+
+    # The stored row is untouched — only the derivation moved.
+    frozen = session.query(ForecastOutcome).filter_by(forecast_id=1).one()
+    assert frozen.direction_actual == "flat"
+    assert frozen.direction_correct == 1
+
+
+def test_gate_denominator_counts_only_forecasts_requiring_resolution(
+    session, tmp_path, monkeypatch
+):
+    """20 frozen forecasts plus 10 new ones of which 2 are unresolvable is a 20%
+    resolution failure rate and must trip the gate. Counting the frozen majority
+    in the denominator would read 2/30 = 6.7% and wave it through — a frozen
+    forecast was not resolved this run and belongs on neither side of the ratio.
+    """
+    rows = []
+    for i in range(20):
+        rows += [(f"old{i}", date(2026, 7, d), 3.0) for d in range(3, 9)]
+        _seed(session, i + 1, f"old{i}", current_price=3.0, price_mid=3.0)
+    session.commit()
+    archive = _write_archive(tmp_path, rows)
+
+    _run_backtest(session, archive, monkeypatch)
+    assert session.query(ForecastOutcome).count() == 20
+
+    # 8 resolvable newcomers and 2 with no observation at or before 07-05.
+    for i in range(8):
+        rows += [(f"new{i}", date(2026, 7, d), 3.0) for d in range(3, 9)]
+        _seed(session, 100 + i, f"new{i}", current_price=3.0, price_mid=3.0)
+    for i in range(2):
+        rows += [(f"gap{i}", date(2026, 7, d), 3.0) for d in (6, 7, 8)]
+        _seed(session, 200 + i, f"gap{i}", current_price=3.0, price_mid=3.0)
+    session.commit()
+    _revise_archive(archive, rows)
+
+    with pytest.raises(RuntimeError, match="could not be resolved"):
+        _run_backtest(session, archive, monkeypatch)
+
+    # The gate fired before anything new was persisted.
+    assert session.query(ForecastOutcome).count() == 20
+
+
 def test_headline_log_line_handles_fewer_than_ten_samples_without_raising(
     session, tmp_path, monkeypatch
 ):
