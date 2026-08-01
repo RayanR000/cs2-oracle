@@ -542,3 +542,196 @@ def test_rescore_path_emits_the_same_tier_rows_as_the_normal_path(
     # all-tiers aggregate (price_tier=None) must be present in both paths.
     assert {None, 1, 2} == {t for (_, _, t) in normal_shape}
     assert normal_shape == rescore_shape
+
+
+# ---------------------------------------------------------------------------
+# Task 8: the determinism regression test.
+#
+# The bug: the base leg of actual_ret was item_forecasts.current_price (a
+# 3-observation median written once at serving time) and the actual leg was a
+# raw single-day voted price re-read from the archive on every run. Two
+# different estimators, differenced against a 0.5% flat band. When the
+# archive gained or revised source rows for an already-scored target date,
+# every item's return shifted together and direction labels flipped in bulk —
+# the same 5,512-forecast cohort scored 61.76%, 33.74%, 61.54%, 57.91% across
+# four dates with no change to the model or the forecasts themselves.
+#
+# Layer (a) below exercises the shared estimator directly: an already-
+# resolved anchor's smoothed price must not move when the archive gains an
+# outlier source row for that date. Layer (b) drives the full path —
+# backtest_forecasts, twice, across an archive revision — which is the
+# actual claim this plan makes ("an archive revision must not move the
+# reported metric") and exercises both the estimator and the Task 6 freeze.
+# ---------------------------------------------------------------------------
+
+
+def test_estimator_price_is_unchanged_when_archive_gains_an_outlier_source_row(tmp_path):
+    """Layer (a). The voted+smoothed price for an already-resolved anchor
+    (07-08) must not move when a new outlier source row appears for that
+    date. Multi-source voting rejects the outlier and the window median
+    absorbs anything that gets through — this is what makes re-resolving a
+    growing mature cohort every day safe in the first place.
+    """
+    archive = tmp_path / "price-archive"
+    archive.mkdir()
+    days = [date(2026, 7, 1) + timedelta(days=i) for i in range(12)]
+
+    def write(extra_rows):
+        frame = pd.DataFrame(
+            {
+                "item_slug": ["ak"] * 12,
+                "day": pd.to_datetime(days),
+                "mean_price": [3.0] * 12,
+                "volume": [5] * 12,
+                "source": ["a"] * 12,
+            }
+        )
+        if extra_rows is not None:
+            frame = pd.concat([frame, extra_rows], ignore_index=True)
+        frame.to_parquet(archive / "prices-2026.parquet")
+
+    anchors = {("ak", date(2026, 7, 5)), ("ak", date(2026, 7, 8))}
+
+    write(None)
+    before = smoothed_prices(
+        price_resolution.load_voted_prices(archive, ["ak"], date(2026, 7, 1), date(2026, 7, 12)),
+        anchors,
+    )
+
+    # A second source appears for an already-resolved day, well off consensus.
+    write(
+        pd.DataFrame(
+            {
+                "item_slug": ["ak"],
+                "day": pd.to_datetime([date(2026, 7, 8)]),
+                "mean_price": [75.0],
+                "volume": [5],
+                "source": ["b"],
+            }
+        )
+    )
+    after = smoothed_prices(
+        price_resolution.load_voted_prices(archive, ["ak"], date(2026, 7, 1), date(2026, 7, 12)),
+        anchors,
+    )
+
+    assert direction_from_return(
+        (before[("ak", date(2026, 7, 8))] - before[("ak", date(2026, 7, 5))])
+        / before[("ak", date(2026, 7, 5))]
+    ) == "flat"
+
+    # Voting rejects the outlier source; even unfrozen, the estimator holds.
+    assert after[("ak", date(2026, 7, 8))] == before[("ak", date(2026, 7, 8))]
+
+
+def test_backtest_forecasts_reports_identical_metrics_across_an_archive_revision(
+    session, tmp_path, monkeypatch
+):
+    """Layer (b), the centrepiece: backtest_forecasts run twice across an
+    archive revision, same forecast cohort both times, must report identical
+    metrics and must not duplicate the frozen per-forecast outcome rows.
+
+    backtest_forecasts re-derives its scoring records fresh from the archive
+    on every call (the mature cohort is re-scored daily, growing over time) —
+    it does not read them back from the frozen ForecastOutcome rows. So the
+    metrics-stability half of this assertion is carried by the shared
+    estimator, exercised through the real pipeline rather than in isolation.
+    The row-count half is carried by the Task 6 freeze: a freeze that
+    silently duplicated rather than skipped rows would leave the *values*
+    unchanged but the table would grow every run, which the plain
+    before/after dict comparison used in Task 6's own test cannot see.
+    """
+    rows = [("ak", date(2026, 7, d), 3.0) for d in (3, 4, 5)]
+    rows += [("ak", date(2026, 7, d), 3.3) for d in (6, 7, 8)]
+    rows += [("awp", date(2026, 7, d), 10.0) for d in (3, 4, 5, 6, 7, 8)]
+    archive = _write_archive(tmp_path, rows)
+
+    _seed(
+        session, 1, "ak", current_price=3.0, price_mid=3.6,
+        price_low=3.0, price_high=4.0, direction="up",
+    )
+    _seed(
+        session, 2, "awp", current_price=10.0, price_mid=10.1,
+        price_low=9.0, price_high=11.0, direction="flat",
+    )
+    session.commit()
+
+    results_before = _run_backtest(session, archive, monkeypatch)
+    assert session.query(ForecastOutcome).count() == 2
+
+    # The archive is revised: an outlier source row appears for the
+    # already-resolved 07-08 target date. Voting rejects it, so the resolved
+    # "ak" price at 07-08 is unchanged — but this is driven through the real
+    # backtest_accuracy.load_voted_prices / smoothed_prices call path, not a
+    # direct call, so it also proves the wiring, not just the estimator.
+    base_frame = pd.DataFrame(
+        {
+            "item_slug": [r[0] for r in rows],
+            "day": pd.to_datetime([r[1] for r in rows]),
+            "mean_price": [float(r[2]) for r in rows],
+            "volume": [10] * len(rows),
+            "source": ["a"] * len(rows),
+        }
+    )
+    extra = pd.DataFrame(
+        {
+            "item_slug": ["ak"],
+            "day": pd.to_datetime([date(2026, 7, 8)]),
+            "mean_price": [75.0],
+            "volume": [5],
+            "source": ["b"],
+        }
+    )
+    pd.concat([base_frame, extra], ignore_index=True).to_parquet(
+        archive / "prices-2026.parquet"
+    )
+
+    results_after = _run_backtest(session, archive, monkeypatch)
+
+    def shape(results):
+        return {
+            (r["horizon_days"], r["model_version"], r["price_tier"]): (
+                r["sample_count"],
+                r["metrics"],
+            )
+            for r in results
+        }
+
+    assert shape(results_before) == shape(results_after)
+
+    # Not just unchanged values — exactly as many rows as forecasts, both
+    # before and after the revision.
+    assert session.query(ForecastOutcome).count() == 2
+    outcomes = {
+        o.forecast_id: (o.base_price, o.actual_price)
+        for o in session.query(ForecastOutcome).all()
+    }
+    assert outcomes[1] == (pytest.approx(3.0), pytest.approx(3.3))
+    assert outcomes[2] == (pytest.approx(10.0), pytest.approx(10.0))
+
+
+def test_headline_log_line_handles_fewer_than_ten_samples_without_raising(
+    session, tmp_path, monkeypatch
+):
+    """bootstrap_ci returns (None, None) under 10 values. The >=$1 headline
+    log line in backtest_forecasts guards ci_lower is not None before
+    multiplying by 100 — this drives that branch explicitly with a 3-forecast
+    cohort rather than relying on it firing incidentally in other tests."""
+    rows = []
+    for i in range(3):
+        rows += [(f"ak{i}", date(2026, 7, d), 3.0) for d in (3, 4, 5)]
+        rows += [(f"ak{i}", date(2026, 7, d), 3.3) for d in (6, 7, 8)]
+        _seed(
+            session, i + 1, f"ak{i}", current_price=3.0, price_mid=3.6,
+            price_low=3.0, price_high=4.0, direction="up",
+        )
+    session.commit()
+
+    archive = _write_archive(tmp_path, rows)
+
+    results = _run_backtest(session, archive, monkeypatch)
+
+    all_row = next(r for r in results if r["price_tier"] is None)
+    assert all_row["sample_count"] == 3
+    assert all_row["metrics"]["directional_accuracy_ci_lower"] is None
+    assert all_row["metrics"]["directional_accuracy_ci_upper"] is None
