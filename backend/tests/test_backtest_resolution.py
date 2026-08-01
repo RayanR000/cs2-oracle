@@ -125,6 +125,19 @@ def test_missing_archive_raises_rather_than_returning_empty(tmp_path):
         load_voted_prices(tmp_path / "nope", ["ak"], date(2026, 7, 1), date(2026, 7, 9))
 
 
+def test_empty_archive_dir_raises_rather_than_returning_empty(tmp_path):
+    """A present-but-empty archive directory (no prices-*.parquet files) is a
+    second silent-success shape: the directory exists, so a naive `.exists()`
+    check alone would pass, and a scan-and-return-empty loader would report a
+    green run over zero rows. Assert on the distinct message so this test
+    verifies the *second* raise (no parquet files found), not the first
+    (directory absent)."""
+    archive = tmp_path / "price-archive"
+    archive.mkdir()  # exists, but contains no prices-*.parquet
+    with pytest.raises(FileNotFoundError, match="no prices-\\*.parquet"):
+        load_voted_prices(archive, ["ak"], date(2026, 7, 1), date(2026, 7, 9))
+
+
 def test_loads_and_votes_multi_source_rows(tmp_path):
     archive = tmp_path / "price-archive"
     archive.mkdir()
@@ -163,3 +176,28 @@ def test_window_dates_before_the_range_are_loaded(tmp_path):
 
     out = load_voted_prices(archive, ["ak"], date(2026, 7, 1), date(2026, 7, 1))
     assert len(out) == 3
+
+
+def test_slug_with_apostrophe_round_trips(tmp_path):
+    """The registered-DataFrame JOIN exists specifically because CS2 item
+    names contain apostrophes, which the old f-string `IN (...)` list
+    hand-escaped. Push a real-shaped apostrophe slug through the loader and
+    confirm it comes back rather than being dropped or breaking the query."""
+    archive = tmp_path / "price-archive"
+    archive.mkdir()
+    slug = "Charm | Lil' Buns"
+    pd.DataFrame(
+        {
+            "item_slug": [slug],
+            "day": pd.to_datetime([date(2026, 7, 1)]),
+            "mean_price": [3.5],
+            "volume": [5],
+            "source": ["a"],
+        }
+    ).to_parquet(archive / "prices-2026.parquet")
+
+    out = load_voted_prices(archive, [slug], date(2026, 7, 1), date(2026, 7, 1))
+
+    assert len(out) == 1
+    assert out.iloc[0]["item_id"] == slug
+    assert out.iloc[0]["price"] == 3.5
