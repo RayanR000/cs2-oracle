@@ -258,7 +258,7 @@ class PredictionAccuracy(Base):
     __table_args__ = (
         Index('idx_accuracy_type_date', 'prediction_type', 'evaluation_date'),
         UniqueConstraint('prediction_type', 'evaluation_date', 'horizon_days', 'model_version',
-                         name='uq_accuracy_type_date_horizon_model'),
+                         'price_tier', name='uq_accuracy_type_date_horizon_model_tier'),
     )
 
 

@@ -26,9 +26,12 @@ from sqlalchemy import text
 from backtest.price_resolution import load_voted_prices, smoothed_prices
 from backtest.scoring import (
     FLAT_TOLERANCE,
+    HEADLINE_MIN_TIER,
     bootstrap_ci,
     direction_from_return,
+    headline_records,
     price_tier,
+    score_by_tier,
     score_cohort,
 )
 
@@ -59,6 +62,7 @@ def _upsert_accuracy(db, rows):
             filters["model_version"] = row["model_version"]
         else:
             filters["model_version"] = None
+        filters["price_tier"] = row.get("price_tier")
 
         existing = db.query(PredictionAccuracy).filter_by(**filters).first()
         if existing:
@@ -72,7 +76,9 @@ def _upsert_accuracy(db, rows):
 
     if rows:
         from db.parquet import append_table
-        append_table("prediction_accuracy", rows, ["prediction_type", "evaluation_date", "horizon_days", "model_version"])
+        append_table("prediction_accuracy", rows,
+                     ["prediction_type", "evaluation_date", "horizon_days",
+                      "model_version", "price_tier"])
 
 
 # ---------------------------------------------------------------------------
@@ -203,19 +209,18 @@ def backtest_forecasts(db, today=None, min_price=0, reresolve=False, rescore=Fal
         groups = _records_from_frozen_outcomes(db, min_price=min_price)
         results = []
         for (horizon, model_version), records in sorted(groups.items()):
-            metrics, n = score_cohort(records)
-            if n == 0:
-                continue
-            results.append({
-                "prediction_type": "forecast",
-                "evaluation_date": today,
-                "horizon_days": horizon,
-                "model_version": model_version,
-                "evaluation_window_days": None,
-                "sample_count": n,
-                "metrics": metrics,
-                "created_at": datetime.now(timezone.utc).replace(tzinfo=None),
-            })
+            for tier, metrics, n in score_by_tier(records):
+                results.append({
+                    "prediction_type": "forecast",
+                    "evaluation_date": today,
+                    "horizon_days": horizon,
+                    "model_version": model_version,
+                    "price_tier": tier,
+                    "evaluation_window_days": None,
+                    "sample_count": n,
+                    "metrics": metrics,
+                    "created_at": datetime.now(timezone.utc).replace(tzinfo=None),
+                })
         if results:
             _upsert_accuracy(db, results)
             logger.info(f"  Stored {len(results)} forecast accuracy records")
@@ -356,37 +361,48 @@ def backtest_forecasts(db, today=None, min_price=0, reresolve=False, rescore=Fal
             logger.info(f"  [{horizon}d / {model_version}] No valid comparisons")
             continue
 
-        metrics, n = score_cohort(records)
-        if n == 0:
+        tiered = score_by_tier(records)
+        if not tiered:
             logger.info(f"  [{horizon}d / {model_version}] No valid comparisons")
             continue
 
-        dir_ci_lower = metrics["directional_accuracy_ci_lower"]
-        dir_ci_upper = metrics["directional_accuracy_ci_upper"]
+        for tier, metrics, n in tiered:
+            results.append({
+                "prediction_type": "forecast",
+                "evaluation_date": today,
+                "horizon_days": horizon,
+                "model_version": model_version,
+                "price_tier": tier,
+                "evaluation_window_days": None,
+                "sample_count": n,
+                "metrics": metrics,
+                "created_at": datetime.now(timezone.utc).replace(tzinfo=None),
+            })
 
-        results.append({
-            "prediction_type": "forecast",
-            "evaluation_date": today,
-            "horizon_days": horizon,
-            "model_version": model_version,
-            "evaluation_window_days": None,
-            "sample_count": n,
-            "metrics": metrics,
-            "created_at": datetime.now(timezone.utc).replace(tzinfo=None),
-        })
+        head = headline_records(records)
+        penny = [r for r in records if r["price_tier"] < HEADLINE_MIN_TIER]
+        head_metrics, head_n = score_cohort(head)
+        penny_metrics, penny_n = score_cohort(penny)
 
-        ci_str = ""
-        if dir_ci_lower is not None:
-            ci_str = f" [CI: {dir_ci_lower:.1f}–{dir_ci_upper:.1f}]"
-        logger.info(
-            f"  [{horizon}d / {model_version}] {n} samples — "
-            f"MAE=${metrics['mae']:.2f} MAPE={metrics['mape']:.1f}% "
-            f"wMAPE={metrics['wmape']:.1f}% "
-            f"DirAcc={metrics['directional_accuracy']:.1f}%{ci_str} "
-            f"IntCov={metrics['interval_coverage']:.1f}% "
-            f"Gap={metrics['conf_gap_pp']:.1f}pp "
-            f"Skill={metrics['skill_vs_baseline']}"
-        )
+        if head_n:
+            head_ci_lower = head_metrics["directional_accuracy_ci_lower"]
+            head_ci_upper = head_metrics["directional_accuracy_ci_upper"]
+            ci_str = ""
+            if head_ci_lower is not None:
+                ci_str = f" [CI: {head_ci_lower * 100:.1f}–{head_ci_upper * 100:.1f}]"
+            logger.info(
+                f"  [{horizon}d / {model_version}] >=$1: {head_n:,} samples — "
+                f"MAE=${head_metrics['mae']:.2f} MAPE={head_metrics['mape']:.1f}% "
+                f"DirAcc={head_metrics['directional_accuracy']:.1f}%{ci_str} "
+                f"IntCov={head_metrics['interval_coverage']:.1f}% "
+                f"ConfGap={head_metrics['conf_gap_pp']:.1f}pp "
+                f"Skill={head_metrics['skill_vs_baseline']}"
+            )
+        if penny_n:
+            logger.info(
+                f"  [{horizon}d / {model_version}] <$1: {penny_n:,} samples — "
+                f"DirAcc={penny_metrics['directional_accuracy']:.1f}% (tick-dominated)"
+            )
 
     if n_considered:
         unresolvable_pct = n_unresolvable / n_considered * 100

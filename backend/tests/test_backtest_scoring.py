@@ -440,6 +440,35 @@ def test_reresolve_overrides_the_freeze(session, monkeypatch):
     assert session.query(ForecastOutcome).filter_by(forecast_id=8).one().actual_price == 99.0
 
 
+from backtest.scoring import HEADLINE_MIN_TIER, score_by_tier
+
+
+def test_tier_rows_partition_the_all_row():
+    records = [_record(price_tier=0, item_id=i) for i in range(30)]
+    records += [_record(price_tier=1, item_id=100 + i) for i in range(20)]
+
+    scored = score_by_tier(records)
+    per_tier = {tier: n for tier, _, n in scored if tier is not None}
+    all_rows = [(m, n) for tier, m, n in scored if tier is None]
+
+    assert per_tier == {0: 30, 1: 20}
+    assert len(all_rows) == 1
+    assert all_rows[0][1] == 50
+    assert sum(per_tier.values()) == all_rows[0][1]
+
+
+def test_empty_tiers_are_omitted_not_zero_filled():
+    records = [_record(price_tier=4, item_id=i) for i in range(12)]
+    tiers = {tier for tier, _, _ in score_by_tier(records) if tier is not None}
+    assert tiers == {4}
+
+
+def test_headline_tier_is_one_dollar_and_up():
+    assert HEADLINE_MIN_TIER == 1
+    assert price_tier(0.99) < HEADLINE_MIN_TIER
+    assert price_tier(1.00) >= HEADLINE_MIN_TIER
+
+
 def test_forecasts_with_no_slug_mapping_count_toward_the_gate(
     session, tmp_path, monkeypatch
 ):
@@ -466,3 +495,50 @@ def test_forecasts_with_no_slug_mapping_count_toward_the_gate(
 
     with pytest.raises(RuntimeError, match="could not be resolved"):
         _run_backtest(session, archive, monkeypatch)
+
+
+def test_rescore_path_emits_the_same_tier_rows_as_the_normal_path(
+    session, tmp_path, monkeypatch
+):
+    """Task 6 introduced --rescore ahead of score_by_tier existing, so it
+    scored one blended cohort per (horizon, model_version) as a placeholder.
+    Now that score_by_tier exists, both paths must emit the same set of
+    (horizon_days, model_version, price_tier) rows, with matching sample
+    counts, for the same underlying data — otherwise --rescore silently
+    reports a different shape than a normal run."""
+    from scripts import backtest_accuracy
+
+    archive = _write_archive(
+        tmp_path,
+        [("ak", date(2026, 7, d), 3.0) for d in (3, 4, 5)]
+        + [("ak", date(2026, 7, d), 3.3) for d in (6, 7, 8)]
+        + [("awp", date(2026, 7, d), 10.0) for d in (3, 4, 5)]
+        + [("awp", date(2026, 7, d), 11.0) for d in (6, 7, 8)],
+    )
+    _seed(session, 1, "ak", current_price=3.0, price_mid=3.6,
+          price_low=3.0, price_high=4.0, direction="up")
+    _seed(session, 2, "awp", current_price=10.0, price_mid=11.5,
+          price_low=10.0, price_high=13.0, direction="up")
+    session.commit()
+
+    normal_results = _run_backtest(session, archive, monkeypatch)
+
+    import db.parquet as parquet_mod
+    monkeypatch.setattr(parquet_mod, "append_table", lambda *a, **k: None)
+    rescore_results = backtest_accuracy.backtest_forecasts(
+        session, today=EVAL_DATE, rescore=True
+    )
+
+    def shape(results):
+        return {
+            (r["horizon_days"], r["model_version"], r["price_tier"]): r["sample_count"]
+            for r in results
+        }
+
+    normal_shape = shape(normal_results)
+    rescore_shape = shape(rescore_results)
+
+    # Both a per-tier row (tier 1 for "ak", tier 2 for "awp") and the
+    # all-tiers aggregate (price_tier=None) must be present in both paths.
+    assert {None, 1, 2} == {t for (_, _, t) in normal_shape}
+    assert normal_shape == rescore_shape

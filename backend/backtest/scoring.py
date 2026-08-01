@@ -126,3 +126,38 @@ def score_cohort(records: list[dict]) -> tuple[dict, int]:
         "mae_ci_upper": mae_ci_upper,
     }
     return metrics, n
+
+
+# Tiers at or above this are aggregated into the headline figure. Tier 0
+# (<$1) is 72% of the evaluated universe and one cent there is a 20% move,
+# so its up/flat/down label is dominated by tick quantisation. It is
+# reported separately rather than filtered out — "the model is worse on
+# penny items" is a real question the tier rows keep answerable.
+HEADLINE_MIN_TIER = 1
+
+
+def score_by_tier(records: list[dict]) -> list[tuple[int | None, dict, int]]:
+    """Score per price tier plus an all-tiers aggregate.
+
+    Returns [(tier, metrics, n), ..., (None, metrics, n)]. Tiers with no
+    records are omitted rather than emitted as zeros.
+    """
+    by_tier: dict[int, list[dict]] = defaultdict(list)
+    for r in records:
+        by_tier[r["price_tier"]].append(r)
+
+    out: list[tuple[int | None, dict, int]] = []
+    for tier in sorted(by_tier):
+        metrics, n = score_cohort(by_tier[tier])
+        if n:
+            out.append((tier, metrics, n))
+
+    metrics, n = score_cohort(records)
+    if n:
+        out.append((None, metrics, n))
+    return out
+
+
+def headline_records(records: list[dict]) -> list[dict]:
+    """The >=$1 subset used for the headline log line."""
+    return [r for r in records if r["price_tier"] >= HEADLINE_MIN_TIER]
