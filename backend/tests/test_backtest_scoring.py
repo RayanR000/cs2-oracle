@@ -1841,6 +1841,10 @@ def _run_with_real_mirror(session, archive, monkeypatch, today=EVAL_DATE, **kwar
     from scripts import backtest_accuracy
 
     assert "price-archive" not in str(parquet_mod.OPS_DIR), parquet_mod.OPS_DIR
+    # ...and that a stub left over from an earlier _run_backtest in the same
+    # test is not quietly swallowing the writes this test means to inspect.
+    for name in ("append_table", "replace_rows"):
+        assert getattr(parquet_mod, name).__module__ == "db.parquet", name
 
     real_loader = price_resolution.load_voted_prices
 
@@ -1926,7 +1930,16 @@ def test_the_default_path_never_deletes_a_frozen_row(session, tmp_path, monkeypa
     Same scenario without --reresolve. A forecast that stops resolving on the
     daily path keeps its frozen row: the likely cause is a transient archive
     problem, and reacting to a resolution failure by destroying good history
-    would be silent and unrecoverable. Deletion is an operator action only."""
+    would be silent and unrecoverable. Deletion is an operator action only.
+
+    THIS TEST DOES NOT CARRY THE GUARANTEE — the unit test below does. It
+    cannot: on the daily path a forecast that already has a row is frozen and
+    never enters `to_resolve`, so it never reaches the considered set, and a
+    mutation that made the default branch delete would leave this test green
+    (measured). What this test pins is the end-to-end story — the row is still
+    there, with its actuals, after the archive regressed. Keep both; if one has
+    to go, keep
+    test_the_default_path_does_not_delete_even_when_handed_a_considered_set."""
     archive = _seed_cohort(session, tmp_path)
     _run_backtest(session, archive, monkeypatch)
     before = {
@@ -1951,7 +1964,12 @@ def test_the_default_path_does_not_delete_even_when_handed_a_considered_set(
 ):
     """The asymmetry asserted directly on _store_forecast_outcomes, so it holds
     whatever the caller passes: with reresolve=False, a considered id whose
-    forecast produced no outcome keeps its row."""
+    forecast produced no outcome keeps its row.
+
+    THIS IS THE TEST THAT CARRIES THE INSERT-ONLY GUARANTEE. The end-to-end
+    version above cannot reach the case — frozen forecasts never re-enter the
+    considered set on the daily path — so this is the only test that fails when
+    the default branch is mutated to delete. Do not delete it as a duplicate."""
     import scripts.backtest_accuracy as bt
 
     _stub_parquet_writes(monkeypatch)
@@ -2065,3 +2083,168 @@ def test_reresolve_leaves_min_price_filtered_rows_alone(
 
     session.expire_all()
     assert session.query(ForecastOutcome).count() == 12
+
+
+# ---------------------------------------------------------------------------
+# Fix round 1, Finding 1: replace_rows must widen the schema and never narrow
+# it. It rewrites the WHOLE file, and the backfill is the next thing to run.
+#
+# The production forecast_outcomes mirror has 18 columns and no base_price; the
+# re-resolve write carries 20. Under _append_parquet's column INTERSECTION the
+# two extra columns were discarded, so a --reresolve would have rewritten the
+# whole 65k-row served file without the frozen actuals — the values the backfill
+# exists to produce. Same schema-drift class as the SQLite text()/VARCHAR trap
+# earlier in this plan: same file, same blast radius.
+# ---------------------------------------------------------------------------
+
+
+def test_replace_rows_widens_the_schema_instead_of_dropping_new_columns(
+    tmp_path, monkeypatch
+):
+    """A column in the incoming rows that the file lacks must be ADDED, NULL on
+    the rows that survive — not silently discarded. This is the case that
+    decides whether the production mirror gets base_price at all."""
+    import db.parquet as parquet_mod
+
+    monkeypatch.setattr(parquet_mod, "OPS_DIR", tmp_path / "ops")
+
+    parquet_mod.append_table(
+        "t", [{"k": 1, "a": 10.0}, {"k": 2, "a": 20.0}], ["k"]
+    )
+    assert list(parquet_mod.read_table("t").columns) == ["k", "a"]
+
+    parquet_mod.replace_rows("t", "k", [], [{"k": 3, "a": 30.0, "extra": 1.5}])
+
+    out = parquet_mod.read_table("t").set_index("k").sort_index()
+    assert "extra" in out.columns
+    assert out.loc[3, "extra"] == pytest.approx(1.5)
+    # The rows the write did not carry survive, keep their own values, and take
+    # NULL for the added column rather than vanishing.
+    assert out.loc[1, "a"] == pytest.approx(10.0)
+    assert out.loc[2, "a"] == pytest.approx(20.0)
+    assert pd.isna(out.loc[1, "extra"]) and pd.isna(out.loc[2, "extra"])
+    # File column order is preserved, with the new column appended.
+    assert list(parquet_mod.read_table("t").columns) == ["k", "a", "extra"]
+
+
+def test_replace_rows_refuses_to_narrow_the_file_schema(tmp_path, monkeypatch):
+    """A column the file has and the incoming rows lack cannot be preserved on
+    the rows being rewritten. Blanking them quietly is how a whole-file rewrite
+    loses a column for good, so it raises — and the file on disk is untouched,
+    because the rewrite only ever lands via os.replace."""
+    import db.parquet as parquet_mod
+
+    monkeypatch.setattr(parquet_mod, "OPS_DIR", tmp_path / "ops")
+
+    parquet_mod.append_table(
+        "t",
+        [{"k": 1, "a": 10.0, "extra": "keep"}, {"k": 2, "a": 20.0, "extra": "y"}],
+        ["k"],
+    )
+
+    with pytest.raises(ValueError, match="extra"):
+        parquet_mod.replace_rows("t", "k", [2], [{"k": 3, "a": 30.0}])
+
+    out = parquet_mod.read_table("t").set_index("k").sort_index()
+    assert list(out.columns) == ["a", "extra"]
+    assert sorted(out.index) == [1, 2]
+    assert out.loc[1, "extra"] == "keep"
+    # No temp file was left behind by the failed rewrite.
+    assert list((tmp_path / "ops").glob("*.tmp")) == []
+
+    # Supplying the whole row is accepted, and the untouched row keeps its
+    # column and its value.
+    parquet_mod.replace_rows(
+        "t", "k", [2], [{"k": 3, "a": 30.0, "extra": "new"}]
+    )
+    out = parquet_mod.read_table("t").set_index("k").sort_index()
+    assert sorted(out.index) == [1, 3]
+    assert out.loc[1, "extra"] == "keep"
+    assert out.loc[3, "extra"] == "new"
+
+
+def test_reresolve_adds_base_price_to_a_mirror_that_predates_the_column(
+    session, tmp_path, monkeypatch
+):
+    """The production shape, end to end: the served mirror has the pre-freeze
+    18 columns and no base_price, while --reresolve writes 20. The rewritten
+    file must GAIN base_price with real values, not silently drop it — the
+    frozen actuals are the whole point of the backfill and the API serves this
+    copy first."""
+    import db.parquet as parquet_mod
+
+    real_append = parquet_mod.append_table
+    real_replace = parquet_mod.replace_rows
+
+    archive = _seed_cohort(session, tmp_path)
+    _run_backtest(session, archive, monkeypatch)          # DB only, writes stubbed
+
+    monkeypatch.setattr(parquet_mod, "OPS_DIR", tmp_path / "ops")
+    monkeypatch.setattr(parquet_mod, "append_table", real_append)
+    monkeypatch.setattr(parquet_mod, "replace_rows", real_replace)
+
+    # A legacy mirror: every column the freeze added is absent.
+    legacy = []
+    for o in session.query(ForecastOutcome).all():
+        row = _outcome_to_mapping_for_test(o)
+        row.pop("base_price")
+        row["evaluated_at"] = o.evaluated_at
+        legacy.append(row)
+    parquet_mod.append_table("forecast_outcomes", legacy, ["forecast_id"])
+
+    before = parquet_mod.read_table("forecast_outcomes")
+    assert "base_price" not in before.columns
+    assert "resolved_at" not in before.columns
+    assert len(before) == 12
+
+    _break_ak0(archive)
+    _run_with_real_mirror(session, archive, monkeypatch, reresolve=True)
+
+    after = parquet_mod.read_table("forecast_outcomes")
+    assert "base_price" in after.columns
+    assert "resolved_at" in after.columns
+    assert len(after) == 11
+    assert 1 not in set(after["forecast_id"])
+    # Real frozen values, not NULLs.
+    assert after["base_price"].notna().all()
+    assert after["base_price"].round(4).eq(3.00).all()
+    assert after["actual_price"].round(4).eq(3.01).all()
+    # ...and no pre-existing column was lost in the widening rewrite.
+    assert set(before.columns) <= set(after.columns)
+
+
+def _outcome_to_mapping_for_test(o):
+    from scripts import backtest_accuracy
+
+    return backtest_accuracy._outcome_to_mapping(o)
+
+
+def test_reresolve_min_price_deletes_only_the_unresolvable(
+    session, tmp_path, monkeypatch
+):
+    """Fix round 1, Minor 1 — the real boundary of considered_ids under
+    --min-price, in one MIXED cohort.
+
+    Every forecast here resolves below the threshold, but ak0 does not resolve
+    at all. A forecast leaves considered_ids only when the run positively
+    established it is out of scope, which needs a resolved base price. ak0 has
+    none, so it stays in the set and its row goes; the eleven that resolved and
+    were then filtered keep theirs, because the run wrote no replacement for
+    them. Deleting those would make `--reresolve --min-price` a silent
+    history-truncation tool."""
+    archive = _seed_cohort(session, tmp_path)
+    _run_backtest(session, archive, monkeypatch)
+    assert session.query(ForecastOutcome).count() == 12
+
+    _break_ak0(archive)
+    # Threshold far above every resolved base price (3.00).
+    _run_backtest(session, archive, monkeypatch, reresolve=True, min_price=100.0)
+
+    session.expire_all()
+    assert session.query(ForecastOutcome).filter_by(forecast_id=1).first() is None
+    assert session.query(ForecastOutcome).count() == 11
+    # The filtered-but-resolvable rows were neither deleted nor rewritten.
+    assert all(
+        o.actual_price == pytest.approx(3.01)
+        for o in session.query(ForecastOutcome).all()
+    )

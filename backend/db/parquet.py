@@ -21,6 +21,7 @@ import os
 from functools import lru_cache
 from pathlib import Path
 from typing import Any, Iterable, Optional
+from uuid import uuid4
 
 import duckdb
 import pandas as pd
@@ -187,6 +188,24 @@ def replace_rows(
     ``_append_parquet`` COPYs over the live path and does not have this
     property; it is left alone because appending is additive, while a delete
     that is interrupted mid-COPY would destroy rows nothing can rebuild.
+
+    SCHEMA. The output schema is the UNION of the file's columns and
+    *new_rows*': it widens, and it never narrows.
+
+    * A column in *new_rows* that the file lacks is ADDED, NULL (typed from the
+      incoming frame) on every surviving row. ``_append_parquet``'s
+      intersection would have discarded it. That is not academic — the
+      production ``forecast_outcomes`` mirror has 18 columns and no
+      ``base_price``, while the re-resolve write carries 20. Under an
+      intersection a ``--reresolve`` would rewrite the whole 65k-row served
+      file *without the frozen actuals*, which are the entire point of the
+      backfill.
+    * A column the file has and *new_rows* lacks cannot be preserved on the
+      rows being rewritten, so it raises rather than silently blanking them.
+      Surviving rows always keep every column they had.
+
+    File column order is preserved, with added columns appended — the caller's
+    dict ordering does not get to reshuffle the served file.
     """
     if isinstance(new_rows, list) or new_rows is None:
         new_rows = pd.DataFrame(new_rows or [])
@@ -208,7 +227,7 @@ def replace_rows(
         return
 
     new_rows = _coerce_dates(new_rows)
-    tmp = path.with_name(f"{path.name}.tmp")
+    tmp = _tmp_path(path)
     con = duckdb.connect()
     try:
         existing_cols = [
@@ -217,18 +236,31 @@ def replace_rows(
             ).fetchall()
         ]
         if new_rows.empty:
-            cols = existing_cols
+            out_cols = existing_cols
+            existing_select = ", ".join(existing_cols)
             new_select = ""
         else:
-            # Same column alignment rule as _append_parquet: intersect with the
-            # file so schema drift cannot corrupt the whole table.
-            cols = [c for c in new_rows.columns if c in existing_cols]
-            if not cols:
-                cols = list(new_rows.columns)
+            missing = [c for c in existing_cols if c not in new_rows.columns]
+            if missing:
+                raise ValueError(
+                    f"replace_rows('{table}'): incoming rows are missing "
+                    f"column(s) {missing} that the file has. The rewritten "
+                    f"rows would silently lose them. Supply the whole row."
+                )
             con.register("_new", new_rows)
-            new_select = f"SELECT {', '.join(cols)} FROM _new UNION ALL "
+            new_types = {
+                r[0]: r[1]
+                for r in con.execute("DESCRIBE SELECT * FROM _new").fetchall()
+            }
+            added = [c for c in new_rows.columns if c not in existing_cols]
+            out_cols = existing_cols + added
+            new_select = f"SELECT {', '.join(out_cols)} FROM _new UNION ALL "
+            existing_select = ", ".join(
+                c if c in existing_cols
+                else f"CAST(NULL AS {new_types[c]}) AS {c}"
+                for c in out_cols
+            )
 
-        col_list = ", ".join(cols)
         if keys:
             con.register("_del", pd.DataFrame({"_k": keys}))
             keep = (
@@ -241,7 +273,7 @@ def replace_rows(
         con.execute(f"""
             COPY (
                 {new_select}
-                SELECT {col_list} FROM read_parquet('{path}') _existing
+                SELECT {existing_select} FROM read_parquet('{path}') _existing
                 {keep}
             ) TO '{tmp}' (FORMAT PARQUET)
         """)
@@ -254,8 +286,19 @@ def replace_rows(
     os.replace(tmp, path)
 
 
+def _tmp_path(path: Path) -> Path:
+    """A writer-unique sibling temp name.
+
+    Unique per writer, not just per table: a shared ``<table>.parquet.tmp``
+    lets two concurrent writers interleave their COPYs into one file, and lets
+    one writer's error path unlink the other's temp out from under it. Single
+    writer today; the suffix removes the class rather than relying on that.
+    """
+    return path.with_name(f"{path.name}.{os.getpid()}.{uuid4().hex[:8]}.tmp")
+
+
 def _atomic_write(path: Path, df: pd.DataFrame):
-    tmp = path.with_name(f"{path.name}.tmp")
+    tmp = _tmp_path(path)
     try:
         df.to_parquet(tmp, index=False)
     except BaseException:

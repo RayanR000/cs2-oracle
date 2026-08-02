@@ -389,7 +389,11 @@ def _store_forecast_outcomes(
         if not delete_ids:
             return 0
     else:
-        delete_ids = set()  # the default path NEVER deletes
+        # The default path NEVER deletes. considered_ids is accepted and
+        # ignored here on purpose: the caller passes it unconditionally, so
+        # this empty set is the only thing standing between the daily path and
+        # a delete, and a mutation of this line is visible end to end.
+        delete_ids = set()
         if not outcomes:
             return 0
         all_fids = [o["forecast_id"] for o in outcomes]
@@ -412,7 +416,7 @@ def _store_forecast_outcomes(
         o["evaluated_at"] = resolved_at
         o["resolved_at"] = resolved_at
 
-    if reresolve:
+    if delete_ids:
         from db.parquet import replace_rows
 
         # ORDER IS LOAD-BEARING, same discipline as _flush_verdict_refresh:
@@ -741,11 +745,23 @@ def backtest_forecasts(db, today=None, min_price=0, reresolve=False, rescore=Fal
     # majority would dilute a genuinely broken resolution rate to nothing.
     n_unresolvable = 0
     n_considered = 0
-    # The forecasts this run attempted to resolve AND would have stored a row
-    # for. Under --reresolve this is the delete set, so membership means "this
-    # run owns whatever row this forecast has". A forecast excluded by
-    # --min-price is deliberately NOT a member: the run is not replacing its
-    # row, so it must not remove it either.
+    # The forecasts this run attempted to resolve, MINUS the ones it went on to
+    # exclude by --min-price. Under --reresolve this is the delete set.
+    #
+    # The exact invariant, because it is NOT quite "this run owns this row":
+    # a forecast leaves the set only when the run positively established it is
+    # out of scope, which requires a resolved base price to compare against
+    # --min-price. A forecast that fails to resolve therefore stays in the set
+    # even if it would have been below the threshold — there is no price to
+    # test. So under `--reresolve --min-price` an unresolvable cheap forecast's
+    # row IS removed while a resolvable cheap one's row is kept.
+    #
+    # That asymmetry is the safe direction and is deliberate. The row that is
+    # kept belongs to a forecast the run declined to replace; the row that is
+    # removed belongs to one that no longer resolves at all, which is precisely
+    # what --reresolve exists to clear out. The reverse rule would let
+    # `--reresolve --min-price` delete rows it never established anything about.
+    # Pinned by test_reresolve_min_price_deletes_only_the_unresolvable.
     considered_ids: set[int] = set()
 
     for (horizon, model_version), forecasts in sorted(groups.items()):
@@ -825,9 +841,12 @@ def backtest_forecasts(db, today=None, min_price=0, reresolve=False, rescore=Fal
 
             mid, low, high = f.price_mid, f.price_low, f.price_high
             if min_price > 0 and base < min_price:
-                # Filtered out, not resolved-and-failed: this run neither writes
-                # nor owns this forecast's row, so it stays out of considered_ids
-                # and --reresolve leaves any existing row alone.
+                # Resolved, then positively established to be out of scope. The
+                # run writes no replacement for it, so it stays out of the
+                # delete set and --reresolve leaves any existing row alone.
+                # This is the ONLY exit from considered_ids — see the invariant
+                # note where the set is declared; a forecast that never
+                # resolved cannot reach here and is not excluded.
                 continue
 
             considered_ids.add(f.id)
@@ -889,9 +908,20 @@ def backtest_forecasts(db, today=None, min_price=0, reresolve=False, rescore=Fal
     # Under --reresolve there is work to do even with nothing resolved: the
     # considered forecasts still have stale stored rows to remove.
     if all_outcomes or (reresolve and considered_ids):
+        # Passed unconditionally, not only under --reresolve, so the
+        # insert-only guarantee lives in _store_forecast_outcomes' own branch
+        # rather than in a None the caller happens to send.
+        #
+        # Note what that does NOT buy: on the daily path a forecast that
+        # already has a stored row is frozen and never enters `to_resolve`, so
+        # it is never in considered_ids either. The daily path is therefore
+        # structurally incapable of deleting a frozen row whatever this set
+        # contains — which is also why only the unit test
+        # test_the_default_path_does_not_delete_even_when_handed_a_considered_set
+        # can discriminate a "default path deletes" mutation. Verified: that
+        # mutation fails that test alone.
         _store_forecast_outcomes(
-            db, all_outcomes, reresolve=reresolve,
-            considered_ids=considered_ids if reresolve else None,
+            db, all_outcomes, reresolve=reresolve, considered_ids=considered_ids,
         )
 
     # The actuals are frozen; the verdict columns are not, because they are
