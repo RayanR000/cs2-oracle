@@ -23,7 +23,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from database import SessionLocal, PredictionAccuracy
 from sqlalchemy import bindparam, select, text
-from backtest.price_resolution import load_voted_prices, resolve_anchors
+from backtest.price_resolution import archive_max_day, load_voted_prices, resolve_anchors
 from backtest.scoring import (
     FLAT_TOLERANCE,
     HEADLINE_MIN_TIER,
@@ -677,6 +677,30 @@ def backtest_forecasts(db, today=None, min_price=0, reresolve=False, rescore=Fal
             logger.info(f"  Stored {len(results)} forecast accuracy records")
         return results
 
+    archive_dir = Path(__file__).parent.parent.parent / "price-archive"
+
+    # A forecast is evaluable only when the archive covers its target date, so
+    # the cutoff is the archive's last day, not the calendar's. The archive
+    # always lags `today` — the collector writes yesterday's prices at best —
+    # and every forecast in that lag window is mature-by-calendar and
+    # unresolvable-by-data. Admitting them put 30,859 of 80,737 prod forecasts
+    # into the cohort as guaranteed misses, tripping MAX_UNRESOLVABLE_PCT at
+    # 38.5% so the run reported nothing at all. Because the lag is permanent,
+    # the daily run would have failed identically every day.
+    #
+    # Clamped to `today` rather than taken from the archive alone: a backfilled
+    # archive can hold days past `today`, and a caller passing an explicit
+    # `today` to score a historical cohort must not have future forecasts pulled
+    # in behind its back.
+    coverage_end = archive_max_day(archive_dir)
+    cutoff = min(today, coverage_end)
+    if coverage_end < today:
+        logger.info(
+            f"  Archive covers through {coverage_end}; evaluating forecasts "
+            f"matured on or before that date rather than {today} "
+            f"({(today - coverage_end).days}d of lag)"
+        )
+
     # Fetch all forecasts with a midpoint price, filter for maturity in Python
     rows = db.execute(text("""
         SELECT f.id, f.item_id, f.forecast_date, f.horizon_days,
@@ -686,12 +710,12 @@ def backtest_forecasts(db, today=None, min_price=0, reresolve=False, rescore=Fal
         WHERE f.price_mid IS NOT NULL
     """)).fetchall()
 
-    # Filter for mature forecasts (forecast_date + horizon <= today)
+    # Filter for mature forecasts (forecast_date + horizon <= cutoff)
     mature = []
     for r in rows:
         forecast_date = r.forecast_date if isinstance(r.forecast_date, date) else date.fromisoformat(r.forecast_date)
         maturity_date = forecast_date + timedelta(days=r.horizon_days)
-        if maturity_date <= today:
+        if maturity_date <= cutoff:
             mature.append(r)
 
     if not mature:
@@ -730,8 +754,6 @@ def backtest_forecasts(db, today=None, min_price=0, reresolve=False, rescore=Fal
     for r in to_resolve:
         key = (r.horizon_days, r.model_version or "unknown")
         groups[key].append(r)
-
-    archive_dir = Path(__file__).parent.parent.parent / "price-archive"
 
     id_to_slug = {}
     if to_resolve:

@@ -263,9 +263,107 @@ def _run_backtest(session, archive, monkeypatch, today=EVAL_DATE, **kwargs):
         return real_loader(archive, slugs, min_date, max_date, **kw)
 
     monkeypatch.setattr(backtest_accuracy, "load_voted_prices", loader)
+
+    # Maturity is bounded by archive coverage, so this must read the test
+    # archive too — otherwise the cutoff comes from the repo's real archive and
+    # every test's cohort depends on when the collector last ran.
+    real_max_day = price_resolution.archive_max_day
+
+    def max_day(archive_dir):
+        assert Path(archive_dir).name == "price-archive"
+        return real_max_day(archive)
+
+    monkeypatch.setattr(backtest_accuracy, "archive_max_day", max_day)
     _stub_parquet_writes(monkeypatch)
 
     return backtest_accuracy.backtest_forecasts(session, today=today, **kwargs)
+
+
+def test_maturity_is_bounded_by_archive_coverage_not_the_calendar(
+    session, tmp_path, monkeypatch
+):
+    """A forecast is evaluable only once the archive covers its target date.
+
+    Found running Task 9's backfill against prod: maturity was
+    `target_date <= today` while resolvability is bounded by the archive's last
+    day, which always lags the calendar. 30,859 of 80,737 prod forecasts were
+    mature-by-calendar and unresolvable-by-data, tripping the 10% gate at 38.5%
+    and refusing to report any number at all. Because the archive lags every
+    day, the daily CI run would have failed the same way every day.
+
+    Archive covers through 07-08. `today` is 07-20. The 3d forecast maturing
+    07-08 is evaluable; the 3d forecast maturing 07-15 is not, and must be
+    excluded from the cohort rather than counted as an unresolvable member of
+    it. Pre-fix, both are admitted, 1 of 2 fails to resolve, and the 50%
+    unresolvable rate raises.
+    """
+    archive = _write_archive(
+        tmp_path,
+        [("ak", date(2026, 7, d), 3.0) for d in (3, 4, 5)]
+        + [("ak", date(2026, 7, d), 3.3) for d in (6, 7, 8)]
+        + [("awp", date(2026, 7, d), 5.0) for d in range(3, 9)],
+    )
+    # Matures 2026-07-08 — inside archive coverage.
+    _seed(session, 1, "ak", current_price=3.0, price_mid=3.3, direction="up")
+    # Matures 2026-07-15 — past archive coverage, before `today`.
+    session.add(Item(id=2, item_id="awp", name="awp", type="skin"))
+    session.add(
+        ItemForecast(
+            id=2,
+            item_id=2,
+            forecast_date=date(2026, 7, 12),
+            horizon_days=HORIZON,
+            price_low=4.0,
+            price_mid=5.0,
+            price_high=6.0,
+            current_price=5.0,
+            direction="flat",
+            confidence="high",
+            model_version="lgbm-test",
+        )
+    )
+    session.commit()
+
+    results = _run_backtest(session, archive, monkeypatch, today=date(2026, 7, 20))
+
+    outcomes = session.query(ForecastOutcome).all()
+    assert [o.forecast_id for o in outcomes] == [1]
+    assert results[0]["sample_count"] == 1
+
+
+def test_archive_coverage_does_not_extend_maturity_past_today(
+    session, tmp_path, monkeypatch
+):
+    """The cutoff is min(today, archive_max), not the archive alone.
+
+    A backfilled archive can hold days beyond `today` (the collector writes a
+    range, and callers pass an explicit `today` to score a historical cohort).
+    Clamping to the archive only would score forecasts the caller deliberately
+    placed in the future.
+    """
+    archive = _write_archive(
+        tmp_path, [("ak", date(2026, 7, d), 3.0) for d in range(3, 31)]
+    )
+    _seed(session, 1, "ak", current_price=3.0, price_mid=3.0)
+    session.add(Item(id=2, item_id="awp", name="awp", type="skin"))
+    session.add(
+        ItemForecast(
+            id=2,
+            item_id=2,
+            forecast_date=date(2026, 7, 20),
+            horizon_days=HORIZON,   # matures 07-23, after `today`
+            price_mid=3.0,
+            current_price=3.0,
+            direction="flat",
+            confidence="high",
+            model_version="lgbm-test",
+        )
+    )
+    session.commit()
+
+    _run_backtest(session, archive, monkeypatch, today=date(2026, 7, 10))
+
+    assert [o.forecast_id for o in session.query(ForecastOutcome).all()] == [1]
 
 
 def test_backtest_scores_the_base_leg_from_the_archive_not_current_price(
@@ -718,7 +816,13 @@ def test_forecasts_with_no_slug_mapping_count_toward_the_gate(
     )
     session.commit()
 
-    archive = _write_archive(tmp_path, [("ak", date(2026, 7, 5), 3.0)])
+    # Must reach TARGET_DATE: maturity is bounded by archive coverage, so an
+    # archive stopping at FORECAST_DATE would exclude this forecast from the
+    # cohort entirely and the gate would never engage. The missing slug has to
+    # be the only reason it fails to resolve.
+    archive = _write_archive(
+        tmp_path, [("ak", date(2026, 7, d), 3.0) for d in range(3, 9)]
+    )
 
     with pytest.raises(RuntimeError, match="could not be resolved"):
         _run_backtest(session, archive, monkeypatch)

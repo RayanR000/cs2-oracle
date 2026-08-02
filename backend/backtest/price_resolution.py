@@ -39,6 +39,44 @@ SMOOTH_WINDOW = 3
 MAX_WINDOW_SPAN_DAYS = FALLBACK_MAX_AGE_DAYS
 
 
+def archive_max_day(archive_dir: Path) -> date:
+    """Return the newest day present in the archive's ``prices-*.parquet``.
+
+    This is the resolvability horizon. A forecast whose target date falls past
+    it cannot be scored, no matter how long ago it matured by the calendar, so
+    callers use this rather than ``date.today()`` to decide which forecasts are
+    evaluable. Read from Parquet column statistics, so the cost is metadata
+    only — no row scan.
+
+    Raises FileNotFoundError on a missing or empty archive, matching
+    :func:`load_voted_prices`: an absent archive must never read as "nothing is
+    evaluable yet", which is a green run that scores zero forecasts.
+    """
+    import duckdb
+
+    archive_dir = Path(archive_dir)
+    if not archive_dir.exists():
+        raise FileNotFoundError(f"price archive not found at {archive_dir}")
+
+    pq_files = sorted(str(p) for p in archive_dir.glob("prices-*.parquet"))
+    if not pq_files:
+        raise FileNotFoundError(f"price archive at {archive_dir} contains no prices-*.parquet")
+
+    con = duckdb.connect()
+    try:
+        union_sql = " UNION ALL ".join(
+            f"SELECT max(CAST(day AS DATE)) AS d FROM read_parquet('{f}')" for f in pq_files
+        )
+        newest = con.sql(f"SELECT max(d) FROM ({union_sql})").fetchone()[0]
+    finally:
+        con.close()
+
+    if newest is None:
+        raise FileNotFoundError(f"price archive at {archive_dir} contains no dated price rows")
+
+    return newest if isinstance(newest, date) else pd.Timestamp(newest).date()
+
+
 @dataclass(frozen=True)
 class Resolution:
     """A resolved anchor plus the window that produced it.
