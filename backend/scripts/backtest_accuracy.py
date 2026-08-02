@@ -340,7 +340,9 @@ def _refresh_verdict_columns(db, forecast_ids=None) -> int:
     return total
 
 
-def _store_forecast_outcomes(db, outcomes, reresolve: bool = False) -> int:
+def _store_forecast_outcomes(
+    db, outcomes, reresolve: bool = False, considered_ids=None
+) -> int:
     """Persist per-forecast outcomes. Insert-only unless *reresolve*.
 
     Resolved actuals are frozen: a forecast_id that already has a row keeps
@@ -349,40 +351,100 @@ def _store_forecast_outcomes(db, outcomes, reresolve: bool = False) -> int:
     — that silent rewriting is why the same 5,512 forecasts scored 61.76% on
     07-18 and 33.74% on 07-19. Metrics stay derived and are recomputed every
     run, so a *scoring* fix still lands without --reresolve.
+
+    considered_ids: every forecast this run ATTEMPTED to resolve, whether or not
+        it produced an outcome. Required under --reresolve and ignored
+        otherwise. The delete set is derived from it and NOT from *outcomes*,
+        which is the whole point of Task 8e: a forecast that had a stored row
+        and is now unresolvable — dropped by the anchor-staleness rule or the
+        leg-window disjointness rule — never appears in *outcomes*, so a delete
+        set built from *outcomes* left its row behind. Measured on the Task 9b
+        dry run that was 8,784 rows still carrying values from the old broken
+        estimator, scored into the published metric and into
+        update_bias_corrections_from_outcomes, with --reresolve the only path
+        that could ever have corrected them. It is a required argument rather
+        than an optional one so that a future caller cannot silently reproduce
+        the defect by omitting it.
+
+    THE ASYMMETRY IS DELIBERATE. Only --reresolve deletes. On the default daily
+    path a forecast that stops resolving keeps its frozen row, because there the
+    likely cause is a transient archive problem, and reacting to a resolution
+    failure by destroying good history would be unrecoverable and silent.
+    Deletion is an explicit operator action, never an automatic reaction.
     """
-    if not outcomes:
-        return 0
+    if reresolve and considered_ids is None:
+        raise ValueError(
+            "_store_forecast_outcomes(reresolve=True) requires considered_ids: "
+            "the delete set must cover every forecast considered this run, not "
+            "just the ones that resolved."
+        )
     from database import ForecastOutcome
 
-    all_fids = [o["forecast_id"] for o in outcomes]
-    existing_ids = set()
-    for i in range(0, len(all_fids), 900):
-        batch = all_fids[i:i + 900]
-        rows = db.query(ForecastOutcome.forecast_id).filter(
-            ForecastOutcome.forecast_id.in_(batch)
-        ).all()
-        existing_ids.update(r[0] for r in rows)
-
     if reresolve:
-        stale = list(existing_ids)
-        for i in range(0, len(stale), 900):
-            batch = stale[i:i + 900]
-            db.query(ForecastOutcome).filter(
-                ForecastOutcome.forecast_id.in_(batch)
-            ).delete(synchronize_session=False)
-        to_write = outcomes
+        # Every considered forecast loses its stored row; the ones that
+        # resolved get a freshly written one back. Includes ids with no
+        # existing row, which delete over harmlessly.
+        delete_ids = set(considered_ids) | {o["forecast_id"] for o in outcomes}
+        to_write = list(outcomes)
+        if not delete_ids:
+            return 0
     else:
+        delete_ids = set()  # the default path NEVER deletes
+        if not outcomes:
+            return 0
+        all_fids = [o["forecast_id"] for o in outcomes]
+        existing_ids = set()
+        for i in range(0, len(all_fids), CHUNK):
+            batch = all_fids[i:i + CHUNK]
+            rows = db.query(ForecastOutcome.forecast_id).filter(
+                ForecastOutcome.forecast_id.in_(batch)
+            ).all()
+            existing_ids.update(r[0] for r in rows)
         to_write = [o for o in outcomes if o["forecast_id"] not in existing_ids]
 
-    if not to_write:
-        db.commit()
-        logger.info(f"  All {len(outcomes):,} outcomes already resolved (frozen)")
-        return 0
+        if not to_write:
+            db.commit()
+            logger.info(f"  All {len(outcomes):,} outcomes already resolved (frozen)")
+            return 0
 
     resolved_at = datetime.now(timezone.utc).replace(tzinfo=None)
     for o in to_write:
         o["evaluated_at"] = resolved_at
         o["resolved_at"] = resolved_at
+
+    if reresolve:
+        from db.parquet import replace_rows
+
+        # ORDER IS LOAD-BEARING, same discipline as _flush_verdict_refresh:
+        # the Parquet mirror — the copy the API serves — is written first, in a
+        # single atomic delete-and-insert, and the DB follows. A crash between
+        # them leaves the mirror already corrected while the DB still holds the
+        # pre-run rows, i.e. the run simply has not landed yet; re-running
+        # --reresolve recomputes the same considered set and converges both.
+        # Under the reverse order the same crash would leave the DB clean and
+        # the SERVED copy holding orphans that no daily run can ever remove,
+        # because the daily path is insert-only by design. Nothing detects that
+        # state, and only a second --reresolve would fix it.
+        replace_rows("forecast_outcomes", "forecast_id", delete_ids, to_write)
+
+        deleted = 0
+        ids = sorted(delete_ids)
+        for i in range(0, len(ids), CHUNK):
+            deleted += db.query(ForecastOutcome).filter(
+                ForecastOutcome.forecast_id.in_(ids[i:i + CHUNK])
+            ).delete(synchronize_session=False)
+        if to_write:
+            db.bulk_insert_mappings(ForecastOutcome, to_write)
+        db.commit()
+
+        orphaned = deleted - len(to_write)
+        logger.info(
+            f"  --reresolve: rewrote {len(to_write):,} outcome(s) over "
+            f"{len(delete_ids):,} considered forecast(s); {max(orphaned, 0):,} "
+            f"stored row(s) whose forecast no longer resolves were REMOVED "
+            f"from the DB and the Parquet mirror."
+        )
+        return len(to_write)
 
     db.bulk_insert_mappings(ForecastOutcome, to_write)
     db.commit()
@@ -679,6 +741,12 @@ def backtest_forecasts(db, today=None, min_price=0, reresolve=False, rescore=Fal
     # majority would dilute a genuinely broken resolution rate to nothing.
     n_unresolvable = 0
     n_considered = 0
+    # The forecasts this run attempted to resolve AND would have stored a row
+    # for. Under --reresolve this is the delete set, so membership means "this
+    # run owns whatever row this forecast has". A forecast excluded by
+    # --min-price is deliberately NOT a member: the run is not replacing its
+    # row, so it must not remove it either.
+    considered_ids: set[int] = set()
 
     for (horizon, model_version), forecasts in sorted(groups.items()):
         anchors = set()
@@ -696,6 +764,7 @@ def backtest_forecasts(db, today=None, min_price=0, reresolve=False, rescore=Fal
             logger.info(f"  [{horizon}d / {model_version}] No slug mappings")
             n_considered += len(forecasts)
             n_unresolvable += len(forecasts)
+            considered_ids.update(f.id for f in forecasts)
             continue
 
         anchor_dates = [a[1] for a in anchors]
@@ -713,11 +782,13 @@ def backtest_forecasts(db, today=None, min_price=0, reresolve=False, rescore=Fal
             actual_res = prices.get((slug, target_date))
             if base_res is None or actual_res is None:
                 n_unresolvable += 1
+                considered_ids.add(f.id)
                 continue
 
             base, actual = base_res.price, actual_res.price
             if base <= 0 or actual <= 0:
                 n_unresolvable += 1
+                considered_ids.add(f.id)
                 continue
 
             # EVERY observation backing the actual leg must post-date the
@@ -749,11 +820,17 @@ def backtest_forecasts(db, today=None, min_price=0, reresolve=False, rescore=Fal
             # unresolvable), never given a fallback.
             if actual_res.oldest_observation <= f_date:
                 n_unresolvable += 1
+                considered_ids.add(f.id)
                 continue
 
             mid, low, high = f.price_mid, f.price_low, f.price_high
             if min_price > 0 and base < min_price:
+                # Filtered out, not resolved-and-failed: this run neither writes
+                # nor owns this forecast's row, so it stays out of considered_ids
+                # and --reresolve leaves any existing row alone.
                 continue
+
+            considered_ids.add(f.id)
 
             # Same derivation the refresh and the scoring records use, so a
             # freshly written row is by construction already "current" and the
@@ -809,8 +886,13 @@ def backtest_forecasts(db, today=None, min_price=0, reresolve=False, rescore=Fal
     # new. Passing the frozen rows too keeps the freeze the single gate on the
     # table, and the table is what gets scored below.
     all_outcomes = [_outcome_to_mapping(o) for o in frozen_rows] + new_outcomes
-    if all_outcomes:
-        _store_forecast_outcomes(db, all_outcomes, reresolve=reresolve)
+    # Under --reresolve there is work to do even with nothing resolved: the
+    # considered forecasts still have stale stored rows to remove.
+    if all_outcomes or (reresolve and considered_ids):
+        _store_forecast_outcomes(
+            db, all_outcomes, reresolve=reresolve,
+            considered_ids=considered_ids if reresolve else None,
+        )
 
     # The actuals are frozen; the verdict columns are not, because they are
     # metrics. Bring any that the current scoring logic disagrees with back in

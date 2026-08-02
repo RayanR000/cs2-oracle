@@ -233,7 +233,21 @@ def _seed(session, pk, slug, *, current_price, price_mid, direction="flat",
     )
 
 
-def _run_backtest(session, archive, monkeypatch, today=EVAL_DATE):
+def _stub_parquet_writes(monkeypatch):
+    """Neutralise EVERY mirror write path.
+
+    Human ruling: these write git-tracked production data under
+    price-archive/ops/. append_table is not the only one — replace_rows
+    (Task 8e's delete-and-insert) writes there too, and a test that stubbed
+    only the former would rewrite the real 65k-row file.
+    """
+    import db.parquet as parquet_mod
+
+    monkeypatch.setattr(parquet_mod, "append_table", lambda *a, **k: None)
+    monkeypatch.setattr(parquet_mod, "replace_rows", lambda *a, **k: None)
+
+
+def _run_backtest(session, archive, monkeypatch, today=EVAL_DATE, **kwargs):
     """Run backtest_forecasts with the archive redirected to tmp_path.
 
     backtest_forecasts hardcodes archive_dir to the repo-root price-archive/,
@@ -244,16 +258,14 @@ def _run_backtest(session, archive, monkeypatch, today=EVAL_DATE):
 
     real_loader = price_resolution.load_voted_prices
 
-    def loader(archive_dir, slugs, min_date, max_date, **kwargs):
+    def loader(archive_dir, slugs, min_date, max_date, **kw):
         assert Path(archive_dir).name == "price-archive"
-        return real_loader(archive, slugs, min_date, max_date, **kwargs)
+        return real_loader(archive, slugs, min_date, max_date, **kw)
 
     monkeypatch.setattr(backtest_accuracy, "load_voted_prices", loader)
+    _stub_parquet_writes(monkeypatch)
 
-    import db.parquet as parquet_mod
-    monkeypatch.setattr(parquet_mod, "append_table", lambda *a, **k: None)
-
-    return backtest_accuracy.backtest_forecasts(session, today=today)
+    return backtest_accuracy.backtest_forecasts(session, today=today, **kwargs)
 
 
 def test_backtest_scores_the_base_leg_from_the_archive_not_current_price(
@@ -585,11 +597,10 @@ def test_unresolvable_forecasts_count_toward_the_gate_denominator(
 
 def test_resolution_is_insert_only(session, monkeypatch):
     import scripts.backtest_accuracy as bt
-    import db.parquet as parquet_mod
 
-    # Human ruling: append_table writes to git-tracked production data
-    # (price-archive/ops/forecast_outcomes.parquet). Never let a test touch it.
-    monkeypatch.setattr(parquet_mod, "append_table", lambda *a, **k: None)
+    # Human ruling: the mirror writes touch git-tracked production data
+    # (price-archive/ops/forecast_outcomes.parquet). Never let a test reach them.
+    _stub_parquet_writes(monkeypatch)
 
     outcome = {
         "forecast_id": 7,
@@ -626,9 +637,8 @@ def test_resolution_is_insert_only(session, monkeypatch):
 
 def test_reresolve_overrides_the_freeze(session, monkeypatch):
     import scripts.backtest_accuracy as bt
-    import db.parquet as parquet_mod
 
-    monkeypatch.setattr(parquet_mod, "append_table", lambda *a, **k: None)
+    _stub_parquet_writes(monkeypatch)
 
     outcome = {
         "forecast_id": 8,
@@ -650,7 +660,9 @@ def test_reresolve_overrides_the_freeze(session, monkeypatch):
     }
     bt._store_forecast_outcomes(session, [dict(outcome)])
     revised = dict(outcome, actual_price=99.0)
-    assert bt._store_forecast_outcomes(session, [revised], reresolve=True) == 1
+    assert bt._store_forecast_outcomes(
+        session, [revised], reresolve=True, considered_ids={8}
+    ) == 1
 
     assert session.query(ForecastOutcome).filter_by(forecast_id=8).one().actual_price == 99.0
 
@@ -1259,6 +1271,8 @@ def _capture_append(monkeypatch):
         "append_table",
         lambda table, rows, dedup_keys: calls.append((table, rows, dedup_keys)),
     )
+    # replace_rows reaches the same production file; --reresolve goes through it.
+    monkeypatch.setattr(parquet_mod, "replace_rows", lambda *a, **k: None)
     return calls
 
 
@@ -1764,3 +1778,290 @@ def test_the_refreshed_mirror_row_replaces_the_stale_one_in_a_real_parquet_file(
     assert pd.api.types.is_datetime64_any_dtype(stored["evaluated_at"])
     assert pd.api.types.is_datetime64_any_dtype(stored["target_date"])
     assert not (tmp_path.parent / "price-archive").exists()
+
+
+# ---------------------------------------------------------------------------
+# Task 8e: --reresolve must not leave orphaned stale rows behind.
+#
+# The delete set used to be derived from the forecasts that RESOLVED on the run.
+# A forecast that previously had a stored row and is now unresolvable — dropped
+# by the anchor-staleness rule (8d) or the leg-window disjointness rule (8d) —
+# never appears there, so its row survived. On the Task 9b dry run that was
+# 8,784 rows still holding values from the old broken estimator: scored into the
+# published metric, fed into update_bias_corrections_from_outcomes, and
+# uncorrectable, because --reresolve is the only path that can move a frozen
+# value at all.
+#
+# The delete set is now the CONSIDERED set. Only --reresolve deletes.
+# ---------------------------------------------------------------------------
+
+
+def _cohort_rows(n, broken=()):
+    """Archive rows for n items: 3.00 before the forecast date, 3.01 after.
+
+    A slug in *broken* keeps only its pre-forecast observations, so its target
+    anchor resolves off the SAME window as its base anchor and the leg-pair
+    guard drops it — the exact shape that produced the orphans.
+    """
+    rows = []
+    for i in range(n):
+        slug = f"ak{i}"
+        rows += [(slug, date(2026, 7, d), 3.00) for d in (3, 4, 5)]
+        if slug not in broken:
+            rows += [(slug, date(2026, 7, d), 3.01) for d in (6, 7, 8)]
+    return rows
+
+
+def _seed_cohort(session, tmp_path, n=12):
+    """n mature flat forecasts, all resolvable. Returns the archive dir.
+
+    n = 12 keeps one unresolvable forecast at 8.3%, under the 10%
+    MAX_UNRESOLVABLE_PCT gate, which is not weakened anywhere here.
+    """
+    for i in range(n):
+        _seed(session, i + 1, f"ak{i}", current_price=3.0, price_mid=3.0,
+              price_low=2.0, price_high=4.0, direction="flat")
+    session.commit()
+    return _write_archive(tmp_path, _cohort_rows(n))
+
+
+def _break_ak0(archive, n=12):
+    """Revise the archive so ak0 (forecast_id 1) can no longer be resolved."""
+    _revise_archive(archive, _cohort_rows(n, broken={"ak0"}))
+
+
+def _run_with_real_mirror(session, archive, monkeypatch, today=EVAL_DATE, **kwargs):
+    """_run_backtest, but with the REAL Parquet writers left in place.
+
+    Callers must have redirected db.parquet.OPS_DIR into tmp_path first; the
+    assert below is the guard that they did, so no test can reach the
+    git-tracked price-archive/ops/.
+    """
+    import db.parquet as parquet_mod
+    from scripts import backtest_accuracy
+
+    assert "price-archive" not in str(parquet_mod.OPS_DIR), parquet_mod.OPS_DIR
+
+    real_loader = price_resolution.load_voted_prices
+
+    def loader(archive_dir, slugs, min_date, max_date, **kw):
+        return real_loader(archive, slugs, min_date, max_date, **kw)
+
+    monkeypatch.setattr(backtest_accuracy, "load_voted_prices", loader)
+    return backtest_accuracy.backtest_forecasts(session, today=today, **kwargs)
+
+
+def test_reresolve_deletes_the_row_of_a_forecast_that_no_longer_resolves(
+    session, tmp_path, monkeypatch
+):
+    """Test 1 of the brief. The orphan is deleted from the DB.
+
+    ak0 resolves on run 1 and is frozen. The archive is then revised so its
+    actual leg can only be supported by pre-forecast observations, which the
+    leg-pair guard rejects — so ak0 produces no outcome on the --reresolve run
+    and never appears in the write set. Its stale row must still go."""
+    archive = _seed_cohort(session, tmp_path)
+    _run_backtest(session, archive, monkeypatch)
+    assert session.query(ForecastOutcome).count() == 12
+
+    # Mark the row so a survivor is unmistakably the OLD, broken-estimator one.
+    stale = session.query(ForecastOutcome).filter_by(forecast_id=1).one()
+    stale.actual_price = 999.0
+    session.commit()
+
+    _break_ak0(archive)
+    _run_backtest(session, archive, monkeypatch, reresolve=True)
+
+    session.expire_all()
+    assert session.query(ForecastOutcome).filter_by(forecast_id=1).first() is None
+    # ...and only that one went: the other eleven were rewritten, not dropped.
+    assert session.query(ForecastOutcome).count() == 11
+    assert all(
+        o.actual_price == pytest.approx(3.01)
+        for o in session.query(ForecastOutcome).all()
+    )
+
+
+def test_reresolve_deletes_the_orphan_from_the_parquet_mirror_too(
+    session, tmp_path, monkeypatch
+):
+    """Test 2 of the brief, against a REAL Parquet file with OPS_DIR redirected.
+
+    The mirror is what the API serves (backend/AGENTS.md: routes read Parquet
+    first, DB fallback), so a DB-only delete would just move the bug to the copy
+    users actually see. append_table cannot express a delete at all — this is
+    the half that needs db.parquet.replace_rows."""
+    import db.parquet as parquet_mod
+
+    monkeypatch.setattr(parquet_mod, "OPS_DIR", tmp_path / "ops")
+
+    archive = _seed_cohort(session, tmp_path)
+    _run_with_real_mirror(session, archive, monkeypatch)
+
+    mirror = parquet_mod.read_table("forecast_outcomes")
+    assert len(mirror) == 12
+    assert 1 in set(mirror["forecast_id"])
+
+    _break_ak0(archive)
+    _run_with_real_mirror(session, archive, monkeypatch, reresolve=True)
+
+    mirror = parquet_mod.read_table("forecast_outcomes")
+    assert len(mirror) == 11
+    assert 1 not in set(mirror["forecast_id"])
+    # The eleven survivors were replaced in place, not duplicated, and their
+    # frozen actuals and column types survived the delete-and-insert rewrite.
+    assert sorted(mirror["forecast_id"]) == list(range(2, 13))
+    assert mirror["actual_price"].round(4).eq(3.01).all()
+    assert pd.api.types.is_datetime64_any_dtype(mirror["resolved_at"])
+    assert pd.api.types.is_datetime64_any_dtype(mirror["target_date"])
+
+    # The DB agrees with the served copy.
+    session.expire_all()
+    assert session.query(ForecastOutcome).count() == 11
+
+
+def test_the_default_path_never_deletes_a_frozen_row(session, tmp_path, monkeypatch):
+    """Test 3 of the brief — the guard against overreach.
+
+    Same scenario without --reresolve. A forecast that stops resolving on the
+    daily path keeps its frozen row: the likely cause is a transient archive
+    problem, and reacting to a resolution failure by destroying good history
+    would be silent and unrecoverable. Deletion is an operator action only."""
+    archive = _seed_cohort(session, tmp_path)
+    _run_backtest(session, archive, monkeypatch)
+    before = {
+        o.forecast_id: (o.base_price, o.actual_price, o.resolved_at)
+        for o in session.query(ForecastOutcome).all()
+    }
+    assert len(before) == 12
+
+    _break_ak0(archive)
+    _run_backtest(session, archive, monkeypatch)
+
+    session.expire_all()
+    after = {
+        o.forecast_id: (o.base_price, o.actual_price, o.resolved_at)
+        for o in session.query(ForecastOutcome).all()
+    }
+    assert after == before
+
+
+def test_the_default_path_does_not_delete_even_when_handed_a_considered_set(
+    session, monkeypatch
+):
+    """The asymmetry asserted directly on _store_forecast_outcomes, so it holds
+    whatever the caller passes: with reresolve=False, a considered id whose
+    forecast produced no outcome keeps its row."""
+    import scripts.backtest_accuracy as bt
+
+    _stub_parquet_writes(monkeypatch)
+
+    stored = {
+        "forecast_id": 7,
+        "item_id": 1,
+        "forecast_date": date(2026, 7, 1),
+        "horizon_days": 3,
+        "target_date": date(2026, 7, 4),
+        "current_price": 1.0,
+        "base_price": 1.0,
+        "predicted_price_mid": 1.1,
+        "actual_price": 1.2,
+        "direction_predicted": "up",
+        "direction_actual": "up",
+        "direction_correct": 1,
+        "in_interval": 1,
+        "abs_error": 0.1,
+        "pct_error": 10.0,
+        "model_version": "lgbm-v3-regime",
+    }
+    assert bt._store_forecast_outcomes(session, [dict(stored)]) == 1
+
+    other = dict(stored, forecast_id=8)
+    # 7 was considered and did not resolve; 8 did. Insert-only means 7 survives.
+    assert bt._store_forecast_outcomes(
+        session, [other], reresolve=False, considered_ids={7, 8}
+    ) == 1
+
+    assert session.query(ForecastOutcome).filter_by(forecast_id=7).one().actual_price == 1.2
+    assert session.query(ForecastOutcome).count() == 2
+
+
+def test_reresolve_replaces_a_still_resolvable_row_without_duplicating_it(
+    session, tmp_path, monkeypatch
+):
+    """Test 4 of the brief. Nothing becomes unresolvable, so a --reresolve —
+    and a second one — must leave the row count exactly where it was, in the DB
+    and in a real Parquet mirror. Delete-then-insert must not lose or double."""
+    import db.parquet as parquet_mod
+
+    monkeypatch.setattr(parquet_mod, "OPS_DIR", tmp_path / "ops")
+
+    archive = _seed_cohort(session, tmp_path)
+    _run_with_real_mirror(session, archive, monkeypatch)
+    assert session.query(ForecastOutcome).count() == 12
+
+    for _ in range(2):
+        _run_with_real_mirror(session, archive, monkeypatch, reresolve=True)
+        session.expire_all()
+        assert session.query(ForecastOutcome).count() == 12
+        mirror = parquet_mod.read_table("forecast_outcomes")
+        assert len(mirror) == 12
+        assert sorted(mirror["forecast_id"]) == list(range(1, 13))
+
+
+def test_a_considered_forecast_that_never_had_a_row_is_harmless(
+    session, tmp_path, monkeypatch
+):
+    """Test 5 of the brief. A forecast considered for the first time and found
+    unresolvable has nothing to delete; the delete must be a no-op, not an
+    error, and must not disturb the rest of the cohort."""
+    import scripts.backtest_accuracy as bt
+
+    _stub_parquet_writes(monkeypatch)
+
+    # Direct: an id with no stored row at all.
+    assert bt._store_forecast_outcomes(
+        session, [], reresolve=True, considered_ids={999}
+    ) == 0
+    assert session.query(ForecastOutcome).count() == 0
+
+    # End to end: ak0 is broken from the very first run, so --reresolve
+    # considers it, resolves nothing for it, and finds no row to remove.
+    for i in range(12):
+        _seed(session, i + 1, f"ak{i}", current_price=3.0, price_mid=3.0,
+              price_low=2.0, price_high=4.0, direction="flat")
+    session.commit()
+    archive = _write_archive(tmp_path, _cohort_rows(12, broken={"ak0"}))
+
+    _run_backtest(session, archive, monkeypatch, reresolve=True)
+    assert session.query(ForecastOutcome).count() == 11
+    assert session.query(ForecastOutcome).filter_by(forecast_id=1).first() is None
+
+
+def test_reresolve_refuses_to_run_without_the_considered_set(session, monkeypatch):
+    """The delete set must never be re-derivable from `outcomes` alone. Making
+    considered_ids required rather than defaulted is what stops a future caller
+    from silently reintroducing the orphan bug."""
+    import scripts.backtest_accuracy as bt
+
+    _stub_parquet_writes(monkeypatch)
+
+    with pytest.raises(ValueError, match="considered_ids"):
+        bt._store_forecast_outcomes(session, [], reresolve=True)
+
+
+def test_reresolve_leaves_min_price_filtered_rows_alone(
+    session, tmp_path, monkeypatch
+):
+    """A forecast excluded by --min-price is not resolved-and-failed: the run
+    writes no replacement for it, so it is not in the considered set and its
+    stored row must survive. Deleting it would make `--reresolve --min-price`
+    a silent history-truncation tool."""
+    archive = _seed_cohort(session, tmp_path)
+    _run_backtest(session, archive, monkeypatch)
+    assert session.query(ForecastOutcome).count() == 12
+
+    _run_backtest(session, archive, monkeypatch, reresolve=True, min_price=100.0)
+
+    session.expire_all()
+    assert session.query(ForecastOutcome).count() == 12
