@@ -10,7 +10,13 @@ from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
 import backtest.price_resolution as price_resolution
-from backtest.price_resolution import smoothed_prices
+from backtest.price_resolution import resolve_anchors
+
+
+def smoothed_prices(voted, anchors, **kwargs):
+    """resolve_anchors projected to prices. See the note in
+    tests/test_backtest_resolution.py — test-local by design."""
+    return {k: r.price for k, r in resolve_anchors(voted, anchors, **kwargs).items()}
 from database import Base, ForecastOutcome, Item, ItemForecast, PredictionAccuracy
 
 
@@ -359,17 +365,17 @@ def test_backtest_drops_a_target_beyond_archive_coverage_rather_than_resolving_i
     right reason if the drop is removed.
 
     A second beyond-coverage shape is driven alongside it, because the two
-    halves of this change guard different cases and a test that only covers one
-    would let the other regress. "stale10" has a 10-day horizon (target 07-15)
-    and observations through 07-06: its actual leg IS supported by an
-    observation after the forecast date, so the leg-pair drop does not fire —
-    but 07-04 is 11 days before the 07-15 anchor, so the anchor-staleness rule
-    does. Under the old between-observations rule its window spans 2 days and it
-    resolves to a price nine days stale.
+    guards in this change are disjoint and a test that only covers one would let
+    the other regress. "stale30" has a 30-day horizon (target 08-04) and
+    observations on 07-03/04/05 then 07-10/11/12. Its actual window is
+    07-10/11/12 — wholly AFTER the 07-05 forecast date, so the leg-pair drop does
+    not fire — but 07-10 is 25 days before the 08-04 anchor, so the
+    anchor-staleness rule does. Under the old between-observations rule that
+    window spans 2 days and resolves to a price 23 days stale.
 
     Twenty fully-covered forecasts keep 2/22 = 9.1% under MAX_UNRESOLVABLE_PCT,
     so the drops are observable in the outcome rows rather than masked by the
-    gate.
+    gate. `today` is moved out to 08-10 so the 30-day forecast is mature.
     """
     rows = []
     for i in range(20):
@@ -377,9 +383,9 @@ def test_backtest_drops_a_target_beyond_archive_coverage_rather_than_resolving_i
         _seed(session, i + 1, f"ak{i}", current_price=3.0, price_mid=3.0)
     rows += [("future", date(2026, 7, d), 7.0) for d in (3, 4, 5)]
     _seed(session, 21, "future", current_price=7.0, price_mid=7.0, direction="flat")
-    rows += [("stale10", date(2026, 7, d), 7.0) for d in (3, 4, 5, 6)]
-    _seed(session, 22, "stale10", current_price=7.0, price_mid=7.0,
-          direction="flat", horizon=10)
+    rows += [("stale30", date(2026, 7, d), 7.0) for d in (3, 4, 5, 10, 11, 12)]
+    _seed(session, 22, "stale30", current_price=7.0, price_mid=7.0,
+          direction="flat", horizon=30)
     session.commit()
 
     archive = _write_archive(tmp_path, rows)
@@ -400,7 +406,20 @@ def test_backtest_drops_a_target_beyond_archive_coverage_rather_than_resolving_i
     # date. That is what makes the equality an artefact rather than a flat market.
     assert both[("future", TARGET_DATE)].newest_observation == FORECAST_DATE
 
-    results = _run_backtest(session, archive, monkeypatch)
+    # ...and the complementary premise for "stale30": its actual window IS
+    # disjoint from the base leg, so only the anchor-staleness rule can drop it.
+    voted30 = pd.DataFrame(
+        {
+            "item_id": ["stale30"] * 6,
+            "date": [date(2026, 7, d) for d in (3, 4, 5, 10, 11, 12)],
+            "price": [7.0] * 6,
+        }
+    )
+    base30 = resolve_anchors(voted30, {("stale30", FORECAST_DATE)})
+    assert ("stale30", FORECAST_DATE) in base30          # base leg resolves
+    assert resolve_anchors(voted30, {("stale30", date(2026, 8, 4))}) == {}
+
+    results = _run_backtest(session, archive, monkeypatch, today=date(2026, 8, 10))
 
     stored = session.query(ForecastOutcome).all()
     assert len(stored) == 20
@@ -415,6 +434,92 @@ def test_backtest_drops_a_target_beyond_archive_coverage_rather_than_resolving_i
     ) == 20
 
 
+def test_overlapping_leg_windows_are_dropped_even_with_a_post_forecast_observation(
+    session, tmp_path, monkeypatch
+):
+    """Fix round 1, Important finding. A single post-forecast observation is NOT
+    enough to make the actual leg a measurement.
+
+    "overlap" is observed at 1.0 on 07-01/02/03 and then at 1.5 on 07-06 — a 50%
+    move, and 07-06 is the ONLY observation after the 07-05 forecast date. The
+    two 3-observation windows still overlap in 2 of 3 slots:
+
+        base   = median(07-01, 07-02, 07-03) = median(1.0, 1.0, 1.0) = 1.0
+        actual = median(07-02, 07-03, 07-06) = median(1.0, 1.0, 1.5) = 1.0
+
+    actual_ret is exactly 0.0 and the forecast scores "flat" — a fabricated zero
+    over a 50% move. Both anchors pass the staleness rule (gaps of 4 and 6 days,
+    inside the 7-day cap) and a guard testing only newest_observation passes too,
+    because 07-06 > 07-05. Requiring the OLDEST supporting observation to
+    post-date the forecast makes the windows disjoint and drops it.
+
+    Note the mid-archive gap: the dry run's mass shape was a truncated tail,
+    which is why this variant did not show up there.
+
+    Ten covered forecasts keep 1/11 = 9.1% under MAX_UNRESOLVABLE_PCT so the drop
+    is visible in the outcome rows rather than masked by the gate."""
+    rows = []
+    for i in range(10):
+        rows += [(f"ak{i}", date(2026, 7, d), 3.0) for d in range(3, 9)]
+        _seed(session, i + 1, f"ak{i}", current_price=3.0, price_mid=3.0)
+    rows += [("overlap", date(2026, 7, d), 1.0) for d in (1, 2, 3)]
+    rows += [("overlap", date(2026, 7, 6), 1.5)]
+    _seed(session, 11, "overlap", current_price=1.0, price_mid=1.0, direction="flat")
+    session.commit()
+
+    archive = _write_archive(tmp_path, rows)
+
+    # The premise: both legs resolve, to the same price, off overlapping windows
+    # whose NEWEST observation does post-date the forecast.
+    voted = pd.DataFrame(
+        {
+            "item_id": ["overlap"] * 4,
+            "date": [date(2026, 7, d) for d in (1, 2, 3, 6)],
+            "price": [1.0, 1.0, 1.0, 1.5],
+        }
+    )
+    both = resolve_anchors(voted, {("overlap", FORECAST_DATE), ("overlap", TARGET_DATE)})
+    base_res, actual_res = both[("overlap", FORECAST_DATE)], both[("overlap", TARGET_DATE)]
+    assert base_res.price == actual_res.price == 1.0  # the fabricated zero
+    assert actual_res.newest_observation > FORECAST_DATE   # newest-guard passes
+    assert actual_res.oldest_observation <= FORECAST_DATE  # oldest-guard fires
+
+    results = _run_backtest(session, archive, monkeypatch)
+
+    stored = session.query(ForecastOutcome).all()
+    assert len(stored) == 10
+    assert 11 not in {o.forecast_id for o in stored}
+    assert next(r for r in results if r["price_tier"] is None)["sample_count"] == 10
+
+
+def test_a_fully_covered_forecast_has_disjoint_leg_windows_at_every_horizon():
+    """The stricter rule must cost nothing in production. ItemForecaster.HORIZONS
+    is [3, 7, 14, 30] and SMOOTH_WINDOW is 3, so a daily-observed forecast's
+    actual window is {f+h-2 ... f+h} — entirely after f whenever h >= 3. Asserted
+    against the real HORIZONS list so a new horizon below the smoothing window
+    cannot be added without this failing."""
+    from backtest.price_resolution import SMOOTH_WINDOW
+    from models.forecaster import ItemForecaster
+
+    f = date(2026, 7, 15)
+    voted = pd.DataFrame(
+        {
+            "item_id": ["ak"] * 120,
+            "date": [date(2026, 6, 1) + timedelta(days=i) for i in range(120)],
+            "price": [3.0] * 120,
+        }
+    )
+
+    assert min(ItemForecaster.HORIZONS) >= SMOOTH_WINDOW
+    for h in ItemForecaster.HORIZONS:
+        target = f + timedelta(days=h)
+        res = resolve_anchors(voted, {("ak", f), ("ak", target)})
+        assert res[("ak", target)].oldest_observation > f, h
+        assert res[("ak", target)].oldest_observation == target - timedelta(
+            days=SMOOTH_WINDOW - 1
+        )
+
+
 def test_an_actual_leg_supported_only_by_pre_forecast_observations_is_unresolvable(
     session, tmp_path, monkeypatch
 ):
@@ -423,8 +528,8 @@ def test_an_actual_leg_supported_only_by_pre_forecast_observations_is_unresolvab
     to remove. Two beyond-coverage forecasts against seven covered ones is
     2/9 = 22.2%, over the 10% cap, so the run must refuse to report a number.
 
-    The complement is asserted too: a single observation strictly AFTER the
-    forecast date is enough to make the actual leg a real measurement."""
+    The complement is asserted too: once the actual leg's window is wholly after
+    the forecast date, it is a real measurement and the gate clears."""
     rows = []
     for i in range(7):
         rows += [(f"ak{i}", date(2026, 7, d), 3.0) for d in range(3, 9)]
@@ -440,10 +545,12 @@ def test_an_actual_leg_supported_only_by_pre_forecast_observations_is_unresolvab
         _run_backtest(session, archive, monkeypatch)
     assert session.query(ForecastOutcome).count() == 0
 
-    # One observation past the forecast date is enough: 07-06 supports the
-    # 07-08 actual leg, so both forecasts now resolve and the gate clears.
+    # A DISJOINT actual window clears it: 07-06/07/08 backs the 07-08 leg with
+    # nothing the 07-03/04/05 base leg already saw. Note one observation on 07-06
+    # alone would NOT be enough — the 07-08 window would still reach back to
+    # 07-04 and overlap the base leg. That is the finding this rule closes.
     for i in range(2):
-        rows += [(f"end{i}", date(2026, 7, 6), 3.6)]
+        rows += [(f"end{i}", date(2026, 7, d), 3.6) for d in (6, 7, 8)]
     _revise_archive(archive, rows)
 
     results = _run_backtest(session, archive, monkeypatch)

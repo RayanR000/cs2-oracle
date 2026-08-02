@@ -1,7 +1,7 @@
 """Shared price estimator for the forecast backtest.
 
 Both legs of ``actual_ret`` — the forecast-date base and the target-date
-actual — go through :func:`smoothed_prices`. That is the entire determinism
+actual — go through :func:`resolve_anchors`. That is the entire determinism
 guarantee: the same function, the same window, the same source on both sides.
 
 Before 2026-08-01 the base leg was ``item_forecasts.current_price`` (a
@@ -43,11 +43,17 @@ MAX_WINDOW_SPAN_DAYS = FALLBACK_MAX_AGE_DAYS
 class Resolution:
     """A resolved anchor plus the window that produced it.
 
-    ``newest_observation`` is the latest observation date backing ``price``. It
-    is what lets a *caller* — which is the only layer that knows two anchors
-    form a leg pair — reject a pair whose actual leg carries no information
-    recorded after the forecast date. This class stays leg-agnostic: it reports
-    what supported the estimate, and makes no judgement about which leg it is.
+    The observation dates are what let a *caller* — the only layer that knows
+    two anchors form a leg pair — reject a pair whose actual leg carries no
+    information the base leg did not already have.
+    ``oldest_observation`` is the one that check must use: a pair is safe only
+    when the two windows are DISJOINT. Testing ``newest_observation`` admits a
+    pair whose windows overlap in 2 of 3 slots, and a median decided by the
+    shared observations scores an exact 0.0 return no matter what the one
+    unshared observation did.
+
+    This class stays leg-agnostic: it reports what supported the estimate, and
+    makes no judgement about which leg it is.
     """
 
     price: float
@@ -117,19 +123,6 @@ def resolve_anchors(
         )
 
     return resolved
-
-
-def smoothed_prices(
-    voted: pd.DataFrame,
-    anchors: set[tuple[str, date]],
-    window: int = SMOOTH_WINDOW,
-    max_span_days: int = MAX_WINDOW_SPAN_DAYS,
-) -> dict[tuple[str, date], float]:
-    """:func:`resolve_anchors` reduced to prices. Same rule, same symmetry."""
-    return {
-        key: res.price
-        for key, res in resolve_anchors(voted, anchors, window, max_span_days).items()
-    }
 
 
 def load_voted_prices(

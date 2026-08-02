@@ -720,20 +720,34 @@ def backtest_forecasts(db, today=None, min_price=0, reresolve=False, rescore=Fal
                 n_unresolvable += 1
                 continue
 
-            # The actual leg must be supported by at least one observation
-            # recorded AFTER the forecast date. When the archive ends before the
-            # target date, both legs can resolve from the SAME window — the
-            # anchor-staleness rule passes each anchor individually — and
-            # actual_ret comes out exactly 0.0. That is not a flat market, it is
-            # a manufactured flat, produced for every forecast whose target date
-            # is beyond coverage. In the Task 9a dry run it moved the actual-flat
-            # share from 31.8% to 48.1%.
+            # EVERY observation backing the actual leg must post-date the
+            # forecast. When the archive ends before the target date, both legs
+            # can resolve from the SAME window — the anchor-staleness rule passes
+            # each anchor individually — and actual_ret comes out exactly 0.0.
+            # That is not a flat market, it is a manufactured flat, produced for
+            # every forecast whose target date is beyond coverage. In the Task 9a
+            # dry run it moved the actual-flat share from 31.8% to 48.1%.
+            #
+            # Testing the NEWEST observation is not enough: a single post-forecast
+            # observation admits the pair while the actual leg's median is still
+            # decided by pre-forecast observations, because two 3-observation
+            # windows can overlap in 2 of 3 slots. With observations on
+            # 07-01/02/03 at 1.0 and 07-06 at 1.5, a forecast dated 07-05
+            # targeting 07-08 has base median(07-01,02,03) = 1.0 and actual
+            # median(07-02,03,06) = 1.0 — a 50% move on the only post-forecast
+            # observation scoring as exactly 0.0%. Requiring the OLDEST supporting
+            # observation to post-date the forecast makes the two windows
+            # disjoint, so the actual leg carries no information the base leg
+            # already had. It costs nothing at any production horizon:
+            # ItemForecaster.HORIZONS is [3, 7, 14, 30] and SMOOTH_WINDOW is 3, so
+            # a fully-covered actual window is {f+h-2 ... f+h}, entirely after f
+            # whenever h >= 3.
             #
             # This lives here, not in resolve_anchors: only the caller knows two
             # anchors form a leg pair. resolve_anchors stays symmetric and
             # leg-agnostic, and the forecast is DROPPED (and counted
             # unresolvable), never given a fallback.
-            if actual_res.newest_observation <= f_date:
+            if actual_res.oldest_observation <= f_date:
                 n_unresolvable += 1
                 continue
 

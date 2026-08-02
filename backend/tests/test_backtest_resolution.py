@@ -10,8 +10,16 @@ from backtest.price_resolution import (
     MAX_WINDOW_SPAN_DAYS,
     SMOOTH_WINDOW,
     load_voted_prices,
-    smoothed_prices,
+    resolve_anchors,
 )
+
+
+def smoothed_prices(voted, anchors, **kwargs):
+    """resolve_anchors projected to prices, for the tests that only care about
+    the value. Deliberately test-local: production reads Resolution objects, and
+    exporting a price-only wrapper from the module would put two things that
+    each look like "the" estimator on the public surface."""
+    return {k: r.price for k, r in resolve_anchors(voted, anchors, **kwargs).items()}
 
 
 def _frame(rows):
@@ -195,7 +203,9 @@ def test_the_anchor_rule_subsumes_the_between_observations_rule():
                 anchor = start + timedelta(days=anchor_gap)
                 out = smoothed_prices(_frame(rows), {("ak", anchor)})
 
-                selected_oldest = start  # only 3 observations, all selected
+                # sorted({0, gap_a, gap_b}) dedupes, so this is 1-3 observations;
+                # either way they all fit the 3-slot window and 0 is the oldest.
+                selected_oldest = start
                 anchor_ok = (anchor - selected_oldest).days <= MAX_WINDOW_SPAN_DAYS
                 window_ok = (
                     (start + timedelta(days=days[-1])) - selected_oldest
