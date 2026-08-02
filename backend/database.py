@@ -246,6 +246,9 @@ class PredictionAccuracy(Base):
     prediction_type = Column(String(50), nullable=False, index=True)
     evaluation_date = Column(Date, nullable=False, index=True)
     horizon_days = Column(Integer, nullable=True)
+    # Price tier of the cohort (0 = <$1 ... 4 = >=$100), or NULL for the
+    # all-tiers aggregate row.
+    price_tier = Column(Integer, nullable=True)
     model_version = Column(String(50), nullable=True)
     evaluation_window_days = Column(Integer, nullable=True)
     sample_count = Column(Integer, nullable=False, default=0)
@@ -255,7 +258,7 @@ class PredictionAccuracy(Base):
     __table_args__ = (
         Index('idx_accuracy_type_date', 'prediction_type', 'evaluation_date'),
         UniqueConstraint('prediction_type', 'evaluation_date', 'horizon_days', 'model_version',
-                         name='uq_accuracy_type_date_horizon_model'),
+                         'price_tier', name='uq_accuracy_type_date_horizon_model_tier'),
     )
 
 
@@ -274,12 +277,45 @@ class ForecastOutcome(Base):
     forecast_date = Column(Date, nullable=False)
     horizon_days = Column(Integer, nullable=False)
     target_date = Column(Date, nullable=False)
-    current_price = Column(Float, nullable=False)
+    # Nullable: written straight through from item_forecasts.current_price
+    # (itself nullable), which may be unset. Never synthesized — a null here
+    # means the serving-time snapshot is genuinely missing, distinct from
+    # base_price which is always archive-resolved when the row exists.
+    current_price = Column(Float, nullable=True)
     predicted_price_low = Column(Float, nullable=True)
     predicted_price_mid = Column(Float, nullable=False)
     predicted_price_high = Column(Float, nullable=True)
     actual_price = Column(Float, nullable=False)
+    # The forecast-time leg of actual_ret, resolved by the backtest with the
+    # same estimator as actual_price. Distinct from current_price, which is
+    # whatever the serving run happened to write and is no longer scored on.
+    base_price = Column(Float, nullable=True)
     direction_predicted = Column(String(10), nullable=True)
+    # --- DERIVED VERDICTS, REFRESHED TO MATCH CURRENT SCORING ---------------
+    # direction_actual, direction_correct, in_interval, abs_error and pct_error
+    # are NOT observations. They are metrics derived from base_price /
+    # actual_price plus the prediction legs, and the number the backtest reports
+    # is re-derived from those actuals on every run by
+    # scripts/backtest_accuracy.py::_records_from_frozen_outcomes, which
+    # deliberately does not read these columns.
+    #
+    # The freeze applies to the actuals, not the metrics: a later scoring change
+    # (a different FLAT_TOLERANCE, a different interval rule) must land on
+    # historical rows with no archive access. So that these stored copies cannot
+    # drift away from the reported metric, every scoring run also calls
+    # backtest_accuracy._refresh_verdict_columns, which UPDATEs exactly these
+    # five columns (plus evaluated_at) wherever they disagree with the current
+    # derivation. base_price, actual_price and resolved_at are never in that
+    # UPDATE's SET clause — only --reresolve moves them.
+    #
+    # Consequence for readers: these columns are safe to read as the verdict as
+    # of the last backtest run, and no longer go permanently stale awaiting a
+    # --reresolve. Two places read them — models/forecaster.py::
+    # update_bias_corrections_from_outcomes, which feeds production predict()
+    # thresholds and which run_backtest() invokes in the same process right
+    # after the refresh (so it sees no staleness at all), and the manual
+    # scripts/tiered_breakdown.py, which sees whatever the last backtest run
+    # left behind.
     direction_actual = Column(String(10), nullable=True)
     direction_correct = Column(Integer, nullable=False, default=0)
     in_interval = Column(Integer, nullable=True)
@@ -287,6 +323,9 @@ class ForecastOutcome(Base):
     pct_error = Column(Float, nullable=True)
     model_version = Column(String(50), nullable=True)
     evaluated_at = Column(DateTime, nullable=False, default=utcnow_naive)
+    # Set once, when the outcome is first resolved. base_price and
+    # actual_price are frozen from that moment; only --reresolve moves them.
+    resolved_at = Column(DateTime, nullable=True)
 
     __table_args__ = (
         Index("idx_outcome_forecast_id", "forecast_id"),

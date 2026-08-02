@@ -17,9 +17,11 @@ paths are single-file queries with no runtime join overhead.
 from __future__ import annotations
 
 import logging
+import os
 from functools import lru_cache
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Iterable, Optional
+from uuid import uuid4
 
 import duckdb
 import pandas as pd
@@ -160,6 +162,149 @@ def append_table(table: str, rows: list[dict] | pd.DataFrame, dedup_keys: list[s
         return
     path = _table_path(table)
     _append_parquet(path, rows, dedup_keys)
+
+
+def replace_rows(
+    table: str,
+    key_column: str,
+    delete_keys: Iterable,
+    new_rows: list[dict] | pd.DataFrame | None = None,
+):
+    """Drop every row whose *key_column* is in *delete_keys*, then add *new_rows*.
+
+    ``append_table`` can only append-with-dedup, so it has no way to express
+    "this key no longer has a row at all". Re-resolving a cohort needs exactly
+    that: a forecast that used to resolve and no longer does must end with NO
+    mirrored row, not a stale one.
+
+    Delete and insert are ONE rewrite, not two. The rows carried by *new_rows*
+    are removed by key as well, so passing a key in both sets is a replace.
+
+    CRASH SAFETY. The rewrite goes to a sibling temp file and is moved into
+    place with ``os.replace``, which is atomic within a directory: a concurrent
+    reader — and a process killed at any point — sees either the whole
+    pre-state or the whole post-state of the table, never a half-written file
+    and never a file with the deletes applied but the inserts missing.
+    ``_append_parquet`` COPYs over the live path and does not have this
+    property; it is left alone because appending is additive, while a delete
+    that is interrupted mid-COPY would destroy rows nothing can rebuild.
+
+    SCHEMA. The output schema is the UNION of the file's columns and
+    *new_rows*': it widens, and it never narrows.
+
+    * A column in *new_rows* that the file lacks is ADDED, NULL (typed from the
+      incoming frame) on every surviving row. ``_append_parquet``'s
+      intersection would have discarded it. That is not academic — the
+      production ``forecast_outcomes`` mirror has 18 columns and no
+      ``base_price``, while the re-resolve write carries 20. Under an
+      intersection a ``--reresolve`` would rewrite the whole 65k-row served
+      file *without the frozen actuals*, which are the entire point of the
+      backfill.
+    * A column the file has and *new_rows* lacks cannot be preserved on the
+      rows being rewritten, so it raises rather than silently blanking them.
+      Surviving rows always keep every column they had.
+
+    File column order is preserved, with added columns appended — the caller's
+    dict ordering does not get to reshuffle the served file.
+    """
+    if isinstance(new_rows, list) or new_rows is None:
+        new_rows = pd.DataFrame(new_rows or [])
+
+    keys = list(dict.fromkeys(delete_keys or []))
+    if not new_rows.empty and key_column in new_rows.columns:
+        keys = list(dict.fromkeys(keys + list(new_rows[key_column])))
+
+    path = _table_path(table)
+
+    if not path.exists():
+        # Nothing to delete from; this degenerates to a first write.
+        if new_rows.empty:
+            return
+        _atomic_write(path, _coerce_dates(new_rows))
+        return
+
+    if new_rows.empty and not keys:
+        return
+
+    new_rows = _coerce_dates(new_rows)
+    tmp = _tmp_path(path)
+    con = duckdb.connect()
+    try:
+        existing_cols = [
+            r[0] for r in con.execute(
+                f"DESCRIBE SELECT * FROM read_parquet('{path}')"
+            ).fetchall()
+        ]
+        if new_rows.empty:
+            out_cols = existing_cols
+            existing_select = ", ".join(existing_cols)
+            new_select = ""
+        else:
+            missing = [c for c in existing_cols if c not in new_rows.columns]
+            if missing:
+                raise ValueError(
+                    f"replace_rows('{table}'): incoming rows are missing "
+                    f"column(s) {missing} that the file has. The rewritten "
+                    f"rows would silently lose them. Supply the whole row."
+                )
+            con.register("_new", new_rows)
+            new_types = {
+                r[0]: r[1]
+                for r in con.execute("DESCRIBE SELECT * FROM _new").fetchall()
+            }
+            added = [c for c in new_rows.columns if c not in existing_cols]
+            out_cols = existing_cols + added
+            new_select = f"SELECT {', '.join(out_cols)} FROM _new UNION ALL "
+            existing_select = ", ".join(
+                c if c in existing_cols
+                else f"CAST(NULL AS {new_types[c]}) AS {c}"
+                for c in out_cols
+            )
+
+        if keys:
+            con.register("_del", pd.DataFrame({"_k": keys}))
+            keep = (
+                f"WHERE NOT EXISTS (SELECT 1 FROM _del "
+                f"WHERE _del._k = _existing.{key_column})"
+            )
+        else:
+            keep = ""
+
+        con.execute(f"""
+            COPY (
+                {new_select}
+                SELECT {existing_select} FROM read_parquet('{path}') _existing
+                {keep}
+            ) TO '{tmp}' (FORMAT PARQUET)
+        """)
+    except BaseException:
+        tmp.unlink(missing_ok=True)
+        raise
+    finally:
+        con.close()
+
+    os.replace(tmp, path)
+
+
+def _tmp_path(path: Path) -> Path:
+    """A writer-unique sibling temp name.
+
+    Unique per writer, not just per table: a shared ``<table>.parquet.tmp``
+    lets two concurrent writers interleave their COPYs into one file, and lets
+    one writer's error path unlink the other's temp out from under it. Single
+    writer today; the suffix removes the class rather than relying on that.
+    """
+    return path.with_name(f"{path.name}.{os.getpid()}.{uuid4().hex[:8]}.tmp")
+
+
+def _atomic_write(path: Path, df: pd.DataFrame):
+    tmp = _tmp_path(path)
+    try:
+        df.to_parquet(tmp, index=False)
+    except BaseException:
+        tmp.unlink(missing_ok=True)
+        raise
+    os.replace(tmp, path)
 
 
 # ---------------------------------------------------------------------------
