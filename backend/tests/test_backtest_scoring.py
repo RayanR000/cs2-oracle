@@ -208,14 +208,14 @@ def _write_archive(tmp_path, rows):
 
 
 def _seed(session, pk, slug, *, current_price, price_mid, direction="flat",
-          price_low=None, price_high=None):
+          price_low=None, price_high=None, horizon=HORIZON):
     session.add(Item(id=pk, item_id=slug, name=slug, type="skin"))
     session.add(
         ItemForecast(
             id=pk,
             item_id=pk,
             forecast_date=FORECAST_DATE,
-            horizon_days=HORIZON,
+            horizon_days=horizon,
             price_low=price_low,
             price_mid=price_mid,
             price_high=price_high,
@@ -340,6 +340,114 @@ def test_backtest_drops_a_forecast_whose_base_leg_is_unresolvable(
     assert len(stored) == 10
     assert 11 not in {o.forecast_id for o in stored}
     assert results[0]["sample_count"] == 10
+
+
+def test_backtest_drops_a_target_beyond_archive_coverage_rather_than_resolving_it_backwards(
+    session, tmp_path, monkeypatch
+):
+    """Task 8d, test 4 of the brief. A forecast whose TARGET date lies past the
+    end of the archive must be dropped, never scored.
+
+    "future" has observations only through 07-05 — the forecast date itself.
+    Both anchors then select the SAME 07-03/04/05 window: the base leg because
+    07-05 is its own date, the actual leg because 07-08 is only 5 days past the
+    oldest of them and so passes the anchor-staleness rule on its own terms.
+    Two identical windows give actual_ret == 0.0 exactly, and the forecast
+    scores "flat" — a manufactured flat, not a measurement, produced for every
+    forecast whose target is beyond coverage. It is asserted below that the
+    estimator really does return identical legs here, so this test fails for the
+    right reason if the drop is removed.
+
+    A second beyond-coverage shape is driven alongside it, because the two
+    halves of this change guard different cases and a test that only covers one
+    would let the other regress. "stale10" has a 10-day horizon (target 07-15)
+    and observations through 07-06: its actual leg IS supported by an
+    observation after the forecast date, so the leg-pair drop does not fire —
+    but 07-04 is 11 days before the 07-15 anchor, so the anchor-staleness rule
+    does. Under the old between-observations rule its window spans 2 days and it
+    resolves to a price nine days stale.
+
+    Twenty fully-covered forecasts keep 2/22 = 9.1% under MAX_UNRESOLVABLE_PCT,
+    so the drops are observable in the outcome rows rather than masked by the
+    gate.
+    """
+    rows = []
+    for i in range(20):
+        rows += [(f"ak{i}", date(2026, 7, d), 3.0) for d in range(3, 9)]
+        _seed(session, i + 1, f"ak{i}", current_price=3.0, price_mid=3.0)
+    rows += [("future", date(2026, 7, d), 7.0) for d in (3, 4, 5)]
+    _seed(session, 21, "future", current_price=7.0, price_mid=7.0, direction="flat")
+    rows += [("stale10", date(2026, 7, d), 7.0) for d in (3, 4, 5, 6)]
+    _seed(session, 22, "stale10", current_price=7.0, price_mid=7.0,
+          direction="flat", horizon=10)
+    session.commit()
+
+    archive = _write_archive(tmp_path, rows)
+
+    # The premise: leg-agnostic resolution resolves BOTH anchors, identically.
+    voted = pd.DataFrame(
+        {
+            "item_id": ["future"] * 3,
+            "date": [date(2026, 7, d) for d in (3, 4, 5)],
+            "price": [7.0] * 3,
+        }
+    )
+    both = price_resolution.resolve_anchors(
+        voted, {("future", FORECAST_DATE), ("future", TARGET_DATE)}
+    )
+    assert both[("future", FORECAST_DATE)].price == both[("future", TARGET_DATE)].price
+    # ...off the same window, whose newest observation is not after the forecast
+    # date. That is what makes the equality an artefact rather than a flat market.
+    assert both[("future", TARGET_DATE)].newest_observation == FORECAST_DATE
+
+    results = _run_backtest(session, archive, monkeypatch)
+
+    stored = session.query(ForecastOutcome).all()
+    assert len(stored) == 20
+    assert {21, 22}.isdisjoint({o.forecast_id for o in stored})
+    # No outcome anywhere carries the 7.0 price the stale carry-forward would
+    # have produced, on either leg, and none was scored as a manufactured flat.
+    assert all(o.base_price == pytest.approx(3.0) for o in stored)
+    assert all(o.actual_price == pytest.approx(3.0) for o in stored)
+    assert sum(
+        r["sample_count"] for r in results
+        if r["price_tier"] is None
+    ) == 20
+
+
+def test_an_actual_leg_supported_only_by_pre_forecast_observations_is_unresolvable(
+    session, tmp_path, monkeypatch
+):
+    """The drop above is a resolution failure, so it must reach the gate rather
+    than quietly shrinking the cohort — the exact invisibility this plan exists
+    to remove. Two beyond-coverage forecasts against seven covered ones is
+    2/9 = 22.2%, over the 10% cap, so the run must refuse to report a number.
+
+    The complement is asserted too: a single observation strictly AFTER the
+    forecast date is enough to make the actual leg a real measurement."""
+    rows = []
+    for i in range(7):
+        rows += [(f"ak{i}", date(2026, 7, d), 3.0) for d in range(3, 9)]
+        _seed(session, i + 1, f"ak{i}", current_price=3.0, price_mid=3.0)
+    for i in range(2):
+        rows += [(f"end{i}", date(2026, 7, d), 3.0) for d in (3, 4, 5)]
+        _seed(session, 100 + i, f"end{i}", current_price=3.0, price_mid=3.0)
+    session.commit()
+
+    archive = _write_archive(tmp_path, rows)
+
+    with pytest.raises(RuntimeError, match="could not be resolved"):
+        _run_backtest(session, archive, monkeypatch)
+    assert session.query(ForecastOutcome).count() == 0
+
+    # One observation past the forecast date is enough: 07-06 supports the
+    # 07-08 actual leg, so both forecasts now resolve and the gate clears.
+    for i in range(2):
+        rows += [(f"end{i}", date(2026, 7, 6), 3.6)]
+    _revise_archive(archive, rows)
+
+    results = _run_backtest(session, archive, monkeypatch)
+    assert next(r for r in results if r["price_tier"] is None)["sample_count"] == 9
 
 
 def test_unresolvable_forecasts_count_toward_the_gate_denominator(

@@ -23,7 +23,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from database import SessionLocal, PredictionAccuracy
 from sqlalchemy import bindparam, select, text
-from backtest.price_resolution import load_voted_prices, smoothed_prices
+from backtest.price_resolution import load_voted_prices, resolve_anchors
 from backtest.scoring import (
     FLAT_TOLERANCE,
     HEADLINE_MIN_TIER,
@@ -700,7 +700,7 @@ def backtest_forecasts(db, today=None, min_price=0, reresolve=False, rescore=Fal
 
         anchor_dates = [a[1] for a in anchors]
         voted = load_voted_prices(archive_dir, sorted(slugs), min(anchor_dates), max(anchor_dates))
-        prices = smoothed_prices(voted, anchors)
+        prices = resolve_anchors(voted, anchors)
         logger.info(f"  Resolved {len(prices):,} of {len(anchors):,} anchors")
 
         for f in forecasts:
@@ -709,9 +709,31 @@ def backtest_forecasts(db, today=None, min_price=0, reresolve=False, rescore=Fal
             f_date = f.forecast_date if isinstance(f.forecast_date, date) else date.fromisoformat(str(f.forecast_date)[:10])
             target_date = f_date + timedelta(days=horizon)
 
-            base = prices.get((slug, f_date))
-            actual = prices.get((slug, target_date))
-            if base is None or actual is None or base <= 0 or actual <= 0:
+            base_res = prices.get((slug, f_date))
+            actual_res = prices.get((slug, target_date))
+            if base_res is None or actual_res is None:
+                n_unresolvable += 1
+                continue
+
+            base, actual = base_res.price, actual_res.price
+            if base <= 0 or actual <= 0:
+                n_unresolvable += 1
+                continue
+
+            # The actual leg must be supported by at least one observation
+            # recorded AFTER the forecast date. When the archive ends before the
+            # target date, both legs can resolve from the SAME window — the
+            # anchor-staleness rule passes each anchor individually — and
+            # actual_ret comes out exactly 0.0. That is not a flat market, it is
+            # a manufactured flat, produced for every forecast whose target date
+            # is beyond coverage. In the Task 9a dry run it moved the actual-flat
+            # share from 31.8% to 48.1%.
+            #
+            # This lives here, not in resolve_anchors: only the caller knows two
+            # anchors form a leg pair. resolve_anchors stays symmetric and
+            # leg-agnostic, and the forecast is DROPPED (and counted
+            # unresolvable), never given a fallback.
+            if actual_res.newest_observation <= f_date:
                 n_unresolvable += 1
                 continue
 

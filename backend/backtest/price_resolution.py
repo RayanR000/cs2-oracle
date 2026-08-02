@@ -13,6 +13,7 @@ forecasts score 61.76% one day and 33.74% the next.
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from datetime import date
 from pathlib import Path
 
@@ -23,30 +24,59 @@ from collectors.pipeline import FALLBACK_MAX_AGE_DAYS
 # Mirrors ItemForecaster.predict()'s tail(3) median (forecaster.py:3513).
 SMOOTH_WINDOW = 3
 
-# The 3 observations must lie within this many calendar days of each other.
+# Every selected observation must lie within this many calendar days of the
+# ANCHOR — not merely within this many days of each other. Measuring the span
+# between the selected observations alone leaves the gap from the newest
+# observation to the anchor unbounded, so an anchor arbitrarily far past the end
+# of the archive resolves to a carried-forward price stamped as the anchor's own
+# value. That is the price-laundering shape commit db5bddb removed from the
+# historical collector fallback; it must not live in the scorer either.
+#
 # Derived from collectors.pipeline.FALLBACK_MAX_AGE_DAYS to ensure a single
 # staleness convention across the codebase. If an operator overrides
 # FALLBACK_MAX_AGE_DAYS via environment variable, both sides (backtest and
-# production) will use the same value. Measured cost: ~0.74% of item-days.
+# production) will use the same value.
 MAX_WINDOW_SPAN_DAYS = FALLBACK_MAX_AGE_DAYS
 
 
-def smoothed_prices(
+@dataclass(frozen=True)
+class Resolution:
+    """A resolved anchor plus the window that produced it.
+
+    ``newest_observation`` is the latest observation date backing ``price``. It
+    is what lets a *caller* — which is the only layer that knows two anchors
+    form a leg pair — reject a pair whose actual leg carries no information
+    recorded after the forecast date. This class stays leg-agnostic: it reports
+    what supported the estimate, and makes no judgement about which leg it is.
+    """
+
+    price: float
+    oldest_observation: date
+    newest_observation: date
+
+
+def resolve_anchors(
     voted: pd.DataFrame,
     anchors: set[tuple[str, date]],
     window: int = SMOOTH_WINDOW,
     max_span_days: int = MAX_WINDOW_SPAN_DAYS,
-) -> dict[tuple[str, date], float]:
+) -> dict[tuple[str, date], Resolution]:
     """Median of the last ``window`` observed prices at or before each anchor.
 
     ``voted`` must already be voted to one row per item-day, with columns
     ``item_id`` (slug), ``date``, ``price``.
 
-    Anchors that cannot be resolved — no observation at or before the anchor,
-    or observations spanning more than ``max_span_days`` — are omitted from the
-    result. Callers must treat a missing key as a dropped forecast rather than
-    substituting a fallback, which would reintroduce the asymmetry this
-    function exists to remove.
+    Anchors that cannot be resolved — no observation at or before the anchor, or
+    any selected observation more than ``max_span_days`` before the anchor — are
+    omitted from the result. Callers must treat a missing key as a dropped
+    forecast rather than substituting a fallback, which would reintroduce the
+    asymmetry this function exists to remove.
+
+    The anchor-relative bound subsumes a between-observations bound: every
+    selected observation is at or before the anchor, so the newest is too, and
+    ``selected[-1] - selected[0] <= anchor - selected[0]``. If the oldest
+    selected observation is within ``max_span_days`` of the anchor, the
+    observations are necessarily within ``max_span_days`` of each other.
     """
     if voted.empty or not anchors:
         return {}
@@ -56,7 +86,7 @@ def smoothed_prices(
         ordered = group.sort_values("date")
         by_item[slug] = list(zip(ordered["date"], ordered["price"]))
 
-    resolved: dict[tuple[str, date], float] = {}
+    resolved: dict[tuple[str, date], Resolution] = {}
     for slug, anchor in anchors:
         observations = by_item.get(slug)
         if not observations:
@@ -67,18 +97,39 @@ def smoothed_prices(
         if not selected:
             continue
 
-        span = (selected[-1][0] - selected[0][0]).days
-        if span > max_span_days:
+        # Measured from the ANCHOR, not across the selected window. This bounds
+        # both the scatter of the observations and their staleness relative to
+        # the date being resolved.
+        if (anchor - selected[0][0]).days > max_span_days:
             continue
 
         prices = sorted(p for _, p in selected)
         mid = len(prices) // 2
         if len(prices) % 2:
-            resolved[(slug, anchor)] = float(prices[mid])
+            price = float(prices[mid])
         else:
-            resolved[(slug, anchor)] = float((prices[mid - 1] + prices[mid]) / 2)
+            price = float((prices[mid - 1] + prices[mid]) / 2)
+
+        resolved[(slug, anchor)] = Resolution(
+            price=price,
+            oldest_observation=selected[0][0],
+            newest_observation=selected[-1][0],
+        )
 
     return resolved
+
+
+def smoothed_prices(
+    voted: pd.DataFrame,
+    anchors: set[tuple[str, date]],
+    window: int = SMOOTH_WINDOW,
+    max_span_days: int = MAX_WINDOW_SPAN_DAYS,
+) -> dict[tuple[str, date], float]:
+    """:func:`resolve_anchors` reduced to prices. Same rule, same symmetry."""
+    return {
+        key: res.price
+        for key, res in resolve_anchors(voted, anchors, window, max_span_days).items()
+    }
 
 
 def load_voted_prices(

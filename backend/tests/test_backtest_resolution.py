@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import date
+from datetime import date, timedelta
 from pathlib import Path
 
 import pandas as pd
@@ -92,23 +92,118 @@ def test_items_are_independent():
     assert out[("m4", date(2026, 7, 2))] == 50.0
 
 
-def test_span_is_measured_across_the_window_not_from_the_anchor():
-    """The span check measures from the oldest to newest observation in the
-    selected window, not from the anchor to the oldest observation. This matters
-    when the anchor has no exact observation and sits well after the window.
-    Observations tightly clustered within 2 days should resolve even if the
-    anchor is 7+ days later."""
+def test_span_is_measured_from_the_anchor_not_across_the_window():
+    """Replaces test_span_is_measured_across_the_window_not_from_the_anchor,
+    which asserted the defect Task 8d fixes.
+
+    The span is measured from the ANCHOR to the oldest selected observation.
+    Measuring only across the selected window leaves the gap from the newest
+    observation to the anchor unbounded, so a tight cluster of observations
+    resolves an anchor arbitrarily far in the future — a stale price re-stamped
+    as the anchor's own value.
+
+    Observations 07-01/02/03 span 2 days, so the old rule resolved an anchor on
+    07-10. From the anchor the oldest observation is 9 days back, past the 7-day
+    cap, so it must not resolve."""
     rows = [
         ("ak", date(2026, 7, 1), 1.0),
         ("ak", date(2026, 7, 2), 2.0),
         ("ak", date(2026, 7, 3), 3.0),
     ]
-    # Anchor on 07-10 has no observation; selected window is 07-01 to 07-03 (2d span).
-    # Correct: span = 07-03 - 07-01 = 2d < 7d cap → resolves.
-    # Incorrect: span = 07-10 - 07-01 = 9d > 7d cap → unresolvable.
     out = smoothed_prices(_frame(rows), {("ak", date(2026, 7, 10))})
-    assert ("ak", date(2026, 7, 10)) in out
+    assert out == {}
+
+
+def test_an_anchor_beyond_archive_coverage_does_not_carry_a_stale_price_forward():
+    """Test 1 of the brief — the reproduction. Observations end on 07-25 at 3.0.
+    Every one of these anchors used to resolve to a bit-identical 3.0; in the
+    Task 9a dry run that was 25,317 of 75,195 targets.
+
+    Asserted on the boundary rather than a single case: an anchor resolves iff
+    the OLDEST selected observation is within the cap of it. With observations
+    on 07-23/24/25 the oldest of the last three is 07-23, so anchors up to
+    07-30 resolve and 07-31 onward do not."""
+    rows = [("ak", date(2026, 7, d), 3.0) for d in (23, 24, 25)]
+
+    resolved = {
+        anchor: smoothed_prices(_frame(rows), {("ak", anchor)})
+        for anchor in [
+            date(2026, 7, 26),
+            date(2026, 7, 29),
+            date(2026, 8, 30),
+            date(2027, 1, 1),
+        ]
+    }
+    assert resolved[date(2026, 7, 26)] == {("ak", date(2026, 7, 26)): 3.0}
+    assert resolved[date(2026, 7, 29)] == {("ak", date(2026, 7, 29)): 3.0}
+    assert resolved[date(2026, 8, 30)] == {}
+    assert resolved[date(2027, 1, 1)] == {}
+
+    # The boundary itself: oldest selected observation is 07-23.
+    last = date(2026, 7, 23) + timedelta(days=MAX_WINDOW_SPAN_DAYS)
+    assert ("ak", last) in smoothed_prices(_frame(rows), {("ak", last)})
+    past = last + timedelta(days=1)
+    assert smoothed_prices(_frame(rows), {("ak", past)}) == {}
+
+
+def test_the_anchor_gap_boundary_is_inclusive_at_exactly_max_span_days():
+    """Test 2 of the brief. A single observation exactly MAX_WINDOW_SPAN_DAYS
+    before the anchor resolves; one day older does not. Driven with one
+    observation so the gap under test is unambiguously the anchor gap and not
+    the window span, which is 0 either way."""
+    obs_day = date(2026, 7, 10)
+    rows = [("ak", obs_day, 4.0)]
+
+    on_cap = obs_day + timedelta(days=MAX_WINDOW_SPAN_DAYS)
+    assert smoothed_prices(_frame(rows), {("ak", on_cap)}) == {("ak", on_cap): 4.0}
+
+    past_cap = on_cap + timedelta(days=1)
+    assert smoothed_prices(_frame(rows), {("ak", past_cap)}) == {}
+
+
+def test_an_anchor_with_no_observation_on_it_still_resolves_when_recent():
+    """Test 3 of the brief, and the legitimate half of the test this change
+    replaced. The rule bounds staleness; it does not require an observation on
+    the anchor itself. Observations 07-06/07/08 with an anchor on 07-10 are 4
+    days stale at the oldest — well inside the cap — so the anchor resolves at
+    the median."""
+    rows = [
+        ("ak", date(2026, 7, 6), 1.0),
+        ("ak", date(2026, 7, 7), 2.0),
+        ("ak", date(2026, 7, 8), 3.0),
+    ]
+    out = smoothed_prices(_frame(rows), {("ak", date(2026, 7, 10))})
     assert out[("ak", date(2026, 7, 10))] == 2.0  # median(1.0, 2.0, 3.0)
+
+
+def test_the_anchor_rule_subsumes_the_between_observations_rule():
+    """The brief claims the anchor-relative bound makes a separate
+    between-observations bound redundant. Every selected observation is at or
+    before the anchor, so selected[-1] <= anchor and therefore
+    (selected[-1] - selected[0]) <= (anchor - selected[0]). Anything the window
+    check would reject, the anchor check rejects too.
+
+    Asserted rather than reasoned about alone: sweep every 3-observation shape
+    up to a 12-day reach and confirm no case passes the anchor check while
+    failing the window check."""
+    start = date(2026, 7, 1)
+    for gap_a in range(0, 13):
+        for gap_b in range(gap_a, 13):
+            for anchor_gap in range(gap_b, 13):
+                days = sorted({0, gap_a, gap_b})
+                rows = [("ak", start + timedelta(days=d), 1.0) for d in days]
+                anchor = start + timedelta(days=anchor_gap)
+                out = smoothed_prices(_frame(rows), {("ak", anchor)})
+
+                selected_oldest = start  # only 3 observations, all selected
+                anchor_ok = (anchor - selected_oldest).days <= MAX_WINDOW_SPAN_DAYS
+                window_ok = (
+                    (start + timedelta(days=days[-1])) - selected_oldest
+                ).days <= MAX_WINDOW_SPAN_DAYS
+
+                assert bool(out) == anchor_ok, (days, anchor_gap)
+                # The subsumption itself: anchor-pass implies window-pass.
+                assert not (anchor_ok and not window_ok), (days, anchor_gap)
 
 
 def test_constants_match_the_codebase_staleness_convention():
