@@ -391,7 +391,15 @@ class ItemForecaster:
                 with open(path) as f:
                     data = json.load(f)
                 self.bias_corrections = {int(k): v for k, v in data.get("corrections", {}).items()}
-                version = int(data.get("schema_version", 0))
+                try:
+                    version = int(data.get("schema_version", 0))
+                except (TypeError, ValueError):
+                    # Malformed schema_version (null, a string, a list/dict, ...)
+                    # is provenance we can't trust either -- treat it the same
+                    # as "unversioned" rather than nuking the whole file
+                    # (which would also drop the still-valid `corrections`
+                    # dict already parsed above).
+                    version = 0
                 if version < self.BIAS_FIT_SCHEMA_VERSION:
                     logger.warning(
                         f"  bias_corrections.json is schema v{version} < "

@@ -130,3 +130,30 @@ def test_a_discarded_load_survives_a_save_round_trip(model_dir):
     f._save_bias_corrections()
     reloaded = _load(model_dir)
     assert reloaded.bias_thresholds[30]["$1-5"] == {"t_down": -DEFAULT_T, "t_up": DEFAULT_T}
+
+
+@pytest.mark.parametrize("bad_version", [None, "abc", [1, 2], {"nested": True}], ids=[
+    "null", "non_numeric_string", "list", "dict",
+])
+def test_malformed_schema_version_discards_thresholds_without_crashing(model_dir, bad_version):
+    """A malformed schema_version (not an int and not int-able) must not raise.
+
+    It is treated the same as an unversioned (v0) file -- stored thresholds
+    are discarded to defaults -- rather than falling into the corrupt-file
+    except clause, which would also wipe the still-valid `corrections` dict
+    parsed just above the version check. Assert on `corrections` surviving to
+    prove which branch was taken, not merely that nothing raised.
+    """
+    _write_corrections(model_dir, {
+        "schema_version": bad_version,
+        "corrections": {"7": {"$1-5": 1.5}},
+        "thresholds": {"30": {"$1-5": {"t_down": -3.0, "t_up": -2.92}}},
+        "ewma_state": {"30": {"$1-5": 2}},
+    })
+    f = _load(model_dir)  # must not raise
+    # Discard-to-defaults branch: thresholds reset to the flat-tolerance default.
+    assert f.bias_thresholds[30]["$1-5"] == {"t_down": -DEFAULT_T, "t_up": DEFAULT_T}
+    # Not the corrupt-file branch: _set_default_bias_corrections() would have
+    # reset `corrections` to `{}` for every horizon; instead the parsed value
+    # from the file survives untouched.
+    assert f.bias_corrections[7]["$1-5"] == 1.5
