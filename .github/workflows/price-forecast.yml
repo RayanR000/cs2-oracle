@@ -132,6 +132,35 @@ jobs:
               ;;
           esac
 
+      # forecast_prices.py writes the item_forecasts Parquet mirror into the
+      # ephemeral archive/ checkout, so without this step every CI run's mirror
+      # write is discarded at teardown. That is why item_forecasts.parquet
+      # stopped at 2026-07-29 — the last manual local run — while Supabase kept
+      # advancing, and why the API (which reads Parquet first, falling back to
+      # the DB only on None/exception) served forecasts days older than the DB
+      # held.
+      #
+      # Mirrors "Publish updated archive" in aggregator-update.yml: the parquet
+      # files ARE the data, each holding full history, so git history of them has
+      # no value and only bloats the repo — republish as one squashed commit via
+      # an orphan branch + force-push. Safe because the chain is sequential
+      # (aggregator 23:00 -> this -> backtest) and each job checks out the
+      # archive fresh, so the orphan tree is never missing another job's write.
+      #
+      # MUST run before the freshness check below. Reversed, the check would read
+      # the file this step is about to publish and pass on state that does not
+      # survive the job — which is exactly the false green it exists to prevent.
+      - name: Publish updated archive (flat history)
+        if: always() && steps.mode.outputs.mode != 'train-only'
+        working-directory: ./archive
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git checkout --orphan flat
+          git add -A
+          git commit -m "archive: item_forecasts $(date -u +%F)"
+          git push --force origin HEAD:main
+
       # A run that persists nothing must not report success. item_forecasts
       # accumulated 5 forecast dates in eight months because nothing asserted
       # the output — the same shape as the collectors audited in

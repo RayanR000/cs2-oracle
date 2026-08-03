@@ -25,6 +25,45 @@ accuracy roadmap stays closed.
    `Verify forecasts were persisted` step runs
    `backend/scripts/check_forecast_freshness.py`, which asserts both
    `item_forecasts` and its Parquet mirror carry a forecast dated today or later.
+6. **`price-forecast.yml` now publishes the archive.** Added after the above was
+   merged — see "The mirror was never being pushed" below. Without it the Parquet
+   leg of the freshness check was a false green.
+
+## The mirror was never being pushed
+
+Found immediately after merging items 1–5, and the reason item 6 exists.
+
+`forecast_prices.py:151` writes the `item_forecasts` mirror via `append_table`
+into `archive/` — the ephemeral `cs2-oracle-data` checkout — and
+`price-forecast.yml` had **no commit/push step**, so every CI run's mirror write
+was discarded at runner teardown. `aggregator-update.yml` has had that step all
+along ("Publish updated archive (flat history)"); the forecast workflow never
+did. Confirmed 2026-08-03: the mirror's newest `forecast_date` was 2026-07-29,
+the last manual local run, while Supabase `item_forecasts` was at 2026-08-02.
+
+Two consequences, both now fixed by item 6:
+
+- **The freshness check's Parquet leg was a false green.** On the runner
+  `append_table` writes the file minutes before the check reads it, so
+  `max(forecast_date)` was today and the check passed — then the file evaporated.
+  It verified a write that did not survive the job. Only the DB leg was real.
+  This class of bug cannot be caught locally, because locally there is no
+  ephemeral checkout; the Task 6 verification exercised real files and so could
+  not have surfaced it.
+- **It was also a live serving defect.** `/items/{id}/trends` (`items.py:419`)
+  and the prediction endpoint read Parquet first, falling back to the DB only on
+  `None` or an exception, so a present-but-stale mirror beat a current DB and
+  those endpoints served forecasts days older than the DB held.
+
+The publish step is placed **before** the freshness check deliberately: reversed,
+the check would read the file the publish step is about to write and pass on
+transient state, reproducing the false green it exists to prevent.
+
+**Still outstanding:** `backtest-accuracy.yml` has the identical gap. It checks
+out and links the archive, writes `forecast_outcomes` and `prediction_accuracy`
+via `append_table` (`scripts/backtest_accuracy.py:111,263`), and never pushes
+either. The aggregator remains the only other workflow whose archive writes
+survive. Not fixed here.
 
 ## Why
 
