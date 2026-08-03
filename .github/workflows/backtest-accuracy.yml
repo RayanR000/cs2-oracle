@@ -74,6 +74,34 @@ jobs:
           set -o pipefail
           python scripts/backtest_accuracy.py --type forecast 2>&1 | tee backtest.log
 
+      # backtest_accuracy.py appends forecast_outcomes and prediction_accuracy to
+      # the archive (scripts/backtest_accuracy.py:111,263), which lands in the
+      # ephemeral archive/ checkout — so without this step every CI backtest's
+      # resolved outcomes were discarded at teardown, and the accuracy history
+      # only ever advanced when someone ran the backtest locally. Same gap that
+      # price-forecast.yml had for item_forecasts.parquet.
+      #
+      # Mirrors "Publish updated archive" in aggregator-update.yml. Not
+      # conditioned on success: resolution is incremental and frozen once
+      # written, so outcomes resolved before a later failure are still worth
+      # keeping — discarding them just means redoing the work next run.
+      #
+      # Ordering note: this force-pushes the whole tree, so it must not run
+      # concurrently with another archive writer. It does not today — this
+      # workflow is triggered by Price Forecast *completion* (after that
+      # workflow's own publish step) or by the 08:00 cron, both disjoint from the
+      # 23:00 aggregator. Adding a third writer would need that revisited.
+      - name: Publish updated archive (flat history)
+        if: always()
+        working-directory: ./archive
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git checkout --orphan flat
+          git add -A
+          git commit -m "archive: forecast outcomes + accuracy $(date -u +%F)"
+          git push --force origin HEAD:main
+
       - name: Notify on failure
         if: failure() && github.event_name == 'workflow_run'
         env:

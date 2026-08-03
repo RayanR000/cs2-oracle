@@ -25,9 +25,10 @@ accuracy roadmap stays closed.
    `Verify forecasts were persisted` step runs
    `backend/scripts/check_forecast_freshness.py`, which asserts both
    `item_forecasts` and its Parquet mirror carry a forecast dated today or later.
-6. **`price-forecast.yml` now publishes the archive.** Added after the above was
-   merged — see "The mirror was never being pushed" below. Without it the Parquet
-   leg of the freshness check was a false green.
+6. **`price-forecast.yml` and `backtest-accuracy.yml` now publish the archive.**
+   Added after the above was merged — see "The mirror was never being pushed"
+   below. Without it the Parquet leg of the freshness check was a false green, and
+   no CI backtest's resolved outcomes ever persisted.
 
 ## The mirror was never being pushed
 
@@ -59,11 +60,21 @@ The publish step is placed **before** the freshness check deliberately: reversed
 the check would read the file the publish step is about to write and pass on
 transient state, reproducing the false green it exists to prevent.
 
-**Still outstanding:** `backtest-accuracy.yml` has the identical gap. It checks
-out and links the archive, writes `forecast_outcomes` and `prediction_accuracy`
-via `append_table` (`scripts/backtest_accuracy.py:111,263`), and never pushes
-either. The aggregator remains the only other workflow whose archive writes
-survive. Not fixed here.
+**`backtest-accuracy.yml` had the identical gap, also fixed.** It checks out and
+links the archive, writes `forecast_outcomes` and `prediction_accuracy` via
+`append_table` (`scripts/backtest_accuracy.py:111,263`), and never pushed either —
+so every CI backtest's resolved outcomes were discarded, and the accuracy history
+only advanced when someone ran the backtest locally. That is the more
+consequential of the two: `forecast_outcomes.parquet` is the source the
+confidence evidence in this document was computed from. Its publish step is not
+conditioned on success, because resolution is incremental and frozen once
+written, so outcomes resolved before a later failure are still worth keeping.
+
+With both fixed, the aggregator is no longer the only workflow whose archive
+writes survive. All three force-push the whole tree, so they must not run
+concurrently; they do not today (aggregator 23:00 → Price Forecast → Backtest, or
+the disjoint 08:00 backtest cron), but a fourth archive writer would need that
+revisited.
 
 ## Why
 
