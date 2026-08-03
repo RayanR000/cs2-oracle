@@ -132,6 +132,19 @@ jobs:
               ;;
           esac
 
+      # A run that persists nothing must not report success. item_forecasts
+      # accumulated 5 forecast dates in eight months because nothing asserted
+      # the output — the same shape as the collectors audited in
+      # docs/changelog/2026-07-31-accuracy-work-closed.md. Skipped for
+      # train-only, which is not expected to write forecasts.
+      - name: Verify forecasts were persisted
+        if: always() && steps.mode.outputs.mode != 'train-only'
+        working-directory: ./backend
+        env:
+          DATABASE_URL: ${{ secrets.SUPABASE_DATABASE_URL }}
+          ENVIRONMENT: production
+        run: python scripts/check_forecast_freshness.py
+
       # Deliberately NOT conditioned on success. Training finishes and writes
       # valid boosters to disk minutes before the predict phase OOMs (exit 143 —
       # see runs 30226424193, 29793571744, 30666903525, all killed at "Adding

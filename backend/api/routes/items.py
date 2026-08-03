@@ -14,6 +14,7 @@ from database import (
     Event, EventImpact, EventCorrelation, backfilled_item_clause,
 )
 from api.cache import get_or_build
+from api.serving_policy import price_floor_clause
 from api.schemas import (
     ItemOut, PricePointOut, TrendAnalysisOut, PredictionOut,
     SourcePriceOut, MultiSourcePricesOut, EventOut, TrendingItemOut,
@@ -92,7 +93,6 @@ def _latest_prices(db: Session, item_ids: list[int]) -> dict[int, float]:
 
 
 def _build_trending(db: Session, limit: int):
-    from sqlalchemy import case
     from datetime import date
 
     today = date.today()
@@ -105,23 +105,21 @@ def _build_trending(db: Session, limit: int):
             ItemForecast.price_mid,
             ItemForecast.current_price,
         )
-        .filter(ItemForecast.forecast_date == today, ItemForecast.horizon_days == 7)
+        .filter(
+            ItemForecast.forecast_date == today,
+            ItemForecast.horizon_days == 7,
+            price_floor_clause(ItemForecast.current_price),
+        )
         .distinct(ItemForecast.item_id)
         .order_by(ItemForecast.item_id, desc(ItemForecast.forecast_date))
         .subquery()
-    )
-
-    confidence_order = case(
-        (subq.c.confidence == "high", 3),
-        (subq.c.confidence == "medium", 2),
-        else_=1,
     )
 
     items = (
         db.query(Item, subq.c.direction, subq.c.confidence, subq.c.price_mid, subq.c.current_price)
         .outerjoin(subq, Item.id == subq.c.item_id)
         .filter(Item.icon_url.isnot(None), backfilled_item_clause())
-        .order_by(desc(confidence_order), desc(subq.c.price_mid / func.nullif(subq.c.current_price, 0)))
+        .order_by(desc(subq.c.price_mid / func.nullif(subq.c.current_price, 0)))
         .limit(limit)
         .all()
     )
@@ -364,7 +362,7 @@ def _trends_parquet(item, item_id: str, db: Session):
         .first()
     )
     current_price = latest_price.price if latest_price else 0.0
-    explanation = _build_trend_explanation(trend_dir, confidence, current_price)
+    explanation = _build_trend_explanation(trend_dir, current_price)
     price_points = [
         p.price for p in (
             db.query(PriceHistory)
@@ -446,7 +444,7 @@ def get_item_trends(item_id: str, db: Session = Depends(get_db)):
     trend_dir = direction_map.get(latest_forecast.direction if latest_forecast else None, "neutral")
     confidence = latest_forecast.confidence if latest_forecast and latest_forecast.confidence else "low"
 
-    explanation = _build_trend_explanation(trend_dir, confidence, current_price)
+    explanation = _build_trend_explanation(trend_dir, current_price)
 
     price_points = [
         r.price for r in (
@@ -505,12 +503,12 @@ def get_item_trends(item_id: str, db: Session = Depends(get_db)):
     )
 
 
-def _build_trend_explanation(direction: str, confidence: str, current_price) -> str:
+def _build_trend_explanation(direction: str, current_price) -> str:
     if direction == "bullish":
-        return f"ML forecast predicts upward movement. Confidence is {confidence}."
+        return "ML forecast predicts upward movement over the next 7 days."
     elif direction == "bearish":
-        return f"ML forecast predicts downward movement. Confidence is {confidence}."
-    return f"ML forecast predicts stable price. Confidence is {confidence}."
+        return "ML forecast predicts downward movement over the next 7 days."
+    return "ML forecast predicts a stable price over the next 7 days."
 
 
 def _prediction_parquet(item, period: str, horizon: int):
