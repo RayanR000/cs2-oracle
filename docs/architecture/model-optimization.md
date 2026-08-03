@@ -21,7 +21,7 @@
 | **Warm retrain** | ~4–5 min (HP cached) |
 | **Cold retrain** | **12m30s** measured 2026-07-29 (`SKIP_REGIMES=1 FORCE_HP_SEARCH=1`, CV on, 3d HP frozen). ~14–16 min with regimes |
 | **Inference** | ~1–2 min with a warm 3-day feature cache; **~5 min on a cold cache** (rebuilds 6.1M voted rows from Parquet) |
-| **Production DA** | ⚠️ **STALE — measured pre-q50-fix.** 3d=61.5%, 7d=52.8%, 14d=55.7%, 30d=54.2% (+35–41pp vs baseline). These predate the 2026-07-29 q50 sampling fix and cannot be refreshed on demand: `backtest_accuracy.py` scores *stored* forecasts against matured actuals, so the current model will not appear in it until the forecasts written 2026-07-29 mature (3–30 days). For a fresh-model number, run `scripts/walkforward_backtest.py` (~60–90 min, all horizons) |
+| **Production DA** | **3d=48.4%, 7d=49.4%, 14d=50.8%, 30d=46.7%** (`lgbm-v3`, ≥$1 headline tier, re-resolved on prod 2026-08-02). ⚠️ **The old row here — 3d=61.5%, 7d=52.8%, 14d=55.7%, 30d=54.2%, "+35–41pp vs baseline" — was an artifact of the two-estimator bug fixed 2026-08-02, not a pre-q50-fix staleness problem as previously believed.** Chance is ~33% with three labels, so these beat chance but by far less than the old numbers implied. Still cannot be refreshed on demand: `backtest_accuracy.py` scores *stored* forecasts against matured actuals, and maturity is now additionally bounded by archive coverage. For a fresh-model number, run `scripts/walkforward_backtest.py` (~60–90 min, all horizons). See `docs/changelog/2026-08-01-deterministic-backtest.md` |
 | **Classifier CV DA** | 3d=68.2%, 7d=68.3%, 14d=68.8%, 30d=70.9% (9 folds; 8 for 30d) — measured during the 2026-07-29 retrain. This is the **served** direction signal (classifier, not quantile-sign, since 2026-07-24). A training-time diagnostic, **not** comparable to the Production DA row above |
 | **Quantile-sign CV DA** | 3d=61.0%, 7d=61.0%, 14d=60.8%, 30d=64.0% (same run; sd 5.2–8.9%). ⚠️ **Understates the shipped model:** the CV block caps fits at `num_boost_round=200`, but production 3d q50 trains to 349–428 rounds — CV scores an under-trained model. Does not affect the classifier row (different code path) |
 | **7d q50 early stopping** | ⚠️ **Noise-determined.** The val curve improves only 0.28% total on the production frame, so `early_stopping(50)` trips on noise: stopping round sd 41 on mean 47 (shipped members 41/11/89). Root-caused 2026-07-29 to a regime mismatch — the 30-day val window has ~2× the return spread of the training set, and only 14.5% of training rows fall in the last 180 days. Tree count is a red herring: 3d looks healthy only because its `learning_rate` is 0.01 vs 7d's 0.068. **Any 7d accuracy A/B is partly measuring this noise.** See `docs/changelog/2026-07-29-7d-q50-early-stop.md` |
@@ -142,6 +142,17 @@ before running predict on a fresh model.
 | 7d      | 52.8%                    | ≥47.5%              |
 | 14d     | 55.7%                    | ≥50.1%              |
 | 30d     | 54.2%                    | ≥48.8%              |
+
+> ⚠️ **These retention floors are derived from the pre-2026-08-02 production DA,
+> which the deterministic-backtest fix showed to be inflated** (the two legs of
+> the realised return were different estimators). The reproducible figures are
+> 3d=48.4% / 7d=49.4% / 14d=50.8% / 30d=46.7%, which are *below* every floor in
+> this table — so a naive reading says all four horizons already fail their gate.
+> They do not: the floors and the measurements come from different scorers and are
+> not comparable. Recompute the floors from a post-fix baseline before using them
+> to accept or reject an optimization. Note also that row 12 above justifies
+> keeping the 14d horizon on a "55.7% DA" that is likewise superseded (now 50.8%
+> at ≥$1). See `docs/changelog/2026-08-01-deterministic-backtest.md`.
 
 ---
 

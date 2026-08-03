@@ -260,22 +260,53 @@ Measured via `walkforward_backtest.py` on 200 data-rich items, 26 expanding wind
 | After Jul '26 round 2 | 87.0% | 83.0% | **Buggy** — target inversion inflated |
 | After target inversion fix | 61.1% | 65.8% | Genuine — 9-16pp above 50% baseline |
 | After data quality + shift guard | 57.4% | 55.2% | Dead item filter, winsorization, 2026 exclusion |
-| After 3d depth + walkforward | **52.8%** | **54.2%** | Production backtest (all 8,691 items) |
+| After 3d depth + walkforward | 52.8% | 54.2% | Production backtest — **inflated, see below** |
+| After the deterministic backtest (2026-08-02) | **47.9%** | **42.4%** | First reproducible measurement |
+
+Every row above the last was measured by a scorer whose two legs used different
+estimators, so the whole progression is inflated by an unknown, run-date-dependent
+amount. Stage-to-stage *deltas* in it are not trustworthy either. Only the last
+row is reproducible.
 
 ### Production Backtest Pipeline
 
-The `backtest_accuracy.py` script evaluates mature forecasts from `item_forecasts` against actual prices from the Parquet archive (using the same multi-source voting as training). It stores aggregate metrics to `prediction_accuracy` and per-forecast outcomes to `forecast_outcomes`.
+The `backtest_accuracy.py` script evaluates mature forecasts from `item_forecasts`
+against the Parquet archive. Since 2026-08-02, **both legs** of the realised
+return resolve through one shared estimator,
+`backtest.price_resolution.resolve_anchors` — the same 3-observation window, the
+same multi-source voting, the same anchor-staleness cap on each side.
+`item_forecasts.current_price` is stored on the outcome for reference and is
+never scored on. Resolved actuals are then **frozen**: `base_price`,
+`actual_price` and `resolved_at` are final, and only `--reresolve` can move them.
+Maturity is bounded by archive coverage (`min(today, archive_max_day())`), not by
+the calendar. It stores aggregate metrics to `prediction_accuracy` (per price
+tier, with a ≥$1 headline) and per-forecast outcomes to `forecast_outcomes`.
 
-**Latest verified results (v3, 2026-07-20, 5,300–5,500 forecasts per horizon):**
+**Latest verified results (`lgbm-v3`, re-resolved on prod 2026-08-02, ≥$1
+headline tier, ~1,000 forecasts per horizon):**
 
-| Horizon | DA | 95% CI | Baseline DA | vs Baseline | MAE | MAPE | wMAPE | IC |
-|---------|---:|--------|------------:|------------:|----:|-----:|------:|--:|
-| **3d** | **61.5%** | [60.2, 62.8] | 20.23% | **+41.27pp** | $0.73 | 33.2% | 30.5% | 47.1% |
-| **7d** | 52.8% | [51.5, 54.1] | 17.42% | +35.38pp | $0.73 | 43.8% | 30.8% | 41.2% |
-| **14d** | 55.7% | [54.3, 57.1] | 17.67% | +38.03pp | $0.74 | 51.9% | 30.9% | 49.8% |
-| **30d** | 54.2% | [52.8, 55.6] | 18.00% | +36.20pp | $0.77 | 35.8% | 31.7% | 57.0% |
+| Horizon | DA (≥$1) | DA (all tiers) |
+|---------|---:|---:|
+| **3d** | **48.4%** | 48.7% |
+| **7d** | 49.4% | 47.9% |
+| **14d** | **50.8%** | 40.2% |
+| **30d** | 46.7% | 42.4% |
 
-Baseline = persistence forecast (predicts zero change). Bootstrap CI = 95% percentile, 1,000 resamples. 3d high-confidence forecasts achieve ~78% accuracy vs ~43% low-confidence. Improvements from 3d depth experiment (+1.8pp on 3d) and walkforward-guided fixes.
+With three labels (up/flat/down) chance is ~33%, so these are above chance but
+far below the figures this section carried before 2026-08-02.
+
+> ⚠️ **Every production DA number measured before 2026-08-02 is an artifact.**
+> The two legs of the realised return were different estimators — a serving-time
+> 3-observation median against a raw single-day voted price — which inflated DA
+> and made it non-reproducible: one 5,512-forecast cohort scored 61.76%, 33.74%,
+> 61.54% and 57.91% on four evaluation dates with no new data. The superseded
+> table read 3d=61.5% / 7d=52.8% / 14d=55.7% / 30d=54.2%. Do not compare against
+> it, and do not treat the drop as a regression in the model. See
+> `docs/changelog/2026-08-01-deterministic-backtest.md`.
+
+Tier 0 (<$1) is reported separately rather than folded into the headline: it is
+72% of the evaluated universe, and at those prices one cent is a 20% move, so the
+direction label is dominated by tick quantisation.
 
 **Metrics computed per horizon:**
 - Point error: MAE, RMSE, MAPE, wMAPE (dollar-weighted), MAPE by price tier
@@ -385,7 +416,9 @@ All three issues were fixed in the 2026-07-17 changelog. Full details in `docs/c
 | `backend/models/forecaster.py` | ~3,500 | Core ML: ItemForecaster, feature engineering, training, predict, regime-switching |
 | `backend/models/steam_types.py` | 130 | Steam type field parser (rarity + weapon_type extraction) |
 | `backend/scripts/forecast_prices.py` | 283 | Entry point: train + predict pipeline, `--compare-regime` A/B mode |
-| `backend/scripts/backtest_accuracy.py` | 399 | Mature forecast backtesting (production) |
+| `backend/scripts/backtest_accuracy.py` | 1,054 | Mature forecast backtesting (production) |
+| `backend/backtest/price_resolution.py` | 232 | Shared price estimator — both legs of the realised return |
+| `backend/backtest/scoring.py` | 163 | Pure scorer: tiers, verdicts, cohort metrics |
 | `backend/scripts/walkforward_backtest.py` | — | Standalone walk-forward evaluation (200 items, 26 folds) |
 | `backend/scripts/evaluate_forecaster.py` | 366 | Legacy walk-forward evaluation (archived) |
 | `backend/scripts/optuna_3d_search.py` | — | Optimized 3d horizon Optuna search (200 items, ~58s) |

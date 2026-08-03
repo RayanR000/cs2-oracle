@@ -60,14 +60,24 @@ API serving:
 | `event_impacts` | ~17 MB | 67,211 | Weekly rebuild |
 | `collection_runs` | ~1 MB | ~1,000 | 1 row/day |
 | `prediction_accuracy` | ~2 MB | ~5,000 | UPSERT, bounded |
-| `forecast_outcomes` | ~4 MB | ~50,000 | UPSERT, bounded |
+| `forecast_outcomes` | ~6 MB | 60,737 | **Insert-only / frozen** — see below |
 | `accuracy_alerts` | ~1 MB | ~100 | UPSERT, bounded |
 | `social_mentions` | ~2 MB | ~8,000 | 4 rows/day (6-hourly) |
 | `users` | ~0.1 MB | few | Static |
 | Others | ~8 MB | — | Static |
 | **Supabase total** | **~68 MB** | | |
-| `prices-2026.parquet` | **44.6 MB** (was 19 MB) | **4.1M** (was 2.0M) | After HF merge |
+| `prices-2026-*.parquet` | ~101 MB across 7 monthly files | **10.6M** | Monthly layout, per `cs2-oracle-data` (see below) |
 | `snapshots-2026.parquet` | **21.2 MB** (was 7.6 MB) | **3.7M** (was 1.6M) | After HF merge |
+
+**Archive layout.** The canonical copy of `price-archive/` lives in the separate
+`cs2-oracle-data` repo (`RayanR000/cs2-oracle-data`); the working copy under
+`cs2-oracle/price-archive/` is gitignored. 2026 prices use **monthly**
+`prices-2026-MM.parquet` files there. A local single-file `prices-2026.parquet`
+was retired 2026-08-02 — it was missing six days the monthly set has, and one of
+them (07-22) was enough to invalidate an entire 5,542-forecast backtest cohort,
+because a target date with no observation makes the actual leg's window fall back
+onto pre-forecast days. The loader globs `prices-*.parquet`, so both layouts
+would be read at once if the single file is restored alongside the monthly ones.
 
 ### Performance
 
@@ -120,6 +130,21 @@ After: `Item.is_backfilled == True`
 | 0016 | Add `supply_snapshots` table |
 | 0017 | Add item rarity columns |
 | 0018 | Add `social_mentions` table — Reddit sentiment (VADER) |
+| 0019 | Add `base_price` / `resolved_at` to `forecast_outcomes`, `price_tier` to `prediction_accuracy`; relax `current_price` to nullable |
+| 0020 | Include `price_tier` in the `prediction_accuracy` unique constraint |
+
+> `alembic upgrade` cannot replay this chain from scratch on SQLite — revisions
+> `0001`→`0018` contain Postgres-only `ALTER COLUMN ... TYPE` DDL. To rehearse
+> against a SQLite snapshot, `alembic stamp 0018` first; `0019`/`0020` are
+> dialect-aware and apply to both.
+
+**`forecast_outcomes` is insert-only.** Once a row has `base_price`,
+`actual_price` and `resolved_at`, those three columns are final — the daily
+backtest is structurally incapable of moving them, so a green run cannot silently
+restate history. `--rescore` recomputes the derived verdict columns from the
+frozen actuals without reading the archive; `--reresolve` is the only path that
+re-reads the archive, overwrites frozen actuals, and deletes rows whose forecast
+no longer resolves. See `docs/changelog/2026-08-01-deterministic-backtest.md`.
 
 ---
 

@@ -233,5 +233,5 @@ not blocked: `python scripts/run_supply_scraper.py` and
 
 Note: a bare `pytest` from `backend/` currently aborts during collection —
 `scripts/test_social_signal.py` is a one-off analysis script (not a test) that imports
-`thefuzz`, which is not in `requirements.txt`. Run `pytest tests` (235 pass) until it is
+`thefuzz`, which is not in `requirements.txt`. Run `pytest tests` (313 pass) until it is
 renamed or the import is guarded.
