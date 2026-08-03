@@ -1,7 +1,17 @@
 # Model Architecture
 
-> **⚠ Pending overhaul (2026-07-24, branch `simplify-price-only-model`, not yet merged).**
-> A model critique + serving audit produced significant changes not yet reflected in the sections below. See `docs/changelog/2026-07-24-directional-classifier-and-honest-serving-audit.md` for the full record. Summary:
+> **⚠ No accuracy figure in this document is currently reportable.**
+> The served accuracy series spans only **2 distinct forecast dates**, so its effective sample
+> size is 2 rather than the five-figure counts it carries, and the two dates ran in opposite
+> market directions. `MIN_FORECAST_DATES = 20` in `backtest/scoring.py` now refuses to quote a
+> headline below that bar. Any directional-accuracy percentage below — and any pre-2026-08-02
+> figure anywhere — should be read as unverified. CV numbers from the feature A/B harness carry a
+> separate problem: a 1.15pp noise floor at 3d, wider elsewhere. See
+> `docs/changelog/2026-08-03-accuracy-is-clustered-by-forecast-date.md`.
+
+> **The 2026-07-24 overhaul has landed** (commit `a332c2b`); the sections below describe live
+> behaviour. Full record in
+> `docs/changelog/2026-07-24-directional-classifier-and-honest-serving-audit.md`. Summary:
 > - **Directional classifier** — a per-horizon 3-class (down/flat/up) LightGBM (multiclass log-loss, mover-weighted) now supplies the served **direction + confidence**; quantile models supply only the interval. It beats momentum at every horizon in CV (3d/7d/14d/30d = 69.8/69.7/68.1/69.2%, +2–10pp over the best naive baseline). ~40% of that is correctly calling static ("flat") items; sign skill on real movers is ~55–57%.
 > - **Price-only features** — `FEATURE_GROUP_ALLOWLIST = ["price_technicals"]` (126 → 41–46 features). An ablation showed the 85 non-price features add ~0 directional accuracy and hurt 3d/30d.
 > - **Date-based, gap-robust features** — lag/return features now look up prices by *calendar date* (like targets), so data gaps yield NaN→neutral instead of fabricated multi-month returns.

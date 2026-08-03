@@ -4,6 +4,13 @@
 > while retaining ≥90% of current accuracy (DA within ~5pp of baseline).
 > Source of truth: `backend/models/forecaster.py:ItemForecaster` class constants.
 
+> **⚠ The accuracy side of every trade-off below is unverified.** The "≥90% of current accuracy"
+> budget and the per-lever DA deltas were measured either on the served series (effective sample
+> size 2 forecast dates) or on the feature A/B harness (1.15pp noise floor at 3d, up to 7.13pp at
+> 30d). The **timing** measurements are sound; the accuracy costs are mostly inside the noise. See
+> `docs/changelog/2026-08-03-accuracy-is-clustered-by-forecast-date.md` and
+> `docs/research/accuracy-opportunities.md`.
+
 ---
 
 ## Current Baseline (2026-07-29)
@@ -168,7 +175,7 @@ These are NOT new levers — they're already in production:
 | `SKIP_HP_HORIZONS` | [3] | Was [3, 14, 30] (2026-07-26: re-enabled 15-trial Optuna search for 14d/30d DART; measured retrain 16m16s with `SKIP_REGIMES=1 FORCE_HP_SEARCH=1` — improved conformal calibration, see `docs/retrain-optimization-analysis.md`) |
 | `N_TRIALS_MAP[3]` | 50→20 (then 50) | Iterated |
 | Feature cache (predict path) | 3-day TTL | Was none |
-| Voted frame cache (`fetch_price_history`) | On by default (2026-07-29); `VOTED_CACHE=0` disables | Was none. Saves **35s**, not the ~10 min `next-steps-tier1.md` §6 Lever A estimated — see the measured table there. **Bump `VOTED_CACHE_VERSION` when voting or the DuckDB query changes**, or a stale frame will silently train the next model |
+| Voted frame cache (`fetch_price_history`) | On by default (2026-07-29); `VOTED_CACHE=0` disables | Was none. Saves **35s** measured, against a ~10 min estimate in the since-deleted Tier-1 planning doc — the estimate was wrong by ~17x. **Bump `VOTED_CACHE_VERSION` when voting or the DuckDB query changes**, or a stale frame will silently train the next model |
 | Row sampling | **bagging for all quantiles** (2026-07-29) | Was q50=GOSS, q10/q90=bagging — GOSS reverted after A/B showed +5.21% (3d) / +1.76% (7d) pinball and +1.13pp / +0.71pp DA for bagging |
 | 2026 data exclusion | Active | Was all data |
 | Dead item filter | <$0.05, <5% range | Was none |
