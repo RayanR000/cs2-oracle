@@ -423,7 +423,6 @@ export default function ItemDetailPage() {
             <MetricCard
               label="Trend"
               value={trendDirection.replace('_', ' ')}
-              sub={`Confidence ${confidence}`}
               accentColor={trendColor}
             />
             <MetricCard label="7d SMA" value={hasPriceData ? formatCurrency(trends?.indicators?.sma_7 ?? null) : '\u2014'} mono />
