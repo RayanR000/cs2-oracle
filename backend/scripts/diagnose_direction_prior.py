@@ -24,7 +24,7 @@ finite-row coverage per horizon) -- not necessarily the exact distribution
 LightGBM's objective saw during the historical training run that produced
 the saved models.
 
-The "bulk_frame_{down,flat,up}" columns are NOT the production served
+The "bulk_{down,flat,up}" columns are NOT the production served
 distribution and must never be read as such. Production (ItemForecaster.predict)
 predicts one row per item -- the latest date, ~8.7k rows -- after reindexing
 to the full feature set, replacing +/-inf with NaN, and filling NaN with
@@ -86,7 +86,7 @@ def main():
           "training saw (training adds dead-item filtering, corrupt-item "
           "flagging, stratified subsampling, a time-based split, and target "
           "dropna). See module docstring.")
-    print("NOTE: the 'bulk_frame_*' columns below are a bulk in-sample pass "
+    print("NOTE: the 'bulk_*' columns below are a bulk in-sample pass "
           "over all historical rows with no inf/NaN cleanup -- they are NOT "
           "the production served distribution (which predicts one "
           "reindexed/cleaned row per item). Do not compare them to the "

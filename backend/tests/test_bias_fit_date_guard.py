@@ -8,7 +8,9 @@ cohort is 11,000 rows and 2 dates.
 """
 from __future__ import annotations
 
+import inspect
 import json
+import re
 from datetime import date
 from unittest.mock import MagicMock
 
@@ -50,17 +52,34 @@ def test_empty_input_lacks_coverage():
     assert ItemForecaster._has_date_coverage([]) is False
 
 
-def test_the_fit_and_the_headline_share_one_constant():
+def test_forecaster_does_not_define_its_own_min_forecast_dates():
     """A second, drifting threshold is the failure this guards against.
 
     scoring.MIN_FORECAST_DATES gates what gets *reported*; the guard gates
-    what gets *fitted*. If they ever diverge, production could fit
-    thresholds on a cohort the same codebase refuses to quote.
+    what gets *fitted*. If forecaster.py ever grew its own
+    `MIN_FORECAST_DATES = ...` instead of importing scoring's, the two could
+    drift independently of each other — production could fit thresholds on a
+    cohort the same codebase refuses to quote.
+
+    An `is`/`==` check on `forecaster.MIN_FORECAST_DATES` can't catch that:
+    CPython caches small integers, so a module that independently defines
+    `MIN_FORECAST_DATES = 20` would still pass an identity or value check
+    against `scoring.MIN_FORECAST_DATES`. Instead, inspect forecaster.py's own
+    source for a local assignment to the name -- there must be none; the only
+    way the name can exist in that module is via the `from backtest.scoring
+    import MIN_FORECAST_DATES` at the top of the file.
     """
-    from backtest import scoring
     from models import forecaster as fc
 
-    assert fc.MIN_FORECAST_DATES is scoring.MIN_FORECAST_DATES
+    source = inspect.getsource(fc)
+    own_assignments = [
+        line for line in source.splitlines()
+        if re.match(r"^MIN_FORECAST_DATES\s*=", line.strip())
+    ]
+    assert own_assignments == [], (
+        "forecaster.py must not define its own MIN_FORECAST_DATES -- found: "
+        f"{own_assignments!r}"
+    )
 
 
 DEFAULT_T = 0.5  # DIRECTION_FLAT_TOLERANCE_PCT

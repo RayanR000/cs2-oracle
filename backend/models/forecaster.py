@@ -528,7 +528,7 @@ class ItemForecaster:
                 logger.warning(
                     f"  Threshold[{horizon}d, {tier}]: refusing to fit — "
                     f"{n_dates} distinct forecast date(s) < {MIN_FORECAST_DATES} "
-                    f"(n={n} rows). Leaving thresholds at defaults."
+                    f"(n={n} rows). Leaving this tier's stored thresholds unchanged."
                 )
                 continue
 
@@ -3314,8 +3314,8 @@ class ItemForecaster:
         Weighted by _direction_sample_weights, because that is the
         distribution the classifier's multiclass objective actually sees —
         raw class counts would describe a model that was never trained.
-        Returns {} when not estimable, which callers treat as "serve
-        uncorrected".
+        Returns {} when not estimable, which the diagnostic
+        (scripts/diagnose_direction_prior.py) reports as "prior not estimable".
 
         ``threshold`` must be a scalar. Production trains with
         sigma_train=None in _train_horizon_inline and _cv_evaluate_horizon,

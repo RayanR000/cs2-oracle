@@ -67,11 +67,15 @@ measures a different quantity.
 
 Its own bulk figures (3d: 36.5% down / 33.8% flat / 29.7% up; 30d: 32.8% /
 31.7% / 35.5%) are therefore **not comparable** to the production rate, and the
-script names those columns `bulk_frame_*` with a printed caveat saying so.
+script names those columns `bulk_*` with a printed caveat saying so.
 
-So: the down-bias is real, still unexplained, and now attributable to
-**serve-time feature state rather than the inherited prior**. That is the open
-question. The natural next thread is the gap between the A/B harness's
+So: the down-bias is real and still unexplained. What this diagnostic
+establishes is only that it is **not attributable to the inherited class
+prior**; it did not identify what does explain it, and it does not rule
+anything else in, either. The remaining candidates are all serve-time and
+untested against each other: `_recenter_on_direction`, `_recenter_on_momentum`,
+`_blend_returns_with_prior`, and the two-date outcome cohort itself. That is
+the open question. The natural next thread is the gap between the A/B harness's
 reported directional accuracy and the live serving figures — `backend/AGENTS.md`
 documents `walkforward_backtest.py` as scoring a different price consensus than
 production (plain mean over duplicate item-days vs production's outlier-voted
@@ -96,9 +100,9 @@ days, which is what the table holds. It now reuses `MIN_FORECAST_DATES` from
 `backend/backtest/scoring.py` — the same constant that gates reporting — so the
 value fitted on and the value reported cannot drift apart
 (`ItemForecaster._has_date_coverage`). Below coverage it logs a `WARNING`
-naming the distinct date count and refuses, leaving that tier's thresholds at
-defaults and its `ewma_state` counter untouched so a later well-covered fit
-starts cold.
+naming the distinct date count and refuses, leaving that tier's stored
+thresholds unchanged and its `ewma_state` counter untouched so a later
+well-covered fit starts cold.
 
 ### 2. A provenance schema version on `bias_corrections.json`
 

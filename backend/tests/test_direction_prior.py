@@ -1,15 +1,21 @@
-"""The directional classifier's inherited up/down prior, and its correction.
+"""The directional classifier's inherited up/down training class prior.
 
 The classifier trains multiclass with no class_weight, so whatever up/down
 skew its 1460-day window carried is learned and then applied at serve time
-regardless of current market state. That is the mechanism behind "predicts
-down 57-87% of the time regardless of date" in
+regardless of current market state. That part is real, and was the
+hypothesis under test in
+docs/changelog/2026-08-03-direction-prior-diagnostic.md, which measured this
+prior directly: down/up ratios of 1.023-1.040 across all four horizons,
+against a 1.20 skew threshold. The prior is essentially balanced, so it does
+NOT explain "predicts down 57-87% of the time regardless of date" from
 docs/changelog/2026-08-03-accuracy-is-clustered-by-forecast-date.md.
 
-Two asymmetries live in this classifier and only one is a bug: up-vs-down is
-inherited and unwanted; mover-vs-flat is deliberate (DIRECTION_MOVER_WEIGHT_MAP
-up-weights movers 3x). Every correction here is zero-sum over down/up and
-leaves the flat mass alone.
+_direction_class_prior is weighted by _direction_sample_weights -- mover-vs-flat
+up-weighting is deliberate (DIRECTION_MOVER_WEIGHT_MAP up-weights movers 3x) --
+because that is the distribution the classifier's multiclass objective
+actually saw; raw class counts would describe a model that was never trained.
+These tests verify that weighting and the three not-estimable paths (empty
+input, all-non-finite, zero total weight).
 """
 from __future__ import annotations
 
