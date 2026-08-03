@@ -14,6 +14,7 @@ from database import (
     Event, EventImpact, EventCorrelation, backfilled_item_clause,
 )
 from api.cache import get_or_build
+from api.serving_policy import price_floor_clause
 from api.schemas import (
     ItemOut, PricePointOut, TrendAnalysisOut, PredictionOut,
     SourcePriceOut, MultiSourcePricesOut, EventOut, TrendingItemOut,
@@ -92,7 +93,6 @@ def _latest_prices(db: Session, item_ids: list[int]) -> dict[int, float]:
 
 
 def _build_trending(db: Session, limit: int):
-    from sqlalchemy import case
     from datetime import date
 
     today = date.today()
@@ -105,23 +105,21 @@ def _build_trending(db: Session, limit: int):
             ItemForecast.price_mid,
             ItemForecast.current_price,
         )
-        .filter(ItemForecast.forecast_date == today, ItemForecast.horizon_days == 7)
+        .filter(
+            ItemForecast.forecast_date == today,
+            ItemForecast.horizon_days == 7,
+            price_floor_clause(ItemForecast.current_price),
+        )
         .distinct(ItemForecast.item_id)
         .order_by(ItemForecast.item_id, desc(ItemForecast.forecast_date))
         .subquery()
-    )
-
-    confidence_order = case(
-        (subq.c.confidence == "high", 3),
-        (subq.c.confidence == "medium", 2),
-        else_=1,
     )
 
     items = (
         db.query(Item, subq.c.direction, subq.c.confidence, subq.c.price_mid, subq.c.current_price)
         .outerjoin(subq, Item.id == subq.c.item_id)
         .filter(Item.icon_url.isnot(None), backfilled_item_clause())
-        .order_by(desc(confidence_order), desc(subq.c.price_mid / func.nullif(subq.c.current_price, 0)))
+        .order_by(desc(subq.c.price_mid / func.nullif(subq.c.current_price, 0)))
         .limit(limit)
         .all()
     )
