@@ -1,7 +1,7 @@
 # Served Forecast Surface — Design
 
 **Date:** 2026-08-03
-**Status:** Approved, not yet implemented
+**Status:** Implemented 2026-08-03
 **Scope:** `backend/api/routes/opportunities.py`, `backend/api/routes/items.py`, a
 new `backend/api/serving_policy.py`, and `.github/workflows/price-forecast.yml`.
 No change to `backend/models/forecaster.py`, to features, or to training.
