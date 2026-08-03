@@ -8,7 +8,11 @@ cohort is 11,000 rows and 2 dates.
 """
 from __future__ import annotations
 
+import json
 from datetime import date
+from unittest.mock import MagicMock
+
+import pytest
 
 from backtest.scoring import MIN_FORECAST_DATES
 from models.forecaster import ItemForecaster
@@ -57,3 +61,72 @@ def test_the_fit_and_the_headline_share_one_constant():
     from models import forecaster as fc
 
     assert fc.MIN_FORECAST_DATES is scoring.MIN_FORECAST_DATES
+
+
+DEFAULT_T = 0.5  # DIRECTION_FLAT_TOLERANCE_PCT
+
+
+def _write_corrections(model_dir, payload):
+    (model_dir / "bias_corrections.json").write_text(json.dumps(payload))
+
+
+@pytest.fixture
+def model_dir(tmp_path):
+    d = tmp_path / "saved_models"
+    d.mkdir()
+    return d
+
+
+def _load(model_dir):
+    # ItemForecaster only hydrates persisted state (models, bias thresholds,
+    # ...) via load_models(); __init__ leaves it empty. load_models() itself
+    # requires a full meta.json + model files, which these tests don't
+    # provide, so exercise the bias-corrections load directly -- this is the
+    # same call load_models() makes internally.
+    f = ItemForecaster(db_session=MagicMock(), model_dir=str(model_dir))
+    f._load_bias_corrections()
+    return f
+
+
+def test_unversioned_thresholds_are_discarded(model_dir):
+    """The real production file: rail-clamped values, no provenance."""
+    _write_corrections(model_dir, {
+        "corrections": {},
+        "thresholds": {"30": {"$1-5": {"t_down": -3.0, "t_up": -2.92}}},
+        "ewma_state": {"30": {"$1-5": 2}},
+    })
+    f = _load(model_dir)
+    assert f.bias_thresholds[30]["$1-5"] == {"t_down": -DEFAULT_T, "t_up": DEFAULT_T}
+    assert f.bias_ewma_state.get(30, {}).get("$1-5", 0) == 0
+
+
+def test_versioned_thresholds_are_kept(model_dir):
+    _write_corrections(model_dir, {
+        "schema_version": ItemForecaster.BIAS_FIT_SCHEMA_VERSION,
+        "corrections": {},
+        "thresholds": {"30": {"$1-5": {"t_down": -0.4, "t_up": 0.6}}},
+        "ewma_state": {"30": {"$1-5": 2}},
+    })
+    f = _load(model_dir)
+    assert f.bias_thresholds[30]["$1-5"] == {"t_down": -0.4, "t_up": 0.6}
+    assert f.bias_ewma_state[30]["$1-5"] == 2
+
+
+def test_save_stamps_the_schema_version(model_dir):
+    f = _load(model_dir)
+    f._save_bias_corrections()
+    data = json.loads((model_dir / "bias_corrections.json").read_text())
+    assert data["schema_version"] == ItemForecaster.BIAS_FIT_SCHEMA_VERSION
+
+
+def test_a_discarded_load_survives_a_save_round_trip(model_dir):
+    """Discard then save must not write the rails back out."""
+    _write_corrections(model_dir, {
+        "corrections": {},
+        "thresholds": {"30": {"$1-5": {"t_down": -3.0, "t_up": -2.92}}},
+        "ewma_state": {"30": {"$1-5": 2}},
+    })
+    f = _load(model_dir)
+    f._save_bias_corrections()
+    reloaded = _load(model_dir)
+    assert reloaded.bias_thresholds[30]["$1-5"] == {"t_down": -DEFAULT_T, "t_up": DEFAULT_T}

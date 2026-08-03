@@ -232,6 +232,11 @@ class ItemForecaster:
     # sweep (scripts/ab_test_direction_labels.py) tunes per horizon.
     DIRECTION_MOVER_WEIGHT_MAP = {3: 3.0, 7: 3.0, 14: 3.0, 30: 3.0}
     DIRECTION_VOL_MULTIPLIER_MAP = {3: 1.0, 7: 1.0, 14: 1.0, 30: 1.0}
+    # Bumped when a fitting-logic change invalidates stored thresholds.
+    # v2 (2026-08-03): thresholds must come from a date-coverage-guarded fit.
+    # Unversioned files predate the guard, were fitted on a two-date cohort,
+    # and are discarded on load.
+    BIAS_FIT_SCHEMA_VERSION = 2
     # Max class probability at/above which a directional call is "high" confidence.
     DIRECTION_CONFIDENCE_HIGH = 0.5
     # Residual stacking: train a Ridge regression on LightGBM residuals
@@ -386,12 +391,24 @@ class ItemForecaster:
                 with open(path) as f:
                     data = json.load(f)
                 self.bias_corrections = {int(k): v for k, v in data.get("corrections", {}).items()}
-                raw_thresholds = data.get("thresholds", {})
-                self.bias_thresholds = {int(k): v for k, v in raw_thresholds.items()}
-                self.bias_ewma_state = {int(k): v for k, v in data.get("ewma_state", {}).items()}
+                version = int(data.get("schema_version", 0))
+                if version < self.BIAS_FIT_SCHEMA_VERSION:
+                    logger.warning(
+                        f"  bias_corrections.json is schema v{version} < "
+                        f"v{self.BIAS_FIT_SCHEMA_VERSION}; discarding stored "
+                        f"thresholds. Pre-v2 files were fitted without "
+                        f"forecast-date coverage and can sit at the ±3.0 clamp "
+                        f"rail. Reverting to defaults until a guarded fit runs."
+                    )
+                    self.bias_thresholds = {}
+                    self.bias_ewma_state = {}
+                else:
+                    raw_thresholds = data.get("thresholds", {})
+                    self.bias_thresholds = {int(k): v for k, v in raw_thresholds.items()}
+                    self.bias_ewma_state = {int(k): v for k, v in data.get("ewma_state", {}).items()}
+                self._fill_missing_threshold_defaults()
                 logger.info(f"  Loaded bias corrections for {len(self.bias_corrections)} horizons, "
                             f"thresholds for {len(self.bias_thresholds)} horizons")
-                self._fill_missing_threshold_defaults()
             except (json.JSONDecodeError, ValueError, KeyError) as e:
                 logger.warning(f"  Corrupt bias_corrections.json ({e}), using defaults")
                 self._set_default_bias_corrections()
@@ -401,6 +418,7 @@ class ItemForecaster:
 
     def _save_bias_corrections(self):
         data = {
+            "schema_version": self.BIAS_FIT_SCHEMA_VERSION,
             "corrections": {str(k): v for k, v in self.bias_corrections.items()},
             "thresholds": {str(k): v for k, v in self.bias_thresholds.items()},
             "ewma_state": {str(k): v for k, v in self.bias_ewma_state.items()},
