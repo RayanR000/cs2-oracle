@@ -6,12 +6,14 @@ with SQLAlchemy fallback.
 """
 
 from typing import Optional
+import pandas as pd
 from fastapi import APIRouter, Depends, Query
 from sqlalchemy.orm import Session
 from sqlalchemy import desc, func, text
 from datetime import date
 
 from database import get_db, PredictionAccuracy, ForecastOutcome
+from backtest.scoring import HEADLINE_TIER
 
 router = APIRouter(prefix="/accuracy", tags=["accuracy"])
 
@@ -23,6 +25,7 @@ def _row_to_dict(row: PredictionAccuracy) -> dict:
         "evaluation_date": row.evaluation_date.isoformat() if row.evaluation_date else None,
         "horizon_days": row.horizon_days,
         "model_version": row.model_version,
+        "price_tier": row.price_tier,
         "evaluation_window_days": row.evaluation_window_days,
         "sample_count": row.sample_count,
         "metrics": row.metrics,
@@ -37,6 +40,7 @@ def _dict_to_row(d: dict) -> dict:
         "evaluation_date": str(d.get("evaluation_date")) if d.get("evaluation_date") else None,
         "horizon_days": d.get("horizon_days"),
         "model_version": d.get("model_version"),
+        "price_tier": d.get("price_tier"),
         "evaluation_window_days": d.get("evaluation_window_days"),
         "sample_count": d.get("sample_count"),
         "metrics": d.get("metrics"),
@@ -44,17 +48,46 @@ def _dict_to_row(d: dict) -> dict:
     }
 
 
+def _tier_clause(price_tier: Optional[int], column: str = "price_tier") -> str:
+    """SQL restricting to one price cohort.
+
+    ``price_tier`` is a discriminator, not a filterable attribute: the table
+    holds a row per price band (0..4), one for the >=$1 headline
+    (HEADLINE_TIER), and one all-tiers aggregate (NULL). They overlap, so a
+    query that does not pick exactly one is summing the same forecasts several
+    times over. ``None`` means the all-tiers aggregate, which is the row the
+    endpoints served before price_tier existed.
+    """
+    if price_tier is None:
+        return f"{column} IS NULL"
+    return f"{column} = {int(price_tier)}"
+
+
 def _query_prediction_accuracy(
     prediction_type: Optional[str] = None,
     limit: int = 200,
+    price_tier: Optional[int] = None,
 ) -> Optional[list[dict]]:
     from db.parquet import ParquetQuery
     try:
         with ParquetQuery("prediction_accuracy") as q:
-            where = "1=1"
+            cols = set(
+                q.query("DESCRIBE SELECT * FROM prediction_accuracy")
+                 .iloc[:, 0].tolist()
+            )
+            clauses = []
             if prediction_type:
                 pt = prediction_type.replace("'", "''")
-                where = f"prediction_type = '{pt}'"
+                clauses.append(f"prediction_type = '{pt}'")
+            # A mirror written before migration 0019 has no price_tier column.
+            # Such a file holds only all-tiers rows, so an unqualified request
+            # is still correct; a request for a specific cohort is not, and
+            # returning None falls the caller back to the DB.
+            if "price_tier" in cols:
+                clauses.append(_tier_clause(price_tier))
+            elif price_tier is not None:
+                return None
+            where = " AND ".join(clauses) or "1=1"
             df = q.query(
                 f"SELECT * FROM prediction_accuracy WHERE {where} ORDER BY evaluation_date DESC LIMIT {limit}"
             )
@@ -62,12 +95,14 @@ def _query_prediction_accuracy(
                 return []
             result = []
             for r in df.itertuples():
+                tier = getattr(r, "price_tier", None)
                 d = {
                     "id": int(getattr(r, "id", 0)),
                     "prediction_type": str(getattr(r, "prediction_type", "")),
                     "evaluation_date": str(getattr(r, "evaluation_date", "")),
                     "horizon_days": getattr(r, "horizon_days", None),
                     "model_version": str(getattr(r, "model_version", "")) if getattr(r, "model_version", None) else None,
+                    "price_tier": None if pd.isna(tier) else int(tier),
                     "evaluation_window_days": getattr(r, "evaluation_window_days", None),
                     "sample_count": int(getattr(r, "sample_count", 0)),
                     "metrics": getattr(r, "metrics", {}),
@@ -79,14 +114,27 @@ def _query_prediction_accuracy(
         return None
 
 
+PRICE_TIER_QUERY = Query(
+    None,
+    ge=HEADLINE_TIER,
+    le=4,
+    description=(
+        "Price cohort: 0-4 for a single price band, -1 for the >=$1 headline. "
+        "Omit for the all-tiers aggregate. The cohorts overlap, so exactly one "
+        "is served."
+    ),
+)
+
+
 @router.get("/")
 def list_accuracy(
     prediction_type: Optional[str] = Query(None),
     limit: int = Query(50, ge=1, le=200),
+    price_tier: Optional[int] = PRICE_TIER_QUERY,
     db: Session = Depends(get_db),
 ):
     try:
-        rows = _query_prediction_accuracy(prediction_type, limit)
+        rows = _query_prediction_accuracy(prediction_type, limit, price_tier)
         if rows is not None:
             return rows
     except Exception:
@@ -95,6 +143,10 @@ def list_accuracy(
     q = db.query(PredictionAccuracy).order_by(desc(PredictionAccuracy.evaluation_date))
     if prediction_type:
         q = q.filter(PredictionAccuracy.prediction_type == prediction_type)
+    q = q.filter(
+        PredictionAccuracy.price_tier.is_(None) if price_tier is None
+        else PredictionAccuracy.price_tier == price_tier
+    )
     rows_st = q.limit(limit).all()
     return [_row_to_dict(r) for r in rows_st]
 
@@ -102,11 +154,12 @@ def list_accuracy(
 @router.get("/latest")
 def get_latest_accuracy(
     prediction_type: Optional[str] = Query(None),
+    price_tier: Optional[int] = PRICE_TIER_QUERY,
     db: Session = Depends(get_db),
 ):
     """Get the most recent accuracy record for each prediction type."""
     try:
-        rows = _query_prediction_accuracy(prediction_type, limit=500)
+        rows = _query_prediction_accuracy(prediction_type, 500, price_tier)
         if rows is not None:
             latest = {}
             for r in rows:
@@ -119,7 +172,10 @@ def get_latest_accuracy(
     except Exception:
         pass
 
-    rows_st = db.query(PredictionAccuracy).order_by(
+    rows_st = db.query(PredictionAccuracy).filter(
+        PredictionAccuracy.price_tier.is_(None) if price_tier is None
+        else PredictionAccuracy.price_tier == price_tier
+    ).order_by(
         PredictionAccuracy.prediction_type,
         desc(PredictionAccuracy.evaluation_date),
     ).all()
@@ -139,11 +195,12 @@ def get_latest_accuracy(
 @router.get("/summary")
 def get_accuracy_summary(
     prediction_type: Optional[str] = Query(None),
+    price_tier: Optional[int] = PRICE_TIER_QUERY,
     db: Session = Depends(get_db),
 ):
     """Returns aggregated summary across all available accuracy records."""
     try:
-        rows = _query_prediction_accuracy(prediction_type, limit=2000)
+        rows = _query_prediction_accuracy(prediction_type, 2000, price_tier)
         if rows is None:
             rows = []
     except Exception:
@@ -153,6 +210,10 @@ def get_accuracy_summary(
         q = db.query(PredictionAccuracy)
         if prediction_type:
             q = q.filter(PredictionAccuracy.prediction_type == prediction_type)
+        q = q.filter(
+            PredictionAccuracy.price_tier.is_(None) if price_tier is None
+            else PredictionAccuracy.price_tier == price_tier
+        )
         rows_st = q.order_by(PredictionAccuracy.evaluation_date).all()
         rows = [_row_to_dict(r) for r in rows_st]
 

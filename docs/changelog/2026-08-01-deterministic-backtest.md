@@ -137,9 +137,24 @@ the fix landing:
 | 30d | lgbm-v3 | 5,360 → 5,461 | 54.24% → **42.37%** |
 
 With three labels, chance is ~33%. The ≥$1 headline for `lgbm-v3` lands at
-48.4% / 49.4% / 50.8% / 46.7% across 3/7/14/30d — above chance, but nowhere near
-the ~55–62% the old scorer reported. Anyone reasoning about model quality from
-the pre-08-02 series was reading an artifact.
+**45.13% / 49.22% / 45.25% / 38.69%** across 3/7/14/30d — nowhere near the
+~55–62% the old scorer reported. Anyone reasoning about model quality from the
+pre-08-02 series was reading an artifact.
+
+> **Correction (2026-08-03).** This paragraph originally read
+> "48.4% / 49.4% / 50.8% / 46.7%", overstating the headline by up to 8pp
+> (3.27 / 0.18 / 5.55 / 8.01pp). The figures above are the corrected ones,
+> confirmed by two independent derivations that agree to 0.01pp: the
+> sample-weighted average of the stored per-tier rows in
+> `prediction_accuracy.parquet`, and a direct recount of `direction_correct`
+> over the frozen `forecast_outcomes`. The full-universe table above was
+> always correct — only the headline was wrong.
+>
+> The error was undetectable because `_score_groups` computed the headline and
+> only *logged* it, so unlike every per-tier row it was never stored and
+> nothing could recompute it. See
+> `docs/changelog/2026-08-03-headline-persisted-and-tier-mirror.md`, which
+> persists it under `HEADLINE_TIER` and fixes the mirror bug underneath.
 
 ## Deliberately not fixed
 

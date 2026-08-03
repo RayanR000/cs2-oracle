@@ -135,12 +135,25 @@ def score_cohort(records: list[dict]) -> tuple[dict, int]:
 # penny items" is a real question the tier rows keep answerable.
 HEADLINE_MIN_TIER = 1
 
+# The >=$1 aggregate is stored under this sentinel tier. It is NOT a price
+# band: real tiers are 0..4 and the all-tiers aggregate is NULL, so the
+# headline needed a third thing to be. Negative by construction so it can
+# never collide with a band price_tier() returns.
+#
+# It is stored rather than only logged because the headline is the one number
+# quoted as "the model's accuracy", and a figure that exists only in a run's
+# console output cannot be audited or recomputed. The 2026-08-01 changelog
+# quoted a headline up to 8pp off the stored tier rows and nothing could catch
+# it. Every other row in this function was already persisted; this one wasn't.
+HEADLINE_TIER = -1
+
 
 def score_by_tier(records: list[dict]) -> list[tuple[int | None, dict, int]]:
-    """Score per price tier plus an all-tiers aggregate.
+    """Score per price tier, the >=$1 headline, plus an all-tiers aggregate.
 
-    Returns [(tier, metrics, n), ..., (None, metrics, n)]. Tiers with no
-    records are omitted rather than emitted as zeros.
+    Returns [(tier, metrics, n), ..., (HEADLINE_TIER, ...), (None, metrics, n)].
+    Cohorts with no records are omitted rather than emitted as zeros, so the
+    headline is absent when nothing reaches HEADLINE_MIN_TIER.
     """
     by_tier: dict[int, list[dict]] = defaultdict(list)
     for r in records:
@@ -151,6 +164,10 @@ def score_by_tier(records: list[dict]) -> list[tuple[int | None, dict, int]]:
         metrics, n = score_cohort(by_tier[tier])
         if n:
             out.append((tier, metrics, n))
+
+    metrics, n = score_cohort(headline_records(records))
+    if n:
+        out.append((HEADLINE_TIER, metrics, n))
 
     metrics, n = score_cohort(records)
     if n:

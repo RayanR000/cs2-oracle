@@ -765,15 +765,24 @@ def test_reresolve_overrides_the_freeze(session, monkeypatch):
     assert session.query(ForecastOutcome).filter_by(forecast_id=8).one().actual_price == 99.0
 
 
-from backtest.scoring import HEADLINE_MIN_TIER, score_by_tier
+from backtest.scoring import HEADLINE_MIN_TIER, HEADLINE_TIER, score_by_tier
 
 
 def test_tier_rows_partition_the_all_row():
+    """The price bands partition the all-tiers row.
+
+    HEADLINE_TIER is excluded on purpose: it is a sentinel for the >=$1
+    aggregate, not a band, and it deliberately overlaps bands 1..4. Summing it
+    with them would double-count.
+    """
     records = [_record(price_tier=0, item_id=i) for i in range(30)]
     records += [_record(price_tier=1, item_id=100 + i) for i in range(20)]
 
     scored = score_by_tier(records)
-    per_tier = {tier: n for tier, _, n in scored if tier is not None}
+    per_tier = {
+        tier: n for tier, _, n in scored
+        if tier is not None and tier != HEADLINE_TIER
+    }
     all_rows = [(m, n) for tier, m, n in scored if tier is None]
 
     assert per_tier == {0: 30, 1: 20}
@@ -782,9 +791,26 @@ def test_tier_rows_partition_the_all_row():
     assert sum(per_tier.values()) == all_rows[0][1]
 
 
+def test_headline_row_covers_exactly_the_tiers_at_or_above_the_minimum():
+    records = [_record(price_tier=0, item_id=i) for i in range(30)]
+    records += [_record(price_tier=1, item_id=100 + i) for i in range(20)]
+    records += [_record(price_tier=3, item_id=200 + i) for i in range(5)]
+
+    scored = score_by_tier(records)
+    headline_n = next(n for tier, _, n in scored if tier == HEADLINE_TIER)
+    above_min = sum(
+        n for tier, _, n in scored
+        if tier is not None and tier != HEADLINE_TIER and tier >= HEADLINE_MIN_TIER
+    )
+    assert headline_n == above_min == 25
+
+
 def test_empty_tiers_are_omitted_not_zero_filled():
     records = [_record(price_tier=4, item_id=i) for i in range(12)]
-    tiers = {tier for tier, _, _ in score_by_tier(records) if tier is not None}
+    tiers = {
+        tier for tier, _, _ in score_by_tier(records)
+        if tier is not None and tier != HEADLINE_TIER
+    }
     assert tiers == {4}
 
 
@@ -869,9 +895,10 @@ def test_rescore_path_emits_the_same_tier_rows_as_the_normal_path(
     normal_shape = shape(normal_results)
     rescore_shape = shape(rescore_results)
 
-    # Both a per-tier row (tier 1 for "ak", tier 2 for "awp") and the
-    # all-tiers aggregate (price_tier=None) must be present in both paths.
-    assert {None, 1, 2} == {t for (_, _, t) in normal_shape}
+    # A per-tier row (tier 1 for "ak", tier 2 for "awp"), the >=$1 headline
+    # (HEADLINE_TIER), and the all-tiers aggregate (price_tier=None) must all
+    # be present in both paths.
+    assert {None, 1, 2, HEADLINE_TIER} == {t for (_, _, t) in normal_shape}
     assert normal_shape == rescore_shape
 
 

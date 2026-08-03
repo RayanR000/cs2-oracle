@@ -67,6 +67,24 @@ def _append_parquet(path: Path, new_data: pd.DataFrame, dedup_keys: list[str]):
 
     Uses DuckDB-native operations to avoid loading the full file into Python
     memory. The dedup is performed within DuckDB's engine via anti-join.
+
+    SCHEMA. The output schema is the UNION of the file's columns and
+    *new_data*': it widens, and it never narrows — the same rule
+    ``replace_rows`` follows, for the same reason. An intersection silently
+    drops a column the served file predates, and the dropped column is then
+    also missing from ``dedup_keys``, so rows that differ only in that column
+    become indistinguishable. That is not academic: ``prediction_accuracy``
+    gained ``price_tier`` in migration 0019 and the unique constraint gained it
+    in 0020, but the mirror predated both, so every write intersected it away
+    and the served file carried six unlabelled rows per (horizon, model) —
+    four price bands, the >=$1 headline, and the tick-dominated tier 0 — with
+    no way for a reader to tell which was which.
+
+    Missing columns are NULL on whichever side lacks them: a column only
+    *new_data* has is NULL on the surviving existing rows, and a column only
+    the file has is NULL on the appended rows. File column order is preserved,
+    with added columns appended, so the caller's dict ordering does not get to
+    reshuffle the served file.
     """
     new_data = _coerce_dates(new_data)
     if not path.exists():
@@ -76,26 +94,38 @@ def _append_parquet(path: Path, new_data: pd.DataFrame, dedup_keys: list[str]):
     con = duckdb.connect()
     try:
         con.register("_new", new_data)
-        # Align columns between new and existing data to handle schema drift
         existing_cols = [
             r[0] for r in con.execute(
                 f"DESCRIBE SELECT * FROM read_parquet('{path}')"
             ).fetchall()
         ]
-        common_cols = [c for c in new_data.columns if c in existing_cols]
-        if not common_cols:
-            common_cols = list(new_data.columns)
-        col_list = ", ".join(common_cols)
+        new_cols = list(new_data.columns)
+        # Union, file order first, so an existing served file keeps its layout.
+        union_cols = existing_cols + [c for c in new_cols if c not in existing_cols]
+
+        def _project(cols_present, alias):
+            """Select union_cols from a relation, NULLing what it lacks."""
+            return ", ".join(
+                f"{alias}.{c}" if c in cols_present else f"NULL AS {c}"
+                for c in union_cols
+            )
+
+        # Dedup on every key both sides carry. A key absent from the file is
+        # still meaningful: those existing rows predate the column, so they
+        # cannot match a new row on it and must survive.
+        usable_keys = [k for k in dedup_keys if k in new_cols and k in existing_cols]
         dedup_conditions = " AND ".join(
-            f"_existing.{k} = _new.{k}" for k in dedup_keys if k in common_cols
+            f"_existing.{k} = _new.{k}" for k in usable_keys
         )
         if not dedup_conditions:
             dedup_conditions = "1=0"
+
         con.execute(f"""
             COPY (
-                SELECT {col_list} FROM _new
+                SELECT {_project(new_cols, '_new')} FROM _new
                 UNION ALL
-                SELECT {col_list} FROM read_parquet('{path}') _existing
+                SELECT {_project(existing_cols, '_existing')}
+                FROM read_parquet('{path}') _existing
                 WHERE NOT EXISTS (
                     SELECT 1 FROM _new
                     WHERE {dedup_conditions}

@@ -65,12 +65,19 @@ TABLES = {
         "coerce_date": ["forecast_date", "target_date"],
     },
     "prediction_accuracy": {
+        # price_tier is part of the identity of a row, not an attribute of it:
+        # the table holds a row per price band, one for the >=$1 headline, and
+        # one all-tiers aggregate, all sharing the other four key columns.
+        # Omitting it here is what left the mirror unable to tell them apart
+        # (migration 0019 added the column, 0020 put it in the unique key).
         "query": (
             "SELECT id, prediction_type, evaluation_date, horizon_days, "
-            "model_version, evaluation_window_days, sample_count, metrics, created_at "
+            "model_version, price_tier, evaluation_window_days, sample_count, "
+            "metrics, created_at "
             "FROM prediction_accuracy"
         ),
-        "dedup": ["prediction_type", "evaluation_date", "horizon_days", "model_version"],
+        "dedup": ["prediction_type", "evaluation_date", "horizon_days",
+                  "model_version", "price_tier"],
         "coerce_date": ["evaluation_date"],
     },
     "supply_snapshots": {

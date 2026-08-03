@@ -27,9 +27,9 @@ from backtest.price_resolution import archive_max_day, load_voted_prices, resolv
 from backtest.scoring import (
     FLAT_TOLERANCE,
     HEADLINE_MIN_TIER,
+    HEADLINE_TIER,
     bootstrap_ci,
     direction_from_return,
-    headline_records,
     price_tier,
     score_by_tier,
     score_cohort,
@@ -587,7 +587,12 @@ def _score_groups(groups, today):
                 "created_at": datetime.now(timezone.utc).replace(tzinfo=None),
             })
 
-        head_metrics, head_n = score_cohort(headline_records(records))
+        # The logged headline is the row that was just stored, not a second
+        # derivation of it. A headline that is computed only for the log is a
+        # number nothing can audit — see HEADLINE_TIER in backtest.scoring.
+        head_metrics, head_n = next(
+            ((m, n) for t, m, n in tiered if t == HEADLINE_TIER), ({}, 0)
+        )
         penny_metrics, penny_n = score_cohort(
             [r for r in records if r["price_tier"] < HEADLINE_MIN_TIER]
         )
