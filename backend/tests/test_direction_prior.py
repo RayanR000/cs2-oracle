@@ -61,3 +61,9 @@ class TestDirectionClassPrior:
     def test_all_non_finite_is_not_estimable(self):
         assert ItemForecaster._direction_class_prior(
             np.array([np.nan, np.nan]), THR, MOVER) == {}
+
+    def test_zero_total_weight_is_not_estimable(self):
+        # When mover_weight=0.0, all movers get weight 0. If all returns are
+        # movers (|r| > threshold), then total weight is 0 and not estimable.
+        assert ItemForecaster._direction_class_prior(
+            np.array([5.0, -5.0]), 0.0, 0.0) == {}

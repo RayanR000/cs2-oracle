@@ -3318,9 +3318,10 @@ class ItemForecaster:
         uncorrected".
 
         ``threshold`` must be a scalar. Production trains with
-        sigma_train=None (:2902, :4042), so the band is the fixed scalar
-        DIRECTION_FLAT_TOLERANCE_PCT; a per-row band would need the same
-        rows dropped here as in the finite mask below.
+        sigma_train=None in _train_horizon_inline and _cv_evaluate_horizon,
+        so the band is the fixed scalar DIRECTION_FLAT_TOLERANCE_PCT; a
+        per-row band would need the same rows dropped here as in the finite
+        mask below.
         """
         r = np.asarray(returns, dtype=float)
         r = r[np.isfinite(r)]
