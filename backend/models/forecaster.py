@@ -3307,6 +3307,33 @@ class ItemForecaster:
         return w
 
     @classmethod
+    def _direction_class_prior(cls, returns, threshold: float,
+                               mover_weight: float) -> Dict[int, float]:
+        """Weighted training class prior as {0: down, 1: flat, 2: up}.
+
+        Weighted by _direction_sample_weights, because that is the
+        distribution the classifier's multiclass objective actually sees —
+        raw class counts would describe a model that was never trained.
+        Returns {} when not estimable, which callers treat as "serve
+        uncorrected".
+
+        ``threshold`` must be a scalar. Production trains with
+        sigma_train=None (:2902, :4042), so the band is the fixed scalar
+        DIRECTION_FLAT_TOLERANCE_PCT; a per-row band would need the same
+        rows dropped here as in the finite mask below.
+        """
+        r = np.asarray(returns, dtype=float)
+        r = r[np.isfinite(r)]
+        if r.size == 0:
+            return {}
+        c = cls._direction_classes(r, float(threshold))
+        w = cls._direction_sample_weights(r, float(threshold), mover_weight)
+        total = float(w.sum())
+        if total <= 0.0:
+            return {}
+        return {k: float(w[c == k].sum() / total) for k in (0, 1, 2)}
+
+    @classmethod
     def _recenter_on_direction(cls, low_ret, mid_ret, high_ret, direction_class):
         """Recenter forecasts so the median's sign matches the classifier's call,
         preserving each item's interval half-widths.
