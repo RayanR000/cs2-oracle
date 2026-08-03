@@ -18,6 +18,7 @@ from typing import Dict, List, Optional, Tuple, Any
 from pathlib import Path
 from sqlalchemy import text
 from models.item_parser import parse_item_name
+from backtest.scoring import MIN_FORECAST_DATES
 
 # Residual stacking (Ridge on LightGBM residuals)
 _sklearn_available = False
@@ -464,7 +465,7 @@ class ItemForecaster:
             # headline just reported.
             rows = self.db.execute(text("""
                 SELECT fo.horizon_days, fo.current_price, fo.predicted_price_mid,
-                       fo.direction_actual
+                       fo.direction_actual, fo.forecast_date
                 FROM forecast_outcomes fo
                 WHERE fo.model_version LIKE 'lgbm-v3%'
                   AND fo.current_price > 0
@@ -480,7 +481,7 @@ class ItemForecaster:
 
         df = pd.DataFrame(rows, columns=[
             "horizon_days", "current_price", "predicted_price_mid",
-            "direction_actual",
+            "direction_actual", "forecast_date",
         ])
         df["tier"] = df["current_price"].apply(self._get_price_tier)
         df["approx_mid_ret"] = (df["predicted_price_mid"] / df["current_price"] - 1) * 100
@@ -494,6 +495,15 @@ class ItemForecaster:
         for (horizon, tier), g in df.groupby(["horizon_days", "tier"]):
             n = len(g)
             if n < 20:
+                continue
+
+            if not self._has_date_coverage(g["forecast_date"]):
+                n_dates = g["forecast_date"].nunique(dropna=True)
+                logger.warning(
+                    f"  Threshold[{horizon}d, {tier}]: refusing to fit — "
+                    f"{n_dates} distinct forecast date(s) < {MIN_FORECAST_DATES} "
+                    f"(n={n} rows). Leaving thresholds at defaults."
+                )
                 continue
 
             mid_rets = g["approx_mid_ret"].values
@@ -3234,6 +3244,20 @@ class ItemForecaster:
         r = np.asarray(returns, dtype=float)
         thr = np.asarray(threshold, dtype=float)
         return np.where(r > thr, 2, np.where(r < -thr, 0, 1)).astype(int)
+
+    @staticmethod
+    def _has_date_coverage(forecast_dates) -> bool:
+        """True when distinct non-null forecast dates reach MIN_FORECAST_DATES.
+
+        Row count cannot substitute for this. Items sharing a forecast_date
+        share one market-wide move, so a five-figure cohort on two dates is
+        nearer two observations than 11,000 — see
+        docs/changelog/2026-08-03-accuracy-is-clustered-by-forecast-date.md.
+        Reuses the reporting threshold so the value we fit on and the value we
+        report cannot drift apart.
+        """
+        distinct = {d for d in forecast_dates if d is not None and not pd.isna(d)}
+        return len(distinct) >= MIN_FORECAST_DATES
 
     @staticmethod
     def _direction_threshold(sigma, horizon: int, k: float,
