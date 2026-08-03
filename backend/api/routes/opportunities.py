@@ -7,6 +7,7 @@ from datetime import date
 from database import get_db, ItemForecast, Item
 from api.cache import get_or_build
 from api.schemas import OpportunityOut
+from api.serving_policy import meets_price_floor, price_floor_clause
 
 router = APIRouter(prefix="/opportunities", tags=["opportunities"])
 
@@ -28,9 +29,9 @@ def _build_opportunity(item: Item, forecast: ItemForecast, opp_type: str) -> Opp
 
 def _reason_for_type(opp_type: str) -> str:
     if opp_type == "undervalued":
-        return "ML forecast predicts significant upward movement with high confidence."
+        return "ML forecast predicts upward movement over the next 7 days."
     if opp_type == "overheated":
-        return "ML forecast predicts significant downward movement with high confidence."
+        return "ML forecast predicts downward movement over the next 7 days."
     return "ML forecast shows strong predicted price movement."
 
 
@@ -59,7 +60,10 @@ def _latest_forecasts(db: Session, horizon_days: int = 7):
     return (
         db.query(ItemForecast)
         .join(subq, (ItemForecast.item_id == subq.c.item_id) & (ItemForecast.forecast_date == subq.c.forecast_date))
-        .filter(ItemForecast.horizon_days == horizon_days)
+        .filter(
+            ItemForecast.horizon_days == horizon_days,
+            price_floor_clause(ItemForecast.current_price),
+        )
         .all()
     )
 
@@ -81,27 +85,37 @@ def _build_opportunities(db: Session, type: Optional[str], limit: int):
     forecasts = _latest_forecasts(db)
     item_ids = [f.item_id for f in forecasts if f.direction is not None]
     items_map = _load_items(item_ids, db)
+    return select_opportunities(forecasts, items_map, type, limit)
 
+
+def opportunity_type_for(direction: Optional[str]) -> str:
+    """Direction alone decides the label.
+
+    This previously required ``confidence == "high"`` for the directional
+    labels, which meant the two headline buckets were populated exclusively by
+    the anti-predictive subset. Confidence no longer participates.
+    """
+    if direction == "up":
+        return "undervalued"
+    if direction == "down":
+        return "overheated"
+    return "momentum"
+
+
+def select_opportunities(forecasts, items_map, type_filter, limit):
+    """Pure selection over already-fetched rows, ranked by |predicted return|."""
     results = []
     for f in forecasts:
-        if f.direction is None or f.current_price is None or f.current_price <= 0:
+        if f.direction is None:
+            continue
+        if not meets_price_floor(f.current_price):
             continue
         item = items_map.get(f.item_id)
         if not item:
             continue
-
-        predicted_return = ((f.price_mid or f.current_price) - f.current_price) / f.current_price * 100
-
-        if f.direction == "up" and f.confidence == "high":
-            opp_type = "undervalued"
-        elif f.direction == "down" and f.confidence == "high":
-            opp_type = "overheated"
-        else:
-            opp_type = "momentum"
-
-        if type and opp_type != type:
+        opp_type = opportunity_type_for(f.direction)
+        if type_filter and opp_type != type_filter:
             continue
-
         results.append(_build_opportunity(item, f, opp_type))
 
     results.sort(key=lambda x: abs(x.opportunity_score), reverse=True)
@@ -121,7 +135,6 @@ def get_undervalued(
         .filter(
             ItemForecast.horizon_days == 7,
             ItemForecast.direction == "up",
-            ItemForecast.confidence == "high",
         )
         .distinct(ItemForecast.item_id)
         .order_by(ItemForecast.item_id, desc(ItemForecast.forecast_date))
@@ -133,9 +146,8 @@ def get_undervalued(
         .filter(
             ItemForecast.horizon_days == 7,
             ItemForecast.direction == "up",
-            ItemForecast.confidence == "high",
             ItemForecast.current_price.isnot(None),
-            ItemForecast.current_price > 0,
+            price_floor_clause(ItemForecast.current_price),
             ItemForecast.price_mid.isnot(None),
         )
         .order_by(
@@ -169,7 +181,6 @@ def get_overheated(
         .filter(
             ItemForecast.horizon_days == 7,
             ItemForecast.direction == "down",
-            ItemForecast.confidence == "high",
         )
         .distinct(ItemForecast.item_id)
         .order_by(ItemForecast.item_id, desc(ItemForecast.forecast_date))
@@ -181,9 +192,8 @@ def get_overheated(
         .filter(
             ItemForecast.horizon_days == 7,
             ItemForecast.direction == "down",
-            ItemForecast.confidence == "high",
             ItemForecast.current_price.isnot(None),
-            ItemForecast.current_price > 0,
+            price_floor_clause(ItemForecast.current_price),
             ItemForecast.price_mid.isnot(None),
         )
         .order_by(
@@ -225,7 +235,7 @@ def get_momentum(
         .filter(
             ItemForecast.horizon_days == 7,
             ItemForecast.current_price.isnot(None),
-            ItemForecast.current_price > 0,
+            price_floor_clause(ItemForecast.current_price),
             ItemForecast.price_mid.isnot(None),
         )
         .order_by(
