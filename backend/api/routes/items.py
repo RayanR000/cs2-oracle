@@ -362,7 +362,7 @@ def _trends_parquet(item, item_id: str, db: Session):
         .first()
     )
     current_price = latest_price.price if latest_price else 0.0
-    explanation = _build_trend_explanation(trend_dir, confidence, current_price)
+    explanation = _build_trend_explanation(trend_dir, current_price)
     price_points = [
         p.price for p in (
             db.query(PriceHistory)
@@ -444,7 +444,7 @@ def get_item_trends(item_id: str, db: Session = Depends(get_db)):
     trend_dir = direction_map.get(latest_forecast.direction if latest_forecast else None, "neutral")
     confidence = latest_forecast.confidence if latest_forecast and latest_forecast.confidence else "low"
 
-    explanation = _build_trend_explanation(trend_dir, confidence, current_price)
+    explanation = _build_trend_explanation(trend_dir, current_price)
 
     price_points = [
         r.price for r in (
@@ -503,12 +503,12 @@ def get_item_trends(item_id: str, db: Session = Depends(get_db)):
     )
 
 
-def _build_trend_explanation(direction: str, confidence: str, current_price) -> str:
+def _build_trend_explanation(direction: str, current_price) -> str:
     if direction == "bullish":
-        return f"ML forecast predicts upward movement. Confidence is {confidence}."
+        return "ML forecast predicts upward movement over the next 7 days."
     elif direction == "bearish":
-        return f"ML forecast predicts downward movement. Confidence is {confidence}."
-    return f"ML forecast predicts stable price. Confidence is {confidence}."
+        return "ML forecast predicts downward movement over the next 7 days."
+    return "ML forecast predicts a stable price over the next 7 days."
 
 
 def _prediction_parquet(item, period: str, horizon: int):
