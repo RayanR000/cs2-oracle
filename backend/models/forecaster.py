@@ -322,6 +322,52 @@ class ItemForecaster:
         self.bias_ewma_state: Dict[int, Dict[str, int]] = {}
 
     @staticmethod
+    def _smoothed_anchor_prices(df: "pd.DataFrame", anchor) -> Dict[Any, float]:
+        """Per-item base price for the dollar conversion: a span-bounded median.
+
+        The median of the most recent SMOOTH_WINDOW observations that lie
+        within MAX_WINDOW_SPAN_DAYS of *anchor*.
+
+        The bound is the point. This previously took `tail(3)` — the last three
+        *rows* — with no calendar constraint, so a sparsely observed item could
+        anchor on prices months apart and serve their median as today's value.
+        That is the price-laundering shape `db5bddb` removed from the
+        collector's historical fallback, and it is why serving's
+        `current_price` diverges from the backtest's archive-resolved
+        `base_price` by a median 3.6% (90th percentile 35%) despite both being
+        documented as "the 3-day median". Both sides now apply one staleness
+        convention, ultimately derived from
+        `collectors.pipeline.FALLBACK_MAX_AGE_DAYS`.
+
+        Unlike the backtest, serving may not drop an item: an unresolvable
+        anchor there is one fewer scored row, but here it is a missing product.
+        An item with nothing inside the window therefore falls back to its
+        latest observation — no smoothing, but never a manufactured price, and
+        never a silent disappearance.
+        """
+        from backtest.price_resolution import MAX_WINDOW_SPAN_DAYS, SMOOTH_WINDOW
+
+        if df.empty:
+            return {}
+
+        anchor = pd.Timestamp(anchor)
+        cutoff = anchor - pd.Timedelta(days=MAX_WINDOW_SPAN_DAYS)
+        ordered = df.sort_values(["item_id", "date"])
+        # The predict frame carries datetime.date; the tests and the archive
+        # path carry Timestamps. Compare in one type rather than assuming.
+        dates = pd.to_datetime(ordered["date"])
+
+        in_window = ordered[(dates >= cutoff) & (dates <= anchor)]
+        smoothed = (
+            in_window.groupby("item_id").tail(SMOOTH_WINDOW)
+            .groupby("item_id")["price"].median()
+        )
+
+        # Items with no in-window observation keep their latest known price.
+        latest = ordered.groupby("item_id")["price"].last()
+        return latest.to_dict() | smoothed.to_dict()
+
+    @staticmethod
     def _get_price_tier(price: float) -> str:
         for lo, hi, label in PRICE_TIER_BOUNDARIES:
             if lo <= price < hi:
@@ -3521,9 +3567,14 @@ class ItemForecaster:
         # robust when averaged over a short window.
         df = df.sort_values(["item_id", "date"])
 
-        # Compute the median price over the last 3 days per item
-        last_3 = df.groupby("item_id").tail(3)
-        smoothed_price = last_3.groupby("item_id")["price"].median().to_frame("_smoothed_price")
+        # Span-bounded, matching the backtest's resolver. See
+        # _smoothed_anchor_prices: the observations must be near the anchor,
+        # not merely the last three rows on file.
+        smoothed_price = pd.Series(
+            self._smoothed_anchor_prices(df, pd.to_datetime(df["date"]).max()),
+            name="_smoothed_price",
+        ).to_frame()
+        smoothed_price.index.name = "item_id"
 
         # Detect outliers: log when latest price deviates > 10% from 3d median
         latest_rows = df.groupby("item_id").last().reset_index()

@@ -28,6 +28,7 @@ from backtest.scoring import (
     FLAT_TOLERANCE,
     HEADLINE_MIN_TIER,
     HEADLINE_TIER,
+    MIN_FORECAST_DATES,
     bootstrap_ci,
     direction_from_return,
     price_tier,
@@ -494,9 +495,9 @@ def _records_from_frozen_outcomes(db, min_price=0, forecast_ids=None):
     """
     select_sql = """
         SELECT o.forecast_id, o.item_id, o.horizon_days, o.model_version,
-               o.base_price, o.actual_price, o.predicted_price_low,
-               o.predicted_price_mid, o.predicted_price_high,
-               o.direction_predicted, f.confidence
+               o.forecast_date, o.base_price, o.actual_price,
+               o.predicted_price_low, o.predicted_price_mid,
+               o.predicted_price_high, o.direction_predicted, f.confidence
         FROM forecast_outcomes o
         LEFT JOIN item_forecasts f ON f.id = o.forecast_id
     """
@@ -542,6 +543,9 @@ def _records_from_frozen_outcomes(db, min_price=0, forecast_ids=None):
             "actual_price": actual,
             "price_tier": price_tier(base),
             "item_id": r.item_id,
+            # The clustering unit. Outcomes sharing a forecast_date share a
+            # market-wide move, so the CI must resample these, not items.
+            "forecast_date": r.forecast_date,
         })
 
     n_scored = sum(len(v) for v in groups.values())
@@ -598,19 +602,41 @@ def _score_groups(groups, today):
         )
 
         if head_n:
-            head_ci_lower = head_metrics["directional_accuracy_ci_lower"]
-            head_ci_upper = head_metrics["directional_accuracy_ci_upper"]
-            ci_str = ""
-            if head_ci_lower is not None:
-                ci_str = f" [CI: {head_ci_lower * 100:.1f}–{head_ci_upper * 100:.1f}]"
-            logger.info(
-                f"  [{horizon}d / {model_version}] >=$1: {head_n:,} samples — "
+            n_dates = head_metrics["distinct_forecast_dates"]
+            lo = head_metrics["directional_accuracy_ci_clustered_lower"]
+            hi = head_metrics["directional_accuracy_ci_clustered_upper"]
+            ci_str = (
+                f" [CI: {lo * 100:.1f}–{hi * 100:.1f}]" if lo is not None
+                else " [CI: n/a, <2 forecast dates]"
+            )
+            common = (
                 f"MAE=${head_metrics['mae']:.2f} MAPE={head_metrics['mape']:.1f}% "
-                f"DirAcc={head_metrics['directional_accuracy']:.1f}%{ci_str} "
                 f"IntCov={head_metrics['interval_coverage']:.1f}% "
                 f"ConfGap={head_metrics['conf_gap_pp']:.1f}pp "
                 f"Skill={head_metrics['skill_vs_baseline']}"
             )
+            if head_metrics["date_coverage_sufficient"]:
+                logger.info(
+                    f"  [{horizon}d / {model_version}] >=$1: {head_n:,} samples "
+                    f"over {n_dates} forecast dates — "
+                    f"DirAcc={head_metrics['directional_accuracy']:.1f}%{ci_str} "
+                    f"{common}"
+                )
+            else:
+                # Refuse to quote a headline the cohort cannot support. The
+                # sample_count is not the evidence here; the date count is.
+                # A directional accuracy over <MIN_FORECAST_DATES dates mostly
+                # measures which way the market moved on those days.
+                logger.warning(
+                    f"  [{horizon}d / {model_version}] >=$1: NO HEADLINE — "
+                    f"{head_n:,} samples span only {n_dates} forecast date(s), "
+                    f"below the {MIN_FORECAST_DATES} required. Directional "
+                    f"accuracy is clustered by forecast date, so this cohort "
+                    f"cannot separate model skill from the market's direction "
+                    f"on those days. Unquotable DirAcc="
+                    f"{head_metrics['directional_accuracy']:.1f}%{ci_str}. "
+                    f"{common}"
+                )
         if penny_n:
             logger.info(
                 f"  [{horizon}d / {model_version}] <$1: {penny_n:,} samples — "

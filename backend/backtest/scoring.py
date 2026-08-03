@@ -18,6 +18,25 @@ BOOTSTRAP_CI = 95
 BOOTSTRAP_RNG_SEED = 42
 CONFIDENCE_TARGET_ACCURACY = 80.0
 
+# Below this many distinct forecast dates, a cohort cannot separate model skill
+# from the market's direction on the days it happens to cover, whatever its
+# sample_count says.
+#
+# Directional outcomes are CLUSTERED BY forecast_date: every item forecast on
+# the same day is exposed to the same market-wide move, so N forecasts on one
+# date are closer to one observation than to N. The 2026-08-02 cohorts made
+# this concrete — 11,009 forecasts at 3d spanning two dates, and 5,461 at 30d
+# spanning one. The two dates ran opposite (2025-12-01 rising, 2026-07-17
+# falling) and a model that predicts "down" 57-87% of the time regardless
+# scored 33% on the first and 64% on the second. The horizon-to-horizon
+# "differences" in that report are mostly which of the two dates each cohort
+# happened to contain.
+#
+# 20 is a judgement call, not a derivation: enough dates to span more than one
+# market swing without demanding a quarter of history before any number is
+# quoted. It is deliberately well above the 2 currently stored.
+MIN_FORECAST_DATES = 20
+
 
 def direction_from_return(ret: float) -> str:
     if ret > FLAT_TOLERANCE:
@@ -49,6 +68,49 @@ def bootstrap_ci(values, n_resamples=N_BOOTSTRAP, ci=BOOTSTRAP_CI):
     for i in range(n_resamples):
         sample = rng.choice(arr, size=n, replace=True)
         stats[i] = np.mean(sample)
+    alpha = (100 - ci) / 2
+    return (
+        round(float(np.percentile(stats, alpha)), 4),
+        round(float(np.percentile(stats, 100 - alpha)), 4),
+    )
+
+
+def block_bootstrap_ci(values, clusters, n_resamples=N_BOOTSTRAP, ci=BOOTSTRAP_CI):
+    """Bootstrap the mean of *values* by resampling whole *clusters*.
+
+    ``bootstrap_ci`` resamples individual records, which assumes they are
+    independent draws. Directional outcomes are not: they are clustered by
+    forecast date (see MIN_FORECAST_DATES). Resampling items therefore measures
+    only the within-day spread and reports a tight interval around a quantity
+    whose real uncertainty is between-day.
+
+    This resamples dates with replacement and recomputes the pooled mean over
+    the drawn dates, so the interval reflects the variation that actually
+    matters. With few dates it is very wide — that is the honest answer, not a
+    defect.
+
+    Returns (None, None) for fewer than 2 clusters: a single date carries no
+    information about between-date variation, and any interval derived from one
+    would be a fabrication.
+    """
+    by_cluster: dict = defaultdict(list)
+    for value, cluster in zip(values, clusters):
+        by_cluster[cluster].append(value)
+    # Sorted so the resample draw does not depend on dict insertion order.
+    groups = [np.array(by_cluster[k]) for k in sorted(by_cluster)]
+    if len(groups) < 2:
+        return None, None
+
+    rng = np.random.default_rng(BOOTSTRAP_RNG_SEED)
+    n_groups = len(groups)
+    sums = np.array([g.sum() for g in groups], dtype=float)
+    counts = np.array([g.size for g in groups], dtype=float)
+
+    stats = np.empty(n_resamples)
+    for i in range(n_resamples):
+        idx = rng.integers(0, n_groups, size=n_groups)
+        stats[i] = sums[idx].sum() / counts[idx].sum()
+
     alpha = (100 - ci) / 2
     return (
         round(float(np.percentile(stats, alpha)), 4),
@@ -105,6 +167,15 @@ def score_cohort(records: list[dict]) -> tuple[dict, int]:
     dir_ci_lower, dir_ci_upper = bootstrap_ci([r["direction_correct"] for r in records])
     mae_ci_lower, mae_ci_upper = bootstrap_ci([r["abs_error"] for r in records])
 
+    # Records predating this field score with no date attributed rather than
+    # crashing; they then report 0 distinct dates and fail the sufficiency
+    # check, which is the correct reading of "we cannot tell".
+    forecast_dates = [r.get("forecast_date") for r in records]
+    distinct_dates = len({d for d in forecast_dates if d is not None})
+    dir_ci_cl_lower, dir_ci_cl_upper = block_bootstrap_ci(
+        [r["direction_correct"] for r in records], forecast_dates
+    )
+
     metrics = {
         "mae": round(mae, 4),
         "rmse": round(rmse, 4),
@@ -120,8 +191,15 @@ def score_cohort(records: list[dict]) -> tuple[dict, int]:
         "conf_gap_pp": round(high_dir_acc - low_dir_acc, 2),
         "conf_high_interval_cov": high_int_cov,
         "conf_calibration_error": round(abs(high_dir_acc - CONFIDENCE_TARGET_ACCURACY), 2),
+        # Item-resampled. Retained for continuity with the stored series, but
+        # it understates the uncertainty — prefer the clustered pair below.
         "directional_accuracy_ci_lower": dir_ci_lower,
         "directional_accuracy_ci_upper": dir_ci_upper,
+        # Forecast-date-resampled: the interval that respects the clustering.
+        "directional_accuracy_ci_clustered_lower": dir_ci_cl_lower,
+        "directional_accuracy_ci_clustered_upper": dir_ci_cl_upper,
+        "distinct_forecast_dates": distinct_dates,
+        "date_coverage_sufficient": distinct_dates >= MIN_FORECAST_DATES,
         "mae_ci_lower": mae_ci_lower,
         "mae_ci_upper": mae_ci_upper,
     }
