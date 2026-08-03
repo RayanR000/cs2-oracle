@@ -1229,13 +1229,21 @@ def test_a_scoring_fix_lands_on_frozen_rows_without_touching_the_archive(
     assert frozen.direction_correct == 0
 
 
-def test_gate_denominator_counts_only_forecasts_requiring_resolution(
+def test_gate_is_not_diluted_by_the_frozen_majority(
     session, tmp_path, monkeypatch
 ):
     """20 frozen forecasts plus 10 new ones of which 2 are unresolvable is a 20%
-    resolution failure rate and must trip the gate. Counting the frozen majority
-    in the denominator would read 2/30 = 6.7% and wave it through — a frozen
-    forecast was not resolved this run and belongs on neither side of the ratio.
+    resolution failure rate and must trip the gate.
+
+    This is the DILUTION half of the gate's contract. Cohort coverage here is
+    only 2/30 = 6.7% and passes, so it is the fresh-rate ratio — 2 of 10
+    newly-resolvable forecasts — that has to catch this. A gate measuring
+    coverage alone would wave it through.
+
+    The 2 failures are classified fresh, not chronic: their target date is 3
+    days behind the archive's coverage end, inside the MAX_WINDOW_SPAN_DAYS
+    grace window, so they still look like data that could arrive. See
+    test_unresolvable_gate_denominator.py for the HYPERSENSITIVITY half.
     """
     rows = []
     for i in range(20):

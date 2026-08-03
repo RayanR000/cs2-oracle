@@ -23,7 +23,17 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from database import SessionLocal, PredictionAccuracy
 from sqlalchemy import bindparam, select, text
-from backtest.price_resolution import archive_max_day, load_voted_prices, resolve_anchors
+from backtest.price_resolution import (
+    MAX_WINDOW_SPAN_DAYS,
+    archive_max_day,
+    load_voted_prices,
+    resolve_anchors,
+)
+from backtest.resolution_gate import (
+    MAX_UNRESOLVABLE_PCT as _MAX_UNRESOLVABLE_PCT,
+    classify_chronic,
+    evaluate_gate,
+)
 from backtest.scoring import (
     FLAT_TOLERANCE,
     HEADLINE_MIN_TIER,
@@ -36,10 +46,10 @@ from backtest.scoring import (
     score_cohort,
 )
 
-# Above this rate of mature forecasts that can't be resolved by the shared
-# estimator, refuse to report a number rather than silently score a shrunken
-# cohort — that silent shrinkage is how the pre-fix metric moved unnoticed.
-MAX_UNRESOLVABLE_PCT = 10.0
+# Re-exported so the gate's threshold has one definition. The gate itself —
+# and the reason it needs two ratios rather than one — lives in
+# backtest.resolution_gate.
+MAX_UNRESOLVABLE_PCT = _MAX_UNRESOLVABLE_PCT
 
 # SQLite's bind-parameter cap is 999; every chunked statement in this file uses
 # the same conservative batch size.
@@ -792,11 +802,13 @@ def backtest_forecasts(db, today=None, min_price=0, reresolve=False, rescore=Fal
         id_to_slug = {r.id: r.item_id for r in slug_rows}
 
     new_outcomes = []
-    # The gate measures resolution quality, so its denominator is the forecasts
-    # that actually required resolution this run. A frozen forecast was not
-    # resolved and belongs on neither side of the ratio; counting the frozen
-    # majority would dilute a genuinely broken resolution rate to nothing.
-    n_unresolvable = 0
+    # Unresolvable failures are split by whether the archive has already moved
+    # past the target date, because the two mean opposite things and no single
+    # ratio separates them. See backtest.resolution_gate for the full argument;
+    # in short, a chronic failure is a fixed tax that re-enters `to_resolve`
+    # every run forever, while a cluster of fresh ones is a regression.
+    n_unresolvable_fresh = 0
+    n_unresolvable_chronic = 0
     n_considered = 0
     # The forecasts this run attempted to resolve, MINUS the ones it went on to
     # exclude by --min-price. Under --reresolve this is the delete set.
@@ -832,7 +844,11 @@ def backtest_forecasts(db, today=None, min_price=0, reresolve=False, rescore=Fal
         if not anchors:
             logger.info(f"  [{horizon}d / {model_version}] No slug mappings")
             n_considered += len(forecasts)
-            n_unresolvable += len(forecasts)
+            # Counted FRESH regardless of target date. A missing slug mapping is
+            # a referential-integrity break between item_forecasts and items,
+            # not the archive lagging — no amount of future collection fixes it
+            # and it must never be excused as a chronic archive gap.
+            n_unresolvable_fresh += len(forecasts)
             considered_ids.update(f.id for f in forecasts)
             continue
 
@@ -847,16 +863,25 @@ def backtest_forecasts(db, today=None, min_price=0, reresolve=False, rescore=Fal
             f_date = f.forecast_date if isinstance(f.forecast_date, date) else date.fromisoformat(str(f.forecast_date)[:10])
             target_date = f_date + timedelta(days=horizon)
 
+            chronic = classify_chronic(target_date, coverage_end, MAX_WINDOW_SPAN_DAYS)
+
+            def _count_unresolvable():
+                nonlocal n_unresolvable_fresh, n_unresolvable_chronic
+                if chronic:
+                    n_unresolvable_chronic += 1
+                else:
+                    n_unresolvable_fresh += 1
+
             base_res = prices.get((slug, f_date))
             actual_res = prices.get((slug, target_date))
             if base_res is None or actual_res is None:
-                n_unresolvable += 1
+                _count_unresolvable()
                 considered_ids.add(f.id)
                 continue
 
             base, actual = base_res.price, actual_res.price
             if base <= 0 or actual <= 0:
-                n_unresolvable += 1
+                _count_unresolvable()
                 considered_ids.add(f.id)
                 continue
 
@@ -888,7 +913,7 @@ def backtest_forecasts(db, today=None, min_price=0, reresolve=False, rescore=Fal
             # leg-agnostic, and the forecast is DROPPED (and counted
             # unresolvable), never given a fallback.
             if actual_res.oldest_observation <= f_date:
-                n_unresolvable += 1
+                _count_unresolvable()
                 considered_ids.add(f.id)
                 continue
 
@@ -939,20 +964,22 @@ def backtest_forecasts(db, today=None, min_price=0, reresolve=False, rescore=Fal
                 "model_version": model_version,
             })
 
-    # A run with nothing new to resolve has an empty denominator; there is no
-    # resolution rate to gate on, and dividing here would raise.
-    if n_considered:
-        unresolvable_pct = n_unresolvable / n_considered * 100
-        logger.info(
-            f"  Unresolvable: {n_unresolvable:,}/{n_considered:,} "
-            f"({unresolvable_pct:.1f}% of forecasts requiring resolution)"
-        )
-        if unresolvable_pct > MAX_UNRESOLVABLE_PCT:
-            raise RuntimeError(
-                f"{unresolvable_pct:.1f}% of mature forecasts could not be resolved "
-                f"(cap {MAX_UNRESOLVABLE_PCT}%). Silent cohort shrinkage is how this "
-                f"metric moved unnoticed before — refusing to report a number."
-            )
+    # Both ratios are evaluated against the whole mature cohort and against
+    # this run's informative attempts respectively — see
+    # backtest.resolution_gate. Divisions by zero are the gate's problem, not
+    # this call site's.
+    gate = evaluate_gate(
+        n_mature=len(mature_ids),
+        n_attempted=n_considered,
+        n_unresolvable_fresh=n_unresolvable_fresh,
+        n_unresolvable_chronic=n_unresolvable_chronic,
+    )
+    if gate.warn:
+        logger.warning(f"  Resolution gate: {gate.reason}")
+    else:
+        logger.info(f"  Resolution gate: {gate.reason}")
+    if not gate.ok:
+        raise RuntimeError(gate.reason)
 
     # The whole mature cohort goes through the freeze, which writes only what is
     # new. Passing the frozen rows too keeps the freeze the single gate on the
