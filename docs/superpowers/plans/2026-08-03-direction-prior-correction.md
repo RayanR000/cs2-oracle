@@ -1,5 +1,26 @@
 # Directional Prior Correction Implementation Plan
 
+> # 🛑 EXECUTED AND CLOSED (2026-08-03) — Tasks 5–7 were NOT built
+>
+> **Do not execute Tasks 5, 6 or 7.** Task 4's Step 0 gate ran and returned
+> **STOP**: the weighted training class prior is balanced at every horizon
+> (down/up 1.035, 1.040, 1.034, 1.023 against a 1.20 threshold), so the inherited
+> prior does not explain the observed down-bias. The correction was deliberately
+> never implemented.
+>
+> Tasks 1–4 shipped. The result is written up in
+> `docs/changelog/2026-08-03-direction-prior-diagnostic.md`, which is the
+> authoritative record.
+>
+> **Everything below describing the correction is a design refuted before
+> implementation, kept as a record of what was tried.** Passages written before the
+> gate fired — the zero-sum offset, `DIRECTION_PRIOR_TAU`,
+> `_apply_direction_prior`, `direction_priors.json`, the `p_flat` and
+> `dir_conf_arr` constraints — describe code that does not exist and must not be
+> created on the strength of this document. Re-running
+> `scripts/diagnose_direction_prior.py` after a future retrain is the way to
+> revisit the question, since the prior is a property of each training window.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Correct the directional classifier's inherited up/down class prior at serve time, and stop the outcome-fitted bias loop from fitting on a sample that spans two market days.
