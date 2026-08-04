@@ -8,6 +8,7 @@ docs/changelog/2026-08-03-accuracy-is-clustered-by-forecast-date.md.
 """
 from __future__ import annotations
 
+from pathlib import Path
 from unittest.mock import MagicMock
 
 import pytest
@@ -95,3 +96,36 @@ def test_drift_alert_is_still_written(tmp_path):
     f.check_concept_drift(horizon=7)
     assert f.db.add.called
     assert f.db.commit.called
+
+
+# ---------------------------------------------------------------------------
+# The predict-only path must not retrain.
+# ---------------------------------------------------------------------------
+
+FORECAST_PRICES_SRC = (
+    Path(__file__).resolve().parent.parent / "scripts" / "forecast_prices.py"
+)
+
+
+def test_predict_only_branch_has_no_retrain_trigger():
+    """The --predict-only branch must not set do_train unconditionally.
+
+    Asserted on source rather than by running the pipeline: main() needs a live
+    DB, a price archive, and saved boosters. The defect was one assignment, so
+    pinning that assignment out is the honest unit-level check.
+    """
+    src = FORECAST_PRICES_SRC.read_text()
+    start = src.index("elif predict_only and has_models:")
+    branch = src[start:src.index("if do_train:", start)]
+
+    # The retrain must exist only behind the explicit opt-in.
+    assert "if drifted_horizons and allow_retrain:" in branch, (
+        "Retraining must be gated on the ALLOW_DRIFT_RETRAIN opt-in."
+    )
+    assert branch.count("do_train = True") == 1, (
+        "Exactly one gated retrain assignment expected in this branch; found "
+        f"{branch.count('do_train = True')}."
+    )
+    assert "ALLOW_DRIFT_RETRAIN" in branch, (
+        "The opt-in escape hatch must be present in this branch."
+    )

@@ -5,6 +5,7 @@ Daily pipeline collects multi-source prices from 7 markets, archives to Parquet,
 ## Gotchas
 
 - **API client at `frontend/lib/api.ts`.** Update both backend router and this client when adding routes.
+- **`--predict-only` does not retrain.** It used to: `check_concept_drift` ran against a hardcoded 60% floor above the model's measured 46.7–50.8% DA, so drift fired every run and cost a measured 465s of the 835s daily step. Drift is now reported only. Set `ALLOW_DRIFT_RETRAIN=1`, or dispatch `price-forecast.yml` with `mode=full`, to retrain.
 
 ## Workflow Rules
 

@@ -6,7 +6,7 @@ forecasts to the item_forecasts table.
 
 Usage:
     python scripts/forecast_prices.py          # train + predict
-    python scripts/forecast_prices.py --predict-only  # use saved models (auto-retrain on drift)
+    python scripts/forecast_prices.py --predict-only  # use saved models (no auto-retrain)
     python scripts/forecast_prices.py --train-only     # train models only, skip forecasts
     python scripts/forecast_prices.py --compare-regime  # A/B test regime vs global-only + backtest
     python scripts/forecast_prices.py --compare-ensemble # A/B test 3-member vs 6-member ensemble + backtest
@@ -189,19 +189,31 @@ def run_forecast(train_only: bool = False, predict_only: bool = False,
                         f"and no drift detected"
                     )
         elif predict_only and has_models:
+            # Drift is reported but does NOT trigger a retrain. The signal it
+            # reads spans 1-2 distinct forecast dates, so it tracks market
+            # direction rather than model decay, and the retrain it used to
+            # trigger cost a measured 465s of every 835s daily run while
+            # making the workflow's Monday-only retrain design fiction.
+            # See docs/superpowers/specs/2026-08-04-remove-accidental-retrain-work-design.md
+            allow_retrain = os.environ.get("ALLOW_DRIFT_RETRAIN") == "1"
             drifted_horizons = []
             for h in ItemForecaster.HORIZONS:
-                drift_result = forecaster.check_concept_drift(
-                    horizon=h, sliding_window=7, threshold=60.0
-                )
+                drift_result = forecaster.check_concept_drift(horizon=h, sliding_window=7)
                 if drift_result and drift_result.get("drifted"):
                     drifted_horizons.append(h)
-            if drifted_horizons:
+            if drifted_horizons and allow_retrain:
                 logger.warning(
-                    f"Drift detected for horizons {drifted_horizons} — "
-                    f"triggering auto-retrain before prediction."
+                    f"Drift reported for horizons {drifted_horizons} and "
+                    f"ALLOW_DRIFT_RETRAIN=1 — retraining before prediction."
                 )
                 do_train = True
+            elif drifted_horizons:
+                logger.warning(
+                    f"Drift reported for horizons {drifted_horizons}. Not "
+                    f"retraining: predict-only serves the scheduled model. Set "
+                    f"ALLOW_DRIFT_RETRAIN=1 to retrain, or dispatch the "
+                    f"workflow with mode=full."
+                )
 
         if do_train:
             if has_models:
