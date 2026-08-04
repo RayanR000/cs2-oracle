@@ -12,7 +12,12 @@
 
 ## Global Constraints
 
-- Per `AGENTS.md`: run `pytest` and `python3 -m py_compile` for all backend changes. No frontend change is involved, so `npm run lint` / `npm run build` do not apply.
+- **Test invocation, verified 2026-08-04 — use exactly this:** `cd backend && ./venv/bin/python -m pytest tests/ -q`.
+  - `python` is **not on PATH**. Bare `python -m pytest` fails with "command not found".
+  - System `python3` (3.13) has the dependencies but **segfaults inside LightGBM** partway through the suite. Do not use it for pytest.
+  - Scope to `tests/`. Collecting from `backend/` root picks up `scripts/test_social_signal.py`, which fails at import and aborts the whole run — pre-existing and unrelated to this plan.
+  - `python3 -m py_compile <file>` is fine (no LightGBM import), per `AGENTS.md`.
+- **Baseline is `417 passed` in ~3m08s** (measured on `363b659`, before any task). Any other number of failures is yours. No frontend change is involved, so `npm run lint` / `npm run build` do not apply.
 - **No model-class, feature-set, or hyperparameter changes.** If a step would alter which features the model trains on or how it fits, stop and flag it.
 - **Never let tests use the default `model_dir`.** Always pass `model_dir=str(tmp_path_factory.mktemp("saved_models"))` or `tmp_path`. The real `backend/models/saved_models/` holds gitignored, unrecoverable production artifacts.
 - Reuse `MIN_FORECAST_DATES` from `backend/backtest/scoring.py` (currently 20). Do **not** introduce a second date-coverage threshold.
@@ -172,7 +177,7 @@ def test_drift_alert_is_still_written(tmp_path):
 - [ ] **Step 2: Run the tests to verify they fail**
 
 ```bash
-cd backend && python -m pytest tests/test_drift_retrain_guard.py -v
+cd backend && ./venv/bin/python -m pytest tests/test_drift_retrain_guard.py -v
 ```
 
 Expected: `test_threshold_is_a_named_constant` fails with `AttributeError: type object 'ItemForecaster' has no attribute 'DRIFT_DA_THRESHOLD'`. The coverage tests fail because drift is currently reported regardless of coverage.
@@ -239,7 +244,7 @@ No import is needed: `MIN_FORECAST_DATES` is already imported at `forecaster.py:
 - [ ] **Step 6: Run the tests to verify they pass**
 
 ```bash
-cd backend && python -m pytest tests/test_drift_retrain_guard.py -v
+cd backend && ./venv/bin/python -m pytest tests/test_drift_retrain_guard.py -v
 ```
 
 Expected: all 8 tests PASS.
@@ -247,7 +252,7 @@ Expected: all 8 tests PASS.
 - [ ] **Step 7: Run the full backend suite and compile check**
 
 ```bash
-cd backend && python -m pytest -q && python3 -m py_compile models/forecaster.py
+cd backend && ./venv/bin/python -m pytest tests/ -q && python3 -m py_compile models/forecaster.py
 ```
 
 Expected: no new failures. Note the pre-existing pass/fail count before you start so you can tell new breakage from old.
@@ -323,7 +328,7 @@ This fails today for the right reason: the current branch has no `allow_retrain`
 - [ ] **Step 2: Run the test to verify it fails**
 
 ```bash
-cd backend && python -m pytest tests/test_drift_retrain_guard.py::test_predict_only_branch_has_no_retrain_trigger -v
+cd backend && ./venv/bin/python -m pytest tests/test_drift_retrain_guard.py::test_predict_only_branch_has_no_retrain_trigger -v
 ```
 
 Expected: FAIL on the first assertion — `do_train = True` is still present in the branch.
@@ -366,7 +371,7 @@ Replace `backend/scripts/forecast_prices.py:192-204` in full:
 - [ ] **Step 4: Run the test to verify it passes**
 
 ```bash
-cd backend && python -m pytest tests/test_drift_retrain_guard.py -v
+cd backend && ./venv/bin/python -m pytest tests/test_drift_retrain_guard.py -v
 ```
 
 Expected: all tests PASS.
@@ -388,7 +393,7 @@ Note this replaces the claim in `forecast_prices.py:9`'s docstring — update th
 - [ ] **Step 6: Run the full suite and compile check**
 
 ```bash
-cd backend && python -m pytest -q && python3 -m py_compile scripts/forecast_prices.py
+cd backend && ./venv/bin/python -m pytest tests/ -q && python3 -m py_compile scripts/forecast_prices.py
 ```
 
 - [ ] **Step 7: Commit**
@@ -447,7 +452,7 @@ def test_full_mode_retrains_on_age_not_drift():
 - [ ] **Step 2: Run the tests to verify they fail**
 
 ```bash
-cd backend && python -m pytest tests/test_drift_retrain_guard.py -k "drift_detected_helper or full_mode" -v
+cd backend && ./venv/bin/python -m pytest tests/test_drift_retrain_guard.py -k "drift_detected_helper or full_mode" -v
 ```
 
 Expected: both FAIL — the helper still exists and `drifted` is still in the condition.
@@ -506,7 +511,7 @@ Expected: no output.
 - [ ] **Step 6: Run the tests to verify they pass**
 
 ```bash
-cd backend && python -m pytest tests/test_drift_retrain_guard.py -v && python -m pytest -q
+cd backend && ./venv/bin/python -m pytest tests/test_drift_retrain_guard.py -v && ./venv/bin/python -m pytest tests/ -q
 ```
 
 Expected: all drift-guard tests PASS, no new failures elsewhere.
@@ -683,7 +688,7 @@ def test_served_features_survive_truncation(forecaster):
 - [ ] **Step 2: Run the tests to verify they fail**
 
 ```bash
-cd backend && python -m pytest tests/test_predict_tail_truncation.py -v
+cd backend && ./venv/bin/python -m pytest tests/test_predict_tail_truncation.py -v
 ```
 
 Expected: FAIL with `AttributeError` on `PREDICT_TAIL_ITEM_DAYS` and `_tail_predict_frame`.
@@ -738,7 +743,7 @@ In `backend/models/forecaster.py`, extend the existing comment block at `:3527-3
 - [ ] **Step 4: Run the tests to verify they pass**
 
 ```bash
-cd backend && python -m pytest tests/test_predict_tail_truncation.py -v
+cd backend && ./venv/bin/python -m pytest tests/test_predict_tail_truncation.py -v
 ```
 
 Expected: all 6 tests PASS. If `test_served_features_survive_truncation` fails, **do not raise the tolerance.** Read the mismatched feature names it prints and find which window exceeds 240 rows — then raise `PREDICT_TAIL_ITEM_DAYS` to cover it and note the real requirement in the comment.
@@ -813,7 +818,7 @@ def test_roundtripped_cache_is_accepted_without_the_version_column(forecaster):
 - [ ] **Step 8: Run everything**
 
 ```bash
-cd backend && python -m pytest tests/test_predict_tail_truncation.py -v && python -m pytest -q && python3 -m py_compile models/forecaster.py
+cd backend && ./venv/bin/python -m pytest tests/test_predict_tail_truncation.py -v && ./venv/bin/python -m pytest tests/ -q && python3 -m py_compile models/forecaster.py
 ```
 
 Expected: all 8 tests in the new file PASS, no new failures elsewhere.
@@ -885,7 +890,7 @@ for window in (365, 548, 730, 913, 1095):
 Run it:
 
 ```bash
-cd backend && python /tmp/measure_predict_window.py
+cd backend && ./venv/bin/python /tmp/measure_predict_window.py
 ```
 
 - [ ] **Step 2: Apply the decision rule**
@@ -917,7 +922,7 @@ Fill `<DATE>`, `<SHARE>`, and `<SELECTED_WINDOW>` with the real measured values.
 - [ ] **Step 4: Re-run the feature-equality test**
 
 ```bash
-cd backend && python -m pytest tests/test_predict_tail_truncation.py -v && python -m pytest -q
+cd backend && ./venv/bin/python -m pytest tests/test_predict_tail_truncation.py -v && ./venv/bin/python -m pytest tests/ -q
 ```
 
 The synthetic fixtures are dense, so they will not catch a real-archive shortfall. Step 1's measurement is the actual evidence for this task; the suite only confirms nothing regressed.
@@ -945,7 +950,7 @@ window, so served feature vectors are unchanged."
 - [ ] **Step 1: Confirm the suite is green**
 
 ```bash
-cd backend && python -m pytest -q && python3 -m py_compile models/forecaster.py scripts/forecast_prices.py
+cd backend && ./venv/bin/python -m pytest tests/ -q && python3 -m py_compile models/forecaster.py scripts/forecast_prices.py
 ```
 
 - [ ] **Step 2: Push the branch and dispatch a predict-only run**
@@ -1036,5 +1041,5 @@ One addition beyond the spec: the **engineered-cache version** (Task 4, Steps 6�
 
 - **Tasks 1–3 and Task 4 are independent.** Either can go first. Tasks 1→2→3 are ordered; 5 depends on 4; 6 is last.
 - **The two load-bearing tests are `test_served_features_survive_truncation` and `test_voting_yields_one_row_per_item_day`.** If either fails, do not loosen it — stop and report. They are the only things standing between this change and train/serve skew.
-- **Record the baseline test count before you start** (`cd backend && python -m pytest -q | tail -3`) so new failures are distinguishable from pre-existing ones.
+- **The baseline is 417 passed** (measured on `363b659`). See Global Constraints for the exact test invocation — three plausible-looking variants all fail for different reasons.
 - `DataFrame.attrs` does not survive `to_parquet`. The existing `_cache_date` attr at `:2561` is very likely already a no-op, which is why the loader has a DuckDB fallback. Do not follow that pattern for the version — use a real column, as Task 4 Step 6 does.
