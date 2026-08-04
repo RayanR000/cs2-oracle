@@ -58,7 +58,10 @@ Nothing in Part 2 may be committed before Part 1 is merged and Task 5's bar is w
 
 **Interfaces:**
 - Consumes: `backtest.scoring.direction_from_return`, `backtest.scoring.price_tier`
-- Produces: `fold_records(...) -> list[dict]`, with exactly the keys `score_cohort` reads. Tasks 2 and 3 call it.
+- Produces: `fold_records(...) -> list[dict]`. Tasks 2 and 3 call it.
+- The dicts carry every key `score_cohort` reads, **plus two it does not**:
+  - `item_id` — **load-bearing for Task 2.** `paired_da_difference` indexes records by `(item_id, forecast_date)`; without it, arms cannot be paired and the MDE cannot be computed. Not optional.
+  - `predicted_direction` — carried for parity with the repo's existing record shape at `backtest_accuracy.py:551`, which also includes it unread by `score_cohort`. Keeps one record schema across both scoring paths.
 
 - [ ] **Step 1: Write the failing test**
 
