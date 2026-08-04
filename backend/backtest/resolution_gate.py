@@ -44,6 +44,38 @@ So the gate checks two ratios, neither of which needs an arbitrary floor:
 Chronic rows are reported and warned on, never fatal. They still count toward
 coverage, so a chronic population that grows large enough to matter fails the
 run on that ratio rather than being excused indefinitely.
+
+GAP — a third category, added 2026-08-04. The 08-02/03 collection outage left
+the archive holding 2026-08-01 and 2026-08-04 with nothing between (three of
+those missing days came from cron drift, not failures — see
+collectors.snapshot_date). A horizon-3 forecast dated 08-01 targeting 08-04 then
+has fewer than SMOOTH_WINDOW observations available inside `(f, target]`, so
+`resolve_anchors` reaches back past the forecast date and the disjoint-leg guard
+drops it. 17,382 forecasts died that way in run 30901398468.
+
+Neither existing category fits. Not FRESH: nothing is regressing now, and the
+run's own anchor resolution succeeded completely (34,764 of 34,764). Not
+CHRONIC: `classify_chronic` asks whether coverage has moved a full window past
+target_date, and it had not. So they fell into the fatal coverage ratio and
+pinned the gate at 17.9% permanently — a forecast that never resolves never
+earns a frozen outcome, so it re-enters `to_resolve` every run forever. Nor could
+it be waited out: backfill is unavailable (CSGOTrader serves only `/latest/`, and
+CSMarketAPI's per-item history costs 1 request/item against 4,000/month for
+41,294 items).
+
+Gap rows are therefore excluded from the fatal ratio — but the exclusion is
+deliberately narrow, because "excuse the rows we cannot score" is exactly the
+loophole this module exists to prevent:
+
+* It requires positive evidence of missing days from the archive itself, not the
+  mere fact that a forecast failed. `classify_archive_gap` returns False when it
+  has no coverage information at all.
+* Gap rows leave the fresh denominator too, so a real resolver regression behind
+  a large gap population still fails at full sensitivity.
+* The count, the percentage and the surviving scoreable cohort are reported and
+  warned on every run, so the shrinkage is attributable rather than invisible.
+* If the gap swallows the entire cohort there is no metric left and the run fails
+  regardless.
 """
 
 from __future__ import annotations
@@ -62,6 +94,7 @@ class GateResult:
     coverage_pct: float | None
     fresh_rate_pct: float | None
     warn: bool = False
+    gap_pct: float | None = None
 
 
 def evaluate_gate(
@@ -69,6 +102,7 @@ def evaluate_gate(
     n_attempted: int,
     n_unresolvable_fresh: int,
     n_unresolvable_chronic: int = 0,
+    n_unresolvable_gap: int = 0,
     max_pct: float = MAX_UNRESOLVABLE_PCT,
 ) -> GateResult:
     """Decide whether to report metrics for this run.
@@ -76,21 +110,47 @@ def evaluate_gate(
     n_mature: the whole mature cohort, frozen rows included. Frozen rows are
         covered — they have usable actuals — so they belong in this denominator
         even though this run did not resolve them.
-    n_attempted: forecasts this run tried to resolve, chronic ones included.
+    n_attempted: forecasts this run tried to resolve, chronic and gap ones
+        included.
     n_unresolvable_fresh: failures whose target date sits near the archive's
         coverage edge.
     n_unresolvable_chronic: failures the archive has already moved past. See
         `classify_chronic`.
+    n_unresolvable_gap: failures caused by days genuinely absent from the
+        archive inside the actual leg's window. See `classify_archive_gap`.
     """
     n_unresolvable = n_unresolvable_fresh + n_unresolvable_chronic
+    # Gap rows can never be scored, so what is left is the cohort a metric can
+    # honestly be computed over.
+    n_scoreable = n_mature - n_unresolvable_gap
     # A chronic row always fails, so chronic attempts and chronic failures are
     # the same set; removing them leaves the attempts that carried information.
-    n_attempted_fresh = max(0, n_attempted - n_unresolvable_chronic)
+    # Gap attempts are removed for the same reason — the archive decided their
+    # outcome, not the resolver.
+    n_attempted_fresh = max(
+        0, n_attempted - n_unresolvable_chronic - n_unresolvable_gap
+    )
 
     coverage_pct = (n_unresolvable / n_mature * 100) if n_mature else None
+    gap_pct = (n_unresolvable_gap / n_mature * 100) if n_mature else None
     fresh_rate_pct = (
         (n_unresolvable_fresh / n_attempted_fresh * 100) if n_attempted_fresh else None
     )
+
+    # Checked before the ratios: if nothing is scoreable there is no number to
+    # report and no ratio worth quoting, however clean the survivors look.
+    if n_mature and n_scoreable <= 0:
+        return GateResult(
+            ok=False,
+            reason=(
+                f"nothing scoreable left: all {n_mature:,} mature forecasts fall "
+                f"in an archive gap. No metric can be computed — refusing to "
+                f"report a number."
+            ),
+            coverage_pct=coverage_pct,
+            fresh_rate_pct=fresh_rate_pct,
+            gap_pct=gap_pct,
+        )
 
     if coverage_pct is not None and coverage_pct > max_pct:
         return GateResult(
@@ -104,6 +164,7 @@ def evaluate_gate(
             ),
             coverage_pct=coverage_pct,
             fresh_rate_pct=fresh_rate_pct,
+            gap_pct=gap_pct,
         )
 
     if fresh_rate_pct is not None and fresh_rate_pct > max_pct:
@@ -120,6 +181,33 @@ def evaluate_gate(
             ),
             coverage_pct=coverage_pct,
             fresh_rate_pct=fresh_rate_pct,
+            gap_pct=gap_pct,
+        )
+
+    # Reported before chronic because it is the larger and more surprising
+    # population when present, and because it names a fixable upstream cause.
+    if n_unresolvable_gap:
+        chronic_note = (
+            f" A further {n_unresolvable_chronic:,} are chronically unresolvable."
+            if n_unresolvable_chronic
+            else ""
+        )
+        return GateResult(
+            ok=True,
+            warn=True,
+            reason=(
+                f"{n_unresolvable_gap:,} of {n_mature:,} mature forecasts "
+                f"({gap_pct:.1f}%) are unscoreable: days are missing from the "
+                f"archive inside their actual-leg window, so the leg cannot be "
+                f"established without reusing pre-forecast observations. This is "
+                f"a collection gap, not a resolver regression — the fresh "
+                f"resolution rate is measured over the {n_attempted_fresh:,} "
+                f"attempts that carried information.{chronic_note} Reporting on "
+                f"the {n_scoreable:,} scoreable forecasts."
+            ),
+            coverage_pct=coverage_pct,
+            fresh_rate_pct=fresh_rate_pct,
+            gap_pct=gap_pct,
         )
 
     if n_unresolvable_chronic:
@@ -136,6 +224,7 @@ def evaluate_gate(
             ),
             coverage_pct=coverage_pct,
             fresh_rate_pct=fresh_rate_pct,
+            gap_pct=gap_pct,
         )
 
     parts = []
@@ -151,7 +240,34 @@ def evaluate_gate(
         reason="; ".join(parts) or "nothing mature to resolve",
         coverage_pct=coverage_pct,
         fresh_rate_pct=fresh_rate_pct,
+        gap_pct=gap_pct,
     )
+
+
+def classify_archive_gap(f_date, target_date, covered_days, window: int = 3) -> bool:
+    """True when the archive cannot supply a clean actual leg for this forecast.
+
+    The actual leg needs *window* observations drawn from ``(f_date,
+    target_date]`` — strictly after the forecast — or ``resolve_anchors`` reaches
+    back past ``f_date`` and the disjoint-leg guard drops the forecast. So the
+    question is not "is any day missing somewhere in the horizon" but "are there
+    even *window* days present in the range that matters". That distinction keeps
+    the category tight: a 30-day horizon missing one day 25 days out still has 29
+    usable days and is NOT excused, while a 3-day horizon spanning the
+    2026-08-02/03 hole has one and is.
+
+    *window* is the resolver's ``SMOOTH_WINDOW``. It is a parameter rather than
+    an import so this module stays free of pandas and the collectors package.
+
+    An empty *covered_days* means we have no coverage information, which is not
+    evidence of a gap — returns False so an unknown never becomes an excuse.
+    """
+    if not covered_days or f_date is None or target_date is None:
+        return False
+    present = sum(
+        1 for day in covered_days if f_date < day <= target_date
+    )
+    return present < window
 
 
 def classify_chronic(target_date, coverage_end, grace_days: int) -> bool:

@@ -12,6 +12,8 @@ from typing import Any, Optional, List, Dict
 from sqlalchemy import func
 from sqlalchemy.orm import scoped_session
 
+from collectors.snapshot_date import resolve_snapshot_date
+
 logger = logging.getLogger(__name__)
 
 QUALITY_SUFFIXES = (
@@ -143,6 +145,12 @@ class DataPipeline:
             # 3. Store results
             price_records = []
             now = datetime.utcnow()
+            # `now` timestamps the observation; `snapshot_day` says which day's
+            # price dump this is. They are NOT interchangeable — the cron fires
+            # minutes before midnight and Actions delay regularly pushes the run
+            # past it, so deriving the day from the clock silently relabelled
+            # (and lost) whole days. See collectors.snapshot_date.
+            snapshot_day = resolve_snapshot_date()
 
             for name, matched_items in item_map.items():
                 sources = results.get(name)
@@ -259,7 +267,7 @@ class DataPipeline:
                     for r in price_records
                 ]
 
-                agg_date = now.strftime("%Y-%m-%d")
+                agg_date = snapshot_day.strftime("%Y-%m-%d")
 
                 # ── Write ALL sources to snapshot CSV for Parquet archive ──
                 snapshot_csv_path = f"/tmp/aggregator-snapshots-{agg_date}.csv"
@@ -366,7 +374,7 @@ class DataPipeline:
             exchange_rates_csv_path = None
             rates = aggregator.fetch_exchange_rates()
             if rates:
-                agg_date = now.strftime("%Y-%m-%d")
+                agg_date = snapshot_day.strftime("%Y-%m-%d")
                 exchange_rates_csv_path = f"/tmp/exchange-rates-{agg_date}.csv"
                 with open(exchange_rates_csv_path, "w", newline="") as f:
                     writer = csv.writer(f)

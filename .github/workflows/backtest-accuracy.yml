@@ -102,8 +102,12 @@ jobs:
           git commit -m "archive: forecast outcomes + accuracy $(date -u +%F)"
           git push --force origin HEAD:main
 
+      # Was `workflow_run` only, which made the 08:00 cron's failures structurally
+      # unreportable — two of the three 2026-08-03/04 failures were schedule runs
+      # and filed nothing. Manual dispatches stay silent on purpose: a human is
+      # already watching those.
       - name: Notify on failure
-        if: failure() && github.event_name == 'workflow_run'
+        if: failure() && (github.event_name == 'workflow_run' || github.event_name == 'schedule')
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
@@ -114,7 +118,8 @@ jobs:
           Run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
           Branch: ${{ github.ref_name }}
           Trigger: ${{ github.event_name }}" \
-            --label "automation" 2>/dev/null || true
+            --label "automation" \
+            || echo "::warning::Could not file the failure issue. Check that the 'automation' label exists and the job has issues:write."
 
       - name: Upload backtest logs
         if: always()

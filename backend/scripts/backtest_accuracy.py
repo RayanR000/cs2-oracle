@@ -25,12 +25,15 @@ from database import SessionLocal, PredictionAccuracy
 from sqlalchemy import bindparam, select, text
 from backtest.price_resolution import (
     MAX_WINDOW_SPAN_DAYS,
+    SMOOTH_WINDOW,
+    archive_covered_days,
     archive_max_day,
     load_voted_prices,
     resolve_anchors,
 )
 from backtest.resolution_gate import (
     MAX_UNRESOLVABLE_PCT as _MAX_UNRESOLVABLE_PCT,
+    classify_archive_gap,
     classify_chronic,
     evaluate_gate,
 )
@@ -734,6 +737,13 @@ def backtest_forecasts(db, today=None, min_price=0, reresolve=False, rescore=Fal
     # `today` to score a historical cohort must not have future forecasts pulled
     # in behind its back.
     coverage_end = archive_max_day(archive_dir)
+    # The coverage EDGE is not enough. It says how far the archive reaches, not
+    # whether the range is solid: the 2026-08-02/03 outage left a max day of
+    # 08-04 that looked perfectly healthy with two days missing in the middle.
+    # The interior is what separates "the collector missed a day, and no future
+    # collection will fill it" from a live resolver regression. See
+    # backtest.resolution_gate's GAP category.
+    covered_days = archive_covered_days(archive_dir)
     cutoff = min(today, coverage_end)
     if coverage_end < today:
         logger.info(
@@ -809,6 +819,7 @@ def backtest_forecasts(db, today=None, min_price=0, reresolve=False, rescore=Fal
     # every run forever, while a cluster of fresh ones is a regression.
     n_unresolvable_fresh = 0
     n_unresolvable_chronic = 0
+    n_unresolvable_gap = 0
     n_considered = 0
     # The forecasts this run attempted to resolve, MINUS the ones it went on to
     # exclude by --min-price. Under --reresolve this is the delete set.
@@ -864,10 +875,21 @@ def backtest_forecasts(db, today=None, min_price=0, reresolve=False, rescore=Fal
             target_date = f_date + timedelta(days=horizon)
 
             chronic = classify_chronic(target_date, coverage_end, MAX_WINDOW_SPAN_DAYS)
+            # Checked ahead of chronic: a missing collection day is the more
+            # specific explanation and the one with a fixable upstream cause, and
+            # a row can satisfy both predicates. Both are non-fatal, so the
+            # precedence only decides which reason gets reported — name the one
+            # an operator can act on.
+            gap = classify_archive_gap(
+                f_date, target_date, covered_days, SMOOTH_WINDOW
+            )
 
             def _count_unresolvable():
                 nonlocal n_unresolvable_fresh, n_unresolvable_chronic
-                if chronic:
+                nonlocal n_unresolvable_gap
+                if gap:
+                    n_unresolvable_gap += 1
+                elif chronic:
                     n_unresolvable_chronic += 1
                 else:
                     n_unresolvable_fresh += 1
@@ -973,6 +995,7 @@ def backtest_forecasts(db, today=None, min_price=0, reresolve=False, rescore=Fal
         n_attempted=n_considered,
         n_unresolvable_fresh=n_unresolvable_fresh,
         n_unresolvable_chronic=n_unresolvable_chronic,
+        n_unresolvable_gap=n_unresolvable_gap,
     )
     if gate.warn:
         logger.warning(f"  Resolution gate: {gate.reason}")

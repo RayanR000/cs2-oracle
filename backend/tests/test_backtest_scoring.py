@@ -274,6 +274,18 @@ def _run_backtest(session, archive, monkeypatch, today=EVAL_DATE, **kwargs):
         return real_max_day(archive)
 
     monkeypatch.setattr(backtest_accuracy, "archive_max_day", max_day)
+
+    # Same reasoning as archive_max_day: gap classification reads the archive's
+    # interior day coverage, so it must see the test archive. Left pointing at
+    # the repo's real archive it would decide gaps from whenever the collector
+    # last ran.
+    real_covered_days = price_resolution.archive_covered_days
+
+    def covered_days(archive_dir):
+        assert Path(archive_dir).name == "price-archive"
+        return real_covered_days(archive)
+
+    monkeypatch.setattr(backtest_accuracy, "archive_covered_days", covered_days)
     _stub_parquet_writes(monkeypatch)
 
     return backtest_accuracy.backtest_forecasts(session, today=today, **kwargs)
@@ -691,6 +703,86 @@ def test_unresolvable_forecasts_count_toward_the_gate_denominator(
     # The gate fires before anything is persisted.
     assert session.query(ForecastOutcome).count() == 0
     assert backtest_accuracy.MAX_UNRESOLVABLE_PCT == 10.0
+
+
+def test_a_forecast_spanning_a_missing_archive_day_is_a_gap_not_a_fresh_failure(
+    session, tmp_path, monkeypatch
+):
+    """A collection outage must not read as cohort shrinkage.
+
+    This is the 2026-08-02/03 shape reproduced small. Two horizon-3 forecasts
+    have NO archive day at all inside their actual-leg window, so
+    `resolve_anchors` reaches back past the forecast date and the disjoint-leg
+    guard drops them — permanently, because backfill is unavailable and a
+    forecast that never resolves never earns a frozen outcome.
+
+    Before the GAP category these landed in the fatal coverage ratio: 2 of 10 is
+    20%, over the 10% cap, so the run refused to report anything and would have
+    done so every day forever. They must now be classified as unscoreable,
+    reported, and stepped over, leaving the 8 genuinely scoreable forecasts to
+    produce a number.
+    """
+    rows = []
+    # 8 scoreable forecasts at horizon 14. Their actual leg (target 07-19) has
+    # 07-17/18/19 behind it — three observations strictly after the forecast.
+    for i in range(8):
+        rows += [(f"ok{i}", date(2026, 7, d), 3.0) for d in (3, 4, 5, 17, 18, 19)]
+        _seed(session, i + 1, f"ok{i}", current_price=3.0, price_mid=3.0, horizon=14)
+    # 2 forecasts at horizon 3 (target 07-08). Nothing exists between 07-05 and
+    # 07-08 anywhere in the archive, so the 07-08 anchor resolves from
+    # 07-03/04/05 — the base leg's own window.
+    for i in range(2):
+        rows += [(f"hole{i}", date(2026, 7, d), 3.0) for d in (3, 4, 5)]
+        _seed(session, 100 + i, f"hole{i}", current_price=3.0, price_mid=3.0)
+    session.commit()
+
+    archive = _write_archive(tmp_path, rows)
+
+    results = _run_backtest(session, archive, monkeypatch)
+
+    headline = next(r for r in results if r["price_tier"] is None)
+    assert headline["sample_count"] == 8
+    # The two gap forecasts are stepped over, not scored and not frozen.
+    assert session.query(ForecastOutcome).count() == 8
+
+
+def test_a_gap_population_does_not_excuse_a_real_resolution_failure(
+    session, tmp_path, monkeypatch
+):
+    """The loophole check, end to end.
+
+    Gap rows leave the fresh denominator, so this has to prove the FRESH RATE
+    leg specifically — not just that some ratio caught the failure. The numbers
+    are chosen so coverage cannot be the one that fires: 2 genuine failures out
+    of 20 mature is exactly 10.0%, which is not *over* the 10% cap. Against the
+    8 attempts that carried information it is 25%, and that is what must fail.
+
+    Left in the denominator, the 12 gap rows would have diluted those 2 failures
+    to 10% and waved a broken resolver through. That is the dilution the module
+    docstring warns about, now reachable through the new category.
+    """
+    rows = []
+    # 6 scoreable.
+    for i in range(6):
+        rows += [(f"ok{i}", date(2026, 7, d), 3.0) for d in (3, 4, 5, 17, 18, 19)]
+        _seed(session, i + 1, f"ok{i}", current_price=3.0, price_mid=3.0, horizon=14)
+    # 2 genuine failures. Days 07-17/18/19 DO exist in the archive, so these
+    # items' silence is about the items, not the calendar — their 07-19 anchor
+    # has nothing within MAX_WINDOW_SPAN_DAYS. Not a gap.
+    for i in range(2):
+        rows += [(f"dead{i}", date(2026, 7, d), 3.0) for d in (3, 4, 5)]
+        _seed(session, 50 + i, f"dead{i}", current_price=3.0, price_mid=3.0, horizon=14)
+    # 12 gap rows — nothing exists in the archive inside their actual-leg window.
+    for i in range(12):
+        rows += [(f"hole{i}", date(2026, 7, d), 3.0) for d in (3, 4, 5)]
+        _seed(session, 100 + i, f"hole{i}", current_price=3.0, price_mid=3.0)
+    session.commit()
+
+    archive = _write_archive(tmp_path, rows)
+
+    with pytest.raises(RuntimeError, match="resolution rate"):
+        _run_backtest(session, archive, monkeypatch)
+    assert session.query(ForecastOutcome).count() == 0
 
 
 def test_resolution_is_insert_only(session, monkeypatch):

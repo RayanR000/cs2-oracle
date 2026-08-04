@@ -52,12 +52,29 @@ jobs:
           DEBUG: false
         run: python scripts/run_task.py migrate
 
+      # Resolved ONCE, here, and reused by every step below. Previously the
+      # pipeline stamped filenames from its own datetime.utcnow() and this
+      # workflow passed `--date $(date -u +%F)` from a separate clock read a step
+      # later, so a run straddling midnight would look for a file the pipeline
+      # had named for the previous day. The cron fires at 23:00 and Actions
+      # delay was observed pushing starts to 00:08, which also silently lost
+      # 2026-07-27, 2026-07-30 and 2026-08-03 from the archive entirely.
+      # See backend/collectors/snapshot_date.py.
+      - name: Resolve snapshot date
+        working-directory: ./backend
+        run: |
+          SNAPSHOT_DATE=$(python -c 'from collectors.snapshot_date import resolve_snapshot_date; print(resolve_snapshot_date())')
+          echo "Snapshot day resolved to $SNAPSHOT_DATE (runner clock: $(date -u +%FT%TZ))"
+          echo "SNAPSHOT_DATE=$SNAPSHOT_DATE" >> "$GITHUB_ENV"
+
       - name: Run Aggregator Task
         working-directory: ./backend
         env:
           DATABASE_URL: ${{ secrets.SUPABASE_DATABASE_URL }}
           ENVIRONMENT: production
           DEBUG: false
+          # Pins the pipeline to the same day the append step will use.
+          AGGREGATOR_SNAPSHOT_DATE: ${{ env.SNAPSHOT_DATE }}
         run: |
           echo "🚀 Starting aggregator market update..."
           set -o pipefail
@@ -83,11 +100,11 @@ jobs:
           DEBUG: false
         run: >
           python scripts/append_to_parquet.py
-          --date $(date -u +%F)
+          --date "$SNAPSHOT_DATE"
           --out-dir ../archive
-          --snapshot-csv /tmp/aggregator-snapshots-$(date -u +%F).csv
-          --backfilled-csv /tmp/aggregator-backfilled-$(date -u +%F).csv
-          --exchange-rates-csv /tmp/exchange-rates-$(date -u +%F).csv
+          --snapshot-csv /tmp/aggregator-snapshots-$SNAPSHOT_DATE.csv
+          --backfilled-csv /tmp/aggregator-backfilled-$SNAPSHOT_DATE.csv
+          --exchange-rates-csv /tmp/exchange-rates-$SNAPSHOT_DATE.csv
 
       # The parquet files ARE the data (each holds full history), so git history
       # of them has no value and only bloats the repo. Republish the archive as a
@@ -99,7 +116,7 @@ jobs:
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git checkout --orphan flat
           git add -A
-          git commit -m "archive: prices + exchange-rates $(date -u +%F)"
+          git commit -m "archive: prices + exchange-rates $SNAPSHOT_DATE"
           git push --force origin HEAD:main
 
       - name: Notify on failure
@@ -114,7 +131,8 @@ jobs:
           Run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
           Branch: ${{ github.ref_name }}
           Trigger: ${{ github.event_name }}" \
-            --label "automation" 2>/dev/null || true
+            --label "automation" \
+            || echo "::warning::Could not file the failure issue. Check that the 'automation' label exists and the job has issues:write."
 
       - name: Upload aggregator logs
         if: always()

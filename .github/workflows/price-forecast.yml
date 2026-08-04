@@ -213,7 +213,8 @@ jobs:
           Run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
           Branch: ${{ github.ref_name }}
           Trigger: ${{ github.event_name }}" \
-            --label "automation" 2>/dev/null || true
+            --label "automation" \
+            || echo "::warning::Could not file the failure issue. Check that the 'automation' label exists and the job has issues:write."
 
       - name: Upload logs
         if: always()

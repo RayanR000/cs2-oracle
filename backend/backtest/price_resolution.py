@@ -77,6 +77,48 @@ def archive_max_day(archive_dir: Path) -> date:
     return newest if isinstance(newest, date) else pd.Timestamp(newest).date()
 
 
+def archive_covered_days(archive_dir: Path) -> set[date]:
+    """Return every distinct day present in the archive's ``prices-*.parquet``.
+
+    :func:`archive_max_day` gives the coverage *edge*, which bounds maturity but
+    is blind to holes inside the range. The 2026-08-02/03 collection outage is
+    exactly that shape: the max day was 08-04 and looked healthy while two days
+    in the middle held nothing. Interior coverage is what
+    :func:`backtest.resolution_gate.classify_archive_gap` needs to tell "the
+    collector missed a day" apart from "this forecast failed for some other
+    reason".
+
+    Distinct days only, so the cost is one grouped scan of a single column rather
+    than a row scan. Raises FileNotFoundError on a missing or empty archive for
+    the same reason ``archive_max_day`` does: an absent archive must never read
+    as "no gaps", which would silently excuse every unresolvable forecast.
+    """
+    import duckdb
+
+    archive_dir = Path(archive_dir)
+    if not archive_dir.exists():
+        raise FileNotFoundError(f"price archive not found at {archive_dir}")
+
+    pq_files = sorted(str(p) for p in archive_dir.glob("prices-*.parquet"))
+    if not pq_files:
+        raise FileNotFoundError(f"price archive at {archive_dir} contains no prices-*.parquet")
+
+    con = duckdb.connect()
+    try:
+        union_sql = " UNION ALL ".join(
+            f"SELECT DISTINCT CAST(day AS DATE) AS d FROM read_parquet('{f}')"
+            for f in pq_files
+        )
+        rows = con.sql(f"SELECT DISTINCT d FROM ({union_sql}) WHERE d IS NOT NULL").fetchall()
+    finally:
+        con.close()
+
+    return {
+        r[0] if isinstance(r[0], date) else pd.Timestamp(r[0]).date()
+        for r in rows
+    }
+
+
 @dataclass(frozen=True)
 class Resolution:
     """A resolved anchor plus the window that produced it.

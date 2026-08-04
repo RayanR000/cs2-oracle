@@ -113,6 +113,75 @@ class TestHappyPath:
         finally:
             db.close()
 
+    def test_snapshot_csv_is_named_from_the_snapshot_date_not_the_clock(
+        self, monkeypatch
+    ):
+        """The archive lost whole days to a wall-clock filename.
+
+        `agg_date` came from the pipeline's own `datetime.utcnow()`, and the
+        workflow's append step read `date -u +%F` from a *separate* clock one
+        step later. A cron firing at 23:5x two nights running stamped the same
+        date and lost the day between; a run straddling midnight would have had
+        the two steps disagree on the filename outright.
+
+        Both sides now resolve through collectors.snapshot_date, so pinning that
+        value pins every path this run produces.
+        """
+        monkeypatch.setenv("AGGREGATOR_SNAPSHOT_DATE", "2026-07-27")
+        db = database_module.SessionLocal()
+        try:
+            seed_items(db, [
+                {"item_id": "ak-47-redline-field-tested", "name": "AK-47 | Redline (Field-Tested)", "type": "skin"},
+            ])
+            monkeypatch.setattr(
+                aggregator_module, "CSGOTraderAggregator",
+                lambda: FakeAggregator(price_data={"AK-47 | Redline (Field-Tested)": 22.50}),
+            )
+
+            pipeline = DataPipeline(db_session=db)
+            result = pipeline.run_full_aggregator_collection()
+
+            assert result["status"] == "success"
+            assert result["snapshot_csv_path"].endswith(
+                "aggregator-snapshots-2026-07-27.csv"
+            )
+        finally:
+            db.close()
+
+    def test_exchange_rates_csv_also_uses_the_snapshot_date(self, monkeypatch):
+        """The rates branch reads the same resolved day.
+
+        FakeAggregator returns None for rates, so this second CSV path was never
+        exercised by any test — and it is a *separate* reference to the resolved
+        day further down the function. Worth its own case: a NameError there
+        would only ever have surfaced in production.
+        """
+        monkeypatch.setenv("AGGREGATOR_SNAPSHOT_DATE", "2026-07-30")
+
+        class RatesAggregator(FakeAggregator):
+            def fetch_exchange_rates(self):
+                return {"EUR": 0.92, "GBP": 0.79}
+
+        db = database_module.SessionLocal()
+        try:
+            seed_items(db, [
+                {"item_id": "ak-47-redline-field-tested", "name": "AK-47 | Redline (Field-Tested)", "type": "skin"},
+            ])
+            monkeypatch.setattr(
+                aggregator_module, "CSGOTraderAggregator",
+                lambda: RatesAggregator(price_data={"AK-47 | Redline (Field-Tested)": 22.50}),
+            )
+
+            pipeline = DataPipeline(db_session=db)
+            result = pipeline.run_full_aggregator_collection()
+
+            assert result["status"] == "success"
+            assert result["exchange_rates_csv_path"].endswith(
+                "exchange-rates-2026-07-30.csv"
+            )
+        finally:
+            db.close()
+
     def test_missing_item_falls_back_to_historical_price(self, monkeypatch):
         """When the aggregator cannot match an item, the pipeline
         recovers from the last non-aggregator price history."""
