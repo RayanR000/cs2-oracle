@@ -13,7 +13,6 @@ Usage:
 
 import sys
 import json
-import math
 import time
 import logging
 from pathlib import Path
@@ -28,6 +27,8 @@ import lightgbm as lgb
 
 from database import SessionLocal, PredictionAccuracy
 from models.forecaster import ItemForecaster
+from backtest.scoring import HEADLINE_TIER, score_by_tier
+from backtest.walkforward_records import fold_records
 
 logging.basicConfig(
     level=logging.INFO,
@@ -100,41 +101,62 @@ def _load_all_prices(con, items):
     return df
 
 
-def _compute_metrics(y_true, y_low, y_mid, y_high, current_prices):
-    n = len(y_true)
-    if n == 0:
+# Boosting rounds for the per-fold directional classifier. Matches
+# _fit_direction_classifier's own default so the gate's classifier is
+# configured like production's.
+DIRECTION_NUM_ROUNDS = 200
+
+
+def _score_fold(*, item_ids, forecast_dates, base_prices, actual_returns_pct,
+                mid_returns_pct, low_returns_pct, high_returns_pct,
+                predicted_classes):
+    """Records for one fold, for both estimators.
+
+    Returns (classifier_records, median_sign_records). Both describe the same
+    rows; only `predicted_direction` and `direction_correct` differ. The
+    classifier set is what the pre-registered bar governs — production serves
+    the classifier's call (forecaster.py:2981-2982) — and the median-sign set
+    is reported alongside because the two have never been compared on the same
+    folds.
+    """
+    shared = dict(
+        item_ids=item_ids,
+        forecast_dates=forecast_dates,
+        base_prices=base_prices,
+        actual_returns_pct=actual_returns_pct,
+        mid_returns_pct=mid_returns_pct,
+        low_returns_pct=low_returns_pct,
+        high_returns_pct=high_returns_pct,
+    )
+    return (
+        fold_records(**shared, predicted_classes=predicted_classes),
+        fold_records(**shared, predicted_classes=None),
+    )
+
+
+def _aggregate_records(records):
+    """Pool records across folds and score them with the clustered scorer.
+
+    Replaces the old sample_count-weighted per-fold average, which treated
+    every item-row inside a fold as an independent observation. Directional
+    outcomes are clustered by date, so the effective sample size is the number
+    of distinct dates — see backtest/scoring.py:MIN_FORECAST_DATES.
+
+    Returns the >=$1 headline cohort's metrics, matching production's headline
+    tier, with the per-tier rows attached under "by_tier".
+    """
+    if not records:
         return None
-
-    abs_errors = [abs(y_mid[i] - y_true[i]) for i in range(n)]
-    pct_errors = [abs(abs_errors[i] / y_true[i]) * 100 if y_true[i] > 0 else 0 for i in range(n)]
-
-    mae = sum(abs_errors) / n
-    rmse = math.sqrt(sum(e ** 2 for e in abs_errors) / n)
-    mape = sum(pct_errors) / n
-
-    total_actual = sum(y_true)
-    wmape = (sum(abs_errors) / total_actual * 100) if total_actual > 0 else 0
-
-    dir_hits = 0
-    for i in range(n):
-        actual_dir = "up" if y_true[i] > current_prices[i] else "down" if y_true[i] < current_prices[i] else "flat"
-        pred_dir = "up" if y_mid[i] > current_prices[i] else "down" if y_mid[i] < current_prices[i] else "flat"
-        if pred_dir == actual_dir:
-            dir_hits += 1
-    dir_acc = dir_hits / n * 100
-
-    int_hits = sum(1 for i in range(n) if y_low[i] is not None and y_high[i] is not None and y_low[i] <= y_true[i] <= y_high[i])
-    int_cov = int_hits / n * 100
-
-    return {
-        "mae": round(mae, 4),
-        "rmse": round(rmse, 4),
-        "mape": round(mape, 2),
-        "wmape": round(wmape, 2),
-        "directional_accuracy": round(dir_acc, 2),
-        "interval_coverage": round(int_cov, 2),
-        "sample_count": n,
+    scored = score_by_tier(records)
+    headline = next((m for tier, m, _ in scored if tier == HEADLINE_TIER), None)
+    all_tiers = next((m for tier, m, _ in scored if tier is None), None)
+    out = dict(headline or all_tiers or {})
+    out["by_tier"] = {
+        ("all" if tier is None else "headline" if tier == HEADLINE_TIER else f"tier_{tier}"):
+            {"directional_accuracy": m["directional_accuracy"], "sample_count": n}
+        for tier, m, n in scored
     }
+    return out
 
 
 def _get_tuned_params(meta, horizon, q):
@@ -175,7 +197,7 @@ def _upsert_accuracy(db, rows):
     db.commit()
 
 
-def run_walkforward(max_items=500, horizons=None, skip_db=False):
+def run_walkforward(max_items=500, horizons=None, skip_db=False, return_records=False):
     logger.info("=" * 60)
     logger.info("WALK-FORWARD BACKTEST")
     logger.info("=" * 60)
@@ -226,7 +248,8 @@ def run_walkforward(max_items=500, horizons=None, skip_db=False):
             split_idx = len(dates) * 2 // 3
             logger.info(f"    {len(tdf):,} rows, {len(dates)} dates, split at idx {split_idx}")
 
-            fold_results = []
+            clf_records = []
+            median_records = []
 
             for window_end in range(split_idx + 1, len(dates), STEP_DAYS):
                 train_dates = dates[:window_end]
@@ -263,9 +286,10 @@ def run_walkforward(max_items=500, horizons=None, skip_db=False):
                         to_drop.update(highly_corr)
                     feature_cols = [c for c in feature_cols if c not in to_drop]
 
-                X_train = train_df[feature_cols].fillna(train_df[feature_cols].median())
+                medians = train_df[feature_cols].median()
+                X_train = train_df[feature_cols].fillna(medians)
                 y_train = train_df[f"target_return_{horizon}d"]
-                X_val = val_df[feature_cols].fillna(train_df[feature_cols].median())
+                X_val = val_df[feature_cols].fillna(medians)
                 y_val = val_df[f"target_return_{horizon}d"]
 
                 preds = {}
@@ -290,42 +314,75 @@ def run_walkforward(max_items=500, horizons=None, skip_db=False):
                     )
                     preds[q] = model.predict(X_val.values)
 
-                if len(preds) == 3:
-                    low, high = ItemForecaster._fix_quantile_crossing(
-                        preds[0.1], preds[0.5], preds[0.9]
-                    )
+                if len(preds) != 3:
+                    continue
 
-                    current_prices = val_df["price"].values
-                    actual_returns = y_val.values
-                    actual_prices = current_prices * (1 + actual_returns / 100)
-                    mid_prices = current_prices * (1 + preds[0.5] / 100)
-                    low_prices = current_prices * (1 + low / 100)
-                    high_prices = current_prices * (1 + high / 100)
+                low, high = ItemForecaster._fix_quantile_crossing(
+                    preds[0.1], preds[0.5], preds[0.9]
+                )
 
-                    metrics = _compute_metrics(actual_prices, low_prices, mid_prices, high_prices, current_prices)
-                    if metrics:
-                        fold_results.append(metrics)
+                # The estimator production actually serves. sigma_train/
+                # sigma_val stay None so the fixed-band labels production
+                # selects are used (forecaster.py:2984-2993).
+                clf = forecaster._fit_direction_classifier(
+                    X_train.values, y_train.values,
+                    X_val.values, y_val.values,
+                    _get_tuned_params(meta, horizon, 0.5).get("boosting_type", "gbdt"),
+                    ItemForecaster._direction_tree_params(
+                        {0.5: _get_tuned_params(meta, horizon, 0.5)}
+                    ),
+                    horizon=horizon,
+                    sigma_train=None,
+                    sigma_val=None,
+                    num_boost_round=DIRECTION_NUM_ROUNDS,
+                )
+                predicted_classes = clf.predict(X_val.values).argmax(axis=1)
 
-            if not fold_results:
+                fold_clf, fold_median = _score_fold(
+                    item_ids=val_df["item_id"].to_numpy(),
+                    forecast_dates=val_df["date"].to_numpy(),
+                    base_prices=val_df["price"].to_numpy(dtype=float),
+                    actual_returns_pct=y_val.to_numpy(dtype=float),
+                    mid_returns_pct=preds[0.5],
+                    low_returns_pct=low,
+                    high_returns_pct=high,
+                    predicted_classes=predicted_classes,
+                )
+                clf_records.extend(fold_clf)
+                median_records.extend(fold_median)
+
+            if not clf_records:
                 logger.warning(f"    No folds completed for {horizon}d")
                 continue
 
-            n_folds = len(fold_results)
-            total_n = sum(f["sample_count"] for f in fold_results)
-            agg = {
-                "mae": sum(f["mae"] * f["sample_count"] for f in fold_results) / total_n,
-                "rmse": sum(f["rmse"] * f["sample_count"] for f in fold_results) / total_n,
-                "mape": sum(f["mape"] * f["sample_count"] for f in fold_results) / total_n,
-                "wmape": sum(f["wmape"] * f["sample_count"] for f in fold_results) / total_n,
-                "directional_accuracy": sum(f["directional_accuracy"] * f["sample_count"] for f in fold_results) / total_n,
-                "interval_coverage": sum(f["interval_coverage"] * f["sample_count"] for f in fold_results) / total_n,
-                "sample_count": total_n,
-                "fold_count": n_folds,
+            agg_clf = _aggregate_records(clf_records)
+            agg_median = _aggregate_records(median_records)
+            entry = {
+                "classifier": agg_clf,
+                "median_sign": agg_median,
+                "sample_count": len(clf_records),
             }
-            results_by_horizon[horizon] = agg
+            if return_records:
+                entry["records"] = clf_records
+            results_by_horizon[horizon] = entry
 
-            logger.info(f"    {horizon}d: {n_folds} folds, {total_n} samples")
-            logger.info(f"      DirAcc={agg['directional_accuracy']:.1f}%  MAE=${agg['mae']:.2f}  MAPE={agg['mape']:.1f}%  IntCov={agg['interval_coverage']:.1f}%")
+            lo = agg_clf["directional_accuracy_ci_clustered_lower"]
+            hi = agg_clf["directional_accuracy_ci_clustered_upper"]
+            ci_txt = f"[{lo:.1f}, {hi:.1f}]" if lo is not None else "[insufficient dates]"
+            logger.info(
+                f"    {horizon}d: {len(clf_records):,} records, "
+                f"{agg_clf['distinct_forecast_dates']} dates "
+                f"(sufficient={agg_clf['date_coverage_sufficient']})"
+            )
+            logger.info(
+                f"      classifier DirAcc={agg_clf['directional_accuracy']:.1f}% "
+                f"clustered95={ci_txt}   "
+                f"median-sign DirAcc={agg_median['directional_accuracy']:.1f}%"
+            )
+            logger.info(
+                f"      MAE=${agg_clf['mae']:.2f}  MAPE={agg_clf['mape']:.1f}%  "
+                f"IntCov={agg_clf['interval_coverage']:.1f}%"
+            )
 
         total_elapsed = time.time() - total_start
         logger.info(f"\n{'='*60}")
@@ -334,18 +391,35 @@ def run_walkforward(max_items=500, horizons=None, skip_db=False):
 
         if not skip_db:
             today = date.today()
-            for horizon, metrics in results_by_horizon.items():
-                row = {
+            for horizon, entry in results_by_horizon.items():
+                clf = entry["classifier"]
+                _upsert_accuracy(db, [{
                     "prediction_type": "walkforward_backtest",
                     "evaluation_date": today,
                     "horizon_days": horizon,
-                    "model_version": "lgbm-v3-tuned",
+                    # Bumped: the metric definition changed (3-label with a
+                    # flat band, classifier-sourced direction, clustered CI),
+                    # so these rows are NOT continuous with lgbm-v3-tuned.
+                    "model_version": "lgbm-v3-clustered",
                     "evaluation_window_days": None,
-                    "sample_count": metrics["sample_count"],
-                    "metrics": {k: metrics[k] for k in ["mae", "rmse", "mape", "wmape", "directional_accuracy", "interval_coverage", "fold_count"]},
+                    "sample_count": entry["sample_count"],
+                    "metrics": {
+                        k: clf[k] for k in [
+                            "mae", "rmse", "mape", "wmape",
+                            "directional_accuracy",
+                            "directional_accuracy_ci_clustered_lower",
+                            "directional_accuracy_ci_clustered_upper",
+                            "distinct_forecast_dates",
+                            "date_coverage_sufficient",
+                            "interval_coverage",
+                        ]
+                    } | {
+                        "median_sign_directional_accuracy":
+                            entry["median_sign"]["directional_accuracy"],
+                        "by_tier": clf["by_tier"],
+                    },
                     "created_at": datetime.now(timezone.utc).replace(tzinfo=None),
-                }
-                _upsert_accuracy(db, [row])
+                }])
 
         con.close()
         try:
@@ -357,7 +431,10 @@ def run_walkforward(max_items=500, horizons=None, skip_db=False):
             "test_date": str(date.today()),
             "total_items": len(items),
             "total_elapsed_seconds": round(total_elapsed, 1),
-            "horizons": {str(h): m for h, m in results_by_horizon.items()},
+            "horizons": {
+                str(h): {k: v for k, v in m.items() if k != "records"}
+                for h, m in results_by_horizon.items()
+            },
         }
         return report
 
