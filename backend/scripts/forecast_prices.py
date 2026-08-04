@@ -56,20 +56,6 @@ def _model_age_days(forecaster) -> Optional[int]:
     return (datetime.now(timezone.utc) - trained).days
 
 
-def _drift_detected(forecaster) -> bool:
-    """Return True if any horizon currently shows concept drift."""
-    for h in ItemForecaster.HORIZONS:
-        try:
-            drift_result = forecaster.check_concept_drift(
-                horizon=h, sliding_window=7, threshold=60.0
-            )
-        except Exception:
-            continue
-        if drift_result and drift_result.get("drifted"):
-            return True
-    return False
-
-
 def _write_forecasts_to_db(db, results, model_version, slug_to_id, today):
     """Write forecast results to the item_forecasts table. Returns count."""
     forecast_rows = []
@@ -177,16 +163,17 @@ def run_forecast(train_only: bool = False, predict_only: bool = False,
                 do_train = True
             else:
                 age = _model_age_days(forecaster)
-                drifted = _drift_detected(forecaster)
-                if age is None or age >= retrain_interval or drifted:
+                # Retrain on model age only. Drift is not a valid trigger: it
+                # reads a 1-2-forecast-date sample, so it tracks market
+                # direction rather than model decay.
+                if age is None or age >= retrain_interval:
                     reason = ("model stale" if (age is not None and age >= retrain_interval)
-                              else "drift" if drifted else "unknown age")
+                              else "unknown age")
                     logger.info(f"Retraining ({reason}): age={age}, interval={retrain_interval}d")
                     do_train = True
                 else:
                     logger.info(
-                        f"Skipping retrain: model {age}d old (<{retrain_interval}d) "
-                        f"and no drift detected"
+                        f"Skipping retrain: model {age}d old (<{retrain_interval}d)"
                     )
         elif predict_only and has_models:
             # Drift is reported but does NOT trigger a retrain. The signal it

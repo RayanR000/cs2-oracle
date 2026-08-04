@@ -129,3 +129,27 @@ def test_predict_only_branch_has_no_retrain_trigger():
     assert "ALLOW_DRIFT_RETRAIN" in branch, (
         "The opt-in escape hatch must be present in this branch."
     )
+
+
+# ---------------------------------------------------------------------------
+# Full mode retrains on model age, not on drift.
+# ---------------------------------------------------------------------------
+
+def test_drift_detected_helper_is_gone():
+    import scripts.forecast_prices as m
+    assert not hasattr(m, "_drift_detected"), (
+        "_drift_detected's only caller was the full-mode retrain condition. "
+        "Leaving it behind invites the trigger being reinstated."
+    )
+
+
+def test_full_mode_retrains_on_age_not_drift():
+    src = FORECAST_PRICES_SRC.read_text()
+    start = src.index("if age is None or age >= retrain_interval")
+    condition = src[start:src.index(":", start)]
+
+    assert "drifted" not in condition, (
+        "Full mode must retrain on model age alone. Drift reads a 1-2-date "
+        "sample and cannot support the decision."
+    )
+    assert "retrain_interval" in condition
