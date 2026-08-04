@@ -88,6 +88,44 @@ of how a cohort is scored.
 reported confidence interval must come out **wider** than before. A rig fix that
 does not reduce apparent precision did not do anything.
 
+⚠️ **Pre-fix and post-fix walkforward DA numbers are not comparable**, for a reason
+beyond the CI. `_compute_metrics` (`walkforward_backtest.py:118-124`) derives the
+actual direction by exact float comparison against the current price, with no flat
+band — so `flat` essentially never fires and it is a **2-label** problem where
+chance is 50%. `scoring.py` uses `FLAT_TOLERANCE = 0.005` (a fraction, ≡ the
+forecaster's `DIRECTION_FLAT_TOLERANCE_PCT = 0.5`), giving **3 labels** where chance
+is ~33%. Routing through `score_cohort` adopts the 3-label definition, which is the
+one production uses. Only arms measured *after* this task are comparable to one
+another; the historical walkforward series is retired, not continued.
+
+Unit trap for the implementer: `target_return_{h}d` is in **percent**, while
+`direction_from_return` expects a **fraction**. Divide by 100 or the flat band
+silently becomes 0.005%.
+
+### Task 1b: score DA from the estimator production actually serves
+
+`_compute_metrics:120-121` takes the **sign of the p50 regression** as the predicted
+direction, and the harness never trains a directional classifier at all. Production
+serves the **classifier's** argmax (`forecaster.py:2981-2982`: "the quantile models
+only supply the interval"), and the headline DA, the trust warning, and the
+opportunity ranking are all judged on it.
+
+A DA bar measured on the median's sign therefore governs a signal that is not
+served. Part 1 must fit the directional classifier inside each fold — via the same
+`_fit_direction_classifier` production uses, with `sigma_train=None` /
+`sigma_val=None` to select the fixed-band labels production selects — and derive
+`predicted_direction` from its argmax (`0=down, 1=flat, 2=up`, per
+`_direction_classes`).
+
+Report DA from **both** estimators per arm. The two have never been compared on the
+same folds, and whether they agree is itself worth knowing. The pre-registered bar
+governs the **classifier** figure.
+
+Note the consequence for Part 2: the minimal model leaves the classifier path
+untouched, so its served DA is *expected* to move only through the shared
+`per_quantile_params[0.5]` seeding and the feature frame. A large move in the
+classifier figure is evidence of an unintended change, not of the design working.
+
 ### Task 2: establish a clean timing baseline
 
 One local run on the current model, recording:
@@ -316,6 +354,8 @@ it against the bar, then ship Part 3 and measure again.
 | `test_trained_model_count_is_eight` | A trained forecaster holds exactly 4 quantile + 4 direction models — guards accidental re-expansion of the grid |
 | `test_direction_output_unchanged` | Identical features produce identical direction calls and confidences; this path is supposed to be untouched |
 | `test_walkforward_uses_clustered_scorer` | `walkforward_backtest` aggregation routes through `score_cohort` and reports `date_coverage_sufficient` |
+| `test_walkforward_record_units` | A +0.3% return is labelled `flat` and a +2% return `up` — guards the percent/fraction conversion into `direction_from_return` |
+| `test_walkforward_scores_classifier_direction` | The per-record `predicted_direction` comes from the classifier's argmax, mapped `0→down, 1→flat, 2→up`, not from the sign of the median |
 
 Per `AGENTS.md`: `pytest backend/tests/ -q` and `python3 -m py_compile` must pass.
 No frontend change is involved — the band keeps the same `forecast_low`/
