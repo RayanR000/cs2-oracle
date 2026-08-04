@@ -57,6 +57,24 @@ def test_fetch_window_leaves_room_for_the_tail_budget():
     assert ItemForecaster.PREDICT_FETCH_DAYS >= 2 * ItemForecaster.PREDICT_TAIL_ITEM_DAYS
 
 
+def test_cross_sectional_features_are_not_served():
+    """PREDICT_TAIL_ITEM_DAYS=240 is only sufficient because of this.
+
+    `market_return_30d_percentile` (_apply_market_aggregates) uses rolling(365),
+    which a 240-item-day tail cannot reproduce — measured 0.9068 -> 0.8381 on a
+    synthetic series. The column is computed and then dropped, because its group
+    is not in FEATURE_GROUP_ALLOWLIST. If that changes, truncation starts
+    silently corrupting a served feature.
+
+    When this test fails, raise PREDICT_TAIL_ITEM_DAYS past 368
+    (365 + PREDICT_TAIL_ROWS) rather than deleting the test.
+    """
+    from models.forecaster import _feature_group
+
+    assert _feature_group("market_return_30d_percentile") == "cross_sectional"
+    assert "cross_sectional" not in (ItemForecaster.FEATURE_GROUP_ALLOWLIST or [])
+
+
 def test_tail_constant_covers_both_window_requirements():
     # 200-row positional rollings + PREDICT_TAIL_ROWS, and 180-day calendar
     # lags + PREDICT_TAIL_ROWS. The row-based tail must clear both.
@@ -138,6 +156,12 @@ def test_served_features_survive_truncation(forecaster):
     The served feature vector is the last row per item. It must be identical
     whether engineered from 1460 days or from the truncated tail. Anything that
     differs here is train/serve skew shipped to production.
+
+    Scope: this covers engineer_features only. predict() then calls
+    _add_cross_sectional_features and _add_supply_depth_features, which are NOT
+    exercised here — the first of those contains a rolling(365) that this tail
+    deliberately does not cover. test_cross_sectional_features_are_not_served
+    is what keeps that safe.
     """
     full = _price_frame(n_items=3, n_days=1460)
     events = pd.DataFrame(columns=["date", "event_type", "name"])

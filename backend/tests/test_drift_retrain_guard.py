@@ -8,9 +8,11 @@ docs/changelog/2026-08-03-accuracy-is-clustered-by-forecast-date.md.
 """
 from __future__ import annotations
 
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest.mock import MagicMock
 
+import pandas as pd
 import pytest
 
 from backtest.scoring import MIN_FORECAST_DATES
@@ -153,3 +155,111 @@ def test_full_mode_retrains_on_age_not_drift():
         "sample and cannot support the decision."
     )
     assert "retrain_interval" in condition
+
+
+# ---------------------------------------------------------------------------
+# The same contract, asserted behaviourally.
+#
+# The source-text tests above pin the shape of the code; they cannot see what it
+# evaluates to. Flipping the opt-in from `== "1"` to `!= "0"` reinstates
+# unconditional retraining and still satisfies them. These drive run_forecast()
+# with a fake forecaster and assert on whether train() is actually called.
+# ---------------------------------------------------------------------------
+
+class _TrainCalled(Exception):
+    """Raised by the fake's train() so the run stops before any real DB work."""
+
+
+def _fake_forecast_env(monkeypatch, tmp_path, *, drifted, trained_days_ago=0):
+    """Patch run_forecast's collaborators. Returns the fake forecaster class."""
+    import json
+
+    import scripts.forecast_prices as fp
+
+    (tmp_path / "meta.json").write_text(json.dumps({
+        "trained_at": (datetime.now(timezone.utc)
+                       - timedelta(days=trained_days_ago)).isoformat(),
+    }))
+
+    class FakeForecaster:
+        HORIZONS = [3, 7, 14, 30]
+        train_called = False
+
+        def __init__(self, *a, **kw):
+            self.model_dir = str(tmp_path)
+            self.db = None
+            type(self).instance = self
+
+        def load_models(self):
+            return True
+
+        def check_concept_drift(self, horizon=7, sliding_window=7, threshold=None):
+            return {"drifted": drifted, "accuracy": 28.0, "threshold": 60.0}
+
+        def train(self, *a, **kw):
+            type(self).train_called = True
+            raise _TrainCalled
+
+        def predict(self):
+            return pd.DataFrame()
+
+    fake_db = MagicMock()
+    fake_db.execute.return_value.fetchall.return_value = []
+    monkeypatch.setattr(fp, "ItemForecaster", FakeForecaster)
+    monkeypatch.setattr(fp, "SessionLocal", lambda: fake_db)
+    monkeypatch.delenv("ALLOW_DRIFT_RETRAIN", raising=False)
+    monkeypatch.delenv("FORCE_RETRAIN", raising=False)
+    return FakeForecaster
+
+
+def test_predict_only_does_not_train_though_drift_is_reported(monkeypatch, tmp_path):
+    import scripts.forecast_prices as fp
+
+    fake = _fake_forecast_env(monkeypatch, tmp_path, drifted=True)
+    fp.run_forecast(predict_only=True)
+    assert fake.train_called is False, (
+        "Drift is reported on every real run. Retraining on it costs a measured "
+        "465s of an 835s daily step."
+    )
+
+
+def test_predict_only_trains_when_the_opt_in_is_set(monkeypatch, tmp_path):
+    import scripts.forecast_prices as fp
+
+    fake = _fake_forecast_env(monkeypatch, tmp_path, drifted=True)
+    monkeypatch.setenv("ALLOW_DRIFT_RETRAIN", "1")
+    fp.run_forecast(predict_only=True)
+    assert fake.train_called is True
+
+
+def test_predict_only_opt_in_requires_exactly_one(monkeypatch, tmp_path):
+    """A truthy-ish value must not enable it.
+
+    Guards the gate against being loosened to `!= "0"` or `bool(...)`, which
+    would restore the old behaviour by default.
+    """
+    import scripts.forecast_prices as fp
+
+    fake = _fake_forecast_env(monkeypatch, tmp_path, drifted=True)
+    monkeypatch.setenv("ALLOW_DRIFT_RETRAIN", "true")
+    fp.run_forecast(predict_only=True)
+    assert fake.train_called is False
+
+
+def test_full_mode_does_not_train_on_drift_alone(monkeypatch, tmp_path):
+    """A fresh model plus reported drift must not retrain."""
+    import scripts.forecast_prices as fp
+
+    fake = _fake_forecast_env(monkeypatch, tmp_path, drifted=True,
+                              trained_days_ago=0)
+    fp.run_forecast()
+    assert fake.train_called is False
+
+
+def test_full_mode_still_trains_a_stale_model(monkeypatch, tmp_path):
+    import scripts.forecast_prices as fp
+
+    fake = _fake_forecast_env(monkeypatch, tmp_path, drifted=False,
+                              trained_days_ago=99)
+    fp.run_forecast()
+    assert fake.train_called is True

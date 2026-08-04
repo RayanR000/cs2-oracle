@@ -2190,9 +2190,17 @@ class ItemForecaster:
 
         ``item_first_dates`` is an optional item_id -> first-seen date mapping
         for callers that pass a truncated history. Only ``item_age_days`` reads
-        it; every other feature is a bounded-window computation that a
-        sufficiently long tail reproduces exactly. Omit it and the frame's own
-        min date is used, which is correct for the untruncated training path.
+        it; it is the one feature here whose value depends on how far back the
+        frame reaches. Omit it and the frame's own min date is used, which is
+        correct for the untruncated training path.
+
+        Every other feature here is a bounded-window computation that a
+        sufficiently long tail reproduces, exactly for the row-count and
+        calendar windows, and to ~1e-5 relative for the ewm()-based MACD family,
+        which has no finite memory. Note this docstring covers
+        ``engineer_features`` only: ``_apply_market_aggregates`` is called
+        separately and contains a rolling(365) that a PREDICT_TAIL_ITEM_DAYS
+        tail does not reproduce — see that constant's comment.
         """
         # Resample to one row per item per day before feature engineering.
         # Raw price_history has multiple rows per day (collection runs every 6h).
@@ -3584,6 +3592,17 @@ class ItemForecaster:
     # feature. Voting collapses to one row per item-day, so the last N item-days
     # always span >= N calendar days — one parameter satisfies both.
     # Tailing is a no-op for items holding fewer item-days than this.
+    #
+    # ⚠ 240 covers every feature in the **served** set only. One feature in the
+    # pipeline needs more: `market_return_30d_percentile` in
+    # _apply_market_aggregates uses rolling(365), so a 240-item-day tail shifts
+    # it (measured 0.9068 -> 0.8381 on a synthetic series). That is currently
+    # harmless because its group, `cross_sectional`, is not in
+    # FEATURE_GROUP_ALLOWLIST and the column is discarded before training. It is
+    # NOT harmless if the allowlist ever widens —
+    # test_cross_sectional_features_are_not_served pins that dependency and will
+    # fail, at which point raise this constant past 368 rather than deleting the
+    # test.
     PREDICT_TAIL_ITEM_DAYS = 240
 
     # Calendar prefilter for the predict fetch, purely to shrink the DuckDB scan
