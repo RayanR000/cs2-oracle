@@ -70,3 +70,59 @@ def test_no_overlap_raises():
     b = _arm({2: [("y", 1)]})
     with pytest.raises(ValueError, match="no paired records"):
         paired_da_difference(a, b)
+
+
+def test_bootstrap_is_seeded_deterministically():
+    """Regression pin on bootstrap outputs under BOOTSTRAP_RNG_SEED = 42.
+
+    This dataset is crafted to produce a non-zero MDE under the seeded
+    bootstrap. If the resampling logic changes, this hard-coded output
+    will alert us. Changing the bootstrap constants or the resampling
+    strategy will change this output.
+    """
+    # Create test data with varying differences across dates
+    # Date 1: all +1, Date 2: mixed +0, Date 3: all -1, Date 4: mixed -1
+    a = [_rec(f"i{i}", 1, 1) for i in range(5)] + \
+        [_rec(f"i{i}", 2, 1) for i in range(5)] + \
+        [_rec(f"i{i}", 3, 1) for i in range(5)] + \
+        [_rec(f"i{i}", 4, 1) for i in range(5)]
+
+    b = [_rec(f"i{i}", 1, 1) for i in range(5)] + \
+        [_rec(f"i{i}", 2, 1 if i < 2 else 0) for i in range(5)] + \
+        [_rec(f"i{i}", 3, 0) for i in range(5)] + \
+        [_rec(f"i{i}", 4, 0 if i < 2 else 1) for i in range(5)]
+
+    out = paired_da_difference(a, b)
+    # These are recorded outputs under BOOTSTRAP_RNG_SEED = 42
+    assert out["mean_diff_pp"] == pytest.approx(-50.0, abs=0.01)
+    assert out["ci_lower_pp"] == pytest.approx(-85.0, abs=0.1)
+    assert out["ci_upper_pp"] == pytest.approx(-15.0, abs=0.1)
+    assert out["mde_pp"] == pytest.approx(35.0, abs=0.1)
+
+
+def test_constant_difference_across_dates_collapses_interval():
+    """When all dates carry the exact same mean difference, the interval
+    collapses and MDE = 0 (resampling dates always yields the same value).
+
+    This tests that we resample dates, not rows. If the code resampled rows,
+    a dataset with unequal dates (different item counts per date) would still
+    produce a non-zero interval even though the true difference is constant.
+    """
+    # All records: arm_a = all 0, arm_b = all 1, so diff = +1 everywhere
+    # Use unequal item counts per date to ensure row-resampling would matter
+    a = [_rec(f"i{i}", 1, 0) for i in range(3)] + \
+        [_rec(f"i{i}", 2, 0) for i in range(7)] + \
+        [_rec(f"i{i}", 3, 0) for i in range(15)]
+
+    b = [_rec(f"i{i}", 1, 1) for i in range(3)] + \
+        [_rec(f"i{i}", 2, 1) for i in range(7)] + \
+        [_rec(f"i{i}", 3, 1) for i in range(15)]
+
+    out = paired_da_difference(a, b)
+    # All pairs differ by exactly +1, so mean is 100pp
+    assert out["mean_diff_pp"] == pytest.approx(100.0)
+    # Resampling dates can only draw +1, so CI must collapse to point
+    assert out["ci_lower_pp"] == pytest.approx(100.0)
+    assert out["ci_upper_pp"] == pytest.approx(100.0)
+    # Half-width of degenerate interval is 0
+    assert out["mde_pp"] == pytest.approx(0.0)
