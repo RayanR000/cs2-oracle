@@ -20,7 +20,7 @@
 - **Baseline is `417 passed` in ~3m08s** (measured on `363b659`, before any task). Any other number of failures is yours. No frontend change is involved, so `npm run lint` / `npm run build` do not apply.
 - **No model-class, feature-set, or hyperparameter changes.** If a step would alter which features the model trains on or how it fits, stop and flag it.
 - **Never let tests use the default `model_dir`.** Always pass `model_dir=str(tmp_path_factory.mktemp("saved_models"))` or `tmp_path`. The real `backend/models/saved_models/` holds gitignored, unrecoverable production artifacts.
-- Reuse `MIN_FORECAST_DATES` from `backend/backtest/scoring.py` (currently 20). Do **not** introduce a second date-coverage threshold.
+- Reuse `MIN_FORECAST_DATES` from `backend/backtest/scoring.py` (currently 20). Do **not** introduce a second *date-coverage* threshold. Note this does not conflict with Task 1's `DRIFT_DA_THRESHOLD = 60.0`, which is an *accuracy* floor for alerting — a different quantity that is currently hardcoded at two call sites.
 - The date-coverage guard **fails closed**: missing or absent coverage data reads as "we cannot tell", not as "fine".
 - Existing behaviour to preserve: `check_concept_drift` must keep writing `AccuracyAlert` rows and keep resolving open alerts.
 
@@ -115,7 +115,7 @@ def _forecaster(rows, tmp_path):
     return ItemForecaster(db_session=db, model_dir=str(tmp_path))
 
 
-def test_threshold_is_a_named_constant(tmp_path):
+def test_threshold_is_a_named_constant():
     # 60.0 was hardcoded at two call sites above a model whose measured DA is
     # 46.7-50.8%. Naming it stops the next reader rediscovering that.
     assert ItemForecaster.DRIFT_DA_THRESHOLD == 60.0
