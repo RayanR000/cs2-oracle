@@ -3577,8 +3577,9 @@ class ItemForecaster:
     PREDICT_TAIL_ROWS = 3
 
     # Item-days of history per item retained for prediction. Row-based, not
-    # calendar-based: features mix 180-day calendar lag joins (:937) with
-    # 200-row positional rollings (:1118) over a ~48%-dense archive, so a
+    # calendar-based: features mix 180-day calendar lag joins (see LAGS in
+    # _compute_price_features) with 200-row positional rollings (the
+    # `for window in [100, 200]` block) over a ~48%-dense archive, so a
     # 240-*day* cutoff could yield ~115 rows and silently change every rolling
     # feature. Voting collapses to one row per item-day, so the last N item-days
     # always span >= N calendar days — one parameter satisfies both.
@@ -3605,7 +3606,7 @@ class ItemForecaster:
         Selects on distinct dates rather than on row position, so a frame that
         still carries intraday duplicates cannot yield fewer calendar days than
         the window promises. engineer_features resamples to one row per item-day
-        itself (:2163), so keeping every row on a retained date is safe.
+        itself, so keeping every row on a retained date is safe.
         """
         before = len(price_df)
         keep = (price_df[["item_id", "date"]]
@@ -4430,9 +4431,18 @@ class ItemForecaster:
                              threshold: Optional[float] = None) -> Optional[Dict]:
         """Check if recent prediction accuracy has dropped below threshold.
 
-        Queries the last `sliding_window` days of forecast backtest results
-        and compares directional accuracy against the threshold. Logs an
-        alert to the accuracy_alerts table if drift is detected.
+        Queries the last `sliding_window` days of forecast backtest results and
+        compares directional accuracy against the threshold, defaulting to
+        DRIFT_DA_THRESHOLD. Logs an alert to the accuracy_alerts table if drift
+        is detected.
+
+        Rows that do not report `date_coverage_sufficient` are **ignored**, not
+        averaged: a cohort spanning 1-2 forecast dates describes those dates'
+        market direction rather than the model. Returns None when fewer than
+        three rows survive that filter, meaning "we cannot tell".
+
+        This is an alerting signal only. It must not gate a retrain — see
+        docs/superpowers/specs/2026-08-04-remove-accidental-retrain-work-design.md
         """
         threshold = self.DRIFT_DA_THRESHOLD if threshold is None else threshold
         from database import PredictionAccuracy, AccuracyAlert
