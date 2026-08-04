@@ -151,6 +151,11 @@ class ItemForecaster:
     # series is still young, and 14 daily points is enough for the lag/rolling
     # features to be non-degenerate.
     PREDICT_MIN_HISTORY_DAYS = 14
+    # Directional-accuracy floor for the drift *alert*. This no longer gates a
+    # retrain: the model's measured production DA is 46.7-50.8%
+    # (docs/architecture/model-optimization.md), so a 60% floor was never
+    # attainable and fired on every run. Kept as an alert threshold only.
+    DRIFT_DA_THRESHOLD = 60.0
     # Walk-forward validation split: most recent N days are held out.
     # A relative split stays valid as data accumulates (a fixed date would
     # eventually leave the validation set covering all new data).
@@ -271,6 +276,14 @@ class ItemForecaster:
     CV_MIN_TRAIN_DAYS = 200       # Minimum unique dates before first validation fold
 
     ENGINEERED_CACHE_NAME = "engineered_data.parquet"
+    # Bump when the *shape* of the cached frame changes, not just its contents.
+    # v2: the predict path now truncates to PREDICT_TAIL_ITEM_DAYS item-days per
+    # item, so a v1 cache holds full history the loader would misread as a tail.
+    # Carried in DataFrame.attrs alongside _cache_date (verified to survive the
+    # pyarrow round-trip on pandas 2.3.3) rather than as a column: the predict
+    # frame reaches ~2M rows and copying it to append a constant would double
+    # peak memory on the path that already OOMs in CI.
+    ENGINEERED_CACHE_VERSION = 2
 
     # --- Voted price frame cache ---
     # Bump VOTED_CACHE_VERSION whenever _fetch_voted_price_history or
@@ -1478,7 +1491,8 @@ class ItemForecaster:
         df = df.drop(columns=["type"])
         return df
 
-    def _add_temporal_features(self, df: pd.DataFrame) -> pd.DataFrame:
+    def _add_temporal_features(self, df: pd.DataFrame,
+                               item_first_dates=None) -> pd.DataFrame:
         dates = pd.to_datetime(df["date"])
         dow = dates.dt.dayofweek
         month = dates.dt.month
@@ -1496,7 +1510,18 @@ class ItemForecaster:
         df["doy_sin"] = np.sin(2 * np.pi * doy / 366)
         df["doy_cos"] = np.cos(2 * np.pi * doy / 366)
         if "item_id" in df.columns:
-            item_first_date = df.groupby("item_id")["date"].transform("min")
+            if item_first_dates is not None:
+                # The frame's own min date is wrong whenever the caller has
+                # truncated history (the predict path keeps only
+                # PREDICT_TAIL_ITEM_DAYS item-days), which would report every
+                # item as exactly that many days old. Prefer the true
+                # first-seen date when the caller can supply it.
+                item_first_date = df["item_id"].map(item_first_dates)
+                item_first_date = item_first_date.fillna(
+                    df.groupby("item_id")["date"].transform("min")
+                )
+            else:
+                item_first_date = df.groupby("item_id")["date"].transform("min")
             df["item_age_days"] = (pd.to_datetime(df["date"]) - pd.to_datetime(item_first_date)).dt.days
         else:
             df["item_age_days"] = 0
@@ -2159,7 +2184,24 @@ class ItemForecaster:
         return best_params
 
     def engineer_features(self, price_df: pd.DataFrame,
-                          events_df: pd.DataFrame) -> pd.DataFrame:
+                          events_df: pd.DataFrame,
+                          item_first_dates=None) -> pd.DataFrame:
+        """Engineer the full feature frame.
+
+        ``item_first_dates`` is an optional item_id -> first-seen date mapping
+        for callers that pass a truncated history. Only ``item_age_days`` reads
+        it; it is the one feature here whose value depends on how far back the
+        frame reaches. Omit it and the frame's own min date is used, which is
+        correct for the untruncated training path.
+
+        Every other feature here is a bounded-window computation that a
+        sufficiently long tail reproduces, exactly for the row-count and
+        calendar windows, and to ~1e-5 relative for the ewm()-based MACD family,
+        which has no finite memory. Note this docstring covers
+        ``engineer_features`` only: ``_apply_market_aggregates`` is called
+        separately and contains a rolling(365) that a PREDICT_TAIL_ITEM_DAYS
+        tail does not reproduce — see that constant's comment.
+        """
         # Resample to one row per item per day before feature engineering.
         # Raw price_history has multiple rows per day (collection runs every 6h).
         # Without resampling, "lag_1d" is really ~6h and "mean_7d" covers ~2 days.
@@ -2171,7 +2213,7 @@ class ItemForecaster:
         else:
             daily = price_df
         df = self._compute_price_features(daily)
-        df = self._add_temporal_features(df)
+        df = self._add_temporal_features(df, item_first_dates=item_first_dates)
         df = self._add_item_identity_features(df)
         df = self._add_event_features(df, events_df)
         df = self._add_item_metadata_features(df)
@@ -2559,6 +2601,7 @@ class ItemForecaster:
         """Save the fully-engineered feature DataFrame to Parquet cache."""
         path = self._engineered_cache_path
         df.attrs["_cache_date"] = str(date.today())
+        df.attrs["_cache_version"] = self.ENGINEERED_CACHE_VERSION
         logger.info(f"  Saving engineered feature cache ({len(df):,} rows) to {path}")
         df.to_parquet(path, index=False)
 
@@ -2572,6 +2615,16 @@ class ItemForecaster:
             cache_date_str = df.attrs.get("_cache_date", "")
             if df.empty:
                 logger.warning(f"  Cache at {path} is empty (0 rows) — will refresh")
+                return None
+
+            # Version before staleness: a v1 cache is full history, not a tail,
+            # and is wrong regardless of how fresh it is.
+            version = int(df.attrs.get("_cache_version", 1))
+            if version != self.ENGINEERED_CACHE_VERSION:
+                logger.info(
+                    f"  Cache at {path} is v{version}, expected "
+                    f"v{self.ENGINEERED_CACHE_VERSION} — will refresh"
+                )
                 return None
             logger.info(f"  Loaded engineered feature cache from {path} "
                         f"({len(df):,} rows, cache_date={cache_date_str})")
@@ -3531,12 +3584,69 @@ class ItemForecaster:
     # SIGKILLed — see docs and runs 30226424193 / 30666903525 / 30668690592.
     PREDICT_TAIL_ROWS = 3
 
+    # Item-days of history per item retained for prediction. Row-based, not
+    # calendar-based: features mix 180-day calendar lag joins (see LAGS in
+    # _compute_price_features) with 200-row positional rollings (the
+    # `for window in [100, 200]` block) over a ~48%-dense archive, so a
+    # 240-*day* cutoff could yield ~115 rows and silently change every rolling
+    # feature. Voting collapses to one row per item-day, so the last N item-days
+    # always span >= N calendar days — one parameter satisfies both.
+    # Tailing is a no-op for items holding fewer item-days than this.
+    #
+    # ⚠ 240 covers every feature in the **served** set only. One feature in the
+    # pipeline needs more: `market_return_30d_percentile` in
+    # _apply_market_aggregates uses rolling(365), so a 240-item-day tail shifts
+    # it (measured 0.9068 -> 0.8381 on a synthetic series). That is currently
+    # harmless because its group, `cross_sectional`, is not in
+    # FEATURE_GROUP_ALLOWLIST and the column is discarded before training. It is
+    # NOT harmless if the allowlist ever widens —
+    # test_cross_sectional_features_are_not_served pins that dependency and will
+    # fail, at which point raise this constant past 368 rather than deleting the
+    # test.
+    PREDICT_TAIL_ITEM_DAYS = 240
+
+    # Calendar prefilter for the predict fetch, purely to shrink the DuckDB scan
+    # and the voting pass. Measured 2026-07-31 archive, 8,691 backfilled items,
+    # share of eligible items still retaining min(own_item_days, 240):
+    #
+    #     365d  99.9770%   1.98M rows      548d  100.0000%   2.85M rows
+    #     730d 100.0000%   3.60M rows     1460d  100.0000%   6.14M rows
+    #
+    # 365d is the smallest window clearing a 99.9% bar, but it shortens ~2 items
+    # below their entitlement — the silent feature skew this truncation design
+    # exists to avoid. 730d is the conservative 100% choice: still a 1.7x scan
+    # reduction, with margin if per-item density falls. Re-measure before
+    # lowering it; the script is in the plan's Task 5.
+    PREDICT_FETCH_DAYS = 730
+
+    def _tail_predict_frame(self, price_df: pd.DataFrame) -> pd.DataFrame:
+        """Keep only the last PREDICT_TAIL_ITEM_DAYS item-days per item.
+
+        Selects on distinct dates rather than on row position, so a frame that
+        still carries intraday duplicates cannot yield fewer calendar days than
+        the window promises. engineer_features resamples to one row per item-day
+        itself, so keeping every row on a retained date is safe.
+        """
+        before = len(price_df)
+        keep = (price_df[["item_id", "date"]]
+                .drop_duplicates()
+                .sort_values(["item_id", "date"])
+                .groupby("item_id", sort=False, group_keys=False)
+                .tail(self.PREDICT_TAIL_ITEM_DAYS))
+        out = price_df.merge(keep, on=["item_id", "date"], how="inner")
+        logger.info(
+            f"  Predict tail: {before:,} -> {len(out):,} rows "
+            f"(<= {self.PREDICT_TAIL_ITEM_DAYS} item-days per item)"
+        )
+        return out
+
     @property
     def _predict_chunk_items(self) -> int:
         """Items per chunk during prediction; 0 disables chunking."""
         return int(os.getenv("PREDICT_CHUNK_ITEMS", "1000"))
 
-    def _engineer_features_chunked(self, price_df, events_df, eligible) -> pd.DataFrame:
+    def _engineer_features_chunked(self, price_df, events_df, eligible,
+                                   item_first_dates=None) -> pd.DataFrame:
         """Engineer prediction features in item chunks with bounded memory.
 
         Two passes are required because the cross-sectional features are per-date
@@ -3557,7 +3667,8 @@ class ItemForecaster:
 
         def _chunk_frame(chunk):
             return self.engineer_features(
-                price_df[price_df["item_id"].isin(chunk)], events_df
+                price_df[price_df["item_id"].isin(chunk)], events_df,
+                item_first_dates=item_first_dates,
             )
 
         # Pass A — per-date market aggregates across every item.
@@ -3600,7 +3711,8 @@ class ItemForecaster:
             logger.info(f"  Using cached engineered features ({len(df):,} rows)")
         else:
             logger.info("  No usable cache found — running full feature engineering")
-            price_df = self.fetch_price_history(days_back=1460, backfilled_only=True)
+            price_df = self.fetch_price_history(
+                days_back=self.PREDICT_FETCH_DAYS, backfilled_only=True)
 
             # Skip items without a real recent series: snapshot-tier items keep
             # only a single latest row, and a "forecast" from one data point is
@@ -3616,10 +3728,19 @@ class ItemForecaster:
 
             events_df = self.fetch_events()
 
+            # Engineer only the history the features need. Must come after the
+            # eligibility filter, which counts distinct days over full history,
+            # and the first-seen dates must be captured before the truncation
+            # that would otherwise make every item look 239 days old.
+            item_first_dates = price_df.groupby("item_id")["date"].min()
+            price_df = self._tail_predict_frame(price_df)
+
             if self._predict_chunk_items and len(eligible) > self._predict_chunk_items:
-                df = self._engineer_features_chunked(price_df, events_df, eligible)
+                df = self._engineer_features_chunked(
+                    price_df, events_df, eligible, item_first_dates=item_first_dates)
             else:
-                df = self.engineer_features(price_df, events_df)
+                df = self.engineer_features(price_df, events_df,
+                                            item_first_dates=item_first_dates)
 
                 # Add cross-sectional features (same as training)
                 df = self._add_cross_sectional_features(df)
@@ -3628,8 +3749,9 @@ class ItemForecaster:
                 df = self._add_supply_depth_features(df)
 
                 # Save to cache for next predict run. Only the whole-frame path
-                # writes it: the chunked frame is a per-item tail, not the full
-                # history the cache contract promises.
+                # writes it: the chunked frame keeps PREDICT_TAIL_ROWS per item,
+                # which is narrower still than the PREDICT_TAIL_ITEM_DAYS window
+                # this frame carries.
                 self._save_engineered_cache(df)
 
         # Align features with training columns (add missing, drop extras)
@@ -4325,13 +4447,23 @@ class ItemForecaster:
     # ------------------------------------------------------------------
 
     def check_concept_drift(self, horizon: int = 7, sliding_window: int = 7,
-                             threshold: float = 60.0) -> Optional[Dict]:
+                             threshold: Optional[float] = None) -> Optional[Dict]:
         """Check if recent prediction accuracy has dropped below threshold.
 
-        Queries the last `sliding_window` days of forecast backtest results
-        and compares directional accuracy against the threshold. Logs an
-        alert to the accuracy_alerts table if drift is detected.
+        Queries the last `sliding_window` days of forecast backtest results and
+        compares directional accuracy against the threshold, defaulting to
+        DRIFT_DA_THRESHOLD. Logs an alert to the accuracy_alerts table if drift
+        is detected.
+
+        Rows that do not report `date_coverage_sufficient` are **ignored**, not
+        averaged: a cohort spanning 1-2 forecast dates describes those dates'
+        market direction rather than the model. Returns None when fewer than
+        three rows survive that filter, meaning "we cannot tell".
+
+        This is an alerting signal only. It must not gate a retrain — see
+        docs/superpowers/specs/2026-08-04-remove-accidental-retrain-work-design.md
         """
+        threshold = self.DRIFT_DA_THRESHOLD if threshold is None else threshold
         from database import PredictionAccuracy, AccuracyAlert
         from sqlalchemy import desc
 
@@ -4350,10 +4482,25 @@ class ItemForecaster:
             return None
 
         accuracies = []
+        uncovered = 0
         for r in records:
             m = r.metrics if isinstance(r.metrics, dict) else json.loads(r.metrics)
-            if "directional_accuracy" in m:
-                accuracies.append(m["directional_accuracy"])
+            if "directional_accuracy" not in m:
+                continue
+            # Fail closed. Rows written before scoring.py began reporting
+            # coverage carry no date attribution, and rows spanning 1-2 dates
+            # describe those dates rather than the model. Either way this is
+            # "we cannot tell", not "the model is fine".
+            if not m.get("date_coverage_sufficient", False):
+                uncovered += 1
+                continue
+            accuracies.append(m["directional_accuracy"])
+
+        if uncovered:
+            logger.info(
+                f"  Drift check ({horizon}d): ignored {uncovered} accuracy row(s) "
+                f"lacking {MIN_FORECAST_DATES}-date coverage"
+            )
 
         if len(accuracies) < 3:
             return None
