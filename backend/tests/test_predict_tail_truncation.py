@@ -72,7 +72,17 @@ def test_cross_sectional_features_are_not_served():
     from models.forecaster import _feature_group
 
     assert _feature_group("market_return_30d_percentile") == "cross_sectional"
-    assert "cross_sectional" not in (ItemForecaster.FEATURE_GROUP_ALLOWLIST or [])
+
+    allowlist = ItemForecaster.FEATURE_GROUP_ALLOWLIST
+    # None or empty is not "no cross-sectional features" — _apply_feature_allowlist
+    # returns every column unfiltered in that case, which serves the rolling(365)
+    # feature. Treating it as equivalent to a list would make this guard vacuous.
+    assert allowlist, (
+        "FEATURE_GROUP_ALLOWLIST is None/empty, so every feature group is served "
+        "— including cross_sectional, whose rolling(365) a 240-item-day tail "
+        "cannot reproduce. Raise PREDICT_TAIL_ITEM_DAYS past 368 first."
+    )
+    assert "cross_sectional" not in allowlist
 
 
 def test_tail_constant_covers_both_window_requirements():

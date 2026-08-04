@@ -247,7 +247,13 @@ def test_predict_only_opt_in_requires_exactly_one(monkeypatch, tmp_path):
 
 
 def test_full_mode_does_not_train_on_drift_alone(monkeypatch, tmp_path):
-    """A fresh model plus reported drift must not retrain."""
+    """A fresh model plus reported drift must not retrain.
+
+    Black-box: full mode no longer consults drift at all, so the fake's
+    drifted=True is never read on this path. The test still earns its place by
+    pinning the outcome — reinstating a drift trigger in this branch would make
+    it fail.
+    """
     import scripts.forecast_prices as fp
 
     fake = _fake_forecast_env(monkeypatch, tmp_path, drifted=True,
