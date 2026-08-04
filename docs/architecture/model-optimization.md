@@ -27,7 +27,7 @@
 | **HP search** | 3d skipped (frozen, 50-trial winner), 7d=10 trials, 14d=15 trials, 30d=15 trials (as of 2026-07-26 — see below) |
 | **Warm retrain** | ~4–5 min (HP cached) |
 | **Cold retrain** | **12m30s** measured 2026-07-29 (`SKIP_REGIMES=1 FORCE_HP_SEARCH=1`, CV on, 3d HP frozen). ~14–16 min with regimes |
-| **Inference** | ~1–2 min with a warm 3-day feature cache; **~5 min on a cold cache** (rebuilds 6.1M voted rows from Parquet) |
+| **Inference** | **87s measured locally on a cold cache** (2026-08-04, `VOTED_CACHE=0`, 10-core Mac, 8,691 items / 34,764 forecasts). Phases: 37s fetch (730d window, 5.37M raw → 3.59M voted), 1.4s tail (3.59M → **1.39M rows**), 35s chunked feature engineering, remainder booster scoring. ⚠️ **The old row here — "~1–2 min warm / ~5 min cold" — described the predict phase in isolation and omitted that every non-Monday CI run auto-retrained first.** Drift fired unconditionally against a 60% threshold sitting above the model's 46.7–50.8% DA, adding **465s** to a measured **835s** daily step (CI run `30864690456`). Both the retrain trigger and the 1460-day predict fetch are fixed — see `docs/superpowers/specs/2026-08-04-remove-accidental-retrain-work-design.md`. The CI-side figure is not yet re-measured; the local number is not directly comparable to a 2-core runner |
 | **Production DA** | **3d=48.4%, 7d=49.4%, 14d=50.8%, 30d=46.7%** (`lgbm-v3`, ≥$1 headline tier, re-resolved on prod 2026-08-02). ⚠️ **The old row here — 3d=61.5%, 7d=52.8%, 14d=55.7%, 30d=54.2%, "+35–41pp vs baseline" — was an artifact of the two-estimator bug fixed 2026-08-02, not a pre-q50-fix staleness problem as previously believed.** Chance is ~33% with three labels, so these beat chance but by far less than the old numbers implied. Still cannot be refreshed on demand: `backtest_accuracy.py` scores *stored* forecasts against matured actuals, and maturity is now additionally bounded by archive coverage. For a fresh-model number, run `scripts/walkforward_backtest.py` (~60–90 min, all horizons). See `docs/changelog/2026-08-01-deterministic-backtest.md` |
 | **Classifier CV DA** | 3d=68.2%, 7d=68.3%, 14d=68.8%, 30d=70.9% (9 folds; 8 for 30d) — measured during the 2026-07-29 retrain. This is the **served** direction signal (classifier, not quantile-sign, since 2026-07-24). A training-time diagnostic, **not** comparable to the Production DA row above |
 | **Quantile-sign CV DA** | 3d=61.0%, 7d=61.0%, 14d=60.8%, 30d=64.0% (same run; sd 5.2–8.9%). ⚠️ **Understates the shipped model:** the CV block caps fits at `num_boost_round=200`, but production 3d q50 trains to 349–428 rounds — CV scores an under-trained model. Does not affect the classifier row (different code path) |
@@ -128,13 +128,15 @@ derived from CV out-of-fold predictions (the CQR block that populates
 `ItemForecaster.conformal_calibration`), so skipping CV leaves a stale q̂
 calibrated against differently-shaped quantiles.
 
-**`--predict-only` can trigger an unwanted retrain.** It drift-checks every
-horizon and auto-retrains via `forecaster.train(max_rows=700_000)` — with no
-`SKIP_REGIMES` — if any horizon is below the 60% threshold. Drift is scored
-from *stored* forecasts, so a recent bad patch (e.g. the 2026-07-29 synthetic
-overwrite, which left 3d at 37.2% and 7d at 39.3%) will retrain a model that
-is minutes old. Check drift read-only via `forecaster.check_concept_drift`
-before running predict on a fresh model.
+**`--predict-only` no longer retrains** (fixed 2026-08-04). It used to
+drift-check every horizon and auto-retrain via
+`forecaster.train(max_rows=700_000)` — with no `SKIP_REGIMES` — whenever a
+horizon fell below the 60% threshold. Because that threshold sits above the
+model's measured DA, this fired on **every** run: 465s of an 835s daily step,
+and the served forecasts came from a throwaway warm retrain rather than the
+scheduled Monday model. Drift is now reported only, and `check_concept_drift`
+additionally ignores accuracy rows that lack forecast-date coverage. Set
+`ALLOW_DRIFT_RETRAIN=1`, or dispatch with `mode=full`, to retrain.
 
 **Which accuracy script to use:**
 
