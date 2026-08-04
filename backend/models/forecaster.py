@@ -3585,6 +3585,20 @@ class ItemForecaster:
     # Tailing is a no-op for items holding fewer item-days than this.
     PREDICT_TAIL_ITEM_DAYS = 240
 
+    # Calendar prefilter for the predict fetch, purely to shrink the DuckDB scan
+    # and the voting pass. Measured 2026-07-31 archive, 8,691 backfilled items,
+    # share of eligible items still retaining min(own_item_days, 240):
+    #
+    #     365d  99.9770%   1.98M rows      548d  100.0000%   2.85M rows
+    #     730d 100.0000%   3.60M rows     1460d  100.0000%   6.14M rows
+    #
+    # 365d is the smallest window clearing a 99.9% bar, but it shortens ~2 items
+    # below their entitlement — the silent feature skew this truncation design
+    # exists to avoid. 730d is the conservative 100% choice: still a 1.7x scan
+    # reduction, with margin if per-item density falls. Re-measure before
+    # lowering it; the script is in the plan's Task 5.
+    PREDICT_FETCH_DAYS = 730
+
     def _tail_predict_frame(self, price_df: pd.DataFrame) -> pd.DataFrame:
         """Keep only the last PREDICT_TAIL_ITEM_DAYS item-days per item.
 
@@ -3677,7 +3691,8 @@ class ItemForecaster:
             logger.info(f"  Using cached engineered features ({len(df):,} rows)")
         else:
             logger.info("  No usable cache found — running full feature engineering")
-            price_df = self.fetch_price_history(days_back=1460, backfilled_only=True)
+            price_df = self.fetch_price_history(
+                days_back=self.PREDICT_FETCH_DAYS, backfilled_only=True)
 
             # Skip items without a real recent series: snapshot-tier items keep
             # only a single latest row, and a "forecast" from one data point is

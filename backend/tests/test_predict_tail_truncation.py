@@ -46,6 +46,17 @@ def _price_frame(n_items=3, n_days=1460, start=date(2022, 1, 1)):
     return pd.DataFrame(rows)
 
 
+def test_fetch_window_leaves_room_for_the_tail_budget():
+    """The prefilter must not be the thing that starves the tail.
+
+    Measured on the 2026-07-31 archive, 730d retains min(own_item_days, 240) for
+    100.0000% of eligible items. This pins the ordering that makes that true:
+    the fetch window has to exceed the item-day budget by a wide margin, because
+    the archive is only ~48% dense and the budget counts item-days, not days.
+    """
+    assert ItemForecaster.PREDICT_FETCH_DAYS >= 2 * ItemForecaster.PREDICT_TAIL_ITEM_DAYS
+
+
 def test_tail_constant_covers_both_window_requirements():
     # 200-row positional rollings + PREDICT_TAIL_ROWS, and 180-day calendar
     # lags + PREDICT_TAIL_ROWS. The row-based tail must clear both.
