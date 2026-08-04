@@ -100,29 +100,47 @@ def test_bootstrap_is_seeded_deterministically():
     assert out["mde_pp"] == pytest.approx(35.0, abs=0.1)
 
 
-def test_constant_difference_across_dates_collapses_interval():
-    """When all dates carry the exact same mean difference, the interval
-    collapses and MDE = 0 (resampling dates always yields the same value).
+def test_varying_differences_across_dates_discriminates_resampling_axis():
+    """Verify the resampling unit is dates, not rows.
 
-    This tests that we resample dates, not rows. If the code resampled rows,
-    a dataset with unequal dates (different item counts per date) would still
-    produce a non-zero interval even though the true difference is constant.
+    Constructs a fixture where per-date group means *vary* while values are
+    homogeneous *within* each date:
+    - date 1: 5 records, all differences +1 (A=0, B=1)
+    - date 2: 10 records, all differences 0 (A=0, B=0)
+    - date 3: 20 records, all differences -1 (A=1, B=0)
+
+    Under date-level resampling (correct): bootstrap draws 3 dates with
+    replacement, each contributing its fixed value, so the sampling
+    distribution is wide (CI = [-100, +100], MDE = 100).
+
+    Under row-level resampling (bug): bootstrap draws 35 rows with
+    replacement, giving a narrower distribution (CI ≈ [-65.71, -17.14],
+    MDE ≈ 24.29 pp).
+
+    This fixture discriminates because the two resampling schemes yield
+    materially different sampling distributions on this data. The
+    mean_diff_pp also exercises count-weighted pooling: it should be
+    the weighted average (5*1 + 10*0 + 20*(-1)) / (5+10+20) = -42.857%,
+    not the unweighted mean of date means (which would be 0%).
     """
-    # All records: arm_a = all 0, arm_b = all 1, so diff = +1 everywhere
-    # Use unequal item counts per date to ensure row-resampling would matter
-    a = [_rec(f"i{i}", 1, 0) for i in range(3)] + \
-        [_rec(f"i{i}", 2, 0) for i in range(7)] + \
-        [_rec(f"i{i}", 3, 0) for i in range(15)]
+    a = [_rec(f"i{i}", 1, 0) for i in range(5)] + \
+        [_rec(f"i{i}", 2, 0) for i in range(10)] + \
+        [_rec(f"i{i}", 3, 1) for i in range(20)]
 
-    b = [_rec(f"i{i}", 1, 1) for i in range(3)] + \
-        [_rec(f"i{i}", 2, 1) for i in range(7)] + \
-        [_rec(f"i{i}", 3, 1) for i in range(15)]
+    b = [_rec(f"i{i}", 1, 1) for i in range(5)] + \
+        [_rec(f"i{i}", 2, 0) for i in range(10)] + \
+        [_rec(f"i{i}", 3, 0) for i in range(20)]
 
     out = paired_da_difference(a, b)
-    # All pairs differ by exactly +1, so mean is 100pp
-    assert out["mean_diff_pp"] == pytest.approx(100.0)
-    # Resampling dates can only draw +1, so CI must collapse to point
-    assert out["ci_lower_pp"] == pytest.approx(100.0)
-    assert out["ci_upper_pp"] == pytest.approx(100.0)
-    # Half-width of degenerate interval is 0
-    assert out["mde_pp"] == pytest.approx(0.0)
+
+    # Count-weighted mean: (5*1 + 10*0 + 20*(-1)) / 35 = -15/35 ≈ -42.857%
+    # Also verifies pooling is count-weighted, not a naive date-mean average
+    assert out["mean_diff_pp"] == pytest.approx(-42.857, abs=0.01)
+
+    # Date-level resampling yields wide CI; row-level would yield ~24.3pp MDE
+    assert out["ci_lower_pp"] == pytest.approx(-100.0, abs=0.1)
+    assert out["ci_upper_pp"] == pytest.approx(100.0, abs=0.1)
+    assert out["mde_pp"] == pytest.approx(100.0, abs=0.1)
+
+    # Discriminating bound: if resampling regressed to row-level, MDE ≈ 24.3pp
+    assert out["mde_pp"] > 50.0
