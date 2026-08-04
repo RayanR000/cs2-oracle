@@ -276,6 +276,14 @@ class ItemForecaster:
     CV_MIN_TRAIN_DAYS = 200       # Minimum unique dates before first validation fold
 
     ENGINEERED_CACHE_NAME = "engineered_data.parquet"
+    # Bump when the *shape* of the cached frame changes, not just its contents.
+    # v2: the predict path now truncates to PREDICT_TAIL_ITEM_DAYS item-days per
+    # item, so a v1 cache holds full history the loader would misread as a tail.
+    # Carried in DataFrame.attrs alongside _cache_date (verified to survive the
+    # pyarrow round-trip on pandas 2.3.3) rather than as a column: the predict
+    # frame reaches ~2M rows and copying it to append a constant would double
+    # peak memory on the path that already OOMs in CI.
+    ENGINEERED_CACHE_VERSION = 2
 
     # --- Voted price frame cache ---
     # Bump VOTED_CACHE_VERSION whenever _fetch_voted_price_history or
@@ -1483,7 +1491,8 @@ class ItemForecaster:
         df = df.drop(columns=["type"])
         return df
 
-    def _add_temporal_features(self, df: pd.DataFrame) -> pd.DataFrame:
+    def _add_temporal_features(self, df: pd.DataFrame,
+                               item_first_dates=None) -> pd.DataFrame:
         dates = pd.to_datetime(df["date"])
         dow = dates.dt.dayofweek
         month = dates.dt.month
@@ -1501,7 +1510,18 @@ class ItemForecaster:
         df["doy_sin"] = np.sin(2 * np.pi * doy / 366)
         df["doy_cos"] = np.cos(2 * np.pi * doy / 366)
         if "item_id" in df.columns:
-            item_first_date = df.groupby("item_id")["date"].transform("min")
+            if item_first_dates is not None:
+                # The frame's own min date is wrong whenever the caller has
+                # truncated history (the predict path keeps only
+                # PREDICT_TAIL_ITEM_DAYS item-days), which would report every
+                # item as exactly that many days old. Prefer the true
+                # first-seen date when the caller can supply it.
+                item_first_date = df["item_id"].map(item_first_dates)
+                item_first_date = item_first_date.fillna(
+                    df.groupby("item_id")["date"].transform("min")
+                )
+            else:
+                item_first_date = df.groupby("item_id")["date"].transform("min")
             df["item_age_days"] = (pd.to_datetime(df["date"]) - pd.to_datetime(item_first_date)).dt.days
         else:
             df["item_age_days"] = 0
@@ -2164,7 +2184,16 @@ class ItemForecaster:
         return best_params
 
     def engineer_features(self, price_df: pd.DataFrame,
-                          events_df: pd.DataFrame) -> pd.DataFrame:
+                          events_df: pd.DataFrame,
+                          item_first_dates=None) -> pd.DataFrame:
+        """Engineer the full feature frame.
+
+        ``item_first_dates`` is an optional item_id -> first-seen date mapping
+        for callers that pass a truncated history. Only ``item_age_days`` reads
+        it; every other feature is a bounded-window computation that a
+        sufficiently long tail reproduces exactly. Omit it and the frame's own
+        min date is used, which is correct for the untruncated training path.
+        """
         # Resample to one row per item per day before feature engineering.
         # Raw price_history has multiple rows per day (collection runs every 6h).
         # Without resampling, "lag_1d" is really ~6h and "mean_7d" covers ~2 days.
@@ -2176,7 +2205,7 @@ class ItemForecaster:
         else:
             daily = price_df
         df = self._compute_price_features(daily)
-        df = self._add_temporal_features(df)
+        df = self._add_temporal_features(df, item_first_dates=item_first_dates)
         df = self._add_item_identity_features(df)
         df = self._add_event_features(df, events_df)
         df = self._add_item_metadata_features(df)
@@ -2564,6 +2593,7 @@ class ItemForecaster:
         """Save the fully-engineered feature DataFrame to Parquet cache."""
         path = self._engineered_cache_path
         df.attrs["_cache_date"] = str(date.today())
+        df.attrs["_cache_version"] = self.ENGINEERED_CACHE_VERSION
         logger.info(f"  Saving engineered feature cache ({len(df):,} rows) to {path}")
         df.to_parquet(path, index=False)
 
@@ -2577,6 +2607,16 @@ class ItemForecaster:
             cache_date_str = df.attrs.get("_cache_date", "")
             if df.empty:
                 logger.warning(f"  Cache at {path} is empty (0 rows) — will refresh")
+                return None
+
+            # Version before staleness: a v1 cache is full history, not a tail,
+            # and is wrong regardless of how fresh it is.
+            version = int(df.attrs.get("_cache_version", 1))
+            if version != self.ENGINEERED_CACHE_VERSION:
+                logger.info(
+                    f"  Cache at {path} is v{version}, expected "
+                    f"v{self.ENGINEERED_CACHE_VERSION} — will refresh"
+                )
                 return None
             logger.info(f"  Loaded engineered feature cache from {path} "
                         f"({len(df):,} rows, cache_date={cache_date_str})")
@@ -3536,12 +3576,43 @@ class ItemForecaster:
     # SIGKILLed — see docs and runs 30226424193 / 30666903525 / 30668690592.
     PREDICT_TAIL_ROWS = 3
 
+    # Item-days of history per item retained for prediction. Row-based, not
+    # calendar-based: features mix 180-day calendar lag joins (:937) with
+    # 200-row positional rollings (:1118) over a ~48%-dense archive, so a
+    # 240-*day* cutoff could yield ~115 rows and silently change every rolling
+    # feature. Voting collapses to one row per item-day, so the last N item-days
+    # always span >= N calendar days — one parameter satisfies both.
+    # Tailing is a no-op for items holding fewer item-days than this.
+    PREDICT_TAIL_ITEM_DAYS = 240
+
+    def _tail_predict_frame(self, price_df: pd.DataFrame) -> pd.DataFrame:
+        """Keep only the last PREDICT_TAIL_ITEM_DAYS item-days per item.
+
+        Selects on distinct dates rather than on row position, so a frame that
+        still carries intraday duplicates cannot yield fewer calendar days than
+        the window promises. engineer_features resamples to one row per item-day
+        itself (:2163), so keeping every row on a retained date is safe.
+        """
+        before = len(price_df)
+        keep = (price_df[["item_id", "date"]]
+                .drop_duplicates()
+                .sort_values(["item_id", "date"])
+                .groupby("item_id", sort=False, group_keys=False)
+                .tail(self.PREDICT_TAIL_ITEM_DAYS))
+        out = price_df.merge(keep, on=["item_id", "date"], how="inner")
+        logger.info(
+            f"  Predict tail: {before:,} -> {len(out):,} rows "
+            f"(<= {self.PREDICT_TAIL_ITEM_DAYS} item-days per item)"
+        )
+        return out
+
     @property
     def _predict_chunk_items(self) -> int:
         """Items per chunk during prediction; 0 disables chunking."""
         return int(os.getenv("PREDICT_CHUNK_ITEMS", "1000"))
 
-    def _engineer_features_chunked(self, price_df, events_df, eligible) -> pd.DataFrame:
+    def _engineer_features_chunked(self, price_df, events_df, eligible,
+                                   item_first_dates=None) -> pd.DataFrame:
         """Engineer prediction features in item chunks with bounded memory.
 
         Two passes are required because the cross-sectional features are per-date
@@ -3562,7 +3633,8 @@ class ItemForecaster:
 
         def _chunk_frame(chunk):
             return self.engineer_features(
-                price_df[price_df["item_id"].isin(chunk)], events_df
+                price_df[price_df["item_id"].isin(chunk)], events_df,
+                item_first_dates=item_first_dates,
             )
 
         # Pass A — per-date market aggregates across every item.
@@ -3621,10 +3693,19 @@ class ItemForecaster:
 
             events_df = self.fetch_events()
 
+            # Engineer only the history the features need. Must come after the
+            # eligibility filter, which counts distinct days over full history,
+            # and the first-seen dates must be captured before the truncation
+            # that would otherwise make every item look 239 days old.
+            item_first_dates = price_df.groupby("item_id")["date"].min()
+            price_df = self._tail_predict_frame(price_df)
+
             if self._predict_chunk_items and len(eligible) > self._predict_chunk_items:
-                df = self._engineer_features_chunked(price_df, events_df, eligible)
+                df = self._engineer_features_chunked(
+                    price_df, events_df, eligible, item_first_dates=item_first_dates)
             else:
-                df = self.engineer_features(price_df, events_df)
+                df = self.engineer_features(price_df, events_df,
+                                            item_first_dates=item_first_dates)
 
                 # Add cross-sectional features (same as training)
                 df = self._add_cross_sectional_features(df)
@@ -3633,8 +3714,9 @@ class ItemForecaster:
                 df = self._add_supply_depth_features(df)
 
                 # Save to cache for next predict run. Only the whole-frame path
-                # writes it: the chunked frame is a per-item tail, not the full
-                # history the cache contract promises.
+                # writes it: the chunked frame keeps PREDICT_TAIL_ROWS per item,
+                # which is narrower still than the PREDICT_TAIL_ITEM_DAYS window
+                # this frame carries.
                 self._save_engineered_cache(df)
 
         # Align features with training columns (add missing, drop extras)
