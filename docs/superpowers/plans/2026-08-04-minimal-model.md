@@ -1716,29 +1716,6 @@ from models.conformal import ALPHA
 from models.forecaster import ItemForecaster
 
 
-def test_quantiles_collapse_to_the_median_only():
-    assert ItemForecaster.QUANTILES == [0.5]
-
-
-def test_ensemble_is_a_single_member():
-    assert ItemForecaster.N_ENSEMBLES == 1
-    assert len(ItemForecaster.ENSEMBLE_SEEDS) == 1
-    assert len(ItemForecaster.ENSEMBLE_FEATURE_FRACTIONS) == 1
-
-
-def test_no_horizon_uses_dart():
-    assert set(ItemForecaster.BOOSTING_TYPE_MAP.values()) == {"gbdt"}
-
-
-def test_trained_model_count_is_eight():
-    # 4 median GBMs + 4 directional classifiers. Guards accidental
-    # re-expansion of the quantile/ensemble grid.
-    expected = len(ItemForecaster.HORIZONS) * len(ItemForecaster.QUANTILES) \
-        * ItemForecaster.N_ENSEMBLES
-    assert expected == 4
-    assert expected + len(ItemForecaster.HORIZONS) == 8
-
-
 def test_sigma_clip_defaults_are_present_and_finite():
     f = ItemForecaster.__new__(ItemForecaster)
     ItemForecaster._init_conformal_state(f)
@@ -1747,24 +1724,17 @@ def test_sigma_clip_defaults_are_present_and_finite():
     assert np.isfinite(f.sigma_clip["fallback"])
 
 
-def test_residual_stacking_is_gone():
-    assert not hasattr(ItemForecaster, "STACK_RESIDUALS")
-    assert not hasattr(ItemForecaster, "RESIDUAL_ALPHA")
-
-
-def test_dart_params_are_gone():
-    assert not hasattr(ItemForecaster, "DART_PARAMS")
-
-
 def test_alpha_matches_the_pinned_nominal_coverage():
     assert ALPHA == pytest.approx(0.20)
 ```
+
+**Note on scope:** the config-constant assertions (`QUANTILES == [0.5]`, `N_ENSEMBLES == 1`, no DART, no residual stacking, the 8-model count) are **deliberately not in this file yet** — they are added by Task 11, in the same commit that makes them true. Writing them here would leave Tasks 8, 9 and 10 committing a red suite, which the Global Constraint forbids. Do not add them early.
 
 - [ ] **Step 2: Run the test to verify it fails**
 
 Run: `python3 -m pytest tests/test_minimal_model_shape.py -v`
 
-Expected: FAIL on every test — the constants still hold their old values and `_init_conformal_state` does not exist.
+Expected: FAIL — `_init_conformal_state` does not exist.
 
 - [ ] **Step 3: Add the conformal state initializer**
 
@@ -2283,17 +2253,54 @@ MODEL_ARTIFACT_VERSION = 2 and raises IncompatibleModelArtifact."
 
 **Files:**
 - Modify: `backend/models/forecaster.py:148`, `:171-190`, `:261-262`, `:2966-2979`
-- Test: `backend/tests/test_minimal_model_shape.py` (already written in Task 8)
+- Test: `backend/tests/test_minimal_model_shape.py` (extend)
 
 **Interfaces:**
 - Consumes: nothing new.
 - Produces: the 8-model configuration. This is the commit that changes what gets trained.
 
-- [ ] **Step 1: Confirm the shape tests still fail**
+- [ ] **Step 1: Write the failing config tests**
+
+These live here, not in Task 8, so that no intermediate commit ships a red suite. Append to `backend/tests/test_minimal_model_shape.py`:
+
+```python
+def test_quantiles_collapse_to_the_median_only():
+    assert ItemForecaster.QUANTILES == [0.5]
+
+
+def test_ensemble_is_a_single_member():
+    assert ItemForecaster.N_ENSEMBLES == 1
+    assert len(ItemForecaster.ENSEMBLE_SEEDS) == 1
+    assert len(ItemForecaster.ENSEMBLE_FEATURE_FRACTIONS) == 1
+
+
+def test_no_horizon_uses_dart():
+    assert set(ItemForecaster.BOOSTING_TYPE_MAP.values()) == {"gbdt"}
+
+
+def test_trained_model_count_is_eight():
+    # 4 median GBMs + 4 directional classifiers. Guards accidental
+    # re-expansion of the quantile/ensemble grid.
+    expected = len(ItemForecaster.HORIZONS) * len(ItemForecaster.QUANTILES) \
+        * ItemForecaster.N_ENSEMBLES
+    assert expected == 4
+    assert expected + len(ItemForecaster.HORIZONS) == 8
+
+
+def test_residual_stacking_is_gone():
+    assert not hasattr(ItemForecaster, "STACK_RESIDUALS")
+    assert not hasattr(ItemForecaster, "RESIDUAL_ALPHA")
+
+
+def test_dart_params_are_gone():
+    assert not hasattr(ItemForecaster, "DART_PARAMS")
+```
+
+- [ ] **Step 1b: Run them to verify they fail**
 
 Run: `python3 -m pytest tests/test_minimal_model_shape.py -v`
 
-Expected: FAIL on `test_quantiles_collapse_to_the_median_only`, `test_ensemble_is_a_single_member`, `test_no_horizon_uses_dart`, `test_trained_model_count_is_eight`, `test_residual_stacking_is_gone`, `test_dart_params_are_gone`.
+Expected: FAIL on all six new tests — the constants still hold their old values.
 
 - [ ] **Step 2: Flip the constants**
 
@@ -2353,7 +2360,7 @@ Expected after deletion: no hits.
 
 Run: `python3 -m pytest tests/test_minimal_model_shape.py -v`
 
-Expected: PASS, all 13 tests.
+Expected: PASS, all tests in the file — the two from Task 8, the three from Task 9, the three from Task 10, and the six added in Step 1 here.
 
 - [ ] **Step 6: Run the full suite**
 
