@@ -151,6 +151,11 @@ class ItemForecaster:
     # series is still young, and 14 daily points is enough for the lag/rolling
     # features to be non-degenerate.
     PREDICT_MIN_HISTORY_DAYS = 14
+    # Directional-accuracy floor for the drift *alert*. This no longer gates a
+    # retrain: the model's measured production DA is 46.7-50.8%
+    # (docs/architecture/model-optimization.md), so a 60% floor was never
+    # attainable and fired on every run. Kept as an alert threshold only.
+    DRIFT_DA_THRESHOLD = 60.0
     # Walk-forward validation split: most recent N days are held out.
     # A relative split stays valid as data accumulates (a fixed date would
     # eventually leave the validation set covering all new data).
@@ -4325,13 +4330,14 @@ class ItemForecaster:
     # ------------------------------------------------------------------
 
     def check_concept_drift(self, horizon: int = 7, sliding_window: int = 7,
-                             threshold: float = 60.0) -> Optional[Dict]:
+                             threshold: Optional[float] = None) -> Optional[Dict]:
         """Check if recent prediction accuracy has dropped below threshold.
 
         Queries the last `sliding_window` days of forecast backtest results
         and compares directional accuracy against the threshold. Logs an
         alert to the accuracy_alerts table if drift is detected.
         """
+        threshold = self.DRIFT_DA_THRESHOLD if threshold is None else threshold
         from database import PredictionAccuracy, AccuracyAlert
         from sqlalchemy import desc
 
@@ -4350,10 +4356,25 @@ class ItemForecaster:
             return None
 
         accuracies = []
+        uncovered = 0
         for r in records:
             m = r.metrics if isinstance(r.metrics, dict) else json.loads(r.metrics)
-            if "directional_accuracy" in m:
-                accuracies.append(m["directional_accuracy"])
+            if "directional_accuracy" not in m:
+                continue
+            # Fail closed. Rows written before scoring.py began reporting
+            # coverage carry no date attribution, and rows spanning 1-2 dates
+            # describe those dates rather than the model. Either way this is
+            # "we cannot tell", not "the model is fine".
+            if not m.get("date_coverage_sufficient", False):
+                uncovered += 1
+                continue
+            accuracies.append(m["directional_accuracy"])
+
+        if uncovered:
+            logger.info(
+                f"  Drift check ({horizon}d): ignored {uncovered} accuracy row(s) "
+                f"lacking {MIN_FORECAST_DATES}-date coverage"
+            )
 
         if len(accuracies) < 3:
             return None

@@ -810,9 +810,16 @@ class TestFeaturePipeline:
 
 class TestConceptDrift:
     def _make_mock_record(self, metrics_dict):
-        """Create a mock DB result row with .metrics attribute and .fetchall()."""
+        """Create a mock DB result row with .metrics attribute and .fetchall().
+
+        Defaults date_coverage_sufficient to True. check_concept_drift ignores
+        rows that do not report sufficient forecast-date coverage — see
+        tests/test_drift_retrain_guard.py, which owns that behaviour. The tests
+        in this class are about the threshold comparison, so they opt in to
+        being treated as evidence. Pass the key explicitly to override.
+        """
         record = MagicMock()
-        record.metrics = metrics_dict
+        record.metrics = {"date_coverage_sufficient": True, **metrics_dict}
         return record
 
     def _make_mock_execute(self, records):
