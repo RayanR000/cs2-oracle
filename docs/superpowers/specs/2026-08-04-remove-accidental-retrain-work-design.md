@@ -188,19 +188,32 @@ signal. Drift-*triggered retraining* on a two-date sample is not.
 
 | Component | Change |
 |---|---|
-| `ItemForecaster.check_concept_drift` | Keep the `AccuracyAlert` write. Add a **date-coverage guard**: return `None` (insufficient evidence) unless the contributing accuracy windows span at least `MIN_DRIFT_FORECAST_DATES` distinct forecast dates. Follows the guard pattern already established by `tests/test_bias_fit_date_guard.py`. |
+| `ItemForecaster.check_concept_drift` | Keep the `AccuracyAlert` write. Add a **date-coverage guard**: return `None` (insufficient evidence) unless the contributing accuracy rows report sufficient forecast-date coverage. |
 | `forecast_prices.py:192-204` (predict-only) | Remove the auto-retrain trigger. Log the drift result at `WARNING` without setting `do_train`. |
 | `forecast_prices.py:180` (full mode) | Drop `drifted` from the retrain condition; retain `age is None or age >= retrain_interval`. Monday's `full` run already retrains on age. |
 | `_drift_detected` (`:59-70`) | Delete. Dropping `drifted` from the `:180` condition removes its only caller. |
 | Escape hatch | `ALLOW_DRIFT_RETRAIN=1` restores the previous behaviour on both branches. |
 
-`MIN_DRIFT_FORECAST_DATES` is a new class constant, **default 10**. The rationale
-is that the guard exists to make "we cannot tell" distinguishable from "the model
-is fine", which the current window-count check cannot express: seven sliding
-windows can all sit on a single forecast date. Ten is chosen as the smallest value
-that cannot be satisfied by the 1–2-date cohorts the clustering changelog found,
-not as a power calculation — this is a guard against a known-degenerate input, not
-a significance test.
+**No new constant is needed.** `backend/backtest/scoring.py` already carries this
+machinery, added by the deterministic-backtest work:
+
+```python
+MIN_FORECAST_DATES = 20                                    # scoring.py:38
+...
+"distinct_forecast_dates": distinct_dates,                  # scoring.py:201
+"date_coverage_sufficient": distinct_dates >= MIN_FORECAST_DATES,
+```
+
+Every `prediction_accuracy.metrics` row written since then already reports whether
+its own date coverage is sufficient, alongside a forecast-date-clustered bootstrap
+CI (`directional_accuracy_ci_clustered_lower/upper`, `scoring.py:199-200`). The
+guard therefore reads `metrics["date_coverage_sufficient"]` rather than
+recomputing anything, keeping one source of truth for what "enough dates" means.
+
+The guard **fails closed**: rows predating the field are treated as insufficient.
+This matches the intent already recorded at `scoring.py:170-172` — such records
+"report 0 distinct dates and fail the sufficiency check, which is the correct
+reading of 'we cannot tell'."
 
 The 60.0 threshold stops gating anything once the retrain triggers are removed, so
 its unreachability no longer causes harm. It should still be moved out of the two
@@ -242,7 +255,7 @@ fetch.
 |---|---|
 | `test_predict_only_never_trains` | `--predict-only` completes without calling `forecaster.train`, given drift-triggering stored accuracy. |
 | `test_drift_alert_still_written` | An `AccuracyAlert` row is still created when accuracy is below threshold and date coverage is sufficient. |
-| `test_drift_date_coverage_guard` | `check_concept_drift` returns `None` when windows span fewer than `MIN_DRIFT_FORECAST_DATES` distinct forecast dates, even with enough windows. |
+| `test_drift_date_coverage_guard` | `check_concept_drift` returns `None` when the stored rows report `date_coverage_sufficient: False`, even with enough sliding windows — and also when the key is absent entirely (fail-closed). |
 | `test_allow_drift_retrain_env` | `ALLOW_DRIFT_RETRAIN=1` restores retrain-on-drift. |
 | `test_predict_tail_feature_equality` | For a sample of items, the 44 served feature values from the truncated path equal the 1460-day path. **This is the load-bearing test for Change 2.** |
 | `test_voted_frame_one_row_per_item_day` | Post-voting frames contain no duplicate `(item_id, date)` pairs — the invariant the row-based truncation rests on. |
@@ -314,9 +327,13 @@ Neither of these is actioned here. Both are accuracy-side and would make trainin
    `docs/retrain-optimization-analysis.md` estimates "~450 items" at this budget;
    the measured figure is 133.
 
-2. **`walkforward_backtest.py` aggregates folds by sample count.** Lines 316-321
-   weight each fold's metrics by `sample_count`, treating correlated item-rows
-   within a fold as independent observations. This is the same error identified in
-   `docs/changelog/2026-08-03-accuracy-is-clustered-by-forecast-date.md`. The
-   repository's only fresh-model gate therefore reports inflated precision, which
-   matters for any future model-class comparison.
+2. **`walkforward_backtest.py` does not use the clustered scorer that already
+   exists.** `backend/backtest/scoring.py` computes forecast-date-clustered
+   bootstrap CIs and a `date_coverage_sufficient` flag (`:175-202`), but
+   `walkforward_backtest.py:316-321` rolls its own aggregation, weighting each
+   fold's metrics by `sample_count` — treating correlated item-rows within a fold
+   as independent observations. That is the error identified in
+   `docs/changelog/2026-08-03-accuracy-is-clustered-by-forecast-date.md`. So the
+   repository's only fresh-model gate reports inflated precision *despite* the
+   correct machinery being one import away. Routing it through `score_cohort` is
+   the likely fix and the natural first task of the measurement-rig spec.
