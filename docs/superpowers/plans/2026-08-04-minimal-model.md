@@ -886,10 +886,19 @@ And in the report dict (old line 360), replace the `horizons` entry with:
 
 ```python
             "horizons": {
-                str(h): {k: v for k, v in m.items() if k != "records"}
+                str(h): {k: v for k, v in m.items()
+                         if return_records or k != "records"}
                 for h, m in results_by_horizon.items()
             },
 ```
+
+⚠️ **The `return_records or` guard is essential.** Stripping `records`
+unconditionally makes `return_records=True` a no-op, because `report` is the only
+value `run_walkforward` returns — and Task 5's `compute_mde.py` reads
+`runs[0]["horizons"][h]["records"]` to pair the two seed runs. Without the guard
+it always gets nothing and the MDE can never be computed, silently. Records are
+kept out of the report by default because they are large; the flag is what makes
+them retrievable.
 
 - [ ] **Step 6: Run the tests to verify they pass**
 
