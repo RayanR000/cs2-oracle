@@ -45,6 +45,11 @@ MAX_TRAIN_ROWS = 200_000
 MIN_VAL_SAMPLES = 50
 QUANTILES = [0.1, 0.5, 0.9]
 
+# Seed for the per-fold boosters. scripts/compute_mde.py varies this to
+# measure the gate's own noise floor: two runs of the same design differ only
+# by seed, so the paired difference is the MDE.
+FOLD_SEED = 42
+
 
 def _load_parquet_items(con, backfilled_only=True):
     pq_files = sorted([str(p) for p in ARCHIVE_DIR.glob("prices-*.parquet")])
@@ -211,7 +216,8 @@ def _build_horizons_report(results_by_horizon, return_records):
     }
 
 
-def run_walkforward(max_items=500, horizons=None, skip_db=False, return_records=False):
+def run_walkforward(max_items=500, horizons=None, skip_db=False, return_records=False,
+                     step_days: int = STEP_DAYS, fold_seed: int = FOLD_SEED):
     logger.info("=" * 60)
     logger.info("WALK-FORWARD BACKTEST")
     logger.info("=" * 60)
@@ -265,7 +271,7 @@ def run_walkforward(max_items=500, horizons=None, skip_db=False, return_records=
             clf_records = []
             median_records = []
 
-            for window_end in range(split_idx + 1, len(dates), STEP_DAYS):
+            for window_end in range(split_idx + 1, len(dates), step_days):
                 train_dates = dates[:window_end]
                 val_dates = dates[window_end:window_end + VAL_WINDOW_DAYS]
 
@@ -314,7 +320,7 @@ def run_walkforward(max_items=500, horizons=None, skip_db=False, return_records=
                         "alpha": q,
                         "metric": "quantile",
                         "verbosity": -1,
-                        "random_state": 42,
+                        "random_state": fold_seed,
                         "n_jobs": -1,
                     })
 
@@ -349,6 +355,7 @@ def run_walkforward(max_items=500, horizons=None, skip_db=False, return_records=
                     sigma_train=None,
                     sigma_val=None,
                     num_boost_round=DIRECTION_NUM_ROUNDS,
+                    random_state=fold_seed,
                 )
                 predicted_classes = clf.predict(X_val.values).argmax(axis=1)
 
@@ -462,9 +469,12 @@ def main():
     parser.add_argument("--max-items", type=int, default=500, help="Items to evaluate (default: 500)")
     parser.add_argument("--horizons", type=int, nargs="+", default=None, help="Horizons to test (default: all)")
     parser.add_argument("--skip-db", action="store_true", help="Skip writing to database")
+    parser.add_argument("--step-days", type=int, default=STEP_DAYS,
+                         help=f"Fold stride in days (default: {STEP_DAYS})")
     args = parser.parse_args()
 
-    report = run_walkforward(max_items=args.max_items, horizons=args.horizons, skip_db=args.skip_db)
+    report = run_walkforward(max_items=args.max_items, horizons=args.horizons,
+                              skip_db=args.skip_db, step_days=args.step_days)
     print(f"\nRESULT: {json.dumps(report, indent=2, default=str)}")
     return 0 if report.get("status") != "error" else 1
 

@@ -3429,7 +3429,8 @@ class ItemForecaster:
                                    boosting_type: str, tree_params: dict,
                                    horizon: Optional[int] = None,
                                    sigma_train=None, sigma_val=None,
-                                   num_boost_round: int = 200):
+                                   num_boost_round: int = 200,
+                                   random_state: int = 42):
         """Train a 3-class (down/flat/up) LightGBM classifier on returns,
         up-weighting movers. When ``sigma_train`` is given, the flat band is
         vol-scaled per row (k_h * sigma * sqrt(h), clamped); otherwise the
@@ -3453,7 +3454,7 @@ class ItemForecaster:
         params = dict(tree_params)
         params.update(objective="multiclass", num_class=3, metric="multi_logloss",
                       boosting_type=boosting_type, verbosity=-1, n_jobs=-1,
-                      random_state=42)
+                      random_state=random_state)
         callbacks = [lgb.log_evaluation(0)]
         valid_sets = None
         if X_val is not None and y_val_ret is not None and len(X_val):
