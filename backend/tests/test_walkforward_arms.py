@@ -75,3 +75,65 @@ def test_ridge_arm_requires_the_scaler_to_fit_ill_scaled_features():
         "(measured ~0.3365 with the scaler removed) -- if this drops below "
         "0.90 the scaler was likely removed from _ridge_predict"
     )
+
+
+def test_ridge_arm_tolerates_non_finite_features():
+    """LightGBM accepts +-inf; sklearn's Ridge/StandardScaler raise on it.
+
+    `price_log` is log(price), so a zero price in the archive yields -inf and
+    the column survives the gate's `fillna(medians)` (fillna does not touch
+    infinities). Arm C died on real data with "Input X contains infinity or a
+    value too large for dtype('float64')" after ~5 minutes, having produced no
+    records, while arms A/B/D completed -- so the baseline silently dropped out
+    of the comparison rather than failing loudly up front.
+    """
+    rng = np.random.RandomState(0)
+    X_train = rng.rand(80, 3)
+    X_train[3, 1] = -np.inf
+    X_train[7, 2] = np.inf
+    y_train = rng.rand(80)
+    X_val = rng.rand(10, 3)
+    X_val[2, 0] = -np.inf
+
+    mid, low, high, classes = wf._ridge_predict(X_train, y_train, X_val)
+
+    assert np.isfinite(mid).all()
+    assert len(mid) == len(X_val)
+    assert np.all(low <= mid) and np.all(mid <= high)
+
+
+def test_item_selection_is_deterministic_under_row_count_ties():
+    """The 60-item universe must be reproducible across runs.
+
+    `ORDER BY row_count DESC` alone leaves ties broken by whatever order
+    DuckDB happens to produce. Measured consequence: arms A and B drew
+    universes differing by 2 of 60 items, so only 96.66% of
+    (item_id, forecast_date) keys paired. That is not a 3.3% data loss -- the
+    gate's feature list falls back to every numeric column, including
+    cross-sectional features computed ACROSS the universe, and the >0.95
+    correlation prune is data-dependent, so swapping two items perturbs every
+    row. paired_da_difference raises only on ZERO overlap, so this drift is
+    otherwise silent.
+    """
+    import duckdb
+    src = inspect.getsource(wf._load_parquet_items)
+    assert "ORDER BY row_count DESC, item_slug" in src, (
+        "row_count needs a tie-break on item_slug or the universe is not "
+        "reproducible between runs"
+    )
+
+    con = duckdb.connect()
+    # Every slug has an identical row_count, so ordering is decided entirely
+    # by the tie-break.
+    con.sql("""
+        CREATE TABLE t AS
+        SELECT * FROM (VALUES
+            ('zeta', DATE '2024-01-01'), ('alpha', DATE '2024-01-01'),
+            ('mu', DATE '2024-01-01'), ('beta', DATE '2024-01-01')
+        ) AS v(item_slug, day)
+    """)
+    rows = con.sql("""
+        SELECT item_slug, COUNT(*) AS row_count FROM t
+        GROUP BY item_slug ORDER BY row_count DESC, item_slug
+    """).fetchall()
+    assert [r[0] for r in rows] == ["alpha", "beta", "mu", "zeta"]

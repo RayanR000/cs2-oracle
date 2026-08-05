@@ -74,7 +74,7 @@ def _load_parquet_items(con, backfilled_only=True):
         {where_clause}
         GROUP BY item_slug
         HAVING row_count >= 90
-        ORDER BY row_count DESC
+        ORDER BY row_count DESC, item_slug
     """
     rows = con.sql(query).fetchall()
     return rows
@@ -166,10 +166,33 @@ def _naive_predict(trailing_returns_pct):
             _classes_from_returns(mid))
 
 
+def _impute_non_finite(X_train, X_val):
+    """Replace ±inf/NaN with the training column median, for the sklearn arms.
+
+    The caller's `fillna(medians)` handles NaN but not infinities, and
+    `price_log` = log(price) emits -inf for a zero price in the archive.
+    LightGBM accepts that; StandardScaler and Ridge raise on it, which killed
+    arm C outright. The median is taken over finite training values only, so
+    an all-inf column collapses to 0.0 rather than propagating NaN.
+    """
+    Xtr = np.asarray(X_train, dtype=float).copy()
+    Xva = np.asarray(X_val, dtype=float).copy()
+    Xtr[~np.isfinite(Xtr)] = np.nan
+    Xva[~np.isfinite(Xva)] = np.nan
+    with np.errstate(invalid="ignore"):
+        med = np.nanmedian(Xtr, axis=0)
+    med = np.where(np.isfinite(med), med, 0.0)
+    Xtr = np.where(np.isnan(Xtr), med, Xtr)
+    Xva = np.where(np.isnan(Xva), med, Xva)
+    return Xtr, Xva
+
+
 def _ridge_predict(X_train, y_train, X_val, alpha: float = 5.0):
     """Arm C: Ridge on the same features. Does the tree structure earn anything?"""
     from sklearn.linear_model import Ridge
     from sklearn.preprocessing import StandardScaler
+
+    X_train, X_val = _impute_non_finite(X_train, X_val)
 
     # Ridge is scale-sensitive. Skipping this is the bug that produced a 100%
     # quantile-crossing rate in the shelved residual stacker
