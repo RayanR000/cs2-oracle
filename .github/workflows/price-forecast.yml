@@ -116,7 +116,12 @@ jobs:
           DATABASE_URL: ${{ secrets.SUPABASE_DATABASE_URL }}
           ENVIRONMENT: production
           DEBUG: false
-          SKIP_CV: "1"
+          # SKIP_CV is deliberately NOT set. The conformal band's q_hat is
+          # fitted on the out-of-fold CV records; skipping CV routes it to the
+          # single holdout, which is also the early-stopping and Optuna scoring
+          # set, so q_hat comes out biased low and the served band under-covers.
+          # Do not re-add it to buy CI minutes.
+          # Pinned by backend/tests/test_minimal_model_shape.py.
         run: |
           echo "🔮 Mode: ${{ steps.mode.outputs.mode }}"
           set -o pipefail

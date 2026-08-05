@@ -2064,6 +2064,17 @@ class ItemForecaster:
             folds.append((train_d, list(val_d)))
         return folds
 
+    def _cv_can_run(self, tdf, horizon: int) -> bool:
+        """Whether this horizon has enough distinct dates for >=2 CV folds.
+
+        `_cv_evaluate_horizon` raises when it does not, and the caller needs to
+        fall back to the (weaker) holdout instead of failing the whole retrain —
+        so feasibility is checked up front. Cheap: date arithmetic only, no fits.
+        """
+        splits = self._compute_cv_splits(
+            sorted(tdf["date"].unique()), purge_days=horizon)
+        return len(splits) >= 2
+
     def _optuna_search_params(self, X_train, y_train, X_val, y_val,
                                quantile: float = 0.5,
                                boosting_type: str = "gbdt",
@@ -2878,7 +2889,9 @@ class ItemForecaster:
             reuse_hp = (os.environ.get("FORCE_HP_SEARCH") != "1"
                         and all(q in cached_hp for q in self.QUANTILES))
             if reuse_hp:
-                logger.info(f"  Reusing cached HP for {horizon}d (Optuna + CV skipped)...")
+                # HP reuse only. CV still runs: it is where the conformal
+                # calibration records come from, and they have to be unseen.
+                logger.info(f"  Reusing cached HP for {horizon}d (Optuna skipped)...")
                 _warm_retrain = True
                 for q in self.QUANTILES:
                     bp = dict(cached_hp[q])
@@ -3099,25 +3112,34 @@ class ItemForecaster:
                     logger.info(f"  {regime} regime models for {horizon}d done "
                                 f"({len(r_train)} train, {len(r_val)} val)")
 
-            # Expanding-window CV evaluation using the best hyperparams.
-            # Skip CV entirely on warm retrain (cached HPs) — the fold accuracy
-            # metrics from the previous training run remain informative as long
-            # as the distribution hasn't shifted (checked via concept drift).
-            # SKIP_CV=1 only applies to GBDT horizons — DART horizons (14d, 30d)
-            # still run CV.
+            # Expanding-window CV. This is NOT optional on the production path,
+            # and the reason is conformal, not metrics.
             #
-            # q_hat is NOT inherited across a skip. It is refitted from the
-            # single validation holdout below, because the models it has to
-            # bracket are the ones just trained. Inheriting it was a latent
-            # serving hole: SKIP_CV=1 is set on every automated run
-            # (.github/workflows/price-forecast.yml), so on a cold model
-            # conformal_calibration stayed empty for every GBDT horizon.
-            _skip_cv = (os.environ.get("SKIP_CV") == "1" and boosting_type == "gbdt")
-            if _skip_cv or _warm_retrain:
-                if _warm_retrain:
-                    logger.info(f"  CV skipped (warm retrain — cached HP)")
-                else:
-                    logger.info(f"  CV skipped (SKIP_CV=1, GBDT horizon)")
+            # Split conformal only guarantees coverage if the calibration
+            # residuals are genuinely unseen. `X_val`/`y_val` is not: it is the
+            # `dval` handed to lgb.early_stopping(50) in _train_ensemble_member
+            # AND the set _optuna_search_params scores hyperparameters on. A
+            # q_hat fitted there is measured on rows the model was selected
+            # against, so its residuals are optimistically small, q_hat comes out
+            # biased low, and the served band under-covers. Only CV's out-of-fold
+            # records are unseen.
+            #
+            # So: SKIP_CV was removed from .github/workflows/price-forecast.yml
+            # (pinned by test_ci_workflow_does_not_skip_cv), and a warm retrain
+            # now reuses cached HP WITHOUT skipping CV. Those were always
+            # separable concerns — HP reuse is the point of a warm retrain,
+            # skipping calibration was collateral — and conflating them is what
+            # put an in-sample q_hat behind the served 3d/7d band.
+            #
+            # SKIP_CV=1 survives as a local/dispatch speedup only. It routes to
+            # the holdout leg, which warns that the band under-covers.
+            _skip_cv = os.environ.get("SKIP_CV") == "1"
+            _cv_feasible = self._cv_can_run(tdf, horizon)
+            if _skip_cv:
+                logger.info("  CV skipped (SKIP_CV=1 — local speedup; not the CI path)")
+                oof_records, cv_metrics = [], []
+            elif not _cv_feasible:
+                logger.info(f"  CV cannot run for {horizon}d (<2 expanding-window folds)")
                 oof_records, cv_metrics = [], []
             else:
                 oof_records, cv_metrics = self._cv_evaluate_horizon(tdf, horizon, per_quantile_params)
@@ -3129,26 +3151,39 @@ class ItemForecaster:
             if oof_records:
                 records_df = pd.DataFrame(oof_records)
                 calibration_source = f"CV-POOLED OOF, {len(cv_metrics)} folds"
-            elif _skip_cv or _warm_retrain:
+                out_of_sample = True
+            elif _skip_cv or not _cv_feasible:
                 records_df = self._holdout_conformal_records(
                     horizon, X_val, y_val, val_set)
-                # Grep-able: a single 21-day window is a weaker calibration set
-                # than pooled OOF, and nobody should mistake one for the other.
-                calibration_source = "SINGLE HOLDOUT (weaker than CV-pooled)"
+                calibration_source = "SINGLE HOLDOUT — expect UNDER-COVERAGE"
+                out_of_sample = False
             else:
                 raise RuntimeError(
-                    f"CV produced no OOF records for {horizon}d horizon "
-                    f"but SKIP_CV is not set. This indicates a bug — "
-                    f"_cv_evaluate_horizon should have raised."
+                    f"CV ran for the {horizon}d horizon but produced no OOF "
+                    f"records. This indicates a bug — _cv_evaluate_horizon "
+                    f"should have raised."
                 )
 
             q_hat = self._calibrate_conformal(horizon, records_df)
-            logger.info(
+            _cal_msg = (
                 f"  Conformal calibration [{calibration_source}]: "
                 f"q_hat={q_hat:.4f} (dimensionless x sigma), "
                 f"n={len(records_df)}, alpha={conformal.ALPHA}, "
                 f"target coverage={conformal.NOMINAL_COVERAGE * 100:.0f}%"
             )
+            if out_of_sample:
+                logger.info(_cal_msg)
+            else:
+                # WARNING, not INFO: a reader of forecast.log must be able to
+                # tell that this horizon's band carries no coverage guarantee.
+                logger.warning(
+                    _cal_msg + " — q_hat was fitted on X_val, which is also the "
+                    "early-stopping and Optuna scoring set, so those residuals "
+                    "are optimistically small and this band is expected to cover "
+                    "BELOW nominal. Out-of-fold CV records are the only unseen "
+                    "calibration set; run without SKIP_CV=1, or give the horizon "
+                    "enough distinct dates for >=2 folds."
+                )
             self._calibrate_confidence(horizon=horizon, records_df=records_df)
 
             # Log CV fold-level metrics
@@ -3575,13 +3610,18 @@ class ItemForecaster:
                                    val_set) -> pd.DataFrame:
         """Calibration records from the single validation holdout.
 
-        Used whenever CV is skipped. That is not a rare path: the production
-        workflow sets SKIP_CV=1 on every automated run, and steady state is a
-        warm retrain, so without this q_hat would never be fitted for the
-        horizons that skip — and predict() has no band without it.
+        LAST RESORT, not a peer of the CV path. `X_val` is the early-stopping
+        `dval` and the set Optuna scores HP on, so a q_hat fitted here is
+        measured on rows the model was selected against: its residuals are
+        optimistically small and the resulting band under-covers. The caller
+        logs that at WARNING.
 
-        Weaker than pooled OOF (one window instead of every fold), so the
-        caller logs the distinction. Raises rather than defaulting.
+        Reached only when CV genuinely cannot run (fewer than 2 expanding-window
+        folds) or when a local run opts in with SKIP_CV=1. It exists so a
+        short-history horizon degrades loudly instead of failing the retrain.
+
+        Raises rather than defaulting — a fabricated q_hat is worse than a
+        weak one.
         """
         p50 = self._get_ensemble_prediction(horizon, 0.5, X_val.values)
         if p50 is None:

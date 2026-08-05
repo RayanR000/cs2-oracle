@@ -9,11 +9,13 @@ code version.
 from __future__ import annotations
 
 from datetime import date, timedelta
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import numpy as np
 import pandas as pd
 import pytest
+import yaml
 
 from models.conformal import ALPHA
 from models.forecaster import ItemForecaster
@@ -245,12 +247,15 @@ def test_cv_records_calibrate_end_to_end_with_a_median_only_grid(tmp_path):
 
 
 # ---------------------------------------------------------------------------
-# q_hat must be fitted on the path production actually takes
+# q_hat must be fitted, and fitted on data the model was not selected against
 #
-# .github/workflows/price-forecast.yml sets SKIP_CV=1 on every automated run,
-# and steady state is a warm retrain. Both skip CV. If q_hat is only fitted
-# from pooled OOF records, it is never fitted for any horizon that skips —
-# which under Task 11's all-GBDT map is every horizon.
+# Two separate guarantees:
+#  1. Every horizon gets a q_hat. There used to be branches (SKIP_CV=1, warm
+#     retrain) that finished a horizon without one, which leaves predict() with
+#     no band.
+#  2. It is fitted on out-of-fold CV records. X_val is the early-stopping dval
+#     and the Optuna scoring set, so residuals measured there are optimistically
+#     small and q_hat comes out biased low — the band would under-cover.
 # ---------------------------------------------------------------------------
 
 
@@ -319,13 +324,42 @@ def _run_train(f, monkeypatch, df):
     f.train()
 
 
-def test_skip_cv_still_fits_q_hat_for_every_horizon(tmp_path, monkeypatch):
-    """SKIP_CV=1 is what every automated run sets.
+def test_ci_workflow_does_not_skip_cv():
+    """SKIP_CV=1 in CI is what put an in-sample q_hat behind the served band.
 
-    Under the production BOOSTING_TYPE_MAP it skips CV for the GBDT horizons;
-    under Task 11's all-GBDT map it skips for all four. Either way every served
-    horizon needs a q_hat, so it must be fitted from the holdout when CV is
-    skipped rather than left empty.
+    Skipping CV routes calibration to the single holdout, which is also the
+    early-stopping dval and the Optuna scoring set, so q_hat is biased low and
+    the band under-covers. This pins the workflow so the flag cannot come back
+    as a CI-minutes optimization.
+    """
+    wf = (Path(__file__).resolve().parents[2]
+          / ".github" / "workflows" / "price-forecast.yml")
+    spec = yaml.safe_load(wf.read_text())
+
+    def env_keys(node):
+        if isinstance(node, dict):
+            for k, v in node.items():
+                if k == "env" and isinstance(v, dict):
+                    yield from v
+                else:
+                    yield from env_keys(v)
+        elif isinstance(node, list):
+            for v in node:
+                yield from env_keys(v)
+
+    assert "SKIP_CV" not in set(env_keys(spec))
+    # The run: blocks are strings, so an inline `SKIP_CV=1 python …` would slip
+    # past the env walk above.
+    assert "SKIP_CV" not in wf.read_text().replace("# SKIP_CV", "")
+
+
+def test_the_holdout_fallback_still_fits_q_hat_for_every_horizon(
+        tmp_path, monkeypatch):
+    """The degraded path must degrade, not disappear.
+
+    SKIP_CV=1 is now a local-only speedup, and a horizon with too few distinct
+    dates takes the same leg. It under-covers — but every served horizon still
+    needs *a* q_hat, or predict() has no band at all.
     """
     f = _fast_forecaster(tmp_path)
     monkeypatch.setenv("SKIP_CV", "1")
@@ -342,11 +376,16 @@ def test_skip_cv_still_fits_q_hat_for_every_horizon(tmp_path, monkeypatch):
         assert f.confidence_thresholds[h]["high_accuracy"] > 0
 
 
-def test_warm_retrain_still_fits_q_hat_for_every_horizon(tmp_path, monkeypatch):
-    """A warm retrain skips CV for every horizon regardless of boosting type.
+def test_warm_retrain_calibrates_from_cv_not_the_holdout(tmp_path, monkeypatch):
+    """The production steady state: cached HP present, no SKIP_CV.
 
-    It refits the models, so inheriting the previous run's q_hat would bracket
-    models that no longer exist.
+    A warm retrain reuses hyperparameters — that is its purpose — but it also
+    refits the models, so q_hat has to be refitted too, and against records the
+    models were not selected on. Warm retrain used to skip CV outright and
+    calibrate from X_val, i.e. from the early-stopping and Optuna scoring set.
+
+    `cv_results[h]["fold_count"]` is the observable seam: it is 0 when CV was
+    skipped and >= 2 when the out-of-fold records are real.
     """
     f = _fast_forecaster(tmp_path, warm=True)
     monkeypatch.delenv("SKIP_CV", raising=False)
@@ -355,6 +394,11 @@ def test_warm_retrain_still_fits_q_hat_for_every_horizon(tmp_path, monkeypatch):
 
     _run_train(f, monkeypatch, _train_frame())
 
+    for h in f.HORIZONS:
+        assert f.cv_results[h]["fold_count"] >= 2, (
+            f"{h}d calibrated with {f.cv_results[h]['fold_count']} CV folds — "
+            f"q_hat was fitted on the early-stopping holdout, not out-of-fold"
+        )
     assert set(f.conformal_calibration) == set(f.HORIZONS)
     assert all(v > 0 for v in f.conformal_calibration.values())
     assert f.conformal_calibration != stale, (
@@ -365,8 +409,13 @@ def test_warm_retrain_still_fits_q_hat_for_every_horizon(tmp_path, monkeypatch):
 
 def test_train_measures_sigma_clip_from_the_training_frame(tmp_path, monkeypatch):
     """The clip q_hat is calibrated against must come from the data, not the
-    class defaults, or serving clips differently than calibration did."""
+    class defaults, or serving clips differently than calibration did.
+
+    Measured in train() before the horizon loop, so the calibration branch is
+    irrelevant here — SKIP_CV=1 only to keep the fixture cheap.
+    """
     f = _fast_forecaster(tmp_path, warm=True)
+    monkeypatch.setenv("SKIP_CV", "1")
     defaults = dict(f.sigma_clip)
     _run_train(f, monkeypatch, _train_frame())
 
