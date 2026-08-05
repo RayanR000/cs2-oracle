@@ -526,6 +526,34 @@ def run_walkforward(max_items=500, horizons=None, skip_db=False, return_records=
         return {"status": "error", "message": str(e)}
 
 
+def _write_records(report, path):
+    """Persist per-horizon records so two arms can be paired offline.
+
+    `item_id` and `forecast_date` are the pairing key in
+    paired_mde.paired_da_difference, so both are normalized here: item_id to
+    str (it is the item SLUG, carried through from the archive's item_slug
+    column, not an integer id) and forecast_date to a day-resolution ISO
+    string. Letting json's `default=str` handle the date would work only as
+    long as every arm happened to hold the same dtype -- a datetime64[ns] on
+    one side and a datetime.date on the other stringify differently, which
+    would silently pair zero rows.
+    """
+    out = {}
+    for h, entry in report.get("horizons", {}).items():
+        rows = []
+        for r in entry.get("records", []):
+            r = dict(r)
+            r["item_id"] = str(r["item_id"])
+            r["forecast_date"] = str(np.datetime_as_string(
+                np.datetime64(r["forecast_date"]), unit="D"))
+            rows.append(r)
+        out[str(h)] = rows
+    with open(path, "w") as f:
+        json.dump(out, f)
+    total = sum(len(v) for v in out.values())
+    logger.info(f"Wrote {total:,} records across {len(out)} horizons to {path}")
+
+
 def main():
     import argparse
     parser = argparse.ArgumentParser(description="Walk-forward backtest with tuned params")
@@ -536,12 +564,25 @@ def main():
                          help=f"Fold stride in days (default: {STEP_DAYS})")
     parser.add_argument("--arm", choices=list(ARMS), default="gbm",
                         help="gbm (current design), ridge, or naive baseline")
+    parser.add_argument("--save-records", metavar="PATH", default=None,
+                        help="Write per-horizon records to PATH as JSON, for "
+                             "paired_mde.paired_da_difference")
     args = parser.parse_args()
 
     report = run_walkforward(max_items=args.max_items, horizons=args.horizons,
                               skip_db=args.skip_db, step_days=args.step_days,
-                              arm=args.arm)
-    print(f"\nRESULT: {json.dumps(report, indent=2, default=str)}")
+                              arm=args.arm,
+                              return_records=bool(args.save_records))
+    if args.save_records:
+        _write_records(report, args.save_records)
+    # Records are large and already on disk if requested; keep them out of stdout.
+    printable = dict(report)
+    printable["horizons"] = _build_horizons_report(
+        {h: {k: v for k, v in m.items() if k != "records"}
+         for h, m in report.get("horizons", {}).items()},
+        return_records=False,
+    )
+    print(f"\nRESULT: {json.dumps(printable, indent=2, default=str)}")
     return 0 if report.get("status") != "error" else 1
 
 
