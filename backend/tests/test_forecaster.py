@@ -869,13 +869,33 @@ class TestConceptDrift:
 # ---------------------------------------------------------------------------
 
 class TestCalibration:
-    def test_calibration_requires_min_samples(self, forecaster):
-        """Calibration should return early with < 50 samples."""
-        result = forecaster._calibrate_confidence(
-            X_val=MagicMock(), y_val=MagicMock(), val_set=MagicMock(), horizon=7
-        )
-        # With mocked objects, preds will be None → early return
+    def test_holdout_calibration_refuses_a_thin_validation_window(self, forecaster):
+        """Too few rows must raise, not silently default.
+
+        `_calibrate_confidence` no longer builds its own records — it takes a
+        frame whose `range_pct` came from a fitted q_hat — so the min-sample
+        refusal lives at the point the records are built.
+        """
+        n = forecaster.MIN_CALIBRATION_ROWS - 1
+        X_val = pd.DataFrame({"f": np.zeros(n)})
+        y_val = pd.Series(np.zeros(n))
+        val_set = pd.DataFrame({"price": np.full(n, 10.0),
+                                "price_std_60d": np.full(n, 1.0)})
+        with patch.object(forecaster, "_get_ensemble_prediction",
+                          return_value=np.zeros(n)):
+            with pytest.raises(RuntimeError, match="Refusing to fabricate"):
+                forecaster._holdout_conformal_records(7, X_val, y_val, val_set)
         assert forecaster.confidence_thresholds.get(7) is None
+
+    def test_holdout_calibration_refuses_a_missing_median_model(self, forecaster):
+        """No p50 model means no band; that must be loud, not an empty q_hat."""
+        X_val = pd.DataFrame({"f": np.zeros(100)})
+        y_val = pd.Series(np.zeros(100))
+        val_set = pd.DataFrame({"price": np.full(100, 10.0)})
+        with patch.object(forecaster, "_get_ensemble_prediction",
+                          return_value=None):
+            with pytest.raises(RuntimeError, match="No median model"):
+                forecaster._holdout_conformal_records(7, X_val, y_val, val_set)
 
     def test_confidence_thresholds_per_horizon(self, forecaster):
         """Different horizons should have different threshold dicts."""

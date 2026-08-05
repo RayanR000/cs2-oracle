@@ -3100,49 +3100,56 @@ class ItemForecaster:
                                 f"({len(r_train)} train, {len(r_val)} val)")
 
             # Expanding-window CV evaluation using the best hyperparams.
-            # Skip CV entirely on warm retrain (cached HPs) — the confidence
-            # thresholds and conformal q_hat from the previous training run
-            # (restored via load_models) remain valid as long as the
-            # distribution hasn't shifted (checked via concept drift).
+            # Skip CV entirely on warm retrain (cached HPs) — the fold accuracy
+            # metrics from the previous training run remain informative as long
+            # as the distribution hasn't shifted (checked via concept drift).
             # SKIP_CV=1 only applies to GBDT horizons — DART horizons (14d, 30d)
-            # still run CV for proper CQR calibration (~91% coverage).
+            # still run CV.
+            #
+            # q_hat is NOT inherited across a skip. It is refitted from the
+            # single validation holdout below, because the models it has to
+            # bracket are the ones just trained. Inheriting it was a latent
+            # serving hole: SKIP_CV=1 is set on every automated run
+            # (.github/workflows/price-forecast.yml), so on a cold model
+            # conformal_calibration stayed empty for every GBDT horizon.
             _skip_cv = (os.environ.get("SKIP_CV") == "1" and boosting_type == "gbdt")
             if _skip_cv or _warm_retrain:
                 if _warm_retrain:
-                    logger.info(f"  CV skipped (warm retrain — using cached thresholds)")
+                    logger.info(f"  CV skipped (warm retrain — cached HP)")
                 else:
-                    logger.info(f"  CV skipped (SKIP_CV=1, GBDT horizon); calibrating from single holdout")
+                    logger.info(f"  CV skipped (SKIP_CV=1, GBDT horizon)")
                 oof_records, cv_metrics = [], []
             else:
                 oof_records, cv_metrics = self._cv_evaluate_horizon(tdf, horizon, per_quantile_params)
 
-            # Calibrate on pooled OOF predictions from CV (more robust than a
-            # single 21-day holdout). Order matters: q_hat sets the band width,
-            # and the confidence thresholds are fitted on that width, so the
-            # conformal step runs FIRST.
+            # Calibrate. Order matters: q_hat sets the band width and the
+            # confidence thresholds are fitted on that width, so the conformal
+            # step runs FIRST and _calibrate_confidence always sees a range_pct
+            # on the same scale _compute_confidence will compare against.
             if oof_records:
                 records_df = pd.DataFrame(oof_records)
-                logger.info(f"  Calibrating on {len(records_df)} pooled OOF predictions "
-                            f"({len(cv_metrics)} folds)")
-
-                q_hat = self._calibrate_conformal(horizon, records_df)
-                logger.info(
-                    f"  Conformal calibration: q_hat={q_hat:.4f} (dimensionless "
-                    f"x sigma), n={len(records_df)}, alpha={conformal.ALPHA}, "
-                    f"target coverage={conformal.NOMINAL_COVERAGE * 100:.0f}%"
-                )
-
-                self._calibrate_confidence(horizon=horizon, records_df=records_df)
+                calibration_source = f"CV-POOLED OOF, {len(cv_metrics)} folds"
             elif _skip_cv or _warm_retrain:
-                if _skip_cv:
-                    logger.info("  CV skipped (SKIP_CV=1, GBDT horizon); fallback to single-split calibration")
-                self._calibrate_confidence(horizon=horizon, X_val=X_val, y_val=y_val, val_set=val_set)
+                records_df = self._holdout_conformal_records(
+                    horizon, X_val, y_val, val_set)
+                # Grep-able: a single 21-day window is a weaker calibration set
+                # than pooled OOF, and nobody should mistake one for the other.
+                calibration_source = "SINGLE HOLDOUT (weaker than CV-pooled)"
             else:
                 raise RuntimeError(
                     f"CV produced no OOF records for {horizon}d horizon "
                     f"but SKIP_CV is not set. This indicates a bug — "
                     f"_cv_evaluate_horizon should have raised."
                 )
+
+            q_hat = self._calibrate_conformal(horizon, records_df)
+            logger.info(
+                f"  Conformal calibration [{calibration_source}]: "
+                f"q_hat={q_hat:.4f} (dimensionless x sigma), "
+                f"n={len(records_df)}, alpha={conformal.ALPHA}, "
+                f"target coverage={conformal.NOMINAL_COVERAGE * 100:.0f}%"
+            )
+            self._calibrate_confidence(horizon=horizon, records_df=records_df)
 
             # Log CV fold-level metrics
             fold_accs = [m["directional_accuracy"] for m in cv_metrics]
@@ -3508,6 +3515,12 @@ class ItemForecaster:
     SIGMA_FLOOR_DEFAULT = 0.01
     SIGMA_CAP_DEFAULT = 2.0
 
+    # Fewest usable rows q_hat may be fitted on. Below this the conformal
+    # quantile is decided by a handful of tail draws. Falling back to a default
+    # instead of raising would put an unvalidated band in front of users, which
+    # is the one thing this design refuses to do.
+    MIN_CALIBRATION_ROWS = 50
+
     def _init_conformal_state(self) -> None:
         """Sigma clip bounds and fallback, persisted with the model.
 
@@ -3519,6 +3532,75 @@ class ItemForecaster:
             "cap": self.SIGMA_CAP_DEFAULT,
             "fallback": self.SIGMA_FALLBACK_DEFAULT,
         }
+
+    def _conformal_records(self, mid_ret, actual_ret, sigma,
+                           current_price) -> List[Dict[str, float]]:
+        """Per-row calibration records, shared by the CV and holdout paths.
+
+        `residual_pct` / `sigma` are what q_hat is fitted on, `mid_ret` is what
+        the band is rebuilt from once q_hat exists, and `change_pct` / `hit` are
+        what `_calibrate_confidence` thresholds on. Both callers go through here
+        so a q_hat fitted on one path is never on a different footing from the
+        other.
+
+        Rows whose mid or current price is zero are dropped: range_pct and
+        change_pct are undefined there.
+        """
+        mid = np.asarray(mid_ret, dtype=float)
+        actual = np.asarray(actual_ret, dtype=float)
+        sig = np.asarray(sigma, dtype=float)
+        curr = np.asarray(current_price, dtype=float)
+
+        mid_price = curr * (1.0 + mid / 100.0)
+        keep = (mid_price != 0) & (curr != 0)
+
+        tol = DIRECTION_FLAT_TOLERANCE_PCT
+        hit = (self._direction_classes(actual, tol)
+               == self._direction_classes(mid, tol)).astype(float)
+        with np.errstate(divide="ignore", invalid="ignore"):
+            change_pct = np.abs(mid_price - curr) / curr
+
+        return [
+            {
+                "mid_ret": float(mid[i]),
+                "residual_pct": float(actual[i] - mid[i]),
+                "sigma": float(sig[i]),
+                "change_pct": float(change_pct[i]),
+                "hit": float(hit[i]),
+            }
+            for i in np.flatnonzero(keep)
+        ]
+
+    def _holdout_conformal_records(self, horizon: int, X_val, y_val,
+                                   val_set) -> pd.DataFrame:
+        """Calibration records from the single validation holdout.
+
+        Used whenever CV is skipped. That is not a rare path: the production
+        workflow sets SKIP_CV=1 on every automated run, and steady state is a
+        warm retrain, so without this q_hat would never be fitted for the
+        horizons that skip — and predict() has no band without it.
+
+        Weaker than pooled OOF (one window instead of every fold), so the
+        caller logs the distinction. Raises rather than defaulting.
+        """
+        p50 = self._get_ensemble_prediction(horizon, 0.5, X_val.values)
+        if p50 is None:
+            raise RuntimeError(
+                f"No median model for {horizon}d, so the conformal band cannot "
+                f"be calibrated from the holdout. Refusing to serve an "
+                f"uncalibrated band."
+            )
+        records = self._conformal_records(
+            p50, y_val.values, self._sigma_for_rows(val_set),
+            val_set["price"].values,
+        )
+        if len(records) < self.MIN_CALIBRATION_ROWS:
+            raise RuntimeError(
+                f"Holdout for {horizon}d yielded {len(records)} usable "
+                f"calibration rows (need >= {self.MIN_CALIBRATION_ROWS}). "
+                f"Refusing to fabricate a conformal q_hat."
+            )
+        return pd.DataFrame(records)
 
     def _calibrate_conformal(self, horizon: int,
                              records_df: pd.DataFrame) -> float:
@@ -3543,7 +3625,7 @@ class ItemForecaster:
         # range_pct is (high_price - low_price) / mid_price. The current price
         # is a common factor and cancels, leaving the return-space width over
         # the mid growth factor. Rows with mid_ret == -100 (a zero mid price)
-        # are already dropped by _cv_evaluate_horizon.
+        # are already dropped by _conformal_records.
         records_df["range_pct"] = (high - low) / 100.0 / (1.0 + mid / 100.0)
         return q_hat
 
@@ -4305,7 +4387,6 @@ class ItemForecaster:
             # crossing to repair. `val_df` is the same row order as fold_p50, so
             # sigma aligns positionally.
             fold_sigma = self._sigma_for_rows(val_df)
-            fold_residuals = actual_returns - fold_p50
 
             # Fold-level directional accuracy
             fold_hits = 0
@@ -4364,31 +4445,10 @@ class ItemForecaster:
                 "momentum_accuracy": momentum_acc,
             })
 
-            # Build per-row records for pooled calibration
-            for i in range(len(val_df)):
-                mid_ret = float(fold_p50[i])
-                curr = float(current_prices[i])
-                actual_ret = float(actual_returns[i])
-
-                mid_price = curr * (1 + mid_ret / 100)
-
-                if mid_price == 0 or curr == 0:
-                    continue
-
-                change_pct = abs(mid_price - curr) / curr
-                actual_dir = "up" if actual_ret > DIRECTION_FLAT_TOLERANCE_PCT else "down" if actual_ret < -DIRECTION_FLAT_TOLERANCE_PCT else "flat"
-                pred_dir = "up" if mid_ret > DIRECTION_FLAT_TOLERANCE_PCT else "down" if mid_ret < -DIRECTION_FLAT_TOLERANCE_PCT else "flat"
-                hit = 1.0 if pred_dir == actual_dir else 0.0
-
-                oof_records.append({
-                    # mid_ret and sigma are what the band is rebuilt from once
-                    # q_hat exists; residual_pct and sigma are what calibrate it.
-                    "mid_ret": mid_ret,
-                    "residual_pct": float(fold_residuals[i]),
-                    "sigma": float(fold_sigma[i]),
-                    "change_pct": change_pct,
-                    "hit": hit,
-                })
+            # Build per-row records for pooled calibration. Same builder the
+            # single-holdout path uses, so the two calibrations are comparable.
+            oof_records.extend(self._conformal_records(
+                fold_p50, actual_returns, fold_sigma, current_prices))
 
         if not fold_metrics:
             raise RuntimeError(
@@ -4400,9 +4460,8 @@ class ItemForecaster:
 
         return oof_records, fold_metrics
 
-    def _calibrate_confidence(self, horizon, X_val=None, y_val=None, val_set=None,
-                               records_df=None):
-        """Calibrate confidence thresholds from validation set predictions.
+    def _calibrate_confidence(self, horizon, records_df):
+        """Calibrate confidence thresholds from pre-built calibration records.
 
         Binary confidence (high/low only):
         - Finds a range_pct threshold where high-confidence predictions achieve
@@ -4410,59 +4469,17 @@ class ItemForecaster:
         - A change_pct floor prevents marking near-zero-move predictions as
           "high" confidence (they're correct but uninformative).
 
-        If records_df is provided (from CV OOF predictions), it skips the
-        prediction-computation step and uses the pre-built records directly.
+        `records_df` must carry a numeric `range_pct`, which means
+        `_calibrate_conformal` has to have run first: the width is a function of
+        q_hat. There used to be a second entry point that built its own records
+        from the p10/p90 spread, which put `high_range` on a different scale
+        than the conformal width `_compute_confidence` compares against. Both
+        callers now share one scale.
         """
         target_accuracy = 0.80
         min_coverage_pct = 0.05
 
-        if records_df is not None:
-            df = records_df
-        else:
-            p50_pred = self._get_ensemble_prediction(horizon, 0.5, X_val.values)
-            p10_pred = self._get_ensemble_prediction(horizon, 0.1, X_val.values)
-            p90_pred = self._get_ensemble_prediction(horizon, 0.9, X_val.values)
-            if p50_pred is None or p10_pred is None or p90_pred is None:
-                return
-
-            current_prices = val_set["price"].values
-            actual_returns = y_val.values
-
-            # Fix quantile crossing via isotonic regression (same as predict / CV).
-            low_pred, high_pred = self._fix_quantile_crossing(
-                p10_pred, p50_pred, p90_pred)
-
-            records = []
-            for i in range(len(val_set)):
-                mid_ret = float(p50_pred[i])
-                low_ret = float(low_pred[i])
-                high_ret = float(high_pred[i])
-                curr = float(current_prices[i])
-                actual_ret = float(actual_returns[i])
-
-                mid_price = curr * (1 + mid_ret / 100)
-                low_price = curr * (1 + low_ret / 100)
-                high_price = curr * (1 + high_ret / 100)
-
-                if mid_price == 0 or curr == 0:
-                    continue
-
-                range_pct = (high_price - low_price) / mid_price
-                change_pct = abs(mid_price - curr) / curr
-                actual_dir = "up" if actual_ret > 0 else "down" if actual_ret < 0 else "flat"
-                pred_dir = "up" if mid_ret > 0 else "down" if mid_ret < 0 else "flat"
-                hit = 1.0 if pred_dir == actual_dir else 0.0
-
-                records.append({
-                    "range_pct": range_pct,
-                    "change_pct": change_pct,
-                    "hit": hit,
-                })
-
-            if len(records) < 50:
-                return
-
-            df = pd.DataFrame(records)
+        df = records_df
 
         # Find the widest range_pct threshold where accuracy >= target.
         # Wider threshold = more items get "high" confidence → better coverage.

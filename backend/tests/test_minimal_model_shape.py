@@ -9,7 +9,7 @@ code version.
 from __future__ import annotations
 
 from datetime import date, timedelta
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 import numpy as np
 import pandas as pd
@@ -158,7 +158,10 @@ def test_calibrated_records_are_accepted_by_calibrate_confidence():
 
     th = f.confidence_thresholds[7]
     assert np.isfinite(th["high_range"])
-    assert th["high_range"] > 0
+    # high_accuracy is the discriminating assertion: the silent-default path
+    # leaves high_range at the hardcoded 0.15 (finite and > 0, so those two
+    # assertions alone would pass) with high_accuracy at 0.0.
+    assert th["high_accuracy"] > 0
 
 
 # ---------------------------------------------------------------------------
@@ -239,3 +242,136 @@ def test_cv_records_calibrate_end_to_end_with_a_median_only_grid(tmp_path):
     assert q_hat > 0
     assert records_df["range_pct"].notna().all()
     assert np.isfinite(f.confidence_thresholds[3]["high_range"])
+
+
+# ---------------------------------------------------------------------------
+# q_hat must be fitted on the path production actually takes
+#
+# .github/workflows/price-forecast.yml sets SKIP_CV=1 on every automated run,
+# and steady state is a warm retrain. Both skip CV. If q_hat is only fitted
+# from pooled OOF records, it is never fitted for any horizon that skips —
+# which under Task 11's all-GBDT map is every horizon.
+# ---------------------------------------------------------------------------
+
+
+def _train_frame(n_items=10, n_dates=140, seed=5):
+    """Minimal frame in the shape build_training_data returns."""
+    rng = np.random.default_rng(seed)
+    rows = []
+    for item in range(n_items):
+        base = 10.0 * (item + 1)
+        price = base
+        for d in range(n_dates):
+            price = max(price * (1.0 + rng.normal(0.001, 0.02)), 0.5)
+            rows.append({
+                "item_id": f"item_{item}",
+                "date": date(2025, 1, 1) + timedelta(days=d),
+                "price": price,
+                "price_std_60d": abs(rng.normal(base * 0.05, base * 0.01)),
+                "feat_a": rng.normal(),
+                "feat_b": rng.normal(),
+            })
+    return pd.DataFrame(rows)
+
+
+def _fast_forecaster(tmp_path, warm=False):
+    """A real ItemForecaster shrunk enough to train inside a unit test.
+
+    Only cost knobs are touched. QUANTILES, N_ENSEMBLES and BOOSTING_TYPE_MAP
+    keep their production values on the class; the instance overrides here are
+    test-local and do not change what ships.
+
+    `warm=True` seeds cached HP for every horizon/quantile, which is what makes
+    reuse_hp — and therefore a warm retrain — true.
+    """
+    f = ItemForecaster(db_session=MagicMock(), model_dir=str(tmp_path))
+    f.N_ENSEMBLES = 1
+    f.DART_NUM_BOOST_ROUND = 25
+    f.SKIP_HP_HORIZONS = list(f.HORIZONS)   # no Optuna
+    f.CV_MIN_TRAIN_DAYS = 40
+    f.CV_STEP_DAYS = 25
+    f.VALIDATION_WINDOW_DAYS = 10
+    if warm:
+        f.tuned_params = {
+            h: {q: {"num_leaves": 15, "learning_rate": 0.05, "max_depth": 4,
+                    "min_data_in_leaf": 10, "objective": "quantile",
+                    "alpha": q, "metric": "quantile", "verbosity": -1}
+                for q in f.QUANTILES}
+            for h in f.HORIZONS
+        }
+    return f
+
+
+def _run_train(f, monkeypatch, df):
+    """Drive the real train() over a synthetic frame.
+
+    build_training_data is the only thing stubbed, so train()'s own sigma-clip
+    measurement and every per-horizon calibration branch run for real.
+    """
+    def fake_build(*a, **kw):
+        f.feature_cols = ["feat_a", "feat_b"]
+        f._base_feature_cols = list(f.feature_cols)
+        return df.copy()
+
+    monkeypatch.setattr(f, "build_training_data", fake_build)
+    monkeypatch.setattr(f, "save_models", lambda *a, **kw: None)
+    monkeypatch.setenv("SKIP_REGIMES", "1")
+    f.train()
+
+
+def test_skip_cv_still_fits_q_hat_for_every_horizon(tmp_path, monkeypatch):
+    """SKIP_CV=1 is what every automated run sets.
+
+    Under the production BOOSTING_TYPE_MAP it skips CV for the GBDT horizons;
+    under Task 11's all-GBDT map it skips for all four. Either way every served
+    horizon needs a q_hat, so it must be fitted from the holdout when CV is
+    skipped rather than left empty.
+    """
+    f = _fast_forecaster(tmp_path)
+    monkeypatch.setenv("SKIP_CV", "1")
+    _run_train(f, monkeypatch, _train_frame())
+
+    assert set(f.conformal_calibration) == set(f.HORIZONS), (
+        f"horizons with no fitted q_hat: "
+        f"{sorted(set(f.HORIZONS) - set(f.conformal_calibration))}"
+    )
+    assert all(v > 0 for v in f.conformal_calibration.values())
+    # And the confidence thresholds must be on the conformal scale, which
+    # means they were fitted rather than left at the hardcoded default.
+    for h in f.HORIZONS:
+        assert f.confidence_thresholds[h]["high_accuracy"] > 0
+
+
+def test_warm_retrain_still_fits_q_hat_for_every_horizon(tmp_path, monkeypatch):
+    """A warm retrain skips CV for every horizon regardless of boosting type.
+
+    It refits the models, so inheriting the previous run's q_hat would bracket
+    models that no longer exist.
+    """
+    f = _fast_forecaster(tmp_path, warm=True)
+    monkeypatch.delenv("SKIP_CV", raising=False)
+    stale = {h: 999.0 for h in f.HORIZONS}
+    f.conformal_calibration = dict(stale)
+
+    _run_train(f, monkeypatch, _train_frame())
+
+    assert set(f.conformal_calibration) == set(f.HORIZONS)
+    assert all(v > 0 for v in f.conformal_calibration.values())
+    assert f.conformal_calibration != stale, (
+        "q_hat was inherited from the previous run instead of refitted "
+        "against the models this run trained"
+    )
+
+
+def test_train_measures_sigma_clip_from_the_training_frame(tmp_path, monkeypatch):
+    """The clip q_hat is calibrated against must come from the data, not the
+    class defaults, or serving clips differently than calibration did."""
+    f = _fast_forecaster(tmp_path, warm=True)
+    defaults = dict(f.sigma_clip)
+    _run_train(f, monkeypatch, _train_frame())
+
+    assert set(f.sigma_clip) == {"floor", "cap", "fallback"}
+    assert f.sigma_clip != defaults
+    assert 0 < f.sigma_clip["floor"] < f.sigma_clip["cap"]
+    assert (f.sigma_clip["floor"] <= f.sigma_clip["fallback"]
+            <= f.sigma_clip["cap"])
