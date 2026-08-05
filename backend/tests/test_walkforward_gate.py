@@ -12,7 +12,6 @@ from __future__ import annotations
 import inspect
 from datetime import date
 
-import numpy as np
 import pytest
 
 import scripts.walkforward_backtest as wf
@@ -90,3 +89,24 @@ def test_classifier_is_fitted_per_fold():
         "the gate must fit the directional classifier production serves, not "
         "score the median's sign"
     )
+
+
+def _fake_results_by_horizon():
+    return {
+        3: {
+            "classifier": {"directional_accuracy": 55.0},
+            "median_sign": {"directional_accuracy": 50.0},
+            "sample_count": 10,
+            "records": [{"item_id": "a"}, {"item_id": "b"}],
+        }
+    }
+
+
+def test_return_records_true_keeps_records_in_the_report():
+    horizons = wf._build_horizons_report(_fake_results_by_horizon(), return_records=True)
+    assert horizons["3"]["records"] == [{"item_id": "a"}, {"item_id": "b"}]
+
+
+def test_return_records_false_omits_records_from_the_report():
+    horizons = wf._build_horizons_report(_fake_results_by_horizon(), return_records=False)
+    assert "records" not in horizons["3"]

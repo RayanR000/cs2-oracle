@@ -197,6 +197,20 @@ def _upsert_accuracy(db, rows):
     db.commit()
 
 
+def _build_horizons_report(results_by_horizon, return_records):
+    """Assemble the report's `"horizons"` dict.
+
+    `"records"` (Task 5's pairing input) is stripped unless `return_records`
+    is set — the report is printed as JSON and the records are large, so the
+    default must stay "excluded"; the flag is what makes them retrievable.
+    """
+    return {
+        str(h): {k: v for k, v in m.items()
+                 if return_records or k != "records"}
+        for h, m in results_by_horizon.items()
+    }
+
+
 def run_walkforward(max_items=500, horizons=None, skip_db=False, return_records=False):
     logger.info("=" * 60)
     logger.info("WALK-FORWARD BACKTEST")
@@ -431,10 +445,7 @@ def run_walkforward(max_items=500, horizons=None, skip_db=False, return_records=
             "test_date": str(date.today()),
             "total_items": len(items),
             "total_elapsed_seconds": round(total_elapsed, 1),
-            "horizons": {
-                str(h): {k: v for k, v in m.items() if k != "records"}
-                for h, m in results_by_horizon.items()
-            },
+            "horizons": _build_horizons_report(results_by_horizon, return_records),
         }
         return report
 
