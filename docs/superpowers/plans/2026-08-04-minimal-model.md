@@ -1012,6 +1012,22 @@ what the minimal model's speed claim is measured against."
 
 **Method:** the MDE is estimated by pairing the current model against **itself under a different seed**. Two runs of the same design differ only by seed noise, so the width of that paired interval is the width the gate cannot see through — which is exactly the minimum detectable effect.
 
+### The pinned measurement configuration (human decision, 2026-08-04)
+
+All measurement in this plan — Task 5's two seed runs **and every arm in Task 12** — runs at:
+
+```
+--max-items 60  --step-days 120   (all 4 horizons)
+```
+
+**Measured cost basis.** At 60 items and the default `STEP_DAYS = 60` (27 folds), one horizon costs 402s and the two-seed four-horizon MDE run costs ~52 min. `--step-days 120` halves the folds to ~13, giving **~281 distinct dates** — still 14× the `MIN_FORECAST_DATES = 20` sufficiency floor — for **~25 min**. The human set this budget explicitly after the ~52 min option was measured.
+
+**Why item count is not the lever.** Cutting items 500 → 60 (8.3×) cut wall time only 2.8× (1133s → 402s), because every fold trains on rows capped by `MAX_TRAIN_ROWS = 200_000` and the fold count is fixed by the date axis. Item count stops paying below ~100 items. Date count is *invariant* to it: both 60 and 500 items yielded exactly **562 dates**.
+
+**The cost of this choice, stated honestly.** Fold count is the one remaining strong lever, and it is not free: dates scale with folds and CI width goes as 1/√dates, so ~281 dates instead of ~562 makes the MDE roughly **1.4× wider** — a more permissive bar. Record the measured MDE in the results document with this caveat attached, so nobody later reads the bar as tighter than it is.
+
+⚠️ **Task 12's arms MUST use the identical `--max-items` and `--step-days`.** The bar is a paired quantity: it is only valid against arms measured on the same folds. An arm run at a different fold configuration is not comparable to this MDE, and pairing would silently drop to whatever `(item_id, forecast_date)` keys happen to overlap. `paired_da_difference` raises on zero overlap but will *not* warn about partial overlap.
+
 - [ ] **Step 1: Write the script**
 
 Create `backend/scripts/compute_mde.py`:
@@ -1074,6 +1090,24 @@ def main():
 if __name__ == "__main__":
     sys.exit(main())
 ```
+
+- [ ] **Step 1b: Make the fold step configurable**
+
+`STEP_DAYS = 60` is a module constant. The pinned measurement configuration needs
+`120` without editing source between runs, and Task 12 must be able to pass the
+same value.
+
+- Add a `step_days: int = STEP_DAYS` parameter to `run_walkforward`, and use it in
+  place of the module constant in the `range(split_idx + 1, len(dates), ...)` fold
+  loop. Keep the module constant as the default so nothing that omits the argument
+  changes behaviour.
+- Add `--step-days` to `main()`'s argument parser, defaulting to `STEP_DAYS`, and
+  pass it through.
+- `compute_mde.py` takes `--step-days` too and forwards it to both seed runs.
+
+Do **not** mutate the module constant at runtime — a global rebind would leak
+across the two seed runs inside one `compute_mde.py` process and make the
+configuration of each run unclear from its own call site.
 
 - [ ] **Step 2: Make the seed configurable in the gate**
 
