@@ -427,6 +427,129 @@ def test_train_measures_sigma_clip_from_the_training_frame(tmp_path, monkeypatch
 
 
 # ---------------------------------------------------------------------------
+# Artifact version: a pre-rewrite cache must fail loudly, not load tolerantly
+# ---------------------------------------------------------------------------
+
+
+def test_artifact_version_constant_exists():
+    assert isinstance(ItemForecaster.MODEL_ARTIFACT_VERSION, int)
+    assert ItemForecaster.MODEL_ARTIFACT_VERSION >= 2
+
+
+def test_loading_a_pre_rewrite_artifact_raises(tmp_path):
+    import json
+
+    from models.forecaster import IncompatibleModelArtifact
+
+    model_dir = tmp_path / "saved_models"
+    model_dir.mkdir()
+    # A pre-rewrite meta.json: CQR floats, no artifact version, no sigma clip.
+    (model_dir / "meta.json").write_text(json.dumps({
+        "conformal_calibration": {"3": 4.21, "7": 6.02},
+        "n_ensembles": 3,
+        "quantiles": [0.1, 0.5, 0.9],
+    }))
+
+    f = ItemForecaster.__new__(ItemForecaster)
+    with pytest.raises(IncompatibleModelArtifact, match="artifact version"):
+        ItemForecaster._check_artifact_version(f, json.loads(
+            (model_dir / "meta.json").read_text()
+        ))
+
+
+def test_current_artifact_version_is_accepted():
+    f = ItemForecaster.__new__(ItemForecaster)
+    meta = {"model_artifact_version": ItemForecaster.MODEL_ARTIFACT_VERSION}
+    # Must not raise.
+    ItemForecaster._check_artifact_version(f, meta)
+
+
+def test_load_models_raises_before_reading_any_other_field(tmp_path):
+    """The version check must run through the real load_models() entry
+    point, not just be reachable in isolation -- and it must fire even
+    though every other field in this artifact (feature_cols, n_ensembles)
+    is well-formed. An artifact this shape is exactly what the repo's own
+    pre-rewrite saved_models/meta.json looks like.
+    """
+    import json
+
+    from models.forecaster import IncompatibleModelArtifact
+
+    (tmp_path / "meta.json").write_text(json.dumps({
+        "feature_cols": ["feat_a", "feat_b"],
+        "conformal_calibration": {"3": 1.567, "7": 1.673, "14": 4.440, "30": 7.419},
+        "n_ensembles": 3,
+    }))
+    f = ItemForecaster(db_session=MagicMock(), model_dir=str(tmp_path))
+    with pytest.raises(IncompatibleModelArtifact, match="artifact version"):
+        f.load_models()
+
+
+def test_load_models_raises_on_missing_sigma_clip_even_at_current_version(tmp_path):
+    """_check_artifact_version passing does not license a tolerant default
+    for a field it didn't itself check. A current-version artifact missing
+    sigma_clip is corrupt, not old, and must still raise.
+    """
+    import json
+
+    (tmp_path / "meta.json").write_text(json.dumps({
+        "model_artifact_version": ItemForecaster.MODEL_ARTIFACT_VERSION,
+        "feature_cols": ["feat_a", "feat_b"],
+        "conformal_calibration": {"3": 1.1, "7": 2.2, "14": 3.3, "30": 4.4},
+        "n_ensembles": 1,
+    }))
+    f = ItemForecaster(db_session=MagicMock(), model_dir=str(tmp_path))
+    with pytest.raises(KeyError, match="sigma_clip"):
+        f.load_models()
+
+
+def test_load_models_raises_on_missing_conformal_calibration_even_at_current_version(tmp_path):
+    import json
+
+    (tmp_path / "meta.json").write_text(json.dumps({
+        "model_artifact_version": ItemForecaster.MODEL_ARTIFACT_VERSION,
+        "feature_cols": ["feat_a", "feat_b"],
+        "sigma_clip": {"floor": 0.01, "cap": 2.0, "fallback": 0.15},
+        "n_ensembles": 1,
+    }))
+    f = ItemForecaster(db_session=MagicMock(), model_dir=str(tmp_path))
+    with pytest.raises(KeyError, match="conformal_calibration"):
+        f.load_models()
+
+
+def test_save_then_load_round_trips_conformal_and_sigma_clip(tmp_path):
+    """The only path a predict-only run has to these fields is a round trip
+    through disk -- it never recalibrates. save_models must persist exactly
+    what load_models restores, with no coercion drift (e.g. int horizon keys
+    staying int, not becoming str or float on the way back).
+    """
+    f = ItemForecaster(db_session=MagicMock(), model_dir=str(tmp_path))
+    f.feature_cols = ["feat_a", "feat_b"]
+    f.conformal_calibration = {3: 1.1, 7: 2.2, 14: 3.3, 30: 4.4}
+    f.sigma_clip = {"floor": 0.023, "cap": 0.91, "fallback": 0.156}
+    f.save_models()
+
+    g = ItemForecaster(db_session=MagicMock(), model_dir=str(tmp_path))
+    g.load_models()
+
+    assert g.conformal_calibration == f.conformal_calibration
+    assert all(isinstance(h, int) for h in g.conformal_calibration)
+    assert g.sigma_clip == pytest.approx(f.sigma_clip)
+
+
+def test_saved_meta_records_the_current_artifact_version(tmp_path):
+    f = ItemForecaster(db_session=MagicMock(), model_dir=str(tmp_path))
+    f.feature_cols = ["feat_a"]
+    f.conformal_calibration = {3: 1.0}
+    f.save_models()
+
+    import json
+    meta = json.loads((tmp_path / "meta.json").read_text())
+    assert meta["model_artifact_version"] == ItemForecaster.MODEL_ARTIFACT_VERSION
+    assert meta["sigma_clip"] == f.sigma_clip
+
+
+# ---------------------------------------------------------------------------
 # predict(): the served band comes from conformal, not from p10/p90 models
 # ---------------------------------------------------------------------------
 

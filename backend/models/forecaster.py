@@ -144,10 +144,23 @@ def _feature_group(name: str) -> str:
     return "other"
 
 
+class IncompatibleModelArtifact(RuntimeError):
+    """A saved model cache was written by an incompatible code version.
+
+    Raised rather than defaulted around. Between the CQR scheme and the
+    minimal model, `conformal_calibration` changed MEANING (percentage-point
+    addend -> dimensionless sigma multiplier) without changing type, so a
+    tolerant loader would silently serve a band computed two different ways.
+    """
+
 
 class ItemForecaster:
     HORIZONS = [3, 7, 14, 30]
     QUANTILES = [0.1, 0.5, 0.9]
+    # Bump when the MEANING of any persisted field changes, not just the set
+    # of fields. v2: conformal_calibration became a dimensionless multiplier
+    # of per-item sigma, p10/p90 models no longer exist, sigma_clip added.
+    MODEL_ARTIFACT_VERSION = 2
     MIN_HISTORY_DAYS = 30
     # Prediction eligibility is looser than training: the live aggregator
     # series is still young, and 14 daily points is enough for the lag/rolling
@@ -3568,6 +3581,26 @@ class ItemForecaster:
             "fallback": self.SIGMA_FALLBACK_DEFAULT,
         }
 
+    def _check_artifact_version(self, meta: dict) -> None:
+        """Fail closed on any artifact not written by this exact scheme.
+
+        Must run before any other field is read from `meta`. An old artifact
+        has no `model_artifact_version` key at all (`meta.get` returns None,
+        which never equals an int and so still raises) -- absence is exactly
+        as incompatible as a mismatched version, not a reason to default.
+        """
+        found = meta.get("model_artifact_version")
+        if found == self.MODEL_ARTIFACT_VERSION:
+            return
+        raise IncompatibleModelArtifact(
+            f"saved model artifact version {found!r} != expected "
+            f"{self.MODEL_ARTIFACT_VERSION}. This cache predates the minimal "
+            f"model, where conformal_calibration changed from a percentage-"
+            f"point addend to a dimensionless sigma multiplier and sigma_clip "
+            f"was added. Loading it here would silently serve a band computed "
+            f"a different way. Retrain (mode=full) rather than loading it."
+        )
+
     def _conformal_records(self, mid_ret, actual_ret, sigma,
                            current_price) -> List[Dict[str, float]]:
         """Per-row calibration records, shared by the CV and holdout paths.
@@ -4917,6 +4950,8 @@ class ItemForecaster:
         trained_regimes = list(set(reg for (reg, h, q) in self.regime_models.keys()))
 
         meta = {
+            "model_artifact_version": self.MODEL_ARTIFACT_VERSION,
+            "sigma_clip": dict(self.sigma_clip),
             "feature_cols": self.feature_cols,
             "horizon_feature_cols": {
                 str(h): cols for h, cols in self.horizon_feature_cols.items()
@@ -4971,6 +5006,13 @@ class ItemForecaster:
         except (json.JSONDecodeError, ValueError) as e:
             logger.warning(f"Corrupt meta.json ({e}); ignoring saved models and retraining.")
             return False
+
+        # Must run before any other field is read: an artifact written by an
+        # incompatible code version can hold fields of the same name and type
+        # but a different MEANING (see IncompatibleModelArtifact), so reading
+        # anything else first risks acting on it before the check fires.
+        self._check_artifact_version(meta)
+
         self.feature_cols = meta["feature_cols"]
         self.feature_medians = pd.Series(meta.get("feature_medians", {}), dtype=np.float64)
 
@@ -5003,14 +5045,14 @@ class ItemForecaster:
                 # Legacy flat format: {"high_range": ..., ...} — assign to all horizons
                 for h in self.HORIZONS:
                     self.confidence_thresholds[h] = dict(raw_thresholds)
-        # Restore conformal calibration adjustment factors
-        raw_cc = meta.get("conformal_calibration", {})
-        self.conformal_calibration = {}
-        for h_str, q_hat in raw_cc.items():
-            try:
-                self.conformal_calibration[int(h_str)] = float(q_hat)
-            except (ValueError, TypeError):
-                continue
+        # Strict: both fields are load-bearing for the band, and
+        # _check_artifact_version has already confirmed this artifact is the
+        # minimal-model scheme, so a missing key here means the artifact is
+        # corrupt, not that an older field name should be defaulted around.
+        self.conformal_calibration = {
+            int(h): float(q) for h, q in meta["conformal_calibration"].items()
+        }
+        self.sigma_clip = {k: float(v) for k, v in meta["sigma_clip"].items()}
 
         n_ensembles = meta.get("n_ensembles", 1)
 
