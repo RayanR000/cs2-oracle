@@ -1,9 +1,9 @@
 # CV/Production Cohort Parity
 
 Date: 2026-08-05
-Status: **implemented** 2026-08-05 — `models/forecaster.py`, tests in
-`tests/test_cv_cohort_parity.py`. The numbers below are not yet reproduced from
-a retrain; the next full training run is what confirms them (see Verification).
+Status: **implemented and confirmed by retrain** 2026-08-05 —
+`models/forecaster.py`, tests in `tests/test_cv_cohort_parity.py`, verified
+against CI run `31048504009` (see Verification).
 
 ## Problem
 
@@ -98,6 +98,34 @@ reproduces exactly from `price`. `cv_results` is serialized wholesale into
 
 The CV log line now reads `classifier=X% (>=$1: Y%)`, so the comparable number is
 visible in run output instead of only in the artifact.
+
+### Retrain result (CI run 31048504009, train-only, 265s)
+
+| horizon | CV all-tiers | **CV ≥$1 (new, out-of-fold)** | predicted (in-sample) | production ≥$1 | residual |
+|---|---|---|---|---|---|
+| 3d | 66.2% | **51.3%** | 52.1% | 45.1% | 6.2pp |
+| 7d | 66.5% | **52.8%** | 54.2% | 49.2% | 3.6pp |
+| 14d | 66.5% | **55.7%** | 57.5% | 45.3% | 10.4pp |
+| 30d | 69.5% | **57.8%** | 59.1% | 38.7% | 19.1pp |
+
+Every ≥$1 figure lands 0.8–1.8pp *below* its in-sample prediction — the
+direction and magnitude expected out-of-fold — and none is near 67–71%, so the
+tier filter applied. The all-tiers series stays continuous with the stored
+66.1 / 66.6 / 68.4 / 70.8%. `edge_vs_best_baseline` reproduces from the
+all-tiers figure at all four horizons (e.g. 3d: 66.2 − 56.8 = 9.4pp),
+confirming the metric is additive.
+
+**The horizon slope is now confirmed out-of-fold and it is the real finding.**
+CV ≥$1 *rises* with horizon (51.3 → 57.8) while production *falls*
+(45.1 → 38.7), so the residual widens 3.6 → 19.1pp. The uniform "~20pp" framing
+hid this entirely: at 7d there is almost no gap to explain.
+
+**Caveat on all CV figures.** Training subsamples to a stratified
+**133 of 7,874 items** (100,920 of 5,888,996 rows, budget hardcoded at
+`build_training_data`'s `max_feature_rows=100_000`, no caller override). The
+≥$1 cohort inside a fold is correspondingly small, and the model is fit on 133
+items but serves thousands — a candidate for the remaining residual, and a
+second cohort mismatch distinct from the tier one fixed here.
 
 ## Non-goals
 
