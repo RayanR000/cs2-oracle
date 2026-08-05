@@ -35,6 +35,59 @@
 
 ---
 
+## Measured training baseline — 2026-08-04, pre-minimal-model
+
+One clean local run, 10-core Mac, `SKIP_REGIMES=1`, `--train-only`, from the
+per-phase `[timing]` lines added for this measurement. **Supersedes the
+465s/137s/401s figures in
+`docs/superpowers/specs/2026-08-04-remove-accidental-retrain-work-design.md`,
+which came from different runs and sum to more than their own total.**
+
+| Horizon | Boosting | q10 | q50 | q90 | classifier | subtotal |
+|---|---|---|---|---|---|---|
+| 3d | gbdt | 5.0s | 7.7s | 7.6s | 2.8s | **23.1s** |
+| 7d | gbdt | 2.2s | 3.0s | 4.8s | 0.6s | **10.6s** |
+| 14d | **dart** | 42.9s | 32.7s | **90.0s** | 8.1s | **173.7s** |
+| 30d | **dart** | 44.7s | 44.3s | 26.0s | 8.4s | **123.4s** |
+
+| Aggregate | Seconds | Share |
+|---|---|---|
+| p10 + p90 (24 models — the ones the minimal model deletes) | 223.2s | 59% |
+| q50 (12 models → 4) | 87.7s | 23% |
+| Directional classifiers (4 — **kept**) | 19.9s | 5% |
+| CV / feature engineering / pruning / saving | 50.4s | 13% |
+| **TOTAL training** | **381.2s** | 100% |
+
+**Optuna contributed 0.0s.** All four horizons logged
+`optuna: 0.0s (skipped - cached HP)`, so this is a *warm* retrain. A cold run
+that actually searches hyperparameters costs more, and the spec's 462s estimate
+is plausibly the cold figure. Any comparison must hold this constant.
+
+### The dominant cost is DART, not the quantile count
+
+| | Seconds | Share of all training |
+|---|---|---|
+| **14d + 30d (DART)** | **297.1s** | **78%** |
+| 3d + 7d (gbdt) | 33.7s | 9% |
+
+The minimal-model spec framed the 24 p10/p90 models (59%) as the headline cost.
+The measurement says the *boosting type* is bigger: two DART horizons account for
+78% of training, and **`14d q90` alone costs 90.0s — 24% of all training time for
+one model.** The two effects overlap heavily, since most of the p10/p90 cost sits
+inside the DART horizons.
+
+Consequence for sequencing: `BOOSTING_TYPE_MAP` → all `gbdt` may be the single
+largest lever available, and it is a one-line change. It is also an untested
+accuracy hypothesis — 14d currently has the best production DA of the four
+horizons (50.8%) — so it stays under the same pre-registered bar as everything
+else. See `docs/superpowers/specs/2026-08-04-minimal-model-design.md`.
+
+Two incidental corrections to the spec's figures, both minor and in the same
+direction: the stratified subsample selected **141** items (spec says 133) of
+7,872, and the allowlist left **47** served features (spec says 44).
+
+---
+
 ## Optimization Levers
 
 ### Tier 1 — Zero quality risk
