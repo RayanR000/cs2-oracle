@@ -1066,12 +1066,16 @@ def main():
     out = {}
     runs = []
     for seed in (42, 7):
-        wf.FOLD_SEED = seed
+        # Pass the seed as an ARGUMENT. Do not rebind wf.FOLD_SEED: both runs
+        # execute in this one process, so a global rebind leaks across them and
+        # makes each run's configuration unreadable from its own call site.
         runs.append(wf.run_walkforward(
             max_items=args.max_items,
             horizons=args.horizons,
             skip_db=True,
             return_records=True,
+            step_days=args.step_days,
+            fold_seed=seed,
         ))
 
     for horizon_str in runs[0]["horizons"]:
