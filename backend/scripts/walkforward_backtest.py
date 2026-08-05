@@ -26,7 +26,7 @@ import pandas as pd
 import lightgbm as lgb
 
 from database import SessionLocal, PredictionAccuracy
-from models.forecaster import ItemForecaster
+from models.forecaster import DIRECTION_FLAT_TOLERANCE_PCT, ItemForecaster
 from backtest.scoring import HEADLINE_TIER, score_by_tier
 from backtest.walkforward_records import fold_records
 
@@ -139,6 +139,52 @@ def _score_fold(*, item_ids, forecast_dates, base_prices, actual_returns_pct,
     )
 
 
+ARMS = ("gbm", "ridge", "naive")
+
+# Half-width of the baseline arms' interval, in percent return space. These
+# arms exist to answer "what does the DA cost?", not to compete on interval
+# coverage, so the band is a fixed placeholder and their interval_coverage
+# figure must not be quoted.
+BASELINE_BAND_PCT = 10.0
+
+
+def _classes_from_returns(mid_returns_pct):
+    """Direction classes from a point return, using production's flat band."""
+    return ItemForecaster._direction_classes(
+        np.asarray(mid_returns_pct, dtype=float),
+        DIRECTION_FLAT_TOLERANCE_PCT,
+    )
+
+
+def _naive_predict(trailing_returns_pct):
+    """Arm D: the forecast IS the trailing return over the same horizon."""
+    mid = np.asarray(trailing_returns_pct, dtype=float)
+    mid = np.nan_to_num(mid, nan=0.0, posinf=0.0, neginf=0.0)
+    return (mid,
+            mid - BASELINE_BAND_PCT,
+            mid + BASELINE_BAND_PCT,
+            _classes_from_returns(mid))
+
+
+def _ridge_predict(X_train, y_train, X_val, alpha: float = 5.0):
+    """Arm C: Ridge on the same features. Does the tree structure earn anything?"""
+    from sklearn.linear_model import Ridge
+    from sklearn.preprocessing import StandardScaler
+
+    # Ridge is scale-sensitive. Skipping this is the bug that produced a 100%
+    # quantile-crossing rate in the shelved residual stacker
+    # (forecaster.py:251-260) — do not remove the scaler.
+    scaler = StandardScaler().fit(np.asarray(X_train, dtype=float))
+    model = Ridge(alpha=alpha, random_state=42)
+    model.fit(scaler.transform(np.asarray(X_train, dtype=float)),
+              np.asarray(y_train, dtype=float))
+    mid = model.predict(scaler.transform(np.asarray(X_val, dtype=float)))
+    return (mid,
+            mid - BASELINE_BAND_PCT,
+            mid + BASELINE_BAND_PCT,
+            _classes_from_returns(mid))
+
+
 def _aggregate_records(records):
     """Pool records across folds and score them with the clustered scorer.
 
@@ -217,7 +263,10 @@ def _build_horizons_report(results_by_horizon, return_records):
 
 
 def run_walkforward(max_items=500, horizons=None, skip_db=False, return_records=False,
-                     step_days: int = STEP_DAYS, fold_seed: int = FOLD_SEED):
+                     step_days: int = STEP_DAYS, fold_seed: int = FOLD_SEED, arm="gbm"):
+    if arm not in ARMS:
+        raise ValueError(f"unknown arm {arm!r}; expected one of {ARMS}")
+
     logger.info("=" * 60)
     logger.info("WALK-FORWARD BACKTEST")
     logger.info("=" * 60)
@@ -312,61 +361,75 @@ def run_walkforward(max_items=500, horizons=None, skip_db=False, return_records=
                 X_val = val_df[feature_cols].fillna(medians)
                 y_val = val_df[f"target_return_{horizon}d"]
 
-                preds = {}
-                for q in QUANTILES:
-                    params = _get_tuned_params(meta, horizon, q)
-                    params.update({
-                        "objective": "quantile",
-                        "alpha": q,
-                        "metric": "quantile",
-                        "verbosity": -1,
-                        "random_state": fold_seed,
-                        "n_jobs": -1,
-                    })
-
-                    dtrain = lgb.Dataset(X_train.values, y_train.values)
-                    dval = lgb.Dataset(X_val.values, y_val.values, reference=dtrain)
-                    model = lgb.train(
-                        params, dtrain,
-                        num_boost_round=200,
-                        valid_sets=[dval],
-                        callbacks=[lgb.early_stopping(20, verbose=False), lgb.log_evaluation(0)]
+                if arm == "naive":
+                    trailing_col = f"return_{horizon}d"
+                    if trailing_col not in val_df.columns:
+                        logger.warning(f"    {trailing_col} absent; skipping naive fold")
+                        continue
+                    mid_ret, low_ret, high_ret, predicted_classes = _naive_predict(
+                        val_df[trailing_col].to_numpy(dtype=float)
                     )
-                    preds[q] = model.predict(X_val.values)
+                elif arm == "ridge":
+                    mid_ret, low_ret, high_ret, predicted_classes = _ridge_predict(
+                        X_train.values, y_train.values, X_val.values
+                    )
+                else:
+                    preds = {}
+                    for q in QUANTILES:
+                        params = _get_tuned_params(meta, horizon, q)
+                        params.update({
+                            "objective": "quantile",
+                            "alpha": q,
+                            "metric": "quantile",
+                            "verbosity": -1,
+                            "random_state": fold_seed,
+                            "n_jobs": -1,
+                        })
 
-                if len(preds) != 3:
-                    continue
+                        dtrain = lgb.Dataset(X_train.values, y_train.values)
+                        dval = lgb.Dataset(X_val.values, y_val.values, reference=dtrain)
+                        model = lgb.train(
+                            params, dtrain,
+                            num_boost_round=200,
+                            valid_sets=[dval],
+                            callbacks=[lgb.early_stopping(20, verbose=False), lgb.log_evaluation(0)]
+                        )
+                        preds[q] = model.predict(X_val.values)
 
-                low, high = ItemForecaster._fix_quantile_crossing(
-                    preds[0.1], preds[0.5], preds[0.9]
-                )
+                    if len(preds) != 3:
+                        continue
 
-                # The estimator production actually serves. sigma_train/
-                # sigma_val stay None so the fixed-band labels production
-                # selects are used (forecaster.py:2984-2993).
-                clf = forecaster._fit_direction_classifier(
-                    X_train.values, y_train.values,
-                    X_val.values, y_val.values,
-                    _get_tuned_params(meta, horizon, 0.5).get("boosting_type", "gbdt"),
-                    ItemForecaster._direction_tree_params(
-                        {0.5: _get_tuned_params(meta, horizon, 0.5)}
-                    ),
-                    horizon=horizon,
-                    sigma_train=None,
-                    sigma_val=None,
-                    num_boost_round=DIRECTION_NUM_ROUNDS,
-                    random_state=fold_seed,
-                )
-                predicted_classes = clf.predict(X_val.values).argmax(axis=1)
+                    low_ret, high_ret = ItemForecaster._fix_quantile_crossing(
+                        preds[0.1], preds[0.5], preds[0.9]
+                    )
+                    mid_ret = preds[0.5]
+
+                    # The estimator production actually serves. sigma_train/
+                    # sigma_val stay None so the fixed-band labels production
+                    # selects are used (forecaster.py:2984-2993).
+                    clf = forecaster._fit_direction_classifier(
+                        X_train.values, y_train.values,
+                        X_val.values, y_val.values,
+                        _get_tuned_params(meta, horizon, 0.5).get("boosting_type", "gbdt"),
+                        ItemForecaster._direction_tree_params(
+                            {0.5: _get_tuned_params(meta, horizon, 0.5)}
+                        ),
+                        horizon=horizon,
+                        sigma_train=None,
+                        sigma_val=None,
+                        num_boost_round=DIRECTION_NUM_ROUNDS,
+                        random_state=fold_seed,
+                    )
+                    predicted_classes = clf.predict(X_val.values).argmax(axis=1)
 
                 fold_clf, fold_median = _score_fold(
                     item_ids=val_df["item_id"].to_numpy(),
                     forecast_dates=val_df["date"].to_numpy(),
                     base_prices=val_df["price"].to_numpy(dtype=float),
                     actual_returns_pct=y_val.to_numpy(dtype=float),
-                    mid_returns_pct=preds[0.5],
-                    low_returns_pct=low,
-                    high_returns_pct=high,
+                    mid_returns_pct=mid_ret,
+                    low_returns_pct=low_ret,
+                    high_returns_pct=high_ret,
                     predicted_classes=predicted_classes,
                 )
                 clf_records.extend(fold_clf)
@@ -471,10 +534,13 @@ def main():
     parser.add_argument("--skip-db", action="store_true", help="Skip writing to database")
     parser.add_argument("--step-days", type=int, default=STEP_DAYS,
                          help=f"Fold stride in days (default: {STEP_DAYS})")
+    parser.add_argument("--arm", choices=list(ARMS), default="gbm",
+                        help="gbm (current design), ridge, or naive baseline")
     args = parser.parse_args()
 
     report = run_walkforward(max_items=args.max_items, horizons=args.horizons,
-                              skip_db=args.skip_db, step_days=args.step_days)
+                              skip_db=args.skip_db, step_days=args.step_days,
+                              arm=args.arm)
     print(f"\nRESULT: {json.dumps(report, indent=2, default=str)}")
     return 0 if report.get("status") != "error" else 1
 
