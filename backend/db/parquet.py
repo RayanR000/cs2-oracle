@@ -16,7 +16,9 @@ paths are single-file queries with no runtime join overhead.
 
 from __future__ import annotations
 
+import json
 import logging
+import math
 import os
 from functools import lru_cache
 from pathlib import Path
@@ -62,6 +64,101 @@ def _coerce_dates(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
+# ---------------------------------------------------------------------------
+# Nested values
+# ---------------------------------------------------------------------------
+
+# NESTED VALUES ARE STORED AS JSON TEXT. This is a store-wide invariant, not a
+# per-table choice, and it exists because DuckDB infers the SQL type of a pandas
+# object column FROM THE BATCH'S CONTENTS. Handed a column of Python dicts it
+# produced three different types for the same `prediction_accuracy.metrics`
+# column, measured 2026-08-05:
+#
+#   * STRUCT  — every dict in the batch had identical keys and value types,
+#   * MAP(VARCHAR, DOUBLE) — a nested dict's key set differed between rows,
+#     which `score_by_tier` guarantees (`mape_by_tier` carries only the tiers a
+#     cohort actually has),
+#   * VARCHAR holding a Python `repr` — it could reconcile neither.
+#
+# The file on disk holds ONE type, so the append has to cast whatever was
+# inferred today into it, and raises when they disagree. Because the inference
+# is data-dependent, so is the failure: the 2026-08-05 00:07 run passed and the
+# 10:32 run failed on identical code, one raising `Could not convert string
+# 'None' to DOUBLE` and the next `Type VARCHAR ... can't be cast to STRUCT(...)`.
+#
+# `_project`'s schema-drift handling cannot reach this. It NULLs out whole
+# columns a side lacks, and `metrics` is ONE column — drift *inside* its struct
+# is invisible to it, and always was.
+#
+# JSON text removes the inference step entirely: one stable scalar type, no
+# frozen field list, and a new metric costs nothing. The cost is that inner
+# fields need `metrics->>'$.mae'` rather than `metrics.mae`; DuckDB reads JSON
+# natively, so they stay queryable.
+_NESTED_TYPE_PREFIXES = ("STRUCT", "MAP")
+
+
+def _is_nested_type(sql_type: str) -> bool:
+    """True if *sql_type* is a DuckDB nested type, i.e. a pre-JSON column."""
+    return (
+        sql_type == "JSON"
+        or sql_type.endswith("[]")
+        or sql_type.startswith(_NESTED_TYPE_PREFIXES)
+    )
+
+
+def _json_default(value):
+    """Convert what json.dumps cannot, and refuse what we don't understand.
+
+    Deliberately not ``default=str``: stringifying an unrecognised value would
+    turn a numpy float into the string ``"1.0"``, which round-trips as a string
+    and silently corrupts the metric. numpy scalars and dates are converted;
+    anything else raises.
+    """
+    if hasattr(value, "item"):        # numpy scalar
+        return value.item()
+    if hasattr(value, "isoformat"):   # date / datetime
+        return value.isoformat()
+    raise TypeError(
+        f"{type(value).__name__} is not JSON-serialisable and has no known "
+        f"conversion; add one to _json_default rather than stringifying it."
+    )
+
+
+def _jsonify_nested(df: pd.DataFrame) -> pd.DataFrame:
+    """Serialise dict/list-valued columns to JSON text.
+
+    Does not mutate *df*, and does not mutate the values inside it — callers
+    hand the SAME row dicts to the DB, whose columns really are JSON-typed and
+    want the original objects. ``_upsert_accuracy`` does exactly that.
+
+    Keys are sorted so that identical metrics serialise to identical bytes and a
+    re-write of an unchanged row is a no-op rather than a diff. Ordering is
+    otherwise cosmetic here: the value is opaque text on disk and comes back as
+    a dict.
+    """
+    def _convert(value):
+        if isinstance(value, (dict, list)):
+            return json.dumps(value, sort_keys=True, default=_json_default)
+        # A partially-populated nested column arrives with NaN or None in the
+        # rows that have no value; both mean SQL NULL. Anything else is already
+        # scalar (an already-serialised JSON string, typically) and is left be.
+        if value is None or (isinstance(value, float) and math.isnan(value)):
+            return None
+        return value
+
+    nested = [
+        c for c in df.columns
+        if df[c].dtype == object
+        and any(isinstance(v, (dict, list)) for v in df[c])
+    ]
+    if not nested:
+        return df
+    df = df.copy()
+    for c in nested:
+        df[c] = [_convert(v) for v in df[c]]
+    return df
+
+
 def _append_parquet(path: Path, new_data: pd.DataFrame, dedup_keys: list[str]):
     """Append new_data to an existing Parquet file, deduplicating on dedup_keys.
 
@@ -85,7 +182,16 @@ def _append_parquet(path: Path, new_data: pd.DataFrame, dedup_keys: list[str]):
     the file has is NULL on the appended rows. File column order is preserved,
     with added columns appended, so the caller's dict ordering does not get to
     reshuffle the served file.
+
+    NESTED VALUES. Dict- and list-valued columns are written as JSON text, and a
+    file that still holds them as a DuckDB nested type is converted in the same
+    single rewrite — see the _jsonify_nested comment for why the nested types
+    cannot be appended to at all. The migration is done here rather than by a
+    script because ``price-archive/`` is gitignored: the served mirror exists
+    only where the job runs, so no operator can be relied on to migrate it
+    before the next unattended daily run.
     """
+    new_data = _jsonify_nested(new_data)
     new_data = _coerce_dates(new_data)
     if not path.exists():
         new_data.to_parquet(path, index=False)
@@ -94,28 +200,51 @@ def _append_parquet(path: Path, new_data: pd.DataFrame, dedup_keys: list[str]):
     con = duckdb.connect()
     try:
         con.register("_new", new_data)
-        existing_cols = [
-            r[0] for r in con.execute(
-                f"DESCRIBE SELECT * FROM read_parquet('{path}')"
-            ).fetchall()
-        ]
+        described = con.execute(
+            f"DESCRIBE SELECT * FROM read_parquet('{path}')"
+        ).fetchall()
+        existing_cols = [r[0] for r in described]
+        existing_nested = {r[0] for r in described if _is_nested_type(r[1])}
         new_cols = list(new_data.columns)
         # Union, file order first, so an existing served file keeps its layout.
         union_cols = existing_cols + [c for c in new_cols if c not in existing_cols]
 
-        def _project(cols_present, alias):
-            """Select union_cols from a relation, NULLing what it lacks."""
-            return ", ".join(
-                f"{alias}.{c}" if c in cols_present else f"NULL AS {c}"
-                for c in union_cols
-            )
+        def _project(cols_present, alias, nested=frozenset()):
+            """Select union_cols from a relation, NULLing what it lacks.
+
+            Columns in *nested* are still a DuckDB nested type on this side and
+            are converted to JSON text, so both sides of the UNION agree on
+            VARCHAR and the file lands fully migrated.
+            """
+            def _one(c):
+                if c not in cols_present:
+                    return f"NULL AS {c}"
+                if c in nested:
+                    return f"CAST(to_json({alias}.{c}) AS VARCHAR) AS {c}"
+                return f"{alias}.{c}"
+
+            return ", ".join(_one(c) for c in union_cols)
 
         # Dedup on every key both sides carry. A key absent from the file is
         # still meaningful: those existing rows predate the column, so they
         # cannot match a new row on it and must survive.
+        #
+        # IS NOT DISTINCT FROM, not `=`: a NULL in a dedup key is a key VALUE
+        # here, not "unknown". prediction_accuracy uses a NULL price_tier as the
+        # discriminator for the all-tiers aggregate — the row every accuracy
+        # endpoint serves by default — and horizon_days and model_version are
+        # nullable too. Under `=` those rows compared NULL rather than TRUE, so
+        # the anti-join kept the stale copy and the file gained one duplicate
+        # aggregate row PER RUN, leaving "the latest row" arbitrary among them.
+        # The DB side was never affected (filter_by(price_tier=None) emits
+        # IS NULL), so this was one more way for the two stores to disagree.
+        #
+        # Latent until the mirror gained price_tier: while the column was absent
+        # from the file it dropped out of usable_keys entirely and dedup ran on
+        # the four non-NULL keys, which happened to be correct.
         usable_keys = [k for k in dedup_keys if k in new_cols and k in existing_cols]
         dedup_conditions = " AND ".join(
-            f"_existing.{k} = _new.{k}" for k in usable_keys
+            f"_existing.{k} IS NOT DISTINCT FROM _new.{k}" for k in usable_keys
         )
         if not dedup_conditions:
             dedup_conditions = "1=0"
@@ -124,7 +253,7 @@ def _append_parquet(path: Path, new_data: pd.DataFrame, dedup_keys: list[str]):
             COPY (
                 SELECT {_project(new_cols, '_new')} FROM _new
                 UNION ALL
-                SELECT {_project(existing_cols, '_existing')}
+                SELECT {_project(existing_cols, '_existing', existing_nested)}
                 FROM read_parquet('{path}') _existing
                 WHERE NOT EXISTS (
                     SELECT 1 FROM _new
@@ -256,18 +385,27 @@ def replace_rows(
     if new_rows.empty and not keys:
         return
 
+    new_rows = _jsonify_nested(new_rows)
     new_rows = _coerce_dates(new_rows)
     tmp = _tmp_path(path)
     con = duckdb.connect()
     try:
-        existing_cols = [
-            r[0] for r in con.execute(
-                f"DESCRIBE SELECT * FROM read_parquet('{path}')"
-            ).fetchall()
-        ]
+        described = con.execute(
+            f"DESCRIBE SELECT * FROM read_parquet('{path}')"
+        ).fetchall()
+        existing_cols = [r[0] for r in described]
+        # Still a DuckDB nested type on disk: converted to JSON text as the rows
+        # are rewritten, the same migration _append_parquet performs.
+        nested = {r[0] for r in described if _is_nested_type(r[1])}
+
+        def _existing_col(c):
+            if c in nested:
+                return f"CAST(to_json(_existing.{c}) AS VARCHAR) AS {c}"
+            return f"_existing.{c}"
+
         if new_rows.empty:
             out_cols = existing_cols
-            existing_select = ", ".join(existing_cols)
+            existing_select = ", ".join(_existing_col(c) for c in existing_cols)
             new_select = ""
         else:
             missing = [c for c in existing_cols if c not in new_rows.columns]
@@ -286,7 +424,7 @@ def replace_rows(
             out_cols = existing_cols + added
             new_select = f"SELECT {', '.join(out_cols)} FROM _new UNION ALL "
             existing_select = ", ".join(
-                c if c in existing_cols
+                _existing_col(c) if c in existing_cols
                 else f"CAST(NULL AS {new_types[c]}) AS {c}"
                 for c in out_cols
             )

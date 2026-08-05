@@ -83,7 +83,30 @@ logger = logging.getLogger("backtest_accuracy")
 
 
 def _upsert_accuracy(db, rows):
-    """Replace existing accuracy rows for the same key then insert new ones."""
+    """Replace existing accuracy rows for the same key then insert new ones.
+
+    ORDER IS LOAD-BEARING: Parquet first, DB commit second — the same discipline
+    _flush_verdict_refresh and the --reresolve path already follow, for the same
+    reason.
+
+    Under the reverse order every failing append left the DB rows committed and
+    the mirror untouched, and the run then exited 1. The API reads Parquet first
+    and falls back to the DB only on None or an exception, so a
+    present-but-stale mirror WINS over a current DB: the divergence is served,
+    not detected, and each failed run widened it. That is exactly what the
+    2026-08-05 append failures did, twice.
+
+    Written first, the worst case is a mirror briefly AHEAD of the DB. The next
+    run recomputes the same rows from the same frozen outcomes and rewrites
+    both, so it converges; and the append dedups on the full key, so rewriting a
+    row is a replace rather than a duplicate.
+    """
+    if rows:
+        from db.parquet import append_table
+        append_table("prediction_accuracy", rows,
+                     ["prediction_type", "evaluation_date", "horizon_days",
+                      "model_version", "price_tier"])
+
     for row in rows:
         filters = {
             "prediction_type": row["prediction_type"],
@@ -108,12 +131,6 @@ def _upsert_accuracy(db, rows):
         else:
             db.add(PredictionAccuracy(**row))
     db.commit()
-
-    if rows:
-        from db.parquet import append_table
-        append_table("prediction_accuracy", rows,
-                     ["prediction_type", "evaluation_date", "horizon_days",
-                      "model_version", "price_tier"])
 
 
 # ---------------------------------------------------------------------------
@@ -618,8 +635,11 @@ def _score_groups(groups, today):
             n_dates = head_metrics["distinct_forecast_dates"]
             lo = head_metrics["directional_accuracy_ci_clustered_lower"]
             hi = head_metrics["directional_accuracy_ci_clustered_upper"]
+            # Already percent, same units as directional_accuracy — the * 100
+            # that used to live here was compensating for a scoring bug that is
+            # now fixed at the source. See the units note in score_cohort.
             ci_str = (
-                f" [CI: {lo * 100:.1f}–{hi * 100:.1f}]" if lo is not None
+                f" [CI: {lo:.1f}–{hi:.1f}]" if lo is not None
                 else " [CI: n/a, <2 forecast dates]"
             )
             # The carry-forward split travels with the headline in BOTH branches

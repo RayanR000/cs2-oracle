@@ -5,6 +5,7 @@ Reads from Parquet (ops/prediction_accuracy.parquet, ops/forecast_outcomes.parqu
 with SQLAlchemy fallback.
 """
 
+import json
 from typing import Optional
 import pandas as pd
 from fastapi import APIRouter, Depends, Query
@@ -46,6 +47,33 @@ def _dict_to_row(d: dict) -> dict:
         "metrics": d.get("metrics"),
         "created_at": str(d.get("created_at")) if d.get("created_at") else None,
     }
+
+
+def _metrics_from_mirror(value):
+    """The mirror's ``metrics`` cell as a dict.
+
+    ``db.parquet`` stores nested values as JSON text — DuckDB's type inference
+    over a column of Python dicts is data-dependent and could not be appended
+    to, see the _jsonify_nested comment there. The HTTP contract is unchanged:
+    callers have always received an object, and the DB fallback path returns one
+    from its JSON column, so the two legs must not disagree.
+
+    Rows written before that change come back as a dict (or, from a file whose
+    struct has not been rewritten yet, something dict-like), so both shapes are
+    accepted rather than assuming the migration has run.
+    """
+    if value is None or isinstance(value, dict):
+        return value
+    if isinstance(value, str):
+        try:
+            return json.loads(value)
+        except (ValueError, TypeError):
+            return None
+    # A DuckDB STRUCT read through pandas arrives as a mapping-like object.
+    try:
+        return dict(value)
+    except (TypeError, ValueError):
+        return None
 
 
 def _tier_clause(price_tier: Optional[int], column: str = "price_tier") -> str:
@@ -105,7 +133,7 @@ def _query_prediction_accuracy(
                     "price_tier": None if pd.isna(tier) else int(tier),
                     "evaluation_window_days": getattr(r, "evaluation_window_days", None),
                     "sample_count": int(getattr(r, "sample_count", 0)),
-                    "metrics": getattr(r, "metrics", {}),
+                    "metrics": _metrics_from_mirror(getattr(r, "metrics", None)) or {},
                     "created_at": str(getattr(r, "created_at", "")),
                 }
                 result.append(d)

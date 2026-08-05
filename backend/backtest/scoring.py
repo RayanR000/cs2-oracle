@@ -118,6 +118,19 @@ def block_bootstrap_ci(values, clusters, n_resamples=N_BOOTSTRAP, ci=BOOTSTRAP_C
     )
 
 
+def _as_percent(bounds: tuple) -> tuple:
+    """Rescale a (lower, upper) pair of proportions to percent, preserving None.
+
+    None means "not enough data to bootstrap" and must stay None: a 0.0 bound
+    would read as a real interval reaching zero accuracy.
+    """
+    lower, upper = bounds
+    return (
+        None if lower is None else round(lower * 100, 2),
+        None if upper is None else round(upper * 100, 2),
+    )
+
+
 def score_cohort(records: list[dict]) -> tuple[dict, int]:
     """Metrics for one (horizon, model_version, tier) cohort.
 
@@ -186,7 +199,22 @@ def score_cohort(records: list[dict]) -> tuple[dict, int]:
         if high_interval else 0
     )
 
-    dir_ci_lower, dir_ci_upper = bootstrap_ci([r["direction_correct"] for r in records])
+    # The bootstraps average the raw 0/1 direction_correct indicators, so their
+    # bounds come back as FRACTIONS while directional_accuracy is a PERCENT.
+    # Reported side by side under names differing only by suffix, that was a
+    # reading trap: the 2026-08-05 dump carried
+    # 'directional_accuracy': 49.57 next to 'directional_accuracy_ci_lower':
+    # 0.4854, which reads as an interval excluding its own point estimate by 49
+    # points. Rescaled here, at the one place the fractions are produced, rather
+    # than at each display site — _score_groups compensated with a * 100 in the
+    # log line only, so the console was right and the STORED row, the one that
+    # gets audited, was not.
+    #
+    # mae_ci_* is deliberately NOT rescaled: it is in dollars, the same units as
+    # mae, and always was.
+    dir_ci_lower, dir_ci_upper = _as_percent(
+        bootstrap_ci([r["direction_correct"] for r in records])
+    )
     mae_ci_lower, mae_ci_upper = bootstrap_ci([r["abs_error"] for r in records])
 
     # Records predating this field score with no date attributed rather than
@@ -194,8 +222,10 @@ def score_cohort(records: list[dict]) -> tuple[dict, int]:
     # check, which is the correct reading of "we cannot tell".
     forecast_dates = [r.get("forecast_date") for r in records]
     distinct_dates = len({d for d in forecast_dates if d is not None})
-    dir_ci_cl_lower, dir_ci_cl_upper = block_bootstrap_ci(
-        [r["direction_correct"] for r in records], forecast_dates
+    dir_ci_cl_lower, dir_ci_cl_upper = _as_percent(
+        block_bootstrap_ci(
+            [r["direction_correct"] for r in records], forecast_dates
+        )
     )
 
     metrics = {
@@ -218,6 +248,9 @@ def score_cohort(records: list[dict]) -> tuple[dict, int]:
         "conf_gap_pp": round(high_dir_acc - low_dir_acc, 2),
         "conf_high_interval_cov": high_int_cov,
         "conf_calibration_error": round(abs(high_dir_acc - CONFIDENCE_TARGET_ACCURACY), 2),
+        # All four bounds are PERCENT, matching directional_accuracy. Rows
+        # written before 2026-08-05 hold the same numbers as fractions.
+        #
         # Item-resampled. Retained for continuity with the stored series, but
         # it understates the uncertainty — prefer the clustered pair below.
         "directional_accuracy_ci_lower": dir_ci_lower,
