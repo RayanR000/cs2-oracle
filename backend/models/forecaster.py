@@ -22,14 +22,6 @@ from models import conformal
 from models.item_parser import parse_item_name
 from backtest.scoring import MIN_FORECAST_DATES
 
-# Residual stacking (Ridge on LightGBM residuals)
-_sklearn_available = False
-try:
-    from sklearn.linear_model import Ridge
-    _sklearn_available = True
-except ImportError:
-    Ridge = None  # type: ignore
-
 logger = logging.getLogger(__name__)
 
 RNG = np.random.RandomState(42)
@@ -156,7 +148,10 @@ class IncompatibleModelArtifact(RuntimeError):
 
 class ItemForecaster:
     HORIZONS = [3, 7, 14, 30]
-    QUANTILES = [0.1, 0.5, 0.9]
+    # The band no longer comes from quantile models — see models/conformal.py.
+    # 24 p10/p90 GBMs cost 303s of a 462s budget for 39-48% coverage against
+    # an 80% target, while their top feature was already price_std_60d.
+    QUANTILES = [0.5]
     # Bump when the MEANING of any persisted field changes, not just the set
     # of fields. v2: conformal_calibration became a dimensionless multiplier
     # of per-item sigma, p10/p90 models no longer exist, sigma_clip added.
@@ -183,27 +178,29 @@ class ItemForecaster:
     REGIMES = ["bear", "range", "bull"]
     REGIME_RETURN_THRESHOLD_BEAR = -3.0   # market_return_30d < -3% → bear
     REGIME_RETURN_THRESHOLD_BULL = 3.0    # market_return_30d > 3% → bull
-    N_ENSEMBLES = 3
-    ENSEMBLE_SEEDS = [42, 73, 91]
-    ENSEMBLE_FEATURE_FRACTIONS = [0.6, 0.7, 0.8]
+    # Single member. The 3-seed / 3-feature-fraction ensemble was estimated at
+    # 0.3-0.5pp in docs/architecture/model-optimization.md, which is below the
+    # MDE the gate reports, so it cannot be resolved in isolation. If the
+    # minimal model misses its bar, restoring N_ENSEMBLES = 2 is the first
+    # thing to try.
+    N_ENSEMBLES = 1
+    ENSEMBLE_SEEDS = [42]
+    ENSEMBLE_FEATURE_FRACTIONS = [0.7]
     MAX_BIN = 63
     # Per-horizon boosting configuration.
-    # GBDT for short horizons (3d, 7d); DART for longer/noisier horizons
-    # (14d, 30d) where dropout regularization helps reduce overfitting.
-    WEAK_HORIZONS = [14, 30]
-    BOOSTING_TYPE_MAP = {3: "gbdt", 7: "gbdt", 14: "dart", 30: "dart"}
+    # GBDT everywhere. DART's dropout was the single most expensive config
+    # choice in this file and had never been measured against GBDT on a
+    # trustworthy gate. Tested under the pre-registered bar; note 14d had the
+    # best DA of the four horizons, so this is the change most likely to cost.
+    BOOSTING_TYPE_MAP = {3: "gbdt", 7: "gbdt", 14: "gbdt", 30: "gbdt"}
     N_TRIALS_MAP = {3: 50, 7: 10, 14: 15, 30: 15}
     # 3d is frozen (50-trial search, winner warm-started in _optuna_search_params).
-    # 14d/30d run HP search so DART's drop_rate/max_drop/skip_drop get tuned
-    # rather than falling back to DART_PARAMS defaults.
+    # 14d/30d still search because they are the noisiest horizons; the original
+    # reason (tuning DART's drop_rate/max_drop/skip_drop rather than falling
+    # back to DART_PARAMS defaults) went away with DART itself.
     SKIP_HP_HORIZONS = [3]
-    DART_PARAMS = {
-        "drop_rate": 0.1,
-        "max_drop": 50,
-        "skip_drop": 0.5,
-        "xgboost_dart_mode": False,
-        "uniform_drop": False,
-    }
+    # Retained only for scripts/ab_test_*.py, which still compare DART arms.
+    # No production horizon selects it any more.
     DART_NUM_BOOST_ROUND = 500
     # Horizon-specific feature exclusions based on ablation study
     # (2026-07-19-feature-contribution-by-horizon.md):
@@ -259,22 +256,15 @@ class ItemForecaster:
     BIAS_FIT_SCHEMA_VERSION = 2
     # Max class probability at/above which a directional call is "high" confidence.
     DIRECTION_CONFIDENCE_HIGH = 0.5
-    # Residual stacking: train a Ridge regression on LightGBM residuals
-    # after ensemble training to correct systematic bias. Applied only
-    # to weak horizons.
-    #
-    # DISABLED (2026-07-25): the Ridge was fit on RAW, unscaled feature values,
-    # so it extrapolates without bound at serving time — a penny item whose
-    # return_Nd feature is legitimately +900% gets a linear correction of
-    # +100,000%+. On the 2026-inclusive retrain the 14d residual over-corrected
-    # 99% of items across every price tier (median +184% for penny, -480% for
-    # mid-price) and inverted quantile ordering (100% crossing rate). The served
-    # direction now comes from the classifier and interval width from conformal
-    # calibration, so this legacy corrector is redundant as well as dangerous.
-    # Gated in both train() and predict() so previously-saved residual models
-    # stop being applied immediately.
-    STACK_RESIDUALS = False
-    RESIDUAL_ALPHA = 5.0
+    # Residual stacking (a Ridge on LightGBM residuals, applied to 14d/30d) was
+    # disabled on 2026-07-25 and is DELETED here. It was fit on RAW, unscaled
+    # feature values, so it extrapolated without bound at serving time: a penny
+    # item whose return_Nd feature is legitimately +900% got a linear correction
+    # in the +100,000% range. On the 2026-inclusive retrain the 14d residual
+    # over-corrected 99% of items across every price tier (median +184% for
+    # penny, -480% for mid-price) and inverted quantile ordering on 100% of
+    # predictions. The served direction comes from the classifier and the band
+    # from conformal calibration, so nothing replaces it.
     # Weight given to the previous day's forecast when smoothing/blending
     # current predictions to reduce daily direction flip-flopping.
     FORECAST_BLEND_WEIGHT = 0.15
@@ -323,7 +313,6 @@ class ItemForecaster:
         self.direction_models: Dict[int, lgb.Booster] = {}
         self.regime_feature_cols: Dict[Tuple[int, str], List[str]] = {}
         self.feature_cols: List[str] = []
-        self.residual_models: Dict[Tuple[int, float], Any] = {}
         self.prune_failed_groups = prune_failed_groups
         self.tuned_params: Dict[int, Dict[float, Dict[str, Any]]] = {}
         # Per-horizon confidence thresholds: {horizon: {"high_range": ..., "high_change": ..., "high_accuracy": ...}}
@@ -2150,11 +2139,6 @@ class ItemForecaster:
             self._apply_row_sampling(
                 params, quantile,
                 subsample=trial.suggest_float("subsample", 0.5, 0.9, step=0.1))
-            # DART-specific hyperparameters
-            if boosting_type == "dart":
-                params["drop_rate"] = trial.suggest_float("drop_rate", 0.05, 0.3, log=False)
-                params["max_drop"] = trial.suggest_int("max_drop", 10, 100, step=10)
-                params["skip_drop"] = trial.suggest_float("skip_drop", 0.2, 0.8, log=False)
             _num_rounds = 100 if horizon == 7 else 200
             opt_callbacks = [
                 lgb.log_evaluation(0),
@@ -2202,13 +2186,6 @@ class ItemForecaster:
         # Searched for every quantile (all use bagging).
         if "subsample" in best.params:
             best_params["subsample"] = best.params["subsample"]
-        # DART dropout params are searched in the objective; propagate them so
-        # _train_horizon_inline's merge_keys can apply the tuned values instead
-        # of silently falling back to DART_PARAMS defaults.
-        for k in ("drop_rate", "max_drop", "skip_drop"):
-            if k in best.params:
-                best_params[k] = best.params[k]
-
         logger.info(
             f"  Optuna search ({n_trials} trials): best loss={best.value:.6f} "
             f"params={best_params}"
@@ -2972,8 +2949,6 @@ class ItemForecaster:
                         merge_keys = ["num_leaves", "learning_rate", "lambda_l1",
                                       "lambda_l2", "max_depth", "min_data_in_leaf",
                                       "subsample"]
-                        if boosting_type == "dart":
-                            merge_keys += ["drop_rate", "max_drop", "skip_drop"]
                         for k in merge_keys:
                             if k in best_params:
                                 base_params[k] = best_params[k]
@@ -2984,11 +2959,6 @@ class ItemForecaster:
                         base_params["lambda_l2"] = 1.5
                         base_params["max_depth"] = 5
                         base_params["min_data_in_leaf"] = 15
-
-                    # Add DART-specific defaults if not set by Optuna
-                    if boosting_type == "dart":
-                        for k, v in self.DART_PARAMS.items():
-                            base_params.setdefault(k, v)
 
                     per_quantile_params[q] = dict(base_params)
                 self.tuned_params[horizon] = {
@@ -3025,23 +2995,6 @@ class ItemForecaster:
                 fi = self._get_feature_importance(ensemble_models[0])
                 logger.info(f"  Done in {_ens_elapsed:.0f}s — Top features: {fi['feature'].head(5).tolist()}")
                 logger.info(f"  [timing] {horizon}d q{int(q*100)} ensemble: {_ens_elapsed:.1f}s")
-
-                # Residual stacking: train Ridge regression on ensemble
-                # residuals to correct systematic bias patterns.
-                if self.STACK_RESIDUALS and _sklearn_available and horizon in self.WEAK_HORIZONS:
-                    ensemble_pred = np.mean(
-                        [m.predict(X_val) for m in ensemble_models], axis=0
-                    )
-                    residual = y_val.values - ensemble_pred
-                    residual_model = Ridge(alpha=self.RESIDUAL_ALPHA, random_state=42)
-                    residual_model.fit(X_val.values, residual)
-                    self.residual_models[(horizon, q)] = residual_model
-                    r2 = np.corrcoef(residual, residual_model.predict(X_val.values))[0, 1] ** 2
-                    logger.info(f"  Residual model (Ridge α={self.RESIDUAL_ALPHA}) "
-                                 f"trained for {horizon}d p{int(q*100)}: "
-                                 f"R²={r2:.4f}")
-                elif self.STACK_RESIDUALS and not _sklearn_available and horizon in self.WEAK_HORIZONS:
-                    logger.warning(f"  sklearn not available — skipping residual stacking for {horizon}d")
 
             # Directional classifier: supplies the served up/flat/down call and
             # confidence (the quantile models only supply the interval).
@@ -3549,7 +3502,7 @@ class ItemForecaster:
         to seed the directional classifier."""
         src = per_quantile_params.get(0.5, {}) if per_quantile_params else {}
         keys = ("num_leaves", "learning_rate", "max_depth", "min_data_in_leaf",
-                "lambda_l1", "lambda_l2", "drop_rate", "max_drop", "skip_drop")
+                "lambda_l1", "lambda_l2")
         return {k: src[k] for k in keys if k in src}
 
     # ------------------------------------------------------------------
@@ -4126,21 +4079,6 @@ class ItemForecaster:
 
                 if all_preds:
                     preds[q] = np.mean(all_preds, axis=0)
-
-                    # Residual stacking correction: add Ridge prediction
-                    # to correct systematic bias patterns learned during
-                    # training. Only applies to weak horizons where the
-                    # residual model was trained. Gated on STACK_RESIDUALS so
-                    # that disabling the (fragile, unbounded) corrector takes
-                    # effect immediately even when older residual models are
-                    # still present on disk — see STACK_RESIDUALS note above.
-                    residual_key = (horizon, q)
-                    res_model = (self.residual_models.get(residual_key)
-                                 if self.STACK_RESIDUALS else None)
-                    if res_model is not None and getattr(
-                            res_model, "n_features_in_", X_horizon.shape[1]) == X_horizon.shape[1]:
-                        res_correction = res_model.predict(X_horizon.values)
-                        preds[q] = preds[q] + res_correction
 
             # Only the median is served. Gating on the presence of 0.5 rather
             # than on a quantile count keeps this correct whatever QUANTILES
@@ -4886,17 +4824,6 @@ class ItemForecaster:
         if removed:
             logger.info(f"  Removed {removed} orphaned regime model files")
 
-        # Save residual stacking models (Ridge coefficients for weak horizons)
-        if _sklearn_available and self.residual_models:
-            import joblib
-            for (horizon, q), res_model in self.residual_models.items():
-                path = os.path.join(
-                    self.model_dir,
-                    f"residual_{horizon}d_q{int(q*100)}.pkl"
-                )
-                joblib.dump(res_model, path)
-            logger.info(f"  Saved {len(self.residual_models)} residual stacking models")
-
         # Save feature columns, calibration thresholds, and imputation medians
         thresholds_serial = {}
         for horizon, th in self.confidence_thresholds.items():
@@ -4971,9 +4898,6 @@ class ItemForecaster:
             "feature_importance": feature_importance,
             "cv_results": cv_serial,
             "tuned_params": tuned_serial,
-            "residual_models": [
-                [h, q] for (h, q) in self.residual_models.keys()
-            ],
         }
         def _json_default(o):
             if isinstance(o, np.bool_):
@@ -5058,25 +4982,33 @@ class ItemForecaster:
 
         for horizon in self.HORIZONS:
             for q in self.QUANTILES:
-                # Load LGB models
-                if n_ensembles > 1:
-                    ensemble = []
-                    for ei in range(n_ensembles):
-                        path = os.path.join(self.model_dir, f"lgb_{horizon}d_q{int(q*100)}_e{ei}.txt")
-                        if os.path.exists(path):
-                            try:
-                                ensemble.append(lgb.Booster(model_file=path))
-                            except (lgb.basic.LightGBMError, Exception) as e:
-                                logger.warning(f"  Corrupt model {path}, skipping: {e}")
-                    if ensemble:
-                        self.models[(horizon, q)] = ensemble
-                else:
-                    path = os.path.join(self.model_dir, f"lgb_{horizon}d_q{int(q*100)}.txt")
+                # Load LGB models. train() always stores a LIST, so save_models
+                # writes `_e{ei}`-suffixed members even for a single member —
+                # this must mirror that regardless of n_ensembles. Branching on
+                # `n_ensembles > 1` here and reading an unsuffixed filename in
+                # the single-member case left self.models empty once
+                # N_ENSEMBLES became 1, silently serving no forecasts.
+                # `range(n_ensembles)` (not a glob) is what keeps stale e1/e2
+                # files from the 40-model grid out of the ensemble.
+                ensemble = []
+                for ei in range(max(1, n_ensembles)):
+                    path = os.path.join(self.model_dir, f"lgb_{horizon}d_q{int(q*100)}_e{ei}.txt")
                     if os.path.exists(path):
                         try:
-                            self.models[(horizon, q)] = lgb.Booster(model_file=path)
+                            ensemble.append(lgb.Booster(model_file=path))
                         except (lgb.basic.LightGBMError, Exception) as e:
                             logger.warning(f"  Corrupt model {path}, skipping: {e}")
+                if ensemble:
+                    self.models[(horizon, q)] = ensemble
+                    continue
+                # Unsuffixed fallback: save_models still emits this name if a
+                # bare Booster (not a list) is ever assigned to self.models.
+                path = os.path.join(self.model_dir, f"lgb_{horizon}d_q{int(q*100)}.txt")
+                if os.path.exists(path):
+                    try:
+                        self.models[(horizon, q)] = lgb.Booster(model_file=path)
+                    except (lgb.basic.LightGBMError, Exception) as e:
+                        logger.warning(f"  Corrupt model {path}, skipping: {e}")
 
         # Load regime-specific models
         trained_regimes = meta.get("trained_regimes", [])
@@ -5119,24 +5051,6 @@ class ItemForecaster:
                     logger.warning(f"  Corrupt classifier {cpath}, skipping: {e}")
         if self.direction_models:
             logger.info(f"  Loaded {len(self.direction_models)} directional classifiers")
-
-        # Load residual stacking models (Ridge on LGB residuals for weak horizons)
-        if _sklearn_available:
-            import joblib
-            res_model_list = meta.get("residual_models", [])
-            for entry in res_model_list:
-                try:
-                    h, q = int(entry[0]), float(entry[1])
-                except (ValueError, TypeError):
-                    continue
-                rpath = os.path.join(
-                    self.model_dir,
-                    f"residual_{h}d_q{int(q*100)}.pkl"
-                )
-                if os.path.exists(rpath):
-                    self.residual_models[(h, q)] = joblib.load(rpath)
-            if self.residual_models:
-                logger.info(f"  Loaded {len(self.residual_models)} residual stacking models")
 
         # Build per-horizon feature sets from the loaded models.
         # Each model internally stores the feature names it was trained with.

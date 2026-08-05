@@ -537,6 +537,67 @@ def test_save_then_load_round_trips_conformal_and_sigma_clip(tmp_path):
     assert g.sigma_clip == pytest.approx(f.sigma_clip)
 
 
+def _tiny_booster():
+    """A real one-tree Booster, so this exercises the actual file format."""
+    import lightgbm as lgb
+    rng = np.random.RandomState(0)
+    X = rng.rand(60, 2)
+    y = X[:, 0] * 2.0
+    ds = lgb.Dataset(X, y)
+    return lgb.train({"objective": "quantile", "alpha": 0.5, "verbosity": -1,
+                      "num_leaves": 2, "min_data_in_leaf": 5}, ds,
+                     num_boost_round=1)
+
+
+def test_single_member_ensemble_round_trips_through_disk(tmp_path):
+    """A one-member ensemble must load back, not silently vanish.
+
+    train() always stores self.models[(h, q)] as a LIST, so save_models writes
+    the member as `lgb_3d_q50_e0.txt` whatever N_ENSEMBLES is. load_models
+    branched on `n_ensembles > 1` and looked for an unsuffixed
+    `lgb_3d_q50.txt` in the single-member case -- a filename save_models never
+    produces. With N_ENSEMBLES == 1 that left self.models EMPTY after a load,
+    so a predict-only run served nothing. Train-only runs could not catch it:
+    the boosters are still in memory there.
+    """
+    f = ItemForecaster(db_session=MagicMock(), model_dir=str(tmp_path))
+    f.feature_cols = ["feat_a", "feat_b"]
+    f.conformal_calibration = {3: 1.0}
+    f.models[(3, 0.5)] = [_tiny_booster()]
+    f.save_models()
+
+    g = ItemForecaster(db_session=MagicMock(), model_dir=str(tmp_path))
+    g.load_models()
+
+    assert (3, 0.5) in g.models, f"models empty after load; on disk: " \
+        f"{sorted(p.name for p in tmp_path.glob('*.txt'))}"
+    members = g.models[(3, 0.5)]
+    assert isinstance(members, list) and len(members) == 1
+
+
+def test_load_ignores_stale_extra_ensemble_members_on_disk(tmp_path):
+    """The 40-model artifact left lgb_*_e1/_e2 files behind on real deploys.
+
+    save_models only purges orphaned *regime* files, so those stale members
+    persist in models/saved_models. Loading must be governed by the member
+    count, not by whatever happens to be on disk, or the minimal model would
+    quietly serve a 3-member ensemble again.
+    """
+    f = ItemForecaster(db_session=MagicMock(), model_dir=str(tmp_path))
+    f.feature_cols = ["feat_a", "feat_b"]
+    f.conformal_calibration = {3: 1.0}
+    f.models[(3, 0.5)] = [_tiny_booster()]
+    f.save_models()
+    # Simulate leftovers from the pre-rewrite grid.
+    for ei in (1, 2):
+        _tiny_booster().save_model(str(tmp_path / f"lgb_3d_q50_e{ei}.txt"))
+
+    g = ItemForecaster(db_session=MagicMock(), model_dir=str(tmp_path))
+    g.load_models()
+
+    assert len(g.models[(3, 0.5)]) == 1
+
+
 def test_saved_meta_records_the_current_artifact_version(tmp_path):
     f = ItemForecaster(db_session=MagicMock(), model_dir=str(tmp_path))
     f.feature_cols = ["feat_a"]
@@ -970,3 +1031,35 @@ def test_sanitization_cannot_be_relied_on_being_given_an_ordered_band(tmp_path):
     fc = f._sanitize_forecasts(result).iloc[0]["forecasts"][7]
     assert fc["low"] <= fc["mid"] <= fc["high"], fc
     assert fc["low"] > 0
+
+
+def test_quantiles_collapse_to_the_median_only():
+    assert ItemForecaster.QUANTILES == [0.5]
+
+
+def test_ensemble_is_a_single_member():
+    assert ItemForecaster.N_ENSEMBLES == 1
+    assert len(ItemForecaster.ENSEMBLE_SEEDS) == 1
+    assert len(ItemForecaster.ENSEMBLE_FEATURE_FRACTIONS) == 1
+
+
+def test_no_horizon_uses_dart():
+    assert set(ItemForecaster.BOOSTING_TYPE_MAP.values()) == {"gbdt"}
+
+
+def test_trained_model_count_is_eight():
+    # 4 median GBMs + 4 directional classifiers. Guards accidental
+    # re-expansion of the quantile/ensemble grid.
+    expected = len(ItemForecaster.HORIZONS) * len(ItemForecaster.QUANTILES) \
+        * ItemForecaster.N_ENSEMBLES
+    assert expected == 4
+    assert expected + len(ItemForecaster.HORIZONS) == 8
+
+
+def test_residual_stacking_is_gone():
+    assert not hasattr(ItemForecaster, "STACK_RESIDUALS")
+    assert not hasattr(ItemForecaster, "RESIDUAL_ALPHA")
+
+
+def test_dart_params_are_gone():
+    assert not hasattr(ItemForecaster, "DART_PARAMS")

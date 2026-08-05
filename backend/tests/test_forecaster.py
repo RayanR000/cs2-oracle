@@ -1392,29 +1392,35 @@ class TestDirectionClassifierHelpers:
         assert np.all(nl <= nm) and np.all(nm <= nh)
 
     def test_direction_tree_params_extracts_agnostic_keys(self, forecaster):
+        # drop_rate is a DART dropout param and used to be carried through. No
+        # horizon boosts with DART any more, so it is no longer an extracted key
+        # and must be left behind like objective/alpha.
         pqp = {0.5: {"num_leaves": 63, "learning_rate": 0.04, "objective": "quantile",
                      "alpha": 0.5, "max_depth": 6, "drop_rate": 0.1}}
         tp = forecaster._direction_tree_params(pqp)
-        assert tp == {"num_leaves": 63, "learning_rate": 0.04, "max_depth": 6, "drop_rate": 0.1}
+        assert tp == {"num_leaves": 63, "learning_rate": 0.04, "max_depth": 6}
         assert "objective" not in tp and "alpha" not in tp
+        assert "drop_rate" not in tp
 
 
-class TestResidualStackingDisabled:
-    """Residual Ridge stacking is disabled: it was fit on raw unscaled features
-    and extrapolated without bound at serving time (penny-item 14d forecasts
-    exploded to +10,000%+ and quantiles inverted). See STACK_RESIDUALS note."""
+class TestResidualStackingDeleted:
+    """Residual Ridge stacking is gone, not merely disabled: it was fit on raw
+    unscaled features and extrapolated without bound at serving time
+    (penny-item 14d forecasts exploded to +10,000%+ and quantiles inverted).
 
-    def test_stack_residuals_flag_off(self, forecaster):
-        assert forecaster.STACK_RESIDUALS is False, \
-            "Residual stacking must stay disabled (fragile unbounded corrector)"
+    These were flag-state assertions while `STACK_RESIDUALS = False` held the
+    corrector back. The minimal-model rewrite deleted the code, so the
+    equivalent guard is now that no part of the machinery can be reached.
+    """
 
-    def test_train_does_not_fit_residual_models(self, forecaster):
-        """With the flag off, train() must not populate residual_models even on
-        weak horizons — the fit block is gated on STACK_RESIDUALS."""
-        # The training gate is `STACK_RESIDUALS and _sklearn_available and
-        # horizon in WEAK_HORIZONS`; with the flag False no models are fit.
-        assert forecaster.STACK_RESIDUALS is False
-        assert 14 in forecaster.WEAK_HORIZONS  # the horizon that blew up
+    def test_config_flags_are_gone(self, forecaster):
+        assert not hasattr(forecaster, "STACK_RESIDUALS")
+        assert not hasattr(forecaster, "RESIDUAL_ALPHA")
+
+    def test_no_residual_model_store_exists(self, forecaster):
+        """`predict()` used to look the corrector up in this dict. With the
+        attribute gone, a stale `residual_*.pkl` on disk cannot be applied."""
+        assert not hasattr(forecaster, "residual_models")
 
 
 class TestQ50RowSampling:
@@ -1635,12 +1641,16 @@ class TestPredictEnsembleSafe:
 
 class TestForecastBlending:
     def test_ensemble_constants(self, forecaster):
-        """Ensemble must use 6 diversified members (Tier-1 speedup)."""
-        assert forecaster.N_ENSEMBLES == 3
-        assert len(forecaster.ENSEMBLE_SEEDS) == 3
-        assert len(forecaster.ENSEMBLE_FEATURE_FRACTIONS) == 3
-        # Fractions should span a diversification range (not all identical).
-        assert len(set(forecaster.ENSEMBLE_FEATURE_FRACTIONS)) > 1
+        """The ensemble is a single member (minimal-model rewrite).
+
+        This asserted 3 diversified members and that the feature fractions
+        spanned a range. Both were replaced rather than dropped: the invariant
+        that still matters is that the seed and fraction lists agree with
+        N_ENSEMBLES, since train() indexes them by member.
+        """
+        assert forecaster.N_ENSEMBLES == 1
+        assert len(forecaster.ENSEMBLE_SEEDS) == forecaster.N_ENSEMBLES
+        assert len(forecaster.ENSEMBLE_FEATURE_FRACTIONS) == forecaster.N_ENSEMBLES
         assert 0.0 < forecaster.FORECAST_BLEND_WEIGHT < 1.0
         assert forecaster.MAX_BIN == 63
 
