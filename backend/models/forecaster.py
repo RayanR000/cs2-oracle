@@ -18,6 +18,7 @@ from datetime import datetime, timedelta, timezone, date
 from typing import Dict, List, Optional, Tuple, Any
 from pathlib import Path
 from sqlalchemy import text
+from models import conformal
 from models.item_parser import parse_item_name
 from backtest.scoring import MIN_FORECAST_DATES
 
@@ -315,10 +316,16 @@ class ItemForecaster:
         # Per-horizon confidence thresholds: {horizon: {"high_range": ..., "high_change": ..., "high_accuracy": ...}}
         self.confidence_thresholds: Dict[int, Dict[str, float]] = {}
         self.feature_medians: pd.Series = pd.Series(dtype=np.float64)
-        # Conformal quantile calibration adjustment per horizon (in percentage-return space).
-        # Maps horizon -> q_hat, the (1-α)(1+1/n) quantile of nonconformity scores
-        # from CV out-of-fold predictions. Applied as: low -= q_hat, high += q_hat.
+        # Conformal calibration per horizon. NOTE: the meaning changed with the
+        # minimal model — q_hat is now a DIMENSIONLESS multiplier of the
+        # per-item sigma, not a percentage-point addend. Applied as:
+        #   low = mid - q_hat * sigma_i,  high = mid + q_hat * sigma_i
+        # The previous CQR scheme widened a [p10, p90] base interval by a
+        # constant. Loading an old artifact into this code would silently
+        # produce a band computed two different ways, which is why
+        # MODEL_ARTIFACT_VERSION exists.
         self.conformal_calibration: Dict[int, float] = {}
+        self._init_conformal_state()
         # Expanding-window CV results per horizon: {horizon: {fold_count, fold_accs, per_fold, ...}}
         self.cv_results: Dict[int, Dict] = {}
         # Event decay constants (grid-searchable per event type)
@@ -2736,6 +2743,26 @@ class ItemForecaster:
 
         self.horizon_feature_cols = {}
 
+        # Sigma clip bounds come from the cross-sectional distribution of the
+        # TRAINING frame, then are frozen into the artifact. q_hat is
+        # calibrated against clipped sigmas, so serving must clip identically.
+        # Measured once here, before any horizon calibrates, so every horizon's
+        # q_hat and every served row share one clip.
+        with np.errstate(divide="ignore", invalid="ignore"):
+            sigma_raw = (df["price_std_60d"].to_numpy(dtype=float)
+                         / df["price"].to_numpy(dtype=float))
+        floor, cap = conformal.sigma_bounds(sigma_raw)
+        finite = sigma_raw[np.isfinite(sigma_raw) & (sigma_raw > 0)]
+        self.sigma_clip = {
+            "floor": floor,
+            "cap": cap,
+            "fallback": float(np.median(finite)),
+        }
+        logger.info(
+            f"Sigma clip: floor={floor:.5f} cap={cap:.5f} "
+            f"fallback={self.sigma_clip['fallback']:.5f}"
+        )
+
         for hi, horizon in enumerate(self.HORIZONS, 1):
             self._train_horizon_inline(horizon, df, max_rows)
 
@@ -3085,32 +3112,27 @@ class ItemForecaster:
                     logger.info(f"  CV skipped (warm retrain — using cached thresholds)")
                 else:
                     logger.info(f"  CV skipped (SKIP_CV=1, GBDT horizon); calibrating from single holdout")
-                oof_records, cv_metrics, nc_scores = [], [], []
+                oof_records, cv_metrics = [], []
             else:
-                oof_records, cv_metrics, nc_scores = self._cv_evaluate_horizon(tdf, horizon, per_quantile_params)
+                oof_records, cv_metrics = self._cv_evaluate_horizon(tdf, horizon, per_quantile_params)
 
-            # Calibrate confidence thresholds on pooled OOF predictions from CV
-            # (more robust than a single 21-day holdout)
+            # Calibrate on pooled OOF predictions from CV (more robust than a
+            # single 21-day holdout). Order matters: q_hat sets the band width,
+            # and the confidence thresholds are fitted on that width, so the
+            # conformal step runs FIRST.
             if oof_records:
                 records_df = pd.DataFrame(oof_records)
                 logger.info(f"  Calibrating on {len(records_df)} pooled OOF predictions "
                             f"({len(cv_metrics)} folds)")
-                self._calibrate_confidence(horizon=horizon, records_df=records_df)
 
-                # Conformal quantile calibration: compute the (1-α)(1+1/n)
-                # quantile of nonconformity scores from pooled OOF predictions.
-                # This adjustment factor widens prediction intervals so that
-                # [p10 - q_hat, p90 + q_hat] achieves ~(1-2α) empirical coverage.
-                if nc_scores:
-                    nc_arr = np.array(nc_scores)
-                    n_cal = len(nc_arr)
-                    alpha = 0.10  # target 90% coverage for the conformal interval
-                    q_level = (1.0 - alpha) * (1.0 + 1.0 / max(n_cal, 1))
-                    q_level = min(q_level, 0.999)
-                    q_hat = float(np.quantile(nc_arr, q_level))
-                    self.conformal_calibration[horizon] = q_hat
-                    logger.info(f"  CQR calibration: q_hat={q_hat:.4f}pp "
-                                f"(n={n_cal}, α={alpha}, target coverage={(1-alpha)*100:.0f}%)")
+                q_hat = self._calibrate_conformal(horizon, records_df)
+                logger.info(
+                    f"  Conformal calibration: q_hat={q_hat:.4f} (dimensionless "
+                    f"x sigma), n={len(records_df)}, alpha={conformal.ALPHA}, "
+                    f"target coverage={conformal.NOMINAL_COVERAGE * 100:.0f}%"
+                )
+
+                self._calibrate_confidence(horizon=horizon, records_df=records_df)
             elif _skip_cv or _warm_retrain:
                 if _skip_cv:
                     logger.info("  CV skipped (SKIP_CV=1, GBDT horizon); fallback to single-split calibration")
@@ -3474,6 +3496,73 @@ class ItemForecaster:
         keys = ("num_leaves", "learning_rate", "max_depth", "min_data_in_leaf",
                 "lambda_l1", "lambda_l2", "drop_rate", "max_drop", "skip_drop")
         return {k: src[k] for k in keys if k in src}
+
+    # ------------------------------------------------------------------
+    # Conformal band state
+    # ------------------------------------------------------------------
+
+    # Fallback sigma for items with no usable 60-day history, and the initial
+    # clip bounds before a fit has measured the real distribution. Overwritten
+    # by train() and restored by load_models().
+    SIGMA_FALLBACK_DEFAULT = 0.15
+    SIGMA_FLOOR_DEFAULT = 0.01
+    SIGMA_CAP_DEFAULT = 2.0
+
+    def _init_conformal_state(self) -> None:
+        """Sigma clip bounds and fallback, persisted with the model.
+
+        q_hat is calibrated against CLIPPED sigmas, so serving must clip
+        identically or the coverage guarantee does not transfer.
+        """
+        self.sigma_clip: Dict[str, float] = {
+            "floor": self.SIGMA_FLOOR_DEFAULT,
+            "cap": self.SIGMA_CAP_DEFAULT,
+            "fallback": self.SIGMA_FALLBACK_DEFAULT,
+        }
+
+    def _calibrate_conformal(self, horizon: int,
+                             records_df: pd.DataFrame) -> float:
+        """Fit q_hat on pooled OOF records and attach the width they imply.
+
+        Two passes are unavoidable. The nonconformity score needs only the
+        residual and sigma, but `range_pct` — what `_calibrate_confidence`
+        thresholds on, and what it requires to be numeric — is a function of
+        q_hat, which does not exist until the first pass finishes. Deriving it
+        here rather than inside CV keeps the width the confidence thresholds
+        are fitted on identical to the width predict() will serve.
+
+        Mutates `records_df` in place by adding `range_pct`, and returns q_hat.
+        """
+        resid = records_df["residual_pct"].to_numpy(dtype=float)
+        sigma = records_df["sigma"].to_numpy(dtype=float)
+        q_hat = conformal.calibrate(resid, sigma, conformal.ALPHA)
+        self.conformal_calibration[horizon] = q_hat
+
+        mid = records_df["mid_ret"].to_numpy(dtype=float)
+        low, high = conformal.band(mid, sigma, q_hat)
+        # range_pct is (high_price - low_price) / mid_price. The current price
+        # is a common factor and cancels, leaving the return-space width over
+        # the mid growth factor. Rows with mid_ret == -100 (a zero mid price)
+        # are already dropped by _cv_evaluate_horizon.
+        records_df["range_pct"] = (high - low) / 100.0 / (1.0 + mid / 100.0)
+        return q_hat
+
+    def _sigma_for_rows(self, rows: pd.DataFrame) -> np.ndarray:
+        """Per-item sigma for a feature frame, using the persisted clip bounds.
+
+        Reads `price_std_60d` (engineered in engineer_features) and `price`.
+        Both are present on every frame that reaches training or prediction,
+        so this adds no feature-engineering pass.
+        """
+        std = rows["price_std_60d"] if "price_std_60d" in rows.columns \
+            else pd.Series(np.nan, index=rows.index)
+        return conformal.sigma_from_columns(
+            price_std_60d=std.to_numpy(dtype=float),
+            price=rows["price"].to_numpy(dtype=float),
+            floor=self.sigma_clip["floor"],
+            cap=self.sigma_clip["cap"],
+            fallback=self.sigma_clip["fallback"],
+        )
 
     @staticmethod
     def _fix_quantile_crossing(low: np.ndarray, mid: np.ndarray,
@@ -4113,10 +4202,15 @@ class ItemForecaster:
             per_quantile_params: Dict {q: base_params} with best HP merged.
 
         Returns:
-            (oof_records, fold_metrics, nonconformity_scores) where oof_records
-            is a list of dicts with range_pct/change_pct/hit for calibration,
-            fold_metrics is a list of per-fold accuracy dicts, and
-            nonconformity_scores is a list of CQR scores for conformal calibration.
+            (oof_records, fold_metrics) where oof_records is a list of dicts
+            with mid_ret/residual_pct/sigma/change_pct/hit and fold_metrics is
+            a list of per-fold accuracy dicts.
+
+            The records carry no `range_pct`: the band width depends on a q_hat
+            that does not exist until the pooled records are calibrated. The
+            caller computes q_hat from residual_pct/sigma and then derives
+            range_pct in a second pass, so the width the confidence thresholds
+            are fitted on is the width that will actually be served.
         """
         sorted_dates = sorted(tdf["date"].unique())
         # Embargo train dates within `horizon` days of each validation window:
@@ -4133,7 +4227,6 @@ class ItemForecaster:
 
         oof_records = []
         fold_metrics = []
-        nonconformity_scores = []
 
         for fold_id, (train_dates, val_dates) in enumerate(splits):
             train_df = tdf[tdf["date"].isin(train_dates)]
@@ -4142,9 +4235,10 @@ class ItemForecaster:
             if len(val_df) < 50:
                 continue
 
+            # Only the median is consumed: the band is conformal now, so a
+            # fold's p10/p90 predictions (where QUANTILES still asks for them)
+            # have no reader.
             fold_p50 = None
-            fold_p10 = None
-            fold_p90 = None
 
             X_train_pre = train_df[self.feature_cols].replace([np.inf, -np.inf], np.nan)
             fold_medians = X_train_pre.median()
@@ -4195,28 +4289,23 @@ class ItemForecaster:
                 pred = lgb_preds[0]
                 if q == 0.5:
                     fold_p50 = pred
-                elif q == 0.1:
-                    fold_p10 = pred
-                elif q == 0.9:
-                    fold_p90 = pred
 
-            if fold_p50 is None or fold_p10 is None or fold_p90 is None:
+            # The median is the only prediction this function needs. Guarding on
+            # p10/p90 here would `continue` on every fold once QUANTILES == [0.5],
+            # emptying oof_records and silently skipping calibration entirely.
+            if fold_p50 is None:
                 continue
 
-            # Fix quantile crossing via isotonic regression (same as predict()).
-            low_pred, high_pred = self._fix_quantile_crossing(
-                fold_p10, fold_p50, fold_p90)
             current_prices = val_df["price"].values
             actual_returns = y_val.values
 
-            # Conformal nonconformity scores: max(Q_low - y, y - Q_high) in % return space.
-            # Measures how far the actual return falls outside the prediction interval.
-            fold_scores = np.maximum(
-                low_pred - actual_returns,
-                actual_returns - high_pred,
-            )
-            fold_scores = np.clip(fold_scores, 0.0, None)  # inside interval → score 0
-            nonconformity_scores.extend(fold_scores[~np.isnan(fold_scores)].tolist())
+            # Locally-weighted split conformal: the nonconformity score is the
+            # absolute median residual normalized by the item's sigma. There is
+            # no p10/p90 interval to measure exceedance against any more, and no
+            # crossing to repair. `val_df` is the same row order as fold_p50, so
+            # sigma aligns positionally.
+            fold_sigma = self._sigma_for_rows(val_df)
+            fold_residuals = actual_returns - fold_p50
 
             # Fold-level directional accuracy
             fold_hits = 0
@@ -4278,26 +4367,25 @@ class ItemForecaster:
             # Build per-row records for pooled calibration
             for i in range(len(val_df)):
                 mid_ret = float(fold_p50[i])
-                low_ret = float(low_pred[i])
-                high_ret = float(high_pred[i])
                 curr = float(current_prices[i])
                 actual_ret = float(actual_returns[i])
 
                 mid_price = curr * (1 + mid_ret / 100)
-                low_price = curr * (1 + low_ret / 100)
-                high_price = curr * (1 + high_ret / 100)
 
                 if mid_price == 0 or curr == 0:
                     continue
 
-                range_pct = (high_price - low_price) / mid_price
                 change_pct = abs(mid_price - curr) / curr
                 actual_dir = "up" if actual_ret > DIRECTION_FLAT_TOLERANCE_PCT else "down" if actual_ret < -DIRECTION_FLAT_TOLERANCE_PCT else "flat"
                 pred_dir = "up" if mid_ret > DIRECTION_FLAT_TOLERANCE_PCT else "down" if mid_ret < -DIRECTION_FLAT_TOLERANCE_PCT else "flat"
                 hit = 1.0 if pred_dir == actual_dir else 0.0
 
                 oof_records.append({
-                    "range_pct": range_pct,
+                    # mid_ret and sigma are what the band is rebuilt from once
+                    # q_hat exists; residual_pct and sigma are what calibrate it.
+                    "mid_ret": mid_ret,
+                    "residual_pct": float(fold_residuals[i]),
+                    "sigma": float(fold_sigma[i]),
                     "change_pct": change_pct,
                     "hit": hit,
                 })
@@ -4310,7 +4398,7 @@ class ItemForecaster:
                 f"{len(sorted_dates)} distinct dates and {len(tdf)} rows."
             )
 
-        return oof_records, fold_metrics, nonconformity_scores
+        return oof_records, fold_metrics
 
     def _calibrate_confidence(self, horizon, X_val=None, y_val=None, val_set=None,
                                records_df=None):
