@@ -2746,13 +2746,31 @@ class ItemForecaster:
         vol = vol / max(np.mean(vol), 1e-8)
         return vol.astype(np.float32)
 
-    def train(self, max_rows: int = 300_000):
+    def train(self, max_rows: int = 300_000,
+              max_feature_rows: int = 100_000):
         logger.info("=" * 60)
         logger.info("TRAINING LIGHTGBM FORECASTER (ensemble, HP search, walk-forward)")
         logger.info("=" * 60)
 
         _train_start = datetime.now()
-        df = self.build_training_data(days_back=1460, backfilled_only=True)
+        # Two separate budgets, previously conflated into one that was then
+        # discarded. max_feature_rows bounds the frame BEFORE feature
+        # engineering and therefore decides how many whole item histories the
+        # model learns from; max_rows caps each horizon's slice AFTER it. Only
+        # the latter was ever passed, so build_training_data silently kept its
+        # own 100_000 default and the caller's 700_000 did nothing.
+        #
+        # They are deliberately not unified. Feeding max_rows to both would
+        # raise coverage and make the per-horizon cap start binding at the same
+        # time, so one number would move two things at once. Measured
+        # 2026-08-05: at 700_000 (646 items) training costs 468.7s against
+        # 104.6s at 100_000 (99 items) — more than the 462s the pre-rewrite
+        # 40-model grid cost, i.e. raising coverage here spends the entire
+        # minimal-model saving to buy 12% of the item pool. Hence the default
+        # stays at the measured status quo; see
+        # docs/changelog/2026-08-04-minimal-model-results.md.
+        df = self.build_training_data(days_back=1460, backfilled_only=True,
+                                      max_feature_rows=max_feature_rows)
 
         self.horizon_feature_cols = {}
 

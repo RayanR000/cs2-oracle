@@ -35,6 +35,48 @@ logger = logging.getLogger("forecast_prices")
 
 MODEL_VERSION = "lgbm-v3"
 
+# Rows kept BEFORE feature engineering, which is what decides how many whole
+# item histories the model learns from: ~1,083 archive rows per item, so 100_000
+# buys 99 of the 5,377-item pool. Kept at the measured status quo rather than
+# raised, because coverage is bought at a steep price — 400_000 (372 items) costs
+# 2.2x the training wall-clock and 700_000 (646 items) costs 4.5x, the latter
+# exceeding the pre-rewrite 40-model grid. Raise it only against a measured
+# accuracy gain. Env-configured to match SKIP_REGIMES/SKIP_CV rather than a
+# flag, because this script parses argv as a plain set.
+DEFAULT_TRAIN_FEATURE_ROWS = 100_000
+
+# Rows per horizon AFTER feature engineering. A different knob: at the feature
+# budget above it never binds, and it is left where it was so that changing
+# coverage does not silently also change each horizon's slice.
+TRAIN_HORIZON_MAX_ROWS = 700_000
+
+
+def _train_feature_rows() -> int:
+    raw = os.environ.get("TRAIN_FEATURE_ROWS")
+    if not raw:
+        return DEFAULT_TRAIN_FEATURE_ROWS
+    try:
+        budget = int(raw)
+    except ValueError:
+        logger.warning(
+            f"TRAIN_FEATURE_ROWS={raw!r} is not an integer; using "
+            f"{DEFAULT_TRAIN_FEATURE_ROWS:,}"
+        )
+        return DEFAULT_TRAIN_FEATURE_ROWS
+    if budget <= 0:
+        logger.warning(
+            f"TRAIN_FEATURE_ROWS={budget} is not positive; using "
+            f"{DEFAULT_TRAIN_FEATURE_ROWS:,}"
+        )
+        return DEFAULT_TRAIN_FEATURE_ROWS
+    if budget != DEFAULT_TRAIN_FEATURE_ROWS:
+        logger.info(
+            f"TRAIN_FEATURE_ROWS override: {budget:,} rows "
+            f"(default {DEFAULT_TRAIN_FEATURE_ROWS:,}) — expect training "
+            f"wall-clock to move with it"
+        )
+    return budget
+
 
 def _model_age_days(forecaster) -> Optional[int]:
     """Days since the currently saved model was trained, or None if unknown."""
@@ -221,7 +263,8 @@ def run_forecast(train_only: bool = False, predict_only: bool = False,
         if do_train:
             if has_models:
                 logger.info("Saved models found, retraining...")
-            forecaster.train(max_rows=700_000)
+            forecaster.train(max_rows=TRAIN_HORIZON_MAX_ROWS,
+                             max_feature_rows=_train_feature_rows())
             has_models = True
             logger.info("Refreshing DB connection after training...")
             try:
@@ -322,7 +365,8 @@ def run_forecast(train_only: bool = False, predict_only: bool = False,
                 db_session=db,
                 model_dir=str(Path(__file__).parent.parent / "models" / "saved_models_ens3")
             )
-            forecaster_ens3.train(max_rows=700_000)
+            forecaster_ens3.train(max_rows=TRAIN_HORIZON_MAX_ROWS,
+                                  max_feature_rows=_train_feature_rows())
             db.close()
             db = SessionLocal()
             results_ens3 = forecaster_ens3.predict()
@@ -339,7 +383,8 @@ def run_forecast(train_only: bool = False, predict_only: bool = False,
                 db_session=db,
                 model_dir=str(Path(__file__).parent.parent / "models" / "saved_models_ens6")
             )
-            forecaster_ens6.train(max_rows=700_000)
+            forecaster_ens6.train(max_rows=TRAIN_HORIZON_MAX_ROWS,
+                                  max_feature_rows=_train_feature_rows())
             db.close()
             db = SessionLocal()
             results_ens6 = forecaster_ens6.predict()

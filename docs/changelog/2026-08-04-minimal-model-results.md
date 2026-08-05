@@ -283,8 +283,112 @@ falls back to every numeric column, so cross-sectional and event features that
 present here. Equal across arms, so it does not bias the comparison, but it is
 another reason these are not production numbers.
 
+## Part 3 — item-coverage reinvestment: measured, then declined
+
+**Date:** 2026-08-05. **Spec:** Part 3 / plan Task 13.
+
+Part 3 existed to spend the wall-clock Part 2 freed on training over more items,
+on the reasoning that "fewer models over more items is plausibly *more* accurate,
+not merely faster." The plumbing bug is fixed; the reinvestment is **declined on
+measured cost**, at the user's direction, with accuracy left untested.
+
+### The bug was real
+
+`forecast_prices.py` passed `train(max_rows=700_000)`. That value never reached
+`build_training_data`, which kept its own `max_feature_rows=100_000` default. So
+the caller's 700_000 was a **no-op that read as if it were doing something** —
+the single most expensive kind of dead parameter, because every reader assumed
+coverage had already been raised.
+
+### Two budgets, not one
+
+They are now separate named parameters, deliberately not unified:
+
+| Parameter | Applies | Controls | Value |
+|---|---|---|---|
+| `max_feature_rows` | *before* feature engineering | how many whole item histories the model learns from | **100_000** (`TRAIN_FEATURE_ROWS` overrides) |
+| `max_rows` | *after*, per horizon | each horizon's training slice | 700_000, unchanged |
+
+Feeding `max_rows` to both — the obvious one-line fix — is wrong twice. It would
+silently raise production coverage 6.5× (the caller already passes 700_000), and
+it would make one number move two things, so the per-horizon cap would begin
+binding at the same moment coverage changed. `test_the_per_horizon_cap_does_not_leak_into_coverage`
+guards exactly this.
+
+### What a row budget actually buys
+
+Measured against the real archive, not estimated. The pool is **5,377 items /
+5,823,319 rows** after the backfilled filter (5,542 items from prod Postgres), the
+dead-item filter and 165 corrupt items — at **1,083 rows per item**.
+
+| Budget | Items | Rows | % of pool | Training | vs 100k |
+|---|---|---|---|---|---|
+| **100_000** | **99** | 116,111 | **1.8%** | **104.6s** | — |
+| 400_000 | 372 | 410,780 | 6.9% | 232.3s | 2.2× |
+| 700_000 | 646 | 707,913 | 12.0% | 468.7s | 4.5× |
+| 5_823_319 | 5,377 | 5,823,319 | 100% | not run | — |
+
+**The decision, and the number that drove it:** 700_000 costs **468.7s**, which is
+*more* than the **462s** the pre-rewrite 40-model grid cost. Raising coverage to
+the value the spec intended would hand back the entire minimal-model saving to buy
+12% of the item pool. Kept at 100_000.
+
+Timings are warm-to-warm with cached Optuna params and a warm voted cache, so they
+are lower than the 176.7s headline above and comparable only within this table.
+The sweep rows moved both budgets together; the shipped decoupled default was
+re-verified separately at **99/5,377 items in 102.5s**, confirming zero behaviour
+change.
+
+### Corrections to the spec's figures
+
+The spec's Part 3 said "133 of 7,879 items". Measured today: **99 of 5,377**. The
+pool is smaller than the spec assumed (5,377, not 7,879) and rows-per-item larger
+(1,083, not ~748), so the same budget buys fewer items than estimated. The spec's
+claim that "the budget can rise substantially inside the original wall-clock" does
+not survive measurement.
+
+### Where the cost goes as the budget rises
+
+Conformal CV dominates but its *share* falls — 75.8% of training at 100k, 70.6% at
+400k, 61.3% at 700k — because the q50 ensemble degrades faster than linearly
+(3d q50: 2.5s → 62.4s, a **25×** jump for 6.1× the rows). So "cut CV folds" would
+not have rescued the raised budget on its own.
+
+### Accuracy is UNMEASURED — this is not a null result
+
+No accuracy claim is made or implied for a raised budget. Nothing here shows that
+more items would fail to help; it was not tested. Two reasons, and the second is
+the one that matters for anyone who picks this up:
+
+1. The shipped change has **zero behaviour change** — 100_000 effective before,
+   100_000 explicit after — so there are no two arms to pair and the
+   pre-registered bar is satisfied structurally.
+2. **The walkforward gate cannot measure this knob at all.**
+   `walkforward_backtest.py` has no `build_training_data` and no
+   `_stratified_item_subsample`; its universe is
+   `_load_parquet_items(con, backfilled_only=False)[:max_items]` (`:309`). So
+   `TRAIN_FEATURE_ROWS` never reaches it, and running "arm B at 700k vs arm B at
+   100k" as the plan instructed would have produced two **byte-identical** arms and
+   a ~0.00pp difference that looked like a clean pass.
+
+Raising `--max-items` instead is *not* a substitute. It perturbs the shared items'
+features through `_add_cross_sectional_features`, changes which features survive
+the data-dependent >0.95 correlation prune, and past ~185 items trips
+`MAX_TRAIN_ROWS = 200_000`, whose `.tail(MAX_TRAIN_ROWS)` truncates the **training
+window** — so it would measure shorter history, not wider coverage. This is the
+same class of confound that produced the fake −3.696pp above.
+
+**Measuring this honestly needs a rig that does not exist yet:** a fixed scored
+cohort with a varying trained universe. `_stratified_item_subsample` also draws
+non-nested samples across budgets (`RandomState(seed)` re-sampled per rarity group
+at each `k`), so even the production CV path cannot pair 99 items against 646
+without changing the selection rule. That is its own spec.
+
 ## Open follow-ups
 
+0. **Whether item coverage buys accuracy is open, not closed.** Part 3 declined it
+   on cost alone. If it is ever revisited, the blocker is the rig described above,
+   plus nested subsampling so budgets are comparable — not another timing run.
 1. **Calibration CV is the new bottleneck** (~84% of training). Cutting folds or
    subsampling the OOF pool is the next lever; unmeasured.
 2. **Realized band coverage is unmeasured on production data.** Neither the
