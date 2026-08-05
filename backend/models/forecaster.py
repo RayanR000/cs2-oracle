@@ -4103,20 +4103,43 @@ class ItemForecaster:
                         res_correction = res_model.predict(X_horizon.values)
                         preds[q] = preds[q] + res_correction
 
-            if len(preds) != 3:
+            # Only the median is served. Gating on the presence of 0.5 rather
+            # than on a quantile count keeps this correct whatever QUANTILES
+            # holds — the old three-quantile count check would skip every
+            # horizon once the grid collapses to [0.5].
+            if 0.5 not in preds:
                 continue
 
-            # Models predict percentage returns. Convert back to price levels.
-            # preds are return percentages (e.g., 5.0 means +5%).
-            p10_ret = preds[0.1]
+            # Models predict percentage returns (e.g. 5.0 means +5%); the
+            # conversion to price levels happens per item further below.
             p50_ret = preds[0.5]
-            p90_ret = preds[0.9]
 
-            # Fix quantile crossing via isotonic regression (PAV for 3 points).
-            # Preserves item-level interval width instead of global imputation.
-            low_ret_arr, high_ret_arr = self._fix_quantile_crossing(
-                p10_ret, p50_ret, p90_ret)
+            # Median from the single p50 model; band from locally-weighted split
+            # conformal. A band symmetric about the median cannot cross, so the
+            # isotonic repair this loop used to run is unnecessary. That repair
+            # is still a static method on this class for walkforward's baseline
+            # arm and the evaluate/ab_test scripts — do not delete it.
+            #
+            # sigma MUST come from _sigma_for_rows: q_hat was calibrated against
+            # sigmas clipped with self.sigma_clip, so serving has to clip
+            # identically or the coverage guarantee does not transfer.
             mid_ret_arr = p50_ret
+            sigma_arr = self._sigma_for_rows(latest_rows)
+            q_hat = self.conformal_calibration.get(horizon)
+            if q_hat is None:
+                raise RuntimeError(
+                    f"no conformal calibration for horizon {horizon}d. The band "
+                    f"cannot be constructed without q_hat; refusing to serve a "
+                    f"forecast with a fabricated interval."
+                )
+            # A q_hat from the single-holdout fallback is served too. It is
+            # fitted on the early-stopping/Optuna scoring set, so it is biased
+            # low and the band under-covers — train() logs that at WARNING. A
+            # band that under-covers is still more useful than no band, and the
+            # path is unreachable in production (a 1460-day frame yields 8-9 CV
+            # folds; the fallback needs fewer than 2).
+            low_ret_arr, high_ret_arr = conformal.band(
+                mid_ret_arr, sigma_arr, q_hat)
 
             # Momentum fallback for weak horizons (14d/30d): serve the trailing
             # return as the median, keeping the model's calibrated interval
@@ -4140,13 +4163,10 @@ class ItemForecaster:
                 dir_class_arr = probs.argmax(axis=1)
                 dir_conf_arr = probs.max(axis=1)
 
-            # Conformal calibration: widen intervals by the CQR adjustment factor
-            # learned from CV out-of-fold residuals. This pushes empirical coverage
-            # toward nominal (80% for [p10, p90] intervals).
-            q_hat = self.conformal_calibration.get(horizon, 0.0)
-            if q_hat > 0:
-                low_ret_arr = low_ret_arr - q_hat
-                high_ret_arr = high_ret_arr + q_hat
+            # NOTE: the conformal widening used to be applied here, as a
+            # per-horizon percentage-point addend. It is not missing — q_hat is
+            # now a multiplier of the per-item sigma and is applied where the
+            # band is built above. Do not re-add a widening step at this point.
 
             # Forecast blending / directional smoothing: blend the current
             # return-space predictions with the previous day's forecast for the
@@ -4182,13 +4202,6 @@ class ItemForecaster:
             if dir_class_arr is not None:
                 low_ret_arr, mid_ret_arr, high_ret_arr = self._recenter_on_direction(
                     low_ret_arr, mid_ret_arr, high_ret_arr, dir_class_arr)
-
-            # Diagnostic: log crossing rate
-            crossing_mask = (p10_ret > p50_ret) | (p50_ret > p90_ret)
-            crossing_rate = np.mean(crossing_mask)
-            if crossing_rate > 0.01:
-                logger.warning(f"  Quantile crossing rate: {crossing_rate:.3f} "
-                               f"(corrected via PAV isotonic regression")
 
             _dir_name = {0: "down", 1: "flat", 2: "up"}
             for i, iid in enumerate(item_id_arr):

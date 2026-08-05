@@ -424,3 +424,246 @@ def test_train_measures_sigma_clip_from_the_training_frame(tmp_path, monkeypatch
     assert 0 < f.sigma_clip["floor"] < f.sigma_clip["cap"]
     assert (f.sigma_clip["floor"] <= f.sigma_clip["fallback"]
             <= f.sigma_clip["cap"])
+
+
+# ---------------------------------------------------------------------------
+# predict(): the served band comes from conformal, not from p10/p90 models
+# ---------------------------------------------------------------------------
+
+
+def test_predict_no_longer_calls_the_crossing_fix():
+    import inspect
+
+    src = inspect.getsource(ItemForecaster.predict)
+    assert "_fix_quantile_crossing" not in src, (
+        "a symmetric band around the median cannot cross; the crossing fix "
+        "survives only for walkforward's baseline arm"
+    )
+
+
+def test_crossing_fix_still_exists_for_the_harness():
+    # scripts/walkforward_backtest.py uses it for the baseline arm, as do
+    # evaluate_forecaster.py and the ab_test_* scripts. Deleting it breaks the
+    # baseline the minimal model is measured against.
+    assert hasattr(ItemForecaster, "_fix_quantile_crossing")
+
+
+def test_predict_never_indexes_the_p10_or_p90_prediction():
+    """No unreachable p10/p90 branch may survive in predict().
+
+    Once QUANTILES == [0.5] (Task 11) any `preds[0.1]` would be a KeyError, and
+    a diagnostic that reads p10_ret/p90_ret is just as fatal as the band did.
+    """
+    import inspect
+
+    src = inspect.getsource(ItemForecaster.predict)
+    for dead in ("preds[0.1]", "preds[0.9]", "p10_ret", "p90_ret",
+                 "len(preds) != 3"):
+        assert dead not in src, f"predict() still references {dead}"
+
+
+def test_band_from_conformal_varies_by_item_and_is_finite():
+    f = ItemForecaster.__new__(ItemForecaster)
+    ItemForecaster._init_conformal_state(f)
+    f.sigma_clip = {"floor": 0.01, "cap": 2.0, "fallback": 0.25}
+
+    rows = pd.DataFrame({
+        "price": [100.0, 100.0, 50.0],
+        # third row: no 60d history, the short-history case
+        "price_std_60d": [5.0, 20.0, np.nan],
+    })
+    sigma = ItemForecaster._sigma_for_rows(f, rows)
+    assert np.all(np.isfinite(sigma))
+    assert sigma[1] > sigma[0]          # more volatile item, wider sigma
+    assert sigma[2] == pytest.approx(0.25)   # fallback, not NaN
+
+    from models.conformal import band
+    low, high = band(np.zeros(3), sigma, q_hat=3.0)
+    widths = high - low
+    assert widths[1] > widths[0]
+    assert np.all(np.isfinite(widths))
+    assert np.all(low <= high)
+
+
+# --- behavioural: drive the real predict() over a synthetic catalogue -------
+
+class _StubBooster:
+    """Minimal LightGBM Booster stand-in for _predict_ensemble_safe.
+
+    `num_feature` is checked against the live matrix width before predict is
+    called, so it has to be honest about the column count.
+    """
+
+    def __init__(self, n_features: int, value: float):
+        self._n = n_features
+        self._value = value
+
+    def num_feature(self):
+        return self._n
+
+    def predict(self, X):
+        return np.full(len(X), float(self._value))
+
+
+class _StubClassifier:
+    """3-class direction model returning one fixed probability row per item."""
+
+    def __init__(self, probs_row):
+        self._row = np.asarray(probs_row, dtype=float)
+
+    def predict(self, X):
+        return np.tile(self._row, (len(X), 1))
+
+
+# Two items at the same price level with an order of magnitude between their
+# volatilities, plus a cheap item as volatile as the second. Deterministic:
+# the sigma ordering asserted below must not depend on a seed.
+_PREDICT_ITEMS = {"calm100": (100.0, 1.0), "wild100": (100.0, 20.0),
+                  "wild5": (5.0, 1.0)}
+
+
+def _predict_price_frame(n_dates=70):
+    rows = []
+    for d in range(n_dates):
+        day = date(2026, 6, 1) + timedelta(days=d)
+        for iid, (base, amp) in _PREDICT_ITEMS.items():
+            rows.append({
+                "item_id": iid,
+                "date": day,
+                "price": base + (amp if d % 2 else -amp),
+                "volume": 100,
+            })
+    return pd.DataFrame(rows)
+
+
+_MID_RET = 4.0          # the stub median model's return, in percent
+_Q_HAT = 10.0           # sigma is a ratio and mid is in percent, so q_hat
+                        # absorbs the factor of 100 — see conformal.calibrate
+
+
+def _predict_forecaster(tmp_path, q_hat=_Q_HAT, horizons=None,
+                        classifier=None):
+    """A forecaster wired for predict() with a stub median model per horizon.
+
+    `db=None` disables prior-forecast blending, and bias corrections /
+    thresholds are left empty, so the served band is exactly what the conformal
+    step produced.
+    """
+    f = ItemForecaster(db_session=None, model_dir=str(tmp_path))
+    f.feature_cols = ["price", "price_std_60d"]
+    f.horizon_feature_cols = {}
+    f.conformal_calibration = ({h: q_hat for h in f.HORIZONS}
+                               if horizons is None
+                               else {h: q_hat for h in horizons})
+    f.models = {(h, 0.5): [_StubBooster(len(f.feature_cols), _MID_RET)]
+                for h in f.HORIZONS}
+    if classifier is not None:
+        f.direction_models = {h: classifier for h in f.HORIZONS}
+    return f
+
+
+def _run_predict(f):
+    """Call the real predict() with only the two data fetches stubbed."""
+    empty_events = pd.DataFrame(columns=["id", "type", "timestamp",
+                                         "description"])
+    with patch.object(f, "fetch_price_history",
+                      return_value=_predict_price_frame()), \
+            patch.object(f, "fetch_events", return_value=empty_events):
+        return f.predict()
+
+
+def _forecast_rows(result, horizon):
+    """{item_id: forecast dict} for one horizon."""
+    return {r["item_id"]: r["forecasts"][horizon]
+            for r in result.to_dict("records")}
+
+
+def test_predict_serves_a_band_centred_on_the_median(tmp_path):
+    """The served interval is symmetric about the median, in price space."""
+    f = _predict_forecaster(tmp_path)
+    result = _run_predict(f)
+    assert not result.empty
+
+    for h in f.HORIZONS:
+        for iid, fc in _forecast_rows(result, h).items():
+            assert fc["low"] <= fc["mid"] <= fc["high"], (h, iid, fc)
+            # round(, 2) on each leg, so allow one cent of asymmetry.
+            assert (fc["high"] - fc["mid"]) == pytest.approx(
+                fc["mid"] - fc["low"], abs=0.011), (h, iid, fc)
+
+
+def test_predict_half_width_is_q_hat_times_the_clipped_sigma(tmp_path):
+    """The width must be q_hat * sigma, with sigma from _sigma_for_rows.
+
+    Recomputing std/price at the use site, or skipping the clip, would void the
+    coverage guarantee q_hat was fitted under; this pins the exact arithmetic.
+    """
+    f = _predict_forecaster(tmp_path)
+    seen = {}
+    real = f._sigma_for_rows
+
+    def recording(rows):
+        sigma = real(rows)
+        seen["sigma"] = dict(zip(rows["item_id"], sigma))
+        seen["price"] = dict(zip(rows["item_id"], rows["price"]))
+        return sigma
+
+    with patch.object(f, "_sigma_for_rows", side_effect=recording):
+        result = _run_predict(f)
+
+    assert seen, "predict() did not route sigma through _sigma_for_rows"
+    for h in f.HORIZONS:
+        for iid, fc in _forecast_rows(result, h).items():
+            base = seen["price"][iid]
+            expected_half = base * (_Q_HAT * seen["sigma"][iid]) / 100.0
+            assert (fc["high"] - fc["mid"]) == pytest.approx(
+                expected_half, abs=0.011), (h, iid, fc)
+            assert fc["mid"] == pytest.approx(
+                base * (1 + _MID_RET / 100.0), abs=0.011)
+
+
+def test_predict_band_width_scales_with_item_volatility(tmp_path):
+    """The item-level variation the p10/p90 models used to supply."""
+    f = _predict_forecaster(tmp_path)
+    result = _run_predict(f)
+    fcs = _forecast_rows(result, 7)
+
+    def rel_width(iid):
+        return (fcs[iid]["high"] - fcs[iid]["low"]) / fcs[iid]["mid"]
+
+    assert rel_width("wild100") > rel_width("calm100")
+    # Same volatility, ten times cheaper: normalization makes the relative
+    # width comparable and the absolute width scale with price.
+    assert rel_width("wild5") == pytest.approx(rel_width("wild100"), rel=0.5)
+    assert (fcs["wild100"]["high"] - fcs["wild100"]["low"]) > (
+        fcs["wild5"]["high"] - fcs["wild5"]["low"])
+
+
+def test_predict_refuses_to_serve_a_horizon_with_no_q_hat(tmp_path):
+    """Refuse rather than fabricate: a zero-width or default band would be
+    served to users as if it were calibrated."""
+    f = _predict_forecaster(tmp_path, horizons=[])
+    with pytest.raises(RuntimeError, match="conformal calibration"):
+        _run_predict(f)
+
+
+def test_predict_still_serves_the_classifier_direction(tmp_path):
+    """The direction call is the classifier's, not a threshold on mid_ret."""
+    up = _StubClassifier([0.05, 0.05, 0.90])
+    f = _predict_forecaster(tmp_path, classifier=up)
+    result = _run_predict(f)
+
+    for h in f.HORIZONS:
+        for iid, fc in _forecast_rows(result, h).items():
+            assert fc["direction"] == "up", (h, iid, fc)
+            assert fc["confidence"] == "high"
+            assert fc["low"] <= fc["mid"] <= fc["high"]
+
+    down = _StubClassifier([0.90, 0.05, 0.05])
+    f2 = _predict_forecaster(tmp_path, classifier=down)
+    result2 = _run_predict(f2)
+    for h in f2.HORIZONS:
+        for iid, fc in _forecast_rows(result2, h).items():
+            assert fc["direction"] == "down", (h, iid, fc)
+            # _recenter_on_direction flips the median but keeps half-widths.
+            assert fc["low"] <= fc["mid"] <= fc["high"]
