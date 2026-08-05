@@ -550,6 +550,98 @@ def test_saved_meta_records_the_current_artifact_version(tmp_path):
 
 
 # ---------------------------------------------------------------------------
+# scripts/forecast_prices.py: the caller must recover from an incompatible
+# cache when the run is willing to train, and must not paper over it in
+# predict-only, which has no recovery path of its own.
+# ---------------------------------------------------------------------------
+
+def _fake_incompatible_forecast_env(monkeypatch, tmp_path):
+    """Same shape as test_drift_retrain_guard.py's fixture, but load_models
+    raises IncompatibleModelArtifact instead of returning True -- this is
+    what the real ItemForecaster does when meta.json predates
+    MODEL_ARTIFACT_VERSION, which is exactly the state of the checked-in
+    backend/models/saved_models/meta.json today.
+    """
+    import scripts.forecast_prices as fp
+    from models.forecaster import IncompatibleModelArtifact
+
+    class FakeForecaster:
+        HORIZONS = [3, 7, 14, 30]
+        train_called = False
+
+        def __init__(self, *a, **kw):
+            self.model_dir = str(tmp_path)
+            self.db = None
+            type(self).instance = self
+
+        def load_models(self):
+            raise IncompatibleModelArtifact(
+                "saved model artifact version None != expected 2"
+            )
+
+        def check_concept_drift(self, horizon=7, sliding_window=7, threshold=None):
+            return None
+
+        def train(self, *a, **kw):
+            type(self).train_called = True
+
+        def predict(self):
+            return pd.DataFrame()
+
+    fake_db = MagicMock()
+    fake_db.execute.return_value.fetchall.return_value = []
+    monkeypatch.setattr(fp, "ItemForecaster", FakeForecaster)
+    monkeypatch.setattr(fp, "SessionLocal", lambda: fake_db)
+    monkeypatch.delenv("ALLOW_DRIFT_RETRAIN", raising=False)
+    monkeypatch.delenv("FORCE_RETRAIN", raising=False)
+    return FakeForecaster
+
+
+def test_incompatible_artifact_triggers_a_full_retrain_not_a_crash(monkeypatch, tmp_path):
+    import scripts.forecast_prices as fp
+
+    fake = _fake_incompatible_forecast_env(monkeypatch, tmp_path)
+    fp.run_forecast()
+    assert fake.train_called is True, (
+        "A rejected cache must read as 'no usable models' for a mode that is "
+        "willing to train, not crash the run."
+    )
+
+
+def test_incompatible_artifact_triggers_retrain_in_train_only_mode(monkeypatch, tmp_path):
+    import scripts.forecast_prices as fp
+
+    fake = _fake_incompatible_forecast_env(monkeypatch, tmp_path)
+    result = fp.run_forecast(train_only=True)
+    assert fake.train_called is True
+    assert result["status"] == "success"
+
+
+def test_incompatible_artifact_fails_the_run_in_predict_only_mode(monkeypatch, tmp_path):
+    """predict-only has no recovery path: serving from a cache whose q_hat
+    means something else is the exact failure this guard exists to prevent,
+    so the incompatibility must re-raise rather than being silently treated
+    as absent.
+
+    run_forecast has a pre-existing catch-all (`except Exception as e:
+    ... return {"status": "error", ...}`) wrapping the whole function body,
+    which every other failure mode in this pipeline already surfaces
+    through -- main() turns any non-"success" status into a non-zero exit.
+    Re-raising out of the inner try/except therefore surfaces here as that
+    same error status, not as a raw exception escaping run_forecast(). That
+    is the existing "fail loudly" idiom for this pipeline: this must NOT
+    fall through to do_train/predict and must NOT report "success".
+    """
+    import scripts.forecast_prices as fp
+
+    fake = _fake_incompatible_forecast_env(monkeypatch, tmp_path)
+    result = fp.run_forecast(predict_only=True)
+    assert result["status"] == "error"
+    assert "artifact version" in result["message"]
+    assert fake.train_called is False
+
+
+# ---------------------------------------------------------------------------
 # predict(): the served band comes from conformal, not from p10/p90 models
 # ---------------------------------------------------------------------------
 

@@ -24,7 +24,7 @@ from typing import Optional
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from database import SessionLocal, ItemForecast, Item
-from models.forecaster import ItemForecaster
+from models.forecaster import ItemForecaster, IncompatibleModelArtifact
 from sqlalchemy import text
 
 logging.basicConfig(
@@ -146,7 +146,23 @@ def run_forecast(train_only: bool = False, predict_only: bool = False,
     db = SessionLocal()
     try:
         forecaster = ItemForecaster(db_session=db, prune_failed_groups=False)
-        has_models = forecaster.load_models()
+        # predict_only is a parameter, already known here -- no need to defer
+        # this decision until do_train is computed below. A cache that
+        # predates the current artifact scheme is exactly "no usable models"
+        # for any mode that is willing to train, but predict-only has no
+        # recovery path: serving from it would mean q_hat means something
+        # other than what this code expects, which is the one thing this
+        # guard exists to prevent.
+        try:
+            has_models = forecaster.load_models()
+        except IncompatibleModelArtifact as e:
+            if predict_only:
+                raise
+            logger.warning(
+                f"Saved model cache is incompatible ({e}); ignoring it and "
+                f"training from scratch."
+            )
+            has_models = False
 
         force_retrain = os.environ.get("FORCE_RETRAIN") == "1"
         retrain_interval = int(os.environ.get("RETRAIN_INTERVAL_DAYS", "14"))
