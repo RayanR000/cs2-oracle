@@ -149,8 +149,10 @@ class IncompatibleModelArtifact(RuntimeError):
 class ItemForecaster:
     HORIZONS = [3, 7, 14, 30]
     # The band no longer comes from quantile models — see models/conformal.py.
-    # 24 p10/p90 GBMs cost 303s of a 462s budget for 39-48% coverage against
-    # an 80% target, while their top feature was already price_std_60d.
+    # Measured (2026-08-04 warm baseline): 24 p10/p90 GBMs cost 223.2s of a
+    # 381.2s budget for 39-48% empirical coverage against an 80% target, while
+    # their top feature was already price_std_60d. The 303s/462s figures this
+    # comment first carried were the spec's pre-measurement estimate.
     QUANTILES = [0.5]
     # Bump when the MEANING of any persisted field changes, not just the set
     # of fields. v2: conformal_calibration became a dimensionless multiplier
@@ -2045,7 +2047,7 @@ class ItemForecaster:
                 has no horizon, e.g. unit tests).
         """
         val_window = self.VALIDATION_WINDOW_DAYS  # 21 days
-        step = self.CV_STEP_DAYS  # 120 days
+        step = self.CV_STEP_DAYS  # 150 days
         min_train = self.CV_MIN_TRAIN_DAYS
 
         folds = []

@@ -36,25 +36,36 @@ def main():
                          help=f"Fold stride in days (default: {wf.STEP_DAYS})")
     args = parser.parse_args()
 
+    # One horizon at a time, both seeds, emitting each result the moment it is
+    # paired. The previous shape ran every horizon for seed 42, then every
+    # horizon for seed 7, and printed only at the very end -- so the run that
+    # was killed at 16 minutes yielded nothing at all. The cost of this shape
+    # is that the archive load and feature engineering repeat per horizon
+    # instead of per seed; that is a couple of minutes against losing the lot.
     out = {}
-    runs = []
-    for seed in (42, 7):
-        runs.append(wf.run_walkforward(
-            max_items=args.max_items,
-            horizons=args.horizons,
-            skip_db=True,
-            return_records=True,
-            step_days=args.step_days,
-            fold_seed=seed,
-        ))
-
-    for horizon_str in runs[0]["horizons"]:
-        a = runs[0]["horizons"][horizon_str].get("records")
-        b = runs[1]["horizons"][horizon_str].get("records")
+    horizons = args.horizons or wf.ItemForecaster.HORIZONS
+    for horizon in horizons:
+        records = {}
+        for seed in (42, 7):
+            report = wf.run_walkforward(
+                max_items=args.max_items,
+                horizons=[horizon],
+                skip_db=True,
+                return_records=True,
+                step_days=args.step_days,
+                fold_seed=seed,
+            )
+            records[seed] = (report.get("horizons", {})
+                             .get(str(horizon), {})
+                             .get("records"))
+        a, b = records[42], records[7]
         if not a or not b:
-            out[horizon_str] = {"error": "no records returned"}
-            continue
-        out[horizon_str] = paired_da_difference(a, b)
+            out[str(horizon)] = {"error": "no records returned"}
+        else:
+            out[str(horizon)] = paired_da_difference(a, b)
+        # Flushed per horizon so an interrupted run still leaves usable output.
+        print(f"MDE h={horizon}: "
+              f"{json.dumps(out[str(horizon)], default=str)}", flush=True)
 
     print(json.dumps(out, indent=2, default=str))
     return 0
