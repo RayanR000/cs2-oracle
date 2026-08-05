@@ -1026,6 +1026,35 @@ All measurement in this plan — Task 5's two seed runs **and every arm in Task 
 
 **The cost of this choice, stated honestly.** Fold count is the one remaining strong lever, and it is not free: dates scale with folds and CI width goes as 1/√dates, so ~281 dates instead of ~562 makes the MDE roughly **1.4× wider** — a more permissive bar. Record the measured MDE in the results document with this caveat attached, so nobody later reads the bar as tighter than it is.
 
+### Amendment (human decision after a measured overrun): the MDE is split by horizon
+
+The first attempt at a four-horizon two-seed run was killed at 16 minutes. Cause: the
+controller's ~25 min estimate extrapolated from the 3d horizon and ignored the Task 4b
+measurement showing **DART horizons cost 8.8× the GBDT ones** (297.1s vs 33.7s). Measured:
+3d+7d = 7.4 min per seed; 14d+30d implied 15–65 min more, i.e. 45–145 min for both seeds.
+
+Revised approach:
+
+- **3d and 7d** — MDE measured now, on the current (arm A) design, via
+  `compute_mde.py --max-items 60 --step-days 120 --horizons 3 7` (~15 min). This is the
+  textbook construction: the noise floor of the design being compared against.
+- **14d and 30d** — deferred until after Task 11 switches them to `gbdt`, at which point
+  the same measurement is cheap. DART is precisely what the rewrite deletes, and the MDE
+  needs *two* DART passes where the arm comparison needs only one.
+
+⚠️ **The two halves are not the same construction, and the results document must not
+present four uniform rows.** 3d/7d bars derive from the old design's noise floor; any
+14d/30d bar measured post-rewrite derives from the *new* design's noise floor. That is
+defensible for a paired comparison where one arm is the new design, but it is a different
+quantity and must be labelled as such. If the 14d/30d MDE is never measured, those two
+horizons ship with parity **explicitly untested** — and 14d currently has the best
+production DA of the four (50.8%), making it the least comfortable one to leave unmeasured.
+
+**Also fix `compute_mde.py`'s output behaviour.** It prints its JSON only after every
+horizon and seed completes, so an interrupted run yields nothing at all — the 16 minutes
+above were unrecoverable. It should emit each horizon's result as soon as that horizon is
+paired.
+
 ⚠️ **Task 12's arms MUST use the identical `--max-items` and `--step-days`.** The bar is a paired quantity: it is only valid against arms measured on the same folds. An arm run at a different fold configuration is not comparable to this MDE, and pairing would silently drop to whatever `(item_id, forecast_date)` keys happen to overlap. `paired_da_difference` raises on zero overlap but will *not* warn about partial overlap.
 
 - [ ] **Step 1: Write the script**
