@@ -153,6 +153,28 @@ def score_cohort(records: list[dict]) -> tuple[dict, int]:
     baseline_directional_accuracy = baseline_hits / n * 100
     baseline_mae = sum(abs(r["base_price"] - r["actual_price"]) for r in records) / n
 
+    # A price the archive carried forward is not a prediction the model got
+    # right. Measured 2026-08-05: 30-36% of scored outcomes have actual_price
+    # BIT-IDENTICAL to base_price, and the rate barely decays from 3d (32.4%) to
+    # 30d (31.3%) — genuine no-trade would decay with horizon, so that population
+    # is dominated by archive carry-forward, not market behaviour. Those rows
+    # label "flat" by construction, so pooling them into one headline makes the
+    # number partly a measure of archive staleness.
+    #
+    # Reported as a split rather than filtered out: "how much of our accuracy is
+    # unchanged prices" is a question the partition keeps answerable, and the
+    # same reasoning the tier rows follow (see HEADLINE_MIN_TIER). Each partition
+    # is None when empty rather than 0.0 — an empty partition has no accuracy,
+    # and a zero would be read as the model scoring nothing.
+    unchanged = [r for r in records if r["actual_price"] == r["base_price"]]
+    moved = [r for r in records if r["actual_price"] != r["base_price"]]
+    n_unchanged = len(unchanged)
+
+    def _dir_acc(rows):
+        if not rows:
+            return None
+        return round(sum(r["direction_correct"] for r in rows) / len(rows) * 100, 2)
+
     high_conf = [r for r in records if r["confidence"] == "high"]
     low_conf = [r for r in records if r["confidence"] == "low"]
     high_dir_acc = sum(r["direction_correct"] for r in high_conf) / len(high_conf) * 100 if high_conf else 0
@@ -183,6 +205,11 @@ def score_cohort(records: list[dict]) -> tuple[dict, int]:
         "wmape": round(wmape, 2),
         "mape_by_tier": mape_by_tier,
         "directional_accuracy": round(directional_accuracy, 2),
+        # Carry-forward split. See the comment above the partition.
+        "directional_accuracy_moved": _dir_acc(moved),
+        "directional_accuracy_unchanged": _dir_acc(unchanged),
+        "n_unchanged": n_unchanged,
+        "unchanged_pct": round(n_unchanged / n * 100, 2),
         "interval_coverage": round(interval_coverage, 2),
         "baseline_directional_accuracy": round(baseline_directional_accuracy, 2),
         "improvement_over_baseline_pp": round(directional_accuracy - baseline_directional_accuracy, 2),

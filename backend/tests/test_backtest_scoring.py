@@ -145,6 +145,85 @@ def test_score_cohort_uses_base_price_for_the_persistence_baseline():
     assert metrics["baseline_mae"] == 0.5
 
 
+class TestUnchangedPriceSplit:
+    """A price the archive carried forward is not a prediction the model got right.
+
+    Measured 2026-08-05: 30-36% of scored outcomes have actual_price bit-identical
+    to base_price, at a rate that barely decays from 3d (32.4%) to 30d (31.3%).
+    Genuine no-trade would decay with horizon, so that population is dominated by
+    archive carry-forward. Those rows label "flat" by construction, and pooling
+    them into one headline means the number partly measures archive staleness.
+    The split is reported rather than filtered so "how much of our accuracy is
+    unchanged prices" stays answerable.
+    """
+
+    def test_counts_rows_whose_price_never_moved(self):
+        records = [_record(base_price=1.0, actual_price=1.0) for _ in range(3)]
+        records += [_record(base_price=1.0, actual_price=1.1) for _ in range(7)]
+        metrics, _ = score_cohort(records)
+        assert metrics["n_unchanged"] == 3
+        assert metrics["unchanged_pct"] == 30.0
+
+    def test_splits_directional_accuracy_by_whether_the_price_moved(self):
+        # All 4 unchanged rows correct, 2 of 6 moved rows correct.
+        records = [
+            _record(base_price=1.0, actual_price=1.0, direction_correct=1)
+            for _ in range(4)
+        ]
+        records += [
+            _record(base_price=1.0, actual_price=1.1, direction_correct=1)
+            for _ in range(2)
+        ]
+        records += [
+            _record(base_price=1.0, actual_price=1.1, direction_correct=0)
+            for _ in range(4)
+        ]
+        metrics, _ = score_cohort(records)
+        assert metrics["directional_accuracy"] == 60.0
+        assert metrics["directional_accuracy_unchanged"] == 100.0
+        assert metrics["directional_accuracy_moved"] == pytest.approx(33.33, abs=0.01)
+
+    def test_moved_accuracy_is_none_when_every_price_was_carried_forward(self):
+        """None, not 0.0 — an empty partition has no accuracy, and a zero here
+        would be averaged into reports as though the model scored nothing."""
+        records = [_record(base_price=1.0, actual_price=1.0) for _ in range(10)]
+        metrics, _ = score_cohort(records)
+        assert metrics["directional_accuracy_moved"] is None
+        assert metrics["directional_accuracy_unchanged"] == 100.0
+
+    def test_unchanged_accuracy_is_none_when_every_price_moved(self):
+        records = [_record(base_price=1.0, actual_price=1.1) for _ in range(10)]
+        metrics, _ = score_cohort(records)
+        assert metrics["directional_accuracy_unchanged"] is None
+        assert metrics["n_unchanged"] == 0
+        assert metrics["unchanged_pct"] == 0.0
+
+    def test_split_partitions_the_cohort(self):
+        """The two partitions must reconstruct the pooled figure, or the split is
+        measuring something other than the headline it sits beside.
+
+        Tolerance is 0.01, not exact: every figure in this module is rounded to
+        two decimals, so each partition carries up to 0.005 of rounding error and
+        the weighted recombination inherits that bound.
+        """
+        records = [
+            _record(base_price=1.0, actual_price=1.0, direction_correct=i % 2)
+            for i in range(6)
+        ]
+        records += [
+            _record(base_price=1.0, actual_price=1.2, direction_correct=i % 3 == 0)
+            for i in range(9)
+        ]
+        metrics, n = score_cohort(records)
+        n_unchanged = metrics["n_unchanged"]
+        n_moved = n - n_unchanged
+        pooled = (
+            metrics["directional_accuracy_unchanged"] * n_unchanged
+            + metrics["directional_accuracy_moved"] * n_moved
+        ) / n
+        assert pooled == pytest.approx(metrics["directional_accuracy"], abs=0.01)
+
+
 def test_both_legs_use_the_same_estimator_so_a_flat_market_scores_flat():
     """The end-to-end symmetry property. Under the old code the base leg was a
     3-observation median and the actual leg a single-day price, so a perfectly

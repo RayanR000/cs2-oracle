@@ -622,7 +622,21 @@ def _score_groups(groups, today):
                 f" [CI: {lo * 100:.1f}–{hi * 100:.1f}]" if lo is not None
                 else " [CI: n/a, <2 forecast dates]"
             )
+            # The carry-forward split travels with the headline in BOTH branches
+            # below, so DirAcc can never be read without it. ~30-36% of scored
+            # outcomes have actual_price bit-identical to base_price and label
+            # "flat" for free, so a pooled DirAcc partly measures archive
+            # staleness — see the partition comment in backtest.scoring.
+            def _pct(value):
+                return "n/a" if value is None else f"{value:.1f}%"
+
+            split_str = (
+                f"Unchanged={head_metrics['unchanged_pct']:.1f}% of rows "
+                f"(DirAcc there {_pct(head_metrics['directional_accuracy_unchanged'])}) "
+                f"DirAccMoved={_pct(head_metrics['directional_accuracy_moved'])}"
+            )
             common = (
+                f"{split_str} "
                 f"MAE=${head_metrics['mae']:.2f} MAPE={head_metrics['mape']:.1f}% "
                 f"IntCov={head_metrics['interval_coverage']:.1f}% "
                 f"ConfGap={head_metrics['conf_gap_pp']:.1f}pp "
