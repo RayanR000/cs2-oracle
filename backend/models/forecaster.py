@@ -20,7 +20,7 @@ from pathlib import Path
 from sqlalchemy import text
 from models import conformal
 from models.item_parser import parse_item_name
-from backtest.scoring import MIN_FORECAST_DATES
+from backtest.scoring import HEADLINE_MIN_TIER, MIN_FORECAST_DATES
 
 logger = logging.getLogger(__name__)
 
@@ -3198,10 +3198,22 @@ class ItemForecaster:
             served_acc = mean_clf if mean_clf is not None else mean_acc
             edge = round(served_acc - best_baseline, 1) if best_baseline is not None else None
 
+            # Reported, never gated on. This is the cohort the production
+            # headline scores (>=$1), so it is the only CV figure comparable to
+            # it; `edge` deliberately stays on the all-tiers number above so
+            # the trust warning and the confidence calibration do not move.
+            # None when no fold had a >=$1 cohort, matching the per-fold rule.
+            clf_ge1 = [m["classifier_accuracy_ge1"] for m in cv_metrics
+                       if m.get("classifier_accuracy_ge1") is not None]
+            mean_clf_ge1 = round(float(np.mean(clf_ge1)), 1) if clf_ge1 else None
+
             if cv_metrics:
+                # classifier= pools all tiers and the frame is ~83% tier-0, so
+                # it reads close to the penny-item score. classifier>=$1= is
+                # the one to compare against the production headline.
                 logger.info(f"  CV ({len(cv_metrics)} folds): "
-                            f"classifier={mean_clf}% quantile-sign={mean_acc:.1f}% "
-                            f"(sd={std_acc:.1f}%)")
+                            f"classifier={mean_clf}% (>=$1: {mean_clf_ge1}%) "
+                            f"quantile-sign={mean_acc:.1f}% (sd={std_acc:.1f}%)")
                 logger.info(f"  Baselines: persistence={mean_persist}% "
                             f"momentum={mean_mom}% → served(classifier) edge vs best={edge}pp")
                 if edge is not None and edge <= 0:
@@ -3216,6 +3228,7 @@ class ItemForecaster:
                 "min_dir_acc": round(min(fold_accs), 1) if fold_accs else 0,
                 "max_dir_acc": round(max(fold_accs), 1) if fold_accs else 0,
                 "mean_classifier_acc": mean_clf,
+                "mean_classifier_acc_ge1": mean_clf_ge1,
                 "mean_persistence_acc": mean_persist,
                 "mean_momentum_acc": mean_mom,
                 "edge_vs_best_baseline": edge,
@@ -4559,6 +4572,28 @@ class ItemForecaster:
             actual_cls = self._direction_classes(actual_returns)  # FIXED ±0.5% yardstick
             classifier_acc = round(float((pred_cls == actual_cls).mean()) * 100, 1)
 
+            # The same accuracy again over the production cohort only. The
+            # figure above pools every price tier and the training frame is
+            # ~83% tier-0, so it is approximately the penny-item score, while
+            # the production headline is >=$1 (HEADLINE_MIN_TIER). Comparing
+            # the two was comparing populations, and that cohort mismatch is
+            # most of the "~20pp train/serve gap" five hypotheses failed to
+            # explain (docs/superpowers/specs/2026-08-05-cv-cohort-parity-design.md).
+            #
+            # Additive, never a replacement: mean_classifier_acc feeds the
+            # edge-vs-baseline trust gate and the confidence calibration, and
+            # is the series every historical meta.json holds.
+            #
+            # None, not 0.0, when a fold holds no >=$1 rows — an empty
+            # partition has no accuracy, and a zero reads as "scored nothing
+            # right". Same rule score_cohort follows for its own partitions.
+            classifier_acc_ge1 = None
+            if "price_tier" in val_df.columns:
+                ge1 = val_df["price_tier"].to_numpy() >= HEADLINE_MIN_TIER
+                if ge1.any():
+                    classifier_acc_ge1 = round(
+                        float((pred_cls[ge1] == actual_cls[ge1]).mean()) * 100, 1)
+
             fold_metrics.append({
                 "fold": fold_id + 1,
                 "train_start": str(train_dates[0]),
@@ -4569,6 +4604,7 @@ class ItemForecaster:
                 "n_val": len(val_df),
                 "directional_accuracy": fold_acc,
                 "classifier_accuracy": classifier_acc,
+                "classifier_accuracy_ge1": classifier_acc_ge1,
                 "persistence_accuracy": persistence_acc,
                 "momentum_accuracy": momentum_acc,
             })
