@@ -4062,6 +4062,12 @@ class ItemForecaster:
             for iid, cur in zip(item_id_arr, current_price_arr)
         }
 
+        # Per-item conformal scale. Loop-invariant: it depends only on
+        # latest_rows, which does not vary by horizon (q_hat does). Clipped with
+        # self.sigma_clip — the same bounds q_hat was calibrated against, or the
+        # coverage guarantee does not transfer.
+        sigma_arr = self._sigma_for_rows(latest_rows)
+
         for horizon in self.HORIZONS:
             h_features = self.horizon_feature_cols.get(horizon, self.feature_cols)
             X_horizon = X_batch[h_features]
@@ -4115,16 +4121,18 @@ class ItemForecaster:
             p50_ret = preds[0.5]
 
             # Median from the single p50 model; band from locally-weighted split
-            # conformal. A band symmetric about the median cannot cross, so the
-            # isotonic repair this loop used to run is unnecessary. That repair
-            # is still a static method on this class for walkforward's baseline
-            # arm and the evaluate/ab_test scripts — do not delete it.
+            # conformal (sigma_arr, computed once above). A band symmetric about
+            # the median cannot cross, so the isotonic repair this loop used to
+            # run is unnecessary. That repair is still a static method on this
+            # class for walkforward's baseline arm and the evaluate/ab_test
+            # scripts — do not delete it.
             #
-            # sigma MUST come from _sigma_for_rows: q_hat was calibrated against
-            # sigmas clipped with self.sigma_clip, so serving has to clip
-            # identically or the coverage guarantee does not transfer.
+            # The band is unbounded below: a wide enough q_hat * sigma puts the
+            # low leg under -100%, i.e. a negative price. _sanitize_forecasts is
+            # what guarantees the served triple stays ordered and positive;
+            # low_ret is deliberately NOT floored here, because truncating one
+            # side would break the symmetry the coverage guarantee rests on.
             mid_ret_arr = p50_ret
-            sigma_arr = self._sigma_for_rows(latest_rows)
             q_hat = self.conformal_calibration.get(horizon)
             if q_hat is None:
                 raise RuntimeError(
@@ -4257,6 +4265,16 @@ class ItemForecaster:
         logger.info(f"  Forecasts generated for {len(result_df)} items")
         return result_df
 
+    # Floor for a `low` leg that sanitization has to replace, as a fraction of
+    # the median. Anchored on `mid` rather than on `current_price` precisely
+    # because `mid` can sit well below `current_price` on a strong down
+    # forecast: flooring at `current_price` is what produced low > mid. A
+    # fraction of `mid` satisfies both requirements — strictly positive and
+    # <= mid — by construction, and is scale-free across price tiers. The value
+    # is arbitrary (any positive floor is), so the WARNING below, not the
+    # number, is what makes a systematically clipping sigma visible.
+    SANITIZE_LOW_FLOOR_FRAC = 0.01
+
     def _sanitize_forecasts(self, result_df: pd.DataFrame) -> pd.DataFrame:
         for h in self.HORIZONS:
             for key in ["low", "mid", "high"]:
@@ -4266,14 +4284,78 @@ class ItemForecaster:
                 if mask_bad.any():
                     current_prices = result_df["current_price"].values
                     vals[mask_bad] = current_prices[mask_bad]
+                    clamped = []
                     for i in np.where(mask_bad)[0]:
                         cf = result_df.iloc[i]["forecasts"].get(h)
                         if cf is None:
                             continue
                         cf[key] = float(vals[i])
+                        clamped.append(str(result_df.iloc[i]["item_id"]))
                         if key == "mid":
                             cf["direction"] = "flat"
                             cf["confidence"] = "low"
+                    if clamped:
+                        logger.warning(
+                            f"  {len(clamped)} {h}d forecasts had a "
+                            f"non-positive or non-finite '{key}' clamped to "
+                            f"current_price: {clamped[:5]}"
+                            f"{' ...' if len(clamped) > 5 else ''}"
+                        )
+
+            # Ordering is enforced structurally, because the clamping above is
+            # per-leg and independent: a valid `mid` alongside a non-positive
+            # `low` comes back as low = current_price, which can exceed mid.
+            #
+            # The conformal band is unbounded below — low_ret = mid_ret -
+            # q_hat * sigma, with sigma free to sit at the persisted
+            # 99th-percentile cap — so this is reachable for volatile items,
+            # which are exactly the ones the normalized band exists to serve
+            # better. Under the old [p10, p90] base plus a percentage-point
+            # widening, low_ret never got near -100 and the clamp was
+            # effectively dead code.
+            #
+            # Enforced here rather than by flooring low_ret at construction for
+            # two reasons: this is the last layer before serving, so it must
+            # hold for ANY upstream input (including a band that arrives
+            # inverted for some other reason); and truncating low_ret would
+            # break the band's symmetry about the median, which is the property
+            # conformal calibrated its coverage guarantee on.
+            reordered = []
+            for i in range(len(result_df)):
+                cf = result_df.iloc[i]["forecasts"].get(h)
+                if cf is None:
+                    continue
+                mid = float(cf.get("mid", np.nan))
+                if not np.isfinite(mid):
+                    # Nothing coherent to anchor on; the pass above already
+                    # flagged it and there is no ordering to restore.
+                    continue
+                low = float(cf.get("low", np.nan))
+                high = float(cf.get("high", np.nan))
+                orig_low, orig_high = low, high
+
+                if np.isfinite(low):
+                    low = min(low, mid)
+                if not np.isfinite(low) or low <= 0:
+                    low = mid * self.SANITIZE_LOW_FLOOR_FRAC if mid > 0 else mid
+                if not np.isfinite(high) or high < mid:
+                    high = mid
+
+                cf["low"] = float(low)
+                cf["high"] = float(high)
+                # NaN != NaN, so a non-finite original counts as changed.
+                if low != orig_low or high != orig_high:
+                    reordered.append(str(result_df.iloc[i]["item_id"]))
+
+            if reordered:
+                logger.warning(
+                    f"  {len(reordered)} {h}d forecasts violated "
+                    f"low <= mid <= high and were reordered around the median: "
+                    f"{reordered[:5]}{' ...' if len(reordered) > 5 else ''}. "
+                    f"A sigma pinned at the clip cap or an oversized q_hat is "
+                    f"the usual cause."
+                )
+
         if "volume" in result_df.columns:
             zero_vol = result_df["volume"].fillna(0) == 0
             if zero_vol.any():

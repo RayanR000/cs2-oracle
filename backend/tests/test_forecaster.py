@@ -6,6 +6,8 @@ Tests avoid DB/Parquet dependencies by constructing synthetic DataFrames
 and injecting them directly into the methods under test.
 """
 
+import logging
+
 import pytest
 import numpy as np
 import pandas as pd
@@ -687,6 +689,68 @@ class TestSanitization:
         cleaned = forecaster._sanitize_forecasts(result_df)
         fc = cleaned.iloc[0]["forecasts"][7]
         assert fc["confidence"] == "low"
+
+    def test_sanitize_only_the_low_leg_invalid(self, forecaster):
+        """A single bad leg must not invert the band.
+
+        The legs are clamped to current_price independently, so a valid `mid`
+        below current_price plus a non-positive `low` used to come back as
+        low > mid. mid and high are deliberately both != current_price so a
+        clamp on either would be visible.
+        """
+        result_df = pd.DataFrame([{
+            "item_id": "test",
+            "current_price": 100.0,
+            "forecasts": {
+                7: {"low": -40.0, "mid": 80.0, "high": 200.0,
+                    "direction": "down", "confidence": "high"},
+            },
+            "generated_at": datetime.now(timezone.utc),
+        }])
+        cleaned = forecaster._sanitize_forecasts(result_df)
+        fc = cleaned.iloc[0]["forecasts"][7]
+
+        assert fc["low"] <= fc["mid"] <= fc["high"], fc
+        assert fc["low"] > 0
+        # The valid legs must be left exactly alone.
+        assert fc["mid"] == 80.0
+        assert fc["high"] == 200.0
+        # mid was never clamped, so the direction call still stands.
+        assert fc["direction"] == "down"
+
+    def test_sanitize_keeps_a_valid_band_untouched(self, forecaster):
+        """The ordering guard must be a no-op on a well-formed band."""
+        result_df = pd.DataFrame([{
+            "item_id": "test",
+            "current_price": 100.0,
+            "forecasts": {
+                7: {"low": 90.0, "mid": 95.0, "high": 101.0,
+                    "direction": "down", "confidence": "high"},
+            },
+            "generated_at": datetime.now(timezone.utc),
+        }])
+        cleaned = forecaster._sanitize_forecasts(result_df)
+        fc = cleaned.iloc[0]["forecasts"][7]
+        assert (fc["low"], fc["mid"], fc["high"]) == (90.0, 95.0, 101.0)
+        assert fc["direction"] == "down"
+        assert fc["confidence"] == "high"
+
+    def test_sanitize_warns_when_a_leg_is_clamped(self, forecaster, caplog):
+        """A systematically clipping sigma must be visible in forecast.log,
+        not only in the served numbers."""
+        result_df = pd.DataFrame([{
+            "item_id": "loud_item",
+            "current_price": 100.0,
+            "forecasts": {
+                7: {"low": -40.0, "mid": 80.0, "high": 200.0,
+                    "direction": "down", "confidence": "high"},
+            },
+            "generated_at": datetime.now(timezone.utc),
+        }])
+        with caplog.at_level(logging.WARNING):
+            forecaster._sanitize_forecasts(result_df)
+        assert "loud_item" in caplog.text
+        assert "7d" in caplog.text
 
 
 # ---------------------------------------------------------------------------

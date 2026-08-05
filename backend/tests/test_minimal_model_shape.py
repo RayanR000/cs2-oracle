@@ -8,7 +8,7 @@ code version.
 """
 from __future__ import annotations
 
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -667,3 +667,91 @@ def test_predict_still_serves_the_classifier_direction(tmp_path):
             assert fc["direction"] == "down", (h, iid, fc)
             # _recenter_on_direction flips the median but keeps half-widths.
             assert fc["low"] <= fc["mid"] <= fc["high"]
+
+
+# ---------------------------------------------------------------------------
+# The conformal band is unbounded below, so sanitization must keep it ordered
+#
+# _sanitize_forecasts clamps low/mid/high to current_price INDEPENDENTLY per
+# leg. Under the old [p10, p90] + percentage-point widening, low_ret never got
+# near -100 and the per-leg clamp was effectively unreachable. The conformal
+# band has no such bound: low_ret = mid_ret - q_hat * sigma with sigma free to
+# sit at the persisted 99th-percentile cap. So the ordering invariant has to be
+# enforced structurally, and specifically for volatile items — the ones this
+# design exists to serve better.
+# ---------------------------------------------------------------------------
+
+
+def _one_row_result(cur, low, mid, high, horizon=7, item_id="itm"):
+    return pd.DataFrame([{
+        "item_id": item_id,
+        "current_price": float(cur),
+        "forecasts": {horizon: {"low": float(low), "mid": float(mid),
+                                "high": float(high), "direction": "down",
+                                "confidence": "high"}},
+        "generated_at": datetime.now(timezone.utc),
+    }])
+
+
+def test_a_conformal_band_wide_enough_to_go_negative_stays_ordered(tmp_path):
+    """The reported repro, composed through the real band construction.
+
+    cur=100, mid_ret=-20, sigma=2.0 (the default cap), q_hat=60 gives
+    low_ret=-140 -> a low PRICE of -40, which the per-leg clamp lifts to
+    current_price=100 while mid stays at 80. That served low > mid.
+    """
+    from models.conformal import band
+
+    f = ItemForecaster(db_session=None, model_dir=str(tmp_path))
+    cur, mid_ret, sigma, q_hat = 100.0, -20.0, 2.0, 60.0
+    low_ret, high_ret = band(np.array([mid_ret]), np.array([sigma]), q_hat)
+
+    assert low_ret[0] == pytest.approx(-140.0)   # below -100%: negative price
+    to_price = lambda r: round(cur * (1 + r / 100.0), 2)
+    result = _one_row_result(cur, to_price(low_ret[0]), to_price(mid_ret),
+                             to_price(high_ret[0]))
+    assert result.iloc[0]["forecasts"][7]["low"] == pytest.approx(-40.0)
+
+    fc = f._sanitize_forecasts(result).iloc[0]["forecasts"][7]
+    assert fc["low"] <= fc["mid"] <= fc["high"], fc
+    assert fc["low"] > 0, "a served price must be positive"
+    assert fc["mid"] == pytest.approx(80.0), "the valid median must survive"
+
+
+@pytest.mark.parametrize("mid_ret", [-95.0, -60.0, -20.0, 0.0, 25.0, 300.0])
+@pytest.mark.parametrize("sigma", [0.01, 0.25, 1.0, 2.0])
+@pytest.mark.parametrize("q_hat", [1.0, 15.0, 60.0, 200.0])
+def test_ordering_holds_for_any_band_width(tmp_path, mid_ret, sigma, q_hat):
+    """Property check across the reachable (mid_ret, sigma, q_hat) space.
+
+    sigma spans the default clip range including the cap; q_hat spans from a
+    tight band to one far wider than anything calibration should produce.
+    """
+    from models.conformal import band
+
+    f = ItemForecaster(db_session=None, model_dir=str(tmp_path))
+    cur = 100.0
+    low_ret, high_ret = band(np.array([mid_ret]), np.array([sigma]), q_hat)
+    to_price = lambda r: round(cur * (1 + r / 100.0), 2)
+    result = _one_row_result(cur, to_price(low_ret[0]), to_price(mid_ret),
+                             to_price(high_ret[0]))
+
+    fc = f._sanitize_forecasts(result).iloc[0]["forecasts"][7]
+    assert fc["low"] <= fc["mid"] <= fc["high"], (mid_ret, sigma, q_hat, fc)
+    assert fc["low"] > 0, (mid_ret, sigma, q_hat, fc)
+    assert np.isfinite([fc["low"], fc["mid"], fc["high"]]).all()
+
+
+def test_sanitization_cannot_be_relied_on_being_given_an_ordered_band(tmp_path):
+    """The guard must not assume its input is ordered.
+
+    Every leg here is a positive, finite price, so no per-leg clamp fires — the
+    band is simply inverted on arrival. Sanitization is the last layer before
+    serving, so it has to hold for any upstream input, not just for the band
+    predict() happens to build today.
+    """
+    f = ItemForecaster(db_session=None, model_dir=str(tmp_path))
+    result = _one_row_result(cur=100.0, low=120.0, mid=90.0, high=70.0)
+    fc = f._sanitize_forecasts(result).iloc[0]["forecasts"][7]
+    assert fc["low"] <= fc["mid"] <= fc["high"], fc
+    assert fc["low"] > 0
