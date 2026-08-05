@@ -281,6 +281,16 @@ class ItemForecaster:
     # conformal calibration more OOF points).
     CV_STEP_DAYS = 150            # was 200; ~7 non-overlapping folds on real data
     CV_MIN_TRAIN_DAYS = 200       # Minimum unique dates before first validation fold
+    # Overridable because this is the dominant training cost. Post-minimal-model
+    # the out-of-fold conformal CV is ~84% of a warm retrain (~148.6s of 176.7s),
+    # since it refits a median model per fold per horizon purely to generate the
+    # residuals q_hat is calibrated on. Raising the stride cuts folds ~linearly.
+    # Read here, not at class-definition time, so a sweep does not need an edit.
+    # Instance method, not classmethod: tests override CV_STEP_DAYS on the
+    # INSTANCE to force extra folds out of a small synthetic frame, and a
+    # classmethod reading cls.CV_STEP_DAYS would silently ignore them.
+    def _cv_step_days(self) -> int:
+        return int(os.environ.get("CV_STEP_DAYS", self.CV_STEP_DAYS))
 
     ENGINEERED_CACHE_NAME = "engineered_data.parquet"
     # Bump when the *shape* of the cached frame changes, not just its contents.
@@ -2047,7 +2057,7 @@ class ItemForecaster:
                 has no horizon, e.g. unit tests).
         """
         val_window = self.VALIDATION_WINDOW_DAYS  # 21 days
-        step = self.CV_STEP_DAYS  # 150 days
+        step = self._cv_step_days()  # 150 days unless CV_STEP_DAYS overrides
         min_train = self.CV_MIN_TRAIN_DAYS
 
         folds = []
@@ -3110,7 +3120,17 @@ class ItemForecaster:
                 logger.info(f"  CV cannot run for {horizon}d (<2 expanding-window folds)")
                 oof_records, cv_metrics = [], []
             else:
+                # Timed explicitly: post-minimal-model this is the single
+                # largest phase of a warm retrain, and the only figure on
+                # record for it was a REMAINDER (total minus the phases that
+                # were instrumented), which lumped it with feature engineering
+                # and artifact saving. A fold-count change cannot be attributed
+                # against a remainder.
+                _cv_t0 = time.time()
                 oof_records, cv_metrics = self._cv_evaluate_horizon(tdf, horizon, per_quantile_params)
+                logger.info(f"  [timing] {horizon}d conformal CV: "
+                            f"{time.time() - _cv_t0:.1f}s "
+                            f"({len(cv_metrics)} folds, {len(oof_records)} OOF rows)")
 
             # Calibrate. Order matters: q_hat sets the band width and the
             # confidence thresholds are fitted on that width, so the conformal
