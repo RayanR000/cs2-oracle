@@ -74,16 +74,68 @@ def test_sigma_bounds_are_the_first_and_ninety_ninth_percentiles():
     assert floor > 0
 
 
-def test_calibrate_achieves_nominal_coverage_on_its_own_calibration_set():
+def test_calibrate_achieves_held_out_marginal_coverage():
+    """Split conformal's actual distribution-free guarantee: calibrate q_hat
+    on one half of exchangeable data, measure coverage on a disjoint held-out
+    half, and it lands near the nominal level.
+
+    This test deliberately does NOT discriminate sigma-normalization: an
+    earlier version of this suite calibrated and measured coverage on the
+    SAME set, which is a tautology (np.quantile inverting its own CDF, ~0.80
+    coverage whether sigma is correct, inverted, or a constant). Splitting
+    into disjoint calibration/test halves closes that hole for the marginal
+    number, but marginal coverage is still ~80% with or without
+    normalization by construction of split conformal — see the next test,
+    which partitions the held-out set by sigma and is the one that actually
+    tells a locally-weighted implementation apart from an unnormalized one.
+    """
     rng = np.random.default_rng(0)
-    n = 5000
+    n = 8000
     sigma = rng.uniform(0.05, 0.5, size=n)
     # Heteroscedastic residuals: spread proportional to sigma.
     residuals = rng.normal(scale=sigma * 10.0, size=n)
-    q_hat = calibrate(residuals, sigma, ALPHA)
-    low, high = band(np.zeros(n), sigma, q_hat)
-    covered = np.mean((residuals >= low) & (residuals <= high))
-    assert covered == pytest.approx(NOMINAL_COVERAGE, abs=0.02)
+
+    idx = rng.permutation(n)
+    cal_idx, test_idx = idx[: n // 2], idx[n // 2:]
+
+    q_hat = calibrate(residuals[cal_idx], sigma[cal_idx], ALPHA)
+    low, high = band(np.zeros(test_idx.size), sigma[test_idx], q_hat)
+    covered = (residuals[test_idx] >= low) & (residuals[test_idx] <= high)
+    assert np.mean(covered) == pytest.approx(NOMINAL_COVERAGE, abs=0.03)
+
+
+def test_calibrate_gives_conditional_coverage_across_volatility_strata():
+    """The discriminating test: sigma-normalization equalizes coverage across
+    volatility levels, not just on average.
+
+    Measured directly against this module (n=8000, 50/50 calibration/test
+    split via the same rng stream, residual spread proportional to sigma):
+    with normalization the low- vs high-volatility coverage gap on the
+    held-out half is ~0.007 (79.1% vs 79.8%); replacing sigma with a constant
+    (sigma_from_columns bypassed, no normalization) blows the gap out to
+    ~0.307 (94.8% vs 64.1%), while marginal coverage stays ~79.4% in BOTH
+    cases. That last fact is exactly why the previous test cannot tell these
+    apart and this one is required.
+    """
+    rng = np.random.default_rng(0)
+    n = 8000
+    sigma = rng.uniform(0.05, 0.5, size=n)
+    residuals = rng.normal(scale=sigma * 10.0, size=n)
+
+    idx = rng.permutation(n)
+    cal_idx, test_idx = idx[: n // 2], idx[n // 2:]
+    sigma_test = sigma[test_idx]
+    residuals_test = residuals[test_idx]
+
+    q_hat = calibrate(residuals[cal_idx], sigma[cal_idx], ALPHA)
+    low, high = band(np.zeros(test_idx.size), sigma_test, q_hat)
+    covered = (residuals_test >= low) & (residuals_test <= high)
+
+    median_sigma = np.median(sigma_test)
+    low_vol = sigma_test <= median_sigma
+    high_vol = ~low_vol
+    gap = abs(np.mean(covered[low_vol]) - np.mean(covered[high_vol]))
+    assert gap < 0.05
 
 
 def test_calibrate_is_scale_invariant_in_sigma():
