@@ -145,7 +145,43 @@ resolve, per horizon. The prior for what to expect: the feature A/B harness nois
 floor ran **1.15pp at 3d up to 7.13pp at longer horizons**
 (`docs/architecture/model-optimization.md`).
 
-Then write the acceptance bar into this document **before running any arm**:
+### THE PRE-REGISTERED BAR — measured and committed 2026-08-04, before any arm was run
+
+Measured by `scripts/compute_mde.py --max-items 60 --step-days 120 --horizons 3 7`:
+the current design run twice, changing only the LightGBM seed (42 and 7), paired
+within `(item_id, forecast_date)`, date-clustered bootstrap.
+
+| Horizon | MDE (pp) | **Bar** | same-design mean diff | dates | paired records |
+|---|---|---|---|---|---|
+| 3d | **0.54** | paired `ci_lower_pp ≥ −0.54` | +0.152 pp, CI [−0.364, +0.711] | 289 | 16,464 |
+| 7d | **0.74** | paired `ci_lower_pp ≥ −0.74` | +0.634 pp, CI [−0.080, +1.402] | 288 | 16,404 |
+| 14d | not measured | **deferred** — see the amendment above | — | — | — |
+| 30d | not measured | **deferred** | — | — | — |
+
+The bar is on the **classifier** DA figure, not the median's sign.
+
+**This is far tighter than this spec originally predicted.** The earlier text cited
+the feature A/B harness noise floor of 1.15–7.13pp and warned that "parity" might
+only mean "not worse by 7pp at 30d". The measured MDE is **sub-1pp**, because
+pairing within `(item_id, forecast_date)` removes the between-date market variance
+that dominates both arms equally — a power gain the original design of this spec did
+not anticipate. **The consequence is a harder bar, not an easier one:** the minimal
+model must land within 0.54pp at 3d, while simultaneously dropping from 3 ensemble
+members to 1. It may well fail, and that would be a real result rather than a
+measurement artifact.
+
+Two caveats that must travel with these numbers:
+
+1. **They are the `--step-days 120` figures.** At the full 27-fold configuration the
+   MDE would be roughly 1.4× tighter still (~0.38pp / ~0.53pp), so this bar is the
+   *more permissive* of the two available. It is not the tightest achievable.
+2. **7d's same-design seed effect is the larger one (+0.634pp, CI barely excluding
+   zero).** That is independent corroboration of a known defect rather than noise in
+   this measurement: `docs/architecture/model-optimization.md` already records 7d q50
+   early stopping as "noise-determined", with stopping-round sd 41 on a mean of 47.
+   The gate rediscovered it. Any 7d comparison is partly measuring that instability.
+
+The prose bar this replaces read as follows, and is retained for the record:
 
 > For each horizon, the minimal model passes if the lower bound of its clustered
 > DA confidence interval is not more than `MDE(horizon)` below the current model's
