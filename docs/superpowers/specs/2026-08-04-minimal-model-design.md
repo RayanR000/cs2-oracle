@@ -255,6 +255,37 @@ per-item variation the p10/p90 models were supplying — and `price_std_60d` was
 already their top feature in 8 of 12 ensembles. The change replaces a learned
 function of volatility with the stated one.
 
+### What the normalization does and does not buy (measured 2026-08-04)
+
+This distinction was missing from the first draft of this spec and it changes what
+the band improvement can claim. Measured on n=8000 with a 50/50
+calibration/test split and residual spread proportional to σ:
+
+| | marginal coverage | low-vol half | high-vol half | gap |
+|---|---|---|---|---|
+| with σ-normalization | 0.815 | 0.810 | 0.820 | **0.009** |
+| without (`σ = 1`) | 0.809 | 0.949 | 0.669 | **0.279** |
+
+**Marginal coverage lands at nominal either way.** That is split conformal's
+distribution-free guarantee doing its job, and it holds for *any* nonconformity
+score — normalized or not. So "the band hits 80%" is a property of using conformal
+at all, not evidence that the σ-weighting works.
+
+What σ-normalization buys is **conditional** coverage. Unnormalized, the band
+over-covers quiet items (94.9%) and under-covers volatile ones (66.9%) while still
+averaging 80%. That average would look correct in any aggregate report while being
+wrong for every individual item — which is precisely the failure the served band
+must avoid, since a user reads one item's band, not the mean of 8,691 of them.
+
+Consequences for the rest of this spec:
+
+- The "Expected outcome" row reading *band coverage: 39–48% → at nominal by
+  construction* is true but weaker than it sounds. It should be read as **marginal**
+  coverage, and the results document must report **coverage stratified by volatility
+  tier** as well, or it will be quoting the one number that cannot fail.
+- A test asserting only marginal coverage cannot detect a broken normalization. The
+  discriminating assertion is the stratified gap.
+
 `σᵢ` is derived from `price_std_60d` (`:978`) and `price`, both already present on
 `latest_rows` in `predict()`. No new feature-engineering pass is added.
 
