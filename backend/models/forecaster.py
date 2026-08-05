@@ -8,6 +8,7 @@ import os
 import gc
 import sys
 import json
+import time
 import hashlib
 import logging
 import numpy as np
@@ -2745,6 +2746,7 @@ class ItemForecaster:
         logger.info(f"\n{'='*60}")
         logger.info(f"TRAINING COMPLETE in {_train_elapsed:.0f}s ({_train_elapsed/60:.1f}min)")
         logger.info(f"{'='*60}")
+        logger.info(f"  [timing] TOTAL training: {_train_elapsed:.1f}s")
 
     def _train_horizon_inline(self, horizon: int, df: pd.DataFrame,
                                 max_rows: int = 300_000):
@@ -2844,6 +2846,7 @@ class ItemForecaster:
             dart_msg = " (DART)" if boosting_type == "dart" else ""
             logger.info(f"  Boosting type for {horizon}d: {boosting_type}{dart_msg}")
 
+            _hp_start = time.time()
             cached_hp = self.tuned_params.get(horizon, {})
             reuse_hp = (os.environ.get("FORCE_HP_SEARCH") != "1"
                         and all(q in cached_hp for q in self.QUANTILES))
@@ -2939,6 +2942,14 @@ class ItemForecaster:
                     q: dict(per_quantile_params[q]) for q in self.QUANTILES
                 }
 
+            _hp_elapsed = time.time() - _hp_start
+            if reuse_hp:
+                logger.info(f"  [timing] {horizon}d optuna: {_hp_elapsed:.1f}s (skipped - cached HP)")
+            elif skip_hp:
+                logger.info(f"  [timing] {horizon}d optuna: {_hp_elapsed:.1f}s (skipped - SKIP_HP_HORIZONS)")
+            else:
+                logger.info(f"  [timing] {horizon}d optuna: {_hp_elapsed:.1f}s")
+
             # Train ensemble members sequentially. No threading or multiprocessing
             # — LightGBM's internal OpenMP threads already utilize all cores.
             n_jobs = max(1, (os.cpu_count() or 4) // 2)
@@ -2960,6 +2971,7 @@ class ItemForecaster:
                 _ens_elapsed = (datetime.now() - _ens_start).total_seconds()
                 fi = self._get_feature_importance(ensemble_models[0])
                 logger.info(f"  Done in {_ens_elapsed:.0f}s — Top features: {fi['feature'].head(5).tolist()}")
+                logger.info(f"  [timing] {horizon}d q{int(q*100)} ensemble: {_ens_elapsed:.1f}s")
 
                 # Residual stacking: train Ridge regression on ensemble
                 # residuals to correct systematic bias patterns.
@@ -2984,6 +2996,7 @@ class ItemForecaster:
             # Vol-scaled labels were A/B-tested (2026-07-27) and did not beat
             # the fixed-band control; production stays fixed-band. Tooling
             # retained in scripts/ab_test_direction_labels.py.
+            _dir_start = time.time()
             self.direction_models[horizon] = self._fit_direction_classifier(
                 X_train, y_train, X_val, y_val, boosting_type,
                 self._direction_tree_params(per_quantile_params),
@@ -2991,6 +3004,8 @@ class ItemForecaster:
                 sigma_train=None,
                 sigma_val=None,
             )
+            _dir_elapsed = time.time() - _dir_start
+            logger.info(f"  [timing] {horizon}d direction classifier: {_dir_elapsed:.1f}s")
 
             # Train regime-specific models (optional: SKIP_REGIMES=1 to skip)
             if os.environ.get("SKIP_REGIMES") == "1" or _warm_retrain:
