@@ -1496,6 +1496,58 @@ def test_unusable_frozen_rows_are_counted_and_logged_not_swallowed(
     assert backtest_accuracy.MAX_UNRESOLVABLE_PCT == 10.0
 
 
+def test_the_unusable_hint_does_not_promise_reresolve_will_recover_them(
+    session, caplog
+):
+    """The warning used to end "Re-resolve them with --reresolve to bring them
+    back into the metric." For part of the population that actually triggered it
+    the truth was the opposite: --reresolve DELETES the row.
+
+    Run 31057993603 (2026-08-05) dropped 14,233 frozen outcomes. They were
+    pre-freeze vintage with a NULL base_price — the column arrived in migration
+    0019 on 2026-08-01, and predicted_price_mid / actual_price are
+    nullable=False, so a NULL base_price was the only reachable trigger — all
+    with target_date 2026-08-01. At h=3 (forecast 07-29) the archive holds only
+    07-31 and 08-01 in the actual-leg window because 2026-07-30 is missing, so
+    classify_archive_gap calls it unresolvable, --reresolve puts it in
+    considered_ids and its frozen row is deleted instead of repaired. At h=7/14/30
+    the same target date re-resolves normally.
+
+    So the hint must name the precondition — the archive can still supply a
+    clean actual leg for their target_date — and the consequence when it does
+    not hold, rather than promising recovery for all of them.
+    """
+    import logging
+
+    from scripts import backtest_accuracy
+
+    session.add(ForecastOutcome(
+        forecast_id=1,
+        item_id=1,
+        forecast_date=date(2026, 7, 29),
+        horizon_days=3,
+        target_date=date(2026, 8, 1),
+        base_price=None,
+        predicted_price_mid=1.1,
+        actual_price=1.2,
+        abs_error=0.1,
+    ))
+    session.commit()
+
+    caplog.clear()
+    with caplog.at_level(logging.WARNING, logger="backtest_accuracy"):
+        backtest_accuracy._records_from_frozen_outcomes(session)
+
+    msg = next(r.message for r in caplog.records if "UNUSABLE" in r.message)
+    assert "1 frozen outcome(s) UNUSABLE" in msg
+    # The refuted claim must be gone.
+    assert "bring them back into the metric" not in msg
+    # The consequence when the archive cannot cover their actual leg.
+    assert "delete" in msg.lower()
+    # And the check that tells the two cases apart.
+    assert "target_date" in msg
+
+
 def test_frozen_outcome_query_is_restricted_in_sql_not_in_python(
     session, tmp_path, monkeypatch
 ):

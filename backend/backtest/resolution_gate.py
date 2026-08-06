@@ -72,8 +72,11 @@ loophole this module exists to prevent:
   has no coverage information at all.
 * Gap rows leave the fresh denominator too, so a real resolver regression behind
   a large gap population still fails at full sensitivity.
-* The count, the percentage and the surviving scoreable cohort are reported and
-  warned on every run, so the shrinkage is attributable rather than invisible.
+* The count, the percentage and the surviving cohort are reported and warned on
+  every run, so the shrinkage is attributable rather than invisible. The
+  survivor count is quoted as an upper bound only: further rows are dropped
+  below this module and the scored denominator is not the gate's to state. See
+  the comment on the gap branch.
 * If the gap swallows the entire cohort there is no metric left and the run fails
   regardless.
 """
@@ -186,6 +189,32 @@ def evaluate_gate(
 
     # Reported before chronic because it is the larger and more surprising
     # population when present, and because it names a fixable upstream cause.
+    #
+    # It reports n_scoreable as an UPPER BOUND, never as the metric's
+    # denominator. Run 31057993603 (2026-08-05) said "Reporting on the 80,737
+    # scoreable forecasts" and the metric was then computed over 66,279 — the
+    # gate was overstating the cohort by 14,458, an over-report as large as the
+    # 17.7% shrinkage it had just warned about. Two drops happen below it and
+    # neither is visible from here:
+    #
+    #   * 14,233 frozen rows with a NULL base_price, dropped by
+    #     backtest_accuracy._records_from_frozen_outcomes.
+    #   * the 225 chronic rows, which never earn an outcome row at all and so are
+    #     not in the scored table either, yet are still inside n_scoreable —
+    #     only gap rows are subtracted from it.
+    #
+    # The fix is for the gate to stop claiming a number it does not own, rather
+    # than for the scored count to be threaded back into it. This module is pure
+    # by contract (no DB, no archive, no clock) and it runs BEFORE the freeze and
+    # the scoring step, so the scored count does not exist yet at this point —
+    # reconciling here would mean either reaching into the DB or accepting a
+    # value the caller cannot have computed. And nothing is lost by dropping the
+    # claim: `_records_from_frozen_outcomes` logs "N scored of M considered" a
+    # line later in the same run, which is the honest denominator.
+    #
+    # n_scoreable itself is deliberately left alone. It still decides the
+    # "nothing scoreable left" failure above, and changing its definition would
+    # change what the run fails on — this is a reporting fix only.
     if n_unresolvable_gap:
         chronic_note = (
             f" A further {n_unresolvable_chronic:,} are chronically unresolvable."
@@ -202,8 +231,11 @@ def evaluate_gate(
                 f"established without reusing pre-forecast observations. This is "
                 f"a collection gap, not a resolver regression — the fresh "
                 f"resolution rate is measured over the {n_attempted_fresh:,} "
-                f"attempts that carried information.{chronic_note} Reporting on "
-                f"the {n_scoreable:,} scoreable forecasts."
+                f"attempts that carried information.{chronic_note} That leaves "
+                f"{n_scoreable:,} forecasts, which is an UPPER BOUND on the "
+                f"scoreable cohort and not the metric's denominator — the count "
+                f"actually scored is reported by the frozen-outcome scoring step "
+                f"below, which drops rows this gate cannot see."
             ),
             coverage_pct=coverage_pct,
             fresh_rate_pct=fresh_rate_pct,

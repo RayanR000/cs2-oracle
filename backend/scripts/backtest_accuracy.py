@@ -589,12 +589,44 @@ def _records_from_frozen_outcomes(db, min_price=0, forecast_ids=None):
     if n_unusable:
         # Loud on purpose. These rows are re-resolved by nothing and counted by
         # no gate — without this line a shrinking scored cohort is invisible.
+        #
+        # The hint used to read "Re-resolve them with --reresolve to bring them
+        # back into the metric." That is not a promise this code can make, and
+        # for part of the population that actually triggered it the truth was the
+        # opposite. Run 31057993603 (2026-08-05) dropped 14,233 rows of
+        # pre-freeze vintage carrying a NULL base_price — the column arrived in
+        # migration 0019 on 2026-08-01, and predicted_price_mid / actual_price
+        # are nullable=False, so a NULL base_price was the only reachable
+        # trigger — all with target_date 2026-08-01.
+        #
+        # Checked against the archive rather than assumed: with the local
+        # coverage set, a target of 08-01 has only {07-31, 08-01} inside the
+        # actual-leg window at h=3, because 2026-07-30 is missing. That is fewer
+        # than SMOOTH_WINDOW, so classify_archive_gap calls it unresolvable,
+        # --reresolve puts it in considered_ids and DELETES the frozen row.
+        # At h=7/14/30 the same target has 5/12/28 covered days and re-resolves
+        # normally. So the old hint was correct for the long horizons and
+        # destructive for the short ones, and which branch a row takes is decided
+        # by archive coverage over its actual leg — hence the wording below.
+        #
+        # That population is gone: the cleanup documented in
+        # docs/changelog/2026-08-01-deterministic-backtest.md was executed on
+        # 2026-08-06, forecast_outcomes went 89,203 -> 74,970 rows and
+        # `base_price IS NULL` now returns 0. This warning should therefore be
+        # dormant, which makes a future occurrence a NEW population with a cause
+        # nobody has diagnosed — worth investigating before it is routinely
+        # deleted the way this one was.
         logger.warning(
             f"  {n_unusable:,} frozen outcome(s) UNUSABLE and dropped from scoring "
             f"(base_price/actual_price missing or non-positive, or no "
             f"predicted_price_mid). They are frozen, so they are never "
             f"re-resolved and never counted by the unresolvable gate. "
-            f"Re-resolve them with --reresolve to bring them back into the metric."
+            f"--reresolve only recovers the ones whose target_date window the "
+            f"archive can still supply a clean actual leg for; for the rest it "
+            f"DELETES the frozen row instead of repairing it. Check their "
+            f"target_date against archive coverage, and what wrote them, before "
+            f"acting: the known 2026-08-01 population was cleared by deletion on "
+            f"2026-08-06, so this is a new one."
         )
     return groups
 

@@ -77,6 +77,42 @@ class TestTheLiveBreakage:
         assert r.gap_pct == pytest.approx(17382 / 98119 * 100)
 
 
+class TestTheWarningDoesNotClaimTheScoredDenominator:
+    """Run 31057993603 (2026-08-05) said "Reporting on the 80,737 scoreable
+    forecasts" and then scored 66,279 of them.
+
+    98,119 mature - 17,382 gap = 80,737, which is what this gate owns. Below it,
+    225 chronic rows never earn an outcome row at all (80,512 considered) and
+    14,233 frozen rows with a NULL base_price are dropped by
+    `_records_from_frozen_outcomes` (66,279 scored). The gate is pure and runs
+    before scoring, so it cannot see either drop — and must therefore not
+    present its own survivor count as the metric's denominator.
+    """
+
+    ARGS = dict(
+        n_mature=98119,
+        n_attempted=23149,
+        n_unresolvable_fresh=0,
+        n_unresolvable_chronic=225,
+        n_unresolvable_gap=17382,
+    )
+
+    def test_it_does_not_announce_what_it_is_reporting_on(self):
+        r = evaluate_gate(**self.ARGS)
+        assert "reporting on" not in r.reason.lower()
+
+    def test_the_survivor_count_is_labelled_an_upper_bound(self):
+        r = evaluate_gate(**self.ARGS)
+        assert "80,737" in r.reason
+        assert "upper bound" in r.reason.lower()
+
+    def test_it_points_at_the_scored_count_as_the_real_denominator(self):
+        """The operator has to be told where the honest number is, or the
+        reframing just removes information."""
+        r = evaluate_gate(**self.ARGS)
+        assert "scored" in r.reason.lower()
+
+
 class TestTheLoopholeIsClosed:
     def test_a_fresh_regression_still_fails_behind_a_large_gap(self):
         """A gap population must not become cover for a broken resolver.
