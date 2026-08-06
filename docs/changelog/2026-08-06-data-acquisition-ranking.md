@@ -19,6 +19,17 @@ This record ranks the candidates against that bar. **No lift is claimed for any 
 The measurement floor (1.15pp at 3d, 2.76–7.13pp at 7d/14d/30d) is unchanged, and
 `compute_mde.py` still gates any experiment.
 
+> **Updated 2026-08-06 (later the same day).** Two of the arguments below have since been
+> measured — the breadth-beats-depth premise and the ByMykel item-age claim. See
+> `2026-08-06-breadth-beats-depth-item-age-does-not.md`. Breadth at a fixed budget is
+> confirmed but **saturates by ~350 items**, and the inline notes below are corrected
+> accordingly.
+>
+> **Updated again, same day.** A market-relative re-run of the metadata arms **reversed the
+> item-age refutation** this banner previously carried. The ByMykel recommendation is now
+> *ingest the whole 9-column bundle*, not "the static columns, skip age". Tier-2 item 4
+> carries the corrected numbers.
+
 ## What the audit found that changes the picture
 
 Three findings bear directly on the ranking. Full detail in `data-inventory.md`.
@@ -51,6 +62,17 @@ stands. It is the only source that attacks finding (1) and finding (2) at once, 
 it *lowers* rows/item instead of raising it: 5,542 → ~31,590 items, 1,341 → 923 rows/item,
 `target_items` at the 700K budget **521 → 758 (+45%)**. Treat 5.7× breadth as an upper
 bound; the sample is biased toward items that resolved.
+
+**Measured 2026-08-06, and smaller than this section implies.** Breadth at a fixed
+200K-row budget is worth **+1.18pp at 14d and +0.73pp at 30d** (150 → 350 items, held-out
+≥$1 CV), null at 3d, inconsistent at 7d — but **350 → 700 items adds only +0.10pp**, so the
+gain saturates well before the backfill's 5.7×. Production's ~1,343 rows/item is the
+150-item arm's density and the backfill would move it to ~923, between the 150- and
+350-item arms; interpolating gives roughly **+0.5 to +0.8pp at 14d/30d and nothing at
+3d/7d**. Real, but below the 1pp bar used elsewhere in this project. The
+breadth-of-*coverage* argument — a training universe that matches what `predict()` scores —
+is unaffected and is now the stronger half of the case.
+See `2026-08-06-breadth-beats-depth-item-age-does-not.md`.
 
 Blocked on egress, not code. The residential IP is soft-blocked with no decay over 5 h,
 and both datacenter VPN exits were served a stripped shell on request #1 — Steam filters
@@ -86,6 +108,34 @@ is not inferable from a truncated price history. Worth weighting: **rarity is th
 metadata family that ever measured causal here** (+10–12pp within the model), and
 `item-metadata.parquet` has rarity NULL on 4,296 of its 8,691 rows — this fills that too.
 
+**Measured 2026-08-06; three corrections, one of them since reversed.** (a) ~~Item age is
+not worth ingesting for accuracy.~~ **Withdrawn.** Under raw labels, age's marginal
+contribution over the static columns is +0.73pp at 7d and **−0.69pp at 30d** —
+sign-inconsistent — and `item_age_days` (observation date − first sale date) carries a
+calendar term. But under **market-relative labels** the full 9-column bundle beats the
+7-column static subset at **all four** horizons (+0.34 vs +0.13 at 3d, +0.75 vs +0.54 at
+7d, +0.99 vs −0.29 at 14d, +1.85 vs +1.29 at 30d), and `age_only` reads significantly
+positive at 7d/14d/30d (+0.81 / +0.67 / +0.56, CIs excluding zero). **Ingest the whole
+bundle.** The residual uncertainty is narrow but real: age's marginal over the static subset
+is still sign-inconsistent (−0.02 / +0.27 / +0.96 / −0.73) and no arm isolates age *inside*
+the bundle, so no per-column attribution exists.
+(b) The **static** columns (rarity, crate, collection, float caps, StatTrak/Souvenir) *are*
+a small real effect: **+0.70pp at 7d, +1.92pp at 30d**, held-out ≥$1 CV, placebo at ~0 —
+**+0.54 / +1.29pp** once the label is demeaned by the market factor, so about two thirds of
+it is not the market term. Null at 3d and 14d in that regime.
+(c) It is **not a two-call one-shot**: 10 further dumps from the same repo are required
+(item age reaches 72.5% of the ≥$1 served cohort with them, **45.7% from skins + crates
+alone**), joining needs a new `market_hash_name` parser (`models/steam_types.py` cannot do
+it), item age is ambiguous for 11.1% of the served cohort, and one file carries three date
+formats.
+
+All of (a) and (b) are **held-out-item CV numbers on an 870-item deep ≥$1 universe, not
+production DA**. The market-relative figures score *idiosyncratic* direction and are not
+comparable to the raw-label ones or to production; the label flag defaults off and was
+itself refuted for production the same day
+(`2026-08-06-market-relative-labels-refuted.md`). See
+`2026-08-06-breadth-beats-depth-item-age-does-not.md`.
+
 **5. Steam `ISteamNews/GetNewsForApp`** — 500 entries back to 2022-03-01, keyless, 0.29 s.
 A free CS2 event calendar for `event_correlation_analysis.py`, which currently reads a
 Postgres table that has been empty by design since 2026-07-19.
@@ -112,7 +162,7 @@ FX in `exchange-rates-2026.parquet`. Free from ECB / Frankfurter.
 | Candidate | Why not |
 |---|---|
 | Trade volume as a predictive feature | |r| < 0.002 across 4.47M rows. Audit stands |
-| `atalantus/buff-price-history-archive` | Depth-only: rows/item 1,341 → 1,641, `target_items` 521 → **426** |
+| `atalantus/buff-price-history-archive` | Depth-only: rows/item 1,341 → 1,641, `target_items` 521 → **426**. Now measured, not just arithmetic: the unbudgeted 700-item arm carried 5.8× the rows and scored **worse** than the same items at 200K rows at 7d/14d/30d |
 | CSMarketAPI | Quota permanently burned across all 5 free keys |
 | Any paid feed ($9.99–$179/mo) | Skinport + lis-skins + market.csgo.com cover the same ground free |
 | Wayback Machine for listing history | Zero captures across all six endpoints probed |
@@ -125,6 +175,13 @@ for the *same* 5,542 items makes things worse — that is exactly why the BUFF a
 rejected. The argument for the Steam listing backfill is specifically that it buys
 **breadth**: a training universe that matches what `predict()` scores, rather than twelve
 years of history on 14% of the catalogue, 84% of it sub-dollar.
+
+**This paragraph is the one claim here that has since been measured directly, and it holds
+in both directions.** Removing the row cap from a 700-item arm — 5.8× the rows, ~1,518
+rows/item — scored −0.83 / −0.59 / −0.15pp at 7d/14d/30d against the same items at 200K
+rows, and +0.27pp at 3d. What pays is item diversity per row, not row count. But the
+breadth payoff itself saturates by ~350 items, so "buys breadth" is worth sub-1pp here
+rather than the multi-pp this section leaves open.
 
 And the measurement floor still applies. With an MDE of 1.15pp (3d) to 7.13pp (30d), a new
 feature group has to be genuinely large to be provable at all. Of everything above,
@@ -146,6 +203,8 @@ building anything, and use a permutation A/B, never a plain one.
 - `docs/research/accuracy-opportunities.md` — the stop banner and the reopen bar
 - `docs/changelog/2026-08-06-retroactive-supply-feeds.md` — the lis-skins and Skinport
   measurements
+- `docs/changelog/2026-08-06-breadth-beats-depth-item-age-does-not.md` — the measurement of
+  this record's breadth premise and its ByMykel item-age claim
 - `docs/changelog/2026-08-06-steam-listing-backfill-and-phantom-items.md`
 - `docs/changelog/2026-08-06-price-archive-compaction.md`
 - `docs/research/lis-skins-snapshot-plan.md` — read before building the lis-skins collector
