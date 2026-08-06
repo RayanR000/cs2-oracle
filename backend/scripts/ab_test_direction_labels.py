@@ -143,7 +143,7 @@ def _run_horizon(fc, tdf, feat_cols, horizon, purge_days):
     target_col = f"target_return_{horizon}d"
     dates = np.array(sorted(tdf["date"].unique()))
     folds = fc._compute_cv_splits(dates, purge_days=purge_days)
-    boosting_type = fc.BOOSTING_TYPE_MAP.get(horizon, "gbdt")
+    boosting_type = fc.BOOSTING_TYPE
 
     if not folds:
         logger.warning(f"  no folds for {horizon}d after purge gap")

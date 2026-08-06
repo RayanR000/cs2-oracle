@@ -167,7 +167,6 @@ def trained():
     with tempfile.TemporaryDirectory() as tmp:
         f = ItemForecaster(db_session=MagicMock(), model_dir=tmp)
         f.N_ENSEMBLES = 1
-        f.DART_NUM_BOOST_ROUND = 25
         f.SKIP_HP_HORIZONS = list(f.HORIZONS)   # no Optuna
         f.CV_MIN_TRAIN_DAYS = 40
         f.CV_STEP_DAYS = 25

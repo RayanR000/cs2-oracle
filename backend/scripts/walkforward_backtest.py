@@ -43,7 +43,13 @@ VAL_WINDOW_DAYS = 21
 STEP_DAYS = 60
 MAX_TRAIN_ROWS = 200_000
 MIN_VAL_SAMPLES = 50
-QUANTILES = [0.1, 0.5, 0.9]
+# Driven by production, NOT held locally. This module used to own
+# `QUANTILES = [0.1, 0.5, 0.9]` and fit a booster per quantile per fold, which
+# meant the gate silently kept measuring a 3-quantile design after production
+# collapsed to one median model — so the quantile collapse was invisible to the
+# very gate that was supposed to police it, and the p10/p90 boosters were fitted
+# on UNTUNED defaults because meta.json only carries q=0.5.
+QUANTILES = list(ItemForecaster.QUANTILES)
 
 # Seed for the per-fold boosters. scripts/compute_mde.py varies this to
 # measure the gate's own noise floor: two runs of the same design differ only
@@ -141,11 +147,14 @@ def _score_fold(*, item_ids, forecast_dates, base_prices, actual_returns_pct,
 
 ARMS = ("gbm", "ridge", "naive")
 
-# Half-width of the baseline arms' interval, in percent return space. These
-# arms exist to answer "what does the DA cost?", not to compete on interval
-# coverage, so the band is a fixed placeholder and their interval_coverage
-# figure must not be quoted.
-BASELINE_BAND_PCT = 10.0
+# Half-width of EVERY arm's interval, in percent return space. No arm here has a
+# band model any more: production builds its band with models/conformal.py, which
+# this gate never calls, and the p10/p90 boosters that used to stand in for it
+# described a design production no longer has. So the band is a fixed placeholder
+# for all arms, `in_interval` is structurally meaningless, and the gate neither
+# logs nor persists interval_coverage. Realized coverage can only come from
+# scripts/backtest_accuracy.py, which scores the actually-served band.
+PLACEHOLDER_BAND_PCT = 10.0
 
 
 def _classes_from_returns(mid_returns_pct):
@@ -161,8 +170,8 @@ def _naive_predict(trailing_returns_pct):
     mid = np.asarray(trailing_returns_pct, dtype=float)
     mid = np.nan_to_num(mid, nan=0.0, posinf=0.0, neginf=0.0)
     return (mid,
-            mid - BASELINE_BAND_PCT,
-            mid + BASELINE_BAND_PCT,
+            mid - PLACEHOLDER_BAND_PCT,
+            mid + PLACEHOLDER_BAND_PCT,
             _classes_from_returns(mid))
 
 
@@ -203,8 +212,8 @@ def _ridge_predict(X_train, y_train, X_val, alpha: float = 5.0):
               np.asarray(y_train, dtype=float))
     mid = model.predict(scaler.transform(np.asarray(X_val, dtype=float)))
     return (mid,
-            mid - BASELINE_BAND_PCT,
-            mid + BASELINE_BAND_PCT,
+            mid - PLACEHOLDER_BAND_PCT,
+            mid + PLACEHOLDER_BAND_PCT,
             _classes_from_returns(mid))
 
 
@@ -419,13 +428,15 @@ def run_walkforward(max_items=500, horizons=None, skip_db=False, return_records=
                         )
                         preds[q] = model.predict(X_val.values)
 
-                    if len(preds) != 3:
+                    if 0.5 not in preds:
                         continue
 
-                    low_ret, high_ret = ItemForecaster._fix_quantile_crossing(
-                        preds[0.1], preds[0.5], preds[0.9]
-                    )
                     mid_ret = preds[0.5]
+                    # Placeholder, as for every other arm — see
+                    # PLACEHOLDER_BAND_PCT. Production's band comes from
+                    # models/conformal.py, which this gate does not call.
+                    low_ret = mid_ret - PLACEHOLDER_BAND_PCT
+                    high_ret = mid_ret + PLACEHOLDER_BAND_PCT
 
                     # The estimator production actually serves. sigma_train/
                     # sigma_val stay None so the fixed-band labels production
@@ -487,8 +498,7 @@ def run_walkforward(max_items=500, horizons=None, skip_db=False, return_records=
                 f"median-sign DirAcc={agg_median['directional_accuracy']:.1f}%"
             )
             logger.info(
-                f"      MAE=${agg_clf['mae']:.2f}  MAPE={agg_clf['mape']:.1f}%  "
-                f"IntCov={agg_clf['interval_coverage']:.1f}%"
+                f"      MAE=${agg_clf['mae']:.2f}  MAPE={agg_clf['mape']:.1f}%"
             )
 
         total_elapsed = time.time() - total_start
@@ -518,7 +528,9 @@ def run_walkforward(max_items=500, horizons=None, skip_db=False, return_records=
                             "directional_accuracy_ci_clustered_upper",
                             "distinct_forecast_dates",
                             "date_coverage_sufficient",
-                            "interval_coverage",
+                            # interval_coverage is deliberately NOT persisted:
+                            # every arm's band is PLACEHOLDER_BAND_PCT, so the
+                            # figure describes the placeholder, not a model.
                         ]
                     } | {
                         "median_sign_directional_accuracy":

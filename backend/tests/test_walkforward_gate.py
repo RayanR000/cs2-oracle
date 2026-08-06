@@ -16,6 +16,7 @@ import pytest
 
 import scripts.walkforward_backtest as wf
 from backtest.scoring import HEADLINE_TIER
+from models.forecaster import ItemForecaster
 
 
 def test_sample_count_weighted_aggregation_is_gone():
@@ -89,6 +90,33 @@ def test_classifier_is_fitted_per_fold():
         "the gate must fit the directional classifier production serves, not "
         "score the median's sign"
     )
+
+
+def test_the_gate_does_not_own_its_quantile_list():
+    """The gate's quantiles must track production's, not be hard-coded here.
+
+    This module used to hold `QUANTILES = [0.1, 0.5, 0.9]` and fit a booster per
+    quantile per fold. That made the collapse to a single median model invisible
+    to the gate that was supposed to police it: the 3d/7d arms came out
+    byte-identical and "passed" the pre-registered bar vacuously. Anything
+    hard-coded here reintroduces exactly that blindness.
+    """
+    assert wf.QUANTILES == list(ItemForecaster.QUANTILES)
+    assert wf.QUANTILES == [0.5]
+
+
+def test_the_gate_reports_no_interval_coverage():
+    """Every arm's band is a placeholder, so coverage must not be reported.
+
+    The gbm arm's band used to come from p10/p90 boosters fitted on UNTUNED
+    defaults (meta.json carries only q=0.5), describing a design production does
+    not have — while production builds its band with models/conformal.py, which
+    this gate never calls. Reporting a number for it invited quoting it.
+    """
+    code = "\n".join(ln for ln in inspect.getsource(wf.run_walkforward).splitlines()
+                     if not ln.lstrip().startswith("#"))
+    assert "interval_coverage" not in code
+    assert "IntCov" not in code
 
 
 def _fake_results_by_horizon():

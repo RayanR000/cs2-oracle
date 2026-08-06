@@ -9,7 +9,6 @@ Usage:
     python scripts/forecast_prices.py --predict-only  # use saved models (no auto-retrain)
     python scripts/forecast_prices.py --train-only     # train models only, skip forecasts
     python scripts/forecast_prices.py --compare-regime  # A/B test regime vs global-only + backtest
-    python scripts/forecast_prices.py --compare-ensemble # A/B test 3-member vs 6-member ensemble + backtest
 """
 
 import sys
@@ -183,7 +182,6 @@ def _write_forecasts_to_db(db, results, model_version, slug_to_id, today):
 
 def run_forecast(train_only: bool = False, predict_only: bool = False,
                  compare_regime: bool = False,
-                 compare_ensemble: bool = False,
                  update_bias: bool = False):
     db = SessionLocal()
     try:
@@ -346,75 +344,6 @@ def run_forecast(train_only: bool = False, predict_only: bool = False,
                 "model_version_global": version_global,
             }
 
-        # Compare ensemble sizes: 3-member vs 6-member
-        if compare_ensemble:
-            logger.info("=" * 60)
-            logger.info("COMPARISON MODE: comparing 3-member vs 6-member ensemble")
-            logger.info("=" * 60)
-
-            orig_n = ItemForecaster.N_ENSEMBLES
-            orig_seeds = ItemForecaster.ENSEMBLE_SEEDS
-            orig_ff = ItemForecaster.ENSEMBLE_FEATURE_FRACTIONS
-
-            # Run A: 3-member ensemble
-            logger.info("Training 3-member ensemble...")
-            ItemForecaster.N_ENSEMBLES = 3
-            ItemForecaster.ENSEMBLE_SEEDS = [42, 73, 91]
-            ItemForecaster.ENSEMBLE_FEATURE_FRACTIONS = [0.6, 0.65, 0.7]
-            forecaster_ens3 = ItemForecaster(
-                db_session=db,
-                model_dir=str(Path(__file__).parent.parent / "models" / "saved_models_ens3")
-            )
-            forecaster_ens3.train(max_rows=TRAIN_HORIZON_MAX_ROWS,
-                                  max_feature_rows=_train_feature_rows())
-            db.close()
-            db = SessionLocal()
-            results_ens3 = forecaster_ens3.predict()
-            version_ens3 = f"{MODEL_VERSION}-ens3"
-            n_ens3 = _write_forecasts_to_db(db, results_ens3, version_ens3, slug_to_id, today)
-            logger.info(f"Wrote {n_ens3} forecasts (ens3 mode) to item_forecasts table")
-
-            # Run B: 6-member ensemble
-            logger.info("Training 6-member ensemble...")
-            ItemForecaster.N_ENSEMBLES = orig_n
-            ItemForecaster.ENSEMBLE_SEEDS = orig_seeds
-            ItemForecaster.ENSEMBLE_FEATURE_FRACTIONS = orig_ff
-            forecaster_ens6 = ItemForecaster(
-                db_session=db,
-                model_dir=str(Path(__file__).parent.parent / "models" / "saved_models_ens6")
-            )
-            forecaster_ens6.train(max_rows=TRAIN_HORIZON_MAX_ROWS,
-                                  max_feature_rows=_train_feature_rows())
-            db.close()
-            db = SessionLocal()
-            results_ens6 = forecaster_ens6.predict()
-            version_ens6 = f"{MODEL_VERSION}-ens6"
-            n_ens6 = _write_forecasts_to_db(db, results_ens6, version_ens6, slug_to_id, today)
-            logger.info(f"Wrote {n_ens6} forecasts (ens6 mode) to item_forecasts table")
-
-            # Backtest both
-            logger.info("=" * 60)
-            logger.info("Running backtest on both ensemble sizes...")
-            logger.info("=" * 60)
-            try:
-                from scripts.backtest_accuracy import backtest_forecasts
-                bt_results = backtest_forecasts(db, today)
-                logger.info(f"Backtest complete: {len(bt_results or [])} accuracy records")
-            except Exception as e:
-                logger.error(f"Backtest failed: {e}", exc_info=True)
-                bt_results = []
-
-            return {
-                "status": "success",
-                "items_ens3": len(results_ens3),
-                "forecasts_ens3": n_ens3,
-                "items_ens6": len(results_ens6),
-                "forecasts_ens6": n_ens6,
-                "backtest_records": len(bt_results or []),
-                "model_version_ens3": version_ens3,
-                "model_version_ens6": version_ens6,
-            }
-
         return {
             "status": "success",
             "items": len(results),
@@ -439,12 +368,10 @@ def main():
     train_only = "--train-only" in args
     predict_only = "--predict-only" in args
     compare_regime = "--compare-regime" in args
-    compare_ensemble = "--compare-ensemble" in args
     update_bias = "--update-bias" in args
 
     result = run_forecast(train_only=train_only, predict_only=predict_only,
                           compare_regime=compare_regime,
-                          compare_ensemble=compare_ensemble,
                           update_bias=update_bias)
     print(f"RESULT: {result}")
     return 0 if result.get("status") == "success" else 1

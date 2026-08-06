@@ -80,6 +80,11 @@ GATE_MAX_DA_REGRESSION_PP = 0.5     # percentage points
 # sampling strategy.
 SINGLE_MEMBER_FEATURE_FRACTION = 0.7
 
+# Boosting rounds per model. Was `DART_NUM_BOOST_ROUND if dart else 1000`;
+# DART is gone from the forecaster, so only the GBDT arm of that branch
+# survives.
+NUM_BOOST_ROUND = 1000
+
 
 def pinball_loss(y_true, y_pred, alpha=QUANTILE):
     """Mean pinball (quantile) loss — the objective q50 is trained on."""
@@ -200,11 +205,6 @@ def build_arm_params(base, arm, boosting_type, forecaster):
     return p
 
 
-def _num_boost_round(forecaster, boosting_type):
-    return (forecaster.DART_NUM_BOOST_ROUND
-            if boosting_type == "dart" else 1000)
-
-
 def _run_horizon(fc, tdf, feat_cols, horizon, max_folds,
                  fold_start=0, fold_count=None):
     """Train both arms on identical folds; yield one record per (arm, fold).
@@ -217,7 +217,7 @@ def _run_horizon(fc, tdf, feat_cols, horizon, max_folds,
     target_col = f"target_return_{horizon}d"
     dates = np.array(sorted(tdf["date"].unique()))
     folds = fc._compute_cv_splits(dates, purge_days=horizon)
-    boosting_type = fc.BOOSTING_TYPE_MAP.get(horizon, "gbdt")
+    boosting_type = fc.BOOSTING_TYPE
     if not folds:
         logger.warning(f"  no folds for {horizon}d after purge gap")
         return
@@ -230,7 +230,7 @@ def _run_horizon(fc, tdf, feat_cols, horizon, max_folds,
                 f"boosting={boosting_type}")
 
     base = load_production_q50_params(horizon)
-    nbr = _num_boost_round(fc, boosting_type)
+    nbr = NUM_BOOST_ROUND
 
     for fold_idx, (train_dates, val_dates) in sharded:
         tr = tdf[tdf["date"].isin(train_dates)]
@@ -258,9 +258,7 @@ def _run_horizon(fc, tdf, feat_cols, horizon, max_folds,
                                  **({"weight": w_tr} if w_tr is not None else {}))
             dval = lgb.Dataset(X_va, y_va, reference=dtrain, params=ds_params,
                                **({"weight": w_va} if w_va is not None else {}))
-            callbacks = [lgb.log_evaluation(0)]
-            if boosting_type != "dart":
-                callbacks.insert(0, lgb.early_stopping(50, verbose=False))
+            callbacks = [lgb.early_stopping(50, verbose=False), lgb.log_evaluation(0)]
             t0 = time.time()
             model = lgb.train(params, dtrain, num_boost_round=nbr,
                               valid_sets=[dval], callbacks=callbacks)

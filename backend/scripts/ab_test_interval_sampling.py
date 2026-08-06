@@ -63,7 +63,7 @@ Usage:
     python -m scripts.ab_test_interval_sampling [--max-items 200]
         [--horizon 7] [--max-folds 8] [--single-fold] [--with-gain0]
         [--out recs.csv] [--feature-cache /tmp/abfeat]
-    # shard DART horizons across processes, then merge:
+    # shard the slow long horizons across processes, then merge:
     python -m scripts.ab_test_interval_sampling --horizon 14 \
         --fold-start 0 --fold-count 4 --out h14a.csv
     python -m scripts.ab_test_interval_sampling --merge h14a.csv h14b.csv
@@ -119,6 +119,11 @@ CONFORMAL_ALPHA = 0.10
 # A/B trains one member at the middle value so the arms differ only in the
 # parameter under test.
 SINGLE_MEMBER_FEATURE_FRACTION = 0.7
+
+# Boosting rounds per model. Was `DART_NUM_BOOST_ROUND if dart else 1000`;
+# DART is gone from the forecaster, so only the GBDT arm of that branch
+# survives.
+NUM_BOOST_ROUND = 1000
 
 
 def pinball_loss(y_true, y_pred, alpha):
@@ -258,11 +263,6 @@ def build_arm_params(base, arm, quantile, boosting_type, forecaster):
     return p
 
 
-def _num_boost_round(forecaster, boosting_type):
-    return (forecaster.DART_NUM_BOOST_ROUND
-            if boosting_type == "dart" else 1000)
-
-
 def _fit_quantile(params, X_tr, y_tr, w_tr, X_va, y_va, w_va,
                   nbr, boosting_type, max_bin):
     """Train one quantile model and return (predictions, trees, best_iter)."""
@@ -271,9 +271,7 @@ def _fit_quantile(params, X_tr, y_tr, w_tr, X_va, y_va, w_va,
                          **({"weight": w_tr} if w_tr is not None else {}))
     dval = lgb.Dataset(X_va, y_va, reference=dtrain, params=ds_params,
                        **({"weight": w_va} if w_va is not None else {}))
-    callbacks = [lgb.log_evaluation(0)]
-    if boosting_type != "dart":
-        callbacks.insert(0, lgb.early_stopping(50, verbose=False))
+    callbacks = [lgb.early_stopping(50, verbose=False), lgb.log_evaluation(0)]
     model = lgb.train(params, dtrain, num_boost_round=nbr,
                       valid_sets=[dval], callbacks=callbacks)
     pred = model.predict(X_va, num_iteration=model.best_iteration or None)
@@ -292,7 +290,7 @@ def _run_horizon(fc, tdf, feat_cols, horizon, max_folds, arms,
     target_col = f"target_return_{horizon}d"
     dates = np.array(sorted(tdf["date"].unique()))
     folds = fc._compute_cv_splits(dates, purge_days=horizon)
-    boosting_type = fc.BOOSTING_TYPE_MAP.get(horizon, "gbdt")
+    boosting_type = fc.BOOSTING_TYPE
     if not folds:
         logger.warning(f"  no folds for {horizon}d after purge gap")
         return
@@ -305,7 +303,7 @@ def _run_horizon(fc, tdf, feat_cols, horizon, max_folds, arms,
                 f"boosting={boosting_type}, arms={arms}")
 
     base_by_q = {q: load_production_params(horizon, q) for q in QUANTILES}
-    nbr = _num_boost_round(fc, boosting_type)
+    nbr = NUM_BOOST_ROUND
 
     for fold_idx, (train_dates, val_dates) in sharded:
         tr = tdf[tdf["date"].isin(train_dates)]

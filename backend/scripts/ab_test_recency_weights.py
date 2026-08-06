@@ -66,6 +66,11 @@ GATE_MIN_REL_PINBALL_GAIN = 0.005
 GATE_MAX_DA_REGRESSION_PP = 0.5
 SINGLE_MEMBER_FEATURE_FRACTION = 0.7
 
+# Boosting rounds per model. Was `DART_NUM_BOOST_ROUND if dart else 1000`;
+# DART is gone from the forecaster, so only the GBDT arm of that branch
+# survives.
+NUM_BOOST_ROUND = 1000
+
 
 def pinball(y, p, a):
     d = np.asarray(y, float) - np.asarray(p, float)
@@ -91,12 +96,12 @@ def run_horizon(fc, tdf, feat_cols, horizon, max_folds):
     target = f"target_return_{horizon}d"
     dates = np.array(sorted(tdf["date"].unique()))
     folds = fc._compute_cv_splits(dates, purge_days=horizon)
-    boosting = fc.BOOSTING_TYPE_MAP.get(horizon, "gbdt")
+    boosting = fc.BOOSTING_TYPE
     if not folds:
         logger.warning(f"  no folds for {horizon}d")
         return
     folds = folds[-max_folds:]
-    nbr = fc.DART_NUM_BOOST_ROUND if boosting == "dart" else 1000
+    nbr = NUM_BOOST_ROUND
     base = {q: load_params(horizon, q) for q in QUANTILES}
     logger.info(f"  {horizon}d: {len(folds)} folds, boosting={boosting}")
 
@@ -133,9 +138,8 @@ def run_horizon(fc, tdf, feat_cols, horizon, max_folds):
                 ds = {"max_bin": fc.MAX_BIN, "feature_pre_filter": False}
                 dtr = lgb.Dataset(X_tr, y_tr, params=ds, weight=w_tr)
                 dva = lgb.Dataset(X_va, y_va, reference=dtr, params=ds, weight=w_va)
-                cbs = [lgb.log_evaluation(0)]
-                if boosting != "dart":
-                    cbs.insert(0, lgb.early_stopping(50, verbose=False))
+                cbs = [lgb.early_stopping(50, verbose=False),
+                       lgb.log_evaluation(0)]
                 m = lgb.train(p, dtr, num_boost_round=nbr, valid_sets=[dva], callbacks=cbs)
                 bi = m.best_iteration or m.num_trees()
                 preds[q] = m.predict(X_va, num_iteration=bi)

@@ -79,7 +79,7 @@ def main():
 
         all_results = {}
         for horizon in HORIZONS:
-            boosting = forecaster.BOOSTING_TYPE_MAP.get(horizon, "gbdt")
+            boosting = forecaster.BOOSTING_TYPE
             logger.info(f"\n{'='*60}")
             logger.info(f"HORIZON {horizon}d (boosting={boosting})")
             logger.info(f"{'='*60}")

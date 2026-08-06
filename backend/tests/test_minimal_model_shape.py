@@ -282,16 +282,15 @@ def _train_frame(n_items=10, n_dates=140, seed=5):
 def _fast_forecaster(tmp_path, warm=False):
     """A real ItemForecaster shrunk enough to train inside a unit test.
 
-    Only cost knobs are touched. QUANTILES, N_ENSEMBLES and BOOSTING_TYPE_MAP
-    keep their production values on the class; the instance overrides here are
-    test-local and do not change what ships.
+    Only cost knobs are touched. QUANTILES and N_ENSEMBLES keep their production
+    values on the class; the instance overrides here are test-local and do not
+    change what ships.
 
     `warm=True` seeds cached HP for every horizon/quantile, which is what makes
     reuse_hp — and therefore a warm retrain — true.
     """
     f = ItemForecaster(db_session=MagicMock(), model_dir=str(tmp_path))
     f.N_ENSEMBLES = 1
-    f.DART_NUM_BOOST_ROUND = 25
     f.SKIP_HP_HORIZONS = list(f.HORIZONS)   # no Optuna
     f.CV_MIN_TRAIN_DAYS = 40
     f.CV_STEP_DAYS = 25
@@ -1043,8 +1042,25 @@ def test_ensemble_is_a_single_member():
     assert len(ItemForecaster.ENSEMBLE_FEATURE_FRACTIONS) == 1
 
 
-def test_no_horizon_uses_dart():
-    assert set(ItemForecaster.BOOSTING_TYPE_MAP.values()) == {"gbdt"}
+def test_dart_is_gone_from_the_forecaster():
+    """No dart branch, constant or per-horizon selector may come back.
+
+    A source-level check rather than a config assertion, because the config that
+    selected DART (BOOSTING_TYPE_MAP) and the constant that sized its runs
+    (DART_NUM_BOOST_ROUND) are both deleted — there is no longer a value to
+    assert on, only the absence of the mechanism. DART cost 78% of pre-rewrite
+    training time and lost to GBDT at 14d by 3.14pp when finally measured.
+    """
+    import inspect
+
+    assert not hasattr(ItemForecaster, "BOOSTING_TYPE_MAP")
+    assert not hasattr(ItemForecaster, "DART_NUM_BOOST_ROUND")
+    assert ItemForecaster.BOOSTING_TYPE == "gbdt"
+
+    src = inspect.getsource(inspect.getmodule(ItemForecaster))
+    offenders = [ln for ln in src.splitlines()
+                 if "dart" in ln.lower() and not ln.lstrip().startswith("#")]
+    assert not offenders, f"dart re-entered non-comment code: {offenders}"
 
 
 def test_trained_model_count_is_eight():

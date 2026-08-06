@@ -65,8 +65,8 @@ DIRECTION_UPWEIGHT = 1.5
 # `scripts/ab_test_recency_weights.py`, 8 purge-gap folds on the real 141-item
 # production frame, half-life 365d vs flat. q50 pinball: 3d −0.01% (5/8 folds),
 # 7d −0.63% (2/8), 14d −0.22% (5/8), 30d +1.23% (6/8, DA +1.17pp). Only 30d
-# passed, and 14d — also DART, also long-horizon — moved the other way, so the
-# 30d win reads as noise rather than mechanism.
+# passed, and 14d — long-horizon too, and DART-configured at the time, as 30d
+# was — moved the other way, so the 30d win reads as noise, not mechanism.
 #
 # It also failed at the thing it was built for: the 7d q50 stopping-round sd
 # rose from 81 to 102. Recency weighting does NOT stabilise early stopping.
@@ -189,21 +189,20 @@ class ItemForecaster:
     ENSEMBLE_SEEDS = [42]
     ENSEMBLE_FEATURE_FRACTIONS = [0.7]
     MAX_BIN = 63
-    # Per-horizon boosting configuration.
-    # GBDT everywhere. DART's dropout was the single most expensive config
+    # GBDT is the only boosting type. DART was the single most expensive config
     # choice in this file and had never been measured against GBDT on a
-    # trustworthy gate. Tested under the pre-registered bar; note 14d had the
-    # best DA of the four horizons, so this is the change most likely to cost.
-    BOOSTING_TYPE_MAP = {3: "gbdt", 7: "gbdt", 14: "gbdt", 30: "gbdt"}
+    # trustworthy gate; when it finally was, under the pre-registered bar, 14d
+    # improved +3.14pp (CI [+1.955, +4.373]) and 30d was unchanged — and 14d was
+    # the horizon DART was supposedly earning its cost on. So there is no
+    # per-horizon BOOSTING_TYPE_MAP and no DART_NUM_BOOST_ROUND any more; the
+    # dropout branches they selected are gone with them.
+    # See docs/changelog/2026-08-04-minimal-model-results.md.
+    BOOSTING_TYPE = "gbdt"
     N_TRIALS_MAP = {3: 50, 7: 10, 14: 15, 30: 15}
     # 3d is frozen (50-trial search, winner warm-started in _optuna_search_params).
     # 14d/30d still search because they are the noisiest horizons; the original
-    # reason (tuning DART's drop_rate/max_drop/skip_drop rather than falling
-    # back to DART_PARAMS defaults) went away with DART itself.
+    # reason (tuning DART's drop_rate/max_drop/skip_drop) went away with DART.
     SKIP_HP_HORIZONS = [3]
-    # Retained only for scripts/ab_test_*.py, which still compare DART arms.
-    # No production horizon selects it any more.
-    DART_NUM_BOOST_ROUND = 500
     # Horizon-specific feature exclusions based on ablation study
     # (2026-07-19-feature-contribution-by-horizon.md):
     # - Cross-sectional features actively harm 14d (−0.9pp) and 30d (−3.5pp)
@@ -2100,8 +2099,9 @@ class ItemForecaster:
         termination of unpromising trials (median pruner).
 
         Args:
-            boosting_type: "gbdt" or "dart". DART uses dropout on trees
-                to reduce overfitting, useful for noisy longer horizons.
+            boosting_type: LightGBM's `boosting_type`. Production always passes
+                `ItemForecaster.BOOSTING_TYPE` ("gbdt"); the parameter survives
+                only so scripts/optuna_*_search.py can state it at the call site.
             n_trials: Number of Optuna trials. Short horizons (3d) need
                 more trials due to noisy signal; 7d/14d/30d default to 15.
             horizon: Horizon in days. When provided, applies horizon-aware
@@ -2153,11 +2153,10 @@ class ItemForecaster:
                 subsample=trial.suggest_float("subsample", 0.5, 0.9, step=0.1))
             _num_rounds = 100 if horizon == 7 else 200
             opt_callbacks = [
+                lgb.early_stopping(20),
                 lgb.log_evaluation(0),
                 LightGBMPruningCallback(trial, "quantile"),
             ]
-            if boosting_type != "dart":
-                opt_callbacks.insert(0, lgb.early_stopping(20))
             model = lgb.train(
                 params, dtrain,
                 num_boost_round=_num_rounds,
@@ -2299,11 +2298,8 @@ class ItemForecaster:
         Forcing construction up front lets every ensemble member safely
         share one binned Dataset (read-only) instead of re-binning the
         same matrix per member.
-        Uses early_stopping for GBDT; DART disables it internally.
         """
-        callbacks = [lgb.log_evaluation(0)]
-        if params.get("boosting_type") != "dart":
-            callbacks.insert(0, lgb.early_stopping(50))
+        callbacks = [lgb.early_stopping(50), lgb.log_evaluation(0)]
         return lgb.train(
             params, dtrain,
             num_boost_round=num_boost_round,
@@ -2896,13 +2892,7 @@ class ItemForecaster:
 
             per_quantile_params = {}
 
-            # Determine boosting type per horizon: DART for weak/long
-            # horizons, GBDT for short horizons. DART's dropout
-            # regularization helps reduce overfitting on noisy
-            # longer-range signals.
-            boosting_type = self.BOOSTING_TYPE_MAP.get(horizon, "gbdt")
-            dart_msg = " (DART)" if boosting_type == "dart" else ""
-            logger.info(f"  Boosting type for {horizon}d: {boosting_type}{dart_msg}")
+            boosting_type = self.BOOSTING_TYPE
 
             _hp_start = time.time()
             cached_hp = self.tuned_params.get(horizon, {})
@@ -3006,7 +2996,7 @@ class ItemForecaster:
             # Train ensemble members sequentially. No threading or multiprocessing
             # — LightGBM's internal OpenMP threads already utilize all cores.
             n_jobs = max(1, (os.cpu_count() or 4) // 2)
-            boost_rounds = self.DART_NUM_BOOST_ROUND if boosting_type == "dart" else 1000
+            boost_rounds = 1000
             for q in self.QUANTILES:
                 pq = per_quantile_params[q]
                 logger.info(f"  Training {horizon}d p{int(q*100)} ensemble ({self.N_ENSEMBLES} members)...")
@@ -3544,8 +3534,7 @@ class ItemForecaster:
             dval = lgb.Dataset(X_val, self._direction_classes(y_val_ret, _thr(sigma_val)),
                                reference=dtrain, params=ds)
             valid_sets = [dval]
-            if boosting_type != "dart":
-                callbacks.insert(0, lgb.early_stopping(20))
+            callbacks.insert(0, lgb.early_stopping(20))
         return lgb.train(params, dtrain, num_boost_round=num_boost_round,
                          valid_sets=valid_sets, callbacks=callbacks)
 
@@ -4516,9 +4505,7 @@ class ItemForecaster:
                 params["n_jobs"] = -1
                 params["random_state"] = 42
 
-                fold_callbacks = [lgb.log_evaluation(0)]
-                if self.BOOSTING_TYPE_MAP.get(horizon) != "dart":
-                    fold_callbacks.insert(0, lgb.early_stopping(20))
+                fold_callbacks = [lgb.early_stopping(20), lgb.log_evaluation(0)]
                 model = lgb.train(
                     params, dtrain,
                     num_boost_round=200,
@@ -4576,12 +4563,11 @@ class ItemForecaster:
             # Directional classifier — the actually-served signal. Trained the
             # same way as the production model (mover-weighted 3-class) so this
             # fold accuracy reflects what predict() will deliver.
-            boosting_type = self.BOOSTING_TYPE_MAP.get(horizon, "gbdt")
             # Vol-scaled labels were A/B-tested (2026-07-27) and did not beat
             # the fixed-band control; production stays fixed-band. Tooling
             # retained in scripts/ab_test_direction_labels.py.
             clf = self._fit_direction_classifier(
-                X_train, y_train, X_val, y_val, boosting_type,
+                X_train, y_train, X_val, y_val, self.BOOSTING_TYPE,
                 self._direction_tree_params(per_quantile_params),
                 horizon=horizon,
                 sigma_train=None,
