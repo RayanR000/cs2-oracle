@@ -1197,8 +1197,9 @@ meta.json. Both arms therefore run through the live _cv_evaluate_horizon.
 
 That distinction is the whole point. scripts/ab_test_*.py mostly build their
 own walk-forward loops, and that pattern produced
-docs/changelog/2026-08-02-live-backtest-vs-ab-harness.md -- the harness drifted
-from the live path and the resulting accuracy series had to be discarded.
+docs/changelog/2026-08-06-volume-ab-and-harness-defects.md -- that harness scored
+a cohort 92% of which production never serves, so ~31pp of its reported
+directional accuracy was free hits.
 
 Both arms write into scratch directories via FORECAST_MODEL_DIR, so the
 deployed artifact in backend/models/saved_models/ is never touched.
@@ -1444,7 +1445,7 @@ git commit -m "feat: TRAIN_MARKET_RELATIVE_LABELS knob and the paired A/B driver
 
 - [ ] **Step 1: Write the entry**
 
-Record: the hypothesis and the evidence behind it; that this is an instrument, not a result; the pre-registered rule copied verbatim from the spec so it cannot drift; where the code lives and that the default is off; the test count from Task 5 Step 7; and how to run the arms (`python scripts/ab_test_market_relative_labels.py --out /tmp/mrl`). Link the spec, `2026-08-03-accuracy-is-clustered-by-forecast-date.md`, `2026-08-06-served-cohort-weighting-refuted.md` and `2026-08-02-live-backtest-vs-ab-harness.md`.
+Record: the hypothesis and the evidence behind it; that this is an instrument, not a result; the pre-registered rule copied verbatim from the spec so it cannot drift; where the code lives and that the default is off; the test count from Task 5 Step 7; and how to run the arms (`python scripts/ab_test_market_relative_labels.py --out /tmp/mrl`). Link the spec, `2026-08-03-accuracy-is-clustered-by-forecast-date.md`, `2026-08-06-served-cohort-weighting-refuted.md` and `2026-08-06-volume-ab-and-harness-defects.md`.
 
 State explicitly that no measurement has been taken yet, so no conclusion about the hypothesis is recorded here.
 

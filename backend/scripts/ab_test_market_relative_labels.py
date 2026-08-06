@@ -8,8 +8,9 @@ meta.json. Both arms therefore run through the live _cv_evaluate_horizon.
 
 That distinction is the whole point. scripts/ab_test_*.py mostly build their
 own walk-forward loops, and that pattern produced
-docs/changelog/2026-08-02-live-backtest-vs-ab-harness.md -- the harness drifted
-from the live path and the resulting accuracy series had to be discarded.
+docs/changelog/2026-08-06-volume-ab-and-harness-defects.md -- that harness scored
+a cohort 92% of which production never serves, so ~31pp of its reported
+directional accuracy was free hits.
 
 Both arms write into scratch directories via FORECAST_MODEL_DIR, so the
 deployed artifact in backend/models/saved_models/ is never touched.

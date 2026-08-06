@@ -214,8 +214,10 @@ so it can be understood and tested without loading the forecaster.
 ### Why not a standalone harness
 
 `scripts/ab_test_*.py` mostly build their own walk-forward loops. That pattern
-produced `2026-08-02-live-backtest-vs-ab-harness`: the harness drifted from the
-live path and the resulting accuracy series had to be discarded. Both arms here
+produced `2026-08-06-volume-ab-and-harness-defects.md`: the harness scored a
+cohort 92% of which production never serves, making ~31pp of its reported
+directional accuracy free hits — a defect that "calls every prior null measured
+through it into question". Both arms here
 run through the real `_cv_evaluate_horizon` on the real retrain path; the script
 only sets env vars, invokes the two runs and diffs their `meta.json`.
 
@@ -311,7 +313,7 @@ social collector.
   finding this spec acts on.
 * `docs/changelog/2026-08-06-served-cohort-weighting-refuted.md` — the paired
   cold-retrain methodology reused here, and the "Still open" item this addresses.
-* `docs/changelog/2026-08-02-live-backtest-vs-ab-harness.md` — why the arms run
-  through the live path.
+* `docs/changelog/2026-08-06-volume-ab-and-harness-defects.md` — why the arms run
+  through the live path rather than a bespoke harness.
 * `docs/superpowers/specs/2026-08-05-cv-cohort-parity-design.md` — origin of
   `classifier_accuracy_ge1`.
