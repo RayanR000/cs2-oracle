@@ -1,259 +1,193 @@
-<div align="center">
-
 # CS2 Oracle
 
-**Market intelligence platform for the Counter-Strike 2 skin economy**
+Daily price forecasts for the Counter-Strike 2 skin market — a LightGBM pipeline that
+predicts 3/7/14/30-day returns across a 13-year price archive, with every forecast
+scored against what actually happened.
 
-[![Python 3.11](https://img.shields.io/badge/python-3.11-3776AB?logo=python&logoColor=white&style=flat-square)](https://python.org)
-[![Node 20+](https://img.shields.io/badge/node-20%2B-339933?logo=nodedotjs&logoColor=white&style=flat-square)](https://nodejs.org)
-[![Next.js 16](https://img.shields.io/badge/next.js-16.2-000000?logo=nextdotjs&logoColor=white&style=flat-square)](https://nextjs.org)
-[![FastAPI](https://img.shields.io/badge/fastapi-009688?logo=fastapi&logoColor=white&style=flat-square)](https://fastapi.tiangolo.com)
-[![TypeScript](https://img.shields.io/badge/typescript-3178C6?logo=typescript&logoColor=white&style=flat-square)](https://typescriptlang.org)
-[![Tailwind CSS v4](https://img.shields.io/badge/tailwind_v4-06B6D4?logo=tailwindcss&logoColor=white&style=flat-square)](https://tailwindcss.com)
-[![LightGBM](https://img.shields.io/badge/lightgbm-7D3C98?logo=python&logoColor=white&style=flat-square)](https://lightgbm.readthedocs.io)
-
-[![Aggregator](https://img.shields.io/github/actions/workflow/status/RayanR000/cs2-oracle/aggregator-update.yml?label=aggregator&style=flat-square&logo=github)](https://github.com/RayanR000/cs2-oracle/actions/workflows/aggregator-update.yml)
 [![Forecast](https://img.shields.io/github/actions/workflow/status/RayanR000/cs2-oracle/price-forecast.yml?label=forecast&style=flat-square&logo=github)](https://github.com/RayanR000/cs2-oracle/actions/workflows/price-forecast.yml)
 [![Backtest](https://img.shields.io/github/actions/workflow/status/RayanR000/cs2-oracle/backtest-accuracy.yml?label=backtest&style=flat-square&logo=github)](https://github.com/RayanR000/cs2-oracle/actions/workflows/backtest-accuracy.yml)
-[![Supply](https://img.shields.io/github/actions/workflow/status/RayanR000/cs2-oracle/supply-scraper.yml?label=supply&style=flat-square&logo=github)](https://github.com/RayanR000/cs2-oracle/actions/workflows/supply-scraper.yml)
-[![Sentiment](https://img.shields.io/github/actions/workflow/status/RayanR000/cs2-oracle/reddit-sentiment.yml?label=sentiment&style=flat-square&logo=github)](https://github.com/RayanR000/cs2-oracle/actions/workflows/reddit-sentiment.yml)
+[![Python 3.11](https://img.shields.io/badge/python-3.11-3776AB?logo=python&logoColor=white&style=flat-square)](https://python.org)
 
-</div>
+<!-- Add a dashboard screenshot here — one image, ideally the item detail page with a
+     forecast overlay. This is the highest-value single addition to this README. -->
 
----
+## What this is
 
-**CS2 Oracle** is a full-stack analytics platform for the Counter-Strike 2 skin economy. A daily pipeline collects multi-source prices across **7 markets**, archives 13+ years of history to **Parquet**, and serves intelligence through a **FastAPI** REST API to a **Next.js** dashboard. ML price forecasts via **LightGBM quantile ensembles** replace naive trend analysis with probabilistic predictions.
+CS2 skins trade across a dozen marketplaces with no consolidated tape. Prices diverge
+between venues, listings are thin, and the public "analytics" sites mostly show you a
+line chart of where a price has already been.
 
----
+CS2 Oracle is an attempt at the harder version: forecasting where a price is going, and
+then being honest about how often that forecast was right. A daily job pulls seven market
+price feeds, votes them into a single consensus price per item, appends to a Parquet
+archive going back to 2013, trains gradient-boosted models on the result, and serves
+predictions through a FastAPI backend to a Next.js dashboard. A separate scheduled job
+resolves every past forecast against the realised price and writes the accuracy back out.
 
-## Architecture
+It is a single-operator system that runs unattended on GitHub Actions. Most of the
+engineering effort has gone into the evaluation harness rather than the model, because on
+this problem it is very easy to produce an impressive-looking number that is wrong.
+
+## How it works
 
 ```
-┌──────────────────────────────────────────────────────────────────┐
-│                         DATA INGESTION                           │
-│  ┌──────────┐ ┌──────────┐ ┌──────────┐ ┌──────────┐ ┌───────┐  │
-│  │  Steam   │ │ Skinport │ │  Buff163 │ │  CSFloat  │ │  … +3 │  │
-│  └────┬─────┘ └────┬─────┘ └────┬─────┘ └────┬─────┘ └───┬───┘  │
-│       └────────────┴────────────┴────────────┴────────────┘      │
-│                              ▼                                    │
-│  ┌──────────────────────────────────────────────────────────┐    │
-│  │                Daily Aggregator (23:00 UTC)               │    │
-│  └──────────┬────────────────────────────────────┬──────────┘    │
-│             ▼                                    ▼                │
-│  ┌──────────────────┐              ┌──────────────────────┐      │
-│  │  Parquet Archive  │              │  PostgreSQL/Supabase  │      │
-│  │  (13 yrs · DuckDB)│              │  (daily closes)       │      │
-│  └──────────────────┘              └──────────┬───────────┘      │
-└─────────────────────────────────────────────────┼────────────────┘
-                                                  │
-┌─────────────────────────────────────────────────▼────────────────┐
-│                           BACKEND                                 │
-│  ┌────────────┐  ┌────────────┐  ┌──────────────┐  ┌─────────┐  │
-│  │  FastAPI   │  │ SQLAlchemy │  │   Alembic    │  │  Pydantic│  │
-│  │  REST API  │  │    ORM     │  │  Migrations  │  │ Settings │  │
-│  └─────┬──────┘  └────────────┘  └──────────────┘  └─────────┘  │
-│        │                                                          │
-│  ┌─────▼──────────────────────────────────────────────────────┐  │
-│  │  ML Layer: LightGBM · Optuna · Quantile Ensembles         │  │
-│  │  Regime-Switching · Walk-Forward · SHAP Feature Importance│  │
-│  └───────────────────────────────────────────────────────────┘  │
-└──────────────────────────────────────────────────────────────────┘
-                              │
-┌─────────────────────────────▼────────────────────────────────────┐
-│                      FRONTEND                                     │
-│  ┌────────────┐ ┌────────────┐ ┌──────────┐ ┌────────────────┐   │
-│  │  Next.js   │ │  Recharts  │ │  Tailwind│ │  Framer Motion │   │
-│  │  App Router│ │  Viz       │ │  CSS v4  │ │  Animations    │   │
-│  └────────────┘ └────────────┘ └──────────┘ └────────────────┘   │
-│                                                                   │
-│  Item Detail · Price History · Forecast Overlay · Market Map    │
-│  Opportunities · Event Impacts · Portfolio · Accuracy Metrics   │
-└──────────────────────────────────────────────────────────────────┘
+  7 market price feeds (CSGOTrader public dumps)
+  steam · skinport · buff163 · csfloat · csmoney · csgotrader · youpin
+                          │
+                          ▼
+        Daily aggregator — 23:00 UTC
+        outlier-voted median, sources >2σ from median rejected
+                          │
+            ┌─────────────┴─────────────┐
+            ▼                           ▼
+    Parquet archive              PostgreSQL / Supabase
+    prices 2013-2026             serving layer, daily closes
+    queried via DuckDB
+            │
+            ▼
+    ══════ TRAINING ══════════════════════════════════
+    LightGBM, 4 horizons (3/7/14/30d), median regression
+    regime-switching · Optuna · expanding-window CV
+            │
+            ▼
+    Conformal calibration → uncertainty band
+            │
+            ▼
+    ══════ SERVING ═══════════════════════════════════
+    FastAPI  →  Next.js dashboard
+            │
+            ▼
+    Backtest — resolves each forecast against the archive
+    MAE · MAPE · directional accuracy, by horizon and price tier
 ```
 
----
+**Collection.** Seven price feeds are read from CSGOTrader's public daily dumps rather
+than from each marketplace's own API — a deliberate tradeoff of freshness for reliability
+and rate-limit headroom. Sources are reconciled per item by outlier-voted median, so a
+single stale or mispriced venue cannot move the consensus.
 
-## Features
+**Storage.** The archive is Parquet on disk, partitioned yearly through 2025 and monthly
+from 2026, queried with DuckDB. Training reads the archive directly; the database holds
+only the serving layer and item metadata. This keeps the training set reproducible from
+version-controlled files rather than from mutable database state.
 
-| | |
-|---|---|
-| **Multi-Source Collection** — Daily aggregator polling 7 CS2 skin markets in parallel | **Parquet Price Archive** — 13 years of history, queryable via DuckDB |
-| **ML Price Forecasts** — LightGBM quantile regression (q10/q50/q90) across 3/7/14/30d horizons. 6-member diversified ensemble with walk-forward validation & Optuna tuning | **Regime-Switching** — Separate models per market regime (bear / range / bull) |
-| **Accuracy Tracking** — Automated daily backtesting with MAE, MAPE, directional accuracy, drift alerts | **Model Explainability** — Per-item feature importance via SHAP-style analysis |
-| **Event Impact Analysis** — Quantified market-event price impacts with correlation scoring | **Market Opportunities** — Undervalued, overheated, and momentum signals surfaced daily |
-| **Interactive Dashboard** — Responsive Recharts visualizations, grouped market views, item detail pages, forecast overlays | **A/B Testing** — Regime vs. ensemble comparison for forecast methodology validation |
+**Modelling.** One LightGBM median regressor per horizon, with separate models per market
+regime (bear / range / bull, split on 30-day market return at ±3%). Hyperparameters are
+tuned with Optuna per horizon. Feature groups are excluded per horizon based on an
+ablation study — cross-sectional features measurably *hurt* the 14d and 30d horizons, so
+they are not used there.
 
----
+**Uncertainty.** The prediction band comes from split-conformal calibration against
+out-of-fold residuals, not from quantile models. Dedicated p10/p90 GBMs were measured and
+removed: they consumed 223s of a 381s training budget to deliver 39–48% empirical
+coverage against an 80% target.
 
-## Tech Stack
+**Evaluation.** See below — it's the part worth reading.
 
-| Layer | Technologies |
-|-------|-------------|
-| **Frontend** | Next.js 16, React 19, TypeScript, Tailwind CSS 4, Recharts, Framer Motion |
-| **Backend** | Python 3.11, FastAPI, SQLAlchemy 2, Alembic, Pydantic Settings |
-| **Data** | PostgreSQL / Supabase, DuckDB, Parquet, Pandas, NumPy, SciPy |
-| **Machine Learning** | LightGBM, Optuna, Joblib |
-| **Automation** | GitHub Actions (7 scheduled workflows) |
+## Accuracy and evaluation
 
----
+Forecast accuracy is measured by a scheduled job, not by a number typed into this file.
+Every prediction the system serves is written with its anchor date and horizon; once the
+archive covers the target date, the backtest resolves it and records the outcome.
 
-## Quick Start
+The protocol, and the reasons for it:
 
-### Prerequisites
+- **Both legs resolve through the same code path.** The base price and the actual price
+  are both resolved by `backtest.price_resolution.resolve_anchors`. The stored
+  `current_price` on a forecast is kept for reference and is never scored against — using
+  it as the base leg is a real bug this system had, and it let one cohort score 61.76% and
+  33.74% on two different days.
+- **Resolved outcomes are frozen.** Once scored, `base_price` / `actual_price` /
+  `resolved_at` are final. Re-resolution is an explicit, separate operation.
+- **Maturity is bounded by archive coverage, not by the calendar.** A forecast is only
+  evaluable once the archive actually covers its target date. Scoring against
+  `date.today()` admits the archive's lag window and puts guaranteed misses into the
+  cohort.
+- **Results are reported by price tier.** Sub-$1 items dominate by count and behave
+  differently from the rest of the market, so a single blended accuracy figure is mostly
+  a statement about penny items. Production reports the ≥$1 cohort.
+- **Cross-validation and production are scored on the same cohort definition**, so the
+  offline number and the live number are comparable.
 
-- Python 3.11+, Node.js 20+, PostgreSQL 14+ (or Supabase account)
+<!-- Accuracy table goes here. Report per horizon, ≥$1 cohort, against a persistence
+     baseline, with n and the evaluation window stated. -->
 
-### Backend
+Live figures are served at `GET /accuracy/summary` and rendered on the dashboard.
+
+## Quickstart
+
+Requires Python 3.11+, Node 20+, and PostgreSQL 14+ (or a Supabase project).
 
 ```bash
+# Backend
 cd backend
 python3 -m venv venv && source venv/bin/activate
 pip install -r requirements.txt
-cp .env.example .env          # configure DATABASE_URL + API keys
+cp .env.example .env          # set DATABASE_URL, STEAM_API_KEY, SECRET_KEY
 python scripts/run_task.py migrate
-uvicorn main:app --host 0.0.0.0 --port 8000 --reload
+uvicorn main:app --port 8000 --reload
 ```
 
-### Frontend
-
 ```bash
+# Frontend
 cd frontend
 npm install
 echo "NEXT_PUBLIC_API_URL=http://localhost:8000" > .env.local
 npm run dev                   # → http://localhost:3000
 ```
 
----
+Tests: `cd backend && source venv/bin/activate && pytest`
 
-## API Overview
-
-| Endpoint | Description |
-|----------|-------------|
-| `GET /health` | Health check |
-| `GET /items/`, `/items/search`, `/items/trending`, `/items/{id}` | Item catalog & detail |
-| `GET /items/{id}/price-history`, `/prediction` | Price timeline + ML forecasts |
-| `GET /market/summary` | Grouped market view (paginated, cached) |
-| `GET /opportunities/`, `/undervalued`, `/overheated`, `/momentum` | Trading signals |
-| `GET /events/`, `/events/recent` | Market event timeline |
-| `GET /accuracy/`, `/accuracy/latest`, `/accuracy/summary` | Forecast accuracy metrics |
-| `GET /ab-test/regime`, `/ab-test/ensemble` | Forecast methodology A/B comparison |
-| `GET /auth/me`, `/auth/steam/login` | Steam OpenID authentication |
-| `GET /portfolio/inventory` | Steam inventory snapshot |
-
----
-
-## Environment Variables
-
-Key configuration (see `backend/.env.example` for full reference):
-
-| Variable | Required | Description |
-|----------|----------|-------------|
-| `DATABASE_URL` | Yes | PostgreSQL/Supabase connection string |
-| `SECRET_KEY` | Yes | Session signing key (rotate in production) |
-| `STEAM_API_KEY` | Yes | Steam Web API key |
-| `CSMARKETAPI_*` | Yes | Market API keys (6 sources) |
-| `FRONTEND_URL` | Yes | Allowed CORS origin |
-| `ENVIRONMENT` | No | `development` / `production` |
-
----
-
-## Commands
-
-### Backend Tasks
-
-Run via `python scripts/run_task.py <task>`:
-
-| Task | Description |
-|------|-------------|
-| `aggregate` | Full aggregator collection (all items, all sources) |
-| `priority` | Top 2000 items collection |
-| `supply_scrape` | Listing supply-depth collection |
-| `migrate` | Run pending Alembic migrations |
-| `backtest` | Run forecast accuracy backtest |
-| `backtest_historical` | Run historical walk-forward backtest |
-| `walkforward_report` | Generate walk-forward validation report |
-| `event_correlation` | Run market-event correlation analysis |
-| `reddit_social` | Run Reddit sentiment analysis |
-
-### Frontend
-
-| Command | Description |
-|---------|-------------|
-| `npm run dev` | Development server (localhost:3000) |
-| `npm run build` | Type-check + production build |
-| `npm run lint` | ESLint |
-
-### Testing
-
-```bash
-cd backend && source venv/bin/activate && pytest
-```
-
----
-
-## Data Pipeline
+## Repo layout
 
 ```
-22:00 UTC     Supply Scraper        → listing supply depth        → Supabase
-23:00 UTC     Aggregator            → 7 source prices             → Parquet + Supabase
-Every 2h      Player Count          → Steam active players        → Supabase + Parquet
-(chained)     Forecast              → LightGBM ensemble           → item_forecasts
-(chained)     Backtest              → accuracy tracking           → prediction_accuracy
-Weekly Sun    Event Correlation     → market-event price impacts  → analysis tables
+backend/
+  api/routes/        FastAPI route handlers
+  collectors/        Market aggregator, supply scraper, validation
+  models/
+    forecaster.py    Training, features, regimes, CV — the core of the project
+    conformal.py     Split-conformal band calibration
+  backtest/          Price resolution, scoring, resolution gate
+  db/                Parquet store and ops-table mirrors
+  scripts/           Task runner and scheduled entrypoints
+  tests/             Pytest suite (41 modules, 714 tests)
+frontend/
+  app/               Next.js app router pages
+  components/        React components
+  lib/               API client
+price-archive/       Parquet price data, 2013-present
+docs/                Architecture, research, changelog, design specs
+.github/workflows/   3 cron jobs + 1 chained + 1 manual
 ```
 
----
+Operational reference — API endpoints, environment variables, task commands, workflow
+schedules — lives in [`docs/`](docs/README.md).
 
-## Scheduled Workflows
+## Limitations
 
-| Workflow | Schedule | Purpose |
-|----------|----------|---------|
-| `aggregator-update` | Daily 23:00 UTC | Multi-source collection + Parquet archive commit |
-| `supply-scraper` | Daily 22:00 UTC | Listing supply-depth per item |
-| `price-forecast` | Chained off aggregator | LightGBM predictions (predict-only Tue–Sun, full retrain Mon) |
-| `backtest-accuracy` | Chained + M–Sat 08:00 UTC | Daily forecast accuracy evaluation |
-| `event-correlation-analysis` | Weekly Sun 04:00 UTC | Market-event price impacts |
-| `discover-new-items` | Ad hoc | Scan for newly tradable items |
-| `reddit-sentiment` | Every 6h | Community sentiment analysis |
+Known weaknesses, stated plainly:
 
----
+- **Training runs on a subsample.** The default budget is 100,000 feature rows
+  (`TRAIN_FEATURE_ROWS`), a fraction of the available pool. Raising it to 700,000 costs
+  4.5× the training wall-clock, and the accuracy gate cannot currently resolve whether
+  that buys anything, so it has not been raised.
+- **The walk-forward gate is not directly comparable to production.**
+  `walkforward_backtest.py` uses its own price loader that skips multi-source voting and
+  the backfill filter, so it scores a different price consensus over a different item
+  universe than production trains on. It is a relative gate for config changes, not an
+  estimate of live accuracy.
+- **The archive has day gaps.** Missing days come mostly from cron drift around midnight
+  UTC rather than from failed runs, but they thin the training set and bound what the
+  backtest can resolve.
+- **No path to onboard new items.** The catalog is fixed to backfilled items. Steam
+  discovery is disabled and the third-party backfill quota is exhausted, so newly tradable
+  skins do not enter the system.
+- **Single-member models.** The ensemble is one seed. A 3-seed ensemble was estimated at
+  0.3–0.5pp, below what the accuracy gate can resolve, so it was cut rather than kept on
+  faith.
 
-## Project Structure
+## Documentation
 
-```
-cs2-oracle/
-├── backend/              # FastAPI server, routes, collectors, models, tests
-│   ├── api/              # Route handlers
-│   ├── collectors/       # Market data collectors (7 sources)
-│   ├── models/           # SQLAlchemy ORM models
-│   ├── analytics/        # ML forecasting, backtesting, event analysis
-│   ├── scripts/          # Task runner + utilities
-│   └── tests/            # Pytest suite
-├── frontend/             # Next.js app router + components
-│   ├── app/              # Pages (app router)
-│   ├── components/       # React component library
-│   └── lib/              # API client, utilities
-├── docs/                 # Architecture docs, changelog, research
-├── price-archive/        # Parquet price data (13 years)
-└── .github/workflows/    # 7 CI/CD automation workflows
-```
-
----
-
-## Security
-
-- Never commit `.env` files — use `.env.example` as template
-- Replace default `SECRET_KEY` in production deployments
-- Enable GitHub Secret Scanning for the repository
-- Pre-commit hooks via `.pre-commit-config.yaml` enforce secrets check
-
----
-
-## Contributing
-
-1. Fork the repository
-2. Create a feature branch (`git checkout -b feature/my-feature`)
-3. Install pre-commit hooks: `pre-commit install`
-4. Make changes and verify with tests: `pytest`
-5. Commit using conventional commit messages
-6. Open a pull request
+[`docs/`](docs/README.md) holds architecture notes, the research log, and a changelog of
+shipped changes with their measured effect. Negative results are kept there too — several
+feature families were built, measured, and removed, and the write-ups explain why.

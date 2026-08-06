@@ -15,6 +15,9 @@
 | Steam Announcements | Stub | N/A | Not implemented | None | **Stub** |
 | Synthetic demo | Generated | Dev only | Fake | None | **Dev only** |
 | Steam `priceoverview` | Undocumented endpoint | Per-item | 24h sales volume, lowest/median price | None | **Not integrated** |
+| **Steam market listing pages** | **SSR HTML scrape** | **One-shot backfill** | **Daily median + volume back to 2013** | **None (no cookie)** | **⚠️ Staged** — 262 items collected; this IP soft-blocked 2026-08-05 |
+| BUFF163 git archive (atalantus) | JSON dump (24 MB xz) | One-shot | Daily CNY min-listing, 2021-07 → 2024-02 | None (unlicensed) | **Evaluated, declined** |
+| CSFloat `/api/v1/history/…/graph` | REST (undocumented) | Per-item | Daily completed-sale avg + count, from 2020-04 | None | **Not integrated** |
 | CSMarketCap API | GraphQL + REST | Bulk (all items in 1 call) | Trade volume (24h/7d/30d/90d), listings, buy orders | JWT token | **Not integrated** ($9.99/mo) |
 
 ## CSGOTrader Accuracy Issues
@@ -131,6 +134,100 @@ The remaining gap (**Apr 16 – Jul 8, 84 days**) is still unfilled for non-back
 4. Appends to `prices-YYYY.parquet` and `snapshots-YYYY.parquet` using the same dedup logic as `append_to_parquet.py`
 
 Usage: `python scripts/merge_hf_dataset.py --out-dir ..`
+
+## Steam market listing pages — free logged-out history (evaluated 2026-08-05)
+
+The conventional wisdom, repeated in every community thread, is that Steam price
+history requires a logged-in session. That is true of `/market/pricehistory/`
+(**HTTP 400** without a cookie), but **not** of the listing page:
+
+```
+GET https://steamcommunity.com/market/listings/730/<market_hash_name>   # follow the 302
+```
+
+Its dehydrated React-Query blob embeds the same series — `{time, price_median,
+purchases}`, where `purchases` is real daily traded volume — with **no cookie, no
+key, back to 2013**. Pages carry several wear/StatTrak variants at once, so
+harvesting all of them yields **~4 items per request**.
+
+Implementation: `backend/scripts/backfill_steam_listing_history.py`. Targets
+non-gated, name-keyed items; writes to a staging SQLite
+(`runtime/steam_listing_history.db`) and never touches prod or the archive.
+
+### Two traps, both hit and both fixed
+
+**1. Price basis — divide by 1.1607.** The page quotes the **buyer** price
+(Steam's fee included); the archive's `aggregator_sync` rows store **net**.
+Across 30,875 overlapping pre-2024 rows the ratio is constant: median 1.1607,
+p10 1.1565, p90 1.1656, within-item CV 0.0021.
+
+| | median abs diff | correlation |
+|---|---|---|
+| Raw | 16.08% | 1.0000 |
+| ÷1.1607 | **0.038%** | **1.000000** |
+
+Volume needs no correction (77.8% exact match before normalisation).
+
+**2. Steam soft-blocks without a 429.** Instead of an error it serves HTTP
+**200** with a stripped ~250 KB shell: no 302, zero occurrences of
+`pricehistory`, no `Retry-After`. A 300-request run logged *0 failures, 0 429s
+and "80% EMPTY"* while being throttled for most of it — the
+collectors-fail-silently shape. Detection now in `classify()`: a real hit
+redirects **and** contains `pricehistory`; anything else under 300 KB with no
+redirect is a block, not an empty item. A **canary** (a liquid item that must
+have history) runs before the run and every 50 requests, and aborts rather than
+marking items done during a block.
+
+### Rate limiting — what is actually known
+
+Valve publishes nothing. The community figure is **~20 requests/minute**, with an
+**IP-based** limiter added to Market/inventories in **October 2022**.
+
+Measured here: a 20-request burst at 1.75 req/s succeeded fully (it merely
+drained the bucket), but a sustained run at 2.5 s + 0.8 s jitter ≈ **20.7
+req/min** — right on the line — tripped the block, and then issued ~250 further
+requests while blocked. The result was **IP-scoped and long-lived: still blocked
+2.4 h later with zero traffic**, identical across 6 probes with fresh and warmed
+sessions. Fetching the same URL **from a different IP returned the fully
+populated page**, confirming the flag is on the caller, not a Steam-wide change.
+
+The exact bucket depth and refill period were **not** isolated — doing so means
+deliberately re-tripping a flagged IP. Practical guidance instead:
+
+- Use `--delay 8` or slower (≤8 req/min), well under the ~20/min line.
+- Treat the first stripped page as a full stop. Never request during a block —
+  that is what turned a timeout into a multi-hour penalty.
+- Probe recovery with a single request (`--limit 1 --resume`), hours apart.
+- Do **not** run from GitHub Actions; Steam 429s runner IPs.
+
+### Measured value
+
+262 items / 528,573 rows collected before the block, back to 2013-08-15. Unlike
+the depth-only candidates below, this source *lowers* avg rows/item and so
+**raises** training breadth:
+
+| | items | rows/item | `target_items` @700k |
+|---|---|---|---|
+| Current gated pool | 5,542 | 1,341 | 521 |
+| + sample harvested | 5,770 | 1,321 | 529 |
+| Extrapolated to all 29,933 targets | ~31,590 | 923 | **758 (+45%)** |
+
+Treat 5.7× breadth as an upper bound — the sample is biased toward items that
+resolved. Note also that no extra data can move accuracy while the training row
+budget binds; the argument for this source is a training universe that matches
+what `predict()` scores, not row count.
+
+## Bulk historical sources evaluated and declined (2026-08-05)
+
+| Source | Free? | Content | Why declined |
+|---|:--:|---|---|
+| [atalantus/buff-price-history-archive](https://github.com/atalantus/buff-price-history-archive) | Yes | **21,954 items, 15.4M daily rows, 2021-07 → 2024-02**, CNY×100, one 24 MB xz | Depth-only: adds 1.66M in-window gated rows, pushing rows/item 1,341 → 1,641 and `target_items` **521 → 426 (−18%)**. Needs 2021–24 CNY/USD rates the archive lacks. No LICENSE. Fetch via `raw.githubusercontent.com` — the LFS media URL 404s. |
+| CSFloat `/api/v1/history/<name>/graph` | Yes | Daily completed-sale avg + count from 2020-04, no auth (1,898 rows for AK Redline) | Viable and unblocked; simply not integrated yet. Extends the existing `aggregator_csfloat` label backwards. |
+| cs2.sh | No | Steam daily back to 2013 | No free tier; history is the $200/mo Scale plan and only reaches back to 2025-12-24. |
+| CSGOSKINS.GG | No | 36 markets, 38.5K items | €179/mo minimum, 90-day history. |
+| SteamAnalyst | Partly | 30+ markets | Free tier is 100 req/day — unusable in bulk. |
+| Wayback Machine (`prices.csgotrader.app`) | Yes | — | `steam.json` has **zero** captures; only 4 stray snapshots of older filenames. Not a time series. |
+| `HilliamT/scm-price-history` | Yes | The classic `var line1=` scrape | Dead — Steam moved to SSR. The React blob documented above is its replacement. |
 
 ## Quality gaps
 - Wire `data_validation.py` checks into the pipeline — it is still dead code (only importers are `collectors/__init__.py:1` and `tests/test_data_validation.py:6`; `pipeline.py:160` validates `price > 0` only)

@@ -133,7 +133,31 @@ and that is where the result is real: 14d **+3.14pp better**, 30d unchanged.
 four, and the one DART was supposedly earning its cost on. Removing DART
 *improved* it.
 
-## Deferred MDE for 14d and 30d — NOT measured, and why that is acceptable
+## ✅ CORRECTION (2026-08-05): the 14d/30d MDE *was* measured
+
+**The section below is wrong and is kept only so the reasoning it records stays
+auditable.** It says the deferred measurement "was deliberately not run." It was
+run — `compute_mde.py --max-items 60 --step-days 120 --horizons 14 30`, about
+twenty minutes after the arms finished:
+
+| Horizon | mean diff (seed 42 vs 7) | 95% CI | **MDE (pp)** |
+|---|---|---|---|
+| 14d | +0.0585pp | [+0.0176, +0.1229] | **0.0527** |
+| 30d | +0.0358pp | [−0.0119, +0.0953] | **0.0536** |
+
+This is the seed-varied noise floor the section below calls "the only thing that
+would reveal whether these intervals are falsely precise." They are not: the
+floor is ~0.053pp at both horizons, so 14d's **+3.143pp is ~60× the noise floor**.
+
+⚠️ **It also undercuts the pre-registered 3d/7d bars, in the direction of them
+having been too lax.** Those were 0.54pp and 0.74pp — an order of magnitude wider
+than what the same tool measures at 14d/30d. The likely cause is that they were
+measured at `2af8917`, *before* `b1bab03` fixed the universe-drift bug documented
+below; drifting universes inject exactly the between-run variance an MDE
+integrates. Anyone re-pre-registering a bar should re-measure 3d/7d post-fix
+rather than reuse those two numbers.
+
+## Deferred MDE for 14d and 30d — the reasoning at the time (superseded above)
 
 The spec deferred these because measuring a DART design's noise floor needs two
 DART passes. Post-rewrite both horizons are `gbdt`, so the measurement became
@@ -384,6 +408,53 @@ non-nested samples across budgets (`RandomState(seed)` re-sampled per rarity gro
 at each `k`), so even the production CV path cannot pair 99 items against 646
 without changing the selection rule. That is its own spec.
 
+## ✅ The median price was compared too (2026-08-05) — the minimal model wins
+
+Follow-up #3 below said the rewrite's effect on the **median price** was untested:
+"the gate reports [it] but no pre-registered bar covers [it]." It is now measured,
+by re-pairing the saved arm records (`records-arm-{a,b}.json`) through the same
+date-clustered bootstrap `paired_da_difference` uses, generalised off
+`direction_correct` onto `abs_error` / `pct_error` / `sq_error`.
+
+Paired B−A, negative = the 8-model minimal design is **better**:
+
+| Horizon | MAPE, all tiers | MAPE, ≥$1 | MAE ≥$1 |
+|---|---|---|---|
+| 3d | −0.00000 (identical) | +0.00000 (identical) | identical |
+| 7d | −0.0003 [−0.0009, +0.0003] | +0.0008 [−0.0006, +0.0024] | −0.00005 |
+| 14d | **−0.656pp** [−0.805, −0.520] | **−0.421pp** [−0.580, −0.263] | **−$0.104** |
+| 30d | **−0.477pp** [−0.660, −0.291] | −0.157pp [−0.383, +0.073] | **−$0.084** |
+
+So the collapse did not merely preserve the point forecast — at 14d and 30d it
+**improved** it, on MAE, MAPE and squared error alike, with 14d's intervals
+excluding zero in both cohorts. 30d improves all-tiers; its ≥$1 interval straddles
+zero (n=2,985).
+
+⚠️ **What this still does not test.** 3d and 7d are byte-identical here for exactly
+the reason given above — the gate holds its own quantile config, so the quantile
+and ensemble collapse never reached those two arms. This closes the *dart→gbdt*
+half of follow-up #3 and leaves the quantile/ensemble half open. In particular
+**averaging 3 ensemble members into 1 remains unmeasured on the median price**,
+and unlike served DA there is no structural argument that it cannot matter.
+
+## Old-model removal (2026-08-05)
+
+Having established the above, the pre-rewrite machinery was deleted:
+
+| Removed | Why it was safe |
+|---|---|
+| `walkforward_backtest.py`'s own `QUANTILES = [0.1, 0.5, 0.9]` → `list(ItemForecaster.QUANTILES)` | The gate fitted p10/p90 per fold on **untuned defaults** (meta.json holds only q=0.5) and this local constant is precisely what made the collapse invisible to it. One booster per fold now, down from three |
+| The gate's `interval_coverage` / `IntCov` | Every arm's band is now `PLACEHOLDER_BAND_PCT`. The figure described a design production does not have; this document already said it must not be quoted, so it is no longer produced or persisted |
+| `BOOSTING_TYPE_MAP`, `DART_NUM_BOOST_ROUND`, 6 `dart` branches | The map was all-`gbdt` and never mutated anywhere, so DART was already unreachable |
+| `scripts/ab_test_hp_search.py` | The only remaining hard-coded `"dart"` user; a shelved 2026-07-27 experiment |
+| `forecast_prices.py --compare-ensemble` | Dead mode that re-instated `N_ENSEMBLES = 3` and trained two full models. No caller, no CI reference |
+| 38 stale artifacts + 3 pre-rewrite `meta.json` backups | `load_models` reads `range(n_ensembles)`; verified post-purge that it still loads exactly 4 median models + 4 classifiers |
+
+`interval_coverage` in `backtest/scoring.py` is **untouched** — production's
+`backtest_accuracy.py` scores the real served band and that number is legitimate.
+Note this makes follow-up #2 harder to close, not easier: realized band coverage
+now has exactly one possible source.
+
 ## Open follow-ups
 
 0. **Whether item coverage buys accuracy is open, not closed.** Part 3 declined it
@@ -392,13 +463,19 @@ without changing the selection rule. That is its own spec.
 1. **Calibration CV is the new bottleneck** (~84% of training). Cutting folds or
    subsampling the OOF pool is the next lever; unmeasured.
 2. **Realized band coverage is unmeasured on production data.** Neither the
-   training path nor the gate can supply it.
-3. **The quantile/ensemble collapse is unmeasured by this gate**, and cannot be
-   measured without driving the gate's quantiles from `ItemForecaster.QUANTILES`
-   and building its band via `models/conformal.py`. Argued safe for served DA on
-   structural grounds; the effect on the served **median price** is untested.
-4. **38 stale artifacts** (32 orphaned boosters + 6 residual `.pkl`) remain in
-   `models/saved_models`. Gitignored and provably inert — `load_models` reads
-   `range(n_ensembles)` and a test guards it — but `save_models` purges only
-   orphaned *regime* files. Deliberately left: a purge would let a partially
-   failed retrain delete still-good artifacts.
+   training path nor the gate can supply it — and now *only*
+   `scripts/backtest_accuracy.py` can, since the gate no longer fabricates a
+   coverage number from p10/p90 boosters. This is the most important open item.
+3. **PARTIALLY CLOSED.** The gate's quantiles now come from
+   `ItemForecaster.QUANTILES`, so the local `[0.1, 0.5, 0.9]` that hid the collapse
+   is gone. The **dart→gbdt** half is measured on the median price (see above:
+   14d/30d both improve). Still open: **the 3→1 ensemble collapse on the median
+   price**, which no arm run has ever varied. Closing it needs the gate to
+   ensemble, or a paired production-path CV run at `N_ENSEMBLES` 1 vs 3.
+4. **CLOSED 2026-08-05.** The 32 orphaned boosters and 6 residual `.pkl` were
+   deleted, along with 3 git-tracked pre-rewrite `meta.json` backups
+   (`n_ensembles: 3`, three quantiles). `load_models` was re-run afterwards and
+   loads exactly 4 median models + 4 classifiers. This was a **one-off manual
+   purge**, not a change to `save_models`, which still purges only orphaned
+   *regime* files — the original reason for leaving them (an automated purge could
+   let a partially failed retrain delete still-good artifacts) still stands.

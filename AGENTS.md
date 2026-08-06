@@ -1,18 +1,55 @@
 # CS2 Oracle
 
-Daily pipeline collects multi-source prices from 7 markets, archives to Parquet, serves via FastAPI to a Next.js dashboard, and forecasts via LightGBM quantile ensembles.
+Daily pipeline pulls 7 markets' prices from the csgotrader.app dumps, archives them to
+Parquet, serves them via FastAPI to a Next.js dashboard, and forecasts with LightGBM —
+one q50 model per horizon, with the served band calibrated by split conformal.
+
+- `backend/` — FastAPI (`main.py`), routers in `api/routes/`, ML in `models/forecaster.py`,
+  batch jobs in `scripts/`. See `backend/AGENTS.md`.
+- `frontend/` — Next.js App Router; one API client at `lib/api.ts`. See `frontend/AGENTS.md`.
+- `price-archive/` — gitignored symlink to a local checkout of the separate
+  `RayanR000/cs2-oracle-data` repo. Nothing written there is committed by this repo.
+- `docs/` — `architecture/`, dated decision records in `changelog/`, `design.md`.
+- `.github/workflows/` — daily chain: Aggregator (23:00 UTC) → Price Forecast → Backtest
+  Accuracy, each chained off the previous run's success.
+
+## Commands
+
+Backend, from `backend/`, through the venv (`venv/bin/python`, Python 3.13 locally / 3.11 in CI):
+
+- `venv/bin/python -m pytest tests/test_<name>.py -q` — targeted run. Prefer this.
+- `venv/bin/python -m pytest -q` — full suite: 714 tests, ~45s of collection before the
+  first one runs.
+- `venv/bin/uvicorn main:app --port 8000` — the API the dashboard fetches.
+
+Frontend, from `frontend/`:
+
+- `npm run lint` — eslint. Currently 11 warnings, 0 errors; keep errors at 0.
+- `npx tsc --noEmit` — typecheck. There is no `typecheck` script.
+- `npm run build`
 
 ## Gotchas
 
-- **API client at `frontend/lib/api.ts`.** Update both backend router and this client when adding routes.
-- **`--predict-only` does not retrain.** It used to: `check_concept_drift` ran against a hardcoded 60% floor above the model's measured 46.7–50.8% DA, so drift fired every run and cost a measured 465s of the 835s daily step. Drift is now reported only. Set `ALLOW_DRIFT_RETRAIN=1`, or dispatch `price-forecast.yml` with `mode=full`, to retrain.
+- **`backend/.env` points at production.** It sets the prod Supabase pooler
+  `DATABASE_URL` and `ENVIRONMENT=production`, and `config.py` reads `.env` relative to
+  the **current working directory** — so a script run from `backend/` writes to prod,
+  while the same command from the repo root picks up the root `.env` (no `DATABASE_URL`,
+  `ENVIRONMENT=development`). `database.py` builds the engine at import, so setting
+  `os.environ["DATABASE_URL"]` inside a script is already too late to redirect it.
+- **`--predict-only` does not retrain.** It used to: `check_concept_drift` ran against a
+  hardcoded 60% floor above the model's measured 46.7–50.8% DA, so drift fired every run
+  and cost a measured 465s of the 835s daily step. Drift is now reported only. Set
+  `ALLOW_DRIFT_RETRAIN=1`, or dispatch `price-forecast.yml` with `mode=full`, to retrain.
+- **A task that returns no count fields defeats the zero-row guard.** `scripts/run_task.py`
+  fails a run when a task reports row counts and every one is zero — that is the only
+  thing standing between a dead collector and a green badge. Two collectors hid behind an
+  earlier guard that keyed on a single field. New tasks must return their counts.
 
 ## Workflow Rules
 
-1. Run `pytest` + `python3 -m py_compile` for backend changes.
-2. Run `npm run lint` + `npm run build` for frontend changes.
-3. When adding API routes, also update `frontend/lib/api.ts`.
-4. Keep `frontend/AGENTS.md` in sync if design tokens or API surface changes.
-5. For frontend design, see `frontend/AGENTS.md` (OKLCH tokens, typography, styling rules).
-6. Use subagents: `@review` after significant work, `@data` for Parquet queries, `@explore` for codebase search, `@document` for changelog/architecture.
-7. When adding agents, update `opencode.json` task permissions and this file.
+1. Backend changes: run the relevant `pytest` files. Frontend changes: `npm run lint` and
+   `npx tsc --noEmit`.
+2. Adding or changing an API route means updating `frontend/lib/api.ts` in the same change.
+3. Design values live in `docs/design.md` and the tokens in `frontend/app/globals.css` —
+   reference them, don't restate them in components or in these files.
+4. Non-trivial decisions get a dated note in `docs/changelog/`.
