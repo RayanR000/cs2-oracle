@@ -110,6 +110,12 @@ The price archive spans **2013-08-14 → 2026-08-04** and carries **41,725 disti
 slugs**. The local item catalog is separate: `backend/runtime/market_catalog.db`, 18 MB,
 31,908 `market_items`.
 
+For what that coverage actually amounts to — history depth per item, per-source spans and
+gaps, which columns still carry information, and label coverage — see
+`../references/data-inventory.md`. The short version: only 5,542 of the 41,725 slugs have
+more than 180 days of history, and over the last 90 days `mean_price` is the only
+non-degenerate column.
+
 Growth is dominated by the daily append: **~362,586 OHLCV rows/day** across 11 source
 labels. `ops/` tables are UPSERT-or-append-and-dedup and stay under a few MB each;
 `forecast_outcomes` is insert-only (see below).

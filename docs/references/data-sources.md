@@ -1,5 +1,10 @@
 # Data Source Audit & Plan
 
+This file catalogues **where data comes from**. For what is actually on disk and how much
+of the market it covers — item counts, history depth, per-source spans, field
+availability, label coverage — see **`data-inventory.md`**. The acquisition priorities
+derived from it are in `../changelog/2026-08-06-data-acquisition-ranking.md`.
+
 ## Current Sources
 
 | Source | Type | Interval | Freshness | Auth | Status |
@@ -19,6 +24,12 @@
 | BUFF163 git archive (atalantus) | JSON dump (24 MB xz) | One-shot | Daily CNY min-listing, 2021-07 → 2024-02 | None (unlicensed) | **Evaluated, declined** |
 | CSFloat `/api/v1/history/…/graph` | REST (undocumented) | Per-item | Daily completed-sale avg + count, from 2020-04 | None | **Not integrated** |
 | CSMarketCap API | GraphQL + REST | Bulk (all items in 1 call) | Trade volume (24h/7d/30d/90d), listings, buy orders | JWT token | **Not integrated** ($9.99/mo) |
+| **Skinport `/v1/sales/history`** | REST API | Bulk (1 call, 1.9 s / 20.4 MB) | min/max/avg/median/volume for 24h, 7d, 30d, 90d — **retroactive on first pull** | None (needs `Accept-Encoding: br`) | **Not integrated** — 36,004 items; 23,533 of the ≥$1 cohort (89.0%) |
+| lis-skins full export | JSON dump | Bulk (1 call, 44 s / 173 MB) | 2,297,323 individual listings: `price`, `created_at` (100% populated), `item_float` (55.3%) — full ask ladder + listing age | None | **Not integrated** — 25,660 items; 17,453 of the ≥$1 cohort (66.0%) |
+| market.csgo.com `/api/v2/prices/USD.json` | REST API | Bulk (1 call, 0.63 s / 2.6 MB) | `volume` (live listing count), `price` | None | **Not integrated** — 27,402 items; 17,274 of the ≥$1 cohort (65.4%) |
+| `somespecialone/steam-item-name-ids` | GitHub JSON | One-shot (pushed 2026-08-03) | 26,935 `market_hash_name` → `item_nameid` — unblocks `itemordershistogram` lookups | None | **Not integrated** — Steam-hosted consumer, so residential IP only (see IP-class section) and per-item |
+| `ByMykel/CSGO-API` | Raw GitHub JSON | One-shot | 481 crates (261 with `first_sale_date`), 2,126 skins with rarity, float range, StatTrak/souvenir, crate + collection | None | **Not integrated** — cross-sectional metadata; `item-metadata.parquet` lacks item age, crate and collection today |
+| Steam `ISteamNews/GetNewsForApp` | REST API | Bulk (0.29 s) | 500 entries back to 2022-03-01 — free CS2 event calendar | None | **Not integrated** — candidate input for `event_correlation_analysis.py` |
 
 ## CSGOTrader Accuracy Issues
 
@@ -53,6 +64,15 @@ The direct Skinport API (`/v1/items`) is **alive** — the historical 403s were 
 - Rate-limited (~1 req/sec) — fine for gap-filling, but see `steam-api.md`: hosted CI runners are 429'd immediately, so this can only run from a residential IP.
 
 ## Volume Data Status (audited 2026-07-16, corrected 2026-07-16)
+
+> **⚠️ Superseded on the availability figures (2026-08-06).** Everything in this section
+> was measured against an 11,092,908-row archive and reports the volume series running to
+> 2026-03-29. The archive now holds **20,756,038 rows**, and volume is **identically zero
+> for every row since 2026-04-16 — 111 days, across every source**. The last non-zero day
+> is 2026-04-15 for buff163/youpin/csfloat and 2026-03-29 for `aggregator_sync`. The
+> historical claim below still holds (2013–2025 is ~100% populated, 5,542 items); the
+> "2026 is partial" line does not. See `data-inventory.md` §6 for the current per-period
+> table. **The predictive verdict below is unaffected** — trade volume remains 0pp.
 
 Volume **is** present in the Parquet archive — and it is **not** limited to a 90-day window.
 
@@ -90,7 +110,9 @@ Tested on the volume-rich window (2023–2025, 4.47M samples with `volume>0`):
 | Pricempire Standard | $99.90/mo | No (per-item) | trade count metas | All items |
 | cs2.sh Developer | $75/mo | ✅ bulk endpoint | ask_volume (listing count, not trade vol) | 6 markets |
 
-**Verdict:** a free, bulk trade-volume source already exists *inside the archive* — the Steam price-history backfill (`aggregator_sync`) — for 5,542 items. Paid sources (CSMarketCap $9.99/mo, SteamWebAPI €15/mo) would only extend coverage to more items and keep recent days fresh; they do **not** add predictive signal.
+**Verdict (2026-07-16) — superseded 2026-08-06 on the availability half:** a free, bulk trade-volume source already exists *inside the archive* — the Steam price-history backfill (`aggregator_sync`) — for 5,542 items. Paid sources (CSMarketCap $9.99/mo, SteamWebAPI €15/mo) would only extend coverage to more items and keep recent days fresh; they do **not** add predictive signal.
+
+> **Correction (2026-08-06).** The claim that the only free bulk trade-volume source is the *historical* in-archive backfill is wrong. Skinport `/v1/sales/history` is free, unauthenticated, bulk (one 1.9 s call), and **current** — 24h/7d/30d/90d volume for 36,004 items, 23,533 of them in the ≥$1 cohort. Nothing paid in the table above is needed to keep recent days fresh. The **second** half of the verdict is unaffected: no volume source has been shown to add predictive signal, and the |r| < 0.002 audit above still stands. See `docs/changelog/2026-08-06-retroactive-supply-feeds.md`.
 
 ## Hugging Face CS2 Dataset (merged 2026-07-20)
 
@@ -131,7 +153,9 @@ The remaining gap (**Apr 16 – Jul 8, 84 days**) is still unfilled for non-back
 1. Downloads the HF Parquet file (cached at `/tmp/cs2_listing_prices_hourly.parquet`)
 2. Maps `market_hash_name` → `item_slug`, `bucket` → `day`, `close_ask` → price
 3. Aggregates hourly → daily OHLCV per `(item_slug, day, source)`
-4. Appends to `prices-YYYY.parquet` and `snapshots-YYYY.parquet` using the same dedup logic as `append_to_parquet.py`
+4. Appends to `prices-YYYY.parquet` using the same dedup logic as `append_to_parquet.py`
+   (it also wrote `snapshots-YYYY.parquet`, retired 2026-08-06 — see
+   `../changelog/2026-08-06-price-archive-compaction.md`)
 
 Usage: `python scripts/merge_hf_dataset.py --out-dir ..`
 
@@ -200,6 +224,37 @@ deliberately re-tripping a flagged IP. Practical guidance instead:
 - Probe recovery with a single request (`--limit 1 --resume`), hours apart.
 - Do **not** run from GitHub Actions; Steam 429s runner IPs.
 
+### The gate is IP *class*, not just IP reputation — VPNs cannot help
+
+Tested 2026-08-06 on three distinct egresses:
+
+| Egress | ASN / type | Result |
+|---|---|---|
+| Residential home connection | residential | Served hydrated pages, then penalised after ~300 requests |
+| `138.199.35.122` DataPacket, Los Angeles US | AS212238, datacenter | **Stripped shell on request #1** |
+| `185.107.80.83` NForce, Breda NL | AS43350, datacenter | **Stripped shell on request #1** |
+
+Both VPN exits were blocked on their *first ever* request, with no traffic
+history behind them — so this is not our rate-limit penalty following us, it is
+Steam pre-blocking commercial hosting ranges. Same reason the route cannot run
+from GitHub Actions. **A residential IP is the only viable egress**; switching
+VPN region does not help, because the filter tracks ASN class, not country. The
+only untested alternative with a real chance is a cellular hotspot, since carrier
+ranges are residential-classified.
+
+The residential penalty is long-lived: last real traffic 20:28, and probes at
+22:56, 00:10, 01:09, 01:34 and 01:47 all returned the identical 251,388-byte
+shell — **>5 h with no decay whatsoever**.
+
+### Currency: a non-US egress silently corrupts prices
+
+Steam renders logged-out market pages in the **visitor's geo-IP currency**. The
+`STEAM_FEE_MULTIPLIER = 1.1607` divisor was calibrated against USD, so collecting
+from, say, a Netherlands exit would return EUR and write plausible-looking but
+wrong prices — a silent corruption, not a visible failure. Before trusting any
+run from a new egress, check `"wallet_currency"` in the page (**1 = USD, 3 = EUR**)
+and re-verify the ratio against overlapping archive rows.
+
 ### Measured value
 
 262 items / 528,573 rows collected before the block, back to 2013-08-15. Unlike
@@ -228,6 +283,58 @@ what `predict()` scores, not row count.
 | SteamAnalyst | Partly | 30+ markets | Free tier is 100 req/day — unusable in bulk. |
 | Wayback Machine (`prices.csgotrader.app`) | Yes | — | `steam.json` has **zero** captures; only 4 stray snapshots of older filenames. Not a time series. |
 | `HilliamT/scm-price-history` | Yes | The classic `var line1=` scrape | Dead — Steam moved to SSR. The React blob documented above is its replacement. |
+
+## Free non-price feeds — exact pull recipes (verified 2026-08-06)
+
+All verified 200 from a residential IP on 2026-08-06. No key, no cookie, no
+signup on any of them. `item_slug` == `market_hash_name` in the archive, so every
+one of these joins to `price-archive/prices-*.parquet` directly on name.
+
+```bash
+# 1. Skinport sales history — 24h/7d/30d/90d volume, 36,004 items, 20.4 MB, 1.9 s
+#    RETURNS 406 WITHOUT `Accept-Encoding: br`. macOS curl 8.7.1 has no brotli
+#    (`curl -V` → zlib only) and the backend venv has no `brotli` module, so pipe
+#    the raw bytes through node to decode:
+curl -s -H 'Accept-Encoding: br' \
+  'https://api.skinport.com/v1/sales/history?app_id=730&currency=USD' -o sph.br
+node -e "require('fs').writeFileSync('sph.json',require('zlib').brotliDecompressSync(require('fs').readFileSync('sph.br')))"
+#    Shape: [{market_hash_name, last_24_hours:{min,max,avg,median,volume}, last_7_days:{…},
+#             last_30_days:{…}, last_90_days:{…}}, …]   prices nullable, volume 0 when absent
+#    NOTE: 854 duplicate market_hash_name entries — dedup on join.
+
+# 2. lis-skins full export — 2,297,323 individual listings, 25,660 items, 173 MB, 44 s
+curl -s --compressed 'https://lis-skins.com/market_export_json/api_csgo_full.json' -o lis.json
+#    Shape: {"items":[{id, name, price, created_at, item_float, item_paint_seed,
+#                      stickers, unlock_at, …}, …]}
+#    created_at 100% populated; item_float 55.3%; unlock_at only 8 of 2.3M (unusable).
+
+# 3. market.csgo.com — live listing count, 27,402 items, 2.6 MB, 0.63 s
+curl -s --compressed 'https://market.csgo.com/api/v2/prices/USD.json' -o tm.json
+#    Shape: {"success":true,"time":…,"currency":"USD",
+#            "items":[{market_hash_name, volume, price}, …]}   volume is a STRING.
+
+# 4. Steam item_nameid map — 26,935 entries, 227 KB (unblocks itemordershistogram)
+curl -s --compressed \
+  'https://raw.githubusercontent.com/somespecialone/steam-item-name-ids/master/data/CS2/item_names.json'
+#    Shape: {"<market_hash_name>": <item_nameid int>, …}
+
+# 5. Item metadata — crate first_sale_date, collection, float caps, StatTrak/Souvenir
+curl -s --compressed 'https://raw.githubusercontent.com/ByMykel/CSGO-API/main/public/api/en/crates.json'
+curl -s --compressed 'https://raw.githubusercontent.com/ByMykel/CSGO-API/main/public/api/en/skins.json'
+#    crates.json 8.2 MB, 481 crates, 261 with first_sale_date.
+#    skins.json  5.5 MB, 2,126 skins: rarity, min_float, max_float, stattrak,
+#                souvenir, crates[], collections[].
+
+# 6. Steam event calendar — 500 entries back to 2022-03-01, keyless, 0.29 s
+curl -s 'https://api.steampowered.com/ISteamNews/GetNewsForApp/v2/?appid=730&count=500&maxlength=1'
+#    Shape: {"appnews":{"newsitems":[{gid,title,url,author,contents,feedlabel,date,…}]}}
+```
+
+Before implementing any of these as a collector, read
+`docs/research/lis-skins-snapshot-plan.md` — it carries the constraints
+(never run from `backend/`, verify from a GitHub runner first, return row counts
+for the zero-row guard, guard the `min_ask` anchor) and the open `created_at`
+ambiguity that decides whether the age features mean anything.
 
 ## Quality gaps
 - Wire `data_validation.py` checks into the pipeline — it is still dead code (only importers are `collectors/__init__.py:1` and `tests/test_data_validation.py:6`; `pipeline.py:160` validates `price > 0` only)
