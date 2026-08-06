@@ -6,10 +6,16 @@
 **Commits:** `444268f` (new files); the `forecaster.py` / `forecast_prices.py` edits are
 still uncommitted — see "Commit provenance" below.
 
-**No measurement has been taken.** Neither arm has been run. This entry records what was
-built, the pre-registered rule it will be read against, and two design decisions that
-would otherwise be invisible in the diff. It records **no conclusion about whether the
-hypothesis holds**, and any later entry that claims one must cite an actual paired run.
+**Measured later the same day — the hypothesis was REFUTED.** See
+`docs/changelog/2026-08-06-market-relative-labels-refuted.md`: pre-registered rule 1 fired,
+`relative_accuracy_ge1` came in at 36.7 / 32.7 / 34.6 / 39.0 against a majority-class
+baseline of 38.8 / 42.7 / 46.4 / 51.7, and the default stays off. Read that entry for the
+result; this one remains the record of **what was built and why**, written before any number
+existed.
+
+Everything below was written pre-measurement and is left unedited, including the two
+assumptions the run contradicted (the flat-band dispersion direction, and the `<= 51%`
+threshold's implicit 50% chance baseline).
 
 ## The hypothesis: the label's variance is dominated by a term the features cannot see
 
@@ -230,9 +236,10 @@ absolute levels to "the arms' tree" rather than to a named artifact.
 
 ## Still open
 
-* The measurement itself. Neither arm has run; `relative_accuracy_ge1`,
-  `classifier_accuracy_ge1` under the treatment, and `market_factor_coverage` are all
-  unmeasured.
+* ~~The measurement itself.~~ **Closed 2026-08-06** by
+  `2026-08-06-market-relative-labels-refuted.md`. The treatment arm ran; rule 1 fired.
+  Market-factor coverage came in at 100.0% of validation rows at every horizon, so the
+  expectation recorded below was correct.
 * Market-factor coverage in practice is unmeasured. The spec expects it to be near-total
   (the index needs 30 items priced ≥$1 on a day, and the median-≥$1 cohort holds 925
   items), but that is a prediction, not a reading.

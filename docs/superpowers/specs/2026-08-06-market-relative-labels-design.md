@@ -1,7 +1,28 @@
 # Market-relative direction labels — design
 
 **Date:** 2026-08-06
-**Status:** design, pre-registered. Nothing adopted.
+**Status:** **REFUTED on measurement 2026-08-06.** Pre-registered rule 1 (the
+stage-1 kill switch) fired. `relative_accuracy_ge1` came in at 36.7 / 32.7 /
+34.6 / 39.0 at 3/7/14/30d against a majority-class baseline of 38.8 / 42.7 /
+46.4 / 51.7 — below a constant call at every horizon, against a rule requiring
+> 51%. Once the market factor is removed the price-technical feature set
+predicts nothing about which item moves which way. Result and caveats:
+`docs/changelog/2026-08-06-market-relative-labels-refuted.md`. The default stays
+off; the code is kept as the instrument that produced the measurement.
+
+Two things this document got wrong, recorded rather than edited away:
+
+1. It defined `relative_accuracy_ge1` as `sign(ê)` vs `sign(e)` but the
+   implementation used 3-class agreement, whose chance baseline is the
+   majority-class share, not the 50% the `<= 51%` threshold assumed. A
+   `relative_majority_ge1` baseline was added before the arm ran — the fix made
+   the bar harder, not easier — but the pre-registration did not catch it.
+2. The flat-band section below asserts residuals are *less* dispersed than raw
+   returns. The opposite is true here: a large share of raw returns are exactly
+   zero (penny items, stale prices), and subtracting a nonzero `m` moves them
+   off zero, so demeaning *spreads* the distribution. Matched bands came out at
+   ±1.668 / ±2.572 / ±3.609 / ±4.746% against a fixed ±0.5%.
+
 **Scope:** an off-to-the-side, default-off experiment. Production behaviour stays
 byte-identical.
 
