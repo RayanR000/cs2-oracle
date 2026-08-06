@@ -15,14 +15,19 @@ instead of querying Supabase over the network.
 
 The canonical archive is the repo **`RayanR000/cs2-oracle-data`**, branch `main`,
 force-pushed as a squashed orphan commit by every workflow that writes it. There is no
-`data-archive` branch — any command referencing one is dead. Locally, `price-archive/` is
-a gitignored symlink to a checkout of that repo (`.gitignore:64-65`).
+`data-archive` branch — any command referencing one is dead.
+
+Locally, `price-archive/` is a gitignored **plain directory** (`.gitignore:65`) — despite
+what `.gitignore:64` says, it is not a symlink and not a checkout. It is an unlinked local
+working copy, and it lags the canonical repo. **Compacting or repairing it does not reach
+production**; only `aggregator-update.yml` writes the data repo, which it checks out fresh
+into `archive/` each run. The empty `../cs2-oracle-data` checkout has no commits and is
+not wired to anything. Never force-push the local copy over the remote — it is behind.
 
 ```
-price-archive/                       (repo: RayanR000/cs2-oracle-data, branch main)
-  ├─ prices-YYYY.parquet             — daily OHLCV, yearly files for pre-2026
-  ├─ prices-YYYY-MM.parquet          — daily OHLCV, monthly from 2026 on
-  ├─ snapshots-YYYY-MM.parquet       — flat per-source rows (item_slug, day, source, price, volume)
+price-archive/                       (local working copy, NOT the canonical repo)
+  ├─ prices-YYYY.parquet             — item_slug, day, mean_price, volume (yearly, pre-2026)
+  ├─ prices-YYYY-MM.parquet          — + source (monthly from 2026 on)
   ├─ exchange-rates-YYYY.parquet     — currency rates
   ├─ player-counts-YYYY.parquet      — frozen; the collector was removed in 181488b
   ├─ item-metadata.parquet           — 8,691 item rows
@@ -58,7 +63,6 @@ restored single-file `prices-2026.parquet` would be read *alongside* the monthly
 
 ```
 Daily aggregator ──▶ snapshot CSV ──▶ append_to_parquet.py ──▶ prices-YYYY-MM.parquet
-                                                               snapshots-YYYY-MM.parquet
                                                                exchange-rates-YYYY.parquet
 
 Training / backtest / analysis (DuckDB + read_parquet over price-archive/)
@@ -81,13 +85,16 @@ work, not shipped behaviour.
 
 ### Storage Breakdown
 
-Parquet archive, measured 2026-08-05:
+Measured 2026-08-06 against the **local** copy, after the compaction described in
+`docs/changelog/2026-08-06-price-archive-compaction.md`. The canonical repo is still
+uncompacted at **210.7 MB** until *Aggregator Market Update* is dispatched once with
+`compact_archive = true`; expect ~91 MB after that. Prod also holds one or two more days
+than the local copy, so its per-file sizes run slightly higher.
 
 | File / group | Size | Rows |
 |--------------|------|------|
-| `prices-2026-*.parquet` (8 monthly files, Jan–Aug) | 114 MB | **11,326,632** |
-| `prices-20XX.parquet` (pre-2026, yearly) | — | 9,429,275 |
-| `snapshots-2026-*.parquet` (6 monthly files, Mar–Aug) | 45 MB | 10,916,698 |
+| `prices-2026-*.parquet` (8 monthly files, Jan–Aug) | 55 MB | **11,326,763** |
+| `prices-20XX.parquet` (pre-2026, yearly) | 33 MB | 9,429,275 |
 | `exchange-rates-2026.parquet` | 5 KB | 306 (6 distinct days, latest 2026-07-17) |
 | `item-metadata.parquet` | 0.1 MB | 8,691 |
 | `ops/item_forecasts.parquet` | 1.6 MB | 158,200 |
@@ -194,7 +201,8 @@ no longer resolves. See `docs/changelog/2026-08-01-deterministic-backtest.md`.
 
 | Script | Purpose |
 |--------|---------|
-| `append_to_parquet.py` | Daily: snapshot CSV → monthly `prices-YYYY-MM` / `snapshots-YYYY-MM` + yearly `exchange-rates-YYYY` |
+| `append_to_parquet.py` | Daily: snapshot CSV → monthly `prices-YYYY-MM` + yearly `exchange-rates-YYYY` |
+| `compact_price_archive.py` | One-off: drop the redundant `median_price`/`min_price`/`max_price` columns and retire `snapshots-*`. Idempotent; dry-run by default |
 | `db/parquet.py` | The `ops/` store: `append()` (concat-and-dedup, full rewrite) and `query()` (DuckDB context manager). Serialises nested values to JSON text |
 | `init_local_db.py` | Rebuild a local `items` table from the archive and re-derive `is_backfilled` |
 | `export_historical_parquet.py` | One-time: csmarketapi.db → year-split Parquet |
@@ -213,7 +221,7 @@ Aggregator Market Update — GitHub Actions, cron 23:00 UTC
   │    └─ CollectionRun row (no prices written to Supabase)
   ├─ Checkout RayanR000/cs2-oracle-data  (needs CS2_DATA_REPO_TOKEN)
   ├─ append_to_parquet.py --date $SNAPSHOT_DATE --out-dir ../archive
-  │    └─ collapse to daily OHLCV → prices-YYYY-MM / snapshots-YYYY-MM / exchange-rates-YYYY
+  │    └─ collapse to daily OHLCV → prices-YYYY-MM / exchange-rates-YYYY
   └─ Publish updated archive: orphan commit + force-push to main
 
   ▼ workflow_run

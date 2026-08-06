@@ -171,8 +171,8 @@ import duckdb
 print(duckdb.sql(\"select max(day) latest_day, count(*) rows from '../price-archive/prices-2026-*.parquet'\"))"
 ```
 
-Layout: `prices-YYYY-MM.parquet` and `snapshots-YYYY-MM.parquet` monthly for the current
-year (yearly only for older years), plus `exchange-rates-YYYY.parquet`,
+Layout: `prices-YYYY-MM.parquet` monthly for the current year (yearly only for older
+years), plus `exchange-rates-YYYY.parquet`,
 `player-counts-YYYY.parquet`, and a whole `price-archive/ops/` operational layer
 (`item_forecasts`, `forecast_outcomes`, `prediction_accuracy`, `collection_runs`,
 `accuracy_alerts`, `events`, `event_impacts_denorm`, `supply_snapshots`). The API reads

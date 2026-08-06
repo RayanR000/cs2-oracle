@@ -48,10 +48,30 @@ def test_writes_monthly_files_not_yearly(tmp_path):
 
     arch = tmp_path / "price-archive"
     assert (arch / "prices-2026-08.parquet").exists()
-    assert (arch / "snapshots-2026-08.parquet").exists()
     # the old yearly layout must NOT be produced
     assert not (arch / "prices-2026.parquet").exists()
-    assert not (arch / "snapshots-2026.parquet").exists()
+
+
+def test_snapshots_parquet_is_not_written(tmp_path):
+    """Retired as a pure projection of prices-*; see compact_price_archive.py."""
+    csv = tmp_path / "snap.csv"
+    _write_csv(csv, "2026-08-03", [("ak-redline", "aggregator_csfloat", 10.0, 5)])
+    _run("2026-08-03", tmp_path, csv)
+
+    arch = tmp_path / "price-archive"
+    assert list(arch.glob("snapshots-*.parquet")) == []
+
+
+def test_redundant_price_columns_are_not_written(tmp_path):
+    """median/min/max were exact copies of mean_price — 45% of archive bytes."""
+    csv = tmp_path / "snap.csv"
+    _write_csv(csv, "2026-08-03", [("ak-redline", "aggregator_csfloat", 10.0, 5)])
+    _run("2026-08-03", tmp_path, csv)
+
+    pq = tmp_path / "price-archive" / "prices-2026-08.parquet"
+    cols = [r[0] for r in duckdb.connect().sql(
+        f"DESCRIBE SELECT * FROM read_parquet('{pq}')").fetchall()]
+    assert set(cols) == {"item_slug", "day", "source", "mean_price", "volume"}
 
 
 def test_same_month_appends_and_dedups(tmp_path):

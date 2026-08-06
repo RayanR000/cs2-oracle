@@ -29,9 +29,8 @@ Supabase, and importing `database.py` builds a live engine against it.
 
 ```
 price-archive/
-├── prices-YYYY.parquet        OHLCV per (item_slug, day, source); frozen years ≤2025
-├── prices-YYYY-MM.parquet     same, monthly partitions for 2026+ (GitHub 100MB cap)
-├── snapshots-YYYY[-MM].parquet  flat per-source snapshots
+├── prices-YYYY.parquet        item_slug, day, mean_price, volume; frozen years ≤2025
+├── prices-YYYY-MM.parquet     same + source, monthly partitions for 2026+ (GitHub 100MB cap)
 ├── item-metadata.parquet      item_slug, rarity, rarity_rank, weapon_type — that is all
 ├── player-counts-YYYY.parquet CS2 concurrents, 2011+
 ├── exchange-rates-2026.parquet

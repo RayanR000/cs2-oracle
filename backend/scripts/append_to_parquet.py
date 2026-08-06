@@ -2,11 +2,20 @@
 """
 Daily: append today's aggregator rows to the current year's Parquet files.
 
-Writes three Parquet files (prices/snapshots partitioned by month to stay
-well under GitHub's 100MB-per-file limit; exchange-rates stays yearly, it's tiny):
-  prices-YYYY-MM.parquet       — OHLCV per (item_slug, day, source) from all sources
-  snapshots-YYYY-MM.parquet    — All source snapshots (flat: item_slug, day, source, price, volume)
+Writes two Parquet files (prices partitioned by month to stay well under
+GitHub's 100MB-per-file limit; exchange-rates stays yearly, it's tiny):
+  prices-YYYY-MM.parquet       — item_slug, day, source, mean_price, volume
   exchange-rates-YYYY.parquet  — Currency exchange rates (flat: currency, rate, day)
+
+`median_price`, `min_price` and `max_price` are deliberately NOT written. The
+snapshot CSV carries one row per (item_slug, day, source) and has no median
+column (`collectors/pipeline.py:276`), so all three were exact copies of
+`mean_price` — 45% of the archive's bytes for no information. No reader ever
+selected them. See docs/changelog/2026-08-06-price-archive-compaction.md.
+
+`snapshots-YYYY-MM.parquet` is likewise retired: it was
+`SELECT item_slug, day, source, mean_price AS price, volume` off the prices
+file and nothing read it. `scripts/compact_price_archive.py` removed both.
 
 Input: a snapshot CSV written by the aggregator (or Supabase + backfilled CSV for backward compat).
 
@@ -128,9 +137,6 @@ def main():
     if snapshots_df is not None and not snapshots_df.empty:
         daily = snapshots_df.groupby(["item_slug", "day", "source"]).agg(
             mean_price=("price", "mean"),
-            min_price=("price", "min"),
-            max_price=("price", "max"),
-            median_price=("median_price", "mean") if "median_price" in snapshots_df.columns else ("price", "mean"),
             volume=("volume", "sum"),
         ).reset_index()
         daily["day"] = pd.to_datetime(daily["day"])
@@ -141,22 +147,11 @@ def main():
         df = pd.concat(legacy_frames, ignore_index=True)
         daily = df.groupby(["item_slug", "day", "source"]).agg(
             mean_price=("price", "mean"),
-            min_price=("price", "min"),
-            max_price=("price", "max"),
-            median_price=("median_price", "mean"),
             volume=("volume", "sum"),
         ).reset_index()
         daily["day"] = pd.to_datetime(daily["day"])
         _append_parquet(out_dir / f"prices-{ym}.parquet", daily, ["item_slug", "day", "source"])
         print(f"Appended {len(daily)} OHLCV rows to prices-{ym}.parquet (legacy path)")
-
-    # ── Write snapshots-YYYY-MM.parquet (all sources) ─────────────────────
-    if snapshots_df is not None and not snapshots_df.empty:
-        snap_path = out_dir / f"snapshots-{ym}.parquet"
-        out_cols = ["item_slug", "day", "source", "price", "volume"]
-        snap_data = snapshots_df[out_cols].copy()
-        _append_parquet(snap_path, snap_data, ["item_slug", "day", "source"])
-        print(f"Appended {len(snap_data)} snapshot rows to snapshots-{ym}.parquet")
 
     # ── Write exchange-rates-YYYY.parquet ────────────────────────────
     if args.exchange_rates_csv:

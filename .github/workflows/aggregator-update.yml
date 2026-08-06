@@ -10,6 +10,15 @@ on:
     # and leaves time for the forecast chain (runs ~01:00 UTC).
     - cron: '0 23 * * *'
   workflow_dispatch: # Allow manual trigger
+    inputs:
+      compact_archive:
+        description: >
+          One-time: drop the redundant median/min/max price columns and delete
+          snapshots-*.parquet from the data repo before appending. Idempotent —
+          safe to leave off, safe to re-run. See
+          docs/changelog/2026-08-06-price-archive-compaction.md
+        type: boolean
+        default: false
 
 defaults:
   run:
@@ -91,6 +100,17 @@ jobs:
           token: ${{ secrets.CS2_DATA_REPO_TOKEN }}
           path: archive
           fetch-depth: 1
+
+      # Runs BEFORE the append so the day's rows land on the already-compacted
+      # schema. The other order also works, but leaves the new rows carrying
+      # NULL median/min/max until the compaction strips those columns.
+      - name: Compact the price archive (one-time, manual)
+        if: inputs.compact_archive
+        working-directory: ./backend
+        run: >
+          python scripts/compact_price_archive.py
+          --archive-dir ../archive/price-archive
+          --apply
 
       - name: Append to Parquet archive
         working-directory: ./backend

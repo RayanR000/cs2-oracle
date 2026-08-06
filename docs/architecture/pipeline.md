@@ -5,7 +5,7 @@ cron. Five workflows exist in `.github/workflows/`:
 
 | Workflow | Trigger | What it does | Writes |
 |----------|---------|--------------|--------|
-| `aggregator-update.yml` | cron `0 23 * * *` | Fetch 7 CSGOTrader price endpoints + exchange rates | `prices-YYYY-MM.parquet`, `snapshots-YYYY-MM.parquet`, `exchange-rates-YYYY.parquet`, `collection_runs` |
+| `aggregator-update.yml` | cron `0 23 * * *` | Fetch 7 CSGOTrader price endpoints + exchange rates | `prices-YYYY-MM.parquet`, `exchange-rates-YYYY.parquet`, `collection_runs` |
 | `price-forecast.yml` | `workflow_run` on *Aggregator Market Update* | Predict, and retrain when the model is ≥14 days old | `ops/item_forecasts.parquet` |
 | `backtest-accuracy.yml` | `workflow_run` on *Price Forecast*, plus cron `0 8 * * 1-6` | Resolve matured forecasts, score them | `ops/forecast_outcomes.parquet`, `ops/prediction_accuracy.parquet`, `ops/accuracy_alerts.parquet` |
 | `event-correlation-analysis.yml` | cron `0 4 * * 0` | Rebuild event/item impact correlations | `ops/events.parquet`, `ops/event_impacts_denorm.parquet` |

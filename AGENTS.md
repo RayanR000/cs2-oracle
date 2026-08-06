@@ -7,8 +7,11 @@ one q50 model per horizon, with the served band calibrated by split conformal.
 - `backend/` — FastAPI (`main.py`), routers in `api/routes/`, ML in `models/forecaster.py`,
   batch jobs in `scripts/`. See `backend/AGENTS.md`.
 - `frontend/` — Next.js App Router; one API client at `lib/api.ts`. See `frontend/AGENTS.md`.
-- `price-archive/` — gitignored symlink to a local checkout of the separate
-  `RayanR000/cs2-oracle-data` repo. Nothing written there is committed by this repo.
+- `price-archive/` — gitignored **plain local directory**, not a symlink and not a
+  checkout. Editing it changes nothing in production: the durable archive is the separate
+  `RayanR000/cs2-oracle-data` repo, which only CI writes (orphan commit + force-push in
+  `aggregator-update.yml`). The local copy also runs *behind* it. Nothing written there is
+  committed by this repo.
 - `docs/` — `architecture/`, dated decision records in `changelog/`, `design.md`.
 - `.github/workflows/` — daily chain: Aggregator (23:00 UTC) → Price Forecast → Backtest
   Accuracy, each chained off the previous run's success.
