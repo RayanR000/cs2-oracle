@@ -11,6 +11,8 @@ defaults:
 
 permissions:
   issues: write
+  # Stays read even though this job now publishes: the archive lives in the
+  # cs2-oracle-data repo and is pushed with CS2_DATA_REPO_TOKEN, not GITHUB_TOKEN.
   contents: read
 
 jobs:
@@ -38,6 +40,24 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
+      # The analysis reads its price windows from the Parquet archive rather than
+      # the Postgres price_history table (which is empty in prod — snapshot-tier
+      # items keep only their latest row). backend/db/parquet.py resolves
+      # ARCHIVE_ROOT to <repo-root>/price-archive, so without this checkout the
+      # run dies on FileNotFoundError. Same two steps as price-forecast.yml and
+      # backtest-accuracy.yml.
+      - name: Checkout price archive
+        uses: actions/checkout@v4
+        with:
+          repository: RayanR000/cs2-oracle-data
+          ref: main
+          token: ${{ secrets.CS2_DATA_REPO_TOKEN }}
+          path: archive
+          fetch-depth: 1
+
+      - name: Link price-archive
+        run: ln -s $PWD/archive/price-archive price-archive
+
       - name: Run event correlation analysis
         working-directory: ./backend
         env:
@@ -48,6 +68,67 @@ jobs:
           echo "📊 Starting event correlation analysis..."
           set -o pipefail
           python scripts/run_task.py event_correlation 2>&1 | tee event-correlation.log
+
+      # event_correlation_analysis.py appends event_impacts_denorm to the archive
+      # (scripts/event_correlation_analysis.py:256), which lands in the ephemeral
+      # archive/ checkout — so without this step every CI run's impact rows are
+      # discarded at teardown and the denorm table only ever advances when someone
+      # runs the analysis locally. Same gap price-forecast.yml had for
+      # item_forecasts.parquet and backtest-accuracy.yml had for forecast outcomes.
+      #
+      # Mirrors "Publish updated archive" in aggregator-update.yml: the parquet
+      # files ARE the data, each holding full history, so git history of them has
+      # no value and only bloats the repo — republish as one squashed commit via an
+      # orphan branch + force-push. Not conditioned on success: append_table
+      # dedups on (event_id, item_id), so partial rows written before a later
+      # failure are both safe to keep and safe to re-derive next run.
+      #
+      # Concurrency note — this is the FOURTH archive writer, the case
+      # backtest-accuracy.yml flagged as needing revisiting. The full writer set,
+      # all force-pushing the whole tree to cs2-oracle-data main:
+      #   1. Aggregator Market Update  cron 0 23 * * *   (daily 23:00, 60m cap)
+      #   2. Price Forecast            workflow_run on (1) completion (180m cap)
+      #   3. Backtest Accuracy         workflow_run on (2) completion,
+      #                                plus cron 0 8 * * 1-6 (Mon-Sat, 60m cap)
+      #   4. this workflow             cron 0 4 * * 0     (Sunday 04:00, 60m cap)
+      # Nominally disjoint: the Saturday 23:00 aggregator chain runs predict-only
+      # on Sunday (date +%u = 7, not the Monday retrain) and is done by ~00:30 UTC,
+      # ~3.5h before this job starts; the 08:00 backtest cron skips Sunday
+      # entirely. But it is NOT provably disjoint. aggregator-update.yml documents
+      # Actions cron delay pushing a 23:00 start to 00:08, and with that delay the
+      # timeout caps allow the chain to reach 04:10 (forecast) / 05:10 (backtest)
+      # on Sunday — inside this job's checkout->publish window, where the loser of
+      # the force-push race silently loses a run's worth of rows (recoverable by
+      # re-running, since every writer's append is dedup-keyed, but silent).
+      # workflow_dispatch on any of the four is unguarded in the same way. The
+      # per-workflow `concurrency` groups above serialise a workflow only against
+      # itself; a group name SHARED by all four is the real fix and belongs in a
+      # change that may touch the other three files.
+      #
+      # Skipping the push when nothing changed is what keeps that race window as
+      # small as it can be from this file alone, and it is required for a second
+      # reason: this job can legitimately write nothing (no events in the window),
+      # and a bare `git commit` with an empty stage exits non-zero, which would
+      # report a spurious failure. The test has to happen BEFORE `checkout
+      # --orphan`, because on an orphan branch every file is staged as new, so
+      # `git add -A && git commit` would always find something to commit and would
+      # republish a byte-identical tree under a fresh SHA. Comparing the working
+      # tree against the upstream commit we checked out is the only point where
+      # "nothing changed" is actually visible.
+      - name: Publish updated archive (flat history)
+        if: always()
+        working-directory: ./archive
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          if [ -z "$(git status --porcelain)" ]; then
+            echo "Archive unchanged (no event impacts written) — nothing to publish."
+            exit 0
+          fi
+          git checkout --orphan flat
+          git add -A
+          git commit -m "archive: event impacts $(date -u +%F)"
+          git push --force origin HEAD:main
 
       - name: Notify on failure
         if: failure() && github.event_name == 'schedule'

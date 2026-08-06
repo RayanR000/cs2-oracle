@@ -6,6 +6,22 @@ Computes historical price impacts around market events (operations, cases,
 updates) and writes results to event_impacts, event_patterns, and
 event_correlations tables.
 
+PRICES COME FROM THE PARQUET ARCHIVE, NOT POSTGRES. Until 2026-08-05 every
+price window here was a `price_history` query, and that table is empty for
+exactly the items this script analyses: migration 0008 deleted every
+`is_backfilled = 1` item's rows, and `run_analysis` selects precisely
+`is_backfilled == 1`; `collectors/pipeline.py` then stopped writing the table
+at all at the 2026-07-11 CSV->Parquet cutover. Prod holds 16,487 rows spanning
+05-27 -> 07-11 and nothing in any recent event window, while
+`price-archive/prices-2026-05.parquet` has ~25k item-days for every day of it.
+So `_compute_impacts` returned `[]` for every event, `run_analysis` logged "No
+price data found ... skipping", and the task wrote ZERO rows on every run from
+2026-07-19 onward while exiting green. It only turned red on 2026-08-02, when
+324cfff added the impact counts to `run_task.py`'s `ROW_COUNT_FIELDS`.
+
+The AGENTS.md invariant: "Training data comes from Parquet, not the DB. The DB
+supplies only the `is_backfilled` flag and events metadata."
+
 Usage:
     python scripts/event_correlation_analysis.py
     python scripts/event_correlation_analysis.py --days-back 90
@@ -13,19 +29,23 @@ Usage:
 
 import sys
 import math
+import bisect
 import logging
 import argparse
+from dataclasses import dataclass, field
 from pathlib import Path
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 from collections import defaultdict
+from typing import NamedTuple
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from database import (
-    SessionLocal, Event, EventImpact, EventPattern, EventCorrelation,
-    PriceHistory, Item,
+    SessionLocal, Event, EventImpact, EventPattern, EventCorrelation, Item,
 )
-from sqlalchemy import text, func, and_, desc
+from backtest.price_resolution import archive_max_day, load_voted_prices
+from db.parquet import append_table
+from sqlalchemy import func, desc
 
 logging.basicConfig(
     level=logging.INFO,
@@ -33,132 +53,262 @@ logging.basicConfig(
 )
 logger = logging.getLogger("event_correlation")
 
+# Repo-root `price-archive/`, the same resolution `scripts/evaluate_forecaster.py`
+# and `db/parquet.py::ARCHIVE_ROOT` use. CI has to check the archive repo out to
+# this path (see .github/workflows/event-correlation-analysis.yml) or the run
+# dies on FileNotFoundError — which is the intended outcome, not a fallback.
+ARCHIVE_DIR = Path(__file__).resolve().parent.parent.parent / "price-archive"
 
-def _date_range(event: Event, days_before: int = 14, days_after: int = 30):
-    """Return (start, end) datetime range around an event."""
-    start = event.timestamp - timedelta(days=days_before)
-    end = event.timestamp + timedelta(days=days_after)
-    return start, end
+# WINDOW SEMANTICS, NORMALISED TO WHOLE DAYS. The old SQL compared
+# `PriceHistory.timestamp` against `event.timestamp`, which carries a time of
+# day, so the effective window silently depended on an event's clock time: a
+# `>= event - 8 days` bound over midnight-stamped rows admits 8 days for an
+# event at 00:00 and 7 for one at 13:45. The archive is one row per DAY, so
+# every bound below is a date and the windows are exactly what the docstrings
+# advertise. This is a deliberate documented change: the pre-event window is now
+# always 7 days, where before it was 7 or 8 depending on the event's timestamp.
+PRE_EVENT_WINDOW_DAYS = 7      # [event_day - 7, event_day - 1] inclusive
+CENTRED_WINDOW_DAYS = 3        # [target - 1, target + 1] inclusive
+IMPACT_OFFSETS = (1, 3, 7)     # days after the event that get an impact column
+CONTROL_OFFSET_DAYS = 7        # the offset the z-score's control group uses
+
+# `run_analysis`'s status when the lookback window holds no events at all.
+# `data/cs2_events.json`'s newest event is 2026-05-10, so at days_back=90 the
+# window empties around 2026-08-08 — a calendar fact, not a fault. It gets its
+# own status so `run_task.py`'s zero-row guard can let it through loudly instead
+# of reporting a failure nobody can fix, while "events exist but zero impacts
+# were written" stays fatal, because that is the bug documented above.
+NO_EVENTS_STATUS = "no_events_in_window"
 
 
-def _price_on_date(db, item_id: int, target: datetime, window_days: int = 3):
-    """Get average price around a target date (centered window)."""
+class ItemRef(NamedTuple):
+    """The two item identities this script has to keep apart.
+
+    `Item.id` (the int PK, used by `event_impacts.item_id`) is what the DB and
+    the impact rows key on; `Item.item_id` is the VARCHAR slug the archive keys
+    on. Mixing them up reads as "no price data". `type` rides along because the
+    control group needs it and querying it per item inside the impact loop was
+    one DB round trip per item.
+    """
+
+    slug: str
+    type: str
+
+
+@dataclass(frozen=True)
+class _DailySeries:
+    """One item's prices, one entry per observed day, ascending by day."""
+
+    days: list[date]
+    prices: list[float]
+
+
+class PriceStore:
+    """Voted daily prices for the analysis universe, keyed by DB item id.
+
+    Loaded once per run and queried by window, because the analysis asks for
+    O(items x events x windows) means and each one used to be a SQL round trip.
+
+    The prices are whatever `backtest/price_resolution.py::load_voted_prices`
+    returns — i.e. after `ItemForecaster._apply_multi_source_voting`, so the
+    archive's duplicate item-days are collapsed the way production collapses
+    them, not with a plain mean. Reusing that loader rather than writing raw
+    DuckDB here is also what keeps the "missing archive raises" behaviour: an
+    absent checkout must fail loudly, never read as "no price data".
+    """
+
+    def __init__(self, series: dict[int, _DailySeries]):
+        self._series = series
+
+    @property
+    def items_with_prices(self) -> int:
+        return len(self._series)
+
+    @classmethod
+    def from_voted(cls, voted, universe: dict[int, ItemRef]) -> "PriceStore":
+        """Index a voted frame (`item_id` = slug, `date`, `price`) by DB id."""
+        series: dict[int, _DailySeries] = {}
+        if voted is None or len(voted) == 0:
+            return cls(series)
+
+        db_id_by_slug = {ref.slug: db_id for db_id, ref in universe.items()}
+        for slug, group in voted.groupby("item_id", sort=False):
+            db_id = db_id_by_slug.get(slug)
+            if db_id is None:
+                continue
+            ordered = group.sort_values("date")
+            series[db_id] = _DailySeries(
+                # pd.Timestamp is a datetime subclass, so this normalises both
+                # what DuckDB hands back and what a test fixture passes in.
+                days=[d.date() if isinstance(d, datetime) else d for d in ordered["date"]],
+                prices=[float(p) for p in ordered["price"]],
+            )
+        return cls(series)
+
+    @classmethod
+    def load(cls, archive_dir: Path, universe: dict[int, ItemRef],
+             min_date: date, max_date: date) -> "PriceStore":
+        voted = load_voted_prices(
+            Path(archive_dir),
+            [ref.slug for ref in universe.values()],
+            min_date,
+            max_date,
+        )
+        return cls.from_voted(voted, universe)
+
+    def window_mean(self, item_id: int, start: date, end: date) -> float | None:
+        """Mean price over the INCLUSIVE day window [start, end], or None.
+
+        None — never 0.0 — when the window holds no observation: a missing
+        window must not read as a free item. Bisection rather than a pandas
+        `.loc` slice because this is called O(items x events x windows) times
+        and the per-call overhead dominates at 5.5k items.
+        """
+        series = self._series.get(item_id)
+        if series is None or end < start:
+            return None
+        lo = bisect.bisect_left(series.days, start)
+        hi = bisect.bisect_right(series.days, end)
+        if hi <= lo:
+            return None
+        return sum(series.prices[lo:hi]) / (hi - lo)
+
+
+@dataclass
+class _ControlChanges:
+    """The per-item pct-change distribution for one (event, type, offset).
+
+    `_control_group_prices` used to be called once PER ITEM with
+    `exclude_item_ids={item_id}`, which was O(items^2) window means once the
+    prices are in memory. The distribution is computed ONCE and each item's
+    leave-one-out mean/std comes from n, sum(x) and sum(x^2) in closed form.
+    That is exactly equivalent to recomputing without the item: the old SQL
+    excluded it before aggregating, and an item lacking either leg never
+    entered the set at all — so for such an item there is nothing to subtract.
+    """
+
+    changes: dict[int, float] = field(default_factory=dict)
+    total: float = 0.0
+    total_sq: float = 0.0
+
+    def add(self, item_id: int, change: float) -> None:
+        self.changes[item_id] = change
+        self.total += change
+        self.total_sq += change * change
+
+    def excluding(self, item_id: int) -> tuple[float, float]:
+        """(mean, std) of the distribution with *item_id* removed.
+
+        Edge cases are the pre-Parquet ones, preserved exactly: POPULATION
+        variance (denominator n, not n-1), a std floor of 0.001 when the
+        variance is not > 0 (so the z-score divides by something), and
+        (0.0, 0.0) when nothing is left — which the caller reads as "no control
+        group", yielding z = 0.0.
+        """
+        n = len(self.changes)
+        total, total_sq = self.total, self.total_sq
+
+        own = self.changes.get(item_id)
+        if own is not None:
+            n -= 1
+            total -= own
+            total_sq -= own * own
+
+        if n <= 0:
+            return 0.0, 0.0
+
+        mean = total / n
+        # Clamped at 0 before the sqrt: sum(x^2)/n - mean^2 is algebraically
+        # non-negative but can land at -1e-17 in floating point when every
+        # change is identical, and math.sqrt would raise on it.
+        variance = max(total_sq / n - mean * mean, 0.0)
+        std = math.sqrt(variance) if variance > 0 else 0.001
+        return mean, std
+
+
+def _event_day(event: Event) -> date:
+    """The event's calendar day. See the window-semantics note above: the time
+    of day is dropped rather than being allowed to shift every window."""
+    ts = event.timestamp
+    return ts.date() if isinstance(ts, datetime) else ts
+
+
+def _price_on_date(store: PriceStore, item_id: int, target: date,
+                   window_days: int = CENTRED_WINDOW_DAYS) -> float | None:
+    """Average price around a target date (centered window)."""
     half = window_days // 2
-    start = target - timedelta(days=half)
-    end = target + timedelta(days=half)
-    row = (
-        db.query(func.avg(PriceHistory.price))
-        .filter(
-            PriceHistory.item_id == item_id,
-            PriceHistory.timestamp >= start,
-            PriceHistory.timestamp <= end,
-        )
-        .scalar()
+    return store.window_mean(
+        item_id, target - timedelta(days=half), target + timedelta(days=half)
     )
-    return float(row) if row is not None else None
 
 
-def _pre_event_price(db, item_id: int, event_date: datetime):
-    """Average price in the 7 days before the event."""
-    end = event_date - timedelta(days=1)
-    start = event_date - timedelta(days=8)
-    row = (
-        db.query(func.avg(PriceHistory.price))
-        .filter(
-            PriceHistory.item_id == item_id,
-            PriceHistory.timestamp >= start,
-            PriceHistory.timestamp <= end,
-        )
-        .scalar()
+def _pre_event_price(store: PriceStore, item_id: int, event_day: date) -> float | None:
+    """Average price in the 7 days before the event: [day - 7, day - 1]."""
+    return store.window_mean(
+        item_id,
+        event_day - timedelta(days=PRE_EVENT_WINDOW_DAYS),
+        event_day - timedelta(days=1),
     )
-    return float(row) if row is not None else None
 
 
-def _post_event_price(db, item_id: int, event_date: datetime, offset_days: int):
+def _post_event_price(store: PriceStore, item_id: int, event_day: date,
+                      offset_days: int) -> float | None:
     """Average price at offset_days after the event (3-day centered window)."""
-    target = event_date + timedelta(days=offset_days)
-    return _price_on_date(db, item_id, target, window_days=3)
+    return _price_on_date(store, item_id, event_day + timedelta(days=offset_days))
 
 
-def _control_group_prices(db, item_type: str, event_date: datetime,
-                          exclude_item_ids: set[int], offset_days: int):
-    """Average price change for similar items not affected by the event."""
-    before, after = [], []
-    end = event_date - timedelta(days=1)
-    start = event_date - timedelta(days=8)
-    target = event_date + timedelta(days=offset_days)
-    target_end = target + timedelta(days=1)
-    target_start = target - timedelta(days=1)
+def _control_change_distribution(store: PriceStore, item_ids: list[int],
+                                 event_day: date,
+                                 offset_days: int) -> _ControlChanges:
+    """Pct change from the pre-event window to the offset window, per item.
 
-    rows = (
-        db.query(
-            PriceHistory.item_id,
-            func.avg(PriceHistory.price).label("avg_price"),
-            func.date_trunc('day', PriceHistory.timestamp).label("day"),
-        )
-        .join(Item, Item.id == PriceHistory.item_id)
-        .filter(
-            Item.type == item_type,
-            ~Item.id.in_(exclude_item_ids) if exclude_item_ids else True,
-            PriceHistory.timestamp.between(start, end),
-        )
-        .group_by(PriceHistory.item_id, func.date_trunc('day', PriceHistory.timestamp))
-        .all()
-    )
-    by_item: dict[int, list[float]] = defaultdict(list)
-    for r in rows:
-        by_item[r.item_id].append(r.avg_price)
+    *item_ids* is the control cohort — every item of the same type. Items
+    missing either leg are omitted, as the old two-query version omitted them
+    (it inner-joined the before and target aggregates).
 
-    target_rows = (
-        db.query(
-            PriceHistory.item_id,
-            func.avg(PriceHistory.price).label("avg_price"),
-        )
-        .join(Item, Item.id == PriceHistory.item_id)
-        .filter(
-            Item.type == item_type,
-            ~Item.id.in_(exclude_item_ids) if exclude_item_ids else True,
-            PriceHistory.timestamp.between(target_start, target_end),
-        )
-        .group_by(PriceHistory.item_id)
-        .all()
-    )
-    target_prices = {r.item_id: float(r.avg_price) for r in target_rows}
-
-    changes: list[float] = []
-    for item_id, prices in by_item.items():
-        if item_id not in target_prices:
+    Note the cohort narrowed with the move to Parquet: it is now the
+    `is_backfilled` universe this script analyses, where the SQL version drew on
+    any item with `price_history` rows. In prod that set is empty, so the old
+    cohort was the empty set on every run.
+    """
+    dist = _ControlChanges()
+    target = event_day + timedelta(days=offset_days)
+    for item_id in item_ids:
+        before = _pre_event_price(store, item_id, event_day)
+        if before is None or before <= 0:
             continue
-        avg_before = sum(prices) / len(prices)
-        if avg_before > 0:
-            change = (target_prices[item_id] - avg_before) / avg_before * 100
-            changes.append(change)
-
-    if not changes:
-        return 0.0, 0.0
-    mean = sum(changes) / len(changes)
-    variance = sum((c - mean) ** 2 for c in changes) / len(changes)
-    std = math.sqrt(variance) if variance > 0 else 0.001
-    return mean, std
+        after = _price_on_date(store, item_id, target)
+        if after is None:
+            continue
+        dist.add(item_id, (after - before) / before * 100)
+    return dist
 
 
-def _compute_impacts(db, event: Event, item_ids: list[int]):
+def _compute_impacts(event: Event, item_ids: list[int], store: PriceStore,
+                     universe: dict[int, ItemRef]):
     """Compute impact metrics for all items around an event."""
-    event_date = event.timestamp
+    event_day = _event_day(event)
     pre_prices: dict[int, float] = {}
     for item_id in item_ids:
-        p = _pre_event_price(db, item_id, event_date)
+        p = _pre_event_price(store, item_id, event_day)
         if p is not None:
             pre_prices[item_id] = p
 
     if not pre_prices:
         return []
 
+    ids_by_type: dict[str, list[int]] = defaultdict(list)
+    for db_id, ref in universe.items():
+        ids_by_type[ref.type or "skin"].append(db_id)
+
+    # One distribution per item type, reused by every item of that type.
+    control_cache: dict[str, _ControlChanges] = {}
+
     impacts: list[dict] = []
     for item_id, price_before in pre_prices.items():
-        p1 = _post_event_price(db, item_id, event_date, 1)
-        p3 = _post_event_price(db, item_id, event_date, 3)
-        p7 = _post_event_price(db, item_id, event_date, 7)
+        p1 = _post_event_price(store, item_id, event_day, 1)
+        p3 = _post_event_price(store, item_id, event_day, 3)
+        p7 = _post_event_price(store, item_id, event_day, 7)
 
         if p1 is None and p3 is None and p7 is None:
             continue
@@ -182,11 +332,13 @@ def _compute_impacts(db, event: Event, item_ids: list[int]):
             if imp is not None and abs(imp) > 0.5:
                 duration = d
 
-        item_type_result = db.query(Item.type).filter(Item.id == item_id).scalar()
-        control_mean, control_std = _control_group_prices(
-            db, item_type_result or "skin", event_date, {item_id},
-            offset_days=7,
-        )
+        item_type = (universe[item_id].type if item_id in universe else None) or "skin"
+        if item_type not in control_cache:
+            control_cache[item_type] = _control_change_distribution(
+                store, ids_by_type.get(item_type, []), event_day,
+                CONTROL_OFFSET_DAYS,
+            )
+        control_mean, control_std = control_cache[item_type].excluding(item_id)
 
         item_impact = impact_7d or impact_3d or impact_1d or 0.0
         z_score = (item_impact - control_mean) / control_std if control_std > 0 else 0.0
@@ -210,8 +362,18 @@ def _compute_impacts(db, event: Event, item_ids: list[int]):
     return impacts
 
 
-def _upsert_event_impacts(db, impacts: list[dict], event_type: str = "", event_description: str = "", event_timestamp=None):
-    """Write event_impacts rows to DB and Parquet."""
+def _upsert_event_impacts(db, impacts: list[dict], event_type: str = "",
+                          event_description: str = "", event_timestamp=None):
+    """Write event_impacts rows to the DB and return the denormalised mirror.
+
+    The mirror rows are RETURNED, not written: `confidence_score` is only known
+    after `_compute_and_upsert_correlations` has run, and the previous version
+    appended them with `confidence_score: None` and then tried to patch the
+    value in by reading the whole Parquet file back — from
+    `{... for r in [data]}`, where `data` was whatever the correlations loop
+    variable happened to hold last. That wrote one item's confidence, left every
+    other row NULL, and rewrote the entire table by hand outside `append_table`.
+    """
     written = 0
     for row in impacts:
         existing = (
@@ -230,32 +392,45 @@ def _upsert_event_impacts(db, impacts: list[dict], event_type: str = "", event_d
         written += 1
     db.commit()
 
-    if impacts:
-        denorm_rows = []
-        for r in impacts:
-            denorm_rows.append({
-                "event_id": r["event_id"],
-                "item_id": r["item_id"],
-                "event_type": event_type,
-                "event_description": event_description,
-                "event_timestamp": event_timestamp,
-                "price_day_before": r.get("price_day_before"),
-                "price_day_1": r.get("price_day_1"),
-                "price_day_3": r.get("price_day_3"),
-                "price_day_7": r.get("price_day_7"),
-                "impact_pct_1day": r.get("impact_pct_1day"),
-                "impact_pct_3day": r.get("impact_pct_3day"),
-                "impact_pct_7day": r.get("impact_pct_7day"),
-                "peak_impact_pct": r.get("peak_impact_pct"),
-                "peak_impact_day": r.get("peak_impact_day"),
-                "duration_days": r.get("duration_days"),
-                "z_score": r.get("z_score"),
-                "confidence_score": None,
-            })
-        from db.parquet import append_table
-        append_table("event_impacts_denorm", denorm_rows, ["event_id", "item_id"])
+    denorm_rows = [
+        {
+            "event_id": r["event_id"],
+            "item_id": r["item_id"],
+            "event_type": event_type,
+            "event_description": event_description,
+            "event_timestamp": event_timestamp,
+            "price_day_before": r.get("price_day_before"),
+            "price_day_1": r.get("price_day_1"),
+            "price_day_3": r.get("price_day_3"),
+            "price_day_7": r.get("price_day_7"),
+            "impact_pct_1day": r.get("impact_pct_1day"),
+            "impact_pct_3day": r.get("impact_pct_3day"),
+            "impact_pct_7day": r.get("impact_pct_7day"),
+            "peak_impact_pct": r.get("peak_impact_pct"),
+            "peak_impact_day": r.get("peak_impact_day"),
+            "duration_days": r.get("duration_days"),
+            "z_score": r.get("z_score"),
+            "confidence_score": None,
+        }
+        for r in impacts
+    ]
+    return written, denorm_rows
 
-    return written
+
+def _write_impacts_mirror(denorm_rows: list[dict],
+                          confidence_by_item: dict[int, float]) -> int:
+    """Append the event_impacts_denorm mirror once, confidence already filled.
+
+    Every value here is a scalar. Per AGENTS.md, nested values reaching
+    `append_table` are the `prediction_accuracy.metrics` STRUCT failure mode —
+    don't introduce one.
+    """
+    if not denorm_rows:
+        return 0
+    for row in denorm_rows:
+        row["confidence_score"] = confidence_by_item.get(row["item_id"])
+    append_table("event_impacts_denorm", denorm_rows, ["event_id", "item_id"])
+    return len(denorm_rows)
 
 
 def _compute_and_upsert_patterns(db, event_type: str, impacts: list[dict]):
@@ -336,15 +511,44 @@ def _compute_and_upsert_patterns(db, event_type: str, impacts: list[dict]):
 
 def _compute_and_upsert_correlations(db, event: Event, db_item_ids: list[int],
                                       impacts: list[dict]):
-    """Write event_correlations with statistical rigor checks."""
+    """Write event_correlations with statistical rigor checks.
+
+    Returns (rows_written, {item_id: confidence_score}). The scores go into the
+    denormalised Parquet mirror; see `_write_impacts_mirror` for why they are
+    returned rather than patched into the file afterwards.
+    """
     impact_by_item = {i["item_id"]: i for i in impacts}
     event_date = event.timestamp
 
-    cutoff = datetime.now(timezone.utc).replace(tzinfo=None)
-    event_age_days = (cutoff - event_date.replace(tzinfo=None) if event_date.tzinfo is None
-                      else (cutoff - event_date)).days if event_date else 365
+    # Both of these used to be queried once PER ITEM inside the loop below. The
+    # confounding count is a property of the EVENT — identical for all ~5.5k
+    # items — and the patterns are one row per (event_type, item), so a single
+    # query fetches every one of them. The cost never showed up because
+    # `_compute_impacts` returned [] and this loop never ran; the first run that
+    # actually had impacts would have issued ~11k round trips per event against
+    # Supabase.
+    day_start = event_date.replace(hour=0, minute=0, second=0, microsecond=0)
+    day_end = day_start + timedelta(days=1)
+    confounding = (
+        db.query(func.count(Event.id))
+        .filter(
+            Event.id != event.id,
+            Event.timestamp >= day_start,
+            Event.timestamp < day_end,
+        )
+        .scalar()
+    ) or 0
+    confounding_passed = 1 if confounding == 0 else 0
+
+    patterns_by_item = {
+        p.item_id: p
+        for p in db.query(EventPattern)
+                   .filter(EventPattern.event_type == event.type)
+                   .all()
+    }
 
     written = 0
+    confidence_by_item: dict[int, float] = {}
     for item_id in db_item_ids:
         imp = impact_by_item.get(item_id)
         if imp is None:
@@ -360,29 +564,8 @@ def _compute_and_upsert_correlations(db, event: Event, db_item_ids: list[int],
         control_diff = impact_7d
         control_passed = 1 if abs(control_diff) > 0.0 else 0
 
-        # Confounding events: count events on same calendar day
-        day_start = event_date.replace(hour=0, minute=0, second=0, microsecond=0)
-        day_end = day_start + timedelta(days=1)
-        confounding = (
-            db.query(func.count(Event.id))
-            .filter(
-                Event.id != event.id,
-                Event.timestamp >= day_start,
-                Event.timestamp < day_end,
-            )
-            .scalar()
-        ) or 0
-        confounding_passed = 1 if confounding == 0 else 0
-
         # Pattern consistency from event_patterns table
-        pattern = (
-            db.query(EventPattern)
-            .filter(
-                EventPattern.event_type == event.type,
-                EventPattern.item_id == item_id,
-            )
-            .first()
-        )
+        pattern = patterns_by_item.get(item_id)
         pattern_consistency = pattern.consistency_score if pattern else None
         pattern_passed = 1 if (pattern_consistency is not None and pattern_consistency >= 0.7) else 0
 
@@ -432,32 +615,25 @@ def _compute_and_upsert_correlations(db, event: Event, db_item_ids: list[int],
                 setattr(existing, key, val)
         else:
             db.add(EventCorrelation(**data))
+        confidence_by_item[item_id] = data["confidence_score"]
         written += 1
     db.commit()
 
-    if written:
-        try:
-            from db.parquet import read_table, ensure_ops_dir
-            df = read_table("event_impacts_denorm")
-            if not df.empty:
-                confidence_map = {
-                    (r["event_id"], r["item_id"]): r.get("confidence_score")
-                    for r in [data]
-                }
-                for idx in df.index:
-                    key = (df.at[idx, "event_id"], df.at[idx, "item_id"])
-                    if key in confidence_map:
-                        df.at[idx, "confidence_score"] = confidence_map[key]
-                df.to_parquet(ensure_ops_dir() / "event_impacts_denorm.parquet", index=False)
-        except Exception as pq_err:
-            logger.warning("Parquet update for event_impacts_denorm failed: %s", pq_err)
-
-    return written
+    return written, confidence_by_item
 
 
-def run_analysis(days_back: int = 90):
-    """Main entry point: analyze events and write results to DB."""
-    db = SessionLocal()
+def run_analysis(days_back: int = 90, db=None, archive_dir: Path | None = None):
+    """Main entry point: analyze events and write results to DB.
+
+    *db* and *archive_dir* are injectable so tests can drive this against an
+    in-memory SQLite session and a fixture archive. `backend/.env` points at
+    PRODUCTION Supabase and the engine binds at import, so a test that lets
+    this open its own session would be querying prod.
+    """
+    archive_dir = Path(archive_dir) if archive_dir is not None else ARCHIVE_DIR
+    owns_session = db is None
+    if owns_session:
+        db = SessionLocal()
     try:
         cutoff = datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(days=days_back)
 
@@ -469,13 +645,68 @@ def run_analysis(days_back: int = 90):
         )
         logger.info(f"Found {len(events)} events in the last {days_back} days")
 
-        backfilled_items = (
-            db.query(Item.id)
-            .filter(Item.is_backfilled == 1)
-            .all()
-        )
-        item_ids = [r.id for r in backfilled_items]
+        if not events:
+            # An empty window is a calendar outcome, not a fault, and it must
+            # not look like the zero-row bug this file was rewritten to fix.
+            # `data/cs2_events.json` ends at 2026-05-10 and nothing adds to it,
+            # so at days_back=90 this becomes the normal Sunday result from
+            # roughly 2026-08-08 onward. Loud, distinct status, exit 0.
+            logger.warning(
+                "No events within %d days of %s — nothing to correlate. "
+                "The events table is loaded from data/cs2_events.json, whose "
+                "newest entry is 2026-05-10; extend it to analyse newer "
+                "windows. Returning %r (not a failure).",
+                days_back, cutoff.date(), NO_EVENTS_STATUS,
+            )
+            return {
+                "status": NO_EVENTS_STATUS,
+                "events_analyzed": 0,
+                "impacts_written": 0,
+                "patterns_written": 0,
+                "correlations_written": 0,
+            }
+
+        # id -> (slug, type), built once. The slug is the archive's key and the
+        # id is what event_impacts stores; `type` used to cost one query per
+        # item inside the impact loop.
+        universe = {
+            r.id: ItemRef(r.item_id, r.type or "skin")
+            for r in db.query(Item.id, Item.item_id, Item.type)
+                       .filter(Item.is_backfilled == 1)
+                       .all()
+        }
+        item_ids = list(universe)
         logger.info(f"Found {len(item_ids)} backfilled items for analysis")
+
+        if not item_ids:
+            return {
+                "status": "error",
+                "error": "no items have is_backfilled = 1 — the archive-derived "
+                         "backfill gate is empty, so there is nothing to analyse",
+            }
+
+        event_days = [_event_day(e) for e in events]
+        min_date = min(event_days) - timedelta(days=PRE_EVENT_WINDOW_DAYS)
+        max_date = max(event_days) + timedelta(days=max(IMPACT_OFFSETS) + 1)
+        store = PriceStore.load(archive_dir, universe, min_date, max_date)
+        logger.info(
+            "Loaded archive prices for %d/%d items over %s..%s",
+            store.items_with_prices, len(item_ids), min_date, max_date,
+        )
+
+        if store.items_with_prices == 0:
+            # The archive exists (load_voted_prices raises otherwise) but holds
+            # nothing for this universe in this window. That is a collection gap
+            # or a slug mismatch, not "no impacts" — and reporting it as zero
+            # rows is the silent-success shape this area keeps regressing into.
+            return {
+                "status": "error",
+                "error": (
+                    f"archive at {archive_dir} priced 0 of {len(item_ids)} "
+                    f"requested slugs over {min_date}..{max_date}; archive "
+                    f"coverage ends {archive_max_day(archive_dir)}"
+                ),
+            }
 
         total_impacts = 0
         total_patterns = 0
@@ -484,12 +715,15 @@ def run_analysis(days_back: int = 90):
         for event in events:
             logger.info(f"Analyzing event #{event.id}: {event.type} - {event.description[:60]}")
 
-            impacts = _compute_impacts(db, event, item_ids)
+            impacts = _compute_impacts(event, item_ids, store, universe)
             if not impacts:
-                logger.info(f"  No price data found for event #{event.id}, skipping")
+                logger.warning(
+                    "  No archive prices in event #%s's windows (%s), skipping",
+                    event.id, _event_day(event),
+                )
                 continue
 
-            n_impacts = _upsert_event_impacts(
+            n_impacts, denorm_rows = _upsert_event_impacts(
                 db, impacts,
                 event_type=event.type,
                 event_description=event.description,
@@ -502,11 +736,14 @@ def run_analysis(days_back: int = 90):
             total_patterns += n_patterns
             logger.info(f"  Wrote {n_patterns} event_patterns")
 
-            n_correlations = _compute_and_upsert_correlations(
+            n_correlations, confidence_by_item = _compute_and_upsert_correlations(
                 db, event, item_ids, impacts,
             )
             total_correlations += n_correlations
             logger.info(f"  Wrote {n_correlations} event_correlations")
+
+            n_mirrored = _write_impacts_mirror(denorm_rows, confidence_by_item)
+            logger.info(f"  Mirrored {n_mirrored} event_impacts_denorm rows")
 
         logger.info(f"Done: {total_impacts} impacts, {total_patterns} patterns, {total_correlations} correlations")
         return {
@@ -522,7 +759,8 @@ def run_analysis(days_back: int = 90):
         db.rollback()
         return {"status": "error", "error": str(e)}
     finally:
-        db.close()
+        if owns_session:
+            db.close()
 
 
 if __name__ == "__main__":

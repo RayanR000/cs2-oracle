@@ -36,6 +36,95 @@ def run_migrations(revision="head"):
         )
         raise RuntimeError(f"Could not run migrations to {revision}: {e}")
 
+# Row-count fields every task can return. This guard used to key on
+# `items_collected` alone — a field only collectors/pipeline.py sets. Every other
+# task could therefore return status "success" with zero rows and still exit 0,
+# which is exactly how the Steam supply scraper (429s from 2026-07-16) and the
+# Reddit collector (403s, never stored a single row) both stayed dead behind a
+# green CI badge.
+ROW_COUNT_FIELDS = (
+    "items_collected",      # collectors/pipeline.py
+    "total_records",        # scripts/backtest_accuracy.py
+    "impacts_written",      # scripts/event_correlation_analysis.py
+    "patterns_written",     # scripts/event_correlation_analysis.py
+    "correlations_written", # scripts/event_correlation_analysis.py
+    "steam_items",          # collectors/supply_scraper.py
+    "total_mentions",       # collectors/social_sentiment.py
+    "inserted",             # collectors/social_sentiment.py
+)
+
+# Statuses that mean "this task legitimately had nothing to do", as opposed to
+# "this task produced nothing because it is broken". Deliberately a tiny
+# allowlist: every status not on it flows into the guards below, so a new
+# no-op-shaped outcome has to be added here consciously rather than inheriting
+# a green run. `no_events_in_window` is event_correlation_analysis.py's — see
+# NO_EVENTS_STATUS there for why an empty event window is a calendar fact.
+NO_OP_STATUSES = ("no_events_in_window",)
+
+
+def check_results(task_name, results) -> None:
+    """Exit non-zero unless every result reports real work or a known no-op.
+
+    Extracted from `run_task` so it is testable without a DB session: `.env`
+    here points at PRODUCTION Supabase and the engine binds at import, so a test
+    that instantiated the runner would be querying prod.
+    """
+    results = [r for r in results if isinstance(r, dict)]
+
+    # Pipeline methods catch their own exceptions and return status dicts; exit
+    # non-zero so scheduled workflows report the failure instead of showing green
+    # on a run that collected nothing.
+    failures = [r for r in results if r.get("status") in ("failed", "error")]
+    if failures:
+        logger.error(f"❌ TASK '{task_name}' reported failure: {failures[0].get('error', failures[0])}")
+        sys.exit(1)
+
+    # A known no-op: loud, and exit 0. It has to be recognised BEFORE the
+    # zero-row guard, because its counts are all legitimately zero.
+    no_ops = [r for r in results if r.get("status") in NO_OP_STATUSES]
+    for r in no_ops:
+        logger.warning(
+            f"⚠️  TASK '{task_name}' had nothing to do (status "
+            f"{r.get('status')!r}) and wrote no rows — not a failure. "
+            f"Result: {r}"
+        )
+    # Identity, not equality: two tasks in one run can return equal dicts, and
+    # `!=` would drop both when only one was the no-op.
+    results = [r for r in results if not any(r is n for n in no_ops)]
+
+    def _zero_row(r) -> bool:
+        """True if r reports row counts and every one of them is zero."""
+        if r.get("status") != "success":
+            return False
+        counts = [r[f] for f in ROW_COUNT_FIELDS
+                  if isinstance(r.get(f), (int, float))]
+        return bool(counts) and not any(counts)
+
+    # Treat zero-row results as failures (all endpoints likely down). For
+    # event_correlation specifically this is the guard that must STAY fatal:
+    # "events exist but zero impacts were written" is the price_history bug
+    # (2026-07-19 -> 2026-08-02, green the whole time), not an empty calendar.
+    zero_rows = [r for r in results if _zero_row(r)]
+    if zero_rows:
+        logger.error(
+            f"❌ TASK '{task_name}' completed with ZERO rows written — "
+            "all upstream endpoints may be down or blocking this IP. "
+            f"Result: {zero_rows[0]}"
+        )
+        sys.exit(1)
+
+    # "skipped" passed both guards above: not a failure status, and no count
+    # fields to inspect. pipeline.py returns it when there are no items to
+    # update, which is itself a zero-row outcome worth surfacing.
+    skipped = [r for r in results if r.get("status") == "skipped"]
+    if skipped:
+        logger.error(
+            f"❌ TASK '{task_name}' was SKIPPED and wrote nothing: "
+            f"{skipped[0].get('reason', skipped[0])}"
+        )
+        sys.exit(1)
+
+
 def run_task(task_name):
     db = SessionLocal()
     pipeline = DataPipeline(db_session=db)
@@ -137,67 +226,7 @@ def run_task(task_name):
             logger.error(f"Unknown task: {task_name}")
             sys.exit(1)
 
-        # Pipeline methods catch their own exceptions and return status dicts;
-        # exit non-zero so scheduled workflows report the failure instead of
-        # showing green on a run that collected nothing.
-        failures = [
-            r for r in (result, result2, result3)
-            if isinstance(r, dict) and r.get("status") in ("failed", "error")
-        ]
-        if failures:
-            logger.error(f"❌ TASK '{task_name}' reported failure: {failures[0].get('error', failures[0])}")
-            sys.exit(1)
-
-        # Treat zero-row results as failures (all endpoints likely down).
-        #
-        # This guard used to key on `items_collected` alone — a field only
-        # collectors/pipeline.py sets. Every other task could therefore return
-        # status "success" with zero rows and still exit 0, which is exactly how
-        # the Steam supply scraper (429s from 2026-07-16) and the Reddit
-        # collector (403s, never stored a single row) both stayed dead behind a
-        # green CI badge. Check every count field any task actually returns, and
-        # fail when a task reports counts and all of them are zero.
-        ROW_COUNT_FIELDS = (
-            "items_collected",      # collectors/pipeline.py
-            "total_records",        # scripts/backtest_accuracy.py
-            "impacts_written",      # scripts/event_correlation_analysis.py
-            "patterns_written",     # scripts/event_correlation_analysis.py
-            "correlations_written", # scripts/event_correlation_analysis.py
-            "steam_items",          # collectors/supply_scraper.py
-            "total_mentions",       # collectors/social_sentiment.py
-            "inserted",             # collectors/social_sentiment.py
-        )
-
-        def _zero_row(r) -> bool:
-            """True if r reports row counts and every one of them is zero."""
-            if not isinstance(r, dict) or r.get("status") != "success":
-                return False
-            counts = [r[f] for f in ROW_COUNT_FIELDS
-                      if isinstance(r.get(f), (int, float))]
-            return bool(counts) and not any(counts)
-
-        zero_rows = [r for r in (result, result2, result3) if _zero_row(r)]
-        if zero_rows:
-            logger.error(
-                f"❌ TASK '{task_name}' completed with ZERO rows written — "
-                "all upstream endpoints may be down or blocking this IP. "
-                f"Result: {zero_rows[0]}"
-            )
-            sys.exit(1)
-
-        # "skipped" passed both guards above: not a failure status, and no count
-        # fields to inspect. pipeline.py returns it when there are no items to
-        # update, which is itself a zero-row outcome worth surfacing.
-        skipped = [
-            r for r in (result, result2, result3)
-            if isinstance(r, dict) and r.get("status") == "skipped"
-        ]
-        if skipped:
-            logger.error(
-                f"❌ TASK '{task_name}' was SKIPPED and wrote nothing: "
-                f"{skipped[0].get('reason', skipped[0])}"
-            )
-            sys.exit(1)
+        check_results(task_name, (result, result2, result3))
 
         elapsed = (datetime.now() - start_time).total_seconds()
         logger.info(f"Total task time: {elapsed:.1f} seconds")
