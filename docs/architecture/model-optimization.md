@@ -1,19 +1,19 @@
 # Model Optimization Options
 
-> Covers all levers to make the model smaller, faster, and cheaper to train/infer
-> while retaining ≥90% of current accuracy (DA within ~5pp of baseline).
+> Covers the levers that make the model smaller, faster, and cheaper to train/infer.
 > Source of truth: `backend/models/forecaster.py:ItemForecaster` class constants.
 
-> **⚠ The accuracy side of every trade-off below is unverified.** The "≥90% of current accuracy"
-> budget and the per-lever DA deltas were measured either on the served series (effective sample
-> size 2 forecast dates) or on the feature A/B harness (1.15pp noise floor at 3d, up to 7.13pp at
-> 30d). The **timing** measurements are sound; the accuracy costs are mostly inside the noise. See
+> **⚠ The accuracy side of every trade-off below is unverified.** The timing measurements are
+> sound. The accuracy costs are not: they were measured either on the served series (effective
+> sample size 1–2 forecast dates) or on the feature A/B harness, whose noise floor is ~1.15pp at
+> 3d and up to 7.13pp at 30d — wider than most of the per-lever deltas quoted. Run
+> `scripts/compute_mde.py` before treating any sub-1pp figure as real. See
 > `docs/changelog/2026-08-03-accuracy-is-clustered-by-forecast-date.md` and
 > `docs/research/accuracy-opportunities.md`.
 
 ---
 
-## Current Baseline (2026-07-29)
+## Current Baseline (2026-08-05)
 
 | Metric | Value |
 |--------|-------|
@@ -21,217 +21,192 @@
 | **Ensemble size** | `N_ENSEMBLES = 1` (seed 42; feature fraction 0.7). ⚠️ **Was 3** (seeds 42, 73, 91; fractions 0.6, 0.7, 0.8). The 3→1 collapse is **unmeasured** — the walkforward gate never ensembled, so it cannot resolve it. Argued safe for served DA on structural grounds only (the served direction comes from the classifier, which was never ensembled). If accuracy needs recovering, `N_ENSEMBLES = 2` is the first thing to try |
 | **Horizons** | 3d, 7d, 14d, 30d — **all GBDT**. ⚠️ **14d and 30d were DART.** Removing DART was measured as an *improvement* at 14d (+3.14pp paired DA, CI [+1.96, +4.37]) and neutral at 30d, against the spec's expectation that it was the riskiest change |
 | **Quantiles** | **p50 (0.5) only.** ⚠️ **Was p10/p50/p90.** The band now comes from split conformal around the single median model (`models/conformal.py`), not from quantile models: 24 p10/p90 GBMs cost 223.2s of a 381.2s budget for 39–48% empirical coverage against an 80% target. Retained for the record: an earlier version of this row read "p90 GBDT is broken (1-3 rounds, GOSS incompatibility)" — that was backwards. p90 was the healthiest GBDT quantile; **q50** was the collapsed one (7d q50 saved 1–2 trees), because GOSS was applied to q50 only and is degenerate under the quantile objective's constant ±alpha gradients. Fixed 2026-07-29 — see `docs/changelog/2026-07-29-q50-row-sampling.md` |
-| **Boost rounds** | GBDT: 1000 (early stop 50). `DART_NUM_BOOST_ROUND = 500` survives for `scripts/ab_test_*.py` only — no production horizon selects DART any more |
-| **Features** | ~70–120 after correlation pruning (threshold 0.95), 8 groups |
-| **Rows** | `max_feature_rows = 100K` (stratified subsample) |
-| **HP search** | 3d skipped (frozen, 50-trial winner), 7d=10 trials, 14d=15 trials, 30d=15 trials (as of 2026-07-26 — see below) |
-| **Warm retrain** | **176.7s** measured 2026-08-05 (10-core Mac, `SKIP_REGIMES=1 --train-only`, HP cached). ⚠️ **Was 381.2s** on the same machine and flags — see the baseline table below. Booster fitting fell 330.8s → 28.1s, but the out-of-fold conformal CV rose 50.4s → ~148.6s and is now **~84% of training**, so the bottleneck is calibration, not the model |
-| **Cold retrain** | **250.1s** measured 2026-08-05 (same flags, no cached HP; Optuna 39.4s). ⚠️ **Was 12m30s** measured 2026-07-29. The first post-rewrite run is necessarily cold: Task 10's artifact-version check refuses the pre-rewrite `meta.json` |
-| **Inference** | **87s measured locally on a cold cache** (2026-08-04, `VOTED_CACHE=0`, 10-core Mac, 8,691 items / 34,764 forecasts). Phases: 37s fetch (730d window, 5.37M raw → 3.59M voted), 1.4s tail (3.59M → **1.39M rows**), 35s chunked feature engineering, remainder booster scoring. ⚠️ **The old row here — "~1–2 min warm / ~5 min cold" — described the predict phase in isolation and omitted that every non-Monday CI run auto-retrained first.** Drift fired unconditionally against a 60% threshold sitting above the model's 46.7–50.8% DA, adding **465s** to a measured **835s** daily step (CI run `30864690456`). Both the retrain trigger and the 1460-day predict fetch are fixed — see `docs/superpowers/specs/2026-08-04-remove-accidental-retrain-work-design.md`. The CI-side figure is not yet re-measured; the local number is not directly comparable to a 2-core runner. ⚠️ **Not re-measured after the 40→8 collapse either, and it should not be expected to move much:** 72 of those 87s are fetch + feature engineering, so the predict path is data-bound, not model-bound. Scoring 4 boosters instead of 36 shrinks only the remainder |
-| **Production DA** | **3d=48.4%, 7d=49.4%, 14d=50.8%, 30d=46.7%** (`lgbm-v3`, ≥$1 headline tier, re-resolved on prod 2026-08-02). ⚠️ **The old row here — 3d=61.5%, 7d=52.8%, 14d=55.7%, 30d=54.2%, "+35–41pp vs baseline" — was an artifact of the two-estimator bug fixed 2026-08-02, not a pre-q50-fix staleness problem as previously believed.** Chance is ~33% with three labels, so these beat chance but by far less than the old numbers implied. Still cannot be refreshed on demand: `backtest_accuracy.py` scores *stored* forecasts against matured actuals, and maturity is now additionally bounded by archive coverage. For a fresh-model number, run `scripts/walkforward_backtest.py` (~38–46 min at `--max-items 60 --step-days 120`, all horizons). See `docs/changelog/2026-08-01-deterministic-backtest.md`. ⚠️ **These are pre-rewrite figures and the minimal model's effect on them is not yet observable** — this row scores *stored* forecasts, so it cannot move until post-2026-08-05 forecasts mature. The rewrite's measured accuracy evidence is the paired gate comparison in `docs/changelog/2026-08-04-minimal-model-results.md`, which is arm-vs-arm only and **not** comparable to this row |
-| **Classifier CV DA** | **3d=67.3%, 7d=67.8%, 14d=68.1%, 30d=67.9%** (9 folds; 8 for 30d) — measured during the 2026-08-05 post-rewrite retrain. ⚠️ **Was 3d=68.2%, 7d=68.3%, 14d=68.8%, 30d=70.9%** (2026-07-29 retrain). Not a like-for-like comparison: different retrain, different data cutoff, and this is the forecaster's own CV rather than the paired gate. The 30d drop is the largest and is **not** corroborated by the gate, which measured 30d as unchanged (+0.215pp, CI [−0.94, +1.29]). This is the **served** direction signal (classifier, not quantile-sign, since 2026-07-24). A training-time diagnostic, **not** comparable to the Production DA row above |
+| **Boost rounds** | 1000, early stop 50 — unconditionally. ⚠️ **`DART_NUM_BOOST_ROUND = 500` and `BOOSTING_TYPE_MAP` are both deleted** (2026-08-05), along with every `!= "dart"` branch they selected; `BOOSTING_TYPE = "gbdt"` is now a scalar. The map was never mutated by anything, so DART was already unreachable — the only remaining hard-coded user was `scripts/ab_test_hp_search.py`, itself a shelved experiment, deleted with it. `tests/test_minimal_model_shape.py::test_dart_is_gone_from_the_forecaster` guards against re-entry |
+| **Features** | **47 columns** in the shipped 2026-08-05 artifact, identical across all four horizons (`meta.json: horizon_feature_cols`). That is the count *after* correlation pruning at 0.95, `SHELVED_FEATURES`, and `FEATURE_GROUP_ALLOWLIST = ["price_technicals"]`; every other feature group is engineered on every training row and then discarded, and the allowlist logs the drop as `pre -> post`. ⚠️ **An earlier version of this row read "~70–120 features, 8 groups"; that was the engineered count, not the served count, and the doc then contradicted itself further down.** Shelving the 11 volume features (their archive column has been identically 0 since 2026-05) takes the served count to **36** on the next retrain; `MODEL_ARTIFACT_VERSION` was bumped to 3 to force that retrain rather than wait out the 14-day age trigger |
+| **Rows** | `max_feature_rows = 100_000`, overridable with **`TRAIN_FEATURE_ROWS`**. This is an item-coverage budget, not a row budget: it selects **99 whole item histories of ~5,377** (1.8% of the pool). See the dedicated section below |
+| **HP search** | 3d skipped (frozen 50-trial winner, warm-started in `_optuna_search_params`), 7d=10 trials, 14d=15, 30d=15. Cold Optuna across all four horizons measured **39.4s** total and a warm retrain logs 0.0s, so HP search is no longer a meaningful cost centre |
+| **Warm retrain** | **176.7s** measured 2026-08-05 (10-core Mac, `SKIP_REGIMES=1 --train-only`, HP cached). ⚠️ **Was 381.2s** on the same machine and flags. Booster fitting fell 330.8s → 28.1s, but the out-of-fold conformal CV rose 50.4s → ~148.6s and is now **~84% of training**, so the bottleneck is calibration, not the model |
+| **Cold retrain** | **250.1s** measured 2026-08-05 (same flags, no cached HP; Optuna 39.4s). ⚠️ **Was 12m30s** measured 2026-07-29. The first post-rewrite run is necessarily cold: the artifact-version check refuses the pre-rewrite `meta.json` |
+| **Inference** | **87s measured locally on a cold cache** (2026-08-04, `VOTED_CACHE=0`, 10-core Mac, 8,691 items / 34,764 forecasts). Phases: 37s fetch (730d window, 5.37M raw → 3.59M voted), 1.4s tail (3.59M → **1.39M rows**), 35s chunked feature engineering, remainder booster scoring. **72 of those 87s are fetch + feature engineering, so predict is data-bound, not model-bound** — scoring 4 boosters instead of 36 shrinks only the remainder, and this figure was not expected to move on the collapse. Not re-measured on a 2-core CI runner, where the local number does not transfer |
+| **Production DA** | **Not quotable.** `MIN_FORECAST_DATES = 20` (`backtest/scoring.py:38`) and every live cohort spans 1–2 distinct forecast dates, so all four horizons report NO HEADLINE. It also cannot be refreshed on demand: `backtest_accuracy.py` scores *stored* forecasts against matured actuals and maturity is bounded by archive coverage, so no post-rewrite forecast has matured. ⚠️ **Every production DA measured before 2026-08-02 is an artifact** of a scorer whose two legs used different estimators — one 5,512-forecast cohort scored 61.76%, 33.74%, 61.54% and 57.91% on four evaluation dates with no new data. Do not cite those figures and do not read their disappearance as a model regression. See `docs/changelog/2026-08-01-deterministic-backtest.md`. For a fresh-model number, run `scripts/walkforward_backtest.py` |
+| **Classifier CV DA** | **3d=67.3%, 7d=67.8%, 14d=68.1%, 30d=67.9%** (9 folds; 8 for 30d) — measured during the 2026-08-05 post-rewrite retrain. This is the **served** direction signal (classifier, not quantile-sign, since 2026-07-24) but a training-time diagnostic only: interior rows, a 99-item universe, ~83% tier-0, so the all-tiers number reads close to a penny-item score. The ≥$1 cohort is now reported alongside it (2026-08-05). **Not** comparable to a production figure |
 | **Quantile-sign CV DA** | 3d=61.0%, 7d=61.0%, 14d=60.8%, 30d=64.0% (same run; sd 5.2–8.9%). ⚠️ **Understates the shipped model:** the CV block caps fits at `num_boost_round=200`, but production 3d q50 trains to 349–428 rounds — CV scores an under-trained model. Does not affect the classifier row (different code path) |
 | **7d q50 early stopping** | ⚠️ **Noise-determined.** The val curve improves only 0.28% total on the production frame, so `early_stopping(50)` trips on noise: stopping round sd 41 on mean 47 (shipped members 41/11/89). Root-caused 2026-07-29 to a regime mismatch — the 30-day val window has ~2× the return spread of the training set, and only 14.5% of training rows fall in the last 180 days. Tree count is a red herring: 3d looks healthy only because its `learning_rate` is 0.01 vs 7d's 0.068. **Any 7d accuracy A/B is partly measuring this noise.** See `docs/changelog/2026-07-29-7d-q50-early-stop.md` |
 
 ---
 
-## Measured training baseline — 2026-08-04, pre-minimal-model
+## Where the time goes now
 
-One clean local run, 10-core Mac, `SKIP_REGIMES=1`, `--train-only`, from the
-per-phase `[timing]` lines added for this measurement. **Supersedes the
-465s/137s/401s figures in
-`docs/superpowers/specs/2026-08-04-remove-accidental-retrain-work-design.md`,
-which came from different runs and sum to more than their own total.**
+Warm retrain, 176.7s total, from the per-phase `[timing]` lines:
 
-| Horizon | Boosting | q10 | q50 | q90 | classifier | subtotal |
-|---|---|---|---|---|---|---|
-| 3d | gbdt | 5.0s | 7.7s | 7.6s | 2.8s | **23.1s** |
-| 7d | gbdt | 2.2s | 3.0s | 4.8s | 0.6s | **10.6s** |
-| 14d | **dart** | 42.9s | 32.7s | **90.0s** | 8.1s | **173.7s** |
-| 30d | **dart** | 44.7s | 44.3s | 26.0s | 8.4s | **123.4s** |
-
-| Aggregate | Seconds | Share |
+| Phase | Seconds | Share |
 |---|---|---|
-| p10 + p90 (24 models — the ones the minimal model deletes) | 223.2s | 59% |
-| q50 (12 models → 4) | 87.7s | 23% |
-| Directional classifiers (4 — **kept**) | 19.9s | 5% |
-| CV / feature engineering / pruning / saving | 50.4s | 13% |
-| **TOTAL training** | **381.2s** | 100% |
+| Out-of-fold conformal CV (8–9 folds × 4 horizons) | ~148.6s | **~84%** |
+| Booster fitting (4 q50 + 4 classifiers) | 28.1s | 16% |
+| Optuna | 0.0s (cached HP) | — |
 
-**Optuna contributed 0.0s.** All four horizons logged
-`optuna: 0.0s (skipped - cached HP)`, so this is a *warm* retrain. A cold run
-that actually searches hyperparameters costs more, and the spec's 462s estimate
-is plausibly the cold figure. Any comparison must hold this constant.
+A cold run adds 39.4s of Optuna, for 250.1s.
 
-### The dominant cost is DART, not the quantile count
+**This inverts the pre-rewrite picture, and it is what makes most of the old lever tables moot.**
+Before the collapse, two DART horizons were 78% of training and the 24 p10/p90 boosters were 59%;
+both are gone. Every surviving lever that acts on *booster fitting* is now competing for a 28.1s
+budget, which is why the sub-1pp micro-levers below are no longer worth a retrain individually.
+The only phase with real headroom left is fold count.
 
-| | Seconds | Share of all training |
-|---|---|---|
-| **14d + 30d (DART)** | **297.1s** | **78%** |
-| 3d + 7d (gbdt) | 33.7s | 9% |
+The pre-rewrite per-horizon/per-quantile breakdown lives in
+`docs/changelog/2026-08-04-minimal-model-results.md`. It is not reproduced here: the models it
+measures no longer exist.
 
-The minimal-model spec framed the 24 p10/p90 models (59%) as the headline cost.
-The measurement says the *boosting type* is bigger: two DART horizons account for
-78% of training, and **`14d q90` alone costs 90.0s — 24% of all training time for
-one model.** The two effects overlap heavily, since most of the p10/p90 cost sits
-inside the DART horizons.
+---
 
-Consequence for sequencing: `BOOSTING_TYPE_MAP` → all `gbdt` may be the single
-largest lever available, and it is a one-line change. It is also an untested
-accuracy hypothesis — 14d currently has the best production DA of the four
-horizons (50.8%) — so it stays under the same pre-registered bar as everything
-else. See `docs/superpowers/specs/2026-08-04-minimal-model-design.md`.
+## The training row budget
 
-Two incidental corrections to the spec's figures, both minor and in the same
-direction: the stratified subsample selected **141** items (spec says 133) of
-7,872, and the allowlist left **47** served features (spec says 44).
+The knob that was missing from this document entirely, and the largest single decision in it.
+
+`TRAIN_FEATURE_ROWS` (env) → `DEFAULT_TRAIN_FEATURE_ROWS = 100_000`
+(`scripts/forecast_prices.py:45`, parsed at :54, passed to `train(max_feature_rows=...)` at :265).
+An unparseable or non-positive value logs a warning and falls back to the default. Distinct from
+`TRAIN_HORIZON_MAX_ROWS = 700_000` (:50), which caps each horizon's slice *after* feature
+engineering and is not the coverage dial — the two are deliberately not unified, because one number
+would otherwise move coverage and the per-horizon cap at the same time.
+
+`_stratified_item_subsample()` (`forecaster.py:2419`, applied at :2496) spends the budget on
+**whole item histories** — stratified by rarity, full calendar window preserved, so lags and
+rolling features stay valid. It therefore decides how much of the item universe the model ever
+sees:
+
+| `TRAIN_FEATURE_ROWS` | Items selected | Training time | Measured |
+|---|---|---|---|
+| 100,000 (default) | 99 of ~5,377 (**1.8%**) | **104.6s** | 2026-08-05 |
+| 700,000 | 646 (12%) | **468.7s** | 2026-08-05 |
+
+Raising it is a ~4.5× cost increase — more than the pre-rewrite 40-model grid cost — which spends
+the entire minimal-model saving to buy 12% of the pool, and **the fresh-model gate cannot detect
+the resulting accuracy difference**. So there is no measurement that would justify the spend, and
+it was explicitly declined; the rationale is in the code at `forecaster.py:2791-2806`.
+
+Lowering it below 100K is available but no longer buys much in absolute terms: booster fitting is
+only 28.1s, so the saving would arrive mostly through CV refits. Prefer `CV_STEP_DAYS`, which cuts
+the same phase directly without shrinking item coverage further.
 
 ---
 
 ## Optimization Levers
 
-### Tier 1 — Zero quality risk
+### Already applied — do not re-propose
 
-| # | Lever | Change | Speed Gain | Model Reduction | Quality Impact | Implementation |
-|---|-------|--------|-----------|----------------|----------------|----------------|
-| **1** | Drop social features | Remove 5 VADER features from `engineer_features()` | ~2s feature engineering | — | 0pp (not in top 20) | Delete `social_` from `_add_social_features()` or skip call |
-| **2** | Skip regime models permanently | Set `SKIP_REGIMES=1` as default | ~3.5 min train / ~0s infer | −108 models (max) | 0pp (0% regime usage logged) | Change `forecaster.py` env check to default-true or hardcode regime skip |
-| **3** | Reduce ensemble 3→2 | `N_ENSEMBLES = 2`, seeds=[42,73], fractions=[0.6,0.7] | ~33% ensemble training | −12 models (36→24) | ~0.3–0.5pp (ensemble variance shrinks) | Edit class constants |
-| **4** | Reduce `max_bin` 63→31 | `MAX_BIN = 31` | ~10–15% per fit | — | ~0.3–0.5pp (coarser splits) | Edit class constant. Was 255, already halved once |
-| **5** | Drop `_validate_feature_groups` permutation test | Skip permutation pruning entirely | ~2–5% per horizon | — | 0pp (diagnostic only) | Return early in `_train_horizon_ensemble` |
+| Lever | Applied | Effect |
+|---|---|---|
+| Drop p10/p90 quantiles (`QUANTILES = [0.5]`) + conformal band | 2026-08-05 | −24 models, −223.2s. `forecast_low/high` still populated, now from `conformal.band` — no frontend change was needed |
+| Collapse the ensemble 3→2→1 (`N_ENSEMBLES = 1`) | 2026-08-05 | −2/3 of remaining booster fits. Unmeasured on accuracy; `N_ENSEMBLES = 2` is the first restore step |
+| Remove DART (`BOOSTING_TYPE = "gbdt"`) | 2026-08-05 | −297.1s of the pre-rewrite budget; 14d **improved** +3.14pp |
+| Delete residual stacking (Ridge on LightGBM residuals) | 2026-07-25 | Removed an unbounded serving-time extrapolation; `scikit-learn` left `requirements.txt` |
+| Retire the momentum fallback (`MOMENTUM_FALLBACK_HORIZONS = []`) | 2026-07-24 | The classifier beats momentum at every horizon, 30d included |
+| `max_feature_rows` 700K → 100K | Jul 2026 | The 4.5× lever, in the cheap direction. See the row-budget section |
+| `MAX_BIN` 255 → 63 | Jul 2026 | Roughly halves histogram build cost |
+| 7d HP search reduced (`N_TRIALS_MAP[7]` 15 → 10) | 2026-07-26 | Now worth ~0s: HP is cached on warm retrains and 39.4s total when cold. A full skip is available and not worth the edit |
+| `SKIP_HP_HORIZONS = [3]` | Jul 2026 | 3d frozen on its 50-trial winner |
+| Regime training skipped on warm retrains | Jul 2026 | `forecaster.py:3076` — also skipped whenever `SKIP_REGIMES=1`. **CI does not set the env var**, so a *cold* CI retrain would still train regimes; `meta.json` currently carries `trained_regimes: []` |
+| Feature-group permutation validation skipped on warm retrains | Jul 2026 | `forecaster.py:3296`; also auto-skipped when the val window has <2000 rows or <7 distinct dates, where the permutation test is pure noise and caused false-positive pruning that collapsed 14d/30d to ~4 features |
+| Voted frame cache in `fetch_price_history` | 2026-07-29 | **35s** measured, against a ~10 min estimate in a since-deleted planning doc — the estimate was wrong by ~17×. `VOTED_CACHE=0` disables. **Bump `VOTED_CACHE_VERSION` when voting or the DuckDB query changes**, or a stale frame silently trains the next model |
+| Engineered feature cache on the predict path (3-day TTL) | Jul 2026 | Removes feature engineering from most predict runs |
+| Predict tail truncation (`PREDICT_TAIL_ITEM_DAYS = 240`) | 2026-08-04 | 3.59M → 1.39M rows in 1.4s |
+| Drift-triggered retrain removed (report-only) | 2026-08-04 | −465s of an 835s daily step. `ALLOW_DRIFT_RETRAIN=1` restores it |
+| Row sampling: `bagging` for all quantiles | 2026-07-29 | GOSS reverted after A/B showed +5.21% (3d) / +1.76% (7d) pinball and +1.13pp / +0.71pp DA for bagging |
+| Dead-item filter, ±500% target winsorization, corrupt-item flagging | 2026-07-17 | Removed ~41% of training rows that carried no signal |
 
-**Combined Tier 1:** Models 36→24, warm retrain ~2–3 min, cold ~8–10 min, inference ~45–60s. Quality: −0.6–1.0pp DA (well within 90% retention).
+### Still available
+
+| # | Lever | Change | Speed gain | Quality risk |
+|---|-------|--------|-----------|--------------|
+| **1** | **Widen the CV stride** | `CV_STEP_DAYS` 150 → higher. Env-overridable, no code edit (`forecaster.py:316`) | **The only large lever left.** Cuts folds ~linearly against a ~148.6s phase | **Real and structural, not statistical.** Folds are the conformal calibration set *and* the confidence-threshold fit set, so fewer folds means fewer OOF points, a noisier `q_hat`, and a looser coverage guarantee. Directional accuracy is also clustered by date, so folds are the effective sample size of every CV number in this doc. Verify empirical coverage against `NOMINAL_COVERAGE = 0.80` before and after |
+| **2** | Stop computing discarded features | Skip the temporal / event / cross-sectional / rarity / supply / social / volume blocks in `engineer_features()` when the allowlist would drop them anyway | Part of the 35s feature-engineering phase, on both train and predict | 0pp — they never reach a model. The cost is that the `ab_test_*` scripts build their feature lists from the frame and would need their own path |
+| **3** | `MAX_BIN` 63 → 31 | Edit the class constant | ~10–15% of 28.1s | ~0.3–0.5pp claimed (coarser splits) — below the harness's noise floor, so unmeasurable |
+| **4** | `num_leaves` 47 → 31 | Edit the fallback; needs `FORCE_HP_SEARCH=1` to escape cached HP | ~15–20% of 28.1s | ~0.3–0.5pp claimed; likewise unmeasurable |
+| **5** | Aggressive correlation pruning | `PRUNE_CORRELATION_THRESHOLD` 0.95 → 0.85 | Fewer of 47 (soon 36) features per fit | Loses signal-bearing correlated features. Untested |
+| **6** | Increase regularization | `lambda_l2 = 2.0`, `min_data_in_leaf = 30` | ~5% per fit | Untested |
+| **7** | Drop the 14d horizon | `HORIZONS = [3, 7, 30]` | ~25% of train + inference; −2 models | **Unjustifiable in either direction right now.** The old rationale ("loses a 55.7% DA horizon") came from the superseded scorer and there is no quotable production DA to replace it with. 14d also has the best classifier CV DA of the four and gained the most from removing DART (+3.14pp), so it is the worst horizon to cut, not the safest. Do not pull this without a measurement |
+| **8** | LightGBM → ONNX for inference | Convert the boosters | 0 on training, and applies only to the ~15s of booster scoring — not the 72s of fetch + feature engineering | ~0pp if the conversion is exact. Low ceiling: fix the data path first |
+| **9** | Lower `TRAIN_FEATURE_ROWS` below 100K | Env var | Mostly through CV refits | Cuts item coverage below 1.8%. Prefer lever 1 |
+
+### 🛑 Do not
+
+| Lever | Why |
+|---|---|
+| **Parallel ensemble or horizon training** | Removed deliberately. Both the horizon `spawn` Pool and the ensemble `ThreadPoolExecutor` were deleted on 2026-07-21 (−209 lines) because they deadlocked under OpenMP and the surrounding timeouts were masking it. `AGENTS.md` documents training as fully sequential; LightGBM's OpenMP threads supply the CPU parallelism. Re-adding this reintroduces a fixed bug. See `docs/changelog/2026-07-21-remove-training-parallelism.md` |
+| **`SKIP_CV=1` in CI** | `q_hat` is derived from CV out-of-fold predictions. Skipping CV routes calibration to a single holdout that is *also* the early-stopping and Optuna scoring set, so the band under-covers. It was removed from `price-forecast.yml` and is pinned by `test_ci_workflow_does_not_skip_cv`; the rationale is repeated at `forecaster.py:3141-3160`. It survives as a local/dispatch speedup only |
+| **CatBoost** | Tested Jul 2026, degraded accuracy 18–20pp. No longer a dependency |
+| **Neural forecasters** (N-BEATS / PatchTST / TFT) | Slower, GPU-dependent, unknown on this data — and not worth attempting while the gate cannot resolve 1pp |
+| **Cap GBDT rounds at 500** | Moot. The lever existed because q10 was still improving at ~774 rounds; q10 no longer exists, and the surviving q50 models stop well under 500 |
+| **Drop the 5 social features as a speed lever** | Moot as stated. The allowlist already discards them and the collector's workflow is deleted, so they are identically zero. Only the feature-engineering cost remains, which is lever 2 |
 
 ---
 
-### Tier 2 — Low quality risk
+## Recommended order
 
-| # | Lever | Change | Speed Gain | Model Reduction | Quality Impact | Implementation |
-|---|-------|--------|-----------|----------------|----------------|----------------|
-| **6** | Reduce `max_feature_rows` 100K→50K | Half training rows | ~2–3 min per train | — | ~0.3–0.7pp (fewer items sampled) | Change default parameter |
-| **7** | Reduce `num_leaves` 47→31 | Simpler trees | ~15–20% per fit | — | ~0.3–0.5pp | Edit class constant (was 31 in old docs) |
-| **8** | Skip 7d HP search | Add 7 to `SKIP_HP_HORIZONS` | ~2 min (15 saved trials) | — | ~0.1–0.3pp (uses fallback params) | `SKIP_HP_HORIZONS = [3, 7, 14, 30]` |
-| **9** | Reduce Optuna trials 15→10 for 14d/30d | `N_TRIALS_MAP[14]=10, [30]=10` | ~1 min | — | ~0.1pp | Edit N_TRIALS_MAP |
-| **10** | ~~Parallel ensemble training~~ | 🛑 **DO NOT** — removed deliberately | — | — | — | Both the horizon `spawn` Pool and the ensemble `ThreadPoolExecutor` were deleted on 2026-07-21 (−209 lines) because they deadlocked under OpenMP and the timeouts were masking it. AGENTS.md now documents training as fully sequential. See `docs/changelog/2026-07-21-remove-training-parallelism.md`. Re-adding this reintroduces a fixed bug |
-| **11** | Drop horizon-excluded features at source | Skip computing cross-sectional/event features for 14d/30d | ~5–10s feature engineering | — | 0pp (already excluded from model) | Conditional in `engineer_features()` |
-
----
-
-### Tier 3 — Measurable quality risk
-
-| # | Lever | Change | Speed Gain | Model Reduction | Quality Impact |
-|---|-------|--------|-----------|----------------|----------------|
-| **12** | Drop 14d horizon | `HORIZONS = [3, 7, 30]` | ~25% training + inference | −9 models (36→27) | Loses 55.7% DA horizon (+38pp baseline). Consider keeping DART-only if used for trend confirmation |
-| **13** | Cap GBDT rounds at 500 | `num_boost_round = 500` for GBDT | ~20s (only q10 affected) | — | Medium — q10 still improving at 774 median. Truncates lower interval |
-| **14** | Single model per (horizon, q) | `N_ENSEMBLES = 1` | ~66% ensemble training | −24 models (36→12) | ~0.5–1.0pp (no averaging stabilization) |
-| **15** | Aggressive correlation pruning | `PRUNE_CORRELATION_THRESHOLD = 0.85` | ~5–10% per fit | Fewer features | ~0.3–0.5pp (loses some signal-bearing correlated features) |
-| **16** | Increase regularization | `lambda_l2 = 2.0`, `min_data_in_leaf = 30` | ~5% per fit | Smaller trees | ~0.3–0.5pp |
-
----
-
-### Tier 4 — Major architectural changes
-
-| # | Lever | Change | Speed Gain | Model Reduction | Quality Impact |
-|---|-------|--------|-----------|----------------|----------------|
-| **17** | Drop p10/p90 quantiles | `QUANTILES = [0.5]` only | ~66% training + inference | −24 models (36→12) | Loses prediction intervals. Frontend uses `forecast_low/forecast_high` — needs UI change. **Correction (2026-07-29):** this cell previously read "p90 GBDT already broken (1-3 rounds)" — same error as the Quantiles row above, and false. Post-retrain p90 trains healthily (3d 330/305/281, 7d 270/188/85) and so does p10 (3d 226/176/174, 7d 286/237/206). Interval coverage on GBDT is genuinely poor (39–48% raw vs 80% nominal), but that is a calibration problem, not a collapsed model — and conformal q̂ already corrects it at serve time |
-| **18** | LightGBM → ONNX conversion | Convert to ONNX for inference | 0 train impact, ~2–5× faster inference | Smaller on-disk | ~0pp (if conversion is precise) |
-| **19** | Replace with CatBoost | CatBoost (tested Jul 2026, degraded 18-20pp) | — | — | **Already tested and rejected** |
-| **20** | Replace with neural forecast | N-BEATS / PatchTST / TFT | Slower training | — | Unknown, requires GPU |
-
----
-
-## Recommended Implementation Order
-
-### Quick win (1 session, ~20 min of code changes):
-
-1. **Drop social features** — delete `social_` column generation
-2. **Skip regime models permanently** — flip default in code
-3. **Reduce ensemble 3→2** — edit `N_ENSEMBLES`, `ENSEMBLE_SEEDS`, `ENSEMBLE_FEATURE_FRACTIONS`
-4. **Reduce `max_bin` 63→31** — edit `MAX_BIN`
-5. **Add 7 to `SKIP_HP_HORIZONS`** — edit class constant
-6. **Skip feature validation on all retrains** — remove permutation test
-
-**Result:** 36→24 global models, no regimes saved/loaded, ~2 min warm retrain, ~30s inference.
-
-### If intervals are expendable (2 sessions):
-
-7. **Drop p10/p90** — `QUANTILES = [0.5]`. 24→12 models. Update frontend to remove interval display. Current intervals are already partially broken.
-
-### If you want maximum speed (separate session):
-
-8. **Drop 14d horizon** — 12→9 models
-9. **Reduce `max_feature_rows` 100K→50K** — ~2× faster per fit
-10. **Parallel ensemble training (2-wide)** — ~5 min saved on cold retrain
+1. **Lever 2 (stop computing discarded features).** Zero accuracy risk, helps both train and
+   predict, and it makes the allowlist's effect legible in the code rather than implicit.
+2. **Lever 1 (CV stride), with a coverage check.** Retrain and compare empirical band coverage
+   against the 80% nominal before and after. This is the only lever with real headroom and the only
+   one whose risk is structural rather than statistical.
+3. **Levers 3/4/5/6** buy seconds against a 28.1s budget for accuracy costs nothing can measure.
+   Bundle them into one retrain or skip them; individually they are not worth the run.
+4. **Nothing on the predict path until the fetch is addressed.** 72 of 87s is fetch + feature
+   engineering; lever 8 optimizes the remainder.
 
 ---
 
 ## Verification Protocol
 
-After applying any change, verify:
+After applying any change:
 
 ```bash
 cd backend
-pytest tests/test_forecaster.py -x -q                    # unit tests pass (114 as of 2026-07-29)
-SKIP_REGIMES=1 FORCE_HP_SEARCH=1 python scripts/forecast_prices.py --train-only   # retrain succeeds
-python scripts/walkforward_backtest.py                    # fresh-model DA (~60-90 min)
+venv/bin/python -m pytest tests/test_forecaster.py tests/test_minimal_model_shape.py -x -q
+SKIP_REGIMES=1 FORCE_HP_SEARCH=1 venv/bin/python scripts/forecast_prices.py --train-only
+venv/bin/python scripts/walkforward_backtest.py       # fresh-model DA gate
 ```
 
-**Do not use `SKIP_CV=1` when the quantile models change.** Conformal q̂ is
-derived from CV out-of-fold predictions (the CQR block that populates
-`ItemForecaster.conformal_calibration`), so skipping CV leaves a stale q̂
-calibrated against differently-shaped quantiles.
+Run the whole suite as **`pytest tests`**, never bare `pytest` — `scripts/test_social_signal.py`
+imports `thefuzz`, which is not in `requirements.txt`, and collection aborts with
+"714 tests collected, 1 error … Interrupted".
 
-**`--predict-only` no longer retrains** (fixed 2026-08-04). It used to
-drift-check every horizon and auto-retrain via
-`forecaster.train(max_rows=700_000)` — with no `SKIP_REGIMES` — whenever a
-horizon fell below the 60% threshold. Because that threshold sits above the
-model's measured DA, this fired on **every** run: 465s of an 835s daily step,
-and the served forecasts came from a throwaway warm retrain rather than the
-scheduled Monday model. Drift is now reported only, and `check_concept_drift`
-additionally ignores accuracy rows that lack forecast-date coverage. Set
-`ALLOW_DRIFT_RETRAIN=1`, or dispatch with `mode=full`, to retrain.
+**Do not use `SKIP_CV=1` when anything touching the median model or the band changes.** Conformal
+`q̂` and the confidence thresholds are both fitted on the CV out-of-fold predictions that populate
+`ItemForecaster.conformal_calibration`, so skipping CV leaves a stale calibration behind a changed
+model.
+
+**`--predict-only` no longer retrains** (fixed 2026-08-04). It used to drift-check every horizon
+and auto-retrain via `forecaster.train(max_rows=700_000)` — with no `SKIP_REGIMES` — whenever a
+horizon fell below a 60% DA threshold. Because that threshold sits above anything the model has
+ever measured, it fired on **every** run: 465s of an 835s daily step, with the served forecasts
+coming from a throwaway warm retrain rather than the scheduled model. Drift is now reported only,
+and `check_concept_drift` additionally ignores accuracy rows that lack forecast-date coverage. Set
+`ALLOW_DRIFT_RETRAIN=1`, or dispatch with `mode=full`, to retrain — noting that `mode=full` still
+only trains if the artifact is ≥14 days old or `FORCE_RETRAIN=1`.
 
 **Which accuracy script to use:**
 
 | Script | Measures | Reflects a fresh model? |
 |---|---|---|
-| `walkforward_backtest.py` | Retrospective walk-forward folds using current tuned params | **Yes** — the fresh-model gate |
-| `backtest_accuracy.py` | Stored forecasts vs matured actuals | **No** — needs 3–30 days for forecasts to mature. This is what CI runs |
+| `scripts/walkforward_backtest.py` | Retrospective walk-forward folds using current tuned params | **Yes** — the fresh-model gate. But it bypasses `fetch_price_history`, so it scores a plain-mean price consensus over a different item universe than production trains on |
+| `scripts/backtest_accuracy.py` | Stored forecasts vs matured actuals | **No** — 3–30 days for maturity, further bounded by archive coverage. This is what CI runs |
+| `scripts/compute_mde.py` | Minimum detectable effect for a proposed A/B | Run this **first** |
 
-| Horizon | Baseline DA (pre-q50-fix) | 90% Retention Floor |
-|---------|--------------------------|---------------------|
-| 3d      | 61.5%                    | ≥55.4%              |
-| 7d      | 52.8%                    | ≥47.5%              |
-| 14d     | 55.7%                    | ≥50.1%              |
-| 30d     | 54.2%                    | ≥48.8%              |
+### There are no retention floors
 
-> ⚠️ **These retention floors are derived from the pre-2026-08-02 production DA,
-> which the deterministic-backtest fix showed to be inflated** (the two legs of
-> the realised return were different estimators). The reproducible figures are
-> 3d=48.4% / 7d=49.4% / 14d=50.8% / 30d=46.7%, which are *below* every floor in
-> this table — so a naive reading says all four horizons already fail their gate.
-> They do not: the floors and the measurements come from different scorers and are
-> not comparable. Recompute the floors from a post-fix baseline before using them
-> to accept or reject an optimization. Note also that row 12 above justifies
-> keeping the 14d horizon on a "55.7% DA" that is likewise superseded (now 50.8%
-> at ≥$1). See `docs/changelog/2026-08-01-deterministic-backtest.md`.
+This section used to carry a "retain ≥90% of current accuracy" gate with per-horizon floors
+(3d ≥55.4%, 7d ≥47.5%, 14d ≥50.1%, 30d ≥48.8%). Those floors were derived from pre-2026-08-02
+production DA, which the deterministic-backtest fix showed to be an artifact of a scorer whose two
+legs used different estimators — so a naive reading had all four horizons failing a gate they were
+never actually measured against.
 
----
+There is nothing to replace them with. `MIN_FORECAST_DATES = 20` means no production DA is
+publishable yet, and CV DA, walkforward DA and production DA each score a different item universe
+and a different price consensus, so none can stand in for another.
 
-## Previous Optimizations Already Applied
-
-These are NOT new levers — they're already in production:
-
-| Optimization | Value | Previously |
-|-------------|-------|------------|
-| `N_ENSEMBLES` | 3 | Was 6 (was 9) |
-| `MAX_BIN` | 63 | Was 255 |
-| `max_feature_rows` | 100K | Was 700K (was 400K) |
-| `SKIP_HP_HORIZONS` | [3] | Was [3, 14, 30] (2026-07-26: re-enabled 15-trial Optuna search for 14d/30d DART; measured retrain 16m16s with `SKIP_REGIMES=1 FORCE_HP_SEARCH=1` — improved conformal calibration, see `docs/retrain-optimization-analysis.md`) |
-| `N_TRIALS_MAP[3]` | 50→20 (then 50) | Iterated |
-| Feature cache (predict path) | 3-day TTL | Was none |
-| Voted frame cache (`fetch_price_history`) | On by default (2026-07-29); `VOTED_CACHE=0` disables | Was none. Saves **35s** measured, against a ~10 min estimate in the since-deleted Tier-1 planning doc — the estimate was wrong by ~17x. **Bump `VOTED_CACHE_VERSION` when voting or the DuckDB query changes**, or a stale frame will silently train the next model |
-| Row sampling | **bagging for all quantiles** (2026-07-29) | Was q50=GOSS, q10/q90=bagging — GOSS reverted after A/B showed +5.21% (3d) / +1.76% (7d) pinball and +1.13pp / +0.71pp DA for bagging |
-| 2026 data exclusion | Active | Was all data |
-| Dead item filter | <$0.05, <5% range | Was none |
-| Target winsorization | ±500% clip | Was none |
+Until a post-rewrite cohort matures past 20 forecast dates, judge an optimization on a
+**pre-registered paired comparison between two arms of the same harness**, with the MDE computed in
+advance — the method used for the minimal-model rewrite
+(`docs/changelog/2026-08-04-minimal-model-results.md`). Do not accept or reject a change against a
+floor derived from a different scorer.

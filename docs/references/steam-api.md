@@ -2,6 +2,12 @@
 
 Findings from testing — do not re-test, use this as reference.
 
+> **The rate-limit envelope below applies to residential IPs only.**
+>
+> **Hosted GitHub Actions runners are 429'd on the very first request.** There is no interval, burst pattern, or backoff that makes this work from CI — the runner IP ranges are blocked outright. This is why `supply-scraper.yml` was deleted (commit 0288568) and why `supply_snapshots` is frozen at 35,037 rows.
+>
+> So: "safe interval 3 seconds", "full catalog in ~2.85 hours", "5s delay is safe" are all measurements from a residential connection. Any plan that schedules Steam scraping in GitHub Actions is dead on arrival; it needs a residential/proxied egress or a local run.
+
 ---
 
 ## Endpoints
@@ -14,6 +20,8 @@ Findings from testing — do not re-test, use this as reference.
 
 **Auth:** None required (public endpoint).
 
+**Consumers:** the catalog builder (`scripts/build_market_catalog.py`, `scripts/repair_catalog_gaps.py`) and `collectors/supply_scraper.py`. There is **no working discovery entry point** — `scripts/discover_steam_items.py:20` does `from collectors.real_data_collector import get_collector` and no `real_data_collector.py` exists, so `discover-new-items.yml` dies with an ImportError before any Steam call. Item onboarding via this endpoint is currently unreachable.
+
 **Parameters:**
 
 | Param | Value | Notes |
@@ -21,7 +29,7 @@ Findings from testing — do not re-test, use this as reference.
 | `appid` | `730` | CS2 app ID |
 | `norender` | `1` | Returns raw JSON |
 | `start` | `0, 10, 20, ...` | Offset (page number × 10) |
-| `count` | `100` | **Ignored — always returns 10 items** |
+| `count` | `100` | **Ignored — always returns 10 items.** `collectors/supply_scraper.py:48,158,173` still sends `count=100` while advancing `start` by 10 — a 10× over-fetch, still open. |
 | `category_730_Type[]` | `tag_CSGO_Tool_Sticker` | Only works for Stickers (returns 15,349). All other categories return 0. |
 | `q` | search string | **Does not filter** — always returns all 34,263 items |
 
@@ -143,6 +151,8 @@ Each record: `[date_str, price_float, volume_string]`
 
 ## Rate Limits
 
+**All figures in this section were measured from a residential IP.** From a hosted GitHub runner the first request already returns 429 — see the note at the top of this file.
+
 ### search/render
 
 | Metric | Value |
@@ -169,7 +179,7 @@ Each record: `[date_str, price_float, volume_string]`
 
 - 429 = temporary rate limit (30s recovery)
 - Sustained 429s = IP ban (hours, renewing if you keep hitting)
-- Datacenter IPs banned faster than residential
+- **Datacenter IPs are not "banned faster" — they are pre-banned.** Hosted CI runners 429 on request #1 with no prior traffic.
 - Session cookie expiry = all requests return empty (hard to distinguish from items with no history)
 
 ---
@@ -191,16 +201,8 @@ Each record: `[date_str, price_float, volume_string]`
 
 ---
 
-## Production DB vs Market
+## Catalog Coverage
 
-| | Production DB | Steam Market | Coverage |
-|---|---|---|---|
-| Skins | 24,737 | ~18,900 | ~100% (includes StatTrak/Souvenir) |
-| Cases | 85 | ~85 | ~100% |
-| Stickers | 5,712 | 15,349 | ~37% |
-| Agents | 0 | ~100 | 0% |
-| Music Kits | 0 | ~50 | 0% |
-| Collectibles | 0 | ~50 | 0% |
-| **Total** | **24,822** | **34,263** | **~72%** |
+The item catalog is **`backend/runtime/market_catalog.db`** — 18 MB, **31,908 `market_items`**, ~93% of the ~34,263 items on the market. See `catalog-build.md` for the per-category breakdown and how it was built.
 
-Missing: ~9,440 items (mostly stickers, agents, music kits, collectibles, charms).
+The catalog is maintained by the backfill/catalog-build scripts, **not** by Steam discovery: `discover-new-items.yml` is broken at import (see above), so nothing currently adds items from `search/render/` on a schedule. Any older "Production DB vs Market" table (24,822 items / 5,712 stickers / ~72% coverage) is stale — that was the pre-catalog Supabase item list.

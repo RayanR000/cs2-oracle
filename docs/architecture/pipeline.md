@@ -1,96 +1,151 @@
 # Data Collection Pipelines
 
-Four independent pipelines feed the Parquet archive + Supabase:
+One collector feeds the archive. Everything else is chained off it or runs on its own
+cron. Five workflows exist in `.github/workflows/`:
 
-| Pipeline | Frequency | Source | Data Written | Workflow |
-|----------|-----------|--------|-------------|----------|
-| CSGoTrader Mult-Market | 23:00 UTC daily | `prices.csgotrader.app/latest/` (7 markets) | `prices-YYYY.parquet`, `snapshots-YYYY.parquet`, `collection_runs` | `aggregator-update.yml` |
-| Supply Scraper | 22:00 UTC daily | Steam Community Market (pagination) | `supply_snapshots` (sell_listings) | `supply-scraper.yml` |
-| Social Sentiment | 05/11/17/23 UTC (6-hourly) | old.reddit.com (3 CS2 subreddits) | `social_mentions` | `reddit-sentiment.yml` |
-| HF Dataset Merge | One-time | HuggingFace CS2 hourly dataset (69.2M rows) | `prices-2026.parquet`, `snapshots-2026.parquet` | Manual |
+| Workflow | Trigger | What it does | Writes |
+|----------|---------|--------------|--------|
+| `aggregator-update.yml` | cron `0 23 * * *` | Fetch 7 CSGOTrader price endpoints + exchange rates | `prices-YYYY-MM.parquet`, `snapshots-YYYY-MM.parquet`, `exchange-rates-YYYY.parquet`, `collection_runs` |
+| `price-forecast.yml` | `workflow_run` on *Aggregator Market Update* | Predict, and retrain when the model is ≥14 days old | `ops/item_forecasts.parquet` |
+| `backtest-accuracy.yml` | `workflow_run` on *Price Forecast*, plus cron `0 8 * * 1-6` | Resolve matured forecasts, score them | `ops/forecast_outcomes.parquet`, `ops/prediction_accuracy.parquet`, `ops/accuracy_alerts.parquet` |
+| `event-correlation-analysis.yml` | cron `0 4 * * 0` | Rebuild event/item impact correlations | `ops/events.parquet`, `ops/event_impacts_denorm.parquet` |
+| `discover-new-items.yml` | `workflow_dispatch` only | Steam item discovery — **broken at import**, see below | nothing |
+
+All four archive-writing workflows check out `RayanR000/cs2-oracle-data` and force-push it
+back as a squashed orphan commit. **`CS2_DATA_REPO_TOKEN` is a required secret** for all
+four (`aggregator-update.yml:91`, `price-forecast.yml:63`, `backtest-accuracy.yml:56`,
+`event-correlation-analysis.yml:54`); without it the checkout fails before any work runs.
 
 ---
 
 ## CSGoTrader Multi-Market Aggregator
 
 ### Data Sources (from `prices.csgotrader.app/latest/`)
-| Endpoint   | Source Label (DB/Parquet)    | Fields Used                              |
-|------------|------------------------------|------------------------------------------|
-| steam.json | `aggregator_sync`            | `last_24h`, `last_7d`, `last_30d`, `last_90d` |
-| skinport.json | `aggregator_skinport`     | `starting_at`                            |
-| buff163.json  | `aggregator_buff163`      | `starting_at.price`                      |
-| buff163.json  | `aggregator_buff163_buy`  | `highest_order.price`                    |
-| csfloat.json  | `aggregator_csfloat`      | `price`                                  |
-| csmoney.json  | `aggregator_csmoney`      | `price`                                  |
-| csgotrader.json | `aggregator_csgotrader` | `price`                                  |
-| youpin.json    | `aggregator_youpin`      | `price`                                  |
+
+`csgotrader_aggregator.py:141-149` fetches 7 price endpoints; `fetch_exchange_rates()`
+(:370) fetches an 8th, `exchange_rates.json`. The 7 endpoints fan out to **11 distinct
+source labels** per day (`pipeline.py:131-143`), because `steam.json` carries four price
+windows and `buff163.json` carries both a sell and a buy side.
+
+| Endpoint | Source label(s) written | Field(s) used |
+|----------|-------------------------|---------------|
+| steam.json | `aggregator_sync`, `aggregator_steam_7d`, `aggregator_steam_30d`, `aggregator_steam_90d` | `last_24h` (with 7d/30d/90d fallback), `last_7d`, `last_30d`, `last_90d` |
+| skinport.json | `aggregator_skinport` | `starting_at` |
+| buff163.json | `aggregator_buff163`, `aggregator_buff163_buy` | `starting_at.price`, `highest_order.price` |
+| csfloat.json | `aggregator_csfloat` | `price` |
+| csmoney.json | `aggregator_csmoney` | `price` |
+| csgotrader.json | `aggregator_csgotrader` | `price` |
+| youpin.json | `aggregator_youpin` | `price` |
+| exchange_rates.json | — (own Parquet file) | currency → rate |
+
+The `aggregator_sync` fallback chain is why that label never goes missing when Steam has
+no 24-hour print. Skinport reads `starting_at`, not `last_24h` — the earlier field choice
+was a bug.
 
 ### Files
-- **`collectors/csgotrader_aggregator.py`** — Fetches all 4 endpoints in one session; returns `Dict[str, SourceData]` per item with `{source: (price, volume, timestamp)}`. Logs failed endpoint counts, match rates, and warns on low match rate.
-- **`collectors/pipeline.py`** — Maps sources to DB labels; writes all sources to snapshot CSV for Parquet archive (no prices written to Supabase — only `CollectionRun` records). Logs `"ZERO items collected"` error when nothing is returned.
-- **`scripts/append_to_parquet.py`** — Accepts `--snapshot-csv` for all-source flat data and `--backfilled-csv` (legacy). Writes `prices-YYYY.parquet` (OHLCV) and `snapshots-YYYY.parquet` (all sources). Warns on missing/empty CSV files.
-- **`scripts/run_task.py`** — Exits with code 1 when `items_collected == 0`, triggering GitHub failure notification.
-- **`.github/workflows/aggregator-update.yml`** — Daily 23:00 UTC schedule.
+- **`collectors/csgotrader_aggregator.py`** — one session for all endpoints; returns
+  `{source: {item_name: raw_dict}}`. Logs per-endpoint failures and escalates to
+  `CRITICAL` when all 7 fail.
+- **`collectors/pipeline.py`** — maps sources to labels (:131-143), writes every
+  item-source pair to the snapshot CSV (:273-352). Historical fallback rows are relabelled
+  `historical_fallback:<source>` (:39-43) and stale items are tracked (:183-238), so
+  carried-forward prices are distinguishable downstream. Validation is a bare `price > 0`
+  check (:160) — `collectors/data_validation.py` is imported by nothing but its own test.
+- **`collectors/snapshot_date.py`** — resolves the snapshot day **once**, in the workflow
+  (`aggregator-update.yml:63-68`), and pins it into `AGGREGATOR_SNAPSHOT_DATE` for every
+  later step. Before this, a run straddling midnight read the clock twice and silently
+  dropped whole days from the archive.
+- **`scripts/append_to_parquet.py`** — collapses the snapshot CSV to daily OHLCV and
+  appends. Partitions prices and snapshots **by month** (:5-9) to stay under GitHub's
+  100 MB per-file limit; exchange rates stay yearly.
+- **`scripts/run_task.py`** — exits 1 when `items_collected == 0`, which files a labelled
+  failure issue.
 
 ### Storage Strategy
-- **Supabase**: Only `CollectionRun` tracking records — all price data is CSV → Parquet only. (Prices in Supabase are stale.)
-- **Parquet** (`archive/price-archive/`):
-  - `prices-{YYYY}.parquet` — Steam daily OHLCV (from `aggregator_sync` rows)
-  - `snapshots-{YYYY}.parquet` — Flat rows of all sources (`item_slug`, `day`, `source`, `price`, `volume`)
+- **Parquet is the record.** `price-archive/` (a gitignored local symlink to a checkout of
+  `cs2-oracle-data`) holds all price data plus an `ops/` layer of operational tables.
+- **Supabase** gets only a `CollectionRun` row per run. Prices in `price_history` are
+  stale and not written by this pipeline.
+
+See `docs/architecture/data.md` for the full archive layout.
 
 ### Coverage Per Run
-- ~18K `aggregator_sync` rows + ~30K multi-market rows = ~48K total/day (~1.2 MB/day)
+- **~362,586 OHLCV rows/day** measured 2026-08-01, spread across the 11 source labels at
+  roughly 29–34K rows each. `prices-2026-07.parquet` alone is 56 MB.
 
 ---
 
-## Supply Scraper
+## Price Forecast
 
-### What it does
-Paginates the Steam Community Market (34K-item catalog) to collect sell_listings (supply) counts for each item. Uses burst rate limiting: 20 rapid requests → 30s pause. Full run takes ~115 min.
+Chains off the aggregator (`workflow_run`, `price-forecast.yml:6-11`) and skips itself if
+the upstream run did not succeed (:32). `timeout-minutes: 180` is the only hang protection
+in the system — there are no code-level timeouts.
 
-### Files
-- **`collectors/supply_scraper.py`** — Pagination logic, rate limiting, HTML parsing.
-- **`scripts/run_supply_scraper.py`** — Standalone entry point.
-- **`.github/workflows/supply-scraper.yml`** — Daily 22:00 UTC, 120-min timeout.
+Mode is decided by "Determine run mode" (:70-86): Monday sets `mode=full`, but `full`
+**only retrains if the model is ≥14 days old** or `FORCE_RETRAIN=1`
+(`forecast_prices.py:210,227`). Drift is report-only unless `ALLOW_DRIFT_RETRAIN=1`
+(:243-261). Monday is not a guaranteed retrain.
 
-### Storage
-- `supply_snapshots` table in Supabase — daily sell_listings per item (~11K rows/day).
-- Supply depth features (`supply_listings_log`, `supply_zscore_30d`, `supply_change_7d`, `supply_to_volume_ratio`) feed the forecaster.
+Two load-bearing steps beyond the obvious: "Publish updated archive" (:158-167) runs
+*before* "Verify forecasts were persisted" (:174-180,
+`scripts/check_forecast_freshness.py`), so the freshness check reads what actually landed
+in the archive rather than passing on an unpublished local write.
 
----
-
-## Social Sentiment Collector
-
-### What it does
-Scrapes Reddit for CS2 skin mentions every 6 hours. Monitors 3 subreddits (`GlobalOffensiveTrade`, `csgomarketforum`, `CSGOSkinInvesting`) via old.reddit.com HTML (Reddit's JSON API was killed in May 2026). Regex-matches skin names from ~2000 item names, scores each mention using VADER sentiment.
-
-### Files
-- **`collectors/social_sentiment.py`** — Reddit scraper + VADER scoring.
-- **`db/parquet.py`** — Dual-write to Parquet ops archive + Supabase.
-- **`.github/workflows/reddit-sentiment.yml`** — 6-hourly at 05/11/17/23 UTC, 10-min timeout.
-
-### Known Limitation
-VADER is a 2014 general-purpose lexicon — CS2 market jargon ("BFK CW MW low float") scores as neutral. After 3 days of production data, none of the 5 social features rank in top 20 by gain importance. Recommendation: replace with ModernFinBERT (ONNX INT8).
-
-### Features Written
-`social_mentions_1d`, `social_mentions_7d`, `social_mention_velocity`, `social_sentiment_7d`, `social_score_7d` — dual-written to `social_mentions` (Supabase) and `ops/social_mentions.parquet`.
+`SKIP_CV=1` is deliberately absent from CI (:119-124). It is a local/dispatch speedup only.
 
 ---
 
-## HF Dataset Merge (One-Time)
+## Backtest Accuracy
 
-### What it did
-Merged the Hugging Face "CS2 Market Data" dataset (CC BY 4.0, 69.2M hourly rows, 32K items, Mar 22 – Apr 15 2026 from BUFF/CSFloat/YouPin) into the Parquet archive. Filled the 17-day gap (Mar 30–Apr 15) and expanded coverage of 8 overlap days (Mar 22–29) by ~32K items.
+Chains off the forecast run and also carries its own cron (`0 8 * * 1-6`) so a failed
+forecast day does not skip scoring. Resolves both the base and actual legs through
+`backtest/price_resolution.py::resolve_anchors`; maturity is bounded by archive coverage
+(`min(today, archive_max_day())`), not by the calendar. An unresolvable rate above
+`MAX_UNRESOLVABLE_PCT = 10.0` (`backtest/resolution_gate.py:87`) reports nothing rather
+than a biased number.
 
-### Files
-- **`scripts/merge_hf_dataset.py`** — Downloads, deduplicates, merges HF data into Parquet.
+Failures auto-file a labelled GitHub issue (:109-123).
 
-### Impact
-- `prices-2026.parquet`: 19 MB → 44.6 MB, 2.0M → 4.1M rows
-- `snapshots-2026.parquet`: 7.6 MB → 21.2 MB, 1.6M → 3.7M rows
-- Remaining gap: Apr 16 – Jul 8 (84 days) still unfilled.
+---
+
+## Event Correlation Analysis
+
+Weekly, Sundays 04:00 UTC. Rebuilds `events` and the denormalised `event_impacts_denorm`
+Parquet the API reads. Independent of the daily chain.
+
+---
+
+## Discover New Items
+
+Dispatch-only; the schedule was removed 2026-07-08. **It cannot run**:
+`scripts/discover_steam_items.py:20` imports `from collectors.real_data_collector import
+get_collector` and no `real_data_collector.py` exists, so a dispatch dies with
+`ImportError` before any Steam request. There is currently no working path to add items to
+the catalog — the CSMarketAPI backfill that was supposed to be the alternative has a
+permanently exhausted free-key quota.
+
+---
+
+## Removed pipelines
+
+- **Supply scraper** (`supply-scraper.yml`, deleted in `0288568`) — hosted GitHub runners
+  are 429'd by Steam on the first request. `supply_snapshots` is frozen at 35,037 rows;
+  its features were already excluded from training. See
+  `docs/changelog/2026-07-16-drop-supply-depth.md`.
+- **Reddit social sentiment** (`reddit-sentiment.yml`, deleted) — old.reddit.com returns
+  `403 Blocked` from runner IPs, and the features were refuted independently. Do not
+  rebuild it. `collectors/social_sentiment.py` survives for local/authenticated runs and
+  scores with FinBERT ONNX INT8, not VADER. See
+  `docs/changelog/2026-07-22-social-feature-audit.md`.
+- **Player-count collector** — removed in `181488b`. The `player-counts-YYYY.parquet`
+  files in the archive are a frozen historical dataset with nothing appending to them.
+
+One-time merges (HuggingFace CS2 hourly dataset, CSMarketAPI backfill) are recorded in
+`docs/changelog/2026-07-20-hf-dataset-merge.md` and are not part of any recurring run.
 
 ---
 
 ## Test Coverage
-- **134 tests** passing across 6 test files — aggregator fuzzy matching, pipeline + DB flow, forecaster ML, regime-switching, data validation, fallback recovery.
+- **714 tests** across 41 files in `backend/tests/`.
+- Run **`pytest tests`**, not bare `pytest` — `scripts/test_social_signal.py:25` imports
+  `thefuzz`, which is not in `requirements.txt`, and collection aborts on it.

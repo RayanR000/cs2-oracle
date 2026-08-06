@@ -1,5 +1,13 @@
 # CSMarketAPI Multi-Market Price History Backfill
 
+> **DEAD — the data described here is not on disk and cannot be re-fetched.**
+>
+> 1. `backend/runtime/csmarketapi.db` is **0 bytes**. Every "Final Totals" figure below (4,940 items, ~12M rows, 7 markets, ~2.5 GB) describes data that no longer exists locally. Treat this document as a design record, not an inventory.
+> 2. The free-tier quota is **permanently exhausted** — every key still returns 429 a month after the burn, so the monthly reset the plan assumed never happens.
+> 3. With an empty DB there is also no `backfill_state` checkpoint, so a resume would restart from item #1 even if quota existed.
+>
+> The only surviving CSMarketAPI artifact is `backend/runtime/csmarketapi_reference.db` (692 KB: markets, currency rates, player counts). Historical CSMarketAPI *prices* that reached the Parquet archive are still there — see `data-sources.md` — but the source DB is gone.
+
 ## Goal
 
 Backfill daily sales history (OHLCV per market) for CS2 items across all major trading platforms, prioritized by item popularity (liquidity). The data enables trend analysis, price prediction, and market intelligence without relying on a single source like Steam alone.
@@ -8,9 +16,9 @@ Backfill daily sales history (OHLCV per market) for CS2 items across all major t
 
 | Constraint | Detail |
 |---|---|---|
-| CSMarketAPI free tier | 1,000 requests/month/key |
-| Accounts available | 5 (skrup.chezz, breadandpoops, rrane2025, rayanrane, bobafett) |
-| Total monthly budget | ~4,750 requests (950 safety threshold × 5) |
+| CSMarketAPI free tier | 1,000 requests/month/key — **all burned, and they do not reset** |
+| Accounts available | 5 burned (skrup.chezz, breadandpoops, rrane2025, rayanrane, bobafett); code supports **6** slots (`config.py:49-50,56` → `range(1, 7)`) |
+| Total monthly budget | Nominally ~4,750 requests (950 safety threshold × 5) — **actually 0** |
 | Items in local catalog | 31,908 (from `market_catalog.db`) |
 | CSMarketAPI catalog | 31,417 items |
 | Overlap | 26,718 items (in both catalogs) |
@@ -25,7 +33,7 @@ Two separate databases to allow independent refresh cycles:
 
 | Database | Contents | Size | Refresh Cadence |
 |---|---|---|---|
-| `runtime/csmarketapi.db` | `items`, `sales_history`, `backfill_state` | 1.8 GB | Monthly (per-key quota cycle) |
+| `runtime/csmarketapi.db` | `items`, `sales_history`, `backfill_state` | **0 bytes — empty** (was ~2.5 GB) | Never (quota dead) |
 | `runtime/csmarketapi_reference.db` | `markets`, `currency_rates`, `player_counts` | 692 KB | Any time via `--refresh-ref` |
 
 ### Data Flow
@@ -35,7 +43,7 @@ market_catalog.db ──→ build_priority_queue() ──→ [item_1, item_2, ..
                                                         │
                      CSMarketAPI ──→ fetch_sales_history(hash_name) ──→ sales_history table
                           │
-                     Key rotation (3 keys, round-robin)
+                     Key rotation (up to 6 keys, round-robin)
                           │
                      checkpoint: last_hash_name → backfill_state
 ```
@@ -120,6 +128,8 @@ python backend/collectors/csmarketapi_backfill.py --refresh-ref
 | **Per-item checkpoint** | `last_hash_name` updated after each successful item commit |
 | **Key rotation on 429** | Failed item logged, next key tried immediately |
 | **Retry with backoff** | Server errors (5xx) retried up to 3 times with exponential backoff (2s, 4s, 8s) |
+
+**Open bug — 429s get no backoff.** `csmarketapi_backfill.py:205-207` logs the 429 and `return None` immediately, inside the same retry loop where 5xx sleeps `2 ** attempt` and continues (:212-214). A transient/burst 429 is therefore indistinguishable from a quota kill and costs the item outright. This is the mechanism behind the 256 "failed" items below.
 | **Atomic per-item commit** | DELETE old + INSERT new in single transaction — partial writes impossible |
 | **Logging** | Simultaneous stdout + file (`runtime/logs/csmarketapi_backfill_*.log`) |
 
@@ -150,9 +160,11 @@ CSMARKETAPI_KEY_4=your_key_4_here
 CSMARKETAPI_ACCOUNT_4=account_4
 CSMARKETAPI_KEY_5=your_key_5_here
 CSMARKETAPI_ACCOUNT_5=account_5
+CSMARKETAPI_KEY_6=your_key_6_here
+CSMARKETAPI_ACCOUNT_6=account_6
 ```
 
-Supports up to 5 keys (loops `range(1, 6)`). Config model in `backend/config.py` exposes `settings.csmarketapi_keys` as a list of `{account, key}` dicts.
+Supports up to **6** keys (`config.py:49-50,56` declares slots 1–6 and loops `range(1, 7)`). Config model in `backend/config.py` exposes `settings.csmarketapi_keys` as a list of `{account, key}` dicts. All keys are `Optional[str] = None`, so unset slots are simply skipped.
 
 ## Execution Results
 
@@ -176,7 +188,9 @@ Rolled back `req_idx_1` and `req_idx_2` to 900 in the DB to re-expose ~50 quota 
 | Key 1 (breadandpoops) | ~50 items | Hit 429, rotated |
 | All keys exhausted | — | Clean stop at item #2,942 |
 
-### Final Totals
+### Final Totals (historical — none of this is on disk)
+
+These were the totals when the burn finished. `csmarketapi.db` is now 0 bytes, so read this as a record of what the quota bought, not as available data.
 
 | Metric | Value |
 |---|---|
@@ -185,7 +199,7 @@ Rolled back `req_idx_1` and `req_idx_2` to 900 in the DB to re-expose ~50 quota 
 | Failed | 256 (429 burns — all keys forced to 1000/1000) |
 | Months of price data | ~4,500 unique days |
 | Markets with data | 7 (STEAMCOMMUNITY, CSFLOAT, MARKETCSGO, WHITEMARKET, SKINPORT, SKINBARON, CSDEALS) |
-| Database size | **~2.5 GB** (`csmarketapi.db`) |
+| Database size at the time | **~2.5 GB** (`csmarketapi.db` — now 0 bytes) |
 | Key 0 actual usage | 1000 (hit 429) |
 | Key 1 actual usage | 1000 (hit 429) |
 | Key 2 actual usage | 1000 (hit 429) |
@@ -212,20 +226,16 @@ All 5 keys confirmed exhausted via 429 response:
 | **1s delay between requests** | Respectful rate limiting. No documented rate limit, but avoids triggering abuse detection. |
 | **Per-item commit + skip check** | Crash-safe: if script dies mid-write, the data for that item is incomplete but the item won't be re-fetched (checked on resume). |
 
-## Resume Next Month
+## Resume Status: not resumable
 
-```bash
-# Just run it — picks up automatically
-python backend/collectors/csmarketapi_backfill.py
+The original plan — "wait for the monthly quota reset, rerun, it picks up from the checkpoint" — is dead on **both** legs:
 
-# Or refresh reference data first
-python backend/collectors/csmarketapi_backfill.py --refresh-ref
-python backend/collectors/csmarketapi_backfill.py
-```
+1. **Quota never resets.** All keys still return `{"detail": "You have exceeded your monthly quota. Consider upgrading your plan."}` more than a month after the burn. The free tier's "1,000 requests/month" does not behave as a rolling monthly allowance for these accounts.
+2. **No checkpoint survives.** `csmarketapi.db` is 0 bytes, so `backfill_state` (and its `last_hash_name` / `req_idx_N` counters) is gone. Even with working quota, a rerun would restart the priority queue at item #1 and re-spend requests on items already fetched once.
 
-Next item to process: `Sir Bloody Skullhead Darryl | The Professionals` (#4,941 of 36,607).
+Restarting this capability requires a paid plan (or a different bulk source) **and** an accepted full re-fetch from scratch. Do not describe it as a resume.
 
-### Coverage by Tier (Corrected)
+### Coverage by Tier (as of the burn — historical)
 
 | Tier | Items in Queue | Fetched | Remaining | Coverage |
 |------|:-------------:|:-------:|:---------:|:--------:|
@@ -240,13 +250,14 @@ The 136 remaining high-priority items (1000+ tier) include capsules, stickers, a
 ### Future Optimizations
 
 - **cs2.sh batch endpoint**: POST with 100 items/request. $75/mo Developer plan. Would reduce ~37K requests to ~370 requests.
-- **Add more CSMarketAPI keys**: Each additional key adds ~950 items/month. Add `CSMARKETAPI_KEY_N` / `CSMARKETAPI_ACCOUNT_N` to `.env` and `config.py` (bump `range(1, 6)` to `range(1, N+1)`).
+- **Add more CSMarketAPI keys**: superseded — the range was already bumped to `range(1, 7)` (6 slots), and new free accounts do not help because the exhausted keys never recover. Adding slots beyond 6 still means editing `config.py` and `.env` together.
+- **Fix the 429 backoff** (`csmarketapi_backfill.py:205-207`): give 429 the same exponential retry as 5xx so a burst limit doesn't discard the item.
 - **Parallel fetching**: Currently 1 request at a time (1s delay). Could parallelize with multiple keys simultaneously.
 - **Selective date range**: Pass `start`/`end` params to sales history to reduce response size for items with very long histories.
 
 ## Complementary Coverage: Hugging Face Dataset (2026-07-20)
 
-The CSMarketAPI backfill covers **4,940 items** (Steam + 6 markets). A complementary expansion was done via the [HF CS2 Historical Item Price Dataset](https://huggingface.co/datasets/idomanteu/cs2-historical-item-prices-hourly-march-april-2026) (CC BY 4.0):
+The CSMarketAPI backfill reached **4,940 items** (Steam + 6 markets) before the quota died. A complementary expansion — which, unlike the backfill DB, *is* still in the Parquet archive — was done via the [HF CS2 Historical Item Price Dataset](https://huggingface.co/datasets/idomanteu/cs2-historical-item-prices-hourly-march-april-2026) (CC BY 4.0):
 
 | Metric | CSMarketAPI Backfill | HF Dataset |
 |--------|:--------------------:|:----------:|
@@ -267,6 +278,6 @@ The HF dataset brought the total items with some historical data from **5,542 to
 | `backend/scripts/merge_hf_dataset.py` | HF dataset merge into Parquet archive |
 | `backend/config.py` | Settings model with `csmarketapi_keys` property |
 | `.env` | API keys + account names |
-| `runtime/csmarketapi.db` | Backfill database (items + sales_history + state) |
+| `runtime/csmarketapi.db` | Backfill database (items + sales_history + state) — **0 bytes / empty** |
 | `runtime/csmarketapi_reference.db` | Reference database (markets + currencies + player counts) |
 | `runtime/logs/csmarketapi_backfill_*.log` | Run logs |

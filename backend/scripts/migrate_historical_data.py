@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """
 Historical Data Migration: Clean Supabase + Import local data.
-Implements docs/historical/db-migration-plan.md
+Implemented docs/historical/db-migration-plan.md, which was superseded by the Parquet
+archive and deleted 2026-08-05 — recover it from git history if you need the rationale.
 
 Phases:
   1a. Delete stale price_history sources (kaggle_csgo, historical_fallback:*, csgotrader)

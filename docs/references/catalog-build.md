@@ -4,7 +4,7 @@
 
 A complete catalog of every CS2 item on the Steam Community Market, stored in local SQLite. This replaces the production database's limited 24,822-item catalog with a full 31,908-item catalog scraped directly from Steam's API.
 
-**Output:** `backend/data/market_catalog.db` (~28 MB, 31,908 items)
+**Output:** `backend/runtime/market_catalog.db` (18 MB, 31,908 `market_items`)
 
 ---
 
@@ -218,7 +218,7 @@ CREATE TABLE failed_pages (
 --burst-pause N    # Seconds between bursts (default: 30)
 ```
 
-**Logs to:** `backend/data/market_catalog.log`
+**Logs to:** `backend/runtime/market_catalog.log`
 
 ### Dependencies
 
@@ -236,7 +236,7 @@ CREATE TABLE failed_pages (
 | Pending gaps (unfetchable) | ~2,393 offsets |
 | Coverage | 93% of ~34,301 items |
 | Failed pages | 0 |
-| DB size | ~28 MB |
+| DB size | 18 MB |
 | Total duration (all phases) | ~6.5 hours |
 | Active fetch time | ~3 hours |
 | 429s encountered | ~50+ (all recovered) |
@@ -268,7 +268,7 @@ CREATE TABLE failed_pages (
 3. **Track429s at the right level** — retry loops hide 429s from higher-level monitoring. Always surface them.
 4. **VPN is a valid recovery** — when IP banned, switching to a VPN immediately restores access.
 5. **Failed page tracking is essential** — without it, you'd have to re-run the entire build to recover 4 pages.
-6. **Local SQLite is the right choice** — Supabase is 500MB and full; this 15.4MB local DB is clean and complete.
+6. **Local SQLite is the right choice** — Supabase is 500MB and full; this 18 MB local DB is clean and complete.
 
 ---
 
@@ -318,9 +318,9 @@ Created `backend/scripts/repair_catalog_gaps.py` to identify and fetch missing i
 | `--dry-run` | Preview gaps without fetching |
 | `--max-offset N` | Max offset to scan (default: 35000) |
 
-**Logs to:** `backend/data/gap_repair.log` (thorough logging: every INSERT, every page, progress every 25 gaps, timing, rate limits, failures)
+**Logs to:** `backend/runtime/gap_repair.log` (thorough logging: every INSERT, every page, progress every 25 gaps, timing, rate limits, failures)
 
-**Monitor:** `tail -f backend/data/gap_repair.log`
+**Monitor:** `tail -f backend/runtime/gap_repair.log`
 
 **Resume after kill:** `python3 scripts/repair_catalog_gaps.py --fetch-only`
 
@@ -384,7 +384,7 @@ python3 -u scripts/repair_catalog_gaps.py --scan-only --start-offset 26340 --max
 
 **Monitor:**
 ```bash
-tail -f backend/data/gap_repair.log
+tail -f backend/runtime/gap_repair.log
 ```
 
 ### Second Fetch Pass (1,264 gaps → 31,908 items)
@@ -433,7 +433,7 @@ python3 -u scripts/repair_catalog_gaps.py --fetch-only
 3. **Track429s at the right level** — retry loops hide 429s from higher-level monitoring. Always surface them.
 4. **VPN is a valid recovery** — when IP banned, switching to a VPN immediately restores access.
 5. **Failed page tracking is essential** — without it, you'd have to re-run the entire build to recover 4 pages.
-6. **Local SQLite is the right choice** — Supabase is 500MB and full; this 28MB local DB is clean and complete.
+6. **Local SQLite is the right choice** — Supabase is 500MB and full; this 18 MB local DB is clean and complete.
 7. **Empty results ≠ end of results** — Steam returns `[]` for rate-limited pages, not 429. Always retry empty pages instead of breaking the loop.
 8. **Resume must skip ahead** — re-scanning from offset 0 wastes burst budget. On resume, start from the last known offset.
 9. **Python log buffering lies** — `tail -f` shows stale data unless you line-buffer the file handler. Use `python3 -u` and `buffering=1`.

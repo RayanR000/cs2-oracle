@@ -1,350 +1,407 @@
 # Model Architecture
 
-> **⚠ No accuracy figure in this document is currently reportable.**
-> The served accuracy series spans only **2 distinct forecast dates**, so its effective sample
-> size is 2 rather than the five-figure counts it carries, and the two dates ran in opposite
-> market directions. `MIN_FORECAST_DATES = 20` in `backtest/scoring.py` now refuses to quote a
-> headline below that bar. Any directional-accuracy percentage below — and any pre-2026-08-02
-> figure anywhere — should be read as unverified. CV numbers from the feature A/B harness carry a
-> separate problem: a 1.15pp noise floor at 3d, wider elsewhere. See
-> `docs/changelog/2026-08-03-accuracy-is-clustered-by-forecast-date.md`.
-
-> **The 2026-07-24 overhaul has landed** (commit `a332c2b`); the sections below describe live
-> behaviour. Full record in
-> `docs/changelog/2026-07-24-directional-classifier-and-honest-serving-audit.md`. Summary:
-> - **Directional classifier** — a per-horizon 3-class (down/flat/up) LightGBM (multiclass log-loss, mover-weighted) now supplies the served **direction + confidence**; quantile models supply only the interval. It beats momentum at every horizon in CV (3d/7d/14d/30d = 69.8/69.7/68.1/69.2%, +2–10pp over the best naive baseline). ~40% of that is correctly calling static ("flat") items; sign skill on real movers is ~55–57%.
-> - **Price-only features** — `FEATURE_GROUP_ALLOWLIST = ["price_technicals"]` (126 → 41–46 features). An ablation showed the 85 non-price features add ~0 directional accuracy and hurt 3d/30d.
-> - **Date-based, gap-robust features** — lag/return features now look up prices by *calendar date* (like targets), so data gaps yield NaN→neutral instead of fabricated multi-month returns.
-> - **Honest CV** — expanding-window folds now carry a `horizon`-day purge gap and report persistence/momentum baselines + `edge_vs_best_baseline`.
-> - **Regime models shelved**; momentum fallback retired; `predict()` guards against feature-count-mismatched (stale) models.
-> - **Serving is NOT production-ready:** blocked on a data gap (May–June 2026 missing) and a train/serve regime mismatch. The CV numbers above are 2022–2025 hold-out figures and overstate live performance until the data gap is fixed and the model is retrained + walk-forward-validated through the serving window.
+> **⚠ There is no reportable production directional-accuracy number right now.**
+> `MIN_FORECAST_DATES = 20` (`backtest/scoring.py:38`) refuses to publish a headline below 20
+> distinct forecast dates, and every live cohort currently spans **1–2** dates — so all four
+> horizons report NO HEADLINE. That is a calendar problem, not a code problem: the cohorts have to
+> accumulate dates. The CV figures below are training-time diagnostics measured on a different
+> item universe and a different price consensus, and they are **not** comparable to a production
+> number. See `docs/changelog/2026-08-03-accuracy-is-clustered-by-forecast-date.md`.
 
 ## Overview
 
-Two-layer `ItemForecaster` containing **36–144 LightGBM models** — a global ensemble and optional per-regime ensembles:
-
-### Global models (always available)
+`ItemForecaster` (`backend/models/forecaster.py`) trains and serves **8 LightGBM models** —
+one median regressor and one directional classifier per horizon:
 
 ```
-3d horizon:  3 quantiles (p10, p50, p90) × 3 ensemble members
-7d horizon:  3 quantiles (p10, p50, p90) × 3 ensemble members
-14d horizon: 3 quantiles (p10, p50, p90) × 3 ensemble members
-30d horizon: 3 quantiles (p10, p50, p90) × 3 ensemble members
+3d horizon:  1 × q50 GBM  +  1 × 3-class directional classifier
+7d horizon:  1 × q50 GBM  +  1 × 3-class directional classifier
+14d horizon: 1 × q50 GBM  +  1 × 3-class directional classifier
+30d horizon: 1 × q50 GBM  +  1 × 3-class directional classifier
 ```
 
-36 total. Predictions averaged across ensemble members per quantile. p10/p90 provide the interval, p50 is the point prediction.
+`HORIZONS = [3, 7, 14, 30]` (:150), `QUANTILES = [0.5]` (:156), `N_ENSEMBLES = 1` with
+`ENSEMBLE_SEEDS = [42]` and `ENSEMBLE_FEATURE_FRACTIONS = [0.7]` (:193-195). There is no
+ensemble averaging and no p10/p90 model. The 40-model grid this replaced (36 global + regime
+files) collapsed on 2026-08-05; see `docs/changelog/2026-08-04-minimal-model-results.md`.
 
-### Regime-specific models (trained per regime)
+**Division of labour:** the classifier supplies the served **direction + confidence**; the q50
+model supplies the **median**; conformal calibration supplies the **band**. Nothing else
+contributes to a served forecast.
 
-Separate ensembles for each detectable market regime (bear / range / bull), each with the same 36-model structure. Trained alongside global models when data volume permits. At prediction time, the current regime is detected and regime-specific models are preferred.
+**Model version:** `lgbm-v3` (`scripts/forecast_prices.py:35`)
+**Artifacts** in `backend/models/saved_models/`: `lgb_{horizon}d_q50_e0.txt` (:4897),
+`clf_{horizon}d.txt` (:4921), `bias_corrections.json`, `meta.json`.
+`MODEL_ARTIFACT_VERSION = 3` (:165) — `load_models()` raises `IncompatibleModelArtifact` on an
+older cache rather than serving a band computed by a different scheme.
 
-| Regime | Detection | Typical status |
-|--------|-----------|----------------|
-| bear | `market_return_30d < -3%` | Trained for 7d/14d, skipped for 3d/30d (insufficient val data) |
-| range | `-3% ≤ return_30d ≤ 3%` | Fully trained |
-| bull | `return_30d > 3%` | Fully trained |
+### Directional classifier
 
-**Model version:** `lgbm-v3-regime` (regime-enabled) / `lgbm-v3-global-only` (A/B comparison)
-**Files:** `lgb_{horizon}d_q{q}_e{ei}.txt` (global) + `lgb_{horizon}d_q{q}_{regime}_e{ei}.txt` (regime) + `residual_{horizon}d_q{int(q*100)}.pkl` (Ridge residual models) + `meta.json` in `backend/models/saved_models/`
+A per-horizon 3-class (down/flat/up) LightGBM trained on multiclass log-loss, which optimizes
+the served metric directly. Labels come from a fixed ±`DIRECTION_FLAT_TOLERANCE_PCT = 0.5`
+band on the realised return (:28). Movers (`|return| > tolerance`) are up-weighted 3.0×
+(`DIRECTION_MOVER_WEIGHT_MAP`, :276) so the classifier spends capacity on the hard calls rather
+than the large easily-predicted flat mass. Predicted class = `argmax`; confidence is `high` when
+`max(prob) >= DIRECTION_CONFIDENCE_HIGH = 0.5` (:284, applied :4296-4300).
+
+**Vol-scaled labels are dead code.** `DIRECTION_VOL_MULTIPLIER_MAP` (:277), the `label_vol_30d`
+column, and `_direction_threshold` all exist, but every call site passes
+`sigma_train=None, sigma_val=None` (:3519), so the threshold is always the fixed scalar. The
+branch is unreachable in training and in CV.
+
+### Conformal prediction band
+
+`models/conformal.py` (106 lines) replaces the 24 p10/p90 quantile GBMs, which cost 223.2s of a
+381.2s training budget for 39–48% empirical coverage against an 80% target.
+
+| Step | Where | What |
+|------|-------|------|
+| Per-item scale | `conformal.sigma_from_columns` (`conformal.py:48`) | `sigma = price_std_60d / price` — the 60-day coefficient of variation, in return space |
+| Clip bounds | `conformal.sigma_bounds` (`conformal.py:31`), called `forecaster.py:2820` | 1st/99th percentile of the training frame's sigma distribution, frozen into `meta.json` |
+| Calibration | `conformal.calibrate` (`conformal.py:72`), called `forecaster.py:3202` | `q_hat` = finite-sample-corrected quantile of `|residual| / sigma` over pooled out-of-fold CV residuals. Dimensionless |
+| Serving | `conformal.band` (`conformal.py:98`), called `forecaster.py:4219` | `mid ± q_hat * sigma`, symmetric in return space |
+
+`NOMINAL_COVERAGE = 0.80` (`conformal.py:23`). Because the band is symmetric about the median it
+**cannot cross by construction**, which is why `predict()` no longer repairs quantile ordering.
+`_fix_quantile_crossing` (:3775) survives only for `walkforward_backtest.py`'s baseline arm and
+the `ab_test_*` scripts; `tests/test_minimal_model_shape.py` asserts it is absent from
+`predict()`. The band is deliberately *not* floored at −100% in the band step — truncating one
+side would break the symmetry the coverage guarantee rests on — so `_sanitize_forecasts` (:4348)
+is what guarantees the served triple is ordered and positive.
+
+`predict()` raises rather than serving a forecast if `q_hat` is missing for a horizon
+(:4207-4212).
+
+### Regime models
+
+The code still supports per-regime ensembles (`REGIMES = ["bear", "range", "bull"]`, :185,
+thresholds ±3% on `market_return_30d`, :186-187), which at the current grid would be at most
+3 × 4 = 12 extra models. A regime is skipped below `MIN_REGIME_TRAIN = 500` train rows (:3091).
+**Nothing trains them in production:** CI passes `SKIP_REGIMES=1`, `meta.json` carries
+`trained_regimes: []`, and `predict()` logs `no regime models trained, using global` (:4131).
 
 ---
 
-## Regime-Switching
+## Features
 
-### Motivation
+`_feature_group()` (:115-137) partitions engineered columns into nine groups:
+`price_technicals`, `supply_depth`, `item_identity`, `item_metadata`, `temporal`, `events`,
+`cross_sectional`, `social`, `other`.
 
-Market regimes (bear/range/bull) have fundamentally different price dynamics. A single global model must average across all regimes, diluting signal in each. Separate per-regime models capture regime-specific patterns (e.g., mean-reversion in ranges, momentum in bulls).
+**`FEATURE_GROUP_ALLOWLIST = ["price_technicals"]`** (:226, applied :2529-2536). This is the
+single most consequential fact about the feature set: **every other group is computed on every
+training row and then discarded.** Temporal, event, cross-sectional, rarity/identity, supply-depth
+and social features all cost feature-engineering time and contribute nothing to any model. An
+ablation (2026-07-24, purge-gap CV) found the 85 non-price features added no measurable
+directional accuracy and hurt 3d/30d, so the columns stay computed but unused rather than being
+deleted — the `ab_test_*` scripts build their own feature lists from the frame and need them.
 
-### Training
+Two further filters run before the allowlist:
 
-In `train()`, after global models complete (skipped entirely when `SKIP_REGIMES=1` or on warm retrain):
+- **`SHELVED_FEATURES`** (:243-261, applied :2522-2523) — 17 named columns withheld by name
+  because they resolve to `price_technicals` and the allowlist would otherwise pass them
+  straight through. Six are the volatility-asymmetry / oscillator-divergence primitives shelved
+  2026-07-31 (`docs/changelog/2026-07-31-price-primitives-shelved.md`). Eleven are the volume
+  features: the archive's `volume` column has been identically **0** since 2026-05 — stored as 0,
+  never NULL, which defeats every guard in the volume feature code (`has_volume` tests `notna()`
+  so it stays True, `volume_missing` reports "present") — so they carry real signal on pre-2026-05
+  training rows and are dead on 100% of served rows.
+- **Correlation pruning** at `PRUNE_CORRELATION_THRESHOLD = 0.95` (:297, applied :2526).
 
-1. **Label assignment:** `_assign_regime_label()` tags each row by `market_return_30d` → bear/range/bull
-2. **Per-regime training:** `_assign_regime_labels()` groups data by regime, calls `_train_horizon_ensemble()` with regime-specific subset
-3. **Skip threshold:** regime skipped if <500 train or <50 val rows (bear often skipped for short horizons)
-4. **Hyperparameters:** reuse global `tuned_params` (no separate Optuna per regime)
-5. **Storage:** regime models saved to `self.regime_models[(regime, horizon, q)]` — parallel to `self.models[(horizon, q)]`
+Net effect: the shipped 2026-08-05 artifact carries **47 feature columns**, identical for all
+four horizons (`meta.json: horizon_feature_cols`). Shelving the volume features drops that to
+**36** on the next retrain; the `MODEL_ARTIFACT_VERSION` bump to 3 exists to force that retrain
+rather than wait 14 days for the age trigger.
 
-Regime models are disabled by default (warm retrain) and must be explicitly enabled via `SKIP_REGIMES=0`. See `docs/architecture/model-optimization.md` Tier-1 #2.
+`HORIZON_EXCLUDED_GROUPS` (:215-218) still excludes `cross_sectional` from 14d and
+`cross_sectional` + `events` from 30d, but the allowlist already removes both from every horizon,
+so it is currently a no-op.
 
-### Prediction
+### Price technicals (the only group that reaches a model)
 
-`predict()` detects current regime once via `_detect_current_regime()`:
+Lags at `LAGS = [1, 3, 7, 14, 30, 60, 90, 120, 180]` (:996) and the returns/log-returns derived
+from them; rolling mean/std/min/max over 7/14/20/30/60d (:1020-1024) and distance from the 100d
+and 200d moving averages (:1177-1181); Bollinger Bands (20d: upper, lower, %B, width); RSI(14);
+MACD line/signal/histogram; support/resistance distances; high/low range; price acceleration;
+autocorrelation proxies; trend divergence.
 
-```python
-regime = _detect_current_regime(feature_row)
-#     ^— "bear", "range", or "bull"
-```
+Lag and return features are looked up **by calendar date**, the same way targets are, so an
+archive day gap yields NaN → median-fill rather than a fabricated multi-month return. The cost
+is that a missing day exactly `lag` before the anchor NaNs that lag for every item at once — see
+Known limitations.
 
-For each `(horizon, q)`:
-- If `regime_models.get((regime, horizon, q))` exists → use it
-- Otherwise → fall back to `models[(horizon, q)]`
+### Computed and discarded
 
-Logs per-horizon usage ratio after prediction.
-
-### Persistence
-
-- Regime model filenames: `lgb_{horizon}d_q{q}_{regime}_e{ei}.txt`
-- `meta.json` fields:
-  - `trained_regimes`: list of regimes that have models saved
-  - `regime_feature_cols`: feature columns per regime ensemble
-
-### Training time impact
-
-On the initial run (Mac, 400K rows, SKIP_CV):
-- Global-only: ~30 min (53 min - 23 min regime overhead)
-- Regime (range + bull, bear partial): +23 min
-- Total: **53 min** for all 4 horizons
-
-Speed concern is mitigated by the Monday retrain schedule + weekday predict-only pattern.
-
----
-
-### Price Features
-Lags (1/3/7/14/30/60d), returns (winsorized ±500%), rolling stats (7/14/20/30/60d windows), log returns, autocorrelation proxies, price acceleration.
-
-### Technical Indicators
-Bollinger Bands (20d: bb_upper, bb_lower, bb_pct_b, bb_width), RSI (14d), MACD (line, signal, histogram), support/resistance distances, high/low range.
-
-### Volume Features
-Lags, log-change (avoids division-by-zero), Z-score relative to 30d mean, volume-price confirmation signals.
-
-### Temporal Features
-Day-of-week/month/quarter/year, sin/cos cyclic encoding, weekend flag, item age. Added in Jul 2026 to replace raw integer encoding which LightGBM treated as ordinal (Dec→Jan looked like gap of 11).
-
-### Event Features
-5 event types (major, operation, case_drop, update, game_update) with exponential decay weighting (`exp(-days_since / decay_constant)`), event density counts (30d/90d), events-next-30d count.
-
-### Cross-Sectional Features
-Market return per lag, item return vs market, market volatility/volume/regime flags (bull/bear/range), item volume vs market.
-
-### Rarity Features (Added Jul 2026, refined Jul 2026)
-Rarity ordinal and one-hot dummies (11 categories: base, consumer, industrial, milspec, restricted, classified, covert, high_grade, remarkable, exotic, extraordinary). Source: `price-archive/item-metadata.parquet` (8,691 items, 109 KB) with DB fallback. Permutation test confirmed strong causal signal (+10-12pp across all horizons).
-
-**Removed after permutation test:** weapon_type one-hot dummies (22 cols) and weapon-type cross-sectional features (6 cols) — showed zero causal signal (shuffling changed accuracy by ≤0.05pp). Player count features (10 cols) also removed; earlier permutation test showed zero causal impact.
-
-### Social Sentiment Features (Added 2026-07-19)
-5 features sourced from the Reddit social sentiment collector (`collectors/social_sentiment.py`): `social_mentions_1d` (mention count past 24h), `social_mentions_7d` (rolling 7d), `social_mention_velocity` (1d→7d ratio), `social_sentiment_7d` (VADER compound score), `social_score_7d` (weighted sentiment × volume). Collector monitors 3 CS2 trading subreddits via old.reddit.com HTML (Reddit JSON API killed May 2026).
-
-**Known limitation:** VADER is a 2014 general-purpose lexicon that scores CS2 market jargon ("BFK CW MW low float") as neutral — social features do not rank in top 20 by gain importance across any horizon. See `docs/changelog/2026-07-22-social-feature-audit.md`. Recommendation: replace VADER with ModernFinBERT (ONNX INT8).
-
-### Feature Pruning
-Correlation-based pruning at 0.95 threshold. Applied during training, pruned feature list saved to `meta.json`.
+Volume, temporal (day/month/quarter + sin/cos encodings, item age), event decay + density,
+cross-sectional market return/volatility/regime flags, rarity ordinal and one-hot (source:
+`price-archive/item-metadata.parquet`), supply depth, and 5 social sentiment columns. The social
+collector scores with **FinBERT ONNX INT8** (`collectors/social_sentiment.py`), not VADER, but
+`reddit-sentiment.yml` was deleted after runner IPs started getting 403s, so the source table
+holds 0 rows and the features are identically zero regardless.
 
 ---
 
 ## Training Pipeline
 
-### Hyperparameter Search
-Optuna Bayesian (TPE sampler, MedianPruner). Replaced brute-force grid search Jul 2026.
+`train()` (:2784) runs one horizon at a time via `_train_horizon_inline()` (:2844, called :2833).
 
-| Before | After |
-|--------|-------|
-| Grid search: 81 combos (3⁴) | Optuna TPE: 15-50 Bayesian trials per quantile |
-| Searched 4 params | Searches 6 (+ max_depth, min_data_in_leaf) |
-| Fixed discrete values | Continuous ranges with log-uniform sampling |
-| All trials to completion | MedianPruner kills bad trials early |
+### Training row budget
 
-**Per-horizon trial budget (2026-07-20):** 15 trials proved insufficient for the 3d horizon's 6D search space (~40k combinations). The 3d model's chosen depth=3 was an artifact of under-exploration, not a signal ceiling. Added `N_TRIALS_MAP = {3: 50, 7: 15, 14: 15, 30: 15}`. With 50 trials, Optuna chose depth=5-8 across quantiles (3d p50: depth=5, L2=1.5).
+The most consequential knob in the system. Two separate budgets, previously conflated:
 
-**Optimized (2026-07-20):** 3d depth experiment showed 50 trials unnecessary — 20 trials + warm-start (depth=5, leaves=47, λ₂=1.5, lr=0.01) + horizon-aware bounds (max_depth 4-8, lambda_l2 0.5-2.0) reached same quality at 3 min instead of 7.5 min. Final: `N_TRIALS_MAP = {3: 20, 7: 15, 14: 15, 30: 15}`.
+| Budget | Default | Where | What it bounds |
+|--------|---------|-------|----------------|
+| `max_feature_rows` | 100,000 | `DEFAULT_TRAIN_FEATURE_ROWS`, `forecast_prices.py:45`; env override `TRAIN_FEATURE_ROWS` (:54) | The frame **before** feature engineering — i.e. how many whole item histories the model ever sees |
+| `max_rows` | 700,000 | `TRAIN_HORIZON_MAX_ROWS`, `forecast_prices.py:50` | Each horizon's slice **after** feature engineering |
 
-**Bug fix (Jul 2026):** `_optuna_search_params` originally hardcoded `alpha=0.5`. The `quantile` parameter was never received — p10 and p90 models were tuned at alpha=0.5. Fixed by adding `quantile` to method signature.
+`_stratified_item_subsample()` (:2419, applied :2496-2499) spends the first budget by selecting
+**entire item histories** (stratified by rarity, full calendar window preserved) so lags and
+rolling features stay valid. It is therefore an *item-coverage* budget, and at the default it
+selects **99 of 5,377 items — 1.8% of the pool**.
 
-### Validation
-Expanding-window cross-validation (5 folds, 120-day steps):
+Raising it was measured and declined: 700,000 rows selects 646 items and costs **468.7s** against
+**104.6s** at 100,000 (:2801-2806). That is more than the pre-rewrite 40-model grid cost — the
+entire minimal-model saving spent to buy 12% of the item pool. The fresh-model gate cannot
+resolve the accuracy difference either, so there is no measurement that would justify it. The two
+budgets are deliberately not unified: one number would otherwise move coverage and the
+per-horizon cap at the same time.
 
-```
-Fold 1: train [0..200d] → val [201..221d]
-Fold 2: train [0..320d] → val [321..341d]
-Fold 3: train [0..440d] → val [441..461d]
-Fold 4: train [0..560d] → val [561..581d]
-Fold 5: train [0..680d] → val [681..701d]
-```
+### Training window
 
-Confidence calibration uses pooled out-of-fold predictions across all folds. Added Jul 2026 (was single 21-day holdout, which was sensitive to specific events in that window).
+`days_back=1460` (:2807), backfilled items only, read from `price-archive/*.parquet` via DuckDB.
+The 2026 distribution-shift guard that used to exclude the current year was removed once the
+May–June 2026 archive gap was backfilled (:2487-2494).
 
-### Training Window
-1460 days of backfilled data from Parquet archive. Changed from 365d→730d (Jul 2026) then 730d→1460d (2026-07-16) to improve long-horizon signal. Row count bounded by a pre-feature-engineering item-stratified subsample (`max_feature_rows=100K`, was 700K).
+### Hyperparameter search
 
-### Retrain Schedule
-- Full retrain Monday: Optuna (cold) or HP reuse (warm) + 36 global ensemble models + optional regime models (~4–16 min total)
-- Predict-only Tue-Sun: load saved models (global + regime both loaded)
-- Drift-triggered: auto-retrain if directional accuracy drops below 60% on 7-day sliding window
+Optuna TPE with MedianPruner, per-quantile. `N_TRIALS_MAP = {3: 50, 7: 10, 14: 15, 30: 15}`
+(:206) and `SKIP_HP_HORIZONS = [3]` (:210) — 3d is frozen on its 50-trial winner, warm-started
+in `_optuna_search_params`. 14d and 30d still search because they are the noisiest horizons;
+the original reason (tuning DART's dropout params) went away with DART. A warm retrain reuses
+cached params from `meta.json` and logs `optuna: 0.0s`.
 
-### Platform-specific training
+`study.optimize()` is called with no `timeout=` and there is no timeout constant anywhere in
+`backend/models/`. The only wall-clock protection is `timeout-minutes: 180` in
+`.github/workflows/price-forecast.yml`.
 
-**Multiprocessing context:** On Linux/macOS, workers use `fork` for copy-on-write memory sharing. On Windows (where `fork` is unavailable), workers use `spawn`. The context is selected automatically in `_train_horizon_worker` — no flag needed.
+### Validation and calibration
 
-**CUDA detection:** `_gpu_available()` probes GPU availability via a subprocess that runs a minimal `lgb.train(device="cuda")` call. A subprocess is required because calling `lgb.train(device="cuda")` in-process segfaults if the LightGBM pip wheel is CPU-only (the crash can't be caught via `try/except`). The subprocess also isolates the crash from the parent process if the CUDA runtime has issues. Workers always train on CPU regardless of the parent's GPU state — `os.environ["CUDA_VISIBLE_DEVICES"] = ""` is set in every worker to prevent accidental GPU usage when the GPU-probe subprocess succeeded but the worker's LightGBM build was compiled without CUDA support.
+Expanding-window CV: `CV_STEP_DAYS = 150` (:306), `VALIDATION_WINDOW_DAYS = 30` (:184),
+`CV_MIN_TRAIN_DAYS = 200` (:307), each fold carrying a `horizon`-day purge gap. A 1460-day frame
+yields 8–9 folds. Folds report persistence and momentum baselines and `edge_vs_best_baseline`,
+judged on the **classifier** accuracy because that is the served signal (:3240-3246); the ≥$1
+cohort accuracy is reported alongside the all-tiers number so it is comparable to the production
+headline (:3248-3255).
 
-### Boosting Strategy
+CV is the calibration set, not just a diagnostic: `q_hat` and the confidence thresholds are both
+fitted on pooled out-of-fold residuals (:3186-3222), in that order. This makes it the dominant
+cost — **~148.6s of a 176.7s warm retrain, ~84%** — because it refits a median model per fold per
+horizon purely to generate residuals.
 
-Short horizons (3d, 7d) use standard **GBDT**. Longer horizons (14d, 30d) use **DART** (Dropout Additive Regression Trees) to reduce overfitting. DART uses 500 boost rounds (vs 1000 for GBDT) and adds three Optuna-tuned hyperparameters (`drop_rate`, `max_drop`, `skip_drop`).
+**`SKIP_CV=1` is deliberately not set in CI** (`price-forecast.yml`, pinned by
+`test_ci_workflow_does_not_skip_cv`; rationale at :3141-3160). It routes to a single-holdout
+fallback that fits `q_hat` on the same rows used for early stopping and Optuna scoring, so the
+band under-covers; `train()` logs that at WARNING (:3214-3221). It survives as a local/dispatch
+speedup only.
 
-### Residual Stacking
+### Boosting
 
-A **Ridge regression** model (`alpha=5.0`) trained on ensemble residuals to correct systematic bias for weak horizons (14d, 30d). Models saved as `residual_{horizon}d_q{int(q*100)}.pkl`.
+`BOOSTING_TYPE = "gbdt"` (:205) for all four horizons. There is no per-horizon boosting map and
+no DART: when DART was finally measured against GBDT on a trustworthy gate, 14d **improved**
++3.14pp (CI [+1.955, +4.373]) and 30d was unchanged — and 14d was the horizon DART was supposedly
+earning its cost on. The dropout branches went with it.
 
-### Forecast Blending
+`data_sample_strategy` is `bagging` for the median model (:2061); GOSS was reverted 2026-07-29
+after it measured worse under the quantile objective's constant ±alpha gradients.
 
-`FORECAST_BLEND_WEIGHT = 0.15` smooths predictions day-over-day, reducing direction flip-flopping by blending with the previous day's forecast.
+### Parallelism
 
-### Parameters
+**None.** Horizons, quantiles and ensemble members train sequentially; LightGBM's OpenMP threads
+supply the CPU parallelism, with ensemble members getting `n_jobs = cpu_count // 2` and the
+Optuna search params keeping `n_jobs: -1`. Both the horizon `spawn` Pool and the ensemble
+`ThreadPoolExecutor` were deleted on 2026-07-21 (−209 lines) because they deadlocked under
+OpenMP and the surrounding timeouts were masking it. See
+`docs/changelog/2026-07-21-remove-training-parallelism.md`. **Do not re-add this.**
 
-| Parameter | Value |
-|-----------|-------|
-| `num_leaves` | 47 (fallback) / Optuna-tuned (15–63) |
-| `max_depth` | 5 (fallback) / Optuna-tuned (4–8) |
-| `min_data_in_leaf` | 15 (fallback) / Optuna-tuned (5–30) |
-| `min_gain_to_split` | 0.1 |
-| `learning_rate` | 0.01 (fallback) / Optuna-tuned (0.005–0.08) |
-| `num_boost_round` | 1000 (GBDT) / 500 (DART) |
-| `early_stopping` | 50 (GBDT) / none (DART) |
-| `feature_fraction` | 0.7 / per-ensemble [0.6, 0.7, 0.8] |
-| `data_sample_strategy` | `goss` (q50) / `bagging` (q10/q90) |
-| `lambda_l1` | 0.0 (fallback) / Optuna-tuned (0.0–2.0) |
-| `lambda_l2` | 1.5 (fallback) / Optuna-tuned (0.5–2.0) |
-| `boosting_type` | `gbdt` (3d/7d) / `dart` (14d/30d) |
-| `drop_rate` | 0.05–0.3 (DART, Optuna-tuned) |
-| `max_drop` | 10–100 (DART, Optuna-tuned) |
-| `skip_drop` | 0.2–0.8 (DART, Optuna-tuned) |
-| `max_bin` | 63 (was 255, reduced for speed) |
-| `feature_pre_filter` | `false` (LGB 4.6 compat) |
-| `N_ENSEMBLES` | 3 (was 6, was 9) |
-| `max_feature_rows` | 100K (was 700K) |
+`_gpu_available()` (:84) still probes CUDA in a subprocess — required because
+`lgb.train(device="cuda")` segfaults uncatchably on a CPU-only pip wheel — and sets
+`device: cuda|cpu` at :2949 and :2959. Every shipped model in `meta.json` carries `device: cpu`.
 
-### Training Time (Mac)
-~14–16 min cold retrain (full Optuna + HP search + CV). ~4–5 min warm retrain (HP cache reuse, SKIP_CV, SKIP_REGIMES). ~17–20 min of Optuna on first-ever cold start. See `docs/architecture/model-optimization.md` for optimization levers.
+### Deleted layers
+
+- **Residual stacking (Ridge on LightGBM residuals)** — deleted 2026-07-25. It was fit on raw
+  unscaled feature values, so it extrapolated without bound: a penny item with a legitimate +900%
+  `return_Nd` got a correction in the +100,000% range, over-correcting 99% of 14d items and
+  inverting quantile ordering on 100% of predictions. Tombstone comment at :285-293. No `.pkl`
+  artifacts exist and `scikit-learn` is not in `requirements.txt`.
+- **CatBoost** — removed; not a dependency. A stale `backend/catboost_info/` directory remains.
+- **Momentum fallback** — `MOMENTUM_FALLBACK_HORIZONS = []` (:266), superseded by the classifier,
+  which beats momentum at every horizon including 30d. `_recenter_on_momentum` (:3445) survives
+  as an unreachable path behind that empty list.
+
+### Retrain triggering
+
+**Age-based only.** `RETRAIN_INTERVAL_DAYS` defaults to **14** (`forecast_prices.py:208`) and a
+retrain fires when the artifact's age reaches it, or when `FORCE_RETRAIN=1` (:207).
+
+Drift is **report-only**. `DRIFT_DA_THRESHOLD = 60.0` (:175) is now an alert threshold: the old
+drift-triggered retrain compared measured DA against a 60% floor the model has never reached, so
+it fired on *every* run and added a measured 465s to an 835s daily step, serving forecasts from a
+throwaway warm retrain instead of the scheduled model. Set `ALLOW_DRIFT_RETRAIN=1`
+(`forecast_prices.py:241`) to restore the old behaviour.
+
+Monday sets `mode=full` in `price-forecast.yml`, but `full` **only trains if the model is ≥14 days
+old or `FORCE_RETRAIN=1`**. A fresh model plus `mode=full` will not retrain — Monday is not a
+guaranteed retrain.
+
+### Measured training time
+
+10-core Mac, `SKIP_REGIMES=1 --train-only`, 2026-08-05: **cold 250.1s** (Optuna 39.4s),
+**warm 176.7s**. The pre-collapse warm figure on the same machine and flags was 381.2s. Booster
+fitting fell 330.8s → 28.1s; conformal CV rose to ~148.6s, so calibration, not model fitting, is
+now the bottleneck. Per-lever detail in `docs/architecture/model-optimization.md`.
 
 ---
 
 ## Prediction
 
-### Regime detection
-Current market regime detected from global `market_return_30d` mean before per-item prediction. If regime models exist for the detected regime, they are preferred over global models. Usage ratio logged per run.
+`predict()` processes items in chunks of `PREDICT_CHUNK_ITEMS` (default 1000, :3958) and reuses a
+3-day-TTL engineered feature cache.
 
 ### Eligibility
-≥14 days of price history in Parquet archive. Filtered to items with STEAMCOMMUNITY backfill data (~5,542 items).
 
-### Spike Smoothing
-If latest price deviates >10% from 3d median, price is replaced with median value (~33% of items affected). Prevents outlier-driven predictions.
+`PREDICT_MIN_HISTORY_DAYS = 14` distinct days in the Parquet archive (:170, applied :4033-4037) —
+looser than the training floor of `MIN_HISTORY_DAYS = 30` (:166) because the live aggregator
+series is still young. Restricted to `is_backfilled` items, which is **re-derived from the
+archive on every run** (items with pre-2026 rows) rather than being a static flag: **5,542 items**.
 
-### Quantile Crossing Fix
-When p10 > p50 or p90 < p50: impute average interval half-width from well-behaved items. Crossing rate logged when >1%.
+### Serving transform
 
-### Sanitization
-NaN/INF/negative forecast prices → clamped to `current_price` with `flat` direction and `low` confidence. High confidence downgraded for zero-volume items.
+Features come from the last row per item, reindexed with `fill_value=0` for absent columns and
+then median-filled from `meta.json: feature_medians` (:4112-4115).
+
+### Spike smoothing
+
+The base price used to convert percentage returns into dollars is a span-bounded 3-observation
+median near the anchor (`_smoothed_anchor_prices`, :4075-4100), matching the backtest's resolver
+rather than "the last three rows on file". Items whose latest price deviates >10% from that
+median are logged.
+
+### Serving order
+
+Order matters and is asserted by tests:
+
+1. q50 predicts the median return; the horizon is skipped unless `0.5 in preds` (:4186).
+2. `conformal.band(mid, sigma, q_hat)` builds the interval (:4219). `sigma_arr` is computed once
+   outside the horizon loop because it does not vary by horizon (`_sigma_for_rows`, :3757,
+   called :4154).
+3. The classifier predicts class probabilities (:4238-4242).
+4. `_blend_returns_with_prior` blends with the previous day's forecast at
+   `FORECAST_BLEND_WEIGHT = 0.15` (:296, applied :4253-4255) to damp direction flip-flopping.
+5. Per-tier bias correction — threshold-based, with the additive correction only as a fallback
+   when no threshold data exists (:4257-4275). `BIAS_FIT_SCHEMA_VERSION = 2` (:282) discards
+   thresholds fitted without a date-coverage guard.
+6. `_recenter_on_direction` moves the median onto the classifier's call **last**, preserving
+   interval half-widths, so the served price is coherent with the served direction (:4280-4282).
+7. `_sanitize_forecasts` (:4348) clamps NaN/INF/negative prices to `current_price` with `flat`
+   direction and `low` confidence, and downgrades high confidence on zero-volume items.
 
 ### Confidence
-Binary: `high` or `low`. Threshold-calibrated per horizon from holdout predictions. Targets ≥80% directional accuracy within high-confidence bucket with minimum 5% coverage.
+
+Binary `high` / `low`, taken from the classifier's max class probability against
+`DIRECTION_CONFIDENCE_HIGH = 0.5`. `_compute_confidence` (:4774) and the per-horizon
+`confidence_thresholds` in `meta.json` are only reached on the no-classifier fallback path
+(:4302-4314).
 
 ---
 
 ## Accuracy
 
-### Summary
+### What is measurable
 
-The model has two accuracy evaluation methods. The **production backtest** (below) is the canonical metric — it runs against 5,500 full-batch forecasts on real Parquet data with bootstrap CIs and baseline comparison. The walk-forward eval is a historical reference from an earlier 50-item test.
+**Classifier CV directional accuracy** (2026-08-05 post-rewrite retrain, 9 folds; 8 at 30d):
 
-### Walk-Forward Evaluation (200 items, tuned params)
+| Horizon | CV DA (all tiers) |
+|---------|:---:|
+| 3d | 67.3% |
+| 7d | 67.8% |
+| 14d | 68.1% |
+| 30d | 67.9% |
 
-| Horizon | Directional Accuracy | vs 50% baseline | Interval Coverage | MAE |
-|---------|:--------------------:|:---------------:|:-----------------:|:---:|
-| **3d**  | 62.9%                | +12.9pp         | 86.1%             | $0.19 |
-| **7d**  | 65.5%                | +15.5pp         | 86.8%             | $0.24 |
-| **14d** | 67.7%                | +17.7pp         | 85.9%             | $0.32 |
-| **30d** | 67.4%                | +17.4pp         | 83.1%             | $0.50 |
+This is a **training-time diagnostic on interior rows**, not a production figure. The CV frame is
+~83% sub-$1 items, so the all-tiers number reads close to a penny-item score; the ≥$1 cohort is
+now reported alongside it (2026-08-05) precisely so a comparable number exists. Do not quote
+either as served accuracy.
 
-Measured via `walkforward_backtest.py` on 200 data-rich items, 26 expanding windows (60-day steps), ~109K samples per horizon. Uses tuned params from `meta.json`. Walkforward numbers are 5-13pp higher than production backtest because they test on data-rich items vs all 8,691 items (including sparse-history and dead items).
+The quantile-median sign is also scored in CV but is **not** the served signal and understates the
+shipped model — the CV block caps fits at `num_boost_round=200` while production 3d q50 trains to
+several hundred rounds.
 
-**Previous 50-item eval (archived):** 3d=61.4%, 7d=60.9%, 14d=60.2%, 30d=68.1% — Fixed LightGBM params (no ensemble).
+### What is not measurable
 
-### Historical Accuracy Timeline
+No production directional accuracy. `backtest_accuracy.py` scores *stored* forecasts against
+matured actuals, `MIN_FORECAST_DATES = 20` gates the headline, and live cohorts span 1–2 distinct
+forecast dates — so every horizon reports NO HEADLINE. Accuracy is clustered by forecast date, so
+a five-figure forecast count with two dates has an effective sample size of two; see
+`docs/changelog/2026-08-03-accuracy-is-clustered-by-forecast-date.md`. Every production DA
+measured before 2026-08-02 is additionally an artifact of a two-estimator bug in the scorer
+(`docs/changelog/2026-08-01-deterministic-backtest.md`) and must not be cited or compared against.
 
-| Stage | 7d Dir Acc | 30d Dir Acc | Notes |
-|-------|:----------:|:-----------:|-------|
-| Pre-audit (MA-crossover) | ~34% | ~34% | Random baseline (3-class) |
-| After P1/P2 fixes | 70.9% | 72.5% | Leakage fix, returns target, NaN fix |
-| After Jul '26 round 1 | 75.3% | 77.0% | Event decay, confidence calibration |
-| After Jul '26 round 2 | 87.0% | 83.0% | **Buggy** — target inversion inflated |
-| After target inversion fix | 61.1% | 65.8% | Genuine — 9-16pp above 50% baseline |
-| After data quality + shift guard | 57.4% | 55.2% | Dead item filter, winsorization, 2026 exclusion |
-| After 3d depth + walkforward | 52.8% | 54.2% | Production backtest — **inflated, see below** |
-| After the deterministic backtest (2026-08-02) | **47.9%** | **42.4%** | First reproducible measurement |
+For a fresh-model number, `scripts/walkforward_backtest.py` is the gate — but it does not use
+`fetch_price_history`, so it scores a different price consensus (plain mean vs production's
+outlier-voted median) over a different item universe, and is not directly comparable to
+production either.
 
-Every row above the last was measured by a scorer whose two legs used different
-estimators, so the whole progression is inflated by an unknown, run-date-dependent
-amount. Stage-to-stage *deltas* in it are not trustworthy either. Only the last
-row is reproducible.
+### Production backtest pipeline
 
-### Production Backtest Pipeline
+`backtest_accuracy.py` evaluates mature forecasts from `item_forecasts` against the Parquet
+archive. **Both legs** of the realised return resolve through one shared estimator,
+`backtest/price_resolution.py::resolve_anchors` — same observation window, same multi-source
+voting, same anchor-staleness cap on each side. `item_forecasts.current_price` is stored on the
+outcome for reference and is **never scored on**; using it as the base leg is the bug that let one
+cohort score 61.76% and 33.74% on different days with no new data. Resolved actuals are frozen
+(`base_price`, `actual_price`, `resolved_at`); only `--reresolve` moves them.
 
-The `backtest_accuracy.py` script evaluates mature forecasts from `item_forecasts`
-against the Parquet archive. Since 2026-08-02, **both legs** of the realised
-return resolve through one shared estimator,
-`backtest.price_resolution.resolve_anchors` — the same 3-observation window, the
-same multi-source voting, the same anchor-staleness cap on each side.
-`item_forecasts.current_price` is stored on the outcome for reference and is
-never scored on. Resolved actuals are then **frozen**: `base_price`,
-`actual_price` and `resolved_at` are final, and only `--reresolve` can move them.
-Maturity is bounded by archive coverage (`min(today, archive_max_day())`), not by
-the calendar. It stores aggregate metrics to `prediction_accuracy` (per price
-tier, with a ≥$1 headline) and per-forecast outcomes to `forecast_outcomes`.
+Maturity is bounded by archive coverage, `min(today, archive_max_day())`, not by the calendar.
+`MAX_UNRESOLVABLE_PCT = 10.0` (`backtest/resolution_gate.py:87`) fails the run rather than
+reporting a cohort riddled with guaranteed misses. Aggregates land in `prediction_accuracy` (per
+price tier, ≥$1 headline), per-forecast outcomes in `forecast_outcomes`.
 
-**Latest verified results (`lgbm-v3`, re-resolved on prod 2026-08-02, ≥$1
-headline tier, ~1,000 forecasts per horizon):**
+Tier 0 (<$1) is reported separately rather than folded into the headline: it is ~72% of the
+evaluated universe, and at those prices one cent is a 20% move, so the direction label is
+dominated by tick quantisation. `api/serving_policy.py` sets `MIN_SERVED_PRICE_USD = 1.0` equal to
+`HEADLINE_MIN_TIER` so the population the product shows is the population the headline describes.
 
-| Horizon | DA (≥$1) | DA (all tiers) |
-|---------|---:|---:|
-| **3d** | **48.4%** | 48.7% |
-| **7d** | 49.4% | 47.9% |
-| **14d** | **50.8%** | 40.2% |
-| **30d** | 46.7% | 42.4% |
+**Metrics per horizon:** MAE, RMSE, MAPE, wMAPE, MAPE by tier; DA with bootstrap CI and interval
+coverage; persistence-baseline DA/MAE, improvement in pp, `skill_vs_baseline`; `conf_gap_pp`,
+`conf_high_interval_cov`, `conf_calibration_error`.
 
-With three labels (up/flat/down) chance is ~33%, so these are above chance but
-far below the figures this section carried before 2026-08-02.
+### Known limitations
 
-> ⚠️ **Every production DA number measured before 2026-08-02 is an artifact.**
-> The two legs of the realised return were different estimators — a serving-time
-> 3-observation median against a raw single-day voted price — which inflated DA
-> and made it non-reproducible: one 5,512-forecast cohort scored 61.76%, 33.74%,
-> 61.54% and 57.91% on four evaluation dates with no new data. The superseded
-> table read 3d=61.5% / 7d=52.8% / 14d=55.7% / 30d=54.2%. Do not compare against
-> it, and do not treat the drop as a regression in the model. See
-> `docs/changelog/2026-08-01-deterministic-backtest.md`.
-
-Tier 0 (<$1) is reported separately rather than folded into the headline: it is
-72% of the evaluated universe, and at those prices one cent is a 20% move, so the
-direction label is dominated by tick quantisation.
-
-**Metrics computed per horizon:**
-- Point error: MAE, RMSE, MAPE, wMAPE (dollar-weighted), MAPE by price tier
-- Directional: DA with bootstrap CI, interval coverage
-- Baseline: persistence forecast DA/MAE, improvement over baseline (pp), skill_vs_baseline (Theil's U analog)
-- Calibration: conf_gap_pp, conf_high_interval_cov, conf_calibration_error
-
-### Known Limitations
-- Walk-forward eval runs on 200 items only (not all 8,691)
-- Fold variance is high (30d std=12.0%, range 42.5%–91.1%)
-- Recent folds degrade during high market volatility
-- Interval coverage drops in volatile periods
-- **q90 GBDT models are broken** — GOSS `data_sample_strategy` is incompatible with extreme quantile regression (alpha=0.9). q90 models terminate at 1-3 boost rounds, causing 39-48% interval coverage on GBDT horizons (3d, 7d). DART horizons (14d, 30d) unaffected (~91% coverage).
-- Rarity features have strong causal signal (+10-12pp permutation test). Weapon-type one-hot and cross-sectional were removed — they showed zero causal signal despite the +0.66pp A/B bundle delta
-- `_apply_multi_source_voting()` uses `groupby().apply()` on 5.5M rows — takes ~3-5 min. Could be vectorized for ~5s but voting logic is correct and this only affects training time, not accuracy
-- **Flat-bias on longer horizons:** The model predicts "flat" too often on 7d/14d/30d when uncertainty is high. In a trending market (Dec 2025: only ~18% of actuals were flat), this penalizes raw DA heavily — 43% of 7d forecasts predicted flat when the item actually moved. The model still adds +29pp over baseline, but confidence calibration tuning could reduce this bias.
-- **VADER social features not in top 20:** None of the 5 social sentiment features rank in the top 20 by gain importance. Root cause: VADER is a 2014 general-purpose lexicon that scores CS2 market jargon ("BFK CW MW low float") as neutral. Recommendation: replace with ModernFinBERT (ONNX INT8, ~88% accuracy on financial text).
-
-### Data Quality Audit (2026-07-17)
-A comprehensive audit of the 9.8M-row training set revealed three data quality issues:
-
-| Issue | Scope | Impact |
-|-------|-------|--------|
-| **Dead items at Steam floor** ($0.03-0.04) | 2,936 items, 4.1M rows (41.5%) | Zero signal — dilutes model, wastes gradient steps |
-| **Corrupt price jumps** (>1000%, revert next day) | 11,044 jumps across 905 items | Pollutes gradient estimates with false targets |
-| **Incomplete 2026 backfill** (ends Mar 29) | ~400K rows | Distribution shift: train on Jan-Mar, predict on Jul+ |
-
-All three issues were fixed in the 2026-07-17 changelog. Full details in `docs/changelog/2026-07-17-data-quality-audit-and-fixes.md`.
+- **Train/serve gap in the serving transform.** Running the saved classifiers on interior rows vs
+  serving rows shows the served class mix skewed to "down": at 7d, 48.2% down on served rows
+  against 34.8% on interior rows — a +13.4pp residual on the cohort actually served. Two causes,
+  both hitting all 5,542 served items at once: volume features median-filled on 100% of served
+  rows (now shelved), and date-based lag joins meeting the archive's day gaps, which NaN a
+  rotating set of `return_{lag}d` columns for every item simultaneously. Serving confidence is
+  correspondingly lower than interior confidence (7d: 0.583 vs 0.664).
+- **The model trains on 1.8% of the item pool** (99 of 5,377 items at the default row budget) and
+  serves 5,542. Raising coverage is a measured ~4.5× cost increase and was declined.
+- **The gate cannot resolve small effects.** The A/B harness has a ~1.15pp noise floor at 3d,
+  wider at longer horizons, so anything below ~1pp is unmeasurable by design. Compute the MDE
+  (`scripts/compute_mde.py`) before running one.
+- **7d q50 early stopping is noise-determined.** The validation curve improves only 0.28% total on
+  the production frame, so `early_stopping(50)` trips on noise (stopping-round sd 41 on mean 47).
+  Root cause is a regime mismatch: the 30-day validation window has ~2× the return spread of the
+  training set. Any 7d accuracy A/B is partly measuring this.
+  `docs/changelog/2026-07-29-7d-q50-early-stop.md`.
+- **`_apply_multi_source_voting()` uses `groupby().apply()`** over millions of rows and takes
+  minutes. Vectorizable, but it affects only training/fetch time. The voted frame is cached —
+  bump `VOTED_CACHE_VERSION` when voting or the DuckDB query changes.
+- **Dead code that survives deliberately:** `_fix_quantile_crossing` (backtest baseline arm),
+  `_recenter_on_momentum` (empty `MOMENTUM_FALLBACK_HORIZONS`), the vol-scaled direction-label
+  branch (all call sites pass `sigma=None`), regime training (`SKIP_REGIMES=1` in CI), and every
+  non-`price_technicals` feature group (computed, then dropped by the allowlist).
 
 ---
 
@@ -354,87 +411,52 @@ All three issues were fixed in the 2026-07-17 changelog. Full details in `docs/c
 |---------|--------|-----------|
 | 1d | ❌ Rejected | Too noisy — day-to-day CS2 price action dominated by random walk |
 | 3d | ✅ Active | Short-term momentum, smooths weekend gaps |
-| 7d | ✅ Active | Primary horizon, strongest mid-term signal |
+| 7d | ✅ Active | Primary horizon |
 | 14d | ✅ Active | Natural midpoint, many CS2 cycles run ~2 weeks |
-| 30d | ✅ Active | Longest horizon, benefits most from 1460d training window |
+| 30d | ✅ Active | Longest horizon, benefits most from the 1460d training window |
 | 60d | ❌ Not yet | Would require more data and richer long-term features |
 
 ---
 
-## Historical Audit Reference
+## What NOT To Do
 
-### Critical Bug: Target Inversion (2026-07-12)
-
-`prepare_targets` was looking up prices `horizon` days **ago** instead of **ahead**. The model learned that `return_7d` (a feature) ≈ `target_return_7d` (the target), producing deceptively high 86-88% accuracy. Fixed by reversing the merge direction: each row looks up price at `date + horizon` using a backward date shift.
-
-**Impact:** Real accuracy is ~60-66% (9-16pp above 50% baseline) instead of the illusory 86-88%.
-
-### Key Fixes Applied
-
-| Fix | Date | Impact |
-|-----|------|--------|
-| Remove `daily_analysis` feature leakage | Jul 2026 | High |
-| Change target from price level to returns | Jul 2026 | High |
-| Target inversion fix | 2026-07-12 | Critical |
-| NaN imputation (per-feature medians) | Jul 2026 | High |
-| Add RSI, MACD, Bollinger %B features | Jul 2026 | High |
-| Walk-forward validation split | Jul 2026 | High |
-| Optuna Bayesian HP search | Jul 2026 | Medium |
-| Cyclical temporal encoding | 2026-07-12 | Medium |
-| Feature medians persisted to meta.json | 2026-07-12 | Medium |
-| Expanding-window CV | 2026-07-13 | Medium |
-| Cross-sectional/market-regime features | Jul 2026 | Medium |
-| Event decay weighting (not hardcoded 999) | Jul 2026 | Medium |
-| Feature pruning (correlation 0.95) | Jul 2026 | Medium |
-| Supply-side features (rarity one-hot) | 2026-07-15 | Low (+0.66pp bundle, refined to rarity-only Jul 16) |
-| Weapon-type features removed (22 one-hot + 6 cross-sectional) | 2026-07-16 | Zero causal signal (permutation test) |
-| Multi-source outlier voting | 2026-07-16 | Medium — protects live inference from corrupted `current_price` |
-| Walk-forward backtest (`walkforward_backtest.py`) | 2026-07-20 | Medium — reusable 200-item, 26-fold walk-forward evaluation |
-| HF CS2 dataset merge (69.2M hourly rows) | 2026-07-20 | Medium — filled Mar 30–Apr 15 gap in Parquet archive |
-| Social sentiment features (5 cols, VADER) | 2026-07-19 | Low — not in top 20 gain importance; VADER ineffective on CS2 jargon |
-| 3d depth experiment (`N_TRIALS_MAP[3]: 50→20`) | 2026-07-20 | Medium — +1.8pp on 3d, 3 min vs 7.5 min Optuna |
-| 3-seed ensemble per quantile | Jul 2026 | Medium |
-| Binary confidence (dropped medium bucket) | Jul 2026 | Low |
-| CatBoost ensemble tested and removed | 2026-07-13 | Low (degraded accuracy) |
-| Recency mismatch fix (365d → 365d aligned) | Jul 2026 | Medium |
-| 60d rolling features + 730d training window | 2026-07-12 | Medium |
-| Concept drift monitoring | Jul 2026 | Medium |
-| **Regime-switching models** (bear/range/bull per horizon) | **2026-07-18** | **High** — captures regime-specific price dynamics |
-| **DART boosting for 14d/30d** | Done | **Medium** — reduces overfitting on noisy long horizons |
-| **Residual stacking** (Ridge on LGB residuals) | Done | **Medium** — corrects systematic bias for weak horizons |
-| **Forecast blending** (`FORECAST_BLEND_WEIGHT=0.15`) | Done | **Low** — reduces daily direction flip-flopping |
-| Prediction sanity checks (clamp, zero-volume) | 2026-07-12 | Low |
-| 41 unit tests for forecaster | 2026-07-12 | Foundation |
-| **Dead item filter** (remove $0.03 floor items) | 2026-07-17 | High — +2-5pp estimated, 41% less training noise |
-| **Target winsorization** (±500% clip) | 2026-07-17 | High — neuters 11K corrupt price jumps |
-| **Corrupt item flagging** (exclude 151 worst) | 2026-07-17 | Medium — removes API corruption from training |
-| **Sample weighting** (by price variance) | 2026-07-17 | Medium — down-weights flat items, up-weights movers |
-| **2026 shift guard** (exclude incomplete year) | 2026-07-17 | Low — closes train/predict distribution gap |
-
-### What NOT To Do
-- **Do not replace with a fine-tuned LLM** — worse at numerical time series, slower, harder to retrain
-- **Do not add neural forecasting models** (N-BEATS, PatchTST) unless accuracy plateaus and GPU training is manageable
-- **Do not revisit CatBoost** — tested Jul 2026, degraded accuracy by 18-20pp
-- **Do not ship VADER-based social features as-is** — 2014 general-purpose lexicon scores CS2 jargon as neutral. Replace with ModernFinBERT (ONNX INT8) first
+- **Do not re-add training parallelism** — deleted 2026-07-21 after OpenMP deadlocks.
+- **Do not set `SKIP_CV=1` in CI** — CV is the conformal calibration set, not a diagnostic.
+- **Do not revisit CatBoost** — tested Jul 2026, degraded accuracy 18–20pp.
+- **Do not rebuild the Reddit sentiment collector** — runner IPs get 403s and the features were
+  refuted independently.
+- **Do not replace with a fine-tuned LLM or a neural forecaster** (N-BEATS/PatchTST/TFT) — worse on
+  numerical time series, slower, GPU-dependent.
+- **Do not compare any accuracy figure across scorer versions.** Pre-2026-08-02 production DA came
+  from a two-estimator scorer; CV, walkforward and production each score a different item universe.
 
 ---
 
 ## Files Reference
 
 | File | Lines | Role |
-|------|-------|------|
-| `backend/models/forecaster.py` | ~3,500 | Core ML: ItemForecaster, feature engineering, training, predict, regime-switching |
-| `backend/models/steam_types.py` | 130 | Steam type field parser (rarity + weapon_type extraction) |
-| `backend/scripts/forecast_prices.py` | 283 | Entry point: train + predict pipeline, `--compare-regime` A/B mode |
-| `backend/scripts/backtest_accuracy.py` | 1,054 | Mature forecast backtesting (production) |
-| `backend/backtest/price_resolution.py` | 232 | Shared price estimator — both legs of the realised return |
-| `backend/backtest/scoring.py` | 163 | Pure scorer: tiers, verdicts, cohort metrics |
-| `backend/scripts/walkforward_backtest.py` | — | Standalone walk-forward evaluation (200 items, 26 folds) |
-| `backend/scripts/evaluate_forecaster.py` | 366 | Legacy walk-forward evaluation (archived) |
-| `backend/scripts/optuna_3d_search.py` | — | Optimized 3d horizon Optuna search (200 items, ~58s) |
-| `backend/scripts/3d_depth_experiment.py` | — | 3d depth hyperparameter depth experiment |
-| `backend/scripts/merge_hf_dataset.py` | — | Merge HuggingFace CS2 dataset into Parquet archive |
-| `backend/scripts/backfill_supply_metadata.py` | — | Backfill supply metadata from catalog → Parquet + DB |
-| `backend/collectors/social_sentiment.py` | — | Reddit sentiment collector (3 subreddits, VADER, 6-hourly) |
-| `backend/tests/test_forecaster.py` | 1,118 | 69+ unit tests (global + regime-switching) |
-| `price-archive/item-metadata.parquet` | 8,691 rows | Supply metadata cache (rarity, weapon_type per item) |
+|------|------|------|
+| `backend/models/forecaster.py` | 5,196 | `ItemForecaster`: feature engineering, training, CV, predict |
+| `backend/models/conformal.py` | 106 | Normalized split conformal band (sigma, q_hat, band). Pure numpy |
+| `backend/models/steam_types.py` | 170 | Steam type field parser (rarity + weapon_type extraction) |
+| `backend/scripts/forecast_prices.py` | 381 | Entry point: retrain decision, train + predict, DB/Parquet write |
+| `backend/scripts/backtest_accuracy.py` | 1,169 | Production backtest over stored forecasts |
+| `backend/backtest/price_resolution.py` | 276 | Shared price estimator — both legs of the realised return |
+| `backend/backtest/scoring.py` | 318 | Pure scorer: tiers, verdicts, cohort metrics, `MIN_FORECAST_DATES` |
+| `backend/backtest/resolution_gate.py` | 285 | Unresolvable-rate gate (`MAX_UNRESOLVABLE_PCT = 10.0`) |
+| `backend/backtest/walkforward_records.py` | 110 | Per-forecast record schema for paired offline comparison |
+| `backend/backtest/paired_mde.py` | 86 | Paired minimum-detectable-effect for A/B arms |
+| `backend/db/parquet.py` | 566 | `price-archive/ops/*.parquet` read/write; JSON-text nested columns |
+| `backend/scripts/walkforward_backtest.py` | 625 | Fresh-model gate (`--max-items 500`, `STEP_DAYS = 60`) |
+| `backend/scripts/evaluate_forecaster.py` | 354 | Legacy walk-forward evaluation (archived) |
+| `backend/scripts/append_to_parquet.py` | 204 | Monthly/yearly archive partition writer |
+| `backend/scripts/compute_mde.py` | — | Minimum detectable effect for the A/B harness |
+| `backend/scripts/optuna_horizons_search.py` | — | Standalone per-horizon Optuna search |
+| `backend/scripts/optuna_3d_search.py` | 161 | 3d horizon Optuna search (frozen winner lives here) |
+| `backend/collectors/social_sentiment.py` | 332 | FinBERT ONNX INT8 sentiment scorer (workflow deleted; dormant) |
+| `backend/tests/test_forecaster.py` | 2,249 | 152 forecaster tests |
+| `backend/tests/test_minimal_model_shape.py` | 1,081 | Pins the 8-model shape and the removed code paths |
+| `price-archive/item-metadata.parquet` | 109 KB | Rarity/weapon_type cache (computed, then dropped by the allowlist) |
+
+Run tests with **`pytest tests`**, not bare `pytest` — `scripts/test_social_signal.py` imports
+`thefuzz`, which is not in `requirements.txt`, and collection aborts.

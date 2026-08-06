@@ -1,62 +1,79 @@
 # docs/
 
+Refreshed 2026-08-05 against the code. Where a doc and the code disagree, the code wins —
+report it rather than working around it.
+
 ## Architecture (`architecture/`)
 
-- `data.md` — Parquet archive, Supabase serving layer, storage breakdown, migration history
-- `model.md` — LightGBM forecaster: features, ensembles, regime-switching, accuracy, parameters
-- `model-optimization.md` — Size/speed levers and the measured effect of each
-- `pipeline.md` — CSGOTrader aggregator: multi-source collection, Parquet storage, coverage
+- `model.md` — the forecaster as it stands: 4 q50 LightGBM models + 4 directional
+  classifiers, the split-conformal band, sequential training, age-based retrain
+- `model-optimization.md` — size/speed levers, split into already-applied, still-available,
+  and 🛑 do-not
+- `pipeline.md` — the aggregator and the workflows chained off it; what collects and what
+  no longer does
+- `data.md` — Parquet archive layout, the `ops/` mirror layer, Supabase serving tables
 
-> **Accuracy figures in `model.md` and `model-optimization.md` are not current.** See
-> `changelog/2026-08-03-accuracy-is-clustered-by-forecast-date.md` — no directional-accuracy
-> number is reportable until the served series spans 20 distinct forecast dates.
+> **No production directional-accuracy figure is currently quotable.**
+> `MIN_FORECAST_DATES = 20` (`backend/backtest/scoring.py`) and live cohorts span 1–2
+> distinct forecast dates, so every horizon reports NO HEADLINE. This is a calendar
+> problem, not a code problem. Offline CV DA and production DA are not comparable until
+> the served series accumulates ~20 dates.
 
 ## Reference (`references/`)
 
-- `steam-api.md` — Steam Market API endpoints, rate limits, response format (empirically tested)
-- `backfill.md` — CSMarketAPI multi-market backfill: key rotation, priority queue, execution results
-- `data-sources.md` — Source quality, freshness, known issues, volume data analysis
-- `catalog-build.md` — Phase 1 Steam catalog scrape: rate-limiting strategy, gap repair
+- `steam-api.md` — Steam Market endpoints and response formats, empirically tested.
+  The rate-limit envelope applies to **residential IPs only** — hosted CI runners are
+  429'd on the first request.
+- `data-sources.md` — per-source status, freshness, known issues
+- `catalog-build.md` — Steam catalog scrape: rate-limiting strategy, gap repair
+- `backfill.md` — **Dead capability.** CSMarketAPI multi-market backfill; the free-key
+  quota never resets and the local DB is empty. Kept for the key-rotation and
+  priority-queue design only.
 
 ## Research (`research/`)
 
-- `accuracy-opportunities.md` — **Closed 2026-07-31.** Carries a stop banner; the remaining
-  items were abandoned as unmeasurable, not deferred. Read before proposing accuracy work.
-- `2026-07-19-feature-contribution-by-horizon.md` — Ablation study behind the live
+- `accuracy-opportunities.md` — **Closed 2026-07-31.** Carries a stop banner; the
+  remaining items were abandoned as unmeasurable, not deferred. Read before proposing
+  accuracy work.
+- `2026-07-19-feature-contribution-by-horizon.md` — ablation behind the
   `HORIZON_EXCLUDED_GROUPS` config in `models/forecaster.py`
-- `2026-07-21-training-time-optimization.md` — Training-time levers
-- `volume-data.md` — Volume data evaluation: free source in archive, zero predictive lift verified
-- `competitor-analysis.md` — Landscape: CSMarketCap, SteamAnalyst, TradeUp Academy, differentiators
+- `2026-07-21-training-time-optimization.md` — training-time levers
+- `volume-data.md` — volume evaluation: free source in the archive, zero predictive lift
+- `competitor-analysis.md` — landscape and differentiators
+- `2026-07-27-direction-label-sweep-raw.txt` — raw sweep output
 
 ## Design docs and plans (`superpowers/`)
 
-`specs/` holds designs, `plans/` the execution checklists. Only those still load-bearing are
-kept — each shipped change is recorded in `changelog/`, which is the durable record.
+`specs/` holds designs (8), `plans/` the execution checklists (5). Each shipped change is
+also recorded in `changelog/`, which is the durable record. Load-bearing ones:
 
-- `specs/2026-08-03-served-forecast-surface-design.md` + `plans/…` — confidence-gate removal, $1 floor
-- `specs/2026-08-01-deterministic-backtest-design.md` + `plans/…` — shared-estimator backtest
-- `specs/2026-07-25-monthly-parquet-partitioning-design.md` — the live partitioning scheme in
-  `scripts/append_to_parquet.py`
-- `specs/2026-07-25-quality-spread-features-design.md` — referenced by `accuracy-opportunities.md`
-
-## Historical (`historical/`)
-
-Preserved as reference only — the issues they describe have been resolved:
-- `backend-review.md` — Original code review (Jul 2026). All critical/high issues fixed.
-- `system-overhaul.md` — Jul 7-8 overhaul: schema fix, pipeline repair, Parquet architecture
-- `db-migration-plan.md` — Superseded by Parquet-based architecture
-- `schema-fix-recommendations.md` — Schema optimization: composite PK migration
-- `price-basis-swap.md` — Steam price basis unification (completed)
+- `specs/2026-07-25-monthly-parquet-partitioning-design.md` — the live partitioning scheme
+  in `scripts/append_to_parquet.py`
+- `specs/2026-08-01-deterministic-backtest-design.md` — shared-estimator backtest
+- `specs/2026-08-03-served-forecast-surface-design.md` — confidence-gate removal, $1 floor
+- `specs/2026-08-04-minimal-model-design.md` — the 40→8 model collapse
+- `specs/2026-08-05-cv-cohort-parity-design.md` — CV/production cohort mismatch. Its
+  residual-gap table rests on 1–2 market days; read it with the NO HEADLINE caveat above.
 
 ## Changelog (`changelog/`)
 
-Dated execution logs for bug fixes, features, and audits. 53 entries, 2026-07-08 to 2026-08-03.
+Append-only dated decision records: bug fixes, features, audits, and refuted experiments.
+57 entries, 2026-07-08 to 2026-08-06. Entries are never edited to match later reality —
+several describe code that has since been deleted, which is the point. Per `AGENTS.md`
+rule 4, non-trivial decisions get a new dated note here.
 
 ## Other
 
-- `code-review-2026-07-21.md` — **Has open findings.** The pagination double-slice bug it
-  reports is still live at `api/routes/items.py:256,267`. Not historical.
-- `retrain-optimization-analysis.md` — Per-change training-time estimates and side effects
-- `design.md` — Visual design system: OKLCH palette, typography, spacing, components
-- `product.md` — Product positioning, users, brand personality, design principles
-- `operations.md` — Workflow monitoring: schedules, data flow, troubleshooting
+- `code-review-2026-07-21.md` — **Live punch list**, findings re-verified 2026-08-05.
+  Most are still open, and the security findings cluster (SQL f-strings, default secret
+  key, session token in a redirect URL). Separates LIVE from DORMANT.
+- `operations.md` — runbook: workflow schedules, required secrets, load-bearing steps,
+  troubleshooting
+- `design.md` — visual design system: OKLCH palette, typography, spacing, components
+- `product.md` — positioning, users, brand personality, design principles
+
+## Removed 2026-08-05
+
+`historical/` (5 files) and `retrain-optimization-analysis.md` were deleted — the first
+documented only resolved issues, the second optimized a 36-model quantile grid that no
+longer exists. Both are recoverable from git history if needed.

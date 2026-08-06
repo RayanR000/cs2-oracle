@@ -2,90 +2,118 @@
 
 ## Motivation
 
-Supabase has a 500 MB limit. `price_history` held 15.2M daily OHLCV rows that couldn't fit. The local `csmarketapi.db` (4.2 GB, 5,542 items, 15.2M rows) had full daily granularity but wasn't backed up. Analysis scripts needed daily data for SMA-7, momentum, event impact, and forecasts, but Supabase couldn't hold it all.
+Supabase has a 500 MB limit and the daily OHLCV history does not fit in it. Analysis and
+training need full daily granularity for lags, SMAs, momentum, event impact and forecasts.
 
-**Solution:** Move full historical data to Parquet files on the `data-archive` branch. Supabase becomes a lean serving layer. Analysis scripts read training data from local Parquet via DuckDB instead of querying Supabase over the network.
+**Solution:** full history lives in Parquet, in a separate repo. Supabase is a lean
+serving layer and a fallback. Training and analysis read Parquet locally via DuckDB
+instead of querying Supabase over the network.
 
 ---
 
 ## Current Architecture
 
-```
-data-archive branch:
-  └─ prices-YYYY.parquet    — Full daily OHLCV by year (~10-45 MB each)
-  └─ snapshots-YYYY.parquet — Raw multi-source snapshots
-  └─ exchange-rates-YYYY.parquet — Currency rates
+The canonical archive is the repo **`RayanR000/cs2-oracle-data`**, branch `main`,
+force-pushed as a squashed orphan commit by every workflow that writes it. There is no
+`data-archive` branch — any command referencing one is dead. Locally, `price-archive/` is
+a gitignored symlink to a checkout of that repo (`.gitignore:64-65`).
 
-Supabase (~68 MB):
-  └─ items (+ is_backfilled flag)
-  └─ price_history           — Stale (aggregator writes only to Parquet)
-  └─ supply_snapshots        — Daily Steam sell_listings (supply scraper)
-  └─ item_forecasts
-  └─ events / event_impacts / event_correlations
-  └─ collection_runs         — Run tracking
-  └─ prediction_accuracy / forecast_outcomes / accuracy_alerts
-  └─ social_mentions         — Reddit mentions & sentiment (VADER)
+```
+price-archive/                       (repo: RayanR000/cs2-oracle-data, branch main)
+  ├─ prices-YYYY.parquet             — daily OHLCV, yearly files for pre-2026
+  ├─ prices-YYYY-MM.parquet          — daily OHLCV, monthly from 2026 on
+  ├─ snapshots-YYYY-MM.parquet       — flat per-source rows (item_slug, day, source, price, volume)
+  ├─ exchange-rates-YYYY.parquet     — currency rates
+  ├─ player-counts-YYYY.parquet      — frozen; the collector was removed in 181488b
+  ├─ item-metadata.parquet           — 8,691 item rows
+  └─ ops/                            — operational tables, one Parquet file per table
+       accuracy_alerts, collection_runs, event_impacts_denorm, events,
+       forecast_outcomes, item_forecasts, prediction_accuracy, supply_snapshots
+
+Supabase (serving + fallback):
+  ├─ items (+ is_backfilled)         — the only thing training reads from the DB
+  ├─ price_history                   — stale; the aggregator writes to Parquet only
+  ├─ events / event_impacts / event_correlations
+  ├─ collection_runs                 — run tracking
+  ├─ item_forecasts / prediction_accuracy / forecast_outcomes / accuracy_alerts
+  ├─ supply_snapshots                — frozen, collector deleted
+  ├─ social_mentions                 — 0 rows all-time, collector deleted
   └─ users
 ```
+
+**`ops/` is read before the DB.** `db/parquet.py:37-48` points at `price-archive/ops/` and
+API routes query it first, falling back to Supabase only when the Parquet read returns
+nothing or raises — see `api/routes/items.py:418-424` for the pattern, repeated for
+trends, predictions, item events, event impacts and sentiment. Nested values in `ops/` are
+stored as **JSON text store-wide** (`db/parquet.py::_jsonify_nested`), because DuckDB
+infers a nested column's SQL type from the batch's contents; see
+`docs/changelog/2026-08-05-backtest-red-triage.md`.
+
+Prices and snapshots are partitioned **monthly** from 2026 onward
+(`scripts/append_to_parquet.py:5-9`) to stay under GitHub's 100 MB per-file limit;
+`prices-2026-07.parquet` alone is 56 MB. The loader globs `prices-*.parquet`, so a
+restored single-file `prices-2026.parquet` would be read *alongside* the monthly set.
 
 ### Data Flow
 
 ```
-csmarketapi.db ──export_historical_parquet.py──▶ archive/price-archive/prices-*.parquet
-                                                          │
-Live aggregator ──▶ CSVs ──▶ daily Parquet append
-                                                          │
-HF CS2 dataset ──merge_hf_dataset.py──▶ append to prices-2026.parquet
-                                          (Mar 22 – Apr 15, ~33K items)
-                                                          │
-Analysis scripts (DuckDB + read_parquet)
-  └─ 90-day or 365-day or full history — local, ~200ms
-  └─ Compute results → write to Supabase tables
+Daily aggregator ──▶ snapshot CSV ──▶ append_to_parquet.py ──▶ prices-YYYY-MM.parquet
+                                                               snapshots-YYYY-MM.parquet
+                                                               exchange-rates-YYYY.parquet
+
+Training / backtest / analysis (DuckDB + read_parquet over price-archive/)
+  └─ fetch_price_history(backfilled_only=True) — local, no network
+  └─ results ──▶ price-archive/ops/*.parquet  (+ Supabase mirror)
 
 API serving:
-  GET /items/{id}/price-history
-    ├─ days < 365  → Supabase price_history
-    └─ days >= 365 → Parquet archive (via DuckDB)
+  GET /items/{id}/price-history   → Supabase price_history only  (see below)
+  GET /items/{id}/trends          → ops/item_forecasts.parquet, DB fallback
+  GET /items/{id}/prediction      → ops/item_forecasts.parquet, DB fallback
+  GET /items/{id}/events|impacts  → ops/*.parquet, DB fallback
 ```
+
+**Long-range price history does not work.** `api/routes/items.py:234-257` accepts
+`days` up to 5000 and queries Supabase `PriceHistory` unconditionally — there is no
+DuckDB/Parquet branch at any `days` threshold. Because `price_history` is stale, any
+request beyond the last few days of coverage returns near-nothing, silently. Routing this
+endpoint at the archive the way the forecast and event endpoints already do is unbuilt
+work, not shipped behaviour.
 
 ### Storage Breakdown
 
-| Table / File | Size | Rows | Growth |
-|-------|------|------|--------|
-| `items` | ~2 MB | 5,525 | Static |
-| `price_history` | ~1 MB | few hundred | Stale (aggregator writes to Parquet only) |
-| `supply_snapshots` | ~2 MB | 35,037 | ~11K rows/day |
-| `item_forecasts` | ~8.4 MB | 10,970 | UPSERT, bounded |
-| `event_correlations` | ~17 MB | 67,211 | Weekly rebuild |
-| `event_impacts` | ~17 MB | 67,211 | Weekly rebuild |
-| `collection_runs` | ~1 MB | ~1,000 | 1 row/day |
-| `prediction_accuracy` | ~2 MB | ~5,000 | UPSERT, bounded |
-| `forecast_outcomes` | ~6 MB | 60,737 | **Insert-only / frozen** — see below |
-| `accuracy_alerts` | ~1 MB | ~100 | UPSERT, bounded |
-| `social_mentions` | ~2 MB | ~8,000 | 4 rows/day (6-hourly) |
-| `users` | ~0.1 MB | few | Static |
-| Others | ~8 MB | — | Static |
-| **Supabase total** | **~68 MB** | | |
-| `prices-2026-*.parquet` | ~101 MB across 7 monthly files | **10.6M** | Monthly layout, per `cs2-oracle-data` (see below) |
-| `snapshots-2026.parquet` | **21.2 MB** (was 7.6 MB) | **3.7M** (was 1.6M) | After HF merge |
+Parquet archive, measured 2026-08-05:
 
-**Archive layout.** The canonical copy of `price-archive/` lives in the separate
-`cs2-oracle-data` repo (`RayanR000/cs2-oracle-data`); the working copy under
-`cs2-oracle/price-archive/` is gitignored. 2026 prices use **monthly**
-`prices-2026-MM.parquet` files there. A local single-file `prices-2026.parquet`
-was retired 2026-08-02 — it was missing six days the monthly set has, and one of
-them (07-22) was enough to invalidate an entire 5,542-forecast backtest cohort,
-because a target date with no observation makes the actual leg's window fall back
-onto pre-forecast days. The loader globs `prices-*.parquet`, so both layouts
-would be read at once if the single file is restored alongside the monthly ones.
+| File / group | Size | Rows |
+|--------------|------|------|
+| `prices-2026-*.parquet` (8 monthly files, Jan–Aug) | 114 MB | **11,326,632** |
+| `prices-20XX.parquet` (pre-2026, yearly) | — | 9,429,275 |
+| `snapshots-2026-*.parquet` (6 monthly files, Mar–Aug) | 45 MB | 10,916,698 |
+| `exchange-rates-2026.parquet` | 5 KB | 306 (6 distinct days, latest 2026-07-17) |
+| `item-metadata.parquet` | 0.1 MB | 8,691 |
+| `ops/item_forecasts.parquet` | 1.6 MB | 158,200 |
+| `ops/forecast_outcomes.parquet` | 2.2 MB | 104,642 |
+| `ops/event_impacts_denorm.parquet` | 0.7 MB | 18,473 |
+| `ops/supply_snapshots.parquet` | 0.5 MB | 35,037 (frozen) |
+| `ops/collection_runs.parquet` | <0.1 MB | 194 |
+| `ops/prediction_accuracy.parquet` | <0.1 MB | 84 |
+| `ops/events.parquet` | <0.1 MB | 79 |
+| `ops/accuracy_alerts.parquet` | <0.1 MB | 13 |
+
+The price archive spans **2013-08-14 → 2026-08-04** and carries **41,725 distinct item
+slugs**. The local item catalog is separate: `backend/runtime/market_catalog.db`, 18 MB,
+31,908 `market_items`.
+
+Growth is dominated by the daily append: **~362,586 OHLCV rows/day** across 11 source
+labels. `ops/` tables are UPSERT-or-append-and-dedup and stay under a few MB each;
+`forecast_outcomes` is insert-only (see below).
 
 ### Performance
 
 | Operation | Before | After |
 |-----------|--------|-------|
-| Analysis (Actions runner) | Supabase query over network (~2-5s) | DuckDB local Parquet (~200ms) |
-| API listing filter | Correlated EXISTS subquery | `is_backfilled` column index |
-| Aggregator workflow | Same + pruning | Same - pruning + ~10s Parquet append |
+| Training / analysis read | Supabase query over network (~2-5s) | DuckDB local Parquet (~200ms) |
+| API listing filter | Correlated `EXISTS` subquery on `price_history` | `is_backfilled` column index |
+| API forecast / event reads | Supabase round-trip | `ops/*.parquet` via DuckDB, DB fallback |
 
 ---
 
@@ -94,20 +122,34 @@ would be read at once if the single file is restored alongside the monthly ones.
 ### `items` table — `is_backfilled` column
 
 ```python
-is_backfilled = Column(Integer, default=0)
+is_backfilled = Column(Integer, default=0)  # boolean: has CSMarketAPI historical series
 ```
 
-Boolean flag replacing the old pattern of scanning `price_history` for `source IN ('market_csgo', 'steam_historical')` on every listing query.
+Marks the items carrying the CSMarketAPI historical series — **not** merely "present in the
+archive". It is **derived from the archive, not set by hand**: `scripts/init_local_db.py`
+selects the slugs with rows before 2026-01-01 (that series predates the `source` column, so
+the same set is what `source IS NULL` selects) and re-derives the flag on **every run**,
+correcting rows written by older versions (`init_local_db.py:66-134`). ~5,542 items are
+flagged.
+
+This replaced a static blanket flag that read 100% of items, which made
+`backfilled_only=True` admit the low-history live cohort while excluding most of the grown
+archive — it mis-scoped both training and predict. See commit `065613b`.
+
+`init_local_db.py` refuses to run against a non-local database (`assert_local_db()`),
+because `backend/.env` points `DATABASE_URL` at production Supabase and the engine binds at
+import time.
 
 ### `price_history` composite PK
 
-`(item_id, timestamp, source)` promoted to primary key. Dropped surrogate `id` bigint PK (no FKs referenced it). Freed ~80 MB index space.
+`(item_id, timestamp, source)` promoted to primary key. Dropped surrogate `id` bigint PK
+(no FKs referenced it). Freed ~80 MB index space.
 
 ### `backfilled_item_clause()` rewritten
 
 Before: `EXISTS (SELECT 1 FROM price_history WHERE item_id=Item.id AND source IN ('market_csgo','steam_historical'))`
 
-After: `Item.is_backfilled == True`
+After: `Item.is_backfilled == 1` (`database.py:105`)
 
 ### Migration summary
 
@@ -152,26 +194,37 @@ no longer resolves. See `docs/changelog/2026-08-01-deterministic-backtest.md`.
 
 | Script | Purpose |
 |--------|---------|
-| `export_historical_parquet.py` | One-time: csmarketapi.db → year-split Parquet files |
-| `append_to_parquet.py` | Daily: append aggregator rows to current year's Parquet |
-| `merge_hf_dataset.py` | One-time: Hugging Face CS2 dataset → append to 2026 Parquet |
-| `build_chart_points.py` | Manual utility: Parquet → chart_points (if needed) |
+| `append_to_parquet.py` | Daily: snapshot CSV → monthly `prices-YYYY-MM` / `snapshots-YYYY-MM` + yearly `exchange-rates-YYYY` |
+| `db/parquet.py` | The `ops/` store: `append()` (concat-and-dedup, full rewrite) and `query()` (DuckDB context manager). Serialises nested values to JSON text |
+| `init_local_db.py` | Rebuild a local `items` table from the archive and re-derive `is_backfilled` |
+| `export_historical_parquet.py` | One-time: csmarketapi.db → year-split Parquet |
+| `merge_hf_dataset.py` | One-time: HuggingFace CS2 dataset → 2026 Parquet |
 
-### Daily aggregator run
+### Daily run
 
 ```
-GitHub Actions (23:00 UTC)
-  └─ run_task.py aggregate
-       ├─ Fetch all 7 sources from CSGOTraderAggregator
-       ├─ Snapshots CSV → /tmp/aggregator-snapshot-{date}.csv
-       ├─ Backfilled CSV → /tmp/aggregator-backfilled-{date}.csv
-       └─ Record CollectionRun (no prices written to Supabase)
+Aggregator Market Update — GitHub Actions, cron 23:00 UTC
+  ├─ run_task.py migrate
+  ├─ Resolve snapshot date  (collectors/snapshot_date.py → AGGREGATOR_SNAPSHOT_DATE)
+  ├─ run_task.py aggregate
+  │    ├─ 7 CSGOTrader price endpoints + exchange_rates.json
+  │    ├─ 11 source labels → /tmp/aggregator-snapshots-$DATE.csv
+  │    ├─ /tmp/aggregator-backfilled-$DATE.csv, /tmp/exchange-rates-$DATE.csv
+  │    └─ CollectionRun row (no prices written to Supabase)
+  ├─ Checkout RayanR000/cs2-oracle-data  (needs CS2_DATA_REPO_TOKEN)
+  ├─ append_to_parquet.py --date $SNAPSHOT_DATE --out-dir ../archive
+  │    └─ collapse to daily OHLCV → prices-YYYY-MM / snapshots-YYYY-MM / exchange-rates-YYYY
+  └─ Publish updated archive: orphan commit + force-push to main
 
-  └─ append_to_parquet.py
-       ├─ Collapse to daily OHLCV
-       ├─ Append to archive/price-archive/prices-YYYY.parquet
-       └─ Also writes snapshots
+  ▼ workflow_run
+Price Forecast  ──▶  ops/item_forecasts.parquet
+  ▼ workflow_run
+Backtest Accuracy  ──▶  ops/forecast_outcomes.parquet, ops/prediction_accuracy.parquet
 ```
+
+The snapshot date is resolved **once** and pinned for every later step. Reading the clock
+twice silently lost 2026-07-27, 07-30 and 08-03 from the archive
+(`aggregator-update.yml:56-68`).
 
 ---
 
@@ -179,9 +232,10 @@ GitHub Actions (23:00 UTC)
 
 See `docs/changelog/` for full detail. Major changes:
 - **2026-07-07**: Composite PK on `price_history` promoted (`item_id, timestamp, source`), freed ~80 MB
-- **2026-07-08**: Backfilled catalog (5,525 items), 1×/day collection, Parquet archive on `data-archive`
+- **2026-07-08**: Backfilled catalog, 1×/day collection, Parquet archive introduced
 - **2026-07-08**: Dropped `trend_indicators` table, cleared stale rows (~350 MB recovered)
-- **2026-07-11**: All 7 sources written to Parquet; dropped `chart_points` (freed 290 MB)
+- **2026-07-11**: All sources written to Parquet; dropped `chart_points` (freed 290 MB)
 - **2026-07-16**: Dropped `daily_analysis` table (migration 0015)
-- **2026-07-19**: Added `social_mentions` table (migration 0018) for Reddit sentiment collection
-- **2026-07-20**: Merged HF CS2 dataset (32K items, Mar 22 – Apr 15) into Parquet archive — filled 17 gap days, expanded 8 overlap days, 2.1M new OHLCV rows
+- **2026-07-20**: Merged HF CS2 dataset into the Parquet archive (`2026-07-20-hf-dataset-merge.md`)
+- **2026-08-02**: Archive moved to the `cs2-oracle-data` repo; 2026 prices split into monthly files after a missing day invalidated a 5,542-forecast backtest cohort
+- **2026-08-05**: `is_backfilled` re-derived from the archive on every run (`065613b`); `ops/` nested values standardised on JSON text (`2026-08-05-backtest-red-triage.md`)
