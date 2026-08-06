@@ -201,11 +201,31 @@ like a series of unlucky feature choices.
 
 * `DEFAULT_MARKET_RELATIVE_LABELS` stays **`False`**. Production is unchanged; `predict()`
   was never touched.
-* The code is **kept, defaulted off**, on the same reasoning that retained the served-cohort
-  instrument (`2026-08-06-served-cohort-weighting-refuted.md`) and
-  `scripts/ab_test_direction_labels.py`: it is the instrument that produced this
-  measurement, and the next person to doubt the finding should re-run it rather than rebuild
-  it.
+* **Superseded the same day: the forecaster wiring was removed rather than kept
+  defaulted-off.** The served-cohort precedent ("keep the instrument") was overridden on the
+  owner's call — the model is staying as it is, so a dead flag threading through
+  `__init__`, `build_training_data`, `_train_horizon_inline` and `_cv_evaluate_horizon`
+  is carrying cost for a question that is answered. Removed:
+  `market_relative_labels` / `market_index` / `direction_bands`, the pre-subsample index
+  build and factor join, `_matched_flat_band`, `_residual_point_estimate`, the
+  `flat_band` parameter on `_fit_direction_classifier`, the CV branch and its
+  `relative_accuracy_ge1` / `relative_majority_ge1` / `market_factor_coverage` metrics,
+  `TRAIN_MARKET_RELATIVE_LABELS`, and `scripts/ab_test_market_relative_labels.py`.
+
+* **Two pieces were kept, because they are load-bearing for a different and
+  still-standing result.** `backend/models/market_factor.py` (with its 21 tests, including
+  the leakage tests) and `ItemForecaster._demean_returns` are imported by
+  `scripts/ab_test_item_metadata.py`, whose market-relative re-run produced the amendments
+  recorded in `docs/research/accuracy-opportunities.md` §1 — the static-metadata effect
+  surviving at ~2/3 size (7d +0.54pp, 30d +1.29pp) and item age no longer being refuted.
+  Deleting them would have broken that A/B and orphaned conclusions that depend on it.
+  The `market_factor_*`-is-never-a-feature exclusion in `_select_feature_cols` also stays,
+  as leak insurance for a module that still exists; both guards are now tested in
+  `tests/test_market_factor.py`.
+
+* Reproducing the measurement therefore means restoring the wiring from git
+  (`444268f`, and this entry's own commit) — not rebuilding it from scratch. The factor
+  itself, which is the non-obvious half, is still in the tree.
 
 ## What was deliberately not done
 

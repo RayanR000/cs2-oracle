@@ -269,3 +269,44 @@ def test_forecast_before_the_index_starts_returns_zero():
     idx = _index_from_daily([np.nan] + [0.0] * 5)
     assert forecast_market_factor(
         idx, pd.Timestamp("2020-01-01"), horizon=7) == 0.0
+
+
+# --- guards retained after the market-relative label experiment was removed ---
+#
+# The experiment that introduced this module was refuted and its forecaster
+# wiring removed (2026-08-06). The module itself survives because
+# scripts/ab_test_item_metadata.py depends on it, so these two guards stay.
+
+def test_market_factor_columns_are_never_features():
+    """`market_factor_*` is built from other items' FUTURE prices. Any frame
+    carrying it must not hand it to the model as a feature."""
+    from models.forecaster import ItemForecaster
+
+    f = ItemForecaster(db_session=None)
+    df = pd.DataFrame({
+        "item_id": [1, 2],
+        "date": pd.to_datetime(["2026-01-01", "2026-01-02"]),
+        "price": [10.0, 11.0],
+        "return_7d": [9.0, 10.0],
+        "target_return_3d": [10.0, 9.0],
+        "market_factor_3d": [1.0, 2.0],
+        "market_factor_7d": [1.5, 2.5],
+        "market_factor_14d": [2.0, 3.0],
+        "market_factor_30d": [2.5, 3.5],
+    })
+    cols = f._select_feature_cols(df, ItemForecaster.HORIZONS,
+                                  ItemForecaster.SHELVED_FEATURES)
+    for h in ItemForecaster.HORIZONS:
+        assert f"market_factor_{h}d" not in cols
+    assert "return_7d" in cols
+
+
+def test_demean_returns_survives_for_the_item_metadata_ab():
+    """scripts/ab_test_item_metadata.py calls this directly. Removing it with
+    the rest of the refuted experiment would break that A/B and orphan the
+    market-relative amendments in docs/research/accuracy-opportunities.md."""
+    from models.forecaster import ItemForecaster
+
+    got = ItemForecaster._demean_returns(
+        np.array([5.0, -2.0]), np.array([1.0, np.nan]))
+    assert got == pytest.approx([4.0, -2.0])
