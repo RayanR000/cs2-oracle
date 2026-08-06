@@ -865,7 +865,11 @@ class TestFeaturePipeline:
                 df = forecaster.build_training_data(days_back=200, backfilled_only=False)
 
         n_features = len(forecaster.feature_cols)
-        assert 45 <= n_features <= 200, f"Feature count {n_features} outside expected range [45, 200]"
+        # Lower bound was 45 until 2026-08-06, when the eleven volume features
+        # were shelved (archive volume is identically 0 since 2026-05 — see
+        # tests/test_volume_features_shelved.py). This mock feeds real Poisson
+        # volume, so it exercises the has_volume=True path and still lands at 37.
+        assert 30 <= n_features <= 200, f"Feature count {n_features} outside expected range [30, 200]"
 
 
 # ---------------------------------------------------------------------------

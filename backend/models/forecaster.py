@@ -157,7 +157,12 @@ class ItemForecaster:
     # Bump when the MEANING of any persisted field changes, not just the set
     # of fields. v2: conformal_calibration became a dimensionless multiplier
     # of per-item sigma, p10/p90 models no longer exist, sigma_clip added.
-    MODEL_ARTIFACT_VERSION = 2
+    # v3 (2026-08-06): the eleven volume features left feature_cols. This IS a
+    # set change, which the rule above would not normally bump for — but a v2
+    # artifact carries its own 47-column feature_cols and the columns are still
+    # engineered, so predict() would keep serving the dead features until the
+    # 14-day age trigger fired. Bumping forces the retrain that realises the fix.
+    MODEL_ARTIFACT_VERSION = 3
     MIN_HISTORY_DAYS = 30
     # Prediction eligibility is looser than training: the live aggregator
     # series is still young, and 14 daily points is enough for the lag/rolling
@@ -227,6 +232,15 @@ class ItemForecaster:
     # docs/changelog/2026-07-31-price-primitives-shelved.md). The columns are
     # still engineered so ab_test_price_primitives.py -- which builds its own
     # feature list from the frame -- can re-run the arms unchanged.
+    # The eleven volume features (2026-08-06) are shelved because the archive's
+    # volume column has been identically 0 since 2026-05 — stored as 0, never
+    # NULL, which defeats every guard in _compute_volume_features: `has_volume`
+    # tests notna() so it stays True, `volume_missing` reports 0 ("present"),
+    # and the raw levels are served a real-looking 0 against training medians of
+    # 98.0 / 99.0 / 115.7 / 43.9 / 124.2. They carry real signal on the
+    # pre-2026-05 training rows and are dead on every served row, which is a
+    # pure train/serve gap on 100% of items. Reinstate them only with a repaired
+    # feed. See docs/changelog/2026-08-06-volume-features-shelved.md.
     SHELVED_FEATURES = frozenset({
         "vol_semidev_down_30d",
         "vol_semidev_up_30d",
@@ -234,6 +248,25 @@ class ItemForecaster:
         "rsi_divergence_7d",
         "rsi_price_divergence_7d",
         "macd_hist_slope_7d",
+        "volume_missing",
+        "volume_lag_1d",
+        "volume_lag_7d",
+        "volume_mean_30d",
+        "volume_std_30d",
+        "volume_mean_60d",
+        "volume_log_change_1d",
+        "volume_log_change_7d",
+        "volume_zscore_30d",
+        "volume_price_conf_7d",
+        "volume_price_conf_1d",
+        # These two were never in the 47-column feature_cols: the >0.95
+        # correlation prune dropped them in favour of their 30d partners.
+        # Shelving those partners removes what they correlated against, so
+        # without this they SURVIVE the prune and re-enter production — the one
+        # failure mode a name-list assertion cannot see. See
+        # test_no_volume_feature_survives_the_real_selection_and_prune.
+        "volume_mean_7d",
+        "volume_std_60d",
     })
     # Horizons served as momentum (trailing return_Nd) instead of the ML median.
     # Superseded by the directional classifier (2026-07-24), which beats
@@ -1167,6 +1200,32 @@ class ItemForecaster:
         # =====================================================================
         # Volume features
         # =====================================================================
+        df = self._compute_volume_features(df, grouped)
+
+        # Boolean indicators for features with frequent missingness
+        df["rsi_missing"] = df["rsi_14"].isna().astype(int)
+        df["macd_missing"] = df["macd_line"].isna().astype(int)
+
+        return df
+
+    @staticmethod
+    def _compute_volume_features(df: pd.DataFrame, grouped=None) -> pd.DataFrame:
+        """Engineer the volume-derived columns.
+
+        ALL of these are in SHELVED_FEATURES, so none of them reaches training —
+        see the comment there for why (the archive's volume has been identically
+        0 since 2026-05, stored as 0 rather than NULL). They are still computed
+        because two features that are NOT shelved read them:
+        ``supply_to_volume_ratio`` reads ``volume_mean_30d`` and
+        ``item_volume_vs_market_30d`` reads the raw ``volume`` column.
+
+        Note ``has_volume`` is deliberately left testing ``notna()``. Making it
+        treat all-zero as absent would only swap a served 0 for a median-filled
+        ~98, which is no more truthful; the shelving is the fix.
+        """
+        if grouped is None:
+            grouped = df.groupby("item_id")
+
         has_volume = "volume" in df.columns and df["volume"].notna().any()
         df["volume_missing"] = (1 if not has_volume else
                                 df["volume"].isna().astype(int))
@@ -1213,11 +1272,6 @@ class ItemForecaster:
                         "volume_zscore_30d", "volume_price_conf_7d",
                         "volume_price_conf_1d"]:
                 df[col] = np.nan
-
-        # Boolean indicators for features with frequent missingness
-        df["rsi_missing"] = df["rsi_14"].isna().astype(int)
-        df["macd_missing"] = df["macd_line"].isna().astype(int)
-
         return df
 
     def _fetch_item_metadata(self) -> pd.DataFrame:
@@ -2477,15 +2531,8 @@ class ItemForecaster:
         df = self._add_supply_depth_features(df)
 
         # Define feature columns (exclude metadata and target columns)
-        exclude = {"item_id", "date", "timestamp", "price", "volume",
-                   "name", "release_date", DIRECTION_LABEL_VOL_COL}
-        exclude |= {f"target_{h}d" for h in self.HORIZONS}
-        exclude |= {f"target_return_{h}d" for h in self.HORIZONS}
-
-        exclude |= set(self.SHELVED_FEATURES)
-
-        self.feature_cols = [c for c in df.columns if c not in exclude
-                             and df[c].dtype in (np.float64, np.float32, np.int64, int, float)]
+        self.feature_cols = self._select_feature_cols(
+            df, self.HORIZONS, self.SHELVED_FEATURES)
 
         # Prune highly correlated features to reduce noise
         self.feature_cols = self._prune_features(df)
@@ -3382,6 +3429,24 @@ class ItemForecaster:
             hits += int(p_dir == a_dir)
             n += 1
         return round(hits / n * 100, 1) if n else 0.0
+
+    @staticmethod
+    def _select_feature_cols(df, horizons, shelved) -> List[str]:
+        """The numeric columns the trainer fits on.
+
+        Drops metadata, the per-horizon targets, and everything in *shelved*.
+        Extracted from build_training_data so the shelving can be tested without
+        a full training run — a feature leaving SHELVED_FEATURES and silently
+        re-entering production is exactly the regression worth a test.
+        """
+        exclude = {"item_id", "date", "timestamp", "price", "volume",
+                   "name", "release_date", DIRECTION_LABEL_VOL_COL}
+        exclude |= {f"target_{h}d" for h in horizons}
+        exclude |= {f"target_return_{h}d" for h in horizons}
+        exclude |= set(shelved)
+
+        return [c for c in df.columns if c not in exclude
+                and df[c].dtype in (np.float64, np.float32, np.int64, int, float)]
 
     @staticmethod
     def _apply_feature_allowlist(feature_cols, allowlist):
