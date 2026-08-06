@@ -17,6 +17,16 @@ itsdangerous>=2.2.0
 pyarrow>=14.0.0
 duckdb>=0.10.0
 optuna>=3.6.0
+# forecaster.py imports optuna.integration.LightGBMPruningCallback, which optuna
+# 4.9 split into this separate distribution -- the shim now raises unless it is
+# installed. Undeclared until 2026-08-06: `optuna>=3.6.0` has no upper bound, so
+# CI drifted onto 4.9.0 and every HP search died with "Could not find
+# `optuna-integration` for `lightgbm`". It stayed hidden because daily runs are
+# predict-only, which never reaches the search, and local venvs already had the
+# package. Run 31074434179 (mode=full) is the first one to hit it.
+# The shim is deprecated and goes away in optuna 6.0 -- import it from
+# `optuna_integration` directly before then.
+optuna-integration[lightgbm]>=4.0.0
 joblib>=1.3.0
 huggingface_hub>=0.24.0
 onnxruntime>=1.18.0
