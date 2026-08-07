@@ -112,7 +112,21 @@ def _gpu_available() -> bool:
         return False
 
 
+# The ByMykel bundle, routed by exact name before any prefix rule can claim it:
+# `item_age_meta_days` would match the "item_age" temporal prefix, `is_meta_*` and
+# `rarity_meta_rank` the item_identity prefixes, and `type_meta_*` the item_metadata
+# one. Declared here rather than on the class because _feature_group is a module
+# function; ItemForecaster.BYMYKEL_META_FEATURES is the same frozenset.
+_BYMYKEL_META_FEATURES = frozenset({
+    "item_age_meta_days", "item_age_ambiguous", "rarity_meta_rank",
+    "is_meta_stattrak", "is_meta_souvenir", "float_meta_min", "float_meta_max",
+    "type_meta_crate_id", "type_meta_collection_id",
+})
+
+
 def _feature_group(name: str) -> str:
+    if name in _BYMYKEL_META_FEATURES:
+        return "bymykel_metadata"
     if any(name.startswith(p) for p in ("price_", "return_", "log_return_", "bb_",
                                          "rsi_", "macd_", "vol_", "trend_",
                                          "price_accel_", "autocorr_", "support_",
@@ -162,12 +176,29 @@ class ItemForecaster:
     # artifact carries its own 47-column feature_cols and the columns are still
     # engineered, so predict() would keep serving the dead features until the
     # 14-day age trigger fired. Bumping forces the retrain that realises the fix.
-    MODEL_ARTIFACT_VERSION = 3
+    # v4 (2026-08-06): lag lookups became as-of within LAG_TOLERANCE_DAYS instead
+    # of exact-date. The feature *set* is unchanged, but the VALUES and the
+    # persisted feature_medians now mean something different, so a v3 booster
+    # scored against v4 features would itself be a train/serve mismatch — the
+    # exact defect the change removes. The bump forces the retrain.
+    # v5 (2026-08-06): the dollar-denominated columns left the feature set for
+    # their scale-free forms (_DOLLAR_SCALE_FEATURES, price_cv_{w}d,
+    # macd_*_rel). A v4 booster's splits are thresholds in dollars and are
+    # meaningless against v5 features, so this must not load across the bump.
+    MODEL_ARTIFACT_VERSION = 5
     MIN_HISTORY_DAYS = 30
     # Prediction eligibility is looser than training: the live aggregator
     # series is still young, and 14 daily points is enough for the lag/rolling
     # features to be non-degenerate.
     PREDICT_MIN_HISTORY_DAYS = 14
+    # How far a lag lookup may reach back past its exact target date when that
+    # date is absent from the archive. The aggregator drops whole calendar days
+    # (August 2026 held only 08-01 and 08-04), and a strict exact-date lookup
+    # then NaNs every lag-day feature for every item simultaneously -> median
+    # fill on 100% of served rows. 3 days covers the observed gap widths while
+    # staying far short of the multi-week holes that must remain NaN, because a
+    # value reached across those would fabricate a jump.
+    LAG_TOLERANCE_DAYS = 3
     # Directional-accuracy floor for the drift *alert*. This no longer gates a
     # retrain: the model's measured production DA is 46.7-50.8%
     # (docs/architecture/model-optimization.md), so a 60% floor was never
@@ -182,6 +213,18 @@ class ItemForecaster:
     # (was 21) buys more market episodes per fold and more OOF points for
     # conformal calibration.
     VALIDATION_WINDOW_DAYS = 30
+    # Floors a validation window must clear to be worth stopping and tuning on.
+    # Below either one, early stopping and the Optuna objective are reading
+    # noise, and the feature-group permutation test false-positives hard enough
+    # to prune 14d/30d down to ~4 features.
+    MIN_VAL_ROWS = 2000
+    MIN_VAL_DATES = 7
+    # How far back the trailing window may be widened to reach those floors.
+    # Voided labels (prepare_targets) thin the default window, and the old
+    # response was a positional 80/20 split whose validation window is ~10
+    # months. Widening keeps validation a recent contiguous window; this bound
+    # keeps "recent" meaningful and keeps the window off the CV folds' turf.
+    MAX_VALIDATION_WINDOW_DAYS = 90
     REGIMES = ["bear", "range", "bull"]
     REGIME_RETURN_THRESHOLD_BEAR = -3.0   # market_return_30d < -3% → bear
     REGIME_RETURN_THRESHOLD_BULL = 3.0    # market_return_30d > 3% → bull
@@ -224,6 +267,28 @@ class ItemForecaster:
     # noise) and hurt at 3d/30d. Restrict to price technicals; the momentum
     # (return_Nd) features live in this group, so trend signal is retained.
     FEATURE_GROUP_ALLOWLIST = ["price_technicals"]
+    # The ByMykel item-metadata bundle, joined from
+    # price-archive/item-metadata-bymykel.parquet by
+    # scripts/ingest_bymykel_metadata.py. Off by default: the effect is measured
+    # only on a held-out-item CV instrument over an 870-item deep >=$1 universe
+    # (+1.26pp at 7d, +3.72pp at 30d raw labels; null at 3d and 14d), and this
+    # project's record is that such gains need not survive the production retrain
+    # path -- market-relative labels cleared the same harness and were refuted on
+    # their own pre-registered rule the same day. Set BYMYKEL_METADATA=1 to enable.
+    # See docs/changelog/2026-08-06-bymykel-metadata-ingest.md.
+    #
+    # These columns get their OWN group rather than reusing item_identity /
+    # item_metadata / temporal. Those three carry other, separately-refuted
+    # features, so admitting one of them to the allowlist would admit the 2026-07-24
+    # ablation's losers alongside the nine measured columns and make any result
+    # unattributable.
+    # Note `item_age_meta_days` is NOT `item_age_days`. That name is already taken
+    # by a DIFFERENT quantity -- observation date minus the first date in the price
+    # frame (_add_temporal_features) -- where this one is observation date minus the
+    # catalogue first-sale date. Same units, different meaning; sharing the name
+    # would silently overwrite one with the other.
+    BYMYKEL_META_GROUP = "bymykel_metadata"
+    BYMYKEL_META_FEATURES = _BYMYKEL_META_FEATURES
     # Features computed but withheld from training. These are price technicals by
     # name, so the allowlist above would otherwise pull them straight into prod.
     # Volatility-asymmetry and oscillator-divergence primitives (2026-07-26) are
@@ -267,6 +332,47 @@ class ItemForecaster:
         "volume_mean_7d",
         "volume_std_60d",
     })
+
+    # Dollar-denominated columns. The target is a PERCENTAGE return, so a
+    # feature measured in dollars cannot be a price signal — it can only encode
+    # which item this is. On the 2026-08-06 artifact these carried 55.6 / 70.2 /
+    # 77.5 / 86.6% of total gain at 3/7/14/30d, rising with horizon in step with
+    # the served-cohort accuracy gap, while the training median price was $0.086
+    # against served items reaching $639. With max_bin = 63 that puts nearly
+    # everything above ~$1 into one saturated terminal bin, which is a mechanism
+    # for the pooled-67% / >=$1-50% split.
+    #
+    # Every one of these is still COMPUTED — the conformal band reads
+    # price_std_60d, _apply_market_aggregates reads price_std_30d, and the
+    # z-score / Bollinger / MA-distance / support-resistance / log-return
+    # features are all derived from the means, mins, maxes and lags. They are
+    # shelved from the FEATURE SET only, and replaced by the scale-free forms
+    # that already existed or were added alongside them:
+    #   price_std_{w}d  -> price_cv_{w}d          (new)
+    #   macd_line       -> macd_line_rel          (new)
+    #   macd_histogram  -> macd_histogram_rel     (new)
+    #   price_lag_{n}d  -> return_{n}d / log_return_{n}d   (already features)
+    #   price_mean_{w}d -> price_zscore_30d, price_dist_ma{100,200}
+    #   price_min/max   -> distance_to_support/resistance, high_low_range_30d
+    #   bb_upper/lower  -> bb_pct_b, bb_width
+    #   price_log       -> price_tier (bounded categorical, deliberately kept)
+    #
+    # Listed exhaustively rather than by prefix because the >0.95 correlation
+    # prune is data-dependent: a column pruned today can survive tomorrow, which
+    # is the failure mode documented for the volume shelf above.
+    # test_model_features_are_invariant_to_price_scale asserts the property
+    # instead of this list, so a new dollar-scale feature fails without anyone
+    # remembering to add it here.
+    _DOLLAR_SCALE_FEATURES = frozenset(
+        {f"price_std_{w}d" for w in (7, 14, 20, 30, 60)}
+        | {f"price_mean_{w}d" for w in (7, 14, 20, 30, 60, 100, 200)}
+        | {f"price_min_{w}d" for w in (7, 14, 20, 30, 60)}
+        | {f"price_max_{w}d" for w in (7, 14, 20, 30, 60)}
+        | {f"price_lag_{n}d" for n in (1, 3, 7, 14, 30, 60, 90, 120, 180)}
+        | {"price_log", "macd_line", "macd_signal", "macd_histogram",
+           "bb_upper", "bb_lower"}
+    )
+    SHELVED_FEATURES = SHELVED_FEATURES | _DOLLAR_SCALE_FEATURES
     # Horizons served as momentum (trailing return_Nd) instead of the ML median.
     # Superseded by the directional classifier (2026-07-24), which beats
     # momentum at every horizon including 30d — so this is now empty. Kept as a
@@ -344,8 +450,19 @@ class ItemForecaster:
     VOTED_CACHE_PREFIX = "voted_"
     VOTED_CACHE_MAX_ENTRIES = 3
 
-    def __init__(self, db_session, model_dir: str = None, prune_failed_groups: bool = True):
+    def __init__(self, db_session, model_dir: str = None, prune_failed_groups: bool = True,
+                 served_cohort_share: Optional[float] = None):
         self.db = db_session
+        # Share of the directional classifier's training weight to place on the
+        # >= $1 cohort production serves. None = no tier weighting, which is
+        # byte-identical to the pre-2026-08-06 model. Set from
+        # TRAIN_SERVED_COHORT_SHARE by scripts/forecast_prices.py. See
+        # docs/superpowers/specs/2026-08-06-served-cohort-weighting-design.md.
+        if served_cohort_share is not None and not 0.0 < served_cohort_share < 1.0:
+            raise ValueError(
+                f"served_cohort_share must be in (0, 1) or None, "
+                f"got {served_cohort_share!r}")
+        self.served_cohort_share = served_cohort_share
         self.model_dir = model_dir or str(Path(__file__).parent / "saved_models")
         # Kept off model_dir: that holds gitignored production model artifacts,
         # and tests assert nothing else lands there.
@@ -996,21 +1113,45 @@ class ItemForecaster:
         # Lag prices — DATE-based, not row-based. A row-based shift(lag) spans
         # any gap in an item's daily series (e.g. a multi-week ingestion hole),
         # turning "return_14d" into a multi-month return and blowing the feature
-        # out of distribution at the serving edge. Look up the price exactly
-        # `lag` calendar days earlier instead; a missing date yields NaN (later
-        # imputed to the median → neutral) rather than a fabricated jump. This
-        # matches prepare_targets, which already uses a date-based lookup for
-        # the same reason. Longer lags (90/120/180) feed the trend features.
+        # out of distribution at the serving edge. This matches prepare_targets,
+        # which already uses a date-based lookup for the same reason. Longer lags
+        # (90/120/180) feed the trend features.
+        #
+        # The lookup is as-of rather than exact: take the most recent price at or
+        # before `date - lag`, but only within LAG_TOLERANCE_DAYS. An exact-date
+        # lookup was correct about multi-week holes and wrong about the 1-2 day
+        # ones the aggregator produces daily — those NaN'd the freshest features
+        # for the entire served universe at once. Anything beyond the tolerance
+        # still yields NaN (later imputed to the median → neutral).
         LAGS = [1, 3, 7, 14, 30, 60, 90, 120, 180]
         df["_date_dt"] = pd.to_datetime(df["date"])
+        df = df.reset_index(drop=True)
+        # One row per (item, date) keeps the lookup unambiguous even if the
+        # caller passed un-resampled (intraday-duplicate) rows. merge_asof needs
+        # both sides sorted on the join key.
+        observed = (
+            df[["item_id", "_date_dt", "price"]]
+            .drop_duplicates(subset=["item_id", "_date_dt"])
+            .sort_values("_date_dt")
+        )
+        tolerance = pd.Timedelta(self.LAG_TOLERANCE_DAYS, unit="D")
         for lag in LAGS:
-            past = df[["item_id", "_date_dt", "price"]].rename(
-                columns={"price": f"price_lag_{lag}d"})
-            past["_date_dt"] = past["_date_dt"] + pd.Timedelta(days=lag)
-            # One row per (item, date) keeps the left join 1:1 even if the caller
-            # passed un-resampled (intraday-duplicate) rows.
-            past = past.drop_duplicates(subset=["item_id", "_date_dt"])
-            df = df.merge(past, on=["item_id", "_date_dt"], how="left")
+            col = f"price_lag_{lag}d"
+            targets = pd.DataFrame({
+                "_row": df.index,
+                "item_id": df["item_id"],
+                "_target": df["_date_dt"] - pd.Timedelta(lag, unit="D"),
+            }).sort_values("_target")
+            resolved = pd.merge_asof(
+                targets,
+                observed.rename(columns={"price": col}),
+                left_on="_target",
+                right_on="_date_dt",
+                by="item_id",
+                direction="backward",
+                tolerance=tolerance,
+            )
+            df[col] = resolved.set_index("_row")[col].reindex(df.index)
 
         # Returns (winsorized at ±500% against residual data artifacts)
         for lag in LAGS:
@@ -1032,6 +1173,20 @@ class ItemForecaster:
             df[f"price_std_{window}d"] = roll_agg["std"].values
             df[f"price_min_{window}d"] = roll_agg["min"].values
             df[f"price_max_{window}d"] = roll_agg["max"].values
+
+        # Coefficient of variation — the return-space form of the rolling std.
+        # The raw price_std_{w}d are DOLLARS while target_return_{h}d is a
+        # PERCENT, which made them item-identity proxies rather than volatility
+        # signals (they carried 55.6-86.6% of gain on the 2026-08-06 artifact).
+        # Dividing by price is exactly what conformal.sigma_from_columns already
+        # does for price_std_60d; price_cv_60d and that sigma are the same
+        # quantity, pinned by test_cv_60d_matches_what_conformal_computes_for_sigma.
+        # The dollar columns stay computed — the band, the market aggregates and
+        # the z-score/Bollinger derivations all read them — but they are shelved
+        # out of the feature set. See _DOLLAR_SCALE_FEATURES.
+        _px = df["price"].replace(0, np.nan)
+        for window in [7, 14, 20, 30, 60]:
+            df[f"price_cv_{window}d"] = df[f"price_std_{window}d"] / _px
 
         # Z-score vs 30d rolling
         mean_30 = df["price_mean_30d"]
@@ -1123,6 +1278,14 @@ class ItemForecaster:
             .reset_index(level=0, drop=True)
         )
         df["macd_histogram"] = df["macd_line"] - df["macd_signal"]
+
+        # MACD is a difference of price EMAs, so it is in DOLLARS and scales
+        # with the item. Normalising by price turns it into the oscillator it is
+        # meant to be. The raw columns stay computed for macd_hist_slope_7d and
+        # the macd_missing flag; only these relative forms reach a booster.
+        _macd_px = df["price"].replace(0, np.nan)
+        df["macd_line_rel"] = df["macd_line"] / _macd_px
+        df["macd_histogram_rel"] = df["macd_histogram"] / _macd_px
 
         # =====================================================================
         # Volatility asymmetry (downside vs upside semi-deviation) — pure price.
@@ -1286,6 +1449,94 @@ class ItemForecaster:
             return self._item_meta_cache
         self._item_meta_cache = df
         logger.info(f"  item metadata: {len(df)} items loaded")
+        return df
+
+    @staticmethod
+    def bymykel_metadata_enabled() -> bool:
+        """Whether the ByMykel bundle joins into the feature frame.
+
+        Off by default. See BYMYKEL_META_FEATURES for why.
+        """
+        return os.environ.get("BYMYKEL_METADATA") == "1"
+
+    def _fetch_bymykel_metadata(self) -> pd.DataFrame:
+        """Load the ByMykel item-metadata bundle, or an empty frame if absent.
+
+        Absent is not an error. `price-archive/` is a gitignored local directory
+        (the durable archive is the separate cs2-oracle-data repo), so a checkout
+        that has never run scripts/ingest_bymykel_metadata.py legitimately has no
+        such file. The feature columns are then simply not added, and the
+        allowlist finds nothing to admit.
+        """
+        if getattr(self, "_bymykel_meta_cache", None) is not None:
+            return self._bymykel_meta_cache
+
+        # Overridable so scripts/paired_retrain_bymykel.py can point a placebo
+        # arm at a permuted copy without a second code path. Unset in production.
+        override = os.environ.get("BYMYKEL_METADATA_PATH")
+        path = (Path(override) if override else
+                Path(__file__).parent.parent.parent / "price-archive"
+                / "item-metadata-bymykel.parquet")
+        df = pd.DataFrame()
+        if path.exists():
+            try:
+                df = pd.read_parquet(path).rename(columns={"item_slug": "item_id"})
+                logger.info(f"  ByMykel metadata: {len(df):,} items loaded")
+            except Exception as e:
+                logger.warning(f"  Failed to load ByMykel metadata: {e}")
+                df = pd.DataFrame()
+        else:
+            logger.warning(
+                f"  BYMYKEL_METADATA=1 but {path.name} is absent — the nine "
+                f"metadata features will not be added. Run "
+                f"scripts/ingest_bymykel_metadata.py.")
+        self._bymykel_meta_cache = df
+        return df
+
+    def _add_bymykel_metadata_features(self, df: pd.DataFrame) -> pd.DataFrame:
+        """Join the ByMykel bundle and derive per-row catalogue age.
+
+        Age is computed HERE rather than stored, because it is (observation date
+        - first sale date) and so belongs to a row, not an item. A stored "days
+        since sale as of today" column would be the calendar frozen into a
+        per-item constant.
+        """
+        if not self.bymykel_metadata_enabled():
+            return df
+
+        meta = self._fetch_bymykel_metadata()
+        if meta.empty or "item_id" not in meta.columns:
+            return df
+
+        meta = meta.drop_duplicates(subset=["item_id"]).set_index("item_id")
+        aligned = meta.reindex(df["item_id"].to_numpy())
+
+        if "item_age_first_sale_date" in aligned.columns:
+            obs = pd.to_datetime(pd.Series(df["date"].to_numpy()))
+            first_sale = pd.to_datetime(
+                pd.Series(aligned["item_age_first_sale_date"].to_numpy()),
+                errors="coerce")
+            age = (obs - first_sale).dt.days.to_numpy(dtype=float)
+            # A negative age means the item traded before the catalogue says it
+            # first went on sale: the metadata is wrong for that item, not that
+            # the item is "very new". Null it rather than clip to 0, which would
+            # fabricate a real-looking value at a meaningful boundary.
+            age[age < 0] = np.nan
+            df["item_age_meta_days"] = age
+
+        for col in self.BYMYKEL_META_FEATURES:
+            if col == "item_age_meta_days" or col not in aligned.columns:
+                continue
+            # float64, not the source Int64. _select_feature_cols keeps a column
+            # only if its dtype is in (float64, float32, int64, int, float), and
+            # pandas' nullable Int64 is none of those — leaving it would drop the
+            # column silently, which reads exactly like a null result.
+            df[col] = pd.to_numeric(
+                aligned[col].to_numpy(), errors="coerce").astype(np.float64)
+
+        present = sorted(c for c in self.BYMYKEL_META_FEATURES if c in df.columns)
+        logger.info(f"  ByMykel metadata features added: {len(present)} "
+                    f"({', '.join(present)})")
         return df
 
     def _fetch_supply_metadata(self) -> pd.DataFrame:
@@ -2172,6 +2423,140 @@ class ItemForecaster:
             folds.append((train_d, list(val_d)))
         return folds
 
+    @staticmethod
+    def _purge_overlapping_train_rows(train_set, split_date, horizon: int):
+        """Drop training rows whose forward label is drawn from the validation
+        window.
+
+        A row dated ``d`` is labelled with the price at ``d + horizon``
+        (``prepare_targets`` merges on exactly that date). So every row in
+        ``[split_date - horizon, split_date)`` carries a label the validation
+        window already contains, and at ``horizon == VALIDATION_WINDOW_DAYS == 30``
+        that is the *entire* window's worth of future prices.
+
+        This is the same purge ``_compute_cv_splits(..., purge_days=horizon)``
+        applies above, which the production split in ``_train_horizon_inline``
+        was missing. It matters more than a CV fold does: that split produces the
+        ``dval`` early stopping stops on, the set Optuna scores every trial
+        against, and the directional classifier's stopping set — so the shipped
+        tree counts, hyperparameters and stopping points were all selected
+        against partly-seen labels.
+
+        Rows inside the band are dropped, not moved: they belong to neither side.
+        """
+        if train_set.empty or "date" not in train_set.columns:
+            return train_set
+        cutoff = pd.to_datetime(split_date) - timedelta(days=int(horizon))
+        return train_set[pd.to_datetime(train_set["date"]) < cutoff]
+
+    @classmethod
+    def _choose_validation_split(cls, tdf) -> Tuple[Optional[pd.Timestamp], bool]:
+        """Pick the split date for the production holdout, widening if starved.
+
+        Returns ``(split_date, floors_met)``; ``val_set`` is ``date >= split_date``.
+
+        The default is the trailing ``VALIDATION_WINDOW_DAYS``. `prepare_targets`
+        voids labels built across a fabricated archive day and the caller drops
+        those rows, and the fabricated days sit inside that window — so at the
+        production budget the window fell under ``MIN_VAL_ROWS`` at 3d/7d/14d and
+        the split fell through to a positional 80/20 slice whose validation
+        window is roughly ten months. Early stopping, the Optuna objective and
+        the classifier's stopping set all read that window, so the shape of it
+        is not a detail.
+
+        Widening backwards is the graceful degradation the fallback should have
+        been: validation stays a recent contiguous calendar window, just a wider
+        one. ``floors_met=False`` means even ``MAX_VALIDATION_WINDOW_DAYS`` could
+        not reach the floors — the frame is genuinely too small, and the caller
+        still has the positional fallback for that.
+        """
+        if tdf is None or len(tdf) == 0 or "date" not in getattr(tdf, "columns", []):
+            return None, False
+        dates = pd.to_datetime(tdf["date"])
+        max_date = dates.max()
+        default_split = max_date - timedelta(days=cls.VALIDATION_WINDOW_DAYS)
+
+        inside = dates >= default_split
+        rows = int(inside.sum())
+        n_dates = int(dates[inside].nunique())
+        if rows >= cls.MIN_VAL_ROWS and n_dates >= cls.MIN_VAL_DATES:
+            return default_split, True
+
+        # Walk earlier distinct dates, widening the window one date at a time.
+        counts = dates.value_counts()
+        earlier = sorted((d for d in counts.index if d < default_split), reverse=True)
+        floor_date = max_date - timedelta(days=cls.MAX_VALIDATION_WINDOW_DAYS)
+        split = default_split
+        for d in earlier:
+            if d < floor_date:
+                break
+            rows += int(counts[d])
+            n_dates += 1
+            split = d
+            if rows >= cls.MIN_VAL_ROWS and n_dates >= cls.MIN_VAL_DATES:
+                return d, True
+        return split, False
+
+    def _build_production_split(self, tdf, horizon: int, max_rows: int):
+        """The production train/val split: a trailing calendar window, purged.
+
+        Returns ``(train_set, val_set)``. Three things happen here, in order:
+
+        1. Pick the window (`_choose_validation_split`), widening it if voided
+           labels have starved the default trailing window.
+        2. Purge the horizon-day band of training rows whose labels come from
+           inside the window (`_purge_overlapping_train_rows`).
+        3. Fall back to the positional 80/20 split only when even a widened
+           window cannot clear the floors — a frame that small has no recent
+           window worth stopping on.
+
+        `_train_horizon_inline` is the full Optuna + ensemble path and cannot be
+        driven from a test, so the decision lives here where it can be.
+        """
+        dates = pd.to_datetime(tdf["date"])
+        split_date, floors_met = self._choose_validation_split(tdf)
+
+        if floors_met:
+            train_set = tdf[dates < split_date]
+            val_set = tdf[dates >= split_date]
+            train_set = self._purge_overlapping_train_rows(
+                train_set, split_date, horizon)
+            span = (dates.max() - pd.to_datetime(split_date)).days
+            if span > self.VALIDATION_WINDOW_DAYS:
+                logger.info(
+                    f"  Widened {horizon}d validation window to {span}d "
+                    f"({len(val_set)} rows, {val_set['date'].nunique()} dates) — "
+                    f"voided labels thinned the default "
+                    f"{self.VALIDATION_WINDOW_DAYS}d window"
+                )
+        else:
+            n_val = 0 if split_date is None else int((dates >= split_date).sum())
+            logger.warning(
+                f"  Validation set for {horizon}d holds only {n_val} rows even "
+                f"widened to {self.MAX_VALIDATION_WINDOW_DAYS}d; using last 20% "
+                f"of training data as fallback."
+            )
+            split_idx = int(len(tdf) * 0.8)
+            train_set = tdf.iloc[:split_idx]
+            val_set = tdf.iloc[split_idx:]
+            # The fallback splits positionally, so it leaks the same way the
+            # date split did. tdf is date-sorted, so the validation window
+            # opens at val_set's first date.
+            if len(val_set) and "date" in val_set.columns:
+                train_set = self._purge_overlapping_train_rows(
+                    train_set, pd.to_datetime(val_set["date"].min()), horizon)
+
+        # Safety guard only: the calendar window is already bounded by the
+        # stratified item subsample in build_training_data(). Sample randomly
+        # (never tail()) so we don't truncate the calendar window, which would
+        # silently disable expanding-window CV. Applied after the branch so the
+        # fallback path is capped too — it reads from `tdf`, so it was not.
+        if len(train_set) > max_rows:
+            train_set = train_set.sample(
+                n=max_rows, random_state=42).sort_values("date")
+
+        return train_set, val_set
+
     def _cv_can_run(self, tdf, horizon: int) -> bool:
         """Whether this horizon has enough distinct dates for >=2 CV folds.
 
@@ -2333,12 +2718,77 @@ class ItemForecaster:
         df = self._add_event_features(df, events_df)
         df = self._add_item_metadata_features(df)
         df = self._add_supply_side_features(df)
+        df = self._add_bymykel_metadata_features(df)
         df = self._add_social_features(df)
         return df
 
     # ------------------------------------------------------------------
     # Target preparation
     # ------------------------------------------------------------------
+
+    # A day on which this fraction of the cross-section repeats the previous
+    # day's price EXACTLY is a re-published snapshot, not a market day. Measured
+    # over all 4,735 archive days, exactly two fire (2026-07-16 and 2026-07-22,
+    # both at 100.00% across ~40k items) and the next-highest day sits at
+    # 69.01%, so this threshold lives in a wide empty gap rather than being
+    # tuned. Requires MIN_DEGENERATE_CROSS_SECTION items so a quiet day on a
+    # handful of items is not mistaken for one.
+    SNAPSHOT_DAY_FLAT_FRACTION = 0.99
+    MIN_DEGENERATE_CROSS_SECTION = 25
+    # A day on which the size of the collected item universe moves by more than
+    # this is a collector cutover. Detected from the universe, never from
+    # prices: a market-wide crash cannot change how many items a collector
+    # returns, so this can never delete a real event. Fires 12 times in 4,735
+    # days (4 in 2013 at archive startup, 1 in 2016, 7 in 2026).
+    COLLECTION_SHIFT_FRACTION = 0.20
+
+    @classmethod
+    def _snapshot_dates(cls, df: pd.DataFrame) -> frozenset:
+        """Dates whose prices are a copy of the previous day's.
+
+        Unusable as a label ENDPOINT — the price is stale, so any return
+        measured to or from it is fabricated. Harmless mid-window: a copied day
+        shifts no level.
+        """
+        if df.empty or not {"item_id", "date", "price"} <= set(df.columns):
+            return frozenset()
+        d = df[["item_id", "date", "price"]].copy()
+        d["date"] = pd.to_datetime(d["date"])
+        d = d.groupby(["item_id", "date"], as_index=False)["price"].mean()
+        prev = d.copy()
+        prev["date"] = prev["date"] + pd.Timedelta(days=1)
+        merged = d.merge(prev, on=["item_id", "date"], suffixes=("", "_prev"))
+        if merged.empty:
+            return frozenset()
+        merged["same"] = merged["price"] == merged["price_prev"]
+        agg = merged.groupby("date")["same"].agg(["mean", "size"])
+        hits = agg[(agg["mean"] >= cls.SNAPSHOT_DAY_FLAT_FRACTION)
+                   & (agg["size"] >= cls.MIN_DEGENERATE_CROSS_SECTION)]
+        return frozenset(ts.date() for ts in hits.index)
+
+    @classmethod
+    def _collection_shift_dates(cls, df: pd.DataFrame) -> frozenset:
+        """Dates where the collected item universe changed size abruptly.
+
+        These are source cutovers. The archive is a stitch of source regimes —
+        on 2026-03-22 the mean market return reads -31.6% and on 2026-07-09/10
+        +17.4% then -17.8%, against ±0.5% on a normal day — and those are basis
+        changes between source sets, not price moves.
+
+        A cutover corrupts any label whose window SPANS it, because the anchor
+        is quoted on one source basis and the target on another.
+        """
+        if df.empty or not {"item_id", "date"} <= set(df.columns):
+            return frozenset()
+        d = df[["item_id", "date"]].copy()
+        d["date"] = pd.to_datetime(d["date"])
+        counts = d.groupby("date")["item_id"].nunique().sort_index()
+        if len(counts) < 2:
+            return frozenset()
+        prev = counts.shift(1)
+        change = (counts - prev).abs() / prev.replace(0, np.nan)
+        hits = counts.index[change > cls.COLLECTION_SHIFT_FRACTION]
+        return frozenset(ts.date() for ts in hits)
 
     def prepare_targets(self, df: pd.DataFrame, horizon: int) -> pd.DataFrame:
         logger.info(f"Preparing {horizon}d targets...")
@@ -2374,6 +2824,41 @@ class ItemForecaster:
                 f"(±500% clip)"
             )
             df[f"target_return_{horizon}d"] = winsorized
+
+        # Void labels the collector fabricated. Winsorization above cannot catch
+        # these: a -31.6% source-cutover return and a 0% re-published return are
+        # both well inside the ±500% clip, so they survive as confident,
+        # completely wrong labels. See _snapshot_dates / _collection_shift_dates.
+        anchor = pd.to_datetime(df["date"])
+        # pd.Timedelta(days=<int>) emits a NumPy generic-unit DeprecationWarning;
+        # the explicit-unit form does not.
+        h_delta = pd.to_timedelta(int(horizon), unit="D")
+        bad = pd.Series(False, index=df.index)
+
+        snapshots = self._snapshot_dates(df)
+        if snapshots:
+            snap = pd.to_datetime(sorted(snapshots))
+            # Endpoint rule: the anchor price or the target price is stale.
+            bad |= anchor.isin(snap)
+            bad |= (anchor + h_delta).isin(snap)
+
+        shifts = self._collection_shift_dates(df)
+        if shifts:
+            # Span rule: the basis changes somewhere inside (anchor, anchor+h],
+            # so the two legs of the return are quoted on different sources.
+            for s in sorted(shifts):
+                s = pd.Timestamp(s)
+                bad |= (anchor < s) & (s <= anchor + h_delta)
+
+        n_bad = int((bad & df[f"target_return_{horizon}d"].notna()).sum())
+        if n_bad:
+            df.loc[bad, f"target_return_{horizon}d"] = np.nan
+            df.loc[bad, f"target_{horizon}d"] = np.nan
+            logger.info(
+                f"  Voided {n_bad} {horizon}d targets spanning "
+                f"{len(snapshots)} snapshot day(s) / {len(shifts)} collector "
+                f"cutover(s)"
+            )
         return df
 
     # ------------------------------------------------------------------
@@ -2575,12 +3060,15 @@ class ItemForecaster:
         self.feature_cols = self._prune_features(df)
 
         # Restrict to the allowlisted feature groups (default: price technicals).
-        if self.FEATURE_GROUP_ALLOWLIST:
+        allowlist = list(self.FEATURE_GROUP_ALLOWLIST or [])
+        if allowlist and self.bymykel_metadata_enabled():
+            allowlist.append(self.BYMYKEL_META_GROUP)
+        if allowlist:
             pre = len(self.feature_cols)
             self.feature_cols = self._apply_feature_allowlist(
-                self.feature_cols, self.FEATURE_GROUP_ALLOWLIST)
+                self.feature_cols, allowlist)
             logger.info(
-                f"Feature allowlist {self.FEATURE_GROUP_ALLOWLIST}: "
+                f"Feature allowlist {allowlist}: "
                 f"{pre} -> {len(self.feature_cols)} features"
             )
         self._base_feature_cols = list(self.feature_cols)
@@ -2916,30 +3404,10 @@ class ItemForecaster:
             if attempt == 1:
                 logger.info(f"  Retry {horizon}d — pruned feature groups")
 
-            # Proper temporal walk-forward split (using actual data dates):
-            # Hold out the last VALIDATION_WINDOW_DAYS of calendar data.
-            max_date = pd.to_datetime(tdf["date"].max())
-            split_date = max_date - timedelta(days=self.VALIDATION_WINDOW_DAYS)
-            train_set = tdf[pd.to_datetime(tdf["date"]) < split_date]
-            val_set = tdf[pd.to_datetime(tdf["date"]) >= split_date]
-
-            # Safety guard only: the calendar window is already bounded by
-            # the stratified item subsample in build_training_data(). Sample
-            # randomly (never tail()) so we don't truncate the calendar
-            # window, which would silently disable expanding-window CV.
-            if len(train_set) > max_rows:
-                train_set = train_set.sample(
-                    n=max_rows, random_state=42).sort_values("date")
-
-            val_dates = val_set["date"].nunique() if "date" in val_set.columns else 0
-            if len(val_set) < 2000 or val_dates < 7:
-                logger.warning(
-                    f"  Validation set for {horizon}d has only {len(val_set)} rows "
-                    f"({val_dates} distinct dates); using last 20% of training data as fallback."
-                )
-                split_idx = int(len(tdf) * 0.8)
-                train_set = tdf.iloc[:split_idx]
-                val_set = tdf.iloc[split_idx:]
+            # Temporal walk-forward split: a trailing calendar window, purged of
+            # the training rows it labels. See the helper.
+            train_set, val_set = self._build_production_split(
+                tdf, horizon, max_rows)
 
             if attempt == 0:
                 logger.info(f"  {horizon}d: {len(train_set)} train, {len(val_set)} val")
@@ -3117,6 +3585,8 @@ class ItemForecaster:
                 horizon=horizon,
                 sigma_train=None,
                 sigma_val=None,
+                tier_train=(train_set["price_tier"].to_numpy()
+                            if "price_tier" in train_set.columns else None),
             )
             _dir_elapsed = time.time() - _dir_start
             logger.info(f"  [timing] {horizon}d direction classifier: {_dir_elapsed:.1f}s")
@@ -3331,9 +3801,9 @@ class ItemForecaster:
             }
 
             # Validate feature groups: permutation test on the held-out set.
-            # Skip entirely when the validation window is thin (same threshold
-            # as the temporal-split floor above) — permutation tests on <2000
-            # rows or <7 distinct dates are pure noise and cause false-positive
+            # Skip entirely when the validation window is thin (MIN_VAL_ROWS /
+            # MIN_VAL_DATES, the same floor the split widens to reach) —
+            # permutation tests below it are pure noise and cause false-positive
             # pruning that collapses 14d/30d models to ~4 features.
             # The significance_level parameter (0.05) gates pruning further:
             # a group must pass BOTH the statistical significance test (p < α)
@@ -3344,7 +3814,7 @@ class ItemForecaster:
             need_retrain = False
             if _warm_retrain:
                 logger.info("  Skipping feature-group validation (warm retrain)")
-            elif len(val_set) < 2000 or val_dates < 7:
+            elif len(val_set) < self.MIN_VAL_ROWS or val_dates < self.MIN_VAL_DATES:
                 logger.info(
                     f"  Skipping feature-group validation ({len(val_set)} rows, "
                     f"{val_dates} dates — below minimum threshold)"
@@ -3474,6 +3944,10 @@ class ItemForecaster:
                    "name", "release_date", DIRECTION_LABEL_VOL_COL}
         exclude |= {f"target_{h}d" for h in horizons}
         exclude |= {f"target_return_{h}d" for h in horizons}
+        # The market factor is computed from other items' FUTURE prices. It is
+        # a label input, never a feature -- if it reaches feature_cols the
+        # model trains on the answer.
+        exclude |= {f"market_factor_{h}d" for h in horizons}
         exclude |= set(shelved)
 
         return [c for c in df.columns if c not in exclude
@@ -3519,6 +3993,30 @@ class ItemForecaster:
         return np.where(r > thr, 2, np.where(r < -thr, 0, 1)).astype(int)
 
     @staticmethod
+    def _demean_returns(returns, factor) -> np.ndarray:
+        """Subtract the market factor from % returns, giving the idiosyncratic
+        residual ``e = r - m``. See ``models/market_factor.py`` for the factor.
+
+        A missing factor demeans by zero rather than producing NaN, so the row
+        keeps the raw label instead of being dropped. That matters to any paired
+        arm comparison: dropping rows in one arm only changes its row counts and
+        breaks the pairing.
+
+        Not used by training or serving. It survives the removal of the
+        market-relative label experiment (refuted 2026-08-06, see
+        docs/changelog/2026-08-06-market-relative-labels-refuted.md) because
+        scripts/ab_test_item_metadata.py calls it to re-score its arms against a
+        demeaned target -- the run that amended the item-metadata conclusions in
+        docs/research/accuracy-opportunities.md.
+        """
+        r = np.asarray(returns, dtype=float)
+        if factor is None:
+            return r.copy()
+        m = np.asarray(factor, dtype=float)
+        return r - np.nan_to_num(m, nan=0.0)
+
+
+    @staticmethod
     def _has_date_coverage(forecast_dates) -> bool:
         """True when distinct non-null forecast dates reach MIN_FORECAST_DATES.
 
@@ -3543,24 +4041,79 @@ class ItemForecaster:
         return np.clip(raw, floor, cap)
 
     @staticmethod
-    def _direction_sample_weights(returns, threshold, mover_weight: float) -> np.ndarray:
+    def _served_cohort_multiplier(base_weights, tiers, served_share: float) -> float:
+        """Multiplier for served (>= $1) rows that makes them carry
+        ``served_share`` of the total training weight.
+
+        Solving ``m*W_s / (m*W_s + W_n) = share`` for m gives
+
+            m = share * W_n / ((1 - share) * W_s)
+
+        where W_s / W_n are the sums of *base_weights* over the served and
+        non-served partitions. Taking the sums over the already-computed mover
+        weights (rather than over row counts) is what makes the resulting share
+        exact once the two weightings compose.
+
+        The knob is a share and not a raw multiplier on purpose: a multiplier's
+        meaning drifts with the frame's tier composition, which varies fold to
+        fold, while the share is the quantity we actually mean.
+
+        Returns 1.0 — leave the weights alone — when the target is unreachable
+        or already met: no served rows (W_s == 0) and no non-served rows
+        (W_n == 0) both have no multiplier that moves the share.
+        """
+        if not 0.0 < served_share < 1.0:
+            raise ValueError(
+                f"served_share must be in (0, 1), got {served_share!r}")
+        w = np.asarray(base_weights, dtype=float)
+        served = np.asarray(tiers) >= HEADLINE_MIN_TIER
+        w_served = float(w[served].sum())
+        w_other = float(w[~served].sum())
+        if w_served <= 0.0 or w_other <= 0.0:
+            return 1.0
+        return served_share * w_other / ((1.0 - served_share) * w_served)
+
+    @classmethod
+    def _direction_sample_weights(cls, returns, threshold, mover_weight: float,
+                                  tiers=None,
+                                  served_share: Optional[float] = None) -> np.ndarray:
         """Up-weight clearly-moving rows (|return| > ``threshold``) by
         ``mover_weight``; flat rows keep weight 1.0. ``threshold`` scalar or
-        per-row array (percent)."""
+        per-row array (percent).
+
+        When ``tiers`` and ``served_share`` are both given, rows in the served
+        cohort (``price_tier >= HEADLINE_MIN_TIER``, i.e. >= $1) are then scaled
+        so they carry ``served_share`` of the total weight. Production trains on
+        a frame that is ~83% sub-$1 while `api/serving_policy.py` shows only
+        >= $1, so untouched the classifier spends most of its capacity on rows
+        no one is served. ``served_share=None`` reproduces the pre-2026-08-06
+        weights exactly. See
+        docs/superpowers/specs/2026-08-06-served-cohort-weighting-design.md.
+        """
         r = np.asarray(returns, dtype=float)
         thr = np.asarray(threshold, dtype=float)
         w = np.ones(len(r))
         w[np.abs(r) > thr] = mover_weight
+        if served_share is None or tiers is None:
+            return w
+        m = cls._served_cohort_multiplier(w, tiers, served_share)
+        served = np.asarray(tiers) >= HEADLINE_MIN_TIER
+        w = w.copy()
+        w[served] *= m
         return w
 
     @classmethod
     def _direction_class_prior(cls, returns, threshold: float,
-                               mover_weight: float) -> Dict[int, float]:
+                               mover_weight: float, tiers=None,
+                               served_share: Optional[float] = None) -> Dict[int, float]:
         """Weighted training class prior as {0: down, 1: flat, 2: up}.
 
         Weighted by _direction_sample_weights, because that is the
         distribution the classifier's multiclass objective actually sees —
-        raw class counts would describe a model that was never trained.
+        raw class counts would describe a model that was never trained. That
+        commitment is why ``tiers``/``served_share`` are threaded through: once
+        the classifier gained a served-cohort weight, a prior that ignored it
+        would silently describe a different model again.
         Returns {} when not estimable, which the diagnostic
         (scripts/diagnose_direction_prior.py) reports as "prior not estimable".
 
@@ -3569,13 +4122,20 @@ class ItemForecaster:
         so the band is the fixed scalar DIRECTION_FLAT_TOLERANCE_PCT; a
         per-row band would need the same rows dropped here as in the finite
         mask below.
+
+        ``tiers`` is filtered by the same finite mask as ``returns``, so a
+        caller passing the raw column does not silently misalign the two.
         """
         r = np.asarray(returns, dtype=float)
-        r = r[np.isfinite(r)]
+        finite = np.isfinite(r)
+        r = r[finite]
         if r.size == 0:
             return {}
+        if tiers is not None:
+            tiers = np.asarray(tiers)[finite]
         c = cls._direction_classes(r, float(threshold))
-        w = cls._direction_sample_weights(r, float(threshold), mover_weight)
+        w = cls._direction_sample_weights(r, float(threshold), mover_weight,
+                                          tiers=tiers, served_share=served_share)
         total = float(w.sum())
         if total <= 0.0:
             return {}
@@ -3609,12 +4169,23 @@ class ItemForecaster:
                                    horizon: Optional[int] = None,
                                    sigma_train=None, sigma_val=None,
                                    num_boost_round: int = 200,
-                                   random_state: int = 42):
+                                   random_state: int = 42,
+                                   tier_train=None):
         """Train a 3-class (down/flat/up) LightGBM classifier on returns,
         up-weighting movers. When ``sigma_train`` is given, the flat band is
         vol-scaled per row (k_h * sigma * sqrt(h), clamped); otherwise the
         legacy fixed ±DIRECTION_FLAT_TOLERANCE_PCT band is used. Early-stops on
-        val multi-logloss for GBDT."""
+        val multi-logloss for GBDT.
+
+        ``tier_train`` is the training rows' ``price_tier``. Combined with
+        ``self.served_cohort_share`` it up-weights the >= $1 cohort production
+        actually serves. Passed explicitly rather than read off ``X_train``
+        because the >0.95 correlation prune can drop ``price_tier`` from
+        ``feature_cols``, and a weight that silently switches off when a feature
+        is pruned is the failure mode SHELVED_FEATURES was written to avoid.
+        Validation rows are deliberately left unweighted: the early-stopping
+        metric should track the whole fold, and weighting it too would move the
+        stopping point along with the objective."""
         k = self.DIRECTION_VOL_MULTIPLIER_MAP.get(horizon, 1.0)
         mover_weight = self.DIRECTION_MOVER_WEIGHT_MAP.get(horizon, 3.0)
         floor, cap = DIRECTION_THRESHOLD_FLOOR_PCT, DIRECTION_THRESHOLD_CAP_PCT
@@ -3628,7 +4199,19 @@ class ItemForecaster:
         ds = {"max_bin": self.MAX_BIN, "feature_pre_filter": False}
         thr_train = _thr(sigma_train)
         c_train = self._direction_classes(y_train_ret, thr_train)
-        w_train = self._direction_sample_weights(y_train_ret, thr_train, mover_weight)
+        w_train = self._direction_sample_weights(
+            y_train_ret, thr_train, mover_weight,
+            tiers=tier_train, served_share=self.served_cohort_share)
+        if self.served_cohort_share is not None and tier_train is not None:
+            served = np.asarray(tier_train) >= HEADLINE_MIN_TIER
+            logger.info(
+                f"  {horizon}d direction classifier: served-cohort weighting "
+                f"to share={self.served_cohort_share:.2f} — "
+                f"{int(served.sum()):,}/{len(served):,} rows are >= $1 "
+                f"({served.mean() * 100:.1f}% of rows, "
+                f"{w_train[served].sum() / max(w_train.sum(), 1e-12) * 100:.1f}% "
+                f"of weight)"
+            )
         dtrain = lgb.Dataset(X_train, c_train, params=ds, weight=w_train)
         params = dict(tree_params)
         params.update(objective="multiclass", num_class=3, metric="multi_logloss",
@@ -3692,6 +4275,23 @@ class ItemForecaster:
         """
         found = meta.get("model_artifact_version")
         if found == self.MODEL_ARTIFACT_VERSION:
+            # Same version, but the ByMykel bundle changes the feature SET
+            # without changing the meaning of any persisted field, so the
+            # version alone cannot catch it. A booster trained with the nine
+            # columns, loaded with the flag off, would be scored against a
+            # feature matrix that no longer has them -- a train/serve mismatch
+            # of exactly the kind the v3 and v4 bumps exist to prevent.
+            saved = bool(meta.get("bymykel_metadata", False))
+            if saved != self.bymykel_metadata_enabled():
+                raise IncompatibleModelArtifact(
+                    f"saved model artifact was trained with "
+                    f"BYMYKEL_METADATA={'1' if saved else '0'} but this process "
+                    f"has it {'on' if self.bymykel_metadata_enabled() else 'off'}. "
+                    f"The feature set differs by the nine ByMykel metadata "
+                    f"columns, so loading it would serve a booster against a "
+                    f"feature matrix it was not trained on. Retrain, or match "
+                    f"the flag."
+                )
             return
         raise IncompatibleModelArtifact(
             f"saved model artifact version {found!r} != expected "
@@ -4677,7 +5277,9 @@ class ItemForecaster:
                 self._direction_tree_params(per_quantile_params),
                 horizon=horizon,
                 sigma_train=None,
-                sigma_val=None)
+                sigma_val=None,
+                tier_train=(train_df["price_tier"].to_numpy()
+                            if "price_tier" in train_df.columns else None))
             pred_cls = clf.predict(X_val).argmax(axis=1)
             actual_cls = self._direction_classes(actual_returns)  # FIXED ±0.5% yardstick
             classifier_acc = round(float((pred_cls == actual_cls).mean()) * 100, 1)
@@ -5046,6 +5648,11 @@ class ItemForecaster:
 
         meta = {
             "model_artifact_version": self.MODEL_ARTIFACT_VERSION,
+            # Not folded into the version bump: with the flag off the feature set
+            # is byte-identical to v5, so bumping would force every checkout into
+            # a needless retrain for a change none of them enabled. Checked
+            # separately instead — see _check_artifact_version.
+            "bymykel_metadata": self.bymykel_metadata_enabled(),
             "sigma_clip": dict(self.sigma_clip),
             "feature_cols": self.feature_cols,
             "horizon_feature_cols": {

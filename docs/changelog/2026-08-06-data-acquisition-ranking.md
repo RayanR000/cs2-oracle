@@ -100,7 +100,28 @@ it is under-rated there. It is the cheapest way to get a second opinion on the 2
 window, which the archive currently covers with a single unattributed series (45% of all
 rows have `source IS NULL`).
 
+**Measured 2026-08-06 and this recommendation is withdrawn.** Coverage is as good as
+claimed — 98% of the deep ≥$1 cohort, median 1,058 days, 92.5% spanning the fold split —
+but the feature is not there. A cross-market basis is null on held-out items at 3d, 7d and
+14d and **significantly harmful at 30d** (−1.42pp), against an MDE of 0.32–0.95pp that
+could have resolved a 1pp effect; the one apparent 7d gain is the sale count, not the
+spread. Two further corrections to this section: the budget is **500 requests per day**,
+not the 3.7 req/s implied here, so a catalogue backfill is ~52 days and not ~2 hours; and
+`avg_price` is float-composition noise at the median 4 sales/day (within-item CV 1.347,
+falling to 0.098 only at ≥50 sales/day). The "second opinion on 2013–2025" argument also
+fails on its own terms — the series starts 2020-04.
+See `2026-08-06-csfloat-basis-refuted.md`.
+
 ### Tier 2 — cheap one-shots that fix identified gaps
+
+> **Built 2026-08-06 (later the same day).** The ingest now exists as
+> `backend/scripts/ingest_bymykel_metadata.py`, and rebuilding the metadata table from
+> scratch reproduced the harness controls exactly while measuring the bundle *higher*
+> than the scratchpad build did — raw-label treatment **+2.68 → +3.72pp at 30d**, and
+> significantly positive at **all four** horizons under market-relative labels. 3d and
+> 14d were measured under raw labels for the first time and are **null**. The "two
+> calls" and "a name parser is required" claims below are both wrong in detail. See
+> `2026-08-06-bymykel-metadata-ingest.md`. Nothing is wired into the model.
 
 **4. `ByMykel/CSGO-API`** (crates.json + skins.json, ~14 MB, two calls). Supplies item age
 via `first_sale_date`, collection, crate, float caps and StatTrak/Souvenir flags. Item age

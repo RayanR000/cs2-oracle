@@ -132,6 +132,43 @@ class TestFeatureEngineering:
         # endpoints exactly 30 days apart that both EXIST still compute (10->20)
         assert row(40)["return_30d"] == pytest.approx(100.0)  # day 40 vs day 10
 
+    def test_short_archive_hole_resolves_lag_within_tolerance(self, forecaster):
+        """A 1-2 day hole in the archive must NOT neutralize the lag features.
+
+        The aggregator drops whole calendar days (August 2026 held only 08-01 and
+        08-04), and an exact-date lag lookup then NaNs price_lag_1d / return_1d
+        for every item at once -> median-filled on 100% of served rows. Reach back
+        to the nearest prior day inside LAG_TOLERANCE_DAYS instead.
+        """
+        base = date(2026, 1, 1)
+        # days 0..20 present, 21 and 22 missing, 23 present. price = 10 + d
+        present = list(range(0, 21)) + [23]
+        rows = [{"item_id": "a", "date": base + timedelta(days=d),
+                 "price": 10.0 + d, "volume": 100} for d in present]
+        df = forecaster._compute_price_features(pd.DataFrame(rows))
+        anchor = df[df["date"] == base + timedelta(days=23)].iloc[0]
+
+        # target for lag 1 is day 22 (absent) -> nearest prior is day 20, 2 days
+        # back, inside tolerance -> real value, not NaN.
+        assert anchor["price_lag_1d"] == pytest.approx(30.0)
+        assert anchor["return_1d"] == pytest.approx((33.0 - 30.0) / 30.0 * 100)
+
+    def test_lag_beyond_tolerance_stays_nan(self, forecaster):
+        """The tolerance is a short reach, not a blanket forward-fill: a hole
+        wider than LAG_TOLERANCE_DAYS must still yield NaN -> median -> neutral,
+        rather than fabricating a return that spans the hole."""
+        base = date(2026, 1, 1)
+        # days 0..20 present, 21..24 missing (4 days), 25 present
+        present = list(range(0, 21)) + [25]
+        rows = [{"item_id": "a", "date": base + timedelta(days=d),
+                 "price": 10.0 + d, "volume": 100} for d in present]
+        df = forecaster._compute_price_features(pd.DataFrame(rows))
+        anchor = df[df["date"] == base + timedelta(days=25)].iloc[0]
+
+        # target for lag 1 is day 24; nearest prior is day 20, 4 days back -> out.
+        assert pd.isna(anchor["price_lag_1d"])
+        assert pd.isna(anchor["return_1d"])
+
     def test_returns_winsorized(self, forecaster):
         df = pd.DataFrame({
             "item_id": ["a"] * 10,
@@ -869,7 +906,14 @@ class TestFeaturePipeline:
         # were shelved (archive volume is identically 0 since 2026-05 — see
         # tests/test_volume_features_shelved.py). This mock feeds real Poisson
         # volume, so it exercises the has_volume=True path and still lands at 37.
-        assert 30 <= n_features <= 200, f"Feature count {n_features} outside expected range [30, 200]"
+        # Lowered again to 20 on 2026-08-06 when _DOLLAR_SCALE_FEATURES shelved
+        # the dollar-denominated columns in favour of price_cv_{w}d and
+        # macd_*_rel — a net removal, since one CV column replaces one std
+        # column while the raw means/mins/maxes/lags leave with no replacement
+        # (their scale-free derivatives were already features). This is a
+        # sanity range, not a pin; test_scale_free_features.py is what asserts
+        # the composition.
+        assert 20 <= n_features <= 200, f"Feature count {n_features} outside expected range [20, 200]"
 
 
 # ---------------------------------------------------------------------------

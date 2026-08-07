@@ -49,6 +49,67 @@ DEFAULT_TRAIN_FEATURE_ROWS = 100_000
 # coverage does not silently also change each horizon's slice.
 TRAIN_HORIZON_MAX_ROWS = 700_000
 
+# Share of the directional classifier's training weight placed on the >= $1
+# cohort. None keeps the pre-2026-08-06 behaviour exactly: no tier weighting,
+# so the classifier trains on a frame that is ~83% sub-$1 while the product
+# serves only >= $1 (api/serving_policy.py). Env-configured to match
+# TRAIN_FEATURE_ROWS/SKIP_CV rather than a flag, because this script parses
+# argv as a plain set. Raise it only against a measured gain in
+# mean_classifier_acc_ge1 — see
+# docs/superpowers/specs/2026-08-06-served-cohort-weighting-design.md.
+DEFAULT_SERVED_COHORT_SHARE = None
+
+
+def _served_cohort_share() -> Optional[float]:
+    raw = os.environ.get("TRAIN_SERVED_COHORT_SHARE")
+    if not raw:
+        return DEFAULT_SERVED_COHORT_SHARE
+    try:
+        share = float(raw)
+    except ValueError:
+        logger.warning(
+            f"TRAIN_SERVED_COHORT_SHARE={raw!r} is not a number; using "
+            f"{DEFAULT_SERVED_COHORT_SHARE}"
+        )
+        return DEFAULT_SERVED_COHORT_SHARE
+    if not 0.0 < share < 1.0:
+        logger.warning(
+            f"TRAIN_SERVED_COHORT_SHARE={share} is not in (0, 1); using "
+            f"{DEFAULT_SERVED_COHORT_SHARE}"
+        )
+        return DEFAULT_SERVED_COHORT_SHARE
+    logger.info(
+        f"TRAIN_SERVED_COHORT_SHARE override: {share:.2f} of the direction "
+        f"classifier's training weight goes to >= $1 rows (default "
+        f"{DEFAULT_SERVED_COHORT_SHARE}) — expect mean_classifier_acc "
+        f"(pooled) to fall and mean_classifier_acc_ge1 to be the metric that "
+        f"matters"
+    )
+    return share
+
+
+def _model_dir() -> Optional[str]:
+    """Override where model artifacts are read from and written to.
+
+    None keeps ItemForecaster's default (models/saved_models/), which is the
+    deployed artifact. Point this at a scratch directory to run a training arm
+    without clobbering production's model — there is no other guard: train()
+    overwrites meta.json and the boosters in place.
+
+    Env-configured for the same reason as TRAIN_FEATURE_ROWS: this script parses
+    argv as a plain set, so a two-token flag does not fit.
+    """
+    raw = os.environ.get("FORECAST_MODEL_DIR")
+    if not raw:
+        return None
+    path = Path(raw).expanduser()
+    path.mkdir(parents=True, exist_ok=True)
+    logger.info(
+        f"FORECAST_MODEL_DIR override: artifacts read/written under {path} "
+        f"— the deployed model in models/saved_models/ is untouched"
+    )
+    return str(path)
+
 
 def _train_feature_rows() -> int:
     raw = os.environ.get("TRAIN_FEATURE_ROWS")
@@ -185,7 +246,9 @@ def run_forecast(train_only: bool = False, predict_only: bool = False,
                  update_bias: bool = False):
     db = SessionLocal()
     try:
-        forecaster = ItemForecaster(db_session=db, prune_failed_groups=False)
+        forecaster = ItemForecaster(db_session=db, prune_failed_groups=False,
+                                    served_cohort_share=_served_cohort_share(),
+                                    model_dir=_model_dir())
         # predict_only is a parameter, already known here -- no need to defer
         # this decision until do_train is computed below. A cache that
         # predates the current artifact scheme is exactly "no usable models"

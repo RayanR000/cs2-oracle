@@ -32,8 +32,11 @@ contributes to a served forecast.
 **Model version:** `lgbm-v3` (`scripts/forecast_prices.py:35`)
 **Artifacts** in `backend/models/saved_models/`: `lgb_{horizon}d_q50_e0.txt` (:4897),
 `clf_{horizon}d.txt` (:4921), `bias_corrections.json`, `meta.json`.
-`MODEL_ARTIFACT_VERSION = 3` (:165) — `load_models()` raises `IncompatibleModelArtifact` on an
-older cache rather than serving a band computed by a different scheme.
+`MODEL_ARTIFACT_VERSION = 5` (:174) — `load_models()` raises `IncompatibleModelArtifact` on an
+older cache rather than serving a band computed by a different scheme. v4 (2026-08-06) marks
+the as-of lag lookup, which changes feature *values* and the persisted `feature_medians`
+without changing the set; v5 (2026-08-06) marks the dollar-scale columns leaving the feature
+set, after which a v4 booster's splits are thresholds in dollars and are meaningless.
 
 ### Directional classifier
 
@@ -98,20 +101,33 @@ deleted — the `ab_test_*` scripts build their own feature lists from the frame
 
 Two further filters run before the allowlist:
 
-- **`SHELVED_FEATURES`** (:243-261, applied :2522-2523) — 17 named columns withheld by name
-  because they resolve to `price_technicals` and the allowlist would otherwise pass them
-  straight through. Six are the volatility-asymmetry / oscillator-divergence primitives shelved
-  2026-07-31 (`docs/changelog/2026-07-31-price-primitives-shelved.md`). Eleven are the volume
-  features: the archive's `volume` column has been identically **0** since 2026-05 — stored as 0,
-  never NULL, which defeats every guard in the volume feature code (`has_volume` tests `notna()`
-  so it stays True, `volume_missing` reports "present") — so they carry real signal on pre-2026-05
-  training rows and are dead on 100% of served rows.
-- **Correlation pruning** at `PRUNE_CORRELATION_THRESHOLD = 0.95` (:297, applied :2526).
+- **`SHELVED_FEATURES`** (:260-327) — **56** named columns withheld by name because they resolve
+  to `price_technicals` and the allowlist would otherwise pass them straight through. Three
+  groups:
+  - **Six** volatility-asymmetry / oscillator-divergence primitives shelved 2026-07-31
+    (`docs/changelog/2026-07-31-price-primitives-shelved.md`).
+  - **Thirteen** volume features: the archive's `volume` column has been identically **0** since
+    2026-05 — stored as 0, never NULL, which defeats every guard in the volume feature code
+    (`has_volume` tests `notna()` so it stays True, `volume_missing` reports "present") — so they
+    carry real signal on pre-2026-05 training rows and are dead on 100% of served rows.
+  - **Thirty-seven** dollar-denominated columns, `_DOLLAR_SCALE_FEATURES` (:318-326), shelved
+    2026-08-06: all `price_std_*`, `price_mean_*`, `price_min_*`, `price_max_*`, `price_lag_*`,
+    plus `price_log`, the raw MACD trio and `bb_upper`/`bb_lower`. The target is a **percentage**
+    return, so a dollar-scale input can only encode item identity — and on the 2026-08-06
+    artifact these carried **55.6 / 70.2 / 77.5 / 86.6%** of total gain at 3/7/14/30d against a
+    training median price of $0.086 and served items reaching $639. `price_tier` is deliberately
+    kept: a bounded categorical is the honest way to express price level.
+- **Correlation pruning** at `PRUNE_CORRELATION_THRESHOLD = 0.95` (applied after shelving).
 
-Net effect: the shipped 2026-08-05 artifact carries **47 feature columns**, identical for all
-four horizons (`meta.json: horizon_feature_cols`). Shelving the volume features drops that to
-**36** on the next retrain; the `MODEL_ARTIFACT_VERSION` bump to 3 exists to force that retrain
-rather than wait 14 days for the age trigger.
+All shelved columns are still **computed** — the conformal band reads `price_std_60d`,
+`_apply_market_aggregates` reads `price_std_30d`, and the z-score / Bollinger / MA-distance /
+support-resistance / log-return features are all derived from the means, mins, maxes and lags.
+
+Net effect: the shipped 2026-08-05 artifact carried **47 feature columns**; shelving the volume
+features took the 2026-08-06 artifact to **36** (`meta.json: horizon_feature_cols`, identical for
+all four horizons), and shelving the dollar columns takes it to **32** on the next retrain, on a
+training smoke run. The `MODEL_ARTIFACT_VERSION` bump exists to force that retrain rather than
+wait 14 days for the age trigger.
 
 `HORIZON_EXCLUDED_GROUPS` (:215-218) still excludes `cross_sectional` from 14d and
 `cross_sectional` + `events` from 30d, but the allowlist already removes both from every horizon,
@@ -119,16 +135,25 @@ so it is currently a no-op.
 
 ### Price technicals (the only group that reaches a model)
 
-Lags at `LAGS = [1, 3, 7, 14, 30, 60, 90, 120, 180]` (:996) and the returns/log-returns derived
-from them; rolling mean/std/min/max over 7/14/20/30/60d (:1020-1024) and distance from the 100d
-and 200d moving averages (:1177-1181); Bollinger Bands (20d: upper, lower, %B, width); RSI(14);
-MACD line/signal/histogram; support/resistance distances; high/low range; price acceleration;
-autocorrelation proxies; trend divergence.
+Lags at `LAGS = [1, 3, 7, 14, 30, 60, 90, 120, 180]` and the returns/log-returns derived
+from them; rolling mean/std/min/max over 7/14/20/30/60d and the coefficient-of-variation forms
+`price_cv_{7,14,20,30,60}d`; distance from the 100d and 200d moving averages; Bollinger Bands
+(20d: upper, lower, %B, width); RSI(14); MACD line/signal/histogram plus the price-normalised
+`macd_line_rel` / `macd_histogram_rel`; support/resistance distances; high/low range; price
+acceleration; autocorrelation proxies; trend divergence.
+
+**Everything that reaches a booster is scale-free** (2026-08-06), `price_tier` excepted. The raw
+dollar levels are computed and then shelved; the model sees their return-space forms.
+`price_cv_60d` is by definition the same quantity as the conformal band's
+`sigma = price_std_60d / price`, and `tests/test_scale_free_features.py` pins both that identity
+and the general property — it multiplies every price by 100 and asserts no served feature moves,
+so a dollar-scale column added later fails without anyone updating a name list.
 
 Lag and return features are looked up **by calendar date**, the same way targets are, so an
-archive day gap yields NaN → median-fill rather than a fabricated multi-month return. The cost
-is that a missing day exactly `lag` before the anchor NaNs that lag for every item at once — see
-Known limitations.
+archive day gap yields NaN → median-fill rather than a fabricated multi-month return. The lookup
+is *as-of* within `LAG_TOLERANCE_DAYS = 3` (:179): the aggregator drops whole calendar days
+(August 2026 held only 08-01 and 08-04) and an exact-date lookup NaN'd that lag for every item at
+once. Holes wider than the tolerance still yield NaN — see Known limitations.
 
 ### Computed and discarded
 
@@ -172,6 +197,23 @@ per-horizon cap at the same time.
 The 2026 distribution-shift guard that used to exclude the current year was removed once the
 May–June 2026 archive gap was backfilled (:2487-2494).
 
+### Label hygiene
+
+`prepare_targets` winsorizes `target_return_{h}d` at ±500%, and then (2026-08-06) voids labels
+built across days the collector fabricated. Winsorization cannot catch these — the returns are
+well inside the clip and survive as confident, wrong labels.
+
+| Defect | Detector | Threshold | Rule | Incidence |
+|---|---|---|---|---|
+| Re-published snapshot (a day that is a byte copy of the previous one) | `_snapshot_dates` | `SNAPSHOT_DAY_FLAT_FRACTION = 0.99`, `MIN_DEGENERATE_CROSS_SECTION = 25` | Bad **endpoint** only — a copied day shifts no level, so it is harmless mid-window | 2 of 4,735 archive days (2026-07-16, 2026-07-22), both at 100.00%; next-highest day 69.01% |
+| Collector cutover (a source-regime change in the stitched archive) | `_collection_shift_dates` | `COLLECTION_SHIFT_FRACTION = 0.20` on the **item universe size** | Corrupts any label whose window **spans** it, so the whole horizon-wide anchor band is voided | 12 of 4,735 days (0.25%) — 4 in 2013, 1 in 2016, 7 in 2026 |
+
+Cutovers are detected from the universe size and never from prices, deliberately: prices moving
+cannot change how many items a collector returns, so the detector cannot mask a real crash
+(`tests/test_degenerate_label_dates.py::test_a_price_crash_is_never_flagged`). The market-return
+signature it catches is large — −31.6% on 2026-03-22, +17.4%/−17.8% on 2026-07-09/10, against
+±0.5% on a normal day — and is a basis change, not a price move.
+
 ### Hyperparameter search
 
 Optuna TPE with MedianPruner, per-quantile. `N_TRIALS_MAP = {3: 50, 7: 10, 14: 15, 30: 15}`
@@ -186,7 +228,16 @@ cached params from `meta.json` and logs `optuna: 0.0s`.
 
 ### Validation and calibration
 
-Expanding-window CV: `CV_STEP_DAYS = 150` (:306), `VALIDATION_WINDOW_DAYS = 30` (:184),
+The production train/val split in `_train_horizon_inline` is **purged**
+(`_purge_overlapping_train_rows`, 2026-08-06): a row dated `d` is labelled with the price at
+`d + horizon`, so rows in `[split_date - horizon, split_date)` carry labels drawn from the
+validation window — at `horizon == VALIDATION_WINDOW_DAYS == 30`, the entire window. That frame
+is the `dval` early stopping stops on, the set Optuna scores every trial against, and the
+classifier's stopping set, so before this every shipped tree count, hyperparameter and stopping
+point was selected against partly-seen labels. The positional fallback split is purged the same
+way. CV always purged.
+
+Expanding-window CV: `CV_STEP_DAYS = 150` (:306), `VALIDATION_WINDOW_DAYS = 30` (:201),
 `CV_MIN_TRAIN_DAYS = 200` (:307), each fold carrying a `horizon`-day purge gap. A 1460-day frame
 yields 8–9 folds. Folds report persistence and momentum baselines and `edge_vs_best_baseline`,
 judged on the **classifier** accuracy because that is the served signal (:3240-3246); the ≥$1
@@ -319,19 +370,27 @@ Binary `high` / `low`, taken from the classifier's max class probability against
 
 ### What is measurable
 
-**Classifier CV directional accuracy** (2026-08-05 post-rewrite retrain, 9 folds; 8 at 30d):
+**Classifier CV directional accuracy** — the 2026-08-06 36-column retrain, 9 folds (8 at 30d).
+`mean_classifier_acc` / `mean_classifier_acc_ge1` from `meta.json`; the CI arm trained on 101,407
+feature rows against the local arm's 115,763, so the spread between the two columns is subsample
+noise (`docs/changelog/2026-08-06-serving-down-skew-refuted.md`):
 
-| Horizon | CV DA (all tiers) |
-|---------|:---:|
-| 3d | 67.3% |
-| 7d | 67.8% |
-| 14d | 68.1% |
-| 30d | 67.9% |
+| Horizon | CV DA, all tiers (local / CI) | CV DA, ≥$1 (local / CI) |
+|---------|:---:|:---:|
+| 3d | 67.3% / 65.8% | 49.9% / 51.8% |
+| 7d | 67.2% / 65.6% | 49.0% / 49.6% |
+| 14d | 67.8% / 66.4% | 51.1% / 53.3% |
+| 30d | 68.6% / 68.4% | 53.4% / 53.9% |
 
 This is a **training-time diagnostic on interior rows**, not a production figure. The CV frame is
-~83% sub-$1 items, so the all-tiers number reads close to a penny-item score; the ≥$1 cohort is
-now reported alongside it (2026-08-05) precisely so a comparable number exists. Do not quote
-either as served accuracy.
+~83% sub-$1 items, so the all-tiers number reads close to a penny-item score; the ≥$1 column is
+the comparable cohort (`MIN_SERVED_PRICE_USD = 1.0`), first populated by this retrain. Do not
+quote either as served accuracy.
+
+The ~17pp pooled-vs-≥$1 spread is the gap the 2026-08-06 scale-free feature change was aimed at:
+the top features of this artifact were `price_std_*` and the raw MACD legs, all denominated in
+dollars against a percentage target. That change is **unmeasured** —
+`docs/changelog/2026-08-06-scale-free-features-and-fabricated-labels.md`.
 
 The quantile-median sign is also scored in CV but is **not** the served signal and understates the
 shipped model — the CV block caps fits at `num_boost_round=200` while production 3d q50 trains to
@@ -378,13 +437,16 @@ coverage; persistence-baseline DA/MAE, improvement in pp, `skill_vs_baseline`; `
 
 ### Known limitations
 
-- **Train/serve gap in the serving transform.** Running the saved classifiers on interior rows vs
-  serving rows shows the served class mix skewed to "down": at 7d, 48.2% down on served rows
-  against 34.8% on interior rows — a +13.4pp residual on the cohort actually served. Two causes,
-  both hitting all 5,542 served items at once: volume features median-filled on 100% of served
-  rows (now shelved), and date-based lag joins meeting the archive's day gaps, which NaN a
-  rotating set of `return_{lag}d` columns for every item simultaneously. Serving confidence is
-  correspondingly lower than interior confidence (7d: 0.583 vs 0.664).
+- **The serving down-skew is largely refuted.** The "+13.4pp" 7d residual was a market-period
+  artifact: the interior baseline spanned full history while serving sits on the latest day.
+  Like-for-like inside one window it is **+4.5 / +1.7 / −1.2 / −2.5pp** at 3/7/14/30d, and the
+  transform actually *lowers* the down-rate (60.6% on raw anchor rows → 53.4% as served). **Do
+  not cite +13.4pp.** See `docs/changelog/2026-08-06-serving-down-skew-refuted.md`. The two
+  underlying mechanisms were real and are both now addressed: volume features median-filled on
+  100% of served rows (shelved 2026-08-06), and calendar-gap lag fills — on the 2026-08-04 anchor
+  `price_lag_1d`, `return_1d`, `log_return_1d` and `autocorr_1d` were median-filled on 100% of
+  served rows because the archive's entire August was 08-01 and 08-04 (addressed by
+  `LAG_TOLERANCE_DAYS = 3`; the underlying ingestion gaps remain).
 - **The model trains on 1.8% of the item pool** (99 of 5,377 items at the default row budget) and
   serves 5,542. Raising coverage is a measured ~4.5× cost increase and was declined.
 - **The gate cannot resolve small effects.** The A/B harness has a ~1.15pp noise floor at 3d,
@@ -436,7 +498,7 @@ coverage; persistence-baseline DA/MAE, improvement in pp, `skill_vs_baseline`; `
 
 | File | Lines | Role |
 |------|------|------|
-| `backend/models/forecaster.py` | 5,196 | `ItemForecaster`: feature engineering, training, CV, predict |
+| `backend/models/forecaster.py` | 5,543 | `ItemForecaster`: feature engineering, training, CV, predict |
 | `backend/models/conformal.py` | 106 | Normalized split conformal band (sigma, q_hat, band). Pure numpy |
 | `backend/models/steam_types.py` | 170 | Steam type field parser (rarity + weapon_type extraction) |
 | `backend/scripts/forecast_prices.py` | 381 | Entry point: retrain decision, train + predict, DB/Parquet write |
@@ -454,8 +516,11 @@ coverage; persistence-baseline DA/MAE, improvement in pp, `skill_vs_baseline`; `
 | `backend/scripts/optuna_horizons_search.py` | — | Standalone per-horizon Optuna search |
 | `backend/scripts/optuna_3d_search.py` | 161 | 3d horizon Optuna search (frozen winner lives here) |
 | `backend/collectors/social_sentiment.py` | 332 | FinBERT ONNX INT8 sentiment scorer (workflow deleted; dormant) |
-| `backend/tests/test_forecaster.py` | 2,249 | 152 forecaster tests |
+| `backend/tests/test_forecaster.py` | 2,297 | 154 forecaster tests |
 | `backend/tests/test_minimal_model_shape.py` | 1,081 | Pins the 8-model shape and the removed code paths |
+| `backend/tests/test_scale_free_features.py` | 185 | Price-scale invariance of every served feature |
+| `backend/tests/test_degenerate_label_dates.py` | 164 | Snapshot-day and collector-cutover label voiding |
+| `backend/tests/test_purged_production_split.py` | 104 | The production train/val purge band |
 | `price-archive/item-metadata.parquet` | 109 KB | Rarity/weapon_type cache (computed, then dropped by the allowlist) |
 
 Run tests with **`pytest tests`**, not bare `pytest` — `scripts/test_social_signal.py` imports

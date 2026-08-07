@@ -184,29 +184,61 @@ def store(conn: sqlite3.Connection, rows: List[Tuple[str, str, float, int]]) -> 
     return cur.rowcount
 
 
-def load_targets(min_price: Optional[float], shuffle_seed: Optional[int]) -> List[str]:
-    """Non-gated, name-keyed archive items — the ones training currently drops."""
+# Two mangled key formats exist in the archive, both duplicates of real items
+# already inside the gate (see the slug-duplicates writeup). Neither is a
+# market_hash_name, so both return a valid page with zero series — which looks
+# exactly like a genuine miss and would poison the EMPTY rate.
+#   slug   : 'sealed-graffiti-popdog-battle-green'  (migrate_historical_data.py)
+#   steam_ : 'steam_sticker_|_sico_|_rio_2022'      (deleted real_data_collector)
+# NOTE the slug regex does NOT match the steam_ form (it has '_' and '|'), so
+# excluding slugs alone is not enough.
+_SLUG_KEY = re.compile(r"^[a-z0-9][a-z0-9\-]*$")
+
+
+def is_mangled_key(item_slug: str) -> bool:
+    return bool(_SLUG_KEY.match(item_slug)) or item_slug.startswith("steam_")
+
+
+def load_targets(
+    min_price: Optional[float],
+    shuffle_seed: Optional[int],
+    active_days: int = 1,
+) -> List[str]:
+    """Items the daily aggregator is actively collecting, that training drops.
+
+    Three conditions, all required:
+      1. present on the latest `active_days` archive days — i.e. the daily
+         aggregator is still writing them, so a backfill stays useful
+      2. outside the `is_backfilled` gate (no pre-2026 history)
+      3. a real market_hash_name, not one of the two mangled key formats
+    """
     import duckdb
 
     con = duckdb.connect()
     glob = str(PRICE_ARCHIVE_DIR / "prices-*.parquet")
-    con.execute(
-        f"CREATE TABLE gate AS SELECT DISTINCT item_slug "
-        f"FROM read_parquet('{glob}') WHERE day < '2026-01-01'"
-    )
+    con.execute(f"CREATE VIEW arch AS SELECT * FROM read_parquet('{glob}')")
+    con.execute("CREATE TABLE gate AS SELECT DISTINCT item_slug FROM arch WHERE day < '2026-01-01'")
+
+    recent = [
+        r[0]
+        for r in con.execute(
+            f"SELECT DISTINCT day FROM arch ORDER BY day DESC LIMIT {active_days}"
+        ).fetchall()
+    ]
+    logger.info(f"active window = {len(recent)} most recent archive day(s): "
+                f"{', '.join(str(d)[:10] for d in recent)}")
+    con.execute("CREATE TABLE act(day DATE)")
+    con.executemany("INSERT INTO act VALUES (?)", [(d,) for d in recent])
+
     price_clause = f"HAVING MAX(median_price) >= {min_price}" if min_price else ""
     rows = con.execute(
-        f"""SELECT item_slug FROM read_parquet('{glob}')
-            WHERE item_slug NOT IN (SELECT item_slug FROM gate)
+        f"""SELECT item_slug FROM arch
+            WHERE day IN (SELECT day FROM act)
+              AND item_slug NOT IN (SELECT item_slug FROM gate)
             GROUP BY 1 {price_clause}"""
     ).fetchall()
 
-    # Slug-keyed rows ('sealed-graffiti-...') are not market_hash_names; a slug
-    # URL returns a valid page with zero series, which is indistinguishable from
-    # a genuine miss. Exclude them rather than poison the EMPTY rate.
-    slug = re.compile(r"^[a-z0-9][a-z0-9\-]*$")
-    names = [r[0] for r in rows if not slug.match(r[0])]
-    names.sort()
+    names = sorted(r[0] for r in rows if not is_mangled_key(r[0]))
     if shuffle_seed is not None:
         random.Random(shuffle_seed).shuffle(names)
     return names
@@ -277,6 +309,8 @@ def main() -> int:
     ap.add_argument("--min-price", type=float, default=None, help="only items reaching this price")
     ap.add_argument("--delay", type=float, default=REQUEST_DELAY)
     ap.add_argument("--seed", type=int, default=None, help="shuffle targets for a representative sample")
+    ap.add_argument("--active-days", type=int, default=1,
+                    help="require presence on the N most recent archive days (default 1)")
     ap.add_argument("--dry-run", action="store_true")
     args = ap.parse_args()
 
@@ -290,7 +324,7 @@ def main() -> int:
         logger.info(f"stored: {n_items} items, {n_rows} rows | requested: {len(prog['done'])}")
         return 0
 
-    targets = load_targets(args.min_price, args.seed)
+    targets = load_targets(args.min_price, args.seed, args.active_days)
     logger.info(f"{len(targets)} non-gated, name-keyed target items")
 
     prog = load_progress()

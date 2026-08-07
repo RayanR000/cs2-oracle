@@ -13,7 +13,11 @@ Date: 2026-07-14
 >
 > 1. Every feature group ever measured here landed at **|effect| < 0.7pp** —
 >    +0.66, 0, 0, 0, +0.16, −1.10 (see Reality Check). Six consecutive results
->    indistinguishable from zero.
+>    indistinguishable from zero. *(The **|effect| < 0.7pp for every feature group**
+>    generalisation no longer holds: a static item-metadata bundle measured +0.70pp
+>    at 7d and +1.92pp at 30d on held-out ≥$1 items on 2026-08-06 — a different
+>    instrument, and not shipped. See the note under §1. The six numbers listed here
+>    are unchanged.)*
 > 2. The A/B harness's minimum detectable effect is **1.15pp at 3d and
 >    2.76–7.13pp at 7d/14d/30d** (see Measurement Floor).
 > 3. To resolve effects of the size this project actually produces you would need
@@ -55,7 +59,7 @@ Date: 2026-07-14
 
 | Feature | Rationale | Est. Impact | Calibrated | Effort |
 |---------|-----------|-------------|-------------|--------|
-| Category/collection features (same weapon group, collection, case) | Items in same category move together — category returns, volatility | 2-5pp | **0pp** ✅ tested | Low |
+| Category/collection features (same weapon group, collection, case) | Items in same category move together — category returns, volatility | 2-5pp | **0pp** ✅ tested — **contested 2026-08-06**, see note below | Low |
 | Steam active listing count (vs. trade volume) | 🛑 **DROPPED** — supply-side, but only change/velocity variant is directionally predictive and needs 30d history/paid backfill; free source too slow. See §1 DECISION. | 3-6pp est | 0pp pursued | — |
 | Item liquidity score (volume churn ratio) | Low-liquidity items have larger price impact per trade | 2-4pp | 1-2pp | Low |
 | Steam player count | Core demand driver — correlates with market activity | 2-4pp | **0pp** ✅ tested | Low |
@@ -67,6 +71,34 @@ Date: 2026-07-14
 
 > ⚠️ **CRITICAL DISTINCTION — "listing volume" ≠ "trade volume".**
 > The supply-depth features above (active *sell_listings* count, listing density, supply-to-volume ratio) are **supply-side** signals and are the genuinely novel remaining input. They are **NOT** the same as **trade volume** (units *sold*), which was audited on 2026-07-16 and found to add **ZERO predictive lift** — every trade-volume feature correlates with forward returns at **|r| < 0.002** (statistical noise). See `docs/research/volume-data.md:25-29` and `docs/references/data-sources.md:75-83`. Trade volume's only value in this stack is confidence/liquidity weighting, never forecasting. If a future contributor reads "listing volume" and adds *sales* volume, that is the mistake to avoid — use `sell_listings` from the `supply_scraper` / `supply_snapshots` table, not traded-volume.
+>
+> ℹ️ **The category/collection 0pp is contested (2026-08-06).** A 7-arm A/B on an 870-item
+> deep ≥$1 universe, 33 production features, evaluated on 150 **held-out** items, measured a
+> static item-metadata bundle (rarity + crate id + collection id + float caps +
+> StatTrak/Souvenir, from `ByMykel/CSGO-API`) at **+0.70pp at 7d [+0.02, +1.33] and +1.92pp
+> at 30d [+1.29, +2.57]**, with a per-fold permuted placebo at ~0pp so it is not capacity
+> inflation. Those are **held-out-item CV numbers, not production DA** and not comparable to
+> the pooled figures in this table. The plausible reason for the disagreement is coverage:
+> the 0pp read used `item-metadata.parquet`, which has **rarity NULL on 4,296 of its 8,691
+> rows** and no crate or collection column at all, against 99.5% rarity coverage in the
+> ByMykel join. Not shipped; the ingest is not built. See
+> `docs/changelog/2026-08-06-breadth-beats-depth-item-age-does-not.md`.
+>
+> ℹ️ **Amended later on 2026-08-06 by a re-run with market-relative labels.** The same six
+> arms, with the target demeaned by the realized market factor
+> (`models/market_factor.py`, `ItemForecaster._demean_returns`), give two corrections.
+> (a) **The static-metadata effect survives at about two thirds of its size** — 7d
+> +0.70 → **+0.54pp [+0.04, +1.06]**, 30d +1.92 → **+1.29pp [+0.63, +2.03]**, CIs still
+> excluding zero; null at 3d and 14d. Part of the raw-label gain was the market term
+> arriving through crate and collection identity, most of it was not. (b) **Item age is no
+> longer refuted.** The full 9-column bundle beats the 7-column static subset at all four
+> horizons (+0.34 vs +0.13, +0.75 vs +0.54, +0.99 vs −0.29, +1.85 vs +1.29), so the ingest
+> recommendation is the whole bundle — but age's marginal over the static subset is still
+> sign-inconsistent (−0.02 / +0.27 / +0.96 / −0.73) and **no arm isolates age inside the
+> bundle**, so there is no per-column attribution. Market-relative DA scores *idiosyncratic*
+> direction and is not comparable to the raw-label or production numbers; the label flag
+> defaults off and the same transform was refuted for production the same day
+> (`docs/changelog/2026-08-06-market-relative-labels-refuted.md`).
 >
 > 🛑 **DECISION (2026-07-16): Supply depth is DROPPED as a prediction-accuracy improvement.** Rationale: (1) only the *change/velocity* variant (`supply_change_7d`, `supply_listings_zscore`) is mechanistically predictive of direction — the *level* feature is a liquidity signal that does not move directional accuracy (CS2Cap: "liquidity is a tradability signal, not a price forecast"); (2) the change features require 30+ days of `supply_snapshots` history or a paid historical backfill (CS2Cap candles `q`); (3) the only free source is the Steam full-catalog scrape (~115 min/day) — deemed too slow/high-effort, and no free bulk listing-count source exists; paid APIs (CSMarketCap $9.99/mo, CS2Cap $19/mo) were rejected. Expected lift was only ~+1-2pp directional. Remaining accuracy work shifts to model architecture (regime-switching, Ridge head) on existing data. The `_add_supply_depth_features` code remains but is excluded from the accuracy roadmap.
 
@@ -203,6 +235,45 @@ Formerly listed as remaining, now **abandoned unmeasurable**:
   archive date range, not `--max-items`, so more items cannot resolve it. See
   `docs/changelog/2026-07-31-price-primitives-decision-scale.md` — and the
   measurement-floor section below, which that run produced.
+- 🛑 **Market-relative (cross-sectionally demeaned) direction labels** — the
+  strongest surviving idea in this document, and the one the closure memo's
+  "variance reduction, not more items" escape clause pointed at. Built and
+  measured 2026-08-06. It is refuted in a way that **strengthens this banner
+  more than any other entry here**: training the classifier on `r − m` and
+  scoring the idiosyncratic call gives `relative_accuracy_ge1` of
+  **36.7 / 32.7 / 34.6 / 39.0** (3d/7d/14d/30d) against a majority-class
+  baseline of **38.8 / 42.7 / 46.4 / 51.7** — *below a constant call at every
+  horizon*. Once the market factor is removed, the price-technical feature set
+  predicts nothing about **which item** moves which way. That is a mechanism for
+  the entire null streak: these experiments were variations on a signal that is
+  not present at the item level, and no feature group, reweighting or model-class
+  swap addresses it. Kept in the code, defaulted off
+  (`DEFAULT_MARKET_RELATIVE_LABELS = False`). Bounded by the 99-item subsample
+  and the mover-weighting artifact — see
+  `docs/changelog/2026-08-06-market-relative-labels-refuted.md`.
+  **Corroborated on a second, independent instrument the same day.** In the
+  item-metadata A/B (870-item deep ≥$1 universe, 150 held-out items, 33 features),
+  a feature column holding **nothing but the calendar date ordinal** bought
+  **+11.21pp [+9.30, +13.01] at 30d** under raw labels; demeaning the label by the
+  realized market factor collapsed it to **+0.53pp [−0.08, +1.13]**, and to
+  **+0.00pp at 3d**. The largest "feature" effect ever measured in this project was
+  the market term, and subtracting it removes it. That is the mechanism above,
+  measured without the production retrain path. See
+  `docs/changelog/2026-08-06-breadth-beats-depth-item-age-does-not.md`.
+- 🛑 **Served-cohort (≥$1) weighting of the directional classifier** — the one
+  angle that legitimately reopened this document, since every decision recorded
+  here was scored on the **pooled** metric and `classifier_accuracy_ge1` did not
+  exist until 2026-08-05. Built and measured 2026-08-06 on two paired cold
+  retrains (identical folds, rows and `tuned_params`; only the training weight
+  vector differed). Moving the ≥$1 cohort from ~18% to **50.0%** of the
+  classifier's training weight changed paired `classifier_accuracy_ge1` by
+  **−0.43 / +1.18 / −0.07 / −0.97pp** (3d/7d/14d/30d) and pooled accuracy by
+  **~0.1pp at every horizon** — the intended pooled-for-served trade never
+  happened, because the decision function barely moved. Below the
+  pre-registered +2pp bar; **kept in the code, defaulted off**
+  (`DEFAULT_SERVED_COHORT_SHARE = None`). This refutes "capacity is spent on the
+  wrong cohort"; it does **not** test whether *more* ≥$1 items would help. See
+  `docs/changelog/2026-08-06-served-cohort-weighting-refuted.md`.
 - 🛑 **Quality spread / cross-wear features** — built and A/B'd 2026-07-26
   (walk-forward, 1,500 variant-group items). **Net-flat: +0.16pp mean**
   (3d −0.78 / 7d +1.28 / 14d +0.76 / 30d −0.63pp), and **+77% feature-build

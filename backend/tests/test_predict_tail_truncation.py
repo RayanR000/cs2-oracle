@@ -201,8 +201,14 @@ def test_served_features_survive_truncation(forecaster):
     # on this fixture is 3.7e-6. Prices carry 4 decimals and split thresholds
     # are nowhere near that resolution, so this is numerically irrelevant --
     # but it is bounded here so a genuine regression cannot hide inside it.
+    # macd_line_rel / macd_histogram_rel are these same ewm() quantities divided
+    # by price (added 2026-08-06 by _DOLLAR_SCALE_FEATURES), so they inherit the
+    # property exactly. They are also the members of this family that now reach
+    # a booster — the dollar forms are shelved — so the bound matters more here
+    # than it did when only the raw columns were listed.
     EWM_FAMILY = {"macd_line", "macd_signal", "macd_histogram",
-                  "macd_hist_slope_7d"}
+                  "macd_hist_slope_7d",
+                  "macd_line_rel", "macd_histogram_rel"}
     EWM_RTOL = 1e-4
 
     def _close(col):

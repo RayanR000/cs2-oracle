@@ -22,7 +22,7 @@ derived from it are in `../changelog/2026-08-06-data-acquisition-ranking.md`.
 | Steam `priceoverview` | Undocumented endpoint | Per-item | 24h sales volume, lowest/median price | None | **Not integrated** |
 | **Steam market listing pages** | **SSR HTML scrape** | **One-shot backfill** | **Daily median + volume back to 2013** | **None (no cookie)** | **⚠️ Staged** — 262 items collected; this IP soft-blocked 2026-08-05 |
 | BUFF163 git archive (atalantus) | JSON dump (24 MB xz) | One-shot | Daily CNY min-listing, 2021-07 → 2024-02 | None (unlicensed) | **Evaluated, declined** |
-| CSFloat `/api/v1/history/…/graph` | REST (undocumented) | Per-item | Daily completed-sale avg + count, from 2020-04 | None | **Not integrated** |
+| CSFloat `/api/v1/history/…/graph` | REST (undocumented) | Per-item, **500 req/day** | Daily completed-sale avg + count, from 2020-04 | None | **Measured and declined 2026-08-06** — coverage passes, the basis feature is null; see `../changelog/2026-08-06-csfloat-basis-refuted.md` |
 | CSMarketCap API | GraphQL + REST | Bulk (all items in 1 call) | Trade volume (24h/7d/30d/90d), listings, buy orders | JWT token | **Not integrated** ($9.99/mo) |
 | **Skinport `/v1/sales/history`** | REST API | Bulk (1 call, 1.9 s / 20.4 MB) | min/max/avg/median/volume for 24h, 7d, 30d, 90d — **retroactive on first pull** | None (needs `Accept-Encoding: br`) | **Not integrated** — 36,004 items; 23,533 of the ≥$1 cohort (89.0%) |
 | **lis-skins full export** | JSON dump | **Daily** (1 call, 364.5 s / 173 MB) | 2.3M individual listings: `price`, `created_at`, `item_float` — reduced to per-item ask ladder + listing age | None | **✅ Active** — `collectors/supply_depth.py`, 23,879 items on 2026-08-06; 17,286 of the ≥$1 cohort. Largest marginal contributor (+1,428 items over the other feeds). Untested from a GitHub runner |
@@ -290,7 +290,7 @@ what `predict()` scores, not row count.
 | Source | Free? | Content | Why declined |
 |---|:--:|---|---|
 | [atalantus/buff-price-history-archive](https://github.com/atalantus/buff-price-history-archive) | Yes | **21,954 items, 15.4M daily rows, 2021-07 → 2024-02**, CNY×100, one 24 MB xz | Depth-only: adds 1.66M in-window gated rows, pushing rows/item 1,341 → 1,641 and `target_items` **521 → 426 (−18%)**. Needs 2021–24 CNY/USD rates the archive lacks. No LICENSE. Fetch via `raw.githubusercontent.com` — the LFS media URL 404s. |
-| CSFloat `/api/v1/history/<name>/graph` | Yes | Daily completed-sale avg + count from 2020-04, no auth (1,898 rows for AK Redline) | Viable and unblocked; simply not integrated yet. Extends the existing `aggregator_csfloat` label backwards. |
+| CSFloat `/api/v1/history/<name>/graph` | Yes | Daily completed-sale avg + count from 2020-04, no auth (1,899 rows for AK Redline) | **Measured 2026-08-06 and declined.** Coverage is fine (98% of the deep cohort, median 1,058 days) but a cross-market basis feature is null at every horizon and *harmful* at 30d, and `avg_price` is float-composition noise at the median 4 sales/day (within-item CV 1.347). Budget is **500 requests/day**, so a catalogue backfill is ~52 days. See `../changelog/2026-08-06-csfloat-basis-refuted.md`. |
 | cs2.sh | No | Steam daily back to 2013 | No free tier; history is the $200/mo Scale plan and only reaches back to 2025-12-24. |
 | CSGOSKINS.GG | No | 36 markets, 38.5K items | €179/mo minimum, 90-day history. |
 | SteamAnalyst | Partly | 30+ markets | Free tier is 100 req/day — unusable in bulk. |

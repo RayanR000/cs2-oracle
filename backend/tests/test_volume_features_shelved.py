@@ -76,7 +76,12 @@ def test_feature_selection_excludes_shelved_volume_columns():
         "price": [1.0, 2.0],
         "volume": [0.0, 0.0],
         "return_7d": [0.1, -0.2],
-        "price_std_60d": [0.3, 0.4],
+        # Witness that the volume shelving does not over-reach into the price
+        # technicals. Was price_std_60d until 2026-08-06, when that column was
+        # shelved by _DOLLAR_SCALE_FEATURES for an unrelated reason (dollars vs
+        # a percentage target); price_cv_60d is its scale-free replacement and
+        # keeps this assertion testing what it was written to test.
+        "price_cv_60d": [0.3, 0.4],
         "target_7d": [1.1, 2.1],
         "target_return_7d": [0.1, 0.05],
         **{name: [1.0, 2.0] for name in sorted(VOLUME_FEATURES)},
@@ -88,7 +93,7 @@ def test_feature_selection_excludes_shelved_volume_columns():
     assert set(cols) & VOLUME_FEATURES == set()
     # The price technicals it should keep are still there.
     assert "return_7d" in cols
-    assert "price_std_60d" in cols
+    assert "price_cv_60d" in cols
     # And the metadata/target columns are still excluded.
     for excluded in ("item_id", "date", "price", "volume",
                      "target_7d", "target_return_7d"):
