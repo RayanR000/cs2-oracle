@@ -2,6 +2,23 @@
 
 Date: 2026-07-14
 
+> ## ↩️ REOPENED 2026-08-07 — on a different constraint than the one that closed it
+>
+> `docs/research/2026-08-07-cs2-forecasting-research.md` relocates the binding constraint
+> from **input data** to **measurement**. The banner below closes this line of work partly
+> because "to resolve effects of the size this project actually produces you would need an
+> MDE near 0.3pp … it is not reachable". The review measures a **date-level MDE of ~0.3pp**
+> against the 2.21–3.69pp item-level floor — reachable, at a different grain. It also finds
+> that the headline metric measures the market's base rate rather than the model (the
+> Pesaran–Timmermann null), that the published backtest number is unpurged, and that three of
+> the refutations underneath this banner have intervals that are wrong.
+>
+> **The banner below is left intact and still governs item-level feature work.** The reopened
+> directions are aggregation (a date-level factor model), cross-tier structure, and
+> measurement — not new item-level features. The tracked action list is
+> `docs/research/2026-08-07-next-steps.md`; the record is
+> `docs/changelog/2026-08-07-cs2-forecasting-research-review.md`.
+
 > # 🛑 THIS LINE OF WORK IS CLOSED (2026-07-31)
 >
 > **Do not open a new feature or model experiment against this document.** The

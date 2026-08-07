@@ -32,9 +32,20 @@ report it rather than working around it.
 
 ## Research (`research/`)
 
-- `accuracy-opportunities.md` — **Closed 2026-07-31.** Carries a stop banner; the
-  remaining items were abandoned as unmeasurable, not deferred. Read before proposing
-  accuracy work.
+- `2026-08-07-cs2-forecasting-research.md` — **Start here for anything accuracy-related.**
+  1,706-line external design review. Its C1–C5 correction block overturns four of its own
+  first-pass claims and three of those touch live code: a BUFF **bid** may be voting into the
+  consensus price as an ask since 2026-07-11, the 1.1607 Steam fee constant is synthetic, and
+  `walkforward_backtest.py --purge` is default OFF so the published backtest number is
+  unpurged. Also carries the one measured positive — expensive tiers lead cheap tiers by a
+  day, z = 9.1. See `changelog/2026-08-07-cs2-forecasting-research-review.md`.
+- `2026-08-07-next-steps.md` — the tracked, **gated** action list from that review. Step 1 is
+  one query and gates everything else; steps 1–6 need no retrain and are ~2 weeks. Everything
+  on it is NOT STARTED.
+- `accuracy-opportunities.md` — closed 2026-07-31, **reopened 2026-08-07** by the review
+  above, which relocates the binding constraint from input data to measurement. The stop
+  banner is intact and the tables are still a record of what was tried, not a backlog. Read
+  both before proposing accuracy work.
 - `2026-07-19-feature-contribution-by-horizon.md` — ablation behind the
   `HORIZON_EXCLUDED_GROUPS` config in `models/forecaster.py`
 - `2026-07-21-training-time-optimization.md` — training-time levers
