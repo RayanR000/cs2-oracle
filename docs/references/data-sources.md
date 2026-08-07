@@ -14,7 +14,7 @@ derived from it are in `../changelog/2026-08-06-data-acquisition-ranking.md`.
 | CSFloat API | REST API | Not running | Live listings | API key not configured | **Degraded** |
 | Steam Web API | REST API | Manual only | Item schema/icons | STEAM_API_KEY (optional) | **Not used by any pipeline** |
 | Skinport (via aggregator) | JSON API | Daily | Reads `starting_at` correctly | None | **Active** (fixed — `csgotrader_aggregator.py:191-192, 314-317`) |
-| Skinport (direct API) | REST API | N/A | Live `/v1/items` | None | **Available, unimplemented** — API 200s with `Accept-Encoding: br` |
+| Skinport (direct API) | REST API | Daily (attempted) | Live `/v1/items` `quantity` | None | **Wired, blocked** — `collectors/supply_depth.py` calls it daily; returned **HTTP 403 (WAF)** on 2026-08-06 and contributed 0 rows. Two distinct failure modes — see the Skinport section below |
 | cs2.sh archive | API stub | N/A | Not implemented | CS2SH_API_KEY | **Stub** |
 | **HF CS2 Dataset (idomanteu)** | **Parquet (Hugging Face)** | **Imported once** | **Hourly BUFF/CSFloat/YouPin, Mar 22 – Apr 15 2026** | **None (CC BY 4.0)** | **✅ Active (merged to archive 2026-07-20)** |
 | Steam Announcements | Stub | N/A | Not implemented | None | **Stub** |
@@ -25,8 +25,10 @@ derived from it are in `../changelog/2026-08-06-data-acquisition-ranking.md`.
 | CSFloat `/api/v1/history/…/graph` | REST (undocumented) | Per-item | Daily completed-sale avg + count, from 2020-04 | None | **Not integrated** |
 | CSMarketCap API | GraphQL + REST | Bulk (all items in 1 call) | Trade volume (24h/7d/30d/90d), listings, buy orders | JWT token | **Not integrated** ($9.99/mo) |
 | **Skinport `/v1/sales/history`** | REST API | Bulk (1 call, 1.9 s / 20.4 MB) | min/max/avg/median/volume for 24h, 7d, 30d, 90d — **retroactive on first pull** | None (needs `Accept-Encoding: br`) | **Not integrated** — 36,004 items; 23,533 of the ≥$1 cohort (89.0%) |
-| lis-skins full export | JSON dump | Bulk (1 call, 44 s / 173 MB) | 2,297,323 individual listings: `price`, `created_at` (100% populated), `item_float` (55.3%) — full ask ladder + listing age | None | **Not integrated** — 25,660 items; 17,453 of the ≥$1 cohort (66.0%) |
-| market.csgo.com `/api/v2/prices/USD.json` | REST API | Bulk (1 call, 0.63 s / 2.6 MB) | `volume` (live listing count), `price` | None | **Not integrated** — 27,402 items; 17,274 of the ≥$1 cohort (65.4%) |
+| **lis-skins full export** | JSON dump | **Daily** (1 call, 364.5 s / 173 MB) | 2.3M individual listings: `price`, `created_at`, `item_float` — reduced to per-item ask ladder + listing age | None | **✅ Active** — `collectors/supply_depth.py`, 23,879 items on 2026-08-06; 17,286 of the ≥$1 cohort. Largest marginal contributor (+1,428 items over the other feeds). Untested from a GitHub runner |
+| **market.csgo.com `/api/v2/prices/USD.json`** | REST API | **Daily** (1 call, 0.6 s / 2.6 MB) | `volume` — a live **listing count**, not trade volume (verified 4 ways, see below) | None | **✅ Active** — 27,570 items on 2026-08-06; 17,596 of the ≥$1 cohort. Untested from a GitHub runner |
+| **Waxpeer `/v1/prices?game=csgo`** | REST API | **Daily** (1 call, 0.6 s / 4.9 MB) | `count` (listing count), `min` in millicents | None | **✅ Active** — 22,039 items on 2026-08-06; 15,016 of the ≥$1 cohort. Marginal value only **+117 items** over the other feeds; kept on cost, not on signal |
+| **Bitskins `/market/insell/730`** | REST API | **Daily** (1 call, 0.5 s / 1.4 MB) | `quantity` (listing count), `price_min` in millicents | None | **✅ Active** — 10,920 items on 2026-08-06; 4,899 of the ≥$1 cohort |
 | `somespecialone/steam-item-name-ids` | GitHub JSON | One-shot (pushed 2026-08-03) | 26,935 `market_hash_name` → `item_nameid` — unblocks `itemordershistogram` lookups | None | **Not integrated** — Steam-hosted consumer, so residential IP only (see IP-class section) and per-item |
 | `ByMykel/CSGO-API` | Raw GitHub JSON | One-shot | 481 crates (261 with `first_sale_date`), 2,126 skins with rarity, float range, StatTrak/souvenir, crate + collection | None | **Not integrated** — cross-sectional metadata; `item-metadata.parquet` lacks item age, crate and collection today |
 | Steam `ISteamNews/GetNewsForApp` | REST API | Bulk (0.29 s) | 500 entries back to 2022-03-01 — free CS2 event calendar | None | **Not integrated** — candidate input for `event_correlation_analysis.py` |
@@ -42,15 +44,26 @@ derived from it are in `../changelog/2026-08-06-data-acquisition-ranking.md`.
 
 ## Supply Scraper (Steam sell_listings) — DELETED
 
-**Added 2026-07-15, removed 2026-08.** Do not treat this as a live source.
+**Added 2026-07-15, removed 2026-08.** Do not treat this as a live source. **Replaced 2026-08-06** by `collectors/supply_depth.py`, which pulls four non-Steam marketplace feeds daily inside `aggregator-update.yml` and writes `price-archive/supply-YYYY-MM.parquet`. `models/forecaster.py::_fetch_supply_snapshots` now reads that archive instead of the `supply_snapshots` table. The allowlist point below is unchanged: **the forecaster still consumes no supply-depth feature in production, and no lift has been measured.** See `../changelog/2026-08-06-supply-depth-collector.md`.
 
 - **Why it died:** hosted GitHub runners are 429'd by `steamcommunity.com` on the *first* request. `supply-scraper.yml` was deleted (commit 0288568); `supply_snapshots` is frozen at 35,037 rows.
 - **It fed nothing anyway:** `FEATURE_GROUP_ALLOWLIST = ["price_technicals"]` (`models/forecaster.py:222`) discards supply features before training. The forecaster has never consumed supply-depth features in production.
 - **Code still present but unreachable from CI:** `backend/collectors/supply_scraper.py`, entry at `backend/scripts/run_supply_scraper.py`. Runnable manually from a residential IP only.
 - **Original design (for reference):** burst scrape of `steamcommunity.com/market/search/render/` (public, no auth), 20 rapid requests → 30s pause, ~3,400 pages of 10 items → ~115 min for the full catalog.
 
-### Skinport
-The direct Skinport API (`/v1/items`) is **alive** — the historical 403s were caused by a missing `Accept-Encoding: br` request header, not Cloudflare Bot Management. No `api.skinport.com` client exists yet; see the source table above. Skinport data arriving via the CSGOTrader aggregator is correct (`starting_at`, not `last_24h`).
+### Skinport — two distinct blocks, and they look alike
+
+**1. HTTP 406, `Accept-Encoding`.** Skinport answers 406 to any request that does not advertise brotli, and `requests` advertises it only when a codec is importable. The historical "Cloudflare-dead" verdict was this, misdiagnosed. `brotli>=1.1.0` is pinned in `backend/requirements.txt` and `collectors/supply_depth.py::_probe_brotli` fails loudly rather than letting the feed disappear behind a header bug. macOS system `curl 8.7.1` is built without brotli, so it sends the header, gets a 200 and cannot decode the body.
+
+**2. HTTP 403, egress ASN (new, 2026-08-06).** Separately, Skinport's WAF returns **403 with an HTML challenge page** to traffic from **Cloudflare-owned egress IPs (AS13335)**. No header change fixes it; measured with brotli decoding correctly and across every User-Agent tried. `scripts/probe_supply_feeds.py` reports this as a distinct `blocked_waf` status so it cannot be folded into (1) or into a fabricated zero.
+
+Before concluding anything about Skinport, check `server: cloudflare` on the response and the caller's egress ASN — a 403 here is about *where you are calling from*. The coverage figures for Skinport `/v1/items` and `/v1/sales/history` in the two 2026-08-06 supply entries were measured from a residential IP and are **unverified from any other egress**.
+
+`collectors/supply_depth.py` calls `/v1/items` daily and it contributed 0 rows on 2026-08-06. Skinport data arriving via the CSGOTrader aggregator is unaffected and correct (`starting_at`, not `last_24h`).
+
+### market.csgo.com `volume` is a listing count
+
+The field name is a landmine: in this repo `volume` means completed-sale count, refuted at |r| < 0.002. Verified as live inventory on 2026-08-06 by `scripts/probe_supply_feeds.py` on four grounds — a heavy right tail (median 13, p99 813, max 17,028); Spearman 0.56 against Waxpeer's `count`; values exceeding CSFloat's genuine daily sale count for all 9 canary items by a multiple that widens as liquidity falls (1.4x Kilowatt Case → 15x Glock Fade, the inventory ≈ trade rate × dwell time signature); and a per-physical-listing full export on the site. See `../changelog/2026-08-06-supply-depth-collector.md`.
 
 ## Deduplication strategy
 - Only insert price row if value actually changed vs previous row

@@ -4,6 +4,12 @@ psycopg2-binary>=2.9.9
 python-dotenv==1.0.0
 pydantic-settings==2.1.0
 requests==2.31.0
+# Skinport's API returns HTTP 406 to any request that does not advertise brotli,
+# and `requests` only sends `Accept-Encoding: br` when a brotli codec is importable.
+# Without this, collectors/supply_depth.py loses the Skinport feed to what looks
+# like a server-side block -- the exact misdiagnosis recorded in
+# docs/references/data-sources.md that had Skinport written off as "Cloudflare-dead".
+brotli>=1.1.0
 httpx==0.27.2
 beautifulsoup4==4.12.2
 apscheduler==3.10.4

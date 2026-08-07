@@ -51,6 +51,7 @@ ROW_COUNT_FIELDS = (
     "steam_items",          # collectors/supply_scraper.py
     "total_mentions",       # collectors/social_sentiment.py
     "inserted",             # collectors/social_sentiment.py
+    "supply_rows",          # collectors/supply_depth.py
 )
 
 # Statuses that mean "this task legitimately had nothing to do", as opposed to

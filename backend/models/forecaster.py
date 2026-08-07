@@ -1356,37 +1356,78 @@ class ItemForecaster:
     # ── Supply-depth features (sell_listings, skinport_quantity) ──────
 
     def _fetch_supply_snapshots(self) -> pd.DataFrame:
-        """Load daily supply snapshots from DB (or Parquet fallback).
+        """Load daily supply depth from `price-archive/supply-*.parquet`.
 
         Returns DataFrame with columns:
           item_id, date, sell_listings, skinport_quantity
+
+        Reads the archive, NOT the `supply_snapshots` Postgres table this method
+        used to query. That table holds one stale day (2026-07-15) from the Steam
+        burst scraper, which cannot run from CI at all — Steam 429s runner IPs —
+        and it was never published to the data repo, so it was invisible to
+        everything that reads the archive. `collectors/supply_depth.py` replaced
+        it: slug-keyed, published inside the aggregator's own commit, and joined
+        on name like every other archive table.
+
+        `sell_listings` is the max listing count across marketplaces for the day
+        rather than a sum. The feeds overlap heavily (Spearman 0.65–0.82, and
+        market.csgo.com is close to a superset of Waxpeer), so a sum would double
+        count the same inventory, and — worse — would make the series lurch
+        whenever a feed drops out. A max degrades gracefully: losing one
+        marketplace lowers the level a little instead of creating a phantom
+        supply crash, which matters because the predictive variant is the
+        *change*, and a feed outage would otherwise read as a real move.
         """
         if hasattr(self, "_supply_snap_cache") and self._supply_snap_cache is not None:
             return self._supply_snap_cache
 
+        empty = pd.DataFrame(columns=["item_id", "date", "sell_listings", "skinport_quantity"])
+        archive_dir = Path(__file__).parent.parent.parent / "price-archive"
+        paths = sorted(archive_dir.glob("supply-*.parquet"))
+        if not paths:
+            logger.info("  supply snapshots: no supply-*.parquet in the archive")
+            self._supply_snap_cache = empty
+            return empty
+
         try:
-            rows = self.db.execute(text("""
-                SELECT i.item_id, ss.snapshot_date AS date,
-                       ss.sell_listings, ss.skinport_quantity
-                FROM supply_snapshots ss
-                JOIN items i ON i.id = ss.item_id
-                ORDER BY i.item_id, ss.snapshot_date
-            """)).fetchall()
-            df = pd.DataFrame(rows, columns=["item_id", "date", "sell_listings", "skinport_quantity"])
-            if df.empty:
-                logger.info("  supply snapshots: empty")
-                self._supply_snap_cache = df
-                return df
+            frames = [pd.read_parquet(p, columns=["item_slug", "snapshot_day",
+                                                  "source", "listing_count"])
+                      for p in paths]
+            raw = pd.concat(frames, ignore_index=True)
+            raw = raw[raw["listing_count"].notna()]
+            if raw.empty:
+                logger.info("  supply snapshots: archive files hold no usable rows")
+                self._supply_snap_cache = empty
+                return empty
+
+            df = (
+                raw.groupby(["item_slug", "snapshot_day"], as_index=False)["listing_count"]
+                .max()
+                .rename(columns={"item_slug": "item_id",
+                                 "snapshot_day": "date",
+                                 "listing_count": "sell_listings"})
+            )
             df["date"] = pd.to_datetime(df["date"]).dt.date
-            df["sell_listings"] = df["sell_listings"].fillna(0).astype(int)
-            df["skinport_quantity"] = df["skinport_quantity"].fillna(0).astype(int)
-            logger.info(f"  supply snapshots: {len(df):,} rows, {df.item_id.nunique():,} items")
+            df["sell_listings"] = df["sell_listings"].astype(int)
+            # Retained so `_add_supply_depth_features` keeps its column contract.
+            # The old Steam/Skinport split no longer exists — one consolidated
+            # depth series replaces it — so this stays 0 rather than being
+            # dropped, which would change the feature set as a side effect of a
+            # data-source change.
+            df["skinport_quantity"] = 0
+            df = df.sort_values(["item_id", "date"]).reset_index(drop=True)
+
+            logger.info(
+                f"  supply snapshots: {len(df):,} item-days, "
+                f"{df.item_id.nunique():,} items, "
+                f"{df.date.nunique()} days from {len(paths)} file(s)"
+            )
             self._supply_snap_cache = df
             return df
         except Exception as e:
-            logger.warning(f"  Failed to load supply snapshots: {e}")
-            self._supply_snap_cache = pd.DataFrame()
-            return self._supply_snap_cache
+            logger.warning(f"  Failed to load supply depth from archive: {e}")
+            self._supply_snap_cache = empty
+            return empty
 
     def _add_supply_depth_features(self, df: pd.DataFrame) -> pd.DataFrame:
         """Add supply-depth features: listing count, change, ratio.

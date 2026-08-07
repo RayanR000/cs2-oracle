@@ -31,9 +31,11 @@ price-archive/                       (local working copy, NOT the canonical repo
   ├─ exchange-rates-YYYY.parquet     — currency rates
   ├─ player-counts-YYYY.parquet      — frozen; the collector was removed in 181488b
   ├─ item-metadata.parquet           — 8,691 item rows
+  ├─ supply-YYYY-MM.parquet          — item_slug, snapshot_day, source, listing_count,
+  │                                    ask-ladder quantiles, depth, listing age (monthly)
   └─ ops/                            — operational tables, one Parquet file per table
        accuracy_alerts, collection_runs, event_impacts_denorm, events,
-       forecast_outcomes, item_forecasts, prediction_accuracy, supply_snapshots
+       forecast_outcomes, item_forecasts, prediction_accuracy
 
 Supabase (serving + fallback):
   ├─ items (+ is_backfilled)         — the only thing training reads from the DB
@@ -41,7 +43,10 @@ Supabase (serving + fallback):
   ├─ events / event_impacts / event_correlations
   ├─ collection_runs                 — run tracking
   ├─ item_forecasts / prediction_accuracy / forecast_outcomes / accuracy_alerts
-  ├─ supply_snapshots                — frozen, collector deleted
+  ├─ supply_snapshots                — deprecated; one stale day (2026-07-15, 35,037 rows),
+  │                                     collector deleted. Not published to the data repo;
+  │                                     the local Parquet was deleted 2026-08-06. Any revival
+  │                                     writes a new slug-keyed series, not this table.
   ├─ social_mentions                 — 0 rows all-time, collector deleted
   └─ users
 ```
@@ -64,6 +69,9 @@ restored single-file `prices-2026.parquet` would be read *alongside* the monthly
 ```
 Daily aggregator ──▶ snapshot CSV ──▶ append_to_parquet.py ──▶ prices-YYYY-MM.parquet
                                                                exchange-rates-YYYY.parquet
+                 └──▶ run_supply_depth.py ─────────────────▶ supply-YYYY-MM.parquet
+                      (same workflow, between append and publish, so the day's
+                       supply rows land in the same orphan commit as its prices)
 
 Training / backtest / analysis (DuckDB + read_parquet over price-archive/)
   └─ fetch_price_history(backfilled_only=True) — local, no network
@@ -97,10 +105,10 @@ than the local copy, so its per-file sizes run slightly higher.
 | `prices-20XX.parquet` (pre-2026, yearly) | 33 MB | 9,429,275 |
 | `exchange-rates-2026.parquet` | 5 KB | 306 (6 distinct days, latest 2026-07-17) |
 | `item-metadata.parquet` | 0.1 MB | 8,691 |
+| `supply-2026-08.parquet` | 1.6 MB | 84,408 (1 day, 30,330 items, 4 feeds) |
 | `ops/item_forecasts.parquet` | 1.6 MB | 158,200 |
 | `ops/forecast_outcomes.parquet` | 2.2 MB | 104,642 |
 | `ops/event_impacts_denorm.parquet` | 0.7 MB | 18,473 |
-| `ops/supply_snapshots.parquet` | 0.5 MB | 35,037 (frozen) |
 | `ops/collection_runs.parquet` | <0.1 MB | 194 |
 | `ops/prediction_accuracy.parquet` | <0.1 MB | 84 |
 | `ops/events.parquet` | <0.1 MB | 79 |

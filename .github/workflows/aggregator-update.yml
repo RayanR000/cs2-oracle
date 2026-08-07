@@ -126,6 +126,32 @@ jobs:
           --backfilled-csv /tmp/aggregator-backfilled-$SNAPSHOT_DATE.csv
           --exchange-rates-csv /tmp/exchange-rates-$SNAPSHOT_DATE.csv
 
+      # Runs INSIDE this workflow, between the append and the publish, so the
+      # day's supply snapshot lands in the same orphan commit as the day's
+      # prices. That placement is the whole point: the previous supply table was
+      # written only to Postgres and a local Parquet, was never published to the
+      # data repo, and its single surviving day was invisible to anything that
+      # reads the archive.
+      #
+      # `continue-on-error` because Price Forecast and Backtest Accuracy chain
+      # off THIS workflow's success. Supply depth is an unproven experiment; a
+      # marketplace outage must not take down the daily forecast. The collector
+      # already exits non-zero only when EVERY feed fails, so this suppresses a
+      # total outage, not a partial one -- and the JSON summary in the log
+      # carries per-feed counts either way.
+      #
+      # AGGREGATOR_SNAPSHOT_DATE pins the same day label the price rows got, so
+      # the two join. Without it a run straddling midnight labels supply D+1
+      # against prices D.
+      - name: Collect supply depth
+        continue-on-error: true
+        working-directory: ./backend
+        env:
+          AGGREGATOR_SNAPSHOT_DATE: ${{ env.SNAPSHOT_DATE }}
+        run: |
+          echo "📦 Collecting supply depth (scalar feeds ~2s, lis-skins ladder ~7min)..."
+          python scripts/run_supply_depth.py --archive-dir ../archive/price-archive
+
       # The parquet files ARE the data (each holds full history), so git history
       # of them has no value and only bloats the repo. Republish the archive as a
       # single squashed commit each run via an orphan branch + force-push.
