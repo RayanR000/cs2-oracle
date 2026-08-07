@@ -121,7 +121,10 @@ See `2026-08-06-csfloat-basis-refuted.md`.
 > significantly positive at **all four** horizons under market-relative labels. 3d and
 > 14d were measured under raw labels for the first time and are **null**. The "two
 > calls" and "a name parser is required" claims below are both wrong in detail. See
-> `2026-08-06-bymykel-metadata-ingest.md`. Nothing is wired into the model.
+> `2026-08-06-bymykel-metadata-ingest.md`. **Then refuted on the production path the
+> same evening** — the in-model permutation test scores the bundle at −0.24 / −0.69 /
+> −0.06 / +0.79pp, i.e. the model does not use it. Tier 2 item 4 is **closed**. See
+> `2026-08-06-bymykel-metadata-refuted.md`.
 
 **4. `ByMykel/CSGO-API`** (crates.json + skins.json, ~14 MB, two calls). Supplies item age
 via `first_sale_date`, collection, crate, float caps and StatTrak/Souvenir flags. Item age

@@ -1,5 +1,11 @@
 # The ByMykel metadata ingest is built, and the bundle measures better than the scratchpad build did
 
+> **Superseded on the production path, 2026-08-06.** Every CV number below stands as
+> measured, and none of it survives contact with the model: the forecaster's own
+> permutation test reports that shuffling this bundle costs **−0.24 / −0.69 / −0.06 /
+> +0.79pp** at 3/7/14/30d. The model does not use these columns. Read
+> `2026-08-06-bymykel-metadata-refuted.md` before citing anything here.
+
 **Date:** 2026-08-06
 **Change:** new `backend/scripts/ingest_bymykel_metadata.py` and
 `backend/tests/test_ingest_bymykel_metadata.py` (52 tests). Writes

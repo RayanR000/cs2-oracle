@@ -117,7 +117,15 @@ def run_arm(name: str, enabled: bool, model_dir: Path,
                  for h, cv in fc.cv_results.items()}
         features = list(fc.feature_cols)
     finally:
-        db.close()
+        # The prod pooler drops the connection during a long train -- at the
+        # 700K budget a single arm is ~14.5 min -- so close() itself raises
+        # `SSL SYSCALL error: EOF detected` and would discard a completed arm's
+        # results on the way out. scripts/forecast_prices.py guards the same
+        # call for the same reason.
+        try:
+            db.close()
+        except Exception as exc:
+            logger.warning(f"  db.close() failed (connection already dropped): {exc}")
 
     elapsed = time.time() - t0
     meta_cols = sorted(set(features) & ItemForecaster.BYMYKEL_META_FEATURES)

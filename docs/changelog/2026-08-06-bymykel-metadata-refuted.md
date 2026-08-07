@@ -1,4 +1,13 @@
-# The ByMykel bundle is wired in behind a flag, and the paired retrain does not confirm it
+# The ByMykel bundle is wired in behind a flag, and the model does not use it
+
+> **Resolved 2026-08-06, later the same evening.** This entry originally closed as
+> *inconclusive* — the paired retrain neither confirmed nor refuted the bundle. A
+> 700K-budget run settled it: the forecaster's **own** in-model permutation test
+> reports that shuffling the ByMykel group costs **−0.24 / −0.69 / −0.06 / +0.79pp**
+> at 3/7/14/30d against `price_technicals` at **+1.15 to +12.18pp, p=0.0000**. The
+> model is not using the columns, so the paired diffs below are training
+> nondeterminism rather than a feature effect. **Refuted; the flag stays off
+> permanently.** See § The 700K run, which settles it.
 
 **Date:** 2026-08-06
 **Change:** `models/forecaster.py` gains a default-**off** `BYMYKEL_METADATA` flag,
@@ -113,31 +122,97 @@ a booster trained with the columns and served without them is the train/serve
 mismatch the v3 and v4 bumps exist to prevent. An artifact predating the key reads as
 disabled, which is true of every existing one.
 
-## What would make this answerable
+## The 700K run, which settles it
 
-In rough order of cost:
+Run at `TRAIN_FEATURE_ROWS=700_000` — **646 items** in the frame instead of ~99, the
+regime the CV result was measured in, and the one thing identified above as able to
+address the disagreement. ~15 min per arm.
 
-1. **Repeat the paired retrain N times** and read the distribution of paired diffs
-   rather than one draw. Given the observed run-to-run swing this is the minimum, and
-   at ~2–4 min per arm it is cheap. It does not fix the MDE, only the reproducibility.
-2. **Raise the training budget.** `TRAIN_FEATURE_ROWS = 700_000` puts ~646 items in
-   the frame instead of ~99, which is the regime the CV result was measured in. It
-   was declined on cost (468.7s vs 104.6s) and that trade-off has not changed, but
-   this is the one lever that addresses the actual disagreement.
-3. **More folds.** The MDE is fold-bound, and the placebo's behaviour at 8–9 folds is
-   itself the reason to distrust the current count.
+Paired diffs looked like the best result yet:
 
-Until one of those runs, this is not evidence for or against the bundle.
+| h | folds | control | treatment | diff | 95% CI | MDE(80%) |
+|---|---:|---|---|---|---|---:|
+| 3d | 9 | 50.64% | 51.59% | +0.94 | [+0.40, +1.49] | 0.78 |
+| 7d | 8 | 49.49% | 50.35% | +0.86 | [−0.59, +2.32] | 2.08 |
+| 14d | 8 | 49.41% | 53.30% | **+3.89** | [+1.58, +6.19] | 3.30 |
+| 30d | 8 | 51.50% | 55.81% | +4.31 | [−1.59, +10.21] | 8.44 |
+
+3d and 14d clear both their CIs and their MDEs. Taken alone this reads as the first
+genuinely positive production-path result for anything in months.
+
+**It is not one.** The forecaster already runs a per-group permutation test during
+training (`_validate_feature_groups`), and in the **treatment** arm — real,
+unpermuted metadata — it reports:
+
+| group | 3d | 7d | 14d | 30d |
+|---|---|---|---|---|
+| `price_technicals` | +9.10 | +11.51 | +5.19 | +10.76 (all p=0.0000, PASS) |
+| `bymykel_metadata` | −0.24 | −0.69 | −0.06 | +0.79 |
+
+Shuffling the bundle costs **nothing**, and at 3d/7d/14d it is *negative* — the model
+scores marginally better with the columns randomised. Three of four horizons WARN;
+only 30d passes, at +0.79pp. A feature group worth +3.89pp at 14d would lose ~3.89pp
+when shuffled. This one loses 0.06pp.
+
+So the paired diff and the permutation test disagree, and the permutation test is the
+better instrument: it is **within-run**, so it cannot be contaminated by the
+training nondeterminism that the paired diff measures across two separate trainings.
+
+### The placebo arm was never a placebo, and what it accidentally measured
+
+The permuted arm finished with **32 features and zero bundle columns — identical to
+control.** `_validate_feature_groups` correctly scored the permuted group at −0.02pp
+and `prune_failed_groups=True` deleted it outright. The arm therefore trained the
+control feature set.
+
+That makes its diffs a direct measurement of **run-to-run nondeterminism between two
+identical configurations**, which is more useful here than the placebo would have
+been:
+
+| h | 100K "placebo" | 700K "placebo" |
+|---|---|---|
+| 3d | −0.38 [−0.99, +0.23] | −0.00 [−0.09, +0.09] |
+| 7d | **+1.20 [+0.44, +1.96]** | −0.90 [−1.85, +0.05] |
+| 14d | +0.39 [−5.27, +6.04] | +0.69 [−0.25, +1.63] |
+| 30d | +0.41 [−4.20, +5.02] | +0.35 [−1.13, +1.83] |
+
+At 100K, two identical configurations differ by **+1.20pp with a CI excluding zero**.
+That is the instrument's noise floor, measured, and it is larger than most effects
+this project tries to detect. It shrinks at 700K but does not vanish.
+
+**A useful by-product:** `prune_failed_groups` distinguished real metadata from
+permuted metadata unaided — it kept 7 columns in treatment and deleted all 9 in the
+permuted arm. The mechanism works; there is simply nothing for it to keep.
+
+## The lesson for the next feature experiment
+
+**Read `_validate_feature_groups` before reading any paired retrain.** It is already
+computed on every training run, it costs nothing extra, it is within-run so
+nondeterminism cannot contaminate it, and it answers the question the paired retrain
+only approaches: *does the model use this feature at all?* Had it been read first,
+this line of work would have closed after one 15-minute run instead of four.
+
+The paired retrain remains the right instrument for a change that alters *labels*,
+*weights* or *splits* — where there is no feature group to permute. It is the wrong
+first instrument for a change that adds columns.
+
+Second: **two runs of an identical configuration differ by up to 1.20pp with a CI
+excluding zero** at the 100K budget. Any production-path result below roughly that
+magnitude, in either direction, is unreadable from a single run. That number belongs
+next to the MDE in any future design.
 
 ## What was deliberately not done
 
 * **The flag was not enabled**, no production retrain was run, and
   `models/saved_models/` was not touched — both arms train into scratch dirs.
 * **`MODEL_ARTIFACT_VERSION` was not bumped.** See above.
-* **No repeat runs.** Two runs revealed the instability; characterising it properly is
-  item 1 above and was not done here.
-* **The 700K budget arm was not run.** It is the most informative next step and also
-  the expensive one; that is a cost decision, not something this measurement settles.
+* **No repeat runs at 700K.** One run, settled by the permutation test rather than by
+  repetition. Repeats would only sharpen a paired diff now known to be measuring
+  nondeterminism.
+* **The flag was left in the codebase rather than reverted.** The ingest, the join and
+  the artifact guard are all correct and tested; only the hypothesis failed. Removing
+  them would cost the next person the rebuild, and the parquet is useful metadata
+  regardless. Nothing reads it with the flag off.
 
 ## Related
 
