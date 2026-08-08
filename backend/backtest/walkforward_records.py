@@ -32,6 +32,8 @@ def fold_records(
     low_returns_pct,
     high_returns_pct,
     predicted_classes,
+    fold_id=None,
+    horizon_days=None,
 ) -> list[dict]:
     """Build score_cohort records for one fold.
 
@@ -40,8 +42,22 @@ def fold_records(
     `base * (1 + ret/100)`.
 
     `predicted_classes` are the directional classifier's argmax values. Pass
-    None to score the median's sign instead — used to report both estimators
+    None to score the median's sign instead — used to score both estimators
     side by side (spec Task 1b).
+
+    `fold_id` identifies the walkforward fold these rows came from. It exists
+    because `forecast_date` is *not* an independent resampling unit: every date
+    inside one fold's validation window is scored by the same trained model, and
+    at short horizons adjacent dates' forward-return windows overlap. Clustering
+    on dates therefore under-disperses the bootstrap — measured 2026-08-07, a
+    seed-only placebo at h=3 returned a 95% CI of [-0.310, -0.014]pp that
+    excluded zero on what is by construction pure noise. See
+    `backtest/paired_mde.py`.
+
+    `horizon_days` is the forecast horizon these rows were built for. It is
+    optional and defaults to None, which scores as out_of_scope for the
+    friction-conditioned metric — correct for a caller that has not said which
+    horizon it is measuring, and wrong to guess at.
     """
     arrays = {
         "item_ids": item_ids,
@@ -102,9 +118,17 @@ def fold_records(
             "confidence": "low",
             "base_price": float(base[i]),
             "actual_price": float(actual[i]),
+            # The prediction leg and the horizon, for the friction-conditioned
+            # metric. See backtest/actionable.py.
+            "predicted_mid": float(mid[i]),
+            "horizon_days": horizon_days,
             "price_tier": price_tier(float(base[i])),
             "item_id": item_ids[i],
-            # The clustering unit: rows sharing a date share one market move.
+            # Rows sharing a date share one market move. This is the PAIRING key
+            # (with item_id), and it is the right grain for that. It is NOT the
+            # resampling unit — see `fold_id` and the docstring above.
             "forecast_date": forecast_dates[i],
+            # The clustering unit: rows sharing a fold share one trained model.
+            "fold_id": fold_id,
         })
     return records

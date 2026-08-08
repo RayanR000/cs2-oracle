@@ -1594,6 +1594,34 @@ def test_frozen_outcome_query_is_restricted_in_sql_not_in_python(
     assert sum(len(v) for v in groups.values()) == 1
 
 
+def test_frozen_outcome_records_carry_the_prediction_leg_and_the_horizon(
+    session, tmp_path, monkeypatch
+):
+    """ActionableDA needs r_hat, so the record needs predicted_mid; and it is
+    scoped by horizon, so the record needs the horizon.
+
+    Both ride ON the record rather than as score_cohort parameters: records are
+    grouped by (horizon, model_version) so every record in a cohort shares the
+    horizon, and eight test modules call score_cohort(records) positionally.
+    """
+    from scripts import backtest_accuracy
+
+    rows = [("ak", date(2026, 7, d), 3.0) for d in (3, 4, 5)]
+    rows += [("ak", date(2026, 7, d), 3.3) for d in (6, 7, 8)]
+    archive = _write_archive(tmp_path, rows)
+    _seed(session, 1, "ak", current_price=3.0, price_mid=3.6,
+          price_low=3.0, price_high=4.0, direction="up")
+    session.commit()
+    _run_backtest(session, archive, monkeypatch)
+
+    groups = backtest_accuracy._records_from_frozen_outcomes(session)
+    records = [r for rs in groups.values() for r in rs]
+    assert records, "fixture produced no records"
+    for r in records:
+        assert r["predicted_mid"] == 3.6
+        assert r["horizon_days"] in (3, 7, 14, 30)
+
+
 def test_headline_log_line_handles_fewer_than_ten_samples_without_raising(
     session, tmp_path, monkeypatch
 ):

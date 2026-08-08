@@ -85,6 +85,21 @@ def test_confidence_is_uniform_low():
     assert rec["confidence"] == "low"
 
 
+def test_fold_records_carry_the_prediction_leg_and_an_optional_horizon():
+    """The walkforward gate scores through score_cohort, so its records need the
+    same two fields — otherwise the gate silently reports out_of_scope forever."""
+    rec = fold_records(**_kwargs(), horizon_days=14)[0]
+    assert rec["predicted_mid"] == pytest.approx(101.0)   # 100 * (1 + 1.0/100)
+    assert rec["horizon_days"] == 14
+
+
+def test_fold_records_horizon_defaults_to_none_for_existing_callers():
+    """A caller that has not said which horizon it is measuring must score as
+    out_of_scope, not have one guessed for it."""
+    rec = fold_records(**_kwargs())[0]
+    assert rec["horizon_days"] is None
+
+
 def test_rejects_mismatched_array_lengths():
     with pytest.raises(ValueError, match="equal length"):
         fold_records(**_kwargs(mid_returns_pct=np.array([1.0, 2.0])))

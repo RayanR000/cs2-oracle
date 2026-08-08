@@ -5,10 +5,23 @@ Walk-forward backtest using the current model's tuned parameters.
 Loads items from the Parquet archive, engineers features via ItemForecaster,
 and evaluates out-of-sample accuracy across walk-forward folds for all horizons.
 
+Embargo (added 2026-08-07, DEFAULT OFF):
+    The fold split is `train = every date < val_start`, with no purge gap, so
+    training rows in the last `horizon` days before the boundary carry a
+    `target_return_{h}d` drawn from inside the validation window. Production's
+    trainer does purge (`ItemForecaster._compute_cv_splits(..., purge_days=H)`
+    and `_purge_overlapping_train_rows`); this gate diverged from it, as the
+    `ab_test_*` walkforward harnesses had until they were fixed on 2026-08-07.
+    `--purge` / `purge=True` applies production's purge to the TRAIN side only.
+    It is OFF by default because this module is the published Backtest Accuracy
+    gate and flipping it silently would break continuity of the stored
+    `lgbm-v3-clustered` series. See the changelog before changing that.
+
 Usage:
     python scripts/walkforward_backtest.py
     python scripts/walkforward_backtest.py --max-items 200 --horizons 3 7
     python scripts/walkforward_backtest.py --skip-db
+    python scripts/walkforward_backtest.py --purge --skip-db   # embargoed folds
 """
 
 import sys
@@ -26,7 +39,7 @@ import pandas as pd
 import lightgbm as lgb
 
 from database import SessionLocal, PredictionAccuracy
-from models.forecaster import DIRECTION_FLAT_TOLERANCE_PCT, ItemForecaster
+from models.forecaster import BID_SOURCES, DIRECTION_FLAT_TOLERANCE_PCT, ItemForecaster
 from backtest.scoring import HEADLINE_TIER, score_by_tier
 from backtest.walkforward_records import fold_records
 
@@ -99,11 +112,25 @@ def _load_all_prices(con, items):
         return pd.DataFrame(columns=["item_id", "timestamp", "price", "volume", "date"])
 
     slug_list = ", ".join(f"'{s.replace(chr(39), chr(39) + chr(39))}'" for s in slugs)
+    # Read through prices_relation rather than a raw glob: `source` is needed to
+    # drop bids, and a plain read_parquet('prices-*.parquet') narrows to the
+    # first file's schema, where the column does not exist. See db/archive.py.
+    #
+    # This loader never calls _apply_multi_source_voting — engineer_features
+    # collapses the duplicate item-days with a plain mean, which has no outlier
+    # rejection at all — so without this filter the bid enters the published
+    # Backtest Accuracy number undiluted.
+    from db.archive import prices_relation
+    relation = prices_relation(
+        con, ARCHIVE_DIR,
+        columns=["item_slug", "day", "mean_price", "volume", "source"])
+    bid_list = ", ".join(f"'{s}'" for s in sorted(BID_SOURCES))
     rows = con.sql(f"""
         SELECT item_slug AS item_id, CAST(day AS DATE) AS timestamp,
                mean_price AS price, volume
-        FROM read_parquet('{ARCHIVE_DIR}/prices-*.parquet')
+        FROM {relation} sub
         WHERE item_slug IN ({slug_list})
+          AND (source IS NULL OR source NOT IN ({bid_list}))
         ORDER BY item_slug, day
     """).fetchall()
     df = pd.DataFrame(rows, columns=["item_id", "timestamp", "price", "volume"])
@@ -120,7 +147,7 @@ DIRECTION_NUM_ROUNDS = 200
 
 def _score_fold(*, item_ids, forecast_dates, base_prices, actual_returns_pct,
                 mid_returns_pct, low_returns_pct, high_returns_pct,
-                predicted_classes):
+                predicted_classes, fold_id=None, horizon_days=None):
     """Records for one fold, for both estimators.
 
     Returns (classifier_records, median_sign_records). Both describe the same
@@ -138,6 +165,8 @@ def _score_fold(*, item_ids, forecast_dates, base_prices, actual_returns_pct,
         mid_returns_pct=mid_returns_pct,
         low_returns_pct=low_returns_pct,
         high_returns_pct=high_returns_pct,
+        fold_id=fold_id,
+        horizon_days=horizon_days,
     )
     return (
         fold_records(**shared, predicted_classes=predicted_classes),
@@ -295,12 +324,14 @@ def _build_horizons_report(results_by_horizon, return_records):
 
 
 def run_walkforward(max_items=500, horizons=None, skip_db=False, return_records=False,
-                     step_days: int = STEP_DAYS, fold_seed: int = FOLD_SEED, arm="gbm"):
+                     step_days: int = STEP_DAYS, fold_seed: int = FOLD_SEED, arm="gbm",
+                     purge: bool = False):
     if arm not in ARMS:
         raise ValueError(f"unknown arm {arm!r}; expected one of {ARMS}")
 
     logger.info("=" * 60)
     logger.info("WALK-FORWARD BACKTEST")
+    logger.info("  train-side embargo: %s", "ON (purge=horizon)" if purge else "OFF")
     logger.info("=" * 60)
 
     import duckdb
@@ -362,7 +393,15 @@ def run_walkforward(max_items=500, horizons=None, skip_db=False, return_records=
                 train_df = tdf[tdf["date"].isin(train_dates)]
                 val_df = tdf[tdf["date"].isin(val_dates)]
 
-                if len(val_df) < MIN_VAL_SAMPLES:
+                if purge:
+                    # TRAIN side only, and with production's own function so
+                    # this cannot drift from `_compute_cv_splits(purge_days=H)`
+                    # the way it did before 2026-08-07. Purging the val side
+                    # would shrink VAL_WINDOW_DAYS=21 and empty it at h=30.
+                    train_df = ItemForecaster._purge_overlapping_train_rows(
+                        train_df, val_dates[0], horizon)
+
+                if len(val_df) < MIN_VAL_SAMPLES or train_df.empty:
                     continue
 
                 if len(train_df) > MAX_TRAIN_ROWS:
@@ -457,6 +496,13 @@ def run_walkforward(max_items=500, horizons=None, skip_db=False, return_records=
                     predicted_classes = clf.predict(X_val.values).argmax(axis=1)
 
                 fold_clf, fold_median = _score_fold(
+                    # `window_end` is the fold's unique index in this sweep and
+                    # is stable across arms, which is what lets two arms pair
+                    # and cluster on the same folds.
+                    fold_id=int(window_end),
+                    # Without this the gate's friction-conditioned metric would
+                    # report out_of_scope on every fold forever.
+                    horizon_days=horizon,
                     item_ids=val_df["item_id"].to_numpy(),
                     forecast_dates=val_df["date"].to_numpy(),
                     base_prices=val_df["price"].to_numpy(dtype=float),
@@ -549,6 +595,7 @@ def run_walkforward(max_items=500, horizons=None, skip_db=False, return_records=
         report = {
             "test_date": str(date.today()),
             "total_items": len(items),
+            "purge": bool(purge),
             "total_elapsed_seconds": round(total_elapsed, 1),
             "horizons": _build_horizons_report(results_by_horizon, return_records),
         }
@@ -599,6 +646,11 @@ def main():
                          help=f"Fold stride in days (default: {STEP_DAYS})")
     parser.add_argument("--arm", choices=list(ARMS), default="gbm",
                         help="gbm (current design), ridge, or naive baseline")
+    parser.add_argument("--purge", action="store_true",
+                        help="Embargo the train side by `horizon` days before each "
+                             "validation window (production's purge rule). OFF by "
+                             "default: this is the published Backtest Accuracy gate "
+                             "and the stored series assumes the un-purged split.")
     parser.add_argument("--save-records", metavar="PATH", default=None,
                         help="Write per-horizon records to PATH as JSON, for "
                              "paired_mde.paired_da_difference")
@@ -606,7 +658,7 @@ def main():
 
     report = run_walkforward(max_items=args.max_items, horizons=args.horizons,
                               skip_db=args.skip_db, step_days=args.step_days,
-                              arm=args.arm,
+                              arm=args.arm, purge=args.purge,
                               return_records=bool(args.save_records))
     if args.save_records:
         _write_records(report, args.save_records)

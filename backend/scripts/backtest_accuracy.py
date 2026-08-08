@@ -37,6 +37,7 @@ from backtest.resolution_gate import (
     classify_chronic,
     evaluate_gate,
 )
+from backtest.directional_test import PT_T_HURDLE
 from backtest.scoring import (
     FLAT_TOLERANCE,
     HEADLINE_MIN_TIER,
@@ -255,6 +256,31 @@ def _iter_outcome_rows(db, forecast_ids=None, batch=None):
                 yield rows
 
 
+def _id_to_slug(db) -> dict:
+    """Postgres surrogate `items.id` -> `items.item_id`, the market_hash_name slug.
+
+    The price archive keys on `item_slug`; the ops tables key on `item_id`. With
+    no bridge between them, an outcome in `ops/forecast_outcomes.parquet` cannot
+    be joined to its own price history without a round-trip to Supabase, which
+    is the network hop the Parquet store exists to avoid.
+    """
+    return {r.id: r.item_id
+            for r in db.execute(text("SELECT id, item_id FROM items")).fetchall()}
+
+
+def _with_item_slug(rows, id_to_slug):
+    """The Parquet projection of outcome rows: the DB payload plus `item_slug`.
+
+    Applied to the mirror only. The column is deliberately NOT added to the
+    Postgres table — that side already has `items` to join against, and a
+    denormalised copy there would be a second thing to keep true. Every writer
+    of `ops/forecast_outcomes.parquet` must go through this, because
+    `append_table` dedups on `forecast_id` and REPLACES the whole row: a writer
+    that omitted the column would blank it on every row it refreshed.
+    """
+    return [{**r, "item_slug": id_to_slug.get(r["item_id"])} for r in rows]
+
+
 def _flush_verdict_refresh(db, updates, mirror):
     """Write one batch of refreshed verdicts to the Parquet mirror, then the DB.
 
@@ -322,6 +348,10 @@ def _refresh_verdict_columns(db, forecast_ids=None) -> int:
     now = datetime.now(timezone.utc).replace(tzinfo=None)
     updates, mirror = [], []
     total = 0
+    # Read once for the whole walk. The mirror row must carry item_slug or the
+    # refresh would blank it on every row it touches — append_table replaces
+    # the whole row, it does not merge columns.
+    id_to_slug = _id_to_slug(db)
 
     for batch in _iter_outcome_rows(db, forecast_ids):
         for r in batch:
@@ -344,6 +374,7 @@ def _refresh_verdict_columns(db, forecast_ids=None) -> int:
             mirror_row.update(derived)
             mirror_row["evaluated_at"] = now
             mirror_row["resolved_at"] = r.resolved_at
+            mirror_row["item_slug"] = id_to_slug.get(r.item_id)
             mirror.append(mirror_row)
 
         # Flush only on a batch boundary, never mid-batch.
@@ -372,7 +403,7 @@ def _refresh_verdict_columns(db, forecast_ids=None) -> int:
 
 
 def _store_forecast_outcomes(
-    db, outcomes, reresolve: bool = False, considered_ids=None
+    db, outcomes, reresolve: bool = False, considered_ids=None, id_to_slug=None
 ) -> int:
     """Persist per-forecast outcomes. Insert-only unless *reresolve*.
 
@@ -447,6 +478,13 @@ def _store_forecast_outcomes(
         o["evaluated_at"] = resolved_at
         o["resolved_at"] = resolved_at
 
+    # The DB payload stays exactly as built; only the Parquet mirror gains the
+    # slug. `to_write` is handed to bulk_insert_mappings below and an unmapped
+    # key there is an error, so the two payloads have to diverge here.
+    if id_to_slug is None:
+        id_to_slug = _id_to_slug(db)
+    mirror = _with_item_slug(to_write, id_to_slug)
+
     if delete_ids:
         from db.parquet import replace_rows
 
@@ -460,7 +498,7 @@ def _store_forecast_outcomes(
         # the SERVED copy holding orphans that no daily run can ever remove,
         # because the daily path is insert-only by design. Nothing detects that
         # state, and only a second --reresolve would fix it.
-        replace_rows("forecast_outcomes", "forecast_id", delete_ids, to_write)
+        replace_rows("forecast_outcomes", "forecast_id", delete_ids, mirror)
 
         deleted = 0
         ids = sorted(delete_ids)
@@ -485,7 +523,7 @@ def _store_forecast_outcomes(
     db.commit()
 
     from db.parquet import append_table
-    append_table("forecast_outcomes", to_write, ["forecast_id"])
+    append_table("forecast_outcomes", mirror, ["forecast_id"])
 
     logger.info(
         f"  Resolved {len(to_write):,} new outcomes "
@@ -576,6 +614,15 @@ def _records_from_frozen_outcomes(db, min_price=0, forecast_ids=None):
             # The clustering unit. Outcomes sharing a forecast_date share a
             # market-wide move, so the CI must resample these, not items.
             "forecast_date": r.forecast_date,
+            # The prediction leg, for the friction-conditioned metric:
+            # r_hat = (predicted_mid - base_price) / base_price. A frozen
+            # column, so this stays archive-free and --rescore keeps working.
+            "predicted_mid": mid,
+            # ActionableDA is scoped to h in {14, 30}. Carried on the record
+            # rather than passed into score_cohort: the grouping key already
+            # fixes it per cohort, and eight test modules call score_cohort
+            # positionally.
+            "horizon_days": r.horizon_days,
         })
 
     n_scored = sum(len(v) for v in groups.values())
@@ -631,6 +678,108 @@ def _records_from_frozen_outcomes(db, min_price=0, forecast_ids=None):
     return groups
 
 
+def _pct(value):
+    return "n/a" if value is None else f"{value:.1f}%"
+
+
+def _pt_str(metrics) -> str:
+    """The Pesaran-Timmermann verdict as one field.
+
+    Excess is in percentage points of hit rate ABOVE the per-date independence
+    null, so 0.0 means "indistinguishable from calling the market's own
+    direction distribution at random" — not 50%.
+    """
+    excess = metrics.get("pt_excess_pp")
+    if excess is None:
+        return f"n/a ({metrics.get('pt_verdict', 'unknown')})"
+    t_stat = metrics.get("pt_t_stat")
+    if t_stat is None:
+        return f"{excess:+.2f}pp t=n/a ({metrics.get('pt_verdict')})"
+    p_value = metrics.get("pt_p_value")
+    p_str = "n/a" if p_value is None else f"{p_value:.3g}"
+    return (
+        f"{excess:+.2f}pp t={t_stat:+.2f} p={p_str} "
+        f"[NW lag {metrics.get('pt_nw_lag')}, {metrics.get('pt_n_dates')} dates]"
+    )
+
+
+def _headline_line(horizon, model_version, metrics, n) -> tuple[int, str]:
+    """The >=$1 headline as (log level, message).
+
+    The headline is the SIGNIFICANCE TEST, not the accuracy. Raw DA appears
+    only inside the triple — DA, the best constant call, and the realised
+    down-rate — because on this data the first is uninterpretable without the
+    other two: an always-down call scored 29.4% on one stored forecast date and
+    76.9% on another, so a fixed DA is skill on one and incompetence on the
+    other. See backtest/directional_test.py.
+
+    A significantly negative statistic is REPORTED, at warning level, rather
+    than folded into "no skill". It means the calls are anti-correlated with
+    outcomes once the market effect is removed, which is a finding about the
+    model and not an absence of one.
+    """
+    verdict = metrics["pt_verdict"]
+    n_dates = metrics["distinct_forecast_dates"]
+    lo = metrics["directional_accuracy_ci_clustered_lower"]
+    hi = metrics["directional_accuracy_ci_clustered_upper"]
+    # Already percent, same units as directional_accuracy — the * 100 that used
+    # to live here was compensating for a scoring bug that is now fixed at the
+    # source. See the units note in score_cohort.
+    ci_str = (
+        f" [CI: {lo:.1f}–{hi:.1f}]" if lo is not None
+        else " [CI: n/a, <2 forecast dates]"
+    )
+    triple = (
+        f"DA={metrics['directional_accuracy']:.1f}%{ci_str} "
+        f"vs constant-call {_pct(metrics['constant_call_accuracy'])} "
+        f"('{metrics['constant_call_direction']}') "
+        f"down-rate={_pct(metrics['realised_down_rate'])}"
+    )
+    # The carry-forward split travels with every branch, so DA can never be read
+    # without it. ~30-36% of scored outcomes have actual_price bit-identical to
+    # base_price and label "flat" for free, so a pooled DA partly measures
+    # archive staleness — see the partition comment in backtest.scoring.
+    common = (
+        f"Unchanged={metrics['unchanged_pct']:.1f}% of rows "
+        f"(DA there {_pct(metrics['directional_accuracy_unchanged'])}) "
+        f"DAMoved={_pct(metrics['directional_accuracy_moved'])} "
+        f"MAE=${metrics['mae']:.2f} MAPE={metrics['mape']:.1f}% "
+        f"IntCov={metrics['interval_coverage']:.1f}% "
+        f"ConfGap={metrics['conf_gap_pp']:.1f}pp "
+        f"Skill={metrics['skill_vs_baseline']}"
+    )
+    prefix = f"  [{horizon}d / {model_version}] >=$1: {n:,} samples over {n_dates} forecast dates"
+
+    if verdict == "skill":
+        return logging.INFO, (
+            f"{prefix} — DIRECTIONAL SKILL (PT t > {PT_T_HURDLE}): "
+            f"PT={_pt_str(metrics)} {triple} {common}"
+        )
+    if verdict == "perverse":
+        return logging.WARNING, (
+            f"{prefix} — PERVERSE (PT t < -{PT_T_HURDLE}): the model's calls are "
+            f"significantly ANTI-correlated with outcomes once the per-date market "
+            f"direction is removed. This is a finding, not a null. "
+            f"PT={_pt_str(metrics)} {triple} {common}"
+        )
+    if verdict == "no_skill":
+        return logging.INFO, (
+            f"{prefix} — NO DIRECTIONAL SKILL: PT is inside +/-{PT_T_HURDLE}, so the "
+            f"hit rate is not distinguishable from the per-date independence null. "
+            f"PT={_pt_str(metrics)} {triple} {common}"
+        )
+    # insufficient_dates / degenerate. Refuse to quote a headline the cohort
+    # cannot support: the sample_count is not the evidence here, the date count
+    # is, and a DA over <MIN_FORECAST_DATES dates mostly measures which way the
+    # market moved on those days.
+    return logging.WARNING, (
+        f"{prefix} — NO HEADLINE ({verdict}): {metrics['pt_n_dates']} usable date(s) "
+        f"below the {MIN_FORECAST_DATES} required "
+        f"({metrics['pt_n_dates_dropped']} date(s) too thin to test). Unquotable "
+        f"PT={_pt_str(metrics)} {triple} {common}"
+    )
+
+
 def _score_groups(groups, today):
     """Turn {(horizon, model_version): records} into prediction_accuracy rows."""
     results = []
@@ -664,62 +813,15 @@ def _score_groups(groups, today):
         )
 
         if head_n:
-            n_dates = head_metrics["distinct_forecast_dates"]
-            lo = head_metrics["directional_accuracy_ci_clustered_lower"]
-            hi = head_metrics["directional_accuracy_ci_clustered_upper"]
-            # Already percent, same units as directional_accuracy — the * 100
-            # that used to live here was compensating for a scoring bug that is
-            # now fixed at the source. See the units note in score_cohort.
-            ci_str = (
-                f" [CI: {lo:.1f}–{hi:.1f}]" if lo is not None
-                else " [CI: n/a, <2 forecast dates]"
-            )
-            # The carry-forward split travels with the headline in BOTH branches
-            # below, so DirAcc can never be read without it. ~30-36% of scored
-            # outcomes have actual_price bit-identical to base_price and label
-            # "flat" for free, so a pooled DirAcc partly measures archive
-            # staleness — see the partition comment in backtest.scoring.
-            def _pct(value):
-                return "n/a" if value is None else f"{value:.1f}%"
-
-            split_str = (
-                f"Unchanged={head_metrics['unchanged_pct']:.1f}% of rows "
-                f"(DirAcc there {_pct(head_metrics['directional_accuracy_unchanged'])}) "
-                f"DirAccMoved={_pct(head_metrics['directional_accuracy_moved'])}"
-            )
-            common = (
-                f"{split_str} "
-                f"MAE=${head_metrics['mae']:.2f} MAPE={head_metrics['mape']:.1f}% "
-                f"IntCov={head_metrics['interval_coverage']:.1f}% "
-                f"ConfGap={head_metrics['conf_gap_pp']:.1f}pp "
-                f"Skill={head_metrics['skill_vs_baseline']}"
-            )
-            if head_metrics["date_coverage_sufficient"]:
-                logger.info(
-                    f"  [{horizon}d / {model_version}] >=$1: {head_n:,} samples "
-                    f"over {n_dates} forecast dates — "
-                    f"DirAcc={head_metrics['directional_accuracy']:.1f}%{ci_str} "
-                    f"{common}"
-                )
-            else:
-                # Refuse to quote a headline the cohort cannot support. The
-                # sample_count is not the evidence here; the date count is.
-                # A directional accuracy over <MIN_FORECAST_DATES dates mostly
-                # measures which way the market moved on those days.
-                logger.warning(
-                    f"  [{horizon}d / {model_version}] >=$1: NO HEADLINE — "
-                    f"{head_n:,} samples span only {n_dates} forecast date(s), "
-                    f"below the {MIN_FORECAST_DATES} required. Directional "
-                    f"accuracy is clustered by forecast date, so this cohort "
-                    f"cannot separate model skill from the market's direction "
-                    f"on those days. Unquotable DirAcc="
-                    f"{head_metrics['directional_accuracy']:.1f}%{ci_str}. "
-                    f"{common}"
-                )
+            logger.log(*_headline_line(horizon, model_version, head_metrics, head_n))
         if penny_n:
+            # Diagnostic only, and never the headline: one cent is a 20% move
+            # down here, so the up/flat/down label is tick quantisation. Carries
+            # its PT verdict so it is comparable to the line above.
             logger.info(
                 f"  [{horizon}d / {model_version}] <$1: {penny_n:,} samples — "
-                f"DirAcc={penny_metrics['directional_accuracy']:.1f}% (tick-dominated)"
+                f"PT={_pt_str(penny_metrics)} "
+                f"DA={penny_metrics['directional_accuracy']:.1f}% (tick-dominated)"
             )
     return results
 
@@ -762,7 +864,10 @@ def backtest_forecasts(db, today=None, min_price=0, reresolve=False, rescore=Fal
 
     Metrics breakdown:
       - Point error:      MAE, RMSE, MAPE, wMAPE (dollar-weighted), MAPE by price tier
-      - Direction:        directional_accuracy, baseline comp, bootstrap CI
+      - Direction:        pt_* — the Pesaran-Timmermann headline (per forecast
+                          date, HAC t-stat over dates), with directional_accuracy,
+                          constant_call_accuracy and realised_down_rate as the
+                          triple that makes it readable, plus the clustered CI
       - Probabilistic:    interval_coverage, conf_gap_pp, conf_calibration_error
       - Skill:            skill_vs_baseline (Theil's U analog, <1 beats persistence)
 
@@ -1091,6 +1196,9 @@ def backtest_forecasts(db, today=None, min_price=0, reresolve=False, rescore=Fal
         # mutation fails that test alone.
         _store_forecast_outcomes(
             db, all_outcomes, reresolve=reresolve, considered_ids=considered_ids,
+            # Already read above for anchor resolution; passed so the mirror's
+            # item_slug costs no second scan of `items`.
+            id_to_slug=id_to_slug,
         )
 
     # The actuals are frozen; the verdict columns are not, because they are
