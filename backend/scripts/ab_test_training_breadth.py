@@ -41,6 +41,29 @@ Evaluation is on HELD-OUT items that appear in no arm's training set, over
 identical folds and identical rows, so `paired_da_difference` pairs perfectly on
 (item_id, forecast_date).
 
+## Embargo (fixed 2026-08-07)
+
+Until 2026-08-07 the fold split here was `train = date < val_start` with **no purge
+gap**, so every training row inside the last `horizon` days before the boundary carried
+a `target_return_{h}d` resolved from inside the validation window. Production never had
+that bug (`ItemForecaster._compute_cv_splits(..., purge_days=horizon)`), and this harness
+family had simply diverged from it. The overlap is symmetric across arms, but only an arm
+that can *locate* the overlapping rows exploits it, so date-level and date-proxy columns
+banked leakage that per-item columns could not — measured on an event-calendar arm at
+h=30 (25 folds, held-out >=$1, fold-clustered): **+12.1pp unpurged -> +6.1pp purged**.
+This harness's arms differ only in the training item set, not in features, so the
+exposure here is second-order: a wider arm sees more distinct items inside the
+overlapping band and can average the shared future move more precisely. The date-ordinal
+diagnostic reported in `2026-08-06-breadth-beats-depth-item-age-does-not.md` was
+directly exposed.
+
+The train side is now embargoed by calling production's own
+`ItemForecaster._purge_overlapping_train_rows(train, val_start, horizon)`; a second
+implementation of the same rule is what caused the drift in the first place. Purging is
+unconditional -- this is a research tool with no results to keep back-compatible. The
+**val** side is never purged: at h=30 that would empty the 21-day window. Note the purge
+lands BEFORE `_stratified_sample`, so each arm still spends its full row budget.
+
 Usage:
     python scripts/ab_test_training_breadth.py --build-cache-only \
         --frame-cache /tmp/breadth_frame.parquet
@@ -447,7 +470,12 @@ def run_evaluation(df, pruned, horizon_filter=None, n_jobs=None):
                         (sub_days >= dates_dt[window_end])
                         & (sub_days <= dates_dt[window_end + len(val_dates) - 1])
                     )
-                    train_df = sub[in_train_window & is_train_item]
+                    # Embargo the TRAIN side only, via production's own purge
+                    # (see the "Embargo" section of the module docstring). The
+                    # val mask above is untouched: purging it would shrink the
+                    # 21-day window and empty it outright at 30d.
+                    train_df = ItemForecaster._purge_overlapping_train_rows(
+                        sub[in_train_window & is_train_item], val_dates[0], horizon)
                     # Eval rows are the SAME in every arm -- held-out items
                     # only. That is what lets paired_da_difference pair on
                     # (item_id, forecast_date) rather than compare two pooled
@@ -509,6 +537,12 @@ def run_evaluation(df, pruned, horizon_filter=None, n_jobs=None):
                         records.append({
                             "item_id": ids[i],
                             "forecast_date": str(dts[i]),
+                            # The resampling cluster. Dates inside one 21-day
+                            # validation window come from a single fitted
+                            # model, so clustering on them understates the
+                            # variance -- see paired_mde's module docstring,
+                            # which names this experiment as one to re-derive.
+                            "fold_id": fold_idx,
                             "direction_correct": bool(match[i]),
                         })
                     hits = int(np.count_nonzero(match & scored))
@@ -562,7 +596,8 @@ def run_evaluation(df, pruned, horizon_filter=None, n_jobs=None):
                         continue
                     results[horizon]["_paired_vs_narrow"][arm] = (
                         paired_da_difference(base["records"],
-                                             results[horizon][arm]["records"])
+                                             results[horizon][arm]["records"],
+                                             cluster_key="fold_id")
                     )
         return results
     finally:

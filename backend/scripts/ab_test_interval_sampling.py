@@ -82,6 +82,7 @@ import pandas as pd
 import lightgbm as lgb
 
 from database import SessionLocal
+from db.archive import ARCHIVE_ROOT, prices_relation
 from models.forecaster import ItemForecaster
 
 logging.basicConfig(
@@ -90,7 +91,7 @@ logging.basicConfig(
 )
 logger = logging.getLogger("ab_test_interval_sampling")
 
-ARCHIVE_DIR = Path(__file__).parent.parent.parent / "price-archive"
+ARCHIVE_DIR = ARCHIVE_ROOT
 META_PATH = Path(__file__).parent.parent / "models" / "saved_models" / "meta.json"
 
 HORIZONS = [3, 7, 14, 30]
@@ -160,23 +161,19 @@ def interval_metrics(y, low, high):
 def load_features(con, forecaster, events_df, max_items):
     """Mirrors ab_test_q50_sampling.load_features so this A/B trains on the
     same data path as the other harnesses."""
-    pq_files = sorted(str(p) for p in ARCHIVE_DIR.glob("prices-*.parquet"))
-    pq_queries = []
-    for pqf in pq_files:
-        cols = {r[0] for r in con.sql(
-            f"DESCRIBE SELECT * FROM read_parquet('{pqf}')").fetchall()}
-        if "source" in cols:
-            pq_queries.append(
-                f"SELECT item_slug, day, mean_price, volume FROM "
-                f"read_parquet('{pqf}') WHERE source = 'STEAMCOMMUNITY'")
-        else:
-            pq_queries.append(
-                f"SELECT item_slug, day, mean_price, volume FROM read_parquet('{pqf}')")
-    union_sql = " UNION ALL BY NAME ".join(pq_queries)
+    # `source IS NULL` is the pre-2026 CSMarketAPI STEAMCOMMUNITY series — that
+    # series predates the column, so a NULL here means the same cohort the
+    # explicit label selects in the monthly files (`init_local_db.py` documents
+    # the equivalence). This reproduces the per-file branch it replaced, which
+    # took every row from a file with no source column.
+    union_sql = prices_relation(
+        con, ARCHIVE_DIR,
+        columns=["item_slug", "day", "mean_price", "volume", "source"],
+        where="source = 'STEAMCOMMUNITY' OR source IS NULL")
 
     items = con.sql(f"""
         SELECT item_slug, COUNT(*) AS row_count
-        FROM ({union_sql})
+        FROM {union_sql}
         GROUP BY item_slug HAVING row_count >= 90
         ORDER BY row_count DESC LIMIT {max_items}
     """).fetchall()
@@ -186,7 +183,7 @@ def load_features(con, forecaster, events_df, max_items):
     for item_slug, _ in items:
         rows = con.sql(f"""
             SELECT item_slug AS item_id, day AS timestamp, mean_price AS price, volume
-            FROM ({union_sql}) WHERE item_slug = ? ORDER BY day
+            FROM {union_sql} WHERE item_slug = ? ORDER BY day
         """, params=[item_slug]).fetchall()
         idf = pd.DataFrame(rows, columns=["item_id", "timestamp", "price", "volume"])
         idf["timestamp"] = pd.to_datetime(idf["timestamp"])

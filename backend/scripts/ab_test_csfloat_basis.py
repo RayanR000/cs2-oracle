@@ -30,6 +30,23 @@ built around that: they separate the raw daily basis from smoothed forms, so a n
 `2026-08-06-breadth-beats-depth-item-age-does-not.md` purely as a market proxy, so any
 arm that widens the model needs a same-width control.
 
+## Embargo (fixed 2026-08-07)
+
+Until 2026-08-07 the fold split here was `train = date < val_start` with **no purge
+gap**, so every training row inside the last `horizon` days before the boundary carried
+a `target_return_{h}d` resolved from inside the validation window. Production never had
+that bug (`ItemForecaster._compute_cv_splits(..., purge_days=horizon)`), and this harness
+family had simply diverged from it. The overlap is symmetric across arms, but only an arm
+that can *locate* the overlapping rows exploits it, so date-level and date-proxy columns
+banked leakage that per-item columns could not — measured on an event-calendar arm at
+h=30 (25 folds, held-out >=$1, fold-clustered): **+12.1pp unpurged -> +6.1pp purged**.
+
+The train side is now embargoed by calling production's own
+`ItemForecaster._purge_overlapping_train_rows(train, val_start, horizon)`; a second
+implementation of the same rule is what caused the drift in the first place. Purging is
+unconditional -- this is a research tool with no results to keep back-compatible. The
+**val** side is never purged: at h=30 that would empty the 21-day window.
+
 ## No lookahead
 
 Every CSFloat column is computed from data at t-1 and shifted forward, including the
@@ -475,7 +492,12 @@ def run_evaluation(df, pruned, horizon_filter=None, n_jobs=None,
                     in_val = ((sub_days >= dates_dt[window_end])
                               & (sub_days <= dates_dt[window_end + len(val_dates) - 1]))
 
-                    train_df = sub[in_train & is_train_item]
+                    # Embargo the TRAIN side only, via production's own purge
+                    # (see the "Embargo" section of the module docstring).
+                    # The val mask above is untouched: purging it would shrink
+                    # the 21-day window and empty it outright at 30d.
+                    train_df = ItemForecaster._purge_overlapping_train_rows(
+                        sub[in_train & is_train_item], val_dates[0], horizon)
                     val_df = sub[in_val & (is_heldout | is_trained_eval)]
                     if len(val_df) < 50 or train_df.empty:
                         continue
@@ -537,8 +559,14 @@ def run_evaluation(df, pruned, horizon_filter=None, n_jobs=None,
                     for cohort, mask in (("heldout", held), ("trained", ~held)):
                         sel = scored & mask
                         for i in np.flatnonzero(sel):
+                            # fold_id is the resampling cluster: dates inside
+                            # one validation window share a fitted model, so
+                            # clustering on them understates the variance --
+                            # see paired_mde's module docstring, which names
+                            # this experiment as one to re-derive.
                             rec[cohort].append({"item_id": ids[i],
                                                 "forecast_date": str(dts[i]),
+                                                "fold_id": fold_idx,
                                                 "direction_correct": bool(match[i])})
                         tot = int(sel.sum())
                         hits = int(np.count_nonzero(match & sel))
@@ -572,7 +600,8 @@ def run_evaluation(df, pruned, horizon_filter=None, n_jobs=None,
                         continue
                     results[horizon]["_paired"][arm] = {
                         cohort: paired_da_difference(base["records"][cohort],
-                                                     results[horizon][arm]["records"][cohort])
+                                                     results[horizon][arm]["records"][cohort],
+                                                     cluster_key="fold_id")
                         for cohort in ("heldout", "trained")}
                 # basis_all vs placebo is the comparison that rules out capacity
                 # inflation: same width, only the values differ.
@@ -580,7 +609,8 @@ def run_evaluation(df, pruned, horizon_filter=None, n_jobs=None,
                     results[horizon]["_paired"]["basis_all_vs_placebo"] = {
                         cohort: paired_da_difference(
                             results[horizon]["placebo"]["records"][cohort],
-                            results[horizon]["basis_all"]["records"][cohort])
+                            results[horizon]["basis_all"]["records"][cohort],
+                            cluster_key="fold_id")
                         for cohort in ("heldout", "trained")}
         return results
     finally:
