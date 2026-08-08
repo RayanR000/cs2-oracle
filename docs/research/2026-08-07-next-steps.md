@@ -3,7 +3,11 @@
 **Source:** `docs/research/2026-08-07-cs2-forecasting-research.md`, section
 "If I were building this myself", cross-referenced against §10 "Ranked recommendations".
 **Record:** `docs/changelog/2026-08-07-cs2-forecasting-research-review.md`.
-**Status of everything below: NOT STARTED.** Nothing in this list has been done.
+**Status: steps 1, 2 and 3 are DONE (2026-08-07 —
+`docs/changelog/2026-08-07-bid-source-excluded-from-voting.md`,
+`docs/changelog/2026-08-07-pesaran-timmermann-headline.md` and
+`docs/changelog/2026-08-07-friction-conditioned-tier-scoring.md`). Steps 4–6 are unblocked and
+NOT STARTED. Steps 7–11 are NOT STARTED.**
 
 Ordering is the review's, not a re-ranking. Numbers in the "why" column are quoted from the
 review or from the changelog entry that measured them; nothing here is estimated.
@@ -20,39 +24,74 @@ order is what it is: *"the highest-value work available is free of the Monday re
 entirely"*, and *"(b) is a calendar wait, not work — which is exactly why the metric fixes
 should start now, while the wait is free."*
 
-**2. Step 1 gates everything else.** If `aggregator_buff163_buy` is voting into the consensus
-median, every label and every A/B since **2026-07-11** is downstream of a fabricated series,
-and re-running steps 2–11 afterwards would be the second time the work was done. Half a day.
-Do not start anything below it first.
+**2. Step 1 gated everything else, and it is now done.** It was voting: every label and every
+A/B from **2026-07-11 to 2026-08-07** is downstream of a displaced consensus, and needs
+re-running. Steps 2–6 can now proceed — but any pre-2026-08-07 number they are compared
+against carries the defect.
 
 ---
 
-## Gated: run this before anything else
+## Gated: this ran first
 
-### 1. Is `aggregator_buff163_buy` in the consensus median? — NOT STARTED
+### 1. Is `aggregator_buff163_buy` in the consensus median? — **DONE 2026-08-07**
 
-- **Do:** one query against the archive / the voting path. If the bid is in the median,
-  exclude it from voting, promote it to its own column, and re-run the affected A/Bs before
-  proceeding.
-- **Why:** the BUFF **bid** sits at **0.550× Steam** while the asks it is being median-voted
-  against sit at **0.700–0.802×** (n = 23,904 items, review §11). `vote()` rejects >2σ
-  outliers only when ≥3 sources are present, so **whether the bid is rejected flickers day to
-  day** — that fabricates returns of roughly the bid–ask wedge rather than a constant level
-  shift. ~33k items, since 2026-07-11.
-- **Confidence:** the review marks this **[UNVERIFIED]** — mechanism read from code,
-  magnitude not measured. That is exactly what the query settles.
-- **Touches:** `backend/collectors/pipeline.py`,
-  `backend/collectors/csgotrader_aggregator.py`,
-  `backend/models/forecaster.py::_apply_multi_source_voting` (no source filter today),
-  `vote()`.
-- **Effort:** half a day to check. Small to fix.
-- **Unblocks:** everything. §10 Tier 1 #3.
+**It was.** `BID_SOURCES` now excludes it from `_apply_multi_source_voting` and from
+`walkforward_backtest.py::_load_all_prices`; `VOTED_CACHE_VERSION` bumped 1 → 2. Measured on
+the ≥$1 served cohort (1,398 items), **95.4% of item-days had a displaced consensus, median
+−10.8%, and 13.6% of return pairs had their direction flipped**. Record:
+`docs/changelog/2026-08-07-bid-source-excluded-from-voting.md`.
+
+**Three claims in the original entry below were refuted by the measurement:**
+
+1. **The level was 0.579× Steam against asks at 0.717–0.809×**, on n = 461,540 item-days
+   (2026-07-11 → 2026-08-04), not 0.550× / 0.700–0.802× on 23,904 items. Same conclusion,
+   re-measured denominator.
+2. **The "≥3 sources" reasoning was wrong.** `vote()` was *eligible* on **99.3%** of bid
+   item-days (11 sources on 55% of them) and simply failed to reject the bid **80.5%** of the
+   time — an 11-source panel spanning 0.58–1.04× of Steam has a σ too wide for 2σ to catch a
+   value at 0.579×. **The guard was never the fix.**
+3. **Flicker was not the primary mechanism.** Day-to-day flicker in whether the bid is
+   rejected is **5.6%** of return pairs; **steady-state inclusion with a drifting bid–ask
+   spread is 53.5%** and carries ~4× more of the >1pp damaged mass. A third mechanism the
+   review did not name — **median parity**, where one low value steps an even panel's median
+   down a rung (−6.35% at n = 11) — is larger than flicker too.
+
+- **Not done:** the bid was **not** promoted to its own column (it stays recoverable as a
+  labelled archive row; the spread-feature family it would serve still has 25 days of
+  history), and **the affected A/Bs were not re-run**.
+- **Still open from this step:** `aggregator_steam_17mafo` (2,169,483 rows, 2026-04-16 →
+  2026-07-10) is voted unfiltered and uninvestigated; if it is not an ask, the contaminated
+  window predates 2026-07-11 by four months. And `ab_test_regime.py` /
+  `ab_test_ensemble.py` still vote the bid through their private loaders — folded into step 5.
+- §10 Tier 1 #3.
 
 ---
 
 ## No retrain, ~two weeks (steps 2–6)
 
-### 2. Replace DA with serial-correlation-robust Pesaran–Timmermann — NOT STARTED
+### 2. Replace DA with serial-correlation-robust Pesaran–Timmermann — **DONE 2026-08-07**
+
+Landed as specified: per-date excess hit rate, Newey–West HAC t-stat over dates, hurdle
+`|t| > 3.0`, ≥$1 cohort, `n_dates ≥ 20`. `backend/backtest/directional_test.py` is the new pure
+module; `pt_verdict` ∈ `skill` / `no_skill` / `perverse` / `insufficient_dates` / `degenerate` is
+stored in `prediction_accuracy.metrics`, and a **significantly negative statistic is reported at
+warning level as a finding** rather than folded into the null. DA now ships only as the triple
+(`constant_call_accuracy`, `constant_call_direction`, `realised_down_rate`). New endpoint
+`GET /accuracy/headline`; the homepage placard and `/accuracy` render the verdict, not the hit
+rate. Record: `docs/changelog/2026-08-07-pesaran-timmermann-headline.md`.
+
+**One thing the spec did not anticipate, and it is the important one:** a **constant call has
+per-date excess identically zero**, because when the call never varies `P*_d` equals the realised
+down-rate and cancels the hit rate term for term. So "always-down beats the model" resolves as
+`degenerate` — t undefined, not t large — and the always-down straw man can never be scored as
+skill. Also worth noting: `baseline_directional_accuracy` in the stored series was never the
+constant-call baseline, it is the always-*flat* call; it keeps its name for continuity and the
+real one sits beside it.
+
+**Not done here:** nothing was re-scored (a `--rescore` will populate `pt_*` on existing rows, at
+no archive cost), and no production verdict exists yet — every live cohort still spans 1–2
+forecast dates, so all four horizons report `insufficient_dates`. The `ab_test_*` harnesses and
+`walkforward_backtest.py` do not carry PT; they are step 5's problem.
 
 - **Do:** PT as the headline, computed per forecast date with a t-stat over dates. Report raw
   DA only as a **triple** with the constant-call baseline and the realised down-rate beside
@@ -72,7 +111,45 @@ Do not start anything below it first.
 - **Unblocks:** every subsequent measurement. Until this lands, no accuracy number in the
   repo is interpretable. §10 Tier 1 #1.
 
-### 3. Score by price tier, conditioned on `|predicted move| > round-trip cost` — NOT STARTED
+### 3. Score by price tier, conditioned on `|predicted move| > round-trip cost` — **DONE 2026-08-07**
+
+Landed as specified except for the two narrowings below. `price_tier` gained a cut at $1000
+(six bands); `backtest/friction.py` holds the round-trip and spread constants;
+`backtest/actionable.py` publishes `ActionableDA` at h ∈ {14, 30} as four numbers together
+(`actionable_share_pct`, `actionable_da`, `actionable_e_net_pct`, and PT on the subset); and
+`FLOOR_SWEEP = {-1: $1, -2: $5, -3: $20}` stores one `prediction_accuracy` row per floor so
+"where does the headline stabilise" is auditable rather than a console line. `HEADLINE_TIER`
+stays `-1` / `≥$1`, so `/accuracy/headline` and the placard are unchanged. Record:
+`docs/changelog/2026-08-07-friction-conditioned-tier-scoring.md`.
+
+**Two things the spec did not anticipate:**
+
+1. **The spread measurement is at the wrong cuts.** The bands are `<$1`, `$1–10`, `$10–50`,
+   `$50–500`, `$1000+` and `price_tier`'s cuts are 1/5/20/100/1000 — they do not align, so
+   tiers 2 and 3 both borrow `$10–50`'s **17.3%** under a nearest-geometric-midpoint rule
+   recorded in `SPREAD_SOURCE_BAND`. **These are not measured per tier and must not be cited
+   as such.**
+2. **Splitting tier 4 is a series discontinuity, not a refinement.** A stored row with
+   `price_tier == 4` written before 2026-08-07 means `≥$100`; nothing migrates it, because the
+   tier was all that was stored.
+
+**Narrowed on purpose, both because the frozen-data-only scope was chosen to keep
+`backtest/scoring.py` pure and `--rescore` archive-free:**
+
+- **The staleness axis is 2 buckets, not 4.** The `actual_price == base_price` split each row
+  already carries is a real staleness partition, giving a 6 × 2 grid. The quartiles need
+  `stale_run_days` — **step 6's** deliverable. No quartile was invented.
+- **`s_i` is the tier median, not the per-item BUFF spread.** That needs a frozen
+  `buff_spread_rel`, and 25 days of bid history would leave it NULL on almost every stored
+  outcome.
+
+**Not done:** nothing was re-scored (`--rescore` populates the new keys at no archive cost, but
+running it is an operational step); `MIN_SERVED_PRICE_USD` did not move, since raising the
+serving floor is a decision that follows the sweep; and **no production verdict exists** — every
+live cohort spans 1–2 forecast dates, so `actionable_pt_verdict` reads `insufficient_dates`
+exactly as `pt_verdict` does. Also note the walkforward gate now carries `actionable_*` at
+h=14/30 while still having **no purge and no embargo** (step 5), so its actionable numbers
+inherit the same boundary-overlap inflation as its DA.
 
 - **Do:** split `price_tier` above $100; report on a grid (price band × staleness quartile),
   never pooled; sub-$1 is diagnostic-only and never headline. Add the friction-conditioned
@@ -114,7 +191,10 @@ Do not start anything below it first.
   discontinuity in the published series. Widen `_purge_overlapping_train_rows` from `H` to
   `H + 13`. Fix the ten `ab_test_*` harnesses that have neither purge nor fold clustering
   (13 exist; three were fold-threaded in `2026-08-07-training-item-universe.md`). Add an
-  `ingested_at` column to `CANONICAL_PRICE_COLUMNS` while in there.
+  `ingested_at` column to `CANONICAL_PRICE_COLUMNS` while in there. **Also filter
+  `BID_SOURCES` in `ab_test_regime.py` and `ab_test_ensemble.py`**, each of which carries a
+  private `_load_all_prices` glob with no source filter — deferred here from step 1, and
+  until it lands no A/B on those two harnesses is clean.
 - **Why:** `--purge` is **default OFF**, so the *published* Backtest Accuracy number is
   unpurged. The review's measured inflation: the event-calendar arm at h=30 went **+12.1pp
   unpurged → +6.1pp purged** — half the effect was boundary overlap. *(That pair appears only
@@ -319,7 +399,9 @@ are here so they are not re-proposed.
   identical commands, with `n_paired` and `n_dates` also moving). Best candidate cause is a
   changing ask-source set with no `n_ask_sources` column to detect it — the mean market return
   reads **−31.6% on 2026-03-22** and **+17.4%/−17.8% on 2026-07-09/10** against ±0.5% on a
-  normal day. Hypothesis, not diagnosis.
+  normal day. Hypothesis, not diagnosis. Step 1 removed one measured contributor to it — the
+  bid's rejection flickered on **5.6%** of return pairs — but flicker was only a twentieth of
+  that defect's effect, so this is not resolved.
 - **h=30 rests on 5,461 usable rows from one backdated date.** It carries both the +3.50pp
   positive (step 7) and the largest unpurged inflation (step 5). No h=30 claim until ≥30
   forecast dates mature.
