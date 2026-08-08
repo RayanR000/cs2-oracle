@@ -47,6 +47,19 @@ from database import engine
 from db.archive import canonical_order
 
 
+def _sum_observed(s: pd.Series):
+    """Sum a volume group, keeping an all-absent group absent.
+
+    A bare `.sum()` returns 0 for an all-NaN group, which is the whole bug this
+    guards: the aggregator feeds carry no volume field, so every live row is
+    *unknown*, and 0 would present that as an observed zero. A real zero never
+    occurs -- a day with no sale produces an absent row, not a zero one -- so a
+    0 here is always fabricated. `min_count=1` keeps one observed value enough
+    to produce a sum and no observed values NA.
+    """
+    return s.sum(min_count=1)
+
+
 FETCH_TODAY_SQL = """
     SELECT i.item_id AS item_slug,
            DATE(ph.timestamp) AS day,
@@ -148,8 +161,9 @@ def main():
     if snapshots_df is not None and not snapshots_df.empty:
         daily = snapshots_df.groupby(["item_slug", "day", "source"]).agg(
             mean_price=("price", "mean"),
-            volume=("volume", "sum"),
+            volume=("volume", _sum_observed),
         ).reset_index()
+        daily["volume"] = daily["volume"].astype("Int64")
         daily["day"] = pd.to_datetime(daily["day"])
         daily["ingested_at"] = arrived
         _append_parquet(out_dir / f"prices-{ym}.parquet", daily, ["item_slug", "day", "source"])
@@ -159,8 +173,9 @@ def main():
         df = pd.concat(legacy_frames, ignore_index=True)
         daily = df.groupby(["item_slug", "day", "source"]).agg(
             mean_price=("price", "mean"),
-            volume=("volume", "sum"),
+            volume=("volume", _sum_observed),
         ).reset_index()
+        daily["volume"] = daily["volume"].astype("Int64")
         daily["day"] = pd.to_datetime(daily["day"])
         daily["ingested_at"] = arrived
         _append_parquet(out_dir / f"prices-{ym}.parquet", daily, ["item_slug", "day", "source"])

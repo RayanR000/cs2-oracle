@@ -24,7 +24,7 @@ derived from it are in `../changelog/2026-08-06-data-acquisition-ranking.md`.
 | BUFF163 git archive (atalantus) | JSON dump (24 MB xz) | One-shot | Daily CNY min-listing, 2021-07 → 2024-02 | None (unlicensed) | **Evaluated, declined** |
 | CSFloat `/api/v1/history/…/graph` | REST (undocumented) | Per-item, **500 req/day** | Daily completed-sale avg + count, from 2020-04 | None | **Measured and declined 2026-08-06** — coverage passes, the basis feature is null; see `../changelog/2026-08-06-csfloat-basis-refuted.md` |
 | CSMarketCap API | GraphQL + REST | Bulk (all items in 1 call) | Trade volume (24h/7d/30d/90d), listings, buy orders | JWT token | **Not integrated** ($9.99/mo) |
-| **Skinport `/v1/sales/history`** | REST API | Bulk (1 call, 1.9 s / 20.4 MB) | min/max/avg/median/volume for 24h, 7d, 30d, 90d — **retroactive on first pull** | None (needs `Accept-Encoding: br`) | **Not integrated** — 36,004 items; 23,533 of the ≥$1 cohort (89.0%) |
+| **Skinport `/v1/sales/history`** | REST API | **Daily** (1 call, 1.9 s / 20.4 MB) | min/max/avg/median/volume for 24h, 7d, 30d, 90d — **retroactive on first pull** | None (needs `Accept-Encoding: br`) | **✅ Wired 2026-08-08** — `collectors/sales_volume.py` → `volume-YYYY-MM.parquet`. The pipeline's only real trade-volume feed. 36,004 items; 23,533 of the ≥$1 cohort (89.0%). **Unverified from a CI runner** — see below |
 | **lis-skins full export** | JSON dump | **Daily** (1 call, 364.5 s / 173 MB) | 2.3M individual listings: `price`, `created_at`, `item_float` — reduced to per-item ask ladder + listing age | None | **✅ Active** — `collectors/supply_depth.py`, 23,879 items on 2026-08-06; 17,286 of the ≥$1 cohort. Largest marginal contributor (+1,428 items over the other feeds). Untested from a GitHub runner |
 | **market.csgo.com `/api/v2/prices/USD.json`** | REST API | **Daily** (1 call, 0.6 s / 2.6 MB) | `volume` — a live **listing count**, not trade volume (verified 4 ways, see below) | None | **✅ Active** — 27,570 items on 2026-08-06; 17,596 of the ≥$1 cohort. Untested from a GitHub runner |
 | **Waxpeer `/v1/prices?game=csgo`** | REST API | **Daily** (1 call, 0.6 s / 4.9 MB) | `count` (listing count), `min` in millicents | None | **✅ Active** — 22,039 items on 2026-08-06; 15,016 of the ≥$1 cohort. Marginal value only **+117 items** over the other feeds; kept on cost, not on signal |
@@ -38,6 +38,17 @@ derived from it are in `../changelog/2026-08-06-data-acquisition-ranking.md`.
 - `steam.json` is a **rolling 24h average** of completed Steam Market sales, NOT a live price
 - Lags significantly on volatile items (new cases, sticker releases, event spikes)
 - CSGOTrader's `csgotrader` source records `volume=None` (→0) — it carries no trade volume (verified: `prices.csgotrader.app/latest/csgotrader.json` returns only `price` + `doppler`). The archive's `aggregator_sync` Steam backfill does carry real trade volume, so liquid vs illiquid items *can* be distinguished for backfilled items.
+- **No aggregator feed carries a volume field at all.** Re-probed live 2026-08-08:
+  `steam.json` returns `last_24h/7d/30d/90d` *prices*, `buff163.json` returns
+  `starting_at`/`highest_order`, `csgotrader.json` returns `price` + `doppler`.
+  `csgotrader_aggregator.py` contains no reference to `volume` because there is nothing to
+  parse. The daily collector has never collected volume — this is an absence, not a
+  regression. Real sale counts now arrive on a separate path
+  (`collectors/sales_volume.py` → `volume-YYYY-MM.parquet`).
+- **The pipeline used to write `0` for that absence; since 2026-08-08 it writes NULL.**
+  `pipeline.py`'s `VOLUME_NOT_OBSERVED` and `append_to_parquet.py`'s `_sum_observed`
+  (a `min_count=1` sum, so an all-absent group stays NA). This is fix-forward only —
+  stored rows through 2026-08-08 keep their fabricated zeros.
 - No freshness metadata in the JSON dump — can't detect stale/failed upstream
 - `data_validation.py` has outlier/anomaly checks but they are NEVER called in the pipeline
 - Historical fallback re-inserts stale prices with `timestamp=now`, but the rows are relabelled `historical_fallback:<source>` (`pipeline.py:39-43`) and stale items are tracked separately (`pipeline.py:183-238`) — so fallback rows *are* distinguishable downstream. Treat this as a freshness caveat, not silent corruption.

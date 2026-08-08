@@ -236,3 +236,61 @@ class TestIngestedAt:
             f"SELECT mean_price, ingested_at FROM read_parquet('{pq}')").fetchone()
         assert price == 11.0, "the corrected price should win"
         assert arrived == first, "the original arrival should not"
+
+
+class TestVolumeAbsenceIsNull:
+    """An unobserved volume must reach the archive as NULL, never as 0.
+
+    The aggregator feeds carry no volume field at all, so every live row's
+    volume is *unknown*. Writing 0 makes that indistinguishable from a real
+    zero -- and a real zero never occurs, because a day with no sale produces
+    an absent row rather than a zero one. The 0 also defeats every guard in
+    `_compute_volume_features`: `has_volume` tests notna() so it stays True and
+    `volume_missing` reports 0, i.e. "present". See
+    `models/forecaster.py` and the shelved volume features.
+    """
+
+    def test_missing_volume_lands_as_null(self, tmp_path):
+        csv = tmp_path / "snap.csv"
+        pd.DataFrame([{
+            "item_slug": "AK-47 | Redline (FT)", "day": "2026-10-02",
+            "source": "aggregator_csgotrader", "price": 10.0, "volume": None,
+        }]).to_csv(csv, index=False)
+        _run("2026-10-02", tmp_path, csv)
+
+        pq = tmp_path / "price-archive" / "prices-2026-10.parquet"
+        vol = duckdb.connect().sql(
+            f"SELECT volume FROM read_parquet('{pq}')").fetchone()[0]
+        assert vol is None, f"absent volume must stay NULL, got {vol!r}"
+
+    def test_a_real_volume_still_sums(self, tmp_path):
+        """The NULL path must not cost the aggregation its real values."""
+        csv = tmp_path / "snap.csv"
+        pd.DataFrame([
+            {"item_slug": "AWP | Asiimov (FT)", "day": "2026-10-02",
+             "source": "aggregator_sync", "price": 10.0, "volume": 3},
+            {"item_slug": "AWP | Asiimov (FT)", "day": "2026-10-02",
+             "source": "aggregator_sync", "price": 12.0, "volume": 4},
+        ]).to_csv(csv, index=False)
+        _run("2026-10-02", tmp_path, csv)
+
+        pq = tmp_path / "price-archive" / "prices-2026-10.parquet"
+        vol = duckdb.connect().sql(
+            f"SELECT volume FROM read_parquet('{pq}')").fetchone()[0]
+        assert vol == 7, f"two observed volumes should sum, got {vol!r}"
+
+    def test_a_partial_group_sums_only_what_was_observed(self, tmp_path):
+        """One NULL among real values is a gap in the panel, not a zero."""
+        csv = tmp_path / "snap.csv"
+        pd.DataFrame([
+            {"item_slug": "M4A4 | Howl (FN)", "day": "2026-10-02",
+             "source": "aggregator_sync", "price": 10.0, "volume": 5},
+            {"item_slug": "M4A4 | Howl (FN)", "day": "2026-10-02",
+             "source": "aggregator_sync", "price": 12.0, "volume": None},
+        ]).to_csv(csv, index=False)
+        _run("2026-10-02", tmp_path, csv)
+
+        pq = tmp_path / "price-archive" / "prices-2026-10.parquet"
+        vol = duckdb.connect().sql(
+            f"SELECT volume FROM read_parquet('{pq}')").fetchone()[0]
+        assert vol == 5

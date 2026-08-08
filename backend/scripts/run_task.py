@@ -52,6 +52,7 @@ ROW_COUNT_FIELDS = (
     "total_mentions",       # collectors/social_sentiment.py
     "inserted",             # collectors/social_sentiment.py
     "supply_rows",          # collectors/supply_depth.py
+    "volume_rows",          # collectors/sales_volume.py
 )
 
 # Statuses that mean "this task legitimately had nothing to do", as opposed to

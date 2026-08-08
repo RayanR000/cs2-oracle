@@ -35,6 +35,21 @@ SPECIAL_PREFIXES = ("StatTrak", "Souvenir")
 # errors instead, so the run reports the outage rather than papering over it.
 FALLBACK_MAX_AGE_DAYS = int(os.environ.get("FALLBACK_MAX_AGE_DAYS", "7"))
 
+# `None` -> csv.writer emits an empty field -> pandas reads NaN -> the archive
+# stores NULL. Not 0.
+#
+# **No aggregator feed carries a volume field.** Probed 2026-08-08:
+# `steam.json` returns last_24h/7d/30d/90d *prices*, `buff163.json` returns
+# starting_at/highest_order, `csgotrader.json` returns price + doppler. So a
+# live row's volume is *unknown*, and the 0 this used to write was fabricated.
+# It mattered: a real zero never occurs (a day with no sale produces an absent
+# row, min observed volume is 1), so every downstream guard read the 0 as an
+# observation -- `_compute_volume_features`'s `has_volume` tests notna() and
+# stayed True, `volume_missing` reported 0 meaning "present". That is why the
+# eleven volume features are shelved. Real sale counts arrive on a separate
+# path: `collectors/sales_volume.py` -> `volume-YYYY-MM.parquet`.
+VOLUME_NOT_OBSERVED = None
+
 
 def _historical_fallback_source(source: str) -> str:
     """Normalize fallback source labels so retries do not stack prefixes."""
@@ -164,7 +179,7 @@ class DataPipeline:
                                     item_id=item.id,
                                     timestamp=now,
                                     price=price,
-                                    volume=volume if volume is not None else 0,
+                                    volume=volume,
                                     source=db_source,
                                 ))
                             if src_key == "steam":
@@ -277,7 +292,7 @@ class DataPipeline:
                     for d in rows_as_dicts:
                         slug = id_to_slug.get(d["item_id"])
                         if slug:
-                            writer.writerow([slug, agg_date, d["source"], d["price"], d.get("volume", 0)])
+                            writer.writerow([slug, agg_date, d["source"], d["price"], d.get("volume", VOLUME_NOT_OBSERVED)])
                 logger.info("Wrote %s snapshot rows to %s (all sources)", len(rows_as_dicts), snapshot_csv_path)
 
                 # ── Append ALL raw CSGOTrader items (even those not matched to a DB Item) ──
@@ -309,7 +324,7 @@ class DataPipeline:
                                     ("aggregator_steam_90d", p90),
                                 ]:
                                     if p is not None and p > 0 and (item_key, label) not in written:
-                                        w.writerow([item_key, agg_date, label, p, 0])
+                                        w.writerow([item_key, agg_date, label, p, VOLUME_NOT_OBSERVED])
                                         raw_count += 1
                                 continue
 
@@ -318,7 +333,7 @@ class DataPipeline:
                                 if p is not None and p > 0:
                                     label = SOURCE_LABELS.get(src_name, f"aggregator_{src_name}")
                                     if (item_key, label) not in written:
-                                        w.writerow([item_key, agg_date, label, p, 0])
+                                        w.writerow([item_key, agg_date, label, p, VOLUME_NOT_OBSERVED])
                                         raw_count += 1
                                 continue
 
@@ -333,7 +348,7 @@ class DataPipeline:
                                     if ho_p is not None and ho_p > 0:
                                         label = "aggregator_buff163_buy"
                                         if (item_key, label) not in written:
-                                            w.writerow([item_key, agg_date, label, ho_p, 0])
+                                            w.writerow([item_key, agg_date, label, ho_p, VOLUME_NOT_OBSERVED])
                                             raw_count += 1
                             elif src_name == "csfloat":
                                 p = _agg_get_safe(info.get("price"))
@@ -349,7 +364,7 @@ class DataPipeline:
                             if p is not None and p > 0:
                                 label = SOURCE_LABELS.get(src_name, f"aggregator_{src_name}")
                                 if (item_key, label) not in written:
-                                    w.writerow([item_key, agg_date, label, p, 0])
+                                    w.writerow([item_key, agg_date, label, p, VOLUME_NOT_OBSERVED])
                                     raw_count += 1
 
                 logger.info("Appended %s raw CSGOTrader item-source pairs to snapshot CSV", raw_count)
@@ -364,7 +379,7 @@ class DataPipeline:
                         for d in backfilled_dicts:
                             slug = id_to_slug.get(d["item_id"])
                             if slug:
-                                writer.writerow([slug, agg_date, d["source"], d["price"], d.get("volume", 0)])
+                                writer.writerow([slug, agg_date, d["source"], d["price"], d.get("volume", VOLUME_NOT_OBSERVED)])
                     backfilled_csv_path = csv_path
                     logger.info("Wrote %s backfilled rows to %s (all sources)", len(backfilled_dicts), csv_path)
 

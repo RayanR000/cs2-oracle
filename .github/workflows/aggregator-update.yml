@@ -192,6 +192,28 @@ jobs:
           echo "📦 Collecting supply depth (scalar feeds ~2s, lis-skins ladder ~7min)..."
           python scripts/run_supply_depth.py --archive-dir ../archive/price-archive
 
+      # Same placement and the same reasoning as supply depth above: inside this
+      # workflow so the day's sale counts ride the same orphan commit as the
+      # day's prices.
+      #
+      # This is the pipeline's ONLY real trade-volume feed. No aggregator feed
+      # carries a volume field (probed 2026-08-08), which is why
+      # prices-*.parquet's `volume` column has been unobserved since the HF
+      # merge ran out on 2026-04-15. It writes volume-YYYY-MM.parquet and does
+      # NOT repair that column -- see collectors/sales_volume.py for why.
+      #
+      # `continue-on-error` for the same reason: one call to one cash venue must
+      # not take down the daily forecast. Skinport answers 403 to Cloudflare-owned
+      # egress (AS13335), so this can pass from CI and fail from a laptop on WARP.
+      - name: Collect sales volume
+        continue-on-error: true
+        working-directory: ./backend
+        env:
+          AGGREGATOR_SNAPSHOT_DATE: ${{ env.SNAPSHOT_DATE }}
+        run: |
+          echo "📊 Collecting completed-sale volume (Skinport, 1 call ~2s)..."
+          python scripts/run_sales_volume.py --archive-dir ../archive/price-archive
+
       # The parquet files ARE the data (each holds full history), so git history
       # of them has no value and only bloats the repo. Republish the archive as a
       # single squashed commit each run via an orphan branch + force-push.
