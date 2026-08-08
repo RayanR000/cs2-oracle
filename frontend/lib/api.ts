@@ -357,21 +357,51 @@ export interface AccuracyRecord {
   created_at: string;
 }
 
+export interface AccuracyMetric {
+  mae?: number;
+  rmse?: number;
+  mape?: number;
+  wmape?: number;
+  directional_accuracy?: number;
+  baseline_directional_accuracy?: number;
+  interval_coverage?: number;
+  [key: string]: unknown;
+}
+
+export interface LatestAccuracyRecord {
+  id: number;
+  prediction_type: string;
+  evaluation_date: string | null;
+  horizon_days: number | null;
+  model_version: string | null;
+  price_tier: number | null;
+  evaluation_window_days: number | null;
+  sample_count: number;
+  metrics: AccuracyMetric;
+  created_at: string | null;
+}
+
 export async function getAccuracy(
   predictionType?: string,
+  priceTier?: number,
   limit = 50
 ): Promise<AccuracyRecord[]> {
   const url = new URL(`${API_URL}/accuracy/`);
   if (predictionType) url.searchParams.append('prediction_type', predictionType);
+  if (priceTier !== undefined) url.searchParams.append('price_tier', priceTier.toString());
   url.searchParams.append('limit', limit.toString());
   const response = await fetch(url.toString());
   if (!response.ok) throw new Error('Failed to fetch accuracy');
   return response.json();
 }
 
-export async function getLatestAccuracy(predictionType?: string) {
+export async function getLatestAccuracy(
+  predictionType?: string,
+  priceTier?: number
+): Promise<LatestAccuracyRecord | Record<string, LatestAccuracyRecord>> {
   const url = new URL(`${API_URL}/accuracy/latest`);
   if (predictionType) url.searchParams.append('prediction_type', predictionType);
+  if (priceTier !== undefined) url.searchParams.append('price_tier', priceTier.toString());
   const response = await fetch(url.toString());
   if (!response.ok) throw new Error('Failed to fetch latest accuracy');
   return response.json();
@@ -382,6 +412,71 @@ export async function getAccuracySummary(predictionType?: string) {
   if (predictionType) url.searchParams.append('prediction_type', predictionType);
   const response = await fetch(url.toString());
   if (!response.ok) throw new Error('Failed to fetch accuracy summary');
+  return response.json();
+}
+
+/**
+ * Pesaran-Timmermann verdict for one horizon.
+ *
+ * `skill` / `perverse` — the statistic cleared +/- the hurdle t. `no_skill` —
+ * it did not. `insufficient_dates` / `degenerate` — it could not be formed.
+ * `untested` — the row predates the test and is not the same thing as a null.
+ */
+export type HeadlineVerdict =
+  | 'skill'
+  | 'no_skill'
+  | 'perverse'
+  | 'insufficient_dates'
+  | 'degenerate'
+  | 'untested';
+
+export interface AccuracyHeadlineHorizon {
+  horizon_days: number | null;
+  model_version: string | null;
+  evaluation_date: string | null;
+  sample_count: number | null;
+  verdict: HeadlineVerdict;
+  pt_excess_pp: number | null;
+  pt_t_stat: number | null;
+  pt_p_value: number | null;
+  pt_nw_lag: number | null;
+  pt_n_dates: number | null;
+  pt_n_dates_dropped: number | null;
+  // Context for the verdict, never quoted alone — see getAccuracyHeadline.
+  directional_accuracy: number | null;
+  constant_call_accuracy: number | null;
+  constant_call_direction: string | null;
+  realised_down_rate: number | null;
+  directional_accuracy_ci_clustered_lower: number | null;
+  directional_accuracy_ci_clustered_upper: number | null;
+  distinct_forecast_dates: number | null;
+  date_coverage_sufficient: boolean | null;
+  unchanged_pct: number | null;
+  interval_coverage: number | null;
+}
+
+export interface AccuracyHeadline {
+  cohort: string;
+  price_tier: number;
+  hurdle_t: number;
+  min_forecast_dates: number;
+  test: string;
+  horizons: AccuracyHeadlineHorizon[];
+}
+
+/**
+ * The published accuracy claim, as a significance test rather than a number.
+ *
+ * Prefer this over reading `directional_accuracy` off `getLatestAccuracy`. On
+ * this data the realised down-rate swings between forecast dates while the
+ * model's call distribution barely moves, so a bare hit rate reports which way
+ * the market went, not whether the model knew. The backend computes
+ * Pesaran-Timmermann per forecast date and takes a Newey-West t over dates;
+ * `verdict` is that test's answer, and the accuracy fields are context for it.
+ */
+export async function getAccuracyHeadline(): Promise<AccuracyHeadline> {
+  const response = await fetch(`${API_URL}/accuracy/headline`);
+  if (!response.ok) throw new Error('Failed to fetch accuracy headline');
   return response.json();
 }
 

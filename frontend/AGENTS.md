@@ -27,7 +27,7 @@ Analytical, precise, calm. Every element clarifies signal from noise.
   `app/layout.tsx` sets `data-theme="dark"` on `<html>` and an inline script overrides it
   from `localStorage.theme`. **A new token must be defined in both blocks** or it silently
   falls back to the light value in dark mode.
-- Accent is derived, not hardcoded: `--brand-hue: 55` and `--brand-chroma: 0.12` on
+- Accent is derived, not hardcoded: `--brand-hue: 190` and `--brand-chroma: 0.12` on
   `:root` feed `--brand`, which is `oklch(50% …)` in light and `oklch(62% …)` in dark.
   `--accent-primary` aliases `--brand`; the Tailwind `accent` color maps to it.
 - Data colors flip lightness by theme (`--data-up` is `oklch(50% 0.12 155)` light,

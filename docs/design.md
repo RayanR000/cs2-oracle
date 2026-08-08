@@ -1,207 +1,293 @@
-# CS2 Oracle — Design System
+<!-- SPECIMEN ARCHIVE: visual world committed with the user on 2026-08-07 via the impeccable new-work workshop (seed 08df685d, roll index 4). The world is decided; no implementation of it exists yet. The frontmatter tokens below are normative for the rebuild — mirror them into frontend/app/globals.css when the rebuild lands, then re-run $impeccable document to capture the implemented system. -->
 
-## Philosophy
+---
+name: CS2 Oracle
+description: The specimen archive of the CS2 market — thirteen years of prices, pinned and catalogued.
+colors:
+  ground: "oklch(16% 0.006 55)"
+  stock: "oklch(19.5% 0.007 55)"
+  recess: "oklch(13.5% 0.005 55)"
+  surface: "oklch(23.5% 0.008 55)"
+  surface-hover: "oklch(26.5% 0.009 55)"
+  surface-active: "oklch(29.5% 0.01 55)"
+  paper: "oklch(92% 0.008 85)"
+  paper-secondary: "oklch(71% 0.012 70)"
+  paper-tertiary: "oklch(64% 0.012 60)"
+  paper-muted: "oklch(62% 0.01 55)"
+  ink: "oklch(66% 0.1 250)"
+  ink-hover: "oklch(70% 0.11 250)"
+  ink-active: "oklch(60% 0.1 250)"
+  ink-light: "oklch(74% 0.09 250)"
+  ink-subtle: "oklch(26% 0.03 250)"
+  specimen: "oklch(70% 0.12 75)"
+  specimen-subtle: "oklch(24% 0.04 75)"
+  up: "oklch(64% 0.11 150)"
+  down: "oklch(64% 0.11 25)"
+  up-subtle: "oklch(23% 0.03 150)"
+  down-subtle: "oklch(23% 0.03 25)"
+  border: "oklch(30% 0.008 55)"
+  border-light: "oklch(25.5% 0.007 55)"
+  border-accent: "oklch(46% 0.04 250)"
+  grid: "oklch(27% 0.008 55)"
+  divider: "oklch(25% 0.007 55)"
+typography:
+  display:
+    fontFamily: "Inter, system-ui, sans-serif"
+    fontSize: "48px"
+    fontWeight: 700
+    letterSpacing: "-0.03em"
+  headline:
+    fontFamily: "Inter, system-ui, sans-serif"
+    fontSize: "32px"
+    fontWeight: 700
+    letterSpacing: "-0.025em"
+  title:
+    fontFamily: "Inter, system-ui, sans-serif"
+    fontSize: "22px"
+    fontWeight: 600
+    letterSpacing: "-0.02em"
+  body:
+    fontFamily: "Inter, system-ui, sans-serif"
+    fontSize: "15px"
+    fontWeight: 400
+    lineHeight: 1.6
+    letterSpacing: "-0.01em"
+  label:
+    fontFamily: "Inter, system-ui, sans-serif"
+    fontSize: "13px"
+    fontWeight: 500
+  data:
+    fontFamily: "JetBrains Mono, monospace"
+    fontSize: "14px"
+    fontWeight: 400
+    letterSpacing: "-0.02em"
+    fontFeature: "tnum"
+rounded:
+  xs: "2px"
+  sm: "4px"
+  md: "6px"
+spacing:
+  base: "4px"
+  xs: "8px"
+  sm: "12px"
+  md: "16px"
+  lg: "24px"
+  xl: "32px"
+  "2xl": "48px"
+components:
+  button-primary:
+    backgroundColor: "{colors.ink}"
+    textColor: "{colors.recess}"
+    typography: "{typography.label}"
+    rounded: "{rounded.sm}"
+    padding: "10px 20px"
+  button-primary-hover:
+    backgroundColor: "{colors.ink-hover}"
+    textColor: "{colors.recess}"
+    rounded: "{rounded.sm}"
+    padding: "10px 20px"
+  button-primary-active:
+    backgroundColor: "{colors.ink-active}"
+    textColor: "{colors.recess}"
+    rounded: "{rounded.sm}"
+    padding: "10px 20px"
+  button-secondary:
+    backgroundColor: "transparent"
+    textColor: "{colors.paper-secondary}"
+    typography: "{typography.label}"
+    rounded: "{rounded.sm}"
+    padding: "10px 20px"
+  button-ghost:
+    backgroundColor: "transparent"
+    textColor: "{colors.paper-secondary}"
+    typography: "{typography.label}"
+    padding: "8px 12px"
+  input-search:
+    backgroundColor: "{colors.stock}"
+    textColor: "{colors.paper}"
+    typography: "{typography.body}"
+    rounded: "{rounded.sm}"
+    height: "40px"
+  chip-wear:
+    backgroundColor: "{colors.ink-subtle}"
+    textColor: "{colors.paper}"
+    typography: "{typography.label}"
+    rounded: "{rounded.xs}"
+    padding: "6px 12px"
+  tag-specimen:
+    backgroundColor: "transparent"
+    textColor: "{colors.specimen}"
+    typography: "{typography.label}"
+    rounded: "{rounded.xs}"
+    padding: "2px 6px"
+  nav-link:
+    textColor: "{colors.paper-secondary}"
+    typography: "{typography.label}"
+  card-specimen:
+    backgroundColor: "{colors.stock}"
+    typography: "{typography.body}"
+    rounded: "{rounded.sm}"
+---
 
-**Analytical Instrument.** Not a dashboard, not a terminal — an instrument. Like a precision measuring tool, every element exists to clarify signal from noise. The interface recedes; the data speaks. Carbon surfaces provide deep, restful contrast for extended sessions. Amber accents punctuate only where attention is needed — a selection, a change, a call to action. Restraint is the brand.
+# Design System: CS2 Oracle
 
-## Color Strategy
+## Overview
 
-**Restrained Carbon with Tinted Surface.** A near-monochrome dark palette where the neutral surfaces carry a subtle warm chroma (hue 30) at near-zero saturation. This prevents the "dead gray" feel of pure grayscale while keeping focus on the data. A single accent — warm amber — is used sparingly for primary actions, selection states, and meaningful emphasis.
+**Creative North Star: "The Specimen Archive"**
 
-### Palette (OKLCH)
+CS2 Oracle is the working museum of the CS2 market. Thirteen years of daily prices are the collection; every item is a specimen pinned to its archive card — the skin image mounted as the specimen plate, price history drawn as strata across the card, and the forecast hanging from the frame as a curator's tag. The product's promise — published, measured forecast accuracy — is the archive's own cataloguing discipline: a collection that records its errors on the same ledger as its findings. The interface is the display case, the data is the exhibit, and honesty is the curator's first rule.
 
-**Backgrounds:**
-- **Primary:** `oklch(18% 0.004 30)` — Soft carbon, main canvas. Not pitch black — restful without harshness.
-- **Secondary:** `oklch(22% 0.005 30)` — Elevated panel. Visible separation from canvas.
-- **Tertiary:** `oklch(15% 0.003 30)` — Deepest layer. Table headers, asset frames, recessed areas.
+The world replaces the previous "analytical instrument" (carbon + teal terminal chrome). What survives is what the archive itself preserves: soft dark as the primary viewing condition, calm precision, asset-grounded skin imagery, and uncertainty shown as ranges, never as a confident single number. What is banned is anything that would turn a museum into an arcade — neon, glow, trading-exuberance green/red, gambling energy, and decorative motion. The archive is warm where a terminal is cold: bone paper text on umber-dark case stock, one ink-blue interaction color, and one amber reserved exclusively for forecast marks.
 
-**Surfaces:**
-- **Surface:** `oklch(26% 0.005 30)` — Interactive surfaces. Cards, inputs, clickable areas. Clearly visible against background.
-- **Surface-hover:** `oklch(30% 0.006 30)` — Hovered state. Subtle lift.
-- **Surface-active:** `oklch(33% 0.007 30)` — Active/pressed. Clear feedback.
+**Key Characteristics:**
+- One item, one card: the specimen plate leads, the ledger follows.
+- Warm dark case stock (hue 55, near-zero chroma), bone paper text (hue 85).
+- Ink blue is the only interaction accent; amber belongs to the forecast alone.
+- Price history as strata; the q10–q90 corridor as a translucent amber stratum with the q50 inked through it.
+- Absence is information: an item without a forecast shows an unfilled ledger line, never a hidden or zero-filled one.
+- Motion is the curator's lamp and the settling of a pinned specimen — nothing else moves.
 
-**Text:**
-- **Primary:** `oklch(93% 0 0)` — Headings, body text, primary information. Slightly softened white for less harsh contrast.
-- **Secondary:** `oklch(70% 0.004 30)` — Descriptions, meta info. Readable but subordinate.
-- **Tertiary:** `oklch(52% 0.004 30)` — Labels, captions, secondary metadata.
-- **Muted:** `oklch(38% 0.003 30)` — Placeholders, disabled states, decorative markers.
-- **Accent:** `oklch(72% 0.14 55)` — Links, emphasis, primary data highlights. Warm amber.
+## Colors
 
-**Structural:**
-- **Border:** `oklch(28% 0.005 30)` — Default dividers, card borders, table rules.
-- **Border-light:** `oklch(24% 0.004 30)` — Subtle inner dividers, recessed separators.
-- **Border-accent:** `oklch(42% 0.012 30)` — Hover/focus emphasis borders.
-- **Grid:** `oklch(22% 0.004 30)` — Chart grid lines, minor structural dividers.
-- **Divider:** `oklch(24% 0.004 30)` — Row separators, section breaks.
+A warm, low-chroma dark archive in which bone paper and umber case stock replace the old carbon-and-teal. Three ink roles carry meaning, and each is governed by a scarcity law: **ink** for interaction, **specimen amber** for forecast marks, **moss/brick** for price deltas. The frontmatter holds the normative dark values; the light theme below is the derived secondary.
 
-**Data Indicators:**
-- **Up:** `oklch(62% 0.14 155)` — Price increase, positive delta. Muted emerald.
-- **Down:** `oklch(62% 0.12 25)` — Price decrease, negative delta. Muted rose.
-- **Up-subtle:** `oklch(24% 0.04 155)` — Positive delta background tint.
-- **Down-subtle:** `oklch(24% 0.04 25)` — Negative delta background tint.
+### Primary (interaction)
+- **Archive Ink** (`oklch(66% 0.1 250)` dark): the only interaction accent — primary buttons, active nav, focus rings, links, selected states. Cool blue against warm stock reads as the archive's label ink.
+- **Ink-hover / Ink-active** (`oklch(70% 0.11 250)` / `oklch(60% 0.1 250)`): hover brightens, press deepens.
 
-**Brand Accent:**
-- **Brand:** `oklch(62% 0.14 55)` — Primary action color. Warm amber at medium lightness.
-- **Brand-hover:** `oklch(66% 0.15 55)` — Hovered accent. Slightly brighter.
-- **Brand-active:** `oklch(56% 0.13 55)` — Pressed/active accent.
-- **Brand-light:** `oklch(72% 0.1 55)` — Muted accent for secondary emphasis.
-- **Brand-subtle:** `oklch(26% 0.04 30)` — Accent-tinted surface for selection states.
+### Secondary (data semantics — never interaction)
+- **Specimen Amber** (`oklch(70% 0.12 75)` dark, `oklch(58% 0.11 75)` light): forecast marks only — the curator tag, the q10–q90 corridor, forecast horizons. Nothing else in the interface wears amber.
+- **Moss Up / Brick Down** (`oklch(64% 0.11 150)` / `oklch(64% 0.11 25)` dark): price deltas. Muted archive colors, not trading-lite green/red. Subtle tints (`oklch(23% 0.03 …)`) tint badge and band backgrounds.
 
-**Radii & Shadows:**
-- **Radius-xs:** `2px` — Tags, badges, micro indicators.
-- **Radius-sm:** `4px` — Cards, inputs, buttons, table rows. Crisp, not rounded.
-- **Radius-md:** `6px` — Larger containers, modals, dropdowns.
-- **Shadow-sm:** `0 1px 3px oklch(0% 0 0 / 0.25)` — Subtle lift.
-- **Shadow-md:** `0 4px 16px oklch(0% 0 0 / 0.3)` — Card elevation.
+### Neutral
+- **Case Ground / Stock / Recess** (`oklch(16% 0.006 55)` / `oklch(19.5% 0.007 55)` / `oklch(13.5% 0.005 55)`): the floor, the card stock, the recessed frame. The umber undertone keeps the dark warm, never "dead gray".
+- **Surface family** (`oklch(23.5% 0.008 55)` → `29.5%`): interactive surfaces and hovered rows, stepping up from stock.
+- **Bone Paper** (`oklch(92% 0.008 85)`): primary text. **Paper-secondary/tertiary/muted** (`71%` / `64%` / `62%`): descriptions, labels, placeholders — all ≥4.5:1 on the surfaces they sit on (AA).
+- **Border / Border-light / Border-accent / Grid / Divider** (`oklch(30% 0.008 55)` / `25.5%` / `46% 0.04 250` / `27%` / `25%`): card rules, chart hairline grid, and the ink-tinted hover emphasis.
 
-**Theme:** Dark (Default). Soft carbon base at 18% lightness — dark enough to reduce eye strain, light enough to avoid the harsh "pitch black" feel. Warm tint (hue 30) prevents sterile gray.
+### Light theme (derived, secondary)
+Gallery light, not paper white: ground `oklch(97.5% 0.008 80)`, stock `oklch(95% 0.009 80)`, recess `oklch(92% 0.01 80)`, surface `oklch(99.5% 0.006 80)`; text ink `oklch(19% 0.012 60)`, secondary `38%`, tertiary `50%`, muted `55%`; ink `oklch(48% 0.1 250)` (hover `43%`, active `38%`); specimen `oklch(58% 0.11 75)`; up `oklch(46% 0.1 150)`, down `oklch(46% 0.1 25)`; border `oklch(88% 0.012 80)`, border-accent `oklch(75% 0.04 250)`. Dark remains the primary theme; the light set exists to be complete, not preferred.
+
+### Named Rules
+**The Specimen Mark Rule.** Amber is reserved for the forecast — the curator tag, the q10–q90 corridor, horizon labels. A forecastless screen contains no amber at all.
+**The Ink Rule.** Ink blue is the interaction color and nothing else: buttons, nav, focus, links, selection. Data never borrows it, and it never appears in a chart.
+**The Two-Way Rule.** Up and down are always two colors — moss and brick — used together. Never a single green-for-good or red-for-bad; the archive reports change, not judgment.
 
 ## Typography
 
-**Inter** for all UI, **JetBrains Mono** for all data. One sans family keeps the interface calm; the monospace sibling handles numeric alignment. No display fonts, no decorative type.
+**Display Font:** Inter (with system-ui, sans-serif fallback)
+**Body Font:** Inter (with system-ui, sans-serif fallback)
+**Label/Mono Font:** JetBrains Mono (with monospace fallback)
 
-### Scale
+**Character:** Inter carries the archive's quiet officiousness — the curator's desk hand, calm at every weight. JetBrains Mono is the ledger ink: every number, price, tick, and horizon in tabular monospace, as if typed into the accession book. Nothing decorative, nothing display; hierarchy comes from weight and size alone.
 
-| Role | Size | Weight | Tracking | Use |
-|------|------|--------|----------|-----|
-| Display | 48px | 700 | -0.03em | Hero headings only (home page) |
-| H1 | 32px | 700 | -0.025em | Page titles |
-| H2 | 22px | 600 | -0.02em | Section headings |
-| H3 | 16px | 600 | -0.015em | Subsection headings, card titles |
-| Body | 15px | 400 | -0.01em | Paragraphs, descriptions, primary text |
-| Small | 13px | 500 | 0 | Form labels, table body text |
-| Caption | 11px | 600 | 0.08em | Uppercase labels, metadata, tags |
-| Micro | 10px | 600 | 0.15em | Uppercase micro labels, annotations |
-| Data | 14px | 400 | -0.02em | Monospace (JetBrains), prices, numbers |
-| Data-lg | 20px | 500 | -0.02em | Monospace, hero numbers, large prices |
-| Data-sm | 12px | 400 | -0.015em | Monospace, compact data, table numbers |
+### Hierarchy
+- **Display** (700, 48px, -0.03em): the museum placard — hero headings on the home entrance only.
+- **Headline** (700, 32px, -0.025em): page titles.
+- **Title** (600, 22px, -0.02em): section headings, card titles.
+- **Body** (400, 15px, 1.6, -0.01em): descriptions, primary text. Max line length 65–70ch.
+- **Label** (500, 13px): form labels, table body text.
+- **Data** (JetBrains Mono, 400, 14px, -0.02em, tabular-nums): prices, numbers, ledger figures. Large values (20px, 500) for stat readouts; compact (12px) inside tables.
+- **Specimen tag** (JetBrains Mono, 600, 10px, +0.15em, uppercase): micro labels, captions, nav — the archive's printed plate captions.
 
-- Headings use `text-wrap: balance` for even line lengths.
-- Body text caps at 65–70ch line length.
-- Tabular-nums on all numeric content for alignment.
+### Named Rules
+**The Ledger Rule.** Every numeral in the product — price, delta, horizon, accuracy figure, date — is set in mono with tabular-nums via the `.font-data` class. If it is a number, it types itself like a ledger entry.
+**The One-Voice Rule.** Two faces, always: Inter for prose, JetBrains Mono for data. Introducing a third face is a design decision that requires a reason no existing face could satisfy.
 
-## Spacing & Layout
+## Layout
 
-- **Base unit:** 4px (8, 12, 16, 20, 24, 32, 40, 48, 64).
-- **Container max-width:** 1200px. Side padding: 24px (px-6).
-- **Breathing room:** 24px minimum between major sections.
-- **Section gap:** 32–40px between content blocks.
-- **Tables:** 44px row height. Th: `px-5 py-4`. Td: `px-5 py-3`. Generous but not bloated.
-- **Alignment:** Data right-aligned, text left-aligned. Monospace for all numeric columns.
+A 4px base grid; the museum's casework. Container max-width 1200px with 24px side padding; 24px minimum between major sections, 32–40px between content blocks. Tables keep 44px rows with generous cell padding (th `px-5 py-4`, td `px-5 py-3`). Numbers right-align, text left-aligns.
 
-### Layout Patterns
+### Reading order (the cross-check)
+1. **Specimen plate** — the skin image. The "what."
+2. **Strata chart / price** — the "value." Prominent, clearly drawn.
+3. **Ledger metadata** — wear, volume, signals. Subordinate.
+4. **Chrome** — the casework frame. Present, never competing.
 
-**Home (`/`):** Full-width, centered. Hero with product statement, key stats, featured items, capabilities summary. No hero-metric template — the product IS the metric.
+### Page patterns
+- **Home (`/`)** — the gallery entrance: placard hero (product statement + the live backtest figure as the collection's headline record, cohort and horizon named), featured specimens, a holdings summary. No hero-metric template; the product's accuracy IS the headline exhibit.
+- **Market (`/market`)** — the catalog drawers: search + type filter above, specimen grid (3-col), the ledger table below (sortable, paginated, ≤7 columns, sticky header).
+- **Item detail (`/items/[id]`)** — the specimen card: primary plate (2/3) holding the strata chart and wear tray; sidebar (1/3) holding ledger stats, signals, and the curator tag. No nested widget stacks.
+- **Portfolio (`/portfolio`)** — your collection case: summary row of three ledger stats above a full-width inventory table; Steam CTA when unauthenticated.
 
-**Market (`/market`):** Top bar: search + type filter. Trending grid (3-col, compact). Data table below: sortable, paginated, 7 columns with clear hierarchy. Sticky table header.
+### Named Rules
+**The Empty Drawer Rule.** An item with no forecast, or a surface with no data, shows its absence honestly: an unfilled ledger line ("no curator note on record") or a labeled degraded state. Never a hidden slot, a zero-filled chart, or a plausible-looking number.
 
-**Item Detail (`/items/[id]`):** Two-panel — primary (2/3) for chart + quality selector, sidebar (1/3) for metrics + signals. Clean separation, no nested widgets.
+## Elevation & Depth
 
-**Portfolio (`/portfolio`):** Summary row (3 stat cards). Full-width inventory table. Steam login CTA when unauthenticated.
+Depth is tonal, not shaded: the archive is flat casework where layers step by lightness — floor, stock, recess — and the chart grid is a hairline, not a shadow. Shadows exist in exactly two places: mounted specimens (cards lift with a soft `0 4px 16px` under `0 1px 3px` at rest) and the sticky header's separation. Everything else is flat; depth comes from paper-on-stock contrast, never from drop-shadow decoration.
 
-## Motion & State
+### Named Rules
+**The Case Rule.** Flat by default. A shadow appears only on a mounted card or the sticky header — the two things that physically stand off the case floor.
+**The No-Glow Rule.** No glows, no bloom, no neon halos, in either theme. The archive is lit by the curator's lamp, not a neon sign.
 
-150–250ms transitions. Motion conveys state, never decoration. No orchestrated page loads.
+## Shapes
 
-- **Hover transitions:** 200ms ease-out. Background + border color shifts on interactive surfaces.
-- **Focus ring:** 2px solid accent with 2px offset. Instant appearance, no transition.
-- **Page content:** 300ms ease-out, staggered children at 30ms intervals. No hero orchestration.
-- **Data updates:** CountUpNumber for value changes. Duration proportional to delta magnitude.
-- **Table loading:** Skeleton rows with subtle pulse. No full-page spinners over content.
-- **Reduced motion:** `prefers-reduced-motion: reduce` → all transitions instant, no scroll triggers, no stagger.
+The pin discipline: corners are `2px` (tags, badges, micro indicators), `4px` (cards, inputs, buttons, table rows), or `6px` (modals, larger containers) — nothing rounder. Radius reads as the crisp edge of a pinned label, never a pillow. The world's signature geometry is the **specimen pin**: a 2px ink-blue corner bracket at the top-left of the primary specimen card, like the museum label plate that identifies the exhibit. Tags and badges stay 2px rectangles; pills are reserved for scrollbar thumbs only.
 
 ## Components
 
-### Header
-- Sticky top, `z-sticky`. `bg-background-primary/95 backdrop-blur-sm`.
-- Left: CS logo mark + "DATA TERMINAL" in caption weight.
-- Center: Nav links — MARKET, PORTFOLIO. Uppercase, 11px, tracking-[0.15em]. Active state: text-accent + bottom border.
-- Right: Theme toggle (sun/moon), auth button or user avatar.
-- Bottom: 1px border divider.
-- States: loading (pulse skeleton), authenticated (avatar + name + logout), unauthenticated (AUTHENTICATE button).
-
-### Search
-- Full-width input, `bg-background-secondary border border-border radius-sm`.
-- Left: search icon SVG (text-muted → text-primary on focus).
-- Right: "Terminal" tag-tech badge.
-- Focus: border → border-accent, `bg-surface`, subtle inner shadow.
-- Placeholder: uppercase, micro weight, text-muted.
-
-### StatCard
-- Widget-block container.
-- Top: caption label (uppercase, 11px, text-tertiary).
-- Center: data-lg value (20px, monospace, font-medium).
-- Optional: change badge (data-up/data-down tint + colored text).
-- Bottom: micro annotation (10px, text-muted).
-- No hover animation — the card exists to display data, not perform.
-
-### ItemCard
-- Widget-block container, `overflow-hidden`.
-- Top: type label (micro, text-muted) + name (small, font-semibold). Rarity indicator (colored dot or thin line).
-- Center: asset image in aspect-square frame (`bg-background-tertiary`). Image scales 103% on hover.
-- Bottom: data-lg price (monospace) + data change (data-up/data-down).
-- Hover: border → border-accent. No glow, no annotation fade-in — just clear interaction feedback.
-
 ### Buttons
-- Uppercase, caption weight (11px, 600), tracking-[0.12em].
-- **Primary:** `bg-accent text-background-primary`. Hover: `bg-brand-hover`. Active: `scale-[0.97]`.
-- **Secondary:** `bg-transparent border border-border text-secondary`. Hover: `border-accent text-primary`.
-- **Danger:** `bg-data-down-subtle text-data-down border border-data-down/30`. Hover: `bg-data-down/15`.
-- **Ghost:** `bg-transparent text-secondary`. Hover: `text-primary bg-surface`.
+- **Shape:** 4px (`--radius-sm`), uppercase labels (11px/600, +0.12em).
+- **Primary:** the ink-blue plate (`bg-ink`) with the darkest ground tone as text (`text-recess`). Hover: `ink-hover`; active: pressed (`ink-active`, `scale-[0.97]`).
+- **Secondary:** transparent, 1px `border`, paper-secondary text; hover: `border-accent` + paper.
+- **Ghost:** transparent, paper-secondary; hover: `surface` background.
+- **Danger:** brick tint (`down-subtle`) with brick text and `down/30` border.
 
-### Tables
-- Full-width, `bg-background-secondary border border-border radius-sm overflow-hidden`.
-- **Thead:** `bg-background-tertiary`. Caption weight (11px), text-secondary, uppercase.
-- **Rows:** 1px bottom divider. Hover → `bg-surface`.
-- **Sortable headers:** Click button, show sort direction arrow (↑/↓).
-- **Data cells:** Monospace (font-data). Right-aligned for numbers, left-aligned for text.
-- **Change badges:** Inline rounded pill. `bg-data-up-subtle text-data-up` or `bg-data-down-subtle text-data-down`.
-- **States:** Loading — skeleton pulse rows. Empty — centered message + clear action. Error — red-tinted banner.
+### Search (the finding aid)
+- **Style:** full-width input on `stock` with 1px `border`, 4px radius; left icon in paper-muted → paper on focus.
+- **Focus:** border → `border-accent` (ink-tinted), background → `surface`. The tag-chip inside the field is a specimen tag.
+- **States:** keyboard-first (Esc closes, arrows move, Enter opens), listbox semantics, height-capped dropdown.
 
-### Charts
-- Recharts `LineChart` with `ResponsiveContainer`. 320px height (slightly shorter than current for less visual weight).
-- Grid: 1px stroke, `--grid` color. No vertical grid lines.
-- Steam line: `oklch(60% 0 0)` stroke, 1.5px. CSFloat line: `--brand` stroke, 1.5px.
-- Tooltip: `bg-background-tertiary border border-border radius-sm`. Monospace data, white text.
-- Time range tabs: 24h / 7d / 30d / All. Caption weight, active = accent color.
-- No animation on chart lines — data accuracy over decoration.
+### Ledger Stats (StatCard)
+- **Style:** widget-block on stock; top caption as a specimen tag (10px mono uppercase, paper-tertiary); center value in data-lg mono (20px/500); bottom annotation in 10px paper-muted.
+- No hover animation — a ledger entry does not perform.
 
-### Quality Selector
-- Horizontal pill group. Each pill: border, radius-sm, caption weight, data-sm price.
-- Active pill: `bg-brand-subtle border-accent text-primary`.
-- Hover: `bg-surface`.
-- Compact — no icons, no decorative elements. Just wear name + price.
+### Specimen Cards (ItemCard)
+- **Style:** widget-block, `overflow-hidden`, 4px; the primary card of a page carries the specimen pin (2px ink corner bracket).
+- **Composition:** plate caption (mono micro) + name (13px/600) above the image frame (aspect-square on `recess`); below, data-lg price in mono with a moss/brick change badge.
+- **Hover:** border → `border-accent`, image scales 103%. No glow, no fade-ins.
 
-### Loading States
-- **Full-page:** Centered spinner (32px, 2px border, accent color) + caption text.
-- **Table:** Skeleton rows (3 per visible page, pulse animation).
-- **Header avatar:** 8x8 rounded skeleton, bg-surface, pulse.
+### Ledger Tables
+- **Style:** full-width on stock, 1px border, 4px radius, `recess` header row with mono uppercase captions; rows divided by 1px `divider`, hover → `surface`.
+- **Cells:** numerals in mono, right-aligned; sortable headers show direction arrows; change badges are 2px pills on `up-subtle`/`down-subtle`.
+- **States:** skeleton plate rows while loading; centered empty state with a clear action; red-tinted banner on error.
 
-### Empty States
-- Centered, max-width 400px. Tertiary heading + muted body text + ghost action button.
-- No illustrations, no decorative elements.
+### Strata Charts (the signature)
+- **Composition:** the price history drawn as strata on a hairline grid (no vertical lines). History line in bone ink (1.5px); the q10–q90 corridor is a translucent **specimen-amber stratum** with the q50 inked through it (2px); multi-source series draw as separate strata in paper-tertiary. The forecast region is the amber stratum; nothing else on the chart is amber.
+- **Tooltip:** card-stock panel, 1px border, mono numerals.
+- **Time ranges:** specimen-tag tabs (24h / 7d / 30d / All), active in ink.
+- **Motion:** lines draw statically — data accuracy over decoration. Hover crosshair only.
 
-### Error States
-- Banner: `border-data-down/30 bg-data-down/8 radius-sm`. Text-primary. Dismissible.
-- Full-page error: Back link + heading + description. Clean, no panic.
+### Wear Tray (quality selector)
+- **Style:** horizontal pill group on the specimen card; each pill: 1px border, 2px radius, label caps + data-sm price in mono.
+- **States:** active = `ink-subtle` background + `border-accent`; hover = `surface`.
 
-## Visual Hierarchy
+### Curator Tag (forecast summary — signature)
+- **Style:** a hanging tag beside the strata chart: specimen-amber label, data-lg q50 with "q10–q90" range at each horizon (3/7/14/30d), and the measured accuracy line naming its cohort and horizon. No forecast on record → the empty-drawer state.
 
-1. **Asset image** — the "what." Largest visual element on item-focused views.
-2. **Price/chart** — the "value." Prominent data, clear trend.
-3. **Metadata** — the "context." Wear, volume, signals. Subordinate to the above.
-4. **Navigation/chrome** — the "frame." Present but never competing with content.
+### Header
+- **Style:** sticky, `ground/95` + blur, 1px divider beneath; the CS2 Oracle collection mark left, nav (MARKET, PORTFOLIO) in mono specimen tags, active = ink + bottom rule; right: theme toggle, auth or avatar.
+- **States:** loading skeleton, authenticated avatar + logout, unauthenticated AUTHENTICATE button.
 
-Use elevation and whitespace to group, not color or borders. Color carries data meaning (up/down/accent), not decoration.
+### Motion & State
+150–250ms transitions; the world's only allowed motions are the curator's lamp sweep on the home exhibit (the slow vertical scan), the status pulse, and card hover border/background shifts. Focus rings: 2px ink, 2px offset, instant. `prefers-reduced-motion: reduce` makes all transitions instant and removes the lamp sweep. No orchestrated page loads, no chart line animation, no scroll-triggered decoration.
 
-## Anti-patterns to avoid
+## Do's and Don'ts
 
-- **Information Overload:** Max 7 columns in any table. Progressive disclosure for details.
-- **Harsh Contrast:** No `#000` with `#fff`. Use tinted darks and neutral whites.
-- **Generic Slop:** No shadcn defaults without custom OKLCH tokens.
-- **Gamer Cliche:** No neon, no tactical styling, no aggressive gradients.
-- **Decorative motion:** Motion conveys state, never performance.
-- **Identical cards:** Every card type has a distinct purpose and layout.
-- **Display fonts in UI:** One sans (Inter), one mono (JetBrains Mono). Nothing else.
-- **Over-rounding:** Cards top out at 6px. Full-pill only for tags/badges.
-- **Border + shadow on same element:** Pick one. Never both as decoration.
+### Do:
+- **Do** set every number in mono with tabular-nums — the ledger never lies in a proportional face.
+- **Do** keep amber exclusively on forecast marks; a screen without a forecast is a screen without amber.
+- **Do** use ink blue for interaction and moss/brick (always paired) for deltas — the ink never enters the chart, the data never borrows the button color.
+- **Do** keep corners to 2/4/6px and tag plates rectangular — radius is a pin, not a pillow.
+- **Do** show absence honestly: unfilled ledger lines, labeled degraded states, no fabricated figures. Published accuracy is the product — every accuracy number shown must name its cohort and horizon.
+- **Do** let the specimen plate (skin image) anchor every item view; the tool never abstracts into pure numbers.
+
+### Don't:
+- **Don't** use glow, bloom, neon, or gradients that don't carry data meaning.
+- **Don't** use trading-platform green/red exuberance, candles, or "stonks" chrome — the archive reports in moss and brick.
+- **Don't** gamify: no confetti, no hype energy, no unboxing drama. The archive catalogs; it does not celebrate.
+- **Don't** add a display font or a third face; two voices are the whole chorus.
+- **Don't** put shadow and border on the same element as decoration; pick one.
+- **Don't** add decorative motion, orchestrated page loads, or hover effects that perform instead of inform.
+- **Don't** ship identical card grids; every card type in this system has a distinct anatomy.

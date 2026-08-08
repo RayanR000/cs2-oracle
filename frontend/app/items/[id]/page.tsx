@@ -3,18 +3,17 @@
 import { useEffect, useMemo, useState } from 'react';
 import Link from 'next/link';
 import { useParams } from 'next/navigation';
-import { motion } from 'framer-motion';
 import {
+  Area,
   CartesianGrid,
+  ComposedChart,
   Line,
-  LineChart,
   ResponsiveContainer,
   Tooltip,
   XAxis,
   YAxis,
 } from 'recharts';
 import { Header, PriceSourceFilter } from '@/components';
-import CountUpNumber from '@/components/CountUpNumber';
 import {
   getItem,
   getItemPrediction,
@@ -24,11 +23,13 @@ import {
   getItemVariants,
   getItemEventImpacts,
   getItemFeatureImportance,
+  getLatestAccuracy,
   MultiSourcePrices,
   PricePoint,
   QualityVariant,
   EventImpact,
   FeatureImportance,
+  LatestAccuracyRecord,
 } from '@/lib/api';
 
 interface CatalogItem {
@@ -50,56 +51,47 @@ interface TrendResponse {
     sma_7?: number | null;
     sma_30?: number | null;
     volatility?: number | null;
-    rsi?: number | null;
-    bollinger_upper?: number | null;
-    bollinger_middle?: number | null;
-    bollinger_lower?: number | null;
-    macd?: number | null;
-    macd_signal?: number | null;
-    support?: number | null;
-    resistance?: number | null;
   };
   factors?: string[];
-  methodology?: string;
-  timestamp?: string;
-  message?: string;
+  explanation?: string;
 }
 
 interface PredictionResponse {
   item_id: string;
-  item_name: string;
   current_price: number | null;
   forecast?: { low: number; mid: number; high: number };
-  period_days?: number;
   period_label?: string;
-  trend_direction?: string;
-  confidence?: string;
-  volatility?: number | null;
-  methodology?: string;
-  timestamp?: string;
-  message?: string;
 }
 
-interface PriceSeriesRow {
-  timestamp: number;
+interface ChartRow {
   label: string;
-  [source: string]: number | string;
+  timestamp: number;
+  [key: string]: number | string | null;
 }
-
-const SOURCE_CHART_META: Record<string, { label: string; color: string }> = {
-  historical: { label: 'Historical', color: 'oklch(70% 0 0)' },
-  aggregator_sync: { label: 'Live', color: 'var(--brand)' },
-  market_csgo: { label: 'Market.CSGO', color: 'oklch(65% 0.14 250)' },
-  steam_historical: { label: 'Steam (weekly)', color: 'oklch(70% 0 0)' },
-  steam_batch: { label: 'Steam', color: 'oklch(70% 0 0)' },
-  steam: { label: 'Steam', color: 'oklch(70% 0 0)' },
-  csfloat: { label: 'CSFloat', color: 'var(--brand)' },
-};
 
 const TIME_RANGES = ['24h', '7d', '30d', 'all'] as const;
 type TimeRange = (typeof TIME_RANGES)[number];
 
-const EASE: [number, number, number, number] = [0.16, 1, 0.3, 1];
+const FORECAST_PERIODS = ['3_days', '7_days', '14_days', '30_days'] as const;
+type ForecastPeriod = (typeof FORECAST_PERIODS)[number];
+const FORECAST_DAYS: Record<ForecastPeriod, number> = {
+  '3_days': 3,
+  '7_days': 7,
+  '14_days': 14,
+  '30_days': 30,
+};
+
+const SOURCE_META: Record<string, string> = {
+  historical: 'Archive',
+  aggregator_sync: 'Live',
+  market_csgo: 'Market.CSGO',
+  steam_historical: 'Steam (weekly)',
+  steam_batch: 'Steam',
+  steam: 'Steam',
+  csfloat: 'CSFloat',
+};
+
+const MONO = 'var(--font-jetbrains-mono), monospace';
 
 function summarizeHistory(history: PricePoint[]) {
   if (!history.length) return { currentPrice: null, priceChange24h: null, volume24h: null };
@@ -120,7 +112,7 @@ function summarizeHistory(history: PricePoint[]) {
   return { currentPrice: latest.price, priceChange24h, volume24h };
 }
 
-function buildSourceChartData(sourceData: MultiSourcePrices | null, selectedSources: string[], range: TimeRange): PriceSeriesRow[] {
+function buildSourceChartData(sourceData: MultiSourcePrices | null, selectedSources: string[], range: TimeRange): ChartRow[] {
   if (!sourceData) return [];
 
   const activeSources = selectedSources.length ? selectedSources : sourceData.sources;
@@ -130,7 +122,7 @@ function buildSourceChartData(sourceData: MultiSourcePrices | null, selectedSour
     : range === '30d' ? now - 30 * 24 * 60 * 60 * 1000
     : Number.NEGATIVE_INFINITY;
 
-  const buckets = new Map<string, PriceSeriesRow>();
+  const buckets = new Map<string, ChartRow>();
 
   for (const source of activeSources) {
     const points = sourceData.data[source] ?? [];
@@ -147,15 +139,37 @@ function buildSourceChartData(sourceData: MultiSourcePrices | null, selectedSour
 
       const existing = buckets.get(bucketKey);
       if (!existing) {
-        buckets.set(bucketKey, { timestamp, label, [source]: point.price });
+        buckets.set(bucketKey, { label, timestamp, [source]: point.price });
       } else {
         existing[source] = point.price;
-        existing.timestamp = Math.max(existing.timestamp as number, timestamp);
+        existing.timestamp = Math.max(existing.timestamp, timestamp);
       }
     }
   }
 
-  return [...buckets.values()].sort((a, b) => (a.timestamp as number) - (b.timestamp as number));
+  return [...buckets.values()].sort((a, b) => a.timestamp - b.timestamp);
+}
+
+function appendForecastBand(
+  data: ChartRow[],
+  prediction: PredictionResponse | null,
+  primarySource: string,
+  period: ForecastPeriod
+): ChartRow[] {
+  if (!prediction?.forecast || data.length === 0) return data;
+  const f = prediction.forecast;
+  const last = data[data.length - 1];
+  const lastPrice = typeof last[primarySource] === 'number' ? (last[primarySource] as number) : null;
+  if (lastPrice == null) return data;
+
+  const endTs = last.timestamp + FORECAST_DAYS[period] * 24 * 60 * 60 * 1000;
+  const endLabel = new Date(endTs).toLocaleDateString([], { month: 'short', day: 'numeric' });
+
+  const rows = data.map((r) =>
+    r === last ? { ...r, q10: lastPrice, q90span: 0, q50: lastPrice } : r
+  );
+  rows.push({ label: endLabel, timestamp: endTs, q10: f.low, q90span: f.high - f.low, q50: f.mid });
+  return rows;
 }
 
 function formatCurrency(value: number | null | undefined) {
@@ -175,24 +189,65 @@ function formatVolume(value: number | null | undefined) {
   return `${value.toFixed(0)}`;
 }
 
+interface StrataTooltipItem {
+  dataKey: string;
+  value: number | string | null;
+  color: string;
+  payload?: ChartRow;
+}
+
+function StrataTooltip({ active, payload }: { active?: boolean; payload?: StrataTooltipItem[] }) {
+  if (!active || !payload?.length) return null;
+  const first = payload[0];
+  if (first?.value == null) return null;
+
+  const label = first.payload?.label;
+  const rows = payload.filter(
+    (p) => p.value != null && p.dataKey !== 'q10' && p.dataKey !== 'q90span'
+  );
+
+  return (
+    <div className="bg-stock border border-border rounded-sm px-3 py-2.5 min-w-[180px]">
+      <div className="specimen-tag text-paper-tertiary mb-2">{label}</div>
+      <div className="space-y-1">
+        {rows.map((p) => (
+          <div key={String(p.dataKey)} className="flex items-center justify-between gap-6">
+            <span
+              className="font-data text-[11px] flex items-center gap-2"
+              style={{ color: p.dataKey === 'q50' ? 'var(--specimen)' : 'var(--paper-tertiary)' }}
+            >
+              <span
+                aria-hidden
+                className="w-2 h-[2px] rounded-full inline-block"
+                style={{ backgroundColor: p.dataKey === 'q50' ? 'var(--specimen)' : p.color }}
+              />
+              {p.dataKey === 'q50' ? 'q50 forecast' : SOURCE_META[String(p.dataKey)] ?? String(p.dataKey)}
+            </span>
+            <span className="font-data text-xs text-paper">
+              {formatCurrency(Number(p.value))}
+            </span>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 export default function ItemDetailPage() {
   const params = useParams();
-  // useParams returns the still-encoded URL segment; without decoding here,
-  // api.ts encodes it a second time and every request 404s for ids
-  // containing spaces or pipes.
   const itemId = decodeURIComponent(params.id as string);
   const [item, setItem] = useState<CatalogItem | null>(null);
   const [variants, setVariants] = useState<QualityVariant[]>([]);
-  const [activeQuality, setActiveQuality] = useState<string>('');
   const [history, setHistory] = useState<PricePoint[]>([]);
   const [trends, setTrends] = useState<TrendResponse | null>(null);
-  const [prediction, setPrediction] = useState<PredictionResponse | null>(null);
+  const [predictions, setPredictions] = useState<Partial<Record<ForecastPeriod, PredictionResponse | null>>>({});
   const [multiSourceData, setMultiSourceData] = useState<MultiSourcePrices | null>(null);
   const [selectedSources, setSelectedSources] = useState<string[]>([]);
   const [timeRange, setTimeRange] = useState<TimeRange>('30d');
-  const [forecastPeriod, setForecastPeriod] = useState<string>('7_days');
+  const [forecastPeriod, setForecastPeriod] = useState<ForecastPeriod>('7_days');
   const [eventImpacts, setEventImpacts] = useState<EventImpact[]>([]);
   const [featureImportance, setFeatureImportance] = useState<FeatureImportance | null>(null);
+  const [accuracy, setAccuracy] = useState<LatestAccuracyRecord | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
@@ -210,15 +265,15 @@ export default function ItemDetailPage() {
           : 5000;
 
       try {
-        const [itemResponse, variantsResponse, historyResponse, trendsResponse, predictionResponse, sourceResponse, eventImpactsResponse, fiResponse] = await Promise.all([
+        const [itemResponse, variantsResponse, historyResponse, trendsResponse, sourceResponse, eventImpactsResponse, fiResponse, accuracyResponse] = await Promise.all([
           getItem(itemId),
           getItemVariants(itemId).catch(() => []),
           getPriceHistory(itemId, 5000, 0, 500),
           getItemTrends(itemId),
-          getItemPrediction(itemId, forecastPeriod),
           getMultiSourcePrices(itemId, ['all'], days),
           getItemEventImpacts(itemId).catch(() => [] as EventImpact[]),
           getItemFeatureImportance(itemId).catch(() => null),
+          getLatestAccuracy('forecast', -1).catch(() => null),
         ]);
 
         if (cancelled) return;
@@ -226,10 +281,6 @@ export default function ItemDetailPage() {
         setItem(itemResponse as CatalogItem);
         const variantList = Array.isArray(variantsResponse) ? variantsResponse as QualityVariant[] : [];
         setVariants(variantList);
-
-        const currentVariant = variantList.find(v => v.item_id === itemId);
-        setActiveQuality(currentVariant?.quality ?? variantList[0]?.quality ?? 'Standard');
-
         setHistory(Array.isArray(historyResponse) ? historyResponse as PricePoint[] : []);
         setTrends({
           item_id: trendsResponse?.item_id ?? '',
@@ -242,22 +293,41 @@ export default function ItemDetailPage() {
             sma_30: trendsResponse?.sma_30 ?? null,
             volatility: trendsResponse?.volatility ?? null,
           },
+          factors: trendsResponse?.factors ?? [],
           explanation: trendsResponse?.explanation ?? '',
         } as TrendResponse);
-        setPrediction({
-          current_price: predictionResponse?.current_price ?? null,
-          forecast: {
-            low: predictionResponse?.forecast_low ?? 0,
-            mid: predictionResponse?.forecast_mid ?? 0,
-            high: predictionResponse?.forecast_high ?? 0,
-          },
-          period_label: predictionResponse?.forecast_period ?? forecastPeriod,
-          trend_direction: predictionResponse?.trend_direction,
-          confidence: predictionResponse?.confidence,
-        } as PredictionResponse);
+
+        const periodResults = await Promise.allSettled(
+          FORECAST_PERIODS.map((p) => getItemPrediction(itemId, p))
+        );
+        const predictionMap: Partial<Record<ForecastPeriod, PredictionResponse | null>> = {};
+        FORECAST_PERIODS.forEach((p, i) => {
+          const res = periodResults[i];
+          if (res.status === 'fulfilled' && res.value && !Array.isArray(res.value)) {
+            const pr = res.value as Record<string, unknown>;
+            const low = pr.forecast_low;
+            const mid = pr.forecast_mid;
+            const high = pr.forecast_high;
+            if (typeof low === 'number' && typeof mid === 'number' && typeof high === 'number') {
+              predictionMap[p] = {
+                item_id: String(pr.item_id ?? itemId),
+                current_price: (pr.current_price as number) ?? null,
+                forecast: { low, mid, high },
+                period_label: (pr.forecast_period as string) ?? p,
+              };
+            }
+          }
+        });
+        setPredictions(predictionMap);
+
         setMultiSourceData(sourceResponse);
         setEventImpacts(Array.isArray(eventImpactsResponse) ? eventImpactsResponse as EventImpact[] : []);
         setFeatureImportance(fiResponse as FeatureImportance | null);
+
+        const acc = accuracyResponse as LatestAccuracyRecord | null;
+        if (acc && !Array.isArray(acc) && acc.metrics && typeof acc.metrics.interval_coverage === 'number') {
+          setAccuracy(acc);
+        }
         setSelectedSources(
           Array.isArray(sourceResponse?.sources) && sourceResponse.sources.length
             ? sourceResponse.sources
@@ -272,37 +342,51 @@ export default function ItemDetailPage() {
 
     loadItemData();
     return () => { cancelled = true; };
-  }, [itemId, timeRange, forecastPeriod]);
-
-  const sourceChartData = useMemo(
-    () => buildSourceChartData(multiSourceData, selectedSources, timeRange),
-    [multiSourceData, selectedSources, timeRange]
-  );
+  }, [itemId, timeRange]);
 
   const availableSources = multiSourceData?.sources ?? ['steam'];
   const visibleSources = selectedSources.length ? selectedSources : availableSources;
+  const primarySource = useMemo(() => {
+    const preferred = visibleSources.find((s) => s === 'historical' || s === 'steam_historical');
+    return preferred ?? visibleSources[0];
+  }, [visibleSources]);
+  const otherSources = visibleSources.filter((s) => s !== primarySource);
+
+  const rawChartData = useMemo(
+    () => buildSourceChartData(multiSourceData, visibleSources, timeRange),
+    [multiSourceData, visibleSources, timeRange]
+  );
+
+  const showCorridor = timeRange === '30d' || timeRange === 'all';
+  const chartData = useMemo(
+    () =>
+      showCorridor
+        ? appendForecastBand(rawChartData, predictions[forecastPeriod] ?? null, primarySource, forecastPeriod)
+        : rawChartData,
+    [rawChartData, showCorridor, predictions, forecastPeriod, primarySource]
+  );
+
   const summary = summarizeHistory(history);
   const latestPrice = summary.currentPrice;
   const trendDirection = trends?.trend_direction ?? 'insufficient_data';
-  const confidence = trends?.confidence ?? 'low';
   const trendFactors = trends?.factors ?? [];
-  const forecast = prediction?.forecast;
   const hasPriceData = history.length > 0;
+  const hasForecast = Object.values(predictions).some((p) => p?.forecast != null);
 
   if (isLoading) {
     return (
-      <div className="min-h-screen bg-background-primary">
+      <div className="min-h-screen bg-ground">
         <Header />
-        <div className="max-w-7xl mx-auto px-6 py-8">
+        <div className="max-w-6xl mx-auto px-6 py-8">
           <div className="flex items-center gap-4 mb-8">
-            <div className="w-20 h-20 rounded-sm bg-background-secondary animate-pulse" />
+            <div className="w-16 h-16 rounded-xs bg-stock animate-pulse" />
             <div className="flex-1">
-              <div className="h-8 w-64 bg-background-secondary rounded-sm animate-pulse mb-2" />
-              <div className="h-4 w-40 bg-background-tertiary rounded-sm animate-pulse" />
+              <div className="h-8 w-64 bg-stock rounded-xs animate-pulse mb-2" />
+              <div className="h-4 w-40 bg-recess rounded-xs animate-pulse" />
             </div>
           </div>
-          <div className="widget-block p-6">
-            <div className="h-[360px] bg-background-tertiary/30 rounded-sm animate-pulse" />
+          <div className="bg-stock border border-border rounded-sm p-6">
+            <div className="h-[380px] bg-recess/60 rounded-xs animate-pulse" />
           </div>
         </div>
       </div>
@@ -311,16 +395,21 @@ export default function ItemDetailPage() {
 
   if (error || !item) {
     return (
-      <div className="min-h-screen bg-background-primary">
+      <div className="min-h-screen bg-ground">
         <Header />
-        <div className="max-w-7xl mx-auto px-6 py-8">
-          <Link href="/market" className="text-accent-primary hover:text-brand-hover text-xs font-bold uppercase tracking-[0.2em] mb-6 inline-block transition-colors">
-            &larr; MARKET
+        <div className="max-w-6xl mx-auto px-6 py-8">
+          <Link
+            href="/market"
+            className="specimen-tag text-ink hover:text-ink-hover transition-colors duration-200 mb-6 inline-block"
+          >
+            &larr; Catalog
           </Link>
-          <div className="widget-block p-8 text-center">
-            <h1 className="text-2xl font-semibold text-primary mb-2">Item unavailable</h1>
-            <p className="text-sm text-secondary mb-4">{error || 'No backend item data was returned for this id.'}</p>
-            <Link href="/market" className="text-xs font-bold uppercase tracking-widest text-accent-primary hover:text-brand-hover transition-colors">
+          <div className="bg-stock border border-border rounded-sm p-10 text-center">
+            <h1 className="text-title text-paper mb-2">Item unavailable</h1>
+            <p className="text-sm text-paper-secondary mb-6">
+              {error || 'No backend item data was returned for this id.'}
+            </p>
+            <Link href="/market" className="btn btn-secondary">
               Back to Market
             </Link>
           </div>
@@ -329,342 +418,409 @@ export default function ItemDetailPage() {
     );
   }
 
-  const trendColor = trendDirection === 'bullish' ? 'var(--data-up)' : trendDirection === 'bearish' ? 'var(--data-down)' : 'var(--text-secondary)';
-
   return (
-    <div className="min-h-screen bg-background-primary">
+    <div className="min-h-screen bg-ground">
       <Header />
 
-      <div className="max-w-7xl mx-auto px-6 py-8">
-        <motion.div
-          initial={{ opacity: 0, x: -8 }}
-          animate={{ opacity: 1, x: 0 }}
-          transition={{ duration: 0.3, ease: EASE }}
+      <div className="max-w-6xl mx-auto px-6 py-8">
+        <Link
+          href="/market"
+          className="specimen-tag text-ink hover:text-ink-hover transition-colors duration-200 mb-6 inline-block"
         >
-          <Link href="/market" className="text-accent-primary hover:text-brand-hover text-xs font-bold uppercase tracking-[0.2em] mb-6 inline-block transition-colors">
-            &larr; MARKET
-          </Link>
-        </motion.div>
+          &larr; Catalog
+        </Link>
 
-        {/* Quality Selector */}
-        {variants.length > 1 && (
-          <motion.div
-            initial={{ opacity: 0, y: 8 }}
-            animate={{ opacity: 1, y: 0 }}
-            transition={{ delay: 0.05, duration: 0.35, ease: EASE }}
-            className="mb-6"
-          >
-            <div className="text-[10px] uppercase tracking-[0.15em] text-muted mb-2 font-semibold">Quality</div>
-            <div className="flex flex-wrap gap-1.5">
-              {variants.map((v) => (
-                <Link
-                  key={v.item_id}
-                  href={`/items/${encodeURIComponent(v.item_id)}`}
-                  className={`px-3 py-2 text-xs font-bold uppercase tracking-widest rounded-sm border transition-all duration-200 ${
-                    v.quality === activeQuality
-                      ? 'bg-accent text-background-primary border-accent'
-                      : 'bg-surface text-secondary border-border hover:bg-surface-hover hover:border-accent-primary'
-                  }`}
-                >
-                  {v.quality}
-                  {v.current_price != null && (
-                    <span className="ml-1.5 font-data normal-case opacity-70">
-                      {formatCurrency(v.current_price)}
-                    </span>
-                  )}
-                </Link>
-              ))}
-            </div>
-          </motion.div>
-        )}
+        {/* Specimen header */}
+        <div className="mb-6">
+          <span className="specimen-tag text-paper-tertiary mb-2 block">{item.type}</span>
+          <h1 className="text-headline text-paper mb-2">{item.name}</h1>
+          <div className="flex flex-wrap items-center gap-x-5 gap-y-1 font-data text-xs text-paper-tertiary">
+            <span>{itemId}</span>
+            {item.release_date && (
+              <span>{new Date(item.release_date).toLocaleDateString()}</span>
+            )}
+          </div>
+        </div>
 
-        {/* Item Header */}
-        <motion.div
-          initial={{ opacity: 0, y: 12 }}
-          animate={{ opacity: 1, y: 0 }}
-          transition={{ delay: 0.1, duration: 0.45, ease: EASE }}
-          className="widget-block p-6 mb-8"
-        >
-          <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
-            <div>
-              <h1 className="text-3xl font-bold text-primary mb-2 tracking-tight">{item.name}</h1>
-              <div className="flex flex-wrap items-center gap-3 text-xs font-data text-tertiary">
-                <span className="uppercase tracking-wide">{item.type}</span>
-                {item.release_date && <span>{new Date(item.release_date).toLocaleDateString()}</span>}
-                <span className="tag-tech">{itemId}</span>
+        <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+          {/* Primary plate — strata chart + wear tray */}
+          <div className="lg:col-span-2">
+            <div className="specimen-card relative overflow-hidden">
+              <span aria-hidden className="specimen-pin" />
+              <div className="flex items-center justify-between px-4 py-2.5 border-b border-divider">
+                <span className="specimen-tag text-paper-tertiary">Strata &mdash; Price History</span>
+                <span className="specimen-tag text-paper-muted">specimen {itemId}</span>
               </div>
-            </div>
 
-            <div className="text-right">
-              <div className="text-4xl font-bold text-primary font-data mb-1">
-                {hasPriceData ? (
-                  <CountUpNumber from={latestPrice!} to={latestPrice!} decimals={2} formatFn={formatCurrency} />
+              <div className="p-4">
+                {/* Time ranges + forecast horizon */}
+                <div className="flex flex-wrap items-center justify-between gap-3 mb-4">
+                  <div className="flex gap-1">
+                    {TIME_RANGES.map((range) => (
+                      <button
+                        key={range}
+                        onClick={() => setTimeRange(range)}
+                        className={`specimen-tag px-2.5 py-1.5 rounded-xs transition-colors duration-200 ${
+                          timeRange === range
+                            ? 'text-ink bg-ink-subtle'
+                            : 'text-paper-tertiary hover:text-paper'
+                        }`}
+                      >
+                        {range}
+                      </button>
+                    ))}
+                  </div>
+                  {showCorridor && hasForecast && (
+                    <div className="flex gap-1">
+                      {FORECAST_PERIODS.map((p) => (
+                        <button
+                          key={p}
+                          onClick={() => setForecastPeriod(p)}
+                          className={`specimen-tag px-2.5 py-1.5 rounded-xs transition-colors duration-200 ${
+                            forecastPeriod === p
+                              ? 'text-ink bg-ink-subtle'
+                              : 'text-paper-tertiary hover:text-paper'
+                          }`}
+                        >
+                          {FORECAST_DAYS[p]}d
+                        </button>
+                      ))}
+                    </div>
+                  )}
+                </div>
+
+                {/* Source filter */}
+                <div className="mb-4">
+                  <PriceSourceFilter
+                    selectedSources={visibleSources}
+                    onSourceChange={setSelectedSources}
+                    availableSources={availableSources}
+                  />
+                </div>
+
+                {/* Strata chart */}
+                {chartData.length > 0 ? (
+                  <ResponsiveContainer width="100%" height={380}>
+                    <ComposedChart data={chartData}>
+                      <CartesianGrid horizontal stroke="var(--grid)" strokeWidth={1} vertical={false} />
+                      <XAxis
+                        dataKey="label"
+                        tick={{ fontSize: 11, fill: 'var(--paper-tertiary)', fontFamily: MONO }}
+                        axisLine={{ stroke: 'var(--border)' }}
+                        tickLine={false}
+                        minTickGap={40}
+                      />
+                      <YAxis
+                        tick={{ fontSize: 11, fill: 'var(--paper-tertiary)', fontFamily: MONO }}
+                        axisLine={false}
+                        tickLine={false}
+                        width={64}
+                        domain={['auto', 'auto']}
+                      />
+                      <Tooltip content={<StrataTooltip />} cursor={{ stroke: 'var(--border)', strokeDasharray: '3 3' }} />
+                      <Area dataKey="q10" stackId="corridor" stroke="none" fill="transparent" connectNulls isAnimationActive={false} />
+                      <Area
+                        dataKey="q90span"
+                        stackId="corridor"
+                        stroke="none"
+                        fill="var(--specimen)"
+                        fillOpacity={0.16}
+                        connectNulls
+                        isAnimationActive={false}
+                      />
+                      <Line dataKey="q50" stroke="var(--specimen)" strokeWidth={2} dot={false} connectNulls isAnimationActive={false} />
+                      <Line
+                        dataKey={primarySource}
+                        stroke="var(--paper)"
+                        strokeWidth={1.5}
+                        dot={false}
+                        connectNulls
+                        isAnimationActive={false}
+                        name={SOURCE_META[primarySource] ?? primarySource}
+                      />
+                      {otherSources.map((source) => (
+                        <Line
+                          key={source}
+                          dataKey={source}
+                          stroke="var(--paper-tertiary)"
+                          strokeWidth={1.25}
+                          strokeDasharray="4 3"
+                          dot={false}
+                          connectNulls
+                          isAnimationActive={false}
+                          name={SOURCE_META[source] ?? source}
+                        />
+                      ))}
+                    </ComposedChart>
+                  </ResponsiveContainer>
                 ) : (
-                  <span className="text-tertiary">---</span>
+                  <div className="flex items-center justify-center h-[380px] text-sm text-paper-tertiary">
+                    {hasPriceData
+                      ? 'No price data available for the selected range'
+                      : 'No price history recorded for this item'}
+                  </div>
                 )}
               </div>
-              <div
-                className="font-data text-sm"
-                style={{ color: (summary.priceChange24h ?? 0) >= 0 ? 'var(--data-up)' : 'var(--data-down)' }}
-              >
-                {hasPriceData ? `${formatPercent(summary.priceChange24h)} (24h)` : <span className="text-tertiary">No data</span>}
-              </div>
             </div>
+
+            {/* Wear tray */}
+            {variants.length > 1 && (
+              <div className="mt-6">
+                <div className="specimen-tag text-paper-tertiary mb-3">Wear Tray</div>
+                <div className="flex flex-wrap gap-1.5">
+                  {variants.map((v) => {
+                    const isActive = v.item_id === itemId;
+                    return (
+                      <Link
+                        key={v.item_id}
+                        href={`/items/${encodeURIComponent(v.item_id)}`}
+                        className={`wear-pill ${isActive ? 'wear-pill-active' : ''}`}
+                      >
+                        <span className="text-[11px] font-semibold uppercase tracking-[0.12em]">
+                          {v.quality}
+                        </span>
+                        <span className="font-data text-xs">
+                          {v.current_price != null ? formatCurrency(v.current_price) : '\u2014'}
+                        </span>
+                      </Link>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
           </div>
 
-          {!hasPriceData && (
-            <div className="mt-4 rounded-sm border border-border bg-background-tertiary px-4 py-3 text-sm text-secondary">
-              This item exists in the index but has no price history yet. Data will appear once the collection pipeline processes it.
-            </div>
-          )}
-
-          {/* Metric Cards */}
-          <div className="mt-6 grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
-            <MetricCard
-              label="Trend"
-              value={trendDirection.replace('_', ' ')}
-              accentColor={trendColor}
-            />
-            <MetricCard label="7d SMA" value={hasPriceData ? formatCurrency(trends?.indicators?.sma_7 ?? null) : '\u2014'} mono />
-            <MetricCard label="30d SMA" value={hasPriceData ? formatCurrency(trends?.indicators?.sma_30 ?? null) : '\u2014'} mono />
-            <MetricCard label="Volume 24h" value={hasPriceData ? formatVolume(summary.volume24h) : '\u2014'} mono />
-          </div>
-        </motion.div>
-
-        {/* Chart + Sidebar */}
-        <div className="grid grid-cols-1 gap-8 xl:grid-cols-4">
-          {/* Chart */}
-          <motion.div
-            initial={{ opacity: 0, y: 12 }}
-            animate={{ opacity: 1, y: 0 }}
-            transition={{ delay: 0.2, duration: 0.45, ease: EASE }}
-            className="xl:col-span-3"
-          >
-            {/* Time Range Tabs */}
-            <div className="flex items-center justify-between gap-4 mb-4">
-              <div className="flex gap-0.5">
-                {TIME_RANGES.map((range) => (
-                  <button
-                    key={range}
-                    onClick={() => setTimeRange(range)}
-                    className={`px-3 py-2 text-xs font-bold uppercase tracking-widest transition-all duration-200 rounded-sm ${
-                      timeRange === range
-                        ? 'text-accent-primary bg-accent-primary/10'
-                        : 'text-tertiary hover:text-primary hover:bg-surface'
-                    }`}
-                  >
-                    {range}
-                  </button>
-                ))}
+          {/* Sidebar — curator tag, ledger stats, signals */}
+          <aside className="space-y-6">
+            {/* Curator tag */}
+            <div className="bg-stock border border-border rounded-sm relative">
+              <div className="flex items-center justify-between px-4 py-2.5 border-b border-divider">
+                <span className="specimen-tag text-specimen">Curator Tag</span>
               </div>
-              <span className="tag-tech">price history</span>
-            </div>
-
-            {/* Source Filter */}
-            <div className="mb-4">
-              <PriceSourceFilter
-                selectedSources={visibleSources}
-                onSourceChange={setSelectedSources}
-                availableSources={availableSources}
-              />
-            </div>
-
-            {/* Chart */}
-            <div className="widget-block p-4">
-              {sourceChartData.length > 0 ? (
-                <ResponsiveContainer width="100%" height={360}>
-                  <LineChart data={sourceChartData}>
-                    <CartesianGrid strokeDasharray="3 3" stroke="var(--grid)" />
-                    <XAxis dataKey="label" stroke="var(--text-tertiary)" style={{ fontSize: '12px' }} />
-                    <YAxis
-                      stroke="var(--text-tertiary)"
-                      style={{ fontSize: '12px' }}
-                      domain={['dataMin - 10', 'dataMax + 10']}
-                    />
-                    <Tooltip
-                      contentStyle={{
-                        backgroundColor: 'var(--background-secondary)',
-                        border: '1px solid var(--border)',
-                        color: 'var(--text-primary)',
-                        borderRadius: '4px',
-                      }}
-                      formatter={(value) => formatCurrency(Number(value))}
-                    />
-                    {visibleSources.map((source) => (
-                      <Line
-                        key={source}
-                        type="monotone"
-                        dataKey={source}
-                        stroke={SOURCE_CHART_META[source]?.color ?? 'var(--text-secondary)'}
-                        strokeWidth={2}
-                        dot={false}
-                        isAnimationActive={false}
-                        connectNulls
-                        name={SOURCE_CHART_META[source]?.label ?? source}
-                      />
-                    ))}
-                  </LineChart>
-                </ResponsiveContainer>
+              {hasForecast ? (
+                <>
+                  <div className="divide-y divide-divider">
+                    {FORECAST_PERIODS.map((p) => {
+                      const f = predictions[p]?.forecast;
+                      if (!f) return null;
+                      return (
+                        <div key={p} className="px-4 py-3 flex items-baseline justify-between gap-4">
+                          <div className="flex items-baseline gap-2">
+                            <span className="specimen-tag text-paper-tertiary">{FORECAST_DAYS[p]}d</span>
+                            <span className="font-data text-[10px] text-paper-muted">q10&ndash;q90</span>
+                          </div>
+                          <div className="text-right">
+                            <div className="text-data-lg text-specimen leading-none">
+                              {formatCurrency(f.mid)}
+                            </div>
+                            <div className="font-data text-[11px] text-paper-tertiary mt-1">
+                              {formatCurrency(f.low)} &ndash; {formatCurrency(f.high)}
+                            </div>
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                  <div className="px-4 py-3 border-t border-divider">
+                    {accuracy ? (
+                      <p className="text-[10px] font-data text-paper-muted leading-relaxed">
+                        Measured accuracy: {num(accuracy.metrics.interval_coverage)}% q10&ndash;q90
+                        coverage on cohort &ge;${accuracy.price_tier ?? 1} at the{' '}
+                        {accuracy.horizon_days != null ? `${accuracy.horizon_days}-day` : ''} horizon
+                        &middot; {accuracy.evaluation_date ?? ''}
+                      </p>
+                    ) : (
+                      <p className="text-[10px] font-data text-paper-muted">
+                        No measured accuracy on record yet.
+                      </p>
+                    )}
+                  </div>
+                </>
               ) : (
-                <div className="flex items-center justify-center h-[360px] text-sm text-tertiary">
-                  {hasPriceData ? 'No price data available for the selected range' : 'No price history recorded for this item'}
+                <div className="px-4 py-6">
+                  <div className="flex items-center gap-3">
+                    <span aria-hidden className="text-specimen/60 font-data text-sm leading-none">&#8212;</span>
+                    <p className="text-sm text-paper-secondary">No curator note on record.</p>
+                  </div>
+                  <p className="text-[10px] font-data text-paper-muted mt-2">
+                    Forecasts appear once the collection pipeline processes this specimen.
+                  </p>
                 </div>
               )}
             </div>
-          </motion.div>
 
-          {/* Sidebar */}
-          <motion.div
-            initial={{ opacity: 0, y: 12 }}
-            animate={{ opacity: 1, y: 0 }}
-            transition={{ delay: 0.3, duration: 0.45, ease: EASE }}
-            className="space-y-4"
-          >
-            {/* Prediction */}
-            <div className="widget-block p-4">
-              <div className="text-[10px] uppercase tracking-[0.15em] text-muted mb-3 font-semibold">Prediction</div>
-              <div className="text-2xl font-bold text-primary font-data">
-                {hasPriceData && forecast ? (
-                  <CountUpNumber from={forecast.mid} to={forecast.mid} decimals={2} formatFn={formatCurrency} />
-                ) : '\u2014'}
+            {/* Ledger stats */}
+            <div className="bg-stock border border-border rounded-sm">
+              <div className="px-4 py-2.5 border-b border-divider">
+                <span className="specimen-tag text-paper-tertiary">Ledger</span>
               </div>
-              <div className="flex gap-1 mt-2">
-                {(['3_days', '7_days', '14_days', '30_days'] as const).map((p) => (
-                  <button
-                    key={p}
-                    onClick={() => setForecastPeriod(p)}
-                    className={`text-[10px] uppercase tracking-wider px-1.5 py-0.5 rounded-xs transition-colors ${
-                      forecastPeriod === p
-                        ? 'bg-accent/20 text-accent'
-                        : 'text-muted hover:text-secondary'
-                    }`}
-                  >
-                    {p.replace('_', ' ')}
-                  </button>
-                ))}
-              </div>
-              <div className="text-xs text-tertiary mt-1">
-                {hasPriceData ? (prediction?.period_label || forecastPeriod) + ' forecast' : 'Insufficient data'}
-              </div>
-            </div>
-
-            {/* Forecast Band */}
-            <div className="widget-block p-4">
-              <div className="text-[10px] uppercase tracking-[0.15em] text-muted mb-3 font-semibold">Forecast band</div>
-              {hasPriceData ? (
-                <div className="space-y-1.5 font-data text-sm">
-                  <div className="flex justify-between">
-                    <span className="text-tertiary">Low</span>
-                    <span className="text-primary">{formatCurrency(forecast?.low ?? null)}</span>
-                  </div>
-                  <div className="flex justify-between">
-                    <span className="text-tertiary">Mid</span>
-                    <span className="text-primary font-medium">{formatCurrency(forecast?.mid ?? null)}</span>
-                  </div>
-                  <div className="flex justify-between">
-                    <span className="text-tertiary">High</span>
-                    <span className="text-primary">{formatCurrency(forecast?.high ?? null)}</span>
-                  </div>
-                </div>
-              ) : (
-                <div className="text-sm text-tertiary">No price data to forecast from</div>
-              )}
-            </div>
-
-            {/* Data Sources */}
-            <div className="widget-block p-4">
-              <div className="text-[10px] uppercase tracking-[0.15em] text-muted mb-3 font-semibold">Data sources</div>
-              <div className="space-y-2">
-                {availableSources.map((source) => (
-                  <div key={source} className="flex items-center justify-between text-sm">
-                    <span className="capitalize text-primary">{source}</span>
-                    <span className="text-tertiary font-data text-xs">
-                      {(multiSourceData?.data[source]?.length ?? 0).toString()} pts
+              <div className="divide-y divide-divider">
+                <LedgerRow
+                  label="Current Price"
+                  value={
+                    <span className="text-data-lg text-paper">
+                      {hasPriceData && latestPrice != null ? formatCurrency(latestPrice) : '\u2014'}
                     </span>
-                  </div>
-                ))}
+                  }
+                />
+                <LedgerRow
+                  label="Change 24h"
+                  value={
+                    hasPriceData && summary.priceChange24h != null ? (
+                      <span
+                        className="inline-block px-1.5 py-0.5 rounded-xs font-data text-[11px] font-semibold"
+                        style={{
+                          backgroundColor: summary.priceChange24h >= 0 ? 'var(--up-subtle)' : 'var(--down-subtle)',
+                          color: summary.priceChange24h >= 0 ? 'var(--up)' : 'var(--down)',
+                        }}
+                      >
+                        {formatPercent(summary.priceChange24h)}
+                      </span>
+                    ) : (
+                      <span className="font-data text-sm text-paper-muted">{'\u2014'}</span>
+                    )
+                  }
+                />
+                <LedgerRow
+                  label="Volume 24h"
+                  value={
+                    <span className="font-data text-sm text-paper">
+                      {hasPriceData ? formatVolume(summary.volume24h) : '\u2014'}
+                    </span>
+                  }
+                />
+                <LedgerRow
+                  label="Trend"
+                  value={
+                    <span className="font-data text-sm capitalize" style={{ color: trendDirection === 'bullish' ? 'var(--up)' : trendDirection === 'bearish' ? 'var(--down)' : 'var(--paper-tertiary)' }}>
+                      {trendDirection.replace('_', ' ')}
+                    </span>
+                  }
+                />
+                <LedgerRow
+                  label="7d SMA"
+                  value={
+                    <span className="font-data text-sm text-paper">
+                      {hasPriceData ? formatCurrency(trends?.indicators?.sma_7 ?? null) : '\u2014'}
+                    </span>
+                  }
+                />
+                <LedgerRow
+                  label="30d SMA"
+                  value={
+                    <span className="font-data text-sm text-paper">
+                      {hasPriceData ? formatCurrency(trends?.indicators?.sma_30 ?? null) : '\u2014'}
+                    </span>
+                  }
+                />
+                {trends?.indicators?.volatility != null && (
+                  <LedgerRow
+                    label="Volatility"
+                    value={
+                      <span className="font-data text-sm text-paper">
+                        {trends.indicators.volatility.toFixed(1)}%
+                      </span>
+                    }
+                  />
+                )}
               </div>
-              {!hasPriceData && (
-                <div className="mt-2 text-xs text-tertiary">Awaiting collection...</div>
-              )}
             </div>
 
             {/* Signals */}
-            <div className="widget-block p-4">
-              <div className="text-[10px] uppercase tracking-[0.15em] text-muted mb-3 font-semibold">Signals</div>
-              <div className="space-y-2 text-sm text-primary">
+            <div className="bg-stock border border-border rounded-sm">
+              <div className="px-4 py-2.5 border-b border-divider">
+                <span className="specimen-tag text-paper-tertiary">Signals</span>
+              </div>
+              <div className="px-4 py-3">
                 {hasPriceData && trendFactors.length ? (
-                  trendFactors.map((factor) => (
-                    <div key={factor} className="leading-snug">{factor}</div>
-                  ))
+                  <ul className="space-y-2">
+                    {trendFactors.map((factor) => (
+                      <li key={factor} className="text-sm text-paper leading-snug flex gap-2">
+                        <span aria-hidden className="text-ink font-data text-xs leading-snug mt-0.5">&#9642;</span>
+                        {factor}
+                      </li>
+                    ))}
+                  </ul>
                 ) : (
-                  <div className="text-tertiary">{hasPriceData ? 'No technical factors returned yet.' : 'No data to compute signals from'}</div>
+                  <p className="text-sm text-paper-tertiary">
+                    {hasPriceData ? 'No technical factors returned yet.' : 'No data to compute signals from'}
+                  </p>
                 )}
               </div>
             </div>
 
-            {/* Event Impacts */}
+            {/* Event impacts */}
             {eventImpacts.length > 0 && (
-              <div className="widget-block p-4">
-                <div className="text-[10px] uppercase tracking-[0.15em] text-muted mb-3 font-semibold">Event impacts</div>
-                <div className="space-y-3">
+              <div className="bg-stock border border-border rounded-sm">
+                <div className="px-4 py-2.5 border-b border-divider">
+                  <span className="specimen-tag text-paper-tertiary">Event Impacts</span>
+                </div>
+                <div className="divide-y divide-divider">
                   {eventImpacts.slice(0, 5).map((imp) => (
-                    <div key={imp.event_id} className="text-xs">
-                      <div className="flex items-center justify-between mb-0.5">
-                        <span className="text-primary font-medium capitalize">{imp.event_type.replace('_', ' ')}</span>
-                        <span className="font-data" style={{ color: (imp.impact_pct_7day ?? 0) >= 0 ? 'var(--data-up)' : 'var(--data-down)' }}>
-                          {imp.impact_pct_7day != null ? `${imp.impact_pct_7day > 0 ? '+' : ''}${imp.impact_pct_7day.toFixed(1)}%` : '\u2014'}
+                    <div key={imp.event_id} className="px-4 py-3">
+                      <div className="flex items-center justify-between gap-3 mb-0.5">
+                        <span className="text-xs font-medium text-paper capitalize">
+                          {imp.event_type.replace('_', ' ')}
+                        </span>
+                        <span
+                          className="font-data text-xs"
+                          style={{ color: (imp.impact_pct_7day ?? 0) >= 0 ? 'var(--up)' : 'var(--down)' }}
+                        >
+                          {imp.impact_pct_7day != null
+                            ? `${imp.impact_pct_7day > 0 ? '+' : ''}${imp.impact_pct_7day.toFixed(1)}%`
+                            : '\u2014'}
                         </span>
                       </div>
-                      <div className="text-tertiary truncate">{imp.event_description}</div>
-                      {imp.confidence_score != null && (
-                        <div className="text-tertiary mt-0.5">
-                          Confidence: {imp.confidence_score.toFixed(2)} | Z-score: {imp.z_score?.toFixed(2) ?? '\u2014'}
-                        </div>
-                      )}
+                      <div className="text-xs text-paper-tertiary truncate">{imp.event_description}</div>
                     </div>
                   ))}
                 </div>
               </div>
             )}
 
-            {/* Feature Importance */}
+            {/* Forecast drivers */}
             {featureImportance && Object.keys(featureImportance.horizons).length > 0 && (
-              <div className="widget-block p-4">
-                <div className="text-[10px] uppercase tracking-[0.15em] text-muted mb-3 font-semibold">Forecast drivers</div>
-                {Object.entries(featureImportance.horizons).map(([horizon, features]) => (
-                  <div key={horizon} className="mb-3 last:mb-0">
-                    <div className="text-[11px] font-semibold text-secondary mb-1.5 uppercase tracking-wide">{horizon}d horizon</div>
-                    <div className="space-y-1">
-                      {features.slice(0, 5).map((fi) => (
-                        <div key={fi.feature} className="flex items-center gap-2 text-xs">
-                          <div className="flex-1 truncate text-tertiary">{fi.feature.replace(/_/g, ' ')}</div>
-                          <div className="font-data text-primary w-8 text-right">{fi.importance.toFixed(0)}</div>
-                        </div>
-                      ))}
+              <div className="bg-stock border border-border rounded-sm">
+                <div className="px-4 py-2.5 border-b border-divider">
+                  <span className="specimen-tag text-paper-tertiary">Forecast Drivers</span>
+                </div>
+                <div className="px-4 py-3 space-y-4">
+                  {Object.entries(featureImportance.horizons).map(([horizon, features]) => (
+                    <div key={horizon}>
+                      <div className="specimen-tag text-paper-muted mb-1.5">{horizon}d horizon</div>
+                      <div className="space-y-1">
+                        {features.slice(0, 5).map((fi) => (
+                          <div key={fi.feature} className="flex items-center gap-2 text-xs">
+                            <div className="flex-1 truncate text-paper-tertiary">
+                              {fi.feature.replace(/_/g, ' ')}
+                            </div>
+                            <div className="font-data text-paper w-8 text-right">
+                              {fi.importance.toFixed(0)}
+                            </div>
+                          </div>
+                        ))}
+                      </div>
                     </div>
-                  </div>
-                ))}
+                  ))}
+                </div>
               </div>
             )}
-          </motion.div>
+          </aside>
         </div>
       </div>
     </div>
   );
 }
 
-function MetricCard({ label, value, sub, mono, accentColor }: { label: string; value: string; sub?: string; mono?: boolean; accentColor?: string }) {
+function num(value: unknown): number | null {
+  return typeof value === 'number' && Number.isFinite(value) ? value : null;
+}
+
+function LedgerRow({ label, value }: { label: string; value: React.ReactNode }) {
   return (
-    <div className="rounded-sm border border-border bg-background-tertiary p-4 group hover:border-border-accent transition-colors duration-200">
-      <div className="text-[10px] uppercase tracking-[0.15em] text-muted mb-2 font-semibold">{label}</div>
-      <div
-        className={`text-lg font-semibold ${mono ? 'font-data' : ''} capitalize`}
-        style={{ color: accentColor || 'var(--text-primary)' }}
-      >
-        {value}
-      </div>
-      {sub && <div className="text-xs text-tertiary mt-1">{sub}</div>}
+    <div className="px-4 py-3 flex items-center justify-between gap-4">
+      <span className="specimen-tag text-paper-tertiary">{label}</span>
+      {value}
     </div>
   );
 }

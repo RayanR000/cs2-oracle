@@ -139,13 +139,13 @@ export default function RegimeABTestPage() {
 
         {loading ? (
           <div className="flex items-center justify-center py-20">
-            <div className="w-5 h-5 border-2 border-accent border-t-transparent rounded-full animate-spin" />
+            <span className="specimen-tag text-paper-muted">Reading the ledger...</span>
           </div>
         ) : error ? (
           <div className="widget-block p-10 text-center">
             <p className="text-sm text-secondary">{error}</p>
             <p className="text-[11px] text-tertiary mt-2">
-              Run <code className="font-data text-accent">python scripts/ab_test_regime.py</code> to generate A/B test data.
+              Run <code className="font-data text-ink">python scripts/ab_test_regime.py</code> to generate A/B test data.
             </p>
           </div>
         ) : data ? (

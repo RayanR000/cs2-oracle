@@ -9,8 +9,8 @@ interface ItemCardProps {
   imageUrl?: string;
   currentPrice?: number;
   priceChange7d?: number;
-  rarity?: 'Consumer' | 'Industrial' | 'Mil-Spec' | 'Restricted' | 'Classified' | 'Covert' | 'Contraband';
   annotation?: string;
+  pinned?: boolean;
 }
 
 export default function ItemCard({
@@ -20,93 +20,56 @@ export default function ItemCard({
   imageUrl,
   currentPrice,
   priceChange7d,
-  rarity = 'Mil-Spec',
-  annotation
+  annotation,
+  pinned = false,
 }: ItemCardProps) {
-  const rarityColors = {
-    'Consumer': 'oklch(70% 0.02 260)',
-    'Industrial': 'oklch(60% 0.04 240)',
-    'Mil-Spec': 'oklch(55% 0.06 250)',
-    'Restricted': 'oklch(50% 0.08 280)',
-    'Classified': 'oklch(55% 0.08 320)',
-    'Covert': 'oklch(60% 0.1 20)',
-    'Contraband': 'oklch(75% 0.1 60)'
-  };
-
-  const rarityColor = rarityColors[rarity] || rarityColors['Mil-Spec'];
-
   return (
-    <Link href={`/items/${itemId}`} className="widget-block p-5 block group relative overflow-hidden transition-all duration-300">
-      {/* Hover glow — brand accent radiating from center */}
-      <div
-        className="absolute inset-0 opacity-0 group-hover:opacity-100 transition-opacity duration-500 pointer-events-none"
-        style={{
-          background: `radial-gradient(ellipse at 50% 50%, oklch(52% 0.12 var(--brand-hue) / 0.04) 0%, transparent 70%)`,
-        }}
-      />
+    <Link
+      href={`/items/${itemId}`}
+      className="relative block bg-stock border border-border rounded-sm overflow-hidden transition-colors duration-250 hover:border-border-accent hover:bg-surface group"
+    >
+      {pinned && <span aria-hidden className="specimen-pin" />}
 
-      <div className="relative z-10 h-full flex flex-col justify-between">
-        <div>
-          <div className="flex justify-between items-start mb-4">
-            <div className="flex flex-col">
-              <span className="text-[9px] font-bold uppercase tracking-[0.2em] text-muted mb-1">
-                {type}
-              </span>
-              <h3 className="font-semibold text-sm text-primary group-hover:text-primary transition-colors line-clamp-1 tracking-tight">
-                {name}
-              </h3>
-            </div>
-            <div className="flex items-center gap-2">
-              {annotation && (
-                <span className="tag-tech opacity-0 group-hover:opacity-100 transition-opacity">
-                  {annotation}
-                </span>
-              )}
-              <div
-                className="w-1.5 h-1.5 rounded-full"
-                style={{ backgroundColor: rarityColor }}
-              />
-            </div>
-          </div>
-
-          {/* Asset Display */}
-          <div className="aspect-square w-full mb-6 flex items-center justify-center p-6 bg-background-tertiary/50 rounded-sm border border-border group-hover:border-accent-primary/40 transition-all duration-500">
-            {imageUrl ? (
-              <img
-                src={imageUrl}
-                alt={name}
-                className="max-w-full max-h-full object-contain drop-shadow-[0_12px_24px_rgba(0,0,0,0.7)] group-hover:scale-105 transition-transform duration-700 ease-out"
-              />
-            ) : (
-              <div className="text-muted text-[10px] font-data uppercase tracking-[0.3em]">No Asset</div>
-            )}
-          </div>
-        </div>
-
-        <div className="flex items-end justify-between mt-auto">
-          <div className="flex flex-col">
-            <span className="text-[9px] font-bold text-muted uppercase tracking-[0.2em] mb-1">
-              EST. VALUE
-            </span>
-            <p className="text-xl font-data font-medium text-primary tracking-tighter group-hover:text-primary">
-              {currentPrice !== undefined ? `$${currentPrice.toFixed(2)}` : 'N/A'}
-            </p>
-          </div>
-
-          {priceChange7d !== undefined && (
-            <div className="flex flex-col items-end">
-              <span className="text-[9px] font-bold text-muted uppercase tracking-[0.2em] mb-1">
-                7D DELTA
-              </span>
-              <p
-                className="text-xs font-data font-bold"
-                style={{ color: priceChange7d >= 0 ? 'var(--data-up)' : 'var(--data-down)' }}
-              >
-                {priceChange7d >= 0 ? '+' : ''}{priceChange7d.toFixed(1)}%
-              </p>
-            </div>
+      <div className="px-4 pt-4">
+        <div className="flex items-baseline justify-between gap-2 mb-2">
+          <span className="specimen-tag text-paper-tertiary">{type}</span>
+          {annotation && (
+            <span className="specimen-tag text-paper-muted">{annotation}</span>
           )}
         </div>
+        <h3 className="text-[13px] font-semibold text-paper tracking-tight line-clamp-1 mb-3">
+          {name}
+        </h3>
+      </div>
+
+      <div className="aspect-square mx-4 mb-4 bg-recess rounded-xs flex items-center justify-center p-6 overflow-hidden">
+        {imageUrl ? (
+          <img
+            src={imageUrl}
+            alt={name}
+            loading="lazy"
+            className="max-w-full max-h-full object-contain transition-transform duration-500 ease-out group-hover:scale-[1.03]"
+          />
+        ) : (
+          <div className="specimen-tag text-paper-muted">No Plate</div>
+        )}
+      </div>
+
+      <div className="px-4 pb-4 flex items-end justify-between gap-3">
+        <p className="text-data-lg text-paper">
+          {currentPrice !== undefined ? `$${currentPrice.toFixed(2)}` : '\u2014'}
+        </p>
+        {priceChange7d !== undefined && (
+          <span
+            className="inline-block px-1.5 py-0.5 rounded-xs font-data text-[11px] font-semibold"
+            style={{
+              backgroundColor: priceChange7d >= 0 ? 'var(--up-subtle)' : 'var(--down-subtle)',
+              color: priceChange7d >= 0 ? 'var(--up)' : 'var(--down)',
+            }}
+          >
+            {priceChange7d >= 0 ? '+' : ''}{priceChange7d.toFixed(1)}%
+          </span>
+        )}
       </div>
     </Link>
   );
