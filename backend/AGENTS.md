@@ -62,6 +62,32 @@ points at production Supabase — see the root `AGENTS.md` gotcha before running
   `sticker` exemption is for. Worth **6 items of the 926-item ≥$1 cohort** — a correctness
   fix, not an accuracy lever. See
   `docs/changelog/2026-08-08-phase-collapsed-names-dropped.md`.
+- **A label may not touch a frozen price run, on either leg.** `models/staleness.py`
+  counts consecutive bit-identical prices per item; `prepare_targets` voids the label of any
+  row whose anchor day *or* target day sits on a run longer than
+  `LABEL_MAX_STALE_RUN_DAYS` (0 — set it to `None` to disable, which is the harness's control
+  arm). This is the per-item companion to `_snapshot_dates`, which voids a day where the whole
+  cross-section repeats. **A gap wider than `MAX_WINDOW_SPAN_DAYS` (7) breaks a run** rather
+  than continuing it — nothing was observed across a collection outage to be frozen.
+  **Two numbers not to misread.** The "0–1.8% stale at ≥$1" figure in the research review is
+  measured on **resolved, 3-day-smoothed anchors**; the raw voted series the label path sees is
+  **12–27%**. Different quantities — neither sizes the other. And the rate is a **2026 feed
+  property**, 0.5–0.8% through 2025 against 6–33% across 2026, because no Steam-derived series
+  in this archive is a point observation (`aggregator_steam_7d/30d/90d` are trailing-window
+  means outright; `aggregator_sync` and `aggregator_steam_17mafo` are `last_24h` falling back
+  to them, which fires on exactly the illiquid items). So the rule voids ~30% of 2026 ≥$1
+  labels and ~0.6% of pre-2024 ones, and it takes **13.7–15.9% of *non-zero* ≥$1 labels** with
+  it — it can be net-harmful, which is why `scripts/ab_test_frozen_runs.py` verifies it on
+  paired interval **width**, not on a point estimate. See
+  `docs/superpowers/specs/2026-08-08-frozen-price-runs-design.md`.
+- **`base_stale_run_days` is a frozen observation, and NULL means unknown.** Written by
+  `resolve_outcomes` beside `base_price`, absent from `_REFRESH_VERDICTS_SQL`, moved only by
+  `--reresolve` — `backtest/scoring.py` is pure and `--rescore` never opens the archive, so
+  the run length cannot be derived at score time. Every row resolved before 2026-08-08 carries
+  NULL and **must never be read as 0**; `score_by_staleness` buckets those as `unknown`.
+  The axis is **four fixed bands, not quartiles** (`fresh` / `repeat_1` / `run_2_6` /
+  `run_7_plus`): ~80% of the ≥$1 cohort sits at zero, so data-driven quartiles collapse to one
+  populated bucket and would still be reported as four.
 - **The embargo is `horizon + 13`, not `horizon`.** `models/forecaster.py::embargo_days`
   derives the 13 at call time from `LAG_TOLERANCE_DAYS` (3) + `SMOOTH_WINDOW` (3) +
   `MAX_WINDOW_SPAN_DAYS` (7): the label at `d + horizon` is a **resolved anchor**, not a

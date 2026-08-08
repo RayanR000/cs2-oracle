@@ -29,6 +29,7 @@ from models.item_parser import (
     parse_item_name,
     phase_collapsed_sql_filter,
 )
+from models.staleness import STALE_RUN_GAP_BREAK_DAYS, stale_run_days
 from backtest.scoring import HEADLINE_MIN_TIER, MIN_FORECAST_DATES
 from backtest.price_resolution import MAX_WINDOW_SPAN_DAYS, SMOOTH_WINDOW
 
@@ -122,6 +123,31 @@ DIRECTION_UPWEIGHT = 1.5
 # roadmap's α^days_ago with α=0.99 would leave a 1460-day-old row at ~6e-7,
 # effectively truncating training to ~200 days.
 SAMPLE_WEIGHT_HALFLIFE_DAYS = 0.0
+
+# The longest bit-identical price run a label may sit on. A row whose anchor
+# day OR target day carries a `stale_run_days` above this has its label voided
+# in `prepare_targets`, exactly as a snapshot day or a collector cutover does.
+#
+# 0 means "the day must be a fresh price level on both legs"; None disables the
+# rule and reproduces the pre-2026-08-08 label set. Named rather than written as
+# a literal so `scripts/ab_test_frozen_runs.py` can contrast None/0/1/2 without
+# editing this file. The review states the rule as "run >= 2", which is
+# 1-indexed and selects the same rows.
+#
+# Measured 2026-08-08, 2024+, on the >=$1 cohort: this voids 19.2/18.2/16.0/13.8%
+# of labels at h=3/7/14/30 (39.8/39.5/38.8/38.8% on the whole unfiltered
+# universe). Two things that number hides, both in
+# `docs/superpowers/specs/2026-08-08-frozen-price-runs-design.md`:
+#
+#   1. It is a 2026 filter. The >=$1 stale rate runs 0.5-0.8% through 2025 and
+#      6-33% across 2026, because no Steam-derived series in the archive is a
+#      point observation. So this removes ~30% of 2026 >=$1 labels and ~0.6% of
+#      everything before 2024 — defensible, since 2026 is what production
+#      trains and serves on, but it is not an even 13-year cleaning.
+#   2. It is not surgical. 13.7-15.9% of the >=$1 labels it takes carry a
+#      NON-zero return. The rule can therefore be net-harmful, which is why it
+#      is verified on paired interval WIDTH and not on a point estimate.
+LABEL_MAX_STALE_RUN_DAYS = 0
 
 
 def _gpu_available() -> bool:
@@ -2924,14 +2950,72 @@ class ItemForecaster:
                 s = pd.Timestamp(s)
                 bad |= (anchor < s) & (s <= anchor + h_delta)
 
+        # Frozen-price runs. The per-item analogue of the snapshot rule above:
+        # _snapshot_dates voids a day on which the whole CROSS-SECTION repeats
+        # yesterday, this voids a row on which THIS ITEM does. Both are the
+        # Getmansky-Lo-Makarov MA(k) mechanism — a series that stopped
+        # reporting, not a market that stopped moving — and both are invisible
+        # to the +/-500% winsorization, because a fabricated 0% return is well
+        # inside the clip.
+        #
+        # ENDPOINT rule, matching the snapshot branch: either leg being stale
+        # ruins the return, so both are tested. Measured 2026-08-08 on the >=$1
+        # cohort, the anchor leg alone catches only 65-72% of the exact-zero
+        # return mass at h=3-14 and 31.2% at h=30; anchor-or-target reaches
+        # 86-91% and 52.0%. The residual at h=30 is deliberate and is NOT a gap
+        # in the rule — roughly half of 30d zero returns are genuine round
+        # trips back to the same price, and those are labels, not artifacts.
+        # Keyed on (item, day), never on day alone: staleness is a property of
+        # one item's series, and a date-only set would void every item's label
+        # on any day some other item happened to be frozen.
+        # None disables the rule outright — the control arm in
+        # scripts/ab_test_frozen_runs.py, and the only way to reproduce a
+        # pre-2026-08-08 label set. Distinct from a large threshold, which
+        # would still pay for the scan.
+        n_stale = 0
+        if (LABEL_MAX_STALE_RUN_DAYS is not None
+                and not df.empty and "price" in df.columns):
+            runs = stale_run_days(
+                df, item_col="item_id", date_col="date", price_col="price")
+            anchor_stale = (runs > LABEL_MAX_STALE_RUN_DAYS).to_numpy()
+
+            day = anchor.dt.normalize()
+            by_key = pd.Series(
+                anchor_stale,
+                index=pd.MultiIndex.from_arrays([df["item_id"], day]),
+            )
+            # max() over the key rather than a plain lookup: the frame is
+            # normally voted to one row per item-day, but nothing here enforces
+            # it, and a duplicated key must resolve to "stale if any copy is"
+            # rather than raising on a non-unique index.
+            by_key = by_key.groupby(level=[0, 1]).max()
+
+            target_stale = by_key.reindex(
+                pd.MultiIndex.from_arrays([df["item_id"], day + h_delta]),
+                fill_value=False,
+            ).to_numpy(dtype=bool)
+
+            stale_leg = pd.Series(anchor_stale | target_stale, index=df.index)
+            n_stale = int(
+                (stale_leg & ~bad
+                 & df[f"target_return_{horizon}d"].notna()).sum()
+            )
+            bad |= stale_leg
+
         n_bad = int((bad & df[f"target_return_{horizon}d"].notna()).sum())
         if n_bad:
             df.loc[bad, f"target_return_{horizon}d"] = np.nan
             df.loc[bad, f"target_{horizon}d"] = np.nan
+            frozen_note = (
+                "frozen-run rule DISABLED"
+                if LABEL_MAX_STALE_RUN_DAYS is None
+                else (f"{n_stale} of them for a frozen price run "
+                      f"(> {LABEL_MAX_STALE_RUN_DAYS}d) on either leg")
+            )
             logger.info(
                 f"  Voided {n_bad} {horizon}d targets spanning "
                 f"{len(snapshots)} snapshot day(s) / {len(shifts)} collector "
-                f"cutover(s)"
+                f"cutover(s); {frozen_note}"
             )
         return df
 

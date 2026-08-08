@@ -10,11 +10,18 @@
 DONE (2026-08-08 — `docs/changelog/2026-08-08-phase-collapsed-names-dropped.md` and
 `docs/changelog/2026-08-08-embargo-and-harness-hygiene.md`; step 5's outstanding "gate not
 re-run" item closed the same day —
-`docs/changelog/2026-08-08-embargo-discontinuity-measured.md`). Step 6 is unblocked and NOT
-STARTED. Steps 7–11 are NOT STARTED.**
+`docs/changelog/2026-08-08-embargo-discontinuity-measured.md`), and step 6 is DONE (2026-08-08 —
+`docs/changelog/2026-08-08-frozen-price-runs-dropped-from-labels.md`, which also refuted the two
+prevalence figures step 6 was justified on and surfaced the un-taken MA-feed voting fix).
+Steps 7–11 are NOT STARTED.**
 
 Ordering is the review's, not a re-ranking. Numbers in the "why" column are quoted from the
 review or from the changelog entry that measured them; nothing here is estimated.
+
+**The 1–11 ordering is not the whole of §10.** It follows the review's "If I were building this
+myself", which omits six items §10 itself ranked; they are tracked in
+**"From §10 Tier 2 and Tier 3, ranked by the review and never tracked (R11–R19)"** below. One of
+them, **R19**, is step 7's entry criterion.
 
 ---
 
@@ -250,12 +257,21 @@ Record: `docs/changelog/2026-08-08-embargo-and-harness-hygiene.md`.
 
 **Not done, and each of these matters for how the result is read:**
 
-- **No harness was run.** The thirteen `ab_test_*` harnesses are untouched: every A/B result
-  in the repo predates all five changes, and **not one of the new intervals has been
-  observed on real data**.
-- **The archive migration has not been run.** `ingested_at` exists in the schema and in the
-  writer; only CI writes the canonical archive, so the column is absent from every stored
-  file until `aggregator-update.yml` runs with `normalize_schema = true`.
+- ~~**No harness was run.**~~ — **three of thirteen re-run 2026-08-08**, and only after fixing
+  a defect the migration below introduced: the harnesses' `source` filters were not NULL-safe,
+  so every migrated pre-2026 file matched nothing and the universe went to **0 items (876
+  after the fix)**. It surfaced as three unrelated-looking errors — `IndexError`, a DuckDB
+  parse error on `IN ()`, a stale cache fingerprint — and **not one of them said "zero rows"**
+  (`e930850`). The three re-derivations all survive; see the "Open questions" entry below and
+  `docs/changelog/2026-08-08-migrated-archive-emptied-eight-harnesses.md`. **The other ten
+  harnesses are still un-run**, so every A/B they carry predates all five changes.
+- ~~**The archive migration has not been run.**~~ — **run locally 2026-08-08**; all 21
+  `price-archive/prices-*.parquet` files now carry `source` and `ingested_at`. Two things that
+  does not mean. `ingested_at` is **populated on 361,525 of 21,842,207 rows (1.7%)**, only the
+  ones appended since the writer changed — it is a typed NULL on everything older, which is
+  the correct migration and not a fix. And the local archive is **not** the canonical one:
+  only CI writes `RayanR000/cs2-oracle-data`, so whether the *published* archive is migrated
+  is unverified here.
 - ~~**The published gate has not been re-run under the new default**~~ — **DONE 2026-08-08**,
   and the discontinuity is measured. Record:
   `docs/changelog/2026-08-08-embargo-discontinuity-measured.md`. Two things had to be fixed
@@ -303,7 +319,54 @@ Record: `docs/changelog/2026-08-08-embargo-and-harness-hygiene.md`.
 
 </details>
 
-### 6. Drop or downweight frozen-price runs from the label set — NOT STARTED
+### 6. Drop or downweight frozen-price runs from the label set — **DONE 2026-08-08**
+
+**Dropped, not downweighted**, on both legs. `models/staleness.py` is the new pure module;
+`LABEL_MAX_STALE_RUN_DAYS = 0` voids in `prepare_targets` inside the same `bad` mask as
+`_snapshot_dates` (a gap > `MAX_WINDOW_SPAN_DAYS` breaks a run rather than continuing it);
+migration `0021` freezes `forecast_outcomes.base_stale_run_days`; `score_by_staleness`
+publishes the axis; `scripts/ab_test_frozen_runs.py` is the verification. 1,532 tests pass,
+up from 1,466. Record:
+`docs/changelog/2026-08-08-frozen-price-runs-dropped-from-labels.md`.
+
+**Both numbers in the "why" below are wrong as applied, and that is the step's main result:**
+
+1. **"0–1.8% at every tier ≥$1" measures resolved, 3-day-SMOOTHED anchors**, which are almost
+   never bit-identical. The raw voted series the label path sees is **12–27%** at ≥$1. Both are
+   real; neither sizes the other, and a citation must say which.
+2. **The rate is a 2026 feed property, not a market fact** — 0.5–0.8% through 2025 against
+   6–33% across 2026. So the rule voids **~30% of 2026 ≥$1 labels and ~0.6% of pre-2024 ones**:
+   a 2026 filter wearing a 13-year mask. Defensible, since 2026 is what production trains and
+   serves on, but not the even cleaning implied here.
+
+**It is also not surgical:** it takes **13.7–15.9% of *non-zero* ≥$1 labels** with it, so it can
+be net-harmful. The verification is therefore on paired interval **width** (the seed-only
+placebo floor, once per label regime), not on accuracy.
+
+**A new finding this step surfaced, and did NOT act on** — `aggregator_steam_7d/30d/90d` are
+Steam's trailing-window **mean sale price** voting against point-in-time asks, i.e. the MA(k)
+mechanism as an ingest decision, a basis error by the same argument that removed the bid. It is
+**not** a substitute for the run-length rule: it clears only **2.30pp of the 20.25pp** ≥$1 stale
+rate, because the smoothing is in the *fields* — `aggregator_sync` and `aggregator_steam_17mafo`
+are `last_24h` falling back to those same windows, and **there is no point-in-time Steam price in
+this archive**. Excluding the three windows is nearly free on coverage (670 item-days of 3.09M)
+but moves the voted median on **17.13%** of 2026 ≥$1 item-days (median **−7.16%**) and flips
+**5.75%** of return directions — half the bid's magnitude, same character. It needs its own step,
+its own `VOTED_CACHE_VERSION` bump, and it **subsumes the `aggregator_steam_17mafo` item open
+from step 1**. Dropping `aggregator_sync` as well would delete 2026-01 and 2026-02 in full —
+don't.
+
+- **Not done:** nothing re-scored or re-resolved, so `base_stale_run_days` is NULL on every
+  stored outcome and `staleness_bands` reads 100% `unknown` until new outcomes mature; no
+  retrain, so the rule first bites at the next Monday `mode=full`; and `stale_run_days` is
+  **not** a model feature — that is step 11, and it is **leak-adjacent**, since the 2026 source
+  mix changed four times and a run-length feature partly encodes the collection schedule.
+- **Overlaps step 7, and not additively.** `TRAIN_MIN_MEDIAN_PRICE = 1.0` removes the sub-$1
+  items outright; this rule drops ~39% of labels on the whole universe against 13.8–19.2% on the
+  ≥$1 subset. Once step 7 lands, step 6's effect falls to roughly a third. Do not sum them.
+
+<details>
+<summary>The original entry</summary>
 
 - **Do:** remove item-days from the **label set** at run ≥2 of bit-identical prices, or
   downweight by `1/(1+run_len)`. Compute `stale_run_days` while doing it — it is the same
@@ -322,10 +385,31 @@ Record: `docs/changelog/2026-08-08-embargo-and-harness-hygiene.md`.
 - **Effort:** small.
 - **Unblocks:** everything downstream, by shrinking label noise. Review §22 D2.
 
+</details>
+
 **After step 6 the system reports honestly. That is the point of stopping the count here.**
 
 ### Also no-retrain, from §10 Tier 1 but not in the review's own 1–11 ordering
 
+- **6c. Stop the Steam rolling-window feeds voting in the consensus** — NOT STARTED, and it is
+  **not** in the review; it was found while building step 6 (2026-08-08).
+  `aggregator_steam_7d/30d/90d` are Steam's trailing-window **mean sale price** — MA(7)/MA(30)/
+  MA(90) — voting on equal terms against point-in-time asks
+  (`collectors/csgotrader_aggregator.py:308-312`, `collectors/pipeline.py:132-135`). Same class
+  of basis error as `aggregator_buff163_buy`, which step 1 removed. **Do not scope it as a
+  staleness fix**: it clears only 2.30pp of the 20.25pp ≥$1 stale rate, because the smoothing is
+  in the *fields* — `aggregator_sync` and `aggregator_steam_17mafo` are `last_24h` **falling
+  back** to those same windows, which fires on exactly the illiquid items, and there is **no
+  point-in-time Steam price in this archive at all**. Cost: nearly free on coverage (670 lost
+  item-days of 3,093,793 on the ≥$1 cohort) but it **displaces the level** — the voted median
+  moves on **17.13%** of 2026 ≥$1 item-days, median **−7.16%** where it moves, and **5.75%** of
+  consecutive-day return directions flip. Half the bid's magnitude, same character, so it needs
+  its own step, its own changelog entry and a `VOTED_CACHE_VERSION` bump, and every A/B and label
+  from 2026-03 on would sit downstream of it. **It subsumes the `aggregator_steam_17mafo` item
+  still open from step 1.** Do **not** also drop `aggregator_sync`: that deletes 2026-01 and
+  2026-02 in full for the ≥$1 cohort (52,048 item-days) to buy a further 1.4pp — the fix there is
+  upstream, recording which field the fallback chain actually used. Effort: small, plus a
+  re-vote. Record: `docs/changelog/2026-08-08-frozen-price-runs-dropped-from-labels.md`.
 - **5c. Fix the Steam listing-page backfill to use the real cent-ceiling schedule** —
   NOT STARTED. The 1.1607 constant is **synthetic**: measured flat at **1.1606–1.1607 across
   four orders of magnitude, IQR 0.0002** over 63,767 matched pairs, where theory must swing
@@ -444,6 +528,148 @@ Each is free, none needs a new source. All are §24 entries; none is expected to
 of history**, which at `CV_STEP_DAYS = 150` produces **zero additional folds**. Case EV is
 blocked the same way — **128 usable days**, because 78.7% of contained items have their first
 priced day on exactly 2026-03-22. `usd_cny` has **7 days** of FX history.
+
+---
+
+## From §10 Tier 2 and Tier 3, ranked by the review and never tracked (R11–R19)
+
+The 1–11 ordering above is the review's "If I were building this myself", which stops at §10
+#10 plus step 11's candidate table. **Six items §10 ranked are absent from it.** They are
+labelled by their §10 rank (`R…`) rather than renumbered, so they cannot be read as steps.
+None was declined — they were dropped in transcription, and no entry in this repo records a
+decision either way. Order below is §10's ascending, not a re-ranking; two are worth knowing
+about before reading in order, though — **R19 is step 7's entry criterion**, and **R13 is
+described by the review as a larger lever than any feature on the list**.
+
+Three Tier 3 rows *are* accounted for elsewhere and are deliberately not repeated here: **#15**
+(per-item Getmansky–Lo–Makarov MA coefficient) is step 6 / step 11's `stale_run_days`, "the GLM
+θ in discrete form"; **#16** (cross-sectional reversal) is in step 11's table; **#17**
+("volume ↑ ⇒ price ↓") is downstream of R11, and volume features are shelved
+(`2026-08-06-volume-features-shelved.md`).
+
+### R11. Recover historical volume from the kieranpoc Kaggle dump — NOT STARTED
+
+- **Do:** backfill Steam price + volume from `kieranpoc/counter-strike-market-sale-data` —
+  **22,492 items, 99.3M data slices**, hourly for the trailing month and daily before it, back
+  to **2013**, snapshot as of **2024-05-04**.
+- **Why:** the archive's `volume` column has been **identically zero since 2026-04-16**. The
+  value is *not* return prediction — that is shelved and refuted — it is the **counting-noise
+  denominator** (§24 rank 16, `sale_count_24h`). §11's central finding is that
+  `AK-47 | Redline (Field-Tested)`, one of the most traded skins in the game, records **96
+  Steam sales in 24 hours**, while the archive's own 2025 distribution medians **69
+  sales/item-day overall, 20 at $50–500, 4 at $500+**, with **60% of $500+ item-days at 1–5
+  sales**. Without a sales count there is no way to weight, screen, or even report which
+  item-days are statistically empty — and the thin tier *is* the served cohort.
+- **Caveats:** the review's own licence mark is **unconfirmed — verify on the page**. §24 is
+  explicit that the dead column **must not be reused in place**. And the `|r| < 0.002` figure
+  nine docs rest on is wrong in its reasoning: C4 measures pooled **+0.019 (7d) / +0.034
+  (30d)**, `$1–10` tier **+0.080** at 7d, on 4.46M rows — the *conclusion* (r² < 0.15%,
+  economically trivial) survives, so this is not a route back to volume as a predictor.
+- **Effort:** medium. §10 Tier 2 #11.
+
+### R12. Backfill retroactive supply depth from `atalantus` — NOT STARTED
+
+- **Do:** take **listing counts only** from `atalantus/buff-price-history-archive` — BUFF163
+  min price **2021-07-26 → 2024-01-19**, with the listing count populated after **2023-01-25**.
+- **Why:** supply depth is accumulation-blocked, and the block is structural rather than a
+  wait: **25 days of paired history at `CV_STEP_DAYS = 150` yields zero additional folds**
+  (step 11's blocked list). Roughly a year of retroactive listing counts is the only thing on
+  the table that changes that arithmetic. §24 rank 25 puts `supply_change_7d` at low-medium —
+  "the level is ~0pp; only velocity was ever plausible" — at h=30.
+- **Not the import that was declined.** The same repo's **price** dump was declined because it
+  shrinks `target_items` **521 → 426** (§10, "what not to collect"). This is a different
+  column and a different use, and the two should not be conflated in either direction.
+- **Caveats:** licence is **none — all rights reserved**. The 2023-01 → 2024-01 window does
+  not overlap the multi-source era, so it adds folds to *history*, not observations to the
+  served present. And it carries listing counts, **not bids** — there is no retroactive bid
+  anywhere (§16), so it does not unblock the liquidity family.
+- **Effort:** medium. §10 Tier 2 #12.
+
+### R13. Fix the cohort inversion — NOT STARTED
+
+- **Do:** change *which items are served*, through the `is_backfilled` gate.
+- **Why:** §1's table is the review's "most consequential product fact":
+
+  | Cohort | ≥$1 | <$1 | % ≥$1 |
+  |---|---:|---:|---:|
+  | All items with recent data | 26,468 | 14,955 | **63.9%** |
+  | Items actually forecast | 1,423 | 7,268 | **16.4%** |
+
+  The archive is two-thirds dollar-plus; the served cohort is **84% sub-dollar** — the tier
+  carrying the **35.5% spread** and **37–42% bit-identical carry-forward** rate. The review:
+  *"the gate excludes most of the items that have tradeable signal and includes mostly ones
+  that don't … a larger lever than any feature, and it is a data-plumbing problem
+  (`is_backfilled`), not a modelling one."*
+- **Half of it is already instrumented.** Step 3's `FLOOR_SWEEP` ($1 / $5 / $20) is exactly
+  the read for the cheap half — raising `MIN_SERVED_PRICE_USD` removes the bad cohort without
+  adding a single item, and step 3 deliberately left that decision to follow the sweep. The
+  expensive half is *adding* the ≥$1 items the gate excludes, which runs into the dead
+  onboarding path; the Steam listing-page route is the only live way in (extrapolated pool
+  **5,542 → ~31,590 items**, `target_items` **521 → 758**), which is also why **5c** matters
+  more than its size suggests.
+- **Touches:** the `is_backfilled` plumbing, `backend/api/serving_policy.py`.
+- **Effort:** medium. §10 Tier 2 #13.
+
+### R14. Mechanical supply-position features — NOT STARTED
+
+- **Do:** trade-up **fuel vs output** position, and drop-pool status. The third member of §10's
+  row, `float_range_capped`, is already in step 11's table.
+- **Why:** 2025-10-22 is the one dated event where item attributes dominated the market factor,
+  and what dispersed the cross-section was mechanical position, not cosmetics. Valve extended
+  the trade-up contract to **5 Covert → 1 knife or glove**, unannounced; knives and gloves fell
+  while **Coverts rose 10–20× in extreme cases, because they became trade-up fuel**. R6 is the
+  same shape and case-specific: Valve silently zeroed the rare drop pool and **discontinued
+  cases went +15–57% while weapon skins were unaffected**. The map is **free and static**
+  (ByMykel, MIT), and §25 is explicit that this is a *different feature class* from the refuted
+  cosmetic bundle.
+- **The caveat that should keep it last:** §25 rates trade-up position "real (Oct-2025)" but
+  firing **only on unannounced rule changes**. A feature informative on a handful of dates in
+  13 years cannot clear the **2.21–3.69pp** item-level MDE; it belongs in step 9's date-level
+  frame or as a conditioning variable, not as a per-item column. The standing no-winsorising
+  rule is the same finding from the other side — clipping 2025-10-22 deletes the only
+  observation that carries this information.
+- **Effort:** medium. §10 Tier 3 #14.
+
+### R18. Split conformal → adaptive conformal (ACI) — NOT STARTED
+
+- **Do:** measure band coverage per tier **and per regime window** first, then adopt Gibbs &
+  Candès (2021, *NeurIPS*) Adaptive Conformal Inference — α adjusted online from realised
+  coverage error — only if it fails. Xu & Xie (2021, *ICML*) EnbPI is the residual-pool-refresh
+  variant.
+- **Why:** the served band is **split** conformal, which assumes exchangeability, and §12's
+  regime record is a list of dated exchangeability breaks. §20's gate is **|coverage error| ≤
+  5pp overall and ≥60% in any single regime window**, and it says in as many words that
+  failures there *are* the ACI business case. This is the only item in the entire review that
+  improves **something a user actually sees**.
+- **State of play:** `interval_coverage` already exists (`backend/backtest/scoring.py:170`), is
+  stored, is served on `/accuracy`, and — since step 3 — is computed per tier and per floor.
+  **What does not exist is the per-regime-window read and the gate**, so the business case is
+  one query away from being decidable either way.
+- **Effort:** small to measure, small-to-medium to implement. §10 Tier 3 #18.
+
+### R19. Deflate the accumulated A/Bs for multiplicity — NOT STARTED, and it gates step 7
+
+- **Do:** declare the trial count (§20 puts it at **≥15 A/Bs**), apply the Deflated Sharpe /
+  PBO framework (Bailey & López de Prado 2014, *JPM* 40(5)), and hold new results to
+  **t > 3.0** (Harvey, Liu & Zhu 2016, *RFS* 29(1)) rather than 2.0.
+- **Why:** a dozen-plus A/Bs against one panel means the single-comparison CI is the wrong
+  instrument, and §3 states the consequence without hedging: the ≥$1 universe result
+  (**+3.50pp at 30d**) *"is the only surviving positive … and it should still be deflated for
+  multiplicity before being called established."* **Step 7 ships that result**, so this is not
+  bookkeeping — it is step 7's entry criterion, and it sits alongside the look-ahead caveat
+  step 7 already carries.
+- **The blocker is real: there is no CPCV path in this repo** (verified — no combinatorial
+  split anywhere under `backend/`). §19's design is Track A purged expanding-window
+  walk-forward for shipping and calibration, Track B **CPCV (N=12 / k=2 → 66 splits, 11
+  backtest paths)** for feature decisions, never swapped — *"you cannot compute PBO from a
+  single walk-forward path, which is why §3's multiplicity problem currently has no
+  instrument."* Building Track B is medium, not small.
+- **Cheaper partial, available now:** step 2 already adopted the t > 3.0 hurdle for PT, so
+  extending it to the paired-A/B verdicts is a threshold change; and Jensen, Kelly & Pedersen
+  (2023, *JF* 78(5), 2465–2518) Bayesian hierarchical shrinkage is the right tool for the
+  many-small-A/Bs problem **without** CPCV (code: `github.com/bkelly-lab/ReplicationCrisis`).
+- **Effort:** small for the hurdle and the trial-count declaration; medium for the instrument.
+  §10 Tier 3 #19.
 
 ---
 

@@ -290,6 +290,21 @@ class ForecastOutcome(Base):
     # same estimator as actual_price. Distinct from current_price, which is
     # whatever the serving run happened to write and is no longer scored on.
     base_price = Column(Float, nullable=True)
+    # Length of the frozen (bit-identical) price run the forecast-date anchor
+    # sat on, over the UNSMOOTHED voted series; 0 means a fresh price level.
+    # A frozen anchor under-reports, so the return measured from it is the
+    # Getmansky-Lo-Makarov MA(k) artifact rather than a market move.
+    #
+    # A frozen observation, like base_price: resolved from the archive at the
+    # same moment, never in _REFRESH_VERDICTS_SQL's SET clause, moved only by
+    # --reresolve. NULL means "unknown", NOT zero — every row resolved before
+    # 2026-08-08 carries NULL and backtest.scoring buckets those as `unknown`
+    # rather than pooling them with the fresh ones.
+    #
+    # Do not compare this against the raw-series staleness rates: this is a
+    # property of a SMOOTHED anchor. The >=$1 cohort reads 0-1.8% stale here
+    # and 12-27% on the unsmoothed series the label path sees.
+    base_stale_run_days = Column(Integer, nullable=True)
     direction_predicted = Column(String(10), nullable=True)
     # --- DERIVED VERDICTS, REFRESHED TO MATCH CURRENT SCORING ---------------
     # direction_actual, direction_correct, in_interval, abs_error and pct_error

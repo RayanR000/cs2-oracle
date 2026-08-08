@@ -38,6 +38,7 @@ from backtest.resolution_gate import (
     evaluate_gate,
 )
 from backtest.directional_test import PT_T_HURDLE
+from models.staleness import stale_run_lookup
 from backtest.scoring import (
     FLAT_TOLERANCE,
     FLOOR_SWEEP,
@@ -611,6 +612,10 @@ def _records_from_frozen_outcomes(db, min_price=0, forecast_ids=None):
             "base_price": base,
             "actual_price": actual,
             "price_tier": price_tier(base),
+            # Frozen at resolution time, so the staleness axis stays available
+            # to an archive-free --rescore. None on every row resolved before
+            # 2026-08-08; score_by_staleness buckets those as `unknown`.
+            "base_stale_run_days": getattr(r, "base_stale_run_days", None),
             "item_id": r.item_id,
             # The clustering unit. Outcomes sharing a forecast_date share a
             # market-wide move, so the CI must resample these, not items.
@@ -876,6 +881,10 @@ def _outcome_to_mapping(row):
         "target_date": row.target_date,
         "current_price": row.current_price,
         "base_price": row.base_price,
+        # Carried through even though nothing here recomputes it. append_table
+        # dedups on forecast_id and REPLACES the whole row, so a projection
+        # that omitted the column would blank it on every row it touched.
+        "base_stale_run_days": row.base_stale_run_days,
         "predicted_price_low": row.predicted_price_low,
         "predicted_price_mid": row.predicted_price_mid,
         "predicted_price_high": row.predicted_price_high,
@@ -1071,6 +1080,11 @@ def backtest_forecasts(db, today=None, min_price=0, reresolve=False, rescore=Fal
         anchor_dates = [a[1] for a in anchors]
         voted = load_voted_prices(archive_dir, sorted(slugs), min(anchor_dates), max(anchor_dates))
         prices = resolve_anchors(voted, anchors)
+        # Run length on the UNSMOOTHED voted series, keyed (slug, day). Computed
+        # here rather than in scoring because `voted` exists only on this path:
+        # backtest/scoring.py is a pure function of the frozen row and
+        # --rescore never opens the archive. See migration 0021.
+        stale_runs = stale_run_lookup(voted)
         logger.info(f"  Resolved {len(prices):,} of {len(anchors):,} anchors")
 
         for f in forecasts:
@@ -1178,6 +1192,9 @@ def backtest_forecasts(db, today=None, min_price=0, reresolve=False, rescore=Fal
                 # real serving-time value or a genuine NULL, not a stand-in.
                 "current_price": f.current_price,
                 "base_price": base,
+                # None, not 0, when the slug-day is absent from `voted` — an
+                # unknown run length must never read as "the price was fresh".
+                "base_stale_run_days": stale_runs.get((slug, f_date)),
                 "predicted_price_low": low,
                 "predicted_price_mid": mid,
                 "predicted_price_high": high,

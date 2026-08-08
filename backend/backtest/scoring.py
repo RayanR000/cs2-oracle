@@ -45,6 +45,80 @@ CONFIDENCE_TARGET_ACCURACY = 80.0
 MIN_FORECAST_DATES = 20
 
 
+# Staleness bands over `base_stale_run_days`, as (label, lower, upper) with
+# upper exclusive and None meaning open.
+#
+# FIXED BANDS, NOT QUARTILES. The friction-conditioned tier-scoring spec asked
+# for a 4-quartile staleness axis, and quartiles are the wrong estimator here:
+# the distribution is ~80% zeros on the >=$1 cohort (measured 2026-08-08), so
+# q1 = q2 = q3 = 0 and a data-driven cut collapses to a single populated bucket
+# that would then silently be reported as four. These bands are chosen to
+# straddle the mechanism instead — a fresh level, a single repeat, a short run,
+# and a run long enough that the series has plainly stopped reporting.
+#
+# `unknown` is a band, not a default. Every outcome resolved before 2026-08-08
+# carries a NULL base_stale_run_days, and folding those into the fresh bucket
+# would report 13 years of unmeasured rows as measured-fresh.
+STALENESS_BANDS = (
+    ("fresh", 0, 1),
+    ("repeat_1", 1, 2),
+    ("run_2_6", 2, 7),
+    ("run_7_plus", 7, None),
+)
+STALENESS_UNKNOWN = "unknown"
+
+
+def staleness_band(run_days) -> str:
+    """Which STALENESS_BANDS label a `base_stale_run_days` value falls in."""
+    if run_days is None:
+        return STALENESS_UNKNOWN
+    try:
+        v = int(run_days)
+    except (TypeError, ValueError):
+        return STALENESS_UNKNOWN
+    if v < 0:
+        return STALENESS_UNKNOWN
+    for label, lo, hi in STALENESS_BANDS:
+        if v >= lo and (hi is None or v < hi):
+            return label
+    return STALENESS_UNKNOWN
+
+
+def score_by_staleness(records: list[dict]) -> dict:
+    """Directional accuracy per staleness band. Never pooled.
+
+    The axis `docs/superpowers/specs/2026-08-07-friction-conditioned-tier-scoring-design.md`
+    deferred to step 6. Reported as a split rather than used as a filter, for
+    the same reason the carry-forward partition is: "how much of our accuracy
+    is frozen prices" has to stay answerable.
+
+    Read this against the anchor, not the raw series. `base_stale_run_days` is
+    measured on a SMOOTHED anchor (median of the last SMOOTH_WINDOW
+    observations), where the >=$1 cohort reads 0-1.8% stale, against 12-27% on
+    the unsmoothed voted series the training label path sees. The two are
+    different quantities and neither sizes the other.
+    """
+    buckets: dict[str, list] = defaultdict(list)
+    for r in records:
+        buckets[staleness_band(r.get("base_stale_run_days"))].append(r)
+
+    out = {}
+    n = len(records)
+    for label in [b[0] for b in STALENESS_BANDS] + [STALENESS_UNKNOWN]:
+        rows = buckets.get(label, [])
+        out[label] = {
+            "n": len(rows),
+            "share_pct": round(len(rows) / n * 100, 2) if n else 0.0,
+            # None rather than 0.0 on an empty band: an empty band has no
+            # accuracy, and a zero reads as the model scoring nothing.
+            "directional_accuracy": (
+                round(sum(r["direction_correct"] for r in rows) / len(rows) * 100, 2)
+                if rows else None
+            ),
+        }
+    return out
+
+
 def direction_from_return(ret: float) -> str:
     if ret > FLAT_TOLERANCE:
         return "up"
@@ -294,6 +368,11 @@ def score_cohort(records: list[dict]) -> tuple[dict, int]:
         "directional_accuracy_unchanged": _dir_acc(unchanged),
         "n_unchanged": n_unchanged,
         "unchanged_pct": round(n_unchanged / n * 100, 2),
+        # The finer staleness axis the 2-bucket carry-forward split above
+        # approximates. `unchanged` asks whether the two legs came out equal;
+        # this asks how long the anchor had already been frozen before the
+        # forecast was made, which is the direction the MA(k) mechanism runs.
+        "staleness_bands": score_by_staleness(records),
         "interval_coverage": round(interval_coverage, 2),
         "baseline_directional_accuracy": round(baseline_directional_accuracy, 2),
         "improvement_over_baseline_pp": round(directional_accuracy - baseline_directional_accuracy, 2),

@@ -36,10 +36,18 @@ from models.item_parser import (
 SCRIPTS = Path(__file__).resolve().parents[1] / "scripts"
 
 #: Every harness, and whether it reads the price archive at all.
-#: `recency_weights` takes a pre-built frame on `--frame` and issues no archive
-#: query, so it is the one module with nothing to filter.
+#:
+#: Two modules issue no archive query and so have nothing to filter:
+#: `recency_weights` takes a pre-built frame on `--frame`, and `frozen_runs`
+#: delegates every read to `walkforward_backtest.run_walkforward`, which
+#: already routes through `archive_universe_sql_filter`.
+#:
+#: Adding a name here is a claim that the module contains no archive read.
+#: `test_the_exempt_harnesses_really_do_not_read_the_archive` enforces it, so
+#: an exemption cannot be used to smuggle an unfiltered glob past the checks
+#: below.
 HARNESSES = sorted(p.stem for p in SCRIPTS.glob("ab_test_*.py"))
-NO_ARCHIVE_READ = {"ab_test_recency_weights"}
+NO_ARCHIVE_READ = {"ab_test_recency_weights", "ab_test_frozen_runs"}
 READS_ARCHIVE = [n for n in HARNESSES if n not in NO_ARCHIVE_READ]
 
 
@@ -137,6 +145,34 @@ class TestThePredicates:
         from models import forecaster
 
         assert forecaster.BID_SOURCES is BID_SOURCES
+
+
+@pytest.mark.parametrize("name", sorted(NO_ARCHIVE_READ))
+def test_the_exempt_harnesses_really_do_not_read_the_archive(name):
+    """An exemption must be earned, not asserted.
+
+    NO_ARCHIVE_READ turns off every universe check for a module, so without
+    this the set is a hole: adding a name to it is all anyone would need to do
+    to land an unfiltered glob. A module claiming the exemption must contain no
+    archive read of any kind — if it grows one, it stops being exempt and the
+    checks below apply to it again.
+    """
+    src = (SCRIPTS / f"{name}.py").read_text()
+    reads = [
+        line.strip() for line in src.splitlines()
+        # `prices_relation` is the archive reader outright. A bare
+        # `read_parquet(` is DuckDB's, inside a SQL string, and is an archive
+        # glob; `pd.read_parquet(` is pandas opening a file the CALLER named,
+        # which is how `recency_weights` takes its `--frame` and is not an
+        # archive read at all.
+        if re.search(r"prices_relation\s*\(", line)
+        or re.search(r"(?<!pd\.)(?<!pandas\.)\bread_parquet\s*\(", line)
+        if not line.strip().startswith("#")
+    ]
+    assert not reads, (
+        f"{name} is in NO_ARCHIVE_READ but reads the archive: {reads}. "
+        f"Remove the exemption and declare _UNIVERSE."
+    )
 
 
 @pytest.mark.parametrize("name", READS_ARCHIVE)

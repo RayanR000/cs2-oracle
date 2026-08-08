@@ -299,3 +299,45 @@ def test_backfill_skips_a_table_with_no_item_id(ops_dir):
 def test_backfill_skips_an_absent_table(ops_dir):
     from scripts.backfill_ops_item_slug import backfill
     assert backfill(ops_dir.parent, ["nope"], MAP, apply=True) == 0
+
+
+def test_the_mirror_projection_carries_every_stored_column():
+    """`_outcome_to_mapping` must project the WHOLE row, not a chosen subset.
+
+    `append_table` dedups on `forecast_id` and REPLACES the row, so a column
+    the projection forgets is blanked on every row a verdict refresh touches —
+    silently, on data that only `--reresolve` could rebuild. That is the bug
+    `item_slug` already cost one fix for, and `base_stale_run_days` (added
+    2026-08-08) is the second column to land in this shape.
+
+    Asserting against the table's own columns rather than a hardcoded list is
+    the point: the next column added to `forecast_outcomes` fails here until it
+    is projected, instead of failing in production as a column of NULLs.
+    """
+    from scripts.backtest_accuracy import _outcome_to_mapping
+
+    stored = {c.name for c in ForecastOutcome.__table__.columns}
+    # Three deliberate omissions, named rather than computed so a NEW column
+    # cannot quietly join them:
+    #   id            — the surrogate key; the mirror keys on forecast_id.
+    #   evaluated_at  — stamped by _refresh_verdict_columns with the run clock.
+    #   resolved_at   — stamped by the caller from the row in hand.
+    # The last two are supplied immediately after the projection, so they are
+    # caller-owned rather than dropped.
+    caller_supplied = {"evaluated_at", "resolved_at"}
+    expected = stored - {"id"} - caller_supplied
+
+    row = ForecastOutcome(
+        id=1, forecast_id=1, item_id=1, forecast_date=date(2026, 7, 1),
+        horizon_days=7, target_date=date(2026, 7, 8), current_price=10.0,
+        predicted_price_mid=11.0, actual_price=10.5, base_price=10.0,
+        base_stale_run_days=3, direction_predicted="up",
+    )
+    projected = set(_outcome_to_mapping(row))
+
+    assert not expected - projected, (
+        f"_outcome_to_mapping drops stored column(s): {sorted(expected - projected)}. "
+        f"append_table replaces the whole row, so these would be blanked on every "
+        f"refreshed row."
+    )
+    assert _outcome_to_mapping(row)["base_stale_run_days"] == 3
