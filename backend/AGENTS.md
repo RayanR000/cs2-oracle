@@ -94,8 +94,11 @@ points at production Supabase — see the root `AGENTS.md` gotcha before running
   shard can contrast in-process, and `merge_price_primitives_ab.py` pairs the shards at fold
   grain off `per_fold`. Only `NoPairedRows` is catchable — a missing `cluster_key` is a wiring
   bug and propagates, because swallowing it restores the 2026-08-07 under-dispersion bug
-  behind a confident wrong message. **Every stored A/B result predates this**, and no harness
-  has been re-run.
+  behind a confident wrong message. **Every A/B result stored in this repo predates this.**
+  Three harnesses (`training_breadth`, `item_metadata`, `csfloat_basis`) were re-run on
+  2026-08-08 and all three refutations survived, but those results live in a scratchpad, not
+  here; the other **ten have not been re-run**. See
+  `docs/changelog/2026-08-08-migrated-archive-emptied-eight-harnesses.md`.
 - **Never quote a directional accuracy on its own.** The published headline is a
   Pesaran–Timmermann test (`backtest/directional_test.py`), computed per forecast date with a
   Newey–West t-stat over dates and a `|t| > 3.0` hurdle; `score_cohort` stores it as `pt_*` and

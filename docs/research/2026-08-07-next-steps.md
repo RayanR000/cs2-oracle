@@ -484,9 +484,16 @@ are here so they are not re-proposed.
 
 ## Open questions this list does not answer
 
-- The **three Appendix refutations** (CSFloat, ByMykel, training-breadth) still have
-  date-clustered intervals and have **not** been re-derived. Probably still correct in sign;
-  the intervals are wrong. Any citation should say so.
+- ~~The **three Appendix refutations** (CSFloat, ByMykel, training-breadth) still have
+  date-clustered intervals and have **not** been re-derived.~~ **Re-derived 2026-08-08 and all
+  three survive**, under the `H + 13` embargo, the universe filter and fold-clustered
+  intervals: CSFloat null at all four horizons, ByMykel `treatment_vs_placebo` null at all
+  four, breadth positive at **14d only** (mid +2.33pp [+0.44, +4.74]) and now null at 30d.
+  Two caveats a citation must carry: the results are **not stored in this repo** (scratchpad
+  artifacts only, reproducible by a 16m28s re-run), and two sub-findings are unresolved — the
+  CSFloat **14d placebo excludes zero**, and ByMykel `age_only` reads positive at 3d/14d/30d
+  *against baseline*, with no placebo contrast computed. See
+  `docs/changelog/2026-08-08-migrated-archive-emptied-eight-harnesses.md`.
 - The **A/B harness is not reproducible run-to-run** (`mean_diff_pp` −0.1581 → −0.0026 on
   identical commands, with `n_paired` and `n_dates` also moving). Best candidate cause is a
   changing ask-source set with no `n_ask_sources` column to detect it — the mean market return
