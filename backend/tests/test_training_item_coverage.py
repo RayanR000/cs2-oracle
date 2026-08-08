@@ -216,6 +216,80 @@ class TestMedianPriceFloor:
         )
 
 
+class TestFoldMedianPriceItems:
+    """The look-ahead-free counterpart, used to re-derive the floor's +3.50pp.
+
+    `_filter_by_median_price` selects on a median over the whole 2013-2026
+    frame, so a 2019 fold trains on "items that were >= $1 at some point
+    through 2026". The effect it was credited with is h=30 only and null at
+    3/7/14, which is the signature of survivorship rather than of liquidity —
+    so the number cannot adjudicate itself and this helper exists to re-derive
+    it. See docs/superpowers/plans/2026-08-08-per-fold-price-filter.md.
+    """
+
+    @staticmethod
+    def _frame():
+        import pandas as pd
+        # `riser` is the survivorship case: pennies before the cutoff, $50
+        # after. `faller` is its mirror. Only `faller` was nameable in 2020.
+        days = pd.to_datetime(["2020-01-01", "2020-01-02",
+                               "2026-01-01", "2026-01-02"])
+        return pd.DataFrame({
+            "item_id": ["riser"] * 4 + ["faller"] * 4 + ["steady"] * 4,
+            "date": list(days) * 3,
+            "price": [0.03, 0.04, 50.0, 52.0,
+                      50.0, 52.0, 0.03, 0.04,
+                      5.0, 5.0, 5.0, 5.0],
+        })
+
+    def test_an_item_that_only_clears_the_floor_later_is_excluded(self):
+        import pandas as pd
+        out = ItemForecaster._fold_median_price_items(
+            self._frame(), 1.0, pd.Timestamp("2021-01-01"))
+        assert "riser" not in out, (
+            "selecting on post-cutoff prices is the look-ahead this helper "
+            "exists to remove"
+        )
+
+    def test_an_item_that_cleared_it_and_collapsed_is_included(self):
+        import pandas as pd
+        out = ItemForecaster._fold_median_price_items(
+            self._frame(), 1.0, pd.Timestamp("2021-01-01"))
+        assert "faller" in out, (
+            "the universe is what was knowable at the cutoff, not what "
+            "survived to the end of the sample"
+        )
+
+    def test_the_full_sample_filter_disagrees_on_the_same_frame(self):
+        """The two must differ here, or the fixture is not testing the leak."""
+        import pandas as pd
+        full = set(ItemForecaster._filter_by_median_price(
+            self._frame(), 1.0)["item_id"])
+        fold = ItemForecaster._fold_median_price_items(
+            self._frame(), 1.0, pd.Timestamp("2021-01-01"))
+        assert "riser" in full and "riser" not in fold
+
+    def test_an_empty_pre_cutoff_window_yields_nothing(self):
+        """Not everything: a fallback to "keep all" would silently restore the
+        full-sample universe on the earliest folds, where the leak is largest."""
+        import pandas as pd
+        out = ItemForecaster._fold_median_price_items(
+            self._frame(), 1.0, pd.Timestamp("2013-01-01"))
+        assert out == set()
+
+    def test_rows_on_the_cutoff_day_are_excluded(self):
+        """`date < cutoff`, strictly. The cutoff is already the embargoed
+        boundary, so admitting its own day reads one day of the purge."""
+        import pandas as pd
+        frame = self._frame()
+        out = ItemForecaster._fold_median_price_items(
+            frame, 1.0, pd.Timestamp("2020-01-01"))
+        assert out == set(), (
+            "only 2020-01-01 rows exist before this cutoff if the comparison "
+            "is <=, and faller would clear the floor on them"
+        )
+
+
 class TestTrainMinMedianPriceEnv:
     @staticmethod
     def _fn():

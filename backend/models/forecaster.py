@@ -3119,6 +3119,41 @@ class ItemForecaster:
         )
         return out
 
+    @staticmethod
+    def _fold_median_price_items(price_df: pd.DataFrame,
+                                 min_median_price: float,
+                                 cutoff) -> set:
+        """Items whose median price over ``date < cutoff`` clears the floor.
+
+        The look-ahead-free counterpart to `_filter_by_median_price`, which
+        takes the median over the **whole** frame and so hands every fold a
+        universe nobody could name at that fold's decision time: an item that
+        was a penny sticker in 2019 and $50 in 2025 enters a 2019 fold
+        *because it later rose*. This selects on the pre-cutoff window only.
+
+        ``cutoff`` must be ``val_start - embargo_days(horizon)``, never
+        ``val_start``. The selection statistic is itself a function of prices,
+        so computed up to the boundary it reads the embargo window — the same
+        leak in a smaller form. Never pass a bare horizon; see
+        `.claude/rules/labels-and-embargo.md`.
+
+        An empty pre-cutoff window returns an empty set, not everything. A
+        fold with no history to select on has no defensible universe, and
+        falling back to "keep all" would silently restore the full-sample
+        behaviour on exactly the early folds where the leak is largest.
+
+        Research use only: `build_training_data` cannot call this, because a
+        fold-varying universe would move the market factor and the row budget
+        alongside the treatment. See
+        `docs/superpowers/plans/2026-08-08-per-fold-price-filter.md`.
+        """
+        cutoff = pd.Timestamp(cutoff)
+        past = price_df[pd.to_datetime(price_df["date"]) < cutoff]
+        if past.empty:
+            return set()
+        item_median = past.groupby("item_id")["price"].median()
+        return set(item_median[item_median >= min_median_price].index)
+
     def _flag_corrupt_items(self, price_df: pd.DataFrame,
                             jump_threshold: float = 500.0,
                             max_jumps: int = 10) -> set:

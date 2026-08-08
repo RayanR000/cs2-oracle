@@ -25,7 +25,8 @@ review or from the changelog entry that measured them; nothing here is estimated
 **The 1–11 ordering is not the whole of §10.** It follows the review's "If I were building this
 myself", which omits six items §10 itself ranked; they are tracked in
 **"From §10 Tier 2 and Tier 3, ranked by the review and never tracked (R11–R19)"** below. One of
-them, **R19**, is step 7's entry criterion.
+them, **R19**, was step 7's entry criterion — see R19 for why 2026-08-08 removed the result it
+was meant to deflate.
 
 ---
 
@@ -481,30 +482,38 @@ don't.
 
 ## Retrain required (steps 7–11)
 
-### 7. Ship `TRAIN_MIN_MEDIAN_PRICE` at a `TRAIN_FEATURE_ROWS ≥ 1.0M` budget — NOT STARTED
+### 7. Ship `TRAIN_MIN_MEDIAN_PRICE` at a `TRAIN_FEATURE_ROWS ≥ 1.0M` budget — NOT STARTED; **re-derived 2026-08-08, accuracy claim withdrawn**
 
-- **Do:** set the knob. **Re-derive the result first with a per-fold price filter** — the
-  current version selects on a full-sample median.
-- **Why:** the one surviving positive, **paired +3.50pp [+1.56, +5.98] at 30d**, null at
-  3/7/14d (`2026-08-07-training-item-universe.md`). More importantly it **removes item-draw
-  variance entirely** rather than shrinking it — the 99-item subsample's seed alone moves
-  `acc_ge1` by sd **1.5–3.1pp**. The spread data (35.5% sub-$1) argues the honest floor is
-  **above** $1, not at it.
-- **Caveat that must be resolved first:** `_filter_by_median_price` runs on the **entire
-  window before any split** — "items whose median 2013→2026 price is ≥$1" was not a set
-  anyone could have named in 2019. The effect appears **only at h=30**, which is the
-  signature a look-ahead selection produces (§18 L2).
-  **Planned 2026-08-08:** `docs/superpowers/plans/2026-08-08-per-fold-price-filter.md`. Three
-  things that plan found which are not stated here. (a) `ab_test_training_breadth.py:269-276`
-  carries the **same leak** — `HAVING MEDIAN(...) >= 1.0`, `COUNT(DISTINCT day) >= 180` and
-  `LIMIT 870` are all full-sample — so the harness that produced the +3.50pp cannot adjudicate
-  it. (b) A per-fold filter must run *after* `engineer_features`, which silently moves the
-  market factor from the ≥$1 universe to the pooled one, so it is two treatments unless held
-  fixed. (c) It also runs after `_stratified_item_subsample`, which **destroys the budget
-  argument step 7 exists for** — hence the plan derives per-fold but would ship an *anchored*
-  filter. A third `per_fold_matched` arm is required, or "the leak is gone" and "there is less
-  data" are the same observation. And the whole thing must be re-derived on the post-step-6
-  label set.
+- **Status:** the re-derivation the entry demanded is **DONE**
+  (`docs/changelog/2026-08-08-per-fold-price-filter-rederived.md`, plan stage 1). The knob is
+  still **NOT STARTED** as a shipping decision, and the decision now rests on **measurability
+  alone**.
+- **Do:** set the knob. The per-fold re-derivation is no longer a precondition; it has been run.
+- **Why — accuracy: WITHDRAWN.** The **+3.50pp [+1.56, +5.98] at 30d** does not reproduce. The
+  same contrast (`ge1_full` vs `prod_a`, now `full_sample` vs `prod_pool`) reads **+1.642pp
+  [−0.809, +4.505], null**, and the `prod_pool_b` placebo puts this instrument's item-draw
+  noise floor at **±3–4pp**, so a +1.6pp effect cannot resolve here at all. The cause is not
+  the filter: the train-side embargo the original harness lacked (worth +10.15pp at 30d
+  unpurged, step 5), step 6's label voiding (**48,338 30d targets** on that frame) and the two
+  universe rules all changed underneath it, confounded with each other. **The stored +3.50pp
+  is not recoverable in isolation and should not be cited again.**
+- **Why — measurability: UNCHANGED, and it was always the stronger reason.** The floor
+  **removes item-draw variance by construction** rather than shrinking it — the 99-item
+  subsample's seed alone moves `acc_ge1` by sd **1.5–3.1pp**. That is a determinism argument,
+  not an accuracy claim, and nothing in the re-derivation touches it. The spread data (35.5%
+  sub-$1) still argues the honest floor is **above** $1, not at it.
+- **The look-ahead caveat is RESOLVED, and it was not the problem.** `_filter_by_median_price`
+  really does select on a full-sample median — measured at h=30, **876 items used where 319
+  were knowable** at the earliest fold's cutoff, plus **141 items** that enter some per-fold
+  universe and never the full-sample one. But removing it moves DA by **−0.004pp
+  [−0.664, +0.851] at 30d** and **−0.362pp [−1.135, +0.318] at 14d**, both null; all three ≥$1
+  arms land on 55.25% at 30d. The leak is real and not load-bearing.
+- **If it ships, ship the anchored filter** (plan stage 2), which is unstarted. It is a
+  cleanliness argument now, not an accuracy one: it keeps the market factor on the ≥$1
+  universe and the row budget buying ≥$1 breadth (the plan's B1 and B2), and it buys no
+  accuracy. `_fold_median_price_items` exists in `models/forecaster.py` as a research helper;
+  `build_training_data` deliberately does not call it.
+- **Still gated by R19** (multiplicity deflation), unaffected by the re-derivation.
 - **Touches:** `TRAIN_MIN_MEDIAN_PRICE` and `TRAIN_FEATURE_ROWS` in
   `backend/scripts/forecast_prices.py`; `_filter_by_median_price` in
   `backend/models/forecaster.py`.
@@ -601,9 +610,9 @@ The 1–11 ordering above is the review's "If I were building this myself", whic
 #10 plus step 11's candidate table. **Six items §10 ranked are absent from it.** They are
 labelled by their §10 rank (`R…`) rather than renumbered, so they cannot be read as steps.
 They were dropped in transcription, not declined. Order below is §10's ascending, not a
-re-ranking; two are worth knowing about before reading in order, though — **R19 is step 7's
-entry criterion**, and **R13 is described by the review as a larger lever than any feature on
-the list**.
+re-ranking; two are worth knowing about before reading in order, though — **R19 was step 7's
+entry criterion** until 2026-08-08 withdrew the positive it deflates, and **R13 is described by
+the review as a larger lever than any feature on the list**.
 
 **Two are now decided (2026-08-08): R11 and R12 are DECLINED**, both on coverage/fold-count
 grounds and neither on licence. R18 and R19 keep their rank but their effort estimates were
@@ -793,9 +802,11 @@ here: the raw dump is **113 MB via Git LFS**, not the 24 MB xz that `data-source
 - **Why:** a dozen-plus A/Bs against one panel means the single-comparison CI is the wrong
   instrument, and §3 states the consequence without hedging: the ≥$1 universe result
   (**+3.50pp at 30d**) *"is the only surviving positive … and it should still be deflated for
-  multiplicity before being called established."* **Step 7 ships that result**, so this is not
-  bookkeeping — it is step 7's entry criterion, and it sits alongside the look-ahead caveat
-  step 7 already carries.
+  multiplicity before being called established."* **Updated 2026-08-08:** that positive no
+  longer exists to deflate — the re-derivation reads **+1.642pp [−0.809, +4.505], null**
+  (`2026-08-08-per-fold-price-filter-rederived.md`), so §3's premise is gone and this is now
+  bookkeeping over an all-null set rather than step 7's entry criterion. The argument for
+  doing it stands on its own; the urgency does not.
 - **The blocker is real: there is no CPCV path in this repo** (verified — no combinatorial
   split anywhere under `backend/`). §19's design is Track A purged expanding-window
   walk-forward for shipping and calibration, Track B **CPCV (N=12 / k=2 → 66 splits, 11
@@ -879,8 +890,9 @@ are here so they are not re-proposed.
   normal day. Hypothesis, not diagnosis. Step 1 removed one measured contributor to it — the
   bid's rejection flickered on **5.6%** of return pairs — but flicker was only a twentieth of
   that defect's effect, so this is not resolved.
-- **h=30 rests on 5,461 usable rows from one backdated date.** It carries both the +3.50pp
-  positive (step 7) and the largest unpurged inflation (step 5, now measured on the gate at
+- **h=30 rests on 5,461 usable rows from one backdated date.** It carried both the +3.50pp
+  positive (step 7 — **withdrawn 2026-08-08**, it re-derives to +1.642pp with an interval
+  covering zero) and the largest unpurged inflation (step 5, now measured on the gate at
   **+10.15pp**, 2026-08-08). No h=30 claim until ≥30 forecast dates mature.
 - **`|r| < 0.002`** for trade volume is quoted in nine documents and is **10–40× too small**:
   C4 measures pooled corr(vol z, fwd7) = **+0.019**, fwd30 = **+0.034**, item-fixed-effects
