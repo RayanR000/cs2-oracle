@@ -176,6 +176,97 @@ class TestNoHarnessGlobsUnfiltered:
         assert not offenders, f"{name} still globs the archive raw: {offenders}"
 
 
+#: Harnesses whose union builder filters rows on `source`, and the value each
+#: one asks for. Every one of them sniffed `"source" in cols` to decide whether
+#: to apply that filter, which was the same question as "is this a 2026 file"
+#: only until the archive was migrated.
+SOURCE_FILTERED = {
+    "ab_test_csfloat_basis": "aggregator_sync",
+    "ab_test_item_metadata": "aggregator_sync",
+    "ab_test_training_breadth": "aggregator_sync",
+    "ab_test_price_primitives": "aggregator_sync",
+    "ab_test_volume_features": "aggregator_sync",
+    "ab_test_feature_contribution": "STEAMCOMMUNITY",
+    "ab_test_direction_labels": "STEAMCOMMUNITY",
+    "ab_test_q50_sampling": "STEAMCOMMUNITY",
+}
+
+
+@pytest.fixture
+def migrated_archive(tmp_path):
+    """A **migrated** two-file archive: the shape that broke every harness.
+
+    `normalize_price_schema.py` materialises `source` on the pre-2026 files as
+    a typed all-NULL column. That is the correct migration — `source IS NULL`
+    is what "the pre-2026 series" means, per `db/archive.py::prices_relation`.
+    What it breaks is any caller that decided *whether* to filter on `source`
+    by asking whether the column exists. Before the migration those two
+    questions had the same answer; after it, the pre-2026 file takes the
+    `source = '...'` branch, matches nothing, and 13 years of prices vanish.
+    """
+    old = pd.DataFrame([
+        {"item_slug": "AK-47 | Redline (Field-Tested)", "day": date(2025, 6, 1),
+         "source": None, "mean_price": 10.0, "volume": 1},
+    ])
+    old.to_parquet(tmp_path / "prices-2025.parquet", index=False)
+    new = pd.DataFrame([
+        {"item_slug": "AK-47 | Redline (Field-Tested)", "day": date(2026, 7, 10),
+         "source": "aggregator_sync", "mean_price": 11.0, "volume": 1},
+    ])
+    new.to_parquet(tmp_path / "prices-2026-07.parquet", index=False)
+    return tmp_path
+
+
+class TestTheMigratedArchiveStillYieldsThePre2026Series:
+    """The 2026-08-08 archive migration silently emptied eight harnesses.
+
+    All three that were re-run that day failed on an empty universe — one with
+    `IndexError: list index out of range`, one with `IN ()`, one on a stale
+    cache fingerprint. None of them said "zero rows", which is why this is
+    pinned behaviourally and not just by reading the source.
+    """
+
+    @pytest.mark.parametrize(
+        "name", ["ab_test_csfloat_basis", "ab_test_item_metadata",
+                 "ab_test_training_breadth"])
+    def test_the_union_returns_pre_2026_rows(self, name, migrated_archive,
+                                             monkeypatch):
+        import importlib
+        mod = importlib.import_module(f"scripts.{name}")
+        monkeypatch.setattr(mod, "ARCHIVE_DIR", migrated_archive)
+        con = duckdb.connect()
+        try:
+            n_old = con.sql(
+                f"SELECT count(*) FROM ({mod._archive_union_sql(con)}) "
+                f"WHERE day < DATE '2026-01-01'").fetchone()[0]
+        finally:
+            con.close()
+        assert n_old == 1, (
+            f"{name} dropped the pre-2026 series from a migrated archive: its "
+            f"union filters `source` on a file whose source column is all NULL"
+        )
+
+
+@pytest.mark.parametrize("name", sorted(SOURCE_FILTERED))
+def test_a_source_filter_is_null_safe(name):
+    """Guards the whole family, including the five not re-run on 2026-08-08.
+
+    A bare `source = 'x'` is only ever correct for the 2026 era. Written
+    NULL-safe it is correct in both, which removes the need to decide per file
+    — and it is the rule `prices_relation` already documents.
+    """
+    src = (SCRIPTS / f"{name}.py").read_text()
+    for line in src.splitlines():
+        # Matches the comparison itself, not the `WHERE` in front of it: after
+        # the fix the clause reads `WHERE (source IS NULL OR source = '...')`,
+        # and anchoring on `WHERE source` would make this pass by not matching.
+        if re.search(r"source = '", line) and not line.strip().startswith("#"):
+            assert "source IS NULL" in line, (
+                f"{name} filters `source` without a NULL-safe clause, so a "
+                f"migrated pre-2026 file contributes nothing: {line.strip()}"
+            )
+
+
 def test_the_no_archive_harness_really_reads_no_archive():
     """`recency_weights` is exempt from the rules above. That exemption has to
     stay true, or it becomes a hole rather than a fact."""

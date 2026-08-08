@@ -203,7 +203,7 @@ def _build_frame_uncached(max_items):
             col_names = {r[0] for r in cols}
             if "source" in col_names:
                 pq_queries.append(
-                    f"SELECT item_slug, day, mean_price, volume FROM read_parquet('{pqf}') WHERE source = 'aggregator_sync' AND {_UNIVERSE}"
+                    f"SELECT item_slug, day, mean_price, volume FROM read_parquet('{pqf}') WHERE (source IS NULL OR source = 'aggregator_sync') AND {_UNIVERSE}"
                 )
             else:
                 pq_queries.append(

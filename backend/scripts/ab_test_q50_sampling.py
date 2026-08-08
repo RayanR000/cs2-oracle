@@ -128,7 +128,7 @@ def load_features(con, forecaster, events_df, max_items):
         if "source" in cols:
             pq_queries.append(
                 f"SELECT item_slug, day, mean_price, volume FROM "
-                f"read_parquet('{pqf}') WHERE source = 'STEAMCOMMUNITY' "
+                f"read_parquet('{pqf}') WHERE (source IS NULL OR source = 'STEAMCOMMUNITY') "
                 f"AND {_UNIVERSE}")
         else:
             pq_queries.append(

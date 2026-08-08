@@ -97,7 +97,7 @@ def run_evaluation(max_items=200, horizon_filter=None):
             col_names = {r[0] for r in cols}
             if "source" in col_names:
                 pq_queries.append(
-                    f"SELECT item_slug, day, mean_price, volume FROM read_parquet('{pqf}') WHERE source = 'STEAMCOMMUNITY' AND {_UNIVERSE}"
+                    f"SELECT item_slug, day, mean_price, volume FROM read_parquet('{pqf}') WHERE (source IS NULL OR source = 'STEAMCOMMUNITY') AND {_UNIVERSE}"
                 )
             else:
                 pq_queries.append(

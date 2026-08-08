@@ -194,7 +194,7 @@ def _archive_union_sql(con):
         if "source" in {r[0] for r in cols}:
             queries.append(
                 f"SELECT item_slug, day, mean_price, volume FROM "
-                f"read_parquet('{pqf}') WHERE source = 'aggregator_sync' AND {_UNIVERSE}")
+                f"read_parquet('{pqf}') WHERE (source IS NULL OR source = 'aggregator_sync') AND {_UNIVERSE}")
         else:
             queries.append(
                 f"SELECT item_slug, day, mean_price, volume FROM "

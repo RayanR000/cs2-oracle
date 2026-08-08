@@ -237,7 +237,7 @@ def _archive_union_sql(con):
         if "source" in {r[0] for r in cols}:
             queries.append(
                 f"SELECT item_slug, day, mean_price, volume FROM read_parquet('{pqf}') "
-                f"WHERE source = 'aggregator_sync' AND {_UNIVERSE}"
+                f"WHERE (source IS NULL OR source = 'aggregator_sync') AND {_UNIVERSE}"
             )
         else:
             queries.append(
@@ -276,17 +276,22 @@ def _build_frame_uncached():
             LIMIT {N_UNIVERSE}
         """).fetchall()
         slugs = [r[0] for r in rows]
-        logger.info(
-            f"  Universe: {len(slugs)} deep >=${MIN_MEDIAN_PRICE:.0f} items "
-            f"with >={MIN_ITEM_DAYS} days "
-            f"(days/item: max {rows[0][1]}, min {rows[-1][1]})"
-        )
+        # The guard runs BEFORE the log line. When the 2026-08-08 archive
+        # migration emptied this query, `rows[0]` raised `IndexError: list
+        # index out of range` from inside the *logging*, which buried the
+        # explicit diagnostic three lines below it and cost a debugging pass.
+        # An empty universe is the failure this function most needs to name.
         if len(slugs) < N_EVAL_ITEMS + N_WIDE:
             raise SystemExit(
                 f"Universe has {len(slugs)} items but the design needs "
                 f"{N_EVAL_ITEMS + N_WIDE} (N_EVAL_ITEMS + N_WIDE). Lower "
                 f"MIN_ITEM_DAYS or N_WIDE."
             )
+        logger.info(
+            f"  Universe: {len(slugs)} deep >=${MIN_MEDIAN_PRICE:.0f} items "
+            f"with >={MIN_ITEM_DAYS} days "
+            f"(days/item: max {rows[0][1]}, min {rows[-1][1]})"
+        )
 
         placeholders = ", ".join("?" for _ in slugs)
         # `volume` is selected only because engineer_features requires the
