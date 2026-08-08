@@ -125,7 +125,10 @@ table and was absent from the morning audit.
   cohort and collection membership are absent today**. This is cross-sectional
   metadata, not a time series; it cannot produce a velocity feature.
 - **Steam news.** `api.steampowered.com/ISteamNews/GetNewsForApp/v2/?appid=730&count=500`
-  — no key, **0.29 s**, 500 entries back to **2022-03-01**. A free CS2 event
+  — no key, **0.29 s**, 500 entries back to **2022-03-01**. *(Corrected the same day:
+  that is one page, not the feed's depth. Paging with `enddate` reaches 1,752 items
+  back to 2012-03-16 in ~2 s — see
+  `2026-08-06-date-level-exogenous-ingest.md`.)* A free CS2 event
   calendar. Relevant to `event_correlation_analysis.py`, which per the
   event-correlation finding reads a Postgres table that is empty by design.
 

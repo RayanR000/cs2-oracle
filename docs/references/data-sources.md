@@ -31,7 +31,7 @@ derived from it are in `../changelog/2026-08-06-data-acquisition-ranking.md`.
 | **Bitskins `/market/insell/730`** | REST API | **Daily** (1 call, 0.5 s / 1.4 MB) | `quantity` (listing count), `price_min` in millicents | None | **✅ Active** — 10,920 items on 2026-08-06; 4,899 of the ≥$1 cohort |
 | `somespecialone/steam-item-name-ids` | GitHub JSON | One-shot (pushed 2026-08-03) | 26,935 `market_hash_name` → `item_nameid` — unblocks `itemordershistogram` lookups | None | **Not integrated** — Steam-hosted consumer, so residential IP only (see IP-class section) and per-item |
 | `ByMykel/CSGO-API` | Raw GitHub JSON | One-shot | 481 crates (261 with `first_sale_date`), 2,126 skins with rarity, float range, StatTrak/souvenir, crate + collection | None | **Not integrated** — cross-sectional metadata; `item-metadata.parquet` lacks item age, crate and collection today |
-| Steam `ISteamNews/GetNewsForApp` | REST API | Bulk (0.29 s) | 500 entries back to 2022-03-01 — free CS2 event calendar | None | **Not integrated** — candidate input for `event_correlation_analysis.py` |
+| Steam `ISteamNews/GetNewsForApp` | REST API | Bulk (~2 s, 4 pages) | **1,752 entries back to 2012-03-16** (439 official) — free CS2 event calendar | None | **Ingested** by `scripts/ingest_steam_news.py` → `event-calendar.parquet` |
 
 ## CSGOTrader Accuracy Issues
 
@@ -338,8 +338,10 @@ curl -s --compressed 'https://raw.githubusercontent.com/ByMykel/CSGO-API/main/pu
 #    skins.json  5.5 MB, 2,126 skins: rarity, min_float, max_float, stattrak,
 #                souvenir, crates[], collections[].
 
-# 6. Steam event calendar — 500 entries back to 2022-03-01, keyless, 0.29 s
+# 6. Steam event calendar — keyless. `count=500` is ONE PAGE, not the feed's depth:
+#    pass `enddate` to walk back. 4 pages / ~2 s → 1,752 unique items to 2012-03-16.
 curl -s 'https://api.steampowered.com/ISteamNews/GetNewsForApp/v2/?appid=730&count=500&maxlength=1'
+curl -s 'https://api.steampowered.com/ISteamNews/GetNewsForApp/v2/?appid=730&count=500&enddate=1646179200'
 #    Shape: {"appnews":{"newsitems":[{gid,title,url,author,contents,feedlabel,date,…}]}}
 ```
 

@@ -164,9 +164,29 @@ itself refuted for production the same day
 A free CS2 event calendar for `event_correlation_analysis.py`, which currently reads a
 Postgres table that has been empty by design since 2026-07-19.
 
+**Built 2026-08-06, and the depth claim above is wrong.** `count=500` returns one
+*page*, not the feed. Paging with `enddate` reaches **1,752 unique items back to
+2012-03-16** (439 official Valve posts) in four requests and ~2 s — full coverage of
+the archive window, so this clears the multi-year half of the reopen bar. Ingested by
+`scripts/ingest_steam_news.py` into `price-archive/event-calendar.parquet`, alongside
+item 6 below. A case-release flag was attempted and **did not validate** from either
+news text (33% recall) or ByMykel `first_sale_date` (disagrees with the news date on
+14/14 overlapping cases, median 38 days), so none ships. No lift claimed; the MDE gate
+has to be re-derived for a date-level design before anything here is measurable.
+See `2026-08-06-date-level-exogenous-ingest.md`.
+
 **6. Historical CNY/USD rates.** `aggregator_buff163` and `aggregator_youpin` are the two
 largest live sources by item count and both are CNY-denominated markets, against 7 days of
 FX in `exchange-rates-2026.parquet`. Free from ECB / Frankfurter.
+
+**Built 2026-08-06, and demoted to a control column on measurement.** 3,479 daily
+quotes from 2012-12-31 in one 1.1 s call, now in
+`price-archive/exchange-rates-history.parquet`. The mechanism holds — arbitrage
+against BUFF is weak, so a currency move passes through to the USD series rather than
+being absorbed — but CNY/USD realises a **0.2307% daily sd (3.66% annualised)**, one
+of the lowest-volatility major pairs there is, so it is noise against skin moves at
+7d/14d/30d. Ingested because it costs one call, not because it is expected to carry a
+result. See `2026-08-06-date-level-exogenous-ingest.md`.
 
 ### Tier 3 — repairs, no new source needed
 
