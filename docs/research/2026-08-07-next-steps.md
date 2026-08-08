@@ -13,7 +13,11 @@ re-run" item closed the same day —
 `docs/changelog/2026-08-08-embargo-discontinuity-measured.md`), and step 6 is DONE (2026-08-08 —
 `docs/changelog/2026-08-08-frozen-price-runs-dropped-from-labels.md`, which also refuted the two
 prevalence figures step 6 was justified on and surfaced the un-taken MA-feed voting fix).
-Steps 7–11 are NOT STARTED.**
+Steps 7–11 are NOT STARTED. **6b** is DONE (verified absent, 2026-08-08) and **R11** and **R12**
+are DECLINED (2026-08-08 —
+`docs/changelog/2026-08-08-r11-r12-declined-and-r18-r19-recosted.md`, which also re-costed R18
+and R19 and opened **5d**, a blocker on the Steam listing backfill that R11, R13 and 5c all
+assumed was merely un-run).**
 
 Ordering is the review's, not a re-ranking. Numbers in the "why" column are quoted from the
 review or from the changelog entry that measured them; nothing here is estimated.
@@ -417,12 +421,55 @@ don't.
   the bottom three deciles read ratio **0.44** (buyer below net, impossible under any fee).
   Rows below ~$0.50 carry a real basis error, ~5% too high at $0.10–0.25. Touches
   `backend/scripts/backfill_steam_listing_history.py`. Effort: small. §10 Tier 1 #5 / C1.
-- **6b. Grep for `api.dmarket.com/exchange/v1`** — NOT STARTED. Returns **410 Gone**. If it
-  is present it is a dead integration; the live path is `/marketplace-api/v2/offers`. Effort:
-  tiny. §10 Tier 1 #6.
-- **Free bug fix, zero new data:** `distance_to_support`, `distance_to_resistance` and
-  `high_low_range_30d` are computed every run and silently discarded, because `_feature_group`
-  matches prefix `support_` while the columns are named `distance_to_*`. One line. Review §16.
+- **5d. Two things stand between the Steam listing backfill and a resumed run** — NEW
+  2026-08-08, found while re-deriving R11. It **gates R11, R13 and 5c**.
+  1. **`load_targets` raises on `--min-price` since the schema migration.** It filters
+     `HAVING MAX(median_price)`, and the 2026-08-08 normalisation left the archive with
+     `mean_price` — so the script's own documented usage line `--min-price 1.0` dies on a DuckDB
+     `BinderException`. It also reaches the archive through a raw
+     `SELECT * FROM read_parquet('prices-*.parquet')`, which is invariant 1 in
+     `backend/AGENTS.md` and is exactly the mechanism by which a renamed column disappears
+     without an error. One-line fix. Target counts on the 2026-08-07 archive day once it is
+     fixed: **32,617** non-gated name-keyed items with no floor, **27,935** at ≥$1 (35,766 /
+     28,594 before the mangled-key filter drops 3,149 / 659 phantom slug rows) — which
+     independently corroborates R13's extrapolated ~31,590.
+  2. **This IP's soft-block has not decayed in three days.** The block is not new — it is dated
+     **2026-08-05** with "no decay over 5 h" (`2026-08-06-data-acquisition-ranking.md`), and the
+     staged DB stops there. What is new is that it is **still in force on 2026-08-08**, so the
+     decay bound is now ≥3 days rather than ≥5 h. Re-measured today: a logged-out
+     `GET /market/listings/730/<name>` returns 302 → **5.0 MB** carrying 20 embedded
+     `pricehistory` caches (9 variants of one base name, daily `price_median` + `purchases` back
+     to **2014-02-21**) for the first ~3–4 fetches, then flips to the shell — 200, **230 KB**, no
+     redirect, zero `pricehistory` — and stays flipped at every idle interval probed
+     (**60 s, 180 s, 360 s, 660 s**: shell every time, byte-identical to within one byte). The
+     flip is **not header-shaped**: all three rotated user-agents and the `Accept` /
+     `Accept-Language` / `Accept-Encoding` variants returned the shell once flipped, while the
+     same request had succeeded a minute earlier. `classify()` calls it `SOFT_BLOCK` correctly,
+     so `canary_ok` aborts **before request 1** — the guard is working, and the run genuinely
+     cannot proceed from here.
+  - **What the staged data already proves, and it matters for R11:** 47 requests harvested
+     **262 items / 528,573 daily rows back to 2013-08-15** (`runtime/steam_listing_history.db`)
+     — **5.6 series per request measured**, above the docstring's ~4.5. At the docstring's ~82%
+     target share that is ~4.6 targets/request, so the 32,617 targets are **~7,100 requests**,
+     ~5.7 h at `REQUEST_DELAY = 2.5` **if the block allowed it**. It does not, so the delay is
+     not the binding constraint and no run should be planned on that figure.
+  - Effort: tiny for (1). **(2) is an egress problem, not a code problem** — the same conclusion
+    `2026-08-06-data-acquisition-ranking.md` reached — so the honest options are a different
+    egress or a much slower schedule, and until one is demonstrated, "the Steam listing page is
+    the one live onboarding route" describes a route that has delivered 262 of 32,617 items.
+- **6b. Grep for `api.dmarket.com/exchange/v1`** — **DONE 2026-08-08: verified absent.** No
+  occurrence anywhere in the repo. `dmarket` appears only as fee constants in
+  `backend/backtest/friction.py` and its test, so there is no dead integration to remove and
+  nothing depends on the 410'd path. §10 Tier 1 #6.
+- **A one-line bug, but not a free win** — corrected 2026-08-08. `distance_to_support`,
+  `distance_to_resistance` and `high_low_range_30d` really are computed every run and dropped:
+  `_feature_group` matches prefix `support_` while the columns are named `distance_to_*`
+  (`models/forecaster.py:201` against `:1416-1420`), so they group as `other` and
+  `FEATURE_GROUP_ALLOWLIST = ["price_technicals"]` filters them out — confirmed by running
+  `_apply_feature_allowlist` on them. **But the 2026-07-24 ablation that set that allowlist ran
+  with these three already absent**, so "fixing" the prefix does not restore something measured;
+  it admits **three never-measured features** to the model. One line plus an A/B against the
+  2.21–3.69pp MDE, which three price-technical columns are unlikely to clear. Review §16.
 
 ---
 
@@ -441,6 +488,17 @@ don't.
   window before any split** — "items whose median 2013→2026 price is ≥$1" was not a set
   anyone could have named in 2019. The effect appears **only at h=30**, which is the
   signature a look-ahead selection produces (§18 L2).
+  **Planned 2026-08-08:** `docs/superpowers/plans/2026-08-08-per-fold-price-filter.md`. Three
+  things that plan found which are not stated here. (a) `ab_test_training_breadth.py:269-276`
+  carries the **same leak** — `HAVING MEDIAN(...) >= 1.0`, `COUNT(DISTINCT day) >= 180` and
+  `LIMIT 870` are all full-sample — so the harness that produced the +3.50pp cannot adjudicate
+  it. (b) A per-fold filter must run *after* `engineer_features`, which silently moves the
+  market factor from the ≥$1 universe to the pooled one, so it is two treatments unless held
+  fixed. (c) It also runs after `_stratified_item_subsample`, which **destroys the budget
+  argument step 7 exists for** — hence the plan derives per-fold but would ship an *anchored*
+  filter. A third `per_fold_matched` arm is required, or "the leak is gone" and "there is less
+  data" are the same observation. And the whole thing must be re-derived on the post-step-6
+  label set.
 - **Touches:** `TRAIN_MIN_MEDIAN_PRICE` and `TRAIN_FEATURE_ROWS` in
   `backend/scripts/forecast_prices.py`; `_filter_by_median_price` in
   `backend/models/forecaster.py`.
@@ -536,10 +594,15 @@ priced day on exactly 2026-03-22. `usd_cny` has **7 days** of FX history.
 The 1–11 ordering above is the review's "If I were building this myself", which stops at §10
 #10 plus step 11's candidate table. **Six items §10 ranked are absent from it.** They are
 labelled by their §10 rank (`R…`) rather than renumbered, so they cannot be read as steps.
-None was declined — they were dropped in transcription, and no entry in this repo records a
-decision either way. Order below is §10's ascending, not a re-ranking; two are worth knowing
-about before reading in order, though — **R19 is step 7's entry criterion**, and **R13 is
-described by the review as a larger lever than any feature on the list**.
+They were dropped in transcription, not declined. Order below is §10's ascending, not a
+re-ranking; two are worth knowing about before reading in order, though — **R19 is step 7's
+entry criterion**, and **R13 is described by the review as a larger lever than any feature on
+the list**.
+
+**Two are now decided (2026-08-08): R11 and R12 are DECLINED**, both on coverage/fold-count
+grounds and neither on licence. R18 and R19 keep their rank but their effort estimates were
+wrong in opposite directions — R18 is harder than "one query", R19 is cheaper than "build the
+instrument". Record: `docs/changelog/2026-08-08-r11-r12-declined-and-r18-r19-recosted.md`.
 
 Three Tier 3 rows *are* accounted for elsewhere and are deliberately not repeated here: **#15**
 (per-item Getmansky–Lo–Makarov MA coefficient) is step 6 / step 11's `stale_run_days`, "the GLM
@@ -547,7 +610,33 @@ Three Tier 3 rows *are* accounted for elsewhere and are deliberately not repeate
 ("volume ↑ ⇒ price ↓") is downstream of R11, and volume features are shelved
 (`2026-08-06-volume-features-shelved.md`).
 
-### R11. Recover historical volume from the kieranpoc Kaggle dump — NOT STARTED
+### R11. Recover historical volume from the kieranpoc Kaggle dump — **DECLINED 2026-08-08**
+
+**Declined on coverage, not on licence.** The dump is frozen: `dateModified` **2024-06-15**,
+data snapshot **2024-05-04**, 901,195,556 bytes, CC BY-NC-SA 4.0 (verified on the page — the
+review's licence mark was unconfirmed, and this is what it says). So it supplies **nothing for
+2024-06 → 2026-08**, which is the only window that matters: the `volume` column's last non-zero
+day is **2026-04-15**, and it is zero on 100% of rows from 2026-05 through 2026-08 (verified,
+`prices-2026-*.parquet`). Both legs of its purpose are covered elsewhere —
+
+- **Forward** sale counts: `collectors/sales_volume.py` (Skinport, wired 2026-08-08). *Not
+  independently re-verified here — the endpoint answers **403 with a 422 KB HTML challenge** to
+  this machine's egress, which is the WAF behaviour that module's docstring documents for
+  Cloudflare-owned egress, so it is not evidence of breakage.*
+- **Historical** sale counts: the Steam listing pages already carry them, and this is
+  demonstrated rather than argued. `backfill_steam_listing_history.py` parses `purchases` per day
+  beside `price_median`, and its staged DB holds **262 items / 528,573 daily rows back to
+  2013-08-15** from 47 requests. The dump's own source is Steam, so the set of items reachable
+  only through the dump is small by construction.
+
+**What is not established, and it is why this is a decline rather than a swap:** the listing
+route's *sustainable* rate. See **5d** — this IP has been soft-blocked since 2026-08-05 with no
+decay in three days, so 262 of 32,617 items are in hand and the remainder needs a different
+egress or a much slower schedule. That is a reason to fix the collection route, **not** a reason
+to import a dump that stops 26 months before the window in question.
+
+<details>
+<summary>The original entry</summary>
 
 - **Do:** backfill Steam price + volume from `kieranpoc/counter-strike-market-sale-data` —
   **22,492 items, 99.3M data slices**, hourly for the trailing month and daily before it, back
@@ -567,7 +656,27 @@ Three Tier 3 rows *are* accounted for elsewhere and are deliberately not repeate
   economically trivial) survives, so this is not a route back to volume as a predictor.
 - **Effort:** medium. §10 Tier 2 #11.
 
-### R12. Backfill retroactive supply depth from `atalantus` — NOT STARTED
+</details>
+
+### R12. Backfill retroactive supply depth from `atalantus` — **DECLINED 2026-08-08**
+
+**Declined on fold count and splicability.** The listing-count window is 2023-01-25 →
+2024-01-19, **359 days**. Against `CV_STEP_DAYS = 150` and `CV_MIN_TRAIN_DAYS = 200`
+(`models/forecaster.py:489-490`) that is **~2 folds** — so it does technically break the
+zero-additional-folds arithmetic this entry was written to break, and that is the strongest
+thing that can be said for it.
+
+What it cannot do is join the served present. Live supply depth begins **2026-08-06**
+(verified: `supply-2026-08.parquet` holds that one day, 30,330 items), leaving a **2.5-year
+gap**, across a **different venue** (BUFF, CNY) and a **different quantity** than the
+lis-skins / market.csgo / Waxpeer counts. The two panels cannot be concatenated into one
+series, so what R12 actually buys is a **history-only, ~2-fold A/B** — which against the
+2.21–3.69pp item-level MDE resolves `unresolved` by construction, not `null` and not positive.
+Nothing about the licence entered this decision. One correction to the source record while
+here: the raw dump is **113 MB via Git LFS**, not the 24 MB xz that `data-sources.md` carried.
+
+<details>
+<summary>The original entry</summary>
 
 - **Do:** take **listing counts only** from `atalantus/buff-price-history-archive` — BUFF163
   min price **2021-07-26 → 2024-01-19**, with the listing count populated after **2023-01-25**.
@@ -584,6 +693,8 @@ Three Tier 3 rows *are* accounted for elsewhere and are deliberately not repeate
   served present. And it carries listing counts, **not bids** — there is no retroactive bid
   anywhere (§16), so it does not unblock the liquidity family.
 - **Effort:** medium. §10 Tier 2 #12.
+
+</details>
 
 ### R13. Fix the cohort inversion — NOT STARTED
 
@@ -607,6 +718,12 @@ Three Tier 3 rows *are* accounted for elsewhere and are deliberately not repeate
   onboarding path; the Steam listing-page route is the only live way in (extrapolated pool
   **5,542 → ~31,590 items**, `target_items` **521 → 758**), which is also why **5c** matters
   more than its size suggests.
+- **The pool figure now has a direct measurement, and the route now has a blocker (2026-08-08).**
+  `load_targets` counts **32,617** non-gated, name-keyed items actively collected on 2026-08-07
+  (**27,935** at ≥$1), which corroborates the review's extrapolated ~31,590 independently. But
+  see **5d**: **262 of those 32,617 are in hand**, the `--min-price` path raises on a column the
+  schema migration renamed, and this IP's soft-block has not decayed in three days, so the canary
+  aborts the run at request 0. **R13's expensive half is blocked on egress, not on effort.**
 - **Touches:** the `is_backfilled` plumbing, `backend/api/serving_policy.py`.
 - **Effort:** medium. §10 Tier 2 #13.
 
@@ -641,11 +758,26 @@ Three Tier 3 rows *are* accounted for elsewhere and are deliberately not repeate
   5pp overall and ≥60% in any single regime window**, and it says in as many words that
   failures there *are* the ACI business case. This is the only item in the entire review that
   improves **something a user actually sees**.
-- **State of play:** `interval_coverage` already exists (`backend/backtest/scoring.py:170`), is
+- **State of play:** `interval_coverage` already exists (`backend/backtest/scoring.py`), is
   stored, is served on `/accuracy`, and — since step 3 — is computed per tier and per floor.
-  **What does not exist is the per-regime-window read and the gate**, so the business case is
-  one query away from being decidable either way.
-- **Effort:** small to measure, small-to-medium to implement. §10 Tier 3 #18.
+  **What does not exist is the per-regime-window read and the gate.**
+- **It is NOT "one query away" — corrected 2026-08-08, on three counts.** (1) **No regime window
+  is defined anywhere in the code**: `REGIME_WINDOWS` / `regime_window` / `regime_stress` return
+  zero hits across every `.py` in the repo, so §12's dated breaks exist only in prose. (2) **The
+  walkforward gate cannot supply the number, by design.** Every arm gets
+  `PLACEHOLDER_BAND_PCT = 10.0`, the gate never calls `models/conformal.py`, and
+  `interval_coverage` is *deliberately* neither logged nor persisted there —
+  `walkforward_backtest.py:195-201` and the omission comment at `:621-623` say so outright,
+  because the figure would describe the placeholder rather than a model. Realised coverage can
+  only come from `scripts/backtest_accuracy.py`, which scores the actually-served band.
+  (3) **Those stored outcomes span 6 forecast dates**, 2025-12-01 → 2026-07-19 (verified,
+  `ops/forecast_outcomes.parquet`), in two clusters — a backdated batch and one week of July.
+  You cannot read coverage "per regime window" off two clusters.
+- **So R18 is gated on the same calendar wait as everything else**, plus a regime-window
+  definition that has to be written first. It is not a cheap decidable read, and the ordering
+  claim that it is should not be repeated.
+- **Effort:** small to measure *once outcomes exist*; small-to-medium to implement.
+  §10 Tier 3 #18.
 
 ### R19. Deflate the accumulated A/Bs for multiplicity — NOT STARTED, and it gates step 7
 
@@ -664,6 +796,20 @@ Three Tier 3 rows *are* accounted for elsewhere and are deliberately not repeate
   backtest paths)** for feature decisions, never swapped — *"you cannot compute PBO from a
   single walk-forward path, which is why §3's multiplicity problem currently has no
   instrument."* Building Track B is medium, not small.
+- **The instrument does not have to be built — corrected 2026-08-08.** `purgedcv`
+  (`github.com/eslazarev/purged-cross-validation`, **MIT**, PyPI **0.1.3** and conda-forge)
+  exports `CombinatorialPurgedCV`, `PurgedGroupKFold`, `PurgedKFold`, `WalkForwardSplit`,
+  `purge`, `apply_embargo`, `deflated_sharpe_ratio` and
+  `probability_of_backtest_overfitting` (PBO via CSCV) — i.e. **both** Bailey/López de Prado
+  instruments this entry says have no path here, plus the fold geometry. All four splitters
+  satisfy the sklearn splitter protocol; dependencies are numpy / pandas / scikit-learn / scipy
+  and `python >= 3.10`, so nothing new enters the image. It exists precisely because mlfinlab,
+  the canonical implementation, went closed-source. **Two caveats before leaning on it:** it is
+  at **0.1.3**, which is young for something a ship decision would rest on; and adopting the
+  splitter still leaves this repo's own work — CPCV has to be fed the same `cluster_key` fold
+  geometry `backtest/paired_mde.py` uses, or the deflation runs on a different clustering than
+  the intervals it is deflating. Re-cost the entry as **small-to-medium, mostly wiring**, not
+  "build Track B".
 - **Cheaper partial, available now:** step 2 already adopted the t > 3.0 hurdle for PT, so
   extending it to the paired-A/B verdicts is a threshold change; and Jensen, Kelly & Pedersen
   (2023, *JF* 78(5), 2465–2518) Bayesian hierarchical shrinkage is the right tool for the
