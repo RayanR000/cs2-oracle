@@ -215,6 +215,26 @@ per-horizon cap at the same time.
 The 2026 distribution-shift guard that used to exclude the current year was removed once the
 May–June 2026 archive gap was backfilled (:2487-2494).
 
+### Item universe
+
+Two exclusions are applied at the read, not downstream, so training and `predict()` see the
+same universe from the one query in `_fetch_voted_price_history`:
+
+| Rule | Where | What it removes |
+|---|---|---|
+| `BID_SOURCES` | `models/forecaster.py`, dropped in `_apply_multi_source_voting` | `aggregator_buff163_buy` — a bid, which must not vote against asks |
+| `PHASE_COLLAPSED_SLUG_PATTERNS` | `models/item_parser.py`, applied as `phase_collapsed_sql_filter()` | Doppler / Gamma Doppler names, whose returns are phase-composition artifacts |
+
+A `market_hash_name` encodes weapon + finish + wear + StatTrak/Souvenir and nothing else, so a
+Doppler name is **29 base names covering 181 distinct `paint_index` assets**; the quoted
+headline is the *cheapest* phase **95.5%** of the time, so the series steps whenever which phase
+is cheapest changes — a level shift with no asset repricing. The rule lives in `item_parser.py`
+(light enough for `api/` to import without LightGBM) and is re-exported from `forecaster.py`; it
+is applied at `_fetch_voted_price_history`, both `walkforward_backtest` loaders and
+`api/routes/opportunities.py::_load_items`. `PHASE_COLLAPSED_EXEMPT_PATTERNS = ("sticker",)`
+keeps the two measured false positives (`Sticker | Doppler Poison Frog (Foil)` and its Sticker
+Slab twin). `docs/changelog/2026-08-08-phase-collapsed-names-dropped.md`.
+
 ### Label hygiene
 
 `prepare_targets` winsorizes `target_return_{h}d` at ±500%, and then (2026-08-06) voids labels
@@ -518,7 +538,12 @@ autocorrelation — so the statistic is conservative by construction.
   `docs/changelog/2026-07-29-7d-q50-early-stop.md`.
 - **`_apply_multi_source_voting()` uses `groupby().apply()`** over millions of rows and takes
   minutes. Vectorizable, but it affects only training/fetch time. The voted frame is cached —
-  bump `VOTED_CACHE_VERSION` when voting or the DuckDB query changes.
+  bump `VOTED_CACHE_VERSION` when voting or the DuckDB query changes. Now at **v3**: v2 marked
+  the `BID_SOURCES` exclusion, v3 the phase-collapsed names leaving the universe.
+- **The `ab_test_*` harnesses do not share the production universe.** Ten-plus of them carry
+  private archive globs and filter neither `BID_SOURCES` nor the phase-collapsed names, so they
+  train on a universe production no longer has. Tracked as step 5 of
+  `docs/research/2026-08-07-next-steps.md`, alongside their missing purge and embargo.
 - **Dead code that survives deliberately:** `_fix_quantile_crossing` (backtest baseline arm),
   `_recenter_on_momentum` (empty `MOMENTUM_FALLBACK_HORIZONS`), the vol-scaled direction-label
   branch (all call sites pass `sigma=None`), regime training (`SKIP_REGIMES=1` in CI), and every
@@ -560,6 +585,7 @@ autocorrelation — so the statistic is conservative by construction.
 | `backend/models/forecaster.py` | 5,543 | `ItemForecaster`: feature engineering, training, CV, predict |
 | `backend/models/conformal.py` | 106 | Normalized split conformal band (sigma, q_hat, band). Pure numpy |
 | `backend/models/steam_types.py` | 170 | Steam type field parser (rarity + weapon_type extraction) |
+| `backend/models/item_parser.py` | 187 | Item-name parser **and** the phase-collapsed universe rule (`is_phase_collapsed`, `phase_collapsed_sql_filter`). No LightGBM import, so `api/` can use it |
 | `backend/scripts/forecast_prices.py` | 381 | Entry point: retrain decision, train + predict, DB/Parquet write |
 | `backend/scripts/backtest_accuracy.py` | 1,169 | Production backtest over stored forecasts |
 | `backend/backtest/price_resolution.py` | 276 | Shared price estimator — both legs of the realised return |
@@ -581,6 +607,7 @@ autocorrelation — so the statistic is conservative by construction.
 | `backend/tests/test_scale_free_features.py` | 185 | Price-scale invariance of every served feature |
 | `backend/tests/test_degenerate_label_dates.py` | 164 | Snapshot-day and collector-cutover label voiding |
 | `backend/tests/test_purged_production_split.py` | 104 | The production train/val purge band |
+| `backend/tests/test_phase_collapsed_universe.py` | 224 | 19 cases pinning the Doppler exclusion at all four readers |
 | `price-archive/item-metadata.parquet` | 109 KB | Rarity/weapon_type cache (computed, then dropped by the allowlist) |
 
 Run tests with **`pytest tests`**, not bare `pytest` — `scripts/test_social_signal.py` imports

@@ -31,6 +31,19 @@ points at production Supabase — see the root `AGENTS.md` gotcha before running
   fix because it never calls the voting function, and `ab_test_regime.py` /
   `ab_test_ensemble.py` are still unfiltered. See
   `docs/changelog/2026-08-07-bid-source-excluded-from-voting.md`.
+- **A name that prices several assets is not in the universe.** Every Doppler and Gamma
+  Doppler `market_hash_name` collapses its phases into one series, and the quoted headline is
+  the *cheapest* phase 95.5% of the time — so the series steps when the cheapest phase
+  changes, which is a fabricated return. `models/item_parser.py` holds the rule
+  (`PHASE_COLLAPSED_SLUG_PATTERNS`, `phase_collapsed_sql_filter`, `is_phase_collapsed`),
+  light enough for `api/` to import and re-exported from `models/forecaster.py` beside
+  `BID_SOURCES`. It is applied at `_fetch_voted_price_history`, both
+  `walkforward_backtest` loaders and `opportunities.py::_load_items`; **the `ab_test_*`
+  harnesses still glob unfiltered**, so their universe is not production's. Two names match
+  the word and must stay: `Sticker | Doppler Poison Frog (Foil)` and its Sticker Slab twin,
+  which is what the `sticker` exemption is for. Worth **6 items of the 926-item ≥$1 cohort**
+  — a correctness fix, not an accuracy lever. See
+  `docs/changelog/2026-08-08-phase-collapsed-names-dropped.md`.
 - **Never quote a directional accuracy on its own.** The published headline is a
   Pesaran–Timmermann test (`backtest/directional_test.py`), computed per forecast date with a
   Newey–West t-stat over dates and a `|t| > 3.0` hurdle; `score_cohort` stores it as `pt_*` and
@@ -78,9 +91,10 @@ points at production Supabase — see the root `AGENTS.md` gotcha before running
   (gitignored), keyed on the `prices-*.parquet` fingerprint + cutoff date + backfill slug
   set. **Bump `ItemForecaster.VOTED_CACHE_VERSION` if you change `_fetch_voted_price_history`
   or `_apply_multi_source_voting`** — the key cannot see code changes. `VOTED_CACHE=0` disables.
-  Now at **v2**: the `BID_SOURCES` exclusion changed the consensus level, so any surviving v1
-  frame holds a displaced price series and would have trained the next model on it silently.
-  A source-set change counts as a voting change.
+  Now at **v3**: v2 was the `BID_SOURCES` exclusion, which changed the consensus level, so any
+  surviving v1 frame holds a displaced price series and would have trained the next model on
+  it silently; v3 dropped the phase-collapsed names. A source-set change and a universe change
+  both count as voting changes.
 - **Training subsamples the pool, and the draw is not free.** `TRAIN_FEATURE_ROWS` (default
   `DEFAULT_TRAIN_FEATURE_ROWS = 100_000` in `scripts/forecast_prices.py`) caps the feature
   rows, so a retrain sees a small fraction of the item universe — **99 items of 5,542, while

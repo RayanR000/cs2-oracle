@@ -39,7 +39,12 @@ import pandas as pd
 import lightgbm as lgb
 
 from database import SessionLocal, PredictionAccuracy
-from models.forecaster import BID_SOURCES, DIRECTION_FLAT_TOLERANCE_PCT, ItemForecaster
+from models.forecaster import (
+    BID_SOURCES,
+    DIRECTION_FLAT_TOLERANCE_PCT,
+    ItemForecaster,
+    phase_collapsed_sql_filter,
+)
 from backtest.scoring import FLOOR_SWEEP, HEADLINE_TIER, score_by_tier
 from backtest.walkforward_records import fold_records
 
@@ -81,9 +86,13 @@ def _load_parquet_items(con, backfilled_only=True):
             pq_queries.append(f"SELECT item_slug, CAST(day AS DATE) AS day, mean_price AS price, NULL::VARCHAR AS source, volume FROM read_parquet('{pqf}')")
     union_sql = " UNION ALL BY NAME ".join(pq_queries)
 
-    where_clause = ""
+    # Drop the phase-collapsed names here as well as in _load_all_prices, so the
+    # `max_items` budget is not spent selecting items the price loader will
+    # return nothing for.
+    conds = [phase_collapsed_sql_filter()]
     if backfilled_only:
-        where_clause = "WHERE source = 'STEAMCOMMUNITY'"
+        conds.append("source = 'STEAMCOMMUNITY'")
+    where_clause = "WHERE " + " AND ".join(conds)
     query = f"""
         SELECT item_slug,
                MIN(day) AS first_day,
@@ -131,6 +140,7 @@ def _load_all_prices(con, items):
         FROM {relation} sub
         WHERE item_slug IN ({slug_list})
           AND (source IS NULL OR source NOT IN ({bid_list}))
+          AND {phase_collapsed_sql_filter("sub.item_slug")}
         ORDER BY item_slug, day
     """).fetchall()
     df = pd.DataFrame(rows, columns=["item_id", "timestamp", "price", "volume"])

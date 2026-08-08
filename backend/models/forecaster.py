@@ -19,7 +19,13 @@ from typing import Dict, List, Optional, Tuple, Any
 from pathlib import Path
 from sqlalchemy import text
 from models import conformal
-from models.item_parser import parse_item_name
+from models.item_parser import (
+    PHASE_COLLAPSED_EXEMPT_PATTERNS,
+    PHASE_COLLAPSED_SLUG_PATTERNS,
+    is_phase_collapsed,
+    parse_item_name,
+    phase_collapsed_sql_filter,
+)
 from backtest.scoring import HEADLINE_MIN_TIER, MIN_FORECAST_DATES
 
 logger = logging.getLogger(__name__)
@@ -46,6 +52,11 @@ _GPU_AVAILABLE_CACHE: Optional[bool] = None
 # Not a quality filter — these rows are good data, just not asks. Anything that
 # wants the bid should read the source row from the archive directly.
 BID_SOURCES = frozenset({"aggregator_buff163_buy"})
+
+# `PHASE_COLLAPSED_SLUG_PATTERNS` and friends are imported from
+# `models/item_parser.py` above and re-exported here: every archive reader
+# already takes its universe rules from this module (`BID_SOURCES`), but the
+# rule itself is about names and the API needs it without importing LightGBM.
 
 # Price tier boundaries for per-tier bias correction
 PRICE_TIER_BOUNDARIES = [(0, 1, "<$1"), (1, 5, "$1-5"), (5, 20, "$5-20"),
@@ -456,7 +467,9 @@ class ItemForecaster:
     # frame silently training the next model.
     # v2: BID_SOURCES is excluded from voting, so every cached v1 frame holds a
     # consensus displaced by a median -8.0% (-10.8% on the >=$1 served cohort).
-    VOTED_CACHE_VERSION = 2
+    # v3: PHASE_COLLAPSED_SLUG_PATTERNS leaves the universe, so a v2 frame still
+    # carries the Doppler names whose returns are phase-composition artifacts.
+    VOTED_CACHE_VERSION = 3
     VOTED_CACHE_PREFIX = "voted_"
     VOTED_CACHE_MAX_ENTRIES = 3
 
@@ -965,9 +978,12 @@ class ItemForecaster:
                 {slug_join}
                 WHERE day >= ?
                   AND (source IS NULL OR source NOT LIKE 'historical_fallback:%')
+                  AND {phase_collapsed_sql_filter("sub.item_slug")}
                 ORDER BY item_slug, day, source
             """, params=[cutoff]).fetchdf()
-            logger.info(f"  DuckDB query returned {len(df):,} rows")
+            logger.info(f"  DuckDB query returned {len(df):,} rows "
+                        f"(phase-collapsed names excluded: "
+                        f"{', '.join(PHASE_COLLAPSED_SLUG_PATTERNS)})")
             df = df.rename(columns={"item_slug": "item_id", "day": "timestamp"})
             logger.info(f"  DataFrame created, converting types...")
             df["timestamp"] = pd.to_datetime(df["timestamp"])

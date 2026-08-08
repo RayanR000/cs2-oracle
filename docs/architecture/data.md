@@ -96,6 +96,21 @@ same per-file `DESCRIBE` + `NULL AS source` workaround. See
 materialised the column as a typed NULL rather than stamping a label, precisely
 so the `is_backfilled` derivation below keeps working.
 
+**The item universe is a read-time filter, not a property of the archive.** Every
+row stays on disk; readers narrow it. Two rules apply, and a new reader has to
+carry both itself — `walkforward_backtest.py` needed a separate copy of each,
+because it globs the archive rather than calling `fetch_price_history`:
+`models/forecaster.py::BID_SOURCES` (`aggregator_buff163_buy` is a bid and must
+not vote), and `models/item_parser.py::phase_collapsed_sql_filter()`, which drops
+the Doppler and Gamma Doppler names because one such name prices every phase at
+once. The phase rule matches **129 of 41,725 slugs / 47,081 of 20,756,038 rows**
+(0.309% / 0.227%), of which two are false positives —
+`Sticker | Doppler Poison Frog (Foil)` and its Sticker Slab twin, 396 rows, kept
+by `PHASE_COLLAPSED_EXEMPT_PATTERNS`. Both filters are written NULL-safe: a bare
+`NOT LIKE` over a NULL evaluates to NULL and drops the row, and NULL selects 13
+years here. See `../changelog/2026-08-08-phase-collapsed-names-dropped.md` and
+`../changelog/2026-08-07-bid-source-excluded-from-voting.md`.
+
 ### Data Flow
 
 ```
@@ -147,8 +162,9 @@ than the local copy, so its per-file sizes run slightly higher.
 | `ops/accuracy_alerts.parquet` | <0.1 MB | 13 |
 
 The price archive spans **2013-08-14 → 2026-08-04** and carries **41,725 distinct item
-slugs**. The local item catalog is separate: `backend/runtime/market_catalog.db`, 18 MB,
-31,908 `market_items`.
+slugs** over **20,756,038 rows**. The local item catalog is separate:
+`backend/runtime/market_catalog.db`, 18 MB, 31,908 `market_items`. What readers *use*
+is narrower than what is stored — see § Reading the price archive.
 
 For what that coverage actually amounts to — history depth per item, per-source spans and
 gaps, which columns still carry information, and label coverage — see

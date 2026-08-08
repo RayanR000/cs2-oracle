@@ -6,8 +6,9 @@
 **Status: steps 1, 2 and 3 are DONE (2026-08-07 —
 `docs/changelog/2026-08-07-bid-source-excluded-from-voting.md`,
 `docs/changelog/2026-08-07-pesaran-timmermann-headline.md` and
-`docs/changelog/2026-08-07-friction-conditioned-tier-scoring.md`). Steps 4–6 are unblocked and
-NOT STARTED. Steps 7–11 are NOT STARTED.**
+`docs/changelog/2026-08-07-friction-conditioned-tier-scoring.md`), and step 4 is DONE
+(2026-08-08 — `docs/changelog/2026-08-08-phase-collapsed-names-dropped.md`). Steps 5 and 6
+are unblocked and NOT STARTED. Steps 7–11 are NOT STARTED.**
 
 Ordering is the review's, not a re-ranking. Numbers in the "why" column are quoted from the
 review or from the changelog entry that measured them; nothing here is estimated.
@@ -170,7 +171,32 @@ inherit the same boundary-overlap inflation as its DA.
 - **Effort:** small.
 - **Unblocks:** an honest statement of what the product is. §10 Tier 1 #2.
 
-### 4. Drop the 110 Doppler names from the item universe — NOT STARTED
+### 4. Drop the 110 Doppler names from the item universe — **DONE 2026-08-08**
+
+**Dropped, not split.** `PHASE_COLLAPSED_SLUG_PATTERNS` in `backend/models/item_parser.py`,
+applied at `_fetch_voted_price_history` (the one read behind both `train()` and `predict()`),
+both `walkforward_backtest` loaders and `api/routes/opportunities.py::_load_items`;
+`VOTED_CACHE_VERSION` bumped 2 → 3. Splitting by phase needs the BUFF `doppler` sub-object
+ingested as its own daily series — a collection project, not a filter.
+
+Measured against the archive rather than the dump: the word matches **129 slugs / 47,081
+rows** (0.309% of slugs, 0.227% of rows), of which **two are false positives** —
+`Sticker | Doppler Poison Frog (Foil)` and its Sticker Slab twin are ordinary single assets,
+hence a `sticker` exemption. In the ≥$1 served cohort the cut is **6 items of 926 (0.65%)
+and 7,560 item-days of 994,432 (0.76%)**; the other ~121 real names are absent from the
+cohort because they are not in the gated pool, not because of the price floor. This is a
+correctness fix on a 0.65% slice, an order of magnitude under the 2.21–3.69pp MDE floor — no
+A/B was run and none should be. Record:
+`docs/changelog/2026-08-08-phase-collapsed-names-dropped.md`.
+
+- **Still open from this step:** the ten-plus `ab_test_*` harnesses glob the archive
+  privately and still see the names, so their universe now differs from production's —
+  folded into step 5, which already owns those loaders. Stored forecasts and outcomes were
+  not purged, and `price_resolution.py` was deliberately left unfiltered so pending outcomes
+  stay resolvable; they drain from the scored cohort within 30 days.
+
+<details>
+<summary>The original entry</summary>
 
 - **Do:** one filter. Drop them, or split them by phase using the `doppler` sub-object the
   BUFF dump already carries.
@@ -184,6 +210,8 @@ inherit the same boundary-overlap inflation as its DA.
 - **Touches:** the item-universe filter in the training path and the archive read.
 - **Effort:** tiny.
 - **Unblocks:** step 8. Review §22 D9, §25.
+
+</details>
 
 ### 5. Purge and embargo everywhere at `H + 13` days; add `ingested_at` — NOT STARTED
 

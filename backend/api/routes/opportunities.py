@@ -8,6 +8,7 @@ from database import get_db, ItemForecast, Item
 from api.cache import get_or_build
 from api.schemas import OpportunityOut
 from api.serving_policy import meets_price_floor, price_floor_clause
+from models.item_parser import is_phase_collapsed
 
 router = APIRouter(prefix="/opportunities", tags=["opportunities"])
 
@@ -36,10 +37,19 @@ def _reason_for_type(opp_type: str) -> str:
 
 
 def _load_items(item_ids: list[int], db: Session) -> dict[int, Item]:
+    """Items backing a set of forecasts. Every caller here skips a forecast
+    whose item is missing from the map, which makes this the one place that has
+    to drop phase-collapsed names.
+
+    They left the forecast universe on 2026-08-08, but these queries take each
+    item's *latest* forecast with no date bound, so their final row would
+    otherwise sit on the ranked surfaces permanently — and they are $200-500
+    knives, which rank.
+    """
     if not item_ids:
         return {}
     items = db.query(Item).filter(Item.id.in_(item_ids)).all()
-    return {i.id: i for i in items}
+    return {i.id: i for i in items if not is_phase_collapsed(i.name)}
 
 
 def _latest_forecasts(db: Session, horizon_days: int = 7):
