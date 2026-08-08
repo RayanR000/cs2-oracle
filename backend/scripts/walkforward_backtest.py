@@ -40,7 +40,7 @@ import lightgbm as lgb
 
 from database import SessionLocal, PredictionAccuracy
 from models.forecaster import BID_SOURCES, DIRECTION_FLAT_TOLERANCE_PCT, ItemForecaster
-from backtest.scoring import HEADLINE_TIER, score_by_tier
+from backtest.scoring import FLOOR_SWEEP, HEADLINE_TIER, score_by_tier
 from backtest.walkforward_records import fold_records
 
 logging.basicConfig(
@@ -264,7 +264,14 @@ def _aggregate_records(records):
     all_tiers = next((m for tier, m, _ in scored if tier is None), None)
     out = dict(headline or all_tiers or {})
     out["by_tier"] = {
-        ("all" if tier is None else "headline" if tier == HEADLINE_TIER else f"tier_{tier}"):
+        (
+            "all" if tier is None
+            else "headline" if tier == HEADLINE_TIER
+            # Without this a floor sentinel keys as "tier_-2", which reads as a
+            # price band and is not one.
+            else f"floor_{FLOOR_SWEEP[tier]:g}" if tier in FLOOR_SWEEP
+            else f"tier_{tier}"
+        ):
             {"directional_accuracy": m["directional_accuracy"], "sample_count": n}
         for tier, m, n in scored
     }

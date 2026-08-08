@@ -12,6 +12,7 @@ from collections import defaultdict
 
 import numpy as np
 
+from backtest.actionable import actionable_metrics
 from backtest.directional_test import (
     constant_call_baseline,
     pesaran_timmermann,
@@ -262,6 +263,18 @@ def score_cohort(records: list[dict]) -> tuple[dict, int]:
     # backtest/directional_test.py for why the plain version does not apply.
     pt = pesaran_timmermann(records, MIN_FORECAST_DATES)
 
+    # Friction-conditioned accuracy, on the subset whose predicted move clears
+    # the round trip plus the tier's spread. Scoped to h in {14, 30}; outside
+    # that it reports out_of_scope rather than zeros. See backtest/actionable.py
+    # for why a low error and zero utility are compatible.
+    #
+    # The horizon is read off the first record because records are grouped by
+    # (horizon, model_version) before they get here, so a cohort cannot mix
+    # horizons. A record predating the field yields None, which is out_of_scope.
+    actionable = actionable_metrics(
+        records, records[0].get("horizon_days"), MIN_FORECAST_DATES
+    )
+
     metrics = {
         "mae": round(mae, 4),
         "rmse": round(rmse, 4),
@@ -305,6 +318,7 @@ def score_cohort(records: list[dict]) -> tuple[dict, int]:
         "mae_ci_upper": mae_ci_upper,
     }
     metrics.update(pt)
+    metrics.update(actionable)
     return metrics, n
 
 
@@ -327,13 +341,37 @@ HEADLINE_MIN_TIER = 1
 # it. Every other row in this function was already persisted; this one wasn't.
 HEADLINE_TIER = -1
 
+# price_tier sentinels for the headline floor sweep, mapping sentinel -> floor in
+# USD. HEADLINE_TIER is -1 and keeps meaning >= $1: /accuracy/headline, the
+# homepage placard and months of stored series all key on it, so the sweep
+# extends downward from it rather than renumbering.
+#
+# The sweep exists because $1 is a CONVENTION, not a derivation — the spread
+# evidence (35.5% sub-$1 against 5.2% at $1000+) argues the honest floor is
+# above it. These rows are what answers "where does the headline stabilise",
+# and they are stored for the same reason HEADLINE_TIER is.
+#
+# Negative by construction so they can never collide with a band price_tier()
+# returns; the API's price_tier query bound is widened to -3 to match. Every
+# floor must be a price_tier cut — see floor_records.
+FLOOR_SWEEP = {
+    -1: 1.0,
+    -2: 5.0,
+    -3: 20.0,
+}
+
 
 def score_by_tier(records: list[dict]) -> list[tuple[int | None, dict, int]]:
-    """Score per price tier, the >=$1 headline, plus an all-tiers aggregate.
+    """Score per price band, once per headline floor, plus an all-tiers aggregate.
 
-    Returns [(tier, metrics, n), ..., (HEADLINE_TIER, ...), (None, metrics, n)].
-    Cohorts with no records are omitted rather than emitted as zeros, so the
-    headline is absent when nothing reaches HEADLINE_MIN_TIER.
+    Returns [(tier, metrics, n), ..., (floor sentinels), (None, metrics, n)].
+    Cohorts with no records are omitted rather than emitted as zeros, so a floor
+    nothing reaches is absent instead of reporting a fabricated 0%.
+
+    The all-tiers (None) row is retained for API defaults and for continuity of a
+    series months deep. It is POOLED ACROSS LIQUIDITY POPULATIONS whose spreads
+    run 35.5% to 5.2%, so nothing quotes it — the logged headline reads
+    HEADLINE_TIER.
     """
     by_tier: dict[int, list[dict]] = defaultdict(list)
     for r in records:
@@ -345,9 +383,12 @@ def score_by_tier(records: list[dict]) -> list[tuple[int | None, dict, int]]:
         if n:
             out.append((tier, metrics, n))
 
-    metrics, n = score_cohort(headline_records(records))
-    if n:
-        out.append((HEADLINE_TIER, metrics, n))
+    # Descending sentinel order (-1, -2, -3) so the widest cohort is emitted
+    # first and the log reads as a sweep upward through the floors.
+    for sentinel in sorted(FLOOR_SWEEP, reverse=True):
+        metrics, n = score_cohort(floor_records(records, FLOOR_SWEEP[sentinel]))
+        if n:
+            out.append((sentinel, metrics, n))
 
     metrics, n = score_cohort(records)
     if n:
@@ -355,6 +396,22 @@ def score_by_tier(records: list[dict]) -> list[tuple[int | None, dict, int]]:
     return out
 
 
+def floor_records(records: list[dict], floor: float) -> list[dict]:
+    """The subset at or above a price floor, in USD.
+
+    Filters in TIER space rather than on base_price directly. Every floor in
+    FLOOR_SWEEP is a price_tier cut, so the two are equivalent — but filtering on
+    tiers keeps each floor cohort exactly a UNION OF BANDS, which is the property
+    the partition tests rely on to catch double-counting, and it keeps
+    headline_records selecting the identical population it always has.
+
+    A floor that is not a band edge would silently round down to the band below
+    it. `test_every_sweep_floor_is_a_band_edge` is what stops one being added.
+    """
+    min_tier = price_tier(floor)
+    return [r for r in records if r["price_tier"] >= min_tier]
+
+
 def headline_records(records: list[dict]) -> list[dict]:
     """The >=$1 subset used for the headline log line."""
-    return [r for r in records if r["price_tier"] >= HEADLINE_MIN_TIER]
+    return floor_records(records, FLOOR_SWEEP[HEADLINE_TIER])

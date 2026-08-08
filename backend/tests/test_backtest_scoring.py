@@ -94,6 +94,11 @@ def _record(**overrides):
         "actual_price": 1.10,
         "price_tier": 1,
         "item_id": 1,
+        # The friction-conditioned metric's two inputs. A +10% predicted move at
+        # tier 1 is deliberately BELOW the 23.1% actionable threshold, so the
+        # default record is in scope and not actionable — the ordinary case.
+        "predicted_mid": 1.10,
+        "horizon_days": 14,
     }
     base.update(overrides)
     return base
@@ -953,15 +958,21 @@ def test_reresolve_overrides_the_freeze(session, monkeypatch):
     assert session.query(ForecastOutcome).filter_by(forecast_id=8).one().actual_price == 99.0
 
 
-from backtest.scoring import HEADLINE_MIN_TIER, HEADLINE_TIER, score_by_tier
+from backtest.scoring import (
+    FLOOR_SWEEP,
+    HEADLINE_MIN_TIER,
+    HEADLINE_TIER,
+    floor_records,
+    score_by_tier,
+)
 
 
 def test_tier_rows_partition_the_all_row():
     """The price bands partition the all-tiers row.
 
-    HEADLINE_TIER is excluded on purpose: it is a sentinel for the >=$1
-    aggregate, not a band, and it deliberately overlaps bands 1..4. Summing it
-    with them would double-count.
+    Every FLOOR_SWEEP sentinel is excluded on purpose: they are floor
+    aggregates, not bands, and they deliberately overlap bands 1..5. Summing
+    them with the bands would double-count.
     """
     records = [_record(price_tier=0, item_id=i) for i in range(30)]
     records += [_record(price_tier=1, item_id=100 + i) for i in range(20)]
@@ -969,7 +980,7 @@ def test_tier_rows_partition_the_all_row():
     scored = score_by_tier(records)
     per_tier = {
         tier: n for tier, _, n in scored
-        if tier is not None and tier != HEADLINE_TIER
+        if tier is not None and tier not in FLOOR_SWEEP
     }
     all_rows = [(m, n) for tier, m, n in scored if tier is None]
 
@@ -997,7 +1008,7 @@ def test_empty_tiers_are_omitted_not_zero_filled():
     records = [_record(price_tier=4, item_id=i) for i in range(12)]
     tiers = {
         tier for tier, _, _ in score_by_tier(records)
-        if tier is not None and tier != HEADLINE_TIER
+        if tier is not None and tier not in FLOOR_SWEEP
     }
     assert tiers == {4}
 
@@ -1006,6 +1017,103 @@ def test_headline_tier_is_one_dollar_and_up():
     assert HEADLINE_MIN_TIER == 1
     assert price_tier(0.99) < HEADLINE_MIN_TIER
     assert price_tier(1.00) >= HEADLINE_MIN_TIER
+
+
+# ---------------------------------------------------------------------------
+# The friction-conditioned metric and the headline floor sweep.
+# ---------------------------------------------------------------------------
+
+
+def test_score_cohort_publishes_the_actionable_metric():
+    records = [
+        _record(item_id=i, base_price=2000.0, actual_price=3000.0,
+                predicted_mid=3000.0, price_tier=5, horizon_days=14)
+        for i in range(20)
+    ]
+    metrics, _ = score_cohort(records)
+    assert metrics["actionable_scope"] == "in_scope"
+    assert metrics["actionable_n"] == 20
+    assert metrics["actionable_da"] == 100.0
+
+
+def test_score_cohort_marks_short_horizons_out_of_scope():
+    """A cohort at h=3 must say why the metric is absent, not report zeros."""
+    records = [_record(item_id=i, horizon_days=3) for i in range(20)]
+    metrics, _ = score_cohort(records)
+    assert metrics["actionable_scope"] == "out_of_scope"
+    assert metrics["actionable_n"] is None
+
+
+def test_the_actionable_keys_are_present_on_every_cohort():
+    """Fixed shape. A key set that varies by cohort is the defect that forced
+    every nested metrics value in this store to JSON text."""
+    in_scope, _ = score_cohort([_record(item_id=i, horizon_days=14) for i in range(20)])
+    out_of, _ = score_cohort([_record(item_id=i, horizon_days=3) for i in range(20)])
+    actionable = {k for k in in_scope if k.startswith("actionable_")}
+    assert actionable
+    assert actionable == {k for k in out_of if k.startswith("actionable_")}
+
+
+def test_every_sweep_floor_is_a_band_edge():
+    """floor_records filters in tier space, which is only equivalent to a dollar
+    floor when the floor is a price_tier cut. Pinned so a later $50 floor cannot
+    be added silently and quietly round down to the $20 band."""
+    for floor in FLOOR_SWEEP.values():
+        assert price_tier(floor - 0.01) < price_tier(floor), f"${floor} is not a band edge"
+
+
+def test_floor_sweep_emits_one_stored_row_per_floor():
+    """The sweep answers 'where does the headline stabilise'. Stored, not just
+    logged, for the reason HEADLINE_TIER is stored: a headline that exists only
+    in console output cannot be audited or recomputed."""
+    records = (
+        [_record(item_id=i, base_price=2.0, price_tier=price_tier(2.0)) for i in range(10)]
+        + [_record(item_id=20 + i, base_price=50.0, price_tier=price_tier(50.0))
+           for i in range(10)]
+    )
+    by_tier = {t: n for t, _, n in score_by_tier(records)}
+    assert FLOOR_SWEEP == {-1: 1.0, -2: 5.0, -3: 20.0}
+    assert by_tier[-1] == 20     # >= $1
+    assert by_tier[-2] == 10     # >= $5
+    assert by_tier[-3] == 10     # >= $20
+
+
+def test_the_floors_nest():
+    records = [
+        _record(item_id=i, base_price=base, price_tier=price_tier(base))
+        for i, base in enumerate([0.5, 2.0, 8.0, 50.0, 500.0, 5000.0] * 4)
+    ]
+    by_tier = {t: n for t, _, n in score_by_tier(records)}
+    assert by_tier[-3] <= by_tier[-2] <= by_tier[-1]
+
+
+def test_headline_tier_is_still_the_dollar_floor():
+    """/accuracy/headline, the homepage placard and the stored series all key on
+    HEADLINE_TIER. The sweep must not renumber it."""
+    assert HEADLINE_TIER == -1
+    assert FLOOR_SWEEP[HEADLINE_TIER] == 1.0
+
+
+def test_the_dollar_floor_is_exactly_the_old_headline_cohort():
+    """headline_records changed from a price_tier comparison to a FLOOR_SWEEP
+    lookup. The population it selects must not have moved."""
+    records = [
+        _record(item_id=i, base_price=base, price_tier=price_tier(base))
+        for i, base in enumerate([0.2, 0.99, 1.0, 7.0, 300.0, 9000.0])
+    ]
+    assert floor_records(records, FLOOR_SWEEP[HEADLINE_TIER]) == [
+        r for r in records if r["price_tier"] >= HEADLINE_MIN_TIER
+    ]
+
+
+def test_a_floor_no_record_reaches_is_omitted_not_emitted_as_zero():
+    records = [
+        _record(item_id=i, base_price=2.0, price_tier=price_tier(2.0))
+        for i in range(10)
+    ]
+    tiers = {t for t, _, _ in score_by_tier(records)}
+    assert -1 in tiers
+    assert -2 not in tiers and -3 not in tiers
 
 
 def test_forecasts_with_no_slug_mapping_count_toward_the_gate(
@@ -1083,10 +1191,12 @@ def test_rescore_path_emits_the_same_tier_rows_as_the_normal_path(
     normal_shape = shape(normal_results)
     rescore_shape = shape(rescore_results)
 
-    # A per-tier row (tier 1 for "ak", tier 2 for "awp"), the >=$1 headline
-    # (HEADLINE_TIER), and the all-tiers aggregate (price_tier=None) must all
-    # be present in both paths.
-    assert {None, 1, 2, HEADLINE_TIER} == {t for (_, _, t) in normal_shape}
+    # A per-tier row (tier 1 for "ak", tier 2 for "awp"), the >=$1 and >=$5
+    # floor sentinels the fixture's prices reach, and the all-tiers aggregate
+    # (price_tier=None) must all be present in both paths. There is no >=$20
+    # row: nothing in the fixture is that expensive, and an unreached floor is
+    # omitted rather than zero-filled.
+    assert {None, 1, 2, HEADLINE_TIER, -2} == {t for (_, _, t) in normal_shape}
     assert normal_shape == rescore_shape
 
 

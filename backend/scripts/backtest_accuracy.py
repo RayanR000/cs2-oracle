@@ -40,6 +40,7 @@ from backtest.resolution_gate import (
 from backtest.directional_test import PT_T_HURDLE
 from backtest.scoring import (
     FLAT_TOLERANCE,
+    FLOOR_SWEEP,
     HEADLINE_MIN_TIER,
     HEADLINE_TIER,
     MIN_FORECAST_DATES,
@@ -703,6 +704,26 @@ def _pt_str(metrics) -> str:
     )
 
 
+def _actionable_str(metrics) -> str:
+    """The friction-conditioned numbers as one field.
+
+    Four numbers or none: a share, a hit rate, a net return and a PT verdict. A
+    hit rate on its own is what this metric exists to stop being quoted.
+    """
+    scope = metrics.get("actionable_scope")
+    if scope != "in_scope":
+        return f"n/a ({scope})"
+    n = metrics["actionable_n"]
+    if not n:
+        return "0 rows — NO call cleared its round trip + tier spread"
+    return (
+        f"n={n:,} ({metrics['actionable_share_pct']:.1f}% of rows) "
+        f"DA={metrics['actionable_da']:.1f}% "
+        f"E[net]={metrics['actionable_e_net_pct']:+.2f}% "
+        f"PT={metrics.get('actionable_pt_verdict')}"
+    )
+
+
 def _headline_line(horizon, model_version, metrics, n) -> tuple[int, str]:
     """The >=$1 headline as (log level, message).
 
@@ -746,7 +767,8 @@ def _headline_line(horizon, model_version, metrics, n) -> tuple[int, str]:
         f"MAE=${metrics['mae']:.2f} MAPE={metrics['mape']:.1f}% "
         f"IntCov={metrics['interval_coverage']:.1f}% "
         f"ConfGap={metrics['conf_gap_pp']:.1f}pp "
-        f"Skill={metrics['skill_vs_baseline']}"
+        f"Skill={metrics['skill_vs_baseline']} "
+        f"Actionable={_actionable_str(metrics)}"
     )
     prefix = f"  [{horizon}d / {model_version}] >=$1: {n:,} samples over {n_dates} forecast dates"
 
@@ -814,6 +836,18 @@ def _score_groups(groups, today):
 
         if head_n:
             logger.log(*_headline_line(horizon, model_version, head_metrics, head_n))
+
+        # Where does the headline stabilise? $1 is a convention and the spread
+        # evidence argues the honest floor is above it, so the floors are printed
+        # side by side. Reading the stored rows, not re-deriving them.
+        sweep = [(FLOOR_SWEEP[t], m, n) for t, m, n in tiered if t in FLOOR_SWEEP]
+        if len(sweep) > 1:
+            parts = " | ".join(
+                f">=${floor:g}: n={n:,} DA={m['directional_accuracy']:.1f}% "
+                f"PT={_pt_str(m)}"
+                for floor, m, n in sweep
+            )
+            logger.info(f"  [{horizon}d / {model_version}] floor sweep — {parts}")
         if penny_n:
             # Diagnostic only, and never the headline: one cent is a 20% move
             # down here, so the up/flat/down label is tick quantisation. Carries
