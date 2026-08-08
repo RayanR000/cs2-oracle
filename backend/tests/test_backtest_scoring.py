@@ -112,6 +112,23 @@ def test_price_tier_boundaries():
     assert price_tier(5.0) == 2
     assert price_tier(20.0) == 3
     assert price_tier(100.0) == 4
+    assert price_tier(999.99) == 4
+    assert price_tier(1000.0) == 5
+    assert price_tier(29_685.0) == 5   # the priciest name in the archive
+
+
+def test_tier_4_no_longer_merges_the_two_most_liquid_cohorts():
+    """The reason the cut exists: tier 4 used to hold both the 10.8%-spread
+    ($50-500) and the 5.2%-spread ($1000+) populations, which are the two most
+    DIFFERENT liquidity cohorts in the market. Pooling them made every tier-4
+    number uninterpretable.
+
+    Note for anyone reading the stored series: rows written before 2026-08-07
+    with price_tier == 4 mean >= $100, not $100-1000.
+    """
+    assert price_tier(200.0) == 4
+    assert price_tier(2000.0) == 5
+    assert price_tier(200.0) != price_tier(2000.0)
 
 
 def test_score_cohort_is_pure_and_repeatable():
@@ -2110,11 +2127,14 @@ def test_the_refreshed_mirror_row_replaces_the_stale_one_in_a_real_parquet_file(
     monkeypatch.setattr(parquet_mod, "append_table", real_append)
 
     # Seed the mirror exactly as the insert path does: the frozen row, with the
-    # write-time verdict on it.
+    # write-time verdict on it and the denormalised item_slug the mirror
+    # carries so it can be joined to prices-*.parquet without the DB.
     frozen = session.query(ForecastOutcome).filter_by(forecast_id=1).one()
     seed_row = backtest_accuracy._outcome_to_mapping(frozen)
     seed_row["evaluated_at"] = frozen.evaluated_at
     seed_row["resolved_at"] = frozen.resolved_at
+    seed_row, = backtest_accuracy._with_item_slug(
+        [seed_row], backtest_accuracy._id_to_slug(session))
     real_append("forecast_outcomes", [seed_row], ["forecast_id"])
 
     stored = parquet_mod.read_table("forecast_outcomes")

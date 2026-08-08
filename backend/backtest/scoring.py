@@ -12,6 +12,12 @@ from collections import defaultdict
 
 import numpy as np
 
+from backtest.directional_test import (
+    constant_call_baseline,
+    pesaran_timmermann,
+    realised_down_rate,
+)
+
 FLAT_TOLERANCE = 0.005
 N_BOOTSTRAP = 1000
 BOOTSTRAP_CI = 95
@@ -47,6 +53,17 @@ def direction_from_return(ret: float) -> str:
 
 
 def price_tier(price: float) -> int:
+    """Liquidity band, not a display bucket.
+
+    The $1000 cut exists because the bid-ask spread is 10.8% at $50-500 and
+    5.2% at $1000+ (n = 22,449) — the two most different liquidity populations
+    in the market, which tier 4 used to merge. See backtest/friction.py.
+
+    Rows stored before 2026-08-07 with price_tier == 4 mean >= $100. Tiers 0-3
+    are unchanged, so HEADLINE_MIN_TIER and MIN_SERVED_PRICE_USD are unaffected.
+    """
+    if price >= 1000:
+        return 5
     if price >= 100:
         return 4
     if price >= 20:
@@ -162,9 +179,21 @@ def score_cohort(records: list[dict]) -> tuple[dict, int]:
         for t, errs in sorted(tier_errors.items())
     }
 
+    # NOTE: this is the always-FLAT call specifically, not the best constant
+    # call. It is kept under its original name because the stored series goes
+    # back months under this definition; the number DA actually has to beat is
+    # `constant_call_accuracy` below.
     baseline_hits = sum(1 for r in records if r["actual_direction"] == "flat")
     baseline_directional_accuracy = baseline_hits / n * 100
     baseline_mae = sum(abs(r["base_price"] - r["actual_price"]) for r in records) / n
+
+    # The headline triple. `directional_accuracy` on its own says nothing: the
+    # realised down-rate swings 29.4% -> 76.9% between stored forecast dates
+    # while the model's call distribution barely moves, so the same DA is skill
+    # on one date and incompetence on another. These three always travel
+    # together, and the significance test below is what is actually quoted.
+    constant_call_direction, constant_call_accuracy = constant_call_baseline(records)
+    down_rate = realised_down_rate(records)
 
     # A price the archive carried forward is not a prediction the model got
     # right. Measured 2026-08-05: 30-36% of scored outcomes have actual_price
@@ -228,6 +257,11 @@ def score_cohort(records: list[dict]) -> tuple[dict, int]:
         )
     )
 
+    # Serial-correlation-robust Pesaran-Timmermann, computed per forecast date
+    # with a t-stat over dates. THIS is the headline; DA is context for it. See
+    # backtest/directional_test.py for why the plain version does not apply.
+    pt = pesaran_timmermann(records, MIN_FORECAST_DATES)
+
     metrics = {
         "mae": round(mae, 4),
         "rmse": round(rmse, 4),
@@ -235,6 +269,13 @@ def score_cohort(records: list[dict]) -> tuple[dict, int]:
         "wmape": round(wmape, 2),
         "mape_by_tier": mape_by_tier,
         "directional_accuracy": round(directional_accuracy, 2),
+        # The two figures DA must never be quoted without. See the triple
+        # comment above.
+        "constant_call_accuracy": (
+            None if constant_call_accuracy is None else round(constant_call_accuracy, 2)
+        ),
+        "constant_call_direction": constant_call_direction,
+        "realised_down_rate": None if down_rate is None else round(down_rate, 2),
         # Carry-forward split. See the comment above the partition.
         "directional_accuracy_moved": _dir_acc(moved),
         "directional_accuracy_unchanged": _dir_acc(unchanged),
@@ -263,6 +304,7 @@ def score_cohort(records: list[dict]) -> tuple[dict, int]:
         "mae_ci_lower": mae_ci_lower,
         "mae_ci_upper": mae_ci_upper,
     }
+    metrics.update(pt)
     return metrics, n
 
 

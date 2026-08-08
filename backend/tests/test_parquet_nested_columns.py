@@ -209,16 +209,24 @@ class TestNullValuedDedupKeys:
         assert len(out) == 2, "the aggregate and tier 1 collided"
 
     def test_the_whole_tier_fanout_is_stable_across_runs(self, tmp_path):
-        """score_by_tier emits 7 rows per (horizon, model); a re-run must too."""
+        """score_by_tier's whole fan-out must dedup to itself on a re-run.
+
+        Derived from FLOOR_SWEEP rather than hardcoded: the row count moved from
+        7 to 10 when the $1000 band and the $5/$20 floor sentinels landed, and a
+        literal here just breaks on the next legitimate cut.
+        """
+        from backtest.scoring import FLOOR_SWEEP
+
         path = tmp_path / "prediction_accuracy.parquet"
+        tiers = [0, 1, 2, 3, 4, 5, *sorted(FLOOR_SWEEP), None]
         rows = pd.DataFrame([
             {"prediction_type": "forecast", "horizon_days": 7, "price_tier": t,
              "metrics": {"mae": 1.0}}
-            for t in (0, 1, 2, 3, 4, -1, None)
+            for t in tiers
         ])
         _append_parquet(path, rows, KEYS)
         _append_parquet(path, rows, KEYS)
-        assert len(pd.read_parquet(path)) == 7
+        assert len(pd.read_parquet(path)) == len(tiers)
 
 
 class TestExistingStructFilesAreMigratedInPlace:
