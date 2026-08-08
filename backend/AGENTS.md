@@ -76,8 +76,10 @@ points at production Supabase — see the root `AGENTS.md` gotcha before running
   on the dashboard trend and in `backtest-triage`, with nothing stored to say otherwise. The
   persisted `metrics` also carry `purge` and `embargo_days`, so a row is self-describing.
   `--no-purge` reproduces the old split — and the old version string — for a like-for-like
-  read against a pre-flip run, and must never be published from. **No run has happened under
-  the new default**, so the size of the discontinuity is unknown.
+  read against a pre-flip run, and must never be published from. The discontinuity was
+  **measured on 2026-08-08** by running both arms and pairing them: the un-purged split inflates
+  DA by **+10.15pp at 30d** and **+5.44pp at 14d** (both intervals exclude zero); h=3 and h=7 are
+  unresolved, not clean. See `docs/changelog/2026-08-08-embargo-discontinuity-measured.md`.
 - **An A/B verdict is a fold-clustered interval, never a win count.** Ten harnesses decided
   on a fold win-count, a ±0.5pp pooled-delta threshold or a bare `a > b` until 2026-08-08 —
   none is a test, against a measured item-level MDE of 2.21–3.69pp. Use

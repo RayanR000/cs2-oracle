@@ -8,7 +8,9 @@
 `docs/changelog/2026-08-07-pesaran-timmermann-headline.md` and
 `docs/changelog/2026-08-07-friction-conditioned-tier-scoring.md`), and steps 4 and 5 are
 DONE (2026-08-08 — `docs/changelog/2026-08-08-phase-collapsed-names-dropped.md` and
-`docs/changelog/2026-08-08-embargo-and-harness-hygiene.md`). Step 6 is unblocked and NOT
+`docs/changelog/2026-08-08-embargo-and-harness-hygiene.md`; step 5's outstanding "gate not
+re-run" item closed the same day —
+`docs/changelog/2026-08-08-embargo-discontinuity-measured.md`). Step 6 is unblocked and NOT
 STARTED. Steps 7–11 are NOT STARTED.**
 
 Ordering is the review's, not a re-ranking. Numbers in the "why" column are quoted from the
@@ -248,14 +250,25 @@ Record: `docs/changelog/2026-08-08-embargo-and-harness-hygiene.md`.
 
 **Not done, and each of these matters for how the result is read:**
 
-- **Nothing was run.** No harness, and no walkforward gate. Every A/B result in the repo
-  predates all five changes, and **not one of the new intervals has been observed on real
-  data**. The +12.1pp → +6.1pp pair quoted below is still the review's, still unreplicated.
+- **No harness was run.** The thirteen `ab_test_*` harnesses are untouched: every A/B result
+  in the repo predates all five changes, and **not one of the new intervals has been
+  observed on real data**.
 - **The archive migration has not been run.** `ingested_at` exists in the schema and in the
   writer; only CI writes the canonical archive, so the column is absent from every stored
   file until `aggregator-update.yml` runs with `normalize_schema = true`.
-- **The published gate has not been re-run under the new default**, so the size of the
-  discontinuity it was flipped to accept is unknown.
+- ~~**The published gate has not been re-run under the new default**~~ — **DONE 2026-08-08**,
+  and the discontinuity is measured. Record:
+  `docs/changelog/2026-08-08-embargo-discontinuity-measured.md`. Two things had to be fixed
+  or found first: the gate had **never persisted a row** (a session closed 30 min before the
+  write, `f63ae76`), and there was consequently **no `lgbm-v3-clustered` series to step
+  from**, so the contrast was run as a paired `--no-purge --skip-db` arm instead. Unpurged
+  inflation on the ≥$1 headline cohort, positive = unpurged reads higher: **h=3 +0.47pp
+  [−1.05, +2.06] (null, MDE 1.55)**, **h=7 +4.29pp [−0.26, +9.14] (null, MDE 4.70 — the
+  point estimate is inside its own MDE, so unresolved, not clean)**, **h=14 +5.44pp
+  [+1.68, +9.12] (positive)**, **h=30 +10.15pp [+5.00, +15.79] (positive)**. At h=30 the old
+  split read 63.14% and the embargoed one reads 52.92% — which loses to the 52.97% always-up
+  constant call. **The +12.1pp → +6.1pp pair quoted below is retired**: there is now a local
+  measurement of the same quantity and the review's figure should not be cited.
 - **The three raw-glob harnesses still read every ask source**, so a 2026 item-day reaches
   them ~11 times and `engineer_features` collapses the copies with a plain mean where
   production votes an outlier-rejected median. Narrowing that cohort changes what they
@@ -482,8 +495,8 @@ are here so they are not re-proposed.
   bid's rejection flickered on **5.6%** of return pairs — but flicker was only a twentieth of
   that defect's effect, so this is not resolved.
 - **h=30 rests on 5,461 usable rows from one backdated date.** It carries both the +3.50pp
-  positive (step 7) and the largest unpurged inflation (step 5). No h=30 claim until ≥30
-  forecast dates mature.
+  positive (step 7) and the largest unpurged inflation (step 5, now measured on the gate at
+  **+10.15pp**, 2026-08-08). No h=30 claim until ≥30 forecast dates mature.
 - **`|r| < 0.002`** for trade volume is quoted in nine documents and is **10–40× too small**:
   C4 measures pooled corr(vol z, fwd7) = **+0.019**, fwd30 = **+0.034**, item-fixed-effects
   identical, $1–10 tier **+0.080** at 7d, on 4.46M rows 2023–2025. The audit's *conclusion*
