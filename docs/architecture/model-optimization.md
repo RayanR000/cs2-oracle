@@ -79,11 +79,19 @@ sees:
 |---|---|---|---|
 | 100,000 (default) | 99 of ~5,377 (**1.8%**) | **104.6s** | 2026-08-05 |
 | 700,000 | 646 (12%) | **468.7s** | 2026-08-05 |
+| 1,200,000 **with `TRAIN_MIN_MEDIAN_PRICE=1.0`** | 926 of 5,542 — the whole ≥$1 cohort, no subsample | **538s** | 2026-08-07 |
 
 Raising it is a ~4.5× cost increase — more than the pre-rewrite 40-model grid cost — which spends
 the entire minimal-model saving to buy 12% of the pool, and **the fresh-model gate cannot detect
 the resulting accuracy difference**. So there is no measurement that would justify the spend, and
 it was explicitly declined; the rationale is in the code at `forecaster.py:2791-2806`.
+
+**Two 2026-08-07 corrections to how that cost should be read.** First, the retrain runs on
+**Mondays only** (`price-forecast.yml`, `date +%u = 1`); every other day is predict-only, so a
+budget increase is a weekly cost, not a daily one. Second, the third row above is the cheaper way
+to buy coverage: the median-price floor drops the 82.56% of item-days that are sub-$1 *before* the
+budget is spent, so 538s buys the entire served cohort rather than 12% of the pool. It is
+**defaulted off**. `docs/changelog/2026-08-07-training-item-universe.md`.
 
 Lowering it below 100K is available but no longer buys much in absolute terms: booster fitting is
 only 28.1s, so the saving would arrive mostly through CV refits. Prefer `CV_STEP_DAYS`, which cuts

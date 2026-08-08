@@ -42,6 +42,12 @@ The `aggregator_sync` fallback chain is why that label never goes missing when S
 no 24-hour print. Skinport reads `starting_at`, not `last_24h` — the earlier field choice
 was a bug.
 
+**Ten of the 11 labels are asks; `aggregator_buff163_buy` is a bid** (`highest_order`) and is
+collected but **excluded from consensus voting** as of 2026-08-07 —
+`models/forecaster.py::BID_SOURCES`. It is still written to the archive under its own label,
+so it is recoverable at read time. See
+`docs/changelog/2026-08-07-bid-source-excluded-from-voting.md`.
+
 ### Files
 - **`collectors/csgotrader_aggregator.py`** — one session for all endpoints; returns
   `{source: {item_name: raw_dict}}`. Logs per-endpoint failures and escalates to

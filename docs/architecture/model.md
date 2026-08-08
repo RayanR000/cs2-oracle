@@ -1,12 +1,15 @@
 # Model Architecture
 
 > **⚠ There is no reportable production directional-accuracy number right now.**
-> `MIN_FORECAST_DATES = 20` (`backtest/scoring.py:38`) refuses to publish a headline below 20
+> `MIN_FORECAST_DATES = 20` (`backtest/scoring.py`) refuses to publish a headline below 20
 > distinct forecast dates, and every live cohort currently spans **1–2** dates — so all four
 > horizons report NO HEADLINE. That is a calendar problem, not a code problem: the cohorts have to
 > accumulate dates. The CV figures below are training-time diagnostics measured on a different
 > item universe and a different price consensus, and they are **not** comparable to a production
 > number. See `docs/changelog/2026-08-03-accuracy-is-clustered-by-forecast-date.md`.
+>
+> **And when it arrives it will not be a DA.** The published headline is a Pesaran–Timmermann
+> test — see "The headline is a test, not an accuracy" below. Raw DA is never quoted alone.
 
 ## Overview
 
@@ -178,11 +181,26 @@ The most consequential knob in the system. Two separate budgets, previously conf
 |--------|---------|-------|----------------|
 | `max_feature_rows` | 100,000 | `DEFAULT_TRAIN_FEATURE_ROWS`, `forecast_prices.py:45`; env override `TRAIN_FEATURE_ROWS` (:54) | The frame **before** feature engineering — i.e. how many whole item histories the model ever sees |
 | `max_rows` | 700,000 | `TRAIN_HORIZON_MAX_ROWS`, `forecast_prices.py:50` | Each horizon's slice **after** feature engineering |
+| `min_median_price` | `None` | `_train_min_median_price()`, env `TRAIN_MIN_MEDIAN_PRICE` | Which items the budget may buy: a floor on each item's median price, applied **before** the subsample |
 
 `_stratified_item_subsample()` (:2419, applied :2496-2499) spends the first budget by selecting
 **entire item histories** (stratified by rarity, full calendar window preserved) so lags and
 rolling features stay valid. It is therefore an *item-coverage* budget, and at the default it
 selects **99 of 5,377 items — 1.8% of the pool**.
+
+**The subsample's seed is a first-order term.** It is hard-coded (`seed: int = 42`), and eight
+retrains varying only that seed moved `mean_classifier_acc_ge1` with sd **1.82 / 3.05 / 1.54 /
+2.77pp** at 3/7/14/30d, over near-disjoint draws (Jaccard 0.010–0.026 vs seed 42). Absolute
+levels from a single retrain are therefore not comparable across runs; paired arms at a fixed
+seed are unaffected. `docs/changelog/2026-08-07-training-item-universe.md`.
+
+`min_median_price` exists because the pool is **82.56% sub-$1 item-days** while
+`MIN_SERVED_PRICE_USD = 1.0`, so at the default budget only ~20 of the 99 selected items are in
+the served cohort. The ≥$1 cohort is **926 items / 993,464 item-days** at essentially the pool's
+own density, so a floor of 1.0 with `TRAIN_FEATURE_ROWS` ≥ 1.0M trains on the whole served cohort
+with **no subsample** — 538s, and the in-model permutation test goes from 7 WARN in 32
+horizon-runs to 4/4 PASS. It is **defaulted off**; see the changelog for the paired evidence
+(+3.50pp at 30d, null elsewhere) and for the caveat that `predict()` still writes sub-$1 rows.
 
 Raising it was measured and declined: 700,000 rows selects 646 items and costs **468.7s** against
 **104.6s** at 100,000 (:2801-2806). That is more than the pre-rewrite 40-model grid cost — the
@@ -431,9 +449,43 @@ evaluated universe, and at those prices one cent is a 20% move, so the direction
 dominated by tick quantisation. `api/serving_policy.py` sets `MIN_SERVED_PRICE_USD = 1.0` equal to
 `HEADLINE_MIN_TIER` so the population the product shows is the population the headline describes.
 
-**Metrics per horizon:** MAE, RMSE, MAPE, wMAPE, MAPE by tier; DA with bootstrap CI and interval
-coverage; persistence-baseline DA/MAE, improvement in pp, `skill_vs_baseline`; `conf_gap_pp`,
-`conf_high_interval_cov`, `conf_calibration_error`.
+**Metrics per horizon:** MAE, RMSE, MAPE, wMAPE, MAPE by tier; the PT block (below); DA with
+bootstrap CI and interval coverage; persistence-baseline DA/MAE, improvement in pp,
+`skill_vs_baseline`; `conf_gap_pp`, `conf_high_interval_cov`, `conf_calibration_error`.
+
+### The headline is a test, not an accuracy
+
+`backtest/directional_test.py` computes a **serial-correlation-robust Pesaran–Timmermann**
+statistic, and that — not DA — is what the log line, `GET /accuracy/headline` and the product
+surfaces publish. Raw DA is quotable only as a **triple** with `constant_call_accuracy` (the best
+single fixed call) and `realised_down_rate` beside it.
+
+The reason is measured, not stylistic: an always-down call scored **29.4% on 2025-12-01 and 76.9%
+on 2026-07-17** at 7d, against a model that says "down" 57–87% of the time whatever the date. A
+fixed DA is therefore skill on one date and incompetence on the other, and a pooled DA over a few
+dates mostly reports which dates the cohort contained. That observation *is* the PT null
+(Pesaran & Timmermann 1992, *JBES* 10(4), 461–465).
+
+- **Per forecast date**, excess hit rate `e_d = hit_d − P*_d`, with `P*_d = Σ_k P(pred=k)·P(act=k)`
+  estimated from that date's own label distributions. Estimating the null per date is what removes
+  the market effect. A **constant call has `e_d` identically zero** — that is the point.
+- **Over dates**, a t-stat on the mean of `e_d` under a Newey–West (Bartlett) HAC long-run
+  variance — Blaskowitz & Herwartz (2014, *IJF* 30(1)) — because carry-forward prices break the
+  plain PT independence assumption. Bandwidth is the published `floor(4·(T/100)^(2/9))` rule, so 2
+  at the 20-date floor.
+- **Hurdle `|t| > 3.0`** (Harvey–Liu–Zhu 2016, *RFS* 29(1)), not 1.96, because this repo has run
+  well over a dozen A/Bs against the same outcome series.
+- Dates carrying fewer than `PT_MIN_ROWS_PER_DATE = 30` rows are dropped and counted
+  (`pt_n_dates_dropped`): at tiny `n_d` the per-date null is degenerate.
+
+`pt_verdict` is one of `skill` / `no_skill` / `perverse` / `insufficient_dates` / `degenerate`. A
+significantly **negative** statistic is reported at warning level as a finding, not folded into
+"no skill". Rows written before this landed carry no `pt_*` keys at all, and the API reports them
+as `untested` — which is not the same claim as `no_skill`.
+
+Both departures from textbook PT push the same way — the per-date null is higher than a pooled one
+on a trending market, and the HAC variance is larger than the i.i.d. one under positive
+autocorrelation — so the statistic is conservative by construction.
 
 ### Known limitations
 
@@ -447,8 +499,15 @@ coverage; persistence-baseline DA/MAE, improvement in pp, `skill_vs_baseline`; `
   `price_lag_1d`, `return_1d`, `log_return_1d` and `autocorr_1d` were median-filled on 100% of
   served rows because the archive's entire August was 08-01 and 08-04 (addressed by
   `LAG_TOLERANCE_DAYS = 3`; the underlying ingestion gaps remain).
-- **The model trains on 1.8% of the item pool** (99 of 5,377 items at the default row budget) and
-  serves 5,542. Raising coverage is a measured ~4.5× cost increase and was declined.
+- **The model trains on 1.8% of the item pool** (99 of 5,377 items at the default row budget)
+  while `predict()` writes forecasts for **8,691 distinct items** on the latest date
+  (`price-archive/ops/item_forecasts.parquet`). Raising coverage on the unfiltered pool is a
+  measured ~4.5× cost increase and was declined; raising it **under a $1 median-price floor**
+  costs 538s and was measured at +3.50pp (30d, paired, held-out CV) and null elsewhere —
+  `docs/changelog/2026-08-07-training-item-universe.md`. The floor is defaulted off.
+- **Which 99 items is worth more than any feature tested.** sd 1.5–3.1pp on
+  `mean_classifier_acc_ge1` from the subsample seed alone. Read § Training row budget before
+  comparing absolute accuracy across two retrains.
 - **The gate cannot resolve small effects.** The A/B harness has a ~1.15pp noise floor at 3d,
   wider at longer horizons, so anything below ~1pp is unmeasurable by design. Compute the MDE
   (`scripts/compute_mde.py`) before running one.
@@ -504,7 +563,8 @@ coverage; persistence-baseline DA/MAE, improvement in pp, `skill_vs_baseline`; `
 | `backend/scripts/forecast_prices.py` | 381 | Entry point: retrain decision, train + predict, DB/Parquet write |
 | `backend/scripts/backtest_accuracy.py` | 1,169 | Production backtest over stored forecasts |
 | `backend/backtest/price_resolution.py` | 276 | Shared price estimator — both legs of the realised return |
-| `backend/backtest/scoring.py` | 318 | Pure scorer: tiers, verdicts, cohort metrics, `MIN_FORECAST_DATES` |
+| `backend/backtest/scoring.py` | 349 | Pure scorer: tiers, verdicts, cohort metrics, `MIN_FORECAST_DATES` |
+| `backend/backtest/directional_test.py` | 269 | Pesaran–Timmermann headline: per-date excess, Newey–West t over dates, `PT_T_HURDLE = 3.0` |
 | `backend/backtest/resolution_gate.py` | 285 | Unresolvable-rate gate (`MAX_UNRESOLVABLE_PCT = 10.0`) |
 | `backend/backtest/walkforward_records.py` | 110 | Per-forecast record schema for paired offline comparison |
 | `backend/backtest/paired_mde.py` | 86 | Paired minimum-detectable-effect for A/B arms |

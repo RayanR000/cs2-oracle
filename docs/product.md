@@ -12,41 +12,43 @@ web
 
 ## Users
 
-Traders and collectors navigating the CS2 skin market. Traders seek short-to-medium-term price signals, volatility windows, and liquidity data to execute informed flips. Collectors track long-term value trends, wear spreads, and portfolio composition. Both share the need for clarity — turning raw market noise into actionable conviction without drowning in data.
+CS2 skin traders and collectors. Traders work short-to-medium horizons: they want price direction, volatility windows, and liquidity so they can buy, flip, and sell with conviction. Collectors work long horizons: they track value trends, wear spreads across tiers, and how their portfolio is composed. The shared job is turning raw market noise into a defensible decision — buy, sell, hold, or wait — without drowning in data.
 
-The operator is currently the only real user. The product is built to be opened to CS2 traders later, and it doubles as a portfolio piece that demonstrates the engineering and analytical depth behind it. Design work must therefore hold up for a first-time visitor who has never seen the pipeline, not only for the person who built it.
+The operator is the only real user today. The product is intended to open to CS2 traders later, and it also functions as a portfolio piece: first-time visitors judge the engineering and analytical depth behind it. Every surface must therefore stand on its own for someone who has never seen the pipeline.
 
 ## Product Purpose
 
-A precise analytical dashboard for CS2 market intelligence. Users search items, inspect price history through high-quality charts, and surface trends that inform buying, selling, or holding decisions. Success looks like a user closing a session with confident conviction — whether to trade, collect, or wait.
+CS2 Oracle is a precision analytical instrument for CS2 market intelligence. A user searches for an item, reads its price history on high-quality charts across sources and wear tiers, and compares it against quantified trends and forecast ranges. Success is a user ending a session with a clear, evidence-backed conviction — trade, collect, or wait.
 
 ## Positioning
 
-**Probabilistic forecasts with published accuracy.** Neighboring CS2 price sites report what a skin costs now and what it cost before. CS2 Oracle issues quantile forecasts — q10 / q50 / q90 at 3, 7, 14, and 30-day horizons — and then publishes how well those forecasts did, from an automated daily backtest that scores MAE, MAPE, and directional accuracy against resolved outcomes.
+**Probabilistic forecasts with published accuracy.** Neighboring CS2 price sites report what a skin costs now and what it cost before. CS2 Oracle issues quantile forecasts — q10 / q50 / q90 at 3, 7, 14, and 30-day horizons — and then publishes how well those forecasts performed, via an automated daily backtest scoring MAE, MAPE, and a directional **significance test** against resolved outcomes.
+
+The directional claim is a Pesaran–Timmermann verdict, not a hit rate. A raw hit rate on this market is not a claim about the model: an always-down call scored 29.4% on one stored forecast date and 76.9% on another, so the same number is skill on one day and incompetence on the next. The product publishes whether the calls beat the per-date chance null, and shows the hit rate only beside the constant-call baseline and the realised down-rate that make it readable.
 
 The accountability is the position, not the prediction. A competitor can copy a forecast number; it cannot copy a public error record it has not been keeping. This obliges the product to show forecast uncertainty and measured accuracy honestly, including when the numbers are unflattering.
 
 ## Operating Context
 
-- **Daily pipeline, not a live ticker.** Prices are daily closes assembled by a scheduled aggregator; forecasts and backtests run downstream of it on GitHub Actions. The interface reflects a market as of a date, and should never imply real-time tick data.
-- **Sessions are analytical, not transactional.** Users compare, chart, and decide inside CS2 Oracle, then execute the trade somewhere else. The product never handles a transaction.
-- **Extended sittings.** Comparing wear tiers and horizons across many items is long-dwell work, which is why visual comfort is a functional requirement here rather than a theme preference.
-- **Operator-run infrastructure.** One person runs the collection, model training, and backtest schedule. Anything the interface promises has to survive an unattended pipeline.
+- **Daily pipeline, not a live ticker.** Prices are daily closes assembled by a scheduled aggregator; forecasts and backtests run downstream on GitHub Actions. The interface reflects a market as of a date and must never imply real-time tick data.
+- **Sessions are analytical, not transactional.** Users compare, chart, and decide inside CS2 Oracle, then execute the trade elsewhere. The product never handles a transaction.
+- **Extended sittings.** Comparing wear tiers and horizons across many items is long-dwell work; visual comfort is a functional requirement, not a theme preference.
+- **Operator-run infrastructure.** One person runs collection, model training, and the backtest schedule. Anything the interface promises must survive an unattended pipeline.
 
 ## Capabilities and Constraints
 
 **Confirmed capabilities**
 
 - Item catalog with search, trending, and per-item detail; price history across sources with wear-tier selection.
-- ML price forecasts: LightGBM quantile ensemble producing q10/q50/q90 at horizons `[3, 7, 14, 30]` days (`backend/models/forecaster.py`).
+- ML price forecasts: a LightGBM quantile ensemble producing q10/q50/q90 at horizons `[3, 7, 14, 30]` days (`backend/models/forecaster.py`).
 - Automated accuracy backtesting written to `prediction_accuracy` and exposed at `/accuracy/*`.
-- Market signals: undervalued, overheated, and momentum. Market-event timeline with correlation scoring.
+- Market signals — undervalued, overheated, momentum — plus a market-event timeline with correlation scoring.
 - Steam OpenID sign-in and a read-only Steam inventory snapshot for the portfolio view.
 - Multi-source daily collection across 7 markets, archived to Parquet and queried via DuckDB.
 
 **Constraints future work must respect**
 
-- **The catalog is effectively closed.** There is no working path to add new items to the backfilled cohort — Steam discovery is disabled and broken, and the CSMarketAPI free-tier quota is exhausted without resetting. Do not design flows that assume the item universe grows, and do not promise coverage of an arbitrary skin.
+- **The catalog is effectively closed.** There is no working path to add new items to the backfilled cohort — Steam discovery is disabled and broken, and the CSMarketAPI free-tier quota is exhausted without a reset. Do not design flows that assume the item universe grows, and do not promise coverage of an arbitrary skin.
 - **Accuracy is reported per price tier.** `backtest/scoring.py` tiers items at $1 / $5 / $20 / $100; production accuracy reporting uses the ≥$1 cohort. Any accuracy figure shown to a user must state the cohort it describes, because the all-tiers number and the ≥$1 number differ materially.
 - **Not every item has a forecast.** Coverage is bounded by archive history, and items can be excluded from scoring. The interface needs a real "no forecast for this item" state, not a hidden or zero-filled one.
 - **Green CI is not evidence of collection.** Collectors have stored zero rows while their workflows reported success. Freshness claims in the UI must come from the data, never from a workflow badge.
@@ -72,8 +74,8 @@ The accountability is the position, not the prediction. A competitor can copy a 
 
 **Real, and available to show**
 
-- `price-archive/` — multi-year daily price archive in Parquet, spanning roughly 13 years of history, queryable via DuckDB.
-- Measured forecast accuracy from the automated backtest (`prediction_accuracy`, surfaced at `/accuracy/*`): MAE, MAPE, and directional accuracy by horizon and price tier.
+- `price-archive/` — a multi-year daily price archive in Parquet spanning roughly 13 years of history, queryable via DuckDB.
+- Measured forecast accuracy from the automated backtest (`prediction_accuracy`, surfaced at `/accuracy/*`): MAE, MAPE, and the Pesaran–Timmermann directional verdict by horizon and price tier. The verdict, with its triple, is at `GET /accuracy/headline`; a bare hit rate is not a publishable figure.
 - Live multi-source pricing across 7 markets, plus market-event correlation output and supply-depth data.
 - Real Steam item imagery and real Steam inventory data for signed-in users.
 

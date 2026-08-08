@@ -26,8 +26,10 @@ not wired to anything. Never force-push the local copy over the remote — it is
 
 ```
 price-archive/                       (local working copy, NOT the canonical repo)
-  ├─ prices-YYYY.parquet             — item_slug, day, mean_price, volume (yearly, pre-2026)
-  ├─ prices-YYYY-MM.parquet          — + source (monthly from 2026 on)
+  ├─ prices-YYYY.parquet             — item_slug, day, source, mean_price, volume
+  │                                    (yearly, pre-2026; source is NULL there)
+  ├─ prices-YYYY-MM.parquet          — same five columns (monthly from 2026 on)
+  │                                    2026-03/04 also carry min_price, max_price
   ├─ exchange-rates-YYYY.parquet     — currency rates
   ├─ player-counts-YYYY.parquet      — frozen; the collector was removed in 181488b
   ├─ item-metadata.parquet           — 8,691 item rows
@@ -51,6 +53,16 @@ Supabase (serving + fallback):
   └─ users
 ```
 
+**`ops/` rows carry `item_slug` as well as `item_id`.** The prices files key on
+the slug and the ops tables key on the Postgres surrogate, so until 2026-08-07
+joining a forecast to its own price history needed a round-trip to Supabase.
+`item_forecasts` and `forecast_outcomes` now denormalise the slug onto the
+**Parquet mirror only** — the DB side has `items` to join against. `append_table`
+replaces whole rows on the dedup key, so *every* mirror writer must supply the
+column or it blanks. `scripts/backfill_ops_item_slug.py` fills pre-existing rows;
+31,422 `forecast_outcomes` rows point at `item_id`s with no `items` row and keep
+a NULL slug.
+
 **`ops/` is read before the DB.** `db/parquet.py:37-48` points at `price-archive/ops/` and
 API routes query it first, falling back to Supabase only when the Parquet read returns
 nothing or raises — see `api/routes/items.py:418-424` for the pattern, repeated for
@@ -63,6 +75,26 @@ Prices and snapshots are partitioned **monthly** from 2026 onward
 (`scripts/append_to_parquet.py:5-9`) to stay under GitHub's 100 MB per-file limit;
 `prices-2026-07.parquet` alone is 56 MB. The loader globs `prices-*.parquet`, so a
 restored single-file `prices-2026.parquet` would be read *alongside* the monthly set.
+
+### Reading the price archive
+
+**Go through `db/archive.py::prices_relation`, not a raw glob.** Every prices
+file now shares one schema (`item_slug, day, source, mean_price, volume`, `day`
+as `DATE`) after `scripts/normalize_price_schema.py`, but the reader still
+projects an explicit column list and NULLs what is absent, so it is correct
+against an unmigrated archive too — which is what a fresh clone of the data repo
+is until *Aggregator Market Update* is dispatched with `normalize_schema = true`.
+
+Before that migration a plain `SELECT * FROM read_parquet('prices-*.parquet')`
+returned **four** columns and no error: DuckDB narrows a multi-file read to the
+first file's schema, and `prices-2013.parquet` predates `source`. Values were
+correct; `source` silently did not exist. Three call sites had each grown the
+same per-file `DESCRIBE` + `NULL AS source` workaround. See
+`../changelog/2026-08-07-archive-schema-and-keys.md`.
+
+`source IS NULL` still means "the pre-2026 CSMarketAPI series" — the migration
+materialised the column as a typed NULL rather than stamping a label, precisely
+so the `is_backfilled` derivation below keeps working.
 
 ### Data Flow
 
@@ -215,7 +247,10 @@ no longer resolves. See `docs/changelog/2026-08-01-deterministic-backtest.md`.
 
 | Script | Purpose |
 |--------|---------|
-| `append_to_parquet.py` | Daily: snapshot CSV → monthly `prices-YYYY-MM` + yearly `exchange-rates-YYYY` |
+| `db/archive.py` | The one price-archive reader: `prices_relation()` (typed projection over the glob), `price_files()`, `canonical_order()` |
+| `append_to_parquet.py` | Daily: snapshot CSV → monthly `prices-YYYY-MM` + yearly `exchange-rates-YYYY`, in canonical order with `day` as DATE |
+| `normalize_price_schema.py` | One-off: one schema for every prices file — materialise `source`, cast `day` to DATE, canonical order. Idempotent; dry-run by default |
+| `backfill_ops_item_slug.py` | One-off: stamp `item_slug` onto existing `ops/*.parquet` rows. Idempotent; dry-run by default |
 | `compact_price_archive.py` | One-off: drop the redundant `median_price`/`min_price`/`max_price` columns and retire `snapshots-*`. Idempotent; dry-run by default |
 | `db/parquet.py` | The `ops/` store: `append()` (concat-and-dedup, full rewrite) and `query()` (DuckDB context manager). Serialises nested values to JSON text |
 | `init_local_db.py` | Rebuild a local `items` table from the archive and re-derive `is_backfilled` |

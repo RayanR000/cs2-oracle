@@ -29,6 +29,13 @@ The measurement floor (1.15pp at 3d, 2.76–7.13pp at 7d/14d/30d) is unchanged, 
 > item-age refutation** this banner previously carried. The ByMykel recommendation is now
 > *ingest the whole 9-column bundle*, not "the static columns, skip age". Tier-2 item 4
 > carries the corrected numbers.
+>
+> **Corrected 2026-08-07.** Two numbers in this entry were wrong. The binding training
+> budget is `TRAIN_FEATURE_ROWS` at **100K**, not 700K (700K is the non-binding per-horizon
+> cap), and production therefore trains on **99 items**, not ~521 — below the 150-item
+> breadth arm rather than between the 150- and 350-item arms. Both are amended inline, in
+> Tier-1 item 1 and in *The constraint that bounds all of it*.
+> `2026-08-07-training-item-universe.md`.
 
 ## What the audit found that changes the picture
 
@@ -66,13 +73,25 @@ bound; the sample is biased toward items that resolved.
 **Measured 2026-08-06, and smaller than this section implies.** Breadth at a fixed
 200K-row budget is worth **+1.18pp at 14d and +0.73pp at 30d** (150 → 350 items, held-out
 ≥$1 CV), null at 3d, inconsistent at 7d — but **350 → 700 items adds only +0.10pp**, so the
-gain saturates well before the backfill's 5.7×. Production's ~1,343 rows/item is the
+gain saturates well before the backfill's 5.7×. ~~Production's ~1,343 rows/item is the
 150-item arm's density and the backfill would move it to ~923, between the 150- and
 350-item arms; interpolating gives roughly **+0.5 to +0.8pp at 14d/30d and nothing at
-3d/7d**. Real, but below the 1pp bar used elsewhere in this project. The
+3d/7d**.~~ Real, but below the 1pp bar used elsewhere in this project. The
 breadth-of-*coverage* argument — a training universe that matches what `predict()` scores —
 is unaffected and is now the stronger half of the case.
 See `2026-08-06-breadth-beats-depth-item-age-does-not.md`.
+
+> **Amended 2026-08-07 — the struck sentence placed production in the wrong place, twice.**
+> Production trains on **99 items**, not ~521, because the budget that binds is
+> `TRAIN_FEATURE_ROWS` at **100K** (see the amendment under *The constraint that bounds all
+> of it*). So production sits **below the 150-item arm**, not between the 150- and
+> 350-item arms, and the interpolated "+0.5 to +0.8pp" has nothing to interpolate between.
+> Two further cautions on the arms themselves: their CIs were **date-clustered** and are
+> too narrow — on a comparable design at a comparable fold count, fold-clustering gives an
+> MDE of 2.21–3.69pp where this run reported 0.32–0.78pp — and a measured **±2pp of
+> variation comes from redrawing the training items alone** at 99 items. Neither is a
+> reason to disbelieve the direction of the breadth result; both are reasons not to quote
+> its sub-1pp magnitudes. `2026-08-07-training-item-universe.md`.
 
 Blocked on egress, not code. The residential IP is soft-blocked with no decay over 5 h,
 and both datacenter VPN exits were served a stripped shell on request #1 — Steam filters
@@ -214,7 +233,13 @@ result. See `2026-08-06-date-level-exogenous-ingest.md`.
 ## The constraint that bounds all of it
 
 **More data does not move accuracy on its own.** The training row budget
-(`TRAIN_FEATURE_ROWS`, 700K) binds, and raising it costs 4.5× and was declined. More rows
+(`TRAIN_FEATURE_ROWS`, ~~700K~~ **100K** — amended 2026-08-07; 700K is
+`TRAIN_HORIZON_MAX_ROWS`, the per-horizon cap applied *after* feature engineering, which
+does not bind at the feature budget) binds, and raising it costs 4.5× and was declined —
+that 4.5× is the measured cost of raising the feature budget **to** 700K, which is where
+the `target_items` ≈ 521 arithmetic used above and in the `atalantus` row also sits.
+Production itself runs at 100K, which buys **99 of the 5,542-item pool**.
+See `2026-08-07-training-item-universe.md`. More rows
 for the *same* 5,542 items makes things worse — that is exactly why the BUFF archive was
 rejected. The argument for the Steam listing backfill is specifically that it buys
 **breadth**: a training universe that matches what `predict()` scores, rather than twelve

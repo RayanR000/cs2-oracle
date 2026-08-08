@@ -14,12 +14,28 @@
 excludes everything here. **The served model is byte-identical on this change.**
 Nothing was retrained, nothing re-scored, no accuracy number moved.
 
-The MDE gate is **not** satisfied and the existing numbers do not transfer. A
-date-level column's effective N is the count of distinct *dates*, not rows, so the
-per-item floor this project quotes (1.15pp at 3d to 7.13pp at 30d) is the wrong
-denominator entirely. `scripts/compute_mde.py` has to be re-run against a date-level
-design before any result off these tables means anything, and then a **permutation**
-A/B, never a plain one.
+The MDE gate is **not** satisfied. `scripts/compute_mde.py` has to be run before any
+result off these tables means anything, and then a **permutation** A/B, never a plain
+one.
+
+> **Corrected 2026-08-07.** This section originally argued the per-item floor
+> (1.15–7.13pp) was "the wrong denominator entirely" because a date-level column's
+> effective N is the count of distinct dates. That framing was wrong on its premise:
+> `backtest/paired_mde.py` already resampled at a grain coarser than rows. The real
+> defect was that it clustered on `forecast_date`, which is **not** independent — every
+> date in a fold's validation window is scored by one fitted model — so its intervals
+> were too *narrow*. Fixed 2026-08-07; see
+> `2026-08-07-training-item-universe.md` for the fix's blast radius and the three A/Bs
+> it invalidates.
+>
+> The operative floor for a date-level experiment is therefore the **fold-clustered
+> 2.21–3.69pp** measured on the breadth A/B at 25–26 folds, not 1.15pp and not the
+> 0.008pp a seed-only placebo returns at h=3. A seed placebo perturbs only the RNG, so
+> its two arms are near-identical models with almost no contrast to bound; it measures
+> reseeding noise, not the floor for an arm that changes the training data. **Nothing
+> in these two tables can be resolved below roughly 2pp**, which is the practical
+> answer to whether the date-level axis is testable here: not unless the effect is
+> large.
 
 ## Why date-level, when the item-level candidates are not exhausted
 
