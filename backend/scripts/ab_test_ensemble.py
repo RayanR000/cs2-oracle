@@ -11,6 +11,22 @@ Usage:
     python scripts/ab_test_ensemble.py --max-items 200         # limit items
     python scripts/ab_test_ensemble.py --skip-db                # don't write to DB
     python scripts/ab_test_ensemble.py --horizons 7 30          # specific horizons
+
+Embargo (added 2026-08-08):
+    This harness had **no purge gap at all** before that date: the fold split
+    was `train = every date <= window_end - 1`, so every training row within
+    `horizon` days of the boundary carried a label resolved from inside the
+    validation window. The train side now goes through production's own
+    `ItemForecaster._purge_overlapping_train_rows`, which embargoes
+    `embargo_days(horizon)` = `horizon + 13` days -- the label's resolved-anchor
+    support, not its nominal date. The validation window is untouched; purging
+    it would empty the 21-day window at h=30.
+
+    **Every delta this harness printed before 2026-08-08 is un-embargoed.**
+    How much that inflated them is not known here. The often-quoted
+    "+12.1pp unpurged -> +6.1pp purged" at h=30 is from the external review
+    (docs/research/2026-08-07-cs2-forecasting-research.md), describes an
+    event-calendar arm, and has never been replicated in this repo.
 """
 
 import sys
@@ -29,7 +45,10 @@ import pandas as pd
 import lightgbm as lgb
 
 from database import SessionLocal, PredictionAccuracy
-from models.forecaster import ItemForecaster
+from backtest.paired_mde import format_paired, paired_arm_contrasts
+from backtest.walkforward_records import paired_records
+from db.archive import prices_relation
+from models.forecaster import ItemForecaster, archive_universe_sql_filter
 
 logging.basicConfig(
     level=logging.INFO,
@@ -38,6 +57,25 @@ logging.basicConfig(
 logger = logging.getLogger("ab_test_ensemble")
 
 ARCHIVE_DIR = Path(__file__).parent.parent.parent / "price-archive"
+
+# Production's item universe and price consensus, spelled into every archive
+# read this harness makes. These three harnesses (`regime`, `ensemble`,
+# `supply_side`) were the worst case before 2026-08-08: a raw
+# `read_parquet('prices-*.parquet')` glob, which DuckDB narrows to the first
+# file's schema so `source` is not even a column, and no universe rule at all —
+# so the BUFF bid voted straight into their price series. `prices_relation`
+# is the reader that projects `source` correctly whether or not the archive has
+# been migrated. See `backend/AGENTS.md` and `db/archive.py`.
+#
+# Still outstanding here: these three read EVERY ask source, where the other
+# ten filter to one, so a 2026 item-day reaches them several times over and
+# `engineer_features` collapses the copies with a plain mean rather than
+# production's outlier-voted median. `backend/AGENTS.md` puts the archive's
+# duplication at 1.37x item-days. Narrowing the cohort would change what
+# these harnesses measure and is not part of this change.
+_PRICE_COLUMNS = ["item_slug", "day", "mean_price", "volume", "source"]
+_UNIVERSE = archive_universe_sql_filter()
+
 
 N_ENSEMBLES_3 = 3
 ENSEMBLE_SEEDS_3 = [42, 73, 91]
@@ -49,22 +87,20 @@ ENSEMBLE_FEATURE_FRACTIONS_6 = [0.6, 0.65, 0.7, 0.75, 0.8, 0.85]
 
 
 def _load_parquet_items(con, min_rows=90, backfilled_only=False):
-    where_clause = ""
+    relation = prices_relation(con, ARCHIVE_DIR, columns=_PRICE_COLUMNS)
+    conds = [_UNIVERSE]
     if backfilled_only:
-        where_clause = f"""
-            WHERE item_slug IN (
-                SELECT DISTINCT item_slug
-                FROM read_parquet('{ARCHIVE_DIR}/prices-*.parquet')
+        conds.append(f"""item_slug IN (
+                SELECT DISTINCT item_slug FROM {relation}
                 WHERE source = 'STEAMCOMMUNITY'
-            )
-        """
+            )""")
     rows = con.sql(f"""
         SELECT item_slug,
                MIN(day) AS first_day,
                MAX(day) AS last_day,
                COUNT(*) AS row_count
-        FROM read_parquet('{ARCHIVE_DIR}/prices-*.parquet')
-        {where_clause}
+        FROM {relation}
+        WHERE {" AND ".join(conds)}
         GROUP BY item_slug
         HAVING row_count >= 90
         ORDER BY row_count DESC
@@ -73,15 +109,16 @@ def _load_parquet_items(con, min_rows=90, backfilled_only=False):
 
 
 def _load_all_prices(con, items):
+    relation = prices_relation(con, ARCHIVE_DIR, columns=_PRICE_COLUMNS)
     all_rows = []
     for item_slug, first_day, last_day, row_count in items:
-        rows = con.sql("""
+        rows = con.sql(f"""
             SELECT item_slug AS item_id, CAST(day AS DATE) AS timestamp,
                    mean_price AS price, volume
-            FROM read_parquet('{}/prices-*.parquet')
-            WHERE item_slug = ?
+            FROM {relation}
+            WHERE item_slug = ? AND {_UNIVERSE}
             ORDER BY day
-        """.format(ARCHIVE_DIR), params=[item_slug]).fetchall()
+        """, params=[item_slug]).fetchall()
         item_df = pd.DataFrame(rows, columns=["item_id", "timestamp", "price", "volume"])
         item_df["timestamp"] = pd.to_datetime(item_df["timestamp"])
         item_df["date"] = item_df["timestamp"].dt.date
@@ -206,6 +243,8 @@ def run_ab_test(max_items=500, horizons=None, skip_db=False):
 
             ens3_fold_results = []
             ens6_fold_results = []
+            ens3_records = []
+            ens6_records = []
 
             for window_end in range(split_idx + 1, len(dates), step):
                 train_dates = dates[:window_end]
@@ -213,7 +252,8 @@ def run_ab_test(max_items=500, horizons=None, skip_db=False):
                 if len(val_dates) < 7:
                     continue
 
-                train_df = tdf[tdf["date"].isin(train_dates)]
+                train_df = ItemForecaster._purge_overlapping_train_rows(
+                    tdf[tdf["date"].isin(train_dates)], val_dates[0], horizon)
                 val_df = tdf[tdf["date"].isin(val_dates)]
 
                 if len(val_df) < 50:
@@ -322,6 +362,26 @@ def run_ab_test(max_items=500, horizons=None, skip_db=False):
                     if e6_metrics:
                         ens6_fold_results.append(e6_metrics)
 
+                    # Paired records for the fold-clustered interval below.
+                    # Scored on non-flat actuals at >=$1, which is the
+                    # population production serves and does not depend on the
+                    # arm, so the two ensembles pair row for row. `window_end`
+                    # rather than a running counter: a counter drifts the
+                    # moment one arm skips a fold the other kept.
+                    _scored = ((np.asarray(actual_returns) != 0)
+                               & (np.asarray(current_prices, dtype=float) >= 1.0))
+                    _sign = np.sign(np.nan_to_num(actual_returns))
+                    for bucket, preds in ((ens3_records, ens3_preds[0.5]),
+                                          (ens6_records, ens6_preds[0.5])):
+                        bucket.extend(paired_records(
+                            item_ids=val_df["item_id"].to_numpy(),
+                            forecast_dates=val_df["date"].to_numpy(),
+                            fold_id=window_end,
+                            keep=_scored,
+                            direction_correct=(
+                                _sign == np.sign(np.nan_to_num(preds))),
+                        ))
+
             # Aggregate across folds
             if ens3_fold_results and ens6_fold_results:
                 e3_agg = _aggregate_folds(ens3_fold_results)
@@ -335,8 +395,18 @@ def run_ab_test(max_items=500, horizons=None, skip_db=False):
                         "mape_delta": round(e3_agg["mape"] - e6_agg["mape"], 2),
                         "interval_coverage_pp": round(e3_agg["interval_coverage"] - e6_agg["interval_coverage"], 2),
                     },
+                    # Kept for continuity; it is not the verdict and never
+                    # was one. A bare `a > b` fires half the time on two arms
+                    # that differ only by ensemble size against an item-level
+                    # MDE of 2.21-3.69pp.
                     "ens3_wins": e3_agg["directional_accuracy"] > e6_agg["directional_accuracy"],
                 }
+                if ens3_records and ens6_records:
+                    contrasts = paired_arm_contrasts(
+                        {"ens6": ens6_records, "ens3": ens3_records},
+                        base="ens6")
+                    results_by_horizon[horizon]["paired_ens3_vs_ens6"] = (
+                        contrasts["ens3"])
 
                 logger.info(f"\n  === {horizon}d A/B Results ===")
                 logger.info(f"  Ens3:       DirAcc={e3_agg['directional_accuracy']:.1f}% "
@@ -349,7 +419,12 @@ def run_ab_test(max_items=500, horizons=None, skip_db=False):
                 logger.info(f"  Delta:      DirAcc={delta['directional_accuracy_pp']:+.2f}pp "
                             f"MAE=${delta['mae_delta']:+.4f} "
                             f"IntCov={delta['interval_coverage_pp']:+.2f}pp")
-                logger.info(f"  Ens3 wins: {results_by_horizon[horizon]['ens3_wins']}")
+                paired = results_by_horizon[horizon].get("paired_ens3_vs_ens6")
+                if paired:
+                    logger.info(f"  Paired (ens3 - ens6, >=$1 non-flat): "
+                                f"{format_paired(paired)}")
+                else:
+                    logger.info("  Paired: unresolved — no scored rows")
 
         total_elapsed = time.time() - total_train_start
         logger.info(f"\n{'='*60}")
@@ -381,12 +456,17 @@ def run_ab_test(max_items=500, horizons=None, skip_db=False):
         for h, hr in sorted(results_by_horizon.items()):
             e3, e6 = hr["ens3"], hr["ens6"]
             d = hr["delta"]
-            winner = "ENS3" if hr["ens3_wins"] else "ENS6"
             logger.info(f"\n  {h}d:")
             logger.info(f"    Ens3:  DirAcc={e3['directional_accuracy']:.1f}%  MAE=${e3['mae']:.2f}  MAPE={e3['mape']:.1f}%  IntCov={e3['interval_coverage']:.1f}%")
             logger.info(f"    Ens6:  DirAcc={e6['directional_accuracy']:.1f}%  MAE=${e6['mae']:.2f}  MAPE={e6['mape']:.1f}%  IntCov={e6['interval_coverage']:.1f}%")
             logger.info(f"    Delta: DirAcc={d['directional_accuracy_pp']:+.2f}pp  MAE=${d['mae_delta']:+.4f}  IntCov={d['interval_coverage_pp']:+.2f}pp")
-            logger.info(f"    Winner: {'ENS3' if hr['ens3_wins'] else 'ENS6'}")
+            # The verdict, and the last line an operator reads. `ens3_wins` is
+            # a bare `a > b` and is reported beside it as context only.
+            paired = hr.get("paired_ens3_vs_ens6")
+            logger.info(f"    Verdict: "
+                        f"{format_paired(paired) if paired else 'unresolved'}")
+            logger.info(f"    (ens3_wins={hr['ens3_wins']} — a bare a>b, "
+                        f"not a test)")
 
         con.close()
         db.close()
@@ -456,6 +536,20 @@ def _store_ab_results(db, report):
                 "mape_delta": delta["mape_delta"],
                 "interval_coverage_delta_pp": delta["interval_coverage_pp"],
                 "ens3_wins": h_results["ens3_wins"],
+                # The paired, fold-clustered verdict — the only one of these
+                # two that is a test. Stored flat: `db/parquet.py` serialises
+                # nested values, but a reader should not have to parse JSON to
+                # find out whether the effect was real.
+                "paired_verdict": (h_results.get("paired_ens3_vs_ens6") or {})
+                    .get("verdict", "unresolved"),
+                "paired_mean_diff_pp": (
+                    h_results.get("paired_ens3_vs_ens6") or {}).get("mean_diff"),
+                "paired_ci_lower_pp": (
+                    h_results.get("paired_ens3_vs_ens6") or {}).get("ci_lower"),
+                "paired_ci_upper_pp": (
+                    h_results.get("paired_ens3_vs_ens6") or {}).get("ci_upper"),
+                "paired_n_clusters": (
+                    h_results.get("paired_ens3_vs_ens6") or {}).get("n_clusters"),
                 "ens3_dir_acc": h_results["ens3"]["directional_accuracy"],
                 "ens6_dir_acc": h_results["ens6"]["directional_accuracy"],
                 "ens3_mae": h_results["ens3"]["mae"],

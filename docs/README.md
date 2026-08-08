@@ -36,12 +36,14 @@ report it rather than working around it.
   1,706-line external design review. Its C1–C5 correction block overturns four of its own
   first-pass claims and three of those touch live code: a BUFF **bid** may be voting into the
   consensus price as an ask since 2026-07-11, the 1.1607 Steam fee constant is synthetic, and
-  `walkforward_backtest.py --purge` is default OFF so the published backtest number is
-  unpurged. Also carries the one measured positive — expensive tiers lead cheap tiers by a
-  day, z = 9.1. See `changelog/2026-08-07-cs2-forecasting-research-review.md`.
-- `2026-08-07-next-steps.md` — the tracked, **gated** action list from that review. Step 1 is
-  one query and gates everything else; steps 1–6 need no retrain and are ~2 weeks. Everything
-  on it is NOT STARTED.
+  `walkforward_backtest.py --purge` was default OFF so the published backtest number was
+  unpurged (fixed 2026-08-08; the flag is now `--no-purge`). Also carries the one measured
+  positive — expensive tiers lead cheap tiers by a day, z = 9.1. See
+  `changelog/2026-08-07-cs2-forecasting-research-review.md`.
+- `2026-08-07-next-steps.md` — the tracked, **gated** action list from that review. Steps 1–5
+  are DONE; step 6 is unblocked and steps 6–11 are NOT STARTED. Steps 1–6 need no retrain.
+  Read step 5's "not done" list before citing any A/B result: the harnesses were repaired but
+  **none has been re-run**, so every stored A/B number predates the repair.
 - `accuracy-opportunities.md` — closed 2026-07-31, **reopened 2026-08-07** by the review
   above, which relocates the binding constraint from input data to measurement. The stop
   banner is intact and the tables are still a record of what was tried, not a backlog. Read

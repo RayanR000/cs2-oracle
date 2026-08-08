@@ -13,24 +13,42 @@ points at production Supabase — see the root `AGENTS.md` gotcha before running
   error — DuckDB narrows a multi-file read to the first file's schema and
   `prices-2013.parquet` predates `source`, so `source`/`min_price`/`max_price` silently
   vanished. `scripts/normalize_price_schema.py` gave every file one schema
-  (`item_slug, day, source, mean_price, volume`, `day` as `DATE`), but the reader still
-  projects an explicit column list and NULLs what is absent, so it works against an
-  unmigrated archive too. `source IS NULL` still selects the pre-2026 series — the
+  (`item_slug, day, source, mean_price, volume, ingested_at`, `day` as `DATE`), but the
+  reader still projects an explicit column list and NULLs what is absent, so it works against
+  an unmigrated archive too. `source IS NULL` still selects the pre-2026 series — the
   migration materialised a typed NULL rather than stamping a label, because
-  `init_local_db.py` derives `is_backfilled` from that equivalence.
+  `init_local_db.py` derives `is_backfilled` from that equivalence. A materialised column is
+  NULLed to `COLUMN_TYPES[c]`, not to VARCHAR: that shortcut was only ever right while
+  `source` was the one column that could be missing.
+- **`ingested_at` is arrival; `day` is what the row describes.** Added 2026-08-08 and
+  **NULL for every row written before it** — the archive had no arrival timestamp anywhere
+  and one cannot be reconstructed backwards. A NULL means "arrival unknown" and must never be
+  read as "arrived on `day`", which is exactly what 13 years of backfilled rows would falsely
+  claim. `append_to_parquet.py` stamps the run's wall clock, not `--date`, so re-exporting an
+  old day records an old `day` with a present-day arrival — the truth. A re-append keeps the
+  **first** arrival, so a corrected price does not date the whole month forward. **The
+  migration has not been run**: only CI writes the canonical archive, so the column is absent
+  from every stored file until `aggregator-update.yml` runs with `normalize_schema = true`.
 - **A bid must never vote in the consensus price.** `aggregator_buff163_buy` is BUFF's
-  `highest_order`, and `models/forecaster.py::BID_SOURCES` is dropped in
-  `_apply_multi_source_voting` *before* the group is read, so it counts toward neither the
-  median nor the ≥3-source gate that enables the 2σ mask. The filter is
-  `~df["source"].isin(BID_SOURCES)` — NULL-safe by construction, which is what keeps the
-  pre-2026 `source IS NULL` series voting. An item-day whose only source was the bid returns
-  **no row** rather than falling back to it. **The 2σ guard is not a defence here**: it ran on
-  99.3% of bid item-days and kept the bid four times out of five, because the ask panel's own
-  dispersion is wider than the bid–ask wedge. Any new loader that reads prices must filter
-  `BID_SOURCES` itself — `scripts/walkforward_backtest.py::_load_all_prices` needed a separate
-  fix because it never calls the voting function, and `ab_test_regime.py` /
-  `ab_test_ensemble.py` are still unfiltered. See
+  `highest_order`, and `BID_SOURCES` is dropped in `_apply_multi_source_voting` *before* the
+  group is read, so it counts toward neither the median nor the ≥3-source gate that enables
+  the 2σ mask. The filter is `~df["source"].isin(BID_SOURCES)` — NULL-safe by construction,
+  which is what keeps the pre-2026 `source IS NULL` series voting. An item-day whose only
+  source was the bid returns **no row** rather than falling back to it. **The 2σ guard is not
+  a defence here**: it ran on 99.3% of bid item-days and kept the bid four times out of five,
+  because the ask panel's own dispersion is wider than the bid–ask wedge. See
   `docs/changelog/2026-08-07-bid-source-excluded-from-voting.md`.
+- **Any loader that globs the archive must apply `archive_universe_sql_filter()`.**
+  `models/item_parser.py` holds the two universe rules — `BID_SOURCES` (re-exported from
+  `forecaster.py`, so existing imports are unaffected) and the phase-collapsed names — as SQL
+  predicates, because each of them has already cost a separate fix per loader. Both are
+  NULL-safe: a bare `NOT IN` over the pre-2026 `source IS NULL` series evaluates to NULL and
+  silently drops 13 years of prices. Every `ab_test_*` harness and `walkforward_backtest.py`
+  now route through it (2026-08-08); `ab_test_recency_weights.py` is the one exemption and
+  only because it reads a pre-built frame. Pass `source_column=None` for a relation with no
+  `source` column — safe only because every bid source is a 2026 feed. **Frame caches
+  fingerprint `forecaster.py`'s bytes, not `item_parser.py`'s**, so five harnesses hash the
+  universe predicate into their key explicitly; a new one must too.
 - **A name that prices several assets is not in the universe.** Every Doppler and Gamma
   Doppler `market_hash_name` collapses its phases into one series, and the quoted headline is
   the *cheapest* phase 95.5% of the time — so the series steps when the cheapest phase
@@ -38,12 +56,44 @@ points at production Supabase — see the root `AGENTS.md` gotcha before running
   (`PHASE_COLLAPSED_SLUG_PATTERNS`, `phase_collapsed_sql_filter`, `is_phase_collapsed`),
   light enough for `api/` to import and re-exported from `models/forecaster.py` beside
   `BID_SOURCES`. It is applied at `_fetch_voted_price_history`, both
-  `walkforward_backtest` loaders and `opportunities.py::_load_items`; **the `ab_test_*`
-  harnesses still glob unfiltered**, so their universe is not production's. Two names match
-  the word and must stay: `Sticker | Doppler Poison Frog (Foil)` and its Sticker Slab twin,
-  which is what the `sticker` exemption is for. Worth **6 items of the 926-item ≥$1 cohort**
-  — a correctness fix, not an accuracy lever. See
+  `walkforward_backtest` loaders, `opportunities.py::_load_items` and — since 2026-08-08 —
+  every `ab_test_*` harness. Two names match the word and must stay:
+  `Sticker | Doppler Poison Frog (Foil)` and its Sticker Slab twin, which is what the
+  `sticker` exemption is for. Worth **6 items of the 926-item ≥$1 cohort** — a correctness
+  fix, not an accuracy lever. See
   `docs/changelog/2026-08-08-phase-collapsed-names-dropped.md`.
+- **The embargo is `horizon + 13`, not `horizon`.** `models/forecaster.py::embargo_days`
+  derives the 13 at call time from `LAG_TOLERANCE_DAYS` (3) + `SMOOTH_WINDOW` (3) +
+  `MAX_WINDOW_SPAN_DAYS` (7): the label at `d + horizon` is a **resolved anchor**, not a
+  point observation, so its support runs 13 days past its nominal date and a bare-`horizon`
+  purge left that carry inside the validation window. Never pass a bare horizon to
+  `_compute_cv_splits(purge_days=…)` or re-derive the band locally. At h=30 the embargo (43d)
+  **exceeds `VALIDATION_WINDOW_DAYS`** — that is the correct cost, not a bug. It also tracks
+  the env-overridable `FALLBACK_MAX_AGE_DAYS`, so fold geometry is not a constant.
+- **`walkforward_backtest.py` embargoes by default** since 2026-08-08, and writes
+  **`model_version = "lgbm-v4-embargoed"`** when it does. That bump is the point: appending
+  purged rows to the un-purged `lgbm-v3-clustered` series would surface as a model regression
+  on the dashboard trend and in `backtest-triage`, with nothing stored to say otherwise. The
+  persisted `metrics` also carry `purge` and `embargo_days`, so a row is self-describing.
+  `--no-purge` reproduces the old split — and the old version string — for a like-for-like
+  read against a pre-flip run, and must never be published from. **No run has happened under
+  the new default**, so the size of the discontinuity is unknown.
+- **An A/B verdict is a fold-clustered interval, never a win count.** Ten harnesses decided
+  on a fold win-count, a ±0.5pp pooled-delta threshold or a bare `a > b` until 2026-08-08 —
+  none is a test, against a measured item-level MDE of 2.21–3.69pp. Use
+  `backtest/paired_mde.py`: `paired_da_difference` for a hit rate,
+  `paired_metric_difference(value_key=…)` for anything else (pass
+  `higher_is_better=False` for a loss), and `paired_arm_contrasts` / `format_paired` /
+  `verdict` for the reporting. Records come from `backtest/walkforward_records.py`:
+  `paired_records` at row grain — always prefer it — and `fold_level_records` only where the
+  rows are genuinely gone, as in the three pinball harnesses that shard folds across
+  processes. `unresolved` (fewer than 2 shared clusters, or a non-finite bound) is **not**
+  `null`. Strip `records` with `without_records` before printing; under `--arm` sharding no
+  shard can contrast in-process, and `merge_price_primitives_ab.py` pairs the shards at fold
+  grain off `per_fold`. Only `NoPairedRows` is catchable — a missing `cluster_key` is a wiring
+  bug and propagates, because swallowing it restores the 2026-08-07 under-dispersion bug
+  behind a confident wrong message. **Every stored A/B result predates this**, and no harness
+  has been re-run.
 - **Never quote a directional accuracy on its own.** The published headline is a
   Pesaran–Timmermann test (`backtest/directional_test.py`), computed per forecast date with a
   Newey–West t-stat over dates and a `|t| > 3.0` hurdle; `score_cohort` stores it as `pt_*` and
@@ -140,8 +190,8 @@ points at production Supabase — see the root `AGENTS.md` gotcha before running
   unresolvable gate at 38.5% and reported nothing.
 - **`scripts/walkforward_backtest.py` does NOT use `fetch_price_history`.** Its own
   `_load_all_prices` skips multi-source voting, the `historical_fallback:` source filter,
-  the dead-item filter, and `backfilled_only`. It does filter `BID_SOURCES`, in SQL, as a
-  separate fix. Lags are *not* corrupted — `engineer_features`
+  the dead-item filter, and `backfilled_only`. It does apply the universe rules, in SQL,
+  through `archive_universe_sql_filter`. Lags are *not* corrupted — `engineer_features`
   collapses to one row per item-day — but it collapses the archive's 1.37× duplicate
   item-days with a plain **mean**, where production serves an **outlier-voted median**
   (sources >2σ from the median are rejected). The fresh-model gate therefore scores a

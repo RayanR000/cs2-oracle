@@ -122,7 +122,7 @@ import pandas as pd
 import lightgbm as lgb
 
 from database import SessionLocal
-from models.forecaster import ItemForecaster
+from models.forecaster import ItemForecaster, phase_collapsed_sql_filter
 from models.market_factor import build_market_index, market_factor_for_horizon
 from backtest.paired_mde import paired_da_difference
 
@@ -133,6 +133,14 @@ logging.basicConfig(
 logger = logging.getLogger("ab_test_csfloat_basis")
 
 ARCHIVE_DIR = Path(__file__).parent.parent.parent / "price-archive"
+
+# Production's item universe, spelled into every archive read this harness
+# makes. Before 2026-08-08 the `ab_test_*` family globbed the Parquet privately
+# and saw a universe production does not train on, so an A/B advised a model it
+# had not measured. The bid sources need no clause here: `aggregator_sync` is a
+# single ask feed and already excludes them. See `models/item_parser.py`.
+_UNIVERSE = phase_collapsed_sql_filter()
+
 DS_PARAMS = {"max_bin": 63, "feature_pre_filter": False}
 
 
@@ -153,10 +161,10 @@ def _archive_union_sql(con):
         cols = con.sql(f"DESCRIBE SELECT * FROM read_parquet('{pqf}')").fetchall()
         if "source" in {r[0] for r in cols}:
             queries.append(f"SELECT item_slug, day, mean_price, volume FROM "
-                           f"read_parquet('{pqf}') WHERE source = 'aggregator_sync'")
+                           f"read_parquet('{pqf}') WHERE source = 'aggregator_sync' AND {_UNIVERSE}")
         else:
             queries.append(f"SELECT item_slug, day, mean_price, volume FROM "
-                           f"read_parquet('{pqf}')")
+                           f"read_parquet('{pqf}') WHERE {_UNIVERSE}")
     return " UNION ALL BY NAME ".join(queries)
 
 
@@ -225,7 +233,8 @@ def build_basis_features(px: pd.DataFrame, cf: pd.DataFrame) -> pd.DataFrame:
 def _fingerprint(probe_dir: Path) -> str:
     src = Path(__file__).parent.parent / "models" / "forecaster.py"
     h = hashlib.sha256(src.read_bytes())
-    h.update(repr((MIN_MEDIAN_PRICE, MIN_ITEM_DAYS, CORR_PRUNE_THRESHOLD, CF_ALL)).encode())
+    h.update(repr((MIN_MEDIAN_PRICE, MIN_ITEM_DAYS, CORR_PRUNE_THRESHOLD,
+                   CF_ALL, _UNIVERSE)).encode())
     series = probe_dir / "csfloat_probe_series.parquet"
     h.update(hashlib.sha256(series.read_bytes()).digest())
     return h.hexdigest()[:16]

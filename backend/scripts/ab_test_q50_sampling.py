@@ -52,7 +52,13 @@ import pandas as pd
 import lightgbm as lgb
 
 from database import SessionLocal
-from models.forecaster import ItemForecaster
+from backtest.paired_mde import format_paired, paired_arm_contrasts
+from backtest.walkforward_records import fold_level_records
+from models.forecaster import (
+    ItemForecaster,
+    embargo_days,
+    phase_collapsed_sql_filter,
+)
 
 logging.basicConfig(
     level=logging.INFO,
@@ -61,6 +67,14 @@ logging.basicConfig(
 logger = logging.getLogger("ab_test_q50_sampling")
 
 ARCHIVE_DIR = Path(__file__).parent.parent.parent / "price-archive"
+
+# Production's item universe, spelled into every archive read this harness
+# makes. Before 2026-08-08 the `ab_test_*` family globbed the Parquet privately
+# and saw a universe production does not train on, so an A/B advised a model it
+# had not measured. The bid sources need no clause here: `STEAMCOMMUNITY` is a
+# single ask feed and already excludes them. See `models/item_parser.py`.
+_UNIVERSE = phase_collapsed_sql_filter()
+
 META_PATH = Path(__file__).parent.parent / "models" / "saved_models" / "meta.json"
 
 HORIZONS = [3, 7, 14, 30]
@@ -114,10 +128,12 @@ def load_features(con, forecaster, events_df, max_items):
         if "source" in cols:
             pq_queries.append(
                 f"SELECT item_slug, day, mean_price, volume FROM "
-                f"read_parquet('{pqf}') WHERE source = 'STEAMCOMMUNITY'")
+                f"read_parquet('{pqf}') WHERE source = 'STEAMCOMMUNITY' "
+                f"AND {_UNIVERSE}")
         else:
             pq_queries.append(
-                f"SELECT item_slug, day, mean_price, volume FROM read_parquet('{pqf}')")
+                f"SELECT item_slug, day, mean_price, volume FROM "
+                f"read_parquet('{pqf}') WHERE {_UNIVERSE}")
     union_sql = " UNION ALL BY NAME ".join(pq_queries)
 
     items = con.sql(f"""
@@ -216,7 +232,7 @@ def _run_horizon(fc, tdf, feat_cols, horizon, max_folds,
     """
     target_col = f"target_return_{horizon}d"
     dates = np.array(sorted(tdf["date"].unique()))
-    folds = fc._compute_cv_splits(dates, purge_days=horizon)
+    folds = fc._compute_cv_splits(dates, purge_days=embargo_days(horizon))
     boosting_type = fc.BOOSTING_TYPE
     if not folds:
         logger.warning(f"  no folds for {horizon}d after purge gap")
@@ -323,20 +339,34 @@ def summarize(records):
         mae_delta = b["mae"].mean() - g["mae"].mean()
 
         c1 = rel_gain >= GATE_MIN_REL_PINBALL_GAIN
-        c2 = folds_won >= (len(common) / 2)
+        # Fold-clustered paired interval on the pinball difference, replacing
+        # the "wins on at least half the folds" condition this gate used until
+        # 2026-08-08. A win count is not a test: two arms that differ only by
+        # seed clear it half the time, and at 8 folds the binomial makes even
+        # 6/8 unremarkable. Lower pinball is better, so a SHIP needs the
+        # interval strictly below zero.
+        paired = paired_arm_contrasts(
+            {"goss": fold_level_records(common, g["pinball"], metric="pinball"),
+             "bagging": fold_level_records(common, b["pinball"], metric="pinball")},
+            base="goss", value_key="pinball", scale=1.0,
+            higher_is_better=False)["bagging"]
+
+        c2 = paired["verdict"] == "positive"
         c3 = da_delta_pp >= -GATE_MAX_DA_REGRESSION_PP
         ship = bool(c1 and c2 and c3)
         verdicts[horizon] = {
             "ship": ship, "rel_pinball_gain": rel_gain,
             "folds_won": folds_won, "n_folds": len(common),
             "da_delta_pp": da_delta_pp, "mae_delta": mae_delta,
-            "gate": {"pinball_gain": c1, "folds_majority": c2, "da_no_regress": c3},
+            "paired_pinball": paired,
+            "gate": {"pinball_gain": c1, "paired_interval": c2, "da_no_regress": c3},
         }
         print(f"  -> {horizon}d: pinball {rel_gain*100:+.2f}% "
               f"(gate >= +{GATE_MIN_REL_PINBALL_GAIN*100:.1f}%) [{'PASS' if c1 else 'FAIL'}] | "
-              f"folds won {folds_won}/{len(common)} [{'PASS' if c2 else 'FAIL'}] | "
+              f"paired {format_paired(paired, unit='')} [{'PASS' if c2 else 'FAIL'}] | "
               f"DA {da_delta_pp:+.2f}pp (gate >= -{GATE_MAX_DA_REGRESSION_PP}pp) "
-              f"[{'PASS' if c3 else 'FAIL'}] | MAE {mae_delta:+.4f}")
+              f"[{'PASS' if c3 else 'FAIL'}] | MAE {mae_delta:+.4f} "
+              f"| folds won {folds_won}/{len(common)} (context, not a gate)")
         print(f"     VERDICT {horizon}d: {'SHIP bagging' if ship else 'KEEP goss'}")
 
     return df, verdicts

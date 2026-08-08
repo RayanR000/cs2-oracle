@@ -50,25 +50,50 @@ import numpy as np
 from backtest.scoring import BOOTSTRAP_CI, BOOTSTRAP_RNG_SEED, N_BOOTSTRAP
 
 
-def paired_da_difference(
+class NoPairedRows(ValueError):
+    """Two arms share no `(item_id, forecast_date)` rows.
+
+    Its own type because `paired_arm_contrasts` has to report this one and
+    re-raise everything else. The other `ValueError` this module raises is the
+    missing-`cluster_key` guard, and that one must stay loud: swallowing it
+    would restore the 2026-08-07 under-dispersion bug on any caller that forgot
+    to thread the fold through, while printing a confident and wrong
+    "not measured on the same folds".
+    """
+
+
+def paired_metric_difference(
     records_a: list[dict],
     records_b: list[dict],
+    *,
+    value_key: str,
     n_resamples: int = N_BOOTSTRAP,
     ci: int = BOOTSTRAP_CI,
     cluster_key: str = "fold_id",
+    scale: float = 1.0,
 ) -> dict:
-    """Bootstrap the mean of (b - a) direction_correct over shared (item, date).
+    """Bootstrap the mean of (b - a) `value_key` over shared (item, date).
 
     Pairing is always on `(item_id, forecast_date)` — that is the row identity.
     *Resampling* is on `cluster_key`, which is a different and coarser grain;
     see the module docstring for why conflating the two under-disperses the
     interval.
 
-    Returns percentage-point figures. `mde_pp` is the half-width of the
-    interval: the smallest difference this gate can resolve. None when fewer
-    than 2 clusters are shared.
+    `value_key` is any per-row scalar both arms carry. It is `direction_correct`
+    for a hit rate (see :func:`paired_da_difference`) and `pinball` for a
+    quantile loss — the harnesses that compare pinball had no interval at all
+    before 2026-08-08, only a "wins on more than half the folds" rule, which
+    answers a different and much weaker question: a coin lands that way 50% of
+    the time and the rule fires at 50%.
+
+    `scale` multiplies the reported difference. Pass 100 for a rate you want in
+    percentage points; leave it at 1 for a loss, which has its own units.
+
+    `mde` is the half-width of the interval: the smallest difference this
+    design can resolve. None when fewer than 2 clusters are shared, because a
+    single cluster carries no between-cluster variance to resample.
     """
-    index_a = {(r["item_id"], r["forecast_date"]): r["direction_correct"]
+    index_a = {(r["item_id"], r["forecast_date"]): r[value_key]
                for r in records_a}
     by_cluster: dict = defaultdict(list)
     dates_seen: set = set()
@@ -86,14 +111,16 @@ def paired_da_difference(
                 f"silently is the 2026-08-07 under-dispersion bug — see the "
                 f"module docstring."
             )
+        # float() on both sides: `direction_correct` reaches here as a Python
+        # bool from one harness and a np.bool_ from another, and np.bool_ has
+        # no `-`.
         by_cluster[r[cluster_key]].append(
-            r["direction_correct"] - index_a[key]
-        )
+            float(r[value_key]) - float(index_a[key]))
         dates_seen.add(r["forecast_date"])
         n_paired += 1
 
     if n_paired == 0:
-        raise ValueError(
+        raise NoPairedRows(
             "no paired records: the two arms share no (item_id, forecast_date) "
             "pairs, so they were not measured on the same folds"
         )
@@ -101,10 +128,9 @@ def paired_da_difference(
     clusters = sorted(by_cluster)
     groups = [np.array(by_cluster[c], dtype=float) for c in clusters]
     all_diffs = np.concatenate(groups)
-    mean_diff_pp = float(all_diffs.mean()) * 100.0
 
     out = {
-        "mean_diff_pp": round(mean_diff_pp, 4),
+        "mean_diff": round(float(all_diffs.mean()) * scale, 4),
         "n_paired": n_paired,
         # Both are reported so a result is self-describing about which grain it
         # was resampled at. n_dates >> n_clusters is the signature of the old
@@ -112,9 +138,10 @@ def paired_da_difference(
         "n_dates": len(dates_seen),
         "n_clusters": len(clusters),
         "cluster_key": cluster_key,
-        "ci_lower_pp": None,
-        "ci_upper_pp": None,
-        "mde_pp": None,
+        "value_key": value_key,
+        "ci_lower": None,
+        "ci_upper": None,
+        "mde": None,
     }
     if len(groups) < 2:
         return out
@@ -128,12 +155,138 @@ def paired_da_difference(
     for i in range(n_resamples):
         idx = rng.integers(0, n_groups, size=n_groups)
         stats[i] = sums[idx].sum() / counts[idx].sum()
-    stats *= 100.0
+    stats *= scale
 
     alpha = (100 - ci) / 2
     lower = float(np.percentile(stats, alpha))
     upper = float(np.percentile(stats, 100 - alpha))
-    out["ci_lower_pp"] = round(lower, 4)
-    out["ci_upper_pp"] = round(upper, 4)
-    out["mde_pp"] = round((upper - lower) / 2, 4)
+    out["ci_lower"] = round(lower, 4)
+    out["ci_upper"] = round(upper, 4)
+    out["mde"] = round((upper - lower) / 2, 4)
     return out
+
+
+def paired_da_difference(
+    records_a: list[dict],
+    records_b: list[dict],
+    n_resamples: int = N_BOOTSTRAP,
+    ci: int = BOOTSTRAP_CI,
+    cluster_key: str = "fold_id",
+) -> dict:
+    """The directional-accuracy case of :func:`paired_metric_difference`.
+
+    Returns percentage-point figures under the `_pp` names the stored A/B
+    results and every existing caller use. Identical arithmetic — the generic
+    function was factored out of this one on 2026-08-08 so the pinball
+    harnesses could stop verdicting on fold win-counts.
+    """
+    out = paired_metric_difference(
+        records_a, records_b,
+        value_key="direction_correct",
+        n_resamples=n_resamples, ci=ci, cluster_key=cluster_key,
+        scale=100.0,
+    )
+    return {
+        "mean_diff_pp": out["mean_diff"],
+        "n_paired": out["n_paired"],
+        "n_dates": out["n_dates"],
+        "n_clusters": out["n_clusters"],
+        "cluster_key": out["cluster_key"],
+        "ci_lower_pp": out["ci_lower"],
+        "ci_upper_pp": out["ci_upper"],
+        "mde_pp": out["mde"],
+    }
+
+
+def paired_arm_contrasts(
+    arm_records: dict,
+    base: str,
+    *,
+    value_key: str = "direction_correct",
+    scale: float = 100.0,
+    higher_is_better: bool = True,
+    cluster_key: str = "fold_id",
+) -> dict:
+    """Every arm against *base*, paired and fold-clustered, with a verdict.
+
+    `arm_records` maps an arm name to its record list. The base arm is skipped
+    (its contrast with itself is zero by construction) and so is any arm that
+    shares no rows with it — which is a result about the design, not the arm,
+    and is reported as `no_shared_rows` rather than swallowed.
+
+    Exists so the ten harnesses fixed on 2026-08-08 share one contrast step.
+    Each of them previously had its own, and none of the ten was a test: three
+    counted fold wins, five averaged a pooled delta against a ±0.5pp threshold,
+    and two printed `a > b`.
+    """
+    out: dict = {}
+    for arm, records in arm_records.items():
+        if arm == base or arm.startswith("_"):
+            continue
+        try:
+            paired = paired_metric_difference(
+                arm_records[base], records,
+                value_key=value_key, scale=scale, cluster_key=cluster_key)
+        except NoPairedRows as exc:
+            # Only this one is reportable. A missing `cluster_key` is a wiring
+            # bug in the caller and propagates.
+            out[arm] = {"verdict": "no_shared_rows", "detail": str(exc)}
+            continue
+        paired["verdict"] = verdict(paired, higher_is_better=higher_is_better)
+        out[arm] = paired
+    return out
+
+
+def format_paired(paired: dict, unit: str = "pp") -> str:
+    """One line for a paired result, verdict first.
+
+    The verdict leads because the number does not speak for itself: the whole
+    point of the 2026-08-08 change is that a +0.4pp delta with an interval
+    spanning zero and a +0.4pp delta with an interval clear of it are different
+    findings, and the harnesses used to print them identically.
+    """
+    if paired.get("verdict") == "no_shared_rows":
+        return "no_shared_rows (arms were not measured on the same folds)"
+    mean = paired.get("mean_diff")
+    if mean is None:
+        # A caller that could not get far enough to estimate anything. Print
+        # the verdict and whatever counts it does have; a `+nan` alongside a
+        # confident-looking interval reads worse than saying nothing.
+        return (f"{paired.get('verdict', '?'):<8} "
+                f"(no estimate — "
+                f"{paired.get('n_clusters', 0)} shared cluster(s))")
+    lo, hi = paired.get("ci_lower"), paired.get("ci_upper")
+    interval = ("interval unresolved"
+                if lo is None or not np.isfinite(lo)
+                else f"[{lo:+.3f}, {hi:+.3f}]{unit}")
+    return (f"{paired.get('verdict', '?'):<8} "
+            f"{mean:+.3f}{unit} "
+            f"{interval} "
+            f"n={paired.get('n_paired', 0):,} "
+            f"folds={paired.get('n_clusters', 0)}")
+
+
+def verdict(paired: dict, higher_is_better: bool = True) -> str:
+    """One word for what a paired interval says, so callers stop inventing one.
+
+    The ten harnesses fixed on 2026-08-08 each had their own rule — a fold
+    win-count, a ±0.5pp emoji threshold, a bare `a > b` boolean — and none of
+    them was a test. This is: an effect is `positive`/`negative` only when the
+    interval excludes zero, and `null` when it does not. `unresolved` means the
+    design could not produce an interval at all (fewer than 2 shared clusters),
+    which is a different statement from "no effect" and must not be printed as
+    one.
+    """
+    lower, upper = paired.get("ci_lower"), paired.get("ci_upper")
+    # `np.isfinite` as well as the None check: a NaN bound fails both `> 0` and
+    # `< 0` and would fall through to `null`, printing "no effect" for a
+    # comparison that produced no number at all. One NaN row is enough — it
+    # propagates through `np.percentile` to both bounds.
+    if (lower is None or upper is None
+            or not np.isfinite(lower) or not np.isfinite(upper)):
+        return "unresolved"
+    if lower > 0:
+        return "positive" if higher_is_better else "negative"
+    if upper < 0:
+        return "negative" if higher_is_better else "positive"
+    return "null"

@@ -11,6 +11,22 @@ Usage:
     python scripts/ab_test_regime.py --max-items 200         # limit items
     python scripts/ab_test_regime.py --skip-db                # don't write to DB
     python scripts/ab_test_regime.py --horizons 7 30          # specific horizons
+
+Embargo (added 2026-08-08):
+    This harness had **no purge gap at all** before that date: the fold split
+    was `train = every date <= window_end - 1`, so every training row within
+    `horizon` days of the boundary carried a label resolved from inside the
+    validation window. The train side now goes through production's own
+    `ItemForecaster._purge_overlapping_train_rows`, which embargoes
+    `embargo_days(horizon)` = `horizon + 13` days -- the label's resolved-anchor
+    support, not its nominal date. The validation window is untouched; purging
+    it would empty the 21-day window at h=30.
+
+    **Every delta this harness printed before 2026-08-08 is un-embargoed.**
+    How much that inflated them is not known here. The often-quoted
+    "+12.1pp unpurged -> +6.1pp purged" at h=30 is from the external review
+    (docs/research/2026-08-07-cs2-forecasting-research.md), describes an
+    event-calendar arm, and has never been replicated in this repo.
 """
 
 import sys
@@ -29,7 +45,10 @@ import pandas as pd
 import lightgbm as lgb
 
 from database import SessionLocal, PredictionAccuracy
-from models.forecaster import ItemForecaster
+from backtest.paired_mde import format_paired, paired_arm_contrasts
+from backtest.walkforward_records import paired_records
+from db.archive import prices_relation
+from models.forecaster import ItemForecaster, archive_universe_sql_filter
 
 logging.basicConfig(
     level=logging.INFO,
@@ -39,24 +58,41 @@ logger = logging.getLogger("ab_test_regime")
 
 ARCHIVE_DIR = Path(__file__).parent.parent.parent / "price-archive"
 
+# Production's item universe and price consensus, spelled into every archive
+# read this harness makes. These three harnesses (`regime`, `ensemble`,
+# `supply_side`) were the worst case before 2026-08-08: a raw
+# `read_parquet('prices-*.parquet')` glob, which DuckDB narrows to the first
+# file's schema so `source` is not even a column, and no universe rule at all —
+# so the BUFF bid voted straight into their price series. `prices_relation`
+# is the reader that projects `source` correctly whether or not the archive has
+# been migrated. See `backend/AGENTS.md` and `db/archive.py`.
+#
+# Still outstanding here: these three read EVERY ask source, where the other
+# ten filter to one, so a 2026 item-day reaches them several times over and
+# `engineer_features` collapses the copies with a plain mean rather than
+# production's outlier-voted median. `backend/AGENTS.md` puts the archive's
+# duplication at 1.37x item-days. Narrowing the cohort would change what
+# these harnesses measure and is not part of this change.
+_PRICE_COLUMNS = ["item_slug", "day", "mean_price", "volume", "source"]
+_UNIVERSE = archive_universe_sql_filter()
+
+
 
 def _load_parquet_items(con, min_rows=90, backfilled_only=False):
-    where_clause = ""
+    relation = prices_relation(con, ARCHIVE_DIR, columns=_PRICE_COLUMNS)
+    conds = [_UNIVERSE]
     if backfilled_only:
-        where_clause = f"""
-            WHERE item_slug IN (
-                SELECT DISTINCT item_slug
-                FROM read_parquet('{ARCHIVE_DIR}/prices-*.parquet')
+        conds.append(f"""item_slug IN (
+                SELECT DISTINCT item_slug FROM {relation}
                 WHERE source = 'STEAMCOMMUNITY'
-            )
-        """
+            )""")
     rows = con.sql(f"""
         SELECT item_slug,
                MIN(day) AS first_day,
                MAX(day) AS last_day,
                COUNT(*) AS row_count
-        FROM read_parquet('{ARCHIVE_DIR}/prices-*.parquet')
-        {where_clause}
+        FROM {relation}
+        WHERE {" AND ".join(conds)}
         GROUP BY item_slug
         HAVING row_count >= 90
         ORDER BY row_count DESC
@@ -65,15 +101,16 @@ def _load_parquet_items(con, min_rows=90, backfilled_only=False):
 
 
 def _load_all_prices(con, items):
+    relation = prices_relation(con, ARCHIVE_DIR, columns=_PRICE_COLUMNS)
     all_rows = []
     for item_slug, first_day, last_day, row_count in items:
-        rows = con.sql("""
+        rows = con.sql(f"""
             SELECT item_slug AS item_id, CAST(day AS DATE) AS timestamp,
                    mean_price AS price, volume
-            FROM read_parquet('{}/prices-*.parquet')
-            WHERE item_slug = ?
+            FROM {relation}
+            WHERE item_slug = ? AND {_UNIVERSE}
             ORDER BY day
-        """.format(ARCHIVE_DIR), params=[item_slug]).fetchall()
+        """, params=[item_slug]).fetchall()
         item_df = pd.DataFrame(rows, columns=["item_id", "timestamp", "price", "volume"])
         item_df["timestamp"] = pd.to_datetime(item_df["timestamp"])
         item_df["date"] = item_df["timestamp"].dt.date
@@ -155,13 +192,13 @@ def run_ab_test(max_items=500, horizons=None, skip_db=False):
 
         all_rows = []
         for item_slug, first_day, last_day, row_count in items:
-            rows = con.sql("""
+            rows = con.sql(f"""
                 SELECT item_slug AS item_id, CAST(day AS DATE) AS timestamp,
                        mean_price AS price, volume
-                FROM read_parquet('{}/prices-*.parquet')
-                WHERE item_slug = ?
+                FROM {prices_relation(con, ARCHIVE_DIR, columns=_PRICE_COLUMNS)}
+                WHERE item_slug = ? AND {_UNIVERSE}
                 ORDER BY day
-            """.format(ARCHIVE_DIR), params=[item_slug]).fetchall()
+            """, params=[item_slug]).fetchall()
             item_df = pd.DataFrame(rows, columns=["item_id", "timestamp", "price", "volume"])
             item_df["timestamp"] = pd.to_datetime(item_df["timestamp"])
             item_df["date"] = item_df["timestamp"].dt.date
@@ -193,6 +230,8 @@ def run_ab_test(max_items=500, horizons=None, skip_db=False):
 
             regime_fold_results = []
             global_fold_results = []
+            regime_records = []
+            global_records = []
             regime_times = []
             global_times = []
 
@@ -202,7 +241,8 @@ def run_ab_test(max_items=500, horizons=None, skip_db=False):
                 if len(val_dates) < 7:
                     continue
 
-                train_df = tdf[tdf["date"].isin(train_dates)]
+                train_df = ItemForecaster._purge_overlapping_train_rows(
+                    tdf[tdf["date"].isin(train_dates)], val_dates[0], horizon)
                 val_df = tdf[tdf["date"].isin(val_dates)]
 
                 if len(val_df) < 50:
@@ -342,6 +382,26 @@ def run_ab_test(max_items=500, horizons=None, skip_db=False):
                     if g_metrics:
                         global_fold_results.append(g_metrics)
 
+                    # Paired records for the fold-clustered interval below.
+                    # Scored on non-flat actuals at >=$1, which is the
+                    # population production serves and does not depend on the
+                    # arm, so the two pair row for row. `window_end` rather
+                    # than a running counter: a counter drifts the moment one
+                    # arm skips a fold the other kept.
+                    _scored = ((np.asarray(actual_returns) != 0)
+                               & (np.asarray(current_prices, dtype=float) >= 1.0))
+                    _sign = np.sign(np.nan_to_num(actual_returns))
+                    for bucket, preds in ((regime_records, regime_preds[0.5]),
+                                          (global_records, global_preds[0.5])):
+                        bucket.extend(paired_records(
+                            item_ids=val_df["item_id"].to_numpy(),
+                            forecast_dates=val_df["date"].to_numpy(),
+                            fold_id=window_end,
+                            keep=_scored,
+                            direction_correct=(
+                                _sign == np.sign(np.nan_to_num(preds))),
+                        ))
+
             # Aggregate across folds
             if regime_fold_results and global_fold_results:
                 r_agg = _aggregate_folds(regime_fold_results)
@@ -355,8 +415,17 @@ def run_ab_test(max_items=500, horizons=None, skip_db=False):
                         "mape_delta": round(r_agg["mape"] - g_agg["mape"], 2),
                         "interval_coverage_pp": round(r_agg["interval_coverage"] - g_agg["interval_coverage"], 2),
                     },
+                    # Kept for continuity; it is not the verdict and never
+                    # was one. A bare `a > b` fires half the time against an
+                    # item-level MDE of 2.21-3.69pp.
                     "regime_wins": r_agg["directional_accuracy"] > g_agg["directional_accuracy"],
                 }
+                if regime_records and global_records:
+                    contrasts = paired_arm_contrasts(
+                        {"global_only": global_records, "regime": regime_records},
+                        base="global_only")
+                    results_by_horizon[horizon]["paired_regime_vs_global"] = (
+                        contrasts["regime"])
 
                 logger.info(f"\n  === {horizon}d A/B Results ===")
                 logger.info(f"  Regime:     DirAcc={r_agg['directional_accuracy']:.1f}% "
@@ -369,7 +438,12 @@ def run_ab_test(max_items=500, horizons=None, skip_db=False):
                 logger.info(f"  Delta:      DirAcc={delta['directional_accuracy_pp']:+.2f}pp "
                             f"MAE=${delta['mae_delta']:+.4f} "
                             f"IntCov={delta['interval_coverage_pp']:+.2f}pp")
-                logger.info(f"  Regime wins: {results_by_horizon[horizon]['regime_wins']}")
+                paired = results_by_horizon[horizon].get("paired_regime_vs_global")
+                if paired:
+                    logger.info(f"  Paired (regime - global, >=$1 non-flat): "
+                                f"{format_paired(paired)}")
+                else:
+                    logger.info("  Paired: unresolved — no scored rows")
 
         total_elapsed = time.time() - total_train_start
         logger.info(f"\n{'='*60}")
@@ -397,12 +471,17 @@ def run_ab_test(max_items=500, horizons=None, skip_db=False):
         for h, hr in sorted(results_by_horizon.items()):
             r, g = hr["regime"], hr["global_only"]
             d = hr["delta"]
-            winner = "REGIME" if hr["regime_wins"] else "GLOBAL"
             logger.info(f"\n  {h}d:")
             logger.info(f"    Regime:  DirAcc={r['directional_accuracy']:.1f}%  MAE=${r['mae']:.2f}  MAPE={r['mape']:.1f}%  IntCov={r['interval_coverage']:.1f}%")
             logger.info(f"    Global:  DirAcc={g['directional_accuracy']:.1f}%  MAE=${g['mae']:.2f}  MAPE={g['mape']:.1f}%  IntCov={g['interval_coverage']:.1f}%")
             logger.info(f"    Delta:   DirAcc={d['directional_accuracy_pp']:+.2f}pp  MAE=${d['mae_delta']:+.4f}  IntCov={d['interval_coverage_pp']:+.2f}pp")
-            logger.info(f"    Winner:  {'REGIME' if hr['regime_wins'] else 'GLOBAL'}")
+            # The verdict, and the last line an operator reads. `regime_wins`
+            # is a bare `a > b` and is reported beside it as context only.
+            paired = hr.get("paired_regime_vs_global")
+            logger.info(f"    Verdict: "
+                        f"{format_paired(paired) if paired else 'unresolved'}")
+            logger.info(f"    (regime_wins={hr['regime_wins']} — a bare a>b, "
+                        f"not a test)")
 
         con.close()
         db.close()
@@ -472,6 +551,20 @@ def _store_ab_results(db, report):
                 "mape_delta": delta["mape_delta"],
                 "interval_coverage_delta_pp": delta["interval_coverage_pp"],
                 "regime_wins": h_results["regime_wins"],
+                # The paired, fold-clustered verdict — the only one of these
+                # two that is a test. Stored flat: `db/parquet.py` serialises
+                # nested values, but a reader should not have to parse JSON to
+                # find out whether the effect was real.
+                "paired_verdict": (h_results.get("paired_regime_vs_global") or {})
+                    .get("verdict", "unresolved"),
+                "paired_mean_diff_pp": (
+                    h_results.get("paired_regime_vs_global") or {}).get("mean_diff"),
+                "paired_ci_lower_pp": (
+                    h_results.get("paired_regime_vs_global") or {}).get("ci_lower"),
+                "paired_ci_upper_pp": (
+                    h_results.get("paired_regime_vs_global") or {}).get("ci_upper"),
+                "paired_n_clusters": (
+                    h_results.get("paired_regime_vs_global") or {}).get("n_clusters"),
                 "regime_dir_acc": h_results["regime"]["directional_accuracy"],
                 "global_dir_acc": h_results["global_only"]["directional_accuracy"],
                 "regime_mae": h_results["regime"]["mae"],

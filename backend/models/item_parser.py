@@ -1,5 +1,14 @@
 """
-Parse CS2 item names into structured fields for feature engineering.
+Parse CS2 item names into structured fields, and hold the archive's universe
+rules.
+
+The universe rules — which sources may vote and which names price a single
+asset — live here rather than in `models/forecaster.py` because every archive
+reader needs them and not every archive reader can afford to import LightGBM.
+`forecaster.py` re-exports them so its own callers are unaffected. Both are
+spelled once, as SQL predicates, because each of them has already cost a
+separate fix per loader: the bid exclusion needed three, and the phase-collapsed
+names needed four.
 
 Examples:
     AK-47 | Redline (Field-Tested)
@@ -15,6 +24,47 @@ Examples:
 """
 
 import re
+
+# Sources that quote a BID, not an ask. Excluded from consensus voting: a bid is
+# a different quantity, so median-voting it against asks is not noise reduction
+# but a basis change. `aggregator_buff163_buy` is BUFF's `highest_order`, live
+# since 2026-07-11 at 0.579x Steam against asks at 0.717-0.809x.
+# Not a quality filter — these rows are good data, just not asks. Anything that
+# wants the bid should read the source row from the archive directly.
+BID_SOURCES = frozenset({"aggregator_buff163_buy"})
+
+
+def bid_sources_sql_filter(column: str = "source") -> str:
+    """SQL predicate dropping the bid sources from an archive read.
+
+    NULL-safe: `source` is NULL for the whole pre-2026 series and a bare
+    `NOT IN` over a NULL evaluates to NULL, which silently drops 13 years of
+    prices. That is the same trap `phase_collapsed_sql_filter` guards.
+    """
+    quoted = ", ".join(f"'{s}'" for s in sorted(BID_SOURCES))
+    return f"({column} IS NULL OR {column} NOT IN ({quoted}))"
+
+
+def archive_universe_sql_filter(slug_column: str = "item_slug",
+                                source_column: str = "source") -> str:
+    """Both universe rules at once, for a loader that reads the archive direct.
+
+    Production applies these inside `_fetch_voted_price_history`; anything that
+    globs the Parquet itself — `walkforward_backtest.py`, every `ab_test_*.py`
+    harness — bypasses that and has to spell them out. Before 2026-08-08 they
+    all did bypass it, so an A/B measured a different item universe and a
+    different price consensus than the model it was advising.
+
+    Pass ``source_column=None`` for a read whose relation genuinely has no
+    `source` column. That is safe only because the bid sources are all 2026
+    aggregator feeds: a file old enough to lack the column is old enough to
+    contain none of them.
+    """
+    parts = [phase_collapsed_sql_filter(slug_column)]
+    if source_column:
+        parts.append(bid_sources_sql_filter(source_column))
+    return " AND ".join(parts)
+
 
 # Names that are not one asset. A `market_hash_name` encodes weapon + finish +
 # wear + StatTrak/Souvenir and nothing else, so a Doppler or Gamma Doppler name

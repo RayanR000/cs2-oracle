@@ -13,6 +13,10 @@ import duckdb
 import pandas as pd
 
 BACKEND = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(BACKEND))
+
+from db.archive import CANONICAL_PRICE_COLUMNS  # noqa: E402
+
 SCRIPT = BACKEND / "scripts" / "append_to_parquet.py"
 
 
@@ -71,7 +75,7 @@ def test_redundant_price_columns_are_not_written(tmp_path):
     pq = tmp_path / "price-archive" / "prices-2026-08.parquet"
     cols = [r[0] for r in duckdb.connect().sql(
         f"DESCRIBE SELECT * FROM read_parquet('{pq}')").fetchall()]
-    assert set(cols) == {"item_slug", "day", "source", "mean_price", "volume"}
+    assert set(cols) == set(CANONICAL_PRICE_COLUMNS)
 
 
 def test_same_month_appends_and_dedups(tmp_path):
@@ -127,8 +131,7 @@ def test_columns_are_written_in_canonical_order(tmp_path):
     _write_csv(csv, "2026-09-03", [("AK-47 | Redline (FT)", "aggregator_sync", 10.0, 3)])
     _run("2026-09-03", tmp_path, csv)
     pq = tmp_path / "price-archive" / "prices-2026-09.parquet"
-    assert [c for c, _ in _schema(pq)] == [
-        "item_slug", "day", "source", "mean_price", "volume"]
+    assert [c for c, _ in _schema(pq)] == list(CANONICAL_PRICE_COLUMNS)
 
 
 def test_appending_to_a_date_typed_file_does_not_duplicate_rows(tmp_path):
@@ -171,3 +174,65 @@ def test_new_month_file_matches_what_the_migration_produces(tmp_path):
     _run("2026-09-03", tmp_path, csv)
     pq = tmp_path / "price-archive" / "prices-2026-09.parquet"
     assert not needs_rewrite(_schema(pq))
+
+
+class TestIngestedAt:
+    """`ingested_at` records ARRIVAL; `day` records what the row describes.
+
+    Added 2026-08-08 for the embargo. A purge computed from `day` assumes a row
+    dated `d` was knowable on `d`, which a backfill writer violates by
+    definition — and the archive had no arrival timestamp anywhere to check it
+    against. See `db/archive.py` and
+    `docs/changelog/2026-08-08-embargo-and-harness-hygiene.md`.
+    """
+
+    def test_a_fresh_row_is_stamped_with_a_timestamp(self, tmp_path):
+        csv = tmp_path / "snap.csv"
+        _write_csv(csv, "2026-09-03",
+                   [("AK-47 | Redline (FT)", "aggregator_sync", 10.0, 3)])
+        _run("2026-09-03", tmp_path, csv)
+        pq = tmp_path / "price-archive" / "prices-2026-09.parquet"
+
+        assert dict(_schema(pq))["ingested_at"] == "TIMESTAMP"
+        stamped = duckdb.connect().sql(
+            f"SELECT count(*) FROM read_parquet('{pq}') "
+            f"WHERE ingested_at IS NOT NULL").fetchone()[0]
+        assert stamped == 1
+
+    def test_arrival_is_not_the_day_being_exported(self, tmp_path):
+        """Backdating `--date` must not backdate the arrival: re-exporting an
+        old day is something that happens now, and that is the fact worth
+        recording."""
+        csv = tmp_path / "snap.csv"
+        _write_csv(csv, "2026-01-05",
+                   [("AK-47 | Redline (FT)", "aggregator_sync", 10.0, 3)])
+        _run("2026-01-05", tmp_path, csv)
+        pq = tmp_path / "price-archive" / "prices-2026-01.parquet"
+
+        day, arrived = duckdb.connect().sql(
+            f"SELECT day, ingested_at FROM read_parquet('{pq}')").fetchone()
+        assert str(day) == "2026-01-05"
+        assert pd.Timestamp(arrived) > pd.Timestamp("2026-01-06")
+
+    def test_a_re_append_keeps_the_first_arrival(self, tmp_path):
+        """`keep="last"` replaces a row wholesale, which is right for a
+        corrected price and wrong for the arrival time behind it. Re-stamping
+        on every re-run would date the whole month forward and make the column
+        useless as an embargo input."""
+        csv = tmp_path / "snap.csv"
+        _write_csv(csv, "2026-09-03",
+                   [("AK-47 | Redline (FT)", "aggregator_sync", 10.0, 3)])
+        _run("2026-09-03", tmp_path, csv)
+        pq = tmp_path / "price-archive" / "prices-2026-09.parquet"
+        first = duckdb.connect().sql(
+            f"SELECT ingested_at FROM read_parquet('{pq}')").fetchone()[0]
+
+        corrected = tmp_path / "snap2.csv"
+        _write_csv(corrected, "2026-09-03",
+                   [("AK-47 | Redline (FT)", "aggregator_sync", 11.0, 3)])
+        _run("2026-09-03", tmp_path, corrected)
+
+        price, arrived = duckdb.connect().sql(
+            f"SELECT mean_price, ingested_at FROM read_parquet('{pq}')").fetchone()
+        assert price == 11.0, "the corrected price should win"
+        assert arrived == first, "the original arrival should not"

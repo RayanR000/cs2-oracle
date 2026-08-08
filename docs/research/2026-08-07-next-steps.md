@@ -6,9 +6,10 @@
 **Status: steps 1, 2 and 3 are DONE (2026-08-07 —
 `docs/changelog/2026-08-07-bid-source-excluded-from-voting.md`,
 `docs/changelog/2026-08-07-pesaran-timmermann-headline.md` and
-`docs/changelog/2026-08-07-friction-conditioned-tier-scoring.md`), and step 4 is DONE
-(2026-08-08 — `docs/changelog/2026-08-08-phase-collapsed-names-dropped.md`). Steps 5 and 6
-are unblocked and NOT STARTED. Steps 7–11 are NOT STARTED.**
+`docs/changelog/2026-08-07-friction-conditioned-tier-scoring.md`), and steps 4 and 5 are
+DONE (2026-08-08 — `docs/changelog/2026-08-08-phase-collapsed-names-dropped.md` and
+`docs/changelog/2026-08-08-embargo-and-harness-hygiene.md`). Step 6 is unblocked and NOT
+STARTED. Steps 7–11 are NOT STARTED.**
 
 Ordering is the review's, not a re-ranking. Numbers in the "why" column are quoted from the
 review or from the changelog entry that measured them; nothing here is estimated.
@@ -213,7 +214,55 @@ A/B was run and none should be. Record:
 
 </details>
 
-### 5. Purge and embargo everywhere at `H + 13` days; add `ingested_at` — NOT STARTED
+### 5. Purge and embargo everywhere at `H + 13` days; add `ingested_at` — **DONE 2026-08-08**
+
+Landed as specified, in five parts. `models/forecaster.py::embargo_days(horizon)` is the
+band, and the 13 is **derived at call time** from `LAG_TOLERANCE_DAYS` (3) +
+`SMOOTH_WINDOW` (3) + `MAX_WINDOW_SPAN_DAYS` (7) rather than typed;
+`_purge_overlapping_train_rows` and every `_compute_cv_splits` caller use it.
+`walkforward_backtest.py` embargoes **by default** — `--purge` became `--no-purge`, and the
+discontinuity in the stored `lgbm-v3-clustered` series was accepted rather than avoided.
+`ingested_at` is in `CANONICAL_PRICE_COLUMNS` as a `TIMESTAMP`, stamped by
+`append_to_parquet.py` with the run's wall clock, first-arrival-wins on a re-append. All
+thirteen `ab_test_*` harnesses now read production's universe through the new
+`archive_universe_sql_filter`, the six with **no embargo at all** got one, and the ten with
+no significance test got a paired, fold-clustered interval. 1,466 tests pass, up from 1,258.
+Record: `docs/changelog/2026-08-08-embargo-and-harness-hygiene.md`.
+
+**Three things the spec did not anticipate:**
+
+1. **`BID_SOURCES` was not the harnesses' main defect — the Doppler names were.** Nine of
+   the twelve archive-reading harnesses already filter to a *single ask source*
+   (`aggregator_sync` or `STEAMCOMMUNITY`), which excludes the bid by construction. The
+   step's framing (bid filtering for `ab_test_regime.py` / `ab_test_ensemble.py`) was right
+   about those two, and about `ab_test_supply_side.py`, which it did not name. What all
+   twelve were missing is step 4's phase-collapsed filter.
+2. **Those three harnesses were reading a raw glob, not a filtered one.**
+   `read_parquet('prices-*.parquet')` narrows to the first file's schema, where `source`
+   does not exist at all — so their `source = 'STEAMCOMMUNITY'` item subquery worked only
+   against an already-migrated archive. They now go through `prices_relation`.
+3. **The embargo width follows an environment variable.** `MAX_WINDOW_SPAN_DAYS` derives
+   from `collectors.pipeline.FALLBACK_MAX_AGE_DAYS`, which is env-overridable. That is the
+   deliberate single-staleness-convention coupling, but it means the fold geometry is not
+   a constant.
+
+**Not done, and each of these matters for how the result is read:**
+
+- **Nothing was run.** No harness, and no walkforward gate. Every A/B result in the repo
+  predates all five changes, and **not one of the new intervals has been observed on real
+  data**. The +12.1pp → +6.1pp pair quoted below is still the review's, still unreplicated.
+- **The archive migration has not been run.** `ingested_at` exists in the schema and in the
+  writer; only CI writes the canonical archive, so the column is absent from every stored
+  file until `aggregator-update.yml` runs with `normalize_schema = true`.
+- **The published gate has not been re-run under the new default**, so the size of the
+  discontinuity it was flipped to accept is unknown.
+- **The three raw-glob harnesses still read every ask source**, so a 2026 item-day reaches
+  them ~11 times and `engineer_features` collapses the copies with a plain mean where
+  production votes an outlier-rejected median. Narrowing that cohort changes what they
+  measure and was left alone.
+
+<details>
+<summary>The original entry</summary>
 
 - **Do:** turn `walkforward_backtest.py --purge` **on by default** and accept the
   discontinuity in the published series. Widen `_purge_overlapping_train_rows` from `H` to
@@ -238,6 +287,8 @@ A/B was run and none should be. Record:
 - **Effort:** small, plus a schema migration through `aggregator-update.yml` (only CI writes
   the canonical archive).
 - **Unblocks:** any A/B result being citable. §10 Tier 1 #4 and #5b; §18 L1.
+
+</details>
 
 ### 6. Drop or downweight frozen-price runs from the label set — NOT STARTED
 

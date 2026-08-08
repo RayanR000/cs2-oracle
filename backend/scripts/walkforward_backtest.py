@@ -5,23 +5,29 @@ Walk-forward backtest using the current model's tuned parameters.
 Loads items from the Parquet archive, engineers features via ItemForecaster,
 and evaluates out-of-sample accuracy across walk-forward folds for all horizons.
 
-Embargo (added 2026-08-07, DEFAULT OFF):
-    The fold split is `train = every date < val_start`, with no purge gap, so
-    training rows in the last `horizon` days before the boundary carry a
+Embargo (added 2026-08-07 opt-in, DEFAULT ON since 2026-08-08):
+    The fold split was `train = every date < val_start`, with no purge gap, so
+    training rows in the last `horizon` days before the boundary carried a
     `target_return_{h}d` drawn from inside the validation window. Production's
-    trainer does purge (`ItemForecaster._compute_cv_splits(..., purge_days=H)`
-    and `_purge_overlapping_train_rows`); this gate diverged from it, as the
+    trainer purges (`ItemForecaster._compute_cv_splits` and
+    `_purge_overlapping_train_rows`); this gate diverged from it, as the
     `ab_test_*` walkforward harnesses had until they were fixed on 2026-08-07.
-    `--purge` / `purge=True` applies production's purge to the TRAIN side only.
-    It is OFF by default because this module is the published Backtest Accuracy
-    gate and flipping it silently would break continuity of the stored
-    `lgbm-v3-clustered` series. See the changelog before changing that.
+    The embargo applies to the TRAIN side only and is `embargo_days(horizon)`
+    wide -- `horizon + 13`, the label's resolved-anchor support rather than its
+    nominal date.
+
+    It shipped OFF for a day so the flip would be a deliberate, dated act
+    rather than a silent one. **Turning it on is a discontinuity in the stored
+    `lgbm-v3-clustered` series**, accepted 2026-08-08: an un-purged published
+    number is not a number worth continuity. `--no-purge` reproduces the old
+    split for a like-for-like read against a pre-2026-08-08 run, and the report
+    carries `"purge"` so the two are never confused.
 
 Usage:
     python scripts/walkforward_backtest.py
     python scripts/walkforward_backtest.py --max-items 200 --horizons 3 7
     python scripts/walkforward_backtest.py --skip-db
-    python scripts/walkforward_backtest.py --purge --skip-db   # embargoed folds
+    python scripts/walkforward_backtest.py --no-purge --skip-db  # legacy split
 """
 
 import sys
@@ -40,10 +46,10 @@ import lightgbm as lgb
 
 from database import SessionLocal, PredictionAccuracy
 from models.forecaster import (
-    BID_SOURCES,
     DIRECTION_FLAT_TOLERANCE_PCT,
     ItemForecaster,
-    phase_collapsed_sql_filter,
+    archive_universe_sql_filter,
+    embargo_days,
 )
 from backtest.scoring import FLOOR_SWEEP, HEADLINE_TIER, score_by_tier
 from backtest.walkforward_records import fold_records
@@ -86,10 +92,11 @@ def _load_parquet_items(con, backfilled_only=True):
             pq_queries.append(f"SELECT item_slug, CAST(day AS DATE) AS day, mean_price AS price, NULL::VARCHAR AS source, volume FROM read_parquet('{pqf}')")
     union_sql = " UNION ALL BY NAME ".join(pq_queries)
 
-    # Drop the phase-collapsed names here as well as in _load_all_prices, so the
+    # Apply the universe here as well as in _load_all_prices, so the
     # `max_items` budget is not spent selecting items the price loader will
-    # return nothing for.
-    conds = [phase_collapsed_sql_filter()]
+    # return nothing for, and so an item does not qualify on a row count the
+    # price loader then drops.
+    conds = [archive_universe_sql_filter()]
     if backfilled_only:
         conds.append("source = 'STEAMCOMMUNITY'")
     where_clause = "WHERE " + " AND ".join(conds)
@@ -133,14 +140,12 @@ def _load_all_prices(con, items):
     relation = prices_relation(
         con, ARCHIVE_DIR,
         columns=["item_slug", "day", "mean_price", "volume", "source"])
-    bid_list = ", ".join(f"'{s}'" for s in sorted(BID_SOURCES))
     rows = con.sql(f"""
         SELECT item_slug AS item_id, CAST(day AS DATE) AS timestamp,
                mean_price AS price, volume
         FROM {relation} sub
         WHERE item_slug IN ({slug_list})
-          AND (source IS NULL OR source NOT IN ({bid_list}))
-          AND {phase_collapsed_sql_filter("sub.item_slug")}
+          AND {archive_universe_sql_filter("sub.item_slug", "sub.source")}
         ORDER BY item_slug, day
     """).fetchall()
     df = pd.DataFrame(rows, columns=["item_id", "timestamp", "price", "volume"])
@@ -342,13 +347,15 @@ def _build_horizons_report(results_by_horizon, return_records):
 
 def run_walkforward(max_items=500, horizons=None, skip_db=False, return_records=False,
                      step_days: int = STEP_DAYS, fold_seed: int = FOLD_SEED, arm="gbm",
-                     purge: bool = False):
+                     purge: bool = True):
     if arm not in ARMS:
         raise ValueError(f"unknown arm {arm!r}; expected one of {ARMS}")
 
     logger.info("=" * 60)
     logger.info("WALK-FORWARD BACKTEST")
-    logger.info("  train-side embargo: %s", "ON (purge=horizon)" if purge else "OFF")
+    logger.info("  train-side embargo: %s",
+                "ON (purge=horizon+13)" if purge
+                else "OFF -- legacy split, not comparable to a default run")
     logger.info("=" * 60)
 
     import duckdb
@@ -412,9 +419,9 @@ def run_walkforward(max_items=500, horizons=None, skip_db=False, return_records=
 
                 if purge:
                     # TRAIN side only, and with production's own function so
-                    # this cannot drift from `_compute_cv_splits(purge_days=H)`
-                    # the way it did before 2026-08-07. Purging the val side
-                    # would shrink VAL_WINDOW_DAYS=21 and empty it at h=30.
+                    # this cannot drift from `_compute_cv_splits` the way it
+                    # did before 2026-08-07. Purging the val side would shrink
+                    # VAL_WINDOW_DAYS=21 and empty it at h=30.
                     train_df = ItemForecaster._purge_overlapping_train_rows(
                         train_df, val_dates[0], horizon)
 
@@ -577,10 +584,20 @@ def run_walkforward(max_items=500, horizons=None, skip_db=False, return_records=
                     "prediction_type": "walkforward_backtest",
                     "evaluation_date": today,
                     "horizon_days": horizon,
-                    # Bumped: the metric definition changed (3-label with a
-                    # flat band, classifier-sourced direction, clustered CI),
-                    # so these rows are NOT continuous with lgbm-v3-tuned.
-                    "model_version": "lgbm-v3-clustered",
+                    # Bumped twice, both times because the number stopped
+                    # meaning what the previous rows meant:
+                    #   lgbm-v3-tuned    -> lgbm-v3-clustered: the metric
+                    #     definition changed (3-label with a flat band,
+                    #     classifier-sourced direction, clustered CI).
+                    #   lgbm-v3-clustered -> lgbm-v4-embargoed (2026-08-08):
+                    #     the train side is now embargoed by default, and the
+                    #     module docstring calls that a discontinuity in so
+                    #     many words. Appending purged rows to the unpurged
+                    #     series would surface as a model regression on the
+                    #     dashboard trend and in `backtest-triage`, with
+                    #     nothing stored to say otherwise.
+                    "model_version": ("lgbm-v4-embargoed" if purge
+                                      else "lgbm-v3-clustered"),
                     "evaluation_window_days": None,
                     "sample_count": entry["sample_count"],
                     "metrics": {
@@ -599,6 +616,11 @@ def run_walkforward(max_items=500, horizons=None, skip_db=False, return_records=
                         "median_sign_directional_accuracy":
                             entry["median_sign"]["directional_accuracy"],
                         "by_tier": clf["by_tier"],
+                        # Stored as well as version-encoded, so a row is
+                        # self-describing without anyone having to know what
+                        # the version strings mean.
+                        "purge": bool(purge),
+                        "embargo_days": embargo_days(horizon) if purge else 0,
                     },
                     "created_at": datetime.now(timezone.utc).replace(tzinfo=None),
                 }])
@@ -653,7 +675,13 @@ def _write_records(report, path):
     logger.info(f"Wrote {total:,} records across {len(out)} horizons to {path}")
 
 
-def main():
+def build_parser():
+    """The CLI, as its own function so the embargo default is testable.
+
+    `--no-purge` is the whole reason this is not inline: a `store_false` whose
+    default came only from argparse convention would be an un-asserted default
+    on the published gate.
+    """
     import argparse
     parser = argparse.ArgumentParser(description="Walk-forward backtest with tuned params")
     parser.add_argument("--max-items", type=int, default=500, help="Items to evaluate (default: 500)")
@@ -663,15 +691,21 @@ def main():
                          help=f"Fold stride in days (default: {STEP_DAYS})")
     parser.add_argument("--arm", choices=list(ARMS), default="gbm",
                         help="gbm (current design), ridge, or naive baseline")
-    parser.add_argument("--purge", action="store_true",
-                        help="Embargo the train side by `horizon` days before each "
-                             "validation window (production's purge rule). OFF by "
-                             "default: this is the published Backtest Accuracy gate "
-                             "and the stored series assumes the un-purged split.")
+    parser.add_argument("--no-purge", dest="purge", action="store_false",
+                        help="Drop the train-side embargo and reproduce the "
+                             "pre-2026-08-08 split. For a like-for-like read "
+                             "against a stored run from before the flip only — "
+                             "the resulting accuracy is inflated by boundary "
+                             "overlap and must not be published.")
+    parser.set_defaults(purge=True)
     parser.add_argument("--save-records", metavar="PATH", default=None,
                         help="Write per-horizon records to PATH as JSON, for "
                              "paired_mde.paired_da_difference")
-    args = parser.parse_args()
+    return parser
+
+
+def main():
+    args = build_parser().parse_args()
 
     report = run_walkforward(max_items=args.max_items, horizons=args.horizons,
                               skip_db=args.skip_db, step_days=args.step_days,

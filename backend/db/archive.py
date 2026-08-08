@@ -38,20 +38,41 @@ PRICE_GLOB = "prices-*.parquet"
 #: emits exactly this for a new month, and `normalize_price_schema.py` rewrites
 #: the older files into it.
 CANONICAL_PRICE_COLUMNS: tuple[str, ...] = (
-    "item_slug", "day", "source", "mean_price", "volume",
+    "item_slug", "day", "source", "mean_price", "volume", "ingested_at",
 )
+
+#: `ingested_at` is when the row ARRIVED, as distinct from `day`, which is what
+#: it describes. Added 2026-08-08, and **NULL for every row written before that
+#: date** — the archive had no arrival timestamp anywhere and one cannot be
+#: reconstructed backwards, so the column starts empty and fills forward.
+#:
+#: It exists for the embargo. A purge computed from `day` assumes a row dated
+#: `d` was knowable on `d`; a backfill writer violates that by definition, and
+#: the archive has carried backfilled series under ordinary `day` values for
+#: 13 years. Until enough of this column accumulates, an embargo can only be
+#: derived from `day` and is a lower bound on the true one.
+#:
+#: First arrival wins on a re-append: a row rewritten with a corrected price
+#: keeps the timestamp of the day it first became knowable. A row that predates
+#: the column reads NULL and is stamped by whichever append touches it next,
+#: which dates it LATER than the truth — conservative in the safe direction for
+#: a leakage filter, and the reason a NULL must never be read as "arrived at
+#: `day`".
 
 #: Kept only where they hold real intraday range (see `compact_price_archive.py`),
 #: so they trail the canonical columns rather than sitting among them.
 RANGE_PRICE_COLUMNS: tuple[str, ...] = ("min_price", "max_price")
 
 #: The type a missing column is NULLed to, so both sides of a union agree.
-_COLUMN_TYPES: dict[str, str] = {
+#: Public because `normalize_price_schema.py` materialises the same columns
+#: into the files themselves and has to NULL them to the same types.
+COLUMN_TYPES: dict[str, str] = {
     "item_slug": "VARCHAR",
     "day": "DATE",
     "source": "VARCHAR",
     "mean_price": "DOUBLE",
     "volume": "BIGINT",
+    "ingested_at": "TIMESTAMP",
     "min_price": "DOUBLE",
     "max_price": "DOUBLE",
 }
@@ -144,10 +165,10 @@ def prices_relation(
     files = price_files(archive_dir)
     wanted = list(columns) if columns is not None else list(CANONICAL_PRICE_COLUMNS)
 
-    unknown = [c for c in wanted if c not in _COLUMN_TYPES]
+    unknown = [c for c in wanted if c not in COLUMN_TYPES]
     if unknown:
         raise ValueError(
-            f"unknown price column(s) {unknown}; known: {sorted(_COLUMN_TYPES)}")
+            f"unknown price column(s) {unknown}; known: {sorted(COLUMN_TYPES)}")
 
     present = present_columns(con, archive_dir)
     projection = ", ".join(
@@ -155,8 +176,8 @@ def prices_relation(
         # files and TIMESTAMP_NS in the monthly ones, and callers compare it
         # against dates. Normalising here means they all see one type whether
         # or not the archive has been migrated yet.
-        (f"CAST({c} AS {_COLUMN_TYPES[c]}) AS {c}" if c in present
-         else f"NULL::{_COLUMN_TYPES[c]} AS {c}")
+        (f"CAST({c} AS {COLUMN_TYPES[c]}) AS {c}" if c in present
+         else f"NULL::{COLUMN_TYPES[c]} AS {c}")
         for c in wanted
     )
 

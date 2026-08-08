@@ -18,7 +18,7 @@ import pytest
 from datetime import timedelta
 from unittest.mock import MagicMock
 
-from models.forecaster import ItemForecaster
+from models.forecaster import ItemForecaster, embargo_days
 
 
 @pytest.fixture
@@ -54,7 +54,15 @@ class TestPurgeOverlappingTrainRows:
         assert latest + timedelta(days=30) < split
 
     @pytest.mark.parametrize("horizon", [3, 7, 14, 30])
-    def test_purge_band_is_exactly_horizon_days(self, forecaster, horizon):
+    def test_purge_band_is_the_embargo_not_the_bare_horizon(
+            self, forecaster, horizon):
+        """`horizon + 13`, not `horizon` — the label's support, not its date.
+
+        Widened 2026-08-08. The label at `d + horizon` is a resolved anchor,
+        and `resolve_anchors` will build it from an observation up to 13 days
+        earlier (SMOOTH_WINDOW + MAX_WINDOW_SPAN_DAYS + LAG_TOLERANCE_DAYS), so
+        a bare `horizon` purge left that carry inside the validation window.
+        """
         df = _frame()
         split = pd.Timestamp("2026-04-01")
         train = df[pd.to_datetime(df["date"]) < split]
@@ -62,7 +70,8 @@ class TestPurgeOverlappingTrainRows:
         purged = forecaster._purge_overlapping_train_rows(train, split, horizon)
 
         dropped = len(train) - len(purged)
-        assert dropped == horizon
+        assert dropped == embargo_days(horizon)
+        assert dropped == horizon + 13
 
     def test_at_30d_the_whole_validation_window_would_otherwise_leak(self, forecaster):
         """The specific defect: VALIDATION_WINDOW_DAYS == 30 == horizon."""

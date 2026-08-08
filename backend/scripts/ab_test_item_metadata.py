@@ -144,7 +144,7 @@ import pandas as pd
 import lightgbm as lgb
 
 from database import SessionLocal
-from models.forecaster import ItemForecaster
+from models.forecaster import ItemForecaster, phase_collapsed_sql_filter
 from models.market_factor import (
     build_market_index,
     market_factor_for_horizon,
@@ -158,6 +158,14 @@ logging.basicConfig(
 logger = logging.getLogger("ab_test_item_metadata")
 
 ARCHIVE_DIR = Path(__file__).parent.parent.parent / "price-archive"
+
+# Production's item universe, spelled into every archive read this harness
+# makes. Before 2026-08-08 the `ab_test_*` family globbed the Parquet privately
+# and saw a universe production does not train on, so an A/B advised a model it
+# had not measured. The bid sources need no clause here: `aggregator_sync` is a
+# single ask feed and already excludes them. See `models/item_parser.py`.
+_UNIVERSE = phase_collapsed_sql_filter()
+
 DS_PARAMS = {"max_bin": 63, "feature_pre_filter": False}
 
 
@@ -165,7 +173,7 @@ def _frame_fingerprint(metadata_parquet):
     src = Path(__file__).parent.parent / "models" / "forecaster.py"
     h = hashlib.sha256(src.read_bytes())
     h.update(repr((MIN_MEDIAN_PRICE, MIN_ITEM_DAYS, N_UNIVERSE,
-                   CORR_PRUNE_THRESHOLD, META_ALL)).encode())
+                   CORR_PRUNE_THRESHOLD, META_ALL, _UNIVERSE)).encode())
     if metadata_parquet:
         h.update(hashlib.sha256(Path(metadata_parquet).read_bytes()).digest())
     return h.hexdigest()[:16]
@@ -186,11 +194,11 @@ def _archive_union_sql(con):
         if "source" in {r[0] for r in cols}:
             queries.append(
                 f"SELECT item_slug, day, mean_price, volume FROM "
-                f"read_parquet('{pqf}') WHERE source = 'aggregator_sync'")
+                f"read_parquet('{pqf}') WHERE source = 'aggregator_sync' AND {_UNIVERSE}")
         else:
             queries.append(
                 f"SELECT item_slug, day, mean_price, volume FROM "
-                f"read_parquet('{pqf}')")
+                f"read_parquet('{pqf}') WHERE {_UNIVERSE}")
     return " UNION ALL BY NAME ".join(queries)
 
 

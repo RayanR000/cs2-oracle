@@ -20,13 +20,17 @@ from pathlib import Path
 from sqlalchemy import text
 from models import conformal
 from models.item_parser import (
+    BID_SOURCES,
     PHASE_COLLAPSED_EXEMPT_PATTERNS,
     PHASE_COLLAPSED_SLUG_PATTERNS,
+    archive_universe_sql_filter,
+    bid_sources_sql_filter,
     is_phase_collapsed,
     parse_item_name,
     phase_collapsed_sql_filter,
 )
 from backtest.scoring import HEADLINE_MIN_TIER, MIN_FORECAST_DATES
+from backtest.price_resolution import MAX_WINDOW_SPAN_DAYS, SMOOTH_WINDOW
 
 logger = logging.getLogger(__name__)
 
@@ -45,18 +49,38 @@ DIRECTION_LABEL_VOL_COL = "label_vol_30d"
 # Cached result of GPU availability check (avoids repeated subprocess probes)
 _GPU_AVAILABLE_CACHE: Optional[bool] = None
 
-# Sources that quote a BID, not an ask. Excluded from consensus voting: a bid is
-# a different quantity, so median-voting it against asks is not noise reduction
-# but a basis change. `aggregator_buff163_buy` is BUFF's `highest_order`, live
-# since 2026-07-11 at 0.579x Steam against asks at 0.717-0.809x.
-# Not a quality filter — these rows are good data, just not asks. Anything that
-# wants the bid should read the source row from the archive directly.
-BID_SOURCES = frozenset({"aggregator_buff163_buy"})
+# `BID_SOURCES`, `PHASE_COLLAPSED_SLUG_PATTERNS` and the SQL filters over them
+# are imported from `models/item_parser.py` above and re-exported here. The
+# rules are about names and sources, not about models, and `api/` needs them
+# without importing LightGBM — but every archive reader already takes its
+# universe from this module, so the re-export is what keeps that true.
 
-# `PHASE_COLLAPSED_SLUG_PATTERNS` and friends are imported from
-# `models/item_parser.py` above and re-exported here: every archive reader
-# already takes its universe rules from this module (`BID_SOURCES`), but the
-# rule itself is about names and the API needs it without importing LightGBM.
+
+def embargo_days(horizon: int) -> int:
+    """How many days a train/validation split must embargo at *horizon*.
+
+    A row dated ``d`` is labelled with the price at ``d + horizon``, so a purge
+    of exactly ``horizon`` looks sufficient. It is not, because that label is
+    not a point observation. Both legs resolve through
+    `backtest/price_resolution.py::resolve_anchors`, which takes the median of
+    the last `SMOOTH_WINDOW` (3) observations, admits an observation up to
+    `MAX_WINDOW_SPAN_DAYS` (7) before the anchor, and — on the feature side —
+    `LAG_TOLERANCE_DAYS` (3) reaches a lag lookup back past its exact date when
+    the archive dropped that calendar day. The label's support therefore runs
+    ``horizon + 13`` days past ``d``, and an ``horizon``-day purge leaves the
+    last 13 days of it drawn from inside the validation window.
+
+    Reads `ItemForecaster.LAG_TOLERANCE_DAYS` at call time, so the constant has
+    one definition even though the class is declared below this function.
+
+    At h=30 the embargo (43d) exceeds `VALIDATION_WINDOW_DAYS`. That is the
+    correct cost of the overlap, not a bug: it means a 30d fold cannot be built
+    from 30 days of history, which was always true and was previously hidden.
+    """
+    carry = (ItemForecaster.LAG_TOLERANCE_DAYS
+             + SMOOTH_WINDOW + MAX_WINDOW_SPAN_DAYS)
+    return int(horizon) + carry
+
 
 # Price tier boundaries for per-tier bias correction
 PRICE_TIER_BOUNDARIES = [(0, 1, "<$1"), (1, 5, "$1-5"), (5, 20, "$5-20"),
@@ -2425,15 +2449,14 @@ class ItemForecaster:
         Args:
             purge_days: Embargo gap, in calendar days, applied between the
                 training window and the validation window. For an H-day
-                forecast horizon this MUST be set to H: a training row dated
-                T carries a target observed at T+H, so any train date within
-                H days of ``val_start`` has a label that overlaps the
+                forecast horizon this MUST be ``embargo_days(H)``: a training
+                row dated T carries a target observed at T+H, so any train date
+                within H days of ``val_start`` has a label that overlaps the
                 validation period — classic horizon-forecasting leakage that
-                inflates both accuracy and conformal calibration. With
-                ``purge_days=H`` every purged train date's target lands
-                strictly before the first validation date. Default 0
-                reproduces the un-embargoed split (used only where the caller
-                has no horizon, e.g. unit tests).
+                inflates both accuracy and conformal calibration — and the
+                resolved anchor behind that label carries 13 days further
+                still. Default 0 reproduces the un-embargoed split (used only
+                where the caller has no horizon, e.g. unit tests).
         """
         val_window = self.VALIDATION_WINDOW_DAYS  # 21 days
         step = self._cv_step_days()  # 150 days unless CV_STEP_DAYS overrides
@@ -2468,7 +2491,13 @@ class ItemForecaster:
         window already contains, and at ``horizon == VALIDATION_WINDOW_DAYS == 30``
         that is the *entire* window's worth of future prices.
 
-        This is the same purge ``_compute_cv_splits(..., purge_days=horizon)``
+        The band is ``embargo_days(horizon)`` — ``horizon + 13`` — not
+        ``horizon``, because the label is a resolved anchor rather than a point
+        observation and its support runs 13 days past its nominal date. See
+        `embargo_days`. Widened 2026-08-08; before that this purged exactly
+        ``horizon`` and left the carry inside the window.
+
+        This is the same purge ``_compute_cv_splits(..., purge_days=...)``
         applies above, which the production split in ``_train_horizon_inline``
         was missing. It matters more than a CV fold does: that split produces the
         ``dval`` early stopping stops on, the set Optuna scores every trial
@@ -2480,7 +2509,7 @@ class ItemForecaster:
         """
         if train_set.empty or "date" not in train_set.columns:
             return train_set
-        cutoff = pd.to_datetime(split_date) - timedelta(days=int(horizon))
+        cutoff = pd.to_datetime(split_date) - timedelta(days=embargo_days(horizon))
         return train_set[pd.to_datetime(train_set["date"]) < cutoff]
 
     @classmethod
@@ -2610,7 +2639,7 @@ class ItemForecaster:
         so feasibility is checked up front. Cheap: date arithmetic only, no fits.
         """
         splits = self._compute_cv_splits(
-            sorted(tdf["date"].unique()), purge_days=horizon)
+            sorted(tdf["date"].unique()), purge_days=embargo_days(horizon))
         return len(splits) >= 2
 
     def _optuna_search_params(self, X_train, y_train, X_val, y_val,
@@ -5308,10 +5337,12 @@ class ItemForecaster:
             are fitted on is the width that will actually be served.
         """
         sorted_dates = sorted(tdf["date"].unique())
-        # Embargo train dates within `horizon` days of each validation window:
-        # a train row's target is observed `horizon` days later, so without
-        # this gap those labels overlap the validation period (leakage).
-        splits = self._compute_cv_splits(sorted_dates, purge_days=horizon)
+        # Embargo train dates within `embargo_days(horizon)` of each validation
+        # window: a train row's target is observed `horizon` days later and the
+        # anchor behind it carries 13 days further, so without this gap those
+        # labels overlap the validation period (leakage).
+        splits = self._compute_cv_splits(
+            sorted_dates, purge_days=embargo_days(horizon))
         if len(splits) < 2:
             raise RuntimeError(
                 f"CV produced {len(splits)} fold{'s' if splits else 's'} "

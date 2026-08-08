@@ -9,6 +9,22 @@ Trains two models on the same expanding-window walk-forward evaluation:
 
 Usage:
     python scripts/ab_test_supply_side.py [--max-items 200]
+
+Embargo (added 2026-08-08):
+    This harness had **no purge gap at all** before that date: the fold split
+    was `train = every date <= window_end - 1`, so every training row within
+    `horizon` days of the boundary carried a label resolved from inside the
+    validation window. The train side now goes through production's own
+    `ItemForecaster._purge_overlapping_train_rows`, which embargoes
+    `embargo_days(horizon)` = `horizon + 13` days -- the label's resolved-anchor
+    support, not its nominal date. The validation window is untouched; purging
+    it would empty the 21-day window at h=30.
+
+    **Every delta this harness printed before 2026-08-08 is un-embargoed.**
+    How much that inflated them is not known here. The often-quoted
+    "+12.1pp unpurged -> +6.1pp purged" at h=30 is from the external review
+    (docs/research/2026-08-07-cs2-forecasting-research.md), describes an
+    event-calendar arm, and has never been replicated in this repo.
 """
 
 import sys
@@ -27,7 +43,13 @@ import pandas as pd
 import lightgbm as lgb
 
 from database import SessionLocal
-from models.forecaster import ItemForecaster
+from backtest.paired_mde import format_paired, paired_arm_contrasts
+from backtest.walkforward_records import (
+    paired_records,
+    without_records,
+)
+from db.archive import prices_relation
+from models.forecaster import ItemForecaster, archive_universe_sql_filter
 
 logging.basicConfig(
     level=logging.INFO,
@@ -36,6 +58,23 @@ logging.basicConfig(
 logger = logging.getLogger("ab_test_supply_side")
 
 ARCHIVE_DIR = Path(__file__).parent.parent.parent / "price-archive"
+
+# Production's item universe and price consensus, spelled into every archive
+# read this harness makes. Before 2026-08-08 this was a raw
+# `read_parquet('prices-*.parquet')` glob, which DuckDB narrows to the first
+# file's schema so `source` is not even a column there, and it carried no
+# universe rule at all — so the BUFF bid voted straight into its price series.
+# `prices_relation` is the reader that projects `source` correctly whether or
+# not the archive has been migrated. See `backend/AGENTS.md` and `db/archive.py`.
+#
+# Still outstanding: this reads EVERY ask source, where most harnesses filter
+# to one, so a 2026 item-day reaches it several times over and
+# `engineer_features` collapses the copies with a plain mean rather than
+# production's outlier-voted median. `backend/AGENTS.md` puts the archive's
+# duplication at 1.37x item-days.
+_PRICE_COLUMNS = ["item_slug", "day", "mean_price", "volume", "source"]
+_UNIVERSE = archive_universe_sql_filter()
+
 
 
 def _noop_supply_side(df: pd.DataFrame) -> pd.DataFrame:
@@ -54,20 +93,18 @@ def run_evaluation(max_items=200, use_supply_side=True):
         db.close()
 
         # ── Load items ──────────────────────────────────────────────
-        where_clause = """
-            WHERE item_slug IN (
-                SELECT DISTINCT item_slug
-                FROM read_parquet('{}/prices-*.parquet')
-                WHERE source = 'STEAMCOMMUNITY'
-            )
-        """.format(ARCHIVE_DIR)
+        relation = prices_relation(con, ARCHIVE_DIR, columns=_PRICE_COLUMNS)
         rows = con.sql(f"""
             SELECT item_slug,
                    MIN(day) AS first_day,
                    MAX(day) AS last_day,
                    COUNT(*) AS row_count
-            FROM read_parquet('{ARCHIVE_DIR}/prices-*.parquet')
-            {where_clause}
+            FROM {relation}
+            WHERE {_UNIVERSE}
+              AND item_slug IN (
+                SELECT DISTINCT item_slug FROM {relation}
+                WHERE source = 'STEAMCOMMUNITY'
+              )
             GROUP BY item_slug
             HAVING row_count >= 90
             ORDER BY row_count DESC
@@ -83,8 +120,8 @@ def run_evaluation(max_items=200, use_supply_side=True):
             item_rows = con.sql(f"""
                 SELECT item_slug AS item_id, day AS timestamp,
                        mean_price AS price, volume
-                FROM read_parquet('{ARCHIVE_DIR}/prices-*.parquet')
-                WHERE item_slug = ?
+                FROM {relation}
+                WHERE item_slug = ? AND {_UNIVERSE}
                 ORDER BY day
             """, params=[item_slug]).fetchall()
             item_df = pd.DataFrame(
@@ -149,6 +186,7 @@ def run_evaluation(max_items=200, use_supply_side=True):
             interval_hits = 0
             interval_total = 0
             per_fold = []
+            records = []
 
             VAL_WINDOW_DAYS = 21
             step = 60
@@ -158,7 +196,8 @@ def run_evaluation(max_items=200, use_supply_side=True):
                 if len(val_dates) < 7:
                     continue
 
-                train_df = tdf[tdf["date"].isin(train_dates)]
+                train_df = ItemForecaster._purge_overlapping_train_rows(
+                    tdf[tdf["date"].isin(train_dates)], val_dates[0], horizon)
                 val_df = tdf[tdf["date"].isin(val_dates)]
 
                 if len(val_df) < 50:
@@ -263,6 +302,24 @@ def run_evaluation(max_items=200, use_supply_side=True):
                         interval_hits += 1
                         fold_int_hits += 1
 
+                # Paired records for the fold-clustered interval below.
+                # Scored on non-flat actuals at >=$1, which is the population
+                # production serves and is arm-independent, so the two runs
+                # pair row for row. `window_end` rather than a running counter:
+                # a counter drifts the moment one arm skips a fold the other
+                # kept.
+                _match = (np.sign(np.nan_to_num(actual_returns))
+                          == np.sign(np.nan_to_num(p50_ret)))
+                _scored = ((np.asarray(actual_returns) != 0)
+                           & (np.asarray(current_prices, dtype=float) >= 1.0))
+                records.extend(paired_records(
+                    item_ids=val_df["item_id"].to_numpy(),
+                    forecast_dates=val_df["date"].to_numpy(),
+                    fold_id=window_end,
+                    keep=_scored,
+                    direction_correct=_match,
+                ))
+
                 per_fold.append({
                     "fold": len(per_fold) + 1,
                     "val_start": str(val_dates[0]),
@@ -287,6 +344,9 @@ def run_evaluation(max_items=200, use_supply_side=True):
                     "sample_count": directional_total,
                     "effective_baseline": baseline_2class,
                     "fold_count": len(per_fold),
+                    # The pairing input for the fold-clustered interval that
+                    # `main` computes across the two runs.
+                    "records": records,
                     "fold_mean_dir_acc": round(np.mean(fold_accs), 1) if fold_accs else 0,
                     "fold_std_dir_acc": round(np.std(fold_accs), 1) if len(fold_accs) > 1 else 0,
                     "fold_min_dir_acc": round(min(fold_accs), 1) if fold_accs else 0,
@@ -368,7 +428,22 @@ def main():
 
     avg_delta = total_delta / horizon_count if horizon_count > 0 else 0
     summary = "IMPROVEMENT" if avg_delta > 0 else "DEGRADATION" if avg_delta < 0 else "NO CHANGE"
-    print(f"\n  Verdict: Supply-side features → {summary} ({avg_delta:+.2f}pp avg)")
+    print(f"\n  Pooled delta (NOT a verdict): {summary} ({avg_delta:+.2f}pp avg)")
+
+    # The verdict. Until 2026-08-08 the line above was it: a mean of per-horizon
+    # deltas, with the sign alone deciding "IMPROVEMENT" or "DEGRADATION" and no
+    # interval anywhere. The item-level MDE here is 2.21-3.69pp, so that rule
+    # called a coin flip either way about half the time.
+    print("\n  Paired, fold-clustered (treatment - control, >=$1 non-flat):")
+    for h in ItemForecaster.HORIZONS:
+        base = results_without.get(h, {}).get("records")
+        arm = results_with.get(h, {}).get("records")
+        if not base or not arm:
+            print(f"    {h:>2}d:  unresolved — one arm produced no scored rows")
+            continue
+        contrasts = paired_arm_contrasts(
+            {"control": base, "treatment": arm}, base="control")
+        print(f"    {h:>2}d:  {format_paired(contrasts['treatment'])}")
 
     print("\n  Detail:")
     for h in ItemForecaster.HORIZONS:
@@ -383,10 +458,10 @@ def main():
         print(f"    {h:>2}d:  Control: MAE=${wo_mae:.2f}  IntCov={wo_int:.1f}%  n={wo_n}")
         print(f"           Treat:  MAE=${w_mae:.2f}  IntCov={w_int:.1f}%  n={w_n}")
 
-    print(f"\n  JSON: {json.dumps({
+    print(f"\n  JSON: {json.dumps(without_records({
         'control': results_without,
         'treatment': results_with,
-    }, indent=2)}")
+    }), indent=2)}")
 
     return 0
 

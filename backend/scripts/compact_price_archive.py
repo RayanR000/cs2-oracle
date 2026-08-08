@@ -40,6 +40,10 @@ from typing import Optional, Sequence
 
 import duckdb
 
+sys.path.insert(0, str(Path(__file__).parent.parent))
+
+from db.archive import COLUMN_TYPES  # noqa: E402
+
 logger = logging.getLogger("compact_price_archive")
 
 # Dropped from every prices file: a structural duplicate of mean_price.
@@ -187,7 +191,11 @@ def absorb_orphan_snapshot_rows(archive_dir: Path, apply: bool) -> int:
                 elif c in ("item_slug", "day", "source", "volume"):
                     proj.append(f"o.{c}")
                 else:
-                    proj.append(f"NULL AS {c}")
+                    # Typed, so the UNION does not resolve the column to
+                    # INTEGER off an untyped NULL and disagree with the other
+                    # leg. `ingested_at` is genuinely unknown for an orphan —
+                    # it was in a snapshot file the prices file never saw.
+                    proj.append(f"NULL::{COLUMN_TYPES.get(c, 'VARCHAR')} AS {c}")
             tmp = prices.with_suffix(".parquet.tmp")
             col_list = ", ".join(f'"{c}"' for c in keep)
             con.sql(

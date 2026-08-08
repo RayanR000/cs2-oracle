@@ -22,6 +22,111 @@ from backtest.scoring import direction_from_return, price_tier
 CLASS_TO_DIRECTION = {0: "down", 1: "flat", 2: "up"}
 
 
+def fold_level_records(fold_ids, values, *, metric: str):
+    """Paired records at FOLD grain, for an arm scored one number per fold.
+
+    The row-grain form above is strictly better — differencing within
+    `(item, date)` removes the common market term — and every harness that can
+    reach its per-row predictions should use it. The three pinball harnesses
+    cannot without restructuring: they shard folds across processes and merge
+    per-fold CSVs, so the rows are gone by the time the arms meet.
+
+    Fold grain still gives the thing that was missing: an interval resampled on
+    the fold, which is the independent unit. It is wide, because ~8 folds is ~8
+    clusters. That width is the honest cost of the design and is the point —
+    the rule it replaces ("wins on at least half the folds") fires 50% of the
+    time on two identical arms.
+    """
+    ids = list(fold_ids)
+    vals = list(values)
+    if len(ids) != len(vals):
+        raise ValueError(
+            f"fold_ids has {len(ids)} entries, values has {len(vals)}")
+    return [
+        # Pairing key and cluster key are the same here, by construction: the
+        # fold IS the observation. `paired_metric_difference` pairs on
+        # (item_id, forecast_date) and resamples on fold_id, and at this grain
+        # all three are the fold.
+        {"item_id": f, "forecast_date": str(f), "fold_id": f, metric: v}
+        for f, v in zip(ids, vals)
+    ]
+
+
+def without_records(obj):
+    """`obj` with every ``"records"`` list dropped, for printing or writing.
+
+    A harness's records are its pairing input, not its result: one arm at one
+    horizon carries tens of thousands of them, so dumping a results dict to
+    stdout or to `--out` without this buries the summary under them. The paired
+    interval is computed before this is called and survives it.
+    """
+    if isinstance(obj, dict):
+        return {k: without_records(v) for k, v in obj.items() if k != "records"}
+    if isinstance(obj, list):
+        return [without_records(v) for v in obj]
+    return obj
+
+
+def paired_records(*, item_ids, forecast_dates, fold_id, keep=None, **metrics):
+    """Minimal per-row records for pairing two A/B arms on the same folds.
+
+    `fold_records` above is the full `score_cohort` shape and is what the
+    walkforward gate needs. An A/B harness needs three things only: the pairing
+    key `(item_id, forecast_date)`, the resampling key `fold_id`, and whichever
+    scalars it is comparing — so this exists to stop each of the ten harnesses
+    fixed on 2026-08-08 from growing its own copy of the same six lines.
+
+    `keep` is an optional boolean mask of rows to score, applied to every array.
+    Pass the arm-independent one: a mask that differs between arms would break
+    the pairing rather than narrow it, and `paired_metric_difference` would
+    silently compare whatever intersection survived.
+
+    `fold_id` must identify the fold the same way in every arm. Use the loop's
+    own window bound rather than a running counter — a counter drifts the
+    moment one arm skips a fold the other kept.
+
+    Each keyword in `metrics` becomes a column: `direction_correct=<bool array>`
+    for a hit rate, `pinball=<float array>` for a loss. Values are cast per row
+    by `paired_metric_difference`, so bools and floats both work.
+    """
+    ids = np.asarray(item_ids)
+    dates = np.asarray(forecast_dates)
+    # tolist(): a np.bool_ does not support `-`, which is exactly how the
+    # difference is taken, and a np.float32 does not survive a json round trip.
+    cols = {k: np.asarray(v).tolist() for k, v in metrics.items()}
+    if not cols:
+        raise ValueError("paired_records needs at least one metric to compare")
+
+    n = len(ids)
+    checked = [("forecast_dates", dates), *cols.items()]
+    # `keep` is checked too. Every caller derives it from the prediction/actual
+    # arrays, which are different objects from `item_ids` (that comes off
+    # `val_df`) — so a short mask would not raise, it would score a subset while
+    # `ids[i]` labelled rows the mask never described. A silent mispairing is
+    # the one failure this function exists to prevent.
+    if keep is not None:
+        checked.append(("keep", np.asarray(keep)))
+    for name, arr in checked:
+        if len(arr) != n:
+            raise ValueError(
+                f"all inputs must be of equal length; {name} has {len(arr)}, "
+                f"expected {n}")
+
+    idx = np.flatnonzero(np.asarray(keep)) if keep is not None else range(n)
+    return [
+        {
+            "item_id": ids[i],
+            # str(): the pairing key has to compare equal across arms, and a
+            # datetime64 on one side against a datetime.date on the other
+            # stringifies differently and pairs zero rows.
+            "forecast_date": str(dates[i]),
+            "fold_id": fold_id,
+            **{k: v[i] for k, v in cols.items()},
+        }
+        for i in idx
+    ]
+
+
 def fold_records(
     *,
     item_ids,

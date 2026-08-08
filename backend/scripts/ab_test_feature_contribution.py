@@ -14,6 +14,22 @@ less signal for 14d/30d than for 3d/7d.
 
 Usage:
     python scripts/ab_test_feature_contribution.py [--max-items 200] [--horizon 14]
+
+Embargo (added 2026-08-08):
+    This harness had **no purge gap at all** before that date: the fold split
+    was `train = every date <= window_end - 1`, so every training row within
+    `horizon` days of the boundary carried a label resolved from inside the
+    validation window. The train side now goes through production's own
+    `ItemForecaster._purge_overlapping_train_rows`, which embargoes
+    `embargo_days(horizon)` = `horizon + 13` days -- the label's resolved-anchor
+    support, not its nominal date. The validation window is untouched; purging
+    it would empty the 21-day window at h=30.
+
+    **Every delta this harness printed before 2026-08-08 is un-embargoed.**
+    How much that inflated them is not known here. The often-quoted
+    "+12.1pp unpurged -> +6.1pp purged" at h=30 is from the external review
+    (docs/research/2026-08-07-cs2-forecasting-research.md), describes an
+    event-calendar arm, and has never been replicated in this repo.
 """
 
 import sys
@@ -31,7 +47,12 @@ import pandas as pd
 import lightgbm as lgb
 
 from database import SessionLocal
-from models.forecaster import ItemForecaster
+from backtest.paired_mde import format_paired, paired_arm_contrasts
+from backtest.walkforward_records import (
+    paired_records,
+    without_records,
+)
+from models.forecaster import ItemForecaster, phase_collapsed_sql_filter
 
 logging.basicConfig(
     level=logging.INFO,
@@ -40,6 +61,14 @@ logging.basicConfig(
 logger = logging.getLogger("ab_test_feature_contribution")
 
 ARCHIVE_DIR = Path(__file__).parent.parent.parent / "price-archive"
+
+# Production's item universe, spelled into every archive read this harness
+# makes. Before 2026-08-08 the `ab_test_*` family globbed the Parquet privately
+# and saw a universe production does not train on, so an A/B advised a model it
+# had not measured. The bid sources need no clause here: `STEAMCOMMUNITY` is a
+# single ask feed and already excludes them. See `models/item_parser.py`.
+_UNIVERSE = phase_collapsed_sql_filter()
+
 
 CROSS_SECTIONAL_PREFIXES = ("market_", "market_regime_", "item_return_vs_market_", "item_volume_vs_market_")
 EVENT_PREFIXES = ("event_decay_", "events_next_", "event_density_")
@@ -68,11 +97,11 @@ def run_evaluation(max_items=200, horizon_filter=None):
             col_names = {r[0] for r in cols}
             if "source" in col_names:
                 pq_queries.append(
-                    f"SELECT item_slug, day, mean_price, volume FROM read_parquet('{pqf}') WHERE source = 'STEAMCOMMUNITY'"
+                    f"SELECT item_slug, day, mean_price, volume FROM read_parquet('{pqf}') WHERE source = 'STEAMCOMMUNITY' AND {_UNIVERSE}"
                 )
             else:
                 pq_queries.append(
-                    f"SELECT item_slug, day, mean_price, volume FROM read_parquet('{pqf}')"
+                    f"SELECT item_slug, day, mean_price, volume FROM read_parquet('{pqf}') WHERE {_UNIVERSE}"
                 )
         union_sql = " UNION ALL BY NAME ".join(pq_queries)
 
@@ -185,6 +214,7 @@ def run_evaluation(max_items=200, horizon_filter=None):
                 interval_hits = 0
                 interval_total = 0
                 per_fold = []
+                records = []
 
                 VAL_WINDOW_DAYS = 21
                 step = 60
@@ -194,7 +224,9 @@ def run_evaluation(max_items=200, horizon_filter=None):
                     if len(val_dates) < 7:
                         continue
 
-                    train_df = tdf[tdf["date"].isin(train_dates)]
+                    train_df = ItemForecaster._purge_overlapping_train_rows(
+                        tdf[tdf["date"].isin(train_dates)],
+                        val_dates[0], horizon)
                     val_df = tdf[tdf["date"].isin(val_dates)]
 
                     if len(val_df) < 50:
@@ -300,6 +332,24 @@ def run_evaluation(max_items=200, horizon_filter=None):
                             interval_hits += 1
                             fold_int_hits += 1
 
+                    # Paired records for the fold-clustered interval below.
+                    # Scored on non-flat actuals at >=$1, which is the
+                    # population production serves and is arm-independent, so
+                    # the arms pair row for row. `window_end` rather than a
+                    # running counter: a counter drifts the moment one arm
+                    # skips a fold the other kept.
+                    _match = (np.sign(np.nan_to_num(actual_returns))
+                              == np.sign(np.nan_to_num(p50_ret)))
+                    _scored = ((np.asarray(actual_returns) != 0)
+                               & (np.asarray(current_prices, dtype=float) >= 1.0))
+                    records.extend(paired_records(
+                        item_ids=val_df["item_id"].to_numpy(),
+                        forecast_dates=val_df["date"].to_numpy(),
+                        fold_id=window_end,
+                        keep=_scored,
+                        direction_correct=_match,
+                    ))
+
                     per_fold.append({
                         "fold": len(per_fold) + 1,
                         "val_start": str(val_dates[0]),
@@ -328,12 +378,28 @@ def run_evaluation(max_items=200, horizon_filter=None):
                         "fold_std_dir_acc": round(np.std(fold_accs), 1) if len(fold_accs) > 1 else 0,
                         "fold_min_dir_acc": round(min(fold_accs), 1) if fold_accs else 0,
                         "fold_max_dir_acc": round(max(fold_accs), 1) if fold_accs else 0,
+                        # The pairing input for the fold-clustered interval.
+                        "records": records,
                     }
                     result["improvement_over_baseline_pp"] = round(dir_acc - baseline_2class, 1)
                     results[horizon][config_name] = result
 
                     logger.info(f"      DirAcc={dir_acc:.1f}% ({directional_total:,} samples, "
                                 f"{result['improvement_over_baseline_pp']:.1f}pp above baseline)")
+
+            # Fold-clustered paired intervals against the full-feature arm,
+            # which is this harness's control. Until 2026-08-08 an ablation was
+            # judged on a pooled delta against a +/-0.5pp emoji threshold, and
+            # the item-level MDE here is 2.21-3.69pp -- so every green tick it
+            # ever printed was inside the noise floor by a factor of five.
+            arms = {a: r.get("records", []) for a, r in results[horizon].items()
+                    if not a.startswith("_") and r.get("records")}
+            if "full" in arms and len(arms) > 1:
+                contrasts = paired_arm_contrasts(arms, base="full")
+                results[horizon]["_paired_vs_full"] = contrasts
+                for arm, paired in contrasts.items():
+                    logger.info(f"      paired {arm:<20} vs full: "
+                                f"{format_paired(paired)}")
 
         return results
 
@@ -445,7 +511,7 @@ def main():
 
     print_comparison(results)
 
-    print(f"\n  JSON: {json.dumps(results, indent=2, default=str)}")
+    print(f"\n  JSON: {json.dumps(without_records(results), indent=2, default=str)}")
 
     return 0
 

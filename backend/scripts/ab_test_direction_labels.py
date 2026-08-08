@@ -29,11 +29,15 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 import numpy as np
 import pandas as pd
 
+from backtest.paired_mde import format_paired, paired_arm_contrasts
+from backtest.walkforward_records import paired_records
 from database import SessionLocal
 from models.forecaster import (
     ItemForecaster,
     DIRECTION_LABEL_VOL_COL,
     DIRECTION_FLAT_TOLERANCE_PCT,
+    embargo_days,
+    phase_collapsed_sql_filter,
 )
 
 logging.basicConfig(
@@ -43,6 +47,14 @@ logging.basicConfig(
 logger = logging.getLogger("ab_test_direction_labels")
 
 ARCHIVE_DIR = Path(__file__).parent.parent.parent / "price-archive"
+
+# Production's item universe, spelled into every archive read this harness
+# makes. Before 2026-08-08 the `ab_test_*` family globbed the Parquet privately
+# and saw a universe production does not train on, so an A/B advised a model it
+# had not measured. The bid sources need no clause here: `STEAMCOMMUNITY` is a
+# single ask feed and already excludes them. See `models/item_parser.py`.
+_UNIVERSE = phase_collapsed_sql_filter()
+
 
 K_GRID = [0.25, 0.5, 1.0]
 MOVER_WEIGHT_GRID = [3.0, 5.0, 8.0]
@@ -85,9 +97,9 @@ def load_features(con, forecaster, events_df, max_items):
     for pqf in pq_files:
         cols = {r[0] for r in con.sql(f"DESCRIBE SELECT * FROM read_parquet('{pqf}')").fetchall()}
         if "source" in cols:
-            pq_queries.append(f"SELECT item_slug, day, mean_price, volume FROM read_parquet('{pqf}') WHERE source = 'STEAMCOMMUNITY'")
+            pq_queries.append(f"SELECT item_slug, day, mean_price, volume FROM read_parquet('{pqf}') WHERE source = 'STEAMCOMMUNITY' AND {_UNIVERSE}")
         else:
-            pq_queries.append(f"SELECT item_slug, day, mean_price, volume FROM read_parquet('{pqf}')")
+            pq_queries.append(f"SELECT item_slug, day, mean_price, volume FROM read_parquet('{pqf}') WHERE {_UNIVERSE}")
     union_sql = " UNION ALL BY NAME ".join(pq_queries)
 
     items = con.sql(f"""
@@ -166,7 +178,8 @@ def _run_horizon(fc, tdf, feat_cols, horizon, purge_days):
         fc.DIRECTION_VOL_MULTIPLIER_MAP[horizon] = k if not is_control else 1.0
         fc.DIRECTION_MOVER_WEIGHT_MAP[horizon] = mw
         fold_overall, fold_movers = [], []
-        for train_dates, val_dates in folds:
+        records = []
+        for fold_idx, (train_dates, val_dates) in enumerate(folds):
             tr = tdf[tdf["date"].isin(train_dates)]
             va = tdf[tdf["date"].isin(val_dates)]
             if len(tr) < MIN_TRAIN_ROWS or len(va) < MIN_VAL_ROWS:
@@ -187,14 +200,32 @@ def _run_horizon(fc, tdf, feat_cols, horizon, purge_days):
                 sigma_train=sigma_train,
                 sigma_val=sigma_val)
             pred_cls = clf.predict(X_va).argmax(axis=1)
-            ov, mv = score_fixed_yardstick(pred_cls, va[target_col].to_numpy(dtype=float))
+            actual = va[target_col].to_numpy(dtype=float)
+            ov, mv = score_fixed_yardstick(pred_cls, actual)
             fold_overall.append(ov)
             fold_movers.append(mv)
+
+            # Paired records against the control cell, for the fold-clustered
+            # interval `run` computes below. Scored on the same FIXED +/-0.5%
+            # yardstick the sweep reports, over movers only -- a flat actual is
+            # not a directional call and the control cell answers "flat" for
+            # free on it. Every cell sees identical folds and identical rows,
+            # so the pairing is exact.
+            actual_cls = ItemForecaster._direction_classes(
+                actual, DIRECTION_FLAT_TOLERANCE_PCT)
+            records.extend(paired_records(
+                item_ids=va["item_id"].to_numpy(),
+                forecast_dates=va["date"].to_numpy(),
+                fold_id=fold_idx,
+                keep=np.abs(actual) > DIRECTION_FLAT_TOLERANCE_PCT,
+                direction_correct=(np.asarray(pred_cls, dtype=int) == actual_cls),
+            ))
         yield {
             "horizon": horizon, "k": "ctrl" if is_control else k, "mover_weight": mw,
             "overall_acc": round(100 * np.nanmean(fold_overall), 2) if fold_overall else None,
             "movers_acc": round(100 * np.nanmean(fold_movers), 2) if fold_movers else None,
             "n_folds": len(fold_overall),
+            "records": records,
         }
 
 
@@ -226,7 +257,8 @@ def run(max_items, horizon_filter, purge_days_arg):
         if tdf.empty:
             logger.warning(f"  no targets for {horizon}d")
             continue
-        purge_days = purge_days_arg if purge_days_arg is not None else horizon
+        purge_days = (purge_days_arg if purge_days_arg is not None
+                      else embargo_days(horizon))
 
         best, control = None, None
         for row in _run_horizon(forecaster, tdf, feat_cols, horizon, purge_days):
@@ -245,6 +277,30 @@ def run(max_items, horizon_filter, purge_days_arg):
             print(f"  -> best {horizon}d: k={best['k']} mover_weight={best['mover_weight']} "
                   f"overall={best['overall_acc']}% movers={best['movers_acc']}%")
 
+        # Fold-clustered paired intervals against the control cell. Until
+        # 2026-08-08 this sweep reported a raw mean per cell and picked the
+        # highest, with no interval anywhere -- so "best" meant "won the draw",
+        # and with ten cells against an item-level MDE of 2.21-3.69pp a winner
+        # was guaranteed whether or not any cell differed from control.
+        if control and control.get("records"):
+            cells = {
+                f"k={r['k']},mw={r['mover_weight']}": r["records"]
+                for r in results if r["horizon"] == horizon and r.get("records")
+            }
+            ctrl_key = f"k=ctrl,mw={control['mover_weight']}"
+            if ctrl_key in cells and len(cells) > 1:
+                contrasts = paired_arm_contrasts(cells, base=ctrl_key)
+                for cell, paired in sorted(contrasts.items()):
+                    print(f"     paired {cell:<20} vs control (movers): "
+                          f"{format_paired(paired)}")
+                control["paired_vs_control"] = contrasts
+
+        # The records are the pairing input, not a result. Dropping them keeps
+        # the returned rows printable -- one cell at one horizon carries tens
+        # of thousands.
+        for r in results:
+            r.pop("records", None)
+
     return results
 
 
@@ -256,7 +312,8 @@ def main():
     ap.add_argument("--max-items", type=int, default=200)
     ap.add_argument("--horizon", type=int, default=None, choices=HORIZONS)
     ap.add_argument("--purge-days", type=int, default=None,
-                    help="CV purge/embargo gap in days; default = horizon per horizon")
+                    help="CV purge/embargo gap in days; default = "
+                         "embargo_days(horizon), i.e. horizon + 13")
     args = ap.parse_args()
 
     logger.info("=" * 70)

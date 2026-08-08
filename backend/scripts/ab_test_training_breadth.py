@@ -139,7 +139,7 @@ import pandas as pd
 import lightgbm as lgb
 
 from database import SessionLocal
-from models.forecaster import ItemForecaster
+from models.forecaster import ItemForecaster, phase_collapsed_sql_filter
 from backtest.paired_mde import paired_da_difference
 
 logging.basicConfig(
@@ -149,6 +149,14 @@ logging.basicConfig(
 logger = logging.getLogger("ab_test_training_breadth")
 
 ARCHIVE_DIR = Path(__file__).parent.parent.parent / "price-archive"
+
+# Production's item universe, spelled into every archive read this harness
+# makes. Before 2026-08-08 the `ab_test_*` family globbed the Parquet privately
+# and saw a universe production does not train on, so an A/B advised a model it
+# had not measured. The bid sources need no clause here: `aggregator_sync` is a
+# single ask feed and already excludes them. See `models/item_parser.py`.
+_UNIVERSE = phase_collapsed_sql_filter()
+
 
 DS_PARAMS = {"max_bin": 63, "feature_pre_filter": False}
 
@@ -172,6 +180,7 @@ def _frame_fingerprint():
     h = hashlib.sha256(src.read_bytes())
     h.update(repr((
         MIN_MEDIAN_PRICE, MIN_ITEM_DAYS, N_UNIVERSE, CORR_PRUNE_THRESHOLD,
+        _UNIVERSE,
     )).encode())
     return h.hexdigest()[:16]
 
@@ -228,11 +237,12 @@ def _archive_union_sql(con):
         if "source" in {r[0] for r in cols}:
             queries.append(
                 f"SELECT item_slug, day, mean_price, volume FROM read_parquet('{pqf}') "
-                f"WHERE source = 'aggregator_sync'"
+                f"WHERE source = 'aggregator_sync' AND {_UNIVERSE}"
             )
         else:
             queries.append(
-                f"SELECT item_slug, day, mean_price, volume FROM read_parquet('{pqf}')"
+                f"SELECT item_slug, day, mean_price, volume FROM read_parquet('{pqf}') "
+                f"WHERE {_UNIVERSE}"
             )
     return " UNION ALL BY NAME ".join(queries)
 

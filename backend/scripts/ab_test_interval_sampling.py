@@ -83,7 +83,13 @@ import lightgbm as lgb
 
 from database import SessionLocal
 from db.archive import ARCHIVE_ROOT, prices_relation
-from models.forecaster import ItemForecaster
+from backtest.paired_mde import format_paired, paired_arm_contrasts
+from backtest.walkforward_records import fold_level_records
+from models.forecaster import (
+    ItemForecaster,
+    embargo_days,
+    phase_collapsed_sql_filter,
+)
 
 logging.basicConfig(
     level=logging.INFO,
@@ -92,6 +98,12 @@ logging.basicConfig(
 logger = logging.getLogger("ab_test_interval_sampling")
 
 ARCHIVE_DIR = ARCHIVE_ROOT
+
+# Production's item universe, spelled into this harness's archive read. The bid
+# sources need no clause: the `STEAMCOMMUNITY`/NULL cohort already excludes
+# them. See `models/item_parser.py`.
+_UNIVERSE = phase_collapsed_sql_filter()
+
 META_PATH = Path(__file__).parent.parent / "models" / "saved_models" / "meta.json"
 
 HORIZONS = [3, 7, 14, 30]
@@ -169,7 +181,7 @@ def load_features(con, forecaster, events_df, max_items):
     union_sql = prices_relation(
         con, ARCHIVE_DIR,
         columns=["item_slug", "day", "mean_price", "volume", "source"],
-        where="source = 'STEAMCOMMUNITY' OR source IS NULL")
+        where=f"(source = 'STEAMCOMMUNITY' OR source IS NULL) AND {_UNIVERSE}")
 
     items = con.sql(f"""
         SELECT item_slug, COUNT(*) AS row_count
@@ -286,7 +298,7 @@ def _run_horizon(fc, tdf, feat_cols, horizon, max_folds, arms,
     """
     target_col = f"target_return_{horizon}d"
     dates = np.array(sorted(tdf["date"].unique()))
-    folds = fc._compute_cv_splits(dates, purge_days=horizon)
+    folds = fc._compute_cv_splits(dates, purge_days=embargo_days(horizon))
     boosting_type = fc.BOOSTING_TYPE
     if not folds:
         logger.warning(f"  no folds for {horizon}d after purge gap")
@@ -438,8 +450,21 @@ def summarize(records):
             rel_width = float(((t["conf_width"] - c["conf_width"])
                                / c["conf_width"]).mean())
 
+            # Fold-clustered paired interval on the pinball difference,
+            # replacing the "wins on at least half the folds" condition this
+            # gate used until 2026-08-08. A win count is not a test: two arms
+            # differing only by seed clear it half the time. Lower pinball is
+            # better, so a SHIP needs the interval strictly below zero.
+            paired = paired_arm_contrasts(
+                {"control": fold_level_records(
+                    common, c["pinball_mean"], metric="pinball"),
+                 arm: fold_level_records(
+                     common, t["pinball_mean"], metric="pinball")},
+                base="control", value_key="pinball", scale=1.0,
+                higher_is_better=False)[arm]
+
             c1 = rel_gain >= GATE_MIN_REL_PINBALL_GAIN
-            c2 = folds_won >= (len(common) / 2)
+            c2 = paired["verdict"] == "positive"
             c3 = (not np.isfinite(rel_width)) or \
                 rel_width <= GATE_MAX_REL_WIDTH_INCREASE
             ship = bool(c1 and c2 and c3)
@@ -447,18 +472,20 @@ def summarize(records):
                 "ship": ship, "rel_pinball_gain": rel_gain,
                 "folds_won": folds_won, "n_folds": len(common),
                 "rel_conf_width_change": rel_width,
-                "gate": {"pinball_gain": c1, "folds_majority": c2,
+                "paired_pinball": paired,
+                "gate": {"pinball_gain": c1, "paired_interval": c2,
                          "width_no_regress": c3},
             }
             print(f"  -> {horizon}d {arm} vs control: "
                   f"pinball {rel_gain*100:+.2f}% "
                   f"(gate >= +{GATE_MIN_REL_PINBALL_GAIN*100:.1f}%) "
                   f"[{'PASS' if c1 else 'FAIL'}] | "
-                  f"folds won {folds_won}/{len(common)} "
+                  f"paired {format_paired(paired, unit='')} "
                   f"[{'PASS' if c2 else 'FAIL'}] | "
                   f"conf width {rel_width*100:+.2f}% "
                   f"(gate <= +{GATE_MAX_REL_WIDTH_INCREASE*100:.0f}%) "
-                  f"[{'PASS' if c3 else 'FAIL'}]")
+                  f"[{'PASS' if c3 else 'FAIL'}] | "
+                  f"folds won {folds_won}/{len(common)} (context, not a gate)")
             print(f"     VERDICT {horizon}d {arm}: "
                   f"{'SHIP' if ship else 'KEEP control'}")
 

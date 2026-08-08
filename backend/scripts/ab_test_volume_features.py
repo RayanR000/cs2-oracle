@@ -19,6 +19,22 @@ against the current dead feed.
 
 Usage:
     python scripts/ab_test_volume_features.py [--max-items 200] [--horizon 14]
+
+Embargo (added 2026-08-08):
+    This harness had **no purge gap at all** before that date: the fold split
+    was `train = every date <= window_end - 1`, so every training row within
+    `horizon` days of the boundary carried a label resolved from inside the
+    validation window. The train side now goes through production's own
+    `ItemForecaster._purge_overlapping_train_rows`, which embargoes
+    `embargo_days(horizon)` = `horizon + 13` days -- the label's resolved-anchor
+    support, not its nominal date. The validation window is untouched; purging
+    it would empty the 21-day window at h=30.
+
+    **Every delta this harness printed before 2026-08-08 is un-embargoed.**
+    How much that inflated them is not known here. The often-quoted
+    "+12.1pp unpurged -> +6.1pp purged" at h=30 is from the external review
+    (docs/research/2026-08-07-cs2-forecasting-research.md), describes an
+    event-calendar arm, and has never been replicated in this repo.
 """
 
 # The 13 shelved volume columns. The last two were never in the 47-column
@@ -68,7 +84,12 @@ import pandas as pd
 import lightgbm as lgb
 
 from database import SessionLocal
-from models.forecaster import ItemForecaster
+from backtest.paired_mde import format_paired, paired_arm_contrasts
+from backtest.walkforward_records import (
+    paired_records,
+    without_records,
+)
+from models.forecaster import ItemForecaster, phase_collapsed_sql_filter
 
 logging.basicConfig(
     level=logging.INFO,
@@ -77,6 +98,14 @@ logging.basicConfig(
 logger = logging.getLogger("ab_test_volume_features")
 
 ARCHIVE_DIR = Path(__file__).parent.parent.parent / "price-archive"
+
+# Production's item universe, spelled into every archive read this harness
+# makes. Before 2026-08-08 the `ab_test_*` family globbed the Parquet privately
+# and saw a universe production does not train on, so an A/B advised a model it
+# had not measured. The bid sources need no clause here: `aggregator_sync` is a
+# single ask feed and already excludes them. See `models/item_parser.py`.
+_UNIVERSE = phase_collapsed_sql_filter()
+
 
 # Correlation-prune threshold. Part of the frame fingerprint: it decides the
 # cached frame's column set, so changing it must invalidate the cache.
@@ -102,7 +131,8 @@ def _frame_fingerprint():
     """
     src = Path(__file__).parent.parent / "models" / "forecaster.py"
     h = hashlib.sha256(src.read_bytes())
-    h.update(repr((NEW_PRIMITIVES, CORR_PRUNE_THRESHOLD, VOLUME_LIVE_THROUGH, MIN_MEDIAN_PRICE)).encode())
+    h.update(repr((NEW_PRIMITIVES, CORR_PRUNE_THRESHOLD, VOLUME_LIVE_THROUGH,
+                   MIN_MEDIAN_PRICE, _UNIVERSE)).encode())
     return h.hexdigest()[:16]
 
 
@@ -173,11 +203,11 @@ def _build_frame_uncached(max_items):
             col_names = {r[0] for r in cols}
             if "source" in col_names:
                 pq_queries.append(
-                    f"SELECT item_slug, day, mean_price, volume FROM read_parquet('{pqf}') WHERE source = 'aggregator_sync'"
+                    f"SELECT item_slug, day, mean_price, volume FROM read_parquet('{pqf}') WHERE source = 'aggregator_sync' AND {_UNIVERSE}"
                 )
             else:
                 pq_queries.append(
-                    f"SELECT item_slug, day, mean_price, volume FROM read_parquet('{pqf}')"
+                    f"SELECT item_slug, day, mean_price, volume FROM read_parquet('{pqf}') WHERE {_UNIVERSE}"
                 )
         union_sql = " UNION ALL BY NAME ".join(pq_queries)
 
@@ -350,8 +380,11 @@ def run_evaluation(df, pruned, present_new, horizon_filter=None, arm_filter=None
                     logger.info(f"    [{config_name}] Skipping — no features present")
                     continue
                 target_col = f"target_return_{horizon}d"
-                # "date" rides along for the 200K row cap's sort below.
-                sub = tdf[available + [target_col, "price", "date"]]
+                # `item_id` rides along for the paired records' pairing key;
+                # `date` for the 200K row cap's sort below. Neither is a
+                # feature -- `available` is the feature list and the matrices
+                # are built from it alone.
+                sub = tdf[available + [target_col, "price", "date", "item_id"]]
 
                 directional_hits = 0
                 directional_total = 0
@@ -375,6 +408,7 @@ def run_evaluation(df, pruned, present_new, horizon_filter=None, arm_filter=None
                 interval_hits = 0
                 interval_total = 0
                 per_fold = []
+                records = []
 
                 VAL_WINDOW_DAYS = 21
                 step = 60
@@ -383,7 +417,9 @@ def run_evaluation(df, pruned, present_new, horizon_filter=None, arm_filter=None
                     if len(val_dates) < 7:
                         continue
 
-                    train_df = sub[tdf_days <= dates_dt[window_end - 1]]
+                    train_df = ItemForecaster._purge_overlapping_train_rows(
+                        sub[tdf_days <= dates_dt[window_end - 1]],
+                        val_dates[0], horizon)
                     val_df = sub[
                         (tdf_days >= dates_dt[window_end])
                         & (tdf_days <= dates_dt[window_end + len(val_dates) - 1])
@@ -516,6 +552,21 @@ def run_evaluation(df, pruned, present_new, horizon_filter=None, arm_filter=None
                     strict_ge1_hits += int(np.count_nonzero(_match & _nonflat & _ge1))
                     strict_ge1_total += int((_nonflat & _ge1).sum())
 
+                    # Paired records for the fold-clustered interval below.
+                    # The cohort is the harness's strictest one -- non-flat
+                    # actuals at >=$1 -- because that is the population
+                    # production serves, and it is arm-independent, so the two
+                    # arms pair row for row. `window_end` rather than a running
+                    # counter: a counter drifts the moment one arm skips a fold
+                    # the other kept.
+                    records.extend(paired_records(
+                        item_ids=val_df["item_id"].to_numpy(),
+                        forecast_dates=val_df["date"].to_numpy(),
+                        fold_id=window_end,
+                        keep=_nonflat & _ge1,
+                        direction_correct=_match,
+                    ))
+
                     if _ge1.any():
                         ge1_hits += int(np.count_nonzero(
                             (np.sign(np.nan_to_num(ar)) == np.sign(np.nan_to_num(p50_ret)))
@@ -569,12 +620,37 @@ def run_evaluation(df, pruned, present_new, horizon_filter=None, arm_filter=None
                         # Retained so the merge step can compute per-fold win
                         # counts between arms, not just the pooled delta.
                         "per_fold": per_fold,
+                        # The pairing input for the fold-clustered interval.
+                        "records": records,
                     }
                     result["improvement_over_baseline_pp"] = round(dir_acc - baseline_2class, 1)
                     results[horizon][config_name] = result
 
                     logger.info(f"      DirAcc={dir_acc:.1f}% ({directional_total:,} samples, "
                                 f"{result['improvement_over_baseline_pp']:.1f}pp above baseline)")
+
+            # Fold-clustered paired intervals, the harness's actual verdict.
+            # Until 2026-08-08 this reported a pooled `treatment - baseline`
+            # delta against a +/-0.5pp emoji threshold, which is not a test:
+            # the item-level MDE here is 2.21-3.69pp, so a 0.5pp "win" is
+            # inside the noise floor by a factor of five.
+            arms = {a: r.get("records", []) for a, r in results[horizon].items()
+                    if not a.startswith("_") and r.get("records")}
+            if "baseline" in arms and len(arms) > 1:
+                contrasts = paired_arm_contrasts(arms, base="baseline")
+                results[horizon]["_paired_vs_baseline"] = contrasts
+                for arm, paired in contrasts.items():
+                    logger.info(f"      paired {arm:<10} vs baseline: "
+                                f"{format_paired(paired)}")
+            else:
+                # `--arm` shards one arm per process, so a shard has nothing to
+                # contrast against. Say so: a missing verdict must not read as
+                # an absent effect. `merge_price_primitives_ab.py` pairs the
+                # shards at fold grain from `per_fold`.
+                logger.info(
+                    f"      paired: not computed — this run holds "
+                    f"{sorted(arms) or 'no'} arm(s). Merge the shards with "
+                    f"scripts/merge_price_primitives_ab.py for the verdict.")
 
         logger.info("\n" + "=" * 64)
         logger.info("SHIP DECISION SUMMARY (dir-acc %, treatment vs baseline vs placebo)")
@@ -737,12 +813,13 @@ def main():
     )
 
     if args.out:
-        Path(args.out).write_text(json.dumps(results, indent=2, default=str))
+        Path(args.out).write_text(
+            json.dumps(without_records(results), indent=2, default=str))
         logger.info(f"Wrote {args.out}")
         return 0
 
     print_comparison(results)
-    print(f"\n  JSON: {json.dumps(results, indent=2, default=str)}")
+    print(f"\n  JSON: {json.dumps(without_records(results), indent=2, default=str)}")
 
     return 0
 

@@ -4,8 +4,15 @@ Daily: append today's aggregator rows to the current year's Parquet files.
 
 Writes two Parquet files (prices partitioned by month to stay well under
 GitHub's 100MB-per-file limit; exchange-rates stays yearly, it's tiny):
-  prices-YYYY-MM.parquet       — item_slug, day, source, mean_price, volume
+  prices-YYYY-MM.parquet       — item_slug, day, source, mean_price, volume,
+                                 ingested_at
   exchange-rates-YYYY.parquet  — Currency exchange rates (flat: currency, rate, day)
+
+`ingested_at` is this run's wall clock, not `--date`: it records when the row
+arrived, which is the whole point of having it beside a `day` that says what the
+row describes. Backdating `--date` to re-export an old day therefore writes an
+old `day` with a present-day arrival, which is the truth. Rows written before
+2026-08-08 have none and never will. See `db/archive.py`.
 
 `median_price`, `min_price` and `max_price` are deliberately NOT written. The
 snapshot CSV carries one row per (item_slug, day, source) and has no median
@@ -136,12 +143,15 @@ def main():
                 print(f"Warning: --backfilled-csv path does not exist: {csv_path} — skipping OHLCV Parquet")
 
     # ── Write prices-YYYY-MM.parquet (OHLCV, all sources) ──────────────────
+    arrived = datetime.now(timezone.utc).replace(tzinfo=None)
+
     if snapshots_df is not None and not snapshots_df.empty:
         daily = snapshots_df.groupby(["item_slug", "day", "source"]).agg(
             mean_price=("price", "mean"),
             volume=("volume", "sum"),
         ).reset_index()
         daily["day"] = pd.to_datetime(daily["day"])
+        daily["ingested_at"] = arrived
         _append_parquet(out_dir / f"prices-{ym}.parquet", daily, ["item_slug", "day", "source"])
         print(f"Appended {len(daily)} OHLCV rows to prices-{ym}.parquet")
 
@@ -152,6 +162,7 @@ def main():
             volume=("volume", "sum"),
         ).reset_index()
         daily["day"] = pd.to_datetime(daily["day"])
+        daily["ingested_at"] = arrived
         _append_parquet(out_dir / f"prices-{ym}.parquet", daily, ["item_slug", "day", "source"])
         print(f"Appended {len(daily)} OHLCV rows to prices-{ym}.parquet (legacy path)")
 
@@ -231,6 +242,17 @@ def _append_parquet(path: Path, new_data: pd.DataFrame, dedup_keys: list):
                 if col in new_data.columns:
                     new_data[col] = pd.to_datetime(new_data[col])
             combined = pd.concat([existing, new_data], ignore_index=True)
+            # First arrival wins, before the dedup drops the row that carries
+            # it. `keep="last"` replaces an existing row wholesale, which is
+            # right for a corrected price and wrong for `ingested_at`: the
+            # value being corrected still became knowable on the day it first
+            # landed, and re-stamping it would date the whole month forward on
+            # any re-run. `min` skips NaT, so a row that predates the column
+            # takes the new timestamp rather than staying unknown.
+            if "ingested_at" in combined.columns:
+                combined["ingested_at"] = (combined
+                                           .groupby(dedup_keys, dropna=False)
+                                           ["ingested_at"].transform("min"))
             combined = combined.drop_duplicates(subset=dedup_keys, keep="last")
             _write_parquet(con, path, combined)
             print(f"  {path.name}: {len(new_data)} appended, {len(combined)} total")

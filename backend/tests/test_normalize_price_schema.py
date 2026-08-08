@@ -9,6 +9,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
+from db.archive import CANONICAL_PRICE_COLUMNS  # noqa: E402
 from scripts.normalize_price_schema import (  # noqa: E402
     main,
     needs_rewrite,
@@ -17,7 +18,9 @@ from scripts.normalize_price_schema import (  # noqa: E402
     verify,
 )
 
-CANONICAL = ["item_slug", "day", "source", "mean_price", "volume"]
+# Taken from the module rather than spelled out: this list is the thing under
+# test, and a copy of it here only ever tests that the copy was updated.
+CANONICAL = list(CANONICAL_PRICE_COLUMNS)
 
 
 def _legacy(n=3, day="2025-06-01"):
@@ -117,6 +120,29 @@ def test_added_source_is_null_not_a_label(archive):
             f"SELECT count(*) FROM read_parquet("
             f"'{archive}/prices-2025.parquet') WHERE source IS NULL"
         ).fetchone()[0] == 3
+    finally:
+        con.close()
+
+
+def test_added_ingested_at_is_a_typed_null(archive):
+    """The materialised column has to come back as the type
+    `prices_relation` casts it to, or a migrated file disagrees with its own
+    reader. It used to be NULLed to VARCHAR unconditionally, which was correct
+    only while `source` was the one column ever missing.
+
+    NULL means "arrival unknown". It must never be read as "arrived on `day`":
+    every row in this file predates the column, and 13 years of it were written
+    by backfill writers whose arrival was nothing like their `day`.
+    """
+    normalize_archive(archive, apply=True)
+    path = archive / "prices-2025.parquet"
+
+    assert dict(_schema(path))["ingested_at"] == "TIMESTAMP"
+    con = duckdb.connect()
+    try:
+        assert con.sql(
+            f"SELECT count(*) FROM read_parquet('{path}') "
+            f"WHERE ingested_at IS NULL").fetchone()[0] == 3
     finally:
         con.close()
 

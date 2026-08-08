@@ -50,7 +50,9 @@ import pandas as pd
 import lightgbm as lgb
 
 import models.forecaster as fmod
-from models.forecaster import ItemForecaster
+from backtest.paired_mde import format_paired, paired_arm_contrasts
+from backtest.walkforward_records import fold_level_records
+from models.forecaster import ItemForecaster, embargo_days
 
 logging.basicConfig(level=logging.INFO,
                     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
@@ -95,7 +97,7 @@ def load_params(horizon, q):
 def run_horizon(fc, tdf, feat_cols, horizon, max_folds):
     target = f"target_return_{horizon}d"
     dates = np.array(sorted(tdf["date"].unique()))
-    folds = fc._compute_cv_splits(dates, purge_days=horizon)
+    folds = fc._compute_cv_splits(dates, purge_days=embargo_days(horizon))
     boosting = fc.BOOSTING_TYPE
     if not folds:
         logger.warning(f"  no folds for {horizon}d")
@@ -189,18 +191,31 @@ def summarize(records):
         gain = ((c.pinball_q50 - t.pinball_q50) / c.pinball_q50).mean()
         won = int((t.pinball_q50 < c.pinball_q50).sum())
         da_pp = 100 * (t.da.mean() - c.da.mean())
+        # Fold-clustered paired interval on the pinball difference, replacing
+        # the "wins on at least half the folds" condition this gate used until
+        # 2026-08-08. A win count is not a test: two arms differing only by
+        # seed clear it half the time. Lower pinball is better, so a SHIP needs
+        # the interval strictly below zero.
+        paired = paired_arm_contrasts(
+            {"flat": fold_level_records(common, c.pinball_q50, metric="pinball"),
+             "decay": fold_level_records(common, t.pinball_q50, metric="pinball")},
+            base="flat", value_key="pinball", scale=1.0,
+            higher_is_better=False)["decay"]
+
         g1 = gain >= GATE_MIN_REL_PINBALL_GAIN
-        g2 = won >= len(common) / 2
+        g2 = paired["verdict"] == "positive"
         g3 = da_pp >= -GATE_MAX_DA_REGRESSION_PP
         ship = bool(g1 and g2 and g3)
         # Stopping-round stability: the defect that motivated this change.
         sd_c, sd_t = c.iter_q50.std(), t.iter_q50.std()
         verdicts[h] = {"ship": ship, "rel_gain": gain, "folds_won": won,
                        "n_folds": len(common), "da_delta_pp": da_pp,
+                       "paired_pinball": paired,
                        "iter_q50_sd_flat": sd_c, "iter_q50_sd_decay": sd_t}
         print(f"  -> {h}d: q50 pinball {gain*100:+.2f}% [{'PASS' if g1 else 'FAIL'}] | "
-              f"folds {won}/{len(common)} [{'PASS' if g2 else 'FAIL'}] | "
-              f"DA {da_pp:+.2f}pp [{'PASS' if g3 else 'FAIL'}]")
+              f"paired {format_paired(paired, unit='')} [{'PASS' if g2 else 'FAIL'}] | "
+              f"DA {da_pp:+.2f}pp [{'PASS' if g3 else 'FAIL'}] | "
+              f"folds {won}/{len(common)} (context, not a gate)")
         print(f"     q50 stopping-round sd: flat={sd_c:.0f} decay={sd_t:.0f}")
         print(f"     VERDICT {h}d: {'SHIP decay' if ship else 'KEEP flat'}")
     return df, verdicts

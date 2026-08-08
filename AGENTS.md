@@ -21,7 +21,7 @@ one q50 model per horizon, with the served band calibrated by split conformal.
 Backend, from `backend/`, through the venv (`venv/bin/python`, Python 3.13 locally / 3.11 in CI):
 
 - `venv/bin/python -m pytest tests/test_<name>.py -q` — targeted run. Prefer this.
-- `venv/bin/python -m pytest tests/ -q` — full suite: **1,258 tests** (2026-08-07), ~45s of
+- `venv/bin/python -m pytest tests/ -q` — full suite: **1,466 tests** (2026-08-08), ~45s of
   collection before the first one runs. Scope it to `tests/`: a bare `pytest -q` also collects
   `scripts/test_social_signal.py`, which aborts the run on a missing local `thefuzz`.
 - `venv/bin/uvicorn main:app --port 8000` — the API the dashboard fetches.

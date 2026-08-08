@@ -13,9 +13,13 @@ rather than failing on them (see `db/archive.py` for the demonstration):
    have a time component), so the distinction carries no information.
 3. **`prices-2026-08.parquet` orders its columns differently** from the months
    before it.
+4. **No file written before 2026-08-08 has `ingested_at`.** That one is not
+   drift — the column did not exist. It is materialised as a typed NULL for the
+   same reason `source` is, and a NULL there means "arrival unknown", never
+   "arrived on `day`". See `db/archive.py`.
 
 This rewrites each file into `db/archive.CANONICAL_PRICE_COLUMNS` order with
-`day` as `DATE`, materialising `source` as a **typed NULL** where it is absent.
+`day` as `DATE`, materialising absent columns as **typed NULLs**.
 
 `source` stays NULL for pre-2026 rows on purpose. That series predates the
 column, and `scripts/init_local_db.py` documents `source IS NULL` and
@@ -52,6 +56,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from db.archive import (  # noqa: E402
     CANONICAL_PRICE_COLUMNS,
+    COLUMN_TYPES,
     RANGE_PRICE_COLUMNS,
     canonical_order,
 )
@@ -125,6 +130,10 @@ def _fingerprint(con, relation: str, cols: Sequence[str]) -> tuple:
         # Counted, not summed: this is what proves a NULLed-in source column
         # stayed NULL and a populated one kept every label.
         parts += ["count(source)", "count(DISTINCT source)"]
+    if "ingested_at" in cols:
+        # Same reasoning as `source`. A rewrite must not invent an arrival
+        # time for a row that has none, nor drop one from a row that has.
+        parts += ["count(ingested_at)", "max(ingested_at)"]
     for c in RANGE_PRICE_COLUMNS:
         if c in cols:
             parts.append(f"sum({c}::DECIMAL(24,8))")
@@ -163,7 +172,13 @@ def normalize_file(con, path: Path, apply: bool) -> bool:
 
     projection = ", ".join(
         f"CAST(day AS {DAY_TYPE}) AS day" if c == "day"
-        else (f'"{c}"' if c in names else f"NULL::VARCHAR AS {c}")
+        # A materialised column is NULLed to the type `prices_relation` will
+        # read it back as. It used to be VARCHAR unconditionally, which was
+        # right only as long as `source` was the sole column ever missing;
+        # `ingested_at` is a TIMESTAMP, and a VARCHAR NULL in its place makes
+        # the migrated file disagree with the reader's own CAST.
+        else (f'"{c}"' if c in names
+              else f"NULL::{COLUMN_TYPES[c]} AS {c}")
         for c in want
     )
     tmp = path.with_suffix(".parquet.tmp")
