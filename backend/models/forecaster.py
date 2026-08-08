@@ -3619,8 +3619,8 @@ class ItemForecaster:
         return vol.astype(np.float32)
 
     def train(self, max_rows: int = 300_000,
-              max_feature_rows: int = 100_000,
-              min_median_price: Optional[float] = None,
+              max_feature_rows: int = 1_200_000,
+              min_median_price: Optional[float] = 1.0,
               per_item_row_sampling: bool = False):
         logger.info("=" * 60)
         logger.info("TRAINING LIGHTGBM FORECASTER (ensemble, HP search, walk-forward)")
@@ -3634,15 +3634,20 @@ class ItemForecaster:
         # the latter was ever passed, so build_training_data silently kept its
         # own 100_000 default and the caller's 700_000 did nothing.
         #
-        # They are deliberately not unified. Feeding max_rows to both would
-        # raise coverage and make the per-horizon cap start binding at the same
-        # time, so one number would move two things at once. Measured
-        # 2026-08-05: at 700_000 (646 items) training costs 468.7s against
-        # 104.6s at 100_000 (99 items) — more than the 462s the pre-rewrite
-        # 40-model grid cost, i.e. raising coverage here spends the entire
-        # minimal-model saving to buy 12% of the item pool. Hence the default
-        # stays at the measured status quo; see
-        # docs/changelog/2026-08-04-minimal-model-results.md.
+        # They are deliberately not unified, even though production now runs
+        # both at 1_200_000: feeding max_rows to both would make one number
+        # move coverage and the per-horizon cap at once, and the caller sets
+        # them from two separate constants for that reason.
+        #
+        # max_feature_rows and min_median_price, by contrast, ARE one setting
+        # and default together. At the $1 floor the served cohort is 926 items
+        # / 993,464 item-days, so this budget covers it with no subsample —
+        # which is the point, because _stratified_item_subsample's seed alone
+        # moves mean_classifier_acc_ge1 by sd 1.5-3.1pp. Raising the budget
+        # without the floor spends 12x the wall-clock on the pool's tier mix;
+        # setting the floor without the budget leaves a smaller draw rather
+        # than none. See docs/changelog/2026-08-08-training-price-floor-shipped.md
+        # and docs/changelog/2026-08-04-minimal-model-results.md.
         df = self.build_training_data(days_back=1460, backfilled_only=True,
                                       max_feature_rows=max_feature_rows,
                                       min_median_price=min_median_price)

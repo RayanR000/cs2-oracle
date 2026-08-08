@@ -12,8 +12,10 @@ DONE (2026-08-08 — `docs/changelog/2026-08-08-phase-collapsed-names-dropped.md
 re-run" item closed the same day —
 `docs/changelog/2026-08-08-embargo-discontinuity-measured.md`), and step 6 is DONE (2026-08-08 —
 `docs/changelog/2026-08-08-frozen-price-runs-dropped-from-labels.md`, which also refuted the two
-prevalence figures step 6 was justified on and surfaced the un-taken MA-feed voting fix).
-Steps 7–11 are NOT STARTED. **6b** is DONE (verified absent, 2026-08-08) and **R11** and **R12**
+prevalence figures step 6 was justified on and surfaced the un-taken MA-feed voting fix), and
+**step 7 is DONE** (2026-08-08 — `docs/changelog/2026-08-08-training-price-floor-shipped.md`,
+shipped on measurability alone, with R19's supposed gate on it withdrawn).
+Steps 8–11 are NOT STARTED. **6b** is DONE (verified absent, 2026-08-08) and **R11** and **R12**
 are DECLINED (2026-08-08 —
 `docs/changelog/2026-08-08-r11-r12-declined-and-r18-r19-recosted.md`, which also re-costed R18
 and R19 and opened **5d**, a blocker on the Steam listing backfill that R11, R13 and 5c all
@@ -482,13 +484,25 @@ don't.
 
 ## Retrain required (steps 7–11)
 
-### 7. Ship `TRAIN_MIN_MEDIAN_PRICE` at a `TRAIN_FEATURE_ROWS ≥ 1.0M` budget — NOT STARTED; **re-derived 2026-08-08, accuracy claim withdrawn**
+### 7. Ship `TRAIN_MIN_MEDIAN_PRICE` at a `TRAIN_FEATURE_ROWS ≥ 1.0M` budget — **DONE 2026-08-08**, on measurability alone
 
-- **Status:** the re-derivation the entry demanded is **DONE**
-  (`docs/changelog/2026-08-08-per-fold-price-filter-rederived.md`, plan stage 1). The knob is
-  still **NOT STARTED** as a shipping decision, and the decision now rests on **measurability
-  alone**.
-- **Do:** set the knob. The per-fold re-derivation is no longer a precondition; it has been run.
+- **Status: SHIPPED** — `docs/changelog/2026-08-08-training-price-floor-shipped.md`. Defaults
+  moved together: `DEFAULT_TRAIN_MIN_MEDIAN_PRICE = 1.0`, `DEFAULT_TRAIN_FEATURE_ROWS =
+  1_200_000`, `TRAIN_HORIZON_MAX_ROWS = 700_000 → 1_200_000`, and `ItemForecaster.train`'s own
+  defaults mirrored so a bare `train()` is production's config. The re-derivation the entry
+  demanded was done first (`docs/changelog/2026-08-08-per-fold-price-filter-rederived.md`,
+  plan stage 1). **Shipped on the measurability argument only** — the accuracy claim below is
+  withdrawn and was not restored.
+- **1.2M, not 1.0M.** The cohort is 993,464 rows, so 1.0M leaves 0.7% headroom before
+  `_stratified_item_subsample` re-engages and the draw returns over a *smaller* universe. The
+  round number in this entry's title was the wrong one to ship.
+- **`TRAIN_HORIZON_MAX_ROWS` had to move too**, which this entry did not anticipate: the
+  per-horizon frame is 958,289 rows on the ≥ $1 universe, so the old 700K cap would have
+  started binding the moment the floor landed — one change silently moving two things, the
+  exact coupling `forecast_prices.py` kept the two constants apart to prevent.
+- **Stage 2 (the anchored filter) was deliberately not shipped with it.** Stage 1 measured the
+  look-ahead at −0.004pp [−0.664, +0.851] at 30d, so it is a cleanliness change and gets its
+  own diff. Still open.
 - **Why — accuracy: WITHDRAWN.** The **+3.50pp [+1.56, +5.98] at 30d** does not reproduce. The
   same contrast (`ge1_full` vs `prod_a`, now `full_sample` vs `prod_pool`) reads **+1.642pp
   [−0.809, +4.505], null**, and the `prod_pool_b` placebo puts this instrument's item-draw
@@ -513,11 +527,16 @@ don't.
   universe and the row budget buying ≥$1 breadth (the plan's B1 and B2), and it buys no
   accuracy. `_fold_median_price_items` exists in `models/forecaster.py` as a research helper;
   `build_training_data` deliberately does not call it.
-- **Still gated by R19** (multiplicity deflation), unaffected by the re-derivation.
+- **R19 did not gate this, and the earlier claim that it did is withdrawn.** R19 deflates a
+  positive for multiplicity; the re-derivation removed the positive, and R19's own entry says
+  so — *"this is now bookkeeping over an all-null set rather than step 7's entry criterion."*
+  A determinism argument has no test statistic to deflate. R19 remains worth doing on its own
+  terms.
 - **Touches:** `TRAIN_MIN_MEDIAN_PRICE` and `TRAIN_FEATURE_ROWS` in
   `backend/scripts/forecast_prices.py`; `_filter_by_median_price` in
   `backend/models/forecaster.py`.
-- **Effort:** small; **+7 min Monday-only**.
+- **Effort:** small; **+7 min Monday-only** — and unverified in CI as of shipping. No retrain
+  was run against production; the next `mode=full` Monday is the first real read.
 - **Unblocks:** a training cohort that matches the served one. §10 Tier 1 #7.
 
 ### 8. Build a hedonic market index — NOT STARTED

@@ -35,19 +35,32 @@ logger = logging.getLogger("forecast_prices")
 MODEL_VERSION = "lgbm-v3"
 
 # Rows kept BEFORE feature engineering, which is what decides how many whole
-# item histories the model learns from: ~1,083 archive rows per item, so 100_000
-# buys 99 of the 5,377-item pool. Kept at the measured status quo rather than
-# raised, because coverage is bought at a steep price — 400_000 (372 items) costs
-# 2.2x the training wall-clock and 700_000 (646 items) costs 4.5x, the latter
-# exceeding the pre-rewrite 40-model grid. Raise it only against a measured
-# accuracy gain. Env-configured to match SKIP_REGIMES/SKIP_CV rather than a
-# flag, because this script parses argv as a plain set.
-DEFAULT_TRAIN_FEATURE_ROWS = 100_000
+# item histories the model learns from. Raised 100_000 -> 1_200_000 on
+# 2026-08-08 together with the price floor below, because the two are one
+# setting: at the floor the served cohort is 926 items / 993,464 item-days, so
+# this budget covers it outright and _stratified_item_subsample never runs.
+# That is the whole point — the subsample's hardcoded seed=42 moves
+# mean_classifier_acc_ge1 by sd 1.5-3.1pp across 8 draws, and no draw is the
+# only setting that removes that variance rather than shrinking it. The
+# 4.5x-wall-clock objection this default used to carry was priced as a daily
+# cost; the workflow retrains Mondays only. Raising the floor means re-measuring
+# the cohort's row count here. See
+# docs/changelog/2026-08-08-training-price-floor-shipped.md.
+# Env-configured to match SKIP_REGIMES/SKIP_CV rather than a flag, because this
+# script parses argv as a plain set.
+DEFAULT_TRAIN_FEATURE_ROWS = 1_200_000
 
-# Rows per horizon AFTER feature engineering. A different knob: at the feature
-# budget above it never binds, and it is left where it was so that changing
-# coverage does not silently also change each horizon's slice.
-TRAIN_HORIZON_MAX_ROWS = 700_000
+# Rows per horizon AFTER feature engineering. A different knob, held at or above
+# the feature budget so it stays non-binding — the per-horizon frame measured
+# 958,289 rows on the >= $1 universe, so the old 700_000 would have started
+# binding the moment the floor shipped and one change would have moved two
+# things. Raised to keep the floor the only treatment, not to buy coverage.
+TRAIN_HORIZON_MAX_ROWS = 1_200_000
+
+# Median-price floor on the training universe, matching
+# api/serving_policy.py::MIN_SERVED_PRICE_USD so the model trains on the cohort
+# it serves. Inseparable from DEFAULT_TRAIN_FEATURE_ROWS above.
+DEFAULT_TRAIN_MIN_MEDIAN_PRICE = 1.0
 
 # Share of the directional classifier's training weight placed on the >= $1
 # cohort. None keeps the pre-2026-08-06 behaviour exactly: no tier weighting,
@@ -141,31 +154,48 @@ def _train_feature_rows() -> int:
 def _train_min_median_price() -> Optional[float]:
     """Median-price floor on the training universe, or None for no filter.
 
-    Default None keeps the universe byte-identical to the pre-2026-08-07 model.
+    Shipped at $1 on 2026-08-08 — step 7 of
+    docs/research/2026-08-07-next-steps.md. The justification is
+    **measurability, not accuracy**: with DEFAULT_TRAIN_FEATURE_ROWS the floor
+    covers the served cohort with no subsample, so the item draw is removed by
+    construction rather than shrunk. The +3.50pp at 30d that once also
+    justified it re-derives to +1.642pp [-0.809, +4.505], null, inside a
+    +/-3-4pp noise floor, and must not be cited
+    (docs/changelog/2026-08-08-per-fold-price-filter-rederived.md).
+
     Set with TRAIN_FEATURE_ROWS, not instead of it: the floor decides *which*
-    items the budget may buy, the budget decides how many. A floor of 1.0 with a
-    budget above ~1.0M covers the whole >= $1 cohort (926 items) with no
-    subsample, which is the only configuration that removes item-draw variance
-    rather than merely shrinking it.
+    items the budget may buy, the budget decides how many. A floor under too
+    small a budget re-introduces the draw over a smaller universe, which is
+    worse than either alone.
+
+    An unparseable value keeps the default floor rather than disabling it — a
+    typo must not silently widen the training universe back to the pool. A
+    value <= 0 is the deliberate escape hatch to the pre-2026-08-08 behaviour.
     """
     raw = os.environ.get("TRAIN_MIN_MEDIAN_PRICE")
     if not raw:
-        return None
-    try:
-        floor = float(raw)
-    except ValueError:
-        logger.warning(
-            f"TRAIN_MIN_MEDIAN_PRICE={raw!r} is not a number; no price floor"
-        )
-        return None
-    if floor <= 0:
-        logger.warning(
-            f"TRAIN_MIN_MEDIAN_PRICE={floor} is not positive; no price floor"
-        )
-        return None
+        floor = DEFAULT_TRAIN_MIN_MEDIAN_PRICE
+    else:
+        try:
+            floor = float(raw)
+        except ValueError:
+            logger.warning(
+                f"TRAIN_MIN_MEDIAN_PRICE={raw!r} is not a number; keeping the "
+                f"default floor of ${DEFAULT_TRAIN_MIN_MEDIAN_PRICE:g}"
+            )
+            floor = DEFAULT_TRAIN_MIN_MEDIAN_PRICE
+        else:
+            if floor <= 0:
+                logger.warning(
+                    f"TRAIN_MIN_MEDIAN_PRICE={floor} disables the price floor: "
+                    f"training on the pooled universe, where the row budget "
+                    f"buys the pool's tier mix (44% stickers and graffiti at a "
+                    f"$0.03 median) and the item draw returns"
+                )
+                return None
     logger.info(
-        f"TRAIN_MIN_MEDIAN_PRICE override: training universe restricted to "
-        f"items with median price >= ${floor:g}"
+        f"Training universe restricted to items with median price >= "
+        f"${floor:g} (default ${DEFAULT_TRAIN_MIN_MEDIAN_PRICE:g})"
     )
     return floor
 

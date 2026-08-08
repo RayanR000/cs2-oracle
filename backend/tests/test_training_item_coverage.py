@@ -10,11 +10,17 @@ The fix is two named budgets, not one shared number:
   max_feature_rows  bounds the frame BEFORE feature engineering -> item coverage
   max_rows          caps each horizon's slice AFTER it
 
-Unifying them would move both with one knob. It would also raise coverage
-sharply: measured 2026-08-05, 700_000 feature rows (646 items) costs 468.7s
-against 104.6s at 100_000 (99 items), exceeding the 462s the pre-rewrite
-40-model grid cost. So the default is pinned to the measured status quo and
-these tests guard the wiring, not a hoped-for improvement.
+Unifying them would move both with one knob, which is why they stay separate
+even now that they hold the same value.
+
+Both defaults moved on 2026-08-08 (step 7): the budget to 1_200_000 and the
+median-price floor to $1, together, because they are one setting. At the floor
+the served cohort is 926 items / 993,464 item-days, so that budget covers it
+with no subsample — and the subsample is what these tests were originally
+written around. The justification is measurability, not accuracy: the draw's
+own seed moves `mean_classifier_acc_ge1` by sd 1.5-3.1pp, and the +3.50pp that
+once also justified the floor does not reproduce
+(`docs/changelog/2026-08-08-per-fold-price-filter-rederived.md`).
 """
 from __future__ import annotations
 
@@ -42,11 +48,32 @@ def test_train_forwards_the_feature_budget():
     )
 
 
-def test_feature_budget_default_is_the_measured_status_quo():
+def test_feature_budget_default_covers_the_served_cohort_outright():
+    """Shipped 2026-08-08: the budget must clear the >= $1 cohort's row count.
+
+    Paired with the $1 floor, 1.2M covers the 926-item / 993,464-row served
+    cohort with no subsample at all. Dropping below ~1.0M re-engages
+    `_stratified_item_subsample` over the *filtered* universe, which is a
+    smaller draw rather than no draw — the failure mode the floor exists to
+    remove. Raise the floor and this number has to be re-measured with it.
+    """
     sig = inspect.signature(ItemForecaster.train)
-    assert sig.parameters["max_feature_rows"].default == 100_000, (
-        "raising this default changes training wall-clock ~linearly in rows "
-        "and must be justified by a measured accuracy gain"
+    assert sig.parameters["max_feature_rows"].default == 1_200_000, (
+        "the feature budget and the median-price floor are one setting; "
+        "changing either alone leaves an item draw in the training set"
+    )
+
+
+def test_price_floor_default_matches_the_served_cohort():
+    """`train()` bare must be production's configuration, floor included.
+
+    A bare `train()` that raised the budget but not the floor would spend 12x
+    the wall-clock buying the pool's tier mix — 44% stickers and graffiti at a
+    $0.03 median — which is the opposite of what the budget was raised for.
+    """
+    sig = inspect.signature(ItemForecaster.train)
+    assert sig.parameters["min_median_price"].default == 1.0, (
+        "the budget default assumes the floor; unset, it buys pooled breadth"
     )
 
 
@@ -81,10 +108,10 @@ def test_train_forwards_the_actual_budget_value(monkeypatch):
 def test_the_per_horizon_cap_does_not_leak_into_coverage(monkeypatch):
     """max_rows must not reach the subsample.
 
-    This is the regression that would silently 4.5x the daily retrain: the
-    production caller passes max_rows=700_000, so if that value reaches
-    build_training_data the budget jumps from 99 items to 646 with no code
-    change visible at the call site.
+    The two budgets now sit at the same value in production, so this test
+    passes a deliberately different max_rows: with both at 1.2M a leak would
+    be invisible, and the separation is the property under test, not the
+    numbers.
     """
     seen = {}
 
@@ -101,7 +128,7 @@ def test_the_per_horizon_cap_does_not_leak_into_coverage(monkeypatch):
     with pytest.raises(_Abort):
         ItemForecaster.train(forecaster, max_rows=700_000)
 
-    assert seen.get("max_feature_rows") == 100_000, (
+    assert seen.get("max_feature_rows") == 1_200_000, (
         f"max_rows leaked into coverage: subsample got "
         f"{seen.get('max_feature_rows')!r} when only max_rows was passed"
     )
@@ -191,17 +218,21 @@ class TestMedianPriceFloor:
         assert len(out) == len(frame)
 
     def test_build_training_data_exposes_and_defaults_to_no_filter(self):
+        """The lower-level builder keeps the pool; only `train()` ships a floor.
+
+        Every direct caller of `build_training_data` is a test or a research
+        harness choosing its own universe deliberately. Defaulting a floor here
+        would change what those arms measure without touching their code —
+        production reaches it through `train()`, which does default the floor.
+        """
         sig = inspect.signature(ItemForecaster.build_training_data)
         assert "min_median_price" in sig.parameters
-        assert sig.parameters["min_median_price"].default is None, (
-            "the default universe must stay the pool, or this lands as a "
-            "silent production change"
-        )
+        assert sig.parameters["min_median_price"].default is None
 
     def test_train_exposes_and_forwards_the_floor(self):
         sig = inspect.signature(ItemForecaster.train)
         assert "min_median_price" in sig.parameters
-        assert sig.parameters["min_median_price"].default is None
+        assert sig.parameters["min_median_price"].default == 1.0
         assert "min_median_price=min_median_price" in inspect.getsource(
             ItemForecaster.train)
 
@@ -296,15 +327,40 @@ class TestTrainMinMedianPriceEnv:
         from scripts.forecast_prices import _train_min_median_price
         return _train_min_median_price
 
-    def test_none_when_unset(self, monkeypatch):
+    def test_default_when_unset(self, monkeypatch):
+        from scripts.forecast_prices import DEFAULT_TRAIN_MIN_MEDIAN_PRICE
         monkeypatch.delenv("TRAIN_MIN_MEDIAN_PRICE", raising=False)
-        assert self._fn()() is None
+        assert self._fn()() == DEFAULT_TRAIN_MIN_MEDIAN_PRICE
 
     def test_override_is_honoured(self, monkeypatch):
-        monkeypatch.setenv("TRAIN_MIN_MEDIAN_PRICE", "1.0")
-        assert self._fn()() == 1.0
+        monkeypatch.setenv("TRAIN_MIN_MEDIAN_PRICE", "5.0")
+        assert self._fn()() == 5.0
 
-    @pytest.mark.parametrize("bad", ["", "dollars", "0", "-1"])
-    def test_bad_values_disable_the_floor(self, monkeypatch, bad):
+    @pytest.mark.parametrize("bad", ["", "dollars"])
+    def test_unparseable_values_keep_the_default_floor(self, monkeypatch, bad):
+        """A typo must not silently widen the training universe.
+
+        This flipped when the floor shipped: while the default was None a bad
+        value could only fall back to "no filter", so it was indistinguishable
+        from the default. Now it is the difference between the served cohort
+        and the pool, and falling back to the pool is the dangerous direction.
+        """
+        from scripts.forecast_prices import DEFAULT_TRAIN_MIN_MEDIAN_PRICE
         monkeypatch.setenv("TRAIN_MIN_MEDIAN_PRICE", bad)
+        assert self._fn()() == DEFAULT_TRAIN_MIN_MEDIAN_PRICE
+
+    @pytest.mark.parametrize("off", ["0", "-1"])
+    def test_non_positive_is_the_escape_hatch_to_the_pooled_universe(
+            self, monkeypatch, off):
+        """The one way back to the pre-2026-08-08 universe, and it is explicit."""
+        monkeypatch.setenv("TRAIN_MIN_MEDIAN_PRICE", off)
         assert self._fn()() is None
+
+    def test_the_production_default_matches_the_served_floor(self):
+        """The training floor tracks what the product actually serves."""
+        from scripts.forecast_prices import DEFAULT_TRAIN_MIN_MEDIAN_PRICE
+        from api.serving_policy import MIN_SERVED_PRICE_USD
+        assert DEFAULT_TRAIN_MIN_MEDIAN_PRICE == MIN_SERVED_PRICE_USD, (
+            "training on a different cohort than the one served is the "
+            "train/serve gap this knob closed"
+        )

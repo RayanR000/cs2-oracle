@@ -18,9 +18,11 @@ Below the 2,000-row floor the split fell through to `tdf.iloc[:int(len*0.8)]`,
 which is not a thinner version of the same thing: validation stops being the
 recent 30 days and becomes the last 20% of the date-sorted frame — roughly ten
 months. Early stopping, the Optuna objective and the classifier's stopping set
-are all scored on that window. Measured at the production default of
+are all scored on that window. Measured at the then-production default of
 `TRAIN_FEATURE_ROWS=100_000`, three of four horizons took that path; only a 6x
-budget escaped it.
+budget escaped it. **The default is now 1_200_000** (2026-08-08), a 12x budget,
+so production should clear the floors on its own — the widening is the guard
+for a thin frame, not the routine path it was.
 
 The fix widens the calendar window backwards until it clears the floors, which
 keeps validation a recent contiguous window. The positional split survives only
