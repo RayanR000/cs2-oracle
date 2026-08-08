@@ -19,6 +19,22 @@ on:
           docs/changelog/2026-08-06-price-archive-compaction.md
         type: boolean
         default: false
+      normalize_schema:
+        description: >
+          One-time: give every prices-*.parquet the same schema — materialise
+          `source` on the pre-2026 files, cast `day` to DATE, canonical column
+          order. Fixes a plain glob read silently dropping `source`. Idempotent
+          — safe to leave off, safe to re-run. See
+          docs/changelog/2026-08-07-archive-schema-and-keys.md
+        type: boolean
+        default: false
+      backfill_ops_slug:
+        description: >
+          One-time: stamp item_slug onto the existing ops/*.parquet rows so a
+          forecast can be joined to its price history without Supabase. New
+          rows already carry it. Idempotent. Needs SUPABASE_DATABASE_URL.
+        type: boolean
+        default: false
 
 defaults:
   run:
@@ -109,6 +125,30 @@ jobs:
         working-directory: ./backend
         run: >
           python scripts/compact_price_archive.py
+          --archive-dir ../archive/price-archive
+          --apply
+
+      # After compaction (which drops columns) and before the append, so the
+      # day's rows land on the canonical schema rather than being written and
+      # then rewritten. append_to_parquet.py already emits this shape, so a
+      # normalized archive stays normalized without this step running again.
+      - name: Normalize the price schema (one-time, manual)
+        if: inputs.normalize_schema
+        working-directory: ./backend
+        run: >
+          python scripts/normalize_price_schema.py
+          --archive-dir ../archive/price-archive
+          --apply
+
+      - name: Backfill item_slug on the ops tables (one-time, manual)
+        if: inputs.backfill_ops_slug
+        working-directory: ./backend
+        env:
+          DATABASE_URL: ${{ secrets.SUPABASE_DATABASE_URL }}
+          ENVIRONMENT: production
+          DEBUG: false
+        run: >
+          python scripts/backfill_ops_item_slug.py
           --archive-dir ../archive/price-archive
           --apply
 

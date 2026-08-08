@@ -25,6 +25,7 @@ Usage:
 """
 
 import argparse
+import os
 import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -36,6 +37,7 @@ from sqlalchemy import text
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from database import engine
+from db.archive import canonical_order
 
 
 FETCH_TODAY_SQL = """
@@ -175,21 +177,65 @@ def main():
     print(f"Done: {args.date}")
 
 
+#: Written as Parquet DATE, not TIMESTAMP. Every `day` in the archive is
+#: midnight-truncated, so the time component was only ever a source of type
+#: drift between files — `prices-2013..2025` hold TIMESTAMP and the monthly
+#: files TIMESTAMP_NS, which a glob read has to reconcile at every call site.
+DATE_COLUMNS = ("day",)
+
+
+def _write_parquet(con, path: Path, frame: pd.DataFrame):
+    """Write *frame* in canonical column order with DATE-typed day columns.
+
+    Goes through DuckDB rather than `DataFrame.to_parquet` because pandas has
+    no date dtype: a datetime64 column always lands as TIMESTAMP. Written to a
+    temp file and moved into place so a crash mid-write cannot truncate the
+    month's archive.
+    """
+    ordered = canonical_order(frame.columns)
+    projection = ", ".join(
+        f'CAST("{c}" AS DATE) AS "{c}"' if c in DATE_COLUMNS else f'"{c}"'
+        for c in ordered
+    )
+    tmp = path.with_suffix(".parquet.tmp")
+    escaped = str(tmp).replace("'", "''")
+    con.register("_append_out", frame[ordered])
+    try:
+        con.sql(f"COPY (SELECT {projection} FROM _append_out) "
+                f"TO '{escaped}' (FORMAT PARQUET, COMPRESSION SNAPPY)")
+        os.replace(tmp, path)
+    finally:
+        con.unregister("_append_out")
+        tmp.unlink(missing_ok=True)
+
+
 def _append_parquet(path: Path, new_data: pd.DataFrame, dedup_keys: list):
     """Append new_data to an existing Parquet file, deduplicating on dedup_keys."""
     con = duckdb.connect()
     try:
         if path.exists():
             existing = con.sql(f"SELECT * FROM read_parquet('{path}')").fetchdf()
-            # Migrate old schema: add source column if missing
+            # Migrate old schema: materialise source if the file predates it.
+            # NULL, not a label: `init_local_db.py` derives is_backfilled from
+            # the equivalence of `source IS NULL` and `day < '2026-01-01'`, and
+            # `normalize_price_schema.py` fills the column the same way.
             if "source" not in existing.columns and "source" in new_data.columns:
-                existing["source"] = "aggregator_sync"
+                existing["source"] = None
+            # Both sides through the same conversion before the dedup: an
+            # existing DATE column comes back as datetime.date objects while
+            # new_data holds Timestamps, and those never compare equal, so the
+            # dedup would keep both copies of every re-run row.
+            for col in DATE_COLUMNS:
+                if col in existing.columns:
+                    existing[col] = pd.to_datetime(existing[col])
+                if col in new_data.columns:
+                    new_data[col] = pd.to_datetime(new_data[col])
             combined = pd.concat([existing, new_data], ignore_index=True)
             combined = combined.drop_duplicates(subset=dedup_keys, keep="last")
-            combined.to_parquet(path, index=False)
+            _write_parquet(con, path, combined)
             print(f"  {path.name}: {len(new_data)} appended, {len(combined)} total")
         else:
-            new_data.to_parquet(path, index=False)
+            _write_parquet(con, path, new_data)
             print(f"  {path.name}: {len(new_data)} written (new file)")
     finally:
         con.close()

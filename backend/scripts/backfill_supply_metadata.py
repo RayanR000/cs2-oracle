@@ -37,6 +37,132 @@ PRICE_ARCHIVE = Path(__file__).parent.parent.parent / "price-archive"
 OUTPUT_PARQUET = PRICE_ARCHIVE / "item-metadata.parquet"
 
 
+def _normalise_key(name: str) -> str:
+    """One key format that both a Steam display name and an archive slug reach.
+
+    The catalog is keyed `Berlin 2019 Legends (Holo/Foil)`; the price archive
+    keys the same item `berlin-2019-legends-holo-foil`. The lookup used to
+    compare those two strings directly, so **2,344 of the 4,296 NULL-rarity
+    items (54.6%) missed on formatting alone** — the data was there the whole
+    time. Slugs are already in normal form, so this is idempotent on them and
+    the previously-matching 4,395 exact-name hits are unaffected.
+    """
+    s = name.lower().strip()
+    out = []
+    for ch in s:
+        out.append(ch if (ch.isalnum() or ch == "-") else " ")
+    return "-".join("".join(out).replace("-", " ").split())
+
+
+def build_name_lookup(cat_rows) -> dict:
+    """Index catalog metadata under every key format a caller might hold.
+
+    Each row is indexed under its literal `display_name` and `hash_name` (so
+    exact lookups keep working) and under `_normalise_key` of both.
+
+    Collisions matter: two display names can share one normal form. A row that
+    carries a rarity always wins over one that does not, so normalising can
+    only add coverage, never replace a populated entry with an empty one.
+    """
+    lookup: dict[str, dict] = {}
+
+    def _put(key: str, meta: dict):
+        if not key:
+            return
+        prior = lookup.get(key)
+        if prior is not None and prior["rarity"] is not None and meta["rarity"] is None:
+            return
+        lookup[key] = meta
+
+    for hash_name, display_name, steam_type in cat_rows:
+        parsed = parse_steam_type(steam_type)
+        meta = {
+            "rarity": parsed["rarity"],
+            "rarity_rank": parsed["rarity_rank"],
+            "weapon_type": parsed["weapon_type"],
+        }
+        for key in (display_name, hash_name):
+            if not key:
+                continue
+            _put(key, meta)
+            _put(_normalise_key(key), meta)
+
+    return lookup
+
+
+BYMYKEL_PARQUET = PRICE_ARCHIVE / "item-metadata-bymykel.parquet"
+
+
+def coalesce_rarity(steam_df: "pd.DataFrame",
+                    bymykel_df: "pd.DataFrame") -> "pd.DataFrame":
+    """Fill rarity from ByMykel wherever Steam's catalog left it empty.
+
+    After key normalisation, 1,938 of 8,691 items still have no rarity — not a
+    lookup failure but an empty `type` column in `market_catalog.db`, on real
+    skins like `AK-47 | Asiimov (Minimal Wear)`. ByMykel covers 1,933 of them
+    (1,147 on the literal key, 786 more once normalised).
+
+    Steam wins wherever it has a value. The two sources agree on all 4,389
+    overlapping items, so precedence is not a trust judgement — it keeps the
+    column reproducible from the primary source, with the secondary filling
+    only the holes.
+
+    Rank 0 is a real rank (`base`, `highlight`), so emptiness is tested on the
+    rarity string, never on a falsy rank.
+    """
+    out = steam_df.copy()
+    if bymykel_df is None or bymykel_df.empty:
+        out.attrs["rarity_filled_from_bymykel"] = 0
+        return out
+
+    bm = bymykel_df[bymykel_df["rarity_meta"].notna()]
+    direct = {r.item_slug: (r.rarity_meta, r.rarity_meta_rank)
+              for r in bm.itertuples()}
+    normalised: dict[str, tuple] = {}
+    for key, val in direct.items():
+        normalised.setdefault(_normalise_key(key), val)
+
+    filled = 0
+    rarities = out["rarity"].tolist()
+    ranks = out["rarity_rank"].tolist()
+    for i, (slug, rarity) in enumerate(zip(out["item_slug"], rarities)):
+        if rarity is not None and not pd.isna(rarity):
+            continue
+        hit = direct.get(slug) or normalised.get(_normalise_key(slug))
+        if hit is None:
+            continue
+        rarities[i], ranks[i] = hit[0], hit[1]
+        filled += 1
+
+    out["rarity"] = rarities
+    # Nullable integer, not float. Unknown ranks are now NULL, which silently
+    # promotes a plain int64 column to float64 and makes covert read as `6.0` —
+    # `items.rarity_rank` is an Integer column and would receive a numpy float.
+    out["rarity_rank"] = pd.array(ranks, dtype="Int64")
+    out.attrs["rarity_filled_from_bymykel"] = filled
+    logger.info(f"ByMykel fill: {filled:,} rarities recovered where the Steam "
+                f"catalog had none")
+    return out
+
+
+def load_bymykel() -> "pd.DataFrame | None":
+    """The ByMykel metadata, or None when it has not been ingested here."""
+    if not BYMYKEL_PARQUET.exists():
+        logger.warning(
+            f"{BYMYKEL_PARQUET.name} not found — skipping the rarity fill. "
+            f"Run scripts/ingest_bymykel_metadata.py to populate it."
+        )
+        return None
+    df = pd.read_parquet(BYMYKEL_PARQUET)
+    if "rarity_meta" not in df.columns:
+        logger.warning(
+            f"{BYMYKEL_PARQUET.name} predates the rarity_meta column — "
+            f"re-run scripts/ingest_bymykel_metadata.py. Skipping the fill."
+        )
+        return None
+    return df
+
+
 # Weapon type inference from item name (fallback for items without Steam type)
 WEAPON_TYPE_FROM_PARSER = {
     "is_sticker": "sticker",
@@ -313,19 +439,7 @@ def build_metadata() -> pd.DataFrame:
             cat.close()
 
     # ── 2. Build name → metadata mapping ──
-    name_to_meta: dict[str, dict] = {}  # name -> {rarity, weapon_type, rarity_rank}
-
-    for hash_name, display_name, steam_type in cat_rows:
-        parsed = parse_steam_type(steam_type)
-        name_to_meta[display_name] = {
-            "rarity": parsed["rarity"],
-            "rarity_rank": parsed["rarity_rank"],
-            "weapon_type": parsed["weapon_type"],
-        }
-
-        # Also store by hash_name
-        if hash_name != display_name:
-            name_to_meta[hash_name] = name_to_meta[display_name]
+    name_to_meta = build_name_lookup(cat_rows)
 
     logger.info(f"Built metadata for {len(name_to_meta):,} catalog entries")
 
@@ -365,12 +479,14 @@ def build_metadata() -> pd.DataFrame:
 
     for slug in all_slugs:
         rarity = None
-        rarity_rank = 0
+        # None, not 0: 0 is base grade's real rank. See _normalise_key.
+        rarity_rank = None
         weapon_type = None
 
-        # Try direct slug match in catalog metadata
-        if slug in name_to_meta:
-            meta = name_to_meta[slug]
+        # Exact key first, then the normalised form. The second lookup is what
+        # recovers the 2,344 slug-formatted items that used to fall through.
+        meta = name_to_meta.get(slug) or name_to_meta.get(_normalise_key(slug))
+        if meta is not None:
             rarity = meta["rarity"]
             rarity_rank = meta["rarity_rank"]
             weapon_type = meta["weapon_type"]
@@ -395,6 +511,10 @@ def build_metadata() -> pd.DataFrame:
 
     df = pd.DataFrame(records)
     logger.info(f"Metadata built: {from_source}")
+    df = coalesce_rarity(df, load_bymykel())
+    have = df["rarity"].notna().sum()
+    logger.info(f"Rarity coverage: {have:,}/{len(df):,} "
+                f"({have / max(len(df), 1) * 100:.1f}%)")
     return df
 
 

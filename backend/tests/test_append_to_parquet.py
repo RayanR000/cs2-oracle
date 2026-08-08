@@ -106,3 +106,68 @@ def test_different_months_go_to_separate_files(tmp_path):
     assert (arch / "prices-2026-08.parquet").exists()
     assert _count(arch / "prices-2026-07.parquet") == 1
     assert _count(arch / "prices-2026-08.parquet") == 1
+
+
+def _schema(pq):
+    return [(r[0], r[1]) for r in duckdb.connect().sql(
+        f"DESCRIBE SELECT * FROM read_parquet('{pq}')").fetchall()]
+
+
+def test_day_is_written_as_date_not_timestamp(tmp_path):
+    """A TIMESTAMP here is what made the yearly and monthly files disagree."""
+    csv = tmp_path / "snap.csv"
+    _write_csv(csv, "2026-09-03", [("AK-47 | Redline (FT)", "aggregator_sync", 10.0, 3)])
+    _run("2026-09-03", tmp_path, csv)
+    pq = tmp_path / "price-archive" / "prices-2026-09.parquet"
+    assert dict(_schema(pq))["day"] == "DATE"
+
+
+def test_columns_are_written_in_canonical_order(tmp_path):
+    csv = tmp_path / "snap.csv"
+    _write_csv(csv, "2026-09-03", [("AK-47 | Redline (FT)", "aggregator_sync", 10.0, 3)])
+    _run("2026-09-03", tmp_path, csv)
+    pq = tmp_path / "price-archive" / "prices-2026-09.parquet"
+    assert [c for c, _ in _schema(pq)] == [
+        "item_slug", "day", "source", "mean_price", "volume"]
+
+
+def test_appending_to_a_date_typed_file_does_not_duplicate_rows(tmp_path):
+    """The dedup key includes `day`. Re-running a day must not leave two rows
+    because the file round-tripped as `date` and the new frame holds Timestamps."""
+    csv = tmp_path / "snap.csv"
+    _write_csv(csv, "2026-09-03", [("AK-47 | Redline (FT)", "aggregator_sync", 10.0, 3)])
+    _run("2026-09-03", tmp_path, csv)
+    _run("2026-09-03", tmp_path, csv)
+    pq = tmp_path / "price-archive" / "prices-2026-09.parquet"
+    assert _count(pq) == 1
+
+
+def test_exchange_rates_day_is_also_a_date(tmp_path):
+    csv = tmp_path / "snap.csv"
+    _write_csv(csv, "2026-09-03", [("AK-47 | Redline (FT)", "aggregator_sync", 10.0, 3)])
+    fx = tmp_path / "fx.csv"
+    pd.DataFrame([{"currency": "EUR", "rate": 0.92, "day": "2026-09-03"}]).to_csv(
+        fx, index=False)
+    env = {**os.environ, "DATABASE_URL": "postgresql://u:p@localhost:5432/db",
+           "ENVIRONMENT": "test"}
+    res = subprocess.run(
+        [sys.executable, str(SCRIPT), "--date", "2026-09-03",
+         "--out-dir", str(tmp_path), "--snapshot-csv", str(csv),
+         "--exchange-rates-csv", str(fx)],
+        cwd=str(BACKEND), env=env, capture_output=True, text=True)
+    assert res.returncode == 0, f"{res.stdout}\n{res.stderr}"
+    pq = tmp_path / "price-archive" / "exchange-rates-2026.parquet"
+    assert dict(_schema(pq))["day"] == "DATE"
+
+
+def test_new_month_file_matches_what_the_migration_produces(tmp_path):
+    """The writer and normalize_price_schema.py must agree, or every new month
+    immediately drifts back out of canonical shape."""
+    sys.path.insert(0, str(BACKEND))
+    from scripts.normalize_price_schema import needs_rewrite
+
+    csv = tmp_path / "snap.csv"
+    _write_csv(csv, "2026-09-03", [("AK-47 | Redline (FT)", "aggregator_sync", 10.0, 3)])
+    _run("2026-09-03", tmp_path, csv)
+    pq = tmp_path / "price-archive" / "prices-2026-09.parquet"
+    assert not needs_rewrite(_schema(pq))

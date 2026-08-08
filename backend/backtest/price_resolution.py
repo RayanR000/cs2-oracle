@@ -20,6 +20,7 @@ from pathlib import Path
 import pandas as pd
 
 from collectors.pipeline import FALLBACK_MAX_AGE_DAYS
+from db.archive import price_files, prices_relation
 
 # Mirrors ItemForecaster.predict()'s tail(3) median (forecaster.py:3513).
 SMOOTH_WINDOW = 3
@@ -54,20 +55,10 @@ def archive_max_day(archive_dir: Path) -> date:
     """
     import duckdb
 
-    archive_dir = Path(archive_dir)
-    if not archive_dir.exists():
-        raise FileNotFoundError(f"price archive not found at {archive_dir}")
-
-    pq_files = sorted(str(p) for p in archive_dir.glob("prices-*.parquet"))
-    if not pq_files:
-        raise FileNotFoundError(f"price archive at {archive_dir} contains no prices-*.parquet")
-
     con = duckdb.connect()
     try:
-        union_sql = " UNION ALL ".join(
-            f"SELECT max(CAST(day AS DATE)) AS d FROM read_parquet('{f}')" for f in pq_files
-        )
-        newest = con.sql(f"SELECT max(d) FROM ({union_sql})").fetchone()[0]
+        relation = prices_relation(con, archive_dir, columns=["day"])
+        newest = con.sql(f"SELECT max(day) FROM {relation}").fetchone()[0]
     finally:
         con.close()
 
@@ -95,21 +86,12 @@ def archive_covered_days(archive_dir: Path) -> set[date]:
     """
     import duckdb
 
-    archive_dir = Path(archive_dir)
-    if not archive_dir.exists():
-        raise FileNotFoundError(f"price archive not found at {archive_dir}")
-
-    pq_files = sorted(str(p) for p in archive_dir.glob("prices-*.parquet"))
-    if not pq_files:
-        raise FileNotFoundError(f"price archive at {archive_dir} contains no prices-*.parquet")
-
     con = duckdb.connect()
     try:
-        union_sql = " UNION ALL ".join(
-            f"SELECT DISTINCT CAST(day AS DATE) AS d FROM read_parquet('{f}')"
-            for f in pq_files
-        )
-        rows = con.sql(f"SELECT DISTINCT d FROM ({union_sql}) WHERE d IS NOT NULL").fetchall()
+        relation = prices_relation(con, archive_dir, columns=["day"])
+        rows = con.sql(
+            f"SELECT DISTINCT day FROM {relation} WHERE day IS NOT NULL"
+        ).fetchall()
     finally:
         con.close()
 
@@ -225,36 +207,26 @@ def load_voted_prices(
     import duckdb
     from models.forecaster import ItemForecaster
 
-    archive_dir = Path(archive_dir)
-    if not archive_dir.exists():
-        raise FileNotFoundError(f"price archive not found at {archive_dir}")
-
-    pq_files = sorted(str(p) for p in archive_dir.glob("prices-*.parquet"))
-    if not pq_files:
-        raise FileNotFoundError(f"price archive at {archive_dir} contains no prices-*.parquet")
-
     if not slugs:
+        # Checked after price_files() below would have run, so a caller passing
+        # no slugs against a missing archive still gets the FileNotFoundError
+        # rather than an innocuous empty frame.
+        price_files(archive_dir)
         return pd.DataFrame(columns=["item_id", "date", "price"])
 
     lookback_start = min_date - pd.Timedelta(days=max_span_days)
 
     con = duckdb.connect()
     try:
-        selects = []
-        for pqf in pq_files:
-            cols = {r[0] for r in con.sql(f"DESCRIBE SELECT * FROM read_parquet('{pqf}')").fetchall()}
-            source_expr = "source" if "source" in cols else "NULL::VARCHAR AS source"
-            selects.append(
-                f"SELECT item_slug, CAST(day AS DATE) AS day, mean_price AS price, "
-                f"{source_expr}, volume FROM read_parquet('{pqf}')"
-            )
-        union_sql = " UNION ALL BY NAME ".join(selects)
+        relation = prices_relation(
+            con, archive_dir,
+            columns=["item_slug", "day", "mean_price", "source", "volume"])
 
         con.register("wanted_slugs", pd.DataFrame({"item_slug": slugs}))
         rows = con.sql(
             f"""
-            SELECT s.item_slug, s.day, s.price, s.source, s.volume
-            FROM ({union_sql}) s
+            SELECT s.item_slug, s.day, s.mean_price AS price, s.source, s.volume
+            FROM {relation} s
             JOIN wanted_slugs w ON w.item_slug = s.item_slug
             WHERE s.day BETWEEN DATE '{lookback_start}' AND DATE '{max_date}'
             """
