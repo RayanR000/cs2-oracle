@@ -14,13 +14,26 @@ from sqlalchemy import desc, func, text
 from datetime import date
 
 from database import get_db, PredictionAccuracy, ForecastOutcome
-from backtest.scoring import HEADLINE_TIER
+from api.serving_policy import MIN_SERVED_PRICE_USD
+from backtest.directional_test import PT_T_HURDLE
+from backtest.scoring import HEADLINE_TIER, MIN_FORECAST_DATES
 
 router = APIRouter(prefix="/accuracy", tags=["accuracy"])
 
 
+def _json_safe(value):
+    """Recursively replace non-JSON floats (NaN/Inf) so responses serialize."""
+    if isinstance(value, float):
+        return None if (value != value or value in (float("inf"), float("-inf"))) else value
+    if isinstance(value, dict):
+        return {k: _json_safe(v) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_json_safe(v) for v in value]
+    return value
+
+
 def _row_to_dict(row: PredictionAccuracy) -> dict:
-    return {
+    return _json_safe({
         "id": row.id,
         "prediction_type": row.prediction_type,
         "evaluation_date": row.evaluation_date.isoformat() if row.evaluation_date else None,
@@ -31,7 +44,7 @@ def _row_to_dict(row: PredictionAccuracy) -> dict:
         "sample_count": row.sample_count,
         "metrics": row.metrics,
         "created_at": row.created_at.isoformat() if row.created_at else None,
-    }
+    })
 
 
 def _dict_to_row(d: dict) -> dict:
@@ -80,11 +93,12 @@ def _tier_clause(price_tier: Optional[int], column: str = "price_tier") -> str:
     """SQL restricting to one price cohort.
 
     ``price_tier`` is a discriminator, not a filterable attribute: the table
-    holds a row per price band (0..4), one for the >=$1 headline
-    (HEADLINE_TIER), and one all-tiers aggregate (NULL). They overlap, so a
-    query that does not pick exactly one is summing the same forecasts several
-    times over. ``None`` means the all-tiers aggregate, which is the row the
-    endpoints served before price_tier existed.
+    holds a row per price band (0..5), one per floor in ``FLOOR_SWEEP`` (-1 is
+    the >=$1 headline, -2 is >=$5, -3 is >=$20), and one all-tiers aggregate
+    (NULL). They overlap, so a query that does not pick exactly one is summing
+    the same forecasts several times over. ``None`` means the all-tiers
+    aggregate, which is the row the endpoints served before price_tier existed —
+    it is pooled across liquidity populations and is not a quotable number.
     """
     if price_tier is None:
         return f"{column} IS NULL"
@@ -137,18 +151,21 @@ def _query_prediction_accuracy(
                     "created_at": str(getattr(r, "created_at", "")),
                 }
                 result.append(d)
-            return result
+            return [_json_safe(d) for d in result]
     except Exception:
         return None
 
 
 PRICE_TIER_QUERY = Query(
     None,
-    ge=HEADLINE_TIER,
-    le=4,
+    ge=-3,
+    le=5,
     description=(
-        "Price cohort: 0-4 for a single price band, -1 for the >=$1 headline. "
-        "Omit for the all-tiers aggregate. The cohorts overlap, so exactly one "
+        "Price cohort: 0-5 for a single price band (5 is >=$1000, split out "
+        "from tier 4 because its bid-ask spread is 5.2% against 10.8%), or a "
+        "floor sentinel -1/-2/-3 for the >=$1 / >=$5 / >=$20 headline sweep. "
+        "Omit for the all-tiers aggregate, which is pooled across liquidity "
+        "populations and is not quotable. The cohorts overlap, so exactly one "
         "is served."
     ),
 )
@@ -220,6 +237,100 @@ def get_latest_accuracy(
     return latest
 
 
+# A row written before the Pesaran-Timmermann headline landed has no pt_* keys
+# at all. Such a row is not "no skill" — it is untested, and the two must not
+# render the same, so the verdict is explicit rather than defaulted.
+_UNTESTED_VERDICT = "untested"
+
+
+def _headline_entry(row: dict) -> dict:
+    """One horizon's honest headline: the test first, the accuracy as context."""
+    m = row.get("metrics") or {}
+    verdict = m.get("pt_verdict", _UNTESTED_VERDICT)
+    return {
+        "horizon_days": row.get("horizon_days"),
+        "model_version": row.get("model_version"),
+        "evaluation_date": row.get("evaluation_date"),
+        "sample_count": row.get("sample_count"),
+        # The test.
+        "verdict": verdict,
+        "pt_excess_pp": m.get("pt_excess_pp"),
+        "pt_t_stat": m.get("pt_t_stat"),
+        "pt_p_value": m.get("pt_p_value"),
+        "pt_nw_lag": m.get("pt_nw_lag"),
+        "pt_n_dates": m.get("pt_n_dates"),
+        "pt_n_dates_dropped": m.get("pt_n_dates_dropped"),
+        # Context. `directional_accuracy` is deliberately shipped only inside
+        # this triple: the realised down-rate swings 29.4% -> 76.9% between
+        # stored forecast dates, so the same DA is skill on one date and
+        # incompetence on another, and the constant call is what it must beat.
+        "directional_accuracy": m.get("directional_accuracy"),
+        "constant_call_accuracy": m.get("constant_call_accuracy"),
+        "constant_call_direction": m.get("constant_call_direction"),
+        "realised_down_rate": m.get("realised_down_rate"),
+        "directional_accuracy_ci_clustered_lower": m.get(
+            "directional_accuracy_ci_clustered_lower"
+        ),
+        "directional_accuracy_ci_clustered_upper": m.get(
+            "directional_accuracy_ci_clustered_upper"
+        ),
+        # Everything else the headline is not allowed to be read without.
+        "distinct_forecast_dates": m.get("distinct_forecast_dates"),
+        "date_coverage_sufficient": m.get("date_coverage_sufficient"),
+        "unchanged_pct": m.get("unchanged_pct"),
+        "interval_coverage": m.get("interval_coverage"),
+    }
+
+
+@router.get("/headline")
+def get_headline(db: Session = Depends(get_db)):
+    """The published accuracy claim, per horizon, as a significance test.
+
+    This is the endpoint the product surfaces are meant to render. It exists
+    because ``/accuracy/latest`` hands back a metrics blob from which a caller
+    can pull ``directional_accuracy`` alone, and a bare DA on this data is not
+    an accuracy claim — it is a report of which way the market moved on the
+    dates the cohort happens to contain.
+
+    Always the >=$1 cohort (HEADLINE_TIER), because that is the population the
+    product actually serves; see MIN_SERVED_PRICE_USD in api/serving_policy.py.
+    """
+    rows = None
+    try:
+        rows = _query_prediction_accuracy("forecast", 2000, HEADLINE_TIER)
+    except Exception:
+        rows = None
+
+    if not rows:
+        q = db.query(PredictionAccuracy).filter(
+            PredictionAccuracy.prediction_type == "forecast",
+            PredictionAccuracy.price_tier == HEADLINE_TIER,
+        ).order_by(desc(PredictionAccuracy.evaluation_date))
+        rows = [_row_to_dict(r) for r in q.limit(2000).all()]
+
+    # One entry per horizon, from that horizon's most recent evaluation. Rows
+    # arrive newest-first from both legs, so the first sighting wins.
+    latest: dict = {}
+    for r in rows:
+        key = r.get("horizon_days")
+        if key is not None and key not in latest:
+            latest[key] = r
+
+    return _json_safe({
+        # Named from the serving floor, not from HEADLINE_TIER's index — the
+        # two are held equal on purpose (see MIN_SERVED_PRICE_USD) and a label
+        # derived from the tier number would read right while meaning nothing.
+        "cohort": f">=${MIN_SERVED_PRICE_USD:.0f}",
+        "price_tier": HEADLINE_TIER,
+        "hurdle_t": PT_T_HURDLE,
+        "min_forecast_dates": MIN_FORECAST_DATES,
+        "test": "Pesaran-Timmermann, per forecast date, Newey-West t over dates",
+        "horizons": [
+            _headline_entry(latest[h]) for h in sorted(latest)
+        ],
+    })
+
+
 @router.get("/summary")
 def get_accuracy_summary(
     prediction_type: Optional[str] = Query(None),
@@ -274,7 +385,7 @@ def get_accuracy_summary(
 
 
 def _outcome_to_dict(o: ForecastOutcome) -> dict:
-    return {
+    return _json_safe({
         "id": o.id,
         "forecast_id": o.forecast_id,
         "item_id": o.item_id,
@@ -292,11 +403,11 @@ def _outcome_to_dict(o: ForecastOutcome) -> dict:
         "pct_error": o.pct_error,
         "model_version": o.model_version,
         "evaluated_at": o.evaluated_at.isoformat() if o.evaluated_at else None,
-    }
+    })
 
 
 def _outcome_dict_from_row(r) -> dict:
-    return {
+    return _json_safe({
         "id": int(getattr(r, "id", 0)),
         "forecast_id": int(getattr(r, "forecast_id", 0)),
         "item_id": int(getattr(r, "item_id", 0)),
@@ -314,7 +425,7 @@ def _outcome_dict_from_row(r) -> dict:
         "pct_error": float(getattr(r, "pct_error", 0)),
         "model_version": str(getattr(r, "model_version", "")) if getattr(r, "model_version", None) else None,
         "evaluated_at": str(getattr(r, "evaluated_at", "")),
-    }
+    })
 
 
 def _query_outcomes(
@@ -339,7 +450,7 @@ def _query_outcomes(
             )
             if df.empty:
                 return []
-            return [_outcome_dict_from_row(r) for r in df.itertuples()]
+            return [_json_safe(_outcome_dict_from_row(r)) for r in df.itertuples()]
     except Exception:
         return None
 
