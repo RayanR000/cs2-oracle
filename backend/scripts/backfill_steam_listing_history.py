@@ -211,12 +211,25 @@ def load_targets(
          aggregator is still writing them, so a backfill stays useful
       2. outside the `is_backfilled` gate (no pre-2026 history)
       3. a real market_hash_name, not one of the two mangled key formats
+
+    Read through `prices_relation`, not a glob. The glob this replaced returned
+    `prices-2013.parquet`'s schema for the whole archive, which is how the
+    price column survived being renamed `median_price` → `mean_price` without
+    anything failing until `--min-price` was next passed.
     """
     import duckdb
 
+    from db.archive import prices_relation
+    from models.item_parser import archive_universe_sql_filter
+
     con = duckdb.connect()
-    glob = str(PRICE_ARCHIVE_DIR / "prices-*.parquet")
-    con.execute(f"CREATE VIEW arch AS SELECT * FROM read_parquet('{glob}')")
+    rel = prices_relation(
+        con,
+        PRICE_ARCHIVE_DIR,
+        columns=["item_slug", "day", "source", "mean_price"],
+        where=archive_universe_sql_filter(),
+    )
+    con.execute(f"CREATE VIEW arch AS SELECT * FROM {rel}")
     con.execute("CREATE TABLE gate AS SELECT DISTINCT item_slug FROM arch WHERE day < '2026-01-01'")
 
     recent = [
@@ -230,7 +243,7 @@ def load_targets(
     con.execute("CREATE TABLE act(day DATE)")
     con.executemany("INSERT INTO act VALUES (?)", [(d,) for d in recent])
 
-    price_clause = f"HAVING MAX(median_price) >= {min_price}" if min_price else ""
+    price_clause = f"HAVING MAX(mean_price) >= {min_price}" if min_price else ""
     rows = con.execute(
         f"""SELECT item_slug FROM arch
             WHERE day IN (SELECT day FROM act)

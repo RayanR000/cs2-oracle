@@ -423,16 +423,22 @@ don't.
   `backend/scripts/backfill_steam_listing_history.py`. Effort: small. §10 Tier 1 #5 / C1.
 - **5d. Two things stand between the Steam listing backfill and a resumed run** — NEW
   2026-08-08, found while re-deriving R11. It **gates R11, R13 and 5c**.
-  1. **`load_targets` raises on `--min-price` since the schema migration.** It filters
-     `HAVING MAX(median_price)`, and the 2026-08-08 normalisation left the archive with
-     `mean_price` — so the script's own documented usage line `--min-price 1.0` dies on a DuckDB
-     `BinderException`. It also reaches the archive through a raw
-     `SELECT * FROM read_parquet('prices-*.parquet')`, which is invariant 1 in
-     `backend/AGENTS.md` and is exactly the mechanism by which a renamed column disappears
-     without an error. One-line fix. Target counts on the 2026-08-07 archive day once it is
-     fixed: **32,617** non-gated name-keyed items with no floor, **27,935** at ≥$1 (35,766 /
-     28,594 before the mangled-key filter drops 3,149 / 659 phantom slug rows) — which
-     independently corroborates R13's extrapolated ~31,590.
+  1. ~~**`load_targets` raises on `--min-price` since the schema migration.**~~ — **FIXED
+     2026-08-08.** It filtered `HAVING MAX(median_price)`, and the 2026-08-08 normalisation left
+     the archive with `mean_price`, so the script's own documented usage line `--min-price 1.0`
+     died on a DuckDB `BinderException`. The rename is not the interesting part: it reached the
+     archive through a raw `SELECT * FROM read_parquet('prices-*.parquet')`, which narrows the
+     whole read to `prices-2013.parquet`'s schema — invariant 1 in `backend/AGENTS.md`, and
+     exactly the mechanism by which a renamed column disappears without an error. Now reads
+     through `db/archive.py::prices_relation` with `archive_universe_sql_filter()` applied
+     (invariant 2, which it had also been bypassing). Regression test:
+     `backend/tests/test_steam_listing_targets.py` — 4 of its 5 cases fail on the pre-fix script.
+     **Measured target counts on the 2026-08-07 archive day: 32,374 with no floor, 27,785 at
+     ≥$1** — which corroborates R13's extrapolated ~31,590 independently. These are **243 and 150
+     below the figures this entry predicted** (32,617 / 27,935), and the gap is the universe
+     filter the old read could not apply: 122 phase-collapsed Doppler names, plus 127 items whose
+     only row that day was an `aggregator_buff163_buy` bid. Pre-mangled-key counts are unchanged
+     at 35,766 unfiltered, 35,517 filtered.
   2. **This IP's soft-block has not decayed in three days.** The block is not new — it is dated
      **2026-08-05** with "no decay over 5 h" (`2026-08-06-data-acquisition-ranking.md`), and the
      staged DB stops there. What is new is that it is **still in force on 2026-08-08**, so the
