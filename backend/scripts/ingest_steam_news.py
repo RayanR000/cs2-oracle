@@ -87,6 +87,22 @@ CACHE_DIR = Path(__file__).parent.parent / "runtime" / "steamnews"
 PRICE_ARCHIVE = Path(__file__).parent.parent.parent / "price-archive"
 OUTPUT_PARQUET = PRICE_ARCHIVE / "event-calendar.parquet"
 
+# The per-*event* companion to the date panel above. `event-calendar.parquet` is
+# deliberately structural -- one row per day, counts only, no identity -- which
+# makes it a feature table and useless to anything that needs to point at a
+# specific announcement. `event_correlation_analysis.py` needs exactly that:
+# it measures a price window around one event, and `event_impacts.event_id` is a
+# real FK to `events.id`.
+#
+# `fetch_news` already caches the full items and throws all of this away, so the
+# rows cost nothing extra to emit. Structural fields only -- gid, title, day,
+# feed_type -- and no classification, for the reason in the module docstring:
+# both candidate case-release classifiers were measured on 2026-08-06 and
+# neither validated (33% recall from text; 14/14 disagreement from ByMykel).
+EVENTS_PARQUET = PRICE_ARCHIVE / "event-news.parquet"
+
+EVENT_COLUMNS = ("gid", "day", "published_at", "feed_type", "is_valve", "title", "url")
+
 # `count` is capped server-side well below anything useful in one shot, and the
 # 500 it returns is what `data-sources.md` recorded as the feed's whole depth
 # ("500 entries back to 2022-03-01"). It is not -- passing `enddate` walks
@@ -264,6 +280,48 @@ def news_events(items: list[dict]) -> pd.DataFrame:
     return grouped
 
 
+def news_rows(items: list[dict]) -> pd.DataFrame:
+    """Keep the news items themselves, one row per announcement.
+
+    Same `(day, title)` dedupe as `news_events` and for the same reason: Steam
+    cross-posts one announcement under several gids, and counting those
+    separately would both inflate the panel and create duplicate `events` rows
+    pointing at the same real-world event. The surviving `gid` is the first
+    seen, which is stable across runs because `fetch_news` pages deterministically.
+
+    Sorted oldest-first so a diff between two runs shows the new tail rather
+    than a reshuffle.
+    """
+    seen: set[tuple[date, str]] = set()
+    rows = []
+    for i in items:
+        ts = i.get("date")
+        if not isinstance(ts, (int, float)):
+            continue
+        title = i.get("title", "") or ""
+        day = datetime.fromtimestamp(ts, timezone.utc).date()
+        key = (day, title)
+        if key in seen:
+            continue
+        seen.add(key)
+        feed_type = i.get("feed_type")
+        rows.append({
+            "gid": str(i.get("gid", "")),
+            "day": day,
+            "published_at": datetime.fromtimestamp(ts, timezone.utc),
+            "feed_type": int(feed_type) if isinstance(feed_type, (int, float)) else None,
+            "is_valve": int(feed_type == 1),
+            "title": title,
+            "url": i.get("url", "") or "",
+        })
+
+    if not rows:
+        return pd.DataFrame(columns=list(EVENT_COLUMNS))
+
+    df = pd.DataFrame(rows).sort_values(["published_at", "gid"]).reset_index(drop=True)
+    return df[list(EVENT_COLUMNS)]
+
+
 def crate_events(dumps: dict[str, list]) -> pd.DataFrame:
     """Per-day counts of dated crate and collection first-sales.
 
@@ -392,6 +450,8 @@ def main() -> int:
                         help="Use cached dumps instead of refetching")
     parser.add_argument("--cache-dir", default=str(CACHE_DIR))
     parser.add_argument("--out", default=str(OUTPUT_PARQUET))
+    parser.add_argument("--events-out", default=str(EVENTS_PARQUET),
+                        help="Per-event companion table (event-news.parquet)")
     parser.add_argument("--start", default=CALENDAR_START.isoformat())
     parser.add_argument("--coverage-only", action="store_true",
                         help="Report coverage and exit without writing")
@@ -418,6 +478,15 @@ def main() -> int:
     cal.to_parquet(out, index=False)
     logger.info(f"Wrote {out} ({out.stat().st_size / 1e3:.1f} KB, "
                 f"{len(cal):,} rows x {len(cal.columns)} columns)")
+
+    events = news_rows(items)
+    events_out = Path(args.events_out)
+    events_out.parent.mkdir(parents=True, exist_ok=True)
+    events.to_parquet(events_out, index=False)
+    logger.info(f"Wrote {events_out} ({len(events):,} events, "
+                f"{int(events['is_valve'].sum()) if len(events) else 0} from Valve, "
+                f"{events['day'].min() if len(events) else '-'}.."
+                f"{events['day'].max() if len(events) else '-'})")
     return 0
 
 

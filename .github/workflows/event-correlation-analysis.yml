@@ -58,6 +58,34 @@ jobs:
       - name: Link price-archive
         run: ln -s $PWD/archive/price-archive price-archive
 
+      # Refresh the calendar before the thing that consumes it. `events` is
+      # loaded from data/cs2_events.json, whose newest entry is 2026-05-10, so
+      # from ~2026-08-08 the analyser's 90-day window is empty and every Sunday
+      # returns `no_events_in_window` -- a correct status and a permanently
+      # empty report. Steam's own feed carries 4 of the 6 dated supply shocks
+      # the same day they happened, including 3 of the 4 largest.
+      #
+      # Scheduled here rather than daily on purpose: this is the only consumer,
+      # it runs weekly, and the feed is ~2s of four pages. Move it into the
+      # aggregator only when something reads the calendar daily.
+      #
+      # `continue-on-error` because a Steam API blip must not fail the analysis
+      # -- it would simply run against the calendar it already has.
+      - name: Refresh the CS2 event calendar
+        continue-on-error: true
+        working-directory: ./backend
+        env:
+          DATABASE_URL: ${{ secrets.SUPABASE_DATABASE_URL }}
+          ENVIRONMENT: production
+        run: |
+          echo "📰 Ingesting Steam news (4 pages, ~2s)..."
+          python scripts/ingest_steam_news.py \
+            --out ../archive/price-archive/event-calendar.parquet \
+            --events-out ../archive/price-archive/event-news.parquet
+          echo "🗓  Syncing Valve announcements into the events table..."
+          python scripts/sync_events_from_news.py \
+            --events-parquet ../archive/price-archive/event-news.parquet
+
       - name: Run event correlation analysis
         working-directory: ./backend
         env:

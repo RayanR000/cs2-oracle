@@ -648,14 +648,21 @@ def run_analysis(days_back: int = 90, db=None, archive_dir: Path | None = None):
         if not events:
             # An empty window is a calendar outcome, not a fault, and it must
             # not look like the zero-row bug this file was rewritten to fix.
-            # `data/cs2_events.json` ends at 2026-05-10 and nothing adds to it,
-            # so at days_back=90 this becomes the normal Sunday result from
-            # roughly 2026-08-08 onward. Loud, distinct status, exit 0.
+            #
+            # Since 2026-08-08 the table is fed by `sync_events_from_news.py`
+            # from Steam's own announcement feed, which runs immediately before
+            # this step in `event-correlation-analysis.yml`. So an empty window
+            # now means one of two things, and they are worth telling apart:
+            # Valve genuinely posted nothing in the period, or that sync failed
+            # (it is `continue-on-error`, so a Steam blip does not fail the
+            # workflow -- check the step above). Before that date the table came
+            # from `data/cs2_events.json`, frozen at 2026-05-10.
             logger.warning(
-                "No events within %d days of %s — nothing to correlate. "
-                "The events table is loaded from data/cs2_events.json, whose "
-                "newest entry is 2026-05-10; extend it to analyse newer "
-                "windows. Returning %r (not a failure).",
+                "No events within %d days of %s — nothing to correlate. The "
+                "events table is fed by scripts/sync_events_from_news.py; check "
+                "the 'Refresh the CS2 event calendar' step, which is "
+                "continue-on-error and may have failed silently. Returning %r "
+                "(not a failure).",
                 days_back, cutoff.date(), NO_EVENTS_STATUS,
             )
             return {
