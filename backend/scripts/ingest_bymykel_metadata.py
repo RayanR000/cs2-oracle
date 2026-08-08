@@ -86,6 +86,10 @@ OUTPUT_COLUMNS = (
     "item_age_first_sale_date",
     "item_age_ambiguous",
     "rarity_meta_rank",
+    # The categorical twin of the rank. Rank 3 collapses milspec/high_grade/
+    # distinguished, so the rank alone cannot rebuild the rarity string that
+    # `item-metadata.parquet` and the training subsample both key on.
+    "rarity_meta",
     "is_meta_stattrak",
     "is_meta_souvenir",
     "float_meta_min",
@@ -149,6 +153,29 @@ def rarity_rank(rarity) -> int | None:
     for keyword, rank in EXTRA_RARITY_RANK.items():
         if keyword in name:
             return rank
+    return None
+
+
+def rarity_token(rarity) -> str | None:
+    """The ByMykel rarity name as one of the repo's rarity tokens.
+
+    The rank alone cannot restore this: rank 3 collapses `milspec`,
+    `high_grade` and `distinguished`, so a consumer holding only the rank
+    cannot tell a Mil-Spec rifle from a High Grade sticker. `rarity_meta_rank`
+    stays the numeric axis; this is the categorical one, and the two are kept
+    in lockstep — both resolve, or neither does.
+    """
+    if not isinstance(rarity, dict):
+        return None
+    name = (rarity.get("name") or "").lower()
+    if not name:
+        return None
+    for keyword, key in RARITY_KEYWORDS:
+        if keyword in name:
+            return key
+    for keyword in EXTRA_RARITY_RANK:
+        if keyword in name:
+            return keyword
     return None
 
 
@@ -380,6 +407,7 @@ def build_records(dumps: dict, codebook: CodeBook) -> dict[str, dict]:
             # ambiguous even when a collection date also exists.
             "item_age_ambiguous": 1 if n_crate_dates > 1 else 0,
             "rarity_meta_rank": rarity_rank(rarity),
+            "rarity_meta": rarity_token(rarity),
             "is_meta_stattrak": int(bool(stattrak)),
             "is_meta_souvenir": int(bool(souvenir)),
             "float_meta_min": float_min,

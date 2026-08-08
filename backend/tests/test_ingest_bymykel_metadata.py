@@ -341,9 +341,9 @@ class TestBuildFrame:
         df = build_frame(dumps, codebook)
         assert list(df.columns) == [
             "item_slug", "item_age_first_sale_date", "item_age_ambiguous",
-            "rarity_meta_rank", "is_meta_stattrak", "is_meta_souvenir",
-            "float_meta_min", "float_meta_max", "type_meta_crate_id",
-            "type_meta_collection_id",
+            "rarity_meta_rank", "rarity_meta", "is_meta_stattrak",
+            "is_meta_souvenir", "float_meta_min", "float_meta_max",
+            "type_meta_crate_id", "type_meta_collection_id",
         ]
         assert df["item_slug"].is_unique
 

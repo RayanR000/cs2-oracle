@@ -114,7 +114,7 @@ def parse_steam_type(raw: str) -> dict:
             "is_knife": False,
             "is_glove": False,
             "rarity": None,
-            "rarity_rank": 0,
+            "rarity_rank": None,
             "weapon_type": None,
         }
 
@@ -125,7 +125,11 @@ def parse_steam_type(raw: str) -> dict:
         "is_knife": False,
         "is_glove": False,
         "rarity": None,
-        "rarity_rank": 0,
+        # None, not 0 — 0 is the real rank of `base` and `highlight`. Defaulting
+        # unknown to 0 made 4,296 unparsed items indistinguishable from 624
+        # genuine base-tier ones, so any reader keying on the rank rather than
+        # the rarity string treated half the catalogue as the lowest tier.
+        "rarity_rank": None,
         "weapon_type": None,
     }
 

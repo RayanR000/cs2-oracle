@@ -39,6 +39,14 @@ DIRECTION_LABEL_VOL_COL = "label_vol_30d"
 # Cached result of GPU availability check (avoids repeated subprocess probes)
 _GPU_AVAILABLE_CACHE: Optional[bool] = None
 
+# Sources that quote a BID, not an ask. Excluded from consensus voting: a bid is
+# a different quantity, so median-voting it against asks is not noise reduction
+# but a basis change. `aggregator_buff163_buy` is BUFF's `highest_order`, live
+# since 2026-07-11 at 0.579x Steam against asks at 0.717-0.809x.
+# Not a quality filter — these rows are good data, just not asks. Anything that
+# wants the bid should read the source row from the archive directly.
+BID_SOURCES = frozenset({"aggregator_buff163_buy"})
+
 # Price tier boundaries for per-tier bias correction
 PRICE_TIER_BOUNDARIES = [(0, 1, "<$1"), (1, 5, "$1-5"), (5, 20, "$5-20"),
                          (20, 100, "$20-100"), (100, float("inf"), ">$100")]
@@ -446,7 +454,9 @@ class ItemForecaster:
     # archive contents and the query window, but it cannot see the code — this
     # constant is the only thing standing between a logic change and a stale
     # frame silently training the next model.
-    VOTED_CACHE_VERSION = 1
+    # v2: BID_SOURCES is excluded from voting, so every cached v1 frame holds a
+    # consensus displaced by a median -8.0% (-10.8% on the >=$1 served cohort).
+    VOTED_CACHE_VERSION = 2
     VOTED_CACHE_PREFIX = "voted_"
     VOTED_CACHE_MAX_ENTRIES = 3
 
@@ -932,17 +942,13 @@ class ItemForecaster:
         cutoff = (self._now() - timedelta(days=days_back)).strftime("%Y-%m-%d")
         con = duckdb.connect()
         try:
-            # Load Parquet files, handling schema mismatch (older files lack 'source' column)
-            pq_files = sorted([str(p) for p in archive_dir.glob("prices-*.parquet")])
-            pq_queries = []
-            for pqf in pq_files:
-                cols = con.sql(f"DESCRIBE SELECT * FROM read_parquet('{pqf}')").fetchall()
-                col_names = {r[0] for r in cols}
-                if "source" in col_names:
-                    pq_queries.append(f"SELECT * FROM read_parquet('{pqf}')")
-                else:
-                    pq_queries.append(f"SELECT *, NULL::VARCHAR AS source FROM read_parquet('{pqf}')")
-            union_sql = " UNION ALL BY NAME ".join(pq_queries)
+            # One reader for the whole archive; it handles the pre-2026 files
+            # lacking `source` and the TIMESTAMP/TIMESTAMP_NS split. See
+            # db/archive.py for why a plain glob read is not enough.
+            from db.archive import prices_relation
+            relation = prices_relation(
+                con, archive_dir,
+                columns=["item_slug", "day", "mean_price", "volume", "source"])
 
             # Filter to backfilled slugs via a temp table JOIN (handles special chars safely)
             if backfilled_slugs is not None:
@@ -955,7 +961,7 @@ class ItemForecaster:
 
             df = con.sql(f"""
                 SELECT item_slug, day, mean_price AS price, volume, source
-                FROM ({union_sql}) sub
+                FROM {relation} sub
                 {slug_join}
                 WHERE day >= ?
                   AND (source IS NULL OR source NOT LIKE 'historical_fallback:%')
@@ -1010,6 +1016,18 @@ class ItemForecaster:
                 price=("price", "mean"),
                 volume=("volume", "sum"),
             )
+
+        # Drop bids before anything else reads the group, so they count toward
+        # neither the median nor the >=3-source gate that enables the outlier
+        # mask. `isin` is False for NaN, which is what keeps the pre-2026
+        # `source IS NULL` series — 13 years of the archive — voting.
+        df = df[~df["source"].isin(BID_SOURCES)]
+        if df.empty:
+            # Every input row was a bid. 2,338 item-days across 217 items have
+            # no ask at all; they drop out rather than falling back to the bid,
+            # because a series whose basis alternates between bid and ask
+            # fabricates the wedge as a return.
+            return pd.DataFrame(columns=["item_id", "date", "price", "volume"])
 
         # Speedup: split into single-source (≤1 row per item/date) and multi-source groups.
         # Single-source rows use fast groupby agg; multi-source uses the vote function.
@@ -2497,7 +2515,8 @@ class ItemForecaster:
                 return d, True
         return split, False
 
-    def _build_production_split(self, tdf, horizon: int, max_rows: int):
+    def _build_production_split(self, tdf, horizon: int, max_rows: int,
+                                per_item_row_sampling: bool = False):
         """The production train/val split: a trailing calendar window, purged.
 
         Returns ``(train_set, val_set)``. Three things happen here, in order:
@@ -2551,9 +2570,19 @@ class ItemForecaster:
         # (never tail()) so we don't truncate the calendar window, which would
         # silently disable expanding-window CV. Applied after the branch so the
         # fallback path is capped too — it reads from `tdf`, so it was not.
+        #
+        # Which draw depends on the caller. The uniform default gives an item
+        # a share of the sample equal to its share of the rows; the per-item
+        # quota gives every item the same depth, which is the axis the paired
+        # harness measured as worth +5.72pp at 30d. See _per_item_row_sample.
+        # Only train_set is thinned — thinning val would move the evaluation
+        # cohort, which is the artifact that pairing exists to remove.
         if len(train_set) > max_rows:
-            train_set = train_set.sample(
-                n=max_rows, random_state=42).sort_values("date")
+            if per_item_row_sampling:
+                train_set = self._per_item_row_sample(train_set, max_rows)
+            else:
+                train_set = train_set.sample(
+                    n=max_rows, random_state=42).sort_values("date")
 
         return train_set, val_set
 
@@ -2920,6 +2949,47 @@ class ItemForecaster:
         )
         return filtered
 
+    @staticmethod
+    def _filter_by_median_price(price_df: pd.DataFrame,
+                                min_median_price: float) -> pd.DataFrame:
+        """Restrict the training universe to items whose median price clears
+        ``min_median_price``, measured on the voted consensus price.
+
+        Training applies no price filter by default, so the universe is the
+        pool's tier mix: 82.6% of item-days are sub-$1 while production serves
+        only >= $1 (``api/serving_policy.py::MIN_SERVED_PRICE_USD``). That
+        matters less as a cohort-mismatch argument — reweighting the classifier
+        toward the served cohort was measured and refuted — than as a *budget*
+        argument. ``_stratified_item_subsample`` spends its row budget on the
+        pool, so at the 100K default only ~20 of the ~99 selected items are in
+        the served cohort, and 44% of the universe is stickers and graffiti at
+        a $0.03 median.
+
+        Filtering first makes the budget buy served-cohort breadth instead:
+        measured over the 1460-day window, the >= $1 cohort is 926 items /
+        993,464 item-days at 1,072.9 rows/item — essentially the pool's density,
+        so the floor costs no history. A budget above ~1.0M therefore covers it
+        with no subsampling at all, which removes the item-draw variance the
+        subsample otherwise injects (sd 1.5-3.1pp on
+        ``mean_classifier_acc_ge1``).
+
+        Median, not mean, and computed over the whole window: it is the same
+        statistic the cohort was sized on, and it does not let one spike
+        promote a penny item.
+        """
+        item_median = price_df.groupby("item_id")["price"].median()
+        keep = set(item_median[item_median >= min_median_price].index)
+        if len(keep) == len(item_median):
+            return price_df
+
+        out = price_df[price_df["item_id"].isin(keep)].copy()
+        logger.info(
+            f"  Median-price floor >= ${min_median_price:g}: "
+            f"{len(keep):,}/{len(item_median):,} items, "
+            f"{len(out):,}/{len(price_df):,} rows"
+        )
+        return out
+
     def _flag_corrupt_items(self, price_df: pd.DataFrame,
                             jump_threshold: float = 500.0,
                             max_jumps: int = 10) -> set:
@@ -3009,13 +3079,79 @@ class ItemForecaster:
         )
         return out
 
+    @staticmethod
+    def _per_item_row_sample(train_set: pd.DataFrame, max_rows: int,
+                             seed: int = 42) -> pd.DataFrame:
+        """Spend a row budget on item breadth: an equal quota per item.
+
+        The alternative in ``_build_production_split`` is
+        ``train_set.sample(n=max_rows)``, a uniform draw in which an item's
+        share of the sample is its share of the rows. Under a median-price
+        floor that is the wrong axis. Measured 2026-08-07 on the paired
+        harness, ``ge1_budgeted`` (71K rows/fold) beat ``ge1_full`` (728K)
+        by +5.72pp against +3.50pp at 30d — ten times the rows losing at both
+        horizons, which replicates the breadth harness's ``wide_unbudgeted``
+        finding. What pays is item diversity per row, not row count.
+
+        That arm could not be expressed in production because every sampler
+        upstream selects *whole item histories*: a 110K budget under the floor
+        buys ~93 items at full depth, never 728 items at ~98 rows each. This
+        is the missing half — ``_stratified_item_subsample`` picks which items,
+        this picks how deeply each is drawn.
+
+        Rows are drawn uniformly at random *within* each item rather than from
+        its tail, so the full calendar window survives; a ``tail()`` cap
+        silently disabled expanding-window CV once already
+        (``2026-07-16-training-window-audit.md``). Mirrors
+        ``scripts/ab_test_training_breadth.py::_stratified_sample``, which is
+        the implementation the +5.72pp was measured on.
+
+        Safe to run after feature engineering only. Thinning rows before
+        ``engineer_features`` would compute lags over a punctured series, and
+        before ``prepare_targets`` would void the labels of any row whose
+        ``date + horizon`` partner was dropped.
+        """
+        if len(train_set) <= max_rows or "item_id" not in train_set.columns:
+            return train_set
+
+        groups = train_set.groupby("item_id", sort=True).indices
+        per_item = max(1, max_rows // len(groups))
+        rng = np.random.default_rng(seed)
+
+        keep = []
+        for _item_id, idx in groups.items():
+            if len(idx) <= per_item:
+                keep.append(idx)
+            else:
+                keep.append(rng.choice(idx, size=per_item, replace=False))
+        picked = np.concatenate(keep)
+        picked.sort()
+        out = train_set.iloc[picked]
+
+        if len(out) > max_rows:
+            # Only reachable when items outnumber the budget, where the
+            # one-row-per-item floor cannot be honoured for everyone. max_rows
+            # is a memory guard upstream, so it wins over the quota.
+            out = out.iloc[rng.choice(len(out), size=max_rows, replace=False)]
+
+        logger.info(
+            f"  Per-item row sample: {len(groups):,} items x {per_item:,} rows "
+            f"-> {len(out):,}/{len(train_set):,} rows (budget {max_rows:,})"
+        )
+        return out.sort_values("date")
+
     def build_training_data(self, days_back: int = 365,
                              backfilled_only: bool = False,
-                             max_feature_rows: int = 100_000) -> pd.DataFrame:
+                             max_feature_rows: int = 100_000,
+                             min_median_price: Optional[float] = None) -> pd.DataFrame:
         _t0 = datetime.now()
         price_df = self.fetch_price_history(days_back=days_back, backfilled_only=backfilled_only)
         logger.info(f"  fetch_price_history took {(datetime.now() - _t0).total_seconds():.0f}s")
         price_df = self._filter_dead_items(price_df)
+        # Before the subsample, so the row budget is spent on the surviving
+        # universe rather than on the pool. See _filter_by_median_price.
+        if min_median_price:
+            price_df = self._filter_by_median_price(price_df, min_median_price)
         corrupt_items = self._flag_corrupt_items(price_df)
 
         # NOTE: A distribution-shift guard here previously excluded ALL 2026
@@ -3319,7 +3455,9 @@ class ItemForecaster:
         return vol.astype(np.float32)
 
     def train(self, max_rows: int = 300_000,
-              max_feature_rows: int = 100_000):
+              max_feature_rows: int = 100_000,
+              min_median_price: Optional[float] = None,
+              per_item_row_sampling: bool = False):
         logger.info("=" * 60)
         logger.info("TRAINING LIGHTGBM FORECASTER (ensemble, HP search, walk-forward)")
         logger.info("=" * 60)
@@ -3342,7 +3480,8 @@ class ItemForecaster:
         # stays at the measured status quo; see
         # docs/changelog/2026-08-04-minimal-model-results.md.
         df = self.build_training_data(days_back=1460, backfilled_only=True,
-                                      max_feature_rows=max_feature_rows)
+                                      max_feature_rows=max_feature_rows,
+                                      min_median_price=min_median_price)
 
         self.horizon_feature_cols = {}
 
@@ -3367,7 +3506,9 @@ class ItemForecaster:
         )
 
         for hi, horizon in enumerate(self.HORIZONS, 1):
-            self._train_horizon_inline(horizon, df, max_rows)
+            self._train_horizon_inline(
+                horizon, df, max_rows,
+                per_item_row_sampling=per_item_row_sampling)
 
         del df
 
@@ -3379,7 +3520,8 @@ class ItemForecaster:
         logger.info(f"  [timing] TOTAL training: {_train_elapsed:.1f}s")
 
     def _train_horizon_inline(self, horizon: int, df: pd.DataFrame,
-                                max_rows: int = 300_000):
+                                max_rows: int = 300_000,
+                                per_item_row_sampling: bool = False):
         logger.info(f"\n{'='*60}")
         logger.info(f"HORIZON {horizon}d")
         logger.info(f"{'='*60}")
@@ -3407,7 +3549,8 @@ class ItemForecaster:
             # Temporal walk-forward split: a trailing calendar window, purged of
             # the training rows it labels. See the helper.
             train_set, val_set = self._build_production_split(
-                tdf, horizon, max_rows)
+                tdf, horizon, max_rows,
+                per_item_row_sampling=per_item_row_sampling)
 
             if attempt == 0:
                 logger.info(f"  {horizon}d: {len(train_set)} train, {len(val_set)} val")

@@ -138,6 +138,72 @@ def _train_feature_rows() -> int:
     return budget
 
 
+def _train_min_median_price() -> Optional[float]:
+    """Median-price floor on the training universe, or None for no filter.
+
+    Default None keeps the universe byte-identical to the pre-2026-08-07 model.
+    Set with TRAIN_FEATURE_ROWS, not instead of it: the floor decides *which*
+    items the budget may buy, the budget decides how many. A floor of 1.0 with a
+    budget above ~1.0M covers the whole >= $1 cohort (926 items) with no
+    subsample, which is the only configuration that removes item-draw variance
+    rather than merely shrinking it.
+    """
+    raw = os.environ.get("TRAIN_MIN_MEDIAN_PRICE")
+    if not raw:
+        return None
+    try:
+        floor = float(raw)
+    except ValueError:
+        logger.warning(
+            f"TRAIN_MIN_MEDIAN_PRICE={raw!r} is not a number; no price floor"
+        )
+        return None
+    if floor <= 0:
+        logger.warning(
+            f"TRAIN_MIN_MEDIAN_PRICE={floor} is not positive; no price floor"
+        )
+        return None
+    logger.info(
+        f"TRAIN_MIN_MEDIAN_PRICE override: training universe restricted to "
+        f"items with median price >= ${floor:g}"
+    )
+    return floor
+
+
+def _train_per_item_rows() -> bool:
+    """Whether the per-horizon row cap draws an equal quota per item.
+
+    Default False keeps the training set byte-identical to the pre-2026-08-07
+    model, where the cap is a uniform draw and an item's share of the sample is
+    its share of the rows. True spends the same budget on breadth instead: the
+    paired harness measured that arm at +5.72pp at 30d against +3.50pp for the
+    row-heavy one, ten times the rows losing at both horizons.
+
+    Pairs with TRAIN_MIN_MEDIAN_PRICE and TRAIN_FEATURE_ROWS, and is the reason
+    a wide floor need not cost a wide budget: the floor picks the universe,
+    TRAIN_FEATURE_ROWS picks how many whole histories are engineered, and this
+    decides how deeply each is drawn for the fit.
+
+    Unrecognised values fall back to False rather than True — a typo must not
+    silently change the training set.
+    """
+    raw = os.environ.get("TRAIN_PER_ITEM_ROWS", "").strip().lower()
+    if not raw:
+        return False
+    if raw in {"1", "true", "yes", "on"}:
+        logger.info(
+            "TRAIN_PER_ITEM_ROWS override: the per-horizon row cap draws an "
+            "equal quota per item instead of a uniform sample of rows"
+        )
+        return True
+    if raw not in {"0", "false", "no", "off"}:
+        logger.warning(
+            f"TRAIN_PER_ITEM_ROWS={raw!r} is not a boolean; leaving per-item "
+            f"row sampling off"
+        )
+    return False
+
+
 def _model_age_days(forecaster) -> Optional[int]:
     """Days since the currently saved model was trained, or None if unknown."""
     meta_path = os.path.join(forecaster.model_dir, "meta.json")
@@ -235,8 +301,18 @@ def _write_forecasts_to_db(db, results, model_version, slug_to_id, today):
                         db.rollback()
                         raise
 
+        # The Parquet mirror carries the slug as well as the surrogate id. The
+        # price archive keys on item_slug, so without it a forecast cannot be
+        # joined to its own price history without a round-trip to Supabase.
+        # Mirror only: `forecast_rows` is the DB payload above and ItemForecast
+        # has no such column.
+        id_to_slug = {v: k for k, v in slug_to_id.items()}
         from db.parquet import append_table
-        append_table("item_forecasts", forecast_rows, ["item_id", "forecast_date", "horizon_days"])
+        append_table(
+            "item_forecasts",
+            [{**r, "item_slug": id_to_slug.get(r["item_id"])} for r in forecast_rows],
+            ["item_id", "forecast_date", "horizon_days"],
+        )
 
     return len(forecast_rows)
 
@@ -325,7 +401,9 @@ def run_forecast(train_only: bool = False, predict_only: bool = False,
             if has_models:
                 logger.info("Saved models found, retraining...")
             forecaster.train(max_rows=TRAIN_HORIZON_MAX_ROWS,
-                             max_feature_rows=_train_feature_rows())
+                             max_feature_rows=_train_feature_rows(),
+                             min_median_price=_train_min_median_price(),
+                             per_item_row_sampling=_train_per_item_rows())
             has_models = True
             logger.info("Refreshing DB connection after training...")
             try:

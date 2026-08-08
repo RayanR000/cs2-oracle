@@ -141,3 +141,96 @@ class TestFeatureRowsOverride:
         sig = inspect.signature(ItemForecaster.train)
         assert (DEFAULT_TRAIN_FEATURE_ROWS
                 == sig.parameters["max_feature_rows"].default)
+
+
+class TestMedianPriceFloor:
+    """The universe filter that decides *which* items the budget may buy.
+
+    Training applied no price filter, so at the 100K default only ~20 of the
+    ~99 selected items were in the >= $1 cohort production serves, and 44% of
+    the pool is stickers and graffiti at a $0.03 median. The floor exists so a
+    budget above ~1.0M can cover the 926-item served cohort outright — the only
+    configuration that removes the subsample's item-draw variance (measured
+    sd 1.5-3.1pp on mean_classifier_acc_ge1 across 8 seeds) rather than
+    shrinking it.
+    """
+
+    @staticmethod
+    def _frame():
+        import pandas as pd
+        return pd.DataFrame({
+            "item_id": ["cheap"] * 3 + ["dear"] * 3 + ["spiky"] * 3,
+            "date": pd.to_datetime(["2026-01-01", "2026-01-02", "2026-01-03"] * 3),
+            # spiky is a penny item with one large print: its mean clears $1
+            # but its median does not.
+            "price": [0.03, 0.04, 0.05,
+                      5.00, 6.00, 7.00,
+                      0.03, 0.04, 99.0],
+        })
+
+    def test_keeps_only_items_whose_median_clears_the_floor(self):
+        out = ItemForecaster._filter_by_median_price(self._frame(), 1.0)
+        assert set(out["item_id"]) == {"dear"}
+
+    def test_uses_the_median_not_the_mean(self):
+        """A single spike must not promote a penny item into the universe."""
+        frame = self._frame()
+        spiky = frame[frame["item_id"] == "spiky"]
+        assert spiky["price"].mean() > 1.0, "fixture no longer tests the case"
+        out = ItemForecaster._filter_by_median_price(frame, 1.0)
+        assert "spiky" not in set(out["item_id"])
+
+    def test_whole_item_histories_survive(self):
+        """Row-level filtering would corrupt lag/rolling features."""
+        out = ItemForecaster._filter_by_median_price(self._frame(), 1.0)
+        assert len(out) == 3, "the kept item must keep every one of its rows"
+
+    def test_is_a_no_op_when_every_item_clears(self):
+        frame = self._frame()
+        out = ItemForecaster._filter_by_median_price(frame, 0.001)
+        assert len(out) == len(frame)
+
+    def test_build_training_data_exposes_and_defaults_to_no_filter(self):
+        sig = inspect.signature(ItemForecaster.build_training_data)
+        assert "min_median_price" in sig.parameters
+        assert sig.parameters["min_median_price"].default is None, (
+            "the default universe must stay the pool, or this lands as a "
+            "silent production change"
+        )
+
+    def test_train_exposes_and_forwards_the_floor(self):
+        sig = inspect.signature(ItemForecaster.train)
+        assert "min_median_price" in sig.parameters
+        assert sig.parameters["min_median_price"].default is None
+        assert "min_median_price=min_median_price" in inspect.getsource(
+            ItemForecaster.train)
+
+    def test_floor_is_applied_before_the_subsample(self):
+        """Order is the whole point: filtering after the subsample would spend
+        the row budget on the pool and then throw most of it away."""
+        src = inspect.getsource(ItemForecaster.build_training_data)
+        assert src.index("_filter_by_median_price") < src.index(
+            "_stratified_item_subsample"), (
+            "the price floor must narrow the universe BEFORE the budget is "
+            "spent, otherwise it cannot buy served-cohort breadth"
+        )
+
+
+class TestTrainMinMedianPriceEnv:
+    @staticmethod
+    def _fn():
+        from scripts.forecast_prices import _train_min_median_price
+        return _train_min_median_price
+
+    def test_none_when_unset(self, monkeypatch):
+        monkeypatch.delenv("TRAIN_MIN_MEDIAN_PRICE", raising=False)
+        assert self._fn()() is None
+
+    def test_override_is_honoured(self, monkeypatch):
+        monkeypatch.setenv("TRAIN_MIN_MEDIAN_PRICE", "1.0")
+        assert self._fn()() == 1.0
+
+    @pytest.mark.parametrize("bad", ["", "dollars", "0", "-1"])
+    def test_bad_values_disable_the_floor(self, monkeypatch, bad):
+        monkeypatch.setenv("TRAIN_MIN_MEDIAN_PRICE", bad)
+        assert self._fn()() is None
