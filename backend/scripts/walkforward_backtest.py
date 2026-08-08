@@ -577,6 +577,16 @@ def run_walkforward(max_items=500, horizons=None, skip_db=False, return_records=
         logger.info(f"{'='*60}")
 
         if not skip_db:
+            # A FRESH session. The one opened at the top of this function was
+            # closed immediately after `fetch_events`, and everything between
+            # there and here is the fold loop -- 35 minutes at the default 500
+            # items. Reusing the closed session makes SQLAlchemy check out a
+            # pooled connection the Supabase pooler dropped long ago, and the
+            # write dies with `SSL SYSCALL error: EOF detected` *after* every
+            # horizon has been computed. Measured 2026-08-08: all four horizons
+            # scored, none persisted, and the failure is reported by the outer
+            # `except` as "Backtest failed" with the numbers already in hand.
+            db = SessionLocal()
             today = date.today()
             for horizon, entry in results_by_horizon.items():
                 clf = entry["classifier"]

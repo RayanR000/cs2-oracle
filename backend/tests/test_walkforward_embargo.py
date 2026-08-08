@@ -351,3 +351,34 @@ class TestTheProductionGateEmbargoesByDefault:
     def test_the_report_records_which_way_it_ran(self):
         """Two runs of the gate differ only by this flag; the report has to say."""
         assert '"purge": bool(purge)' in inspect.getsource(wf.run_walkforward)
+
+
+class TestTheGateCanActuallyPersist:
+    """The 2026-08-08 run scored all four horizons and stored none of them.
+
+    `run_walkforward` opens a session, closes it right after `fetch_events`,
+    then reuses it for the writes at the end. At the default 500 items the fold
+    loop between those two points runs ~35 minutes, so the write checks out a
+    pooled connection the Supabase pooler dropped long ago and dies with
+    `SSL SYSCALL error: EOF detected` — with every number already computed and
+    nothing to show for it. `prediction_type='walkforward_backtest'` had zero
+    rows in production as a result.
+    """
+
+    def test_the_write_block_opens_its_own_session(self):
+        src = inspect.getsource(wf.run_walkforward)
+        head, _, tail = src.partition("if not skip_db:")
+        assert tail, "the write block moved; this test needs updating"
+        assert "SessionLocal()" in tail, (
+            "the DB write must open a fresh session — the one from the top of "
+            "the function was closed before the fold loop ran"
+        )
+
+    def test_the_early_session_is_still_closed_promptly(self):
+        """Holding it open for the whole run is the other way to 'fix' this,
+        and it is worse: an idle transaction against the pooler for 35 minutes.
+        Closing early and reopening late is the intended shape."""
+        src = inspect.getsource(wf.run_walkforward)
+        head, _, _ = src.partition("if not skip_db:")
+        assert "events_df = forecaster.fetch_events()" in head
+        assert "db.close()" in head
