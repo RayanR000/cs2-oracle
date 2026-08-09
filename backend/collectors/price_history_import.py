@@ -3,7 +3,11 @@
 Source-specific fetching and parsing live in ``collectors/price_history_sources/``.
 Everything here is source-agnostic and is what a second backfill source reuses.
 """
+from collections import defaultdict
+from dataclasses import dataclass
 from datetime import date
+
+from backtest.price_resolution import MAX_WINDOW_SPAN_DAYS
 
 
 class StalledSourceError(Exception):
@@ -54,3 +58,87 @@ def detect_stalled_days(day_digests: dict[date, str]) -> list[list[date]]:
     if len(run) >= 2:
         groups.append(run)
     return groups
+
+
+#: An item whose observations are further apart than this yields a punctured
+#: series: lags compute over holes and the resolution window breaks rather than
+#: continuing. Deliberately the archive's own constant, not a new number.
+MAX_GAP_DAYS = MAX_WINDOW_SPAN_DAYS
+
+#: Minimum distinct days an item must carry inside the imported range.
+#:
+#: NOT redundant with MAX_GAP_DAYS, which passes trivially for a near-empty
+#: item: two consecutive observations have a max interior gap of 1. Measured on
+#: the 90-day block, 904 items (611 at >= $1) clear the gap bar on fewer than 10
+#: of 90 days, median 2 — each of which would flip ``is_backfilled`` on two
+#: rows. Together the two conditions mean "densely observed over at least half a
+#: year". A genuinely dense item carries 300+ of the range's 408 days, so this
+#: never binds on real data.
+MIN_DISTINCT_DAYS = 180
+
+
+@dataclass(frozen=True)
+class GapGateReport:
+    kept_items: int
+    rejected_gap_items: int
+    rejected_sparse_items: int
+    kept_rows: int
+    rejected_rows: int
+    worst_gap_days: int
+
+
+def apply_gap_gate(
+    records: list[tuple[str, date, float]],
+    max_gap_days: int = MAX_GAP_DAYS,
+    min_distinct_days: int = MIN_DISTINCT_DAYS,
+) -> tuple[list[tuple[str, date, float]], GapGateReport]:
+    """Keep only densely-observed items: both conditions must hold.
+
+    (a) no interior gap wider than *max_gap_days*, and
+    (b) at least *min_distinct_days* distinct days.
+
+    Filtering here rather than at training is deliberate. A sparse item still
+    flips ``is_backfilled`` (derived as "has any row before 2026-01-01"), so
+    admitting one buys a gate entry that carries no usable features — which is
+    how that flag was rendered meaningless once before, when it read 8,691 of
+    8,691. Price, by contrast, is NOT filtered here: which cohort to train on
+    belongs to ``TRAIN_MIN_MEDIAN_PRICE``, and the archive must not bake it in.
+
+    Only gaps BETWEEN consecutive observations count. An item that starts late
+    or stops early is judged on the span it covers. An item failing both
+    conditions is counted once, as a gap rejection.
+    """
+    by_item: dict[str, dict[date, float]] = defaultdict(dict)
+    for slug, day, price in records:
+        by_item[slug].setdefault(day, price)
+
+    kept: list[tuple[str, date, float]] = []
+    kept_items = rejected_gap = rejected_sparse = rejected_rows = 0
+    worst_gap = 0
+
+    for slug, observations in by_item.items():
+        days = sorted(observations)
+        gaps = [(b - a).days for a, b in zip(days, days[1:])]
+        item_worst = max(gaps) if gaps else 0
+
+        if item_worst > max_gap_days:
+            rejected_gap += 1
+            rejected_rows += len(days)
+            worst_gap = max(worst_gap, item_worst)
+            continue
+        if len(days) < min_distinct_days:
+            rejected_sparse += 1
+            rejected_rows += len(days)
+            continue
+
+        kept_items += 1
+        kept.extend((slug, day, observations[day]) for day in days)
+
+    return kept, GapGateReport(
+        kept_items=kept_items,
+        rejected_gap_items=rejected_gap,
+        rejected_sparse_items=rejected_sparse,
+        kept_rows=len(kept),
+        rejected_rows=rejected_rows,
+        worst_gap_days=worst_gap,
+    )
