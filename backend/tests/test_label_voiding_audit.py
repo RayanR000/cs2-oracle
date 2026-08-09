@@ -55,6 +55,28 @@ def _frame_with_a_cutover(n_items=60, n_dates=40, cutover_at=20):
     return pd.DataFrame(rows)
 
 
+def _frame_with_flat_prices(n_items=60, n_dates=40):
+    """Same population as `_frame_with_a_cutover`, minus the `d * 1e-6` drift
+    and the cutover -- every item's price is bit-identical on every day it
+    appears, so this is what `_frame_with_a_cutover` would have been before
+    that fix, and it exists specifically to fire `_snapshot_dates`: >=99% of a
+    >=25-item cross-section repeating the previous day's price exactly.
+    `_frame_with_a_cutover` can no longer exercise `snapshot_dates` at all
+    (that is the point of its drift), so this fixture is the only coverage
+    for the ISO-string/sorted contract on that key.
+    """
+    rows = []
+    start = pd.Timestamp("2026-01-01")
+    for d in range(n_dates):
+        for item in range(n_items):
+            rows.append({
+                "item_id": f"item-{item}",
+                "date": (start + pd.Timedelta(days=d)).date(),
+                "price": 10.0 + item * 0.01,
+            })
+    return pd.DataFrame(rows)
+
+
 def test_audit_is_empty_before_prepare_targets(tmp_path):
     assert _f(tmp_path).label_voiding == {}
 
@@ -98,3 +120,21 @@ def test_dates_are_sorted_iso_strings(tmp_path):
         assert isinstance(got, list)
         assert all(isinstance(d, str) for d in got)
         assert got == sorted(got)
+
+
+def test_dates_are_sorted_iso_strings_for_a_populated_snapshot_list(tmp_path):
+    """The loop above never exercises a non-empty `snapshot_dates`:
+    `_frame_with_a_cutover`'s drift (needed to keep the cutover assertions
+    from being swamped by a spurious snapshot-day confound -- see its
+    docstring) means that fixture always yields `snapshot_dates == []`, and
+    the ISO-string/sorted checks pass vacuously on an empty list. The real
+    archive does populate this key (Step 8 measurement: 2026-07-16,
+    2026-07-22), so pin the contract against a fixture that actually fires
+    `_snapshot_dates`."""
+    f = _f(tmp_path)
+    f.prepare_targets(_frame_with_flat_prices(), horizon=3)
+    got = f.label_voiding["snapshot_dates"]
+    assert got, "flat prices across a >=25-item cross-section must fire _snapshot_dates"
+    assert isinstance(got, list)
+    assert all(isinstance(d, str) for d in got)
+    assert got == sorted(got)
