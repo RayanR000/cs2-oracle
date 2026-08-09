@@ -36,6 +36,17 @@ The measurement floor (1.15pp at 3d, 2.76–7.13pp at 7d/14d/30d) is unchanged, 
 > breadth arm rather than between the 150- and 350-item arms. Both are amended inline, in
 > Tier-1 item 1 and in *The constraint that bounds all of it*.
 > `2026-08-07-training-item-universe.md`.
+>
+> **Void 2026-08-09 — the budget this entry divides no longer binds.** Production ships
+> `TRAIN_FEATURE_ROWS = 1.2M` with a $1 floor and no subsample, and at that budget the
+> widest 700-item arm's largest fold is 1,120,798 rows, so no fold is capped at all. The
+> `target_items = budget / rows_per_item` arithmetic — Tier-1 item 1's **521 → 758** and the
+> `atalantus` rejection's **521 → 426** — therefore has nothing to divide and is
+> inapplicable, not merely re-scaled. Re-measured at 1.2M, breadth is **+0.90pp at 14d
+> against a 0.95pp MDE** and null at 30d; the significant 30d *penalty* seen in the
+> early-stopping re-run was a leak, not an effect. The coverage argument for the Steam
+> backfill is untouched and is now the whole case.
+> `2026-08-09-breadth-curve-at-1p2m-budget.md`.
 
 ## What the audit found that changes the picture
 

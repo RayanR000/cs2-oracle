@@ -25,7 +25,7 @@
 | **Features** | **47 columns** in the shipped 2026-08-05 artifact, identical across all four horizons (`meta.json: horizon_feature_cols`). That is the count *after* correlation pruning at 0.95, `SHELVED_FEATURES`, and `FEATURE_GROUP_ALLOWLIST = ["price_technicals"]`; every other feature group is engineered on every training row and then discarded, and the allowlist logs the drop as `pre -> post`. ⚠️ **An earlier version of this row read "~70–120 features, 8 groups"; that was the engineered count, not the served count, and the doc then contradicted itself further down.** Shelving the 13 volume features (their archive column has been identically 0 since 2026-05) took the served count to **36** in the 2026-08-06 artifact, and shelving the 37 dollar-denominated columns takes it to **32** on the next retrain (training smoke run, 2026-08-06 — see `docs/changelog/2026-08-06-scale-free-features-and-fabricated-labels.md`). `MODEL_ARTIFACT_VERSION` is now **5**; each bump exists to force the retrain rather than wait out the 14-day age trigger |
 | **Rows** | `max_feature_rows = 100_000`, overridable with **`TRAIN_FEATURE_ROWS`**. This is an item-coverage budget, not a row budget: it selects **99 whole item histories of ~5,377** (1.8% of the pool). See the dedicated section below |
 | **HP search** | 3d skipped (frozen 50-trial winner, warm-started in `_optuna_search_params`), 7d=10 trials, 14d=15, 30d=15. Cold Optuna across all four horizons measured **39.4s** total and a warm retrain logs 0.0s, so HP search is no longer a meaningful cost centre |
-| **Warm retrain** | **176.7s** measured 2026-08-05 (10-core Mac, `SKIP_REGIMES=1 --train-only`, HP cached). ⚠️ **Was 381.2s** on the same machine and flags. Booster fitting fell 330.8s → 28.1s, but the out-of-fold conformal CV rose 50.4s → ~148.6s and is now **~84% of training**, so the bottleneck is calibration, not the model |
+| **Warm retrain** | **176.7s** measured 2026-08-05 (10-core Mac, `SKIP_REGIMES=1 --train-only`, HP cached). ⚠️ **Was 381.2s** on the same machine and flags. Booster fitting fell 330.8s → 28.1s, but the out-of-fold conformal CV rose 50.4s → ~148.6s and was then **~84% of training**, so the bottleneck is calibration, not the model. ⚠️ **These are 100K-config numbers.** The shipped ≥$1 fixed-rounds config is an **872s** cold retrain in which CV is 439.3s / 50.4% — see "Where the time goes now" |
 | **Cold retrain** | **250.1s** measured 2026-08-05 (same flags, no cached HP; Optuna 39.4s). ⚠️ **Was 12m30s** measured 2026-07-29. The first post-rewrite run is necessarily cold: the artifact-version check refuses the pre-rewrite `meta.json` |
 | **Inference** | **87s measured locally on a cold cache** (2026-08-04, `VOTED_CACHE=0`, 10-core Mac, 8,691 items / 34,764 forecasts). Phases: 37s fetch (730d window, 5.37M raw → 3.59M voted), 1.4s tail (3.59M → **1.39M rows**), 35s chunked feature engineering, remainder booster scoring. **72 of those 87s are fetch + feature engineering, so predict is data-bound, not model-bound** — scoring 4 boosters instead of 36 shrinks only the remainder, and this figure was not expected to move on the collapse. Not re-measured on a 2-core CI runner, where the local number does not transfer |
 | **Production DA** | **Not quotable.** `MIN_FORECAST_DATES = 20` (`backtest/scoring.py:38`) and every live cohort spans 1–2 distinct forecast dates, so all four horizons report NO HEADLINE. It also cannot be refreshed on demand: `backtest_accuracy.py` scores *stored* forecasts against matured actuals and maturity is bounded by archive coverage, so no post-rewrite forecast has matured. ⚠️ **Every production DA measured before 2026-08-02 is an artifact** of a scorer whose two legs used different estimators — one 5,512-forecast cohort scored 61.76%, 33.74%, 61.54% and 57.91% on four evaluation dates with no new data. Do not cite those figures and do not read their disappearance as a model regression. See `docs/changelog/2026-08-01-deterministic-backtest.md`. For a fresh-model number, run `scripts/walkforward_backtest.py` |
@@ -37,21 +37,52 @@
 
 ## Where the time goes now
 
-Warm retrain, 176.7s total, from the per-phase `[timing]` lines:
+⚠️ **The table below was re-measured 2026-08-09 on the shipped fixed-rounds config**
+(`FIXED_BOOST_ROUNDS` = 3d 300 / 7d 750 / 14d 150 / 30d 1000, verified from the saved boosters'
+tree counts), a CI-exact cold retrain on an uncontended 10-core Mac: **872s training + ~3s data
+build** (warm voted cache). An earlier version of this section read **487s** with conformal CV at
+260.8s / 53.6% — that was the early-stopping config, which was cheap by not training. Source:
+`docs/changelog/2026-08-09-shipped-retrain-cost-measured.md`.
 
 | Phase | Seconds | Share |
 |---|---|---|
-| Out-of-fold conformal CV (8–9 folds × 4 horizons) | ~148.6s | **~84%** |
-| Booster fitting (4 q50 + 4 classifiers) | 28.1s | 16% |
-| Optuna | 0.0s (cached HP) | — |
+| Conformal CV (33 folds × 4 horizons) | 439.3s | **50.4%** |
+| q50 ensemble | 158.4s | 18.2% |
+| Regime models | 95.4s | 10.9% |
+| Direction classifier | 92.3s | 10.6% |
+| Remainder (targets, splits, feature medians, artifact save) | 52.0s | 6.0% |
+| Optuna | 35.0s | 4.0% |
 
-A cold run adds 39.4s of Optuna, for 250.1s.
+⚠️ **Read the total, not the phases.** Per-phase timings on this machine swing ±25% between clean
+runs at identical rounds — 3d conformal CV read 93.9s and 68.3s across two uncontended runs of the
+same config. Do not compare a single phase across runs, and do not size a lever from one.
+
+**The CV diagnostic classifier is 52% of a research retrain, and CI already gates it off.** The CV
+phase fits *two* boosters per fold: only the q50 predictions become `oof_records` → conformal
+`q_hat` and the confidence thresholds. The 3-class direction classifier fitted beside it feeds only
+`classifier_accuracy` / `classifier_accuracy_ge1` in `cv_results`, which is serialised to
+`meta.json` and read by no served artifact. Measured 2026-08-09 by running the shipped config both
+ways: **872s with `CV_DIAGNOSTIC_CLASSIFIER=0` (what CI runs) against 1804s with it on** — the
+diagnostic costs **932s, 52% of a classifier-on retrain**. ⚠️ **An earlier version of this
+paragraph said 69% of a fold's fit cost, ~155–180s, 32–37% of the retrain.** That was benchmarked
+under early stopping, which collapsed the classifier to ~3 trees; fixed rounds let it train
+full-length at 3 trees per round, so its share roughly doubled. The local/research default is
+still on, which puts a research retrain at 30.1 min.
 
 **This inverts the pre-rewrite picture, and it is what makes most of the old lever tables moot.**
 Before the collapse, two DART horizons were 78% of training and the 24 p10/p90 boosters were 59%;
-both are gone. Every surviving lever that acts on *booster fitting* is now competing for a 28.1s
-budget, which is why the sub-1pp micro-levers below are no longer worth a retrain individually.
-The only phase with real headroom left is fold count.
+both are gone. Every surviving lever that acts on *booster fitting* is now competing for the three
+fit phases above (130.5s combined), which is why the sub-1pp micro-levers below are no longer worth
+a retrain individually. The phases with real headroom left are fold count and the per-fold
+diagnostic classifier.
+
+**Feature engineering is 7s, not 35s**, at this config — see lever 2, which is sized against it.
+
+**`n_jobs = max(1, cpu_count // 2)`** (`forecaster.py:3866`) was vestigial from the
+parallel-ensemble code deleted 2026-07-21, and contradicted the comment above it; it has now been
+changed to `-1`. Expect less than it looks: LightGBM is memory-bandwidth bound at this frame shape,
+and 1 → 10 threads measured only **1.55×**, so thread count is worth ~25% of the booster-fit
+phases, not 2×.
 
 The pre-rewrite per-horizon/per-quantile breakdown lives in
 `docs/changelog/2026-08-04-minimal-model-results.md`. It is not reproduced here: the models it
@@ -114,7 +145,7 @@ the same phase directly without shrinking item coverage further.
 | `MAX_BIN` 255 → 63 | Jul 2026 | Roughly halves histogram build cost |
 | 7d HP search reduced (`N_TRIALS_MAP[7]` 15 → 10) | 2026-07-26 | Now worth ~0s: HP is cached on warm retrains and 39.4s total when cold. A full skip is available and not worth the edit |
 | `SKIP_HP_HORIZONS = [3]` | Jul 2026 | 3d frozen on its 50-trial winner |
-| Regime training skipped on warm retrains | Jul 2026 | `forecaster.py:3076` — also skipped whenever `SKIP_REGIMES=1`. **CI does not set the env var**, so a *cold* CI retrain would still train regimes; `meta.json` currently carries `trained_regimes: []` |
+| Regime training skipped on warm retrains | Jul 2026 | `forecaster.py:3076` — also skipped whenever `SKIP_REGIMES=1`. ⚠️ **An earlier version of this row said `meta.json` currently carries `trained_regimes: []`, i.e. that regimes are effectively not trained. That is wrong.** The model-cache restore step in `price-forecast.yml` is `if: mode == 'predict-only'`, so the Monday `mode=full` run is **always cold**, `_warm_retrain` is False, and CI never sets `SKIP_REGIMES`. The deployed artifact carries `trained_regimes: ['bull','range','bear']` and 7 regime boosters, and `predict()` uses them — **95.4s / 10.9%** of the shipped retrain (re-measured 2026-08-09; was 54.1s / 11.1% under early stopping). A local retrain produces them too when it is cold and does not pass `SKIP_REGIMES=1` — 8 boosters, `trained_regimes: ['bear','bull','range']` — but the documented local command *does* pass it, so **the served model depends on where it was trained** (2026-08-08) |
 | Feature-group permutation validation skipped on warm retrains | Jul 2026 | `forecaster.py:3296`; also auto-skipped when the val window has <2000 rows or <7 distinct dates, where the permutation test is pure noise and caused false-positive pruning that collapsed 14d/30d to ~4 features |
 | Voted frame cache in `fetch_price_history` | 2026-07-29 | **35s** measured, against a ~10 min estimate in a since-deleted planning doc — the estimate was wrong by ~17×. `VOTED_CACHE=0` disables. **Bump `VOTED_CACHE_VERSION` when voting or the DuckDB query changes**, or a stale frame silently trains the next model |
 | Engineered feature cache on the predict path (3-day TTL) | Jul 2026 | Removes feature engineering from most predict runs |
@@ -127,8 +158,8 @@ the same phase directly without shrinking item coverage further.
 
 | # | Lever | Change | Speed gain | Quality risk |
 |---|-------|--------|-----------|--------------|
-| **1** | **Widen the CV stride** | `CV_STEP_DAYS` 150 → higher. Env-overridable, no code edit (`forecaster.py:316`) | **The only large lever left.** Cuts folds ~linearly against a ~148.6s phase | **Real and structural, not statistical.** Folds are the conformal calibration set *and* the confidence-threshold fit set, so fewer folds means fewer OOF points, a noisier `q_hat`, and a looser coverage guarantee. Directional accuracy is also clustered by date, so folds are the effective sample size of every CV number in this doc. Verify empirical coverage against `NOMINAL_COVERAGE = 0.80` before and after |
-| **2** | Stop computing discarded features | Skip the temporal / event / cross-sectional / rarity / supply / social / volume blocks in `engineer_features()` when the allowlist would drop them anyway | Part of the 35s feature-engineering phase, on both train and predict | 0pp — they never reach a model. The cost is that the `ab_test_*` scripts build their feature lists from the frame and would need their own path |
+| **1** | **Widen the CV stride** | `CV_STEP_DAYS` 150 → higher. Env-overridable, no code edit (`forecaster.py:316`) | Cuts folds ~linearly against a **439.3s** phase (33 folds, 50.4% of the retrain) | **Real and structural, not statistical.** Folds are the conformal calibration set *and* the confidence-threshold fit set, so fewer folds means fewer OOF points, a noisier `q_hat`, and a looser coverage guarantee. Directional accuracy is also clustered by date, so folds are the effective sample size of every CV number in this doc. ⚠️ **Fold count is now also the input to the offline rank-IC / Pesaran–Timmermann metrics, not just conformal calibration** — cutting folds degrades the evaluation as well as the band. Verify empirical coverage against `NOMINAL_COVERAGE = 0.80` before and after |
+| **2** | Stop computing discarded features | Skip the temporal / event / cross-sectional / rarity / supply / social / volume blocks in `engineer_features()` when the allowlist would drop them anyway | ⚠️ **Near zero.** An earlier version sized this against "the 35s feature-engineering phase"; feature engineering measured **7s** at the shipped config (2026-08-08), so the lever is worth **~1% of the retrain** | 0pp — they never reach a model. The cost is that the `ab_test_*` scripts build their feature lists from the frame and would need their own path |
 | **3** | `MAX_BIN` 63 → 31 | Edit the class constant | ~10–15% of 28.1s | ~0.3–0.5pp claimed (coarser splits) — below the harness's noise floor, so unmeasurable |
 | **4** | `num_leaves` 47 → 31 | Edit the fallback; needs `FORCE_HP_SEARCH=1` to escape cached HP | ~15–20% of 28.1s | ~0.3–0.5pp claimed; likewise unmeasurable |
 | **5** | Aggressive correlation pruning | `PRUNE_CORRELATION_THRESHOLD` 0.95 → 0.85 | Fewer of 47 (soon 36) features per fit | Loses signal-bearing correlated features. Untested |
@@ -152,15 +183,24 @@ the same phase directly without shrinking item coverage further.
 
 ## Recommended order
 
-1. **Lever 2 (stop computing discarded features).** Zero accuracy risk, helps both train and
-   predict, and it makes the allowlist's effect legible in the code rather than implicit.
-2. **Lever 1 (CV stride), with a coverage check.** Retrain and compare empirical band coverage
-   against the 80% nominal before and after. This is the only lever with real headroom and the only
-   one whose risk is structural rather than statistical.
-3. **Levers 3/4/5/6** buy seconds against a 28.1s budget for accuracy costs nothing can measure.
-   Bundle them into one retrain or skip them; individually they are not worth the run.
-4. **Nothing on the predict path until the fetch is addressed.** 72 of 87s is fetch + feature
+1. **Lever 1 (CV stride), with a coverage check.** Retrain and compare empirical band coverage
+   against the 80% nominal before and after. It acts on the 439.3s / 50.4% phase, and its risk is
+   structural rather than statistical — note that folds now also carry the offline rank-IC/PT
+   metrics.
+2. **Levers 3/4/5/6** buy seconds against the booster-fit phases for accuracy costs nothing can
+   measure. Bundle them into one retrain or skip them; individually they are not worth the run.
+3. **Nothing on the predict path until the fetch is addressed.** 72 of 87s is fetch + feature
    engineering; lever 8 optimizes the remainder.
+4. **Lever 2 (stop computing discarded features), last.** ⚠️ **This was #1 in an earlier version of
+   this doc, sized against a 35s feature-engineering phase.** Feature engineering measured **7s** at
+   the shipped config (2026-08-08), so the lever is worth ~1% of the retrain. Still zero accuracy
+   risk and it makes the allowlist's effect legible, but do it for legibility, not for speed.
+
+The two levers not in this table but larger than any of them are in
+`docs/research/2026-08-08-model-review.md`: gating the per-fold diagnostic classifier off in CI
+(**already done** — measured −932s, −52%, touches nothing served) and deciding whether the
+**95.4s** of regime models earn their place. Both re-measured 2026-08-09; the first is spent, so
+the second is the only large lever left.
 
 ---
 

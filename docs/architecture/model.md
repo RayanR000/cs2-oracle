@@ -83,8 +83,15 @@ is what guarantees the served triple is ordered and positive.
 The code still supports per-regime ensembles (`REGIMES = ["bear", "range", "bull"]`, :185,
 thresholds ±3% on `market_return_30d`, :186-187), which at the current grid would be at most
 3 × 4 = 12 extra models. A regime is skipped below `MIN_REGIME_TRAIN = 500` train rows (:3091).
-**Nothing trains them in production:** CI passes `SKIP_REGIMES=1`, `meta.json` carries
-`trained_regimes: []`, and `predict()` logs `no regime models trained, using global` (:4131).
+⚠️ **An earlier version of this paragraph read "Nothing trains them in production: CI passes
+`SKIP_REGIMES=1`, `meta.json` carries `trained_regimes: []`." That is wrong.** `price-forecast.yml`
+never sets `SKIP_REGIMES`, and the Monday `mode=full` run is always cold (the model-cache restore
+step is `if: mode == 'predict-only'`), so `_warm_retrain` is False and regimes *are* trained and
+served. A cold retrain produces 8 regime boosters and `trained_regimes: ['bear','bull','range']`,
+at **95.4s / 10.9%** of the retrain (measured 2026-08-09). `predict()` falls back to
+`no regime models trained, using global` (:4131) only for artifacts built with `SKIP_REGIMES=1` —
+which is what the documented *local* retrain command passes, so a locally trained model and a
+CI-trained one do not serve the same thing.
 
 ---
 

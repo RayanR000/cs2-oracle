@@ -134,6 +134,14 @@ are declined (`buff-price-history-archive` pushes rows/item 1,341 → 1,641 and 
 `target_items` 521 → 426) and why the Steam listing-page backfill is valued for
 *lowering* rows/item.
 
+> **The `target_items` arithmetic in that paragraph is void as of 2026-08-09.** It divides a
+> row budget that no longer binds: production runs `TRAIN_FEATURE_ROWS = 1.2M` with a $1
+> floor and no subsample, and at that budget no training fold is capped (widest arm's
+> largest fold: 1,120,798 rows). The depth cliff itself is unchanged — it is a measurement of
+> the archive — but neither the `buff-price-history-archive` rejection nor the Steam
+> backfill's valuation can rest on rows/item any more.
+> `docs/changelog/2026-08-09-breadth-curve-at-1p2m-budget.md`.
+
 ---
 
 ## 4. Time coverage
