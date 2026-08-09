@@ -39,16 +39,40 @@ def _code(func) -> str:
     return ast.unparse(tree)          # ast.unparse never emits comments
 
 
+def _prices(rows: int, extra_cols: bool = False) -> pd.DataFrame:
+    """The archive's real schema. The date column is `day`, not `date` -- the
+    first content-based fingerprint keyed on MAX(date) and passed every test
+    here while failing the retrain with a binder error, because these fixtures
+    had invented a `date` column."""
+    df = pd.DataFrame({
+        "item_slug": [f"item-{i}" for i in range(rows)],
+        "day": pd.to_datetime(["2026-01-01"] * rows),
+        "source": ["aggregator_sync"] * rows,
+        "mean_price": [float(i) for i in range(rows)],
+        "volume": list(range(rows)),
+        "ingested_at": pd.to_datetime(["2026-01-02"] * rows),
+    })
+    if extra_cols:
+        # prices-2026-03 and -04 really do carry these; 19 other files do not.
+        df["min_price"] = df["mean_price"]
+        df["max_price"] = df["mean_price"]
+    return df
+
+
 @pytest.fixture
 def archive(tmp_path):
     d = tmp_path / "price-archive"
     d.mkdir()
-    pd.DataFrame({
-        "item_slug": ["a", "b"],
-        "date": pd.to_datetime(["2026-01-01", "2026-01-02"]),
-        "mean_price": [1.0, 2.0],
-    }).to_parquet(d / "prices-2026-01.parquet")
+    _prices(2).to_parquet(d / "prices-2026-01.parquet")
     return d
+
+
+def test_fingerprint_survives_a_non_uniform_schema(tmp_path, archive):
+    """The archive is not schema-uniform, so the fingerprint may not name a
+    column. Regression: MAX(date) died on the real files."""
+    _prices(3, extra_cols=True).to_parquet(archive / "prices-2026-03.parquet")
+    f = _f(tmp_path, archive)
+    assert f._archive_fingerprint()          # does not raise
 
 
 def _f(tmp_path, archive):
@@ -68,11 +92,7 @@ def test_fingerprint_is_stable_across_a_touch(tmp_path, archive):
 def test_fingerprint_changes_when_content_changes(tmp_path, archive):
     f = _f(tmp_path, archive)
     before = f._archive_fingerprint()
-    pd.DataFrame({
-        "item_slug": ["a", "b", "c"],
-        "date": pd.to_datetime(["2026-01-01", "2026-01-02", "2026-01-03"]),
-        "mean_price": [1.0, 2.0, 3.0],
-    }).to_parquet(archive / "prices-2026-01.parquet")
+    _prices(3).to_parquet(archive / "prices-2026-01.parquet")
     assert f._archive_fingerprint() != before
 
 

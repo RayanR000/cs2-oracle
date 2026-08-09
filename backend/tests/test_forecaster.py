@@ -2043,7 +2043,8 @@ class TestVotedPriceCache:
         for year in (2025, 2026):
             pd.DataFrame({
                 "item_slug": ["ak47", "awp"],
-                "date": pd.to_datetime([f"{year}-01-01", f"{year}-01-02"]),
+                # `day`, as the real archive names it -- not `date`.
+                "day": pd.to_datetime([f"{year}-01-01", f"{year}-01-02"]),
                 "mean_price": [10.5, 99.9],
             }).to_parquet(archive_dir / f"prices-{year}.parquet")
         forecaster.cache_dir = str(cache_dir)
@@ -2073,11 +2074,11 @@ class TestVotedPriceCache:
     def test_key_changes_when_archive_content_changes(self, cached_forecaster):
         f = cached_forecaster
         before = f._voted_cache_key(1460, False, None)
-        # Aggregator appends a day: same filename, one more row and a later
-        # max date. Both legs of the fingerprint move.
+        # Aggregator appends a day: same filename, one more row. Both legs of
+        # the fingerprint (row count and byte size) move.
         pd.DataFrame({
             "item_slug": ["ak47", "awp", "m4a4"],
-            "date": pd.to_datetime(["2026-01-01", "2026-01-02", "2026-01-03"]),
+            "day": pd.to_datetime(["2026-01-01", "2026-01-02", "2026-01-03"]),
             "mean_price": [10.5, 99.9, 42.0],
         }).to_parquet(f.archive_dir / "prices-2026.parquet")
         assert f._voted_cache_key(1460, False, None) != before
@@ -2087,7 +2088,7 @@ class TestVotedPriceCache:
         before = f._voted_cache_key(1460, False, None)
         pd.DataFrame({
             "item_slug": ["ak47"],
-            "date": pd.to_datetime(["2027-01-01"]),
+            "day": pd.to_datetime(["2027-01-01"]),
             "mean_price": [12.0],
         }).to_parquet(f.archive_dir / "prices-2027.parquet")
         assert f._voted_cache_key(1460, False, None) != before

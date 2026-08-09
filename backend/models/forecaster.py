@@ -3567,14 +3567,20 @@ class ItemForecaster:
         return os.getenv("VOTED_CACHE", "1") != "0"
 
     def _archive_fingerprint(self) -> str:
-        """Identify the archive by each file's row count and max day.
+        """Identify the archive by each file's row count and byte size.
 
         Was `name:st_size:st_mtime_ns`, which made the cache structurally
         CI-hostile: CI checks the archive out fresh every run, so every mtime
         was new and the key changed unconditionally. The miss costs ~48s a run
         (21.1s DuckDB read + 27.2s voting), paid by the daily predict path too,
-        not just by the retrain. Row count and max day are content-derived and
-        survive a checkout.
+        not just by the retrain. Dropping mtime is the whole fix — st_size was
+        always content-derived and survives a checkout byte-identically.
+
+        Names NO column. The archive's schema is not uniform (prices-2026-03
+        and -04 carry min_price/max_price the other 19 files do not), and the
+        date column is `day`, not `date` — a first attempt at this keyed on
+        MAX(date) and died in the retrain with a binder error. Row count comes
+        from the Parquet footer, so this stays a metadata read.
 
         Only prices-*.parquet feeds the voted frame — ops/ artifacts are
         rewritten by the pipeline on every run and must not invalidate it.
@@ -3584,10 +3590,10 @@ class ItemForecaster:
         con = duckdb.connect()
         try:
             for path in sorted(self.archive_dir.glob("prices-*.parquet")):
-                n, max_day = con.execute(
-                    "SELECT COUNT(*), MAX(date) FROM read_parquet(?)",
+                (n,) = con.execute(
+                    "SELECT COUNT(*) FROM read_parquet(?)",
                     [str(path)]).fetchone()
-                parts.append(f"{path.name}:{n}:{max_day}")
+                parts.append(f"{path.name}:{n}:{path.stat().st_size}")
         finally:
             con.close()
         return "|".join(parts)
