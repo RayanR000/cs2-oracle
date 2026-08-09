@@ -358,6 +358,12 @@ class ItemForecaster:
     # lower-indexed member of a >0.95 pair and index order does not follow
     # group, so set this False to restore the old order if a feature count moves.
     ALLOWLIST_BEFORE_PRUNE = True
+    # Every name _feature_group() can return, minus bymykel_metadata, which is
+    # gated by bymykel_metadata_enabled() rather than by the allowlist alone.
+    ALL_FEATURE_GROUPS = frozenset({
+        "price_technicals", "supply_depth", "item_identity", "item_metadata",
+        "temporal", "events", "cross_sectional", "social", "other",
+    })
     # The ByMykel item-metadata bundle, joined from
     # price-archive/item-metadata-bymykel.parquet by
     # scripts/ingest_bymykel_metadata.py. Off by default: the effect is measured
@@ -2934,7 +2940,8 @@ class ItemForecaster:
 
     def engineer_features(self, price_df: pd.DataFrame,
                           events_df: pd.DataFrame,
-                          item_first_dates=None) -> pd.DataFrame:
+                          item_first_dates=None,
+                          skip_unused_groups: bool = False) -> pd.DataFrame:
         """Engineer the full feature frame.
 
         ``item_first_dates`` is an optional item_id -> first-seen date mapping
@@ -2961,14 +2968,24 @@ class ItemForecaster:
             )
         else:
             daily = price_df
+        # _compute_price_features is never skipped: price_technicals is the one
+        # allowlisted group, and the `other` columns are computed inside it.
+        skip = self._skipped_feature_groups() if skip_unused_groups else set()
         df = self._compute_price_features(daily)
-        df = self._add_temporal_features(df, item_first_dates=item_first_dates)
-        df = self._add_item_identity_features(df)
-        df = self._add_event_features(df, events_df)
-        df = self._add_item_metadata_features(df)
-        df = self._add_supply_side_features(df)
+        if "temporal" not in skip:
+            df = self._add_temporal_features(df, item_first_dates=item_first_dates)
+        if "item_identity" not in skip:
+            df = self._add_item_identity_features(df)
+        if "events" not in skip:
+            df = self._add_event_features(df, events_df)
+        if "item_metadata" not in skip:
+            df = self._add_item_metadata_features(df)
+        # _feature_group assigns the supply-side columns to item_identity.
+        if "item_identity" not in skip:
+            df = self._add_supply_side_features(df)
         df = self._add_bymykel_metadata_features(df)
-        df = self._add_social_features(df)
+        if "social" not in skip:
+            df = self._add_social_features(df)
         return df
 
     # ------------------------------------------------------------------
@@ -3499,18 +3516,28 @@ class ItemForecaster:
         logger.info(f"  fetch_events took {(datetime.now() - _t1).total_seconds():.0f}s")
 
         _t2 = datetime.now()
-        df = self.engineer_features(price_df, events_df)
+        # Only the training path skips: the ab_test_* harnesses build their own
+        # frame and need the full 123 columns to call _apply_feature_allowlist
+        # on. Measured 2026-08-09: 8.5s of engineer_features' 17.5s is blocks
+        # the allowlist then discards.
+        skip = self._skipped_feature_groups()
+        df = self.engineer_features(price_df, events_df,
+                                    skip_unused_groups=True)
         logger.info(f"  engineer_features took {(datetime.now() - _t2).total_seconds():.0f}s, "
                     f"result: {len(df):,} rows, {len(df.columns)} cols")
         del price_df, events_df
 
-        # Add cross-sectional (market-regime) features
+        # Cross-sectional and supply-depth are applied here rather than inside
+        # engineer_features, so they carry their own guards off the same
+        # derived skip set.
         _t3 = datetime.now()
-        df = self._add_cross_sectional_features(df)
-        logger.info(f"  cross_sectional_features took {(datetime.now() - _t3).total_seconds():.0f}s")
+        if "cross_sectional" not in skip:
+            df = self._add_cross_sectional_features(df)
+            logger.info(f"  cross_sectional_features took "
+                        f"{(datetime.now() - _t3).total_seconds():.0f}s")
 
-        # Add supply depth features (sell_listings, skinport_quantity)
-        df = self._add_supply_depth_features(df)
+        if "supply_depth" not in skip:
+            df = self._add_supply_depth_features(df)
 
         # Define feature columns (exclude metadata and target columns)
         self.feature_cols = self._select_feature_cols(
@@ -4501,6 +4528,25 @@ class ItemForecaster:
 
         return [c for c in df.columns if c not in exclude
                 and df[c].dtype in (np.float64, np.float32, np.int64, int, float)]
+
+    def _skipped_feature_groups(self) -> set:
+        """Groups engineer_features may skip: everything the allowlist drops.
+
+        Derived, never a literal. Track C4 proposes re-admitting
+        `cross_sectional`; a hard-coded list would then produce a frame with the
+        group allowlisted and its columns absent, median-filled to zero.
+
+        `other` is never skipped: distance_to_support / distance_to_resistance /
+        high_low_range_30d group as `other` because _feature_group matches the
+        prefix `support_` while the columns are named `distance_to_*`, and they
+        are computed inside _compute_price_features regardless.
+        """
+        allowlist = set(self.FEATURE_GROUP_ALLOWLIST or [])
+        if not allowlist:
+            return set()
+        if self.bymykel_metadata_enabled():
+            allowlist.add(self.BYMYKEL_META_GROUP)
+        return set(self.ALL_FEATURE_GROUPS) - allowlist - {"other"}
 
     def _reduce_feature_cols(self, df: pd.DataFrame) -> None:
         """Apply the allowlist and the correlation prune, in the cheaper order.
