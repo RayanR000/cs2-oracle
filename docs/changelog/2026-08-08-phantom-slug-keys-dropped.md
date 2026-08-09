@@ -65,34 +65,52 @@ publishes the Backtest Accuracy number, included.
 Verified against the real archive: 21,842,207 → 21,055,799 rows, 41,775 → 38,626
 items, every dropped key confirmed to have a surviving twin.
 
+## 2026-08-09 — the prod rows are gone, and the purge found schema drift
+
+`--target db --apply` ran against prod. **3,149 `items` rows and 100,600 child
+rows deleted in one transaction**, 0 unresolved. The daily leak is stopped: both
+writers were already dormant, so nothing recreates these keys.
+
+| table | deleted |
+|---|---|
+| `item_forecasts` | 75,576 |
+| `forecast_outcomes` | 9,447 |
+| `price_history` | 9,348 |
+| `supply_snapshots` | 3,149 |
+| `daily_analysis` | 3,080 |
+| `items` | **3,149** |
+
+**The first attempt failed, and what it exposed matters more than the purge.**
+It deleted all 97,520 children and then raised on `DELETE FROM items`:
+`daily_analysis_item_id_fkey`. The whole thing rolled back — the deletes are
+inside one `engine.begin()` block precisely so a partial purge cannot leave the
+DB and the archive disagreeing about which items exist.
+
+`daily_analysis` was **dropped by migration `0015` on 2026-07-12 and is still in
+production**. The script's child-table list was hand-built by reading
+`database.py` and `migrations/versions/`, which is a correct description of the
+code and a wrong description of the database. `CHILD_TABLES` is now replaced by
+`discover_child_tables()`, reading `pg_constraint` at run time, plus
+`order_child_tables()` to restore the delete ordering the hand-written tuple
+encoded — the catalog returns rows unordered, and `forecast_outcomes` must still
+precede `item_forecasts`. Re-discovered inside the write transaction so the
+counted set and the deleted set cannot diverge.
+
+Discovery found **9 FK tables against 8 hardcoded**. `trend_indicators` (dropped
+by `0010`) and `chart_points` (`0012`) did *not* appear, so those migrations did
+apply — `daily_analysis` is the only survivor.
+
+**Open follow-up: prod is missing migration `0015`.** Check `alembic_version`
+against head (`0018`). Whatever skipped it may skip the next one.
+
 ## Not done
 
-- **The prod `items` rows still exist**, so the daily run keeps writing ~32,700
-  phantom rows. Readers ignore them; the archive keeps growing them.
-  `scripts/purge_phantom_items.py --target db --apply`, run from `backend/`,
-  is the fix and is irreversible. **The dry run was taken 2026-08-08 and every
-  safety condition holds** — re-run it before applying, but the expected shape is:
-
-  | | |
-  |---|---|
-  | `items` rows scanned | 35,058 |
-  | phantoms with an identified keeper | **3,149** |
-  | phantoms unresolved (left alone) | **0** |
-  | child rows to delete | 97,520 — `item_forecasts` 75,576, `forecast_outcomes` 9,447, `price_history` 9,348, `supply_snapshots` 3,149 |
-
-  The 4 rows the script flags as `slugify(name) != item_id` are the four
-  `steam_` keys; that cross-check only applies to the slug arm, and each one
-  matches its keeper exactly under the `steam_` transform.
-
-  Checked separately against the ops mirror: **0 orphans** — every phantom's
-  keeper already holds its own `item_forecasts` and `forecast_outcomes` rows, so
-  deleting the phantom's copies de-duplicates rather than removing an item from
-  the product.
 - **The durable archive still holds the 786,408 historical rows.** Purging them
   means running `--target archive --apply` against a checkout of
   `RayanR000/cs2-oracle-data` and force-pushing, since CI carries that repo
-  forward run to run rather than rebuilding it.
+  forward run to run rather than rebuilding it. Declined on 2026-08-09: the rows
+  are inert now that every reader filters.
 
-Neither is required for correctness now that the readers filter, but until the
-first one lands, treat any statistic computed directly off recent archive days —
-without the universe filter — as ~7.6% contaminated.
+Not required for correctness, but treat any statistic computed directly off
+archive days before 2026-08-09 — without the universe filter — as ~7.6%
+contaminated.

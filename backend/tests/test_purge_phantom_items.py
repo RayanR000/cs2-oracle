@@ -13,7 +13,12 @@ deleted, because deleting it would destroy the only copy of that item.
 """
 import pytest
 
-from scripts.purge_phantom_items import is_mangled_key, pair_phantoms, purge_archive_frame
+from scripts.purge_phantom_items import (
+    is_mangled_key,
+    order_child_tables,
+    pair_phantoms,
+    purge_archive_frame,
+)
 
 
 class TestPhantomDetection:
@@ -119,3 +124,57 @@ class TestArchivePurge:
         kept, dropped = purge_archive_frame(frame)
         assert dropped == 0
         assert len(kept) == 1
+
+
+class TestChildTableOrdering:
+    """Delete order for the FK children of `items`.
+
+    The table list is read from the live catalog, not hardcoded, because
+    production's schema is behind `migrations/`: `daily_analysis` was dropped by
+    migration 0015 but still exists in prod and still holds a FK onto items.id.
+    A hardcoded list built by reading the migrations therefore omitted it, and
+    the 2026-08-09 purge deleted all 97,520 child rows before failing on the
+    final `DELETE FROM items`. Discovery removes the ordering guarantee that
+    the hand-written tuple encoded, so it has to be re-derived here.
+    """
+
+    def test_a_referenced_table_is_emptied_after_its_referencer(self):
+        """forecast_outcomes FKs item_forecasts.id, so it must come first."""
+        order = order_child_tables(
+            ["item_forecasts", "forecast_outcomes"],
+            [("forecast_outcomes", "item_forecasts"),
+             ("forecast_outcomes", "items"),
+             ("item_forecasts", "items")],
+        )
+        assert order.index("forecast_outcomes") < order.index("item_forecasts")
+
+    def test_discovery_order_is_independent_of_input_order(self):
+        """The catalog returns rows in no particular order."""
+        edges = [("forecast_outcomes", "item_forecasts")]
+        a = order_child_tables(["forecast_outcomes", "item_forecasts"], edges)
+        b = order_child_tables(["item_forecasts", "forecast_outcomes"], edges)
+        assert a == b == ["forecast_outcomes", "item_forecasts"]
+
+    def test_unrelated_tables_are_all_emitted(self):
+        tables = ["price_history", "supply_snapshots", "daily_analysis"]
+        order = order_child_tables(tables, [])
+        assert sorted(order) == sorted(tables)
+
+    def test_a_zombie_table_is_not_dropped_from_the_order(self):
+        """`daily_analysis` is the table whose absence broke the 08-09 purge."""
+        order = order_child_tables(
+            ["item_forecasts", "forecast_outcomes", "daily_analysis"],
+            [("forecast_outcomes", "item_forecasts")],
+        )
+        assert "daily_analysis" in order
+        assert len(order) == 3
+
+    def test_a_self_reference_does_not_stall_the_sort(self):
+        order = order_child_tables(["events"], [("events", "events")])
+        assert order == ["events"]
+
+    def test_a_cycle_still_emits_every_table(self):
+        """Ordering cannot resolve a cycle; Postgres should raise, not the sort."""
+        order = order_child_tables(
+            ["a", "b"], [("a", "b"), ("b", "a")])
+        assert sorted(order) == ["a", "b"]

@@ -68,21 +68,72 @@ def slugify(name: str) -> str:
     return s.strip("-")
 
 
-# Every table with a FOREIGN KEY onto items.id, ordered so a child is always
-# deleted before its parent. There is no ON DELETE anywhere in the schema
-# (verified across database.py and all of migrations/versions/), so Postgres
-# applies NO ACTION and a bare DELETE FROM items raises while any child lives.
-# forecast_outcomes also FKs item_forecasts.id, so it must precede that table.
-CHILD_TABLES: Tuple[str, ...] = (
-    "forecast_outcomes",
-    "item_forecasts",
-    "price_history",
-    "supply_snapshots",
-    "social_mentions",
-    "event_impacts",
-    "event_patterns",
-    "event_correlations",
-)
+# Every table with a FOREIGN KEY onto items.id. There is no ON DELETE anywhere
+# in the schema, so Postgres applies NO ACTION and a bare DELETE FROM items
+# raises while any child lives.
+#
+# This list is read from the live catalog rather than hardcoded, because the
+# obvious way to build it -- reading database.py and migrations/versions/ --
+# gives the WRONG answer against production. Prod's schema is behind the
+# migrations: `daily_analysis` was dropped by 0015 but still exists there and
+# still holds a FK, so a purge on 2026-08-09 deleted all 97,520 child rows and
+# then failed on the final DELETE FROM items (the transaction rolled back).
+# `trend_indicators` (0010) and `chart_points` (0012) are dropped the same way
+# and may survive the same way. Only the database knows what is really there.
+CHILD_FK_SQL = """
+    SELECT ch.relname AS child_table, a.attname AS child_column
+    FROM pg_constraint c
+    JOIN pg_class ch ON ch.oid = c.conrelid
+    JOIN pg_class p ON p.oid = c.confrelid
+    JOIN pg_namespace n ON n.oid = ch.relnamespace
+    JOIN pg_attribute a
+      ON a.attrelid = c.conrelid AND a.attnum = ANY(c.conkey)
+    WHERE c.contype = 'f'
+      AND p.relname = 'items'
+      AND n.nspname = 'public'
+"""
+
+# Edges among those tables, so one that references another is emptied first --
+# forecast_outcomes FKs item_forecasts.id and must precede it.
+CHILD_EDGE_SQL = """
+    SELECT ch.relname AS child_table, p.relname AS parent_table
+    FROM pg_constraint c
+    JOIN pg_class ch ON ch.oid = c.conrelid
+    JOIN pg_class p ON p.oid = c.confrelid
+    WHERE c.contype = 'f'
+"""
+
+
+def order_child_tables(
+    tables: Iterable[str], edges: Iterable[Tuple[str, str]],
+) -> List[str]:
+    """Delete order: a table is emitted before anything it references.
+
+    *edges* is (child, parent) meaning child holds a FK onto parent. A table
+    nothing else still-pending references is safe to empty now.
+    """
+    remaining = set(tables)
+    edges = [(c, p) for c, p in edges if c != p]
+    order: List[str] = []
+    while remaining:
+        referenced = {p for c, p in edges if c in remaining and p in remaining}
+        ready = sorted(t for t in remaining if t not in referenced)
+        if not ready:
+            # A cycle cannot be resolved by ordering; emit the rest and let
+            # Postgres raise rather than guessing.
+            ready = sorted(remaining)
+        order.extend(ready)
+        remaining -= set(ready)
+    return order
+
+
+def discover_child_tables(conn) -> List[Tuple[str, str]]:
+    """(table, fk_column) for every table referencing items.id, in delete order."""
+    from sqlalchemy import text
+
+    cols = {r[0]: r[1] for r in conn.execute(text(CHILD_FK_SQL)).fetchall()}
+    edges = [(r[0], r[1]) for r in conn.execute(text(CHILD_EDGE_SQL)).fetchall()]
+    return [(t, cols[t]) for t in order_child_tables(cols, edges)]
 
 
 @dataclass
@@ -199,11 +250,14 @@ def purge_database(apply: bool) -> int:
             return 0
 
         ids = [p.id for p in paired]
-        logger.info("Child rows referencing the %s phantoms:", f"{len(ids):,}")
+        child_tables = discover_child_tables(conn)
+        logger.info("Child rows referencing the %s phantoms "
+                    "(%s FK tables, from the live catalog):",
+                    f"{len(ids):,}", len(child_tables))
         total_children = 0
-        for table in CHILD_TABLES:
+        for table, col in child_tables:
             n = conn.execute(
-                text(f"SELECT COUNT(*) FROM {table} WHERE item_id = ANY(:ids)"),
+                text(f"SELECT COUNT(*) FROM {table} WHERE {col} = ANY(:ids)"),
                 {"ids": ids},
             ).scalar_one()
             total_children += n
@@ -218,9 +272,11 @@ def purge_database(apply: bool) -> int:
     # One transaction: a partial purge would leave the archive and the DB
     # disagreeing about which items exist.
     with engine.begin() as conn:
-        for table in CHILD_TABLES:
+        # Re-discovered inside the write transaction: the count above ran on a
+        # separate connection, and the list has to match what is deleted.
+        for table, col in discover_child_tables(conn):
             res = conn.execute(
-                text(f"DELETE FROM {table} WHERE item_id = ANY(:ids)"),
+                text(f"DELETE FROM {table} WHERE {col} = ANY(:ids)"),
                 {"ids": ids},
             )
             logger.info("Deleted %s from %s", f"{res.rowcount:,}", table)
