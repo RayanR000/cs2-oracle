@@ -95,6 +95,26 @@ jobs:
           restore-keys: |
             forecast-models-
 
+      # The voted price frame (backend/data/voted_*.parquet, gitignored). Worth
+      # ~48s a run — 21.1s DuckDB read + 27.2s multi-source voting — on the
+      # daily predict path as well as the retrain. Until 2026-08-09 the key
+      # embedded each archive file's st_mtime_ns, and CI checks the archive out
+      # fresh every run, so the key changed unconditionally and this could
+      # never have hit; _archive_fingerprint is content-derived now.
+      #
+      # `v4` matches ItemForecaster.VOTED_CACHE_VERSION. BUMP BOTH TOGETHER:
+      # a stale frame here is a frame voted under a superseded rule, and
+      # training would consume it silently. Phase 2 of the master plan bumps
+      # VOTED_CACHE_VERSION to 5 (n_ask_sources) and then 6 (excluding the
+      # Steam trailing-window feeds) — each must move this key in the same
+      # commit.
+      - name: Cache voted price frame
+        uses: actions/cache@v4
+        with:
+          path: backend/data
+          key: voted-v4-${{ hashFiles('backend/models/forecaster.py') }}
+          restore-keys: voted-v4-
+
       # Fail loudly here rather than 60s later with the opaque "No models
       # available for prediction" that hid this breakage for 17 days.
       - name: Verify models are present

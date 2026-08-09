@@ -3567,16 +3567,29 @@ class ItemForecaster:
         return os.getenv("VOTED_CACHE", "1") != "0"
 
     def _archive_fingerprint(self) -> str:
-        """Identify the archive by the size and mtime of every prices-*.parquet.
+        """Identify the archive by each file's row count and max day.
 
-        Only those files feed the voted frame — ops/ artifacts (forecasts,
-        accuracy) are written by the pipeline on every run and must not
-        invalidate the cache.
+        Was `name:st_size:st_mtime_ns`, which made the cache structurally
+        CI-hostile: CI checks the archive out fresh every run, so every mtime
+        was new and the key changed unconditionally. The miss costs ~48s a run
+        (21.1s DuckDB read + 27.2s voting), paid by the daily predict path too,
+        not just by the retrain. Row count and max day are content-derived and
+        survive a checkout.
+
+        Only prices-*.parquet feeds the voted frame — ops/ artifacts are
+        rewritten by the pipeline on every run and must not invalidate it.
         """
+        import duckdb
         parts = []
-        for path in sorted(self.archive_dir.glob("prices-*.parquet")):
-            st = path.stat()
-            parts.append(f"{path.name}:{st.st_size}:{st.st_mtime_ns}")
+        con = duckdb.connect()
+        try:
+            for path in sorted(self.archive_dir.glob("prices-*.parquet")):
+                n, max_day = con.execute(
+                    "SELECT COUNT(*), MAX(date) FROM read_parquet(?)",
+                    [str(path)]).fetchone()
+                parts.append(f"{path.name}:{n}:{max_day}")
+        finally:
+            con.close()
         return "|".join(parts)
 
     def _voted_cache_key(self, days_back: int, backfilled_only: bool,
