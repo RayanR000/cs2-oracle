@@ -25,8 +25,10 @@ from models.item_parser import (
     PHASE_COLLAPSED_SLUG_PATTERNS,
     archive_universe_sql_filter,
     bid_sources_sql_filter,
+    is_phantom_slug,
     is_phase_collapsed,
     parse_item_name,
+    phantom_slug_sql_filter,
     phase_collapsed_sql_filter,
 )
 from models.staleness import STALE_RUN_GAP_BREAK_DAYS, stale_run_days
@@ -519,7 +521,10 @@ class ItemForecaster:
     # consensus displaced by a median -8.0% (-10.8% on the >=$1 served cohort).
     # v3: PHASE_COLLAPSED_SLUG_PATTERNS leaves the universe, so a v2 frame still
     # carries the Doppler names whose returns are phase-composition artifacts.
-    VOTED_CACHE_VERSION = 3
+    # v4: the phantom slug keys leave the universe. A v3 frame carries both
+    # copies of 3,149 items, which is what let a fold score an item it had
+    # already trained on.
+    VOTED_CACHE_VERSION = 4
     VOTED_CACHE_PREFIX = "voted_"
     VOTED_CACHE_MAX_ENTRIES = 3
 
@@ -1029,11 +1034,13 @@ class ItemForecaster:
                 WHERE day >= ?
                   AND (source IS NULL OR source NOT LIKE 'historical_fallback:%')
                   AND {phase_collapsed_sql_filter("sub.item_slug")}
+                  AND {phantom_slug_sql_filter("sub.item_slug")}
                 ORDER BY item_slug, day, source
             """, params=[cutoff]).fetchdf()
             logger.info(f"  DuckDB query returned {len(df):,} rows "
                         f"(phase-collapsed names excluded: "
-                        f"{', '.join(PHASE_COLLAPSED_SLUG_PATTERNS)})")
+                        f"{', '.join(PHASE_COLLAPSED_SLUG_PATTERNS)}; "
+                        f"phantom duplicate keys excluded)")
             df = df.rename(columns={"item_slug": "item_id", "day": "timestamp"})
             logger.info(f"  DataFrame created, converting types...")
             df["timestamp"] = pd.to_datetime(df["timestamp"])

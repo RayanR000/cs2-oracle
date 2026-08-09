@@ -61,7 +61,13 @@ LADDER = [
 LADDER_ASK_CONSENSUS = 9.045
 
 
-def _ladder_rows(item="ak", d=date(2026, 7, 15), steam=10.0):
+# A real `market_hash_name`. The archive readers drop all-lowercase keys as
+# phantom duplicates (`item_parser.is_phantom_slug`), so a toy slug like "ak"
+# would leave `_load_all_prices` empty and pass the bid assertion vacuously.
+LADDER_ITEM = "AK-47 | Redline (Field-Tested)"
+
+
+def _ladder_rows(item=LADDER_ITEM, d=date(2026, 7, 15), steam=10.0):
     return [(item, d, round(steam * mult, 4), src) for src, mult in LADDER]
 
 
@@ -159,7 +165,8 @@ def test_label_resolution_path_excludes_the_bid(tmp_path):
         "source": [r[3] for r in rows],
     }).to_parquet(archive / "prices-2026.parquet")
 
-    out = load_voted_prices(archive, ["ak"], date(2026, 7, 15), date(2026, 7, 15))
+    out = load_voted_prices(archive, [LADDER_ITEM],
+                            date(2026, 7, 15), date(2026, 7, 15))
 
     assert len(out) == 1
     assert out.iloc[0]["price"] == pytest.approx(LADDER_ASK_CONSENSUS)
@@ -190,7 +197,7 @@ def test_published_gate_loader_excludes_the_bid(tmp_path, monkeypatch):
 
     con = duckdb.connect()
     try:
-        out = wf._load_all_prices(con, [("ak",)])
+        out = wf._load_all_prices(con, [(LADDER_ITEM,)])
     finally:
         con.close()
 

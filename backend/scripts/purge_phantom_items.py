@@ -48,14 +48,13 @@ logging.basicConfig(
 )
 logger = logging.getLogger("purge_phantom_items")
 
-# Same predicate the Steam backfill uses to exclude these keys from its target
-# list (`backfill_steam_listing_history.py:195-199`). The slug regex does NOT
-# match the `steam_` form, which holds '_' and '|', so both arms are needed.
-_SLUG_KEY = re.compile(r"^[a-z0-9][a-z0-9\-]*$")
-
-
-def is_mangled_key(item_id: str) -> bool:
-    return bool(_SLUG_KEY.match(item_id)) or item_id.startswith("steam_")
+# The one definition, shared with the archive readers. What this script deletes
+# from production and what `archive_universe_sql_filter` drops from a training
+# read have to be the same set, or the model and the database disagree about
+# which items exist. Also the predicate the Steam backfill uses to keep these
+# keys out of its target list (`backfill_steam_listing_history.py:195-199`).
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from models.item_parser import is_phantom_slug as is_mangled_key  # noqa: E402
 
 
 def slugify(name: str) -> str:

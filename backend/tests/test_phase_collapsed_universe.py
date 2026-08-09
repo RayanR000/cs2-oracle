@@ -201,8 +201,11 @@ def test_opportunities_drop_them():
     from api.routes import opportunities as opp
 
     class _Item:
+        # `item_id` is a non-nullable column and `_load_items` also screens the
+        # phantom duplicate keys on it, so the stub has to carry it. Every
+        # inserter but the two phantom writers sets it to the market_hash_name.
         def __init__(self, id, name):
-            self.id, self.name = id, name
+            self.id, self.name, self.item_id = id, name, name
 
     items = [_Item(1, "★ Gut Knife | Doppler (Factory New)"),
              _Item(2, "AK-47 | Redline (Field-Tested)"),

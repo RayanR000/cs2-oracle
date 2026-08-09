@@ -45,9 +45,54 @@ def bid_sources_sql_filter(column: str = "source") -> str:
     return f"({column} IS NULL OR {column} NOT IN ({quoted}))"
 
 
+# Keys that are a second copy of an item already in the universe. The archive's
+# `item_slug` is `items.item_id` verbatim, and two writers keyed rows on
+# something other than the `market_hash_name` every other inserter uses:
+# `migrate_historical_data.py:345` wrote `slugify(name)` (3,145 keys) and a
+# since-deleted `real_data_collector.py` wrote `f"steam_{...}"` (4 keys). The
+# aggregator matches its price lookup on `name`, so both copies collect every
+# day's price.
+#
+# Measured over the whole archive 2026-08-08: 3,149 keys / 786,408 rows (3.6%),
+# and every one pairs 1:1 onto a correctly-keyed row — 99.93% of same-day
+# same-source pairs agree to the cent. So this is a de-duplication, not a
+# universe reduction: nothing is dropped that is not also present under its real
+# name. The cost of leaving them is validation, not storage — a split that
+# partitions by item can seat the same price series on both sides of a fold.
+#
+# The two forms need separate arms: the `steam_` keys hold '_' and '|', so the
+# slug regex does not match them. See
+# docs/changelog/2026-08-06-steam-listing-backfill-and-phantom-items.md.
+PHANTOM_SLUG_PATTERN = r"[a-z0-9][a-z0-9\-]*"
+PHANTOM_SLUG_PREFIX = "steam_"
+
+
+def is_phantom_slug(item_slug: str) -> bool:
+    """True when *item_slug* is a duplicate key rather than a market_hash_name.
+
+    A real `market_hash_name` always carries a capital, a space or a delimiter
+    ('|', '(', '™', '★'), so it cannot match the all-lowercase slug form.
+    """
+    if not isinstance(item_slug, str):
+        return False
+    return (re.fullmatch(PHANTOM_SLUG_PATTERN, item_slug) is not None
+            or item_slug.startswith(PHANTOM_SLUG_PREFIX))
+
+
+def phantom_slug_sql_filter(column: str = "item_slug") -> str:
+    """SQL predicate keeping only the correctly-keyed copy of each item.
+
+    NULL-safe like the other two: a bare `NOT regexp_full_match` over a NULL
+    slug evaluates to NULL and silently drops the row.
+    """
+    return (f"({column} IS NULL OR NOT ("
+            f"regexp_full_match({column}, '{PHANTOM_SLUG_PATTERN}')"
+            f" OR starts_with({column}, '{PHANTOM_SLUG_PREFIX}')))")
+
+
 def archive_universe_sql_filter(slug_column: str = "item_slug",
                                 source_column: str = "source") -> str:
-    """Both universe rules at once, for a loader that reads the archive direct.
+    """Every universe rule at once, for a loader that reads the archive direct.
 
     Production applies these inside `_fetch_voted_price_history`; anything that
     globs the Parquet itself — `walkforward_backtest.py`, every `ab_test_*.py`
@@ -58,9 +103,10 @@ def archive_universe_sql_filter(slug_column: str = "item_slug",
     Pass ``source_column=None`` for a read whose relation genuinely has no
     `source` column. That is safe only because the bid sources are all 2026
     aggregator feeds: a file old enough to lack the column is old enough to
-    contain none of them.
+    contain none of them. The slug rules carry no such caveat and always apply.
     """
-    parts = [phase_collapsed_sql_filter(slug_column)]
+    parts = [phase_collapsed_sql_filter(slug_column),
+             phantom_slug_sql_filter(slug_column)]
     if source_column:
         parts.append(bid_sources_sql_filter(source_column))
     return " AND ".join(parts)
