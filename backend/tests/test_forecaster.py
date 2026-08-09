@@ -2031,12 +2031,21 @@ class TestVotedPriceCache:
 
     @pytest.fixture
     def cached_forecaster(self, forecaster, tmp_path):
-        """Forecaster with a throwaway cache dir and a fake Parquet archive."""
+        """Forecaster with a throwaway cache dir and a small Parquet archive.
+
+        These were byte stubs until 2026-08-09, which worked only because
+        _archive_fingerprint just stat()'d them. It now derives the key from
+        row count and max day, so the files have to be real Parquet.
+        """
         cache_dir = tmp_path / "cache"
         archive_dir = tmp_path / "price-archive"
         archive_dir.mkdir()
-        (archive_dir / "prices-2025.parquet").write_bytes(b"fake-2025")
-        (archive_dir / "prices-2026.parquet").write_bytes(b"fake-2026")
+        for year in (2025, 2026):
+            pd.DataFrame({
+                "item_slug": ["ak47", "awp"],
+                "date": pd.to_datetime([f"{year}-01-01", f"{year}-01-02"]),
+                "mean_price": [10.5, 99.9],
+            }).to_parquet(archive_dir / f"prices-{year}.parquet")
         forecaster.cache_dir = str(cache_dir)
         forecaster.archive_dir = archive_dir
         return forecaster
@@ -2064,14 +2073,23 @@ class TestVotedPriceCache:
     def test_key_changes_when_archive_content_changes(self, cached_forecaster):
         f = cached_forecaster
         before = f._voted_cache_key(1460, False, None)
-        # Aggregator appends a day: same filename, different size.
-        (f.archive_dir / "prices-2026.parquet").write_bytes(b"fake-2026-plus-a-new-day")
+        # Aggregator appends a day: same filename, one more row and a later
+        # max date. Both legs of the fingerprint move.
+        pd.DataFrame({
+            "item_slug": ["ak47", "awp", "m4a4"],
+            "date": pd.to_datetime(["2026-01-01", "2026-01-02", "2026-01-03"]),
+            "mean_price": [10.5, 99.9, 42.0],
+        }).to_parquet(f.archive_dir / "prices-2026.parquet")
         assert f._voted_cache_key(1460, False, None) != before
 
     def test_key_changes_when_archive_gains_a_file(self, cached_forecaster):
         f = cached_forecaster
         before = f._voted_cache_key(1460, False, None)
-        (f.archive_dir / "prices-2027.parquet").write_bytes(b"fake-2027")
+        pd.DataFrame({
+            "item_slug": ["ak47"],
+            "date": pd.to_datetime(["2027-01-01"]),
+            "mean_price": [12.0],
+        }).to_parquet(f.archive_dir / "prices-2027.parquet")
         assert f._voted_cache_key(1460, False, None) != before
 
     def test_key_ignores_non_price_files(self, cached_forecaster):
@@ -2180,17 +2198,24 @@ class TestVotedPriceCache:
     def test_fetch_price_history_skips_voting_on_cache_hit(self, cached_forecaster,
                                                            voted_df):
         """The whole point: a second fetch over an unchanged archive must not
-        re-run the DuckDB query or the voting pass."""
+        re-run the price query or the voting pass.
+
+        This asserted `duckdb.connect` was never called until 2026-08-09.
+        _archive_fingerprint now derives the key from each file's row count and
+        max day, so building the key itself opens a connection — a
+        footer/statistics read, not the scan this test exists to prevent.
+        Guarding _fetch_voted_price_history states that intent directly.
+        """
         f = cached_forecaster
         key = f._voted_cache_key(1460, False, None)
         f._save_voted_cache(key, voted_df)
 
         with patch.object(f, "_apply_multi_source_voting") as vote, \
-             patch("duckdb.connect") as connect:
+             patch.object(f, "_fetch_voted_price_history") as query:
             out = f.fetch_price_history(days_back=1460, backfilled_only=False)
 
         vote.assert_not_called()
-        connect.assert_not_called()
+        query.assert_not_called()
         pd.testing.assert_frame_equal(out, voted_df)
 
     def test_fetch_price_history_populates_cache_on_miss(self, cached_forecaster,
