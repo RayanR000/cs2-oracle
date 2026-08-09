@@ -16,13 +16,26 @@ held still across the label window.
 
 Definitions, each of which changes the answer:
 
-* **Composition** is ``n_ask_sources`` — the number of distinct *ask* sources
-  that voted on an item-day, produced by
-  ``ItemForecaster._apply_multi_source_voting``. Bids are excluded before the
-  count, and a NULL ``source`` counts as one source. That last point matters:
-  every archive row before 2026 carries ``source IS NULL``, so the whole
-  pre-2026 series reads as one constant source rather than as an unknown.
-* **Composition stable** for an item over ``t-1 … t+h`` means ``n_ask_sources``
+* **Composition** has two bases, selected by ``--basis``:
+
+  ``set`` (default) — the *set of source names* that voted on the item-day,
+  carried as a bitmask over the archive's distinct sources. This is the basis
+  that can tell one source being swapped for another apart from no change at
+  all, which is exactly the case the count basis misses, and missing it biases
+  the instrument toward "composition does not matter".
+
+  ``count`` — ``n_ask_sources``, the number of distinct ask sources, straight
+  off ``ItemForecaster._apply_multi_source_voting``.
+
+  Both are built from the same rows the vote consumed, with bids already
+  excluded, and a NULL ``source`` treated as one named source rather than as an
+  unknown. That last point matters: every archive row before 2026 carries
+  ``source IS NULL``, so under either basis the whole pre-2026 series reads as
+  one constant source. Treating NULL as "never equal to itself" instead — which
+  is what the refuted ``2026-08-08-model-review.md`` §5 measurement did — throws
+  away 13 years and silently turns the comparison into 2026-vs-history.
+
+* **Composition stable** for an item over ``t-1 … t+h`` means the composition
   takes the *same value* on every one of those days for that item **and every
   one of those days is present for that item**. A gap in the window is not
   stable: an absent day is an unobserved composition, not a matching one.
@@ -58,8 +71,13 @@ would be talking to production.
 
 Usage::
 
-    venv/bin/python scripts/measure_composition_stability.py --horizon 3 --from 2024-01-01
-    venv/bin/python scripts/measure_composition_stability.py --horizon 7 --from 2013-08-14
+    # primary: the source-labelled era, composition as the set of source names
+    venv/bin/python scripts/measure_composition_stability.py --horizon 3 --from 2026-01-01
+
+    # secondary: the whole archive on the count basis, which assumes the NULL
+    # source of 2013-2025 is one constant source
+    venv/bin/python scripts/measure_composition_stability.py \\
+        --horizon 3 --from 2013-08-14 --basis count
 """
 from __future__ import annotations
 
@@ -92,6 +110,15 @@ MIN_ITEMS_PER_DATE = 5
 #: `n_ask_sources >= this` is the "several sources agree" cell.
 MULTI_SOURCE_FLOOR = 3
 
+#: What a NULL `source` is called when the source set is built. It is a name
+#: like any other, so two NULL-source days read as the same composition.
+NULL_SOURCE_LABEL = "<null>"
+
+#: The column each `--basis` reads. `source_mask` is a bitmask over the
+#: archive's distinct source names, so equality of the mask is equality of the
+#: set; `n_ask_sources` is only its cardinality.
+COMPOSITION_COLUMN = {"set": "source_mask", "count": "n_ask_sources"}
+
 ARCHIVE_ROOT = Path(__file__).resolve().parent.parent.parent / "price-archive"
 
 # Day zero for the integer day index the window arithmetic runs on. Any fixed
@@ -110,7 +137,8 @@ def load_voted_series(archive_dir: Path, start: date, end: date | None = None
     vote. A reimplementation that drifted from production would stop measuring
     production's label while still looking like it was.
 
-    Returns columns ``item_id, date, price, volume, n_ask_sources``.
+    Returns columns ``item_id, date, price, volume, n_ask_sources,
+    source_mask``.
     """
     import duckdb
 
@@ -142,7 +170,67 @@ def load_voted_series(archive_dir: Path, start: date, end: date | None = None
     df["volume"] = pd.to_numeric(df["volume"], errors="coerce")
     df = df.dropna(subset=["price"])
 
-    return ItemForecaster._apply_multi_source_voting(df)
+    voted = ItemForecaster._apply_multi_source_voting(df)
+    voted = voted.merge(source_masks(df), on=["item_id", "date"], how="left",
+                        validate="one_to_one")
+
+    # The two bases must agree on cardinality or one of them is describing rows
+    # the other did not see. This is the only cheap check that the set was built
+    # from the same rows production voted on.
+    mismatch = int((np.bitwise_count(voted["source_mask"].to_numpy())
+                    != voted["n_ask_sources"].to_numpy()).sum())
+    if mismatch:
+        raise ValueError(
+            f"{mismatch:,} item-days where the source set's size disagrees with "
+            "n_ask_sources; the set and the vote are reading different rows")
+    return voted
+
+
+def source_masks(df: pd.DataFrame) -> pd.DataFrame:
+    """One bitmask per item-day over the source names that voted on it.
+
+    Built from the same frame the vote consumed — after the price dropna, with
+    bids already excluded by the universe filter — so it describes exactly the
+    rows ``n_ask_sources`` counted. Computing it from a separate query would let
+    the two drift apart while both still looked right.
+
+    A bitmask rather than a joined string: there are a dozen distinct sources in
+    thirteen years, so the whole set fits in an integer, and set equality
+    becomes integer equality on a column that costs 8 bytes a row instead of a
+    Python object.
+
+    ``_apply_multi_source_voting`` is not asked for this. It is production's
+    loader and a later task on this branch owns its cache version; adding a
+    column here keeps that surface untouched.
+    """
+    codes, names = pd.factorize(df["source"].fillna(NULL_SOURCE_LABEL))
+    if len(names) > 62:
+        raise ValueError(
+            f"{len(names)} distinct sources will not fit in an int64 bitmask; "
+            "the set basis needs a different encoding")
+
+    # Group on one integer key rather than on the (item_id, date) object pair.
+    # The pair is a string and a `datetime.date`, and grouping 20M rows of those
+    # is minutes; the same grouping on int64 is seconds.
+    item_codes, items = pd.factorize(df["item_id"])
+    date_codes, dates = pd.factorize(df["date"])
+    key = item_codes.astype(np.int64) * len(dates) + date_codes
+
+    distinct = pd.DataFrame({
+        "key": key,
+        "bit": (np.int64(1) << codes.astype(np.int64)),
+    }).drop_duplicates()
+    # Summing DISTINCT bits within an item-day is a bitwise OR, which pandas has
+    # no groupby aggregation for. The drop_duplicates above is what makes the
+    # sum an OR rather than a count.
+    masks = distinct.groupby("key", sort=False)["bit"].sum()
+
+    grouped_key = masks.index.to_numpy()
+    return pd.DataFrame({
+        "item_id": items.to_numpy()[grouped_key // len(dates)],
+        "date": dates.to_numpy()[grouped_key % len(dates)],
+        "source_mask": masks.to_numpy(),
+    })
 
 
 def voided_dates(voted: pd.DataFrame) -> tuple[frozenset, frozenset]:
@@ -177,14 +265,22 @@ def voided_anchors(snapshots: frozenset, shifts: frozenset, horizon: int
     return frozenset(void)
 
 
-def build_windows(voted: pd.DataFrame, horizon: int, min_price: float
-                  ) -> pd.DataFrame:
+def build_windows(voted: pd.DataFrame, horizon: int, min_price: float,
+                  basis: str = "set") -> pd.DataFrame:
     """One row per usable ``(item, t)``, with its returns and stability flag.
 
     Columns: ``date``, ``x`` (``-r_t``), ``y`` (the forward ``horizon``-day
     return), ``stable``, ``n_ask_sources`` (at ``t``).
+
+    *basis* selects which column composition is read from — see
+    :data:`COMPOSITION_COLUMN`. It changes only ``stable``; the source-count
+    cells always read ``n_ask_sources``.
     """
-    frame = voted[["item_id", "date", "price", "n_ask_sources"]].copy()
+    composition_col = COMPOSITION_COLUMN[basis]
+    wanted = ["item_id", "date", "price", "n_ask_sources"]
+    if composition_col not in wanted:      # the count basis reads a column
+        wanted.append(composition_col)     # that is already in the list
+    frame = voted[wanted].copy()
     frame["date"] = pd.to_datetime(frame["date"])
 
     # A single int64 key per (item, day) turns every window lookup into a hash
@@ -201,7 +297,6 @@ def build_windows(voted: pd.DataFrame, horizon: int, min_price: float
 
     keys = frame["_key"].to_numpy()
     price = pd.Series(frame["price"].to_numpy(), index=keys)
-    n_src = pd.Series(frame["n_ask_sources"].to_numpy(dtype=float), index=keys)
 
     p_t = frame["price"].to_numpy(dtype=float)
     with np.errstate(divide="ignore", invalid="ignore"):
@@ -210,16 +305,24 @@ def build_windows(voted: pd.DataFrame, horizon: int, min_price: float
         r_1d = (p_t - p_prev) / p_prev
         forward = (p_fwd - p_t) / p_t
 
-    # Composition over t-1 ... t+h. Absent days come back NaN from the reindex,
-    # which fails `present` — an unobserved composition is not a matching one.
-    window = [n_src.reindex(keys + k).to_numpy(dtype=float)
+    # Composition over t-1 ... t+h. Row POSITIONS are looked up rather than the
+    # composition values themselves: a reindex that introduces a NaN casts the
+    # column to float, and a 62-bit source mask does not survive that intact.
+    positions = pd.Series(np.arange(len(frame), dtype=np.int64), index=keys)
+    values = frame[composition_col].to_numpy(dtype=np.int64)
+    window = [positions.reindex(keys + k).to_numpy(dtype=float)
               for k in range(-1, horizon + 1)]
+
+    # An absent day comes back NaN — an unobserved composition, not a matching
+    # one.
     present = np.ones(len(frame), dtype=bool)
-    for column in window:
-        present &= ~np.isnan(column)
+    for offset in window:
+        present &= ~np.isnan(offset)
+    resolved = [np.nan_to_num(offset, nan=0.0).astype(np.int64)
+                for offset in window]
     same = np.ones(len(frame), dtype=bool)
-    for column in window[1:]:
-        same &= (column == window[0])
+    for offset in resolved[1:]:
+        same &= (values[offset] == values[resolved[0]])
     stable = present & same
 
     out = pd.DataFrame({
@@ -301,7 +404,7 @@ def partitions(windows: pd.DataFrame) -> list[tuple[str, pd.DataFrame]]:
 
 
 def measure(archive_dir: Path, horizon: int, start: date, min_price: float,
-            end: date | None = None) -> list[dict]:
+            basis: str = "set", end: date | None = None) -> list[dict]:
     voted = load_voted_series(archive_dir, start, end)
     print(f"voted series: {len(voted):,} item-days, "
           f"{voted['item_id'].nunique():,} items")
@@ -312,7 +415,7 @@ def measure(archive_dir: Path, horizon: int, start: date, min_price: float,
     print(f"collection shift dates ({len(shifts)}): "
           f"{', '.join(str(d) for d in sorted(shifts)) or 'none'}")
 
-    windows = build_windows(voted, horizon, min_price)
+    windows = build_windows(voted, horizon, min_price, basis)
     void = voided_anchors(snapshots, shifts, horizon)
     before = len(windows)
     windows = windows[~windows["date"].dt.date.isin(void)]
@@ -330,11 +433,14 @@ def measure(archive_dir: Path, horizon: int, start: date, min_price: float,
     return results
 
 
-def report(results: list[dict], horizon: int, start: date, min_price: float
-           ) -> None:
+def report(results: list[dict], horizon: int, start: date, min_price: float,
+           basis: str) -> None:
+    described = ("the SET of source names" if basis == "set"
+                 else "the COUNT of ask sources")
     print()
     print(f"rank IC of -r_t vs the forward {horizon}d return, "
           f">= ${min_price:g}, from {start}")
+    print(f"composition basis: {basis} ({described})")
     print(f"(within-date Spearman, averaged across dates; "
           f"cells under {MIN_DATES_TO_REPORT} dates are not quotable)")
     print()
@@ -363,13 +469,18 @@ def main() -> None:
                              "narrow range")
     parser.add_argument("--min-price", type=float, default=1.0,
                         help="anchor-price floor in USD (default: 1.0)")
+    parser.add_argument("--basis", default="set",
+                        choices=sorted(COMPOSITION_COLUMN),
+                        help="what composition means: the set of source names "
+                             "(default) or their count")
     parser.add_argument("--archive-dir", type=Path, default=ARCHIVE_ROOT)
     args = parser.parse_args()
 
     start = date.fromisoformat(args.start)
     end = date.fromisoformat(args.end) if args.end else None
-    results = measure(args.archive_dir, args.horizon, start, args.min_price, end)
-    report(results, args.horizon, start, args.min_price)
+    results = measure(args.archive_dir, args.horizon, start, args.min_price,
+                      args.basis, end)
+    report(results, args.horizon, start, args.min_price, args.basis)
 
 
 if __name__ == "__main__":

@@ -21,21 +21,30 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from scripts.measure_composition_stability import (  # noqa: E402
     MIN_ITEMS_PER_DATE,
+    NULL_SOURCE_LABEL,
     build_windows,
     rank_ic,
+    source_masks,
     voided_anchors,
 )
 
 START = date(2026, 1, 1)
 
 
-def _voted(rows) -> pd.DataFrame:
-    """`(item_id, day_offset, price, n_ask_sources)` tuples as a voted frame."""
-    return pd.DataFrame(
+def _voted(rows, masks=None) -> pd.DataFrame:
+    """`(item_id, day_offset, price, n_ask_sources)` tuples as a voted frame.
+
+    `masks` optionally overrides the source-set bitmask per row; it defaults to
+    the lowest `n_ask_sources` bits, i.e. every day drawing on the same sources.
+    """
+    frame = pd.DataFrame(
         [{"item_id": item, "date": START + timedelta(days=offset),
           "price": price, "n_ask_sources": n}
          for item, offset, price, n in rows]
     )
+    frame["source_mask"] = (masks if masks is not None
+                            else [(1 << n) - 1 for n in frame["n_ask_sources"]])
+    return frame
 
 
 def _series(item: str, offsets, n_ask_sources, price: float = 10.0):
@@ -243,3 +252,91 @@ def test_a_collection_shift_voids_every_anchor_whose_window_spans_it():
 def test_the_span_rule_widens_with_the_horizon():
     shift = date(2026, 5, 10)
     assert len(voided_anchors(frozenset(), frozenset({shift}), horizon=7)) == 8
+
+
+# --------------------------------------------------------------------------
+# The set basis: what the count basis cannot see
+# --------------------------------------------------------------------------
+
+def _two_sources_then_a_swap():
+    """Six days at two ask sources, where day 3 swaps one source for another.
+
+    `n_ask_sources` is 2 on every day, so the count basis sees nothing at all.
+    """
+    rows = _series("a", range(0, 6), 2)
+    swapped = [0b011, 0b011, 0b011, 0b101, 0b011, 0b011]
+    return _voted(rows, masks=swapped)
+
+
+def test_a_source_swap_with_the_count_unchanged_reads_as_changed():
+    windows = build_windows(_two_sources_then_a_swap(), horizon=3,
+                            min_price=1.0, basis="set")
+
+    # Both anchors (days 1 and 2) have day 3 inside their window.
+    assert len(windows) == 2
+    assert not windows["stable"].any(), (
+        "swapping one source for another is a composition change, and it is "
+        "the case the count basis is blind to")
+
+
+def test_the_count_basis_is_blind_to_the_swap():
+    # The same frame, read on the other basis. This is not a bug in the count
+    # basis, it is its known limitation -- pinned so the difference between the
+    # two published measurements stays visible.
+    windows = build_windows(_two_sources_then_a_swap(), horizon=3,
+                            min_price=1.0, basis="count")
+
+    assert windows["stable"].all()
+
+
+def test_an_unchanged_set_is_stable_on_the_set_basis():
+    rows = _series("a", range(0, 6), 2)
+    windows = build_windows(_voted(rows, masks=[0b011] * 6), horizon=3,
+                            min_price=1.0, basis="set")
+
+    assert windows["stable"].all()
+
+
+# --------------------------------------------------------------------------
+# The source set itself, built from the frame the vote consumed
+# --------------------------------------------------------------------------
+
+def _raw(rows) -> pd.DataFrame:
+    return pd.DataFrame(
+        [{"item_id": item, "date": START + timedelta(days=offset),
+          "source": source}
+         for item, offset, source in rows]
+    )
+
+
+def test_the_mask_encodes_the_set_not_the_row_count():
+    masks = source_masks(_raw([
+        ("a", 0, "skinport"), ("a", 0, "skinport"), ("a", 0, "buff163"),
+        ("b", 0, "skinport"), ("b", 0, "buff163"),
+    ]))
+
+    by_item = dict(zip(masks["item_id"], masks["source_mask"]))
+    assert by_item["a"] == by_item["b"], (
+        "a duplicate row from a source already in the set must not change it")
+
+
+def test_different_sets_of_the_same_size_get_different_masks():
+    masks = source_masks(_raw([
+        ("a", 0, "skinport"), ("a", 0, "buff163"),
+        ("b", 0, "skinport"), ("b", 0, "youpin"),
+    ]))
+
+    by_item = dict(zip(masks["item_id"], masks["source_mask"]))
+    assert by_item["a"] != by_item["b"]
+    assert np.bitwise_count(by_item["a"]) == np.bitwise_count(by_item["b"]) == 2
+
+
+def test_a_null_source_is_a_name_like_any_other():
+    # Two NULL-source days must read as the SAME composition. Treating NULL as
+    # never equal to itself is what made every pre-2026 row look like a
+    # composition change in the refuted 2026-08-08 measurement.
+    masks = source_masks(_raw([("a", 0, None), ("b", 0, None),
+                               ("c", 0, NULL_SOURCE_LABEL)]))
+
+    assert masks["source_mask"].nunique() == 1
+    assert (np.bitwise_count(masks["source_mask"].to_numpy()) == 1).all()

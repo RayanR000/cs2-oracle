@@ -220,6 +220,34 @@ early-stopping contrast and the naive comparison are internally valid.
 
 ## 5. How much of the signal is a quoting artifact
 
+> **REFUTED 2026-08-09. The composition rows of the table below do not mean what
+> they say.** The partition classified every item-day whose `source` is NULL as
+> "composition changed" — and `source` is NULL for **every archive row before
+> 2026** (9,417,947 item-days, 0 with a label). So the "stable" cell contains no
+> pre-2026 data at all: its 188 dates are 2026 dates, and ~716 of the 775
+> "changed" dates are pre-2026 dates marked changed for want of a label rather
+> than because anything changed. The measurement also applied no
+> `_snapshot_dates` / `_collection_shift_dates` exclusion.
+>
+> **The +0.1676 → +0.1006 fall is a 2013-2025 → 2026 regime difference, not
+> composition control.** Measured with the committed instrument: restricted to
+> 2026, the **all-rows** rank IC — no composition control of any kind — is
+> **+0.1023 on 185 dates**, against this table's "stable" +0.1006 on 188.
+>
+> **Corrected answer:** over 2026, with composition defined as the *set* of source
+> names, the composition-stable cell is **+0.1027 on 181 dates at 3d** against an
+> unconditional **+0.1023** — and **+0.0842 vs +0.0842 on 167 dates at 7d**.
+> Holding composition still does not touch the signal, so the reversal is **not**
+> a composition artifact and accuracy work is **not** gated on this. The one row
+> that survives is the weakest: "stable & three agreeing sources" is 25 dates at
+> 3d and 19 at 7d, both under the 30-date reporting floor.
+>
+> The numbers are kept as published. They are reproducible: the committed script
+> reproduces 188 and 185 dates exactly when the NULL-never-equal rule is applied.
+> See **`docs/research/2026-08-09-composition-stability.md`** for the corrected
+> measurement and `backend/scripts/measure_composition_stability.py` for the
+> instrument.
+
 The reversal is large enough to be suspicious. The archive carries `source` per
 item-day, so it can be tested directly. Voted daily series, ≥$1, 2024-01-01 onward,
 universe rules applied; rank IC of `-r_t` predicting the forward 3-day return:
@@ -227,10 +255,10 @@ universe rules applied; rank IC of `-r_t` predicting the forward 3-day return:
 | Subset | Dates | rank IC | t |
 |---|---|---|---|
 | All rows | 932 | +0.1676 | 43.6 |
-| Source composition **stable** across t−1…t+3 | 188 | **+0.1006** | 14.1 |
-| Source composition changed | 775 | +0.1804 | 43.1 |
-| Stable & single source | 185 | +0.1081 | 14.0 |
-| Stable & **three agreeing sources** | 28 | **+0.0044** | 0.1 |
+| ~~Source composition **stable** across t−1…t+3~~ (refuted) | 188 | +0.1006 | 14.1 |
+| ~~Source composition changed~~ (refuted) | 775 | +0.1804 | 43.1 |
+| ~~Stable & single source~~ (refuted) | 185 | +0.1081 | 14.0 |
+| ~~Stable & **three agreeing sources**~~ (refuted) | 28 | +0.0044 | 0.1 |
 
 75% of item-days are composition-stable, but only 188 dates have a full stable
 window. Roughly 40% of the effect is associated with composition change — consistent
@@ -239,14 +267,24 @@ with the documented basis errors (the BUFF bid quoting ~11% low, and
 observations). A component survives at +0.10, but the cleanest subset available —
 three sources agreeing, none changing — shows **no reversal at all**, on 28 dates.
 
+*(The paragraph above is the original reading and is what the 2026-08-09 work
+refutes. "40% of the effect is associated with composition change" is an artifact
+of the NULL rule; the "28 dates" cell is real but was and remains underpowered.)*
+
 Pooled 1-day return autocorrelation is ~0 (−0.0001) whether or not composition
 changes, so this is a purely cross-sectional effect, not Roll-style
 [bid-ask bounce](https://onlinelibrary.wiley.com/doi/10.1111/j.1540-6261.1984.tb03897.x)
 in the time series.
 
-**This is underpowered and it gates everything else.** If the effect is a quoting
+~~**This is underpowered and it gates everything else.** If the effect is a quoting
 artifact, no feature or architecture work can help, because the label is not a
-tradeable return.
+tradeable return.~~
+
+**The gate is lifted (2026-08-09).** The conditional was right and the antecedent
+is false: composition change is not what the reversal is made of. What remains
+open is narrower — whether the reversal survives *several independent sources
+agreeing*, which is 25 dates at 3d and cannot be answered until more multi-source
+days accumulate.
 
 ---
 
