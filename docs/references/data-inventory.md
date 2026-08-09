@@ -192,6 +192,13 @@ until 07-11. `aggregator_sync` is the only continuous 2026 series, with 106 miss
 
 `aggregator_steam_17mafo` has been dead for 25 days with nothing flagging it.
 
+**2026-03-22 is a basis break, not just a coverage start.** Until that date an affected item's
+consensus was `aggregator_sync` alone (Steam-basis); on it, buff163/youpin/csfloat arrive at
+0.891–0.905× and outvote the single Steam feed 3-to-1, stepping the voted consensus down ~8–10%
+on one shared date for every item with cash-venue coverage. Measured 2026-08-09; numbers,
+control group and caveats in `../changelog/2026-08-09-march-22-consensus-break.md`. No fix has
+been taken — treat any return computed across 2026-03-22 as carrying a synthetic move.
+
 ---
 
 ## 6. Field availability — one column carries information
