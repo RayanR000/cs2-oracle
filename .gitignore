@@ -64,6 +64,10 @@ backend/data/*.json
 # Price archive (lives in the cs2-oracle-data repo; symlinked in locally)
 price-archive/
 
+# Staging archive for one-shot historical imports. Multi-GB, never committed:
+# promotion into the real archive goes through the cs2-oracle-data repo, not here.
+archive-staging/
+
 # ML model artifacts (regenerated on each retrain)
 backend/models/saved_models/*.txt
 backend/models/saved_models/*.pkl
