@@ -356,3 +356,48 @@ def test_a_reappend_does_not_duplicate_the_same_item_day_source(tmp_path):
     finally:
         con.close()
     assert count == 1
+
+
+import json
+
+from scripts.import_price_history_source import (
+    cached_path,
+    daterange,
+    load_cached_day,
+)
+
+
+def test_daterange_is_inclusive_of_both_ends():
+    days = daterange(date(2025, 6, 1), date(2025, 6, 4))
+    assert days == [
+        date(2025, 6, 1), date(2025, 6, 2), date(2025, 6, 3), date(2025, 6, 4)
+    ]
+
+
+def test_daterange_rejects_an_inverted_range():
+    with pytest.raises(ValueError):
+        daterange(date(2025, 6, 4), date(2025, 6, 1))
+
+
+def test_cached_path_is_namespaced_by_source(tmp_path):
+    path = cached_path(tmp_path, "cs2_prices_tracker", date(2025, 6, 1))
+    assert path == tmp_path / "cs2_prices_tracker" / "2025-06-01.json"
+
+
+def test_load_cached_day_returns_none_for_a_missing_file(tmp_path):
+    assert load_cached_day(tmp_path / "nope.json") is None
+
+
+def test_load_cached_day_returns_none_for_an_empty_or_corrupt_file(tmp_path):
+    empty = tmp_path / "empty.json"
+    empty.write_text("")
+    corrupt = tmp_path / "corrupt.json"
+    corrupt.write_text("{not json")
+    assert load_cached_day(empty) is None
+    assert load_cached_day(corrupt) is None
+
+
+def test_load_cached_day_parses_a_good_file(tmp_path):
+    good = tmp_path / "good.json"
+    good.write_text(json.dumps({"Item A": {"steam": {"last_24h": 1.0}}}))
+    assert load_cached_day(good) == {"Item A": {"steam": {"last_24h": 1.0}}}
