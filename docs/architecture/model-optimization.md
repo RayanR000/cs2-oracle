@@ -153,17 +153,18 @@ the same phase directly without shrinking item coverage further.
 | Drift-triggered retrain removed (report-only) | 2026-08-04 | −465s of an 835s daily step. `ALLOW_DRIFT_RETRAIN=1` restores it |
 | Row sampling: `bagging` for all quantiles | 2026-07-29 | GOSS reverted after A/B showed +5.21% (3d) / +1.76% (7d) pinball and +1.13pp / +0.71pp DA for bagging |
 | Dead-item filter, ±500% target winsorization, corrupt-item flagging | 2026-07-17 | Removed ~41% of training rows that carried no signal |
+| Allowlist before the correlation prune **+** skip the discarded feature blocks | 2026-08-09 | **−16.5s combined, measured paired on the production frame** (24.5s → 8.0s, warm voted cache, both arms same code). ⚠️ The planning doc sized these separately at 25.2s + 8.5s = 33.7s; that did **not** reproduce, so quote 16.5s. `df[feature_cols].corr()` is O(rows × p²) single-threaded pandas and was running over 123 candidate columns instead of the 33 the allowlist keeps. **Verified output-preserving**: flipping `ALLOWLIST_BEFORE_PRUNE` and `skip_unused_groups` yields set-identical 33 features, matching the shipped `meta.json`. Not identical *by construction* though — `_prune_features` keeps the lower-indexed member of a >0.95 pair and index order does not follow group, so `ALLOWLIST_BEFORE_PRUNE = False` exists to restore the old order. The skip half is default **off**: seven `ab_test_*` harnesses build their own frame and need the full 123 columns, so only `build_training_data` passes `skip_unused_groups=True`. Its skip set is *derived* from the allowlist, never a literal — re-admitting `cross_sectional` (Track C4) must not yield a frame with the group allowlisted and its columns absent, median-filled to zero |
+| Cap CV fold training rows (`CV_MAX_TRAIN_ROWS = 300_000`) | 2026-08-09 | `max_rows` was applied only in `_build_production_split`, so `_cv_evaluate_horizon` took the whole expanding window every fold — nine folds per horizon summed to **4.2× the training frame**. Only `train` is thinned; fold count, val rows and OOF record count are unchanged, because they are the sample size of `q_hat`, `mean_rank_ic` and the PT statistic. The fold model now fits on less data than the served one, so `q_hat` comes out **larger** — over-coverage, the safe direction. **Verify empirical coverage against `NOMINAL_COVERAGE = 0.80` before lowering it** |
+| Optuna scores within-date rank IC | 2026-08-09 | **A correctness fix that COSTS time — the largest single phase of the cold retrain is now HP search.** The objective was still `best_score["valid_0"]["quantile"]` under `lgb.early_stopping(20)`, i.e. the criterion `FIXED_BOOST_ROUNDS` replaced on 2026-08-08, with a pruner cutting trials on LightGBM's reported metric rather than on the returned objective. At 14d/30d the val-loss optimum is 25 rounds while rank IC peaks at 500–750. Removing early stopping means every trial now trains the full `_boost_rounds(horizon, cv=True)` instead of stopping at ~25 rounds: measured **392.3s of a 1426.3s** cold retrain (0.0 / 107.8 / 37.6 / **246.9s** at 3/7/14/30d, 3d frozen by `SKIP_HP_HORIZONS`). Budget for it, or cut `N_TRIALS_MAP[30]`. `MODEL_ARTIFACT_VERSION` 5 → 6 |
+| Content-hashed archive fingerprint | 2026-08-09 | The voted-frame cache keyed on `st_mtime_ns`, and CI checks the archive out fresh every run, so the key changed unconditionally and **the cache could never hit in CI** — ~48s a run (21.1s DuckDB read + 27.2s voting), paid by the daily predict path too. Now row count + byte size, naming no column: the archive is not schema-uniform and its date column is `day`, not `date` |
 
 ### Still available
 
 | # | Lever | Change | Speed gain | Quality risk |
 |---|-------|--------|-----------|--------------|
 | **1** | **Widen the CV stride** | `CV_STEP_DAYS` 150 → higher. Env-overridable, no code edit (`forecaster.py:316`) | Cuts folds ~linearly against a **439.3s** phase (33 folds, 50.4% of the retrain) | **Real and structural, not statistical.** Folds are the conformal calibration set *and* the confidence-threshold fit set, so fewer folds means fewer OOF points, a noisier `q_hat`, and a looser coverage guarantee. Directional accuracy is also clustered by date, so folds are the effective sample size of every CV number in this doc. ⚠️ **Fold count is now also the input to the offline rank-IC / Pesaran–Timmermann metrics, not just conformal calibration** — cutting folds degrades the evaluation as well as the band. Verify empirical coverage against `NOMINAL_COVERAGE = 0.80` before and after |
-| **2** | Stop computing discarded features | Skip the temporal / event / cross-sectional / rarity / supply / social / volume blocks in `engineer_features()` when the allowlist would drop them anyway | ⚠️ **Near zero.** An earlier version sized this against "the 35s feature-engineering phase"; feature engineering measured **7s** at the shipped config (2026-08-08), so the lever is worth **~1% of the retrain** | 0pp — they never reach a model. The cost is that the `ab_test_*` scripts build their feature lists from the frame and would need their own path |
-| **3** | `MAX_BIN` 63 → 31 | Edit the class constant | ~10–15% of 28.1s | ~0.3–0.5pp claimed (coarser splits) — below the harness's noise floor, so unmeasurable |
-| **4** | `num_leaves` 47 → 31 | Edit the fallback; needs `FORCE_HP_SEARCH=1` to escape cached HP | ~15–20% of 28.1s | ~0.3–0.5pp claimed; likewise unmeasurable |
-| **5** | Aggressive correlation pruning | `PRUNE_CORRELATION_THRESHOLD` 0.95 → 0.85 | Fewer of 47 (soon 36) features per fit | Loses signal-bearing correlated features. Untested |
-| **6** | Increase regularization | `lambda_l2 = 2.0`, `min_data_in_leaf = 30` | ~5% per fit | Untested |
+| **2** | ~~Stop computing discarded features~~ — **APPLIED 2026-08-09**, see the row in the table above | — | — | — |
+| **3–6** | ~~`MAX_BIN` 63→31, `num_leaves` 47→31, aggressive correlation pruning, more regularization~~ — **REFUTED 2026-08-09, do not re-propose.** Measured per boosting round on the production frame: `max_bin` 31 → **26.3 ms**, `num_leaves` 31 → **26.2 ms**, `min_data_in_leaf` 100 → **27.1 ms**, `feature_fraction` 0.4 → **28.9 ms**, against a **25.5 ms** baseline. Every one is *slower* than doing nothing. The "~10–20% of 28.1s" figures in the earlier version of this table were estimates, never measurements | — | — |
 | **7** | Drop the 14d horizon | `HORIZONS = [3, 7, 30]` | ~25% of train + inference; −2 models | **Unjustifiable in either direction right now.** The old rationale ("loses a 55.7% DA horizon") came from the superseded scorer and there is no quotable production DA to replace it with. 14d also has the best classifier CV DA of the four and gained the most from removing DART (+3.14pp), so it is the worst horizon to cut, not the safest. Do not pull this without a measurement |
 | **8** | LightGBM → ONNX for inference | Convert the boosters | 0 on training, and applies only to the ~15s of booster scoring — not the 72s of fetch + feature engineering | ~0pp if the conversion is exact. Low ceiling: fix the data path first |
 | **9** | Lower `TRAIN_FEATURE_ROWS` below 100K | Env var | Mostly through CV refits | Cuts item coverage below 1.8%. Prefer lever 1 |
@@ -187,14 +188,17 @@ the same phase directly without shrinking item coverage further.
    against the 80% nominal before and after. It acts on the 439.3s / 50.4% phase, and its risk is
    structural rather than statistical — note that folds now also carry the offline rank-IC/PT
    metrics.
-2. **Levers 3/4/5/6** buy seconds against the booster-fit phases for accuracy costs nothing can
-   measure. Bundle them into one retrain or skip them; individually they are not worth the run.
+2. ~~**Levers 3/4/5/6**~~ — **measured dead 2026-08-09.** All four are slower per boosting round
+   than the baseline. Do not bundle them into a retrain; do not re-propose them.
 3. **Nothing on the predict path until the fetch is addressed.** 72 of 87s is fetch + feature
    engineering; lever 8 optimizes the remainder.
-4. **Lever 2 (stop computing discarded features), last.** ⚠️ **This was #1 in an earlier version of
-   this doc, sized against a 35s feature-engineering phase.** Feature engineering measured **7s** at
-   the shipped config (2026-08-08), so the lever is worth ~1% of the retrain. Still zero accuracy
-   risk and it makes the allowlist's effect legible, but do it for legibility, not for speed.
+4. ~~**Lever 2**~~ — **applied 2026-08-09**, and it was worth ≈**32s**, not the "~1% of the
+   retrain" this doc claimed. The re-size came from measuring the two halves separately: **25.2s**
+   was `_prune_features` building a correlation matrix over 123 columns instead of 33 — which this
+   doc never mentioned at all, and which is the larger half — and **8.5s** was the discarded
+   feature blocks themselves. Both are in the applied table above. The lesson is the one this
+   section keeps relearning: the sizes here were estimates, and three of them have now been wrong
+   by more than an order of magnitude in both directions.
 
 The two levers not in this table but larger than any of them are in
 `docs/research/2026-08-08-model-review.md`: gating the per-fold diagnostic classifier off in CI
