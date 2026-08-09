@@ -351,6 +351,13 @@ class ItemForecaster:
     # noise) and hurt at 3d/30d. Restrict to price technicals; the momentum
     # (return_Nd) features live in this group, so trend signal is retained.
     FEATURE_GROUP_ALLOWLIST = ["price_technicals"]
+    # Run the allowlist BEFORE _prune_features. The correlation matrix is
+    # O(rows x p^2) single-threaded pandas: 25.2s over 123 candidate columns,
+    # 1.65s over the 33 the allowlist keeps (measured 2026-08-09). Output was
+    # identical on the production frame -- but _prune_features keeps the
+    # lower-indexed member of a >0.95 pair and index order does not follow
+    # group, so set this False to restore the old order if a feature count moves.
+    ALLOWLIST_BEFORE_PRUNE = True
     # The ByMykel item-metadata bundle, joined from
     # price-archive/item-metadata-bymykel.parquet by
     # scripts/ingest_bymykel_metadata.py. Off by default: the effect is measured
@@ -3509,21 +3516,9 @@ class ItemForecaster:
         self.feature_cols = self._select_feature_cols(
             df, self.HORIZONS, self.SHELVED_FEATURES)
 
-        # Prune highly correlated features to reduce noise
-        self.feature_cols = self._prune_features(df)
-
-        # Restrict to the allowlisted feature groups (default: price technicals).
-        allowlist = list(self.FEATURE_GROUP_ALLOWLIST or [])
-        if allowlist and self.bymykel_metadata_enabled():
-            allowlist.append(self.BYMYKEL_META_GROUP)
-        if allowlist:
-            pre = len(self.feature_cols)
-            self.feature_cols = self._apply_feature_allowlist(
-                self.feature_cols, allowlist)
-            logger.info(
-                f"Feature allowlist {allowlist}: "
-                f"{pre} -> {len(self.feature_cols)} features"
-            )
+        # Restrict to the allowlisted groups and prune correlated columns,
+        # in the cheaper order.
+        self._reduce_feature_cols(df)
         self._base_feature_cols = list(self.feature_cols)
 
         # Downcast features to float32 to halve feature matrix memory
@@ -4506,6 +4501,41 @@ class ItemForecaster:
 
         return [c for c in df.columns if c not in exclude
                 and df[c].dtype in (np.float64, np.float32, np.int64, int, float)]
+
+    def _reduce_feature_cols(self, df: pd.DataFrame) -> None:
+        """Apply the allowlist and the correlation prune, in the cheaper order.
+
+        _prune_features builds `df[self.feature_cols].corr()`, which is
+        O(rows x p^2) single-threaded pandas: 25.2s over the 123 selected
+        candidates against 1.65s over the 33 the allowlist keeps. Running the
+        allowlist first is therefore ~23s off every retrain.
+
+        Output-identical on the production frame, but not by construction:
+        _prune_features keeps the lower-indexed member of each >0.95 pair and
+        index order does not follow group, so a correlated pair straddling the
+        allowlist boundary could resolve differently. ALLOWLIST_BEFORE_PRUNE
+        restores the old order.
+        """
+        allowlist = list(self.FEATURE_GROUP_ALLOWLIST or [])
+        if allowlist and self.bymykel_metadata_enabled():
+            allowlist.append(self.BYMYKEL_META_GROUP)
+
+        def _allow():
+            if not allowlist:
+                return
+            pre = len(self.feature_cols)
+            self.feature_cols = self._apply_feature_allowlist(
+                self.feature_cols, allowlist)
+            logger.info(
+                f"Feature allowlist {allowlist}: "
+                f"{pre} -> {len(self.feature_cols)} features")
+
+        if self.ALLOWLIST_BEFORE_PRUNE:
+            _allow()
+            self.feature_cols = self._prune_features(df)
+        else:
+            self.feature_cols = self._prune_features(df)
+            _allow()
 
     @staticmethod
     def _apply_feature_allowlist(feature_cols, allowlist):
