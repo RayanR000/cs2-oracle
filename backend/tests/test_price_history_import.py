@@ -288,6 +288,57 @@ def test_rows_fan_out_to_one_file_per_month(tmp_path):
     assert names == ["prices-2025-06.parquet", "prices-2025-07.parquet"]
 
 
+def test_a_reappend_keeps_the_first_arrival_not_the_latest(tmp_path):
+    """append_monthly replaces a colliding row wholesale, ingested_at included.
+
+    Without _preserve_first_arrival a re-run dates every touched row forward,
+    which is exactly what the embargo reads. The daily CI writer solves the
+    same problem at scripts/append_to_parquet.py:267-270.
+    """
+    out_dir = tmp_path / "price-archive"
+    first = datetime(2026, 8, 8, 12, 0, 0)
+    later = datetime(2026, 9, 1, 9, 30, 0)
+    records = [("Item A", date(2025, 6, 1), 10.0)]
+
+    write_archive_frame(to_archive_frame(records, "tracker_steam_24h", first), out_dir)
+    write_archive_frame(to_archive_frame(records, "tracker_steam_24h", later), out_dir)
+
+    con = duckdb.connect()
+    try:
+        rel = prices_relation(
+            con, archive_dir=out_dir, columns=["item_slug", "ingested_at"]
+        )
+        stored = con.sql(f"SELECT ingested_at FROM {rel}").fetchall()
+    finally:
+        con.close()
+
+    assert len(stored) == 1
+    assert stored[0][0] == first
+
+
+def test_a_row_with_no_prior_arrival_takes_the_new_timestamp(tmp_path):
+    """min skips NaT: a row predating the column must not stay unknown."""
+    out_dir = tmp_path / "price-archive"
+    stamped = to_archive_frame(
+        [("Item A", date(2025, 6, 1), 10.0)], "tracker_steam_24h", _INGESTED
+    )
+    unstamped = stamped.copy()
+    unstamped["ingested_at"] = pd.NaT
+    write_archive_frame(unstamped, out_dir)
+    write_archive_frame(stamped, out_dir)
+
+    con = duckdb.connect()
+    try:
+        rel = prices_relation(
+            con, archive_dir=out_dir, columns=["item_slug", "ingested_at"]
+        )
+        stored = con.sql(f"SELECT ingested_at FROM {rel}").fetchall()
+    finally:
+        con.close()
+
+    assert stored[0][0] == pd.Timestamp(_INGESTED)
+
+
 def test_a_reappend_does_not_duplicate_the_same_item_day_source(tmp_path):
     frame = to_archive_frame(
         [("Item A", date(2025, 6, 1), 1.0)],
