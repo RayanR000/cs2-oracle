@@ -682,6 +682,57 @@ def test_rows_fan_out_to_one_file_per_month(tmp_path):
     assert names == ["prices-2025-06.parquet", "prices-2025-07.parquet"]
 
 
+def test_a_reappend_keeps_the_first_arrival_not_the_latest(tmp_path):
+    """append_monthly replaces a colliding row wholesale, ingested_at included.
+
+    Without _preserve_first_arrival a re-run dates every touched row forward,
+    which is exactly what the embargo reads. The daily CI writer solves the
+    same problem at scripts/append_to_parquet.py:267-270.
+    """
+    out_dir = tmp_path / "price-archive"
+    first = datetime(2026, 8, 8, 12, 0, 0)
+    later = datetime(2026, 9, 1, 9, 30, 0)
+    records = [("Item A", date(2025, 6, 1), 10.0)]
+
+    write_archive_frame(to_archive_frame(records, "tracker_steam_24h", first), out_dir)
+    write_archive_frame(to_archive_frame(records, "tracker_steam_24h", later), out_dir)
+
+    con = duckdb.connect()
+    try:
+        rel = prices_relation(
+            con, archive_dir=out_dir, columns=["item_slug", "ingested_at"]
+        )
+        stored = con.sql(f"SELECT ingested_at FROM {rel}").fetchall()
+    finally:
+        con.close()
+
+    assert len(stored) == 1
+    assert stored[0][0] == first
+
+
+def test_a_row_with_no_prior_arrival_takes_the_new_timestamp(tmp_path):
+    """min skips NaT: a row predating the column must not stay unknown."""
+    out_dir = tmp_path / "price-archive"
+    stamped = to_archive_frame(
+        [("Item A", date(2025, 6, 1), 10.0)], "tracker_steam_24h", _INGESTED
+    )
+    unstamped = stamped.copy()
+    unstamped["ingested_at"] = pd.NaT
+    write_archive_frame(unstamped, out_dir)
+    write_archive_frame(stamped, out_dir)
+
+    con = duckdb.connect()
+    try:
+        rel = prices_relation(
+            con, archive_dir=out_dir, columns=["item_slug", "ingested_at"]
+        )
+        stored = con.sql(f"SELECT ingested_at FROM {rel}").fetchall()
+    finally:
+        con.close()
+
+    assert stored[0][0] == pd.Timestamp(_INGESTED)
+
+
 def test_a_reappend_does_not_duplicate_the_same_item_day_source(tmp_path):
     frame = to_archive_frame(
         [("Item A", date(2025, 6, 1), 1.0)],
@@ -719,8 +770,16 @@ import pandas as pd
 from db.archive import CANONICAL_PRICE_COLUMNS
 from db.parquet import append_monthly
 
-#: The archive's natural key. A re-append replaces the row rather than adding
-#: one, and `_append_parquet` keeps the FIRST `ingested_at`.
+#: The archive's natural key. A re-append REPLACES the row: `_append_parquet`
+#: selects `_new` unconditionally and keeps an existing row only `WHERE NOT
+#: EXISTS` a match (`db/parquet.py:250-262`), so the new row's `ingested_at`
+#: wins too.
+#:
+#: That is wrong for an arrival timestamp, which is why `write_archive_frame`
+#: restores first-arrival itself. The daily CI writer has the same problem and
+#: solves it the same way (`scripts/append_to_parquet.py:267-270`); the
+#: difference is that it does so before its own dedup, while `append_monthly`
+#: offers no hook, so the correction has to happen on the frame going in.
 DEDUP_KEYS = ["item_slug", "day", "source"]
 
 
@@ -748,6 +807,50 @@ def to_archive_frame(
     return frame[list(CANONICAL_PRICE_COLUMNS)]
 
 
+def _preserve_first_arrival(
+    frame: pd.DataFrame, out_dir: Path | str
+) -> pd.DataFrame:
+    """Roll each row's ``ingested_at`` back to its earliest recorded arrival.
+
+    ``append_monthly`` replaces a colliding row wholesale, so without this a
+    re-run re-stamps arrival forward on every row it touches — and the whole
+    reason the column exists is the embargo. A value being corrected still
+    became knowable on the day it first landed.
+
+    ``min`` skips NaT, so a row predating the column takes the new timestamp
+    rather than staying unknown.
+    """
+    files = sorted(Path(out_dir).glob("prices-*.parquet"))
+    if not files:
+        return frame
+
+    con = duckdb.connect()
+    try:
+        rel = prices_relation(
+            con,
+            archive_dir=Path(out_dir),
+            columns=["item_slug", "day", "source", "ingested_at"],
+        )
+        existing = con.sql(
+            f"SELECT item_slug, day, source, ingested_at FROM {rel}"
+        ).fetchdf()
+    finally:
+        con.close()
+
+    if existing.empty:
+        return frame
+
+    existing["day"] = pd.to_datetime(existing["day"]).dt.date
+    merged = frame.merge(
+        existing.rename(columns={"ingested_at": "_prior"}),
+        on=DEDUP_KEYS,
+        how="left",
+    )
+    frame = frame.copy()
+    frame["ingested_at"] = merged[["ingested_at", "_prior"]].min(axis=1)
+    return frame
+
+
 def write_archive_frame(frame: pd.DataFrame, out_dir: Path | str) -> int:
     """Append *frame* to the monthly price files under *out_dir*.
 
@@ -756,9 +859,12 @@ def write_archive_frame(frame: pd.DataFrame, out_dir: Path | str) -> int:
     """
     if frame.empty:
         return 0
-    append_monthly(out_dir, "prices", frame, DEDUP_KEYS)
+    append_monthly(out_dir, "prices", _preserve_first_arrival(frame, out_dir),
+                   DEDUP_KEYS)
     return len(frame)
 ```
+
+This needs `import duckdb` and `from db.archive import prices_relation` alongside the existing imports.
 
 - [ ] **Step 4: Run the tests to verify they pass**
 
