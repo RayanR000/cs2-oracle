@@ -14,7 +14,6 @@ from __future__ import annotations
 from unittest.mock import MagicMock
 
 import pandas as pd
-import pytest
 
 from models.forecaster import ItemForecaster
 
@@ -70,6 +69,36 @@ def test_column_is_never_null(tmp_path):
     ))
     assert out["n_ask_sources"].notna().all()
     assert out["n_ask_sources"].dtype.kind in "iu"
+
+
+def test_all_bids_returns_empty_int_frame(tmp_path):
+    """Every input row was a bid, so the item-day has no ask at all and drops
+    out entirely -- this exits before the vote/agg split, and before the
+    trailing astype on the concatenated result, so it needs its own dtype
+    guarantee."""
+    out = _f(tmp_path)._apply_multi_source_voting(_rows(
+        ("a", "2026-07-11", 5.8, "aggregator_buff163_buy"),
+    ))
+    assert len(out) == 0
+    assert out["n_ask_sources"].dtype.kind in "iu"
+
+
+def test_mixed_single_and_multi_source_frame_stays_int(tmp_path):
+    """A single-source item-day and a multi-source item-day in the same call
+    forces both the vectorised and vote paths to run and actually concatenate
+    -- the exact shape the trailing astype("int64") exists to protect. The
+    vectorised path's groupby.agg also sums `volume`, so this fixture (unlike
+    the brief's bare `_rows`) needs that column populated to reach it."""
+    out = _f(tmp_path)._apply_multi_source_voting(_rows(
+        ("a", "2026-07-11", 10.0, "aggregator_sync"),
+        ("b", "2026-07-11", 10.0, "aggregator_buff163"),
+        ("b", "2026-07-11", 10.2, "aggregator_youpin"),
+        ("b", "2026-07-11", 9.9, "aggregator_csfloat"),
+    ).assign(volume=1.0))
+    assert out["n_ask_sources"].dtype.kind in "iu"
+    counts = out.set_index("item_id")["n_ask_sources"]
+    assert counts["a"] == 1
+    assert counts["b"] == 3
 
 
 def test_cache_version_bumped():

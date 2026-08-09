@@ -1245,7 +1245,9 @@ class ItemForecaster:
             # no ask at all; they drop out rather than falling back to the bid,
             # because a series whose basis alternates between bid and ask
             # fabricates the wedge as a return.
-            return pd.DataFrame(columns=["item_id", "date", "price", "volume", "n_ask_sources"])
+            return pd.DataFrame(
+                columns=["item_id", "date", "price", "volume", "n_ask_sources"]
+            ).astype({"n_ask_sources": "int64"})
 
         # Speedup: split into single-source (≤1 row per item/date) and multi-source groups.
         # Single-source rows use fast groupby agg; multi-source uses the vote function.
