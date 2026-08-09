@@ -657,7 +657,9 @@ class ItemForecaster:
     # v4: the phantom slug keys leave the universe. A v3 frame carries both
     # copies of 3,149 items, which is what let a fold score an item it had
     # already trained on.
-    VOTED_CACHE_VERSION = 4
+    # v5: n_ask_sources on the voted frame. A v4 frame lacks the column
+    # entirely, so a stale cache would train the next model without it.
+    VOTED_CACHE_VERSION = 5
     VOTED_CACHE_PREFIX = "voted_"
     VOTED_CACHE_MAX_ENTRIES = 3
 
@@ -1220,6 +1222,10 @@ class ItemForecaster:
         (lags, returns, rolling stats, Bollinger, RSI, MACD, volume features).
         """
         if "source" not in df.columns:
+            # No source information at all here -- both production callers
+            # (_fetch_price_history_from_db, _fetch_voted_price_history) select
+            # `source` explicitly. This is a legacy/test path where the count
+            # is genuinely unknowable, so it does not carry n_ask_sources.
             unique_rows = df.groupby(["item_id", "date"]).size()
             already_single = not (unique_rows > 1).any()
             if already_single:
@@ -1239,7 +1245,7 @@ class ItemForecaster:
             # no ask at all; they drop out rather than falling back to the bid,
             # because a series whose basis alternates between bid and ask
             # fabricates the wedge as a return.
-            return pd.DataFrame(columns=["item_id", "date", "price", "volume"])
+            return pd.DataFrame(columns=["item_id", "date", "price", "volume", "n_ask_sources"])
 
         # Speedup: split into single-source (≤1 row per item/date) and multi-source groups.
         # Single-source rows use fast groupby agg; multi-source uses the vote function.
@@ -1247,7 +1253,11 @@ class ItemForecaster:
         item_date_counts = df.groupby(["item_id", "date"], as_index=False).size()
         multi_groups = item_date_counts[item_date_counts["size"] > 1]
         if multi_groups.empty:
-            return df.drop(columns=["source"], errors="ignore")
+            # Every item-day has exactly one row left after the bid drop, i.e.
+            # exactly one ask source voted, by construction.
+            out = df.drop(columns=["source"], errors="ignore")
+            out["n_ask_sources"] = 1
+            return out
 
         multi_keys = multi_groups[["item_id", "date"]].drop_duplicates()
         is_multi = df.set_index(["item_id", "date"]).index.isin(
@@ -1260,6 +1270,10 @@ class ItemForecaster:
         def vote(group):
             prices = group["price"].values
             n_sources = len(prices)
+            # nunique of the source column, not the row count: a group can
+            # hold duplicate rows from the same source. NaN sources collapse
+            # to one bucket via fillna so a NULL-source group still counts 1.
+            n_ask_sources = int(group["source"].fillna("__null__").nunique())
 
             if n_sources >= 3:
                 consensus = np.median(prices)
@@ -1268,6 +1282,7 @@ class ItemForecaster:
                 return pd.Series({
                     "price": consensus,
                     "volume": group["volume"].sum() if "volume" in group.columns else 0,
+                    "n_ask_sources": n_ask_sources,
                 })
 
             median = consensus
@@ -1285,16 +1300,19 @@ class ItemForecaster:
             return pd.Series({
                 "price": consensus,
                 "volume": group["volume"].sum() if "volume" in group.columns else 0,
+                "n_ask_sources": n_ask_sources,
             })
 
-        # Fast path: single-source rows
+        # Fast path: single-source rows -- exactly one row per item-day, so
+        # exactly one ask source voted, by construction.
         if len(single_df) > 0:
             result_single = single_df.groupby(["item_id", "date"], as_index=False).agg(
                 price=("price", "mean"),
                 volume=("volume", "sum"),
             )
+            result_single["n_ask_sources"] = 1
         else:
-            result_single = pd.DataFrame(columns=["item_id", "date", "price", "volume"])
+            result_single = pd.DataFrame(columns=["item_id", "date", "price", "volume", "n_ask_sources"])
 
         # Slow path: multi-source rows (small subset, typically <2% of groups)
         if len(multi_df) > 0:
@@ -1302,9 +1320,12 @@ class ItemForecaster:
                 vote
             ).reset_index(drop=True)
         else:
-            result_multi = pd.DataFrame(columns=["item_id", "date", "price", "volume"])
+            result_multi = pd.DataFrame(columns=["item_id", "date", "price", "volume", "n_ask_sources"])
 
         result = pd.concat([result_single, result_multi], ignore_index=True)
+        # Concatenating single- and multi-source frames can upcast to float
+        # when one side is empty; n_ask_sources must stay a true integer.
+        result["n_ask_sources"] = result["n_ask_sources"].astype("int64")
         return result
 
     def fetch_events(self) -> pd.DataFrame:
