@@ -353,23 +353,31 @@ git commit -m "feat: detect a stalled upstream source by consecutive identical f
 
 **Interfaces:**
 - Consumes: the record triple `(item_slug, day, price)` from Task 1.
-- Produces: `MAX_GAP_DAYS: int`, `apply_gap_gate(records, max_gap_days=MAX_GAP_DAYS) -> tuple[list[tuple[str, date, float]], GapGateReport]`, and `GapGateReport` (a dataclass with `kept_items: int`, `rejected_items: int`, `kept_rows: int`, `rejected_rows: int`, `worst_gap_days: int`).
+- Produces: `MAX_GAP_DAYS: int`, `MIN_DISTINCT_DAYS: int`, `apply_gap_gate(records, max_gap_days=MAX_GAP_DAYS, min_distinct_days=MIN_DISTINCT_DAYS) -> tuple[list[tuple[str, date, float]], GapGateReport]`, and `GapGateReport` (a frozen dataclass with `kept_items: int`, `rejected_gap_items: int`, `rejected_sparse_items: int`, `kept_rows: int`, `rejected_rows: int`, `worst_gap_days: int`).
 
 - [ ] **Step 1: Write the failing tests**
 
 Append to `backend/tests/test_price_history_import.py`:
 
 ```python
-from collectors.price_history_import import MAX_GAP_DAYS, apply_gap_gate
+from datetime import timedelta
+
+from collectors.price_history_import import (
+    MAX_GAP_DAYS,
+    MIN_DISTINCT_DAYS,
+    apply_gap_gate,
+)
 
 
 def _series(name, days, price=1.0):
-    return [(name, date(2025, 6, 1) + _delta(d), price) for d in days]
+    """Records for *name* on the given day offsets from 2025-06-01."""
+    return [(name, date(2025, 6, 1) + timedelta(days=d), price) for d in days]
 
 
-def _delta(days):
-    from datetime import timedelta
-    return timedelta(days=days)
+# The gap-specific tests set min_distinct_days=1 so they isolate the gap
+# condition; the sparse floor gets its own tests below.
+def _gaps_only(records):
+    return apply_gap_gate(records, min_distinct_days=1)
 
 
 def test_max_gap_matches_the_archive_window_constant():
@@ -377,41 +385,75 @@ def test_max_gap_matches_the_archive_window_constant():
     assert MAX_GAP_DAYS == MAX_WINDOW_SPAN_DAYS == 7
 
 
+def test_min_distinct_days_floor_is_180():
+    assert MIN_DISTINCT_DAYS == 180
+
+
 def test_a_seven_day_gap_is_kept():
-    records = _series("Item A", [0, 7, 14])
-    kept, report = apply_gap_gate(records)
+    kept, report = _gaps_only(_series("Item A", [0, 7, 14]))
     assert {r[0] for r in kept} == {"Item A"}
-    assert report.rejected_items == 0
+    assert report.rejected_gap_items == 0
 
 
 def test_an_eight_day_gap_is_rejected():
-    records = _series("Item A", [0, 8, 16])
-    kept, report = apply_gap_gate(records)
+    kept, report = _gaps_only(_series("Item A", [0, 8, 16]))
     assert kept == []
-    assert report.rejected_items == 1
+    assert report.rejected_gap_items == 1
     assert report.rejected_rows == 3
     assert report.worst_gap_days == 8
 
 
 def test_the_gate_is_per_item_not_global():
     records = _series("Dense", [0, 1, 2]) + _series("Sparse", [0, 30])
-    kept, report = apply_gap_gate(records)
+    kept, report = _gaps_only(records)
     assert {r[0] for r in kept} == {"Dense"}
     assert report.kept_items == 1
-    assert report.rejected_items == 1
+    assert report.rejected_gap_items == 1
 
 
 def test_edges_are_not_penalised_only_interior_gaps_count():
     # Starts late and ends early inside the range; interior spacing is daily.
-    records = _series("Late Starter", [40, 41, 42, 43])
-    kept, report = apply_gap_gate(records)
+    kept, _ = _gaps_only(_series("Late Starter", [40, 41, 42, 43]))
     assert {r[0] for r in kept} == {"Late Starter"}
 
 
-def test_a_single_observation_item_has_no_interior_gap_and_is_kept():
-    records = _series("Lonely", [5])
-    kept, report = apply_gap_gate(records)
-    assert {r[0] for r in kept} == {"Lonely"}
+def test_a_dense_item_spanning_180_days_passes_the_default_floor():
+    kept, report = apply_gap_gate(_series("Dense", range(180)))
+    assert {r[0] for r in kept} == {"Dense"}
+    assert report.rejected_sparse_items == 0
+
+
+def test_179_distinct_days_is_one_short_and_is_rejected():
+    kept, report = apply_gap_gate(_series("Nearly", range(179)))
+    assert kept == []
+    assert report.rejected_sparse_items == 1
+
+
+def test_two_adjacent_observations_do_not_pass_trivially():
+    """Max-gap alone is necessary and NOT sufficient.
+
+    Two consecutive days have a max interior gap of 1, so without the distinct-
+    day floor this item sails through and flips is_backfilled on two rows —
+    measured at 904 such items (611 at >=$1) on the 90-day block.
+    """
+    kept, report = apply_gap_gate(_series("Two Days", [0, 1]))
+    assert kept == []
+    assert report.rejected_sparse_items == 1
+    assert report.rejected_gap_items == 0
+
+
+def test_a_single_observation_item_is_rejected_by_the_sparse_floor():
+    kept, report = apply_gap_gate(_series("Lonely", [5]))
+    assert kept == []
+    assert report.rejected_sparse_items == 1
+
+
+def test_the_gap_condition_takes_precedence_in_the_report():
+    """An item failing BOTH conditions counts once, as a gap rejection."""
+    kept, report = apply_gap_gate(_series("Both", [0, 30]))
+    assert kept == []
+    assert report.rejected_gap_items == 1
+    assert report.rejected_sparse_items == 0
 
 
 def test_records_are_deduplicated_on_item_and_day_keeping_the_first():
@@ -420,7 +462,7 @@ def test_records_are_deduplicated_on_item_and_day_keeping_the_first():
         ("Item A", date(2025, 6, 1), 99.0),
         ("Item A", date(2025, 6, 2), 11.0),
     ]
-    kept, report = apply_gap_gate(records)
+    kept, report = _gaps_only(records)
     assert sorted(kept) == [
         ("Item A", date(2025, 6, 1), 10.0),
         ("Item A", date(2025, 6, 2), 11.0),
@@ -448,11 +490,23 @@ from backtest.price_resolution import MAX_WINDOW_SPAN_DAYS
 #: continuing. Deliberately the archive's own constant, not a new number.
 MAX_GAP_DAYS = MAX_WINDOW_SPAN_DAYS
 
+#: Minimum distinct days an item must carry inside the imported range.
+#:
+#: NOT redundant with MAX_GAP_DAYS, which passes trivially for a near-empty
+#: item: two consecutive observations have a max interior gap of 1. Measured on
+#: the 90-day block, 904 items (611 at >= $1) clear the gap bar on fewer than 10
+#: of 90 days, median 2 — each of which would flip ``is_backfilled`` on two
+#: rows. Together the two conditions mean "densely observed over at least half a
+#: year". A genuinely dense item carries 300+ of the range's 408 days, so this
+#: never binds on real data.
+MIN_DISTINCT_DAYS = 180
+
 
 @dataclass(frozen=True)
 class GapGateReport:
     kept_items: int
-    rejected_items: int
+    rejected_gap_items: int
+    rejected_sparse_items: int
     kept_rows: int
     rejected_rows: int
     worst_gap_days: int
@@ -461,8 +515,12 @@ class GapGateReport:
 def apply_gap_gate(
     records: list[tuple[str, date, float]],
     max_gap_days: int = MAX_GAP_DAYS,
+    min_distinct_days: int = MIN_DISTINCT_DAYS,
 ) -> tuple[list[tuple[str, date, float]], GapGateReport]:
-    """Drop items whose interior spacing exceeds *max_gap_days*.
+    """Keep only densely-observed items: both conditions must hold.
+
+    (a) no interior gap wider than *max_gap_days*, and
+    (b) at least *min_distinct_days* distinct days.
 
     Filtering here rather than at training is deliberate. A sparse item still
     flips ``is_backfilled`` (derived as "has any row before 2026-01-01"), so
@@ -472,31 +530,39 @@ def apply_gap_gate(
     belongs to ``TRAIN_MIN_MEDIAN_PRICE``, and the archive must not bake it in.
 
     Only gaps BETWEEN consecutive observations count. An item that starts late
-    or stops early is judged on the span it covers.
+    or stops early is judged on the span it covers. An item failing both
+    conditions is counted once, as a gap rejection.
     """
     by_item: dict[str, dict[date, float]] = defaultdict(dict)
     for slug, day, price in records:
         by_item[slug].setdefault(day, price)
 
     kept: list[tuple[str, date, float]] = []
-    kept_items = rejected_items = rejected_rows = 0
+    kept_items = rejected_gap = rejected_sparse = rejected_rows = 0
     worst_gap = 0
 
     for slug, observations in by_item.items():
         days = sorted(observations)
         gaps = [(b - a).days for a, b in zip(days, days[1:])]
         item_worst = max(gaps) if gaps else 0
+
         if item_worst > max_gap_days:
-            rejected_items += 1
+            rejected_gap += 1
             rejected_rows += len(days)
             worst_gap = max(worst_gap, item_worst)
             continue
+        if len(days) < min_distinct_days:
+            rejected_sparse += 1
+            rejected_rows += len(days)
+            continue
+
         kept_items += 1
         kept.extend((slug, day, observations[day]) for day in days)
 
     return kept, GapGateReport(
         kept_items=kept_items,
-        rejected_items=rejected_items,
+        rejected_gap_items=rejected_gap,
+        rejected_sparse_items=rejected_sparse,
         kept_rows=len(kept),
         rejected_rows=rejected_rows,
         worst_gap_days=worst_gap,
@@ -813,6 +879,7 @@ import requests
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from collectors.price_history_import import (  # noqa: E402
+    MIN_DISTINCT_DAYS,
     StalledSourceError,
     apply_gap_gate,
     detect_stalled_days,
@@ -924,9 +991,12 @@ def main(argv: list[str] | None = None) -> int:
 
     kept, report = apply_gap_gate(records)
     logger.info(
-        f"gap gate (<= {report.worst_gap_days or 0}d worst rejected): "
-        f"kept {report.kept_items:,} items / {report.kept_rows:,} rows; "
-        f"rejected {report.rejected_items:,} items / {report.rejected_rows:,} rows"
+        f"quality gate: kept {report.kept_items:,} items / "
+        f"{report.kept_rows:,} rows; rejected "
+        f"{report.rejected_gap_items:,} on gaps (worst "
+        f"{report.worst_gap_days or 0}d) and "
+        f"{report.rejected_sparse_items:,} on the {MIN_DISTINCT_DAYS}-day floor, "
+        f"{report.rejected_rows:,} rows total"
     )
 
     frame = to_archive_frame(kept, adapter.SOURCE, datetime.now())
@@ -1183,9 +1253,9 @@ venv/bin/python scripts/import_price_history_source.py \
     --out-dir ../archive-staging
 ```
 
-Expected: ~408 days fetched (~2.3 GB cached), no `StalledSourceError`, gap-gate rejections logged, rows written to `../archive-staging/price-archive/`.
+Expected: ~408 days fetched (~2.3 GB cached), no `StalledSourceError`, quality-gate rejections logged split by cause, rows written to `../archive-staging/price-archive/`.
 
-Projection from the spec, to compare against: **~12,000 items gaining pre-2026 rows** (the unfiltered figure is 18,843; the gate passes ~64%). If the log's `pre_2026 items` figure is outside 10,800–13,200, stop and reconcile before going further.
+Projection from the spec, to compare against: **~10,500 items gaining pre-2026 rows** (unfiltered is 18,843; the max-gap condition passes ~64% and the 180-day floor removes a further ~13%). If the log's `pre_2026 items` figure falls outside **9,000–12,000**, stop and reconcile before going further — the band is wide because both factors are extrapolations from a 90-day block, not measurements over the 408-day range.
 
 - [ ] **Step 6: Report the promotion-gate numbers**
 

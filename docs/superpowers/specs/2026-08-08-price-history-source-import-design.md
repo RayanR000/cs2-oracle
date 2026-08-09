@@ -91,12 +91,23 @@ function signature.
    price *run* in the label path.
 3. **Parse.** `{market_hash_name: {steam: {last_24h, ...}}}` → rows. Only `last_24h`; a null is
    an absent row, never a zero.
-4. **Quality gate.** Per item, reject any item whose largest gap between *consecutive
-   observations inside the imported range* exceeds **7 days** (`MAX_WINDOW_SPAN_DAYS`). The
-   gate measures interior gaps only — an item that starts late or ends early is judged on the
-   span it does cover, not penalised for its edges. An item whose imported rows fall entirely in
-   2026 is written but flips nothing, since the gate derivation tests `day < '2026-01-01'`.
-   Rejected items are counted and logged, not written.
+4. **Quality gate — two conditions, both required.** Per item:
+   (a) the largest gap between *consecutive observations inside the imported range* must not
+   exceed **7 days** (`MAX_WINDOW_SPAN_DAYS`), and (b) the item must carry at least
+   **180 distinct days** inside the range.
+
+   Condition (b) is not redundant. Max-gap alone passes *trivially* for a near-empty item: two
+   consecutive observations have a max interior gap of 1 and sail through, then flip
+   `is_backfilled` on two rows. Measured on the 90-day block, **904 items (611 at ≥$1) clear
+   the max-gap bar on fewer than 10 of 90 days, median 2 days present** — so max-gap is
+   necessary and not sufficient. Together the two conditions mean "densely observed over at
+   least half a year"; a genuinely dense item carries 300+ of the range's 408 days, so (b)
+   never binds on real data.
+
+   The gate measures interior gaps only — an item that starts late or ends early is judged on
+   the span it does cover, not penalised for its edges. An item whose imported rows fall
+   entirely in 2026 is written but flips nothing, since the gate derivation tests
+   `day < '2026-01-01'`. Rejected items are counted and logged, not written.
 5. **Write.** Through `db/parquet.py::append_monthly`, columns
    `item_slug, day, source, mean_price, volume, ingested_at`, into the **staging** archive dir
    (`--out-dir`, default `../archive-staging`, mirroring `merge_hf_dataset.py`'s `--out-dir`
@@ -134,10 +145,12 @@ The import writes to a staging archive root, never to `price-archive/` and never
 `cs2-oracle-data`. Promotion is a separate, explicitly authorised step.
 
 **Expected post-gate size, to be confirmed at import.** The 18,843 flip count and the
-5,536 → 24,379 gate figure above are *unfiltered*. The gap gate passes 15,539 of 24,178 items
-(64%) on the 90-day block, so the filtered flip count is projected at **~12,000** and the gate at
-**~17,500**. These two numbers are extrapolations, not measurements — the import computes them
-directly and they are the projection referenced in the promotion gate below.
+5,536 → 24,379 gate figure above are *unfiltered*. The max-gap condition passes 15,539 of 24,178
+items (64%) on the 90-day block, and the 180-day floor removes a further ~13%, so the filtered
+flip count is projected at **~10,500** and the gate at **~16,000**. These are extrapolations, not
+measurements — the import computes both directly and they are the projection referenced in the
+promotion gate below. Note the earlier headline figures (7,464 items at ≥$1, 5,768 bridging) were
+computed before the 180-day floor and are ~8% optimistic at ≥$1.
 
 Promotion gate — all must hold:
 
