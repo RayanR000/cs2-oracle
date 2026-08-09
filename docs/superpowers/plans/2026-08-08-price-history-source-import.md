@@ -1387,6 +1387,135 @@ git commit -m "feat: report the promotion-gate numbers for a staged import"
 
 ---
 
+---
+
+### Task 7: Fee-correct the source and floor it at $1
+
+Added 2026-08-09 after the Task 6 run. The promotion gate refuted this plan's stated premise that the source needs no basis conversion.
+
+**Measured:** `tracker_steam_24h` ÷ `aggregator_sync` = **1.147–1.154, flat across all seven price tiers** (1.107 at <$0.10 through 1.163 at ≥$100), median within-item CV 0.046–0.063. Flat is the signature of a constant, not a market wedge. Dividing by **1.1607** collapses it to **0.998** at ≥$1. The source serves Steam's **buyer** price (fee included); the archive stores **net**. `scripts/backfill_steam_listing_history.py` already carries `STEAM_FEE_MULTIPLIER` for exactly this.
+
+**Why the $1 floor, and why it does not contradict this plan's "no price floor at import" rule.** That rule exists so the archive does not bake in a *cohort* decision. This floor is a *data-validity* decision: the fee constant is documented as synthetic — flat where fee theory demands ~1.67 at $0.03 falling to ~1.15 at $50 — and the correction measures 0.998 at ≥$1 but only 0.906 below it. Sub-$1 rows would be knowingly biased. Cohort selection still belongs to `TRAIN_MIN_MEDIAN_PRICE`.
+
+**Order matters:** correct the fee first, then apply the floor, so the floor is evaluated on net prices.
+
+**Files:**
+- Modify: `backend/collectors/price_history_sources/cs2_prices_tracker.py`
+- Modify: `backend/collectors/price_history_import.py`
+- Test: `backend/tests/test_price_history_import.py`
+
+**Interfaces:**
+- Consumes: `parse_day`, `apply_gap_gate` as built.
+- Produces: `cs2_prices_tracker.STEAM_FEE_MULTIPLIER: float`; `apply_gap_gate(..., min_median_price: float | None = None)`; `GapGateReport` gains `rejected_cheap_items: int`.
+
+- [ ] **Step 1: Write the failing tests**
+
+```python
+def test_parse_day_returns_net_of_the_steam_fee():
+    """The source serves the BUYER price; the archive stores NET.
+
+    Measured 2026-08-09: tracker/aggregator_sync = 1.147-1.154 flat across all
+    seven price tiers, collapsing to 0.998 at >=$1 after this division.
+    """
+    payload = {"AK-47 | Redline (Field-Tested)": {"steam": {"last_24h": 11.607}}}
+    records = tracker.parse_day(payload, date(2025, 6, 15))
+    assert records[0][2] == pytest.approx(10.0, rel=1e-6)
+
+
+def test_steam_fee_multiplier_matches_the_repo_constant():
+    from scripts.backfill_steam_listing_history import STEAM_FEE_MULTIPLIER
+    assert tracker.STEAM_FEE_MULTIPLIER == STEAM_FEE_MULTIPLIER == 1.1607
+
+
+def test_a_price_that_is_positive_only_before_the_fee_still_survives():
+    payload = {"Cheap": {"steam": {"last_24h": 0.02}}}
+    records = tracker.parse_day(payload, date(2025, 6, 15))
+    assert len(records) == 1
+    assert records[0][2] == pytest.approx(0.02 / 1.1607)
+
+
+def test_the_gate_drops_items_below_the_median_price_floor():
+    cheap = _series("Cheap", range(200), price=0.50)
+    rich = _series("Rich", range(200), price=5.00)
+    kept, report = apply_gap_gate(cheap + rich, min_median_price=1.0)
+    assert {r[0] for r in kept} == {"Rich"}
+    assert report.rejected_cheap_items == 1
+
+
+def test_the_floor_uses_the_median_not_the_last_price():
+    """One spike must not carry an otherwise-cheap item over the floor."""
+    records = _series("Spiky", range(199), price=0.50) + [
+        ("Spiky", date(2025, 6, 1) + timedelta(days=199), 500.0)
+    ]
+    kept, report = apply_gap_gate(records, min_median_price=1.0)
+    assert kept == []
+    assert report.rejected_cheap_items == 1
+
+
+def test_no_floor_by_default_keeps_the_archive_free_of_a_cohort_decision():
+    kept, report = apply_gap_gate(_series("Cheap", range(200), price=0.50))
+    assert {r[0] for r in kept} == {"Cheap"}
+    assert report.rejected_cheap_items == 0
+```
+
+- [ ] **Step 2: Run to verify they fail**
+
+Run: `venv/bin/python -m pytest tests/test_price_history_import.py -q`
+Expected: FAIL — `AttributeError: module ... has no attribute 'STEAM_FEE_MULTIPLIER'`
+
+- [ ] **Step 3: Implement**
+
+In `cs2_prices_tracker.py`, add the constant and divide in `parse_day`:
+
+```python
+#: Steam's listed price is GROSS of its fee; the archive stores NET. Measured
+#: 2026-08-09 against `aggregator_sync`: the raw ratio is 1.147-1.154 and FLAT
+#: across seven price tiers, which is the signature of a constant rather than a
+#: market wedge, and dividing by this collapses it to 0.998 at >= $1.
+#:
+#: The constant is documented as synthetic and is NOT trustworthy below ~$1
+#: (the correction lands at 0.906 there), which is why the import applies a $1
+#: floor. Kept equal to the repo's existing value rather than re-derived, so
+#: there is one number to fix if it is ever re-measured.
+STEAM_FEE_MULTIPLIER = 1.1607
+```
+
+and in `parse_day`, after the `price <= 0` check:
+
+```python
+        records.append((name, day, price / STEAM_FEE_MULTIPLIER))
+```
+
+In `price_history_import.py`, add `rejected_cheap_items: int` to `GapGateReport`, add the parameter, and apply it after the sparse check:
+
+```python
+        if min_median_price is not None:
+            prices = sorted(observations[day] for day in days)
+            mid = len(prices) // 2
+            median_price = (prices[mid] if len(prices) % 2
+                            else (prices[mid - 1] + prices[mid]) / 2)
+            if median_price < min_median_price:
+                rejected_cheap += 1
+                rejected_rows += len(days)
+                continue
+```
+
+- [ ] **Step 4: Run to verify they pass**
+
+Run: `venv/bin/python -m pytest tests/test_price_history_import.py -q`
+Expected: PASS, 44 tests.
+
+- [ ] **Step 5: Wire the floor into the CLI**
+
+Add `--min-median-price` (type float, default `1.0`) to `main`'s argparse, pass it into `apply_gap_gate`, and extend the gate log line with `rejected_cheap_items`.
+
+- [ ] **Step 6: Commit**
+
+```bash
+git add backend/collectors/ backend/tests/test_price_history_import.py
+git commit -m "fix: import Steam prices net of fee, and floor the source at \$1"
+```
+
 ## Not in this plan
 
 Per the spec, all deliberately out of scope: promoting staging into `cs2-oracle-data`; retraining or changing `TRAIN_FEATURE_ROWS` / `TRAIN_MIN_MEDIAN_PRICE`; changing the `is_backfilled` derivation; raising `MIN_SERVED_PRICE_USD`; repairing the `volume` column; building a second adapter. The `database.py` note recording the gate's widened meaning is a promotion-time change, not an import-time one.
