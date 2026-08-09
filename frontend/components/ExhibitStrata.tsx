@@ -8,6 +8,7 @@ interface ExhibitStrataProps {
   history: PricePoint[];
   forecast: { low: number; mid: number; high: number } | null;
   loading?: boolean;
+  height?: number;
 }
 
 const FORECAST_HORIZON_DAYS = 7;
@@ -20,7 +21,12 @@ interface StrataRow {
   q50?: number;
 }
 
-export default function ExhibitStrata({ history, forecast, loading = false }: ExhibitStrataProps) {
+export default function ExhibitStrata({
+  history,
+  forecast,
+  loading = false,
+  height = 68,
+}: ExhibitStrataProps) {
   const rows = useMemo(() => {
     const points = [...history]
       .filter((p) => typeof p.price === 'number' && Number.isFinite(p.price))
@@ -48,7 +54,7 @@ export default function ExhibitStrata({ history, forecast, loading = false }: Ex
   if (loading) {
     return (
       <div className="px-4 pt-3 pb-3.5 border-t border-divider">
-        <div className="h-[68px] rounded-xs bg-recess animate-pulse" />
+        <div className="rounded-xs bg-recess animate-pulse" style={{ height }} />
       </div>
     );
   }
@@ -56,17 +62,17 @@ export default function ExhibitStrata({ history, forecast, loading = false }: Ex
   return (
     <div className="px-4 pt-2.5 pb-3 border-t border-divider">
       <div className="flex items-center justify-between mb-1">
-        <span className="specimen-tag text-paper-muted">
-          {spanDays != null ? `Strata \u00b7 ${spanDays}d` : 'Strata'}
+        <span className="dive-tag text-paper-muted">
+          {spanDays != null ? `Profile \u00b7 ${spanDays}d` : 'Profile'}
         </span>
         {forecast && (
-          <span className="specimen-tag text-specimen">
+          <span className="dive-tag text-thermocline">
             {FORECAST_HORIZON_DAYS}d &middot; q10&ndash;q90
           </span>
         )}
       </div>
       {rows.length > 1 ? (
-        <ResponsiveContainer width="100%" height={68}>
+        <ResponsiveContainer width="100%" height={height}>
           <ComposedChart data={rows} margin={{ top: 2, right: 0, bottom: 0, left: 0 }}>
             <Area
               dataKey="q10"
@@ -80,14 +86,14 @@ export default function ExhibitStrata({ history, forecast, loading = false }: Ex
               dataKey="q90span"
               stackId="corridor"
               stroke="none"
-              fill="var(--specimen)"
-              fillOpacity={0.16}
+              fill="var(--thermocline-subtle)"
+              fillOpacity={0.6}
               connectNulls
               isAnimationActive={false}
             />
             <Line
               dataKey="q50"
-              stroke="var(--specimen)"
+              stroke="var(--thermocline)"
               strokeWidth={2}
               dot={false}
               connectNulls
@@ -104,8 +110,8 @@ export default function ExhibitStrata({ history, forecast, loading = false }: Ex
           </ComposedChart>
         </ResponsiveContainer>
       ) : (
-        <div className="h-[68px] flex items-center">
-          <span className="specimen-tag text-paper-muted">no strata on record</span>
+        <div className="flex items-center" style={{ height }}>
+          <span className="dive-tag text-paper-muted">no profile on record</span>
         </div>
       )}
     </div>

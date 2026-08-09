@@ -28,13 +28,14 @@ export default function ItemCard({
       href={`/items/${itemId}`}
       className="relative block bg-stock border border-border rounded-sm overflow-hidden transition-colors duration-250 hover:border-border-accent hover:bg-surface group"
     >
-      {pinned && <span aria-hidden className="specimen-pin" />}
+      {pinned && <span aria-hidden className="sounding-rule" />}
+      <span aria-hidden className="card-sweep" />
 
       <div className="px-4 pt-4">
         <div className="flex items-baseline justify-between gap-2 mb-2">
-          <span className="specimen-tag text-paper-tertiary">{type}</span>
+          <span className="dive-tag text-paper-tertiary">{type}</span>
           {annotation && (
-            <span className="specimen-tag text-paper-muted">{annotation}</span>
+            <span className="dive-tag text-paper-muted">{annotation}</span>
           )}
         </div>
         <h3 className="text-[13px] font-semibold text-paper tracking-tight line-clamp-1 mb-3">
@@ -51,7 +52,7 @@ export default function ItemCard({
             className="max-w-full max-h-full object-contain transition-transform duration-500 ease-out group-hover:scale-[1.03]"
           />
         ) : (
-          <div className="specimen-tag text-paper-muted">No Plate</div>
+          <div className="dive-tag text-paper-muted">No Plate</div>
         )}
       </div>
 

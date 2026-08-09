@@ -18,7 +18,7 @@ interface SearchProps {
 }
 
 export default function Search({
-  placeholder = 'Search the collection...',
+  placeholder = 'Search the market...',
   fetchOptions,
   onSelect,
   errorMessage = 'Search is unavailable right now \u2014 the market API is not responding.',
@@ -155,7 +155,7 @@ export default function Search({
         <div className="absolute top-full left-0 right-0 mt-2 bg-stock border border-border rounded-sm z-[var(--z-dropdown)]">
           {isSearching ? (
             <div className="px-5 py-8 text-center">
-              <span className="specimen-tag text-paper-muted">Searching...</span>
+              <span className="dive-tag text-paper-muted">Searching...</span>
             </div>
           ) : hasError ? (
             <div className="px-5 py-8 text-center">
@@ -189,7 +189,7 @@ export default function Search({
                   )}
                   <div className="min-w-0 flex-1">
                     <div className="text-sm font-medium text-paper truncate">{item.name}</div>
-                    <div className="specimen-tag text-paper-tertiary">{item.type}</div>
+                    <div className="dive-tag text-paper-tertiary">{item.type}</div>
                   </div>
                   {item.latest_price != null && (
                     <span className="font-data text-sm text-paper shrink-0">${item.latest_price.toFixed(2)}</span>

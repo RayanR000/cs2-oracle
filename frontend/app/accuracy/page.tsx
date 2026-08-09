@@ -47,7 +47,7 @@ function MetricCard({
     'var(--paper)';
   return (
     <div className="bg-stock border border-border rounded-sm p-4">
-      <div className="specimen-tag text-paper-tertiary mb-2">{label}</div>
+      <div className="dive-tag text-paper-tertiary mb-2">{label}</div>
       <div className="text-data-lg" style={{ color }}>
         {typeof value === 'number' ? value.toLocaleString(undefined, { maximumFractionDigits: 2 }) : value}
         {unit && <span className="text-sm text-paper-secondary ml-1">{unit}</span>}
@@ -129,7 +129,7 @@ function HeadlineSection({ headline }: { headline: AccuracyHeadline }) {
   return (
     <div className="mb-12">
       <div className="flex items-baseline justify-between gap-4 mb-4 border-b border-divider pb-3">
-        <span className="specimen-tag text-paper-secondary">
+        <span className="dive-tag text-paper-secondary">
           Directional Verdict &mdash; {headline.cohort} cohort
         </span>
         <span className="font-data text-[10px] text-paper-muted">
@@ -145,7 +145,7 @@ function HeadlineSection({ headline }: { headline: AccuracyHeadline }) {
                 (h, i) => (
                   <th
                     key={h}
-                    className={`specimen-tag text-paper-tertiary pb-2 font-normal ${i > 1 ? 'text-right pr-4' : 'pr-4'}`}
+                    className={`dive-tag text-paper-tertiary pb-2 font-normal ${i > 1 ? 'text-right pr-4' : 'pr-4'}`}
                   >
                     {h}
                   </th>
@@ -181,7 +181,7 @@ function ForecastSection({ records }: { records: AccuracyRecord[] }) {
   return (
     <div className="mb-10">
       <div className="flex items-baseline justify-between gap-4 mb-4">
-        <h3 className="specimen-tag text-paper-secondary">
+        <h3 className="dive-tag text-paper-secondary">
           {latest.horizon_days}-Day Forecast
         </h3>
         <span className="font-data text-[10px] text-paper-muted">
@@ -236,11 +236,11 @@ export default function AccuracyPage() {
       <Header />
       <main className="max-w-6xl mx-auto px-6 py-12">
         <div className="mb-10">
-          <span className="specimen-tag text-paper-tertiary mb-3 block">The Collection&rsquo;s Record</span>
+          <span className="dive-tag text-paper-tertiary mb-3 block">The Dive Log&rsquo;s Record</span>
           <h1 className="text-headline text-paper mb-2">Prediction Accuracy</h1>
           <p className="text-base text-paper-secondary max-w-xl">
             How well each forecast performed against actual market outcomes — the errors
-            logged on the same ledger as the findings.
+            logged in the same dive log as the findings.
           </p>
         </div>
 
@@ -248,7 +248,7 @@ export default function AccuracyPage() {
 
         {loading ? (
           <div className="flex items-center justify-center py-20">
-            <span className="specimen-tag text-paper-muted">Reading the ledger...</span>
+            <span className="dive-tag text-paper-muted">Reading the dive log...</span>
           </div>
         ) : data.length === 0 ? (
           <div className="bg-stock border border-border rounded-sm p-10 text-center">
@@ -267,7 +267,7 @@ export default function AccuracyPage() {
             return (
               <div key={`${type}-${group.horizon_days ?? ''}-${group.evaluation_window_days ?? ''}`} className="mb-8">
                 <div className="flex items-center gap-3 mb-4 border-b border-divider pb-3">
-                  <span className="specimen-tag text-paper-secondary">{label}</span>
+                  <span className="dive-tag text-paper-secondary">{label}</span>
                 </div>
                 {type === 'forecast' && <ForecastSection records={group.records} />}
               </div>

@@ -232,11 +232,11 @@ function MarketPageInner() {
       <div className="max-w-6xl mx-auto px-6 py-10">
         {/* Catalog header */}
         <div className="mb-8">
-          <span className="specimen-tag text-paper-tertiary mb-3 block">The Catalog</span>
+          <span className="dive-tag text-paper-tertiary mb-3 block">The Reef Ledge</span>
           <h1 className="text-headline text-paper mb-2">Market</h1>
           <p className="text-base text-paper-secondary max-w-xl">
-            Drawers of every specimen in the collection — search, filter by type, and open
-            the card to read its strata.
+            The reef ledge of the collection — search, filter by type, and dive into any
+            item to read its profile.
           </p>
         </div>
 
@@ -278,7 +278,7 @@ function MarketPageInner() {
 
         {/* Specimen grid */}
         <div className="mb-10">
-          <h2 className="text-title text-paper mb-5">Featured Specimens</h2>
+          <h2 className="text-title text-paper mb-5">Featured Dives</h2>
           {trending.length > 0 ? (
             <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
               {trending.slice(0, 6).map((item) => (
@@ -315,7 +315,7 @@ function MarketPageInner() {
                 setError(null);
                 setIsLoading(true);
               }}
-              className="specimen-tag hover:opacity-80 transition-opacity"
+              className="dive-tag hover:opacity-80 transition-opacity"
             >
               Retry
             </button>
@@ -335,33 +335,33 @@ function MarketPageInner() {
               <thead className="sticky top-0 z-10">
                 <tr className="bg-recess border-b border-border">
                   <th className="px-5 py-4 text-left w-[36%]">
-                    <button onClick={() => handleSort('name')} className="specimen-tag text-paper-secondary hover:text-paper transition-colors duration-200 flex items-center gap-2">
+                    <button onClick={() => handleSort('name')} className="dive-tag text-paper-secondary hover:text-paper transition-colors duration-200 flex items-center gap-2">
                       Item {sortBy === 'name' && <SortArrow direction={sortOrder} />}
                     </button>
                   </th>
                   <th className="px-5 py-4 text-left w-[9%]">
-                    <span className="specimen-tag text-paper-secondary">Type</span>
+                    <span className="dive-tag text-paper-secondary">Type</span>
                   </th>
                   <th className="px-5 py-4 text-right w-[15%]">
-                    <button onClick={() => handleSort('priceAvg')} className="specimen-tag text-paper-secondary hover:text-paper transition-colors duration-200 w-full flex justify-end items-center gap-2">
+                    <button onClick={() => handleSort('priceAvg')} className="dive-tag text-paper-secondary hover:text-paper transition-colors duration-200 w-full flex justify-end items-center gap-2">
                       Avg Price {sortBy === 'priceAvg' && <SortArrow direction={sortOrder} />}
                     </button>
                   </th>
                   <th className="px-5 py-4 text-right w-[14%]">
-                    <span className="specimen-tag text-paper-muted">Range</span>
+                    <span className="dive-tag text-paper-muted">Range</span>
                   </th>
                   <th className="px-5 py-4 text-right w-[11%]">
-                    <button onClick={() => handleSort('priceChange24h')} className="specimen-tag text-paper-secondary hover:text-paper transition-colors duration-200 w-full flex justify-end items-center gap-2">
+                    <button onClick={() => handleSort('priceChange24h')} className="dive-tag text-paper-secondary hover:text-paper transition-colors duration-200 w-full flex justify-end items-center gap-2">
                       24h {sortBy === 'priceChange24h' && <SortArrow direction={sortOrder} />}
                     </button>
                   </th>
                   <th className="px-5 py-4 text-right w-[9%]">
-                    <button onClick={() => handleSort('volume24h')} className="specimen-tag text-paper-secondary hover:text-paper transition-colors duration-200 w-full flex justify-end items-center gap-2">
+                    <button onClick={() => handleSort('volume24h')} className="dive-tag text-paper-secondary hover:text-paper transition-colors duration-200 w-full flex justify-end items-center gap-2">
                       Vol {sortBy === 'volume24h' && <SortArrow direction={sortOrder} />}
                     </button>
                   </th>
                   <th className="px-5 py-4 text-center w-[6%]">
-                    <span className="specimen-tag text-paper-secondary">Quals</span>
+                    <span className="dive-tag text-paper-secondary">Quals</span>
                   </th>
                 </tr>
               </thead>
@@ -387,7 +387,7 @@ function MarketPageInner() {
                             <span className="truncate">{item.base_name}</span>
                           </Link>
                         </td>
-                        <td className="px-5 py-4 text-left specimen-tag text-paper-tertiary">
+                        <td className="px-5 py-4 text-left dive-tag text-paper-tertiary">
                           {item.type}
                         </td>
                         <td className="px-5 py-4 text-right font-data font-medium text-paper">

@@ -64,7 +64,7 @@ export default function PortfolioPage() {
           <div className="h-0.5 w-48 bg-ink/40 rounded-full overflow-hidden">
             <div className="h-full w-1/3 bg-ink animate-pulse" />
           </div>
-          <p className="text-sm text-paper-secondary">Opening your collection case...</p>
+          <p className="text-sm text-paper-secondary">Returning to your stops...</p>
         </div>
       </div>
     );
@@ -75,11 +75,11 @@ export default function PortfolioPage() {
       <div className="min-h-screen bg-ground">
         <Header />
         <div className="max-w-4xl mx-auto px-6 py-20 text-center">
-          <span className="specimen-tag text-paper-tertiary mb-4 block">Your Collection Case</span>
+          <span className="dive-tag text-paper-tertiary mb-4 block">Your Ascent Stops</span>
           <h1 className="text-headline text-paper mb-4">Portfolio</h1>
           <p className="text-base text-paper-secondary max-w-2xl mx-auto leading-relaxed mb-10">
-            Sign in with your Steam account to open your collection case — every inventory
-            item becomes a specimen, priced against the archive.
+            Sign in with your Steam account to read your stops — every inventory
+            item priced against the dive log.
           </p>
           <a href={getLoginUrl()} className="btn btn-primary">
             <svg className="w-4 h-4" viewBox="0 0 24 24" fill="currentColor">
@@ -119,13 +119,13 @@ export default function PortfolioPage() {
       <div className="max-w-6xl mx-auto px-6 py-10">
         <div className="mb-8 flex flex-col md:flex-row md:items-end md:justify-between gap-4">
           <div>
-            <span className="specimen-tag text-paper-tertiary mb-3 block">Your Collection Case</span>
+            <span className="dive-tag text-paper-tertiary mb-3 block">Your Ascent Stops</span>
             <h1 className="text-headline text-paper mb-2">Portfolio</h1>
             <div className="flex items-center gap-3 text-sm text-paper-secondary">
               <span className="px-2 py-0.5 rounded-xs bg-recess font-data text-xs">
                 Steam: {user.steam_id}
               </span>
-              <span className="text-xs">{items.length} unique specimens</span>
+              <span className="text-xs">{items.length} unique items</span>
             </div>
           </div>
           <button
@@ -161,12 +161,12 @@ export default function PortfolioPage() {
             <table className="w-full text-sm min-w-[680px]">
               <thead>
                 <tr className="bg-recess border-b border-border">
-                  <th className="px-5 py-4 text-left specimen-tag text-paper-secondary">Item</th>
-                  <th className="px-5 py-4 text-left specimen-tag text-paper-secondary">Type</th>
-                  <th className="px-5 py-4 text-right specimen-tag text-paper-secondary">Qty</th>
-                  <th className="px-5 py-4 text-right specimen-tag text-paper-secondary">Current Price</th>
-                  <th className="px-5 py-4 text-right specimen-tag text-paper-secondary">Total Value</th>
-                  <th className="px-5 py-4 text-center specimen-tag text-paper-secondary">Market</th>
+                  <th className="px-5 py-4 text-left dive-tag text-paper-secondary">Item</th>
+                  <th className="px-5 py-4 text-left dive-tag text-paper-secondary">Type</th>
+                  <th className="px-5 py-4 text-right dive-tag text-paper-secondary">Qty</th>
+                  <th className="px-5 py-4 text-right dive-tag text-paper-secondary">Current Price</th>
+                  <th className="px-5 py-4 text-right dive-tag text-paper-secondary">Total Value</th>
+                  <th className="px-5 py-4 text-center dive-tag text-paper-secondary">Market</th>
                 </tr>
               </thead>
               <tbody>
@@ -184,7 +184,7 @@ export default function PortfolioPage() {
                           <span className="font-medium text-paper">{item.name}</span>
                         </div>
                       </td>
-                      <td className="px-5 py-4 text-left specimen-tag text-paper-tertiary">
+                      <td className="px-5 py-4 text-left dive-tag text-paper-tertiary">
                         {item.type}
                       </td>
                       <td className="px-5 py-4 text-right font-data text-paper-secondary">
@@ -199,7 +199,7 @@ export default function PortfolioPage() {
                       <td className="px-5 py-4 text-center">
                         <Link
                           href={`/market?q=${encodeURIComponent(item.market_hash_name)}`}
-                          className="specimen-tag text-ink hover:text-ink-hover transition-colors duration-200"
+                          className="dive-tag text-ink hover:text-ink-hover transition-colors duration-200"
                         >
                           Analyze &rarr;
                         </Link>
@@ -220,7 +220,7 @@ export default function PortfolioPage() {
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.5" d="M20 7l-8-4-8 4m16 0l-8 4m8-4v10l-8 4m0-10L4 7m8 4v10M4 7v10l8 4" />
               </svg>
             </div>
-            <p className="mb-4 text-base text-paper-secondary">No specimens found in your public CS2 inventory</p>
+            <p className="mb-4 text-base text-paper-secondary">No items found in your public CS2 inventory</p>
             <p className="text-sm mb-6 max-w-md mx-auto text-paper-tertiary">
               Make sure your Steam profile and inventory are set to &ldquo;Public&rdquo; in your privacy settings.
             </p>

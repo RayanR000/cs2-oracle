@@ -139,7 +139,7 @@ export default function RegimeABTestPage() {
 
         {loading ? (
           <div className="flex items-center justify-center py-20">
-            <span className="specimen-tag text-paper-muted">Reading the ledger...</span>
+            <span className="dive-tag text-paper-muted">Reading the dive log...</span>
           </div>
         ) : error ? (
           <div className="widget-block p-10 text-center">

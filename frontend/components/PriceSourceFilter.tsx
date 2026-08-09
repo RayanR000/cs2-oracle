@@ -32,7 +32,7 @@ export default function PriceSourceFilter({
 
   return (
     <div className="flex flex-col gap-2">
-      <span className="specimen-tag text-paper-tertiary">Sources</span>
+      <span className="dive-tag text-paper-tertiary">Sources</span>
       <div className="flex gap-1.5 flex-wrap">
         {availableSources.map(sourceId => {
           const isActive = selectedSources.includes(sourceId);

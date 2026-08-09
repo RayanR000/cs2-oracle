@@ -243,21 +243,41 @@ export default function Home() {
       <Header />
 
       <main className="max-w-6xl mx-auto px-6">
-        {/* --- PLACARD HERO --- */}
-        <section className="pt-16 pb-14 lg:pt-20 lg:pb-16">
-          <div className="grid grid-cols-1 lg:grid-cols-2 gap-12 lg:gap-16 items-center">
-            {/* Placard */}
-            <div>
-              <span className="specimen-tag text-paper-tertiary mb-6 block">
-                The Specimen Archive
-              </span>
+        {/* --- SURFACE ZONE: the depth axis rules every line below --- */}
+        <section className="pt-14 pb-14 lg:pt-20 lg:pb-16">
+          <div className="lg:grid lg:grid-cols-[56px_minmax(0,1fr)] lg:gap-8">
+            {/* Depth ruler — the instrument's one true axis */}
+            <div aria-hidden className="hidden lg:block relative">
+              <div className="absolute top-0 bottom-0 left-6 w-px bg-grid">
+                {[
+                  { top: '0%', label: 'SURFACE' },
+                  { top: '33.33%', label: 'THERMOCLINE' },
+                  { top: '66.66%', label: 'MESOPHOTIC' },
+                  { top: '100%', label: 'THE FLOOR' },
+                ].map((tick) => (
+                  <div key={tick.label} className="absolute -translate-y-1/2" style={{ top: tick.top }}>
+                    <span className="absolute top-0 left-0 w-2 h-px bg-border" />
+                    <span
+                      className="absolute top-0 right-2 whitespace-nowrap font-data text-[9px] tracking-widest text-paper-muted leading-none"
+                      style={{ writingMode: 'vertical-rl', transform: 'rotate(180deg)', transformOrigin: 'center' }}
+                    >
+                      {tick.label}
+                    </span>
+                  </div>
+                ))}
+              </div>
+            </div>
+
+            <div className="min-w-0">
+              {/* Placard */}
+              <span className="dive-tag text-paper-tertiary mb-6 block">The Deep Dive</span>
               <h1 className="text-display text-paper mb-6">
-                Thirteen years of CS2 prices, pinned and catalogued.
+                Thirteen years of CS2 prices, measured at depth.
               </h1>
               <p className="text-base text-paper-secondary max-w-lg leading-relaxed mb-8">
-                Every item is a specimen on an archive card — its price history drawn as
-                strata, its forecast hanging from the frame as a curator&rsquo;s tag, and
-                the record of the collection&rsquo;s own accuracy kept on the same ledger.
+                Every item is a dive &mdash; its price history read as a profile through
+                the water, its forecast drawn as the thermocline band where certainty
+                changes, and the instrument&rsquo;s own accuracy kept in the same dive log.
               </p>
 
               {/* Finding aid */}
@@ -265,88 +285,95 @@ export default function Home() {
                 fetchOptions={(query) => searchItems(query)}
                 onSelect={(option) => router.push(`/items/${encodeURIComponent(option.item_id)}`)}
               />
-            </div>
 
-            {/* The exhibit — featured specimen under the curator's lamp */}
-            {marketStatus === 'loading' ? (
-              <div className="specimen-card overflow-hidden">
-                <div className="flex items-center justify-between px-4 py-2.5 border-b border-divider">
-                  <div className="h-2.5 w-28 bg-surface rounded-xs animate-pulse" />
-                  <div className="h-2.5 w-24 bg-surface rounded-xs animate-pulse" />
-                </div>
-                <div className="aspect-square bg-recess flex items-center justify-center">
-                  <div className="w-24 h-24 bg-surface rounded-xs animate-pulse" />
-                </div>
-                <div className="flex items-end justify-between px-4 py-3.5">
-                  <div className="space-y-1.5">
-                    <div className="h-3 w-28 bg-surface rounded-xs animate-pulse" />
-                    <div className="h-2 w-16 bg-surface rounded-xs animate-pulse" />
-                  </div>
-                  <div className="h-4 w-16 bg-surface rounded-xs animate-pulse" />
-                </div>
-              </div>
-            ) : heroItem ? (
-              <Link
-                href={`/items/${encodeURIComponent(heroItem.item_id)}`}
-                ref={exhibitRef}
-                className={`group block relative ${exhibitVisible ? '' : 'exhibit-hidden'}`}
-              >
-                <div className="specimen-card overflow-hidden">
-                  <span aria-hidden className="specimen-pin" />
-                  <div className="flex items-center justify-between px-4 py-2.5 border-b border-divider">
-                    <span className="specimen-tag text-paper-tertiary">
-                      Featured Specimen
-                    </span>
-                    <span className="flex items-center gap-2 specimen-tag text-paper-muted">
-                      <span aria-hidden className="w-1.5 h-1.5 rounded-full bg-paper-muted status-dot inline-block" />
-                      7 markets &middot; {lastCloseLabel ? `last close ${lastCloseLabel}` : 'daily'}
-                    </span>
-                  </div>
-                  <div className="relative aspect-square bg-recess overflow-hidden">
-                    {heroItem.icon_url ? (
-                      <img
-                        src={heroItem.icon_url}
-                        alt={heroItem.name}
-                        fetchPriority="high"
-                        className="w-full h-full object-contain p-10 transition-transform duration-500 ease-out group-hover:scale-[1.03]"
-                      />
-                    ) : (
-                      <div className="w-full h-full flex items-center justify-center p-10">
-                        <div className="specimen-tag text-paper-muted">{heroItem.name}</div>
+              {/* The surface reading — the featured dive under the drifting snow */}
+              <div className="mt-10">
+                {marketStatus === 'loading' ? (
+                  <div className="dive-card overflow-hidden">
+                    <div className="flex items-center justify-between px-4 py-2.5 border-b border-divider">
+                      <div className="h-2.5 w-28 bg-surface rounded-xs animate-pulse" />
+                      <div className="h-2.5 w-24 bg-surface rounded-xs animate-pulse" />
+                    </div>
+                    <div className="grid md:grid-cols-[260px_minmax(0,1fr)]">
+                      <div className="aspect-square md:aspect-auto bg-recess flex items-center justify-center">
+                        <div className="w-24 h-24 bg-surface rounded-xs animate-pulse" />
                       </div>
-                    )}
-                    <div aria-hidden className="lamp-sweep" />
-                  </div>
-                  <ExhibitStrata
-                    history={exhibitData?.history ?? []}
-                    forecast={exhibitData?.prediction ?? null}
-                    loading={exhibitStatus === 'loading'}
-                  />
-                  <div className="flex items-end justify-between px-4 py-3.5">
-                    <div>
-                      <div className="text-[13px] font-semibold text-paper mb-1">{heroItem.name}</div>
-                      <div className="specimen-tag text-paper-tertiary">{heroItem.type}</div>
-                    </div>
-                    <div className="font-data text-xl text-paper">
-                      ${heroItem.latest_price?.toFixed(2)}
+                      <div className="p-4 flex flex-col gap-3">
+                        <div className="h-3 w-36 bg-surface rounded-xs animate-pulse" />
+                        <div className="h-40 bg-recess rounded-xs animate-pulse" />
+                      </div>
                     </div>
                   </div>
-                </div>
-              </Link>
-            ) : (
-              <div className="specimen-card overflow-hidden">
-                <div className="px-4 py-2.5 border-b border-divider">
-                  <span className="specimen-tag text-paper-tertiary">Featured Specimen</span>
-                </div>
-                <div className="aspect-square bg-recess flex items-center justify-center p-10">
-                  <span className="specimen-tag text-paper-muted">No specimen mounted on record</span>
-                </div>
+                ) : heroItem ? (
+                  <Link
+                    href={`/items/${encodeURIComponent(heroItem.item_id)}`}
+                    ref={exhibitRef}
+                    className={`group block relative ${exhibitVisible ? '' : 'exhibit-hidden'}`}
+                  >
+                    <div className="dive-card overflow-hidden">
+                      <span aria-hidden className="sounding-rule" />
+                      <span aria-hidden className="card-sweep" />
+                      <div className="flex items-center justify-between px-4 py-2.5 border-b border-divider">
+                        <span className="dive-tag text-paper-tertiary">Featured Dive</span>
+                        <span className="flex items-center gap-2 dive-tag text-paper-muted">
+                          <span aria-hidden className="w-1.5 h-1.5 rounded-full bg-paper-muted sonar-dot inline-block" />
+                          7 markets &middot; {lastCloseLabel ? `last close ${lastCloseLabel}` : 'daily'}
+                        </span>
+                      </div>
+                      <div className="grid md:grid-cols-[260px_minmax(0,1fr)]">
+                        <div className="relative bg-recess overflow-hidden aspect-square md:aspect-auto">
+                          {heroItem.icon_url ? (
+                            <img
+                              src={heroItem.icon_url}
+                              alt={heroItem.name}
+                              fetchPriority="high"
+                              className="w-full h-full object-contain p-8 transition-transform duration-500 ease-out group-hover:scale-[1.03]"
+                            />
+                          ) : (
+                            <div className="w-full h-full flex items-center justify-center p-8">
+                              <div className="dive-tag text-paper-muted">{heroItem.name}</div>
+                            </div>
+                          )}
+                          <div aria-hidden className="snow-drift" />
+                        </div>
+                        <div className="flex flex-col min-w-0">
+                          <div className="flex items-end justify-between gap-4 px-4 pt-3.5 pb-1">
+                            <div className="min-w-0">
+                              <div className="text-[13px] font-semibold text-paper mb-1 truncate">
+                                {heroItem.name}
+                              </div>
+                              <div className="dive-tag text-paper-tertiary">{heroItem.type}</div>
+                            </div>
+                            <div className="font-data text-2xl text-paper shrink-0">
+                              ${heroItem.latest_price?.toFixed(2)}
+                            </div>
+                          </div>
+                          <ExhibitStrata
+                            history={exhibitData?.history ?? []}
+                            forecast={exhibitData?.prediction ?? null}
+                            loading={exhibitStatus === 'loading'}
+                            height={170}
+                          />
+                        </div>
+                      </div>
+                    </div>
+                  </Link>
+                ) : (
+                  <div className="dive-card overflow-hidden">
+                    <div className="px-4 py-2.5 border-b border-divider">
+                      <span className="dive-tag text-paper-tertiary">Featured Dive</span>
+                    </div>
+                    <div className="aspect-square bg-recess flex items-center justify-center p-10">
+                      <span className="dive-tag text-paper-muted">No dive on record</span>
+                    </div>
+                  </div>
+                )}
               </div>
-            )}
+            </div>
           </div>
 
           {/* The collection's headline record — published accuracy, cohort and horizon named */}
-          <div className="mt-12 lg:mt-16">
+          <div className="mt-12 lg:mt-16 lg:ml-24">
             {accuracyStatus === 'loading' ? (
               <div className="bg-stock border border-border rounded-sm">
                 <div className="flex flex-col md:flex-row gap-6 p-6">
@@ -363,7 +390,7 @@ export default function Home() {
                 <div className="flex flex-col md:flex-row md:items-stretch divide-y md:divide-y-0 md:divide-x divide-divider">
                   {/* The published claim is the TEST, not the hit rate. */}
                   <div className="px-6 py-5 md:w-72">
-                    <div className="specimen-tag text-paper-tertiary mb-2">
+                    <div className="dive-tag text-paper-tertiary mb-2">
                       Directional Verdict
                     </div>
                     <div
@@ -388,7 +415,7 @@ export default function Home() {
                   </div>
                   {/* Accuracy travels only as the triple that makes it readable. */}
                   <div className="px-6 py-5 flex-1">
-                    <div className="specimen-tag text-paper-tertiary mb-2">
+                    <div className="dive-tag text-paper-tertiary mb-2">
                       Hit Rate vs Chance
                     </div>
                     <div className="text-data-lg text-paper">
@@ -406,7 +433,7 @@ export default function Home() {
                     </div>
                   </div>
                   <div className="px-6 py-5 md:w-44">
-                    <div className="specimen-tag text-paper-tertiary mb-2">Coverage</div>
+                    <div className="dive-tag text-paper-tertiary mb-2">Coverage</div>
                     <div className="text-data-lg text-paper">
                       {coverage !== null ? `${coverage.toFixed(1)}%` : '\u2014'}
                     </div>
@@ -415,7 +442,7 @@ export default function Home() {
                     </div>
                   </div>
                   <div className="px-6 py-5 md:w-44">
-                    <div className="specimen-tag text-paper-tertiary mb-2">Cohort</div>
+                    <div className="dive-tag text-paper-tertiary mb-2">Cohort</div>
                     <div className="text-data-lg text-paper">{headline.cohort}</div>
                     <div className="text-[10px] font-data text-paper-muted mt-1">
                       {placard.horizon_days != null ? `${placard.horizon_days}d` : '\u2014'}
@@ -426,7 +453,7 @@ export default function Home() {
                     </div>
                   </div>
                   <div className="px-6 py-5 md:w-44 flex items-center">
-                    <span className="specimen-tag text-ink group-hover:text-ink-hover transition-colors duration-200">
+                    <span className="dive-tag text-ink group-hover:text-ink-hover transition-colors duration-200">
                       Full Backtest &rarr;
                     </span>
                   </div>
@@ -434,10 +461,10 @@ export default function Home() {
               </Link>
             ) : (
               <div className="bg-stock border border-border rounded-sm px-6 py-5">
-                <span className="specimen-tag text-paper-tertiary">Published Accuracy</span>
+                <span className="dive-tag text-paper-tertiary">Published Accuracy</span>
                 <p className="text-sm text-paper-secondary mt-2">
-                  No backtest on record yet — the collection logs its errors on the same
-                  ledger as its findings.
+                  No backtest on record yet — the dive log records its errors at the same
+                  depth as its findings.
                 </p>
               </div>
             )}
@@ -447,10 +474,10 @@ export default function Home() {
         {/* --- FEATURED SPECIMENS --- */}
         <section className="pb-14 lg:pb-16">
           <div className="flex items-end justify-between mb-6">
-            <h2 className="text-title text-paper">Featured Specimens</h2>
+            <h2 className="text-title text-paper">Featured Dives</h2>
             <Link
               href="/market"
-              className="specimen-tag text-ink hover:text-ink-hover transition-colors duration-200"
+              className="dive-tag text-ink hover:text-ink-hover transition-colors duration-200"
             >
               View the Catalog &rarr;
             </Link>
@@ -494,27 +521,27 @@ export default function Home() {
 
         {/* --- HOLDINGS SUMMARY --- */}
         <section className="pb-16 lg:pb-24 border-t border-divider pt-12">
-          <h2 className="text-title text-paper mb-6">The Holdings</h2>
+          <h2 className="text-title text-paper mb-6">The Ascent Stops</h2>
           <div className="bg-stock border border-border rounded-sm">
             <div className="flex flex-col md:flex-row divide-y md:divide-y-0 md:divide-x divide-divider">
               <div className="px-6 py-5 flex-1">
-                <div className="specimen-tag text-paper-tertiary mb-3">Items Tracked</div>
+                <div className="dive-tag text-paper-tertiary mb-3">Items Tracked</div>
                 <div className="text-data-lg text-paper">
                   {itemsCount !== null ? itemsCount.toLocaleString() : '\u2014'}
                 </div>
               </div>
               <div className="px-6 py-5 flex-1">
-                <div className="specimen-tag text-paper-tertiary mb-3">Markets</div>
+                <div className="dive-tag text-paper-tertiary mb-3">Markets</div>
                 <div className="text-data-lg text-paper">7</div>
                 <div className="text-[10px] font-data text-paper-muted mt-1">daily closes</div>
               </div>
               <div className="px-6 py-5 flex-1">
-                <div className="specimen-tag text-paper-tertiary mb-3">Archive Depth</div>
+                <div className="dive-tag text-paper-tertiary mb-3">Archive Depth</div>
                 <div className="text-data-lg text-paper">13 yrs</div>
-                <div className="text-[10px] font-data text-paper-muted mt-1">of price strata</div>
+                <div className="text-[10px] font-data text-paper-muted mt-1">of price depth</div>
               </div>
               <div className="px-6 py-5 flex-1">
-                <div className="specimen-tag text-paper-tertiary mb-3">Cadence</div>
+                <div className="dive-tag text-paper-tertiary mb-3">Cadence</div>
                 <div className="text-data-lg text-paper">Daily</div>
                 <div className="text-[10px] font-data text-paper-muted mt-1">archived at 23:00 UTC</div>
               </div>
@@ -531,16 +558,16 @@ export default function Home() {
               <div className="w-7 h-7 rounded-xs border border-border bg-stock flex items-center justify-center">
                 <span className="font-data font-bold text-[7px] text-paper tracking-tighter">CS</span>
               </div>
-              <span className="specimen-tag text-paper-secondary">CS2 Oracle</span>
+              <span className="dive-tag text-paper-secondary">CS2 Oracle</span>
             </div>
             <div className="flex gap-8">
-              <Link href="/market" className="specimen-tag text-paper-tertiary hover:text-paper transition-colors duration-200">Market</Link>
-              <Link href="/portfolio" className="specimen-tag text-paper-tertiary hover:text-paper transition-colors duration-200">Portfolio</Link>
-              <Link href="/accuracy" className="specimen-tag text-paper-tertiary hover:text-paper transition-colors duration-200">Accuracy</Link>
+              <Link href="/market" className="dive-tag text-paper-tertiary hover:text-paper transition-colors duration-200">Market</Link>
+              <Link href="/portfolio" className="dive-tag text-paper-tertiary hover:text-paper transition-colors duration-200">Portfolio</Link>
+              <Link href="/accuracy" className="dive-tag text-paper-tertiary hover:text-paper transition-colors duration-200">Accuracy</Link>
             </div>
           </div>
           <div className="mt-8 pt-6 border-t border-divider">
-            <p className="specimen-tag text-paper-muted">
+            <p className="dive-tag text-paper-muted">
               &copy; {new Date().getFullYear()} CS2 Oracle
             </p>
           </div>

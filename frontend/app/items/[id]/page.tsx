@@ -72,6 +72,14 @@ interface ChartRow {
 const TIME_RANGES = ['24h', '7d', '30d', 'all'] as const;
 type TimeRange = (typeof TIME_RANGES)[number];
 
+/* Dive-stage depths: the deeper the range, the darker the water behind the chart. */
+const RANGE_DEPTH: Record<TimeRange, string> = {
+  '24h': 'var(--surface)',
+  '7d': 'var(--stock)',
+  '30d': 'var(--ground)',
+  all: 'var(--recess)',
+};
+
 const FORECAST_PERIODS = ['3_days', '7_days', '14_days', '30_days'] as const;
 type ForecastPeriod = (typeof FORECAST_PERIODS)[number];
 const FORECAST_DAYS: Record<ForecastPeriod, number> = {
@@ -208,18 +216,18 @@ function StrataTooltip({ active, payload }: { active?: boolean; payload?: Strata
 
   return (
     <div className="bg-stock border border-border rounded-sm px-3 py-2.5 min-w-[180px]">
-      <div className="specimen-tag text-paper-tertiary mb-2">{label}</div>
+      <div className="dive-tag text-paper-tertiary mb-2">{label}</div>
       <div className="space-y-1">
         {rows.map((p) => (
           <div key={String(p.dataKey)} className="flex items-center justify-between gap-6">
             <span
               className="font-data text-[11px] flex items-center gap-2"
-              style={{ color: p.dataKey === 'q50' ? 'var(--specimen)' : 'var(--paper-tertiary)' }}
+              style={{ color: p.dataKey === 'q50' ? 'var(--thermocline)' : 'var(--paper-tertiary)' }}
             >
               <span
                 aria-hidden
                 className="w-2 h-[2px] rounded-full inline-block"
-                style={{ backgroundColor: p.dataKey === 'q50' ? 'var(--specimen)' : p.color }}
+                style={{ backgroundColor: p.dataKey === 'q50' ? 'var(--thermocline)' : p.color }}
               />
               {p.dataKey === 'q50' ? 'q50 forecast' : SOURCE_META[String(p.dataKey)] ?? String(p.dataKey)}
             </span>
@@ -366,6 +374,14 @@ export default function ItemDetailPage() {
     [rawChartData, showCorridor, predictions, forecastPeriod, primarySource]
   );
 
+  // The forecast row sits at the far right of the profile; the water darkens
+  // from the last real close onward — the mesophotic zone.
+  const forecastZonePct = useMemo(() => {
+    const last = chartData[chartData.length - 1];
+    if (chartData.length < 2 || typeof last?.q50 !== 'number') return null;
+    return ((chartData.length - 1) / chartData.length) * 100;
+  }, [chartData]);
+
   const summary = summarizeHistory(history);
   const latestPrice = summary.currentPrice;
   const trendDirection = trends?.trend_direction ?? 'insufficient_data';
@@ -400,7 +416,7 @@ export default function ItemDetailPage() {
         <div className="max-w-6xl mx-auto px-6 py-8">
           <Link
             href="/market"
-            className="specimen-tag text-ink hover:text-ink-hover transition-colors duration-200 mb-6 inline-block"
+            className="dive-tag text-ink hover:text-ink-hover transition-colors duration-200 mb-6 inline-block"
           >
             &larr; Catalog
           </Link>
@@ -425,14 +441,14 @@ export default function ItemDetailPage() {
       <div className="max-w-6xl mx-auto px-6 py-8">
         <Link
           href="/market"
-          className="specimen-tag text-ink hover:text-ink-hover transition-colors duration-200 mb-6 inline-block"
+          className="dive-tag text-ink hover:text-ink-hover transition-colors duration-200 mb-6 inline-block"
         >
           &larr; Catalog
         </Link>
 
         {/* Specimen header */}
         <div className="mb-6">
-          <span className="specimen-tag text-paper-tertiary mb-2 block">{item.type}</span>
+          <span className="dive-tag text-paper-tertiary mb-2 block">{item.type}</span>
           <h1 className="text-headline text-paper mb-2">{item.name}</h1>
           <div className="flex flex-wrap items-center gap-x-5 gap-y-1 font-data text-xs text-paper-tertiary">
             <span>{itemId}</span>
@@ -445,11 +461,12 @@ export default function ItemDetailPage() {
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
           {/* Primary plate — strata chart + wear tray */}
           <div className="lg:col-span-2">
-            <div className="specimen-card relative overflow-hidden">
-              <span aria-hidden className="specimen-pin" />
+            <div className="dive-card relative overflow-hidden">
+              <span aria-hidden className="sounding-rule" />
+              <span aria-hidden className="card-sweep" />
               <div className="flex items-center justify-between px-4 py-2.5 border-b border-divider">
-                <span className="specimen-tag text-paper-tertiary">Strata &mdash; Price History</span>
-                <span className="specimen-tag text-paper-muted">specimen {itemId}</span>
+                <span className="dive-tag text-paper-tertiary">Dive Profile &mdash; Price History</span>
+                <span className="dive-tag text-paper-muted">dive {itemId}</span>
               </div>
 
               <div className="p-4">
@@ -460,7 +477,7 @@ export default function ItemDetailPage() {
                       <button
                         key={range}
                         onClick={() => setTimeRange(range)}
-                        className={`specimen-tag px-2.5 py-1.5 rounded-xs transition-colors duration-200 ${
+                        className={`dive-tag px-2.5 py-1.5 rounded-xs transition-colors duration-200 ${
                           timeRange === range
                             ? 'text-ink bg-ink-subtle'
                             : 'text-paper-tertiary hover:text-paper'
@@ -476,7 +493,7 @@ export default function ItemDetailPage() {
                         <button
                           key={p}
                           onClick={() => setForecastPeriod(p)}
-                          className={`specimen-tag px-2.5 py-1.5 rounded-xs transition-colors duration-200 ${
+                          className={`dive-tag px-2.5 py-1.5 rounded-xs transition-colors duration-200 ${
                             forecastPeriod === p
                               ? 'text-ink bg-ink-subtle'
                               : 'text-paper-tertiary hover:text-paper'
@@ -498,10 +515,23 @@ export default function ItemDetailPage() {
                   />
                 </div>
 
-                {/* Strata chart */}
+                {/* Dive profile chart */}
                 {chartData.length > 0 ? (
-                  <ResponsiveContainer width="100%" height={380}>
-                    <ComposedChart data={chartData}>
+                  <div
+                    className="relative rounded-sm p-2 transition-colors duration-500"
+                    style={{ backgroundColor: RANGE_DEPTH[timeRange] }}
+                  >
+                    {forecastZonePct !== null && (
+                      <div
+                        aria-hidden
+                        className="absolute inset-0 rounded-sm pointer-events-none"
+                        style={{
+                          backgroundImage: `linear-gradient(90deg, transparent ${forecastZonePct}%, var(--recess) 100%)`,
+                        }}
+                      />
+                    )}
+                    <ResponsiveContainer width="100%" height={364}>
+                      <ComposedChart data={chartData}>
                       <CartesianGrid horizontal stroke="var(--grid)" strokeWidth={1} vertical={false} />
                       <XAxis
                         dataKey="label"
@@ -523,12 +553,12 @@ export default function ItemDetailPage() {
                         dataKey="q90span"
                         stackId="corridor"
                         stroke="none"
-                        fill="var(--specimen)"
-                        fillOpacity={0.16}
+                        fill="var(--thermocline)"
+                        fillOpacity={0.24}
                         connectNulls
                         isAnimationActive={false}
                       />
-                      <Line dataKey="q50" stroke="var(--specimen)" strokeWidth={2} dot={false} connectNulls isAnimationActive={false} />
+                      <Line dataKey="q50" stroke="var(--thermocline)" strokeWidth={2} dot={false} connectNulls isAnimationActive={false} />
                       <Line
                         dataKey={primarySource}
                         stroke="var(--paper)"
@@ -552,7 +582,8 @@ export default function ItemDetailPage() {
                         />
                       ))}
                     </ComposedChart>
-                  </ResponsiveContainer>
+                    </ResponsiveContainer>
+                  </div>
                 ) : (
                   <div className="flex items-center justify-center h-[380px] text-sm text-paper-tertiary">
                     {hasPriceData
@@ -566,7 +597,7 @@ export default function ItemDetailPage() {
             {/* Wear tray */}
             {variants.length > 1 && (
               <div className="mt-6">
-                <div className="specimen-tag text-paper-tertiary mb-3">Wear Tray</div>
+                <div className="dive-tag text-paper-tertiary mb-3">Wear Tray</div>
                 <div className="flex flex-wrap gap-1.5">
                   {variants.map((v) => {
                     const isActive = v.item_id === itemId;
@@ -595,7 +626,7 @@ export default function ItemDetailPage() {
             {/* Curator tag */}
             <div className="bg-stock border border-border rounded-sm relative">
               <div className="flex items-center justify-between px-4 py-2.5 border-b border-divider">
-                <span className="specimen-tag text-specimen">Curator Tag</span>
+                <span className="dive-tag text-thermocline">Dive Log Entry</span>
               </div>
               {hasForecast ? (
                 <>
@@ -606,11 +637,11 @@ export default function ItemDetailPage() {
                       return (
                         <div key={p} className="px-4 py-3 flex items-baseline justify-between gap-4">
                           <div className="flex items-baseline gap-2">
-                            <span className="specimen-tag text-paper-tertiary">{FORECAST_DAYS[p]}d</span>
+                            <span className="dive-tag text-paper-tertiary">{FORECAST_DAYS[p]}d</span>
                             <span className="font-data text-[10px] text-paper-muted">q10&ndash;q90</span>
                           </div>
                           <div className="text-right">
-                            <div className="text-data-lg text-specimen leading-none">
+                            <div className="text-data-lg text-thermocline leading-none">
                               {formatCurrency(f.mid)}
                             </div>
                             <div className="font-data text-[11px] text-paper-tertiary mt-1">
@@ -639,11 +670,11 @@ export default function ItemDetailPage() {
               ) : (
                 <div className="px-4 py-6">
                   <div className="flex items-center gap-3">
-                    <span aria-hidden className="text-specimen/60 font-data text-sm leading-none">&#8212;</span>
-                    <p className="text-sm text-paper-secondary">No curator note on record.</p>
+                    <span aria-hidden className="text-thermocline/60 font-data text-sm leading-none">&#8212;</span>
+                    <p className="text-sm text-paper-secondary">Below working depth &mdash; no signal at this depth.</p>
                   </div>
                   <p className="text-[10px] font-data text-paper-muted mt-2">
-                    Forecasts appear once the collection pipeline processes this specimen.
+                    Forecasts appear once the daily pipeline processes this item.
                   </p>
                 </div>
               )}
@@ -652,7 +683,7 @@ export default function ItemDetailPage() {
             {/* Ledger stats */}
             <div className="bg-stock border border-border rounded-sm">
               <div className="px-4 py-2.5 border-b border-divider">
-                <span className="specimen-tag text-paper-tertiary">Ledger</span>
+                <span className="dive-tag text-paper-tertiary">Dive Log</span>
               </div>
               <div className="divide-y divide-divider">
                 <LedgerRow
@@ -729,7 +760,7 @@ export default function ItemDetailPage() {
             {/* Signals */}
             <div className="bg-stock border border-border rounded-sm">
               <div className="px-4 py-2.5 border-b border-divider">
-                <span className="specimen-tag text-paper-tertiary">Signals</span>
+                <span className="dive-tag text-paper-tertiary">Signals</span>
               </div>
               <div className="px-4 py-3">
                 {hasPriceData && trendFactors.length ? (
@@ -753,7 +784,7 @@ export default function ItemDetailPage() {
             {eventImpacts.length > 0 && (
               <div className="bg-stock border border-border rounded-sm">
                 <div className="px-4 py-2.5 border-b border-divider">
-                  <span className="specimen-tag text-paper-tertiary">Event Impacts</span>
+                  <span className="dive-tag text-paper-tertiary">Event Impacts</span>
                 </div>
                 <div className="divide-y divide-divider">
                   {eventImpacts.slice(0, 5).map((imp) => (
@@ -782,12 +813,12 @@ export default function ItemDetailPage() {
             {featureImportance && Object.keys(featureImportance.horizons).length > 0 && (
               <div className="bg-stock border border-border rounded-sm">
                 <div className="px-4 py-2.5 border-b border-divider">
-                  <span className="specimen-tag text-paper-tertiary">Forecast Drivers</span>
+                  <span className="dive-tag text-paper-tertiary">Forecast Drivers</span>
                 </div>
                 <div className="px-4 py-3 space-y-4">
                   {Object.entries(featureImportance.horizons).map(([horizon, features]) => (
                     <div key={horizon}>
-                      <div className="specimen-tag text-paper-muted mb-1.5">{horizon}d horizon</div>
+                      <div className="dive-tag text-paper-muted mb-1.5">{horizon}d horizon</div>
                       <div className="space-y-1">
                         {features.slice(0, 5).map((fi) => (
                           <div key={fi.feature} className="flex items-center gap-2 text-xs">
@@ -819,7 +850,7 @@ function num(value: unknown): number | null {
 function LedgerRow({ label, value }: { label: string; value: React.ReactNode }) {
   return (
     <div className="px-4 py-3 flex items-center justify-between gap-4">
-      <span className="specimen-tag text-paper-tertiary">{label}</span>
+      <span className="dive-tag text-paper-tertiary">{label}</span>
       {value}
     </div>
   );

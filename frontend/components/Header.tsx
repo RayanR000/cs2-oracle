@@ -25,11 +25,11 @@ export default function Header() {
               <span className="font-data font-bold text-[10px] text-paper tracking-tighter">CS</span>
             </div>
             <div className="flex flex-col">
-              <span className="specimen-tag text-paper leading-none">
+              <span className="dive-tag text-paper leading-none">
                 CS2 Oracle
               </span>
-              <span className="specimen-tag text-paper-muted mt-1 leading-none">
-                Specimen Archive
+              <span className="dive-tag text-paper-muted mt-1 leading-none">
+                Dive Log
               </span>
             </div>
           </Link>
@@ -41,7 +41,7 @@ export default function Header() {
                 <Link
                   key={link.href}
                   href={link.href}
-                  className={`specimen-tag relative py-2 transition-colors duration-200 ${
+                  className={`dive-tag relative py-2 transition-colors duration-200 ${
                     active ? 'text-ink' : 'text-paper-secondary hover:text-paper'
                   }`}
                 >
@@ -84,7 +84,7 @@ export default function Header() {
                   </span>
                   <button
                     onClick={() => logout()}
-                    className="specimen-tag text-paper-muted hover:text-paper transition-colors duration-200"
+                    className="dive-tag text-paper-muted hover:text-paper transition-colors duration-200"
                   >
                     Logout
                   </button>

@@ -19,9 +19,9 @@ export default function StatCard({
     <div className="bg-stock border border-border rounded-sm p-5 flex flex-col justify-between gap-4">
       <div>
         <div className="flex items-start justify-between mb-3">
-          <p className="specimen-tag text-paper-tertiary">{label}</p>
+          <p className="dive-tag text-paper-tertiary">{label}</p>
           {annotation && (
-            <span className="specimen-tag text-paper-muted">{annotation}</span>
+            <span className="dive-tag text-paper-muted">{annotation}</span>
           )}
         </div>
         <div className="flex items-baseline gap-3">

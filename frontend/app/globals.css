@@ -1,45 +1,45 @@
 @import "tailwindcss";
 
 :root {
-  /* Archive vocabulary — light theme (derived, secondary) */
-  --ground: oklch(97.5% 0.008 80);
-  --stock: oklch(95% 0.009 80);
-  --recess: oklch(92% 0.01 80);
-  --surface: oklch(99.5% 0.006 80);
-  --surface-hover: oklch(97% 0.008 80);
-  --surface-active: oklch(94.5% 0.009 80);
+  /* Deep Dive vocabulary — light theme (derived, surface daylight) */
+  --ground: oklch(97% 0.015 220);
+  --stock: oklch(94% 0.02 220);
+  --recess: oklch(91% 0.02 220);
+  --surface: oklch(99.5% 0.008 220);
+  --surface-hover: oklch(97% 0.015 220);
+  --surface-active: oklch(94.5% 0.018 220);
 
-  --paper: oklch(19% 0.012 60);
-  --paper-secondary: oklch(38% 0.01 60);
-  --paper-tertiary: oklch(50% 0.01 60);
-  --paper-muted: oklch(55% 0.01 60);
+  --paper: oklch(18% 0.03 250);
+  --paper-secondary: oklch(38% 0.02 250);
+  --paper-tertiary: oklch(48% 0.02 250);
+  --paper-muted: oklch(55% 0.02 250);
 
-  --ink: oklch(48% 0.1 250);
-  --ink-hover: oklch(43% 0.1 250);
-  --ink-active: oklch(38% 0.1 250);
-  --ink-light: oklch(60% 0.08 250);
-  --ink-subtle: oklch(92% 0.03 250);
+  --ink: oklch(32% 0.04 250);
+  --ink-hover: oklch(27% 0.04 250);
+  --ink-active: oklch(36% 0.04 250);
+  --ink-light: oklch(45% 0.03 250);
+  --ink-subtle: oklch(90% 0.03 250);
 
-  --specimen: oklch(58% 0.11 75);
-  --specimen-subtle: oklch(92% 0.03 75);
+  --thermocline: oklch(50% 0.09 205);
+  --thermocline-subtle: oklch(88% 0.06 205);
 
-  --up: oklch(46% 0.1 150);
-  --down: oklch(46% 0.1 25);
-  --up-subtle: oklch(92% 0.03 150);
-  --down-subtle: oklch(92% 0.03 25);
+  --up: oklch(44% 0.1 150);
+  --down: oklch(44% 0.1 25);
+  --up-subtle: oklch(90% 0.04 150);
+  --down-subtle: oklch(90% 0.04 25);
 
-  --border: oklch(88% 0.012 80);
-  --border-light: oklch(92% 0.01 80);
-  --border-accent: oklch(75% 0.04 250);
-  --grid: oklch(88% 0.012 80);
-  --divider: oklch(90% 0.01 80);
+  --border: oklch(88% 0.02 220);
+  --border-light: oklch(92% 0.015 220);
+  --border-accent: oklch(70% 0.04 230);
+  --grid: oklch(88% 0.02 220);
+  --divider: oklch(90% 0.018 220);
 
   --radius-xs: 2px;
   --radius-sm: 4px;
   --radius-md: 6px;
 
-  --shadow-sm: 0 1px 3px oklch(30% 0.01 60 / 0.14);
-  --shadow-md: 0 4px 16px oklch(30% 0.01 60 / 0.12);
+  --shadow-sm: 0 1px 3px oklch(25% 0.04 250 / 0.14);
+  --shadow-md: 0 4px 16px oklch(25% 0.04 250 / 0.12);
 
   --z-dropdown: 100;
   --z-sticky: 200;
@@ -51,7 +51,7 @@
   --duration-fast: 150ms;
   --duration-normal: 250ms;
 
-  /* Legacy aliases — old-world names resolve to archive tokens */
+  /* Legacy aliases — old-world names resolve to deep-dive tokens */
   --background-primary: var(--ground);
   --background-secondary: var(--stock);
   --background-tertiary: var(--recess);
@@ -73,40 +73,40 @@
 }
 
 [data-theme="dark"] {
-  --ground: oklch(16% 0.006 55);
-  --stock: oklch(19.5% 0.007 55);
-  --recess: oklch(13.5% 0.005 55);
-  --surface: oklch(23.5% 0.008 55);
-  --surface-hover: oklch(26.5% 0.009 55);
-  --surface-active: oklch(29.5% 0.01 55);
+  --ground: oklch(11.5% 0.03 250);
+  --stock: oklch(17% 0.035 250);
+  --recess: oklch(8.5% 0.025 250);
+  --surface: oklch(23.5% 0.04 250);
+  --surface-hover: oklch(26.5% 0.045 250);
+  --surface-active: oklch(29.5% 0.05 250);
 
-  --paper: oklch(92% 0.008 85);
-  --paper-secondary: oklch(71% 0.012 70);
-  --paper-tertiary: oklch(64% 0.012 60);
-  --paper-muted: oklch(62% 0.01 55);
+  --paper: oklch(94% 0.008 90);
+  --paper-secondary: oklch(74% 0.02 230);
+  --paper-tertiary: oklch(66% 0.02 230);
+  --paper-muted: oklch(58% 0.025 230);
 
-  --ink: oklch(66% 0.1 250);
-  --ink-hover: oklch(70% 0.11 250);
-  --ink-active: oklch(60% 0.1 250);
-  --ink-light: oklch(74% 0.09 250);
-  --ink-subtle: oklch(26% 0.03 250);
+  --ink: oklch(92% 0.01 90);
+  --ink-hover: oklch(97% 0.008 90);
+  --ink-active: oklch(86% 0.012 90);
+  --ink-light: oklch(78% 0.015 90);
+  --ink-subtle: oklch(29% 0.035 230);
 
-  --specimen: oklch(70% 0.12 75);
-  --specimen-subtle: oklch(24% 0.04 75);
+  --thermocline: oklch(74% 0.1 205);
+  --thermocline-subtle: oklch(32% 0.07 205);
 
-  --up: oklch(64% 0.11 150);
-  --down: oklch(64% 0.11 25);
-  --up-subtle: oklch(23% 0.03 150);
-  --down-subtle: oklch(23% 0.03 25);
+  --up: oklch(66% 0.1 150);
+  --down: oklch(66% 0.1 25);
+  --up-subtle: oklch(24% 0.03 150);
+  --down-subtle: oklch(24% 0.03 25);
 
-  --border: oklch(30% 0.008 55);
-  --border-light: oklch(25.5% 0.007 55);
-  --border-accent: oklch(46% 0.04 250);
-  --grid: oklch(27% 0.008 55);
-  --divider: oklch(25% 0.007 55);
+  --border: oklch(33% 0.04 250);
+  --border-light: oklch(28% 0.035 250);
+  --border-accent: oklch(64% 0.03 230);
+  --grid: oklch(31% 0.035 250);
+  --divider: oklch(27% 0.03 250);
 
-  --shadow-sm: 0 1px 3px oklch(0% 0 0 / 0.4);
-  --shadow-md: 0 4px 16px oklch(0% 0 0 / 0.35);
+  --shadow-sm: 0 1px 3px oklch(0% 0 0 / 0.5);
+  --shadow-md: 0 4px 16px oklch(0% 0 0 / 0.45);
 }
 
 @theme inline {
@@ -125,8 +125,8 @@
   --color-ink-active: var(--ink-active);
   --color-ink-light: var(--ink-light);
   --color-ink-subtle: var(--ink-subtle);
-  --color-specimen: var(--specimen);
-  --color-specimen-subtle: var(--specimen-subtle);
+  --color-thermocline: var(--thermocline);
+  --color-thermocline-subtle: var(--thermocline-subtle);
   --color-up: var(--up);
   --color-down: var(--down);
   --color-up-subtle: var(--up-subtle);
@@ -222,7 +222,7 @@ body {
   letter-spacing: -0.02em;
 }
 
-.specimen-tag {
+.dive-tag {
   font-family: var(--font-jetbrains-mono), monospace;
   font-size: 10px;
   font-weight: 600;
@@ -230,7 +230,7 @@ body {
   text-transform: uppercase;
 }
 
-/* --- Casework --- */
+/* --- Water column --- */
 
 .widget-block {
   background-color: var(--stock);
@@ -246,8 +246,8 @@ body {
   background-color: var(--surface);
 }
 
-/* Mounted specimens — the only cards that stand off the floor */
-.specimen-card {
+/* Mounted reef cards — the only cards that stand off the floor */
+.dive-card {
   background-color: var(--stock);
   border: 1px solid var(--border);
   border-radius: var(--radius-sm);
@@ -258,24 +258,39 @@ body {
     background-color var(--duration-normal) ease;
 }
 
-.specimen-card:hover {
+.dive-card:hover {
   border-color: var(--border-accent);
   background-color: var(--surface);
-  box-shadow: var(--shadow-sm), 0 8px 24px oklch(0% 0 0 / 0.28);
+  box-shadow: var(--shadow-sm), 0 8px 24px oklch(0% 0 0 / 0.3);
 }
 
-/* The specimen pin — 2px ink corner bracket on the primary card */
-.specimen-pin {
+/* The sounding rule — 2px chalk vertical hairline with tick marks at the
+   left edge of the primary card: the depth axis that rules every line. */
+.sounding-rule {
   position: absolute;
   top: -1px;
   left: -1px;
-  width: 14px;
-  height: 14px;
-  border-top: 2px solid var(--ink);
-  border-left: 2px solid var(--ink);
+  bottom: -1px;
+  width: 2px;
+  background-color: var(--ink);
   border-top-left-radius: var(--radius-sm);
+  border-bottom-left-radius: var(--radius-sm);
   pointer-events: none;
   z-index: 10;
+}
+
+.sounding-rule::after {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: 2px;
+  bottom: 0;
+  width: 5px;
+  background-image: repeating-linear-gradient(
+    90deg,
+    color-mix(in oklch, var(--ink) 40%, transparent) 0 1px,
+    transparent 1px 7px
+  );
 }
 
 /* --- Buttons --- */
@@ -344,7 +359,7 @@ body {
   padding: 10px 20px;
 }
 
-/* --- Finding aid (search) --- */
+/* --- Sounding line (search) --- */
 
 .input-search {
   width: 100%;
@@ -398,7 +413,7 @@ body {
   color: var(--paper);
 }
 
-/* --- Ledger --- */
+/* --- Dive log --- */
 
 .ledger-row {
   border-bottom: 1px solid var(--divider);
@@ -418,49 +433,86 @@ body {
   background-color: var(--surface);
 }
 
-/* The ambient loops run only while the exhibit is on screen */
-.exhibit-hidden .lamp-sweep,
-.exhibit-hidden .status-dot {
+/* The ambient loops run only while the surface is on screen */
+.exhibit-hidden .snow-drift,
+.exhibit-hidden .sonar-dot {
   animation-play-state: paused;
 }
 
-/* --- Motion: the curator's lamp, and the status pulse. Nothing else moves. --- */
+/* --- Motion: marine snow, the lamp's card sweep, the sonar ping. --- */
 
-@keyframes lamp-sweep {
-  0% {
-    transform: translateY(-120%);
-    opacity: 0;
+@keyframes snow-drift {
+  from {
+    transform: translateY(-218px);
   }
-  6% {
-    opacity: 1;
-  }
-  12% {
-    transform: translateY(480%);
-    opacity: 0.85;
-  }
-  13%,
-  100% {
-    opacity: 0;
+  to {
+    transform: translateY(218px);
   }
 }
 
-.lamp-sweep {
+.snow-drift {
   position: absolute;
-  left: 0;
-  right: 0;
-  height: 18%;
+  inset: 0;
+  pointer-events: none;
+  opacity: 0.22;
+  background-image:
+    radial-gradient(2px 2px at 20% 30%, var(--paper) 0, transparent 42%),
+    radial-gradient(2px 2px at 60% 70%, var(--paper) 0, transparent 42%),
+    radial-gradient(3px 3px at 80% 20%, var(--paper) 0, transparent 46%),
+    radial-gradient(2px 2px at 40% 85%, var(--paper) 0, transparent 42%),
+    radial-gradient(3px 3px at 90% 55%, var(--paper) 0, transparent 46%),
+    radial-gradient(2px 2px at 10% 55%, var(--paper) 0, transparent 42%);
+  background-repeat: repeat;
+  background-size: 164px 218px;
+  animation: snow-drift 96s linear infinite;
+  will-change: transform;
+}
+
+/* The card's lamp sweep — passes once on hover */
+.card-sweep {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  overflow: hidden;
+  z-index: 1;
+}
+
+.card-sweep::after {
+  content: '';
+  position: absolute;
+  top: -20%;
+  bottom: -20%;
+  left: -50%;
+  width: 40%;
   background: linear-gradient(
-    180deg,
+    100deg,
     transparent,
-    color-mix(in oklch, var(--paper) 6%, transparent),
+    color-mix(in oklch, var(--paper) 5%, transparent),
     transparent
   );
-  pointer-events: none;
-  animation: lamp-sweep 14s cubic-bezier(0.4, 0, 0.2, 1) infinite;
-  will-change: transform, opacity;
+  transform: skewX(-12deg);
+  opacity: 0;
 }
 
-@keyframes status-pulse {
+.group:hover .card-sweep::after {
+  animation: card-sweep 1.1s ease-out forwards;
+}
+
+@keyframes card-sweep {
+  0% {
+    left: -50%;
+    opacity: 0;
+  }
+  10% {
+    opacity: 1;
+  }
+  100% {
+    left: 130%;
+    opacity: 0;
+  }
+}
+
+@keyframes sonar-ping {
   0%,
   100% {
     opacity: 1;
@@ -470,8 +522,8 @@ body {
   }
 }
 
-.status-dot {
-  animation: status-pulse 2.4s ease-in-out infinite;
+.sonar-dot {
+  animation: sonar-ping 2.4s ease-in-out infinite;
 }
 
 /* --- Focus, selection, scrollbar --- */
@@ -515,7 +567,7 @@ button:focus-visible {
     transition-duration: 0.01ms !important;
   }
 
-  .lamp-sweep {
+  .snow-drift {
     display: none;
   }
 }
