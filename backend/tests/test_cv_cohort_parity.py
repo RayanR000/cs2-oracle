@@ -23,6 +23,16 @@ from backtest.scoring import HEADLINE_MIN_TIER
 from models.forecaster import ItemForecaster
 
 
+@pytest.fixture(autouse=True)
+def _diagnostic_classifier_on(monkeypatch):
+    """Every test here scores the per-fold directional classifier, which has
+    been off by default since 2026-08-09 (932s, 52% of a retrain, feeding no
+    served artifact). The cohort split these tests pin is still correct and
+    still runs whenever the diagnostic is asked for, so they opt in rather than
+    the default reverting."""
+    monkeypatch.setenv("CV_DIAGNOSTIC_CLASSIFIER", "1")
+
+
 def _tier(price: float) -> int:
     """The production banding from engineer_features, so the fixtures cannot
     describe a frame `price_tier` would never actually produce."""
@@ -178,9 +188,14 @@ def trained():
             f._base_feature_cols = list(f.feature_cols)
             return df.copy()
 
+        # This fixture is module-scoped, so it is built before the
+        # function-scoped _diagnostic_classifier_on fixture can apply. It has
+        # to opt in itself or train() runs with the diagnostic off and
+        # mean_classifier_acc comes back None.
         with patch.object(f, "build_training_data", fake_build), \
                 patch.object(f, "save_models", lambda *a, **kw: None), \
-                patch.dict("os.environ", {"SKIP_REGIMES": "1"}):
+                patch.dict("os.environ", {"SKIP_REGIMES": "1",
+                                          "CV_DIAGNOSTIC_CLASSIFIER": "1"}):
             f.train()
         yield f
 

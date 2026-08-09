@@ -6057,11 +6057,15 @@ class ItemForecaster:
     def _cv_diagnostic_classifier_enabled() -> bool:
         """Whether CV fits the per-fold directional classifier.
 
-        Default on, so local and research runs keep `mean_classifier_acc_ge1`.
-        CI sets CV_DIAGNOSTIC_CLASSIFIER=0: the model feeds no served artifact
-        (only `fold_p50` reaches `oof_records`) and costs 32-37% of a retrain.
+        Default OFF (2026-08-09). It feeds no served artifact -- only fold_p50
+        reaches oof_records -- and costs 932s, 52% of a classifier-on retrain
+        (872s off vs 1804s on), which put a local retrain over the project's own
+        30-minute run cap. The replacement diagnostics are mean_rank_ic and the
+        PT verdict, both computed from fold_p50 and unaffected.
+
+        Set CV_DIAGNOSTIC_CLASSIFIER=1 to restore mean_classifier_acc_ge1.
         """
-        return os.environ.get("CV_DIAGNOSTIC_CLASSIFIER", "1") != "0"
+        return os.environ.get("CV_DIAGNOSTIC_CLASSIFIER", "0") != "0"
 
     @staticmethod
     def _direction_records(pred_returns, actual_returns, dates) -> list:

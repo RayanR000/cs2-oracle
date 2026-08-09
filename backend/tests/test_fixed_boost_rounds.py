@@ -157,16 +157,19 @@ class TestDirectionRecords:
 
 
 class TestDiagnosticClassifierGate:
-    def test_on_by_default(self, monkeypatch):
+    def test_off_by_default(self, monkeypatch):
+        """Was on by default until 2026-08-09. See
+        test_cv_diagnostic_classifier_defaults_off below for the cost."""
         monkeypatch.delenv("CV_DIAGNOSTIC_CLASSIFIER", raising=False)
-        assert ItemForecaster._cv_diagnostic_classifier_enabled() is True
+        assert ItemForecaster._cv_diagnostic_classifier_enabled() is False
 
     def test_zero_turns_it_off(self, monkeypatch):
         monkeypatch.setenv("CV_DIAGNOSTIC_CLASSIFIER", "0")
         assert ItemForecaster._cv_diagnostic_classifier_enabled() is False
 
-    def test_anything_else_keeps_it_on(self, monkeypatch):
-        """Default-on: a typo must not silently drop the metric."""
+    def test_anything_else_turns_it_on(self, monkeypatch):
+        """Only a literal "0" is off, so a typo cannot silently skip a
+        diagnostic the caller asked for."""
         for raw in ("1", "yes", "", "true"):
             monkeypatch.setenv("CV_DIAGNOSTIC_CLASSIFIER", raw)
             assert ItemForecaster._cv_diagnostic_classifier_enabled() is True
@@ -179,3 +182,17 @@ def test_ci_skips_the_diagnostic_classifier_but_never_cv():
           / ".github" / "workflows" / "price-forecast.yml").read_text()
     assert 'CV_DIAGNOSTIC_CLASSIFIER: "0"' in wf
     assert "SKIP_CV: " not in wf, "SKIP_CV must never be set in CI"
+
+
+def test_cv_diagnostic_classifier_defaults_off(monkeypatch):
+    """932s / 52% of a classifier-on retrain, to populate a meta.json field no
+    served artifact reads. Measured 2026-08-09: 872s off vs 1804s on. On by
+    default put a local retrain at 30.1 min, over the project's own 30-minute
+    run cap."""
+    monkeypatch.delenv("CV_DIAGNOSTIC_CLASSIFIER", raising=False)
+    assert ItemForecaster._cv_diagnostic_classifier_enabled() is False
+
+
+def test_cv_diagnostic_classifier_can_be_re_enabled(monkeypatch):
+    monkeypatch.setenv("CV_DIAGNOSTIC_CLASSIFIER", "1")
+    assert ItemForecaster._cv_diagnostic_classifier_enabled() is True
