@@ -4,6 +4,10 @@ from datetime import date, datetime
 import pytest
 
 from collectors.price_history_sources import cs2_prices_tracker as tracker
+from collectors.price_history_import import (
+    StalledSourceError,
+    detect_stalled_days,
+)
 
 
 def test_source_label_is_exact():
@@ -57,3 +61,35 @@ def test_parse_day_tolerates_a_missing_or_null_steam_object():
     }
     records = tracker.parse_day(payload, date(2025, 6, 15))
     assert [r[0] for r in records] == ["AK-47 | Redline (Field-Tested)"]
+
+
+def test_detect_stalled_days_finds_consecutive_identical_files():
+    digests = {
+        date(2026, 7, 26): "aaa",
+        date(2026, 7, 27): "bbb",
+        date(2026, 7, 28): "bbb",
+        date(2026, 7, 29): "bbb",
+        date(2026, 7, 30): "ccc",
+    }
+    assert detect_stalled_days(digests) == [
+        [date(2026, 7, 27), date(2026, 7, 28), date(2026, 7, 29)]
+    ]
+
+
+def test_detect_stalled_days_ignores_identical_files_that_are_not_adjacent():
+    digests = {
+        date(2025, 6, 1): "aaa",
+        date(2025, 6, 2): "bbb",
+        date(2025, 6, 3): "aaa",
+    }
+    assert detect_stalled_days(digests) == []
+
+
+def test_detect_stalled_days_is_empty_for_all_distinct_files():
+    digests = {date(2025, 6, d): f"h{d}" for d in range(1, 6)}
+    assert detect_stalled_days(digests) == []
+
+
+def test_stalled_source_error_is_raisable_with_the_groups():
+    with pytest.raises(StalledSourceError):
+        raise StalledSourceError([[date(2026, 7, 27), date(2026, 7, 28)]])
