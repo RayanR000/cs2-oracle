@@ -14,6 +14,7 @@ import logging
 import numpy as np
 import pandas as pd
 import lightgbm as lgb
+from scipy.stats import spearmanr
 from datetime import datetime, timedelta, timezone, date
 from typing import Dict, List, Optional, Tuple, Any
 from pathlib import Path
@@ -34,6 +35,15 @@ from models.item_parser import (
 from models.staleness import STALE_RUN_GAP_BREAK_DAYS, stale_run_days
 from backtest.scoring import HEADLINE_MIN_TIER, MIN_FORECAST_DATES
 from backtest.price_resolution import MAX_WINDOW_SPAN_DAYS, SMOOTH_WINDOW
+# Invariant #4 (backend/AGENTS.md): a directional accuracy is quotable only
+# beside the constant call and the realised down rate, with Pesaran-Timmermann
+# as the headline. These lived in backtest/ and were applied only to production
+# scoring; the offline CV quoted DA against persistence and momentum alone.
+from backtest.directional_test import (
+    constant_call_baseline,
+    pesaran_timmermann,
+    realised_down_rate,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -500,6 +510,94 @@ class ItemForecaster:
     # classmethod reading cls.CV_STEP_DAYS would silently ignore them.
     def _cv_step_days(self) -> int:
         return int(os.environ.get("CV_STEP_DAYS", self.CV_STEP_DAYS))
+
+    # ------------------------------------------------------------------
+    # Boost rounds: fixed, not early-stopped
+    # ------------------------------------------------------------------
+    # Early stopping was scored against `_build_production_split`'s trailing
+    # 30-day window. That window is not a sample of 15,000 rows — at h=14 the
+    # last 14 days carry no label and frozen-run voiding removes ~30% more,
+    # leaving ~a dozen distinct dates, and every item moves with the market
+    # inside a date (docs/changelog/2026-08-03-accuracy-is-clustered-by-
+    # forecast-date.md). Its EFFECTIVE sample size is that dozen. Any real
+    # fitting therefore reads as a val-loss regression against one different
+    # market period, and training halts almost immediately.
+    #
+    # Measured 2026-08-08 (docs/research/2026-08-08-model-review.md): it left
+    # 9 of 33 CV folds fitting a SINGLE tree, the served clf_14d at 3 trees and
+    # lgb_14d_q50 at 4, and cost 23-88% of out-of-fold rank IC at 7/14/30d.
+    #
+    # Replaced by a fixed round count per horizon, calibrated on pooled
+    # out-of-fold rank IC using production's tuned params (the calibration
+    # sweep is scripts/calibrate_boost_rounds.py). The counts are horizon-
+    # specific because the tuned learning rates are not comparable across
+    # horizons — 3d is 0.01 and 7d is 0.0053, so one shared count would badly
+    # undertrain the slow ones.
+    #
+    # EARLY_STOPPING=1 restores the old behaviour for a like-for-like read.
+    # Set it to reproduce any artifact or measurement from before this change.
+    # Calibrated 2026-08-08 by scripts/calibrate_boost_rounds.py: each CV fold
+    # trained once to 1500 rounds with production's tuned params, then scored at
+    # checkpoints via predict(num_iteration=k). The counts below are the KNEE —
+    # the smallest count within 1% of peak pooled out-of-fold rank IC — not the
+    # peak, because the curve is flat past it and rounds are the dominant cost.
+    #
+    # What the sweep showed, and why early stopping had to go: the validation
+    # pinball loss and the cross-sectional rank IC point in OPPOSITE directions
+    # at the long horizons.
+    #
+    #   h    val-loss optimum   rank-IC peak    IC @ 25 rounds -> IC at peak
+    #   3d      300 rounds        300 rounds       0.1666 -> 0.1893
+    #   7d      200 rounds       1500 rounds       0.1003 -> 0.1287
+    #  14d       25 rounds        500 rounds       0.1104 -> 0.1204
+    #  30d       25 rounds        750 rounds       0.0267 -> 0.0961  (3.6x)
+    #
+    # At 14d and 30d the val loss is minimised at 25 rounds and rises
+    # monotonically after it, so early stopping was not merely noisy — it was
+    # optimising a metric anti-correlated with the thing the product needs. 3d
+    # is the one horizon where the two agree, which is why it was the only
+    # healthy one.
+    #
+    # Rounds are now the dominant training cost — they have to be, because the
+    # old configuration was cheap precisely by not training (1-90 trees). So
+    # these are set at the VALUE point, not the peak: the measured CV cost per
+    # horizon against the share of peak IC it buys.
+    #
+    #   h    rounds   share of peak IC   CV phase
+    #   3d      200        99.7%            94s     (300 buys +0.3pp for +47s)
+    #   7d      500        96.7%           132s     (750 buys +2.6pp for +66s)
+    #  14d      100        99.6%            29s     (curve flat 50-750)
+    #  30d      750       100.0%           266s     (NOT the value point - see below)
+    #
+    # 30d is deliberately at the peak rather than the 500-round value point.
+    # Measured on two full retrains: at 750 rounds its Pesaran-Timmermann
+    # statistic is t=3.06, verdict "skill"; at 500 rounds it is t=2.81, verdict
+    # "no_skill". The 4% of rank IC that 500 gives up is what carries the
+    # horizon across the project's own PT hurdle, so the cheaper point would
+    # buy 89s by making the horizon unpublishable under invariant #4.
+    #
+    # Production trains on a larger frame than the average expanding-window CV
+    # fold, so its counts are ~1.5x the CV count. The curve is very forgiving
+    # upward (3d loses 1.5% of peak IC going 300 -> 1500 rounds), so erring
+    # high costs wall-clock rather than accuracy.
+    FIXED_BOOST_ROUNDS = {3: 300, 7: 750, 14: 150, 30: 1000}
+    CV_FIXED_BOOST_ROUNDS = {3: 200, 7: 500, 14: 100, 30: 750}
+
+    @staticmethod
+    def _early_stopping_enabled() -> bool:
+        return os.environ.get("EARLY_STOPPING") == "1"
+
+    @classmethod
+    def _boost_rounds(cls, horizon: Optional[int], cv: bool = False) -> int:
+        """Fixed round count for a horizon, or the legacy cap under EARLY_STOPPING=1.
+
+        Falls back to the legacy caps for an unknown horizon so a HORIZONS
+        change cannot silently train a 0-round model.
+        """
+        if cls._early_stopping_enabled():
+            return 200 if cv else 1000
+        table = cls.CV_FIXED_BOOST_ROUNDS if cv else cls.FIXED_BOOST_ROUNDS
+        return table.get(horizon, 300 if cv else 500)
 
     ENGINEERED_CACHE_NAME = "engineered_data.parquet"
     # Bump when the *shape* of the cached frame changes, not just its contents.
@@ -3033,7 +3131,8 @@ class ItemForecaster:
     @staticmethod
     def _train_ensemble_member(params: dict, dtrain: lgb.Dataset,
                                 dval: lgb.Dataset,
-                                num_boost_round: int = 1000) -> lgb.Booster:
+                                num_boost_round: int = 1000,
+                                early_stopping: bool = False) -> lgb.Booster:
         """Train a single ensemble member on a pre-constructed Dataset.
 
         Callers MUST call `dtrain.construct()` / `dval.construct()`
@@ -3043,12 +3142,22 @@ class ItemForecaster:
         Forcing construction up front lets every ensemble member safely
         share one binned Dataset (read-only) instead of re-binning the
         same matrix per member.
+
+        ``early_stopping`` defaults to False: the trailing validation window
+        has an effective sample size of ~a dozen dates, so stopping on it is
+        noise. See FIXED_BOOST_ROUNDS. When it is off, `dval` is not attached
+        as a valid_set at all — nothing reads the per-round metric, and
+        evaluating it every round is pure cost.
         """
-        callbacks = [lgb.early_stopping(50), lgb.log_evaluation(0)]
+        callbacks = [lgb.log_evaluation(0)]
+        valid_sets = None
+        if early_stopping and dval is not None:
+            callbacks.insert(0, lgb.early_stopping(50))
+            valid_sets = [dval]
         return lgb.train(
             params, dtrain,
             num_boost_round=num_boost_round,
-            valid_sets=[dval],
+            valid_sets=valid_sets,
             callbacks=callbacks,
         )
 
@@ -3869,9 +3978,15 @@ class ItemForecaster:
                 logger.info(f"  [timing] {horizon}d optuna: {_hp_elapsed:.1f}s")
 
             # Train ensemble members sequentially. No threading or multiprocessing
-            # — LightGBM's internal OpenMP threads already utilize all cores.
-            n_jobs = max(1, (os.cpu_count() or 4) // 2)
-            boost_rounds = 1000
+            # — LightGBM's internal OpenMP threads already utilize all cores,
+            # which is exactly why this hands them ALL the cores. The `// 2`
+            # this used to carry was left behind by the parallel-ensemble code
+            # deleted 2026-07-21 and contradicted the line above it; on a 2-core
+            # CI runner it pinned the final fits to a single thread while the
+            # Optuna search and the CV folds both ran at n_jobs=-1.
+            n_jobs = -1
+            boost_rounds = self._boost_rounds(horizon)
+            _es = self._early_stopping_enabled()
             for q in self.QUANTILES:
                 pq = per_quantile_params[q]
                 logger.info(f"  Training {horizon}d p{int(q*100)} ensemble ({self.N_ENSEMBLES} members)...")
@@ -3883,7 +3998,7 @@ class ItemForecaster:
                     p["feature_fraction"] = self.ENSEMBLE_FEATURE_FRACTIONS[ei]
                     p["n_jobs"] = n_jobs
                     ensemble_models.append(self._train_ensemble_member(
-                        p, dtrain, dval, boost_rounds))
+                        p, dtrain, dval, boost_rounds, early_stopping=_es))
 
                 self.models[(horizon, q)] = ensemble_models
                 _ens_elapsed = (datetime.now() - _ens_start).total_seconds()
@@ -3906,6 +4021,8 @@ class ItemForecaster:
                 sigma_val=None,
                 tier_train=(train_set["price_tier"].to_numpy()
                             if "price_tier" in train_set.columns else None),
+                num_boost_round=boost_rounds,
+                early_stopping=_es,
             )
             _dir_elapsed = time.time() - _dir_start
             logger.info(f"  [timing] {horizon}d direction classifier: {_dir_elapsed:.1f}s")
@@ -3968,7 +4085,8 @@ class ItemForecaster:
                             p["feature_fraction"] = self.ENSEMBLE_FEATURE_FRACTIONS[ei]
                             p["n_jobs"] = n_jobs
                             r_ensemble.append(self._train_ensemble_member(
-                                p, r_dtrain, r_dval, boost_rounds))
+                                p, r_dtrain, r_dval, boost_rounds,
+                                early_stopping=_es))
                         self.regime_models[(regime, horizon, q)] = r_ensemble
 
                     self.regime_feature_cols[(horizon, regime)] = list(self.feature_cols)
@@ -4000,10 +4118,10 @@ class ItemForecaster:
             _cv_feasible = self._cv_can_run(tdf, horizon)
             if _skip_cv:
                 logger.info("  CV skipped (SKIP_CV=1 — local speedup; not the CI path)")
-                oof_records, cv_metrics = [], []
+                oof_records, cv_metrics, pt_records = [], [], []
             elif not _cv_feasible:
                 logger.info(f"  CV cannot run for {horizon}d (<2 expanding-window folds)")
-                oof_records, cv_metrics = [], []
+                oof_records, cv_metrics, pt_records = [], [], []
             else:
                 # Timed explicitly: post-minimal-model this is the single
                 # largest phase of a warm retrain, and the only figure on
@@ -4012,7 +4130,8 @@ class ItemForecaster:
                 # and artifact saving. A fold-count change cannot be attributed
                 # against a remainder.
                 _cv_t0 = time.time()
-                oof_records, cv_metrics = self._cv_evaluate_horizon(tdf, horizon, per_quantile_params)
+                oof_records, cv_metrics, pt_records = self._cv_evaluate_horizon(
+                    tdf, horizon, per_quantile_params)
                 logger.info(f"  [timing] {horizon}d conformal CV: "
                             f"{time.time() - _cv_t0:.1f}s "
                             f"({len(cv_metrics)} folds, {len(oof_records)} OOF rows)")
@@ -4092,6 +4211,45 @@ class ItemForecaster:
                        if m.get("classifier_accuracy_ge1") is not None]
             mean_clf_ge1 = round(float(np.mean(clf_ge1)), 1) if clf_ge1 else None
 
+            # Invariant #4. `edge` above is measured against persistence and
+            # momentum, both of which the constant call beats comfortably — so
+            # a positive `edge` never meant the model was useful. These are the
+            # honest bars.
+            def _mean_of(key, ndigits=2):
+                vals = [m[key] for m in cv_metrics if m.get(key) is not None]
+                return round(float(np.mean(vals)), ndigits) if vals else None
+
+            mean_constant_call = _mean_of("constant_call_accuracy")
+            mean_down_rate = _mean_of("realised_down_rate")
+            # 4 dp: a rank IC lives in [-1, 1] and the differences that matter
+            # here are third-decimal. 2 dp rounds 0.1199 to 0.12 and makes the
+            # naive comparison unreadable.
+            mean_rank_ic = _mean_of("rank_ic", 4)
+            mean_naive_rank_ic = _mean_of("naive_rank_ic", 4)
+            mean_trees = _mean_of("n_trees", 1)
+            # Deliberately measured on the quantile-median sign, NOT on
+            # `served_acc`. `served_acc` falls back from the classifier to the
+            # median sign when CV_DIAGNOSTIC_CLASSIFIER=0, so an edge built on
+            # it would mean one thing in CI and another locally while carrying
+            # the same key. This one is always the median sign, which is also
+            # what `pt` below is computed from, so the two invariant-#4 numbers
+            # always describe the same signal.
+            edge_vs_constant = (
+                None if (mean_constant_call is None or not fold_accs)
+                else round(mean_acc - mean_constant_call, 2))
+            # Positive means the model orders items better than "bet against
+            # yesterday's move". On 2026-08-08 it was negative at all four
+            # horizons, which is the bar this project had never measured.
+            rank_ic_edge = (
+                None if (mean_rank_ic is None or mean_naive_rank_ic is None)
+                else round(mean_rank_ic - mean_naive_rank_ic, 4))
+
+            # PT is the headline: it tests whether predictions are independent
+            # of outcomes, so unlike DA it cannot be passed by a base rate. Run
+            # on the pooled out-of-fold rows, clustered by forecast date exactly
+            # as backtest/scoring.py does in production.
+            pt = pesaran_timmermann(pt_records, MIN_FORECAST_DATES)
+
             if cv_metrics:
                 # classifier= pools all tiers and the frame is ~83% tier-0, so
                 # it reads close to the penny-item score. classifier>=$1= is
@@ -4101,10 +4259,34 @@ class ItemForecaster:
                             f"quantile-sign={mean_acc:.1f}% (sd={std_acc:.1f}%)")
                 logger.info(f"  Baselines: persistence={mean_persist}% "
                             f"momentum={mean_mom}% → served(classifier) edge vs best={edge}pp")
-                if edge is not None and edge <= 0:
+                # Invariant #4: never on its own. The constant call is the bar
+                # persistence and momentum were standing in for, and it is a
+                # much higher one.
+                logger.info(
+                    f"  Invariant #4: constant-call={mean_constant_call}% "
+                    f"down-rate={mean_down_rate}% → edge vs constant call="
+                    f"{edge_vs_constant}pp | PT excess={pt['pt_excess_pp']}pp "
+                    f"t={pt['pt_t_stat']} verdict={pt['pt_verdict']}")
+                logger.info(
+                    f"  Cross-sectional (>=$1): rank_ic={mean_rank_ic} vs "
+                    f"naive(-return_1d)={mean_naive_rank_ic} → edge={rank_ic_edge} "
+                    f"| mean trees/fold={mean_trees}")
+                if edge_vs_constant is not None and edge_vs_constant <= 0:
                     logger.warning(
-                        f"  ⚠ {horizon}d served model does NOT beat naive baselines "
-                        f"(edge={edge}pp) — directional forecasts are not trustworthy.")
+                        f"  ⚠ {horizon}d served model does NOT beat the constant "
+                        f"call ({edge_vs_constant}pp) — a single fixed direction "
+                        f"scores {mean_constant_call}% on these folds.")
+                if rank_ic_edge is not None and rank_ic_edge <= 0:
+                    logger.warning(
+                        f"  ⚠ {horizon}d model does NOT beat ranking by "
+                        f"-return_1d (rank IC {mean_rank_ic} vs "
+                        f"{mean_naive_rank_ic}) — the ML stack is subtracting "
+                        f"from its own best feature.")
+                if pt["pt_verdict"] not in ("skill",):
+                    logger.warning(
+                        f"  ⚠ {horizon}d Pesaran-Timmermann verdict is "
+                        f"'{pt['pt_verdict']}' (t={pt['pt_t_stat']}) — the "
+                        f"directional call is not distinguishable from chance.")
             self.cv_results[horizon] = {
                 "fold_count": len(cv_metrics),
                 "per_fold": cv_metrics,
@@ -4117,6 +4299,19 @@ class ItemForecaster:
                 "mean_persistence_acc": mean_persist,
                 "mean_momentum_acc": mean_mom,
                 "edge_vs_best_baseline": edge,
+                # Invariant #4 + the cross-sectional headline.
+                "mean_constant_call_acc": mean_constant_call,
+                "mean_realised_down_rate": mean_down_rate,
+                "edge_vs_constant_call": edge_vs_constant,
+                # Which signal the two lines above describe. Always the median
+                # sign, so the key does not change meaning when the diagnostic
+                # classifier is skipped.
+                "invariant_4_signal": "quantile_sign",
+                "mean_rank_ic": mean_rank_ic,
+                "mean_naive_rank_ic": mean_naive_rank_ic,
+                "rank_ic_edge_vs_naive": rank_ic_edge,
+                "mean_trees_per_fold": mean_trees,
+                "pt": pt,
             }
 
             # Validate feature groups: permutation test on the held-out set.
@@ -4489,12 +4684,19 @@ class ItemForecaster:
                                    sigma_train=None, sigma_val=None,
                                    num_boost_round: int = 200,
                                    random_state: int = 42,
-                                   tier_train=None):
+                                   tier_train=None,
+                                   early_stopping: bool = False):
         """Train a 3-class (down/flat/up) LightGBM classifier on returns,
         up-weighting movers. When ``sigma_train`` is given, the flat band is
         vol-scaled per row (k_h * sigma * sqrt(h), clamped); otherwise the
-        legacy fixed ±DIRECTION_FLAT_TOLERANCE_PCT band is used. Early-stops on
-        val multi-logloss for GBDT.
+        legacy fixed ±DIRECTION_FLAT_TOLERANCE_PCT band is used.
+
+        ``early_stopping`` defaults to **False**, so this trains
+        ``num_boost_round`` rounds outright and ``X_val``/``y_val_ret`` are used
+        for nothing. It used to early-stop on val multi-logloss, which on the
+        trailing window fitted clf_14d to 3 trees — one boosting round — while
+        clf_3d and clf_7d ran to the cap. See FIXED_BOOST_ROUNDS. Callers that
+        want the old behaviour pass ``early_stopping=True``.
 
         ``tier_train`` is the training rows' ``price_tier``. Combined with
         ``self.served_cohort_share`` it up-weights the >= $1 cohort production
@@ -4538,7 +4740,8 @@ class ItemForecaster:
                       random_state=random_state)
         callbacks = [lgb.log_evaluation(0)]
         valid_sets = None
-        if X_val is not None and y_val_ret is not None and len(X_val):
+        if (early_stopping and X_val is not None and y_val_ret is not None
+                and len(X_val)):
             dval = lgb.Dataset(X_val, self._direction_classes(y_val_ret, _thr(sigma_val)),
                                reference=dtrain, params=ds)
             valid_sets = [dval]
@@ -5484,6 +5687,7 @@ class ItemForecaster:
 
         oof_records = []
         fold_metrics = []
+        pt_records = []
 
         for fold_id, (train_dates, val_dates) in enumerate(splits):
             train_df = tdf[tdf["date"].isin(train_dates)]
@@ -5532,11 +5736,18 @@ class ItemForecaster:
                 params["n_jobs"] = -1
                 params["random_state"] = 42
 
-                fold_callbacks = [lgb.early_stopping(20), lgb.log_evaluation(0)]
+                # Fixed rounds by default, for the reason in FIXED_BOOST_ROUNDS:
+                # `dval` here is one fold's 21-day window, so early-stopping on
+                # it stopped 9 of 33 folds at a single tree.
+                fold_callbacks = [lgb.log_evaluation(0)]
+                fold_valid = None
+                if self._early_stopping_enabled():
+                    fold_callbacks.insert(0, lgb.early_stopping(20))
+                    fold_valid = [dval]
                 model = lgb.train(
                     params, dtrain,
-                    num_boost_round=200,
-                    valid_sets=[dval],
+                    num_boost_round=self._boost_rounds(horizon, cv=True),
+                    valid_sets=fold_valid,
                     callbacks=fold_callbacks,
                 )
                 lgb_preds.append(model.predict(X_val))
@@ -5593,17 +5804,30 @@ class ItemForecaster:
             # Vol-scaled labels were A/B-tested (2026-07-27) and did not beat
             # the fixed-band control; production stays fixed-band. Tooling
             # retained in scripts/ab_test_direction_labels.py.
-            clf = self._fit_direction_classifier(
-                X_train, y_train, X_val, y_val, self.BOOSTING_TYPE,
-                self._direction_tree_params(per_quantile_params),
-                horizon=horizon,
-                sigma_train=None,
-                sigma_val=None,
-                tier_train=(train_df["price_tier"].to_numpy()
-                            if "price_tier" in train_df.columns else None))
-            pred_cls = clf.predict(X_val).argmax(axis=1)
+            #
+            # It is a DIAGNOSTIC, not an input: only `fold_p50` reaches
+            # `oof_records`, so q_hat and the confidence thresholds never see
+            # this model. It is also the single most expensive thing in a
+            # retrain — 3 trees per round against the median model's 1, i.e.
+            # 69% of a fold's fit cost and 32-37% of the whole run (measured
+            # 2026-08-08). CV_DIAGNOSTIC_CLASSIFIER=0 skips it; CI sets that,
+            # local and research runs keep it.
             actual_cls = self._direction_classes(actual_returns)  # FIXED ±0.5% yardstick
-            classifier_acc = round(float((pred_cls == actual_cls).mean()) * 100, 1)
+            classifier_acc = None
+            pred_cls = None
+            if self._cv_diagnostic_classifier_enabled():
+                clf = self._fit_direction_classifier(
+                    X_train, y_train, X_val, y_val, self.BOOSTING_TYPE,
+                    self._direction_tree_params(per_quantile_params),
+                    horizon=horizon,
+                    sigma_train=None,
+                    sigma_val=None,
+                    tier_train=(train_df["price_tier"].to_numpy()
+                                if "price_tier" in train_df.columns else None),
+                    num_boost_round=self._boost_rounds(horizon, cv=True),
+                    early_stopping=self._early_stopping_enabled())
+                pred_cls = clf.predict(X_val).argmax(axis=1)
+                classifier_acc = round(float((pred_cls == actual_cls).mean()) * 100, 1)
 
             # The same accuracy again over the production cohort only. The
             # figure above pools every price tier and the training frame is
@@ -5621,11 +5845,40 @@ class ItemForecaster:
             # partition has no accuracy, and a zero reads as "scored nothing
             # right". Same rule score_cohort follows for its own partitions.
             classifier_acc_ge1 = None
-            if "price_tier" in val_df.columns:
+            if pred_cls is not None and "price_tier" in val_df.columns:
                 ge1 = val_df["price_tier"].to_numpy() >= HEADLINE_MIN_TIER
                 if ge1.any():
                     classifier_acc_ge1 = round(
                         float((pred_cls[ge1] == actual_cls[ge1]).mean()) * 100, 1)
+
+            # The bar that actually matters, and the one this CV never carried.
+            # `constant_call` is the best single fixed call on THIS fold, which
+            # is what backend/AGENTS.md invariant #4 requires beside any DA;
+            # `realised_down_rate` says whether a given DA is impressive.
+            # Measured 2026-08-08: corr(fold DA, fold constant-call DA) = 0.715,
+            # R^2 0.51 — half of what mean_classifier_acc moves on is the fold's
+            # realised direction mix, not the model.
+            fold_records = self._direction_records(
+                fold_p50, actual_returns, val_df["date"])
+            _, fold_constant_call = constant_call_baseline(fold_records)
+            fold_down_rate = realised_down_rate(fold_records)
+
+            # Cross-sectional signal, on the SERVED cohort. This is the metric
+            # the product needs: the dashboard ranks items within a date, so
+            # within-date ordering is the thing to maximise, and it is immune to
+            # the base rate that dominates DA. `naive_rank_ic` is the same
+            # measurement for "rank by minus yesterday's return" — the one-line
+            # baseline that beat this model at all four horizons on 2026-08-08.
+            served = (val_df["price_tier"].to_numpy() >= HEADLINE_MIN_TIER
+                      if "price_tier" in val_df.columns
+                      else np.ones(len(val_df), dtype=bool))
+            fold_rank_ic = self._within_date_rank_ic(
+                fold_p50, actual_returns, val_df["date"], served)
+            naive_rank_ic = None
+            if "return_1d" in val_df.columns:
+                naive_rank_ic = self._within_date_rank_ic(
+                    -val_df["return_1d"].to_numpy(dtype=float),
+                    actual_returns, val_df["date"], served)
 
             fold_metrics.append({
                 "fold": fold_id + 1,
@@ -5635,12 +5888,25 @@ class ItemForecaster:
                 "val_end": str(val_dates[-1]),
                 "n_train": len(train_df),
                 "n_val": len(val_df),
+                "n_trees": int(model.num_trees()),
                 "directional_accuracy": fold_acc,
                 "classifier_accuracy": classifier_acc,
                 "classifier_accuracy_ge1": classifier_acc_ge1,
                 "persistence_accuracy": persistence_acc,
                 "momentum_accuracy": momentum_acc,
+                "constant_call_accuracy": (
+                    None if fold_constant_call is None
+                    else round(fold_constant_call, 1)),
+                "realised_down_rate": (
+                    None if fold_down_rate is None else round(fold_down_rate, 1)),
+                "rank_ic": fold_rank_ic,
+                "naive_rank_ic": naive_rank_ic,
             })
+
+            # Pooled records for the Pesaran-Timmermann test. Built from the
+            # quantile-median SIGN so this costs nothing even when the
+            # diagnostic classifier is skipped.
+            pt_records.extend(fold_records)
 
             # Build per-row records for pooled calibration. Same builder the
             # single-holdout path uses, so the two calibrations are comparable.
@@ -5655,7 +5921,69 @@ class ItemForecaster:
                 f"{len(sorted_dates)} distinct dates and {len(tdf)} rows."
             )
 
-        return oof_records, fold_metrics
+        return oof_records, fold_metrics, pt_records
+
+    @staticmethod
+    def _cv_diagnostic_classifier_enabled() -> bool:
+        """Whether CV fits the per-fold directional classifier.
+
+        Default on, so local and research runs keep `mean_classifier_acc_ge1`.
+        CI sets CV_DIAGNOSTIC_CLASSIFIER=0: the model feeds no served artifact
+        (only `fold_p50` reaches `oof_records`) and costs 32-37% of a retrain.
+        """
+        return os.environ.get("CV_DIAGNOSTIC_CLASSIFIER", "1") != "0"
+
+    @staticmethod
+    def _direction_records(pred_returns, actual_returns, dates) -> list:
+        """Rows in the shape `backtest/directional_test.py` expects.
+
+        Built from the quantile-median sign, not the classifier, so the PT test
+        and the constant-call baseline stay available when the diagnostic
+        classifier is skipped. `forecast_date` is a string because
+        `pesaran_timmermann` clusters on it and sorts it.
+        """
+        tol = DIRECTION_FLAT_TOLERANCE_PCT
+        p = np.asarray(pred_returns, dtype=float)
+        a = np.asarray(actual_returns, dtype=float)
+        d = pd.to_datetime(pd.Series(dates).to_numpy()).strftime("%Y-%m-%d")
+        pdir = np.where(p > tol, "up", np.where(p < -tol, "down", "flat"))
+        adir = np.where(a > tol, "up", np.where(a < -tol, "down", "flat"))
+        return [
+            {"predicted_direction": str(pd_), "actual_direction": str(ad),
+             "direction_correct": bool(pd_ == ad), "forecast_date": str(fd)}
+            for pd_, ad, fd in zip(pdir, adir, d)
+        ]
+
+    @staticmethod
+    def _within_date_rank_ic(pred, actual, dates, mask=None,
+                             min_rows: int = 20) -> Optional[float]:
+        """Mean within-date Spearman correlation of `pred` against `actual`.
+
+        The cross-sectional metric: it measures whether the model orders items
+        correctly on a given day, which is what the product serves, and it is
+        immune to the realised direction mix that dominates DA. Dates with
+        fewer than `min_rows` served rows, or with no variation in either leg,
+        contribute nothing rather than a degenerate 0.
+        """
+        p = np.asarray(pred, dtype=float)
+        a = np.asarray(actual, dtype=float)
+        d = pd.to_datetime(pd.Series(dates).to_numpy())
+        if mask is not None:
+            m = np.asarray(mask, dtype=bool)
+            p, a, d = p[m], a[m], d[m]
+        if len(p) < min_rows:
+            return None
+        frame = pd.DataFrame({"d": d, "p": p, "a": a})
+        ics = []
+        for _, g in frame.groupby("d"):
+            if len(g) < min_rows:
+                continue
+            if g["p"].nunique() < 2 or g["a"].nunique() < 2:
+                continue
+            ic = spearmanr(g["p"], g["a"]).statistic
+            if np.isfinite(ic):
+                ics.append(float(ic))
+        return round(float(np.mean(ics)), 4) if ics else None
 
     def _calibrate_confidence(self, horizon, records_df):
         """Calibrate confidence thresholds from pre-built calibration records.

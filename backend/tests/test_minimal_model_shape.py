@@ -216,8 +216,9 @@ def test_every_cv_fold_produces_oof_records(tmp_path, quantiles):
     tdf = _cv_frame(horizon=3)
 
     result = f._cv_evaluate_horizon(tdf, 3, {q: {} for q in quantiles})
-    assert len(result) == 2, "return tuple must be (oof_records, fold_metrics)"
-    oof_records, fold_metrics = result
+    assert len(result) == 3, (
+        "return tuple must be (oof_records, fold_metrics, pt_records)")
+    oof_records, fold_metrics, pt_records = result
 
     assert len(fold_metrics) >= 2
     assert oof_records, "no OOF records — calibration would be skipped"
@@ -235,7 +236,7 @@ def test_cv_records_calibrate_end_to_end_with_a_median_only_grid(tmp_path):
     f = _cv_forecaster(tmp_path, [0.5])
     tdf = _cv_frame(horizon=3)
 
-    oof_records, _ = f._cv_evaluate_horizon(tdf, 3, {0.5: {}})
+    oof_records, _, _ = f._cv_evaluate_horizon(tdf, 3, {0.5: {}})
     records_df = pd.DataFrame(oof_records)
     q_hat = f._calibrate_conformal(3, records_df)
     f._calibrate_confidence(horizon=3, records_df=records_df)

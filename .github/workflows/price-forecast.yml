@@ -122,6 +122,18 @@ jobs:
           # set, so q_hat comes out biased low and the served band under-covers.
           # Do not re-add it to buy CI minutes.
           # Pinned by backend/tests/test_minimal_model_shape.py.
+          #
+          # The per-fold directional classifier inside CV is a DIAGNOSTIC: only
+          # the quantile-median predictions reach `oof_records`, so q_hat and
+          # the confidence thresholds never see it, and no served artifact
+          # depends on it. It costs 32-37% of a retrain (3 trees per boosting
+          # round against the median model's 1). Skipping it here drops
+          # `mean_classifier_acc*` from meta.json and nothing else; the
+          # invariant-#4 metrics (constant call, down rate, Pesaran-Timmermann)
+          # and the cross-sectional rank IC are built from the median sign and
+          # still run. Local and research retrains keep the default (on).
+          # See docs/research/2026-08-08-model-review.md.
+          CV_DIAGNOSTIC_CLASSIFIER: "0"
         run: |
           echo "🔮 Mode: ${{ steps.mode.outputs.mode }}"
           set -o pipefail
