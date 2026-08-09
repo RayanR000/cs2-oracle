@@ -721,6 +721,12 @@ class ItemForecaster:
         self.bias_thresholds: Dict[int, Dict[str, dict]] = {}
         # EWMA state for tracking which tiers have been seen
         self.bias_ewma_state: Dict[int, Dict[str, int]] = {}
+        # What the label path voided, recorded so a reader can tell a handled
+        # cutover from an unhandled one. `_collection_shift_dates` fires 12
+        # times in 4,735 days and that list has never been written down, which
+        # is how a 2026-08-09 audit re-reported the handled 2026-07-09/10
+        # cutover as a new finding.
+        self.label_voiding: dict = {}
 
     @staticmethod
     def _smoothed_anchor_prices(df: "pd.DataFrame", anchor) -> Dict[Any, float]:
@@ -3184,6 +3190,7 @@ class ItemForecaster:
             )
             bad |= stale_leg
 
+        pre_void_na = df[f"target_return_{horizon}d"].isna().sum()
         n_bad = int((bad & df[f"target_return_{horizon}d"].notna()).sum())
         if n_bad:
             df.loc[bad, f"target_return_{horizon}d"] = np.nan
@@ -3199,6 +3206,24 @@ class ItemForecaster:
                 f"{len(snapshots)} snapshot day(s) / {len(shifts)} collector "
                 f"cutover(s); {frozen_note}"
             )
+
+        voided = int(df[f"target_return_{horizon}d"].isna().sum() - pre_void_na)
+        counts = self.label_voiding.get("voided_labels_by_horizon", {})
+        counts[horizon] = voided
+        self.label_voiding = {
+            "snapshot_dates": sorted(d.isoformat() for d in snapshots),
+            "collection_shift_dates": sorted(d.isoformat() for d in shifts),
+            "voided_labels_by_horizon": counts,
+            "frame_date_range": [
+                pd.to_datetime(df["date"]).min().date().isoformat(),
+                pd.to_datetime(df["date"]).max().date().isoformat(),
+            ],
+        }
+        logger.info(
+            f"  Label voiding (h={horizon}): {voided:,} labels voided; "
+            f"{len(shifts)} collector cutovers, {len(snapshots)} snapshot days; "
+            f"cutovers: {sorted(d.isoformat() for d in shifts)}"
+        )
         return df
 
     # ------------------------------------------------------------------
@@ -6491,6 +6516,7 @@ class ItemForecaster:
             "feature_importance": feature_importance,
             "cv_results": cv_serial,
             "tuned_params": tuned_serial,
+            "label_voiding": self.label_voiding,
         }
         def _json_default(o):
             if isinstance(o, np.bool_):
