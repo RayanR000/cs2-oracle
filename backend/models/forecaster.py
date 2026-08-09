@@ -1645,11 +1645,27 @@ class ItemForecaster:
             vol_std_30 = df["volume_std_30d"].replace(0, np.nan)
             df["volume_zscore_30d"] = ((df["volume"] - df["volume_mean_30d"]) / vol_std_30)
 
-            # Volume-price confirmation
-            df["volume_price_conf_7d"] = (df["return_7d"] *
-                                          (df["volume_log_change_7d"] > 0).astype(int))
-            df["volume_price_conf_1d"] = (df["return_1d"] *
-                                          (df["volume_log_change_1d"] > 0).astype(int))
+            # Volume-price confirmation.
+            #
+            # fillna(False) before astype(int) because `volume` is nullable
+            # from 2026-08-08 on: that is the first day the upstream feed
+            # returned no volume (33,613 non-null of 361,453 rows; every
+            # earlier day is 100% populated). DuckDB hands a column with NULLs
+            # to pandas as a nullable dtype, so `> 0` yields BooleanDtype
+            # carrying pd.NA and astype(int) raises "cannot convert NA to
+            # integer" -- which is exactly how the first mode=full run in
+            # weeks died, in CI, on data this machine's archive did not yet
+            # have.
+            #
+            # False is the pre-existing semantics, not a new choice: on the
+            # numpy path `NaN > 0` was already False, i.e. "no confirmation".
+            # This is a no-op on every day before 2026-08-08.
+            df["volume_price_conf_7d"] = (
+                df["return_7d"]
+                * (df["volume_log_change_7d"] > 0).fillna(False).astype(int))
+            df["volume_price_conf_1d"] = (
+                df["return_1d"]
+                * (df["volume_log_change_1d"] > 0).fillna(False).astype(int))
         else:
             for col in ["volume_lag_1d", "volume_lag_7d", "volume_mean_7d",
                         "volume_mean_30d", "volume_std_30d",
