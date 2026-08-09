@@ -1,6 +1,8 @@
 """Tests for the historical price-source import."""
 from datetime import date, datetime
 
+import duckdb
+import pandas as pd
 import pytest
 
 from collectors.price_history_sources import cs2_prices_tracker as tracker
@@ -203,3 +205,103 @@ def test_records_are_deduplicated_on_item_and_day_keeping_the_first():
         ("Item A", date(2025, 6, 2), 11.0),
     ]
     assert report.kept_rows == 2
+
+
+from db.archive import CANONICAL_PRICE_COLUMNS, prices_relation
+from collectors.price_history_import import to_archive_frame, write_archive_frame
+
+_INGESTED = datetime(2026, 8, 8, 12, 0, 0)
+
+
+def test_archive_frame_has_exactly_the_canonical_columns():
+    frame = to_archive_frame(
+        [("AK-47 | Redline (Field-Tested)", date(2025, 6, 1), 12.5)],
+        source="tracker_steam_24h",
+        ingested_at=_INGESTED,
+    )
+    assert list(frame.columns) == list(CANONICAL_PRICE_COLUMNS)
+
+
+def test_archive_frame_leaves_volume_null_never_zero():
+    frame = to_archive_frame(
+        [("AK-47 | Redline (Field-Tested)", date(2025, 6, 1), 12.5)],
+        source="tracker_steam_24h",
+        ingested_at=_INGESTED,
+    )
+    assert frame["volume"].isna().all()
+    assert not (frame["volume"].fillna(-1) == 0).any()
+
+
+def test_archive_frame_stamps_arrival_not_the_day_it_describes():
+    frame = to_archive_frame(
+        [("AK-47 | Redline (Field-Tested)", date(2025, 6, 1), 12.5)],
+        source="tracker_steam_24h",
+        ingested_at=_INGESTED,
+    )
+    assert frame["ingested_at"].iloc[0] == pd.Timestamp(_INGESTED)
+    assert frame["day"].iloc[0] != frame["ingested_at"].iloc[0]
+
+
+def test_written_rows_read_back_through_the_typed_reader(tmp_path):
+    frame = to_archive_frame(
+        [
+            ("AK-47 | Redline (Field-Tested)", date(2025, 6, 1), 12.5),
+            ("AK-47 | Redline (Field-Tested)", date(2026, 3, 1), 13.5),
+        ],
+        source="tracker_steam_24h",
+        ingested_at=_INGESTED,
+    )
+    out_dir = tmp_path / "price-archive"
+    assert write_archive_frame(frame, out_dir) == 2
+
+    con = duckdb.connect()
+    try:
+        rel = prices_relation(
+            con,
+            archive_dir=out_dir,
+            columns=["item_slug", "day", "source", "mean_price", "volume"],
+        )
+        rows = con.sql(
+            f"SELECT item_slug, source, mean_price, volume FROM {rel} ORDER BY day"
+        ).fetchall()
+    finally:
+        con.close()
+
+    assert rows == [
+        ("AK-47 | Redline (Field-Tested)", "tracker_steam_24h", 12.5, None),
+        ("AK-47 | Redline (Field-Tested)", "tracker_steam_24h", 13.5, None),
+    ]
+
+
+def test_rows_fan_out_to_one_file_per_month(tmp_path):
+    frame = to_archive_frame(
+        [
+            ("Item A", date(2025, 6, 1), 1.0),
+            ("Item A", date(2025, 7, 1), 1.0),
+        ],
+        source="tracker_steam_24h",
+        ingested_at=_INGESTED,
+    )
+    out_dir = tmp_path / "price-archive"
+    write_archive_frame(frame, out_dir)
+    names = sorted(p.name for p in out_dir.glob("prices-*.parquet"))
+    assert names == ["prices-2025-06.parquet", "prices-2025-07.parquet"]
+
+
+def test_a_reappend_does_not_duplicate_the_same_item_day_source(tmp_path):
+    frame = to_archive_frame(
+        [("Item A", date(2025, 6, 1), 1.0)],
+        source="tracker_steam_24h",
+        ingested_at=_INGESTED,
+    )
+    out_dir = tmp_path / "price-archive"
+    write_archive_frame(frame, out_dir)
+    write_archive_frame(frame, out_dir)
+
+    con = duckdb.connect()
+    try:
+        rel = prices_relation(con, archive_dir=out_dir, columns=["item_slug"])
+        count = con.sql(f"SELECT count(*) FROM {rel}").fetchone()[0]
+    finally:
+        con.close()
+    assert count == 1

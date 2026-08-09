@@ -5,9 +5,14 @@ Everything here is source-agnostic and is what a second backfill source reuses.
 """
 from collections import defaultdict
 from dataclasses import dataclass
-from datetime import date
+from datetime import date, datetime
+from pathlib import Path
+
+import pandas as pd
 
 from backtest.price_resolution import MAX_WINDOW_SPAN_DAYS
+from db.archive import CANONICAL_PRICE_COLUMNS
+from db.parquet import append_monthly
 
 
 class StalledSourceError(Exception):
@@ -142,3 +147,44 @@ def apply_gap_gate(
         rejected_rows=rejected_rows,
         worst_gap_days=worst_gap,
     )
+
+
+#: The archive's natural key. A re-append replaces the row rather than adding
+#: one, and `_append_parquet` keeps the FIRST `ingested_at`.
+DEDUP_KEYS = ["item_slug", "day", "source"]
+
+
+def to_archive_frame(
+    records: list[tuple[str, date, float]],
+    source: str,
+    ingested_at: datetime,
+) -> pd.DataFrame:
+    """Canonical price rows for *records*, labelled *source*.
+
+    ``volume`` is a typed NULL, never 0. No aggregator feed carries volume and
+    a real zero never occurs — a day with no sale produces an ABSENT row. The
+    fabricated zeros are what kept ``has_volume`` reading True and
+    ``volume_missing`` reporting "present", which shelved eleven features.
+
+    ``ingested_at`` is the run's wall clock: when the row ARRIVED, not what it
+    describes. A backfill writer violates "a row dated `d` was knowable on `d`"
+    by definition, which is precisely why the column exists.
+    """
+    frame = pd.DataFrame(records, columns=["item_slug", "day", "mean_price"])
+    frame["day"] = pd.to_datetime(frame["day"]).dt.date
+    frame["source"] = source
+    frame["volume"] = pd.Series([pd.NA] * len(frame), dtype="Int64")
+    frame["ingested_at"] = pd.Timestamp(ingested_at)
+    return frame[list(CANONICAL_PRICE_COLUMNS)]
+
+
+def write_archive_frame(frame: pd.DataFrame, out_dir: Path | str) -> int:
+    """Append *frame* to the monthly price files under *out_dir*.
+
+    Returns the row count written. *out_dir* is the ``price-archive`` directory
+    itself, so a caller passing a staging root must append that component.
+    """
+    if frame.empty:
+        return 0
+    append_monthly(out_dir, "prices", frame, DEDUP_KEYS)
+    return len(frame)
