@@ -54,11 +54,8 @@ Analytical, precise, calm. Every element clarifies signal from noise.
 FastAPI on port 8000. Start from `backend/`: `venv/bin/uvicorn main:app --port 8000`.
 
 The route list changes often — read `backend/api/routes/` rather than trusting a list
-here. The routers are `items`, `opportunities`, `events`, `auth`, `portfolio`, `market`,
-`accuracy`, `ab_test`, each mounted at its own prefix, plus `GET /health` on the app
-itself. Note that per-item detail lives **under** `/items/{item_id}/` — `price-history`,
-`trends`, `prediction`, `prices`, `variants`, `events`, `event-impacts`,
-`feature-importance`, `social-sentiment` — not at the top level.
+here. The one thing that is easy to get wrong: per-item detail lives **under**
+`/items/{item_id}/`, not at the top level.
 
 `lib/api.ts` is the only place the frontend talks to the API; it reads
 `NEXT_PUBLIC_API_URL` (default `http://localhost:8000`). Adding a backend route means

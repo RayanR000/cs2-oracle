@@ -13,6 +13,8 @@ one q50 model per horizon, with the served band calibrated by split conformal.
   `aggregator-update.yml`). The local copy also runs *behind* it. Nothing written there is
   committed by this repo.
 - `docs/` — `architecture/`, dated decision records in `changelog/`, `design.md`.
+- `.claude/rules/` — backend subsystem detail, scoped by path so it loads only when you touch
+  the matching files. Indexed in `backend/AGENTS.md`.
 - `.github/workflows/` — daily chain: Aggregator (23:00 UTC) → Price Forecast → Backtest
   Accuracy, each chained off the previous run's success.
 
@@ -20,15 +22,16 @@ one q50 model per horizon, with the served band calibrated by split conformal.
 
 Backend, from `backend/`, through the venv (`venv/bin/python`, Python 3.13 locally / 3.11 in CI):
 
-- `venv/bin/python -m pytest tests/test_<name>.py -q` — targeted run. Prefer this.
-- `venv/bin/python -m pytest tests/ -q` — full suite: **1,466 tests** (2026-08-08), ~45s of
-  collection before the first one runs. Scope it to `tests/`: a bare `pytest -q` also collects
-  `scripts/test_social_signal.py`, which aborts the run on a missing local `thefuzz`.
+- `venv/bin/python -m pytest tests/test_<name>.py -q` — targeted run. Prefer this; the full
+  suite spends ~45s collecting before the first test runs.
+- `venv/bin/python -m pytest tests/ -q` — full suite. **Always scope it to `tests/`**: a bare
+  `pytest -q` also collects `scripts/test_social_signal.py`, which aborts the whole run on a
+  missing local `thefuzz`.
 - `venv/bin/uvicorn main:app --port 8000` — the API the dashboard fetches.
 
 Frontend, from `frontend/`:
 
-- `npm run lint` — eslint. Currently 11 warnings, 0 errors; keep errors at 0.
+- `npm run lint` — eslint. Warnings exist; keep errors at 0.
 - `npx tsc --noEmit` — typecheck. There is no `typecheck` script.
 - `npm run build`
 
