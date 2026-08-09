@@ -401,3 +401,65 @@ def test_load_cached_day_parses_a_good_file(tmp_path):
     good = tmp_path / "good.json"
     good.write_text(json.dumps({"Item A": {"steam": {"last_24h": 1.0}}}))
     assert load_cached_day(good) == {"Item A": {"steam": {"last_24h": 1.0}}}
+
+
+from scripts.import_price_history_source import report_promotion_gate
+
+
+def test_report_promotion_gate_counts_rows_items_and_finds_no_zero_volume(tmp_path):
+    staging = tmp_path / "staging" / "price-archive"
+    frame = to_archive_frame(
+        [
+            ("Item A", date(2025, 6, 1), 10.0),
+            ("Item A", date(2026, 3, 1), 11.0),
+            ("Item B", date(2026, 3, 1), 20.0),
+        ],
+        source="tracker_steam_24h",
+        ingested_at=_INGESTED,
+    )
+    write_archive_frame(frame, staging)
+
+    archive = tmp_path / "archive" / "price-archive"
+    existing = to_archive_frame(
+        [("Item A", date(2026, 3, 1), 10.0)],
+        source="aggregator_sync",
+        ingested_at=_INGESTED,
+    )
+    write_archive_frame(existing, archive)
+
+    result = report_promotion_gate(staging, archive, "tracker_steam_24h")
+    assert result["rows"] == 3
+    assert result["items"] == 2
+    assert result["pre_2026_items"] == 1
+    # Item A has a pre-2026 staged row and the real archive has none for it,
+    # so it flips. Item B is 2026-only and flips nothing.
+    assert result["new_gate_items"] == 1
+    assert result["zero_volume_rows"] == 0
+    assert result["duplicate_keys"] == 0
+    assert result["overlap_items"] == 1
+    assert result["overlap_ratio_median"] == pytest.approx(1.1)
+
+
+def test_report_promotion_gate_excludes_items_already_inside_the_gate(tmp_path):
+    staging = tmp_path / "staging" / "price-archive"
+    write_archive_frame(
+        to_archive_frame(
+            [("Already Gated", date(2025, 6, 1), 10.0)],
+            source="tracker_steam_24h",
+            ingested_at=_INGESTED,
+        ),
+        staging,
+    )
+    archive = tmp_path / "archive" / "price-archive"
+    write_archive_frame(
+        to_archive_frame(
+            [("Already Gated", date(2024, 5, 1), 9.0)],
+            source="aggregator_sync",
+            ingested_at=_INGESTED,
+        ),
+        archive,
+    )
+
+    result = report_promotion_gate(staging, archive, "tracker_steam_24h")
+    assert result["pre_2026_items"] == 1
+    assert result["new_gate_items"] == 0

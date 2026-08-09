@@ -32,6 +32,8 @@ import requests
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
+import duckdb  # noqa: E402
+
 from collectors.price_history_import import (  # noqa: E402
     MIN_DISTINCT_DAYS,
     StalledSourceError,
@@ -41,6 +43,7 @@ from collectors.price_history_import import (  # noqa: E402
     write_archive_frame,
 )
 from collectors.price_history_sources import ADAPTERS  # noqa: E402
+from db.archive import prices_relation  # noqa: E402
 
 logger = logging.getLogger(__name__)
 
@@ -105,6 +108,90 @@ def fetch_days(adapter, source_name, days, cache_dir, session):
     return digests
 
 
+def report_promotion_gate(staging_dir, archive_dir, source: str) -> dict:
+    """The numbers the spec's promotion gate requires.
+
+    ``overlap_ratio_*`` is the seam measurement: imported price over the
+    existing archive's price for the same (item, day). This is Steam-to-Steam,
+    unlike the earlier repo-vs-7-source-consensus figure, which overstated the
+    disagreement by mixing in non-Steam venues.
+    """
+    con = duckdb.connect()
+    try:
+        staged = prices_relation(
+            con,
+            archive_dir=Path(staging_dir),
+            columns=["item_slug", "day", "source", "mean_price", "volume"],
+            where=f"source = '{source}'",
+        )
+        rows, items, pre_2026_items, zero_volume = con.sql(f"""
+            SELECT count(*),
+                   count(DISTINCT item_slug),
+                   count(DISTINCT CASE WHEN day < DATE '2026-01-01'
+                                       THEN item_slug END),
+                   count(*) FILTER (WHERE volume = 0)
+            FROM {staged}
+        """).fetchone()
+
+        duplicate_keys = con.sql(f"""
+            SELECT count(*) FROM (
+                SELECT item_slug, day, source
+                FROM {staged}
+                GROUP BY 1, 2, 3 HAVING count(*) > 1
+            )
+        """).fetchone()[0]
+
+        existing = prices_relation(
+            con,
+            archive_dir=Path(archive_dir),
+            columns=["item_slug", "day", "source", "mean_price"],
+            where=f"source IS DISTINCT FROM '{source}'",
+        )
+        new_gate_items = con.sql(f"""
+            SELECT count(*) FROM (
+                SELECT DISTINCT item_slug FROM {staged}
+                WHERE day < DATE '2026-01-01'
+                EXCEPT
+                SELECT DISTINCT item_slug FROM {existing}
+                WHERE day < DATE '2026-01-01'
+            )
+        """).fetchone()[0]
+
+        overlap = con.sql(f"""
+            WITH consensus AS (
+                SELECT item_slug, day, median(mean_price) AS price
+                FROM {existing} GROUP BY 1, 2
+            ), paired AS (
+                SELECT s.item_slug,
+                       s.mean_price / c.price AS ratio
+                FROM {staged} s
+                JOIN consensus c
+                  ON c.item_slug = s.item_slug AND c.day = s.day
+                WHERE c.price > 0
+            )
+            SELECT count(DISTINCT item_slug),
+                   median(ratio),
+                   quantile_cont(ratio, 0.25),
+                   quantile_cont(ratio, 0.75)
+            FROM paired
+        """).fetchone()
+    finally:
+        con.close()
+
+    return {
+        "rows": rows,
+        "items": items,
+        "pre_2026_items": pre_2026_items,
+        "new_gate_items": new_gate_items,
+        "zero_volume_rows": zero_volume,
+        "duplicate_keys": duplicate_keys,
+        "overlap_items": overlap[0],
+        "overlap_ratio_median": overlap[1],
+        "overlap_ratio_p25": overlap[2],
+        "overlap_ratio_p75": overlap[3],
+    }
+
+
 def main(argv: list[str] | None = None) -> int:
     logging.basicConfig(level=logging.INFO, format="%(message)s")
     ap = argparse.ArgumentParser(description=__doc__)
@@ -115,9 +202,25 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--out-dir", default="../archive-staging")
     ap.add_argument("--fetch-only", action="store_true",
                     help="populate the cache and stop, writing nothing")
+    ap.add_argument("--report", action="store_true",
+                    help="report the promotion-gate numbers for an existing "
+                         "staging import and exit, fetching nothing")
+    ap.add_argument("--archive-dir", default="../price-archive",
+                    help="the real archive, compared against for the seam read")
     args = ap.parse_args(argv)
 
     adapter = ADAPTERS[args.source]
+
+    if args.report:
+        result = report_promotion_gate(
+            Path(args.out_dir) / "price-archive",
+            Path(args.archive_dir),
+            adapter.SOURCE,
+        )
+        for key, value in result.items():
+            logger.info(f"  {key}: {value}")
+        return 0
+
     days = daterange(
         date.fromisoformat(args.start), date.fromisoformat(args.end)
     )
