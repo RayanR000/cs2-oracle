@@ -141,6 +141,12 @@ import lightgbm as lgb
 from database import SessionLocal
 from models.forecaster import ItemForecaster, phase_collapsed_sql_filter
 from backtest.paired_mde import paired_da_difference
+from backtest.directional_test import (
+    constant_call_baseline,
+    pesaran_timmermann,
+    realised_down_rate,
+)
+from backtest.scoring import MIN_FORECAST_DATES as MIN_PT_DATES
 
 logging.basicConfig(
     level=logging.INFO,
@@ -425,8 +431,36 @@ def _stratified_sample(train_df, items, budget, fold_idx):
     return sub.iloc[picked]
 
 
-def run_evaluation(df, pruned, horizon_filter=None, n_jobs=None):
-    """Walk-forward over the prebuilt frame. Returns results[horizon][arm]."""
+def _direction_label(value):
+    """Sign as the label vocabulary `backtest/directional_test.py` counts on."""
+    v = float(value)
+    if v > 0:
+        return "up"
+    if v < 0:
+        return "down"
+    return "flat"
+
+
+def run_evaluation(df, pruned, horizon_filter=None, n_jobs=None,
+                   row_budget=None, fixed_rounds=None):
+    """Walk-forward over the prebuilt frame. Returns results[horizon][arm].
+
+    `row_budget` overrides ROW_BUDGET. Note that above ~1.2M it stops binding
+    on this universe entirely (the widest arm's largest fold is ~1.12M rows),
+    at which point all three "budgeted" arms degenerate into the unbudgeted
+    one and the contrast becomes "more items AND more rows", not "the same
+    rows spread wider". That is production's regime at TRAIN_FEATURE_ROWS =
+    1.2M, so it is a legitimate question -- but it is a DIFFERENT question
+    from the one the module docstring describes, and the two must not be
+    compared as if they were the same experiment.
+
+    `fixed_rounds` replaces early stopping with a fixed round count. Early
+    stopping here selects the round count on `dval` and then SCORES `dval`,
+    and the 21-day window's dates all move with the market, so its effective
+    sample is ~a dozen observations -- the pathology production removed on
+    2026-08-08 (`models/forecaster.py`, fixed boost rounds), which had left 9
+    of 33 CV folds fitting a single tree.
+    """
     if n_jobs is None:
         n_jobs = max(1, (os.cpu_count() or 4) // 2)
 
@@ -463,7 +497,8 @@ def run_evaluation(df, pruned, horizon_filter=None, n_jobs=None):
 
             results[horizon] = {}
             for arm, items in arms.items():
-                budget = None if arm == "wide_unbudgeted" else ROW_BUDGET
+                effective_budget = ROW_BUDGET if row_budget is None else row_budget
+                budget = None if arm == "wide_unbudgeted" else effective_budget
                 logger.info(
                     f"\n    --- {arm} ({len(items)} items, "
                     f"budget={budget if budget else 'none'}) ---"
@@ -527,12 +562,18 @@ def run_evaluation(df, pruned, horizon_filter=None, n_jobs=None):
                         "force_row_wise": True,
                         **DS_PARAMS,
                     }
-                    model = lgb.train(
-                        params, dtrain, num_boost_round=100,
-                        valid_sets=[dval],
-                        callbacks=[lgb.early_stopping(15, verbose=False),
-                                   lgb.log_evaluation(0)],
-                    )
+                    if fixed_rounds:
+                        model = lgb.train(
+                            params, dtrain, num_boost_round=fixed_rounds,
+                            callbacks=[lgb.log_evaluation(0)],
+                        )
+                    else:
+                        model = lgb.train(
+                            params, dtrain, num_boost_round=100,
+                            valid_sets=[dval],
+                            callbacks=[lgb.early_stopping(15, verbose=False),
+                                       lgb.log_evaluation(0)],
+                        )
                     pred = model.predict(X_val)
 
                     # Strict >=$1 scoring. Flat-actual rows are excluded: an
@@ -559,6 +600,14 @@ def run_evaluation(df, pruned, horizon_filter=None, n_jobs=None):
                             # which names this experiment as one to re-derive.
                             "fold_id": fold_idx,
                             "direction_correct": bool(match[i]),
+                            # Backend invariant 4: a DA is quotable only beside
+                            # the constant call and the realised down rate, with
+                            # Pesaran-Timmermann as the headline. These two keys
+                            # are what make those computable, and they use the
+                            # label vocabulary backtest/directional_test.py
+                            # expects rather than a private encoding.
+                            "actual_direction": _direction_label(actual[i]),
+                            "predicted_direction": _direction_label(pred[i]),
                         })
                     hits = int(np.count_nonzero(match & scored))
                     tot = int(scored.sum())
@@ -594,6 +643,18 @@ def run_evaluation(df, pruned, horizon_filter=None, n_jobs=None):
                     "per_fold": per_fold,
                     "records": records,
                 }
+                # Invariant 4. Computed here, not in print_summary, so they
+                # land OUTSIDE `records` and therefore survive `--out`'s
+                # record-stripping into the artifact.
+                call, call_acc = constant_call_baseline(records)
+                results[horizon][arm]["constant_call"] = call
+                results[horizon][arm]["constant_call_accuracy"] = (
+                    round(call_acc, 2) if call_acc is not None else None)
+                down = realised_down_rate(records)
+                results[horizon][arm]["realised_down_rate"] = (
+                    round(down, 2) if down is not None else None)
+                results[horizon][arm].update(
+                    pesaran_timmermann(records, min_dates=MIN_PT_DATES))
                 logger.info(
                     f"      DA(strict,>=$1)={results[horizon][arm]['dir_acc_strict_ge1']}% "
                     f"n={scored_n:,} folds={len(per_fold)} "
@@ -658,6 +719,12 @@ def main():
     parser.add_argument("--build-cache-only", action="store_true")
     parser.add_argument("--out", default=None)
     parser.add_argument("--n-jobs", type=int, default=None)
+    parser.add_argument("--row-budget", type=int, default=None,
+                        help="Override ROW_BUDGET. Above ~1.2M it does not "
+                             "bind on this universe -- see run_evaluation.")
+    parser.add_argument("--fixed-rounds", type=int, default=None,
+                        help="Use a fixed boost-round count instead of early "
+                             "stopping on the scored validation window.")
     args = parser.parse_args()
 
     logger.info("=" * 70)
@@ -670,7 +737,8 @@ def main():
         return 0
 
     results = run_evaluation(df, pruned, horizon_filter=args.horizon,
-                            n_jobs=args.n_jobs)
+                            n_jobs=args.n_jobs, row_budget=args.row_budget,
+                            fixed_rounds=args.fixed_rounds)
 
     if args.out:
         # Per-row records are what make the pairing possible but they dominate
