@@ -511,6 +511,25 @@ class ItemForecaster:
     def _cv_step_days(self) -> int:
         return int(os.environ.get("CV_STEP_DAYS", self.CV_STEP_DAYS))
 
+    # Cap on each CV fold's TRAINING rows. `max_rows` was applied only in
+    # _build_production_split, so _cv_evaluate_horizon took the whole expanding
+    # window every fold: nine folds per horizon summed to 4.2x the frame and the
+    # conformal CV phase was 50.4% of an 872s retrain (measured 2026-08-09).
+    #
+    # Only train is thinned. Fold count, val rows and the OOF record count are
+    # the sample size of q_hat, mean_rank_ic and the PT statistic, and none of
+    # them moves. The fold model then fits on less data than the served one, so
+    # q_hat comes out LARGER and the band wider -- over-coverage, which is the
+    # safe direction. Verify against NOMINAL_COVERAGE before lowering it.
+    CV_MAX_TRAIN_ROWS = 300_000
+
+    def _cv_max_train_rows(self) -> int:
+        return int(os.environ.get("CV_MAX_TRAIN_ROWS", self.CV_MAX_TRAIN_ROWS))
+
+    @staticmethod
+    def _record_cv_fold_train_rows(n: int) -> None:
+        """Seam for tests to observe the post-cap fold size. No-op in prod."""
+
     # ------------------------------------------------------------------
     # Boost rounds: fixed, not early-stopped
     # ------------------------------------------------------------------
@@ -4131,7 +4150,8 @@ class ItemForecaster:
                 # against a remainder.
                 _cv_t0 = time.time()
                 oof_records, cv_metrics, pt_records = self._cv_evaluate_horizon(
-                    tdf, horizon, per_quantile_params)
+                    tdf, horizon, per_quantile_params,
+                    per_item_row_sampling=per_item_row_sampling)
                 logger.info(f"  [timing] {horizon}d conformal CV: "
                             f"{time.time() - _cv_t0:.1f}s "
                             f"({len(cv_metrics)} folds, {len(oof_records)} OOF rows)")
@@ -5647,7 +5667,8 @@ class ItemForecaster:
             return None
         return np.mean(all_preds, axis=0)
 
-    def _cv_evaluate_horizon(self, tdf, horizon, per_quantile_params):
+    def _cv_evaluate_horizon(self, tdf, horizon, per_quantile_params,
+                             per_item_row_sampling: bool = False):
         """Run expanding-window CV for a single horizon.
 
         Trains a single model (no ensemble) per fold using the best hyperparams
@@ -5689,9 +5710,22 @@ class ItemForecaster:
         fold_metrics = []
         pt_records = []
 
+        cv_max_rows = self._cv_max_train_rows()
         for fold_id, (train_dates, val_dates) in enumerate(splits):
             train_df = tdf[tdf["date"].isin(train_dates)]
             val_df = tdf[tdf["date"].isin(val_dates)]
+
+            # Same cap, same draw, same reasoning as _build_production_split:
+            # sample randomly (never tail()) so the calendar window survives and
+            # expanding-window CV is not silently disabled. val_df is never
+            # thinned -- that would move the evaluation cohort.
+            if len(train_df) > cv_max_rows:
+                if per_item_row_sampling:
+                    train_df = self._per_item_row_sample(train_df, cv_max_rows)
+                else:
+                    train_df = train_df.sample(
+                        n=cv_max_rows, random_state=42).sort_values("date")
+            self._record_cv_fold_train_rows(len(train_df))
 
             if len(val_df) < 50:
                 continue
