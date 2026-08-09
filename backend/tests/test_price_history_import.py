@@ -30,9 +30,11 @@ def test_parse_day_reads_last_24h_only():
             "steam": {"last_24h": 12.5, "last_7d": 99.0, "last_30d": 98.0}
         }
     }
-    assert tracker.parse_day(payload, date(2025, 6, 15)) == [
-        ("AK-47 | Redline (Field-Tested)", date(2025, 6, 15), 12.5)
+    records = tracker.parse_day(payload, date(2025, 6, 15))
+    assert [(r[0], r[1]) for r in records] == [
+        ("AK-47 | Redline (Field-Tested)", date(2025, 6, 15))
     ]
+    assert records[0][2] == pytest.approx(12.5 / tracker.STEAM_FEE_MULTIPLIER)
 
 
 def test_parse_day_treats_null_last_24h_as_an_absent_row():
@@ -463,3 +465,50 @@ def test_report_promotion_gate_excludes_items_already_inside_the_gate(tmp_path):
     result = report_promotion_gate(staging, archive, "tracker_steam_24h")
     assert result["pre_2026_items"] == 1
     assert result["new_gate_items"] == 0
+
+
+def test_parse_day_returns_net_of_the_steam_fee():
+    """The source serves the BUYER price; the archive stores NET.
+
+    Measured 2026-08-09: tracker/aggregator_sync = 1.147-1.154 flat across all
+    seven price tiers, collapsing to 0.998 at >=$1 after this division.
+    """
+    payload = {"AK-47 | Redline (Field-Tested)": {"steam": {"last_24h": 11.607}}}
+    records = tracker.parse_day(payload, date(2025, 6, 15))
+    assert records[0][2] == pytest.approx(10.0, rel=1e-6)
+
+
+def test_steam_fee_multiplier_matches_the_repo_constant():
+    from scripts.backfill_steam_listing_history import STEAM_FEE_MULTIPLIER
+    assert tracker.STEAM_FEE_MULTIPLIER == STEAM_FEE_MULTIPLIER == 1.1607
+
+
+def test_a_price_that_is_positive_only_before_the_fee_still_survives():
+    payload = {"Cheap": {"steam": {"last_24h": 0.02}}}
+    records = tracker.parse_day(payload, date(2025, 6, 15))
+    assert len(records) == 1
+    assert records[0][2] == pytest.approx(0.02 / 1.1607)
+
+
+def test_the_gate_drops_items_below_the_median_price_floor():
+    cheap = _series("Cheap", range(200), price=0.50)
+    rich = _series("Rich", range(200), price=5.00)
+    kept, report = apply_gap_gate(cheap + rich, min_median_price=1.0)
+    assert {r[0] for r in kept} == {"Rich"}
+    assert report.rejected_cheap_items == 1
+
+
+def test_the_floor_uses_the_median_not_the_last_price():
+    """One spike must not carry an otherwise-cheap item over the floor."""
+    records = _series("Spiky", range(199), price=0.50) + [
+        ("Spiky", date(2025, 6, 1) + timedelta(days=199), 500.0)
+    ]
+    kept, report = apply_gap_gate(records, min_median_price=1.0)
+    assert kept == []
+    assert report.rejected_cheap_items == 1
+
+
+def test_no_floor_by_default_keeps_the_archive_free_of_a_cohort_decision():
+    kept, report = apply_gap_gate(_series("Cheap", range(200), price=0.50))
+    assert {r[0] for r in kept} == {"Cheap"}
+    assert report.rejected_cheap_items == 0

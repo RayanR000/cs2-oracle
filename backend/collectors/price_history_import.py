@@ -88,6 +88,7 @@ class GapGateReport:
     kept_items: int
     rejected_gap_items: int
     rejected_sparse_items: int
+    rejected_cheap_items: int
     kept_rows: int
     rejected_rows: int
     worst_gap_days: int
@@ -97,6 +98,7 @@ def apply_gap_gate(
     records: list[tuple[str, date, float]],
     max_gap_days: int = MAX_GAP_DAYS,
     min_distinct_days: int = MIN_DISTINCT_DAYS,
+    min_median_price: float | None = None,
 ) -> tuple[list[tuple[str, date, float]], GapGateReport]:
     """Keep only densely-observed items: both conditions must hold.
 
@@ -107,19 +109,29 @@ def apply_gap_gate(
     flips ``is_backfilled`` (derived as "has any row before 2026-01-01"), so
     admitting one buys a gate entry that carries no usable features — which is
     how that flag was rendered meaningless once before, when it read 8,691 of
-    8,691. Price, by contrast, is NOT filtered here: which cohort to train on
-    belongs to ``TRAIN_MIN_MEDIAN_PRICE``, and the archive must not bake it in.
+    8,691. Price is NOT filtered here for cohort reasons: which cohort to
+    train on belongs to ``TRAIN_MIN_MEDIAN_PRICE``, and the archive must not
+    bake that in.
+
+    *min_median_price*, when given, is a DATA-VALIDITY floor, not a cohort
+    one: ``cs2_prices_tracker.STEAM_FEE_MULTIPLIER`` is measured accurate only
+    at >= $1, so a caller importing that source passes the floor to drop rows
+    it cannot fee-correct reliably. It defaults to None so the library itself
+    bakes in no such decision. An item's PRICE is judged by the MEDIAN of its
+    observations, not the last or mean, so a single spike cannot carry an
+    otherwise-cheap item over the floor.
 
     Only gaps BETWEEN consecutive observations count. An item that starts late
-    or stops early is judged on the span it covers. An item failing both
-    conditions is counted once, as a gap rejection.
+    or stops early is judged on the span it covers. An item failing multiple
+    conditions is counted once, against the first that applies (gap, then
+    sparse, then cheap).
     """
     by_item: dict[str, dict[date, float]] = defaultdict(dict)
     for slug, day, price in records:
         by_item[slug].setdefault(day, price)
 
     kept: list[tuple[str, date, float]] = []
-    kept_items = rejected_gap = rejected_sparse = rejected_rows = 0
+    kept_items = rejected_gap = rejected_sparse = rejected_cheap = rejected_rows = 0
     worst_gap = 0
 
     for slug, observations in by_item.items():
@@ -136,6 +148,15 @@ def apply_gap_gate(
             rejected_sparse += 1
             rejected_rows += len(days)
             continue
+        if min_median_price is not None:
+            prices = sorted(observations[day] for day in days)
+            mid = len(prices) // 2
+            median_price = (prices[mid] if len(prices) % 2
+                            else (prices[mid - 1] + prices[mid]) / 2)
+            if median_price < min_median_price:
+                rejected_cheap += 1
+                rejected_rows += len(days)
+                continue
 
         kept_items += 1
         kept.extend((slug, day, observations[day]) for day in days)
@@ -144,6 +165,7 @@ def apply_gap_gate(
         kept_items=kept_items,
         rejected_gap_items=rejected_gap,
         rejected_sparse_items=rejected_sparse,
+        rejected_cheap_items=rejected_cheap,
         kept_rows=len(kept),
         rejected_rows=rejected_rows,
         worst_gap_days=worst_gap,

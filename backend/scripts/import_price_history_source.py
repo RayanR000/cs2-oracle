@@ -207,6 +207,9 @@ def main(argv: list[str] | None = None) -> int:
                          "staging import and exit, fetching nothing")
     ap.add_argument("--archive-dir", default="../price-archive",
                     help="the real archive, compared against for the seam read")
+    ap.add_argument("--min-median-price", type=float, default=1.0,
+                    help="drop items whose median price falls below this; "
+                         "the fee correction is unreliable below $1")
     args = ap.parse_args(argv)
 
     adapter = ADAPTERS[args.source]
@@ -246,13 +249,15 @@ def main(argv: list[str] | None = None) -> int:
         records.extend(adapter.parse_day(payload, day))
     logger.info(f"parsed {len(records):,} raw records")
 
-    kept, report = apply_gap_gate(records)
+    kept, report = apply_gap_gate(records, min_median_price=args.min_median_price)
     logger.info(
         f"quality gate: kept {report.kept_items:,} items / "
         f"{report.kept_rows:,} rows; rejected "
         f"{report.rejected_gap_items:,} on gaps (worst "
-        f"{report.worst_gap_days or 0}d) and "
+        f"{report.worst_gap_days or 0}d), "
         f"{report.rejected_sparse_items:,} on the {MIN_DISTINCT_DAYS}-day floor, "
+        f"and {report.rejected_cheap_items:,} on the "
+        f"${args.min_median_price:g} median-price floor, "
         f"{report.rejected_rows:,} rows total"
     )
 
