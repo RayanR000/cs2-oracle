@@ -266,7 +266,10 @@ class ItemForecaster:
     # their scale-free forms (_DOLLAR_SCALE_FEATURES, price_cv_{w}d,
     # macd_*_rel). A v4 booster's splits are thresholds in dollars and are
     # meaningless against v5 features, so this must not load across the bump.
-    MODEL_ARTIFACT_VERSION = 5
+    # v6 (2026-08-09): Optuna selects on within-date rank IC instead of
+    # early-stopped pinball loss. A cached meta.json would otherwise supply
+    # hyperparameters chosen under the criterion this replaced.
+    MODEL_ARTIFACT_VERSION = 6
     MIN_HISTORY_DAYS = 30
     # Prediction eligibility is looser than training: the live aggregator
     # series is still young, and 14 daily points is enough for the lag/rolling
@@ -2793,16 +2796,28 @@ class ItemForecaster:
         return len(splits) >= 2
 
     def _optuna_search_params(self, X_train, y_train, X_val, y_val,
+                               val_dates,
                                quantile: float = 0.5,
                                boosting_type: str = "gbdt",
                                n_trials: int = 15,
                                horizon: Optional[int] = None) -> Dict[str, Any]:
         """Bayesian hyperparameter search via Optuna.
 
-        Searches over 6 key params using TPE pruning, with early
-        termination of unpromising trials (median pruner).
+        Searches over 6 key params with TPE, scored on within-date rank IC.
+
+        The objective was `model.best_score["valid_0"]["quantile"]` under
+        `lgb.early_stopping(20)` until 2026-08-09. FIXED_BOOST_ROUNDS replaced
+        early stopping in training and CV on 2026-08-08 because the trailing
+        validation window carries ~a dozen effective observations, but the
+        Optuna objective was missed -- so hyperparameters were still selected on
+        exactly the criterion the rest of the model had discarded. At 14d and
+        30d the val-loss optimum is 25 rounds while rank IC peaks at 500-750.
 
         Args:
+            val_dates: The validation split's date column. Rank IC is computed
+                WITHIN date and never pooled: a pooled Spearman re-introduces
+                the market factor and would select for the base-rate tracking
+                the Pesaran-Timmermann test exists to reject.
             boosting_type: LightGBM's `boosting_type`. Production always passes
                 `ItemForecaster.BOOSTING_TYPE` ("gbdt"); the parameter survives
                 only so scripts/optuna_*_search.py can state it at the call site.
@@ -2813,7 +2828,6 @@ class ItemForecaster:
                 lambda_l2 away from 0, based on prior search results).
         """
         import optuna
-        from optuna.integration import LightGBMPruningCallback
 
         # Build the binned Dataset once and reuse across all trials. Only tree
         # params (num_leaves, learning_rate, ...) vary between trials; the data
@@ -2855,25 +2869,29 @@ class ItemForecaster:
             self._apply_row_sampling(
                 params, quantile,
                 subsample=trial.suggest_float("subsample", 0.5, 0.9, step=0.1))
-            _num_rounds = 100 if horizon == 7 else 200
-            opt_callbacks = [
-                lgb.early_stopping(20),
-                lgb.log_evaluation(0),
-                LightGBMPruningCallback(trial, "quantile"),
-            ]
+            # Fixed rounds, no early stopping, no pruner: the trailing val
+            # window carries ~a dozen effective observations, so early stopping
+            # trips on noise (FIXED_BOOST_ROUNDS, :551-560) and
+            # LightGBMPruningCallback prunes on LightGBM's reported `quantile`
+            # metric rather than on what this objective returns.
+            #
+            # cv=True so tuning happens at the depth CV actually reaches.
+            # Tuning at production rounds and evaluating at CV rounds selects
+            # params that only pay off deeper than the evaluation ever goes.
             model = lgb.train(
                 params, dtrain,
-                num_boost_round=_num_rounds,
-                valid_sets=[dval],
-                callbacks=opt_callbacks,
+                num_boost_round=self._boost_rounds(horizon, cv=True),
+                callbacks=[lgb.log_evaluation(0)],
             )
-            return model.best_score["valid_0"]["quantile"]
+            # Within-date, never pooled. A pooled Spearman re-introduces the
+            # market factor and would select for the base-rate tracking the
+            # Pesaran-Timmermann test exists to reject.
+            ic = self._within_date_rank_ic(
+                model.predict(X_val), y_val, val_dates)
+            return -(ic if ic is not None else 0.0)
 
         sampler = optuna.samplers.TPESampler(seed=42)
-        pruner = optuna.pruners.HyperbandPruner(
-            min_resource=5, max_resource=200, reduction_factor=3
-        )
-        study = optuna.create_study(direction="minimize", sampler=sampler, pruner=pruner)
+        study = optuna.create_study(direction="minimize", sampler=sampler)
 
         # Warm-start with the known winning params (from prior 50-trial search),
         # so TPE starts near the answer instead of rediscovering it.
@@ -3957,7 +3975,9 @@ class ItemForecaster:
                         logger.info(f"  Searching hyperparams for {horizon}d p{int(q*100)} "
                                     f"(Optuna, {boosting_type}, {hz_trials} trials)...")
                         best_params_by_q[q] = self._optuna_search_params(
-                            X_train, y_train, X_val, y_val, quantile=q,
+                            X_train, y_train, X_val, y_val,
+                            val_dates=val_set["date"],
+                            quantile=q,
                             boosting_type=boosting_type,
                             n_trials=hz_trials,
                             horizon=horizon,

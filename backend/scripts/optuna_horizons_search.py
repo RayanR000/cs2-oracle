@@ -130,6 +130,7 @@ def main():
                 logger.info(f"\n  Searching p{int(q*100)} ({N_TRIALS} trials)...")
                 best_params = forecaster._optuna_search_params(
                     X_train, y_train, X_val, y_val,
+                    val_dates=val_set["date"],
                     quantile=q, boosting_type=boosting, n_trials=N_TRIALS,
                 )
                 logger.info(f"  Best params p{int(q*100)}: {best_params}")
