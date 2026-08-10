@@ -61,12 +61,23 @@ the defect, so it fails if someone makes the penny items harmless.
 `predict` needs a loaded booster and an archive. It is weak by construction and is there to fail
 when the guard is deleted, which is the regression that matters.
 
+## The refactor is training-neutral, measured
+
+Run `31438314051` (`34091fd`, `xs_rank`, cached HP) reproduces the pre-refactor panel **exactly at
+all four horizons** — rank IC 0.2489 / 0.2199 / 0.1827 / 0.1374, edge +0.0556 / +0.0561 / +0.0371
+/ +0.0316, served PT excess 7.933 / 6.274 / 4.220 / 3.394pp, `32/32 features` transformed. Every
+digit matches run `31430874845`.
+
+That is the intended result and the only one this run could establish: CV folds are already
+cohort-filtered, so they take the `reference_mask=None` branch and never exercise the new code.
+The check is that the refactor did **not** leak into training, and it did not.
+
 ## Not done
 
-- **No arm has been re-run through the fixed path.** The CV panel is unaffected — folds train and
-  score on the same 916-item population, so the transform never saw a pooled frame there — but the
-  *served* effect of the transform remains unmeasured, and `CROSS_SECTIONAL_RANK` stays off in
-  production.
+- **The serving fix itself is still unexercised.** No predict run has gone through the masked
+  branch — CV cannot reach it. Its correctness rests on the unit tests and a synthetic scale check
+  (5,536 items × 3 dates × 33 columns in 0.126s, cohort resolving to exactly 916), not on a
+  production run. `CROSS_SECTIONAL_RANK` stays off until one happens.
 - The 25% divergence warning is a guess at a threshold, not a derived one.
 - `train_cohort_items` counts items in the built training frame, which is post-floor and
   post-budget. On the current config the budget does not bind (916 items fit whole), so it equals
