@@ -1,12 +1,14 @@
 # CS2 Oracle
 
 Daily pipeline pulls 7 markets' prices from the csgotrader.app dumps, archives them to
-Parquet, serves them via FastAPI to a Next.js dashboard, and forecasts with LightGBM —
-one q50 model per horizon, with the served band calibrated by split conformal.
+Parquet, serves them via FastAPI, and forecasts with LightGBM — one q50 model per horizon,
+with the served band calibrated by split conformal.
+
+**There is no frontend.** It was deleted on 2026-08-10 to be rebuilt from scratch; see
+`docs/changelog/2026-08-10-frontend-removed.md`. The API is the product surface for now.
 
 - `backend/` — FastAPI (`main.py`), routers in `api/routes/`, ML in `models/forecaster.py`,
   batch jobs in `scripts/`. See `backend/AGENTS.md`.
-- `frontend/` — Next.js App Router; one API client at `lib/api.ts`. See `frontend/AGENTS.md`.
 - `price-archive/` — gitignored **plain local directory**, not a symlink and not a
   checkout. Editing it changes nothing in production: the durable archive is the separate
   `RayanR000/cs2-oracle-data` repo, which only CI writes (orphan commit + force-push in
@@ -27,13 +29,7 @@ Backend, from `backend/`, through the venv (`venv/bin/python`, Python 3.13 local
 - `venv/bin/python -m pytest tests/ -q` — full suite. **Always scope it to `tests/`**: a bare
   `pytest -q` also collects `scripts/test_social_signal.py`, which aborts the whole run on a
   missing local `thefuzz`.
-- `venv/bin/uvicorn main:app --port 8000` — the API the dashboard fetches.
-
-Frontend, from `frontend/`:
-
-- `npm run lint` — eslint. Warnings exist; keep errors at 0.
-- `npx tsc --noEmit` — typecheck. There is no `typecheck` script.
-- `npm run build`
+- `venv/bin/uvicorn main:app --port 8000` — the API.
 
 ## Gotchas
 
@@ -54,9 +50,7 @@ Frontend, from `frontend/`:
 
 ## Workflow Rules
 
-1. Backend changes: run the relevant `pytest` files. Frontend changes: `npm run lint` and
-   `npx tsc --noEmit`.
-2. Adding or changing an API route means updating `frontend/lib/api.ts` in the same change.
-3. Design values live in `docs/design.md` and the tokens in `frontend/app/globals.css` —
-   reference them, don't restate them in components or in these files.
-4. Non-trivial decisions get a dated note in `docs/changelog/`.
+1. Backend changes: run the relevant `pytest` files.
+2. Non-trivial decisions get a dated note in `docs/changelog/`.
+3. `docs/design.md` describes the deleted frontend. It is kept as rebuild input only —
+   do not treat it as a spec for anything that currently runs.

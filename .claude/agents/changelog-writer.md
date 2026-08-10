@@ -63,6 +63,5 @@ Write and edit only under `docs/`. Never modify source, tests, or workflows. Rea
 `git diff`, `git log`, `ls`, `rg`. Do not run scripts — `backend/.env` points at production
 Supabase and anything run from `backend/` is pointed at prod.
 
-If the change also moved something described in `docs/architecture/`, `docs/design.md`,
-`AGENTS.md`, or `frontend/AGENTS.md`, update it in the same pass and say which files you
-touched. Report anything you could not source, rather than filling the gap.
+If the change also moved something described in `docs/architecture/` or `AGENTS.md`, update
+it in the same pass and say which files you touched. Report anything you could not source, rather than filling the gap.

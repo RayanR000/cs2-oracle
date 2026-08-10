@@ -30,8 +30,7 @@ When asked to document changes:
 | Changed area | Docs to update |
 |---|---|
 | New feature, bugfix, refactor | Create `docs/changelog/YYYY-MM-DD-topic.md` |
-| API route changes | `docs/changelog/` entry + verify `frontend/lib/api.ts` is in sync |
-| Design tokens, components, CSS | `docs/design.md` and/or `frontend/AGENTS.md` |
+| API route changes | `docs/changelog/` entry |
 | Architecture changes | Relevant file(s) in `docs/architecture/` |
 | Config/agent/plugin changes | `AGENTS.md` (workflow rules, gotchas, agent references) |
 

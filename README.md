@@ -145,13 +145,9 @@ python scripts/run_task.py migrate
 uvicorn main:app --port 8000 --reload
 ```
 
-```bash
-# Frontend
-cd frontend
-npm install
-echo "NEXT_PUBLIC_API_URL=http://localhost:8000" > .env.local
-npm run dev                   # → http://localhost:3000
-```
+There is no frontend. It was deleted on 2026-08-10 to be rebuilt from scratch — see
+[`docs/changelog/2026-08-10-frontend-removed.md`](docs/changelog/2026-08-10-frontend-removed.md).
+The API is the product surface until then.
 
 Tests: `cd backend && source venv/bin/activate && pytest tests/ -q`. Scope it to `tests/` —
 a bare `pytest` also collects a script that aborts the run on a missing optional dependency.
@@ -169,10 +165,6 @@ backend/
   db/                Parquet store and ops-table mirrors
   scripts/           Task runner and scheduled entrypoints
   tests/             Pytest suite (87 modules, 1,385 tests)
-frontend/
-  app/               Next.js app router pages
-  components/        React components
-  lib/               API client
 price-archive/       Parquet price data, 2013-present
 docs/                Architecture, research, changelog, design specs
 .github/workflows/   3 cron jobs + 1 chained + 1 manual

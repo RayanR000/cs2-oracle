@@ -9,8 +9,8 @@ keep this file + AGENTS.md under ~200 lines combined. Anything subsystem-specifi
 ## Claude Code
 
 Claude Code does not read `AGENTS.md`; this file exists so the import above loads it.
-`backend/CLAUDE.md` and `frontend/CLAUDE.md` do the same for their directories and load
-on demand when files there are read.
+`backend/CLAUDE.md` does the same for its directory and loads on demand when files there
+are read.
 
 ### Rules
 

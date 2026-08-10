@@ -20,7 +20,6 @@ When asked to run tests:
 
 1. Determine which area changed:
    - **Backend**: run `pytest -v` from the `backend/` directory. If specific test files are relevant, run `pytest -v tests/test_file.py`.
-   - **Frontend**: run `npm run build` from `frontend/` (TypeScript checking) and `npm run lint`.
 2. If tests fail, report:
    - Which test(s) failed and why.
    - The assertion that broke and expected vs actual values.

@@ -26,7 +26,6 @@ When asked to explore the codebase:
 
 3. Know the project layout:
    - `backend/` — FastAPI server, routes in `backend/routes/`, models in `backend/models/`, collectors in `backend/collectors/`
-   - `frontend/` — Next.js app router in `frontend/app/`, components in `frontend/components/`, lib in `frontend/lib/`
    - `price-archive/` — Parquet data files (on `data-archive` branch)
    - `.github/workflows/` — CI/CD workflows
    - `.opencode/` — Agent definitions and plugins
