@@ -125,7 +125,21 @@ because it moves the voted median on 17.13% of 2026 ≥$1 item-days — every A/
 
 ## Track O — operational, do first (minutes)
 
-### O4. Retrain on the post-G3 consensus — ⬜ **NOT STARTED. Do this first.**
+### O4. Retrain on the post-G3 consensus — ✅ **DONE 2026-08-10**, run `31356483719`
+
+> **Landed.** `mode=train-only` on `a0c215e`, 39m32s, TOTAL training 2306.0s. 12 boosters cached;
+> `voted-v6-` populated. PT returns **skill at all four horizons** (t = 12.14 / 7.03 / 3.08 /
+> 3.35), and the model still **loses to `−return_1d`** on rank IC everywhere (−0.0159 / −0.0371 /
+> −0.0433 / −0.0091) — the re-vote cleaned the label's basis without closing the baseline gap.
+> Full numbers: `docs/changelog/2026-08-10-post-revote-retrain.md`.
+>
+> ⚠️ It got **slower**, not faster: Optuna cost **692.9s** against 63.3s in the previous CI run.
+> That phase is bimodal run to run. Remaining cost levers, with the measured basis:
+> `docs/research/2026-08-10-training-cost-levers.md`.
+>
+> ⚠️ **Served accuracy is still unmeasured.** `CV_DIAGNOSTIC_CLASSIFIER=0`, so the classifier that
+> serves direction is unscored in CV and every DA figure in the log is the q50 sign. No forecasts
+> were written by a `train-only` run; the first served read comes from the backtest.
 
 - **Do:** dispatch `price-forecast.yml` with **`mode=train-only`** against `origin/main`.
   ⚠️ **Not `mode=full`.** `full` runs `forecast_prices.py` with no flag, which reaches the age

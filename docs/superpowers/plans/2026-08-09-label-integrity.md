@@ -17,12 +17,10 @@
 > dates), so the label is a tradeable return and Track C accuracy work is unblocked. Full result:
 > `docs/research/2026-08-09-composition-stability.md`.
 >
-> ⚠️ **One thing this branch leaves owing: a retrain.** Task 4 changed the consensus, so every
-> label from 2026-03 onward moved. The shipped artifact was trained before `873148b` and no
-> workflow has run on the merged tree. Dispatch `price-forecast.yml` with **`mode=train-only`**
-> (*not* `mode=full` — the artifact is a day old, so `full` skips the age gate's retrain branch
-> and `FORCE_RETRAIN` is not a dispatch input). It will vote **cold**, since no `voted-v6-` cache
-> key exists yet.
+> ✅ **The retrain this branch owed landed 2026-08-10**, run `31356483719` (`mode=train-only`,
+> 39m32s, `voted-v6-` now populated). PT returns skill at all four horizons; the model still loses
+> to `−return_1d` on rank IC at all four, so the re-vote cleaned the label's basis without closing
+> the baseline gap. `docs/changelog/2026-08-10-post-revote-retrain.md`.
 > **No stored A/B verdict is citable against a post-merge number.**
 >
 > **Task 1's open question is closed by measurement.** On the backfilled-only frame the detectors

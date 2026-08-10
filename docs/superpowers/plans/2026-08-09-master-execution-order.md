@@ -21,14 +21,15 @@
 >   keys on `voted-v4-`.~~ **Fixed in `873148b`** — constant and key moved together, straight to
 >   **v6**, leaving no v5 key behind.
 >
-> ⚠️ **The one live consequence: nothing has trained or scored on the new consensus.** 2.4 changed
-> what the voted median is computed from, so every label from 2026-03 onward moved. The shipped
-> artifact was trained **2026-08-09 21:55 UTC**, before `873148b`, and the most recent run of any
-> workflow is on `895005a` — five commits behind `HEAD`. Until a full retrain lands on `58d681e`,
-> production serves a model fitted to the pre-exclusion vote and the backtest scores against it.
-> Dispatch it as **`mode=train-only`**, not `mode=full`: the artifact is a day old, so `full`
-> reaches the 14-day age gate and skips training, and `FORCE_RETRAIN` is not exposed as a dispatch
-> input. Expect a **cold** vote: the `voted-v6-` cache key has never been populated.
+> ✅ **The retrain landed 2026-08-10** (run `31356483719`, `mode=train-only` on `a0c215e`, 39m32s).
+> PT returns **skill at all four horizons**; the model still **loses to `−return_1d`** on rank IC
+> at all four. `docs/changelog/2026-08-10-post-revote-retrain.md`.
+>
+> ⚠️ **Two things it did not settle.** Served accuracy is still unmeasured —
+> `CV_DIAGNOSTIC_CLASSIFIER=0`, so the classifier that serves direction is unscored and every DA
+> figure in the log is the q50 sign. And the run went **over the 30-minute cap** at 39m32s, with
+> Optuna alone costing 692.9s against 63.3s the run before:
+> `docs/research/2026-08-10-training-cost-levers.md`.
 >
 > **Phase 1 did not deliver a speedup.** The cold retrain measured **1426.3s** against a predicted
 > ≈600s, because 1.2 removed early stopping from the trial loop and made Optuna the largest phase
@@ -71,7 +72,7 @@ wasted.
 | **2.3** | Run the powered-up composition test | ✅ instrument `80c3e07`, write-up `f833882` + `cddcf76` | label plan, Task 3 | 2.1, 2.2 | medium | **D3** |
 | **2.4** | Exclude the Steam trailing-window feeds from voting | ✅ `873148b` (+ `ac713cc`, `09e945e`); cache key moved v4 → **v6** in the same commit | label plan, Task 4 | 2.2 | small + re-vote | — |
 | **2.5** | Re-run 2.3 on the post-6c consensus | ✅ `3c62a49` — every measured cell moved 0.0000–0.0015; conclusion unchanged | label plan, Task 3 | 2.4 | small | — |
-| **2.6** | **Retrain on the post-2.4 consensus** | ⬜ **not started — the live gap.** No workflow run since `895005a`; artifact predates `873148b` | ops, `price-forecast.yml` **`mode=train-only`** (not `full` — see O4) | 2.4 | ~35 min, cold vote | — |
+| **2.6** | Retrain on the post-2.4 consensus | ✅ run `31356483719`, 39m32s. PT skill at all 4; still loses to `−return_1d` | ops, `price-forecast.yml` `mode=train-only` | 2.4 | done | — |
 | **3.x** | Accuracy work — **Branch A** | ⬜ unblocked by D3; start after 2.6 gives a post-exclusion baseline | branches on **D3** | 2.3, 2.6 | — | — |
 
 Phase 0 is roughly an hour. Phase 1 is a day. Phase 2 is a day plus a re-vote. Phase 3 does not
@@ -305,14 +306,17 @@ the sequence table.
 
 ### The current three
 
-1. **2.6, the retrain** — until it runs, production serves a model fitted to a consensus that no
-   longer exists, and no post-2.4 number can be compared to anything.
+1. **Training cost** — both recent runs are over the 30-minute cap (35m24s, then 39m32s). The
+   free lever is restoring the model cache on training runs, which removes an Optuna phase that
+   measured 63.3s and then 692.9s. `docs/research/2026-08-10-training-cost-levers.md`.
 2. **O2** — `architecture/model.md` and `model-optimization.md` carry ~25 stale claims between
    them (training defaults in eight places, `MODEL_ARTIFACT_VERSION` 5 vs 6, `VOTED_CACHE_VERSION`
    v3 vs 6, early stopping described as live). 0.3's number is fixed; the surrounding config
    description is not.
 3. **0.4's last leg** — delete the stranded `snapshots-2026-08.parquet` from the canonical repo.
    Compaction itself already landed; only that one file is left.
+
+~~2.6, the retrain~~ ✅ done 2026-08-10, run `31356483719`.
 
 Then Phase 3, Branch A, in order: A1 → A2 → A3 → A4. **Do not compare any A/B result to a stored
 one** — hazard 6 — every stored verdict predates 2.4's re-vote.
