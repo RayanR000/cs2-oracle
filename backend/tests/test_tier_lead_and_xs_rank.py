@@ -492,3 +492,172 @@ def test_no_artifact_falls_back_to_the_environment(monkeypatch):
     monkeypatch.setenv("CROSS_SECTIONAL_RANK", "1")
     assert fc._tier_lead_served() is True
     assert fc._cross_sectional_rank_served() is True
+
+
+# ----------------------------------------------------------------------
+# The reference cohort: training ranks 916 items, predict sees 5,536
+#
+# `_filter_by_median_price` runs before the transform on the training path, so
+# the booster is fitted on percentiles within the >= $1 cohort. `predict`
+# applies no floor. Ranking the served frame over all 5,536 items would hand
+# the booster percentiles from a 6x larger, ~72% sub-$1 population -- silently,
+# because every column still exists and still lies in [-1, 1].
+# ----------------------------------------------------------------------
+
+def _cohort_panel():
+    """Four >= $1 items and four penny items, two dates.
+
+    The penny values are interleaved with the cohort's on purpose: if they
+    voted, they would move every cohort percentile rather than merely extend
+    the tails.
+    """
+    rows = []
+    for date in ("2026-01-01", "2026-01-02"):
+        for i, (item, price, f) in enumerate([
+            ("rich_a", 10.0, 1.0), ("rich_b", 20.0, 2.0),
+            ("rich_c", 30.0, 3.0), ("rich_d", 40.0, 4.0),
+            ("penny_a", 0.03, 1.5), ("penny_b", 0.04, 2.5),
+            ("penny_c", 0.05, 3.5), ("penny_d", 0.06, 0.5),
+        ]):
+            rows.append({"item_id": item, "date": pd.Timestamp(date),
+                         "price": price, "f": f})
+    return pd.DataFrame(rows)
+
+
+def test_reference_rows_get_exactly_the_training_transform():
+    """The load-bearing property: a served >= $1 row must receive the same
+    number training computed for it, to the bit. Anything else means the
+    booster is scoring a feature it was not fitted on."""
+    df = _cohort_panel()
+    mask = df["price"] >= 1.0
+
+    served = ItemForecaster._apply_cross_sectional_ranks(
+        df.copy(), ["f"], reference_mask=mask)
+
+    # What training saw: the cohort alone, no mask, no penny rows in the frame.
+    trained = ItemForecaster._apply_cross_sectional_ranks(
+        df[mask].copy().reset_index(drop=True), ["f"])
+
+    assert served.loc[mask.values, "f"].tolist() == pytest.approx(
+        trained["f"].tolist())
+    # And that is the evenly-spaced four-item answer, not a de-facto eight.
+    assert served.loc[mask.values, "f"].iloc[:4].tolist() == pytest.approx(
+        [-0.75, -0.25, 0.25, 0.75])
+
+
+def test_out_of_cohort_rows_are_placed_in_the_reference_distribution():
+    """Sub-$1 items keep getting a forecast row, so they need a value on the
+    same scale -- their position within the cohort's distribution, not their
+    position within a population the booster never saw."""
+    df = _cohort_panel()
+    mask = df["price"] >= 1.0
+    out = ItemForecaster._apply_cross_sectional_ranks(
+        df.copy(), ["f"], reference_mask=mask)
+
+    first = out[out["date"] == pd.Timestamp("2026-01-01")].set_index("item_id")["f"]
+    # f=1.5 sits between the cohort's 1.0 and 2.0 -> between their percentiles.
+    assert -0.75 < first["penny_a"] < -0.25
+    # f=0.5 is below every cohort value -> pinned at the floor.
+    assert first["penny_d"] == pytest.approx(-1.0)
+    # Monotone across the out-of-cohort rows too.
+    assert first["penny_a"] < first["penny_b"] < first["penny_c"]
+
+
+def test_out_of_cohort_rows_do_not_move_cohort_percentiles():
+    """The failure this whole change exists to prevent."""
+    df = _cohort_panel()
+    mask = df["price"] >= 1.0
+
+    with_mask = ItemForecaster._apply_cross_sectional_ranks(
+        df.copy(), ["f"], reference_mask=mask)
+    without = ItemForecaster._apply_cross_sectional_ranks(df.copy(), ["f"])
+
+    cohort_masked = with_mask.loc[mask.values, "f"].tolist()
+    cohort_pooled = without.loc[mask.values, "f"].tolist()
+    assert cohort_masked != pytest.approx(cohort_pooled), (
+        "pooling the penny items left the cohort percentiles unchanged; the "
+        "fixture no longer exercises the defect"
+    )
+
+
+def test_no_mask_is_the_training_path_unchanged():
+    """Training must not change behaviour: it passes no mask and every row is
+    in the cohort by construction."""
+    df = _cohort_panel()
+    plain = ItemForecaster._apply_cross_sectional_ranks(df.copy(), ["f"])
+    all_true = ItemForecaster._apply_cross_sectional_ranks(
+        df.copy(), ["f"], reference_mask=pd.Series(True, index=df.index))
+    pd.testing.assert_frame_equal(plain, all_true)
+
+
+def test_an_empty_reference_cohort_raises_rather_than_ranking_on_nothing():
+    """A frame with no cohort rows cannot be transformed into the fitted scale.
+    Median-filling the lot to zero would serve a constant and log nothing."""
+    df = _cohort_panel()
+    with pytest.raises(ValueError, match="reference cohort"):
+        ItemForecaster._apply_cross_sectional_ranks(
+            df.copy(), ["f"], reference_mask=pd.Series(False, index=df.index))
+
+
+def test_served_reference_mask_uses_the_artifact_floor():
+    """The floor is a property of the artifact, not of today's environment: a
+    model trained at >= $1 must be served at >= $1 even if the default moves."""
+    fc = ItemForecaster.__new__(ItemForecaster)
+    fc._artifact_min_median_price = 5.0
+    df = _cohort_panel()
+    mask = fc._reference_cohort_mask(df)
+    assert set(df.loc[mask, "item_id"]) == {"rich_a", "rich_b", "rich_c", "rich_d"}
+
+    fc._artifact_min_median_price = 25.0
+    mask = fc._reference_cohort_mask(df)
+    assert set(df.loc[mask, "item_id"]) == {"rich_c", "rich_d"}
+
+
+def test_reference_mask_is_by_item_median_not_by_row():
+    """`_filter_by_median_price` selects items on their median over the window.
+    A row-wise price test would let one spike promote a penny item for a day,
+    and the cohort would then differ from the trained one on that date alone."""
+    fc = ItemForecaster.__new__(ItemForecaster)
+    fc._artifact_min_median_price = 1.0
+    df = pd.DataFrame({
+        "item_id": ["spiky"] * 3 + ["steady"] * 3,
+        "date": pd.to_datetime(["2026-01-01", "2026-01-02", "2026-01-03"] * 2),
+        "price": [0.02, 50.0, 0.02, 5.0, 5.0, 5.0],
+        "f": [1.0, 2.0, 3.0, 4.0, 5.0, 6.0],
+    })
+    mask = fc._reference_cohort_mask(df)
+    assert not mask[df["item_id"] == "spiky"].any()
+    assert mask[df["item_id"] == "steady"].all()
+
+
+def test_predict_refuses_a_rank_artifact_that_records_no_cohort():
+    """An artifact written before the floor was recorded cannot be served with
+    the transform on: there is no way to know which items its percentiles were
+    relative to, and guessing silently is the whole defect.
+
+    Asserted against `predict`'s source rather than by calling it -- predict
+    needs a loaded booster and a price archive. A source test is weak, but it
+    fails if the guard is deleted, which is the regression that matters.
+    """
+    import inspect
+    src = inspect.getsource(ItemForecaster.predict)
+    guard = src.split("_cross_sectional_rank_served()")[1]
+    assert "_artifact_min_median_price is None" in guard
+    assert "raise RuntimeError" in guard
+    # And the guard must precede the transform, not follow it.
+    assert (guard.index("raise RuntimeError")
+            < guard.index("_apply_cross_sectional_ranks"))
+    assert "reference_mask=cohort" in guard, (
+        "predict calls the transform without a reference cohort; it would rank "
+        "the whole 5,536-item frame against itself"
+    )
+
+
+def test_the_cohort_floor_round_trips_through_meta():
+    """save_models records it, load_models reads it back. Without the pair the
+    predict path has nothing to rebuild the cohort from."""
+    import inspect
+    src = inspect.getsource(ItemForecaster)
+    assert '"train_min_median_price": self._train_min_median_price' in src
+    assert 'meta.get("train_min_median_price")' in src
+    assert 'self._train_min_median_price = min_median_price' in src

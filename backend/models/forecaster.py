@@ -749,6 +749,17 @@ class ItemForecaster:
         self._artifact_tier_lead: Optional[bool] = None
         self._artifact_xs_rank: Optional[bool] = None
         self._artifact_naive_init: Optional[bool] = None
+        # The median-price floor the artifact was TRAINED under. Load-bearing
+        # only when the rank transform is on, and then it is load-bearing
+        # absolutely: the transform's output depends on which items are in the
+        # cross-section, and training's is the >= $1 cohort while predict's
+        # frame is every backfilled item. See _reference_cohort_mask.
+        self._artifact_min_median_price: Optional[float] = None
+        self._artifact_cohort_items: Optional[int] = None
+        # Set by train() so save_models can record what the frame was built
+        # under. Not read on the predict path -- that reads the artifact.
+        self._train_min_median_price: Optional[float] = None
+        self._train_cohort_items: Optional[int] = None
         # Conformal calibration per horizon. NOTE: the meaning changed with the
         # minimal model — q_hat is now a DIMENSIONLESS multiplier of the
         # per-item sigma, not a percentage-point addend. Applied as:
@@ -2644,9 +2655,25 @@ class ItemForecaster:
 
     @staticmethod
     def _apply_cross_sectional_ranks(
-        df: pd.DataFrame, cols: List[str]
+        df: pd.DataFrame, cols: List[str],
+        reference_mask: Optional[pd.Series] = None,
     ) -> pd.DataFrame:
         """Map each column in *cols* to its centred within-date percentile.
+
+        **`reference_mask` is what makes the served frame comparable to the
+        trained one, and it is not optional on the predict path.** Training
+        applies the median-price floor before this runs, so the booster is
+        fitted on percentiles within the **916-item >= $1 cohort**; `predict`'s
+        frame is every backfilled item with 14 days of history, **5,536 of
+        them, ~72% sub-$1**. Ranking that pooled frame would feed the booster a
+        column it never saw, in range and without an error. Pass the cohort as
+        `reference_mask` and every row -- cohort or not -- is positioned in the
+        cohort's distribution instead. Cohort rows then receive exactly the
+        number training computed; out-of-cohort rows are placed by
+        interpolation and pin to +/-1 outside the cohort's range, which is the
+        honest answer for an item outside the fitted support.
+
+        `None` means "every row is in the cohort", which is the training path.
 
         Range [-1, 1], NaN preserved (pandas' rank skips NaN, so a missing
         characteristic stays missing and is median-filled downstream -- which now
@@ -2686,7 +2713,19 @@ class ItemForecaster:
         if not present:
             return df
 
-        grouped = df.groupby("date")
+        if reference_mask is None:
+            ref = df
+        else:
+            ref = df[np.asarray(reference_mask, dtype=bool)]
+            if ref.empty:
+                raise ValueError(
+                    "cross-sectional rank: the reference cohort is empty, so "
+                    "there is no distribution to rank against. Ranking the "
+                    "whole frame instead would hand the booster percentiles "
+                    "from a population it was never fitted on."
+                )
+
+        grouped = ref.groupby("date")
         skipped = []
         for col in present:
             # nunique over the whole frame would be O(rows); a per-date std of 0
@@ -2701,7 +2740,12 @@ class ItemForecaster:
             # NaN, matching rank()'s own treatment, so an item-day missing this
             # characteristic does not inflate the denominator for the rest.
             n = grouped[col].transform("count")
-            df[col] = 2.0 * ((grouped[col].rank() - 0.5) / n - 0.5)
+            ranked = 2.0 * ((grouped[col].rank() - 0.5) / n - 0.5)
+            if ref is df:
+                df[col] = ranked
+            else:
+                df[col] = ItemForecaster._place_in_reference(
+                    df, ref, col, ranked)
 
         if skipped:
             logger.info(
@@ -2713,6 +2757,62 @@ class ItemForecaster:
             f"{len(present) - len(skipped)}/{len(present)} features"
         )
         return df
+
+    @staticmethod
+    def _place_in_reference(df: pd.DataFrame, ref: pd.DataFrame, col: str,
+                            ranked: pd.Series) -> pd.Series:
+        """Cohort rows keep *ranked*; the rest get their position within it.
+
+        Two-sided `searchsorted` so a value tying with k cohort values lands at
+        the middle of their block rather than at either edge -- the same
+        mid-rank convention the cohort rows themselves get, so the two are on
+        one scale. A value below the whole cohort maps to -1 and one above it to
+        +1: the booster has no fitted support out there and the endpoint says so
+        rather than pretending to interpolate.
+        """
+        out = pd.Series(np.nan, index=df.index, dtype="float64")
+        out.loc[ranked.index] = ranked.to_numpy()
+
+        outside = df.index.difference(ref.index)
+        if len(outside) == 0:
+            return out
+
+        others = df.loc[outside, ["date", col]]
+        for date, block in others.groupby("date", sort=False):
+            ref_vals = ref.loc[ref["date"] == date, col].dropna().to_numpy()
+            if ref_vals.size == 0:
+                # No cohort observation of this characteristic on this date, so
+                # there is no distribution to place anything in. NaN, which the
+                # median fill downstream resolves -- unlike a 0.0, which would
+                # read as "exactly median" and be indistinguishable from a real
+                # mid-ranked value.
+                continue
+            ref_vals.sort()
+            values = block[col].to_numpy(dtype="float64")
+            known = ~np.isnan(values)
+            lo = np.searchsorted(ref_vals, values[known], side="left")
+            hi = np.searchsorted(ref_vals, values[known], side="right")
+            pct = ((lo + hi) / 2.0) / ref_vals.size
+            placed = np.full(values.shape, np.nan)
+            placed[known] = 2.0 * (pct - 0.5)
+            out.loc[block.index] = placed
+        return out
+
+    def _reference_cohort_mask(self, df: pd.DataFrame) -> pd.Series:
+        """Rows belonging to the cohort the loaded artifact was trained on.
+
+        By **item median over the frame**, matching `_filter_by_median_price`
+        exactly. A row-wise price test would be a different cohort: one spike
+        would promote a penny item for a single date, and that date's
+        percentiles would then be computed over a population training never
+        used.
+        """
+        floor = self._artifact_min_median_price
+        if not floor:
+            return pd.Series(True, index=df.index)
+        item_median = df.groupby("item_id")["price"].median()
+        keep = set(item_median[item_median >= floor].index)
+        return df["item_id"].isin(keep)
 
     def _add_cross_sectional_features(self, df: pd.DataFrame) -> pd.DataFrame:
         """Add market-level and category-level context features."""
@@ -4372,6 +4472,12 @@ class ItemForecaster:
         df = self.build_training_data(days_back=1460, backfilled_only=True,
                                       max_feature_rows=max_feature_rows,
                                       min_median_price=min_median_price)
+
+        # Recorded into the artifact because the rank transform's output is a
+        # function of WHICH items are in the cross-section, and predict's frame
+        # is not this one. See _reference_cohort_mask.
+        self._train_min_median_price = min_median_price
+        self._train_cohort_items = int(df["item_id"].nunique())
 
         self.horizon_feature_cols = {}
 
@@ -6058,8 +6164,38 @@ class ItemForecaster:
         # of PREDICT_TAIL_ROWS, which still holds every item at the latest date,
         # and the latest date is the only one predict reads (`groupby.last()`
         # below).
+        #
+        # But NOT over every eligible item as the ranking POPULATION: training
+        # ranks the >= $1 cohort (916 items of 5,536 on the 2026-08-10 frame)
+        # and this frame is unfiltered, so the cohort goes in as the reference
+        # and the rest are placed within it. Ranking the pooled frame was the
+        # defect recorded in
+        # docs/changelog/2026-08-10-instrument-panel-first-read.md.
         if self._cross_sectional_rank_served():
-            df = self._apply_cross_sectional_ranks(df, list(self.feature_cols))
+            if self._artifact_min_median_price is None:
+                raise RuntimeError(
+                    "the loaded artifact enables the cross-sectional rank "
+                    "transform but records no `train_min_median_price`, so the "
+                    "cohort its percentiles are relative to cannot be "
+                    "reconstructed. Retrain rather than serve percentiles from "
+                    "a population the booster never saw."
+                )
+            cohort = self._reference_cohort_mask(df)
+            n_cohort = df.loc[cohort, "item_id"].nunique()
+            n_all = df["item_id"].nunique()
+            logger.info(
+                f"  cross-sectional rank reference: {n_cohort:,}/{n_all:,} items "
+                f"at the artifact's >= ${self._artifact_min_median_price:g} floor"
+            )
+            trained = self._artifact_cohort_items
+            if trained and abs(n_cohort - trained) > 0.25 * trained:
+                logger.warning(
+                    f"  ⚠ the served cohort is {n_cohort:,} items against "
+                    f"{trained:,} at training — a >25% move means the frames "
+                    f"disagree about the universe, not that the market changed"
+                )
+            df = self._apply_cross_sectional_ranks(
+                df, list(self.feature_cols), reference_mask=cohort)
 
         # Align features with training columns (add missing, drop extras)
         for col in self.feature_cols:
@@ -7211,6 +7347,11 @@ class ItemForecaster:
             # needless retrain for a change none of them enabled.
             "tier_lead": self.tier_lead_enabled(),
             "cross_sectional_rank": self.cross_sectional_rank_enabled(),
+            # The cohort the transform above was computed over. predict's frame
+            # holds every backfilled item, so without these it cannot rebuild
+            # the population the booster's percentiles are relative to.
+            "train_min_median_price": self._train_min_median_price,
+            "train_cohort_items": self._train_cohort_items,
             # Load-bearing for the served LEVEL, not just for the feature set: a
             # booster fitted with the offset emits a residual, so predict has to
             # know to add `-return_1d` back. See _naive_init_score_served.
@@ -7285,6 +7426,8 @@ class ItemForecaster:
         # it would let a stray env var change what an existing model is served.
         self._artifact_tier_lead = meta.get("tier_lead")
         self._artifact_xs_rank = meta.get("cross_sectional_rank")
+        self._artifact_min_median_price = meta.get("train_min_median_price")
+        self._artifact_cohort_items = meta.get("train_cohort_items")
         self._artifact_naive_init = meta.get("naive_init_score")
 
         # Restore cached tuned hyperparameters (skips Optuna on retrain when present).

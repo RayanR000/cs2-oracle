@@ -188,9 +188,11 @@ belongs with it — this defect is only invisible because nothing counts.
 ## Not done
 
 - No confirm at 3d, and none is possible without changing `SKIP_HP_HORIZONS`.
-- **The predict-path floor is not implemented.** `CROSS_SECTIONAL_RANK` stays off in production
-  until it is; the CV result above is unaffected, because folds train and score on the same
-  916-item population.
+- ~~**The predict-path floor is not implemented.**~~ **Fixed the same day** — see
+  `2026-08-10-rank-transform-reference-cohort.md`. The resolution is not the floor described
+  above: `predict` now ranks every row against the >= $1 cohort's within-date distribution, so
+  sub-$1 items keep their (still unserved, still out-of-cohort) forecast rows. `CROSS_SECTIONAL_RANK`
+  stays off in production until an arm is run through the fixed path.
 - No combined `xs_rank + naive_init` arm. They are independent seams and the panel does not say
   whether they add.
 - N1 was not extended to the classifier's `Dataset`. That is the change that would make the N1
