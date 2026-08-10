@@ -14,7 +14,9 @@ with the served band calibrated by split conformal.
   `RayanR000/cs2-oracle-data` repo, which only CI writes (orphan commit + force-push in
   `aggregator-update.yml`). The local copy also runs *behind* it. Nothing written there is
   committed by this repo.
-- `docs/` — `architecture/`, dated decision records in `changelog/`, `design.md`.
+- `docs/` — `architecture/` (4), dated decision records in `changelog/` (119), `references/` (5),
+  `research/` (14, incl. the live action list), `superpowers/{specs,plans}` (28), and the loose
+  `design.md`, `product.md`, `operations.md`. Indexed in `docs/README.md`.
 - `.claude/rules/` — backend subsystem detail, scoped by path so it loads only when you touch
   the matching files. Indexed in `backend/AGENTS.md`.
 - `.github/workflows/` — daily chain: Aggregator (23:00 UTC) → Price Forecast → Backtest
@@ -24,11 +26,12 @@ with the served band calibrated by split conformal.
 
 Backend, from `backend/`, through the venv (`venv/bin/python`, Python 3.13 locally / 3.11 in CI):
 
-- `venv/bin/python -m pytest tests/test_<name>.py -q` — targeted run. Prefer this; the full
-  suite spends ~45s collecting before the first test runs.
-- `venv/bin/python -m pytest tests/ -q` — full suite. **Always scope it to `tests/`**: a bare
-  `pytest -q` also collects `scripts/test_social_signal.py`, which aborts the whole run on a
-  missing local `thefuzz`.
+- `venv/bin/python -m pytest tests/test_<name>.py -q` — targeted run.
+- `venv/bin/python -m pytest tests/ -q` — full suite. Collection is ~1.4s. It used to take
+  ~45s and to hit **production** on the way: `tests/test_price_history.py` had no test
+  functions at all, just module-level code that opened a prod session and made five live
+  Steam calls with `time.sleep(10)` between them. Deleted 2026-08-10, along with
+  `scripts/test_social_signal.py`, which was why a bare `pytest -q` used to abort.
 - `venv/bin/uvicorn main:app --port 8000` — the API.
 
 ## Gotchas

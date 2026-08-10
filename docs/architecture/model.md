@@ -336,7 +336,8 @@ OpenMP and the surrounding timeouts were masking it. See
   `return_Nd` got a correction in the +100,000% range, over-correcting 99% of 14d items and
   inverting quantile ordering on 100% of predictions. Tombstone comment at :285-293. No `.pkl`
   artifacts exist and `scikit-learn` is not in `requirements.txt`.
-- **CatBoost** — removed; not a dependency. A stale `backend/catboost_info/` directory remains.
+- **CatBoost** — removed; not a dependency. The stale `backend/catboost_info/` directory it left
+  behind was deleted 2026-08-10.
 - **Momentum fallback** — `MOMENTUM_FALLBACK_HORIZONS = []` (:266), superseded by the classifier,
   which beats momentum at every horizon including 30d. `_recenter_on_momentum` (:3445) survives
   as an unreachable path behind that empty list.

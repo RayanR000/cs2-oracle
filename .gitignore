@@ -50,6 +50,9 @@ yarn-error.log*
 *.db
 *.sqlite
 *.sqlite3
+# `*.db` is path-exact on the extension, so `cs2_market.db.backup` escaped it and
+# was tracked at 9.1MB until 2026-08-10. Match the suffix too.
+*.db.backup
 
 # Runtime artifacts (logs, DBs, state files)
 backend/runtime/
@@ -79,6 +82,9 @@ backend/models/saved_models/engineered_data.parquet
 # rejects outright (100MB cap), which silently blocked every push for 5 days.
 # Does not match saved_models/ itself -- meta.json there stays tracked.
 backend/models/saved_models_*/
+# The rule above keys on the `_` separator, so `saved_models.bak/` escaped it in
+# turn and sat tracked at 58MB (73 boosters, 2026-07-17) until 2026-08-10.
+backend/models/saved_models.*/
 
 # Generated parquet cache
 backend/data/*.parquet

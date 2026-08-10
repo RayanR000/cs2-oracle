@@ -8,9 +8,6 @@ scored against what actually happened.
 [![Backtest](https://img.shields.io/github/actions/workflow/status/RayanR000/cs2-oracle/backtest-accuracy.yml?label=backtest&style=flat-square&logo=github)](https://github.com/RayanR000/cs2-oracle/actions/workflows/backtest-accuracy.yml)
 [![Python 3.11](https://img.shields.io/badge/python-3.11-3776AB?logo=python&logoColor=white&style=flat-square)](https://python.org)
 
-<!-- Add a dashboard screenshot here — one image, ideally the item detail page with a
-     forecast overlay. This is the highest-value single addition to this README. -->
-
 ## What this is
 
 CS2 skins trade across a dozen marketplaces with no consolidated tape. Prices diverge
@@ -21,8 +18,8 @@ CS2 Oracle is an attempt at the harder version: forecasting where a price is goi
 then being honest about how often that forecast was right. A daily job pulls seven market
 price feeds, votes them into a single consensus price per item, appends to a Parquet
 archive going back to 2013, trains gradient-boosted models on the result, and serves
-predictions through a FastAPI backend to a Next.js dashboard. A separate scheduled job
-resolves every past forecast against the realised price and writes the accuracy back out.
+predictions through a FastAPI backend. A separate scheduled job resolves every past
+forecast against the realised price and writes the accuracy back out.
 
 It is a single-operator system that runs unattended on GitHub Actions. Most of the
 engineering effort has gone into the evaluation harness rather than the model, because on
@@ -55,7 +52,7 @@ this problem it is very easy to produce an impressive-looking number that is wro
             │
             ▼
     ══════ SERVING ═══════════════════════════════════
-    FastAPI  →  Next.js dashboard
+    FastAPI — the API is the only surface; there is no frontend
             │
             ▼
     Backtest — resolves each forecast against the archive
@@ -66,9 +63,10 @@ this problem it is very easy to produce an impressive-looking number that is wro
 than from each marketplace's own API — a deliberate tradeoff of freshness for reliability
 and rate-limit headroom. Sources are reconciled per item by outlier-voted median: with
 three or more sources on an item-day, anything more than 2σ from the median is rejected
-and the median of the rest becomes the consensus price. Only *ask* prices vote — BUFF's
-`highest_order` is a bid and is dropped before the group is read, so it counts toward
-neither the median nor the three-source gate.
+and the median of the rest becomes the consensus price. Only live *ask* prices vote —
+BUFF's `highest_order` is a bid, and Steam's 7/30/90-day feeds are trailing-window mean
+sale prices; all four are dropped before the group is read, so they count toward neither
+the median nor the three-source gate.
 
 **Storage.** The archive is Parquet on disk, partitioned yearly through 2025 and monthly
 from 2026, queried with DuckDB. Training reads the archive directly; the database holds
@@ -129,11 +127,11 @@ that many, so every horizon currently reports no headline. This is a calendar pr
 rather than a code problem, and the honest thing is to say so instead of publishing the
 blended number that is available.
 
-Live figures are served at `GET /accuracy/summary` and rendered on the dashboard.
+Live figures are served at `GET /accuracy/summary`.
 
 ## Quickstart
 
-Requires Python 3.11+, Node 20+, and PostgreSQL 14+ (or a Supabase project).
+Requires Python 3.11+ and PostgreSQL 14+ (or a Supabase project).
 
 ```bash
 # Backend
@@ -164,10 +162,10 @@ backend/
   backtest/          Price resolution, scoring, resolution gate
   db/                Parquet store and ops-table mirrors
   scripts/           Task runner and scheduled entrypoints
-  tests/             Pytest suite (87 modules, 1,385 tests)
+  tests/             Pytest suite (87 modules, 1,773 tests)
 price-archive/       Parquet price data, 2013-present
 docs/                Architecture, research, changelog, design specs
-.github/workflows/   3 cron jobs + 1 chained + 1 manual
+.github/workflows/   4 cron jobs + 1 chained + 1 manual
 ```
 
 Operational reference — API endpoints, environment variables, task commands, workflow
@@ -178,15 +176,18 @@ schedules — lives in [`docs/`](docs/README.md).
 Known weaknesses, stated plainly:
 
 - **The training universe is small.** Training applies a $1 median-price floor and a
-  1.2M feature-row budget, which the ≥$1 cohort — 926 items — fits whole, so no item
-  subsample is drawn. That was chosen for determinism, not accuracy: the previous
+  1.2M feature-row budget, which the ≥$1 cohort — 916 of 5,536 items — fits whole, so no
+  item subsample is drawn. That was chosen for determinism, not accuracy: the previous
   subsample's seed alone moved cross-validated accuracy by 1.5–3.1pp, which is larger
   than most effects being measured. The cost is that the model sees under a thousand
   items, and nothing can currently add more (see below).
 - **Some sources are not point observations.** Steam's 7/30/90-day feeds are
-  trailing-window *mean sale* prices, but they vote in the consensus alongside live ask
-  prices. On illiquid items this smears the price series and shows up as frozen runs.
-  The size of the effect has been measured; the fix has not shipped.
+  trailing-window *mean sale* prices, and they used to vote in the consensus alongside
+  live ask prices, smearing the series on illiquid items into frozen runs. They were
+  excluded from the vote on 2026-08-09 (`TRAILING_WINDOW_SOURCES`), and the model was
+  retrained on the corrected consensus the next day. The correction cleaned the label's
+  basis but did not close the gap to the naive `−return_1d` baseline, which still wins at
+  every horizon.
 - **The walk-forward gate is not directly comparable to production.**
   `walkforward_backtest.py` uses its own price loader that skips multi-source voting and
   the backfill filter, collapsing duplicate item-days with a plain mean where production

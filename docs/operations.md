@@ -16,7 +16,7 @@ There is **no hang protection except one job-level timeout** — see
 
 | Secret | Used by | If unset |
 |---|---|---|
-| `SUPABASE_DATABASE_URL` | all five workflows | every DB step fails |
+| `SUPABASE_DATABASE_URL` | all six workflows | every DB step fails |
 | `CS2_DATA_REPO_TOKEN` | `aggregator-update`, `price-forecast`, `backtest-accuracy` | the **archive checkout fails before any collection or forecasting runs** — the job dies at `Checkout data archive` / `Checkout price archive` |
 
 `CS2_DATA_REPO_TOKEN` must be able to read *and* force-push
@@ -32,6 +32,7 @@ nothing in the daily pipeline reads them.
 | `price-forecast` | Chained off aggregator | ML price predictions (Monday sets `mode=full`) | `item_forecasts` + its Parquet mirror |
 | `backtest-accuracy` | Chained off forecast + 08:00 UTC Mon-Sat | Evaluate forecast accuracy, detect concept drift | `prediction_accuracy`, `forecast_outcomes`, `accuracy_alerts` |
 | `event-correlation-analysis` | Weekly Sun 04:00 UTC | Quantifies market-event price impacts | `event_correlations`, `event_impacts` |
+| `model-diagnostics` | Weekly Sun 02:00 UTC | Scores the served classifier — one matrix job per horizon, `--train-only`, measurement only | nothing (artifacts die with the runner) |
 | `discover-new-items` | Manual dispatch only | **Broken at import — cannot run** | nothing |
 
 `discover-new-items` is not merely dormant: `scripts/discover_steam_items.py:20` imports
@@ -312,8 +313,12 @@ python scripts/run_task.py aggregate
 # Forecast (with saved models)
 python scripts/forecast_prices.py --predict-only
 
-# Forecast (full retrain)
+# Forecast (predict, and retrain only if the age gate at forecast_prices.py:376-398
+# says the artifact is ≥14 days old — a fresh artifact degrades this to predict-only)
 python scripts/forecast_prices.py
+
+# Forecast (force a retrain — bypasses the age gate, writes no forecasts)
+python scripts/forecast_prices.py --train-only
 
 # Forecast (regime A/B comparison)
 python scripts/forecast_prices.py --compare-regime
@@ -325,8 +330,11 @@ python scripts/backtest_accuracy.py --type forecast
 python scripts/run_task.py event_correlation
 ```
 
-Anything that touches the archive expects `price-archive/` to exist at the repo root —
-create the symlink from the [archive section](#check-the-parquet-archive) first.
+Anything that touches the archive expects `price-archive/` to exist at the repo root — set it
+up from the [archive section](#check-the-parquet-archive) first. Note that on this machine it
+is a **plain local directory**, not a symlink and not a checkout, and it runs *behind* the
+durable archive. Editing it changes nothing in production: only CI writes
+`RayanR000/cs2-oracle-data`, via the orphan commit and force-push in `aggregator-update.yml`.
 
 ### Backtest: frozen outcomes and the two escape hatches
 

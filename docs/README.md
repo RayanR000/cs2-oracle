@@ -1,6 +1,6 @@
 # docs/
 
-Refreshed 2026-08-05 against the code. Where a doc and the code disagree, the code wins —
+Refreshed 2026-08-10 against the code. Where a doc and the code disagree, the code wins —
 report it rather than working around it.
 
 ## Architecture (`architecture/`)
@@ -25,6 +25,9 @@ report it rather than working around it.
   The rate-limit envelope applies to **residential IPs only** — hosted CI runners are
   429'd on the first request.
 - `data-sources.md` — per-source status, freshness, known issues
+- `data-inventory.md` — the canonical coverage audit: what is actually on disk, how much of
+  the market it covers, and where the history is thin. Companion to `data-sources.md`, which
+  says where the data comes from rather than what arrived
 - `catalog-build.md` — Steam catalog scrape: rate-limiting strategy, gap repair
 - `backfill.md` — **Dead capability.** CSMarketAPI multi-market backfill; the free-key
   quota never resets and the local DB is empty. Kept for the key-rotation and
@@ -47,7 +50,14 @@ report it rather than working around it.
 - `2026-08-09-next-steps.md` — ⭐ **the live action list.** Tracks O/G/A/C/D. **Track A is closed
   (all six cost levers shipped 2026-08-09); D1 answered — the Steam listing page works.** Read its
   status block first; it says which of the other tracks are done. **The gate is lifted** — Tracks C
-  and D are unblocked; O2 and G3 are the only pre-existing items still open.
+  and D are unblocked. O2 is the last pre-existing item still open — G3 landed in `873148b`,
+  and O4 closed 2026-08-10.
+- `2026-08-10-training-cost-levers.md` — **the current cost accounting**, measured against CI
+  runs `31337078991` and `31356483719`; supersedes the cost tables in
+  `changelog/2026-08-09-training-cost-levers.md`. Both measured runs are over the project's
+  30-minute wall-clock cap. ⚠️ **Read its own corrections banner** — three of its claims were
+  overturned when levers 1 and 4 landed the same day, including that lever 1 is free of
+  served effects (it is not; the regime half moves the served mid).
 - `2026-08-08-model-review.md` — the model review. ⚠️ **§5's composition rows are refuted in
   place** (2026-08-09); the fall attributed to composition control was a pre-2026-vs-2026 regime
   difference caused by a NULL-unsafe comparison.
@@ -100,9 +110,9 @@ also recorded in `changelog/`, which is the durable record. Load-bearing ones:
 ## Changelog (`changelog/`)
 
 Append-only dated decision records: bug fixes, features, audits, and refuted experiments.
-112 entries, 2026-07-08 to 2026-08-09. Entries are never edited to match later reality —
+119 entries, 2026-07-08 to 2026-08-10. Entries are never edited to match later reality —
 several describe code that has since been deleted, which is the point. Per `AGENTS.md`
-rule 4, non-trivial decisions get a new dated note here.
+workflow rule 2, non-trivial decisions get a new dated note here.
 
 ## Other
 
@@ -111,8 +121,12 @@ rule 4, non-trivial decisions get a new dated note here.
   key, session token in a redirect URL). Separates LIVE from DORMANT.
 - `operations.md` — runbook: workflow schedules, required secrets, load-bearing steps,
   troubleshooting
-- `design.md` — visual design system: OKLCH palette, typography, spacing, components
-- `product.md` — positioning, users, brand personality, design principles
+- `design.md` — ⚠️ **describes the frontend deleted 2026-08-10.** Visual design system:
+  OKLCH palette, typography, spacing, components. Bannered, and kept as **rebuild input
+  only** — the `frontend/app/*` paths it references no longer exist
+- `product.md` — ⚠️ **same: rebuild input, not a live spec.** Positioning, users, brand
+  personality, design principles, written in the present tense about an interface that
+  no longer ships
 
 ## Removed 2026-08-05
 

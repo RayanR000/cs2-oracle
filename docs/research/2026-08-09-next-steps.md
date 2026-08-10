@@ -19,19 +19,20 @@ Every item below carries its own status line. Summary, so nothing here is re-pro
 
 | Track | Done | Open |
 |---|---|---|
-| **O** | O1, O3 (the missing files — **22**, not 17) | **O4 (the post-re-vote retrain)**, O2, O3's snapshot deletion |
+| **O** | O1, **O4 (the post-re-vote retrain — done 2026-08-10)**, O3 (the missing files — **22**, not 17) | O2, O3's snapshot deletion |
 | **G** | **G1 (instrument + result), G2 part 1, G3** | G2 part 2 |
 | **A** | **A1–A6, all of them** | — |
 | **C** | C2's rank-IC half | C1, C2's `lambdarank` half, C3–C7 — **all unblocked** |
 | **D** | D1 (and it **answers**) | D2–D5 — **all unblocked** |
 
-⚠️ **New top item — O4.** G3 landed (`873148b`), which changed the consensus every label is built
-from. The shipped artifact was trained **2026-08-09 21:55 UTC**, before it, and the newest run of
-any workflow is on `895005a` — five commits behind `origin/main` @ `58d681e`. **Dispatch
-`price-forecast.yml` with `mode=full`, `FORCE_RETRAIN=1` before anything in Track C.** Until then
-there is no post-exclusion baseline to measure an accuracy change against, and production serves a
-model fitted to a vote that no longer exists. The run will vote **cold** — no `voted-v6-` cache key
-has ever been populated.
+✅ **O4 is done — do not re-dispatch it.** G3 (`873148b`) changed the consensus every label is
+built from, and the retrain onto it ran 2026-08-10 as run `31356483719`. The post-exclusion
+baseline exists and the `voted-v6-` cache key is populated. **Read O4 under Track O below for
+the result before starting Track C.** An earlier version of this block told the reader to dispatch
+`mode=full` with `FORCE_RETRAIN=1`; that instruction was wrong twice over — `mode=full` hits the
+14-day age gate and degrades to predict-only on a fresh artifact, and `FORCE_RETRAIN` is an
+environment variable the workflow neither sets nor exposes as a dispatch input. The way to force
+training is `mode=train-only` (`docs/changelog/2026-08-10-post-revote-retrain.md`).
 
 **Track A is closed.** All six shipped 2026-08-09 on branch `training-cost`, with the measured
 outcome — including three of this document's own predictions failing to reproduce — in

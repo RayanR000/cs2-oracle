@@ -1,7 +1,7 @@
 # Data Collection Pipelines
 
 One collector feeds the archive. Everything else is chained off it or runs on its own
-cron. Five workflows exist in `.github/workflows/`:
+cron. Six workflows exist in `.github/workflows/`:
 
 | Workflow | Trigger | What it does | Writes |
 |----------|---------|--------------|--------|
@@ -9,6 +9,7 @@ cron. Five workflows exist in `.github/workflows/`:
 | `price-forecast.yml` | `workflow_run` on *Aggregator Market Update* | Predict, and retrain when the model is ≥14 days old | `ops/item_forecasts.parquet` |
 | `backtest-accuracy.yml` | `workflow_run` on *Price Forecast*, plus cron `0 8 * * 1-6` | Resolve matured forecasts, score them | `ops/forecast_outcomes.parquet`, `ops/prediction_accuracy.parquet`, `ops/accuracy_alerts.parquet` |
 | `event-correlation-analysis.yml` | cron `0 4 * * 0` | Rebuild event/item impact correlations | `ops/events.parquet`, `ops/event_impacts_denorm.parquet` |
+| `model-diagnostics.yml` | cron `0 2 * * 0` | Score the served classifier — one matrix job per horizon, `--train-only`, artifacts discarded | nothing |
 | `discover-new-items.yml` | `workflow_dispatch` only | Steam item discovery — **broken at import**, see below | nothing |
 
 All four archive-writing workflows check out `RayanR000/cs2-oracle-data` and force-push it
@@ -72,8 +73,10 @@ under their own label, so they are recoverable at read time. See
   failure issue.
 
 ### Storage Strategy
-- **Parquet is the record.** `price-archive/` (a gitignored local symlink to a checkout of
-  `cs2-oracle-data`) holds all price data plus an `ops/` layer of operational tables.
+- **Parquet is the record.** `price-archive/` (a gitignored **plain local directory** — not
+  a symlink and not a checkout of `cs2-oracle-data`) holds all price data plus an `ops/`
+  layer of operational tables. Editing it changes nothing in production: the durable archive
+  is the separate `RayanR000/cs2-oracle-data` repo, which only CI writes.
 - **Supabase** gets only a `CollectionRun` row per run. Prices in `price_history` are
   stale and not written by this pipeline.
 

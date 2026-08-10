@@ -1,3 +1,11 @@
+> **The frontend this describes was deleted on 2026-08-10.** There is no Next.js app; the
+> `frontend/app/*` paths referenced throughout this document — `layout.tsx`, `globals.css`,
+> the six routes — no longer exist. See
+> [`changelog/2026-08-10-frontend-removed.md`](changelog/2026-08-10-frontend-removed.md).
+> This file is kept as **rebuild input only** — the design system it records is the starting
+> point for a rebuild, not a description of anything that currently runs. Read every present
+> tense below as past tense.
+
 <!-- THE MARKET DESK: the category standard, played straight. Chosen on 2026-08-09 via the
 standing exit on decision board 308b07a7 (roll seed 5654f592). Deal 7 of the concept-seed
 seeded run; after weighing challengers against the assigned Case Stencil Kit, the challenger
@@ -129,7 +137,7 @@ components:
   table: "sticky recessed header row of col-heads; hairline dividers; sort arrows in
     paper-tertiary; empty state with ∅ and a btn-secondary reset."
   verdict-strip: "Home accuracy strip: four cells (verdict with t, hit rate vs
-    chance with pp excess, q10-q90 coverage, cohort with horizon/dates/eval date)
+    chance with pp excess, conformal band coverage, cohort with horizon/dates/eval date)
     plus a 'Full Backtest' cell; verdict tone = up/down/neutral only, and
     `no_skill` is deliberately neutral — a completed null, not a failure."
 states:
@@ -143,4 +151,6 @@ icons: "Hand-drawn inline SVGs, 1.5px stroke, round caps; glyph set only — no 
   library. Header mark is the only filled/branded glyph."
 copy-tone: "Market ledger, not dive log. No metaphor vocabulary; the model's claims
   carry their measurement. Deltas always signed; forecasts always published as a
-  q10-q90 band with its horizon named."
+  split-conformal band around the q50 point forecast, with its horizon named. There are
+  no q10/q90 models — `forecaster.py` trains `QUANTILES = [0.5]` and the band comes from
+  `models/conformal.py`."

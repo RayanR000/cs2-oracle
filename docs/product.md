@@ -1,5 +1,12 @@
 # Product
 
+> **The frontend this describes was deleted on 2026-08-10.** No interface currently exists;
+> the API is the product surface. See
+> [`changelog/2026-08-10-frontend-removed.md`](changelog/2026-08-10-frontend-removed.md).
+> This file is kept as **rebuild input only** — the positioning, users and constraints below
+> are the starting point for a rebuild, not a description of anything that ships today. It is
+> written in the present tense throughout; read it as past tense.
+
 <!-- impeccable:product-schema 1 -->
 
 ## Register
@@ -22,7 +29,7 @@ CS2 Oracle is a precision analytical instrument for CS2 market intelligence. A u
 
 ## Positioning
 
-**Probabilistic forecasts with published accuracy.** Neighboring CS2 price sites report what a skin costs now and what it cost before. CS2 Oracle issues quantile forecasts — q10 / q50 / q90 at 3, 7, 14, and 30-day horizons — and then publishes how well those forecasts performed, via an automated daily backtest scoring MAE, MAPE, and a directional **significance test** against resolved outcomes.
+**Probabilistic forecasts with published accuracy.** Neighboring CS2 price sites report what a skin costs now and what it cost before. CS2 Oracle issues a point forecast with a calibrated uncertainty band — a q50 median return at 3, 7, 14, and 30-day horizons, banded by split-conformal calibration against out-of-fold residuals — and then publishes how well those forecasts performed, via an automated daily backtest scoring MAE, MAPE, and a directional **significance test** against resolved outcomes.
 
 The directional claim is a Pesaran–Timmermann verdict, not a hit rate. A raw hit rate on this market is not a claim about the model: an always-down call scored 29.4% on one stored forecast date and 76.9% on another, so the same number is skill on one day and incompetence on the next. The product publishes whether the calls beat the per-date chance null, and shows the hit rate only beside the constant-call baseline and the realised down-rate that make it readable.
 
@@ -40,7 +47,7 @@ The accountability is the position, not the prediction. A competitor can copy a 
 **Confirmed capabilities**
 
 - Item catalog with search, trending, and per-item detail; price history across sources with wear-tier selection.
-- ML price forecasts: a LightGBM quantile ensemble producing q10/q50/q90 at horizons `[3, 7, 14, 30]` days (`backend/models/forecaster.py`).
+- ML price forecasts: one LightGBM q50 regressor per horizon over `[3, 7, 14, 30]` days (`QUANTILES = [0.5]`, `backend/models/forecaster.py`), with the served band from split conformal (`backend/models/conformal.py`) rather than from q10/q90 models — those were measured and removed.
 - Automated accuracy backtesting written to `prediction_accuracy` and exposed at `/accuracy/*`.
 - Market signals — undervalued, overheated, momentum — plus a market-event timeline with correlation scoring.
 - Steam OpenID sign-in and a read-only Steam inventory snapshot for the portfolio view.
