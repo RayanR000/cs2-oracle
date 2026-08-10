@@ -206,8 +206,13 @@ seed are unaffected. `docs/changelog/2026-08-07-training-item-universe.md`.
 the served cohort. The ≥$1 cohort is **926 items / 993,464 item-days** at essentially the pool's
 own density, so a floor of 1.0 with `TRAIN_FEATURE_ROWS` ≥ 1.0M trains on the whole served cohort
 with **no subsample** — 538s, and the in-model permutation test goes from 7 WARN in 32
-horizon-runs to 4/4 PASS. It is **defaulted off**; see the changelog for the paired evidence
-(+3.50pp at 30d, null elsewhere) and for the caveat that `predict()` still writes sub-$1 rows.
+horizon-runs to 4/4 PASS. It has been **production's default since 2026-08-08** (floor 1.0 +
+1.2M budget, `DEFAULT_TRAIN_MIN_MEDIAN_PRICE` / `DEFAULT_TRAIN_FEATURE_ROWS`), and it shipped
+**on determinism, not accuracy**: removing the draw removes the seed's 1.5–3.1pp variance. The
+accuracy evidence is withdrawn — the stored +3.50pp at 30d re-derives to **+1.642pp
+[−0.809, +4.505], null**
+(`docs/changelog/2026-08-08-per-fold-price-filter-rederived.md`). See the changelog also for
+the caveat that `predict()` still writes sub-$1 rows.
 
 Raising it was measured and declined: 700,000 rows selects 646 items and costs **468.7s** against
 **104.6s** at 100,000 (:2801-2806). That is more than the pre-rewrite 40-model grid cost — the
@@ -527,12 +532,14 @@ autocorrelation — so the statistic is conservative by construction.
   `price_lag_1d`, `return_1d`, `log_return_1d` and `autocorr_1d` were median-filled on 100% of
   served rows because the archive's entire August was 08-01 and 08-04 (addressed by
   `LAG_TOLERANCE_DAYS = 3`; the underlying ingestion gaps remain).
-- **The model trains on 1.8% of the item pool** (99 of 5,377 items at the default row budget)
-  while `predict()` writes forecasts for **8,691 distinct items** on the latest date
-  (`price-archive/ops/item_forecasts.parquet`). Raising coverage on the unfiltered pool is a
-  measured ~4.5× cost increase and was declined; raising it **under a $1 median-price floor**
-  costs 538s and was measured at +3.50pp (30d, paired, held-out CV) and null elsewhere —
-  `docs/changelog/2026-08-07-training-item-universe.md`. The floor is defaulted off.
+- **The model trains on the whole ≥$1 cohort** (926 items / 993,464 item-days) since
+  2026-08-08, while `predict()` writes forecasts for **8,691 distinct items** on the latest
+  date (`price-archive/ops/item_forecasts.parquet`) — so the served pool is still far wider
+  than the trained one. Raising coverage on the *unfiltered* pool is a measured ~4.5× cost
+  increase and remains declined. The floor shipped for determinism: its stored accuracy
+  result, +3.50pp at 30d, re-derives to **+1.642pp [−0.809, +4.505], null**
+  (`docs/changelog/2026-08-08-per-fold-price-filter-rederived.md`), so do not cite it as an
+  accuracy gain. Prior write-up: `docs/changelog/2026-08-07-training-item-universe.md`.
 - **Which 99 items is worth more than any feature tested.** sd 1.5–3.1pp on
   `mean_classifier_acc_ge1` from the subsample seed alone. Read § Training row budget before
   comparing absolute accuracy across two retrains.
