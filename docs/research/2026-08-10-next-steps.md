@@ -221,7 +221,7 @@ Content in `docs/research/2026-08-09-next-steps.md`; re-ranked below N and F.
 
 | Item | State |
 |---|---|
-| `C1` | ⭐ **MEASURED 2026-08-10 and positive at all four horizons** — rank IC edge +0.0556 / +0.0561 / +0.0371 / +0.0316, served PT excess up 45–96%. The only arm to clear the `−return_1d` bar. Now the top item. `changelog/2026-08-10-instrument-panel-first-read.md`. |
+| `C1` | ⭐ **MEASURED and HP-CONFIRMED 2026-08-10; positive at all four horizons** — rank IC edge +0.0556 / +0.0561 / +0.0371 / +0.0316 on cached HP, rising to +0.0472 / +0.0446 at 14d/30d when re-tuned; served PT excess up 45–96%. The only arm to clear the `−return_1d` bar. Now the top item. `changelog/2026-08-10-instrument-panel-first-read.md`. |
 | `C3` | Residual reversal as a feature. Not started. Note the overlap with N1 — both are `−return_1d` derivatives. |
 | `C4` | Re-derive the feature allowlist with `cross_sectional` restored. Compute the MDE first; it may not clear the floor. |
 | `C5` | Split conformal + ACI. **Do F1 first.** |

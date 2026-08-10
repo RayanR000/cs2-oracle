@@ -120,9 +120,37 @@ carried at its raw scale, and the metric returns. The fix is confirmed by this p
 5. **All four arms share one label basis** (post-`873148b` re-vote). Do not compare any number
    here to a stored verdict predating 2026-08-09.
 
+## The HP confirm, run `31432640723` (`9d47768`, `xs_rank+hpsearch`)
+
+Caveat 1 above is now discharged at three horizons of four. **Re-tuning does not collapse the
+effect — it enlarges it.**
+
+| Horizon | cached HP | re-tuned | Optuna | served PT excess (cached → re-tuned) |
+|---|---|---|---|---|
+| 3d | +0.0556 | +0.0556 | **not run** | 7.933pp → 7.933pp |
+| 7d | +0.0561 | +0.0561 | 111.0s | 6.274pp → 6.274pp |
+| 14d | +0.0371 | **+0.0472** | 38.1s | 4.220pp → 4.464pp |
+| 30d | +0.0316 | **+0.0446** | 241.6s | 3.394pp → 4.068pp |
+
+Every cell is still positive, and every served PT excess still beats the control's
+4.819 / 3.207 / 2.393 / 2.333pp. The provisional +0.05 was not an artefact of hyperparameters
+tuned for a different feature scale.
+
+**3d cannot be confirmed this way, and that is a config fact rather than a result.**
+`ItemForecaster.SKIP_HP_HORIZONS = [3]` skips the search unconditionally, so `FORCE_HP_SEARCH=1`
+is a no-op at 3d and the run logs `skipped - SKIP_HP_HORIZONS`. Its numbers are identical to the
+cached read *by construction*, not by reproduction. The "confirm with `FORCE_HP_SEARCH=1`"
+instruction that both instrument changelogs carry silently does not apply at 3d — worth knowing
+before it is relied on again.
+
+**7d re-tuned to the same fold rank IC to four decimals** (0.2199) after a real 111.0s search
+that logged `best loss=-0.126100`. Consistent with a seeded search re-finding an equivalent
+optimum. The chosen params were not compared against the cached ones — only the fold metric was —
+so "re-found the same params" is an inference here, not a measurement.
+
 ## Not done
 
-- No `FORCE_HP_SEARCH=1` confirm on `xs_rank`.
+- No confirm at 3d, and none is possible without changing `SKIP_HP_HORIZONS`.
 - No combined `xs_rank + naive_init` arm. They are independent seams and the panel does not say
   whether they add.
 - N1 was not extended to the classifier's `Dataset`. That is the change that would make the N1
