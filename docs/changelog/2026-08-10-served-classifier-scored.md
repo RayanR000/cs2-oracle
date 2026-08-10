@@ -94,13 +94,39 @@ inside the 30-minute cap, and the separate scheduled job becomes unnecessary.
 `SKIP_REGIMES=1`, one horizon each, own data build) against a ±25% per-phase swing — the
 comparison this project's own docs warn against. One controlled run settles it.
 
+## 6. Confirmed in CI — run `31418286692`
+
+The corrected logging ran on `fix/served-classifier-invariant-4`, all four horizons green.
+Both lines emit, and the served PT is **computed**, not a re-print of the q50's:
+
+| h | PT t [quantile-sign] | PT t [SERVED classifier] | classifier edge vs constant |
+|---|---|---|---|
+| 3d | 12.1396 | **13.1775** | **+0.92pp** |
+| 7d | 7.0294 | **7.9998** | −4.08pp |
+| 14d | 3.0770 | **5.3976** | −9.65pp |
+| 30d | 3.3506 | **4.3058** | −16.01pp |
+
+The hand-derived edges in §1 (+0.9 / −4.1 / −9.7 / −16.0) were right to rounding. The
+served-side warnings fire at 7d/14d/30d and correctly stay silent at 3d.
+
+**The finding nobody was looking for: the served signal's PT margin is larger at every
+horizon, and most at the two that were called marginal** — 14d 3.077 → 5.398, 30d
+3.351 → 4.306.
+
+This bears on `CV_STEP_DAYS 150→300`, which was rejected on one ground: "fold count is also
+the sample behind PT, whose t scales with √n", with 14d marginal at t=3.077. That was the
+q50 sign. On the served signal, halving folds leaves 14d near 3.82.
+
+**Not a green light.** 30d lands near 3.05 after the √2 penalty — at the hurdle, given the
+q50's 30d read `no_skill` at 2.81 — and band coverage, the other gate on that lever, is
+still unmeasured. The *input* to the decision has changed; the decision has not.
+
+**It does not transfer to boost rounds.** Those tune the q50, so the q50's PT is the correct
+metric there and the standing "do not cut rounds" verdict is unaffected.
+
 ## Verification
 
 Full backend suite green: **1773 passed**, +4 over the previous 1769. The new tests cover the
 class-encoding map, that the served stream is empty when the diagnostic is off and populated
 when it is on, that both streams agree on outcomes, and a source-level guard that the served
-verdict has no fallback to the quantile sign.
-
-**Not yet re-run.** The corrected logging has not executed in CI — the numbers in §1 come
-from the run that exposed the gap, and `edge vs constant call` for the classifier is derived
-here by hand rather than read from a log.
+verdict has no fallback to the quantile sign. Confirmed end-to-end in CI, above.
