@@ -1,5 +1,18 @@
 # Deterministic Forecast Backtest Implementation Plan
 
+> # ✅ EXECUTED AND CLOSED (2026-08-01)
+>
+> All 9 tasks landed. Evidence: the `backend/backtest/` package
+> (`price_resolution.py`, `scoring.py`, `resolution_gate.py`), migration
+> `0019_freeze_forecast_outcome_actuals.py` (`528b764`), commits `ab2bcd9`, `dd115e2`, and the
+> determinism test at `backend/tests/test_backtest_scoring.py:1204`. Ledger:
+> `.superpowers/sdd/2026-08-01-deterministic-backtest/progress.md`.
+>
+> **Outcome and the prod backfill: `docs/changelog/2026-08-01-deterministic-backtest.md`** —
+> 60,737 outcomes rewritten, 0.4% unresolvable.
+>
+> The boxes below are ticked retroactively. Nothing here is outstanding.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Make the live forecast accuracy metric reproducible by scoring both legs of `actual_ret` with one shared price estimator, freezing resolved actuals, and reporting per price tier.
@@ -49,7 +62,7 @@
 - Consumes: nothing.
 - Produces: `ForecastOutcome.base_price: float | None`, `ForecastOutcome.resolved_at: datetime | None`, `PredictionAccuracy.price_tier: int | None`. Every later task reads these names.
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 Create `backend/tests/test_backtest_scoring.py`:
 
@@ -118,12 +131,12 @@ def test_prediction_accuracy_has_price_tier(session):
     assert session.query(PredictionAccuracy).one().price_tier == 1
 ```
 
-- [ ] **Step 2: Run test to verify it fails**
+- [x] **Step 2: Run test to verify it fails**
 
 Run: `python -m pytest tests/test_backtest_scoring.py -v`
 Expected: FAIL with `TypeError: 'base_price' is an invalid keyword argument for ForecastOutcome`
 
-- [ ] **Step 3: Add the ORM columns**
+- [x] **Step 3: Add the ORM columns**
 
 In `backend/database.py`, inside `class ForecastOutcome`, after the `actual_price` column (line 281):
 
@@ -150,7 +163,7 @@ In `class PredictionAccuracy`, after the `horizon_days` column (line 248):
     price_tier = Column(Integer, nullable=True)
 ```
 
-- [ ] **Step 4: Write the migration**
+- [x] **Step 4: Write the migration**
 
 Create `backend/migrations/versions/0019_freeze_forecast_outcome_actuals.py`:
 
@@ -194,12 +207,12 @@ def downgrade() -> None:
     op.drop_column("forecast_outcomes", "base_price")
 ```
 
-- [ ] **Step 5: Run tests to verify they pass**
+- [x] **Step 5: Run tests to verify they pass**
 
 Run: `python -m pytest tests/test_backtest_scoring.py -v`
 Expected: PASS (2 passed)
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add backend/database.py backend/migrations/versions/0019_freeze_forecast_outcome_actuals.py backend/tests/test_backtest_scoring.py
@@ -225,7 +238,7 @@ This is the fix. Everything else is plumbing around it.
     - `voted` has columns `item_id` (slug string), `date` (`datetime.date`), `price` (float), already voted and one row per item-day.
     - Returns only resolvable anchors. An anchor absent from the result means "unresolvable", which callers must treat as a dropped forecast.
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 Create `backend/tests/test_backtest_resolution.py`:
 
@@ -328,12 +341,12 @@ def test_constants_match_the_codebase_staleness_convention():
     assert MAX_WINDOW_SPAN_DAYS == FALLBACK_MAX_AGE_DAYS
 ```
 
-- [ ] **Step 2: Run tests to verify they fail**
+- [x] **Step 2: Run tests to verify they fail**
 
 Run: `python -m pytest tests/test_backtest_resolution.py -v`
 Expected: FAIL with `ModuleNotFoundError: No module named 'backtest'`
 
-- [ ] **Step 3: Create the package and implement the estimator**
+- [x] **Step 3: Create the package and implement the estimator**
 
 Create `backend/backtest/__init__.py` as an empty file.
 
@@ -419,18 +432,18 @@ def smoothed_prices(
     return resolved
 ```
 
-- [ ] **Step 4: Run tests to verify they pass**
+- [x] **Step 4: Run tests to verify they pass**
 
 Run: `python -m pytest tests/test_backtest_resolution.py -v`
 Expected: PASS (8 passed)
 
-- [ ] **Step 5: Mutation-check the staleness cap**
+- [x] **Step 5: Mutation-check the staleness cap**
 
 Temporarily change `MAX_WINDOW_SPAN_DAYS` to `9999` and re-run.
 Expected: `test_lookback_is_row_based_not_calendar_based` and `test_staleness_cap_rejects_scattered_observations` both FAIL.
 Revert to `7` and confirm they pass again. A cap whose tests still pass when the cap is disabled is not testing the cap.
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add backend/backtest/ backend/tests/test_backtest_resolution.py
@@ -449,7 +462,7 @@ git commit -m "feat: shared 3-observation price estimator for both backtest legs
 - Consumes: `smoothed_prices` from Task 2.
 - Produces: `load_voted_prices(archive_dir: Path, slugs: list[str], min_date: date, max_date: date) -> pd.DataFrame` returning columns `item_id`, `date`, `price`. Raises `FileNotFoundError` when `archive_dir` does not exist.
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 Append to `backend/tests/test_backtest_resolution.py`:
 
@@ -508,12 +521,12 @@ def test_window_dates_before_the_range_are_loaded(tmp_path):
     assert len(out) == 3
 ```
 
-- [ ] **Step 2: Run tests to verify they fail**
+- [x] **Step 2: Run tests to verify they fail**
 
 Run: `python -m pytest tests/test_backtest_resolution.py -k load -v`
 Expected: FAIL with `ImportError: cannot import name 'load_voted_prices'`
 
-- [ ] **Step 3: Implement the loader**
+- [x] **Step 3: Implement the loader**
 
 Append to `backend/backtest/price_resolution.py`:
 
@@ -593,12 +606,12 @@ Note the `JOIN` against a registered frame rather than the current
 f-string `IN (...)` list at `backtest_accuracy.py:160-167` — that built a
 literal containing every slug, with manual quote-escaping.
 
-- [ ] **Step 4: Run tests to verify they pass**
+- [x] **Step 4: Run tests to verify they pass**
 
 Run: `python -m pytest tests/test_backtest_resolution.py -v`
 Expected: PASS (11 passed)
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add backend/backtest/price_resolution.py backend/tests/test_backtest_resolution.py
@@ -626,7 +639,7 @@ Moves the metric math out of the resolve loop with **no metric changes** — sam
 
 **One deliberate non-change:** `pct_error` stays `abs(mid - actual) / base * 100`, i.e. divided by the *base* leg rather than by `actual`. That is unusual for a MAPE, but it is what the current code does (`backtest_accuracy.py:340`, using `current`). Changing it would move MAPE for reasons unrelated to determinism. Flag it in the changelog as a known oddity; do not fix it here.
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 Append to `backend/tests/test_backtest_scoring.py`:
 
@@ -704,12 +717,12 @@ def test_score_cohort_uses_base_price_for_the_persistence_baseline():
     assert metrics["baseline_mae"] == 0.5
 ```
 
-- [ ] **Step 2: Run tests to verify they fail**
+- [x] **Step 2: Run tests to verify they fail**
 
 Run: `python -m pytest tests/test_backtest_scoring.py -v`
 Expected: FAIL with `ModuleNotFoundError: No module named 'backtest.scoring'`
 
-- [ ] **Step 3: Create the pure scorer**
+- [x] **Step 3: Create the pure scorer**
 
 Create `backend/backtest/scoring.py`. Move the bodies verbatim from
 `backtest_accuracy.py` — lines 36-40 (constants), 43-48
@@ -848,7 +861,7 @@ def score_cohort(records: list[dict]) -> tuple[dict, int]:
     return metrics, n
 ```
 
-- [ ] **Step 4: Rewire `backtest_accuracy.py` to call it**
+- [x] **Step 4: Rewire `backtest_accuracy.py` to call it**
 
 Delete lines 36-40, 43-48, 51-60, 63-76 from `backend/scripts/backtest_accuracy.py` and add to its imports:
 
@@ -884,12 +897,12 @@ Replace the metric block at lines 379-500 with:
 
 Update the two remaining call sites of the renamed helpers: `_direction_from_return(actual_ret)` → `direction_from_return(actual_ret)` (line 328) and `_price_tier(current)` → `price_tier(current)` (line 336).
 
-- [ ] **Step 5: Run the full suite**
+- [x] **Step 5: Run the full suite**
 
 Run: `python -m pytest tests/ -q`
 Expected: PASS. Previously 235 tests passed; expect 235 + the new ones.
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add backend/backtest/scoring.py backend/scripts/backtest_accuracy.py backend/tests/test_backtest_scoring.py
@@ -910,7 +923,7 @@ The behavioural change. After this task the metric is symmetric.
 - Consumes: `load_voted_prices`, `smoothed_prices` (Tasks 2–3); `direction_from_return`, `price_tier` (Task 4).
 - Produces: outcome dicts now carrying `base_price`, and `resolved_at`.
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 Append to `backend/tests/test_backtest_scoring.py`:
 
@@ -956,12 +969,12 @@ def test_resolution_drops_rather_than_falling_back_when_a_leg_is_unresolvable():
     assert ("ak", date(2026, 7, 8)) not in prices
 ```
 
-- [ ] **Step 2: Run tests to verify they fail**
+- [x] **Step 2: Run tests to verify they fail**
 
 Run: `python -m pytest tests/test_backtest_scoring.py -k legs -v`
 Expected: FAIL — `test_both_legs_use_the_same_estimator_so_a_flat_market_scores_flat` errors on the `direction_from_return` import if Task 4's import line was not added.
 
-- [ ] **Step 3: Delete `_load_actual_prices` and rewrite the resolve loop**
+- [x] **Step 3: Delete `_load_actual_prices` and rewrite the resolve loop**
 
 Delete `backend/scripts/backtest_accuracy.py:110-193` entirely.
 
@@ -1068,7 +1081,7 @@ Add `from backtest.price_resolution import load_voted_prices, smoothed_prices` t
 
 `current_price` is still *written* to the outcome row for reference, but nothing reads it for scoring.
 
-- [ ] **Step 4: Add the unresolvable-rate gate**
+- [x] **Step 4: Add the unresolvable-rate gate**
 
 After the group loop in `backtest_forecasts`, before `_upsert_accuracy`:
 
@@ -1086,12 +1099,12 @@ After the group loop in `backtest_forecasts`, before `_upsert_accuracy`:
 
 With `MAX_UNRESOLVABLE_PCT = 10.0` alongside the other module constants.
 
-- [ ] **Step 5: Run the full suite**
+- [x] **Step 5: Run the full suite**
 
 Run: `python -m pytest tests/ -q`
 Expected: PASS
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add backend/scripts/backtest_accuracy.py backend/tests/test_backtest_scoring.py
@@ -1110,7 +1123,7 @@ git commit -m "fix: score both legs of actual_ret with one shared estimator"
 - Consumes: outcome dicts from Task 5.
 - Produces: `_store_forecast_outcomes(db, outcomes, reresolve: bool = False) -> int` returning the number of rows actually written. CLI flags `--rescore` and `--reresolve`.
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 Append to `backend/tests/test_backtest_scoring.py`:
 
@@ -1178,12 +1191,12 @@ def test_reresolve_overrides_the_freeze(session):
     assert session.query(ForecastOutcome).filter_by(forecast_id=8).one().actual_price == 99.0
 ```
 
-- [ ] **Step 2: Run tests to verify they fail**
+- [x] **Step 2: Run tests to verify they fail**
 
 Run: `python -m pytest tests/test_backtest_scoring.py -k resolve -v`
 Expected: FAIL — the current implementation deletes and re-inserts, so the second call returns the full count and `actual_price` becomes `99.0`.
 
-- [ ] **Step 3: Make resolution insert-only**
+- [x] **Step 3: Make resolution insert-only**
 
 Replace `_store_forecast_outcomes` (lines 200-240) with:
 
@@ -1245,7 +1258,7 @@ def _store_forecast_outcomes(db, outcomes, reresolve: bool = False) -> int:
     return len(to_write)
 ```
 
-- [ ] **Step 4: Add the CLI flags**
+- [x] **Step 4: Add the CLI flags**
 
 In `main()` at `backend/scripts/backtest_accuracy.py:380`, alongside the existing arg parsing:
 
@@ -1331,18 +1344,18 @@ Update the module docstring usage block (lines 9-11) to list all three invocatio
     python scripts/backtest_accuracy.py --reresolve      # re-read the archive
 ```
 
-- [ ] **Step 5: Run tests**
+- [x] **Step 5: Run tests**
 
 Run: `python -m pytest tests/test_backtest_scoring.py -v`
 Expected: PASS
 
-- [ ] **Step 6: Mutation-check the freeze**
+- [x] **Step 6: Mutation-check the freeze**
 
 Temporarily force `to_write = outcomes` unconditionally and re-run.
 Expected: `test_resolution_is_insert_only` FAILS with `actual_price == 99.0`.
 Revert and confirm it passes.
 
-- [ ] **Step 7: Commit**
+- [x] **Step 7: Commit**
 
 ```bash
 git add backend/scripts/backtest_accuracy.py backend/tests/test_backtest_scoring.py
@@ -1361,7 +1374,7 @@ git commit -m "fix: freeze resolved backtest actuals; add --rescore/--reresolve"
 - Consumes: `score_cohort` (Task 4).
 - Produces: `score_by_tier(records: list[dict]) -> list[tuple[int | None, dict, int]]` — one entry per tier present plus a final `(None, metrics, n)` all-tiers row. `HEADLINE_MIN_TIER: int = 1`.
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 Append to `backend/tests/test_backtest_scoring.py`:
 
@@ -1395,12 +1408,12 @@ def test_headline_tier_is_one_dollar_and_up():
     assert price_tier(1.00) >= HEADLINE_MIN_TIER
 ```
 
-- [ ] **Step 2: Run tests to verify they fail**
+- [x] **Step 2: Run tests to verify they fail**
 
 Run: `python -m pytest tests/test_backtest_scoring.py -k tier -v`
 Expected: FAIL with `ImportError: cannot import name 'score_by_tier'`
 
-- [ ] **Step 3: Implement tiered scoring**
+- [x] **Step 3: Implement tiered scoring**
 
 Append to `backend/backtest/scoring.py`:
 
@@ -1440,7 +1453,7 @@ def headline_records(records: list[dict]) -> list[dict]:
     return [r for r in records if r["price_tier"] >= HEADLINE_MIN_TIER]
 ```
 
-- [ ] **Step 4: Emit tier rows and the split log line**
+- [x] **Step 4: Emit tier rows and the split log line**
 
 In `backtest_forecasts`, replace the single `results.append(...)` with:
 
@@ -1489,7 +1502,7 @@ Note the `* 100` on the CI bounds. `bootstrap_ci` runs over 0/1 values so it
 returns fractions, which the old line printed unscaled next to a percentage —
 producing `DirAcc=55.0% [CI: 0.5–0.6]`.
 
-- [ ] **Step 5: Extend the upsert key**
+- [x] **Step 5: Extend the upsert key**
 
 In `_upsert_accuracy` (line 79), add `price_tier` to the filter dict so tier rows do not overwrite each other:
 
@@ -1505,12 +1518,12 @@ and add `price_tier` to the `append_table` dedup keys at line 107:
                       "model_version", "price_tier"])
 ```
 
-- [ ] **Step 6: Run the full suite**
+- [x] **Step 6: Run the full suite**
 
 Run: `python -m pytest tests/ -q`
 Expected: PASS
 
-- [ ] **Step 7: Commit**
+- [x] **Step 7: Commit**
 
 ```bash
 git add backend/backtest/scoring.py backend/scripts/backtest_accuracy.py backend/tests/test_backtest_scoring.py
@@ -1530,7 +1543,7 @@ The test that would have caught the original bug. Written last because it needs 
 - Consumes: everything from Tasks 2–7.
 - Produces: nothing.
 
-- [ ] **Step 1: Write the test**
+- [x] **Step 1: Write the test**
 
 ```python
 def test_metrics_are_stable_when_the_archive_gains_a_source_row(tmp_path):
@@ -1588,18 +1601,18 @@ def test_metrics_are_stable_when_the_archive_gains_a_source_row(tmp_path):
     assert after[("ak", date(2026, 7, 8))] == before[("ak", date(2026, 7, 8))]
 ```
 
-- [ ] **Step 2: Run it**
+- [x] **Step 2: Run it**
 
 Run: `python -m pytest tests/test_backtest_scoring.py -k stable -v`
 Expected: PASS
 
-- [ ] **Step 3: Mutation-check it**
+- [x] **Step 3: Mutation-check it**
 
 Temporarily change `smoothed_prices` to return the single anchor-day price instead of the window median (`selected = selected[-1:]`).
 Expected: the test FAILS — the outlier source moves the 07-08 price.
 Revert and confirm PASS.
 
-- [ ] **Step 4: Commit**
+- [x] **Step 4: Commit**
 
 ```bash
 git add backend/tests/test_backtest_scoring.py
@@ -1618,7 +1631,7 @@ git commit -m "test: archive revision must not move reported accuracy"
 - Consumes: the `--reresolve` flag (Task 6).
 - Produces: nothing.
 
-- [ ] **Step 1: Re-resolve the historical outcomes**
+- [x] **Step 1: Re-resolve the historical outcomes**
 
 The 65,642 existing outcomes carry an `actual_price` from the old estimator and no `base_price`. Run once:
 
@@ -1626,7 +1639,7 @@ The 65,642 existing outcomes carry an `actual_price` from the old estimator and 
 cd backend && python scripts/backtest_accuracy.py --type forecast --reresolve 2>&1 | tee /tmp/reresolve.log
 ```
 
-- [ ] **Step 2: Verify the backfill against prod rows, not a green exit**
+- [x] **Step 2: Verify the backfill against prod rows, not a green exit**
 
 Per `collectors-fail-silently`, a zero exit is not evidence. Confirm every outcome now has a `base_price` and that the headline moved for the expected reason:
 
@@ -1640,21 +1653,21 @@ print(duckdb.sql(f'''select count(*) n, count(base_price) with_base,
 ```
 Expected: `with_base == resolved == n`.
 
-- [ ] **Step 3: Record the before/after**
+- [x] **Step 3: Record the before/after**
 
 Capture the 3d/7d/14d/30d directional accuracy per model version before and after, and put both tables in the changelog. The historical series *will* move — that is the fix landing, and the entry must say so plainly rather than presenting the new numbers as if they were always there.
 
-- [ ] **Step 4: Write the changelog**
+- [x] **Step 4: Write the changelog**
 
 Create `docs/changelog/2026-08-01-deterministic-backtest.md` covering: the 61.76/33.74/61.54/57.91 evidence, the two-estimator root cause with file:line references, the shared estimator and its staleness cap, the freeze semantics and the two escape hatches, the tier split with the <$0.50 tick-noise table, the `pct_error`-divided-by-base oddity left deliberately unfixed (Task 4), and the before/after accuracy tables from Step 3.
 
-- [ ] **Step 5: Update the docs**
+- [x] **Step 5: Update the docs**
 
 - `backend/AGENTS.md` — add a gotcha: the backtest resolves both legs through `backtest.price_resolution.smoothed_prices`; `item_forecasts.current_price` is written but never scored on; resolved outcomes are frozen and `--reresolve` is the only thing that moves them.
 - `docs/operations.md` — document `--rescore` / `--reresolve` and the unresolvable-rate gate.
 - `docs/README.md` — bump the changelog entry count.
 
-- [ ] **Step 6: Run the full suite and commit**
+- [x] **Step 6: Run the full suite and commit**
 
 ```bash
 cd backend && python -m pytest tests/ -q

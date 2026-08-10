@@ -1,12 +1,26 @@
 # Data organisation — next steps (2026-08-07)
 
+> ## Status — 2026-08-09: item 1 ✅ SHIPPED. Items 2–6 are still open.
+>
+> **This is the most outstanding plan in `docs/superpowers/plans/`.** Verified against the
+> canonical `RayanR000/cs2-oracle-data` repo, not the local copy.
+>
+> | # | Status |
+> |---|---|
+> | 1 — ship to production | ✅ **done**. Commits `b55c15b`, `c0f0349` are ancestors of `origin/main`; dispatch `31246426269` ran `Normalize the price schema: success`. **Both legs verified on the canonical repo:** `prices-2026-08.parquet` carries `item_slug, day, source, mean_price, volume, ingested_at`, and `ops/forecast_outcomes.parquet` has **22 columns including `item_slug`**. |
+> | 2 — the orphaned outcomes | ⬜ **open, and the number got worse.** The canonical `ops/forecast_outcomes.parquet` now has **11,084 of 48,241 rows with a non-NULL `item_slug` — 77% NULL**, against the 30% this document was written against. The row count also fell from 104,642, so the file was rewritten in between. Neither the accuracy comparison nor the phantom-purge question below has been answered. |
+> | 3 — move `raw/`, delete the three ambiguities | ⬜ not started. `price-archive/raw/17mafo`, `exchange-rates-2026.parquet`, `player-counts/` and `2026/` are all still present, locally **and** in the canonical repo. |
+> | 4 — route scripts through `db/archive.py` | ⬜ not started. The two load-bearing `Path("../price-archive")` defaults still exist. |
+> | 5 — publish or `derive/` the three local-only ingests | 🟡 **effectively resolved the other way.** All three are now **published** to the canonical repo (`event-calendar.parquet`, `exchange-rates-history.parquet`, `item-metadata-bymykel.parquet` + codes JSON), so the "publish vs `derived/`" decision was taken by publishing. No `price-archive/derived/` exists. Item 5's stated cost — three extra workflow steps — is already paid. |
+> | 6 — document rarity precedence, refresh the `data.md` tree | ⬜ not started. Partial provenance exists at `docs/references/data-sources.md:34`; `data.md`'s tree is stale and omits `volume-*`, `event-calendar`, `event-news`, `exchange-rates-history` and `item-metadata-bymykel`. |
+
 Follow-on from `docs/changelog/2026-08-07-archive-schema-and-keys.md`, which
 landed items 1 and 2 of a six-item review. Items 3–6 remain, plus two things the
 landed work created or exposed.
 
 ## Blocking
 
-### 1. Ship items 1 and 2 to production
+### 1. Ship items 1 and 2 to production — ✅ **DONE 2026-08-08**
 
 Everything so far is on the local `price-archive/`, an unlinked working copy.
 Prod still has the four-column glob read and un-joinable ops tables.
@@ -27,7 +41,13 @@ Prod still has the four-column glob read and un-joinable ops tables.
 The code is safe to ship ahead of the data migration — `prices_relation` reads a
 migrated and an unmigrated archive identically — so a partial rollout is fine.
 
-### 2. Decide what the 31,422 orphaned outcomes mean
+### 2. Decide what the 31,422 orphaned outcomes mean — ⬜ **STILL OPEN, and larger than stated**
+
+> **Re-measured 2026-08-09 on the canonical repo:** 48,241 rows, of which only **11,084 carry a
+> slug — 77% NULL**, not 30%. The file was also rewritten between the two readings (104,642 →
+> 48,241 rows), so this is not a like-for-like growth: both the numerator and the denominator
+> moved, and the reconciliation is itself part of the answer. The `WHERE item_slug IS NULL`
+> comparison below has never been run.
 
 `ops/forecast_outcomes.parquet` has 31,422 of 104,642 rows whose `item_id` has
 no row in `items` (30%). They keep a NULL slug after the backfill.

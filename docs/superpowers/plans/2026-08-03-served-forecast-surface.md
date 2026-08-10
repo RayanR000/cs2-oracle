@@ -1,5 +1,16 @@
 # Served Forecast Surface Implementation Plan
 
+> # ✅ EXECUTED AND CLOSED (2026-08-03)
+>
+> All 7 tasks landed. Evidence: `backend/api/serving_policy.py` (`acbbff1`,
+> `MIN_SERVED_PRICE_USD = 1.0`), `backend/scripts/check_forecast_freshness.py`, the
+> "Verify forecasts were persisted" step at `price-forecast.yml:206`, and the removal of the
+> `sub=` confidence badge from `frontend/app/items/[id]/page.tsx`.
+>
+> **Outcome: `docs/changelog/2026-08-03-served-forecast-surface.md`.**
+>
+> The boxes below are ticked retroactively. Nothing here is outstanding.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Stop the API from selecting and ranking forecasts by an anti-predictive confidence flag, restrict ranked surfaces to items whose direction labels are not tick-quantization artifacts, and make the daily forecast run fail loudly when it persists nothing.
@@ -33,7 +44,7 @@
   - `price_floor_clause(column) -> ColumnElement` — SQLAlchemy `column >= MIN_SERVED_PRICE_USD`.
   - `meets_price_floor(price: float | None) -> bool` — the in-Python equivalent; `None` is False.
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 Create `backend/tests/test_serving_policy.py`:
 
@@ -97,7 +108,7 @@ class TestMeetsPriceFloor:
         assert meets_price_floor(0.0) is False
 ```
 
-- [ ] **Step 2: Run test to verify it fails**
+- [x] **Step 2: Run test to verify it fails**
 
 ```bash
 cd backend && python3 -m pytest tests/test_serving_policy.py -v
@@ -105,7 +116,7 @@ cd backend && python3 -m pytest tests/test_serving_policy.py -v
 
 Expected: FAIL — `ModuleNotFoundError: No module named 'api.serving_policy'`.
 
-- [ ] **Step 3: Write minimal implementation**
+- [x] **Step 3: Write minimal implementation**
 
 Create `backend/api/serving_policy.py`:
 
@@ -146,7 +157,7 @@ def meets_price_floor(price: float | None) -> bool:
     return price >= MIN_SERVED_PRICE_USD
 ```
 
-- [ ] **Step 4: Run test to verify it passes**
+- [x] **Step 4: Run test to verify it passes**
 
 ```bash
 cd backend && python3 -m pytest tests/test_serving_policy.py -v
@@ -154,7 +165,7 @@ cd backend && python3 -m pytest tests/test_serving_policy.py -v
 
 Expected: PASS, 7 tests.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add backend/api/serving_policy.py backend/tests/test_serving_policy.py
@@ -175,7 +186,7 @@ git commit -m "feat: add serving price floor pinned to the headline accuracy tie
   - `opportunity_type_for(direction: str | None) -> str` — returns `"undervalued"` / `"overheated"` / `"momentum"`.
   - `select_opportunities(forecasts, items_map, type_filter, limit) -> list[OpportunityOut]` — pure; takes already-fetched rows.
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 Create `backend/tests/test_opportunity_selection.py`:
 
@@ -307,7 +318,7 @@ class TestNoConfidenceGateRemains:
         assert "high confidence" not in source
 ```
 
-- [ ] **Step 2: Run test to verify it fails**
+- [x] **Step 2: Run test to verify it fails**
 
 ```bash
 cd backend && python3 -m pytest tests/test_opportunity_selection.py -v
@@ -315,7 +326,7 @@ cd backend && python3 -m pytest tests/test_opportunity_selection.py -v
 
 Expected: FAIL — `ImportError: cannot import name 'opportunity_type_for'`.
 
-- [ ] **Step 3: Write the implementation**
+- [x] **Step 3: Write the implementation**
 
 In `backend/api/routes/opportunities.py`, add to the imports after line 8 (`from api.schemas import OpportunityOut`):
 
@@ -395,7 +406,7 @@ In `/overheated` (lines 156-198): make the identical two edits — delete `ItemF
 
 In `/momentum` (lines 201-246): there is no confidence gate to remove; replace `ItemForecast.current_price > 0,` with `price_floor_clause(ItemForecast.current_price),`.
 
-- [ ] **Step 4: Run tests to verify they pass**
+- [x] **Step 4: Run tests to verify they pass**
 
 ```bash
 cd backend && python3 -m pytest tests/test_opportunity_selection.py tests/test_serving_policy.py -v
@@ -409,7 +420,7 @@ cd backend && python3 -c "import api.routes.opportunities; print('ok')"
 
 Expected: `ok`.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add backend/api/routes/opportunities.py backend/tests/test_opportunity_selection.py
@@ -428,7 +439,7 @@ git commit -m "fix: stop gating opportunities on the anti-predictive confidence 
 - Consumes: `price_floor_clause` from Task 1.
 - Produces: nothing consumed by later tasks.
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 Create `backend/tests/test_trending_ranking.py`:
 
@@ -465,7 +476,7 @@ class TestTrendingDoesNotRankByConfidence:
         assert "price_floor_clause" in source
 ```
 
-- [ ] **Step 2: Run test to verify it fails**
+- [x] **Step 2: Run test to verify it fails**
 
 ```bash
 cd backend && python3 -m pytest tests/test_trending_ranking.py -v
@@ -473,7 +484,7 @@ cd backend && python3 -m pytest tests/test_trending_ranking.py -v
 
 Expected: FAIL on all three — `confidence_order` and `"medium"` are present, `price_floor_clause` is not.
 
-- [ ] **Step 3: Write the implementation**
+- [x] **Step 3: Write the implementation**
 
 In `backend/api/routes/items.py`, add to the import block after line 16 (`from api.cache import get_or_build`):
 
@@ -501,7 +512,7 @@ Delete the `confidence_order` block (lines 114-118) entirely, and change the `or
 
 Leave `subq.c.confidence` in the `db.query(...)` select list on line 121 and the `Item.icon_url` / `backfilled_item_clause()` filter untouched. The floor sits on the joined forecast, not on `Item`, so a sub-$1 item still appears in the list — it simply carries no forecast annotation. That is intentional: this is a list of items, and only the forecast attached to it is subject to the floor.
 
-- [ ] **Step 4: Run tests to verify they pass**
+- [x] **Step 4: Run tests to verify they pass**
 
 ```bash
 cd backend && python3 -m pytest tests/test_trending_ranking.py -v && python3 -c "import api.routes.items; print('ok')"
@@ -509,7 +520,7 @@ cd backend && python3 -m pytest tests/test_trending_ranking.py -v && python3 -c 
 
 Expected: PASS, 3 tests, then `ok`.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add backend/api/routes/items.py backend/tests/test_trending_ranking.py
@@ -528,7 +539,7 @@ git commit -m "fix: rank trending by predicted return instead of confidence"
 - Consumes: nothing from earlier tasks.
 - Produces: `_build_trend_explanation(direction: str, current_price) -> str` — the `confidence` parameter is removed.
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 Create `backend/tests/test_trend_explanation_copy.py`:
 
@@ -572,7 +583,7 @@ class TestExplanationCopy:
         assert "confidence" not in params
 ```
 
-- [ ] **Step 2: Run test to verify it fails**
+- [x] **Step 2: Run test to verify it fails**
 
 ```bash
 cd backend && python3 -m pytest tests/test_trend_explanation_copy.py -v
@@ -580,7 +591,7 @@ cd backend && python3 -m pytest tests/test_trend_explanation_copy.py -v
 
 Expected: FAIL — `TypeError: _build_trend_explanation() missing 1 required positional argument: 'current_price'`, because the current signature takes three arguments.
 
-- [ ] **Step 3: Write the implementation**
+- [x] **Step 3: Write the implementation**
 
 Replace `_build_trend_explanation` (`items.py:508-513`):
 
@@ -607,7 +618,7 @@ Update the call site in the DB trends path (`items.py:449`):
 
 Leave the `confidence = ...` assignments on lines 359 and 447 in place — both still populate `TrendAnalysisOut.confidence`, which stays on the schema.
 
-- [ ] **Step 4: Run tests to verify they pass**
+- [x] **Step 4: Run tests to verify they pass**
 
 ```bash
 cd backend && python3 -m pytest tests/test_trend_explanation_copy.py -v && grep -n "_build_trend_explanation" api/routes/items.py
@@ -615,7 +626,7 @@ cd backend && python3 -m pytest tests/test_trend_explanation_copy.py -v && grep 
 
 Expected: PASS, 7 tests. The `grep` must show exactly three lines — the definition and two call sites — each with two arguments.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add backend/api/routes/items.py backend/tests/test_trend_explanation_copy.py
@@ -634,7 +645,7 @@ git commit -m "fix: stop narrating a confidence level in trend explanations"
 
 **Scope note:** the design spec lists only backend files. This task is included because the spec's stated goal is the accuracy of what the product *shows*, and a page rendering "Confidence high" on a forecast realizing ~25% accuracy defeats that goal regardless of what the backend copy says. Flag it if you would rather ship backend-only.
 
-- [ ] **Step 1: Find the badge and confirm the current state**
+- [x] **Step 1: Find the badge and confirm the current state**
 
 ```bash
 cd frontend && grep -n "Confidence" app/items/\[id\]/page.tsx
@@ -642,11 +653,11 @@ cd frontend && grep -n "Confidence" app/items/\[id\]/page.tsx
 
 Expected: two matches. Line 426 — `sub={\`Confidence ${confidence}\`}` — is the forecast badge and the one to remove. Line 623 — `Confidence: {imp.confidence_score.toFixed(2)}` — is an event-impact correlation score, unrelated to forecast confidence; **leave it alone.**
 
-- [ ] **Step 2: Remove the sub-label**
+- [x] **Step 2: Remove the sub-label**
 
 On line 426, delete the whole `sub={...}` prop from that `MetricCard`, leaving its other props untouched. Do not delete the `confidence` local on line 287 or the type on line 47.
 
-- [ ] **Step 3: Verify nothing else renders it and the app still builds**
+- [x] **Step 3: Verify nothing else renders it and the app still builds**
 
 ```bash
 cd frontend && grep -rn "Confidence \${" app/ ; npm run build
@@ -654,7 +665,7 @@ cd frontend && grep -rn "Confidence \${" app/ ; npm run build
 
 Expected: the `grep` returns nothing (exit 1 is fine), and the build completes without type errors. If `npm run build` is not runnable in this environment, run `npx tsc --noEmit` instead and expect no new errors.
 
-- [ ] **Step 4: Commit**
+- [x] **Step 4: Commit**
 
 ```bash
 git add "frontend/app/items/[id]/page.tsx"
@@ -674,7 +685,7 @@ git commit -m "fix: stop displaying the anti-predictive confidence badge"
 - Consumes: nothing from earlier tasks.
 - Produces: `newest_forecast_date(dates: list[date | None]) -> date | None` and `freshness_verdict(db_newest, parquet_newest, expected) -> tuple[bool, str]` — the pure decision, returning `(ok, message)`.
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 Create `backend/tests/test_forecast_freshness.py`:
 
@@ -747,7 +758,7 @@ class TestFreshnessVerdict:
         assert ok is True
 ```
 
-- [ ] **Step 2: Run test to verify it fails**
+- [x] **Step 2: Run test to verify it fails**
 
 ```bash
 cd backend && python3 -m pytest tests/test_forecast_freshness.py -v
@@ -755,7 +766,7 @@ cd backend && python3 -m pytest tests/test_forecast_freshness.py -v
 
 Expected: FAIL — `ModuleNotFoundError: No module named 'scripts.check_forecast_freshness'`.
 
-- [ ] **Step 3: Write the implementation**
+- [x] **Step 3: Write the implementation**
 
 Create `backend/scripts/check_forecast_freshness.py`:
 
@@ -874,7 +885,7 @@ if __name__ == "__main__":
     sys.exit(main())
 ```
 
-- [ ] **Step 4: Run tests to verify they pass**
+- [x] **Step 4: Run tests to verify they pass**
 
 ```bash
 cd backend && python3 -m pytest tests/test_forecast_freshness.py -v
@@ -882,7 +893,7 @@ cd backend && python3 -m pytest tests/test_forecast_freshness.py -v
 
 Expected: PASS, 10 tests.
 
-- [ ] **Step 5: Add the workflow step**
+- [x] **Step 5: Add the workflow step**
 
 In `.github/workflows/price-forecast.yml`, insert immediately after the "Run ML price forecasting" step (which ends around line 130) and before "Check for boosters to save":
 
@@ -901,7 +912,7 @@ In `.github/workflows/price-forecast.yml`, insert immediately after the "Run ML 
         run: python scripts/check_forecast_freshness.py
 ```
 
-- [ ] **Step 6: Verify the workflow parses and the script runs locally**
+- [x] **Step 6: Verify the workflow parses and the script runs locally**
 
 ```bash
 python3 -c "import yaml,sys; d=yaml.safe_load(open('.github/workflows/price-forecast.yml')); \
@@ -912,7 +923,7 @@ cd backend && python3 scripts/check_forecast_freshness.py --expected-date 2026-0
 
 Expected: the step name is listed. The local run against the checked-in Parquet exits 0 for `2026-07-29` (its newest date) — confirming the Parquet leg reads correctly. The DB leg depends on your local SQLite and may report the DB as empty, which correctly exits 1; if so, re-run with `--expected-date` matching your local data or accept the Parquet-leg confirmation.
 
-- [ ] **Step 7: Commit**
+- [x] **Step 7: Commit**
 
 ```bash
 git add backend/scripts/check_forecast_freshness.py backend/tests/test_forecast_freshness.py .github/workflows/price-forecast.yml
@@ -927,7 +938,7 @@ git commit -m "feat: fail the forecast run when it persists no forecasts"
 - Create: `docs/changelog/2026-08-03-served-forecast-surface.md`
 - Modify: `docs/superpowers/specs/2026-08-03-served-forecast-surface-design.md` (status line only)
 
-- [ ] **Step 1: Write the changelog**
+- [x] **Step 1: Write the changelog**
 
 Create `docs/changelog/2026-08-03-served-forecast-surface.md` covering, with the numbers from the spec:
 
@@ -937,11 +948,11 @@ Create `docs/changelog/2026-08-03-served-forecast-surface.md` covering, with the
 - **What was deliberately not done:** no replacement confidence signal, no model/feature/training change, `_calibrate_confidence` and the `confidence` column retained and still scored.
 - **Still open:** the four follow-ups from the spec, all gated on reaching `MIN_FORECAST_DATES = 20`.
 
-- [ ] **Step 2: Flip the spec status**
+- [x] **Step 2: Flip the spec status**
 
 In `docs/superpowers/specs/2026-08-03-served-forecast-surface-design.md`, change the status line from `**Status:** Approved, not yet implemented` to `**Status:** Implemented 2026-08-03`.
 
-- [ ] **Step 3: Run the whole suite**
+- [x] **Step 3: Run the whole suite**
 
 ```bash
 cd backend && python3 -m pytest tests/ -q
@@ -949,7 +960,7 @@ cd backend && python3 -m pytest tests/ -q
 
 Expected: the four new test files pass and no previously-passing test breaks. Record the actual pass/fail counts in the changelog rather than asserting success — if anything fails, report it and stop.
 
-- [ ] **Step 4: Commit**
+- [x] **Step 4: Commit**
 
 ```bash
 git add docs/changelog/2026-08-03-served-forecast-surface.md docs/superpowers/specs/2026-08-03-served-forecast-surface-design.md

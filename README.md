@@ -46,7 +46,8 @@ this problem it is very easy to produce an impressive-looking number that is wro
             │
             ▼
     ══════ TRAINING ══════════════════════════════════
-    LightGBM, 4 horizons (3/7/14/30d), median regression
+    LightGBM, 4 horizons (3/7/14/30d)
+    q50 regressor + directional classifier per horizon
     regime-switching · Optuna · expanding-window CV
             │
             ▼
@@ -61,21 +62,29 @@ this problem it is very easy to produce an impressive-looking number that is wro
     MAE · MAPE · directional accuracy, by horizon and price tier
 ```
 
-**Collection.** Seven price feeds are read from CSGOTrader's public daily dumps rather
+**Collection.** Seven marketplaces are read from CSGOTrader's public daily dumps rather
 than from each marketplace's own API — a deliberate tradeoff of freshness for reliability
-and rate-limit headroom. Sources are reconciled per item by outlier-voted median, so a
-single stale or mispriced venue cannot move the consensus.
+and rate-limit headroom. Sources are reconciled per item by outlier-voted median: with
+three or more sources on an item-day, anything more than 2σ from the median is rejected
+and the median of the rest becomes the consensus price. Only *ask* prices vote — BUFF's
+`highest_order` is a bid and is dropped before the group is read, so it counts toward
+neither the median nor the three-source gate.
 
 **Storage.** The archive is Parquet on disk, partitioned yearly through 2025 and monthly
 from 2026, queried with DuckDB. Training reads the archive directly; the database holds
 only the serving layer and item metadata. This keeps the training set reproducible from
 version-controlled files rather than from mutable database state.
 
-**Modelling.** One LightGBM median regressor per horizon, with separate models per market
-regime (bear / range / bull, split on 30-day market return at ±3%). Hyperparameters are
-tuned with Optuna per horizon. Feature groups are excluded per horizon based on an
-ablation study — cross-sectional features measurably *hurt* the 14d and 30d horizons, so
-they are not used there.
+**Modelling.** Per horizon: one LightGBM median regressor for the return, and one 3-class
+directional classifier (down / flat / up) that supplies the served direction. Regime
+models (bear / range / bull, split on 30-day market return at ±3%) are fit for the
+prevailing regime and fall back to the global model otherwise. Hyperparameters are tuned
+with Optuna per horizon.
+
+The feature set is deliberately narrow. A global allowlist restricts training to price
+technicals; a 7-fold ablation found the 85 non-price features added no measurable
+directional accuracy over price and technical features alone, and hurt at 3d and 30d.
+Cross-sectional features are excluded again at 14d and 30d, and event features at 30d.
 
 **Uncertainty.** The prediction band comes from split-conformal calibration against
 out-of-fold residuals, not from quantile models. Dedicated p10/p90 GBMs were measured and
@@ -108,9 +117,17 @@ The protocol, and the reasons for it:
   a statement about penny items. Production reports the ≥$1 cohort.
 - **Cross-validation and production are scored on the same cohort definition**, so the
   offline number and the live number are comparable.
+- **Directional accuracy is never quoted on its own.** This market spends long stretches
+  trending one way, so a constant "always down" call can post a high hit rate while
+  carrying no information. The headline is a serial-correlation-robust
+  Pesaran–Timmermann test; DA is reported only alongside the constant-call baseline and
+  the realised down-rate.
 
-<!-- Accuracy table goes here. Report per horizon, ≥$1 cohort, against a persistence
-     baseline, with n and the evaluation window stated. -->
+**There is no quotable production accuracy figure yet.** The Pesaran–Timmermann test
+requires at least 20 distinct forecast dates, and the served series does not yet cover
+that many, so every horizon currently reports no headline. This is a calendar problem
+rather than a code problem, and the honest thing is to say so instead of publishing the
+blended number that is available.
 
 Live figures are served at `GET /accuracy/summary` and rendered on the dashboard.
 
@@ -136,7 +153,8 @@ echo "NEXT_PUBLIC_API_URL=http://localhost:8000" > .env.local
 npm run dev                   # → http://localhost:3000
 ```
 
-Tests: `cd backend && source venv/bin/activate && pytest`
+Tests: `cd backend && source venv/bin/activate && pytest tests/ -q`. Scope it to `tests/` —
+a bare `pytest` also collects a script that aborts the run on a missing optional dependency.
 
 ## Repo layout
 
@@ -150,7 +168,7 @@ backend/
   backtest/          Price resolution, scoring, resolution gate
   db/                Parquet store and ops-table mirrors
   scripts/           Task runner and scheduled entrypoints
-  tests/             Pytest suite (41 modules, 714 tests)
+  tests/             Pytest suite (87 modules, 1,385 tests)
 frontend/
   app/               Next.js app router pages
   components/        React components
@@ -167,15 +185,22 @@ schedules — lives in [`docs/`](docs/README.md).
 
 Known weaknesses, stated plainly:
 
-- **Training runs on a subsample.** The default budget is 100,000 feature rows
-  (`TRAIN_FEATURE_ROWS`), a fraction of the available pool. Raising it to 700,000 costs
-  4.5× the training wall-clock, and the accuracy gate cannot currently resolve whether
-  that buys anything, so it has not been raised.
+- **The training universe is small.** Training applies a $1 median-price floor and a
+  1.2M feature-row budget, which the ≥$1 cohort — 926 items — fits whole, so no item
+  subsample is drawn. That was chosen for determinism, not accuracy: the previous
+  subsample's seed alone moved cross-validated accuracy by 1.5–3.1pp, which is larger
+  than most effects being measured. The cost is that the model sees under a thousand
+  items, and nothing can currently add more (see below).
+- **Some sources are not point observations.** Steam's 7/30/90-day feeds are
+  trailing-window *mean sale* prices, but they vote in the consensus alongside live ask
+  prices. On illiquid items this smears the price series and shows up as frozen runs.
+  The size of the effect has been measured; the fix has not shipped.
 - **The walk-forward gate is not directly comparable to production.**
   `walkforward_backtest.py` uses its own price loader that skips multi-source voting and
-  the backfill filter, so it scores a different price consensus over a different item
-  universe than production trains on. It is a relative gate for config changes, not an
-  estimate of live accuracy.
+  the backfill filter, collapsing duplicate item-days with a plain mean where production
+  takes an outlier-voted median. It scores a different price consensus over a different
+  item universe than production trains on. It is a relative gate for config changes, not
+  an estimate of live accuracy.
 - **The archive has day gaps.** Missing days come mostly from cron drift around midnight
   UTC rather than from failed runs, but they thin the training set and bound what the
   backtest can resolve.

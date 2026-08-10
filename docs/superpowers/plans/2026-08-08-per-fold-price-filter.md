@@ -1,5 +1,31 @@
 # Per-fold price filter: re-deriving step 7 without the look-ahead
 
+> ## ✅ STAGE 1 EXECUTED (2026-08-08) — the question below is ANSWERED
+>
+> **Answer: the +3.50pp does not survive.** Re-derived without the look-ahead it comes back
+> **+1.642pp [−0.809, +4.505] — null**, and the placebo arm puts the instrument's item-draw noise
+> floor at **±3–4pp**, wide enough to have produced the original number by itself.
+>
+> **Outcome: `docs/changelog/2026-08-08-per-fold-price-filter-rederived.md`.** Evidence:
+> `_fold_median_price_items` at `forecaster.py:3364` (`5ebcc73`),
+> `backend/scripts/ab_test_train_universe.py` (arms `prod_pool`, `prod_pool_b`, `full_sample`,
+> `per_fold`, `full_sample_matched`, `full_sample_matched_b`), and `TestFoldMedianPriceItems` in
+> `tests/test_training_item_coverage.py`.
+>
+> ⬜ **Stage 2 (the anchored production filter) is not started — and the finding is that it is not
+> needed.** `build_training_data` still does not call `_fold_median_price_items`; the only callers
+> are the tests and `ab_test_train_universe.py:386`. The floor shipped anyway, on determinism
+> rather than accuracy (`6eb8775`, `docs/changelog/2026-08-08-training-price-floor-shipped.md`).
+>
+> ⚠️ **Two defects in this document's own text, found when the work ran.** They are left in place
+> so the reasoning is still readable, but do not act on either:
+> 1. It names `ab_test_training_breadth.py` as the instrument that produced the +3.50pp. **It did
+>    not** — that harness never produced the number.
+> 2. Its third arm is described backwards: it is `full_sample` that gets thinned, not `per_fold`.
+>
+> ⚠️ **The withdrawal has not propagated.** `docs/architecture/model.md:210,533` still cite the
+> +3.50pp as settled. That correction is O2 of `docs/research/2026-08-09-next-steps.md`.
+
 **Blocks step 7** of `docs/research/2026-08-07-next-steps.md` ("Ship `TRAIN_MIN_MEDIAN_PRICE`
 at a `TRAIN_FEATURE_ROWS ≥ 1.0M` budget"), whose own caveat is *"Re-derive the result first
 with a per-fold price filter — the current version selects on a full-sample median."*

@@ -447,7 +447,22 @@ python3 -u scripts/repair_catalog_gaps.py --fetch-only
 
 ## Next Steps
 
-- **Phase 2:** Backfill pricehistory for all 31,908 items using `backfill_ssr_history.py`
-- Update the backfill script to read from `market_catalog.db` (via `--source catalog`)
-- Replace old Supabase snapshots with SSR history data
-- After Phase 2, plan migration from local SQLite to Supabase (replacing old snapshots)
+**The first two are ✅ DONE — the tooling exists. Do not rebuild it.**
+
+- ~~**Phase 2:** Backfill pricehistory for all 31,908 items using `backfill_ssr_history.py`~~ —
+  ✅ the script exists (`backend/scripts/backfill_ssr_history.py`). The *run* is a separate
+  question; see the caution below.
+- ~~Update the backfill script to read from `market_catalog.db` (via `--source catalog`)~~ —
+  ✅ implemented: `--source {prod,catalog}` at `:1005`, `CATALOG_DB_PATH` at `:63`, routed at
+  `:712,728,948`, and documented in the script's own usage block at `:17,21`.
+- ⬜ Replace old Supabase snapshots with SSR history data — not done.
+- ⬜ After Phase 2, plan migration from local SQLite to Supabase — not done.
+
+> ⚠️ **Two things changed after this document was written, and both bear on the remaining two.**
+>
+> 1. **The item-onboarding path is dead.** Nothing can currently add items past the
+>    `is_backfilled` gate, so a 31,908-item catalog does not by itself widen the served universe.
+> 2. **The Steam listing route was re-verified 2026-08-09 and it works** — 0.36 requests per item
+>    via the canonical `G<id>` URL. But `backfill_steam_listing_history.py` still probes the
+>    `market_hash_name` URL, whose 230 KB SSR shell its block detector reads as a block. Fix the
+>    URL resolution before planning any large run. Detail in `docs/research/2026-08-09-next-steps.md` D1.

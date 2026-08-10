@@ -15,6 +15,153 @@ Confidence is marked throughout: **[MEASURED HERE]** = this repo measured it,
 
 ---
 
+> ## ⚠️ Corrections — 2026-08-09. Substantially stale verdict, not a retired document.
+>
+> **The analysis and the literature sweep are still the best in this repo** — §9's citations, §12's
+> event history, §13's prior-art survey and §26's demand-proxy audit are unaltered. What has gone
+> stale is the *verdict*: six load-bearing numbers are withdrawn or misattributed, the premise of
+> the composition argument is refuted, and twelve items written as open have shipped or reversed.
+> Original numbers are kept in place below and struck where short.
+>
+> **`docs/research/2026-08-09-next-steps.md` is the live action list.** The 2026-08-07
+> second-pass corrections (**C1–C5**) immediately below are unchanged; where a point here is
+> already settled there it says so rather than repeating it.
+>
+> ### The six load-bearing numbers
+>
+> **1. `~0.3pp` date-level MDE is not a measured MDE — it is a *required* effect size, and
+> its own source calls it unreachable.** Appears at `:450-459`, `:640`, `:1133`, `:1245`,
+> `:1553`, `:1857`, marked `[MEASURED HERE]`. The figure comes from
+> `docs/research/accuracy-opportunities.md:57-60`, where 0.3pp is the MDE you would *need* —
+> "**It is not reachable**, and no amount of item count changes it." And the changelog cited
+> as its source retracts it: `docs/changelog/2026-08-06-date-level-exogenous-ingest.md:31-38`
+> carries a 2026-08-07 correction putting the operative date-level floor at the fold-clustered
+> **2.21–3.69pp** — "**Nothing in these two tables can be resolved below roughly 2pp**."
+> Everything routed to the date-level frame *because the MDE is 10× better* — §6, §9 #9,
+> §14's "what to do with it", §17's decomposition diagram, §23's closing instruction, §24
+> rank 15, and final step 9 — rests on a number that does not exist. The date-level case
+> survives on **variance**; it does not survive on measurability, and it faces the same ~2pp
+> floor as everything else.
+>
+> **2. The `+3.50pp [+1.56, +5.98] at 30d` ≥$1 positive is withdrawn.** Cited at `:316`,
+> `:364-366`, `:633`, `:1236`, `:1791` and `:1849-1851` as "the one positive" / "the only
+> surviving positive". Re-derived on the current instrument as **+1.642pp [−0.809, +4.505],
+> null**, with the instrument's own item-draw floor at **±3–4pp**
+> (`docs/changelog/2026-08-08-per-fold-price-filter-rederived.md`: "the stored +3.50pp is an
+> un-purged number… not recoverable in isolation and should not be cited again"). Its stated
+> *explanation* also fails: `:1287` L2 reads the h=30-only effect as "the look-ahead
+> signature". The look-ahead is real — 876 items were used where 319 were knowable — and it
+> is worth **−0.004pp [−0.664, +0.851]**. The floor shipped anyway, on determinism
+> (`docs/changelog/2026-08-08-training-price-floor-shipped.md`).
+>
+> **3. Blocker 5d — the Steam soft-block — was a FALSE POSITIVE.** ~~`:695-702`: Steam
+> "soft-blocks with HTTP 200 and a stripped shell — there is no 429", the block is IP-scoped
+> and multi-hour, keep delay ≥6 s, stop on the first stripped page.~~ The page **answers from
+> this egress at 0.36 requests per item**; the 230 KB shell is normal SSR. You must resolve
+> the canonical `G<id>` first — the `market_hash_name` URL returns an empty shell that looks
+> exactly like a block. See `docs/research/2026-08-09-next-steps.md` **D1**. This unblocks the
+> doc's own "highest-value free source" and R13's expensive half. ⚠️ No code changed:
+> `backfill_steam_listing_history.py:67` still fetches the name URL and the detector at `:271`
+> still keys on the shell.
+>
+> **4. The `99 items / 116,111 rows` training config at `:261-265` is not production.**
+> Subsampling stopped 2026-08-08: `backend/scripts/forecast_prices.py:51,63` set
+> `DEFAULT_TRAIN_FEATURE_ROWS = 1_200_000` and `DEFAULT_TRAIN_MIN_MEDIAN_PRICE = 1.0`,
+> measured on the shipped frame as **918 items / 986,065 rows**
+> (`docs/changelog/2026-08-09-shipped-retrain-cost-measured.md:21`). The
+> `Accuracy (≥$1, CV) 49.9 / 49.0 / 51.1 / 53.4` row is no longer producible either:
+> `CV_DIAGNOSTIC_CLASSIFIER` defaults off (`dfafdfb`) and the shipped `meta.json` carries
+> `mean_classifier_acc*: null`. The replacement headline is **`mean_rank_ic` 0.1307 vs naive
+> `-return_1d` 0.1656, edge −0.0349** at 7d — i.e. the model loses to a one-line baseline at
+> all four horizons. Minor arithmetic: 116,111 / 5.8M is **2.0%**, not 1.8%.
+>
+> **5. The `0–1.8% at every tier ≥$1` staleness split measures the wrong series.** `:396-400`,
+> `:1203`, `:1579`, marked `[MEASURED HERE]`, used as "the cleanest split between real items
+> and artifacts" and as the whole mechanism for `stale_run_days` (§24 rank 4, "highest-ranked
+> new item-level feature").
+> `docs/changelog/2026-08-08-frozen-price-runs-dropped-from-labels.md:18-21`: 0–1.8% is
+> **resolved, 3-day-smoothed backtest anchors**. On the raw voted series the label path
+> actually sees, ≥$1 staleness is **12–27%** (20.25pp overall at ≥$1). **The 37–42% vs 0–1.8%
+> contrast does not exist on the series being modelled**, and neither number may be used to
+> size the other. The feature shipped on the label side regardless — see the table below.
+>
+> **6. The `1.1607` Steam fee constant is synthetic — and §8 still presents the circular
+> measurement as evidence.** `:512-518` marks `[MEASURED HERE]` "your own archive establishes
+> the Steam fee empirically… a constant **1.1607** (p10 1.1565, p90 1.1656, within-item CV
+> 0.0021)" — which is exactly what **C1** below retracts ("91.61% of pairs are the same
+> numbers after dividing"). §8 carries no pointer to C1, and ~~`:751` "**Do this:** regress
+> the ratio on price"~~ — C1 says done. The two passes also report incompatible *n* for the
+> same measurement: **30,875** rows (§8, §11) vs **63,767** matched pairs (C1). *Consequence:*
+> the **+16.1%** Steam round-trip breakeven at `:726` / `:742` is derived from the synthetic
+> constant and is repeated ~8 times, including the closing framing at `:1874`. The published
+> fee rule (buyer/net = 1.15 exactly) gives **+15.0%**. The qualitative argument — no
+> realistic accuracy gain makes this tradeable — is unaffected.
+>
+> ### The composition / quoting-artifact premise is refuted
+>
+> `:487-489` ("your set moved from 5,542 to 41,725 items during 2026" — the premise for §7's
+> hedonic index) and `:1161-1165` are the source-composition argument. It has now been measured
+> and it does not bite: composition-stable rank IC is **+0.1027 on 181 dates** against an
+> unconditional **+0.1023** on 185 at 3d, and the two agree to four decimal places at 7d
+> (**+0.0842 vs +0.0842**) — `docs/research/2026-08-09-composition-stability.md`, commit
+> `f833882`. §7's *product* case (a composition-controlled, publishable index nobody else
+> has) survives untouched; its stated *empirical* motivation does not.
+>
+> ### Shipped since — items this doc writes as open
+>
+> | Where | Item | Settled by |
+> |---|---|---|
+> | `:628` T1 #3 | Stop the BUFF bid voting into consensus | DONE 2026-08-07 — `forecaster.py:1242` drops `BID_SOURCES` before the vote |
+> | `:629`, `:1286`, `:1315-1316`, `:1789` | `--purge` default OFF; purge cuts at exactly `H`, "short by 13 days" | DONE 2026-08-08 — `embargo_days(h) = h + 13` (`forecaster.py:72`) feeds `_purge_overlapping_train_rows`; `walkforward_backtest.py:710` is `set_defaults(purge=True)` with `--no-purge` as the legacy escape |
+> | `:631`, `:1276-1282`, `:1794`, `:1838` | "**No arrival timestamp exists anywhere**"; the 5-tuple `CANONICAL_PRICE_COLUMNS` | `backend/db/archive.py:40` now has **six** columns including `ingested_at` (2026-08-08; NULL for every earlier row, by construction) |
+> | `:632` T1 #6 | Grep for `api.dmarket.com/exchange/v1` | **No-op.** No such reference exists; only a fee constant at `backend/backtest/friction.py:29` |
+> | `:1509`, `:1638-1654`, `:1793`, `:1834` | Drop the 110 Doppler names | DONE 2026-08-08 — `phase_collapsed_sql_filter` in `backend/models/item_parser.py:138` |
+> | `:1504`, `:1842` D2 | Drop / downweight frozen-price runs | DONE 2026-08-08 — `backend/models/staleness.py:54::stale_run_days` + label voiding. (As a *feature* it is still open; its evidence is item 5 above and does not hold) |
+> | `:402-404`, `:1373-1383`, `:1449`, `:1824` | PT and rank IC as things to build | Both committed — `_within_date_rank_ic`, per-fold `rank_ic` beside `naive_rank_ic`, and Optuna's objective **is** within-date rank IC (`8be48c5`) |
+> | `:1161-1165` | `n_ask_sources` as a column to add | Shipped (`48fd352`, `VOTED_CACHE_VERSION` 4 → 5). And 2026-03-22 / 07-09 / 07-10 **cannot** be "the best available guess at the cause of §3 defect 3": `_collection_shift_dates` (`forecaster.py:3081`) already fires on 03-22, 07-09, 07-10, 07-11 and 07-12 and voids the spanning labels |
+> | `:1594` §24 #19 | `usd_cny` "Blocked: 7 days of FX history" | `price-archive/exchange-rates-history.parquet` is **13 years** deep and published |
+> | `:1288` L3 | "early stopping stops late" as a leakage consequence | **Direction reversed.** Early stopping on the thin trailing window *destroyed* 23–88% of rank IC and produced 1-tree boosters; replaced by `FIXED_BOOST_ROUNDS` (`forecaster.py:618`) |
+> | `:1188-1192` §16 | "**117** numeric columns survive shelving" | Now **123** (`docs/research/2026-08-09-model-and-data-research.md:222`). The `distance_to_*` vs `support_` prefix bug reported beside it is **still live and correctly reported** — `forecaster.py:213` |
+> | `:1286`, `:1789` | "**ten** further `ab_test_*` harnesses" | **15** exist. The live residuals differ from the ones named: **9 of 15** call `phase_collapsed_sql_filter()` where invariant 2 requires `archive_universe_sql_filter()`, and **14 of 15** still early-stop against the window they score — only `ab_test_direction_labels.py` does not, because it calls the production estimator (`_fit_direction_classifier`, `early_stopping` default `False`). `ab_test_frozen_runs.py` has no direct reference but inherits one through `walkforward_backtest.py:490` |
+>
+> ### Smaller factual corrections
+>
+> - `:238-242`, `:835-843`, `:1803` — "AK-47 | Redline (FT)… 96 Steam sales in 24 hours" as "the
+>   deepest explanation for your null streak". This doc's own **C5** measures the archive
+>   median at **69 sales/item-day**, so the flagship is 1.4× the median, not an outlier. The
+>   ceiling argument is really about the **$50–500 (20/day)** and **$500+ (4/day)** tiers —
+>   which is where the product lives, so the conclusion is *sharper*, but the headline number
+>   is doing no work.
+> - `:1729` — drop odds "each adjacent tier exactly 5:1". The last ratio is **2.46:1**
+>   (Covert 0.64% / Rare Special 0.26%), from this table's own numbers.
+> - **Three enumerations read as complete and are not.** `:337-352` §3 says "Four defects…
+>   three of them inflating significance" then lists four of which only **#1 and #2** inflate
+>   (#3 is irreproducibility, #4 is item-draw noise). `:1284-1298` §18 numbers L1–L10, L12,
+>   L13 — **L11 is missing**. `:1373-1383` §20 numbers 1–8 then 10 — **9 is missing**.
+> - `:761-768`, `:827-830` §11 — the premium/spread tables omit the **$500–1000** tier and
+>   sum to **23,586** against a stated ALL of **23,904**; and the liquidity paragraph's
+>   "10,152 (41%) are sub-$1" does not reconcile with its own stated universe of 46,631
+>   (= **21.8%**). `:1358` repeats "41% of the archive is sub-$1" against §1's **36.1%**.
+> - `:1321-1339` — the regime stress suite (S1–S6) and §20 metric 4 (`:1378`, "per regime
+>   window") are graded against PASS criteria that require a `regime_window` definition.
+>   `REGIME_WINDOWS` / `regime_window` / `regime_stress` return **zero hits** across every
+>   `.py` in the repo. The suite is prose, not a gate — and `:1378`'s coverage criterion
+>   cannot be supplied by the walkforward gate at all, which gives every arm
+>   `PLACEHOLDER_BAND_PCT = 10.0`
+>   (`docs/changelog/2026-08-08-r11-r12-declined-and-r18-r19-recosted.md:51-62`).
+>
+> ### And the standard this document is held to
+>
+> **This doc does not hold the "nothing here is estimated" standard its successor claims for
+> it.** It marks `[MEASURED HERE]` on a *required* MDE (0.3pp), on a tautology its own
+> corrections section retracts (1.1607), and on a different quantity than the one being
+> reasoned about (the 0–1.8% staleness split). Read the confidence tags as claims to check,
+> not as provenance.
+>
+> **R11–R19 status:** see the block under §10's Tier 3 table.
+
+---
+
 ## Corrections to this document (2026-08-07, second pass)
 
 Follow-up work overturned four claims made earlier in this file. They are corrected in
@@ -111,9 +258,9 @@ From `docs/references/data-inventory.md` and the memory ledger, all **[MEASURED 
 |---|---|
 | Archive | 20,756,038 rows, 41,725 items, 2013-08-14 → 2026-08-04, 4,735 of 4,739 days present |
 | Model | LightGBM, one q50 regressor per horizon (3/7/14/30d) + a 3-class direction classifier; band by split conformal |
-| Trained on | **99 items / 116,111 rows** — 1.8% of the 5.8M-row pool, a rarity-stratified draw |
+| Trained on | ~~**99 items / 116,111 rows** — 1.8% of the 5.8M-row pool, a rarity-stratified draw~~ **Stale.** Subsampling stopped 2026-08-08; production is **918 items / 986,065 rows** (floor $1, 1.2M budget). And 116,111 / 5.8M is 2.0%. Banner item 4 |
 | Served | 8,691 items, filtered to ≥$1 at serve time |
-| Accuracy (≥$1, CV) | 49.9 / 49.0 / 51.1 / 53.4% at 3/7/14/30d |
+| Accuracy (≥$1, CV) | ~~49.9 / 49.0 / 51.1 / 53.4% at 3/7/14/30d~~ **No longer producible** — the CV diagnostic classifier is off by default (`dfafdfb`) and `meta.json` carries `mean_classifier_acc*: null`. Replacement headline: `mean_rank_ic` **0.1307 vs naive 0.1656, edge −0.0349** at 7d |
 | Accuracy (≥$1, prod) | 48.4 / 49.4 / 50.8 / 46.7% |
 | Accuracy (all tiers) | 67.3 / 67.2 / 67.8 / 68.6% — **this is the penny-item score, not the product's** |
 
@@ -166,7 +313,7 @@ Every row **[MEASURED HERE]**, with the caveat in §3 about interval width.
 | Rarity metadata repair | Cannot move accuracy — perturbs the item draw by exactly the seed-noise amount |
 | Event calendar (item-level) | Functions as a **clock**; null once the trend is stripped |
 | Breadth vs depth of training set | Breadth wins; depth-only sources actively shrink the trainable universe |
-| ≥$1 training universe | **The one positive.** Paired **+3.50pp [+1.56, +5.98] at 30d**, null at 3/7/14d |
+| ≥$1 training universe | ~~**The one positive.** Paired **+3.50pp [+1.56, +5.98] at 30d**, null at 3/7/14d~~ **WITHDRAWN 2026-08-08.** Re-derived as **+1.642pp [−0.809, +4.505], null**, against an item-draw floor of ±3–4pp; the look-ahead it was attributed to is worth −0.004pp. The floor shipped on determinism, not accuracy. `2026-08-08-per-fold-price-filter-rederived.md` |
 
 The pattern is unmistakable: **a dozen experiments were variations on a signal that is not
 present.** The literature says the same thing prospectively — Grinsztajn et al. (2022)
@@ -245,9 +392,12 @@ that was measuring the market, not the model.
   makes reported returns *smoother* than true returns via an MA(k) mechanism. Your
   calendar-gap lag fills and frozen sub-$1 prices are literally this. The per-item
   smoothing coefficient θ is (a) a diagnostic for which items' DA is an artifact and (b) a
-  candidate feature. It also explains the tier-0 vs ≥$1 split mechanically: bit-identical
+  candidate feature. ~~It also explains the tier-0 vs ≥$1 split mechanically: bit-identical
   `actual_price == base_price` runs 37–42% at tier 0 and 0–1.8% at every tier ≥$1
-  **[MEASURED HERE]**.
+  **[MEASURED HERE]**.~~ **Corrected 2026-08-08:** 0–1.8% is measured on resolved backtest
+  anchors, which are 3-day smoothed medians. On the raw voted series the label path sees,
+  ≥$1 staleness is **12–27%** (20.25pp overall), so the split does not exist on the series
+  being modelled — `2026-08-08-frozen-price-runs-dropped-from-labels.md:18-21`, banner item 5.
 
 **Do this:** replace raw DA with the serial-correlation-robust PT statistic as the headline,
 and report it *per forecast date* with a t-stat over dates. Cost: a scoring-module change,
@@ -297,10 +447,16 @@ Everything above is still item-level. But your own evidence says the variance is
 The logic is straightforward:
 - Item-level idiosyncratic signal: **measured, absent** **[MEASURED HERE]**.
 - Date-level variance: **measured, enormous** — the market down-rate swings 32.7% → 76.9%.
-- Date-level MDE: **~0.3pp, i.e. measurable** **[MEASURED HERE,
+- ~~Date-level MDE: **~0.3pp, i.e. measurable** **[MEASURED HERE,
   `date-level-exogenous-ingest-built`]** — an order of magnitude better than the 2.21–3.69pp
   item-level floor, because a date-level series has no item-draw variance and no
-  cross-sectional noise.
+  cross-sectional noise.~~ **Wrong, and it is the load-bearing error in this section.** 0.3pp
+  is a *required* effect size that `accuracy-opportunities.md:57-60` declares "**not
+  reachable**", and the changelog cited here retracts it: the operative date-level floor is
+  the same fold-clustered **2.21–3.69pp**, and "nothing in these two tables can be resolved
+  below roughly 2pp" (`2026-08-06-date-level-exogenous-ingest.md:31-38`). See banner item 1.
+  **The argument for §6 is the variance, not the MDE** — the date leg faces the same floor as
+  everything else, so it needs a large effect, not a sensitive instrument.
 
 So the target becomes: **forecast the aggregate market return** (or the down-rate) for date
 *t+h*, then apply it uniformly. This is a single time series with **4,735 days of history**
@@ -353,12 +509,17 @@ published for CS2** (see §9), so this is genuinely novel work.
 
 ## 8. Transaction costs — why 51% accuracy is not a trading system
 
-**[MEASURED HERE]** Your own archive establishes the Steam fee empirically: across 30,875
+~~**[MEASURED HERE]** Your own archive establishes the Steam fee empirically: across 30,875
 overlapping rows the Steam listing-page buyer price divides by a constant **1.1607** to
-reach the net price (p10 1.1565, p90 1.1656, within-item CV 0.0021). That is a ~13.9%
-haircut on the buyer price on the sell side alone.
+reach the net price (p10 1.1565, p90 1.1656, within-item CV 0.0021).~~ **See C1: this is
+circular — 91.61% of the pairs are the same numbers after dividing, and 1.1607 is a baked-in
+upstream multiplier, not a fee.** (C1 also reports a different *n* for the same measurement:
+63,767 matched pairs, not 30,875.) The published rule is buyer/net = **1.15** exactly. That is
+a ~13.0% haircut on the buyer price on the sell side alone.
 
-Round-trip on Steam requires **+16.1%** to break even before spread; CSFloat and DMarket
+Round-trip on Steam requires **+16.1%** to break even before spread — **read +15.0%, from the
+published rule; the +16.1% here and everywhere below is derived from the synthetic constant** —
+CSFloat and DMarket
 are **+2.0%**, Skinport **+8.7%** (§11). Add the bid–ask spread, freshly measured across
 22,449 items: **20.9% median**, ranging **35.5% sub-$1 to 5.2% at $1000+**. A Steam round
 trip on a mid-tier item therefore needs something like a 25–40% move.
@@ -476,7 +637,7 @@ Ordered by expected value per unit of effort, given what is already known.
 | # | Action | Why | Effort |
 |---|---|---|---|
 | 8 | **Build a hedonic market index** (log price ~ attributes + time dummies) | You have no composition-controlled market factor; your demeaning used a median over a set that grew 5,542 → 41,725 items mid-sample. No published CS2 index exists — this is novel | Medium |
-| 9 | **Forecast the date-level market factor** as its own model | The only place variance is demonstrated to live. 4,735 days of history; date-level MDE **~0.3pp** vs 2.21–3.69pp item-level | Medium |
+| 9 | **Forecast the date-level market factor** as its own model | The only place variance is demonstrated to live. 4,735 days of history. ⚠️ ~~date-level MDE **~0.3pp** vs 2.21–3.69pp item-level~~ — **withdrawn, see banner item 1; the date-level floor is the same 2.21–3.69pp** | Medium |
 | 10 | **Try `lambdarank` within-date**, scored by rank-IC | Cancels the market factor structurally rather than by subtraction; LTR is specifically better at low SNR | Small — objective swap |
 | 11 | **Recover historical volume** from the kieranpoc Kaggle dump | Your `volume` column has been zero since 2026-04-16. This is Steam price+volume back to 2013 for 22,492 items | Medium |
 | 12 | **Backfill retroactive supply depth** from `atalantus/buff-price-history-archive` | BUFF listing counts 2023-01-25 → 2024-01-19. Kills the ~30-day accumulation wait. Different use from the price-source evaluation that declined it | Medium |
@@ -488,10 +649,26 @@ Ordered by expected value per unit of effort, given what is already known.
 |---|---|---|
 | 14 | **Mechanical supply-position features**: trade-up fuel vs output, drop-pool status, float-range cap | The Oct-2025 cross-section dispersed on *these*, not on cosmetic metadata. ByMykel was refuted; this is a different feature class |
 | 15 | **Per-item MA smoothing coefficient** (Getmansky–Lo–Makarov) | Diagnostic for which items' DA is a staleness artifact; candidate feature |
-| 16 | **Cross-sectional reversal** | The documented effect in digital collectibles; you tested momentum, not reversal |
-| 17 | **Test "volume ↑ ⇒ price ↓"** | The panel study's counterintuitive finding, testable on your intact pre-2026 volume series |
+| 16 | **Cross-sectional reversal** — ~~Tier 3, speculative but cheap~~ **MEASURED 2026-08-09 and this ranking was wrong: it is the project's strongest measured predictor** | The documented effect in digital collectibles; you tested momentum, not reversal. **Rank IC +0.1023 at 3d (+0.1941 full archive), survives composition control, beats the model at all four horizons** |
+| 17 | ~~**Test "volume ↑ ⇒ price ↓"**~~ **DONE and REFUTED by this document's own C4** — pooled +0.019 / +0.034, item-FE identical, r² < 0.15%, and the sign is *positive*. This row was never updated | ~~The panel study's counterintuitive finding, testable on your intact pre-2026 volume series~~ |
 | 18 | **Split conformal → adaptive conformal (ACI)** | Fixes band coverage under regime shift; improves a user-visible output |
 | 19 | Deflate past A/Bs for multiplicity (DSR/PBO); adopt a t>3 hurdle | A dozen A/Bs against one panel means single-comparison CIs are the wrong instrument |
+
+> **Status of R11–R19 as of 2026-08-09.** Tracked in `docs/research/2026-08-07-next-steps.md`
+> and re-ranked in `docs/research/2026-08-09-next-steps.md`. Rows 11–19 above are the
+> unchanged proposals; this is what happened to them.
+>
+> | # | Status | Correction to the row above |
+> |---|---|---|
+> | **R11** kieranpoc volume | **REFUTED as written** | The dump is frozen at snapshot **2024-05-04** (`dateModified` 2024-06-15), so it supplies nothing for 2024-06 → 2026-08, the only window that matters. Licence at `:1014` is not "unconfirmed": it is **CC BY-NC-SA 4.0**, non-commercial. The *premise* is also superseded — no aggregator feed ever carried a volume field; `steam_volume.json` ceased to exist, 2026-04-16 is the day after the last one-shot backfill ran out, and the column is now NULL rather than 0. `docs/changelog/2026-08-08-r11-r12-declined-and-r18-r19-recosted.md` |
+> | **R12** atalantus listing counts | **REFUTED** | 2023-01-25 → 2024-01-19 is **359 usable days** ⇒ **~2 folds** at `CV_STEP_DAYS = 150` / `CV_MIN_TRAIN_DAYS = 200`; a 2.5-year gap to live depth; different venue and different quantity. Source-record fix: the raw dump is **113 MB via Git LFS**, not 24 MB |
+> | **R13** cohort inversion | **OPEN, now unblocked** | Blocker 5d was a false positive (banner item 3). Nothing built |
+> | **R14** supply-position features | **OPEN** | Correctly ranked last |
+> | **R15** `theta_ma1` / staleness | **PARTLY DONE** | The label-side use shipped 2026-08-08 (`staleness.py::stale_run_days`). As a *feature* it is still open — but its stated evidence is the 0–1.8% staleness split, which does not hold (banner item 5) |
+> | **R16** cross-sectional reversal | **DONE — and it inverted the finding** | Filed here as Tier 3 "speculative but cheap". It is now the project's **strongest measured predictor**: rank IC **+0.1023 at 3d** on 2026, **+0.1941 over the full archive**, it survives composition control, and it **beats the model at all four horizons**. `docs/research/2026-08-09-composition-stability.md`, `f833882` |
+> | **R17** "volume ↑ ⇒ price ↓" | **REFUTED by this document's own C4** | Tier 3 #17 proposed it as untried while `:204-212` reports it done — pooled **+0.019 / +0.034**, item-FE identical, r² < 0.15%, and the *sign is positive*. The row went un-updated for two days; struck in place at `:653` |
+> | **R18** ACI | **OPEN, mis-costed here** | `:614` calls ACI "a small change". Corrected 2026-08-08 on three counts: no `regime_window` exists in code; the walkforward gate cannot supply coverage **by design** (`PLACEHOLDER_BAND_PCT = 10.0`); and stored outcomes span **6 forecast dates in two clusters**, which cannot be partitioned into regime windows. Carried as **C5** of `2026-08-09-next-steps.md` |
+> | **R19** deflate for multiplicity | **OPEN, urgency gone** | It was framed as the gate on the +3.50pp positive. That positive was withdrawn, so the *ordering* claim is void; the argument stands on its own. Carried as **C7** of `2026-08-09-next-steps.md` |
 
 **Do not:** propose another item-level cosmetic feature group, another model class, or a
 deep-learning architecture. §2, §9 and §11 all converge on the same conclusion, and §11
@@ -516,9 +693,13 @@ volume back to 2013, sessionless).
 The Steam listing-page route is the highest-value free source you have, for one reason:
 it is the only one that **grows the trainable universe without shrinking it**. Extrapolated,
 pool 5,542 → ~31,590 items with `target_items` 521 → 758. Two hard operational constraints:
-Steam **soft-blocks with HTTP 200 and a stripped shell — there is no 429**, the block is
-IP-scoped and multi-hour, so keep delay ≥6 s and stop on the first stripped page; and the
-page serves the **buyer** price, so divide by 1.1607.
+~~Steam **soft-blocks with HTTP 200 and a stripped shell — there is no 429**, the block is
+IP-scoped and multi-hour, so keep delay ≥6 s and stop on the first stripped page~~ **— FALSE
+POSITIVE, refuted 2026-08-09. The page answers from this egress at 0.36 requests per item; the
+stripped 230 KB shell is normal SSR, returned because the `market_hash_name` URL is not the
+real page. Resolve the canonical `G<id>` first** (`2026-08-09-next-steps.md` D1); and the
+page serves the **buyer** price, so divide by ~~1.1607~~ **1.15 — the 1.1607 is synthetic
+(C1)**.
 
 ### What not to collect
 
@@ -567,10 +748,11 @@ ratio **vary with price** (on a $0.03 sale it is 3.0, not 1.15). **A genuinely c
 1.1607 across 30,875 rows cannot come from rounding — it would have to be a hardcoded
 multiplier in the source feed.**
 
-**Do this:** regress the ratio on price. Slope ≈ 0 ⇒ it is synthetic, and the Steam
-listing-page normalisation in `backfill_steam_listing_history.py` is applying a constant
-where a price-dependent correction is needed — which would systematically distort cheap
-items. Cheap, decisive, and it touches a live ingestion path.
+~~**Do this:** regress the ratio on price.~~ **DONE — see C1. The slope is ≈ 0 and it is
+synthetic**, so the Steam listing-page normalisation in `backfill_steam_listing_history.py`
+is applying a constant where a price-dependent correction is needed, and rows below ~$0.50
+carry a real basis error (~5% too high at $0.10–0.25). Still unfixed; the live-ingestion-path
+part of this paragraph stands.
 
 ### The Steam premium is ~43%, not ~20% — measured across 23,904 items
 
@@ -1004,7 +1186,8 @@ a contradiction.
 ## 16. Feature engineering
 
 **The current production set is 33 columns, all `price_technicals`** — verified by running
-`_select_feature_cols` → `_apply_feature_allowlist`. 117 numeric columns survive shelving;
+`_select_feature_cols` → `_apply_feature_allowlist`. ~~117~~ **123** numeric columns survive
+shelving (re-counted 2026-08-09; the prefix bug below is still live and still correct);
 the allowlist discards eight whole groups (`item_identity` 26, `other` 17, `events` 15,
 `cross_sectional` 13, `social` 5, `supply_depth` 5, `temporal` 3) *after paying full compute*.
 
@@ -1017,7 +1200,7 @@ features, zero new data, one-line fix.
 
 | Feature | Why | Blocked on |
 |---|---|---|
-| **`stale_run_days`** | Consecutive bit-identical prices. Mechanically the GLM θ: a stale series under-reports, so the next change is a catch-up with predictable sign continuation. Also the cleanest split between real items and artifacts (37–42% at tier 0 vs 0–1.8% at ≥$1) | **Nothing — free, 13 years deep.** Highest-ranked new item-level feature |
+| **`stale_run_days`** | Consecutive bit-identical prices. Mechanically the GLM θ: a stale series under-reports, so the next change is a catch-up with predictable sign continuation. ~~Also the cleanest split between real items and artifacts (37–42% at tier 0 vs 0–1.8% at ≥$1)~~ — **the split does not exist on the voted series (12–27% at ≥$1); banner item 5** | **Nothing — free, 13 years deep.** ~~Highest-ranked new item-level feature~~ **Shipped 2026-08-08 as a label-side filter (`staleness.py::stale_run_days`); still open as a feature, but without the evidence quoted here** |
 | **`roll_spread`** | Roll (1984) recovers an *effective spread from price alone* — the only route to a liquidity variable for the 13 pre-multi-source years and the 24,000 items with no bid feed | Nothing |
 | **`spread_resid`** | `spread_rel` minus its tier-conditional median. Raw spread is **monotone in price** (35.5%→5.2%), so unresidualised it is a price-tier proxy — the exact defect that shelved the dollar-scale features | 25 days of bid history |
 | **`d_bid − d_ask`** (order-flow imbalance) | Decomposes a mid move into demand-side vs supply-side. A mid that rose because the *bid* rose is a different event. Canonical short-horizon predictor in equity microstructure | 25 days of bid history |
@@ -1090,17 +1273,19 @@ it is the better product.
 
 ## 18. Data leakage — ranked for this repo
 
-**The first fact is schema-level:** `CANONICAL_PRICE_COLUMNS = ("item_slug","day","source",
+**The first fact is schema-level:** ~~`CANONICAL_PRICE_COLUMNS = ("item_slug","day","source",
 "mean_price","volume")`. **There is no ingestion or arrival timestamp anywhere in the price
-archive**, so every vector below that depends on *when a row landed* is not merely unfixed
-but **unauditable retroactively**. Adding `ingested_at` costs one column and is the only
-thing that makes point-in-time reconstruction possible later. It belongs in Tier 1.
+archive**~~ — **fixed 2026-08-08: `backend/db/archive.py:40` now carries six columns including
+`ingested_at`.** The retroactive half of the problem is permanent — the column is NULL for
+every row written before that date and cannot be reconstructed backwards — so every vector
+below that depends on *when a row landed* remains **unauditable for the historical panel**,
+and auditable from 2026-08-08 forward.
 
 | # | Vector | Live? | Contaminates |
 |---|---|---|---|
-| **L1** | **Date proxies × unpurged boundary** | **Yes.** `walkforward_backtest.py --purge` is **default OFF** — so the *published* Backtest Accuracy number is unpurged — and **ten further `ab_test_*` harnesses have neither purge nor fold clustering** | The published series; ≥10 ledger entries |
-| **L2** | **Full-sample item selection.** `_filter_dead_items`, `_filter_by_median_price`, `_flag_corrupt_items`, `_stratified_item_subsample` all run on the **entire window before any split**. "Items whose median 2013→2026 price is ≥$1" is not a set anyone could have named in 2019 | **Yes** | **The +3.50pp ≥$1 result.** The effect appears *only* at h=30 — the signature a look-ahead selection produces, since the longest horizon has the most future to borrow |
-| **L3** | **Overlapping labels.** Daily rows with a 30d target ⇒ each price appears in 30 labels. CIs ~√30 too narrow; early stopping stops late | **Yes** | Every interval outside `paired_mde` |
+| **L1** | **Date proxies × unpurged boundary** | ~~**Yes.** `walkforward_backtest.py --purge` is **default OFF**~~ — **fixed 2026-08-08: `set_defaults(purge=True)`, embargo `h+13`, `--no-purge` as the legacy escape.** ~~and **ten further `ab_test_*` harnesses**~~ — **15 exist**, and the live residuals are different: 9 of 15 call `phase_collapsed_sql_filter()` where invariant 2 requires `archive_universe_sql_filter()`, and 14 of 15 still early-stop against the window they score (`ab_test_frozen_runs.py` inherits one via `walkforward_backtest.py:490`; only `ab_test_direction_labels.py` is exempt) | The published series; ≥10 ledger entries |
+| **L2** | **Full-sample item selection.** `_filter_dead_items`, `_filter_by_median_price`, `_flag_corrupt_items`, `_stratified_item_subsample` all run on the **entire window before any split**. "Items whose median 2013→2026 price is ≥$1" is not a set anyone could have named in 2019 | **Yes** — measured: 876 items used where 319 were knowable | ~~**The +3.50pp ≥$1 result.** The effect appears *only* at h=30 — the signature a look-ahead selection produces~~ **Both halves refuted 2026-08-08.** The leak is real but worth **−0.004pp [−0.664, +0.851]**, and the +3.50pp it was offered to explain re-derives as **+1.642pp, null**. Banner item 2 |
+| **L3** | **Overlapping labels.** Daily rows with a 30d target ⇒ each price appears in 30 labels. CIs ~√30 too narrow; ~~early stopping stops late~~ **direction reversed — early stopping on the thin trailing window stopped *at round 1*, destroying 23–88% of rank IC; replaced by `FIXED_BOOST_ROUNDS` (`forecaster.py:618`)** | **Yes** | Every interval outside `paired_mde` |
 | **L4** | **Revision/backfill with no arrival time.** Six backfill writers. The Steam listing page returns Steam's *2026* rendering of 2015, then divides by a constant now known to be synthetic (C1) | **Yes, unauditable** | Reproducibility — this is the best candidate for §3 defect 3 |
 | **L5** | **Survivorship via `is_backfilled`** (derived from `source IS NULL`). Every pre-2026 training row is conditioned on the item still being collected in 2026. "Long history" and "survived" are the same variable | **Yes** | The whole pre-2026 panel |
 | **L6** | **`events_next_30d_*` is an explicit forward count** over `(date, date+30d]`. If any §12 surprise is in the `events` table typed `update`, the model knew a −45% shock was coming | **[NEEDS AUDIT]** — one query settles it | Event-calendar results |
@@ -1391,7 +1576,7 @@ Horizon column uses the §17 finding that only h=14/30 are executable.
 | 1 | **`index_return_{k}d`** (hedonic, time dummies) | market-wide | **High** — the only place variance is demonstrated | date-level | Medium — must be built | **High if mis-built**: time dummies fit in-sample across the panel; must be re-fit per fold inside the purge |
 | 2 | **`down_rate`** (per-date fraction negative) | market-wide | **High** — swings 32.7→76.9%; also the PT base rate | date-level | Trivial | None |
 | 3 | **Within-date rank transform of all features** | all | **High (structural)** — removes the market factor from the feature side | 14, 30 | Trivial — one `groupby.rank` | None (same-date only) |
-| 4 | **`stale_run_days`** | price | **High** — GLM θ in discrete form; 37–42% vs 0–1.8% tier split | 14, 30 | **Trivial, 13 years deep** | None |
+| 4 | **`stale_run_days`** | price | **High** — GLM θ in discrete form; ~~37–42% vs 0–1.8% tier split~~ **that split is on smoothed anchors, not the modelled series (12–27% at ≥$1); banner item 5** | 14, 30 | **Trivial, 13 years deep** — label-side use shipped 2026-08-08 | None |
 | 5 | **`dispersion`** (cross-sectional sd of returns) | market-wide | High — the Oct-2025 signature; separates "market down" from "market re-sorting" | date-level | Trivial | None |
 | 6 | **`d_bid − d_ask`** (order-flow imbalance) | liquidity | **High if measurable** — canonical short-horizon predictor | 14 | **Blocked: 25 days ⇒ zero extra folds** | None |
 | 7 | **`spread_resid`** (spread minus tier median) | liquidity | High | 14, 30 | Blocked: 25 days | None |
@@ -1406,7 +1591,7 @@ Horizon column uses the §17 finding that only h=14/30 are executable.
 | 16 | **`sale_count_24h`** | volume | Medium — the counting-noise denominator | 14, 30 | Medium — kieranpoc backfill | Dead column must not be reused in place |
 | 17 | **`turnover` = sales / listings** | liquidity | Medium — the *signed* version of supply depth | 14, 30 | Blocked on #16 | None |
 | 18 | **`dwell_time` = listings / sales** | liquidity | Medium | 30 | Blocked on #16 | None |
-| 19 | **`usd_cny` return** | market-wide | Medium — the two largest-coverage sources are CNY-denominated | date-level | **Blocked: 7 days of FX history** | None |
+| 19 | **`usd_cny` return** | market-wide | Medium — the two largest-coverage sources are CNY-denominated | date-level | ~~**Blocked: 7 days of FX history**~~ **Unblocked** — `price-archive/exchange-rates-history.parquet` is 13 years deep and published | None |
 | 20 | **`n_ask_sources`** | integrity | Medium (as a *guard*, not a feature) | — | Trivial | Prevents a basis change reading as a return |
 | 10b | **`stattrak_premium_z30`** (z-scored ST/normal ratio) | metadata | Medium-high — **a revealed-preference weapon-usage measure**, the only such signal available free. AK 2.15× vs P2000 1.10×, 14.7% below 1.0× | 14, 30 | **Trivial — names already in the archive, 13 years deep** | None. Use the z-score, never the level (level = shelved dollar proxy) |
 | 10c | **`case_ev_ratio`** (contained-item EV ÷ case price) | cross-asset | Medium — disperses **0.72×–4.06×**; genuinely unmeasured, no free publisher | date × case | Low — ByMykel map is free/MIT | **128 usable days ⇒ zero extra folds.** Use the fixed-composition sub-EV, or reframe as a §14 lead-lag question |
@@ -1541,7 +1726,8 @@ API, but it is paid and therefore out of scope, and useless at this grain regard
 
 **[DOCUMENTED, measured here.]** ByMykel `crates.json` gives **42 weapon cases, all 42 with
 `contains` and `contains_rare`**, free and MIT. Drop odds (Mil-Spec 79.92%, Restricted
-15.98%, Classified 3.20%, Covert 0.64%, Rare Special 0.26% — each adjacent tier exactly 5:1)
+15.98%, Classified 3.20%, Covert 0.64%, Rare Special 0.26% — ~~each adjacent tier exactly
+5:1~~ **the last ratio is 2.46:1, from these same numbers**)
 are **[WIDELY REPORTED]**; I could not fetch a Valve-hosted page stating them, so treat them
 as a fixed vector to verify in-client once, not as a sourced number.
 

@@ -1,7 +1,11 @@
 # Deterministic Forecast Backtest — Design
 
 **Date:** 2026-08-01
-**Status:** Approved, not yet implemented
+**Status:** ✅ **IMPLEMENTED AND CLOSED (2026-08-01).** All 9 tasks of
+`docs/superpowers/plans/2026-08-01-deterministic-backtest.md` landed; the `backend/backtest/`
+package, migration `0019_freeze_forecast_outcome_actuals.py` and the determinism test at
+`backend/tests/test_backtest_scoring.py:1204` are the evidence. Outcome, including the prod
+backfill of 60,737 rewritten outcomes, in `docs/changelog/2026-08-01-deterministic-backtest.md`.
 **Scope:** `backend/scripts/backtest_accuracy.py` and the `forecast_outcomes` /
 `prediction_accuracy` schemas.
 

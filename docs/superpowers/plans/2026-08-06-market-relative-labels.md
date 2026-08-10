@@ -1,5 +1,22 @@
 # Market-Relative Direction Labels Implementation Plan
 
+> # ✅ BUILT, MEASURED, AND REFUTED (2026-08-06) — wiring since removed
+>
+> All 6 tasks landed (`444268f`), the hypothesis was measured, and it **failed**. Demeaning by the
+> market factor drops accuracy below a constant call at every horizon.
+>
+> **Outcome: `docs/changelog/2026-08-06-market-relative-labels-refuted.md`** (and
+> `-instrument.md` for the build).
+>
+> **Do not re-run this plan — most of what it builds no longer exists.** `4cf95fc` removed the
+> refuted wiring: `scripts/ab_test_market_relative_labels.py`, `tests/test_market_relative_labels.py`,
+> the `market_relative_labels` flag and `DEFAULT_MARKET_RELATIVE_LABELS` are all gone. What
+> survives is `backend/models/market_factor.py` + its tests, and `_demean_returns` /
+> the `market_factor_{h}d` feature exclusion at `forecaster.py:4609,4708`.
+>
+> Note for Track C: this changed the **label**. `2026-08-09-next-steps.md` C1 changes the
+> **features**, which is a different experiment and is not refuted by this one.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Build a default-off training path that trains the directional classifier on market-demeaned returns, plus a leak-free market forecast that rebuilds the absolute call, so the hypothesis can be measured on paired cold retrains without touching production.
@@ -34,7 +51,7 @@
 - Consumes: nothing from earlier tasks.
 - Produces: `build_market_index(price_df, min_items=30, min_price=1.0) -> pd.DataFrame`. Input frame needs columns `item_id`, `date`, `price`. Returns a frame indexed by `date` (sorted, unique) with columns `log_return: float`, `n_items: int`, `valid: bool`, `level: float`, `invalid_cum: int`. Module constants `MIN_INDEX_ITEMS`, `INDEX_TOLERANCE_DAYS`, `MARKET_MIN_PRICE_USD`, `TRAILING_DRIFT_DAYS`, `TRAILING_K_WINDOWS`.
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 Create `backend/tests/test_market_factor.py`:
 
@@ -172,12 +189,12 @@ def test_empty_frame_returns_empty_index():
         "log_return", "n_items", "valid", "level", "invalid_cum"]
 ```
 
-- [ ] **Step 2: Run the tests to verify they fail**
+- [x] **Step 2: Run the tests to verify they fail**
 
 Run: `venv/bin/python -m pytest tests/test_market_factor.py -q`
 Expected: collection error, `ModuleNotFoundError: No module named 'models.market_factor'`.
 
-- [ ] **Step 3: Write the implementation**
+- [x] **Step 3: Write the implementation**
 
 Create `backend/models/market_factor.py`:
 
@@ -298,12 +315,12 @@ def build_market_index(price_df: pd.DataFrame,
     return out[_INDEX_COLUMNS]
 ```
 
-- [ ] **Step 4: Run the tests to verify they pass**
+- [x] **Step 4: Run the tests to verify they pass**
 
 Run: `venv/bin/python -m pytest tests/test_market_factor.py -q`
 Expected: 9 passed.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add backend/models/market_factor.py backend/tests/test_market_factor.py
@@ -325,7 +342,7 @@ git commit -m "feat: chain-linked market index over the >=\$1 cohort"
   - `forecast_market_factor(index, as_of, horizon, trailing_days=180) -> float` — percent; the pre-registered estimator. Returns `0.0` when there is no usable history.
   - `forecast_market_factor_diagnostics(index, as_of, horizon) -> dict` with keys `trailing_drift`, `trailing_k_median`, `past_h_momentum`.
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 Append to `backend/tests/test_market_factor.py`:
 
@@ -470,12 +487,12 @@ def test_forecast_before_the_index_starts_returns_zero():
         idx, pd.Timestamp("2020-01-01"), horizon=7) == 0.0
 ```
 
-- [ ] **Step 2: Run the tests to verify they fail**
+- [x] **Step 2: Run the tests to verify they fail**
 
 Run: `venv/bin/python -m pytest tests/test_market_factor.py -q`
 Expected: `ImportError: cannot import name 'market_factor_for_horizon'`.
 
-- [ ] **Step 3: Write the implementation**
+- [x] **Step 3: Write the implementation**
 
 Append to `backend/models/market_factor.py`:
 
@@ -590,12 +607,12 @@ def forecast_market_factor_diagnostics(index: pd.DataFrame, as_of,
     return out
 ```
 
-- [ ] **Step 4: Run the tests to verify they pass**
+- [x] **Step 4: Run the tests to verify they pass**
 
 Run: `venv/bin/python -m pytest tests/test_market_factor.py -q`
 Expected: 21 passed.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add backend/models/market_factor.py backend/tests/test_market_factor.py
@@ -614,7 +631,7 @@ git commit -m "feat: realized market factor and leak-free market forecast"
 - Consumes: `build_market_index`, `market_factor_for_horizon` from Tasks 1-2.
 - Produces: `ItemForecaster(..., market_relative_labels: bool = False)`; attribute `self.market_relative_labels: bool`; attribute `self.market_index: Optional[pd.DataFrame]` (set by `build_training_data`, `None` when the flag is off); columns `market_factor_{h}d` on the training frame for `h in HORIZONS`, present **only** when the flag is on, and never in `feature_cols`.
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 Create `backend/tests/test_market_relative_labels.py`:
 
@@ -663,12 +680,12 @@ def test_market_factor_columns_are_never_features():
         assert f"market_factor_{h}d" not in cols
 ```
 
-- [ ] **Step 2: Run the tests to verify they fail**
+- [x] **Step 2: Run the tests to verify they fail**
 
 Run: `venv/bin/python -m pytest tests/test_market_relative_labels.py -q`
 Expected: `TypeError: __init__() got an unexpected keyword argument 'market_relative_labels'` and an `AttributeError` on `market_relative_labels`.
 
-- [ ] **Step 3: Write the implementation**
+- [x] **Step 3: Write the implementation**
 
 In `backend/models/forecaster.py`, add the import near the other `models.` imports at the top of the file:
 
@@ -752,17 +769,17 @@ Then, immediately after the `df = self._add_supply_depth_features(df)` line
                 logger.info(f"  market factor {h}d coverage: {cov:.1f}% of rows")
 ```
 
-- [ ] **Step 4: Run the tests to verify they pass**
+- [x] **Step 4: Run the tests to verify they pass**
 
 Run: `venv/bin/python -m pytest tests/test_market_relative_labels.py -q`
 Expected: 3 passed.
 
-- [ ] **Step 5: Verify the control arm is untouched**
+- [x] **Step 5: Verify the control arm is untouched**
 
 Run: `venv/bin/python -m pytest tests/test_forecaster.py tests/test_served_cohort_weighting.py -q`
 Expected: all pass. These cover the default construction path.
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add backend/models/forecaster.py backend/tests/test_market_relative_labels.py
@@ -785,7 +802,7 @@ git commit -m "feat: join the market factor onto the training frame, default off
   - `ItemForecaster._residual_point_estimate(pred_cls, band) -> np.ndarray`
   - Three new keys in each `fold_metrics` dict: `relative_accuracy_ge1`, `market_factor_coverage`, `market_relative_classifier_accuracy_ge1`.
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 Append to `backend/tests/test_market_relative_labels.py`:
 
@@ -857,12 +874,12 @@ def test_reconstruction_shifts_the_call_when_the_market_forecast_is_large():
     assert list(rebuilt) == [2]
 ```
 
-- [ ] **Step 2: Run the tests to verify they fail**
+- [x] **Step 2: Run the tests to verify they fail**
 
 Run: `venv/bin/python -m pytest tests/test_market_relative_labels.py -q`
 Expected: `AttributeError: type object 'ItemForecaster' has no attribute '_demean_returns'`.
 
-- [ ] **Step 3: Write the helpers**
+- [x] **Step 3: Write the helpers**
 
 In `backend/models/forecaster.py`, add immediately after `_direction_classes`:
 
@@ -920,19 +937,19 @@ In `backend/models/forecaster.py`, add immediately after `_direction_classes`:
         return np.select([c == 0, c == 2], [-float(band), float(band)], 0.0)
 ```
 
-- [ ] **Step 4: Run the helper tests to verify they pass**
+- [x] **Step 4: Run the helper tests to verify they pass**
 
 Run: `venv/bin/python -m pytest tests/test_market_relative_labels.py -q`
 Expected: 12 passed.
 
-- [ ] **Step 5: Commit the helpers**
+- [x] **Step 5: Commit the helpers**
 
 ```bash
 git add backend/models/forecaster.py backend/tests/test_market_relative_labels.py
 git commit -m "feat: demeaning, flat-band matching and residual point estimate"
 ```
 
-- [ ] **Step 6: Wire the demeaned label into the production trainer**
+- [x] **Step 6: Wire the demeaned label into the production trainer**
 
 In `_train_horizon_inline`, replace the `self.direction_models[horizon] = self._fit_direction_classifier(...)` call with:
 
@@ -979,7 +996,7 @@ parameter, and change its `_thr` helper so an explicit band wins:
                                               horizon, k, floor, cap)
 ```
 
-- [ ] **Step 7: Wire the metrics into CV**
+- [x] **Step 7: Wire the metrics into CV**
 
 In `_cv_evaluate_horizon`, replace the block from the `clf = self._fit_direction_classifier(...)` call through the construction of `classifier_acc_ge1` with:
 
@@ -1059,7 +1076,7 @@ Add the three keys to the `fold_metrics.append({...})` dict, after
                 "market_factor_coverage": mf_coverage,
 ```
 
-- [ ] **Step 8: Aggregate the new metrics into `cv_results`**
+- [x] **Step 8: Aggregate the new metrics into `cv_results`**
 
 In `train()`, next to the existing `mean_clf_ge1` aggregation, add:
 
@@ -1082,12 +1099,12 @@ and add both to the same dict that already carries `"mean_classifier_acc_ge1"`:
                 "mean_market_factor_coverage": mean_cov,
 ```
 
-- [ ] **Step 9: Run the full backend suite**
+- [x] **Step 9: Run the full backend suite**
 
 Run: `venv/bin/python -m pytest tests/ -q`
 Expected: all pass. Record the count for the changelog. If `tests/test_forecaster.py` or `tests/test_served_cohort_weighting.py` fail, the control path was not preserved — fix before continuing.
 
-- [ ] **Step 10: Commit**
+- [x] **Step 10: Commit**
 
 ```bash
 git add backend/models/forecaster.py
@@ -1107,7 +1124,7 @@ git commit -m "feat: market-relative label arm and its CV metrics, default off"
 - Consumes: `ItemForecaster(market_relative_labels=...)` from Task 3.
 - Produces: `_market_relative_labels() -> bool` in `forecast_prices.py`, reading `TRAIN_MARKET_RELATIVE_LABELS`; `DEFAULT_MARKET_RELATIVE_LABELS = False`.
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 Append to `backend/tests/test_market_relative_labels.py`:
 
@@ -1132,12 +1149,12 @@ def test_env_knob_rejects_everything_else(monkeypatch, raw):
     assert fp._market_relative_labels() is False
 ```
 
-- [ ] **Step 2: Run the tests to verify they fail**
+- [x] **Step 2: Run the tests to verify they fail**
 
 Run: `venv/bin/python -m pytest tests/test_market_relative_labels.py -q`
 Expected: `AttributeError: module 'scripts.forecast_prices' has no attribute '_market_relative_labels'`.
 
-- [ ] **Step 3: Add the knob**
+- [x] **Step 3: Add the knob**
 
 In `backend/scripts/forecast_prices.py`, after `DEFAULT_SERVED_COHORT_SHARE = None`:
 
@@ -1177,12 +1194,12 @@ and pass it at the constructor:
                                     model_dir=_model_dir())
 ```
 
-- [ ] **Step 4: Run the tests to verify they pass**
+- [x] **Step 4: Run the tests to verify they pass**
 
 Run: `venv/bin/python -m pytest tests/test_market_relative_labels.py -q`
 Expected: 23 passed.
 
-- [ ] **Step 5: Write the driver script**
+- [x] **Step 5: Write the driver script**
 
 Create `backend/scripts/ab_test_market_relative_labels.py`:
 
@@ -1416,7 +1433,7 @@ if __name__ == "__main__":
     main()
 ```
 
-- [ ] **Step 6: Verify the script parses and its pure functions work**
+- [x] **Step 6: Verify the script parses and its pure functions work**
 
 Run: `venv/bin/python -c "import ast,pathlib; ast.parse(pathlib.Path('scripts/ab_test_market_relative_labels.py').read_text()); print('ok')"`
 Expected: `ok`
@@ -1424,12 +1441,12 @@ Expected: `ok`
 Run: `venv/bin/python scripts/ab_test_market_relative_labels.py --help`
 Expected: usage text, exit 0.
 
-- [ ] **Step 7: Run the full backend suite**
+- [x] **Step 7: Run the full backend suite**
 
 Run: `venv/bin/python -m pytest tests/ -q`
 Expected: all pass.
 
-- [ ] **Step 8: Commit**
+- [x] **Step 8: Commit**
 
 ```bash
 git add backend/scripts/forecast_prices.py backend/scripts/ab_test_market_relative_labels.py backend/tests/test_market_relative_labels.py
@@ -1443,13 +1460,13 @@ git commit -m "feat: TRAIN_MARKET_RELATIVE_LABELS knob and the paired A/B driver
 **Files:**
 - Create: `docs/changelog/2026-08-06-market-relative-labels-instrument.md`
 
-- [ ] **Step 1: Write the entry**
+- [x] **Step 1: Write the entry**
 
 Record: the hypothesis and the evidence behind it; that this is an instrument, not a result; the pre-registered rule copied verbatim from the spec so it cannot drift; where the code lives and that the default is off; the test count from Task 5 Step 7; and how to run the arms (`python scripts/ab_test_market_relative_labels.py --out /tmp/mrl`). Link the spec, `2026-08-03-accuracy-is-clustered-by-forecast-date.md`, `2026-08-06-served-cohort-weighting-refuted.md` and `2026-08-06-volume-ab-and-harness-defects.md`.
 
 State explicitly that no measurement has been taken yet, so no conclusion about the hypothesis is recorded here.
 
-- [ ] **Step 2: Commit**
+- [x] **Step 2: Commit**
 
 ```bash
 git add docs/changelog/2026-08-06-market-relative-labels-instrument.md

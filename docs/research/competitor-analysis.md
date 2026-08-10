@@ -69,9 +69,9 @@ The CS2 skin market is valued at approximately $4.5-7B (2026). Multiple platform
 
 | Feature | How it fits |
 |---------|-------------|
-| **Sales volume data** | Feature input for ML models — volume predicts volatility and price momentum |
-| **Cross-market price spread** | Arbitrage patterns feed into forecasts (price convergence/divergence signals) |
-| **Most liquid skins** | Context for prediction reliability (low liquidity = wider confidence intervals) |
+| **Sales volume data** | ~~Feature input for ML models — volume predicts volatility and price momentum~~ — **refuted.** All 13 volume features were shelved 2026-08-06; see `docs/research/volume-data.md` and `docs/changelog/2026-08-06-volume-features-shelved.md` |
+| **Cross-market price spread** | ~~Arbitrage patterns feed into forecasts~~ — the `cross_sectional` group is discarded by `FEATURE_GROUP_ALLOWLIST` before training (`backend/models/forecaster.py:353`) |
+| **Most liquid skins** | ~~Context for prediction reliability (low liquidity = wider confidence intervals)~~ — the confidence gate was removed; the served band is split-conformal and not liquidity-conditioned (`docs/superpowers/specs/2026-08-03-served-forecast-surface-design.md`) |
 
 ### Skip — zero prediction angle
 
@@ -107,5 +107,10 @@ Trade-up calculator, case simulator, 3D viewer, float checker, pattern checker, 
 | MarketCSGO | — | Yes | Yes |
 | Lis-Skins | — | Yes | Yes |
 | WhiteMarket | — | No | Yes |
+
+**Stale as of 2026-08-09:** the pipeline now carries **9 ask feeds plus 1 excluded bid
+feed** (`docs/research/2026-08-09-model-and-data-research.md` §4b). Waxpeer, Lis-Skins and
+MarketCSGO are marked "—" above but are all collected daily today — as listing depth, not
+price (`backend/collectors/supply_depth.py:479-486`).
 
 **Observation:** You cover 6 major sources. Competitors cover more total marketplaces but at shallower depth. Your advantage is the historical Parquet archive (2013+), ML pipeline, and direct source access.

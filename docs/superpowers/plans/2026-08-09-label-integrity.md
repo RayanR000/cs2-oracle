@@ -1,6 +1,65 @@
 # Label Integrity Implementation Plan
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+> # ✅ COMPLETE — all four tasks landed and merged, 2026-08-09/10
+>
+> Branch `label-integrity`, off `training-cost` @ `c311194`, merged to `main` at `58d681e`
+> (pushed). Ledger: `.superpowers/sdd/2026-08-09-label-integrity/progress.md`.
+>
+> | Task | Status | Commits |
+> |---|---|---|
+> | 1 — label-voiding audit | ✅ complete, review clean | `3d582ab`, `5e7dc60` |
+> | 2 — `n_ask_sources` | ✅ complete, review clean | `48fd352`, `4f828fd` |
+> | 3 — composition test | ✅ instrument + 16 tests, write-up committed, re-run post-exclusion | `80c3e07`, `f833882`, `cddcf76`, `3c62a49`, `6f90ce0` |
+> | 4 — trailing-window exclusion | ✅ complete; cache key moved v4 → **v6** in the same commit | `873148b`, `ac713cc`, `09e945e` |
+>
+> **The goal was met: the gate returned, and it lifted.** The reversal survives source-composition
+> control (2026 set basis, post-exclusion: stable **+0.0838** vs unconditional **+0.0838**, 167–172
+> dates), so the label is a tradeable return and Track C accuracy work is unblocked. Full result:
+> `docs/research/2026-08-09-composition-stability.md`.
+>
+> ⚠️ **One thing this branch leaves owing: a retrain.** Task 4 changed the consensus, so every
+> label from 2026-03 onward moved. The shipped artifact was trained before `873148b` and no
+> workflow has run on the merged tree. Dispatch `price-forecast.yml` with **`mode=train-only`**
+> (*not* `mode=full` — the artifact is a day old, so `full` skips the age gate's retrain branch
+> and `FORCE_RETRAIN` is not a dispatch input). It will vote **cold**, since no `voted-v6-` cache
+> key exists yet.
+> **No stored A/B verdict is citable against a post-merge number.**
+>
+> **Task 1's open question is closed by measurement.** On the backfilled-only frame the detectors
+> fire on cutovers **2026-03-22, 07-09, 07-10, 07-11, 07-12** and snapshots **2026-07-16, 07-22**.
+> **2026-07-11 IS present**, so no special case is needed; 07-12 is present too and had never been
+> documented. ⚠️ New finding: `_collection_shift_dates` *also* fires on 2026-04-16, 07-14 and 07-15
+> on the **full-universe** frame. "Which dates are void" is a function of the universe handed to
+> the detector — previously unrecorded.
+>
+> **Task 3 changed the question, and the plan's expected outcome was wrong.** Step 2's baseline
+> **does not reproduce**, for a definitional reason: "composition stable" was computed with a NULL
+> source never equal to itself, and every pre-2026 row has `source IS NULL` (9,417,947 item-days).
+> The published "stable" cell therefore holds **no pre-2026 data**, and its 775 "changed" dates are
+> ~716 pre-2026 dates classified as changed for want of a label. **The 0.1676 → 0.1006 fall is a
+> 2013-2025 → 2026 regime difference, not composition control.** Within 2026, powered at 181–185
+> dates: **stable +0.1027, changed +0.0967, unconditional +0.1023.** So the plan's "likely outcome
+> is `underpowered`" note at the foot of this file is **superseded** — the cells came back powered.
+>
+> Caveat the write-up must carry: `n_ask_sources` is a count, not a set, so a swap at constant
+> count reads stable; the instrument **under-detects** composition change, biasing toward the
+> answer it found. Agreed basis — primary = 2026 era on **set**-based composition, secondary = full
+> archive on the count basis with its assumption stated.
+>
+> **Four pre-flight rulings this plan's text does not reflect:**
+> 1. `_apply_multi_source_voting` is a `@staticmethod` (called unbound at
+>    `backtest/price_resolution.py:246`), so Task 4 Step 4's `self.BID_SOURCES` **cannot work**.
+>    Keep it static; reference constants by module/class name.
+> 2. `BID_SOURCES` lives in `models/item_parser.py:34`, not on the class. Define
+>    `TRAILING_WINDOW_SOURCES` beside it and expose both as class-level aliases so Task 4's tests
+>    pass verbatim.
+> 3. ~~⚠️ **The CI cache key is `voted-v4-`, not `voted-v5-`.** Task 2 bumped the constant to 5
+>    without moving the key. **Task 4 must move it v4 → v6.**~~ **Done in `873148b`** — key went
+>    `voted-v4-` → `voted-v6-` alongside the constant, no v5 key left behind.
+> 4. The working tree carries unrelated frontend work. `git add` only the paths a task names —
+>    never `git add -A`.
+
+> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [x]`) syntax for tracking.
 
 **Goal:** Answer whether the price signal survives source-composition control, and remove the two remaining basis errors from the consensus vote — so that every accuracy item downstream is either unblocked or honestly declared blocked on calendar time.
 
@@ -35,7 +94,7 @@
 - Consumes: `_snapshot_dates(df) -> frozenset` (`:2951`), `_collection_shift_dates(df) -> frozenset` (`:2975`)
 - Produces: `ItemForecaster.label_voiding: dict` with keys `snapshot_dates`, `collection_shift_dates`, `voided_labels_by_horizon`, `frame_date_range`
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 Create `backend/tests/test_label_voiding_audit.py`:
 
@@ -128,12 +187,12 @@ def test_dates_are_sorted_iso_strings(tmp_path):
         assert got == sorted(got)
 ```
 
-- [ ] **Step 2: Run the tests to verify they fail**
+- [x] **Step 2: Run the tests to verify they fail**
 
 Run: `venv/bin/python -m pytest tests/test_label_voiding_audit.py -q`
 Expected: FAIL — `AttributeError: 'ItemForecaster' object has no attribute 'label_voiding'`
 
-- [ ] **Step 3: Initialise the audit dict**
+- [x] **Step 3: Initialise the audit dict**
 
 In `ItemForecaster.__init__`, beside the other per-run state:
 
@@ -146,7 +205,7 @@ In `ItemForecaster.__init__`, beside the other per-run state:
         self.label_voiding: dict = {}
 ```
 
-- [ ] **Step 4: Record in `prepare_targets`**
+- [x] **Step 4: Record in `prepare_targets`**
 
 In `prepare_targets` (`:2999`), after `snapshots` and `shifts` are computed and after the `bad`
 mask is applied, accumulate rather than overwrite — `prepare_targets` is called once per horizon:
@@ -174,23 +233,23 @@ mask is applied, accumulate rather than overwrite — `prepare_targets` is calle
 Capture `pre_void_na` immediately before the `bad` mask is applied so the count measures the
 voiding rather than pre-existing NaNs.
 
-- [ ] **Step 5: Write it into `meta.json`**
+- [x] **Step 5: Write it into `meta.json`**
 
 In `save_models()`, add `"label_voiding": self.label_voiding` to the metadata dict.
 
-- [ ] **Step 6: Run the tests to verify they pass**
+- [x] **Step 6: Run the tests to verify they pass**
 
 Run: `venv/bin/python -m pytest tests/test_label_voiding_audit.py -q`
 Expected: PASS, 5 tests
 
-- [ ] **Step 7: Verify the detectors are untouched**
+- [x] **Step 7: Verify the detectors are untouched**
 
 Run: `venv/bin/python -m pytest tests/test_degenerate_label_dates.py -q`
 Expected: PASS, including `test_a_price_crash_is_never_flagged`. If that test fails, a detector's
 logic was changed and the diff must be reverted — the universe-size rule is what makes the
 detector unable to delete a real market event.
 
-- [ ] **Step 8: Print the real fired-date list and answer the 2026-07-11 question**
+- [x] **Step 8: Print the real fired-date list and answer the 2026-07-11 question**
 
 ```bash
 cd backend
@@ -210,7 +269,7 @@ this command is the measurement that closes it. If it is absent, do not add a sp
 it as a finding and size it before acting, because the universe-size rule is what keeps the
 detector honest.
 
-- [ ] **Step 9: Commit**
+- [x] **Step 9: Commit**
 
 ```bash
 git add backend/models/forecaster.py backend/tests/test_label_voiding_audit.py
@@ -230,7 +289,7 @@ git commit -m "feat: record which dates the label path voided, and why"
 - Consumes: `BID_SOURCES`, the voted frame's `source` column
 - Produces: voted frame gains `n_ask_sources: int`, never NULL
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 Create `backend/tests/test_n_ask_sources.py`:
 
@@ -315,12 +374,12 @@ def test_cache_version_bumped():
         "model on a frame without it")
 ```
 
-- [ ] **Step 2: Run the tests to verify they fail**
+- [x] **Step 2: Run the tests to verify they fail**
 
 Run: `venv/bin/python -m pytest tests/test_n_ask_sources.py -q`
 Expected: FAIL — `KeyError: 'n_ask_sources'`, and the version assert fails at 4
 
-- [ ] **Step 3: Compute the count on both voting paths**
+- [x] **Step 3: Compute the count on both voting paths**
 
 `_apply_multi_source_voting` splits single-source item-days into a vectorised `groupby().agg`
 (`:1206-1217`) and routes only multi-source days through `groupby().apply(vote)`. **Both paths
@@ -329,23 +388,23 @@ need the column**, and it must be computed after the bid exclusion so a bid cann
 On the vectorised path the count is 1 by construction. On the `apply` path, add
 `n_ask_sources = int(group["source"].fillna("__null__").nunique())` inside `vote`.
 
-- [ ] **Step 4: Bump the cache version**
+- [x] **Step 4: Bump the cache version**
 
 ```python
     VOTED_CACHE_VERSION = 5   # v5: n_ask_sources on the voted frame
 ```
 
-- [ ] **Step 5: Run the tests to verify they pass**
+- [x] **Step 5: Run the tests to verify they pass**
 
 Run: `venv/bin/python -m pytest tests/test_n_ask_sources.py -q`
 Expected: PASS, 6 tests
 
-- [ ] **Step 6: Run the universe and voting tests**
+- [x] **Step 6: Run the universe and voting tests**
 
 Run: `venv/bin/python -m pytest tests/test_phase_collapsed_universe.py tests/test_forecaster.py -q`
 Expected: PASS
 
-- [ ] **Step 7: Commit**
+- [x] **Step 7: Commit**
 
 ```bash
 git add backend/models/forecaster.py backend/tests/test_n_ask_sources.py
@@ -363,7 +422,7 @@ git commit -m "feat: record how many ask sources voted on each item-day"
 **Interfaces:**
 - Consumes: `db/archive.py::prices_relation`, `models/item_parser.py::archive_universe_sql_filter`, `_snapshot_dates`, `_collection_shift_dates`, `n_ask_sources` from Task 2
 
-- [ ] **Step 1: Write the script**
+- [x] **Step 1: Write the script**
 
 `backend/scripts/measure_composition_stability.py` — rank IC of `−r_t` against the forward
 `--horizon`-day return on the voted daily series, ≥$1, partitioned by composition stability and
@@ -384,7 +443,7 @@ MIN_DATES_TO_REPORT = 30   # below this a cell reads `underpowered`, never a num
 - Never pool across price tiers. `--min-price` defaults to 1.0.
 - `--horizon` defaults to 3 to reproduce the §5 baseline; accept 7/14/30.
 
-- [ ] **Step 2: Reproduce the published baseline first**
+- [x] **Step 2: Reproduce the published baseline first**
 
 ```bash
 cd backend
@@ -398,14 +457,14 @@ composition-stable ≈ **+0.1006 on 188**; stable & three sources ≈ **+0.0044 
 reproduce the old one is not evidence. The most likely causes are the date exclusion (the old
 measurement may not have applied it) and the universe filter.
 
-- [ ] **Step 3: Run the powered-up version**
+- [x] **Step 3: Run the powered-up version**
 
 ```bash
 venv/bin/python scripts/measure_composition_stability.py --horizon 3 --from 2013-08-14
 venv/bin/python scripts/measure_composition_stability.py --horizon 7 --from 2013-08-14
 ```
 
-- [ ] **Step 4: Write up the result, including a null result**
+- [x] **Step 4: Write up the result, including a null result** — ✅ **COMPLETE** (`f833882`, extended by `cddcf76`, `3c62a49`, `6f90ce0`). `docs/changelog/2026-08-09-composition-stability-refutes-quoting-artifact.md` written; `2026-08-08-model-review.md` §5 corrected in place (rows struck, numbers kept because they reproduce exactly under the old rule); `docs/research/2026-08-09-composition-stability.md` is 378 lines carrying both bases, the three-way stable/changed/gapped partition, the post-`873148b` re-run and the reproduction commands. The `<!--RESULTS-->` placeholder is gone
 
 Create `docs/research/2026-08-09-composition-stability.md`. State plainly which of the three
 outcomes occurred:
@@ -423,7 +482,7 @@ alone. Do not work around it by lowering `MIN_DATES_TO_REPORT`.
 
 Quote the 28-date cell **only ever with its date count.**
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit** — landed as `80c3e07`, **script and tests only, deliberately no doc**
 
 ```bash
 git add backend/scripts/measure_composition_stability.py docs/research/2026-08-09-composition-stability.md
@@ -444,7 +503,7 @@ git commit -m "feat: measure the reversal signal against source-composition stab
 **Interfaces:**
 - Produces: `ItemForecaster.TRAILING_WINDOW_SOURCES: frozenset`
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 Create `backend/tests/test_trailing_window_sources.py`:
 
@@ -535,12 +594,12 @@ def test_cache_version_bumped():
     assert ItemForecaster.VOTED_CACHE_VERSION >= 6
 ```
 
-- [ ] **Step 2: Run the tests to verify they fail**
+- [x] **Step 2: Run the tests to verify they fail**
 
 Run: `venv/bin/python -m pytest tests/test_trailing_window_sources.py -q`
 Expected: FAIL — `TRAILING_WINDOW_SOURCES` does not exist
 
-- [ ] **Step 3: Add the constant**
+- [x] **Step 3: Add the constant**
 
 Beside `BID_SOURCES`:
 
@@ -567,7 +626,7 @@ Beside `BID_SOURCES`:
     })
 ```
 
-- [ ] **Step 4: Apply the exclusion, NULL-safely**
+- [x] **Step 4: Apply the exclusion, NULL-safely**
 
 In `_apply_multi_source_voting`, alongside the `BID_SOURCES` drop and **before** the
 `n_ask_sources` count so a trailing window cannot inflate it:
@@ -579,7 +638,7 @@ In `_apply_multi_source_voting`, alongside the `BID_SOURCES` drop and **before**
         df = df[~df["source"].isin(excluded)]
 ```
 
-- [ ] **Step 5: Bump the cache version and the workflow key**
+- [x] **Step 5: Bump the cache version and the workflow key**
 
 ```python
     VOTED_CACHE_VERSION = 6   # v6: Steam trailing-window sources out of voting
@@ -588,12 +647,12 @@ In `_apply_multi_source_voting`, alongside the `BID_SOURCES` drop and **before**
 If Track A Task 6 has landed, move the `price-forecast.yml` cache key from `voted-v5-` to
 `voted-v6-` **in this same commit**. Otherwise CI restores a frame voted under the old rule.
 
-- [ ] **Step 6: Run the tests to verify they pass**
+- [x] **Step 6: Run the tests to verify they pass**
 
 Run: `venv/bin/python -m pytest tests/test_trailing_window_sources.py tests/test_n_ask_sources.py -q`
 Expected: PASS, 13 tests
 
-- [ ] **Step 7: Measure the coverage cost against the real archive**
+- [x] **Step 7: Measure the coverage cost against the real archive**
 
 ```bash
 cd backend
@@ -611,7 +670,7 @@ materially larger, the exclusion is matching more than the three intended source
 prefix-matching `aggregator_steam_17mafo`, which must be kept (it is the only feed for
 2026-04-16 → 07-10).
 
-- [ ] **Step 8: Write the changelog entry**
+- [x] **Step 8: Write the changelog entry**
 
 Create `docs/changelog/2026-08-09-trailing-window-sources-excluded.md`. Record the measured
 displacement (17.13% of item-days, median −7.16%, 5.75% direction flips), the coverage cost, the
@@ -619,7 +678,7 @@ cache-version bump, and — prominently — that **every A/B and every label fro
 downstream of this**, so no stored A/B verdict predating it is citable. State explicitly that it
 is not a staleness fix and that `aggregator_steam_17mafo` remains unaudited and is subsumed here.
 
-- [ ] **Step 9: Commit**
+- [x] **Step 9: Commit**
 
 ```bash
 git add backend/models/forecaster.py backend/tests/test_trailing_window_sources.py \
@@ -641,6 +700,9 @@ git commit -m "fix: stop Steam's trailing-window means voting against point-in-t
   the 6c change confounds the comparison. Re-run it after Task 4 as a separate reading.
 - **No task changes a detector's logic.** `test_a_price_crash_is_never_flagged` is the guard, and
   Task 1 Step 7 checks it explicitly.
-- **The likely outcome of Task 3 is `underpowered`.** The plan is written so that this is a
-  completed task with a recorded result, not a failure — the multi-source era is 24 days deep and
-  no amount of implementation effort changes that.
+- ~~**The likely outcome of Task 3 is `underpowered`.**~~ **Wrong — superseded 2026-08-09.** The
+  2026 cells came back **powered at 181–185 dates**, and the signal did not move under composition
+  control (stable +0.1027 vs changed +0.0967). What was underpowered was the *published* 28-date
+  cell, which turns out to have been a pre-2026-vs-2026 split rather than a composition split. The
+  plan's framing — that a recorded null is a completed task, not a failure — still holds; it just
+  is not the outcome that occurred.

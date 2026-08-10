@@ -1,5 +1,20 @@
 # Remove the Accidental Retrain Work — Implementation Plan
 
+> # ✅ EXECUTED AND CLOSED (2026-08-04)
+>
+> All 6 tasks landed; commits `c448234..5c47561`, merged to `main` as `d0068f4`. Evidence:
+> `ALLOW_DRIFT_RETRAIN` / `DRIFT_DA_THRESHOLD` (pinned by
+> `backend/tests/test_drift_retrain_guard.py`), `_drift_detected` deleted, and
+> `PREDICT_TAIL_ITEM_DAYS` / `PREDICT_TAIL_ROWS` / `ENGINEERED_CACHE_VERSION` in `forecaster.py`.
+> The gotcha is recorded in `AGENTS.md`; the timing row in
+> `docs/architecture/model-optimization.md:153` was corrected.
+>
+> Task 6 Steps 2–4 (dispatch CI and pull real timings) were **deferred by decision** and verified
+> locally instead — not skipped by oversight.
+>
+> ⚠️ **This is the only landed plan with no `docs/changelog/` entry**, which is the repo's usual
+> signal that work landed.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Stop the daily forecast run from performing an unrequested full retrain, and stop the predict path from engineering 1460 days of history to keep 3 rows per item.
@@ -70,7 +85,7 @@ Two new test files rather than appending to `test_forecaster.py` (4,718-line sou
 - Consumes: `MIN_FORECAST_DATES` from `backtest.scoring`.
 - Produces: `ItemForecaster.DRIFT_DA_THRESHOLD: float` (class constant, 60.0). `check_concept_drift(horizon: int = 7, sliding_window: int = 7, threshold: Optional[float] = None) -> Optional[Dict]` — returns `None` when evidence is insufficient, else `{"drifted": bool, "accuracy": float, "threshold": float}`. Tasks 2 and 3 rely on the `None` return.
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 Create `backend/tests/test_drift_retrain_guard.py`:
 
@@ -174,7 +189,7 @@ def test_drift_alert_is_still_written(tmp_path):
     assert f.db.commit.called
 ```
 
-- [ ] **Step 2: Run the tests to verify they fail**
+- [x] **Step 2: Run the tests to verify they fail**
 
 ```bash
 cd backend && ./venv/bin/python -m pytest tests/test_drift_retrain_guard.py -v
@@ -182,7 +197,7 @@ cd backend && ./venv/bin/python -m pytest tests/test_drift_retrain_guard.py -v
 
 Expected: `test_threshold_is_a_named_constant` fails with `AttributeError: type object 'ItemForecaster' has no attribute 'DRIFT_DA_THRESHOLD'`. The coverage tests fail because drift is currently reported regardless of coverage.
 
-- [ ] **Step 3: Add the class constant**
+- [x] **Step 3: Add the class constant**
 
 In `backend/models/forecaster.py`, near the other drift/threshold class constants (alongside `PREDICT_MIN_HISTORY_DAYS` at `:153`):
 
@@ -194,7 +209,7 @@ In `backend/models/forecaster.py`, near the other drift/threshold class constant
     DRIFT_DA_THRESHOLD = 60.0
 ```
 
-- [ ] **Step 4: Make the threshold parameter fall back to the constant**
+- [x] **Step 4: Make the threshold parameter fall back to the constant**
 
 Replace the signature at `:4327-4328`:
 
@@ -209,7 +224,7 @@ and insert as the first statement of the body, before the `from database import 
         threshold = self.DRIFT_DA_THRESHOLD if threshold is None else threshold
 ```
 
-- [ ] **Step 5: Add the coverage guard to the accuracy accumulation**
+- [x] **Step 5: Add the coverage guard to the accuracy accumulation**
 
 Replace `:4352-4359` (the `accuracies` loop and the `len(accuracies) < 3` check):
 
@@ -241,7 +256,7 @@ Replace `:4352-4359` (the `accuracies` loop and the `len(accuracies) < 3` check)
 
 No import is needed: `MIN_FORECAST_DATES` is already imported at `forecaster.py:21` (`from backtest.scoring import MIN_FORECAST_DATES`).
 
-- [ ] **Step 6: Run the tests to verify they pass**
+- [x] **Step 6: Run the tests to verify they pass**
 
 ```bash
 cd backend && ./venv/bin/python -m pytest tests/test_drift_retrain_guard.py -v
@@ -249,7 +264,7 @@ cd backend && ./venv/bin/python -m pytest tests/test_drift_retrain_guard.py -v
 
 Expected: all 8 tests PASS.
 
-- [ ] **Step 7: Run the full backend suite and compile check**
+- [x] **Step 7: Run the full backend suite and compile check**
 
 ```bash
 cd backend && ./venv/bin/python -m pytest tests/ -q && python3 -m py_compile models/forecaster.py
@@ -257,7 +272,7 @@ cd backend && ./venv/bin/python -m pytest tests/ -q && python3 -m py_compile mod
 
 Expected: no new failures. Note the pre-existing pass/fail count before you start so you can tell new breakage from old.
 
-- [ ] **Step 8: Commit**
+- [x] **Step 8: Commit**
 
 ```bash
 git add backend/models/forecaster.py backend/tests/test_drift_retrain_guard.py
@@ -283,7 +298,7 @@ constant documenting that it was never attainable."
 - Consumes: `check_concept_drift` returning `Optional[Dict]` from Task 1.
 - Produces: no new symbols. Behavioural contract: with `--predict-only`, `forecaster.train` is never called unless `ALLOW_DRIFT_RETRAIN=1`.
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 Append to `backend/tests/test_drift_retrain_guard.py`:
 
@@ -325,7 +340,7 @@ Add `from pathlib import Path` to the file's imports.
 
 This fails today for the right reason: the current branch has no `allow_retrain` gate, so the first assertion fails while `do_train = True` is present unconditionally.
 
-- [ ] **Step 2: Run the test to verify it fails**
+- [x] **Step 2: Run the test to verify it fails**
 
 ```bash
 cd backend && ./venv/bin/python -m pytest tests/test_drift_retrain_guard.py::test_predict_only_branch_has_no_retrain_trigger -v
@@ -333,7 +348,7 @@ cd backend && ./venv/bin/python -m pytest tests/test_drift_retrain_guard.py::tes
 
 Expected: FAIL on the first assertion — `do_train = True` is still present in the branch.
 
-- [ ] **Step 3: Rewrite the predict-only branch**
+- [x] **Step 3: Rewrite the predict-only branch**
 
 Replace `backend/scripts/forecast_prices.py:192-204` in full:
 
@@ -368,7 +383,7 @@ Replace `backend/scripts/forecast_prices.py:192-204` in full:
 
 `os` is already imported at `forecast_prices.py:16`.
 
-- [ ] **Step 4: Run the test to verify it passes**
+- [x] **Step 4: Run the test to verify it passes**
 
 ```bash
 cd backend && ./venv/bin/python -m pytest tests/test_drift_retrain_guard.py -v
@@ -376,7 +391,7 @@ cd backend && ./venv/bin/python -m pytest tests/test_drift_retrain_guard.py -v
 
 Expected: all tests PASS.
 
-- [ ] **Step 5: Record the gotcha in AGENTS.md**
+- [x] **Step 5: Record the gotcha in AGENTS.md**
 
 Add to the `## Gotchas` list in the repo-root `AGENTS.md`:
 
@@ -390,13 +405,13 @@ Note this replaces the claim in `forecast_prices.py:9`'s docstring — update th
     python scripts/forecast_prices.py --predict-only  # use saved models (no auto-retrain)
 ```
 
-- [ ] **Step 6: Run the full suite and compile check**
+- [x] **Step 6: Run the full suite and compile check**
 
 ```bash
 cd backend && ./venv/bin/python -m pytest tests/ -q && python3 -m py_compile scripts/forecast_prices.py
 ```
 
-- [ ] **Step 7: Commit**
+- [x] **Step 7: Commit**
 
 ```bash
 git add backend/scripts/forecast_prices.py backend/tests/test_drift_retrain_guard.py AGENTS.md
@@ -420,7 +435,7 @@ ALLOW_DRIFT_RETRAIN=1 restores the old behaviour."
 - Consumes: nothing new.
 - Produces: no new symbols. `_drift_detected` is removed; nothing may reference it afterwards.
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 Append to `backend/tests/test_drift_retrain_guard.py`:
 
@@ -449,7 +464,7 @@ def test_full_mode_retrains_on_age_not_drift():
     assert "retrain_interval" in condition
 ```
 
-- [ ] **Step 2: Run the tests to verify they fail**
+- [x] **Step 2: Run the tests to verify they fail**
 
 ```bash
 cd backend && ./venv/bin/python -m pytest tests/test_drift_retrain_guard.py -k "drift_detected_helper or full_mode" -v
@@ -457,7 +472,7 @@ cd backend && ./venv/bin/python -m pytest tests/test_drift_retrain_guard.py -k "
 
 Expected: both FAIL — the helper still exists and `drifted` is still in the condition.
 
-- [ ] **Step 3: Delete the `_drift_detected` helper**
+- [x] **Step 3: Delete the `_drift_detected` helper**
 
 Delete `backend/scripts/forecast_prices.py:59-70` entirely:
 
@@ -476,7 +491,7 @@ def _drift_detected(forecaster) -> bool:
     return False
 ```
 
-- [ ] **Step 4: Rewrite the full-mode retrain condition**
+- [x] **Step 4: Rewrite the full-mode retrain condition**
 
 At `backend/scripts/forecast_prices.py:180-186`, replace the `drifted` lookup and condition. Before:
 
@@ -500,7 +515,7 @@ After:
 
 Read the surrounding lines before editing — the exact indentation and the `else` branch that follows must be preserved.
 
-- [ ] **Step 5: Confirm no references remain**
+- [x] **Step 5: Confirm no references remain**
 
 ```bash
 cd backend && grep -rn "_drift_detected" . --include=*.py
@@ -508,7 +523,7 @@ cd backend && grep -rn "_drift_detected" . --include=*.py
 
 Expected: no output.
 
-- [ ] **Step 6: Run the tests to verify they pass**
+- [x] **Step 6: Run the tests to verify they pass**
 
 ```bash
 cd backend && ./venv/bin/python -m pytest tests/test_drift_retrain_guard.py -v && ./venv/bin/python -m pytest tests/ -q
@@ -516,7 +531,7 @@ cd backend && ./venv/bin/python -m pytest tests/test_drift_retrain_guard.py -v &
 
 Expected: all drift-guard tests PASS, no new failures elsewhere.
 
-- [ ] **Step 7: Commit**
+- [x] **Step 7: Commit**
 
 ```bash
 git add backend/scripts/forecast_prices.py backend/tests/test_drift_retrain_guard.py
@@ -539,7 +554,7 @@ reads a 1-2-forecast-date sample and cannot support the decision."
 - Consumes: nothing from earlier tasks — independent of Tasks 1–3.
 - Produces: `ItemForecaster.PREDICT_TAIL_ITEM_DAYS: int = 240`. `ItemForecaster.ENGINEERED_CACHE_VERSION: int = 2`.
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 Create `backend/tests/test_predict_tail_truncation.py`:
 
@@ -685,7 +700,7 @@ def test_served_features_survive_truncation(forecaster):
     )
 ```
 
-- [ ] **Step 2: Run the tests to verify they fail**
+- [x] **Step 2: Run the tests to verify they fail**
 
 ```bash
 cd backend && ./venv/bin/python -m pytest tests/test_predict_tail_truncation.py -v
@@ -697,7 +712,7 @@ Expected: FAIL with `AttributeError` on `PREDICT_TAIL_ITEM_DAYS` and `_tail_pred
 
 Do **not** weaken `test_voting_yields_one_row_per_item_day` to make it pass. It documents the property the design reasons from. Note that `_tail_predict_frame` selects on distinct dates rather than row position, so it stays correct even if duplicates appear — but if voting genuinely emits duplicate item-days, stop and report anyway, because the spec's "N rows span ≥N calendar days" argument would need rewriting.
 
-- [ ] **Step 3: Add the constant and the tail helper**
+- [x] **Step 3: Add the constant and the tail helper**
 
 In `backend/models/forecaster.py`, extend the existing comment block at `:3527-3532`:
 
@@ -740,7 +755,7 @@ In `backend/models/forecaster.py`, extend the existing comment block at `:3527-3
         return out
 ```
 
-- [ ] **Step 4: Run the tests to verify they pass**
+- [x] **Step 4: Run the tests to verify they pass**
 
 ```bash
 cd backend && ./venv/bin/python -m pytest tests/test_predict_tail_truncation.py -v
@@ -748,7 +763,7 @@ cd backend && ./venv/bin/python -m pytest tests/test_predict_tail_truncation.py 
 
 Expected: all 6 tests PASS. If `test_served_features_survive_truncation` fails, **do not raise the tolerance.** Read the mismatched feature names it prints and find which window exceeds 240 rows — then raise `PREDICT_TAIL_ITEM_DAYS` to cover it and note the real requirement in the comment.
 
-- [ ] **Step 5: Wire the tail into `predict()`**
+- [x] **Step 5: Wire the tail into `predict()`**
 
 In `backend/models/forecaster.py`, immediately after the eligibility filter at `:3611-3615` (the `logger.info` reporting eligible items) and before `events_df = self.fetch_events()`:
 
@@ -760,7 +775,7 @@ In `backend/models/forecaster.py`, immediately after the eligibility filter at `
 
 Leave `days_back=1460` at `:3603` alone — narrowing the fetch is Task 5, gated on its own measurement.
 
-- [ ] **Step 6: Version the engineered cache**
+- [x] **Step 6: Version the engineered cache**
 
 The whole-frame path writes `engineered_data.parquet` (`:3633`). After truncation that file holds a tail, not full history, so a cache written by the old code must not be reused. Add beside `ENGINEERED_CACHE_NAME` at `:273`:
 
@@ -793,7 +808,7 @@ In `_load_engineered_cache` (`:2565`), directly after the `if df.empty:` check:
             df = df.drop(columns=["_cache_version"])
 ```
 
-- [ ] **Step 7: Add a cache-version test**
+- [x] **Step 7: Add a cache-version test**
 
 Append to `backend/tests/test_predict_tail_truncation.py`:
 
@@ -815,7 +830,7 @@ def test_roundtripped_cache_is_accepted_without_the_version_column(forecaster):
     assert len(loaded) == len(df)
 ```
 
-- [ ] **Step 8: Run everything**
+- [x] **Step 8: Run everything**
 
 ```bash
 cd backend && ./venv/bin/python -m pytest tests/test_predict_tail_truncation.py -v && ./venv/bin/python -m pytest tests/ -q && python3 -m py_compile models/forecaster.py
@@ -825,7 +840,7 @@ Expected: all 8 tests in the new file PASS, no new failures elsewhere.
 
 If `test_roundtripped_cache_is_accepted_without_the_version_column` fails on the staleness branch, the cache's own 3-day freshness logic is intervening. Read `_load_engineered_cache` fully and place the version check where it runs before staleness handling.
 
-- [ ] **Step 9: Commit**
+- [x] **Step 9: Commit**
 
 ```bash
 git add backend/models/forecaster.py backend/tests/test_predict_tail_truncation.py
@@ -857,7 +872,7 @@ identical to the 1460-day path."
 
 > **This task is conditional.** The spec gates it on a measurement. Task 4's tail is the larger win (6.1M → ~2M engineered rows across two passes); this only shortens the 137s fetch. **If the bar is not met, skip to Task 6 and leave `days_back=1460` in place.** That is a successful outcome, not a failure.
 
-- [ ] **Step 1: Measure per-item row coverage**
+- [x] **Step 1: Measure per-item row coverage**
 
 Write a throwaway script (do not commit it) that loads the voted frame and reports, for candidate windows, the share of eligible items retaining `min(full_row_count, 240)` rows:
 
@@ -893,11 +908,11 @@ Run it:
 cd backend && ./venv/bin/python /tmp/measure_predict_window.py
 ```
 
-- [ ] **Step 2: Apply the decision rule**
+- [x] **Step 2: Apply the decision rule**
 
 Adopt the **smallest** window at which the share is **≥ 99.9%**. If no candidate reaches 99.9%, **skip this task entirely** — mark it skipped in the plan, leave `days_back=1460`, and record the measured table in the commit message for Task 6.
 
-- [ ] **Step 3: Add the constant and use it (only if Step 2 selected a window)**
+- [x] **Step 3: Add the constant and use it (only if Step 2 selected a window)**
 
 Beside `PREDICT_TAIL_ITEM_DAYS`:
 
@@ -919,7 +934,7 @@ Replace `:3603`:
 
 Fill `<DATE>`, `<SHARE>`, and `<SELECTED_WINDOW>` with the real measured values. Do not commit the placeholders.
 
-- [ ] **Step 4: Re-run the feature-equality test**
+- [x] **Step 4: Re-run the feature-equality test**
 
 ```bash
 cd backend && ./venv/bin/python -m pytest tests/test_predict_tail_truncation.py -v && ./venv/bin/python -m pytest tests/ -q
@@ -927,7 +942,7 @@ cd backend && ./venv/bin/python -m pytest tests/test_predict_tail_truncation.py 
 
 The synthetic fixtures are dense, so they will not catch a real-archive shortfall. Step 1's measurement is the actual evidence for this task; the suite only confirms nothing regressed.
 
-- [ ] **Step 5: Commit (only if a window was adopted)**
+- [x] **Step 5: Commit (only if a window was adopted)**
 
 ```bash
 git add backend/models/forecaster.py
@@ -947,20 +962,20 @@ window, so served feature vectors are unchanged."
 
 **Interfaces:** none.
 
-- [ ] **Step 1: Confirm the suite is green**
+- [x] **Step 1: Confirm the suite is green**
 
 ```bash
 cd backend && ./venv/bin/python -m pytest tests/ -q && python3 -m py_compile models/forecaster.py scripts/forecast_prices.py
 ```
 
-- [ ] **Step 2: Push the branch and dispatch a predict-only run**
+- [x] **Step 2: Push the branch and dispatch a predict-only run**
 
 ```bash
 git push -u origin HEAD
 gh workflow run price-forecast.yml -f mode=predict-only --ref "$(git rev-parse --abbrev-ref HEAD)"
 ```
 
-- [ ] **Step 3: Wait for it, then pull the step timings**
+- [x] **Step 3: Wait for it, then pull the step timings**
 
 ```bash
 gh run list --workflow=price-forecast.yml --limit 1
@@ -969,7 +984,7 @@ gh api repos/:owner/:repo/actions/runs/<RUN_ID>/jobs \
   --jq '.jobs[].steps[] | select(.conclusion!="skipped") | "\(.name): \(.started_at) -> \(.completed_at)"'
 ```
 
-- [ ] **Step 4: Check the four acceptance criteria in the log**
+- [x] **Step 4: Check the four acceptance criteria in the log**
 
 ```bash
 gh run download <RUN_ID> -n forecast-logs-<RUN_ID> -D /tmp/verify && \
@@ -986,7 +1001,7 @@ gh run download <RUN_ID> -n forecast-logs-<RUN_ID> -D /tmp/verify && \
 
 The item and forecast counts must be **within ~1%** of the 8,691 / 34,764 baseline. A large drop means the tail or the prefilter dropped items that should have been eligible — investigate before merging.
 
-- [ ] **Step 5: Correct the timing rows in `model-optimization.md`**
+- [x] **Step 5: Correct the timing rows in `model-optimization.md`**
 
 Update the **Inference** row of the Current Baseline table with the measured new figure, and add a note to the table that the daily path no longer retrains. Replace the existing Inference row:
 
@@ -996,7 +1011,7 @@ Update the **Inference** row of the Current Baseline table with the measured new
 
 Fill `<NEW>` and `<RUN_ID>` from Step 3. Also strike the now-false claim in the **Verification Protocol** section that "`--predict-only` can trigger an unwanted retrain" — replace with a pointer to `ALLOW_DRIFT_RETRAIN=1`.
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add docs/architecture/model-optimization.md

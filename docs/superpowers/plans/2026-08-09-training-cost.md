@@ -1,8 +1,39 @@
 # Training Cost Implementation Plan
 
+> # ✅ EXECUTED 2026-08-09 — Tasks 1–7 landed, one step outstanding
+>
+> Branch `training-cost`. Commits `6b6fc81`, `8be48c5`, `a20b5a2`, `17306b0`, `dfafdfb`,
+> `db8d5d5` (+ fixes `1b5ee06`, `38f673a`), `c311194`.
+> **Measured outcome: `docs/changelog/2026-08-09-training-cost-levers.md` — read that, not this.**
+>
+> **🟡 Task 7 Step 4, half landed.** ✅ The withdrawn +3.50pp is corrected at
+> `docs/architecture/model.md:212` and `:540` (`895005a`). ⬜ Still outstanding: `:189-196` /
+> `:204-217` / `:529-537` describe the 99-item / 100K-row config as production, and
+> `model-optimization.md` repeats the defect. Tracked as **O2** in
+> `docs/research/2026-08-09-next-steps.md`.
+>
+> **The goal in the line below was not met, and the target was not sound.** The cold retrain
+> measured **1426.3s**, not ≈600s, because Task 2 removed early stopping from the trial loop and
+> made Optuna the largest single phase at 392.3s / 27.5%. No like-for-like control was run
+> (`FORCE_HP_SEARCH=1` forces a search a normal retrain caches; the 872s baseline was CI hardware
+> under early stopping, pre-`beec500`). **No net speedup is established — do not quote one.**
+> What *is* established: the direction of each individual lever, and the new cost profile.
+>
+> Three further predictions in this plan did not reproduce, all corrected in the changelog:
+> Task 3+4 saved **16.5s, not 33.7s**; the Task 7 "previous artifact" baselines were unusable
+> (that artifact was `model_artifact_version: 3` from before the ≥$1 universe, so the check would
+> have reported a false positive on 3/4 and a false null on 1); and the **D2 coverage gate is not
+> executable** — `meta.json` has no coverage field and `q_hat` cannot under-cover its own
+> calibration pool. Verdict came from the fallback: folds 9/8/8/8, all capped at exactly 300,000,
+> `q_hat` up at all four horizons, band **wider**. Proceed.
+>
+> Two production bugs this work exposed that a green suite did not: `_archive_fingerprint` named a
+> `date` column the archive does not have (it is `day`), and a NULL `volume` column crashed feature
+> engineering — fixed as `6ddc268`, cherry-picked to `main` ahead of the branch.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Take the weekly retrain from 872s to ≈600s and re-tune hyperparameters against the metric the project actually uses, without changing which features reach a booster or what the model serves.
+**Goal:** ~~Take the weekly retrain from 872s to ≈600s~~ (**not met — see banner**) and re-tune hyperparameters against the metric the project actually uses, without changing which features reach a booster or what the model serves.
 
 **Architecture:** Six independent changes to `backend/models/forecaster.py` and one to `.github/workflows/price-forecast.yml`. The largest is a row cap inside `_cv_evaluate_horizon` mirroring the one `_build_production_split` already applies; the second is swapping the Optuna objective from early-stopped pinball loss to within-date rank IC. Nothing touches labels, the item universe, or the served signal.
 
@@ -34,7 +65,7 @@
 - Consumes: `_per_item_row_sample(train_set, max_rows, seed=42)` (`:3363`), `_cv_step_days()` (`:511`)
 - Produces: `ItemForecaster.CV_MAX_TRAIN_ROWS: int = 300_000`; `ItemForecaster._cv_max_train_rows(self) -> int` reading env `CV_MAX_TRAIN_ROWS`
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 Create `backend/tests/test_cv_row_cap.py`:
 
@@ -145,12 +176,12 @@ def test_only_train_is_thinned_never_val(tmp_path):
         assert m["val_size"] == 400
 ```
 
-- [ ] **Step 2: Run the tests to verify they fail**
+- [x] **Step 2: Run the tests to verify they fail**
 
 Run: `venv/bin/python -m pytest tests/test_cv_row_cap.py -q`
 Expected: FAIL — `AttributeError: type object 'ItemForecaster' has no attribute 'CV_MAX_TRAIN_ROWS'`
 
-- [ ] **Step 3: Add the constant and the reader**
+- [x] **Step 3: Add the constant and the reader**
 
 Beside `CV_STEP_DAYS` at `backend/models/forecaster.py:501`:
 
@@ -175,7 +206,7 @@ Beside `_cv_step_days` at `:511`, matching its instance-method rationale:
         return int(os.environ.get("CV_MAX_TRAIN_ROWS", self.CV_MAX_TRAIN_ROWS))
 ```
 
-- [ ] **Step 4: Apply the cap in the fold loop**
+- [x] **Step 4: Apply the cap in the fold loop**
 
 In `_cv_evaluate_horizon`, replace the fold-frame construction at `:5693-5694`:
 
@@ -214,7 +245,7 @@ Add the hook the test patches, near `_cv_max_train_rows`:
         """Seam for tests to observe the post-cap fold size. No-op in prod."""
 ```
 
-- [ ] **Step 5: Thread `per_item_row_sampling` through**
+- [x] **Step 5: Thread `per_item_row_sampling` through**
 
 Change the signature at `:5650`:
 
@@ -231,17 +262,17 @@ and the call site at `:3838` so CV and the production split cannot diverge on wh
                     per_item_row_sampling=per_item_row_sampling)
 ```
 
-- [ ] **Step 6: Run the tests to verify they pass**
+- [x] **Step 6: Run the tests to verify they pass**
 
 Run: `venv/bin/python -m pytest tests/test_cv_row_cap.py -q`
 Expected: PASS, 5 tests
 
-- [ ] **Step 7: Run the existing CV tests for regressions**
+- [x] **Step 7: Run the existing CV tests for regressions**
 
 Run: `venv/bin/python -m pytest tests/test_cv_cohort_parity.py tests/test_forecaster.py tests/test_fixed_boost_rounds.py -q`
 Expected: PASS. The synthetic frames in these files are far under 300,000 rows, so the cap must not bind and no expectation should move.
 
-- [ ] **Step 8: Commit**
+- [x] **Step 8: Commit**
 
 ```bash
 git add backend/models/forecaster.py backend/tests/test_cv_row_cap.py
@@ -261,7 +292,7 @@ git commit -m "perf: cap CV fold training rows, as the production split already 
 - Consumes: `_within_date_rank_ic(pred, actual, dates, mask=None, min_rows=20)` (`:5958`), `_boost_rounds(horizon, cv=True)` (`:591`)
 - Produces: `_optuna_search_params` gains a required `val_dates` parameter
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 Create `backend/tests/test_optuna_objective.py`:
 
@@ -327,12 +358,12 @@ def test_artifact_version_bumped():
         "old criterion.")
 ```
 
-- [ ] **Step 2: Run the tests to verify they fail**
+- [x] **Step 2: Run the tests to verify they fail**
 
 Run: `venv/bin/python -m pytest tests/test_optuna_objective.py -q`
 Expected: FAIL — 6 failures; `early_stopping` present, `_within_date_rank_ic` absent, `val_dates` missing, version is 5
 
-- [ ] **Step 3: Rewrite the objective**
+- [x] **Step 3: Rewrite the objective**
 
 In `_optuna_search_params` (`:2776`), add `val_dates` to the signature and replace the fit block. The parameter search space, the warm-start `enqueue_trial`, the sampler and the Dataset construction all stay exactly as they are.
 
@@ -361,7 +392,7 @@ Remove the now-unused `LightGBMPruningCallback` import and the `_num_rounds` lin
         study = optuna.create_study(direction="minimize", sampler=sampler)
 ```
 
-- [ ] **Step 4: Pass `val_dates` at the call site**
+- [x] **Step 4: Pass `val_dates` at the call site**
 
 Find the `_optuna_search_params(` call inside `_train_horizon_inline` and pass the validation split's date column:
 
@@ -373,23 +404,23 @@ Find the `_optuna_search_params(` call inside `_train_horizon_inline` and pass t
                         boosting_type=self.BOOSTING_TYPE, n_trials=n_trials)
 ```
 
-- [ ] **Step 5: Bump the artifact version**
+- [x] **Step 5: Bump the artifact version**
 
 ```python
     MODEL_ARTIFACT_VERSION = 6   # v6: Optuna selects on within-date rank IC
 ```
 
-- [ ] **Step 6: Run the tests to verify they pass**
+- [x] **Step 6: Run the tests to verify they pass**
 
 Run: `venv/bin/python -m pytest tests/test_optuna_objective.py -q`
 Expected: PASS, 6 tests
 
-- [ ] **Step 7: Run the artifact-version and shape tests**
+- [x] **Step 7: Run the artifact-version and shape tests**
 
 Run: `venv/bin/python -m pytest tests/test_minimal_model_shape.py tests/test_forecaster.py -q`
 Expected: PASS. If a test asserts `MODEL_ARTIFACT_VERSION == 5`, update it to 6 — that assertion exists to force a retrain, which is the intent here.
 
-- [ ] **Step 8: Commit**
+- [x] **Step 8: Commit**
 
 ```bash
 git add backend/models/forecaster.py backend/tests/test_optuna_objective.py
@@ -408,7 +439,7 @@ git commit -m "fix: select hyperparameters on within-date rank IC, not early-sto
 - Consumes: `_prune_features(df) -> List[str]` (`:2392`), `_apply_feature_allowlist(feature_cols, allowlist)` (`:4471`)
 - Produces: `ItemForecaster.ALLOWLIST_BEFORE_PRUNE: bool = True`
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 Create `backend/tests/test_allowlist_before_prune.py`:
 
@@ -481,12 +512,12 @@ def test_reorder_is_output_identical_on_uncorrelated_features(tmp_path):
     assert a.feature_cols == b.feature_cols
 ```
 
-- [ ] **Step 2: Run the tests to verify they fail**
+- [x] **Step 2: Run the tests to verify they fail**
 
 Run: `venv/bin/python -m pytest tests/test_allowlist_before_prune.py -q`
 Expected: FAIL — `AttributeError: ... has no attribute 'ALLOWLIST_BEFORE_PRUNE'` and `_reduce_feature_cols` undefined
 
-- [ ] **Step 3: Extract the reduction into one method**
+- [x] **Step 3: Extract the reduction into one method**
 
 Add the flag beside `FEATURE_GROUP_ALLOWLIST` (`:350`):
 
@@ -527,7 +558,7 @@ Add the method, lifting the existing body from `build_training_data:3475-3489`:
             _allow()
 ```
 
-- [ ] **Step 4: Call it from `build_training_data`**
+- [x] **Step 4: Call it from `build_training_data`**
 
 Replace `:3475-3489` with:
 
@@ -536,12 +567,12 @@ Replace `:3475-3489` with:
         self._base_feature_cols = list(self.feature_cols)
 ```
 
-- [ ] **Step 5: Run the tests to verify they pass**
+- [x] **Step 5: Run the tests to verify they pass**
 
 Run: `venv/bin/python -m pytest tests/test_allowlist_before_prune.py -q`
 Expected: PASS, 3 tests
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add backend/models/forecaster.py backend/tests/test_allowlist_before_prune.py
@@ -561,7 +592,7 @@ git commit -m "perf: apply the feature allowlist before the correlation prune"
 - Consumes: `FEATURE_GROUP_ALLOWLIST`, `bymykel_metadata_enabled()`
 - Produces: `ItemForecaster._skipped_feature_groups() -> set[str]`; `engineer_features(..., skip_unused_groups: bool = False)`
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 Create `backend/tests/test_skip_unused_feature_groups.py`:
 
@@ -624,12 +655,12 @@ def test_empty_allowlist_skips_nothing(tmp_path):
     assert f._skipped_feature_groups() == set()
 ```
 
-- [ ] **Step 2: Run the tests to verify they fail**
+- [x] **Step 2: Run the tests to verify they fail**
 
 Run: `venv/bin/python -m pytest tests/test_skip_unused_feature_groups.py -q`
 Expected: FAIL — `skip_unused_groups` and `_skipped_feature_groups` do not exist
 
-- [ ] **Step 3: Add the derived skip set**
+- [x] **Step 3: Add the derived skip set**
 
 ```python
     ALL_FEATURE_GROUPS = frozenset({
@@ -657,7 +688,7 @@ Expected: FAIL — `skip_unused_groups` and `_skipped_feature_groups` do not exi
         return set(self.ALL_FEATURE_GROUPS) - allowlist - {"other"}
 ```
 
-- [ ] **Step 4: Gate the blocks in `engineer_features`**
+- [x] **Step 4: Gate the blocks in `engineer_features`**
 
 Add the parameter at `:2891` and guard each of the eight calls. `_compute_price_features` is never guarded.
 
@@ -685,21 +716,21 @@ Add the parameter at `:2891` and guard each of the eight calls. `_compute_price_
             df = self._add_supply_depth_features(df)
 ```
 
-- [ ] **Step 5: Turn it on in `build_training_data` only**
+- [x] **Step 5: Turn it on in `build_training_data` only**
 
 At the `engineer_features` call inside `build_training_data`, pass `skip_unused_groups=True`. Leave every other call site — including all seven harnesses — untouched.
 
-- [ ] **Step 6: Run the tests to verify they pass**
+- [x] **Step 6: Run the tests to verify they pass**
 
 Run: `venv/bin/python -m pytest tests/test_skip_unused_feature_groups.py -q`
 Expected: PASS, 5 tests
 
-- [ ] **Step 7: Verify the harnesses still get the full frame**
+- [x] **Step 7: Verify the harnesses still get the full frame**
 
 Run: `venv/bin/python -m pytest tests/ -q -k "feature or allowlist or harness"`
 Expected: PASS. `_add_supply_side_features` is guarded on `item_identity` because `_feature_group` assigns it there — confirm no test asserts a `supply_side` group name.
 
-- [ ] **Step 8: Commit**
+- [x] **Step 8: Commit**
 
 ```bash
 git add backend/models/forecaster.py backend/tests/test_skip_unused_feature_groups.py
@@ -719,7 +750,7 @@ git commit -m "perf: skip the feature blocks the allowlist discards, behind a fl
 - Consumes: env `CV_DIAGNOSTIC_CLASSIFIER`
 - Produces: unchanged signature, inverted default
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 Append to `backend/tests/test_fixed_boost_rounds.py`:
 
@@ -738,12 +769,12 @@ def test_cv_diagnostic_classifier_can_be_re_enabled(monkeypatch):
     assert ItemForecaster._cv_diagnostic_classifier_enabled() is True
 ```
 
-- [ ] **Step 2: Run to verify it fails**
+- [x] **Step 2: Run to verify it fails**
 
 Run: `venv/bin/python -m pytest tests/test_fixed_boost_rounds.py -q -k diagnostic`
 Expected: FAIL — returns True with the variable unset
 
-- [ ] **Step 3: Invert the default**
+- [x] **Step 3: Invert the default**
 
 ```python
     @staticmethod
@@ -761,12 +792,12 @@ Expected: FAIL — returns True with the variable unset
         return os.environ.get("CV_DIAGNOSTIC_CLASSIFIER", "0") != "0"
 ```
 
-- [ ] **Step 4: Run to verify it passes**
+- [x] **Step 4: Run to verify it passes**
 
 Run: `venv/bin/python -m pytest tests/test_fixed_boost_rounds.py -q`
 Expected: PASS. If a test asserts `mean_classifier_acc_ge1` is present in `cv_results` by default, set `CV_DIAGNOSTIC_CLASSIFIER=1` in that test rather than reverting the default.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add backend/models/forecaster.py backend/tests/test_fixed_boost_rounds.py
@@ -786,7 +817,7 @@ git commit -m "perf: default the CV diagnostic classifier off"
 - Consumes: `self.archive_dir`
 - Produces: `_archive_fingerprint()` returns a content-derived string
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 Create `backend/tests/test_voted_cache_key.py`:
 
@@ -852,12 +883,12 @@ def test_fingerprint_does_not_read_mtime(tmp_path, archive):
     assert "st_mtime" not in src
 ```
 
-- [ ] **Step 2: Run to verify they fail**
+- [x] **Step 2: Run to verify they fail**
 
 Run: `venv/bin/python -m pytest tests/test_voted_cache_key.py -q`
 Expected: FAIL — the touch changes the fingerprint, and `st_mtime` is in the source
 
-- [ ] **Step 3: Replace mtime with content**
+- [x] **Step 3: Replace mtime with content**
 
 ```python
     def _archive_fingerprint(self) -> str:
@@ -885,12 +916,12 @@ Expected: FAIL — the touch changes the fingerprint, and `st_mtime` is in the s
         return "|".join(parts)
 ```
 
-- [ ] **Step 4: Run to verify they pass**
+- [x] **Step 4: Run to verify they pass**
 
 Run: `venv/bin/python -m pytest tests/test_voted_cache_key.py -q`
 Expected: PASS, 3 tests
 
-- [ ] **Step 5: Cache `backend/data` in the workflow**
+- [x] **Step 5: Cache `backend/data` in the workflow**
 
 In `.github/workflows/price-forecast.yml`, beside the existing `saved_models` cache step:
 
@@ -905,7 +936,7 @@ In `.github/workflows/price-forecast.yml`, beside the existing `saved_models` ca
 
 The `v4` matches `VOTED_CACHE_VERSION`. **Bump both together.** Note Task order: if G3 (6c) lands and bumps `VOTED_CACHE_VERSION` to 5, this key must move to `voted-v5-` in the same commit.
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add backend/models/forecaster.py backend/tests/test_voted_cache_key.py .github/workflows/price-forecast.yml
@@ -921,7 +952,7 @@ git commit -m "perf: content-hash the archive fingerprint so the voted cache can
 - Modify: `docs/architecture/model.md:210,533` — the retired +3.50pp citation
 - Create: `docs/changelog/2026-08-09-training-cost-levers.md`
 
-- [ ] **Step 1: Run a full cold retrain and capture per-phase timing**
+- [x] **Step 1: Run a full cold retrain and capture per-phase timing**
 
 ```bash
 cd backend
@@ -930,7 +961,7 @@ FORCE_HP_SEARCH=1 venv/bin/python scripts/forecast_prices.py --train-only 2>&1 |
 
 Expected: total ≈600s, from 872s.
 
-- [ ] **Step 2: Verify nothing structural moved**
+- [x] **Step 2: Verify nothing structural moved**
 
 Read the fresh `backend/models/saved_models/meta.json` and check each row of the table in the spec's Verification section. Specifically confirm:
 - `n_folds` per horizon is unchanged (9, 8 at 30d)
@@ -939,19 +970,19 @@ Read the fresh `backend/models/saved_models/meta.json` and check each row of the
 
 **If coverage came in under 0.80, stop and raise `CV_MAX_TRAIN_ROWS`.** The band getting wider is expected; narrower means the cap hit the wrong axis.
 
-- [ ] **Step 3: Strike the refuted lever table**
+- [x] **Step 3: Strike the refuted lever table**
 
 In `docs/architecture/model-optimization.md`, replace levers 3/4/5/6 with a single row recording that `max_bin` 63→31, `num_leaves` 47→31, `min_data_in_leaf` 15→100 and `feature_fraction` 0.7→0.4 were measured on the production frame on 2026-08-09 at 26.3 / 26.2 / 27.1 / 28.9 ms per round against a 25.5 baseline, i.e. dead, and must not be re-proposed. Re-size lever 2 from "~1% of the retrain" to ≈32s, and note that most of it is `_prune_features` (25.2s), which the doc did not mention.
 
-- [ ] **Step 4: Correct the stale +3.50pp**
+- [x] **Step 4: Correct the stale +3.50pp** — ✅ **DONE** (`895005a`). Both sites now carry the null re-derivation. The surrounding 99-item / 100K-row config description is a separate, still-open item (**O2**)
 
 In `docs/architecture/model.md:210` and `:533`, replace the +3.50pp [+1.56, +5.98] @30d claim with the re-derivation: **+1.642pp [−0.809, +4.505], null**, citing `docs/changelog/2026-08-08-per-fold-price-filter-rederived.md`, and note the ±3–4pp item-draw noise floor the `prod_pool_b` placebo measured.
 
-- [ ] **Step 5: Write the changelog entry**
+- [x] **Step 5: Write the changelog entry**
 
 Create `docs/changelog/2026-08-09-training-cost-levers.md` recording: the measured before/after total, the per-phase table, the fold-geometry finding (4.2× the frame), the refuted lever table, the Optuna criterion mismatch and what changed, and the coverage check result. Follow the house convention — what was measured, what the measurement changed, and what is explicitly not established.
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add docs/

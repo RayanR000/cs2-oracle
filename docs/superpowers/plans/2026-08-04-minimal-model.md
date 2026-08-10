@@ -1,5 +1,21 @@
 # Minimal Model Implementation Plan
 
+> # ✅ EXECUTED AND CLOSED (2026-08-04)
+>
+> All 13 tasks landed. Evidence: `backend/models/conformal.py`; `QUANTILES = [0.5]`,
+> `N_ENSEMBLES = 1` and `IncompatibleModelArtifact` in `forecaster.py`;
+> `backtest/walkforward_records.py` and `backtest/paired_mde.py` (`ffe5ad7`, `bcce8ea`);
+> `TRAIN_HORIZON_MAX_ROWS` at `forecast_prices.py:58`. Ledger:
+> `.superpowers/sdd/2026-08-04-minimal-model/progress.md` (Tasks 1–10 + fix `1890f41`).
+>
+> **Outcome: `docs/changelog/2026-08-04-minimal-model-results.md`.** Part 3's plumbing shipped;
+> the coverage **reinvestment** was measured and then **declined on cost**. That is a decision,
+> not an outstanding task.
+>
+> ⚠️ Two config values this plan set have since moved: `MODEL_ARTIFACT_VERSION` is now **6**
+> (`8be48c5`, not 5), and the training budget is **1,200,000** rows at a **$1** floor
+> (`6eb8775`, `5ebcc73`).
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Cut the forecaster from 40 LightGBM models to 8 — replacing 24 p10/p90 quantile GBMs with locally-weighted split conformal around a single median model — without losing more directional accuracy than a repaired measurement gate can actually resolve.
@@ -63,7 +79,7 @@ Nothing in Part 2 may be committed before Part 1 is merged and Task 5's bar is w
   - `item_id` — **load-bearing for Task 2.** `paired_da_difference` indexes records by `(item_id, forecast_date)`; without it, arms cannot be paired and the MDE cannot be computed. Not optional.
   - `predicted_direction` — carried for parity with the repo's existing record shape at `backtest_accuracy.py:551`, which also includes it unread by `score_cohort`. Keeps one record schema across both scoring paths.
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 Create `backend/tests/test_walkforward_records.py`:
 
@@ -160,13 +176,13 @@ def test_rejects_mismatched_array_lengths():
         fold_records(**_kwargs(mid_returns_pct=np.array([1.0, 2.0])))
 ```
 
-- [ ] **Step 2: Run the test to verify it fails**
+- [x] **Step 2: Run the test to verify it fails**
 
 Run: `python3 -m pytest tests/test_walkforward_records.py -v`
 
 Expected: FAIL — `ModuleNotFoundError: No module named 'backtest.walkforward_records'`
 
-- [ ] **Step 3: Write the implementation**
+- [x] **Step 3: Write the implementation**
 
 Create `backend/backtest/walkforward_records.py`:
 
@@ -283,13 +299,13 @@ def fold_records(
     return records
 ```
 
-- [ ] **Step 4: Run the test to verify it passes**
+- [x] **Step 4: Run the test to verify it passes**
 
 Run: `python3 -m pytest tests/test_walkforward_records.py -v`
 
 Expected: PASS, 9 tests.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add backend/backtest/walkforward_records.py backend/tests/test_walkforward_records.py
@@ -314,7 +330,7 @@ class mapping, both of which the old _compute_metrics got wrong or omitted."
 
 **Why this and not two independent CIs:** the arms run on identical folds, so pairing removes the between-date variance that dominates both arms equally. An unpaired comparison of two very wide CIs would report an MDE so large that no design could ever pass. Pairing is what makes the bar achievable and is only valid *because* the folds are shared.
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 Create `backend/tests/test_paired_mde.py`:
 
@@ -393,13 +409,13 @@ def test_no_overlap_raises():
         paired_da_difference(a, b)
 ```
 
-- [ ] **Step 2: Run the test to verify it fails**
+- [x] **Step 2: Run the test to verify it fails**
 
 Run: `python3 -m pytest tests/test_paired_mde.py -v`
 
 Expected: FAIL — `ModuleNotFoundError: No module named 'backtest.paired_mde'`
 
-- [ ] **Step 3: Write the implementation**
+- [x] **Step 3: Write the implementation**
 
 Create `backend/backtest/paired_mde.py`:
 
@@ -492,13 +508,13 @@ def paired_da_difference(
     return out
 ```
 
-- [ ] **Step 4: Run the test to verify it passes**
+- [x] **Step 4: Run the test to verify it passes**
 
 Run: `python3 -m pytest tests/test_paired_mde.py -v`
 
 Expected: PASS, 6 tests.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add backend/backtest/paired_mde.py backend/tests/test_paired_mde.py
@@ -521,7 +537,7 @@ large no design could pass it."
 - Consumes: `fold_records` (Task 1), `backtest.scoring.score_by_tier`, `HEADLINE_TIER`, `ItemForecaster._fit_direction_classifier`
 - Produces: `run_walkforward(...)` report gains `horizons[h]["classifier"]` and `horizons[h]["median_sign"]`, each a `score_cohort` metrics dict, plus `horizons[h]["records"]` when `return_records=True` (Task 5 needs the records to pair arms).
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 Create `backend/tests/test_walkforward_gate.py`:
 
@@ -620,13 +636,13 @@ def test_classifier_is_fitted_per_fold():
     )
 ```
 
-- [ ] **Step 2: Run the test to verify it fails**
+- [x] **Step 2: Run the test to verify it fails**
 
 Run: `python3 -m pytest tests/test_walkforward_gate.py -v`
 
 Expected: FAIL — `test_sample_count_weighted_aggregation_is_gone`, `test_compute_metrics_helper_is_removed`, and `AttributeError: module has no attribute '_aggregate_records'` / `'_score_fold'`.
 
-- [ ] **Step 3: Delete `_compute_metrics` and add the two new helpers**
+- [x] **Step 3: Delete `_compute_metrics` and add the two new helpers**
 
 In `backend/scripts/walkforward_backtest.py`, delete lines 103-137 (`_compute_metrics` entirely) and add these imports near line 30:
 
@@ -696,7 +712,7 @@ def _aggregate_records(records):
     return out
 ```
 
-- [ ] **Step 4: Rewrite the fold loop to fit the classifier and collect records**
+- [x] **Step 4: Rewrite the fold loop to fit the classifier and collect records**
 
 Replace lines 229-328 (from `fold_results = []` through the two `logger.info` summary lines) with:
 
@@ -838,7 +854,7 @@ Replace lines 229-328 (from `fold_results = []` through the two `logger.info` su
             )
 ```
 
-- [ ] **Step 5: Update the signature and the DB write**
+- [x] **Step 5: Update the signature and the DB write**
 
 Change the `run_walkforward` signature at line 178:
 
@@ -900,19 +916,19 @@ it always gets nothing and the MDE can never be computed, silently. Records are
 kept out of the report by default because they are large; the flag is what makes
 them retrievable.
 
-- [ ] **Step 6: Run the tests to verify they pass**
+- [x] **Step 6: Run the tests to verify they pass**
 
 Run: `python3 -m pytest tests/test_walkforward_gate.py tests/test_walkforward_records.py -v`
 
 Expected: PASS, 15 tests.
 
-- [ ] **Step 7: Verify the module still compiles and the suite is green**
+- [x] **Step 7: Verify the module still compiles and the suite is green**
 
 Run: `python3 -m py_compile scripts/walkforward_backtest.py && python3 -m pytest tests/ -q`
 
 Expected: no compile error; suite passes.
 
-- [ ] **Step 8: Commit**
+- [x] **Step 8: Commit**
 
 ```bash
 git add backend/scripts/walkforward_backtest.py backend/tests/test_walkforward_gate.py
@@ -939,14 +955,14 @@ lgbm-v3-clustered because the metric definition changed."
 
 **Why:** spec #0 reports `465s` total retrain, `137s` fetch and `401s` for "14d + 30d DART" — figures that sum to more than the total. No speed claim can rest on them.
 
-- [ ] **Step 1: Run a full training pass with timing visible**
+- [x] **Step 1: Run a full training pass with timing visible**
 
 ```bash
 cd backend
 SKIP_REGIMES=1 python3 scripts/forecast_prices.py --train-only 2>&1 | tee /tmp/baseline-train.log
 ```
 
-- [ ] **Step 2: Extract the phase timings**
+- [x] **Step 2: Extract the phase timings**
 
 ```bash
 grep -E "Training .*(ensemble|directional)|Optuna|Reusing cached HP|CV |fetch_price_history|elapsed|took|s\)" /tmp/baseline-train.log
@@ -956,14 +972,14 @@ Record, per horizon: HP-search seconds, per-quantile ensemble seconds, direction
 
 If the log does not already emit per-phase seconds at INFO, add `time.time()` deltas around the three blocks in `forecaster.py` — the p50/p10/p90 ensemble loop at `:2947-2962`, the directional classifier at `:2987-2993`, and the Optuna block at `:2862-2937` — logging `f"  [timing] {label}: {elapsed:.1f}s"`. Keep these log lines; they are how Task 12 measures the after figure.
 
-- [ ] **Step 3: Run the predict path cold and time it**
+- [x] **Step 3: Run the predict path cold and time it**
 
 ```bash
 VOTED_CACHE=0 python3 scripts/forecast_prices.py --predict-only 2>&1 | tee /tmp/baseline-predict.log
 grep -E "\[timing\]|fetch|tail|engineer|Predict" /tmp/baseline-predict.log
 ```
 
-- [ ] **Step 4: Write the table into the docs**
+- [x] **Step 4: Write the table into the docs**
 
 Add a section to `docs/architecture/model-optimization.md`:
 
@@ -987,7 +1003,7 @@ in spec #0, which came from different runs and do not sum.
 
 Replace every `_fill from log_` with the measured number. **A committed table still containing that placeholder is a failed task.**
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add docs/architecture/model-optimization.md backend/models/forecaster.py
@@ -1057,7 +1073,7 @@ paired.
 
 ⚠️ **Task 12's arms MUST use the identical `--max-items` and `--step-days`.** The bar is a paired quantity: it is only valid against arms measured on the same folds. An arm run at a different fold configuration is not comparable to this MDE, and pairing would silently drop to whatever `(item_id, forecast_date)` keys happen to overlap. `paired_da_difference` raises on zero overlap but will *not* warn about partial overlap.
 
-- [ ] **Step 1: Write the script**
+- [x] **Step 1: Write the script**
 
 Create `backend/scripts/compute_mde.py`:
 
@@ -1124,7 +1140,7 @@ if __name__ == "__main__":
     sys.exit(main())
 ```
 
-- [ ] **Step 1b: Make the fold step configurable**
+- [x] **Step 1b: Make the fold step configurable**
 
 `STEP_DAYS = 60` is a module constant. The pinned measurement configuration needs
 `120` without editing source between runs, and Task 12 must be able to pass the
@@ -1142,7 +1158,7 @@ Do **not** mutate the module constant at runtime — a global rebind would leak
 across the two seed runs inside one `compute_mde.py` process and make the
 configuration of each run unclear from its own call site.
 
-- [ ] **Step 2: Make the seed configurable in the gate**
+- [x] **Step 2: Make the seed configurable in the gate**
 
 In `backend/scripts/walkforward_backtest.py`, add next to `QUANTILES` (line 45):
 
@@ -1180,7 +1196,7 @@ and at `:3439-3441`:
 
 The default preserves production behaviour exactly.
 
-- [ ] **Step 3: Run it**
+- [x] **Step 3: Run it**
 
 ```bash
 cd backend
@@ -1189,7 +1205,7 @@ python3 scripts/compute_mde.py --max-items 500 2>&1 | tee /tmp/mde.log
 
 Expected: JSON with `mde_pp` and `n_dates` per horizon. If `n_dates < 2` for a horizon, that horizon cannot be gated — record it as unresolvable rather than inventing a bar.
 
-- [ ] **Step 4: Write the bar into the spec**
+- [x] **Step 4: Write the bar into the spec**
 
 Add to `docs/superpowers/specs/2026-08-04-minimal-model-design.md`, replacing the prose bar in Task 3 of Part 1:
 
@@ -1213,7 +1229,7 @@ as unresolvable; the design is not credited with passing it.
 
 Replace every `_measured_` with the number from Step 3.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add backend/scripts/compute_mde.py backend/scripts/walkforward_backtest.py \
@@ -1240,7 +1256,7 @@ runs, on the classifier DA figure."
 
 **Why:** in M5, 92.5% of entrants failed to beat a simple off-the-shelf baseline. This repository has never measured its model against a naive arm on the same gate. If arm D is competitive, that outranks every other finding in this spec.
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 Create `backend/tests/test_walkforward_arms.py`:
 
@@ -1287,13 +1303,13 @@ def test_ridge_arm_returns_aligned_arrays():
     assert set(np.unique(classes)) <= {0, 1, 2}
 ```
 
-- [ ] **Step 2: Run the test to verify it fails**
+- [x] **Step 2: Run the test to verify it fails**
 
 Run: `python3 -m pytest tests/test_walkforward_arms.py -v`
 
 Expected: FAIL — `arm` not in signature; `_naive_predict` / `_ridge_predict` missing.
 
-- [ ] **Step 3: Implement the two arms**
+- [x] **Step 3: Implement the two arms**
 
 Add to `backend/scripts/walkforward_backtest.py` after `_score_fold`:
 
@@ -1350,7 +1366,7 @@ Add the import near line 30:
 from models.forecaster import DIRECTION_FLAT_TOLERANCE_PCT, ItemForecaster
 ```
 
-- [ ] **Step 4: Branch the fold loop on the arm**
+- [x] **Step 4: Branch the fold loop on the arm**
 
 Change the signature:
 
@@ -1438,7 +1454,7 @@ Then update the `_score_fold` call to use the arm-agnostic names:
                 )
 ```
 
-- [ ] **Step 5: Add the CLI flag**
+- [x] **Step 5: Add the CLI flag**
 
 In `main()`:
 
@@ -1454,17 +1470,17 @@ and pass it:
                              skip_db=args.skip_db, arm=args.arm)
 ```
 
-- [ ] **Step 6: Run the tests**
+- [x] **Step 6: Run the tests**
 
 Run: `python3 -m pytest tests/test_walkforward_arms.py tests/test_walkforward_gate.py -v`
 
 Expected: PASS.
 
-- [ ] **Step 7: Verify the whole suite**
+- [x] **Step 7: Verify the whole suite**
 
 Run: `python3 -m py_compile scripts/walkforward_backtest.py && python3 -m pytest tests/ -q`
 
-- [ ] **Step 8: Commit**
+- [x] **Step 8: Commit**
 
 ```bash
 git add backend/scripts/walkforward_backtest.py backend/tests/test_walkforward_arms.py
@@ -1493,7 +1509,7 @@ Do not start until Part 1 is merged and Task 5's bar is committed.
 - Consumes: numpy only.
 - Produces: `NOMINAL_COVERAGE`, `ALPHA`, `sigma_bounds(sigma_raw) -> (float, float)`, `sigma_from_columns(price_std_60d, price, floor, cap) -> np.ndarray`, `calibrate(residuals_pct, sigma, alpha) -> float`, `band(mid_pct, sigma, q_hat) -> (np.ndarray, np.ndarray)`. Tasks 8 and 9 call these.
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 Create `backend/tests/test_conformal.py`:
 
@@ -1625,13 +1641,13 @@ def test_calibrate_ignores_nonfinite_scores():
     assert np.isfinite(q_hat)
 ```
 
-- [ ] **Step 2: Run the test to verify it fails**
+- [x] **Step 2: Run the test to verify it fails**
 
 Run: `python3 -m pytest tests/test_conformal.py -v`
 
 Expected: FAIL — `ModuleNotFoundError: No module named 'models.conformal'`
 
-- [ ] **Step 3: Write the implementation**
+- [x] **Step 3: Write the implementation**
 
 Create `backend/models/conformal.py`:
 
@@ -1744,13 +1760,13 @@ def band(mid_pct, sigma, q_hat: float) -> tuple[np.ndarray, np.ndarray]:
     return mid - half, mid + half
 ```
 
-- [ ] **Step 4: Run the test to verify it passes**
+- [x] **Step 4: Run the test to verify it passes**
 
 Run: `python3 -m pytest tests/test_conformal.py -v`
 
 Expected: PASS, 12 tests.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add backend/models/conformal.py backend/tests/test_conformal.py
@@ -1773,7 +1789,7 @@ the old code stated 80% in a comment and 90% in the alpha it used."
 - Consumes: `models.conformal.calibrate`, `sigma_bounds`, `sigma_from_columns`, `ALPHA`
 - Produces: `self.conformal_calibration: Dict[int, float]` (unchanged type, new meaning — dimensionless multiplier of σ, not a percentage-point addend) and `self.sigma_clip: Dict[str, float]` with keys `floor`, `cap`, `fallback`. Task 9 reads both; Task 10 persists them.
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 Create `backend/tests/test_minimal_model_shape.py`:
 
@@ -1809,13 +1825,13 @@ def test_alpha_matches_the_pinned_nominal_coverage():
 
 **Note on scope:** the config-constant assertions (`QUANTILES == [0.5]`, `N_ENSEMBLES == 1`, no DART, no residual stacking, the 8-model count) are **deliberately not in this file yet** — they are added by Task 11, in the same commit that makes them true. Writing them here would leave Tasks 8, 9 and 10 committing a red suite, which the Global Constraint forbids. Do not add them early.
 
-- [ ] **Step 2: Run the test to verify it fails**
+- [x] **Step 2: Run the test to verify it fails**
 
 Run: `python3 -m pytest tests/test_minimal_model_shape.py -v`
 
 Expected: FAIL — `_init_conformal_state` does not exist.
 
-- [ ] **Step 3: Add the conformal state initializer**
+- [x] **Step 3: Add the conformal state initializer**
 
 In `backend/models/forecaster.py`, replace the `conformal_calibration` state block at `:317-320`:
 
@@ -1855,7 +1871,7 @@ And add the method near `_direction_tree_params`:
         }
 ```
 
-- [ ] **Step 4: Add a sigma helper that reads the feature frame**
+- [x] **Step 4: Add a sigma helper that reads the feature frame**
 
 Add next to `_init_conformal_state`:
 
@@ -1884,7 +1900,7 @@ Add the import near line 15:
 from models import conformal
 ```
 
-- [ ] **Step 5: Replace the CQR calibration block**
+- [x] **Step 5: Replace the CQR calibration block**
 
 At `forecaster.py:3085-3098`, replace the whole `if nc_scores:` block with:
 
@@ -1904,7 +1920,7 @@ At `forecaster.py:3085-3098`, replace the whole `if nc_scores:` block with:
                 )
 ```
 
-- [ ] **Step 6: Unblock `_cv_evaluate_horizon` for a median-only fit**
+- [x] **Step 6: Unblock `_cv_evaluate_horizon` for a median-only fit**
 
 ⚠️ **This step is load-bearing. Without it, Task 11 breaks training silently-then-loudly:** `forecaster.py:4187` reads
 
@@ -1966,7 +1982,7 @@ with:
                 low_pred = high_pred = None
 ```
 
-- [ ] **Step 7: Emit `residual_pct` and `sigma` on every OOF record**
+- [x] **Step 7: Emit `residual_pct` and `sigma` on every OOF record**
 
 In the per-row record loop at `:4263`, add the two fields the calibration block reads. `val_df` and the two fold arrays are already in scope:
 
@@ -1999,7 +2015,7 @@ Every downstream read of `low_ret` / `high_ret` inside this loop must be guarded
 
 Any record field derived from them (a `range_pct`, an interval hit) must accept `None` — check what `_calibrate_confidence` reads before assuming it tolerates a missing key, and if it does not, compute those fields in a second pass after `q_hat` exists.
 
-- [ ] **Step 8: Drop `nonconformity_scores` from the return tuple**
+- [x] **Step 8: Drop `nonconformity_scores` from the return tuple**
 
 The third return value is now unused. Change the return to `(oof_records, fold_metrics)`, delete `nonconformity_scores = []` at `:4120`, update the docstring at `:4099-4103`, and update the single call site at `:3075`:
 
@@ -2010,7 +2026,7 @@ The third return value is now unused. Change the return to `(oof_records, fold_m
 
 Leaving it in place as a vestigial empty list would be the kind of dead field this codebase has been burned by.
 
-- [ ] **Step 5b: Set the clip bounds from the training frame**
+- [x] **Step 5b: Set the clip bounds from the training frame**
 
 Immediately before the per-horizon loop in `train()` (after `self.feature_cols` is finalized and the training frame exists), add:
 
@@ -2034,13 +2050,13 @@ Immediately before the per-horizon loop in `train()` (after `self.feature_cols` 
         )
 ```
 
-- [ ] **Step 9: Run the shape tests that this task can satisfy**
+- [x] **Step 9: Run the shape tests that this task can satisfy**
 
 Run: `python3 -m pytest tests/test_minimal_model_shape.py::test_sigma_clip_defaults_are_present_and_finite -v`
 
 Expected: PASS. The constant tests still fail — Task 11 flips them.
 
-- [ ] **Step 10: Commit**
+- [x] **Step 10: Commit**
 
 ```bash
 git add backend/models/forecaster.py backend/tests/test_minimal_model_shape.py
@@ -2064,7 +2080,7 @@ is calibrated against clipped sigmas."
 - Consumes: `self.conformal_calibration`, `self.sigma_clip`, `self._sigma_for_rows`, `conformal.band`
 - Produces: `low_ret_arr`, `mid_ret_arr`, `high_ret_arr` with the same units and downstream contract as before, so blending, bias thresholds and the serving policy are untouched.
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 Append to `backend/tests/test_minimal_model_shape.py`:
 
@@ -2110,13 +2126,13 @@ def test_band_from_conformal_varies_by_item_and_is_finite():
     assert np.all(low <= high)
 ```
 
-- [ ] **Step 2: Run the test to verify it fails**
+- [x] **Step 2: Run the test to verify it fails**
 
 Run: `python3 -m pytest tests/test_minimal_model_shape.py -k "crossing or band_from_conformal" -v`
 
 Expected: FAIL — `predict` still contains `_fix_quantile_crossing`.
 
-- [ ] **Step 3: Replace the band construction**
+- [x] **Step 3: Replace the band construction**
 
 In `forecaster.py`, replace the block from `:3890` (the `_fix_quantile_crossing` call) through `:3922` (the end of the old `q_hat` widening) with:
 
@@ -2156,7 +2172,7 @@ In `forecaster.py`, replace the block from `:3890` (the `_fix_quantile_crossing`
 
 Note the ordering: the classifier block moves below the band construction but stays above the blending at `:3928`, so every downstream correction still sees the same variables it did before.
 
-- [ ] **Step 4: Remove the p10/p90 prediction calls**
+- [x] **Step 4: Remove the p10/p90 prediction calls**
 
 Above the replaced block, the code predicts each quantile. Restrict it to the median — with `QUANTILES == [0.5]` (Task 11) the loop naturally yields only `p50_ret`, but any code indexing `preds[0.1]` or `preds[0.9]` must be removed rather than left to `KeyError`. Search and fix:
 
@@ -2166,13 +2182,13 @@ grep -n "0\.1\]\|0\.9\]\|p10\|p90" models/forecaster.py
 
 Every hit inside `predict()` and `train()` must either be removed or guarded by `if 0.1 in self.QUANTILES`. Prefer removal — a guard that is always false is dead code.
 
-- [ ] **Step 5: Run the tests**
+- [x] **Step 5: Run the tests**
 
 Run: `python3 -m pytest tests/test_minimal_model_shape.py -v`
 
 Expected: PASS for the crossing and band tests. Constant tests still fail until Task 11.
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add backend/models/forecaster.py backend/tests/test_minimal_model_shape.py
@@ -2198,7 +2214,7 @@ Refuses to serve rather than fabricating an interval when q_hat is absent."
 
 **Why this is not optional:** the recorded failure mode of this project is a green pipeline running something other than its design — the collectors, the CI outage, the drift retrain. A `.get("conformal_calibration", {})` default would let a pre-rewrite artifact load into post-rewrite code and serve a band computed two different ways, with no error anywhere.
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 Append to `backend/tests/test_minimal_model_shape.py`:
 
@@ -2236,13 +2252,13 @@ def test_current_artifact_version_is_accepted():
     ItemForecaster._check_artifact_version(f, meta)
 ```
 
-- [ ] **Step 2: Run the test to verify it fails**
+- [x] **Step 2: Run the test to verify it fails**
 
 Run: `python3 -m pytest tests/test_minimal_model_shape.py -k artifact -v`
 
 Expected: FAIL — `MODEL_ARTIFACT_VERSION` and `IncompatibleModelArtifact` do not exist.
 
-- [ ] **Step 3: Add the exception and the version check**
+- [x] **Step 3: Add the exception and the version check**
 
 Near the top of `forecaster.py`, after the imports:
 
@@ -2282,7 +2298,7 @@ And the check:
         )
 ```
 
-- [ ] **Step 4: Wire it into save and load**
+- [x] **Step 4: Wire it into save and load**
 
 In the metadata dict at `:4674`, add:
 
@@ -2309,13 +2325,13 @@ Then replace the tolerant `conformal_calibration` restore at `:4750-4755` with a
         self.sigma_clip = {k: float(v) for k, v in meta["sigma_clip"].items()}
 ```
 
-- [ ] **Step 5: Run the tests**
+- [x] **Step 5: Run the tests**
 
 Run: `python3 -m pytest tests/test_minimal_model_shape.py -k artifact -v`
 
 Expected: PASS, 3 tests.
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add backend/models/forecaster.py backend/tests/test_minimal_model_shape.py
@@ -2338,7 +2354,7 @@ MODEL_ARTIFACT_VERSION = 2 and raises IncompatibleModelArtifact."
 - Consumes: nothing new.
 - Produces: the 8-model configuration. This is the commit that changes what gets trained.
 
-- [ ] **Step 1: Write the failing config tests**
+- [x] **Step 1: Write the failing config tests**
 
 These live here, not in Task 8, so that no intermediate commit ships a red suite. Append to `backend/tests/test_minimal_model_shape.py`:
 
@@ -2375,13 +2391,13 @@ def test_dart_params_are_gone():
     assert not hasattr(ItemForecaster, "DART_PARAMS")
 ```
 
-- [ ] **Step 1b: Run them to verify they fail**
+- [x] **Step 1b: Run them to verify they fail**
 
 Run: `python3 -m pytest tests/test_minimal_model_shape.py -v`
 
 Expected: FAIL on all six new tests — the constants still hold their old values.
 
-- [ ] **Step 2: Flip the constants**
+- [x] **Step 2: Flip the constants**
 
 In `backend/models/forecaster.py`:
 
@@ -2413,7 +2429,7 @@ In `backend/models/forecaster.py`:
     BOOSTING_TYPE_MAP = {3: "gbdt", 7: "gbdt", 14: "gbdt", 30: "gbdt"}
 ```
 
-- [ ] **Step 3: Delete `DART_PARAMS` and its uses**
+- [x] **Step 3: Delete `DART_PARAMS` and its uses**
 
 Delete the `DART_PARAMS` block at `:185-190`, then:
 
@@ -2425,7 +2441,7 @@ Remove every hit. In `_direction_tree_params` (`:3458-3459`) the `keys` tuple li
 
 Update the `SKIP_HP_HORIZONS` comment at `:181-184`, which currently justifies searching 14d/30d specifically so "DART's drop_rate/max_drop/skip_drop get tuned" — that reason is gone.
 
-- [ ] **Step 4: Delete residual stacking**
+- [x] **Step 4: Delete residual stacking**
 
 Delete `STACK_RESIDUALS` and `RESIDUAL_ALPHA` (`:261-262`), the `if self.STACK_RESIDUALS ...` / `elif` branch (`:2966-2979`), `self.residual_models` initialization, and its save/load handling.
 
@@ -2435,19 +2451,19 @@ grep -n "residual_model\|STACK_RESIDUALS\|RESIDUAL_ALPHA" models/forecaster.py
 
 Expected after deletion: no hits.
 
-- [ ] **Step 5: Run the shape tests**
+- [x] **Step 5: Run the shape tests**
 
 Run: `python3 -m pytest tests/test_minimal_model_shape.py -v`
 
 Expected: PASS, all tests in the file — the two from Task 8, the three from Task 9, the three from Task 10, and the six added in Step 1 here.
 
-- [ ] **Step 6: Run the full suite**
+- [x] **Step 6: Run the full suite**
 
 Run: `python3 -m py_compile models/forecaster.py && python3 -m pytest tests/ -q`
 
 Expected: green. Any test asserting three quantiles or DART now needs updating — update it to the new expectation rather than deleting it, and note in the commit message which ones moved.
 
-- [ ] **Step 7: Train once locally and confirm the model count**
+- [x] **Step 7: Train once locally and confirm the model count**
 
 ```bash
 SKIP_REGIMES=1 python3 scripts/forecast_prices.py --train-only 2>&1 | tee /tmp/minimal-train.log
@@ -2457,7 +2473,7 @@ grep "\[timing\]" /tmp/minimal-train.log
 
 Expected: 8 model files. Total training time in the tens of seconds against the Task 4 baseline.
 
-- [ ] **Step 8: Commit**
+- [x] **Step 8: Commit**
 
 ```bash
 git add backend/models/forecaster.py backend/tests/test_minimal_model_shape.py
@@ -2480,7 +2496,7 @@ was already False)."
 - Consumes: `run_walkforward(arm=..., return_records=True)`, `paired_da_difference`, the bar from Task 5.
 - Produces: the pass/fail verdict.
 
-- [ ] **Step 1: Run all four arms on identical folds**
+- [x] **Step 1: Run all four arms on identical folds**
 
 ```bash
 cd backend
@@ -2492,7 +2508,7 @@ done
 
 Arm A (the current 40-model design) must be run from a checkout **before** Task 11 — its config constants no longer exist afterwards. Either run it first and save its records, or run it from `git stash` / a worktree at the Part 1 merge commit. Arm B is `--arm gbm` on the current checkout.
 
-- [ ] **Step 2: Pair each arm against arm A**
+- [x] **Step 2: Pair each arm against arm A**
 
 ```bash
 python3 - <<'PY'
@@ -2506,11 +2522,11 @@ PY
 
 Record, per horizon and per arm: `mean_diff_pp`, `ci_lower_pp`, `ci_upper_pp`, `n_dates`.
 
-- [ ] **Step 3: Apply the bar**
+- [x] **Step 3: Apply the bar**
 
 For each horizon, arm B passes if `ci_lower_pp >= -MDE(horizon)` from the Task 5 table. Do not adjust the bar now. If a horizon fails, the first remedy named in the spec is `N_ENSEMBLES = 2`.
 
-- [ ] **Step 4: Write the results document**
+- [x] **Step 4: Write the results document**
 
 Create `docs/changelog/2026-08-04-minimal-model-results.md` containing:
 
@@ -2524,11 +2540,11 @@ Create `docs/changelog/2026-08-04-minimal-model-results.md` containing:
 
 Do not write `interval_coverage` or any `conf_*` figure for arms C and D — their bands are a fixed `BASELINE_BAND_PCT` placeholder and their confidence is uniform `low`, so those fields are structurally meaningless.
 
-- [ ] **Step 5: Update the architecture doc**
+- [x] **Step 5: Update the architecture doc**
 
 In `docs/architecture/model-optimization.md`, update the **Models**, **Quantiles**, **Inference** and **Production DA** rows. Where a figure is retired rather than superseded, mark it with the ⚠️ convention already used in that file rather than deleting it.
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add docs/changelog/2026-08-04-minimal-model-results.md \
@@ -2554,7 +2570,7 @@ Do not merge with Part 2. Part 2 is expected to cost a little accuracy and Part 
 - Consumes: nothing new.
 - Produces: `train(max_rows=...)` reaching `_subsample_for_features(max_feature_rows=...)`.
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 Create `backend/tests/test_training_item_coverage.py`:
 
@@ -2588,17 +2604,17 @@ def test_engineer_features_budget_is_not_hardcoded_to_100k():
     assert "max_feature_rows=100_000" not in src
 ```
 
-- [ ] **Step 2: Run the test to verify it fails**
+- [x] **Step 2: Run the test to verify it fails**
 
 Run: `python3 -m pytest tests/test_training_item_coverage.py -v`
 
 Expected: FAIL — `max_feature_rows=` absent from `train`'s source.
 
-- [ ] **Step 3: Thread the budget through**
+- [x] **Step 3: Thread the budget through**
 
 In `train()`, forward its `max_rows` argument to the call that reaches `_subsample_for_features`, so the budget passed at `forecast_prices.py:209` is honoured. Keep `100_000` as the parameter default at `:2417` so nothing that omits the argument changes behaviour.
 
-- [ ] **Step 4: Measure the item count at each budget**
+- [x] **Step 4: Measure the item count at each budget**
 
 ```bash
 cd backend
@@ -2611,11 +2627,11 @@ done
 
 Record items selected and total training seconds per budget. Pick the largest budget whose training time is acceptable.
 
-- [ ] **Step 5: Re-run the gate at the chosen budget**
+- [x] **Step 5: Re-run the gate at the chosen budget**
 
 Run arm B again with the raised budget and pair it against arm B at the 100k budget — same MDE, same bar, one variable moved.
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add backend/scripts/forecast_prices.py backend/models/forecaster.py \

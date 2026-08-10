@@ -1,5 +1,17 @@
 # Friction-Conditioned Tier Scoring Implementation Plan
 
+> # ✅ EXECUTED AND CLOSED (2026-08-07)
+>
+> All 7 tasks landed. Evidence: `backend/backtest/friction.py` (`cc1d878` — `ROUND_TRIP_COST`,
+> `SPREAD_BY_TIER`, `SPREAD_SOURCE_BAND`), `backend/backtest/actionable.py` (`7e2d0e6`,
+> `ACTIONABLE_HORIZONS = {14, 30}`), `price_tier` returning 5 at ≥$1000 (`scoring.py:140`),
+> `FLOOR_SWEEP` (`scoring.py:436`), and `ge=-3` at `api/routes/accuracy.py:161`.
+>
+> **Outcome: `docs/changelog/2026-08-07-friction-conditioned-tier-scoring.md`.** This plan closed
+> step 3 of `docs/research/2026-08-07-next-steps.md`.
+>
+> The boxes below are ticked retroactively. Nothing here is outstanding.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Split `price_tier` above $100, add a friction-conditioned `ActionableDA` metric at
@@ -49,7 +61,7 @@ frozen on `forecast_outcomes`, which is what keeps `--rescore` archive-free.
   `SPREAD_BY_TIER: dict[int, float]`, `SPREAD_SOURCE_BAND: dict[int, str]`,
   `actionable_threshold(price_tier: int, venue: str = DEFAULT_VENUE) -> float`.
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 Create `backend/tests/test_friction.py`:
 
@@ -155,12 +167,12 @@ def test_unknown_venue_raises_rather_than_defaulting():
         actionable_threshold(1, venue="buff163")
 ```
 
-- [ ] **Step 2: Run test to verify it fails**
+- [x] **Step 2: Run test to verify it fails**
 
 Run: `cd backend && venv/bin/python -m pytest tests/test_friction.py -q`
 Expected: FAIL — `ModuleNotFoundError: No module named 'backtest.friction'`
 
-- [ ] **Step 3: Write the implementation**
+- [x] **Step 3: Write the implementation**
 
 Create `backend/backtest/friction.py`:
 
@@ -246,7 +258,7 @@ def actionable_threshold(price_tier: int, venue: str = DEFAULT_VENUE) -> float:
     return ROUND_TRIP_COST[venue] + SPREAD_BY_TIER[price_tier]
 ```
 
-- [ ] **Step 4: Run the tests**
+- [x] **Step 4: Run the tests**
 
 Run: `cd backend && venv/bin/python -m pytest tests/test_friction.py -q`
 Expected: all PASS except `test_every_price_tier_has_a_spread_entry`, which FAILS —
@@ -254,7 +266,7 @@ Expected: all PASS except `test_every_price_tier_has_a_spread_entry`, which FAIL
 `SPREAD_BY_TIER`'s `{0,1,2,3,4,5}`. Task 2 closes it. Leave it failing and do not
 weaken the assertion.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add backend/backtest/friction.py backend/tests/test_friction.py
@@ -274,7 +286,7 @@ git commit -m "feat: add round-trip and spread friction constants"
 - Consumes: nothing.
 - Produces: `price_tier(p) == 5` for `p >= 1000`; tier 4 now means `$100–1000`.
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 Replace `test_price_tier_boundaries` in `backend/tests/test_backtest_scoring.py`:
 
@@ -304,12 +316,12 @@ def test_tier_4_no_longer_merges_the_two_most_liquid_cohorts():
     assert price_tier(200.0) != price_tier(2000.0)
 ```
 
-- [ ] **Step 2: Run test to verify it fails**
+- [x] **Step 2: Run test to verify it fails**
 
 Run: `cd backend && venv/bin/python -m pytest tests/test_backtest_scoring.py -q -k price_tier`
 Expected: FAIL — `assert price_tier(1000.0) == 5` gets `4`.
 
-- [ ] **Step 3: Write the implementation**
+- [x] **Step 3: Write the implementation**
 
 In `backend/backtest/scoring.py`, replace `price_tier`:
 
@@ -337,7 +349,7 @@ def price_tier(price: float) -> int:
     return 0
 ```
 
-- [ ] **Step 4: Fix the hardcoded fan-out assertion**
+- [x] **Step 4: Fix the hardcoded fan-out assertion**
 
 In `backend/tests/test_parquet_nested_columns.py`, replace
 `test_the_whole_tier_fanout_is_stable_across_runs` (lines 211-219):
@@ -367,7 +379,7 @@ In `backend/tests/test_parquet_nested_columns.py`, replace
 This imports `FLOOR_SWEEP`, which Task 5 creates. It will fail until then — that is
 expected and is why the two tasks are adjacent.
 
-- [ ] **Step 5: Run the affected suites**
+- [x] **Step 5: Run the affected suites**
 
 Run:
 ```bash
@@ -380,7 +392,7 @@ PASSES **untouched** — it is the guard that the served population still equals
 population, so if it fails, the tier change leaked into the serving floor and must be undone.
 `test_parquet_nested_columns.py` is expected to fail on the `FLOOR_SWEEP` import until Task 5.
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add backend/backtest/scoring.py backend/tests/test_backtest_scoring.py \
@@ -405,7 +417,7 @@ git commit -m "feat: split price_tier above \$100 into \$100-1000 and \$1000+"
   `actionable_n`, `actionable_share_pct`, `actionable_da`, `actionable_e_net_pct`, plus every
   key `pesaran_timmermann` returns re-prefixed `pt_` → `actionable_pt_`.
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 Create `backend/tests/test_actionable_da.py`:
 
@@ -607,12 +619,12 @@ def test_the_metric_does_not_mutate_its_input():
     assert records == snapshot
 ```
 
-- [ ] **Step 2: Run test to verify it fails**
+- [x] **Step 2: Run test to verify it fails**
 
 Run: `cd backend && venv/bin/python -m pytest tests/test_actionable_da.py -q`
 Expected: FAIL — `ModuleNotFoundError: No module named 'backtest.actionable'`
 
-- [ ] **Step 3: Write the implementation**
+- [x] **Step 3: Write the implementation**
 
 Create `backend/backtest/actionable.py`:
 
@@ -739,12 +751,12 @@ def actionable_metrics(
     return out
 ```
 
-- [ ] **Step 4: Run the tests**
+- [x] **Step 4: Run the tests**
 
 Run: `cd backend && venv/bin/python -m pytest tests/test_actionable_da.py -q`
 Expected: PASS (all 17).
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add backend/backtest/actionable.py backend/tests/test_actionable_da.py
@@ -771,7 +783,7 @@ then scores through `_records_from_frozen_outcomes`, so there is only **one** re
 change in that file. Verify this before editing: `grep -n "price_tier(base)" backend/scripts/backtest_accuracy.py`
 should return exactly one hit.
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 Append to `backend/tests/test_backtest_scoring.py`:
 
@@ -819,7 +831,7 @@ def test_fold_records_horizon_defaults_to_none_for_existing_callers():
 
 Adapt `_fold_records` to whatever the module's existing record-building helper is called.
 
-- [ ] **Step 2: Run test to verify it fails**
+- [x] **Step 2: Run test to verify it fails**
 
 Run:
 ```bash
@@ -828,7 +840,7 @@ cd backend && venv/bin/python -m pytest tests/test_backtest_scoring.py \
 ```
 Expected: FAIL with `KeyError: 'predicted_mid'`.
 
-- [ ] **Step 3: Write the implementation**
+- [x] **Step 3: Write the implementation**
 
 In `backend/scripts/backtest_accuracy.py`, inside the record dict appended in
 `_records_from_frozen_outcomes` (currently ending at the `"forecast_date"` key), add:
@@ -868,7 +880,7 @@ then add to the appended record dict, beside `"actual_price"`:
             "horizon_days": horizon_days,
 ```
 
-- [ ] **Step 4: Run the tests**
+- [x] **Step 4: Run the tests**
 
 Run:
 ```bash
@@ -878,7 +890,7 @@ cd backend && venv/bin/python -m pytest tests/test_backtest_scoring.py \
 ```
 Expected: PASS, except `test_parquet_nested_columns.py`'s `FLOOR_SWEEP` import (Task 5).
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add backend/scripts/backtest_accuracy.py backend/backtest/walkforward_records.py \
@@ -905,7 +917,7 @@ git commit -m "feat: carry predicted_mid and horizon_days on scoring records"
   `score_by_tier` emits one row per present band, one per floor sentinel, and the `None`
   aggregate. `score_cohort`'s metrics dict gains every `actionable_*` key.
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 Append to `backend/tests/test_backtest_scoring.py`:
 
@@ -994,12 +1006,12 @@ Run the fixture first and read the actual tier set out of the failure before com
 `-2`: it depends on the fixture's prices, and the assertion must describe the fixture, not a
 guess.
 
-- [ ] **Step 2: Run test to verify it fails**
+- [x] **Step 2: Run test to verify it fails**
 
 Run: `cd backend && venv/bin/python -m pytest tests/test_backtest_scoring.py -q -k "actionable or floor"`
 Expected: FAIL — `ImportError: cannot import name 'FLOOR_SWEEP'`.
 
-- [ ] **Step 3: Write the implementation**
+- [x] **Step 3: Write the implementation**
 
 In `backend/backtest/scoring.py`, add the import:
 
@@ -1167,7 +1179,7 @@ In `backend/scripts/walkforward_backtest.py:266`, the label map turns a floor se
 
 and add `FLOOR_SWEEP` to that file's import from `backtest.scoring`.
 
-- [ ] **Step 4: Run the tests**
+- [x] **Step 4: Run the tests**
 
 Run:
 ```bash
@@ -1179,7 +1191,7 @@ cd backend && venv/bin/python -m pytest tests/test_backtest_scoring.py \
 ```
 Expected: PASS. `test_parquet_nested_columns.py`'s `FLOOR_SWEEP` import now resolves.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add backend/backtest/scoring.py backend/scripts/backtest_accuracy.py \
@@ -1203,7 +1215,7 @@ git commit -m "feat: publish ActionableDA and sweep the headline at \$1/\$5/\$20
 `number | null` and `frontend/app/accuracy/page.tsx` renders no tier labels. Confirm with
 `grep -n "price_tier" frontend/lib/api.ts` before concluding that.
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 Append to `backend/tests/test_accuracy_headline_route.py`:
 
@@ -1218,12 +1230,12 @@ def test_price_tier_query_admits_every_cohort_score_by_tier_emits():
     assert PRICE_TIER_QUERY.le == price_tier(50_000)    # 5
 ```
 
-- [ ] **Step 2: Run test to verify it fails**
+- [x] **Step 2: Run test to verify it fails**
 
 Run: `cd backend && venv/bin/python -m pytest tests/test_accuracy_headline_route.py -q -k price_tier_query`
 Expected: FAIL — `assert -1 == -3`.
 
-- [ ] **Step 3: Write the implementation**
+- [x] **Step 3: Write the implementation**
 
 In `backend/api/routes/accuracy.py`, add `FLOOR_SWEEP` to the `backtest.scoring` import and
 replace `PRICE_TIER_QUERY`:
@@ -1244,7 +1256,7 @@ PRICE_TIER_QUERY = Query(
 )
 ```
 
-- [ ] **Step 4: Run the tests**
+- [x] **Step 4: Run the tests**
 
 Run:
 ```bash
@@ -1253,7 +1265,7 @@ cd backend && venv/bin/python -m pytest tests/test_accuracy_headline_route.py \
 ```
 Expected: PASS.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add backend/api/routes/accuracy.py backend/tests/test_accuracy_headline_route.py
@@ -1269,7 +1281,7 @@ git commit -m "feat: widen the accuracy price_tier bound to the new bands and fl
 - Create: `docs/changelog/2026-08-07-friction-conditioned-tier-scoring.md`
 - Modify: `docs/research/2026-08-07-next-steps.md` (step 3 → DONE)
 
-- [ ] **Step 1: Run the whole backend suite**
+- [x] **Step 1: Run the whole backend suite**
 
 Run: `cd backend && venv/bin/python -m pytest tests/ -q`
 Expected: PASS. Baseline is **1,258 tests** as of 2026-08-07 plus the ones added here;
@@ -1279,7 +1291,7 @@ collects `scripts/test_social_signal.py` and aborts on a missing local `thefuzz`
 Any failure outside the files this plan touched is a real regression: fix it before
 proceeding, do not adjust the assertion.
 
-- [ ] **Step 2: Update `backend/AGENTS.md`**
+- [x] **Step 2: Update `backend/AGENTS.md`**
 
 Extend the existing "Never quote a directional accuracy on its own" gotcha with two
 sentences: that `price_tier` now has six bands and a stored `price_tier == 4` predating
@@ -1290,7 +1302,7 @@ in, and `SPREAD_BY_TIER` is a nearest-band approximation and not measured at the
 
 Do not restate the numbers that live in `friction.py` — reference the module.
 
-- [ ] **Step 3: Write the changelog**
+- [x] **Step 3: Write the changelog**
 
 Dispatch the `changelog-writer` subagent for
 `docs/changelog/2026-08-07-friction-conditioned-tier-scoring.md`. It must record:
@@ -1309,13 +1321,13 @@ Dispatch the `changelog-writer` subagent for
   yet, because every live cohort spans 1–2 forecast dates and `actionable_pt_verdict` will read
   `insufficient_dates` exactly as `pt_verdict` does.
 
-- [ ] **Step 4: Mark step 3 done in the next-steps list**
+- [x] **Step 4: Mark step 3 done in the next-steps list**
 
 In `docs/research/2026-08-07-next-steps.md`, change the step 3 heading from `NOT STARTED` to
 `DONE 2026-08-07`, following the format steps 1 and 2 already use: what landed, what was
 refuted or narrowed, an explicit **Not done** list, and a link to the changelog entry.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add backend/AGENTS.md docs/changelog/2026-08-07-friction-conditioned-tier-scoring.md \

@@ -1,5 +1,20 @@
 # Historical Price-Source Import Implementation Plan
 
+> # ✅ ALL 7 TASKS LANDED (2026-08-09) — ⛔ promotion into the real archive is BLOCKED
+>
+> Evidence: `backend/collectors/price_history_import.py` (`a657db7`),
+> `collectors/price_history_sources/cs2_prices_tracker.py` (`52f4b3b`,
+> `STEAM_FEE_MULTIPLIER = 1.1607`), `scripts/import_price_history_source.py` (`99636e9`). The real
+> staged import ran: **5,153 items / 1,963,626 rows**, full suite 1,657 pass. Ledger:
+> `.superpowers/sdd/2026-08-08-price-history-source-import/progress.md`.
+>
+> **Outcome: `docs/changelog/2026-08-09-price-history-import-staged.md`.**
+>
+> ⛔ **Do not promote the staged archive.** Four review blockers are open and no commit after
+> `52f4b3b` addresses them: the end seam is unmeasured; the gate's consensus is not production's
+> consensus; `_preserve_first_arrival` NULLs `ingested_at` on non-`RangeIndex` frames; and the
+> importer can under-import silently. Building is done; shipping is not.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Import `LukeX404/cs2-prices-tracker`'s daily Steam price history (2025-02-17 → 2026-03-31) into a **staging** price archive as source `tracker_steam_24h`, so items that entered the archive in 2026-03 gain the pre-2026 rows the `is_backfilled` gate tests for.
@@ -47,7 +62,7 @@
 - Consumes: nothing.
 - Produces: `SOURCE: str`, `day_url(day: date) -> str`, `parse_day(payload: dict, day: date) -> list[tuple[str, date, float]]`. Later tasks consume `parse_day`'s return type as the canonical "record" triple `(item_slug, day, price)`.
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 Create `backend/tests/test_price_history_import.py`:
 
@@ -113,12 +128,12 @@ def test_parse_day_tolerates_a_missing_or_null_steam_object():
     assert [r[0] for r in records] == ["AK-47 | Redline (Field-Tested)"]
 ```
 
-- [ ] **Step 2: Run the tests to verify they fail**
+- [x] **Step 2: Run the tests to verify they fail**
 
 Run: `venv/bin/python -m pytest tests/test_price_history_import.py -q`
 Expected: FAIL — `ModuleNotFoundError: No module named 'collectors.price_history_sources'`
 
-- [ ] **Step 3: Write the registry**
+- [x] **Step 3: Write the registry**
 
 Create `backend/collectors/price_history_sources/__init__.py`:
 
@@ -139,7 +154,7 @@ ADAPTERS = {
 }
 ```
 
-- [ ] **Step 4: Write the adapter**
+- [x] **Step 4: Write the adapter**
 
 Create `backend/collectors/price_history_sources/cs2_prices_tracker.py`:
 
@@ -196,12 +211,12 @@ def parse_day(payload: dict, day: date) -> list[tuple[str, date, float]]:
     return records
 ```
 
-- [ ] **Step 5: Run the tests to verify they pass**
+- [x] **Step 5: Run the tests to verify they pass**
 
 Run: `venv/bin/python -m pytest tests/test_price_history_import.py -q`
 Expected: PASS, 6 tests.
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add backend/collectors/price_history_sources/ backend/tests/test_price_history_import.py
@@ -220,7 +235,7 @@ git commit -m "feat: add the cs2-prices-tracker price-history adapter"
 - Consumes: nothing from Task 1.
 - Produces: `StalledSourceError(Exception)`, `detect_stalled_days(day_digests: dict[date, str]) -> list[list[date]]`.
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 Append to `backend/tests/test_price_history_import.py`:
 
@@ -263,12 +278,12 @@ def test_stalled_source_error_is_raisable_with_the_groups():
         raise StalledSourceError([[date(2026, 7, 27), date(2026, 7, 28)]])
 ```
 
-- [ ] **Step 2: Run the tests to verify they fail**
+- [x] **Step 2: Run the tests to verify they fail**
 
 Run: `venv/bin/python -m pytest tests/test_price_history_import.py -q`
 Expected: FAIL — `ModuleNotFoundError: No module named 'collectors.price_history_import'`
 
-- [ ] **Step 3: Write the implementation**
+- [x] **Step 3: Write the implementation**
 
 Create `backend/collectors/price_history_import.py`:
 
@@ -331,12 +346,12 @@ def detect_stalled_days(day_digests: dict[date, str]) -> list[list[date]]:
     return groups
 ```
 
-- [ ] **Step 4: Run the tests to verify they pass**
+- [x] **Step 4: Run the tests to verify they pass**
 
 Run: `venv/bin/python -m pytest tests/test_price_history_import.py -q`
 Expected: PASS, 10 tests.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add backend/collectors/price_history_import.py backend/tests/test_price_history_import.py
@@ -355,7 +370,7 @@ git commit -m "feat: detect a stalled upstream source by consecutive identical f
 - Consumes: the record triple `(item_slug, day, price)` from Task 1.
 - Produces: `MAX_GAP_DAYS: int`, `MIN_DISTINCT_DAYS: int`, `apply_gap_gate(records, max_gap_days=MAX_GAP_DAYS, min_distinct_days=MIN_DISTINCT_DAYS) -> tuple[list[tuple[str, date, float]], GapGateReport]`, and `GapGateReport` (a frozen dataclass with `kept_items: int`, `rejected_gap_items: int`, `rejected_sparse_items: int`, `kept_rows: int`, `rejected_rows: int`, `worst_gap_days: int`).
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 Append to `backend/tests/test_price_history_import.py`:
 
@@ -470,12 +485,12 @@ def test_records_are_deduplicated_on_item_and_day_keeping_the_first():
     assert report.kept_rows == 2
 ```
 
-- [ ] **Step 2: Run the tests to verify they fail**
+- [x] **Step 2: Run the tests to verify they fail**
 
 Run: `venv/bin/python -m pytest tests/test_price_history_import.py -q`
 Expected: FAIL — `ImportError: cannot import name 'MAX_GAP_DAYS'`
 
-- [ ] **Step 3: Write the implementation**
+- [x] **Step 3: Write the implementation**
 
 Add to `backend/collectors/price_history_import.py` (imports at the top of the file, rest appended):
 
@@ -569,12 +584,12 @@ def apply_gap_gate(
     )
 ```
 
-- [ ] **Step 4: Run the tests to verify they pass**
+- [x] **Step 4: Run the tests to verify they pass**
 
 Run: `venv/bin/python -m pytest tests/test_price_history_import.py -q`
 Expected: PASS, 17 tests.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add backend/collectors/price_history_import.py backend/tests/test_price_history_import.py
@@ -593,7 +608,7 @@ git commit -m "feat: gate imported items on max interior gap, not on price"
 - Consumes: the record triple from Task 1; `db.parquet.append_monthly(out_dir, prefix, df, dedup_keys, day_col="day")`; `db.archive.prices_relation(con, archive_dir=..., columns=..., where=...)`.
 - Produces: `to_archive_frame(records, source: str, ingested_at: datetime) -> pd.DataFrame` and `write_archive_frame(frame, out_dir) -> int`.
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 Append to `backend/tests/test_price_history_import.py`:
 
@@ -752,12 +767,12 @@ def test_a_reappend_does_not_duplicate_the_same_item_day_source(tmp_path):
     assert count == 1
 ```
 
-- [ ] **Step 2: Run the tests to verify they fail**
+- [x] **Step 2: Run the tests to verify they fail**
 
 Run: `venv/bin/python -m pytest tests/test_price_history_import.py -q`
 Expected: FAIL — `ImportError: cannot import name 'to_archive_frame'`
 
-- [ ] **Step 3: Write the implementation**
+- [x] **Step 3: Write the implementation**
 
 Add to `backend/collectors/price_history_import.py`:
 
@@ -866,12 +881,12 @@ def write_archive_frame(frame: pd.DataFrame, out_dir: Path | str) -> int:
 
 This needs `import duckdb` and `from db.archive import prices_relation` alongside the existing imports.
 
-- [ ] **Step 4: Run the tests to verify they pass**
+- [x] **Step 4: Run the tests to verify they pass**
 
 Run: `venv/bin/python -m pytest tests/test_price_history_import.py -q`
 Expected: PASS, 23 tests.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add backend/collectors/price_history_import.py backend/tests/test_price_history_import.py
@@ -890,7 +905,7 @@ git commit -m "feat: build and write source-labelled archive rows with NULL volu
 - Consumes: `ADAPTERS` (Task 1); `detect_stalled_days`, `StalledSourceError` (Task 2); `apply_gap_gate` (Task 3); `to_archive_frame`, `write_archive_frame` (Task 4).
 - Produces: `daterange(start: date, end: date) -> list[date]`, `cached_path(cache_dir: Path, source_name: str, day: date) -> Path`, `load_cached_day(path: Path) -> dict | None`, and `main(argv: list[str] | None = None) -> int`.
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 Append to `backend/tests/test_price_history_import.py`:
 
@@ -940,12 +955,12 @@ def test_load_cached_day_parses_a_good_file(tmp_path):
     assert load_cached_day(good) == {"Item A": {"steam": {"last_24h": 1.0}}}
 ```
 
-- [ ] **Step 2: Run the tests to verify they fail**
+- [x] **Step 2: Run the tests to verify they fail**
 
 Run: `venv/bin/python -m pytest tests/test_price_history_import.py -q`
 Expected: FAIL — `ModuleNotFoundError: No module named 'scripts.import_price_history_source'`
 
-- [ ] **Step 3: Write the CLI**
+- [x] **Step 3: Write the CLI**
 
 Create `backend/scripts/import_price_history_source.py`:
 
@@ -1123,17 +1138,17 @@ if __name__ == "__main__":
     sys.exit(main())
 ```
 
-- [ ] **Step 4: Run the tests to verify they pass**
+- [x] **Step 4: Run the tests to verify they pass**
 
 Run: `venv/bin/python -m pytest tests/test_price_history_import.py -q`
 Expected: PASS, 29 tests.
 
-- [ ] **Step 5: Verify the CLI wires up end to end without network**
+- [x] **Step 5: Verify the CLI wires up end to end without network**
 
 Run: `venv/bin/python scripts/import_price_history_source.py --help`
 Expected: usage text listing `--source {cs2_prices_tracker}`.
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add backend/scripts/import_price_history_source.py backend/tests/test_price_history_import.py
@@ -1154,7 +1169,7 @@ git commit -m "feat: add the resumable staging importer CLI"
 
 `new_gate_items` is the spec's promotion-gate item 4 — staged items with pre-2026 rows that the real archive does **not** already have pre-2026 rows for. That, not `pre_2026_items`, is the `is_backfilled` flip count, because the source also covers 95.8% of items already inside the gate.
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 Append to `backend/tests/test_price_history_import.py`:
 
@@ -1221,12 +1236,12 @@ def test_report_promotion_gate_excludes_items_already_inside_the_gate(tmp_path):
     assert result["new_gate_items"] == 0
 ```
 
-- [ ] **Step 2: Run the test to verify it fails**
+- [x] **Step 2: Run the test to verify it fails**
 
 Run: `venv/bin/python -m pytest tests/test_price_history_import.py -q`
 Expected: FAIL — `ImportError: cannot import name 'report_promotion_gate'`
 
-- [ ] **Step 3: Implement the report**
+- [x] **Step 3: Implement the report**
 
 Add to `backend/scripts/import_price_history_source.py`:
 
@@ -1344,12 +1359,12 @@ Then, immediately after `adapter = ADAPTERS[args.source]` and before the `datera
         return 0
 ```
 
-- [ ] **Step 4: Run the tests to verify they pass**
+- [x] **Step 4: Run the tests to verify they pass**
 
 Run: `venv/bin/python -m pytest tests/test_price_history_import.py -q`
 Expected: PASS, 30 tests.
 
-- [ ] **Step 5: Run the real import**
+- [x] **Step 5: Run the real import**
 
 ```bash
 venv/bin/python scripts/import_price_history_source.py \
@@ -1363,7 +1378,7 @@ Expected: ~408 days fetched (~2.3 GB cached), no `StalledSourceError`, quality-g
 
 Projection from the spec, to compare against: **~10,500 items gaining pre-2026 rows** (unfiltered is 18,843; the max-gap condition passes ~64% and the 180-day floor removes a further ~13%). If the log's `pre_2026 items` figure falls outside **9,000–12,000**, stop and reconcile before going further — the band is wide because both factors are extrapolations from a 90-day block, not measurements over the 408-day range.
 
-- [ ] **Step 6: Report the promotion-gate numbers**
+- [x] **Step 6: Report the promotion-gate numbers**
 
 ```bash
 venv/bin/python scripts/import_price_history_source.py \
@@ -1373,12 +1388,12 @@ venv/bin/python scripts/import_price_history_source.py \
 
 Expected: `zero_volume_rows: 0`, `duplicate_keys: 0`, and an `overlap_ratio_median` near 1.0. Record all nine numbers — they are the promotion decision.
 
-- [ ] **Step 7: Run the full backend suite**
+- [x] **Step 7: Run the full backend suite**
 
 Run: `venv/bin/python -m pytest tests/ -q`
 Expected: no new failures against the pre-change baseline (1,233 passing as of 2026-08-08).
 
-- [ ] **Step 8: Commit**
+- [x] **Step 8: Commit**
 
 ```bash
 git add backend/scripts/import_price_history_source.py backend/tests/test_price_history_import.py
@@ -1408,7 +1423,7 @@ Added 2026-08-09 after the Task 6 run. The promotion gate refuted this plan's st
 - Consumes: `parse_day`, `apply_gap_gate` as built.
 - Produces: `cs2_prices_tracker.STEAM_FEE_MULTIPLIER: float`; `apply_gap_gate(..., min_median_price: float | None = None)`; `GapGateReport` gains `rejected_cheap_items: int`.
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 ```python
 def test_parse_day_returns_net_of_the_steam_fee():
@@ -1458,12 +1473,12 @@ def test_no_floor_by_default_keeps_the_archive_free_of_a_cohort_decision():
     assert report.rejected_cheap_items == 0
 ```
 
-- [ ] **Step 2: Run to verify they fail**
+- [x] **Step 2: Run to verify they fail**
 
 Run: `venv/bin/python -m pytest tests/test_price_history_import.py -q`
 Expected: FAIL — `AttributeError: module ... has no attribute 'STEAM_FEE_MULTIPLIER'`
 
-- [ ] **Step 3: Implement**
+- [x] **Step 3: Implement**
 
 In `cs2_prices_tracker.py`, add the constant and divide in `parse_day`:
 
@@ -1500,16 +1515,16 @@ In `price_history_import.py`, add `rejected_cheap_items: int` to `GapGateReport`
                 continue
 ```
 
-- [ ] **Step 4: Run to verify they pass**
+- [x] **Step 4: Run to verify they pass**
 
 Run: `venv/bin/python -m pytest tests/test_price_history_import.py -q`
 Expected: PASS, 44 tests.
 
-- [ ] **Step 5: Wire the floor into the CLI**
+- [x] **Step 5: Wire the floor into the CLI**
 
 Add `--min-median-price` (type float, default `1.0`) to `main`'s argparse, pass it into `apply_gap_gate`, and extend the gate log line with `rejected_cheap_items`.
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add backend/collectors/ backend/tests/test_price_history_import.py

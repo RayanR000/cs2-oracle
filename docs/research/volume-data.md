@@ -1,5 +1,68 @@
 # Volume Data Source Research
 
+> **The conclusion stands; almost everything supporting it does not (2026-08-09).**
+> `docs/changelog/2026-08-06-volume-ab-and-harness-defects.md:68` already named `:27`
+> and `:142` as carrying wrong reasoning; they are unchanged three days later. Volume
+> features are still refuted — on measured grounds, not these.
+>
+> **The |r| < 0.002 threshold is a cohort artifact.** The same changelog reproduced
+> this doc's exact **n = 4,472,754** and found `price_momentum_7d` — the model's core
+> feature — reads **−0.00143** on that cohort, while `volume_zscore_30d` on the ≥$1
+> subset reads **+0.0424** (`:49-63`). A bar that calls the model's own best feature
+> noise cannot classify anything.
+>
+> **The audit sample conditions on a sale having occurred.** Verified against the
+> archive 2026-08-09: of the 9,429,275 pre-2026 rows, **zero** carry `volume = 0` and
+> zero are NULL. A no-sale day is an *absent row*, not a zero. So the measured |r| is
+> conditional on a trade, and cannot support `:29`'s generalisation to all rows.
+>
+> ~~**A free bulk trade-volume source already exists inside the archive**~~ (`:127`,
+> `:144`) — **dead.** The last day with `volume > 0` anywhere is **2026-04-15**;
+> 2026-04-16 → 2026-08-07 is uniformly `volume = 0`, non-NULL. (The 327,840 NULLs on
+> 2026-08-08 are that day's partial write, not a state.) Mechanically,
+> `prices.csgotrader.app/latest/steam_volume.json` 301s to an S3 `NoSuchKey` — it died
+> upstream, not in the collector
+> (`docs/research/2026-08-09-model-and-data-research.md` §4c). Archive-side the cliff
+> reads as source substitution: on 04-16 the volume-bearing feeds are replaced by
+> `aggregator_steam_17mafo`, and buff163/youpin/csfloat keep writing daily but write
+> zeros.
+>
+> **Post-2026-03-22 "volume" is a listing count, not a trade count.**
+> `backend/scripts/merge_hf_dataset.py:99` maps `ask_volume AS volume`. The three
+> prefixed sources `aggregator_buff163`/`aggregator_youpin`/`aggregator_csfloat` carry
+> **1,967,619** volume-bearing rows spanning **2026-03-22 → 2026-04-15**, and those are
+> listing counts labelled volume. This doc's span ends 2026-03-29 only because it
+> filtered to `source IS NULL OR source = 'aggregator_sync'`; re-running its query
+> without that filter silently pools two different quantities, and the trio *overlaps*
+> `aggregator_sync` on 03-22 → 03-29 rather than handing off to it. **Never pool across
+> 2026-03-22.**
+>
+> **`:29` and `:146` are backwards.** All 13 volume features plus
+> `volume_price_conf_{1,7}d` are in `SHELVED_FEATURES`
+> (`backend/models/forecaster.py:405-431`) *because* they are dead on 100% of served
+> rows — the opposite of "LightGBM handles the missing volume gracefully" — and they
+> fall outside `FEATURE_GROUP_ALLOWLIST` (`:353`) regardless. `volume_price_conf`,
+> named at `:29` as volume's surviving value, is shelved.
+>
+> **The coverage numbers are stale.** Re-measured against the archive 2026-08-09:
+>
+> | | doc says | actual |
+> |---|---|---|
+> | Volume-bearing rows | 88.65% of 11,092,908 | **53.15% of 22,203,660** (11,801,457) |
+> | Items with volume | 5,542 | **27,714** (of 41,795) |
+> | Span end | 2026-03-29 | **2026-04-15** |
+> | 2026 share | 24.3% | **18.57%** (Jan/Feb 100%, Mar 94.8%, Apr 72.4%, **May–Aug 0.00%**) |
+>
+> The **9,833,838** figure does reproduce exactly, spanning 2013-08-14 → 2026-03-29,
+> under this doc's own source filter.
+>
+> Two smaller corrections. ~~`:56` "all currently exhausted **this month**"~~ implies a
+> monthly reset; `docs/references/backfill.md:19` records the CSMarketAPI keys as "all
+> burned, and **they do not reset**", so the "~158 items/day (5 keys)" row at `:135` is
+> a dead capability. And `:84-86`'s "CSFloat is not a free bulk option" is true of
+> `/api/v1/listings` but **wrong for the history endpoint**
+> (`docs/changelog/2026-08-06-free-bulk-supply-depth-feeds-exist.md:76-78`).
+
 **Last updated: 2026-07-16**
 
 ## Current State (corrected 2026-07-16)

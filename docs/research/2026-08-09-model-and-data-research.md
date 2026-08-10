@@ -10,13 +10,188 @@ review or cited to the changelog entry that measured it. Nothing is estimated.
 
 ---
 
+> ## ⚠️ Corrections, 2026-08-09 (later the same day)
+>
+> **Every Track A recommendation in this review shipped within hours of it being written, and three
+> of its cost predictions did not reproduce.** The review is otherwise unusually accurate — 13 of 19
+> of its archive numbers reproduce to the digit on re-query, its statistical tables partition
+> exactly, and no citation in it is fabricated. What follows is what changed and what was wrong.
+> Numbers are kept in place rather than deleted.
+>
+> ### The gate in §1c is refuted — this is the important one
+>
+> **§Summary item 1 ("the label may be a quoting artifact… it gates every accuracy item") and §1c
+> are withdrawn.** The table §1c reproduces from `2026-08-08-model-review.md` §5 is struck through
+> *in that document* as refuted. The partition classified every NULL-`source` item-day as
+> "composition changed", and `source` is NULL for every pre-2026 row, so the 0.1676 → 0.1006 fall is
+> a **2013-2025 → 2026 regime difference, not composition control**. Re-measured on the set basis
+> with void dates excluded: **stable +0.1027 vs unconditional +0.1023** at 3d (181 of 185 dates),
+> and equal to four decimals at 7d (+0.0842, 167 of 172).
+> `docs/research/2026-08-09-composition-stability.md`, commit `f833882`. **Track C is not gated** —
+> the gate's premise was that the reversal is *made of* composition change, and removing
+> composition change does not move it.
+>
+> Two cells did not resolve, and the write-up is explicit about both: **"composition changed
+> (present)"** is 25 dates at 3d / 19 at 7d, so the comparison above is stable-vs-unconditional
+> rather than stable-vs-changed and **no directional claim about the changed population is
+> supported**; and **"stable & ≥3 sources"** is the same 25/19, which is the cell §1c leant on. Both
+> are calendar waits, not effort.
+>
+> ### Three cost predictions failed
+>
+> | § | Predicted here | Measured (`docs/changelog/2026-08-09-training-cost-levers.md`) |
+> |---|---|---|
+> | §3a re-tune Optuna | "**35s** of an 872s run. Highest accuracy-per-second lever in the system" | **392.3s** — 11×, and now the single largest phase. Removing early stopping means every trial trains the full round budget instead of stopping near 25 |
+> | §2b cap CV folds @ 300k | **−194.6s** (−22.3%) | conformal CV went 439.3s → **434.8s**, and the cap **bound on every fold**. The saving did not appear |
+> | §2d allowlist + skip blocks | "≈**32s** recoverable" | **16.5s**, isolated properly |
+>
+> Cold retrain measured **1426.3s**, not the ≈600s the plan projected. That changelog's own
+> conclusion: *"Do not quote a speedup from this work."* **Consequence for §3f/§2a: every share in
+> this document is against the retired 872s baseline.** Conformal CV is now 30.5% of a retrain, not
+> 50.4%, so the split-conformal argument's ceiling is ~30%; regime models do not appear in the new
+> phase table at all, so their cost is unmeasured.
+>
+> ### Four other claims were settled, mostly by shipping
+>
+> - **§5c "uncommitted" is stale.** Rank IC and Pesaran–Timmermann are committed; `grep -c rank_ic`
+>   on `HEAD` returns 23, not 0. Every element §5c enumerates exists.
+> - **§1a's open question is closed.** `_collection_shift_dates` **does** fire on 2026-07-11 —
+>   measured list on the backfilled frame is `2026-03-22, 07-09, 07-10, 07-11, 07-12` (commit
+>   `3d582ab`). No special case is needed. A by-product: the fired set is a function of the
+>   *universe handed to the detector*, so it is not a single fact about the archive.
+> - **§4c's "verify from the project's own IP" is answered — it works**, at 0.36 requests per item.
+>   The 230 KB shell is normal SSR; you must resolve the canonical `G<id>` first.
+> - **§6's four operational defects are all resolved or misstated** — see the block below.
+>
+> ### Wrong on their own terms
+>
+> - **§2f: `_warm_retrain` suppresses four things, not three.** The fourth is
+>   `HORIZON_EXCLUDED_GROUPS`, and it was already there at this document's own commit — so this was
+>   never right. **It matters:** a warm retrain trains 14d/30d on the *full* feature set, so warm and
+>   cold are not the same model at those horizons. The "warm ≈ 730s" figure is also inferred, not
+>   measured — 872 − 35.0 − 95.4 = 741.6, and the permutation test's cost is never given. This
+>   document's method claims "Nothing is estimated"; that line is an estimate.
+> - **§5d: "15 of 15 still early-stop" is 14 of 15.** `ab_test_direction_labels.py` does not — it
+>   calls the production estimator, whose `early_stopping` default is `False`. The 9-harness
+>   wrong-universe-filter count is exact, as are all six duplication counts and the 8,617-line total.
+> - **§2c: `feature_pre_filter: False` is at five Dataset sites, not four** (the regime-model site is
+>   omitted).
+> - **§2d's table does not sum to its own totals**: 17.33s against a stated 17.5s, and **188 columns
+>   against a stated 192**. The 48%-discarded conclusion is unaffected.
+> - **§2g's "elasticity 0.79–0.83" cannot be estimated from the series it cites.** Two of the three
+>   points are a two-parameter fit with zero residual degrees of freedom, and the third (372 items /
+>   410,780 rows) misses the fitted line by 24%. It also sources two rows to `model-optimization.md`
+>   while calling them "the 2026-08-05 budget sweep". The "+62% is **entirely** the round count"
+>   attribution is likewise too strong for a machine whose per-phase timings the same section says
+>   swing ±25%.
+>
+> ### Data: what did not reproduce
+>
+> Re-queried 2026-08-09 through `db/archive.py::prices_relation` with `archive_universe_sql_filter()`.
+> §4a's five claims, §4b's spans, §4f's cliff date, the four missing archive days and the
+> NULL-source provenance all **confirmed exactly**. These did not:
+>
+> - **§4b silently mixes three filters and has no filter column.** Its row counts are the
+>   *slug-rules-only* relation; §1a's "panel reaching 39,366 items" is the *unfiltered* csgotrader
+>   count (36,099 filtered). Each is right under its own filter; none is reproducible from the table.
+>   Also `aggregator_buff163_buy` is **603,243**, not "~570k", and a 13th row is missing:
+>   `historical_fallback:aggregator_sync`, 12,655 rows, 2026-07-11 → 07-16.
+> - **§4b/§1a: 2026-04-16 → 07-10 is single-feed on all 86 days but `17mafo` on only 85.**
+>   **2026-07-09 — the date carrying the +26.46% median — is `aggregator_sync` alone, 2,373 rows.**
+>   That is why n on 07-09/07-10 is exactly 2,372: the panel is the sync intersection, not the
+>   27,194-item `17mafo` universe. The cutover story holds; the mechanism on 07-09 is a one-day feed
+>   substitution, not the handover. (07-11's median re-measures at +14.07%, not +14.26%.)
+> - **§4f's 8,622,895 zero-volume rows is not reproducible under any of eight filter combinations**
+>   (8,500,521 full-filter / 9,103,764 slug-rules / 9,918,361 raw). The substance is stronger than
+>   stated: 2026-04-16 → **08-07** is **100%** `volume = 0`, non-NULL. 2026-08-08 is different again
+>   — 327,840 **NULLs** — which is the crash O1 uncovered.
+> - **§4f's "871 at ≥$1" does not reproduce** — 898 by median price, 923 by latest, 1,050 by last
+>   pre-2026 price, 3,021 ever-≥$1. The definition is load-bearing and unstated.
+> - **§4f's per-source medians (117/50/335/966/1,046) are exact but are medians over `volume > 0`
+>   rows only.** The literal median per row is **0** for every 2026 source — buff163 has 673,963
+>   volume-bearing rows of 1,520,462. The phrasing understates how sparse 2026 volume is.
+> - **§1d's `STEAM_FEE_MULTIPLIER` audit rests on a file not in the archive.**
+>   `backend/runtime/steam_listing_history.db` does not exist on this machine, so the 63,767-pair
+>   measurement is not reproducible. The nearest available pairing (staged `tracker_steam_24h` vs
+>   `aggregator_sync`, 70,988 pairs) shows **no flat-constant signature** — median 1.163, IQR 0.088,
+>   only 2.59% identical after dividing. Different pairing, so it neither confirms nor refutes, but
+>   the circularity finding is currently unverifiable.
+> - **§1c's 2026-03-22 sizing understates it.** −7.77% at ≥$1 (n=620), but **−18.10% pooled**
+>   median / −23.51% mean. Neighbouring days are 0.00% to −3.43%.
+>
+> ### Citations: none fabricated, four misattributed, one misread
+>
+> All three 2026 arXiv IDs exist and are the papers described. **The §3c LambdaRankIC table is
+> correct digit-for-digit**, as are Gu/Kelly/Xiu's 0.33–0.40%, the footnote-29 transform, Qlib's
+> Rank IC ≈ 0.05, the LightGBM defaults, and every conformal-prediction guarantee. However:
+>
+> - **§3c's reading of LambdaRankIC is the one inference that table does not license.** In the
+>   paper's own portfolio columns the two stock-LightGBM-reachable arms are **worse** than the
+>   regression baselines — Sharpe **0.566** (pairwise) / **0.501** (NDCG) against **0.740** (OLS) and
+>   **0.831** (MLP), max drawdown **81–83%** vs 44–46%. Only the authors' own method (0.923)
+>   dominates, and that is the arm needing custom gradient code. The table also has an **MLP
+>   regression** row at ICIR **0.806**, beating both LTR arms, which this review omitted. So
+>   ~~"the regression → LTR jump is the larger one and the replicable-looking one"~~ is not
+>   supported: the rank-IC gain did not convert into performance.
+> - **§3f misattributes the cross-conformal bound.** The formula is right but is Vovk et al. **2018**
+>   plus Barber et al. 2021 App. B.2.1; **Vovk (2015) explains why cross-conformal *lacks* the
+>   inductive guarantee.** Also, Barber's CV+ bound is strictly ≥ 1−2α−√(2/n) — immaterial at n≈1M,
+>   but the table states it without the term.
+> - **§3d overstates Da/Liu/Schaumburg.** The published paper says the residual-reversal strategy is
+>   **four times** the standard one, not ~3×; the 3× and the four-component decomposition both come
+>   from the earlier working paper. "Only the residual is significant" holds.
+> - **§3e does not note that Kelly/Malamud/Zhou is contested** (Nagel; Buncic argue the empirical
+>   result is an artifact of a zero-intercept restriction plus an unconventional aggregation), and
+>   "under ridge shrinkage" is imprecise — their striking case is *ridgeless*.
+> - **§3f's flagged EnbPI contradiction cannot be assessed** — the "2026 benchmark preprint" is
+>   uncited. The conclusion (act on ACI) does not depend on it.
+> - **The Qlib bar is not like-for-like.** Qlib reaches Rank IC 0.047–0.050 at Rank ICIR 0.39–0.40;
+>   this model claims 0.092–0.183 at ICIR 0.34–1.45. Higher IC at comparable-or-lower ICIR is a
+>   different sampling regime, not a better model. Use `naive_rank_ic` as the bar, not 0.05.
+>
+> ### §6's operational defects
+>
+> 1. **Resolved.** Run `31337078991` succeeded 2026-08-09 21:32 UTC. But **"Backtest Accuracy is
+>    `skipped` behind it, so no labels are maturing" is wrong** — Backtest has an independent cron
+>    and went green on 08-08 via `schedule`, writing that day's `prediction_accuracy` row. Only the
+>    `workflow_run`-chained instances skipped. The weaker claim holds: no `forecast_outcomes` were
+>    evaluated on 2026-08-08. **New risk:** `MODEL_ARTIFACT_VERSION` is now **6** and is *not* on
+>    `origin/main`; merging without a `mode=full` dispatch re-breaks predict-only with `5 != 6`.
+> 2. **Resolved, and the count was 22, not 17** (the enumeration itself sums to 19). Fixed by a
+>    **manual push**, not CI — and **no workflow generates `item-metadata-bymykel.parquet`**, so it
+>    persists only via `git add -A` over a fresh checkout.
+> 3. **"The one live stale number in `architecture/`" is wrong — there are at least eight**, listed
+>    under O2 in the roadmap. ⚠️ And note there are **two different `+3.50pp @30d` results**:
+>    `model.md:210`/`:533` both cite the `TRAIN_MIN_MEDIAN_PRICE` one (re-derived null), while §5e's
+>    `ab_test_feature_contribution` `+3.5pp` — the one founding the allowlist — has **never been
+>    re-derived** and is not in `architecture/` at all. §5e is right; §6.3 is about the other one.
+> 4. **"Compaction was never dispatched" is wrong** — it largely landed (210.7 MB → 122.6 MB, the
+>    `median_price`/`min_price`/`max_price` strip done, 5 of 6 snapshot files gone). Only
+>    `snapshots-2026-08.parquet` is stranded, and it has stopped growing.
+> 5. **Not claimed here but found while checking:** `ops/collection_runs.parquet` has not been
+>    written by CI since **2026-07-21**. That is the aggregator's own evidence-of-collection channel.
+>
+> ### One thing this review's own "what it does not establish" list got right, and one it missed
+>
+> Four of its five open items are now closed (the Steam route, the 07-11 detector question, the CI
+> wall-clock, the allowlist reorder). The CI wall-clock **now exists and the estimate was low**:
+> `TOTAL training: 1884.2s` (31.4 min), job 35m24s — a **2.16×** ratio to the 872s local cold, not
+> the assumed 1.4–1.5×. The conclusion (over the 30-minute cap) gets stronger.
+>
+> What it missed: **§4a's 38,391 and the sibling doc's 38,413 are the same filter one day apart**
+> (08-07 vs 08-08), not a discrepancy — but neither doc dates its cut.
+
+---
+
 ## Summary
 
 The model is not underperforming for its asset class. Three things are actually wrong, and they
 are not the things the roadmap has been aimed at.
 
-1. **The label may be a quoting artifact.** The composition test that decides this is
-   underpowered and unresolved, and it gates every accuracy item on the roadmap.
+1. ~~**The label may be a quoting artifact.** The composition test that decides this is
+   underpowered and unresolved, and it gates every accuracy item on the roadmap.~~
+   **REFUTED the same day — see the corrections banner. Composition control does not move the
+   signal (+0.1027 stable vs +0.1023 unconditional at 3d), so nothing is gated on this.**
 2. **The offline cost model was wrong about where the time goes.** CV folds are *uncapped*;
    nine folds per horizon sum to **4.2× the whole training frame**. That single fact explains the
    439.3s conformal-CV phase completely, and capping it is worth −22% with nothing structural lost.
@@ -81,7 +256,13 @@ The second matches the repo's own recorded Oct-2025 natural experiment. The firs
 **liquidity-regime change**, which matters independently: any volume or listing-count feature
 crossing it is measuring two different markets.
 
-### 1c. The composition test that gates everything
+### 1c. ~~The composition test that gates everything~~ — **REFUTED 2026-08-09 (`f833882`)**
+
+> The table below is reproduced from `2026-08-08-model-review.md` §5, where these four rows are
+> **struck through as refuted in place**. They are a 2013-2025 → 2026 regime contrast, not a
+> composition contrast: the partition read a NULL `source` as never equal to itself, and every
+> pre-2026 row has `source IS NULL`. Corrected measurement:
+> `docs/research/2026-08-09-composition-stability.md`. **Nothing downstream is gated on this.**
 
 `docs/research/2026-08-08-model-review.md` §5 measured the reversal signal against source
 composition, voted daily series, ≥$1, 2024-01-01 onward:
@@ -160,7 +341,11 @@ A rows×rounds cost model predicts CV / production-q50 = **2.94×**; the measure
 439.3 / 158.4 = **2.77×**. The phase is fully explained by expanding windows summing to 4.2× the
 frame at 2/3 of production's rounds. Nothing else is going on.
 
-Capping per-fold training rows the way the production split already does:
+Capping per-fold training rows the way the production split already does — ✅ **shipped as
+`6b6fc81` at a 300k cap.** ⚠️ **The saving below did not materialise:** the cap bound on every
+fold, and the conformal-CV phase measured 439.3s → **434.8s**. Either this cost model is wrong or
+the two runs are not comparable (different hardware and round counts). Establish a like-for-like
+control before reusing this table.
 
 | Cap | Saving | Share of 872s |
 |---|---:|---:|
@@ -311,8 +496,13 @@ anti-correlated. So the tuned parameters in `meta.json` for the two noisiest hor
 selected under a criterion the project has since discarded, and the fixed-rounds fix did not
 touch the selector.
 
-Cost to re-tune against within-date rank IC at fixed rounds: **35s of an 872s run.** Highest
-accuracy-per-second lever in the system.
+~~Cost to re-tune against within-date rank IC at fixed rounds: **35s of an 872s run.** Highest
+accuracy-per-second lever in the system.~~ **Wrong by 11×. Shipped as `8be48c5` and measured at
+392.3s** — removing early stopping means every trial trains the full round budget instead of
+stopping near 25 rounds, making Optuna the largest phase of a cold retrain (27.5%). The
+*diagnosis* stands and the change was made; the price was not 35s. Whether the newly selected
+params forecast better is still unmeasured.
+
 
 ### 3b. Scale-free is not cross-sectionally normalised
 
@@ -611,9 +801,13 @@ multi-seed averaging: *"Averaging 8 draws would cost 8× the retrain to buy a nu
 floor makes unnecessary."* Nesting is the design that solves this, and it is already implemented
 in one harness.
 
-### 5c. Offline CV now computes rank IC and PT — uncommitted
+### 5c. Offline CV now computes rank IC and PT — ~~uncommitted~~ **committed**
 
-`git show HEAD:backend/models/forecaster.py | grep -c rank_ic` → **0**. In the working tree:
+> **Stale within hours.** `git show HEAD:backend/models/forecaster.py | grep -c rank_ic` now returns
+> **23**. Every element enumerated below exists on `HEAD`; only the "uncommitted" framing was true.
+> Line numbers have drifted ~+120 to +215.
+
+~~`git show HEAD:backend/models/forecaster.py | grep -c rank_ic` → **0**.~~ In the working tree:
 `pesaran_timmermann` at `:4251` stored as `cv_results["pt"]` (`:4314`); `mean_rank_ic` /
 `mean_naive_rank_ic` / `rank_ic_edge_vs_naive` at `:4227-4245`; per-fold `rank_ic` /
 `naive_rank_ic` at `:5875-5880` via `_within_date_rank_ic` (`:5958`); `constant_call_accuracy` /

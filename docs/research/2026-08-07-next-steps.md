@@ -1,5 +1,32 @@
 # Next steps from the 2026-08-07 research review
 
+> ## ⚠️ Superseded for ordering — 2026-08-09
+>
+> **`docs/research/2026-08-09-next-steps.md` is the live action list.** It re-ranks steps 8–11 and
+> R11–R19; the descriptions here remain valid. Five things below have moved since this header was
+> last written, and all five would be re-proposed if you read only the header:
+>
+> - **Step 10's rank-IC half is DONE**, not NOT STARTED. Within-date rank IC is the Optuna
+>   objective (`8be48c5`) and every fold stores `rank_ic` beside `naive_rank_ic` (the `−return_1d`
+>   baseline). The shipped artifact reports **mean_rank_ic 0.1307 vs naive 0.1656, edge −0.0349**.
+>   Only the `lambdarank` objective swap is outstanding.
+> - **Step 11's cross-sectional reversal item has been MEASURED**, not built as a feature —
+>   `backend/scripts/measure_composition_stability.py` (`80c3e07`). See G1 in the 08-09 doc.
+> - **Steps 6 and 7's "no retrain has run yet" caveats are stale.** A cold retrain landed
+>   2026-08-09 (`model_artifact_version: 6`), and CI's `mode=full` went green as run
+>   `31337078991`.
+> - **The open question "there is no `n_ask_sources` column to detect it" is closed** — the column
+>   shipped as `48fd352`, `VOTED_CACHE_VERSION` 4 → 5.
+> - ⛔ **Blocker 5d is REFUTED. It was a false positive.** The Steam listing page answers from this
+>   egress at **0.36 requests per item**; the 230 KB shell returned by the `market_hash_name` URL
+>   is normal SSR, not a soft-block — you must resolve the canonical `G<id>` first. **`R11`, `R13`
+>   and `5c` are unblocked on access.** No code changed: `backfill_steam_listing_history.py:67`
+>   still fetches the name URL and the block detector at `:271` still keys on the shell.
+>
+> Still genuinely NOT STARTED: steps 8 and 9, step 10's `lambdarank` half, the rest of step 11,
+> **6c**, **5c**, **R13**, **R14**, **R18**, **R19**. Step 7's stage 2 remains open, and the
+> 2026-08-08 re-derivation found stage 1's headline **null** — see the caution under step 7.
+
 **Source:** `docs/research/2026-08-07-cs2-forecasting-research.md`, section
 "If I were building this myself", cross-referenced against §10 "Ranked recommendations".
 **Record:** `docs/changelog/2026-08-07-cs2-forecasting-research-review.md`.
@@ -15,7 +42,9 @@ re-run" item closed the same day —
 prevalence figures step 6 was justified on and surfaced the un-taken MA-feed voting fix), and
 **step 7 is DONE** (2026-08-08 — `docs/changelog/2026-08-08-training-price-floor-shipped.md`,
 shipped on measurability alone, with R19's supposed gate on it withdrawn).
-Steps 8–11 are NOT STARTED. **6b** is DONE (verified absent, 2026-08-08) and **R11** and **R12**
+Steps 8–11 are NOT STARTED **except step 10's rank-IC half and step 11's reversal measurement,
+both of which landed 2026-08-09 — see the banner above.** **6b** is DONE (verified absent,
+2026-08-08) and **R11** and **R12**
 are DECLINED (2026-08-08 —
 `docs/changelog/2026-08-08-r11-r12-declined-and-r18-r19-recosted.md`, which also re-costed R18
 and R19 and opened **5d**, a blocker on the Steam listing backfill that R11, R13 and 5c all
@@ -426,6 +455,12 @@ don't.
   `backend/scripts/backfill_steam_listing_history.py`. Effort: small. §10 Tier 1 #5 / C1.
 - **5d. Two things stand between the Steam listing backfill and a resumed run** — NEW
   2026-08-08, found while re-deriving R11. It **gates R11, R13 and 5c**.
+  > ⛔ **Item 2 below is REFUTED — false positive, 2026-08-09.** The page answers from this egress
+  > at 0.36 requests per item; the 230 KB shell is normal SSR from the `market_hash_name` URL,
+  > which is not the real page. Resolve the canonical `G<id>` first. The body below is kept as
+  > written; read it as the failed diagnosis, not as a live constraint. See the banner at the top
+  > of this file and `2026-08-09-next-steps.md` **D1**. **R11, R13 and 5c are unblocked on
+  > access** — R11's *source* decline is unaffected; see the note under R11.
   1. ~~**`load_targets` raises on `--min-price` since the schema migration.**~~ — **FIXED
      2026-08-08.** It filtered `HAVING MAX(median_price)`, and the 2026-08-08 normalisation left
      the archive with `mean_price`, so the script's own documented usage line `--min-price 1.0`
@@ -569,9 +604,15 @@ don't.
   constant call at all four horizons, 36.7/32.7/34.6/39.0 against a majority-class baseline of
   38.8/42.7/46.4/51.7 (`2026-08-06-market-relative-labels-refuted.md`). Date-level variance is
   **enormous and measured** — always-down scores 29.4% on one stored date and 76.9% on the
-  other. Date-level MDE is **~0.3pp** against
+  other. ~~Date-level MDE is **~0.3pp** against
   the **2.21–3.69pp** item-level floor — an order of magnitude better, and the exact figure
-  `accuracy-opportunities.md` declared unreachable. **4,735 days of history.** The review
+  `accuracy-opportunities.md` declared unreachable.~~ ⚠️ **Withdrawn 2026-08-09: there is no
+  measured 0.3pp date-level MDE.** 0.3pp is the *required* effect size
+  `accuracy-opportunities.md` declared unreachable, not a measurement, and
+  `2026-08-06-date-level-exogenous-ingest.md:29-38` retracts the framing — the operative
+  date-level floor is the same **fold-clustered 2.21–3.69pp**, and "nothing in these two tables
+  can be resolved below roughly 2pp". **The date-level variance argument survives; the
+  order-of-magnitude MDE claim does not.** Re-argue this step on effect size, not grain. **4,735 days of history.** The review
   notes this is silently 80–100% of the answer the model already gives and is **not modelled
   at all**.
 - **Caveats:** an aggregate index is far more autocorrelated than item returns, so the
@@ -645,6 +686,14 @@ Three Tier 3 rows *are* accounted for elsewhere and are deliberately not repeate
 (`2026-08-06-volume-features-shelved.md`).
 
 ### R11. Recover historical volume from the kieranpoc Kaggle dump — **DECLINED 2026-08-08**
+
+> **Not reversed by 5d's refutation, and the two statements are compatible.**
+> `2026-08-09-next-steps.md` calls R11 "unblocked **on access**" — that removes the residual
+> blocker, not the coverage objection. The **source** (kieranpoc) stays declined and the 08-09
+> doc itself lists it under "Do not re-propose". What is live again is R11's **objective** — a
+> historical sale-count panel — by a different route: Steam listing pages (D1) plus
+> `devynpruden/cs2-skin-price-history-2013-2026` (Apache 2.0, covers 2013 → 2026), tracked as
+> **D3**.
 
 **Declined on coverage, not on licence.** The dump is frozen: `dateModified` **2024-06-15**,
 data snapshot **2024-05-04**, 901,195,556 bytes, CC BY-NC-SA 4.0 (verified on the page — the

@@ -5,19 +5,67 @@ Date: 2026-07-14
 > ## ↩️ REOPENED 2026-08-07 — on a different constraint than the one that closed it
 >
 > `docs/research/2026-08-07-cs2-forecasting-research.md` relocates the binding constraint
-> from **input data** to **measurement**. The banner below closes this line of work partly
+> from **input data** to **measurement**. ~~The banner below closes this line of work partly
 > because "to resolve effects of the size this project actually produces you would need an
 > MDE near 0.3pp … it is not reachable". The review measures a **date-level MDE of ~0.3pp**
-> against the 2.21–3.69pp item-level floor — reachable, at a different grain. It also finds
+> against the 2.21–3.69pp item-level floor — reachable, at a different grain.~~ It also finds
 > that the headline metric measures the market's base rate rather than the model (the
 > Pesaran–Timmermann null), that the published backtest number is unpurged, and that three of
 > the refutations underneath this banner have intervals that are wrong.
 >
+> ### ⚠️ The 0.3pp half of that reopening is a category error — withdrawn 2026-08-09
+>
+> **There is no measured date-level MDE of ~0.3pp.** The 0.3pp is this document's own **required**
+> effect size — point 3 of the banner below, where it is the MDE you would *need* and is declared
+> "**not reachable**". The 08-07 review carried it forward marked `[MEASURED HERE]`, which turned a
+> target into a measurement.
+>
+> **And the changelog cited as its source retracts it.**
+> `docs/changelog/2026-08-06-date-level-exogenous-ingest.md:29-38` carries a 2026-08-07 correction:
+> the original "the per-item floor is the wrong denominator" framing "was wrong on its premise",
+> `backtest/paired_mde.py` already resampled at a coarser grain, and its real defect was clustering
+> on `forecast_date` — **not** independent, so its intervals were too *narrow*. Its conclusion:
+>
+> > *"The operative floor for a date-level experiment is therefore the **fold-clustered
+> > 2.21–3.69pp** … **Nothing in these two tables can be resolved below roughly 2pp**."*
+>
+> It also names the 0.008pp seed-only placebo as the wrong instrument for the same reason: a seed
+> placebo perturbs only the RNG, so it measures reseeding noise, not the floor for an arm that
+> changes the training data.
+>
+> **What this does and does not do to the reopening.** The measurement-side reopening **survives on
+> its other three legs** — the Pesaran–Timmermann null, the unpurged backtest number, and the three
+> refutations with wrong intervals are all real and all independently established. What does not
+> survive is *"aggregate to the date level and the floor drops 10×."* **The date-level axis is
+> subject to the same ~2pp floor as everything else**, so it is testable only for large effects, and
+> the "MDE near 0.3pp is not reachable" conclusion in the banner below **stands unchanged**.
+>
+> Anything in `2026-08-07-cs2-forecasting-research.md` justified by "the date-level MDE is an order
+> of magnitude better" — §6, §9 #9, §14, §17's decomposition diagram, §23, §24 rank 15 and its final
+> step 9 — inherits this and must be re-argued on effect size, not on grain.
+>
 > **The banner below is left intact and still governs item-level feature work.** The reopened
 > directions are aggregation (a date-level factor model), cross-tier structure, and
-> measurement — not new item-level features. The tracked action list is
-> `docs/research/2026-08-07-next-steps.md`; the record is
+> measurement — not new item-level features. ~~The tracked action list is
+> `docs/research/2026-08-07-next-steps.md`~~ — **superseded 2026-08-09: the live list is
+> `docs/research/2026-08-09-next-steps.md`.** The record is
 > `docs/changelog/2026-08-07-cs2-forecasting-research-review.md`.
+>
+> **Six things in the tables below have moved since 2026-07-31 and would be re-proposed if you
+> read them cold.** Each is annotated in place; in summary:
+> **conformal prediction is shipped**; the **supply-depth DROP rationale is factually dead**
+> (free bulk feeds exist and a daily collector ships — see §1, though the MDE gate still is not
+> met); the **`supply-scraper.yml` ops follow-up is done**; **time-decayed loss weighting** was
+> built, A/B'd and declined; **rolling retrain on degradation** was decided against (drift is
+> report-only unless `ALLOW_DRIFT_RETRAIN=1`); and **ensemble expansion moved the opposite way** —
+> `N_ENSEMBLES = 1` since the minimal-model rewrite.
+>
+> ⚠️ **Several non-item facts in this document are stale and are not annotated individually:**
+> "3 ensemble seeds = 36 models" (now 1 seed, 8 models), "drift threshold 60%" (report-only),
+> `max_feature_rows = 700K` (now 1.2M at a $1 floor), model version `lgbm-v2` (now `lgbm-v3`),
+> Optuna "current 8 trials" (now `N_TRIALS_MAP = {3:50, 7:10, 14:15, 30:15}`, and the objective is
+> within-date rank IC since `8be48c5`), early stopping (default off behind `FIXED_BOOST_ROUNDS`),
+> and the Measurement Floor MDE table (superseded by fold-clustered `paired_mde`, `180c426`).
 
 > # 🛑 THIS LINE OF WORK IS CLOSED (2026-07-31)
 >
@@ -77,7 +125,7 @@ Date: 2026-07-14
 | Feature | Rationale | Est. Impact | Calibrated | Effort |
 |---------|-----------|-------------|-------------|--------|
 | Category/collection features (same weapon group, collection, case) | Items in same category move together — category returns, volatility | 2-5pp | **0pp** ✅ tested — **contested 2026-08-06**, see note below | Low |
-| Steam active listing count (vs. trade volume) | 🛑 **DROPPED** — supply-side, but only change/velocity variant is directionally predictive and needs 30d history/paid backfill; free source too slow. See §1 DECISION. | 3-6pp est | 0pp pursued | — |
+| Steam active listing count (vs. trade volume) | 🛑 **DROPPED** (⚠️ *rationale refuted 2026-08-06 — free bulk feeds exist and a collector ships; the drop now rests on the MDE gate alone, see §1*) — supply-side, but only change/velocity variant is directionally predictive and needs 30d history/paid backfill; free source too slow. See §1 DECISION. | 3-6pp est | 0pp pursued | — |
 | Item liquidity score (volume churn ratio) | Low-liquidity items have larger price impact per trade | 2-4pp | 1-2pp | Low |
 | Steam player count | Core demand driver — correlates with market activity | 2-4pp | **0pp** ✅ tested | Low |
 | Tournament/major timeline + results | Skins of winning teams/players spike in price | 3-8pp | 1-3pp | Medium |
@@ -155,7 +203,7 @@ Date: 2026-07-14
 | Directional smoothing — EMA on predicted direction to reduce daily flip-flopping | 1-2pp | 1-2pp | Low |
 | 4-tier confidence instead of binary (high/medium/low/very-low) | Better risk stratification | Low | Low |
 | Ensemble variance as confidence signal | More calibrated uncertainty | Low | Low |
-| Conformal prediction on p10/p90 intervals | Better coverage guarantees | Medium | Medium |
+| ~~Conformal prediction on p10/p90 intervals~~ ✅ **SHIPPED 2026-08-04** — `backend/models/conformal.py`; the 24 p10/p90 quantile GBMs were replaced by locally-weighted **split conformal** around a single q50. `meta.json.conformal_calibration` carries the per-horizon `q_hat`. | Better coverage guarantees | Medium | Medium |
 | Forecast blending — blend current prediction with previous day's at small weight | Reduces jumpiness, 1-2pp | 1-2pp | Low |
 
 ---
@@ -180,7 +228,7 @@ Date: 2026-07-14
 | Twitch/YouTube CS2 category metrics | Hype cycles, content trends | Medium |
 | Liquipedia tournament schedule + results | Major/event anticipation & reaction | Medium |
 | Reddit r/GlobalOffensive, r/csgomarketforum | Sentiment (early hype) | High |
-| Steam Community Market listing count API | 🛑 **DROPPED** — supply depth not pursued (2026-07-16); paid bulk APIs (CSMarketCap $9.99, CS2Cap $19) rejected | — |
+| Steam Community Market listing count API | 🛑 **DROPPED** — supply depth not pursued (2026-07-16); paid bulk APIs (CSMarketCap $9.99, CS2Cap $19) rejected. ⚠️ **Premise refuted 2026-08-06:** free bulk listing counts exist (Skinport/Waxpeer/Bitskins, ~5s) and `collectors/supply_depth.py` collects them daily. No paid API is needed; the drop stands on power, not access. | — |
 
 ---
 
@@ -216,10 +264,31 @@ Date: 2026-07-14
     would be null for ~98% of rows. **Only a paid historical backfill (CS2Cap
     candles `q`) could revive this**, which remains declined. Drop decision
     reaffirmed and now permanent on data grounds, not cost grounds.
-  - **Ops follow-up (independent of accuracy):** the workflow burns ~4m30s/day to
-    store nothing, invisibly. Either disable `supply-scraper.yml` or make the abort
-    path exit non-zero so it fails loudly. Tracked in
+  - **Ops follow-up (independent of accuracy):** ✅ **DONE 2026-07-31** (`0288568`) —
+    `supply-scraper.yml` was deleted, not merely disabled. ~~Either disable
+    `supply-scraper.yml` or make the abort path exit non-zero so it fails loudly.~~ Tracked in
     `docs/changelog/2026-07-31-accuracy-work-closed.md`.
+
+> ### ⚠️ The premise of this DROP has since been refuted — 2026-08-06
+>
+> **"No free bulk listing-count source exists" and "cannot run from CI at all" are both false.**
+> Skinport, Waxpeer and Bitskins return live per-item listing counts in bulk, free, in ~5s. A
+> **daily collector shipped**: `backend/collectors/supply_depth.py` +
+> `scripts/run_supply_depth.py`, wired into `aggregator-update.yml`, writing
+> `price-archive/supply-YYYY-MM.parquet` across 5 feeds and covering **71.1% of the ≥$1 cohort**.
+> `market.csgo.com`'s `volume` field was separately verified four ways to be a **listing count**,
+> not the refuted trade volume, so it is usable as depth. Retroactive feeds also exist — Skinport
+> sales history carries 90-day volume windows and lis-skins exposes 2.3M listings with
+> `created_at`, which kills the "only grows forward" argument too.
+>
+> **What is NOT refuted, and is why this is not yet an accuracy result:** the collector is
+> accumulation only, and the **MDE gate is still unsatisfied**. The item-level floor is
+> 2.21–3.69pp against an expected lift of ~1–2pp. So the DROP stands *as a prediction-accuracy
+> decision* — but on power, not on the data-availability grounds written above. Do not cite the
+> "no free source" reasoning again.
+>
+> See `docs/changelog/2026-08-06-free-bulk-supply-depth-feeds-exist.md`,
+> `-supply-depth-collector.md` and `-retroactive-supply-feeds.md`.
 
 ### Remaining — none. Closed 2026-07-31.
 
@@ -346,6 +415,19 @@ For any new feature group added to the current ~70-feature set:
 - **Training data filtering** (dead item removal, target winsorization, corrupt item exclusion): **30-70% of pre-estimate**. Unlike feature additions, data filtering actually *removes noise* rather than adding capacity. The 41% row reduction allows the model to focus its limited leaves on signal. Initial estimates of +3-8pp are more likely to hit than feature additions because there's no "extra capacity inflation" effect.
 
 ### Measurement Floor — what the A/B harness can actually detect
+
+> ⚠️ **The table below is superseded, and the direction of the error is the surprising part.**
+> `paired_mde` clustered on `forecast_date`, which is not independent — every date in a fold's
+> validation window is scored by one fitted model — so these intervals were **too narrow**, not too
+> wide. Fixed 2026-08-07 (`180c426`); see `docs/changelog/2026-08-06-date-level-exogenous-ingest.md:29-38`.
+> The operative floor is the **fold-clustered 2.21–3.69pp** measured on the breadth A/B at 25–26
+> folds. The arithmetic below is internally correct (`MDE = 2.8·sd/√26` and the fold counts both
+> check out) — it is the standard error that was wrong.
+>
+> **This strengthens rather than weakens the closure argument**, since a wider true floor makes the
+> sub-1pp effects this project produces *less* resolvable, not more. It also means the "1.15pp at
+> 3d" figure quoted in point 2 of the stop banner, in "Remaining — none", and as "the harness noise
+> floor" in `docs/architecture/model.md` is **not citable** — use 2.21–3.69pp.
 
 **Added 2026-07-31.** The calibrated rule above says what gain to *expect*. This
 says what gain you can *measure*, and the two are in conflict: most ship gates in

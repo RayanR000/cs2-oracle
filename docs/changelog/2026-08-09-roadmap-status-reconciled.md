@@ -46,19 +46,23 @@ Verified against the working tree, `git log`, the GitHub Actions run history, an
    normal 230 KB SSR shell the block detector at `:271` reads as a block. Three roadmap items
    (`R11`, `R13`, `5c`) were filed as blocked on a blocker that does not exist.
 
-3. **The composition-stability write-up is a stub.** The changelog and the in-place §5 correction
-   are written; `research/2026-08-09-composition-stability.md` stops at a `<!--RESULTS-->`
-   placeholder. **D3 is therefore not answered**, even though the number exists — and the number
-   points at the *opposite* branch from the one every plan predicted.
+3. ~~**The composition-stability write-up is a stub.** `research/2026-08-09-composition-stability.md`
+   stops at a `<!--RESULTS-->` placeholder. **D3 is therefore not answered**, even though the number
+   exists.~~ **Resolved on `label-integrity`**: `f833882` committed the results, and the number did
+   point at the opposite branch from the one every plan predicted — **D3 rules Branch A**, the
+   signal survives composition control. Re-measured post-`873148b` in `3c62a49`; every cell moved
+   ≤0.0015 and the ruling held.
 
 4. **The orphaned-outcomes problem got worse, not better.** The canonical
    `ops/forecast_outcomes.parquet` has 11,084 of 48,241 rows carrying a slug — **77% NULL**,
    against the 30% the plan was written against. The row count also fell from 104,642, so the file
    was rewritten between readings and the two numbers are not comparable.
 
-5. **The `+3.50pp` withdrawal never propagated.** `architecture/model.md:210,533` still ship it as
-   settled evidence, and `:189-217` / `:529-537` still describe the 99-item / 100K-row config as
-   production against a shipped default of 926 items at 1.2M rows.
+5. **The `+3.50pp` withdrawal never propagated.** ~~`architecture/model.md:210,533` still ship it
+   as settled evidence~~ — **fixed in `895005a`**; both sites now record the withdrawal and the
+   null re-derivation. The second half stands: `:189-217` / `:529-537` still describe the 99-item /
+   100K-row config as production against a shipped default of 926 items at 1.2M rows. That remains
+   **O2**.
 
 ## Not done here
 

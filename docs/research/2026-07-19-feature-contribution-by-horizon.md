@@ -1,5 +1,43 @@
 # Feature Contribution A/B Test — Cross-Sectional & Event Features by Horizon
 
+> **Read this before citing anything below (added 2026-08-09).**
+>
+> **Its founding number has never been re-derived.** The `+3.5pp @30d` for removing
+> cross-sectional features is the entire basis of
+> `FEATURE_GROUP_ALLOWLIST = ["price_technicals"]`. The harness that produced it now
+> carries its own warning (`backend/scripts/ab_test_feature_contribution.py:18-32`):
+> it "had **no purge gap at all**" before 2026-08-08, so "**Every delta this harness
+> printed before 2026-08-08 is un-embargoed.**" Re-derivation is tracked as **C4** in
+> `docs/research/2026-08-09-next-steps.md:541`. The number is neither refuted nor
+> validated — it is unmeasured.
+>
+> ⚠️ **Do not confuse it with the other `+3.50pp @30d` in this repo.** That one
+> belongs to `TRAIN_MIN_MEDIAN_PRICE` and *has* been re-derived, to **+1.642pp
+> [−0.809, +4.505], null** (`docs/changelog/2026-08-08-per-fold-price-filter-rederived.md`).
+> Two different results; only the price-floor one has a re-derivation.
+>
+> **`HORIZON_EXCLUDED_GROUPS` is now a no-op.** It still holds this doc's numbers
+> (`backend/models/forecaster.py:342-345`), but `FEATURE_GROUP_ALLOWLIST` (`:353`)
+> already removes `cross_sectional` and `events` at *every* horizon —
+> `docs/architecture/model.md:142-144` states this. The "Immediate (implement in
+> forecaster.py)" recommendations below are subsumed.
+>
+> **The cohort is the penny cohort and the benchmark is the refuted one.** Item
+> selection is `ORDER BY row_count DESC LIMIT max_items` — longest history, no price
+> floor (`ab_test_feature_contribution.py:108-118`). That exact selection was
+> measured on a sibling harness
+> (`docs/changelog/2026-08-06-volume-ab-and-harness-defects.md:74-97`) at **15 of 200
+> items ≥$1**, median item price **$0.059**, **41.0% of 3d forward returns exactly
+> zero**, and **31.27%** of the scored rows being free `sign(0) == sign(0)` hits. The
+> query also filters to `source IS NULL OR source = 'STEAMCOMMUNITY'` (`:100`), so the
+> study reads pre-2026 backfill rows only. That is why its 65.8–72.2% DA sits 15–20pp
+> above production's ≥$1 CV.
+>
+> **"+X pp vs 50%" is the Pesaran–Timmermann null, not a skill measure.** A constant
+> always-down call beats the model on every stored date, so §3 "Accuracy Ceiling Is
+> Not Lower at Long Horizons" and "30d is the most predictable horizon" do not follow
+> from these numbers. See `docs/research/2026-08-08-model-review.md` §2.
+
 **Date:** 2026-07-19  
 **Context:** Investigation into whether market-level cross-sectional features and event relevance weighting actually help 14d/30d horizons, given the hypothesis that skin-market prices past ~2 weeks are dominated by unforecastable one-off events.
 
@@ -88,7 +126,13 @@ Baseline accuracy is actually *higher* at 14d/30d (~68.4–68.7%) than at 3d/7d 
 | 3d  | Full or No CS | 65.8% | +15.8pp vs 50% |
 | 7d  | No Events     | 66.3% | +16.3pp vs 50% |
 | 14d | No CS only    | 69.3% | +19.3pp vs 50% |
-| 30d | No CS + No Ev | **72.2%** | **+22.2pp vs 50%** |
+| 30d | No CS only — the combined **No CS + No Ev** arm was **never run** | 72.2% | ~~+22.2pp vs 50%~~ |
+
+**Correction (2026-08-09):** the 30d row originally read `No CS + No Ev`, but 72.2% is
+the **No-CS-only** number from the Results table above. No combined arm exists in the raw
+data. Recommendation 2 below assumes the two removals stack for "~+6pp total", which would
+be ~74.7% — that figure was never produced and is not supplied here. The "vs 50%" column
+is the Pesaran–Timmermann null, not skill; see the banner.
 
 30d is the most predictable horizon when using the right feature set — the opposite of the original hypothesis.
 

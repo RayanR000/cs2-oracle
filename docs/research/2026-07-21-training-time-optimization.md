@@ -1,5 +1,48 @@
 # Training Time Optimization: 64 min → ~14 min
 
+> **RETIRED 2026-08-09. Do not optimise from this document — its premise is
+> inverted.** It puts Optuna at ~38 min / **59%** and CV + calibration at
+> ~1.5 min / **2%**. Measured on the shipped config
+> (`docs/changelog/2026-08-09-shipped-retrain-cost-measured.md`): conformal CV is
+> **439.3s / 50.4%** of an 872s retrain and Optuna is **35.0s / 4.0%**. The two
+> phases traded places. Anyone optimising from the table below will chase Optuna
+> and leave the actual bottleneck alone.
+>
+> Lever by lever:
+>
+> - ~~**E.** `LightGBMPruningCallback` + `HyperbandPruner`~~ — **refuted in code.**
+>   The objective now runs fixed rounds with no pruner and no early stopping,
+>   because the callback prunes on LightGBM's reported `quantile` metric rather
+>   than on what the objective returns
+>   (`backend/models/forecaster.py:2930-2934`).
+> - ~~**G.** GOSS instead of bagging~~ — **shipped, then reverted.** The quantile
+>   objective emits constant ±alpha gradients, so GOSS's gradient ranking is
+>   degenerate and it shipped 1–2-tree q50 boosters. An A/B on 2026-07-29 restored
+>   bagging (`_row_sampling_params`, `forecaster.py:2602-2635`);
+>   `_ROW_SAMPLING_KEYS` (`:2599`) exists only to strip stale GOSS keys out of
+>   cached params.
+> - ~~**J.** 7d Optuna at 100 rounds~~ — **inverted.** The objective trains
+>   `CV_FIXED_BOOST_ROUNDS` (`:619`), so 7d Optuna trains **500** rounds, and
+>   Optuna is now **392.3s of a 1426.3s** cold retrain — the largest single phase
+>   (`docs/changelog/2026-08-09-training-cost-levers.md`).
+> - ~~**H.** Parallel ensemble training~~ — **premise gone.** `N_ENSEMBLES = 1`
+>   (`:320`) and the p10/p90 models no longer exist, so "36 models" is 4 q50
+>   boosters.
+>
+> **The arithmetic never closed either.** Stated savings sum to 31 min
+> (10+8+3+5+4+1), and 64 − 31 = **33 min**, not the title's "~14 min"; the
+> "After" table sums to **12.0 min** but is totalled at ~14; and the full/warm
+> split double-counts rows already marked "skipped on warm retrain".
+>
+> **What survives:** the param values (47 / 0.01 / 0.0 / 1.5) did land, at
+> `forecaster.py:2957-2963` (3d warm-start) and `:4104-4109` (fallback). Lever
+> **F** was *not* taken as written — `SKIP_HP_HORIZONS` is `[3]` (`:337`), not
+> `[3, 14, 30]`, deliberately.
+>
+> For current cost read `docs/architecture/model-optimization.md` → "Where the
+> time goes now" and `docs/research/2026-08-09-model-and-data-research.md` §2.
+> Every `file:line` below is stale; `forecaster.py` is now 6,719 lines.
+
 **Date:** 2026-07-21
 **Goal:** Aggressively shorten retrain time while minimizing accuracy loss (est. -0.3 to -1.1pp)
 

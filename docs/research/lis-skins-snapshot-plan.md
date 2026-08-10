@@ -1,7 +1,34 @@
 # Next step: start accumulating lis-skins snapshots
 
+> **BUILT 2026-08-06, and it drifted from this plan.**
+> `docs/changelog/2026-08-06-supply-depth-collector.md:4` names this document as the
+> plan it implements. The URL is at `backend/collectors/supply_depth.py:486` and the
+> daily run is the "Collect supply depth" step in
+> `.github/workflows/aggregator-update.yml:186-193`. Three drifts matter:
+>
+> - **Two fields were dropped:** `inflow_7d` and `n_listings_with_float` are not
+>   collected (`SUPPLY_COLUMNS`, `supply_depth.py:92-108`). Everything else shipped —
+>   `listing_count`, `min_ask`, `p25_ask`, `median_ask`, `depth_5pct/10pct`,
+>   `age_median_days`, `age_p90_days`, `inflow_24h` (`:444-462`). ~~The listing-`id`
+>   set hash was dropped too~~ — **it shipped**, as `listing_id_digest`
+>   (`:106`, `:441-442`), so the `created_at` diagnostic in question (1) is
+>   instrumented and answerable from the accumulated snapshots.
+> - **The anchor moved from `min_ask` to `p05_ask`** (`supply_depth.py:381-385`,
+>   `:63-64`), which is the fix for the 358-item outlier problem raised below.
+>   `min_ask`/`p25_ask`/`median_ask` are all still stored, so the anchor is
+>   re-choosable without re-collecting.
+> - ~~"~44 s" export~~ — **~7 min in practice**
+>   (`backend/scripts/run_supply_depth.py:7`).
+>
+> **"Prior evidence stands unchanged" is now doubly questionable.** The |r| < 0.002
+> rationale is a cohort artifact (see the banner on
+> `docs/research/volume-data.md`), and the allowlist's founding `+3.5pp` has never
+> been re-derived (see `docs/research/2026-07-19-feature-contribution-by-horizon.md`).
+> The Revisit gate — early October 2026, `compute_mde.py` first — is still live and
+> correctly stated.
+
 **Date:** 2026-08-06
-**Status:** proposed, not built
+**Status:** **built 2026-08-06** (was: proposed, not built) — see the banner above
 **Context:** `docs/changelog/2026-08-06-retroactive-supply-feeds.md`
 
 ## Why this and nothing else
