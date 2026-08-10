@@ -677,3 +677,62 @@ def test_training_publishes_its_cohort_to_the_predict_path():
             < src.index("self.horizon_feature_cols = {}")), (
         "the cohort must be published before training proceeds, not after"
     )
+
+
+# ----------------------------------------------------------------------
+# The skip set must follow the artifact, not the served frame
+#
+# Training ranked 32/32 columns; serving ranked 31/32, because macd_missing is
+# within-date constant on the predict frame and the date-constant skip fired
+# there only (run 31440424106). The column then reaches the booster raw where
+# it was fitted ranked.
+# ----------------------------------------------------------------------
+
+def _two_date_frame(values):
+    return pd.DataFrame({
+        "item_id": ["a", "b", "c"] * 2,
+        "date": pd.to_datetime(["2026-01-01"] * 3 + ["2026-01-02"] * 3),
+        "price": [10.0, 20.0, 30.0] * 2,
+        "flag": values,
+        "f": [1.0, 2.0, 3.0, 1.0, 2.0, 3.0],
+    })
+
+
+def test_training_reports_which_columns_it_skipped():
+    """The artifact cannot record a decision the transform does not surface."""
+    df = _two_date_frame([0.0] * 6)          # constant on every date
+    skipped = []
+    ItemForecaster._apply_cross_sectional_ranks(
+        df.copy(), ["flag", "f"], skipped_out=skipped)
+    assert skipped == ["flag"]
+
+
+def test_serving_ranks_a_column_training_ranked_even_if_now_constant():
+    """The macd_missing case. Training ranked it, so serving must too.
+
+    Ranking an all-ties date yields exactly 0.0, which is what training
+    produced on its own constant dates -- so following the artifact reproduces
+    training rather than leaking a raw value in.
+    """
+    df = _two_date_frame([1.0] * 6)          # constant NOW, ranked at training
+    out = ItemForecaster._apply_cross_sectional_ranks(
+        df.copy(), ["flag", "f"], skip_cols=[])
+    assert out["flag"].tolist() == pytest.approx([0.0] * 6)
+    # Not the raw 1.0 the served frame would otherwise have handed the booster.
+    assert out["flag"].tolist() != pytest.approx([1.0] * 6)
+
+
+def test_serving_leaves_raw_a_column_training_skipped():
+    """The other direction: training fitted on raw, so serving must not rank."""
+    df = _two_date_frame([0.0, 1.0, 2.0] * 2)   # varies now
+    out = ItemForecaster._apply_cross_sectional_ranks(
+        df.copy(), ["flag", "f"], skip_cols=["flag"])
+    assert out["flag"].tolist() == pytest.approx([0.0, 1.0, 2.0] * 2)
+
+
+def test_predict_refuses_when_the_artifact_records_no_skip_set():
+    import inspect
+    src = inspect.getsource(ItemForecaster.predict)
+    guard = src.split("_cross_sectional_rank_served()")[1]
+    assert "_artifact_xs_rank_skipped is None" in guard
+    assert "skip_cols=" in guard

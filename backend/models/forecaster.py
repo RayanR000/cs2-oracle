@@ -760,6 +760,11 @@ class ItemForecaster:
         # under. Not read on the predict path -- that reads the artifact.
         self._train_min_median_price: Optional[float] = None
         self._train_cohort_items: Optional[int] = None
+        # Which columns the date-constant skip removed at training. None means
+        # "the artifact does not say"; [] means "nothing was skipped", and the
+        # two are not the same -- see the predict guard.
+        self._artifact_xs_rank_skipped: Optional[List[str]] = None
+        self._train_xs_rank_skipped: Optional[List[str]] = None
         # Conformal calibration per horizon. NOTE: the meaning changed with the
         # minimal model — q_hat is now a DIMENSIONLESS multiplier of the
         # per-item sigma, not a percentage-point addend. Applied as:
@@ -2657,6 +2662,8 @@ class ItemForecaster:
     def _apply_cross_sectional_ranks(
         df: pd.DataFrame, cols: List[str],
         reference_mask: Optional[pd.Series] = None,
+        skip_cols: Optional[List[str]] = None,
+        skipped_out: Optional[List[str]] = None,
     ) -> pd.DataFrame:
         """Map each column in *cols* to its centred within-date percentile.
 
@@ -2674,6 +2681,13 @@ class ItemForecaster:
         honest answer for an item outside the fitted support.
 
         `None` means "every row is in the cohort", which is the training path.
+
+        **`skip_cols` is the same argument for the date-constant skip.** Pass
+        the set training recorded and serving reproduces its decision; leave it
+        `None` and the skip is re-derived from the frame in hand, which is how
+        the served frame came to rank 31 columns against training's 32.
+        `skipped_out`, if given, receives whatever was skipped -- that is how
+        training learns what to record.
 
         Range [-1, 1], NaN preserved (pandas' rank skips NaN, so a missing
         characteristic stays missing and is median-filled downstream -- which now
@@ -2727,15 +2741,30 @@ class ItemForecaster:
 
         grouped = ref.groupby("date")
         skipped = []
+        follow = None if skip_cols is None else set(skip_cols)
         for col in present:
-            # nunique over the whole frame would be O(rows); a per-date std of 0
-            # on every date is the property that matters and transform() is one
-            # pass. Constant-within-date includes the all-NaN case, where std is
-            # NaN and the column carries nothing anyway.
-            within_date_spread = grouped[col].transform("std")
-            if not (within_date_spread.fillna(0) > 0).any():
-                skipped.append(col)
-                continue
+            if follow is not None:
+                # Serving: obey the artifact. Re-deriving here is what made the
+                # served frame disagree with the fitted one -- 32/32 columns
+                # ranked at training against 31/32 at serving, because
+                # macd_missing is date-constant on the predict frame only. A
+                # column training ranked must be ranked now even if it is
+                # constant today (all-ties -> exactly 0.0, which is what
+                # training produced on ITS constant dates), and a column
+                # training skipped must stay raw even if it varies today.
+                if col in follow:
+                    skipped.append(col)
+                    continue
+            else:
+                # nunique over the whole frame would be O(rows); a per-date std
+                # of 0 on every date is the property that matters and
+                # transform() is one pass. Constant-within-date includes the
+                # all-NaN case, where std is NaN and the column carries nothing
+                # anyway.
+                within_date_spread = grouped[col].transform("std")
+                if not (within_date_spread.fillna(0) > 0).any():
+                    skipped.append(col)
+                    continue
             # Mid-rank, not rank(pct=True) — see the docstring. `count` excludes
             # NaN, matching rank()'s own treatment, so an item-day missing this
             # characteristic does not inflate the denominator for the rest.
@@ -2756,6 +2785,8 @@ class ItemForecaster:
             f"  cross-sectional rank transform applied to "
             f"{len(present) - len(skipped)}/{len(present)} features"
         )
+        if skipped_out is not None:
+            skipped_out.extend(skipped)
         return df
 
     @staticmethod
@@ -4161,7 +4192,15 @@ class ItemForecaster:
         # TRANSFORMED column -- which is what serving needs, since the booster is
         # fitted on ranks.
         if self.cross_sectional_rank_enabled():
-            df = self._apply_cross_sectional_ranks(df, self.feature_cols)
+            skipped: List[str] = []
+            df = self._apply_cross_sectional_ranks(df, self.feature_cols,
+                                                   skipped_out=skipped)
+            # Recorded, and mirrored onto the artifact fields for the same
+            # reason as the cohort floor: after training, this process IS the
+            # artifact, and predict has to follow this run's decision rather
+            # than whatever load_models() read beforehand.
+            self._train_xs_rank_skipped = skipped
+            self._artifact_xs_rank_skipped = skipped
 
         # Downcast features to float32 to halve feature matrix memory
         for col in self.feature_cols:
@@ -6187,6 +6226,16 @@ class ItemForecaster:
                     "reconstructed. Retrain rather than serve percentiles from "
                     "a population the booster never saw."
                 )
+            # [] is a real answer ("nothing was skipped"); None is not.
+            if self._artifact_xs_rank_skipped is None:
+                raise RuntimeError(
+                    "the loaded artifact enables the cross-sectional rank "
+                    "transform but records no `xs_rank_skipped_cols`. The "
+                    "date-constant skip would then be re-derived from the "
+                    "predict frame, which ranks a different set of columns "
+                    "than training did (run 31440424106: 31/32 against 32/32). "
+                    "Retrain."
+                )
             cohort = self._reference_cohort_mask(df)
             n_cohort = df.loc[cohort, "item_id"].nunique()
             n_all = df["item_id"].nunique()
@@ -6202,7 +6251,8 @@ class ItemForecaster:
                     f"disagree about the universe, not that the market changed"
                 )
             df = self._apply_cross_sectional_ranks(
-                df, list(self.feature_cols), reference_mask=cohort)
+                df, list(self.feature_cols), reference_mask=cohort,
+                skip_cols=self._artifact_xs_rank_skipped)
 
         # Align features with training columns (add missing, drop extras)
         for col in self.feature_cols:
@@ -7359,6 +7409,7 @@ class ItemForecaster:
             # the population the booster's percentiles are relative to.
             "train_min_median_price": self._train_min_median_price,
             "train_cohort_items": self._train_cohort_items,
+            "xs_rank_skipped_cols": self._train_xs_rank_skipped,
             # Load-bearing for the served LEVEL, not just for the feature set: a
             # booster fitted with the offset emits a residual, so predict has to
             # know to add `-return_1d` back. See _naive_init_score_served.
@@ -7435,6 +7486,7 @@ class ItemForecaster:
         self._artifact_xs_rank = meta.get("cross_sectional_rank")
         self._artifact_min_median_price = meta.get("train_min_median_price")
         self._artifact_cohort_items = meta.get("train_cohort_items")
+        self._artifact_xs_rank_skipped = meta.get("xs_rank_skipped_cols")
         self._artifact_naive_init = meta.get("naive_init_score")
 
         # Restore cached tuned hyperparameters (skips Optuna on retrain when present).
