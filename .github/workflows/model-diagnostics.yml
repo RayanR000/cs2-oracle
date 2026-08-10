@@ -77,6 +77,16 @@ on:
         required: false
         default: false
         type: boolean
+      # The serving branch of the rank transform cannot be reached from CV --
+      # folds are already cohort-filtered, so they take reference_mask=None.
+      # This runs predict() after training and writes NOTHING, which is the
+      # difference between it and a price-forecast.yml dispatch: that one calls
+      # _write_forecasts_to_db under the same model_version production uses.
+      predict_smoke:
+        description: 'Run predict() after training and write nothing (path check)'
+        required: false
+        default: false
+        type: boolean
 
 defaults:
   run:
@@ -182,7 +192,11 @@ jobs:
           FORCE_HP_SEARCH: ${{ inputs.force_hp_search && '1' || '0' }}
         run: |
           set -o pipefail
-          python scripts/forecast_prices.py --train-only 2>&1 \
+          MODE=--train-only
+          if [ "${{ inputs.predict_smoke }}" = "true" ]; then
+            MODE=--predict-smoke
+          fi
+          python scripts/forecast_prices.py "$MODE" 2>&1 \
             | tee diagnostics-${{ matrix.horizon }}d.log
 
       # The numbers are the deliverable, so they have to outlive the runner.

@@ -661,3 +661,19 @@ def test_the_cohort_floor_round_trips_through_meta():
     assert '"train_min_median_price": self._train_min_median_price' in src
     assert 'meta.get("train_min_median_price")' in src
     assert 'self._train_min_median_price = min_median_price' in src
+
+
+def test_training_publishes_its_cohort_to_the_predict_path():
+    """train-then-predict in one process must read THIS run's floor.
+
+    `_artifact_min_median_price` is otherwise whatever load_models() read from
+    the cache before training -- absent on any artifact older than this change,
+    which would make predict refuse to serve a model it had just trained.
+    """
+    import inspect
+    src = inspect.getsource(ItemForecaster.train)
+    assert "self._artifact_min_median_price = min_median_price" in src
+    assert (src.index("self._artifact_min_median_price")
+            < src.index("self.horizon_feature_cols = {}")), (
+        "the cohort must be published before training proceeds, not after"
+    )

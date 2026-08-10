@@ -1394,3 +1394,38 @@ def test_cv_results_publish_both_invariant_4_signals():
     assert "pt_clf = pt" not in src
     assert "pt_clf or pt" not in src
     assert "edge_vs_constant_clf or edge_vs_constant" not in src
+
+
+def test_predict_smoke_writes_nothing():
+    """The point of the mode: exercise predict() without touching the DB.
+
+    A price-forecast.yml dispatch reaches the same code and then calls
+    _write_forecasts_to_db under MODEL_VERSION + "-regime" -- the same string
+    production writes -- so its rows are indistinguishable from real ones and
+    are frozen into outcomes. This mode must return before any writer.
+    """
+    import inspect
+    from scripts import forecast_prices
+
+    src = inspect.getsource(forecast_prices.run_forecast)
+    smoke = src.split("if predict_smoke:")[1].split("if train_only:")[0]
+    assert "forecaster.predict()" in smoke, "the mode does not run predict()"
+    assert "_write_forecasts_to_db" not in smoke
+    assert "return" in smoke, "the mode must return before the writer below it"
+    # And it has to be positioned ahead of the writer, not merely avoid calling
+    # it: falling through would write.
+    assert src.index("if predict_smoke:") < src.index("_write_forecasts_to_db")
+
+
+def test_predict_smoke_is_off_unless_asked():
+    wf = (Path(__file__).resolve().parents[2]
+          / ".github" / "workflows" / "model-diagnostics.yml")
+    spec = yaml.safe_load(wf.read_text())
+    assert spec[True]["workflow_dispatch"]["inputs"]["predict_smoke"]["default"] is False
+
+    run_step = next(s for s in spec["jobs"]["diagnose"]["steps"]
+                    if s.get("name") == "Run CV with the served classifier scored")
+    # The scheduled run carries no inputs, so the comparison is false and the
+    # mode stays --train-only.
+    assert "--train-only" in run_step["run"]
+    assert "inputs.predict_smoke" in run_step["run"]

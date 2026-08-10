@@ -4478,6 +4478,13 @@ class ItemForecaster:
         # is not this one. See _reference_cohort_mask.
         self._train_min_median_price = min_median_price
         self._train_cohort_items = int(df["item_id"].nunique())
+        # After training, the in-memory model IS the artifact, so the predict
+        # path's cohort lookup has to see this run's floor rather than the one
+        # belonging to whatever was loaded from cache beforehand. Without this,
+        # train-then-predict in one process reads a stale (or absent) floor and
+        # either refuses to serve or ranks against the wrong cohort.
+        self._artifact_min_median_price = min_median_price
+        self._artifact_cohort_items = self._train_cohort_items
 
         self.horizon_feature_cols = {}
 

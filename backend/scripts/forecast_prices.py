@@ -382,7 +382,8 @@ def _write_forecasts_to_db(db, results, model_version, slug_to_id, today):
 
 def run_forecast(train_only: bool = False, predict_only: bool = False,
                  compare_regime: bool = False,
-                 update_bias: bool = False):
+                 update_bias: bool = False,
+                 predict_smoke: bool = False):
     db = SessionLocal()
     try:
         forecaster = ItemForecaster(db_session=db, prune_failed_groups=False,
@@ -481,6 +482,35 @@ def run_forecast(train_only: bool = False, predict_only: bool = False,
             db = SessionLocal()
             forecaster.db = db
 
+        if predict_smoke:
+            # Exercises the predict PATH and writes nothing. It exists because
+            # the cross-sectional rank transform's serving branch
+            # (_reference_cohort_mask -> reference_mask) cannot be reached from
+            # CV: folds are already cohort-filtered, so they take the
+            # reference_mask=None branch. The only other way to run it on real
+            # data was a full price-forecast.yml dispatch, which writes
+            # forecasts to prod under the SAME model_version production uses --
+            # indistinguishable from real rows, and frozen into outcomes.
+            #
+            # It reports shape, not quality. Nothing here says the forecasts are
+            # any good; a diagnostics run may hold one freshly trained horizon
+            # beside three restored from cache.
+            logger.info("Predict-smoke mode: running predict(), writing nothing.")
+            results = forecaster.predict()
+            n_items = int(results["item_id"].nunique()) if len(results) else 0
+            # A row whose `forecasts` dict is empty reached the writer with
+            # nothing to write -- the shape failure this mode is looking for.
+            with_forecasts = int(
+                sum(1 for f in results.get("forecasts", []) if f)
+            ) if len(results) else 0
+            logger.info(
+                f"  predict-smoke: {len(results):,} rows, {n_items:,} items, "
+                f"{with_forecasts:,} carrying a non-empty forecast dict"
+            )
+            return {"status": "success", "mode": "predict_smoke",
+                    "rows": len(results), "items": n_items,
+                    "with_forecasts": with_forecasts}
+
         if train_only:
             logger.info("Train-only mode, skipping forecast generation.")
             return {"status": "success", "mode": "train_only"}
@@ -578,10 +608,12 @@ def main():
     predict_only = "--predict-only" in args
     compare_regime = "--compare-regime" in args
     update_bias = "--update-bias" in args
+    predict_smoke = "--predict-smoke" in args
 
     result = run_forecast(train_only=train_only, predict_only=predict_only,
                           compare_regime=compare_regime,
-                          update_bias=update_bias)
+                          update_bias=update_bias,
+                          predict_smoke=predict_smoke)
     print(f"RESULT: {result}")
     return 0 if result.get("status") == "success" else 1
 
