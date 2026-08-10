@@ -148,9 +148,49 @@ that logged `best loss=-0.126100`. Consistent with a seeded search re-finding an
 optimum. The chosen params were not compared against the cached ones — only the fold metric was —
 so "re-found the same params" is an inference here, not a measurement.
 
+## The predict-path check: `CROSS_SECTIONAL_RANK=1` is NOT safe to ship as-is
+
+Caveat 4 was checked against the code, and it fails. **The training cross-section is 916 items
+and the serving cross-section is 5,536 — the same items ranked against a 6.0× larger and much
+cheaper population.**
+
+- **Training** applies the median-price floor at `_train_frame` (`forecaster.py:3997`,
+  `_filter_by_median_price(price_df, 1.0)`) *before* feature engineering, and the transform runs
+  at `:4064` on what survives. Run `31407938154` logs it exactly:
+  `Median-price floor >= $1: 916/5,536 items, 986,451/6,074,844 rows`.
+- **`predict` applies no floor.** It fetches `backfilled_only=True` over
+  `PREDICT_FETCH_DAYS`, filters only on `PREDICT_MIN_HISTORY_DAYS = 14`
+  (`5,536 items with >= 14 days of history (0 skipped)`, run `31342839158`), and the transform
+  runs at `:6061` over all of it.
+
+The transform *placement* inside `predict` is correct and was clearly thought about: it runs over
+the concatenated frame rather than per chunk, and it runs before the `item_ids` filter at `:6099`,
+so a caller asking for one item still gets ranks computed over the whole frame. The defect is the
+**population**, not the plumbing. An item at the 60th percentile of `return_1d` among 916 ≥$1
+items is not at the 60th percentile among 5,536 items that are ~72% sub-$1, and the sub-$1 tail
+is where the frozen-price runs concentrate (12–27% of raw 2026 item-days), so its returns pile up
+at exactly zero and distort the mid-ranks of everything above them.
+
+**Nothing would catch it.** All 33 columns exist and are in range, so the tier-lead-style guard at
+`:6045` has no analogue here; `feature_medians` is correctly the median of the *transformed*
+column, so the NaN fill is consistent and silent; and no test in
+`tests/test_tier_lead_and_xs_rank.py` compares the two populations. The failure mode is a served
+mid quietly computed from features the booster was never fitted on.
+
+**The fix is to apply the same floor on the predict path when the artifact says the transform is
+on**, so the two share a population *definition* (day-to-day membership churn is fine — the
+transform is within-date and CV folds vary the same way). That is a real product change, because
+sub-$1 items would stop receiving a forecast row: they are never served
+(`api/serving_policy.py::MIN_SERVED_PRICE_USD = 1.0`, held equal to `HEADLINE_MIN_TIER`), but they
+are currently written. A cohort-size assertion against a training count recorded in `meta.json`
+belongs with it — this defect is only invisible because nothing counts.
+
 ## Not done
 
 - No confirm at 3d, and none is possible without changing `SKIP_HP_HORIZONS`.
+- **The predict-path floor is not implemented.** `CROSS_SECTIONAL_RANK` stays off in production
+  until it is; the CV result above is unaffected, because folds train and score on the same
+  916-item population.
 - No combined `xs_rank + naive_init` arm. They are independent seams and the panel does not say
   whether they add.
 - N1 was not extended to the classifier's `Dataset`. That is the change that would make the N1
