@@ -46,7 +46,17 @@ signal.
 
 ### N1. Fit the q50 on top of `−return_1d` via `init_score`
 
-> **Instrument shipped 2026-08-10, gated off (`NAIVE_INIT_SCORE=1`), and UNMEASURED.** See
+> ## ⚠️ MEASURED 2026-08-10, and this ranking is now wrong.
+> `docs/changelog/2026-08-10-instrument-panel-first-read.md`. N1's rank-IC edge is
+> **+0.0090 / −0.0115 / +0.0131 / −0.0167** at 3/7/14/30d — still negative at 7d and 30d, so the
+> offset does **not** floor the model at the baseline. Worse for the framing here: N1's served
+> figures are byte-identical to the control's, because the offset reaches the q50 boosters and
+> not the directional classifier that production serves.
+> **`C1` below is the arm that cleared the bar**, at all four horizons (+0.0556 / +0.0561 /
+> +0.0371 / +0.0316), and it raises served PT excess by 45–96% as well. Track N is no longer the
+> top priority; `C1` is.
+
+> **Instrument shipped 2026-08-10, gated off (`NAIVE_INIT_SCORE=1`).** See
 > `docs/changelog/2026-08-10-naive-init-score-instrument.md` — it covers all five `Dataset`
 > seams and every predict path, and adds a `naive_init_score` arm to `model-diagnostics.yml`.
 > What remains is the read: one dispatch per horizon against a control on the same commit.
@@ -211,7 +221,7 @@ Content in `docs/research/2026-08-09-next-steps.md`; re-ranked below N and F.
 
 | Item | State |
 |---|---|
-| `C1` | Instrument shipped gated off (`CROSS_SECTIONAL_RANK=1`); **unmeasured**. Read on rank IC. |
+| `C1` | ⭐ **MEASURED 2026-08-10 and positive at all four horizons** — rank IC edge +0.0556 / +0.0561 / +0.0371 / +0.0316, served PT excess up 45–96%. The only arm to clear the `−return_1d` bar. Now the top item. `changelog/2026-08-10-instrument-panel-first-read.md`. |
 | `C3` | Residual reversal as a feature. Not started. Note the overlap with N1 — both are `−return_1d` derivatives. |
 | `C4` | Re-derive the feature allowlist with `cross_sectional` restored. Compute the MDE first; it may not clear the floor. |
 | `C5` | Split conformal + ACI. **Do F1 first.** |

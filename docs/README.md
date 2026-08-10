@@ -135,13 +135,18 @@ also recorded in `changelog/`, which is the durable record. Load-bearing ones:
 ## Changelog (`changelog/`)
 
 Append-only dated decision records: bug fixes, features, audits, and refuted experiments.
-124 entries, 2026-07-08 to 2026-08-10. Entries are never edited to match later reality —
+125 entries, 2026-07-08 to 2026-08-10. Entries are never edited to match later reality —
 several describe code that has since been deleted, which is the point. Per `AGENTS.md`
 workflow rule 2, non-trivial decisions get a new dated note here.
 
-The two newest are the 2026-08-10 audit, and both carry corrections that reach back into
-earlier entries:
+The newest is the instrument panel; the two behind it are the 2026-08-10 audit, and both of
+those carry corrections that reach back into earlier entries:
 
+- `2026-08-10-instrument-panel-first-read.md` — ⭐ four arms on one commit. The cross-sectional
+  rank transform (`C1`) is the first arm to beat `−return_1d` on rank IC, at all four horizons,
+  and it lifts served PT excess 45–96%. `init_score` (`N1`) does not clear the bar and never
+  touches the served classifier; `tier_lead` closes the gap nowhere. Re-ranks
+  `research/2026-08-10-next-steps.md`, which had put Track N first.
 - `2026-08-10-constant-call-is-hindsight-picked.md` — `constant_call_accuracy` is selected with
   hindsight per fold, so `edge_vs_constant_call*` compares to an oracle; the runnable baseline is
   `realised_down_rate`. Also: `model_version` fragments the scoring panel, which is why no headline
