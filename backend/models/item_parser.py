@@ -33,6 +33,41 @@ import re
 # wants the bid should read the source row from the archive directly.
 BID_SOURCES = frozenset({"aggregator_buff163_buy"})
 
+# Steam's trailing-window MEAN SALE price -- MA(7)/MA(30)/MA(90) -- which must
+# not vote on equal terms against point-in-time asks
+# (collectors/csgotrader_aggregator.py:294-312). Kept separate from
+# BID_SOURCES because it is a different error: a bid is the wrong side of the
+# book, an MA is the wrong TIME basis. Measured against genuine third-party
+# asks (buff163/csfloat/csmoney/skinport/youpin; the Steam-derived
+# aggregator_sync and aggregator_steam_17mafo excluded from the comparison
+# group), the trailing window sits ~32% ABOVE them (median ratio 1.316, a
+# premium on 76.6% of item-days) -- the same cash-out fee wedge every
+# Steam-derived feed carries. So unlike the bid, excluding these pulls the
+# consensus DOWN. The defect is not the level, it is the time basis: a
+# trailing 90-day mean barely moves when live asks move, so it damps the
+# consensus and mechanically manufactures mean-reversion in the resulting
+# returns -- which matters acutely here because a reversal effect is the
+# signal this project is currently trying to validate.
+#
+# These three sources exist only 2026-07-11 to 2026-08-08 (not "since
+# 2026-03"), so it is labels and stored A/B verdicts from 2026-07-11 onward
+# that sit downstream of this exclusion.
+#
+# Measured over 2026, >=$1, universe-filtered: excluding them costs 650
+# item-days of 2,589,787 that have no other ask source, but moves the voted
+# median on 16.89% of item-days (median -8.47%) and flips 6.17% of
+# consecutive-day return directions.
+#
+# NOT a staleness fix: aggregator_sync and aggregator_steam_17mafo are
+# `last_24h` FALLING BACK to these same windows on exactly the illiquid
+# items. There is no point-in-time Steam price in this archive at all.
+#
+# Do NOT also drop aggregator_sync: that deletes 2026-01 and 2026-02 in full
+# for the >=$1 cohort (52,048 item-days) to buy a further 1.4pp.
+TRAILING_WINDOW_SOURCES = frozenset({
+    "aggregator_steam_7d", "aggregator_steam_30d", "aggregator_steam_90d",
+})
+
 
 def bid_sources_sql_filter(column: str = "source") -> str:
     """SQL predicate dropping the bid sources from an archive read.

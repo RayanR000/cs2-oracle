@@ -56,9 +56,16 @@ LADDER = [
     ("aggregator_steam_90d", 1.043),
 ]
 
-# Consensus over the ten asks; the bid drags it to 8.09, a -10.6% displacement
-# that matches the -10.8% measured on the >=$1 served cohort.
-LADDER_ASK_CONSENSUS = 9.045
+# Consensus over the ten non-bid legs (2026-08-07 baseline, before Task 4):
+# median 9.045, an 8.09-consensus drag of -10.6% once the bid is added back in.
+#
+# 2026-08-09: three of those ten legs (aggregator_steam_7d/30d/90d) are
+# themselves excluded from voting now (docs/changelog/
+# 2026-08-09-trailing-window-sources-excluded.md), so `vote()` also drops them
+# here -- this constant is `_apply_multi_source_voting`'s actual output over
+# the seven remaining real asks (buff163/youpin/csfloat/csmoney/skinport plus
+# aggregator_sync and aggregator_csgotrader), not just the bid's removal.
+LADDER_ASK_CONSENSUS = 7.32
 
 
 # A real `market_hash_name`. The archive readers drop all-lowercase keys as
@@ -95,11 +102,15 @@ def test_bid_survives_the_outlier_mask_so_the_mask_cannot_be_the_fix():
 def test_bid_does_not_count_toward_the_three_source_outlier_gate():
     """`vote()` only runs the 2-sigma rejection at >= 3 sources. A bid must not
     be what lifts an item-day over that gate, or it changes the estimator
-    itself and not merely the inputs."""
+    itself and not merely the inputs.
+
+    Uses two genuine ask sources (neither a bid nor a trailing window) so this
+    stays a test of the bid/gate interaction and does not also exercise
+    Task 4's separate exclusion."""
     d = date(2026, 7, 15)
     out = vote([
         ("ak", d, 10.0, "aggregator_csfloat"),
-        ("ak", d, 30.0, "aggregator_steam_7d"),
+        ("ak", d, 30.0, "aggregator_youpin"),
         ("ak", d, 2.0, "aggregator_buff163_buy"),
     ])
 

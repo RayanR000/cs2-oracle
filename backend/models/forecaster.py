@@ -24,6 +24,7 @@ from models.item_parser import (
     BID_SOURCES,
     PHASE_COLLAPSED_EXEMPT_PATTERNS,
     PHASE_COLLAPSED_SLUG_PATTERNS,
+    TRAILING_WINDOW_SOURCES,
     archive_universe_sql_filter,
     bid_sources_sql_filter,
     is_phantom_slug,
@@ -242,6 +243,15 @@ class IncompatibleModelArtifact(RuntimeError):
 
 
 class ItemForecaster:
+    # Re-exposed as class attributes -- not just module names -- because
+    # `_apply_multi_source_voting` is the method that applies them and is
+    # itself a staticmethod called unbound (`ItemForecaster._apply_...`,
+    # `backtest/price_resolution.py:246`), so the class that applies a source
+    # rule is the natural place for a reader or a test to find it, without
+    # also importing `models.item_parser` to look up what it means.
+    BID_SOURCES = BID_SOURCES
+    TRAILING_WINDOW_SOURCES = TRAILING_WINDOW_SOURCES
+
     HORIZONS = [3, 7, 14, 30]
     # The band no longer comes from quantile models — see models/conformal.py.
     # Measured (2026-08-04 warm baseline): 24 p10/p90 GBMs cost 223.2s of a
@@ -659,7 +669,11 @@ class ItemForecaster:
     # already trained on.
     # v5: n_ask_sources on the voted frame. A v4 frame lacks the column
     # entirely, so a stale cache would train the next model without it.
-    VOTED_CACHE_VERSION = 5
+    # v6: TRAILING_WINDOW_SOURCES (aggregator_steam_7d/30d/90d) leaves the
+    # voting pool. A v5 frame still lets a trailing-window mean vote on equal
+    # terms against point-in-time asks, damping the consensus and
+    # manufacturing mean-reversion in every return computed across it.
+    VOTED_CACHE_VERSION = 6
     VOTED_CACHE_PREFIX = "voted_"
     VOTED_CACHE_MAX_ENTRIES = 3
 
@@ -1235,16 +1249,22 @@ class ItemForecaster:
                 volume=("volume", "sum"),
             )
 
-        # Drop bids before anything else reads the group, so they count toward
-        # neither the median nor the >=3-source gate that enables the outlier
-        # mask. `isin` is False for NaN, which is what keeps the pre-2026
-        # `source IS NULL` series — 13 years of the archive — voting.
-        df = df[~df["source"].isin(BID_SOURCES)]
+        # Drop bids and Steam's trailing-window means before anything else
+        # reads the group, so neither counts toward the median or the
+        # >=3-source gate that enables the outlier mask. `isin` is False for
+        # NaN, which is what keeps the pre-2026 `source IS NULL` series — 13
+        # years of the archive — voting. `frozenset` membership only, never a
+        # prefix match: `aggregator_steam_17mafo` is a distinct source (the
+        # only ask for 2026-04-16 -> 07-10) and must keep voting.
+        excluded = BID_SOURCES | TRAILING_WINDOW_SOURCES
+        df = df[~df["source"].isin(excluded)]
         if df.empty:
-            # Every input row was a bid. 2,338 item-days across 217 items have
-            # no ask at all; they drop out rather than falling back to the bid,
-            # because a series whose basis alternates between bid and ask
-            # fabricates the wedge as a return.
+            # Every input row was a bid or a trailing-window mean. 2,338
+            # item-days across 217 items have no ask at all from the bid drop
+            # alone (a further 650 from the trailing-window drop, 2026 >=$1);
+            # they drop out rather than falling back to a bid or a stale
+            # window, because a series whose basis alternates fabricates the
+            # wedge, or the time-basis change, as a return.
             return pd.DataFrame(
                 columns=["item_id", "date", "price", "volume", "n_ask_sources"]
             ).astype({"n_ask_sources": "int64"})
