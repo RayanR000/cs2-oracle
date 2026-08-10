@@ -66,6 +66,17 @@ on:
         required: false
         default: false
         type: boolean
+      # Not an arm -- a confirm mode for one. The first read of every arm above
+      # reuses the cached `tuned_params`, which is what makes the arms
+      # comparable and is also why their SIZE is provisional: the HP were
+      # selected without the arm's feature. Re-tuning costs an Optuna phase
+      # (63-693s per horizon, measured) and makes the run non-comparable to a
+      # cached-HP one, so it stays off by default and the arm label records it.
+      force_hp_search:
+        description: 'Confirm mode: re-tune HP instead of reusing the cache (slow)'
+        required: false
+        default: false
+        type: boolean
 
 defaults:
   run:
@@ -166,6 +177,9 @@ jobs:
           # it is on with reused HP. Read `rank_ic_edge` per horizon; the bar is
           # >= 0, and it is currently negative at all four.
           NAIVE_INIT_SCORE: ${{ inputs.naive_init_score && '1' || '0' }}
+          # Off by default: a re-tuned run cannot be read against a cached-HP
+          # one, so leaving this on would break the panel it is meant to confirm.
+          FORCE_HP_SEARCH: ${{ inputs.force_hp_search && '1' || '0' }}
         run: |
           set -o pipefail
           python scripts/forecast_prices.py --train-only 2>&1 \
@@ -189,6 +203,7 @@ jobs:
           TIER_LEAD_FEATURE: ${{ inputs.tier_lead && '1' || '0' }}
           CROSS_SECTIONAL_RANK: ${{ inputs.cross_sectional_rank && '1' || '0' }}
           NAIVE_INIT_SCORE: ${{ inputs.naive_init_score && '1' || '0' }}
+          FORCE_HP_SEARCH: ${{ inputs.force_hp_search && '1' || '0' }}
         run: |
           # The arm goes in the heading. A diagnostics run that cannot say which
           # arm produced it is worse than no run: the numbers look citable and
@@ -206,12 +221,17 @@ jobs:
             arms="${arms:+$arms+}naive_init"
           fi
           arm="${arms:-control}"
+          # Re-tuned runs get their own label. A confirm run and a first read
+          # carry the same flags and are NOT comparable to each other, so the
+          # heading has to separate them.
+          if [ "$FORCE_HP_SEARCH" = "1" ]; then arm="${arm}+hpsearch"; fi
           {
             echo "## ${{ matrix.horizon }}d diagnostics — arm: \`${arm}\`"
             echo
             echo "\`TIER_LEAD_FEATURE=$TIER_LEAD_FEATURE\` "
             echo "\`CROSS_SECTIONAL_RANK=$CROSS_SECTIONAL_RANK\` "
-            echo "\`NAIVE_INIT_SCORE=$NAIVE_INIT_SCORE\`"
+            echo "\`NAIVE_INIT_SCORE=$NAIVE_INIT_SCORE\` "
+            echo "\`FORCE_HP_SEARCH=$FORCE_HP_SEARCH\`"
             echo
             echo "Bar is \`naive_rank_ic\` on the same folds, not 50% and not a stored number."
             echo '```'

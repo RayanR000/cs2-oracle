@@ -556,7 +556,8 @@ def test_diagnostics_arms_default_to_the_control():
     spec = yaml.safe_load(wf.read_text())
 
     inputs = spec[True]["workflow_dispatch"]["inputs"]
-    for name in ("tier_lead", "cross_sectional_rank"):
+    for name in ("tier_lead", "cross_sectional_rank", "naive_init_score",
+                 "force_hp_search"):
         assert inputs[name]["default"] is False, (
             f"{name} defaults on; the Sunday scheduled run would stop being a control"
         )
@@ -568,7 +569,9 @@ def test_diagnostics_arms_default_to_the_control():
     # anyway -- but only because the gate tests for exactly "1". Pin the shape so
     # the two cannot drift apart.
     for key, inp in (("TIER_LEAD_FEATURE", "tier_lead"),
-                     ("CROSS_SECTIONAL_RANK", "cross_sectional_rank")):
+                     ("CROSS_SECTIONAL_RANK", "cross_sectional_rank"),
+                     ("NAIVE_INIT_SCORE", "naive_init_score"),
+                     ("FORCE_HP_SEARCH", "force_hp_search")):
         expr = str(env[key])
         assert f"inputs.{inp}" in expr and "'1'" in expr and "'0'" in expr, (
             f"{key} is {expr!r}; it must resolve to '0' when the input is absent"
