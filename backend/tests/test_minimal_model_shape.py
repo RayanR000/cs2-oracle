@@ -1429,3 +1429,22 @@ def test_predict_smoke_is_off_unless_asked():
     # mode stays --train-only.
     assert "--train-only" in run_step["run"]
     assert "inputs.predict_smoke" in run_step["run"]
+
+
+def test_predict_smoke_always_trains():
+    """It must not predict from a restored artifact.
+
+    The mode exists to run the predict path under the current run's flags. A
+    cached artifact would be restored, the age gate would skip training, and the
+    smoke would then measure a model trained under different flags -- or, if the
+    flag is on and the artifact predates it, refuse to serve at all. That is
+    exactly how run 31439896107 failed.
+    """
+    from scripts import forecast_prices
+
+    src = inspect.getsource(forecast_prices.run_forecast)
+    decision = src.split("do_train = False")[1].split("if do_train:")[0]
+    assert "if train_only or predict_smoke:" in decision, (
+        "predict_smoke no longer forces training; it would predict from "
+        "whatever the model cache happened to restore"
+    )

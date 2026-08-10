@@ -416,7 +416,14 @@ def run_forecast(train_only: bool = False, predict_only: bool = False,
         retrain_interval = int(os.environ.get("RETRAIN_INTERVAL_DAYS", "14"))
 
         do_train = False
-        if train_only:
+        if train_only or predict_smoke:
+            # predict_smoke trains unconditionally, and must: its entire purpose
+            # is to run the predict path under THIS run's flags. Left to the
+            # branch below it would restore a cached artifact, skip training on
+            # the age gate, and then predict with flags the artifact was not
+            # trained under -- which is how run 31439896107 failed, with the
+            # rank transform on from the environment and no cohort recorded in
+            # the restored meta.
             do_train = True
         elif not predict_only:
             if not has_models:
