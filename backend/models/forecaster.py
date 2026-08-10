@@ -4322,10 +4322,10 @@ class ItemForecaster:
             _cv_feasible = self._cv_can_run(tdf, horizon)
             if _skip_cv:
                 logger.info("  CV skipped (SKIP_CV=1 — local speedup; not the CI path)")
-                oof_records, cv_metrics, pt_records = [], [], []
+                oof_records, cv_metrics, pt_records, pt_records_clf = [], [], [], []
             elif not _cv_feasible:
                 logger.info(f"  CV cannot run for {horizon}d (<2 expanding-window folds)")
-                oof_records, cv_metrics, pt_records = [], [], []
+                oof_records, cv_metrics, pt_records, pt_records_clf = [], [], [], []
             else:
                 # Timed explicitly: post-minimal-model this is the single
                 # largest phase of a warm retrain, and the only figure on
@@ -4334,7 +4334,8 @@ class ItemForecaster:
                 # and artifact saving. A fold-count change cannot be attributed
                 # against a remainder.
                 _cv_t0 = time.time()
-                oof_records, cv_metrics, pt_records = self._cv_evaluate_horizon(
+                (oof_records, cv_metrics, pt_records,
+                 pt_records_clf) = self._cv_evaluate_horizon(
                     tdf, horizon, per_quantile_params,
                     per_item_row_sampling=per_item_row_sampling)
                 logger.info(f"  [timing] {horizon}d conformal CV: "
@@ -4439,6 +4440,12 @@ class ItemForecaster:
             # the same key. This one is always the median sign, which is also
             # what `pt` below is computed from, so the two invariant-#4 numbers
             # always describe the same signal.
+            #
+            # The classifier is what production actually serves, so it gets the
+            # same two numbers under its own keys (below) rather than displacing
+            # these. Publishing both is what lets the pair be compared; making
+            # one key mean either signal is what made the 2026-08-10 diagnostics
+            # run report a q50 verdict under a heading that said "served".
             edge_vs_constant = (
                 None if (mean_constant_call is None or not fold_accs)
                 else round(mean_acc - mean_constant_call, 2))
@@ -4455,6 +4462,17 @@ class ItemForecaster:
             # as backtest/scoring.py does in production.
             pt = pesaran_timmermann(pt_records, MIN_FORECAST_DATES)
 
+            # The same test on the SERVED classifier. `mean_constant_call` and
+            # `mean_down_rate` are properties of the outcomes alone, so they are
+            # the same bar for both signals and are not recomputed. None when
+            # CV_DIAGNOSTIC_CLASSIFIER=0 -- visibly absent, never falling back to
+            # the quantile sign.
+            pt_clf = (pesaran_timmermann(pt_records_clf, MIN_FORECAST_DATES)
+                      if pt_records_clf else None)
+            edge_vs_constant_clf = (
+                None if (mean_constant_call is None or mean_clf is None)
+                else round(mean_clf - mean_constant_call, 2))
+
             if cv_metrics:
                 # classifier= pools all tiers and the frame is ~83% tier-0, so
                 # it reads close to the penny-item score. classifier>=$1= is
@@ -4468,19 +4486,41 @@ class ItemForecaster:
                 # persistence and momentum were standing in for, and it is a
                 # much higher one.
                 logger.info(
-                    f"  Invariant #4: constant-call={mean_constant_call}% "
+                    f"  Invariant #4 [quantile-sign]: "
+                    f"constant-call={mean_constant_call}% "
                     f"down-rate={mean_down_rate}% → edge vs constant call="
                     f"{edge_vs_constant}pp | PT excess={pt['pt_excess_pp']}pp "
                     f"t={pt['pt_t_stat']} verdict={pt['pt_verdict']}")
+                # The line that describes production. Absent, not substituted,
+                # when the diagnostic classifier did not run.
+                if pt_clf is not None:
+                    logger.info(
+                        f"  Invariant #4 [SERVED classifier]: "
+                        f"constant-call={mean_constant_call}% "
+                        f"down-rate={mean_down_rate}% → edge vs constant call="
+                        f"{edge_vs_constant_clf}pp | PT excess="
+                        f"{pt_clf['pt_excess_pp']}pp t={pt_clf['pt_t_stat']} "
+                        f"verdict={pt_clf['pt_verdict']}")
+                else:
+                    logger.info(
+                        "  Invariant #4 [SERVED classifier]: not measured "
+                        "(CV_DIAGNOSTIC_CLASSIFIER=0) — the line above "
+                        "describes the q50 sign, NOT what production serves.")
                 logger.info(
                     f"  Cross-sectional (>=$1): rank_ic={mean_rank_ic} vs "
                     f"naive(-return_1d)={mean_naive_rank_ic} → edge={rank_ic_edge} "
                     f"| mean trees/fold={mean_trees}")
                 if edge_vs_constant is not None and edge_vs_constant <= 0:
                     logger.warning(
-                        f"  ⚠ {horizon}d served model does NOT beat the constant "
+                        f"  ⚠ {horizon}d quantile sign does NOT beat the constant "
                         f"call ({edge_vs_constant}pp) — a single fixed direction "
                         f"scores {mean_constant_call}% on these folds.")
+                if edge_vs_constant_clf is not None and edge_vs_constant_clf <= 0:
+                    logger.warning(
+                        f"  ⚠ {horizon}d SERVED classifier does NOT beat the "
+                        f"constant call ({edge_vs_constant_clf}pp) — a single "
+                        f"fixed direction scores {mean_constant_call}% on these "
+                        f"folds. This is the signal production ships.")
                 if rank_ic_edge is not None and rank_ic_edge <= 0:
                     logger.warning(
                         f"  ⚠ {horizon}d model does NOT beat ranking by "
@@ -4490,8 +4530,15 @@ class ItemForecaster:
                 if pt["pt_verdict"] not in ("skill",):
                     logger.warning(
                         f"  ⚠ {horizon}d Pesaran-Timmermann verdict is "
-                        f"'{pt['pt_verdict']}' (t={pt['pt_t_stat']}) — the "
-                        f"directional call is not distinguishable from chance.")
+                        f"'{pt['pt_verdict']}' (t={pt['pt_t_stat']}) on the "
+                        f"quantile sign — that call is not distinguishable "
+                        f"from chance.")
+                if pt_clf is not None and pt_clf["pt_verdict"] not in ("skill",):
+                    logger.warning(
+                        f"  ⚠ {horizon}d Pesaran-Timmermann verdict is "
+                        f"'{pt_clf['pt_verdict']}' (t={pt_clf['pt_t_stat']}) on "
+                        f"the SERVED classifier — what production ships is not "
+                        f"distinguishable from chance.")
             self.cv_results[horizon] = {
                 "fold_count": len(cv_metrics),
                 "per_fold": cv_metrics,
@@ -4512,6 +4559,13 @@ class ItemForecaster:
                 # sign, so the key does not change meaning when the diagnostic
                 # classifier is skipped.
                 "invariant_4_signal": "quantile_sign",
+                # The same pair for the signal production actually serves.
+                # None when CV_DIAGNOSTIC_CLASSIFIER=0. A consumer that wants
+                # the served verdict must read these and handle the None --
+                # falling back to the keys above would silently substitute the
+                # q50 sign, which is the bug this pair exists to prevent.
+                "edge_vs_constant_call_classifier": edge_vs_constant_clf,
+                "pt_classifier": pt_clf,
                 "mean_rank_ic": mean_rank_ic,
                 "mean_naive_rank_ic": mean_naive_rank_ic,
                 "rank_ic_edge_vs_naive": rank_ic_edge,
@@ -5959,6 +6013,7 @@ class ItemForecaster:
         oof_records = []
         fold_metrics = []
         pt_records = []
+        pt_records_clf = []
 
         cv_max_rows = self._cv_max_train_rows()
         for fold_id, (train_dates, val_dates) in enumerate(splits):
@@ -6192,6 +6247,14 @@ class ItemForecaster:
             # diagnostic classifier is skipped.
             pt_records.extend(fold_records)
 
+            # The same pooling for the SERVED classifier, when it ran. Kept in a
+            # separate stream rather than replacing the one above: both verdicts
+            # are then published side by side, and neither key changes which
+            # signal it describes depending on CV_DIAGNOSTIC_CLASSIFIER.
+            if pred_cls is not None:
+                pt_records_clf.extend(self._direction_records_from_classes(
+                    pred_cls, actual_cls, val_df["date"]))
+
             # Build per-row records for pooled calibration. Same builder the
             # single-holdout path uses, so the two calibrations are comparable.
             oof_records.extend(self._conformal_records(
@@ -6205,7 +6268,7 @@ class ItemForecaster:
                 f"{len(sorted_dates)} distinct dates and {len(tdf)} rows."
             )
 
-        return oof_records, fold_metrics, pt_records
+        return oof_records, fold_metrics, pt_records, pt_records_clf
 
     @staticmethod
     def _cv_diagnostic_classifier_enabled() -> bool:
@@ -6240,6 +6303,34 @@ class ItemForecaster:
             {"predicted_direction": str(pd_), "actual_direction": str(ad),
              "direction_correct": bool(pd_ == ad), "forecast_date": str(fd)}
             for pd_, ad, fd in zip(pdir, adir, d)
+        ]
+
+    @staticmethod
+    def _direction_records_from_classes(pred_cls, actual_cls, dates) -> list:
+        """The same record shape as `_direction_records`, but for the SERVED
+        classifier's predictions rather than the quantile-median sign.
+
+        `_direction_classes` buckets 0=down, 1=flat, 2=up, and it is what both
+        the classifier is trained against and `actual_cls` is built from. The
+        actual directions therefore agree row-for-row with `_direction_records`,
+        which is what makes `constant_call_accuracy` and `realised_down_rate` --
+        properties of the outcomes alone -- shared between the two signals
+        rather than needing to be recomputed per signal.
+
+        Only available when CV_DIAGNOSTIC_CLASSIFIER=1. There is no fallback on
+        purpose: a PT verdict that silently described a different signal
+        depending on an environment variable is the failure this exists to fix.
+        """
+        names = ("down", "flat", "up")
+        p = np.asarray(pred_cls, dtype=int)
+        a = np.asarray(actual_cls, dtype=int)
+        d = pd.to_datetime(pd.Series(dates).to_numpy()).strftime("%Y-%m-%d")
+        return [
+            {"predicted_direction": names[int(pc)],
+             "actual_direction": names[int(ac)],
+             "direction_correct": bool(pc == ac),
+             "forecast_date": str(fd)}
+            for pc, ac, fd in zip(p, a, d)
         ]
 
     @staticmethod

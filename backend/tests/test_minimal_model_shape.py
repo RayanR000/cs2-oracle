@@ -12,6 +12,8 @@ from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
+import inspect
+
 import numpy as np
 import pandas as pd
 import pytest
@@ -216,9 +218,10 @@ def test_every_cv_fold_produces_oof_records(tmp_path, quantiles):
     tdf = _cv_frame(horizon=3)
 
     result = f._cv_evaluate_horizon(tdf, 3, {q: {} for q in quantiles})
-    assert len(result) == 3, (
-        "return tuple must be (oof_records, fold_metrics, pt_records)")
-    oof_records, fold_metrics, pt_records = result
+    assert len(result) == 4, (
+        "return tuple must be "
+        "(oof_records, fold_metrics, pt_records, pt_records_clf)")
+    oof_records, fold_metrics, pt_records, _ = result
 
     assert len(fold_metrics) >= 2
     assert oof_records, "no OOF records — calibration would be skipped"
@@ -236,7 +239,7 @@ def test_cv_records_calibrate_end_to_end_with_a_median_only_grid(tmp_path):
     f = _cv_forecaster(tmp_path, [0.5])
     tdf = _cv_frame(horizon=3)
 
-    oof_records, _, _ = f._cv_evaluate_horizon(tdf, 3, {0.5: {}})
+    oof_records = f._cv_evaluate_horizon(tdf, 3, {0.5: {}})[0]
     records_df = pd.DataFrame(oof_records)
     q_hat = f._calibrate_conformal(3, records_df)
     f._calibrate_confidence(horizon=3, records_df=records_df)
@@ -1245,3 +1248,83 @@ def test_residual_stacking_is_gone():
 
 def test_dart_params_are_gone():
     assert not hasattr(ItemForecaster, "DART_PARAMS")
+
+
+# ---------------------------------------------------------------------------
+# Invariant #4 must describe the SERVED classifier, not only the q50 sign
+#
+# The 2026-08-10 model-diagnostics run (31416199251) scored the classifier's
+# accuracy but reported "edge vs constant call" and the PT verdict from the
+# quantile-median sign, under a heading that implied the served signal. These
+# pin the fix: both signals are published, and the served one is never
+# silently substituted by the other.
+# ---------------------------------------------------------------------------
+
+
+def test_direction_records_from_classes_maps_the_class_encoding():
+    """0=down, 1=flat, 2=up, matching _direction_classes."""
+    recs = ItemForecaster._direction_records_from_classes(
+        [0, 1, 2], [0, 2, 2], ["2026-01-01"] * 3)
+
+    assert [r["predicted_direction"] for r in recs] == ["down", "flat", "up"]
+    assert [r["actual_direction"] for r in recs] == ["down", "up", "up"]
+    assert [r["direction_correct"] for r in recs] == [True, False, True]
+    assert all(r["forecast_date"] == "2026-01-01" for r in recs)
+
+
+def test_classifier_pt_records_are_empty_when_the_diagnostic_is_off(
+        tmp_path, monkeypatch):
+    """CV_DIAGNOSTIC_CLASSIFIER=0 must yield NO served-side records.
+
+    Not a fallback to the quantile sign — absent. A PT verdict that changes
+    which signal it describes based on an env var is the defect being fixed.
+    """
+    monkeypatch.setenv("CV_DIAGNOSTIC_CLASSIFIER", "0")
+    f = _cv_forecaster(tmp_path, [0.5])
+
+    _, _, pt_records, pt_records_clf = f._cv_evaluate_horizon(
+        _cv_frame(horizon=3), 3, {0.5: {}})
+
+    assert pt_records, "quantile-sign records should still be built"
+    assert pt_records_clf == []
+
+
+def test_classifier_pt_records_are_built_when_the_diagnostic_is_on(
+        tmp_path, monkeypatch):
+    monkeypatch.setenv("CV_DIAGNOSTIC_CLASSIFIER", "1")
+    f = _cv_forecaster(tmp_path, [0.5])
+
+    _, fold_metrics, pt_records, pt_records_clf = f._cv_evaluate_horizon(
+        _cv_frame(horizon=3), 3, {0.5: {}})
+
+    assert pt_records_clf, "served classifier produced no PT records"
+    # One record per validation row, same as the quantile-sign stream.
+    assert len(pt_records_clf) == len(pt_records)
+    assert len(pt_records_clf) == sum(m["n_val"] for m in fold_metrics)
+    assert {r["predicted_direction"] for r in pt_records_clf} <= {
+        "down", "flat", "up"}
+    # The outcomes are a property of the labels, so both streams must agree on
+    # them row-for-row. That is what lets constant_call be shared.
+    assert ([r["actual_direction"] for r in pt_records_clf]
+            == [r["actual_direction"] for r in pt_records])
+
+
+def test_cv_results_publish_both_invariant_4_signals():
+    """Source-level guard on the aggregation block inside `train`.
+
+    The block is not reachable without a full train, so this asserts the
+    contract on the keys it writes: two distinct signal-labelled names, and no
+    path that lets the served verdict fall back to the quantile sign.
+    """
+    src = inspect.getsource(ItemForecaster._train_horizon_inline)
+
+    # Both signals published, under names that say which is which.
+    assert '"invariant_4_signal": "quantile_sign"' in src
+    assert '"edge_vs_constant_call_classifier": edge_vs_constant_clf' in src
+    assert '"pt_classifier": pt_clf' in src
+
+    # pt_clf is None when the diagnostic classifier did not run -- never `pt`.
+    assert "pt_clf = (pesaran_timmermann(pt_records_clf, MIN_FORECAST_DATES)" in src
+    assert "pt_clf = pt" not in src
+    assert "pt_clf or pt" not in src
+    assert "edge_vs_constant_clf or edge_vs_constant" not in src

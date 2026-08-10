@@ -91,7 +91,7 @@ PENNY_PRICES = [0.30, 0.45, 0.60, 0.85, 0.25, 0.35, 0.55, 0.75]
 def _run_cv(tmp_path, prices, with_tier=True, feature_cols=("feat_a", "feat_b", "price_tier")):
     f = _cv_forecaster(tmp_path, feature_cols)
     tdf = _frame(prices, with_tier=with_tier)
-    _, fold_metrics, _ = f._cv_evaluate_horizon(tdf, 3, {0.5: {}})
+    _, fold_metrics = f._cv_evaluate_horizon(tdf, 3, {0.5: {}})[:2]
     assert len(fold_metrics) >= 2
     return fold_metrics
 
