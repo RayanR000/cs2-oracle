@@ -386,6 +386,9 @@ class ItemForecaster:
     # median-filled to zero (the hazard _skipped_feature_groups documents).
     TIER_LEAD_GROUP = "tier_lead"
     TIER_LEAD_FEATURES = ("tier_lead_return_1d",)
+    # The naive predictor N1 boosts from, negated: the one runnable baseline the
+    # model measurably loses to on rank IC. See naive_init_score_enabled().
+    NAIVE_OFFSET_COL = "return_1d"
     # Columns the within-date rank transform must not touch, because something
     # other than a booster reads their VALUES.
     #
@@ -745,6 +748,7 @@ class ItemForecaster:
         # meta.json" is distinguishable from "trained with it off".
         self._artifact_tier_lead: Optional[bool] = None
         self._artifact_xs_rank: Optional[bool] = None
+        self._artifact_naive_init: Optional[bool] = None
         # Conformal calibration per horizon. NOTE: the meaning changed with the
         # minimal model — q_hat is now a DIMENSIONLESS multiplier of the
         # per-item sigma, not a percentage-point addend. Applied as:
@@ -1828,6 +1832,37 @@ class ItemForecaster:
         """
         return os.environ.get("CROSS_SECTIONAL_RANK") == "1"
 
+    @staticmethod
+    def naive_init_score_enabled() -> bool:
+        """Whether the quantile models are boosted from `-return_1d`.
+
+        Off by default. With it on, `-return_1d` is passed as `init_score` on
+        every quantile `lgb.Dataset` and added back to the model's output at
+        predict time, so the booster fits the RESIDUAL to the naive predictor
+        instead of competing with it.
+
+        The measured gap is rank IC, not DA: ranking by minus yesterday's return
+        beats the model at all four horizons (-0.0159 / -0.0371 / -0.0433 /
+        -0.0091, `docs/changelog/2026-08-10-post-revote-retrain.md`), it uses no
+        hindsight, and it survived the 2026-08-09 re-vote. That makes it the one
+        legitimate baseline gap in this repo -- unlike `constant_call_accuracy`,
+        which is hindsight-selected per fold
+        (`docs/changelog/2026-08-10-constant-call-is-hindsight-picked.md`).
+
+        Read `rank_ic_edge` per horizon; the bar is `>= 0`.
+
+        Two cautions. `tuned_params` were selected against the un-offset target,
+        so the first read should reuse cached HP and any positive should be
+        confirmed with `FORCE_HP_SEARCH=1` before its size is believed. And the
+        floor is empirical, not algebraic: a boosted model can still fit its way
+        below the offset it started from, so a negative read is a real outcome
+        rather than a bug.
+
+        Set NAIVE_INIT_SCORE=1. Tracked as N1 in
+        `docs/research/2026-08-10-next-steps.md`.
+        """
+        return os.environ.get("NAIVE_INIT_SCORE") == "1"
+
     def _tier_lead_served(self) -> bool:
         """Whether the loaded artifact was trained with the tier-lead feature.
 
@@ -1857,6 +1892,66 @@ class ItemForecaster:
         if self._artifact_xs_rank is not None:
             return self._artifact_xs_rank
         return self.cross_sectional_rank_enabled()
+
+    def _naive_init_score_served(self) -> bool:
+        """Whether the loaded artifact was fitted on top of `-return_1d`.
+
+        Same artifact-over-environment rule as _tier_lead_served, and the
+        divergence it prevents is the worst of the three: a booster fitted with
+        the offset emits a RESIDUAL, so serving it without adding the offset back
+        publishes a residual as a price forecast, silently and with no shape
+        change to give it away.
+        """
+        if self._artifact_naive_init is not None:
+            return self._artifact_naive_init
+        return self.naive_init_score_enabled()
+
+    @classmethod
+    def _minus_return_1d(cls, frame) -> np.ndarray:
+        """`-return_1d` for each row of `frame`, in PERCENT, positionally.
+
+        Percent because `return_{lag}d` and `target_return_{h}d` are both
+        `(a - b) / b * 100` -- the offset needs no rescaling to sit in the
+        target's units, and an offset in fractions would be 100x too small and
+        would read as a null result rather than as a units bug.
+
+        Non-finite values become a zero offset ("no baseline view for this row"),
+        never NaN: a NaN init_score propagates into every prediction LightGBM
+        makes from that row.
+
+        Raises when the column is absent rather than returning None. N1 exists to
+        put a floor under the model, and a silently absent offset removes the
+        floor while leaving the metric that reads it looking normal.
+        """
+        col = cls.NAIVE_OFFSET_COL
+        if col not in getattr(frame, "columns", ()):
+            raise RuntimeError(
+                f"NAIVE_INIT_SCORE is on but the frame has no `{col}` column, "
+                f"so the naive offset cannot be built. Every allowlisted feature "
+                f"set contains it; a frame without it is wrong, and training or "
+                f"serving without the offset would quietly void the arm."
+            )
+        v = pd.to_numeric(frame[col], errors="coerce").to_numpy(dtype=float)
+        return -np.nan_to_num(v, nan=0.0, posinf=0.0, neginf=0.0)
+
+    def _naive_offset(self, frame) -> Optional[np.ndarray]:
+        """The training-side offset: reads the environment, per N1's gate.
+
+        None when the instrument is off, which is what every call site checks
+        before touching `init_score`. Training reads the environment rather than
+        the restored artifact's flag for the reason _tier_lead_served documents:
+        a warm retrain restores the previous meta, and inheriting its flag would
+        make the arm untestable.
+        """
+        if not self.naive_init_score_enabled():
+            return None
+        return self._minus_return_1d(frame)
+
+    def _naive_offset_served(self, frame) -> Optional[np.ndarray]:
+        """The predict-side offset: follows the artifact, per _naive_init_score_served."""
+        if not self._naive_init_score_served():
+            return None
+        return self._minus_return_1d(frame)
 
     def _fetch_bymykel_metadata(self) -> pd.DataFrame:
         """Load the ByMykel item-metadata bundle, or an empty frame if absent.
@@ -2819,6 +2914,7 @@ class ItemForecaster:
         feature_names: List[str], horizon: int = 7,
         n_shuffles: int = 20, min_drop_pp: float = 0.5,
         significance_level: float = 0.05,
+        offset=None,
     ) -> Dict[str, Dict]:
         """Validate feature groups via permutation importance with
         statistical significance gating.
@@ -2836,6 +2932,14 @@ class ItemForecaster:
              enough to matter for forecasting.
 
         Uses the p50 (median) quantile model for the given horizon.
+
+        `offset` is N1's `-return_1d` when the model was fitted on top of it. It
+        is added to both the base and the shuffled predictions, because the
+        metric here is a SIGN and the sign of a residual is not the sign of a
+        forecast: without it every group would be scored against a model whose
+        output has the wrong zero. It is deliberately NOT permuted with the
+        `price_technicals` group that owns `return_1d` — the offset is part of the
+        predictor, not one of the features whose contribution is being measured.
 
         Returns:
             {group_name: {"drop_pp": float, "base_acc": float,
@@ -2863,7 +2967,8 @@ class ItemForecaster:
             if idxs:
                 group_indices[g] = idxs
 
-        p50_idx = np.squeeze(model.predict(X_val))
+        _off = 0.0 if offset is None else np.asarray(offset, dtype=float)
+        p50_idx = np.squeeze(model.predict(X_val)) + _off
         base_acc = np.mean((p50_idx > 0) == (y_val > 0)) * 100
 
         results = {}
@@ -2873,7 +2978,7 @@ class ItemForecaster:
                 X_shuf = X_val.copy()
                 for i in idxs:
                     RNG.shuffle(X_shuf[:, i])
-                p50_shuf = np.squeeze(model.predict(X_shuf))
+                p50_shuf = np.squeeze(model.predict(X_shuf)) + _off
                 acc = np.mean((p50_shuf > 0) == (y_val > 0)) * 100
                 shuffled_accs.append(acc)
 
@@ -3168,7 +3273,9 @@ class ItemForecaster:
                                quantile: float = 0.5,
                                boosting_type: str = "gbdt",
                                n_trials: int = 15,
-                               horizon: Optional[int] = None) -> Dict[str, Any]:
+                               horizon: Optional[int] = None,
+                               train_offset=None,
+                               val_offset=None) -> Dict[str, Any]:
         """Bayesian hyperparameter search via Optuna.
 
         Searches over 6 key params with TPE, scored on within-date rank IC.
@@ -3201,8 +3308,13 @@ class ItemForecaster:
         # params (num_leaves, learning_rate, ...) vary between trials; the data
         # and its binning (max_bin) are constant, so there's no need to re-bin.
         ds_params = {"max_bin": self.MAX_BIN, "feature_pre_filter": False}
-        dtrain = lgb.Dataset(X_train, y_train, params=ds_params)
-        dval = lgb.Dataset(X_val, y_val, reference=dtrain, params=ds_params)
+        # N1's offset, when the caller passed it: the search has to score the
+        # same quantity the production fit will produce, which is
+        # `model.predict(X) + offset`.
+        dtrain = lgb.Dataset(X_train, y_train, params=ds_params,
+                             init_score=train_offset)
+        dval = lgb.Dataset(X_val, y_val, reference=dtrain, params=ds_params,
+                           init_score=val_offset)
 
         def objective(trial):
             # Horizon-aware search bounds: 3d overrides known-losing regions.
@@ -3254,8 +3366,10 @@ class ItemForecaster:
             # Within-date, never pooled. A pooled Spearman re-introduces the
             # market factor and would select for the base-rate tracking the
             # Pesaran-Timmermann test exists to reject.
-            ic = self._within_date_rank_ic(
-                model.predict(X_val), y_val, val_dates)
+            trial_pred = model.predict(X_val)
+            if val_offset is not None:
+                trial_pred = trial_pred + val_offset
+            ic = self._within_date_rank_ic(trial_pred, y_val, val_dates)
             return -(ic if ic is not None else 0.0)
 
         sampler = optuna.samplers.TPESampler(seed=42)
@@ -4357,6 +4471,16 @@ class ItemForecaster:
             dval_kw = dict(params=ds_params)
             if val_weights is not None:
                 dval_kw["weight"] = val_weights
+            # N1: boost from `-return_1d` when the instrument is on, so the
+            # boosters fit the residual to the naive predictor. Set on `dval`
+            # too, or the early-stopping/Optuna metric scores the residual
+            # against the un-offset target. Every consumer of these models'
+            # output has to add the offset back -- see _naive_offset_served.
+            train_offset = self._naive_offset(train_set)
+            val_offset = self._naive_offset(val_set)
+            if train_offset is not None:
+                dtrain_kw["init_score"] = train_offset
+                dval_kw["init_score"] = val_offset
             dtrain = lgb.Dataset(X_train, y_train, **dtrain_kw)
             dval = lgb.Dataset(X_val, y_val, reference=dtrain, **dval_kw)
             # Construct eagerly (single-threaded) so the ensemble
@@ -4378,6 +4502,13 @@ class ItemForecaster:
                 # calibration records come from, and they have to be unseen.
                 logger.info(f"  Reusing cached HP for {horizon}d (Optuna skipped)...")
                 _warm_retrain = True
+                if train_offset is not None:
+                    logger.warning(
+                        f"  ⚠ {horizon}d is boosting from -return_1d "
+                        f"(NAIVE_INIT_SCORE=1) on hyperparameters selected "
+                        f"against the UN-offset target. Read the sign of "
+                        f"rank_ic_edge from this run, but confirm the size with "
+                        f"FORCE_HP_SEARCH=1 before believing it.")
                 for q in self.QUANTILES:
                     bp = dict(cached_hp[q])
                     bp["max_bin"] = self.MAX_BIN
@@ -4435,6 +4566,10 @@ class ItemForecaster:
                             boosting_type=boosting_type,
                             n_trials=hz_trials,
                             horizon=horizon,
+                            # Or the search would select hyperparameters for a
+                            # target the fit below does not have.
+                            train_offset=train_offset,
+                            val_offset=val_offset,
                         )
 
                 for q in self.QUANTILES:
@@ -4572,6 +4707,13 @@ class ItemForecaster:
                     r_dval_kw = dict(params=r_ds_params)
                     if r_val_weights is not None:
                         r_dval_kw["weight"] = r_val_weights
+                    # The same offset as the global fit. predict() prefers regime
+                    # models over the global one, so a regime booster trained
+                    # without it would be the thing actually served.
+                    r_train_offset = self._naive_offset(r_train)
+                    if r_train_offset is not None:
+                        r_dtrain_kw["init_score"] = r_train_offset
+                        r_dval_kw["init_score"] = self._naive_offset(r_val)
                     r_dtrain = lgb.Dataset(r_X_train, r_y_train, **r_dtrain_kw)
                     r_dval = lgb.Dataset(r_X_val, r_y_val, reference=r_dtrain, **r_dval_kw)
                     # Construct eagerly for the same reason as the global
@@ -4902,6 +5044,7 @@ class ItemForecaster:
                         X_val_np, y_val_np, self.feature_cols,
                         horizon=horizon, n_shuffles=20, min_drop_pp=0.5,
                         significance_level=0.05,
+                        offset=val_offset,
                     )
                     self.cv_results[horizon]["feature_validation"] = fv
                     failed = [g for g, r in fv.items() if not r["passed"]]
@@ -5516,6 +5659,12 @@ class ItemForecaster:
                 f"be calibrated from the holdout. Refusing to serve an "
                 f"uncalibrated band."
             )
+        # N1's offset, or q_hat would be fitted on residuals to a mid the
+        # serving path does not use. This fallback path is already the weaker of
+        # the two calibrations; it must not also be on a different footing.
+        holdout_offset = self._naive_offset(val_set)
+        if holdout_offset is not None:
+            p50 = p50 + holdout_offset
         records = self._conformal_records(
             p50, y_val.values, self._sigma_for_rows(val_set),
             val_set["price"].values,
@@ -6036,6 +6185,16 @@ class ItemForecaster:
             # conversion to price levels happens per item further below.
             p50_ret = preds[0.5]
 
+            # N1: a booster fitted with `init_score = -return_1d` emits the
+            # RESIDUAL to that baseline, so the served level is the residual plus
+            # the baseline. Read off the artifact, not the environment — a warm
+            # daily run that lost the env var would otherwise publish residuals
+            # as forecasts with nothing in the output to give it away.
+            # `latest_rows` is X_batch's source frame, so this is positional.
+            naive_offset = self._naive_offset_served(latest_rows)
+            if naive_offset is not None:
+                p50_ret = p50_ret + naive_offset
+
             # Median from the single p50 model; band from locally-weighted split
             # conformal (sigma_arr, computed once above). A band symmetric about
             # the median cannot cross, so the isotonic repair this loop used to
@@ -6411,6 +6570,15 @@ class ItemForecaster:
             dval_kw = dict(params=ds_params)
             if val_w is not None:
                 dval_kw["weight"] = val_w
+            # N1's offset. `fold_val_offset` is added back to every prediction
+            # below, so rank_ic, the fold DA, the PT records and the conformal
+            # residuals all describe `model + baseline` -- the same quantity
+            # predict() serves -- rather than the residual on its own.
+            fold_train_offset = self._naive_offset(train_df)
+            fold_val_offset = self._naive_offset(val_df)
+            if fold_train_offset is not None:
+                dtrain_kw["init_score"] = fold_train_offset
+                dval_kw["init_score"] = fold_val_offset
             dtrain = lgb.Dataset(X_train, y_train, **dtrain_kw)
             dval = lgb.Dataset(X_val, y_val, reference=dtrain, **dval_kw)
 
@@ -6440,7 +6608,10 @@ class ItemForecaster:
                     valid_sets=fold_valid,
                     callbacks=fold_callbacks,
                 )
-                lgb_preds.append(model.predict(X_val))
+                fold_pred = model.predict(X_val)
+                if fold_val_offset is not None:
+                    fold_pred = fold_pred + fold_val_offset
+                lgb_preds.append(fold_pred)
 
                 pred = lgb_preds[0]
                 if q == 0.5:
@@ -7040,6 +7211,10 @@ class ItemForecaster:
             # needless retrain for a change none of them enabled.
             "tier_lead": self.tier_lead_enabled(),
             "cross_sectional_rank": self.cross_sectional_rank_enabled(),
+            # Load-bearing for the served LEVEL, not just for the feature set: a
+            # booster fitted with the offset emits a residual, so predict has to
+            # know to add `-return_1d` back. See _naive_init_score_served.
+            "naive_init_score": self.naive_init_score_enabled(),
             "sigma_clip": dict(self.sigma_clip),
             "feature_cols": self.feature_cols,
             "horizon_feature_cols": {
@@ -7110,6 +7285,7 @@ class ItemForecaster:
         # it would let a stray env var change what an existing model is served.
         self._artifact_tier_lead = meta.get("tier_lead")
         self._artifact_xs_rank = meta.get("cross_sectional_rank")
+        self._artifact_naive_init = meta.get("naive_init_score")
 
         # Restore cached tuned hyperparameters (skips Optuna on retrain when present).
         self.tuned_params = {}

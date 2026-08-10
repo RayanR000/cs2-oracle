@@ -46,5 +46,15 @@ paths:
   it: `full` needs `FORCE_RETRAIN=1` or the restored artifact trips the 14-day age gate and
   Monday trains nothing, and **regime models must still train** — `predict` prefers them over
   the global model, so skipping them changes the served mid rather than saving cost.
+- **`NAIVE_INIT_SCORE=1` changes what the boosters PREDICT, not just what they see.** With it on,
+  `-return_1d` is the `init_score` on every quantile `Dataset` and the boosters emit a **residual**
+  to that baseline, so `predict`, the CV fold predictions, the Optuna objective,
+  `_validate_feature_groups` and `_holdout_conformal_records` all add the offset back. Serving one
+  of these boosters without it publishes a residual as a forecast, silently — which is why
+  `_naive_init_score_served` follows `meta.json`'s `naive_init_score` and only falls back to the
+  environment when no artifact is loaded. Training reads the environment, deliberately. The
+  direction classifier is untouched. Read `rank_ic_edge`, bar `>= 0`; HP was selected against the
+  un-offset target, so the run WARNs and any positive needs `FORCE_HP_SEARCH=1` to size. Off by
+  default and **unmeasured**. See `docs/changelog/2026-08-10-naive-init-score-instrument.md`.
 - **Size/speed levers are already documented.** See `docs/architecture/model-optimization.md`
   for the options that retain ≥90% quality — don't re-derive them.

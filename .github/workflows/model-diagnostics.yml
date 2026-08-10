@@ -61,6 +61,11 @@ on:
         required: false
         default: false
         type: boolean
+      naive_init_score:
+        description: 'Arm: boost the q50 from -return_1d (N1)'
+        required: false
+        default: false
+        type: boolean
 
 defaults:
   run:
@@ -156,6 +161,11 @@ jobs:
           # believing the size of it.
           TIER_LEAD_FEATURE: ${{ inputs.tier_lead && '1' || '0' }}
           CROSS_SECTIONAL_RANK: ${{ inputs.cross_sectional_rank && '1' || '0' }}
+          # N1. Unlike the two above this changes what the boosters PREDICT (a
+          # residual to -return_1d, not a level), so the run logs a warning when
+          # it is on with reused HP. Read `rank_ic_edge` per horizon; the bar is
+          # >= 0, and it is currently negative at all four.
+          NAIVE_INIT_SCORE: ${{ inputs.naive_init_score && '1' || '0' }}
         run: |
           set -o pipefail
           python scripts/forecast_prices.py --train-only 2>&1 \
@@ -178,6 +188,7 @@ jobs:
         env:
           TIER_LEAD_FEATURE: ${{ inputs.tier_lead && '1' || '0' }}
           CROSS_SECTIONAL_RANK: ${{ inputs.cross_sectional_rank && '1' || '0' }}
+          NAIVE_INIT_SCORE: ${{ inputs.naive_init_score && '1' || '0' }}
         run: |
           # The arm goes in the heading. A diagnostics run that cannot say which
           # arm produced it is worse than no run: the numbers look citable and
@@ -191,12 +202,16 @@ jobs:
           if [ "$CROSS_SECTIONAL_RANK" = "1" ]; then
             arms="${arms:+$arms+}xs_rank"
           fi
+          if [ "$NAIVE_INIT_SCORE" = "1" ]; then
+            arms="${arms:+$arms+}naive_init"
+          fi
           arm="${arms:-control}"
           {
             echo "## ${{ matrix.horizon }}d diagnostics — arm: \`${arm}\`"
             echo
             echo "\`TIER_LEAD_FEATURE=$TIER_LEAD_FEATURE\` "
-            echo "\`CROSS_SECTIONAL_RANK=$CROSS_SECTIONAL_RANK\`"
+            echo "\`CROSS_SECTIONAL_RANK=$CROSS_SECTIONAL_RANK\` "
+            echo "\`NAIVE_INIT_SCORE=$NAIVE_INIT_SCORE\`"
             echo
             echo "Bar is \`naive_rank_ic\` on the same folds, not 50% and not a stored number."
             echo '```'

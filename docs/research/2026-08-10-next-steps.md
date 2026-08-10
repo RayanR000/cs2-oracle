@@ -46,6 +46,15 @@ signal.
 
 ### N1. Fit the q50 on top of `−return_1d` via `init_score`
 
+> **Instrument shipped 2026-08-10, gated off (`NAIVE_INIT_SCORE=1`), and UNMEASURED.** See
+> `docs/changelog/2026-08-10-naive-init-score-instrument.md` — it covers all five `Dataset`
+> seams and every predict path, and adds a `naive_init_score` arm to `model-diagnostics.yml`.
+> What remains is the read: one dispatch per horizon against a control on the same commit.
+> Two things the changelog corrects about the plan below: the floor is **empirical, not
+> algebraic** (a boosted model can fit its way back below the offset), and a CV rank-IC gain
+> does **not** transfer to the served mid until **F1** lands, because `predict` recentres the
+> mid on the classifier's call afterwards.
+
 - **Do:** pass `init_score = −return_1d` (in the same units as the target) on the training
   `lgb.Dataset`, and add it back at predict time. The model then fits the *residual* to the naive
   predictor instead of competing with it.
