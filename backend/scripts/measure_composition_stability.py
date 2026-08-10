@@ -329,6 +329,13 @@ def build_windows(voted: pd.DataFrame, horizon: int, min_price: float,
         "date": frame["date"].to_numpy(),
         "x": -r_1d,
         "y": forward,
+        # `present` is published separately from `stable` because their
+        # complement is not one thing: `not stable` means "the composition
+        # changed" OR "a day of the window was never observed", and those two
+        # are different claims about the data. Pooling them under one label
+        # puts gap-driven rows in the cell a reader will read as evidence about
+        # composition change.
+        "present": present,
         "stable": stable,
         "n_ask_sources": frame["n_ask_sources"].to_numpy(),
         "price": p_t,
@@ -339,16 +346,17 @@ def build_windows(voted: pd.DataFrame, horizon: int, min_price: float,
     return out[usable & (out["price"] >= min_price)].drop(columns=["price"])
 
 
-def rank_ic(cell: pd.DataFrame) -> dict:
-    """Mean within-date Spearman of ``x`` against ``y``, and its t statistic.
+def per_date_ic(cell: pd.DataFrame,
+                min_items: int = MIN_ITEMS_PER_DATE) -> pd.Series:
+    """The within-date Spearman of ``x`` against ``y``, indexed by date.
 
-    Ranks are taken within each date and correlated there; the per-date series
-    is then averaged, so the cross-sectional market factor common to a date
-    cannot inflate the result the way a pooled Spearman does.
+    Ranks are taken within each date and correlated there. A pooled Spearman
+    over all item-days is a different and much larger number because it absorbs
+    the cross-sectional market factor, which is the thing this measurement is
+    trying to look past.
     """
-    n_rows = len(cell)
-    if n_rows < MIN_ITEMS_PER_DATE:
-        return {"n_dates": 0, "n_rows": n_rows, "rank_ic": None, "t": None}
+    if len(cell) < min_items:
+        return pd.Series(dtype=float)
 
     grouped = cell.groupby("date", sort=True)
     ranks = pd.DataFrame({
@@ -371,40 +379,87 @@ def rank_ic(cell: pd.DataFrame) -> dict:
     # dropped rather than counted as zero, which would be an assertion the data
     # does not make.
     with np.errstate(divide="ignore", invalid="ignore"):
-        per_date = (numerator / denominator)[
-            (n >= MIN_ITEMS_PER_DATE) & (denominator > 0)].dropna()
+        return (numerator / denominator)[
+            (n >= min_items) & (denominator > 0)].dropna()
 
-    n_dates = len(per_date)
-    if n_dates == 0:
-        return {"n_dates": 0, "n_rows": n_rows, "rank_ic": None, "t": None}
 
-    mean = float(per_date.mean())
-    sd = float(per_date.std(ddof=1)) if n_dates > 1 else float("nan")
-    t_stat = (mean / (sd / np.sqrt(n_dates))
-              if n_dates > 1 and sd > 0 else None)
+def _mean_and_t(series: pd.Series) -> tuple[float | None, float | None]:
+    """The mean of a per-date series and ``mean / (sd / sqrt(n))``."""
+    n = len(series)
+    if n == 0:
+        return None, None
+    mean = float(series.mean())
+    if n < 2:
+        return mean, None
+    sd = float(series.std(ddof=1))
+    return mean, (float(mean / (sd / np.sqrt(n))) if sd > 0 else None)
+
+
+def rank_ic(cell: pd.DataFrame,
+            min_items: int = MIN_ITEMS_PER_DATE) -> dict:
+    """Mean within-date rank IC for a cell, and its t statistic."""
+    per_date = per_date_ic(cell, min_items)
+    mean, t_stat = _mean_and_t(per_date)
     return {
-        "n_dates": n_dates,
-        "n_rows": n_rows,
+        "n_dates": len(per_date),
+        "n_rows": len(cell),
         "rank_ic": mean,
-        "t": None if t_stat is None else float(t_stat),
+        "t": t_stat,
     }
 
 
+def paired_difference(left: pd.DataFrame, right: pd.DataFrame,
+                      min_items: int = MIN_ITEMS_PER_DATE) -> dict:
+    """``left - right`` per-date rank IC, on the dates both cells occupy.
+
+    The two cells are drawn from the same days, so the market factor that moves
+    every date's IC together is differenced out. Comparing their unpaired means
+    instead leaves that variance in and, on cells of very different date counts,
+    invites reading a gap that the dates themselves explain.
+    """
+    a, b = per_date_ic(left, min_items), per_date_ic(right, min_items)
+    common = a.index.intersection(b.index)
+    difference = (a.loc[common] - b.loc[common]).dropna()
+    mean, t_stat = _mean_and_t(difference)
+    return {"n_dates": len(difference), "difference": mean, "t": t_stat}
+
+
 def partitions(windows: pd.DataFrame) -> list[tuple[str, pd.DataFrame]]:
+    """The cells, three-way on stability rather than two-way.
+
+    `not stable` is two different claims — the composition changed, or a day of
+    the window was never observed — and they cannot share a cell. The gapped
+    rows are numerous (an item that reports intermittently produces them
+    everywhere) and say nothing about composition, so a two-way split labels
+    them as evidence they are not.
+    """
     stable = windows["stable"]
+    present = windows["present"]
     n_src = windows["n_ask_sources"]
     return [
         ("all rows", windows),
         ("composition stable", windows[stable]),
-        ("composition changed", windows[~stable]),
+        ("composition changed (present)", windows[present & ~stable]),
+        ("window incomplete", windows[~present]),
         ("stable & single source", windows[stable & (n_src == 1)]),
         (f"stable & >={MULTI_SOURCE_FLOOR} sources",
          windows[stable & (n_src >= MULTI_SOURCE_FLOOR)]),
     ]
 
 
+#: The pair the headline rests on: does holding composition still change the
+#: answer? Compared paired, on the dates both cells occupy.
+PAIRED_CELLS = ("composition stable", "composition changed (present)")
+
+
+def verdict(n_dates: int) -> str:
+    """`measured` only above the reporting floor; below it, no number exists."""
+    return "measured" if n_dates >= MIN_DATES_TO_REPORT else "underpowered"
+
+
 def measure(archive_dir: Path, horizon: int, start: date, min_price: float,
-            basis: str = "set", end: date | None = None) -> list[dict]:
+            basis: str = "set", end: date | None = None,
+            min_items: int = MIN_ITEMS_PER_DATE) -> tuple[list[dict], dict]:
     voted = load_voted_series(archive_dir, start, end)
     print(f"voted series: {len(voted):,} item-days, "
           f"{voted['item_id'].nunique():,} items")
@@ -423,28 +478,34 @@ def measure(archive_dir: Path, horizon: int, start: date, min_price: float,
           f"{len(void)} anchor dates")
     print(f"usable (item, t) windows at >= ${min_price:g}: {len(windows):,}")
 
+    cells = dict(partitions(windows))
     results = []
     for name, cell in partitions(windows):
-        stats = rank_ic(cell)
+        stats = rank_ic(cell, min_items)
         stats["cell"] = name
-        stats["verdict"] = ("measured" if stats["n_dates"] >= MIN_DATES_TO_REPORT
-                            else "underpowered")
+        stats["verdict"] = verdict(stats["n_dates"])
         results.append(stats)
-    return results
+
+    paired = paired_difference(cells[PAIRED_CELLS[0]], cells[PAIRED_CELLS[1]],
+                               min_items)
+    paired["verdict"] = verdict(paired["n_dates"])
+    return results, paired
 
 
-def report(results: list[dict], horizon: int, start: date, min_price: float,
-           basis: str) -> None:
+def report(results: list[dict], paired: dict, horizon: int, start: date,
+           min_price: float, basis: str,
+           min_items: int = MIN_ITEMS_PER_DATE) -> None:
     described = ("the SET of source names" if basis == "set"
                  else "the COUNT of ask sources")
     print()
     print(f"rank IC of -r_t vs the forward {horizon}d return, "
           f">= ${min_price:g}, from {start}")
-    print(f"composition basis: {basis} ({described})")
+    print(f"composition basis: {basis} ({described}); "
+          f"min items per date: {min_items}")
     print(f"(within-date Spearman, averaged across dates; "
           f"cells under {MIN_DATES_TO_REPORT} dates are not quotable)")
     print()
-    print(f"{'cell':28s} {'n_dates':>8s} {'n_rows':>12s} "
+    print(f"{'cell':32s} {'n_dates':>8s} {'n_rows':>12s} "
           f"{'rank_ic':>9s} {'t':>8s}  verdict")
     for row in results:
         if row["verdict"] == "measured":
@@ -454,8 +515,19 @@ def report(results: list[dict], horizon: int, start: date, min_price: float,
             # Never print a number for an underpowered cell. The whole point of
             # the floor is that the nearest quotable figure is not available.
             ic, t = f"{'--':>9s}", f"{'--':>8s}"
-        print(f"{row['cell']:28s} {row['n_dates']:8d} {row['n_rows']:12,d} "
+        print(f"{row['cell']:32s} {row['n_dates']:8d} {row['n_rows']:12,d} "
               f"{ic} {t}  {row['verdict']}")
+
+    print()
+    if paired["verdict"] == "measured":
+        difference = f"{paired['difference']:+9.4f}"
+        t = "     n/a" if paired["t"] is None else f"{paired['t']:8.1f}"
+    else:
+        difference, t = f"{'--':>9s}", f"{'--':>8s}"
+    print(f"paired difference, {PAIRED_CELLS[0]} minus {PAIRED_CELLS[1]}, "
+          f"on the dates both occupy:")
+    print(f"{'stable - changed':32s} {paired['n_dates']:8d} {'':12s} "
+          f"{difference} {t}  {paired['verdict']}")
 
 
 def main() -> None:
@@ -473,14 +545,22 @@ def main() -> None:
                         choices=sorted(COMPOSITION_COLUMN),
                         help="what composition means: the set of source names "
                              "(default) or their count")
+    parser.add_argument("--min-items-per-date", type=int,
+                        default=MIN_ITEMS_PER_DATE,
+                        help=f"items a date needs in a cell to contribute an IC "
+                             f"(default: {MIN_ITEMS_PER_DATE}). Exposed so the "
+                             f"sensitivity of a cell to it can be published "
+                             f"from this script rather than estimated.")
     parser.add_argument("--archive-dir", type=Path, default=ARCHIVE_ROOT)
     args = parser.parse_args()
 
     start = date.fromisoformat(args.start)
     end = date.fromisoformat(args.end) if args.end else None
-    results = measure(args.archive_dir, args.horizon, start, args.min_price,
-                      args.basis, end)
-    report(results, args.horizon, start, args.min_price, args.basis)
+    results, paired = measure(args.archive_dir, args.horizon, start,
+                              args.min_price, args.basis, end,
+                              args.min_items_per_date)
+    report(results, paired, args.horizon, start, args.min_price, args.basis,
+           args.min_items_per_date)
 
 
 if __name__ == "__main__":

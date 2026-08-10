@@ -20,11 +20,16 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from scripts.measure_composition_stability import (  # noqa: E402
+    MIN_DATES_TO_REPORT,
     MIN_ITEMS_PER_DATE,
     NULL_SOURCE_LABEL,
     build_windows,
+    paired_difference,
+    partitions,
     rank_ic,
+    report,
     source_masks,
+    verdict,
     voided_anchors,
 )
 
@@ -340,3 +345,141 @@ def test_a_null_source_is_a_name_like_any_other():
 
     assert masks["source_mask"].nunique() == 1
     assert (np.bitwise_count(masks["source_mask"].to_numpy()) == 1).all()
+
+
+# --------------------------------------------------------------------------
+# The far end of the window, which an off-by-one leaves unpinned
+# --------------------------------------------------------------------------
+
+def test_a_change_on_exactly_t_plus_h_is_not_stable():
+    # The change sits on day 5. For the anchor at day 2 that is exactly t+h;
+    # for the anchor at day 1 it is t+h+1, one day past the window. A window
+    # built as `range(-1, horizon)` instead of `range(-1, horizon + 1)` keeps
+    # both stable and every other test in this file still passes.
+    voted = _voted(_series("a", range(0, 7), [2, 2, 2, 2, 2, 3, 3]))
+    windows = build_windows(voted, horizon=3, min_price=1.0)
+
+    by_day = dict(zip(windows["date"].dt.date, windows["stable"]))
+    assert not by_day[START + timedelta(days=2)], "t+h is inside the window"
+    assert by_day[START + timedelta(days=1)], "t+h+1 is outside it"
+
+
+# --------------------------------------------------------------------------
+# Three-way split: "not stable" is two different claims
+# --------------------------------------------------------------------------
+
+def test_a_gapped_window_is_not_counted_as_a_composition_change():
+    # Item a holds its composition but is missing day 3; item b is observed
+    # every day and changes composition on day 3.
+    voted = _voted(_series("a", [0, 1, 2, 4, 5], 2)
+                   + _series("b", range(0, 6), [2, 2, 2, 3, 2, 2]))
+    windows = build_windows(voted, horizon=3, min_price=1.0)
+    cells = dict(partitions(windows))
+
+    changed = cells["composition changed (present)"]
+    incomplete = cells["window incomplete"]
+
+    assert len(changed) == 2 and len(incomplete) == 2
+    assert cells["composition stable"].empty
+    # Every row lands in exactly one of the three.
+    assert (len(cells["composition stable"]) + len(changed) + len(incomplete)
+            == len(cells["all rows"]))
+
+
+def test_the_three_stability_cells_partition_the_rows():
+    voted = _voted(_series("a", range(0, 8), 2)
+                   + _series("b", [0, 1, 2, 4, 5, 6, 7], 2)
+                   + _series("c", range(0, 8), [1, 1, 2, 2, 3, 3, 1, 1]))
+    cells = dict(partitions(build_windows(voted, horizon=3, min_price=1.0)))
+
+    total = (len(cells["composition stable"])
+             + len(cells["composition changed (present)"])
+             + len(cells["window incomplete"]))
+    assert total == len(cells["all rows"])
+
+
+# --------------------------------------------------------------------------
+# The reporting floor, which is the brief's hardest constraint
+# --------------------------------------------------------------------------
+
+def test_a_cell_below_the_floor_is_underpowered():
+    assert verdict(MIN_DATES_TO_REPORT - 1) == "underpowered"
+    assert verdict(MIN_DATES_TO_REPORT) == "measured"
+    assert verdict(0) == "underpowered"
+
+
+def test_an_underpowered_cell_prints_no_number(capsys):
+    results = [{"cell": "stable & >=3 sources", "n_dates": MIN_DATES_TO_REPORT - 1,
+                "n_rows": 407_437, "rank_ic": 0.1234, "t": 9.87,
+                "verdict": "underpowered"}]
+    paired = {"n_dates": 0, "difference": None, "t": None,
+              "verdict": "underpowered"}
+
+    report(results, paired, horizon=3, start=date(2026, 1, 1), min_price=1.0,
+           basis="set")
+
+    line = next(l for l in capsys.readouterr().out.splitlines()
+                if l.startswith("stable & >=3 sources"))
+    assert "0.1234" not in line and "9.9" not in line and "9.87" not in line
+    assert "--" in line and "underpowered" in line
+
+
+def test_a_cell_above_the_floor_prints_its_number(capsys):
+    results = [{"cell": "composition stable", "n_dates": MIN_DATES_TO_REPORT,
+                "n_rows": 100, "rank_ic": 0.1027, "t": 14.1,
+                "verdict": "measured"}]
+    paired = {"n_dates": 0, "difference": None, "t": None,
+              "verdict": "underpowered"}
+
+    report(results, paired, horizon=3, start=date(2026, 1, 1), min_price=1.0,
+           basis="set")
+
+    line = next(l for l in capsys.readouterr().out.splitlines()
+                if l.startswith("composition stable"))
+    assert "+0.1027" in line and "14.1" in line
+
+
+# --------------------------------------------------------------------------
+# The paired difference the headline rests on
+# --------------------------------------------------------------------------
+
+def test_the_paired_difference_uses_only_the_common_dates():
+    left = _cell({date(2026, 1, 1): [(float(i), float(i)) for i in range(6)],
+                  date(2026, 1, 2): [(float(i), float(i)) for i in range(6)],
+                  date(2026, 1, 3): [(float(i), float(-i)) for i in range(6)]})
+    right = _cell({date(2026, 1, 1): [(float(i), float(-i)) for i in range(6)],
+                   date(2026, 1, 2): [(float(i), float(-i)) for i in range(6)]})
+
+    result = paired_difference(left, right)
+
+    # 1-3 is in `left` only and must not contribute; on the two shared dates
+    # the difference is +1 - (-1) = +2 both times.
+    assert result["n_dates"] == 2
+    assert result["difference"] == 2.0
+    assert result["t"] is None  # zero dispersion -> no t, not an infinite one
+
+
+def test_a_paired_difference_of_zero_reports_zero_not_none():
+    pairs = {date(2026, 1, d): [(float(i), float(i * (-1) ** d))
+                                for i in range(6)] for d in range(1, 5)}
+    result = paired_difference(_cell(pairs), _cell(pairs))
+
+    assert result["n_dates"] == 4
+    assert result["difference"] == 0.0
+    assert result["t"] is None  # zero dispersion is not an infinite t
+
+
+def test_a_date_too_thin_in_either_cell_drops_out_of_the_pair():
+    # 1-2 has plenty of items in `left` and only two in `right`. It cannot
+    # contribute an IC on the right, so it must not contribute a difference
+    # either -- silently pairing it against nothing would compare a measured
+    # date to an absent one.
+    left = _cell({date(2026, 1, 1): [(float(i), float(i)) for i in range(6)],
+                  date(2026, 1, 2): [(float(i), float(i)) for i in range(6)]})
+    right = _cell({date(2026, 1, 1): [(float(i), float(-i)) for i in range(6)],
+                   date(2026, 1, 2): [(1.0, 1.0), (2.0, 2.0)]})
+
+    result = paired_difference(left, right)
+
+    assert result["n_dates"] == 1
+    assert result["difference"] == 2.0
