@@ -7,6 +7,16 @@
 
 ## 1. The measurement
 
+> ⚠️ **Corrected 2026-08-10. "It still loses to a constant call at three of four horizons" is
+> wrong** — that baseline is hindsight-selected per fold (implied direction `up` on 4 of 8 folds at
+> 30d), so the +0.9 / −4.1 / −9.7 / −16.0pp column below is a comparison to an oracle. Against the
+> runnable always-down call, whose accuracy is `realised_down_rate` (46.06 / 48.73 / 50.56 /
+> 48.48%), the served classifier is **+3.5 / +0.1 / −1.3 / +4.4pp** — a wash to modest positive, and
+> inside per-fold noise either way. **§1's actual finding stands and is the important one:** the
+> served classifier beats the quantile sign by 4.6–10.0pp, so every historical DA understated
+> production. So does §6's — the served PT margin is larger at every horizon.
+> See `docs/changelog/2026-08-10-constant-call-is-hindsight-picked.md`.
+
 `price-forecast.yml` sets `CV_DIAGNOSTIC_CLASSIFIER=0`, so until this run no offline number
 had ever described the signal production serves. `predict` takes direction from
 `self.direction_models[horizon]` (`forecaster.py:5679`); every DA in every training log to

@@ -27,6 +27,17 @@ paths:
   resolves as `degenerate`, never as skill. `baseline_directional_accuracy` is the always-*flat*
   call, not the constant-call baseline, despite the name. See
   `docs/changelog/2026-08-07-pesaran-timmermann-headline.md`.
+- **`constant_call_accuracy` is hindsight-selected, so never difference model DA against it.**
+  `constant_call_baseline` counts the *outcomes* and returns whichever fixed call would have won,
+  and `_cv_evaluate_horizon` re-picks it **per fold** — the implied direction is `up` on 4 of 8
+  folds at 30d, so the average of the per-fold maxima (68.99%) exceeds any runnable strategy by
+  20.5pp. **The runnable fixed call is always-down, and its accuracy *is* `realised_down_rate`**
+  by construction. Against that, the served classifier is +3.5 / +0.1 / −1.3 / +4.4pp at
+  3/7/14/30d, not the −4 to −16pp that `edge_vs_constant_call*` reports. Keep
+  `constant_call_accuracy` — it upper-bounds what a direction-free call could extract, which is
+  the right diagnostic for how much of a horizon's DA is base rate — but the comparison term is
+  `realised_down_rate` and the test is PT. See
+  `docs/changelog/2026-08-10-constant-call-is-hindsight-picked.md`.
 - **`price_tier` has six bands, and tier 4 changed meaning.** The cut at $1000 landed
   2026-08-07 because the bid–ask spread is 10.8% at $50–500 against 5.2% at $1000+ — the two
   most different liquidity populations in the market. **A stored row with `price_tier == 4`

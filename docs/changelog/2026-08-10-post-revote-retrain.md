@@ -23,6 +23,14 @@ cache key is now populated, so the next run votes warm.
 
 ## Result: the re-vote did not move the model-vs-baseline gap
 
+> ⚠️ **Corrected 2026-08-10. The `edge` column against `constant-call` compares to an oracle.**
+> `constant_call_baseline` picks its direction with hindsight, per fold — `up` on 4 of 8 folds at
+> 30d — so the −9.10 / −11.37 / −15.90 / −20.61pp figures below are not losses to any runnable
+> strategy. The runnable fixed call is always-down, whose accuracy is the `realised_down_rate`
+> already stored on each fold. **The `rank IC` vs `naive −return_1d` columns are unaffected** — that
+> baseline uses no hindsight, and it remains the one legitimate gap this entry identified.
+> See `docs/changelog/2026-08-10-constant-call-is-hindsight-picked.md`.
+
 | h | quantile-sign DA | constant-call | edge | PT excess | PT t | verdict | rank IC | naive `−return_1d` | edge |
 |---|---|---|---|---|---|---|---|---|---|
 | 3d | 39.6% (sd 4.6) | 48.68% | −9.10pp | 2.798pp | **12.14** | skill | 0.1774 | 0.1933 | **−0.0159** |

@@ -22,6 +22,8 @@ These four hold everywhere. The reasoning behind each is in the rule file named 
    time by `models/forecaster.py::embargo_days`. → `labels-and-embargo`
 4. **Never quote a directional accuracy on its own.** The headline is a Pesaran–Timmermann
    test; DA is quotable only beside `constant_call_accuracy` and `realised_down_rate`.
+   Of those two, **`realised_down_rate` is the runnable baseline** — `constant_call_accuracy`
+   picks its direction with hindsight, so **never difference model DA against it**.
    → `backtest-scoring`
 
 ## Rules

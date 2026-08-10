@@ -2,7 +2,10 @@
 
 **Date:** 2026-08-10
 **Follows:** `docs/changelog/2026-08-10-served-classifier-scored.md`, which established that
-the served classifier loses to a constant call at 7d/14d/30d, and
+the served classifier loses to a constant call at 7d/14d/30d — ⚠️ **corrected 2026-08-10: that
+baseline is hindsight-selected and the runnable comparison is a wash, see
+`2026-08-10-constant-call-is-hindsight-picked.md`. Nothing in this entry depends on it; both
+instruments are read on rank IC against `naive_rank_ic`, which is unaffected** — and
 `docs/research/2026-08-10-training-cost-levers.md` for the cost budget these fit inside.
 **Implements:** Track C's **C1** (the rank transform) and the `cross_sectional`-adjacent half
 of **C4** (the tier lead-lag), plus **C6**'s `SKIP_REGIMES` decision.

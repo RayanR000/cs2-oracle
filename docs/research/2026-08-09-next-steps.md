@@ -1,5 +1,14 @@
 # Next steps from the 2026-08-09 research review
 
+> ⚠️ **Ordering superseded by `docs/research/2026-08-10-next-steps.md`.** This document remains the
+> reference for the *content* of every `O`/`G`/`A`/`C`/`D` item and its cautions — the later one
+> carries the labels forward and re-ranks them. Two things changed on 2026-08-10: the
+> "loses to a constant call" framing used throughout is a comparison to a **hindsight-selected**
+> baseline (`2026-08-10-constant-call-is-hindsight-picked.md`), and two serving-path calibration
+> defects plus a `model_version` fragmentation blocker were found
+> (`2026-08-10-band-and-confidence-are-miscalibrated.md`). The `−return_1d` rank-IC gap this
+> document treats as the live bar is **unaffected and still the bar**.
+
 **Source:** `docs/research/2026-08-09-model-and-data-research.md`.
 **Supersedes ordering in:** `docs/research/2026-08-07-next-steps.md` steps 8–11 and R11–R19,
 which remain valid as descriptions but are re-ranked here. Items carried forward keep their old

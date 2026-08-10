@@ -494,6 +494,15 @@ statistic, and that — not DA — is what the log line, `GET /accuracy/headline
 surfaces publish. Raw DA is quotable only as a **triple** with `constant_call_accuracy` (the best
 single fixed call) and `realised_down_rate` beside it.
 
+> ⚠️ **`constant_call_accuracy` is selected with hindsight — do not difference model DA against
+> it.** `constant_call_baseline` counts the outcomes and returns whichever fixed call would have
+> won, re-picked **per fold**; the implied direction is `up` on 4 of 8 folds at 30d, so its 68.99%
+> average is unreachable by any strategy. **The runnable fixed call is always-down, whose accuracy
+> *is* `realised_down_rate`** — the third term of the triple. Against it the served classifier is
+> **+3.5 / +0.1 / −1.3 / +4.4pp** at 3/7/14/30d, not the −4 to −16pp that `edge_vs_constant_call*`
+> reports. Keep the metric (it bounds how much of a horizon's DA is base rate); change the
+> comparison. `docs/changelog/2026-08-10-constant-call-is-hindsight-picked.md`.
+
 The reason is measured, not stylistic: an always-down call scored **29.4% on 2025-12-01 and 76.9%
 on 2026-07-17** at 7d, against a model that says "down" 57–87% of the time whatever the date. A
 fixed DA is therefore skill on one date and incompetence on the other, and a pooled DA over a few

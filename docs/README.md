@@ -14,10 +14,25 @@ report it rather than working around it.
 - `data.md` — Parquet archive layout, the `ops/` mirror layer, Supabase serving tables
 
 > **No production directional-accuracy figure is currently quotable.**
-> `MIN_FORECAST_DATES = 20` (`backend/backtest/scoring.py`) and live cohorts span 1–2
-> distinct forecast dates, so every horizon reports NO HEADLINE. This is a calendar
-> problem, not a code problem. Offline CV DA and production DA are not comparable until
-> the served series accumulates ~20 dates.
+> `MIN_FORECAST_DATES = 20` (`backend/backtest/scoring.py`) and live cohorts span 1–5
+> distinct forecast dates, so every horizon reports NO HEADLINE. Offline CV DA and
+> production DA are not comparable until the served series accumulates ~20 dates.
+>
+> ⚠️ **Corrected 2026-08-10: this is only half a calendar problem.** `item_forecasts` holds
+> **6 distinct forecast dates in total**, split three ways by `model_version`
+> (`lgbm-v3-regime` 3 / `lgbm-v3` 2 / `lgbm-v3-global-only` 1). `score_cohort` keys on that
+> field and it encodes the *configuration*, so every config change resets the panel — twenty
+> daily runs yield twenty dates only if nothing about the config moves for twenty days, and
+> `SKIP_REGIMES=1` landed 2026-08-10. Tracked as **F3**.
+
+> ⚠️ **Two published metrics do not mean what they appear to (audited 2026-08-10).**
+> `constant_call_accuracy` is **hindsight-selected per fold**, so `edge_vs_constant_call*` is a
+> comparison to an oracle and must not be read as a defeat — the runnable baseline is
+> `realised_down_rate`, against which the served classifier is +3.5 / +0.1 / −1.3 / +4.4pp at
+> 3/7/14/30d. And the served band is calibrated around the q50 mid but served around a
+> **recentred** mid, so its 80% coverage claim does not hold (production `IntCov` 34.6–61.8%).
+> `changelog/2026-08-10-constant-call-is-hindsight-picked.md`,
+> `changelog/2026-08-10-band-and-confidence-are-miscalibrated.md`.
 
 ## Reference (`references/`)
 
@@ -47,17 +62,27 @@ report it rather than working around it.
   **fixed** (2026-08-08; the flag is now `--no-purge`); the synthetic 1.1607 Steam fee constant is
   **still unfixed**, tracked as `5c`. Also carries the one measured positive — expensive tiers lead
   cheap tiers by a day, z = 9.1. See `changelog/2026-08-07-cs2-forecasting-research-review.md`.
-- `2026-08-09-next-steps.md` — ⭐ **the live action list.** Tracks O/G/A/C/D. **Track A is closed
-  (all six cost levers shipped 2026-08-09); D1 answered — the Steam listing page works.** Read its
-  status block first; it says which of the other tracks are done. **The gate is lifted** — Tracks C
-  and D are unblocked. O2 is the last pre-existing item still open — G3 landed in `873148b`,
-  and O4 closed 2026-08-10.
-- `2026-08-10-training-cost-levers.md` — **the current cost accounting**, measured against CI
-  runs `31337078991` and `31356483719`; supersedes the cost tables in
-  `changelog/2026-08-09-training-cost-levers.md`. Both measured runs are over the project's
-  30-minute wall-clock cap. ⚠️ **Read its own corrections banner** — three of its claims were
-  overturned when levers 1 and 4 landed the same day, including that lever 1 is free of
-  served effects (it is not; the regime half moves the served mid).
+- `2026-08-10-next-steps.md` — ⭐ **the live action list.** Ranked by accuracy-per-minute after the
+  2026-08-10 audit. Adds **Track N** (close the `−return_1d` gap: `init_score`, then a market/rank
+  decomposition, then `lambdarank`) and **Track F** (three cheap fixes that gate what can be
+  published). Deprioritises anything scoped as closing the constant-call gap, and further
+  retrain-cost work — the warm arm64 retrain is **996.6s / 17m48s**, inside the cap, and the
+  bottleneck is now experiment power.
+- `2026-08-09-next-steps.md` — the previous action list; **ordering superseded**, but still the
+  reference for the *content* of every O/G/A/C/D item and its cautions. **Track A is closed
+  (all six cost levers shipped 2026-08-09); D1 answered — the Steam listing page works.** **The gate
+  is lifted** — Tracks C and D are unblocked. ⚠️ Its "loses to a constant call" framing throughout
+  is a comparison to a hindsight-selected baseline.
+- `2026-08-10-training-cost-levers.md` — the cost accounting, measured against CI runs
+  `31337078991` and `31356483719`; supersedes the cost tables in
+  `changelog/2026-08-09-training-cost-levers.md`. ⚠️ **Read its own corrections banner** — three of
+  its claims were overturned when levers 1 and 4 landed the same day, including that lever 1 is free
+  of served effects (it is not; the regime half moves the served mid). ⚠️ **Also now stale on the
+  headline:** both runs it budgets against (1884s, 2306s) predate the warm cache, `SKIP_REGIMES=1`
+  and arm64. Run `31407938154` measured **996.6s training / 17m48s job** — inside the 30-minute cap,
+  so its remaining levers are real but no longer urgent. Its §"The structural option" (serve the
+  naive predictor) is superseded by **N1**, which gets the same floor via `init_score` without
+  giving up the q50.
 - `2026-08-08-model-review.md` — the model review. ⚠️ **§5's composition rows are refuted in
   place** (2026-08-09); the fall attributed to composition control was a pre-2026-vs-2026 regime
   difference caused by a NULL-unsafe comparison.
@@ -110,9 +135,21 @@ also recorded in `changelog/`, which is the durable record. Load-bearing ones:
 ## Changelog (`changelog/`)
 
 Append-only dated decision records: bug fixes, features, audits, and refuted experiments.
-121 entries, 2026-07-08 to 2026-08-10. Entries are never edited to match later reality —
+123 entries, 2026-07-08 to 2026-08-10. Entries are never edited to match later reality —
 several describe code that has since been deleted, which is the point. Per `AGENTS.md`
 workflow rule 2, non-trivial decisions get a new dated note here.
+
+The two newest are the 2026-08-10 audit, and both carry corrections that reach back into
+earlier entries:
+
+- `2026-08-10-constant-call-is-hindsight-picked.md` — `constant_call_accuracy` is selected with
+  hindsight per fold, so `edge_vs_constant_call*` compares to an oracle; the runnable baseline is
+  `realised_down_rate`. Also: `model_version` fragments the scoring panel, which is why no headline
+  publishes. Corrects three earlier 2026-08-10 entries in place.
+- `2026-08-10-band-and-confidence-are-miscalibrated.md` — the conformal band is calibrated around
+  the q50 mid then served around a recentred one; the served `confidence` label is an uncalibrated
+  0.5 cut, and the thresholds that *were* fitted describe a path production does not take.
+  Diagnosis only, nothing fixed.
 
 ## Other
 
