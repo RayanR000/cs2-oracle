@@ -96,7 +96,17 @@ message. That is better evidence than the source-level test written for it — a
 defect in the smoke mode, fixed in `5fd4892`: `predict_smoke` now forces training, because a mode
 that predicts from a restored artifact is measuring the wrong model.
 
-## Open: the skip set is re-derived at serve time, and it disagrees
+## ~~Open:~~ FIXED — the skip set is re-derived at serve time, and it disagreed
+
+> **Fixed in `cfff8ae`, verified by run `31442057746`.** All four horizons now report
+> `32/32` at training **and** `32/32` at serving, with no `macd_missing` skip line, cohort
+> unchanged at 948/5,536, 5,536 items still carrying a forecast. `skip_cols` makes serving
+> reproduce training's decision in both directions: a column training ranked is ranked now even
+> if constant today (all-ties → exactly 0.0, which is what training produced on its own constant
+> dates), and a column training skipped stays raw even if it varies today. `save_models` records
+> `xs_rank_skipped_cols`, `predict` refuses without it, and `[]` ("nothing skipped") is
+> distinguished from `None` ("the artifact does not say").
+
 
 **32/32 columns transformed at training, 31/32 at serving** — `macd_missing` is within-date
 constant on the predict frame, so the date-constant skip fires there and not in training. The
@@ -113,7 +123,6 @@ artifact and have serving follow it rather than re-deriving. **Not done.**
 
 ## Not done
 
-- The skip-set inconsistency above.
 - **No accuracy claim.** The smoke checks shape, not quality. Three of the four smoke jobs trained
   a single horizon beside restored boosters, and none of it says the served forecasts are good.
 - `CROSS_SECTIONAL_RANK` stays off in production. What is established is that the serving path
