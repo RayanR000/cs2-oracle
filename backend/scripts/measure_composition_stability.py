@@ -27,9 +27,11 @@ Definitions, each of which changes the answer:
   ``count`` — ``n_ask_sources``, the number of distinct ask sources, straight
   off ``ItemForecaster._apply_multi_source_voting``.
 
-  Both are built from the same rows the vote consumed, with bids already
-  excluded, and a NULL ``source`` treated as one named source rather than as an
-  unknown. That last point matters: every archive row before 2026 carries
+  Both are built from the same rows the vote consumed, with bids and Steam's
+  trailing-window means (``TRAILING_WINDOW_SOURCES``) already excluded so
+  "composition" means the set of sources that actually voted, and a NULL
+  ``source`` treated as one named source rather than as an unknown. That last
+  point matters: every archive row before 2026 carries
   ``source IS NULL``, so under either basis the whole pre-2026 series reads as
   one constant source. Treating NULL as "never equal to itself" instead — which
   is what the refuted ``2026-08-08-model-review.md`` §5 measurement did — throws
@@ -93,7 +95,10 @@ import pandas as pd
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from db.archive import prices_relation  # noqa: E402
-from models.item_parser import archive_universe_sql_filter  # noqa: E402
+from models.item_parser import (  # noqa: E402
+    TRAILING_WINDOW_SOURCES,
+    archive_universe_sql_filter,
+)
 
 #: A cell with fewer contributing dates reads `underpowered` and must never be
 #: quoted as a number. The multi-source era of the archive is a few dozen days
@@ -194,6 +199,17 @@ def source_masks(df: pd.DataFrame) -> pd.DataFrame:
     rows ``n_ask_sources`` counted. Computing it from a separate query would let
     the two drift apart while both still looked right.
 
+    ``TRAILING_WINDOW_SOURCES`` (Steam's trailing-window means) are also
+    dropped here, the same way ``_apply_multi_source_voting`` drops them before
+    it counts ``n_ask_sources``: those three sources are not excluded at the
+    SQL level (only bids are, via ``archive_universe_sql_filter``), they are
+    excluded *inside* the vote. Without this, the mask would count a source
+    that never actually voted, and ``load_voted_series``'s
+    ``bitwise_count(source_mask) == n_ask_sources`` guard would fire on every
+    item-day where a trailing-window source sat alongside a real ask.
+    ``.isin()`` on a ``frozenset`` is False for NaN, which is what keeps the
+    whole pre-2026 ``source IS NULL`` series in the mask.
+
     A bitmask rather than a joined string: there are a dozen distinct sources in
     thirteen years, so the whole set fits in an integer, and set equality
     becomes integer equality on a column that costs 8 bytes a row instead of a
@@ -203,6 +219,7 @@ def source_masks(df: pd.DataFrame) -> pd.DataFrame:
     loader and a later task on this branch owns its cache version; adding a
     column here keeps that surface untouched.
     """
+    df = df[~df["source"].isin(TRAILING_WINDOW_SOURCES)]
     codes, names = pd.factorize(df["source"].fillna(NULL_SOURCE_LABEL))
     if len(names) > 62:
         raise ValueError(

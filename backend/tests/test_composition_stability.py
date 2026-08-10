@@ -19,6 +19,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+from models.item_parser import TRAILING_WINDOW_SOURCES  # noqa: E402
 from scripts.measure_composition_stability import (  # noqa: E402
     MIN_DATES_TO_REPORT,
     MIN_ITEMS_PER_DATE,
@@ -334,6 +335,33 @@ def test_different_sets_of_the_same_size_get_different_masks():
     by_item = dict(zip(masks["item_id"], masks["source_mask"]))
     assert by_item["a"] != by_item["b"]
     assert np.bitwise_count(by_item["a"]) == np.bitwise_count(by_item["b"]) == 2
+
+
+def test_a_trailing_window_source_does_not_count_toward_the_mask():
+    # `_apply_multi_source_voting` drops `TRAILING_WINDOW_SOURCES` before it
+    # counts `n_ask_sources`, so the mask must drop them too, or
+    # `load_voted_series`'s `bitwise_count(source_mask) == n_ask_sources`
+    # guard fires on every item-day where one sat alongside a real ask.
+    trailing = next(iter(TRAILING_WINDOW_SOURCES))
+    masks = source_masks(_raw([
+        ("a", 0, "skinport"), ("a", 0, trailing),
+        ("b", 0, "skinport"),
+    ]))
+
+    by_item = dict(zip(masks["item_id"], masks["source_mask"]))
+    assert by_item["a"] == by_item["b"], (
+        "a trailing-window source must not appear in the set at all")
+    assert np.bitwise_count(by_item["a"]) == 1
+
+
+def test_an_item_day_that_is_only_a_trailing_window_source_has_no_mask_row():
+    # Mirrors the vote's own early-return: an item-day with nothing but a
+    # trailing-window source produces no row in `voted` either, so the two
+    # must agree that it does not exist rather than one reporting an empty set.
+    trailing = next(iter(TRAILING_WINDOW_SOURCES))
+    masks = source_masks(_raw([("a", 0, trailing)]))
+
+    assert masks.empty
 
 
 def test_a_null_source_is_a_name_like_any_other():

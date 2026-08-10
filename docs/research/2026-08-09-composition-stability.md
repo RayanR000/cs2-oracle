@@ -213,6 +213,114 @@ this archive currently supports a direct stable-vs-changed comparison.
   reads +0.1761/916 dates against §5's +0.1676/932 on the same 2024-01-01 window.
 - Every number is from the **local** archive copy, which runs behind CI (max day 2026-08-08).
 
+## Post-exclusion re-run — after `873148b`
+
+**Measured 2026-08-09**, same day, same instrument, same archive snapshot (max day
+2026-08-08) — the only thing that changed between the two runs is commit `873148b`
+(`docs/changelog/2026-08-09-trailing-window-sources-excluded.md`), which removed
+`aggregator_steam_7d/30d/90d` from the consensus vote inside
+`ItemForecaster._apply_multi_source_voting`.
+
+**This is not a clean before/after comparison, and the numbers below must not be read as
+one.** The three excluded sources exist only from **2026-07-11 to 2026-08-08**. The
+primary measurement (`--from 2026-01-01`) reports 185/172 dates at h=3/h=7, and of those
+only roughly **29 calendar dates** (the span whose `t−1 … t+h` window can touch
+2026-07-11 → 08-08 at all) have any basis change whatsoever — the other ~150+ dates are
+byte-identical to the pre-exclusion run. The secondary measurement runs the whole
+13-year archive, where that same ~29-day span is a smaller fraction still. **A small
+delta between the two runs is therefore the expected result of the exclusion's own
+narrow time window, not evidence that the exclusion did nothing** — this instrument
+cannot distinguish "the exclusion had no effect" from "the exclusion had an effect
+confined to the ~16% of dates it could possibly touch," and the numbers below are
+consistent with the latter.
+
+### A defect fixed before re-running
+
+The script computes each item-day's source **set** independently of the vote, in
+`source_masks()`, from the pre-vote frame, and asserts
+`bitwise_count(source_mask) == n_ask_sources` as a guard that the two are reading the
+same rows. `_apply_multi_source_voting` now drops `TRAILING_WINDOW_SOURCES` before it
+counts `n_ask_sources`, but `source_masks()` had no such exclusion, so the guard would
+have fired on every item-day where a trailing-window source sat alongside a real ask.
+Fixed by excluding `TRAILING_WINDOW_SOURCES` (imported from `models/item_parser.py`,
+not re-listed) from `source_masks()` too, so "composition" means the set of sources that
+*actually voted* — consistent with what `n_ask_sources` has always counted. Two tests
+added in `backend/tests/test_composition_stability.py`
+(`test_a_trailing_window_source_does_not_count_toward_the_mask`,
+`test_an_item_day_that_is_only_a_trailing_window_source_has_no_mask_row`). The guard did
+not fire on the re-run — this fix is why.
+
+### Primary — 2026, composition = the set of source names
+
+`--horizon 3 --from 2026-01-01 --basis set`
+
+| Cell | pre-exclusion IC | post-exclusion IC | Δ | n_dates (post) | verdict |
+|---|---|---|---|---|---|
+| All rows | +0.1023 | **+0.1011** | −0.0012 | 185 | measured |
+| Composition stable | +0.1027 | **+0.1017** | −0.0010 | 181 | measured |
+| Composition changed (present) | underpowered (25 dates) | underpowered (25 dates) | — | 25 | underpowered |
+| Window incomplete | +0.0917 | **+0.0902** | −0.0015 | 37 | measured |
+| Stable & single source | +0.1088 | **+0.1103** | +0.0015 | 181 | measured |
+| Stable & ≥3 sources | underpowered (25 dates) | underpowered (25 dates) | — | 25 | underpowered |
+| Paired (stable − changed) | underpowered (25 dates) | underpowered (25 dates) | — | 25 | underpowered |
+
+`--horizon 7 --from 2026-01-01 --basis set`
+
+| Cell | pre-exclusion IC | post-exclusion IC | Δ | n_dates (post) | verdict |
+|---|---|---|---|---|---|
+| All rows | +0.0842 | **+0.0838** | −0.0004 | 172 | measured |
+| Composition stable | +0.0842 | **+0.0838** | −0.0004 | 167 | measured |
+| Composition changed (present) | underpowered (19 dates) | underpowered (19 dates) | — | 19 | underpowered |
+| Window incomplete | +0.1095 | **+0.1095** | 0.0000 | 166 | measured |
+| Stable & single source | +0.0919 | **+0.0926** | +0.0007 | 167 | measured |
+| Stable & ≥3 sources | underpowered (19 dates) | underpowered (19 dates) | — | 19 | underpowered |
+| Paired (stable − changed) | underpowered (19 dates) | underpowered (19 dates) | — | 19 | underpowered |
+
+The underpowered cells (25/19 dates, both below `MIN_DATES_TO_REPORT = 30`) stay
+underpowered post-exclusion — carrying no number in either run, as required — because
+excluding three sources from the vote does not add multi-source item-days back to the
+archive; it only changes what the *existing* ones' consensus was computed from.
+
+### Secondary — the whole archive, composition = the count of ask sources
+
+`--horizon 3 --from 2013-08-14 --basis count`
+
+| Cell | pre-exclusion IC | post-exclusion IC | Δ | n_dates (post) | verdict |
+|---|---|---|---|---|---|
+| All rows | +0.1941 | **+0.1940** | −0.0001 | 4,602 | measured |
+| Composition stable | +0.1937 | **+0.1936** | −0.0001 | 4,598 | measured |
+| Composition changed (present) | underpowered (25 dates) | underpowered (25 dates) | — | 25 | underpowered |
+| Window incomplete | +0.1502 | **+0.1496** | −0.0006 | 81 | measured |
+| Stable & single source | +0.1939 | **+0.1940** | +0.0001 | 4,598 | measured |
+| Stable & ≥3 sources | underpowered (25 dates) | underpowered (25 dates) | — | 25 | underpowered |
+| Paired (stable − changed) | underpowered (25 dates) | underpowered (25 dates) | — | 25 | underpowered |
+
+`--horizon 7 --from 2013-08-14 --basis count`
+
+| Cell | pre-exclusion IC | post-exclusion IC | Δ | n_dates (post) | verdict |
+|---|---|---|---|---|---|
+| All rows | +0.1528 | **+0.1528** | 0.0000 | 4,585 | measured |
+| Composition stable | +0.1515 | **+0.1515** | 0.0000 | 4,580 | measured |
+| Composition changed (present) | underpowered (19 dates) | underpowered (19 dates) | — | 19 | underpowered |
+| Window incomplete | +0.2228 | **+0.2228** | 0.0000 | 552 | measured |
+| Stable & single source | +0.1518 | **+0.1518** | 0.0000 | 4,580 | measured |
+| Stable & ≥3 sources | underpowered (19 dates) | underpowered (19 dates) | — | 19 | underpowered |
+| Paired (stable − changed) | underpowered (19 dates) | underpowered (19 dates) | — | 19 | underpowered |
+
+### Reading the deltas
+
+Every measured cell moves by **0.0000 to 0.0015** — one to fifteen units in the fourth
+decimal place, on both bases and both horizons. That is exactly the size the exposure
+argument above predicts: at most ~16% of the primary window's dates and a much smaller
+share of the 13-year secondary window can be touched by a change confined to
+2026-07-11 → 08-08, so a within-date rank IC averaged unweighted across 172–4,602 dates
+should move by a small fraction of even a large per-date effect. **No cell moved
+materially more than the ~29-date exposure can explain**, so this is not a finding that
+requires stopping and reporting under this task's own criterion — it is confirmation
+that the exclusion changed what it was scoped to change and nothing else, and that the
+underlying rank-IC result (composition-stable ≈ unconditional, at a well-powered date
+count; the changed/≥3-source cells still underpowered) is unchanged by it.
+
 ## Reproducing
 
 ```bash
