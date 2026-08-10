@@ -42,27 +42,41 @@ counts *exactly* when the NULL-never-equal rule is applied to it, on two indepen
 ## The corrected answer
 
 Measured over 2026 — the only era whose rows carry a source label — with composition defined as
-the **set** of source names voting on each item-day:
+the **set** of source names voting on each item-day. Each cell has its own date count; "all
+rows" and "composition stable" are not drawn from the same dates, because a handful of dates
+fall into the changed or gapped cells instead:
 
-| | all rows | composition stable | dates |
-|---|---|---|---|
-| 3d | +0.1023 | **+0.1027** | 181 |
-| 7d | +0.0842 | **+0.0842** | 167 |
+| | all rows | dates | composition stable | dates |
+|---|---|---|---|---|
+| 3d | +0.1023 | 185 | **+0.1027** | 181 |
+| 7d | +0.0842 | 172 | **+0.0842** | 167 |
 
 Holding composition still does not touch the signal. The same holds over the whole archive on
-the count basis (+0.1941 vs +0.1937 at 3d, 4,598 dates). **The reversal is not a composition
-artifact, and accuracy work is not gated on this.**
+the count basis — which assumes a NULL `source` is one constant source, so 2013-2025 reads as
+composition-stable by construction (+0.1941 vs +0.1937 at 3d, on 4,602 vs 4,598 dates). **The
+reversal is not a composition artifact, and accuracy work is not gated on this** — with the
+caveat that this conclusion rests on the stable population matching the unconditional one, not on
+a measured contrast against a changed population (next paragraph).
 
-The one part of §5 that survives is its weakest: the "stable and ≥3 agreeing sources" cell is
-**25 dates at 3d and 19 at 7d**, both under the 30-date reporting floor, so no number is quoted
-for it. The strictest form of the question is blocked on calendar time — the multi-source era is
-a few dozen days deep — not on effort.
+Two parts of §5 survive, and both are its weakest: the "composition changed (present)" cell —
+composition demonstrably different with every window day observed, as opposed to a window that
+merely had a missing day — is **25 dates at 3d and 19 at 7d**, and the "stable and ≥3 agreeing
+sources" cell is the same **25 dates at 3d and 19 at 7d**. Both are under the 30-date reporting
+floor, so no number is quoted for either. There is consequently no dataset in this archive on
+which the reversal's behaviour under a *known* composition change can be quoted — the "not a
+composition artifact" conclusion above is supported by the stable cell equalling the
+unconditional cell, not by a stable-vs-changed contrast. The strictest forms of the question are
+blocked on calendar time — the multi-source era is a few dozen days deep — not on effort.
 
 ## What changed
 
 - **New:** `backend/scripts/measure_composition_stability.py` — rank IC of `-r_t` against the
-  forward h-day return on the voted daily series, partitioned by composition stability over
-  `t−1 … t+h`. Reads through `prices_relation` + `archive_universe_sql_filter`, votes through
+  forward h-day return on the voted daily series, partitioned three ways over `t−1 … t+h`:
+  composition stable, composition changed with every window day present, and window incomplete
+  (a gap, which is not evidence about composition at all). Also reports a paired
+  stable-vs-changed difference on the dates both cells occupy, and takes `--min-items-per-date`
+  as a flag so that sensitivity can be published rather than estimated. Reads through
+  `prices_relation` + `archive_universe_sql_filter`, votes through
   `ItemForecaster._apply_multi_source_voting` rather than reimplementing it, opens no database
   session, and applies production's endpoint (snapshot) and span (collection-shift) voiding
   rules itself. Two composition bases: the **set** of source names (default) and the **count**

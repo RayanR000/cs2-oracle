@@ -1,7 +1,8 @@
 # Is the reversal a return, or a change of measurement basis?
 
 **Measured 2026-08-09** on branch `label-integrity`, against the local Parquet archive
-(4,967 days, 2013-08-14 → 2026-08-08, 38,413 items after the universe filter). Instrument:
+(4,743 calendar days, 4,739 present, 2013-08-14 → 2026-08-08, 38,413 items after the universe
+filter). Instrument:
 `backend/scripts/measure_composition_stability.py`, committed. No database session is opened
 anywhere in it.
 
@@ -58,9 +59,12 @@ being swapped for another, which a count cannot.
 |---|---|---|---|---|---|
 | All rows | 185 | 2,040,460 | **+0.1023** | 14.3 | measured |
 | Composition **stable** across t−1…t+3 | 181 | 1,912,872 | **+0.1027** | 14.1 | measured |
-| Composition changed | 46 | 127,588 | +0.0965 | 2.0 | measured |
+| Composition changed (present) | **25** | 23,970 | — | — | **underpowered** |
+| Window incomplete | 37 | 103,618 | +0.0917 | 1.3 | measured |
 | Stable & single source | 181 | 1,472,932 | +0.1088 | 13.7 | measured |
 | Stable & ≥3 sources | **25** | 407,437 | — | — | **underpowered** |
+
+Paired difference (stable minus changed, on the dates both occupy): **25** dates, **underpowered**.
 
 `--horizon 7 --from 2026-01-01 --basis set`
 
@@ -68,14 +72,24 @@ being swapped for another, which a count cannot.
 |---|---|---|---|---|---|
 | All rows | 172 | 1,845,202 | **+0.0842** | 14.3 | measured |
 | Composition **stable** across t−1…t+7 | 167 | 1,686,266 | **+0.0842** | 14.1 | measured |
-| Composition changed | 166 | 158,936 | +0.1051 | 4.1 | measured |
+| Composition changed (present) | **19** | 27,559 | — | — | **underpowered** |
+| Window incomplete | 166 | 131,377 | +0.1095 | 4.2 | measured |
 | Stable & single source | 167 | 1,368,709 | +0.0919 | 13.8 | measured |
 | Stable & ≥3 sources | **19** | 296,502 | — | — | **underpowered** |
 
-**Holding source composition still does not touch the signal.** At 3d the stable cell is
-+0.1027 against an unconditional +0.1023; at 7d the two agree to four decimal places. At 7d the
-*changed* cell is the higher of the two, which is the wrong direction for the artifact story
-entirely.
+Paired difference (stable minus changed, on the dates both occupy): **19** dates, **underpowered**.
+
+**Holding source composition still does not touch the signal, but only one side of that
+comparison is actually measured.** At 3d the stable cell is +0.1027 against an unconditional
++0.1023; at 7d the two agree to four decimal places (+0.0842 both). That is the whole of the
+evidence: the **composition changed (present)** cell — items whose composition genuinely
+differed with every window day observed, as distinct from a window that merely had a missing
+day — is **underpowered at both horizons** (25 dates at 3d, 19 at 7d), so there is no number to
+compare the stable cell against. The equality above is stable-vs-unconditional, not
+stable-vs-changed; no directional claim about the changed population is supported by this run.
+`Window incomplete` (37 dates at 3d, 166 at 7d) is gap-driven reporting, not composition change,
+and is reported apart from `changed` for exactly that reason — it answers a different question
+and is not part of the artifact test.
 
 ## Secondary result — the whole archive, composition = the count of ask sources
 
@@ -91,9 +105,12 @@ is the secondary and not the headline.
 |---|---|---|---|---|---|
 | All rows | 4,602 | 3,451,594 | **+0.1941** | 81.1 | measured |
 | Composition **stable** | 4,598 | 3,321,918 | **+0.1937** | 80.6 | measured |
-| Composition changed | 90 | 129,676 | +0.1469 | 3.0 | measured |
+| Composition changed (present) | **25** | 23,864 | — | — | **underpowered** |
+| Window incomplete | 81 | 105,812 | +0.1502 | 2.6 | measured |
 | Stable & single source | 4,598 | 2,881,885 | +0.1939 | 80.7 | measured |
 | Stable & ≥3 sources | **25** | 407,509 | — | — | **underpowered** |
+
+Paired difference (stable minus changed, on the dates both occupy): **25** dates, **underpowered**.
 
 `--horizon 7 --from 2013-08-14 --basis count`
 
@@ -101,11 +118,18 @@ is the secondary and not the headline.
 |---|---|---|---|---|---|
 | All rows | 4,585 | 3,255,920 | **+0.1528** | 63.4 | measured |
 | Composition **stable** | 4,580 | 3,091,865 | **+0.1515** | 62.2 | measured |
-| Composition changed | 552 | 164,055 | +0.2215 | 12.8 | measured |
+| Composition changed (present) | **19** | 27,493 | — | — | **underpowered** |
+| Window incomplete | 552 | 136,562 | +0.2228 | 12.8 | measured |
 | Stable & single source | 4,580 | 2,774,251 | +0.1518 | 62.3 | measured |
 | Stable & ≥3 sources | **19** | 296,544 | — | — | **underpowered** |
 
-Same answer over thirteen years and 4,598 dates: stable and unconditional are the same number.
+Paired difference (stable minus changed, on the dates both occupy): **19** dates, **underpowered**.
+
+Same answer over thirteen years and 4,598/4,580 dates: stable and unconditional are the same
+number. And, as on the primary basis, the direct comparison is out of reach here too — the
+composition changed (present) cell is underpowered at **exactly the same 25 and 19 dates** as
+the primary basis, because a genuine composition change (as opposed to a gap) can only be
+observed where `source` is non-NULL, which is 2026 regardless of which basis names it.
 
 ### How much does the set basis actually add over the count?
 
@@ -118,40 +142,65 @@ immaterial in this archive.
 
 ## Which of the three outcomes occurred
 
-**Outcome 1: the signal survives composition control at a reportable date count.** On the
-primary basis, at both horizons, the composition-stable cell equals the unconditional cell to
-within noise on 181 and 167 dates. The label is not explained by source composition changing
-under it.
+**Outcome 1: the signal survives composition control at a reportable date count — but only the
+stable-vs-unconditional half of that test is actually powered.** On the primary basis, at both
+horizons, the composition-stable cell equals the unconditional cell to within noise on 181 and
+167 dates; on the secondary basis the same holds on 4,598 and 4,580 dates over the whole
+archive. The label is not explained by source composition changing under it, in the specific
+sense that removing the changed rows (and the gapped rows) from the sample does not move the
+number.
 
-With one part of outcome 3 attached, and it is not a small caveat: **the "stable and ≥3
-agreeing sources" cell is 25 dates at 3d and 19 dates at 7d — both below the 30-date reporting
-floor, so no number is quoted for either.** The strictest available test of the artifact
-hypothesis is still unavailable, and it is blocked on calendar time rather than effort: the
-multi-source era is a few dozen days deep. That cell is the one §5 leant on, at 28 dates.
+Two parts of outcome 3 attach, and neither is a small caveat:
 
-**Track C is unblocked**, on the evidence that composition change is not what the reversal is
-made of.
+- **The direct comparison this test was built to make — "composition changed (present)" against
+  "composition stable" — is underpowered everywhere it was run**: 25 dates at 3d, 19 at 7d, on
+  both the primary and the secondary basis, and the paired stable-minus-changed difference is
+  therefore unreportable at every horizon too. There is no dataset in this archive, on either
+  composition basis, in which the reversal's behaviour under a *known* composition change can be
+  quoted. The "no directional shift" conclusion above rests on the stable population matching the
+  unconditional population, not on any measured contrast against the changed population.
+- **The "stable and ≥3 agreeing sources" cell is 25 dates at 3d and 19 dates at 7d** — the same
+  counts, because both draw on the same short multi-source window — both below the 30-date
+  reporting floor, so no number is quoted for either. That cell is the one §5 leant on, at 28
+  dates.
+
+The strictest available tests of the artifact hypothesis — a measured "changed" cell, and
+"several sources agree" — are both still unavailable, and both are blocked on calendar time
+rather than effort: the multi-source era is a few dozen days deep.
+
+**Track C is unblocked**, but on narrower grounds than "the changed cell disagrees with the
+stable cell": the evidence is that the composition-stable population's signal equals the
+unconditional population's, at a well-powered date count, on both composition bases. No cell in
+this archive currently supports a direct stable-vs-changed comparison.
 
 ## What this does *not* establish
 
 - It does **not** show the reversal is tradeable. It removes one specific mechanism — the
-  reporting set changing between the two ends of the window. A single-source series can still
-  produce cross-sectional reversal from noise in its own quotes; §5's own observation that
-  pooled 1-day autocorrelation is ≈0 argues against the time-series (Roll bid-ask bounce) form
-  of that, but not against a cross-sectional measurement-error form.
+  reporting set changing between the two ends of the window — from the *unconditional* sample,
+  by showing that sample's number survives when composition-changed and gapped rows are excluded.
+  It does not show what happens *in* a changed sample, because that sample is underpowered
+  everywhere measured. A single-source series can still produce cross-sectional reversal from
+  noise in its own quotes; §5's own observation that pooled 1-day autocorrelation is ≈0 argues
+  against the time-series (Roll bid-ask bounce) form of that, but not against a cross-sectional
+  measurement-error form.
 - It does not touch the *level* errors already documented and unfixed: the BUFF bid voting
   ~11% low, and `aggregator_steam_7d/30d/90d` being trailing-window mean sale prices rather than
   point asks. Those bias the consensus price whether or not the source set is moving.
-- The 25-date cell being underpowered means the "several independent sources agreeing" version
-  of the question is genuinely open.
+- Both the 25/19-date "≥3 sources" cells and the 25/19-date "changed (present)" cells being
+  underpowered means the "does the reversal survive an *observed* composition change, and does it
+  survive several independent sources agreeing" versions of the question are genuinely open.
 
 ## Caveats on the instrument
 
-- **`MIN_ITEMS_PER_DATE = 5` is a stated choice, and the "changed" cell is the one sensitive to
-  it.** At the mathematical minimum of 2 items the h=3/2024 changed cell measures +0.2199 on 516
-  dates; at 5 it is +0.1543 on 87. Most changed item-days are a handful of items on an otherwise
-  stable date, so those dates' ICs are near-degenerate. The "all rows" and "stable" cells move by
-  <0.001 either way.
+- **`MIN_ITEMS_PER_DATE = 5` is a stated choice.** Re-run at `--min-items-per-date 2` on the
+  primary window (`--horizon 3 --from 2026-01-01 --basis set`): `all rows` and `composition
+  stable` are unchanged to the four decimal places this script prints (+0.1023 and +0.1027,
+  identical at both settings), and `composition changed (present)` stays at exactly **25 dates,
+  underpowered, at both settings** — none of its dates sit in the 2-to-4-item range the floor
+  would otherwise exclude, so lowering it does not rescue the cell. The cell the floor visibly
+  moves is `window incomplete` (37 dates at the default 5, 108 at 2, rank IC +0.0917 vs +0.2626)
+  — but that cell is gap-driven reporting, not composition change, so its sensitivity to the
+  floor is not evidence about the artifact question this instrument exists to answer.
 - **`_collection_shift_dates` is a function of the item universe it is handed.** On the
   backfilled-only frame it fires on `2026-03-22, 07-09, 07-10, 07-11, 07-12`; on the
   full-universe frame used here it also fires on **`2026-04-16`, `2026-07-14`, `2026-07-15`**,
@@ -172,6 +221,10 @@ venv/bin/python scripts/measure_composition_stability.py --horizon 3 --from 2026
 venv/bin/python scripts/measure_composition_stability.py --horizon 7 --from 2026-01-01
 venv/bin/python scripts/measure_composition_stability.py --horizon 3 --from 2013-08-14 --basis count
 venv/bin/python scripts/measure_composition_stability.py --horizon 7 --from 2013-08-14 --basis count
+
+# The MIN_ITEMS_PER_DATE sensitivity check quoted in the caveats above
+venv/bin/python scripts/measure_composition_stability.py --horizon 3 --from 2026-01-01 \
+  --min-items-per-date 2
 ```
 
 Roughly 3.5 minutes each over 2026 and 4 minutes over the full archive; the cost is almost
