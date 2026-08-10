@@ -3026,6 +3026,10 @@ class ItemForecaster:
         # Resample to one row per item per day before feature engineering.
         # Raw price_history has multiple rows per day (collection runs every 6h).
         # Without resampling, "lag_1d" is really ~6h and "mean_7d" covers ~2 days.
+        # Naming only price/volume here also drops n_ask_sources if the input
+        # carries it -- see the matching exclude-set entry in
+        # _select_feature_cols, which no longer relies on this being the only
+        # thing stopping it from leaking into feature_cols.
         if "date" in price_df.columns:
             daily = price_df.groupby(["item_id", "date"], as_index=False).agg(
                 price=("price", "mean"),
@@ -3253,18 +3257,29 @@ class ItemForecaster:
         voided = int(df[f"target_return_{horizon}d"].isna().sum() - pre_void_na)
         counts = self.label_voiding.get("voided_labels_by_horizon", {})
         counts[horizon] = voided
+        # `voided` is the union of three rules -- snapshot days, collector
+        # cutovers, and the frozen-price-run rule (`bad |= stale_leg` above)
+        # -- and on the >=$1 cohort the frozen-run rule is the dominant term.
+        # Publish it separately rather than folding it into `voided`, or a
+        # reader attributes a large number to cutovers that cutovers did not
+        # cause. Per-horizon like `voided_labels_by_horizon`, since
+        # `LABEL_MAX_STALE_RUN_DAYS` and the window shape both vary by h.
+        frozen_run_labels = self.label_voiding.get("frozen_run_labels", {})
+        frozen_run_labels[horizon] = n_stale
         self.label_voiding = {
             "snapshot_dates": sorted(d.isoformat() for d in snapshots),
             "collection_shift_dates": sorted(d.isoformat() for d in shifts),
             "voided_labels_by_horizon": counts,
+            "frozen_run_labels": frozen_run_labels,
             "frame_date_range": [
                 pd.to_datetime(df["date"]).min().date().isoformat(),
                 pd.to_datetime(df["date"]).max().date().isoformat(),
             ],
         }
         logger.info(
-            f"  Label voiding (h={horizon}): {voided:,} labels voided; "
-            f"{len(shifts)} collector cutovers, {len(snapshots)} snapshot days; "
+            f"  Label voiding (h={horizon}): {voided:,} labels voided "
+            f"({n_stale:,} of them for a frozen price run, "
+            f"{len(shifts)} collector cutovers, {len(snapshots)} snapshot days); "
             f"cutovers: {sorted(d.isoformat() for d in shifts)}"
         )
         return df
@@ -4620,7 +4635,18 @@ class ItemForecaster:
         re-entering production is exactly the regression worth a test.
         """
         exclude = {"item_id", "date", "timestamp", "price", "volume",
-                   "name", "release_date", DIRECTION_LABEL_VOL_COL}
+                   "name", "release_date", DIRECTION_LABEL_VOL_COL,
+                   # n_ask_sources (the composition-stability instrument's
+                   # column, added to the voted frame in v5) never reaches
+                   # this far in practice -- engineer_features' resample to
+                   # one row per item-day names only "price" and "volume" in
+                   # its groupby().agg(), which drops it -- but that is an
+                   # accident of an unrelated aggregation, and
+                   # _feature_group("n_ask_sources") falls through to
+                   # "other", which _skipped_feature_groups() never skips.
+                   # Name it here so the exclusion is a decision, not a
+                   # side effect.
+                   "n_ask_sources"}
         exclude |= {f"target_{h}d" for h in horizons}
         exclude |= {f"target_return_{h}d" for h in horizons}
         # The market factor is computed from other items' FUTURE prices. It is

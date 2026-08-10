@@ -97,18 +97,31 @@ materialised the column as a typed NULL rather than stamping a label, precisely
 so the `is_backfilled` derivation below keeps working.
 
 **The item universe is a read-time filter, not a property of the archive.** Every
-row stays on disk; readers narrow it. Two rules apply, and a new reader has to
-carry both itself — `walkforward_backtest.py` needed a separate copy of each,
-because it globs the archive rather than calling `fetch_price_history`:
-`models/forecaster.py::BID_SOURCES` (`aggregator_buff163_buy` is a bid and must
-not vote), and `models/item_parser.py::phase_collapsed_sql_filter()`, which drops
-the Doppler and Gamma Doppler names because one such name prices every phase at
-once. The phase rule matches **129 of 41,725 slugs / 47,081 of 20,756,038 rows**
+row stays on disk; readers narrow it. Two rules apply at the SQL/archive-glob
+level, and a new reader has to carry both itself — `walkforward_backtest.py`
+needed a separate copy of each, because it globs the archive rather than
+calling `fetch_price_history`: `models/item_parser.py::BID_SOURCES`
+(`aggregator_buff163_buy` is a bid and must not vote), and
+`models/item_parser.py::phase_collapsed_sql_filter()`, which drops the Doppler
+and Gamma Doppler names because one such name prices every phase at once. The
+phase rule matches **129 of 41,725 slugs / 47,081 of 20,756,038 rows**
 (0.309% / 0.227%), of which two are false positives —
 `Sticker | Doppler Poison Frog (Foil)` and its Sticker Slab twin, 396 rows, kept
 by `PHASE_COLLAPSED_EXEMPT_PATTERNS`. Both filters are written NULL-safe: a bare
 `NOT LIKE` over a NULL evaluates to NULL and drops the row, and NULL selects 13
-years here. See `../changelog/2026-08-08-phase-collapsed-names-dropped.md` and
+years here.
+
+A **third** rule, `models/item_parser.py::TRAILING_WINDOW_SOURCES`
+(`aggregator_steam_7d/30d/90d`, trailing-window mean sale prices that must not
+vote either, as of 2026-08-09), applies only inside
+`ItemForecaster._apply_multi_source_voting` — it is not part of
+`archive_universe_sql_filter()`, so it constrains anything that routes through
+the vote (`fetch_price_history`), not a raw archive glob. `walkforward_backtest.py`
+and the `ab_test_*` harnesses glob the archive and apply
+`archive_universe_sql_filter()` directly, so they do not exclude these three
+sources from their own averages — a known, deferred gap (see
+`.claude/rules/item-universe.md` and `.claude/rules/labels-and-embargo.md`).
+See `../changelog/2026-08-08-phase-collapsed-names-dropped.md` and
 `../changelog/2026-08-07-bid-source-excluded-from-voting.md`.
 
 ### Data Flow

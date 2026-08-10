@@ -20,15 +20,19 @@ separate fix per loader.
   relation with no `source` column — safe only because every bid source is a 2026 feed.
   **Frame caches fingerprint `forecaster.py`'s bytes, not `item_parser.py`'s**, so five
   harnesses hash the universe predicate into their key explicitly; a new one must too.
-- **A bid must never vote in the consensus price.** `aggregator_buff163_buy` is BUFF's
-  `highest_order`, and `BID_SOURCES` is dropped in `_apply_multi_source_voting` *before* the
-  group is read, so it counts toward neither the median nor the ≥3-source gate that enables
-  the 2σ mask. The filter is `~df["source"].isin(BID_SOURCES)` — NULL-safe by construction,
+- **A bid, and Steam's trailing-window means, must never vote in the consensus price.**
+  `aggregator_buff163_buy` is BUFF's `highest_order`, a bid; `aggregator_steam_7d/30d/90d` are
+  MA(7)/MA(30)/MA(90) trailing sale prices, the wrong *time* basis rather than the wrong side
+  of the book. Both `BID_SOURCES` and `TRAILING_WINDOW_SOURCES` are dropped in
+  `_apply_multi_source_voting` *before* the group is read, so neither counts toward the median
+  nor the ≥3-source gate that enables the 2σ mask. The filter is
+  `~df["source"].isin(BID_SOURCES | TRAILING_WINDOW_SOURCES)` — NULL-safe by construction,
   which is what keeps the pre-2026 `source IS NULL` series voting. An item-day whose only
-  source was the bid returns **no row** rather than falling back to it. **The 2σ guard is not
-  a defence here**: it ran on 99.3% of bid item-days and kept the bid four times out of five,
-  because the ask panel's own dispersion is wider than the bid–ask wedge. See
-  `docs/changelog/2026-08-07-bid-source-excluded-from-voting.md`.
+  source was excluded returns **no row** rather than falling back to it. **The 2σ guard is not
+  a defence for the bid**: it ran on 99.3% of bid item-days and kept the bid four times out of
+  five, because the ask panel's own dispersion is wider than the bid–ask wedge. See
+  `docs/changelog/2026-08-07-bid-source-excluded-from-voting.md` and
+  `docs/changelog/2026-08-09-trailing-window-sources-excluded.md`.
 - **A name that prices several assets is not in the universe.** Every Doppler and Gamma
   Doppler `market_hash_name` collapses its phases into one series, and the quoted headline is
   the *cheapest* phase 95.5% of the time — so the series steps when the cheapest phase
@@ -58,10 +62,15 @@ separate fix per loader.
   `docs/changelog/2026-08-08-phantom-slug-keys-dropped.md`.
 - **`fetch_price_history` caches the voted frame** to `data/voted_<key>.parquet`
   (gitignored), keyed on the `prices-*.parquet` fingerprint + cutoff date + backfill slug
-  set. **Bump `ItemForecaster.VOTED_CACHE_VERSION` if you change `_fetch_voted_price_history`
-  or `_apply_multi_source_voting`** — the key cannot see code changes. `VOTED_CACHE=0` disables.
-  Now at **v6**: v2 was the `BID_SOURCES` exclusion, which changed the consensus level, so any
-  surviving v1 frame holds a displaced price series and would have trained the next model on
-  it silently; v3 dropped the phase-collapsed names; v4 dropped the phantom slug keys; v5 added
-  `n_ask_sources`; v6 excluded `TRAILING_WINDOW_SOURCES` (Steam's trailing-window means). A
-  source-set change and a universe change both count as voting changes.
+  set. **Bump `ItemForecaster.VOTED_CACHE_VERSION` if you change `_fetch_voted_price_history`,
+  `_apply_multi_source_voting`, or the *contents* of `BID_SOURCES` / `TRAILING_WINDOW_SOURCES`**
+  — the key cannot see code changes. Both frozensets are defined in `models/item_parser.py`,
+  and `.github/workflows/price-forecast.yml:115` hashes only `forecaster.py` into the CI cache
+  key — so editing a source name into or out of either set is invisible to CI unless the
+  version constant (re-exported on `forecaster.py`, which the key does hash) moves too.
+  `VOTED_CACHE=0` disables. Now at **v6**: v2 was the `BID_SOURCES` exclusion, which changed
+  the consensus level, so any surviving v1 frame holds a displaced price series and would have
+  trained the next model on it silently; v3 dropped the phase-collapsed names; v4 dropped the
+  phantom slug keys; v5 added `n_ask_sources`; v6 excluded `TRAILING_WINDOW_SOURCES` (Steam's
+  trailing-window means). A source-set change and a universe change both count as voting
+  changes.

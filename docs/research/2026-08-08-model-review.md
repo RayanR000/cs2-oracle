@@ -230,21 +230,32 @@ early-stopping contrast and the naive comparison are internally valid.
 > `_snapshot_dates` / `_collection_shift_dates` exclusion.
 >
 > **The +0.1676 → +0.1006 fall is a 2013-2025 → 2026 regime difference, not
-> composition control.** Measured with the committed instrument: restricted to
-> 2026, the **all-rows** rank IC — no composition control of any kind — is
-> **+0.1023 on 185 dates**, against this table's "stable" +0.1006 on 188.
+> composition control.** Measured with the committed instrument (pre-`873148b`):
+> restricted to 2026, the **all-rows** rank IC — no composition control of any
+> kind — is **+0.1023 on 185 dates**, against this table's "stable" +0.1006 on 188.
 >
-> **Corrected answer:** over 2026, with composition defined as the *set* of source
-> names, the composition-stable cell is **+0.1027 on 181 dates at 3d** against an
-> unconditional **+0.1023** — and **+0.0842 vs +0.0842 on 167 dates at 7d**.
-> Holding composition still does not touch the signal, so the reversal is **not**
-> a composition artifact and accuracy work is **not** gated on this. The one row
-> that survives is the weakest: "stable & three agreeing sources" is 25 dates at
-> 3d and 19 at 7d, both under the 30-date reporting floor.
+> **Corrected answer (pre-`873148b`):** over 2026, with composition defined as
+> the *set* of source names, the composition-stable cell is **+0.1027 on 181
+> dates at 3d** against an unconditional **+0.1023** — and **+0.0842 vs +0.0842
+> on 167 dates at 7d**. Holding composition still does not touch the signal, so
+> the reversal is **not** a composition artifact and accuracy work is **not**
+> gated on this. The one row that survives is the weakest: "stable & three
+> agreeing sources" is 25 dates at 3d and 19 at 7d, both under the 30-date
+> reporting floor.
 >
-> The numbers are kept as published. They are reproducible: the committed script
-> reproduces 188 and 185 dates exactly when the NULL-never-equal rule is applied.
-> See **`docs/research/2026-08-09-composition-stability.md`** for the corrected
+> **The committed instrument no longer produces `+0.1023` / `+0.1027` /
+> `+0.0842`.** Commit `873148b` (2026-08-09) removed
+> `aggregator_steam_7d/30d/90d` from the consensus vote after this measurement
+> was published; re-run post-exclusion, the same cells read +0.1011 / +0.1017
+> (3d) and +0.0838 / +0.0838 (7d) — every delta ≤0.0015, same conclusion. See
+> the "Post-exclusion re-run — after `873148b`" section of
+> **`docs/research/2026-08-09-composition-stability.md`** for the full
+> before/after tables.
+>
+> The numbers above are kept as published, not deleted. They are reproducible:
+> the committed script reproduces 188 and 185 dates exactly when the
+> NULL-never-equal rule is applied. See
+> **`docs/research/2026-08-09-composition-stability.md`** for the corrected
 > measurement and `backend/scripts/measure_composition_stability.py` for the
 > instrument.
 
@@ -285,6 +296,21 @@ is false: composition change is not what the reversal is made of. What remains
 open is narrower — whether the reversal survives *several independent sources
 agreeing*, which is 25 dates at 3d and cannot be answered until more multi-source
 days accumulate.
+
+**Two things this conclusion leans on, stated here rather than left implicit.**
+First, the "composition changed (present)" cell — item-days whose source set
+genuinely differed with every window day observed, as opposed to a window with
+a missing day — is *also* underpowered, at the same floor as the "≥3 sources"
+cell: 25 dates at 3d, 19 at 7d. There is no dataset in this archive on which the
+reversal's behaviour under a *known* composition change can be quoted — "holding
+composition still does not touch the signal" is a stable-vs-unconditional
+equality, not a measured stable-vs-changed contrast. Second, the stable cell is
+not an independent check on the unconditional one: it is **93.7% of all rows**
+(1,912,872 / 2,040,460, pre-`873148b`) and **77.0% of that is single-source
+item-days** (1,472,932 / 1,912,872) whose composition cannot change by
+construction. See `docs/research/2026-08-09-composition-stability.md` for the
+full disclosure — this section now matches its candour rather than falling
+short of it.
 
 ---
 

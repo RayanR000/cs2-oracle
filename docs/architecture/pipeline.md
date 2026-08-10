@@ -42,11 +42,15 @@ The `aggregator_sync` fallback chain is why that label never goes missing when S
 no 24-hour print. Skinport reads `starting_at`, not `last_24h` — the earlier field choice
 was a bug.
 
-**Ten of the 11 labels are asks; `aggregator_buff163_buy` is a bid** (`highest_order`) and is
-collected but **excluded from consensus voting** as of 2026-08-07 —
-`models/forecaster.py::BID_SOURCES`. It is still written to the archive under its own label,
-so it is recoverable at read time. See
-`docs/changelog/2026-08-07-bid-source-excluded-from-voting.md`.
+**Seven of the 11 labels vote in the consensus price.** `aggregator_buff163_buy` is a bid
+(`highest_order`) and `aggregator_steam_7d/30d/90d` are Steam trailing-window MEAN sale
+prices — the wrong side of the book and the wrong time basis, respectively — so all four are
+collected but **excluded from consensus voting**, the bid as of 2026-08-07
+(`models/item_parser.py::BID_SOURCES`) and the trailing-window means as of 2026-08-09
+(`models/item_parser.py::TRAILING_WINDOW_SOURCES`). All four are still written to the archive
+under their own label, so they are recoverable at read time. See
+`docs/changelog/2026-08-07-bid-source-excluded-from-voting.md` and
+`docs/changelog/2026-08-09-trailing-window-sources-excluded.md`.
 
 ### Files
 - **`collectors/csgotrader_aggregator.py`** — one session for all endpoints; returns

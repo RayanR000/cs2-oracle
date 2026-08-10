@@ -224,12 +224,13 @@ May–June 2026 archive gap was backfilled (:2487-2494).
 
 ### Item universe
 
-Two exclusions are applied at the read, not downstream, so training and `predict()` see the
+Three exclusions are applied at the read, not downstream, so training and `predict()` see the
 same universe from the one query in `_fetch_voted_price_history`:
 
 | Rule | Where | What it removes |
 |---|---|---|
-| `BID_SOURCES` | `models/forecaster.py`, dropped in `_apply_multi_source_voting` | `aggregator_buff163_buy` — a bid, which must not vote against asks |
+| `BID_SOURCES` | `models/item_parser.py`, dropped in `_apply_multi_source_voting` | `aggregator_buff163_buy` — a bid, which must not vote against asks |
+| `TRAILING_WINDOW_SOURCES` | `models/item_parser.py`, dropped in `_apply_multi_source_voting` alongside `BID_SOURCES` (2026-08-09) | `aggregator_steam_7d/30d/90d` — Steam trailing-window MEAN sale prices, the wrong time basis rather than the wrong side of the book |
 | `PHASE_COLLAPSED_SLUG_PATTERNS` | `models/item_parser.py`, applied as `phase_collapsed_sql_filter()` | Doppler / Gamma Doppler names, whose returns are phase-composition artifacts |
 
 A `market_hash_name` encodes weapon + finish + wear + StatTrak/Souvenir and nothing else, so a
@@ -545,8 +546,11 @@ autocorrelation — so the statistic is conservative by construction.
   `docs/changelog/2026-07-29-7d-q50-early-stop.md`.
 - **`_apply_multi_source_voting()` uses `groupby().apply()`** over millions of rows and takes
   minutes. Vectorizable, but it affects only training/fetch time. The voted frame is cached —
-  bump `VOTED_CACHE_VERSION` when voting or the DuckDB query changes. Now at **v3**: v2 marked
-  the `BID_SOURCES` exclusion, v3 the phase-collapsed names leaving the universe.
+  bump `VOTED_CACHE_VERSION` when voting or the DuckDB query changes. Now at **v6**: v2 marked
+  the `BID_SOURCES` exclusion, v3 the phase-collapsed names leaving the universe, v4 the
+  phantom slug keys, v5 added `n_ask_sources`, v6 excluded `TRAILING_WINDOW_SOURCES` (Steam's
+  trailing-window means). See `.claude/rules/item-universe.md` for the full history and the
+  cache-bump trigger.
 - **The `ab_test_*` harnesses do not share the production universe.** Ten-plus of them carry
   private archive globs and filter neither `BID_SOURCES` nor the phase-collapsed names, so they
   train on a universe production no longer has. Tracked as step 5 of

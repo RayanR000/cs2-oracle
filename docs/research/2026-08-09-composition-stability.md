@@ -47,7 +47,12 @@ whole `t−1 … t+h` window because `-r_t` is itself a return over `(t−1, t]`
 This makes every result below **conservative**: the archive's largest known basis changes are
 gone from *every* cell, including "all rows", before composition is partitioned on at all.
 
-## Primary result — 2026, composition = the set of source names
+## Primary result (pre-`873148b`) — 2026, composition = the set of source names
+
+**These numbers predate commit `873148b`** (2026-08-09), which removed
+`aggregator_steam_7d/30d/90d` from the consensus vote after this section was written.
+See "Post-exclusion re-run — after `873148b`" below for the current numbers; the
+delta is ≤0.0015 rank-IC on every measured cell and does not change the conclusion.
 
 This is the measurement immune to both objections: 2026 is the only era whose rows carry a
 source label at all, so nothing rests on what a NULL means, and the set basis sees one source
@@ -91,7 +96,10 @@ stable-vs-changed; no directional claim about the changed population is supporte
 and is reported apart from `changed` for exactly that reason — it answers a different question
 and is not part of the artifact test.
 
-## Secondary result — the whole archive, composition = the count of ask sources
+## Secondary result (pre-`873148b`) — the whole archive, composition = the count of ask sources
+
+**These numbers also predate commit `873148b`** — see "Post-exclusion re-run" below for
+the current numbers (delta ≤0.0001 rank-IC on every measured cell here).
 
 Stated assumption: `source` is NULL for every row before 2026, and this basis reads that as
 **one constant source**, so 2013-2025 is composition-stable by construction. That is an
@@ -216,10 +224,36 @@ this archive currently supports a direct stable-vs-changed comparison.
 ## Post-exclusion re-run — after `873148b`
 
 **Measured 2026-08-09**, same day, same instrument, same archive snapshot (max day
-2026-08-08) — the only thing that changed between the two runs is commit `873148b`
+2026-08-08). The intended change between the two runs is commit `873148b`
 (`docs/changelog/2026-08-09-trailing-window-sources-excluded.md`), which removed
 `aggregator_steam_7d/30d/90d` from the consensus vote inside
-`ItemForecaster._apply_multi_source_voting`.
+`ItemForecaster._apply_multi_source_voting` — but that is not *strictly* the only
+thing that could have moved. `voided_dates()` (`scripts/measure_composition_stability.py:254-266`)
+runs `_snapshot_dates` / `_collection_shift_dates` on the **voted** frame, and both
+detectors key on item-universe size; Task 4 removed 650 item-days that had no ask
+source besides a trailing-window one, which shrinks that universe on the dates
+those item-days existed. Neither detector's logic changed, but the frame they run
+against did, so the exclusion could in principle move which dates are treated as
+void anchors — a channel distinct from, and in addition to, the consensus-price
+channel this section otherwise measures. The script prints both date lists on
+every run; only the post-exclusion lists were captured (below, from the runs
+underlying this section) — the pre-exclusion run's lists were not recorded and
+were not re-derived for this note, so whether the anchor *set* itself moved is not
+verified, only argued to be small by the ~29-date exposure bound below.
+
+Post-exclusion anchor dates, as printed by the runs behind this section's tables:
+
+- Primary (`--horizon 3 --from 2026-01-01 --basis set`, and the `--horizon 7`
+  sibling): snapshot dates (2): `2026-07-16, 2026-07-22`; collection shift dates
+  (8): `2026-03-22, 2026-04-16, 2026-07-09, 2026-07-10, 2026-07-11, 2026-07-12,
+  2026-07-14, 2026-07-15`.
+- Secondary (`--horizon 3/7 --from 2013-08-14 --basis count`, full archive):
+  same 2 snapshot dates; collection shift dates (13) add five pre-2026 dates:
+  `2013-08-29, 2013-09-21, 2013-11-07, 2013-11-28, 2016-10-07`, plus the same
+  eight 2026 dates above.
+
+These match `.superpowers/sdd/2026-08-09-label-integrity/task-5-report.md`'s
+verbatim stdout for all four re-runs.
 
 **This is not a clean before/after comparison, and the numbers below must not be read as
 one.** The three excluded sources exist only from **2026-07-11 to 2026-08-08**. The
@@ -322,6 +356,11 @@ underlying rank-IC result (composition-stable ≈ unconditional, at a well-power
 count; the changed/≥3-source cells still underpowered) is unchanged by it.
 
 ## Reproducing
+
+**On the current tree (post-`873148b`), these commands reproduce the "Post-exclusion
+re-run" tables, not the "Primary result" / "Secondary result" tables above** — the vote
+those tables were measured against no longer exists. Reproducing the pre-exclusion
+tables requires checking out a commit before `873148b`.
 
 ```bash
 cd backend

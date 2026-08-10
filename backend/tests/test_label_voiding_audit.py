@@ -122,6 +122,46 @@ def test_dates_are_sorted_iso_strings(tmp_path):
         assert got == sorted(got)
 
 
+def _frame_with_one_frozen_item(n_items=60, n_dates=40, frozen_item=0):
+    """One item's price never moves; every other item drifts by its own daily
+    increment, so neither the cross-section-wide `_snapshot_dates` rule (needs
+    >=99% of a >=25-item cross-section to repeat the previous day) nor the
+    universe-size `_collection_shift_dates` rule fires. Only the per-item
+    frozen-run rule should touch this frame, isolating it from the other two
+    voiding rules `bad` unions together."""
+    rows = []
+    start = pd.Timestamp("2026-01-01")
+    for d in range(n_dates):
+        for item in range(n_items):
+            price = 10.0 if item == frozen_item else (
+                10.0 + item * 0.01 + d * (item + 1) * 1e-3)
+            rows.append({
+                "item_id": f"item-{item}",
+                "date": (start + pd.Timedelta(days=d)).date(),
+                "price": price,
+            })
+    return pd.DataFrame(rows)
+
+
+def test_frozen_run_labels_published_separately_from_voided_total(tmp_path):
+    """`voided_labels_by_horizon` is the union of snapshot days, collector
+    cutovers, AND the frozen-price-run rule -- the audit must not let a
+    reader attribute the whole count to cutovers/snapshots when the frozen-run
+    rule is what actually did it, so `frozen_run_labels` has to exist as its
+    own key and be no larger than the union it is a part of."""
+    f = _f(tmp_path)
+    f.prepare_targets(_frame_with_one_frozen_item(), horizon=3)
+    assert f.label_voiding["collection_shift_dates"] == [], (
+        "fixture must not also trip the cutover rule, or it isn't isolating "
+        "the frozen-run rule")
+    assert f.label_voiding["snapshot_dates"] == [], (
+        "fixture must not also trip the snapshot rule, or it isn't isolating "
+        "the frozen-run rule")
+    frozen = f.label_voiding["frozen_run_labels"]
+    assert frozen[3] > 0, "the frozen item's own labels must be counted"
+    assert frozen[3] <= f.label_voiding["voided_labels_by_horizon"][3]
+
+
 def test_dates_are_sorted_iso_strings_for_a_populated_snapshot_list(tmp_path):
     """The loop above never exercises a non-empty `snapshot_dates`:
     `_frame_with_a_cutover`'s drift (needed to keep the cutover assertions

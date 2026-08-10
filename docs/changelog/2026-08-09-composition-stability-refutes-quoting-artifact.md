@@ -39,12 +39,17 @@ any kind — is **+0.1023 on 185 dates**, against §5's "stable" +0.1006 on 188.
 The diagnosis is not inference: the new instrument reproduces §5's **188** and **185** date
 counts *exactly* when the NULL-never-equal rule is applied to it, on two independent cells.
 
-## The corrected answer
+## The corrected answer (pre-`873148b`)
 
 Measured over 2026 — the only era whose rows carry a source label — with composition defined as
 the **set** of source names voting on each item-day. Each cell has its own date count; "all
 rows" and "composition stable" are not drawn from the same dates, because a handful of dates
-fall into the changed or gapped cells instead:
+fall into the changed or gapped cells instead. **These numbers are pre-`873148b`**: that commit
+(2026-08-09) later removed `aggregator_steam_7d/30d/90d` from the consensus vote, and the
+committed instrument no longer reproduces the table below — post-exclusion it reads +0.1011 /
++0.1017 (3d) and +0.0838 / +0.0838 (7d), every delta ≤0.0015, same conclusion. See the
+"Post-exclusion re-run" section of `docs/research/2026-08-09-composition-stability.md` for the
+full before/after tables.
 
 | | all rows | dates | composition stable | dates |
 |---|---|---|---|---|
@@ -53,7 +58,8 @@ fall into the changed or gapped cells instead:
 
 Holding composition still does not touch the signal. The same holds over the whole archive on
 the count basis — which assumes a NULL `source` is one constant source, so 2013-2025 reads as
-composition-stable by construction (+0.1941 vs +0.1937 at 3d, on 4,602 vs 4,598 dates). **The
+composition-stable by construction (+0.1941 vs +0.1937 at 3d, on 4,602 vs 4,598 dates,
+pre-`873148b`; post-exclusion the same cells read +0.1940 vs +0.1936, same dates). **The
 reversal is not a composition artifact, and accuracy work is not gated on this** — with the
 caveat that this conclusion rests on the stable population matching the unconditional one, not on
 a measured contrast against a changed population (next paragraph).

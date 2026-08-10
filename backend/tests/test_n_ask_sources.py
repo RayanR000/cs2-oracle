@@ -105,3 +105,15 @@ def test_cache_version_bumped():
     assert ItemForecaster.VOTED_CACHE_VERSION >= 5, (
         "the voted frame gained a column; a stale cache would train the next "
         "model on a frame without it")
+
+
+def test_n_ask_sources_is_excluded_from_feature_cols():
+    """n_ask_sources is a composition-audit column, not a training feature --
+    it is dropped upstream by an unrelated .agg() in engineer_features that
+    doesn't name it, but _select_feature_cols must exclude it explicitly too,
+    so that stays true on purpose rather than by accident of that .agg()."""
+    df = pd.DataFrame({"item_id": ["a"], "date": ["2026-01-01"],
+                        "price": [10.0], "volume": [1.0],
+                        "n_ask_sources": [3]})
+    cols = ItemForecaster._select_feature_cols(df, horizons=[3], shelved=set())
+    assert "n_ask_sources" not in cols
