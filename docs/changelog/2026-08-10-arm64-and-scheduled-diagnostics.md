@@ -3,12 +3,35 @@
 **Date:** 2026-08-10
 **Follows:** `docs/changelog/2026-08-10-warm-retrain-in-ci.md` (HP reuse, ~693s).
 
-## 1. `runs-on: ubuntu-24.04-arm`
+## 1. `runs-on: ubuntu-24.04-arm` — measured at ~11%, not the 25–40% advertised
 
-Free on public repos and materially faster on a LightGBM-bound workload. Every binary
-dependency ships an aarch64 manylinux wheel, verified against PyPI before switching —
-`lightgbm` as `py3-none-manylinux2014_aarch64`, the rest as cp311 builds — so nothing compiles
-from source. No code change.
+Free on public repos. Every binary dependency ships an aarch64 manylinux wheel, verified against
+PyPI before switching — `lightgbm` as `py3-none-manylinux2014_aarch64`, the rest as cp311 builds
+— so nothing compiles from source. No code change.
+
+**Measured: run `31407938154` (arm64) against `31405829674` (x86).** Both `train-only`, both warm
+on HP and on the `voted-v6-` frame, identical universe, identical round counts — architecture is
+the only variable, so unlike the previous comparison this one is clean.
+
+| Phase | x86 `31405829674` | arm64 `31407938154` | Δ |
+|---|---|---|---|
+| q50 ensemble | 232.2s | 232.4s | **+0.1%** |
+| Direction classifier | 214.1s | 135.4s | **−36.8%** |
+| Conformal CV | 392.8s | 360.2s | −8.3% |
+| Remainder | ~278.8s | ~268.6s | −3.7% |
+| **TOTAL training** | **1117.9s** | **996.6s** | **−10.8%** |
+| Job | 19m52s | **17m48s** | −10.4% |
+
+**The estimate published before the run said 25–35%, quoting GitHub's "up to 40%". That was
+wrong — it is ~11%.** Worth keeping (free, ~2 minutes off every run, no code change) but not a
+lever to plan around.
+
+**The gain is concentrated, not uniform.** 65% of it is the direction classifier alone. The q50
+ensemble is flat to 0.1% — the quantile objective sees no benefit. That flat phase doubles as a
+control: two runs doing identical work at identical cost on one phase is what makes the
+classifier's −36.8% credible rather than runner noise. Caveat that this is n=1 per arm against a
+±25% per-phase swing, so treat ~11% as indicative; only the classifier delta is clearly outside
+noise.
 
 **Compare within an architecture, never across.** Floating point differs, so an artifact
 trained here is not bit-identical to an x86 one and any delta measured across the switch
@@ -73,6 +96,18 @@ Land the diagnostics job, read coverage, then cut folds.
 
 ## Verification
 
-Full backend suite green; +9 tests in `tests/test_minimal_model_shape.py` across both changes.
-Both workflow files parse. **Nothing here is measured yet** — the arm64 speedup is an estimate,
-and `model-diagnostics.yml` has never run.
+Full backend suite green (1769); +9 tests in `tests/test_minimal_model_shape.py` across both
+changes. Both workflow files parse. arm64 is measured (above). **`model-diagnostics.yml` has
+never run** — its ~16 min/horizon estimate is unverified, and so is the assumption that a
+classifier-on CV fits the cap once decomposed.
+
+## Cumulative, across both changelogs
+
+| | Training | Job |
+|---|---|---|
+| `31356483719` (cold HP, cold vote, x86) | 2306.0s | 39m32s |
+| `31405829674` (warm HP, warm vote, x86) | 1117.9s | 19m52s |
+| `31407938154` (warm HP, warm vote, arm64) | **996.6s** | **17m48s** |
+
+**−57% training, −55% wall clock**, with −692.9s of it attributable to HP reuse and −121.3s to
+arm64. The rest is a warm voted cache and per-phase variance, not a change anyone made.
