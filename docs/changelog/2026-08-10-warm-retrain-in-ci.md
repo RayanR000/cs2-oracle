@@ -2,9 +2,33 @@
 
 **Date:** 2026-08-10
 **Implements:** levers 1 and 4 of `docs/research/2026-08-10-training-cost-levers.md`.
-**Expected saving:** ~693s of run `31356483719`'s 2306.0s training, plus the discarded ~2GB
-parquet write on every daily run. **Not yet verified in CI** — no run has executed on this
-change.
+**MEASURED in CI: run `31405829674`** (`train-only`, `020a662`, x86) — **1117.9s training /
+19m52s job**, against `31356483719`'s 2306.0s / 39m32s. First run under the 30-minute cap.
+
+| Phase | `31356483719` | `31405829674` | Δ |
+|---|---|---|---|
+| Optuna | 692.9s | **0.0s** | **−692.9s** |
+| Conformal CV | 514.1s | 392.8s | −121.3s |
+| q50 ensemble | 309.3s | 232.2s | −77.1s |
+| Direction classifier | 268.2s | 214.1s | −54.1s |
+| Remainder | ~521s | ~279s | ~−242s |
+| **TOTAL** | **2306.0s** | **1117.9s** | **−1188.1s (−51.5%)** |
+
+**Do not quote −51.5% as this change's effect.** Only **−692.9s is attributable and
+mechanism-verified**: all four horizons log `optuna: 0.0s (skipped - cached HP)`. Of the rest,
+the remainder drop is largely the `voted-v6-` prefix restore (this run votes warm; run
+`31356483719` built that frame cold — the confound was flagged before dispatch), and the three
+fit phases came in 18–25% cheaper at *identical* cached HP and round counts, which sits inside
+the ±25% per-phase run-to-run swing this project already documents. Read the total as "a warm
+retrain on a warm cache costs ~1120s", not as a controlled delta.
+
+**The regime correction was load-bearing, now with evidence.** The log shows `Loaded 4 global +
+4 regime model groups ({'range'})` and then `regime models for {3,7,14,30}d done`. Under the old
+`_warm_retrain` coupling those four restored groups would have been *deleted* and the artifact
+shipped without them — and since `predict` prefers the regime model whenever the detected regime
+matches, the served mid would have moved. Only the `range` regime qualifies (bear and bull hold
+0 rows), and it covers 818K–893K of ~985K rows, so it is close to the whole cohort rather than a
+niche branch.
 
 ## What changed
 
@@ -80,9 +104,10 @@ parse the workflow, so the restore gate and `FORCE_RETRAIN` cannot drift apart.
 `test_warm_retrain_still_trains_regime_models` was confirmed to **fail** against the old
 coupling rather than pass vacuously.
 
-**Unverified:** the saving itself, and whether HP reused across a label change is as good as a
-fresh search. Re-tune periodically with `FORCE_HP_SEARCH=1`; a label-basis change like
-`873148b` is exactly when cached params go stale.
+**Still unverified:** whether HP reused across a label change is as good as a fresh search. The
+cost is now measured; the *quality* of reuse is not. Re-tune periodically with
+`FORCE_HP_SEARCH=1` — a label-basis change like `873148b` is exactly when cached params go
+stale, and nothing detects that automatically.
 
 ## Next levers, unchanged in rank
 
