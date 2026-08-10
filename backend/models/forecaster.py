@@ -3784,8 +3784,20 @@ class ItemForecaster:
         return os.path.join(self.model_dir, self.ENGINEERED_CACHE_NAME)
 
     def _save_engineered_cache(self, df: pd.DataFrame):
-        """Save the fully-engineered feature DataFrame to Parquet cache."""
+        """Save the fully-engineered feature DataFrame to Parquet cache.
+
+        `ENGINEERED_CACHE=0` suppresses the write, for callers that cannot
+        benefit from it. CI is the case: `price-forecast.yml` excludes this file
+        from both the cache save and the restore (it is ~2GB against a 10GB
+        per-repo Actions cache budget), so every run misses, re-engineers, and
+        serializes a frame the next run will never read. Nothing reads it back
+        in-process — `predict` only consults it before engineering — so
+        suppressing the write costs the run nothing. Mirrors `VOTED_CACHE=0`.
+        """
         path = self._engineered_cache_path
+        if os.environ.get("ENGINEERED_CACHE") == "0":
+            logger.info(f"  Engineered feature cache write skipped (ENGINEERED_CACHE=0)")
+            return
         df.attrs["_cache_date"] = str(date.today())
         df.attrs["_cache_version"] = self.ENGINEERED_CACHE_VERSION
         logger.info(f"  Saving engineered feature cache ({len(df):,} rows) to {path}")
@@ -4207,16 +4219,29 @@ class ItemForecaster:
             logger.info(f"  [timing] {horizon}d direction classifier: {_dir_elapsed:.1f}s")
 
             # Train regime-specific models (optional: SKIP_REGIMES=1 to skip)
-            if os.environ.get("SKIP_REGIMES") == "1" or _warm_retrain:
+            #
+            # `_warm_retrain` deliberately does NOT skip these, though it used to.
+            # `predict` at :5584 *prefers* the regime model over the global one
+            # whenever `_detect_current_regime` matches, so an artifact with no
+            # regime models serves a different mid — dropping them is a change to
+            # the forecast, not a cost saving. That was tolerable while warm
+            # retrains only ran locally; it is not once CI restores the model
+            # cache on training runs, which is what makes the warm path
+            # production's steady state. Skipping them is now opt-in only.
+            if os.environ.get("SKIP_REGIMES") == "1":
                 # Drop any regime models this horizon carried in from load_models
                 # so a skip run never re-persists stale regime artifacts.
                 for key in [k for k in self.regime_models if k[1] == horizon]:
                     del self.regime_models[key]
-                if _warm_retrain:
-                    logger.info(f"  Regime models skipped (warm retrain)")
-                else:
-                    logger.info(f"  Regime models skipped (SKIP_REGIMES=1)")
+                logger.info(f"  Regime models skipped (SKIP_REGIMES=1)")
             else:
+                # Clear this horizon's regime models before refitting them. On a
+                # cold run the dict is empty anyway; on a warm one it holds the
+                # restored artifact's, and a regime that now falls below the
+                # minimums below would otherwise keep the *previous* run's model
+                # and re-persist it beside freshly trained global models.
+                for key in [k for k in self.regime_models if k[1] == horizon]:
+                    del self.regime_models[key]
                 for regime in self.REGIMES:
                     if regime == "global":
                         continue

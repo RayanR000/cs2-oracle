@@ -307,11 +307,14 @@ def _fast_forecaster(tmp_path, warm=False):
     return f
 
 
-def _run_train(f, monkeypatch, df):
+def _run_train(f, monkeypatch, df, skip_regimes=True):
     """Drive the real train() over a synthetic frame.
 
     build_training_data is the only thing stubbed, so train()'s own sigma-clip
     measurement and every per-horizon calibration branch run for real.
+
+    `skip_regimes=False` exercises the regime branch, which is the one a warm
+    retrain used to bypass entirely.
     """
     def fake_build(*a, **kw):
         f.feature_cols = ["feat_a", "feat_b"]
@@ -320,7 +323,10 @@ def _run_train(f, monkeypatch, df):
 
     monkeypatch.setattr(f, "build_training_data", fake_build)
     monkeypatch.setattr(f, "save_models", lambda *a, **kw: None)
-    monkeypatch.setenv("SKIP_REGIMES", "1")
+    if skip_regimes:
+        monkeypatch.setenv("SKIP_REGIMES", "1")
+    else:
+        monkeypatch.delenv("SKIP_REGIMES", raising=False)
     f.train()
 
 
@@ -351,6 +357,110 @@ def test_ci_workflow_does_not_skip_cv():
     # The run: blocks are strings, so an inline `SKIP_CV=1 python …` would slip
     # past the env walk above.
     assert "SKIP_CV" not in wf.read_text().replace("# SKIP_CV", "")
+
+
+def test_ci_restores_the_model_cache_on_training_runs_and_forces_the_retrain():
+    """The two halves of this have to move together.
+
+    Gating the restore to predict-only left `tuned_params` empty on every
+    training run, so Optuna re-searched from scratch — 692.9s of run
+    31356483719. But un-gating it alone is worse than the cost: `full` reaches
+    the age gate in forecast_prices.py, which retrains on model age (14d) only,
+    so Monday's weekly retrain would find a 7-day-old restored artifact, read it
+    as fresh, and silently serve a predict-only run. FORCE_RETRAIN is what keeps
+    `full` a retrain. Pinned together so neither can be reverted on its own.
+    """
+    wf = (Path(__file__).resolve().parents[2]
+          / ".github" / "workflows" / "price-forecast.yml")
+    spec = yaml.safe_load(wf.read_text())
+    steps = spec["jobs"]["forecast"]["steps"]
+
+    restore = next(s for s in steps if s.get("name") == "Restore trained models")
+    assert "if" not in restore, (
+        "the model cache restore is conditional again; a training run with an "
+        "empty saved_models/ cannot reuse hyperparameters"
+    )
+
+    run_step = next(s for s in steps if s.get("name") == "Run ML price forecasting")
+    force = str(run_step["env"]["FORCE_RETRAIN"])
+    assert "== 'full'" in force and "'1'" in force, (
+        f"FORCE_RETRAIN is {force!r}; `full` must force the retrain or the "
+        f"restored artifact trips the age gate and Monday trains nothing"
+    )
+
+
+def test_warm_retrain_still_trains_regime_models(tmp_path, monkeypatch, caplog):
+    """A warm retrain may not silently drop the regime models.
+
+    predict() *prefers* the regime model over the global one whenever the
+    detected regime matches, so an artifact without them serves a different
+    mid. Warm retrain used to skip them as a cost saving, which was invisible
+    while warm retrains only ran locally — and becomes a change to production's
+    forecast now that CI restores the model cache on training runs.
+    """
+    f = _fast_forecaster(tmp_path, warm=True)
+    with caplog.at_level("INFO", logger="models.forecaster"):
+        _run_train(f, monkeypatch, _train_frame(), skip_regimes=False)
+
+    assert "Regime models skipped (warm retrain)" not in caplog.text, (
+        "regime training was skipped because the retrain was warm"
+    )
+    # The branch has to have been *entered*: on a frame this small every regime
+    # falls below MIN_REGIME_TRAIN, so its per-regime rejection is the evidence.
+    entered = ("below minimum" in caplog.text) or bool(f.regime_models)
+    assert entered, "the regime branch never ran on a warm retrain"
+
+
+def test_warm_retrain_does_not_carry_stale_regime_models_forward(
+        tmp_path, monkeypatch):
+    """Refitting has to clear the restored artifact's regime models first.
+
+    On a warm run `self.regime_models` arrives populated from load_models(). A
+    regime that no longer clears the row minimums is `continue`d, so without an
+    explicit clear its *previous* model survives and is re-persisted next to
+    freshly trained global models — two training runs mixed in one artifact.
+    """
+    f = _fast_forecaster(tmp_path, warm=True)
+    sentinel = ("bear", f.HORIZONS[0], 0.5)
+    f.regime_models[sentinel] = ["stale-ensemble"]
+
+    _run_train(f, monkeypatch, _train_frame(), skip_regimes=False)
+
+    assert sentinel not in f.regime_models or (
+        f.regime_models[sentinel] != ["stale-ensemble"]), (
+        "a restored regime model survived a retrain of its horizon"
+    )
+
+
+def test_engineered_cache_write_is_suppressible(tmp_path, monkeypatch):
+    """ENGINEERED_CACHE=0 must skip the write, not just redirect it.
+
+    CI excludes this ~2GB frame from both the cache save and the restore, so
+    every run writes one nothing will ever read. Nothing reads it back in
+    process either — predict() only consults it before engineering.
+    """
+    f = ItemForecaster(db_session=MagicMock(), model_dir=str(tmp_path))
+    df = pd.DataFrame({"a": [1.0, 2.0], "b": [3.0, 4.0]})
+    path = Path(f._engineered_cache_path)
+
+    monkeypatch.setenv("ENGINEERED_CACHE", "0")
+    f._save_engineered_cache(df)
+    assert not path.exists(), "cache was written despite ENGINEERED_CACHE=0"
+
+    # And the default still writes, round-trip intact.
+    monkeypatch.delenv("ENGINEERED_CACHE", raising=False)
+    f._save_engineered_cache(df)
+    assert path.exists()
+    assert len(pd.read_parquet(path)) == 2
+
+
+def test_ci_suppresses_the_engineered_cache_write():
+    wf = (Path(__file__).resolve().parents[2]
+          / ".github" / "workflows" / "price-forecast.yml")
+    spec = yaml.safe_load(wf.read_text())
+    run_step = next(s for s in spec["jobs"]["forecast"]["steps"]
+                    if s.get("name") == "Run ML price forecasting")
+    assert str(run_step["env"]["ENGINEERED_CACHE"]) == "0"
 
 
 def test_the_holdout_fallback_still_fits_q_hat_for_every_horizon(

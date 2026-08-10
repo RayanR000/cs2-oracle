@@ -36,7 +36,15 @@ paths:
   It does **not** reduce feature-engineering time, which is what a wide
   `TRAIN_FEATURE_ROWS` actually buys.
 - **Training is fully sequential.** Horizons, quantiles, and ensemble members train one at
-  a time; LightGBM's OpenMP threads supply the CPU parallelism. Ensemble members get
-  `n_jobs = max(1, cpu_count // 2)`; the Optuna search params still use `n_jobs: -1`.
+  a time; LightGBM's OpenMP threads supply the CPU parallelism. **Everything runs at
+  `n_jobs = -1`** — the ensemble's `max(1, cpu_count // 2)` was deleted 2026-07-21 as
+  leftover from the removed parallel-ensemble code; on a small runner it pinned the final
+  fits to one thread while Optuna and the CV folds both took every core.
+- **HP reuse is the steady state, and it is not free of served effects.** CI restores the
+  model cache on every mode since 2026-08-10, so `reuse_hp` is true and Optuna is skipped
+  (692.9s in run `31356483719`). Two things ride on that gate and must not be re-coupled to
+  it: `full` needs `FORCE_RETRAIN=1` or the restored artifact trips the 14-day age gate and
+  Monday trains nothing, and **regime models must still train** — `predict` prefers them over
+  the global model, so skipping them changes the served mid rather than saving cost.
 - **Size/speed levers are already documented.** See `docs/architecture/model-optimization.md`
   for the options that retain ≥90% quality — don't re-derive them.

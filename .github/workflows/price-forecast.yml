@@ -83,9 +83,15 @@ jobs:
       # by committing them — that silently no-op'd and left predict-only runs
       # with a meta.json and no models from 2026-07-14 to 2026-07-31. They ride
       # the Actions cache instead. engineered_data.parquet is excluded: it is a
-      # ~2GB training intermediate that prediction does not read.
+      # ~2GB predict-path feature cache, too big for the 10GB Actions budget.
+      #
+      # Restored on EVERY mode, not just predict-only. Training modes want the
+      # *hyperparameters* out of this same artifact: `tuned_params` is populated
+      # only by the meta.json load path (forecaster.py:6632-6645), so with an
+      # empty saved_models/ the `reuse_hp` check at :4059 can never be true and
+      # Optuna re-searches from scratch. That cost 692.9s of run 31356483719's
+      # 2306.0s. See docs/research/2026-08-10-training-cost-levers.md.
       - name: Restore trained models
-        if: steps.mode.outputs.mode == 'predict-only'
         uses: actions/cache/restore@v4
         with:
           path: |
@@ -152,8 +158,26 @@ jobs:
           # invariant-#4 metrics (constant call, down rate, Pesaran-Timmermann)
           # and the cross-sectional rank IC are built from the median sign and
           # still run. Local and research retrains keep the default (on).
+          #
+          # "32-37%" above was benchmarked under early stopping, which collapsed
+          # the classifier to ~3 trees. Re-measured 2026-08-09 under fixed rounds
+          # it is 52% of a classifier-on retrain (1804s -> 872s locally).
           # See docs/research/2026-08-08-model-review.md.
           CV_DIAGNOSTIC_CLASSIFIER: "0"
+          # The ~2GB engineered feature cache is excluded from the restore above
+          # and from the save below, so in CI it is written once and never read.
+          # Local runs keep it (it is a real predict-path speedup there).
+          ENGINEERED_CACHE: "0"
+          # REQUIRED now that the model cache is restored on every mode. `full`
+          # reaches the age gate at forecast_prices.py:390-402, which retrains on
+          # model age only (14d). Monday's weekly retrain runs 7 days after the
+          # last one, so a restored artifact would read as fresh and `full` would
+          # silently degrade into a predict-only run — the failure mode recorded
+          # in docs/changelog/2026-08-10-post-revote-retrain.md, which is why
+          # that retrain had to be dispatched as train-only. Ignored by the other
+          # two modes: train-only sets do_train unconditionally, and predict-only
+          # never reads force_retrain.
+          FORCE_RETRAIN: ${{ steps.mode.outputs.mode == 'full' && '1' || '0' }}
         run: |
           echo "🔮 Mode: ${{ steps.mode.outputs.mode }}"
           set -o pipefail

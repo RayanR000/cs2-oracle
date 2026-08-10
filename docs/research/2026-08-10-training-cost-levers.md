@@ -7,6 +7,15 @@ concluded — correctly — "do not quote a speedup from this work".
 
 The project's wall-clock cap is 30 minutes per run. Both runs above are over it.
 
+> **Corrected 2026-08-10 when levers 1 and 4 landed.** Three claims below are wrong; see
+> `docs/changelog/2026-08-10-warm-retrain-in-ci.md`. (a) Lever 1 is worth **~693s, not
+> 246–876s**, and it is **not** free of served effects: the ~183s regime-model half changes the
+> served mid, because `predict` prefers regime models over the global one. (b) Optuna's
+> bimodality is **not** the pruner — there isn't one — so the expensive draw is the one on
+> current labels and is what to budget from. (c) Lever 4's parquet is written on the **predict**
+> path, not the training run. Lever 1 also required `FORCE_RETRAIN=1` on `full`, which this doc
+> does not mention.
+
 ## Where the time goes
 
 Per-horizon wall clock from run `31337078991`, timestamps not `[timing]` lines, so it includes the
