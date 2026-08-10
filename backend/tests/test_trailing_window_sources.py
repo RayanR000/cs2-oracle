@@ -88,6 +88,22 @@ def test_exclusion_is_null_safe(tmp_path):
     assert len(out) == 2
 
 
+def test_17mafo_is_not_caught_by_the_exclusion(tmp_path):
+    """The task's own highest-severity risk: for 2026-04-16 -> 07-10,
+    aggregator_steam_17mafo is the ONLY ask source in the entire archive --
+    buff163/csfloat/youpin have a full ~86-day collection outage across
+    exactly that span. The exclusion must be exact frozenset membership, never
+    a prefix match: a `str.startswith("aggregator_steam")` "simplification"
+    would leave TRAILING_WINDOW_SOURCES untouched, pass every other test here,
+    and silently delete effectively all 2026 price data for those 86 days.
+    This item-day must survive and vote alone."""
+    out = _f(tmp_path)._apply_multi_source_voting(
+        _rows(("a", "2026-05-01", 10.0, "aggregator_steam_17mafo")))
+    assert len(out) == 1
+    assert out["price"].iloc[0] == 10.0
+    assert out["n_ask_sources"].iloc[0] == 1
+
+
 def test_n_ask_sources_excludes_trailing_windows(tmp_path):
     out = _f(tmp_path)._apply_multi_source_voting(_rows(
         ("a", "2026-07-11", 10.0, "aggregator_buff163"),

@@ -60,7 +60,8 @@ separate fix per loader.
   (gitignored), keyed on the `prices-*.parquet` fingerprint + cutoff date + backfill slug
   set. **Bump `ItemForecaster.VOTED_CACHE_VERSION` if you change `_fetch_voted_price_history`
   or `_apply_multi_source_voting`** — the key cannot see code changes. `VOTED_CACHE=0` disables.
-  Now at **v4**: v2 was the `BID_SOURCES` exclusion, which changed the consensus level, so any
+  Now at **v6**: v2 was the `BID_SOURCES` exclusion, which changed the consensus level, so any
   surviving v1 frame holds a displaced price series and would have trained the next model on
-  it silently; v3 dropped the phase-collapsed names; v4 dropped the phantom slug keys. A
+  it silently; v3 dropped the phase-collapsed names; v4 dropped the phantom slug keys; v5 added
+  `n_ask_sources`; v6 excluded `TRAILING_WINDOW_SOURCES` (Steam's trailing-window means). A
   source-set change and a universe change both count as voting changes.
