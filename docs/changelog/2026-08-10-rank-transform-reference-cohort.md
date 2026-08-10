@@ -72,12 +72,52 @@ That is the intended result and the only one this run could establish: CV folds 
 cohort-filtered, so they take the `reference_mask=None` branch and never exercise the new code.
 The check is that the refactor did **not** leak into training, and it did not.
 
+## The serving branch, exercised on real data (run `31440424106`)
+
+`--predict-smoke` (added in the same session, see below) trains under the current flags and then
+runs `predict()` writing nothing. All four horizon jobs report identically:
+
+```
+cross-sectional rank reference: 948/5,536 items at the artifact's >= $1 floor
+cross-sectional rank: skipped 1 date-constant column(s) ['macd_missing']
+cross-sectional rank transform applied to 31/32 features
+predict-smoke: 5,536 rows, 5,536 items, 5,536 carrying a non-empty forecast dict
+```
+
+The mask resolves, all 5,536 items keep a forecast, and nothing is written. **948 against the 916
+at training is expected drift, not a defect:** `predict` fetches `PREDICT_FETCH_DAYS = 730` while
+training takes 1460 days, so the item medians are computed over different windows. At +3.5% it is
+far inside the 25% divergence warning, which did not fire.
+
+**The guard was also demonstrated, by accident.** The first attempt (run `31439896107`) restored a
+cached artifact, skipped training on the age gate, and reached `predict` with the transform on
+from the environment and no cohort in the restored meta. It refused to serve, with the intended
+message. That is better evidence than the source-level test written for it — and it exposed a real
+defect in the smoke mode, fixed in `5fd4892`: `predict_smoke` now forces training, because a mode
+that predicts from a restored artifact is measuring the wrong model.
+
+## Open: the skip set is re-derived at serve time, and it disagrees
+
+**32/32 columns transformed at training, 31/32 at serving** — `macd_missing` is within-date
+constant on the predict frame, so the date-constant skip fires there and not in training. The
+column therefore reaches the booster **raw** at serve while it was **ranked** in fitting.
+
+The same class of defect as the cohort mismatch, one column wide: a serving decision re-derived
+from the served frame instead of following what training recorded. Today's impact is probably nil
+and that is a coincidence rather than a design — training ranks an all-ties date to exactly 0.0,
+and a raw all-zero flag is also 0.0, so the two agree **only while the flag's constant value is
+zero**. Nothing measured which value it holds on the served frame.
+
+The fix is the one already applied to the cohort floor: persist the training skip set in the
+artifact and have serving follow it rather than re-deriving. **Not done.**
+
 ## Not done
 
-- **The serving fix itself is still unexercised.** No predict run has gone through the masked
-  branch — CV cannot reach it. Its correctness rests on the unit tests and a synthetic scale check
-  (5,536 items × 3 dates × 33 columns in 0.126s, cohort resolving to exactly 916), not on a
-  production run. `CROSS_SECTIONAL_RANK` stays off until one happens.
+- The skip-set inconsistency above.
+- **No accuracy claim.** The smoke checks shape, not quality. Three of the four smoke jobs trained
+  a single horizon beside restored boosters, and none of it says the served forecasts are good.
+- `CROSS_SECTIONAL_RANK` stays off in production. What is established is that the serving path
+  runs and ranks against the right population — not that shipping it improves anything served.
 - The 25% divergence warning is a guess at a threshold, not a derived one.
 - `train_cohort_items` counts items in the built training frame, which is post-floor and
   post-budget. On the current config the budget does not bind (916 items fit whole), so it equals
