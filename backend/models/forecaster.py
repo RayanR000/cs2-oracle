@@ -386,6 +386,25 @@ class ItemForecaster:
     # median-filled to zero (the hazard _skipped_feature_groups documents).
     TIER_LEAD_GROUP = "tier_lead"
     TIER_LEAD_FEATURES = ("tier_lead_return_1d",)
+    # Columns the within-date rank transform must not touch, because something
+    # other than a booster reads their VALUES.
+    #
+    # `price_tier` is the whole set and it cost a void A/B arm to find. It is a
+    # feature column, so a transform over feature_cols catches it -- but it is
+    # also the cohort gate: _cv_evaluate_horizon does
+    # `val_df["price_tier"] >= HEADLINE_MIN_TIER` (:6514, :6537) to select the
+    # >=$1 rows, and _fit_direction_classifier takes it as `tier_train` (:4490,
+    # :6490). Ranked into [-1, 1] the mid-rank maximum is 1 - 1/n, so the mask
+    # matches NOTHING: run 31424689196 returned mean_rank_ic,
+    # mean_naive_rank_ic and mean_classifier_acc_ge1 all None while
+    # mean_dir_acc and edge_vs_constant_call -- which are pooled over every tier
+    # -- populated and looked 3-5pp BETTER at all four horizons. A green run
+    # publishing the penny metric as if it were the served one.
+    #
+    # It is also the wrong transform for the column on its own terms: price_tier
+    # is a bounded categorical, deliberately kept as one (see the pruning note
+    # at :477).
+    RANK_TRANSFORM_EXCLUDED = frozenset({"price_tier"})
     # The ByMykel item-metadata bundle, joined from
     # price-archive/item-metadata-bymykel.parquet by
     # scripts/ingest_bymykel_metadata.py. Off by default: the effect is measured
@@ -2562,7 +2581,13 @@ class ItemForecaster:
         """
         if not cols:
             return df
-        present = [c for c in cols if c in df.columns]
+        excluded = sorted(set(cols) & ItemForecaster.RANK_TRANSFORM_EXCLUDED)
+        if excluded:
+            logger.info(
+                f"  cross-sectional rank: NOT transforming {excluded} — "
+                f"read as a gate, not only as a feature (RANK_TRANSFORM_EXCLUDED)")
+        present = [c for c in cols if c in df.columns
+                   and c not in ItemForecaster.RANK_TRANSFORM_EXCLUDED]
         if not present:
             return df
 

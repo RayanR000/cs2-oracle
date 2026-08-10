@@ -309,6 +309,46 @@ def test_transform_only_touches_named_columns():
     assert out["target_7d"].tolist() == [0.1, 0.2, 0.3]
 
 
+def test_price_tier_is_never_rank_transformed():
+    """Regression for a void A/B arm — run 31424689196, 2026-08-10.
+
+    price_tier is a feature column AND the cohort gate: _cv_evaluate_horizon
+    selects the >=$1 rows with `val_df["price_tier"] >= HEADLINE_MIN_TIER`, and
+    _fit_direction_classifier takes it as `tier_train`. Ranked into [-1, 1] the
+    maximum is 1 - 1/n, so the mask matched nothing: rank IC and
+    classifier_accuracy_ge1 came back None while the POOLED metrics populated and
+    looked 3-5pp better at every horizon. The run was green.
+    """
+    df = pd.DataFrame({
+        "date": pd.to_datetime(["2026-01-01"] * 5),
+        "price_tier": [0, 1, 2, 3, 4],
+        "return_1d": [1.0, 2.0, 3.0, 4.0, 5.0],
+    })
+    out = ItemForecaster._apply_cross_sectional_ranks(
+        df.copy(), ["price_tier", "return_1d"])
+
+    assert out["price_tier"].tolist() == [0, 1, 2, 3, 4]
+    # The >=$1 gate must still select the four rows it selected before.
+    assert (out["price_tier"].to_numpy() >= 1).sum() == 4
+    # And the real feature must still have been transformed.
+    assert out["return_1d"].tolist() != [1.0, 2.0, 3.0, 4.0, 5.0]
+
+
+def test_the_exclusion_set_is_consulted_not_hardcoded():
+    """Adding a name to RANK_TRANSFORM_EXCLUDED must be enough to protect it."""
+    df = pd.DataFrame({
+        "date": pd.to_datetime(["2026-01-01"] * 3),
+        "guard": [1.0, 2.0, 3.0],
+    })
+    original = ItemForecaster.RANK_TRANSFORM_EXCLUDED
+    try:
+        ItemForecaster.RANK_TRANSFORM_EXCLUDED = frozenset({"guard"})
+        out = ItemForecaster._apply_cross_sectional_ranks(df.copy(), ["guard"])
+        assert out["guard"].tolist() == [1.0, 2.0, 3.0]
+    finally:
+        ItemForecaster.RANK_TRANSFORM_EXCLUDED = original
+
+
 def test_absent_columns_are_tolerated():
     df = pd.DataFrame({
         "date": pd.to_datetime(["2026-01-01"] * 2), "f": [1.0, 2.0],
