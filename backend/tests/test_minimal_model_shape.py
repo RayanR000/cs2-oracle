@@ -392,6 +392,36 @@ def test_ci_restores_the_model_cache_on_training_runs_and_forces_the_retrain():
     )
 
 
+def test_ci_skips_regime_models_so_the_artifact_does_not_depend_on_its_runner():
+    """SKIP_REGIMES=1 in CI, deliberately, and it IS a served change.
+
+    Two things this pins. First, that CI and the documented local retrain agree:
+    local passes SKIP_REGIMES=1, so while CI trained regimes the served artifact
+    differed by where it was built. Second, that the flag is set in `env` rather
+    than inlined into the run: block, so the walk in
+    test_ci_workflow_does_not_skip_cv-style tests can see it.
+
+    Note what this is NOT. It is not a cost saving with no served effect --
+    predict() prefers the regime model whenever _detect_current_regime matches,
+    and `range` (the only regime that ever qualifies) covers 818K-893K of ~985K
+    rows, so dropping it moves the mid for ~90% of the cohort onto the global
+    model. The justification is that the deployed regime set has included 1-tree
+    and 3-tree boosters (docs/research/2026-08-08-model-review.md item 7), not
+    that the ~183s is free.
+
+    If a measured read ever shows the regime models help, remove the flag --
+    do not weaken test_warm_retrain_still_trains_regime_models, which pins a
+    different thing: that regime training is not coupled to the warm-retrain
+    gate. Both must stay true.
+    """
+    wf = (Path(__file__).resolve().parents[2]
+          / ".github" / "workflows" / "price-forecast.yml")
+    spec = yaml.safe_load(wf.read_text())
+    run_step = next(s for s in spec["jobs"]["forecast"]["steps"]
+                    if s.get("name") == "Run ML price forecasting")
+    assert str(run_step["env"]["SKIP_REGIMES"]) == "1"
+
+
 def test_warm_retrain_still_trains_regime_models(tmp_path, monkeypatch, caplog):
     """A warm retrain may not silently drop the regime models.
 
@@ -510,6 +540,39 @@ def test_diagnostics_workflow_cannot_promote_its_artifact():
         "FORECAST_MODEL_DIR would point load_models() at an empty directory, so "
         "the job would measure a freshly-tuned model instead of production's"
     )
+
+
+def test_diagnostics_arms_default_to_the_control():
+    """The scheduled Sunday diagnostics run must stay the control arm.
+
+    A scheduled event carries no inputs, so `inputs.tier_lead` is falsy there and
+    the expression has to resolve to '0'. If either flag ever defaults on, the
+    weekly series silently becomes a treatment arm and every number in it stops
+    being comparable to the ones before it -- which is exactly the failure the
+    repo already has with pre-873148b A/B verdicts.
+    """
+    wf = (Path(__file__).resolve().parents[2]
+          / ".github" / "workflows" / "model-diagnostics.yml")
+    spec = yaml.safe_load(wf.read_text())
+
+    inputs = spec[True]["workflow_dispatch"]["inputs"]
+    for name in ("tier_lead", "cross_sectional_rank"):
+        assert inputs[name]["default"] is False, (
+            f"{name} defaults on; the Sunday scheduled run would stop being a control"
+        )
+
+    env = next(s for s in spec["jobs"]["diagnose"]["steps"]
+               if s.get("name") == "Run CV with the served classifier scored")["env"]
+    # The `&& '1' || '0'` form is what makes a missing input resolve to '0'
+    # rather than to an empty string, which ItemForecaster would read as off
+    # anyway -- but only because the gate tests for exactly "1". Pin the shape so
+    # the two cannot drift apart.
+    for key, inp in (("TIER_LEAD_FEATURE", "tier_lead"),
+                     ("CROSS_SECTIONAL_RANK", "cross_sectional_rank")):
+        expr = str(env[key])
+        assert f"inputs.{inp}" in expr and "'1'" in expr and "'0'" in expr, (
+            f"{key} is {expr!r}; it must resolve to '0' when the input is absent"
+        )
 
 
 def test_ci_suppresses_the_engineered_cache_write():

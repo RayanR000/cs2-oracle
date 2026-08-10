@@ -178,6 +178,24 @@ jobs:
           # and from the save below, so in CI it is written once and never read.
           # Local runs keep it (it is a real predict-path speedup there).
           ENGINEERED_CACHE: "0"
+          # Regime models are not trained, so `predict` falls back to the global
+          # model for every item. This IS a change to the served mid, not a cost
+          # saving — forecaster.py:5658 prefers the regime model whenever
+          # _detect_current_regime matches, which on this artifact is always
+          # (`range` is the only trained regime and it covers 818K-893K of ~985K
+          # rows, so the "specialist" branch was serving ~90% of the cohort).
+          #
+          # Two reasons to drop them. The deployed set has included 1-tree and
+          # 3-tree boosters, so it is plausibly degrading the mid it displaces
+          # (docs/research/2026-08-08-model-review.md item 7). And the served
+          # model currently depends on where it was trained: CI trained regimes
+          # while the documented local retrain passes SKIP_REGIMES=1, so the
+          # artifact differed by runner. This makes the two paths agree.
+          #
+          # Worth ~183s of a ~1120s warm retrain. Revert by removing this line;
+          # nothing else is coupled to it since 2026-08-10 decoupled regime
+          # training from the warm-retrain gate.
+          SKIP_REGIMES: "1"
           # REQUIRED now that the model cache is restored on every mode. `full`
           # reaches the age gate at forecast_prices.py:390-402, which retrains on
           # model age only (14d). Monday's weekly retrain runs 7 days after the

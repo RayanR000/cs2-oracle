@@ -216,6 +216,11 @@ def _feature_group(name: str) -> str:
         return "price_technicals"
     if name.startswith("supply_"):
         return "supply_depth"
+    # Before the item_identity / temporal prefixes below, none of which can
+    # claim a `tier_lead_` name today -- but the group is small and explicit,
+    # so keep it adjacent to supply_depth rather than relying on that.
+    if name.startswith("tier_lead_"):
+        return "tier_lead"
     if any(name.startswith(p) for p in ("is_", "quality_rank", "rarity_")):
         return "item_identity"
     if name.startswith("type_"):
@@ -373,7 +378,14 @@ class ItemForecaster:
     ALL_FEATURE_GROUPS = frozenset({
         "price_technicals", "supply_depth", "item_identity", "item_metadata",
         "temporal", "events", "cross_sectional", "social", "other",
+        "tier_lead",
     })
+    # The tier lead-lag group, gated by tier_lead_enabled() the way
+    # bymykel_metadata is -- the allowlist alone cannot admit it, because a group
+    # that is allowlisted but never engineered yields columns absent and
+    # median-filled to zero (the hazard _skipped_feature_groups documents).
+    TIER_LEAD_GROUP = "tier_lead"
+    TIER_LEAD_FEATURES = ("tier_lead_return_1d",)
     # The ByMykel item-metadata bundle, joined from
     # price-archive/item-metadata-bymykel.parquet by
     # scripts/ingest_bymykel_metadata.py. Off by default: the effect is measured
@@ -706,6 +718,14 @@ class ItemForecaster:
         # Per-horizon confidence thresholds: {horizon: {"high_range": ..., "high_change": ..., "high_accuracy": ...}}
         self.confidence_thresholds: Dict[int, Dict[str, float]] = {}
         self.feature_medians: pd.Series = pd.Series(dtype=np.float64)
+        # What the LOADED artifact was trained with, or None when nothing has
+        # been loaded. Read on the predict path via _tier_lead_served /
+        # _cross_sectional_rank_served so serving follows the artifact rather
+        # than whatever the environment happens to hold; training reads the
+        # environment directly. None, not False, so "absent from an older
+        # meta.json" is distinguishable from "trained with it off".
+        self._artifact_tier_lead: Optional[bool] = None
+        self._artifact_xs_rank: Optional[bool] = None
         # Conformal calibration per horizon. NOTE: the meaning changed with the
         # minimal model — q_hat is now a DIMENSIONLESS multiplier of the
         # per-item sigma, not a percentage-point addend. Applied as:
@@ -1748,6 +1768,77 @@ class ItemForecaster:
         """
         return os.environ.get("BYMYKEL_METADATA") == "1"
 
+    @staticmethod
+    def tier_lead_enabled() -> bool:
+        """Whether `tier_lead_return_1d` is engineered and allowlisted.
+
+        Off by default, so this is an instrument to A/B and not a shipped
+        feature. The prior is the one positive cross-sectional structure measured
+        in this archive: expensive tiers lead cheap tiers by a day at lag-1 corr
+        +0.213 (z = 9.1), Granger incremental R^2 9.0%, stable in 4 of 5 years,
+        and it survives removing the market factor (0.122, R^2 4.5%) -- which is
+        what distinguishes it from every refuted feature here, all of which died
+        with the common factor. See
+        docs/research/2026-08-07-cs2-forecasting-research.md.
+
+        Set TIER_LEAD_FEATURE=1. **Read the staleness caveat before adopting:**
+        cheap skins have the highest zero-change rate (1.33% vs 0.16%), so a
+        partially-updating cheap index could fake this signature. The decisive
+        test is dropping high-`stale_run_days` item-days and re-measuring.
+        """
+        return os.environ.get("TIER_LEAD_FEATURE") == "1"
+
+    @staticmethod
+    def cross_sectional_rank_enabled() -> bool:
+        """Whether features are rank-transformed within each forecast date.
+
+        Off by default. `2 * (rank(pct=True) - 0.5)` per date, i.e. Gu, Kelly &
+        Xiu's footnote-29 transform. The features here are scale-free *per item*
+        (pinned by tests/test_scale_free_features.py), which is not the same as
+        cross-sectionally normalised: every column stays loaded on the common
+        market factor on every date, which is the diagnosed mechanism behind both
+        "DA is dominated by the forecast date" and the market-relative label
+        refutation.
+
+        This is NOT that refuted experiment.
+        docs/changelog/2026-08-06-market-relative-labels-refuted.md changed the
+        **label** and left a pointwise loss fighting a noisy residual; this
+        changes the **features** and leaves the label alone.
+
+        Set CROSS_SECTIONAL_RANK=1.
+        """
+        return os.environ.get("CROSS_SECTIONAL_RANK") == "1"
+
+    def _tier_lead_served(self) -> bool:
+        """Whether the loaded artifact was trained with the tier-lead feature.
+
+        The artifact wins over the environment on the predict path, and the
+        environment is only consulted when no artifact has been loaded. A model
+        trained without the column must not be served a frame that has it (the
+        column would be dropped by feature alignment, harmlessly) and a model
+        trained *with* it must never be served a frame without it -- alignment
+        would add the column as NaN and fill it with the persisted median,
+        feeding the booster a constant where it expects a signal.
+
+        Training deliberately reads `tier_lead_enabled()` instead: a warm retrain
+        restores the previous artifact's meta, and inheriting its flag would make
+        the arm untestable.
+        """
+        if self._artifact_tier_lead is not None:
+            return self._artifact_tier_lead
+        return self.tier_lead_enabled()
+
+    def _cross_sectional_rank_served(self) -> bool:
+        """Whether the loaded artifact was trained on rank-transformed features.
+
+        Same artifact-over-environment rule as _tier_lead_served, and it matters
+        more here: serving raw feature values to a booster fitted on within-date
+        ranks is not a degradation, it is a different input space.
+        """
+        if self._artifact_xs_rank is not None:
+            return self._artifact_xs_rank
+        return self.cross_sectional_rank_enabled()
+
     def _fetch_bymykel_metadata(self) -> pd.DataFrame:
         """Load the ByMykel item-metadata bundle, or an empty frame if absent.
 
@@ -2328,6 +2419,180 @@ class ItemForecaster:
                     30, min_periods=1
                 ).mean()
         return market
+
+    # ------------------------------------------------------------------
+    # Tier lead-lag (gated by tier_lead_enabled)
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _accumulate_tier_partials(df: pd.DataFrame) -> Optional[pd.DataFrame]:
+        """Per-(date, price_tier) (sum, count) of `return_1d`.
+
+        The same (sum, count) shape _accumulate_market_partials uses, and for the
+        same reason: the predict path engineers features in item chunks, and a
+        tier index computed over one chunk is an index over the wrong
+        cross-section. Combining partials reproduces a global
+        groupby([date, price_tier]).mean() exactly.
+
+        **Mean, not median, and that is a real choice.** A median does not
+        compose from partials, so a chunked path could not reproduce a
+        whole-frame median without holding every chunk in memory -- which is the
+        thing chunking exists to avoid. The exposure this accepts is outlier
+        sensitivity in the index. It lands mostly where it does least harm: the
+        feature is the tier *above* each item, so the indices actually consumed
+        are the more liquid, less noisy ones, and the noisiest tier (0, sub-$1)
+        is never read by anything because no tier leads it.
+        """
+        if "return_1d" not in df.columns or "price_tier" not in df.columns:
+            return None
+        return df.groupby(["date", "price_tier"])["return_1d"].agg(["sum", "count"])
+
+    @classmethod
+    def _tier_lead_from_partials(
+        cls, partial_list: List[Optional[pd.DataFrame]]
+    ) -> pd.DataFrame:
+        """Combine tier partials into a per-date table of each tier's LAGGED mean.
+
+        Returns a frame indexed by date with one column per tier, holding that
+        tier's mean `return_1d` on the previous **available** date.
+
+        The shift is positional over sorted observed dates, not calendar. The
+        archive is missing whole days (docs: aggregator-archive-day-gaps), and
+        every other lag in this file resolves against observed item-days for the
+        same reason -- a calendar shift would emit NaN across a collection outage
+        and a `.reindex(full_calendar)` would fabricate an index for a day
+        nothing was collected on.
+        """
+        frames = [p for p in partial_list if p is not None and not p.empty]
+        if not frames:
+            return pd.DataFrame()
+
+        totals = pd.concat(frames).groupby(level=[0, 1]).sum()
+        # count == 0 means every value for that (date, tier) was NaN; pandas'
+        # mean yields NaN there and so does 0/NaN.
+        mean = totals["sum"] / totals["count"].replace(0, np.nan)
+        table = mean.unstack(level=1).sort_index()
+        # One row per observed date; shift by one row = one observed date back.
+        return table.shift(1)
+
+    def _apply_tier_lead(self, df: pd.DataFrame, lagged: pd.DataFrame) -> pd.DataFrame:
+        """Attach `tier_lead_return_1d` given a precomputed lagged tier table.
+
+        For an item in tier t on date d, the value is tier **t+1**'s mean
+        `return_1d` on the previous observed date -- the return of the next more
+        liquid tier, one day earlier. Direction matters and the folk version is
+        backwards: cheap does NOT lead expensive (+0.043, inside the noise band).
+
+        The top tier has no tier above it and gets NaN, as does any (date, tier)
+        the archive did not observe. NaN is left for the existing median fill
+        rather than zero-filled here: a zero would assert "the tier above was
+        flat", which is a different claim from "unobserved".
+        """
+        col = self.TIER_LEAD_FEATURES[0]
+        if lagged.empty or "price_tier" not in df.columns:
+            df[col] = np.nan
+            return df
+
+        # Long form (date, tier_below) -> value, so the join is a plain merge on
+        # the item's own tier. `lead_tier` is the tier whose lagged return the
+        # item receives; `tier_below` is the tier that receives it.
+        #
+        # melt rather than stack: stack's dropna parameter is deprecated in
+        # pandas 2.1 and its replacement (future_stack=True) does not accept one,
+        # so the NaN-preserving spelling differs across versions. melt keeps NaN
+        # unconditionally and is stable API.
+        long = lagged.rename_axis(columns="lead_tier").reset_index().melt(
+            id_vars="date", value_name=col)
+        long["tier_below"] = long["lead_tier"] - 1
+        long = long[long["tier_below"] >= 0][["date", "tier_below", col]]
+
+        out = df.merge(
+            long,
+            left_on=["date", "price_tier"],
+            right_on=["date", "tier_below"],
+            how="left",
+        ).drop(columns=["tier_below"])
+        # merge() returns a fresh RangeIndex; every caller downstream of the
+        # feature builders assumes positional alignment with `df`, so make the
+        # reset explicit rather than incidental (the same note
+        # _apply_market_aggregates carries for its volume branch).
+        return out.reset_index(drop=True)
+
+    def _add_tier_lead_features(self, df: pd.DataFrame) -> pd.DataFrame:
+        """Whole-frame path: accumulate the tier table and apply it."""
+        logger.info("Adding tier lead-lag feature...")
+        lagged = self._tier_lead_from_partials([self._accumulate_tier_partials(df)])
+        return self._apply_tier_lead(df, lagged)
+
+    # ------------------------------------------------------------------
+    # Cross-sectional rank transform (gated by cross_sectional_rank_enabled)
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _apply_cross_sectional_ranks(
+        df: pd.DataFrame, cols: List[str]
+    ) -> pd.DataFrame:
+        """Map each column in *cols* to its centred within-date percentile.
+
+        Range [-1, 1], NaN preserved (pandas' rank skips NaN, so a missing
+        characteristic stays missing and is median-filled downstream -- which now
+        resolves to the *cross-sectional* median by construction rather than to
+        the persisted feature_medians, removing the calendar-gap lag-fill
+        artifact as a side effect).
+
+        **This deliberately deviates from the formula C1 specifies.** Track C1
+        (docs/research/2026-08-09-next-steps.md) writes it as
+        `2 * (rank(pct=True) - 0.5)`, but pandas' `pct=True` divides by n, so
+        that maps the top item to exactly +1.0 and the bottom to `-1 + 2/n`. The
+        cross-section width varies by date here -- items enter and exit, which is
+        the same fact that makes `lambdarank_norm` matter -- so an endpoint that
+        moves with n injects a date-varying artifact into the one transform whose
+        entire purpose is removing date effects. The mid-rank form
+        `(rank - 0.5) / n` is symmetric at every n and has no mass at the
+        endpoints. At n ~ 900 the difference is ~0.1%; it is fixed here because
+        it is free to fix, not because it was going to dominate.
+
+        **Date-constant columns are skipped, and skipping them is required, not
+        an optimisation.** Ranking a column that is identical across the
+        cross-section yields all-ties -> pct 0.5 everywhere -> exactly 0 after
+        centring, i.e. the transform would silently delete the column. Nothing in
+        the current allowlist is date-constant, but `tier_lead_return_1d`'s
+        upstream index is, and a date-level feature added later would be erased
+        without a word.
+        """
+        if not cols:
+            return df
+        present = [c for c in cols if c in df.columns]
+        if not present:
+            return df
+
+        grouped = df.groupby("date")
+        skipped = []
+        for col in present:
+            # nunique over the whole frame would be O(rows); a per-date std of 0
+            # on every date is the property that matters and transform() is one
+            # pass. Constant-within-date includes the all-NaN case, where std is
+            # NaN and the column carries nothing anyway.
+            within_date_spread = grouped[col].transform("std")
+            if not (within_date_spread.fillna(0) > 0).any():
+                skipped.append(col)
+                continue
+            # Mid-rank, not rank(pct=True) — see the docstring. `count` excludes
+            # NaN, matching rank()'s own treatment, so an item-day missing this
+            # characteristic does not inflate the denominator for the rest.
+            n = grouped[col].transform("count")
+            df[col] = 2.0 * ((grouped[col].rank() - 0.5) / n - 0.5)
+
+        if skipped:
+            logger.info(
+                f"  cross-sectional rank: skipped {len(skipped)} date-constant "
+                f"column(s) {skipped} — ranking them would zero them out"
+            )
+        logger.info(
+            f"  cross-sectional rank transform applied to "
+            f"{len(present) - len(skipped)}/{len(present)} features"
+        )
+        return df
 
     def _add_cross_sectional_features(self, df: pd.DataFrame) -> pd.DataFrame:
         """Add market-level and category-level context features."""
@@ -3638,6 +3903,9 @@ class ItemForecaster:
         if "supply_depth" not in skip:
             df = self._add_supply_depth_features(df)
 
+        if self.TIER_LEAD_GROUP not in skip:
+            df = self._add_tier_lead_features(df)
+
         # Define feature columns (exclude metadata and target columns)
         self.feature_cols = self._select_feature_cols(
             df, self.HORIZONS, self.SHELVED_FEATURES)
@@ -3646,6 +3914,15 @@ class ItemForecaster:
         # in the cheaper order.
         self._reduce_feature_cols(df)
         self._base_feature_cols = list(self.feature_cols)
+
+        # After the allowlist and the prune, so the transform runs over the ~33
+        # surviving columns rather than all 123. Two consequences worth stating:
+        # the >0.95 correlation prune therefore decides on RAW values, and
+        # feature_medians (computed later, at :4034) is the median of the
+        # TRANSFORMED column -- which is what serving needs, since the booster is
+        # fitted on ranks.
+        if self.cross_sectional_rank_enabled():
+            df = self._apply_cross_sectional_ranks(df, self.feature_cols)
 
         # Downcast features to float32 to halve feature matrix memory
         for col in self.feature_cols:
@@ -4754,6 +5031,8 @@ class ItemForecaster:
             return set()
         if self.bymykel_metadata_enabled():
             allowlist.add(self.BYMYKEL_META_GROUP)
+        if self.tier_lead_enabled():
+            allowlist.add(self.TIER_LEAD_GROUP)
         return set(self.ALL_FEATURE_GROUPS) - allowlist - {"other"}
 
     def _reduce_feature_cols(self, df: pd.DataFrame) -> None:
@@ -4773,6 +5052,8 @@ class ItemForecaster:
         allowlist = list(self.FEATURE_GROUP_ALLOWLIST or [])
         if allowlist and self.bymykel_metadata_enabled():
             allowlist.append(self.BYMYKEL_META_GROUP)
+        if allowlist and self.tier_lead_enabled():
+            allowlist.append(self.TIER_LEAD_GROUP)
 
         def _allow():
             if not allowlist:
@@ -5478,15 +5759,25 @@ class ItemForecaster:
                 item_first_dates=item_first_dates,
             )
 
-        # Pass A — per-date market aggregates across every item.
+        # Pass A — per-date market aggregates across every item, and the
+        # per-(date, tier) index the lead-lag feature reads. Both are
+        # cross-sectional, so both must be accumulated over every chunk before
+        # either can be applied; folding the tier table into the existing pass
+        # keeps that at two passes rather than three.
         partials = []
+        tier_partials = []
+        want_tier_lead = self._tier_lead_served()
         for n, chunk in enumerate(chunks, 1):
             cdf = _chunk_frame(chunk)
             partials.append(self._accumulate_market_partials(cdf))
+            if want_tier_lead:
+                tier_partials.append(self._accumulate_tier_partials(cdf))
             del cdf
             gc.collect()
             logger.info(f"    market pass {n}/{len(chunks)}")
         market = self._market_from_partials(partials)
+        tier_lagged = (self._tier_lead_from_partials(tier_partials)
+                       if want_tier_lead else pd.DataFrame())
 
         # Pass B — apply the market table, then discard all but each item's tail.
         tails = []
@@ -5494,6 +5785,8 @@ class ItemForecaster:
             cdf = _chunk_frame(chunk)
             cdf = self._apply_market_aggregates(cdf, market)
             cdf = self._add_supply_depth_features(cdf)
+            if want_tier_lead:
+                cdf = self._apply_tier_lead(cdf, tier_lagged)
             cdf = (
                 cdf.sort_values(["item_id", "date"])
                 .groupby("item_id", sort=False)
@@ -5555,11 +5848,44 @@ class ItemForecaster:
                 # Add supply depth features (same as training)
                 df = self._add_supply_depth_features(df)
 
+                if self._tier_lead_served():
+                    df = self._add_tier_lead_features(df)
+
                 # Save to cache for next predict run. Only the whole-frame path
                 # writes it: the chunked frame keeps PREDICT_TAIL_ROWS per item,
                 # which is narrower still than the PREDICT_TAIL_ITEM_DAYS window
                 # this frame carries.
                 self._save_engineered_cache(df)
+
+        # Both gated transforms run BEFORE alignment, and must: alignment adds a
+        # missing column as NaN and the median fill downstream turns that into a
+        # constant, so a frame that reached here without them would be served
+        # silently rather than loudly.
+        #
+        # The engineered cache is the live way for that to happen. Its key
+        # fingerprints forecaster.py's bytes, so a code change invalidates it --
+        # but flipping TIER_LEAD_FEATURE is an environment change the key cannot
+        # see, and a cached frame written with the flag off is otherwise a
+        # perfectly valid hit. Fail instead of median-filling a feature the
+        # booster was fitted on.
+        tier_lead_col = self.TIER_LEAD_FEATURES[0]
+        if (tier_lead_col in self.feature_cols
+                and tier_lead_col not in df.columns):
+            raise RuntimeError(
+                f"{tier_lead_col} is in the model's feature_cols but absent from "
+                f"the prediction frame. The engineered cache was almost certainly "
+                f"built with TIER_LEAD_FEATURE off; delete it (or set "
+                f"ENGINEERED_CACHE=0) and re-run rather than serving a "
+                f"median-filled constant."
+            )
+
+        # Over the concatenated frame, so the within-date cross-section is every
+        # eligible item -- not the chunk. The chunked path returns per-item tails
+        # of PREDICT_TAIL_ROWS, which still holds every item at the latest date,
+        # and the latest date is the only one predict reads (`groupby.last()`
+        # below).
+        if self._cross_sectional_rank_served():
+            df = self._apply_cross_sectional_ranks(df, list(self.feature_cols))
 
         # Align features with training columns (add missing, drop extras)
         for col in self.feature_cols:
@@ -6681,6 +7007,14 @@ class ItemForecaster:
             # a needless retrain for a change none of them enabled. Checked
             # separately instead — see _check_artifact_version.
             "bymykel_metadata": self.bymykel_metadata_enabled(),
+            # Recorded so the predict path can follow the artifact instead of the
+            # environment (see _tier_lead_served). Not part of
+            # MODEL_ARTIFACT_VERSION for the same reason bymykel_metadata is not:
+            # with both flags off the artifact is byte-identical to one written
+            # before they existed, so bumping would force every checkout into a
+            # needless retrain for a change none of them enabled.
+            "tier_lead": self.tier_lead_enabled(),
+            "cross_sectional_rank": self.cross_sectional_rank_enabled(),
             "sigma_clip": dict(self.sigma_clip),
             "feature_cols": self.feature_cols,
             "horizon_feature_cols": {
@@ -6743,6 +7077,14 @@ class ItemForecaster:
 
         self.feature_cols = meta["feature_cols"]
         self.feature_medians = pd.Series(meta.get("feature_medians", {}), dtype=np.float64)
+
+        # Absent in artifacts written before these flags existed, which is why
+        # the default is None rather than False: None means "this artifact does
+        # not say", and _tier_lead_served then falls back to the environment.
+        # Reading a stored False as None would be wrong in the other direction --
+        # it would let a stray env var change what an existing model is served.
+        self._artifact_tier_lead = meta.get("tier_lead")
+        self._artifact_xs_rank = meta.get("cross_sectional_rank")
 
         # Restore cached tuned hyperparameters (skips Optuna on retrain when present).
         self.tuned_params = {}

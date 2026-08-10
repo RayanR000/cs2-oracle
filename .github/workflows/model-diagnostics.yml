@@ -42,6 +42,25 @@ on:
         required: false
         default: 'matrix'
         type: string
+      # The two gated accuracy instruments, so this workflow can run an A/B arm
+      # without touching production. Both default OFF, which keeps the Sunday
+      # scheduled run the control -- a scheduled event carries no inputs, so the
+      # expressions below resolve to '0' there.
+      #
+      # One dispatch per arm, read against a control dispatch on the SAME commit.
+      # Do not compare an arm to a previously stored number: every retrain before
+      # 2026-08-09's re-vote (873148b) sits on a different label basis, and the
+      # cached hyperparameters differ between runs that restore different caches.
+      tier_lead:
+        description: 'Arm: add tier_lead_return_1d (expensive->cheap lead-lag)'
+        required: false
+        default: false
+        type: boolean
+      cross_sectional_rank:
+        description: 'Arm: rank-transform features within each date'
+        required: false
+        default: false
+        type: boolean
 
 defaults:
   run:
@@ -124,6 +143,19 @@ jobs:
           # on the serving path, skipping them costs no accuracy — nothing this
           # job produces is predicted from.
           SKIP_REGIMES: "1"
+          # Arm selection. '0' on a scheduled run (no inputs), so the Sunday job
+          # stays the control. Training reads these from the environment rather
+          # than from the restored artifact's meta, deliberately — see
+          # ItemForecaster._tier_lead_served — so restoring a control artifact
+          # cannot silently turn a treatment arm back into a control.
+          #
+          # What the restore DOES carry into an arm is `tuned_params`: the
+          # hyperparameters were selected without the tier-lead column. That is
+          # the intended first read (HP held fixed across arms), not an
+          # oversight. Confirm any positive with FORCE_HP_SEARCH=1 before
+          # believing the size of it.
+          TIER_LEAD_FEATURE: ${{ inputs.tier_lead && '1' || '0' }}
+          CROSS_SECTIONAL_RANK: ${{ inputs.cross_sectional_rank && '1' || '0' }}
         run: |
           set -o pipefail
           python scripts/forecast_prices.py --train-only 2>&1 \
@@ -143,9 +175,30 @@ jobs:
       - name: Summarise
         if: always()
         working-directory: ./backend
+        env:
+          TIER_LEAD_FEATURE: ${{ inputs.tier_lead && '1' || '0' }}
+          CROSS_SECTIONAL_RANK: ${{ inputs.cross_sectional_rank && '1' || '0' }}
         run: |
+          # The arm goes in the heading. A diagnostics run that cannot say which
+          # arm produced it is worse than no run: the numbers look citable and
+          # are not. meta.json (uploaded above) carries the same two flags, so
+          # the artifact is self-describing even without this summary.
+          #
+          # if-blocks rather than `[ x ] && y=z`: `defaults.run.shell: bash`
+          # means `bash -e`, under which a bare failing test is a failed step.
+          arms=""
+          if [ "$TIER_LEAD_FEATURE" = "1" ]; then arms="tier_lead"; fi
+          if [ "$CROSS_SECTIONAL_RANK" = "1" ]; then
+            arms="${arms:+$arms+}xs_rank"
+          fi
+          arm="${arms:-control}"
           {
-            echo "## ${{ matrix.horizon }}d diagnostics"
+            echo "## ${{ matrix.horizon }}d diagnostics — arm: \`${arm}\`"
+            echo
+            echo "\`TIER_LEAD_FEATURE=$TIER_LEAD_FEATURE\` "
+            echo "\`CROSS_SECTIONAL_RANK=$CROSS_SECTIONAL_RANK\`"
+            echo
+            echo "Bar is \`naive_rank_ic\` on the same folds, not 50% and not a stored number."
             echo '```'
             grep -E "classifier_acc|mean_dir_acc|CV summary|Pesaran|rank IC|\[timing\]" \
               diagnostics-${{ matrix.horizon }}d.log || echo "no diagnostic lines found"

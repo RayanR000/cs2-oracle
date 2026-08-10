@@ -110,7 +110,7 @@ also recorded in `changelog/`, which is the durable record. Load-bearing ones:
 ## Changelog (`changelog/`)
 
 Append-only dated decision records: bug fixes, features, audits, and refuted experiments.
-119 entries, 2026-07-08 to 2026-08-10. Entries are never edited to match later reality —
+121 entries, 2026-07-08 to 2026-08-10. Entries are never edited to match later reality —
 several describe code that has since been deleted, which is the point. Per `AGENTS.md`
 workflow rule 2, non-trivial decisions get a new dated note here.
 
