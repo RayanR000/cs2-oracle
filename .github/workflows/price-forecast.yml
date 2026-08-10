@@ -32,7 +32,17 @@ jobs:
   forecast:
     # Skip when the upstream aggregator failed — forecasts need fresh prices.
     if: github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success'
-    runs-on: ubuntu-latest
+    # arm64, not ubuntu-latest. Free on public repos and materially faster on
+    # this workload, which is LightGBM-bound. Every binary dependency ships an
+    # aarch64 manylinux wheel (lightgbm as py3-none-manylinux2014_aarch64, the
+    # rest as cp311), so nothing builds from source.
+    #
+    # Consequence to know before comparing runs: floating point differs from
+    # x86, so an artifact trained here is not bit-identical to one trained on
+    # ubuntu-latest, and a timing or accuracy delta measured ACROSS the switch
+    # confounds architecture with whatever else changed. Compare within an
+    # architecture. The x86 baseline is run 31405829674.
+    runs-on: ubuntu-24.04-arm
     timeout-minutes: 180
     concurrency:
       group: ${{ github.workflow }}-${{ github.ref }}

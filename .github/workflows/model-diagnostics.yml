@@ -1,0 +1,153 @@
+name: Model Diagnostics
+
+# Scores the signal production actually serves.
+#
+# `price-forecast.yml` sets CV_DIAGNOSTIC_CLASSIFIER=0 because the per-fold
+# directional classifier costs 52% of a retrain (re-measured 2026-08-09 under
+# fixed rounds; the "32-37%" in older notes was benchmarked under early stopping,
+# which collapsed the classifier to ~3 trees). The consequence is that
+# `classifier_accuracy` is None on every fold and `served_acc` falls back to the
+# q50 sign — so **every DA and rank-IC number in a daily log describes the
+# quantile sign, not what production serves.** That gap is why the naive-mid
+# question (the q50 loses to -return_1d on rank IC at all four horizons) cannot
+# currently be decided: there is no measurement of the served signal to compare
+# against.
+#
+# This job buys that measurement back on a schedule instead of on the daily path.
+# It is a MEASUREMENT ONLY and must never become the served model:
+#
+#   * It does NOT write to the `forecast-models-` Actions cache key — there is a
+#     restore step below and deliberately no save step. That is the *only* path
+#     by which an artifact reaches production: the daily predict run restores the
+#     newest entry under that prefix. Everything this job writes lands on the
+#     runner's own checkout and dies with it.
+#   * FORECAST_MODEL_DIR is deliberately NOT set. Pointing it at a scratch
+#     directory looks safer but is worse: load_models() would then read an empty
+#     directory, tuned_params would stay {}, Optuna would re-search, and the job
+#     would measure a freshly-tuned model rather than the one production trains.
+#   * TRAIN_HORIZONS gives one horizon per matrix job. The artifacts are thrown
+#     away, so the partial-artifact merge hazard that makes this decomposition
+#     risky in price-forecast.yml does not exist here.
+#   * --train-only writes no forecasts.
+
+on:
+  schedule:
+    # 02:00 UTC Sundays — clear of the daily chain (Aggregator 23:00 -> Forecast
+    # -> Backtest) so the two do not contend for a runner or the voted cache.
+    - cron: '0 2 * * 0'
+  workflow_dispatch:
+    inputs:
+      horizons:
+        description: 'Comma-separated horizons, or "matrix" for one job each'
+        required: false
+        default: 'matrix'
+        type: string
+
+defaults:
+  run:
+    shell: bash
+
+permissions:
+  contents: read
+
+jobs:
+  diagnose:
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 60
+    strategy:
+      # One horizon per job. 30d is the long pole; the others finish well inside
+      # it. fail-fast off so one horizon's failure still yields the other three.
+      fail-fast: false
+      matrix:
+        horizon: [3, 7, 14, 30]
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
+          cache: pip
+          cache-dependency-path: backend/requirements.txt
+
+      - name: Install dependencies
+        working-directory: ./backend
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Checkout price archive
+        uses: actions/checkout@v4
+        with:
+          repository: RayanR000/cs2-oracle-data
+          ref: main
+          token: ${{ secrets.CS2_DATA_REPO_TOKEN }}
+          path: archive
+          fetch-depth: 1
+
+      - name: Link price-archive
+        run: ln -s $PWD/archive/price-archive price-archive
+
+      # Read-only on purpose: restore-only, no matching save step. This job wants
+      # the cached hyperparameters (so it measures the model production trains,
+      # not a freshly-searched one) but must not write the cache back.
+      - name: Restore trained models (read-only)
+        uses: actions/cache/restore@v4
+        with:
+          path: |
+            backend/models/saved_models
+            !backend/models/saved_models/engineered_data.parquet
+          key: forecast-models-never-matches-${{ github.run_id }}
+          restore-keys: |
+            forecast-models-
+
+      - name: Cache voted price frame
+        uses: actions/cache@v4
+        with:
+          path: backend/data
+          key: voted-v6-${{ hashFiles('backend/models/forecaster.py') }}
+          restore-keys: voted-v6-
+
+      - name: Run CV with the served classifier scored
+        working-directory: ./backend
+        env:
+          DATABASE_URL: ${{ secrets.SUPABASE_DATABASE_URL }}
+          ENVIRONMENT: production
+          DEBUG: false
+          # The entire point of this workflow.
+          CV_DIAGNOSTIC_CLASSIFIER: "1"
+          TRAIN_HORIZONS: ${{ matrix.horizon }}
+          ENGINEERED_CACHE: "0"
+          # The artifact is discarded, so regime models buy nothing here. Unlike
+          # on the serving path, skipping them costs no accuracy — nothing this
+          # job produces is predicted from.
+          SKIP_REGIMES: "1"
+        run: |
+          set -o pipefail
+          python scripts/forecast_prices.py --train-only 2>&1 \
+            | tee diagnostics-${{ matrix.horizon }}d.log
+
+      # The numbers are the deliverable, so they have to outlive the runner.
+      - name: Upload diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: diagnostics-${{ matrix.horizon }}d
+          path: |
+            backend/diagnostics-${{ matrix.horizon }}d.log
+            backend/models/saved_models/meta.json
+          retention-days: 90
+
+      - name: Summarise
+        if: always()
+        working-directory: ./backend
+        run: |
+          {
+            echo "## ${{ matrix.horizon }}d diagnostics"
+            echo '```'
+            grep -E "classifier_acc|mean_dir_acc|CV summary|Pesaran|rank IC|\[timing\]" \
+              diagnostics-${{ matrix.horizon }}d.log || echo "no diagnostic lines found"
+            echo '```'
+          } >> $GITHUB_STEP_SUMMARY

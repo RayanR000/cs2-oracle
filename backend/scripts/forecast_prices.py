@@ -124,6 +124,39 @@ def _model_dir() -> Optional[str]:
     return str(path)
 
 
+def _train_horizons() -> Optional[list]:
+    """`TRAIN_HORIZONS=30` or `TRAIN_HORIZONS=3,7` restricts which horizons train.
+
+    Exists for the scheduled diagnostics job, which turns the CV diagnostic
+    classifier back on (52% of a retrain) and so cannot do all four horizons
+    inside the 30-minute cap. Horizons are independent — every piece of
+    per-horizon state in ItemForecaster is dict-keyed by horizon — so one job per
+    horizon is a valid decomposition.
+
+    **The artifact it writes is partial**, holding boosters for the selected
+    horizons only. Never point this at the deployed model directory: pair it with
+    FORECAST_MODEL_DIR. Unparseable or empty values train every horizon, matching
+    TRAIN_MIN_MEDIAN_PRICE's rule that a typo must not silently narrow the run.
+    """
+    raw = (os.environ.get("TRAIN_HORIZONS") or "").strip()
+    if not raw:
+        return None
+    try:
+        picked = [int(tok) for tok in raw.split(",") if tok.strip()]
+    except ValueError:
+        logger.warning(f"TRAIN_HORIZONS={raw!r} is not a comma-separated int "
+                       f"list; training every horizon")
+        return None
+    unknown = [h for h in picked if h not in ItemForecaster.HORIZONS]
+    if unknown or not picked:
+        logger.warning(f"TRAIN_HORIZONS={raw!r} names unknown horizons "
+                       f"{unknown or '[]'}; training every horizon")
+        return None
+    logger.info(f"TRAIN_HORIZONS override: training {picked} only — the saved "
+                f"artifact will be PARTIAL and must not be served")
+    return picked
+
+
 def _train_feature_rows() -> int:
     raw = os.environ.get("TRAIN_FEATURE_ROWS")
     if not raw:
@@ -355,6 +388,11 @@ def run_forecast(train_only: bool = False, predict_only: bool = False,
         forecaster = ItemForecaster(db_session=db, prune_failed_groups=False,
                                     served_cohort_share=_served_cohort_share(),
                                     model_dir=_model_dir())
+        # Instance override, so the class default is untouched for anything else
+        # importing ItemForecaster in this process.
+        _horizons = _train_horizons()
+        if _horizons is not None:
+            forecaster.HORIZONS = _horizons
         # predict_only is a parameter, already known here -- no need to defer
         # this decision until do_train is computed below. A cache that
         # predates the current artifact scheme is exactly "no usable models"

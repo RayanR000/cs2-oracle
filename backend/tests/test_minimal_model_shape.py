@@ -454,6 +454,61 @@ def test_engineered_cache_write_is_suppressible(tmp_path, monkeypatch):
     assert len(pd.read_parquet(path)) == 2
 
 
+@pytest.mark.parametrize("raw,expected", [
+    ("30", [30]),
+    ("3,7", [3, 7]),
+    (" 7 , 30 ", [7, 30]),
+    ("", None),            # unset -> every horizon
+    ("   ", None),
+    ("nonsense", None),    # a typo must not narrow the run
+    ("5", None),           # not a real horizon
+    ("3,999", None),       # one bad member poisons the whole list
+])
+def test_train_horizons_override_parses_or_falls_back(raw, expected, monkeypatch):
+    """A typo must train everything, never a silent subset.
+
+    Same rule as TRAIN_MIN_MEDIAN_PRICE: an unparseable value keeps the wider
+    behaviour, because a partial artifact that looks complete is the dangerous
+    outcome.
+    """
+    from scripts.forecast_prices import _train_horizons
+
+    monkeypatch.setenv("TRAIN_HORIZONS", raw)
+    assert _train_horizons() == expected
+
+
+def test_diagnostics_workflow_cannot_promote_its_artifact():
+    """The diagnostics job scores the served classifier — it must not serve.
+
+    The only route from a run to production is the `forecast-models-` cache key,
+    which the daily predict run restores by prefix. This job restores it and must
+    never save it, or a single-horizon artifact silently becomes the deployed
+    model. Also pins the classifier on: without it the whole workflow is a slower
+    copy of the daily run.
+    """
+    wf = (Path(__file__).resolve().parents[2]
+          / ".github" / "workflows" / "model-diagnostics.yml")
+    spec = yaml.safe_load(wf.read_text())
+    steps = spec["jobs"]["diagnose"]["steps"]
+
+    saves = [s for s in steps
+             if "cache/save" in str(s.get("uses", ""))
+             or (str(s.get("uses", "")).startswith("actions/cache@")
+                 and "saved_models" in str(s.get("with", {}).get("path", "")))]
+    assert not saves, (
+        f"the diagnostics job writes a model cache ({[s.get('name') for s in saves]}); "
+        f"a partial artifact would be promoted to production by the daily predict run"
+    )
+
+    env = next(s for s in steps
+               if s.get("name") == "Run CV with the served classifier scored")["env"]
+    assert str(env["CV_DIAGNOSTIC_CLASSIFIER"]) == "1"
+    assert "FORECAST_MODEL_DIR" not in env, (
+        "FORECAST_MODEL_DIR would point load_models() at an empty directory, so "
+        "the job would measure a freshly-tuned model instead of production's"
+    )
+
+
 def test_ci_suppresses_the_engineered_cache_write():
     wf = (Path(__file__).resolve().parents[2]
           / ".github" / "workflows" / "price-forecast.yml")
