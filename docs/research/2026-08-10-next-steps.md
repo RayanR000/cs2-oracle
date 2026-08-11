@@ -205,6 +205,15 @@ None of these is an accuracy improvement. All three are cheap, and all three blo
 > `-return_1d` bar they were held to. `changelog/2026-08-11-the-gap-is-the-anchor-denominator.md`
 > and `changelog/2026-08-11-serving-transforms-are-not-the-gap.md`.
 >
+> **Replicated across 10 anchors** (`changelog/2026-08-11-clean-anchor-signal-replicates.md`): the
+> gap is zero on items whose anchor quote equals its local median (sign counts 4–6 of 10) and
+> positive at 10 of 10 where it deviates, at every horizon. The same run found the project's first
+> measured served signal — rank IC **+0.12 to +0.16** on that clean third of the cohort, positive
+> at 8–10 anchors of 10 — against **−0.2750 at 10 of 10** on the deviating two-thirds at h=3.
+>
+> Two consequences ahead of everything below: **rebuild the CV label's denominator** before it
+> ranks another arm, and **a serving gate on anchor cleanliness** is now evidence-backed.
+>
 > The section below is still true about statistical power. It is now the second problem.
 
 ## The measurement problem is now the bottleneck
