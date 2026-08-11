@@ -196,6 +196,17 @@ None of these is an accuracy improvement. All three are cheap, and all three blo
   remaining levers are real but no longer urgent. **The velocity problem is the experiment loop, not
   the retrain** — see below.
 
+> ## ⚠️ 2026-08-11: the metric itself is the bottleneck, not the harness power
+>
+> The serving replay attributes the CV↔serving gap to **one axis**: `prepare_targets` divides by
+> the single raw quote at the anchor, which the features are also built from. Swapping only that
+> denominator recovers 95% of the gap (mean Δ rank IC +0.1398 of +0.1464); the serving transforms
+> account for none of it. Every arm in this document was ranked on CV rank IC, and so was the
+> `-return_1d` bar they were held to. `changelog/2026-08-11-the-gap-is-the-anchor-denominator.md`
+> and `changelog/2026-08-11-serving-transforms-are-not-the-gap.md`.
+>
+> The section below is still true about statistical power. It is now the second problem.
+
 ## The measurement problem is now the bottleneck
 
 Worth stating plainly, because it bounds everything in Track N and C:

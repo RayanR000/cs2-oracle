@@ -14,7 +14,8 @@ import pandas as pd
 import pytest
 
 from models.forecaster import ItemForecaster
-from scripts.replay_serving import _naive_baseline, _requested_horizons
+from scripts.replay_serving import (_basis_frame, _exact_day, _naive_baseline,
+                                    _requested_horizons)
 
 
 def _fc():
@@ -202,6 +203,41 @@ def test_the_naive_baseline_signs_a_move_as_reversal():
     ])
     out = _naive_baseline(_fc(), hist, anchor).set_index("item_id")["naive"]
     assert out["up"] < 0 < out["down"]
+
+
+def test_the_cv_basis_drops_an_item_with_no_observation_that_day():
+    """`prepare_targets` joins on `date + horizon` exactly. Applying the
+    replay's tolerance here would erase the very difference being measured."""
+    hist = _history([("gappy", "2026-06-01", 10.0),
+                     ("gappy", "2026-06-05", 12.0)])   # nothing on 06-04
+    assert _exact_day(hist, date(2026, 6, 4)).empty
+    assert _exact_day(hist, date(2026, 6, 5))["px"].iloc[0] == pytest.approx(12.0)
+
+
+def test_the_four_bases_cross_two_axes():
+    """served = median outcome / smoothed anchor; cv = raw / raw. The mixed
+    pair changes exactly one leg each, which is what makes a difference
+    attributable to a numerator or a denominator rather than to 'the basis'."""
+    anchor = date(2026, 6, 1)
+    hist = _history([
+        # Anchor window: raw price on 06-01 is 12, the 3-obs median is 10.
+        ("a", "2026-05-30", 10.0),
+        ("a", "2026-05-31", 10.0),
+        ("a", "2026-06-01", 12.0),
+        # Outcome: raw price on 06-04 is 20, the trailing median over
+        # (06-01, 06-04] is 15.
+        ("a", "2026-06-03", 15.0),
+        ("a", "2026-06-04", 20.0),
+    ])
+    f = _basis_frame(_fc(), hist, anchor, horizon=3).set_index("item_id").loc["a"]
+    assert f["anchor_raw"] == pytest.approx(12.0)
+    assert f["anchor_smooth"] == pytest.approx(10.0)
+    assert f["out_raw"] == pytest.approx(20.0)
+    assert f["out_med"] == pytest.approx(17.5)   # median(15, 20)
+    assert f["served"] == pytest.approx(17.5 / 10.0 - 1)
+    assert f["cv"] == pytest.approx(20.0 / 12.0 - 1)
+    assert f["num_only"] == pytest.approx(20.0 / 10.0 - 1)
+    assert f["den_only"] == pytest.approx(17.5 / 12.0 - 1)
 
 
 def test_a_replay_ignores_the_engineered_cache():

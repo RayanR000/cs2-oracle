@@ -140,6 +140,63 @@ def _naive_baseline(fc: ItemForecaster, outcomes: pd.DataFrame, anchor: date):
     return naive[np.isfinite(naive["naive"])].reset_index(drop=True)
 
 
+def _exact_day(outcomes: pd.DataFrame, day: date) -> pd.DataFrame:
+    """The price observed on exactly `day`, or nothing.
+
+    `prepare_targets` joins the target on `date + horizon` exactly -- no
+    tolerance, no smoothing -- so an item with no observation that day gets no
+    label and leaves the fold. Reproducing CV's basis means reproducing that
+    dropout, not filling it in: the tolerance is what makes the two measurements
+    different, so silently applying it here would erase the thing being
+    measured.
+    """
+    d = outcomes[outcomes["day"] == pd.Timestamp(day)]
+    return (d.groupby("item_id", as_index=False)["price"].median()
+             .rename(columns={"price": "px"}))
+
+
+def _basis_frame(fc: ItemForecaster, outcomes: pd.DataFrame, anchor: date,
+                 horizon: int) -> pd.DataFrame:
+    """The four label bases, per item, on one anchor.
+
+    The serving replay and CV disagree by 0.1-0.2 rank IC on the same artifact
+    (`2026-08-11-serving-transforms-are-not-the-gap.md`), and the serving
+    transforms have been ruled out. Two axes remain between the two labels:
+
+      denominator -- CV divides by the RAW price at the anchor, `predict`
+                     quotes and the replay divides by the SMOOTHED anchor;
+      numerator   -- CV takes the RAW price on exactly `anchor + h`, the replay
+                     takes a trailing MEDIAN over (anchor, anchor + h].
+
+    Crossing them gives four bases. `served` and `cv` are the two real ones;
+    the mixed pair exists so a difference can be attributed to one axis rather
+    than to "the basis" as a lump.
+    """
+    t = pd.Timestamp(anchor)
+    hist = outcomes.rename(columns={"day": "date"})
+    smoothed = pd.Series(
+        fc._smoothed_anchor_prices(hist[hist["date"] <= t], t), name="anchor_smooth")
+    smoothed.index.name = "item_id"
+
+    raw_anchor = _exact_day(outcomes, anchor).rename(columns={"px": "anchor_raw"})
+    raw_target = _exact_day(outcomes, anchor + timedelta(days=horizon)) \
+        .rename(columns={"px": "out_raw"})
+    med_target = _resolve(outcomes, anchor + timedelta(days=horizon), after=anchor) \
+        .rename(columns={"realised": "out_med"})
+
+    f = (raw_anchor.merge(smoothed.reset_index(), on="item_id", how="outer")
+                   .merge(raw_target, on="item_id", how="outer")
+                   .merge(med_target, on="item_id", how="outer"))
+    for name, num, den in (("served", "out_med", "anchor_smooth"),
+                           ("cv", "out_raw", "anchor_raw"),
+                           ("num_only", "out_raw", "anchor_smooth"),
+                           ("den_only", "out_med", "anchor_raw")):
+        f[name] = np.where(f[den].to_numpy(dtype=float) > 0,
+                           f[num].to_numpy(dtype=float)
+                           / f[den].to_numpy(dtype=float) - 1.0, np.nan)
+    return f
+
+
 def _rank_ic(pred: np.ndarray, actual: np.ndarray) -> float:
     """Spearman across the cross-section. One date, so no averaging."""
     if len(pred) < 3:
@@ -266,6 +323,41 @@ def main() -> int:
             print(f"{h:>4} {len(frame):>7} {da:>7.2f} {down:>7.2f} "
                   f"{da - base:>+7.2f} {ic:>8.4f} {naive_ic:>8.4f} "
                   f"{ic - naive_ic:>+9.4f}")
+
+        if "--basis-sweep" in sys.argv:
+            # The SAME served mids, scored against four label bases. Everything
+            # else -- artifact, anchor, items, transforms -- is held fixed, so a
+            # difference here is the label definition and nothing else.
+            print(f"\nLABEL BASIS SWEEP @ {anchor}   "
+                  f"(same served mids; 'cv' is prepare_targets' own basis)")
+            print(f"{'h':>4} {'basis':>10} {'n':>7} {'rankIC':>8} {'vs served':>10}")
+            for h in horizons:
+                rows = [{"item_id": r["item_id"],
+                         "current": float(r["current_price"]),
+                         "mid": float(r["forecasts"][h]["mid"])}
+                        for _, r in served.iterrows()
+                        if r["forecasts"].get(h)
+                        and r["forecasts"][h].get("mid") is not None
+                        and r.get("current_price")]
+                base_f = pd.DataFrame(rows)
+                if base_f.empty:
+                    continue
+                base_f = base_f[base_f["current"] >= floor]
+                bases = _basis_frame(fc, outcomes, anchor, h)
+                merged = base_f.merge(bases, on="item_id", how="left")
+                # pred_ret keeps the served denominator throughout: the model
+                # quoted a dollar mid against it, and re-deriving the prediction
+                # per basis would change the prediction as well as the label.
+                pred = (merged["mid"] / merged["current"] - 1.0).to_numpy()
+                served_ic = None
+                for name in ("served", "cv", "num_only", "den_only"):
+                    ok = np.isfinite(merged[name].to_numpy()) & np.isfinite(pred)
+                    ic_b = (_rank_ic(pred[ok], merged[name].to_numpy()[ok])
+                            if ok.sum() >= 3 else float("nan"))
+                    if name == "served":
+                        served_ic = ic_b
+                    delta = "" if name == "served" else f"{ic_b - served_ic:>+10.4f}"
+                    print(f"{h:>4} {name:>10} {int(ok.sum()):>7} {ic_b:>8.4f} {delta}")
 
         print("\nDA is quotable only beside down% and the PT test "
               "(backend/AGENTS.md invariant 4). One anchor is one date: this "
