@@ -45,6 +45,19 @@ paths:
   **−0.033 / −0.017 / −0.020 / +0.008**. Both bases are contaminated by `p/S` with opposite
   signs, so **rank arms on the tied subset**, which is the only cohort where neither operates.
   `docs/changelog/2026-08-11-smoothed-anchor-label-measured.md`.
+- **The wedge `p[d]/S[d]` is also attackable in the SERVING basis, and that arm is
+  `SERVE_OUTLIER_GATED_ANCHOR=1`.** `predict` detects items whose latest quote deviates >10%
+  from their local median, logs `using smoothed price` — and then substitutes the median for
+  **every** item, so the served `current_price` is a number no venue quoted. The flag gates
+  the substitution on the deviation test the warning already describes
+  (`_serving_base_price`, threshold `ItemForecaster.ANCHOR_OUTLIER_TOLERANCE`, boundary
+  exclusive). Off by default and **unmeasured**. Three things to know before reading it:
+  it is **serving-only**, so it touches no CV number and leaves **no trace in `meta.json`** —
+  the log line and the `model-diagnostics.yml` arm heading are the only record; the deviation
+  mask is **arm-invariant** by construction, so both dispatches size the same cohort; and it
+  **must be read on `replay_serving.py`'s DOLLAR ERROR table, deviating row** — rank IC divides
+  both legs by the served quote this arm moves, and on the tied cohort both arms serve an
+  identical price. `docs/superpowers/plans/2026-08-11-serving-anchor-freshness.md`.
 - **The embargo is `horizon + 13`, not `horizon`.** `models/forecaster.py::embargo_days`
   derives the 13 at call time from `LAG_TOLERANCE_DAYS` (3) + `SMOOTH_WINDOW` (3) +
   `MAX_WINDOW_SPAN_DAYS` (7): the label at `d + horizon` is a **resolved anchor**, not a

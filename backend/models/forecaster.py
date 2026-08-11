@@ -298,6 +298,12 @@ class ItemForecaster:
     # staying far short of the multi-week holes that must remain NaN, because a
     # value reached across those would fabricate a jump.
     LAG_TOLERANCE_DAYS = 3
+    # How far the latest quote may sit from its own local median before serving
+    # calls it an outlier. It has always been the threshold of predict()'s
+    # `using smoothed price` warning; it only became a *decision* threshold with
+    # SERVE_OUTLIER_GATED_ANCHOR, and `_serving_base_price` reads it under both
+    # arms so the deviating cohort is the same population either way.
+    ANCHOR_OUTLIER_TOLERANCE = 0.10
     # Directional-accuracy floor for the drift *alert*. This no longer gates a
     # retrain: the model's measured production DA is 46.7-50.8%
     # (docs/architecture/model-optimization.md), so a 60% floor was never
@@ -848,6 +854,63 @@ class ItemForecaster:
         # Items with no in-window observation keep their latest known price.
         latest = ordered.groupby("item_id")["price"].last()
         return latest.to_dict() | smoothed.to_dict()
+
+    @staticmethod
+    def outlier_gated_anchor_enabled() -> bool:
+        """Whether serving quotes the RAW price unless it looks like a spike.
+
+        Off (shipped): `predict` substitutes the smoothed anchor for every item,
+        outlier or not, so every served `current_price` carries the wedge
+        `p[d]/S[d]` -- the last raw quote over the median production quotes from
+        -- and is a number no venue published.
+
+        On (arm A): the substitution is conditional on the >10% deviation test
+        the code's own warning already describes, so the wedge is confined to the
+        items the smoothing was motivated by.
+
+        **This is a SERVING change, not a label change**, which is the whole
+        point: `2026-08-11-smoothed-anchor-label-measured.md` measured moving the
+        label's denominator and refuted it -- the gain was `p/S` re-entering as a
+        factor readable at the anchor, worth -0.02 to -0.03 on the tied cohort
+        where the arithmetic cannot operate. Narrowing the wedge at source is the
+        question that experiment raised and did not answer.
+
+        **Read it on dollar error, never on rank IC.** The arm moves
+        `current_price`, which the replay's headline divides both the prediction
+        and the outcome by -- so a rank IC across arms measures a redefinition.
+        `scripts/replay_serving.py` prints a basis-free dollar table and a
+        `pinnedIC` for exactly this. The gate is the deviating cohort, because on
+        the tied cohort both arms serve an identical price.
+
+        Set SERVE_OUTLIER_GATED_ANCHOR=1. Off by default and **unmeasured**. See
+        `docs/superpowers/plans/2026-08-11-serving-anchor-freshness.md`.
+        """
+        return os.environ.get("SERVE_OUTLIER_GATED_ANCHOR") == "1"
+
+    @classmethod
+    def _serving_base_price(cls, price: "pd.Series",
+                            smoothed: "pd.Series") -> "tuple[pd.Series, pd.Series]":
+        """The base price the dollar conversion uses, and the deviation mask.
+
+        Returns `(base, deviates)`. `deviates` is **arm-invariant**: it is what
+        the `using smoothed price` warning counts and what the replay's gate is
+        read on, so both arms have to describe the same cohort.
+
+        `smoothed > 0` guards the division, and it also decides the degenerate
+        cases: an item with no smoothed value (NaN) or a zero one is not a
+        deviation, and under either arm it keeps its raw quote. Serving degrades,
+        it never drops -- a NaN base price would void the item's whole forecast.
+        """
+        deviates = (smoothed > 0) & (
+            (price - smoothed).abs() / smoothed > cls.ANCHOR_OUTLIER_TOLERANCE
+        )
+        if cls.outlier_gated_anchor_enabled():
+            # Raw unless it spikes. `where` keeps `price` where the mask is
+            # False, so a NaN or zero smoothed value falls through to the quote.
+            base = price.where(~deviates, smoothed)
+        else:
+            base = smoothed.fillna(price)
+        return base, deviates
 
     @staticmethod
     def label_smoothed_anchor_enabled() -> bool:
@@ -6449,16 +6512,26 @@ class ItemForecaster:
         ).to_frame()
         smoothed_price.index.name = "item_id"
 
-        # Detect outliers: log when latest price deviates > 10% from 3d median
+        # The served `current_price`, and the only site that sets it. Which of
+        # the two prices lands here is arm A of
+        # docs/superpowers/plans/2026-08-11-serving-anchor-freshness.md.
         latest_rows = df.groupby("item_id").last().reset_index()
         latest_rows = latest_rows.merge(smoothed_price, left_on="item_id", right_index=True, how="left")
-        outlier_mask = (latest_rows["_smoothed_price"] > 0) & (
-            abs(latest_rows["price"] - latest_rows["_smoothed_price"]) / latest_rows["_smoothed_price"] > 0.10
-        )
-        n_outliers = outlier_mask.sum()
+        latest_rows["price"], outlier_mask = self._serving_base_price(
+            latest_rows["price"], latest_rows["_smoothed_price"])
+        n_outliers = int(outlier_mask.sum())
         if n_outliers:
-            logger.warning(f"  {n_outliers} items have latest price >10% from 3d median — using smoothed price")
-        latest_rows["price"] = latest_rows["_smoothed_price"].fillna(latest_rows["price"])
+            # The mask is arm-invariant, so this count sizes the deviating
+            # cohort the replay's dollar gate is read on. The arm has to appear
+            # beside it: it leaves no trace in `meta.json` (the artifact is the
+            # same one either way), so this line is the only record of which
+            # price a stored replay number was scored against.
+            gated = self.outlier_gated_anchor_enabled()
+            logger.warning(
+                f"  {n_outliers} items have latest price >"
+                f"{100 * self.ANCHOR_OUTLIER_TOLERANCE:g}% from 3d median — "
+                f"smoothing {'those items only' if gated else 'every item'} "
+                f"(SERVE_OUTLIER_GATED_ANCHOR={'1' if gated else '0'})")
         latest_rows = latest_rows.drop(columns=["_smoothed_price"])
 
         if item_ids:

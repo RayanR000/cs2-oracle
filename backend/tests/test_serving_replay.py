@@ -15,7 +15,8 @@ import pandas as pd
 import pytest
 
 from models.forecaster import ItemForecaster
-from scripts.replay_serving import (PINNED_MAX_SPAN_DAYS, PINNED_SMOOTH_WINDOW,
+from scripts.replay_serving import (DOLLAR_HEADER, PINNED_MAX_SPAN_DAYS,
+                                    PINNED_SMOOTH_WINDOW,
                                     _basis_frame, _dollar_error_rows,
                                     _dollar_line, _exact_day, _naive_baseline,
                                     _pin_matches_production, _pinned_anchor,
@@ -570,6 +571,31 @@ def test_the_naive_column_is_scored_on_the_items_that_have_one():
             _dollar_error_rows(frame, _error_pinned(), tied)}
     assert rows["deviating"]["n_naive"] == 2
     assert rows["deviating"]["n"] == 3
+
+
+def test_the_workflow_summary_captures_the_dollar_table():
+    """`model-diagnostics.yml` greps the replay log into the step summary, and
+    the gate metric has to survive that filter.
+
+    Worse than absent: the dollar rows are `h` then a word, the same shape as the
+    basis sweep's tied/deviating rows, so a pattern that takes the rows but not
+    the `DOLLAR ERROR` heading interleaves two tables into one unlabelled block.
+    """
+    import re
+    from pathlib import Path
+
+    wf = (Path(__file__).resolve().parents[2]
+          / ".github" / "workflows" / "model-diagnostics.yml").read_text()
+    m = re.search(r'grep -E "([^"]+)" \\\n\s*replay-', wf)
+    assert m, "the replay summary grep moved; this test no longer reads it"
+    pattern = m.group(1)
+
+    row = {"subset": "deviating", "n": 300, "model": 0.0412, "p90": 0.183,
+           "quote": 0.0405, "naive": 0.0431, "n_naive": 298}
+    for line in (f"DOLLAR ERROR @ 2026-06-01   (|x - realised| / realised, %)",
+                 DOLLAR_HEADER,
+                 _dollar_line(3, row)):
+        assert re.search(pattern, line), line
 
 
 def test_a_cohort_too_thin_to_score_still_prints_a_row():

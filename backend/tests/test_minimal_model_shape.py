@@ -557,6 +557,7 @@ def test_diagnostics_arms_default_to_the_control():
 
     inputs = spec[True]["workflow_dispatch"]["inputs"]
     for name in ("tier_lead", "cross_sectional_rank", "naive_init_score",
+                 "label_smoothed_anchor", "serve_outlier_gated_anchor",
                  "force_hp_search"):
         assert inputs[name]["default"] is False, (
             f"{name} defaults on; the Sunday scheduled run would stop being a control"
@@ -571,6 +572,12 @@ def test_diagnostics_arms_default_to_the_control():
     for key, inp in (("TIER_LEAD_FEATURE", "tier_lead"),
                      ("CROSS_SECTIONAL_RANK", "cross_sectional_rank"),
                      ("NAIVE_INIT_SCORE", "naive_init_score"),
+                     ("LABEL_SMOOTHED_ANCHOR", "label_smoothed_anchor"),
+                     # Serving-only, so it reaches nothing this step trains --
+                     # but predict_smoke runs predict() from here, and an arm
+                     # that leaked into the scheduled run would move the served
+                     # `current_price` with nothing in meta.json to say so.
+                     ("SERVE_OUTLIER_GATED_ANCHOR", "serve_outlier_gated_anchor"),
                      ("FORCE_HP_SEARCH", "force_hp_search")):
         expr = str(env[key])
         assert f"inputs.{inp}" in expr and "'1'" in expr and "'0'" in expr, (

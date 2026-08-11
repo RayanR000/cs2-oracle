@@ -64,7 +64,7 @@ or an arm that edits `_smoothed_anchor_prices` silently moves the referee too.
 |---|---|---|
 | 1 | Pin the replay's scoring denominator so it cannot follow the arm; test that it is unchanged when the serving flag flips | ✅ done |
 | 2 | Add dollar-error columns to the replay (median and p90 of `\|mid − realised\|/realised`), control and naive alongside | ✅ done |
-| 3 | Arm A behind `SERVE_OUTLIER_GATED_ANCHOR=1`, plus the `model-diagnostics.yml` input; test both branches and the >10% boundary | ~45m |
+| 3 | Arm A behind `SERVE_OUTLIER_GATED_ANCHOR=1`, plus the `model-diagnostics.yml` input; test both branches and the >10% boundary | ✅ done |
 | 4 | Two dispatches on one commit, four anchors, sequential | ~1h wall clock |
 
 **~2.5h of work plus ~1h of CI.** I estimated "~2h to prototype" in conversation; that was
@@ -108,6 +108,30 @@ If it passes, the follow-on question is whether the *backtest's* resolver should
 > dollar gate's deviating cohort and the basis sweep's cannot drift apart.
 >
 > `n` and `n_naive` are reported per row, which is hazard 4's mitigation.
+
+> ✅ **Task 3 landed.** `ItemForecaster.outlier_gated_anchor_enabled()` and
+> `_serving_base_price(price, smoothed) -> (base, deviates)`, called from the one seam in
+> `predict()`. Off, the base is `smoothed.fillna(price)` — the shipped unconditional
+> substitution, unchanged. On, it is `price.where(~deviates, smoothed)`. 16 new tests, plus a
+> `model-diagnostics.yml` `serve_outlier_gated_anchor` input wired into the train step (for
+> `predict_smoke`), the replay step, and the summary's arm label.
+>
+> **`deviates` is arm-invariant, and that is load-bearing.** The `>10%` mask is computed the
+> same way under both arms, so the `n items have latest price >10%` warning sizes the same
+> cohort in both dispatches, and `ANCHOR_OUTLIER_TOLERANCE = 0.10` is now a named constant
+> read by both branches. The boundary is `> 0.10`, exclusive, inherited from the shipped mask:
+> a boundary that moved with the flag would sort items into different cohorts for a reason
+> that is not the arm.
+>
+> **Two things the plan did not call out.** The arm leaves **no trace in `meta.json`** — the
+> artifact is identical either way — so `predict()`'s warning now names the flag and its state,
+> and that log line plus the workflow summary heading are the only record of which price a
+> stored replay number was scored against. And the summary's replay grep did not match the
+> dollar table: its rows are `h` then a word, the same shape as the basis sweep's split rows,
+> so the heading had to be matched or two tables would interleave into one unlabelled block.
+>
+> Degenerate cases go the safe way under both arms: a NaN or zero smoothed value is not a
+> deviation and the raw quote survives, because serving degrades and never drops.
 
 ## Hazards
 
