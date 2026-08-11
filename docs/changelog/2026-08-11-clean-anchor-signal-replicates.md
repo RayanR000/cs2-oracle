@@ -1,5 +1,9 @@
 # The clean-anchor signal replicates across ten anchors, 2026-08-11
 
+> **Confirmed in CI on a fresh artifact and canonical data**, and one claim below is corrected:
+> the deviating subset is negative at h=3 only, not at every horizon, and 30d's tied signal comes
+> in at +0.0536 rather than +0.1423. `2026-08-11-clean-anchor-confirmed-in-ci.md`.
+
 Ten anchors, 2026-04-15 to 2026-07-09, one artifact (local, trained 2026-08-09), same script and
 flags throughout. Follows `2026-08-11-the-gap-is-the-anchor-denominator.md`, which found both
 results on two anchors and asked for exactly this before either was believed.
