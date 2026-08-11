@@ -1133,7 +1133,42 @@ class ItemForecaster:
     # Data fetching
     # ------------------------------------------------------------------
 
+    @staticmethod
+    def replay_anchor() -> Optional[date]:
+        """`REPLAY_ANCHOR=YYYY-MM-DD` rewinds the serving clock.
+
+        Set, every window `predict` derives -- the fetch cutoff, the voted
+        cache key, the model age gate, the prior-day blend -- resolves as if
+        today were that date, and the archive read gains an UPPER bound so the
+        replay cannot see past its own anchor.
+
+        This exists because the serving path is the one thing walk-forward CV
+        does not score. `_recenter_on_direction`, the tier bias, the prior-day
+        blend and the conformal band all run inside `predict()` and nowhere
+        else, so the only way to measure them was to publish a forecast and
+        wait for it to mature. A replay scores them against outcomes the
+        archive already holds.
+
+        Research and diagnostics only. It must never be set on the daily path:
+        every forecast it produces is dated in the past.
+        """
+        raw = os.environ.get("REPLAY_ANCHOR", "").strip()
+        if not raw:
+            return None
+        try:
+            return date.fromisoformat(raw)
+        except ValueError:
+            raise ValueError(
+                f"REPLAY_ANCHOR={raw!r} is not an ISO date (YYYY-MM-DD). "
+                f"Refusing to guess -- an unparsed anchor would silently "
+                f"replay against today and score a forecast on its own answer."
+            )
+
     def _now(self):
+        anchor = self.replay_anchor()
+        if anchor is not None:
+            return datetime(anchor.year, anchor.month, anchor.day,
+                            tzinfo=timezone.utc)
         return datetime.now(timezone.utc)
 
     def fetch_price_history(self, days_back: int = 365,
@@ -1241,11 +1276,22 @@ class ItemForecaster:
 
             slug_join = "JOIN _backfilled b ON sub.item_slug = b.slug" if backfilled_slugs is not None else ""
 
+            # Interpolated rather than bound: a bound NULL has no type for
+            # DuckDB to infer, and `replay_anchor()` has already parsed this
+            # through `date.fromisoformat`, so it cannot carry SQL.
+            _anchor = self.replay_anchor()
+            _upper_bound = (
+                f"AND day <= '{_anchor.strftime('%Y-%m-%d')}'" if _anchor else "")
+            if _anchor:
+                logger.warning(
+                    f"  REPLAY_ANCHOR={_anchor}: archive read bounded at that "
+                    f"date. This is a backdated replay, not a live forecast.")
             df = con.sql(f"""
                 SELECT item_slug, day, mean_price AS price, volume, source
                 FROM {relation} sub
                 {slug_join}
                 WHERE day >= ?
+                  {_upper_bound}
                   AND (source IS NULL OR source NOT LIKE 'historical_fallback:%')
                   AND {phase_collapsed_sql_filter("sub.item_slug")}
                   AND {phantom_slug_sql_filter("sub.item_slug")}
@@ -4270,6 +4316,9 @@ class ItemForecaster:
         payload = "\n".join([
             f"v={self.VOTED_CACHE_VERSION}",
             f"cutoff={cutoff}",
+            # Without this a replay reuses the live frame, which holds every
+            # row after the anchor -- the leak the upper bound exists to stop.
+            f"anchor={self.replay_anchor() or ''}",
             f"backfilled_only={int(backfilled_only)}",
             f"slugs={slug_digest}",
             f"archive={self._archive_fingerprint()}",
@@ -4360,6 +4409,13 @@ class ItemForecaster:
 
     def _load_engineered_cache(self) -> Optional[pd.DataFrame]:
         """Load cached engineered features. Returns None if cache is missing or stale."""
+        if self.replay_anchor() is not None:
+            # A live cache holds features engineered from rows after the
+            # anchor. Its key fingerprints forecaster.py, which a replay does
+            # not change, so it would be a perfectly valid hit carrying exactly
+            # the data the upper bound exists to exclude.
+            logger.info("  REPLAY_ANCHOR set — ignoring the engineered cache.")
+            return None
         path = self._engineered_cache_path
         if not os.path.exists(path):
             return None
@@ -5943,7 +5999,10 @@ class ItemForecaster:
         }
         if self.db is None:
             return result
-        today = date.today()
+        # _now(), not date.today(): under a replay the "prior" day is the day
+        # before the ANCHOR. Reading real forecasts dated after it would blend
+        # the future into a backdated prediction.
+        today = self._now().date()
         try:
             rows = self.db.execute(text("""
                 SELECT item_id, price_low, price_mid, price_high, current_price, forecast_date
