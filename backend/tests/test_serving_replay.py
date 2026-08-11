@@ -14,7 +14,7 @@ import pandas as pd
 import pytest
 
 from models.forecaster import ItemForecaster
-from scripts.replay_serving import _naive_baseline
+from scripts.replay_serving import _naive_baseline, _requested_horizons
 
 
 def _fc():
@@ -93,6 +93,20 @@ def test_the_prior_day_blend_cannot_read_past_the_anchor():
         "the blend would pull real forecasts dated after the anchor and mix "
         "the future into a backdated prediction"
     )
+
+
+def test_no_horizon_filter_scores_everything_the_artifact_serves():
+    assert _requested_horizons(["scripts/replay_serving.py"]) is None
+
+
+def test_the_horizon_filter_exists_for_the_one_horizon_a_matrix_job_trained():
+    """model-diagnostics.yml trains ONE horizon per job beside restored
+    production boosters, and a feature transform applies to the whole frame --
+    so the other three rows are boosters fitted on untransformed features being
+    fed transformed ones. Scoring them would publish garbage in the same table.
+    """
+    assert _requested_horizons(["x", "--horizons", "3"]) == {3}
+    assert _requested_horizons(["x", "--horizons", "3,30"]) == {3, 30}
 
 
 def test_the_naive_baseline_is_built_on_the_served_basis():

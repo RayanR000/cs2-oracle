@@ -29,6 +29,7 @@ import os
 import sys
 from datetime import date, timedelta
 from pathlib import Path
+from typing import Optional
 
 import numpy as np
 import pandas as pd
@@ -146,7 +147,25 @@ def _rank_ic(pred: np.ndarray, actual: np.ndarray) -> float:
     return float(pd.Series(pred).corr(pd.Series(actual), method="spearman"))
 
 
+def _requested_horizons(argv) -> Optional[set]:
+    """`--horizons 3,7` restricts which rows are scored.
+
+    The reason is `model-diagnostics.yml`: its matrix trains ONE horizon per job
+    beside boosters restored from the production cache, and a feature transform
+    like `CROSS_SECTIONAL_RANK` is applied to the whole frame rather than per
+    horizon. So in job `h` the other three horizons' boosters are fitted on
+    untransformed features and fed transformed ones -- their rows are not a
+    measurement of anything. Scoring them anyway would publish three garbage
+    rows beside one real one, all formatted identically.
+    """
+    if "--horizons" not in argv:
+        return None
+    raw = argv[argv.index("--horizons") + 1]
+    return {int(h) for h in raw.split(",") if h.strip()}
+
+
 def main() -> int:
+    want = _requested_horizons(sys.argv)
     anchor = ItemForecaster.replay_anchor()
     if anchor is None:
         logger.error("REPLAY_ANCHOR is not set. Refusing to run: without it "
@@ -173,6 +192,16 @@ def main() -> int:
             return 1
 
         horizons = sorted({h for f in served["forecasts"] for h in f})
+        if want is not None:
+            missing = want - set(horizons)
+            if missing:
+                logger.error(f"--horizons asked for {sorted(missing)}, which "
+                             f"this artifact does not serve ({horizons}).")
+                return 2
+            horizons = sorted(want)
+            logger.info(f"  scoring only {horizons} -- the rest of this "
+                        f"artifact's boosters were not trained under these "
+                        f"flags, so their rows would not be a measurement.")
         outcomes = _outcomes(fc, anchor, horizons)
         logger.info(f"  {len(served):,} served rows, "
                     f"{outcomes['item_id'].nunique():,} items in the outcome window")

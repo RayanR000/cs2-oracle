@@ -87,6 +87,24 @@ on:
         required: false
         default: false
         type: boolean
+      # The serving-path MEASUREMENT, as opposed to predict_smoke's shape check.
+      # Comma-separated ISO dates; empty skips the step entirely. Each anchor
+      # rewinds the serving clock (REPLAY_ANCHOR), serves the artifact this job
+      # just trained, and scores it against outcomes the archive already holds.
+      #
+      # Only THIS JOB'S horizon is scored. The matrix trains one horizon beside
+      # boosters restored from the production cache, and a feature transform
+      # applies to the whole frame -- so the other three rows would be boosters
+      # fitted on untransformed features being fed transformed ones.
+      #
+      # Cost: roughly 4 minutes per anchor on top of training, all of it the
+      # bounded archive read and a cold vote (the cache key carries the anchor).
+      # Two anchors keeps a diagnostics job inside the 30-minute working cap.
+      replay_anchors:
+        description: 'Serving replay: comma-separated anchor dates (e.g. 2026-06-01,2026-07-05)'
+        required: false
+        default: ''
+        type: string
 
 defaults:
   run:
@@ -199,6 +217,32 @@ jobs:
           python scripts/forecast_prices.py "$MODE" 2>&1 \
             | tee diagnostics-${{ matrix.horizon }}d.log
 
+      # Scores what predict() actually serves. CV never touches it: the
+      # prior-day blend, the tier bias, _recenter_on_direction and the conformal
+      # band all run inside predict and nowhere else. Writes nothing to the
+      # database -- see scripts/replay_serving.py.
+      #
+      # It serves the artifact the step above just saved, so the arm flags must
+      # still be set here: predict refuses a rank-transform artifact whose
+      # recorded cohort and skip set do not match what it is asked to apply.
+      - name: Replay the serving path
+        if: inputs.replay_anchors != ''
+        working-directory: ./backend
+        env:
+          DATABASE_URL: ${{ secrets.SUPABASE_DATABASE_URL }}
+          ENVIRONMENT: production
+          DEBUG: false
+          TIER_LEAD_FEATURE: ${{ inputs.tier_lead && '1' || '0' }}
+          CROSS_SECTIONAL_RANK: ${{ inputs.cross_sectional_rank && '1' || '0' }}
+          NAIVE_INIT_SCORE: ${{ inputs.naive_init_score && '1' || '0' }}
+        run: |
+          set -o pipefail
+          for anchor in $(echo "${{ inputs.replay_anchors }}" | tr ',' ' '); do
+            REPLAY_ANCHOR="$anchor" python -m scripts.replay_serving \
+              --horizons ${{ matrix.horizon }} 2>&1 \
+              | tee -a replay-${{ matrix.horizon }}d.log
+          done
+
       # The numbers are the deliverable, so they have to outlive the runner.
       - name: Upload diagnostics
         if: always()
@@ -207,6 +251,7 @@ jobs:
           name: diagnostics-${{ matrix.horizon }}d
           path: |
             backend/diagnostics-${{ matrix.horizon }}d.log
+            backend/replay-${{ matrix.horizon }}d.log
             backend/models/saved_models/meta.json
           retention-days: 90
 
@@ -252,4 +297,17 @@ jobs:
             grep -E "classifier_acc|mean_dir_acc|CV summary|Pesaran|rank IC|\[timing\]" \
               diagnostics-${{ matrix.horizon }}d.log || echo "no diagnostic lines found"
             echo '```'
+            # The serving-path read, when one was asked for. One anchor is one
+            # date: a path check with a number attached, not an accuracy result.
+            if [ -f replay-${{ matrix.horizon }}d.log ]; then
+              echo
+              echo "### Serving replay — ${{ inputs.replay_anchors }}"
+              echo
+              echo "Compare against a control dispatch on the same commit and the"
+              echo "same anchors. Never against a stored number."
+              echo '```'
+              grep -E "SERVING REPLAY|^ *h +n|^ *[0-9]+ +[0-9]" \
+                replay-${{ matrix.horizon }}d.log || echo "no replay rows found"
+              echo '```'
+            fi
           } >> $GITHUB_STEP_SUMMARY
