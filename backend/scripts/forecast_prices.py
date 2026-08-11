@@ -313,6 +313,13 @@ def _write_forecasts_to_db(db, results, model_version, slug_to_id, today,
             continue
         current_price = row.get("current_price")
         forecasts = row.get("forecasts", {})
+        # Per item, repeated onto each horizon row: the anchor is a property of
+        # the price frame on the forecast date, and all four horizons are
+        # quoted from it. Cannot be recovered from `current_price` later --
+        # that is the SERVED base, which under the shipped arm is already the
+        # smoothed median, so a backfill would call every row clean.
+        anchor_clean = row.get("anchor_clean")
+        anchor_wedge_pct = row.get("anchor_wedge_pct")
 
         for horizon, fcast in forecasts.items():
             forecast_rows.append({
@@ -326,6 +333,8 @@ def _write_forecasts_to_db(db, results, model_version, slug_to_id, today,
                 "direction": fcast.get("direction"),
                 "confidence": fcast.get("confidence"),
                 "model_version": model_version,
+                "anchor_clean": anchor_clean,
+                "anchor_wedge_pct": anchor_wedge_pct,
                 "created_at": datetime.now(timezone.utc).replace(tzinfo=None),
             })
 
@@ -347,15 +356,45 @@ def _write_forecasts_to_db(db, results, model_version, slug_to_id, today,
         is_sqlite = bind is not None and bind.dialect.name == "sqlite"
         insert_stmt = sqlite_insert if is_sqlite else pg_insert
         table = ItemForecast.__table__
+        # This repo's prod schema runs behind its migrations -- `daily_analysis`
+        # was dropped by 0015 and is still there -- so the model declaring a
+        # column is not evidence that the table has one. An INSERT naming a
+        # column the table lacks fails the whole batch, which would take the
+        # daily forecast run down for what is a disclosure field.
+        #
+        # LOUD, never silent: a quiet skip is how this project has repeatedly
+        # ended up with a green run and no data. The gate reads NULL as "not
+        # recorded" and passes it, so dropping these degrades to the old
+        # behaviour rather than to an empty ranked surface.
+        from sqlalchemy import inspect as sa_inspect
+        db_cols = {c["name"] for c in sa_inspect(bind).get_columns(table.name)}
+        missing = {c for c in ("anchor_clean", "anchor_wedge_pct")
+                   if c not in db_cols}
+        if missing:
+            logger.warning(
+                f"  ⚠ item_forecasts is missing {sorted(missing)} — writing "
+                f"forecasts WITHOUT the clean-anchor disclosure. "
+                f"/opportunities cannot gate on a column that is not there, so "
+                f"it will rank the deviating cohort as before. Run "
+                f"`venv/bin/python -m alembic upgrade head` from backend/ "
+                f"(the `venv/bin/alembic` shim carries a stale shebang).")
+        # Only the DB payload is narrowed. The Parquet mirror below has no
+        # schema to violate and `_append_parquet` widens on write, so the
+        # disclosure still lands there and the ops read works either way.
+        db_rows = ([{k: v for k, v in r.items() if k not in missing}
+                    for r in forecast_rows] if missing else forecast_rows)
+
         batch_size = 90 if is_sqlite else 5000
-        for i in range(0, len(forecast_rows), batch_size):
-            batch = forecast_rows[i:i + batch_size]
+        for i in range(0, len(db_rows), batch_size):
+            batch = db_rows[i:i + batch_size]
             stmt = insert_stmt(table).values(batch)
             excluded = stmt.excluded
             update_cols = {
                 col.name: getattr(excluded, col.name)
                 for col in table.columns
-                if col.name not in {"id", "item_id", "forecast_date", "horizon_days", "created_at"}
+                if col.name not in {"id", "item_id", "forecast_date",
+                                    "horizon_days", "created_at"}
+                and col.name not in missing
             }
             stmt = stmt.on_conflict_do_update(
                 index_elements=["item_id", "forecast_date", "horizon_days"],

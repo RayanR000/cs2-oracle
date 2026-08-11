@@ -923,6 +923,46 @@ class ItemForecaster:
         return base, deviates
 
     @staticmethod
+    def _anchor_disclosure(price: "pd.Series",
+                           smoothed: "pd.Series") -> "tuple[pd.Series, pd.Series]":
+        """`(anchor_clean, anchor_wedge_pct)` for the served rows.
+
+        `anchor_clean` is the cohort split every 2026-08-11 served-signal figure
+        was measured on: the model reaches rank IC +0.13 to +0.17 at 3/7/14d
+        where the anchor quote equals its own local median and ~0 or negative
+        where it does not (`2026-08-11-clean-anchor-confirmed-in-ci.md`, 4 CI
+        anchors of 4). `api/serving_policy.py::meets_anchor_gate` keeps the
+        deviating cohort off the ranked surfaces.
+
+        **`price` must be the RAW quote.** `_serving_base_price` overwrites it
+        with the served base, and under the shipped arm that base *is*
+        `smoothed` -- so this called after that line reports a clean catalogue.
+
+        **Exact equality, matching `replay_serving._tied_mask`** (`rtol=0,
+        atol=1e-9`), NOT `ANCHOR_OUTLIER_TOLERANCE`. The 10% test describes a
+        different and far smaller population, and nothing has been measured on
+        it. `anchor_wedge_pct` is published beside the flag because the split at
+        exact equality is what was measured and whether the effect is a cliff
+        there or monotone in `|p/S - 1|` is not.
+
+        **Arm-invariant.** Reads neither `outlier_gated_anchor_enabled` nor
+        `label_smoothed_anchor_enabled`; two arms must describe one cohort.
+
+        A non-positive or missing median yields `clean=False` and a NaN wedge:
+        unknown is not clean, the same rule the replay's mask follows.
+        """
+        p = price.to_numpy(dtype=float)
+        s = smoothed.to_numpy(dtype=float)
+        usable = np.isfinite(s) & (s > 0) & np.isfinite(p)
+        clean = pd.Series(np.isclose(p, s, rtol=0, atol=1e-9) & usable,
+                          index=price.index, name=ANCHOR_TIED_COL)
+        wedge = pd.Series(
+            np.where(usable, (p / np.where(usable, s, 1.0) - 1.0) * 100.0,
+                     np.nan),
+            index=price.index, name="anchor_wedge_pct")
+        return clean, wedge
+
+    @staticmethod
     def label_smoothed_anchor_enabled() -> bool:
         """Whether the LABEL divides by the price `predict` quotes from.
 
@@ -6671,6 +6711,15 @@ class ItemForecaster:
         # docs/superpowers/plans/2026-08-11-serving-anchor-freshness.md.
         latest_rows = df.groupby("item_id").last().reset_index()
         latest_rows = latest_rows.merge(smoothed_price, left_on="item_id", right_index=True, how="left")
+
+        # BEFORE the reassignment below, and that ordering is the whole point.
+        # `_serving_base_price` overwrites `price` with the served base, which
+        # under the shipped arm IS `_smoothed_price` -- so a disclosure computed
+        # after this line would find `p == S` for every item and publish the
+        # entire catalogue as clean.
+        anchor_clean, anchor_wedge_pct = self._anchor_disclosure(
+            latest_rows["price"], latest_rows["_smoothed_price"])
+
         latest_rows["price"], outlier_mask = self._serving_base_price(
             latest_rows["price"], latest_rows["_smoothed_price"])
         n_outliers = int(outlier_mask.sum())
@@ -6707,6 +6756,8 @@ class ItemForecaster:
 
         item_id_arr = latest_rows["item_id"].to_numpy()
         current_price_arr = latest_rows["price"].to_numpy()
+        anchor_clean_arr = anchor_clean.to_numpy()
+        anchor_wedge_arr = anchor_wedge_pct.to_numpy()
         generated_at = self._now()
 
         # Detect current market regime for regime-aware model selection
@@ -6725,14 +6776,21 @@ class ItemForecaster:
         global_count = 0
 
         # One row per item, filled in horizon by horizon.
+        # Per ITEM, not per horizon: the anchor is a property of the price
+        # frame on the forecast date, and all four horizons are quoted from it.
         agg = {
             iid: {
                 "item_id": iid,
                 "current_price": float(cur),
+                "anchor_clean": bool(clean),
+                "anchor_wedge_pct": (float(wedge) if np.isfinite(wedge)
+                                     else None),
                 "forecasts": {},
                 "generated_at": generated_at,
             }
-            for iid, cur in zip(item_id_arr, current_price_arr)
+            for iid, cur, clean, wedge in zip(
+                item_id_arr, current_price_arr,
+                anchor_clean_arr, anchor_wedge_arr)
         }
 
         # Per-item conformal scale. Loop-invariant: it depends only on

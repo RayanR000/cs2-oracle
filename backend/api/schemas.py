@@ -74,6 +74,14 @@ class PredictionOut(BaseModel):
     forecast_period: str
     trend_direction: str
     confidence: str
+    # Did the quote this forecast was built from equal its own local median?
+    # The model reaches rank IC +0.13-0.17 at 3/7/14d where it did and ~0 or
+    # negative where it did not, so a False here says the forecast is served
+    # from a cohort with no measured ordering skill. Those items are kept OFF
+    # /opportunities entirely; a lookup by name still gets its forecast, with
+    # this flag. None = not recorded (rows predating the 2026-08-11 column).
+    anchor_clean: Optional[bool] = None
+    anchor_wedge_pct: Optional[float] = None
 
 
 class OpportunityOut(BaseModel):

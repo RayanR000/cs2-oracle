@@ -511,6 +511,25 @@ def _build_trend_explanation(direction: str, current_price) -> str:
     return "ML forecast predicts a stable price over the next 7 days."
 
 
+def _optional_bool(v):
+    """NULL / NaN out of DuckDB is 'not recorded', never False.
+
+    A column the mirror predates comes back as None from `_DictObj`, and a
+    Parquet NULL in a float or object column arrives as `nan` -- and `bool(nan)`
+    is True, which would publish an unrecorded anchor as clean.
+    """
+    if v is None or (isinstance(v, float) and math.isnan(v)):
+        return None
+    return bool(v)
+
+
+def _optional_float(v):
+    if v is None:
+        return None
+    f = float(v)
+    return None if math.isnan(f) else f
+
+
 def _prediction_parquet(item, period: str, horizon: int):
     r = _forecast_parquet(item.id, horizon)
     if r is None:
@@ -529,6 +548,12 @@ def _prediction_parquet(item, period: str, horizon: int):
         forecast_period=period,
         trend_direction=r.direction or "neutral",
         confidence=r.confidence or "low",
+        # Disclosed, not gated. `/opportunities` drops the deviating cohort
+        # because ranking is what the clean-anchor evidence covers; a lookup by
+        # name still answers, and says which cohort the answer comes from.
+        # `_DictObj` returns None for a column the mirror predates.
+        anchor_clean=_optional_bool(r.anchor_clean),
+        anchor_wedge_pct=_optional_float(r.anchor_wedge_pct),
     )
 
 

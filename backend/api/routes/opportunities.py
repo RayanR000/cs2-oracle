@@ -7,7 +7,12 @@ from datetime import date
 from database import get_db, ItemForecast, Item
 from api.cache import get_or_build
 from api.schemas import OpportunityOut
-from api.serving_policy import meets_price_floor, price_floor_clause
+from api.serving_policy import (
+    anchor_clean_clause,
+    meets_anchor_gate,
+    meets_price_floor,
+    price_floor_clause,
+)
 from models.item_parser import is_phantom_slug, is_phase_collapsed
 
 router = APIRouter(prefix="/opportunities", tags=["opportunities"])
@@ -81,6 +86,11 @@ def _latest_forecasts(db: Session, horizon_days: int = 7):
         .filter(
             ItemForecast.horizon_days == horizon_days,
             price_floor_clause(ItemForecast.current_price),
+            # Ranking is the surface the clean-anchor evidence covers, so the
+            # gate belongs here as well as in select_opportunities -- filtering
+            # only in Python would pull every forecast out of Postgres and
+            # discard two thirds of them in the API process.
+            anchor_clean_clause(ItemForecast.anchor_clean),
         )
         .all()
     )
@@ -121,12 +131,21 @@ def opportunity_type_for(direction: Optional[str]) -> str:
 
 
 def select_opportunities(forecasts, items_map, type_filter, limit):
-    """Pure selection over already-fetched rows, ranked by |predicted return|."""
+    """Pure selection over already-fetched rows, ranked by |predicted return|.
+
+    The clean-anchor gate is applied HERE, before the sort and the truncation.
+    Filtering after `[:limit]` would make the list shorter the more deviating
+    items happened to rank highest -- and they rank high by construction, since
+    a deviating anchor is a quote far from its own median and the predicted
+    return is measured against that median.
+    """
     results = []
     for f in forecasts:
         if f.direction is None:
             continue
         if not meets_price_floor(f.current_price):
+            continue
+        if not meets_anchor_gate(getattr(f, "anchor_clean", None)):
             continue
         item = items_map.get(f.item_id)
         if not item:

@@ -2,7 +2,7 @@
 Database models for CS2 Market Intelligence Platform
 """
 
-from sqlalchemy import create_engine, Column, Integer, String, Float, DateTime, Date, ForeignKey, Index, JSON, UniqueConstraint
+from sqlalchemy import create_engine, Boolean, Column, Integer, String, Float, DateTime, Date, ForeignKey, Index, JSON, UniqueConstraint
 from sqlalchemy.orm import relationship, sessionmaker
 from sqlalchemy.orm import declarative_base
 from datetime import datetime, timezone
@@ -155,6 +155,16 @@ class ItemForecast(Base):
     direction = Column(String(10), nullable=True)  # up, down, flat
     confidence = Column(String(10), nullable=True)  # low, medium, high
     model_version = Column(String(50), nullable=True)
+    # Did the quote this forecast was built from equal its own local median?
+    # The cohort split every 2026-08-11 served-signal figure was measured on:
+    # rank IC +0.13/+0.16/+0.17 at 3/7/14d where True, ~0 or negative where
+    # False. NULL means "not recorded" -- every row predating the column -- and
+    # api/serving_policy.py treats it as passing rather than as deviating.
+    # `anchor_wedge_pct` is (raw quote / smoothed anchor - 1) * 100, published
+    # because the split at exact equality is what was measured and whether the
+    # effect is a cliff there or monotone in |p/S - 1| is not.
+    anchor_clean = Column(Boolean, nullable=True)
+    anchor_wedge_pct = Column(Float, nullable=True)
     created_at = Column(DateTime, default=utcnow_naive)
 
     item = relationship("Item", back_populates="forecasts")
