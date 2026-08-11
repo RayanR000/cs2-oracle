@@ -18,6 +18,15 @@
 >
 > **Not shipped.** The arm stays off by default. What blocks the default is the backtest
 > resolver (below), not the measurement.
+>
+> ✅ **The resolver question is RULED (2026-08-11): the resolver does not move.** `actual_ret`
+> keeps both legs on `resolve_anchors` — that symmetry is what stopped the 61.76%/33.74% swing.
+> The incoherent leg is the *prediction*: `r_hat = (predicted_mid − base_price)/base_price`
+> divides a mid produced against `current_price` by a differently-resolved base. That is wrong
+> **today, with no arm anywhere**: the two bases disagree on 85% of rows, median 13.74% at
+> h ∈ {14,30}, and `ActionableDA` selects **1,141** rows on the scored base against **21** on
+> the served one — 98.2% of its cohort is the wedge. Fix `r_hat`, and arm A becomes
+> scoring-neutral. `docs/changelog/2026-08-11-actionable-selection-is-the-base-wedge.md`.
 
 **Raised by** `docs/changelog/2026-08-11-smoothed-anchor-label-measured.md`. The wedge
 `p[d]/S[d]` — the last raw quote over the span-bounded median production quotes from — is
