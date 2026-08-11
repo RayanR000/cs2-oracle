@@ -60,6 +60,16 @@ DIRECTION_THRESHOLD_FLOOR_PCT = 0.2
 DIRECTION_THRESHOLD_CAP_PCT = 15.0
 DIRECTION_LABEL_VOL_COL = "label_vol_30d"
 
+# The cohort on which neither label basis is contaminated (2026-08-11).
+# `prepare_targets` divides by the raw quote at the anchor and `predict` divides
+# by its local median, so both carry the wedge `p[d]/S[d]` -- with opposite
+# signs, which is why moving the label to the served denominator was refuted
+# rather than fixing it. Where the two are equal the wedge is identically 1 and
+# neither can operate, and that is the subset an arm has to be ranked on.
+# Same name as `replay_serving`'s column, deliberately: one population, two
+# readers. See `docs/changelog/2026-08-11-the-gap-is-the-anchor-denominator.md`.
+ANCHOR_TIED_COL = "anchor_is_tied"
+
 # Cached result of GPU availability check (avoids repeated subprocess probes)
 _GPU_AVAILABLE_CACHE: Optional[bool] = None
 
@@ -977,6 +987,36 @@ class ItemForecaster:
             legs.append(price.where(age <= span))
         med = pd.concat(legs, axis=1).median(axis=1, skipna=True)
         return med.reindex(df.index)
+
+    @classmethod
+    def _anchor_is_tied(cls, df: "pd.DataFrame") -> "pd.Series":
+        """Per row: does the anchor's raw quote equal its own local median?
+
+        The clean cohort. `prepare_targets` divides the label by `p[d]` and
+        `predict` divides the served forecast by `S[d]`, so a rank IC on either
+        basis is partly a measurement of the wedge `p[d]/S[d]` -- positive on
+        the raw basis, negative on the smoothed one
+        (`2026-08-11-smoothed-anchor-label-measured.md`). Where `p[d] == S[d]`
+        the wedge is 1 and neither term exists.
+
+        **Arm-invariant, and it has to stay that way.** This reads the price
+        series only -- never `label_smoothed_anchor_enabled()` or
+        `outlier_gated_anchor_enabled()`. A mask that followed either flag would
+        score the control and the arm on different populations, which is the
+        exact failure the cohort was introduced to remove.
+
+        `atol=1e-9, rtol=0` matches `replay_serving._tied_mask` exactly, because
+        every published tied/deviating number came from that function and the
+        two must not describe different cohorts under one word. A NaN median
+        yields False for the same reason it does there: an item with nothing to
+        compare is unknown, not clean.
+        """
+        smoothed = cls._rolling_anchor_prices(df)
+        return pd.Series(
+            np.isclose(df["price"].to_numpy(dtype=float),
+                       smoothed.to_numpy(dtype=float),
+                       rtol=0, atol=1e-9),
+            index=df.index, name=ANCHOR_TIED_COL)
 
     @staticmethod
     def _get_price_tier(price: float) -> str:
@@ -3903,6 +3943,12 @@ class ItemForecaster:
         else:
             base = df["price"]
         base = base.replace(0, np.nan)
+
+        # Which rows the two bases agree on, computed BEFORE the arm above can
+        # matter and independently of it. This travels with the frame so CV can
+        # report a rank IC restricted to the cohort where neither basis carries
+        # `p[d]/S[d]`; it is never a feature and never a label.
+        df[ANCHOR_TIED_COL] = self._anchor_is_tied(df)
         df[f"target_return_{horizon}d"] = (
             (df[f"target_{horizon}d"] - base) / base * 100
         )
@@ -5256,11 +5302,9 @@ class ItemForecaster:
 
             mean_constant_call = _mean_of("constant_call_accuracy")
             mean_down_rate = _mean_of("realised_down_rate")
-            # 4 dp: a rank IC lives in [-1, 1] and the differences that matter
-            # here are third-decimal. 2 dp rounds 0.1199 to 0.12 and makes the
-            # naive comparison unreadable.
-            mean_rank_ic = _mean_of("rank_ic", 4)
-            mean_naive_rank_ic = _mean_of("naive_rank_ic", 4)
+            rank_ic_summary = self._summarise_rank_ic(cv_metrics)
+            mean_rank_ic = rank_ic_summary["mean_rank_ic"]
+            mean_naive_rank_ic = rank_ic_summary["mean_naive_rank_ic"]
             mean_trees = _mean_of("n_trees", 1)
             # Deliberately measured on the quantile-median sign, NOT on
             # `served_acc`. `served_acc` falls back from the classifier to the
@@ -5281,9 +5325,7 @@ class ItemForecaster:
             # Positive means the model orders items better than "bet against
             # yesterday's move". On 2026-08-08 it was negative at all four
             # horizons, which is the bar this project had never measured.
-            rank_ic_edge = (
-                None if (mean_rank_ic is None or mean_naive_rank_ic is None)
-                else round(mean_rank_ic - mean_naive_rank_ic, 4))
+            rank_ic_edge = rank_ic_summary["rank_ic_edge_vs_naive"]
 
             # PT is the headline: it tests whether predictions are independent
             # of outcomes, so unlike DA it cannot be passed by a base rate. Run
@@ -5339,6 +5381,28 @@ class ItemForecaster:
                     f"  Cross-sectional (>=$1): rank_ic={mean_rank_ic} vs "
                     f"naive(-return_1d)={mean_naive_rank_ic} → edge={rank_ic_edge} "
                     f"| mean trees/fold={mean_trees}")
+                # Printed beside it, never instead of it. The line above is the
+                # contaminated basis every stored A/B was ranked on; this one is
+                # the cohort where `p[d]/S[d]` is 1 and the metric means what it
+                # says. A reader comparing two runs should compare THIS line.
+                tied_edge = rank_ic_summary["rank_ic_edge_vs_naive_tied"]
+                if rank_ic_summary["mean_rank_ic_tied"] is None:
+                    logger.info(
+                        "  Cross-sectional (>=$1, CLEAN ANCHOR): not measured — "
+                        f"{rank_ic_summary['tied_rows']:,} tied served rows over "
+                        f"{rank_ic_summary['tied_dates']} usable dates. Rank an "
+                        "arm on the pooled line above only if you mean to rank "
+                        "it on the anchor wedge.")
+                else:
+                    logger.info(
+                        "  Cross-sectional (>=$1, CLEAN ANCHOR): rank_ic="
+                        f"{rank_ic_summary['mean_rank_ic_tied']} vs naive="
+                        f"{rank_ic_summary['mean_naive_rank_ic_tied']} → "
+                        f"edge={tied_edge} | "
+                        f"{rank_ic_summary['tied_rows']:,} rows, "
+                        f"{rank_ic_summary['tied_dates']} of "
+                        f"{rank_ic_summary['rank_ic_dates']} date-folds. "
+                        "← RANK ARMS ON THIS LINE.")
                 if edge_vs_constant is not None and edge_vs_constant <= 0:
                     logger.warning(
                         f"  ⚠ {horizon}d quantile sign does NOT beat the constant "
@@ -5355,7 +5419,13 @@ class ItemForecaster:
                         f"  ⚠ {horizon}d model does NOT beat ranking by "
                         f"-return_1d (rank IC {mean_rank_ic} vs "
                         f"{mean_naive_rank_ic}) — the ML stack is subtracting "
-                        f"from its own best feature.")
+                        f"from its own best feature. Measured on the raw-anchor "
+                        f"basis; read the CLEAN ANCHOR edge before acting on it.")
+                if tied_edge is not None and tied_edge <= 0:
+                    logger.warning(
+                        f"  ⚠ {horizon}d model does NOT beat -return_1d on the "
+                        f"CLEAN ANCHOR cohort either ({tied_edge}) — this is the "
+                        f"basis-free read, so it is the one that counts.")
                 if pt["pt_verdict"] not in ("skill",):
                     logger.warning(
                         f"  ⚠ {horizon}d Pesaran-Timmermann verdict is "
@@ -5395,9 +5465,10 @@ class ItemForecaster:
                 # q50 sign, which is the bug this pair exists to prevent.
                 "edge_vs_constant_call_classifier": edge_vs_constant_clf,
                 "pt_classifier": pt_clf,
-                "mean_rank_ic": mean_rank_ic,
-                "mean_naive_rank_ic": mean_naive_rank_ic,
-                "rank_ic_edge_vs_naive": rank_ic_edge,
+                # Pooled and tied, together. The tied pair is the one a new arm
+                # is ranked on; the pooled pair is kept unchanged because it is
+                # the series every historical meta.json holds.
+                **rank_ic_summary,
                 "mean_trees_per_fold": mean_trees,
                 "pt": pt,
             }
@@ -5555,7 +5626,13 @@ class ItemForecaster:
                    # "other", which _skipped_feature_groups() never skips.
                    # Name it here so the exclusion is a decision, not a
                    # side effect.
-                   "n_ask_sources"}
+                   "n_ask_sources",
+                   # The clean-cohort mask. `prepare_targets` adds it after
+                   # this runs and the dtype filter below would drop a bool
+                   # anyway, so this is belt-and-braces -- but it is a
+                   # SCORING cohort, and a model that fitted on it would be
+                   # reading which basis its own label is contaminated by.
+                   ANCHOR_TIED_COL}
         exclude |= {f"target_{h}d" for h in horizons}
         exclude |= {f"target_return_{h}d" for h in horizons}
         # The market factor is computed from other items' FUTURE prices. It is
@@ -7263,13 +7340,37 @@ class ItemForecaster:
             served = (val_df["price_tier"].to_numpy() >= HEADLINE_MIN_TIER
                       if "price_tier" in val_df.columns
                       else np.ones(len(val_df), dtype=bool))
-            fold_rank_ic = self._within_date_rank_ic(
+            naive_pred = (-val_df["return_1d"].to_numpy(dtype=float)
+                          if "return_1d" in val_df.columns else None)
+            fold_rank_ic, rank_ic_dates = self._within_date_rank_ic_detail(
                 fold_p50, actual_returns, val_df["date"], served)
             naive_rank_ic = None
-            if "return_1d" in val_df.columns:
+            if naive_pred is not None:
                 naive_rank_ic = self._within_date_rank_ic(
-                    -val_df["return_1d"].to_numpy(dtype=float),
-                    actual_returns, val_df["date"], served)
+                    naive_pred, actual_returns, val_df["date"], served)
+
+            # The same two numbers on the cohort where the label's denominator
+            # is not contaminated -- `p[d] == S[d]`, so neither the raw basis
+            # nor the smoothed one carries the wedge. Every arm this project
+            # has ranked was read on the pooled figure above, and the
+            # contamination (0.03-0.24 rank IC) is larger than every effect
+            # being chased, so THIS is the pair a new arm is decided on.
+            #
+            # None, not the pooled value, when the mask is absent: an
+            # `ab_test_*` frame built before the column existed cannot tell,
+            # and falling back would publish the contaminated number under the
+            # clean key. Same rule `classifier_accuracy_ge1` follows.
+            rank_ic_tied = naive_rank_ic_tied = None
+            rank_ic_tied_dates = 0
+            tied_served = np.zeros(len(val_df), dtype=bool)
+            if ANCHOR_TIED_COL in val_df.columns:
+                tied_served = served & val_df[ANCHOR_TIED_COL].eq(True).to_numpy()
+                rank_ic_tied, rank_ic_tied_dates = \
+                    self._within_date_rank_ic_detail(
+                        fold_p50, actual_returns, val_df["date"], tied_served)
+                if naive_pred is not None:
+                    naive_rank_ic_tied = self._within_date_rank_ic(
+                        naive_pred, actual_returns, val_df["date"], tied_served)
 
             fold_metrics.append({
                 "fold": fold_id + 1,
@@ -7292,6 +7393,11 @@ class ItemForecaster:
                     None if fold_down_rate is None else round(fold_down_rate, 1)),
                 "rank_ic": fold_rank_ic,
                 "naive_rank_ic": naive_rank_ic,
+                "rank_ic_dates": rank_ic_dates,
+                "rank_ic_tied": rank_ic_tied,
+                "naive_rank_ic_tied": naive_rank_ic_tied,
+                "rank_ic_tied_dates": rank_ic_tied_dates,
+                "n_tied": int(tied_served.sum()),
             })
 
             # Pooled records for the Pesaran-Timmermann test. Built from the
@@ -7390,7 +7496,56 @@ class ItemForecaster:
         ]
 
     @staticmethod
-    def _within_date_rank_ic(pred, actual, dates, mask=None,
+    def _summarise_rank_ic(fold_metrics: list) -> dict:
+        """The rank IC block of `cv_results`: pooled, tied, and both bars.
+
+        Two pairs, and the second is the one an arm is decided on.
+        `mean_rank_ic` / `mean_naive_rank_ic` pool the whole served
+        cross-section, so both legs are measured against a label whose
+        denominator is the raw anchor quote the features are also built from.
+        The `_tied` pair restricts to rows where that quote equals its own local
+        median, which is the only cohort where neither the raw basis nor the
+        smoothed one carries `p[d]/S[d]`.
+
+        The pooled keys are NOT redefined. They are the series every historical
+        `meta.json` holds and the trust warning reads, and silently changing
+        what they mean would make the trend a comparison of two quantities.
+
+        `tied_dates` rides along because the `min_rows` bar bites harder on a
+        subset: a horizon whose tied number rests on two dates is not a
+        measurement, and nothing else in the payload would say so.
+        """
+        def _mean(key):
+            vals = [m[key] for m in fold_metrics if m.get(key) is not None]
+            # 4 dp: a rank IC lives in [-1, 1] and the differences that matter
+            # here are third-decimal. 2 dp rounds 0.1199 to 0.12 and makes the
+            # naive comparison unreadable.
+            return round(float(np.mean(vals)), 4) if vals else None
+
+        def _edge(model, naive):
+            return (None if (model is None or naive is None)
+                    else round(model - naive, 4))
+
+        mean_rank_ic = _mean("rank_ic")
+        mean_naive = _mean("naive_rank_ic")
+        mean_tied = _mean("rank_ic_tied")
+        mean_naive_tied = _mean("naive_rank_ic_tied")
+        return {
+            "mean_rank_ic": mean_rank_ic,
+            "mean_naive_rank_ic": mean_naive,
+            "rank_ic_edge_vs_naive": _edge(mean_rank_ic, mean_naive),
+            "mean_rank_ic_tied": mean_tied,
+            "mean_naive_rank_ic_tied": mean_naive_tied,
+            "rank_ic_edge_vs_naive_tied": _edge(mean_tied, mean_naive_tied),
+            "tied_rows": sum(int(m.get("n_tied") or 0) for m in fold_metrics),
+            "tied_dates": sum(int(m.get("rank_ic_tied_dates") or 0)
+                              for m in fold_metrics),
+            "rank_ic_dates": sum(int(m.get("rank_ic_dates") or 0)
+                                 for m in fold_metrics),
+        }
+
+    @classmethod
+    def _within_date_rank_ic(cls, pred, actual, dates, mask=None,
                              min_rows: int = 20) -> Optional[float]:
         """Mean within-date Spearman correlation of `pred` against `actual`.
 
@@ -7400,6 +7555,21 @@ class ItemForecaster:
         fewer than `min_rows` served rows, or with no variation in either leg,
         contribute nothing rather than a degenerate 0.
         """
+        return cls._within_date_rank_ic_detail(
+            pred, actual, dates, mask, min_rows)[0]
+
+    @staticmethod
+    def _within_date_rank_ic_detail(pred, actual, dates, mask=None,
+                                    min_rows: int = 20
+                                    ) -> "tuple[Optional[float], int]":
+        """`_within_date_rank_ic`, and the number of dates it actually read.
+
+        The count is not decoration. The same `min_rows` bar applied to a
+        SUBSET of the cross-section drops dates the pooled figure keeps -- the
+        tied cohort is roughly a third of the panel, and one 2026-08-11 anchor
+        had 26 tied items of 669 -- so the two columns can silently describe
+        different calendars while looking like a paired comparison.
+        """
         p = np.asarray(pred, dtype=float)
         a = np.asarray(actual, dtype=float)
         d = pd.to_datetime(pd.Series(dates).to_numpy())
@@ -7407,7 +7577,7 @@ class ItemForecaster:
             m = np.asarray(mask, dtype=bool)
             p, a, d = p[m], a[m], d[m]
         if len(p) < min_rows:
-            return None
+            return None, 0
         frame = pd.DataFrame({"d": d, "p": p, "a": a})
         ics = []
         for _, g in frame.groupby("d"):
@@ -7418,7 +7588,9 @@ class ItemForecaster:
             ic = spearmanr(g["p"], g["a"]).statistic
             if np.isfinite(ic):
                 ics.append(float(ic))
-        return round(float(np.mean(ics)), 4) if ics else None
+        if not ics:
+            return None, 0
+        return round(float(np.mean(ics)), 4), len(ics)
 
     def _calibrate_confidence(self, horizon, records_df):
         """Calibrate confidence thresholds from pre-built calibration records.

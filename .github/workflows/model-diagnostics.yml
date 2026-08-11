@@ -404,8 +404,17 @@ jobs:
             echo "\`FORCE_HP_SEARCH=$FORCE_HP_SEARCH\`"
             echo
             echo "Bar is \`naive_rank_ic\` on the same folds, not 50% and not a stored number."
+            echo
+            echo "**Read the \`CLEAN ANCHOR\` line, not the one above it.** The pooled"
+            echo "rank IC divides the label by the raw anchor quote its own features are"
+            echo "built from, worth 0.03-0.24 rank IC — more than any effect being"
+            echo "measured here. The clean-anchor cohort is where that wedge is 1."
             echo '```'
-            grep -E "classifier_acc|mean_dir_acc|CV summary|Pesaran|rank IC|\[timing\]" \
+            # `Cross-sectional` is matched explicitly: the log line reads
+            # `rank_ic=`, so the `rank IC` alternative below only ever caught the
+            # WARNING form and the headline pair was missing whenever it was
+            # positive -- i.e. exactly when an arm had worked.
+            grep -E "classifier_acc|mean_dir_acc|CV summary|Pesaran|Cross-sectional|rank IC|\[timing\]" \
               diagnostics-${{ matrix.horizon }}d.log || echo "no diagnostic lines found"
             echo '```'
             # The serving-path read, when one was asked for. One anchor is one
