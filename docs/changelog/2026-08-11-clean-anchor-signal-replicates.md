@@ -79,7 +79,11 @@ deviating signal is −0.2750 at 10 of 10. Those two rows carry the result.
 1. **The CV metric needs rebuilding before it ranks anything else.** Every arm in the project,
    including C1, and the `−return_1d` bar they were held to, were scored on the contaminated
    denominator. The fix is a label whose denominator is the smoothed anchor `predict` actually
-   quotes — which is `den_only` in the sweep, already implemented.
+   quotes. ~~which is `den_only` in the sweep, already implemented.~~ **Corrected 2026-08-11:
+   `den_only` is the sweep arm that KEEPS the raw anchor** (`out_med / anchor_raw`,
+   `replay_serving.py:203-207`) and it is the one that retained +0.1398 of the gap. The
+   smoothed-denominator arm is `num_only`. Shipped gated as `LABEL_SMOOTHED_ANCHOR=1`:
+   `2026-08-11-label-smoothed-anchor.md`.
 2. **A serving policy gate on anchor cleanliness is now supported by evidence**, where before it
    would have been a guess. Serving the deviating two-thirds is publishing forecasts with rank IC
    −0.28 at h=3.

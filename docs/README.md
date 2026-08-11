@@ -3,6 +3,21 @@
 Refreshed 2026-08-10 against the code. Where a doc and the code disagree, the code wins —
 report it rather than working around it.
 
+> ⚠️ **The CV metric that ranked every accuracy arm is measured against a target the
+> serving path does not use (2026-08-11).** `prepare_targets` divides by the raw quote at
+> the anchor; `predict` quotes against a smoothed median. Swapping only that denominator
+> recovers **+0.1398 of the +0.1464** CV↔serving rank IC gap — confirmed in CI on a fresh
+> artifact at four non-overlapping anchors, **16 cells of 16**. **No stored rank IC, DA or
+> `−return_1d` comparison in this repo is safe to rank arms on.** The corrected label ships
+> gated as `LABEL_SMOOTHED_ANCHOR=1` and is **unread**.
+> `changelog/2026-08-11-the-gap-is-the-anchor-denominator.md`,
+> `changelog/2026-08-11-clean-anchor-confirmed-in-ci.md`,
+> `changelog/2026-08-11-label-smoothed-anchor.md`.
+>
+> The same run found the project's **first measured served signal**: rank IC +0.13/+0.16/+0.17
+> at 3/7/14d on the third of the cohort whose anchor quote equals its local median, against
+> nothing usable (−0.20 at h=3) on the rest. 30d does not replicate (+0.05, 3 of 4 anchors).
+
 ## Architecture (`architecture/`)
 
 - `model.md` — the forecaster as it stands: 4 q50 LightGBM models + 4 directional

@@ -850,6 +850,72 @@ class ItemForecaster:
         return latest.to_dict() | smoothed.to_dict()
 
     @staticmethod
+    def label_smoothed_anchor_enabled() -> bool:
+        """Whether the LABEL divides by the price `predict` quotes from.
+
+        Off: `prepare_targets` divides by the raw quote observed on the anchor
+        day. That quote is also what `return_1d` and every level feature are
+        built from, so one noisy observation deflates the label and inflates the
+        feature together, and a model that reads the noise scores as if it had
+        read the market.
+
+        On: the denominator is `_smoothed_anchor_prices`' span-bounded median,
+        computed per anchor day -- the same statistic the serving path converts
+        a return-space forecast to dollars with, and one no single quote can
+        move.
+
+        Measured, not hypothesised. The 2026-08-11 serving replay crossed the
+        two axes between the CV label and the served one and found the
+        denominator carries **+0.1398 of the +0.1464 rank IC gap**; the outcome
+        leg carries +0.0251 and the serving transforms none. In CI on a fresh
+        artifact at four non-overlapping anchors the gap is zero (within
+        +/-0.021) on items whose anchor quote already equals its local median
+        and positive in all sixteen deviating cells.
+
+        **A rank IC under this flag is not comparable to one without it.** The
+        two arms are scored against different targets, so the CV number moves
+        for reasons that have nothing to do with forecast quality. Read the arms
+        through `scripts/replay_serving.py`, which scores both on one basis.
+
+        Set LABEL_SMOOTHED_ANCHOR=1. See
+        `docs/changelog/2026-08-11-the-gap-is-the-anchor-denominator.md`.
+        """
+        return os.environ.get("LABEL_SMOOTHED_ANCHOR") == "1"
+
+    @staticmethod
+    def _rolling_anchor_prices(df: "pd.DataFrame") -> "pd.Series":
+        """`_smoothed_anchor_prices`, evaluated at every row's own date.
+
+        The serving version resolves ONE anchor across items and returns a dict;
+        a label needs the same statistic at ~900 items x ~4,700 dates, so this
+        is the panel form: the median of the most recent SMOOTH_WINDOW
+        observations lying within MAX_WINDOW_SPAN_DAYS *before* the row's date.
+
+        Built from k-step shifts rather than a rolling window because the two
+        bounds are of different kinds -- a count (SMOOTH_WINDOW rows) and a span
+        (MAX_WINDOW_SPAN_DAYS days) -- and pandas' rolling takes one or the
+        other. Shifting gives both: take the k most recent rows, then blank the
+        ones that fall outside the span.
+
+        The row's own observation is always in its own window (k=0, zero days
+        old), so the result is never NaN and the serving fallback to
+        `latest known price` has nothing to fall back from. Returned on the
+        caller's index, unsorted.
+        """
+        ordered = df.sort_values(["item_id", "date"])
+        day = pd.to_datetime(ordered["date"])
+        span = pd.to_timedelta(int(MAX_WINDOW_SPAN_DAYS), unit="D")
+        by_item = ordered.groupby("item_id", sort=False)
+
+        legs = []
+        for k in range(SMOOTH_WINDOW):
+            price = by_item["price"].shift(k)
+            age = day - day.groupby(ordered["item_id"]).shift(k)
+            legs.append(price.where(age <= span))
+        med = pd.concat(legs, axis=1).median(axis=1, skipna=True)
+        return med.reindex(df.index)
+
+    @staticmethod
     def _get_price_tier(price: float) -> str:
         for lo, hi, label in PRICE_TIER_BOUNDARIES:
             if lo <= price < hi:
@@ -3765,8 +3831,17 @@ class ItemForecaster:
         df = df.merge(future, on=["item_id", "date"], how="left")
         df = df.drop(columns=["_date_dt"])
 
+        # The denominator, and it is an arm. Both legs of the return use it --
+        # subtracting the raw anchor from a smoothed base would leave the
+        # contamination term `(S - p_raw)/S` in the label, which is the quantity
+        # being removed. See label_smoothed_anchor_enabled().
+        if self.label_smoothed_anchor_enabled():
+            base = self._rolling_anchor_prices(df)
+        else:
+            base = df["price"]
+        base = base.replace(0, np.nan)
         df[f"target_return_{horizon}d"] = (
-            (df[f"target_{horizon}d"] - df["price"]) / df["price"].replace(0, np.nan) * 100
+            (df[f"target_{horizon}d"] - base) / base * 100
         )
         # Winsorize extreme returns at ±500% to prevent API corruption artifacts
         # from polluting gradient estimates. The audit found 11,044 jumps >1000%,
@@ -7520,6 +7595,13 @@ class ItemForecaster:
             # booster fitted with the offset emits a residual, so predict has to
             # know to add `-return_1d` back. See _naive_init_score_served.
             "naive_init_score": self.naive_init_score_enabled(),
+            # Provenance, not a serving switch. `predict` already converts a
+            # return to dollars against the smoothed anchor, so an artifact
+            # trained under this flag is the COHERENT pairing and needs nothing
+            # added back. What the field is for is reading a stored metric: a
+            # rank IC from a run with this on is measured against a different
+            # target than one with it off, and the two must never be differenced.
+            "label_smoothed_anchor": self.label_smoothed_anchor_enabled(),
             "sigma_clip": dict(self.sigma_clip),
             "feature_cols": self.feature_cols,
             "horizon_feature_cols": {

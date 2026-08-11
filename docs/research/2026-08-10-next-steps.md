@@ -214,6 +214,12 @@ None of these is an accuracy improvement. All three are cheap, and all three blo
 > Two consequences ahead of everything below: **rebuild the CV label's denominator** before it
 > ranks another arm, and **a serving gate on anchor cleanliness** is now evidence-backed.
 >
+> ✅ **The first is built and gated: `LABEL_SMOOTHED_ANCHOR=1`**
+> (`changelog/2026-08-11-label-smoothed-anchor.md`). Unread — it needs a control and an arm
+> dispatch on one commit with `replay_anchors=2026-04-15,2026-05-16,2026-06-16,2026-07-09`,
+> and it may **not** be read on CV rank IC, because the two arms are scored against different
+> targets. The serving gate is not started.
+>
 > The section below is still true about statistical power. It is now the second problem.
 
 ## The measurement problem is now the bottleneck

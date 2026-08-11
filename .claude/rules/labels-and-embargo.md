@@ -24,6 +24,20 @@ paths:
   it — it can be net-harmful, which is why `scripts/ab_test_frozen_runs.py` verifies it on
   paired interval **width**, not on a point estimate. See
   `docs/superpowers/specs/2026-08-08-frozen-price-runs-design.md`.
+- **The label's denominator is the RAW anchor quote, and that is a measured defect.**
+  `prepare_targets` divides by the price observed on the anchor day; `predict` quotes
+  against `_smoothed_anchor_prices`' span-bounded median. The same raw quote drives
+  `return_1d` and every level feature, so one noisy observation deflates the label and
+  inflates the feature together. The 2026-08-11 serving replay attributed **+0.1398 of the
+  +0.1464** CV↔serving rank IC gap to this axis alone (outcome leg +0.0251, serving
+  transforms none), confirmed in CI at four non-overlapping anchors in **16 cells of 16**.
+  `LABEL_SMOOTHED_ANCHOR=1` puts both legs on the served median via
+  `_rolling_anchor_prices`; off by default, unmeasured for accuracy. **It is a LABEL change,
+  so a CV rank IC / DA / `naive_rank_ic` under it is scored against a different target and
+  must never be differenced against a control's** — read it through
+  `scripts/replay_serving.py`, which builds its own labels from the archive. `meta.json`
+  carries `label_smoothed_anchor`. See
+  `docs/changelog/2026-08-11-label-smoothed-anchor.md`.
 - **The embargo is `horizon + 13`, not `horizon`.** `models/forecaster.py::embargo_days`
   derives the 13 at call time from `LAG_TOLERANCE_DAYS` (3) + `SMOOTH_WINDOW` (3) +
   `MAX_WINDOW_SPAN_DAYS` (7): the label at `d + horizon` is a **resolved anchor**, not a

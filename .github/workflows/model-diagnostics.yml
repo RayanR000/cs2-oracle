@@ -66,6 +66,16 @@ on:
         required: false
         default: false
         type: boolean
+      # Unlike the three above, this arm changes the LABEL, so its CV rank IC is
+      # measured against a different target than the control's and the two may
+      # not be differenced. Set `replay_anchors` when running it -- the replay
+      # scores both artifacts on one basis, and it is the only readable
+      # comparison. See 2026-08-11-the-gap-is-the-anchor-denominator.md.
+      label_smoothed_anchor:
+        description: 'Arm: label divides by the SERVED smoothed anchor (read via replay only)'
+        required: false
+        default: false
+        type: boolean
       # Not an arm -- a confirm mode for one. The first read of every arm above
       # reuses the cached `tuned_params`, which is what makes the arms
       # comparable and is also why their SIZE is provisional: the HP were
@@ -205,6 +215,11 @@ jobs:
           # it is on with reused HP. Read `rank_ic_edge` per horizon; the bar is
           # >= 0, and it is currently negative at all four.
           NAIVE_INIT_SCORE: ${{ inputs.naive_init_score && '1' || '0' }}
+          # Changes the LABEL, not the features or the prediction. Every CV
+          # number this run prints -- rank IC, the naive bar, DA -- is measured
+          # against a different target than the control's, so read this arm
+          # through the replay step below and nowhere else.
+          LABEL_SMOOTHED_ANCHOR: ${{ inputs.label_smoothed_anchor && '1' || '0' }}
           # Off by default: a re-tuned run cannot be read against a cached-HP
           # one, so leaving this on would break the panel it is meant to confirm.
           FORCE_HP_SEARCH: ${{ inputs.force_hp_search && '1' || '0' }}
@@ -235,6 +250,10 @@ jobs:
           TIER_LEAD_FEATURE: ${{ inputs.tier_lead && '1' || '0' }}
           CROSS_SECTIONAL_RANK: ${{ inputs.cross_sectional_rank && '1' || '0' }}
           NAIVE_INIT_SCORE: ${{ inputs.naive_init_score && '1' || '0' }}
+          # Carried for provenance only -- the replay builds its own labels from
+          # the archive and never calls prepare_targets, so the arm cannot reach
+          # the score. That is exactly why it is the referee for this flag.
+          LABEL_SMOOTHED_ANCHOR: ${{ inputs.label_smoothed_anchor && '1' || '0' }}
         run: |
           set -o pipefail
           # --basis-sweep always: it re-scores mids that predict() already
@@ -268,6 +287,7 @@ jobs:
           TIER_LEAD_FEATURE: ${{ inputs.tier_lead && '1' || '0' }}
           CROSS_SECTIONAL_RANK: ${{ inputs.cross_sectional_rank && '1' || '0' }}
           NAIVE_INIT_SCORE: ${{ inputs.naive_init_score && '1' || '0' }}
+          LABEL_SMOOTHED_ANCHOR: ${{ inputs.label_smoothed_anchor && '1' || '0' }}
           FORCE_HP_SEARCH: ${{ inputs.force_hp_search && '1' || '0' }}
         run: |
           # The arm goes in the heading. A diagnostics run that cannot say which
@@ -285,6 +305,9 @@ jobs:
           if [ "$NAIVE_INIT_SCORE" = "1" ]; then
             arms="${arms:+$arms+}naive_init"
           fi
+          if [ "$LABEL_SMOOTHED_ANCHOR" = "1" ]; then
+            arms="${arms:+$arms+}smoothed_label"
+          fi
           arm="${arms:-control}"
           # Re-tuned runs get their own label. A confirm run and a first read
           # carry the same flags and are NOT comparable to each other, so the
@@ -296,6 +319,7 @@ jobs:
             echo "\`TIER_LEAD_FEATURE=$TIER_LEAD_FEATURE\` "
             echo "\`CROSS_SECTIONAL_RANK=$CROSS_SECTIONAL_RANK\` "
             echo "\`NAIVE_INIT_SCORE=$NAIVE_INIT_SCORE\` "
+            echo "\`LABEL_SMOOTHED_ANCHOR=$LABEL_SMOOTHED_ANCHOR\` "
             echo "\`FORCE_HP_SEARCH=$FORCE_HP_SEARCH\`"
             echo
             echo "Bar is \`naive_rank_ic\` on the same folds, not 50% and not a stored number."
