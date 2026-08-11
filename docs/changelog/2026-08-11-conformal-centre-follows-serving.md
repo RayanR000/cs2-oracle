@@ -56,6 +56,41 @@ cause rather than just reporting a number. `_served_rows` carries the band along
 which is the not-inert half: a coverage table fed a frame with no `low`/`high` is a table of
 NaN that reads as "nothing to see".
 
+## Measured in CI, run `31529688893` (all four horizons, `conformal_centre=served`)
+
+Two non-overlapping anchors, `horizons=matrix`, every arm off. Target 80%.
+
+| h | 2026-05-16 | miss<low / >high | 2026-07-09 | miss<low / >high |
+|---|---|---|---|---|
+| 3 | 85.49% | 9.7 / 4.8 | **64.44%** | 13.1 / 22.5 |
+| 7 | 91.05% | 6.4 / 2.5 | **74.61%** | 15.0 / 10.4 |
+| 14 | 82.00% | 14.6 / 3.4 | 81.01% | 17.9 / 1.1 |
+| 30 | 88.03% | 7.3 / 4.7 | 80.52% | 17.6 / 1.8 |
+
+n = 1061 and 1032 per cell. **Six of eight cells at or above nominal**, and the two shortfalls
+are both at 07-09 on the short horizons.
+
+**The miss split earns its place immediately.** At 07-09/h=3 the misses skew *above* the band
+(22.5 vs 13.1) while at 14d and 30d the same anchor skews *below* (17.6–17.9 vs 1.1–1.8). The
+sign flips with horizon on one date, which is a directional-bias signature rather than a width
+one — a band that is merely too narrow misses symmetrically. And the 85.49 → 64.44 swing
+between two dates at h=3 is the market-date dominance already on record
+(`da-is-dominated-by-the-market-date`).
+
+⚠️ **This is not a paired before/after, and must not be quoted as one.**
+`model-diagnostics.yml` hardcodes `CV_DIAGNOSTIC_CLASSIFIER=1`, so the run cannot also produce
+a q50-centred artifact, and production's published `IntCov` 34.6–61.8% is the backtest's
+resolver over many dates — a different measurement, not this one with the fix removed. The
+59.8% → 79.1% figure above is the mechanism, on synthetic data. What this run establishes is
+that the served band lands in the right neighbourhood at both anchors, which the q50 centre
+demonstrably does not do on the same assembly. A true control needs
+`CV_DIAGNOSTIC_CLASSIFIER` exposed as a workflow input, or the production artifact replayed at
+these same two anchors.
+
+**The mid did not move**, by construction: `q_hat` sets only the half-widths, and `mid_ret`,
+`change_pct` and `hit` are pinned to the q50 centre by test. Any DA or rank IC in this run is
+comparable to a control on an earlier commit.
+
 ## ⚠️ Inert on the daily path, and now loud about it
 
 `price-forecast.yml` sets `CV_DIAGNOSTIC_CLASSIFIER=0`, so production CV emits **no** OOF
