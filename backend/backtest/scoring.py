@@ -238,10 +238,31 @@ def score_cohort(records: list[dict]) -> tuple[dict, int]:
 
     directional_accuracy = sum(r["direction_correct"] for r in records) / n * 100
 
+    # Two coverage figures for one band, because there are two questions.
+    # `interval_coverage` is the CALIBRATED one: the band rebased onto the
+    # resolved base, which is the basis `q_hat` was fitted in and the predicate
+    # `scripts/replay_serving.py` reports, so the two are the same measurement.
+    # `interval_coverage_dollar_basis` is the PUBLISHED one: did the dollars the
+    # API served contain the resolved price. The gap between them is the anchor
+    # wedge — median 5.70% / p90 37.82% against half-widths of 10-31% — and
+    # reporting both is what makes it attributable rather than a mystery.
+    #
+    # `walkforward_records` rows carry neither extra key: they build the band as
+    # `base * (1 + ret)`, so their quote IS the resolved base and the two
+    # predicates coincide. Defaulted, not required, for exactly that reason.
     interval_records = [r for r in records if r["in_interval"] is not None]
     interval_total = len(interval_records)
     interval_hits = sum(r["in_interval"] for r in interval_records)
     interval_coverage = (interval_hits / interval_total * 100) if interval_total else 0
+    dollar_hits = sum(
+        r.get("in_interval_dollar", r["in_interval"]) for r in interval_records
+    )
+    interval_coverage_dollar_basis = (
+        (dollar_hits / interval_total * 100) if interval_total else 0
+    )
+    interval_n_served_basis = sum(
+        1 for r in interval_records if r.get("interval_basis_served")
+    )
 
     total_actual = sum(r["actual_price"] for r in records)
     wmape = (sum(r["abs_error"] for r in records) / total_actual * 100) if total_actual > 0 else 0
@@ -374,6 +395,9 @@ def score_cohort(records: list[dict]) -> tuple[dict, int]:
         # forecast was made, which is the direction the MA(k) mechanism runs.
         "staleness_bands": score_by_staleness(records),
         "interval_coverage": round(interval_coverage, 2),
+        "interval_coverage_dollar_basis": round(interval_coverage_dollar_basis, 2),
+        "interval_n_served_basis": interval_n_served_basis,
+        "interval_n_fallback_basis": interval_total - interval_n_served_basis,
         "baseline_directional_accuracy": round(baseline_directional_accuracy, 2),
         "improvement_over_baseline_pp": round(directional_accuracy - baseline_directional_accuracy, 2),
         "baseline_mae": round(baseline_mae, 4),

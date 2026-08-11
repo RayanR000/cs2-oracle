@@ -10,8 +10,18 @@ paths:
   `backtest/price_resolution.py::resolve_anchors`.** Using `item_forecasts.current_price` as
   the base leg is the bug that let one cohort score 61.76% and 33.74% on different days, and
   that rule is absolute: an actual return whose two legs come from different estimators is not
-  a measurement. **The one thing `current_price` IS scored on, since 2026-08-11, is
-  `actionable`'s prediction leg** — `r_hat` divides by the price the forecast was quoted from,
+  a measurement. **What `current_price` IS scored on, since 2026-08-11, is the PREDICTION —
+  both legs of the outcome stay on the resolver.** Two metrics: `actionable`'s `r_hat`, and
+  `in_interval`, whose band is rebased by `base_price / current_price` before the predicate
+  (`_derive_verdict`, `quote=` is keyword-only and required so a new path cannot omit it).
+  `interval_coverage` is therefore the **calibrated** figure, the basis `q_hat` was fitted in
+  and the one `scripts/replay_serving.py` reports; `interval_coverage_dollar_basis` is the
+  **published** one, and their gap is the anchor wedge. Quote them together, and read
+  `interval_n_served_basis` / `interval_n_fallback_basis` first — legacy rows and
+  `walkforward_records` have no separate quote, so the two figures coincide on them by
+  construction. `abs_error` / `pct_error` deliberately do **not** rebase: a dollar error is
+  basis-free. `docs/changelog/2026-08-11-in-interval-basis.md`.
+  For `r_hat`, it divides by the price the forecast was quoted from,
   because `predicted_mid` was built as `current_price × (1 + r̂)`. Dividing it by the resolved
   base instead recovers `r̂` plus the wedge between the two bases: median **13.74%** at
   h ∈ {14,30} against a 7.2–37.5% bar, disagreeing on 85% of rows, which selected **1,141**

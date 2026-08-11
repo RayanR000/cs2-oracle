@@ -140,23 +140,80 @@ def _upsert_accuracy(db, rows):
 # 1. Forecast backtesting
 # ---------------------------------------------------------------------------
 
-def _derive_verdict(base, actual, mid, low, high, direction_predicted):
+def _quote_basis(current_price, base):
+    """The price the forecast was QUOTED FROM, falling back to the resolved base.
+
+    Scalar twin of ``backtest.actionable._prediction_base`` — one rule, two
+    record shapes (SQLAlchemy Rows here, plain dicts there). Keep them in step.
+
+    ``predict()`` builds the whole triple as ``current_price x (1 + ret)``, so
+    every published dollar figure is anchored on the served quote while the
+    outcome is anchored on ``resolve_anchors``. The fallback covers the two
+    populations with no separate quote: legacy outcomes predating the column,
+    and ``walkforward_records``, which builds ``mid = base * (1 + mid_ret)`` so
+    the resolved base *is* its quote. Dropping either would shrink the cohort
+    silently.
+    """
+    if current_price is not None and current_price > 0:
+        return float(current_price)
+    return float(base)
+
+
+def _derive_verdict(base, actual, mid, low, high, direction_predicted, *, quote):
     """The single derivation of the verdict columns from the frozen actuals.
 
     Every path that produces a verdict — the first resolution, the re-derived
     scoring records, and the Task 8c refresh of the stored columns — goes
     through this one function, so a scoring change cannot land on some of them
     and not others. Pure: no DB, no clock, no archive.
+
+    ``quote`` is keyword-only and REQUIRED. It has no default on purpose: a
+    default would let a new caller silently reintroduce the basis wedge below,
+    which is precisely how this defect survived being fixed on the actionable
+    leg (`2026-08-11-actionable-selection-is-the-base-wedge.md`) and not here.
+
+    **`in_interval` is measured in return space, off `quote`.** The band was
+    published as ``quote x (1 + low_ret/high_ret)`` but ``actual`` is resolved
+    off ``base``, and comparing them in dollars asks whether the realised price
+    landed inside a band anchored somewhere else. The two anchors disagree on
+    85% of production rows by a median 5.70% / p90 37.82% against half-widths of
+    10-31%, so the wedge — not the calibration — was deciding coverage. Rebasing
+    the band by ``base / quote`` is the same predicate `q_hat` was fitted with
+    and the same one `scripts/replay_serving.py` reports, so the two coverage
+    figures are finally the same measurement.
+
+    **`abs_error` and `pct_error` do NOT move**, and that is not an oversight.
+    A dollar error is basis-free: "how far was the published price from the
+    realised one" is answerable without asking what the prediction was quoted
+    from, and a forecast quoted off a stale anchor really is that wrong. Only a
+    predicate about a CALIBRATED WIDTH needs the width's own basis.
+
+    **Neither leg of the outcome moves.** ``base`` and ``actual`` both stay on
+    ``resolve_anchors``; only the prediction is rebased. Differencing two
+    estimators across the outcome legs is the bug that let one cohort score
+    61.76% and 33.74% on consecutive days, and this does not go near it.
     """
     abs_error = abs(mid - actual)
     predicted_direction = direction_predicted or "flat"
     actual_direction = direction_from_return((actual - base) / base)
+    # low/quote - 1 <= actual/base - 1 <= high/quote - 1, cleared of divisions.
+    # Both bases are positive, so the inequality cannot flip.
+    rebase = base / _quote_basis(quote, base)
+    no_band = low is None or high is None
     return {
         "direction_actual": actual_direction,
         "direction_correct": 1 if predicted_direction == actual_direction else 0,
         "in_interval": (
-            None if (low is None or high is None)
-            else (1 if low <= actual <= high else 0)
+            None if no_band
+            else (1 if low * rebase <= actual <= high * rebase else 0)
+        ),
+        # The published-dollar question, kept because it is a real one: the API
+        # serves a dollar band and a consumer reads it in dollars. Reported
+        # beside the calibrated figure rather than in place of it — the gap
+        # between the two IS the anchor wedge, which makes it attributable.
+        # Not a stored column; `_verdict_for_storage` drops it.
+        "in_interval_dollar": (
+            None if no_band else (1 if low <= actual <= high else 0)
         ),
         "abs_error": abs_error,
         # Divided by the BASE leg, not the actual. Explicit human ruling.
@@ -165,8 +222,12 @@ def _derive_verdict(base, actual, mid, low, high, direction_predicted):
 
 
 def _verdict_for_storage(verdict):
-    """The verdict as it is written to the forecast_outcomes columns."""
-    stored = dict(verdict)
+    """The verdict as it is written to the forecast_outcomes columns.
+
+    Drops the reporting-only keys, so ``_REFRESH_VERDICTS_SQL`` binds exactly
+    the columns it names and adding another split needs no migration.
+    """
+    stored = {k: v for k, v in verdict.items() if k in VERDICT_COLUMNS}
     stored["abs_error"] = round(stored["abs_error"], 4)
     return stored
 
@@ -363,6 +424,7 @@ def _refresh_verdict_columns(db, forecast_ids=None) -> int:
             derived = _verdict_for_storage(_derive_verdict(
                 base, actual, mid,
                 r.predicted_price_low, r.predicted_price_high, r.direction_predicted,
+                quote=r.current_price,
             ))
             if not _verdicts_differ(r, derived):
                 continue
@@ -598,6 +660,7 @@ def _records_from_frozen_outcomes(db, min_price=0, forecast_ids=None):
         verdict = _derive_verdict(
             base, actual, mid,
             r.predicted_price_low, r.predicted_price_high, r.direction_predicted,
+            quote=r.current_price,
         )
 
         groups[(r.horizon_days, r.model_version or "unknown")].append({
@@ -608,6 +671,13 @@ def _records_from_frozen_outcomes(db, min_price=0, forecast_ids=None):
             "predicted_direction": r.direction_predicted or "flat",
             "actual_direction": verdict["direction_actual"],
             "in_interval": verdict["in_interval"],
+            # The two coverage figures and which basis formed this row's band.
+            # `interval_coverage` alone cannot say whether it describes the
+            # calibrated width or the published dollars, and the stored series
+            # breaks at 2026-08-11 — a payload that cannot name its own
+            # convention is not self-describing.
+            "in_interval_dollar": verdict["in_interval_dollar"],
+            "interval_basis_served": _quote_basis(r.current_price, base) != base,
             "confidence": r.confidence or "low",
             "base_price": base,
             "actual_price": actual,
@@ -780,7 +850,11 @@ def _headline_line(horizon, model_version, metrics, n) -> tuple[int, str]:
         f"(DA there {_pct(metrics['directional_accuracy_unchanged'])}) "
         f"DAMoved={_pct(metrics['directional_accuracy_moved'])} "
         f"MAE=${metrics['mae']:.2f} MAPE={metrics['mape']:.1f}% "
+        # Both bases, always together. The calibrated figure alone invites the
+        # reading that the served band covers; the dollar figure alone is what
+        # was mistaken for a calibration defect. Their gap is the anchor wedge.
         f"IntCov={metrics['interval_coverage']:.1f}% "
+        f"($-basis {metrics['interval_coverage_dollar_basis']:.1f}%) "
         f"ConfGap={metrics['conf_gap_pp']:.1f}pp "
         f"Skill={metrics['skill_vs_baseline']} "
         f"Actionable={_actionable_str(metrics)}"
@@ -1184,7 +1258,8 @@ def backtest_forecasts(db, today=None, min_price=0, reresolve=False, rescore=Fal
             # freshly written row is by construction already "current" and the
             # refresh below finds nothing to do for it.
             verdict = _verdict_for_storage(
-                _derive_verdict(base, actual, mid, low, high, f.direction)
+                _derive_verdict(base, actual, mid, low, high, f.direction,
+                                quote=f.current_price)
             )
 
             new_outcomes.append({
@@ -1193,8 +1268,10 @@ def backtest_forecasts(db, today=None, min_price=0, reresolve=False, rescore=Fal
                 "forecast_date": f_date,
                 "horizon_days": horizon,
                 "target_date": target_date,
-                # current_price is retained for reference only; nothing reads
-                # it for scoring, and it is never synthesized. Written through
+                # current_price is the PREDICTION's basis and is now read for
+                # scoring twice — `r_hat` in backtest/actionable.py and the band
+                # rebase in `_derive_verdict` — because `predict()` quoted the
+                # whole triple from it. It is never synthesized. Written through
                 # as-is (nullable) so it stays distinguishable from base_price,
                 # which is always archive-resolved. Downstream consumers
                 # (update_bias_corrections_from_outcomes, retro_bias_check,

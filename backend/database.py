@@ -234,7 +234,9 @@ class PredictionAccuracy(Base):
     prediction_type: forecast
     metrics JSON schema:
       - forecast: {mae, rmse, mape, wmape, mape_by_tier, directional_accuracy,
-                   interval_coverage, baseline_directional_accuracy,
+                   interval_coverage, interval_coverage_dollar_basis,
+                   interval_n_served_basis, interval_n_fallback_basis,
+                   baseline_directional_accuracy,
                    improvement_over_baseline_pp, skill_vs_baseline,
                    conf_gap_pp, conf_high_interval_cov, conf_calibration_error,
                    directional_accuracy_ci_lower, directional_accuracy_ci_upper,

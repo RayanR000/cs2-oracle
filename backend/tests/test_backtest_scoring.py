@@ -2802,3 +2802,160 @@ def test_the_actionable_prediction_leg_reaches_the_scorer(session, tmp_path, mon
     )
     assert m["actionable_n_served_basis"] == 1
     assert m["actionable_n_fallback_basis"] == 0
+
+
+# ---------------------------------------------------------------------------
+# `in_interval` is measured on the basis the band was QUOTED from.
+#
+# `predict()` publishes the band as `current_price x (1 + low_ret/high_ret)`,
+# but the actual it is compared against is archive-resolved off `base_price`.
+# The two bases disagree on 85% of production rows by a median 5.70% / p90
+# 37.82% against half-widths of 10-31%, so the stored predicate was answering
+# "did the served dollar band contain the resolved price" while every reader
+# took it for coverage of the calibrated band. Same defect the actionable
+# prediction leg had, and the same fix: rebase the PREDICTION, leave both legs
+# of the outcome on resolve_anchors.
+# ---------------------------------------------------------------------------
+
+
+def test_in_interval_rebases_the_band_onto_the_resolved_base():
+    """The wedge alone must not put a covered row outside its own band.
+
+    Serving quoted 12.0 and published a [-10%, +15%] band as [10.8, 13.8]. The
+    archive resolves the base to 10.0 and the actual to 10.5 — a +5% move, which
+    is inside the band the model actually stated. Compared in dollars it reads as
+    a miss, and the entire miss is the 20% wedge between the two bases.
+    """
+    from scripts.backtest_accuracy import _derive_verdict
+
+    v = _derive_verdict(10.0, 10.5, 12.6, 10.8, 13.8, "up", quote=12.0)
+    assert v["in_interval"] == 1
+
+
+def test_in_interval_rebasing_rejects_as_well_as_admits():
+    """The rebase is not a coverage-inflating transform: the same wedge that
+    admits a +5% move excludes a +30% one, which the dollar predicate calls a
+    hit. A fix that could only ever raise coverage would be indistinguishable
+    from widening the band."""
+    from scripts.backtest_accuracy import _derive_verdict
+
+    v = _derive_verdict(10.0, 13.0, 12.6, 10.8, 13.8, "up", quote=12.0)
+    assert v["in_interval"] == 0
+    assert v["in_interval_dollar"] == 1
+
+
+def test_in_interval_falls_back_to_the_resolved_base_without_a_quote():
+    """Legacy outcomes predate `current_price`, and the walkforward harness
+    builds its band as `base * (1 + ret)` so the resolved base IS its quote.
+    Both must keep scoring, on a predicate that reduces to the old one."""
+    from scripts.backtest_accuracy import _derive_verdict
+
+    for quote in (None, 0.0, -1.0):
+        v = _derive_verdict(10.0, 10.5, 10.6, 9.0, 11.0, "up", quote=quote)
+        assert v["in_interval"] == 1
+        assert v["in_interval"] == v["in_interval_dollar"]
+
+
+def test_a_missing_band_is_still_unknown_not_a_miss():
+    """None, not 0. A row with no band was never a coverage observation, and
+    counting it as a miss reports under-coverage for a reason that is not the
+    calibration."""
+    from scripts.backtest_accuracy import _derive_verdict
+
+    v = _derive_verdict(10.0, 10.5, 10.6, None, None, "up", quote=12.0)
+    assert v["in_interval"] is None
+    assert v["in_interval_dollar"] is None
+
+
+def test_the_dollar_predicate_is_not_a_stored_column():
+    """`in_interval_dollar` is a reporting split, not a verdict: adding it to
+    the stored set would need a migration, and `_REFRESH_VERDICTS_SQL` binds
+    exactly the columns `_verdict_for_storage` hands it."""
+    from scripts.backtest_accuracy import (
+        VERDICT_COLUMNS, _derive_verdict, _verdict_for_storage,
+    )
+
+    stored = _verdict_for_storage(
+        _derive_verdict(10.0, 13.0, 12.6, 10.8, 13.8, "up", quote=12.0)
+    )
+    assert "in_interval_dollar" not in stored
+    assert set(stored) == set(VERDICT_COLUMNS)
+
+
+def test_score_cohort_reports_both_bases_and_which_rows_used_which():
+    """Two coverage figures that differ by the wedge, plus the counts that say
+    which convention formed each row's band. A payload that cannot say whether
+    its rows were scored on the served quote or the resolved fallback is not
+    self-describing — the same reasoning `actionable_n_served_basis` follows."""
+    from backtest.scoring import score_cohort
+
+    def rec(in_interval, in_interval_dollar, served):
+        return {
+            "abs_error": 0.1, "sq_error": 0.01, "pct_error": 1.0,
+            "direction_correct": 1, "predicted_direction": "up",
+            "actual_direction": "up", "in_interval": in_interval,
+            "in_interval_dollar": in_interval_dollar,
+            "interval_basis_served": served,
+            "confidence": "low", "base_price": 10.0, "actual_price": 10.5,
+            "price_tier": 1, "item_id": 1, "forecast_date": date(2026, 7, 5),
+        }
+
+    metrics, _ = score_cohort([rec(1, 0, True), rec(1, 1, True), rec(0, 0, False)])
+    assert metrics["interval_coverage"] == pytest.approx(66.67, abs=0.01)
+    assert metrics["interval_coverage_dollar_basis"] == pytest.approx(33.33, abs=0.01)
+    assert metrics["interval_n_served_basis"] == 2
+    assert metrics["interval_n_fallback_basis"] == 1
+
+
+def test_score_cohort_defaults_the_dollar_split_to_the_rebased_predicate():
+    """`walkforward_records` builds mid/low/high off the resolved base, so its
+    rows have one basis and carry neither key. They must still score, and the
+    two figures must agree rather than the dollar one reading 0%."""
+    from backtest.scoring import score_cohort
+
+    rec = {
+        "abs_error": 0.1, "sq_error": 0.01, "pct_error": 1.0,
+        "direction_correct": 1, "predicted_direction": "up",
+        "actual_direction": "up", "in_interval": 1,
+        "confidence": "low", "base_price": 10.0, "actual_price": 10.5,
+        "price_tier": 1, "item_id": 1, "forecast_date": date(2026, 7, 5),
+    }
+    metrics, _ = score_cohort([rec])
+    assert metrics["interval_coverage"] == 100.0
+    assert metrics["interval_coverage_dollar_basis"] == 100.0
+    assert metrics["interval_n_served_basis"] == 0
+    assert metrics["interval_n_fallback_basis"] == 1
+
+
+def test_a_wedged_forecast_is_scored_against_the_band_it_was_quoted_from(
+    session, tmp_path, monkeypatch
+):
+    """End to end, through the real resolver: the wedge must not decide coverage.
+
+    The archive resolves "ak" to a base of 2.0 and an actual of 2.1 (+5%).
+    Serving quoted 2.8 — a 40% wedge — and published [-10%, +15%] as
+    [2.52, 3.22]. The +5% move is inside the band the model stated and outside
+    the dollars it printed, and both numbers now reach the payload.
+    """
+    rows = [("ak", date(2026, 7, d), 2.0) for d in (3, 4, 5)]
+    rows += [("ak", date(2026, 7, d), 2.1) for d in (6, 7, 8)]
+    archive = _write_archive(tmp_path, rows)
+
+    _seed(session, 1, "ak", current_price=2.8, price_mid=2.828,
+          price_low=2.52, price_high=3.22, direction="up")
+    session.commit()
+
+    out = _run_backtest(session, archive, monkeypatch)
+    scored = [r for r in out if r["horizon_days"] == HORIZON and r["sample_count"] == 1]
+    assert scored, "the forecast was not scored at all"
+    m = scored[0]["metrics"]
+    assert m["interval_coverage"] == 100.0, (
+        "a +5% move inside a [-10%, +15%] band was scored as a miss; the band "
+        "is still being compared in the dollars it was quoted in"
+    )
+    assert m["interval_coverage_dollar_basis"] == 0.0
+    assert m["interval_n_served_basis"] == 1
+    assert m["interval_n_fallback_basis"] == 0
+
+    stored = session.query(ForecastOutcome).filter_by(forecast_id=1).one()
+    assert stored.in_interval == 1

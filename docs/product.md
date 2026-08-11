@@ -33,12 +33,22 @@ CS2 Oracle is a precision analytical instrument for CS2 market intelligence. A u
 
 The directional claim is a Pesaran–Timmermann verdict, not a hit rate. A raw hit rate on this market is not a claim about the model: an always-down call scored 29.4% on one stored forecast date and 76.9% on another, so the same number is skill on one day and incompetence on the next. The product publishes whether the calls beat the per-date chance null, and shows the hit rate only beside the constant-call baseline and the realised down-rate that make it readable.
 
-> ⚠️ **Two of the claims above are not currently true of the code (audited 2026-08-10).** The band
-> is **not calibrated as served**: `q_hat` is fitted on residuals to the q50 mid, then `predict`
-> recentres the mid on the classifier's call before serving, so the 80% coverage claim does not
-> survive the move (production `IntCov` 34.6–61.8%). And the served `confidence` label is an
-> uncalibrated 0.5 cut on a classifier probability, never validated against outcomes. **Do not
-> publish the band as an 80% interval, or the confidence tag at all, until F1 and F2 land** —
+> ⚠️ **Two of the claims above were not true of the code (audited 2026-08-10). One is now
+> fixed; the other still binds.**
+>
+> **The band (2026-08-11): the 34.6–61.8% `IntCov` was a measurement defect, not a calibration
+> one.** The recentring theory was refuted — served centre, q50 centre and recentring-off agree
+> within 1.1pp. `in_interval` had been comparing an archive-resolved price against a band
+> quoted from a *different* anchor, and the band is now rebased before the predicate. Two
+> figures are published because there are two honest questions: `interval_coverage` asks
+> whether the calibrated width covers, and `interval_coverage_dollar_basis` asks whether the
+> dollars we printed contained the price. **A consumer reads dollars, so the dollar figure is
+> the one that describes their experience** — publish it, do not quote the calibrated number
+> alone, and do not present either as a settled 80% until a `--rescore` has reported it.
+> `docs/changelog/2026-08-11-in-interval-basis.md`.
+>
+> **The confidence tag still binds.** It is an uncalibrated 0.5 cut on a classifier
+> probability, never validated against outcomes. **Do not publish it at all until F2 lands** —
 > `docs/research/2026-08-10-next-steps.md`. Also note that of the two baselines named in the
 > paragraph above, only the **realised down-rate** is runnable; the constant-call baseline is
 > selected with hindsight and must not be shown as something the model failed to beat.

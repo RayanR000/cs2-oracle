@@ -217,6 +217,10 @@ def fold_records(
             "direction_correct": 1 if predicted_direction == actual_direction else 0,
             "predicted_direction": predicted_direction,
             "actual_direction": actual_direction,
+            # No rebase, unlike backtest_accuracy._derive_verdict: the band here
+            # is built as `base * (1 + ret)` a few lines up, so the resolved base
+            # IS the quote and the two predicates coincide. score_cohort defaults
+            # its dollar-basis split to this value for the same reason.
             "in_interval": 1 if low[i] <= actual[i] <= high[i] else 0,
             # The harness has no confidence estimator, so score_cohort's
             # conf_* fields are structurally degenerate for these arms.

@@ -61,6 +61,18 @@ report it rather than working around it.
 > **recentred** mid, so its 80% coverage claim does not hold (production `IntCov` 34.6–61.8%).
 > `changelog/2026-08-10-constant-call-is-hindsight-picked.md`,
 > `changelog/2026-08-10-band-and-confidence-are-miscalibrated.md`.
+>
+> ⚠️ **The band half of that is resolved, and the recentring was not the cause (2026-08-11).**
+> Served centre, q50 centre and recentring-off agree within **1.1pp** in all 8 cells. The
+> 34.6–61.8% was a **basis** artifact: `in_interval` tested an archive-resolved actual against
+> a band `predict` had quoted from `current_price`, two anchors that disagree on 85% of rows by
+> a median 5.70% / p90 37.82% against half-widths of 10–31%. The band is now rebased before the
+> predicate, and **both** figures are reported — `interval_coverage` (calibrated, the basis
+> `q_hat` was fitted in and the one `replay_serving.py` reads at ~81%) beside
+> `interval_coverage_dollar_basis` (published dollars, the old number). Their gap is the anchor
+> wedge. **Do not difference an `interval_coverage` across 2026-08-11.**
+> `changelog/2026-08-11-in-interval-basis.md`,
+> `changelog/2026-08-11-conformal-centre-follows-serving.md`.
 
 ## Reference (`references/`)
 

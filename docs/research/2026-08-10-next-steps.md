@@ -160,6 +160,16 @@ None of these is an accuracy improvement. All three are cheap, and all three blo
 > `2026-08-11-actionable-selection-is-the-base-wedge.md` is about units, not basis.
 > **C5 is unblocked, and it should be re-scoped: recalibrating a band whose reported
 > coverage is measured on the wrong basis will chase the wrong residual.**
+>
+> ✅ **That basis is FIXED, 2026-08-11 — `changelog/2026-08-11-in-interval-basis.md`.**
+> `_derive_verdict` rebases the band by `base / quote` before the predicate (`quote` is
+> keyword-only and required, so no new path can omit it), and both figures are now reported:
+> `interval_coverage` (calibrated, comparable to the replay) beside
+> `interval_coverage_dollar_basis` (the published dollars, which is what 34.6–61.8% was).
+> Neither leg of the outcome moved, and `abs_error` / `pct_error` are deliberately not rebased
+> — a dollar error is basis-free. **C5 is now genuinely unblocked**: it can be scoped against a
+> coverage number that means what it says. What remains is a read — one `--rescore` to see
+> where production's `IntCov` lands against the replay's ~81%, which is a prediction until run.
 
 - **Do:** apply `_recenter_on_direction` inside the conformal records path before
   `_calibrate_conformal`, so the calibration centre and the serving centre are the same.
