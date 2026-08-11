@@ -79,9 +79,51 @@ quote; it was the *comparison* that was wrong, which is what the F1 changelog pr
 
 `_refresh_verdict_columns` rewrites `in_interval` on every stored row whose verdict now
 disagrees, through the existing Task 8c path — no backfill script, and the frozen actuals are
-structurally out of reach. Expect a large rewrite count on the first `--rescore`, and expect
-`IntCov` to jump. **Do not difference an `interval_coverage` across 2026-08-11** in either
-direction; the pre-change series is `interval_coverage_dollar_basis` under the old name.
+structurally out of reach. **Run 2026-08-11 against production: 25,288 rows refreshed, exit 0**,
+after the fix was pushed as `e4b57e9` — order matters, because the daily path refreshes only
+that run's mature ids (`:1346`) while `--rescore` walks the table (`:1014`), so migrating ahead
+of the push would have left prod mixed-basis as CI kept refreshing fresh rows on the old
+predicate. **Do not difference an `interval_coverage` across 2026-08-11** in either direction;
+the pre-change series is `interval_coverage_dollar_basis` under the old name.
+
+⚠️ **`--rescore` also refits production bias corrections.** `update_bias` is hardcoded `True`
+(`backtest_accuracy.py:1418`) with no flag to disable it, so the run loads the models and calls
+`update_bias_corrections_from_outcomes`. On this run every tier refused to fit (1–5 distinct
+forecast dates against the 20 required) and stored thresholds were left unchanged, so it was a
+no-op — but it is a served-config write, not a scoring refresh, and it will stop being a no-op
+once F3 lets the date panel accumulate.
+
+## Measured in production, `--rescore` 2026-08-11 (≥$1 cohort)
+
+25,288 stored rows refreshed; frozen actuals untouched; exit 0.
+
+| cohort | n | `interval_coverage` | `$-basis` |
+|---|---|---|---|
+| 3d / lgbm-v3 | 2,092 | 73.8% | 54.6% |
+| 3d / global-only | 1,053 | 90.9% | 87.8% |
+| 3d / regime | 5,283 | 88.3% | 46.0% |
+| 7d / lgbm-v3 | 2,095 | 80.9% | 57.3% |
+| 7d / global-only | 1,053 | 93.3% | 91.8% |
+| 7d / regime | 5,346 | 93.6% | 78.2% |
+| 14d / lgbm-v3 | 2,093 | 87.0% | 61.8% |
+| 14d / global-only | 1,053 | 92.6% | 91.6% |
+| 14d / regime | 1,052 | 82.8% | 79.8% |
+| 30d / lgbm-v3 | 990 | **88.8%** | **34.6%** |
+
+**The `$-basis` column reproduces the published range exactly.** `lgbm-v3` reads 54.6 / 57.3 /
+61.8 / 34.6 — the "34.6–61.8%" that has been quoted as a calibration defect since 2026-08-10 is
+its minimum and maximum, recovered to the decimal. That is the confirmation: the old figure was
+never measuring the band's calibration, and nothing about the band changed today.
+
+On the corrected basis all ten cells land at **73.8–93.6%**, bracketing the 80% nominal and
+agreeing with `replay_serving.py`'s ~81%. The two instruments now describe one band.
+
+**The new open question is over-coverage, not under.** Five of ten cells sit at 88–94%, which
+is a band wider than its target — the opposite failure, and a real one, since an interval that
+covers 94% at a nominal 80% is uninformative at the width it charges for. That is C5's problem
+and it is now well posed for the first time. Note also that every cell still spans 1–5 forecast
+dates against `MIN_FORECAST_DATES = 20`, so each reads `NO HEADLINE`; these are diagnostics, not
+a published series, and **F3** is what gates that.
 
 ## Caveats
 

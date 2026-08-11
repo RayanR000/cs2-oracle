@@ -71,6 +71,10 @@ report it rather than working around it.
 > `q_hat` was fitted in and the one `replay_serving.py` reads at ~81%) beside
 > `interval_coverage_dollar_basis` (published dollars, the old number). Their gap is the anchor
 > wedge. **Do not difference an `interval_coverage` across 2026-08-11.**
+> **Migrated in prod the same day** (25,288 rows): all ten ≥$1 cells now read **73.8–93.6%**
+> against an 80% nominal, and the `$-basis` column reproduces the old 34.6–61.8% range to the
+> decimal — that range was never a calibration figure. The live open question is now
+> **over**-coverage: 5 of 10 cells sit at 88–94%, which is C5's problem, well posed at last.
 > `changelog/2026-08-11-in-interval-basis.md`,
 > `changelog/2026-08-11-conformal-centre-follows-serving.md`.
 
