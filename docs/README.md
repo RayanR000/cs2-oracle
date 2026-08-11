@@ -9,7 +9,12 @@ report it rather than working around it.
 > recovers **+0.1398 of the +0.1464** CV↔serving rank IC gap — confirmed in CI on a fresh
 > artifact at four non-overlapping anchors, **16 cells of 16**. **No stored rank IC, DA or
 > `−return_1d` comparison in this repo is safe to rank arms on.** The corrected label ships
-> gated as `LABEL_SMOOTHED_ANCHOR=1` and is **unread**.
+> gated as `LABEL_SMOOTHED_ANCHOR=1`. ⚠️ **Measured 2026-08-11 and NOT shippable**: it swings
+> pooled served rank IC to +0.17–0.31 at 4/4 anchors, but the entire gain is the anchor
+> deviation `p/S` entering the label as a free factor — on the tied cohort, where that factor
+> is 1, it is −0.033/−0.017/−0.020/+0.008. Both label bases are contaminated by `p/S` with
+> opposite signs; read arms on the tied subset.
+> `changelog/2026-08-11-smoothed-anchor-label-measured.md`.
 > `changelog/2026-08-11-the-gap-is-the-anchor-denominator.md`,
 > `changelog/2026-08-11-clean-anchor-confirmed-in-ci.md`,
 > `changelog/2026-08-11-label-smoothed-anchor.md`.

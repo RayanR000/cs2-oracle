@@ -214,11 +214,19 @@ None of these is an accuracy improvement. All three are cheap, and all three blo
 > Two consequences ahead of everything below: **rebuild the CV label's denominator** before it
 > ranks another arm, and **a serving gate on anchor cleanliness** is now evidence-backed.
 >
-> ✅ **The first is built and gated: `LABEL_SMOOTHED_ANCHOR=1`**
-> (`changelog/2026-08-11-label-smoothed-anchor.md`). Unread — it needs a control and an arm
-> dispatch on one commit with `replay_anchors=2026-04-15,2026-05-16,2026-06-16,2026-07-09`,
-> and it may **not** be read on CV rank IC, because the two arms are scored against different
-> targets. The serving gate is not started.
+> ✅ **The first is built, gated, and MEASURED — and it is not the fix.**
+> `LABEL_SMOOTHED_ANCHOR=1` (`changelog/2026-08-11-label-smoothed-anchor.md`), read against a
+> control on `4d0c8bc` at four non-overlapping anchors (runs `31459789143` / `31461219973`,
+> `changelog/2026-08-11-smoothed-anchor-label-measured.md`). Pooled served rank IC swings to
+> +0.17–0.31 at 4/4 anchors — and all of it is `p[d]/S[d]`, the anchor deviation, entering the
+> label as a factor the model can read at the anchor. On the **tied** cohort, where that factor
+> is exactly 1, the arm is −0.033 / −0.017 / −0.020 / +0.008. Keep the flag off.
+>
+> **Two consequences.** Rank arms on the **tied subset** — both label bases are contaminated by
+> `p/S`, with opposite signs, and it is the only cohort where neither operates. And the serving
+> gate below is retired as an accuracy lever: the tied/deviating split measures how far the
+> quoted `current_price` sits from the last observation, not those items' prices. The open
+> question it raises is a **serving-basis** one — quote against a fresher anchor — not a label one.
 >
 > The section below is still true about statistical power. It is now the second problem.
 

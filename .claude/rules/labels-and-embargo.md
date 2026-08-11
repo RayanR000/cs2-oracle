@@ -38,6 +38,13 @@ paths:
   `scripts/replay_serving.py`, which builds its own labels from the archive. `meta.json`
   carries `label_smoothed_anchor`. See
   `docs/changelog/2026-08-11-label-smoothed-anchor.md`.
+  ⚠️ **Measured 2026-08-11 and it is NOT the fix — leave it off.** Against a control at four
+  anchors it swings pooled served rank IC to **+0.17–0.31, 4/4 anchors**, and every point of
+  that is `p[d]/S[d]` — the anchor deviation — entering the label as a factor readable at the
+  anchor from `return_1d`. On the **tied** cohort, where the factor is identically 1, it is
+  **−0.033 / −0.017 / −0.020 / +0.008**. Both bases are contaminated by `p/S` with opposite
+  signs, so **rank arms on the tied subset**, which is the only cohort where neither operates.
+  `docs/changelog/2026-08-11-smoothed-anchor-label-measured.md`.
 - **The embargo is `horizon + 13`, not `horizon`.** `models/forecaster.py::embargo_days`
   derives the 13 at call time from `LAG_TOLERANCE_DAYS` (3) + `SMOOTH_WINDOW` (3) +
   `MAX_WINDOW_SPAN_DAYS` (7): the label at `d + horizon` is a **resolved anchor**, not a
