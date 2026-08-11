@@ -238,6 +238,25 @@ def test_the_four_bases_cross_two_axes():
     assert f["cv"] == pytest.approx(20.0 / 12.0 - 1)
     assert f["num_only"] == pytest.approx(20.0 / 10.0 - 1)
     assert f["den_only"] == pytest.approx(17.5 / 12.0 - 1)
+    assert not f["anchor_is_tied"]          # raw 12 vs median 10
+
+
+def test_a_tied_anchor_makes_cv_and_served_share_a_denominator():
+    """The decisive split: where the anchor quote equals its own local median
+    there is no deviation for a feature to read, so the hypothesised
+    shared-quote channel cannot operate and `served` differs from `cv` only by
+    the outcome leg."""
+    anchor = date(2026, 6, 1)
+    hist = _history([
+        ("flat", "2026-05-30", 10.0),
+        ("flat", "2026-05-31", 10.0),
+        ("flat", "2026-06-01", 10.0),      # raw == median == 10
+        ("flat", "2026-06-04", 20.0),
+    ])
+    f = _basis_frame(_fc(), hist, anchor, horizon=3).set_index("item_id").loc["flat"]
+    assert f["anchor_is_tied"]
+    assert f["anchor_raw"] == pytest.approx(f["anchor_smooth"])
+    assert f["served"] == pytest.approx(f["den_only"])
 
 
 def test_a_replay_ignores_the_engineered_cache():

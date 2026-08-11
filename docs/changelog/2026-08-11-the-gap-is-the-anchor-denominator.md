@@ -1,5 +1,15 @@
 # The CV→serving gap is the anchor denominator, 2026-08-11
 
+> ## ✅ The mechanism is CONFIRMED, by two independent cuts — see the last section.
+> The gap is **+0.006 rank IC** among items whose anchor quote equals its own local median and
+> **+0.220** among those where it deviates. And moving the denominator back one day (`cv_lag`)
+> lands near the served basis, not near `cv`, so it is the specific quote at *d* that carries the
+> effect rather than smoothing.
+>
+> A second result fell out that no one was looking for: **on the tied subset the served forecasts
+> reach rank IC 0.20–0.31** at 2026-06-01, while the deviating subset is strongly negative. The
+> served panel's "near zero" is a mixture of the two.
+
 `--basis-sweep` scores the **same served mids** against four label bases at a fixed anchor.
 Artifact, anchor, items, cohort and serving transforms are all held constant, so a difference
 between rows is the label definition and nothing else.
@@ -71,6 +81,64 @@ the shared quote is confirmed. One flag, one run.
 - Nothing here says the model is worthless. It says the metric that ranked the feature work is
   contaminated, and the size of the contamination (0.03–0.24 rank IC) is larger than every effect
   the project has been chasing.
+
+## Confirmed — the two cuts
+
+**Cut 1: move the denominator back one day** (`cv_lag` = raw p[d+h] / raw p[d−1]). This is not a
+clean denominator — it is `return_1d`'s own denominator, so it carries the same channel weakly and
+with the sign flipped — but it separates "the quote at *d*" from "rawness":
+
+| h | anchor | `cv` Δ | `cv_lag` Δ |
+|---|---|---|---|
+| 3 | 06-01 | +0.2346 | +0.0384 |
+| 3 | 07-05 | +0.2908 | +0.0942 |
+| 7 | 06-01 | +0.1558 | +0.0366 |
+| 30 | 06-01 | +0.0758 | −0.0057 |
+
+A day-old raw quote recovers almost none of the gap. **If smoothing itself distorted the metric,
+`cv_lag` would sit with `cv` — it is just as raw. It sits with `served`.** What matters is *which*
+quote, not whether it was smoothed.
+
+**Cut 2: split the cross-section on whether the anchor quote deviates from its own local median.**
+Where it does not, `cv` and `served` share a denominator by construction and the channel cannot
+operate. Δ rank IC (`cv` − `served`), n = 312/360 tied against 721/668 deviating:
+
+| h | tied (06-01 / 07-05) | deviating (06-01 / 07-05) |
+|---|---|---|
+| 3 | −0.0094 / −0.0064 | **+0.3359 / +0.4570** |
+| 7 | +0.0498 / −0.0393 | **+0.2176 / +0.2198** |
+| 14 | +0.0334 / +0.0444 | **+0.2136 / +0.1434** |
+| 30 | −0.0104 / −0.0164 | **+0.1146 / +0.0571** |
+
+**Mean +0.0057 tied, +0.2199 deviating.** Eight cells of eight, both anchors, all four horizons.
+The gap lives entirely where the anchor quote deviates from its local median — and that deviation
+is exactly the quantity `return_1d` reads. The mechanism is no longer a hypothesis.
+
+## The unlooked-for result: the served signal is a mixture
+
+Served rank IC, by subset:
+
+| h | tied (06-01) | deviating (06-01) | tied (07-05) | deviating (07-05) |
+|---|---|---|---|---|
+| 3 | **+0.2174** | −0.3867 | +0.0622 | −0.3165 |
+| 7 | **+0.2027** | −0.0990 | −0.0794 | −0.0961 |
+| 14 | **+0.2169** | −0.1420 | −0.0026 | +0.1111 |
+| 30 | **+0.3050** | −0.1767 | +0.2056 | +0.1318 |
+
+On items whose anchor quote is its own local median, the **served** forecasts — full serving path,
+smoothed denominator, no basis contamination available — reach rank IC **0.20 to 0.31** at
+2026-06-01. The near-zero served panel is not a weak signal everywhere; it is a real signal on the
+clean two-fifths of the cohort, cancelled by a strongly negative one on the rest.
+
+The negative half has a reading consistent with everything above: for a deviating item the model
+sees a spike in `return_1d` and calls reversal, but the served denominator has already smoothed
+that spike away, so the reversal it predicts is one that, on this basis, has largely already
+happened. It is wrong for the same reason the CV metric was flattering.
+
+**This is the first evidence in the project of a servable signal at a useful size**, and it is one
+anchor pair, unreplicated, found while looking for something else. It should be re-measured before
+it is believed, and `2026-08-10-serving-replay.md`'s basis caveat still applies to its absolute
+level.
 
 ## Limits
 

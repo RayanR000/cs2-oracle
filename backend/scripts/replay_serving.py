@@ -179,18 +179,32 @@ def _basis_frame(fc: ItemForecaster, outcomes: pd.DataFrame, anchor: date,
     smoothed.index.name = "item_id"
 
     raw_anchor = _exact_day(outcomes, anchor).rename(columns={"px": "anchor_raw"})
+    # The day before the anchor. NOT a clean denominator -- it is `return_1d`'s
+    # own denominator, so it carries the same shared-quote channel with the sign
+    # flipped. Included because it bounds the effect from the other side.
+    lag_anchor = _exact_day(outcomes, anchor - timedelta(days=1)) \
+        .rename(columns={"px": "anchor_lag"})
     raw_target = _exact_day(outcomes, anchor + timedelta(days=horizon)) \
         .rename(columns={"px": "out_raw"})
     med_target = _resolve(outcomes, anchor + timedelta(days=horizon), after=anchor) \
         .rename(columns={"realised": "out_med"})
 
     f = (raw_anchor.merge(smoothed.reset_index(), on="item_id", how="outer")
+                   .merge(lag_anchor, on="item_id", how="outer")
                    .merge(raw_target, on="item_id", how="outer")
                    .merge(med_target, on="item_id", how="outer"))
+    # The quote at the anchor sits in the label's denominator AND in the
+    # features. Where it equals the local median there is no deviation for the
+    # model to read, so this flag splits the cross-section into the half where
+    # the hypothesised channel can operate and the half where it cannot.
+    f["anchor_is_tied"] = np.isclose(f["anchor_raw"].to_numpy(dtype=float),
+                                     f["anchor_smooth"].to_numpy(dtype=float),
+                                     rtol=0, atol=1e-9)
     for name, num, den in (("served", "out_med", "anchor_smooth"),
                            ("cv", "out_raw", "anchor_raw"),
                            ("num_only", "out_raw", "anchor_smooth"),
-                           ("den_only", "out_med", "anchor_raw")):
+                           ("den_only", "out_med", "anchor_raw"),
+                           ("cv_lag", "out_raw", "anchor_lag")):
         f[name] = np.where(f[den].to_numpy(dtype=float) > 0,
                            f[num].to_numpy(dtype=float)
                            / f[den].to_numpy(dtype=float) - 1.0, np.nan)
@@ -350,7 +364,7 @@ def main() -> int:
                 # per basis would change the prediction as well as the label.
                 pred = (merged["mid"] / merged["current"] - 1.0).to_numpy()
                 served_ic = None
-                for name in ("served", "cv", "num_only", "den_only"):
+                for name in ("served", "cv", "num_only", "den_only", "cv_lag"):
                     ok = np.isfinite(merged[name].to_numpy()) & np.isfinite(pred)
                     ic_b = (_rank_ic(pred[ok], merged[name].to_numpy()[ok])
                             if ok.sum() >= 3 else float("nan"))
@@ -358,6 +372,29 @@ def main() -> int:
                         served_ic = ic_b
                     delta = "" if name == "served" else f"{ic_b - served_ic:>+10.4f}"
                     print(f"{h:>4} {name:>10} {int(ok.sum()):>7} {ic_b:>8.4f} {delta}")
+
+                # The decisive split. Where the anchor quote equals its own
+                # local median, `cv` and `served` share a denominator exactly,
+                # so the shared-quote channel cannot operate. If the gap lives
+                # in the deviating half and vanishes in the tied half, the
+                # deviation IS the noise the model is reading.
+                # fillna before astype: the merge is a LEFT join, so an item
+                # the basis frame never saw arrives as NaN and the column comes
+                # back float. `~` on that raises rather than masking, which is
+                # how this was caught -- but "no anchor observed" is not "tied".
+                tied = merged["anchor_is_tied"].fillna(False).astype(bool).to_numpy()
+                for label, mask in (("tied", tied), ("deviating", ~tied)):
+                    fin = (np.isfinite(merged["cv"].to_numpy())
+                           & np.isfinite(merged["served"].to_numpy())
+                           & np.isfinite(pred) & mask)
+                    if fin.sum() < 3:
+                        print(f"{h:>4} {label:>10} {int(fin.sum()):>7}   too few")
+                        continue
+                    ic_cv = _rank_ic(pred[fin], merged["cv"].to_numpy()[fin])
+                    ic_sv = _rank_ic(pred[fin], merged["served"].to_numpy()[fin])
+                    print(f"{h:>4} {label:>10} {int(fin.sum()):>7} "
+                          f"{ic_sv:>8.4f} {ic_cv - ic_sv:>+10.4f}  "
+                          f"(cv {ic_cv:+.4f})")
 
         print("\nDA is quotable only beside down% and the PT test "
               "(backend/AGENTS.md invariant 4). One anchor is one date: this "
