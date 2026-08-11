@@ -35,20 +35,23 @@ paths:
   `prepare_targets` voids the label of any row whose `date + horizon` partner was dropped.
   It does **not** reduce feature-engineering time, which is what a wide
   `TRAIN_FEATURE_ROWS` actually buys.
-- **`CV_DIAGNOSTIC_CLASSIFIER` moves the served BAND since 2026-08-11, so it is no longer a
-  pure cost flag.** `predict` recentres the served mid on the directional classifier's call
-  *after* building the band from `q_hat`, preserving both half-widths — so `q_hat` has to be
-  fitted on residuals to that recentred centre, and the only honest source for it is the
-  per-fold out-of-fold call this flag gates. `_conformal_records(..., direction_class=...)`
-  does it; with the flag **off** (production's setting in `price-forecast.yml`) the centre
-  falls back to the q50 mid, `_calibrate_conformal` logs a WARNING, and `meta.json`'s
-  `conformal_centre` records `"q50"` for that horizon. Measured on a held-out split, the
-  displacement costs **59.8% served coverage against an 80% target** while the never-served
-  q50-centred band covers 79.5%. So the flag is a real trade — 932s, 52% of a
-  classifier-on retrain (872s off, 1804s on locally), which would put a retrain **at** the
-  30-minute cap — and not a free diagnostic. Never infer the centre from the environment;
-  read `conformal_centre`, and read `BAND COVERAGE` in `scripts/replay_serving.py` for the
-  empirical figure. `docs/changelog/2026-08-11-conformal-centre-follows-serving.md`.
+- **`CV_DIAGNOSTIC_CLASSIFIER` decides which mid `q_hat` is centred on since 2026-08-11 — and
+  that turns out NOT to move coverage. It stays a cost flag.** `predict` recentres the served
+  mid on the classifier's call *after* building the band from `q_hat`, preserving both
+  half-widths, so `q_hat` is fitted on a centre the serving path then moves;
+  `_conformal_records(..., direction_class=...)` fixes the incoherence when this flag supplies
+  an out-of-fold call, and `meta.json`'s `conformal_centre` records `"served"` or `"q50"` per
+  horizon. **Measured 2026-08-11 across three arms at two anchors (runs `31529688893`,
+  `31532517480`, `31532543867`): served coverage agrees within 1.1pp in all 8 cells, whichever
+  centre and with the recentring on or off.** The reason is arithmetic — the displacement is
+  bounded by `2*|mid|` and this model's predicted `|return|` is **median 0.95% / p90 9.01%**,
+  against half-widths of `q_hat*sigma` with `q_hat` = 95.5 / 141.4 / 204.9 / 312.7 at
+  3/7/14/30d, i.e. roughly ±10% to ±31%. So **do not pay the 932s for coverage** (52% of a
+  classifier-on retrain, 872s off vs 1804s on locally, which would put a retrain at the
+  30-minute cap), and **do not blame a low `IntCov` on the centre** — the replay reads ~81%
+  pooled where the band is actually served. Never infer the centre from the environment; read
+  `conformal_centre`, and read `BAND COVERAGE` in `scripts/replay_serving.py`.
+  `docs/changelog/2026-08-11-conformal-centre-follows-serving.md`.
 - **Training is fully sequential.** Horizons, quantiles, and ensemble members train one at
   a time; LightGBM's OpenMP threads supply the CPU parallelism. **Everything runs at
   `n_jobs = -1`** — the ensemble's `max(1, cpu_count // 2)` was deleted 2026-07-21 as

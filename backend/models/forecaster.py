@@ -6145,12 +6145,16 @@ class ItemForecaster:
             logger.warning(
                 f"  {horizon}d q_hat was calibrated around the q50 mid, but a "
                 f"directional classifier exists for this horizon and predict() "
-                f"will recentre the mid on its call — so the SERVED band's "
-                f"coverage is not the nominal "
-                f"{conformal.NOMINAL_COVERAGE * 100:.0f}%. Measured on a "
-                f"held-out split, that displacement costs ~20pp of coverage. "
-                f"Set CV_DIAGNOSTIC_CLASSIFIER=1 so CV emits the out-of-fold "
-                f"direction call the calibration needs."
+                f"will recentre the mid on its call — so this band is not "
+                f"centred where it is served. MEASURED 2026-08-11 and the "
+                f"coverage cost is nil: three arms at two anchors agree within "
+                f"1.1pp, because the displacement is bounded by 2*|mid| "
+                f"(predicted |return| is median 0.95%) against a half-width of "
+                f"q_hat*sigma, an order of magnitude larger. So this is an "
+                f"incoherence to know about, NOT a reason to pay the 932s for "
+                f"CV_DIAGNOSTIC_CLASSIFIER=1, and NOT the cause of a low "
+                f"IntCov. See "
+                f"docs/changelog/2026-08-11-conformal-centre-follows-serving.md."
             )
 
         mid = records_df["mid_ret"].to_numpy(dtype=float)

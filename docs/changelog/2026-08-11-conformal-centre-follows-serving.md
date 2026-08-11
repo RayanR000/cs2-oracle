@@ -9,7 +9,13 @@ triple to `_recenter_on_direction`, which sets the mid to `±|mid|` — or pins 
 disagrees with the q50's sign, the served centre is displaced by up to twice `|mid|` and the
 band is not widened to pay for it.
 
-## Sized on a held-out split
+> ## ⚠️ MEASURED, and the coverage claim below is WRONG on production data.
+> Three arms at two anchors agree within **1.1pp** in all 8 cells. The centre is an
+> incoherence worth fixing and **not** a coverage defect; it is also **not** the cause of
+> production's `IntCov` 34.6–61.8%. Do not pay the 932s for it. Full table and the arithmetic
+> in "The three-arm read" below — read that section before acting on anything above it.
+
+## Sized on a held-out split — in a regime that does not hold
 
 Same generator, same q50 mids, classifier disagreeing on 40% of rows; `q_hat` fitted on one
 half, coverage measured on the other **through the serving assembly** (`conformal.band`, then
@@ -21,8 +27,13 @@ half, coverage measured on the other **through the serving assembly** (`conforma
 | the served centre (after) | **79.1%** | — |
 
 Against an 80% target. The old calibration was not broken arithmetic — it was correct about a
-band that is never published. Production reports `IntCov` 34.6–61.8% on the `lgbm-v3` cohort;
-this is a mechanism that produces exactly that shape of miss.
+band that is never published.
+
+**The generator is the problem, and it is why this number did not replicate.** It draws
+`mid ~ N(0, 4pp)` against residuals of `sigma*20 ≈ 3pp`, so the displacement `2*|mid|` is
+*larger* than the half-width. Production is the other way round by an order of magnitude:
+predicted `|return|` is median 0.95% / p90 9.01% against half-widths of ±10% to ±31%. Read this
+table as "the mechanism exists and this is its shape", never as its size.
 
 ## What changed
 
@@ -77,15 +88,57 @@ one — a band that is merely too narrow misses symmetrically. And the 85.49 →
 between two dates at h=3 is the market-date dominance already on record
 (`da-is-dominated-by-the-market-date`).
 
-⚠️ **This is not a paired before/after, and must not be quoted as one.**
-`model-diagnostics.yml` hardcodes `CV_DIAGNOSTIC_CLASSIFIER=1`, so the run cannot also produce
-a q50-centred artifact, and production's published `IntCov` 34.6–61.8% is the backtest's
-resolver over many dates — a different measurement, not this one with the fix removed. The
-59.8% → 79.1% figure above is the mechanism, on synthetic data. What this run establishes is
-that the served band lands in the right neighbourhood at both anchors, which the q50 centre
-demonstrably does not do on the same assembly. A true control needs
-`CV_DIAGNOSTIC_CLASSIFIER` exposed as a workflow input, or the production artifact replayed at
-these same two anchors.
+## The three-arm read — the centre does not move coverage
+
+`CV_DIAGNOSTIC_CLASSIFIER` and `REPLAY_DISABLE` became `model-diagnostics.yml` inputs
+(`cd6a93d`) precisely so the run above could be paired. Two more dispatches, same commit, same
+two anchors, same matrix:
+
+| anchor | h | served centre | q50 centre (production today) | q50, recentring off |
+|---|---|---|---|---|
+| 05-16 | 3 | 85.49 | 85.67 | 85.86 |
+| 05-16 | 7 | 91.05 | 91.14 | 90.86 |
+| 05-16 | 14 | 82.00 | 82.19 | 81.06 |
+| 05-16 | 30 | 88.03 | 88.12 | 88.31 |
+| 07-09 | 3 | 64.44 | 65.12 | 64.53 |
+| 07-09 | 7 | 74.61 | 75.10 | 74.52 |
+| 07-09 | 14 | 81.01 | 81.40 | 80.72 |
+| 07-09 | 30 | 80.52 | 80.91 | 80.04 |
+
+Runs `31529688893` / `31532517480` / `31532543867`. **Maximum spread across the three arms is
+1.1pp** (14d at 05-16), most cells inside 0.5pp. The WARNING fired 4 of 4 in the q50 arm, so
+the disclosure works and the arm really was the defect.
+
+**Why it cannot matter, in one line of arithmetic.** The recentring displaces the mid by at
+most `2*|mid|`. This model's predicted `|return|` is **median 0.95%, p90 9.01%** (measured on
+the ops mirror for `2026-08-11-actionable-selection-is-the-base-wedge.md`), while the
+half-width is `q_hat*sigma` with `q_hat` = **95.5 / 141.4 / 204.9 / 312.7** at 3/7/14/30d
+against a clipped sigma of ~0.05–0.30 — call it ±10% to ±31%. The displacement is a tenth of
+the half-width, so it can only flip rows sitting in a thin sliver at the band edge. This is the
+same fact that collapsed the actionable cohort: **almost nothing this model predicts is large
+enough to matter to a threshold**, and a band edge is a threshold.
+
+### Three consequences
+
+1. **The centre is not the cause of production's `IntCov` 34.6–61.8%.** The replay reads ~81%
+   pooled on the same band. Two figures describing one band that far apart put the discrepancy
+   in the *backtest's comparison*, not the calibration. The suspect is the basis wedge:
+   `in_interval` tests an archive-resolved actual against a band built on the served
+   `current_price`, and that wedge is **median 5.70% / p90 37.82%** on the ops mirror against
+   half-widths of 10–31%. `2026-08-11-actionable-selection-is-the-base-wedge.md` ruled
+   `in_interval` coherent because "both legs are dollars" — that ruling is about *units*, and
+   it does not survive being asked about *basis*. **This is the open question F1 actually
+   surfaced**, and it is worth more than anything in the option list above.
+2. **Neither production change is worth making.** Paying the 932s buys ≤1.1pp; dropping the
+   recentring buys ≤1.1pp and costs the price/direction sign coherence it exists for. Leave
+   production as it is. The option list above is settled, not pending.
+3. **What F1 delivered is coherence and disclosure**, not coverage: `q_hat` now describes the
+   band that is served, `conformal_centre` says which, the WARNING says when it is the wrong
+   one, and `BAND COVERAGE` makes the whole question falsifiable at a fixed anchor for the
+   first time. That is worth keeping at zero cost — it is not worth 932s.
+
+The 05-16 → 07-09 swing (85.5 → 64.4 at h=3) dwarfs every arm difference and is the market-date
+dominance already on record. Two anchors is a replication, not power.
 
 **The mid did not move**, by construction: `q_hat` sets only the half-widths, and `mid_ret`,
 `change_pct` and `hit` are pinned to the q50 centre by test. Any DA or rank IC in this run is

@@ -142,17 +142,24 @@ None of these is an accuracy improvement. All three are cheap, and all three blo
 > output, both callers pass a direction call, and `meta.json` carries `conformal_centre`
 > per horizon. Sized on a held-out split: **59.8% → 79.1%** served coverage against an
 > 80% target, with the never-served q50-centred band at 79.5%.
-> **The catch:** the served centre needs an out-of-fold direction call, and
-> `price-forecast.yml` sets `CV_DIAGNOSTIC_CLASSIFIER=0` (932s, 52% of a retrain, and
-> turning it on puts a retrain **at** the 30-minute cap). Production therefore keeps the
-> q50 centre and now WARNs; `model-diagnostics.yml` is where the fix is live.
-> **Open decision, cheapest first:** (1) stop recentring the mid and publish the
-> classifier's call as a label only — the existing `q_hat` is then already correct;
-> (2) fit the CV classifier for the last *k* folds only, ~310s at k=3; (3) pay the 932s.
-> The read for (1) vs the shipped state is one diagnostics dispatch each, on the new
-> `BAND COVERAGE` table in `scripts/replay_serving.py`.
-> **C5 is unblocked. Arm A's band question is now measurable** and is the last thing
-> holding its default.
+> **And the coverage claim did not replicate — the decision is CLOSED, change nothing.**
+> Three arms at two anchors (`31529688893` / `31532517480` / `31532543867`) agree within
+> **1.1pp** in all 8 cells: served centre, q50 centre, and recentring-off are
+> indistinguishable. The displacement is bounded by `2*|mid|` and predicted `|return|` is
+> median 0.95% / p90 9.01% against half-widths of ±10–31% (`q_hat` 95.5–312.7). The 59.8%
+> figure came from a synthetic generator whose mid was *larger* than its half-width — the
+> inverse of production. **Do not pay the 932s and do not drop the recentring.**
+> F1's deliverable is coherence plus disclosure (`conformal_centre`, the WARNING,
+> `BAND COVERAGE`), at zero cost.
+> **The real finding is a new question, and it outranks what is left here:** the replay
+> reads ~81% pooled coverage on the band production reports at `IntCov` 34.6–61.8%. Two
+> numbers that far apart for one band put the fault in the **backtest's comparison** — the
+> suspect is `in_interval` testing an archive-resolved actual against a band built on the
+> served `current_price`, a wedge of median 5.70% / p90 37.82% against half-widths of
+> 10–31%. The "both legs are dollars" ruling in
+> `2026-08-11-actionable-selection-is-the-base-wedge.md` is about units, not basis.
+> **C5 is unblocked, and it should be re-scoped: recalibrating a band whose reported
+> coverage is measured on the wrong basis will chase the wrong residual.**
 
 - **Do:** apply `_recenter_on_direction` inside the conformal records path before
   `_calibrate_conformal`, so the calibration centre and the serving centre are the same.
