@@ -777,7 +777,18 @@ def test_diagnostics_workflow_cannot_promote_its_artifact():
 
     env = next(s for s in steps
                if s.get("name") == "Run CV with the served classifier scored")["env"]
-    assert str(env["CV_DIAGNOSTIC_CLASSIFIER"]) == "1"
+    # Default-ON, and it cannot use the `&& '1' || '0'` idiom the arms use: a
+    # scheduled event carries no inputs, so that form would resolve to '0' and
+    # silently turn the Sunday run into the q50-centred band. The fallback form
+    # `inputs.x || '1'` is what keeps absence meaning on.
+    expr = str(env["CV_DIAGNOSTIC_CLASSIFIER"])
+    assert "inputs.cv_diagnostic_classifier" in expr and "'1'" in expr, expr
+    # The guard must compare against the WORD. `== '0'` would be `0 == 0` on a
+    # scheduled run, where the absent input casts to 0 -- flipping the Sunday
+    # control to the treatment. A bare `inputs.x || '1'` instead rests on '0'
+    # being truthy, which fails as a no-op arm that reads like a control.
+    assert "== 'q50'" in expr, expr
+    assert "== '0'" not in expr, expr
     assert "FORECAST_MODEL_DIR" not in env, (
         "FORECAST_MODEL_DIR would point load_models() at an empty directory, so "
         "the job would measure a freshly-tuned model instead of production's"
@@ -825,6 +836,40 @@ def test_diagnostics_arms_default_to_the_control():
         assert f"inputs.{inp}" in expr and "'1'" in expr and "'0'" in expr, (
             f"{key} is {expr!r}; it must resolve to '0' when the input is absent"
         )
+
+
+def test_the_conformal_centre_knobs_default_to_todays_behaviour():
+    """Two knobs added 2026-08-11 to settle how production should get a correct
+    band. Both must leave the scheduled Sunday run exactly as it was.
+
+    `cv_diagnostic_classifier` gates the out-of-fold direction call `q_hat` is
+    centred on, so switching it off is what reproduces the DEFECT — the paired
+    control the served-centre read could not produce. `replay_disable` reaches
+    `predict` through REPLAY_DISABLE and is how the cheap alternative gets read:
+    with `recenter` off, the served mid IS the q50 mid, and the q50-centred
+    `q_hat` is already correct for it.
+    """
+    wf = (Path(__file__).resolve().parents[2]
+          / ".github" / "workflows" / "model-diagnostics.yml")
+    spec = yaml.safe_load(wf.read_text())
+    inputs = spec[True]["workflow_dispatch"]["inputs"]
+
+    # A word-valued choice, not a boolean and not '1'/'0': a default-on flag has
+    # no safe numeric spelling in a GitHub expression, because an absent input
+    # casts to 0 and would equal '0'.
+    assert inputs["cv_diagnostic_classifier"]["default"] == "served"
+    assert inputs["cv_diagnostic_classifier"]["options"] == ["served", "q50"]
+    assert inputs["replay_disable"]["default"] == ""
+
+    steps = spec["jobs"]["diagnose"]["steps"]
+    replay = next(s for s in steps if s.get("name") == "Replay the serving path")
+    assert "inputs.replay_disable" in str(replay["env"]["REPLAY_DISABLE"])
+
+    # And it must NOT reach training: REPLAY_DISABLE names serving transforms,
+    # so a training step that honoured it would report a skip it never made.
+    train = next(s for s in steps
+                 if s.get("name") == "Run CV with the served classifier scored")
+    assert "REPLAY_DISABLE" not in train["env"]
 
 
 def test_ci_suppresses_the_engineered_cache_write():

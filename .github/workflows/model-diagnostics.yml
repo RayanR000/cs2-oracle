@@ -131,6 +131,44 @@ on:
         required: false
         default: ''
         type: string
+      # The two knobs that settle how production should get a correctly centred
+      # band (F1, `2026-08-11-conformal-centre-follows-serving.md`). Both are
+      # default-as-today, and the values are WORDS on purpose.
+      #
+      # A default-on flag has no safe numeric spelling here. On a SCHEDULED event
+      # every input is absent, and GitHub's loose equality casts to Number before
+      # comparing -- so `'' == '0'` is `0 == 0`, TRUE, and a `== '0'` guard would
+      # flip the Sunday run to the treatment. Bare `inputs.x || '1'` instead
+      # depends on whether the string '0' is truthy, which is the kind of thing
+      # that fails silently as a no-op arm read as a control. `== 'q50'` casts to
+      # NaN and is false for both absence and 'conformal_centre', so all three
+      # branches are correct without relying on either rule.
+      #
+      # q50 reproduces the DEFECT: no out-of-fold direction call, so q_hat is
+      # centred on the q50 mid while predict still recentres. That is the paired
+      # control the served-centre read could not produce, because this workflow
+      # used to hardcode the classifier on.
+      cv_diagnostic_classifier:
+        description: 'q_hat centre: served (pays ~932s for the OOF call) or q50 (the defect, as production)'
+        required: false
+        default: 'served'
+        type: choice
+        options: ['served', 'q50']
+      # Serving transforms to skip inside predict(), comma-separated
+      # (blend, bias, recenter). Requires replay_anchors -- the replay refuses
+      # REPLAY_DISABLE without an anchor, because disabling a transform on the
+      # live path would publish a forecast that is not the product.
+      #
+      # `recenter` is the cheap alternative to paying for the served centre:
+      # with it off the served mid IS the q50 mid, so the q50-centred q_hat is
+      # already correct and the band needs no new calibration. What it costs is
+      # that the served price can disagree in sign with the served direction
+      # label, which is the coherence the recentring was added for.
+      replay_disable:
+        description: 'Replay only: transforms to skip (blend,bias,recenter)'
+        required: false
+        default: ''
+        type: string
 
 defaults:
   run:
@@ -205,8 +243,13 @@ jobs:
           DATABASE_URL: ${{ secrets.SUPABASE_DATABASE_URL }}
           ENVIRONMENT: production
           DEBUG: false
-          # The entire point of this workflow.
-          CV_DIAGNOSTIC_CLASSIFIER: "1"
+          # The entire point of this workflow -- and since 2026-08-11 it also
+          # decides which mid q_hat is centred on, because the served centre
+          # needs this classifier's out-of-fold call. `== 'q50'` and not the
+          # arms' `inputs.x && '1' || '0'`: this knob is default-ON, and that
+          # form resolves to '0' on a scheduled run where inputs are absent.
+          # See the input's comment for why the word and not '0'.
+          CV_DIAGNOSTIC_CLASSIFIER: ${{ inputs.cv_diagnostic_classifier == 'q50' && '0' || '1' }}
           TRAIN_HORIZONS: ${{ matrix.horizon }}
           ENGINEERED_CACHE: "0"
           # The artifact is discarded, so regime models buy nothing here. Unlike
@@ -279,6 +322,12 @@ jobs:
           # scores -- and what `rankIC` divides by, which is why that column is
           # not readable across arms and `pinnedIC` exists beside it.
           SERVE_OUTLIER_GATED_ANCHOR: ${{ inputs.serve_outlier_gated_anchor && '1' || '0' }}
+          # Serving transforms to skip, and the only step that may honour it:
+          # REPLAY_DISABLE names things that live inside predict(), so setting it
+          # on the training step would report a skip that never happened. Empty
+          # is the full serving path. `recenter` is the arm that reads the cheap
+          # alternative to a served-centre q_hat -- see the input's comment.
+          REPLAY_DISABLE: ${{ inputs.replay_disable }}
         run: |
           set -o pipefail
           # --basis-sweep always: it re-scores mids that predict() already
