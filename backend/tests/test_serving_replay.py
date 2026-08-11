@@ -14,8 +14,10 @@ import pandas as pd
 import pytest
 
 from models.forecaster import ItemForecaster
-from scripts.replay_serving import (_basis_frame, _exact_day, _naive_baseline,
-                                    _requested_horizons)
+from scripts.replay_serving import (PINNED_MAX_SPAN_DAYS, PINNED_SMOOTH_WINDOW,
+                                    _basis_frame, _exact_day, _naive_baseline,
+                                    _pin_matches_production, _pinned_anchor,
+                                    _pinned_rank_ic, _requested_horizons)
 
 
 def _fc():
@@ -268,3 +270,170 @@ def test_a_replay_ignores_the_engineered_cache():
     head = src.split("path = self._engineered_cache_path")[0]
     assert "replay_anchor() is not None" in head
     assert "return None" in head
+
+
+# ---------------------------------------------------------------------------
+# The pinned denominator (task 1 of the serving-anchor freshness plan).
+#
+# The next experiment changes WHAT PRICE predict() quotes from. `_basis_frame`
+# built its `anchor_smooth` by calling `fc._smoothed_anchor_prices`, and the
+# main loop divides both the prediction and the realised outcome by the served
+# `current_price` -- so an arm that moves the serving anchor moves the referee
+# with it, and a rank IC compared across arms measures nothing. These tests fix
+# the referee in place. See docs/superpowers/plans/2026-08-11-serving-anchor-freshness.md.
+# ---------------------------------------------------------------------------
+
+
+def _anchor_window_history():
+    """Raw 12 on the anchor, 3-observation median 10, one stale item."""
+    return _history([
+        ("a", "2026-05-30", 10.0),
+        ("a", "2026-05-31", 10.0),
+        ("a", "2026-06-01", 12.0),
+        # Nothing within MAX_WINDOW_SPAN_DAYS of the anchor.
+        ("old", "2026-04-01", 99.0),
+    ])
+
+
+def test_the_pinned_denominator_reproduces_the_shipped_one_today(monkeypatch):
+    """It has to be the SAME number before it can be a fixed reference. If this
+    fails, the pin changed the basis rather than freezing it, and every stored
+    replay number becomes incomparable to the next one.
+
+    The shipped constants are pinned to their defaults for the comparison, on
+    purpose: `MAX_WINDOW_SPAN_DAYS` is `FALLBACK_MAX_AGE_DAYS`, which reads the
+    environment at import, so without this the test would pass or fail
+    according to a variable set outside the repo. The runtime divergence check
+    in `main()` is what reports that case, not this test.
+    """
+    import backtest.price_resolution as pr
+    monkeypatch.setattr(pr, "SMOOTH_WINDOW", 3, raising=False)
+    monkeypatch.setattr(pr, "MAX_WINDOW_SPAN_DAYS", 7, raising=False)
+
+    hist = _anchor_window_history()
+    anchor = date(2026, 6, 1)
+
+    pinned = _pinned_anchor(hist, anchor)
+    shipped = ItemForecaster._smoothed_anchor_prices(
+        hist.rename(columns={"day": "date"}), pd.Timestamp(anchor))
+
+    assert set(pinned.index) == set(shipped)
+    for item, value in shipped.items():
+        assert pinned[item] == pytest.approx(value), item
+
+
+def test_the_pinned_denominator_does_not_follow_the_serving_path(monkeypatch):
+    """The point of the pin. An arm that changes what predict() quotes from
+    must not be able to change the number it is scored against."""
+    hist = _anchor_window_history()
+    anchor = date(2026, 6, 1)
+    before = _pinned_anchor(hist, anchor)
+
+    monkeypatch.setattr(ItemForecaster, "_smoothed_anchor_prices",
+                        staticmethod(lambda df, at: {"a": 1.0, "old": 1.0}))
+    after = _pinned_anchor(hist, anchor)
+
+    assert after["a"] == pytest.approx(before["a"])
+    assert after["a"] == pytest.approx(10.0)
+
+
+def test_the_pinned_denominator_does_not_follow_the_window_constants(monkeypatch):
+    """Arm B of the plan moves SMOOTH_WINDOW / MAX_WINDOW_SPAN_DAYS, which are
+    shared with the backtest resolver. The referee's constants are literals in
+    replay_serving for exactly this reason."""
+    import backtest.price_resolution as pr
+    import models.forecaster as fcmod
+
+    hist = _anchor_window_history()
+    anchor = date(2026, 6, 1)
+    before = _pinned_anchor(hist, anchor)
+
+    monkeypatch.setattr(pr, "SMOOTH_WINDOW", 1, raising=False)
+    monkeypatch.setattr(pr, "MAX_WINDOW_SPAN_DAYS", 1, raising=False)
+    monkeypatch.setattr(fcmod, "SMOOTH_WINDOW", 1, raising=False)
+    monkeypatch.setattr(fcmod, "MAX_WINDOW_SPAN_DAYS", 1, raising=False)
+
+    assert _pinned_anchor(hist, anchor)["a"] == pytest.approx(before["a"])
+
+
+def test_the_pinned_denominator_bounds_its_window_in_calendar_days():
+    """An item with nothing near the anchor keeps its latest observation rather
+    than anchoring on prices months apart -- the shipped fallback, which exists
+    so serving never manufactures a price and never drops an item."""
+    pinned = _pinned_anchor(_anchor_window_history(), date(2026, 6, 1))
+    assert pinned["old"] == pytest.approx(99.0)
+
+
+def test_the_pinned_denominator_reads_nothing_after_the_anchor():
+    hist = _history([
+        ("a", "2026-05-31", 10.0),
+        ("a", "2026-06-01", 10.0),
+        ("a", "2026-06-02", 500.0),      # after the anchor
+    ])
+    assert _pinned_anchor(hist, date(2026, 6, 1))["a"] == pytest.approx(10.0)
+
+
+def test_the_basis_frame_uses_the_pinned_anchor(monkeypatch):
+    """`_basis_frame` carries the tied/deviating split every 2026-08-11 result
+    rests on. If an arm could move `anchor_smooth`, it would move the
+    definition of `tied` along with it and the split would stop being a
+    constant across arms."""
+    monkeypatch.setattr(ItemForecaster, "_smoothed_anchor_prices",
+                        staticmethod(lambda df, at: {"a": 1.0}))
+    hist = _history([
+        ("a", "2026-05-30", 10.0),
+        ("a", "2026-05-31", 10.0),
+        ("a", "2026-06-01", 12.0),
+        ("a", "2026-06-04", 20.0),
+    ])
+    f = _basis_frame(_fc(), hist, date(2026, 6, 1), horizon=3) \
+        .set_index("item_id").loc["a"]
+    assert f["anchor_smooth"] == pytest.approx(10.0)
+    assert not f["anchor_is_tied"]
+
+
+def test_the_pinned_rank_ic_is_scored_on_one_denominator():
+    """Both legs divide by the pinned anchor, so two arms quoting different
+    prices are still measured against the same yardstick. Dividing the
+    prediction by the arm's own `current` and the outcome by the pinned anchor
+    would compare a return to a different return."""
+    frame = pd.DataFrame({
+        "item_id": ["a", "b", "c"],
+        "current": [12.0, 20.0, 5.0],      # what the arm quoted
+        "mid": [13.0, 19.0, 6.0],
+        "realised": [14.0, 18.0, 7.0],
+    })
+    pinned = pd.Series({"a": 10.0, "b": 20.0, "c": 4.0}, name="d_fixed")
+
+    ic = _pinned_rank_ic(frame, pinned)
+    # Ranks of mid/d_fixed against realised/d_fixed: a 1.30/1.40, b 0.95/0.90,
+    # c 1.50/1.75 -- concordant, so a perfect +1.
+    assert ic == pytest.approx(1.0)
+
+
+def test_the_pinned_rank_ic_ignores_items_it_has_no_denominator_for():
+    frame = pd.DataFrame({
+        "item_id": ["a", "b", "c", "d"],
+        "current": [10.0, 10.0, 10.0, 10.0],
+        "mid": [11.0, 9.0, 12.0, 99.0],
+        "realised": [12.0, 8.0, 13.0, 1.0],
+    })
+    pinned = pd.Series({"a": 10.0, "b": 10.0, "c": 10.0}, name="d_fixed")
+    assert _pinned_rank_ic(frame, pinned) == pytest.approx(1.0)
+
+
+def test_a_divergence_between_the_pin_and_production_is_reported(monkeypatch, capsys):
+    """FALLBACK_MAX_AGE_DAYS is read from the environment at import, so an
+    operator can move production's smoothing span without touching this repo.
+    The pin must NOT follow it -- that is the point -- but a run that scores
+    against a denominator production no longer uses has to say so, or the
+    numbers look citable and are not.
+    """
+    import backtest.price_resolution as pr
+    monkeypatch.setattr(pr, "MAX_WINDOW_SPAN_DAYS", 14, raising=False)
+    assert _pin_matches_production() is False
+
+    monkeypatch.setattr(pr, "MAX_WINDOW_SPAN_DAYS", PINNED_MAX_SPAN_DAYS,
+                        raising=False)
+    monkeypatch.setattr(pr, "SMOOTH_WINDOW", PINNED_SMOOTH_WINDOW, raising=False)
+    assert _pin_matches_production() is True

@@ -62,7 +62,7 @@ or an arm that edits `_smoothed_anchor_prices` silently moves the referee too.
 
 | # | Task | Cost |
 |---|---|---|
-| 1 | Pin the replay's scoring denominator so it cannot follow the arm; test that it is unchanged when the serving flag flips | ~1h |
+| 1 | Pin the replay's scoring denominator so it cannot follow the arm; test that it is unchanged when the serving flag flips | ✅ done |
 | 2 | Add dollar-error columns to the replay (median and p90 of `\|mid − realised\|/realised`), control and naive alongside | ~45m |
 | 3 | Arm A behind `SERVE_OUTLIER_GATED_ANCHOR=1`, plus the `model-diagnostics.yml` input; test both branches and the >10% boundary | ~45m |
 | 4 | Two dispatches on one commit, four anchors, sequential | ~1h wall clock |
@@ -78,6 +78,22 @@ replication, not power, so the sign consistency is the whole read.
 
 If it passes, the follow-on question is whether the *backtest's* resolver should move with it
 (below), and only then whether to change the default.
+
+> ✅ **Task 1 landed.** `_pinned_anchor` / `_pinned_rank_ic` / `_pin_matches_production` in
+> `scripts/replay_serving.py`, a `pinnedIC` column on the headline table, and `_basis_frame`'s
+> `anchor_smooth` pinned too — so the tied/deviating split stays a constant across arms. 10 new
+> tests.
+>
+> **One hazard surfaced that this plan did not anticipate:** `MAX_WINDOW_SPAN_DAYS` is
+> `collectors.pipeline.FALLBACK_MAX_AGE_DAYS`, which reads `os.environ` at import — so
+> production's smoothing span can move with no commit in this repo, and a literal pin can
+> silently stop describing production. `_pin_matches_production()` is checked at run time and
+> warns; the reproduction test pins the shipped constants to their defaults so it does not
+> pass or fail according to a variable set outside the repo.
+>
+> Confirmed while pinning: `forecaster.py:6482` is the **only** site that sets the served
+> `current_price` (`latest_rows["price"]`, after the unconditional smoothed substitution), so
+> arm A has exactly one seam to change.
 
 ## Hazards
 

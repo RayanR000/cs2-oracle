@@ -50,6 +50,24 @@ logger = logging.getLogger(__name__)
 # so an exact-day join silently drops items rather than scoring them.
 OUTCOME_TOLERANCE_DAYS = 3
 
+# The referee's denominator, and these are LITERALS on purpose.
+#
+# `backtest.price_resolution` exports `SMOOTH_WINDOW` and `MAX_WINDOW_SPAN_DAYS`
+# and `models.forecaster` re-exports them, so an experiment that changes what
+# price serving quotes from -- arm B of
+# `docs/superpowers/plans/2026-08-11-serving-anchor-freshness.md` moves exactly
+# those two constants -- would move the yardstick along with the thing being
+# measured. Importing them here would make the referee follow the arm.
+#
+# They must equal the shipped constants TODAY, which
+# `test_the_pinned_denominator_reproduces_the_shipped_one_today` asserts by
+# comparing against `_smoothed_anchor_prices` itself. If that test fails, the
+# shipped definition moved and this pin is now a different basis: every stored
+# replay number is incomparable to the next one until it is reconciled
+# deliberately, which is the point of finding out from a red test.
+PINNED_SMOOTH_WINDOW = 3
+PINNED_MAX_SPAN_DAYS = 7
+
 
 def _outcomes(fc: ItemForecaster, anchor: date, horizons):
     """Realised prices on the SAME basis production served from.
@@ -155,6 +173,74 @@ def _exact_day(outcomes: pd.DataFrame, day: date) -> pd.DataFrame:
              .rename(columns={"price": "px"}))
 
 
+def _pin_matches_production() -> bool:
+    """Does the frozen referee still describe what production quotes?
+
+    `MAX_WINDOW_SPAN_DAYS` is `collectors.pipeline.FALLBACK_MAX_AGE_DAYS`, which
+    reads the environment at import — so production's smoothing span can move
+    without a commit in this repo. The pin must not follow it, or two arms stop
+    being comparable; but a replay scored against a denominator production no
+    longer uses has to say so out loud, or its numbers look citable and are not.
+
+    Read at call time, never captured at import: the whole point is to notice a
+    value that was set somewhere else.
+    """
+    from backtest.price_resolution import MAX_WINDOW_SPAN_DAYS, SMOOTH_WINDOW
+    return (SMOOTH_WINDOW == PINNED_SMOOTH_WINDOW
+            and MAX_WINDOW_SPAN_DAYS == PINNED_MAX_SPAN_DAYS)
+
+
+def _pinned_anchor(outcomes: pd.DataFrame, anchor: date) -> pd.Series:
+    """`_smoothed_anchor_prices`, frozen: the median of the most recent
+    PINNED_SMOOTH_WINDOW observations within PINNED_MAX_SPAN_DAYS of `anchor`.
+
+    Deliberately NOT a call to `fc._smoothed_anchor_prices`. That method is what
+    the freshness arms change; scoring against it would mean an arm that quotes
+    a different price is also scored against a different number, and the
+    comparison would report the redefinition as a result. Same trap the label
+    arm fell into (`2026-08-11-smoothed-anchor-label-measured.md`), one layer
+    down.
+
+    Keeps the shipped fallback: an item with nothing inside the window keeps its
+    latest observation, so the referee never manufactures a price and never
+    silently drops an item from one arm's cohort but not the other's.
+    """
+    at = pd.Timestamp(anchor)
+    hist = outcomes[outcomes["day"] <= at].sort_values(["item_id", "day"])
+    if hist.empty:
+        return pd.Series(dtype=float, name="d_fixed")
+
+    # Explicit unit: pd.Timedelta(days=<int>) emits a NumPy generic-unit
+    # DeprecationWarning, which the rest of the codebase already avoids.
+    span = pd.to_timedelta(PINNED_MAX_SPAN_DAYS, unit="D")
+    in_window = hist[hist["day"] >= at - span]
+    smoothed = (in_window.groupby("item_id").tail(PINNED_SMOOTH_WINDOW)
+                .groupby("item_id")["price"].median())
+    latest = hist.groupby("item_id")["price"].last()
+    pinned = pd.Series(latest.to_dict() | smoothed.to_dict(), name="d_fixed")
+    pinned.index.name = "item_id"
+    return pinned
+
+
+def _pinned_rank_ic(frame: pd.DataFrame, pinned: pd.Series) -> float:
+    """Rank IC with BOTH legs on the pinned denominator.
+
+    The headline row divides the prediction and the outcome by the served
+    `current_price` (`frame["current"]`), which is the right thing for
+    "what did production experience" and the wrong thing for comparing two arms
+    that quote different prices -- there the label and the prediction move
+    together and the difference is not readable. Here the arm supplies only the
+    dollar mid; the denominator is the same for both arms.
+    """
+    d = frame["item_id"].map(pinned).to_numpy(dtype=float)
+    mid = frame["mid"].to_numpy(dtype=float)
+    realised = frame["realised"].to_numpy(dtype=float)
+    ok = np.isfinite(d) & (d > 0) & np.isfinite(mid) & np.isfinite(realised)
+    if ok.sum() < 3:
+        return float("nan")
+    return _rank_ic(mid[ok] / d[ok] - 1.0, realised[ok] / d[ok] - 1.0)
+
+
 def _basis_frame(fc: ItemForecaster, outcomes: pd.DataFrame, anchor: date,
                  horizon: int) -> pd.DataFrame:
     """The four label bases, per item, on one anchor.
@@ -172,11 +258,12 @@ def _basis_frame(fc: ItemForecaster, outcomes: pd.DataFrame, anchor: date,
     the mixed pair exists so a difference can be attributed to one axis rather
     than to "the basis" as a lump.
     """
-    t = pd.Timestamp(anchor)
-    hist = outcomes.rename(columns={"day": "date"})
-    smoothed = pd.Series(
-        fc._smoothed_anchor_prices(hist[hist["date"] <= t], t), name="anchor_smooth")
-    smoothed.index.name = "item_id"
+    # PINNED, not `fc._smoothed_anchor_prices`. `anchor_smooth` defines the
+    # tied/deviating split that every 2026-08-11 result rests on, so an arm that
+    # changed the serving anchor would change which items count as tied -- and
+    # the split would stop being a constant across arms. `fc` is still taken so
+    # callers do not have to change, and is deliberately not consulted here.
+    smoothed = _pinned_anchor(outcomes, anchor).rename("anchor_smooth")
 
     raw_anchor = _exact_day(outcomes, anchor).rename(columns={"px": "anchor_raw"})
     # The day before the anchor. NOT a clean denominator -- it is `return_1d`'s
@@ -288,9 +375,26 @@ def main() -> int:
                 f"served cohort at >= ${floor:g} instead. Pooling every item "
                 f"would report the penny-item score "
                 f"(docs/changelog offline-DA-inflated-by-stale-prices).")
+        # One denominator for every arm, computed once per anchor. `rankIC`
+        # below divides by what THIS run quoted; `pinnedIC` divides by the
+        # shipped smoothed anchor whatever this run quoted, so two arms that
+        # quote different prices are still comparable. They are equal today,
+        # because production quotes the pinned statistic -- a divergence means
+        # an arm is live.
+        pinned = _pinned_anchor(outcomes, anchor)
+        if not _pin_matches_production():
+            from backtest.price_resolution import (MAX_WINDOW_SPAN_DAYS,
+                                                   SMOOTH_WINDOW)
+            logger.warning(
+                f"  the pinned denominator ({PINNED_SMOOTH_WINDOW} obs / "
+                f"{PINNED_MAX_SPAN_DAYS}d) no longer matches production "
+                f"({SMOOTH_WINDOW} obs / {MAX_WINDOW_SPAN_DAYS}d). `pinnedIC` "
+                f"is still comparable across arms; it is no longer the basis "
+                f"production quotes from. Check FALLBACK_MAX_AGE_DAYS.")
+
         print(f"\nSERVING REPLAY @ {anchor}   (cohort floor >= ${floor:g})")
         print(f"{'h':>4} {'n':>7} {'DA%':>7} {'down%':>7} {'edge':>7} "
-              f"{'rankIC':>8} {'naiveIC':>8} {'vs naive':>9}")
+              f"{'rankIC':>8} {'naiveIC':>8} {'vs naive':>9} {'pinnedIC':>9}")
 
         for h in horizons:
             rows = []
@@ -334,9 +438,10 @@ def main() -> int:
             naive_ic = (_rank_ic(frame["naive"].to_numpy()[have_naive],
                                  actual_ret.to_numpy()[have_naive])
                         if have_naive.sum() >= 3 else float("nan"))
+            pinned_ic = _pinned_rank_ic(frame, pinned)
             print(f"{h:>4} {len(frame):>7} {da:>7.2f} {down:>7.2f} "
                   f"{da - base:>+7.2f} {ic:>8.4f} {naive_ic:>8.4f} "
-                  f"{ic - naive_ic:>+9.4f}")
+                  f"{ic - naive_ic:>+9.4f} {pinned_ic:>9.4f}")
 
         if "--basis-sweep" in sys.argv:
             # The SAME served mids, scored against four label bases. Everything
