@@ -108,6 +108,37 @@ def _resolve(outcomes: pd.DataFrame, target: date, tolerance=OUTCOME_TOLERANCE_D
     return med.rename(columns={"price": "realised"})
 
 
+def _naive_baseline(fc: ItemForecaster, outcomes: pd.DataFrame, anchor: date):
+    """`-return_1d` ON THE SERVED BASIS -- the one baseline that beats the
+    model on rank IC at every horizon in CV.
+
+    The realised return divides by `predict`'s span-bounded median, so a
+    baseline built from the last two RAW quotes is one basis scored against
+    another: a fresh jump moves `return_1d` and barely moves the median, and
+    the outcome window then carries the jump. Measured at anchor 2026-06-01,
+    the raw build read -0.6187 / -0.3815 / -0.3249 / -0.2610 against a CV
+    baseline of about +0.19 -- sign-inverted and decaying monotonically in
+    horizon, which is the wedge's signature, not market momentum. The same
+    baseline on this basis reads -0.0339 / +0.0700 / +0.0797 / +0.0721. Raw and
+    smoothed differ for 29% of items at that anchor.
+    """
+    hist = outcomes.rename(columns={"day": "date"})
+    t_now = pd.Timestamp(anchor)
+    t_prev = t_now - pd.Timedelta(days=1)
+    # Truncate before each call, don't lean on the anchor argument: an item
+    # with nothing inside the span window falls back to `last()` over the WHOLE
+    # frame, which here reaches past the anchor into the outcome.
+    s_now = fc._smoothed_anchor_prices(hist[hist["date"] <= t_now], t_now)
+    s_prev = fc._smoothed_anchor_prices(hist[hist["date"] <= t_prev], t_prev)
+    naive = pd.DataFrame({"item_id": list(s_now)})
+    naive["naive"] = [
+        (-(s_now[i] / s_prev[i] - 1.0)
+         if s_prev.get(i) and s_prev[i] > 0 else np.nan)
+        for i in naive["item_id"]
+    ]
+    return naive[np.isfinite(naive["naive"])].reset_index(drop=True)
+
+
 def _rank_ic(pred: np.ndarray, actual: np.ndarray) -> float:
     """Spearman across the cross-section. One date, so no averaging."""
     if len(pred) < 3:
@@ -146,22 +177,7 @@ def main() -> int:
         logger.info(f"  {len(served):,} served rows, "
                     f"{outcomes['item_id'].nunique():,} items in the outcome window")
 
-        # -return_1d at the anchor, the one baseline that beats the model on
-        # rank IC at every horizon in CV.
-        # Two single, distinct, pre-anchor observations -- the feature's own
-        # definition. Smoothed windows overlap, so p0/p1 became a ratio of two
-        # near-identical medians whose shared window reached past the anchor:
-        # a leak that read as a huge NEGATIVE naive IC, not as market reversal.
-        past = outcomes[outcomes["day"] <= pd.Timestamp(anchor)]
-        past = past.sort_values(["item_id", "day"]).groupby("item_id").tail(2)
-        pivot = past.groupby("item_id")["price"].agg(list)
-        naive = pd.DataFrame({
-            "item_id": pivot.index,
-            "naive": [(-(v[-1] / v[-2] - 1.0)
-                       if len(v) == 2 and v[-2] > 0 else np.nan)
-                      for v in pivot],
-        })
-        naive = naive[naive["naive"].notna()]
+        naive = _naive_baseline(fc, outcomes, anchor)
         logger.info(f"  -return_1d available for {len(naive):,} items")
 
         floor = fc._artifact_min_median_price

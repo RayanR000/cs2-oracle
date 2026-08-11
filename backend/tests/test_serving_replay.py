@@ -10,9 +10,22 @@ anchor scores a forecast against data it already had.
 """
 from datetime import date, datetime, timezone
 
+import pandas as pd
 import pytest
 
 from models.forecaster import ItemForecaster
+from scripts.replay_serving import _naive_baseline
+
+
+def _fc():
+    return ItemForecaster.__new__(ItemForecaster)
+
+
+def _history(rows):
+    """rows: (item_id, 'YYYY-MM-DD', price), in the `_outcomes` shape."""
+    return pd.DataFrame(
+        [{"item_id": i, "day": pd.Timestamp(d), "price": p} for i, d, p in rows]
+    )
 
 
 def test_no_anchor_is_the_live_path(monkeypatch):
@@ -80,6 +93,56 @@ def test_the_prior_day_blend_cannot_read_past_the_anchor():
         "the blend would pull real forecasts dated after the anchor and mix "
         "the future into a backdated prediction"
     )
+
+
+def test_the_naive_baseline_is_built_on_the_served_basis():
+    """It is scored against a return whose denominator is `predict`'s
+    span-bounded median. Built from raw quotes instead, a one-day jump moves the
+    baseline and barely moves the denominator, and the outcome carries the jump:
+    at anchor 2026-06-01 that read -0.6187 rank IC at h=3 against a CV baseline
+    of about +0.19. The median of (10, 10, 16) is 10, so a raw build would score
+    this item at -0.60 and the served build at 0.0.
+    """
+    anchor = date(2026, 6, 1)
+    hist = _history([
+        ("jump", "2026-05-30", 10.0),
+        ("jump", "2026-05-31", 10.0),
+        ("jump", "2026-06-01", 16.0),
+        # Its outcome, which the baseline must not read.
+        ("jump", "2026-06-04", 30.0),
+    ])
+    out = _naive_baseline(_fc(), hist, anchor)
+    assert out.loc[out["item_id"] == "jump", "naive"].iloc[0] == pytest.approx(0.0)
+
+
+def test_the_naive_baseline_cannot_read_past_the_anchor():
+    """`_smoothed_anchor_prices` falls back to `last()` over the WHOLE frame for
+    an item with nothing inside the span window -- and the frame it is handed
+    here spans the outcome. Truncating is what stops that."""
+    anchor = date(2026, 6, 1)
+    hist = _history([
+        # Both quotes older than MAX_WINDOW_SPAN_DAYS, so both legs fall back.
+        ("stale", "2026-04-01", 10.0),
+        ("stale", "2026-04-02", 10.0),
+        ("stale", "2026-07-15", 90.0),   # post-anchor: the leak
+    ])
+    out = _naive_baseline(_fc(), hist, anchor)
+    assert out.loc[out["item_id"] == "stale", "naive"].iloc[0] == pytest.approx(0.0), (
+        "the baseline saw the post-anchor quote through the staleness fallback"
+    )
+
+
+def test_the_naive_baseline_signs_a_move_as_reversal():
+    """-return_1d: an item that rose is predicted to fall."""
+    anchor = date(2026, 6, 1)
+    hist = _history([
+        ("up", "2026-05-31", 10.0),
+        ("up", "2026-06-01", 11.0),
+        ("down", "2026-05-31", 10.0),
+        ("down", "2026-06-01", 9.0),
+    ])
+    out = _naive_baseline(_fc(), hist, anchor).set_index("item_id")["naive"]
+    assert out["up"] < 0 < out["down"]
 
 
 def test_a_replay_ignores_the_engineered_cache():
