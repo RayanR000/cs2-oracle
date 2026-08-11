@@ -95,6 +95,51 @@ def test_the_prior_day_blend_cannot_read_past_the_anchor():
     )
 
 
+def test_no_disable_knob_is_the_full_serving_path(monkeypatch):
+    monkeypatch.delenv("REPLAY_DISABLE", raising=False)
+    assert ItemForecaster.replay_disabled() == frozenset()
+
+
+def test_the_disable_knob_is_refused_without_an_anchor(monkeypatch):
+    """It exists to attribute a replay's loss. Honoured on the live path it
+    would change what production serves, and 'silently ignored' looks exactly
+    like 'applied' in a log."""
+    monkeypatch.delenv("REPLAY_ANCHOR", raising=False)
+    monkeypatch.setenv("REPLAY_DISABLE", "recenter")
+    with pytest.raises(ValueError, match="without REPLAY_ANCHOR"):
+        ItemForecaster.replay_disabled()
+
+
+def test_an_unknown_transform_name_raises(monkeypatch):
+    """A typo would otherwise read as a clean control and measure nothing."""
+    monkeypatch.setenv("REPLAY_ANCHOR", "2026-06-01")
+    monkeypatch.setenv("REPLAY_DISABLE", "recentre")   # British spelling
+    with pytest.raises(ValueError, match="not a serving transform"):
+        ItemForecaster.replay_disabled()
+
+
+def test_the_disable_knob_parses_under_an_anchor(monkeypatch):
+    monkeypatch.setenv("REPLAY_ANCHOR", "2026-06-01")
+    monkeypatch.setenv("REPLAY_DISABLE", "blend, recenter")
+    assert ItemForecaster.replay_disabled() == frozenset({"blend", "recenter"})
+
+
+def test_the_band_is_not_disablable():
+    """It sets low and high around the mid, so it cannot move the mid's
+    cross-sectional ranking. Offering the knob would imply otherwise."""
+    assert "band" not in ItemForecaster.REPLAY_DISABLABLE
+    assert ItemForecaster.REPLAY_DISABLABLE == {"blend", "bias", "recenter"}
+
+
+def test_each_transform_is_actually_guarded():
+    """The knob has to reach all three call sites, not just parse."""
+    import inspect
+    src = inspect.getsource(ItemForecaster.predict)
+    assert '"blend" not in _disabled' in src
+    assert '"bias" in _disabled' in src
+    assert '"recenter" not in _disabled' in src
+
+
 def test_no_horizon_filter_scores_everything_the_artifact_serves():
     assert _requested_horizons(["scripts/replay_serving.py"]) is None
 

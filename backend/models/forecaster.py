@@ -1164,6 +1164,45 @@ class ItemForecaster:
                 f"replay against today and score a forecast on its own answer."
             )
 
+    # The serving transforms that move the median, in the order `predict`
+    # applies them. The conformal band is deliberately absent: it sets `low` and
+    # `high` around the mid and cannot move the mid's cross-sectional ranking.
+    REPLAY_DISABLABLE = frozenset({"blend", "bias", "recenter"})
+
+    @classmethod
+    def replay_disabled(cls) -> frozenset:
+        """`REPLAY_DISABLE=blend,bias,recenter` drops serving transforms.
+
+        Exists to answer one question: CV reports rank IC 0.09-0.18 while the
+        serving replay of the same artifact reads near zero
+        (`docs/changelog/2026-08-11-rank-transform-does-not-transfer-to-serving.md`).
+        Three transforms sit between those two measurements and none has ever
+        been scored. Turning them off one at a time at a fixed anchor attributes
+        the loss.
+
+        **Honoured only under `REPLAY_ANCHOR`.** Set without one, it raises
+        rather than being ignored: a knob that silently changes what production
+        serves is worse than no knob, and "ignored" is indistinguishable from
+        "applied" in a log. An unknown name also raises -- a typo would
+        otherwise read as a clean control and quietly measure nothing.
+        """
+        raw = os.environ.get("REPLAY_DISABLE", "").strip()
+        if not raw:
+            return frozenset()
+        names = frozenset(n.strip() for n in raw.split(",") if n.strip())
+        unknown = names - cls.REPLAY_DISABLABLE
+        if unknown:
+            raise ValueError(
+                f"REPLAY_DISABLE={raw!r} names {sorted(unknown)}, which is not "
+                f"a serving transform. Known: {sorted(cls.REPLAY_DISABLABLE)}. "
+                f"A typo here reads as a control run and measures nothing.")
+        if cls.replay_anchor() is None:
+            raise ValueError(
+                f"REPLAY_DISABLE={raw!r} is set without REPLAY_ANCHOR. This "
+                f"knob is for research replays only; honouring it on the live "
+                f"path would change what production serves.")
+        return names
+
     def _now(self):
         anchor = self.replay_anchor()
         if anchor is not None:
@@ -6507,9 +6546,15 @@ class ItemForecaster:
             # return-space predictions with the previous day's forecast for the
             # same item+horizon. Reduces daily direction flip-flopping. No-ops
             # when no prior forecast exists (first run / retrain).
-            prior = self._fetch_prior_forecasts(item_id_arr, horizon)
-            low_ret_arr, mid_ret_arr, high_ret_arr = self._blend_returns_with_prior(
-                low_ret_arr, mid_ret_arr, high_ret_arr, prior, self.FORECAST_BLEND_WEIGHT)
+            _disabled = self.replay_disabled()
+            if _disabled:
+                logger.warning(
+                    f"  REPLAY_DISABLE={sorted(_disabled)}: serving transforms "
+                    f"skipped. This is an attribution replay, not a forecast.")
+            if "blend" not in _disabled:
+                prior = self._fetch_prior_forecasts(item_id_arr, horizon)
+                low_ret_arr, mid_ret_arr, high_ret_arr = self._blend_returns_with_prior(
+                    low_ret_arr, mid_ret_arr, high_ret_arr, prior, self.FORECAST_BLEND_WEIGHT)
 
             # Per-tier bias correction: threshold-based approach (preferred).
             # Recalibrates classification boundaries to match the true outcome
@@ -6519,6 +6564,8 @@ class ItemForecaster:
             tier_thresholds = self.bias_thresholds.get(horizon, {})
             fallback_additive = not tier_thresholds
             corrections = self.bias_corrections.get(horizon, {})
+            if "bias" in _disabled:
+                corrections = {}
             if corrections and fallback_additive:
                 mid_ret_arr = np.array(mid_ret_arr, dtype=np.float64, copy=True)
                 low_ret_arr = np.array(low_ret_arr, dtype=np.float64, copy=True)
@@ -6534,7 +6581,7 @@ class ItemForecaster:
             # Recenter the median on the classifier's call so the served price
             # is coherent with the reported direction. Applied last, after all
             # return-space corrections, preserving interval half-widths.
-            if dir_class_arr is not None:
+            if dir_class_arr is not None and "recenter" not in _disabled:
                 low_ret_arr, mid_ret_arr, high_ret_arr = self._recenter_on_direction(
                     low_ret_arr, mid_ret_arr, high_ret_arr, dir_class_arr)
 
