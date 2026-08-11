@@ -241,6 +241,126 @@ def _pinned_rank_ic(frame: pd.DataFrame, pinned: pd.Series) -> float:
     return _rank_ic(mid[ok] / d[ok] - 1.0, realised[ok] / d[ok] - 1.0)
 
 
+def _rel_abs_error(pred, realised) -> tuple[float, float]:
+    """Median and p90 of `|pred - realised| / realised`. BASIS-FREE.
+
+    The metric the freshness arms are read on. Rank IC cannot referee them:
+    `main()` divides the prediction and the outcome by the served
+    `current_price`, so an arm that quotes a different price moves the label and
+    the prediction together and the comparison measures nothing
+    (`2026-08-11-smoothed-anchor-label-measured.md`, one layer down). Here the
+    denominator is the REALISED price, which no arm touches, so two arms are
+    expressed in the same units.
+
+    p90 beside the median because a quoting change can leave the centre alone
+    and move the tail: `_smoothed_anchor_prices` records serving and the
+    backtest resolver diverging by a median 3.6% and a p90 35%.
+    """
+    pred = np.asarray(pred, dtype=float)
+    realised = np.asarray(realised, dtype=float)
+    # `realised > 0` is not defensive: an item whose outcome did not resolve
+    # divides to inf, and one inf takes the p90 of the whole cohort with it.
+    ok = np.isfinite(pred) & np.isfinite(realised) & (realised > 0)
+    if ok.sum() < 3:
+        return float("nan"), float("nan")
+    err = np.abs(pred[ok] - realised[ok]) / realised[ok]
+    return float(np.median(err)), float(np.quantile(err, 0.90))
+
+
+def _tied_mask(outcomes: pd.DataFrame, anchor: date) -> pd.Series:
+    """Per item: does the anchor's raw quote equal its own local median?
+
+    ONE definition, shared by the basis sweep and the dollar table. The gate of
+    the freshness experiment is dollar error on the *deviating* cohort, and the
+    durable served signal is the *tied* cell — so two copies of this `isclose`
+    could drift and make the two tables describe different populations while
+    printing the same words.
+
+    `np.isclose(nan, nan)` is False, deliberately: an item with no observation
+    on the anchor day is not tied, it is unknown, and defaulting it into the
+    clean cohort would contaminate the one number that has replicated.
+    """
+    raw = _exact_day(outcomes, anchor).set_index("item_id")["px"]
+    pinned = _pinned_anchor(outcomes, anchor)
+    idx = raw.index.union(pinned.index)
+    mask = pd.Series(
+        np.isclose(raw.reindex(idx).to_numpy(dtype=float),
+                   pinned.reindex(idx).to_numpy(dtype=float),
+                   rtol=0, atol=1e-9),
+        index=idx, name="anchor_is_tied")
+    mask.index.name = "item_id"
+    return mask
+
+
+def _dollar_error_rows(frame: pd.DataFrame, pinned: pd.Series,
+                       tied: pd.Series) -> list[dict]:
+    """The dollar-error table for one horizon: pooled, tied, deviating.
+
+    Three predictions per subset, all scored against the same realised price:
+
+      `model` — the served mid, with its p90;
+      `quote` — NO CHANGE, i.e. the served `current_price` itself. This is the
+                reference a freshness arm is really claiming to beat, because
+                the claim is "the price we publish is closer to what happens";
+      `naive` — `-return_1d`, the baseline the model loses to on rank IC at all
+                four horizons, converted to dollars against the PINNED anchor.
+
+    The naive conversion must not use `frame["current"]`. `naive` is a return,
+    so it needs a base; taking the arm's own quote would move the baseline
+    whenever the arm moved, and "the model beat naive" would shift for a reason
+    that is not the model.
+
+    `n` and `n_naive` are reported separately because `MIN_SERVED_PRICE_USD`
+    applies to `current_price`: the two arms do not score exactly the same item
+    set at the floor (hazard 4 of the plan), and the baseline drops an item with
+    no prior observation.
+    """
+    # `.eq(True)`, not `.fillna(False).astype(bool)`: an item the mask never saw
+    # maps to NaN, which makes the column object dtype, and the fillna route
+    # then emits a downcasting FutureWarning on exactly that case.
+    is_tied = frame["item_id"].map(tied).eq(True).to_numpy()
+    d = frame["item_id"].map(pinned).to_numpy(dtype=float)
+    naive_mid = np.where(np.isfinite(d) & (d > 0),
+                         d * (1.0 + frame["naive"].to_numpy(dtype=float)),
+                         np.nan)
+    mid = frame["mid"].to_numpy(dtype=float)
+    current = frame["current"].to_numpy(dtype=float)
+    realised = frame["realised"].to_numpy(dtype=float)
+    scorable = np.isfinite(realised) & (realised > 0)
+
+    rows = []
+    for subset, mask in (("pooled", np.ones(len(frame), dtype=bool)),
+                         ("tied", is_tied),
+                         ("deviating", ~is_tied)):
+        med, p90 = _rel_abs_error(mid[mask], realised[mask])
+        quote, _ = _rel_abs_error(current[mask], realised[mask])
+        naive, _ = _rel_abs_error(naive_mid[mask], realised[mask])
+        rows.append({
+            "subset": subset,
+            "n": int((mask & scorable & np.isfinite(mid)).sum()),
+            "model": med, "p90": p90, "quote": quote, "naive": naive,
+            "n_naive": int((mask & scorable & np.isfinite(naive_mid)).sum()),
+        })
+    return rows
+
+
+DOLLAR_HEADER = (f"{'h':>4} {'subset':>10} {'n':>7} {'model':>8} {'p90':>8} "
+                 f"{'quote':>8} {'naive':>8} {'nNaive':>7}")
+
+
+def _dollar_line(h: int, row: dict) -> str:
+    """One row of the dollar table, percentages.
+
+    A function rather than an f-string inside `main()` so the NaN case is
+    covered: a cohort under three items scores NaN, and a `%`-formatted NaN
+    raising would take out an hour of CI at the point where the table prints.
+    """
+    return (f"{h:>4} {row['subset']:>10} {row['n']:>7} "
+            f"{100 * row['model']:>8.2f} {100 * row['p90']:>8.2f} "
+            f"{100 * row['quote']:>8.2f} {100 * row['naive']:>8.2f} "
+            f"{row['n_naive']:>7}")
+
+
 def _basis_frame(fc: ItemForecaster, outcomes: pd.DataFrame, anchor: date,
                  horizon: int) -> pd.DataFrame:
     """The four label bases, per item, on one anchor.
@@ -284,9 +404,11 @@ def _basis_frame(fc: ItemForecaster, outcomes: pd.DataFrame, anchor: date,
     # features. Where it equals the local median there is no deviation for the
     # model to read, so this flag splits the cross-section into the half where
     # the hypothesised channel can operate and the half where it cannot.
-    f["anchor_is_tied"] = np.isclose(f["anchor_raw"].to_numpy(dtype=float),
-                                     f["anchor_smooth"].to_numpy(dtype=float),
-                                     rtol=0, atol=1e-9)
+    # `_tied_mask` and not an inline `isclose`: the dollar table reads the same
+    # split, and two copies would drift.
+    f = f.merge(_tied_mask(outcomes, anchor).reset_index(), on="item_id",
+                how="left")
+    f["anchor_is_tied"] = f["anchor_is_tied"].eq(True)
     for name, num, den in (("served", "out_med", "anchor_smooth"),
                            ("cv", "out_raw", "anchor_raw"),
                            ("num_only", "out_raw", "anchor_smooth"),
@@ -382,6 +504,11 @@ def main() -> int:
         # because production quotes the pinned statistic -- a divergence means
         # an arm is live.
         pinned = _pinned_anchor(outcomes, anchor)
+        # Also a constant across arms, and for the same reason: the tied cohort
+        # is where the durable served signal was measured and the deviating one
+        # is what the freshness gate reads, so neither may be redefined by the
+        # arm being scored.
+        tied = _tied_mask(outcomes, anchor)
         if not _pin_matches_production():
             from backtest.price_resolution import (MAX_WINDOW_SPAN_DAYS,
                                                    SMOOTH_WINDOW)
@@ -396,6 +523,7 @@ def main() -> int:
         print(f"{'h':>4} {'n':>7} {'DA%':>7} {'down%':>7} {'edge':>7} "
               f"{'rankIC':>8} {'naiveIC':>8} {'vs naive':>9} {'pinnedIC':>9}")
 
+        dollar_rows: list[tuple[int, dict]] = []
         for h in horizons:
             rows = []
             for _, r in served.iterrows():
@@ -442,6 +570,20 @@ def main() -> int:
             print(f"{h:>4} {len(frame):>7} {da:>7.2f} {down:>7.2f} "
                   f"{da - base:>+7.2f} {ic:>8.4f} {naive_ic:>8.4f} "
                   f"{ic - naive_ic:>+9.4f} {pinned_ic:>9.4f}")
+            dollar_rows += [(h, r) for r in
+                            _dollar_error_rows(frame, pinned, tied)]
+
+        # The gate of the freshness experiment, and the only table here that two
+        # arms can be compared on: rank IC above divides by the served quote,
+        # which an arm moves. Read the DEVIATING row -- on the tied cohort an arm
+        # that chooses between the raw quote and its own median serves the same
+        # price, so a pooled number dilutes the effect with rows that cannot
+        # move (`2026-08-11-smoothed-anchor-label-measured.md`).
+        print(f"\nDOLLAR ERROR @ {anchor}   "
+              f"(|x - realised| / realised, %; basis-free)")
+        print(DOLLAR_HEADER)
+        for h, r in dollar_rows:
+            print(_dollar_line(h, r))
 
         if "--basis-sweep" in sys.argv:
             # The SAME served mids, scored against four label bases. Everything

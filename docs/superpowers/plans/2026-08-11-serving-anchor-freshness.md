@@ -63,7 +63,7 @@ or an arm that edits `_smoothed_anchor_prices` silently moves the referee too.
 | # | Task | Cost |
 |---|---|---|
 | 1 | Pin the replay's scoring denominator so it cannot follow the arm; test that it is unchanged when the serving flag flips | ✅ done |
-| 2 | Add dollar-error columns to the replay (median and p90 of `\|mid − realised\|/realised`), control and naive alongside | ~45m |
+| 2 | Add dollar-error columns to the replay (median and p90 of `\|mid − realised\|/realised`), control and naive alongside | ✅ done |
 | 3 | Arm A behind `SERVE_OUTLIER_GATED_ANCHOR=1`, plus the `model-diagnostics.yml` input; test both branches and the >10% boundary | ~45m |
 | 4 | Two dispatches on one commit, four anchors, sequential | ~1h wall clock |
 
@@ -94,6 +94,20 @@ If it passes, the follow-on question is whether the *backtest's* resolver should
 > Confirmed while pinning: `forecaster.py:6482` is the **only** site that sets the served
 > `current_price` (`latest_rows["price"]`, after the unconditional smoothed substitution), so
 > arm A has exactly one seam to change.
+
+> ✅ **Task 2 landed.** A `DOLLAR ERROR` table prints on every replay run, unconditionally —
+> not behind `--basis-sweep`, because a run missing the gate metric costs an hour to redo.
+> Three rows per horizon (pooled / tied / deviating) and four columns: `model` and its `p90`,
+> `quote` (**no change** — the served `current_price` itself, which is the reference an arm's
+> claim is actually about), and `naive` (`−return_1d` in dollars). 12 new tests.
+>
+> **Two decisions the plan did not specify.** The naive baseline is converted to dollars
+> against the **pinned** anchor, not `frame["current"]` — otherwise the arm moves the baseline
+> too and "the model beat naive" shifts for a reason that is not the model. And the tied/
+> deviating split is now `_tied_mask`, one definition shared with `_basis_frame`, so the
+> dollar gate's deviating cohort and the basis sweep's cannot drift apart.
+>
+> `n` and `n_naive` are reported per row, which is hazard 4's mitigation.
 
 ## Hazards
 

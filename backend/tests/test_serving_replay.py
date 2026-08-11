@@ -10,14 +10,17 @@ anchor scores a forecast against data it already had.
 """
 from datetime import date, datetime, timezone
 
+import numpy as np
 import pandas as pd
 import pytest
 
 from models.forecaster import ItemForecaster
 from scripts.replay_serving import (PINNED_MAX_SPAN_DAYS, PINNED_SMOOTH_WINDOW,
-                                    _basis_frame, _exact_day, _naive_baseline,
+                                    _basis_frame, _dollar_error_rows,
+                                    _dollar_line, _exact_day, _naive_baseline,
                                     _pin_matches_production, _pinned_anchor,
-                                    _pinned_rank_ic, _requested_horizons)
+                                    _pinned_rank_ic, _rel_abs_error,
+                                    _requested_horizons, _tied_mask)
 
 
 def _fc():
@@ -437,3 +440,177 @@ def test_a_divergence_between_the_pin_and_production_is_reported(monkeypatch, ca
                         raising=False)
     monkeypatch.setattr(pr, "SMOOTH_WINDOW", PINNED_SMOOTH_WINDOW, raising=False)
     assert _pin_matches_production() is True
+
+
+# ---------------------------------------------------------------------------
+# Dollar error (task 2 of the serving-anchor freshness plan).
+#
+# Rank IC cannot referee an arm that changes what price predict() quotes from:
+# `main()` divides both the prediction and the outcome by the served
+# `current_price`, so the arm moves the label and the prediction together. The
+# gate is the median absolute dollar error over the DEVIATING cohort, which is
+# basis-free because its denominator is the realised price -- a quantity no arm
+# touches. See docs/superpowers/plans/2026-08-11-serving-anchor-freshness.md.
+# ---------------------------------------------------------------------------
+
+
+def test_the_dollar_error_divides_by_the_realised_price():
+    """The whole reason this metric can compare two arms. Dividing by the served
+    quote instead would make it basis-relative, exactly like rank IC."""
+    err = _rel_abs_error(np.array([11.0, 8.0, 11.0, 8.0]), np.full(4, 10.0))
+    assert err[0] == pytest.approx(0.15)          # median(0.1, 0.2, 0.1, 0.2)
+
+
+def test_the_dollar_error_reports_a_p90_beside_the_median():
+    """A quoting change can leave the median alone and move the tail: the
+    smoothed anchor and the raw quote diverge by a median 3.6% and a p90 35%."""
+    pred = np.array([10.0] * 8 + [20.0, 20.0])
+    med, p90 = _rel_abs_error(pred, np.full(10, 10.0))
+    assert med == pytest.approx(0.0)
+    assert p90 == pytest.approx(1.0)
+
+
+def test_the_dollar_error_drops_a_non_positive_realised_price():
+    """An unresolved or zero outcome divides to infinity, which would swallow
+    the median of the whole cohort rather than dropping one item."""
+    pred = np.array([11.0, 99.0, 12.0, 9.0])
+    realised = np.array([10.0, 0.0, 10.0, 10.0])
+    med, _ = _rel_abs_error(pred, realised)
+    # median(0.1, 0.2, 0.1). Keeping the inf row would read 0.15 instead.
+    assert med == pytest.approx(0.1)
+
+
+def test_the_dollar_error_needs_three_items_to_report():
+    med, p90 = _rel_abs_error(np.array([11.0, 12.0]), np.array([10.0, 10.0]))
+    assert np.isnan(med) and np.isnan(p90)
+
+
+def _error_frame():
+    """Two tied items and two deviating ones, with a known error per item."""
+    return pd.DataFrame({
+        "item_id": ["t1", "t2", "t3", "d1", "d2", "d3"],
+        "current": [10.0, 10.0, 10.0, 12.0, 12.0, 12.0],
+        "mid": [11.0, 9.0, 11.0, 13.0, 11.0, 13.0],
+        "realised": [10.0, 10.0, 10.0, 10.0, 10.0, 10.0],
+        "naive": [0.10, -0.10, 0.10, 0.20, -0.20, 0.20],
+    })
+
+
+def _error_pinned():
+    return pd.Series({"t1": 10.0, "t2": 10.0, "t3": 10.0,
+                      "d1": 10.0, "d2": 10.0, "d3": 10.0}, name="d_fixed")
+
+
+def test_the_dollar_error_splits_on_the_tied_cohort():
+    """The gate reads the deviating cohort alone. On the tied cohort an arm that
+    only chooses between the raw quote and its own median serves an identical
+    price, so a pooled number dilutes the effect with rows that cannot move."""
+    tied = pd.Series({"t1": True, "t2": True, "t3": True,
+                      "d1": False, "d2": False, "d3": False})
+    rows = {r["subset"]: r for r in
+            _dollar_error_rows(_error_frame(), _error_pinned(), tied)}
+    assert [r for r in rows] == ["pooled", "tied", "deviating"]
+    assert rows["pooled"]["n"] == 6
+    assert rows["tied"]["n"] == 3
+    assert rows["deviating"]["n"] == 3
+    assert rows["tied"]["model"] == pytest.approx(0.10)
+    assert rows["deviating"]["model"] == pytest.approx(0.30)
+
+
+def test_an_item_with_no_anchor_observation_is_not_tied():
+    """`np.isclose(nan, nan)` is False and the mask is a left join, so "never
+    observed at the anchor" must fall on the deviating side rather than
+    defaulting into the clean cohort the durable result rests on."""
+    tied = pd.Series({"t1": True, "t2": True, "t3": True, "d1": False})
+    rows = {r["subset"]: r for r in
+            _dollar_error_rows(_error_frame(), _error_pinned(), tied)}
+    assert rows["deviating"]["n"] == 3           # d1 plus the two unlabelled
+
+
+def test_the_quote_control_is_the_no_change_prediction():
+    """The reference an arm is actually claiming to beat: "the price we publish
+    is closer to what happens". It is the served quote, not the model's mid."""
+    tied = pd.Series({"t1": True, "t2": True, "t3": True,
+                      "d1": False, "d2": False, "d3": False})
+    rows = {r["subset"]: r for r in
+            _dollar_error_rows(_error_frame(), _error_pinned(), tied)}
+    assert rows["tied"]["quote"] == pytest.approx(0.0)     # current 10, realised 10
+    assert rows["deviating"]["quote"] == pytest.approx(0.2)  # current 12
+
+
+def test_the_naive_dollar_prediction_does_not_follow_the_served_quote():
+    """`naive` is a return, so it needs a base to become dollars. Taking the
+    arm's own `current_price` would move the baseline whenever the arm moved,
+    and "the model beat naive" would shift for a reason that is not the model.
+    """
+    tied = pd.Series({"t1": True, "t2": True, "t3": True,
+                      "d1": False, "d2": False, "d3": False})
+    frame = _error_frame()
+    before = {r["subset"]: r["naive"] for r in
+              _dollar_error_rows(frame, _error_pinned(), tied)}
+
+    moved = frame.copy()
+    moved["current"] = moved["current"] * 1.5      # the arm quotes elsewhere
+    after = {r["subset"]: r["naive"] for r in
+             _dollar_error_rows(moved, _error_pinned(), tied)}
+
+    assert after["deviating"] == pytest.approx(before["deviating"])
+    # pinned 10 x (1 + 0.20) = 12 against realised 10.
+    assert before["deviating"] == pytest.approx(0.2)
+
+
+def test_the_naive_column_is_scored_on_the_items_that_have_one():
+    """`_naive_baseline` drops an item with no prior observation, and the merge
+    leaves NaN. Counting those as zero error would flatter the baseline."""
+    tied = pd.Series({"t1": True, "t2": True, "t3": True,
+                      "d1": False, "d2": False, "d3": False})
+    frame = _error_frame()
+    frame.loc[frame["item_id"] == "d2", "naive"] = np.nan
+    rows = {r["subset"]: r for r in
+            _dollar_error_rows(frame, _error_pinned(), tied)}
+    assert rows["deviating"]["n_naive"] == 2
+    assert rows["deviating"]["n"] == 3
+
+
+def test_a_cohort_too_thin_to_score_still_prints_a_row():
+    """`_rel_abs_error` returns NaN below three items, and a `%` format on NaN
+    is the kind of thing that raises at the end of an hour of CI. The row has to
+    survive it: an anchor whose tied cell is 26 items is a real case
+    (2026-07-09), and its `n` is what tells you to discount it."""
+    row = {"subset": "tied", "n": 2, "model": float("nan"),
+           "p90": float("nan"), "quote": 0.05, "naive": float("nan"),
+           "n_naive": 0}
+    line = _dollar_line(7, row)
+    assert "tied" in line and "nan" in line
+    assert "5.00" in line          # the one column that resolved
+
+
+def test_the_dollar_line_reports_percentages():
+    row = {"subset": "deviating", "n": 300, "model": 0.0412, "p90": 0.183,
+           "quote": 0.0405, "naive": 0.0431, "n_naive": 298}
+    line = _dollar_line(14, row)
+    assert "4.12" in line and "18.30" in line and "4.05" in line
+
+
+def test_the_tied_mask_is_the_basis_frames_own_split():
+    """One definition of `tied`, so the cohort the dollar gate reads is the same
+    population as the tied/deviating rows of the basis sweep. Two copies of the
+    isclose test would drift and the two tables would silently disagree."""
+    anchor = date(2026, 6, 1)
+    hist = _history([
+        ("flat", "2026-05-30", 10.0),
+        ("flat", "2026-05-31", 10.0),
+        ("flat", "2026-06-01", 10.0),
+        ("spiky", "2026-05-30", 10.0),
+        ("spiky", "2026-05-31", 10.0),
+        ("spiky", "2026-06-01", 12.0),
+        ("gappy", "2026-05-25", 10.0),      # no observation on the anchor
+    ])
+    mask = _tied_mask(hist, anchor)
+    assert bool(mask["flat"]) is True
+    assert bool(mask["spiky"]) is False
+    assert bool(mask["gappy"]) is False
+
+    bases = _basis_frame(_fc(), hist, anchor, horizon=3).set_index("item_id")
+    for item in ("flat", "spiky", "gappy"):
+        assert bool(bases.loc[item, "anchor_is_tied"]) == bool(mask[item]), item
