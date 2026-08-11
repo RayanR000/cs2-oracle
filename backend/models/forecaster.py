@@ -5944,6 +5944,13 @@ class ItemForecaster:
             "cap": self.SIGMA_CAP_DEFAULT,
             "fallback": self.SIGMA_FALLBACK_DEFAULT,
         }
+        # Which centre each horizon's q_hat was fitted around: "served" (the
+        # classifier-recentred mid predict() publishes) or "q50" (a mid that is
+        # only served when no classifier exists). Provenance, not a switch —
+        # the served centre needs an out-of-fold direction call, which
+        # CV_DIAGNOSTIC_CLASSIFIER=0 does not produce, so "q50" is a reachable
+        # state and a reader of the artifact has to be able to see it.
+        self.conformal_centre: Dict[int, str] = {}
 
     def _check_artifact_version(self, meta: dict) -> None:
         """Fail closed on any artifact not written by this exact scheme.
@@ -5983,7 +5990,8 @@ class ItemForecaster:
         )
 
     def _conformal_records(self, mid_ret, actual_ret, sigma,
-                           current_price) -> List[Dict[str, float]]:
+                           current_price,
+                           direction_class=None) -> List[Dict[str, float]]:
         """Per-row calibration records, shared by the CV and holdout paths.
 
         `residual_pct` / `sigma` are what q_hat is fitted on, `mid_ret` is what
@@ -5991,6 +5999,24 @@ class ItemForecaster:
         what `_calibrate_confidence` thresholds on. Both callers go through here
         so a q_hat fitted on one path is never on a different footing from the
         other.
+
+        `direction_class` is the out-of-fold directional call, and it is what
+        makes q_hat cover the band that is actually served. `predict` builds the
+        band around the q50 mid and then hands it to
+        `_recenter_on_direction`, which moves the centre to ±|mid| (or pins it
+        to 0) while preserving both half-widths — so on every row where the
+        classifier disagrees with the q50's sign, the served centre is displaced
+        by up to twice |mid| and the width is unchanged. Fitting q_hat on
+        residuals to the q50 mid therefore calibrates a band nobody is served:
+        measured on a held-out split, 59.8% coverage against an 80% target,
+        while the never-served q50-centred band covers 79.5%.
+
+        **Only `residual_pct` moves.** `mid_ret`, `change_pct` and `hit` stay on
+        the q50 mid deliberately: they feed `_calibrate_confidence`, whose
+        thresholds are consumed by `_compute_confidence`, which runs *only* on
+        the no-classifier fallback path — and that path serves the q50 mid, with
+        no recentring. Putting them on the served centre would fit thresholds for
+        a signal that path never publishes.
 
         Rows whose mid or current price is zero are dropped: range_pct and
         change_pct are undefined there.
@@ -6009,16 +6035,29 @@ class ItemForecaster:
         with np.errstate(divide="ignore", invalid="ignore"):
             change_pct = np.abs(mid_price - curr) / curr
 
-        return [
-            {
+        # The real serving function, not a re-derivation of it: the two centres
+        # cannot drift apart if only one place knows how to compute one. Low and
+        # high are irrelevant here (half-widths are preserved), so the mid is
+        # passed for all three and only the mid is read back.
+        served_mid = None
+        if direction_class is not None:
+            _, served_mid, _ = self._recenter_on_direction(
+                mid, mid, mid, direction_class)
+
+        centre = mid if served_mid is None else served_mid
+        records = []
+        for i in np.flatnonzero(keep):
+            rec = {
                 "mid_ret": float(mid[i]),
-                "residual_pct": float(actual[i] - mid[i]),
+                "residual_pct": float(actual[i] - centre[i]),
                 "sigma": float(sig[i]),
                 "change_pct": float(change_pct[i]),
                 "hit": float(hit[i]),
             }
-            for i in np.flatnonzero(keep)
-        ]
+            if served_mid is not None:
+                rec["served_mid_ret"] = float(served_mid[i])
+            records.append(rec)
+        return records
 
     def _holdout_conformal_records(self, horizon: int, X_val, y_val,
                                    val_set) -> pd.DataFrame:
@@ -6050,9 +6089,19 @@ class ItemForecaster:
         holdout_offset = self._naive_offset(val_set)
         if holdout_offset is not None:
             p50 = p50 + holdout_offset
+        # Same reason, for the same served mid: predict() recentres on this
+        # classifier's call, so the residual has to be measured there. The call
+        # is IN-SAMPLE here — the classifier was fitted on the full training set,
+        # X_val included — which is the defect this whole path already carries
+        # and warns about. A coherent centre on an optimistic residual beats an
+        # incoherent one.
+        holdout_clf = self.direction_models.get(horizon)
+        holdout_cls = (None if holdout_clf is None
+                       else holdout_clf.predict(X_val).argmax(axis=1))
         records = self._conformal_records(
             p50, y_val.values, self._sigma_for_rows(val_set),
             val_set["price"].values,
+            direction_class=holdout_cls,
         )
         if len(records) < self.MIN_CALIBRATION_ROWS:
             raise RuntimeError(
@@ -6079,6 +6128,30 @@ class ItemForecaster:
         sigma = records_df["sigma"].to_numpy(dtype=float)
         q_hat = conformal.calibrate(resid, sigma, conformal.ALPHA)
         self.conformal_calibration[horizon] = q_hat
+        # Read off the records rather than off a flag: whichever centre
+        # `_conformal_records` measured the residual against is the one q_hat
+        # covers, and only that builder knows which it was.
+        self.conformal_centre[horizon] = (
+            "served"
+            if ("served_mid_ret" in records_df.columns
+                and records_df["served_mid_ret"].notna().all())
+            else "q50"
+        )
+        if (self.conformal_centre[horizon] == "q50"
+                and self.direction_models.get(horizon) is not None):
+            # Not a fallback worth passing over in silence: predict() recentres
+            # whenever this classifier exists, so the band being calibrated is
+            # not the band being served, and the 80% label on it is wrong.
+            logger.warning(
+                f"  {horizon}d q_hat was calibrated around the q50 mid, but a "
+                f"directional classifier exists for this horizon and predict() "
+                f"will recentre the mid on its call — so the SERVED band's "
+                f"coverage is not the nominal "
+                f"{conformal.NOMINAL_COVERAGE * 100:.0f}%. Measured on a "
+                f"held-out split, that displacement costs ~20pp of coverage. "
+                f"Set CV_DIAGNOSTIC_CLASSIFIER=1 so CV emits the out-of-fold "
+                f"direction call the calibration needs."
+            )
 
         mid = records_df["mid_ret"].to_numpy(dtype=float)
         low, high = conformal.band(mid, sigma, q_hat)
@@ -7113,9 +7186,15 @@ class ItemForecaster:
             # the fixed-band control; production stays fixed-band. Tooling
             # retained in scripts/ab_test_direction_labels.py.
             #
-            # It is a DIAGNOSTIC, not an input: only `fold_p50` reaches
-            # `oof_records`, so q_hat and the confidence thresholds never see
-            # this model. It is also the single most expensive thing in a
+            # It is an INPUT to q_hat since 2026-08-11, and a diagnostic
+            # otherwise. `predict` recentres the served mid on this call, so its
+            # out-of-fold predictions are what `_conformal_records` measures the
+            # calibration residual against (F1). Two consequences: the
+            # confidence thresholds still never see it — they stay on the q50
+            # mid, which is what the no-classifier fallback serves — and this
+            # cost flag now moves the served BAND, which is why
+            # `conformal_centre` is persisted rather than inferred.
+            # It is also the single most expensive thing in a
             # retrain — 3 trees per round against the median model's 1, i.e.
             # 69% of a fold's fit cost and 32-37% of the whole run (measured
             # 2026-08-08). CV_DIAGNOSTIC_CLASSIFIER=0 skips it; CI sets that,
@@ -7226,8 +7305,12 @@ class ItemForecaster:
 
             # Build per-row records for pooled calibration. Same builder the
             # single-holdout path uses, so the two calibrations are comparable.
+            # `pred_cls` is None unless CV_DIAGNOSTIC_CLASSIFIER=1, and then the
+            # residual is measured against the q50 mid — honest, but a mid
+            # predict() does not serve. `_calibrate_conformal` warns.
             oof_records.extend(self._conformal_records(
-                fold_p50, actual_returns, fold_sigma, current_prices))
+                fold_p50, actual_returns, fold_sigma, current_prices,
+                direction_class=pred_cls))
 
         if not fold_metrics:
             raise RuntimeError(
@@ -7687,6 +7770,11 @@ class ItemForecaster:
             "trained_at": str(self._now()),
             "confidence_thresholds": thresholds_serial,
             "conformal_calibration": {str(h): v for h, v in self.conformal_calibration.items()},
+            # Which mid each q_hat covers — "served" (the classifier-recentred
+            # mid predict() publishes) or "q50" (a mid served only when no
+            # classifier exists). A coverage figure read without this is
+            # uninterpretable, and a predict-only run has no other route to it.
+            "conformal_centre": {str(h): c for h, c in self.conformal_centre.items()},
             "feature_medians": medians_serial,
             "n_ensembles": self.N_ENSEMBLES,
             "ensemble_seeds": self.ENSEMBLE_SEEDS,
@@ -7787,6 +7875,13 @@ class ItemForecaster:
             int(h): float(q) for h, q in meta["conformal_calibration"].items()
         }
         self.sigma_clip = {k: float(v) for k, v in meta["sigma_clip"].items()}
+        # Provenance, so `.get` and not strict: predict() reads the band from
+        # conformal_calibration alone, and every artifact written before
+        # 2026-08-11 lacks this key. An empty dict means "this artifact does not
+        # say which mid its q_hat covers" — which is itself the honest answer.
+        self.conformal_centre = {
+            int(h): str(c) for h, c in meta.get("conformal_centre", {}).items()
+        }
 
         n_ensembles = meta.get("n_ensembles", 1)
 

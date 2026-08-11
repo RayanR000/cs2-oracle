@@ -13,12 +13,14 @@ from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import inspect
+import logging
 
 import numpy as np
 import pandas as pd
 import pytest
 import yaml
 
+from models import conformal
 from models.conformal import ALPHA
 from models.forecaster import ItemForecaster
 
@@ -112,6 +114,9 @@ def test_calibrate_conformal_stores_q_hat_and_adds_numeric_range_pct():
     f = ItemForecaster.__new__(ItemForecaster)
     ItemForecaster._init_conformal_state(f)
     f.conformal_calibration = {}
+    # `__init__` sets this; `__new__` does not. _calibrate_conformal reads it to
+    # decide whether a q50-centred q_hat is about to be recentred out from under.
+    f.direction_models = {}
 
     df = _records()
     q_hat = f._calibrate_conformal(7, df)
@@ -129,6 +134,9 @@ def test_range_pct_varies_with_item_sigma():
     f = ItemForecaster.__new__(ItemForecaster)
     ItemForecaster._init_conformal_state(f)
     f.conformal_calibration = {}
+    # `__init__` sets this; `__new__` does not. _calibrate_conformal reads it to
+    # decide whether a q50-centred q_hat is about to be recentred out from under.
+    f.direction_models = {}
 
     df = _records()
     f._calibrate_conformal(7, df)
@@ -141,6 +149,9 @@ def test_calibrated_band_covers_about_the_nominal_rate():
     f = ItemForecaster.__new__(ItemForecaster)
     ItemForecaster._init_conformal_state(f)
     f.conformal_calibration = {}
+    # `__init__` sets this; `__new__` does not. _calibrate_conformal reads it to
+    # decide whether a q50-centred q_hat is about to be recentred out from under.
+    f.direction_models = {}
 
     df = _records(n=2000, seed=7)
     q_hat = f._calibrate_conformal(3, df)
@@ -154,6 +165,9 @@ def test_calibrated_records_are_accepted_by_calibrate_confidence():
     f = ItemForecaster.__new__(ItemForecaster)
     ItemForecaster._init_conformal_state(f)
     f.conformal_calibration = {}
+    # `__init__` sets this; `__new__` does not. _calibrate_conformal reads it to
+    # decide whether a q50-centred q_hat is about to be recentred out from under.
+    f.direction_models = {}
     f.confidence_thresholds = {}
 
     df = _records(n=1000, seed=3)
@@ -248,6 +262,234 @@ def test_cv_records_calibrate_end_to_end_with_a_median_only_grid(tmp_path):
     assert q_hat > 0
     assert records_df["range_pct"].notna().all()
     assert np.isfinite(f.confidence_thresholds[3]["high_range"])
+
+
+# ---------------------------------------------------------------------------
+# F1: q_hat must be calibrated around the mid predict() actually serves
+#
+# `predict` builds the band around the q50 mid and then recentres the mid on
+# the directional classifier's call, preserving half-widths. A q_hat fitted on
+# residuals to the q50 mid therefore describes a band that is never served:
+# on every row where the classifier disagrees with the q50's sign, the served
+# centre is displaced by up to 2*|mid| while the width is unchanged.
+# ---------------------------------------------------------------------------
+
+
+def _served_centre_inputs(n=3000, seed=5, disagree_share=0.4):
+    """q50 mids, honest actuals, and a classifier that disagrees on a share.
+
+    `actual` is generated around the **q50** mid, so the recentring is pure
+    displacement — which is the worst case for coverage and the one production
+    is in.
+    """
+    rng = np.random.default_rng(seed)
+    sigma = rng.uniform(0.05, 0.25, n)
+    mid = rng.normal(0.0, 4.0, n)
+    actual = mid + rng.normal(0.0, 1.0, n) * sigma * 20.0
+    price = np.full(n, 50.0)
+
+    q50_class = ItemForecaster._direction_classes(mid)
+    served_class = q50_class.copy()
+    flip = rng.random(n) < disagree_share
+    # 0 <-> 2 (down <-> up), 1 -> 1: a flat call pins the served mid to zero.
+    served_class[flip] = 2 - q50_class[flip]
+    return mid, actual, sigma, price, served_class
+
+
+def test_conformal_records_measure_the_residual_against_the_served_centre():
+    """The residual q_hat is fitted on must be to the recentred mid."""
+    f = ItemForecaster.__new__(ItemForecaster)
+    ItemForecaster._init_conformal_state(f)
+
+    mid, actual, sigma, price, served_class = _served_centre_inputs(n=200)
+    records = pd.DataFrame(f._conformal_records(
+        mid, actual, sigma, price, direction_class=served_class))
+    assert len(records) == len(mid), "no row should be dropped in this fixture"
+
+    _, served_mid, _ = ItemForecaster._recenter_on_direction(
+        mid, mid, mid, served_class)
+    assert records["residual_pct"].to_numpy() == pytest.approx(
+        actual - served_mid)
+    # The served centre is carried so the calibration can describe itself, and
+    # it must differ from the q50 mid — otherwise the fixture proves nothing.
+    assert records["served_mid_ret"].to_numpy() == pytest.approx(served_mid)
+    assert (records["served_mid_ret"] != records["mid_ret"]).any()
+
+
+def test_conformal_records_leave_the_confidence_columns_on_the_q50_mid():
+    """`_calibrate_confidence` fits the no-classifier fallback path.
+
+    That path serves the q50-derived direction and mid, so `hit`, `change_pct`
+    and `mid_ret` must stay on the q50 centre even when the served centre is
+    supplied. Only `residual_pct` moves.
+    """
+    f = ItemForecaster.__new__(ItemForecaster)
+    ItemForecaster._init_conformal_state(f)
+
+    mid, actual, sigma, price, served_class = _served_centre_inputs(n=200)
+    plain = pd.DataFrame(f._conformal_records(mid, actual, sigma, price))
+    served = pd.DataFrame(f._conformal_records(
+        mid, actual, sigma, price, direction_class=served_class))
+
+    for col in ("mid_ret", "sigma", "change_pct", "hit"):
+        assert served[col].to_numpy() == pytest.approx(plain[col].to_numpy())
+    assert "served_mid_ret" not in plain.columns
+
+
+def test_served_band_covers_nominal_on_a_held_out_split():
+    """The falsifiable coverage check.
+
+    Fits q_hat on one half and measures coverage of the band **as predict()
+    assembles it** — `conformal.band` around the q50 mid, then
+    `_recenter_on_direction` — on the other half. Measuring coverage against
+    `residual_pct` on the rows q_hat was fitted on is >= nominal by
+    construction and cannot fail.
+    """
+    f = ItemForecaster.__new__(ItemForecaster)
+    ItemForecaster._init_conformal_state(f)
+    f.conformal_calibration = {}
+    # `__init__` sets this; `__new__` does not. _calibrate_conformal reads it to
+    # decide whether a q50-centred q_hat is about to be recentred out from under.
+    f.direction_models = {}
+
+    mid, actual, sigma, price, served_class = _served_centre_inputs(n=4000)
+    half = len(mid) // 2
+    fit, ev = slice(0, half), slice(half, None)
+
+    records = pd.DataFrame(f._conformal_records(
+        mid[fit], actual[fit], sigma[fit], price[fit],
+        direction_class=served_class[fit]))
+    q_hat = f._calibrate_conformal(7, records)
+
+    low, high = conformal.band(mid[ev], sigma[ev], q_hat)
+    s_low, _, s_high = ItemForecaster._recenter_on_direction(
+        low, mid[ev], high, served_class[ev])
+    covered = ((actual[ev] >= s_low) & (actual[ev] <= s_high)).mean()
+    assert covered >= conformal.NOMINAL_COVERAGE - 0.02, (
+        f"served band covers {covered:.1%} against a "
+        f"{conformal.NOMINAL_COVERAGE:.0%} target")
+
+
+def test_calibration_records_which_centre_it_fitted():
+    """A band calibrated on the wrong centre must be visible, not silent.
+
+    The served centre needs an out-of-fold direction call, which
+    CV_DIAGNOSTIC_CLASSIFIER=0 does not produce — so production can legitimately
+    end up on the q50 centre, and the artifact has to say so.
+    """
+    f = ItemForecaster.__new__(ItemForecaster)
+    ItemForecaster._init_conformal_state(f)
+    f.conformal_calibration = {}
+    # `__init__` sets this; `__new__` does not. _calibrate_conformal reads it to
+    # decide whether a q50-centred q_hat is about to be recentred out from under.
+    f.direction_models = {}
+
+    mid, actual, sigma, price, served_class = _served_centre_inputs(n=600)
+    f._calibrate_conformal(7, pd.DataFrame(f._conformal_records(
+        mid, actual, sigma, price, direction_class=served_class)))
+    f._calibrate_conformal(14, pd.DataFrame(f._conformal_records(
+        mid, actual, sigma, price)))
+
+    assert f.conformal_centre == {7: "served", 14: "q50"}
+
+
+def test_calibrating_on_the_q50_centre_warns_when_a_classifier_will_recentre(caplog):
+    """The defect must be loud in forecast.log, not inferable from meta.json.
+
+    `predict` recentres whenever `direction_models[horizon]` exists, so that is
+    exactly the condition under which a q50-centred q_hat is wrong.
+    """
+    f = ItemForecaster.__new__(ItemForecaster)
+    ItemForecaster._init_conformal_state(f)
+    f.conformal_calibration = {}
+    # A classifier for 7d exists, so predict() WILL recentre this horizon's mid.
+    f.direction_models = {7: object()}
+
+    mid, actual, sigma, price, _ = _served_centre_inputs(n=600)
+    with caplog.at_level(logging.WARNING):
+        f._calibrate_conformal(7, pd.DataFrame(
+            f._conformal_records(mid, actual, sigma, price)))
+    assert any("recentre" in r.message for r in caplog.records), caplog.text
+
+    # And it must stay quiet when the two centres agree, or the warning is noise.
+    caplog.clear()
+    _, _, _, _, served_class = _served_centre_inputs(n=600)
+    with caplog.at_level(logging.WARNING):
+        f._calibrate_conformal(7, pd.DataFrame(f._conformal_records(
+            mid, actual, sigma, price, direction_class=served_class)))
+    assert not caplog.records, caplog.text
+
+
+def test_cv_records_carry_the_served_centre_when_the_classifier_runs(tmp_path, monkeypatch):
+    """The wiring: CV's own out-of-fold call is what q_hat needs.
+
+    Without this the fix is inert on the production path — `_conformal_records`
+    would accept a `direction_class` nobody passes.
+    """
+    monkeypatch.setenv("CV_DIAGNOSTIC_CLASSIFIER", "1")
+    f = _cv_forecaster(tmp_path, [0.5])
+    oof_records = f._cv_evaluate_horizon(_cv_frame(horizon=3), 3, {0.5: {}})[0]
+
+    assert oof_records
+    assert all("served_mid_ret" in r for r in oof_records)
+    q_hat = f._calibrate_conformal(3, pd.DataFrame(oof_records))
+    assert q_hat > 0
+    assert f.conformal_centre[3] == "served"
+
+
+def test_cv_records_fall_back_to_the_q50_centre_without_the_classifier(tmp_path, monkeypatch):
+    """CV_DIAGNOSTIC_CLASSIFIER=0 is production's default and cannot crash.
+
+    It produces no out-of-fold direction call, so the centre is honestly q50 —
+    recorded as such rather than silently assumed to be served.
+    """
+    monkeypatch.setenv("CV_DIAGNOSTIC_CLASSIFIER", "0")
+    f = _cv_forecaster(tmp_path, [0.5])
+    oof_records = f._cv_evaluate_horizon(_cv_frame(horizon=3), 3, {0.5: {}})[0]
+
+    assert oof_records
+    assert not any("served_mid_ret" in r for r in oof_records)
+    f._calibrate_conformal(3, pd.DataFrame(oof_records))
+    assert f.conformal_centre[3] == "q50"
+
+
+def test_save_then_load_round_trips_the_conformal_centre(tmp_path):
+    """Which centre a served band was calibrated on has to survive predict-only.
+
+    A predict-only run never recalibrates, so disk is its only route to this
+    field — and reading a coverage number without it is what let an 80%-labelled
+    band serve 34.6-61.8%.
+    """
+    f = ItemForecaster(db_session=MagicMock(), model_dir=str(tmp_path))
+    f.feature_cols = ["feat_a", "feat_b"]
+    f.conformal_calibration = {3: 1.1, 7: 2.2}
+    f.conformal_centre = {3: "served", 7: "q50"}
+    f.save_models()
+
+    g = ItemForecaster(db_session=MagicMock(), model_dir=str(tmp_path))
+    g.load_models()
+    assert g.conformal_centre == {3: "served", 7: "q50"}
+    assert all(isinstance(h, int) for h in g.conformal_centre)
+
+
+def test_load_models_tolerates_an_artifact_with_no_conformal_centre(tmp_path):
+    """Provenance, not a serving input: absence means unknown, not fail-closed.
+
+    Every artifact written before this field existed lacks it, and predict()
+    reads the band from `conformal_calibration` alone.
+    """
+    import json
+
+    (tmp_path / "meta.json").write_text(json.dumps({
+        "model_artifact_version": ItemForecaster.MODEL_ARTIFACT_VERSION,
+        "feature_cols": ["feat_a", "feat_b"],
+        "sigma_clip": {"floor": 0.01, "cap": 2.0, "fallback": 0.15},
+        "conformal_calibration": {"3": 1.1},
+        "n_ensembles": 1,
+    }))
+    f = ItemForecaster(db_session=MagicMock(), model_dir=str(tmp_path))
+    f.load_models()
+    assert f.conformal_centre == {}
 
 
 # ---------------------------------------------------------------------------

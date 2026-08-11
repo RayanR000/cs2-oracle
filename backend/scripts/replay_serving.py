@@ -38,6 +38,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from database import SessionLocal                      # noqa: E402
 from db.archive import prices_relation                 # noqa: E402
+from models import conformal                           # noqa: E402
 from models.forecaster import ItemForecaster           # noqa: E402
 from api.serving_policy import MIN_SERVED_PRICE_USD    # noqa: E402
 
@@ -344,6 +345,76 @@ def _dollar_error_rows(frame: pd.DataFrame, pinned: pd.Series,
     return rows
 
 
+def _served_rows(served: pd.DataFrame, h: int) -> pd.DataFrame:
+    """The served mid AND band for one horizon, as a frame.
+
+    `low`/`high` are carried because the band is the other half of what
+    `predict` publishes, and its coverage is the only falsifiable read on q_hat:
+    coverage measured against the residuals q_hat was fitted on is >= nominal by
+    construction, which is why an 80%-labelled band could serve 34.6-61.8%
+    unnoticed (`2026-08-10-served-classifier-scored.md` §4).
+
+    A row whose band is missing keeps its mid: it still scores DA and rank IC,
+    and dropping it here would shrink every other table in this script.
+    """
+    def _f(v) -> float:
+        return float(v) if v is not None else float("nan")
+
+    rows = []
+    for _, r in served.iterrows():
+        f = r["forecasts"].get(h)
+        if not f or f.get("mid") is None or not r.get("current_price"):
+            continue
+        rows.append({"item_id": r["item_id"],
+                     "current": float(r["current_price"]),
+                     "mid": float(f["mid"]),
+                     "low": _f(f.get("low")),
+                     "high": _f(f.get("high"))})
+    return pd.DataFrame(rows)
+
+
+def _coverage_row(frame: pd.DataFrame) -> dict:
+    """Share of realised prices inside the served band, and which side missed.
+
+    `low <= realised <= high`, inclusive, so this is the same predicate the
+    backtest's `in_interval` uses — two coverage figures that disagree on the
+    boundary are not the same measurement.
+
+    The below/above split is the diagnostic. Split conformal misses
+    symmetrically by construction; a centre the serving path displaced after
+    calibration misses with a sign, because `_recenter_on_direction` moves the
+    mid without touching either half-width.
+    """
+    lo = frame["low"].to_numpy(dtype=float)
+    hi = frame["high"].to_numpy(dtype=float)
+    real = frame["realised"].to_numpy(dtype=float)
+    ok = (np.isfinite(lo) & np.isfinite(hi) & np.isfinite(real)
+          & (real > 0))
+    n = int(ok.sum())
+    if n == 0:
+        nan = float("nan")
+        return {"n": 0, "cov": nan, "below": nan, "above": nan}
+    return {
+        "n": n,
+        "cov": float(((real[ok] >= lo[ok]) & (real[ok] <= hi[ok])).mean()),
+        "below": float((real[ok] < lo[ok]).mean()),
+        "above": float((real[ok] > hi[ok]).mean()),
+    }
+
+
+COVERAGE_HEADER = (f"{'h':>4} {'n':>7} {'cov%':>8} {'target%':>8} "
+                   f"{'miss<low':>9} {'miss>high':>10}")
+
+
+def _coverage_line(h: int, row: dict) -> str:
+    """One row of the coverage table. A function for the same reason
+    `_dollar_line` is one: a %-formatted NaN raising would take out the run at
+    the point where the table prints."""
+    return (f"{h:>4} {row['n']:>7} {100 * row['cov']:>8.2f} "
+            f"{100 * conformal.NOMINAL_COVERAGE:>8.2f} "
+            f"{100 * row['below']:>9.2f} {100 * row['above']:>10.2f}")
+
+
 DOLLAR_HEADER = (f"{'h':>4} {'subset':>10} {'n':>7} {'model':>8} {'p90':>8} "
                  f"{'quote':>8} {'naive':>8} {'nNaive':>7}")
 
@@ -524,16 +595,9 @@ def main() -> int:
               f"{'rankIC':>8} {'naiveIC':>8} {'vs naive':>9} {'pinnedIC':>9}")
 
         dollar_rows: list[tuple[int, dict]] = []
+        coverage_rows: list[tuple[int, dict]] = []
         for h in horizons:
-            rows = []
-            for _, r in served.iterrows():
-                f = r["forecasts"].get(h)
-                if not f or f.get("mid") is None or not r.get("current_price"):
-                    continue
-                rows.append({"item_id": r["item_id"],
-                             "current": float(r["current_price"]),
-                             "mid": float(f["mid"])})
-            frame = pd.DataFrame(rows)
+            frame = _served_rows(served, h)
             if frame.empty:
                 continue
 
@@ -572,6 +636,7 @@ def main() -> int:
                   f"{ic - naive_ic:>+9.4f} {pinned_ic:>9.4f}")
             dollar_rows += [(h, r) for r in
                             _dollar_error_rows(frame, pinned, tied)]
+            coverage_rows.append((h, _coverage_row(frame)))
 
         # The gate of the freshness experiment, and the only table here that two
         # arms can be compared on: rank IC above divides by the served quote,
@@ -585,6 +650,21 @@ def main() -> int:
         for h, r in dollar_rows:
             print(_dollar_line(h, r))
 
+        # The band, which this script scored nothing about until 2026-08-11.
+        # q_hat is fitted to cover 80% of residuals to a centre `predict` then
+        # moves (`_recenter_on_direction`), so `cov%` short of `target%` with the
+        # misses stacked on one side is that displacement, not a wide market.
+        # `conformal_centre` in meta.json says which centre this artifact's q_hat
+        # was fitted around.
+        centre = getattr(fc, "conformal_centre", {}) or {}
+        centres = ", ".join(f"{h}d={centre.get(h, 'unknown')}"
+                            for h, _ in coverage_rows)
+        print(f"\nBAND COVERAGE @ {anchor}   "
+              f"(low <= realised <= high; conformal_centre: {centres})")
+        print(COVERAGE_HEADER)
+        for h, r in coverage_rows:
+            print(_coverage_line(h, r))
+
         if "--basis-sweep" in sys.argv:
             # The SAME served mids, scored against four label bases. Everything
             # else -- artifact, anchor, items, transforms -- is held fixed, so a
@@ -593,14 +673,7 @@ def main() -> int:
                   f"(same served mids; 'cv' is prepare_targets' own basis)")
             print(f"{'h':>4} {'basis':>10} {'n':>7} {'rankIC':>8} {'vs served':>10}")
             for h in horizons:
-                rows = [{"item_id": r["item_id"],
-                         "current": float(r["current_price"]),
-                         "mid": float(r["forecasts"][h]["mid"])}
-                        for _, r in served.iterrows()
-                        if r["forecasts"].get(h)
-                        and r["forecasts"][h].get("mid") is not None
-                        and r.get("current_price")]
-                base_f = pd.DataFrame(rows)
+                base_f = _served_rows(served, h)
                 if base_f.empty:
                     continue
                 base_f = base_f[base_f["current"] >= floor]

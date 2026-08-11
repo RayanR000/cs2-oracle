@@ -35,6 +35,20 @@ paths:
   `prepare_targets` voids the label of any row whose `date + horizon` partner was dropped.
   It does **not** reduce feature-engineering time, which is what a wide
   `TRAIN_FEATURE_ROWS` actually buys.
+- **`CV_DIAGNOSTIC_CLASSIFIER` moves the served BAND since 2026-08-11, so it is no longer a
+  pure cost flag.** `predict` recentres the served mid on the directional classifier's call
+  *after* building the band from `q_hat`, preserving both half-widths — so `q_hat` has to be
+  fitted on residuals to that recentred centre, and the only honest source for it is the
+  per-fold out-of-fold call this flag gates. `_conformal_records(..., direction_class=...)`
+  does it; with the flag **off** (production's setting in `price-forecast.yml`) the centre
+  falls back to the q50 mid, `_calibrate_conformal` logs a WARNING, and `meta.json`'s
+  `conformal_centre` records `"q50"` for that horizon. Measured on a held-out split, the
+  displacement costs **59.8% served coverage against an 80% target** while the never-served
+  q50-centred band covers 79.5%. So the flag is a real trade — 932s, 52% of a
+  classifier-on retrain (872s off, 1804s on locally), which would put a retrain **at** the
+  30-minute cap — and not a free diagnostic. Never infer the centre from the environment;
+  read `conformal_centre`, and read `BAND COVERAGE` in `scripts/replay_serving.py` for the
+  empirical figure. `docs/changelog/2026-08-11-conformal-centre-follows-serving.md`.
 - **Training is fully sequential.** Horizons, quantiles, and ensemble members train one at
   a time; LightGBM's OpenMP threads supply the CPU parallelism. **Everything runs at
   `n_jobs = -1`** — the ensemble's `max(1, cpu_count // 2)` was deleted 2026-07-21 as

@@ -136,6 +136,24 @@ None of these is an accuracy improvement. All three are cheap, and all three blo
 
 ### F1. Calibrate `q_hat` around the mid that is actually served
 
+> ## ✅ SHIPPED 2026-08-11 — and inert on the daily path by design.
+> `docs/changelog/2026-08-11-conformal-centre-follows-serving.md`.
+> `_conformal_records` now measures the residual against `_recenter_on_direction`'s own
+> output, both callers pass a direction call, and `meta.json` carries `conformal_centre`
+> per horizon. Sized on a held-out split: **59.8% → 79.1%** served coverage against an
+> 80% target, with the never-served q50-centred band at 79.5%.
+> **The catch:** the served centre needs an out-of-fold direction call, and
+> `price-forecast.yml` sets `CV_DIAGNOSTIC_CLASSIFIER=0` (932s, 52% of a retrain, and
+> turning it on puts a retrain **at** the 30-minute cap). Production therefore keeps the
+> q50 centre and now WARNs; `model-diagnostics.yml` is where the fix is live.
+> **Open decision, cheapest first:** (1) stop recentring the mid and publish the
+> classifier's call as a label only — the existing `q_hat` is then already correct;
+> (2) fit the CV classifier for the last *k* folds only, ~310s at k=3; (3) pay the 932s.
+> The read for (1) vs the shipped state is one diagnostics dispatch each, on the new
+> `BAND COVERAGE` table in `scripts/replay_serving.py`.
+> **C5 is unblocked. Arm A's band question is now measurable** and is the last thing
+> holding its default.
+
 - **Do:** apply `_recenter_on_direction` inside the conformal records path before
   `_calibrate_conformal`, so the calibration centre and the serving centre are the same.
 - **Why:** `q_hat` is fitted on residuals to the **q50** mid, then `predict` moves the centre three

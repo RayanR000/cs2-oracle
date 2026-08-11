@@ -15,13 +15,16 @@ import pandas as pd
 import pytest
 
 from models.forecaster import ItemForecaster
-from scripts.replay_serving import (DOLLAR_HEADER, PINNED_MAX_SPAN_DAYS,
+from scripts.replay_serving import (COVERAGE_HEADER, DOLLAR_HEADER,
+                                    PINNED_MAX_SPAN_DAYS,
                                     PINNED_SMOOTH_WINDOW,
-                                    _basis_frame, _dollar_error_rows,
+                                    _basis_frame, _coverage_line,
+                                    _coverage_row, _dollar_error_rows,
                                     _dollar_line, _exact_day, _naive_baseline,
                                     _pin_matches_production, _pinned_anchor,
                                     _pinned_rank_ic, _rel_abs_error,
-                                    _requested_horizons, _tied_mask)
+                                    _requested_horizons, _served_rows,
+                                    _tied_mask)
 
 
 def _fc():
@@ -640,3 +643,92 @@ def test_the_tied_mask_is_the_basis_frames_own_split():
     bases = _basis_frame(_fc(), hist, anchor, horizon=3).set_index("item_id")
     for item in ("flat", "spiky", "gappy"):
         assert bool(bases.loc[item, "anchor_is_tied"]) == bool(mask[item]), item
+
+
+# ---------------------------------------------------------------------------
+# F1: the band's coverage, which nothing here measured
+#
+# `predict` publishes low/mid/high; the replay scored only the mid. q_hat is
+# calibrated to cover 80% of residuals to the q50 mid, and then
+# `_recenter_on_direction` moves the centre out from under it — so served
+# coverage is an empirical question, and this is the only vehicle that can ask
+# it without publishing a forecast and waiting.
+# ---------------------------------------------------------------------------
+
+
+def _served_payload(rows):
+    """rows: (item_id, current, mid, low, high) for one horizon, h=7."""
+    return pd.DataFrame([
+        {"item_id": i, "current_price": c,
+         "forecasts": {7: {"mid": m, "low": lo, "high": hi}}}
+        for i, c, m, lo, hi in rows
+    ])
+
+
+def test_the_served_rows_carry_the_band_not_just_the_mid():
+    """The not-inert pin. A coverage table fed a frame with no low/high column
+    is a table of NaN that reads as 'nothing to see'."""
+    served = _served_payload([("a", 10.0, 10.5, 9.0, 12.0)])
+    frame = _served_rows(served, 7)
+    assert frame.loc[0, "low"] == pytest.approx(9.0)
+    assert frame.loc[0, "high"] == pytest.approx(12.0)
+    assert frame.loc[0, "mid"] == pytest.approx(10.5)
+
+
+def test_the_served_rows_keep_a_mid_whose_band_is_missing():
+    """A row with no band still scores DA and rank IC, so dropping it here would
+    silently shrink the cohort every other table in this script reports."""
+    served = _served_payload([("a", 10.0, 10.5, None, None)])
+    frame = _served_rows(served, 7)
+    assert len(frame) == 1
+    assert np.isnan(frame.loc[0, "low"])
+
+
+def test_band_coverage_counts_the_boundary_as_covered_and_splits_the_misses():
+    """`in_interval` in the backtest is `low <= actual <= high`; this must agree,
+    or the two coverage figures are not the same measurement.
+
+    The low/high split is the diagnostic that names the cause: q_hat calibrated
+    around a centre the serving path moves misses asymmetrically, because the
+    displacement has a sign.
+    """
+    frame = pd.DataFrame({
+        "low":      [9.0, 9.0, 9.0, 9.0],
+        "high":     [11.0, 11.0, 11.0, 11.0],
+        "realised": [9.0, 11.0, 8.5, 11.5],   # both boundaries, then one each side
+    })
+    row = _coverage_row(frame)
+    assert row["n"] == 4
+    assert row["cov"] == pytest.approx(0.5)
+    assert row["below"] == pytest.approx(0.25)
+    assert row["above"] == pytest.approx(0.25)
+
+
+def test_band_coverage_ignores_a_row_with_no_band():
+    """A missing band is not a miss. Counting it as one would report
+    under-coverage for a reason that is not the calibration."""
+    frame = pd.DataFrame({
+        "low":      [9.0, np.nan, 9.0],
+        "high":     [11.0, 11.0, np.nan],
+        "realised": [10.0, 10.0, 10.0],
+    })
+    row = _coverage_row(frame)
+    assert row["n"] == 1
+    assert row["cov"] == pytest.approx(1.0)
+
+
+def test_band_coverage_reports_nan_rather_than_dividing_by_zero():
+    frame = pd.DataFrame({"low": [np.nan], "high": [np.nan], "realised": [10.0]})
+    row = _coverage_row(frame)
+    assert row["n"] == 0
+    assert np.isnan(row["cov"])
+
+
+def test_the_coverage_line_survives_a_nan_cohort():
+    """Same reason `_dollar_line` exists: a %-formatted NaN raising would take
+    out the run at the point where the table prints."""
+    line = _coverage_line(7, {"n": 0, "cov": float("nan"),
+                              "below": float("nan"), "above": float("nan")})
+    assert "7" in line
+    # And it lines up under its own header, or the table is unreadable in a log.
+    assert len(line) == len(COVERAGE_HEADER)
