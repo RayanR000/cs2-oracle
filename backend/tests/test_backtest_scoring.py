@@ -2768,3 +2768,37 @@ def test_reresolve_min_price_deletes_only_the_unresolvable(
         o.actual_price == pytest.approx(3.01)
         for o in session.query(ForecastOutcome).all()
     )
+
+
+def test_the_actionable_prediction_leg_reaches_the_scorer(session, tmp_path, monkeypatch):
+    """End-to-end, because the fix is inert unless `current_price` is SELECTed
+    onto the record.
+
+    The archive resolves "ak" to a base of 2.0 while serving quoted 2.8 — a 40%
+    wedge, which is the shape 85% of production rows have. The mid is 2.828, a
+    +1% predicted move on the price it was actually quoted from, and 1% cannot
+    clear tier 1's 23.1% bar at any venue. Scored against the resolved base the
+    same row reads +41% and lands in the subset, which is how 1,120 of 1,141
+    production rows got there.
+    """
+    # h=14 from FORECAST_DATE (07-05) targets 07-19, so the archive has to
+    # cover the anchor window and the target window both.
+    rows = [("ak", date(2026, 7, d), 2.0) for d in (3, 4, 5)]
+    rows += [("ak", date(2026, 7, d), 2.0) for d in (17, 18, 19)]
+    archive = _write_archive(tmp_path, rows)
+
+    _seed(session, 1, "ak", current_price=2.8, price_mid=2.828,
+          price_low=2.5, price_high=3.1, direction="up", horizon=14)
+    session.commit()
+
+    out = _run_backtest(session, archive, monkeypatch)
+    scored = [r for r in out if r["horizon_days"] == 14 and r["sample_count"] == 1]
+    assert scored, "the forecast was not scored at all"
+    m = scored[0]["metrics"]
+    assert m["actionable_scope"] == "in_scope"
+    assert m["actionable_n"] == 0, (
+        "a +1% forecast was reported as clearing a 23.1% friction bar; r_hat is "
+        "still dividing by the resolved base"
+    )
+    assert m["actionable_n_served_basis"] == 1
+    assert m["actionable_n_fallback_basis"] == 0

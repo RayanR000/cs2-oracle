@@ -6,10 +6,18 @@ paths:
 
 # Scoring and resolving the backtest
 
-- **The backtest resolves BOTH legs through `backtest/price_resolution.py::resolve_anchors`.**
-  `item_forecasts.current_price` is stored on the outcome for reference and is **never
-  scored on** — using it as the base leg is the bug that let one cohort score 61.76% and
-  33.74% on different days. Resolved outcomes are **frozen**: `base_price` / `actual_price`
+- **The backtest resolves BOTH legs of `actual_ret` through
+  `backtest/price_resolution.py::resolve_anchors`.** Using `item_forecasts.current_price` as
+  the base leg is the bug that let one cohort score 61.76% and 33.74% on different days, and
+  that rule is absolute: an actual return whose two legs come from different estimators is not
+  a measurement. **The one thing `current_price` IS scored on, since 2026-08-11, is
+  `actionable`'s prediction leg** — `r_hat` divides by the price the forecast was quoted from,
+  because `predicted_mid` was built as `current_price × (1 + r̂)`. Dividing it by the resolved
+  base instead recovers `r̂` plus the wedge between the two bases: median **13.74%** at
+  h ∈ {14,30} against a 7.2–37.5% bar, disagreeing on 85% of rows, which selected **1,141**
+  rows where the served basis selects **21**. `actionable_n_served_basis` /
+  `actionable_n_fallback_basis` report which denominator each cohort used.
+  `docs/changelog/2026-08-11-actionable-selection-is-the-base-wedge.md`. Resolved outcomes are **frozen**: `base_price` / `actual_price`
   / `resolved_at` are final, and `--reresolve` is the only thing that can move them
   (`--rescore` recomputes verdicts from the frozen actuals without reading the archive).
 - **Backtest maturity is bounded by archive coverage, not `date.today()`.** A forecast is
@@ -54,7 +62,13 @@ paths:
   The axis is **four fixed bands, not quartiles** (`fresh` / `repeat_1` / `run_2_6` /
   `run_7_plus`): ~80% of the ≥$1 cohort sits at zero, so data-driven quartiles collapse to one
   populated bucket and would still be reported as four.
-- **`actionable_*` is populated only at h ∈ {14, 30}.** `backtest/actionable.py` conditions
+- **`actionable_*` is populated only at h ∈ {14, 30}, and its stored series breaks at
+  2026-08-11.** Rows scored before that date divided `r_hat` by `base_price`; from that date it
+  is the served quote (above). The published cohort collapses from 1,141 to ~21 at h ∈ {14,30}
+  and the hit rate from 55.6% to 38.1% — **that is the correction, not a regression**, and it
+  is what `2026-08-07-next-steps.md` step 3 predicted: the model's predicted |return| is median
+  0.95% against a median threshold of 23.1%, so almost nothing it says implies a trade. Do not
+  difference an actionable number across that date. `backtest/actionable.py` conditions
   DA on `|r̂| > round trip + tier spread`, so it answers "does this call imply a trade at
   all" — at CSFloat that bar is 7.2% at tier 5 and 23.1% at tier 1. Read
   **`actionable_scope`** first: `out_of_scope` (wrong horizon), `no_prediction_leg` (records

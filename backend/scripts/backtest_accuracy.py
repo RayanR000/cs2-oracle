@@ -565,7 +565,7 @@ def _records_from_frozen_outcomes(db, min_price=0, forecast_ids=None):
     """
     select_sql = """
         SELECT o.forecast_id, o.item_id, o.horizon_days, o.model_version,
-               o.forecast_date, o.base_price, o.actual_price,
+               o.forecast_date, o.base_price, o.actual_price, o.current_price,
                o.predicted_price_low, o.predicted_price_mid,
                o.predicted_price_high, o.direction_predicted, f.confidence
         FROM forecast_outcomes o
@@ -620,10 +620,20 @@ def _records_from_frozen_outcomes(db, min_price=0, forecast_ids=None):
             # The clustering unit. Outcomes sharing a forecast_date share a
             # market-wide move, so the CI must resample these, not items.
             "forecast_date": r.forecast_date,
-            # The prediction leg, for the friction-conditioned metric:
-            # r_hat = (predicted_mid - base_price) / base_price. A frozen
-            # column, so this stays archive-free and --rescore keeps working.
+            # The prediction leg, for the friction-conditioned metric. Both
+            # columns are frozen, so this stays archive-free and --rescore keeps
+            # working.
+            #
+            # `current_price` is here because `r_hat` divides by the price the
+            # forecast was QUOTED FROM -- `predicted_mid` was built as
+            # `current_price x (1 + r_hat)`, and dividing by the resolved base
+            # instead recovers the wedge between the two bases, which is a median
+            # 13.74% on this cohort against a 7.2-37.5% bar. It does NOT breach
+            # "current_price is never scored on": the legs of `actual_ret` are
+            # untouched and both stay on resolve_anchors.
+            # docs/changelog/2026-08-11-actionable-selection-is-the-base-wedge.md
             "predicted_mid": mid,
+            "current_price": r.current_price,
             # ActionableDA is scoped to h in {14, 30}. Carried on the record
             # rather than passed into score_cohort: the grouping key already
             # fixes it per cohort, and eight test modules call score_cohort

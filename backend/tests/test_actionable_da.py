@@ -191,3 +191,109 @@ def test_the_metric_does_not_mutate_its_input():
     snapshot = [dict(r) for r in records]
     actionable_metrics(records, 14, MIN_DATES)
     assert records == snapshot
+
+
+# ---------------------------------------------------------------------------
+# The prediction leg divides by the price the forecast was QUOTED FROM.
+#
+# `predicted_mid` is produced by predict() as `current_price x (1 + r_hat)`.
+# Dividing it by the archive-resolved `base_price` does not recover `r_hat`; it
+# recovers `r_hat` plus the wedge between the two bases -- and that wedge is a
+# median 13.74% at h in {14,30} against thresholds of 7.2-37.5%, so it was
+# supplying the conviction. Measured 2026-08-11: 1,141 rows selected on the
+# resolved base against 21 on the served one, all 1,120 differences GAINED.
+# `docs/changelog/2026-08-11-actionable-selection-is-the-base-wedge.md`.
+#
+# `actual_price` keeps dividing by `base_price`. Both legs of the OUTCOME stay on
+# resolve_anchors -- that symmetry is what stopped the 61.76%/33.74% swing, and
+# this change must not touch it.
+# ---------------------------------------------------------------------------
+
+
+def _wedged(r_hat_served, wedge, tier=5, r_act=0.50, day=1, item_id=1):
+    """A record whose served quote sits `wedge` away from the resolved base.
+
+    `predicted_mid` is built from the SERVED quote, exactly as predict() builds
+    it, so `r_hat_served` is the model's actual predicted return.
+    """
+    base = 2000.0 if tier == 5 else 2.0
+    served = base * (1 + wedge)
+    return {
+        "base_price": base,
+        "current_price": served,
+        "predicted_mid": served * (1 + r_hat_served),
+        "actual_price": base * (1 + r_act),
+        "price_tier": tier,
+        "horizon_days": 14,
+        "item_id": item_id,
+        "forecast_date": date(2026, 7, day),
+        "direction_correct": 1 if (r_act > 0) == (r_hat_served > 0) else 0,
+        "predicted_direction": "up" if r_hat_served > 0 else "down",
+        "actual_direction": "up" if r_act > 0 else "down",
+    }
+
+
+def test_a_forecast_below_its_threshold_is_not_made_actionable_by_the_wedge():
+    """The defect, minimally. A 1% predicted move cannot imply a trade at a 7.2%
+    bar, however far the resolved base sits from the served quote."""
+    r = _wedged(r_hat_served=0.01, wedge=0.40, tier=5)
+    out = actionable_metrics([r], 14, MIN_DATES)
+    assert out["actionable_n"] == 0
+
+
+def test_a_forecast_above_its_threshold_stays_actionable_under_a_wedge():
+    """The converse, so the fix is not simply suppressing the metric."""
+    r = _wedged(r_hat_served=0.50, wedge=0.40, tier=5)
+    out = actionable_metrics([r], 14, MIN_DATES)
+    assert out["actionable_n"] == 1
+
+
+def test_the_outcome_leg_still_divides_by_the_resolved_base():
+    """`r_act` must stay on resolve_anchors' basis. Here the served quote is 40%
+    above the resolved base, so scoring the outcome against the served quote
+    would flip a +50% realised move to a +7% one -- and a two-legged actual
+    return is exactly the estimator mismatch that let one cohort score 61.76%
+    and 33.74% on different days.
+    """
+    # r_act > 0 and r_hat > 0, so a hit; E[net] carries the realised magnitude.
+    out = actionable_metrics([_wedged(r_hat_served=0.50, wedge=0.40, r_act=0.50)],
+                            14, MIN_DATES)
+    assert out["actionable_da"] == 100.0
+    # sign(r_hat) * r_act - threshold, with r_act on the RESOLVED base: 0.50.
+    expected = (0.50 - actionable_threshold(5, "csfloat")) * 100
+    assert abs(out["actionable_e_net_pct"] - expected) < 1e-6
+
+
+def test_a_record_without_a_served_quote_falls_back_to_the_resolved_base():
+    """`fold_records` has no `current_price` and does not need one: it builds
+    `mid = base * (1 + mid_ret)`, so `(mid - base)/base` IS the predicted
+    return. Walkforward numbers must not move at all.
+    """
+    legacy = _record(tier=5, r_hat=0.50)
+    assert "current_price" not in legacy
+    out = actionable_metrics([legacy], 14, MIN_DATES)
+    assert out["actionable_n"] == 1
+
+
+def test_a_null_served_quote_falls_back_rather_than_dropping_the_row():
+    """Legacy outcomes predate the column. A row that vanished here would shrink
+    the cohort silently, which is the failure the resolution gate exists for."""
+    r = _record(tier=5, r_hat=0.50)
+    r["current_price"] = None
+    assert actionable_metrics([r], 14, MIN_DATES)["actionable_n"] == 1
+    r["current_price"] = 0.0
+    assert actionable_metrics([r], 14, MIN_DATES)["actionable_n"] == 1
+
+
+def test_the_basis_split_is_reported_so_the_convention_is_visible():
+    """A metrics payload that cannot say which denominator it used is not
+    self-describing, and this change puts a discontinuity in the stored series.
+    `purge` / `embargo_days` set the precedent."""
+    served = _wedged(r_hat_served=0.50, wedge=0.10, item_id=1, day=1)
+    legacy = _record(tier=5, r_hat=0.50, item_id=2, day=2)
+    out = actionable_metrics([served, legacy], 14, MIN_DATES)
+    assert out["actionable_n_served_basis"] == 1
+    assert out["actionable_n_fallback_basis"] == 1
+
+    empty = actionable_metrics([], 14, MIN_DATES)
+    assert set(out) == set(empty), "the key set must not depend on the data"

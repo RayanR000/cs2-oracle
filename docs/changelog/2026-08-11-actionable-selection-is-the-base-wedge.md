@@ -74,6 +74,27 @@ Once `r_hat` uses the served base, the resolver never needs to know which price 
 from, and **arm A becomes scoring-neutral** — its default can be decided on its own merits
 rather than on a coupling. That is the answer to the plan's open question.
 
+## Shipped, 2026-08-11
+
+`_prediction_base` in `backtest/actionable.py`: `r_hat` divides by `current_price` when it is
+positive, else `base_price`. `r_act` untouched. `scripts/backtest_accuracy.py` now SELECTs
+`o.current_price` and carries it on the record — without that the fix is inert, which is what
+the end-to-end test in `test_backtest_scoring.py` pins: a +1% forecast under a 40% wedge was
+being reported as clearing tier 1's 23.1% bar.
+
+**No re-resolve, and no `model_version` bump.** `ActionableDA` is recomputed from frozen
+columns on every run, so there is nothing stored per row to migrate, and the model did not
+change — bumping its version string would misattribute a scorer fix. The discontinuity lives in
+the persisted `prediction_accuracy` series, so the payload describes itself instead:
+`actionable_n_served_basis` and `actionable_n_fallback_basis`, following the `purge` /
+`embargo_days` precedent. `fold_records` has no served quote and needs none — it builds
+`mid = base × (1 + mid_ret)`, so the resolved base *is* the quote there, and every walkforward
+number is unchanged by construction.
+
+The `backtest-scoring` rule said `current_price` is "never scored on". That sentence is now
+scoped: absolute for the legs of `actual_ret`, and explicitly *not* for the prediction leg.
+Left as-is it would have had the next reader revert this.
+
 ## Expect the number to collapse
 
 Fixing this drops the actionable cohort from 1,141 to ~21 rows at h ∈ {14, 30} and moves the
