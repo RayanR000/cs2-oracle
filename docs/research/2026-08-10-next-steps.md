@@ -221,7 +221,7 @@ Content in `docs/research/2026-08-09-next-steps.md`; re-ranked below N and F.
 
 | Item | State |
 |---|---|
-| `C1` | ⭐ **MEASURED and HP-CONFIRMED 2026-08-10; positive at all four horizons** — rank IC edge +0.0556 / +0.0561 / +0.0371 / +0.0316 on cached HP, rising to +0.0472 / +0.0446 at 14d/30d when re-tuned; served PT excess up 45–96%. The only arm to clear the `−return_1d` bar. Now the top item. `changelog/2026-08-10-instrument-panel-first-read.md`. |
+| `C1` | ⚠️ **CV-positive, and it does not appear at serving.** CV edge +0.0556 / +0.0561 / +0.0371 / +0.0316 on cached HP (re-confirmed 2026-08-11 with its own control: Δ vs control +0.0686 / +0.0883 / +0.0755 / +0.0483). But the serving replay of the same two artifacts is **worse in 6 of 8 cells**, mean Δ −0.0176 / −0.0478 / −0.0763 / +0.0447. Two anchors, no interval — not a refutation, and not shippable on the CV number either. `changelog/2026-08-11-rank-transform-does-not-transfer-to-serving.md`. |
 | `C3` | Residual reversal as a feature. Not started. Note the overlap with N1 — both are `−return_1d` derivatives. |
 | `C4` | Re-derive the feature allowlist with `cross_sectional` restored. Compute the MDE first; it may not clear the floor. |
 | `C5` | Split conformal + ACI. **Do F1 first.** |
