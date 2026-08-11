@@ -51,7 +51,14 @@ paths:
   **every** item, so the served `current_price` is a number no venue quoted. The flag gates
   the substitution on the deviation test the warning already describes
   (`_serving_base_price`, threshold `ItemForecaster.ANCHOR_OUTLIER_TOLERANCE`, boundary
-  exclusive). Off by default and **unmeasured**. Three things to know before reading it:
+  exclusive). Off by default. ⚠️ **Measured 2026-08-11: it PASSES on dollar error — 14 of 16
+  cells above a cohort-composition placebo, tied cohort 0.00 in all 16 — and it buys NO
+  forecasting skill.** The model's edge over its own no-change quote moves at 10 of 16 (coin
+  flip), and `pinnedIC`'s +0.06–0.40 is the `p/S` free factor again, this time in the
+  prediction: pinning the denominator does not make rank IC arm-comparable when the arm moves
+  the served mid's level. Still off by default — the open blocker is the backtest resolver,
+  which shares `SMOOTH_WINDOW`. `docs/changelog/2026-08-11-serving-anchor-freshness-measured.md`.
+  Three things to know before reading it:
   it is **serving-only**, so it touches no CV number and leaves **no trace in `meta.json`** —
   the log line and the `model-diagnostics.yml` arm heading are the only record; the deviation
   mask is **arm-invariant** by construction, so both dispatches size the same cohort; and it

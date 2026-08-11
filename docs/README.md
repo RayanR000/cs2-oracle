@@ -22,6 +22,14 @@ report it rather than working around it.
 > The same run found the project's **first measured served signal**: rank IC +0.13/+0.16/+0.17
 > at 3/7/14d on the third of the cohort whose anchor quote equals its local median, against
 > nothing usable (−0.20 at h=3) on the rest. 30d does not replicate (+0.05, 3 of 4 anchors).
+>
+> **Attacking `p/S` in the SERVING basis works, and it is not an accuracy lever (2026-08-11).**
+> `SERVE_OUTLIER_GATED_ANCHOR=1` serves the raw quote unless it deviates >10%; dollar error on
+> the deviating cohort improves at **14 of 16 cells** above a composition placebo. But the
+> model's edge over simply republishing the served price moves at 10 of 16 — a coin flip — and
+> on that cohort the quote **beats** the forecast in dollars at 12 of 16 control cells. Off by
+> default; the blocker is the shared backtest resolver.
+> `changelog/2026-08-11-serving-anchor-freshness-measured.md`.
 
 ## Architecture (`architecture/`)
 

@@ -1,5 +1,24 @@
 # Quote against a fresher anchor, 2026-08-11
 
+> ## Status — 2026-08-11, all four tasks done
+>
+> **Arm A passes the gate: dollar error improves at 14 of 16 cells above the placebo, on the
+> deviating cohort.** Control `31512455612` / arm `31514765343`, both on `e2c2c80`. The tied
+> cohort is 0.00 different in all 16 cells — the negative control works.
+>
+> **It is a quoting correction and buys no forecasting skill.** The model's edge over its own
+> no-change quote moves at 10 of 16 cells (coin flip), and `pinnedIC`'s +0.06–0.40 is the same
+> `p/S` free-factor arithmetic that refuted the label arm — moved from the label to the
+> prediction. **That corrects task 1's claim**: pinning the denominator does not make rank IC
+> comparable across arms, because this arm moves the numerator's level and both legs carry
+> `p/S` together. Dollar error is the only metric here no arm touches.
+>
+> Uncomfortable control-side fact: on the deviating cohort the served quote beats the forecast
+> in dollars at **12 of 16 cells**. Full read: `docs/changelog/2026-08-11-serving-anchor-freshness-measured.md`.
+>
+> **Not shipped.** The arm stays off by default. What blocks the default is the backtest
+> resolver (below), not the measurement.
+
 **Raised by** `docs/changelog/2026-08-11-smoothed-anchor-label-measured.md`. The wedge
 `p[d]/S[d]` — the last raw quote over the span-bounded median production quotes from — is
 what both label bases are contaminated by, in opposite directions. Neither choice of
@@ -65,7 +84,7 @@ or an arm that edits `_smoothed_anchor_prices` silently moves the referee too.
 | 1 | Pin the replay's scoring denominator so it cannot follow the arm; test that it is unchanged when the serving flag flips | ✅ done |
 | 2 | Add dollar-error columns to the replay (median and p90 of `\|mid − realised\|/realised`), control and naive alongside | ✅ done |
 | 3 | Arm A behind `SERVE_OUTLIER_GATED_ANCHOR=1`, plus the `model-diagnostics.yml` input; test both branches and the >10% boundary | ✅ done |
-| 4 | Two dispatches on one commit, four anchors, sequential | ~1h wall clock |
+| 4 | Two dispatches on one commit, four anchors, sequential | ✅ done — **gate PASSED** |
 
 **~2.5h of work plus ~1h of CI.** I estimated "~2h to prototype" in conversation; that was
 the arm alone and ignored tasks 1–2, without which the read is not interpretable.
