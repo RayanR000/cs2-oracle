@@ -202,6 +202,19 @@ None of these is an accuracy improvement. All three are cheap, and all three blo
 
 ### F3. Stop encoding configuration in `model_version`
 
+> ## ✅ SHIPPED 2026-08-11.
+> `docs/changelog/2026-08-11-model-version-is-not-a-config.md`.
+> `served_identity()` keys the cohort on the artifact, the writer puts the config in the
+> Parquet mirror and **observes** it (`SKIP_REGIMES=1` had been labelling itself `-regime`),
+> and `config_dates` / the `pooling …` prefix disclose every merge. No migration and no
+> production write — legacy rows canonicalise at read. On the ops mirror the panel goes
+> **5 → 8 / 4 → 7 / 2 → 4 / 1 → 1** forecast dates at 3/7/14/30d.
+> **It does not produce a headline**, and the diagnosis above was half right: the code half
+> is fixed, and ~12 more daily runs at h=3 are the calendar half. Two things it corrects —
+> the suffix never separated a row (`item_forecasts` is unique on
+> `(item_id, forecast_date, horizon_days)`, so the second config **overwrote** the first),
+> and it does **not** unblock the bias fit, which already pooled via `LIKE 'lgbm-v3%'`.
+
 - **Do:** separate the served-model identity from its configuration, so a config flag does not fork
   the scoring panel. Alternatively, score across versions where the artifact is materially the same.
 - **Why:** `ops/item_forecasts.parquet` holds **6 distinct forecast dates in total**, split

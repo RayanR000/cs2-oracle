@@ -52,6 +52,14 @@ report it rather than working around it.
 > field and it encodes the *configuration*, so every config change resets the panel — twenty
 > daily runs yield twenty dates only if nothing about the config moves for twenty days, and
 > `SKIP_REGIMES=1` landed 2026-08-10. Tracked as **F3**.
+>
+> ✅ **The code half is fixed, 2026-08-11 — and the figure is still not quotable.**
+> `served_identity()` keys the cohort on the artifact rather than the configuration, so the
+> panel merges to **8 / 7 / 4 / 1** forecast dates at 3/7/14/30d (from a best single cohort of
+> 5 / 4 / 2 / 1) and now accumulates instead of resetting. Still under 20 at every horizon:
+> the remainder is genuinely the calendar, ~12 more daily runs at h=3 and 20 maturing
+> 30-day-old forecasts at h=30. Quote `config_dates` beside any pooled number.
+> `changelog/2026-08-11-model-version-is-not-a-config.md`.
 
 > ⚠️ **Two published metrics do not mean what they appear to (audited 2026-08-10).**
 > `constant_call_accuracy` is **hindsight-selected per fold**, so `edge_vs_constant_call*` is a

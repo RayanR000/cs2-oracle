@@ -25,6 +25,45 @@ BOOTSTRAP_CI = 95
 BOOTSTRAP_RNG_SEED = 42
 CONFIDENCE_TARGET_ACCURACY = 80.0
 
+# Suffixes `scripts/forecast_prices.py` used to append to MODEL_VERSION to
+# record which SERVING CONFIGURATION wrote a row. They are not model identities:
+# `-regime` and `-global-only` are the same artifact with SKIP_REGIMES flipped,
+# and the DB's unique key on item_forecasts is
+# (item_id, forecast_date, horizon_days) with no model_version in it — so the
+# suffix never separated a row from another, it only forked the scoring cohort.
+#
+# The fork is what kept every cohort under MIN_FORECAST_DATES: the stored panel
+# split `lgbm-v3-regime` (8 forecast dates) / `lgbm-v3` (2) / `-global-only` (1),
+# and `score_cohort` keys on the label, so run 31409508960 scored 110,615 frozen
+# outcomes and returned NO HEADLINE (insufficient_dates) at every horizon.
+#
+# An ALLOWLIST, deliberately, not a prefix strip. `lgbm-v1` and
+# `lgbm-catboost-v2` are different models, and `-ens3`/`-ens6`/`-clustered` are
+# A/B harnesses' own prediction_accuracy series; merging any of those would pool
+# cohorts that never shared an artifact. A genuinely new version must be a new
+# identity, and adding one here has to be a deliberate edit.
+SERVING_CONFIG_SUFFIXES = ("-regime", "-global-only")
+
+# What a row with no label at all scores as. Kept here rather than as an
+# `or "unknown"` at each grouping site so one function owns the whole mapping.
+UNKNOWN_MODEL_VERSION = "unknown"
+
+
+def served_identity(model_version) -> str:
+    """The served artifact a stored `model_version` belongs to.
+
+    Strips a SERVING_CONFIG_SUFFIXES suffix so rows that differ only by
+    configuration score as one cohort. Every other label passes through
+    unchanged; a missing one becomes UNKNOWN_MODEL_VERSION.
+    """
+    if not model_version:
+        return UNKNOWN_MODEL_VERSION
+    for suffix in SERVING_CONFIG_SUFFIXES:
+        if model_version.endswith(suffix):
+            return model_version[: -len(suffix)]
+    return model_version
+
+
 # Below this many distinct forecast dates, a cohort cannot separate model skill
 # from the market's direction on the days it happens to cover, whatever its
 # sample_count says.
@@ -347,6 +386,22 @@ def score_cohort(records: list[dict]) -> tuple[dict, int]:
     # check, which is the correct reading of "we cannot tell".
     forecast_dates = [r.get("forecast_date") for r in records]
     distinct_dates = len({d for d in forecast_dates if d is not None})
+
+    # Which stored labels this cohort pooled, in DISTINCT FORECAST DATES each.
+    # served_identity merges rows that differ only by serving configuration, and
+    # a merge is only honest if the payload says what went into it. Dates rather
+    # than row counts because dates are the unit MIN_FORECAST_DATES counts: a
+    # config contributing 1 date to a 20-date panel is a different claim from one
+    # contributing 10.
+    #
+    # Absent, not empty, when no record carries the raw label — an empty dict
+    # reads as "pooled nothing", absent reads as "this payload does not say",
+    # which is what a pre-2026-08-11 record can support.
+    config_dates = defaultdict(set)
+    for r in records:
+        raw = r.get("model_version_raw")
+        if raw and r.get("forecast_date") is not None:
+            config_dates[raw].add(r["forecast_date"])
     dir_ci_cl_lower, dir_ci_cl_upper = _as_percent(
         block_bootstrap_ci(
             [r["direction_correct"] for r in records], forecast_dates
@@ -420,6 +475,10 @@ def score_cohort(records: list[dict]) -> tuple[dict, int]:
         "mae_ci_lower": mae_ci_lower,
         "mae_ci_upper": mae_ci_upper,
     }
+    if config_dates:
+        metrics["config_dates"] = {
+            k: len(v) for k, v in sorted(config_dates.items())
+        }
     metrics.update(pt)
     metrics.update(actionable)
     return metrics, n

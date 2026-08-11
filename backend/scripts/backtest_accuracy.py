@@ -50,6 +50,7 @@ from backtest.scoring import (
     price_tier,
     score_by_tier,
     score_cohort,
+    served_identity,
 )
 
 # Re-exported so the gate's threshold has one definition. The gate itself —
@@ -629,7 +630,8 @@ def _records_from_frozen_outcomes(db, min_price=0, forecast_ids=None):
         SELECT o.forecast_id, o.item_id, o.horizon_days, o.model_version,
                o.forecast_date, o.base_price, o.actual_price, o.current_price,
                o.predicted_price_low, o.predicted_price_mid,
-               o.predicted_price_high, o.direction_predicted, f.confidence
+               o.predicted_price_high, o.direction_predicted, f.confidence,
+               f.model_version AS forecast_model_version
         FROM forecast_outcomes o
         LEFT JOIN item_forecasts f ON f.id = o.forecast_id
     """
@@ -663,7 +665,20 @@ def _records_from_frozen_outcomes(db, min_price=0, forecast_ids=None):
             quote=r.current_price,
         )
 
-        groups[(r.horizon_days, r.model_version or "unknown")].append({
+        # served_identity, not the raw label: rows differing only by serving
+        # configuration are one cohort, or no cohort ever reaches
+        # MIN_FORECAST_DATES. The raw label rides on the record so the merge is
+        # disclosed in `config_dates` rather than silent.
+        groups[(r.horizon_days, served_identity(r.model_version))].append({
+            # The forecast's OWN stored label, which is where the configuration
+            # survives: the outcome carries the identity (it is what the next run
+            # groups on), and item_forecasts is not migrated, so the legacy
+            # `-regime` / `-global-only` fork stays readable from this side.
+            # Falls back to the outcome's label when the join finds no forecast
+            # row.
+            "model_version_raw": (
+                getattr(r, "forecast_model_version", None) or r.model_version
+            ),
             "abs_error": verdict["abs_error"],
             "pct_error": verdict["pct_error"],
             "sq_error": (mid - actual) ** 2,
@@ -859,7 +874,19 @@ def _headline_line(horizon, model_version, metrics, n) -> tuple[int, str]:
         f"Skill={metrics['skill_vs_baseline']} "
         f"Actionable={_actionable_str(metrics)}"
     )
-    prefix = f"  [{horizon}d / {model_version}] >=$1: {n:,} samples over {n_dates} forecast dates"
+    # Named in the prefix when the cohort pooled more than one stored label, so
+    # the merge is visible where the number is read. One label is the ordinary
+    # case and stays quiet.
+    configs = metrics.get("config_dates") or {}
+    config_str = ""
+    if len(configs) > 1:
+        config_str = " pooling " + ", ".join(
+            f"{k}:{v}d" for k, v in sorted(configs.items())
+        )
+    prefix = (
+        f"  [{horizon}d / {model_version}] >=$1: {n:,} samples over "
+        f"{n_dates} forecast dates{config_str}"
+    )
 
     if verdict == "skill":
         return logging.INFO, (
@@ -1097,11 +1124,16 @@ def backtest_forecasts(db, today=None, min_price=0, reresolve=False, rescore=Fal
         f"  {len(frozen_ids):,} already frozen, {len(to_resolve):,} to resolve"
     )
 
-    # Group by horizon + model_version. Only the unfrozen forecasts are grouped:
-    # a group with nothing new performs no archive read at all.
+    # Group by horizon + served identity. Only the unfrozen forecasts are
+    # grouped: a group with nothing new performs no archive read at all.
+    #
+    # The identity, not the stored label, because this key is what
+    # `resolve_outcomes` writes to `forecast_outcomes.model_version` — a
+    # suffixed row here would re-fork the panel from the outcome side on every
+    # later run, even with the forecast writer fixed.
     groups = defaultdict(list)
     for r in to_resolve:
-        key = (r.horizon_days, r.model_version or "unknown")
+        key = (r.horizon_days, served_identity(r.model_version))
         groups[key].append(r)
 
     id_to_slug = {}

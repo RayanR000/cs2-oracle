@@ -315,13 +315,14 @@ def _write_archive(tmp_path, rows):
 
 
 def _seed(session, pk, slug, *, current_price, price_mid, direction="flat",
-          price_low=None, price_high=None, horizon=HORIZON):
+          price_low=None, price_high=None, horizon=HORIZON,
+          model_version="lgbm-test", forecast_date=None):
     session.add(Item(id=pk, item_id=slug, name=slug, type="skin"))
     session.add(
         ItemForecast(
             id=pk,
             item_id=pk,
-            forecast_date=FORECAST_DATE,
+            forecast_date=forecast_date or FORECAST_DATE,
             horizon_days=horizon,
             price_low=price_low,
             price_mid=price_mid,
@@ -329,7 +330,7 @@ def _seed(session, pk, slug, *, current_price, price_mid, direction="flat",
             current_price=current_price,
             direction=direction,
             confidence="high",
-            model_version="lgbm-test",
+            model_version=model_version,
         )
     )
 
@@ -2959,3 +2960,151 @@ def test_a_wedged_forecast_is_scored_against_the_band_it_was_quoted_from(
 
     stored = session.query(ForecastOutcome).filter_by(forecast_id=1).one()
     assert stored.in_interval == 1
+
+
+# ---------------------------------------------------------------------------
+# F3: the served identity is not its configuration
+# ---------------------------------------------------------------------------
+
+
+def test_served_identity_collapses_the_serving_config_suffixes():
+    """`-regime` and `-global-only` are the same artifact with SKIP_REGIMES
+    flipped. Keying the scoring cohort on them forked the date panel three ways
+    and no cohort could ever reach MIN_FORECAST_DATES."""
+    from backtest.scoring import served_identity
+
+    assert served_identity("lgbm-v3-regime") == "lgbm-v3"
+    assert served_identity("lgbm-v3-global-only") == "lgbm-v3"
+    assert served_identity("lgbm-v3") == "lgbm-v3"
+
+
+def test_served_identity_does_not_merge_genuinely_different_artifacts():
+    """The suffix list is an allowlist, not a prefix strip. lgbm-v1 and
+    lgbm-catboost-v2 are different models, and the `-ens3`/`-ens6` labels are
+    an A/B harness's own series in prediction_accuracy — merging any of them
+    would pool cohorts that never shared an artifact."""
+    from backtest.scoring import served_identity
+
+    for label in ("lgbm-v1", "lgbm-catboost-v2", "lgbm-v3-ens3", "lgbm-v3-ens6",
+                  "lgbm-v4", "lgbm-v3-clustered"):
+        assert served_identity(label) == label
+
+
+def test_served_identity_names_the_missing_label_rather_than_dropping_it():
+    """Both grouping sites used `r.model_version or "unknown"`. That mapping
+    belongs with the rest of it, so there is one function to read."""
+    from backtest.scoring import served_identity
+
+    assert served_identity(None) == "unknown"
+    assert served_identity("") == "unknown"
+
+
+def test_a_merged_cohort_reports_which_configs_it_pooled():
+    """Merging is only honest if the payload says what was merged. Distinct
+    forecast dates per stored label, not row counts: dates are the unit
+    MIN_FORECAST_DATES counts, and a config that contributed one date to a
+    20-date panel is a different claim from one that contributed ten."""
+    records = [
+        _record(model_version_raw="lgbm-v3-regime", forecast_date=date(2026, 8, d))
+        for d in (1, 2, 3)
+    ]
+    records += [
+        _record(model_version_raw="lgbm-v3-global-only", forecast_date=date(2026, 8, 4))
+    ]
+    # Two rows, one date -- must count once.
+    records += [
+        _record(model_version_raw="lgbm-v3", forecast_date=date(2026, 7, 17)),
+        _record(model_version_raw="lgbm-v3", forecast_date=date(2026, 7, 17)),
+    ]
+
+    metrics, _ = score_cohort(records)
+
+    assert metrics["config_dates"] == {
+        "lgbm-v3": 1,
+        "lgbm-v3-global-only": 1,
+        "lgbm-v3-regime": 3,
+    }
+    assert metrics["distinct_forecast_dates"] == 5
+
+
+def test_config_dates_is_absent_rather_than_empty_on_unlabelled_records():
+    """Every record predating the field. An empty dict reads as "we pooled
+    nothing"; absent reads as "this payload does not say", which is true."""
+    metrics, _ = score_cohort([_record(forecast_date=date(2026, 8, 1))])
+    assert "config_dates" not in metrics
+
+
+def test_scoring_merges_two_configs_into_one_cohort(session, tmp_path, monkeypatch):
+    """End to end: two forecasts on two dates under the two suffixed labels
+    must score as ONE cohort spanning two forecast dates, not two cohorts of
+    one date each."""
+    from scripts import backtest_accuracy
+
+    rows = [(slug, date(2026, 7, d), 3.0)
+            for slug in ("ak", "ak2") for d in range(1, 9)]
+    archive = _write_archive(tmp_path, rows)
+
+    _seed(session, 1, "ak", current_price=3.0, price_mid=3.0,
+          price_low=2.0, price_high=4.0, direction="flat",
+          model_version="lgbm-v3-regime")
+    _seed(session, 2, "ak2", current_price=3.0, price_mid=3.0,
+          price_low=2.0, price_high=4.0, direction="flat",
+          model_version="lgbm-v3-global-only",
+          forecast_date=FORECAST_DATE - timedelta(days=1))
+    session.commit()
+    _run_backtest(session, archive, monkeypatch)
+
+    groups = backtest_accuracy._records_from_frozen_outcomes(session)
+    keys = [k for k in groups if k[0] == HORIZON]
+    assert keys == [(HORIZON, "lgbm-v3")], f"cohort still forked: {sorted(groups)}"
+
+    metrics, n = score_cohort(groups[keys[0]])
+    assert n == 2
+    assert metrics["distinct_forecast_dates"] == 2
+    assert metrics["config_dates"] == {
+        "lgbm-v3-global-only": 1,
+        "lgbm-v3-regime": 1,
+    }
+
+
+def test_the_frozen_outcome_inherits_the_canonical_label(
+    session, tmp_path, monkeypatch
+):
+    """The stored outcome must carry the identity, not the config: it is what
+    the next run groups on, and a suffixed row would re-fork the panel from
+    the outcome side even after the forecast side was fixed."""
+    rows = [("ak", date(2026, 7, d), 3.0) for d in (3, 4, 5)]
+    rows += [("ak", date(2026, 7, d), 3.3) for d in (6, 7, 8)]
+    archive = _write_archive(tmp_path, rows)
+    _seed(session, 1, "ak", current_price=3.0, price_mid=3.6,
+          price_low=3.0, price_high=4.0, direction="up",
+          model_version="lgbm-v3-regime")
+    session.commit()
+    _run_backtest(session, archive, monkeypatch)
+
+    stored = session.query(ForecastOutcome).filter_by(forecast_id=1).one()
+    assert stored.model_version == "lgbm-v3"
+
+
+def test_the_headline_line_names_a_pooled_cohort():
+    """The disclosure has to appear where the number is read, not only in the
+    stored payload."""
+    from scripts import backtest_accuracy
+
+    records = [
+        _record(model_version_raw="lgbm-v3-regime", forecast_date=date(2026, 8, 1)),
+        _record(model_version_raw="lgbm-v3-global-only", forecast_date=date(2026, 8, 2)),
+    ]
+    metrics, n = score_cohort(records)
+    _, msg = backtest_accuracy._headline_line(3, "lgbm-v3", metrics, n)
+    assert "pooling lgbm-v3-global-only:1d, lgbm-v3-regime:1d" in msg
+
+
+def test_the_headline_line_stays_quiet_on_a_single_config():
+    """One label is the ordinary case; a "pooling" note there would be noise."""
+    from scripts import backtest_accuracy
+
+    records = [_record(model_version_raw="lgbm-v3", forecast_date=date(2026, 8, 1))]
+    metrics, n = score_cohort(records)
+    _, msg = backtest_accuracy._headline_line(3, "lgbm-v3", metrics, n)
+    assert "pooling" not in msg

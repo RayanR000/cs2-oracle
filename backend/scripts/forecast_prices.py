@@ -287,8 +287,23 @@ def _model_age_days(forecaster) -> Optional[int]:
     return (datetime.now(timezone.utc) - trained).days
 
 
-def _write_forecasts_to_db(db, results, model_version, slug_to_id, today):
-    """Write forecast results to the item_forecasts table. Returns count."""
+def _write_forecasts_to_db(db, results, model_version, slug_to_id, today,
+                           model_config=None):
+    """Write forecast results to the item_forecasts table. Returns count.
+
+    `model_version` is the served artifact's IDENTITY and nothing else.
+    `model_config` names the serving configuration that produced the row and
+    goes to the Parquet mirror only — the same split as `item_slug` below.
+
+    Encoding the configuration in `model_version` is what F3 removed. The two
+    were one string (`lgbm-v3-regime` / `lgbm-v3-global-only`), and
+    `backtest/scoring.py::score_cohort` keys the cohort on it, so a config flag
+    forked the date panel and no cohort could reach MIN_FORECAST_DATES. The
+    suffix bought nothing in exchange: item_forecasts is unique on
+    (item_id, forecast_date, horizon_days), so two configs writing the same day
+    never coexisted as rows — the second overwrote the first and only relabelled
+    it. See docs/changelog/2026-08-11-model-version-is-not-a-config.md.
+    """
     forecast_rows = []
     for _, row in results.iterrows():
         slug = str(row["item_id"])
@@ -373,7 +388,10 @@ def _write_forecasts_to_db(db, results, model_version, slug_to_id, today):
         from db.parquet import append_table
         append_table(
             "item_forecasts",
-            [{**r, "item_slug": id_to_slug.get(r["item_id"])} for r in forecast_rows],
+            [{**r,
+              "item_slug": id_to_slug.get(r["item_id"]),
+              "model_config": model_config}
+             for r in forecast_rows],
             ["item_id", "forecast_date", "horizon_days"],
         )
 
@@ -541,9 +559,16 @@ def run_forecast(train_only: bool = False, predict_only: bool = False,
             logger.warning("No forecast results generated.")
             return {"status": "empty", "forecast_count": 0}
 
-        version_regime = f"{MODEL_VERSION}-regime"
-        n_regime = _write_forecasts_to_db(db, results, version_regime, slug_to_id, today)
-        logger.info(f"Wrote {n_regime} forecasts (regime mode) to item_forecasts table")
+        # Read off the forecaster, not off which branch we are in: SKIP_REGIMES=1
+        # (production since 2026-08-10) leaves regime_models empty, so the old
+        # unconditional "-regime" label was describing a configuration that did
+        # not run. `predict` prefers a regime model over the global one where it
+        # has one, which is exactly why this has to be observed rather than
+        # assumed.
+        config_a = "regime" if forecaster.regime_models else "global-only"
+        n_regime = _write_forecasts_to_db(db, results, MODEL_VERSION, slug_to_id,
+                                          today, model_config=config_a)
+        logger.info(f"Wrote {n_regime} forecasts ({config_a} config) to item_forecasts table")
 
         # Update bias corrections from outcomes if requested
         if update_bias:
@@ -563,13 +588,17 @@ def run_forecast(train_only: bool = False, predict_only: bool = False,
             logger.info(f"  Cleared {n_cleared} regime model groups")
 
             results_global = forecaster.predict()
-            version_global = f"{MODEL_VERSION}-global-only"
-            n_global = _write_forecasts_to_db(db, results_global, version_global, slug_to_id, today)
-            logger.info(f"Wrote {n_global} forecasts (global-only mode) to item_forecasts table")
+            n_global = _write_forecasts_to_db(db, results_global, MODEL_VERSION,
+                                              slug_to_id, today,
+                                              model_config="global-only")
+            logger.info(f"Wrote {n_global} forecasts (global-only config) to item_forecasts table")
 
-            # Run backtest on both model versions
+            # Run backtest on both configs. They no longer score as separate
+            # cohorts, and they never were separate rows: the second write
+            # overwrote the first on the (item, date, horizon) key, so what is
+            # stored for today is the global-only run either way.
             logger.info("=" * 60)
-            logger.info("Running backtest on both model versions...")
+            logger.info("Running backtest...")
             logger.info("=" * 60)
             try:
                 from scripts.backtest_accuracy import backtest_forecasts
@@ -586,15 +615,17 @@ def run_forecast(train_only: bool = False, predict_only: bool = False,
                 "items_global": len(results_global),
                 "forecasts_global": n_global,
                 "backtest_records": len(bt_results or []),
-                "model_version_regime": version_regime,
-                "model_version_global": version_global,
+                "model_version": MODEL_VERSION,
+                "model_config_a": config_a,
+                "model_config_b": "global-only",
             }
 
         return {
             "status": "success",
             "items": len(results),
             "forecasts": n_regime,
-            "model_version": version_regime,
+            "model_version": MODEL_VERSION,
+            "model_config": config_a,
         }
 
     except Exception as e:

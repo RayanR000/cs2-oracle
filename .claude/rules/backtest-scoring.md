@@ -30,6 +30,22 @@ paths:
   `docs/changelog/2026-08-11-actionable-selection-is-the-base-wedge.md`. Resolved outcomes are **frozen**: `base_price` / `actual_price`
   / `resolved_at` are final, and `--reresolve` is the only thing that can move them
   (`--rescore` recomputes verdicts from the frozen actuals without reading the archive).
+- **The scoring cohort keys on `served_identity(model_version)`, never on the raw label.**
+  `backtest/scoring.py::served_identity` strips `SERVING_CONFIG_SUFFIXES` (`-regime`,
+  `-global-only`) so rows differing only by serving configuration score as one cohort, and
+  maps a missing label to `unknown`. It is an **allowlist, not a prefix strip**: `lgbm-v1`,
+  `lgbm-catboost-v2` and the harnesses' `-ens3` / `-ens6` / `-clustered` series are different
+  artifacts and must never merge. Both grouping sites in `backtest_accuracy.py` use it —
+  including the resolution path, whose group key is what `resolve_outcomes` writes to
+  `forecast_outcomes.model_version`. The fork is why every cohort read `NO HEADLINE
+  (insufficient_dates)`: three labels split a panel of 11 forecast dates against
+  `MIN_FORECAST_DATES = 20`, and it never separated a *row* from another — `item_forecasts` is
+  unique on `(item_id, forecast_date, horizon_days)`, so the second config's write overwrote
+  the first's and only relabelled it. `score_cohort` reports **`config_dates`** (distinct
+  forecast dates per stored label, absent when no record carries one) and `_headline_line`
+  prints `pooling …` when a cohort merged more than one — quote that beside any pooled figure.
+  Legacy rows are **not** migrated; the canonicalisation happens at read.
+  `docs/changelog/2026-08-11-model-version-is-not-a-config.md`.
 - **Backtest maturity is bounded by archive coverage, not `date.today()`.** A forecast is
   evaluable only once `prices-*.parquet` covers its target date; the cutoff is
   `min(today, archive_max_day())`. The archive always lags the calendar, and admitting
