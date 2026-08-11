@@ -14,8 +14,8 @@ with the served band calibrated by split conformal.
   `RayanR000/cs2-oracle-data` repo, which only CI writes (orphan commit + force-push in
   `aggregator-update.yml`). The local copy also runs *behind* it. Nothing written there is
   committed by this repo.
-- `docs/` — `architecture/` (4), dated decision records in `changelog/` (121), `references/` (5),
-  `research/` (14, incl. the live action list), `superpowers/{specs,plans}` (28), and the loose
+- `docs/` — `architecture/`, dated decision records in `changelog/`, `references/`,
+  `research/` (incl. the live action list), `superpowers/{specs,plans}`, and the loose
   `design.md`, `product.md`, `operations.md`. Indexed in `docs/README.md`.
 - `.claude/rules/` — backend subsystem detail, scoped by path so it loads only when you touch
   the matching files. Indexed in `backend/AGENTS.md`.

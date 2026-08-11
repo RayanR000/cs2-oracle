@@ -37,6 +37,3 @@ are already in context — pick from that listing rather than restating it here.
 
 For codebase search use the built-in `Explore`; for diff review use the `/code-review`
 and `/security-review` skills. Don't build project agents that duplicate those.
-
-The agents in `.opencode/agents/` and the task permissions in `opencode.json` are
-**OpenCode-only** and are not invocable here.
