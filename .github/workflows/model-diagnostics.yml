@@ -92,6 +92,26 @@ on:
         required: false
         default: false
         type: boolean
+      # The band's width, and the only arm here that touches neither the
+      # features, nor the label, nor the prediction. It moves which realised
+      # return `q_hat`'s residual is measured against: the training label
+      # (raw anchor quote) or the smoothed anchor `predict` quotes from and the
+      # backtest scores in.
+      #
+      # Read `q_hat` off the "Conformal calibration" line, arm against control
+      # on the SAME commit. A q_hat differenced across commits or across fold
+      # counts is not a read -- that is exactly what made run 31563209228
+      # unusable, where the arm's 103.70/148.80/205.80/316.96 sat against an
+      # artifact trained three days earlier on 9 folds rather than 8.
+      #
+      # Every other number this job prints is arm-invariant by construction:
+      # the boosters, the folds and the labels are identical, so a rank IC or
+      # DA delta between these two arms is noise in the run, not an effect.
+      conformal_served_basis:
+        description: 'Arm: calibrate q_hat on the SERVED denominator (read q_hat only)'
+        required: false
+        default: false
+        type: boolean
       # Not an arm -- a confirm mode for one. The first read of every arm above
       # reuses the cached `tuned_params`, which is what makes the arms
       # comparable and is also why their SIZE is provisional: the HP were
@@ -279,6 +299,10 @@ jobs:
           # against a different target than the control's, so read this arm
           # through the replay step below and nowhere else.
           LABEL_SMOOTHED_ANCHOR: ${{ inputs.label_smoothed_anchor && '1' || '0' }}
+          # Calibration-only: it moves the residual q_hat is fitted on and
+          # nothing the boosters see. Read q_hat off the "Conformal calibration"
+          # line; every other number here is arm-invariant.
+          CONFORMAL_SERVED_BASIS: ${{ inputs.conformal_served_basis && '1' || '0' }}
           # Serving-only, so it reaches nothing this step trains. Set here for
           # `predict_smoke`, which is the one mode of this step that calls
           # predict() -- and it writes nothing, so the arm cannot escape.
@@ -317,6 +341,11 @@ jobs:
           # the archive and never calls prepare_targets, so the arm cannot reach
           # the score. That is exactly why it is the referee for this flag.
           LABEL_SMOOTHED_ANCHOR: ${{ inputs.label_smoothed_anchor && '1' || '0' }}
+          # Provenance too, and for a stronger reason: calibration already
+          # happened in the step above. The replay serves the q_hat this run
+          # produced, so its BAND COVERAGE table is where the arm's effect shows
+          # up -- but the flag itself does nothing here.
+          CONFORMAL_SERVED_BASIS: ${{ inputs.conformal_served_basis && '1' || '0' }}
           # NOT provenance: this is the step the arm acts in. It changes the
           # served `current_price`, which is what the DOLLAR ERROR table below
           # scores -- and what `rankIC` divides by, which is why that column is
@@ -362,6 +391,7 @@ jobs:
           CROSS_SECTIONAL_RANK: ${{ inputs.cross_sectional_rank && '1' || '0' }}
           NAIVE_INIT_SCORE: ${{ inputs.naive_init_score && '1' || '0' }}
           LABEL_SMOOTHED_ANCHOR: ${{ inputs.label_smoothed_anchor && '1' || '0' }}
+          CONFORMAL_SERVED_BASIS: ${{ inputs.conformal_served_basis && '1' || '0' }}
           SERVE_OUTLIER_GATED_ANCHOR: ${{ inputs.serve_outlier_gated_anchor && '1' || '0' }}
           FORCE_HP_SEARCH: ${{ inputs.force_hp_search && '1' || '0' }}
         run: |
@@ -383,6 +413,9 @@ jobs:
           if [ "$LABEL_SMOOTHED_ANCHOR" = "1" ]; then
             arms="${arms:+$arms+}smoothed_label"
           fi
+          if [ "$CONFORMAL_SERVED_BASIS" = "1" ]; then
+            arms="${arms:+$arms+}served_basis"
+          fi
           # This one is NOT in meta.json -- it is serving-only, so the artifact
           # cannot describe it and the heading is the record.
           if [ "$SERVE_OUTLIER_GATED_ANCHOR" = "1" ]; then
@@ -400,6 +433,7 @@ jobs:
             echo "\`CROSS_SECTIONAL_RANK=$CROSS_SECTIONAL_RANK\` "
             echo "\`NAIVE_INIT_SCORE=$NAIVE_INIT_SCORE\` "
             echo "\`LABEL_SMOOTHED_ANCHOR=$LABEL_SMOOTHED_ANCHOR\` "
+            echo "\`CONFORMAL_SERVED_BASIS=$CONFORMAL_SERVED_BASIS\` "
             echo "\`SERVE_OUTLIER_GATED_ANCHOR=$SERVE_OUTLIER_GATED_ANCHOR\` "
             echo "\`FORCE_HP_SEARCH=$FORCE_HP_SEARCH\`"
             echo
