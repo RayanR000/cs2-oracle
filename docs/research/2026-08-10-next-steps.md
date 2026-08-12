@@ -89,6 +89,17 @@ signal.
 
 ### N2. Split the problem into a market layer and a within-date rank layer
 
+> ## ⚠️ FIRST READ DONE 2026-08-11 — the own-history leg is NULL.
+> `docs/changelog/2026-08-11-market-factor-is-not-forecastable-from-its-own-history.md`.
+> The pre-registered `forecast_market_factor` (trailing 180d drift) loses to a **flat-zero
+> forecast** on MAE at all four horizons, correlates **negatively** at all four (−0.093 to
+> −0.162), and its DA is at or below the realised down-rate at all four. It is negative on
+> 75–78% of dates while the factor is up-majority — an anti-signal, not a weak one.
+> **What remains open is the exogenous leg only** (FX, events, player counts — that ingest
+> exists and was not used). The decomposition is not refuted; it currently buys nothing over
+> a zero market term. The 4-of-4 negative correlation is a mean-reversion signature and is
+> **post-hoc** — pursuing it needs its own pre-registration.
+
 - **Do:** forecast the market factor as a single per-date series (one number per day, not ~900), and
   keep the existing cross-sectional model for relative position. Served item return = market
   forecast + relative component.
