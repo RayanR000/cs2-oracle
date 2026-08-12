@@ -124,7 +124,17 @@ paths:
   pinned at β = 1.0 even under the flag, so the published 0.94/0.91/0.92/0.84× series stays in one
   unit. ⚠️ It does **not** fix the marginal over-coverage: it closes the `sigma`-mix channel, worth
   **36–68%** of it, and on a calm period the corrected band covers **74–77%** — the level is open in
-  BOTH directions and no 80% claim rests on it. `q_hat` and every `fold_q_hat` are byte-identical to `31611508808`, so the
+  BOTH directions and no 80% claim rests on it. ✅ **PAIRED-READ 2026-08-12 (`31629626929` /
+  `31629638834`) and the flag STAYS OFF.** β reproduces (0.4241/0.3672/0.3370/0.3266) and the wiring
+  is coherent, but served marginal coverage falls **−8.07/−8.26/−7.88/−2.19pp** over four anchors —
+  a **regression at 3d**, where the control sat at 77.80% and the arm overshoots to 69.72%. **Ship β
+  only with a re-level against the served `sigma` mix.** Two bar-reading rules come out of it: the
+  0.87/0.86/0.84/0.77× width prediction **fails on the calibration set** (0.966/0.957/0.947/0.965)
+  and holds only on the **served** band (0.794/0.768/0.750/0.761), so **name the basis before
+  dispatching**; and `fold_beta` **hits the `[0.2, 1.0]` clamp** on early folds at 7d/14d/30d while
+  drifting 0.20→0.61 across the fold sequence, so the pooled β sits below a 14-day refit's. The
+  held-out leg again reaches 3d/7d only (−78%/−67% vs −22%/−35%), which settles the dispute against
+  the walk-forward −84%/−73%. `docs/changelog/2026-08-12-sigma-exponent-paired-read.md`. `q_hat` and every `fold_q_hat` are byte-identical to `31611508808`, so the
   audit moved no calibration. ⚠️ **The exponent does NOT explain the marginal over-coverage**
   (87.2/91.8/90.6/89.0% vs 80%): level-matching removes exactly that before the tilt is measured,
   and on the calibration set marginal coverage is 80% by construction. Six causes examined, the
