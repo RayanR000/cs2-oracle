@@ -99,6 +99,13 @@ signal.
 > exists and was not used). The decomposition is not refuted; it currently buys nothing over
 > a zero market term. The 4-of-4 negative correlation is a mean-reversion signature and is
 > **post-hoc** — pursuing it needs its own pre-registration.
+>
+> ❌ **It was pre-registered, tested, and it does NOT replicate.**
+> `changelog/2026-08-11-mean-reversion-does-not-replicate.md`. On 2014-2023 — a disjoint
+> decade, ~2,000 non-overlapping windows — the correlations are −0.038 / +0.008 / +0.038 /
+> +0.016 (primary 1 of 4, FAIL) and the contrarian call loses to the constant call by 12-22pp
+> at every horizon (secondary 0 of 4, FAIL). **N2's own-history leg is closed in both
+> directions.** Only the exogenous leg remains.
 
 - **Do:** forecast the market factor as a single per-date series (one number per day, not ~900), and
   keep the existing cross-sectional model for relative position. Served item return = market
