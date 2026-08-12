@@ -226,13 +226,14 @@ workflow rule 2, non-trivial decisions get a new dated note here.
 
 The newest:
 
-- `2026-08-12-conformal-basis-follows-serving.md` — C5's correctness half. The served band
-  over-covered (**87.2 / 91.8 / 90.6 / 89.0%** against 80%) because `q_hat` was fitted on the
-  raw-anchor training label while the band is served and scored on the smoothed anchor — the
-  denominator half of what `conformal_centre` fixed for the centre. The quiet-dates alternative
-  was measured against the calibration window's own dispersion and **rejected**. Conditional
-  coverage (**58.2–99.2%** per date) is NOT fixed and ACI cannot be validated on 1–7 forecast
-  dates.
+- `2026-08-12-conformal-basis-follows-serving.md` — ❌ **diagnosed, built, and NOT confirmed.**
+  The served band over-covers (**87.2 / 91.8 / 90.6 / 89.0%** against 80%) and `q_hat` is fitted
+  on the raw-anchor training label while the band is served and scored on the smoothed anchor.
+  The quiet-dates alternative was measured against the calibration window's own dispersion and
+  **rejected** (median `rel_cal` 1.01 / 0.96 / 1.07 / 0.97). But the pre-registered check
+  **failed** — the arm moved `q_hat` *up* at three horizons — so it ships off as
+  `CONFORMAL_SERVED_BASIS=1` pending a paired read. Conditional coverage (**58.2–99.2%** per
+  date) is untouched and ACI cannot be validated on 1–7 forecast dates.
 - `2026-08-12-served-confidence-withdrawn.md` — F2. The `confidence` tag leaves `PredictionOut`
   and `TrendAnalysisOut`. Within-date, on the 11 cells with `n_high >= 30`, the `high` cohort is
   right **29.0–45.8%** against a stated 80% target and its gap to `low` is mixed-sign — so it is

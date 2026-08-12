@@ -1,10 +1,35 @@
-# The conformal band is calibrated in the basis it is served in
+# The conformal band's calibration basis — diagnosed, built, and NOT confirmed
 
 C5's correctness half. `2026-08-11-in-interval-basis.md` closed by naming over-coverage as "the
-new open question … C5's problem and now well posed for the first time". This is the answer:
-the band is too wide because `q_hat` is fitted against a denominator production does not use.
+new open question … C5's problem and now well posed for the first time". This entry establishes
+what the over-coverage is, builds the coherent calibration, and then **fails its own
+pre-registered check** — so the arm ships **off** as `CONFORMAL_SERVED_BASIS=1`.
 
-Shipped 2026-08-12 as `ef455ab`.
+Built `ef455ab`, gated off `4b0bcb1`.
+
+> ## ❌ The prediction was recorded before the read, and the read went the other way.
+> The pre-registration below said `q_hat` would **shrink** at every horizon. On
+> `model-diagnostics.yml` run `31563209228` (arm on, 4/4 horizons green, `basis=served`
+> reported at all four) it came out **103.70 / 148.80 / 205.80 / 316.96** against the
+> 2026-08-09 artifact's **95.25 / 137.68 / 205.996 / 309.49** — **larger at three horizons**
+> and flat at the fourth, where the over-coverage needs it smaller.
+>
+> **That comparison is confounded and refutes nothing on its own**: 8 CV folds against 9 at
+> three horizons, a different commit, and three more days of archive. It also confirms
+> nothing, which is why the arm is off. The paired read this needs — one arm, one control,
+> same commit — has not been run.
+>
+> **The likely mechanism for the sign is a real objection, not a confound.** The booster is
+> *trained* on the raw-basis label, so its prediction carries a `p[d]/S[d]` component it
+> learned to fit — the same free factor `2026-08-11-smoothed-anchor-label-measured.md` found
+> in the label. Measured against a smoothed-basis outcome that component is **added** error
+> rather than cancelled error, so the residual can widen even though the smoothed label is
+> the less dispersed of the two. If that is what is happening, moving the calibration
+> denominator alone is not the coherent fix; the prediction and the residual have to move
+> together, which is a larger change than this flag.
+>
+> Everything below about the **measurement** and the **cause of the over-coverage** stands.
+> What does not stand is that this change fixes it.
 
 ## The number
 
@@ -136,7 +161,25 @@ plausible second reason the 30d band is uniformly wide. Neither is chased here.
 
 ## Verification status
 
-`q_hat` does not move until a retrain runs, so **nothing about the served band has changed yet**.
-The prediction to check against `model-diagnostics.yml` on this commit is that `q_hat` shrinks at
-every horizon and the calibration line reports `basis=served`. Recorded before the read, so it can
-fail.
+**The prediction, as recorded before the read:** `q_hat` shrinks at every horizon and the
+calibration line reports `basis=served`.
+
+**The result:** half of it held. `basis=served` at 4/4 horizons, so the wiring works. `q_hat` did
+not shrink — see the banner. The arm is now gated off and the entry is filed as a diagnosis plus
+an instrument, not as a fix.
+
+**What would settle it**, in order:
+
+1. **A paired dispatch** — `model-diagnostics.yml` with `CONFORMAL_SERVED_BASIS=1` against a
+   control on the same commit, same fold geometry. That removes the 8-vs-9-fold confound and
+   says whether the arm moves `q_hat` up or down at all. ~15 min each. The workflow has no input
+   for this flag yet; it needs one, alongside `tier_lead` and `cross_sectional_rank`.
+2. **If the arm really does widen `q_hat`**, test the mechanism above directly: measure the
+   correlation between the booster's prediction and `p[d]/S[d]` on the OOF rows. A prediction
+   that tracks the anchor deviation is the whole story, and it would mean the band cannot be
+   fixed without addressing what the model is fitting.
+3. **Neither of those touches conditional coverage**, which is the larger half and is
+   calendar-blocked regardless.
+
+**Nothing about the served band has changed.** The daily path is on the default, which is the
+pre-2026-08-12 behaviour, and no retrain has promoted an artifact from this work.

@@ -1011,6 +1011,45 @@ class ItemForecaster:
         return os.environ.get("LABEL_SMOOTHED_ANCHOR") == "1"
 
     @staticmethod
+    def conformal_served_basis_enabled() -> bool:
+        """Whether `q_hat` is calibrated on the denominator serving quotes from.
+
+        Off (default): the residual is measured against the training label,
+        whose denominator is the raw anchor quote `p[d]`. That is incoherent
+        with serving -- `predict` quotes from the smoothed anchor `S[d]` and
+        `resolve_anchors` scores against it -- and the served band over-covers
+        at 87.2 / 91.8 / 90.6 / 89.0% against an 80% target.
+
+        On: the residual is measured against `calibration_target_col(h)`, which
+        divides by `S[d]`. The training label is untouched either way, so unlike
+        `LABEL_SMOOTHED_ANCHOR` this cannot hand the model a factor -- `q_hat`
+        is post-hoc and changes only a band width.
+
+        **Off by default because the coherence argument is not the measurement,
+        and the one measurement available points the other way.** On run
+        `31563209228` (2026-08-12, arm on) `q_hat` came out **103.70 / 148.80 /
+        205.80 / 316.96** against the 2026-08-09 artifact's 95.25 / 137.68 /
+        205.996 / 309.49 -- larger at three horizons, where the over-coverage
+        needs it smaller. That comparison is confounded (8 folds against 9, a
+        different commit, three more days of archive), so it refutes nothing;
+        it also confirms nothing, and an unverified arm does not belong on the
+        daily path.
+
+        The likely mechanism for the sign, and it is a real objection rather
+        than a confound: the booster is TRAINED on the raw-basis label, so its
+        prediction carries a `p[d]/S[d]` component it learned to fit. Measured
+        against a smoothed-basis outcome that component is added error, not
+        cancelled error, so the residual can widen even though the smoothed
+        label is the less dispersed of the two. If that is what is happening,
+        the coherent fix is bigger than this flag.
+
+        Read it as a paired dispatch: one arm on, one control off, same commit.
+        Set CONFORMAL_SERVED_BASIS=1. See
+        `docs/changelog/2026-08-12-conformal-basis-follows-serving.md`.
+        """
+        return os.environ.get("CONFORMAL_SERVED_BASIS") == "1"
+
+    @staticmethod
     def _rolling_anchor_prices(df: "pd.DataFrame") -> "pd.Series":
         """`_smoothed_anchor_prices`, evaluated at every row's own date.
 
@@ -6203,16 +6242,22 @@ class ItemForecaster:
         rather than substituting quietly.
         """
         col = calibration_target_col(horizon)
+        if not self.conformal_served_basis_enabled():
+            # The shipped default. Named rather than silent: this IS the
+            # incoherence, and a reader of `conformal_basis` has to be able to
+            # tell "the arm is off" from "the frame had no column".
+            self.conformal_basis[horizon] = "raw_anchor"
+            return np.asarray(fallback, dtype=float)
         if frame is not None and col in getattr(frame, "columns", ()):
             self.conformal_basis[horizon] = "served"
             return frame[col].to_numpy(dtype=float)
         self.conformal_basis[horizon] = "raw_anchor"
         logger.warning(
-            f"  {horizon}d conformal set has no {col!r}: q_hat will be fitted "
-            f"on the TRAINING label, whose denominator is the raw anchor quote "
-            f"and not the smoothed anchor predict() quotes from. Expect the "
-            f"served band to OVER-cover. Rebuild the frame through "
-            f"prepare_targets()."
+            f"  CONFORMAL_SERVED_BASIS=1 but the {horizon}d conformal set has "
+            f"no {col!r}: q_hat falls back to the TRAINING label, whose "
+            f"denominator is the raw anchor quote and not the smoothed anchor "
+            f"predict() quotes from. The arm is NOT in effect for this horizon. "
+            f"Rebuild the frame through prepare_targets()."
         )
         return np.asarray(fallback, dtype=float)
 

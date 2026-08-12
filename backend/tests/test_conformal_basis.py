@@ -158,21 +158,33 @@ class TestConformalRecords:
         assert served[0]["hit"] == control[0]["hit"]
         assert served[0]["change_pct"] == pytest.approx(control[0]["change_pct"])
 
-    def test_falling_back_to_the_label_is_recorded_and_warned(self, tmp_path, caplog):
-        """The fallback is reachable — any frame built before this change has
-        no calibration column — and it silently restores the over-covering
-        band, so it must not be quiet."""
+    def test_the_arm_is_off_by_default(self, tmp_path, monkeypatch):
+        """Shipped default. The coherence argument is not the measurement, and
+        the one read available (run 31563209228) moved q_hat the wrong way."""
+        monkeypatch.delenv("CONFORMAL_SERVED_BASIS", raising=False)
+        fc = _forecaster(tmp_path)
+        frame = pd.DataFrame({calibration_target_col(3): [1.0, 2.0]})
+        out = fc._calibration_returns(frame, 3, np.array([9.0, 9.0]))
+        assert np.allclose(out, [9.0, 9.0])
+        assert fc.conformal_basis[3] == "raw_anchor"
+
+    def test_the_arm_reads_the_served_column_when_on(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("CONFORMAL_SERVED_BASIS", "1")
+        fc = _forecaster(tmp_path)
+        frame = pd.DataFrame({calibration_target_col(7): [1.0, 2.0]})
+        out = fc._calibration_returns(frame, 7, np.array([9.0, 9.0]))
+        assert np.allclose(out, [1.0, 2.0])
+        assert fc.conformal_basis[7] == "served"
+
+    def test_the_arm_warns_when_it_cannot_take_effect(self, tmp_path, monkeypatch, caplog):
+        """On, but the frame predates the column — the arm silently is not the
+        arm, which is the one state a paired read must not mistake for a
+        result."""
+        monkeypatch.setenv("CONFORMAL_SERVED_BASIS", "1")
         fc = _forecaster(tmp_path)
         frame = pd.DataFrame({"price": [10.0, 11.0]})
         with caplog.at_level("WARNING"):
             out = fc._calibration_returns(frame, 3, np.array([1.0, 2.0]))
         assert np.allclose(out, [1.0, 2.0])
         assert fc.conformal_basis[3] == "raw_anchor"
-        assert "OVER-cover" in caplog.text
-
-    def test_the_served_basis_is_recorded(self, tmp_path):
-        fc = _forecaster(tmp_path)
-        frame = pd.DataFrame({calibration_target_col(7): [1.0, 2.0]})
-        out = fc._calibration_returns(frame, 7, np.array([9.0, 9.0]))
-        assert np.allclose(out, [1.0, 2.0])
-        assert fc.conformal_basis[7] == "served"
+        assert "NOT in effect" in caplog.text
