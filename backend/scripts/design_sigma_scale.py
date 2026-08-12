@@ -263,24 +263,53 @@ def walk_forward(resid, sigma, dates, test_dates, embargo, fitter) -> pd.DataFra
         w = fitted[j][1](st)
         rows.append(pd.DataFrame({
             "date": np.full(hi - lo, day), "sigma": st, "width": w,
+            "resid_abs": np.abs(r[lo:hi]),
             "covered": np.abs(r[lo:hi]) <= w}))
     return pd.concat(rows, ignore_index=True) if rows else pd.DataFrame()
 
 
-def score(res: pd.DataFrame, prod_width_median: float | None) -> dict:
-    """Marginal coverage, the sigma-decile error, the date spread, and width."""
+def score(res: pd.DataFrame, prod_width_median: float | None,
+          resid_abs: np.ndarray) -> dict:
+    """Marginal coverage, the sigma-decile error, the date spread, and width.
+
+    `decile_err_lm_pp` is the same decile error after every arm's widths are
+    scaled by the single scalar that puts ITS marginal coverage at exactly 80%.
+    ⚠️ POST-HOC: added after the first run, for the reason recorded in
+    `changelog/2026-08-12-the-sigma-scale-is-the-exponent.md` -- the pinned rule
+    gated on marginal coverage, which drifts by 5-10pp between periods for EVERY
+    arm including production, so it could not compare tilts. Level-matching is
+    how the tilt is compared without the level in the way, and it is the same
+    statistic the published `sigma`-tilt entry used. Reported for every arm.
+    """
     sig = res["sigma"].to_numpy()
     edges = np.quantile(sig, np.linspace(0, 1, N_DECILES + 1)[1:-1])
     idx = np.searchsorted(edges, sig, side="right")
     dec = res.groupby(idx)["covered"].mean()
     per_date = res.groupby("date")["covered"].mean()
     med_w = float(res["width"].median())
+
+    w = res["width"].to_numpy()
+    lo, hi = 1e-6, 1e6
+    for _ in range(60):
+        mid = (lo + hi) / 2
+        if float(np.mean(resid_abs <= w * mid)) < TARGET:
+            lo = mid
+        else:
+            hi = mid
+    c = (lo + hi) / 2
+    cov_lm = resid_abs <= w * c
+    dec_lm = pd.Series(cov_lm).groupby(idx).mean()
+
     return {
         "n_rows": len(res),
         "n_dates": int(res["date"].nunique()),
         "marginal": float(res["covered"].mean()),
         "decile_err_pp": float(np.mean(np.abs(dec - TARGET))) * 100.0,
         "decile_profile": " ".join(f"{v * 100:.0f}" for v in dec.sort_index()),
+        "level_match_c": c,
+        "decile_err_lm_pp": float(np.mean(np.abs(dec_lm - TARGET))) * 100.0,
+        "decile_profile_lm": " ".join(f"{v * 100:.0f}"
+                                      for v in dec_lm.sort_index()),
         "date_sd_pp": float(per_date.std()) * 100.0,
         "median_width_pct": med_w,
         "width_vs_prod": (med_w / prod_width_median
@@ -354,8 +383,10 @@ def main() -> int:
             if name == "P0_production":
                 prod_w = {"sel": float(s_res["width"].median()),
                           "held": float(h_res["width"].median())}
-            sel[name] = score(s_res, prod_w.get("sel"))
-            held[name] = score(h_res, prod_w.get("held"))
+            sel[name] = score(s_res, prod_w.get("sel"),
+                              s_res["resid_abs"].to_numpy())
+            held[name] = score(h_res, prod_w.get("held"),
+                               h_res["resid_abs"].to_numpy())
 
         for label, book in (("SELECTION", sel), ("HELD-OUT", held)):
             logger.info("  --- %s ---", label)
@@ -364,11 +395,13 @@ def main() -> int:
                     continue
                 m = book[name]
                 logger.info("  %-16s marg=%5.1f%%  decile_err=%5.2fpp  "
-                            "date_sd=%4.1fpp  width=%6.2f%% (%.2fx prod)  "
-                            "deciles %s", name, m["marginal"] * 100,
-                            m["decile_err_pp"], m["date_sd_pp"],
-                            m["median_width_pct"], m["width_vs_prod"],
-                            m["decile_profile"])
+                            "TILT(level-matched)=%5.2fpp  date_sd=%4.1fpp  "
+                            "width=%6.2f%% (%.2fx prod)", name,
+                            m["marginal"] * 100, m["decile_err_pp"],
+                            m["decile_err_lm_pp"], m["date_sd_pp"],
+                            m["median_width_pct"], m["width_vs_prod"])
+                logger.info("  %-16s   raw %s | level-matched %s", "",
+                            m["decile_profile"], m["decile_profile_lm"])
                 rows.append({"horizon": h, "period": label, "arm": name,
                              "beta_hat": b_hat, "lambda": lam, **m})
 
@@ -381,15 +414,30 @@ def main() -> int:
         best = min(sel[n]["decile_err_pp"] for n in ok)
         pick = next(n for n in ok
                     if sel[n]["decile_err_pp"] <= best + SIMPLICITY_SLACK_PP)
-        logger.info("  PICK (selection period, simplest within %.0fpp of "
-                    "%.2fpp): %s  ->  held-out decile_err %.2fpp vs "
-                    "production's %.2fpp, marginal %.1f%% vs %.1f%%, "
-                    "width %.2fx", SIMPLICITY_SLACK_PP, best, pick,
-                    held[pick]["decile_err_pp"],
-                    held["P0_production"]["decile_err_pp"],
-                    held[pick]["marginal"] * 100,
-                    held["P0_production"]["marginal"] * 100,
-                    held[pick]["width_vs_prod"])
+        logger.info("  PINNED PICK (selection period, simplest within %.0fpp of "
+                    "%.2fpp): %s", SIMPLICITY_SLACK_PP, best, pick)
+        logger.info("    arms inside the %.0fpp marginal gate: %s",
+                    MARGINAL_TOLERANCE * 100, ", ".join(ok))
+
+        # ⚠️ POST-HOC, labelled. The gate above admits an arm on its marginal
+        # coverage in ONE period and then asks it about the tilt in ANOTHER, while
+        # marginal coverage drifts 5-10pp between the two for every arm including
+        # production. So it has no power to compare tilts, and it is reported as
+        # a misfire rather than quietly replaced.
+        p0h = held["P0_production"]
+        logger.info("    POST-HOC read -- held-out, against production:")
+        for name in ARM_ORDER[1:]:
+            if name not in held:
+                continue
+            m = held[name]
+            logger.info("      %-16s tilt %5.2f -> %5.2fpp (%+.0f%%)  "
+                        "|marg-80| %4.1f -> %4.1fpp  width %.2fx", name,
+                        p0h["decile_err_lm_pp"], m["decile_err_lm_pp"],
+                        (m["decile_err_lm_pp"] / p0h["decile_err_lm_pp"] - 1)
+                        * 100,
+                        abs(p0h["marginal"] - TARGET) * 100,
+                        abs(m["marginal"] - TARGET) * 100,
+                        m["width_vs_prod"])
 
     if not rows:
         logger.error("no results")

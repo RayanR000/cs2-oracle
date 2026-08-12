@@ -12,6 +12,18 @@
 > Consequence for §"Next": normalising by `sigma ** β` also makes marginal coverage invariant to the
 > served mix, which is a second and independent argument for the exponent **at all four horizons**,
 > not only the two where the conditional fix held out.
+>
+> ## ⚠️ §"Next" item 2 is answered, and the −26% / −12% at 14d/30d below is now DISPUTED.
+> `changelog/2026-08-12-the-sigma-scale-is-one-exponent-per-horizon.md`. Both remedies this entry
+> proposed for 14d/30d are **refuted**: shrinking `β` is a **no-op** (its departure from 1 is 6–14×
+> the standard error, λ = 0.996–0.999), and a non-parametric scale **buys nothing** outside 30d.
+> **One fitted exponent per horizon is the answer, and walk-forward it reaches all four** — the
+> level-matched tilt falls **−89% / −94% / −84% / −73%** and bands narrow to 0.87 / 0.86 / 0.84 /
+> 0.77×. The held-out leg below rests on **one** fold at 14d/30d where the windows overlap; that read
+> uses **43 independent refits** at production's cadence, on the model-free panel rather than real
+> OOF residuals. Neither is dominant on both axes, so "the remedy reaches only 3d and 7d" — including
+> this entry's title — should be treated as **unsettled until the paired dispatch**, not as the
+> finding. Design: `docs/superpowers/specs/2026-08-12-sigma-exponent-design.md`.
 
 **Date:** 2026-08-12
 **Run:** `31619383780` (control, `cv_diagnostic_classifier=q50`, all four horizons, commit `58c6cf9`)

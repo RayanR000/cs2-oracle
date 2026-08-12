@@ -206,9 +206,14 @@ report it rather than working around it.
 
 ## Design docs and plans (`superpowers/`)
 
-`specs/` holds designs (15), `plans/` the execution checklists (13). Each shipped change is
+`specs/` holds designs (16), `plans/` the execution checklists (13). Each shipped change is
 also recorded in `changelog/`, which is the durable record. Load-bearing ones:
 
+- `specs/2026-08-12-sigma-exponent-design.md` — **designed, not implemented.** The band divides by
+  `sigma ** beta`. Read the matched-pair invariant before touching it: `sigma` is ~0.07 so
+  `sigma ** 0.4` is ~5× larger and `q_hat` absorbs that, which makes a `q_hat` applied at the wrong
+  exponent wrong by ~5×, not partially fixed. Four call sites, one persisted float, `beta = 1.0` the
+  no-op default for every pre-existing artifact.
 - `specs/2026-07-25-monthly-parquet-partitioning-design.md` — the live partitioning scheme
   in `scripts/append_to_parquet.py`
 - `specs/2026-08-01-deterministic-backtest-design.md` — shared-estimator backtest
@@ -220,12 +225,27 @@ also recorded in `changelog/`, which is the durable record. Load-bearing ones:
 ## Changelog (`changelog/`)
 
 Append-only dated decision records: bug fixes, features, audits, and refuted experiments.
-153 entries, 2026-07-08 to 2026-08-12. Entries are never edited to match later reality —
+154 entries, 2026-07-08 to 2026-08-12. Entries are never edited to match later reality —
 several describe code that has since been deleted, which is the point. Per `AGENTS.md`
 workflow rule 2, non-trivial decisions get a new dated note here.
 
 The newest:
 
+- `2026-08-12-the-sigma-scale-is-one-exponent-per-horizon.md` — the open 14d/30d half of the tilt
+  remedy, **decided**. Walk-forward over 507–588 dates with production's 14-day refit cadence, four
+  arms: shrinkage is a **no-op** (`beta`'s departure from 1 is 6–14× its standard error, so λ =
+  0.996–0.999 and the shrunk arm reproduces the plain one), and flexibility **buys nothing** — a
+  per-`sigma`-decile `q_hat` is worse at 3/4 and a non-parametric binned scale is better only inside
+  the noise, while losing on marginal coverage at 4/4. So: **one fitted exponent per horizon**, which
+  held out cuts the level-matched tilt **−89% / −94% / −84% / −73%** and narrows bands to
+  **0.87 / 0.86 / 0.84 / 0.77×**. ⚠️ That **contradicts the −26% / −12% at 14d/30d on record** — 43
+  independent refits here against one held-out CV fold there, on a model-free panel rather than real
+  OOF residuals, so the dispatch settles it. ⚠️ **The pinned selection rule MISFIRED and picked
+  production at 4/4**, because it gated on a marginal coverage that drifts 5–10pp between periods for
+  every arm; reported as a misfire, with the comparison labelled post-hoc. ⚠️ The tilt and width wins
+  are stable across both periods; the **marginal win is not** — on the earlier period the exponent
+  arms cover 74–77%, so nothing here fixes the level. Spec:
+  `superpowers/specs/2026-08-12-sigma-exponent-design.md`. Nothing shipped.
 - `2026-08-12-marginal-over-coverage-is-half-the-sigma-mix.md` — the seventh cause, and the first one
   that **sizes**. The served `sigma` distribution runs **1.28–1.29×** the calibration median
   (measured directly, not implied as `half_pct / q_hat`), and pushing the measured coverage-vs-`sigma`
