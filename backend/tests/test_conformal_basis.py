@@ -158,6 +158,40 @@ class TestConformalRecords:
         assert served[0]["hit"] == control[0]["hit"]
         assert served[0]["change_pct"] == pytest.approx(control[0]["change_pct"])
 
+    def test_the_row_index_survives_the_keep_filter(self, tmp_path):
+        """The passthrough is positional and the function drops rows. If the
+        index were appended instead of indexed, every record after the first
+        dropped row would carry the wrong item's identity -- and a learned scale
+        built on it would look perfectly reasonable and be wrong.
+
+        Row 1 has a zero current price and is dropped, so the surviving records
+        must carry labels 500 and 502, not 500 and 501.
+        """
+        fc = _forecaster(tmp_path)
+        records = fc._conformal_records(
+            mid_ret=[1.0, 1.0, 1.0], actual_ret=[9.0, 9.0, 9.0],
+            sigma=[0.1, 0.1, 0.1], current_price=[10.0, 0.0, 10.0],
+            row_index=[500, 501, 502],
+        )
+        assert [r["row_index"] for r in records] == [500, 502]
+
+    def test_a_misaligned_row_index_raises_rather_than_mislabelling(self, tmp_path):
+        fc = _forecaster(tmp_path)
+        with pytest.raises(ValueError, match="positional"):
+            fc._conformal_records(
+                mid_ret=[1.0, 1.0], actual_ret=[9.0, 9.0], sigma=[0.1, 0.1],
+                current_price=[10.0, 10.0], row_index=[7],
+            )
+
+    def test_the_row_index_is_absent_unless_asked_for(self, tmp_path):
+        """Off by default: the records feed q_hat, and a stray column would
+        reach every consumer of the calibration frame."""
+        fc = _forecaster(tmp_path)
+        records = fc._conformal_records(
+            mid_ret=[1.0], actual_ret=[9.0], sigma=[0.1], current_price=[10.0],
+        )
+        assert "row_index" not in records[0]
+
     def test_the_arm_is_off_by_default(self, tmp_path, monkeypatch):
         """Shipped default. The coherence argument is not the measurement, and
         the one read available (run 31563209228) moved q_hat the wrong way."""

@@ -109,6 +109,38 @@ def scale(sigma, beta: float = BETA_NEUTRAL) -> np.ndarray:
         return s ** float(beta)
 
 
+def resolve_scale(sigma, beta: float = BETA_NEUTRAL,
+                  learned=None) -> np.ndarray:
+    """THE one place a nonconformity denominator is chosen.
+
+    Two answers to the same question, and they are alternatives rather than
+    layers:
+
+    - `sigma ** beta` — the hand-picked variable, optionally damped.
+    - `learned` — `models/scale_model.py`'s estimate of how large this item's
+      error usually is, fitted directly on `|residual|`.
+
+    **A learned scale is served as-is and `beta` does not apply to it.** The
+    exponent exists to correct `sigma`'s over-reaction; a scale fitted against
+    the residuals it normalises has no such distortion to correct, so raising it
+    to 0.35 would be a second correction on top of an estimate that already fits
+    — and would silently reintroduce the tilt in the opposite direction, which
+    is exactly the failure `2026-08-12-served-sigma-profile.md` measured. Asking
+    for both is therefore a mistake with no sensible reading, and it raises
+    rather than picking one.
+    """
+    if learned is None:
+        return scale(sigma, beta)
+    if float(beta) != BETA_NEUTRAL:
+        raise ValueError(
+            f"both a learned scale and beta={beta} were supplied. They are "
+            f"alternative denominators, not layers: the exponent corrects "
+            f"sigma's over-reaction and a fitted scale has none to correct. "
+            f"Set LEARNED_SCALE=1 or SIGMA_EXPONENT=1, never both."
+        )
+    return np.asarray(learned, dtype=float)
+
+
 def fit_beta(residuals_pct, sigma, min_rows: int = 1_000) -> float:
     """`elasticity`, made safe to persist in an artifact and serve from.
 
@@ -145,16 +177,17 @@ def beta_was_clamped(residuals_pct, sigma, min_rows: int = 1_000) -> bool:
 
 
 def calibrate(residuals_pct, sigma, alpha: float = ALPHA,
-              beta: float = BETA_NEUTRAL) -> float:
+              beta: float = BETA_NEUTRAL, learned_scale=None) -> float:
     """q_hat: the conformal quantile of normalized absolute residuals.
 
     `residuals_pct` are y - y_hat in percentage-return space, from
     out-of-fold predictions. Scores are |residual| / sigma ** beta, so q_hat is
     dimensionless and multiplies `sigma ** beta` at serve time.
 
-    ⚠️ q_hat IS ONLY MEANINGFUL BESIDE THE `beta` IT WAS FITTED AT. Two q_hats
-    from different betas must never be compared, differenced, or substituted for
-    one another -- see `scale`.
+    ⚠️ q_hat IS ONLY MEANINGFUL BESIDE THE `beta` IT WAS FITTED AT, and beside
+    the SCALE it was fitted against. Two q_hats from different betas -- or one
+    from `sigma` and one from a learned scale -- must never be compared,
+    differenced, or substituted for one another. See `resolve_scale`.
 
     Uses the finite-sample corrected level ceil((n+1)(1-alpha))/n, which is
     what gives split conformal its distribution-free coverage guarantee.
@@ -165,7 +198,7 @@ def calibrate(residuals_pct, sigma, alpha: float = ALPHA,
         raise ValueError("empty calibration set: cannot compute q_hat")
 
     with np.errstate(divide="ignore", invalid="ignore"):
-        scores = np.abs(res) / scale(sig, beta)
+        scores = np.abs(res) / resolve_scale(sig, beta, learned_scale)
     scores = scores[np.isfinite(scores)]
     if scores.size == 0:
         raise ValueError("empty calibration set: no finite nonconformity scores")
@@ -257,7 +290,8 @@ def coverage_by_sigma_stratum(residuals_pct, sigma, exponent: float = 1.0,
 
 
 def band(mid_pct, sigma, q_hat: float,
-         beta: float = BETA_NEUTRAL) -> tuple[np.ndarray, np.ndarray]:
+         beta: float = BETA_NEUTRAL,
+         learned_scale=None) -> tuple[np.ndarray, np.ndarray]:
     """Symmetric band around the median, in percentage-return space.
 
     Cannot cross by construction, which is why predict() no longer needs
@@ -268,7 +302,12 @@ def band(mid_pct, sigma, q_hat: float,
     beta=1 q_hat at a fitted beta shrinks it by the same factor. There is no
     partially-correct pairing, which is why both are persisted together or not
     at all.
+
+    ⚠️ The same holds for `learned_scale`, and harder: a `q_hat` calibrated
+    against a learned scale is in units of that scale, so serving it against
+    `sigma` is not a degraded band but an unrelated one. The artifact persists
+    the scale model with `q_hat` for that reason.
     """
     mid = np.asarray(mid_pct, dtype=float)
-    half = float(q_hat) * scale(sigma, beta)
+    half = float(q_hat) * resolve_scale(sigma, beta, learned_scale)
     return mid - half, mid + half

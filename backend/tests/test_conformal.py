@@ -11,9 +11,11 @@ import pytest
 
 from models.conformal import (
     ALPHA,
+    BETA_NEUTRAL,
     NOMINAL_COVERAGE,
     band,
     calibrate,
+    resolve_scale,
     sigma_bounds,
     sigma_from_columns,
 )
@@ -248,3 +250,65 @@ def test_calibrate_ignores_nonfinite_scores():
     sigma = np.array([0.1, 0.1, 0.1, 0.0])
     q_hat = calibrate(residuals, sigma, ALPHA)
     assert np.isfinite(q_hat)
+
+
+# --- resolve_scale: the learned alternative to sigma ------------------------
+
+
+def test_resolve_scale_returns_sigma_when_nothing_is_learned():
+    """The default path must be byte-identical to what shipped before the
+    learned scale existed."""
+    sig = np.array([0.02, 0.07, 0.5])
+    assert np.array_equal(resolve_scale(sig), sig)
+    assert np.array_equal(resolve_scale(sig, BETA_NEUTRAL),
+                          sig)
+
+
+def test_resolve_scale_serves_a_learned_scale_as_is():
+    """`beta` does not apply to a fitted scale: the exponent corrects sigma's
+    over-reaction and an estimate fitted on the residuals has none."""
+    learned = np.array([1.0, 2.0, 3.0])
+    out = resolve_scale(np.array([9.0, 9.0, 9.0]), learned=learned)
+    assert np.array_equal(out, learned)
+
+
+def test_stacking_a_learned_scale_on_an_exponent_raises():
+    """Two alternative denominators, not two layers. Applying both would
+    re-tilt the band in the opposite direction -- the failure measured in
+    2026-08-12-served-sigma-profile.md -- so there is no sensible reading of
+    the request and it must not silently pick one."""
+    with pytest.raises(ValueError, match="alternative denominators"):
+        resolve_scale(np.array([0.07]), beta=0.35,
+                                learned=np.array([1.0]))
+
+
+def test_calibrate_and_band_round_trip_through_a_learned_scale():
+    """q_hat calibrated against a learned scale, then served against the same
+    scale, covers at nominal. The pairing is the correctness condition."""
+    rng = np.random.default_rng(11)
+    n = 20_000
+    s = rng.uniform(0.5, 4.0, n)
+    resid = rng.normal(scale=s)
+
+    q = calibrate(resid, sigma=None, learned_scale=s)
+    lo, hi = band(np.zeros(n), sigma=None, q_hat=q, learned_scale=s)
+    covered = (resid >= lo) & (resid <= hi)
+    assert covered.mean() == pytest.approx(NOMINAL_COVERAGE, abs=0.01)
+
+
+def test_a_learned_q_hat_served_against_sigma_is_not_a_degraded_band():
+    """It is an unrelated one. This is the failure the artifact's matched-pair
+    persistence exists to prevent, and it is gross rather than subtle."""
+    rng = np.random.default_rng(12)
+    n = 20_000
+    s = rng.uniform(0.5, 4.0, n)
+    sigma = s ** 2.0 / 50.0          # a different variable, different units
+    resid = rng.normal(scale=s)
+
+    q_learned = calibrate(resid, sigma=None, learned_scale=s)
+    lo, hi = band(np.zeros(n), sigma, q_hat=q_learned)   # mismatched
+    covered = ((resid >= lo) & (resid <= hi)).mean()
+    assert abs(covered - NOMINAL_COVERAGE) > 0.15, (
+        f"a mismatched scale covered {covered:.3f}, close enough to nominal to "
+        f"go unnoticed; the pairing guard rests on this being obvious"
+    )

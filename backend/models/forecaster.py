@@ -20,6 +20,7 @@ from typing import Dict, List, Optional, Tuple, Any
 from pathlib import Path
 from sqlalchemy import text
 from models import conformal
+from models import scale_model
 from models.item_parser import (
     BID_SOURCES,
     PHASE_COLLAPSED_EXEMPT_PATTERNS,
@@ -5430,7 +5431,10 @@ class ItemForecaster:
                     f"should have raised."
                 )
 
-            q_hat = self._calibrate_conformal(horizon, records_df)
+            # `tdf` is the frame every calibration row's `row_index` points
+            # into, and the only reason it is passed: the learned scale needs
+            # the features behind each residual. Ignored when the flag is off.
+            q_hat = self._calibrate_conformal(horizon, records_df, tdf)
             # The WIDTH, and the exponent it was produced at. Both are here for
             # one reason: `q_hat` may not be differenced across SIGMA_EXPONENT
             # (the two arms are ~5.5x apart in units), so a paired read of that
@@ -6355,6 +6359,50 @@ class ItemForecaster:
         # together with `conformal_calibration` or not at all.
         self.conformal_beta: Dict[int, float] = {}
 
+        # The learned band scale (LEARNED_SCALE=1), and the same matched-pair
+        # rule as `conformal_beta`: a q_hat calibrated against a learned scale
+        # is in that scale's units, so serving it against `sigma` gives an
+        # unrelated band rather than a degraded one. All four move together or
+        # none of them do, and an artifact with no scale model falls back to
+        # `sigma ** beta` -- which is what every pre-2026-08-12 artifact is.
+        self.scale_models: Dict[int, Any] = {}
+        self.scale_norm: Dict[int, float] = {}
+        self.scale_clip: Dict[int, tuple] = {}
+        self.scale_features: Dict[int, List[str]] = {}
+
+    def band_scale(self, horizon: int, rows: pd.DataFrame, sigma):
+        """The learned scale for a set of rows, or None to use `sigma ** beta`.
+
+        THE ONE ACCESSOR, for the same reason `band_beta` is one: a call site
+        that reaches for `scale_models[h]` directly gets a KeyError on an
+        artifact written before this existed, and one that forgets `scale_norm`
+        or the clip serves a scale in different units from the one `q_hat` was
+        calibrated against.
+
+        Returns None -- not NaN, not sigma -- when this horizon has no scale
+        model, so the caller passes `learned_scale=None` and `resolve_scale`
+        takes the pre-existing path.
+        """
+        booster = self.scale_models.get(horizon)
+        if booster is None:
+            return None
+        X = self._scale_feature_frame(rows, sigma, horizon)
+        want = self.scale_features.get(horizon)
+        if want is not None and list(X.columns) != list(want):
+            # Refuse rather than reindex. A scale model scored against a
+            # different column set returns a plausible number computed from the
+            # wrong features, and the band it produces looks entirely normal.
+            logger.warning(
+                f"  {horizon}d learned scale: served columns do not match the "
+                f"{len(want)} the model was fitted on — falling back to sigma "
+                f"for this batch rather than scoring the wrong features."
+            )
+            return None
+        s = scale_model.predict_scale(booster, X,
+                                      clip=self.scale_clip.get(horizon),
+                                      fallback=np.asarray(sigma, dtype=float))
+        return s * float(self.scale_norm.get(horizon, 1.0))
+
     def band_beta(self, horizon: int) -> float:
         """The exponent to build this horizon's band with. Always a finite float.
 
@@ -6433,7 +6481,8 @@ class ItemForecaster:
     def _conformal_records(self, mid_ret, actual_ret, sigma,
                            current_price,
                            direction_class=None,
-                           residual_actual_ret=None) -> List[Dict[str, float]]:
+                           residual_actual_ret=None,
+                           row_index=None) -> List[Dict[str, float]]:
         """Per-row calibration records, shared by the CV and holdout paths.
 
         `residual_pct` / `sigma` are what q_hat is fitted on, `mid_ret` is what
@@ -6468,6 +6517,19 @@ class ItemForecaster:
         back to `actual_ret`, which is the pre-2026-08-12 behaviour and
         over-covers; see `calibration_target_col`.
 
+        `row_index` is the calibration row's label in the frame it came from,
+        carried so a learned scale can reach the features that produced it
+        (`models/scale_model.py`). It is the row's identity and nothing else:
+        no arithmetic reads it, and `_calibrate_conformal` ignores it entirely
+        unless LEARNED_SCALE is on. Passing it costs one array lookup per row.
+
+        ⚠️ It is positional. Every array reaching this function is aligned to
+        the same frame -- in the CV path `fold_p50`, `actual_returns`,
+        `fold_sigma` and `current_prices` are all built from `val_df` -- so
+        `row_index[i]` names the row that produced record `i`. An array that is
+        not on that footing would attach one item's error to another item's
+        features, which would poison the scale silently and plausibly.
+
         Rows whose mid or current price is zero are dropped: range_pct and
         change_pct are undefined there.
         """
@@ -6497,6 +6559,16 @@ class ItemForecaster:
                 mid, mid, mid, direction_class)
 
         centre = mid if served_mid is None else served_mid
+        idx = None if row_index is None else np.asarray(row_index)
+        if idx is not None and idx.shape[0] != mid.shape[0]:
+            # Loud, because the silent version attaches one item's error to
+            # another item's features and every downstream number still looks
+            # reasonable.
+            raise ValueError(
+                f"row_index has {idx.shape[0]} entries against {mid.shape[0]} "
+                f"calibration rows. It is positional: a mismatched length means "
+                f"the caller's arrays are not on one frame."
+            )
         records = []
         for i in np.flatnonzero(keep):
             rec = {
@@ -6508,6 +6580,8 @@ class ItemForecaster:
             }
             if served_mid is not None:
                 rec["served_mid_ret"] = float(served_mid[i])
+            if idx is not None:
+                rec["row_index"] = idx[i]
             records.append(rec)
         return records
 
@@ -6556,6 +6630,10 @@ class ItemForecaster:
             direction_class=holdout_cls,
             residual_actual_ret=self._calibration_returns(
                 val_set, horizon, y_val.values),
+            # Carried here too. Without it a learned scale would silently have
+            # no features on exactly the horizons that fell back to this path --
+            # the short-history ones, which are the hardest to size a band for.
+            row_index=val_set.index.to_numpy(),
         )
         if len(records) < self.MIN_CALIBRATION_ROWS:
             raise RuntimeError(
@@ -6677,8 +6755,122 @@ class ItemForecaster:
         )
         return out
 
+    def _fit_learned_scale(self, horizon: int, records_df: pd.DataFrame,
+                           feature_frame: Optional[pd.DataFrame],
+                           resid, sigma):
+        """Cross-fitted scale for calibration, plus the model that will serve.
+
+        Returns the per-row scale `q_hat` should be calibrated against, or None
+        to leave the band on `sigma ** beta`.
+
+        **Two different scales come out of this, and conflating them is the
+        whole trap.** `q_hat` is calibrated against the CROSS-FITTED scale --
+        every row scored by a model that never saw its fold -- because a scale
+        fitted on the same residuals it normalises matches them better than it
+        will match a served item's, which makes `q_hat` too small and the band
+        under-cover in production while looking flawless offline. Serving then
+        uses a FINAL model fitted on all folds, which is the better estimator
+        but is not the one `q_hat` was measured against.
+
+        The residual mismatch is a LEVEL, and it is normalised away: `q_hat`
+        absorbs any constant factor on the scale (see `scale_model`), so
+        matching the final model's median to the cross-fitted median leaves only
+        the shape difference, which is the part that is genuinely better. That
+        ratio is persisted as `scale_norm` and applied at serve time.
+        """
+        if not scale_model.enabled():
+            return None
+        if feature_frame is None or "row_index" not in records_df.columns:
+            logger.warning(
+                f"  {horizon}d LEARNED_SCALE=1 but the calibration rows carry "
+                f"no feature reference — falling back to sigma. This is the "
+                f"single-holdout path, which cannot cross-fit anyway."
+            )
+            return None
+        if "fold" not in records_df.columns:
+            logger.warning(
+                f"  {horizon}d LEARNED_SCALE=1 but the calibration rows carry "
+                f"no fold labels, so the scale cannot be cross-fitted and a "
+                f"q_hat fitted against it would be optimistic. Falling back to "
+                f"sigma."
+            )
+            return None
+        if not feature_frame.index.is_unique:
+            # Non-unique labels make `.loc` fan out, silently pairing residuals
+            # with the wrong rows. Unique today because `prepare_targets` ends
+            # in a column merge -- an incidental fact, hence the check.
+            raise RuntimeError(
+                f"the {horizon}d feature frame has a non-unique index, so "
+                f"calibration rows cannot be matched to their features. The "
+                f"learned scale would silently pair residuals with the wrong "
+                f"items; refusing to fit it."
+            )
+
+        idx = records_df["row_index"].to_numpy()
+        rows = feature_frame.loc[idx]
+        X = self._scale_feature_frame(rows, sigma, horizon)
+
+        t0 = time.time()
+        cross, n_models = scale_model.cross_fit(
+            X, resid, records_df["fold"].to_numpy(), fallback=sigma)
+        if n_models == 0:
+            logger.warning(
+                f"  {horizon}d learned scale: no fold produced a usable model; "
+                f"falling back to sigma."
+            )
+            return None
+
+        final = scale_model.fit(X, resid)
+        if final is None:
+            return None
+
+        raw = scale_model.predict_scale(final, X, clip=None, fallback=sigma)
+        ok = np.isfinite(raw) & (raw > 0) & np.isfinite(cross) & (cross > 0)
+        norm = (float(np.median(cross[ok]) / np.median(raw[ok]))
+                if ok.any() else 1.0)
+        served = raw * norm
+
+        self.scale_models[horizon] = final
+        self.scale_norm[horizon] = norm
+        self.scale_clip[horizon] = scale_model.clip_bounds(served)
+        self.scale_features[horizon] = list(X.columns)
+
+        logger.info(
+            f"  {horizon}d learned scale: {n_models} cross-fit models + 1 "
+            f"serving model on {len(X):,} rows in {time.time() - t0:.1f}s, "
+            f"norm={norm:.4f}, clip="
+            f"[{self.scale_clip[horizon][0]:.5f}, "
+            f"{self.scale_clip[horizon][1]:.5f}]. q_hat is calibrated against "
+            f"the CROSS-FITTED scale and is dimensionally tied to it — never "
+            f"compare it with a sigma-basis q_hat."
+        )
+        return cross
+
+    def _scale_feature_frame(self, rows: pd.DataFrame, sigma,
+                             horizon: int) -> pd.DataFrame:
+        """The feature matrix the learned scale is fitted on AND served from.
+
+        ONE function with two callers on purpose. A scale model trained on one
+        column set and served against another is the train/serve skew this repo
+        has paid for repeatedly, and the failure is quiet: LightGBM will happily
+        score a frame whose columns mean something else and return a plausible
+        number.
+
+        `sigma` is included as a feature, which makes the learned scale a strict
+        GENERALISATION of the current band rather than a competitor to it — the
+        model can reproduce `s = sigma` if that is genuinely best, so a null
+        result means "sigma was already the right variable" rather than "the
+        model could not see it". That is what makes a null informative here.
+        """
+        cols = self.horizon_feature_cols.get(horizon, self.feature_cols)
+        cols = [c for c in cols if c in rows.columns]
+        X = rows[cols].copy()
+        X["sigma"] = np.asarray(sigma, dtype=float)
+        return X
+
     def _calibrate_conformal(self, horizon: int,
-                             records_df: pd.DataFrame) -> float:
+                             records_df: pd.DataFrame,
+                             feature_frame: Optional[pd.DataFrame] = None) -> float:
         """Fit q_hat on pooled OOF records and attach the width they imply.
 
         Two passes are unavoidable. The nonconformity score needs only the
@@ -6688,10 +6880,29 @@ class ItemForecaster:
         here rather than inside CV keeps the width the confidence thresholds
         are fitted on identical to the width predict() will serve.
 
+        `feature_frame` is the frame the calibration rows came from, needed only
+        by the learned scale (LEARNED_SCALE=1) so it can reach the features
+        behind each residual. When it is absent, or the flag is off, the
+        denominator is `sigma ** beta` exactly as before.
+
         Mutates `records_df` in place by adding `range_pct`, and returns q_hat.
         """
         resid = records_df["residual_pct"].to_numpy(dtype=float)
         sigma = records_df["sigma"].to_numpy(dtype=float)
+
+        if scale_model.enabled() and self.sigma_exponent_enabled():
+            # Caught here rather than deep in `resolve_scale`, so the run dies
+            # at its first calibration instead of after training four horizons.
+            raise RuntimeError(
+                "LEARNED_SCALE=1 and SIGMA_EXPONENT=1 are both set. They are "
+                "alternative band denominators, not layers: the exponent damps "
+                "sigma's over-reaction and a fitted scale has none to damp. "
+                "Applying both re-tilts the band the other way — measured in "
+                "docs/changelog/2026-08-12-served-sigma-profile.md. Pick one."
+            )
+
+        learned = self._fit_learned_scale(horizon, records_df, feature_frame,
+                                          resid, sigma)
 
         # The exponent, fitted on the SAME rows q_hat is, and stored in the same
         # breath. Nothing between these two statements may raise or return, or an
@@ -6701,7 +6912,8 @@ class ItemForecaster:
         beta = (conformal.fit_beta(resid, sigma,
                                    min_rows=self.MIN_CALIBRATION_ROWS)
                 if self.sigma_exponent_enabled() else conformal.BETA_NEUTRAL)
-        q_hat = conformal.calibrate(resid, sigma, conformal.ALPHA, beta)
+        q_hat = conformal.calibrate(resid, sigma, conformal.ALPHA, beta,
+                                    learned_scale=learned)
         self.conformal_calibration[horizon] = q_hat
         self.conformal_beta[horizon] = beta
         if self.sigma_exponent_enabled():
@@ -6753,9 +6965,11 @@ class ItemForecaster:
             )
 
         mid = records_df["mid_ret"].to_numpy(dtype=float)
-        # Same `beta` as the calibrate above, or the width `_calibrate_confidence`
-        # fits its thresholds on is not the width predict() will serve.
-        low, high = conformal.band(mid, sigma, q_hat, beta)
+        # Same `beta` AND the same learned scale as the calibrate above, or the
+        # width `_calibrate_confidence` fits its thresholds on is not the width
+        # predict() will serve.
+        low, high = conformal.band(mid, sigma, q_hat, beta,
+                                   learned_scale=learned)
         # range_pct is (high_price - low_price) / mid_price. The current price
         # is a common factor and cancels, leaving the return-space width over
         # the mid growth factor. Rows with mid_ret == -100 (a zero mid price)
@@ -7355,8 +7569,14 @@ class ItemForecaster:
             # `band_beta` and not `conformal_beta[horizon]`: an artifact written
             # before 2026-08-12 has no exponent at all, and 1.0 is the value that
             # reproduces the band it was calibrated for.
+            # `band_scale` returns None on every artifact without a learned
+            # scale model, which is all of them before 2026-08-12 -- and then
+            # `band` divides by `sigma ** beta` exactly as it always has.
+            # Per-horizon rather than loop-invariant like `sigma_arr`: each
+            # horizon's residuals have their own size, so each has its own model.
             low_ret_arr, high_ret_arr = conformal.band(
-                mid_ret_arr, sigma_arr, q_hat, self.band_beta(horizon))
+                mid_ret_arr, sigma_arr, q_hat, self.band_beta(horizon),
+                learned_scale=self.band_scale(horizon, latest_rows, sigma_arr))
 
             # Momentum fallback for weak horizons (14d/30d): serve the trailing
             # return as the median, keeping the model's calibrated interval
@@ -7972,7 +8192,13 @@ class ItemForecaster:
             # predict() does not serve. `_calibrate_conformal` warns.
             fold_conformal = self._conformal_records(
                 fold_p50, actual_returns, fold_sigma, current_prices,
-                direction_class=pred_cls, residual_actual_ret=cal_returns)
+                direction_class=pred_cls, residual_actual_ret=cal_returns,
+                # `val_df` is a boolean-mask slice of `tdf` with no
+                # `reset_index`, and `tdf` carries a unique RangeIndex out of
+                # `prepare_targets`' merge -- so these labels index straight back
+                # into the feature frame. Every array above is built from
+                # `val_df`, which is what makes them positionally aligned to it.
+                row_index=val_df.index.to_numpy())
             # Which fold each calibration row came from. `_calibrate_conformal`
             # ignores it -- the pooled q_hat is unchanged -- but without it the
             # sigma-tilt audit can only fit and score its exponent on the same
@@ -8440,6 +8666,25 @@ class ItemForecaster:
                 )
                 ensemble.save_model(path)
 
+        # Save learned band-scale models. One per horizon, and it travels with
+        # `conformal_calibration` in meta.json as a matched pair: a q_hat
+        # calibrated against a learned scale is in that scale's units, so an
+        # artifact carrying one without the other serves an unrelated band.
+        for horizon, booster in self.scale_models.items():
+            booster.save_model(
+                os.path.join(self.model_dir, f"scale_{horizon}d.txt"))
+        if self.scale_models:
+            logger.info(f"  Saved {len(self.scale_models)} learned scale models")
+        # And remove any that this run did not produce, for the same reason the
+        # regime sweep below exists: a stale scale_*.txt left on disk would be
+        # loaded beside a q_hat calibrated without it.
+        for horizon in self.HORIZONS:
+            if horizon in self.scale_models:
+                continue
+            stale = os.path.join(self.model_dir, f"scale_{horizon}d.txt")
+            if os.path.exists(stale):
+                os.remove(stale)
+
         # Save directional classifiers (one 3-class model per horizon)
         for horizon, clf in self.direction_models.items():
             clf.save_model(os.path.join(self.model_dir, f"clf_{horizon}d.txt"))
@@ -8572,6 +8817,26 @@ class ItemForecaster:
             "conformal_beta": {
                 str(h): self.band_beta(h) for h in self.conformal_calibration
             },
+            # The learned scale, and the same matched-pair argument one step
+            # further: `conformal_beta` decides how hard to damp `sigma`, this
+            # decides whether `sigma` is the variable at all. A q_hat calibrated
+            # against a learned scale and served against `sigma` is not a
+            # degraded band, it is an unrelated one — so the norm, the clip and
+            # the column list are all written here beside the booster on disk,
+            # and a horizon missing from this dict falls back to `sigma ** beta`.
+            "learned_scale": {
+                str(h): {
+                    "norm": float(self.scale_norm.get(h, 1.0)),
+                    "clip": [float(self.scale_clip[h][0]),
+                             float(self.scale_clip[h][1])],
+                    # The exact column order the booster was fitted on.
+                    # `band_scale` refuses to score a frame that does not match
+                    # it: the wrong columns give a plausible number from the
+                    # wrong features and a band that looks entirely normal.
+                    "features": list(self.scale_features.get(h, [])),
+                }
+                for h in sorted(self.scale_models)
+            },
             # Which mid each q_hat covers — "served" (the classifier-recentred
             # mid predict() publishes) or "q50" (a mid served only when no
             # classifier exists). A coverage figure read without this is
@@ -8692,6 +8957,38 @@ class ItemForecaster:
         self.conformal_beta = {
             int(h): float(b) for h, b in meta.get("conformal_beta", {}).items()
         }
+        # The learned scale, restored as a unit. `.get` for the same reason as
+        # `conformal_beta`: absent on every artifact before 2026-08-12, and
+        # absence means "this q_hat was calibrated against sigma", which
+        # `band_scale` reproduces by returning None. A horizon whose booster is
+        # missing from disk is dropped from ALL FOUR dicts rather than kept with
+        # a default, so the pair can never come apart -- an entry here without
+        # its booster would serve `sigma` under a q_hat that is not in sigma's
+        # units, which is the one failure this whole structure exists to stop.
+        self.scale_models, self.scale_norm = {}, {}
+        self.scale_clip, self.scale_features = {}, {}
+        for h, cfg in meta.get("learned_scale", {}).items():
+            path = os.path.join(self.model_dir, f"scale_{int(h)}d.txt")
+            if not os.path.exists(path):
+                logger.warning(
+                    f"  meta.json claims a learned scale for {h}d but "
+                    f"{os.path.basename(path)} is missing. Dropping it — the "
+                    f"band for this horizon falls back to sigma, and its q_hat "
+                    f"is NOT in sigma's units, so treat its width as suspect."
+                )
+                continue
+            self.scale_models[int(h)] = lgb.Booster(model_file=path)
+            self.scale_norm[int(h)] = float(cfg.get("norm", 1.0))
+            clip = cfg.get("clip")
+            self.scale_clip[int(h)] = (None if not clip
+                                       else (float(clip[0]), float(clip[1])))
+            self.scale_features[int(h)] = list(cfg.get("features", []))
+        if self.scale_models:
+            logger.info(
+                f"  Loaded {len(self.scale_models)} learned scale models "
+                f"({sorted(self.scale_models)}d) — these q_hats are in the "
+                f"learned scale's units, not sigma's."
+            )
         # Provenance, so `.get` and not strict: predict() reads the band from
         # conformal_calibration alone, and every artifact written before
         # 2026-08-11 lacks this key. An empty dict means "this artifact does not

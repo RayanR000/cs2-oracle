@@ -136,6 +136,23 @@ on:
         required: false
         default: false
         type: boolean
+      # The successor arm, and MUTUALLY EXCLUSIVE with the one above -- setting
+      # both raises at the first calibration rather than serving a band that has
+      # been corrected twice. `sigma_exponent` damps a hand-picked variable;
+      # this replaces it with a small model fitted on the out-of-fold residuals
+      # `q_hat` is already calibrated on, so the band's width comes from what
+      # the model knows about an item rather than from its 60-day wobble alone.
+      #
+      # Read it on `BAND COVERAGE BY SIGMA` in the replay, not on the OOF audit:
+      # the exponent it replaces looked right out of fold and FLIPPED the tilt's
+      # sign at serving (2026-08-12-served-sigma-profile.md), which is the whole
+      # reason that table exists. `q_hat` is in the learned scale's units and is
+      # not comparable with a control's at all -- compare coverage and WIDTH.
+      learned_scale:
+        description: 'Arm: band width is learned from features, not sigma (excl. sigma_exponent)'
+        required: false
+        default: false
+        type: boolean
       # The decisive test for the band's over-coverage, and the only arm here
       # that changes how much data the FOLD models see rather than what they
       # see. `CV_MAX_TRAIN_ROWS` defaults to 300,000 (`6b6fc81`, a cost cap),
@@ -358,6 +375,11 @@ jobs:
           # correctness condition, so this env var must be identical in every
           # step of this job that either calibrates or serves.
           SIGMA_EXPONENT: ${{ inputs.sigma_exponent && '1' || '0' }}
+          # Same three steps as SIGMA_EXPONENT and for the same reason:
+          # this changes the denominator q_hat is fitted on AND the one
+          # the band multiplies, so a step that calibrates or serves
+          # without it would pair a learned-scale q_hat with sigma.
+          LEARNED_SCALE: ${{ inputs.learned_scale && '1' || '0' }}
           # Rows per CV fold. Empty means "do not set it", which is what leaves
           # `ItemForecaster.CV_MAX_TRAIN_ROWS` (300,000) in charge -- an empty
           # env var would be read by `int(os.environ.get(...))` and raise, so the
@@ -412,6 +434,11 @@ jobs:
           # calibrates in-process -- set for symmetry, and so that a future step
           # that does calibrate cannot inherit a mismatch.
           SIGMA_EXPONENT: ${{ inputs.sigma_exponent && '1' || '0' }}
+          # Same three steps as SIGMA_EXPONENT and for the same reason:
+          # this changes the denominator q_hat is fitted on AND the one
+          # the band multiplies, so a step that calibrates or serves
+          # without it would pair a learned-scale q_hat with sigma.
+          LEARNED_SCALE: ${{ inputs.learned_scale && '1' || '0' }}
           # NOT provenance: this is the step the arm acts in. It changes the
           # served `current_price`, which is what the DOLLAR ERROR table below
           # scores -- and what `rankIC` divides by, which is why that column is
@@ -459,6 +486,11 @@ jobs:
           LABEL_SMOOTHED_ANCHOR: ${{ inputs.label_smoothed_anchor && '1' || '0' }}
           CONFORMAL_SERVED_BASIS: ${{ inputs.conformal_served_basis && '1' || '0' }}
           SIGMA_EXPONENT: ${{ inputs.sigma_exponent && '1' || '0' }}
+          # Same three steps as SIGMA_EXPONENT and for the same reason:
+          # this changes the denominator q_hat is fitted on AND the one
+          # the band multiplies, so a step that calibrates or serves
+          # without it would pair a learned-scale q_hat with sigma.
+          LEARNED_SCALE: ${{ inputs.learned_scale && '1' || '0' }}
           SERVE_OUTLIER_GATED_ANCHOR: ${{ inputs.serve_outlier_gated_anchor && '1' || '0' }}
           FORCE_HP_SEARCH: ${{ inputs.force_hp_search && '1' || '0' }}
         run: |

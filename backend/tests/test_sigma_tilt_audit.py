@@ -163,12 +163,29 @@ def test_the_audit_reaches_meta_json_and_never_the_band():
     # The band takes its exponent from the artifact and defaults to neutral, so
     # an artifact that predates the field serves exactly the band it was
     # calibrated for.
+    #
+    # ⚠️ UPDATED AGAIN 2026-08-12, and for the same reason as the note above.
+    # This asserted the literal line `half = float(q_hat) * scale(sigma, beta)`.
+    # `band` now routes through `resolve_scale`, which is what lets a LEARNED
+    # scale replace `sigma` entirely (`LEARNED_SCALE`, `models/scale_model.py`).
+    # Pinning the old text would forbid that without protecting anything: what
+    # the line was standing in for is that the band's DEFAULT is unchanged, so
+    # every artifact written before either flag serves exactly what it was
+    # calibrated for. That is asserted behaviourally below instead of textually,
+    # which is stronger — it would catch a wrong default that still matched the
+    # old string.
     band_src = inspect.getsource(conformal.band)
-    assert "half = float(q_hat) * scale(sigma, beta)" in band_src
     assert "beta: float = BETA_NEUTRAL" in band_src
+    assert "learned_scale=None" in band_src
     assert conformal.BETA_NEUTRAL == 1.0
     sigma = np.array([0.02, 0.07, 0.3])
     np.testing.assert_array_equal(conformal.scale(sigma), sigma)
+
+    # The default path, end to end: no exponent and no learned scale must give
+    # back exactly `q_hat * sigma`.
+    lo, hi = conformal.band(np.zeros(3), sigma, q_hat=2.0)
+    np.testing.assert_array_almost_equal(hi - lo, 2.0 * 2.0 * sigma)
+    np.testing.assert_array_equal(conformal.resolve_scale(sigma), sigma)
 
 
 def test_the_audit_honours_the_calibration_floor():
