@@ -443,12 +443,25 @@ jobs:
             echo "rank IC divides the label by the raw anchor quote its own features are"
             echo "built from, worth 0.03-0.24 rank IC — more than any effect being"
             echo "measured here. The clean-anchor cohort is where that wedge is 1."
+            echo
+            echo "\`Expanding-window audit\` screens the band's over-coverage: the pooled"
+            echo "\`q_hat\` is fitted across folds trained on 87K-300K rows against the"
+            echo "shipped 1.2M budget. A negative rho with a pooled/last ratio above 1"
+            echo "means the calibration inherits the early folds' weakness. \`n_train\` is"
+            echo "monotone in fold index, so it cannot separate that from the market"
+            echo "period — a null kills the hypothesis, a negative only promotes it."
             echo '```'
             # `Cross-sectional` is matched explicitly: the log line reads
             # `rank_ic=`, so the `rank IC` alternative below only ever caught the
             # WARNING form and the headline pair was missing whenever it was
             # positive -- i.e. exactly when an arm had worked.
-            grep -E "classifier_acc|mean_dir_acc|CV summary|Pesaran|Cross-sectional|rank IC|\[timing\]" \
+            #
+            # `Conformal calibration` and the two expanding-window lines were
+            # missing entirely: every note that says to "read q_hat off the
+            # Conformal calibration line" meant downloading the log artifact,
+            # because this grep never matched it. The band's width is the subject
+            # of the open 2026-08-12 question, so it belongs in the summary.
+            grep -E "classifier_acc|mean_dir_acc|CV summary|Pesaran|Cross-sectional|rank IC|Conformal calibration|Expanding-window audit|fold_q_hat|\[timing\]" \
               diagnostics-${{ matrix.horizon }}d.log || echo "no diagnostic lines found"
             echo '```'
             # The serving-path read, when one was asked for. One anchor is one

@@ -5397,6 +5397,53 @@ class ItemForecaster:
                 )
             self._calibrate_confidence(horizon=horizon, records_df=records_df)
 
+            # The expanding-window audit, on one line. `q_hat` above is fitted
+            # on residuals pooled across folds whose models saw 87,224 to
+            # 300,000 rows, while the shipped model trains on the full
+            # TRAIN_FEATURE_ROWS budget — so if weaker fold models are what
+            # makes the served band over-cover (87.2/91.8/90.6/89.0% against
+            # 80%, 2026-08-12), `fold_q_hat` must FALL as `n_train` grows and
+            # the pooled value must sit above the late folds'.
+            #
+            # ⚠️ `n_train` is monotone in fold index by construction, so this
+            # correlation cannot separate "more training data" from "later
+            # market period" — a regime where returns are calmer would produce
+            # the same sign. It is a screen, not an attribution: a null here
+            # kills the hypothesis, a negative only promotes it.
+            #
+            # Reported only. `q_hat` above is what serves, unchanged.
+            fold_q_hats = [(m["n_train"], m["fold_q_hat"]) for m in cv_metrics
+                           if m.get("fold_q_hat") is not None]
+            q_hat_trend = None
+            if len(fold_q_hats) >= 3:
+                _n = np.array([a for a, _ in fold_q_hats], dtype=float)
+                _q = np.array([b for _, b in fold_q_hats], dtype=float)
+                # Spearman: the claim is monotone decline, not a linear slope,
+                # and 3-9 points cannot support a fitted slope anyway.
+                _rho = float(pd.Series(_n).corr(pd.Series(_q), method="spearman"))
+                q_hat_trend = {
+                    "spearman_n_train_vs_q_hat": (
+                        None if not np.isfinite(_rho) else round(_rho, 3)),
+                    "first_fold_q_hat": round(float(_q[0]), 4),
+                    "last_fold_q_hat": round(float(_q[-1]), 4),
+                    # None, not inf: a fold whose residuals are all zero is a
+                    # broken fold, and publishing inf under a ratio key would
+                    # read as an extreme confirmation of the hypothesis.
+                    "pooled_over_last_fold": (
+                        None if _q[-1] <= 0 else round(float(q_hat / _q[-1]), 4)),
+                    "n_folds_measured": len(fold_q_hats),
+                }
+                logger.info(
+                    f"  Expanding-window audit: fold_q_hat "
+                    f"{' → '.join(f'{v:.1f}' for _, v in fold_q_hats)} "
+                    f"over n_train {_n[0]:,.0f}→{_n[-1]:,.0f} | "
+                    f"spearman(n_train, q_hat)="
+                    f"{q_hat_trend['spearman_n_train_vs_q_hat']} | pooled "
+                    f"{q_hat:.1f} is {q_hat_trend['pooled_over_last_fold']}x "
+                    f"the last fold's. Negative rho + ratio >1 ⇒ the pooled fit "
+                    f"inherits the early folds' weakness."
+                )
+
             # Log CV fold-level metrics
             fold_accs = [m["directional_accuracy"] for m in cv_metrics]
             mean_acc = float(np.mean(fold_accs)) if fold_accs else float("nan")
@@ -5609,6 +5656,10 @@ class ItemForecaster:
                 **rank_ic_summary,
                 "mean_trees_per_fold": mean_trees,
                 "pt": pt,
+                # The expanding-window screen. None when fewer than 3 folds
+                # reported a `fold_q_hat` — visibly absent rather than a rho
+                # over two points. Diagnostic; nothing builds a band from it.
+                "q_hat_trend": q_hat_trend,
             }
 
             # Validate feature groups: permutation test on the held-out set.
@@ -7658,9 +7709,46 @@ class ItemForecaster:
             # `pred_cls` is None unless CV_DIAGNOSTIC_CLASSIFIER=1, and then the
             # residual is measured against the q50 mid — honest, but a mid
             # predict() does not serve. `_calibrate_conformal` warns.
-            oof_records.extend(self._conformal_records(
+            fold_conformal = self._conformal_records(
                 fold_p50, actual_returns, fold_sigma, current_prices,
-                direction_class=pred_cls, residual_actual_ret=cal_returns))
+                direction_class=pred_cls, residual_actual_ret=cal_returns)
+            oof_records.extend(fold_conformal)
+
+            # Per-fold q_hat, reported and never served. The pooled q_hat is
+            # fitted across folds whose models saw 87,224 to 300,000 rows, while
+            # the shipped model trains on the full TRAIN_FEATURE_ROWS budget --
+            # so the calibration residuals come from systematically WEAKER
+            # models than the one production serves, and split conformal's
+            # exchangeability assumption does not hold across that gap. A pooled
+            # q_hat is then conservative by construction and the served band
+            # over-covers uniformly, which is the shape the 2026-08-12 panel has
+            # (p80 of the served nonconformity score below 1 in 19 of 20 sigma
+            # strata). This is the measurement that decides it: if q_hat falls
+            # as the fold's training set grows, the pooled fit is inheriting the
+            # early folds' weakness.
+            #
+            # Reported only. Nothing reads `fold_q_hat` to build a band -- the
+            # remedy, if this confirms, is a calibration-set change and it needs
+            # its own decision.
+            fold_q_hat = None
+            if len(fold_conformal) >= self.MIN_CALIBRATION_ROWS:
+                _fr = pd.DataFrame(fold_conformal)
+                try:
+                    fold_q_hat = float(conformal.calibrate(
+                        _fr["residual_pct"].values, _fr["sigma"].values,
+                        conformal.ALPHA))
+                except ValueError:
+                    # No finite nonconformity scores in this fold. Diagnostic
+                    # only, so it must never take out the CV that produces the
+                    # pooled calibration.
+                    fold_q_hat = None
+            if fold_q_hat is not None:
+                logger.info(
+                    f"    [fold {fold_id + 1}] fold_q_hat={fold_q_hat:.4f} on "
+                    f"n_cal={len(fold_conformal):,}, n_train={len(train_df):,}, "
+                    f"val {val_dates[0]}..{val_dates[-1]}"
+                )
+            fold_metrics[-1]["fold_q_hat"] = fold_q_hat
 
         if not fold_metrics:
             raise RuntimeError(
