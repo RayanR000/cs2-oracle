@@ -134,7 +134,21 @@ paths:
   dispatching**; and `fold_beta` **hits the `[0.2, 1.0]` clamp** on early folds at 7d/14d/30d while
   drifting 0.20→0.61 across the fold sequence, so the pooled β sits below a 14-day refit's. The
   held-out leg again reaches 3d/7d only (−78%/−67% vs −22%/−35%), which settles the dispute against
-  the walk-forward −84%/−73%. `docs/changelog/2026-08-12-sigma-exponent-paired-read.md`. `q_hat` and every `fold_q_hat` are byte-identical to `31611508808`, so the
+  the walk-forward −84%/−73%. `docs/changelog/2026-08-12-sigma-exponent-paired-read.md`.
+  ❌ **And it FAILS ITS OWN JOB at serving (`31643819235` / `31643829741`) — second, independent
+  reason the flag is off.** The tilt is real where the band is served (control ramps **+15.66 /
+  +9.94 / +8.10 / +9.13pp** across σ quintiles, 15 of 16 cells) but β **flips the sign** rather than
+  flattening it (**−9.50 / −13.57 / −14.54 / −2.48**, 14 of 16 cells, t = −6.50/−8.49/−5.52/−3.27),
+  and is **worse in magnitude than the control at 7d and 14d**. Read the **ramp**, never
+  `sigma_tilt_pp`, which is not level-matched and is inflated by the arm's marginal drop.
+  ⚠️ **The fitting population is the defect, and this REINSTATES the "refuted" prod read:** the
+  served-flattening exponent interpolates to **~0.64/0.73/0.76/0.47**, double the OOF-fitted value
+  and near the 0.798/0.692/1.034/1.150 taken on prod rows. OOF residuals and served outcomes are
+  different populations — **do not carry an elasticity, a width or a coverage number across them**,
+  which has now gone wrong twice in one day in opposite directions. The horizon story inverts too:
+  OOF says 3d/7d work, serving says 3d/7d/14d overcorrect and 30d is right. Next instrument fits β
+  on **resolved served outcomes** (a forecast-date panel, not a CV fold).
+  `docs/changelog/2026-08-12-served-sigma-profile.md`. `q_hat` and every `fold_q_hat` are byte-identical to `31611508808`, so the
   audit moved no calibration. ⚠️ **The exponent does NOT explain the marginal over-coverage**
   (87.2/91.8/90.6/89.0% vs 80%): level-matching removes exactly that before the tilt is measured,
   and on the calibration set marginal coverage is 80% by construction. Six causes examined, the
