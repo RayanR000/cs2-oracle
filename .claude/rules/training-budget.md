@@ -65,11 +65,22 @@ paths:
   residual can only be the smaller one if `r̂` already contains `p[d]/S[d]` and cancels part of
   it, i.e. **the booster is fitting the anchor deviation**. `sigma` is also exonerated (`p80(s)`
   below 1 in **19 of 20** strata; served `sigma` is 1.28/1.34/1.33/**0.93**× the calibration
-  median but the band is wide across the whole range). **Leading hypothesis: the expanding
-  window.** OOF residuals come from fold models trained on 87,224–300,000 rows against the
-  shipped model's 1.2M budget, so a pooled `q_hat` is conservative by construction — check by
-  logging `q_hat` per fold. Real but second-order: `d log|resid| / d log sigma` is **0.798 /
-  0.692** at h=3/7 against the 1.000 conformal assumes. Read `conformal_basis` in `meta.json` and `basis=` on the calibration line — never
+  median but the band is wide across the whole range). ❌ **The expanding window is REFUTED too
+  (2026-08-12, run `31611508808`).** `fold_q_hat` is now reported per fold, and the pooled value
+  sits **0.94/0.91/0.92/0.84×** the p80 of the folds already at the 300K cap — *below* 1, where
+  the hypothesis needs above. Dropping the one genuinely small-`n` fold **widens** the
+  calibration to 1.06–1.13×, and at identical `n_train` the fold spread is still **1.56–2.25×**.
+  Do not read the audit line's rho (−0.05/−0.14/−0.36/−0.48) as support: `CV_MAX_TRAIN_ROWS`
+  binds from fold 4, leaving **4 distinct `n_train` values**, so the rho is fold 1's leverage —
+  read `n_train_distinct` beside it. What the folds track is the **calibration window's
+  volatility regime**, synchronised across horizons at Spearman 0.70–1.00, which is the same
+  fact as the 58.2–99.2% per-date coverage. So the whole *"calibrate on different rows"* class
+  is dead, including "use the late folds": a trailing 2–3 fold window is **worse** than pooled
+  (1.13–1.21×). Only the single most recent fold moves the right way (0.88/0.84/0.72/0.64×) and
+  it is an 18–23K-row estimate. The remedy class is a **conditional** `q_hat`, undesigned and
+  uncosted. `docs/changelog/2026-08-12-expanding-window-refuted-for-band-width.md`. Real but
+  second-order: `d log|resid| / d log sigma` is **0.798 / 0.692** at h=3/7 against the 1.000
+  conformal assumes. Read `conformal_basis` in `meta.json` and `basis=` on the calibration line — never
   infer it from the environment. **Not** the
   `LABEL_SMOOTHED_ANCHOR` arm — the label is untouched. It was tested against the quiet-dates
   alternative and that was rejected: median `rel_cal` on the calibration window's own dates is

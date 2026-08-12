@@ -612,6 +612,18 @@ class ItemForecaster:
     # them moves. The fold model then fits on less data than the served one, so
     # q_hat comes out LARGER and the band wider -- over-coverage, which is the
     # safe direction. Verify against NOMINAL_COVERAGE before lowering it.
+    #
+    # ✅ VERIFIED 2026-08-12 (run 31611508808), and this cap is NOT why the band
+    # over-covers at 87.2/91.8/90.6/89.0% against 80%. Per-fold q_hat says the
+    # pooled value sits 0.94/0.91/0.92/0.84x the p80 of the folds already at this
+    # cap -- below 1, where the mechanism above needs above -- and dropping the
+    # one fold materially under it WIDENS the calibration to 1.06-1.13x. At
+    # identical n_train the fold spread is still 1.56-2.25x, so training size
+    # explains none of it; the folds track their validation window's volatility
+    # regime instead. Raising this cap is therefore a COST decision only, and
+    # lowering it still needs the coverage check -- the finding is that the
+    # effect is small, not that it is absent.
+    # docs/changelog/2026-08-12-expanding-window-refuted-for-band-width.md
     CV_MAX_TRAIN_ROWS = 300_000
 
     def _cv_max_train_rows(self) -> int:
@@ -5405,11 +5417,21 @@ class ItemForecaster:
             # 80%, 2026-08-12), `fold_q_hat` must FALL as `n_train` grows and
             # the pooled value must sit above the late folds'.
             #
-            # ⚠️ `n_train` is monotone in fold index by construction, so this
-            # correlation cannot separate "more training data" from "later
-            # market period" — a regime where returns are calmer would produce
-            # the same sign. It is a screen, not an attribution: a null here
-            # kills the hypothesis, a negative only promotes it.
+            # ⚠️ TWO reasons this is a weak screen, and neither is fixable here.
+            # `n_train` is monotone in fold index by construction, so a negative
+            # rho cannot separate "more training data" from "later market
+            # period" — a calmer regime late in the window produces the same
+            # sign. And `CV_MAX_TRAIN_ROWS` (300,000, shipped 2026-08-09 as
+            # `6b6fc81`) binds on most folds, so the x-axis is heavily tied and
+            # spans at most 87K→300K against the 300K→1.2M gap that actually
+            # separates a fold model from the served one.
+            #
+            # So a null here does NOT kill the hypothesis — it is equally
+            # consistent with the cap having flattened the very axis being
+            # measured. The decisive test is a `CV_MAX_TRAIN_ROWS` sweep, where
+            # the fold geometry is held fixed and only the training size moves;
+            # this line only says whether q_hat is sensitive to that size at all
+            # over the narrow range the cap leaves.
             #
             # Reported only. `q_hat` above is what serves, unchanged.
             fold_q_hats = [(m["n_train"], m["fold_q_hat"]) for m in cv_metrics
@@ -5432,16 +5454,29 @@ class ItemForecaster:
                     "pooled_over_last_fold": (
                         None if _q[-1] <= 0 else round(float(q_hat / _q[-1]), 4)),
                     "n_folds_measured": len(fold_q_hats),
+                    # How much range the screen actually had. With the cap
+                    # binding, `n_train_distinct` collapses toward 1 and a rho
+                    # near zero says nothing about the hypothesis -- it says the
+                    # measurement had no x-axis. A reader comparing two runs
+                    # needs this beside the rho, not in a separate log line.
+                    "n_train_min": int(_n[0]),
+                    "n_train_max": int(_n[-1]),
+                    "n_train_distinct": int(len(np.unique(_n))),
+                    "cv_max_train_rows": self._cv_max_train_rows(),
                 }
                 logger.info(
                     f"  Expanding-window audit: fold_q_hat "
                     f"{' → '.join(f'{v:.1f}' for _, v in fold_q_hats)} "
                     f"over n_train {_n[0]:,.0f}→{_n[-1]:,.0f} | "
                     f"spearman(n_train, q_hat)="
-                    f"{q_hat_trend['spearman_n_train_vs_q_hat']} | pooled "
+                    f"{q_hat_trend['spearman_n_train_vs_q_hat']} over "
+                    f"{q_hat_trend['n_train_distinct']} distinct n_train "
+                    f"(cap={q_hat_trend['cv_max_train_rows']:,}) | pooled "
                     f"{q_hat:.1f} is {q_hat_trend['pooled_over_last_fold']}x "
                     f"the last fold's. Negative rho + ratio >1 ⇒ the pooled fit "
-                    f"inherits the early folds' weakness."
+                    f"inherits the early folds' weakness. A rho near 0 with "
+                    f"n_train_distinct near 1 is NOT a null — the cap removed "
+                    f"the x-axis; sweep CV_MAX_TRAIN_ROWS instead."
                 )
 
             # Log CV fold-level metrics

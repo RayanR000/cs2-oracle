@@ -14,8 +14,22 @@ strata — the whole range, not the tail. Four other causes are already excluded
 (the calibration centre, quiet forecast dates, the calibration denominator, and
 sigma's level).
 
-`fold_q_hat` is the measurement that decides it: if it falls as `n_train` grows,
-the pooled fit is inheriting the early folds' weakness.
+`fold_q_hat` screens it: if it falls as `n_train` grows, the pooled fit is
+inheriting the early folds' weakness.
+
+It is only a screen, and the reason is `CV_MAX_TRAIN_ROWS` (300,000, shipped
+2026-08-09 as `6b6fc81` to cut the conformal-CV phase). It binds on most folds,
+so they share one `n_train` and the rho has barely any x-axis — and the range it
+does span, 87K→300K, is smaller than the 300K→1.2M gap that actually separates a
+fold model from the served one. **A rho near zero is therefore not evidence
+against the hypothesis.** The decisive test is a `CV_MAX_TRAIN_ROWS` sweep, which
+holds the fold geometry fixed and moves only the training size; that knob is a
+`model-diagnostics.yml` input.
+
+Worth noting where the hypothesis came from: the cap's own comment predicted this
+outcome — "the fold model then fits on less data than the served one, so q_hat
+comes out LARGER and the band wider — over-coverage, which is the safe direction.
+Verify against NOMINAL_COVERAGE before lowering it." The band does now over-cover.
 
 **Reported only.** Nothing builds a band from it — the remedy is a
 calibration-set change and needs its own decision.
@@ -100,6 +114,31 @@ def test_the_audit_is_reported_as_a_summary_not_only_per_fold():
     assert "pooled_over_last_fold" in source
     # A rho over two points is not a measurement.
     assert "len(fold_q_hats) >= 3" in source
+    # Without these the rho is unreadable: see the test below.
+    assert "n_train_distinct" in source
+    assert "cv_max_train_rows" in source
+
+
+def test_the_screens_own_limitation_is_recorded_beside_it():
+    """`CV_MAX_TRAIN_ROWS` (300,000) binds on most folds, so the folds share an
+    `n_train` and the rho has almost no x-axis. A rho near zero is then NOT
+    evidence against the expanding-window hypothesis — it is a measurement with
+    nothing to measure over. Anything that reports the rho must report the range
+    too, or the next reader takes a null at face value."""
+    import inspect
+
+    from models.forecaster import ItemForecaster
+
+    source = inspect.getsource(ItemForecaster._train_horizon_inline)
+    assert "NOT a null" in source
+    assert "CV_MAX_TRAIN_ROWS" in source
+
+    # And the cap really does sit far below the served budget — which is what
+    # makes the fold residuals non-exchangeable with the served ones in the
+    # first place. If these ever converge, the hypothesis dissolves.
+    from scripts.forecast_prices import DEFAULT_TRAIN_FEATURE_ROWS
+
+    assert ItemForecaster.CV_MAX_TRAIN_ROWS * 3 < DEFAULT_TRAIN_FEATURE_ROWS
 
 
 def test_the_trend_screen_recovers_a_planted_decline():

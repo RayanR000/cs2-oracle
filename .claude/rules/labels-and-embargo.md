@@ -57,6 +57,15 @@ paths:
   runs `31564924194` vs `31564943172`), so `CONFORMAL_SERVED_BASIS` defaults off. The wrong sign
   is evidence that `r̂` itself carries `p[d]/S[d]` — the same free factor, now in the prediction. `meta.json` carries `conformal_basis`; the fallback WARNs. Conditional coverage (58.2–99.2% per date) is
   **not** fixed. `docs/changelog/2026-08-12-conformal-basis-follows-serving.md`.
+  ⚠️ **Do not reach for a different calibration SET as the fix — that whole class is now closed
+  (2026-08-12, run `31611508808`).** Per-fold `q_hat` refutes the expanding-window explanation
+  (pooled is 0.94/0.91/0.92/0.84× the p80 of folds already at the 300K cap, and dropping the
+  small-`n` fold *widens* it to 1.06–1.13×), and "calibrate on the late folds" is worse than
+  pooled at 1.13–1.21× because one volatile window dominates any p80 containing it. At identical
+  `n_train` the fold spread is 1.56–2.25× and tracks the window's volatility regime, synchronised
+  across horizons at Spearman 0.70–1.00 — the same fact as the per-date spread. A **scalar**
+  `q_hat` is the constraint; a conditional one is the untried remedy.
+  `docs/changelog/2026-08-12-expanding-window-refuted-for-band-width.md`.
 - **The wedge `p[d]/S[d]` is also attackable in the SERVING basis, and that arm is
   `SERVE_OUTLIER_GATED_ANCHOR=1`.** `predict` detects items whose latest quote deviates >10%
   from their local median, logs `using smoothed price` — and then substitutes the median for

@@ -112,6 +112,32 @@ on:
         required: false
         default: false
         type: boolean
+      # The decisive test for the band's over-coverage, and the only arm here
+      # that changes how much data the FOLD models see rather than what they
+      # see. `CV_MAX_TRAIN_ROWS` defaults to 300,000 (`6b6fc81`, a cost cap),
+      # while the shipped model trains on the full 1.2M budget -- so every
+      # residual `q_hat` is fitted on comes from a model weaker than the one
+      # production serves, which makes the pooled `q_hat` conservative by
+      # construction and the band over-cover uniformly. That is the shape the
+      # 2026-08-12 panel has.
+      #
+      # Read `q_hat` off the "Conformal calibration" line, arm against a control
+      # dispatch on the SAME commit. The `Expanding-window audit` line's rho is
+      # only a screen: with the cap binding, most folds share one `n_train` and
+      # there is almost no x-axis left, so a rho near zero there is not evidence
+      # against the hypothesis. THIS knob is the read.
+      #
+      # ⚠️ Cost. The cap exists because nine uncapped expanding windows sum to
+      # 4.2x the frame and the conformal-CV phase was 50.4% of an 872s retrain.
+      # Raising it scales that phase roughly linearly, so a 1.2M value is a
+      # ~30-minute job per horizon and will not fit the working cap. Sweep
+      # upward (600000) before reaching for the full budget, and never set it on
+      # a path that saves an artifact.
+      cv_max_train_rows:
+        description: 'Rows per CV fold (default 300000; raise to test the band over-coverage)'
+        required: false
+        default: ''
+        type: string
       # Not an arm -- a confirm mode for one. The first read of every arm above
       # reuses the cached `tuned_params`, which is what makes the arms
       # comparable and is also why their SIZE is provisional: the HP were
@@ -303,6 +329,11 @@ jobs:
           # nothing the boosters see. Read q_hat off the "Conformal calibration"
           # line; every other number here is arm-invariant.
           CONFORMAL_SERVED_BASIS: ${{ inputs.conformal_served_basis && '1' || '0' }}
+          # Rows per CV fold. Empty means "do not set it", which is what leaves
+          # `ItemForecaster.CV_MAX_TRAIN_ROWS` (300,000) in charge -- an empty
+          # env var would be read by `int(os.environ.get(...))` and raise, so the
+          # `||` fallback must reproduce the class default rather than ''.
+          CV_MAX_TRAIN_ROWS: ${{ inputs.cv_max_train_rows || '300000' }}
           # Serving-only, so it reaches nothing this step trains. Set here for
           # `predict_smoke`, which is the one mode of this step that calls
           # predict() -- and it writes nothing, so the arm cannot escape.
@@ -426,6 +457,13 @@ jobs:
           # carry the same flags and are NOT comparable to each other, so the
           # heading has to separate them.
           if [ "$FORCE_HP_SEARCH" = "1" ]; then arm="${arm}+hpsearch"; fi
+          # The fold row cap is the one arm whose value matters, not just its
+          # on/off state -- a q_hat at 600K and one at 1.2M are different reads,
+          # so the number goes in the heading. `meta.json` carries it too, under
+          # `cv_results[h].q_hat_trend.cv_max_train_rows`.
+          if [ "$CV_MAX_TRAIN_ROWS" != "300000" ]; then
+            arm="${arm}+cvrows${CV_MAX_TRAIN_ROWS}"
+          fi
           {
             echo "## ${{ matrix.horizon }}d diagnostics — arm: \`${arm}\`"
             echo
@@ -435,7 +473,8 @@ jobs:
             echo "\`LABEL_SMOOTHED_ANCHOR=$LABEL_SMOOTHED_ANCHOR\` "
             echo "\`CONFORMAL_SERVED_BASIS=$CONFORMAL_SERVED_BASIS\` "
             echo "\`SERVE_OUTLIER_GATED_ANCHOR=$SERVE_OUTLIER_GATED_ANCHOR\` "
-            echo "\`FORCE_HP_SEARCH=$FORCE_HP_SEARCH\`"
+            echo "\`FORCE_HP_SEARCH=$FORCE_HP_SEARCH\` "
+            echo "\`CV_MAX_TRAIN_ROWS=$CV_MAX_TRAIN_ROWS\`"
             echo
             echo "Bar is \`naive_rank_ic\` on the same folds, not 50% and not a stored number."
             echo

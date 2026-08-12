@@ -244,3 +244,26 @@ so the elasticity there is 1.000 and the test is unfalsifiable on this axis.
 
 **Nothing about the served band has changed.** The daily path is on the default, which is the
 pre-2026-08-12 behaviour, and no retrain has promoted an artifact from this work.
+
+## RESOLVED 2026-08-12: the expanding window is refuted, and the whole remedy class with it
+
+Hypothesis 2 above was measured on run `31611508808` (control, same commit, all four horizons)
+and **fails**. Per-fold `q_hat` does not decline with `n_train` in the way it needs to: the
+pooled value sits **0.94 / 0.91 / 0.92 / 0.84×** the p80 of the folds already at the 300K cap
+(the hypothesis needs *above* 1), dropping the one materially small-`n` fold **widens** the
+calibration to 1.06–1.13×, and at identical `n_train` the fold spread is still **1.56–2.25×**.
+
+Two corrections to what this entry proposed:
+
+- **"Check that `q_hat` declines with fold index" is not a sufficient test.** `CV_MAX_TRAIN_ROWS`
+  binds from fold 4, so there are only 4 distinct `n_train` values and the resulting rho
+  (−0.05 / −0.14 / −0.36 / −0.48) is fold 1's leverage, not a training-size effect. It reads as
+  weak confirmation of a hypothesis the same run refutes.
+- **"The remedy is to calibrate on the late folds" is refuted independently.** A trailing 2–3
+  fold window is *worse* than pooled (1.13–1.21×), because the volatile 2025-08 window dominates
+  the p80 of any set containing it.
+
+What the folds track is the **calibration window's volatility regime**, synchronised across
+horizons at pairwise Spearman 0.70–1.00 — which is the same fact as item 4's 58.2–99.2% per-date
+coverage, not a separate problem. The constraint is that `q_hat` is a **scalar**. See
+`2026-08-12-expanding-window-refuted-for-band-width.md`.
