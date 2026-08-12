@@ -305,20 +305,30 @@ read over the same ops mirror.
 
 ## Still open
 
-Both recommendations from the 07-19 diagnosis are **open, not done.** Nothing in this entry changed
-code or data.
+> ## ✅ Both 07-19 recommendations SHIPPED the same day, after this entry was written.
+> `37b09f9` guards the fallback branch (`_warn_no_classifier`, reporting the horizon, the
+> item count and the flat share once per horizon, silent when the classifier is present).
+> `66b49f4` excludes the date, as `EXCLUDED_FORECAST_DATES` in `backtest/scoring.py` applied
+> at `_records_from_frozen_outcomes`. Full suite green at each: 1,993 then 2,009 passed.
+> **The exclusion is scoring-only** — resolution is untouched, so 07-19's outcomes still
+> freeze and only never reach a metric, which a test asserts directly. It is counted at
+> WARNING with its reason, and `SCORE_ALL_DATES=1` restores the rows for comparison against
+> the pre-exclusion figures while logging that its output is not publishable.
+> **Every pooled `side_ref` figure in this entry therefore describes a panel the code no
+> longer scores.** The numbers stand as the measurement that motivated the exclusion; the
+> next scheduled Backtest Accuracy run is the first to report without the date, and no
+> `--rescore` was forced to bring it forward.
+> One bug worth recording, because a unit test could not have caught it: `forecast_date`
+> arrives as an **ISO string** under SQLite and a `date` under psycopg2, so the first
+> version matched only `date` and the exclusion **silently never fired** — dropping nothing
+> and reporting nothing. The end-to-end wiring test is what found it.
+> **07-18 is still IN, and that is unresolved** — see item 1.
 
-1. **Exclude 2026-07-19 from the scored panel as a distinct serving config** — a different direction
-   rule, not an ablation arm, because it *is* the production run of that day. Two things make this
-   non-trivial: `served_identity()` deliberately merges `-regime` and `-global-only` and **cannot see
-   the direction rule at all**, so it will not separate this by itself; and 07-18's membership
-   should be reviewed in the same pass, since those rows are the ablation arm.
-2. **Guard the fallback branch** (~10 min): a WARNING plus a flat-call count when
-   `direction_models.get(horizon) is None`, so an artifact missing its classifier cannot silently
-   re-enter the ±0.5% dead band. *Status at the time of writing:* a change matching this
-   (`_warn_no_classifier`, plus `backend/tests/test_no_classifier_fallback_warns.py`) is present
-   **uncommitted in the working tree** and was written by someone else. This entry does not verify
-   it — the test was not run here — and it is recorded as open until it lands.
+1. **07-18's cohort membership.** Its rows are `--compare-regime`'s run B overwriting that day's
+   production forecast, so they are an ablation arm's output — but written under the *ordinary*
+   sign rule, which makes it a cohort-membership question rather than an estimator one. The
+   2026-07-19 exclusion deliberately does not cover it, and the distinction is recorded in
+   `EXCLUDED_FORECAST_DATES`' own comment so the two are not conflated later.
 3. **Whether `assoc` should be a stored metric** beside DA and the PT statistic. It is the term that
    is readable on the panel the repo actually has. Raised here as a question; not a decision this
    entry makes.
