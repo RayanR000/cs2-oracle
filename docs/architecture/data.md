@@ -167,7 +167,7 @@ than the local copy, so its per-file sizes run slightly higher.
 | `item-metadata.parquet` | 0.1 MB | 8,691 |
 | `supply-2026-08.parquet` | 1.6 MB | 84,408 (1 day, 30,330 items, 4 feeds) |
 | `ops/item_forecasts.parquet` | 1.6 MB | 158,200 |
-| `ops/forecast_outcomes.parquet` | 2.2 MB | 104,642 (114,489 as of 2026-08-12 — see the warning below) |
+| `ops/forecast_outcomes.parquet` | 2.2 MB | 104,642 (**local copy** 114,489 / **durable** 70,409 as of 2026-08-12 — see the warning below) |
 | `ops/event_impacts_denorm.parquet` | 0.7 MB | 18,473 |
 | `ops/collection_runs.parquet` | <0.1 MB | 194 |
 | `ops/prediction_accuracy.parquet` | <0.1 MB | 84 |
@@ -189,17 +189,34 @@ Growth is dominated by the daily append: **~362,586 OHLCV rows/day** across 11 s
 labels. `ops/` tables are UPSERT-or-append-and-dedup and stay under a few MB each;
 `forecast_outcomes` is insert-only (see below).
 
-> ⚠️ **`ops/forecast_outcomes.parquet` is not a faithful mirror of the DB table, and its gaps are
-> biased (measured 2026-08-12).** Postgres holds **121,699** rows against the file's **114,489**, and
-> **no resolution batch after 2026-08-02 23:12:46 ever landed in the file** — max `resolved_at` there
-> is 2026-08-11 00:19:05, max `evaluated_at` 2026-08-11 21:10:28. On the ≥$1 scored cohort it holds
-> **14,668 of 23,073 rows, missing 36%** across 11 of 22 (forecast_date, horizon) cells, two whole
-> dates absent at h=7. What survives in a deficient cell is only what a verdict-refresh pass rewrote,
-> and that pass writes **only rows whose stored verdict differed** — so the survivors are selected on
-> "the verdict changed" and their rates are not the population's. The file also still carries the
-> **21,737 NULL-`base_price` 2025-12-01 rows purged from prod**. **Do not read it for panel work**;
-> query prod Postgres read-only, or a CI run's `prediction_accuracy`. Diagnose a cell first: if 100%
-> of its rows have `evaluated_at > resolved_at`, it is a verdict-changed subsample.
+> ⚠️ **`ops/forecast_outcomes.parquet` exists in two copies and neither is the full scored panel.
+> Query prod Postgres read-only for panel work.** All three stores were measured 2026-08-12, the
+> durable one by fetching its own blob:
+>
+> | store | rows | dates | freshness | `evaluated_at > resolved_at` |
+> |---|---|---|---|---|
+> | prod Postgres — complete | **121,699** | **12** | max `resolved_at` 2026-08-12 00:05:52.489046 | — |
+> | **durable** (`RayanR000/cs2-oracle-data`, head `c2b96cad04ce`, run `31557070748`) | 70,409 | 10 | matches Postgres to the microsecond | 57 / 70,409 (**0.1%**) |
+> | **local working copy** (`price-archive/`, gitignored) | 114,489 | 13 | max `resolved_at` 2026-08-11 00:19:05, max `evaluated_at` 2026-08-11 21:10:28 | **100%** in every deficient cell |
+>
+> **The publish leg works — do not go looking for a dead one.** Every cell the local copy is missing
+> is complete in the durable file (07-19 h=14 is 1,052 rows there against 115 locally). What the
+> durable file is instead is **shallow**: 10 dates, with 2025-12-01 and 2026-07-17 absent entirely,
+> so it cannot answer a history question. Why it is 10 dates and not 12 is **untraced** — it is fresh
+> and internally complete, so this is not staleness.
+>
+> **The local copy is the trap**, and it is what `db/parquet.py` reads on a developer machine. It
+> went stale for resolution batches after **2026-08-02 23:12:46**, then a verdict-refresh run against
+> prod on 2026-08-11 21:10 wrote rows back into it; `_flush_verdict_refresh` writes **only rows whose
+> stored verdict differed**, so each deficient cell's survivors are selected on "the verdict changed"
+> and their rates are not the population's. On the ≥$1 scored cohort it holds **14,668 of 23,073 rows
+> — missing 36%** across 11 of 22 (forecast_date, horizon) cells, with two whole dates absent at h=7.
+> It also still carries the **21,737 NULL-`base_price` 2025-12-01 rows purged from prod**.
+>
+> **Diagnose a cell before trusting either copy:** if ~100% of its rows have
+> `evaluated_at > resolved_at`, sharing one timestamp, it is a verdict-changed subsample. The durable
+> file reads 0.1% by that test, the local copy's deficient cells 100%. A CI run's
+> `prediction_accuracy` is also sound.
 > `../changelog/2026-08-11-the-da-gap-is-the-market-direction-of-five-dates.md`.
 
 ### Performance

@@ -53,10 +53,13 @@ re-injected after `/compact` — **read the rule yourself before starting work i
   and `database.py` are stale.
 - **Every A/B result stored in this repo predates the 2026-08-08 statistics fix.** Ten of the
   thirteen harnesses have not been re-run. Don't cite a stored verdict without checking.
-- **`price-archive/ops/forecast_outcomes.parquet` is missing 36% of the scored panel, and
-  what remains in the gaps is selected on "the verdict changed"** — a biased subsample, not a
-  lag, because no resolution batch after 2026-08-02 ever landed there. It cost nine published
-  figures on 2026-08-11, one of which reversed sign. **Query prod Postgres read-only, or a CI
-  run's `prediction_accuracy`, for any panel figure.** Full diagnosis and the per-cell test in
-  the `archive-reads` rule — which is scoped to `db/` and `collectors/`, so it will **not**
-  load just because you are doing backtest analysis.
+- **Neither copy of `ops/forecast_outcomes.parquet` is the full scored panel — query prod
+  Postgres read-only for any panel figure.** The **durable** archive that CI writes is fresh
+  and its cells are complete, but shallow: 70,409 rows over 10 dates, with 2025-12-01 and
+  2026-07-17 absent entirely. Your **local working copy** is the dangerous one — deep but stale
+  since 2026-08-02, missing 36% of the ≥$1 rows, and its surviving rows in a deficient cell are
+  **selected on "the verdict changed"** by a later verdict-refresh run, so their rates are not
+  the population's. That cost nine published figures on 2026-08-11, three of which reversed
+  sign. **The publish leg is not broken** — don't go hunting for a dead one. Per-cell test and
+  all three stores' numbers are in the `archive-reads` rule, which is scoped to `db/` and
+  `collectors/` and so will **not** load just because you are doing backtest analysis.

@@ -36,10 +36,12 @@ modest positive, inside per-fold noise. Full derivation in the companion changel
 > is the first-order term, so the pooled deficit is not evidence against this item, which therefore
 > stands. Per-date sd of the excess is 14.96–24.39pp.
 > **New constraint on everything below:** never read `DA − realised_down_rate` on fewer than ~50
-> forecast dates — report the within-date term. And **never read
+> forecast dates — report the within-date term. And **never read the local working copy of
 > `price-archive/ops/forecast_outcomes.parquet` for a panel figure**: it holds 14,668 of the 23,073
 > ≥$1 scored rows and its gaps are selected on "the verdict changed", which is what cost nine
-> published figures on 2026-08-11. The one defect the read surfaced is **diagnosed**:
+> published figures on 2026-08-11. **Neither Parquet copy is the full panel** — the durable archive is
+> fresh and cell-complete but only 10 dates deep, so **the publish leg is not broken**; query prod
+> Postgres read-only. The one defect the read surfaced is **diagnosed**:
 > 2026-07-19 called `flat` on 64.0% of items at h=3 against a **23.59%** realised flat rate (18.3%
 > hit rate — a bad call, not a guaranteed miss), because `f71ffb4` shipped a global ±0.5% dead band
 > in `predict()` 42 minutes before that run and no directional classifier existed yet. Two open
@@ -368,9 +370,11 @@ Everything in the "Do not re-propose" list of `2026-08-09-next-steps.md`, plus:
   21.56 / 24.39pp at 3/7/14/30d and a zero-skill model lands ≤ −11pp on 30–38% of archive dates, so
   a 5-date pooled excess carries no information about the model. Report the within-date term.
   `changelog/2026-08-11-the-da-gap-is-the-market-direction-of-five-dates.md`.
-- **Reading `price-archive/ops/forecast_outcomes.parquet` for a panel figure.** It holds 14,668 of
-  the 23,073 ≥$1 scored rows (2026-08-12), misses two whole dates at h=7, and its surviving rows in
-  a deficient cell are selected on "the verdict changed" — a biased subsample, not a lag. Query prod
-  Postgres read-only, or a CI run's `prediction_accuracy`. Same entry.
+- **Reading either Parquet copy of `ops/forecast_outcomes.parquet` for a panel figure.** Neither is
+  the full panel (2026-08-12): the **local working copy** is deep but stale, holding 14,668 of the
+  23,073 ≥$1 scored rows, missing two whole dates at h=7, with its surviving rows in a deficient cell
+  selected on "the verdict changed"; the **durable archive** is fresh and cell-complete but only 10
+  dates deep, missing 2025-12-01 and 2026-07-17 entirely. **The publish leg is not broken** — don't
+  chase one. Query prod Postgres read-only, or a CI run's `prediction_accuracy`. Same entry.
 - **Shaving the retrain further as a priority.** It is inside the cap; the loop is bounded by
   experiment power, not by training seconds.

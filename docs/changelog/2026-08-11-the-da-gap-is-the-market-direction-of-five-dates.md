@@ -1,11 +1,14 @@
 # The 12–16pp DA gap is the realised market direction of three to eight anchor dates
 
 **Date:** 2026-08-11
-**Amended:** 2026-08-12 — the source file was a 36%-deficient, **biased** view of the scored panel.
-Nine published figures change, with sign reversals in three of them: the within-date term at h=14,
-two of the three rising-date examples, and the h=7 direction correlation. **The central conclusion
-survives.** Read the next section before any figure below. The filename keeps its original
-`five-dates` slug because five other docs link it.
+**Amended:** 2026-08-12 — the panel was read from the **gitignored local working copy** of
+`price-archive/ops/forecast_outcomes.parquet`, which is stale and selectively repopulated: a
+36%-deficient, **biased** view of the scored panel. Nine published figures change, with sign
+reversals in three of them: the within-date term at h=14, two of the three rising-date examples,
+and the h=7 direction correlation. **The central conclusion survives.** **The archive CI publishes
+is not the defective file — the publish leg works** (re-measured 2026-08-12; a first pass at this
+amendment blamed it, wrongly). Read the next section before any figure below. The filename keeps
+its original `five-dates` slug because five other docs link it.
 **Closes:** §3 of `docs/changelog/2026-08-11-clean-anchor-gate-measured-on-realised-outcomes.md`
 — "the largest unexplained gap currently on the board".
 **Against:** the published CV figure of **+3.5 / +0.1 / −1.3 / +4.4pp** at 3/7/14/30d
@@ -14,7 +17,7 @@ survives.** Read the next section before any figure below. The filename keeps it
 (`set_session(readonly=True)`), read 2026-08-12; `q̄` still comes from read-only DuckDB over
 `price-archive/prices-*.parquet`. No `--rescore`, no `--reresolve`, no script run, no write of any
 kind, no code changed. The **original** read, 2026-08-11, was in-memory DuckDB over
-`price-archive/ops/forecast_outcomes.parquet` — which is the defect.
+the **local working copy** of `price-archive/ops/forecast_outcomes.parquet` — which is the defect.
 **Also records:** the diagnosed cause of 2026-07-19's flat calls (a ±0.5% dead band, no classifier),
 and a **correction** — 07-19 is the production daily run and 07-18 is the ablation arm, which is the
 reverse of what the repo had recorded.
@@ -23,31 +26,68 @@ reverse of what the repo had recorded.
 the market happened to take over three to eight anchor dates, measured against a metric whose
 per-date standard deviation is 15–24pp.
 
-## ⚠️ Amended: `ops/forecast_outcomes.parquet` is not a mirror of the scored panel
+## ⚠️ Amended: the panel was read from the local working copy, which is stale and selectively repopulated
 
-On the ≥$1 cohort the file holds **14,668 of Postgres' 23,073 rows — missing 8,405 (36%)** across
-**11 of 22 (forecast_date, horizon) cells**, including **two whole dates at h=7 that no published
-h=7 figure in this entry ever saw**: 2026-07-31 and 2026-08-04.
+The 2026-08-11 read was `price-archive/ops/forecast_outcomes.parquet` — the **gitignored local
+working copy**, which `AGENTS.md` already describes as a plain local directory that runs *behind*
+the durable archive. On the ≥$1 cohort that file holds **14,668 of Postgres' 23,073 rows — missing
+8,405 (36%)** across **11 of 22 (forecast_date, horizon) cells**, including **two whole dates at h=7
+that no published h=7 figure in this entry ever saw**: 2026-07-31 and 2026-08-04.
 
-**The obvious hypothesis is refuted. It is not a sync cutoff.** The missing 2026-07-19 h=14 rows
-resolved at **2026-08-05 00:09:44**, well before the file's own last write (**2026-08-11
-21:10:28**), and the file already contains rows resolved as late as 2026-08-11 00:19.
+**The archive CI publishes does not have this defect. The publish leg is not broken — do not go
+looking for a dead one.** An earlier version of this amendment concluded that "no resolution batch
+after 2026-08-02 23:12:46 ever landed in the mirror" and generalised the 36% deficiency to the
+published archive. That is wrong, and it was wrong because it never read the published archive.
 
-**The mechanism is worse than a lag: no resolution batch after 2026-08-02 23:12:46 ever landed in
-the mirror.** In every deficient cell, **100% of the rows present have `evaluated_at > resolved_at`**
-and all of them share the single timestamp 2026-08-11 21:10:28 — they are there only because a later
-verdict-refresh pass rewrote them (`_flush_verdict_refresh`, `backend/scripts/backtest_accuracy.py`
-~line 350), and that pass writes **only rows whose stored verdict differed from the re-derived one**
-(`_refresh_verdict_columns`: "Only rows whose stored verdict actually differs are written"). Each
-surviving subset is therefore **selected on "the verdict changed"**, not a random subsample. That
-selection is why 07-19 h=14's 115 mirror rows read DA **29.6%** / down-rate **65.2%** against the
-true **39.4% / 51.1%** on 1,052 rows.
+### Three stores, measured 2026-08-12 by fetching the durable archive's own blob
 
-Store totals: **Postgres 121,699 rows**, max `resolved_at` 2026-08-12 00:05:52. **Mirror 114,489
-rows**, max `resolved_at` 2026-08-11 00:19:05, max `evaluated_at` 2026-08-11 21:10:28. The mirror
-also still carries the **21,737 NULL-`base_price` 2025-12-01 rows purged from prod**
+| store | rows | forecast dates | freshness | rows with `evaluated_at > resolved_at` |
+|---|---|---|---|---|
+| **prod Postgres** — the only complete source | **121,699** | **12** | max `resolved_at` 2026-08-12 00:05:52.489046 | — |
+| **durable archive** — `RayanR000/cs2-oracle-data`, head `c2b96cad04ce`, written by run `31557070748` at 2026-08-12 02:34Z | 70,409 | 10 | max `resolved_at` **matches Postgres to the microsecond** | **57 of 70,409 (0.1%)** |
+| **local working copy** | 114,489 | 13 | max `resolved_at` 2026-08-11 00:19:05, max `evaluated_at` 2026-08-11 21:10:28 | **100% in every deficient cell** |
+
+Every cell the local file was missing is **complete** in the durable archive: 07-19 h=14 **1,052**
+rows (local 115), 07-18 h=14 **1,053** (local 34), 07-31 h=7 **1,398** (local 0), 08-04 h=3
+**1,421** (local 16), 08-04 h=7 **963** (local 0). And the selection signature is **absent** there.
+
+**But the durable archive is shallow.** Its dates are 07-18, 07-19, 07-29, 07-31, 08-01, 08-02,
+08-04, 08-05, 08-06, 08-07 — it holds **no 2025-12-01 and no 2026-07-17 rows at all**. Those are the
+whole backdated batch and the largest cell in this entry's live h=14 panel (1,093 of 3,198 rows), so
+this entry could not have been written from the durable copy either.
+
+**So neither Parquet copy is the full panel: durable is fresh but shallow, local is deep but stale.
+Postgres is the source for panel work.** That is the same instruction this entry gave when it was
+amended, but the reason it gave — a dead publish leg — was wrong, and the reason matters because it
+sent a reader looking for a broken workflow step that does not exist.
+
+### The selection mechanism is real, and it explains the local file only
+
+The local copy went stale for resolution batches after **2026-08-02 23:12:46**. A plain sync lag
+does not describe what is in it: the missing 2026-07-19 h=14 rows resolved at **2026-08-05
+00:09:44**, well before the file's own last write at **2026-08-11 21:10:28**. What happened instead
+is that a verdict-refresh run against prod at that last timestamp wrote rows back into the stale
+file. In every deficient cell, **100% of the rows present have `evaluated_at > resolved_at`** and
+all share that single timestamp — they are there only because `_flush_verdict_refresh`
+(`backend/scripts/backtest_accuracy.py` ~line 350) rewrote them, and that pass writes **only rows
+whose stored verdict differed from the re-derived one** (`_refresh_verdict_columns`: "Only rows
+whose stored verdict actually differs are written"). Each surviving subset is therefore **selected
+on "the verdict changed"**, not a random subsample. That selection is why 07-19 h=14's 115 local
+rows read DA **29.6%** / down-rate **65.2%** against the true **39.4% / 51.1%** on 1,052 rows.
+
+**It never reached CI's output.** By the same test the durable file reads 0.1%.
+
+**The per-cell diagnostic, sharpened by that contrast.** Before trusting any cell of either Parquet
+copy: if **~100% of its rows have `evaluated_at > resolved_at`, sharing one timestamp**, it is a
+verdict-changed subsample and its rates are not the population's. The durable file scores **0.1%**
+by this test; the local file's deficient cells score **100%**.
+
+The local copy also still carries the **21,737 NULL-`base_price` 2025-12-01 rows purged from prod**
 (`2026-08-06-stale-null-base-price-outcomes-deleted.md`) — inert here only because the ≥$1 filter
 drops them.
+
+Every "mirror" reference in the rest of this entry means **this local working copy**, which is what
+the superseded figures were read from.
 
 **Two independent confirmations that Postgres is the correct side.** It reproduces the CI panel
 exactly — 999 + 1,093 + 1,053 + 1,052 = **4,198** at h=14 pre-exclusion, **3,146** post, matching
@@ -436,14 +476,17 @@ published headline is PT and not DA.
   q50 sign and reads 39.9 / 42.0 / 43.1 / 48.4 in the local `meta.json`.
 - **No `--rescore`, and no `--reresolve`.** `--rescore` refits served bias corrections and is a
   production write. The 2026-08-12 correction is a **read-only** Postgres session
-  (`set_session(readonly=True)`), no script invoked, so it neither repairs the mirror nor touches a
-  stored verdict. ⚠️ The original entry's claim that "the ops mirror answers this question without
-  one" is exactly the claim that turned out to be false.
-- **The mirror was not repaired, and its root cause was not traced past the symptom.** What is
-  established is that no resolution batch after 2026-08-02 23:12:46 landed in
-  `ops/forecast_outcomes.parquet` and that the surviving rows in the gaps came from a verdict
-  refresh. **Which step stopped writing, and why, is unmeasured** — this entry did not read
-  `aggregator-update.yml` / `backtest-accuracy.yml` run logs for the publish leg.
+  (`set_session(readonly=True)`), no script invoked, so it neither refreshes the local Parquet copy
+  nor touches a stored verdict. ⚠️ The original entry's claim that "the ops mirror answers this
+  question without one" is exactly the claim that turned out to be false.
+- **The local Parquet copy was not refreshed, and nothing was repaired in CI — because nothing in
+  CI is broken.** The durable archive was verified fresh and cell-complete on 2026-08-12, so there
+  is no publish defect to fix. The local copy was left stale rather than re-pulled, since the
+  corrected figures come from Postgres and do not need it.
+- **The durable archive's shallowness was not traced.** It is fresh and internally complete but
+  holds 70,409 rows over 10 dates against Postgres' 121,699 over 12, with 2025-12-01 and 2026-07-17
+  absent. Whether that is a retention window by design or a second defect is **unmeasured**; no
+  cause is guessed at here. See "Still open".
 - **The h=7 and h=30 `q̄` vectors were not tabulated**, so the h=7 `side_ref` / `composition` split
   cannot be re-derived from what is printed here. Their sum, `excess` and `assoc` are unaffected.
 - **No PT test.** 3–8 dates is below what the `|t| > 3.0` hurdle and the HAC bandwidth rule were
@@ -492,13 +535,21 @@ cohort's 1,201 slugs across 4,725 anchor dates, voted median across non-bid sour
 side: the h=14 counts reproduce the CI panel exactly (999 + 1,093 + 1,053 + 1,052 = 4,198
 pre-exclusion, 3,146 post — runs `31548564675` and `31557070748`), and the recomputed `q̄` reproduces
 this entry's own 07-19 `side_ref` figures to within 0.7pp. The deficiency itself was diagnosed by
-comparing the two stores cell by cell and by the `evaluated_at > resolved_at` test described above;
+comparing the stores cell by cell and by the `evaluated_at > resolved_at` test described above;
 `_flush_verdict_refresh` / `_refresh_verdict_columns` were read at source
 (`backend/scripts/backtest_accuracy.py:350` and `:382`) for the write-only-on-difference behaviour.
 
+**Three-store comparison (2026-08-12), which is what corrected the diagnosis.** The durable
+archive's own blob was **fetched from `RayanR000/cs2-oracle-data`** (head `c2b96cad04ce`, written by
+run `31557070748`) and queried alongside the local Parquet copy and the read-only Postgres session,
+so the row counts, date lists, `max resolved_at` values and the 0.1% / 100% split on the
+`evaluated_at > resolved_at` test are three measurements of the same cells, not an inference from
+one. No workflow logs were read, so the durable file's 10-date span is **unexplained**, not
+diagnosed.
+
 **Original read (2026-08-11), which is the superseded one.** Cohort counts, `_tied_mask`
 reproduction and every figure not re-derived above come from one read-only DuckDB
-session over the ops mirror and the archive Parquet; the CV-side numbers (`n_val`, per-fold
+session over the **local** ops Parquet copy and the archive Parquet; the CV-side numbers (`n_val`, per-fold
 `val_start` / `val_end`, `mean_realised_down_rate`, `mean_dir_acc`, `mean_classifier_acc = None`)
 were read from `backend/models/saved_models/meta.json` (`trained_at` 2026-08-09). `VALIDATION_WINDOW_DAYS = 30`,
 `CV_STEP_DAYS = 150`, `DIRECTION_FLAT_TOLERANCE_PCT = 0.5`, `MIN_FORECAST_DATES = 20` and the
@@ -547,29 +598,36 @@ read over the same ops mirror — 07-19's h=3 and h=7 cells, which that diagnosi
 4. **A production DA headline still needs the calendar** — 8 / 7 / 4 / 1 dates at 3/7/14/30d after
    `served_identity` merged the panel (`2026-08-11-model-version-is-not-a-config.md`). This entry
    says the 20-date bar is the wrong bar for `excess`, not that the panel is now sufficient.
-5. **`ops/forecast_outcomes.parquet` is still 36% deficient and still biased**, and nothing has been
-   fixed: no resolution batch after 2026-08-02 23:12:46 has landed in it. Every API route and
-   analysis that reads Parquet-first is reading that file. Which publish step stopped writing is
-   **unmeasured** (see "not done"), and the mirror is a served surface, not only an analysis
-   convenience — `db/parquet.py` is read before the DB fallback.
-6. **Nothing explains the 2026-08-11 21:10:28 UTC verdict refresh against production.** That single
-   `evaluated_at` timestamp is the only reason the deficient cells hold any rows, and it is the
-   mirror's own last write. It has not been tied to a scheduled run, a dispatch or a local
-   invocation. Recorded as an observation.
-7. **The CV-basis agreement table needs re-deriving on the corrected panel** before "CV and
+5. ~~**`ops/forecast_outcomes.parquet` is still 36% deficient and still biased**, and nothing has
+   been fixed: no resolution batch after 2026-08-02 has landed in it.~~ **Void as written
+   (2026-08-12).** The 36% deficiency and the verdict-changed selection are properties of the
+   **local working copy**, not of the archive CI publishes; the durable file is fresh and its cells
+   are complete, so there is no dead publish leg to repair. What remains true is narrower: any
+   Parquet-first reader — `db/parquet.py` is read before the DB fallback — is reading whichever copy
+   is on that machine, and on a developer machine that is the stale one.
+6. **Why the durable archive holds only 70,409 rows over 10 dates when Postgres has 121,699 over
+   12.** It is fresh and internally complete, so this is not staleness. Whether the shallowness is a
+   retention window by design or a second defect has **not been traced**, and no cause is guessed at
+   here. It is why the durable copy cannot answer a history question: 2025-12-01 and 2026-07-17 are
+   absent from it entirely.
+7. **Nothing explains the 2026-08-11 21:10:28 UTC verdict refresh against production.** That single
+   `evaluated_at` timestamp is the only reason the local copy's deficient cells hold any rows, and it
+   is that file's own last write. It has not been tied to a scheduled run, a dispatch or a local
+   invocation. It did not affect CI's output. Recorded as an observation.
+8. **The CV-basis agreement table needs re-deriving on the corrected panel** before "CV and
    production agree" is quoted again — it is this entry's headline and it currently rests on the
    deficient panel at all three horizons.
 
 ## Related
 
 - `2026-08-11-clean-anchor-gate-measured-on-realised-outcomes.md` — §3 is what this closes. ⚠️ Its §1
-  and §2 (rank IC +0.037; the gate does not move direction) were read from the **same deficient
-  file over the same period** and now carry a banner saying so. "Untouched", as this entry
+  and §2 (rank IC +0.037; the gate does not move direction) were read from the **same local Parquet
+  copy over the same period** and now carry a banner saying so. "Untouched", as this entry
   originally put it, is wrong: they are unrecomputed on a panel known to be 36% deficient and
   verdict-selected.
-- `.claude/rules/archive-reads.md` and `backend/AGENTS.md` — where the "do not read
-  `ops/forecast_outcomes.parquet` for panel work" rule and the per-cell `evaluated_at > resolved_at`
-  test now live.
+- `.claude/rules/archive-reads.md` and `backend/AGENTS.md` — where the "neither Parquet copy is the
+  full panel, query prod Postgres read-only" rule, all three stores' numbers and the per-cell
+  `evaluated_at > resolved_at` test now live.
 - `2026-08-10-constant-call-is-hindsight-picked.md` — the runnable-baseline correction this builds
   on. `constant_call_accuracy` is still not to be differenced against model DA.
 - `2026-08-03-accuracy-is-clustered-by-forecast-date.md` — the clustering that makes composition

@@ -88,9 +88,12 @@ report it rather than working around it.
 > what is established is that composition is the first-order term. Per-date sd of `excess` is
 > 14.96–24.39pp, so **never quote `excess` on fewer than ~50 forecast dates**; report the
 > within-date term, which is what the PT statistic already differences. `MIN_FORECAST_DATES = 20`
-> does not rescue it. ⚠️ **The source of the superseded figures,
-> `ops/forecast_outcomes.parquet`, holds only 14,668 of those 23,073 rows and its gaps are
-> verdict-selected, not a lag — do not read it for panel work.** The one defect the read surfaced is
+> does not rescue it. ⚠️ **The superseded figures came from the *local working copy* of
+> `ops/forecast_outcomes.parquet`, which holds only 14,668 of those 23,073 rows with
+> verdict-selected gaps. Do not read the local copy for panel work — and note that neither Parquet
+> copy is the full panel:** the durable archive CI publishes is fresh and cell-complete (70,409 rows,
+> 0.1% by the `evaluated_at > resolved_at` test) but **shallow at 10 dates**, so **the publish leg is
+> not broken**. The one defect the read surfaced is
 > **diagnosed**: 2026-07-19 called `flat` on 64.0%
 > of items at h=3 against a **23.59%** realised flat rate (an 18.3% hit rate, not a near-certain
 > miss), because `f71ffb4` shipped a global ±0.5% dead band in `predict()` 42 minutes before that

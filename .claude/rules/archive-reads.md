@@ -38,24 +38,31 @@ paths:
   from every stored file until `aggregator-update.yml` runs with `normalize_schema = true`.
 - **Operational tables live in `price-archive/ops/*.parquet`.** API routes read Parquet
   first with a DB fallback. See `db/parquet.py`.
-- ⚠️ **`ops/forecast_outcomes.parquet` is NOT a mirror of the scored panel, and its gaps are
-  BIASED — do not read it for panel work.** Measured 2026-08-12 against prod Postgres: on the
-  ≥$1 scored cohort it holds **14,668 of 23,073 rows, missing 8,405 (36%)** across **11 of 22
-  (forecast_date, horizon) cells**, and **two whole dates are absent at h=7** (2026-07-31,
-  2026-08-04) — dates no published h=7 figure had ever seen. It is **not a lag**: the missing
-  2026-07-19 h=14 rows resolved 2026-08-05, six days before the file's own last write.
-  **No resolution batch after 2026-08-02 23:12:46 ever landed.** What remains in a deficient
-  cell is there only because `_flush_verdict_refresh`
-  (`scripts/backtest_accuracy.py`) rewrote it, and that pass writes **only rows whose stored
-  verdict differed from the re-derived one** — so the survivors are **selected on
-  "the verdict changed"** and their rates are not the population's. 07-19 h=14 reads DA 29.6% /
-  down-rate 65.2% on the 115 mirror rows against **39.4% / 51.1%** on the true 1,052.
-  **Diagnose a cell before trusting it:** if 100% of its rows have `evaluated_at > resolved_at`
-  (in practice sharing one timestamp), it is a verdict-changed subsample. Read prod Postgres
-  read-only, or a CI run's `prediction_accuracy`, which reproduced the panel exactly across
-  runs `31548564675` / `31557070748`. The file also still carries the 21,737 NULL-`base_price`
-  2025-12-01 rows purged from prod — inert only because the ≥$1 filter drops them. This
-  corrected nine published figures; see
+- ⚠️ **NEITHER copy of `ops/forecast_outcomes.parquet` is the full scored panel, and the LOCAL
+  one is biased. Query prod Postgres read-only for any panel figure.** Measured 2026-08-12,
+  all three stores at once:
+  - **Postgres: 121,699 rows / 12 forecast dates** — the only complete source.
+  - **Durable (`RayanR000/cs2-oracle-data`, CI-written): fresh but SHALLOW.** 70,409 rows / 10
+    dates, `max resolved_at` matching Postgres to the second, and every cell **complete** —
+    07-19 h=14 is 1,052 rows there. But it holds **no 2025-12-01 and no 2026-07-17 at all**,
+    so a history question cannot be answered from it. **The publish leg works** — do not go
+    looking for a dead one.
+  - **Local working copy: deep but STALE, and its gaps are SELECTED.** 114,489 rows / 13 dates,
+    `max resolved_at` a day behind, **missing 8,405 of 23,073 ≥$1 rows (36%)** across 11 of 22
+    (date, horizon) cells, with 07-31 h=7 and 08-04 h=7 absent outright.
+  The local file's bias is the trap. It went stale after **2026-08-02 23:12:46**, and then a
+  verdict-refresh run against prod on 2026-08-11 21:10 wrote rows back into it —
+  `_flush_verdict_refresh` (`scripts/backtest_accuracy.py`) writes **only rows whose stored
+  verdict differed from the re-derived one**, so each deficient cell's survivors are
+  **selected on "the verdict changed"** and their rates are not the population's. 07-19 h=14
+  reads DA 29.6% / down-rate 65.2% on those 115 rows against **39.4% / 51.1%** on the true
+  1,052. **Diagnose before trusting:** if ~100% of a cell's rows have
+  `evaluated_at > resolved_at`, sharing one timestamp, it is a verdict-changed subsample —
+  the durable file sits at 0.1% by that test, the local deficient cells at 100%. A CI run's
+  `prediction_accuracy` is also sound; it reproduced the panel exactly across runs
+  `31548564675` / `31557070748`. The local file additionally still carries the 21,737
+  NULL-`base_price` 2025-12-01 rows purged from prod — inert only because the ≥$1 filter drops
+  them. This cost nine published figures; see
   `docs/changelog/2026-08-11-the-da-gap-is-the-market-direction-of-five-dates.md`.
 - **The ops mirror carries `item_slug`; the DB table does not.** Prices key on the slug
   and ops keys on the Postgres surrogate `item_id`, so the archive could not be joined to

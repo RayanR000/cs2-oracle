@@ -530,9 +530,11 @@ single fixed call) and `realised_down_rate` beside it.
 > not cite it as agreement with the +3.5 / +0.1 / −1.3 above.
 > Per-date sd of the excess is **14.96 / 22.40 / 21.56 / 24.39pp**. **Do not quote pooled excess on
 > fewer than ~50 forecast dates**; the per-date null the PT
-> block estimates below is the quantity that survives a short panel. And **do not read
-> `price-archive/ops/forecast_outcomes.parquet` for a panel figure** — it held 14,668 of the 23,073
-> rows and its gaps are verdict-selected, which is what cost the superseded numbers above.
+> block estimates below is the quantity that survives a short panel. And **do not read the local
+> working copy of `price-archive/ops/forecast_outcomes.parquet` for a panel figure** — it held 14,668
+> of the 23,073 rows with verdict-selected gaps, which is what cost the superseded numbers above.
+> **Neither Parquet copy is the full panel** (the durable archive is fresh and cell-complete but only
+> 10 dates deep, so the publish leg is fine); query prod Postgres read-only.
 > `docs/changelog/2026-08-11-the-da-gap-is-the-market-direction-of-five-dates.md`.
 
 The reason is measured, not stylistic: an always-down call scored **29.4% on 2025-12-01 and 76.9%

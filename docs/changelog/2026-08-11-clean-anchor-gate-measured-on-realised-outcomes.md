@@ -1,23 +1,29 @@
 # The clean-anchor gate, measured on outcomes that actually resolved
 
 > ## ⚠️ §1 and §2 were measured on a panel now known to be 36% deficient and biased. Nobody has recomputed them.
-> Every figure in §1 and §2 was read from `price-archive/ops/forecast_outcomes.parquet` over the
-> same cohort and period as
+> Every figure in §1 and §2 was read from the **gitignored local working copy** of
+> `price-archive/ops/forecast_outcomes.parquet` over the same cohort and period as
 > `2026-08-11-the-da-gap-is-the-market-direction-of-five-dates.md` — the cohort line below says
 > 14,586 rows over 11 dates, which is that file's ≥$1 panel. On 2026-08-12 a read-only production
-> Postgres session showed that file holds **14,668 of 23,073 ≥$1 scored rows, missing 8,405 (36%)**
-> across **11 of 22 (forecast_date, horizon) cells**, and that the gaps are **not a lag**: no
-> resolution batch after 2026-08-02 landed there, so what survives in a deficient cell is only what
-> a later verdict-refresh pass rewrote — rows **selected on "the verdict changed"**. Two whole dates
-> are absent at h=7 (2026-07-31, 2026-08-04).
+> Postgres session showed that local copy holds **14,668 of 23,073 ≥$1 scored rows, missing 8,405
+> (36%)** across **11 of 22 (forecast_date, horizon) cells**, and that the gaps are **not a plain
+> lag**: it went stale after 2026-08-02, then a verdict-refresh run against prod on 2026-08-11 wrote
+> rows back into it, and `_flush_verdict_refresh` writes **only rows whose stored verdict changed**
+> — so what survives in a deficient cell is a **selected** subsample. Two whole dates are absent at
+> h=7 (2026-07-31, 2026-08-04).
+>
+> **This is a property of the local copy, not of the archive CI publishes.** The durable archive was
+> measured the same day at 70,409 rows over 10 dates, cell-complete and 0.1% by the
+> `evaluated_at > resolved_at` test — **the publish leg works**. It is also shallow (no 2025-12-01,
+> no 2026-07-17), so **neither Parquet copy is the full panel**; prod Postgres is.
 >
 > **This is an inference from the shared source, not a re-measurement.** No number in §1 or §2 has
 > been re-derived; none is corrected here, and no corrected value should be invented for them.
 >
 > **The h=14 cells are the most exposed.** The tied cohort there is **134 rows (§1) / 147 rows (§2)**
-> against true per-date cells of **1,052–1,093 rows** at h=14. The mirror's whole h=14 live panel is
-> **1,242 rows, of which 1,093 — 88% — are 2026-07-17 alone** (the corrected per-date counts are
-> 1,093 / 1,053 / 1,052 for 07-17 / 07-18 / 07-19; the mirror held 1,093 / 34 / 115). §2's h=14
+> against true per-date cells of **1,052–1,093 rows** at h=14. The local copy's whole h=14 live panel
+> is **1,242 rows, of which 1,093 — 88% — are 2026-07-17 alone** (the corrected per-date counts are
+> 1,093 / 1,053 / 1,052 for 07-17 / 07-18 / 07-19; the local copy held 1,093 / 34 / 115). §2's h=14
 > down-rates of 73.8–74.8% sit next to 07-17's true 75.30% and nowhere near 07-18's 54.61% or
 > 07-19's 51.14%, which is what an 07-17-dominated panel looks like. That is an inference from the
 > corrected per-date figures, not a recomputation of these tables.
