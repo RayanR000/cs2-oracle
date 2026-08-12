@@ -1023,6 +1023,50 @@ class ItemForecaster:
         return os.environ.get("LABEL_SMOOTHED_ANCHOR") == "1"
 
     @staticmethod
+    def sigma_exponent_enabled() -> bool:
+        """Whether the band divides by `sigma ** beta` instead of `sigma`.
+
+        Off: `sigma ** 1.0`, which is what locally-weighted split conformal
+        assumes and what this repo served until 2026-08-12. The assumption is
+        that a twice-as-volatile item's residual is twice as large.
+
+        On: `beta` is fitted per horizon on the same OOF records `q_hat` is,
+        persisted as `conformal_beta` in `meta.json`, and applied in BOTH
+        `conformal.calibrate` and `conformal.band`.
+
+        Measured, not hypothesised. The elasticity is **0.429 / 0.369 / 0.350 /
+        0.313** on ~157K real OOF records (run `31619383780`, within 0.03 of a
+        model-free instrument over 731 dates), against the 1.000 assumed — so
+        `sigma`'s cross-sectional range is ~4x too wide for the dispersion it
+        normalises and level-matched coverage ramps **62->93 / 60->95 / 57->96 /
+        52->97%** across `sigma` deciles. Walk-forward over 507-588 dates at this
+        repo's 14-day retrain cadence, one fitted exponent per horizon cuts that
+        tilt **-89% / -94% / -84% / -73%** held out and narrows the median band to
+        **0.87 / 0.86 / 0.84 / 0.77x**. Shrinking `beta` toward 1 is a **no-op**
+        (its departure from 1 is 6-14x the standard error of its own estimate) and
+        a non-parametric scale buys nothing outside 30d — both were measured and
+        refuted, so this is deliberately ONE float per horizon.
+
+        ⚠️ **`q_hat` and `beta` are a matched pair.** `sigma` is ~0.07, so
+        `sigma ** 0.4` is ~5x larger and `q_hat` absorbs the difference. An
+        artifact's `q_hat` served at the wrong exponent is wrong by ~5x, not
+        partially corrected, which is why they are written together, why a missing
+        `conformal_beta` defaults to 1.0, and why no `q_hat` may be differenced
+        across this flag.
+
+        ⚠️ **It does NOT fix the marginal over-coverage** (87.2/91.8/90.6/89.0%
+        vs 80%). It closes the `sigma`-mix channel, which is 36-68% of that
+        defect; the rest is a residual-law shift. On a calm period the corrected
+        band covers **74-77%**, i.e. this leaves the level unresolved in BOTH
+        directions and no 80% claim rests on it.
+
+        Set SIGMA_EXPONENT=1. See
+        `docs/superpowers/specs/2026-08-12-sigma-exponent-design.md` and
+        `docs/changelog/2026-08-12-the-sigma-scale-is-one-exponent-per-horizon.md`.
+        """
+        return os.environ.get("SIGMA_EXPONENT") == "1"
+
+    @staticmethod
     def conformal_served_basis_enabled() -> bool:
         """Whether `q_hat` is calibrated on the denominator serving quotes from.
 
@@ -6292,6 +6336,22 @@ class ItemForecaster:
         # `calibration_target_col`, and a reader of the artifact must be able to
         # tell which width they are looking at.
         self.conformal_basis: Dict[int, str] = {}
+        # The EXPONENT each horizon's q_hat was fitted at, and the one `band`
+        # must serve it with. NOT provenance -- this one is load-bearing
+        # arithmetic. Missing means 1.0, which is every artifact written before
+        # 2026-08-12 and every run with SIGMA_EXPONENT off; `sigma` is ~0.07 so
+        # a q_hat applied one exponent off is wrong by roughly 5x. Written
+        # together with `conformal_calibration` or not at all.
+        self.conformal_beta: Dict[int, float] = {}
+
+    def band_beta(self, horizon: int) -> float:
+        """The exponent to build this horizon's band with. Always a finite float.
+
+        One accessor so that no call site can reach for `conformal_beta[h]` and
+        get a KeyError on an old artifact, or a NaN into a served half-width.
+        """
+        b = self.conformal_beta.get(horizon, conformal.BETA_NEUTRAL)
+        return (conformal.BETA_NEUTRAL if not np.isfinite(b) else float(b))
 
     def _check_artifact_version(self, meta: dict) -> None:
         """Fail closed on any artifact not written by this exact scheme.
@@ -6621,8 +6681,37 @@ class ItemForecaster:
         """
         resid = records_df["residual_pct"].to_numpy(dtype=float)
         sigma = records_df["sigma"].to_numpy(dtype=float)
-        q_hat = conformal.calibrate(resid, sigma, conformal.ALPHA)
+
+        # The exponent, fitted on the SAME rows q_hat is, and stored in the same
+        # breath. Nothing between these two statements may raise or return, or an
+        # artifact could carry one without the other -- which is worse than
+        # carrying neither, because a q_hat at the wrong exponent is wrong by ~5x
+        # rather than merely uncorrected.
+        beta = (conformal.fit_beta(resid, sigma,
+                                   min_rows=self.MIN_CALIBRATION_ROWS)
+                if self.sigma_exponent_enabled() else conformal.BETA_NEUTRAL)
+        q_hat = conformal.calibrate(resid, sigma, conformal.ALPHA, beta)
         self.conformal_calibration[horizon] = q_hat
+        self.conformal_beta[horizon] = beta
+        if self.sigma_exponent_enabled():
+            if conformal.beta_was_clamped(resid, sigma,
+                                          min_rows=self.MIN_CALIBRATION_ROWS):
+                # The clamp binding means the measured elasticity left
+                # [0.2, 1.0], which no window of this archive has ever produced.
+                # Data problem, not a tuning outcome.
+                logger.warning(
+                    f"  {horizon}d sigma exponent CLAMPED to {beta:.4f} — the "
+                    f"raw elasticity fell outside "
+                    f"[{conformal.BETA_MIN}, {conformal.BETA_MAX}], which no "
+                    f"window of this archive has produced. Treat this q_hat as "
+                    f"suspect and check the calibration rows."
+                )
+            logger.info(
+                f"  {horizon}d sigma exponent beta={beta:.4f} on "
+                f"{resid.size:,} calibration rows — q_hat={q_hat:.4f} is "
+                f"DIMENSIONALLY TIED to it and must never be compared with a "
+                f"beta=1.0 q_hat."
+            )
         # Read off the records rather than off a flag: whichever centre
         # `_conformal_records` measured the residual against is the one q_hat
         # covers, and only that builder knows which it was.
@@ -6653,7 +6742,9 @@ class ItemForecaster:
             )
 
         mid = records_df["mid_ret"].to_numpy(dtype=float)
-        low, high = conformal.band(mid, sigma, q_hat)
+        # Same `beta` as the calibrate above, or the width `_calibrate_confidence`
+        # fits its thresholds on is not the width predict() will serve.
+        low, high = conformal.band(mid, sigma, q_hat, beta)
         # range_pct is (high_price - low_price) / mid_price. The current price
         # is a common factor and cancels, leaving the return-space width over
         # the mid growth factor. Rows with mid_ret == -100 (a zero mid price)
@@ -7250,8 +7341,11 @@ class ItemForecaster:
             # band that under-covers is still more useful than no band, and the
             # path is unreachable in production (a 1460-day frame yields 8-9 CV
             # folds; the fallback needs fewer than 2).
+            # `band_beta` and not `conformal_beta[horizon]`: an artifact written
+            # before 2026-08-12 has no exponent at all, and 1.0 is the value that
+            # reproduces the band it was calibrated for.
             low_ret_arr, high_ret_arr = conformal.band(
-                mid_ret_arr, sigma_arr, q_hat)
+                mid_ret_arr, sigma_arr, q_hat, self.band_beta(horizon))
 
             # Momentum fallback for weak horizons (14d/30d): serve the trailing
             # return as the median, keeping the model's calibrated interval
@@ -7893,12 +7987,31 @@ class ItemForecaster:
             # remedy, if this confirms, is a calibration-set change and it needs
             # its own decision.
             fold_q_hat = None
+            fold_beta = None
             if len(fold_conformal) >= self.MIN_CALIBRATION_ROWS:
                 _fr = pd.DataFrame(fold_conformal)
                 try:
+                    # DELIBERATELY AT beta = 1.0, EVEN UNDER SIGMA_EXPONENT.
+                    # The spec listed this as a site to convert; converting it is
+                    # the wrong call. This series exists to test whether q_hat
+                    # falls as a fold's training set grows, which needs every
+                    # fold in ONE unit -- and the pooled beta does not exist yet
+                    # here (it is fitted after CV, on the pooled records), so the
+                    # only available exponent is each fold's own. Using it would
+                    # make consecutive fold_q_hats incomparable and silently
+                    # break the published 0.94/0.91/0.92/0.84x series and the
+                    # expanding-window audit built on it.
                     fold_q_hat = float(conformal.calibrate(
                         _fr["residual_pct"].values, _fr["sigma"].values,
-                        conformal.ALPHA))
+                        conformal.ALPHA, conformal.BETA_NEUTRAL))
+                    # The new information instead: beta per fold. This is the
+                    # quantity the 14d/30d dispute turns on -- whether the
+                    # exponent drifts between folds enough to explain a weak
+                    # held-out leg -- measured on real OOF residuals rather than
+                    # the model-free panel. Reported only.
+                    fold_beta = float(conformal.fit_beta(
+                        _fr["residual_pct"].values, _fr["sigma"].values,
+                        min_rows=self.MIN_CALIBRATION_ROWS))
                 except ValueError:
                     # No finite nonconformity scores in this fold. Diagnostic
                     # only, so it must never take out the CV that produces the
@@ -7906,11 +8019,14 @@ class ItemForecaster:
                     fold_q_hat = None
             if fold_q_hat is not None:
                 logger.info(
-                    f"    [fold {fold_id + 1}] fold_q_hat={fold_q_hat:.4f} on "
+                    f"    [fold {fold_id + 1}] fold_q_hat={fold_q_hat:.4f} "
+                    f"(beta=1.0 always, for comparability), "
+                    f"fold_beta={fold_beta:.4f} on "
                     f"n_cal={len(fold_conformal):,}, n_train={len(train_df):,}, "
                     f"val {val_dates[0]}..{val_dates[-1]}"
                 )
             fold_metrics[-1]["fold_q_hat"] = fold_q_hat
+            fold_metrics[-1]["fold_beta"] = fold_beta
 
         if not fold_metrics:
             raise RuntimeError(
@@ -8436,6 +8552,15 @@ class ItemForecaster:
             "trained_at": str(self._now()),
             "confidence_thresholds": thresholds_serial,
             "conformal_calibration": {str(h): v for h, v in self.conformal_calibration.items()},
+            # The exponent each q_hat above is dimensionally tied to. Written on
+            # the adjacent line, deliberately: these two are a matched pair and a
+            # q_hat served at the wrong exponent is wrong by ~5x, so the writer
+            # must not be able to emit one without the other. Always populated —
+            # an explicit 1.0 is auditable where a missing key is ambiguous about
+            # whether the run had the flag off or predates the field.
+            "conformal_beta": {
+                str(h): self.band_beta(h) for h in self.conformal_calibration
+            },
             # Which mid each q_hat covers — "served" (the classifier-recentred
             # mid predict() publishes) or "q50" (a mid served only when no
             # classifier exists). A coverage figure read without this is
@@ -8548,6 +8673,14 @@ class ItemForecaster:
             int(h): float(q) for h, q in meta["conformal_calibration"].items()
         }
         self.sigma_clip = {k: float(v) for k, v in meta["sigma_clip"].items()}
+        # The ONE non-provenance field that is loaded with `.get`, and the reason
+        # is the opposite of laxness: every artifact written before 2026-08-12
+        # lacks the key, and 1.0 is precisely the exponent those q_hats were
+        # calibrated at, so defaulting reproduces their band exactly. A NaN or a
+        # missing horizon resolves through `band_beta`, never into a half-width.
+        self.conformal_beta = {
+            int(h): float(b) for h, b in meta.get("conformal_beta", {}).items()
+        }
         # Provenance, so `.get` and not strict: predict() reads the band from
         # conformal_calibration alone, and every artifact written before
         # 2026-08-11 lacks this key. An empty dict means "this artifact does not

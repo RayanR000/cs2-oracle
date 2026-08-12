@@ -225,12 +225,22 @@ also recorded in `changelog/`, which is the durable record. Load-bearing ones:
 ## Changelog (`changelog/`)
 
 Append-only dated decision records: bug fixes, features, audits, and refuted experiments.
-154 entries, 2026-07-08 to 2026-08-12. Entries are never edited to match later reality —
+155 entries, 2026-07-08 to 2026-08-12. Entries are never edited to match later reality —
 several describe code that has since been deleted, which is the point. Per `AGENTS.md`
 workflow rule 2, non-trivial decisions get a new dated note here.
 
 The newest:
 
+- `2026-08-12-sigma-exponent-implemented.md` — the band can divide by `sigma ** beta`, behind
+  `SIGMA_EXPONENT=1`, off by default. On the real calibration path the deciles go from
+  `41 61 71 78 83 87 90 94 97 99` to **flat 80 at all ten**, marginal coverage unchanged at 80.0% (the
+  property that hid the tilt for months, now asserted by a test), width 0.90×. **`q_hat` moves
+  833.43 → 151.18 — a 5.5× units shift** — which is why both keys are written together and a missing
+  `conformal_beta` defaults to 1.0. It also found a live bug in the shipped `elasticity` diagnostic:
+  `denom <= 0` does not catch a constant `sigma`, where `x - x.mean()` is 1e-16 noise, so it returned
+  a plausible **0.5** that would have been persisted and served. Two documented deviations from the
+  spec (the per-fold `q_hat` stays at β = 1.0 for comparability, plus a new `fold_beta`). 17 tests,
+  suite 2052 → 2069. No dispatch, nothing promoted.
 - `2026-08-12-the-sigma-scale-is-one-exponent-per-horizon.md` — the open 14d/30d half of the tilt
   remedy, **decided**. Walk-forward over 507–588 dates with production's 14-day refit cadence, four
   arms: shrinkage is a **no-op** (`beta`'s departure from 1 is 6–14× its standard error, so λ =

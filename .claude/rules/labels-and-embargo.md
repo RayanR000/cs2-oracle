@@ -78,6 +78,16 @@ paths:
   within 0.03 of the model-free prediction) — but **held out the remedy only works at 3d/7d**
   (−76% / −62% conditional error against −26% / −12% at 14d/30d), and it does **not** touch the
   marginal over-coverage. `docs/changelog/2026-08-12-sigma-tilt-confirmed-on-oof-residuals.md`.
+  ✅ **BUILT the same day as `SIGMA_EXPONENT=1`, gated off, and the 3d/7d-only reach is DISPUTED.**
+  Shrinking β and a non-parametric scale were both measured and refuted; one fitted exponent per
+  horizon cuts the level-matched tilt **−89% / −94% / −84% / −73%** walk-forward over 507–588 dates,
+  i.e. **all four horizons**, against one held-out fold for the figures above. ⚠️ **`q_hat` and
+  `conformal_beta` are a matched pair** — measured **833.43 → 151.18 (5.5×)** between the arms — so
+  never difference a `q_hat` across the flag; compare coverage and WIDTH, and read
+  `conformal_beta` in `meta.json` (missing means 1.0). The per-fold `q_hat` stays at β = 1.0 on
+  purpose; `fold_beta` is the new per-fold field.
+  `docs/changelog/2026-08-12-sigma-exponent-implemented.md`,
+  `docs/superpowers/specs/2026-08-12-sigma-exponent-design.md`.
 - **The wedge `p[d]/S[d]` is also attackable in the SERVING basis, and that arm is
   `SERVE_OUTLIER_GATED_ANCHOR=1`.** `predict` detects items whose latest quote deviates >10%
   from their local median, logs `using smoothed price` — and then substitutes the median for

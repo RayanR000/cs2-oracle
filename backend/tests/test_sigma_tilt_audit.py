@@ -138,9 +138,16 @@ def test_the_audit_excludes_the_clip_as_the_cause():
 
 
 def test_the_audit_reaches_meta_json_and_never_the_band():
-    """One `meta.json` key and one log line, or a dispatch gets read by eye. And
-    an exponent reaching `predict` would be a silent scheme change: it is not
-    implemented, and the changelog says not to implement it before this read."""
+    """One `meta.json` key and one log line, or a dispatch gets read by eye.
+
+    ⚠️ UPDATED 2026-08-12. This test used to assert that `conformal.band` still
+    divided by `sigma ** 1` literally, because at the time the exponent was
+    measured but deliberately not implemented. It IS implemented now
+    (`SIGMA_EXPONENT`, `docs/superpowers/specs/2026-08-12-sigma-exponent-design.md`),
+    so the assertion moves to the invariant that actually matters and that the old
+    one was standing in for: the AUDIT still cannot move the band, and the band's
+    default exponent is still the neutral one.
+    """
     train = inspect.getsource(ItemForecaster._train_horizon_inline)
     assert '"sigma_tilt": sigma_tilt' in train
 
@@ -148,10 +155,20 @@ def test_the_audit_reaches_meta_json_and_never_the_band():
     assert "sigma_tilt" not in predict
     assert "elasticity" not in predict
 
-    # `band` still divides by sigma**1. The remedy would change this line, and
-    # nothing here should have.
-    assert "half = float(q_hat) * np.asarray(sigma, dtype=float)" in \
-        inspect.getsource(conformal.band)
+    # The audit is diagnostic: it reports an exponent and never assigns one.
+    audit = inspect.getsource(ItemForecaster._sigma_tilt_audit)
+    assert "conformal_beta" not in audit
+    assert "self.conformal_calibration" not in audit
+
+    # The band takes its exponent from the artifact and defaults to neutral, so
+    # an artifact that predates the field serves exactly the band it was
+    # calibrated for.
+    band_src = inspect.getsource(conformal.band)
+    assert "half = float(q_hat) * scale(sigma, beta)" in band_src
+    assert "beta: float = BETA_NEUTRAL" in band_src
+    assert conformal.BETA_NEUTRAL == 1.0
+    sigma = np.array([0.02, 0.07, 0.3])
+    np.testing.assert_array_equal(conformal.scale(sigma), sigma)
 
 
 def test_the_audit_honours_the_calibration_floor():

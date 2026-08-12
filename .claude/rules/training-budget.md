@@ -100,7 +100,31 @@ paths:
   **7.26→1.78pp (−76%)** at 3d and **7.05→2.65pp (−62%)** at 7d but only **−26%** at 14d and
   **−12%** at 30d, where the corrected profile is not flat. **So a single global exponent is
   implementable at 3d/7d and NOT at 14d/30d** — those need a shrunk or non-parametric scale, which
-  is a separate decision. `q_hat` and every `fold_q_hat` are byte-identical to `31611508808`, so the
+  is a separate decision. ⚠️ **DISPUTED, and both proposed remedies are REFUTED (2026-08-12).**
+  Walk-forward over 507–588 dates at the 14-day retrain cadence
+  (`backend/scripts/design_sigma_scale.py`), shrinking β toward 1 is a **no-op** — its departure from
+  1 is 6–14× the standard error of its own estimate, so λ = 0.996–0.999 and the shrunk arm reproduces
+  the plain one to two decimals — and a non-parametric scale buys nothing outside 30d (a per-decile
+  `q_hat` is worse at 3/4; a binned scale is better only inside the noise and worse on marginal
+  coverage at 4/4). **One fitted exponent per horizon is the answer and it reaches all four**: the
+  level-matched tilt falls **−89% / −94% / −84% / −73%** and the median band narrows to
+  **0.87 / 0.86 / 0.84 / 0.77×**. That contradicts the −26% / −12% above, which scored **one**
+  held-out fold where the long-horizon windows overlap; neither read dominates (this one is
+  model-free, that one is real OOF residuals), so treat the reach as **unsettled until the paired
+  dispatch** rather than settled either way. `fold_beta` is now reported per fold, which is the drift
+  measurement the dispute turns on. ✅ **BUILT, gated off as `SIGMA_EXPONENT=1`** with a
+  `sigma_exponent` input on `model-diagnostics.yml`
+  (`docs/changelog/2026-08-12-sigma-exponent-implemented.md`,
+  `docs/superpowers/specs/2026-08-12-sigma-exponent-design.md`). **Read this before touching it:
+  `q_hat` and `conformal_beta` are a MATCHED PAIR** — `sigma` is ~0.07 so `sigma ** 0.4` is ~5×
+  larger and `q_hat` absorbs it, measured at **833.43 → 151.18 (5.5×)** between the arms. A `q_hat`
+  served at the wrong exponent is wrong by that factor, not partially corrected, so: never difference
+  a `q_hat` across this flag (compare **coverage and WIDTH**), a missing `conformal_beta` means 1.0,
+  and the served band reads it through `band_beta()` only. The **per-fold** `q_hat` is deliberately
+  pinned at β = 1.0 even under the flag, so the published 0.94/0.91/0.92/0.84× series stays in one
+  unit. ⚠️ It does **not** fix the marginal over-coverage: it closes the `sigma`-mix channel, worth
+  **36–68%** of it, and on a calm period the corrected band covers **74–77%** — the level is open in
+  BOTH directions and no 80% claim rests on it. `q_hat` and every `fold_q_hat` are byte-identical to `31611508808`, so the
   audit moved no calibration. ⚠️ **The exponent does NOT explain the marginal over-coverage**
   (87.2/91.8/90.6/89.0% vs 80%): level-matching removes exactly that before the tilt is measured,
   and on the calibration set marginal coverage is 80% by construction. Six causes examined, the

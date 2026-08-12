@@ -112,6 +112,30 @@ on:
         required: false
         default: false
         type: boolean
+      # The band divides by `sigma ** beta` instead of `sigma`. Read the
+      # `Sigma-tilt audit` line and, in the replay, BAND COVERAGE by sigma
+      # stratum -- but the FIRST thing to check is the median half-width ratio
+      # against the control, which the offline read predicts at
+      # 0.87 / 0.86 / 0.84 / 0.77x at 3/7/14/30d. A ratio far from that means
+      # `beta` reached some of the four call sites and not the others, which is
+      # the failure mode of this change: `sigma` is ~0.07, so `sigma ** 0.4` is
+      # ~5x larger and `q_hat` absorbs the difference, making a mismatched pair
+      # wrong by ~5x rather than partially corrected.
+      #
+      # ⚠️ `q_hat` from this arm is NOT comparable to the control's -- the two are
+      # in different units. Compare COVERAGE and WIDTH, never q_hat. `meta.json`
+      # carries `conformal_beta` beside `conformal_calibration` so a stored width
+      # is self-describing.
+      #
+      # This arm also settles an open disagreement: whether the tilt fix reaches
+      # 14d/30d (-84% / -73% on a 507-588 date walk-forward) or barely does
+      # (-26% / -12% on a single held-out CV fold). `fold_beta` is now reported
+      # per fold, which is the drift measurement that dispute turns on.
+      sigma_exponent:
+        description: 'Arm: band divides by sigma**beta (compare WIDTH and coverage, never q_hat)'
+        required: false
+        default: false
+        type: boolean
       # The decisive test for the band's over-coverage, and the only arm here
       # that changes how much data the FOLD models see rather than what they
       # see. `CV_MAX_TRAIN_ROWS` defaults to 300,000 (`6b6fc81`, a cost cap),
@@ -329,6 +353,11 @@ jobs:
           # nothing the boosters see. Read q_hat off the "Conformal calibration"
           # line; every other number here is arm-invariant.
           CONFORMAL_SERVED_BASIS: ${{ inputs.conformal_served_basis && '1' || '0' }}
+          # Calibration AND serving: it changes the denominator q_hat is fitted
+          # on and the one `band` multiplies, together. That pairing is the whole
+          # correctness condition, so this env var must be identical in every
+          # step of this job that either calibrates or serves.
+          SIGMA_EXPONENT: ${{ inputs.sigma_exponent && '1' || '0' }}
           # Rows per CV fold. Empty means "do not set it", which is what leaves
           # `ItemForecaster.CV_MAX_TRAIN_ROWS` (300,000) in charge -- an empty
           # env var would be read by `int(os.environ.get(...))` and raise, so the
@@ -377,6 +406,12 @@ jobs:
           # produced, so its BAND COVERAGE table is where the arm's effect shows
           # up -- but the flag itself does nothing here.
           CONFORMAL_SERVED_BASIS: ${{ inputs.conformal_served_basis && '1' || '0' }}
+          # NOT provenance, and not optional either: the replay builds the band,
+          # so it must serve the exponent the artifact was calibrated at. It reads
+          # `conformal_beta` from meta.json, so this only matters for a path that
+          # calibrates in-process -- set for symmetry, and so that a future step
+          # that does calibrate cannot inherit a mismatch.
+          SIGMA_EXPONENT: ${{ inputs.sigma_exponent && '1' || '0' }}
           # NOT provenance: this is the step the arm acts in. It changes the
           # served `current_price`, which is what the DOLLAR ERROR table below
           # scores -- and what `rankIC` divides by, which is why that column is
@@ -423,6 +458,7 @@ jobs:
           NAIVE_INIT_SCORE: ${{ inputs.naive_init_score && '1' || '0' }}
           LABEL_SMOOTHED_ANCHOR: ${{ inputs.label_smoothed_anchor && '1' || '0' }}
           CONFORMAL_SERVED_BASIS: ${{ inputs.conformal_served_basis && '1' || '0' }}
+          SIGMA_EXPONENT: ${{ inputs.sigma_exponent && '1' || '0' }}
           SERVE_OUTLIER_GATED_ANCHOR: ${{ inputs.serve_outlier_gated_anchor && '1' || '0' }}
           FORCE_HP_SEARCH: ${{ inputs.force_hp_search && '1' || '0' }}
         run: |

@@ -27,6 +27,26 @@ ALPHA = 1.0 - NOMINAL_COVERAGE
 SIGMA_FLOOR_PCTL = 1.0
 SIGMA_CAP_PCTL = 99.0
 
+# The exponent `sigma` is raised to before it divides the residual. 1.0 is what
+# locally-weighted split conformal assumes and what this module served until
+# 2026-08-12; the measured value is 0.31-0.43, which is why the band is tilted
+# (see `scale`). BETA_NEUTRAL is the no-op and the default everywhere.
+BETA_NEUTRAL = 1.0
+# Fitted betas are clamped here. 0.2 is below every value ever measured on this
+# archive (the minimum across 24 time blocks was 0.209) and 1.0 means a fitted
+# beta can never make the band WIDER than today by moving the exponent the wrong
+# way. A clamp that binds is a bug, so callers log when it does.
+BETA_MIN = 0.2
+BETA_MAX = 1.0
+# Below this standard deviation of `log sigma`, the elasticity regression has no
+# x-axis and its slope is meaningless. `denom > 0` does NOT catch that case: for
+# a constant sigma, `x - x.mean()` is floating-point noise around 1e-16 rather
+# than exact zero, so the sum of squares is a tiny POSITIVE number and the slope
+# comes back as the ratio of two noises -- measured at 0.5 on a constant sigma,
+# a plausible-looking value that would have been persisted and served. Real data
+# carries sd(log sigma) ~ 0.6, so this threshold cannot bind on it.
+LOG_SIGMA_MIN_SD = 1e-8
+
 
 def sigma_bounds(sigma_raw) -> tuple[float, float]:
     """Clip bounds from the cross-sectional distribution of raw sigma.
@@ -69,12 +89,72 @@ def sigma_from_columns(price_std_60d, price, floor: float, cap: float,
     return np.clip(sigma, floor, cap)
 
 
-def calibrate(residuals_pct, sigma, alpha: float = ALPHA) -> float:
+def scale(sigma, beta: float = BETA_NEUTRAL) -> np.ndarray:
+    """The denominator the nonconformity score is divided by: `sigma ** beta`.
+
+    THE ONE PLACE THE EXPONENT IS APPLIED, so `calibrate` and `band` cannot
+    disagree about it. They must not: `sigma` is a fraction around 0.07, so
+    `sigma ** 0.4` is roughly 0.35 -- five times larger -- and `q_hat` absorbs
+    the whole difference. A `q_hat` fitted here at one beta and applied at
+    another is not partially corrected, it is wrong by about 5x.
+
+    `beta == 1.0` returns `sigma` itself rather than `sigma ** 1.0`, so the
+    default path is provably byte-identical to what this module served before
+    the exponent existed.
+    """
+    s = np.asarray(sigma, dtype=float)
+    if float(beta) == BETA_NEUTRAL:
+        return s
+    with np.errstate(divide="ignore", invalid="ignore"):
+        return s ** float(beta)
+
+
+def fit_beta(residuals_pct, sigma, min_rows: int = 1_000) -> float:
+    """`elasticity`, made safe to persist in an artifact and serve from.
+
+    `elasticity` is the diagnostic and returns NaN freely. This is the
+    production wrapper: it returns BETA_NEUTRAL -- never NaN -- on every
+    degenerate input, because a NaN beta reaching `scale` produces a NaN band,
+    and a NaN half-width surfaces in the API.
+
+    Returns `(beta, clamped)` semantics via the log, not the signature: the
+    clamp binding means the measured elasticity left the range this archive has
+    ever produced, which is a data problem the caller should surface, so
+    `beta_was_clamped` is exposed for that check rather than hidden.
+    """
+    r = np.abs(np.asarray(residuals_pct, dtype=float))
+    s = np.asarray(sigma, dtype=float)
+    ok = (r > 0) & (s > 0) & np.isfinite(r) & np.isfinite(s)
+    if int(ok.sum()) < int(min_rows):
+        return BETA_NEUTRAL
+    b = elasticity(r[ok], s[ok])
+    if not np.isfinite(b):
+        return BETA_NEUTRAL
+    return float(min(max(b, BETA_MIN), BETA_MAX))
+
+
+def beta_was_clamped(residuals_pct, sigma, min_rows: int = 1_000) -> bool:
+    """Whether `fit_beta` had to clamp -- i.e. whether the fit left [0.2, 1.0]."""
+    r = np.abs(np.asarray(residuals_pct, dtype=float))
+    s = np.asarray(sigma, dtype=float)
+    ok = (r > 0) & (s > 0) & np.isfinite(r) & np.isfinite(s)
+    if int(ok.sum()) < int(min_rows):
+        return False
+    b = elasticity(r[ok], s[ok])
+    return bool(np.isfinite(b) and (b < BETA_MIN or b > BETA_MAX))
+
+
+def calibrate(residuals_pct, sigma, alpha: float = ALPHA,
+              beta: float = BETA_NEUTRAL) -> float:
     """q_hat: the conformal quantile of normalized absolute residuals.
 
     `residuals_pct` are y - y_hat in percentage-return space, from
-    out-of-fold predictions. Scores are |residual| / sigma, so q_hat is
-    dimensionless and multiplies sigma at serve time.
+    out-of-fold predictions. Scores are |residual| / sigma ** beta, so q_hat is
+    dimensionless and multiplies `sigma ** beta` at serve time.
+
+    ⚠️ q_hat IS ONLY MEANINGFUL BESIDE THE `beta` IT WAS FITTED AT. Two q_hats
+    from different betas must never be compared, differenced, or substituted for
+    one another -- see `scale`.
 
     Uses the finite-sample corrected level ceil((n+1)(1-alpha))/n, which is
     what gives split conformal its distribution-free coverage guarantee.
@@ -85,7 +165,7 @@ def calibrate(residuals_pct, sigma, alpha: float = ALPHA) -> float:
         raise ValueError("empty calibration set: cannot compute q_hat")
 
     with np.errstate(divide="ignore", invalid="ignore"):
-        scores = np.abs(res) / sig
+        scores = np.abs(res) / scale(sig, beta)
     scores = scores[np.isfinite(scores)]
     if scores.size == 0:
         raise ValueError("empty calibration set: no finite nonconformity scores")
@@ -120,7 +200,9 @@ def elasticity(residuals_pct, sigma) -> float:
     y = np.log(r[ok])
     xc = x - x.mean()
     denom = float(np.dot(xc, xc))
-    if denom <= 0:
+    # Not `denom <= 0`: see LOG_SIGMA_MIN_SD. A constant sigma leaves noise, not
+    # zeros, and returned a confident-looking 0.5.
+    if not np.isfinite(denom) or np.sqrt(denom / xc.size) < LOG_SIGMA_MIN_SD:
         return float("nan")
     return float(np.dot(xc, y - y.mean()) / denom)
 
@@ -174,12 +256,19 @@ def coverage_by_sigma_stratum(residuals_pct, sigma, exponent: float = 1.0,
     return per, err, threshold
 
 
-def band(mid_pct, sigma, q_hat: float) -> tuple[np.ndarray, np.ndarray]:
+def band(mid_pct, sigma, q_hat: float,
+         beta: float = BETA_NEUTRAL) -> tuple[np.ndarray, np.ndarray]:
     """Symmetric band around the median, in percentage-return space.
 
     Cannot cross by construction, which is why predict() no longer needs
     _fix_quantile_crossing.
+
+    ⚠️ `beta` MUST be the one `q_hat` was calibrated at. Serving a beta-era
+    q_hat at `beta = 1.0` inflates the half-width by roughly 5x; serving a
+    beta=1 q_hat at a fitted beta shrinks it by the same factor. There is no
+    partially-correct pairing, which is why both are persisted together or not
+    at all.
     """
     mid = np.asarray(mid_pct, dtype=float)
-    half = float(q_hat) * np.asarray(sigma, dtype=float)
+    half = float(q_hat) * scale(sigma, beta)
     return mid - half, mid + half
