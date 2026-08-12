@@ -220,12 +220,33 @@ also recorded in `changelog/`, which is the durable record. Load-bearing ones:
 ## Changelog (`changelog/`)
 
 Append-only dated decision records: bug fixes, features, audits, and refuted experiments.
-149 entries, 2026-07-08 to 2026-08-12. Entries are never edited to match later reality —
+151 entries, 2026-07-08 to 2026-08-12. Entries are never edited to match later reality —
 several describe code that has since been deleted, which is the point. Per `AGENTS.md`
 workflow rule 2, non-trivial decisions get a new dated note here.
 
 The newest:
 
+- `2026-08-12-the-band-is-tilted-in-sigma.md` — the conditional `q_hat` is designed, costed and
+  measured, and **the axis was wrong**. A model-free instrument (validated at
+  **1.020 / 0.958 / 0.887 / 0.785×** the shipped `q_hat`) puts 731 dates behind the question for
+  seconds per candidate. Its pre-registered read is **VOID** — the shuffled-state **placebo passed
+  the bar**, because `mean_d |cov[d] − 80%|` falls whenever *marginal* coverage moves toward
+  target, information or not. Level-matched to 80% first, **every date-conditional scheme is worse
+  than pooled** (placebos at ≤0.11pp, so there is no noise floor hiding an effect) — a
+  time-varying `q_hat` is refuted, at the same wall N2 hit. The defect is the **`sigma`
+  exponent**: coverage ramps **62→95%** (h=3) to **58→98%** (h=30) across `sigma` deciles,
+  monotone in all ten, stratum error **8.0–9.7pp → 0.6–1.8pp** at a fitted
+  **β = 0.408 / 0.401 / 0.363 / 0.327**. Not the clip (1.2% of rows; β moves 0.389→0.395
+  excluding them). ⚠️ **Contradicts the 0.798 / 0.692 / 1.034 / 1.150 already on record** — that
+  read implied `sigma` as `half_pct / q_hat` from ~20K rows; the magnitude is unresolved and one
+  report-only dispatch settles it. Nothing shipped.
+- `2026-08-12-expanding-window-refuted-for-band-width.md` — ❌ **REFUTED.** Per-fold `q_hat` is now
+  reported: the pooled value sits **0.94 / 0.91 / 0.92 / 0.84×** the p80 of folds already at the
+  300K cap (the hypothesis needs it *above* 1), dropping the one small-`n` fold **widens** the
+  calibration to 1.06–1.13×, and at identical `n_train` the fold spread is still **1.56–2.25×**.
+  That closes the whole *"calibrate on different rows"* class, "use the late folds" included
+  (a trailing 2–3 fold window is worse than pooled at 1.13–1.21×). Do not read the audit rho as
+  support — `CV_MAX_TRAIN_ROWS` leaves 4 distinct `n_train` values, so it is one fold's leverage.
 - `2026-08-12-conformal-basis-follows-serving.md` — ❌ **diagnosed, built, and NOT confirmed.**
   The served band over-covers (**87.2 / 91.8 / 90.6 / 89.0%** against 80%) and `q_hat` is fitted
   on the raw-anchor training label while the band is served and scored on the smoothed anchor.

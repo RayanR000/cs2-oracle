@@ -66,6 +66,14 @@ paths:
   across horizons at Spearman 0.70–1.00 — the same fact as the per-date spread. A **scalar**
   `q_hat` is the constraint; a conditional one is the untried remedy.
   `docs/changelog/2026-08-12-expanding-window-refuted-for-band-width.md`.
+  ❌ **The DATE-conditional version of that remedy is now refuted as well, and the per-date spread
+  is not the lever.** Level-matched to 80% marginal coverage, a 60-day trailing `q_hat` and three
+  date-level volatility states are all **worse than pooled** on per-date coverage error, with
+  shuffled-state placebos moving ≤0.11pp. What is conditional is the **item's `sigma`**: coverage
+  runs **62→95%** (h=3) to **58→98%** (h=30) across `sigma` deciles at a fitted β of 0.33–0.41,
+  against the 1.000 `conformal.calibrate` assumes. That axis is cross-sectional, so it needs no
+  feedback series and no forecast-date history — the calendar block on ACI never applied to it.
+  `docs/changelog/2026-08-12-the-band-is-tilted-in-sigma.md`.
 - **The wedge `p[d]/S[d]` is also attackable in the SERVING basis, and that arm is
   `SERVE_OUTLIER_GATED_ANCHOR=1`.** `predict` detects items whose latest quote deviates >10%
   from their local median, logs `using smoothed price` — and then substitutes the median for

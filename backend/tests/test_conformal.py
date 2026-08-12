@@ -138,6 +138,79 @@ def test_calibrate_gives_conditional_coverage_across_volatility_strata():
     assert gap < 0.05
 
 
+def _coverage_by_sigma_decile(sigma, residuals, denom_cal, denom_test, rng):
+    """Held-out coverage per sigma decile, calibrating on half and scoring on half.
+
+    `denom_*` is what the nonconformity score divides by, which is the whole
+    subject: production passes `sigma`, and the remedy under test passes
+    `sigma**beta`.
+    """
+    n = sigma.size
+    idx = rng.permutation(n)
+    cal, test = idx[: n // 2], idx[n // 2:]
+    q_hat = calibrate(residuals[cal], denom_cal[cal], ALPHA)
+    covered = np.abs(residuals[test]) <= q_hat * denom_test[test]
+
+    s = sigma[test]
+    edges = np.quantile(s, np.linspace(0, 1, 11)[1:-1])
+    dec = np.searchsorted(edges, s, side="right")
+    per = np.array([covered[dec == d].mean() for d in range(10)])
+    return float(covered.mean()), per
+
+
+def test_sigma_normalization_fails_when_the_elasticity_is_not_one():
+    """CHARACTERIZATION of a measured defect, not a property being asserted.
+
+    `test_calibrate_gives_conditional_coverage_across_volatility_strata` above
+    builds residuals at `scale = sigma * 10.0` — elasticity **exactly 1.0 by
+    construction** — so it passes whatever the archive does and cannot fail on
+    this axis. That blind spot was named in
+    `docs/changelog/2026-08-12-conformal-basis-follows-serving.md`; this test
+    closes it.
+
+    On ~500K item-days of the >=$1 cohort, `d log|residual| / d log sigma` is
+    **0.408 / 0.401 / 0.363 / 0.327** at 3/7/14/30d fitted walk-forward, not
+    1.000, and it is not the sigma clip (excluding every clipped row moves the
+    whole-panel fit from 0.389 to 0.395 at h=3 and 0.348 to 0.369 at h=30, and
+    only 1.2% / 1.0% of rows sit at the floor / cap). Level-matched to 80%
+    marginal, coverage then runs
+    **62 -> 95%** across sigma deciles at h=3 and **58 -> 98%** at h=30.
+    `docs/changelog/2026-08-12-the-band-is-tilted-in-sigma.md`.
+
+    Direction matters and is easy to get backwards: the score is
+    `|r| / sigma ∝ sigma**(beta - 1)`, so with `beta < 1` it FALLS as sigma
+    rises — low-sigma rows are UNDER-covered and high-sigma rows over-covered.
+
+    Marginal coverage is unaffected, which is why nothing caught this for so
+    long, and it is asserted here so a future fix cannot trade one for the other.
+    """
+    rng = np.random.default_rng(20260812)
+    n = 40_000
+    beta = 0.4
+    sigma = rng.uniform(0.02, 0.5, size=n)
+    residuals = rng.normal(scale=(sigma ** beta) * 3.0, size=n)
+
+    marginal, per = _coverage_by_sigma_decile(
+        sigma, residuals, sigma, sigma, np.random.default_rng(1))
+
+    # The marginal guarantee is untouched -- this defect is invisible to it.
+    assert marginal == pytest.approx(NOMINAL_COVERAGE, abs=0.02)
+    # And conditional coverage is badly tilted, in the measured direction.
+    assert per[0] < NOMINAL_COVERAGE - 0.10
+    assert per[-1] > NOMINAL_COVERAGE + 0.10
+    assert per[-1] - per[0] > 0.20
+
+    # The remedy, expressed with no change to this module: normalize by
+    # sigma**beta instead of sigma. `calibrate` and `band` already take the
+    # denominator as an argument, so the exponent is a fitted CONSTANT the
+    # artifact would have to persist -- not new math.
+    marginal_b, per_b = _coverage_by_sigma_decile(
+        sigma, residuals, sigma ** beta, sigma ** beta,
+        np.random.default_rng(1))
+    assert marginal_b == pytest.approx(NOMINAL_COVERAGE, abs=0.02)
+    assert per_b.max() - per_b.min() < 0.10
+
+
 def test_calibrate_is_scale_invariant_in_sigma():
     # Doubling sigma halves q_hat, leaving the band unchanged. This is the
     # property that makes the normalization meaningful rather than cosmetic.

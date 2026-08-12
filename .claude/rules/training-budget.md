@@ -77,10 +77,27 @@ paths:
   fact as the 58.2–99.2% per-date coverage. So the whole *"calibrate on different rows"* class
   is dead, including "use the late folds": a trailing 2–3 fold window is **worse** than pooled
   (1.13–1.21×). Only the single most recent fold moves the right way (0.88/0.84/0.72/0.64×) and
-  it is an 18–23K-row estimate. The remedy class is a **conditional** `q_hat`, undesigned and
-  uncosted. `docs/changelog/2026-08-12-expanding-window-refuted-for-band-width.md`. Real but
+  it is an 18–23K-row estimate. The remedy class is a **conditional** `q_hat`.
+  `docs/changelog/2026-08-12-expanding-window-refuted-for-band-width.md`.
+  ❌ **And the TIME-VARYING half of that class is REFUTED too (2026-08-12) — the axis was wrong.**
+  `docs/changelog/2026-08-12-the-band-is-tilted-in-sigma.md` scored five schemes over 731 dates
+  offline (`backend/scripts/measure_conditional_qhat.py`, model-free, validated at
+  **1.020/0.958/0.887/0.785×** the shipped `q_hat`). Level-matched to 80% marginal, a 60-day
+  trailing `q_hat` and all three date-level state variables are **worse than pooled**, with
+  placebos at ≤0.11pp — there is no date-level information to condition on, the same wall the
+  market factor hit. **What carries the defect is `sigma`'s EXPONENT.** Level-matched coverage by
+  `sigma` decile ramps **62→95%** at h=3 and **58→98%** at h=30, monotone in all ten deciles at all
+  four horizons, and a fitted **β = 0.408 / 0.401 / 0.363 / 0.327** cuts the stratum error from
+  **8.62/8.02/8.00/9.73pp to 0.57/1.20/1.82/1.01pp**. The mechanism needs no model: `sigma` spans
+  11× across deciles while the `|residual|` it normalises spans 2.3–2.6×, so its range is ~4× too
+  wide. **Not the clip** (1.2% floor / 1.0% cap; β moves 0.389→0.395 excluding every clipped row).
+  ⚠️ **Do not implement the exponent yet — two reads of it disagree by 3×.** The figure next is
+  implied `sigma`; a confirm dispatch on real OOF residuals settles it, and three of the five
+  causes already excluded here were refuted by a sign rather than a size. Real but claimed
   second-order: `d log|resid| / d log sigma` is **0.798 / 0.692** at h=3/7 against the 1.000
-  conformal assumes. Read `conformal_basis` in `meta.json` and `basis=` on the calibration line — never
+  conformal assumes — reconstructed as `half_pct / q_hat` from ~20K prod rows, and **1.034 /
+  1.150** at h=14/30 where the 500K-row read gets 0.363 / 0.327.
+  Read `conformal_basis` in `meta.json` and `basis=` on the calibration line — never
   infer it from the environment. **Not** the
   `LABEL_SMOOTHED_ANCHOR` arm — the label is untouched. It was tested against the quiet-dates
   alternative and that was rejected: median `rel_cal` on the calibration window's own dates is
