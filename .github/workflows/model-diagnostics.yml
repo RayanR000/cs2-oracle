@@ -489,6 +489,16 @@ jobs:
             echo "means the calibration inherits the early folds' weakness. \`n_train\` is"
             echo "monotone in fold index, so it cannot separate that from the market"
             echo "period — a null kills the hypothesis, a negative only promotes it."
+            echo
+            echo "\`Sigma-tilt audit\` is the confirm read for the band's coverage, and"
+            echo "**the held-out leg is the only part of it that can fail** — the pooled"
+            echo "legs fit and score the exponent on the same rows. Offline, model-free,"
+            echo "the elasticity is **0.408 / 0.401 / 0.363 / 0.327** at 3/7/14/30d"
+            echo "against the **1.000** conformal assumes; the earlier prod read, on a"
+            echo "\`sigma\` reconstructed as \`half_pct / q_hat\`, said **0.798 / 0.692 /"
+            echo "1.034 / 1.150**. Those disagree by 3x and this run is the tiebreak."
+            echo "Below 1 means \`sigma\` over-corrects and the LOW deciles are the"
+            echo "under-covered ones. Reported only — the exponent is not implemented."
             echo '```'
             # `Cross-sectional` is matched explicitly: the log line reads
             # `rank_ic=`, so the `rank IC` alternative below only ever caught the
@@ -500,7 +510,7 @@ jobs:
             # Conformal calibration line" meant downloading the log artifact,
             # because this grep never matched it. The band's width is the subject
             # of the open 2026-08-12 question, so it belongs in the summary.
-            grep -E "classifier_acc|mean_dir_acc|CV summary|Pesaran|Cross-sectional|rank IC|Conformal calibration|Expanding-window audit|fold_q_hat|\[timing\]" \
+            grep -E "classifier_acc|mean_dir_acc|CV summary|Pesaran|Cross-sectional|rank IC|Conformal calibration|Expanding-window audit|fold_q_hat|Sigma-tilt audit|\[timing\]" \
               diagnostics-${{ matrix.horizon }}d.log || echo "no diagnostic lines found"
             echo '```'
             # The serving-path read, when one was asked for. One anchor is one

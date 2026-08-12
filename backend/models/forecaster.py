@@ -5409,6 +5409,11 @@ class ItemForecaster:
                 )
             self._calibrate_confidence(horizon=horizon, records_df=records_df)
 
+            # The sigma axis, on the real OOF residuals. Ordered AFTER
+            # calibration so it audits the same records q_hat was fitted on, and
+            # it must stay report-only: see _sigma_tilt_audit.
+            sigma_tilt = self._sigma_tilt_audit(horizon, records_df)
+
             # The expanding-window audit, on one line. `q_hat` above is fitted
             # on residuals pooled across folds whose models saw 87,224 to
             # 300,000 rows, while the shipped model trains on the full
@@ -5695,6 +5700,10 @@ class ItemForecaster:
                 # reported a `fold_q_hat` — visibly absent rather than a rho
                 # over two points. Diagnostic; nothing builds a band from it.
                 "q_hat_trend": q_hat_trend,
+                # The sigma axis. None below MIN_CALIBRATION_ROWS. Read
+                # `elasticity_heldout` first — the pooled legs fit and score the
+                # exponent on the same rows. Diagnostic; nothing serves from it.
+                "sigma_tilt": sigma_tilt,
             }
 
             # Validate feature groups: permutation test on the held-out set.
@@ -6484,6 +6493,118 @@ class ItemForecaster:
                 f"Refusing to fabricate a conformal q_hat."
             )
         return pd.DataFrame(records)
+
+    def _sigma_tilt_audit(self, horizon: int,
+                          records_df: pd.DataFrame) -> Optional[Dict[str, Any]]:
+        """Is the band tilted across `sigma`, and does an exponent flatten it?
+
+        REPORTED ONLY. `q_hat` above is what serves, unchanged, and nothing in
+        `predict` reads any of this.
+
+        THE CONFIRM READ for `docs/changelog/2026-08-12-the-band-is-tilted-in-sigma.md`,
+        which measured the tilt offline on a MODEL-FREE proxy (`r̂ = 0`, valid to
+        first order because predicted `|return|` is median 0.95% against
+        half-widths of 10-31%). That read found the elasticity at
+        **0.408 / 0.401 / 0.363 / 0.327** and level-matched coverage ramping
+        **62->95%** (h=3) to **58->98%** (h=30) across sigma deciles. It
+        contradicts `2026-08-12-conformal-basis-follows-serving.md`, which read
+        **0.798 / 0.692 / 1.034 / 1.150** off `sigma` RECONSTRUCTED as
+        `half_pct / q_hat` from ~20K prod rows and called the tilt second-order.
+
+        This runs on the real OOF residuals -- the population `q_hat` is actually
+        fitted on -- so it is the tiebreak, and the exponent must not be
+        implemented before it lands. The two candidate sizes differ by 3x, and
+        three of the five causes already excluded in this investigation were
+        refuted by a SIGN rather than a size.
+
+        ⚠️ Read `elasticity_heldout` in preference to `elasticity`. The pooled
+        legs fit and score the exponent on the same rows; the held-out leg fits it
+        on every fold but the last and scores it on the last, which is the only
+        one of the two that can fail. It needs `fold` on the records, so it is
+        absent on the `SKIP_CV=1` holdout path -- and that path's q_hat is already
+        in-sample for early stopping, so nothing there is a confirmation of
+        anything.
+        """
+        resid = records_df["residual_pct"].to_numpy(dtype=float)
+        sigma = records_df["sigma"].to_numpy(dtype=float)
+        if resid.size < self.MIN_CALIBRATION_ROWS:
+            return None
+
+        beta = conformal.elasticity(resid, sigma)
+        if not np.isfinite(beta):
+            return None
+
+        # The clip is the leading alternative explanation and it is cheap to
+        # exclude: rows pinned at the floor or the cap carry a sigma detached
+        # from the item's volatility, so if they are what produces the tilt the
+        # remedy is the clip and not the exponent. Offline this moved the
+        # elasticity 0.389 -> 0.395 at h=3 on 1.2% of rows.
+        floor = float(self.sigma_clip.get("floor", 0.0))
+        cap = float(self.sigma_clip.get("cap", 0.0))
+        clipped = np.isclose(sigma, floor) | np.isclose(sigma, cap)
+        beta_unclipped = conformal.elasticity(resid[~clipped], sigma[~clipped])
+
+        prof_1, err_1, _ = conformal.coverage_by_sigma_stratum(
+            resid, sigma, exponent=1.0)
+        prof_b, err_b, _ = conformal.coverage_by_sigma_stratum(
+            resid, sigma, exponent=beta)
+
+        out: Dict[str, Any] = {
+            "elasticity": round(beta, 4),
+            "elasticity_unclipped": (None if not np.isfinite(beta_unclipped)
+                                     else round(beta_unclipped, 4)),
+            "pct_rows_clipped": round(100.0 * float(clipped.mean()), 3),
+            "n_calibration_rows": int(resid.size),
+            # Level-matched, so marginal coverage is exactly NOMINAL_COVERAGE in
+            # both and only the SPREAD is comparable.
+            "decile_cov_beta1": [None if not np.isfinite(v) else round(v, 4)
+                                 for v in prof_1],
+            "stratum_err_pp_beta1": round(err_1, 3),
+            "decile_cov_beta_fit": [None if not np.isfinite(v) else round(v, 4)
+                                    for v in prof_b],
+            "stratum_err_pp_beta_fit": round(err_b, 3),
+            "elasticity_heldout": None,
+            "stratum_err_pp_beta1_heldout": None,
+            "stratum_err_pp_beta_heldout": None,
+            "heldout_fold": None,
+        }
+
+        if "fold" in records_df.columns:
+            folds = records_df["fold"].to_numpy()
+            last = folds.max()
+            fit, test = (folds < last), (folds == last)
+            if (fit.sum() >= self.MIN_CALIBRATION_ROWS
+                    and test.sum() >= self.MIN_CALIBRATION_ROWS):
+                beta_fit = conformal.elasticity(resid[fit], sigma[fit])
+                if np.isfinite(beta_fit):
+                    _, e1, _ = conformal.coverage_by_sigma_stratum(
+                        resid[test], sigma[test], exponent=1.0)
+                    _, eb, _ = conformal.coverage_by_sigma_stratum(
+                        resid[test], sigma[test], exponent=beta_fit)
+                    out["elasticity_heldout"] = round(beta_fit, 4)
+                    out["stratum_err_pp_beta1_heldout"] = round(e1, 3)
+                    out["stratum_err_pp_beta_heldout"] = round(eb, 3)
+                    out["heldout_fold"] = int(last)
+
+        def _prof(vals) -> str:
+            return " ".join("--" if v is None else f"{v * 100:.0f}"
+                            for v in vals)
+
+        logger.info(
+            f"  Sigma-tilt audit ({horizon}d): elasticity={beta:.3f} "
+            f"(unclipped {out['elasticity_unclipped']}, "
+            f"{out['pct_rows_clipped']}% of {resid.size:,} rows clipped) | "
+            f"level-matched decile coverage beta=1: [{_prof(prof_1)}] "
+            f"err={err_1:.2f}pp -> beta={beta:.3f}: [{_prof(prof_b)}] "
+            f"err={err_b:.2f}pp | HELD-OUT fold {out['heldout_fold']}: "
+            f"beta={out['elasticity_heldout']} "
+            f"err {out['stratum_err_pp_beta1_heldout']}pp -> "
+            f"{out['stratum_err_pp_beta_heldout']}pp. "
+            f"elasticity BELOW 1 means sigma over-corrects and the LOW-sigma "
+            f"deciles are the under-covered ones. Reported only; nothing is "
+            f"served from it, and the held-out leg is the one that can fail."
+        )
+        return out
 
     def _calibrate_conformal(self, horizon: int,
                              records_df: pd.DataFrame) -> float:
@@ -7747,6 +7868,12 @@ class ItemForecaster:
             fold_conformal = self._conformal_records(
                 fold_p50, actual_returns, fold_sigma, current_prices,
                 direction_class=pred_cls, residual_actual_ret=cal_returns)
+            # Which fold each calibration row came from. `_calibrate_conformal`
+            # ignores it -- the pooled q_hat is unchanged -- but without it the
+            # sigma-tilt audit can only fit and score its exponent on the same
+            # rows, and an in-sample elasticity is not a confirmation of one.
+            for _rec in fold_conformal:
+                _rec["fold"] = fold_id
             oof_records.extend(fold_conformal)
 
             # Per-fold q_hat, reported and never served. The pooled q_hat is

@@ -95,6 +95,85 @@ def calibrate(residuals_pct, sigma, alpha: float = ALPHA) -> float:
     return float(np.quantile(scores, level))
 
 
+def elasticity(residuals_pct, sigma) -> float:
+    """`d log|residual| / d log sigma`, which this module's math assumes is 1.0.
+
+    DIAGNOSTIC. Nothing here reads it; `calibrate` divides by `sigma ** 1`
+    unconditionally.
+
+    If the true value is below 1, `sigma` OVER-corrects: a high-sigma item's
+    residual grows more slowly than its sigma does, so the score
+    `|r| / sigma ∝ sigma ** (elasticity - 1)` FALLS as sigma rises. Low-sigma
+    rows are then under-covered and high-sigma rows over-covered, while MARGINAL
+    coverage stays exactly on target -- which is why the guarantee this module
+    advertises cannot detect it. See `coverage_by_sigma_stratum`.
+
+    OLS on the logs, on rows where both are strictly positive. Returns NaN when
+    sigma has no spread to regress on.
+    """
+    r = np.abs(np.asarray(residuals_pct, dtype=float))
+    s = np.asarray(sigma, dtype=float)
+    ok = (r > 0) & (s > 0) & np.isfinite(r) & np.isfinite(s)
+    if ok.sum() < 2:
+        return float("nan")
+    x = np.log(s[ok])
+    y = np.log(r[ok])
+    xc = x - x.mean()
+    denom = float(np.dot(xc, xc))
+    if denom <= 0:
+        return float("nan")
+    return float(np.dot(xc, y - y.mean()) / denom)
+
+
+def coverage_by_sigma_stratum(residuals_pct, sigma, exponent: float = 1.0,
+                              n_strata: int = 10, alpha: float = ALPHA
+                              ) -> tuple[np.ndarray, float, float]:
+    """LEVEL-MATCHED conditional coverage across strata of `sigma`.
+
+    DIAGNOSTIC. Returns `(coverage_per_stratum, mean_abs_error_pp, threshold)`.
+
+    The threshold is the empirical `1 - alpha` quantile of the scores, so
+    **marginal coverage is exactly `1 - alpha` by construction** and any spread
+    across strata is conditional miscalibration rather than the band being too
+    wide overall.
+
+    That separation is the entire point, and skipping it has already cost a read.
+    `mean_d |coverage - target|` computed WITHOUT level-matching falls whenever
+    marginal coverage moves toward target for any reason at all, so a uniformly
+    narrower band scores as a conditional fix -- on 2026-08-12 a placebo with its
+    state variable SHUFFLED across dates passed a pre-registered bar on it. See
+    `docs/changelog/2026-08-12-the-band-is-tilted-in-sigma.md`.
+
+    `exponent` is what sigma is raised to before dividing, so `1.0` reproduces
+    what production serves and a fitted `elasticity` tests the remedy.
+    """
+    r = np.abs(np.asarray(residuals_pct, dtype=float))
+    s = np.asarray(sigma, dtype=float)
+    ok = np.isfinite(r) & np.isfinite(s) & (s > 0)
+    r, s = r[ok], s[ok]
+    if r.size < n_strata:
+        return np.array([]), float("nan"), float("nan")
+
+    with np.errstate(divide="ignore", invalid="ignore"):
+        scores = r / (s ** float(exponent))
+    good = np.isfinite(scores)
+    scores, s = scores[good], s[good]
+    if scores.size < n_strata:
+        return np.array([]), float("nan"), float("nan")
+
+    threshold = float(np.quantile(scores, 1.0 - alpha))
+    covered = scores <= threshold
+
+    # Stratify on sigma ITSELF, never on the exponentiated form: the strata must
+    # be the same rows whatever `exponent` is, or two calls are not comparable.
+    edges = np.quantile(s, np.linspace(0.0, 1.0, n_strata + 1)[1:-1])
+    idx = np.searchsorted(edges, s, side="right")
+    per = np.array([covered[idx == k].mean() if np.any(idx == k) else np.nan
+                    for k in range(n_strata)])
+    err = float(np.nanmean(np.abs(per - (1.0 - alpha)))) * 100.0
+    return per, err, threshold
+
+
 def band(mid_pct, sigma, q_hat: float) -> tuple[np.ndarray, np.ndarray]:
     """Symmetric band around the median, in percentage-return space.
 
