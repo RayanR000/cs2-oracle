@@ -60,6 +60,13 @@ report it rather than working around it.
 > the remainder is genuinely the calendar, ~12 more daily runs at h=3 and 20 maturing
 > 30-day-old forecasts at h=30. Quote `config_dates` beside any pooled number.
 > `changelog/2026-08-11-model-version-is-not-a-config.md`.
+>
+> ⚠️ **And 20 dates is the wrong bar for `DA − realised_down_rate` specifically (2026-08-11).**
+> That statistic's per-date sd is **14.96 / 22.40 / 21.56 / 24.39pp**, so `sd/√20` is 3.3–5.5pp
+> against effects of a few pp. `MIN_FORECAST_DATES` was set to span more than one market swing —
+> stated in-source as "a judgement call, not a derivation" — and it does that; it does not make
+> pooled excess readable. Report the within-date term.
+> `changelog/2026-08-11-the-da-gap-is-the-market-direction-of-five-dates.md`.
 
 > ⚠️ **Two published metrics do not mean what they appear to (audited 2026-08-10).**
 > `constant_call_accuracy` is **hindsight-selected per fold**, so `edge_vs_constant_call*` is a
@@ -70,6 +77,23 @@ report it rather than working around it.
 > `changelog/2026-08-10-constant-call-is-hindsight-picked.md`,
 > `changelog/2026-08-10-band-and-confidence-are-miscalibrated.md`.
 >
+> ✅ **The classifier half is now confirmed against realised outcomes (2026-08-11), and the
+> apparent 11–30pp production deficit is composition.** Decomposing per-date `excess` on the ≥$1
+> `lgbm-v3*` panel (14,668 scorable rows, 11 dates) gives **56% / 78% / 89%** of the gap at
+> 3/7/14d to the realised direction of the 5–7 anchor dates, against a within-date term of
+> **−1.19 / +0.99 / −1.08pp**. On the CV label basis the same item-dates read **+2.70 / +0.17 /
+> +0.42pp** against the published **+3.5 / +0.1 / −1.3** — they agree. Per-date sd of `excess` is
+> 14.96–24.39pp, so **never quote `excess` on fewer than ~50 forecast dates**; report the
+> within-date term, which is what the PT statistic already differences. `MIN_FORECAST_DATES = 20`
+> does not rescue it. The one defect it surfaced is **diagnosed**: 2026-07-19 called `flat` on 64.0%
+> of items at h=3 against a **23.1%** realised flat rate (an 18.3% hit rate, not a near-certain
+> miss), because `f71ffb4` shipped a global ±0.5% dead band in `predict()` 42 minutes before that
+> run and no directional classifier existed yet. Still reachable as `predict()`'s no-classifier
+> fallback; the guard is open. **Correction to the record: 2026-07-19 is the production daily run and
+> 2026-07-18's `-global-only` rows are an ablation arm that overwrote that day's production
+> forecast** — the reverse of what `da-is-dominated-by-market-date` and prose following it state.
+> `changelog/2026-08-11-the-da-gap-is-the-market-direction-of-five-dates.md`.
+
 > ⚠️ **The band half of that is resolved, and the recentring was not the cause (2026-08-11).**
 > Served centre, q50 centre and recentring-off agree within **1.1pp** in all 8 cells. The
 > 34.6–61.8% was a **basis** artifact: `in_interval` tested an archive-resolved actual against

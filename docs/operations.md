@@ -198,8 +198,13 @@ even when Supabase is current.
 - `SKIP_CV=1` is deliberately not set in CI (`price-forecast.yml:119-124`) — it biases the
   conformal `q_hat` low and the served band under-covers. Never add it to buy CI minutes.
 - Backtest chains off forecast automatically, ~1-2 min
-- A/B regime comparison: `python scripts/forecast_prices.py --compare-regime` (writes
-  `lgbm-v3-regime` + `lgbm-v3-global-only` forecasts, runs backtest)
+- A/B regime comparison: `python scripts/forecast_prices.py --compare-regime` — run A (the daily
+  path) then run B with regime models cleared, both under `model_version = lgbm-v3` with
+  `model_config` recording the difference, then a backtest. ⚠️ **Run B overwrites run A on the
+  `(item_id, forecast_date, horizon_days)` key**, so what is stored for that day is the global-only
+  run. That is how 2026-07-18 came to hold an ablation arm's rows in place of production's — see
+  `changelog/2026-08-11-the-da-gap-is-the-market-direction-of-five-dates.md`. The pre-F3 suffixes
+  (`lgbm-v3-regime` / `-global-only`) are gone; only legacy rows carry them.
 - All tables (`item_forecasts`, `prediction_accuracy`, etc.) stay bounded by UPSERT
 
 ### Hang protection: there is only one

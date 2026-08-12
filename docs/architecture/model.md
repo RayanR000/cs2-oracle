@@ -10,6 +10,13 @@
 >
 > **And when it arrives it will not be a DA.** The published headline is a Pesaran–Timmermann
 > test — see "The headline is a test, not an accuracy" below. Raw DA is never quoted alone.
+>
+> Two corrections to the paragraph above. The panel is **8 / 7 / 4 / 1** dates at 3/7/14/30d since
+> `served_identity()` stopped keying the cohort on the config
+> (`changelog/2026-08-11-model-version-is-not-a-config.md`), not 1–2, and half of the failure was a
+> code problem. And 20 dates will not make `DA − realised_down_rate` quotable: its per-date sd is
+> **15–24pp**, so pooled excess needs ~50 dates
+> (`changelog/2026-08-11-the-da-gap-is-the-market-direction-of-five-dates.md`).
 
 ## Overview
 
@@ -409,6 +416,17 @@ Order matters and is asserted by tests:
 7. `_sanitize_forecasts` (:4348) clamps NaN/INF/negative prices to `current_price` with `flat`
    direction and `low` confidence, and downgrades high confidence on zero-volume items.
 
+> ⚠️ **The no-classifier fallback branch is a live hazard, measured 2026-08-11.** When
+> `self.direction_models` has no entry for a horizon, `predict()`'s `else` branch (:6965-6976 as of
+> `67324fb`) derives direction from `mid_ret` against `t_down` / `t_up`, **defaulting to
+> ±`DIRECTION_FLAT_TOLERANCE_PCT` (±0.5%)**. Against a served mid whose `|mid_ret|` distribution is
+> shrunk far harder than realised returns, that dead band swallows the majority of calls: on
+> 2026-07-19 — the last date served before a classifier existed — it produced `flat` on **64.0%** of
+> ≥$1 items at h=3 against a 23.1% realised flat rate, and cost ≥ +8.7pp of DA against a plain
+> zero-threshold sign rule. Flat is 0.0% on every classifier-era ≥$1 date, so nothing served today
+> is affected — but the branch fires **silently**. A WARNING plus a flat-call count is the open fix.
+> `docs/changelog/2026-08-11-the-da-gap-is-the-market-direction-of-five-dates.md`.
+
 ### Confidence
 
 Binary `high` / `low`, taken from the classifier's max class probability against
@@ -502,6 +520,16 @@ single fixed call) and `realised_down_rate` beside it.
 > **+3.5 / +0.1 / −1.3 / +4.4pp** at 3/7/14/30d, not the −4 to −16pp that `edge_vs_constant_call*`
 > reports. Keep the metric (it bounds how much of a horizon's DA is base rate); change the
 > comparison. `docs/changelog/2026-08-10-constant-call-is-hindsight-picked.md`.
+
+> ⚠️ **And `DA − realised_down_rate` is not readable on a handful of dates either (2026-08-11).**
+> Decomposed per (horizon, forecast date) on the ≥$1 `lgbm-v3*` panel, **56% / 78% / 89%** of the
+> apparent −13.12 / −14.35 / −25.52pp production deficit at 3/7/14d is the realised direction of
+> the 5–7 dates in the panel; the within-date term is **−1.19 / +0.99 / −1.08pp**, and on the CV
+> label basis it is **+2.70 / +0.17 / +0.42pp** — agreeing with the +3.5 / +0.1 / −1.3 above.
+> Per-date sd of the excess is **14.96 / 22.40 / 21.56 / 24.39pp**, so the live draw is z = −1.0 to
+> −1.6. **Do not quote pooled excess on fewer than ~50 forecast dates**; the per-date null the PT
+> block estimates below is the quantity that survives a short panel.
+> `docs/changelog/2026-08-11-the-da-gap-is-the-market-direction-of-five-dates.md`.
 
 The reason is measured, not stylistic: an always-down call scored **29.4% on 2025-12-01 and 76.9%
 on 2026-07-17** at 7d, against a model that says "down" 57–87% of the time whatever the date. A

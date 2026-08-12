@@ -49,6 +49,12 @@ hindsight-selected and is not differenced), excluding the backdated batch:
 | 14 | tied | 147 | 44.9 | 74.8 | **−29.9** |
 | 14 | deviating | 1,087 | 48.9 | 73.8 | **−24.9** |
 
+⚠️ The **`DA − down` column is not a model property** — 56–89% of it is the realised direction of
+the 5–7 dates in this panel, and the within-date term is ±1.2pp. See the banner in §3. The
+tied-vs-deviating *contrast* is the readable part of this table; its levels are not, and the
+decomposition was **not** run per cohort, so how much composition survives the differencing is
+unmeasured.
+
 On excess over the runnable baseline the tied cohort is better at 2 of 3 readable horizons and
 worse at 1, by 0.6–5.0pp. **The gate improves ordering slightly and direction not at all** —
 which is coherent, since it was justified on rank IC and the surface it controls is a ranked
@@ -57,6 +63,28 @@ a lower down-rate; differencing the raw column across cohorts would have read th
 as a regression.
 
 ## 3. The number that outranks both, and is not explained here
+
+> ## ✅ CLOSED the same day — it is composition, and the hypothesis below was right.
+> `changelog/2026-08-11-the-da-gap-is-the-market-direction-of-five-dates.md`. Decomposing
+> `excess` per (horizon, date) into the call mix costed against a typical market (`side_ref`),
+> this window's realised direction (`composition`) and within-date information (`assoc`) gives
+> **56% / 78% / 89% composition** at 3/7/14d against `assoc` of **−1.19 / +0.99 / −1.08pp**. On the
+> CV label basis the same live item-dates give `assoc` **+2.70 / +0.17 / +0.42**, against the
+> published CV **+3.5 / +0.1 / −1.3** — the two measurements agree. Per-date sd of `excess` is
+> 14.96–24.39pp, so the live draw is z = −1.0 to −1.6 and **the whole gap is one to two SE.**
+> Two corrections to the sentence below: the model is **above** the baseline on the dates where
+> the market rose (2026-08-06 +4.1, 08-01 +19.7, 08-02 +6.4, and the backdated batch at
+> +1.80/+3.99/+5.00/+5.96), so "every cohort at every horizon" holds of the pooled cells and not
+> of the panel; and h=30 has **no live forecast date at all**. **Do not quote `excess` on fewer
+> than ~50 dates.** One real defect fell out and is **diagnosed**: 2026-07-19 called `flat` on 64.0%
+> of items at h=3 against a **23.1%** realised flat rate in this cohort — a low-hit-rate call at
+> 18.3%, not a near-certain miss — and it carries essentially the entire pooled `side_ref` term on
+> its own. Cause: `f71ffb4` shipped a global ±0.5% dead band in `predict()` **42 minutes before that
+> run**, with no directional classifier in existence yet (`direction_models` was empty until
+> `a332c2b`, 07-24). The band is still reachable as `predict()`'s no-classifier fallback. **And the
+> arm labels are the reverse of what this repo recorded: 2026-07-19 is the production daily run;
+> 2026-07-18's `-global-only` rows are an ablation arm that overwrote that day's production
+> forecast** — so 07-18's membership in this panel is itself in question.
 
 **The model is 11–30pp below the always-down call on every cohort at every horizon.** The
 published CV figure is +3.5 / +0.1 / −1.3 / +4.4pp against the same baseline
