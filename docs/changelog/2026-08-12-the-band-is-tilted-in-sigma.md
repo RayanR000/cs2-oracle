@@ -1,5 +1,21 @@
 # The band is not miscalibrated in time — it is tilted in `sigma`
 
+> ## ✅ CONFIRMED the same day on real OOF residuals — run `31619383780`.
+> `changelog/2026-08-12-sigma-tilt-confirmed-on-oof-residuals.md`. The elasticity is
+> **0.429 / 0.369 / 0.350 / 0.313** on ~157K real conformal records, against the
+> **0.408 / 0.401 / 0.363 / 0.327** the model-free instrument below predicted — accurate to
+> **0.014–0.032**, which retires this entry's largest declared confound. The
+> **0.798 / 0.692 / 1.034 / 1.150** on record is refuted at 4/4, and hardest at the two horizons it
+> called fine: 14d and 30d are where the tilt is worst (level-matched deciles **57→96** and
+> **52→97**, err 9.49 / 10.07pp). Not the clip — excluding all 1.8–1.9% of clipped rows moves the
+> exponent *further* from 1.0.
+>
+> ⚠️ **The one thing this entry got optimistic is the remedy's reach.** Held out — `β` fitted on
+> every fold but the last, scored on the last — the conditional error falls **7.26→1.78pp (−76%)**
+> at 3d and **7.05→2.65pp (−62%)** at 7d, but only **6.01→4.44pp (−26%)** at 14d and
+> **6.09→5.39pp (−12%)** at 30d. A single global exponent is a fix at the short horizons and a
+> partial one at the long ones. Nothing shipped.
+
 **Date:** 2026-08-12
 **Pre-registration:** `docs/research/2026-08-12-conditional-qhat-preregistration.md`
 **Instrument:** `backend/scripts/measure_conditional_qhat.py` (new, offline, read-only)

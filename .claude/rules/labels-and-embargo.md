@@ -74,6 +74,10 @@ paths:
   against the 1.000 `conformal.calibrate` assumes. That axis is cross-sectional, so it needs no
   feedback series and no forecast-date history — the calendar block on ACI never applied to it.
   `docs/changelog/2026-08-12-the-band-is-tilted-in-sigma.md`.
+  ✅ **Confirmed on real OOF residuals** (run `31619383780`, elasticity **0.429/0.369/0.350/0.313**,
+  within 0.03 of the model-free prediction) — but **held out the remedy only works at 3d/7d**
+  (−76% / −62% conditional error against −26% / −12% at 14d/30d), and it does **not** touch the
+  marginal over-coverage. `docs/changelog/2026-08-12-sigma-tilt-confirmed-on-oof-residuals.md`.
 - **The wedge `p[d]/S[d]` is also attackable in the SERVING basis, and that arm is
   `SERVE_OUTLIER_GATED_ANCHOR=1`.** `predict` detects items whose latest quote deviates >10%
   from their local median, logs `using smoothed price` — and then substitutes the median for

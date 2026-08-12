@@ -91,12 +91,23 @@ paths:
   **8.62/8.02/8.00/9.73pp to 0.57/1.20/1.82/1.01pp**. The mechanism needs no model: `sigma` spans
   11× across deciles while the `|residual|` it normalises spans 2.3–2.6×, so its range is ~4× too
   wide. **Not the clip** (1.2% floor / 1.0% cap; β moves 0.389→0.395 excluding every clipped row).
-  ⚠️ **Do not implement the exponent yet — two reads of it disagree by 3×.** The figure next is
-  implied `sigma`; a confirm dispatch on real OOF residuals settles it, and three of the five
-  causes already excluded here were refuted by a sign rather than a size. Real but claimed
-  second-order: `d log|resid| / d log sigma` is **0.798 / 0.692** at h=3/7 against the 1.000
-  conformal assumes — reconstructed as `half_pct / q_hat` from ~20K prod rows, and **1.034 /
-  1.150** at h=14/30 where the 500K-row read gets 0.363 / 0.327.
+  ✅ **CONFIRMED on real OOF residuals, run `31619383780`** — elasticity **0.429 / 0.369 / 0.350 /
+  0.313** on ~157K records, within **0.014–0.032** of the model-free prediction, and level-matched
+  deciles ramping **62→93 / 60→95 / 57→96 / 52→97** (err 7.97 / 9.11 / 9.49 / 10.07pp). Read
+  `cv_results[h].sigma_tilt` in `meta.json` or grep `Sigma-tilt audit`. ⚠️ **But read
+  `stratum_err_pp_beta_heldout`, not the pooled err** — the pooled legs fit and score the exponent
+  on the same rows. Held out (`β` fitted on all folds but the last), the error falls
+  **7.26→1.78pp (−76%)** at 3d and **7.05→2.65pp (−62%)** at 7d but only **−26%** at 14d and
+  **−12%** at 30d, where the corrected profile is not flat. **So a single global exponent is
+  implementable at 3d/7d and NOT at 14d/30d** — those need a shrunk or non-parametric scale, which
+  is a separate decision. `q_hat` and every `fold_q_hat` are byte-identical to `31611508808`, so the
+  audit moved no calibration. ⚠️ **The exponent does NOT explain the marginal over-coverage**
+  (87.2/91.8/90.6/89.0% vs 80%): level-matching removes exactly that before the tilt is measured,
+  and on the calibration set marginal coverage is 80% by construction. Six causes examined, the
+  marginal defect belongs to none.
+  `docs/changelog/2026-08-12-sigma-tilt-confirmed-on-oof-residuals.md`. ❌ Superseded and refuted at
+  4/4, hardest where it said "fine": `d log|resid| / d log sigma` **0.798 / 0.692 / 1.034 / 1.150**,
+  reconstructed as `half_pct / q_hat` from ~20K prod rows.
   Read `conformal_basis` in `meta.json` and `basis=` on the calibration line — never
   infer it from the environment. **Not** the
   `LABEL_SMOOTHED_ANCHOR` arm — the label is untouched. It was tested against the quiet-dates

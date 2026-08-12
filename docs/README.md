@@ -220,12 +220,24 @@ also recorded in `changelog/`, which is the durable record. Load-bearing ones:
 ## Changelog (`changelog/`)
 
 Append-only dated decision records: bug fixes, features, audits, and refuted experiments.
-151 entries, 2026-07-08 to 2026-08-12. Entries are never edited to match later reality —
+152 entries, 2026-07-08 to 2026-08-12. Entries are never edited to match later reality —
 several describe code that has since been deleted, which is the point. Per `AGENTS.md`
 workflow rule 2, non-trivial decisions get a new dated note here.
 
 The newest:
 
+- `2026-08-12-sigma-tilt-confirmed-on-oof-residuals.md` — ✅ the tilt below is **confirmed on real
+  OOF residuals** (run `31619383780`, ~157K records): elasticity **0.429 / 0.369 / 0.350 / 0.313**,
+  within **0.014–0.032** of what the model-free instrument predicted, so that instrument is now
+  validated against real residuals. The **0.798 / 0.692 / 1.034 / 1.150** on record is refuted at
+  4/4 and hardest at 14d/30d, which it had called fine — those are the *worst* horizons
+  (deciles **57→96** and **52→97**). Not the clip. ⚠️ **The remedy's reach is narrower than the
+  tilt:** held out, the conditional error falls **−76% / −62%** at 3d/7d but only **−26% / −12%** at
+  14d/30d, so one global exponent is implementable at the short horizons and needs a shrunk or
+  non-parametric scale at the long ones. ⚠️ **It does not explain the marginal over-coverage** —
+  level-matching removes that quantity first, and after six causes 87.2/91.8/90.6/89.0% vs 80% is
+  still unattributed. `q_hat` and every `fold_q_hat` are byte-identical to `31611508808`. Nothing
+  shipped.
 - `2026-08-12-the-band-is-tilted-in-sigma.md` — the conditional `q_hat` is designed, costed and
   measured, and **the axis was wrong**. A model-free instrument (validated at
   **1.020 / 0.958 / 0.887 / 0.785×** the shipped `q_hat`) puts 731 dates behind the question for
