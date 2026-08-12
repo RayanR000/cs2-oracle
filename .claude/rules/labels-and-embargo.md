@@ -45,6 +45,16 @@ paths:
   **−0.033 / −0.017 / −0.020 / +0.008**. Both bases are contaminated by `p/S` with opposite
   signs, so **rank arms on the tied subset**, which is the only cohort where neither operates.
   `docs/changelog/2026-08-11-smoothed-anchor-label-measured.md`.
+  ✅ **The CONFORMAL residual moved to the served denominator on 2026-08-12, and that is a
+  different change.** `calibration_target_col(h)` → `target_return_{h}d_cal` is emitted by
+  `prepare_targets` alongside the label, always on `_rolling_anchor_prices`, winsorized and
+  voided on the same rows; `_conformal_records(..., residual_actual_ret=)` measures
+  `residual_pct` from it while `actual_ret` still feeds `hit` / `change_pct`. The label is
+  **untouched**, so none of the refutation above applies — `q_hat` is post-hoc and cannot hand
+  the model a factor. Fitting it on the label had inflated it by `p[d]/S[d]` and the served
+  band over-covered at **87.2 / 91.8 / 90.6 / 89.0%** against 80%. `meta.json` carries
+  `conformal_basis`; the fallback WARNs. Conditional coverage (58.2–99.2% per date) is
+  **not** fixed. `docs/changelog/2026-08-12-conformal-basis-follows-serving.md`.
 - **The wedge `p[d]/S[d]` is also attackable in the SERVING basis, and that arm is
   `SERVE_OUTLIER_GATED_ANCHOR=1`.** `predict` detects items whose latest quote deviates >10%
   from their local median, logs `using smoothed price` — and then substitutes the median for

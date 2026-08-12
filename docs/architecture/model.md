@@ -86,6 +86,20 @@ is what guarantees the served triple is ordered and positive.
 `predict()` raises rather than serving a forecast if `q_hat` is missing for a horizon
 (:4207-4212).
 
+**The residual `q_hat` is fitted on has its own column, and it is not the training label.**
+`calibration_target_col(h)` → `target_return_{h}d_cal` divides by the **smoothed** anchor
+`S[d]`, because that is what `predict` quotes from and what `resolve_anchors` scores against;
+the label divides by the raw quote `p[d]`. Fitting `q_hat` on the label inflated it by the
+anchor deviation `p[d]/S[d]` and the served band **over-covered at 87.2 / 91.8 / 90.6 / 89.0%**
+against an 80% target. `meta.json` carries `conformal_basis` per horizon and the calibration
+line logs it; the fallback to the label WARNs. This is the denominator half of what
+`conformal_centre` fixed for the centre, and it is **not** the `LABEL_SMOOTHED_ANCHOR` arm —
+`q_hat` is post-hoc, so it changes a band width and nothing the model learns.
+⚠️ **It does not fix conditional coverage.** Per (horizon, date) the served band runs
+**58.2%–99.2%**; `sigma` is a per-item trailing volatility with no date term, and ACI cannot
+be validated until the panel has more than 1–7 forecast dates per horizon.
+`docs/changelog/2026-08-12-conformal-basis-follows-serving.md`.
+
 ### Regime models
 
 The code still supports per-regime ensembles (`REGIMES = ["bear", "range", "bull"]`, :185,

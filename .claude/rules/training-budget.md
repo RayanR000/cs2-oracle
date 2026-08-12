@@ -52,6 +52,17 @@ paths:
   pooled where the band is actually served. Never infer the centre from the environment; read
   `conformal_centre`, and read `BAND COVERAGE` in `scripts/replay_serving.py`.
   `docs/changelog/2026-08-11-conformal-centre-follows-serving.md`.
+- **What DOES move coverage is the calibration DENOMINATOR, fixed 2026-08-12.** `q_hat` was
+  fitted on the training label, which divides by the raw anchor quote, while `predict` quotes
+  from the smoothed anchor and `resolve_anchors` scores against it — so the served band
+  **over-covered at 87.2 / 91.8 / 90.6 / 89.0%** against an 80% target (19,917 prod outcomes;
+  the half-width has to shrink to 0.72 / 0.61 / 0.73 / 0.77). `prepare_targets` now emits
+  `calibration_target_col(h)` and `_conformal_records` measures the residual from it; read
+  `conformal_basis` in `meta.json` and `basis=` on the calibration line. **Not** the
+  `LABEL_SMOOTHED_ANCHOR` arm — the label is untouched. It was tested against the quiet-dates
+  alternative and that was rejected: median `rel_cal` on the calibration window's own dates is
+  1.01 / 0.96 / 1.07 / 0.97. **Per-date coverage still runs 58.2–99.2%** and no scalar `q_hat`
+  fixes that. `docs/changelog/2026-08-12-conformal-basis-follows-serving.md`.
 - **Training is fully sequential.** Horizons, quantiles, and ensemble members train one at
   a time; LightGBM's OpenMP threads supply the CPU parallelism. **Everything runs at
   `n_jobs = -1`** — the ensemble's `max(1, cpu_count // 2)` was deleted 2026-07-21 as
