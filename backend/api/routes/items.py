@@ -101,7 +101,6 @@ def _build_trending(db: Session, limit: int):
             ItemForecast.item_id,
             ItemForecast.forecast_date,
             ItemForecast.direction,
-            ItemForecast.confidence,
             ItemForecast.price_mid,
             ItemForecast.current_price,
         )
@@ -116,7 +115,7 @@ def _build_trending(db: Session, limit: int):
     )
 
     items = (
-        db.query(Item, subq.c.direction, subq.c.confidence, subq.c.price_mid, subq.c.current_price)
+        db.query(Item, subq.c.direction, subq.c.price_mid, subq.c.current_price)
         .outerjoin(subq, Item.id == subq.c.item_id)
         .filter(Item.icon_url.isnot(None), backfilled_item_clause())
         .order_by(desc(subq.c.price_mid / func.nullif(subq.c.current_price, 0)))
@@ -354,7 +353,6 @@ def _trends_parquet(item, item_id: str, db: Session):
         return None
     direction_map = {"up": "bullish", "down": "bearish", "flat": "neutral", None: "neutral"}
     trend_dir = direction_map.get(r.direction, "neutral")
-    confidence = r.confidence if r.confidence else "low"
     latest_price = (
         db.query(PriceHistory)
         .filter(PriceHistory.item_id == item.id)
@@ -395,7 +393,6 @@ def _trends_parquet(item, item_id: str, db: Session):
         item_name=item.name,
         current_price=current_price,
         trend_direction=trend_dir,
-        confidence=confidence,
         explanation=explanation,
         rsi=rsi,
         bollinger_upper=bollinger_upper,
@@ -442,7 +439,6 @@ def get_item_trends(item_id: str, db: Session = Depends(get_db)):
 
     direction_map = {"up": "bullish", "down": "bearish", "flat": "neutral", None: "neutral"}
     trend_dir = direction_map.get(latest_forecast.direction if latest_forecast else None, "neutral")
-    confidence = latest_forecast.confidence if latest_forecast and latest_forecast.confidence else "low"
 
     explanation = _build_trend_explanation(trend_dir, current_price)
 
@@ -487,7 +483,6 @@ def get_item_trends(item_id: str, db: Session = Depends(get_db)):
         item_name=item.name,
         current_price=current_price,
         trend_direction=trend_dir,
-        confidence=confidence,
         explanation=explanation,
         rsi=rsi,
         bollinger_upper=bollinger_upper,
@@ -547,7 +542,6 @@ def _prediction_parquet(item, period: str, horizon: int):
         forecast_high=fh,
         forecast_period=period,
         trend_direction=r.direction or "neutral",
-        confidence=r.confidence or "low",
         # Disclosed, not gated. `/opportunities` drops the deviating cohort
         # because ranking is what the clean-anchor evidence covers; a lookup by
         # name still answers, and says which cohort the answer comes from.
@@ -604,7 +598,6 @@ def get_item_prediction(
             forecast_high=fh,
             forecast_period=period,
             trend_direction=forecast.direction or "neutral",
-            confidence=forecast.confidence or "low",
         )
 
     fl = current_price * 0.9
@@ -618,7 +611,6 @@ def get_item_prediction(
         forecast_high=fh,
         forecast_period=period,
         trend_direction="neutral",
-        confidence="low",
     )
 
 

@@ -35,9 +35,10 @@ one median regressor and one directional classifier per horizon:
 ensemble averaging and no p10/p90 model. The 40-model grid this replaced (36 global + regime
 files) collapsed on 2026-08-05; see `docs/changelog/2026-08-04-minimal-model-results.md`.
 
-**Division of labour:** the classifier supplies the served **direction + confidence**; the q50
-model supplies the **median**; conformal calibration supplies the **band**. Nothing else
-contributes to a served forecast.
+**Division of labour:** the classifier supplies the served **direction**; the q50 model supplies
+the **median**; conformal calibration supplies the **band**. Nothing else contributes to a served
+forecast. It also produces a `confidence` tag, which is stored and scored but **not published** —
+see "Confidence" below.
 
 **Model version:** `lgbm-v3` (`scripts/forecast_prices.py:35`)
 **Artifacts** in `backend/models/saved_models/`: `lgb_{horizon}d_q50_e0.txt` (:4897),
@@ -424,15 +425,26 @@ Order matters and is asserted by tests:
 > 2026-07-19 — the last date served before a classifier existed — it produced `flat` on **64.0%** of
 > ≥$1 items at h=3 against a 23.1% realised flat rate, and cost ≥ +8.7pp of DA against a plain
 > zero-threshold sign rule. Flat is 0.0% on every classifier-era ≥$1 date, so nothing served today
-> is affected — but the branch fires **silently**. A WARNING plus a flat-call count is the open fix.
+> is affected. The branch no longer fires silently: `_warn_no_classifier` (:5933, called :7015)
+> logs a WARNING with the fallback and flat-call counts.
 > `docs/changelog/2026-08-11-the-da-gap-is-the-market-direction-of-five-dates.md`.
 
-### Confidence
+### Confidence — computed and stored, NOT published
 
 Binary `high` / `low`, taken from the classifier's max class probability against
 `DIRECTION_CONFIDENCE_HIGH = 0.5`. `_compute_confidence` (:4774) and the per-horizon
 `confidence_thresholds` in `meta.json` are only reached on the no-classifier fallback path
 (:4302-4314).
+
+> ❌ **Withdrawn from the API 2026-08-12.** The cut was never calibrated against outcomes.
+> Within-date on the ≥$1 `lgbm-v3%` panel, on the 11 cells with `n_high >= 30`, the `high`
+> cohort's own directional accuracy is **29.0–45.8%** — every cell below a coin flip against
+> `CONFIDENCE_TARGET_ACCURACY = 80.0` — while its gap to `low` runs −8.26 to +4.65pp with mixed
+> sign. It orders nothing and its label is false. `PredictionOut` and `TrendAnalysisOut` no
+> longer carry it; the column, the writer and `conf_gap_pp` stay so the withdrawal is
+> falsifiable. **The backtest's pooled `conf_gap_pp` is not the evidence** — it splits over the
+> whole record set, so it inherits the market-composition term, and its −38.7pp at h=30 is one
+> item. `docs/changelog/2026-08-12-served-confidence-withdrawn.md`.
 
 ---
 

@@ -46,7 +46,8 @@ class TrendAnalysisOut(BaseModel):
     item_name: str
     current_price: float
     trend_direction: str
-    confidence: str
+    # `confidence` withdrawn 2026-08-12: the served label is uncalibrated and
+    # carries no measurable directional information. See PredictionOut below.
     explanation: str
     rsi: Optional[float] = None
     bollinger_upper: Optional[float] = None
@@ -73,7 +74,16 @@ class PredictionOut(BaseModel):
     forecast_high: float
     forecast_period: str
     trend_direction: str
-    confidence: str
+    # `confidence` is WITHDRAWN, 2026-08-12. It was a bare `>= 0.5` cut on the
+    # directional classifier's max class probability, never calibrated against
+    # realised hits. Measured within each forecast date on the >=$1 `lgbm-v3%`
+    # panel, on the 11 cells with n_high >= 30: the "high" cohort is right
+    # 29.0-45.8% of the time — every cell below a coin flip, against a stated
+    # target of 80% — and its gap to "low" runs -8.26 to +4.65pp with mixed
+    # sign, so the tag carries no ordering either. Consumers weight on it, so
+    # an uninformative tag is worse than none. The column is still written and
+    # still scored as `conf_gap_pp` — republish only once that is calibrated.
+    # See docs/changelog/2026-08-12-served-confidence-withdrawn.md.
     # Did the quote this forecast was built from equal its own local median?
     # The model reaches rank IC +0.13-0.17 at 3/7/14d where it did and ~0 or
     # negative where it did not, so a False here says the forecast is served

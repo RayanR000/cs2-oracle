@@ -220,12 +220,21 @@ also recorded in `changelog/`, which is the durable record. Load-bearing ones:
 ## Changelog (`changelog/`)
 
 Append-only dated decision records: bug fixes, features, audits, and refuted experiments.
-126 entries, 2026-07-08 to 2026-08-10. Entries are never edited to match later reality —
+148 entries, 2026-07-08 to 2026-08-12. Entries are never edited to match later reality —
 several describe code that has since been deleted, which is the point. Per `AGENTS.md`
 workflow rule 2, non-trivial decisions get a new dated note here.
 
-The newest is the instrument panel; the two behind it are the 2026-08-10 audit, and both of
-those carry corrections that reach back into earlier entries:
+The newest:
+
+- `2026-08-12-served-confidence-withdrawn.md` — F2. The `confidence` tag leaves `PredictionOut`
+  and `TrendAnalysisOut`. Within-date, on the 11 cells with `n_high >= 30`, the `high` cohort is
+  right **29.0–45.8%** against a stated 80% target and its gap to `low` is mixed-sign — so it is
+  withdrawn as uninformative and mislabelled, not as inverted. **The backtest's `conf_gap_pp` is
+  pooled across dates and must not be quoted for this**; its −38.7pp at h=30 is one item. Column,
+  writer and metric all kept.
+
+Behind it, the instrument panel and the 2026-08-10 audit, both of which carry corrections that
+reach back into earlier entries:
 
 - `2026-08-10-instrument-panel-first-read.md` — ⭐ four arms on one commit. The cross-sectional
   rank transform (`C1`) is the first arm to beat `−return_1d` on rank IC, at all four horizons,

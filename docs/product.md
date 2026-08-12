@@ -47,9 +47,12 @@ The directional claim is a Pesaran–Timmermann verdict, not a hit rate. A raw h
 > alone, and do not present either as a settled 80% until a `--rescore` has reported it.
 > `docs/changelog/2026-08-11-in-interval-basis.md`.
 >
-> **The confidence tag still binds.** It is an uncalibrated 0.5 cut on a classifier
-> probability, never validated against outcomes. **Do not publish it at all until F2 lands** —
-> `docs/research/2026-08-10-next-steps.md`. Also note that of the two baselines named in the
+> **The confidence tag is WITHDRAWN, 2026-08-12 — F2 landed.** It is gone from `PredictionOut`
+> and `TrendAnalysisOut`. Measured within each forecast date on the 11 cells with `n_high >= 30`,
+> the `high` cohort is right **29.0–45.8%** of the time against a stated 80% target, and its gap
+> to `low` runs −8.26 to +4.65pp with mixed sign — uninformative and mislabelled, not inverted.
+> The pooled `conf_gap_pp` the backtest prints is composition-contaminated; don't quote it.
+> `docs/changelog/2026-08-12-served-confidence-withdrawn.md`. Also note that of the two baselines named in the
 > paragraph above, only the **realised down-rate** is runnable; the constant-call baseline is
 > selected with hindsight and must not be shown as something the model failed to beat.
 

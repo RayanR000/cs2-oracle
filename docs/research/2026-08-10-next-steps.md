@@ -234,6 +234,20 @@ None of these is an accuracy improvement. All three are cheap, and all three blo
 
 ### F2. Calibrate or withdraw the served `confidence` label
 
+> ## ✅ SHIPPED 2026-08-12 as the withdrawal.
+> `docs/changelog/2026-08-12-served-confidence-withdrawn.md`. `confidence` is gone from
+> `PredictionOut` and `TrendAnalysisOut`; the column, the writer and `conf_gap_pp` stay so
+> the withdrawal stays falsifiable.
+> **One correction to the reasoning below.** The evidence is not that the tag inverts.
+> `conf_gap_pp` is pooled across forecast dates (`backtest/scoring.py:416-419`), so the
+> −4.6 / −4.8 / −2.0 / −38.7pp it prints carries the same market-composition term this
+> document elsewhere forbids reading — and its h=30 figure is **one item**. Recomputed
+> within-date on the ≥$1 `lgbm-v3%` panel, on the 11 cells with `n_high >= 30`, the gap runs
+> **−8.26 to +4.65pp with mixed sign** (7 of 11 negative): no measurable separation either
+> way. What decides it is the level, not the gap — the `high` cohort is right **29.0–45.8%**
+> in every powered cell, against `CONFIDENCE_TARGET_ACCURACY = 80.0`. A tag reading "high" on
+> sub-coin-flip calls is false regardless of the ordering.
+
 - **Do:** either calibrate the classifier-probability cut against realised hits and store it under
   its own key, or stop publishing `confidence` until it is calibrated.
 - **Why:** the served label is a bare `>= 0.5` cut on a 3-class argmax
