@@ -5930,6 +5930,29 @@ class ItemForecaster:
             return {}
         return {k: float(w[c == k].sum() / total) for k in (0, 1, 2)}
 
+    def _warn_no_classifier(self, horizon: int, n: int, n_flat: int) -> None:
+        """Announce that a horizon served directions from the dead-band fallback.
+
+        `predict` falls back to a ±`DIRECTION_FLAT_TOLERANCE_PCT` band on
+        `mid_ret` when `direction_models` holds no booster for the horizon. That
+        band is not a safe default: the served mid is shrunk far harder than
+        realised returns, so on 2026-07-19 it called `flat` on **64.0%** of the
+        ≥$1 cross-section against a 23.1% realised flat rate — and on 2026-07-17
+        99.8% of `|mid_ret|` sat inside it, which would have called almost
+        everything flat. Nothing logged either fact at the time.
+
+        Silent by design when the classifier is present, so a healthy run stays
+        quiet and this line means exactly one thing.
+        `docs/changelog/2026-08-11-the-da-gap-is-the-market-direction-of-five-dates.md`
+        """
+        if n <= 0:
+            return
+        pct = n_flat / n * 100
+        logger.warning(
+            f"  h={horizon}: NO directional classifier — served the "
+            f"±{DIRECTION_FLAT_TOLERANCE_PCT}% dead-band fallback for {n} items, "
+            f"{n_flat} ({pct:.1f}%) called flat")
+
     @classmethod
     def _recenter_on_direction(cls, low_ret, mid_ret, high_ret, direction_class):
         """Recenter forecasts so the median's sign matches the classifier's call,
@@ -6946,6 +6969,8 @@ class ItemForecaster:
                     low_ret_arr, mid_ret_arr, high_ret_arr, dir_class_arr)
 
             _dir_name = {0: "down", 1: "flat", 2: "up"}
+            fallback_n = 0
+            fallback_flat = 0
             for i, iid in enumerate(item_id_arr):
                 low_ret, mid_ret, high_ret = (float(low_ret_arr[i]),
                                                float(mid_ret_arr[i]),
@@ -6976,6 +7001,8 @@ class ItemForecaster:
                         direction = "flat"
                     confidence = self._compute_confidence(
                         price_mid, price_low, price_high, current_price, horizon=horizon)
+                    fallback_n += 1
+                    fallback_flat += direction == "flat"
 
                 agg[iid]["forecasts"][horizon] = {
                     "low": price_low,
@@ -6984,6 +7011,8 @@ class ItemForecaster:
                     "direction": direction,
                     "confidence": confidence,
                 }
+
+            self._warn_no_classifier(horizon, fallback_n, fallback_flat)
 
         result_df = pd.DataFrame([r for r in agg.values() if r["forecasts"]])
         if not result_df.empty:
