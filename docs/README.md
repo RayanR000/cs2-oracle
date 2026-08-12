@@ -220,12 +220,24 @@ also recorded in `changelog/`, which is the durable record. Load-bearing ones:
 ## Changelog (`changelog/`)
 
 Append-only dated decision records: bug fixes, features, audits, and refuted experiments.
-152 entries, 2026-07-08 to 2026-08-12. Entries are never edited to match later reality —
+153 entries, 2026-07-08 to 2026-08-12. Entries are never edited to match later reality —
 several describe code that has since been deleted, which is the point. Per `AGENTS.md`
 workflow rule 2, non-trivial decisions get a new dated note here.
 
 The newest:
 
+- `2026-08-12-marginal-over-coverage-is-half-the-sigma-mix.md` — the seventh cause, and the first one
+  that **sizes**. The served `sigma` distribution runs **1.28–1.29×** the calibration median
+  (measured directly, not implied as `half_pct / q_hat`), and pushing the measured coverage-vs-`sigma`
+  curve through it buys **+4.0 to +4.9pp** of the 7.2/11.8/10.6/9.0pp excess — **36–68%**, verdict
+  **PARTIAL** at 4/4. Every pre-registered leg passes: validity MAE **0.89–1.43pp**, footprint
+  corr **+0.50 to +0.61**, and the `β = 1` placebo at **0.0000pp**, which proves the channel is the
+  tilt and nothing else. ⚠️ **Refutes the `0.93×` at 30d** — `sigma` has no horizon term, so that
+  rested on production's single 30d forecast date, and the "predicts the opposite at 30d" objection
+  is withdrawn (`A` −0.22 → **+0.51**). At **7d the residual excess is unreachable** from this
+  channel at any market state (`k* = 2.45×` exceeds every date in two years). The remaining 32–64%
+  is **named by identity**: the residual law at given `sigma`, measurable on resolved outcomes.
+  Second argument for shipping `β`, now at all four horizons. Nothing shipped.
 - `2026-08-12-sigma-tilt-confirmed-on-oof-residuals.md` — ✅ the tilt below is **confirmed on real
   OOF residuals** (run `31619383780`, ~157K records): elasticity **0.429 / 0.369 / 0.350 / 0.313**,
   within **0.014–0.032** of what the model-free instrument predicted, so that instrument is now

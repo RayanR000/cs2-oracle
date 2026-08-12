@@ -1,5 +1,18 @@
 # The `sigma` tilt is confirmed on real OOF residuals, and it decays with the horizon
 
+> ## ⚠️ The lead in §"One lead it does open" is SIZED, and its 30d objection is REFUTED.
+> `changelog/2026-08-12-marginal-over-coverage-is-half-the-sigma-mix.md`. The served `sigma`-mix
+> shift buys **+4.0 to +4.9pp** of the marginal excess — **36–68%** of it — with the `β = 1` placebo
+> at **0.0000pp**, so the channel is the tilt and nothing else. The **0.93×** at 30d quoted below is
+> an artifact: `sigma` carries **no horizon term**, so that ratio rested on production's single 30d
+> forecast date via the implied `half_pct / q_hat` route. Measured directly it is **1.28–1.29× at
+> all four horizons**, and 30d moves from `A = −0.22` to **`A = +0.51`**. The caveat "it predicts
+> the opposite at 30d" is withdrawn. ⚠️ 32–64% of the excess remains, and by identity it is now
+> **named**: a shift in the residual law at given `sigma`, not a seventh unrelated cause.
+> Consequence for §"Next": normalising by `sigma ** β` also makes marginal coverage invariant to the
+> served mix, which is a second and independent argument for the exponent **at all four horizons**,
+> not only the two where the conditional fix held out.
+
 **Date:** 2026-08-12
 **Run:** `31619383780` (control, `cv_diagnostic_classifier=q50`, all four horizons, commit `58c6cf9`)
 **Confirms:** `2026-08-12-the-band-is-tilted-in-sigma.md`
