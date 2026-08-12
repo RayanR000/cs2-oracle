@@ -82,6 +82,21 @@ def cv_tied_row(meta: dict, horizon: int) -> dict | None:
     }
 
 
+def cv_table_note(c_meta: dict, a_meta: dict, horizons=HORIZONS) -> str | None:
+    """Why the CV table is empty, when it is — or None when it has rows.
+
+    A table with no rows and a parse that silently failed look the same on a
+    terminal, and the all-missing case is the expected state for any pair of
+    artifacts trained before 2026-08-11.
+    """
+    if any(cv_tied_row(c_meta.get(h, {}), h) or cv_tied_row(a_meta.get(h, {}), h)
+           for h in horizons):
+        return None
+    return ("  (no rows: neither artifact carries `mean_rank_ic_tied` — both "
+            "predate the 2026-08-11 column. The pooled keys are NOT shown in "
+            "its place.)")
+
+
 def pair_replay_rows(control: list[dict], arm: list[dict]) -> list[dict]:
     """Difference the arm against the control on (anchor, horizon, cohort).
 
@@ -166,6 +181,9 @@ def main() -> int:
     print(f"\nCV — CLEAN-ANCHOR COHORT   control {args.control} vs arm {args.arm}")
     print(f"{'h':>4} {'ctl IC':>9} {'arm IC':>9} {'delta':>9} "
           f"{'ctl edge':>9} {'arm edge':>9} {'rows':>9} {'dates':>6}")
+    note = cv_table_note(c_meta, a_meta)
+    if note:
+        print(note)
     for h in HORIZONS:
         c = cv_tied_row(c_meta.get(h, {}), h)
         a = cv_tied_row(a_meta.get(h, {}), h)

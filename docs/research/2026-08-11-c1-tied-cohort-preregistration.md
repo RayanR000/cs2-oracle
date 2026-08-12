@@ -1,6 +1,6 @@
 # Pre-registered read: C1 on the clean-anchor cohort
 
-**Written 2026-08-11 23:52 UTC-4, while runs `31547391395` (control) and `31547400215`
+**Written 2026-08-11 23:52 UTC (19:52 EDT), while runs `31547391395` (control) and `31547400215`
 (arm, `cross_sectional_rank=true`) were still in progress. No number from either was
 visible when this was written.** Both on `ab08a8b`, matrix over 3/7/14/30d, replay anchors
 2026-04-15, 05-16, 06-16, 07-09.

@@ -10,6 +10,7 @@ producing a table of the wrong rows.
 import pytest
 
 from scripts.compare_diagnostics import (
+    cv_table_note,
     cv_tied_row,
     pair_replay_rows,
     parse_replay_log,
@@ -87,6 +88,21 @@ def test_cv_tied_row_reads_the_tied_keys_and_never_the_pooled_ones():
         "tied_rows": 41022,
         "tied_dates": 6,
     }
+
+
+def test_an_empty_cv_table_says_why_rather_than_printing_a_bare_header():
+    """An empty table and a broken parse look identical on a terminal.
+
+    Every artifact before 2026-08-11 lacks `mean_rank_ic_tied`, so this is the
+    expected state for a re-read of an older pair -- and the one case where
+    silence would be read as "the harness is broken".
+    """
+    assert cv_table_note({}, {}, (3, 7)) is not None
+    assert "predate" in cv_table_note({}, {}, (3, 7))
+    # A single horizon carrying the column is enough for the table to stand on
+    # its own; the note is for the all-missing case only.
+    meta = {"cv_results": {"3": {"mean_rank_ic_tied": 0.08}}}
+    assert cv_table_note({3: meta}, {}, (3, 7)) is None
 
 
 def test_pairing_differences_the_arm_against_the_control_on_matching_cells():
