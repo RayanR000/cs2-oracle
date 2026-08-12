@@ -5431,9 +5431,20 @@ class ItemForecaster:
                 )
 
             q_hat = self._calibrate_conformal(horizon, records_df)
+            # The WIDTH, and the exponent it was produced at. Both are here for
+            # one reason: `q_hat` may not be differenced across SIGMA_EXPONENT
+            # (the two arms are ~5.5x apart in units), so a paired read of that
+            # flag has nothing to compare unless the width is reported. Median
+            # half of `range_pct`, on exactly the rows q_hat was fitted on, which
+            # is the basis the 0.87/0.86/0.84/0.77x prediction in
+            # docs/changelog/2026-08-12-sigma-exponent-implemented.md was made on.
+            _half_pct = 50.0 * float(np.nanmedian(
+                records_df["range_pct"].to_numpy(dtype=float)))
             _cal_msg = (
                 f"  Conformal calibration [{calibration_source}]: "
                 f"q_hat={q_hat:.4f} (dimensionless x sigma), "
+                f"beta={self.band_beta(horizon):.4f}, "
+                f"median half-width={_half_pct:.2f}% of mid, "
                 f"n={len(records_df)}, alpha={conformal.ALPHA}, "
                 f"target coverage={conformal.NOMINAL_COVERAGE * 100:.0f}%, "
                 f"basis={self.conformal_basis.get(horizon, 'unknown')}"

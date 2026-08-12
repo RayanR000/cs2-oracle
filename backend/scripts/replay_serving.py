@@ -384,6 +384,14 @@ def _coverage_row(frame: pd.DataFrame) -> dict:
     symmetrically by construction; a centre the serving path displaced after
     calibration misses with a sign, because `_recenter_on_direction` moves the
     mid without touching either half-width.
+
+    `halfw` is the width itself, and it is here because coverage alone cannot
+    read a `SIGMA_EXPONENT` arm: `q_hat` is in different units on either side of
+    that flag (~5.5x apart, see `models/conformal.py`), so the only quantities
+    two arms may be differenced on are coverage and width. It is taken against
+    the band's own midpoint rather than the served quote so that this function
+    keeps needing only `low`/`high`/`realised`; the midpoint is arm-invariant,
+    so the ratio across arms is the half-width ratio.
     """
     lo = frame["low"].to_numpy(dtype=float)
     hi = frame["high"].to_numpy(dtype=float)
@@ -393,26 +401,38 @@ def _coverage_row(frame: pd.DataFrame) -> dict:
     n = int(ok.sum())
     if n == 0:
         nan = float("nan")
-        return {"n": 0, "cov": nan, "below": nan, "above": nan}
+        return {"n": 0, "cov": nan, "below": nan, "above": nan, "halfw": nan}
+    centre = (hi[ok] + lo[ok]) / 2.0
+    with np.errstate(divide="ignore", invalid="ignore"):
+        rel_half = np.where(centre > 0, (hi[ok] - lo[ok]) / 2.0 / centre,
+                            np.nan)
     return {
         "n": n,
         "cov": float(((real[ok] >= lo[ok]) & (real[ok] <= hi[ok])).mean()),
         "below": float((real[ok] < lo[ok]).mean()),
         "above": float((real[ok] > hi[ok]).mean()),
+        # nanmedian of an all-NaN slice warns and returns NaN, which is the
+        # right answer here and must not take out the table.
+        "halfw": (float("nan") if not np.isfinite(rel_half).any()
+                  else float(np.nanmedian(rel_half))),
     }
 
 
 COVERAGE_HEADER = (f"{'h':>4} {'n':>7} {'cov%':>8} {'target%':>8} "
-                   f"{'miss<low':>9} {'miss>high':>10}")
+                   f"{'miss<low':>9} {'miss>high':>10} {'halfw%':>8}")
 
 
 def _coverage_line(h: int, row: dict) -> str:
     """One row of the coverage table. A function for the same reason
     `_dollar_line` is one: a %-formatted NaN raising would take out the run at
     the point where the table prints."""
+    # `.get`, not `row['halfw']`: this formats dicts that callers built before
+    # the column existed, and a KeyError here would take out the whole table.
+    halfw = row.get("halfw", float("nan"))
     return (f"{h:>4} {row['n']:>7} {100 * row['cov']:>8.2f} "
             f"{100 * conformal.NOMINAL_COVERAGE:>8.2f} "
-            f"{100 * row['below']:>9.2f} {100 * row['above']:>10.2f}")
+            f"{100 * row['below']:>9.2f} {100 * row['above']:>10.2f} "
+            f"{100 * halfw:>8.2f}")
 
 
 DOLLAR_HEADER = (f"{'h':>4} {'subset':>10} {'n':>7} {'model':>8} {'p90':>8} "

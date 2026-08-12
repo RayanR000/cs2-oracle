@@ -732,3 +732,41 @@ def test_the_coverage_line_survives_a_nan_cohort():
     assert "7" in line
     # And it lines up under its own header, or the table is unreadable in a log.
     assert len(line) == len(COVERAGE_HEADER)
+
+
+def test_band_coverage_reports_the_width_because_q_hat_is_not_comparable():
+    """The only quantity two SIGMA_EXPONENT arms may be differenced on besides
+    coverage. `q_hat` is ~5.5x apart in units across that flag, so a paired read
+    of it has nothing to compare unless the width is reported here.
+
+    Taken against the band's own midpoint: a half-width of 1.0 on a band centred
+    at 10.0 is 10%.
+    """
+    frame = pd.DataFrame({
+        "low":      [9.0, 18.0, 45.0],
+        "high":     [11.0, 22.0, 55.0],
+        "realised": [10.0, 20.0, 50.0],
+    })
+    row = _coverage_row(frame)
+    # Every band here is +/-10% of its centre, so the median is 10% whatever the
+    # price level -- which is the invariance that makes it arm-comparable.
+    assert row["halfw"] == pytest.approx(0.10)
+    assert len(_coverage_line(7, row)) == len(COVERAGE_HEADER)
+
+
+def test_the_width_survives_a_band_straddling_zero():
+    """A band whose midpoint is <= 0 has no relative width, and dividing by it
+    would report a negative or infinite one. It must drop out of the median
+    rather than poison it -- the coverage columns still count the row."""
+    frame = pd.DataFrame({
+        "low":      [-12.0, 9.0],
+        "high":     [10.0, 11.0],
+        "realised": [5.0, 10.0],
+    })
+    row = _coverage_row(frame)
+    assert row["n"] == 2
+    assert row["halfw"] == pytest.approx(0.10)
+
+    # And an all-degenerate cohort reports NaN rather than warning its way to it.
+    only = pd.DataFrame({"low": [-12.0], "high": [10.0], "realised": [5.0]})
+    assert np.isnan(_coverage_row(only)["halfw"])
