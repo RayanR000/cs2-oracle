@@ -70,6 +70,21 @@ DIRECTION_LABEL_VOL_COL = "label_vol_30d"
 # readers. See `docs/changelog/2026-08-11-the-gap-is-the-anchor-denominator.md`.
 ANCHOR_TIED_COL = "anchor_is_tied"
 
+
+def calibration_target_col(horizon: int) -> str:
+    """The per-horizon return column `q_hat` is calibrated on.
+
+    Distinct from `target_return_{h}d`, which is what the boosters are TRAINED
+    on. The two differ in their denominator: the training label divides by the
+    raw anchor quote `p[d]`, this one by the served smoothed anchor `S[d]`,
+    which is the basis `predict` quotes from and the backtest scores in. A
+    function rather than an f-string at each site because a conformal set built
+    from the wrong column is silent -- it produces a plausible q_hat that is
+    simply the wrong width.
+    """
+    return f"target_return_{horizon}d_cal"
+
+
 # Cached result of GPU availability check (avoids repeated subprocess probes)
 _GPU_AVAILABLE_CACHE: Optional[bool] = None
 
@@ -3992,6 +4007,34 @@ class ItemForecaster:
         df[f"target_return_{horizon}d"] = (
             (df[f"target_{horizon}d"] - base) / base * 100
         )
+
+        # The CALIBRATION basis, always the served one, regardless of the arm
+        # above. `q_hat` is fitted on residuals to this column and the training
+        # label keeps its own denominator.
+        #
+        # Why they must differ: `predict` quotes every item from
+        # `_smoothed_anchor_prices`' span-bounded median, and the backtest
+        # resolves `base_price` with the same statistic (`resolve_anchors`,
+        # median of the last SMOOTH_WINDOW observations), so the residual
+        # production is scored on is `P[d+h]/S[d] - 1 - r_hat`. The label
+        # divides by the RAW quote `p[d]`, so a residual measured against it is
+        # `P[d+h]/p[d] - 1 - r_hat` -- inflated by the anchor deviation
+        # `p[d]/S[d]` on every row where the two disagree, which is most of
+        # them. q_hat fitted there is too wide for the basis it is served in,
+        # and the band over-covers.
+        #
+        # This is the DENOMINATOR half of the same incoherence
+        # `2026-08-11-conformal-centre-follows-serving.md` fixed for the CENTRE.
+        # It is deliberately NOT the `LABEL_SMOOTHED_ANCHOR` arm: that one moves
+        # the training label, which hands the model `p[d]/S[d]` as a factor it
+        # can read at the anchor, and it was measured and rejected
+        # (`2026-08-11-smoothed-anchor-label-measured.md`). q_hat is post-hoc --
+        # it changes a band width and nothing the model learns.
+        cal_base = (base if self.label_smoothed_anchor_enabled()
+                    else self._rolling_anchor_prices(df).replace(0, np.nan))
+        df[calibration_target_col(horizon)] = (
+            (df[f"target_{horizon}d"] - cal_base) / cal_base * 100
+        )
         # Winsorize extreme returns at ±500% to prevent API corruption artifacts
         # from polluting gradient estimates. The audit found 11,044 jumps >1000%,
         # 84% of which revert the next day (definitive corruption).
@@ -4003,6 +4046,12 @@ class ItemForecaster:
                 f"(±500% clip)"
             )
             df[f"target_return_{horizon}d"] = winsorized
+        # Same clip on the calibration column, unconditionally: a ±500% outlier
+        # that survives into the conformal set moves q_hat directly, and the
+        # count above is the label's, not this column's.
+        df[calibration_target_col(horizon)] = (
+            df[calibration_target_col(horizon)].clip(-500.0, 500.0)
+        )
 
         # Void labels the collector fabricated. Winsorization above cannot catch
         # these: a -31.6% source-cutover return and a 0% re-published return are
@@ -4086,6 +4135,12 @@ class ItemForecaster:
         if n_bad:
             df.loc[bad, f"target_return_{horizon}d"] = np.nan
             df.loc[bad, f"target_{horizon}d"] = np.nan
+            # Voided on exactly the same rows. A void means the RETURN is
+            # fabricated -- a snapshot day, a collector cutover, a frozen run --
+            # and that is a property of the price series, not of which anchor
+            # the denominator used. Leaving them in the conformal set would fit
+            # q_hat on the artifacts the label rules exist to remove.
+            df.loc[bad, calibration_target_col(horizon)] = np.nan
             frozen_note = (
                 "frozen-run rule DISABLED"
                 if LABEL_MAX_STALE_RUN_DAYS is None
@@ -5282,7 +5337,8 @@ class ItemForecaster:
                 f"  Conformal calibration [{calibration_source}]: "
                 f"q_hat={q_hat:.4f} (dimensionless x sigma), "
                 f"n={len(records_df)}, alpha={conformal.ALPHA}, "
-                f"target coverage={conformal.NOMINAL_COVERAGE * 100:.0f}%"
+                f"target coverage={conformal.NOMINAL_COVERAGE * 100:.0f}%, "
+                f"basis={self.conformal_basis.get(horizon, 'unknown')}"
             )
             if out_of_sample:
                 logger.info(_cal_msg)
@@ -6091,6 +6147,14 @@ class ItemForecaster:
         # CV_DIAGNOSTIC_CLASSIFIER=0 does not produce, so "q50" is a reachable
         # state and a reader of the artifact has to be able to see it.
         self.conformal_centre: Dict[int, str] = {}
+        # Which DENOMINATOR each horizon's q_hat was fitted on: "served" (the
+        # smoothed anchor `predict` quotes from and the backtest scores in) or
+        # "raw_anchor" (the training label's own denominator, which over-covers).
+        # Provenance for the same reason `conformal_centre` is: the fallback is
+        # reachable whenever the conformal frame predates
+        # `calibration_target_col`, and a reader of the artifact must be able to
+        # tell which width they are looking at.
+        self.conformal_basis: Dict[int, str] = {}
 
     def _check_artifact_version(self, meta: dict) -> None:
         """Fail closed on any artifact not written by this exact scheme.
@@ -6129,9 +6193,33 @@ class ItemForecaster:
             f"a different way. Retrain (mode=full) rather than loading it."
         )
 
+    def _calibration_returns(self, frame, horizon: int, fallback):
+        """The served-basis realised return for *frame*, for calibration only.
+
+        Falls back to the training label when the column is absent, which is
+        what a frame built by a caller that predates `calibration_target_col`
+        looks like. That is a real degradation -- q_hat goes back to being
+        fitted in the raw-anchor basis and the band over-covers -- so it WARNS
+        rather than substituting quietly.
+        """
+        col = calibration_target_col(horizon)
+        if frame is not None and col in getattr(frame, "columns", ()):
+            self.conformal_basis[horizon] = "served"
+            return frame[col].to_numpy(dtype=float)
+        self.conformal_basis[horizon] = "raw_anchor"
+        logger.warning(
+            f"  {horizon}d conformal set has no {col!r}: q_hat will be fitted "
+            f"on the TRAINING label, whose denominator is the raw anchor quote "
+            f"and not the smoothed anchor predict() quotes from. Expect the "
+            f"served band to OVER-cover. Rebuild the frame through "
+            f"prepare_targets()."
+        )
+        return np.asarray(fallback, dtype=float)
+
     def _conformal_records(self, mid_ret, actual_ret, sigma,
                            current_price,
-                           direction_class=None) -> List[Dict[str, float]]:
+                           direction_class=None,
+                           residual_actual_ret=None) -> List[Dict[str, float]]:
         """Per-row calibration records, shared by the CV and holdout paths.
 
         `residual_pct` / `sigma` are what q_hat is fitted on, `mid_ret` is what
@@ -6158,16 +6246,26 @@ class ItemForecaster:
         no recentring. Putting them on the served centre would fit thresholds for
         a signal that path never publishes.
 
+        `residual_actual_ret` is the realised return on the SERVED basis, and
+        it is what `residual_pct` is measured from. `actual_ret` stays the
+        training label and keeps feeding `hit` and `change_pct`, which are
+        `_calibrate_confidence`'s inputs -- moving those too would change a
+        second thing under cover of this one. When it is None the residual falls
+        back to `actual_ret`, which is the pre-2026-08-12 behaviour and
+        over-covers; see `calibration_target_col`.
+
         Rows whose mid or current price is zero are dropped: range_pct and
         change_pct are undefined there.
         """
         mid = np.asarray(mid_ret, dtype=float)
         actual = np.asarray(actual_ret, dtype=float)
+        resid_actual = (actual if residual_actual_ret is None
+                        else np.asarray(residual_actual_ret, dtype=float))
         sig = np.asarray(sigma, dtype=float)
         curr = np.asarray(current_price, dtype=float)
 
         mid_price = curr * (1.0 + mid / 100.0)
-        keep = (mid_price != 0) & (curr != 0)
+        keep = (mid_price != 0) & (curr != 0) & np.isfinite(resid_actual)
 
         tol = DIRECTION_FLAT_TOLERANCE_PCT
         hit = (self._direction_classes(actual, tol)
@@ -6189,7 +6287,7 @@ class ItemForecaster:
         for i in np.flatnonzero(keep):
             rec = {
                 "mid_ret": float(mid[i]),
-                "residual_pct": float(actual[i] - centre[i]),
+                "residual_pct": float(resid_actual[i] - centre[i]),
                 "sigma": float(sig[i]),
                 "change_pct": float(change_pct[i]),
                 "hit": float(hit[i]),
@@ -6242,6 +6340,8 @@ class ItemForecaster:
             p50, y_val.values, self._sigma_for_rows(val_set),
             val_set["price"].values,
             direction_class=holdout_cls,
+            residual_actual_ret=self._calibration_returns(
+                val_set, horizon, y_val.values),
         )
         if len(records) < self.MIN_CALIBRATION_ROWS:
             raise RuntimeError(
@@ -7313,6 +7413,11 @@ class ItemForecaster:
 
             current_prices = val_df["price"].values
             actual_returns = y_val.values
+            # The realised return on the SERVED basis, for q_hat only. Every
+            # other number in this fold -- directional accuracy, rank IC, the PT
+            # records -- stays on `actual_returns`, the training label, so this
+            # cannot move a metric. See `calibration_target_col`.
+            cal_returns = self._calibration_returns(val_df, horizon, y_val)
 
             # Locally-weighted split conformal: the nonconformity score is the
             # absolute median residual normalized by the item's sigma. There is
@@ -7507,7 +7612,7 @@ class ItemForecaster:
             # predict() does not serve. `_calibrate_conformal` warns.
             oof_records.extend(self._conformal_records(
                 fold_p50, actual_returns, fold_sigma, current_prices,
-                direction_class=pred_cls))
+                direction_class=pred_cls, residual_actual_ret=cal_returns))
 
         if not fold_metrics:
             raise RuntimeError(
@@ -8038,6 +8143,13 @@ class ItemForecaster:
             # classifier exists). A coverage figure read without this is
             # uninterpretable, and a predict-only run has no other route to it.
             "conformal_centre": {str(h): c for h, c in self.conformal_centre.items()},
+            # Which DENOMINATOR each q_hat was fitted on — "served" (the
+            # smoothed anchor predict() quotes from, which is also what the
+            # backtest scores in) or "raw_anchor" (the training label's, which
+            # over-covers). Same argument as conformal_centre: two artifacts
+            # with different values here carry bands of different widths for
+            # the same model, and nothing else in the file says so.
+            "conformal_basis": {str(h): b for h, b in self.conformal_basis.items()},
             "feature_medians": medians_serial,
             "n_ensembles": self.N_ENSEMBLES,
             "ensemble_seeds": self.ENSEMBLE_SEEDS,
@@ -8144,6 +8256,12 @@ class ItemForecaster:
         # say which mid its q_hat covers" — which is itself the honest answer.
         self.conformal_centre = {
             int(h): str(c) for h, c in meta.get("conformal_centre", {}).items()
+        }
+        # Same contract, same reason: absent on every artifact written before
+        # 2026-08-12, and an artifact that does not say is not the same as one
+        # that says "raw_anchor".
+        self.conformal_basis = {
+            int(h): str(b) for h, b in meta.get("conformal_basis", {}).items()
         }
 
         n_ensembles = meta.get("n_ensembles", 1)
