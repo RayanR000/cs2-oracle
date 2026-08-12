@@ -148,7 +148,21 @@ paths:
   which has now gone wrong twice in one day in opposite directions. The horizon story inverts too:
   OOF says 3d/7d work, serving says 3d/7d/14d overcorrect and 30d is right. Next instrument fits β
   on **resolved served outcomes** (a forecast-date panel, not a CV fold).
-  `docs/changelog/2026-08-12-served-sigma-profile.md`. `q_hat` and every `fold_q_hat` are byte-identical to `31611508808`, so the
+  `docs/changelog/2026-08-12-served-sigma-profile.md`.
+  ⚠️ **A LEARNED scale exists as `LEARNED_SCALE=1` (off) and it does not fix this either.**
+  `models/scale_model.py`: one small booster per fold on `log|residual|` from the item's features,
+  cross-fitted so `q_hat` stays honest, **26.6s / 2.6% of training**. It and `SIGMA_EXPONENT` are
+  **mutually exclusive and raise if both are set**. CQR was costed off run `31643819235` and
+  **does not fit the 30-minute cap** — the OOF conformal CV is **646.8s of 1017.8s (63.5%)** and
+  needs p10/p90 out of fold, i.e. **40.9–46.3 min** of training. Measured
+  (`31649561391`/`31649571169`): beats the exponent at 7d/14d, loses at 30d, bands 0.78–0.88×.
+  ⚠️ **Its 14d ramp of +0.65 is CANCELLATION, not flatness** (−4.09/−15.74/−8.95/**+31.39** per
+  anchor); `2026-07-09` reverses it at 4/4 horizons and on ordinary anchors it overcorrects harder
+  than the exponent at 3d/7d. 🔑 **Three scales, three different calibration→serving displacements,
+  all calibrated to exactly 80% on their own records** — `sigma` over-covers (77.9/85.0/84.8/87.2),
+  `σ**β` under-covers (69.7/76.7/76.9/84.9), learned under-covers (72.1/78.7/76.6/85.7). **The width
+  variable is not the lever. Do not propose a fourth one.**
+  `docs/changelog/2026-08-12-learned-band-scale-measured.md`. `q_hat` and every `fold_q_hat` are byte-identical to `31611508808`, so the
   audit moved no calibration. ⚠️ **The exponent does NOT explain the marginal over-coverage**
   (87.2/91.8/90.6/89.0% vs 80%): level-matching removes exactly that before the tilt is measured,
   and on the calibration set marginal coverage is 80% by construction. Six causes examined, the

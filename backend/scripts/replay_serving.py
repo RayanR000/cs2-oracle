@@ -450,13 +450,22 @@ def _coverage_by_sigma_rows(frame: pd.DataFrame,
     read could say the arm costs 8pp of marginal coverage without being able to
     say whether it flattened the profile it was built to flatten.
 
-    **The stratifier is the served half-width, and that is not a compromise.**
-    `conformal.band` sets the half-width to `q_hat * sigma ** beta`, strictly
-    increasing in `sigma` for any `beta > 0`, so its quantiles ARE `sigma`
-    quantiles and the item ordering is identical under both arms of the flag —
-    which is what makes the two tables comparable stratum by stratum. Deriving
-    `sigma` from the archive instead would risk computing a different `sigma`
-    than the band was built from; this cannot.
+    **The stratifier is the served half-width.** `conformal.band` sets it to
+    `q_hat * sigma ** beta`, strictly increasing in `sigma` for any `beta > 0`,
+    so under `SIGMA_EXPONENT` its quantiles ARE `sigma` quantiles and the item
+    ordering is identical in both arms — which is what makes those two tables
+    comparable stratum by stratum. Deriving `sigma` from the archive instead
+    would risk computing a different `sigma` than the band was built from; this
+    cannot.
+
+    ⚠️ **That identical-ordering claim does NOT extend to `LEARNED_SCALE`**, and
+    an earlier version of this docstring said it did. A learned scale is a
+    different variable, not a transform of `sigma`, so it reorders items freely:
+    its stratum 3 and a control's stratum 3 are different cohorts. The table
+    still answers the question that matters — *is coverage flat across the
+    widths this arm actually serves*, which is the calibration property itself —
+    but a stratum-by-stratum diff against a `sigma` control is not a like-for-like
+    read, and the `ramp` is the only summary that survives the reordering.
 
     Two caveats a reader has to have. The relative width carries a `1/(1 + mid)`
     factor, so the ordering is `sigma`'s only up to the served mid, which is
