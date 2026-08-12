@@ -7,29 +7,40 @@ pre-registered check** — so the arm ships **off** as `CONFORMAL_SERVED_BASIS=1
 
 Built `ef455ab`, gated off `4b0bcb1`.
 
-> ## ❌ The prediction was recorded before the read, and the read went the other way.
-> The pre-registration below said `q_hat` would **shrink** at every horizon. On
-> `model-diagnostics.yml` run `31563209228` (arm on, 4/4 horizons green, `basis=served`
-> reported at all four) it came out **103.70 / 148.80 / 205.80 / 316.96** against the
-> 2026-08-09 artifact's **95.25 / 137.68 / 205.996 / 309.49** — **larger at three horizons**
-> and flat at the fourth, where the over-coverage needs it smaller.
+> ## ❌ REFUTED as a remedy, on a clean paired read. The arm makes the band WIDER.
+> The pre-registration below said `q_hat` would **shrink** at every horizon. It does the
+> opposite, at all four. Arm `31564924194` against control `31564943172`, same commit
+> `97146b7`, same fold counts, **identical `n` per horizon**:
 >
-> **That comparison is confounded and refutes nothing on its own**: 8 CV folds against 9 at
-> three horizons, a different commit, and three more days of archive. It also confirms
-> nothing, which is why the arm is off. The paired read this needs — one arm, one control,
-> same commit — has not been run.
+> | h | control (`basis=raw_anchor`) | arm (`basis=served`) | Δ | n |
+> |---|---|---|---|---|
+> | 3 | 94.7172 | 103.7049 | **+9.49%** | 175,739 |
+> | 7 | 141.7735 | 148.7987 | **+4.96%** | 157,805 |
+> | 14 | 204.3413 | 205.8030 | **+0.72%** | 157,338 |
+> | 30 | 312.0487 | 316.9594 | **+1.57%** | 155,617 |
 >
-> **The likely mechanism for the sign is a real objection, not a confound.** The booster is
-> *trained* on the raw-basis label, so its prediction carries a `p[d]/S[d]` component it
-> learned to fit — the same free factor `2026-08-11-smoothed-anchor-label-measured.md` found
-> in the label. Measured against a smoothed-basis outcome that component is **added** error
-> rather than cancelled error, so the residual can widen even though the smoothed label is
-> the less dispersed of the two. If that is what is happening, moving the calibration
-> denominator alone is not the coherent fix; the prediction and the residual have to move
-> together, which is a larger change than this flag.
+> The over-coverage needs `q_hat` **25–39% smaller**. This moves it 0.7–9.5% larger. The
+> earlier confounded read (`31563209228`) was directionally right and the 8-vs-9-fold
+> confound was not what produced it.
 >
-> Everything below about the **measurement** and the **cause of the over-coverage** stands.
-> What does not stand is that this change fixes it.
+> **And the mechanism is now evidence, not a hypothesis.** With `r̂ ≈ 0` the raw-basis
+> residual would be the *more* dispersed of the two — `R/k − 1` against `R − 1`, with
+> `k = p[d]/S[d]` scattered about 1 — so the arm should have shrunk `q_hat`. It widened it.
+> The only way the raw-basis residual comes out **smaller** is if `r̂` already contains the
+> `k` term and cancels part of it: the booster is trained on the raw-basis label, and
+> `return_1d` is built from the same raw quote, so it can read the anchor deviation and does.
+> Against a smoothed-basis outcome that component becomes **added** error instead of
+> cancelled error.
+>
+> This is the same free-factor structure `2026-08-11-smoothed-anchor-label-measured.md`
+> refuted in the label, now measured in the conformal residual — and it is the first
+> *direct* evidence that the served model is fitting `p[d]/S[d]` rather than the market.
+>
+> **What this closes:** the calibration basis is **not** the cause of the over-coverage.
+> Fixing the incoherence is correct on its own terms and makes the symptom worse, so the arm
+> stays off. Everything below about the measurement, the cause being a real defect, and the
+> rejection of the quiet-dates alternative stands; **"this change fixes it" does not**, and
+> neither does the causal story in the section named for it.
 
 ## The number
 
@@ -168,18 +179,27 @@ calibration line reports `basis=served`.
 not shrink — see the banner. The arm is now gated off and the entry is filed as a diagnosis plus
 an instrument, not as a fix.
 
-**What would settle it**, in order:
+**Settled by the paired dispatch** (`conformal_served_basis` input added to
+`model-diagnostics.yml` in `97146b7`): the arm widens `q_hat` at 4/4 horizons. The basis is not
+the cause. See the banner.
 
-1. **A paired dispatch** — `model-diagnostics.yml` with `CONFORMAL_SERVED_BASIS=1` against a
-   control on the same commit, same fold geometry. That removes the 8-vs-9-fold confound and
-   says whether the arm moves `q_hat` up or down at all. ~15 min each. The workflow has no input
-   for this flag yet; it needs one, alongside `tier_lead` and `cross_sectional_rank`.
-2. **If the arm really does widen `q_hat`**, test the mechanism above directly: measure the
-   correlation between the booster's prediction and `p[d]/S[d]` on the OOF rows. A prediction
-   that tracks the anchor deviation is the whole story, and it would mean the band cannot be
-   fixed without addressing what the model is fitting.
-3. **Neither of those touches conditional coverage**, which is the larger half and is
-   calendar-blocked regardless.
+**What is still open, and the order it should be taken in.**
+
+1. **What actually makes the served band 25–39% too wide.** Three candidates are now excluded:
+   the calibration centre (F1, ≤1.1pp), quiet forecast dates (median `rel_cal` ≈ 1.0), and the
+   calibration denominator (this entry, wrong sign). The strongest untested one is **`sigma`
+   itself**: `q_hat` multiplies it, so a serving-time `sigma` systematically larger than the
+   CV-time `sigma` for the same items widens the band by exactly that ratio and nothing in the
+   calibration would notice. `sigma = price_std_60d / price`, and `price` is the **raw** quote in
+   the CV frame and the **smoothed anchor** at serving — the same axis as this entry, one level
+   down. Cheap to check: the served median half-width is 8.64% at h=3 against `q_hat = 94.72`,
+   implying a served median `sigma` of 0.0912; compare with the CV frame's.
+2. **The prediction is fitting `p[d]/S[d]`.** The banner's read is indirect evidence. Direct
+   version: correlate `fold_p50` with `p[d]/S[d]` on the OOF rows. If it is large, it reaches
+   well past the band — it is the same defect the label arm was refuted for, sitting in the
+   served mid.
+3. **Conditional coverage** (58.2–99.2% per date) is the larger half and is calendar-blocked
+   regardless of 1 and 2.
 
 **Nothing about the served band has changed.** The daily path is on the default, which is the
 pre-2026-08-12 behaviour, and no retrain has promoted an artifact from this work.

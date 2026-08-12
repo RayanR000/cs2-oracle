@@ -1025,25 +1025,28 @@ class ItemForecaster:
         `LABEL_SMOOTHED_ANCHOR` this cannot hand the model a factor -- `q_hat`
         is post-hoc and changes only a band width.
 
-        **Off by default because the coherence argument is not the measurement,
-        and the one measurement available points the other way.** On run
-        `31563209228` (2026-08-12, arm on) `q_hat` came out **103.70 / 148.80 /
-        205.80 / 316.96** against the 2026-08-09 artifact's 95.25 / 137.68 /
-        205.996 / 309.49 -- larger at three horizons, where the over-coverage
-        needs it smaller. That comparison is confounded (8 folds against 9, a
-        different commit, three more days of archive), so it refutes nothing;
-        it also confirms nothing, and an unverified arm does not belong on the
-        daily path.
+        **Off by default because it is REFUTED as a remedy.** Paired on one
+        commit -- arm `31564924194` against control `31564943172`, same fold
+        counts, identical n per horizon -- it moves q_hat the WRONG way at all
+        four horizons: 94.72 -> 103.70, 141.77 -> 148.80, 204.34 -> 205.80,
+        312.05 -> 316.96 (+9.5 / +5.0 / +0.7 / +1.6%). The over-coverage needs
+        q_hat 25-39% SMALLER.
 
-        The likely mechanism for the sign, and it is a real objection rather
-        than a confound: the booster is TRAINED on the raw-basis label, so its
-        prediction carries a `p[d]/S[d]` component it learned to fit. Measured
-        against a smoothed-basis outcome that component is added error, not
-        cancelled error, so the residual can widen even though the smoothed
-        label is the less dispersed of the two. If that is what is happening,
-        the coherent fix is bigger than this flag.
+        **The sign is itself the finding.** With r_hat ~ 0 the raw-basis
+        residual would be the more dispersed of the two (`R/k - 1` against
+        `R - 1`, with k = p[d]/S[d] scattered about 1), so this arm should have
+        shrunk q_hat. It widened it. The only way the raw-basis residual comes
+        out smaller is if r_hat already contains the k term and cancels part of
+        it -- the booster is trained on the raw-basis label and `return_1d` is
+        built from the same raw quote, so it can read the anchor deviation and
+        evidently does. Against a smoothed-basis outcome that component becomes
+        added error instead of cancelled error.
 
-        Read it as a paired dispatch: one arm on, one control off, same commit.
+        So: the calibration basis is NOT the cause of the over-coverage, fixing
+        the incoherence makes the symptom worse, and the coherent fix has to
+        move the prediction and the residual together. Kept as an instrument
+        because the incoherence is real and the flag is how it is measured.
+
         Set CONFORMAL_SERVED_BASIS=1. See
         `docs/changelog/2026-08-12-conformal-basis-follows-serving.md`.
         """

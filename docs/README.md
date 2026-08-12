@@ -231,8 +231,10 @@ The newest:
   on the raw-anchor training label while the band is served and scored on the smoothed anchor.
   The quiet-dates alternative was measured against the calibration window's own dispersion and
   **rejected** (median `rel_cal` 1.01 / 0.96 / 1.07 / 0.97). But the pre-registered check
-  **failed** — the arm moved `q_hat` *up* at three horizons — so it ships off as
-  `CONFORMAL_SERVED_BASIS=1` pending a paired read. Conditional coverage (**58.2–99.2%** per
+  **failed and the paired read refuted it**: arm against control on one commit, `q_hat` moves
+  *up* at 4/4 horizons where over-coverage needs it 25–39% smaller. Ships off as
+  `CONFORMAL_SERVED_BASIS=1`. The wrong sign is itself the finding — it can only happen if the
+  booster's own prediction carries `p[d]/S[d]`. Conditional coverage (**58.2–99.2%** per
   date) is untouched and ACI cannot be validated on 1–7 forecast dates.
 - `2026-08-12-served-confidence-withdrawn.md` — F2. The `confidence` tag leaves `PredictionOut`
   and `TrendAnalysisOut`. Within-date, on the 11 cells with `n_high >= 30`, the `high` cohort is

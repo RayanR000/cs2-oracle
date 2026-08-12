@@ -58,9 +58,12 @@ paths:
   **over-covered at 87.2 / 91.8 / 90.6 / 89.0%** against an 80% target (19,917 prod outcomes;
   the half-width has to shrink to 0.72 / 0.61 / 0.73 / 0.77). `prepare_targets` now emits
   `calibration_target_col(h)` and `_conformal_records` can measure the residual from it, but the
-  arm is **off by default** as `CONFORMAL_SERVED_BASIS=1`: on run `31563209228` it moved `q_hat`
-  to 103.70 / 148.80 / 205.80 / 316.96, i.e. **up** at three horizons, against a confounded
-  baseline. Read `conformal_basis` in `meta.json` and `basis=` on the calibration line — never
+  arm is **off by default** as `CONFORMAL_SERVED_BASIS=1` because it is **REFUTED as a remedy**:
+  paired on one commit (arm `31564924194` vs control `31564943172`, same folds, identical `n`) it
+  moves `q_hat` **UP at 4/4** — 94.72→103.70 / 141.77→148.80 / 204.34→205.80 / 312.05→316.96 —
+  where the over-coverage needs it 25–39% smaller. The sign is itself a finding: the raw-basis
+  residual can only be the smaller one if `r̂` already contains `p[d]/S[d]` and cancels part of
+  it, i.e. **the booster is fitting the anchor deviation**. Read `conformal_basis` in `meta.json` and `basis=` on the calibration line — never
   infer it from the environment. **Not** the
   `LABEL_SMOOTHED_ANCHOR` arm — the label is untouched. It was tested against the quiet-dates
   alternative and that was rejected: median `rel_cal` on the calibration window's own dates is

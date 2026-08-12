@@ -52,9 +52,10 @@ paths:
   `residual_pct` from it while `actual_ret` still feeds `hit` / `change_pct`. The label is
   **untouched**, so none of the refutation above applies — `q_hat` is post-hoc and cannot hand
   the model a factor. Fitting it on the label had inflated it by `p[d]/S[d]` and the served
-  band over-covers at **87.2 / 91.8 / 90.6 / 89.0%** against 80%. But the arm's own read moved
-  `q_hat` **up** at three horizons, so `CONFORMAL_SERVED_BASIS` defaults off and the entry is a
-  diagnosis, not a fix. `meta.json` carries `conformal_basis`; the fallback WARNs. Conditional coverage (58.2–99.2% per date) is
+  band over-covers at **87.2 / 91.8 / 90.6 / 89.0%** against 80%. ❌ **REFUTED as a remedy on a
+  clean paired read**: the arm moves `q_hat` UP at 4/4 horizons (+9.5 / +5.0 / +0.7 / +1.6%,
+  runs `31564924194` vs `31564943172`), so `CONFORMAL_SERVED_BASIS` defaults off. The wrong sign
+  is evidence that `r̂` itself carries `p[d]/S[d]` — the same free factor, now in the prediction. `meta.json` carries `conformal_basis`; the fallback WARNs. Conditional coverage (58.2–99.2% per date) is
   **not** fixed. `docs/changelog/2026-08-12-conformal-basis-follows-serving.md`.
 - **The wedge `p[d]/S[d]` is also attackable in the SERVING basis, and that arm is
   `SERVE_OUTLIER_GATED_ANCHOR=1`.** `predict` detects items whose latest quote deviates >10%

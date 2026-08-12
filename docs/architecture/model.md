@@ -91,9 +91,10 @@ is what guarantees the served triple is ordered and positive.
 `S[d]`, because that is what `predict` quotes from and what `resolve_anchors` scores against;
 the label divides by the raw quote `p[d]`. Fitting `q_hat` on the label inflated it by the
 anchor deviation `p[d]/S[d]` and the served band **over-covers at 87.2 / 91.8 / 90.6 / 89.0%**
-against an 80% target. ❌ **The arm is OFF by default (`CONFORMAL_SERVED_BASIS=1`) because its
-own read moved `q_hat` UP at three horizons**, against a confounded baseline — diagnosis, not
-fix. `meta.json` carries `conformal_basis` per horizon and the calibration line logs it. This is the denominator half of what
+against an 80% target. ❌ **The arm is OFF by default (`CONFORMAL_SERVED_BASIS=1`) and REFUTED as a
+remedy**: paired on one commit it moves `q_hat` UP at 4/4 horizons (+9.5 / +5.0 / +0.7 / +1.6%),
+where the over-coverage needs it 25–39% smaller. The basis is not the cause; the wrong sign is
+evidence the booster is fitting `p[d]/S[d]`. `meta.json` carries `conformal_basis` per horizon and the calibration line logs it. This is the denominator half of what
 `conformal_centre` fixed for the centre, and it is **not** the `LABEL_SMOOTHED_ANCHOR` arm —
 `q_hat` is post-hoc, so it changes a band width and nothing the model learns.
 ⚠️ **It does not fix conditional coverage.** Per (horizon, date) the served band runs
