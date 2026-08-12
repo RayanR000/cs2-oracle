@@ -435,6 +435,101 @@ def _coverage_line(h: int, row: dict) -> str:
             f"{100 * halfw:>8.2f}")
 
 
+SIGMA_STRATA = 5
+
+
+def _coverage_by_sigma_rows(frame: pd.DataFrame,
+                            n_strata: int = SIGMA_STRATA) -> list[dict]:
+    """Served coverage within strata of `sigma` — the property `SIGMA_EXPONENT`
+    targets, on the path that actually serves it.
+
+    Everything on record about the tilt is measured on the OOF calibration
+    records: coverage by `sigma` decile ramps 62->93 / 60->95 / 57->96 / 52->97%
+    there (`2026-08-12-sigma-tilt-confirmed-on-oof-residuals.md`). Nothing had
+    ever checked it where the band is served, which is why the 2026-08-12 paired
+    read could say the arm costs 8pp of marginal coverage without being able to
+    say whether it flattened the profile it was built to flatten.
+
+    **The stratifier is the served half-width, and that is not a compromise.**
+    `conformal.band` sets the half-width to `q_hat * sigma ** beta`, strictly
+    increasing in `sigma` for any `beta > 0`, so its quantiles ARE `sigma`
+    quantiles and the item ordering is identical under both arms of the flag —
+    which is what makes the two tables comparable stratum by stratum. Deriving
+    `sigma` from the archive instead would risk computing a different `sigma`
+    than the band was built from; this cannot.
+
+    Two caveats a reader has to have. The relative width carries a `1/(1 + mid)`
+    factor, so the ordering is `sigma`'s only up to the served mid, which is
+    median |return| ~0.95% and cannot reorder materially. And a 30d band whose
+    lower leg was clipped at zero is no longer `q_hat * sigma ** beta` wide —
+    242 of ~990 were, on 2026-08-11 — so those rows sit in the wrong stratum;
+    the count is reported as `n` per stratum rather than assumed uniform.
+
+    `n_strata` is 5 rather than the audit's 10 because one anchor serves ~1,000
+    rows: quintiles put ~200 in each, where deciles put ~100 and the per-stratum
+    standard error (~4pp) would swallow the ramp being measured.
+    """
+    lo = frame["low"].to_numpy(dtype=float)
+    hi = frame["high"].to_numpy(dtype=float)
+    real = frame["realised"].to_numpy(dtype=float)
+    centre = (hi + lo) / 2.0
+    with np.errstate(divide="ignore", invalid="ignore"):
+        rel_half = np.where(centre > 0, (hi - lo) / 2.0 / centre, np.nan)
+    ok = (np.isfinite(lo) & np.isfinite(hi) & np.isfinite(real) & (real > 0)
+          & np.isfinite(rel_half))
+    if ok.sum() < n_strata:
+        return []
+
+    w = rel_half[ok]
+    covered = (real[ok] >= lo[ok]) & (real[ok] <= hi[ok])
+    # Rank rather than value: `qcut` on a width with ties (a floor or a cap
+    # binding) raises on duplicate edges, and the rank has none by construction.
+    order = np.argsort(np.argsort(w, kind="stable"), kind="stable")
+    edges = (order * n_strata) // len(w)
+
+    rows = []
+    for s in range(n_strata):
+        m = edges == s
+        if not m.any():
+            continue
+        rows.append({"stratum": s + 1, "n": int(m.sum()),
+                     "cov": float(covered[m].mean()),
+                     "halfw": float(np.median(w[m]))})
+    return rows
+
+
+def sigma_tilt_pp(rows: list[dict]) -> float:
+    """Mean |coverage − nominal| across the strata, in points.
+
+    The same statistic `conformal.coverage_by_sigma_stratum` returns, so a served
+    number and an OOF one can be read side by side. ⚠️ It is NOT level-matched —
+    the OOF version forces each arm to nominal marginal coverage first, precisely
+    because this statistic falls whenever marginal coverage improves. Here the
+    marginal level is the thing under test and cannot be matched away, so read
+    this beside `BAND COVERAGE`'s `cov%` and never alone. See the "do not compare
+    coverage schemes without matching the marginal level" entry in
+    `2026-08-10-next-steps.md`.
+    """
+    if not rows:
+        return float("nan")
+    return float(np.mean([abs(100 * r["cov"] - 100 * conformal.NOMINAL_COVERAGE)
+                          for r in rows]))
+
+
+SIGMA_HEADER = (f"{'h':>4} {'stratum':>8} {'n':>7} {'cov%':>8} {'halfw%':>8}")
+
+
+def _sigma_line(h: int, row: dict, n_strata: int = SIGMA_STRATA) -> str:
+    """One stratum. Same NaN-safety reason as `_coverage_line`.
+
+    The label is built before the f-string, not nested inside it: CI runs 3.11,
+    where a same-quote nesting is a syntax error rather than the 3.12 behaviour.
+    """
+    label = f"{row['stratum']}/{n_strata}"
+    return (f"{h:>4} {label:>8} {row['n']:>7} "
+            f"{100 * row['cov']:>8.2f} {100 * row['halfw']:>8.2f}")
+
+
 DOLLAR_HEADER = (f"{'h':>4} {'subset':>10} {'n':>7} {'model':>8} {'p90':>8} "
                  f"{'quote':>8} {'naive':>8} {'nNaive':>7}")
 
@@ -616,6 +711,7 @@ def main() -> int:
 
         dollar_rows: list[tuple[int, dict]] = []
         coverage_rows: list[tuple[int, dict]] = []
+        sigma_rows: list[tuple[int, list[dict]]] = []
         for h in horizons:
             frame = _served_rows(served, h)
             if frame.empty:
@@ -657,6 +753,10 @@ def main() -> int:
             dollar_rows += [(h, r) for r in
                             _dollar_error_rows(frame, pinned, tied)]
             coverage_rows.append((h, _coverage_row(frame)))
+            # Same frame, so the marginal and conditional tables describe the
+            # same rows -- two coverage figures over different cohorts would not
+            # be decomposable into each other.
+            sigma_rows.append((h, _coverage_by_sigma_rows(frame)))
 
         # The gate of the freshness experiment, and the only table here that two
         # arms can be compared on: rank IC above divides by the served quote,
@@ -684,6 +784,25 @@ def main() -> int:
         print(COVERAGE_HEADER)
         for h, r in coverage_rows:
             print(_coverage_line(h, r))
+
+        # The conditional half. `cov%` above is marginal, and a band can hit 80%
+        # marginally while covering 57% of its low-sigma items and 96% of its
+        # high-sigma ones -- which is what the OOF records say this band does.
+        # Stratum 1 is the NARROWEST band, i.e. the lowest sigma.
+        print(f"\nBAND COVERAGE BY SIGMA @ {anchor}   "
+              f"(quintiles of the served half-width, which is monotone in "
+              f"sigma; stratum 1 = lowest sigma)")
+        print(SIGMA_HEADER)
+        for h, srows in sigma_rows:
+            for r in srows:
+                print(_sigma_line(h, r))
+            if srows:
+                covs = [100 * r["cov"] for r in srows]
+                print(f"{h:>4} {'tilt':>8} {'':>7} "
+                      f"{sigma_tilt_pp(srows):>8.2f} "
+                      f"{covs[-1] - covs[0]:>+8.2f}   "
+                      f"mean |cov-nominal| pp, and the ramp (last - first). "
+                      f"NOT level-matched: read beside cov% above.")
 
         if "--basis-sweep" in sys.argv:
             # The SAME served mids, scored against four label bases. Everything

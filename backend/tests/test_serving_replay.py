@@ -19,6 +19,8 @@ from scripts.replay_serving import (COVERAGE_HEADER, DOLLAR_HEADER,
                                     PINNED_MAX_SPAN_DAYS,
                                     PINNED_SMOOTH_WINDOW,
                                     _basis_frame, _coverage_line,
+                                    _coverage_by_sigma_rows, _sigma_line,
+                                    SIGMA_HEADER, sigma_tilt_pp,
                                     _coverage_row, _dollar_error_rows,
                                     _dollar_line, _exact_day, _naive_baseline,
                                     _pin_matches_production, _pinned_anchor,
@@ -732,6 +734,88 @@ def test_the_coverage_line_survives_a_nan_cohort():
     assert "7" in line
     # And it lines up under its own header, or the table is unreadable in a log.
     assert len(line) == len(COVERAGE_HEADER)
+
+
+def test_the_sigma_strata_rank_by_width_which_is_monotone_in_sigma():
+    """The stratifier is the served half-width, because
+    `half = q_hat * sigma ** beta` is strictly increasing in sigma for any
+    beta > 0 -- so its quantiles are sigma's quantiles, and the item ordering is
+    identical under both arms of SIGMA_EXPONENT. That invariance is the whole
+    reason the two arms' tables can be read stratum by stratum.
+    """
+    # Ten items, relative half-width increasing with the index, all centred at
+    # 100 so the width is the only thing that varies.
+    n = 10
+    widths = np.linspace(1.0, 10.0, n)
+    frame = pd.DataFrame({
+        "low": 100.0 - widths,
+        "high": 100.0 + widths,
+        # Every band covers, so `cov` cannot drive the ordering.
+        "realised": np.full(n, 100.0),
+    })
+    rows = _coverage_by_sigma_rows(frame, n_strata=5)
+    assert [r["stratum"] for r in rows] == [1, 2, 3, 4, 5]
+    assert [r["n"] for r in rows] == [2, 2, 2, 2, 2]
+    # Stratum 1 is the NARROWEST band, i.e. the lowest sigma. A table that got
+    # this backwards would report the tilt with the wrong sign.
+    assert rows[0]["halfw"] < rows[-1]["halfw"]
+    assert all(r["cov"] == pytest.approx(1.0) for r in rows)
+
+
+def test_the_sigma_strata_find_a_tilt_the_marginal_number_cannot_see():
+    """The defect this table exists for: a band at exactly nominal marginal
+    coverage that is badly conditional on sigma. `BAND COVERAGE`'s `cov%` is
+    blind to it by construction, which is how a 62->95% ramp survived every
+    coverage check on record.
+    """
+    # 100 items in five width strata of 20. The narrow strata under-cover and
+    # the wide ones over-cover, and it averages to exactly nominal. A miss is
+    # placed at 5x the half-width, so it is outside the band whatever the width.
+    lo, hi, real = [], [], []
+    for s, covered_in_stratum in enumerate([8, 14, 18, 20, 20]):
+        w = 1.0 + s
+        for i in range(20):
+            lo.append(100.0 - w)
+            hi.append(100.0 + w)
+            real.append(100.0 if i < covered_in_stratum else 100.0 + 5 * w)
+    frame = pd.DataFrame({"low": lo, "high": hi, "realised": real})
+
+    assert _coverage_row(frame)["cov"] == pytest.approx(0.80)  # nominal, and wrong
+
+    rows = _coverage_by_sigma_rows(frame, n_strata=5)
+    assert [r["cov"] for r in rows] == [pytest.approx(c) for c in
+                                        (0.40, 0.70, 0.90, 1.00, 1.00)]
+    # And the summary statistic sees it where the marginal one saw nothing.
+    assert sigma_tilt_pp(rows) == pytest.approx(
+        float(np.mean([40.0, 10.0, 10.0, 20.0, 20.0])))
+
+
+def test_the_sigma_strata_decline_rather_than_stratify_a_tiny_cohort():
+    """Fewer rows than strata is not an error, it is an anchor with no resolved
+    outcomes. Returning [] prints no table; raising would take out every table
+    after it."""
+    frame = pd.DataFrame({"low": [9.0, 9.0], "high": [11.0, 11.0],
+                          "realised": [10.0, 10.0]})
+    assert _coverage_by_sigma_rows(frame, n_strata=5) == []
+    assert np.isnan(sigma_tilt_pp([]))
+
+
+def test_the_sigma_strata_drop_a_row_with_no_defined_width():
+    """A missing band and a band straddling zero have no place on the sigma
+    axis, and must not be swept into stratum 1 as if they were the narrowest
+    bands -- that would fabricate exactly the under-coverage being measured."""
+    frame = pd.DataFrame({
+        "low": [1.0, 2.0, 3.0, 4.0, 5.0, np.nan, -12.0],
+        "high": [9.0, 8.0, 7.0, 6.0, 5.5, 11.0, 10.0],
+        "realised": [5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0],
+    })
+    rows = _coverage_by_sigma_rows(frame, n_strata=5)
+    assert sum(r["n"] for r in rows) == 5
+
+
+def test_the_sigma_line_aligns_under_its_header():
+    row = {"stratum": 3, "n": 207, "cov": 0.7431, "halfw": 0.0912}
+    assert len(_sigma_line(7, row)) == len(SIGMA_HEADER)
 
 
 def test_band_coverage_reports_the_width_because_q_hat_is_not_comparable():
