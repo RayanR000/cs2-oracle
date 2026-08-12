@@ -12,6 +12,7 @@ Usage:
     python scripts/backtest_accuracy.py --reresolve      # re-read the archive
 """
 
+import os
 import sys
 import json
 import logging
@@ -47,6 +48,7 @@ from backtest.scoring import (
     MIN_FORECAST_DATES,
     bootstrap_ci,
     direction_from_return,
+    excluded_forecast_date,
     price_tier,
     score_by_tier,
     score_cohort,
@@ -648,6 +650,19 @@ def _records_from_frozen_outcomes(db, min_price=0, forecast_ids=None):
 
     n_unusable = 0
     n_below_min_price = 0
+    # Counted per reason and logged below, never dropped silently — a scored
+    # panel that shrinks without saying why is how the 07-19 rule change stayed
+    # invisible for three weeks in the first place.
+    n_excluded_date = defaultdict(int)
+    # Escape hatch for a like-for-like read against a figure published before the
+    # exclusion landed. It restores rows served by a superseded direction rule, so
+    # nothing it produces is quotable as a current number.
+    keep_excluded_dates = os.environ.get("SCORE_ALL_DATES") == "1"
+    if keep_excluded_dates:
+        logger.warning(
+            "  SCORE_ALL_DATES=1: scoring dates served by superseded direction "
+            "rules. NOT a publishable figure — for comparison against pre-"
+            "exclusion numbers only.")
 
     groups = defaultdict(list)
     for r in rows:
@@ -658,6 +673,11 @@ def _records_from_frozen_outcomes(db, min_price=0, forecast_ids=None):
         if min_price > 0 and base < min_price:
             n_below_min_price += 1
             continue
+        if not keep_excluded_dates:
+            reason = excluded_forecast_date(r.forecast_date)
+            if reason:
+                n_excluded_date[reason] += 1
+                continue
 
         verdict = _derive_verdict(
             base, actual, mid,
@@ -733,6 +753,13 @@ def _records_from_frozen_outcomes(db, min_price=0, forecast_ids=None):
     if n_below_min_price:
         logger.info(
             f"  {n_below_min_price:,} frozen outcome(s) below --min-price ${min_price:.2f}"
+        )
+    for reason, n in sorted(n_excluded_date.items()):
+        # WARNING, not info: this shrinks the panel MIN_FORECAST_DATES counts,
+        # and the reason has to travel with the number every run.
+        logger.warning(
+            f"  {n:,} frozen outcome(s) excluded — {reason}. "
+            f"SCORE_ALL_DATES=1 restores them for comparison only."
         )
     if n_unusable:
         # Loud on purpose. These rows are re-resolved by nothing and counted by

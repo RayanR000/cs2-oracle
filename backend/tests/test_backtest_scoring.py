@@ -3108,3 +3108,59 @@ def test_the_headline_line_stays_quiet_on_a_single_config():
     metrics, n = score_cohort(records)
     _, msg = backtest_accuracy._headline_line(3, "lgbm-v3", metrics, n)
     assert "pooling" not in msg
+
+
+def _seed_two_dates(session, tmp_path):
+    """One forecast on the excluded 2026-07-19, one on the kept 2026-07-17.
+
+    Both are h=3 and both resolve: the excluded date's outcome is still frozen
+    into the table, which is the point — the exclusion is a SCORING rule, so the
+    row must survive resolution and then not reach a metric.
+    """
+    _seed(session, 1, "kept", current_price=3.0, price_mid=3.6, price_low=3.0,
+          price_high=4.0, direction="up", forecast_date=date(2026, 7, 17))
+    _seed(session, 2, "dropped", current_price=3.0, price_mid=3.6, price_low=3.0,
+          price_high=4.0, direction="up", forecast_date=date(2026, 7, 19))
+    session.commit()
+    rows = [(slug, date(2026, 7, d), 3.0)
+            for slug in ("kept", "dropped")
+            for d in range(15, 23)]
+    return _write_archive(tmp_path, rows)
+
+
+def test_the_dead_band_date_is_resolved_but_never_scored(session, tmp_path, monkeypatch):
+    """2026-07-19's directions came from a rule no other date shares.
+
+    `served_identity` cannot drop it — those rows are `lgbm-v3-regime`, the
+    production daily path at that commit — so the exclusion is a dated one, and
+    it belongs on the scoring side only.
+    """
+    from scripts import backtest_accuracy
+
+    archive = _seed_two_dates(session, tmp_path)
+    _run_backtest(session, archive, monkeypatch, today=date(2026, 7, 26))
+
+    # Resolution is untouched: both rows are frozen in the outcome table.
+    frozen = session.query(ForecastOutcome).all()
+    assert {o.forecast_id for o in frozen} == {1, 2}
+
+    groups = backtest_accuracy._records_from_frozen_outcomes(session)
+    # str(), because the driver decides the type: SQLite yields an ISO string
+    # here and psycopg2 a date. The exclusion normalises both; the assertion
+    # must not depend on which one arrived.
+    dates = {str(r["forecast_date"]) for rs in groups.values() for r in rs}
+    assert "2026-07-17" in dates
+    assert "2026-07-19" not in dates
+
+
+def test_score_all_dates_restores_the_excluded_row(session, tmp_path, monkeypatch):
+    """The escape hatch has to work, or a pre-exclusion figure is unreproducible."""
+    from scripts import backtest_accuracy
+
+    archive = _seed_two_dates(session, tmp_path)
+    _run_backtest(session, archive, monkeypatch, today=date(2026, 7, 26))
+
+    monkeypatch.setenv("SCORE_ALL_DATES", "1")
+    groups = backtest_accuracy._records_from_frozen_outcomes(session)
+    dates = {str(r["forecast_date"]) for rs in groups.values() for r in rs}
+    assert {"2026-07-17", "2026-07-19"} <= dates

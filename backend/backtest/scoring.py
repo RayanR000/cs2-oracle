@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import math
 from collections import defaultdict
+from datetime import date, datetime
 
 import numpy as np
 
@@ -62,6 +63,66 @@ def served_identity(model_version) -> str:
         if model_version.endswith(suffix):
             return model_version[: -len(suffix)]
     return model_version
+
+
+# Forecast dates served by a DIRECTION RULE that no other date in the panel
+# shares, mapped to the reason. `served_identity` cannot do this job: it keys on
+# the artifact and deliberately merges `-regime` / `-global-only`, so a change to
+# the rule that turns a mid into a direction is invisible to it.
+#
+# 2026-07-19 is the only such date. `f71ffb4` ("Correct accuracy evaluation …
+# direction threshold", 22:57 UTC) replaced predict()'s zero-threshold sign rule
+# with a global ±DIRECTION_FLAT_TOLERANCE_PCT dead band on `mid_ret`, and that
+# day's rows were written at 23:39 — 42 minutes inside the new rule, and
+# superseded by the classifier (`a332c2b`, 2026-07-24) before the next stored
+# run. Reconstructing the band from the stored prices matches the served call in
+# 12 of 12 (horizon × call) cells, so the attribution is not in doubt.
+#
+# It is excluded because the band is not a comparable estimator, not because it
+# scored badly: the served mid is shrunk far harder than realised returns, so it
+# called `flat` on 64.0% of the ≥$1 cross-section at h=3 against a 23.1%
+# realised flat rate, and a zero-threshold sign rule on the same rows would have
+# scored +8.7pp higher. Pooled flat across the panel is 10.5% at h=3 and 0.00%
+# once this date is out — it is the entire flat population.
+#
+# NOT the same question as 2026-07-18, which is left IN. Those rows are
+# `--compare-regime`'s run B overwriting that day's production forecast, so they
+# are an ablation arm's output under the ordinary sign rule — a cohort-membership
+# question, not an estimator one, and unresolved.
+#
+# Excluding a date changes every published figure that pooled it. Keep this list
+# a rule change away from empty: a date that merely scored badly does not belong
+# in it. `docs/changelog/2026-08-11-the-da-gap-is-the-market-direction-of-five-dates.md`
+EXCLUDED_FORECAST_DATES = {
+    date(2026, 7, 19): "dead-band direction rule (f71ffb4), live for one run",
+}
+
+
+def excluded_forecast_date(forecast_date) -> str | None:
+    """Why `forecast_date` is out of the scored panel, or None to keep it.
+
+    Normalises what the drivers actually hand back, which is not one type:
+    psycopg2 returns `date`, SQLite returns an ISO **string**, and a datetime
+    turns up wherever a column was declared with a time. Matching only `date`
+    made this silently never fire under SQLite — the failure mode is an
+    exclusion that reports nothing and drops nothing, so keep every branch.
+
+    A missing or unparseable date is **not** excluded: unknown is not the same
+    as disqualified, and dropping it here would lose rows without a count to
+    show for it.
+    """
+    if forecast_date is None:
+        return None
+    if isinstance(forecast_date, str):
+        try:
+            forecast_date = datetime.fromisoformat(forecast_date)
+        except ValueError:
+            return None
+    if isinstance(forecast_date, datetime):
+        forecast_date = forecast_date.date()
+    if not isinstance(forecast_date, date):
+        return None
+    return EXCLUDED_FORECAST_DATES.get(forecast_date)
 
 
 # Below this many distinct forecast dates, a cohort cannot separate model skill
