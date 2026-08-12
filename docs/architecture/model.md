@@ -521,14 +521,18 @@ single fixed call) and `realised_down_rate` beside it.
 > reports. Keep the metric (it bounds how much of a horizon's DA is base rate); change the
 > comparison. `docs/changelog/2026-08-10-constant-call-is-hindsight-picked.md`.
 
-> ⚠️ **And `DA − realised_down_rate` is not readable on a handful of dates either (2026-08-11).**
-> Decomposed per (horizon, forecast date) on the ≥$1 `lgbm-v3*` panel, **56% / 78% / 89%** of the
-> apparent −13.12 / −14.35 / −25.52pp production deficit at 3/7/14d is the realised direction of
-> the 5–7 dates in the panel; the within-date term is **−1.19 / +0.99 / −1.08pp**, and on the CV
-> label basis it is **+2.70 / +0.17 / +0.42pp** — agreeing with the +3.5 / +0.1 / −1.3 above.
-> Per-date sd of the excess is **14.96 / 22.40 / 21.56 / 24.39pp**, so the live draw is z = −1.0 to
-> −1.6. **Do not quote pooled excess on fewer than ~50 forecast dates**; the per-date null the PT
-> block estimates below is the quantity that survives a short panel.
+> ⚠️ **And `DA − realised_down_rate` is not readable on a handful of dates either (2026-08-11;
+> figures corrected 2026-08-12 against prod Postgres).**
+> Decomposed per (horizon, forecast date) on the ≥$1 `lgbm-v3*` panel, **52% / 82% / 103%** of the
+> apparent **−11.89 / −12.08 / −15.54pp** production deficit at 3/7/14d is the realised direction of
+> the 3–8 dates in the panel; the within-date term is **−2.26 / +0.34 / +4.98pp** — positive at
+> h=14. The CV-basis leg (+2.70 / +0.17 / +0.42pp) was **not recomputed and is unverified**, so do
+> not cite it as agreement with the +3.5 / +0.1 / −1.3 above.
+> Per-date sd of the excess is **14.96 / 22.40 / 21.56 / 24.39pp**. **Do not quote pooled excess on
+> fewer than ~50 forecast dates**; the per-date null the PT
+> block estimates below is the quantity that survives a short panel. And **do not read
+> `price-archive/ops/forecast_outcomes.parquet` for a panel figure** — it held 14,668 of the 23,073
+> rows and its gaps are verdict-selected, which is what cost the superseded numbers above.
 > `docs/changelog/2026-08-11-the-da-gap-is-the-market-direction-of-five-dates.md`.
 
 The reason is measured, not stylistic: an always-down call scored **29.4% on 2025-12-01 and 76.9%

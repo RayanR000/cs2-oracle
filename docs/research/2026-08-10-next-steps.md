@@ -23,18 +23,24 @@ modest positive, inside per-fold noise. Full derivation in the companion changel
 
 *Consequence:* work aimed at closing a 16pp DA gap is aimed at a gap that does not exist. Deprioritised.
 
-> ✅ **Confirmed against realised outcomes, 2026-08-11 — including the reading that briefly
-> reopened it.** `changelog/2026-08-11-the-da-gap-is-the-market-direction-of-five-dates.md`.
+> ✅ **Not contradicted by realised outcomes (2026-08-11), and the figures were corrected
+> 2026-08-12.** `changelog/2026-08-11-the-da-gap-is-the-market-direction-of-five-dates.md`.
 > `2026-08-11-clean-anchor-gate-measured-on-realised-outcomes.md` §3 measured the served
 > classifier **11–30pp below always-down** on the ≥$1 `lgbm-v3*` panel, which read as a
-> contradiction of this item. Decomposed per (horizon, date), **56% / 78% / 89%** of that at
-> 3/7/14d is the realised direction of the 5–7 anchor dates and the within-date term is
-> **−1.19 / +0.99 / −1.08pp**; on the CV label basis the same item-dates give **+2.70 / +0.17 /
-> +0.42pp** against the +3.5 / +0.1 / −1.3 quoted here. **The two measurements agree**, and this
-> item stands. Per-date sd of the excess is 14.96–24.39pp, so the live draw is z = −1.0 to −1.6.
+> contradiction of this item. Decomposed per (horizon, date) on the corrected panel,
+> **52% / 82% / 103%** of that at
+> 3/7/14d is the realised direction of the 3–8 anchor dates and the within-date term is
+> **−2.26 / +0.34 / +4.98pp** (mirror-era: 56/78/89% and −1.19 / +0.99 / −1.08). ⚠️ **The CV-basis
+> leg — +2.70 / +0.17 / +0.42pp against the +3.5 / +0.1 / −1.3 quoted here — was NOT recomputed and
+> is unverified, so "the two measurements agree" is an open claim.** What holds is that composition
+> is the first-order term, so the pooled deficit is not evidence against this item, which therefore
+> stands. Per-date sd of the excess is 14.96–24.39pp.
 > **New constraint on everything below:** never read `DA − realised_down_rate` on fewer than ~50
-> forecast dates — report the within-date term. The one defect it surfaced is **diagnosed**:
-> 2026-07-19 called `flat` on 64.0% of items at h=3 against a **23.1%** realised flat rate (18.3%
+> forecast dates — report the within-date term. And **never read
+> `price-archive/ops/forecast_outcomes.parquet` for a panel figure**: it holds 14,668 of the 23,073
+> ≥$1 scored rows and its gaps are selected on "the verdict changed", which is what cost nine
+> published figures on 2026-08-11. The one defect the read surfaced is **diagnosed**:
+> 2026-07-19 called `flat` on 64.0% of items at h=3 against a **23.59%** realised flat rate (18.3%
 > hit rate — a bad call, not a guaranteed miss), because `f71ffb4` shipped a global ±0.5% dead band
 > in `predict()` 42 minutes before that run and no directional classifier existed yet. Two open
 > items, both small: exclude 07-19 as a distinct **serving config** (`served_identity()` cannot see
@@ -362,5 +368,9 @@ Everything in the "Do not re-propose" list of `2026-08-09-next-steps.md`, plus:
   21.56 / 24.39pp at 3/7/14/30d and a zero-skill model lands ≤ −11pp on 30–38% of archive dates, so
   a 5-date pooled excess carries no information about the model. Report the within-date term.
   `changelog/2026-08-11-the-da-gap-is-the-market-direction-of-five-dates.md`.
+- **Reading `price-archive/ops/forecast_outcomes.parquet` for a panel figure.** It holds 14,668 of
+  the 23,073 ≥$1 scored rows (2026-08-12), misses two whole dates at h=7, and its surviving rows in
+  a deficient cell are selected on "the verdict changed" — a biased subsample, not a lag. Query prod
+  Postgres read-only, or a CI run's `prediction_accuracy`. Same entry.
 - **Shaving the retrain further as a priority.** It is inside the cap; the loop is bounded by
   experiment power, not by training seconds.

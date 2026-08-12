@@ -53,3 +53,10 @@ re-injected after `/compact` — **read the rule yourself before starting work i
   and `database.py` are stale.
 - **Every A/B result stored in this repo predates the 2026-08-08 statistics fix.** Ten of the
   thirteen harnesses have not been re-run. Don't cite a stored verdict without checking.
+- **`price-archive/ops/forecast_outcomes.parquet` is missing 36% of the scored panel, and
+  what remains in the gaps is selected on "the verdict changed"** — a biased subsample, not a
+  lag, because no resolution batch after 2026-08-02 ever landed there. It cost nine published
+  figures on 2026-08-11, one of which reversed sign. **Query prod Postgres read-only, or a CI
+  run's `prediction_accuracy`, for any panel figure.** Full diagnosis and the per-cell test in
+  the `archive-reads` rule — which is scoped to `db/` and `collectors/`, so it will **not**
+  load just because you are doing backtest analysis.

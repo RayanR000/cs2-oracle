@@ -38,6 +38,25 @@ paths:
   from every stored file until `aggregator-update.yml` runs with `normalize_schema = true`.
 - **Operational tables live in `price-archive/ops/*.parquet`.** API routes read Parquet
   first with a DB fallback. See `db/parquet.py`.
+- ⚠️ **`ops/forecast_outcomes.parquet` is NOT a mirror of the scored panel, and its gaps are
+  BIASED — do not read it for panel work.** Measured 2026-08-12 against prod Postgres: on the
+  ≥$1 scored cohort it holds **14,668 of 23,073 rows, missing 8,405 (36%)** across **11 of 22
+  (forecast_date, horizon) cells**, and **two whole dates are absent at h=7** (2026-07-31,
+  2026-08-04) — dates no published h=7 figure had ever seen. It is **not a lag**: the missing
+  2026-07-19 h=14 rows resolved 2026-08-05, six days before the file's own last write.
+  **No resolution batch after 2026-08-02 23:12:46 ever landed.** What remains in a deficient
+  cell is there only because `_flush_verdict_refresh`
+  (`scripts/backtest_accuracy.py`) rewrote it, and that pass writes **only rows whose stored
+  verdict differed from the re-derived one** — so the survivors are **selected on
+  "the verdict changed"** and their rates are not the population's. 07-19 h=14 reads DA 29.6% /
+  down-rate 65.2% on the 115 mirror rows against **39.4% / 51.1%** on the true 1,052.
+  **Diagnose a cell before trusting it:** if 100% of its rows have `evaluated_at > resolved_at`
+  (in practice sharing one timestamp), it is a verdict-changed subsample. Read prod Postgres
+  read-only, or a CI run's `prediction_accuracy`, which reproduced the panel exactly across
+  runs `31548564675` / `31557070748`. The file also still carries the 21,737 NULL-`base_price`
+  2025-12-01 rows purged from prod — inert only because the ≥$1 filter drops them. This
+  corrected nine published figures; see
+  `docs/changelog/2026-08-11-the-da-gap-is-the-market-direction-of-five-dates.md`.
 - **The ops mirror carries `item_slug`; the DB table does not.** Prices key on the slug
   and ops keys on the Postgres surrogate `item_id`, so the archive could not be joined to
   itself without Supabase. `item_forecasts` and `forecast_outcomes` denormalise the slug

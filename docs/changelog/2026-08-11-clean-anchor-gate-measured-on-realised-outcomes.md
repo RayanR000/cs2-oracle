@@ -1,5 +1,31 @@
 # The clean-anchor gate, measured on outcomes that actually resolved
 
+> ## ⚠️ §1 and §2 were measured on a panel now known to be 36% deficient and biased. Nobody has recomputed them.
+> Every figure in §1 and §2 was read from `price-archive/ops/forecast_outcomes.parquet` over the
+> same cohort and period as
+> `2026-08-11-the-da-gap-is-the-market-direction-of-five-dates.md` — the cohort line below says
+> 14,586 rows over 11 dates, which is that file's ≥$1 panel. On 2026-08-12 a read-only production
+> Postgres session showed that file holds **14,668 of 23,073 ≥$1 scored rows, missing 8,405 (36%)**
+> across **11 of 22 (forecast_date, horizon) cells**, and that the gaps are **not a lag**: no
+> resolution batch after 2026-08-02 landed there, so what survives in a deficient cell is only what
+> a later verdict-refresh pass rewrote — rows **selected on "the verdict changed"**. Two whole dates
+> are absent at h=7 (2026-07-31, 2026-08-04).
+>
+> **This is an inference from the shared source, not a re-measurement.** No number in §1 or §2 has
+> been re-derived; none is corrected here, and no corrected value should be invented for them.
+>
+> **The h=14 cells are the most exposed.** The tied cohort there is **134 rows (§1) / 147 rows (§2)**
+> against true per-date cells of **1,052–1,093 rows** at h=14. The mirror's whole h=14 live panel is
+> **1,242 rows, of which 1,093 — 88% — are 2026-07-17 alone** (the corrected per-date counts are
+> 1,093 / 1,053 / 1,052 for 07-17 / 07-18 / 07-19; the mirror held 1,093 / 34 / 115). §2's h=14
+> down-rates of 73.8–74.8% sit next to 07-17's true 75.30% and nowhere near 07-18's 54.61% or
+> 07-19's 51.14%, which is what an 07-17-dominated panel looks like. That is an inference from the
+> corrected per-date figures, not a recomputation of these tables.
+>
+> §3's banner stands: it was closed on the same deficient panel, and the closing entry's own figures
+> were corrected on 2026-08-12 — nine of them, three reversing sign — with its central conclusion
+> (composition is the first-order term) intact.
+
 The gate shipped 2026-08-11 (`ab08a8b`) on the strength of **replay** rank IC +0.13–0.17, and
 its own changelog states it does not touch the backtest — so nothing had checked it against
 realised outcomes. This does, on the frozen `forecast_outcomes` already scored.
@@ -49,8 +75,9 @@ hindsight-selected and is not differenced), excluding the backdated batch:
 | 14 | tied | 147 | 44.9 | 74.8 | **−29.9** |
 | 14 | deviating | 1,087 | 48.9 | 73.8 | **−24.9** |
 
-⚠️ The **`DA − down` column is not a model property** — 56–89% of it is the realised direction of
-the 5–7 dates in this panel, and the within-date term is ±1.2pp. See the banner in §3. The
+⚠️ The **`DA − down` column is not a model property** — on the corrected panel **52–103%** of it is
+the realised direction of the 3–8 dates in the panel, and the within-date term is **−2.26 / +0.34 /
++4.98pp** at 3/7/14d, not the ±1.2pp this note first claimed. See the banner in §3. The
 tied-vs-deviating *contrast* is the readable part of this table; its levels are not, and the
 decomposition was **not** run per cohort, so how much composition survives the differencing is
 unmeasured.
@@ -64,20 +91,24 @@ as a regression.
 
 ## 3. The number that outranks both, and is not explained here
 
-> ## ✅ CLOSED the same day — it is composition, and the hypothesis below was right.
+> ## ✅ CLOSED the same day — it is composition, and the hypothesis below was right. Figures corrected 2026-08-12.
 > `changelog/2026-08-11-the-da-gap-is-the-market-direction-of-five-dates.md`. Decomposing
 > `excess` per (horizon, date) into the call mix costed against a typical market (`side_ref`),
 > this window's realised direction (`composition`) and within-date information (`assoc`) gives
-> **56% / 78% / 89% composition** at 3/7/14d against `assoc` of **−1.19 / +0.99 / −1.08pp**. On the
-> CV label basis the same live item-dates give `assoc` **+2.70 / +0.17 / +0.42**, against the
-> published CV **+3.5 / +0.1 / −1.3** — the two measurements agree. Per-date sd of `excess` is
-> 14.96–24.39pp, so the live draw is z = −1.0 to −1.6 and **the whole gap is one to two SE.**
-> Two corrections to the sentence below: the model is **above** the baseline on the dates where
-> the market rose (2026-08-06 +4.1, 08-01 +19.7, 08-02 +6.4, and the backdated batch at
-> +1.80/+3.99/+5.00/+5.96), so "every cohort at every horizon" holds of the pooled cells and not
-> of the panel; and h=30 has **no live forecast date at all**. **Do not quote `excess` on fewer
-> than ~50 dates.** One real defect fell out and is **diagnosed**: 2026-07-19 called `flat` on 64.0%
-> of items at h=3 against a **23.1%** realised flat rate in this cohort — a low-hit-rate call at
+> **52% / 82% / 103% composition** at 3/7/14d against `assoc` of **−2.26 / +0.34 / +4.98pp** — the
+> corrected Postgres figures; the mirror read gave 56% / 78% / 89% and −1.19 / +0.99 / −1.08. On the
+> CV label basis the same live item-dates gave `assoc` **+2.70 / +0.17 / +0.42**, against the
+> published CV **+3.5 / +0.1 / −1.3** — ⚠️ **that table was not recomputed and is now unverified**,
+> so "the two measurements agree" is an open claim, not a result. Per-date sd of `excess` is
+> 14.96–24.39pp, so **the gap is one to two SE** (the z range itself was not re-derived).
+> Two corrections to the sentence below: the model is **above** the baseline on **two live cells**
+> (08-06 h=3 and 07-29 h=7, both +2.33) and on the backdated batch at
+> +1.80/+3.99/+5.00/+5.96, so "every cohort at every horizon" holds of the pooled cells and not
+> of the panel — the rising-date examples first published (08-01 +19.7, 08-02 +6.4) **reversed sign
+> to −5.56 and −7.17** on the corrected panel; and h=30 has **no live forecast date at all**. **Do
+> not quote `excess` on fewer than ~50 dates.** One real defect fell out and is **diagnosed**:
+> 2026-07-19 called `flat` on 64.0%
+> of items at h=3 against a **23.59%** realised flat rate in this cohort — a low-hit-rate call at
 > 18.3%, not a near-certain miss — and it carries essentially the entire pooled `side_ref` term on
 > its own. Cause: `f71ffb4` shipped a global ±0.5% dead band in `predict()` **42 minutes before that
 > run**, with no directional classifier in existence yet (`direction_models` was empty until

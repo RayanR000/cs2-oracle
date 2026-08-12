@@ -167,7 +167,7 @@ than the local copy, so its per-file sizes run slightly higher.
 | `item-metadata.parquet` | 0.1 MB | 8,691 |
 | `supply-2026-08.parquet` | 1.6 MB | 84,408 (1 day, 30,330 items, 4 feeds) |
 | `ops/item_forecasts.parquet` | 1.6 MB | 158,200 |
-| `ops/forecast_outcomes.parquet` | 2.2 MB | 104,642 |
+| `ops/forecast_outcomes.parquet` | 2.2 MB | 104,642 (114,489 as of 2026-08-12 — see the warning below) |
 | `ops/event_impacts_denorm.parquet` | 0.7 MB | 18,473 |
 | `ops/collection_runs.parquet` | <0.1 MB | 194 |
 | `ops/prediction_accuracy.parquet` | <0.1 MB | 84 |
@@ -188,6 +188,19 @@ non-degenerate column.
 Growth is dominated by the daily append: **~362,586 OHLCV rows/day** across 11 source
 labels. `ops/` tables are UPSERT-or-append-and-dedup and stay under a few MB each;
 `forecast_outcomes` is insert-only (see below).
+
+> ⚠️ **`ops/forecast_outcomes.parquet` is not a faithful mirror of the DB table, and its gaps are
+> biased (measured 2026-08-12).** Postgres holds **121,699** rows against the file's **114,489**, and
+> **no resolution batch after 2026-08-02 23:12:46 ever landed in the file** — max `resolved_at` there
+> is 2026-08-11 00:19:05, max `evaluated_at` 2026-08-11 21:10:28. On the ≥$1 scored cohort it holds
+> **14,668 of 23,073 rows, missing 36%** across 11 of 22 (forecast_date, horizon) cells, two whole
+> dates absent at h=7. What survives in a deficient cell is only what a verdict-refresh pass rewrote,
+> and that pass writes **only rows whose stored verdict differed** — so the survivors are selected on
+> "the verdict changed" and their rates are not the population's. The file also still carries the
+> **21,737 NULL-`base_price` 2025-12-01 rows purged from prod**. **Do not read it for panel work**;
+> query prod Postgres read-only, or a CI run's `prediction_accuracy`. Diagnose a cell first: if 100%
+> of its rows have `evaluated_at > resolved_at`, it is a verdict-changed subsample.
+> `../changelog/2026-08-11-the-da-gap-is-the-market-direction-of-five-dates.md`.
 
 ### Performance
 

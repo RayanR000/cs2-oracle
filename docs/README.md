@@ -77,16 +77,22 @@ report it rather than working around it.
 > `changelog/2026-08-10-constant-call-is-hindsight-picked.md`,
 > `changelog/2026-08-10-band-and-confidence-are-miscalibrated.md`.
 >
-> ✅ **The classifier half is now confirmed against realised outcomes (2026-08-11), and the
-> apparent 11–30pp production deficit is composition.** Decomposing per-date `excess` on the ≥$1
-> `lgbm-v3*` panel (14,668 scorable rows, 11 dates) gives **56% / 78% / 89%** of the gap at
-> 3/7/14d to the realised direction of the 5–7 anchor dates, against a within-date term of
-> **−1.19 / +0.99 / −1.08pp**. On the CV label basis the same item-dates read **+2.70 / +0.17 /
-> +0.42pp** against the published **+3.5 / +0.1 / −1.3** — they agree. Per-date sd of `excess` is
+> ✅ **The apparent 12–16pp production deficit is composition (2026-08-11, figures corrected
+> 2026-08-12).** Decomposing per-date `excess` on the ≥$1
+> `lgbm-v3*` panel (**23,073** scorable rows, **12** dates, read from prod Postgres) gives
+> **52% / 82% / 103%** of the gap at
+> 3/7/14d to the realised direction of the 3–8 anchor dates, against a within-date term of
+> **−2.26 / +0.34 / +4.98pp** — positive at h=14, where the model beats its own call mix.
+> ⚠️ **The CV-basis agreement table (+2.70 / +0.17 / +0.42 against the published +3.5 / +0.1 / −1.3)
+> was NOT recomputed and is unverified**, so "the classifier half is confirmed" is not yet a result;
+> what is established is that composition is the first-order term. Per-date sd of `excess` is
 > 14.96–24.39pp, so **never quote `excess` on fewer than ~50 forecast dates**; report the
 > within-date term, which is what the PT statistic already differences. `MIN_FORECAST_DATES = 20`
-> does not rescue it. The one defect it surfaced is **diagnosed**: 2026-07-19 called `flat` on 64.0%
-> of items at h=3 against a **23.1%** realised flat rate (an 18.3% hit rate, not a near-certain
+> does not rescue it. ⚠️ **The source of the superseded figures,
+> `ops/forecast_outcomes.parquet`, holds only 14,668 of those 23,073 rows and its gaps are
+> verdict-selected, not a lag — do not read it for panel work.** The one defect the read surfaced is
+> **diagnosed**: 2026-07-19 called `flat` on 64.0%
+> of items at h=3 against a **23.59%** realised flat rate (an 18.3% hit rate, not a near-certain
 > miss), because `f71ffb4` shipped a global ±0.5% dead band in `predict()` 42 minutes before that
 > run and no directional classifier existed yet. Still reachable as `predict()`'s no-classifier
 > fallback; the guard is open. **Correction to the record: 2026-07-19 is the production daily run and
