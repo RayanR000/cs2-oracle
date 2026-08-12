@@ -185,21 +185,62 @@ the cause. See the banner.
 
 **What is still open, and the order it should be taken in.**
 
-1. **What actually makes the served band 25–39% too wide.** Three candidates are now excluded:
-   the calibration centre (F1, ≤1.1pp), quiet forecast dates (median `rel_cal` ≈ 1.0), and the
-   calibration denominator (this entry, wrong sign). The strongest untested one is **`sigma`
-   itself**: `q_hat` multiplies it, so a serving-time `sigma` systematically larger than the
-   CV-time `sigma` for the same items widens the band by exactly that ratio and nothing in the
-   calibration would notice. `sigma = price_std_60d / price`, and `price` is the **raw** quote in
-   the CV frame and the **smoothed anchor** at serving — the same axis as this entry, one level
-   down. Cheap to check: the served median half-width is 8.64% at h=3 against `q_hat = 94.72`,
-   implying a served median `sigma` of 0.0912; compare with the CV frame's.
-2. **The prediction is fitting `p[d]/S[d]`.** The banner's read is indirect evidence. Direct
+1. **`sigma` was the next candidate and it is MOSTLY exonerated** (measured 2026-08-12, below).
+2. **The leading hypothesis is now the expanding window itself.** The OOF residuals `q_hat` is
+   fitted on come from **fold models trained on less data than the model production serves** —
+   fold 1 sees 87,224 rows, fold 9 is capped at 300,000, and the shipped model trains on the
+   full 1.2M budget. Weaker models make larger residuals, so a pooled OOF `q_hat` is
+   conservative by construction and the served band over-covers *uniformly*. That is exactly
+   the shape the data has, and it is a known failure of K-fold conformal rather than anything
+   specific to this repo. **Test:** log `q_hat` per fold and check that it declines with fold
+   index. Cheap — a few lines plus one dispatch. If it holds, the remedy is to calibrate on the
+   late folds, or on a proper held-out slice of the final model's own training distribution,
+   which is the part of C5 that was scoped as a *cost* change and turns out to be a
+   *correctness* one.
+3. **The prediction is fitting `p[d]/S[d]`.** The banner's read is indirect evidence. Direct
    version: correlate `fold_p50` with `p[d]/S[d]` on the OOF rows. If it is large, it reaches
    well past the band — it is the same defect the label arm was refuted for, sitting in the
    served mid.
-3. **Conditional coverage** (58.2–99.2% per date) is the larger half and is calendar-blocked
-   regardless of 1 and 2.
+4. **Conditional coverage** (58.2–99.2% per date) is the larger half and is calendar-blocked
+   regardless of the above.
+
+## `sigma` is not the cause, and the wrinkle it does have is second-order
+
+`q_hat` is dimensionless and multiplies `sigma`, so a serving-time `sigma` larger than the
+calibration-time one widens the band by exactly that ratio with nothing noticing. It **is**
+larger: against the engineered training frame restricted to the 9 OOF validation windows and the
+≥$1 cohort (73,180 rows, median `sigma` **0.0712**, the artifact's own clip bounds), the served
+rows carry **0.0912 / 0.0957 / 0.0946 / 0.0665** at 3/7/14/30d — **1.28 / 1.34 / 1.33 / 0.93×**.
+At 3d and 14d that is close to the 1.39 / 1.37 the shrink implies.
+
+**It does not survive the stratified read.** Locally-weighted conformal is meant to be
+scale-free: `s = |residual| / (q_hat·sigma)` should have the same distribution at every `sigma`.
+By quintile of served `sigma`, `p80(s)` is:
+
+| h | Q1 | Q2 | Q3 | Q4 | Q5 | elasticity of \|residual\| to `sigma` |
+|---|---|---|---|---|---|---|
+| 3 | 0.591 | 0.801 | 0.792 | 0.901 | 0.605 | 0.798 |
+| 7 | 0.965 | 0.516 | 0.512 | 0.568 | 0.563 | 0.692 |
+| 14 | 0.809 | 0.726 | 0.691 | 0.684 | 0.740 | 1.034 |
+| 30 | 0.800 | 0.776 | 0.886 | 0.752 | 0.654 | 1.150 |
+
+`p80(s)` is **below 1 in 19 of 20 strata**, including the *lowest*-`sigma` quintile at every
+horizon. The band is too wide across the whole `sigma` range, not at the top of it — so a
+level shift in `sigma` cannot be the mechanism. h=30 settles it independently: `sigma` there is
+**smaller** at serving (0.93×) and the band still over-covers at 89.0%.
+
+What is real is the **elasticity**: `d log|residual| / d log sigma` is **0.798 at h=3 and 0.692 at
+h=7** against the 1.000 conformal assumes, so at the short horizons the residual grows
+sub-linearly and high-`sigma` items get a band wider than they need. At h=14 and h=30 it is
+**1.034 / 1.150** — fine, or slightly under-corrected. Worth its own entry; it is not worth
+25–39% of width.
+
+⚠️ The served `sigma` is implied as `half_pct / q_hat` using the control run's `q_hat`, so it
+inherits whatever artifact each row was actually served by — those differ by up to ~3% across the
+panel. Immaterial at these ratios, and the 19-of-20 strata result does not depend on it at all.
+`tests/test_conformal.py::test_calibrate_gives_conditional_coverage_across_volatility_strata`
+cannot catch the elasticity finding: its residuals are proportional to `sigma` by construction,
+so the elasticity there is 1.000 and the test is unfalsifiable on this axis.
 
 **Nothing about the served band has changed.** The daily path is on the default, which is the
 pre-2026-08-12 behaviour, and no retrain has promoted an artifact from this work.

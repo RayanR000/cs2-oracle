@@ -63,7 +63,13 @@ paths:
   moves `q_hat` **UP at 4/4** — 94.72→103.70 / 141.77→148.80 / 204.34→205.80 / 312.05→316.96 —
   where the over-coverage needs it 25–39% smaller. The sign is itself a finding: the raw-basis
   residual can only be the smaller one if `r̂` already contains `p[d]/S[d]` and cancels part of
-  it, i.e. **the booster is fitting the anchor deviation**. Read `conformal_basis` in `meta.json` and `basis=` on the calibration line — never
+  it, i.e. **the booster is fitting the anchor deviation**. `sigma` is also exonerated (`p80(s)`
+  below 1 in **19 of 20** strata; served `sigma` is 1.28/1.34/1.33/**0.93**× the calibration
+  median but the band is wide across the whole range). **Leading hypothesis: the expanding
+  window.** OOF residuals come from fold models trained on 87,224–300,000 rows against the
+  shipped model's 1.2M budget, so a pooled `q_hat` is conservative by construction — check by
+  logging `q_hat` per fold. Real but second-order: `d log|resid| / d log sigma` is **0.798 /
+  0.692** at h=3/7 against the 1.000 conformal assumes. Read `conformal_basis` in `meta.json` and `basis=` on the calibration line — never
   infer it from the environment. **Not** the
   `LABEL_SMOOTHED_ANCHOR` arm — the label is untouched. It was tested against the quiet-dates
   alternative and that was rejected: median `rel_cal` on the calibration window's own dates is

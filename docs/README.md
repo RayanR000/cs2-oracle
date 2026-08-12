@@ -234,7 +234,11 @@ The newest:
   **failed and the paired read refuted it**: arm against control on one commit, `q_hat` moves
   *up* at 4/4 horizons where over-coverage needs it 25–39% smaller. Ships off as
   `CONFORMAL_SERVED_BASIS=1`. The wrong sign is itself the finding — it can only happen if the
-  booster's own prediction carries `p[d]/S[d]`. Conditional coverage (**58.2–99.2%** per
+  booster's own prediction carries `p[d]/S[d]`. `sigma` was then measured and is **also not the
+  cause**: `p80(s)` is below 1 in **19 of 20** `sigma` strata, including the lowest quintile at
+  every horizon. Leading hypothesis is now the **expanding window** — OOF residuals come from
+  fold models trained on 87k–300k rows against the shipped model's 1.2M budget, so a pooled
+  `q_hat` is conservative by construction. Conditional coverage (**58.2–99.2%** per
   date) is untouched and ACI cannot be validated on 1–7 forecast dates.
 - `2026-08-12-served-confidence-withdrawn.md` — F2. The `confidence` tag leaves `PredictionOut`
   and `TrendAnalysisOut`. Within-date, on the 11 cells with `n_high >= 30`, the `high` cohort is
