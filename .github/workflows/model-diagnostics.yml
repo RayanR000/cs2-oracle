@@ -221,9 +221,24 @@ on:
       # of the four anchors used through 2026-08-12 are among them: 2026-07-09
       # (the usual feed absent, a substitute quoting 1.287x) and 2026-04-15 (the
       # last day before the three-source era ends, so every horizon resolves on
-      # the feed that replaced it). Do not re-use that set. Clean and comparable:
-      # 2026-04-22,2026-05-16,2026-06-16,2026-07-06.
+      # the feed that replaced it). Do not re-use that set.
+      #
+      # AND THE FEED AUDIT IS NOT THE WHOLE CHECK (2026-08-13). It looks +/-3 days
+      # around the anchor and cannot see a basis change 30 days out, so an anchor
+      # can pass it and still resolve its OUTCOME across a cutover -- a synthetic
+      # market-wide move scored as a return. `cutovers_in_outcome_window` now
+      # drops those horizons and refuses when none survive. It rejects
+      # 2026-07-06 beyond h=3 and 2026-06-16 at h=30, so the "clean and
+      # comparable" set named here through 2026-08-12 was itself not clean.
+      #
+      # Clean on BOTH audits at all four horizons, inside one collection regime
+      # (~25,010 items/day, after the 2026-04-16 cutover):
+      # 2026-04-18,2026-04-28,2026-05-08,2026-05-19,2026-05-29,2026-06-08.
+      # 52 such dates exist, all in 2026-04-18..06-08 and all high-volatility --
+      # the archive holds ~5,200 items/day before March, so no clean set reaches
+      # a calm quarter without crossing a collection regime.
       # docs/changelog/2026-08-12-july-09-anchor-is-a-feed-substitution.md
+      # docs/changelog/2026-08-13-the-rescaling-is-a-level-fix-not-a-spread-fix.md
       replay_anchors:
         description: 'Serving replay: comma-separated anchor dates (audited; e.g. 2026-05-16,2026-06-16)'
         required: false
