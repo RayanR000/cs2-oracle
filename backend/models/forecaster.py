@@ -506,6 +506,95 @@ class ItemForecaster:
         "volume_std_60d",
     })
 
+    # The volume-derived subset of SHELVED_FEATURES (see the comment above and
+    # tests/test_volume_features_shelved.py) -- every column
+    # _compute_volume_features adds. Task 5 recovered a real `volume` column;
+    # VOLUME_FEATURES=1 lets these back into training. Listed exhaustively,
+    # not by prefix, for the same reason as SHELVED_FEATURES itself: the
+    # >0.95 correlation prune is data-dependent, so volume_mean_7d and
+    # volume_std_60d (which the prune would otherwise drop in favour of their
+    # 30d partners) must be un-shelved together with those partners or they
+    # silently survive the prune and re-enter production alone.
+    VOLUME_FEATURE_NAMES = frozenset({
+        "volume_missing",
+        "volume_lag_1d",
+        "volume_lag_7d",
+        "volume_mean_7d",
+        "volume_mean_30d",
+        "volume_std_30d",
+        "volume_mean_60d",
+        "volume_std_60d",
+        "volume_log_change_1d",
+        "volume_log_change_7d",
+        "volume_zscore_30d",
+        "volume_price_conf_7d",
+        "volume_price_conf_1d",
+    })
+
+    @staticmethod
+    def _volume_features_enabled() -> bool:
+        """Whether the recovered volume columns reach the trained feature set.
+
+        Default OFF: production keeps shelving them per SHELVED_FEATURES'
+        volume comment (the archive's volume was identically 0 from 2026-05
+        through the recovery in Task 5). Set VOLUME_FEATURES=1 to un-shelve.
+        """
+        return os.environ.get("VOLUME_FEATURES") == "1"
+
+    @staticmethod
+    def _bid_features_enabled() -> bool:
+        """Whether the recovered bid/ask-spread features reach the trained feature set.
+
+        Default OFF: `buff_bid` is NaN in production until the sidecar (Task 5) is
+        joined, and the feature set is otherwise unchanged. Set BID_FEATURES=1 to
+        enable.
+        """
+        return os.environ.get("BID_FEATURES") == "1"
+
+    @staticmethod
+    def _compute_bid_features(df: pd.DataFrame) -> pd.DataFrame:
+        """Derive bid/ask-spread features from `buff_bid` (Task 5's sidecar join).
+
+        Safe when `buff_bid` is entirely absent: it is created as NaN first, so
+        `bid_present` is 0 for every row and `bid_ask_spread` is NaN, no exception.
+        """
+        if "buff_bid" not in df.columns:
+            df["buff_bid"] = np.nan
+        df["bid_present"] = df["buff_bid"].notna().astype(int)
+        df["bid_ask_spread"] = np.where(
+            df["price"] > 0, (df["price"] - df["buff_bid"]) / df["price"], np.nan
+        )
+        return df
+
+    @staticmethod
+    def _stattrak_feature_enabled() -> bool:
+        """Whether the recovered StatTrak usage-premium feature reaches the trained feature set.
+
+        Default OFF: `st_premium` is NaN in production until the sidecar (Task 5) is
+        joined, and the feature set is otherwise unchanged. Set STATTRAK_FEATURE=1 to
+        enable.
+        """
+        return os.environ.get("STATTRAK_FEATURE") == "1"
+
+    @staticmethod
+    def _compute_stattrak_feature(df: pd.DataFrame) -> pd.DataFrame:
+        """Derive a presence indicator from `st_premium` (Task 5's sidecar join).
+
+        `st_premium` itself is left as-is — NaN is read as missing by the model, no
+        fill applied. Safe when `st_premium` is entirely absent: it is created as NaN
+        first, so `st_premium_present` is 0 for every row, no exception.
+        """
+        if "st_premium" not in df.columns:
+            df["st_premium"] = np.nan
+        df["st_premium_present"] = df["st_premium"].notna().astype(int)
+        return df
+
+    def _active_shelved_features(self) -> frozenset:
+        """SHELVED_FEATURES, minus the volume names when the flag is on."""
+        if self._volume_features_enabled():
+            return self.SHELVED_FEATURES - self.VOLUME_FEATURE_NAMES
+        return self.SHELVED_FEATURES
+
     # Dollar-denominated columns. The target is a PERCENTAGE return, so a
     # feature measured in dollars cannot be a price signal — it can only encode
     # which item this is. On the 2026-08-06 artifact these carried 55.6 / 70.2 /
@@ -730,7 +819,7 @@ class ItemForecaster:
     # pyarrow round-trip on pandas 2.3.3) rather than as a column: the predict
     # frame reaches ~2M rows and copying it to append a constant would double
     # peak memory on the path that already OOMs in CI.
-    ENGINEERED_CACHE_VERSION = 2
+    ENGINEERED_CACHE_VERSION = 3   # v3: sidecar columns join into the daily frame
 
     # --- Voted price frame cache ---
     # Bump VOTED_CACHE_VERSION whenever _fetch_voted_price_history or
@@ -2103,6 +2192,10 @@ class ItemForecaster:
         # Volume features
         # =====================================================================
         df = self._compute_volume_features(df, grouped)
+        if self._bid_features_enabled():
+            df = self._compute_bid_features(df)
+        if self._stattrak_feature_enabled():
+            df = self._compute_stattrak_feature(df)
 
         # Boolean indicators for features with frequent missingness
         df["rsi_missing"] = df["rsi_14"].isna().astype(int)
@@ -3961,6 +4054,32 @@ class ItemForecaster:
         )
         return best_params
 
+    # Recovered demand/supply sidecars, joined AFTER voting so none of them
+    # votes as a price. Local research dataset only; a missing file is a no-op.
+    _SIDECARS = {
+        "volume-panel.parquet": ["steam_volume", "steam_sale_median"],
+        "bid-panel.parquet": ["buff_bid"],
+        "stattrak-panel.parquet": ["st_premium"],
+        "supply-history.parquet": ["buff_listing_count"],
+    }
+
+    def _attach_sidecars(self, daily: pd.DataFrame) -> pd.DataFrame:
+        for fname, cols in self._SIDECARS.items():
+            path = self.archive_dir / fname
+            if not path.exists():
+                continue
+            side = pd.read_parquet(path)[["item_id", "date"] + cols]
+            # Normalize the join key so a Timestamp-vs-date dtype drift
+            # between a sidecar and `daily` can't silently zero out the
+            # merge instead of raising -- see the Timestamp-typed test.
+            side["date"] = pd.to_datetime(side["date"]).dt.date
+            daily = daily.merge(side, on=["item_id", "date"], how="left")
+            if "steam_volume" in cols:
+                # Prefer recovered volume; keep existing where unmatched.
+                daily["volume"] = daily["steam_volume"].fillna(daily["volume"])
+                daily = daily.drop(columns=["steam_volume"])
+        return daily
+
     def engineer_features(self, price_df: pd.DataFrame,
                           events_df: pd.DataFrame,
                           item_first_dates=None,
@@ -3995,6 +4114,7 @@ class ItemForecaster:
             )
         else:
             daily = price_df
+        daily = self._attach_sidecars(daily)
         # _compute_price_features is never skipped: price_technicals is the one
         # allowlisted group, and the `other` columns are computed inside it.
         skip = self._skipped_feature_groups() if skip_unused_groups else set()
@@ -4656,7 +4776,7 @@ class ItemForecaster:
 
         # Define feature columns (exclude metadata and target columns)
         self.feature_cols = self._select_feature_cols(
-            df, self.HORIZONS, self.SHELVED_FEATURES)
+            df, self.HORIZONS, self._active_shelved_features())
 
         # Restrict to the allowlisted groups and prune correlated columns,
         # in the cheaper order.
@@ -5950,6 +6070,20 @@ class ItemForecaster:
                    # Name it here so the exclusion is a decision, not a
                    # side effect.
                    "n_ask_sources",
+                   # Raw sidecar columns from _attach_sidecars. Each maps to
+                   # _feature_group()'s "other" bucket, which the default
+                   # allowlist drops -- but the BID/STATTRAK A/B widens the
+                   # allowlist to admit "other", and buff_listing_count has no
+                   # gating flag at all (dense in training, NULL at serving:
+                   # availability leakage). Only the derived, flag-gated
+                   # columns (bid_ask_spread, bid_present, st_premium_present,
+                   # the volume_* features) may ever be selectable; the raw
+                   # sidecar literals must not be. steam_sale_median is the
+                   # volume panel's helper price column, not a feature. (The
+                   # raw "volume" column was already excluded above, alongside
+                   # "price" -- unrelated to this addition.)
+                   "buff_bid", "st_premium", "buff_listing_count",
+                   "steam_sale_median",
                    # The clean-cohort mask. `prepare_targets` adds it after
                    # this runs and the dtype filter below would drop a bool
                    # anyway, so this is belt-and-braces -- but it is a
