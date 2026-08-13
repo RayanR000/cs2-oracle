@@ -66,6 +66,20 @@ on:
         required: false
         default: false
         type: boolean
+      # C2. A within-date lambdarank booster trained ALONGSIDE the q50, read
+      # through the same rank-IC path on the same folds. Unlike the arms above it
+      # needs no paired control: both bars are intra-run and on the CLEAN ANCHOR
+      # cohort -- it must beat naive AND the q50's own ordering, both where
+      # p/S == 1. Read `lr_rank_ic_edge_vs_naive_tied` and
+      # `lr_rank_ic_edge_vs_q50_tied`; PASS needs BOTH > 0. HP mirror the q50's,
+      # so a positive needs FORCE_HP_SEARCH=1 to size. Diagnostic only, no serving
+      # path consumes it. See
+      # docs/superpowers/specs/2026-08-13-lambdarank-diagnostic-design.md.
+      lambdarank:
+        description: 'Arm: within-date lambdarank ranker (read lr_rank_ic edges on the CLEAN ANCHOR line)'
+        required: false
+        default: false
+        type: boolean
       # Unlike the three above, this arm changes the LABEL, so its CV rank IC is
       # measured against a different target than the control's and the two may
       # not be differenced. Set `replay_anchors` when running it -- the replay
@@ -387,6 +401,9 @@ jobs:
           # it is on with reused HP. Read `rank_ic_edge` per horizon; the bar is
           # >= 0, and it is currently negative at all four.
           NAIVE_INIT_SCORE: ${{ inputs.naive_init_score && '1' || '0' }}
+          # C2. Adds a within-date ranker in the CV path; touches no served
+          # artifact. Read on the CLEAN ANCHOR line's lr_rank_ic edges.
+          LAMBDARANK: ${{ inputs.lambdarank && '1' || '0' }}
           # Changes the LABEL, not the features or the prediction. Every CV
           # number this run prints -- rank IC, the naive bar, DA -- is measured
           # against a different target than the control's, so read this arm
@@ -509,6 +526,7 @@ jobs:
           TIER_LEAD_FEATURE: ${{ inputs.tier_lead && '1' || '0' }}
           CROSS_SECTIONAL_RANK: ${{ inputs.cross_sectional_rank && '1' || '0' }}
           NAIVE_INIT_SCORE: ${{ inputs.naive_init_score && '1' || '0' }}
+          LAMBDARANK: ${{ inputs.lambdarank && '1' || '0' }}
           LABEL_SMOOTHED_ANCHOR: ${{ inputs.label_smoothed_anchor && '1' || '0' }}
           CONFORMAL_SERVED_BASIS: ${{ inputs.conformal_served_basis && '1' || '0' }}
           SIGMA_EXPONENT: ${{ inputs.sigma_exponent && '1' || '0' }}
@@ -534,6 +552,9 @@ jobs:
           fi
           if [ "$NAIVE_INIT_SCORE" = "1" ]; then
             arms="${arms:+$arms+}naive_init"
+          fi
+          if [ "$LAMBDARANK" = "1" ]; then
+            arms="${arms:+$arms+}lambdarank"
           fi
           if [ "$LABEL_SMOOTHED_ANCHOR" = "1" ]; then
             arms="${arms:+$arms+}smoothed_label"
@@ -564,6 +585,7 @@ jobs:
             echo "\`TIER_LEAD_FEATURE=$TIER_LEAD_FEATURE\` "
             echo "\`CROSS_SECTIONAL_RANK=$CROSS_SECTIONAL_RANK\` "
             echo "\`NAIVE_INIT_SCORE=$NAIVE_INIT_SCORE\` "
+            echo "\`LAMBDARANK=$LAMBDARANK\` "
             echo "\`LABEL_SMOOTHED_ANCHOR=$LABEL_SMOOTHED_ANCHOR\` "
             echo "\`CONFORMAL_SERVED_BASIS=$CONFORMAL_SERVED_BASIS\` "
             echo "\`SERVE_OUTLIER_GATED_ANCHOR=$SERVE_OUTLIER_GATED_ANCHOR\` "
