@@ -58,6 +58,24 @@ Two further bounds on the number:
 - **One dispatch, no interval.** Comparability rests on the documented bit-reproducibility of the
   rank-IC diagnostic; this is not a paired harness.
 
+## Confirm read — the edge is not a stale-HP artifact
+
+`FORCE_HP_SEARCH=1` re-read, run `31737771209`, same arm (`lambdarank+hpsearch`). Both arms use
+the re-searched q50 params, so the vs-q50 comparison stays fair; this checks the *size* against the
+possibility that the cached HP (selected on a different run/label basis) flattered it.
+
+| Horizon | vs-q50 (cached) | vs-q50 (confirm) | vs-naive (confirm) |
+|---|---|---|---|
+| 3d  | +0.0648 | +0.0648 | +0.1333 |
+| 7d  | +0.0608 | +0.0614 | +0.1169 |
+| 14d | +0.0413 | +0.0391 | +0.1018 |
+| 30d | +0.0260 | +0.0297 | +0.0757 |
+
+The vs-q50 edge survives at 4/4, moving ≤0.002 at 7/14/30d. 3d is byte-identical because
+`SKIP_HP_HORIZONS = [3]` (`forecaster.py:384`) skips the Optuna phase there, so FORCE_HP_SEARCH is
+a no-op at 3d — the identical numbers are expected, not a caching artifact. **The diagnostic edge
+is HP-robust.** The size is now confirmed, which is what the serving design should be sized against.
+
 ## Next step
 
 The serving-transfer pre-registration the spec deferred is now earned. It has to answer the
