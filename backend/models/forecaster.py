@@ -730,7 +730,7 @@ class ItemForecaster:
     # pyarrow round-trip on pandas 2.3.3) rather than as a column: the predict
     # frame reaches ~2M rows and copying it to append a constant would double
     # peak memory on the path that already OOMs in CI.
-    ENGINEERED_CACHE_VERSION = 2
+    ENGINEERED_CACHE_VERSION = 3   # v3: sidecar columns join into the daily frame
 
     # --- Voted price frame cache ---
     # Bump VOTED_CACHE_VERSION whenever _fetch_voted_price_history or
@@ -3961,6 +3961,28 @@ class ItemForecaster:
         )
         return best_params
 
+    # Recovered demand/supply sidecars, joined AFTER voting so none of them
+    # votes as a price. Local research dataset only; a missing file is a no-op.
+    _SIDECARS = {
+        "volume-panel.parquet": ["steam_volume", "steam_sale_median"],
+        "bid-panel.parquet": ["buff_bid"],
+        "stattrak-panel.parquet": ["st_premium"],
+        "supply-history.parquet": ["buff_listing_count"],
+    }
+
+    def _attach_sidecars(self, daily: pd.DataFrame) -> pd.DataFrame:
+        for fname, cols in self._SIDECARS.items():
+            path = self.archive_dir / fname
+            if not path.exists():
+                continue
+            side = pd.read_parquet(path)[["item_id", "date"] + cols]
+            daily = daily.merge(side, on=["item_id", "date"], how="left")
+            if "steam_volume" in cols:
+                # Prefer recovered volume; keep existing where unmatched.
+                daily["volume"] = daily["steam_volume"].fillna(daily["volume"])
+                daily = daily.drop(columns=["steam_volume"])
+        return daily
+
     def engineer_features(self, price_df: pd.DataFrame,
                           events_df: pd.DataFrame,
                           item_first_dates=None,
@@ -3995,6 +4017,7 @@ class ItemForecaster:
             )
         else:
             daily = price_df
+        daily = self._attach_sidecars(daily)
         # _compute_price_features is never skipped: price_technicals is the one
         # allowlisted group, and the `other` columns are computed inside it.
         skip = self._skipped_feature_groups() if skip_unused_groups else set()
