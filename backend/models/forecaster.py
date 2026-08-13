@@ -4069,6 +4069,10 @@ class ItemForecaster:
             if not path.exists():
                 continue
             side = pd.read_parquet(path)[["item_id", "date"] + cols]
+            # Normalize the join key so a Timestamp-vs-date dtype drift
+            # between a sidecar and `daily` can't silently zero out the
+            # merge instead of raising -- see the Timestamp-typed test.
+            side["date"] = pd.to_datetime(side["date"]).dt.date
             daily = daily.merge(side, on=["item_id", "date"], how="left")
             if "steam_volume" in cols:
                 # Prefer recovered volume; keep existing where unmatched.
@@ -6066,6 +6070,20 @@ class ItemForecaster:
                    # Name it here so the exclusion is a decision, not a
                    # side effect.
                    "n_ask_sources",
+                   # Raw sidecar columns from _attach_sidecars. Each maps to
+                   # _feature_group()'s "other" bucket, which the default
+                   # allowlist drops -- but the BID/STATTRAK A/B widens the
+                   # allowlist to admit "other", and buff_listing_count has no
+                   # gating flag at all (dense in training, NULL at serving:
+                   # availability leakage). Only the derived, flag-gated
+                   # columns (bid_ask_spread, bid_present, st_premium_present,
+                   # the volume_* features) may ever be selectable; the raw
+                   # sidecar literals must not be. steam_sale_median is the
+                   # volume panel's helper price column, not a feature. (The
+                   # raw "volume" column was already excluded above, alongside
+                   # "price" -- unrelated to this addition.)
+                   "buff_bid", "st_premium", "buff_listing_count",
+                   "steam_sale_median",
                    # The clean-cohort mask. `prepare_targets` adds it after
                    # this runs and the dtype filter below would drop a bool
                    # anyway, so this is belt-and-braces -- but it is a
