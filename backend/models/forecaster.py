@@ -566,6 +566,29 @@ class ItemForecaster:
         )
         return df
 
+    @staticmethod
+    def _stattrak_feature_enabled() -> bool:
+        """Whether the recovered StatTrak usage-premium feature reaches the trained feature set.
+
+        Default OFF: `st_premium` is NaN in production until the sidecar (Task 5) is
+        joined, and the feature set is otherwise unchanged. Set STATTRAK_FEATURE=1 to
+        enable.
+        """
+        return os.environ.get("STATTRAK_FEATURE") == "1"
+
+    @staticmethod
+    def _compute_stattrak_feature(df: pd.DataFrame) -> pd.DataFrame:
+        """Derive a presence indicator from `st_premium` (Task 5's sidecar join).
+
+        `st_premium` itself is left as-is — NaN is read as missing by the model, no
+        fill applied. Safe when `st_premium` is entirely absent: it is created as NaN
+        first, so `st_premium_present` is 0 for every row, no exception.
+        """
+        if "st_premium" not in df.columns:
+            df["st_premium"] = np.nan
+        df["st_premium_present"] = df["st_premium"].notna().astype(int)
+        return df
+
     def _active_shelved_features(self) -> frozenset:
         """SHELVED_FEATURES, minus the volume names when the flag is on."""
         if self._volume_features_enabled():
@@ -2171,6 +2194,8 @@ class ItemForecaster:
         df = self._compute_volume_features(df, grouped)
         if self._bid_features_enabled():
             df = self._compute_bid_features(df)
+        if self._stattrak_feature_enabled():
+            df = self._compute_stattrak_feature(df)
 
         # Boolean indicators for features with frequent missingness
         df["rsi_missing"] = df["rsi_14"].isna().astype(int)
