@@ -52,6 +52,19 @@ from scripts.measure_conditional_qhat import (  # noqa: E402
     score_frame,
     sigma_bounds_for_panel,
 )
+# Both audits come from `replay_serving`, including the private profile query.
+# Re-spelling that SQL here would put a second definition of "how was this day
+# collected" in the repo -- which is the exact failure `cutovers_from_counts`
+# was written to end -- and would have to re-apply AGENTS.md invariants 1 and 2
+# by hand.
+from scripts.replay_serving import (  # noqa: E402
+    ANCHOR_NEIGHBOURHOOD_DAYS,
+    DEFAULT_AUDIT_HORIZONS,
+    _feed_profile,
+    audit_anchor_feed,
+    cutovers_from_counts,
+    cutovers_in_outcome_window,
+)
 
 logger = logging.getLogger("attribute_band_level")
 
@@ -82,6 +95,22 @@ SERVED_WIDTH_RATIO = {3: 1.529, 7: 1.548, 14: 1.553, 30: 1.520}
 # cannot carry them. All six pass `replay_serving.audit_anchor_feed`.
 ARM_ANCHORS = ["2026-02-14", "2026-03-10", "2026-04-06", "2026-04-22",
                "2026-06-16", "2026-07-06"]
+
+# ---- the low-level read, fixed by
+# `docs/research/2026-08-13-low-level-anchor-preregistration.md` BEFORE any
+# coverage was computed. Do not tune.
+LOW_LEVEL_QUANTILE = 0.25        # "low" = the bottom quartile of `L[t]`
+LOW_ANCHOR_SPACING_DAYS = 30     # >= the longest horizon, so no two outcome windows overlap
+LOW_ANCHOR_COUNT = 6             # the size of the high-vol set it is compared against
+MIN_ANCHOR_ROWS = 300            # a rate on fewer rows than this is not a rate
+# `sigma` is `price_std_60d / price`, so the panel's first 60 days hold a
+# trailing window that is not yet 60 days long. Measured on this panel before
+# any coverage was computed: 2024-07-09 has **100%** of its rows pinned at the
+# sigma clip floor and the lowest `L[t]` in the panel by a factor of two, which
+# would have made the warm-up the single largest dose in the low set. The rule
+# is the feature's own window, not a fitted cutoff.
+SIGMA_TRAILING_WINDOW_DAYS = 60
+NOMINAL_COVERAGE_PP = 80.0       # the target every |cov - 80| below is measured against
 
 
 def _med_ratio(num: pd.Series, den: pd.Series) -> float:
@@ -250,6 +279,104 @@ def _covered(frame: pd.DataFrame, anchors, horizon: int, gamma: float,
     return out
 
 
+def audit_eligibility(dates, horizons=DEFAULT_AUDIT_HORIZONS,
+                      archive_dir=None) -> dict:
+    """`{date: {horizons that pass BOTH audits}}`, over one archive read.
+
+    The feed audit asks how the anchor day itself was collected; the cutover
+    check asks whether anything changed inside `(anchor, anchor + h]`, which the
+    feed audit cannot see and which voids the label. A date failing the feed
+    audit fails at every horizon — the anchor's own quote is the defect — while
+    a cutover only removes the horizons whose outcome window spans it.
+
+    One `_feed_profile` call covers the whole range rather than one per date:
+    the per-day source set and item count are properties of the archive, not of
+    the anchor, and 700 windowed queries would read the same days 7 times each.
+    """
+    ds = sorted(dates)
+    if not ds:
+        return {}
+    span = max(int(h) for h in horizons)
+    lo = ds[0] - datetime.timedelta(days=ANCHOR_NEIGHBOURHOOD_DAYS)
+    hi = ds[-1] + datetime.timedelta(days=span + ANCHOR_NEIGHBOURHOOD_DAYS)
+    mid = lo + (hi - lo) / 2
+    profile = _feed_profile(mid, archive_dir,
+                            window=(hi - lo).days // 2 + 1)
+    if profile.empty:
+        return {d: set() for d in ds}
+    profile = profile.assign(day=pd.to_datetime(profile["day"]).dt.date)
+    counts = profile.set_index("day")["items"].sort_index()
+    cutovers = cutovers_from_counts(counts)
+
+    out = {}
+    for d in ds:
+        near = profile[
+            (profile["day"] >= d - datetime.timedelta(days=ANCHOR_NEIGHBOURHOOD_DAYS))
+            & (profile["day"] <= d + datetime.timedelta(days=ANCHOR_NEIGHBOURHOOD_DAYS))]
+        ok, _ = audit_anchor_feed(d, near)
+        if not ok:
+            out[d] = set()
+            continue
+        spanned = cutovers_in_outcome_window(d, horizons, cutovers)
+        out[d] = {int(h) for h in horizons if int(h) not in spanned}
+    return out
+
+
+def select_low_level_anchors(levels: pd.Series, eligible: dict, rows: pd.Series,
+                             *, n: int = LOW_ANCHOR_COUNT,
+                             spacing_days: int = LOW_ANCHOR_SPACING_DAYS,
+                             quantile: float = LOW_LEVEL_QUANTILE,
+                             horizons=DEFAULT_AUDIT_HORIZONS,
+                             min_rows: int = MIN_ANCHOR_ROWS,
+                             candidates=None, not_before=None) -> list:
+    """The lowest-`L[t]` dates the panel can referee, greedily spaced.
+
+    **Selection sees `L[t]`, eligibility and row counts. It never sees coverage** —
+    which is the whole point: the arm has only ever been observed on dates where it
+    LOWERS the band, so the set that tests the other direction has to be picked on
+    the level itself and fixed before a rate is computed.
+
+    `eligible` is `{date: {horizons that pass BOTH audits}}`; a date is taken only
+    if it passes at every horizon in `horizons`. That is the 2026-08-13 lesson
+    applied at selection time rather than discovered afterwards — the collection
+    audit and the label-voiding cutover detector disagreed about two anchors of six
+    in the last set, and each was found only after the read.
+
+    `candidates` restricts WHICH dates may be taken without moving what "low"
+    MEANS: the cut is always the `quantile` of the whole `levels` series, so a
+    sub-period leg is measured against the panel's own distribution and a period
+    holding no calm dates returns an empty set instead of relabelling its
+    quietest ordinary ones.
+
+    Returns fewer than `n` if the frame cannot supply them, deliberately: relaxing
+    the spacing or the quantile to reach a count is how a set stops being the set
+    that was pre-registered.
+    """
+    lv = levels.dropna().sort_values()
+    if lv.empty:
+        return []
+    cut = float(lv.quantile(quantile))
+    allowed = None if candidates is None else set(candidates)
+    taken: list = []
+    for d, level in lv.items():
+        if allowed is not None and d not in allowed:
+            continue
+        if not_before is not None and d < not_before:
+            continue
+        if len(taken) >= n:
+            break
+        if level > cut:
+            break
+        if not set(horizons) <= set(eligible.get(d, ())):
+            continue
+        if float(rows.get(d, 0)) < min_rows:
+            continue
+        if any(abs((d - t).days) < spacing_days for t in taken):
+            continue
+        taken.append(d)
+    return taken
+
+
 def shuffled_levels(levels: pd.Series, seed: int = DATE_LEVEL_SEED,
                     n_perm: int = N_PERMUTATIONS):
     """`L[t]` with the date correspondence destroyed, `n_perm` times.
@@ -359,6 +486,9 @@ def main() -> int:
     ap.add_argument("--arm-anchors", default=",".join(ARM_ANCHORS))
     ap.add_argument("--legs", action="store_true",
                     help="run the date-level rescaling legs (0)/(V)/(P)/(S)")
+    ap.add_argument("--select-low", action="store_true",
+                    help="print the low-`L[t]` anchor sets and exit, seeing no "
+                         "coverage — this is how the set is fixed before the read")
     args = ap.parse_args()
 
     horizons = [int(h) for h in args.horizons.split(",") if h.strip()]
@@ -385,6 +515,35 @@ def main() -> int:
     for ym, g in trend.groupby("ym"):
         logger.info("  %s  n=%7s  median sigma %.4f", ym, f"{len(g):,}",
                     float(np.nanmedian(g["sigma_raw"])))
+
+    if args.select_low:
+        # Scored on the SHORTEST horizon's frame, because a date must survive
+        # every horizon to be selected and h=3 is the one whose row counts are
+        # least reduced by label voiding -- the eligibility test is the audits,
+        # not the frame.
+        frame = score_frame(fc, panel, min(horizons), floor, cap)
+        frame["date"] = pd.to_datetime(frame["date"]).dt.date
+        lv, rows = date_levels(frame), frame.groupby("date").size()
+        elig = audit_eligibility(list(lv.index), tuple(horizons))
+        for label, keep in (("B (full panel)", list(lv.index)),
+                            ("A (2026 only)",
+                             [d for d in lv.index if d.year == 2026])):
+            got = select_low_level_anchors(
+                lv, elig, rows, candidates=keep, horizons=tuple(horizons),
+                not_before=min(lv.index) + datetime.timedelta(
+                    days=SIGMA_TRAILING_WINDOW_DAYS))
+            logger.info("\nleg %s: %d of %d candidate dates eligible at all of "
+                        "%s; panel p%d of L = %.4f",
+                        label, sum(1 for d in keep
+                                   if set(horizons) <= set(elig.get(d, ()))),
+                        len(keep), horizons, int(LOW_LEVEL_QUANTILE * 100),
+                        float(lv.quantile(LOW_LEVEL_QUANTILE)))
+            for d in got:
+                logger.info("    %s  L = %.4f  (%.3fx the panel median)  n = %s",
+                            d, lv[d], lv[d] / float(lv.median()),
+                            f"{int(rows[d]):,}")
+            logger.info("    --arm-anchors %s", ",".join(str(d) for d in got))
+        return 0
 
     for h in horizons:
         frame = score_frame(fc, panel, h, floor, cap)

@@ -23,6 +23,8 @@ from scripts.attribute_band_level import (
     decompose,
     fit_level_elasticity,
     pooled_anchor_coverage,
+    SIGMA_TRAILING_WINDOW_DAYS,
+    select_low_level_anchors,
     shuffled_levels,
 )
 
@@ -284,3 +286,115 @@ def test_the_pooled_coverage_is_row_weighted_not_an_average_of_anchors():
     pooled = pooled_anchor_coverage(thin, anchors, horizon=3)
     assert pooled == pytest.approx(expected)
     assert pooled != pytest.approx(float(np.mean(list(per.values()))))
+
+
+# --------------------------------------------------------------------------- #
+# the low-level anchor selection rule
+# `docs/research/2026-08-13-low-level-anchor-preregistration.md`
+# --------------------------------------------------------------------------- #
+
+def _levels(pairs):
+    return pd.Series({pd.Timestamp(d).date(): v for d, v in pairs}).sort_index()
+
+
+def _all_eligible(levels, horizons=(3, 7, 14, 30)):
+    return {d: set(horizons) for d in levels.index}
+
+
+def _rows(levels, n=500):
+    return pd.Series({d: n for d in levels.index})
+
+
+def test_the_low_set_is_taken_in_ascending_level():
+    """The rule is "lowest `L[t]` first", because the arm's untested direction is
+    the one where it must RAISE the band, and dose is what separates it from noise."""
+    lv = _levels([("2024-01-01", 0.09), ("2024-03-01", 0.02),
+                  ("2024-05-01", 0.05), ("2024-07-01", 0.04)])
+    got = select_low_level_anchors(lv, _all_eligible(lv), _rows(lv),
+                                   n=3, spacing_days=30, quantile=1.0)
+    assert got == [datetime.date(2024, 3, 1), datetime.date(2024, 7, 1),
+                   datetime.date(2024, 5, 1)], got
+
+
+def test_two_anchors_closer_than_the_spacing_cannot_both_be_taken():
+    """Adjacent dates share a cross-section and a calibration pool, and at 30d
+    they share an outcome window. Two of those are a replication, not evidence."""
+    lv = _levels([("2024-03-01", 0.02), ("2024-03-05", 0.021),
+                  ("2024-06-01", 0.03)])
+    got = select_low_level_anchors(lv, _all_eligible(lv), _rows(lv),
+                                   n=3, spacing_days=30, quantile=1.0)
+    assert got == [datetime.date(2024, 3, 1), datetime.date(2024, 6, 1)], got
+
+
+def test_a_date_failing_either_audit_at_any_horizon_is_not_selected():
+    """The 2026-08-13 lesson, applied at selection rather than after the read:
+    the collection audit and the label-voiding detector must both pass, at every
+    horizon the read scores, before an anchor set is fixed."""
+    lv = _levels([("2024-03-01", 0.02), ("2024-06-01", 0.03)])
+    elig = _all_eligible(lv)
+    elig[datetime.date(2024, 3, 1)] = {3, 7, 14}      # 30d refused
+    got = select_low_level_anchors(lv, elig, _rows(lv),
+                                   n=2, spacing_days=30, quantile=1.0)
+    assert got == [datetime.date(2024, 6, 1)], got
+
+
+def test_a_thin_date_is_not_selected():
+    """A coverage rate on 40 rows is not a coverage rate."""
+    lv = _levels([("2024-03-01", 0.02), ("2024-06-01", 0.03)])
+    rows = pd.Series({datetime.date(2024, 3, 1): 40,
+                      datetime.date(2024, 6, 1): 500})
+    got = select_low_level_anchors(lv, _all_eligible(lv), rows,
+                                   n=2, spacing_days=30, quantile=1.0)
+    assert got == [datetime.date(2024, 6, 1)], got
+
+
+def test_only_the_bottom_quantile_of_the_level_is_eligible():
+    """"Low" is defined against the panel's own distribution, fixed in advance --
+    not "the lowest six whatever they are", which would select a set from an
+    ordinary regime if the panel happened to hold no calm dates."""
+    lv = _levels([(f"2024-{m:02d}-01", 0.02 + 0.01 * m) for m in range(1, 13)])
+    got = select_low_level_anchors(lv, _all_eligible(lv), _rows(lv),
+                                   n=6, spacing_days=1, quantile=0.25)
+    assert len(got) == 3, got            # 3 of 12 dates sit at or below the p25
+    assert max(lv[d] for d in got) <= lv.quantile(0.25)
+
+
+def test_an_unsatisfiable_set_is_returned_short_rather_than_relaxed():
+    """If the frame cannot supply `n` spaced eligible anchors, the caller gets
+    what exists. Relaxing the rule to reach a count is how a set stops being
+    the set that was pre-registered."""
+    lv = _levels([("2024-03-01", 0.02), ("2024-03-02", 0.021)])
+    got = select_low_level_anchors(lv, _all_eligible(lv), _rows(lv),
+                                   n=6, spacing_days=30, quantile=1.0)
+    assert got == [datetime.date(2024, 3, 1)], got
+
+
+def test_restricting_the_candidates_does_not_move_what_low_means():
+    """Leg A reads a sub-period. If "low" were re-derived inside it, a period with
+    no calm dates would have its quietest ordinary ones relabelled — which is the
+    selection-on-the-arm's-own-axis trap. The cut stays the panel's."""
+    lv = _levels([(f"2024-{m:02d}-01", 0.02 + 0.01 * m) for m in range(1, 13)])
+    late = [d for d in lv.index if d.month >= 7]           # all above the panel p25
+    assert select_low_level_anchors(lv, _all_eligible(lv), _rows(lv),
+                                    candidates=late, n=6, spacing_days=1) == []
+
+
+def test_the_trailing_windows_warm_up_is_not_a_calm_date():
+    """`sigma` is `price_std_60d / price`, so the panel's first 60 days carry a
+    window that is not yet 60 days long. On the real panel 2024-07-09 is 100%
+    pinned at the sigma clip floor and has the lowest `L[t]` by a factor of two —
+    it would have been the largest dose in the set, and it measures the warm-up."""
+    lv = _levels([("2024-07-09", 0.002), ("2024-09-21", 0.05)])
+    got = select_low_level_anchors(
+        lv, _all_eligible(lv), _rows(lv), n=2, spacing_days=30, quantile=1.0,
+        not_before=datetime.date(2024, 7, 9)
+        + datetime.timedelta(days=SIGMA_TRAILING_WINDOW_DAYS))
+    assert got == [datetime.date(2024, 9, 21)], got
+
+
+def test_the_warm_up_window_is_the_feature_s_own():
+    """Pinned against the rolling feature it is derived from, so a change to the
+    feature set cannot leave this constant silently describing nothing."""
+    from models.forecaster import ItemForecaster
+    assert (f"price_std_{SIGMA_TRAILING_WINDOW_DAYS}d"
+            in ItemForecaster._DOLLAR_SCALE_FEATURES)
