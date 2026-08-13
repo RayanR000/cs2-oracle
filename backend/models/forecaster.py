@@ -5702,6 +5702,22 @@ class ItemForecaster:
                         f"{rank_ic_summary['tied_dates']} of "
                         f"{rank_ic_summary['rank_ic_dates']} date-folds. "
                         "← RANK ARMS ON THIS LINE.")
+                # C2 lambdarank arm, read on the CLEAN ANCHOR cohort against both
+                # bars: beat the naive baseline AND the q50's own ordering.
+                if rank_ic_summary["mean_lr_rank_ic_tied"] is not None:
+                    lr_vs_naive = rank_ic_summary["lr_rank_ic_edge_vs_naive_tied"]
+                    lr_vs_q50 = rank_ic_summary["lr_rank_ic_edge_vs_q50_tied"]
+                    logger.info(
+                        "  Cross-sectional (>=$1, CLEAN ANCHOR) LAMBDARANK: "
+                        f"rank_ic={rank_ic_summary['mean_lr_rank_ic_tied']} | "
+                        f"edge vs naive={lr_vs_naive}, vs q50={lr_vs_q50} — "
+                        "PASS needs BOTH > 0.")
+                    if not (lr_vs_naive and lr_vs_naive > 0
+                            and lr_vs_q50 and lr_vs_q50 > 0):
+                        logger.warning(
+                            f"  ⚠ {horizon}d LAMBDARANK does not clear both bars "
+                            f"on the clean-anchor cohort (vs naive={lr_vs_naive}, "
+                            f"vs q50={lr_vs_q50}) — no served step is licensed.")
                 if edge_vs_constant is not None and edge_vs_constant <= 0:
                     logger.warning(
                         f"  ⚠ {horizon}d quantile sign does NOT beat the constant "
@@ -8159,6 +8175,21 @@ class ItemForecaster:
                     naive_rank_ic_tied = self._within_date_rank_ic(
                         naive_pred, actual_returns, val_df["date"], tied_served)
 
+            # C2: a within-date ranker on the same folds, read against the same
+            # naive baseline and (primarily) the same tied cohort. Its scores are
+            # ordinal — DA/MAE are undefined — so only rank IC is stored.
+            lr_rank_ic = lr_rank_ic_tied = None
+            lr_rank_ic_dates = lr_rank_ic_tied_dates = 0
+            if self._lambdarank_enabled():
+                lr_scores = self._lambdarank_fold_scores(
+                    train_df, val_df, horizon, per_quantile_params)
+                lr_rank_ic, lr_rank_ic_dates = \
+                    self._within_date_rank_ic_detail(
+                        lr_scores, actual_returns, val_df["date"], served)
+                lr_rank_ic_tied, lr_rank_ic_tied_dates = \
+                    self._within_date_rank_ic_detail(
+                        lr_scores, actual_returns, val_df["date"], tied_served)
+
             fold_metrics.append({
                 "fold": fold_id + 1,
                 "train_start": str(train_dates[0]),
@@ -8185,6 +8216,10 @@ class ItemForecaster:
                 "naive_rank_ic_tied": naive_rank_ic_tied,
                 "rank_ic_tied_dates": rank_ic_tied_dates,
                 "n_tied": int(tied_served.sum()),
+                "lr_rank_ic": lr_rank_ic,
+                "lr_rank_ic_dates": lr_rank_ic_dates,
+                "lr_rank_ic_tied": lr_rank_ic_tied,
+                "lr_rank_ic_tied_dates": lr_rank_ic_tied_dates,
             })
 
             # Pooled records for the Pesaran-Timmermann test. Built from the
@@ -8304,6 +8339,106 @@ class ItemForecaster:
         """
         return os.environ.get("CV_DIAGNOSTIC_CLASSIFIER", "0") != "0"
 
+    LAMBDARANK_BINS = 8
+
+    @staticmethod
+    def _lambdarank_enabled() -> bool:
+        """Whether CV also fits a within-date `lambdarank` ranker per fold.
+
+        Default OFF. Pure diagnostic (C2): the ranker's scores are read through
+        `_within_date_rank_ic_detail` on the SAME folds as the q50, so its rank
+        IC is directly comparable, and no served artifact consumes it. The read
+        that decides it is the TIED cohort, where `p[d]/S[d] == 1` — a pooled
+        rank-IC win is contaminated by the anchor-deviation factor a ranker will
+        happily order on, which is what made `xs_rank` a serving mirage. Set
+        LAMBDARANK=1. See
+        `docs/superpowers/specs/2026-08-13-lambdarank-diagnostic-design.md`.
+        """
+        return os.environ.get("LAMBDARANK") == "1"
+
+    @staticmethod
+    def _lambdarank_labels(dates, y, k):
+        """Graded relevance + LightGBM `group` vector for a ranking Dataset.
+
+        `dates` must arrive sorted so equal dates are contiguous (the trainer
+        sorts). Relevance is the WITHIN-date rank of the forward return bucketed
+        into `k` graded levels — a global bucketing would re-import the market
+        factor as relevance. `group` is the per-date row count, summing to
+        `len(y)`. A single-row or all-equal date has nothing to rank and
+        collapses to relevance 0, contributing no pairwise signal.
+        """
+        from scipy.stats import rankdata
+        darr = np.asarray(dates)
+        yv = np.asarray(y, dtype=float)
+        rel = np.zeros(len(yv), dtype=np.int32)
+        group = []
+        start = 0
+        n_all = len(darr)
+        for i in range(1, n_all + 1):
+            if i == n_all or darr[i] != darr[start]:
+                n = i - start
+                group.append(n)
+                gy = yv[start:i]
+                if n > 1 and np.ptp(gy) > 0:
+                    r = rankdata(gy, method="average")  # 1..n, ties averaged
+                    rel[start:i] = np.clip(
+                        np.floor((r - 1) / n * k), 0, k - 1).astype(np.int32)
+                start = i
+        return rel, group
+
+    def _lambdarank_fold_scores(self, train_df, val_df, horizon,
+                                per_quantile_params):
+        """Per-fold within-date ranker scores on `val_df`, LAMBDARANK diagnostic.
+
+        Trains one `lambdarank` booster on the fold's train rows — query group =
+        the date's cross-section, relevance = within-date return bucket — and
+        returns its raw scores on `val_df` in `val_df` row order, so they align
+        with the same `served` / `tied_served` masks the q50 rank IC uses. The
+        ranker does NOT take N1's offset: its output is an ordinal score, not a
+        return, and the naive baseline it is read against is unchanged. HP mirror
+        the q50's tuned tree params, held fixed across arms for comparability; a
+        positive result must be re-sized with FORCE_HP_SEARCH=1.
+        """
+        k = self.LAMBDARANK_BINS
+        tcol = f"target_return_{horizon}d"
+        ts = train_df.sort_values("date", kind="stable")
+        feat = ts[self.feature_cols].replace([np.inf, -np.inf], np.nan)
+        med = feat.median()
+        X_tr = feat.fillna(med)
+        rel, group = self._lambdarank_labels(
+            ts["date"].to_numpy(), ts[tcol].to_numpy(), k)
+        q50 = per_quantile_params.get(0.5, {})
+        params = {
+            "objective": "lambdarank",
+            "metric": "ndcg",
+            "label_gain": list(range(k)),
+            # Cover the whole cross-section, not the default top-30 NDCG — rank
+            # IC scores the full ordering.
+            "lambdarank_truncation_level": max(group) if group else k,
+            "boosting_type": self.BOOSTING_TYPE,
+            "max_bin": self.MAX_BIN,
+            "num_leaves": q50.get("num_leaves", 31),
+            "learning_rate": q50.get("learning_rate", 0.03),
+            "max_depth": q50.get("max_depth", 5),
+            "min_data_in_leaf": q50.get("min_data_in_leaf", 15),
+            "lambda_l1": q50.get("lambda_l1", 0.5),
+            "lambda_l2": q50.get("lambda_l2", 0.5),
+            "feature_fraction": q50.get("feature_fraction", 0.7),
+            "verbosity": -1,
+            "n_jobs": -1,
+            "random_state": 42,
+        }
+        ds = lgb.Dataset(
+            X_tr, label=rel, group=group,
+            params={"max_bin": self.MAX_BIN, "feature_pre_filter": False})
+        model = lgb.train(
+            params, ds,
+            num_boost_round=self._boost_rounds(horizon, cv=True),
+            callbacks=[lgb.log_evaluation(0)])
+        X_val = val_df[self.feature_cols].replace(
+            [np.inf, -np.inf], np.nan).fillna(med)
+        return model.predict(X_val)
+
     @staticmethod
     def _direction_records(pred_returns, actual_returns, dates) -> list:
         """Rows in the shape `backtest/directional_test.py` expects.
@@ -8388,6 +8523,11 @@ class ItemForecaster:
         mean_naive = _mean("naive_rank_ic")
         mean_tied = _mean("rank_ic_tied")
         mean_naive_tied = _mean("naive_rank_ic_tied")
+        # C2 lambdarank arm (None throughout when LAMBDARANK is off). The verdict
+        # pair is the tied cohort: it must beat the naive baseline AND the q50's
+        # own ordering, both where `p[d]/S[d] == 1`.
+        mean_lr = _mean("lr_rank_ic")
+        mean_lr_tied = _mean("lr_rank_ic_tied")
         return {
             "mean_rank_ic": mean_rank_ic,
             "mean_naive_rank_ic": mean_naive,
@@ -8395,6 +8535,10 @@ class ItemForecaster:
             "mean_rank_ic_tied": mean_tied,
             "mean_naive_rank_ic_tied": mean_naive_tied,
             "rank_ic_edge_vs_naive_tied": _edge(mean_tied, mean_naive_tied),
+            "mean_lr_rank_ic": mean_lr,
+            "mean_lr_rank_ic_tied": mean_lr_tied,
+            "lr_rank_ic_edge_vs_naive_tied": _edge(mean_lr_tied, mean_naive_tied),
+            "lr_rank_ic_edge_vs_q50_tied": _edge(mean_lr_tied, mean_tied),
             "tied_rows": sum(int(m.get("n_tied") or 0) for m in fold_metrics),
             "tied_dates": sum(int(m.get("rank_ic_tied_dates") or 0)
                               for m in fold_metrics),
