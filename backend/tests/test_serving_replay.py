@@ -19,6 +19,8 @@ from scripts.replay_serving import (COVERAGE_HEADER, DOLLAR_HEADER,
                                     PINNED_MAX_SPAN_DAYS,
                                     PINNED_SMOOTH_WINDOW,
                                     audit_anchor_feed, _feed_profile,
+                                    cutovers_from_counts,
+                                    cutovers_in_outcome_window,
                                     _basis_frame, _coverage_line,
                                     _coverage_by_sigma_rows, _sigma_line,
                                     SIGMA_HEADER, sigma_tilt_pp,
@@ -1072,3 +1074,57 @@ def test_the_bid_source_cannot_make_a_day_look_differently_collected(tmp_path):
     assert all("aggregator_buff163_buy" not in s for s in profile["sources"])
     ok, _ = audit_anchor_feed(date(2026, 7, 9), profile)
     assert ok
+
+
+# --------------------------------------------------------------------------- #
+# the OUTCOME side of the anchor audit
+# --------------------------------------------------------------------------- #
+
+def _counts(rows):
+    """rows: ('YYYY-MM-DD', item_count) -- the daily universe size."""
+    return pd.Series({pd.Timestamp(d).date(): n for d, n in rows}).sort_index()
+
+
+def test_a_cutover_is_detected_by_the_same_rule_the_label_path_uses():
+    """`_collection_shift_dates` fires on an abrupt change in the collected
+    universe size. The audit must use that rule and not a second one, or the
+    replay and the training labels will disagree about which dates exist.
+    """
+    counts = _counts([("2026-03-19", 32_000), ("2026-03-20", 32_100),
+                      ("2026-03-21", 31_900), ("2026-03-22", 25_000),
+                      ("2026-03-23", 25_100)])
+    assert cutovers_from_counts(counts) == [date(2026, 3, 22)]
+
+
+def test_an_ordinary_wobble_in_the_universe_is_not_a_cutover():
+    """The threshold is 20%. A collector that drops a few hundred items overnight
+    is normal and must not void a horizon -- the check is worthless if it fires
+    on ordinary days, because then every anchor is refused.
+    """
+    counts = _counts([("2026-05-01", 26_000), ("2026-05-02", 25_400),
+                      ("2026-05-03", 26_300), ("2026-05-04", 25_900)])
+    assert cutovers_from_counts(counts) == []
+
+
+def test_a_cutover_after_the_anchor_voids_only_the_horizons_that_span_it():
+    """The span rule, `anchor < s <= anchor + h`, copied from `prepare_targets`.
+    This is the case that matters: 2026-03-10 passes the feed audit -- its own
+    collection is ordinary -- and its 14d and 30d OUTCOMES land the far side of
+    the 2026-03-22 consensus break, so the replay would score them against a
+    synthetic market-wide crash while the training label path voids them.
+    """
+    spanned = cutovers_in_outcome_window(
+        date(2026, 3, 10), [3, 7, 14, 30], [date(2026, 3, 22)])
+    assert spanned == {14: [date(2026, 3, 22)], 30: [date(2026, 3, 22)]}
+
+
+def test_a_cutover_on_the_anchor_itself_is_the_feed_audit_s_job_not_this_one():
+    """Exclusive at the anchor, inclusive at the target -- `(anchor, anchor+h]`.
+    A cutover ON the anchor is a different defect with a different remedy, and
+    double-reporting it here would make the two audits disagree about who
+    refused the date.
+    """
+    assert cutovers_in_outcome_window(
+        date(2026, 3, 22), [3, 7], [date(2026, 3, 22)]) == {}
+    assert cutovers_in_outcome_window(
+        date(2026, 3, 19), [3], [date(2026, 3, 22)]) == {3: [date(2026, 3, 22)]}

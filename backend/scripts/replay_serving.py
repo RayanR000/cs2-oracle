@@ -86,6 +86,10 @@ ANCHOR_MIN_ITEM_SHARE = 0.6
 # for deliberately replaying a known-bad anchor, which is a diagnosis and not a
 # measurement.
 ALLOW_DIRTY_ANCHOR_ENV = "ALLOW_DIRTY_ANCHOR"
+# Audited when the caller names no horizons. The outcome-side check runs BEFORE
+# the artifact loads, so it cannot ask the artifact which horizons it serves --
+# and the audit is worth more early than exact.
+DEFAULT_AUDIT_HORIZONS = (3, 7, 14, 30)
 
 
 def _feed_profile(anchor: date, archive_dir: Optional[Path] = None,
@@ -226,6 +230,52 @@ def audit_anchor_feed(anchor: date, profile: pd.DataFrame) -> tuple[bool, list[s
                      f"(floor {ANCHOR_MIN_ITEM_SHARE:.0%}): a partial day, so "
                      f"most items are served from a quote before the anchor.")
     return ok, lines
+
+
+def cutovers_from_counts(counts: pd.Series) -> list:
+    """Dates where the collected universe changed size abruptly.
+
+    `ItemForecaster._collection_shift_dates`' rule, applied to a per-day item
+    count the audit already has. Deliberately the SAME rule and the same
+    threshold, read off the class rather than restated: if the replay and the
+    label path used two definitions of "cutover", a date could be scored here and
+    voided there — which is exactly the state this function exists to end.
+    """
+    c = counts.sort_index()
+    if len(c) < 2:
+        return []
+    prev = c.shift(1)
+    change = (c - prev).abs() / prev.replace(0, np.nan)
+    return [d for d, hit in
+            zip(c.index, change > ItemForecaster.COLLECTION_SHIFT_FRACTION)
+            if bool(hit)]
+
+
+def cutovers_in_outcome_window(anchor: date, horizons, cutovers) -> dict:
+    """{horizon: cutovers inside `(anchor, anchor + horizon]`}.
+
+    THE GAP THIS CLOSES. `audit_anchor_feed` looks ±3 days around the anchor and
+    asks how the day was collected; it cannot see a basis change 30 days out. The
+    label path can, and voids any label whose window spans one — so an anchor that
+    passes the feed audit can still have its OUTCOME quoted on a different source
+    set, and the replay, which resolves outcomes itself, would score it anyway.
+
+    Measured 2026-08-13: `2026-03-10` passes the feed audit and its 14d and 30d
+    targets land the far side of the 2026-03-22 consensus break, where the
+    archive's own consensus drops 8-10%. A band read on that cell is a read on a
+    synthetic crash. Half the pre-registered six-anchor set for the date-level
+    rescaling was affected.
+
+    Span rule copied from `prepare_targets`: exclusive at the anchor — a cutover
+    ON the anchor is the feed audit's business — inclusive at the target.
+    """
+    out = {}
+    for h in horizons:
+        target = anchor + timedelta(days=int(h))
+        hit = [c for c in cutovers if anchor < c <= target]
+        if hit:
+            out[int(h)] = sorted(hit)
+    return out
 
 
 def _outcomes(fc: ItemForecaster, anchor: date, horizons):
@@ -823,6 +873,35 @@ def main() -> int:
             f"Pick another anchor, or set {ALLOW_DIRTY_ANCHOR_ENV}=1 to replay "
             f"it deliberately as a diagnosis.")
         return 2
+    # The OUTCOME side, which the feed audit's ±3 day window cannot reach. An
+    # anchor whose own collection is ordinary can still resolve across a basis
+    # change: 2026-03-10 is clean here and its 14d/30d targets land the far side
+    # of the 2026-03-22 consensus break.
+    audit_horizons = sorted(want) if want else sorted(DEFAULT_AUDIT_HORIZONS)
+    span = _feed_profile(anchor, window=max(audit_horizons))
+    spanned = cutovers_in_outcome_window(
+        anchor, audit_horizons,
+        cutovers_from_counts(
+            span.set_index(pd.to_datetime(span["day"]).dt.date)["items"]))
+    if spanned:
+        for h, cuts in sorted(spanned.items()):
+            logger.warning(
+                "h=%s resolves ACROSS a collector cutover on %s — the anchor is "
+                "quoted on one source basis and its outcome on another, which "
+                "`prepare_targets` voids as a label.", h,
+                ", ".join(c.isoformat() for c in cuts))
+        survivors = [h for h in audit_horizons if h not in spanned]
+        if not survivors and not allowed:
+            logger.error(
+                f"REFUSING {anchor}: every requested horizon spans a cutover. "
+                f"Pick another anchor, or set {ALLOW_DIRTY_ANCHOR_ENV}=1.")
+            return 2
+        if survivors:
+            logger.warning("dropping %s; replaying %s",
+                           ",".join(str(h) for h in sorted(spanned)),
+                           ",".join(str(h) for h in survivors))
+            want = set(survivors)
+
     if not ok:
         logger.warning(
             f"{ALLOW_DIRTY_ANCHOR_ENV}=1: proceeding on an anchor that FAILED "
