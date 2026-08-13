@@ -225,11 +225,23 @@ also recorded in `changelog/`, which is the durable record. Load-bearing ones:
 ## Changelog (`changelog/`)
 
 Append-only dated decision records: bug fixes, features, audits, and refuted experiments.
-157 entries, 2026-07-08 to 2026-08-13. Entries are never edited to match later reality —
+158 entries, 2026-07-08 to 2026-08-13. Entries are never edited to match later reality —
 several describe code that has since been deleted, which is the point. Per `AGENTS.md`
 workflow rule 2, non-trivial decisions get a new dated note here.
 
 The newest:
+
+- `2026-08-13-ab-harnesses-follow-productions-trainer.md` — all **thirteen** training `ab_test_*`
+  harnesses now use `ItemForecaster._train_ensemble_member` at
+  `_boost_rounds(horizon, cv=True)`. Until now every one early-stopped on `valid_sets=[dval]` and
+  then scored `X_val` — the same rows — with a trainer production abandoned on 2026-08-08, so
+  **every stored verdict describes an estimator that is not served**. Three ad-hoc opt-in flags
+  (`--no-early-stop` x2, `--fixed-rounds`) collapse into `EARLY_STOPPING=1`, which reproduces the
+  old arm and so makes a re-read *paired*. ⚠️ **The "+1.5-2.7pp selection leak" framing is only half
+  supported** — that figure is two channels at once and **neither reproduced** synthetically
+  (selection −0.26pp t = −0.40, trainer +0.11pp t = +0.72), so the size is a property of the real
+  archive and is left open rather than asserted. **`C7` is unblocked, not done:** nothing was
+  re-run, and the defects are stacked five deep. Suite 2142 → 2194.
 
 - `2026-08-13-cohort-geometry-is-not-c1s-gap.md` — the last named explanation for C1's CV→serving
   gap, closed by code read plus two archive counts. The asymmetry is real and located: training's

@@ -442,7 +442,7 @@ def _direction_label(value):
 
 
 def run_evaluation(df, pruned, horizon_filter=None, n_jobs=None,
-                   row_budget=None, fixed_rounds=None):
+                   row_budget=None):
     """Walk-forward over the prebuilt frame. Returns results[horizon][arm].
 
     `row_budget` overrides ROW_BUDGET. Note that above ~1.2M it stops binding
@@ -454,12 +454,14 @@ def run_evaluation(df, pruned, horizon_filter=None, n_jobs=None,
     from the one the module docstring describes, and the two must not be
     compared as if they were the same experiment.
 
-    `fixed_rounds` replaces early stopping with a fixed round count. Early
-    stopping here selects the round count on `dval` and then SCORES `dval`,
-    and the 21-day window's dates all move with the market, so its effective
-    sample is ~a dozen observations -- the pathology production removed on
-    2026-08-08 (`models/forecaster.py`, fixed boost rounds), which had left 9
-    of 33 CV folds fitting a single tree.
+    Rounds come from `ItemForecaster._boost_rounds(horizon, cv=True)`, which is
+    production's own table. This used to early-stop on `dval` and then SCORE
+    `dval`, and the 21-day window's dates all move with the market, so its
+    effective sample is ~a dozen observations -- the pathology production
+    removed on 2026-08-08 (`models/forecaster.py`, fixed boost rounds), which
+    had left 9 of 33 CV folds fitting a single tree. The round-count opt-in that
+    used to sit here is gone: fixed rounds are the default now, and
+    `EARLY_STOPPING=1` reproduces the old arm for a paired read.
     """
     if n_jobs is None:
         n_jobs = max(1, (os.cpu_count() or 4) // 2)
@@ -562,18 +564,12 @@ def run_evaluation(df, pruned, horizon_filter=None, n_jobs=None,
                         "force_row_wise": True,
                         **DS_PARAMS,
                     }
-                    if fixed_rounds:
-                        model = lgb.train(
-                            params, dtrain, num_boost_round=fixed_rounds,
-                            callbacks=[lgb.log_evaluation(0)],
-                        )
-                    else:
-                        model = lgb.train(
-                            params, dtrain, num_boost_round=100,
-                            valid_sets=[dval],
-                            callbacks=[lgb.early_stopping(15, verbose=False),
-                                       lgb.log_evaluation(0)],
-                        )
+                    model = ItemForecaster._train_ensemble_member(
+                        params, dtrain, dval,
+                        num_boost_round=ItemForecaster._boost_rounds(
+                            horizon, cv=True),
+                        early_stopping=ItemForecaster._early_stopping_enabled(),
+                    )
                     pred = model.predict(X_val)
 
                     # Strict >=$1 scoring. Flat-actual rows are excluded: an
@@ -722,9 +718,6 @@ def main():
     parser.add_argument("--row-budget", type=int, default=None,
                         help="Override ROW_BUDGET. Above ~1.2M it does not "
                              "bind on this universe -- see run_evaluation.")
-    parser.add_argument("--fixed-rounds", type=int, default=None,
-                        help="Use a fixed boost-round count instead of early "
-                             "stopping on the scored validation window.")
     args = parser.parse_args()
 
     logger.info("=" * 70)
@@ -737,8 +730,7 @@ def main():
         return 0
 
     results = run_evaluation(df, pruned, horizon_filter=args.horizon,
-                            n_jobs=args.n_jobs, row_budget=args.row_budget,
-                            fixed_rounds=args.fixed_rounds)
+                            n_jobs=args.n_jobs, row_budget=args.row_budget)
 
     if args.out:
         # Per-row records are what make the pairing possible but they dominate

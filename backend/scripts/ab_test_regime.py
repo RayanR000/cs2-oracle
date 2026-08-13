@@ -300,11 +300,14 @@ def run_ab_test(max_items=500, horizons=None, skip_db=False):
                     }
                     dtrain = lgb.Dataset(X_train.values, y_train.values)
                     dval = lgb.Dataset(X_val.values, y_val.values, reference=dtrain)
-                    model = lgb.train(
-                        params, dtrain,
-                        num_boost_round=100,
-                        valid_sets=[dval],
-                        callbacks=[lgb.early_stopping(15, verbose=False), lgb.log_evaluation(0)]
+                    # Production's trainer and round table. The old call
+                    # early-stopped on `dval` and scored `X_val` — the same
+                    # rows. `dval` is ignored unless EARLY_STOPPING=1.
+                    model = ItemForecaster._train_ensemble_member(
+                        params, dtrain, dval,
+                        num_boost_round=ItemForecaster._boost_rounds(
+                            horizon, cv=True),
+                        early_stopping=ItemForecaster._early_stopping_enabled(),
                     )
                     global_models[q] = model.predict(X_val.values)
 
@@ -336,11 +339,11 @@ def run_ab_test(max_items=500, horizons=None, skip_db=False):
                             "lambda_l1": 0.5, "lambda_l2": 0.5,
                             "verbosity": -1, "random_state": 42, "n_jobs": -1,
                         }
-                        r_model = lgb.train(
-                            params, r_dtrain,
-                            num_boost_round=100,
-                            valid_sets=[r_dval],
-                            callbacks=[lgb.early_stopping(15, verbose=False), lgb.log_evaluation(0)]
+                        r_model = ItemForecaster._train_ensemble_member(
+                            params, r_dtrain, r_dval,
+                            num_boost_round=ItemForecaster._boost_rounds(
+                                horizon, cv=True),
+                            early_stopping=ItemForecaster._early_stopping_enabled(),
                         )
                         r_models[q] = r_model.predict(r_X_val.values)
 

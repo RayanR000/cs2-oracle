@@ -425,12 +425,17 @@ def run_evaluation(df, pruned, present_new, horizon_filter=None, arm_filter=None
                             "force_row_wise": True,
                             **DS_PARAMS,
                         }
-                        model = lgb.train(
-                            params, dtrain,
-                            num_boost_round=100,
-                            valid_sets=[dval],
-                            callbacks=[lgb.early_stopping(15, verbose=False),
-                                       lgb.log_evaluation(0)]
+                        # Production's trainer, production's round table. The
+                        # old call early-stopped on `dval` and then scored
+                        # `Xv_v` — the same rows — so the verdict was read off
+                        # the window that chose the iteration. `dval` is still
+                        # passed and is ignored unless EARLY_STOPPING=1, which
+                        # is how the leaky arm gets reproduced deliberately.
+                        model = ItemForecaster._train_ensemble_member(
+                            params, dtrain, dval,
+                            num_boost_round=ItemForecaster._boost_rounds(
+                                horizon, cv=True),
+                            early_stopping=ItemForecaster._early_stopping_enabled(),
                         )
                         models[q] = model.predict(Xv_v)
 

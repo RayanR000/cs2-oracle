@@ -442,7 +442,7 @@ def _stratified_sample(train_df, items, budget, fold_idx):
 
 
 def run_evaluation(df, pruned, meta_present, horizon_filter=None, n_jobs=None,
-                   no_early_stop=False, market_relative=False):
+                   market_relative=False):
     if n_jobs is None:
         n_jobs = max(1, (os.cpu_count() or 4) // 2)
     eval_items, train_items, trained_eval = assign_items(df)
@@ -579,17 +579,19 @@ def run_evaluation(df, pruned, meta_present, horizon_filter=None, n_jobs=None,
                         "verbosity": -1, "random_state": 42, "n_jobs": n_jobs,
                         "force_row_wise": True, **DS_PARAMS,
                     }
-                    # Early stopping scores on `dval`, i.e. on the rows being
+                    # Early stopping scored on `dval`, i.e. on the rows being
                     # measured. That is a leak every arm shares -- except that
                     # an arm holding a date proxy can split the validation
                     # window out on its own, so the leak is worth MORE to it
-                    # than to baseline. `--no-early-stop` removes the channel.
-                    cbs = [lgb.log_evaluation(0)]
-                    if not no_early_stop:
-                        cbs.insert(0, lgb.early_stopping(15, verbose=False))
-                    model = lgb.train(
-                        params, dtrain, num_boost_round=100,
-                        valid_sets=[dval], callbacks=cbs)
+                    # than to baseline. It is now off by default: production's
+                    # trainer and round table, with `dval` ignored unless
+                    # EARLY_STOPPING=1 reinstates the old arm for a paired read.
+                    model = ItemForecaster._train_ensemble_member(
+                        params, dtrain, dval,
+                        num_boost_round=ItemForecaster._boost_rounds(
+                            horizon, cv=True),
+                        early_stopping=ItemForecaster._early_stopping_enabled(),
+                    )
                     pred = model.predict(X_val)
 
                     price = val_df["price"].to_numpy(dtype=float)
@@ -725,11 +727,6 @@ def main():
                              "measures idiosyncratic direction, so absolute "
                              "numbers are NOT comparable across this flag -- "
                              "only the arm contrasts are.")
-    parser.add_argument("--no-early-stop", action="store_true",
-                        help="Train a fixed 100 rounds instead of stopping on "
-                             "the validation set. Removes the channel by which "
-                             "a date-proxy feature can overfit the rows being "
-                             "scored.")
     args = parser.parse_args()
 
     logger.info("=" * 70)
@@ -744,7 +741,6 @@ def main():
 
     results = run_evaluation(df, pruned, meta_present,
                              horizon_filter=args.horizon, n_jobs=args.n_jobs,
-                             no_early_stop=args.no_early_stop,
                              market_relative=args.market_relative)
     if args.out:
         slim = {}

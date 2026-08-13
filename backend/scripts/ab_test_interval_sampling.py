@@ -280,9 +280,10 @@ def _fit_quantile(params, X_tr, y_tr, w_tr, X_va, y_va, w_va,
                          **({"weight": w_tr} if w_tr is not None else {}))
     dval = lgb.Dataset(X_va, y_va, reference=dtrain, params=ds_params,
                        **({"weight": w_va} if w_va is not None else {}))
-    callbacks = [lgb.early_stopping(50, verbose=False), lgb.log_evaluation(0)]
-    model = lgb.train(params, dtrain, num_boost_round=nbr,
-                      valid_sets=[dval], callbacks=callbacks)
+
+    model = ItemForecaster._train_ensemble_member(
+        params, dtrain, dval, num_boost_round=nbr,
+        early_stopping=ItemForecaster._early_stopping_enabled())
     pred = model.predict(X_va, num_iteration=model.best_iteration or None)
     return pred, int(model.num_trees()), int(model.best_iteration or model.num_trees())
 
@@ -312,7 +313,11 @@ def _run_horizon(fc, tdf, feat_cols, horizon, max_folds, arms,
                 f"boosting={boosting_type}, arms={arms}")
 
     base_by_q = {q: load_production_params(horizon, q) for q in QUANTILES}
-    nbr = NUM_BOOST_ROUND
+    # Production's per-horizon table, not a 1000-round cap. `best_iter` in
+    # the records below is therefore the fixed count unless EARLY_STOPPING=1,
+    # so the 'q10 saved 11/1/5 trees' collapse in the docstring reproduces
+    # only under that flag.
+    nbr = ItemForecaster._boost_rounds(horizon, cv=True)
 
     for fold_idx, (train_dates, val_dates) in sharded:
         tr = tdf[tdf["date"].isin(train_dates)]

@@ -51,8 +51,12 @@ re-injected after `/compact` — **read the rule yourself before starting work i
   rebuild the collector. `collectors/social_sentiment.py` is kept for local/authenticated
   runs and scores with **FinBERT ONNX INT8** — the "VADER" comments in `models/forecaster.py`
   and `database.py` are stale.
-- **Every A/B result stored in this repo predates the 2026-08-08 statistics fix.** Ten of the
-  thirteen harnesses have not been re-run. Don't cite a stored verdict without checking.
+- **Every A/B result stored in this repo predates the 2026-08-08 statistics fix and the
+  2026-08-13 trainer fix.** Ten of the thirteen harnesses have not been re-run, and until
+  2026-08-13 all thirteen early-stopped on the rows they scored using a trainer production
+  abandoned on 2026-08-08. The defects are stacked — embargo, `paired_mde` clustering, two label
+  changes, the ≥$1 universe, the trainer — so re-running one harness settles one harness. Don't
+  cite a stored verdict without checking. → `ab-statistics`
 - **Neither copy of `ops/forecast_outcomes.parquet` is the full scored panel — query prod
   Postgres read-only for any panel figure.** The **durable** archive that CI writes is fresh
   and its cells are complete, but shallow: 70,409 rows over 10 dates, with 2025-12-01 and

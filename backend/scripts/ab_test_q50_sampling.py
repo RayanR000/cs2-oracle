@@ -246,7 +246,11 @@ def _run_horizon(fc, tdf, feat_cols, horizon, max_folds,
                 f"boosting={boosting_type}")
 
     base = load_production_q50_params(horizon)
-    nbr = NUM_BOOST_ROUND
+    # Production's per-horizon table, not a 1000-round cap for early
+    # stopping to cut down. `best_iter` below is therefore the fixed count
+    # unless EARLY_STOPPING=1, so the artifact-size diagnostic in the module
+    # docstring ('7d q50 saves 1-2 trees') only reproduces under that flag.
+    nbr = ItemForecaster._boost_rounds(horizon, cv=True)
 
     for fold_idx, (train_dates, val_dates) in sharded:
         tr = tdf[tdf["date"].isin(train_dates)]
@@ -263,7 +267,8 @@ def _run_horizon(fc, tdf, feat_cols, horizon, max_folds,
         y_tr = tr[target_col].to_numpy(dtype=float)
         y_va = va[target_col].to_numpy(dtype=float)
 
-        # Production weighting: early stopping sees the weighted val metric.
+        # Production weighting. Under EARLY_STOPPING=1 the weighted val
+        # metric is what stopping reads; by default nothing reads it.
         w_tr = fc._compute_sample_weights(tr, horizon)
         w_va = fc._compute_sample_weights(va, horizon)
 
@@ -274,10 +279,10 @@ def _run_horizon(fc, tdf, feat_cols, horizon, max_folds,
                                  **({"weight": w_tr} if w_tr is not None else {}))
             dval = lgb.Dataset(X_va, y_va, reference=dtrain, params=ds_params,
                                **({"weight": w_va} if w_va is not None else {}))
-            callbacks = [lgb.early_stopping(50, verbose=False), lgb.log_evaluation(0)]
             t0 = time.time()
-            model = lgb.train(params, dtrain, num_boost_round=nbr,
-                              valid_sets=[dval], callbacks=callbacks)
+            model = ItemForecaster._train_ensemble_member(
+                params, dtrain, dval, num_boost_round=nbr,
+                early_stopping=ItemForecaster._early_stopping_enabled())
             fit_s = time.time() - t0
 
             pred = model.predict(X_va, num_iteration=model.best_iteration or None)

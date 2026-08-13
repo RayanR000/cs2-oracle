@@ -406,7 +406,7 @@ def _stratified_sample(train_df, items, budget, fold_idx):
 
 
 def run_evaluation(df, pruned, horizon_filter=None, n_jobs=None,
-                   no_early_stop=False, market_relative=False,
+                   market_relative=False,
                    min_date=DEFAULT_MIN_DATE):
     if n_jobs is None:
         n_jobs = max(1, (os.cpu_count() or 4) // 2)
@@ -546,11 +546,17 @@ def run_evaluation(df, pruned, horizon_filter=None, n_jobs=None,
                         "verbosity": -1, "random_state": 42, "n_jobs": n_jobs,
                         "force_row_wise": True, **DS_PARAMS,
                     }
-                    cbs = [lgb.log_evaluation(0)]
-                    if not no_early_stop:
-                        cbs.insert(0, lgb.early_stopping(15, verbose=False))
-                    model = lgb.train(params, dtrain, num_boost_round=100,
-                                      valid_sets=[dval], callbacks=cbs)
+                    # Production's trainer and round table. The old call
+                    # early-stopped on `dval` and scored `X_val` — the same
+                    # rows — unless an opt-in flag was passed, which
+                    # defaulted off. Fixed rounds are the default now and
+                    # EARLY_STOPPING=1 is the only opt-out.
+                    model = ItemForecaster._train_ensemble_member(
+                        params, dtrain, dval,
+                        num_boost_round=ItemForecaster._boost_rounds(
+                            horizon, cv=True),
+                        early_stopping=ItemForecaster._early_stopping_enabled(),
+                    )
                     pred = model.predict(X_val)
 
                     price = val_df["price"].to_numpy(dtype=float)
@@ -663,7 +669,6 @@ def main():
     ap.add_argument("--build-cache-only", action="store_true")
     ap.add_argument("--out", default=None)
     ap.add_argument("--n-jobs", type=int, default=None)
-    ap.add_argument("--no-early-stop", action="store_true")
     ap.add_argument("--market-relative", action="store_true",
                     help="score idiosyncratic direction (label demeaned by the market "
                          "factor); NOT comparable to raw-label or production numbers")
@@ -679,7 +684,7 @@ def main():
         return 0
 
     results = run_evaluation(df, pruned, horizon_filter=args.horizon,
-                             n_jobs=args.n_jobs, no_early_stop=args.no_early_stop,
+                             n_jobs=args.n_jobs,
                              market_relative=args.market_relative,
                              min_date=args.min_date)
     print_summary(results)

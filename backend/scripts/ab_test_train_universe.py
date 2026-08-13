@@ -540,10 +540,14 @@ def run(df, pruned, horizon, n_jobs):
                 "random_state": 42, "n_jobs": n_jobs,
                 "force_row_wise": True, **DS_PARAMS,
             }
-            model = lgb.train(
-                params, dtrain, num_boost_round=100, valid_sets=[dval],
-                callbacks=[lgb.early_stopping(15, verbose=False),
-                           lgb.log_evaluation(0)])
+            # Production's trainer and round table. The old call early-stopped
+            # on `dval` and scored `X_val` — the same rows. `dval` is ignored
+            # unless EARLY_STOPPING=1.
+            model = ItemForecaster._train_ensemble_member(
+                params, dtrain, dval,
+                num_boost_round=ItemForecaster._boost_rounds(horizon, cv=True),
+                early_stopping=ItemForecaster._early_stopping_enabled(),
+            )
             pred = model.predict(X_val)
 
             # Strict >=$1 scoring, flat-actual rows dropped: sign(0)==sign(0)

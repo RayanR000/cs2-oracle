@@ -175,18 +175,25 @@ def _compute_metrics(y_true, y_pred_low, y_pred_mid, y_pred_high, current_prices
     }
 
 
-def _train_ensemble(params, dtrain, dval, n_ensembles, seeds, feature_fractions):
-    """Train an ensemble of LightGBM quantile models and return averaged predictions on val."""
+def _train_ensemble(params, dtrain, dval, n_ensembles, seeds, feature_fractions,
+                    horizon):
+    """Train an ensemble of LightGBM quantile models and return averaged predictions on val.
+
+    `horizon` is only used to look up production's round count; it carries no
+    other meaning here. It is a required argument rather than a default because
+    the old call early-stopped on `dval` and then predicted `dval.data` — the
+    same rows — so a caller that forgets to say which horizon it is measuring
+    should fail loudly rather than silently pick one.
+    """
     all_preds = []
     for ei in range(n_ensembles):
         p = params.copy()
         p["random_state"] = seeds[ei]
         p["feature_fraction"] = feature_fractions[ei]
-        model = lgb.train(
-            p, dtrain,
-            num_boost_round=100,
-            valid_sets=[dval],
-            callbacks=[lgb.early_stopping(15, verbose=False), lgb.log_evaluation(0)]
+        model = ItemForecaster._train_ensemble_member(
+            p, dtrain, dval,
+            num_boost_round=ItemForecaster._boost_rounds(horizon, cv=True),
+            early_stopping=ItemForecaster._early_stopping_enabled(),
         )
         all_preds.append(model.predict(dval.data))
     return np.mean(all_preds, axis=0)
@@ -322,7 +329,8 @@ def run_ab_test(max_items=500, horizons=None, skip_db=False):
                     t0 = time.time()
                     ens3_preds[q] = _train_ensemble(
                         params, dtrain, dval,
-                        N_ENSEMBLES_3, ENSEMBLE_SEEDS_3, ENSEMBLE_FEATURE_FRACTIONS_3
+                        N_ENSEMBLES_3, ENSEMBLE_SEEDS_3,
+                        ENSEMBLE_FEATURE_FRACTIONS_3, horizon
                     )
                     fold_ens3_time += time.time() - t0
 
@@ -330,7 +338,8 @@ def run_ab_test(max_items=500, horizons=None, skip_db=False):
                     t0 = time.time()
                     ens6_preds[q] = _train_ensemble(
                         params, dtrain, dval,
-                        N_ENSEMBLES_6, ENSEMBLE_SEEDS_6, ENSEMBLE_FEATURE_FRACTIONS_6
+                        N_ENSEMBLES_6, ENSEMBLE_SEEDS_6,
+                        ENSEMBLE_FEATURE_FRACTIONS_6, horizon
                     )
                     fold_ens6_time += time.time() - t0
 

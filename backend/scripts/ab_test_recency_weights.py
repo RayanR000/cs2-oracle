@@ -103,7 +103,11 @@ def run_horizon(fc, tdf, feat_cols, horizon, max_folds):
         logger.warning(f"  no folds for {horizon}d")
         return
     folds = folds[-max_folds:]
-    nbr = NUM_BOOST_ROUND
+    # Production's per-horizon table. This harness's motivation above is that
+    # the early-stopping round was noise-determined (32/16/94 across seeds);
+    # production removed the mechanism on 2026-08-08, so that premise now
+    # describes history. The weight question it tests is unaffected.
+    nbr = ItemForecaster._boost_rounds(horizon, cv=True)
     base = {q: load_params(horizon, q) for q in QUANTILES}
     logger.info(f"  {horizon}d: {len(folds)} folds, boosting={boosting}")
 
@@ -140,9 +144,9 @@ def run_horizon(fc, tdf, feat_cols, horizon, max_folds):
                 ds = {"max_bin": fc.MAX_BIN, "feature_pre_filter": False}
                 dtr = lgb.Dataset(X_tr, y_tr, params=ds, weight=w_tr)
                 dva = lgb.Dataset(X_va, y_va, reference=dtr, params=ds, weight=w_va)
-                cbs = [lgb.early_stopping(50, verbose=False),
-                       lgb.log_evaluation(0)]
-                m = lgb.train(p, dtr, num_boost_round=nbr, valid_sets=[dva], callbacks=cbs)
+                m = ItemForecaster._train_ensemble_member(
+                    p, dtr, dva, num_boost_round=nbr,
+                    early_stopping=ItemForecaster._early_stopping_enabled())
                 bi = m.best_iteration or m.num_trees()
                 preds[q] = m.predict(X_va, num_iteration=bi)
                 iters[q] = bi
