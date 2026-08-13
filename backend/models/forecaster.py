@@ -506,6 +506,47 @@ class ItemForecaster:
         "volume_std_60d",
     })
 
+    # The volume-derived subset of SHELVED_FEATURES (see the comment above and
+    # tests/test_volume_features_shelved.py) -- every column
+    # _compute_volume_features adds. Task 5 recovered a real `volume` column;
+    # VOLUME_FEATURES=1 lets these back into training. Listed exhaustively,
+    # not by prefix, for the same reason as SHELVED_FEATURES itself: the
+    # >0.95 correlation prune is data-dependent, so volume_mean_7d and
+    # volume_std_60d (which the prune would otherwise drop in favour of their
+    # 30d partners) must be un-shelved together with those partners or they
+    # silently survive the prune and re-enter production alone.
+    VOLUME_FEATURE_NAMES = frozenset({
+        "volume_missing",
+        "volume_lag_1d",
+        "volume_lag_7d",
+        "volume_mean_7d",
+        "volume_mean_30d",
+        "volume_std_30d",
+        "volume_mean_60d",
+        "volume_std_60d",
+        "volume_log_change_1d",
+        "volume_log_change_7d",
+        "volume_zscore_30d",
+        "volume_price_conf_7d",
+        "volume_price_conf_1d",
+    })
+
+    @staticmethod
+    def _volume_features_enabled() -> bool:
+        """Whether the recovered volume columns reach the trained feature set.
+
+        Default OFF: production keeps shelving them per SHELVED_FEATURES'
+        volume comment (the archive's volume was identically 0 from 2026-05
+        through the recovery in Task 5). Set VOLUME_FEATURES=1 to un-shelve.
+        """
+        return os.environ.get("VOLUME_FEATURES") == "1"
+
+    def _active_shelved_features(self) -> frozenset:
+        """SHELVED_FEATURES, minus the volume names when the flag is on."""
+        if self._volume_features_enabled():
+            return self.SHELVED_FEATURES - self.VOLUME_FEATURE_NAMES
+        return self.SHELVED_FEATURES
+
     # Dollar-denominated columns. The target is a PERCENTAGE return, so a
     # feature measured in dollars cannot be a price signal — it can only encode
     # which item this is. On the 2026-08-06 artifact these carried 55.6 / 70.2 /
@@ -4679,7 +4720,7 @@ class ItemForecaster:
 
         # Define feature columns (exclude metadata and target columns)
         self.feature_cols = self._select_feature_cols(
-            df, self.HORIZONS, self.SHELVED_FEATURES)
+            df, self.HORIZONS, self._active_shelved_features())
 
         # Restrict to the allowlisted groups and prune correlated columns,
         # in the cheaper order.
