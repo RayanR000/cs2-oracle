@@ -3240,11 +3240,26 @@ class ItemForecaster:
     def _reference_cohort_mask(self, df: pd.DataFrame) -> pd.Series:
         """Rows belonging to the cohort the loaded artifact was trained on.
 
-        By **item median over the frame**, matching `_filter_by_median_price`
-        exactly. A row-wise price test would be a different cohort: one spike
+        By **item median over the frame**, which is `_filter_by_median_price`'s
+        statistic. A row-wise price test would be a different cohort: one spike
         would promote a penny item for a single date, and that date's
         percentiles would then be computed over a population training never
         used.
+
+        ⚠️ **The statistic matches; the SUPPORT does not.** Training takes the
+        median over `build_training_data`'s 1460-day window. This frame is the
+        predict frame -- fetched at `PREDICT_FETCH_DAYS` (730) and already cut to
+        `PREDICT_TAIL_ITEM_DAYS` (240 observed item-days) by the time this runs.
+        Same rule, ~6x different support, so the two cohorts are not identical
+        sets. Measured 2026-08-13 at six anchors: **0.7-0.9% disagreement**
+        (Jaccard 0.991-0.993), and **directional** -- serving admits 140-173
+        items training excludes against 30-33 the other way, because a shorter
+        recent window catches items that have risen through the floor lately.
+        Too small to have been C1's CV->serving gap, which is what it was
+        measured to test, but it is the term that would grow in a rising market
+        and nothing tracks it. The >25% guard in `predict` is a frame-sanity
+        check and would not see this.
+        `docs/changelog/2026-08-13-cohort-geometry-is-not-c1s-gap.md`.
         """
         floor = self._artifact_min_median_price
         if not floor:

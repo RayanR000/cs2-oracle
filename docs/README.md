@@ -225,11 +225,20 @@ also recorded in `changelog/`, which is the durable record. Load-bearing ones:
 ## Changelog (`changelog/`)
 
 Append-only dated decision records: bug fixes, features, audits, and refuted experiments.
-156 entries, 2026-07-08 to 2026-08-13. Entries are never edited to match later reality —
+157 entries, 2026-07-08 to 2026-08-13. Entries are never edited to match later reality —
 several describe code that has since been deleted, which is the point. Per `AGENTS.md`
 workflow rule 2, non-trivial decisions get a new dated note here.
 
 The newest:
+
+- `2026-08-13-cohort-geometry-is-not-c1s-gap.md` — the last named explanation for C1's CV→serving
+  gap, closed by code read plus two archive counts. The asymmetry is real and located: training's
+  reference cohort is the item median over **1460 days**, serving's is the same rule over the
+  predict frame (**730**-day fetch, tailed to **240** observed item-days). **It measures 0.7–0.9%**
+  (Jaccard 0.991–0.993), which cannot erase +0.04–0.08 rank IC. The other training-only filters are
+  null. 🔑 The disagreement is **directional** — serving admits 140–173 items training excludes
+  against 30–33 the other way — which is the term that grows in a rising market and which the >25%
+  frame guard cannot see. **All four C1 explanations are now spent; close it.**
 
 - `2026-08-13-the-low-level-read-fails-its-axis.md` — the date-level rescaling was only ever
   observed where it *narrows* the band, so this measured the other direction. **(L1) fails at 3
