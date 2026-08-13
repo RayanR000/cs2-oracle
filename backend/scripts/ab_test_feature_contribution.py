@@ -165,11 +165,28 @@ def run_evaluation(max_items=200, horizon_filter=None):
         logger.info(f"  Full feature count: {len(all_feature_cols)} → {len(pruned)} (after corr prune)")
 
         # Define feature subsets
+        no_cross_sectional = [c for c in pruned if not c.startswith(CROSS_SECTIONAL_PREFIXES)]
         subsets = {
             "full": pruned,
-            "no_cross_sectional": [c for c in pruned if not c.startswith(CROSS_SECTIONAL_PREFIXES)],
+            "no_cross_sectional": no_cross_sectional,
             "no_events": [c for c in pruned if not c.startswith(EVENT_PREFIXES)],
         }
+
+        # Placebo: remove a RANDOM set of the same size cross-sectional removal
+        # drops (post-corr-prune), so a positive `no_cross_sectional − full`
+        # can be attributed to those columns rather than to capacity reduction.
+        # The leak this re-read is chasing pays the higher-capacity arm most,
+        # so a column-removal harness must show removing *these* columns beats
+        # removing *any* columns. Seed fixed in
+        # docs/research/2026-08-13-feature-contribution-honest-trainer-preregistration.md.
+        PLACEBO_SEED = 20260813
+        k = len(pruned) - len(no_cross_sectional)
+        if k > 0 and len(pruned) - k >= 3:
+            rng = np.random.default_rng(PLACEBO_SEED)
+            drop_idx = rng.choice(len(pruned), size=k, replace=False)
+            drop_set = {pruned[i] for i in drop_idx}
+            subsets["no_random_k"] = [c for c in pruned if c not in drop_set]
+
         for name, cols in subsets.items():
             logger.info(f"    {name:20s}: {len(cols):>3d} features")
 
@@ -411,11 +428,12 @@ def run_evaluation(max_items=200, horizon_filter=None):
 
 def print_comparison(results):
     """Print a comparison table across configurations and horizons."""
-    config_order = ["full", "no_cross_sectional", "no_events"]
+    config_order = ["full", "no_cross_sectional", "no_events", "no_random_k"]
     config_labels = {
         "full": "Full (baseline)",
         "no_cross_sectional": "No Cross-Sec",
         "no_events": "No Events",
+        "no_random_k": "No Random-k (placebo)",
     }
 
     print("\n" + "=" * 100)
