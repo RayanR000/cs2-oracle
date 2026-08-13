@@ -225,11 +225,22 @@ also recorded in `changelog/`, which is the durable record. Load-bearing ones:
 ## Changelog (`changelog/`)
 
 Append-only dated decision records: bug fixes, features, audits, and refuted experiments.
-155 entries, 2026-07-08 to 2026-08-12. Entries are never edited to match later reality —
+156 entries, 2026-07-08 to 2026-08-13. Entries are never edited to match later reality —
 several describe code that has since been deleted, which is the point. Per `AGENTS.md`
 workflow rule 2, non-trivial decisions get a new dated note here.
 
 The newest:
+
+- `2026-08-13-the-low-level-read-fails-its-axis.md` — the date-level rescaling was only ever
+  observed where it *narrows* the band, so this measured the other direction. **(L1) fails at 3
+  of 3**: pooled coverage moves down on the calm set too. Two things it establishes anyway. The
+  dose is `L[t]` against the anchor's **own calibration window**, not the panel median the set was
+  selected on — that axis predicts the sign **6/6 at 30d** and 3/6 at 3d/7d. And **(J)**, the
+  joint set spanning the whole level range, cuts mean per-date `|cov − 80|` by **2.4–2.9pp at the
+  0.0th/0.5th/0.0th percentile** of its own shuffled null, while **(L2) on the calm set alone sits
+  at the 27th/17th** and must not be quoted. ⚠️ **The served regime holds exactly ONE date** in the
+  panel's bottom quartile of `L[t]` that passes both audits at four horizons, so the raising
+  direction is not measurable in-regime at all. Nothing dispatched, no flag.
 
 - `2026-08-12-sigma-exponent-implemented.md` — the band can divide by `sigma ** beta`, behind
   `SIGMA_EXPONENT=1`, off by default. On the real calibration path the deciles go from

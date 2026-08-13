@@ -22,6 +22,8 @@ from scripts.attribute_band_level import (
     date_levels,
     decompose,
     fit_level_elasticity,
+    mean_abs_miss,
+    overshoot_breaches,
     pooled_anchor_coverage,
     SIGMA_TRAILING_WINDOW_DAYS,
     select_low_level_anchors,
@@ -398,3 +400,25 @@ def test_the_warm_up_window_is_the_feature_s_own():
     from models.forecaster import ItemForecaster
     assert (f"price_std_{SIGMA_TRAILING_WINDOW_DAYS}d"
             in ItemForecaster._DOLLAR_SCALE_FEATURES)
+
+
+def test_the_miss_statistic_weights_each_date_once():
+    """(L2) asks how far a TYPICAL DATE sits from target, so a date is one
+    observation of it — unlike the marginal rate, which is row-weighted."""
+    assert mean_abs_miss({1: 0.70, 2: 0.90}) == pytest.approx(10.0)
+    assert mean_abs_miss({1: 0.80}) == pytest.approx(0.0)
+    assert np.isnan(mean_abs_miss({}))
+
+
+def test_an_overshoot_in_either_direction_is_a_breach():
+    """The high-vol read overshot DOWNWARD at this gamma; on a calm date the same
+    arithmetic inflates instead. A mean would net the two out, so (L3) is a
+    per-anchor guard and symmetric."""
+    control = {"a": 0.82, "b": 0.78, "c": 0.60}
+    arm = {"a": 0.93, "b": 0.68, "c": 0.95}
+    got = {a for a, _, _ in overshoot_breaches(control, arm)}
+    assert got == {"a", "b"}, got      # "c" was already far out: not thrown there
+
+
+def test_an_anchor_the_arm_never_scored_is_not_a_breach():
+    assert overshoot_breaches({"a": 0.80}, {}) == []

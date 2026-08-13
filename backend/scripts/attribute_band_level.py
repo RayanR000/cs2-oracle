@@ -110,6 +110,13 @@ MIN_ANCHOR_ROWS = 300            # a rate on fewer rows than this is not a rate
 # would have made the warm-up the single largest dose in the low set. The rule
 # is the feature's own window, not a fitted cutoff.
 SIGMA_TRAILING_WINDOW_DAYS = 60
+# Fixed by `--select-low` and written into the pre-registration BEFORE any
+# coverage was computed. Leg B is the six lowest-`L[t]` eligible dates; every one
+# is pre-2026, because the served regime holds only LEG_A_ANCHORS in the panel's
+# bottom quartile at all four horizons. Leg A carries no bar: n = 1.
+LOW_ANCHORS = ["2024-09-21", "2024-11-04", "2024-12-04",
+               "2025-01-03", "2025-04-01", "2025-07-12"]
+LEG_A_ANCHORS = ["2026-02-19"]
 NOMINAL_COVERAGE_PP = 80.0       # the target every |cov - 80| below is measured against
 
 
@@ -477,6 +484,114 @@ def run_legs(frame: pd.DataFrame, horizon: int, arm_anchors) -> None:
                         a.isoformat(), per_c[a] * 100.0, per_a[a] * 100.0)
 
 
+def mean_abs_miss(per_anchor: dict) -> float:
+    """Mean per-anchor `|coverage − 80|`, in pp. Bars (L2) and (J).
+
+    Per-anchor and equal-weight, deliberately, where `pooled_anchor_coverage` is
+    row-weighted: this statistic asks how far a TYPICAL DATE sits from target, so
+    each date is one observation of it. The row-weighting that protects a marginal
+    rate from a thin date would here let the fattest date own the answer.
+    """
+    if not per_anchor:
+        return float("nan")
+    return float(np.mean([abs(v * 100.0 - NOMINAL_COVERAGE_PP)
+                          for v in per_anchor.values()]))
+
+
+def overshoot_breaches(control: dict, arm: dict, near_pp: float = 5.0,
+                       far_pp: float = 10.0) -> list:
+    """Anchors the arm threw out of calibration. Bar (L3).
+
+    A date the control already covers within `near_pp` of target that the arm
+    moves beyond `far_pp` — in EITHER direction. The high-vol read overshot
+    downward at this same `gamma` (77.68% pooled, 73–77% on two anchors); on a
+    calm date the same arithmetic inflates a well-calibrated band instead, and a
+    mean statistic would net the two out.
+    """
+    out = []
+    for a, c in control.items():
+        if a not in arm:
+            continue
+        c_pp, a_pp = c * 100.0, arm[a] * 100.0
+        if (abs(c_pp - NOMINAL_COVERAGE_PP) <= near_pp
+                and abs(a_pp - NOMINAL_COVERAGE_PP) > far_pp):
+            out.append((a, c_pp, a_pp))
+    return out
+
+
+def run_low_legs(frame: pd.DataFrame, horizon: int, low_anchors,
+                 high_anchors, leg_a_anchors) -> None:
+    """The low-`L[t]` read, bars fixed by
+    `docs/research/2026-08-13-low-level-anchor-preregistration.md`.
+
+    Everything above measures the arm where it NARROWS the band. This measures the
+    direction it has never been observed in. `gamma` is refit here rather than
+    passed so the void condition can be checked against the published value.
+    """
+    fit = fit_level_elasticity(frame)
+    gamma = fit["gamma"]
+    levels = date_levels(frame)
+    logger.info("\nh=%-2s  gamma = %.3f  (b = %.3f [%.3f, %.3f], %s dates)%s",
+                horizon, gamma, fit["b"], fit["ci_lo"], fit["ci_hi"],
+                f"{fit['n_dates']:,}",
+                "   ⚠️ VOIDED as a measurement (leg V, 4.53pp)"
+                if horizon == 14 else "")
+    if not 0.0 <= fit["b"] <= 1.0 or (fit["ci_lo"] <= 0.0 <= 1.0 <= fit["ci_hi"]):
+        logger.info("      ⚠️  VOID: b = %.3f has no defensible gamma.", fit["b"])
+        return
+
+    present = [a for a in low_anchors if a in set(frame["date"])]
+    con = anchor_coverage(frame, present, horizon)
+    arm = anchor_coverage(frame, present, horizon, gamma=gamma, levels=levels)
+    if not con:
+        logger.info("      no leg-B anchor has rows at this horizon")
+        return
+    for a in sorted(con):
+        logger.info("      %s  L %.4f (%.3fx)  control %6.2f%%  arm %6.2f%%  "
+                    "%+6.2fpp", a, levels.get(a, float("nan")),
+                    levels.get(a, float("nan")) / float(levels.median()),
+                    con[a] * 100.0, arm[a] * 100.0,
+                    (arm[a] - con[a]) * 100.0)
+
+    pooled_c = pooled_anchor_coverage(frame, present, horizon)
+    pooled_a = pooled_anchor_coverage(frame, present, horizon, gamma, levels)
+    logger.info("  (L1) DIRECTION   pooled control %6.2f%%  arm %6.2f%%  "
+                "%+.2fpp  — %s", pooled_c * 100.0, pooled_a * 100.0,
+                (pooled_a - pooled_c) * 100.0,
+                "UP" if pooled_a > pooled_c else "DOWN")
+    mc, ma = mean_abs_miss(con), mean_abs_miss(arm)
+    logger.info("  (L2) CALIBRATION mean |cov-80| control %.2fpp  arm %.2fpp  "
+                "(%+.2fpp)", mc, ma, ma - mc)
+    breach = overshoot_breaches(con, arm)
+    logger.info("  (L3) OVERSHOOT   %s", "none" if not breach else "; ".join(
+        f"{a} {c:.2f}% -> {v:.2f}%" for a, c, v in breach))
+
+    null = np.array([
+        pooled_anchor_coverage(frame, present, horizon, gamma, perm) - pooled_c
+        for perm in shuffled_levels(levels)]) * 100.0
+    logger.info("  (P)  PLACEBO     shuffled mean %+.2fpp  p95 %+.2fpp  "
+                "max|.| %.2fpp  — %s (bar %.1fpp)", float(np.mean(null)),
+                float(np.percentile(null, 95)), float(np.max(np.abs(null))),
+                "PASS" if abs(float(np.mean(null))) <= PLACEBO_MAX_PP else "FAIL",
+                PLACEBO_MAX_PP)
+
+    joint = sorted(set(present) | {a for a in high_anchors
+                                   if a in set(frame["date"])})
+    jc = anchor_coverage(frame, joint, horizon)
+    ja = anchor_coverage(frame, joint, horizon, gamma=gamma, levels=levels)
+    logger.info("  (J)  JOINT       %d anchors  mean |cov-80| control %.2fpp  "
+                "arm %.2fpp  (%+.2fpp)", len(jc), mean_abs_miss(jc),
+                mean_abs_miss(ja), mean_abs_miss(ja) - mean_abs_miss(jc))
+
+    a_present = [a for a in leg_a_anchors if a in set(frame["date"])]
+    ac = anchor_coverage(frame, a_present, horizon)
+    aa = anchor_coverage(frame, a_present, horizon, gamma=gamma, levels=levels)
+    for a in sorted(ac):
+        logger.info("  (A)  IN-REGIME   %s  control %6.2f%%  arm %6.2f%%  "
+                    "%+6.2fpp  — NO BAR, n=1 by construction",
+                    a, ac[a] * 100.0, aa[a] * 100.0, (aa[a] - ac[a]) * 100.0)
+
+
 def main() -> int:
     logging.basicConfig(level=logging.INFO, format="%(message)s")
     ap = argparse.ArgumentParser()
@@ -486,6 +601,10 @@ def main() -> int:
     ap.add_argument("--arm-anchors", default=",".join(ARM_ANCHORS))
     ap.add_argument("--legs", action="store_true",
                     help="run the date-level rescaling legs (0)/(V)/(P)/(S)")
+    ap.add_argument("--low-legs", action="store_true",
+                    help="run the low-`L[t]` read (L1)/(L2)/(L3)/(P)/(J)/(A)")
+    ap.add_argument("--low-anchors", default=",".join(LOW_ANCHORS))
+    ap.add_argument("--leg-a-anchors", default=",".join(LEG_A_ANCHORS))
     ap.add_argument("--select-low", action="store_true",
                     help="print the low-`L[t]` anchor sets and exit, seeing no "
                          "coverage — this is how the set is fixed before the read")
@@ -495,6 +614,10 @@ def main() -> int:
     anchors = [pd.Timestamp(a).date() for a in args.anchors.split(",") if a.strip()]
     arm_anchors = [pd.Timestamp(a).date()
                    for a in args.arm_anchors.split(",") if a.strip()]
+    low_anchors = [pd.Timestamp(a).date()
+                   for a in args.low_anchors.split(",") if a.strip()]
+    leg_a_anchors = [pd.Timestamp(a).date()
+                     for a in args.leg_a_anchors.split(",") if a.strip()]
 
     panel = load_panel(args.voted or default_voted_panel())
     floor, cap = sigma_bounds_for_panel(panel)
@@ -573,6 +696,8 @@ def main() -> int:
                         _med_ratio(sa["sigma"], frame["sigma"]))
         if args.legs:
             run_legs(frame, h, arm_anchors)
+        if args.low_legs:
+            run_low_legs(frame, h, low_anchors, arm_anchors, leg_a_anchors)
     return 0
 
 
