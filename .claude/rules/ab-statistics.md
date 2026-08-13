@@ -31,10 +31,18 @@ Rounds come from `ItemForecaster._boost_rounds(horizon, cv=True)` and the booste
 — never `lgb.train` directly and never a private `num_boost_round`. Until 2026-08-13 all
 thirteen training harnesses early-stopped on `valid_sets=[dval]` and then scored `X_val`, the
 same rows, so the iteration was selected on the window the verdict was read from. `EARLY_STOPPING=1`
-reproduces the old arm, which is what makes a re-read *paired*. ⚠️ **Its size is not
-established** — the breadth harness measured early-stopping-minus-fixed-rounds at +1.5–2.7pp DA
-on real folds, but that is two channels at once and neither reproduced synthetically (selection
-−0.26pp, t = −0.40; trainer +0.11pp, t = +0.72). Don't quote a decomposition.
+reproduces the old arm, which is what makes a re-read *paired*.
+
+**The leak is worth ~2pp of pooled DA and it pays the *shuffled* arm most.** Measured on
+`price_primitives` h=7, same frame and same 26 folds: pooled DA rises **+1.98 / +2.42 / +2.73pp**
+(baseline / treatment / placebo), matching the breadth harness's +1.5–2.7pp. It is a **level
+shift**, so that harness's contrast stays `null` under both trainers — but **placebo swings
++1.09pp** (−0.393 → +0.700) and takes the largest rise, so six shuffled columns buy as much as six
+real ones. The leak rewards **capacity, not signal**, so 🔑 **an arm that measured *positive* under
+early stopping is the suspect case**; null and negative results are the easy direction. ⚠️ One
+harness, one horizon — don't carry the numbers. And **never size a defect of this shape
+synthetically**: a 900-row iid frame returned −0.26pp (t = −0.40) for the same effect.
+`docs/changelog/2026-08-13-the-leak-is-worth-two-points-and-it-pays-the-placebo.md`, correcting
 `docs/changelog/2026-08-13-ab-harnesses-follow-productions-trainer.md`.
 
 **Every A/B result stored in this repo predates all of it, and the defects are stacked.** A

@@ -225,11 +225,24 @@ also recorded in `changelog/`, which is the durable record. Load-bearing ones:
 ## Changelog (`changelog/`)
 
 Append-only dated decision records: bug fixes, features, audits, and refuted experiments.
-158 entries, 2026-07-08 to 2026-08-13. Entries are never edited to match later reality —
+159 entries, 2026-07-08 to 2026-08-13. Entries are never edited to match later reality —
 several describe code that has since been deleted, which is the point. Per `AGENTS.md`
 workflow rule 2, non-trivial decisions get a new dated note here.
 
 The newest:
+
+- `2026-08-13-the-leak-is-worth-two-points-and-it-pays-the-placebo.md` — the first harness re-read
+  after the trainer fix, and it **corrects the entry below**: the leak's size **does** reproduce on
+  real folds. Pooled DA rises **+1.98 / +2.42 / +2.73pp** (baseline / treatment / placebo) under
+  `EARLY_STOPPING=1`, matching the breadth harness's +1.5–2.7pp; the synthetic that failed to find it
+  was underpowered, so **never size a fold-structured defect synthetically**. It is a **level shift**,
+  so the contrast stays `null` under both trainers and **the six primitives stay shelved**. 🔑 **The
+  leak pays the *shuffled* arm most** — placebo swings **+1.09pp** between trainers (−0.393 → +0.700)
+  and takes the largest pooled rise, so six columns of noise buy as much as the six real ones. It
+  rewards capacity, not signal, which means **an arm that measured positive under early stopping is
+  the suspect case.** ⚠️ One harness, one horizon; not a reproduction of the published −1.47pp (five
+  other things changed); pooled and paired disagree in sign, and the paired interval is the verdict.
+  The honest trainer is **~2.4x slower** (8m22s vs 3m34s).
 
 - `2026-08-13-ab-harnesses-follow-productions-trainer.md` — all **thirteen** training `ab_test_*`
   harnesses now use `ItemForecaster._train_ensemble_member` at
