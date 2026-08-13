@@ -11,11 +11,20 @@ See `docs/changelog/2026-08-13-the-band-is-sized-on-trailing-volatility.md`.
 """
 from __future__ import annotations
 
+import datetime
+
 import numpy as np
 import pandas as pd
 import pytest
 
-from scripts.attribute_band_level import decompose
+from scripts.attribute_band_level import (
+    anchor_coverage,
+    date_levels,
+    decompose,
+    fit_level_elasticity,
+    pooled_anchor_coverage,
+    shuffled_levels,
+)
 
 ANCHOR = "2026-06-16"
 OTHER = ["2026-06-09", "2026-06-10", "2026-06-11"]
@@ -105,3 +114,173 @@ def test_an_item_served_but_never_pooled_elsewhere_does_not_inflate_the_ratio():
 def test_no_served_row_returns_empty_rather_than_a_ratio_of_nothing():
     panel = _panel(_uniform(["a", "b"], OTHER, 0.08, 4.0))
     assert decompose(panel, [pd.Timestamp(ANCHOR).date()]) == {}
+
+
+# --------------------------------------------------------------------------- #
+# the date-level rescaling arm
+# `docs/research/2026-08-13-date-level-sigma-rescaling-preregistration.md`
+# --------------------------------------------------------------------------- #
+
+def _level_panel(levels, item_factors, resid_tracks_level, eps=None):
+    """A panel whose date effect is known by construction.
+
+    `sigma[i,t] = levels[t] * item_factors[i]`, and `|resid[i,t]|` either carries
+    the same `levels[t]` (forward dispersion repays trailing volatility, so
+    production is already right and `b = 1`) or does not (the defect the arm
+    targets, `b = 0`). `eps` is a per-item multiplier and is deterministic, so
+    the fitted slope is exact rather than approximate.
+    """
+    eps = eps if eps is not None else [1.0] * len(item_factors)
+    rows = []
+    for t, (d, lev) in enumerate(sorted(levels.items())):
+        for i, (f, e) in enumerate(zip(item_factors, eps)):
+            r = f * e * (lev if resid_tracks_level else 1.0)
+            rows.append({"item_id": f"item-{i}", "date": d,
+                         "sigma": lev * f, "resid": r * (1 if i % 2 else -1)})
+    return pd.DataFrame(rows)
+
+
+def _levels_over(n_dates, values, start="2026-01-01"):
+    days = [pd.Timestamp(start).date() + datetime.timedelta(days=k)
+            for k in range(n_dates)]
+    return {d: values[k % len(values)] for k, d in enumerate(days)}
+
+
+def test_the_date_level_is_the_cross_section_median_of_sigma_on_that_date():
+    """`L[t]` is a median over the panel's whole cohort, not over the served rows.
+    Computing it on two different item sets in calibration and serving is the
+    void condition the pre-registration names; the instrument therefore derives
+    it once, from the frame, and every arm divides by the same series.
+    """
+    levels = _levels_over(4, [0.05, 0.15])
+    panel = _level_panel(levels, [1.0, 2.0, 3.0], resid_tracks_level=False)
+    got = date_levels(panel)
+    assert list(got.index) == sorted(levels)
+    assert got.to_numpy() == pytest.approx([0.10, 0.30, 0.10, 0.30])
+
+
+def test_dispersion_that_tracks_the_trailing_level_one_for_one_fits_b_of_one():
+    """The null, and the arm's void condition. If the forward residual rises with
+    trailing volatility exactly as `sigma` does, the conformal score is already
+    level-free, `gamma = 0`, and production's pooled `q_hat` is right.
+    """
+    levels = _levels_over(24, [0.04, 0.06, 0.09, 0.13])
+    panel = _level_panel(levels, [1.0, 1.5, 2.0, 2.5], resid_tracks_level=True)
+    fit = fit_level_elasticity(panel, n_boot=200)
+    assert fit["b"] == pytest.approx(1.0)
+    assert fit["gamma"] == pytest.approx(0.0)
+    assert fit["ci_lo"] <= fit["b"] <= fit["ci_hi"]
+
+
+def test_dispersion_flat_in_the_trailing_level_fits_b_of_zero():
+    """The mechanism the changelog measured, in its pure form: trailing `sigma`
+    swings by date and the forward move does not follow, so the whole level is
+    uninformative and `gamma = 1`.
+    """
+    levels = _levels_over(24, [0.04, 0.06, 0.09, 0.13])
+    panel = _level_panel(levels, [1.0, 1.5, 2.0, 2.5], resid_tracks_level=False)
+    fit = fit_level_elasticity(panel, n_boot=200)
+    assert fit["b"] == pytest.approx(0.0, abs=1e-9)
+    assert fit["gamma"] == pytest.approx(1.0)
+    assert fit["ci_hi"] < 1.0
+
+
+def test_the_bootstrap_resamples_dates_so_a_noisy_fit_reports_a_wide_interval():
+    """The CI is the void check -- an interval containing both 0 and 1 means the
+    arm has no defensible `gamma`. It must therefore widen with the DATE count,
+    which is the unit of variation, not with the row count: a panel of four dates
+    and 900 items each carries four observations of the level, not 3,600.
+    """
+    rng = np.random.default_rng(11)
+    levels = _levels_over(24, [0.04, 0.06, 0.09, 0.13])
+    panel = _level_panel(levels, [1.0, 1.5, 2.0, 2.5], resid_tracks_level=False)
+    # Per-DATE noise: shifts each date's whole cross-section, which is exactly
+    # what a date-level fit cannot average away.
+    noise = {d: float(rng.lognormal(0.0, 0.5)) for d in levels}
+    panel["resid"] = panel["resid"] * panel["date"].map(noise)
+    wide = fit_level_elasticity(panel, n_boot=400)
+    tight = fit_level_elasticity(
+        _level_panel(levels, [1.0, 1.5, 2.0, 2.5], resid_tracks_level=False),
+        n_boot=400)
+    assert (wide["ci_hi"] - wide["ci_lo"]) > (tight["ci_hi"] - tight["ci_lo"])
+
+
+def _defect_panel(n_dates=80, n_items=60, seed=3):
+    """A panel with the measured defect: `sigma`'s level doubles between dates
+    and the residual it normalises does not follow.
+    """
+    rng = np.random.default_rng(seed)
+    levels = _levels_over(n_dates, [0.05, 0.05, 0.10, 0.10])
+    factors = list(1.0 + rng.random(n_items))
+    eps = list(rng.lognormal(0.0, 0.6, n_items))
+    return _level_panel(levels, factors, resid_tracks_level=False, eps=eps), levels
+
+
+def test_a_gamma_of_zero_is_production_exactly():
+    """`gamma = 0` must reproduce the control band bit for bit. Without this the
+    arm's effect cannot be read as an effect: any difference in plumbing between
+    the two paths would show up as a coverage move.
+    """
+    panel, _ = _defect_panel()
+    anchors = sorted(panel["date"].unique())[-3:]
+    control = anchor_coverage(panel, anchors, horizon=3)
+    arm = anchor_coverage(panel, anchors, horizon=3, gamma=0.0)
+    assert control == arm
+
+
+def test_dividing_out_the_level_flattens_coverage_across_dates():
+    """The claim, on a panel built to carry it. Two date levels, one residual
+    distribution: the control over-covers on high-`sigma` dates and under-covers
+    on low ones, and dividing the level out must collapse that spread.
+    """
+    panel, _ = _defect_panel()
+    dates = sorted(panel["date"].unique())
+    # One anchor of each level, both far enough from the panel's start to have a
+    # calibration set under the H+13 embargo.
+    anchors = [dates[-4], dates[-2]]
+    control = anchor_coverage(panel, anchors, horizon=3)
+    arm = anchor_coverage(panel, anchors, horizon=3, gamma=1.0)
+    spread_control = max(control.values()) - min(control.values())
+    spread_arm = max(arm.values()) - min(arm.values())
+    assert spread_control > 0.10          # the defect is present to begin with
+    assert spread_arm < spread_control / 2
+
+
+def test_a_shuffled_level_does_not_flatten_the_same_panel():
+    """The placebo's discriminating power, asserted on a panel where the real arm
+    works. If a level drawn from the wrong date flattened coverage too, the arm
+    would be `q_hat` re-absorbing a constant and the read would be worthless --
+    so this test is what makes a passing placebo mean anything.
+    """
+    panel, _ = _defect_panel()
+    dates = sorted(panel["date"].unique())
+    anchors = [dates[-4], dates[-2]]
+    real = anchor_coverage(panel, anchors, horizon=3, gamma=1.0)
+    real_spread = max(real.values()) - min(real.values())
+
+    levels = date_levels(panel)
+    spreads = []
+    for perm in shuffled_levels(levels, seed=20260813, n_perm=25):
+        cov = anchor_coverage(panel, anchors, horizon=3, gamma=1.0, levels=perm)
+        spreads.append(max(cov.values()) - min(cov.values()))
+    assert float(np.median(spreads)) > real_spread
+
+
+def test_the_pooled_coverage_is_row_weighted_not_an_average_of_anchors():
+    """The placebo differences a MARGINAL coverage, so the pooling rule is part of
+    the bar. Anchors carry unequal row counts, and averaging their rates equally
+    would let a thin date swing the number that decides the read -- the same
+    composition trap that cost nine published figures on 2026-08-11.
+    """
+    panel, _ = _defect_panel()
+    dates = sorted(panel["date"].unique())
+    anchors = [dates[-4], dates[-2]]
+    # Thin one anchor out so equal-weight and row-weight cannot coincide.
+    thin = panel[(panel["date"] != anchors[0])
+                 | (panel["item_id"].isin({f"item-{n}" for n in range(5)}))]
+    per = anchor_coverage(thin, anchors, horizon=3)
+    n = thin[thin["date"].isin(anchors)].groupby("date").size()
+    expected = float(sum(per[a] * n[a] for a in anchors) / sum(n[a] for a in anchors))
+    pooled = pooled_anchor_coverage(thin, anchors, horizon=3)
+    assert pooled == pytest.approx(expected)
+    assert pooled != pytest.approx(float(np.mean(list(per.values()))))
