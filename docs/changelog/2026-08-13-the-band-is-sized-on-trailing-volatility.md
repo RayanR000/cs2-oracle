@@ -59,14 +59,32 @@ Median `sigma` on the ≥$1 cohort, by quarter, two-year panel:
 |---:|---:|---:|---:|---:|
 | 0.0663 | 0.1148 | 0.0655 | **0.1151** | 0.0693 |
 
-**Trailing volatility nearly doubles between quarters**, and all three anchors on this panel sit in
-2026Q2. Per anchor the `sigma` ratio is **2.01 / 1.70 / 1.08** (04-22 / 05-16 / 06-16) — and the h=3
-coverage those same anchors served was **89.85 / 85.58 / 85.99%**. The most volatile anchor
-over-covers most; the one at its own norm over-covers least.
+**Trailing volatility nearly doubles between quarters**, and three of the four audited anchors sit in
+2026Q2.
 
-⚠️ **So the audited anchor set is clean on collection and concentrated in one volatility regime.**
-That is a *fifth* anchor-selection criterion, after the collection audit, and it is not yet
-instrumented. A four-anchor coverage mean drawn from 2026Q2 is not the year's coverage.
+⚠️ **CORRECTION, same day, before this entry was acted on.** This section first said the audited set is
+"concentrated in one volatility regime" and named a fifth anchor-selection criterion on that basis.
+**That is wrong.** It rested on the three anchors the panel could measure — `prepare_targets` voids
+every `2026-07-06` label as spanning a collector cutover, so the instrument silently dropped the one
+anchor outside 2026Q2. Measured directly on the panel's `sigma` (which needs no label), the set spans
+a **2.2× range** and the dose-response is *within* it:
+
+| anchor | `sigma` vs own history | cov% h=3 | h=7 | h=14 | h=30 |
+|---|---:|---:|---:|---:|---:|
+| 2026-04-22 | **1.888×** | 89.85 | 94.04 | 95.90 | 93.76 |
+| 2026-05-16 | 1.528× | 85.58 | 91.52 | 82.38 | 88.12 |
+| 2026-06-16 | 0.994× | 85.99 | 89.45 | 85.99 | 84.92 |
+| 2026-07-06 | 0.857× | 88.90 | 80.86 | 80.08 | 77.94 |
+
+Spearman correlation between the ratio and served coverage: **0.2 / 1.0 / 0.8 / 1.0** at 3/7/14/30d —
+monotone at 7d and 30d, near-monotone at 14d, and h=3 the exception. n = 4, so this is a pattern to
+test, not a result. **This is stronger evidence for the mechanism than the withdrawn claim was**: the
+level moves with trailing volatility *across dates within one audited set*, and the across-anchor
+coverage spread (4.27 / 13.18 / 15.82 / 15.82pp) is the quantity a remedy has to shrink.
+
+The genuine anchor-selection lesson survives in weaker form: **an anchor's trailing-vol level belongs
+beside its collection audit when a set is chosen**, because a set drawn only from high-`sigma` dates
+would report a coverage mean that is not the year's. This set is not that.
 
 ## What this does and does not license
 
