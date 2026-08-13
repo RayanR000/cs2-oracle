@@ -561,7 +561,9 @@ class ItemForecaster:
         if "buff_bid" not in df.columns:
             df["buff_bid"] = np.nan
         df["bid_present"] = df["buff_bid"].notna().astype(int)
-        df["bid_ask_spread"] = (df["price"] - df["buff_bid"]) / df["price"]
+        df["bid_ask_spread"] = np.where(
+            df["price"] > 0, (df["price"] - df["buff_bid"]) / df["price"], np.nan
+        )
         return df
 
     def _active_shelved_features(self) -> frozenset:

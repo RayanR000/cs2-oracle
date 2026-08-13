@@ -20,3 +20,11 @@ def test_no_bid_column_is_safe():
     out = ItemForecaster._compute_bid_features(df.copy())
     assert out.iloc[0]["bid_present"] == 0
     assert pd.isna(out.iloc[0]["bid_ask_spread"])
+
+
+def test_zero_price_yields_nan_not_inf():
+    df = pd.DataFrame({"price": [0.0], "buff_bid": [5.0]})
+    out = ItemForecaster._compute_bid_features(df.copy())
+    assert out.iloc[0]["bid_present"] == 1
+    assert pd.isna(out.iloc[0]["bid_ask_spread"])
+    assert not np.isinf(out.iloc[0]["bid_ask_spread"])
