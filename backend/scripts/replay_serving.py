@@ -31,6 +31,7 @@ from datetime import date, timedelta
 from pathlib import Path
 from typing import Optional
 
+import duckdb
 import numpy as np
 import pandas as pd
 
@@ -40,6 +41,8 @@ from database import SessionLocal                      # noqa: E402
 from db.archive import prices_relation                 # noqa: E402
 from models import conformal                           # noqa: E402
 from models.forecaster import ItemForecaster           # noqa: E402
+from models.item_parser import (                       # noqa: E402
+    archive_universe_sql_filter)
 from api.serving_policy import MIN_SERVED_PRICE_USD    # noqa: E402
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(message)s")
@@ -68,6 +71,161 @@ OUTCOME_TOLERANCE_DAYS = 3
 # deliberately, which is the point of finding out from a red test.
 PINNED_SMOOTH_WINDOW = 3
 PINNED_MAX_SPAN_DAYS = 7
+
+# How far either side of the anchor the feed audit looks for a comparison. The
+# archive drops whole calendar days (07-27, 07-30, 08-02, 08-03 in 2026), so a
+# ±1 window can find nothing to compare against and would pass a bad anchor by
+# default. 3 days each way survives two adjacent gaps.
+ANCHOR_NEIGHBOURHOOD_DAYS = 3
+# Below this share of the neighbours' median item count, the anchor is a partial
+# day rather than a day. 2026-07-09 sits at 0.21 and the thin days of the
+# 07-11..07-13 regime transition at 0.21-0.33, against 0.98-1.02 for an
+# ordinary day.
+ANCHOR_MIN_ITEM_SHARE = 0.6
+# Set to run anyway. Prints the audit as a WARNING banner instead of refusing —
+# for deliberately replaying a known-bad anchor, which is a diagnosis and not a
+# measurement.
+ALLOW_DIRTY_ANCHOR_ENV = "ALLOW_DIRTY_ANCHOR"
+
+
+def _feed_profile(anchor: date, archive_dir: Optional[Path] = None,
+                  window: int = ANCHOR_NEIGHBOURHOOD_DAYS) -> pd.DataFrame:
+    """Per day around `anchor`: which sources wrote it, and how many items.
+
+    Two columns, one aggregate query. Through `prices_relation` and
+    `archive_universe_sql_filter` because `backend/AGENTS.md` invariants 1 and 2
+    hold for any loader that globs the archive — a raw glob here would compare
+    the anchor's source set against a set the first Parquet file's schema
+    allowed, which is exactly the silent narrowing those invariants exist for.
+
+    `source` is NULL for the whole pre-2026 series, so it is COALESCEd to a
+    label: a 2024 anchor then reads `{<none>}` on every day in its window and
+    compares equal, rather than every set being empty and the audit vacuous.
+    """
+    lo = anchor - timedelta(days=window)
+    hi = anchor + timedelta(days=window)
+    con = duckdb.connect()
+    try:
+        relation = prices_relation(
+            con, archive_dir, columns=["item_slug", "day", "source"])
+        return con.sql(f"""
+            SELECT CAST(day AS DATE) AS day,
+                   count(DISTINCT item_slug) AS items,
+                   list_sort(list(DISTINCT COALESCE(source, '<none>'))) AS sources
+            FROM {relation} sub
+            WHERE day >= DATE '{lo.isoformat()}' AND day <= DATE '{hi.isoformat()}'
+              AND (source IS NULL OR source NOT LIKE 'historical_fallback:%')
+              AND {archive_universe_sql_filter("sub.item_slug", "sub.source")}
+            GROUP BY 1 ORDER BY 1
+        """).fetchdf()
+    finally:
+        con.close()
+
+
+def audit_anchor_feed(anchor: date, profile: pd.DataFrame) -> tuple[bool, list[str]]:
+    """Is `anchor` a day the archive collected the way it collected its neighbours?
+
+    Answers the one question that cost a day of band experiments: 2026-07-09's
+    usual feed (`aggregator_steam_17mafo`, ~26,170 items) is **absent**, and
+    `aggregator_sync` (5,502 items) stands in quoting the served cohort 1.287x
+    higher, reverting 0.773x the next day. Every horizon inherits that spike
+    through the anchor, so the down-rate, the DA, the tied share and the learned
+    band's width all reverse on that one date and on no other.
+    `docs/changelog/2026-08-12-july-09-anchor-is-a-feed-substitution.md`.
+
+    The test is deliberately about *collection*, not about prices: a level check
+    would have to pick a denominator, and any denominator it picked would be one
+    of the arms. Which feeds wrote the day and how many items they covered are
+    properties of the archive alone.
+
+    Returns (ok, lines). The caller decides whether to refuse; the lines are the
+    audit either way, so a run that proceeds still records what it proceeded on.
+    """
+    lines: list[str] = []
+    if profile.empty:
+        return False, [f"the archive holds NO rows within "
+                       f"{ANCHOR_NEIGHBOURHOOD_DAYS} days of {anchor}."]
+
+    days = {pd.Timestamp(d).date(): row for d, row in
+            zip(profile["day"], profile.to_dict("records"))}
+    me = days.get(anchor)
+    if me is None:
+        return False, [f"{anchor} is not in the archive at all — it is one of "
+                       f"the dropped calendar days. Neighbours present: "
+                       f"{', '.join(str(d) for d in sorted(days))}."]
+
+    others = [r for d, r in days.items() if d != anchor]
+    if not others:
+        return False, [f"{anchor} is the only day the archive holds within "
+                       f"±{ANCHOR_NEIGHBOURHOOD_DAYS} days, so there is "
+                       f"nothing to compare its collection against."]
+
+    my_sources = frozenset(me["sources"])
+
+    def modal(rows) -> Optional[frozenset]:
+        """The most common source set among *rows*, not their union.
+
+        The union would widen the reference by any one neighbour that sat inside
+        a regime transition, and let a substitution through as a subset of it.
+        Ties break toward the larger set, so a two-day window that disagrees
+        with itself is reported rather than resolved by dict order.
+        """
+        counts: dict[frozenset, int] = {}
+        for r in rows:
+            key = frozenset(r["sources"])
+            counts[key] = counts.get(key, 0) + 1
+        return max(counts, key=lambda s: (counts[s], len(s))) if counts else None
+
+    # The two sides are checked SEPARATELY because they fail for different
+    # reasons and want different words. A day whose collection differs from the
+    # days BEFORE it has features -- every lag, every rolling window -- reading a
+    # synthetic jump across the change; that is the 2026-03-22 consensus break.
+    # A day differing from the days AFTER it resolves its outcome on a basis its
+    # own quote was not measured on. 2026-07-09 is both at once, which is why it
+    # reversed all four horizons rather than tilting them.
+    before = [r for d, r in days.items() if d < anchor]
+    after = [r for d, r in days.items() if d > anchor]
+    ref_before, ref_after = modal(before), modal(after)
+
+    matching = [r for r in others
+                if frozenset(r["sources"]) in {ref_before, ref_after}
+                and frozenset(r["sources"]) == my_sources]
+    pool = matching or others
+    ref_items = float(np.median([r["items"] for r in pool]))
+    share = me["items"] / ref_items if ref_items else float("nan")
+
+    lines.append(f"anchor {anchor}: {me['items']:,} items from "
+                 f"{len(my_sources)} source(s); {len(before)} day(s) before it "
+                 f"and {len(after)} after, reference {ref_items:,.0f} items")
+
+    ok = True
+    for side, ref, consequence in (
+            ("BEFORE", ref_before,
+             "the anchor's own features read a synthetic jump across the change"),
+            ("AFTER", ref_after,
+             "the outcome resolves on a basis the anchor was not quoted on")):
+        if ref is None or ref == my_sources:
+            continue
+        ok = False
+        missing, extra = ref - my_sources, my_sources - ref
+        lines.append(f"  the days {side} the anchor were collected differently "
+                     f"— {consequence}:")
+        if missing:
+            lines.append(f"    absent on the anchor: {', '.join(sorted(missing))}")
+        if extra:
+            lines.append(f"    only on the anchor:   {', '.join(sorted(extra))}")
+    if ok and ref_before != ref_after:
+        # Only reachable when one side is None: if both sides had days and the
+        # audit still passes, both equal `my_sources` and so equal each other.
+        # So this says "half the comparison was unavailable", not "a change".
+        lines.append("  (only one side of the window has days to compare "
+                     "against; the anchor matches the side it has)")
+    if np.isfinite(share) and share < ANCHOR_MIN_ITEM_SHARE:
+        ok = False
+        lines.append(f"  item count is {share:.0%} of that reference "
+                     f"(floor {ANCHOR_MIN_ITEM_SHARE:.0%}): a partial day, so "
+                     f"most items are served from a quote before the anchor.")
+    return ok, lines
 
 
 def _outcomes(fc: ItemForecaster, anchor: date, horizons):
@@ -647,6 +805,29 @@ def main() -> int:
                      "this would 'replay' today and score a forecast whose "
                      "outcome does not exist yet.")
         return 2
+
+    # Before the artifact, before predict(): a bad anchor makes every number
+    # below an artifact of the archive's collection, and the run costs ~4
+    # minutes per anchor to find that out afterwards.
+    ok, audit = audit_anchor_feed(anchor, _feed_profile(anchor))
+    allowed = os.environ.get(ALLOW_DIRTY_ANCHOR_ENV) == "1"
+    for line in audit:
+        (logger.info if ok else logger.warning)(line)
+    if not ok and not allowed:
+        logger.error(
+            f"REFUSING {anchor}: the archive did not collect this day the way "
+            f"it collected its neighbours, so the served anchor price is a feed "
+            f"artifact and every horizon inherits it. This is how 2026-07-09 "
+            f"reversed four horizons at once "
+            f"(changelog/2026-08-12-july-09-anchor-is-a-feed-substitution.md). "
+            f"Pick another anchor, or set {ALLOW_DIRTY_ANCHOR_ENV}=1 to replay "
+            f"it deliberately as a diagnosis.")
+        return 2
+    if not ok:
+        logger.warning(
+            f"{ALLOW_DIRTY_ANCHOR_ENV}=1: proceeding on an anchor that FAILED "
+            f"the feed audit above. These numbers describe the archive's "
+            f"collection, not the model — do not publish them as a measurement.")
 
     db = SessionLocal()
     try:

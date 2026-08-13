@@ -18,6 +18,7 @@ from models.forecaster import ItemForecaster
 from scripts.replay_serving import (COVERAGE_HEADER, DOLLAR_HEADER,
                                     PINNED_MAX_SPAN_DAYS,
                                     PINNED_SMOOTH_WINDOW,
+                                    audit_anchor_feed, _feed_profile,
                                     _basis_frame, _coverage_line,
                                     _coverage_by_sigma_rows, _sigma_line,
                                     SIGMA_HEADER, sigma_tilt_pp,
@@ -854,3 +855,220 @@ def test_the_width_survives_a_band_straddling_zero():
     # And an all-degenerate cohort reports NaN rather than warning its way to it.
     only = pd.DataFrame({"low": [-12.0], "high": [10.0], "realised": [5.0]})
     assert np.isnan(_coverage_row(only)["halfw"])
+
+
+# --- the anchor feed audit -------------------------------------------------
+#
+# 2026-07-09's usual feed is absent and a smaller one with a different basis
+# stands in, quoting the served cohort 1.287x higher and reverting the next day.
+# Four horizons reversed on that one anchor and the tied share flagged it twice
+# before anyone diagnosed it, so the check is a gate rather than a note.
+# docs/changelog/2026-08-12-july-09-anchor-is-a-feed-substitution.md
+
+def _profile(rows):
+    """rows: ('YYYY-MM-DD', items, [sources]), in `_feed_profile`'s shape."""
+    return pd.DataFrame(
+        [{"day": pd.Timestamp(d), "items": n, "sources": sorted(s)}
+         for d, n, s in rows])
+
+
+ORDINARY_WEEK = [(f"2026-07-{d:02d}", 26_170, ["aggregator_steam_17mafo"])
+                 for d in (6, 7, 8, 10, 11, 12)]
+
+
+def test_an_ordinary_anchor_passes_the_feed_audit():
+    profile = _profile(ORDINARY_WEEK + [("2026-07-09", 26_190,
+                                         ["aggregator_steam_17mafo"])])
+    ok, lines = audit_anchor_feed(date(2026, 7, 9), profile)
+    assert ok
+    # It still reports: an audit that only speaks up on failure cannot be read
+    # as evidence that the anchor was checked.
+    assert any("day(s) before it" in ln for ln in lines)
+
+
+def test_the_real_substitution_is_refused_on_both_sides():
+    """The measured 2026-07-09: the 26k-item feed absent, a 5.5k-item one in.
+
+    It fails BEFORE and AFTER at once -- its features read a synthetic +28.7%
+    jump and its outcome resolves back on the ordinary feed -- which is why all
+    four horizons reversed rather than tilting.
+    """
+    profile = _profile(ORDINARY_WEEK + [("2026-07-09", 5_502,
+                                         ["aggregator_sync"])])
+    ok, lines = audit_anchor_feed(date(2026, 7, 9), profile)
+    assert not ok
+    blob = "\n".join(lines)
+    assert "the days BEFORE the anchor were collected differently" in blob
+    assert "the days AFTER the anchor were collected differently" in blob
+    assert "absent on the anchor: aggregator_steam_17mafo" in blob
+    assert "only on the anchor:   aggregator_sync" in blob
+    # And the count leg fires independently of the swap.
+    assert "21%" in blob
+
+
+def test_a_substitution_at_full_coverage_is_still_refused():
+    """The item count alone would pass this. A feed that reprices the cohort at
+    the same breadth is the harder case and the one a count check misses."""
+    profile = _profile(ORDINARY_WEEK + [("2026-07-09", 26_100,
+                                         ["aggregator_sync"])])
+    ok, lines = audit_anchor_feed(date(2026, 7, 9), profile)
+    assert not ok
+    assert any("collected differently" in ln for ln in lines)
+    assert not any("item count is" in ln for ln in lines)
+
+
+def test_a_thin_day_on_the_right_feed_is_still_refused():
+    """And the converse: the 07-11..07-13 transition days carry the full source
+    set at a third of the breadth, so most items are served from a quote before
+    the anchor -- stale rather than substituted."""
+    profile = _profile(ORDINARY_WEEK + [("2026-07-09", 5_525,
+                                        ["aggregator_steam_17mafo"])])
+    ok, lines = audit_anchor_feed(date(2026, 7, 9), profile)
+    assert not ok
+    assert any("item count is 21%" in ln for ln in lines)
+    assert not any("collected differently" in ln for ln in lines)
+
+
+def test_a_feed_change_only_after_the_anchor_names_the_outcome_side():
+    """The anchor's own day and history are fine; the feed set changes two days
+    later, so its 3d outcome resolves on a basis its quote was never measured
+    on. Refused, and the message must say AFTER -- the anchor is not the
+    deficient day here and a 'missing feed' reading would send the reader to the
+    wrong date."""
+    profile = _profile(
+        [(f"2026-07-{d:02d}", 26_170, ["aggregator_steam_17mafo"])
+         for d in (6, 7, 8)]
+        + [(f"2026-07-{d:02d}", 33_000,
+            ["aggregator_steam_17mafo", "aggregator_buff163"])
+           for d in (10, 11, 12)]
+        + [("2026-07-09", 26_190, ["aggregator_steam_17mafo"])])
+    ok, lines = audit_anchor_feed(date(2026, 7, 9), profile)
+    assert not ok
+    blob = "\n".join(lines)
+    assert "the days AFTER the anchor" in blob
+    assert "the days BEFORE the anchor" not in blob
+    assert "absent on the anchor: aggregator_buff163" in blob
+
+
+def test_a_feed_change_only_before_the_anchor_names_the_feature_side():
+    """2026-03-22's shape: the anchor is collected like every day that follows
+    it, and unlike the days it builds its features from."""
+    profile = _profile(
+        [(f"2026-03-{d:02d}", 3_478, ["aggregator_sync"]) for d in (19, 20, 21)]
+        + [(f"2026-03-{d:02d}", 32_449,
+            ["aggregator_sync", "aggregator_buff163", "aggregator_csfloat"])
+           for d in (23, 24, 25)]
+        + [("2026-03-22", 32_437, ["aggregator_sync", "aggregator_buff163",
+                                   "aggregator_csfloat"])])
+    ok, lines = audit_anchor_feed(date(2026, 3, 22), profile)
+    assert not ok
+    blob = "\n".join(lines)
+    assert "the days BEFORE the anchor" in blob
+    assert "synthetic jump" in blob
+    # The count leg must not also fire: the anchor matches the side it belongs
+    # to, so the reference is 32k rather than the pre-change 3.5k.
+    assert not any("item count is" in ln for ln in lines)
+
+
+def test_the_reference_is_the_modal_day_not_the_union():
+    """One neighbour of three on the later side carries an extra feed. The union
+    would call the ordinary anchor 'missing' it; the intersection would let a
+    substitution through as a subset of the reference."""
+    profile = _profile(
+        [(f"2026-07-{d:02d}", 26_170, ["aggregator_steam_17mafo"])
+         for d in (6, 7, 8, 10, 11)]
+        + [("2026-07-12", 33_000,
+            ["aggregator_steam_17mafo", "aggregator_buff163"])]
+        + [("2026-07-09", 26_190, ["aggregator_steam_17mafo"])])
+    ok, _ = audit_anchor_feed(date(2026, 7, 9), profile)
+    assert ok
+
+
+def test_a_dropped_calendar_day_is_named_as_one():
+    """2026-07-27, 07-30, 08-02 and 08-03 hold no rows at all. That is a
+    different failure from a substitution and the message must not confuse the
+    two -- the anchor cannot be replayed, rather than replayed badly."""
+    profile = _profile([("2026-07-26", 26_237, ["aggregator_steam_17mafo"]),
+                        ("2026-07-28", 26_312, ["aggregator_steam_17mafo"])])
+    ok, lines = audit_anchor_feed(date(2026, 7, 27), profile)
+    assert not ok
+    assert "not in the archive at all" in lines[0]
+
+
+def test_an_anchor_with_no_comparable_neighbour_fails_closed():
+    """No neighbour means no reference. Passing would make the audit vacuous on
+    exactly the sparse stretches of the archive where collection is least
+    uniform."""
+    ok, lines = audit_anchor_feed(
+        date(2026, 7, 9),
+        _profile([("2026-07-09", 26_190, ["aggregator_steam_17mafo"])]))
+    assert not ok
+    assert "nothing to compare" in lines[0]
+
+    ok, lines = audit_anchor_feed(date(2026, 7, 9), _profile([]))
+    assert not ok
+    assert "NO rows" in lines[0]
+
+
+def test_the_pre_2026_series_compares_equal_rather_than_vacuous():
+    """`source` is NULL for all 13 years before 2026, which `_feed_profile`
+    COALESCEs to a label. Without that every day's source set would be equal and
+    empty, and the audit would pass every historical anchor by construction --
+    including one collected differently."""
+    profile = _profile([(f"2024-06-{d:02d}", 900, ["<none>"])
+                        for d in (12, 13, 14, 16, 17, 18)]
+                       + [("2024-06-15", 900, ["<none>"])])
+    ok, _ = audit_anchor_feed(date(2024, 6, 15), profile)
+    assert ok
+
+
+def test_the_profile_query_reads_the_archive_through_the_reader(tmp_path):
+    """One end-to-end read, because the audit's inputs come from SQL: the two
+    columns have to survive `prices_relation`'s projection and the universe
+    filter, and a source substitution has to show up as one."""
+    pd.DataFrame({
+        "item_slug": (["AK-47 | Redline (Field-Tested)"] * 3 + ["AWP | Asiimov (Field-Tested)"] * 3
+                      + ["Glock-18 | Fade (Factory New)"] * 2),
+        "day": pd.to_datetime(["2026-07-08", "2026-07-09", "2026-07-10"] * 2
+                              + ["2026-07-08", "2026-07-10"]),
+        "source": (["aggregator_steam_17mafo", "aggregator_sync",
+                    "aggregator_steam_17mafo"] * 2
+                   + ["aggregator_steam_17mafo"] * 2),
+        "mean_price": [10.0, 12.9, 10.1, 50.0, 64.0, 50.2, 5.0, 5.0],
+        "volume": [1] * 8,
+        "ingested_at": pd.to_datetime(["2026-07-10"] * 8),
+    }).to_parquet(tmp_path / "prices-2026-07.parquet", index=False)
+
+    profile = _feed_profile(date(2026, 7, 9), archive_dir=tmp_path)
+    assert list(profile["day"].astype(str)) == ["2026-07-08", "2026-07-09",
+                                               "2026-07-10"]
+    assert list(profile["items"]) == [3, 2, 3]
+    assert list(profile["sources"].iloc[1]) == ["aggregator_sync"]
+
+    ok, lines = audit_anchor_feed(date(2026, 7, 9), profile)
+    assert not ok
+    assert any("absent on the anchor: aggregator_steam_17mafo" in ln
+               for ln in lines)
+
+
+def test_the_bid_source_cannot_make_a_day_look_differently_collected(tmp_path):
+    """`archive_universe_sql_filter` drops BUFF's bid from the consensus, so it
+    must not appear in a day's source set either. A day where only the bid
+    arrived would otherwise read as a substitution -- and a day where it arrived
+    beside the usual feed would read as the anchor 'missing' a feed on every
+    other day."""
+    pd.DataFrame({
+        "item_slug": ["AK-47 | Redline (Field-Tested)"] * 4,
+        "day": pd.to_datetime(["2026-07-08", "2026-07-09", "2026-07-09",
+                               "2026-07-10"]),
+        "source": ["aggregator_steam_17mafo", "aggregator_steam_17mafo",
+                   "aggregator_buff163_buy", "aggregator_steam_17mafo"],
+        "mean_price": [10.0, 10.1, 9.0, 10.2],
+        "volume": [1] * 4,
+        "ingested_at": pd.to_datetime(["2026-07-10"] * 4),
+    }).to_parquet(tmp_path / "prices-2026-07.parquet", index=False)
+
+    profile = _feed_profile(date(2026, 7, 9), archive_dir=tmp_path)
+    assert all("aggregator_buff163_buy" not in s for s in profile["sources"])
+    ok, _ = audit_anchor_feed(date(2026, 7, 9), profile)
+    assert ok

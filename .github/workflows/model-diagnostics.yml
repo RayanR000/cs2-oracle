@@ -213,8 +213,19 @@ on:
       # Cost: roughly 4 minutes per anchor on top of training, all of it the
       # bounded archive read and a cold vote (the cache key carries the anchor).
       # Two anchors keeps a diagnostics job inside the 30-minute working cap.
+      #
+      # The replay AUDITS each anchor against its neighbours' collection before
+      # it loads the artifact, and refuses a date the archive collected
+      # differently -- `audit_anchor_feed` in `scripts/replay_serving.py`. It
+      # refuses 12 of the 187 dates of 2026 that have a resolvable h=30, and two
+      # of the four anchors used through 2026-08-12 are among them: 2026-07-09
+      # (the usual feed absent, a substitute quoting 1.287x) and 2026-04-15 (the
+      # last day before the three-source era ends, so every horizon resolves on
+      # the feed that replaced it). Do not re-use that set. Clean and comparable:
+      # 2026-04-22,2026-05-16,2026-06-16,2026-07-06.
+      # docs/changelog/2026-08-12-july-09-anchor-is-a-feed-substitution.md
       replay_anchors:
-        description: 'Serving replay: comma-separated anchor dates (e.g. 2026-06-01,2026-07-05)'
+        description: 'Serving replay: comma-separated anchor dates (audited; e.g. 2026-05-16,2026-06-16)'
         required: false
         default: ''
         type: string
