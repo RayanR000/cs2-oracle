@@ -541,6 +541,29 @@ class ItemForecaster:
         """
         return os.environ.get("VOLUME_FEATURES") == "1"
 
+    @staticmethod
+    def _bid_features_enabled() -> bool:
+        """Whether the recovered bid/ask-spread features reach the trained feature set.
+
+        Default OFF: `buff_bid` is NaN in production until the sidecar (Task 5) is
+        joined, and the feature set is otherwise unchanged. Set BID_FEATURES=1 to
+        enable.
+        """
+        return os.environ.get("BID_FEATURES") == "1"
+
+    @staticmethod
+    def _compute_bid_features(df: pd.DataFrame) -> pd.DataFrame:
+        """Derive bid/ask-spread features from `buff_bid` (Task 5's sidecar join).
+
+        Safe when `buff_bid` is entirely absent: it is created as NaN first, so
+        `bid_present` is 0 for every row and `bid_ask_spread` is NaN, no exception.
+        """
+        if "buff_bid" not in df.columns:
+            df["buff_bid"] = np.nan
+        df["bid_present"] = df["buff_bid"].notna().astype(int)
+        df["bid_ask_spread"] = (df["price"] - df["buff_bid"]) / df["price"]
+        return df
+
     def _active_shelved_features(self) -> frozenset:
         """SHELVED_FEATURES, minus the volume names when the flag is on."""
         if self._volume_features_enabled():
@@ -2144,6 +2167,8 @@ class ItemForecaster:
         # Volume features
         # =====================================================================
         df = self._compute_volume_features(df, grouped)
+        if self._bid_features_enabled():
+            df = self._compute_bid_features(df)
 
         # Boolean indicators for features with frequent missingness
         df["rsi_missing"] = df["rsi_14"].isna().astype(int)
