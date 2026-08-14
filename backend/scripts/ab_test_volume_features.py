@@ -320,10 +320,21 @@ def run_evaluation(df, pruned, present_new, horizon_filter=None, arm_filter=None
     try:
         # Three arms. baseline/treatment differ only by the 6 new columns.
         # placebo keeps the columns but shuffles their values (handled per-fold).
+        #
+        # Base is the model production serves: shelve + allowlist applied to the
+        # engineered frame. The tested volume features are price_technicals but
+        # SHELVED in production, so they are excluded from the base and added back
+        # only in treatment/placebo — the honest "does adding these to production
+        # help?" experiment. Before this the arms differed by a handful of columns
+        # on a ~138-column base production does not serve. See 2026-08-13 repin.
+        base_cols = [c for c in pruned
+                     if c not in ItemForecaster.SHELVED_FEATURES]
+        base_cols = ItemForecaster._apply_feature_allowlist(
+            base_cols, ItemForecaster.FEATURE_GROUP_ALLOWLIST)
         subsets = {
-            "baseline": [c for c in pruned if c not in NEW_PRIMITIVES],
-            "treatment": pruned,
-            "placebo": pruned,
+            "baseline": base_cols,
+            "treatment": base_cols + present_new,
+            "placebo": base_cols + present_new,
         }
         if arm_filter is not None:
             subsets = {k: v for k, v in subsets.items() if k == arm_filter}

@@ -178,17 +178,24 @@ def load_features(con, forecaster, events_df, max_items):
     # explicit label selects in the monthly files (`init_local_db.py` documents
     # the equivalence). This reproduces the per-file branch it replaced, which
     # took every row from a file with no source column.
+    # `source = 'STEAMCOMMUNITY'` matches 0 rows post archive-rebuild, so this
+    # degenerated to the NULL (pre-2026) branch; the dead disjunct is dropped,
+    # keeping the intended pre-2026 cohort. See 2026-08-13 harness repin.
     union_sql = prices_relation(
         con, ARCHIVE_DIR,
         columns=["item_slug", "day", "mean_price", "volume", "source"],
-        where=f"(source = 'STEAMCOMMUNITY' OR source IS NULL) AND {_UNIVERSE}")
+        where=f"source IS NULL AND {_UNIVERSE}")
 
     items = con.sql(f"""
         SELECT item_slug, COUNT(*) AS row_count
         FROM {union_sql}
         GROUP BY item_slug HAVING row_count >= 90
-        ORDER BY row_count DESC LIMIT {max_items}
+        ORDER BY row_count DESC, item_slug LIMIT {max_items}
     """).fetchall()
+    if not items:
+        raise RuntimeError(
+            "interval_sampling universe query selected 0 items — the source pin "
+            "matched no rows (see 2026-08-13 harness repin).")
     logger.info(f"  {len(items)} items for evaluation")
 
     all_rows = []

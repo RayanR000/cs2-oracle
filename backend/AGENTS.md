@@ -57,6 +57,16 @@ re-injected after `/compact` — **read the rule yourself before starting work i
   abandoned on 2026-08-08. The defects are stacked — embargo, `paired_mde` clustering, two label
   changes, the ≥$1 universe, the trainer — so re-running one harness settles one harness. Don't
   cite a stored verdict without checking. → `ab-statistics`
+- **The harness family was repinned off `STEAMCOMMUNITY` (2026-08-13); the invariant it broke
+  still stands.** `source = 'STEAMCOMMUNITY'` matches **0 rows** in the archive — the values are
+  `NULL` (pre-2026, ends 2025-12-31) and thirteen `aggregator_*` feeds. It used to sit inside an
+  `item_slug IN (...)` subquery in `supply_side` / `regime` / `ensemble`, which selected zero
+  items, and four more harnesses degenerated silently to a NULL-only frame. All are now repinned
+  to `source IS NULL` and carry a non-zero `RuntimeError` guard (verified: 871 / 5,536 / 5,536
+  items). **Still run the universe query and assert a non-zero row count before citing or
+  re-running any `ab_test_*.py`** — the guard is the invariant, not a one-time fix. The six that
+  skipped `_apply_feature_allowlist` (measuring a 138–180-column model where production serves 33)
+  now apply it. → `changelog/2026-08-13-the-null-verdicts-were-not-all-tested.md`
 - **Neither copy of `ops/forecast_outcomes.parquet` is the full scored panel — query prod
   Postgres read-only for any panel figure.** The **durable** archive that CI writes is fresh
   and its cells are complete, but shallow: 70,409 rows over 10 dates, with 2025-12-01 and

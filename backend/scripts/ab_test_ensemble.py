@@ -90,9 +90,13 @@ def _load_parquet_items(con, min_rows=90, backfilled_only=False):
     relation = prices_relation(con, ARCHIVE_DIR, columns=_PRICE_COLUMNS)
     conds = [_UNIVERSE]
     if backfilled_only:
+        # `source = 'STEAMCOMMUNITY'` matched 0 rows post archive-rebuild
+        # (values are NULL pre-2026 / aggregator_* in 2026), so this subquery
+        # made the whole query return 0 items. `source IS NULL` is the
+        # backfilled (pre-2026) series this filter means. See 2026-08-13 repin.
         conds.append(f"""item_slug IN (
                 SELECT DISTINCT item_slug FROM {relation}
-                WHERE source = 'STEAMCOMMUNITY'
+                WHERE source IS NULL
             )""")
     rows = con.sql(f"""
         SELECT item_slug,
@@ -103,8 +107,12 @@ def _load_parquet_items(con, min_rows=90, backfilled_only=False):
         WHERE {" AND ".join(conds)}
         GROUP BY item_slug
         HAVING row_count >= 90
-        ORDER BY row_count DESC
+        ORDER BY row_count DESC, item_slug
     """).fetchall()
+    if not rows:
+        raise RuntimeError(
+            "ensemble universe query selected 0 items — the source pin matched no "
+            "rows (see 2026-08-13 harness repin).")
     return rows
 
 
@@ -277,6 +285,16 @@ def run_ab_test(max_items=500, horizons=None, skip_db=False):
                     exclude |= {f"target_return_{h}d" for h in forecaster.HORIZONS}
                     feature_cols = [c for c in tdf.columns if c not in exclude
                                     and tdf[c].dtype in (np.float64, np.float32, np.int64, int, float)]
+
+                # Measure the model production serves: shelve + allowlist. This
+                # harness's arms differ only in training config, not features, so
+                # the fixed production allowlist applies to both. Without it the
+                # harness measured a 138+-column model production does not serve.
+                # See 2026-08-13 repin.
+                feature_cols = [c for c in feature_cols
+                                if c not in ItemForecaster.SHELVED_FEATURES]
+                feature_cols = ItemForecaster._apply_feature_allowlist(
+                    feature_cols, ItemForecaster.FEATURE_GROUP_ALLOWLIST)
 
                 if len(feature_cols) > 2:
                     corr = train_df[feature_cols].corr().abs()

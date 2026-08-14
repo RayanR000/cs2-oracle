@@ -97,7 +97,10 @@ def load_features(con, forecaster, events_df, max_items):
     for pqf in pq_files:
         cols = {r[0] for r in con.sql(f"DESCRIBE SELECT * FROM read_parquet('{pqf}')").fetchall()}
         if "source" in cols:
-            pq_queries.append(f"SELECT item_slug, day, mean_price, volume FROM read_parquet('{pqf}') WHERE (source IS NULL OR source = 'STEAMCOMMUNITY') AND {_UNIVERSE}")
+            # `source = 'STEAMCOMMUNITY'` matches 0 rows post archive-rebuild, so
+            # this degenerated to the NULL (pre-2026) branch; the dead disjunct is
+            # dropped, keeping the intended pre-2026 cohort. See 2026-08-13 repin.
+            pq_queries.append(f"SELECT item_slug, day, mean_price, volume FROM read_parquet('{pqf}') WHERE source IS NULL AND {_UNIVERSE}")
         else:
             pq_queries.append(f"SELECT item_slug, day, mean_price, volume FROM read_parquet('{pqf}') WHERE {_UNIVERSE}")
     union_sql = " UNION ALL BY NAME ".join(pq_queries)
@@ -106,8 +109,12 @@ def load_features(con, forecaster, events_df, max_items):
         SELECT item_slug, COUNT(*) AS row_count
         FROM ({union_sql})
         GROUP BY item_slug HAVING row_count >= 90
-        ORDER BY row_count DESC LIMIT {max_items}
+        ORDER BY row_count DESC, item_slug LIMIT {max_items}
     """).fetchall()
+    if not items:
+        raise RuntimeError(
+            "direction_labels universe query selected 0 items — the source pin "
+            "matched no rows (see 2026-08-13 harness repin).")
     logger.info(f"  {len(items)} items for evaluation")
 
     all_rows = []

@@ -96,8 +96,13 @@ def run_evaluation(max_items=200, horizon_filter=None):
             cols = con.sql(f"DESCRIBE SELECT * FROM read_parquet('{pqf}')").fetchall()
             col_names = {r[0] for r in cols}
             if "source" in col_names:
+                # `source = 'STEAMCOMMUNITY'` matches 0 rows post archive-rebuild,
+                # so this degenerated to the NULL (pre-2026) branch anyway; the
+                # dead disjunct is dropped. Cohort stays pre-2026 here — extending
+                # it to the 2026 served universe is C4's rebuild (item 3), not this
+                # repair. See 2026-08-13 harness repin.
                 pq_queries.append(
-                    f"SELECT item_slug, day, mean_price, volume FROM read_parquet('{pqf}') WHERE (source IS NULL OR source = 'STEAMCOMMUNITY') AND {_UNIVERSE}"
+                    f"SELECT item_slug, day, mean_price, volume FROM read_parquet('{pqf}') WHERE source IS NULL AND {_UNIVERSE}"
                 )
             else:
                 pq_queries.append(
@@ -113,11 +118,16 @@ def run_evaluation(max_items=200, horizon_filter=None):
             FROM ({union_sql})
             GROUP BY item_slug
             HAVING row_count >= 90
-            ORDER BY row_count DESC
+               AND MEDIAN(mean_price) >= 1.0
+            ORDER BY row_count DESC, item_slug
             LIMIT {max_items}
         """).fetchall()
 
         items = rows
+        if not items:
+            raise RuntimeError(
+                "feature_contribution universe query selected 0 items — the source "
+                "pin or the >=$1 floor matched no rows (see 2026-08-13 harness repin).")
         logger.info(f"  {len(items)} items for evaluation")
 
         # ── Load all price data ─────────────────────────────────────
@@ -164,6 +174,15 @@ def run_evaluation(max_items=200, horizon_filter=None):
 
         logger.info(f"  Full feature count: {len(all_feature_cols)} → {len(pruned)} (after corr prune)")
 
+        # NOTE (2026-08-13 repin): the fixed production allowlist is deliberately
+        # NOT applied here, unlike the other five repinned harnesses. This harness
+        # measures the marginal contribution of feature *groups* (cross_sectional,
+        # events) that are NOT in production's allowlist; applying
+        # FEATURE_GROUP_ALLOWLIST=["price_technicals"] would strip those groups and
+        # collapse `no_cross_sectional` onto `full`, destroying the experiment. The
+        # honest form — base = production's 33 columns, arm = base + the group under
+        # test — is C4's rebuild (research/2026-08-13-next-steps.md item 3), not this
+        # repair. The universe repin, >=$1 floor and tiebreaker above still apply.
         # Define feature subsets
         no_cross_sectional = [c for c in pruned if not c.startswith(CROSS_SECTIONAL_PREFIXES)]
         subsets = {
