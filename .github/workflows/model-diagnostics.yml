@@ -167,6 +167,26 @@ on:
         required: false
         default: false
         type: boolean
+      # A training-ONLY arm, unlike every band arm above: time-decayed sample
+      # weights (SAMPLE_WEIGHT_HALFLIFE_DAYS). It touches neither the label, the
+      # features, nor calibration -- it reweights the training rows so the recent
+      # regime dominates the gradient, and the decay is BAKED INTO the fitted
+      # booster, so predict()/the replay read it for free and it needs no env in
+      # the replay step and no meta.json field.
+      #
+      # CV-positive at 30d on the honest trainer (+1.44% q50 pinball, paired
+      # -0.108 [-0.192, -0.026], permuted-recency placebo null) -- but that is a
+      # BAND/pinball gain, not DA, and the ship bar is served-band coverage.
+      # Every band-width lever before it improved OOF and failed to transfer to
+      # serving. So set `replay_anchors` and read BAND COVERAGE; a CV number does
+      # not settle it. A halflife in days as a string; '0'/'' disables, 365 is
+      # the tested value. Note the band OVER-covers today, so the arm helps only
+      # if it TIGHTENS coverage toward 80%.
+      recency_halflife:
+        description: 'Arm: sample-weight halflife in days (0 disables; 365 tested; read BAND COVERAGE in replay)'
+        required: false
+        default: '0'
+        type: string
       # The decisive test for the band's over-coverage, and the only arm here
       # that changes how much data the FOLD models see rather than what they
       # see. `CV_MAX_TRAIN_ROWS` defaults to 300,000 (`6b6fc81`, a cost cap),
@@ -428,6 +448,11 @@ jobs:
           # env var would be read by `int(os.environ.get(...))` and raise, so the
           # `||` fallback must reproduce the class default rather than ''.
           CV_MAX_TRAIN_ROWS: ${{ inputs.cv_max_train_rows || '300000' }}
+          # Training-only recency arm. Read at import as float(... or "0.0"), so
+          # the `|| '0'` fallback matters: an empty string would raise. Not set
+          # in the replay step -- the decay is already baked into the artifact
+          # this step trains, so serving reads it without the env.
+          SAMPLE_WEIGHT_HALFLIFE_DAYS: ${{ inputs.recency_halflife || '0' }}
           # Serving-only, so it reaches nothing this step trains. Set here for
           # `predict_smoke`, which is the one mode of this step that calls
           # predict() -- and it writes nothing, so the arm cannot escape.

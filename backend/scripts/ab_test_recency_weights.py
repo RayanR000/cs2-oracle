@@ -62,6 +62,13 @@ META_PATH = Path(__file__).parent.parent / "models" / "saved_models" / "meta.jso
 HORIZONS = [3, 7, 14, 30]
 QUANTILES = (0.1, 0.5, 0.9)
 ARMS = {"flat": 0.0, "decay": 365.0}
+# Third arm computed specially in run_horizon: the decay recency-MULTIPLIER
+# permuted across rows per fold, on top of flat's vol/direction weighting. It
+# holds decay's weight DISTRIBUTION but decouples it from recency, so a real
+# recency effect must beat it. Guards the fold-count floor (this harness runs
+# ~8 folds; see .claude/rules/ab-statistics.md — read a placebo before shipping).
+ARM_ORDER = ["flat", "decay", "placebo"]
+PLACEBO_SEED = 20260814
 CONTROL = "flat"
 MIN_TRAIN_ROWS, MIN_VAL_ROWS, MAX_FOLDS = 2000, 200, 8
 GATE_MIN_REL_PINBALL_GAIN = 0.005
@@ -128,17 +135,38 @@ def run_horizon(fc, tdf, feat_cols, horizon, max_folds):
         X_va = va[feat_cols].replace([np.inf, -np.inf], np.nan).fillna(med)
         y_tr = tr[target].to_numpy(float); y_va = va[target].to_numpy(float)
 
-        for arm, hl in ARMS.items():
-            # The ONLY difference between arms: the half-life the weight
-            # helper reads. Patched around weight computation only.
+        # Weights per arm. flat/decay differ only by the half-life the weight
+        # helper reads (patched around weight computation only). placebo keeps
+        # flat's vol/direction weighting but scrambles the recency multiplier.
+        def _weights(hl, frame):
             prev = fmod.SAMPLE_WEIGHT_HALFLIFE_DAYS
             fmod.SAMPLE_WEIGHT_HALFLIFE_DAYS = hl
             try:
-                w_tr = fc._compute_sample_weights(tr, horizon)
-                w_va = fc._compute_sample_weights(va, horizon)
+                return fc._compute_sample_weights(frame, horizon)
             finally:
                 fmod.SAMPLE_WEIGHT_HALFLIFE_DAYS = prev
 
+        w_flat_tr, w_flat_va = _weights(0.0, tr), _weights(0.0, va)
+        w_decay_tr, w_decay_va = _weights(365.0, tr), _weights(365.0, va)
+        if w_flat_tr is None or w_decay_tr is None:
+            logger.info(f"    fold {fi}: skipped (no weights)")
+            continue
+
+        # Permuted-weight placebo. ratio = decay/flat is the renormalised
+        # recency multiplier 0.5^(age/hl); permuting it row-wise (fixed seed per
+        # fold) preserves its distribution while breaking its alignment to age.
+        rng = np.random.default_rng(PLACEBO_SEED + fi)
+        def _placebo(w_flat, w_decay):
+            ratio = w_decay / np.maximum(w_flat, 1e-12)
+            w = w_flat * rng.permutation(ratio)
+            return (w / max(float(np.mean(w)), 1e-8)).astype(np.float32)
+        weights = {"flat": (w_flat_tr, w_flat_va),
+                   "decay": (w_decay_tr, w_decay_va),
+                   "placebo": (_placebo(w_flat_tr, w_decay_tr),
+                               _placebo(w_flat_va, w_decay_va))}
+
+        for arm in ARM_ORDER:
+            w_tr, w_va = weights[arm]
             t0 = time.time()
             preds, iters = {}, {}
             for q in QUANTILES:
@@ -184,49 +212,65 @@ def summarize(records):
     verdicts = {}
     for h in sorted(df.horizon.unique()):
         hd = df[df.horizon == h]
-        for arm in ARMS:
+        for arm in ARM_ORDER:
             a = hd[hd.arm == arm]
             if a.empty:
                 continue
-            print(f"{h:>3} {arm:>6} {a.pinball_q50.mean():>12.5f} "
+            print(f"{h:>3} {arm:>8} {a.pinball_q50.mean():>12.5f} "
                   f"{a.pinball_mean.mean():>13.5f} {100*a.da.mean():>7.2f} "
                   f"{a.iter_q10.mean():>6.0f}/{a.iter_q50.mean():.0f}/"
                   f"{a.iter_q90.mean():<.0f}{'':>4} {len(a):>6}")
         c = hd[hd.arm == CONTROL].set_index("fold")
-        t = hd[hd.arm == "decay"].set_index("fold")
-        common = sorted(set(c.index) & set(t.index))
-        if not common:
-            continue
-        c, t = c.loc[common], t.loc[common]
-        gain = ((c.pinball_q50 - t.pinball_q50) / c.pinball_q50).mean()
-        won = int((t.pinball_q50 < c.pinball_q50).sum())
-        da_pp = 100 * (t.da.mean() - c.da.mean())
-        # Fold-clustered paired interval on the pinball difference, replacing
-        # the "wins on at least half the folds" condition this gate used until
-        # 2026-08-08. A win count is not a test: two arms differing only by
-        # seed clear it half the time. Lower pinball is better, so a SHIP needs
-        # the interval strictly below zero.
-        paired = paired_arm_contrasts(
-            {"flat": fold_level_records(common, c.pinball_q50, metric="pinball"),
-             "decay": fold_level_records(common, t.pinball_q50, metric="pinball")},
-            base="flat", value_key="pinball", scale=1.0,
-            higher_is_better=False)["decay"]
 
-        g1 = gain >= GATE_MIN_REL_PINBALL_GAIN
-        g2 = paired["verdict"] == "positive"
-        g3 = da_pp >= -GATE_MAX_DA_REGRESSION_PP
-        ship = bool(g1 and g2 and g3)
-        # Stopping-round stability: the defect that motivated this change.
-        sd_c, sd_t = c.iter_q50.std(), t.iter_q50.std()
-        verdicts[h] = {"ship": ship, "rel_gain": gain, "folds_won": won,
-                       "n_folds": len(common), "da_delta_pp": da_pp,
-                       "paired_pinball": paired,
-                       "iter_q50_sd_flat": sd_c, "iter_q50_sd_decay": sd_t}
-        print(f"  -> {h}d: q50 pinball {gain*100:+.2f}% [{'PASS' if g1 else 'FAIL'}] | "
-              f"paired {format_paired(paired, unit='')} [{'PASS' if g2 else 'FAIL'}] | "
-              f"DA {da_pp:+.2f}pp [{'PASS' if g3 else 'FAIL'}] | "
-              f"folds {won}/{len(common)} (context, not a gate)")
-        print(f"     q50 stopping-round sd: flat={sd_c:.0f} decay={sd_t:.0f}")
+        def _contrast(arm_name):
+            """Fold-clustered paired interval on the q50 pinball difference vs
+            flat. A win count is not a test; lower pinball is better, so a
+            positive verdict needs the interval strictly below zero."""
+            t = hd[hd.arm == arm_name].set_index("fold")
+            common = sorted(set(c.index) & set(t.index))
+            if not common:
+                return None
+            cc, tt = c.loc[common], t.loc[common]
+            gain = ((cc.pinball_q50 - tt.pinball_q50) / cc.pinball_q50).mean()
+            won = int((tt.pinball_q50 < cc.pinball_q50).sum())
+            da_pp = 100 * (tt.da.mean() - cc.da.mean())
+            paired = paired_arm_contrasts(
+                {"flat": fold_level_records(common, cc.pinball_q50, metric="pinball"),
+                 arm_name: fold_level_records(common, tt.pinball_q50, metric="pinball")},
+                base="flat", value_key="pinball", scale=1.0,
+                higher_is_better=False)[arm_name]
+            return {"gain": gain, "won": won, "n": len(common),
+                    "da_pp": da_pp, "paired": paired, "iter_sd": tt.iter_q50.std()}
+
+        decay = _contrast("decay")
+        placebo = _contrast("placebo")
+        if decay is None:
+            continue
+
+        g1 = decay["gain"] >= GATE_MIN_REL_PINBALL_GAIN
+        g2 = decay["paired"]["verdict"] == "positive"
+        g3 = decay["da_pp"] >= -GATE_MAX_DA_REGRESSION_PP
+        # The placebo must NOT itself clear the paired bar; if it does, the
+        # "gain" is weight-variance/capacity, not recency structure.
+        g4 = (placebo is None) or (placebo["paired"]["verdict"] != "positive")
+        ship = bool(g1 and g2 and g3 and g4)
+        verdicts[h] = {"ship": ship, "rel_gain": decay["gain"],
+                       "folds_won": decay["won"], "n_folds": decay["n"],
+                       "da_delta_pp": decay["da_pp"],
+                       "paired_pinball": decay["paired"],
+                       "placebo_paired": placebo["paired"] if placebo else None,
+                       "placebo_gain": placebo["gain"] if placebo else None,
+                       "iter_q50_sd_flat": c.iter_q50.std(),
+                       "iter_q50_sd_decay": decay["iter_sd"]}
+        print(f"  -> {h}d: q50 pinball {decay['gain']*100:+.2f}% [{'PASS' if g1 else 'FAIL'}] | "
+              f"paired {format_paired(decay['paired'], unit='')} [{'PASS' if g2 else 'FAIL'}] | "
+              f"DA {decay['da_pp']:+.2f}pp [{'PASS' if g3 else 'FAIL'}] | "
+              f"folds {decay['won']}/{decay['n']} (context, not a gate)")
+        if placebo is not None:
+            print(f"     PLACEBO {placebo['gain']*100:+.2f}% "
+                  f"paired {format_paired(placebo['paired'], unit='')} "
+                  f"[{'null=PASS' if g4 else 'POSITIVE=FAIL'}]")
+        print(f"     q50 stopping-round sd: flat={c.iter_q50.std():.0f} decay={decay['iter_sd']:.0f}")
         print(f"     VERDICT {h}d: {'SHIP decay' if ship else 'KEEP flat'}")
     return df, verdicts
 

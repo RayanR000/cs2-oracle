@@ -161,7 +161,12 @@ DIRECTION_UPWEIGHT = 1.5
 # 365d was deliberately mild: a 4-year-old row still carries 0.0625. The
 # roadmap's α^days_ago with α=0.99 would leave a 1460-day-old row at ~6e-7,
 # effectively truncating training to ~200 days.
-SAMPLE_WEIGHT_HALFLIFE_DAYS = 0.0
+# Env-overridable so `model-diagnostics.yml` can dispatch a recency arm without
+# a code change (like the other diagnostic arms). Training-only: the decay is
+# baked into the fitted booster, so `predict`/serving reads nothing — there is
+# no meta.json field and no serving env to keep in sync. `ab_test_recency_weights`
+# still monkeypatches this module attribute directly, which overrides the default.
+SAMPLE_WEIGHT_HALFLIFE_DAYS = float(os.environ.get("SAMPLE_WEIGHT_HALFLIFE_DAYS") or "0.0")
 
 # The longest bit-identical price run a label may sit on. A row whose anchor
 # day OR target day carries a `stale_run_days` above this has its label voided
