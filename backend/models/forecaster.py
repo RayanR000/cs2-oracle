@@ -8576,25 +8576,19 @@ class ItemForecaster:
     def _fold_q50_scores(self, train_df, val_df, horizon,
                          per_quantile_params):
         """The q50 twin of `_lambdarank_fold_scores`: same rows, same tree HP,
-        `objective="quantile"` at alpha 0.5.
+        `objective="quantile"` at alpha 0.5, and the SAME sample weights the
+        production fold q50 (`_cv_evaluate_horizon`) applies. That makes the
+        vs-q50 rank-IC delta the serving-transfer read reports comparable to the
+        CV diagnostic, whose q50 baseline is production's weighted fold q50.
 
-        The serving-transfer read (scripts/replay_lambdarank.py) needs a q50
-        baseline trained on IDENTICAL rows/HP/embargo as the ranker, so the
-        rank-IC delta between them isolates the objective — the "transferable
-        number" the diagnostic changelog defined. Production's own fold q50
-        (`_cv_evaluate_horizon`) carries sample weights and the N1 offset; both
-        are inert under the shipped config (SAMPLE_WEIGHT_HALFLIFE_DAYS=0.0,
-        NAIVE_INIT_SCORE off), so this plain fit reproduces it. The assert makes
-        that assumption loud rather than silent: if either is ever turned on,
-        this matched contrast stops being matched and must be revisited.
+        The N1 offset is asserted off: under the shipped default the production
+        fold q50 adds no offset and the ranker takes none either, so the contrast
+        is offset-free on both sides. If NAIVE_INIT_SCORE is ever turned on this
+        must be revisited.
         """
         tcol = f"target_return_{horizon}d"
-        # Guard the "matched to production q50" claim (see docstring).
         assert self._naive_offset(train_df) is None, (
             "_fold_q50_scores assumes the N1 offset is off; it is on")
-        w = self._compute_sample_weights(train_df, horizon)
-        assert w is None or np.allclose(np.asarray(w), np.asarray(w)[0]), (
-            "_fold_q50_scores assumes uniform sample weights; they are not")
         feat = train_df[self.feature_cols].replace([np.inf, -np.inf], np.nan)
         med = feat.median()
         X_tr = feat.fillna(med)
@@ -8616,8 +8610,9 @@ class ItemForecaster:
             "n_jobs": -1,
             "random_state": 42,
         }
+        train_w = self._compute_sample_weights(train_df, horizon)
         ds = lgb.Dataset(
-            X_tr, label=train_df[tcol].to_numpy(dtype=float),
+            X_tr, label=train_df[tcol].to_numpy(dtype=float), weight=train_w,
             params={"max_bin": self.MAX_BIN, "feature_pre_filter": False})
         model = lgb.train(
             params, ds,

@@ -1,8 +1,11 @@
+from datetime import date
+
 import numpy as np
 import pandas as pd
 import pytest
 
 from scripts.replay_lambdarank import _anchor_metrics, MIN_TIED_ROWS
+from scripts.replay_lambdarank import _retrain_points, SERVED_WINDOW
 
 
 def _synthetic_anchor(n, signal, rng):
@@ -48,3 +51,16 @@ def test_ranker_beats_q50_on_a_planted_signal():
     assert out["lr_ic"] > out["q50_ic"]   # lr orders the planted signal better
     assert out["ls_spread"] > 0           # top decile outperforms bottom
     assert len(out["pt_records"]) == 300
+
+
+class TestRetrainPoints:
+    def test_biweekly_points_span_the_window(self):
+        pts = _retrain_points(SERVED_WINDOW, cadence=14)
+        assert pts[0] == date(2026, 4, 18)
+        assert all((pts[i + 1] - pts[i]).days == 14
+                   for i in range(len(pts) - 1))
+        assert pts[-1] <= date(2026, 6, 8)
+
+    def test_each_point_precedes_the_window_end(self):
+        pts = _retrain_points(SERVED_WINDOW, cadence=14)
+        assert pts[-1] < SERVED_WINDOW[1]
