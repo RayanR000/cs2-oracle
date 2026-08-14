@@ -6,6 +6,7 @@ import pytest
 
 from scripts.replay_lambdarank import _anchor_metrics, MIN_TIED_ROWS
 from scripts.replay_lambdarank import _retrain_points, SERVED_WINDOW
+import scripts.replay_lambdarank as rl
 
 
 def _synthetic_anchor(n, signal, rng):
@@ -64,3 +65,50 @@ class TestRetrainPoints:
     def test_each_point_precedes_the_window_end(self):
         pts = _retrain_points(SERVED_WINDOW, cadence=14)
         assert pts[-1] < SERVED_WINDOW[1]
+
+
+class TestFrozenAnchors:
+    """frozen_anchors keeps only feed-audit-passing, cutover-free dates in the
+    window, and logs the set before any scoring. Referee helpers are monkey-
+    patched so the logic is exercised without the archive."""
+
+    def _patch(self, monkeypatch, *, audit_ok_for, cutover_for):
+        # _feed_profile is only fed to the (patched) audit/cutover fns, so a
+        # trivial stand-in is fine.
+        monkeypatch.setattr(rl, "_feed_profile",
+                            lambda anchor, window=3: pd.DataFrame(
+                                {"day": [anchor], "items": [100]}))
+        monkeypatch.setattr(rl, "audit_anchor_feed",
+                            lambda anchor, profile: (anchor in audit_ok_for, []))
+        monkeypatch.setattr(rl, "cutovers_from_counts", lambda counts: [])
+        # Return a non-empty dict (truthy) for dates we want dropped for a cutover.
+        monkeypatch.setattr(
+            rl, "cutovers_in_outcome_window",
+            lambda anchor, horizons, cutovers:
+                {horizons[0]: [anchor]} if anchor in cutover_for else {})
+
+    def test_keeps_only_clean_anchors_sorted_in_window(self, monkeypatch):
+        window = (date(2026, 4, 18), date(2026, 4, 22))  # 5 days
+        all_days = [date(2026, 4, d) for d in range(18, 23)]
+        # 4-18 fails the feed audit; 4-20 spans a cutover; the rest are clean.
+        self._patch(monkeypatch,
+                    audit_ok_for=set(all_days) - {date(2026, 4, 18)},
+                    cutover_for={date(2026, 4, 20)})
+        out = rl.frozen_anchors(fc=None, horizon=7, window=window)
+        assert out == [date(2026, 4, 19), date(2026, 4, 21), date(2026, 4, 22)]
+
+    def test_logs_frozen_set_before_returning(self, monkeypatch, caplog):
+        window = (date(2026, 4, 18), date(2026, 4, 19))
+        self._patch(monkeypatch, audit_ok_for={date(2026, 4, 18),
+                                               date(2026, 4, 19)},
+                    cutover_for=set())
+        import logging
+        with caplog.at_level(logging.INFO):
+            out = rl.frozen_anchors(fc=None, horizon=7, window=window)
+        assert out == [date(2026, 4, 18), date(2026, 4, 19)]
+        assert any("FROZEN anchor set" in r.message for r in caplog.records)
+
+    def test_empty_when_nothing_passes(self, monkeypatch):
+        window = (date(2026, 4, 18), date(2026, 4, 20))
+        self._patch(monkeypatch, audit_ok_for=set(), cutover_for=set())
+        assert rl.frozen_anchors(fc=None, horizon=7, window=window) == []
