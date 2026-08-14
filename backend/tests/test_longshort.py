@@ -23,12 +23,12 @@ def test_decile_spread_positive_when_score_matches_realised():
 
 def test_decile_spread_zero_mean_when_score_is_noise():
     rng = np.random.default_rng(1)
-    n = 2000
-    dates = np.repeat(pd.to_datetime(["2026-05-01"]), n)
+    n = 6000
+    dates = np.repeat(pd.to_datetime([f"2026-05-{d:02d}" for d in range(1, 11)]), n // 10)
     score = rng.normal(size=n)
     realised = rng.normal(size=n)  # independent
     out = decile_longshort_by_date(score, realised, dates)
-    assert abs(out["mean"]) < 0.2  # no systematic spread
+    assert abs(out["mean"]) < 0.15  # no systematic spread
 
 
 def test_mask_restricts_to_tied_rows():
@@ -46,7 +46,7 @@ def test_mask_restricts_to_tied_rows():
 
 
 def test_net_of_cost_subtracts_roundtrip():
-    assert net_of_cost(0.30, 0.20) == 0.10
+    assert abs(net_of_cost(0.30, 0.20) - 0.10) < 1e-9
 
 
 def test_direction_records_shape_and_correctness():
