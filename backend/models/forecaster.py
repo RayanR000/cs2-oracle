@@ -3731,12 +3731,26 @@ class ItemForecaster:
                 still. Default 0 reproduces the un-embargoed split (used only
                 where the caller has no horizon, e.g. unit tests).
         """
-        val_window = self.VALIDATION_WINDOW_DAYS  # 21 days
+        val_window = self.VALIDATION_WINDOW_DAYS  # 30 dates
         step = self._cv_step_days()  # 150 days unless CV_STEP_DAYS overrides
         min_train = self.CV_MIN_TRAIN_DAYS
 
+        # End-anchor the grid. Striding forward from `min_train` left the last
+        # validation window up to `step - 1` dates short of the frame end, so
+        # `q_hat` and the PT sample were calibrated on data ending well before
+        # the serving anchors. Walk backward from the end instead: the most
+        # recent fold validates on the final `val_window` dates and earlier
+        # folds step back by `step`. Fold count is unchanged.
+        last_end = len(sorted_dates) - val_window
+        ends = []
+        end = last_end
+        while end >= min_train:
+            ends.append(end)
+            end -= step
+        ends.reverse()
+
         folds = []
-        for end in range(min_train, len(sorted_dates) - val_window + 1, step):
+        for end in ends:
             val_d = sorted_dates[end:end + val_window]
             if len(val_d) < 7:
                 continue

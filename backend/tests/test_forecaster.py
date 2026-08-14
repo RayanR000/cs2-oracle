@@ -1323,6 +1323,20 @@ class TestTrainingWindow:
         assert (forecaster._compute_cv_splits(sorted_dates)
                 == forecaster._compute_cv_splits(sorted_dates, purge_days=0))
 
+    def test_cv_last_fold_validates_on_frame_end(self, forecaster):
+        """The grid is end-anchored: the most recent fold must validate on the
+        final `VALIDATION_WINDOW_DAYS` dates, not stop up to `step-1` dates
+        short of the frame end. `q_hat` and the PT sample are read off these
+        out-of-fold windows, so a fold grid that ends months before the serving
+        anchors calibrates the served band on the wrong period."""
+        base = date(2025, 1, 1)
+        sorted_dates = [base + timedelta(days=i) for i in range(500)]
+        folds = forecaster._compute_cv_splits(sorted_dates)
+        assert len(folds) >= 2
+        last_val = folds[-1][1]
+        assert max(last_val) == sorted_dates[-1]
+        assert len(last_val) == forecaster.VALIDATION_WINDOW_DAYS
+
     def test_cv_purge_gap_prevents_target_leakage(self, forecaster):
         """With purge_days=H, no training row's target (train_date + H days)
         may land inside its fold's validation window — the horizon-forecasting
