@@ -207,6 +207,19 @@ def main() -> int:
         floor = fc._artifact_min_median_price or MIN_SERVED_PRICE_USD
         per_quantile_params = {0.5: {}}  # tuned HP not needed for the sign bar
 
+        # The VAL feature panel, built ONCE over the full window (unbounded up
+        # to today, floored). engineer_features' lags are backward-looking, so a
+        # row's features as of its anchor are identical whether the frame ends
+        # at that date or later — one panel supplies every anchor's cross-section.
+        # Bounding val features at the retrain cutoff (the fixed bug) left every
+        # anchor after the cutoff with no rows, so only the 4 cutoff dates scored.
+        # Outcomes are resolved separately and train_df stays cutoff-bounded, so
+        # this adds no look-ahead.
+        os.environ.pop("REPLAY_ANCHOR", None)
+        val_price = fc._filter_by_median_price(
+            fc.fetch_price_history(days_back=1100, backfilled_only=True), floor)
+        val_feat = fc.engineer_features(val_price, fc.fetch_events())
+
         rows = []
         all_pt = []
         for i, cutoff in enumerate(points):
@@ -215,23 +228,36 @@ def main() -> int:
             block = [a for a in anchors if cutoff <= a < block_hi]
             if not block:
                 continue
-            train_df, feat = _master_frame(fc, horizon, cutoff, floor)
-            logger.info("retrain @ %s: %d train rows, %d anchors in block",
-                        cutoff, len(train_df), len(block))
-            for anchor in block:
-                val_df = _val_frame(feat, anchor)
-                if len(val_df) < MIN_TIED_ROWS:
-                    continue
-                lr = fc._lambdarank_fold_scores(train_df, val_df, horizon,
-                                                per_quantile_params)
-                q50 = fc._fold_q50_scores(train_df, val_df, horizon,
-                                          per_quantile_params)
-                naive = (-val_df["return_1d"].to_numpy(dtype=float)
-                         if "return_1d" in val_df.columns
-                         else np.zeros(len(val_df)))
-                tied = _tied_mask(outcomes, anchor)
-                m = _anchor_metrics(pd.Timestamp(anchor), horizon, val_df, lr,
-                                    q50, naive, outcomes, floor, tied)
+            # Anchors in this block with a large-enough cross-section, scored on
+            # ONE trained pair: train_df is identical for every anchor in the
+            # block and both boosters are deterministic, so a per-anchor retrain
+            # is redundant. Concatenate the anchors' val rows, train once, then
+            # split the scores back by anchor (concat preserves row order).
+            block_vals = [(a, _val_frame(val_feat, a)) for a in block]
+            block_vals = [(a, v) for a, v in block_vals
+                          if len(v) >= MIN_TIED_ROWS]
+            if not block_vals:
+                continue
+            train_df, _ = _master_frame(fc, horizon, cutoff, floor)
+            logger.info("retrain @ %s: %d train rows, %d/%d anchors scorable",
+                        cutoff, len(train_df), len(block_vals), len(block))
+            val_all = pd.concat([v for _, v in block_vals], ignore_index=True)
+            lr_all = np.asarray(fc._lambdarank_fold_scores(
+                train_df, val_all, horizon, per_quantile_params))
+            q50_all = np.asarray(fc._fold_q50_scores(
+                train_df, val_all, horizon, per_quantile_params))
+            naive_all = (-val_all["return_1d"].to_numpy(dtype=float)
+                         if "return_1d" in val_all.columns
+                         else np.zeros(len(val_all)))
+            off = 0
+            for a, v in block_vals:
+                n = len(v)
+                sl = slice(off, off + n)
+                off += n
+                tied = _tied_mask(outcomes, a)
+                m = _anchor_metrics(pd.Timestamp(a), horizon, v,
+                                    lr_all[sl], q50_all[sl], naive_all[sl],
+                                    outcomes, floor, tied)
                 if m is not None:
                     rows.append(m)
                     all_pt.extend(m["pt_records"])
