@@ -22,12 +22,21 @@ Pesaran-Timmermann line are DESCRIPTIVE, not gating.
 
 ## Results
 
-| h | anchors | lr IC | q50 IC | naive IC | **EDGE vs q50** | edge vs naive | decile gross | decile net | PT (excess_pp / t / verdict) |
+**Note:** `EDGE vs q50` and `edge vs naive` are the pre-registered **paired** metric — the
+mean over anchors of the per-anchor difference `rank_ic(lr) − rank_ic(q50)` (or `− naive`) —
+not a difference of the two legs' means. The script originally computed the difference of
+means; that was fixed in the same change that produced the table below (mean-of-differences
+vs difference-of-means diverge whenever a leg is `None` on a different subset of anchors than
+the other leg, which is exactly the case at h=3/7/30: some anchors have a `None` q50 or naive
+leg that the lr leg doesn't share, so the two "different calendars" don't cancel). The lr/q50/
+naive IC columns below are still the simple per-leg means (unaffected by the fix).
+
+| h | anchors | lr IC | q50 IC | naive IC | **EDGE vs q50 (paired)** | edge vs naive (paired) | decile gross | decile net | PT (excess_pp / t / verdict) |
 |---|---|---|---|---|---|---|---|---|---|
-| 3  | 52 | -0.0146 | 0.1209 | -0.0539 | **-0.1355** | +0.0394 | +0.0017 | -0.398 | 0.015 / 0.06 / no_skill |
-| 7  | 52 | 0.1653  | 0.1054 | -0.0527 | **+0.0599** | +0.2180 | +0.0007 | -0.399 | 1.48 / 1.68 / no_skill |
+| 3  | 52 | -0.0146 | 0.1209 | -0.0539 | **-0.1736** | +0.0571 | +0.0017 | -0.398 | 0.015 / 0.06 / no_skill |
+| 7  | 52 | 0.1653  | 0.1054 | -0.0527 | **+0.0346** | +0.2513 | +0.0007 | -0.399 | 1.48 / 1.68 / no_skill |
 | 14 | 52 | None*   | 0.1173 | -0.0510 | **None***   | None*   | -0.0119 | -0.412 | 0.00 / None / degenerate |
-| 30 | 52 | 0.0184  | 0.0719 | -0.0501 | **-0.0535** | +0.0685 | -0.0071 | -0.407 | 0.094 / 0.28 / no_skill |
+| 30 | 52 | 0.0184  | 0.0719 | -0.0501 | **-0.0680** | +0.0519 | -0.0071 | -0.407 | 0.094 / 0.28 / no_skill |
 
 \* At h=14, `lr rank IC` is `None` not because rows failed the tied/floor/min-rows filter
 (q50 and naive IC computed cleanly on the identical per-anchor frames) but because the
@@ -43,21 +52,23 @@ flagged as a follow-up, not resolved here.
 CV vs-q50 edge (HP-confirmed, `docs/changelog/2026-08-13-lambdarank-clears-the-diagnostic-bar.md`):
 3d +0.0648, 7d +0.0614, 14d +0.0391, 30d +0.0297 — all four CV horizons passed the same bar.
 
-- **h=3: CV +0.0648 -> served -0.1355.** Sign-flipped and by far the largest miss. Does not
+- **h=3: CV +0.0648 -> served -0.1736.** Sign-flipped and by far the largest miss. Does not
   transfer.
-- **h=7: CV +0.0614 -> served +0.0599.** Held almost exactly — the only horizon that
-  confirms on the pre-registered bar. Attenuation is ~2%, within noise of the CV estimate.
+- **h=7: CV +0.0614 -> served +0.0346.** Held sign but attenuated by ~44% under the
+  corrected paired metric — still the only horizon that confirms on the pre-registered bar,
+  but the margin is smaller than the difference-of-means read (+0.0599) initially suggested.
 - **h=14: CV +0.0391 -> served undefined (degenerate lr output).** Cannot be read as
   transfer or non-transfer; the ranker's serving predictions carry no rank information at
   all on this horizon's anchors, which is a stronger negative signal than a measured
   negative edge would be.
-- **h=30: CV +0.0297 -> served -0.0535.** Sign-flipped. Does not transfer.
+- **h=30: CV +0.0297 -> served -0.0680.** Sign-flipped. Does not transfer.
 
 **Verdict: 1 of 4 horizons (h=7) confirms the pre-registered bar.** h=3 and h=30 sign-flip
 from a positive CV edge to a negative served edge — attenuation this large (CV edges were
-all in the 0.03-0.065 range; served swings from -0.05 to -0.14) is not "held, some
+all in the 0.03-0.065 range; served swings from -0.07 to -0.17) is not "held, some
 decay," it is reversal. h=14 is not measurable as stated and needs its own diagnosis before
-it can be counted either way.
+it can be counted either way. No verdict changes sign under the paired-metric correction —
+h=7 stays the sole confirm, at a smaller margin than first measured.
 
 ## Tradeability read (descriptive, not a bar)
 
@@ -72,6 +83,11 @@ conditions what "confirms" can be used for even where it holds.
 The PT verdicts are `no_skill` at h=3/7/30 and `degenerate` at h=14 — consistent with the
 rank-IC read: even where EDGE vs q50 is positive (h=7), the ranker's own directional call
 does not clear a PT skill bar on 52 dates.
+
+`edge vs naive` uses the RAW `-return_1d` baseline, the same construction the CV diagnostic
+used — it carries the raw-vs-smoothed basis wedge documented elsewhere in this project's
+history, so `edge vs naive` is directional/descriptive only. The primary `EDGE vs q50` read
+does not touch the naive leg and is unaffected by that wedge.
 
 ## What this does and doesn't license
 

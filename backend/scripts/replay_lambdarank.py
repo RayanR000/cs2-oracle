@@ -271,11 +271,17 @@ def main() -> int:
             vals = [r[key] for r in rows if r[key] is not None]
             return float(np.mean(vals)) if vals else None
 
+        def _paired_edge(a_key, b_key):
+            # Mean of the per-anchor difference, the pre-registered metric — not
+            # a difference of means, which would average the two legs over
+            # different calendars when one degenerates on a subset of anchors.
+            diffs = [r[a_key] - r[b_key] for r in rows
+                     if r[a_key] is not None and r[b_key] is not None]
+            return float(np.mean(diffs)) if diffs else None
+
         lr_ic, q50_ic, naive_ic = _mean("lr_ic"), _mean("q50_ic"), _mean("naive_ic")
-        edge_q50 = (None if lr_ic is None or q50_ic is None
-                    else lr_ic - q50_ic)
-        edge_naive = (None if lr_ic is None or naive_ic is None
-                      else lr_ic - naive_ic)
+        edge_q50 = _paired_edge("lr_ic", "q50_ic")
+        edge_naive = _paired_edge("lr_ic", "naive_ic")
         ls = _mean("ls_spread")
         pt = pesaran_timmermann(all_pt, min_dates=len(rows))
 
