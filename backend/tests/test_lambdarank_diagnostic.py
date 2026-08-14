@@ -77,8 +77,6 @@ class TestLambdarankTrainer:
         # the class-level constants/classmethods.
         fc = ItemForecaster.__new__(ItemForecaster)
         fc.feature_cols = feature_cols
-        fc.SAMPLE_WEIGHT_HALFLIFE_DAYS = 0.0
-        fc.NAIVE_INIT_SCORE = False
         return fc
 
     def _frame(self, dates, feats, rng):
@@ -135,8 +133,6 @@ class TestFoldQ50Scores:
     def _forecaster(self, feature_cols):
         fc = ItemForecaster.__new__(ItemForecaster)
         fc.feature_cols = feature_cols
-        fc.SAMPLE_WEIGHT_HALFLIFE_DAYS = 0.0
-        fc.NAIVE_INIT_SCORE = False
         # Mock the methods to return inert values (matching shipped config).
         fc._compute_sample_weights = lambda df, h: None
         fc._naive_offset = lambda df: None
