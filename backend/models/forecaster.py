@@ -8573,6 +8573,60 @@ class ItemForecaster:
             [np.inf, -np.inf], np.nan).fillna(med)
         return model.predict(X_val)
 
+    def _fold_q50_scores(self, train_df, val_df, horizon,
+                         per_quantile_params):
+        """The q50 twin of `_lambdarank_fold_scores`: same rows, same tree HP,
+        `objective="quantile"` at alpha 0.5.
+
+        The serving-transfer read (scripts/replay_lambdarank.py) needs a q50
+        baseline trained on IDENTICAL rows/HP/embargo as the ranker, so the
+        rank-IC delta between them isolates the objective — the "transferable
+        number" the diagnostic changelog defined. Production's own fold q50
+        (`_cv_evaluate_horizon`) carries sample weights and the N1 offset; both
+        are inert under the shipped config (SAMPLE_WEIGHT_HALFLIFE_DAYS=0.0,
+        NAIVE_INIT_SCORE off), so this plain fit reproduces it. The assert makes
+        that assumption loud rather than silent: if either is ever turned on,
+        this matched contrast stops being matched and must be revisited.
+        """
+        tcol = f"target_return_{horizon}d"
+        # Guard the "matched to production q50" claim (see docstring).
+        assert self._naive_offset(train_df) is None, (
+            "_fold_q50_scores assumes the N1 offset is off; it is on")
+        w = self._compute_sample_weights(train_df, horizon)
+        assert w is None or np.allclose(np.asarray(w), np.asarray(w)[0]), (
+            "_fold_q50_scores assumes uniform sample weights; they are not")
+        feat = train_df[self.feature_cols].replace([np.inf, -np.inf], np.nan)
+        med = feat.median()
+        X_tr = feat.fillna(med)
+        q50 = per_quantile_params.get(0.5, {})
+        params = {
+            "objective": "quantile",
+            "alpha": 0.5,
+            "metric": "quantile",
+            "boosting_type": self.BOOSTING_TYPE,
+            "max_bin": self.MAX_BIN,
+            "num_leaves": q50.get("num_leaves", 31),
+            "learning_rate": q50.get("learning_rate", 0.03),
+            "max_depth": q50.get("max_depth", 5),
+            "min_data_in_leaf": q50.get("min_data_in_leaf", 15),
+            "lambda_l1": q50.get("lambda_l1", 0.5),
+            "lambda_l2": q50.get("lambda_l2", 0.5),
+            "feature_fraction": q50.get("feature_fraction", 0.7),
+            "verbosity": -1,
+            "n_jobs": -1,
+            "random_state": 42,
+        }
+        ds = lgb.Dataset(
+            X_tr, label=train_df[tcol].to_numpy(dtype=float),
+            params={"max_bin": self.MAX_BIN, "feature_pre_filter": False})
+        model = lgb.train(
+            params, ds,
+            num_boost_round=self._boost_rounds(horizon, cv=True),
+            callbacks=[lgb.log_evaluation(0)])
+        X_val = val_df[self.feature_cols].replace(
+            [np.inf, -np.inf], np.nan).fillna(med)
+        return model.predict(X_val)
+
     @staticmethod
     def _direction_records(pred_returns, actual_returns, dates) -> list:
         """Rows in the shape `backtest/directional_test.py` expects.
