@@ -112,3 +112,33 @@ long-short, and PT are reported, as the CV write-up itself specifies.
    number here as more than directional, per `backend/AGENTS.md`'s local-archive caveat.
 3. If h=7 is to be pursued further, its own pre-registration (wider date range, paired MDE
    design) is required before any claim beyond "cleared this one diagnostic."
+
+## Durable-archive confirmation (2026-08-14, same day) — resolves follow-up #2
+
+Re-ran all four shards against the **durable `cs2-oracle-data` archive** (cloned fresh,
+pushed 2026-08-14 09:09 UTC; `price-archive` symlink-swapped to it and restored after, the
+same pattern `model-diagnostics.yml` uses). First checked the served-window coverage: the
+durable archive carries the **same single source** `aggregator_steam_17mafo` over
+2026-04-18..06-08 (1.31M rows / 52 days / 26,720 items) as local — so no rescue was expected,
+and none occurred.
+
+| h | served EDGE vs q50 (durable) | (local) | verdict |
+|---|---|---|---|
+| 3  | **−0.1737** | −0.1736 | does not transfer (sign-flip) |
+| 7  | **+0.0346** | +0.0346 | confirms, attenuated; decile net **−0.399** |
+| 14 | **LightGBM error** | degenerate | not measurable |
+| 30 | **−0.0689** | −0.0680 | does not transfer (sign-flip) |
+
+h=3/7/30 reproduce local **to four decimals** — the non-transfer is robust, not a
+local-archive artifact. **h=14 fails differently and worse:** on the fuller durable
+cross-section the ranker aborts with `LightGBMError: Number of rows 14478 exceeds upper limit
+of 10000 for a query` — a within-date query group exceeds LightGBM lambdarank's hard
+10,000-rows-per-query cap. That is a genuine scaling blocker for a ranker on this ~14K-item
+cross-section, independent of the constant-output degeneracy the local run hit.
+
+**Final verdict (both archives): 1 of 4 horizons transfers (h=7 only), and it is net-negative
+after the 40% round-trip cost.** The lambdarank cross-sectional edge is real in CV and does not
+survive to serving — the same CV+/serving− pattern as C1. Follow-up #2 is closed; the pivot to
+a cross-sectional ranker is refuted **for serving** at this data/horizon setup (the CV signal
+is genuine; it does not transfer). Follow-up #1 (h=14 root-cause) is now two distinct failures,
+neither worth fixing since a fixed h=14 still joins h=3/h=30 in the non-transfer column.

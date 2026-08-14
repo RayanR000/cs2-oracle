@@ -90,6 +90,12 @@ def load_params(horizon, q):
     src = tp.get(str(horizon), {})
     p = src.get(str(q)) or src.get(q)
     if not p:
+        # Production's minimal model tunes only q0.5 and serves the band from a
+        # conformal q_hat*sigma, not separately-tuned q10/q90 boosters. Reuse
+        # the q0.5 tree params for the band quantiles so the harness runs; the
+        # ship gate is q50 pinball + DA either way.
+        p = src.get("0.5") or src.get(0.5)
+    if not p:
         raise RuntimeError(f"no persisted params for {horizon}d q{q}")
     return dict(p)
 
@@ -236,6 +242,10 @@ def main():
     args = ap.parse_args()
 
     fc = ItemForecaster.__new__(ItemForecaster)
+    # `__new__` skips `__init__`; `prepare_targets` now records into
+    # `self.label_voiding` (added after this harness's bypass was written), so
+    # seed the same empty dict `__init__` would have.
+    fc.label_voiding = {}
     df = pd.read_parquet(args.frame)
     feat_cols = [c for c in json.loads(Path(args.cols).read_text()) if c in df.columns]
     logger.info(f"frame {df.shape}, {len(feat_cols)} features, "
