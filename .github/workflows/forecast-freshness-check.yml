@@ -36,10 +36,10 @@ jobs:
 
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Set up Python
-        uses: actions/setup-python@v4
+        uses: actions/setup-python@v7
         with:
           python-version: '3.11'
           cache: pip
@@ -54,7 +54,7 @@ jobs:
       # The check reads the Parquet mirror as well as the DB, because api/routes
       # serves Parquet first — a DB row without a mirror row serves nothing.
       - name: Checkout price archive
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           repository: RayanR000/cs2-oracle-data
           ref: main
