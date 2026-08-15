@@ -95,10 +95,11 @@ run. Every relative/cross-sectional arm is CV-positive and serving-negative:
    only one that makes a 3% prediction distinguishable from no prediction. Never proposed as a
    target; every arm to date optimises sign or rank. Labels already computed; this is a
    loss-function change, not a data problem. **Highest value.**
-2. **≥$20 liquid-tier PT read** — one query on stored `prediction_accuracy`. DA has been conditioned
+2. ~~**≥$20 liquid-tier PT read** — one query on stored `prediction_accuracy`. DA has been conditioned
    on price band, weapon, date, staleness, confidence, freshness — never on the liquid tier, where
    spreads are tightest (5% at $1000+ vs 35% sub-$1). `FLOOR_SWEEP` sentinels (`-1/-2/-3` =
-   ≥$1/≥$5/≥$20) are already stored per run. No record of it being run.
+   ≥$1/≥$5/≥$20) are already stored per run. No record of it being run.~~ **❌ CLOSED 2026-08-15 —
+   the liquid tier does not separate (see Result below).**
 3. **`tier_lead` measured as a real test** — expensive→cheap lead is the only positive
    cross-sectional structure ever found (z=9.1, Granger incremental R² 9.0%, survives market-factor
    removal), yet it shipped as +0.0078 rank IC with no CI, no folds, no placebo. Data on disk.
@@ -143,8 +144,40 @@ checked-out tree, any file committed to the data repo once is carried into every
 commit automatically — the force-push does **not** wipe it. (A backup was started 2026-08-15 and
 interrupted before pushing; not yet done.)
 
+## Result: ≥$20 liquid-tier PT read (2026-08-15) — item 2 CLOSED
+
+Read-only query of prod `prediction_accuracy` (Supabase pooler), latest `evaluation_date`
+(2026-08-15, `lgbm-v3`), sentinels `-1` (≥$1) and `-3` (≥$20). DA quoted only beside the runnable
+`realised_down_rate` baseline and the PT verdict, per invariant 4.
+
+| h | ≥$1 DA / down-rate | ≥$20 DA / down-rate (n) | ≥$20 edge vs baseline | PT |
+|---|---|---|---|---|
+| 3d | 40.0 / 49.0 | 38.8 / 55.1 (n=911) | **−16.4pp** | insufficient_dates |
+| 7d | 44.0 / 53.9 | 40.5 / 63.8 (n=1,120) | **−23.4pp** | insufficient_dates |
+| 14d | 40.9 / 61.5 | 31.0 / 74.9 (n=529) | **−43.9pp** | insufficient_dates |
+| 30d | 38.7 / 32.7 | 50.0 / 54.1 (n=122, 1 date) | −4.1pp | insufficient_dates |
+
+Three findings:
+
+1. **PT is `insufficient_dates` at every horizon and both tiers** — even pooled across the three
+   serving-config labels (`lgbm-v3` / `-global-only` / `-regime`), distinct forecast dates run ~9
+   (h=3) down to 1 (h=30), far below `MIN_FORECAST_DATES = 20`. Conditioning on ≥$20 makes the
+   episode bound *worse*, not better: n collapses 9,266→911 (h=3), 990→122 (h=30).
+2. **At ≥$20, DA sits below the always-down baseline at every horizon**, by 16–44pp where there is
+   any sample. Tighter spreads on liquid items do not come with better direction.
+3. **Measurement-basis caveat:** these are the stored *quantile-sign* DA (~40%), not the served
+   classifier (~49–53%, `CV_DIAGNOSTIC_CLASSIFIER=0` in CI). The absolute level is understated, but
+   the relative read — ≥$20 no better than ≥$1, both below baseline, both date-starved — holds
+   within one basis. Not differenced against `constant_call` (hindsight-picked; h=30 ≥$1 shows
+   64.4% const-call vs 32.7% down-rate, the trap `backtest-scoring` warns of).
+
+The liquid tier is not a hidden pocket of directional skill. Every cohort axis DA has been
+conditioned on is now exhausted, none separates.
+
 ## Next step
 
-Run the ≥$20 `FLOOR_SWEEP` PT read (item 2) — one query, the last unmeasured cohort axis. If liquid
--tier DA does not separate, item 1 (change the target to `P(|return| > cost)`) is the only remaining
-lever, and it requires accumulating durable serving dates before it can be validated.
+Item 2 is closed. **Item 1 (change the target to `P(|return| > round-trip cost)`) is the only
+remaining lever** — the sole idea that changes the deliverable rather than re-slicing sign. It is a
+loss-function change on labels that already exist, but by the episode bound above it cannot be
+*validated* until durable ≥$1 serving dates accumulate past `MIN_FORECAST_DATES = 20` (2026+ calendar
+time), which the current ~4-week durable outcomes window does not yet reach at any horizon.
