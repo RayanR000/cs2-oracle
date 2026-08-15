@@ -7638,6 +7638,13 @@ class ItemForecaster:
         anchor_wedge_arr = anchor_wedge_pct.to_numpy()
         generated_at = self._now()
 
+        # The day the band is anchored on: the newest day in the loaded frame,
+        # which is what `_smoothed_anchor_prices` above resolved against. The
+        # forecast is for `anchor_date + horizon`, so this — not the wall clock
+        # of the run — is the label the row must carry, or the scorer resolves
+        # both `base_price` and `target_date` a frame behind what was quoted.
+        anchor_date = pd.to_datetime(df["date"]).max().date()
+
         # Detect current market regime for regime-aware model selection
         current_regime = self._detect_current_regime(df)
         has_regime_models = any(r == current_regime for r, _, _ in self.regime_models)
@@ -7663,6 +7670,7 @@ class ItemForecaster:
                 "anchor_clean": bool(clean),
                 "anchor_wedge_pct": (float(wedge) if np.isfinite(wedge)
                                      else None),
+                "anchor_date": anchor_date,
                 "forecasts": {},
                 "generated_at": generated_at,
             }

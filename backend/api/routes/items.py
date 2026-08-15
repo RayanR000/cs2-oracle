@@ -24,6 +24,13 @@ from api.schemas import (
 
 router = APIRouter(prefix="/items", tags=["items"])
 
+# How far behind the calendar a forecast's anchor day may sit before the
+# trending list treats it as stale. Forecasts are stamped with the day the band
+# was anchored on (the newest archived day), which lags `date.today()` because
+# the daily dump lands ~22:00 UTC; this window absorbs that lag plus a missed
+# run or two. Mirrors the archive's own staleness span (MAX_WINDOW_SPAN_DAYS).
+MAX_ARCHIVE_LAG_DAYS = 7
+
 
 def _resolve_item(item_id: str, db: Session) -> Item:
     item = db.query(Item).filter(Item.item_id == item_id).first()
@@ -93,9 +100,15 @@ def _latest_prices(db: Session, item_ids: list[int]) -> dict[int, float]:
 
 
 def _build_trending(db: Session, limit: int):
-    from datetime import date
+    from datetime import date, timedelta
 
     today = date.today()
+    # `forecast_date` is the day the band was anchored on -- the newest archived
+    # day, which lags the calendar (the dump lands ~22:00 UTC), so it is usually
+    # today-1. A `== today` pin empties this list after every normal run; the
+    # window keeps it a freshness guard while tolerating archive lag. The
+    # distinct-on below still selects each item's newest forecast within it.
+    freshness_floor = today - timedelta(days=MAX_ARCHIVE_LAG_DAYS)
     subq = (
         db.query(
             ItemForecast.item_id,
@@ -105,7 +118,7 @@ def _build_trending(db: Session, limit: int):
             ItemForecast.current_price,
         )
         .filter(
-            ItemForecast.forecast_date == today,
+            ItemForecast.forecast_date >= freshness_floor,
             ItemForecast.horizon_days == 7,
             price_floor_clause(ItemForecast.current_price),
         )

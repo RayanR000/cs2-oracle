@@ -288,7 +288,7 @@ def _model_age_days(forecaster) -> Optional[int]:
 
 
 def _write_forecasts_to_db(db, results, model_version, slug_to_id, today,
-                           model_config=None):
+                           model_config=None, forecast_date_override=None):
     """Write forecast results to the item_forecasts table. Returns count.
 
     `model_version` is the served artifact's IDENTITY and nothing else.
@@ -321,10 +321,23 @@ def _write_forecasts_to_db(db, results, model_version, slug_to_id, today,
         anchor_clean = row.get("anchor_clean")
         anchor_wedge_pct = row.get("anchor_wedge_pct")
 
+        # The label is the day the band was anchored on, not the wall clock of
+        # the run: the archive lags the calendar, so `today` is usually a frame
+        # ahead of the price the band was quoted against, and the scorer
+        # resolves both outcome legs at whatever `forecast_date` says. An
+        # explicit FORECAST_DATE_OVERRIDE still wins — a replay stamps a chosen
+        # date deliberately — and a legacy frame with no anchor day falls back
+        # to `today` rather than a NULL label.
+        if forecast_date_override is not None:
+            forecast_date = forecast_date_override
+        else:
+            anchor_date = row.get("anchor_date")
+            forecast_date = anchor_date if isinstance(anchor_date, date) else today
+
         for horizon, fcast in forecasts.items():
             forecast_rows.append({
                 "item_id": item_id,
-                "forecast_date": today,
+                "forecast_date": forecast_date,
                 "horizon_days": horizon,
                 "price_low": fcast.get("low"),
                 "price_mid": fcast.get("mid"),
@@ -590,7 +603,10 @@ def run_forecast(train_only: bool = False, predict_only: bool = False,
         slug_to_id = {r.item_id: r.id for r in slug_rows}
         logger.info(f"Loaded {len(slug_to_id)} slug->ID mappings from DB")
         override = os.environ.get("FORECAST_DATE_OVERRIDE")
-        today = date.fromisoformat(override) if override else date.today()
+        override_date = date.fromisoformat(override) if override else None
+        # `today` keeps its old meaning for the post-forecast backtest cutoff;
+        # the stored label follows the anchor day unless the override forces it.
+        today = override_date or date.today()
 
         # Run A: prediction WITH regime-switching
         results = forecaster.predict()
@@ -606,7 +622,8 @@ def run_forecast(train_only: bool = False, predict_only: bool = False,
         # assumed.
         config_a = "regime" if forecaster.regime_models else "global-only"
         n_regime = _write_forecasts_to_db(db, results, MODEL_VERSION, slug_to_id,
-                                          today, model_config=config_a)
+                                          today, model_config=config_a,
+                                          forecast_date_override=override_date)
         logger.info(f"Wrote {n_regime} forecasts ({config_a} config) to item_forecasts table")
 
         # Update bias corrections from outcomes if requested
@@ -629,7 +646,8 @@ def run_forecast(train_only: bool = False, predict_only: bool = False,
             results_global = forecaster.predict()
             n_global = _write_forecasts_to_db(db, results_global, MODEL_VERSION,
                                               slug_to_id, today,
-                                              model_config="global-only")
+                                              model_config="global-only",
+                                              forecast_date_override=override_date)
             logger.info(f"Wrote {n_global} forecasts (global-only config) to item_forecasts table")
 
             # Run backtest on both configs. They no longer score as separate

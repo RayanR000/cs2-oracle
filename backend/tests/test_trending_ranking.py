@@ -28,3 +28,15 @@ class TestTrendingDoesNotRankByConfidence:
     def test_trending_applies_the_price_floor(self):
         source = inspect.getsource(items_mod._build_trending)
         assert "price_floor_clause" in source
+
+    def test_trending_freshness_is_a_window_not_an_exact_today(self):
+        """`forecast_date` is the day the band was anchored on -- the newest
+        archived day, usually today-1 because the dump lands ~22:00 UTC -- not
+        the wall clock of the run. A `== today` freshness pin empties the
+        trending list after every normal daily run; the guard has to be a
+        bounded recency window."""
+        source = inspect.getsource(items_mod._build_trending)
+        assert "forecast_date == today" not in source, (
+            "an exact-today pin goes empty once forecast_date is the anchor day")
+        assert "forecast_date >=" in source, (
+            "the freshness guard must be a bounded window, not dropped entirely")
