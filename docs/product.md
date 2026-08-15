@@ -29,6 +29,16 @@ CS2 Oracle is a precision analytical instrument for CS2 market intelligence. A u
 
 ## Positioning
 
+> ⭐ **Reclassified 2026-08-15: this is a RANGE forecaster, not a directional predictor.** The
+> deliverable per item per horizon is a **calibrated price range and its center**. Directional
+> accuracy is **not a shippable product claim** at any strength — direction is structurally
+> unavailable at this data scale (only ~14–70 independent h-windows in the 2026 serving regime;
+> no idiosyncratic per-item signal once the market factor is removed), and every relative /
+> cross-sectional arm tried is CV-positive and serving-negative. Any rebuild positions on the
+> **band and its measured coverage**, not on an up/down call. The PT framing below stays as the
+> rule for how a hit rate may be *shown* if it is shown at all — never alone.
+> `changelog/2026-08-15-cs2-oracle-is-a-range-forecaster.md`.
+
 **Probabilistic forecasts with published accuracy.** Neighboring CS2 price sites report what a skin costs now and what it cost before. CS2 Oracle issues a point forecast with a calibrated uncertainty band — a q50 median return at 3, 7, 14, and 30-day horizons, banded by split-conformal calibration against out-of-fold residuals — and then publishes how well those forecasts performed, via an automated daily backtest scoring MAE, MAPE, and a directional **significance test** against resolved outcomes.
 
 The directional claim is a Pesaran–Timmermann verdict, not a hit rate. A raw hit rate on this market is not a claim about the model: an always-down call scored 29.4% on one stored forecast date and 76.9% on another, so the same number is skill on one day and incompetence on the next. The product publishes whether the calls beat the per-date chance null, and shows the hit rate only beside the constant-call baseline and the realised down-rate that make it readable.
@@ -46,6 +56,13 @@ The directional claim is a Pesaran–Timmermann verdict, not a hit rate. A raw h
 > the one that describes their experience** — publish it, do not quote the calibrated number
 > alone, and do not present either as a settled 80% until a `--rescore` has reported it.
 > `docs/changelog/2026-08-11-in-interval-basis.md`.
+>
+> **The dollar-basis figure is well below nominal in prod, 2026-08-15, and the shortfall is an
+> anchor problem.** For `lgbm-v3` on ≥$1 rows since 2026-07-01, dollar-basis coverage is
+> **64.0 / 51.5 / 71.8%** at h=3/7/14 against `in_interval` **79 / 83 / 86%**. Rows whose
+> `|base_price/current_price − 1|` is under 2% cover ~90%+; rows at or above 2% collapse to
+> ~19–65%, and their realised outcome tracks `base_price` far closer than `current_price`.
+> Whatever a rebuilt interface prints, it prints the dollar-basis number with that caveat.
 >
 > **The confidence tag is WITHDRAWN, 2026-08-12 — F2 landed.** It is gone from `PredictionOut`
 > and `TrendAnalysisOut`. Measured within each forecast date on the 11 cells with `n_high >= 30`,

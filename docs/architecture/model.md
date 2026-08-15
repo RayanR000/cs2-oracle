@@ -1,5 +1,18 @@
 # Model Architecture
 
+> ⭐ **This is a RANGE (interval) forecaster (2026-08-15).** The served product is the conformal
+> band and its center; the directional classifier described below is instrumentation, not the
+> deliverable. **Directional accuracy is not a shippable claim** — direction is structurally
+> unavailable at this data scale (~14–70 independent h-windows in the 2026 serving regime), and
+> every relative / cross-sectional arm is CV-positive and serving-negative. The band over-covers:
+> **85.90 / 88.70 / 86.46%** at h=3/7/14 against 80% nominal, median half-width
+> **8.07 / 11.65 / 17.34%** (paired `replay_serving.py`, anchor 2026-06-16, n ≈ 1071, ≥$1 — one
+> anchor, and the artifact post-dates it so the mid is leaky). Quote `interval_coverage`
+> (calibrated) and `interval_coverage_dollar_basis` (published) **together**; never either alone.
+> Do not propose a fourth band-width scale, a new row-set for `q_hat`, or
+> `SERVE_OUTLIER_GATED_ANCHOR=1` as a coverage fix.
+> `../changelog/2026-08-15-cs2-oracle-is-a-range-forecaster.md`.
+
 > **⚠ There is no reportable production directional-accuracy number right now.**
 > `MIN_FORECAST_DATES = 20` (`backtest/scoring.py`) refuses to publish a headline below 20
 > distinct forecast dates, and every live cohort currently spans **1–2** dates — so all four

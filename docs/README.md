@@ -3,6 +3,20 @@
 Refreshed 2026-08-10 against the code. Where a doc and the code disagree, the code wins —
 report it rather than working around it.
 
+> ⭐ **CS2 Oracle is a RANGE (interval) forecaster, not a directional predictor (2026-08-15).**
+> The deliverable per item per horizon is a calibrated price range and its center. **Directional
+> accuracy is not a shippable product claim.** Direction is structurally unavailable at this data
+> scale — only ~14–70 independent h-windows exist in the 2026 serving regime, and every relative /
+> cross-sectional arm (C1, lambdarank, lead-lag, own-momentum) is CV-positive and serving-negative.
+> The band is the part that works: **85.90 / 88.70 / 86.46%** served coverage at h=3/7/14 against an
+> 80% nominal (paired `replay_serving.py`, audited anchor 2026-06-16, n ≈ 1071, ≥$1, one anchor and
+> a leaky mid). **Always quote both coverage columns** — `interval_coverage` (calibrated) beside
+> `interval_coverage_dollar_basis` (published); their gap is the serving-anchor wedge. Prod-confirmed
+> the same day: dollar-basis **64.0 / 51.5 / 71.8%** for `lgbm-v3`, with stale-anchor rows
+> (drift ≥2%) collapsing to ~19–65% while fresh rows cover ~90%+. The remaining open thread is an
+> **ops/data-freshness** question, not a modelling one.
+> `changelog/2026-08-15-cs2-oracle-is-a-range-forecaster.md`.
+
 > ⚠️ **The CV metric that ranked every accuracy arm is measured against a target the
 > serving path does not use (2026-08-11).** `prepare_targets` divides by the raw quote at
 > the anchor; `predict` quotes against a smoothed median. Swapping only that denominator
@@ -147,7 +161,23 @@ report it rather than working around it.
   **fixed** (2026-08-08; the flag is now `--no-purge`); the synthetic 1.1607 Steam fee constant is
   **still unfixed**, tracked as `5c`. Also carries the one measured positive — expensive tiers lead
   cheap tiers by a day, z = 9.1. See `changelog/2026-08-07-cs2-forecasting-research-review.md`.
-- `2026-08-10-next-steps.md` — ⭐ **the live action list.** Ranked by accuracy-per-minute after the
+- `2026-08-15-directional-accuracy-and-data-inventory.md` — the DA question, answered: significant
+  skill (served classifier 49.6/48.8/49.3/52.9%, PT `|t|`>3 at 4/4) but economically worthless vs
+  the ~15% fee, and **unvalidatable** — measured ~4/3/1/0 independent serving dates at h=3/7/14/30,
+  smaller than the `14–70` in `AGENTS.md`. Ranks the four surviving ideas (target → `P(|r|>cost)`
+  first) and inventories data for each. Flags that four deep-history panels (volume/stattrak/supply/
+  bid) exist only locally and are **not** in the data repo.
+- `2026-08-14-next-steps.md` — ⭐ **the live action list.** Re-ranks survivors-first after the
+  2026-08-14 changelog run closed six of the prior list's items (harness repin, supply-rarity null,
+  C1 per-fold, CV grid, recency ships at 30d, **lambdarank refuted for serving**). Only three items
+  are still worth running — the Oct-22-2025 `tier × post` natural experiment (free archive read), a
+  free `q_hat`/PT re-read off the next retrain, and a cheap cross-market basis diagnostic — plus a
+  hygiene tier and an explicit "do not run" list. The web doc's "pivot to a ranker" thesis is closed.
+- `2026-08-13-next-steps.md` — **ordering superseded** by the entry above; still the reference for
+  the item-by-item detail behind the 2026-08-13 audit (the harness-family repair, the six-deep
+  stacked defects, and the cost-hygiene / dead-code lists carried forward unchanged).
+- `2026-08-10-next-steps.md` — **ordering superseded** by the entry above; still the reference for
+  the content of Track N and Track F. Ranked by accuracy-per-minute after the
   2026-08-10 audit. Adds **Track N** (close the `−return_1d` gap: `init_score`, then a market/rank
   decomposition, then `lambdarank`) and **Track F** (three cheap fixes that gate what can be
   published). Deprioritises anything scoped as closing the constant-call gap, and further
@@ -225,11 +255,61 @@ also recorded in `changelog/`, which is the durable record. Load-bearing ones:
 ## Changelog (`changelog/`)
 
 Append-only dated decision records: bug fixes, features, audits, and refuted experiments.
-159 entries, 2026-07-08 to 2026-08-13. Entries are never edited to match later reality —
-several describe code that has since been deleted, which is the point. Per `AGENTS.md`
-workflow rule 2, non-trivial decisions get a new dated note here.
+182 entries, 2026-07-08 to 2026-08-15. Entries are never edited to match later reality — several describe code that has since been
+deleted, which is the point. Per `AGENTS.md` workflow rule 2, non-trivial decisions get a new
+dated note here.
 
 The newest:
+
+- `2026-08-15-cs2-oracle-is-a-range-forecaster.md` — ⭐ **what kind of model this is.** The
+  deliverable is a calibrated range and its center; **DA is not a shippable claim.** Records the
+  four things a reader needs: direction is unavailable at ~14–70 independent 2026 h-windows (not a
+  tuning failure); the band over-covers at **85.90 / 88.70 / 86.46%** vs 80% on a coherent basis
+  (one anchor, leaky mid); the two coverage columns must be quoted together and `in_interval` is
+  **not** "broken"; and prod's honest dollar-basis **64.0 / 51.5 / 71.8%** shortfall tracks
+  anchor drift, which makes the open thread an **ops/freshness** one. Also: a persistence +
+  empirical-quantile band ties or beats the served band on clean cash days — **measured, not
+  decided**. Carries an explicit do-not-propose list (a fourth width scale, the
+  "different rows for `q_hat`" class, `SERVE_OUTLIER_GATED_ANCHOR=1` as a coverage fix at
+  **+2.65 / +0.22 / +1.06pp away** from nominal, and `replay_serving.py` for the published-coverage
+  question, which it structurally cannot answer).
+- `2026-08-13-the-null-verdicts-were-not-all-tested.md` — ⭐ **the "accuracy surface is nearly
+  exhausted" claim is not supported.** Of ~16 accuracy verdicts, **6 survive audit, 5 were
+  underpowered against their own MDE, and 5 were never measured at all** — supply depth has no
+  A/B at all, and recency weights' 30d arm *passed* its gate and was declined on a mechanism
+  argument. 🔑 **`source = 'STEAMCOMMUNITY'` matches zero rows in the archive**, so
+  `ab_test_supply_side`, `_regime` and `_ensemble` select **zero items and cannot run today**,
+  while four more silently degenerate to a NULL-only frame ending 2025-12-31. Three further
+  instrument defects (six harnesses skip `_apply_feature_allowlist`; two train on the penny pool
+  and filter `>= $1` only at scoring; `supply_side`/`training_breadth` have no placebo). ⚠️ Also
+  clears two *suspected* defects that are not defects — the embargo delegates correctly, and the
+  phantom-slug omission is inert at every harness's `MIN_ITEM_DAYS` gate. **Fix the pins before
+  re-running anything.**
+- `2026-08-13-cv-folds-are-not-time-aligned-with-serving.md` — ⭐ **diagnosis only, and it opens a
+  fifth explanation for C1's CV→serving gap after the named four were declared spent.** It is not a
+  cohort or a code-path difference — it is a **calendar** one. `_compute_cv_splits`
+  (`forecaster.py:3646`) strides *forward* from `CV_MIN_TRAIN_DAYS`, so the last fold lands up to
+  `CV_STEP_DAYS − 1 = 149` days short of the frame end. h=3 wins that rounding by single-digit dates
+  and reaches **2026-06/07**; 7/14/30d lose a full stride and end at **2026-01-11 → 2026-02-09** —
+  before the 2026-03-22 consensus break and with **no overlap at all** with the
+  `2026-04-18 … 2026-06-08` anchors every served arm is read on. ⚠️ **A hypothesis with a named
+  instrument, not a result — it does not un-refute C1.** The instrument is free: `rank_ic` is already
+  stored per fold, so the arm−control edge on runs `31663312585` / `31663300447` can be split by fold
+  date with no retrain. The fix (~5 lines, anchor the grid to the frame's end) also moves `q_hat` and
+  the PT sample, so neither carries across it.
+
+- `2026-08-13-regime-training-duplicates-the-global-fit.md` — under
+  `FEATURE_GROUP_ALLOWLIST = ["price_technicals"]`, `_skipped_feature_groups` never engineers
+  `cross_sectional`, so `market_return_30d` is absent, so `_assign_regime_labels` returns `range` for
+  **every** row and the regime booster is refitted on identical rows. **`md5`-identical to the global
+  booster at 4 of 4 horizons.** CI is unaffected (`SKIP_REGIMES=1`) but every local retrain, research
+  retrain and A/B harness pays **95.4s of 872s (10.9%)** for a duplicate, and none of the thirteen
+  harnesses sets the flag. Corrects the workflow comment's "covers 818K-893K of ~985K rows" — it is
+  **100%** — and retires the "dropping regimes changes the served mid" claim in
+  `forecaster.py:5300-5307` and in `2026-08-10-training-cost-levers.md`, **for as long as the
+  allowlist holds**. 🔑 **A live footgun for C4:** re-admitting `cross_sectional` silently reactivates
+  an untested three-way model split inside the A/B measuring the feature change. Delete the branch,
+  or gate it on the allowlist rather than an env flag.
 
 - `2026-08-13-the-leak-is-worth-two-points-and-it-pays-the-placebo.md` — the first harness re-read
   after the trainer fix, and it **corrects the entry below**: the leak's size **does** reproduce on
