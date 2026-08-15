@@ -1,0 +1,91 @@
+name: Forecast Freshness Check
+
+# WHY THIS EXISTS SEPARATELY FROM Price Forecast:
+# `scripts/check_forecast_freshness.py` already runs as the last step of the
+# Price Forecast job — but that step can only fire when the job runs. On a night
+# the forecast job fails outright, or is skipped because the upstream Aggregator
+# failed, no run happens and nothing checks freshness. That is exactly how
+# item_forecasts accreted gaps (2026-07-30, 08-03, 08-08, 08-10, 08-12) while
+# the badge showed no red run for those dates. This job is INDEPENDENT of the
+# forecast chain: it runs on its own schedule and turns "no forecast landed
+# today" into a red run + owner notification, regardless of whether the forecast
+# job ran at all. See docs/research/2026-08-15-directional-accuracy-and-data-inventory.md
+# (accumulation audit) and the collector-audit precedent in
+# docs/changelog/2026-07-31-accuracy-work-closed.md.
+
+on:
+  # Noon UTC: the nightly chain (Aggregator ~23:00 UTC -> Price Forecast) lands
+  # the day's forecast_date by ~00:20 UTC, so by noon a healthy system carries
+  # today's forecast in both stores. A miss is therefore a same-day alarm.
+  schedule:
+    - cron: '0 12 * * *'
+  workflow_dispatch:
+
+defaults:
+  run:
+    shell: bash
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  freshness:
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
+          cache: pip
+          cache-dependency-path: backend/requirements.txt
+
+      - name: Install dependencies
+        working-directory: ./backend
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      # The check reads the Parquet mirror as well as the DB, because api/routes
+      # serves Parquet first — a DB row without a mirror row serves nothing.
+      - name: Checkout price archive
+        uses: actions/checkout@v4
+        with:
+          repository: RayanR000/cs2-oracle-data
+          ref: main
+          token: ${{ secrets.CS2_DATA_REPO_TOKEN }}
+          path: archive
+          fetch-depth: 1
+
+      - name: Link price-archive
+        run: ln -s $PWD/archive/price-archive price-archive
+
+      - name: Verify a forecast landed today
+        working-directory: ./backend
+        env:
+          DATABASE_URL: ${{ secrets.SUPABASE_DATABASE_URL }}
+          ENVIRONMENT: production
+        run: python scripts/check_forecast_freshness.py
+
+      # A red scheduled run emails the owner, but that is easy to lose. File (or
+      # update) a single tracking issue so a persistent stall is visible and
+      # de-duplicated rather than spawning one issue per day.
+      - name: Open a tracking issue on failure
+        if: failure()
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          TITLE="Forecast freshness check failed"
+          EXISTING=$(gh issue list --state open --search "$TITLE in:title" \
+            --json number --jq '.[0].number' || true)
+          BODY="The daily forecast freshness check failed on $(date -u +%F) — no fresh forecast landed in item_forecasts (DB and/or Parquet mirror). Run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          if [ -n "$EXISTING" ]; then
+            gh issue comment "$EXISTING" --body "$BODY"
+          else
+            gh issue create --title "$TITLE" --body "$BODY"
+          fi
