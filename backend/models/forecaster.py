@@ -21,6 +21,7 @@ from pathlib import Path
 from sqlalchemy import text
 from models import conformal
 from models import scale_model
+from models import served_recalibration
 from models.item_parser import (
     BID_SOURCES,
     PHASE_COLLAPSED_EXEMPT_PATTERNS,
@@ -5246,6 +5247,17 @@ class ItemForecaster:
 
         del df
 
+        # Served-outcome feedback: one panel read for all horizons after the CV q_hats
+        # are set, giving the per-horizon multiplier that pulls realized served coverage
+        # to 80%. Empty below the MIN_FORECAST_DATES gate (the case today), leaving the
+        # band byte-identical; the read is best-effort and never fails a retrain.
+        self.served_coverage_factor = served_recalibration.served_coverage_factors(
+            self.db, self.HORIZONS)
+        if self.served_coverage_factor:
+            logger.info(
+                f"Served-coverage factors (q_hat multipliers): "
+                f"{ {h: round(v, 4) for h, v in self.served_coverage_factor.items()} }")
+
         _train_elapsed = (datetime.now() - _train_start).total_seconds()
         self.save_models()
         logger.info(f"\n{'='*60}")
@@ -6686,6 +6698,14 @@ class ItemForecaster:
         # together with `conformal_calibration` or not at all.
         self.conformal_beta: Dict[int, float] = {}
 
+        # Served-outcome feedback: a per-horizon multiplier on q_hat, measured from
+        # realized served interval coverage on the forecast_outcomes panel, that pulls
+        # the served band toward the 80% nominal (models/served_recalibration.py). A
+        # LEVEL correction, orthogonal to beta and the learned scale. Empty (=> 1.0,
+        # no-op) on every artifact below the MIN_FORECAST_DATES gate, which is all of
+        # them today. Read only through served_qhat_multiplier().
+        self.served_coverage_factor: Dict[int, float] = {}
+
         # The learned band scale (LEARNED_SCALE=1), and the same matched-pair
         # rule as `conformal_beta`: a q_hat calibrated against a learned scale
         # is in that scale's units, so serving it against `sigma` gives an
@@ -6755,6 +6775,20 @@ class ItemForecaster:
         """
         b = self.conformal_beta.get(horizon, conformal.BETA_NEUTRAL)
         return (conformal.BETA_NEUTRAL if not np.isfinite(b) else float(b))
+
+    def served_qhat_multiplier(self, horizon: int) -> float:
+        """The served-coverage correction to multiply this horizon's q_hat by.
+
+        One accessor, same reasons as `band_beta`: absent (below the data gate, or an
+        old artifact) means 1.0, a non-finite stored value means 1.0, and the factor is
+        re-clamped on read so a hand-edited meta.json cannot push a wild multiplier into
+        a served half-width. 1.0 is byte-identical to the pre-feedback band.
+        """
+        f = self.served_coverage_factor.get(horizon, 1.0)
+        if not np.isfinite(f):
+            return 1.0
+        return float(np.clip(f, served_recalibration.FACTOR_MIN,
+                             served_recalibration.FACTOR_MAX))
 
     def _check_artifact_version(self, meta: dict) -> None:
         """Fail closed on any artifact not written by this exact scheme.
@@ -7994,8 +8028,15 @@ class ItemForecaster:
             # `band` divides by `sigma ** beta` exactly as it always has.
             # Per-horizon rather than loop-invariant like `sigma_arr`: each
             # horizon's residuals have their own size, so each has its own model.
+            #
+            # `served_qhat_multiplier` is the served-outcome feedback correction: a
+            # scalar that scales the half-width to pull realized served coverage to the
+            # 80% nominal. 1.0 (no-op) below the MIN_FORECAST_DATES gate, which is every
+            # artifact today. Orthogonal to beta/scale — it does not change the scale's
+            # units, only the overall width — so it composes with either.
+            q_hat_served = q_hat * self.served_qhat_multiplier(horizon)
             low_ret_arr, high_ret_arr = conformal.band(
-                mid_ret_arr, sigma_arr, q_hat, self.band_beta(horizon),
+                mid_ret_arr, sigma_arr, q_hat_served, self.band_beta(horizon),
                 learned_scale=self.band_scale(horizon, latest_rows, sigma_arr))
 
             # Momentum fallback for weak horizons (14d/30d): serve the trailing
@@ -9445,6 +9486,12 @@ class ItemForecaster:
             "conformal_beta": {
                 str(h): self.band_beta(h) for h in self.conformal_calibration
             },
+            # Served-outcome feedback multiplier per horizon. Only horizons past the
+            # MIN_FORECAST_DATES gate appear; a missing horizon (all of them today)
+            # loads as 1.0, byte-identical to the pre-feedback band.
+            "served_coverage_factor": {
+                str(h): float(v) for h, v in self.served_coverage_factor.items()
+            },
             # The learned scale, and the same matched-pair argument one step
             # further: `conformal_beta` decides how hard to damp `sigma`, this
             # decides whether `sigma` is the variable at all. A q_hat calibrated
@@ -9585,6 +9632,13 @@ class ItemForecaster:
         # missing horizon resolves through `band_beta`, never into a half-width.
         self.conformal_beta = {
             int(h): float(b) for h, b in meta.get("conformal_beta", {}).items()
+        }
+        # Served-outcome feedback multiplier. `.get` default {}: absent on every
+        # artifact before this feature and on every horizon below the data gate, and
+        # absence means 1.0 (no correction) through served_qhat_multiplier.
+        self.served_coverage_factor = {
+            int(h): float(v)
+            for h, v in meta.get("served_coverage_factor", {}).items()
         }
         # The learned scale, restored as a unit. `.get` for the same reason as
         # `conformal_beta`: absent on every artifact before 2026-08-12, and
