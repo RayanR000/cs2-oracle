@@ -167,6 +167,26 @@ on:
         required: false
         default: false
         type: boolean
+      # The third band-denominator arm, MUTUALLY EXCLUSIVE with the two above.
+      # It divides by `sigma * sqrt(p_exceed)`, where `p_exceed` is a per-item
+      # binary head's probability the h-day move clears the round-trip cost — a
+      # market-orthogonal magnitude signal, never a directional call (invariant 4).
+      # Like sigma_exponent/learned_scale it changes BOTH the denominator q_hat is
+      # calibrated on and the one `band` multiplies, so the env var must be
+      # identical in every step that calibrates or serves. The calibration
+      # probability is OUT-OF-FOLD: the CV path fits a per-fold head so the p that
+      # scales q_hat never saw the rows it scales.
+      #
+      # Read BAND COVERAGE BY SIGMA in the replay, arm vs control on the SAME
+      # commit and anchors. The offline read predicts the volatile-tail coverage
+      # rises (31-44% -> 47-53%) for ~5-15% more median width; `q_hat` is in the
+      # scale's units and is NOT comparable with a control's — compare coverage and
+      # WIDTH. meta.json carries `exceedance_scale`.
+      exceedance_scale:
+        description: 'Arm: band divides by sigma*sqrt(p_exceed) (excl. sigma_exponent/learned_scale; compare coverage+WIDTH)'
+        required: false
+        default: false
+        type: boolean
       # A training-ONLY arm, unlike every band arm above: time-decayed sample
       # weights (SAMPLE_WEIGHT_HALFLIFE_DAYS). It touches neither the label, the
       # features, nor calibration -- it reweights the training rows so the recent
@@ -443,6 +463,12 @@ jobs:
           # the band multiplies, so a step that calibrates or serves
           # without it would pair a learned-scale q_hat with sigma.
           LEARNED_SCALE: ${{ inputs.learned_scale && '1' || '0' }}
+          # Same three steps as SIGMA_EXPONENT/LEARNED_SCALE and for the same
+          # reason: it changes the denominator q_hat is fitted on AND the one the
+          # band multiplies, so a calibrate-or-serve step without it would pair an
+          # exceedance-scale q_hat with plain sigma. Also gates whether the CV path
+          # computes the out-of-fold exceed_p and whether the production head trains.
+          EXCEEDANCE_SCALE: ${{ inputs.exceedance_scale && '1' || '0' }}
           # Rows per CV fold. Empty means "do not set it", which is what leaves
           # `ItemForecaster.CV_MAX_TRAIN_ROWS` (300,000) in charge -- an empty
           # env var would be read by `int(os.environ.get(...))` and raise, so the
@@ -507,6 +533,11 @@ jobs:
           # the band multiplies, so a step that calibrates or serves
           # without it would pair a learned-scale q_hat with sigma.
           LEARNED_SCALE: ${{ inputs.learned_scale && '1' || '0' }}
+          # NOT provenance: the replay builds the band, so it must serve the same
+          # exceedance scale q_hat was calibrated against. band_scale reads the
+          # served head and follows meta.json's exceedance_scale, but set it here
+          # for symmetry and so a future in-process calibrate cannot mismatch.
+          EXCEEDANCE_SCALE: ${{ inputs.exceedance_scale && '1' || '0' }}
           # NOT provenance: this is the step the arm acts in. It changes the
           # served `current_price`, which is what the DOLLAR ERROR table below
           # scores -- and what `rankIC` divides by, which is why that column is
@@ -560,6 +591,7 @@ jobs:
           # the band multiplies, so a step that calibrates or serves
           # without it would pair a learned-scale q_hat with sigma.
           LEARNED_SCALE: ${{ inputs.learned_scale && '1' || '0' }}
+          EXCEEDANCE_SCALE: ${{ inputs.exceedance_scale && '1' || '0' }}
           SERVE_OUTLIER_GATED_ANCHOR: ${{ inputs.serve_outlier_gated_anchor && '1' || '0' }}
           FORCE_HP_SEARCH: ${{ inputs.force_hp_search && '1' || '0' }}
         run: |
@@ -586,6 +618,15 @@ jobs:
           fi
           if [ "$CONFORMAL_SERVED_BASIS" = "1" ]; then
             arms="${arms:+$arms+}served_basis"
+          fi
+          if [ "$SIGMA_EXPONENT" = "1" ]; then
+            arms="${arms:+$arms+}sigma_exponent"
+          fi
+          if [ "$LEARNED_SCALE" = "1" ]; then
+            arms="${arms:+$arms+}learned_scale"
+          fi
+          if [ "$EXCEEDANCE_SCALE" = "1" ]; then
+            arms="${arms:+$arms+}exceedance_scale"
           fi
           # This one is NOT in meta.json -- it is serving-only, so the artifact
           # cannot describe it and the heading is the record.

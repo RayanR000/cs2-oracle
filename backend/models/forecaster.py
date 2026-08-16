@@ -5504,18 +5504,26 @@ class ItemForecaster:
             # precomputed one-sided target_exceed_{h}d label (NaN where that label is
             # voided); reuses the direction head's tree params and served-cohort
             # reweighting. None where <2 classes survive (a degenerate horizon).
-            _exc_start = time.time()
-            self.exceedance_models[horizon] = self._fit_exceedance_classifier(
-                X_train, train_set[f"target_exceed_{horizon}d"].to_numpy(),
-                boosting_type,
-                self._direction_tree_params(per_quantile_params),
-                horizon=horizon,
-                tier_train=(train_set["price_tier"].to_numpy()
-                            if "price_tier" in train_set.columns else None),
-                num_boost_round=boost_rounds,
-            )
-            logger.info(f"  [timing] {horizon}d exceedance classifier: "
-                        f"{time.time() - _exc_start:.1f}s")
+            #
+            # Gated on the flag: q_hat only becomes exceedance-based when the OOF
+            # exceed_p is computed in the CV path, which is itself flag-gated — so a
+            # head trained with the flag off is never served and never calibrated
+            # against, and training it would only add four boosters and four files
+            # to every production retrain for nothing. Flag off => byte-identical to
+            # the pre-Phase-2 artifact.
+            if self.exceedance_scale_enabled():
+                _exc_start = time.time()
+                self.exceedance_models[horizon] = self._fit_exceedance_classifier(
+                    X_train, train_set[f"target_exceed_{horizon}d"].to_numpy(),
+                    boosting_type,
+                    self._direction_tree_params(per_quantile_params),
+                    horizon=horizon,
+                    tier_train=(train_set["price_tier"].to_numpy()
+                                if "price_tier" in train_set.columns else None),
+                    num_boost_round=boost_rounds,
+                )
+                logger.info(f"  [timing] {horizon}d exceedance classifier: "
+                            f"{time.time() - _exc_start:.1f}s")
 
             # Train regime-specific models (optional: SKIP_REGIMES=1 to skip)
             #
