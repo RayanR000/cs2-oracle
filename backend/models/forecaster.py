@@ -35,7 +35,8 @@ from models.item_parser import (
     phase_collapsed_sql_filter,
 )
 from models.staleness import STALE_RUN_GAP_BREAK_DAYS, stale_run_days
-from backtest.scoring import HEADLINE_MIN_TIER, MIN_FORECAST_DATES
+from backtest.scoring import HEADLINE_MIN_TIER, MIN_FORECAST_DATES, price_tier
+from backtest.friction import actionable_threshold
 from backtest.price_resolution import MAX_WINDOW_SPAN_DAYS, SMOOTH_WINDOW
 # Invariant #4 (backend/AGENTS.md): a directional accuracy is quotable only
 # beside the constant call and the realised down rate, with Pesaran-Timmermann
@@ -4434,6 +4435,23 @@ class ItemForecaster:
             f"{len(shifts)} collector cutovers, {len(snapshots)} snapshot days); "
             f"cutovers: {sorted(d.isoformat() for d in shifts)}"
         )
+
+        # One-sided exceedance label for the band-scale head (Phase 2): does the
+        # h-day move clear the round-trip cost at the cheapest venue (CSFloat)?
+        # Derived from the FINAL target_return column, so it inherits the ±500%
+        # winsorization and every void above (a NaN return yields a NaN label),
+        # and the exceedance head trains on exactly the rows the range model does.
+        # See docs/superpowers/plans/2026-08-16-exceedance-band-scale-phase2-plan.md.
+        ret = df[f"target_return_{horizon}d"]
+        # Precompute the six per-tier thresholds once (not per row); keep
+        # scoring.price_tier as the tier source of truth rather than re-spelling
+        # its cut bins here, so this cannot drift from the canonical tiers.
+        thr_by_tier = np.array(
+            [100.0 * actionable_threshold(t, "csfloat") for t in range(6)])
+        thr_pct = thr_by_tier[df["price"].map(price_tier).to_numpy()]
+        exceed = (ret.to_numpy(dtype=float) > thr_pct).astype(float)
+        exceed[ret.isna().to_numpy()] = np.nan
+        df[f"target_exceed_{horizon}d"] = exceed
         return df
 
     # ------------------------------------------------------------------
@@ -6111,6 +6129,10 @@ class ItemForecaster:
                    ANCHOR_TIED_COL}
         exclude |= {f"target_{h}d" for h in horizons}
         exclude |= {f"target_return_{h}d" for h in horizons}
+        # The one-sided exceedance label prepare_targets adds after this runs. A
+        # float column the dtype filter would otherwise admit, and it IS the answer
+        # the exceedance head predicts — never a feature.
+        exclude |= {f"target_exceed_{h}d" for h in horizons}
         # The market factor is computed from other items' FUTURE prices. It is
         # a label input, never a feature -- if it reaches feature_cols the
         # model trains on the answer.
@@ -6482,6 +6504,54 @@ class ItemForecaster:
             callbacks.insert(0, lgb.early_stopping(20))
         return lgb.train(params, dtrain, num_boost_round=num_boost_round,
                          valid_sets=valid_sets, callbacks=callbacks)
+
+    def _fit_exceedance_classifier(self, X_train, y_train,
+                                   boosting_type: str, tree_params: dict,
+                                   horizon: Optional[int] = None,
+                                   tier_train=None,
+                                   num_boost_round: int = 200,
+                                   random_state: int = 42):
+        """Binary LightGBM: P(the h-day move clears the round-trip cost).
+
+        Labels are the precomputed one-sided ``target_exceed_{h}d`` from
+        ``prepare_targets`` (already NaN wherever the return label is voided), so
+        the head trains on exactly the rows the range model does — rows with a NaN
+        label are dropped here. Served-cohort (>= $1) reweighting mirrors the
+        direction head via ``_served_cohort_multiplier``. Returns ``None`` when
+        fewer than two classes survive, so a degenerate horizon skips cleanly
+        rather than training an unusable constant model.
+        See docs/superpowers/plans/2026-08-16-exceedance-band-scale-phase2-plan.md.
+        """
+        y = np.asarray(y_train, dtype=float)
+        keep = ~np.isnan(y)
+        X = X_train.loc[keep] if isinstance(X_train, pd.DataFrame) \
+            else np.asarray(X_train)[keep]
+        yk = y[keep].astype(int)
+        if len(np.unique(yk)) < 2:
+            logger.warning(
+                f"  {horizon}d exceedance classifier: <2 classes after dropping "
+                f"NaN labels ({len(yk):,} rows) — skipping")
+            return None
+
+        w = np.ones(len(yk))
+        tiers = np.asarray(tier_train)[keep] if tier_train is not None else None
+        if self.served_cohort_share is not None and tiers is not None:
+            m = self._served_cohort_multiplier(w, tiers, self.served_cohort_share)
+            served = tiers >= HEADLINE_MIN_TIER
+            w[served] *= m
+            logger.info(
+                f"  {horizon}d exceedance classifier: served-cohort weighting to "
+                f"share={self.served_cohort_share:.2f} — {int(served.sum()):,}/"
+                f"{len(served):,} rows are >= $1")
+
+        ds = {"max_bin": self.MAX_BIN, "feature_pre_filter": False}
+        dtrain = lgb.Dataset(X, yk, params=ds, weight=w)
+        params = dict(tree_params)
+        params.update(objective="binary", metric="binary_logloss",
+                      boosting_type=boosting_type, verbosity=-1, n_jobs=-1,
+                      random_state=random_state)
+        return lgb.train(params, dtrain, num_boost_round=num_boost_round,
+                         callbacks=[lgb.log_evaluation(0)])
 
     @staticmethod
     def _direction_tree_params(per_quantile_params: dict) -> dict:
