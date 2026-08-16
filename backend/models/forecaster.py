@@ -872,6 +872,11 @@ class ItemForecaster:
         self.regime_models: Dict[Tuple[str, int, float], list] = {}
         # Per-horizon 3-class directional classifier (down/flat/up).
         self.direction_models: Dict[int, lgb.Booster] = {}
+        # Per-horizon binary exceedance head, P(the h-day move clears the
+        # round-trip cost). A magnitude signal used as a band-width scale
+        # (Phase 2), never a directional call. A value is None where the
+        # horizon had fewer than two classes to fit.
+        self.exceedance_models: Dict[int, Optional[lgb.Booster]] = {}
         self.regime_feature_cols: Dict[Tuple[int, str], List[str]] = {}
         self.feature_cols: List[str] = []
         self.prune_failed_groups = prune_failed_groups
@@ -5452,6 +5457,24 @@ class ItemForecaster:
             _dir_elapsed = time.time() - _dir_start
             logger.info(f"  [timing] {horizon}d direction classifier: {_dir_elapsed:.1f}s")
 
+            # Exceedance head: P(|move| clears the round-trip cost), the band-width
+            # scale for Phase 2. Trains on the same rows as the range model, off the
+            # precomputed one-sided target_exceed_{h}d label (NaN where that label is
+            # voided); reuses the direction head's tree params and served-cohort
+            # reweighting. None where <2 classes survive (a degenerate horizon).
+            _exc_start = time.time()
+            self.exceedance_models[horizon] = self._fit_exceedance_classifier(
+                X_train, train_set[f"target_exceed_{horizon}d"].to_numpy(),
+                boosting_type,
+                self._direction_tree_params(per_quantile_params),
+                horizon=horizon,
+                tier_train=(train_set["price_tier"].to_numpy()
+                            if "price_tier" in train_set.columns else None),
+                num_boost_round=boost_rounds,
+            )
+            logger.info(f"  [timing] {horizon}d exceedance classifier: "
+                        f"{time.time() - _exc_start:.1f}s")
+
             # Train regime-specific models (optional: SKIP_REGIMES=1 to skip)
             #
             # `_warm_retrain` deliberately does NOT skip these, though it used to.
@@ -9130,6 +9153,16 @@ class ItemForecaster:
         if self.direction_models:
             logger.info(f"  Saved {len(self.direction_models)} directional classifiers")
 
+        # Save exceedance heads (one binary model per horizon; None where the
+        # horizon degenerated to a single class, so it writes no file).
+        _n_exc = 0
+        for horizon, clf in self.exceedance_models.items():
+            if clf is not None:
+                clf.save_model(os.path.join(self.model_dir, f"exceed_clf_{horizon}d.txt"))
+                _n_exc += 1
+        if _n_exc:
+            logger.info(f"  Saved {_n_exc} exceedance classifiers")
+
         # Remove orphaned regime-model files: any lgb_*_{regime}_*.txt on disk
         # that isn't in the current self.regime_models. Without this, a
         # regime-free (SKIP_REGIMES) run would leave stale regime artifacts
@@ -9515,6 +9548,17 @@ class ItemForecaster:
                     logger.warning(f"  Corrupt classifier {cpath}, skipping: {e}")
         if self.direction_models:
             logger.info(f"  Loaded {len(self.direction_models)} directional classifiers")
+
+        # Load exceedance heads (one binary model per horizon, where saved).
+        for horizon in self.HORIZONS:
+            epath = os.path.join(self.model_dir, f"exceed_clf_{horizon}d.txt")
+            if os.path.exists(epath):
+                try:
+                    self.exceedance_models[horizon] = lgb.Booster(model_file=epath)
+                except (lgb.basic.LightGBMError, Exception) as e:
+                    logger.warning(f"  Corrupt exceedance classifier {epath}, skipping: {e}")
+        if self.exceedance_models:
+            logger.info(f"  Loaded {len(self.exceedance_models)} exceedance classifiers")
 
         # Build per-horizon feature sets from the loaded models.
         # Each model internally stores the feature names it was trained with.
