@@ -893,6 +893,11 @@ class ItemForecaster:
         self._artifact_tier_lead: Optional[bool] = None
         self._artifact_xs_rank: Optional[bool] = None
         self._artifact_naive_init: Optional[bool] = None
+        # Whether the band was CALIBRATED against sigma * sqrt(p_exceed). Serving
+        # must follow this, not the environment: q_hat and the scale are a matched
+        # pair, so a plain-sigma artifact reloaded with EXCEEDANCE_SCALE=1 in the
+        # env must keep serving plain sigma. None = "older meta.json, does not say".
+        self._artifact_exceedance_scale: Optional[bool] = None
         # The median-price floor the artifact was TRAINED under. Load-bearing
         # only when the rank transform is on, and then it is load-bearing
         # absolutely: the transform's output depends on which items are in the
@@ -1166,6 +1171,43 @@ class ItemForecaster:
         `docs/changelog/2026-08-12-the-sigma-scale-is-one-exponent-per-horizon.md`.
         """
         return os.environ.get("SIGMA_EXPONENT") == "1"
+
+    @staticmethod
+    def exceedance_scale_enabled() -> bool:
+        """Whether the band divides by `sigma * sqrt(p_exceed)` instead of `sigma`.
+
+        `p_exceed` is the per-item exceedance head's probability the h-day move
+        clears the round-trip cost (`self.exceedance_models`) — a magnitude signal,
+        never a directional call (invariant 4). It is passed to conformal as a
+        `learned_scale` ARRAY, so `beta` stays neutral (`resolve_scale` forbids a
+        learned scale beside `beta != 1`) and q_hat is dimensionally tied to the
+        scale, exactly as it is to `beta` under SIGMA_EXPONENT.
+
+        Measured offline against the REAL production scale
+        (`docs/changelog/2026-08-16-exceedance-probability-improves-band-conditional-coverage.md`):
+        at matched 0.80 marginal coverage the plain-sigma band covers the
+        volatile-tail quintile at only 31-44%; `sigma * sqrt(p)` lifts that to
+        47-53% for ~5-15% more median width. It does NOT reach 0.80 (the residual
+        is the trailing-vs-forward volatility gap no in-sample scale closes) and the
+        reallocation is one-sided (it widens hard items without narrowing easy ones).
+
+        Mutually exclusive with LEARNED_SCALE and SIGMA_EXPONENT — three alternative
+        band denominators, not layers (`_calibrate_conformal` raises if combined).
+        Off by default; the served headline stays gated by MIN_FORECAST_DATES=20.
+        Set EXCEEDANCE_SCALE=1. See
+        docs/superpowers/plans/2026-08-16-exceedance-band-scale-phase2-plan.md.
+        """
+        return os.environ.get("EXCEEDANCE_SCALE") == "1"
+
+    def _exceedance_scale_served(self) -> bool:
+        """Whether predict() applies the exceedance scale, following the artifact.
+
+        The matched-pair rule: q_hat was calibrated with the scale iff the artifact
+        says so, so serving must read the artifact and only fall back to the
+        environment when none is loaded (the cold-start / pre-flag case)."""
+        if self._artifact_exceedance_scale is not None:
+            return self._artifact_exceedance_scale
+        return self.exceedance_scale_enabled()
 
     @staticmethod
     def conformal_served_basis_enabled() -> bool:
@@ -6660,6 +6702,23 @@ class ItemForecaster:
         model, so the caller passes `learned_scale=None` and `resolve_scale`
         takes the pre-existing path.
         """
+        # Exceedance scale takes precedence and follows the ARTIFACT: q_hat was
+        # calibrated against sigma * sqrt(p_exceed) iff `_exceedance_scale_served`,
+        # so applying it on any other artifact would serve a mismatched q_hat.
+        if self._exceedance_scale_served():
+            head = self.exceedance_models.get(horizon)
+            if head is not None:
+                cols = head.feature_name()
+                X = rows.reindex(columns=cols, fill_value=0).replace(
+                    [np.inf, -np.inf], np.nan)
+                if not self.feature_medians.empty:
+                    X = X.fillna(self.feature_medians.reindex(cols))
+                p = np.clip(head.predict(X), 1e-3, 1.0)
+                return np.asarray(sigma, dtype=float) * np.sqrt(p)
+            # Flag on but no head for this horizon (degenerate): fall through to
+            # sigma. q_hat for this horizon was calibrated on plain sigma too,
+            # because `_exceedance_learned_scale` returned None there — coherent.
+
         booster = self.scale_models.get(horizon)
         if booster is None:
             return None
@@ -6759,7 +6818,8 @@ class ItemForecaster:
                            current_price,
                            direction_class=None,
                            residual_actual_ret=None,
-                           row_index=None) -> List[Dict[str, float]]:
+                           row_index=None,
+                           exceed_p=None) -> List[Dict[str, float]]:
         """Per-row calibration records, shared by the CV and holdout paths.
 
         `residual_pct` / `sigma` are what q_hat is fitted on, `mid_ret` is what
@@ -6836,6 +6896,15 @@ class ItemForecaster:
                 mid, mid, mid, direction_class)
 
         centre = mid if served_mid is None else served_mid
+        # Out-of-fold exceedance probability, the band scale for EXCEEDANCE_SCALE.
+        # Positional like `row_index`: aligned to the same frame as `mid`.
+        exc = None if exceed_p is None else np.asarray(exceed_p, dtype=float)
+        if exc is not None and exc.shape[0] != mid.shape[0]:
+            raise ValueError(
+                f"exceed_p has {exc.shape[0]} entries against {mid.shape[0]} "
+                f"calibration rows. It is positional: a mismatched length means "
+                f"the caller's arrays are not on one frame."
+            )
         idx = None if row_index is None else np.asarray(row_index)
         if idx is not None and idx.shape[0] != mid.shape[0]:
             # Loud, because the silent version attaches one item's error to
@@ -6859,6 +6928,8 @@ class ItemForecaster:
                 rec["served_mid_ret"] = float(served_mid[i])
             if idx is not None:
                 rec["row_index"] = idx[i]
+            if exc is not None:
+                rec["exceed_p"] = float(exc[i])
             records.append(rec)
         return records
 
@@ -6901,12 +6972,22 @@ class ItemForecaster:
         holdout_clf = self.direction_models.get(horizon)
         holdout_cls = (None if holdout_clf is None
                        else holdout_clf.predict(X_val).argmax(axis=1))
+        # Exceedance scale from the served head — IN-SAMPLE, like holdout_cls
+        # above, because this last-resort path has no fold to hold out. The band
+        # under-covers here for the same reason it does for every other quantity;
+        # a coherent-but-optimistic scale beats none.
+        holdout_exceed = None
+        if self.exceedance_scale_enabled():
+            head = self.exceedance_models.get(horizon)
+            if head is not None:
+                holdout_exceed = head.predict(X_val)
         records = self._conformal_records(
             p50, y_val.values, self._sigma_for_rows(val_set),
             val_set["price"].values,
             direction_class=holdout_cls,
             residual_actual_ret=self._calibration_returns(
                 val_set, horizon, y_val.values),
+            exceed_p=holdout_exceed,
             # Carried here too. Without it a learned scale would silently have
             # no features on exactly the horizons that fell back to this path --
             # the short-history ones, which are the hardest to size a band for.
@@ -7123,6 +7204,37 @@ class ItemForecaster:
         )
         return cross
 
+    def _exceedance_learned_scale(self, horizon: int, records_df: pd.DataFrame,
+                                  sigma) -> Optional[np.ndarray]:
+        """`sigma * sqrt(p_exceed)` for the calibration rows, or None.
+
+        `p_exceed` is `records_df["exceed_p"]`, the OUT-OF-FOLD exceedance-head
+        probability the record builder attached per row (the CV path fits a
+        per-fold head so this is honest; the holdout path is in-sample and already
+        warns). Clipped to (1e-3, 1] so a zero probability cannot collapse the band
+        to zero width. Returns None when the flag is off, and None-with-a-WARNING
+        when the flag is on but the rows carry no probability — a q_hat fitted on
+        plain sigma is coherent, just not the arm that was asked for.
+        """
+        if not self.exceedance_scale_enabled():
+            return None
+        if "exceed_p" not in records_df.columns:
+            logger.warning(
+                f"  {horizon}d EXCEEDANCE_SCALE=1 but the calibration rows carry "
+                f"no out-of-fold exceed_p (the head may have degenerated to <2 "
+                f"classes on every fold) — q_hat falls back to plain sigma and the "
+                f"arm is NOT in effect for this horizon."
+            )
+            return None
+        p = np.clip(records_df["exceed_p"].to_numpy(dtype=float), 1e-3, 1.0)
+        logger.info(
+            f"  {horizon}d exceedance scale: sigma * sqrt(p_exceed) on "
+            f"{p.size:,} calibration rows (p median {np.median(p):.3f}) — q_hat "
+            f"is DIMENSIONALLY TIED to it and must never be compared with a "
+            f"plain-sigma q_hat."
+        )
+        return np.asarray(sigma, dtype=float) * np.sqrt(p)
+
     def _scale_feature_frame(self, rows: pd.DataFrame, sigma,
                              horizon: int) -> pd.DataFrame:
         """The feature matrix the learned scale is fitted on AND served from.
@@ -7177,9 +7289,24 @@ class ItemForecaster:
                 "Applying both re-tilts the band the other way — measured in "
                 "docs/changelog/2026-08-12-served-sigma-profile.md. Pick one."
             )
+        if self.exceedance_scale_enabled() and (
+                scale_model.enabled() or self.sigma_exponent_enabled()):
+            raise RuntimeError(
+                "EXCEEDANCE_SCALE=1 is set alongside LEARNED_SCALE or "
+                "SIGMA_EXPONENT. They are three alternative band denominators, "
+                "not layers — each redefines the scale q_hat is calibrated "
+                "against, and composing them serves a q_hat in the wrong units. "
+                "Pick one."
+            )
 
-        learned = self._fit_learned_scale(horizon, records_df, feature_frame,
-                                          resid, sigma)
+        # sigma * sqrt(p_exceed), from the OUT-OF-FOLD probabilities the record
+        # builder attached (`exceed_p`). It is a full `learned_scale` denominator,
+        # so beta stays neutral below and q_hat is dimensionally tied to it. Takes
+        # precedence over the learned-scale path, which is off by the guard above.
+        exceedance = self._exceedance_learned_scale(horizon, records_df, sigma)
+        learned = (exceedance if exceedance is not None
+                   else self._fit_learned_scale(horizon, records_df,
+                                                feature_frame, resid, sigma))
 
         # The exponent, fitted on the SAME rows q_hat is, and stored in the same
         # breath. Nothing between these two statements may raise or return, or an
@@ -8489,6 +8616,25 @@ class ItemForecaster:
                 pt_records_clf.extend(self._direction_records_from_classes(
                     pred_cls, actual_cls, val_df["date"]))
 
+            # Out-of-fold exceedance probability for the band scale
+            # (EXCEEDANCE_SCALE). Fit ON THIS FOLD's train and predict on its
+            # held-out val, so the p that scales q_hat never saw the rows it
+            # scales — the same cross-fit honesty the learned scale needs, gotten
+            # here for free because the fold split already holds val out. Gated:
+            # unless the flag is on, no head is fit and no cost is paid.
+            fold_exceed_p = None
+            if self.exceedance_scale_enabled():
+                exc_clf = self._fit_exceedance_classifier(
+                    X_train, train_df[f"target_exceed_{horizon}d"].to_numpy(),
+                    self.BOOSTING_TYPE,
+                    self._direction_tree_params(per_quantile_params),
+                    horizon=horizon,
+                    tier_train=(train_df["price_tier"].to_numpy()
+                                if "price_tier" in train_df.columns else None),
+                    num_boost_round=self._boost_rounds(horizon, cv=True))
+                if exc_clf is not None:
+                    fold_exceed_p = exc_clf.predict(X_val)
+
             # Build per-row records for pooled calibration. Same builder the
             # single-holdout path uses, so the two calibrations are comparable.
             # `pred_cls` is None unless CV_DIAGNOSTIC_CLASSIFIER=1, and then the
@@ -8497,6 +8643,7 @@ class ItemForecaster:
             fold_conformal = self._conformal_records(
                 fold_p50, actual_returns, fold_sigma, current_prices,
                 direction_class=pred_cls, residual_actual_ret=cal_returns,
+                exceed_p=fold_exceed_p,
                 # `val_df` is a boolean-mask slice of `tdf` with no
                 # `reset_index`, and `tdf` carries a unique RangeIndex out of
                 # `prepare_targets`' merge -- so these labels index straight back
@@ -9261,6 +9408,7 @@ class ItemForecaster:
             # booster fitted with the offset emits a residual, so predict has to
             # know to add `-return_1d` back. See _naive_init_score_served.
             "naive_init_score": self.naive_init_score_enabled(),
+            "exceedance_scale": self.exceedance_scale_enabled(),
             # Provenance, not a serving switch. `predict` already converts a
             # return to dollars against the smoothed anchor, so an artifact
             # trained under this flag is the COHERENT pairing and needs nothing
@@ -9383,6 +9531,7 @@ class ItemForecaster:
         self._artifact_cohort_items = meta.get("train_cohort_items")
         self._artifact_xs_rank_skipped = meta.get("xs_rank_skipped_cols")
         self._artifact_naive_init = meta.get("naive_init_score")
+        self._artifact_exceedance_scale = meta.get("exceedance_scale")
 
         # Restore cached tuned hyperparameters (skips Optuna on retrain when present).
         self.tuned_params = {}
