@@ -65,12 +65,20 @@ jobs:
       - name: Link price-archive
         run: ln -s $PWD/archive/price-archive price-archive
 
-      - name: Verify a forecast landed today
+      # Expect a forecast at least as fresh as YESTERDAY, not today. The nightly
+      # chain lands the day's forecast_date at ~00:00-00:20 UTC, so an
+      # expected=today check run in that window (or on an off-hours manual
+      # dispatch) false-fails before the day's forecast exists. A one-day grace
+      # removes that boundary while still catching a genuinely stalled pipeline:
+      # this monitor is the backstop for a day on which NO forecast run happened
+      # (multi-day stall), while per-run failures are already alarmed by each
+      # workflow's own failure issue. Detection latency is at most one day.
+      - name: Verify a forecast landed within the last day
         working-directory: ./backend
         env:
           DATABASE_URL: ${{ secrets.SUPABASE_DATABASE_URL }}
           ENVIRONMENT: production
-        run: python scripts/check_forecast_freshness.py
+        run: python scripts/check_forecast_freshness.py --expected-date "$(date -u -d yesterday +%F)"
 
       # A red scheduled run emails the owner, but that is easy to lose. File (or
       # update) a single tracking issue so a persistent stall is visible and
