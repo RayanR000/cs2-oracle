@@ -26,6 +26,7 @@ from models.item_parser import (
     BID_SOURCES,
     PHASE_COLLAPSED_EXEMPT_PATTERNS,
     PHASE_COLLAPSED_SLUG_PATTERNS,
+    STEAM_SPOT_SOURCES,
     TRAILING_WINDOW_SOURCES,
     archive_universe_sql_filter,
     bid_sources_sql_filter,
@@ -247,6 +248,8 @@ def _feature_group(name: str) -> str:
                                          "price_accel_", "autocorr_", "support_",
                                          "volume_", "vol_price_")):
         return "price_technicals"
+    if name.startswith("supply_churn"):
+        return "supply_churn"
     if name.startswith("supply_"):
         return "supply_depth"
     # Before the item_identity / temporal prefixes below, none of which can
@@ -289,6 +292,7 @@ class ItemForecaster:
     # also importing `models.item_parser` to look up what it means.
     BID_SOURCES = BID_SOURCES
     TRAILING_WINDOW_SOURCES = TRAILING_WINDOW_SOURCES
+    STEAM_SPOT_SOURCES = STEAM_SPOT_SOURCES
 
     HORIZONS = [3, 7, 14, 30]
     # The band no longer comes from quantile models — see models/conformal.py.
@@ -417,13 +421,17 @@ class ItemForecaster:
     ALL_FEATURE_GROUPS = frozenset({
         "price_technicals", "supply_depth", "item_identity", "item_metadata",
         "temporal", "events", "cross_sectional", "social", "other",
-        "tier_lead",
+        "tier_lead", "supply_churn",
     })
     # The tier lead-lag group, gated by tier_lead_enabled() the way
     # bymykel_metadata is -- the allowlist alone cannot admit it, because a group
     # that is allowlisted but never engineered yields columns absent and
     # median-filled to zero (the hazard _skipped_feature_groups documents).
     TIER_LEAD_GROUP = "tier_lead"
+    # Isolated so an A/B admits only the supply-churn magnitude features, not the
+    # dormant supply_depth group's other (live-snapshot) columns. Gated the same
+    # way tier_lead is: the allowlist alone cannot admit it.
+    SUPPLY_CHURN_GROUP = "supply_churn"
     TIER_LEAD_FEATURES = ("tier_lead_return_1d",)
     # The naive predictor N1 boosts from, negated: the one runnable baseline the
     # model measurably loses to on rank IC. See naive_init_score_enabled().
@@ -594,6 +602,50 @@ class ItemForecaster:
         if "st_premium" not in df.columns:
             df["st_premium"] = np.nan
         df["st_premium_present"] = df["st_premium"].notna().astype(int)
+        return df
+
+    @staticmethod
+    def _supply_churn_features_enabled() -> bool:
+        """Whether the supply-churn (band-width) features reach the trained set.
+
+        Default OFF. Derived from the deep `buff_listing_count` sidecar (BUFF
+        listing counts, 2021-07 -> 2024-02), which is joined today but consumed
+        by no feature. The signal is 2nd-moment: the MAGNITUDE of a day-over-day
+        listing change predicts forward |return| (docs/research/
+        2026-08-17-supply-churn-volatility-signal.md, corr +0.11), where the
+        existing `supply_change_7d` is signed and null for volatility. Populated
+        only over the sidecar's 2021-2024 span — NaN after, so it can be learned
+        on those folds but is not served until the live supply panel is unioned
+        into the sidecar. Set SUPPLY_CHURN_FEATURES=1 to enable.
+        """
+        return os.environ.get("SUPPLY_CHURN_FEATURES") == "1"
+
+    @staticmethod
+    def _compute_supply_churn_features(df: pd.DataFrame) -> pd.DataFrame:
+        """Derive listing-churn magnitude from `buff_listing_count`.
+
+        `supply_churn`     — per-item day-over-day change in log(1 + listings)
+        `supply_churn_abs` — |supply_churn|, the validated volatility predictor
+        `supply_churn_present` — 1 where a positive listing count was joined
+
+        Scale-free by construction (a log-difference). Safe when the sidecar is
+        absent: `buff_listing_count` is created as NaN first, so churn is NaN and
+        the presence flag is 0 for every row, no exception. NaN is read as
+        missing by the model; no fill. The diff is taken within item on a
+        date-sorted frame so a lag never crosses an item boundary.
+        """
+        if "buff_listing_count" not in df.columns:
+            df["buff_listing_count"] = np.nan
+        df = df.sort_values(["item_id", "date"])
+        present = df["buff_listing_count"] > 0
+        df["supply_churn_present"] = (
+            df["buff_listing_count"].notna() & present
+        ).astype(int)
+        # A 0 listing count is "no supply observed", not a real level -- masking
+        # it to NaN keeps a 0->N day from manufacturing a huge log jump.
+        loglist = np.log1p(df["buff_listing_count"].where(present))
+        df["supply_churn"] = loglist.groupby(df["item_id"]).diff().astype(np.float32)
+        df["supply_churn_abs"] = df["supply_churn"].abs().astype(np.float32)
         return df
 
     def _active_shelved_features(self) -> frozenset:
@@ -826,7 +878,7 @@ class ItemForecaster:
     # pyarrow round-trip on pandas 2.3.3) rather than as a column: the predict
     # frame reaches ~2M rows and copying it to append a constant would double
     # peak memory on the path that already OOMs in CI.
-    ENGINEERED_CACHE_VERSION = 3   # v3: sidecar columns join into the daily frame
+    ENGINEERED_CACHE_VERSION = 4   # v4: supply_churn_* features off buff_listing_count
 
     # --- Voted price frame cache ---
     # Bump VOTED_CACHE_VERSION whenever _fetch_voted_price_history or
@@ -847,7 +899,10 @@ class ItemForecaster:
     # voting pool. A v5 frame still lets a trailing-window mean vote on equal
     # terms against point-in-time asks, damping the consensus and
     # manufacturing mean-reversion in every return computed across it.
-    VOTED_CACHE_VERSION = 6
+    # v7: STEAM_SPOT_SOURCES (aggregator_steam_spot) leaves the voting pool. A
+    # v6 frame built after 2026-08-17 would let Steam's clean spot vote as a
+    # second Steam ballot alongside aggregator_sync, double-counting the venue.
+    VOTED_CACHE_VERSION = 7
     VOTED_CACHE_PREFIX = "voted_"
     VOTED_CACHE_MAX_ENTRIES = 3
 
@@ -1866,7 +1921,11 @@ class ItemForecaster:
         # years of the archive — voting. `frozenset` membership only, never a
         # prefix match: `aggregator_steam_17mafo` is a distinct source (the
         # only ask for 2026-04-16 -> 07-10) and must keep voting.
-        excluded = BID_SOURCES | TRAILING_WINDOW_SOURCES
+        # STEAM_SPOT_SOURCES joins the drop: `aggregator_steam_spot` is Steam's
+        # clean `last_24h`, but Steam already votes through `aggregator_sync`, so
+        # letting it vote double-counts the venue. Kept in the archive as the
+        # basis feature's spot leg only.
+        excluded = BID_SOURCES | TRAILING_WINDOW_SOURCES | STEAM_SPOT_SOURCES
         df = df[~df["source"].isin(excluded)]
         if df.empty:
             # Every input row was a bid or a trailing-window mean. 2,338
@@ -2250,6 +2309,8 @@ class ItemForecaster:
             df = self._compute_bid_features(df)
         if self._stattrak_feature_enabled():
             df = self._compute_stattrak_feature(df)
+        if self._supply_churn_features_enabled():
+            df = self._compute_supply_churn_features(df)
 
         # Boolean indicators for features with frequent missingness
         df["rsi_missing"] = df["rsi_14"].isna().astype(int)
@@ -6246,6 +6307,8 @@ class ItemForecaster:
             allowlist.add(self.BYMYKEL_META_GROUP)
         if self.tier_lead_enabled():
             allowlist.add(self.TIER_LEAD_GROUP)
+        if self._supply_churn_features_enabled():
+            allowlist.add(self.SUPPLY_CHURN_GROUP)
         return set(self.ALL_FEATURE_GROUPS) - allowlist - {"other"}
 
     def _reduce_feature_cols(self, df: pd.DataFrame) -> None:
@@ -6267,6 +6330,8 @@ class ItemForecaster:
             allowlist.append(self.BYMYKEL_META_GROUP)
         if allowlist and self.tier_lead_enabled():
             allowlist.append(self.TIER_LEAD_GROUP)
+        if allowlist and self._supply_churn_features_enabled():
+            allowlist.append(self.SUPPLY_CHURN_GROUP)
 
         def _allow():
             if not allowlist:

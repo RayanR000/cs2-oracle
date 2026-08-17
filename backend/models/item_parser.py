@@ -68,6 +68,21 @@ TRAILING_WINDOW_SOURCES = frozenset({
     "aggregator_steam_7d", "aggregator_steam_30d", "aggregator_steam_90d",
 })
 
+# Steam's point-in-time `last_24h` price, stored WITHOUT the trailing-window
+# fallback that contaminates `aggregator_sync` (which is `last_24h` falling back
+# to 7d/30d/90d means on exactly the illiquid items). Emitted by
+# collectors/pipeline.py's steam branch from 2026-08-17 onward as the clean spot
+# leg the cross-venue basis needs — see
+# docs/research/2026-08-16-cross-venue-basis-steam-buff.md. It is NOT a new ask:
+# Steam already votes through `aggregator_sync`, so this must be excluded from
+# the consensus exactly like TRAILING_WINDOW_SOURCES, or it double-counts Steam.
+# A diagnostic/feature source only; readers that want the clean spot select this
+# source row from the archive directly. No historical backfill exists — past
+# `last_24h` was folded into `aggregator_sync` and cannot be separated — so the
+# series is empty before 2026-08-17 and NULL-safe membership keeps the pre-2026
+# `source IS NULL` series voting.
+STEAM_SPOT_SOURCES = frozenset({"aggregator_steam_spot"})
+
 
 def bid_sources_sql_filter(column: str = "source") -> str:
     """SQL predicate dropping the bid sources from an archive read.

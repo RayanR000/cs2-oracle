@@ -61,6 +61,11 @@ on:
         required: false
         default: false
         type: boolean
+      supply_churn:
+        description: 'Arm: add supply_churn_* (|Δlisting| band-width, read on interval coverage/width)'
+        required: false
+        default: false
+        type: boolean
       naive_init_score:
         description: 'Arm: boost the q50 from -return_1d (N1)'
         required: false
@@ -436,6 +441,10 @@ jobs:
           # believing the size of it.
           TIER_LEAD_FEATURE: ${{ inputs.tier_lead && '1' || '0' }}
           CROSS_SECTIONAL_RANK: ${{ inputs.cross_sectional_rank && '1' || '0' }}
+          # Adds the isolated supply_churn group (|Δlisting| magnitude off the
+          # buff_listing_count sidecar). A band-WIDTH arm: read interval coverage
+          # and width, not DA. Populated only over the sidecar's 2021-2024 span.
+          SUPPLY_CHURN_FEATURES: ${{ inputs.supply_churn && '1' || '0' }}
           # N1. Unlike the two above this changes what the boosters PREDICT (a
           # residual to -return_1d, not a level), so the run logs a warning when
           # it is on with reused HP. Read `rank_ic_edge` per horizon; the bar is
@@ -581,6 +590,7 @@ jobs:
         env:
           TIER_LEAD_FEATURE: ${{ inputs.tier_lead && '1' || '0' }}
           CROSS_SECTIONAL_RANK: ${{ inputs.cross_sectional_rank && '1' || '0' }}
+          SUPPLY_CHURN_FEATURES: ${{ inputs.supply_churn && '1' || '0' }}
           NAIVE_INIT_SCORE: ${{ inputs.naive_init_score && '1' || '0' }}
           LAMBDARANK: ${{ inputs.lambdarank && '1' || '0' }}
           LABEL_SMOOTHED_ANCHOR: ${{ inputs.label_smoothed_anchor && '1' || '0' }}
@@ -606,6 +616,9 @@ jobs:
           if [ "$TIER_LEAD_FEATURE" = "1" ]; then arms="tier_lead"; fi
           if [ "$CROSS_SECTIONAL_RANK" = "1" ]; then
             arms="${arms:+$arms+}xs_rank"
+          fi
+          if [ "$SUPPLY_CHURN_FEATURES" = "1" ]; then
+            arms="${arms:+$arms+}supply_churn"
           fi
           if [ "$NAIVE_INIT_SCORE" = "1" ]; then
             arms="${arms:+$arms+}naive_init"
