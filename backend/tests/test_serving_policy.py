@@ -14,7 +14,9 @@ from api.serving_policy import (
     MIN_SERVED_PRICE_USD,
     meets_price_floor,
     price_floor_clause,
+    tradeability,
 )
+from backtest.friction import actionable_threshold
 from backtest.scoring import HEADLINE_MIN_TIER, price_tier
 from database import ItemForecast
 
@@ -41,6 +43,37 @@ class TestPriceFloorClause:
     def test_clause_compiles_to_a_greater_or_equal_comparison(self):
         sql = _sql(price_floor_clause(ItemForecast.current_price))
         assert "item_forecasts.current_price >= 1.0" in sql
+
+
+class TestTradeability:
+    """Sub-$1 items are served but flagged not economically tradeable: the
+    35.5% sub-$1 spread plus the round trip dwarfs any few-percent forecast
+    edge. The flag carries the estimated round-trip cost so the claim is legible
+    rather than a bare boolean.
+    """
+
+    def test_sub_dollar_item_is_not_tradeable(self):
+        assert tradeability(0.09).tradeable is False
+
+    def test_at_the_floor_is_tradeable(self):
+        assert tradeability(MIN_SERVED_PRICE_USD).tradeable is True
+
+    def test_above_the_floor_is_tradeable(self):
+        assert tradeability(5.0).tradeable is True
+
+    def test_cost_is_round_trip_plus_the_item_tier_spread(self):
+        # tier 0 at the cheapest venue: 2.0% round trip + 35.5% spread = 37.5%
+        assert tradeability(0.09).est_roundtrip_cost_pct == 37.5
+
+    def test_cost_tracks_the_price_tier(self):
+        for price in (0.09, 1.0, 5.0, 250.0):
+            expected = round(actionable_threshold(price_tier(price)) * 100, 1)
+            assert tradeability(price).est_roundtrip_cost_pct == expected
+
+    def test_none_price_is_not_tradeable_with_no_cost(self):
+        result = tradeability(None)
+        assert result.tradeable is False
+        assert result.est_roundtrip_cost_pct is None
 
 
 class TestMeetsPriceFloor:
