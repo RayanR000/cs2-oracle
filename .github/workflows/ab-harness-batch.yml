@@ -1,0 +1,88 @@
+# Re-run the repaired A/B harnesses in parallel.
+#
+# The nine `scripts/ab_test_*.py` harnesses were repinned off the dead
+# `STEAMCOMMUNITY` predicate and given the production allowlist on 2026-08-13
+# (`docs/changelog/2026-08-13-harness-family-repinned-off-steamcommunity.md`) but
+# NONE were re-run, so every stored verdict is unmeasured. This dispatches them
+# as one matrix job each, on the same archive, and uploads each log as an
+# artifact. It does NOT restore the model cache: these harnesses train their own
+# per-fold models (production's trainer via `_train_ensemble_member`), so a
+# saved model would not be used.
+#
+# Read each artifact's paired fold-clustered verdict — never a stored number
+# (`.claude/rules/ab-statistics.md`). Every harness carries its own non-zero
+# universe assertion post-repin; an empty predicate fails the job loudly.
+name: A/B harness batch
+
+on:
+  workflow_dispatch:
+    inputs:
+      max_items:
+        description: 'Universe size per harness (blank = each harness default)'
+        required: false
+        default: ''
+
+jobs:
+  ab-harness:
+    runs-on: ubuntu-24.04-arm
+    strategy:
+      fail-fast: false
+      matrix:
+        harness:
+          - regime
+          - ensemble
+          - supply_side
+          - train_universe
+          - training_breadth
+          - feature_contribution
+          - direction_labels
+          - price_primitives
+          - recency_weights
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
+
+      - name: Set up Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: '3.11'
+          cache: pip
+          cache-dependency-path: backend/requirements.txt
+
+      - name: Install dependencies
+        working-directory: ./backend
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Checkout price archive
+        uses: actions/checkout@v7
+        with:
+          repository: RayanR000/cs2-oracle-data
+          ref: main
+          token: ${{ secrets.CS2_DATA_REPO_TOKEN }}
+          path: archive
+          fetch-depth: 1
+
+      - name: Link price-archive
+        run: ln -s $PWD/archive/price-archive price-archive
+
+      - name: Run ${{ matrix.harness }}
+        working-directory: ./backend
+        env:
+          DATABASE_URL: ${{ secrets.SUPABASE_DATABASE_URL }}
+        run: |
+          ARGS=""
+          if [ -n "${{ inputs.max_items }}" ]; then
+            ARGS="--max-items ${{ inputs.max_items }}"
+          fi
+          set -o pipefail
+          python -m scripts.ab_test_${{ matrix.harness }} $ARGS \
+            2>&1 | tee ab_test_${{ matrix.harness }}.log
+
+      - name: Upload log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ab-${{ matrix.harness }}
+          path: backend/ab_test_${{ matrix.harness }}.log
