@@ -5356,7 +5356,17 @@ class ItemForecaster:
         # setting the floor without the budget leaves a smaller draw rather
         # than none. See docs/changelog/2026-08-08-training-price-floor-shipped.md
         # and docs/changelog/2026-08-04-minimal-model-results.md.
-        df = self.build_training_data(days_back=1460, backfilled_only=True,
+        # TRAIN_DAYS_BACK overrides the 4-year default for the window A/B; an
+        # unparseable value keeps 1460 rather than failing a run. Diagnostics
+        # only — production leaves it unset.
+        try:
+            train_days_back = int(os.environ.get("TRAIN_DAYS_BACK") or 1460)
+        except ValueError:
+            train_days_back = 1460
+        if train_days_back != 1460:
+            logger.warning(f"  TRAIN_DAYS_BACK={train_days_back}: training window "
+                           f"overridden from the 1460-day default.")
+        df = self.build_training_data(days_back=train_days_back, backfilled_only=True,
                                       max_feature_rows=max_feature_rows,
                                       min_median_price=min_median_price,
                                       universe="train")
