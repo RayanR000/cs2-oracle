@@ -519,6 +519,24 @@ class ItemForecaster:
         # test_no_volume_feature_survives_the_real_selection_and_prune.
         "volume_mean_7d",
         "volume_std_60d",
+        # Dead weight inside the served set (2026-08-18). These five reach a
+        # booster but never rank in any horizon's top-20 gain and are
+        # redundant or near-constant: price_cv_20d/30d sit between the ranking
+        # price_cv_14d/60d, log_return_7d duplicates return_7d, autocorr_7d
+        # never ranks while autocorr_1d does, and rsi_missing is near-constant
+        # zero (RSI uses min_periods=1 so it is almost never NaN — unlike
+        # macd_missing, which is kept). A paired drop-5 ablation on the real
+        # archive (400 items, 24-25 folds, n~180-190k) found removing them
+        # NULL at all four horizons (drop5 vs base33: -0.02/+0.11/-0.14/-0.07pp,
+        # every CI straddles zero). They have no consumer outside the booster,
+        # so shelving (not deleting the compute) keeps the A/B harnesses that
+        # build their own feature list from the frame reproducible. Drops the
+        # served set 33 -> 28 on the next retrain.
+        "price_cv_20d",
+        "price_cv_30d",
+        "log_return_7d",
+        "autocorr_7d",
+        "rsi_missing",
     })
 
     # The volume-derived subset of SHELVED_FEATURES (see the comment above and
@@ -1785,40 +1803,67 @@ class ItemForecaster:
                     f"{df.item_id.nunique():,} items")
         return df
 
+    def _archive_universe_slugs(self, exclude_iflow: bool) -> set:
+        """Slugs carrying the pre-2026 backfill, read straight from the archive.
+
+        The backfill series predates the ``source`` column, so ``day <
+        '2026-01-01'`` is exactly the cohort ``is_backfilled`` was derived from
+        (`scripts/init_local_db.py::populate_items`). ``exclude_iflow`` drops the
+        iflow-only history — the trainable narrowing. Read through
+        ``prices_relation`` + ``archive_universe_sql_filter`` so the phase-
+        collapsed and phantom keys never enter the cohort (invariants 1–2).
+        """
+        import duckdb
+        from db.archive import prices_relation
+        iflow_clause = (
+            "AND source IS DISTINCT FROM 'buff_iflow'" if exclude_iflow else "")
+        with duckdb.connect() as con:
+            relation = prices_relation(
+                con, self.archive_dir,
+                columns=["item_slug", "day", "source"])
+            return {
+                r[0] for r in con.sql(f"""
+                    SELECT DISTINCT item_slug
+                    FROM {relation}
+                    WHERE day < '2026-01-01'
+                      {iflow_clause}
+                      AND {archive_universe_sql_filter("item_slug")}
+                """).fetchall()
+            }
+
     def _resolve_backfilled_slugs(self, universe: str = "serve") -> set:
         """The set of item slugs to filter to for the given universe.
 
-        ``universe="train"`` reads ``is_trainable``; the default ``"serve"``
-        reads ``is_backfilled`` (STEAMCOMMUNITY-backfilled items). Split out
-        of ``fetch_price_history`` because the voted-frame cache key has to
-        include it — two runs with different backfill sets produce
+        ``universe="train"`` is derived from the Parquet archive (the data
+        repo), NOT the DB: the trainable cohort is the pre-2026 backfill minus
+        iflow-only history, and reading it from the archive keeps it a pure
+        function of the data the model trains on. The managed Postgres never got
+        an ``is_trainable`` column, so the old DB read threw and fell back to
+        loading every slug (41,885), which OOMed a cold retrain. ``universe=
+        "serve"`` still reads ``is_backfilled`` from the DB — the DB's one job
+        here (`backend/AGENTS.md`) — with the same archive derivation as a
+        fallback.
+
+        Split out of ``fetch_price_history`` because the voted-frame cache key
+        has to include it — two runs with different backfill sets produce
         different frames from an identical archive.
         """
-        column = "is_trainable" if universe == "train" else "is_backfilled"
+        if universe == "train":
+            slugs = self._archive_universe_slugs(exclude_iflow=True)
+            logger.info(f"  Train universe (archive-derived, pre-2026 non-iflow): "
+                        f"{len(slugs)} items")
+            return slugs
+
         try:
             slug_rows = self.db.execute(text(
-                f"SELECT item_id FROM items WHERE {column} = 1")).fetchall()
+                "SELECT item_id FROM items WHERE is_backfilled = 1")).fetchall()
             slugs = {r[0] for r in slug_rows}
-            logger.info(f"  {universe.capitalize()} universe filter ({column}): {len(slugs)} items from DB")
+            logger.info(f"  Serve universe filter (is_backfilled): {len(slugs)} items from DB")
             return slugs
         except Exception as e:
-            logger.warning(f"  Could not fetch {column} items from DB, using all: {e}")
-            import duckdb
-            # Train-aware fallback: even on a DB read failure, training must
-            # not pick up buff_iflow-sourced items (see _resolve_backfilled_slugs
-            # docstring). The serve/default fallback is unfiltered, matching
-            # is_backfilled's wider intent.
-            train_filter = (
-                "WHERE source IS DISTINCT FROM 'buff_iflow'"
-                if universe == "train" else "")
-            with duckdb.connect() as con:
-                return {
-                    r[0] for r in con.sql(f"""
-                        SELECT DISTINCT item_slug
-                        FROM read_parquet(?)
-                        {train_filter}
-                    """, params=[str(self.archive_dir / "prices-*.parquet")]).fetchall()
-                }
+            logger.warning(f"  Could not fetch is_backfilled items from DB, "
+                           f"deriving from archive: {e}")
+            return self._archive_universe_slugs(exclude_iflow=False)
 
     def _fetch_voted_price_history(self, days_back: int,
                                    backfilled_only: bool,
@@ -5329,7 +5374,17 @@ class ItemForecaster:
         # setting the floor without the budget leaves a smaller draw rather
         # than none. See docs/changelog/2026-08-08-training-price-floor-shipped.md
         # and docs/changelog/2026-08-04-minimal-model-results.md.
-        df = self.build_training_data(days_back=1460, backfilled_only=True,
+        # TRAIN_DAYS_BACK overrides the 4-year default for the window A/B; an
+        # unparseable value keeps 1460 rather than failing a run. Diagnostics
+        # only — production leaves it unset.
+        try:
+            train_days_back = int(os.environ.get("TRAIN_DAYS_BACK") or 1460)
+        except ValueError:
+            train_days_back = 1460
+        if train_days_back != 1460:
+            logger.warning(f"  TRAIN_DAYS_BACK={train_days_back}: training window "
+                           f"overridden from the 1460-day default.")
+        df = self.build_training_data(days_back=train_days_back, backfilled_only=True,
                                       max_feature_rows=max_feature_rows,
                                       min_median_price=min_median_price,
                                       universe="train")

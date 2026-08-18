@@ -212,6 +212,16 @@ on:
         required: false
         default: '0'
         type: string
+      # Training-window A/B: how many days back train() fetches (default 1460 =
+      # 4 years). Bakes into the artifact this step trains; the replay serves it,
+      # so it is set on the CV step only, like recency_halflife. Read BAND
+      # COVERAGE + rank IC across arms. 1-year (365) is unreliable at 30d — the
+      # 43-day embargo + 200-day feature warmup leave too few folds.
+      train_days_back:
+        description: 'Arm: training lookback window in days (1460 = 4yr default; try 1095/730/365; read BAND COVERAGE)'
+        required: false
+        default: '1460'
+        type: string
       # The decisive test for the band's over-coverage, and the only arm here
       # that changes how much data the FOLD models see rather than what they
       # see. `CV_MAX_TRAIN_ROWS` defaults to 300,000 (`6b6fc81`, a cost cap),
@@ -488,6 +498,9 @@ jobs:
           # in the replay step -- the decay is already baked into the artifact
           # this step trains, so serving reads it without the env.
           SAMPLE_WEIGHT_HALFLIFE_DAYS: ${{ inputs.recency_halflife || '0' }}
+          # Training-window arm. Parsed as int(... or 1460), unparseable keeps
+          # 1460. Baked into the artifact, so replay serves it without the env.
+          TRAIN_DAYS_BACK: ${{ inputs.train_days_back || '1460' }}
           # Serving-only, so it reaches nothing this step trains. Set here for
           # `predict_smoke`, which is the one mode of this step that calls
           # predict() -- and it writes nothing, so the arm cannot escape.

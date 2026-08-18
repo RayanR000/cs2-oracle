@@ -76,12 +76,14 @@ it before it can be tested. Un-blend the per-venue closes we already ingest.
 ⚠️ Do **not** encode a lead-lag in *hours or days* — no public source has ever measured one
 (`references/cs2-market-domain.md` §9). *(= 08-14 item 3.)*
 
-### 6. `log1p(listing_count)` into the band width 🟡
+### 6. `log1p(listing_count)` into the band width — ❌ CLOSED, refuted 2026-08-18
 
-Thin items are wilder within price tier (P(|r₇|>5%) 0.68 → 0.50 across listing buckets, 797k
-item-days). As a conditioner, not a filter. **Check first** whether low-listing rows are the ones
-under-covered today — that is the actual ruler and needs a prod read, since the local
-`cs2_market.db` is a fixture.
+**Refuted offline, do not re-run.** `changelog/2026-08-18-listing-count-conditioner-refuted.md`.
+0/3 horizons pass (h=3 worsens the worst-bucket miss; h=7/14 worsen dispersion), and the decisive
+finding is structural: the thin buckets (1–5, 6–15 listings) that are the whole target hold <20
+items each in the served ≥$1 cohort and drop out — the per-item `sigma` already absorbs listing
+information for the population actually served. Only reopen if the iflow backfill materially grows
+the thin-listing ≥$1 cohort; re-check bucket `n` first.
 
 ### 7. Recovered from 2026-08-07, still unclosed 🟡
 
@@ -105,6 +107,12 @@ Both are cheap to *decide*. Close them explicitly or rank them — do not let th
 - Anything ranked on a **stored rank IC, DA, or `−return_1d`** comparison. None are safe
   (`README.md:19`).
 - The **label-denominator** thread. Built, refuted, dead end.
+- The **`log1p(listing_count)` band-width conditioner** (was item 6). Refuted 2026-08-18 — the thin
+  buckets it targets barely exist in the served ≥$1 cohort.
+  `changelog/2026-08-18-listing-count-conditioner-refuted.md`.
+- A **static cross-venue arbitrage / raw-feed spread scanner.** No capturable edge even at a 5%
+  fee; low-fee venues are already efficient.
+  `changelog/2026-08-17-low-fee-arb-static-retest-negative.md`.
 
 ## Hygiene
 

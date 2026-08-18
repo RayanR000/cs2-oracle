@@ -20,8 +20,12 @@ def test_fetch_and_build_thread_universe():
     assert "universe" in inspect.signature(ItemForecaster.build_training_data).parameters
 
 def test_universe_selects_column():
+    # Serve reads is_backfilled from the DB; train is derived from the archive
+    # (the data repo), not an is_trainable DB column that drifted out of the
+    # managed Postgres. So the resolver routes train to the archive helper.
     src = inspect.getsource(ItemForecaster._resolve_backfilled_slugs)
-    assert "is_trainable" in src and "is_backfilled" in src
+    assert "is_backfilled" in src
+    assert "_archive_universe_slugs" in src
 
 def test_cache_key_includes_universe():
     src = inspect.getsource(ItemForecaster._voted_cache_key)
@@ -56,12 +60,19 @@ class _CapturingDB:
         return []
 
 
-def test_resolve_slugs_routes_to_is_trainable_for_train_universe(fc):
+def test_resolve_slugs_train_universe_reads_archive_not_db(fc):
+    # Train derives from the archive, so it must NOT query the items table
+    # (the managed Postgres has no is_trainable column; a DB read there would
+    # throw and fall back to loading every slug).
     capturing_db = _CapturingDB()
     fc.db = capturing_db
-    fc._resolve_backfilled_slugs(universe="train")
-    assert "is_trainable" in capturing_db.captured_sql
-    assert "is_backfilled" not in capturing_db.captured_sql
+    from unittest.mock import patch
+    with patch.object(ItemForecaster, "_archive_universe_slugs",
+                      return_value={"a", "b"}) as m:
+        result = fc._resolve_backfilled_slugs(universe="train")
+    assert result == {"a", "b"}
+    m.assert_called_once_with(exclude_iflow=True)
+    assert capturing_db.captured_sql is None
 
 
 def test_resolve_slugs_routes_to_is_backfilled_for_serve_universe(fc):

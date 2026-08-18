@@ -76,6 +76,17 @@ disqualifying for any sub-$1 work.
 | **Valve rule changes** (trade-up mechanics, drop-pool edits, trade holds) | Largest observed repricings, and they hit *categories* in opposite directions | **Yes** — as regime shifts, not daily dummies |
 | **Lifecycle stage** | Release spike → decay → floor `[V]` (no source quantifies the curve) | **Yes**, weakly |
 
+> 🔑 **The finite-supply rule (the screener's scarcity axis; replaces the earlier age proxy).**
+> As of 2026 the **active weekly drop pool is only 5 containers** (~20% each): Kilowatt, Revolution,
+> Dreams & Nightmares, Sealed Dead Hand Terminal, Sealed Genesis Terminal. The **rare-drop pool was
+> removed ~2026-01-08/09**, so every other/legacy case now gets **zero** new supply. So: a
+> case-supplied item is **finite** unless its case is one of those 5 `[V, community trackers Mar
+> 2026; no Valve statement — re-verify, the active set rotates]`. To map an item to its case in
+> this repo: parquet `type_meta_crate_id` is a **dense project code**, not the raw id — invert
+> `price-archive/item-metadata-bymykel-codes.json["crate"]` (rawid→dense), then look up the name in
+> `backend/runtime/bymykel/crates.json`. ⚠️ Metadata gives only the *earliest* crate, so an item
+> also present in an active case can be mislabelled finite.
+
 > 🔑 **The pattern hazard.** For Case Hardened, Fade, Doppler, Marble Fade and knife patterns, a
 > single price series *per `market_hash_name`* is structurally wrong — the true distribution is
 > multimodal on hidden pattern-index/float metadata that no aggregate feed exposes `[V]`. These
