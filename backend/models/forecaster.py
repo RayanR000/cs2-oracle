@@ -1804,11 +1804,19 @@ class ItemForecaster:
         except Exception as e:
             logger.warning(f"  Could not fetch {column} items from DB, using all: {e}")
             import duckdb
+            # Train-aware fallback: even on a DB read failure, training must
+            # not pick up buff_iflow-sourced items (see _resolve_backfilled_slugs
+            # docstring). The serve/default fallback is unfiltered, matching
+            # is_backfilled's wider intent.
+            train_filter = (
+                "WHERE source IS DISTINCT FROM 'buff_iflow'"
+                if universe == "train" else "")
             with duckdb.connect() as con:
                 return {
-                    r[0] for r in con.sql("""
+                    r[0] for r in con.sql(f"""
                         SELECT DISTINCT item_slug
                         FROM read_parquet(?)
+                        {train_filter}
                     """, params=[str(self.archive_dir / "prices-*.parquet")]).fetchall()
                 }
 
@@ -4866,7 +4874,7 @@ class ItemForecaster:
                              backfilled_only: bool = False,
                              max_feature_rows: int = 100_000,
                              min_median_price: Optional[float] = None,
-                             universe: str = "serve") -> pd.DataFrame:
+                             universe: str = "train") -> pd.DataFrame:
         _t0 = datetime.now()
         price_df = self.fetch_price_history(days_back=days_back, backfilled_only=backfilled_only,
                                             universe=universe)

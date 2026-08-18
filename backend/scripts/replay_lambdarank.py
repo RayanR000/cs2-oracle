@@ -142,7 +142,7 @@ def _master_frame(fc, horizon, cutoff, floor):
     """
     os.environ["REPLAY_ANCHOR"] = cutoff.isoformat()
     try:
-        price_df = fc.fetch_price_history(days_back=1100, backfilled_only=True)
+        price_df = fc.fetch_price_history(days_back=1100, backfilled_only=True, universe="train")
         price_df = fc._filter_by_median_price(price_df, floor)
         events_df = fc.fetch_events()
         feat = fc.engineer_features(price_df, events_df)
@@ -217,7 +217,7 @@ def main() -> int:
         # this adds no look-ahead.
         os.environ.pop("REPLAY_ANCHOR", None)
         val_price = fc._filter_by_median_price(
-            fc.fetch_price_history(days_back=1100, backfilled_only=True), floor)
+            fc.fetch_price_history(days_back=1100, backfilled_only=True, universe="train"), floor)
         val_feat = fc.engineer_features(val_price, fc.fetch_events())
 
         rows = []
