@@ -26,6 +26,7 @@ from models.item_parser import (
     BID_SOURCES,
     PHASE_COLLAPSED_EXEMPT_PATTERNS,
     PHASE_COLLAPSED_SLUG_PATTERNS,
+    STEAM_SPOT_SOURCES,
     TRAILING_WINDOW_SOURCES,
     archive_universe_sql_filter,
     bid_sources_sql_filter,
@@ -247,6 +248,8 @@ def _feature_group(name: str) -> str:
                                          "price_accel_", "autocorr_", "support_",
                                          "volume_", "vol_price_")):
         return "price_technicals"
+    if name.startswith("supply_churn"):
+        return "supply_churn"
     if name.startswith("supply_"):
         return "supply_depth"
     # Before the item_identity / temporal prefixes below, none of which can
@@ -289,6 +292,7 @@ class ItemForecaster:
     # also importing `models.item_parser` to look up what it means.
     BID_SOURCES = BID_SOURCES
     TRAILING_WINDOW_SOURCES = TRAILING_WINDOW_SOURCES
+    STEAM_SPOT_SOURCES = STEAM_SPOT_SOURCES
 
     HORIZONS = [3, 7, 14, 30]
     # The band no longer comes from quantile models — see models/conformal.py.
@@ -417,13 +421,17 @@ class ItemForecaster:
     ALL_FEATURE_GROUPS = frozenset({
         "price_technicals", "supply_depth", "item_identity", "item_metadata",
         "temporal", "events", "cross_sectional", "social", "other",
-        "tier_lead",
+        "tier_lead", "supply_churn",
     })
     # The tier lead-lag group, gated by tier_lead_enabled() the way
     # bymykel_metadata is -- the allowlist alone cannot admit it, because a group
     # that is allowlisted but never engineered yields columns absent and
     # median-filled to zero (the hazard _skipped_feature_groups documents).
     TIER_LEAD_GROUP = "tier_lead"
+    # Isolated so an A/B admits only the supply-churn magnitude features, not the
+    # dormant supply_depth group's other (live-snapshot) columns. Gated the same
+    # way tier_lead is: the allowlist alone cannot admit it.
+    SUPPLY_CHURN_GROUP = "supply_churn"
     TIER_LEAD_FEATURES = ("tier_lead_return_1d",)
     # The naive predictor N1 boosts from, negated: the one runnable baseline the
     # model measurably loses to on rank IC. See naive_init_score_enabled().
@@ -594,6 +602,50 @@ class ItemForecaster:
         if "st_premium" not in df.columns:
             df["st_premium"] = np.nan
         df["st_premium_present"] = df["st_premium"].notna().astype(int)
+        return df
+
+    @staticmethod
+    def _supply_churn_features_enabled() -> bool:
+        """Whether the supply-churn (band-width) features reach the trained set.
+
+        Default OFF. Derived from the deep `buff_listing_count` sidecar (BUFF
+        listing counts, 2021-07 -> 2024-02), which is joined today but consumed
+        by no feature. The signal is 2nd-moment: the MAGNITUDE of a day-over-day
+        listing change predicts forward |return| (docs/research/
+        2026-08-17-supply-churn-volatility-signal.md, corr +0.11), where the
+        existing `supply_change_7d` is signed and null for volatility. Populated
+        only over the sidecar's 2021-2024 span — NaN after, so it can be learned
+        on those folds but is not served until the live supply panel is unioned
+        into the sidecar. Set SUPPLY_CHURN_FEATURES=1 to enable.
+        """
+        return os.environ.get("SUPPLY_CHURN_FEATURES") == "1"
+
+    @staticmethod
+    def _compute_supply_churn_features(df: pd.DataFrame) -> pd.DataFrame:
+        """Derive listing-churn magnitude from `buff_listing_count`.
+
+        `supply_churn`     — per-item day-over-day change in log(1 + listings)
+        `supply_churn_abs` — |supply_churn|, the validated volatility predictor
+        `supply_churn_present` — 1 where a positive listing count was joined
+
+        Scale-free by construction (a log-difference). Safe when the sidecar is
+        absent: `buff_listing_count` is created as NaN first, so churn is NaN and
+        the presence flag is 0 for every row, no exception. NaN is read as
+        missing by the model; no fill. The diff is taken within item on a
+        date-sorted frame so a lag never crosses an item boundary.
+        """
+        if "buff_listing_count" not in df.columns:
+            df["buff_listing_count"] = np.nan
+        df = df.sort_values(["item_id", "date"])
+        present = df["buff_listing_count"] > 0
+        df["supply_churn_present"] = (
+            df["buff_listing_count"].notna() & present
+        ).astype(int)
+        # A 0 listing count is "no supply observed", not a real level -- masking
+        # it to NaN keeps a 0->N day from manufacturing a huge log jump.
+        loglist = np.log1p(df["buff_listing_count"].where(present))
+        df["supply_churn"] = loglist.groupby(df["item_id"]).diff().astype(np.float32)
+        df["supply_churn_abs"] = df["supply_churn"].abs().astype(np.float32)
         return df
 
     def _active_shelved_features(self) -> frozenset:
@@ -826,7 +878,7 @@ class ItemForecaster:
     # pyarrow round-trip on pandas 2.3.3) rather than as a column: the predict
     # frame reaches ~2M rows and copying it to append a constant would double
     # peak memory on the path that already OOMs in CI.
-    ENGINEERED_CACHE_VERSION = 3   # v3: sidecar columns join into the daily frame
+    ENGINEERED_CACHE_VERSION = 4   # v4: supply_churn_* features off buff_listing_count
 
     # --- Voted price frame cache ---
     # Bump VOTED_CACHE_VERSION whenever _fetch_voted_price_history or
@@ -847,7 +899,10 @@ class ItemForecaster:
     # voting pool. A v5 frame still lets a trailing-window mean vote on equal
     # terms against point-in-time asks, damping the consensus and
     # manufacturing mean-reversion in every return computed across it.
-    VOTED_CACHE_VERSION = 6
+    # v7: STEAM_SPOT_SOURCES (aggregator_steam_spot) leaves the voting pool. A
+    # v6 frame built after 2026-08-17 would let Steam's clean spot vote as a
+    # second Steam ballot alongside aggregator_sync, double-counting the venue.
+    VOTED_CACHE_VERSION = 7
     VOTED_CACHE_PREFIX = "voted_"
     VOTED_CACHE_MAX_ENTRIES = 3
 
@@ -1677,11 +1732,12 @@ class ItemForecaster:
         return datetime.now(timezone.utc)
 
     def fetch_price_history(self, days_back: int = 365,
-                            backfilled_only: bool = False) -> pd.DataFrame:
+                            backfilled_only: bool = False,
+                            universe: str = "serve") -> pd.DataFrame:
         logger.info(f"Fetching price history (last {days_back}d)...")
 
         if self.archive_dir.exists() and days_back > 14:
-            backfilled_slugs = (self._resolve_backfilled_slugs()
+            backfilled_slugs = (self._resolve_backfilled_slugs(universe)
                                 if backfilled_only else None)
 
             # The voted frame is a pure function of the archive contents plus
@@ -1691,7 +1747,7 @@ class ItemForecaster:
             # cached. That is the whole win; it is not a retrain-time lever
             # (a cold retrain is ~12m30s and almost entirely model fitting).
             cache_key = self._voted_cache_key(days_back, backfilled_only,
-                                              backfilled_slugs)
+                                              backfilled_slugs, universe)
             cached = self._load_voted_cache(cache_key)
             if cached is not None:
                 return cached
@@ -1729,28 +1785,38 @@ class ItemForecaster:
                     f"{df.item_id.nunique():,} items")
         return df
 
-    def _resolve_backfilled_slugs(self) -> set:
-        """The set of STEAMCOMMUNITY-backfilled item slugs to train on.
+    def _resolve_backfilled_slugs(self, universe: str = "serve") -> set:
+        """The set of item slugs to filter to for the given universe.
 
-        Split out of ``fetch_price_history`` because the voted-frame cache key
-        has to include it — two runs with different backfill sets produce
+        ``universe="train"`` reads ``is_trainable``; the default ``"serve"``
+        reads ``is_backfilled`` (STEAMCOMMUNITY-backfilled items). Split out
+        of ``fetch_price_history`` because the voted-frame cache key has to
+        include it — two runs with different backfill sets produce
         different frames from an identical archive.
         """
+        column = "is_trainable" if universe == "train" else "is_backfilled"
         try:
-            slug_rows = self.db.execute(text("""
-                SELECT item_id FROM items WHERE is_backfilled = 1
-            """)).fetchall()
+            slug_rows = self.db.execute(text(
+                f"SELECT item_id FROM items WHERE {column} = 1")).fetchall()
             slugs = {r[0] for r in slug_rows}
-            logger.info(f"  Backfilled items filter: {len(slugs)} items from DB")
+            logger.info(f"  {universe.capitalize()} universe filter ({column}): {len(slugs)} items from DB")
             return slugs
         except Exception as e:
-            logger.warning(f"  Could not fetch backfilled items from DB, using all: {e}")
+            logger.warning(f"  Could not fetch {column} items from DB, using all: {e}")
             import duckdb
+            # Train-aware fallback: even on a DB read failure, training must
+            # not pick up buff_iflow-sourced items (see _resolve_backfilled_slugs
+            # docstring). The serve/default fallback is unfiltered, matching
+            # is_backfilled's wider intent.
+            train_filter = (
+                "WHERE source IS DISTINCT FROM 'buff_iflow'"
+                if universe == "train" else "")
             with duckdb.connect() as con:
                 return {
-                    r[0] for r in con.sql("""
+                    r[0] for r in con.sql(f"""
                         SELECT DISTINCT item_slug
                         FROM read_parquet(?)
+                        {train_filter}
                     """, params=[str(self.archive_dir / "prices-*.parquet")]).fetchall()
                 }
 
@@ -1866,7 +1932,11 @@ class ItemForecaster:
         # years of the archive — voting. `frozenset` membership only, never a
         # prefix match: `aggregator_steam_17mafo` is a distinct source (the
         # only ask for 2026-04-16 -> 07-10) and must keep voting.
-        excluded = BID_SOURCES | TRAILING_WINDOW_SOURCES
+        # STEAM_SPOT_SOURCES joins the drop: `aggregator_steam_spot` is Steam's
+        # clean `last_24h`, but Steam already votes through `aggregator_sync`, so
+        # letting it vote double-counts the venue. Kept in the archive as the
+        # basis feature's spot leg only.
+        excluded = BID_SOURCES | TRAILING_WINDOW_SOURCES | STEAM_SPOT_SOURCES
         df = df[~df["source"].isin(excluded)]
         if df.empty:
             # Every input row was a bid or a trailing-window mean. 2,338
@@ -1989,7 +2059,15 @@ class ItemForecaster:
     # Feature engineering
     # ------------------------------------------------------------------
 
-    def _compute_price_features(self, df: pd.DataFrame) -> pd.DataFrame:
+    def _compute_price_features(self, df: pd.DataFrame,
+                                compute_volume: bool = True,
+                                compute_shelved_primitives: bool = True) -> pd.DataFrame:
+        # compute_volume / compute_shelved_primitives default True so every
+        # caller but the production frame build (engineer_features with
+        # skip_unused_groups=True) is byte-identical. Both blocks are shelved
+        # (SHELVED_FEATURES) and reach no booster; the production path, where
+        # their only live consumers are skipped too, sets them False to skip
+        # the compute. See engineer_features for the predicate.
         logger.info("Engineering price features...")
         df = df.sort_values(["item_id", "date"]).copy()
 
@@ -2170,44 +2248,12 @@ class ItemForecaster:
         df["macd_line_rel"] = df["macd_line"] / _macd_px
         df["macd_histogram_rel"] = df["macd_histogram"] / _macd_px
 
-        # =====================================================================
-        # Volatility asymmetry (downside vs upside semi-deviation) — pure price.
-        # A symmetric std collapses panic (sharp downside) and froth (volatile
-        # upside) into one number; splitting them exposes the difference.
-        # =====================================================================
-        ret = df["return_1d"]
-        ret_neg = ret.where(ret < 0)
-        ret_pos = ret.where(ret > 0)
-        df["vol_semidev_down_30d"] = (
-            ret_neg.groupby(df["item_id"]).rolling(30, min_periods=5).std()
-            .reset_index(level=0, drop=True)
-        )
-        df["vol_semidev_up_30d"] = (
-            ret_pos.groupby(df["item_id"]).rolling(30, min_periods=5).std()
-            .reset_index(level=0, drop=True)
-        )
-        # Ratio > 1 => upside more volatile (froth); < 1 => downside sharper
-        # (panic). Clipped: near-zero downside vol otherwise blows the ratio up.
-        _semidev_down = df["vol_semidev_down_30d"].replace(0, np.nan)
-        df["vol_skew_30d"] = (df["vol_semidev_up_30d"] / _semidev_down).clip(0, 5)
-
-        # =====================================================================
-        # Oscillator divergence — momentum of RSI/MACD, and price/RSI
-        # disagreement. The frame is already item/date-sorted (MACD block
-        # re-sorted it), so a groupby shift(7) is a clean 7-day lookback.
-        # =====================================================================
-        df["rsi_divergence_7d"] = (
-            df["rsi_14"] - df.groupby("item_id")["rsi_14"].shift(7)
-        )
-        # Positive => price up while RSI down (bearish divergence). return_7d is
-        # winsorized to +/-500; clip to +/-50 keeps typical moves on the same
-        # scale as the RSI term (RSI change is bounded to +/-100).
-        df["rsi_price_divergence_7d"] = (
-            df["return_7d"].clip(-50, 50) / 50.0 - df["rsi_divergence_7d"] / 100.0
-        )
-        df["macd_hist_slope_7d"] = (
-            df["macd_histogram"] - df.groupby("item_id")["macd_histogram"].shift(7)
-        )
+        # Volatility-asymmetry and oscillator-divergence primitives (2026-07-26)
+        # are all in SHELVED_FEATURES and reach no booster; only the A/B harness
+        # ab_test_price_primitives.py reads them, off the full frame. The
+        # production build (skip_unused_groups=True) passes False and skips them.
+        if compute_shelved_primitives:
+            df = self._add_shelved_price_primitives(df)
 
         # =====================================================================
         # Support / Resistance distances
@@ -2245,16 +2291,72 @@ class ItemForecaster:
         # =====================================================================
         # Volume features
         # =====================================================================
-        df = self._compute_volume_features(df, grouped)
+        # All shelved; computed only where a live consumer (supply_to_volume_ratio,
+        # item_volume_vs_market_30d) or VOLUME_FEATURES=1 still reads them. The
+        # production build passes compute_volume=False. See engineer_features.
+        if compute_volume:
+            df = self._compute_volume_features(df, grouped)
         if self._bid_features_enabled():
             df = self._compute_bid_features(df)
         if self._stattrak_feature_enabled():
             df = self._compute_stattrak_feature(df)
+        if self._supply_churn_features_enabled():
+            df = self._compute_supply_churn_features(df)
 
         # Boolean indicators for features with frequent missingness
         df["rsi_missing"] = df["rsi_14"].isna().astype(int)
         df["macd_missing"] = df["macd_line"].isna().astype(int)
 
+        return df
+
+    @staticmethod
+    def _add_shelved_price_primitives(df: pd.DataFrame) -> pd.DataFrame:
+        """Volatility-asymmetry and oscillator-divergence primitives (2026-07-26).
+
+        All six are in SHELVED_FEATURES — they cleared no A/B gate (see
+        docs/changelog/2026-07-31-price-primitives-shelved.md) — so nothing
+        production trains on reads them. Split out of _compute_price_features so
+        the production frame build can skip the compute; the ab_test harness,
+        which builds the full frame, still gets them. The frame is already
+        item/date-sorted when this is called (the MACD block re-sorted it).
+        """
+        # =====================================================================
+        # Volatility asymmetry (downside vs upside semi-deviation) — pure price.
+        # A symmetric std collapses panic (sharp downside) and froth (volatile
+        # upside) into one number; splitting them exposes the difference.
+        # =====================================================================
+        ret = df["return_1d"]
+        ret_neg = ret.where(ret < 0)
+        ret_pos = ret.where(ret > 0)
+        df["vol_semidev_down_30d"] = (
+            ret_neg.groupby(df["item_id"]).rolling(30, min_periods=5).std()
+            .reset_index(level=0, drop=True)
+        )
+        df["vol_semidev_up_30d"] = (
+            ret_pos.groupby(df["item_id"]).rolling(30, min_periods=5).std()
+            .reset_index(level=0, drop=True)
+        )
+        # Ratio > 1 => upside more volatile (froth); < 1 => downside sharper
+        # (panic). Clipped: near-zero downside vol otherwise blows the ratio up.
+        _semidev_down = df["vol_semidev_down_30d"].replace(0, np.nan)
+        df["vol_skew_30d"] = (df["vol_semidev_up_30d"] / _semidev_down).clip(0, 5)
+
+        # =====================================================================
+        # Oscillator divergence — momentum of RSI/MACD, and price/RSI
+        # disagreement. A groupby shift(7) is a clean 7-day lookback.
+        # =====================================================================
+        df["rsi_divergence_7d"] = (
+            df["rsi_14"] - df.groupby("item_id")["rsi_14"].shift(7)
+        )
+        # Positive => price up while RSI down (bearish divergence). return_7d is
+        # winsorized to +/-500; clip to +/-50 keeps typical moves on the same
+        # scale as the RSI term (RSI change is bounded to +/-100).
+        df["rsi_price_divergence_7d"] = (
+            df["return_7d"].clip(-50, 50) / 50.0 - df["rsi_divergence_7d"] / 100.0
+        )
+        df["macd_hist_slope_7d"] = (
+            df["macd_histogram"] - df.groupby("item_id")["macd_histogram"].shift(7)
+        )
         return df
 
     @staticmethod
@@ -4131,8 +4233,13 @@ class ItemForecaster:
         "supply-history.parquet": ["buff_listing_count"],
     }
 
-    def _attach_sidecars(self, daily: pd.DataFrame) -> pd.DataFrame:
+    def _attach_sidecars(self, daily: pd.DataFrame,
+                         include_volume_panel: bool = True) -> pd.DataFrame:
         for fname, cols in self._SIDECARS.items():
+            # The volume panel only feeds shelved volume features; skip its read
+            # and merge on the production build, where nothing consumes them.
+            if fname == "volume-panel.parquet" and not include_volume_panel:
+                continue
             path = self.archive_dir / fname
             if not path.exists():
                 continue
@@ -4182,11 +4289,26 @@ class ItemForecaster:
             )
         else:
             daily = price_df
-        daily = self._attach_sidecars(daily)
         # _compute_price_features is never skipped: price_technicals is the one
-        # allowlisted group, and the `other` columns are computed inside it.
+        # allowlisted group, and the `other` columns are computed inside it. But
+        # two shelved blocks inside it (the volume pipeline and the 2026-07-26
+        # price primitives) reach no booster. Skip their compute on the
+        # production build, where nothing reads them; keep it everywhere a
+        # consumer still does.
         skip = self._skipped_feature_groups() if skip_unused_groups else set()
-        df = self._compute_price_features(daily)
+        # Volume's only live consumers are supply_to_volume_ratio (supply_depth)
+        # and item_volume_vs_market_30d (cross_sectional); VOLUME_FEATURES=1 also
+        # un-shelves it into training. Build it if any of those still needs it.
+        need_volume = (self._volume_features_enabled()
+                       or "supply_depth" not in skip
+                       or "cross_sectional" not in skip)
+        # The price primitives have no reinstate flag; only the full-frame A/B
+        # harness (skip_unused_groups=False) reads them.
+        need_primitives = not skip_unused_groups
+        daily = self._attach_sidecars(daily, include_volume_panel=need_volume)
+        df = self._compute_price_features(
+            daily, compute_volume=need_volume,
+            compute_shelved_primitives=need_primitives)
         if "temporal" not in skip:
             df = self._add_temporal_features(df, item_first_dates=item_first_dates)
         if "item_identity" not in skip:
@@ -4801,9 +4923,11 @@ class ItemForecaster:
     def build_training_data(self, days_back: int = 365,
                              backfilled_only: bool = False,
                              max_feature_rows: int = 100_000,
-                             min_median_price: Optional[float] = None) -> pd.DataFrame:
+                             min_median_price: Optional[float] = None,
+                             universe: str = "train") -> pd.DataFrame:
         _t0 = datetime.now()
-        price_df = self.fetch_price_history(days_back=days_back, backfilled_only=backfilled_only)
+        price_df = self.fetch_price_history(days_back=days_back, backfilled_only=backfilled_only,
+                                            universe=universe)
         logger.info(f"  fetch_price_history took {(datetime.now() - _t0).total_seconds():.0f}s")
         price_df = self._filter_dead_items(price_df)
         # Before the subsample, so the row budget is spent on the surviving
@@ -4936,12 +5060,15 @@ class ItemForecaster:
         return "|".join(parts)
 
     def _voted_cache_key(self, days_back: int, backfilled_only: bool,
-                         backfilled_slugs: Optional[set]) -> str:
+                         backfilled_slugs: Optional[set],
+                         universe: str = "serve") -> str:
         """Everything the voted frame depends on, hashed.
 
         The query window is keyed by its resolved cutoff date rather than
         ``days_back`` so a day rollover invalidates the entry — the frame is
-        anchored to a calendar date, not to a relative offset.
+        anchored to a calendar date, not to a relative offset. ``universe``
+        is included so a train frame and a serve frame over an otherwise
+        identical archive/window never collide in cache.
         """
         cutoff = (self._now() - timedelta(days=days_back)).strftime("%Y-%m-%d")
         slug_digest = ""
@@ -4958,6 +5085,7 @@ class ItemForecaster:
             f"anchor={self.replay_anchor() or ''}",
             f"backfilled_only={int(backfilled_only)}",
             f"slugs={slug_digest}",
+            f"universe={universe}",
             f"archive={self._archive_fingerprint()}",
         ])
         return hashlib.sha256(payload.encode()).hexdigest()[:24]
@@ -5203,7 +5331,8 @@ class ItemForecaster:
         # and docs/changelog/2026-08-04-minimal-model-results.md.
         df = self.build_training_data(days_back=1460, backfilled_only=True,
                                       max_feature_rows=max_feature_rows,
-                                      min_median_price=min_median_price)
+                                      min_median_price=min_median_price,
+                                      universe="train")
 
         # Recorded into the artifact because the rank transform's output is a
         # function of WHICH items are in the cross-section, and predict's frame
@@ -6246,6 +6375,8 @@ class ItemForecaster:
             allowlist.add(self.BYMYKEL_META_GROUP)
         if self.tier_lead_enabled():
             allowlist.add(self.TIER_LEAD_GROUP)
+        if self._supply_churn_features_enabled():
+            allowlist.add(self.SUPPLY_CHURN_GROUP)
         return set(self.ALL_FEATURE_GROUPS) - allowlist - {"other"}
 
     def _reduce_feature_cols(self, df: pd.DataFrame) -> None:
@@ -6267,6 +6398,8 @@ class ItemForecaster:
             allowlist.append(self.BYMYKEL_META_GROUP)
         if allowlist and self.tier_lead_enabled():
             allowlist.append(self.TIER_LEAD_GROUP)
+        if allowlist and self._supply_churn_features_enabled():
+            allowlist.append(self.SUPPLY_CHURN_GROUP)
 
         def _allow():
             if not allowlist:

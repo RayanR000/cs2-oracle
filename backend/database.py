@@ -52,6 +52,7 @@ class Item(Base):
     created_at = Column(DateTime, default=utcnow_naive)
     updated_at = Column(DateTime, default=utcnow_naive, onupdate=utcnow_naive)
     is_backfilled = Column(Integer, default=0)  # boolean: has CSMarketAPI historical series
+    is_trainable = Column(Integer, default=0)  # boolean: eligible for the TRAIN universe (non-iflow pre-2026 history)
 
     # Supply-side metadata (populated from Steam Market type field)
     rarity = Column(String(50), nullable=True)       # e.g. covert, milspec, restricted, classified, consumer, industrial, base, etc.
@@ -103,6 +104,13 @@ def backfilled_item_clause():
     by direct link but are not listed.
     """
     return Item.is_backfilled == 1
+
+
+def trainable_item_clause():
+    """Items eligible for the TRAINING universe: pre-2026 history from a
+    non-`buff_iflow` source. Distinct from `backfilled_item_clause()`, which is
+    the wider SERVE universe that includes iflow-backfilled items."""
+    return Item.is_trainable == 1
 
 
 class CollectionRun(Base):

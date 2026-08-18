@@ -1,11 +1,17 @@
-"""What the product is willing to put in front of a user.
+"""What the product ranks, and how it labels what it serves.
 
 Two rules. The price floor below, and the clean-anchor gate on the ranked
 surfaces (``anchor_clean_clause`` / ``meets_anchor_gate``).
 
-The price floor exists because sub-$1 items are ~72% of the forecast
-universe and one cent there is a 20% move, so their up/flat/down label is
-dominated by tick quantisation rather than by anything the model knows
+**The floor is a RANKING floor, not a serving floor.** A per-item forecast is
+generated and served for every eligible item regardless of price (``predict``
+filters only on history depth); the floor gates the ranked ``/opportunities``
+and ``/trending`` surfaces and matches the headline tier. Served sub-$1 items
+carry ``tradeability`` (below) so the forecast is honest about the fee wall.
+
+The floor exists because sub-$1 items are ~72% of the forecast universe and one
+cent there is a 20% move, so their up/flat/down label is dominated by tick
+quantisation rather than by anything the model knows
 (``backtest/scoring.py:209-213``). Ranking those items by percentage move —
 which every opportunities surface did — promotes rounding artifacts to the top
 of the list.
@@ -20,10 +26,50 @@ headline is what earns the number its meaning.
 """
 from __future__ import annotations
 
+from typing import NamedTuple, Optional
+
 from sqlalchemy import or_
 from sqlalchemy.sql.elements import ColumnElement
 
+from backtest.friction import actionable_threshold
+from backtest.scoring import price_tier
+
 MIN_SERVED_PRICE_USD = 1.0
+
+
+class Tradeability(NamedTuple):
+    """Whether acting on a served forecast can clear its trading costs.
+
+    Every item is served a forecast (the floor above governs only the ranked
+    surfaces and the headline tier), but sub-$1 items sit on a book with a
+    35.5% median spread and a Steam fee that climbs past 60% at the cheapest
+    prices, so any few-percent forecast edge is economically dead there. This
+    labels that honestly instead of withholding the forecast.
+
+    ``est_roundtrip_cost_pct`` is the round trip at the cheapest venue plus the
+    item's tier spread (``backtest/friction.py::actionable_threshold``) — the
+    move a forecast must beat to imply a trade — as a percentage. ``None`` when
+    no price is known.
+    """
+
+    tradeable: bool
+    est_roundtrip_cost_pct: Optional[float]
+
+
+def tradeability(price: Optional[float]) -> Tradeability:
+    """Tradeability of a served forecast at ``price``.
+
+    Tradeable is the same $1 line as the ranked/headline floor: below it the
+    cost hurdle dwarfs any edge. The cost estimate is reported for every price
+    so the boolean is legible rather than a bare cutoff.
+    """
+    if price is None:
+        return Tradeability(tradeable=False, est_roundtrip_cost_pct=None)
+    cost_pct = round(actionable_threshold(price_tier(price)) * 100, 1)
+    return Tradeability(
+        tradeable=price >= MIN_SERVED_PRICE_USD,
+        est_roundtrip_cost_pct=cost_pct,
+    )
 
 
 def price_floor_clause(column) -> ColumnElement:

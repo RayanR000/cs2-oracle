@@ -319,6 +319,11 @@ class DataPipeline:
                                 p90 = _agg_get_safe(info.get("last_90d"))
                                 for label, p in [
                                     ("aggregator_sync", p24 if p24 is not None else (p7 if p7 is not None else (p30 if p30 is not None else p90))),
+                                    # Clean Steam spot: last_24h with NO fallback, so it is
+                                    # empty on the illiquid items where aggregator_sync degrades
+                                    # to a trailing mean. Excluded from voting (STEAM_SPOT_SOURCES);
+                                    # the cross-venue basis feature's Steam leg.
+                                    ("aggregator_steam_spot", p24),
                                     ("aggregator_steam_7d", p7),
                                     ("aggregator_steam_30d", p30),
                                     ("aggregator_steam_90d", p90),

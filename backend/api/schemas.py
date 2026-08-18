@@ -1,4 +1,4 @@
-from pydantic import BaseModel
+from pydantic import BaseModel, model_validator
 from typing import Optional, List, Dict
 from datetime import datetime, date
 
@@ -92,6 +92,22 @@ class PredictionOut(BaseModel):
     # this flag. None = not recorded (rows predating the 2026-08-11 column).
     anchor_clean: Optional[bool] = None
     anchor_wedge_pct: Optional[float] = None
+    # Every item is served a forecast; sub-$1 items are flagged not economically
+    # tradeable rather than withheld. Derived from current_price below so every
+    # route that builds a PredictionOut is correct by construction.
+    # `est_roundtrip_cost_pct` is the round trip at the cheapest venue plus the
+    # item's tier spread -- the move a forecast must beat to imply a trade.
+    tradeable: Optional[bool] = None
+    est_roundtrip_cost_pct: Optional[float] = None
+
+    @model_validator(mode="after")
+    def _derive_tradeability(self) -> "PredictionOut":
+        from api.serving_policy import tradeability
+
+        t = tradeability(self.current_price)
+        self.tradeable = t.tradeable
+        self.est_roundtrip_cost_pct = t.est_roundtrip_cost_pct
+        return self
 
 
 class OpportunityOut(BaseModel):

@@ -135,6 +135,15 @@ report it rather than working around it.
 
 ## Reference (`references/`)
 
+- `cs2-market-domain.md` — ⭐ **the external-knowledge file: how the market itself works.** Venues
+  and their fees, why "the price" is undefined without a venue/price-type/fee-side qualifier, the
+  static-level vs time-varying split (the table that decides what is even forecastable), a dated
+  event timeline with a **breadth** column, how money is really made, and the fingerprints
+  manipulated series leave in our data. Built 2026-08-16 from four graded web passes and reconciled
+  against repo measurements — where they conflict, ours wins and the conflict is stated. Two live
+  conflicts worth knowing: the web claims wide spreads on expensive items and our n = 22,449 BUFF
+  measurement says the exact opposite (35.5% sub-$1 → 5.2% at ≥$1k), and the Steam fee is
+  **piecewise/rounding-based**, not the flat `1.1607` (that is item 5c). §9 is a do-not-encode list.
 - `steam-api.md` — Steam Market endpoints and response formats, empirically tested.
   The rate-limit envelope applies to **residential IPs only** — hosted CI runners are
   429'd on the first request.
@@ -148,6 +157,34 @@ report it rather than working around it.
   priority-queue design only.
 
 ## Research (`research/`)
+
+- `2026-08-16-research-docs-review.md` — ⭐ **read before trusting any older research doc.** Audit
+  of all 32 docs / 9,548 lines. Two structural findings: **R13 (the cohort inversion — served
+  cohort 84% sub-$1 vs a 64% ≥$1 archive) fell out of tracking on 2026-08-09 and is verified still
+  unfixed** in `database.py:105`; and **both designated entry points mislead** — the 08-07 doc
+  still calls C1 the strongest predictor (refuted 08-13) and its replacement rank-IC headline is
+  itself invalidated, while the 08-09 "start here" doc predates the range-forecaster pivot. Also:
+  the live action list's #1 item failed 08-15, `volume-data.md`'s banner inverts its own verdict
+  (volume is **feed-blocked, not refuted** — +1.4–1.9pp, placebo-clean), 13 docs are unindexed,
+  and every stored A/B number predates the harness repair. §7 credits 10/10 preregistrations with
+  recorded outcomes; §9 lists three claims checked and refuted, so they don't get re-raised.
+
+- `2026-08-16-listing-count-floor.md` — closes the last of the three items
+  `references/cs2-market-domain.md` proposed. Thin items **are** wilder, monotonically and *within
+  price tier* (P(|r₇|>5%) runs 0.68 → 0.50 across listing buckets; 797k item-days, 2,912 items, 14
+  months) — but the imported ≥30 threshold lands in the flat part of that curve: it costs **69% of
+  the served cohort** and buys **0.011**. The only real break is >100 listings, which costs 90%.
+  ⭐ **Verdict: no floor. Use `log1p(listing_count)` as a band-width conditioner**, where the
+  gradient is a conditional-σ statement rather than a gate. Coverage-vs-exceedance still needs a
+  prod read.
+- `2026-08-16-wash-trade-screen-and-volume-spike-exceedance.md` — **two nulls, one of them
+  disguised.** The wash-trade screen proposed by `references/cs2-market-domain.md` §8 is null on
+  4.7M Steam item-days: volume spikes come with **larger** moves (lift **0.31×** where the
+  fingerprint predicts >1). Its residual — spikes leading `P(|r|>5%)` at lift 1.81× h=3, surviving
+  both the same-day and the realized-vol-decile control — dies on the episode count: **81% of all
+  spikes in 13 years are 2025-10**, and excluding the crash the lift is **1.145×** on 193 spikes.
+  Build neither. Its method note is the transferable part: **report distinct-months and top-month
+  share before reporting a lift.**
 
 - `2026-08-09-model-and-data-research.md` — **Start here for anything accuracy-related.** The
   current review. ⚠️ **Read its corrections banner first** — every Track A recommendation in it
@@ -167,7 +204,23 @@ report it rather than working around it.
   smaller than the `14–70` in `AGENTS.md`. Ranks the four surviving ideas (target → `P(|r|>cost)`
   first) and inventories data for each. Flags that four deep-history panels (volume/stattrak/supply/
   bid) exist only locally and are **not** in the data repo.
-- `2026-08-14-next-steps.md` — ⭐ **the live action list.** Re-ranks survivors-first after the
+- `2026-08-16-next-steps.md` — ⭐ **the live action list.** Supersedes the 08-14 ordering, whose #1
+  item failed on 08-15. Ranks seven items: **decide the R13 cohort question** (a product call —
+  serve 8,691 well-calibrated-but-untradeable forecasts or 1,398 tradeable ones; recommendation is
+  a two-tier label, *not* a floor), **repair the volume feed** (now the largest measured accuracy
+  item open, +1.4–1.9pp), **re-run the nine repaired A/B harnesses** (none were re-run, so nine
+  stored verdicts are unmeasured), ≥$1 over-coverage, cross-market basis, listing count as band
+  width, and two items recovered from 08-07 that were dropped without closing. Carries an explicit
+  **do-not-run** list.
+- `2026-08-16-r13-cohort-inversion-measured.md` — R13 answered. The inversion is **real and worse**
+  (served cohort **16.1% ≥$1**, median served price **$0.09**) and the gate never moved — but its
+  premise is **refuted**: sub-$1 is the *best-calibrated tier we have* (0.832/0.822/0.824/0.882 vs
+  an 80% nominal), and the over-coverage lives in the ≥$1 tiers every published metric uses. So
+  raising the floor costs 84% of the catalogue and makes average calibration *worse*. A
+  product-scope decision, not a data-plumbing fix.
+- `2026-08-16-listing-count-floor.md` — see the entry below; ranked as item 6 in the live list.
+- `2026-08-14-next-steps.md` — ⚠️ **ordering superseded** by `2026-08-16-next-steps.md`; its **item
+  1 (Armory `tier × post`) FAILED** both bars on 2026-08-15. Items 2 and 3 carried forward. Re-ranks survivors-first after the
   2026-08-14 changelog run closed six of the prior list's items (harness repin, supply-rarity null,
   C1 per-fold, CV grid, recency ships at 30d, **lambdarank refuted for serving**). Only three items
   are still worth running — the Oct-22-2025 `tier × post` natural experiment (free archive read), a
@@ -233,6 +286,36 @@ report it rather than working around it.
   on an SSL timeout partway through 14d; 30d never ran and no summary line was printed. Nothing
   cites it. Every treatment arm loses to control on the three completed horizons, which is
   consistent with the vol-scaled branch being dead code (`sigma=None` on both paths).
+
+### Preregistrations
+
+Written before the run, scored after — the repo's strongest discipline artifact, and unindexed
+until 2026-08-16. **All ten have a recorded outcome; there are no orphans.** ⚠️ Three had their
+gate rewritten after the result was seen, all on 2026-08-13 — marked below.
+
+| Preregistration | Outcome |
+|---|---|
+| `2026-08-11-c1-tied-cohort-preregistration.md` | serving fails — `changelog/2026-08-11-c1-fails-the-clean-cohort-read.md` |
+| `2026-08-11-mean-reversion-preregistration.md` | does not replicate — `changelog/2026-08-11-mean-reversion-does-not-replicate.md` |
+| `2026-08-12-conditional-qhat-preregistration.md` | **VOID on the placebo clause**, scored inline |
+| `2026-08-12-marginal-coverage-attribution-preregistration.md` | half the sigma mix — `changelog/2026-08-12-marginal-over-coverage-is-half-the-sigma-mix.md` |
+| `2026-08-13-c1-audited-anchor-preregistration.md` | FAILS 3/4 horizons — ⚠️ **bar rewritten post-hoc** |
+| `2026-08-13-date-level-sigma-rescaling-preregistration.md` | passes 3/7/30d — ⚠️ **h=14 failed, reclassified "unrefereeable"** |
+| `2026-08-13-feature-contribution-honest-trainer-preregistration.md` | Leg 1 FAILS, +3.5 does not reproduce |
+| `2026-08-13-low-level-anchor-preregistration.md` | fails its axis — ⚠️ **pivoted to an unregistered h=30 axis** |
+| `2026-08-13-serving-transform-attribution-preregistration.md` | transforms do not explain the CV gap |
+| `2026-08-15-armory-tier-post-preregistration.md` | **FAIL** on both the primary bar and the placebo, scored inline |
+
+### Also in `research/`
+
+- `2026-08-14-what-moves-skin-prices-web-reconsideration.md` — the nulls catalog reconsidered:
+  which factor nulls are true (static attributes, market-wide shocks) and which were mis-tested.
+  Its externals are superseded by `references/cs2-market-domain.md`; its A/B/C framing still holds.
+- `2026-08-15-p-exceed-cost-target-scope.md` — scope for the `P(|return| > cost)` target, the one
+  signal that is market-orthogonal and date-stable. Magnitude, not direction: use it as band width.
+- `2026-08-16-refutation-power-tiers-and-iflow-backfill.md` — free ~4yr BUFF+Steam history
+  (2022-04 → 2026-05) not yet ingested. Its `count_in_24` is the volume-feed repair that item 2 of
+  the live list depends on, and it multiplies backtest episodes ~10×.
 
 ## Design docs and plans (`superpowers/`)
 

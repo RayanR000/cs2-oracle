@@ -1,5 +1,32 @@
 # CS2 Item Price Prediction — Research Review
 
+> 🔴 **BANNER ADDED 2026-08-16. Two things this doc presents as its strongest results are dead;
+> its own existing banner stops at 2026-08-09 and does not cover either.**
+>
+> **1. C1 / cross-sectional reversal is refuted.** `:652` and `:668` (R16) still call it "the
+> project's strongest measured predictor," which "beats the model at all four horizons" and
+> "survives composition control." It does not:
+> `changelog/2026-08-13-c1-refutation-survives-the-audited-anchors.md:9` — **"FAILS at 3 of 4
+> horizons. C1 stays shelved."** The CV-positive/serving-negative gap is structural, not a cohort
+> or anchor artifact (`…-cohort-geometry-is-not-c1s-gap.md`, `…-c1s-cv-edge-is-not-a-pre-2026-artefact.md`).
+> This is the doc's most-cited positive result and every cross-reference to it inherits the
+> refutation.
+>
+> **2. The replacement headline in the 2026-08-09 banner is itself invalid.** That banner
+> withdraws the accuracy figure and substitutes `mean_rank_ic 0.1307 vs naive −return_1d 0.1656`
+> as the trustworthy number. The 2026-08-11 label-denominator finding (`docs/README.md:19`)
+> concludes **"No stored rank IC, DA or −return_1d comparison in this repo is safe to rank arms
+> on"** — which includes that substitute.
+>
+> **3. Every `ab_test_*`-sourced figure here predates a broken harness family.**
+> `changelog/2026-08-13-harness-family-repinned-off-steamcommunity.md`: three harnesses matched 0
+> rows on `source='STEAMCOMMUNITY'`, six more never applied the production feature allowlist. They
+> were repaired and **none re-run**. Treat the feature-contribution, supply, regime and ensemble
+> deltas below as unmeasured.
+>
+> Still the best literature review in the repo — read it for the reasoning and the mechanisms,
+> not for the rankings. `research/2026-08-16-research-docs-review.md` §3.
+
 **2026-08-07.** Commissioned as a from-scratch design review of a CS2 item price
 forecasting system. It is not written from scratch: this repo has already run most of the
 standard playbook and killed it, so the review is organised around *what the existing

@@ -88,12 +88,25 @@ def populate_items(db):
                 WHERE day < '2026-01-01'
             """).fetchall()
         }
+        # is_trainable narrows is_backfilled to exclude iflow-only history: a
+        # pre-2026 row whose source is 'buff_iflow' is served but must not be
+        # trained on (that backfill source is out of scope for the model).
+        # `source IS DISTINCT FROM 'buff_iflow'` keeps the NULL-source legacy
+        # rows (source predates this column) while excluding buff_iflow rows.
+        trainable = {
+            r[0] for r in con.sql(f"""
+                SELECT DISTINCT item_slug
+                FROM read_parquet('{ARCHIVE_DIR}/prices-*.parquet', union_by_name=true)
+                WHERE day < '2026-01-01' AND source IS DISTINCT FROM 'buff_iflow'
+            """).fetchall()
+        }
     finally:
         con.close()
 
     total = len(rows)
     logger.info(f"Found {total:,} unique items in parquet "
-                f"({len(backfilled):,} carrying the historical backfill)")
+                f"({len(backfilled):,} carrying the historical backfill, "
+                f"{len(trainable):,} trainable)")
 
     existing = {r[0] for r in db.query(Item.item_id).all()}
     to_insert = []
@@ -104,6 +117,7 @@ def populate_items(db):
                 name=slug,
                 type="skin",
                 is_backfilled=1 if slug in backfilled else 0,
+                is_trainable=1 if slug in trainable else 0,
                 created_at=datetime.now(timezone.utc).replace(tzinfo=None),
                 updated_at=datetime.now(timezone.utc).replace(tzinfo=None),
             ))
@@ -118,25 +132,26 @@ def populate_items(db):
         logger.info("No new items to insert")
 
     # Re-derive on every run so rows written by the older version of this
-    # script (which flagged everything) get corrected, and so the flag keeps
+    # script (which flagged everything) get corrected, and so the flags keep
     # tracking the archive as the historical backfill is extended.
     changed = 0
-    for item_id, flag in db.query(Item.item_id, Item.is_backfilled).all():
-        want = 1 if item_id in backfilled else 0
-        if (flag or 0) != want:
+    for item_id, bf, tr in db.query(Item.item_id, Item.is_backfilled, Item.is_trainable).all():
+        want_bf = 1 if item_id in backfilled else 0
+        want_tr = 1 if item_id in trainable else 0
+        if (bf or 0) != want_bf or (tr or 0) != want_tr:
             db.query(Item).filter(Item.item_id == item_id).update(
-                {"is_backfilled": want,
-                 "updated_at": datetime.now(timezone.utc).replace(tzinfo=None)}
-            )
+                {"is_backfilled": want_bf, "is_trainable": want_tr,
+                 "updated_at": datetime.now(timezone.utc).replace(tzinfo=None)})
             changed += 1
     if changed:
         db.commit()
-        logger.info(f"Corrected is_backfilled on {changed:,} existing items")
+        logger.info(f"Corrected is_backfilled/is_trainable on {changed:,} existing items")
 
     total_in_db = db.query(Item).count()
     n_flagged = db.query(Item).filter(Item.is_backfilled == 1).count()
+    n_trainable = db.query(Item).filter(Item.is_trainable == 1).count()
     logger.info(f"Total items in DB: {total_in_db:,} "
-                f"({n_flagged:,} is_backfilled=1)")
+                f"({n_flagged:,} is_backfilled=1, {n_trainable:,} is_trainable=1)")
 
 
 def populate_events(db):

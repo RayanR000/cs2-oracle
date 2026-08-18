@@ -12,6 +12,23 @@ lambdarank), which this **independently converges on and reframes**.
 **Status:** research only. No code changed. Magnitudes quoted from trade blogs are *asserted, not
 measured* — treated as hypotheses, not evidence.
 
+> **Externals re-verified and moved (2026-08-16).** This doc's *thesis* is unchanged, but its
+> outside-world facts now have a graded, cross-checked home in
+> `references/cs2-market-domain.md` — use that for anything about venues, fees, events, or
+> manipulation. Three of this doc's claims changed status there:
+> **(a)** the Oct-22-2025 event is dated **Oct 23** by every press source; both are right — our
+> `ISteamNews` capture is `2025-10-22T23:00:20Z`, ~20s *after* the 23:00 UTC aggregator snapshot
+> boundary, so the earliest archive row that can carry it is **10-23**. Its category rotation
+> (knives/gloves −70–80%, low-tier Coverts up) is now corroborated by 3+ independent outlets;
+> the "+10–20×" Covert figure is not — outlets report one MP7 at $8.77 → $104.
+> **(b)** the "Chinese venues lead by days" premise behind re-test 3 has **no measurement in any
+> public source** — the *direction* is well attested, the lag is folklore. The construct fix
+> (un-blend the venues) is still right, and gains a better rationale: Steam's wallet-lock makes the
+> Steam−Buff wedge structural and persistent, not just a latency artifact.
+> **(c)** re-test 4 (supply depth) gains a cheaper sibling that needs no new data — a
+> **wash-trade screen** on volume-vs-price co-movement, plus a listing-count floor. Published index
+> methodologies use ≥30–50 listings and a ≥$5 floor; our served cohort applies neither.
+
 ## Bottom line
 
 The nulls are correct for everything that is a **fixed cross-sectional attribute** or a

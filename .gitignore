@@ -39,6 +39,9 @@ frontend/.turbo/
 # Tooling (local dev artifacts)
 .impeccable/
 
+# Throwaway analysis prototypes
+scratchpad/
+
 # Logs
 logs/
 *.log
