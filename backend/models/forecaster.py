@@ -519,6 +519,24 @@ class ItemForecaster:
         # test_no_volume_feature_survives_the_real_selection_and_prune.
         "volume_mean_7d",
         "volume_std_60d",
+        # Dead weight inside the served set (2026-08-18). These five reach a
+        # booster but never rank in any horizon's top-20 gain and are
+        # redundant or near-constant: price_cv_20d/30d sit between the ranking
+        # price_cv_14d/60d, log_return_7d duplicates return_7d, autocorr_7d
+        # never ranks while autocorr_1d does, and rsi_missing is near-constant
+        # zero (RSI uses min_periods=1 so it is almost never NaN — unlike
+        # macd_missing, which is kept). A paired drop-5 ablation on the real
+        # archive (400 items, 24-25 folds, n~180-190k) found removing them
+        # NULL at all four horizons (drop5 vs base33: -0.02/+0.11/-0.14/-0.07pp,
+        # every CI straddles zero). They have no consumer outside the booster,
+        # so shelving (not deleting the compute) keeps the A/B harnesses that
+        # build their own feature list from the frame reproducible. Drops the
+        # served set 33 -> 28 on the next retrain.
+        "price_cv_20d",
+        "price_cv_30d",
+        "log_return_7d",
+        "autocorr_7d",
+        "rsi_missing",
     })
 
     # The volume-derived subset of SHELVED_FEATURES (see the comment above and
