@@ -174,9 +174,10 @@ report it rather than working around it.
   price tier* (P(|r₇|>5%) runs 0.68 → 0.50 across listing buckets; 797k item-days, 2,912 items, 14
   months) — but the imported ≥30 threshold lands in the flat part of that curve: it costs **69% of
   the served cohort** and buys **0.011**. The only real break is >100 listings, which costs 90%.
-  ⭐ **Verdict: no floor. Use `log1p(listing_count)` as a band-width conditioner**, where the
-  gradient is a conditional-σ statement rather than a gate. Coverage-vs-exceedance still needs a
-  prod read.
+  ⭐ **Verdict: no floor.** It recommended `log1p(listing_count)` as a band-width conditioner —
+  ⚠️ **that follow-on is now REFUTED (2026-08-18):** 0/3 horizons pass and the thin buckets it
+  targets barely exist in the served ≥$1 cohort.
+  `changelog/2026-08-18-listing-count-conditioner-refuted.md`. Do not re-run.
 - `2026-08-16-wash-trade-screen-and-volume-spike-exceedance.md` — **two nulls, one of them
   disguised.** The wash-trade screen proposed by `references/cs2-market-domain.md` §8 is null on
   4.7M Steam item-days: volume spikes come with **larger** moves (lift **0.31×** where the
@@ -338,12 +339,22 @@ also recorded in `changelog/`, which is the durable record. Load-bearing ones:
 ## Changelog (`changelog/`)
 
 Append-only dated decision records: bug fixes, features, audits, and refuted experiments.
-182 entries, 2026-07-08 to 2026-08-15. Entries are never edited to match later reality — several describe code that has since been
+201 entries, 2026-07-08 to 2026-08-18. Entries are never edited to match later reality — several describe code that has since been
 deleted, which is the point. Per `AGENTS.md` workflow rule 2, non-trivial decisions get a new
 dated note here.
 
 The newest:
 
+- `2026-08-18-listing-count-conditioner-refuted.md` — ❌ closes the last standing band-width lever.
+  `log1p(listing_count)` as a conditioner fails 0/3 horizons, and structurally: the thin buckets it
+  targets hold <20 items each in the served ≥$1 cohort. Was item 6 of the live list; now do-not-run.
+- `2026-08-18-training-breadth-is-accuracy-neutral.md` — breadth is **free at a fixed row budget**
+  (narrow/mid/wide all null at 3/7/14/30d); only raw volume helps, +0.88pp at 30d only. The
+  accuracy-preserving path to more served items is **Steam-consistent backfill, not the iflow merge**.
+- `2026-08-17-low-fee-arb-static-retest-negative.md` — static cross-venue arb has **no capturable
+  edge even at 5%**; low-fee venues are within ~2–5% of each other and a raw-feed spread scan
+  returns currency/outlier garbage. Do not build a spread scanner; the temporal basis signal is a
+  separate, still-open thread.
 - `2026-08-15-cs2-oracle-is-a-range-forecaster.md` — ⭐ **what kind of model this is.** The
   deliverable is a calibrated range and its center; **DA is not a shippable claim.** Records the
   four things a reader needs: direction is unavailable at ~14–70 independent 2026 h-windows (not a
