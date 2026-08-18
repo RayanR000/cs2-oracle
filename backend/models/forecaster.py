@@ -1732,11 +1732,12 @@ class ItemForecaster:
         return datetime.now(timezone.utc)
 
     def fetch_price_history(self, days_back: int = 365,
-                            backfilled_only: bool = False) -> pd.DataFrame:
+                            backfilled_only: bool = False,
+                            universe: str = "serve") -> pd.DataFrame:
         logger.info(f"Fetching price history (last {days_back}d)...")
 
         if self.archive_dir.exists() and days_back > 14:
-            backfilled_slugs = (self._resolve_backfilled_slugs()
+            backfilled_slugs = (self._resolve_backfilled_slugs(universe)
                                 if backfilled_only else None)
 
             # The voted frame is a pure function of the archive contents plus
@@ -1746,7 +1747,7 @@ class ItemForecaster:
             # cached. That is the whole win; it is not a retrain-time lever
             # (a cold retrain is ~12m30s and almost entirely model fitting).
             cache_key = self._voted_cache_key(days_back, backfilled_only,
-                                              backfilled_slugs)
+                                              backfilled_slugs, universe)
             cached = self._load_voted_cache(cache_key)
             if cached is not None:
                 return cached
@@ -1784,22 +1785,24 @@ class ItemForecaster:
                     f"{df.item_id.nunique():,} items")
         return df
 
-    def _resolve_backfilled_slugs(self) -> set:
-        """The set of STEAMCOMMUNITY-backfilled item slugs to train on.
+    def _resolve_backfilled_slugs(self, universe: str = "serve") -> set:
+        """The set of item slugs to filter to for the given universe.
 
-        Split out of ``fetch_price_history`` because the voted-frame cache key
-        has to include it — two runs with different backfill sets produce
+        ``universe="train"`` reads ``is_trainable``; the default ``"serve"``
+        reads ``is_backfilled`` (STEAMCOMMUNITY-backfilled items). Split out
+        of ``fetch_price_history`` because the voted-frame cache key has to
+        include it — two runs with different backfill sets produce
         different frames from an identical archive.
         """
+        column = "is_trainable" if universe == "train" else "is_backfilled"
         try:
-            slug_rows = self.db.execute(text("""
-                SELECT item_id FROM items WHERE is_backfilled = 1
-            """)).fetchall()
+            slug_rows = self.db.execute(text(
+                f"SELECT item_id FROM items WHERE {column} = 1")).fetchall()
             slugs = {r[0] for r in slug_rows}
-            logger.info(f"  Backfilled items filter: {len(slugs)} items from DB")
+            logger.info(f"  {universe.capitalize()} universe filter ({column}): {len(slugs)} items from DB")
             return slugs
         except Exception as e:
-            logger.warning(f"  Could not fetch backfilled items from DB, using all: {e}")
+            logger.warning(f"  Could not fetch {column} items from DB, using all: {e}")
             import duckdb
             with duckdb.connect() as con:
                 return {
@@ -4862,9 +4865,11 @@ class ItemForecaster:
     def build_training_data(self, days_back: int = 365,
                              backfilled_only: bool = False,
                              max_feature_rows: int = 100_000,
-                             min_median_price: Optional[float] = None) -> pd.DataFrame:
+                             min_median_price: Optional[float] = None,
+                             universe: str = "serve") -> pd.DataFrame:
         _t0 = datetime.now()
-        price_df = self.fetch_price_history(days_back=days_back, backfilled_only=backfilled_only)
+        price_df = self.fetch_price_history(days_back=days_back, backfilled_only=backfilled_only,
+                                            universe=universe)
         logger.info(f"  fetch_price_history took {(datetime.now() - _t0).total_seconds():.0f}s")
         price_df = self._filter_dead_items(price_df)
         # Before the subsample, so the row budget is spent on the surviving
@@ -4997,12 +5002,15 @@ class ItemForecaster:
         return "|".join(parts)
 
     def _voted_cache_key(self, days_back: int, backfilled_only: bool,
-                         backfilled_slugs: Optional[set]) -> str:
+                         backfilled_slugs: Optional[set],
+                         universe: str = "serve") -> str:
         """Everything the voted frame depends on, hashed.
 
         The query window is keyed by its resolved cutoff date rather than
         ``days_back`` so a day rollover invalidates the entry — the frame is
-        anchored to a calendar date, not to a relative offset.
+        anchored to a calendar date, not to a relative offset. ``universe``
+        is included so a train frame and a serve frame over an otherwise
+        identical archive/window never collide in cache.
         """
         cutoff = (self._now() - timedelta(days=days_back)).strftime("%Y-%m-%d")
         slug_digest = ""
@@ -5019,6 +5027,7 @@ class ItemForecaster:
             f"anchor={self.replay_anchor() or ''}",
             f"backfilled_only={int(backfilled_only)}",
             f"slugs={slug_digest}",
+            f"universe={universe}",
             f"archive={self._archive_fingerprint()}",
         ])
         return hashlib.sha256(payload.encode()).hexdigest()[:24]
@@ -5264,7 +5273,8 @@ class ItemForecaster:
         # and docs/changelog/2026-08-04-minimal-model-results.md.
         df = self.build_training_data(days_back=1460, backfilled_only=True,
                                       max_feature_rows=max_feature_rows,
-                                      min_median_price=min_median_price)
+                                      min_median_price=min_median_price,
+                                      universe="train")
 
         # Recorded into the artifact because the rank transform's output is a
         # function of WHICH items are in the cross-section, and predict's frame
