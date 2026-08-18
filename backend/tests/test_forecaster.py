@@ -856,13 +856,22 @@ class TestFeaturePipeline:
         assert not any(c.startswith("market_") for c in feature_set), "Market features leaked past allowlist"
         assert all(_feature_group(c) == "price_technicals" for c in feature_set), \
             f"Non-price feature groups present: {[c for c in feature_set if _feature_group(c) != 'price_technicals']}"
-        # Shelved primitives are price technicals by name, so the allowlist alone
-        # would admit them. They must be engineered (the A/B reads them off the
-        # frame) but never trained on.
+        # Shelved features never reach training (they are price technicals by
+        # name, so the allowlist alone would admit them).
         leaked = forecaster.SHELVED_FEATURES & feature_set
         assert not leaked, f"Shelved features leaked into training: {sorted(leaked)}"
-        assert forecaster.SHELVED_FEATURES <= set(df.columns), \
-            "Shelved features must still be engineered for the A/B harness"
+        # Since 2026-08-17 the volume pipeline and the 2026-07-26 price primitives
+        # are not even *computed* on the production build — their only consumers
+        # (supply_depth / cross_sectional / VOLUME_FEATURES) are off here. The
+        # A/B harness that reads them builds its own frame via
+        # engineer_features(skip_unused_groups=False); see
+        # test_shelved_compute_skipped_in_prod.py.
+        skipped_on_prod = forecaster.VOLUME_FEATURE_NAMES | {
+            "vol_semidev_down_30d", "vol_semidev_up_30d", "vol_skew_30d",
+            "rsi_divergence_7d", "rsi_price_divergence_7d", "macd_hist_slope_7d",
+        }
+        assert skipped_on_prod.isdisjoint(df.columns), \
+            f"shelved-and-unused compute ran on the prod build: {sorted(skipped_on_prod & set(df.columns))}"
 
         # Check no float64 feature columns remain (memory optimization)
         float64_cols = [c for c in forecaster.feature_cols if c in df.columns and df[c].dtype == np.float64]

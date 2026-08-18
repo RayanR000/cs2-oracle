@@ -2048,7 +2048,15 @@ class ItemForecaster:
     # Feature engineering
     # ------------------------------------------------------------------
 
-    def _compute_price_features(self, df: pd.DataFrame) -> pd.DataFrame:
+    def _compute_price_features(self, df: pd.DataFrame,
+                                compute_volume: bool = True,
+                                compute_shelved_primitives: bool = True) -> pd.DataFrame:
+        # compute_volume / compute_shelved_primitives default True so every
+        # caller but the production frame build (engineer_features with
+        # skip_unused_groups=True) is byte-identical. Both blocks are shelved
+        # (SHELVED_FEATURES) and reach no booster; the production path, where
+        # their only live consumers are skipped too, sets them False to skip
+        # the compute. See engineer_features for the predicate.
         logger.info("Engineering price features...")
         df = df.sort_values(["item_id", "date"]).copy()
 
@@ -2229,44 +2237,12 @@ class ItemForecaster:
         df["macd_line_rel"] = df["macd_line"] / _macd_px
         df["macd_histogram_rel"] = df["macd_histogram"] / _macd_px
 
-        # =====================================================================
-        # Volatility asymmetry (downside vs upside semi-deviation) — pure price.
-        # A symmetric std collapses panic (sharp downside) and froth (volatile
-        # upside) into one number; splitting them exposes the difference.
-        # =====================================================================
-        ret = df["return_1d"]
-        ret_neg = ret.where(ret < 0)
-        ret_pos = ret.where(ret > 0)
-        df["vol_semidev_down_30d"] = (
-            ret_neg.groupby(df["item_id"]).rolling(30, min_periods=5).std()
-            .reset_index(level=0, drop=True)
-        )
-        df["vol_semidev_up_30d"] = (
-            ret_pos.groupby(df["item_id"]).rolling(30, min_periods=5).std()
-            .reset_index(level=0, drop=True)
-        )
-        # Ratio > 1 => upside more volatile (froth); < 1 => downside sharper
-        # (panic). Clipped: near-zero downside vol otherwise blows the ratio up.
-        _semidev_down = df["vol_semidev_down_30d"].replace(0, np.nan)
-        df["vol_skew_30d"] = (df["vol_semidev_up_30d"] / _semidev_down).clip(0, 5)
-
-        # =====================================================================
-        # Oscillator divergence — momentum of RSI/MACD, and price/RSI
-        # disagreement. The frame is already item/date-sorted (MACD block
-        # re-sorted it), so a groupby shift(7) is a clean 7-day lookback.
-        # =====================================================================
-        df["rsi_divergence_7d"] = (
-            df["rsi_14"] - df.groupby("item_id")["rsi_14"].shift(7)
-        )
-        # Positive => price up while RSI down (bearish divergence). return_7d is
-        # winsorized to +/-500; clip to +/-50 keeps typical moves on the same
-        # scale as the RSI term (RSI change is bounded to +/-100).
-        df["rsi_price_divergence_7d"] = (
-            df["return_7d"].clip(-50, 50) / 50.0 - df["rsi_divergence_7d"] / 100.0
-        )
-        df["macd_hist_slope_7d"] = (
-            df["macd_histogram"] - df.groupby("item_id")["macd_histogram"].shift(7)
-        )
+        # Volatility-asymmetry and oscillator-divergence primitives (2026-07-26)
+        # are all in SHELVED_FEATURES and reach no booster; only the A/B harness
+        # ab_test_price_primitives.py reads them, off the full frame. The
+        # production build (skip_unused_groups=True) passes False and skips them.
+        if compute_shelved_primitives:
+            df = self._add_shelved_price_primitives(df)
 
         # =====================================================================
         # Support / Resistance distances
@@ -2304,7 +2280,11 @@ class ItemForecaster:
         # =====================================================================
         # Volume features
         # =====================================================================
-        df = self._compute_volume_features(df, grouped)
+        # All shelved; computed only where a live consumer (supply_to_volume_ratio,
+        # item_volume_vs_market_30d) or VOLUME_FEATURES=1 still reads them. The
+        # production build passes compute_volume=False. See engineer_features.
+        if compute_volume:
+            df = self._compute_volume_features(df, grouped)
         if self._bid_features_enabled():
             df = self._compute_bid_features(df)
         if self._stattrak_feature_enabled():
@@ -2316,6 +2296,56 @@ class ItemForecaster:
         df["rsi_missing"] = df["rsi_14"].isna().astype(int)
         df["macd_missing"] = df["macd_line"].isna().astype(int)
 
+        return df
+
+    @staticmethod
+    def _add_shelved_price_primitives(df: pd.DataFrame) -> pd.DataFrame:
+        """Volatility-asymmetry and oscillator-divergence primitives (2026-07-26).
+
+        All six are in SHELVED_FEATURES — they cleared no A/B gate (see
+        docs/changelog/2026-07-31-price-primitives-shelved.md) — so nothing
+        production trains on reads them. Split out of _compute_price_features so
+        the production frame build can skip the compute; the ab_test harness,
+        which builds the full frame, still gets them. The frame is already
+        item/date-sorted when this is called (the MACD block re-sorted it).
+        """
+        # =====================================================================
+        # Volatility asymmetry (downside vs upside semi-deviation) — pure price.
+        # A symmetric std collapses panic (sharp downside) and froth (volatile
+        # upside) into one number; splitting them exposes the difference.
+        # =====================================================================
+        ret = df["return_1d"]
+        ret_neg = ret.where(ret < 0)
+        ret_pos = ret.where(ret > 0)
+        df["vol_semidev_down_30d"] = (
+            ret_neg.groupby(df["item_id"]).rolling(30, min_periods=5).std()
+            .reset_index(level=0, drop=True)
+        )
+        df["vol_semidev_up_30d"] = (
+            ret_pos.groupby(df["item_id"]).rolling(30, min_periods=5).std()
+            .reset_index(level=0, drop=True)
+        )
+        # Ratio > 1 => upside more volatile (froth); < 1 => downside sharper
+        # (panic). Clipped: near-zero downside vol otherwise blows the ratio up.
+        _semidev_down = df["vol_semidev_down_30d"].replace(0, np.nan)
+        df["vol_skew_30d"] = (df["vol_semidev_up_30d"] / _semidev_down).clip(0, 5)
+
+        # =====================================================================
+        # Oscillator divergence — momentum of RSI/MACD, and price/RSI
+        # disagreement. A groupby shift(7) is a clean 7-day lookback.
+        # =====================================================================
+        df["rsi_divergence_7d"] = (
+            df["rsi_14"] - df.groupby("item_id")["rsi_14"].shift(7)
+        )
+        # Positive => price up while RSI down (bearish divergence). return_7d is
+        # winsorized to +/-500; clip to +/-50 keeps typical moves on the same
+        # scale as the RSI term (RSI change is bounded to +/-100).
+        df["rsi_price_divergence_7d"] = (
+            df["return_7d"].clip(-50, 50) / 50.0 - df["rsi_divergence_7d"] / 100.0
+        )
+        df["macd_hist_slope_7d"] = (
+            df["macd_histogram"] - df.groupby("item_id")["macd_histogram"].shift(7)
+        )
         return df
 
     @staticmethod
@@ -4192,8 +4222,13 @@ class ItemForecaster:
         "supply-history.parquet": ["buff_listing_count"],
     }
 
-    def _attach_sidecars(self, daily: pd.DataFrame) -> pd.DataFrame:
+    def _attach_sidecars(self, daily: pd.DataFrame,
+                         include_volume_panel: bool = True) -> pd.DataFrame:
         for fname, cols in self._SIDECARS.items():
+            # The volume panel only feeds shelved volume features; skip its read
+            # and merge on the production build, where nothing consumes them.
+            if fname == "volume-panel.parquet" and not include_volume_panel:
+                continue
             path = self.archive_dir / fname
             if not path.exists():
                 continue
@@ -4243,11 +4278,26 @@ class ItemForecaster:
             )
         else:
             daily = price_df
-        daily = self._attach_sidecars(daily)
         # _compute_price_features is never skipped: price_technicals is the one
-        # allowlisted group, and the `other` columns are computed inside it.
+        # allowlisted group, and the `other` columns are computed inside it. But
+        # two shelved blocks inside it (the volume pipeline and the 2026-07-26
+        # price primitives) reach no booster. Skip their compute on the
+        # production build, where nothing reads them; keep it everywhere a
+        # consumer still does.
         skip = self._skipped_feature_groups() if skip_unused_groups else set()
-        df = self._compute_price_features(daily)
+        # Volume's only live consumers are supply_to_volume_ratio (supply_depth)
+        # and item_volume_vs_market_30d (cross_sectional); VOLUME_FEATURES=1 also
+        # un-shelves it into training. Build it if any of those still needs it.
+        need_volume = (self._volume_features_enabled()
+                       or "supply_depth" not in skip
+                       or "cross_sectional" not in skip)
+        # The price primitives have no reinstate flag; only the full-frame A/B
+        # harness (skip_unused_groups=False) reads them.
+        need_primitives = not skip_unused_groups
+        daily = self._attach_sidecars(daily, include_volume_panel=need_volume)
+        df = self._compute_price_features(
+            daily, compute_volume=need_volume,
+            compute_shelved_primitives=need_primitives)
         if "temporal" not in skip:
             df = self._add_temporal_features(df, item_first_dates=item_first_dates)
         if "item_identity" not in skip:

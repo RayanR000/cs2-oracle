@@ -1,5 +1,26 @@
 # Model and data research, 2026-08-09
 
+> 🔴 **BANNER ADDED 2026-08-16 — this doc is `docs/README.md`'s designated "start here for
+> anything accuracy-related," and it predates the pivot that reframes the whole question.**
+>
+> **CS2 Oracle is a RANGE forecaster, not a directional predictor**
+> (`changelog/2026-08-15-cs2-oracle-is-a-range-forecaster.md`, now also in `AGENTS.md`).
+> Directional accuracy is **not** a shippable product claim. This doc's §3 ("the objective does
+> not match the product") reads as if a ranking or directional objective is the fix — that thesis
+> is **closed**: lambdarank is refuted for serving, and `2026-08-14-next-steps.md` records the
+> "pivot to a ranker" line as dead.
+>
+> Two more results postdate it: DA is statistically significant but **economically worthless
+> against the ~15% fee and unvalidatable** — as few as ~4/3/1/0 independent serving dates at
+> h=3/7/14/30 (`2026-08-15-directional-accuracy-and-data-inventory.md`) — and the
+> **label-denominator** thread means no stored rank IC or DA number here is safe to rank arms on
+> (`docs/README.md:19`).
+>
+> A reader who starts and stops here concludes directional/ranking objectives are the frontier.
+> They are the opposite. Read `changelog/2026-08-15-cs2-oracle-is-a-range-forecaster.md` and
+> `2026-08-15-directional-accuracy-and-data-inventory.md` first, then this for its data inventory
+> and cost work, which hold up. `research/2026-08-16-research-docs-review.md` §3.
+
 **Method:** five parallel audits — training cost (fresh measurements on this machine against
 the same 918-item / 986,065-row frame the 872s run used), data inventory (DuckDB over the local
 archive + `gh api` over the canonical repo), experiment-harness capability, and two web-research
@@ -751,6 +772,8 @@ invalidate a naive run:
   ~32 days of fabricated zeros sit inside the evaluated window and 30d/60d rolling features
   straddle them.
 - **Never pool across 2026-03-22.** `merge_hf_dataset.py:99` maps `ask_volume AS volume`, so
+  (⚠️ 2026-08-16: that script was deleted in `fd49d5d`; read it at `fd49d5d^:99`. The rule stands —
+  the rows it wrote are permanent. Surviving reference: `backend/collectors/sales_volume.py:13`.)
   post-break "volume" is a **listing count**, not a trade count. Median per row: pre-2026 = 117,
   `aggregator_sync` = 50, csfloat = 335, youpin = 966, buff163 = 1,046.
 - **The pre-2026 series has literally zero zero-volume rows.** A no-sale day is an *absent row*.

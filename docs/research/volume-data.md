@@ -1,5 +1,23 @@
 # Volume Data Source Research
 
+> 🔴 **THE VERDICT BELOW IS INVERTED (2026-08-15). Volume is FEED-BLOCKED, NOT REFUTED.**
+> `changelog/2026-08-15-volume-features-remeasured.md` re-ran the arm on the post-2026-08-08
+> statistics fix and the post-2026-08-13 trainer fix and found a **real directional gain at every
+> horizon, placebo-clean**: **+1.503pp** [+0.631, +2.499] at 3d, **+1.879pp** [+0.031, +3.952] at
+> 7d, **+1.442pp** [+0.277, +2.538] at 14d, against placebos that are null at all three. Eleven of
+> the thirteen volume features survive the >0.95 prune.
+>
+> The shelving still stands, but **only because the live feed is dead** — not because the features
+> lack signal. Anyone reading this doc for "is volume worth it?" should read it as **yes, if the
+> feed is repaired**, which is precisely what makes `count_in_24` in
+> `2026-08-16-refutation-power-tiers-and-iflow-backfill.md` valuable rather than optional.
+>
+> ⚠️ Its citation `backend/scripts/merge_hf_dataset.py:99` **no longer resolves** — the script was
+> deleted 2026-08-10 in `fd49d5d`, collateral in a cleanup commit about something else. The claim
+> is still true and still binding: `ask_volume AS volume` is at line 99 of `fd49d5d^`, and the rows
+> it wrote are permanently in the archive, so **never pool across 2026-03-22** stands. The
+> surviving prose reference is `backend/collectors/sales_volume.py:13`.
+
 > **The conclusion stands; almost everything supporting it does not (2026-08-09).**
 > `docs/changelog/2026-08-06-volume-ab-and-harness-defects.md:68` already named `:27`
 > and `:142` as carrying wrong reasoning; they are unchanged three days later. Volume

@@ -252,7 +252,10 @@ Post-exclusion anchor dates, as printed by the runs behind this section's tables
   `2013-08-29, 2013-09-21, 2013-11-07, 2013-11-28, 2016-10-07`, plus the same
   eight 2026 dates above.
 
-These match `.superpowers/sdd/2026-08-09-label-integrity/task-5-report.md`'s
+These match the 2026-08-09 label-integrity task-5 report's (⚠️ **that report is not in the repo** —
+it was cited as `.superpowers/sdd/2026-08-09-label-integrity/task-5-report.md`, but
+`docs/superpowers/` holds only `plans/` and `specs/`, with no `sdd/` tree; verified 2026-08-16, so
+the numbers below have no retrievable source)
 verbatim stdout for all four re-runs.
 
 **This is not a clean before/after comparison, and the numbers below must not be read as

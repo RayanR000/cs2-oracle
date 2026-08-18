@@ -7,6 +7,12 @@ concluded — correctly — "do not quote a speedup from this work".
 
 The project's wall-clock cap is 30 minutes per run. Both runs above are over it.
 
+> ⚠️ **Both baseline runs are superseded (noted in-file 2026-08-16; previously only in
+> `docs/README.md`).** Run `31407938154` measured **996.6s training / 17m48s job** — warm cache,
+> `SKIP_REGIMES=1`, arm64 — which is **inside** the 30-minute cap. So the sentence above is no
+> longer true, every saving below is quoted against a baseline that is ~2× too slow, and the
+> remaining levers are real but **not urgent**. The bottleneck is experiment power, not runtime.
+
 > **Corrected 2026-08-10 when levers 1 and 4 landed.** Three claims below are wrong; see
 > `docs/changelog/2026-08-10-warm-retrain-in-ci.md`. (a) Lever 1 is worth **~693s, not
 > 246–876s**, and it is **not** free of served effects: the ~183s regime-model half changes the

@@ -139,11 +139,16 @@ def test_all_zero_volume_still_yields_the_columns_downstream_needs():
 
 
 def test_no_volume_feature_survives_the_real_selection_and_prune(tmp_path):
-    """End-to-end guard, and the only test that catches the prune interaction.
+    """End-to-end guard on the actual build_training_data path.
 
-    Asserting against a hand-written name list cannot see that shelving
-    ``volume_mean_30d`` lets the previously-pruned ``volume_mean_7d`` through.
-    This runs the actual build_training_data path and asserts on the result.
+    The prune interaction — that shelving ``volume_mean_30d`` would let the
+    previously-pruned ``volume_mean_7d`` back through — is unit-tested against
+    ``_select_feature_cols`` in
+    ``test_feature_selection_excludes_shelved_volume_columns``. Since 2026-08-17
+    the production build (allowlist = price_technicals, so the supply_depth /
+    cross_sectional consumers are skipped) does not compute the volume pipeline
+    at all, so there is nothing for the prune to let through here — this test
+    now asserts that stronger property.
     """
     from unittest.mock import MagicMock, patch
 
@@ -177,8 +182,12 @@ def test_no_volume_feature_survives_the_real_selection_and_prune(tmp_path):
 
     survivors = [c for c in f.feature_cols if "volume" in c]
     assert survivors == [], f"volume features reached training: {survivors}"
-    # The columns must still be engineered for the downstream readers.
-    assert "volume_mean_30d" in df.columns
+    # Shelved AND unused on the production build: the compute is skipped
+    # outright, not just dropped from feature_cols. The consumer-present case
+    # (a group that reads volume is admitted) is covered in
+    # tests/test_shelved_compute_skipped_in_prod.py.
+    assert not (set(ItemForecaster.VOLUME_FEATURE_NAMES) & set(df.columns)), (
+        "volume pipeline still computed on the production build")
 
 
 def test_artifact_version_rejects_a_model_fitted_on_the_volume_features():

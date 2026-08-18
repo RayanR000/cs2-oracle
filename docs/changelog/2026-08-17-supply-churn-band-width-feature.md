@@ -52,3 +52,35 @@ the venue the signal was validated on.
 - Per `AGENTS.md` this is a range forecaster and the width variable has been hard to move; a
   null here is the likely outcome and is fine. The change is off by default and inert until
   dispatched.
+
+## A/B result (2026-08-17) — weak null at the aggregate level, not a clean verdict
+
+Dispatched control (`31997248135`) and the `supply_churn` arm (`31997253062`) on the same
+commit (`e564dcc`, branch `feature/supply-churn-band-width`), matrix over 3/7/14/30d. Both
+succeeded. The feature was admitted and used — allowlist `['price_technicals','supply_churn']`,
+39→36 features, with `supply_churn` / `supply_churn_abs` / `supply_churn_present` in the set.
+
+Band half-width (% of mid) and pooled `q_hat`, control → arm:
+
+| H | half-width | q_hat |
+|---|---|---|
+| 3d  | 6.52% → 6.52%  | 96.95 → 96.93 (flat) |
+| 7d  | 9.02% → 9.13% (+0.11pp)  | 130.9 → 132.7 (+1.4%) |
+| 14d | 11.58% → 11.66% (+0.08pp) | 154.4 → 155.6 (+0.8%) |
+| 30d | 21.66% → 21.13% (−0.53pp) | 278.4 → 273.8 (−1.6%) |
+
+No material effect: <1pp of width and <2% of `q_hat` at every horizon, mixed in sign — within
+noise, consistent with the +0.0025 pooled-R² prediction.
+
+**Two reasons this is inconclusive, not a refutation:**
+1. **Wrong instrument.** CV coverage is pinned to 80% by construction on its own OOF, so only
+   *aggregate* width can move in this read. The signal's value is *conditional* (widen on
+   supply-shock days) and needs a serving replay scored on supply-shock strata — not this
+   pooled calibration.
+2. **Half the CV folds see it NaN.** The `buff_listing_count` sidecar ends 2024-02, so folds
+   validating on 2025–2026 (folds 7–8) have the feature absent, diluting any effect.
+
+Both blockers resolve the same way: union the live `supply-*.parquet` into the sidecar so the
+feature is populated in the recent/serving period, then re-run with a strata-scored replay.
+**Until then the feature stays gated off** (`SUPPLY_CHURN_FEATURES` default 0); this A/B
+confirms only that the wiring is correct and causes no aggregate band-width harm.

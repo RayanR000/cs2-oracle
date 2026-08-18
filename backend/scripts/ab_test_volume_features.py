@@ -84,7 +84,8 @@ import pandas as pd
 import lightgbm as lgb
 
 from database import SessionLocal
-from backtest.paired_mde import format_paired, paired_arm_contrasts
+from backtest.paired_mde import (
+    format_paired, paired_arm_contrasts, paired_metric_difference)
 from backtest.walkforward_records import (
     paired_records,
     without_records,
@@ -98,6 +99,44 @@ logging.basicConfig(
 logger = logging.getLogger("ab_test_volume_features")
 
 ARCHIVE_DIR = Path(__file__).parent.parent.parent / "price-archive"
+
+# Feed-repair arm (docs/research/2026-08-17-volume-band-quality-preregistration.md).
+# With IFLOW_VOLUME=1 the `volume` column is sourced from the iflow BUFF backfill's
+# count_in_24 series (staging archive) instead of the native aggregator feed, which
+# is identically 0 from 2026-07 on. iflow is used as the *single* volume series over
+# the whole panel — never coalesced with the native feed, which would average two
+# differently-scaled series inside a 30d/60d rolling window and corrupt the treatment
+# arm exactly the way the cliff-straddle does. The arm structure is untouched: only
+# which series populates `volume` changes; baseline/treatment/placebo still differ
+# solely by whether the volume *columns* are dropped/shuffled downstream.
+IFLOW_VOLUME = os.getenv("IFLOW_VOLUME") == "1"
+IFLOW_VOLUME_DIR = Path(__file__).parent.parent.parent / "buff-iflow-staging" / "price-archive"
+# iflow count_in_24 spans 2022-04-18 .. 2026-05-20; restrict the eval panel to
+# that era so the volume features are live across every row they are scored on.
+IFLOW_ERA_FROM = "2022-04-18"
+if IFLOW_VOLUME:
+    # iflow count_in_24 runs through 2026-05-20; the native cliff was 2026-04-30.
+    VOLUME_LIVE_THROUGH = "2026-05-20"
+
+# Walk-forward fold scheme, exposed as run params for the re-fold prereg
+# (docs/research/2026-08-17-volume-band-quality-refold-preregistration.md).
+# Defaults reproduce the original hardcoded scheme (2/3 split, 60-day step,
+# 21-day window) exactly; the re-fold uses SPLIT_FRACTION=0.50 STEP_DAYS=45 to
+# clear the >=14-cluster floor without overlapping validation windows (the gap
+# STEP_DAYS - VAL_WINDOW_DAYS must exceed the horizon, or forward-resolved
+# labels bleed across folds).
+SPLIT_FRACTION = float(os.getenv("SPLIT_FRACTION", str(2 / 3)))
+STEP_DAYS = int(os.getenv("STEP_DAYS", "60"))
+VAL_WINDOW_DAYS = int(os.getenv("VAL_WINDOW_DAYS", "21"))
+
+# Route-2 offline scale probe (docs above; the served band is `q_hat * scale`,
+# scale defaults to sigma=price_std_60d/price). SCALE_PROBE=1 asks the one cell
+# the 2026-08-12 learned-scale refutation never tested: does *volume* as a NEW
+# conditioning feature in the scale flatten conditional band miscalibration
+# beyond a sigma-only learned scale, and beyond a volume-shuffled placebo? It
+# uses the BASELINE arm's residuals (volume is not in the mean), so it isolates
+# volume-as-band-width from volume-as-mean-predictor.
+SCALE_PROBE = os.getenv("SCALE_PROBE") == "1"
 
 # Production's item universe, spelled into every archive read this harness
 # makes. Before 2026-08-08 the `ab_test_*` family globbed the Parquet privately
@@ -132,7 +171,9 @@ def _frame_fingerprint():
     src = Path(__file__).parent.parent / "models" / "forecaster.py"
     h = hashlib.sha256(src.read_bytes())
     h.update(repr((NEW_PRIMITIVES, CORR_PRUNE_THRESHOLD, VOLUME_LIVE_THROUGH,
-                   MIN_MEDIAN_PRICE, _UNIVERSE)).encode())
+                   MIN_MEDIAN_PRICE, _UNIVERSE, IFLOW_VOLUME,
+                   IFLOW_ERA_FROM if IFLOW_VOLUME else None,
+                   SPLIT_FRACTION, STEP_DAYS, VAL_WINDOW_DAYS)).encode())
     return h.hexdigest()[:16]
 
 
@@ -183,6 +224,150 @@ def build_frame(max_items=200, cache_path=None):
         logger.info(f"  Wrote frame cache {cache_path} ({len(df):,} rows)")
 
     return df, pruned, present_new
+
+
+def _load_iflow_volume(con, slugs):
+    """The iflow count_in_24 series (item_id, date, iflow_volume) for `slugs`.
+
+    Keyed on (item_slug, day); one dump/day is written by the backfill, and the
+    MAX collapse is defensive against a duplicate. Universe safety is inherited
+    from the caller: the left join below keeps only rows whose item_slug already
+    passed `_UNIVERSE` on the price side, so phantom/phase-collapsed keys cannot
+    re-enter through the volume series.
+    """
+    files = sorted(str(p) for p in IFLOW_VOLUME_DIR.glob("iflow-liquidity-*.parquet"))
+    if not files:
+        raise RuntimeError(
+            f"IFLOW_VOLUME=1 but no iflow-liquidity-*.parquet in {IFLOW_VOLUME_DIR}. "
+            f"Run scripts/backfill_buff_iflow.py first.")
+    union = " UNION ALL BY NAME ".join(
+        f"SELECT item_slug, day, steam_volume FROM read_parquet('{f}')" for f in files)
+    placeholders = ", ".join("?" for _ in slugs)
+    df = con.sql(f"""
+        SELECT item_slug AS item_id, day AS date,
+               MAX(steam_volume) AS iflow_volume
+        FROM ({union})
+        WHERE item_slug IN ({placeholders})
+        GROUP BY item_slug, day
+    """, params=slugs).df()
+    df["date"] = pd.to_datetime(df["date"]).dt.date
+    return df
+
+
+def _width_robustness(base_records, treat_records, *, value_key="rel_width"):
+    """Gating robustness for the width contrast (refold prereg).
+
+    Two checks the h=14 tightening must survive: (1) leave-one-fold-out -- no
+    single fold may flip the CI to include 0; (2) leave-out-2025-10 -- the effect
+    must not be carried by the volume-spike regime. Width is lower-better, so the
+    CI excludes 0 when `ci_upper < 0`; the LOO worst case is the drop that pushes
+    `ci_upper` highest (closest to 0). Returns (worst_loo, no_oct25).
+    """
+    folds = sorted({r["fold_id"] for r in treat_records})
+    worst = None
+    for f in folds:
+        b = [r for r in base_records if r["fold_id"] != f]
+        t = [r for r in treat_records if r["fold_id"] != f]
+        d = paired_metric_difference(b, t, value_key=value_key, scale=100.0)
+        if d.get("ci_upper") is None:
+            continue
+        if worst is None or d["ci_upper"] > worst["ci_upper"]:
+            worst = {"dropped_fold": f, **d}
+
+    def _not_oct25(r):
+        ts = pd.Timestamp(r["forecast_date"])
+        return not (ts.year == 2025 and ts.month == 10)
+
+    b_no = [r for r in base_records if _not_oct25(r)]
+    t_no = [r for r in treat_records if _not_oct25(r)]
+    n_oct = len(treat_records) - len(t_no)
+    no_oct = paired_metric_difference(b_no, t_no, value_key=value_key, scale=100.0)
+    no_oct = {"n_oct25_rows_dropped": n_oct, **no_oct}
+    return worst, no_oct
+
+
+def _stratified_coverage(resid, denom, strat, n_strata=10, alpha=0.20):
+    """Level-matched conditional coverage error across strata of `strat`.
+
+    Mirrors `conformal.coverage_by_sigma_stratum` but DECOUPLES the stratifier
+    from the denominator, so the same rows can be scored under `sigma` vs a
+    learned scale while stratifying on a fixed axis. The threshold is the
+    empirical 1-alpha quantile of `|resid|/denom`, so MARGINAL coverage is
+    1-alpha by construction and any spread across strata is conditional
+    miscalibration -- a uniformly narrower band cannot fake a win here (the
+    exact trap `conformal.py:255-260` documents). Returns mean |coverage -
+    (1-alpha)| in pp.
+    """
+    r = np.abs(np.asarray(resid, dtype=float))
+    d = np.asarray(denom, dtype=float)
+    st = np.asarray(strat, dtype=float)
+    ok = np.isfinite(r) & np.isfinite(d) & (d > 0) & np.isfinite(st)
+    r, d, st = r[ok], d[ok], st[ok]
+    if r.size < n_strata:
+        return float("nan")
+    score = r / d
+    thr = float(np.quantile(score, 1.0 - alpha))
+    covered = score <= thr
+    edges = np.quantile(st, np.linspace(0.0, 1.0, n_strata + 1)[1:-1])
+    idx = np.searchsorted(edges, st, side="right")
+    per = np.array([covered[idx == k].mean() if np.any(idx == k) else np.nan
+                    for k in range(n_strata)])
+    return float(np.nanmean(np.abs(per - (1.0 - alpha)))) * 100.0
+
+
+def _run_scale_probe(records, present_new):
+    """Does volume in the learned scale flatten conditional coverage?
+
+    Four denominators, all level-matched to 80% marginal by `_stratified_coverage`:
+    `sigma` (production), a sigma-only learned scale (the fair "scale but no new
+    info" control), a sigma+volume scale, and a sigma+shuffled-volume placebo.
+    The volume scale must beat BOTH the sigma-only scale and the placebo on the
+    volume-stratified error for volume to be real band information.
+    """
+    from models import scale_model
+    rec = pd.DataFrame(records)
+    resid = rec["residual_pct"].to_numpy(dtype=float)
+    sigma = rec["sigma"].to_numpy(dtype=float)
+    folds = rec["fold"].to_numpy()
+    volcols = [c for c in present_new if c in rec.columns]
+    if not volcols:
+        logger.warning("  scale probe: no volume columns present; skipping")
+        return None
+
+    Xs = pd.DataFrame({"sigma": sigma})
+    Xv = Xs.copy()
+    for c in volcols:
+        Xv[c] = rec[c].to_numpy(dtype=float)
+    rng = np.random.default_rng(42)
+    Xp = Xs.copy()
+    for c in volcols:
+        Xp[c] = rng.permutation(rec[c].to_numpy(dtype=float))
+
+    scale_sig, _ = scale_model.cross_fit(Xs, resid, folds, fallback=sigma)
+    scale_vol, nv = scale_model.cross_fit(Xv, resid, folds, fallback=sigma)
+    scale_shuf, _ = scale_model.cross_fit(Xp, resid, folds, fallback=sigma)
+
+    # Stratify on sigma (the documented tilt axis) and on a CONTINUOUS volume
+    # proxy (the new axis under test). Skip volume_missing -- a 0/1 flag has no
+    # deciles and collapses the stratum error to 0. Prefer a level/z-score.
+    _pref = ["volume_mean_30d", "volume_mean_60d", "volume_zscore_30d",
+             "volume_lag_7d", "volume_mean_7d", "volume_lag_1d"]
+    _cont = [c for c in _pref if c in volcols] + \
+            [c for c in volcols if c != "volume_missing"]
+    strat_vol_col = _cont[0] if _cont else volcols[0]
+    strat_vol = rec[strat_vol_col].to_numpy(dtype=float)
+
+    out = {}
+    for name, denom in [("sigma", sigma), ("scale_sigma_only", scale_sig),
+                        ("scale_volume", scale_vol), ("scale_placebo", scale_shuf)]:
+        out[name] = {
+            "err_sigma_strata_pp": _stratified_coverage(resid, denom, sigma),
+            "err_volume_strata_pp": _stratified_coverage(resid, denom, strat_vol),
+        }
+    out["_meta"] = {"n_rows": len(rec), "n_folds": int(rec["fold"].nunique()),
+                    "n_scale_models": nv, "volcols": volcols,
+                    "strat_vol_col": strat_vol_col}
+    return out
 
 
 def _build_frame_uncached(max_items):
@@ -255,6 +440,37 @@ def _build_frame_uncached(max_items):
             ["item_id", "timestamp"], kind="stable"
         ).reset_index(drop=True)
         all_prices["item_id"] = all_prices["item_id"].astype(str)
+
+        # Feed repair: replace the native `volume` column with the iflow
+        # count_in_24 series (never coalesced -- see the IFLOW_VOLUME note).
+        # Restrict the panel to the iflow era first: iflow begins 2022-04-18, so
+        # pre-2022 rows can carry no volume by construction and would enter the
+        # treatment arm as 68% dead-weight zeros, diluting the effect and making
+        # the join-coverage gate measure the panel span, not the feed. The upper
+        # bound (VOLUME_LIVE_THROUGH) is applied below. This IS the "2022-2026
+        # panel" the prereg scoped.
+        if IFLOW_VOLUME:
+            _pre_era = len(all_prices)
+            all_prices = all_prices[
+                all_prices["timestamp"] >= pd.Timestamp(IFLOW_ERA_FROM)
+            ].reset_index(drop=True)
+            logger.info(
+                f"  iflow era >= {IFLOW_ERA_FROM}: "
+                f"{_pre_era:,} -> {len(all_prices):,} price rows"
+            )
+            ivol = _load_iflow_volume(con, slugs)
+            all_prices = all_prices.merge(ivol, on=["item_id", "date"], how="left")
+            _cov = float(all_prices["iflow_volume"].notna().mean())
+            logger.info(
+                f"  iflow volume join: {_cov:.1%} of price rows carry count_in_24 "
+                f"({all_prices['iflow_volume'].notna().sum():,} of {len(all_prices):,})"
+            )
+            if _cov < 0.80:
+                logger.warning(
+                    f"  iflow join coverage {_cov:.1%} < 80% -- feed not repaired "
+                    f"for this cohort; the prereg voids this run.")
+            all_prices["volume"] = all_prices["iflow_volume"]
+            all_prices = all_prices.drop(columns=["iflow_volume"])
 
         # Cut before feature engineering, not after: a 30d/60d rolling volume
         # window that straddles the cliff would average real volume with the
@@ -363,7 +579,7 @@ def run_evaluation(df, pruned, present_new, horizon_filter=None, arm_filter=None
                 continue
 
             dates = sorted(tdf["date"].unique())
-            split_idx = len(dates) * 2 // 3
+            split_idx = int(len(dates) * SPLIT_FRACTION)
 
             # Fold membership by range comparison on datetime64, not
             # `date.isin(train_dates)`. train_dates is always a prefix of
@@ -374,6 +590,7 @@ def run_evaluation(df, pruned, present_new, horizon_filter=None, arm_filter=None
             dates_dt = pd.to_datetime(pd.Series(dates)).to_numpy()
 
             results[horizon] = {}
+            _scale_probe_rows = []  # baseline-arm OOF residuals for SCALE_PROBE
 
             for config_name, fc in subsets.items():
                 # Skip if too few features
@@ -421,8 +638,7 @@ def run_evaluation(df, pruned, present_new, horizon_filter=None, arm_filter=None
                 per_fold = []
                 records = []
 
-                VAL_WINDOW_DAYS = 21
-                step = 60
+                step = STEP_DAYS
                 for window_end in range(split_idx + 1, len(dates), step):
                     val_dates = dates[window_end:window_end + VAL_WINDOW_DAYS]
                     if len(val_dates) < 7:
@@ -572,13 +788,40 @@ def run_evaluation(df, pruned, present_new, horizon_filter=None, arm_filter=None
                     # arms pair row for row. `window_end` rather than a running
                     # counter: a counter drifts the moment one arm skips a fold
                     # the other kept.
+                    # Band-quality endpoints (the shippable axis -- invariant 4
+                    # forbids DA as a claim on its own). `in_interval` is realised
+                    # coverage vs the 0.80 nominal; `rel_width` is the interval's
+                    # width as a fraction of price, (high-low return)/100. Both are
+                    # meaningful only when quantile bounds were trained; in q50-only
+                    # mode low_ret==high_ret==p50_ret so rel_width is 0 and coverage
+                    # degenerate -- do not interpret the width contrast in that mode.
+                    _in_interval = (
+                        (cp * (1 + low_ret / 100) <= actual_future)
+                        & (actual_future <= cp * (1 + high_ret / 100))
+                    ).astype(float)
+                    _rel_width = (high_ret - low_ret) / 100.0
                     records.extend(paired_records(
                         item_ids=val_df["item_id"].to_numpy(),
                         forecast_dates=val_df["date"].to_numpy(),
                         fold_id=window_end,
                         keep=_nonflat & _ge1,
                         direction_correct=_match,
+                        in_interval=_in_interval,
+                        rel_width=_rel_width,
                     ))
+
+                    # SCALE_PROBE: capture the baseline model's OOF residuals on
+                    # the same >=$1 non-flat cohort. sigma and volume are joined
+                    # from `df` after the loop, so nothing here depends on the
+                    # arm's column set. residual_pct = actual - predicted (pct).
+                    if SCALE_PROBE and config_name == "baseline":
+                        _keep = _nonflat & _ge1
+                        _scale_probe_rows.append(pd.DataFrame({
+                            "item_id": val_df["item_id"].to_numpy()[_keep],
+                            "date": val_df["date"].to_numpy()[_keep],
+                            "residual_pct": (ar - p50_ret)[_keep],
+                            "fold": window_end,
+                        }))
 
                     if _ge1.any():
                         ge1_hits += int(np.count_nonzero(
@@ -650,11 +893,48 @@ def run_evaluation(df, pruned, present_new, horizon_filter=None, arm_filter=None
             arms = {a: r.get("records", []) for a, r in results[horizon].items()
                     if not a.startswith("_") and r.get("records")}
             if "baseline" in arms and len(arms) > 1:
+                # DA stays (diagnostic only, per invariant 4). The ship gate is
+                # rel_width (lower better) subject to the coverage gate; both are
+                # fold-clustered contrasts on the same paired records.
                 contrasts = paired_arm_contrasts(arms, base="baseline")
+                width = paired_arm_contrasts(
+                    arms, base="baseline", value_key="rel_width",
+                    higher_is_better=False)
+                coverage = paired_arm_contrasts(
+                    arms, base="baseline", value_key="in_interval",
+                    higher_is_better=True)
                 results[horizon]["_paired_vs_baseline"] = contrasts
-                for arm, paired in contrasts.items():
-                    logger.info(f"      paired {arm:<10} vs baseline: "
-                                f"{format_paired(paired)}")
+                results[horizon]["_paired_width_vs_baseline"] = width
+                results[horizon]["_paired_coverage_vs_baseline"] = coverage
+                for arm in contrasts:
+                    logger.info(f"      paired {arm:<10} DA:       "
+                                f"{format_paired(contrasts[arm])}")
+                    logger.info(f"      paired {arm:<10} rel_width:"
+                                f" {format_paired(width[arm])}")
+                    logger.info(f"      paired {arm:<10} coverage: "
+                                f"{format_paired(coverage[arm])}")
+
+                # Gating width robustness (refold prereg): treatment vs baseline
+                # must survive leave-one-fold-out and leave-out-2025-10.
+                if "treatment" in arms:
+                    worst, no_oct = _width_robustness(
+                        arms["baseline"], arms["treatment"])
+                    if worst is not None:
+                        _s = "SURVIVES" if worst["ci_upper"] < 0 else "FAILS"
+                        logger.info(
+                            f"      robustness LOO width [{_s}]: worst drop="
+                            f"fold {worst['dropped_fold']} -> "
+                            f"{worst['mean_diff']:+.3f} "
+                            f"[{worst['ci_lower']:+.3f}, {worst['ci_upper']:+.3f}]")
+                    _s2 = ("SURVIVES" if no_oct.get("ci_upper") is not None
+                           and no_oct["ci_upper"] < 0 else "FAILS")
+                    logger.info(
+                        f"      robustness -2025-10 width [{_s2}]: dropped "
+                        f"{no_oct['n_oct25_rows_dropped']:,} rows -> "
+                        f"{no_oct['mean_diff']:+.3f} "
+                        f"[{no_oct['ci_lower']:+.3f}, {no_oct['ci_upper']:+.3f}]")
+                    results[horizon]["_width_robustness"] = {
+                        "loo_worst": worst, "no_oct25": no_oct}
             else:
                 # `--arm` shards one arm per process, so a shard has nothing to
                 # contrast against. Say so: a missing verdict must not read as
@@ -664,6 +944,34 @@ def run_evaluation(df, pruned, present_new, horizon_filter=None, arm_filter=None
                     f"      paired: not computed — this run holds "
                     f"{sorted(arms) or 'no'} arm(s). Merge the shards with "
                     f"scripts/merge_price_primitives_ab.py for the verdict.")
+
+            if SCALE_PROBE and _scale_probe_rows:
+                if "price_std_60d" not in df.columns:
+                    logger.warning("  scale probe: price_std_60d absent; skipping")
+                else:
+                    rec = pd.concat(_scale_probe_rows, ignore_index=True)
+                    cols_needed = ["item_id", "date", "price", "price_std_60d"] + \
+                        [c for c in present_new if c in df.columns]
+                    merged = rec.merge(df[cols_needed], on=["item_id", "date"],
+                                       how="left")
+                    with np.errstate(divide="ignore", invalid="ignore"):
+                        merged["sigma"] = merged["price_std_60d"] / merged["price"]
+                    probe = _run_scale_probe(merged, present_new)
+                    if probe is not None:
+                        results[horizon]["_scale_probe"] = probe
+                        m = probe["_meta"]
+                        logger.info(
+                            f"      SCALE PROBE h={horizon}: {m['n_rows']:,} rows, "
+                            f"{m['n_folds']} folds, {m['n_scale_models']} scale "
+                            f"models, strat_vol={m['strat_vol_col']}")
+                        for nm in ("sigma", "scale_sigma_only",
+                                   "scale_volume", "scale_placebo"):
+                            e = probe[nm]
+                            logger.info(
+                                f"        {nm:<17} sigma-strata "
+                                f"err={e['err_sigma_strata_pp']:.2f}pp  "
+                                f"volume-strata "
+                                f"err={e['err_volume_strata_pp']:.2f}pp")
 
         logger.info("\n" + "=" * 64)
         logger.info("SHIP DECISION SUMMARY (dir-acc %, treatment vs baseline vs placebo)")
