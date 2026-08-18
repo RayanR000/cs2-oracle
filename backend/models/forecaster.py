@@ -1785,40 +1785,67 @@ class ItemForecaster:
                     f"{df.item_id.nunique():,} items")
         return df
 
+    def _archive_universe_slugs(self, exclude_iflow: bool) -> set:
+        """Slugs carrying the pre-2026 backfill, read straight from the archive.
+
+        The backfill series predates the ``source`` column, so ``day <
+        '2026-01-01'`` is exactly the cohort ``is_backfilled`` was derived from
+        (`scripts/init_local_db.py::populate_items`). ``exclude_iflow`` drops the
+        iflow-only history — the trainable narrowing. Read through
+        ``prices_relation`` + ``archive_universe_sql_filter`` so the phase-
+        collapsed and phantom keys never enter the cohort (invariants 1–2).
+        """
+        import duckdb
+        from db.archive import prices_relation
+        iflow_clause = (
+            "AND source IS DISTINCT FROM 'buff_iflow'" if exclude_iflow else "")
+        with duckdb.connect() as con:
+            relation = prices_relation(
+                con, self.archive_dir,
+                columns=["item_slug", "day", "source"])
+            return {
+                r[0] for r in con.sql(f"""
+                    SELECT DISTINCT item_slug
+                    FROM {relation}
+                    WHERE day < '2026-01-01'
+                      {iflow_clause}
+                      AND {archive_universe_sql_filter("item_slug")}
+                """).fetchall()
+            }
+
     def _resolve_backfilled_slugs(self, universe: str = "serve") -> set:
         """The set of item slugs to filter to for the given universe.
 
-        ``universe="train"`` reads ``is_trainable``; the default ``"serve"``
-        reads ``is_backfilled`` (STEAMCOMMUNITY-backfilled items). Split out
-        of ``fetch_price_history`` because the voted-frame cache key has to
-        include it — two runs with different backfill sets produce
+        ``universe="train"`` is derived from the Parquet archive (the data
+        repo), NOT the DB: the trainable cohort is the pre-2026 backfill minus
+        iflow-only history, and reading it from the archive keeps it a pure
+        function of the data the model trains on. The managed Postgres never got
+        an ``is_trainable`` column, so the old DB read threw and fell back to
+        loading every slug (41,885), which OOMed a cold retrain. ``universe=
+        "serve"`` still reads ``is_backfilled`` from the DB — the DB's one job
+        here (`backend/AGENTS.md`) — with the same archive derivation as a
+        fallback.
+
+        Split out of ``fetch_price_history`` because the voted-frame cache key
+        has to include it — two runs with different backfill sets produce
         different frames from an identical archive.
         """
-        column = "is_trainable" if universe == "train" else "is_backfilled"
+        if universe == "train":
+            slugs = self._archive_universe_slugs(exclude_iflow=True)
+            logger.info(f"  Train universe (archive-derived, pre-2026 non-iflow): "
+                        f"{len(slugs)} items")
+            return slugs
+
         try:
             slug_rows = self.db.execute(text(
-                f"SELECT item_id FROM items WHERE {column} = 1")).fetchall()
+                "SELECT item_id FROM items WHERE is_backfilled = 1")).fetchall()
             slugs = {r[0] for r in slug_rows}
-            logger.info(f"  {universe.capitalize()} universe filter ({column}): {len(slugs)} items from DB")
+            logger.info(f"  Serve universe filter (is_backfilled): {len(slugs)} items from DB")
             return slugs
         except Exception as e:
-            logger.warning(f"  Could not fetch {column} items from DB, using all: {e}")
-            import duckdb
-            # Train-aware fallback: even on a DB read failure, training must
-            # not pick up buff_iflow-sourced items (see _resolve_backfilled_slugs
-            # docstring). The serve/default fallback is unfiltered, matching
-            # is_backfilled's wider intent.
-            train_filter = (
-                "WHERE source IS DISTINCT FROM 'buff_iflow'"
-                if universe == "train" else "")
-            with duckdb.connect() as con:
-                return {
-                    r[0] for r in con.sql(f"""
-                        SELECT DISTINCT item_slug
-                        FROM read_parquet(?)
-                        {train_filter}
-                    """, params=[str(self.archive_dir / "prices-*.parquet")]).fetchall()
-                }
+            logger.warning(f"  Could not fetch is_backfilled items from DB, "
+                           f"deriving from archive: {e}")
+            return self._archive_universe_slugs(exclude_iflow=False)
 
     def _fetch_voted_price_history(self, days_back: int,
                                    backfilled_only: bool,
