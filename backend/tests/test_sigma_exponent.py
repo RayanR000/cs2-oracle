@@ -243,20 +243,32 @@ def test_every_band_and_calibrate_call_passes_an_exponent():
     import models.forecaster as fmod
 
     src = inspect.getsource(fmod)
+    # `.count` is prefix-blind between `band(` and `band_signed(`, so each is
+    # counted with a trailing token that cannot match the other.
     band_calls = src.count("conformal.band(")
+    band_signed_calls = src.count("conformal.band_signed(")
     calibrate_calls = src.count("conformal.calibrate(")
-    assert band_calls == 2, (
-        f"{band_calls} conformal.band call sites; the spec has 2 "
-        "(_calibrate_conformal's range_pct and predict's served band). "
-        "A new one must pass the artifact's beta."
+    calibrate_signed_calls = src.count("conformal.calibrate_signed(")
+    assert band_calls == 1, (
+        f"{band_calls} conformal.band call sites; the spec has 1 "
+        "(_calibrate_conformal's range_pct). predict serves band_signed now."
+    )
+    assert band_signed_calls == 1, (
+        f"{band_signed_calls} conformal.band_signed call sites; the spec has 1 "
+        "(predict's served signed band). A new one must pass the artifact's beta."
     )
     assert calibrate_calls == 2, (
         f"{calibrate_calls} conformal.calibrate call sites; the spec has 2 "
         "(_calibrate_conformal and the per-fold diagnostic)."
     )
-    # Neither may be called positionally-short: every call names or passes an
+    assert calibrate_signed_calls == 1, (
+        f"{calibrate_signed_calls} conformal.calibrate_signed call sites; the "
+        "spec has 1 (_calibrate_conformal's signed pair, matched to q_hat)."
+    )
+    # None may be called positionally-short: every call names or passes an
     # exponent, so grep for the neutral constant or a beta variable at each.
-    for call in ("conformal.band(", "conformal.calibrate("):
+    for call in ("conformal.band(", "conformal.band_signed(",
+                 "conformal.calibrate(", "conformal.calibrate_signed("):
         i = 0
         while True:
             i = src.find(call, i)

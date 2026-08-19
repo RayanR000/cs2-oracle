@@ -14,7 +14,9 @@ from models.conformal import (
     BETA_NEUTRAL,
     NOMINAL_COVERAGE,
     band,
+    band_signed,
     calibrate,
+    calibrate_signed,
     resolve_scale,
     sigma_bounds,
     sigma_from_columns,
@@ -250,6 +252,91 @@ def test_calibrate_ignores_nonfinite_scores():
     sigma = np.array([0.1, 0.1, 0.1, 0.0])
     q_hat = calibrate(residuals, sigma, ALPHA)
     assert np.isfinite(q_hat)
+
+
+# --- signed quantiles: the two-sided band that recentres itself -------------
+
+
+def test_band_signed_with_a_symmetric_pair_equals_the_symmetric_band():
+    """The from_meta fallback for a pre-signed artifact is (-q_hat, +q_hat),
+    and it must reproduce today's band to the bit -- otherwise loading an old
+    model silently changes the served geometry."""
+    mid = np.array([1.0, -2.0, 3.5])
+    sigma = np.array([0.1, 0.2, 0.4])
+    q_hat = 5.0
+    lo_a, hi_a = band(mid, sigma, q_hat)
+    lo_b, hi_b = band_signed(mid, sigma, -q_hat, q_hat)
+    assert np.array_equal(lo_a, lo_b)
+    assert np.array_equal(hi_a, hi_b)
+
+
+def test_calibrate_signed_is_narrower_than_the_absolute_band_on_biased_residuals():
+    """The whole point. When the q50 residual is off-centre (its median is not
+    zero -- what DIRECTION_UPWEIGHT=1.5 produces, P(actual<mid)=0.60-0.71), the
+    absolute quantile is dominated by the fat tail and the symmetric band is
+    inflated. Two signed quantiles centre on the residual's own median and are
+    strictly narrower at the same nominal coverage."""
+    rng = np.random.default_rng(0)
+    n = 8000
+    sigma = np.full(n, 0.2)
+    residuals = rng.normal(loc=2.0, scale=1.0, size=n)   # biased upward
+
+    q_hat = calibrate(residuals, sigma, ALPHA)
+    lo_s, hi_s = band(np.zeros(n), sigma, q_hat)
+    width_symmetric = float((hi_s - lo_s)[0])
+
+    q_lo, q_hi = calibrate_signed(residuals, sigma, ALPHA)
+    lo, hi = band_signed(np.zeros(n), sigma, q_lo, q_hi)
+    width_signed = float((hi - lo)[0])
+
+    assert width_signed < width_symmetric * 0.9
+    cov = float(((residuals >= lo) & (residuals <= hi)).mean())
+    assert cov >= NOMINAL_COVERAGE - 0.02
+
+
+def test_calibrate_signed_achieves_held_out_marginal_coverage():
+    """Split conformal's two-sided guarantee: calibrate the pair on one half of
+    exchangeable, heteroscedastic, off-centre data and it covers near nominal on
+    a disjoint half. The offset is proportional to sigma so the signed scores are
+    constant across the volatility range, isolating the two-sided level maths."""
+    rng = np.random.default_rng(3)
+    n = 8000
+    sigma = rng.uniform(0.05, 0.5, size=n)
+    residuals = rng.normal(loc=sigma * 3.0, scale=sigma * 10.0, size=n)
+
+    idx = rng.permutation(n)
+    cal_idx, test_idx = idx[: n // 2], idx[n // 2:]
+
+    q_lo, q_hi = calibrate_signed(residuals[cal_idx], sigma[cal_idx], ALPHA)
+    lo, hi = band_signed(np.zeros(test_idx.size), sigma[test_idx], q_lo, q_hi)
+    covered = (residuals[test_idx] >= lo) & (residuals[test_idx] <= hi)
+    assert np.mean(covered) == pytest.approx(NOMINAL_COVERAGE, abs=0.03)
+
+
+def test_calibrate_signed_returns_ordered_quantiles_and_the_band_cannot_cross():
+    rng = np.random.default_rng(7)
+    residuals = rng.normal(loc=1.5, scale=2.0, size=5000)
+    sigma = np.full(5000, 0.3)
+    q_lo, q_hi = calibrate_signed(residuals, sigma, ALPHA)
+    assert q_lo <= q_hi
+    lo, hi = band_signed(np.array([4.0, -1.0]), np.array([0.3, 0.3]), q_lo, q_hi)
+    assert np.all(lo <= hi)
+
+
+def test_band_signed_width_scales_with_sigma():
+    """band_signed goes through resolve_scale like band, so a doubled sigma
+    doubles the width -- the property that keeps the pair a matched set with
+    beta and the learned scale."""
+    lo, hi = band_signed(np.zeros(3), np.array([0.1, 0.2, 0.4]),
+                         q_lo=-4.0, q_hi=6.0)
+    widths = hi - lo
+    assert widths[1] == pytest.approx(widths[0] * 2)
+    assert widths[2] == pytest.approx(widths[0] * 4)
+
+
+def test_calibrate_signed_rejects_an_empty_calibration_set():
+    with pytest.raises(ValueError, match="empty calibration set"):
+        calibrate_signed(np.array([]), np.array([]), ALPHA)
 
 
 # --- resolve_scale: the learned alternative to sigma ------------------------

@@ -1706,11 +1706,14 @@ class ItemForecaster:
     # The serving transforms that move the median, in the order `predict`
     # applies them. The conformal band is deliberately absent: it sets `low` and
     # `high` around the mid and cannot move the mid's cross-sectional ranking.
-    REPLAY_DISABLABLE = frozenset({"blend", "bias", "recenter"})
+    # `recenter` was retired 2026-08-19 with `_recenter_on_direction`'s removal
+    # from the serving path (the range stance); a dead knob that parses but
+    # guards nothing would read as a clean control and measure nothing.
+    REPLAY_DISABLABLE = frozenset({"blend", "bias"})
 
     @classmethod
     def replay_disabled(cls) -> frozenset:
-        """`REPLAY_DISABLE=blend,bias,recenter` drops serving transforms.
+        """`REPLAY_DISABLE=blend,bias` drops serving transforms.
 
         Exists to answer one question: CV reports rank IC 0.09-0.18 while the
         serving replay of the same artifact reads near zero
@@ -6886,6 +6889,18 @@ class ItemForecaster:
         # together with `conformal_calibration` or not at all.
         self.conformal_beta: Dict[int, float] = {}
 
+        # The SIGNED conformal offsets each horizon's band is served with:
+        # low = mid + q_lo*scale, high = mid + q_hi*scale (q_lo typically < 0).
+        # Where `conformal_calibration` (q_hat) folds the residual with abs and
+        # gives a symmetric band, this pair reads the residual's lower/upper
+        # tails separately, so an off-centre q50 residual yields an asymmetric
+        # band that is narrower at the same coverage. Absent on every artifact
+        # before 2026-08-19; `band_offsets` then falls back to (-q_hat, +q_hat),
+        # which is byte-identical to the old symmetric band. Same matched-pair
+        # rule as `conformal_beta`: served with the beta/scale it was fit at.
+        self.conformal_q_lo: Dict[int, float] = {}
+        self.conformal_q_hi: Dict[int, float] = {}
+
         # Served-outcome feedback: a per-horizon multiplier on q_hat, measured from
         # realized served interval coverage on the forecast_outcomes panel, that pulls
         # the served band toward the 80% nominal (models/served_recalibration.py). A
@@ -6963,6 +6978,24 @@ class ItemForecaster:
         """
         b = self.conformal_beta.get(horizon, conformal.BETA_NEUTRAL)
         return (conformal.BETA_NEUTRAL if not np.isfinite(b) else float(b))
+
+    def band_offsets(self, horizon: int) -> tuple[float, float]:
+        """The signed `(q_lo, q_hi)` this horizon's band is built from.
+
+        One accessor, same contract as `band_beta`: a stored pair is served as
+        is; its absence (every artifact before 2026-08-19) or a non-finite value
+        falls back to the symmetric `(-q_hat, +q_hat)`, which reproduces the old
+        band exactly. `q_hat` is guaranteed finite where it exists, so the
+        fallback can never put a NaN into a served half-width. The served
+        multiplier is applied by the caller, on both legs.
+        """
+        lo = self.conformal_q_lo.get(horizon)
+        hi = self.conformal_q_hi.get(horizon)
+        if (lo is not None and hi is not None
+                and np.isfinite(lo) and np.isfinite(hi)):
+            return float(lo), float(hi)
+        q_hat = float(self.conformal_calibration[horizon])
+        return -q_hat, q_hat
 
     def served_qhat_multiplier(self, horizon: int) -> float:
         """The served-coverage correction to multiply this horizon's q_hat by.
@@ -7550,6 +7583,15 @@ class ItemForecaster:
                                     learned_scale=learned)
         self.conformal_calibration[horizon] = q_hat
         self.conformal_beta[horizon] = beta
+        # The SIGNED pair `predict` actually serves, from the SAME residuals,
+        # beta and scale as `q_hat` above — a matched set, written in the same
+        # breath so an artifact can never carry one exponent's q_hat beside
+        # another's offsets. `q_hat` stays: it is the symmetric fallback, and it
+        # still feeds `range_pct`/`_calibrate_confidence` below unchanged.
+        q_lo, q_hi = conformal.calibrate_signed(resid, sigma, conformal.ALPHA,
+                                                beta, learned_scale=learned)
+        self.conformal_q_lo[horizon] = q_lo
+        self.conformal_q_hi[horizon] = q_hi
         if self.sigma_exponent_enabled():
             if conformal.beta_was_clamped(resid, sigma,
                                           min_rows=self.MIN_CALIBRATION_ROWS):
@@ -8222,9 +8264,16 @@ class ItemForecaster:
             # 80% nominal. 1.0 (no-op) below the MIN_FORECAST_DATES gate, which is every
             # artifact today. Orthogonal to beta/scale — it does not change the scale's
             # units, only the overall width — so it composes with either.
-            q_hat_served = q_hat * self.served_qhat_multiplier(horizon)
-            low_ret_arr, high_ret_arr = conformal.band(
-                mid_ret_arr, sigma_arr, q_hat_served, self.band_beta(horizon),
+            # Signed offsets, not one symmetric q_hat: the band recentres on the
+            # q50 residual's own median, so an upward-biased q50 no longer forces
+            # a symmetric band inflated by its fat tail. The served multiplier is
+            # a width correction, so it scales both legs equally. An artifact
+            # without the pair yields (-q_hat, +q_hat) here, i.e. the old band.
+            mult = self.served_qhat_multiplier(horizon)
+            q_lo, q_hi = self.band_offsets(horizon)
+            low_ret_arr, high_ret_arr = conformal.band_signed(
+                mid_ret_arr, sigma_arr, q_lo * mult, q_hi * mult,
+                self.band_beta(horizon),
                 learned_scale=self.band_scale(horizon, latest_rows, sigma_arr))
 
             # Momentum fallback for weak horizons (14d/30d): serve the trailing
@@ -8238,9 +8287,9 @@ class ItemForecaster:
                         low_ret_arr, mid_ret_arr, high_ret_arr, momentum_ret)
 
             # Directional classifier: the served up/flat/down call + confidence.
-            # Probabilities computed now; the median is recentered on the call
-            # AFTER all return-space corrections below, so the price stays
-            # coherent with the reported direction.
+            # These populate the reported `direction`/`confidence` fields only.
+            # Range stance (2026-08-19): the classifier no longer moves the mid —
+            # the band's skew comes from the signed conformal offsets above.
             dir_class_arr = None
             dir_conf_arr = None
             clf = self.direction_models.get(horizon)
@@ -8290,12 +8339,16 @@ class ItemForecaster:
                         low_ret_arr[i] += corr
                         high_ret_arr[i] += corr
 
-            # Recenter the median on the classifier's call so the served price
-            # is coherent with the reported direction. Applied last, after all
-            # return-space corrections, preserving interval half-widths.
-            if dir_class_arr is not None and "recenter" not in _disabled:
-                low_ret_arr, mid_ret_arr, high_ret_arr = self._recenter_on_direction(
-                    low_ret_arr, mid_ret_arr, high_ret_arr, dir_class_arr)
+            # RANGE STANCE (2026-08-19): the median is no longer recentred on the
+            # 3-class classifier's call. That step moved the mid to ±|mid| after
+            # the band was calibrated around the q50, so the band was not centred
+            # where its coverage was fitted (served-median-comes-from-the-classifier),
+            # and it made this a directional predictor in a product AGENTS.md
+            # defines as a range forecaster. The band's skew now comes from the
+            # signed offsets above, calibrated on the q50 residual — coherent by
+            # construction. The classifier's call still populates the `direction`
+            # / `confidence` fields below; it no longer moves the price.
+            # See docs/superpowers/specs/2026-08-19-signed-conformal-quantile-design.md.
 
             _dir_name = {0: "down", 1: "flat", 2: "up"}
             fallback_n = 0
@@ -9674,6 +9727,12 @@ class ItemForecaster:
             "conformal_beta": {
                 str(h): self.band_beta(h) for h in self.conformal_calibration
             },
+            # The signed offsets `predict` serves, a matched set with the beta
+            # above and the same rows q_hat was fit on. Written beside q_hat, and
+            # loaded through `band_offsets`, which reconstructs the symmetric
+            # (-q_hat, +q_hat) band for any artifact that lacks the pair.
+            "conformal_q_lo": {str(h): float(v) for h, v in self.conformal_q_lo.items()},
+            "conformal_q_hi": {str(h): float(v) for h, v in self.conformal_q_hi.items()},
             # Served-outcome feedback multiplier per horizon. Only horizons past the
             # MIN_FORECAST_DATES gate appear; a missing horizon (all of them today)
             # loads as 1.0, byte-identical to the pre-feedback band.
@@ -9820,6 +9879,17 @@ class ItemForecaster:
         # missing horizon resolves through `band_beta`, never into a half-width.
         self.conformal_beta = {
             int(h): float(b) for h, b in meta.get("conformal_beta", {}).items()
+        }
+        # The signed offsets. `.get` default {} for the same reason as
+        # `conformal_beta`: absent on every artifact before 2026-08-19, and
+        # absence means the symmetric (-q_hat, +q_hat) band, which `band_offsets`
+        # reconstructs. Loaded as a pair; a horizon with one leg but not the
+        # other would fall back through the finiteness check in `band_offsets`.
+        self.conformal_q_lo = {
+            int(h): float(v) for h, v in meta.get("conformal_q_lo", {}).items()
+        }
+        self.conformal_q_hi = {
+            int(h): float(v) for h, v in meta.get("conformal_q_hi", {}).items()
         }
         # Served-outcome feedback multiplier. `.get` default {}: absent on every
         # artifact before this feature and on every horizon below the data gate, and

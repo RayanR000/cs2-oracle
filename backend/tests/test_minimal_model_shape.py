@@ -1469,7 +1469,8 @@ def test_predict_still_serves_the_classifier_direction(tmp_path):
     for h in f2.HORIZONS:
         for iid, fc in _forecast_rows(result2, h).items():
             assert fc["direction"] == "down", (h, iid, fc)
-            # _recenter_on_direction flips the median but keeps half-widths.
+            # Range stance (2026-08-19): the classifier still sets `direction`
+            # but no longer moves the mid; the band stays ordered around the q50.
             assert fc["low"] <= fc["mid"] <= fc["high"]
 
 

@@ -208,6 +208,47 @@ def calibrate(residuals_pct, sigma, alpha: float = ALPHA,
     return float(np.quantile(scores, level))
 
 
+def calibrate_signed(residuals_pct, sigma, alpha: float = ALPHA,
+                     beta: float = BETA_NEUTRAL,
+                     learned_scale=None) -> tuple[float, float]:
+    """Two SIGNED conformal quantiles of `residual / scale`: `(q_lo, q_hi)`.
+
+    Where `calibrate` folds the residual with `np.abs` and returns one q_hat for
+    a band symmetric about the mid, this splits `alpha` into two tails and reads
+    the lower and upper quantiles of the *signed* score. On a residual whose
+    median is not zero — what a q50 fitted above the median produces
+    (DIRECTION_UPWEIGHT) — the absolute quantile is inflated by the fat tail;
+    the signed pair centres on the residual's own median and is narrower at the
+    same nominal coverage.
+
+    ⚠️ `(q_lo, q_hi)` is a MATCHED SET with `beta` and the scale, exactly as
+    `q_hat` is — see `calibrate` and `resolve_scale`. Never difference or
+    substitute one across a beta or scale boundary. `band_signed(-q_hat, +q_hat)`
+    reproduces the symmetric band bit-for-bit, which is the fallback for a
+    pre-signed artifact.
+
+    Two-sided finite-sample correction: the upper leg uses
+    `ceil((n+1)(1-alpha/2))/n` and the lower `floor((n+1)(alpha/2))/n`, so the
+    interval keeps split conformal's `1 - alpha` coverage.
+    """
+    res = np.asarray(residuals_pct, dtype=float)
+    sig = np.asarray(sigma, dtype=float)
+    if res.size == 0:
+        raise ValueError("empty calibration set: cannot compute signed q_hat")
+
+    with np.errstate(divide="ignore", invalid="ignore"):
+        scores = res / resolve_scale(sig, beta, learned_scale)
+    scores = scores[np.isfinite(scores)]
+    if scores.size == 0:
+        raise ValueError("empty calibration set: no finite nonconformity scores")
+
+    n = scores.size
+    level_hi = min(np.ceil((n + 1) * (1.0 - alpha / 2.0)) / n, 1.0)
+    level_lo = max(np.floor((n + 1) * (alpha / 2.0)) / n, 0.0)
+    return (float(np.quantile(scores, level_lo)),
+            float(np.quantile(scores, level_hi)))
+
+
 def elasticity(residuals_pct, sigma) -> float:
     """`d log|residual| / d log sigma`, which this module's math assumes is 1.0.
 
@@ -311,3 +352,24 @@ def band(mid_pct, sigma, q_hat: float,
     mid = np.asarray(mid_pct, dtype=float)
     half = float(q_hat) * resolve_scale(sigma, beta, learned_scale)
     return mid - half, mid + half
+
+
+def band_signed(mid_pct, sigma, q_lo: float, q_hi: float,
+                beta: float = BETA_NEUTRAL,
+                learned_scale=None) -> tuple[np.ndarray, np.ndarray]:
+    """Asymmetric band from a signed `(q_lo, q_hi)` pair: `mid + q·scale`.
+
+    The signed counterpart of `band`. `q_lo` is typically negative, so the low
+    edge sits below the mid and the high edge above, but the offsets need not be
+    equal — that is the whole point. `band_signed(mid, sigma, -q_hat, q_hat)` is
+    byte-identical to `band(mid, sigma, q_hat)`, which is what makes the pair a
+    drop-in with a symmetric fallback.
+
+    ⚠️ Same matched-pair rule as `band`: `beta` and `learned_scale` MUST be the
+    ones the pair was calibrated at, or the band is wrong by the scale factor,
+    not partially corrected. Cannot cross as long as `q_lo <= q_hi`, which
+    `calibrate_signed` guarantees.
+    """
+    mid = np.asarray(mid_pct, dtype=float)
+    sc = resolve_scale(sigma, beta, learned_scale)
+    return mid + float(q_lo) * sc, mid + float(q_hi) * sc
