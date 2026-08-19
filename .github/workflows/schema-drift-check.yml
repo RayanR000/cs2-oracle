@@ -1,0 +1,90 @@
+name: Schema Drift Check
+
+# WHY THIS EXISTS: `Item.is_trainable` was added to the ORM and merged with no Alembic
+# migration. Prod never got the column, the aggregator crashed on its first query, and
+# the nightly chain skipped silently for days — review, tests, and merge all missed it.
+# See docs/research/2026-08-19-deep-model-review.md §2.
+#
+# This job applies the migrations to a throwaway Postgres and diffs the result against
+# `Base.metadata` (the same comparison `alembic revision --autogenerate` runs). A model
+# column with no migration fails the build BEFORE merge, where the original defect slipped
+# through. Runs on PRs and pushes to main — it is a pre-merge gate, not a nightly monitor.
+
+on:
+  pull_request:
+    paths:
+      - 'backend/database.py'
+      - 'backend/migrations/**'
+      - 'backend/scripts/check_schema_drift.py'
+      - '.github/workflows/schema-drift-check.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'backend/database.py'
+      - 'backend/migrations/**'
+  workflow_dispatch:
+
+defaults:
+  run:
+    shell: bash
+
+permissions:
+  contents: read
+
+jobs:
+  schema-drift:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: cs2
+          POSTGRES_PASSWORD: cs2
+          POSTGRES_DB: cs2_scratch
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+    env:
+      DATABASE_URL: postgresql://cs2:cs2@localhost:5432/cs2_scratch
+      ENVIRONMENT: production
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
+
+      - name: Set up Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: '3.11'
+          cache: pip
+          cache-dependency-path: backend/requirements.txt
+
+      - name: Install dependencies
+        working-directory: ./backend
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      # Some revision IDs (e.g. 0007_add_is_backfilled_and_chart_points, 39 chars) are
+      # longer than Alembic's default alembic_version.version_num column (VARCHAR(32)), so
+      # a from-scratch `upgrade head` truncates and fails. Prod never hit this because it
+      # was built up incrementally; pre-creating the table wider matches prod's reality.
+      - name: Pre-create a wide alembic_version table
+        working-directory: ./backend
+        run: |
+          python -c "import os, psycopg2; c = psycopg2.connect(os.environ['DATABASE_URL']); c.autocommit = True; c.cursor().execute('CREATE TABLE IF NOT EXISTS alembic_version (version_num VARCHAR(255) NOT NULL, CONSTRAINT alembic_version_pkc PRIMARY KEY (version_num))')"
+
+      - name: Apply migrations to the scratch database
+        working-directory: ./backend
+        run: alembic upgrade head
+
+      - name: Compare Base.metadata against the migrated schema
+        working-directory: ./backend
+        run: python scripts/check_schema_drift.py
