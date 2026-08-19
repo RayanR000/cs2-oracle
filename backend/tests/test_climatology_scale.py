@@ -66,7 +66,8 @@ class TestLookup:
 
 class TestGating:
     def test_disabled_returns_none(self, fc, monkeypatch):
-        monkeypatch.delenv("CLIMATOLOGY_SCALE", raising=False)
+        # On by default since 2026-08-19; only an explicit "0" disables.
+        monkeypatch.setenv("CLIMATOLOGY_SCALE", "0")
         recs = pd.DataFrame({"row_index": [0], "residual_pct": [1.0],
                              "sigma": [0.1], "mid_ret": [0.0]})
         assert fc._fit_climatology_scale(7, recs, _frame()) is None

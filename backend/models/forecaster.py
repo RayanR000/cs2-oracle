@@ -1309,10 +1309,15 @@ class ItemForecaster:
 
         Mutually exclusive with SIGMA_EXPONENT / LEARNED_SCALE / EXCEEDANCE_SCALE
         — four alternative band denominators, not layers (`_calibrate_conformal`
-        raises if combined). Off by default. Set CLIMATOLOGY_SCALE=1. See
+        raises if combined). **On by default since 2026-08-19** — the sole band
+        scale that wins OUT of sample (variance reduction, not signal). Set
+        CLIMATOLOGY_SCALE=0 to disable (only "0" disables; an unparseable value
+        keeps it on, deliberately, mirroring the training price floor). Serving
+        follows the artifact via `_climatology_scale_served`, so the cutover is
+        atomic at the next retrain, not the moment this flag flips. See
         `docs/superpowers/specs/2026-08-19-climatology-band-scale.md`.
         """
-        return os.environ.get("CLIMATOLOGY_SCALE") == "1"
+        return os.environ.get("CLIMATOLOGY_SCALE", "1") != "0"
 
     def _climatology_scale_served(self) -> bool:
         """Whether predict() serves the climatology scale, following the artifact.
