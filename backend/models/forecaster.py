@@ -977,6 +977,9 @@ class ItemForecaster:
         # pair, so a plain-sigma artifact reloaded with EXCEEDANCE_SCALE=1 in the
         # env must keep serving plain sigma. None = "older meta.json, does not say".
         self._artifact_exceedance_scale: Optional[bool] = None
+        # Whether the band was CALIBRATED against the climatology scale. Same
+        # matched-pair rule as the exceedance flag above. None = older meta.json.
+        self._artifact_climatology_scale: Optional[bool] = None
         # The median-price floor the artifact was TRAINED under. Load-bearing
         # only when the rank transform is on, and then it is load-bearing
         # absolutely: the transform's output depends on which items are in the
@@ -1287,6 +1290,40 @@ class ItemForecaster:
         if self._artifact_exceedance_scale is not None:
             return self._artifact_exceedance_scale
         return self.exceedance_scale_enabled()
+
+    @staticmethod
+    def climatology_scale_enabled() -> bool:
+        """Whether the band scale is a per-item CLIMATOLOGICAL dispersion instead
+        of `price_std_60d`-derived sigma.
+
+        The scale is the item's own trailing h-day return dispersion, shrunk
+        toward its price tier's pool by `n_i/(n_i+K)`. It is passed to conformal
+        as a `learned_scale` ARRAY, so `beta` stays neutral and q_hat is
+        dimensionally tied to it — exactly like EXCEEDANCE_SCALE / LEARNED_SCALE.
+
+        Measured offline against the REAL production scale on the durable archive
+        (`docs/research/2026-08-19-climatology-vs-gbm-band.md`): at matched 0.80
+        marginal coverage it is 43-47% NARROWER than sigma at every horizon on
+        285 test dates. Unlike the sigma-tilt/learned-scale arms it wins OUT of
+        sample, because it is variance reduction, not signal extraction.
+
+        Mutually exclusive with SIGMA_EXPONENT / LEARNED_SCALE / EXCEEDANCE_SCALE
+        — four alternative band denominators, not layers (`_calibrate_conformal`
+        raises if combined). Off by default. Set CLIMATOLOGY_SCALE=1. See
+        `docs/superpowers/specs/2026-08-19-climatology-band-scale.md`.
+        """
+        return os.environ.get("CLIMATOLOGY_SCALE") == "1"
+
+    def _climatology_scale_served(self) -> bool:
+        """Whether predict() serves the climatology scale, following the artifact.
+
+        Same matched-pair rule as the exceedance scale: q_hat was calibrated
+        against the climatology scale iff the artifact says so, so serving must
+        read the artifact and fall back to the environment only when none is
+        loaded (the cold-start / pre-flag case)."""
+        if self._artifact_climatology_scale is not None:
+            return self._artifact_climatology_scale
+        return self.climatology_scale_enabled()
 
     @staticmethod
     def conformal_served_basis_enabled() -> bool:
@@ -6937,6 +6974,15 @@ class ItemForecaster:
         self.scale_norm: Dict[int, float] = {}
         self.scale_clip: Dict[int, tuple] = {}
         self.scale_features: Dict[int, List[str]] = {}
+        # The climatology band scale (CLIMATOLOGY_SCALE=1): per horizon a
+        # {"table": {item_id: scale}, "tier_pool": {tier: scale}, "global": float}
+        # persisted in meta.json and reconstructed at serve — no booster.
+        self.climatology_scale: Dict[int, dict] = {}
+
+    #: James-Stein shrink of a thin item's own h-day dispersion toward its tier
+    #: pool: weight = n_i / (n_i + K). Validated at K=20 (insensitive 5..100),
+    #: docs/research/2026-08-19-climatology-vs-gbm-band.md.
+    CLIMATOLOGY_SHRINK_K = 20
 
     def band_scale(self, horizon: int, rows: pd.DataFrame, sigma):
         """The learned scale for a set of rows, or None to use `sigma ** beta`.
@@ -6951,6 +6997,16 @@ class ItemForecaster:
         model, so the caller passes `learned_scale=None` and `resolve_scale`
         takes the pre-existing path.
         """
+        # Climatology scale takes precedence and follows the ARTIFACT, same
+        # matched-pair rule: q_hat was calibrated against the per-item table iff
+        # `_climatology_scale_served`, so it must not be applied to any other.
+        if self._climatology_scale_served():
+            clim = self._climatology_scale_for_rows(horizon, rows)
+            if clim is not None:
+                return clim
+            # Flag on but no table for this horizon: fall through to sigma, which
+            # is coherent because q_hat was then calibrated on sigma too.
+
         # Exceedance scale takes precedence and follows the ARTIFACT: q_hat was
         # calibrated against sigma * sqrt(p_exceed) iff `_exceedance_scale_served`,
         # so applying it on any other artifact would serve a mismatched q_hat.
@@ -7516,6 +7572,118 @@ class ItemForecaster:
         )
         return np.asarray(sigma, dtype=float) * np.sqrt(p)
 
+    @staticmethod
+    def _price_tier_array(prices) -> np.ndarray:
+        """Vectorized `backtest.scoring.price_tier` (liquidity bands)."""
+        px = np.asarray(prices, dtype=float)
+        return np.select(
+            [px >= 1000, px >= 100, px >= 20, px >= 5, px >= 1],
+            [5, 4, 3, 2, 1], default=0).astype(int)
+
+    @classmethod
+    def _build_climatology_table(cls, df: pd.DataFrame, tcol: str):
+        """Per-item h-day return dispersion, shrunk toward the price tier's pool.
+
+        `df` carries `item_id`, `price`, and `tcol` (the h-day return in %).
+        Dispersion is the std of an item's finite h-day returns; a thin item is
+        shrunk toward its tier pool by `n/(n+K)` (`CLIMATOLOGY_SHRINK_K`). The
+        absolute unit does not matter — conformal's q_hat absorbs any constant
+        factor — only the cross-item SHAPE does. Returns
+        `(table, tier_pool, global)`.
+        """
+        d = df[np.isfinite(df[tcol].to_numpy())].copy()
+        if d.empty:
+            return {}, {}, float("nan")
+        d["tier"] = cls._price_tier_array(d["price"].to_numpy())
+        global_std = float(d[tcol].std())
+        if not np.isfinite(global_std) or global_std <= 0:
+            return {}, {}, float("nan")
+        tier_std = d.groupby("tier")[tcol].std()
+        tier_pool = {int(t): (float(v) if np.isfinite(v) and v > 0 else global_std)
+                     for t, v in tier_std.items()}
+        agg = d.groupby("item_id")[tcol].agg(["std", "count"])
+        item_tier = cls._price_tier_array(
+            d.groupby("item_id")["price"].median().to_numpy())
+        K = float(cls.CLIMATOLOGY_SHRINK_K)
+        table = {}
+        for (iid, row), tier in zip(agg.iterrows(), item_tier):
+            n = float(row["count"])
+            pool = tier_pool.get(int(tier), global_std)
+            raw = row["std"]
+            if not np.isfinite(raw) or raw <= 0:
+                raw = pool
+            w = n / (n + K)
+            table[str(iid)] = float(w * raw + (1.0 - w) * pool)
+        return table, tier_pool, global_std
+
+    def _climatology_lookup(self, horizon: int, item_ids, prices):
+        """Per-row climatology scale from the persisted table, tier-pool fallback
+        for unseen items, global fallback for unseen tiers. None if no table."""
+        cfg = self.climatology_scale.get(horizon)
+        if not cfg:
+            return None
+        table, tier_pool, g = cfg["table"], cfg["tier_pool"], cfg["global"]
+        tiers = self._price_tier_array(prices)
+        out = np.empty(len(item_ids), dtype=float)
+        for k, (iid, tier) in enumerate(zip(item_ids, tiers)):
+            v = table.get(str(iid))
+            if v is None or not np.isfinite(v):
+                v = tier_pool.get(int(tier), g)
+            out[k] = v if np.isfinite(v) else g
+        return out
+
+    def _fit_climatology_scale(self, horizon: int, records_df: pd.DataFrame,
+                               feature_frame: Optional[pd.DataFrame]):
+        """Per-item climatology scale for the calibration rows, or None.
+
+        The scale is built from the training frame's realised h-day returns and
+        applied to future serve dates, so serving is leakage-free by
+        construction. q_hat is calibrated in-sample against it (a single global
+        scalar, low optimism); the honest verdict is the SERVED-PANEL A/B, which
+        is future data. See the spec.
+        """
+        if not self.climatology_scale_enabled():
+            return None
+        tcol = f"target_return_{horizon}d"
+        need = {"item_id", "price", tcol}
+        if (feature_frame is None or "row_index" not in records_df.columns
+                or not need <= set(feature_frame.columns)):
+            logger.warning(
+                f"  {horizon}d CLIMATOLOGY_SCALE=1 but the calibration rows lack "
+                f"a feature reference or the frame lacks {sorted(need)} — falling "
+                f"back to sigma. The arm is NOT in effect for this horizon."
+            )
+            return None
+        table, tier_pool, g = self._build_climatology_table(
+            feature_frame[["item_id", "price", tcol]], tcol)
+        if not table:
+            logger.warning(
+                f"  {horizon}d climatology scale: no usable h-day return "
+                f"dispersion — falling back to sigma."
+            )
+            return None
+        self.climatology_scale[horizon] = {
+            "table": table, "tier_pool": tier_pool, "global": g}
+        rows = feature_frame.loc[records_df["row_index"].to_numpy()]
+        scale = self._climatology_lookup(
+            horizon, rows["item_id"].to_numpy(), rows["price"].to_numpy())
+        logger.info(
+            f"  {horizon}d climatology scale: {len(table):,} items, "
+            f"median {float(np.nanmedian(scale)):.3f} on {scale.size:,} "
+            f"calibration rows — q_hat is DIMENSIONALLY TIED to it and must "
+            f"never be compared with a sigma-basis q_hat."
+        )
+        return scale
+
+    def _climatology_scale_for_rows(self, horizon: int, rows: pd.DataFrame):
+        """Serve-side per-row climatology scale, or None to use sigma."""
+        if horizon not in self.climatology_scale:
+            return None
+        if "item_id" not in rows.columns or "price" not in rows.columns:
+            return None
+        return self._climatology_lookup(
+            horizon, rows["item_id"].to_numpy(), rows["price"].to_numpy())
+
     def _scale_feature_frame(self, rows: pd.DataFrame, sigma,
                              horizon: int) -> pd.DataFrame:
         """The feature matrix the learned scale is fitted on AND served from.
@@ -7579,13 +7747,31 @@ class ItemForecaster:
                 "against, and composing them serves a q_hat in the wrong units. "
                 "Pick one."
             )
+        if self.climatology_scale_enabled() and (
+                scale_model.enabled() or self.sigma_exponent_enabled()
+                or self.exceedance_scale_enabled()):
+            raise RuntimeError(
+                "CLIMATOLOGY_SCALE=1 is set alongside another band-scale flag. "
+                "They are alternative band denominators, not layers — each "
+                "redefines the scale q_hat is calibrated against, so composing "
+                "them serves a q_hat in the wrong units. Pick one."
+            )
 
+        # The per-item climatological dispersion (CLIMATOLOGY_SCALE), a full
+        # `learned_scale` denominator, so beta stays neutral and q_hat is
+        # dimensionally tied to it. Takes precedence; the others are off by the
+        # guards above when it is on.
+        climatology = self._fit_climatology_scale(horizon, records_df,
+                                                  feature_frame)
         # sigma * sqrt(p_exceed), from the OUT-OF-FOLD probabilities the record
         # builder attached (`exceed_p`). It is a full `learned_scale` denominator,
         # so beta stays neutral below and q_hat is dimensionally tied to it. Takes
         # precedence over the learned-scale path, which is off by the guard above.
-        exceedance = self._exceedance_learned_scale(horizon, records_df, sigma)
-        learned = (exceedance if exceedance is not None
+        exceedance = (None if climatology is not None
+                      else self._exceedance_learned_scale(horizon, records_df,
+                                                          sigma))
+        learned = (climatology if climatology is not None
+                   else exceedance if exceedance is not None
                    else self._fit_learned_scale(horizon, records_df,
                                                 feature_frame, resid, sigma))
 
@@ -9726,6 +9912,12 @@ class ItemForecaster:
             # know to add `-return_1d` back. See _naive_init_score_served.
             "naive_init_score": self.naive_init_score_enabled(),
             "exceedance_scale": self.exceedance_scale_enabled(),
+            # The climatology band scale: a serving switch AND its lookup tables.
+            # predict reconstructs the per-item scale from these — there is no
+            # booster. Matched-pair rule: never difference a q_hat across this.
+            "climatology_scale": self.climatology_scale_enabled(),
+            "climatology_scale_tables": {
+                str(h): cfg for h, cfg in self.climatology_scale.items()},
             # Provenance, not a serving switch. `predict` already converts a
             # return to dollars against the smoothed anchor, so an artifact
             # trained under this flag is the COHERENT pairing and needs nothing
@@ -9861,6 +10053,18 @@ class ItemForecaster:
         self._artifact_xs_rank_skipped = meta.get("xs_rank_skipped_cols")
         self._artifact_naive_init = meta.get("naive_init_score")
         self._artifact_exceedance_scale = meta.get("exceedance_scale")
+        self._artifact_climatology_scale = meta.get("climatology_scale")
+        # Rebuild the climatology lookup with the int keys the accessors expect
+        # (JSON coerces tier keys to strings; item keys are already strings).
+        self.climatology_scale = {
+            int(h): {
+                "table": dict(cfg.get("table", {})),
+                "tier_pool": {int(t): float(v)
+                              for t, v in cfg.get("tier_pool", {}).items()},
+                "global": float(cfg.get("global", float("nan"))),
+            }
+            for h, cfg in meta.get("climatology_scale_tables", {}).items()
+        }
 
         # Restore cached tuned hyperparameters (skips Optuna on retrain when present).
         self.tuned_params = {}
