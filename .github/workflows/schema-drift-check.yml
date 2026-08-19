@@ -72,6 +72,15 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
+      # Some revision IDs (e.g. 0007_add_is_backfilled_and_chart_points, 39 chars) are
+      # longer than Alembic's default alembic_version.version_num column (VARCHAR(32)), so
+      # a from-scratch `upgrade head` truncates and fails. Prod never hit this because it
+      # was built up incrementally; pre-creating the table wider matches prod's reality.
+      - name: Pre-create a wide alembic_version table
+        working-directory: ./backend
+        run: |
+          python -c "import os, psycopg2; c = psycopg2.connect(os.environ['DATABASE_URL']); c.autocommit = True; c.cursor().execute('CREATE TABLE IF NOT EXISTS alembic_version (version_num VARCHAR(255) NOT NULL, CONSTRAINT alembic_version_pkc PRIMARY KEY (version_num))')"
+
       - name: Apply migrations to the scratch database
         working-directory: ./backend
         run: alembic upgrade head
