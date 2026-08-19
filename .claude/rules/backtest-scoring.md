@@ -88,6 +88,14 @@ paths:
   The axis is **four fixed bands, not quartiles** (`fresh` / `repeat_1` / `run_2_6` /
   `run_7_plus`): ~80% of the ≥$1 cohort sits at zero, so data-driven quartiles collapse to one
   populated bucket and would still be reported as four.
+- **There is no valid h=30 published figure — the only h=30 date was a contaminated replay,
+  now dropped.** `2025-12-01` (`created_at` 2026-07-17, quote matching the 2026-07-18 frame) was
+  the sole h=30 forecast date, so every published h=30 accuracy/coverage/actionable number rested
+  on it. It is in `EXCLUDED_FORECAST_DATES` as of 2026-08-19, which drops it from
+  `backtest_accuracy` and `papertrade_report`, leaving h=30 below `MIN_FORECAST_DATES` →
+  `insufficient_dates`. **Treat any pre-2026-08-19 h=30 headline in the docs as void**, and do not
+  quote an h=30 number until fresh h=30 dates accumulate. See
+  `docs/changelog/2026-08-19-drop-replayed-2025-12-01-cohort.md`.
 - **`actionable_*` is populated only at h ∈ {14, 30}, and its stored series breaks at
   2026-08-11.** Rows scored before that date divided `r_hat` by `base_price`; from that date it
   is the served quote (above). The published cohort collapses from 1,141 to ~21 at h ∈ {14,30}

@@ -29,11 +29,19 @@ def test_the_dead_band_date_is_excluded_with_a_reason():
     assert "dead-band" in reason
 
 
+def test_the_replayed_h30_date_is_excluded_with_a_reason():
+    """2025-12-01 is a replay whose quote matches the 2026-07-18 frame; it is the
+    only h=30 date, so it carried every published h=30 figure. Dropping it leaves
+    h=30 with no clean date, which is the honest state."""
+    reason = excluded_forecast_date(date(2025, 12, 1))
+    assert reason is not None
+    assert "replay" in reason
+
+
 @pytest.mark.parametrize("d", [
     date(2026, 7, 17),
     date(2026, 7, 18),
     date(2026, 7, 29),
-    date(2025, 12, 1),
     date(2026, 8, 7),
 ])
 def test_every_other_panel_date_is_kept(d):
@@ -80,7 +88,8 @@ def test_the_exclusion_is_not_reachable_through_served_identity():
 
 
 def test_the_exclusion_list_stays_small_and_deliberate():
-    """A growing list means dates are being dropped to move a number."""
-    assert len(EXCLUDED_FORECAST_DATES) == 1
+    """A growing list means dates are being dropped to move a number. Each entry
+    must name a contamination mechanism (dead-band rule, replay), not a verdict."""
+    assert len(EXCLUDED_FORECAST_DATES) == 2
     assert all(isinstance(d, date) for d in EXCLUDED_FORECAST_DATES)
     assert all(r and isinstance(r, str) for r in EXCLUDED_FORECAST_DATES.values())

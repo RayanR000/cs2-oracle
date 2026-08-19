@@ -95,6 +95,17 @@ def served_identity(model_version) -> str:
 # in it. `docs/changelog/2026-08-11-the-da-gap-is-the-market-direction-of-five-dates.md`
 EXCLUDED_FORECAST_DATES = {
     date(2026, 7, 19): "dead-band direction rule (f71ffb4), live for one run",
+    # A REPLAY, not a live forecast: `item_forecasts.created_at` is 2026-07-17,
+    # and the stored `current_price` matches the 2026-07-18 price frame to a
+    # median |log ratio| of 0.016 against 0.244 for its own nominal date, so its
+    # dollar coverage is an artifact of the rebasing. Critically it is the ONLY
+    # h=30 date in the panel, so every published h=30 figure rested on this one
+    # contaminated cohort. Dropping it leaves h=30 with zero clean dates — below
+    # MIN_FORECAST_DATES — which is the honest state: there is no valid h=30
+    # measurement yet. See docs/research/2026-08-19-deep-model-review.md §3.
+    date(2025, 12, 1): "replay (created 2026-07-17); quote matches the 2026-07-18"
+                       " frame, not its nominal date — the only h=30 date, so it"
+                       " carried every h=30 figure",
 }
 
 
