@@ -13,7 +13,12 @@ import numpy as np
 import pandas as pd
 
 from models.forecaster import ItemForecaster
-from models.served_recalibration import FACTOR_MAX, FACTOR_MIN
+from models.served_recalibration import (
+    FACTOR_MAX,
+    FACTOR_MIN,
+    SIGNED_BAND_SERVING_START,
+    served_coverage_factors,
+)
 
 
 def _f(tmp_path):
@@ -80,3 +85,16 @@ def test_training_computes_and_stores_the_factor(_stub=None):
     src = inspect.getsource(ItemForecaster.train)
     assert "served_coverage_factors(" in src
     assert "self.served_coverage_factor" in src
+
+
+def test_feedback_is_dormant_until_the_cutover_is_set(_stub=None):
+    """With SIGNED_BAND_SERVING_START unset (today), served_coverage_factors returns {} without
+    ever reading the panel — the whole store is pre-signed-band geometry. A session whose every
+    attribute access raises proves the panel is not touched."""
+    assert SIGNED_BAND_SERVING_START is None                  # the shipped default
+
+    class _Exploding:
+        def __getattr__(self, name):
+            raise AssertionError(f"panel was read ({name}) while feedback should be dormant")
+
+    assert served_coverage_factors(_Exploding(), [3, 7, 14, 30]) == {}

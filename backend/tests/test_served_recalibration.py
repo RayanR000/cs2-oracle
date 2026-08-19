@@ -96,3 +96,27 @@ def test_sub_dollar_cohort_does_not_move_the_factor(_stub=None):
     junk = _panel(7, np.full(400, 6.0), n_dates=25, tier=HEADLINE_MIN_TIER - 1)
     withjunk = factors_from_panel(pd.concat([panel, junk], ignore_index=True), [7])[7]
     assert withjunk == good
+
+
+def test_since_floor_drops_pre_cutover_geometry(_stub=None):
+    """Rows before the signed-band cutover carry the old symmetric geometry; the `since` floor
+    must drop them so the factor is fit only on current-geometry served bands. Dropping the panel
+    below the gate is the visible consequence."""
+    r = np.random.default_rng(5).uniform(0, 1.2, 200)
+    panel = _panel(7, r, n_dates=25)                       # dates run 2026-01-01 .. 2026-01-25
+    assert 7 in factors_from_panel(panel, [7])             # no floor: 25 dates clear the gate
+    assert 7 in factors_from_panel(panel, [7], since="2026-01-01")   # floor at the first date: all kept
+    # A floor past every date leaves zero rows, so the horizon falls below MIN_FORECAST_DATES.
+    assert 7 not in factors_from_panel(panel, [7], since="2027-01-01")
+
+
+def test_since_floor_partitions_two_geometry_epochs(_stub=None):
+    """A panel that mixes pre- and post-cutover dates must yield the post-cutover factor alone."""
+    old = _panel(7, np.full(300, 6.0), n_dates=20)         # old geometry: would clamp to FACTOR_MAX
+    new = _panel(7, np.random.default_rng(6).uniform(0, 1.2, 200), n_dates=25)
+    new["forecast_date"] = pd.to_datetime("2026-06-01") + pd.to_timedelta(
+        np.arange(len(new)) % 25, unit="D")
+    mixed = pd.concat([old, new], ignore_index=True)
+    floored = factors_from_panel(mixed, [7], since="2026-06-01")[7]
+    clean = factors_from_panel(new, [7])[7]
+    assert floored == clean                                # the old epoch does not touch the factor

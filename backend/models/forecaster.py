@@ -8269,15 +8269,20 @@ class ItemForecaster:
             # horizon's residuals have their own size, so each has its own model.
             #
             # `served_qhat_multiplier` is the served-outcome feedback correction: a
-            # scalar that scales the half-width to pull realized served coverage to the
-            # 80% nominal. 1.0 (no-op) below the MIN_FORECAST_DATES gate, which is every
-            # artifact today. Orthogonal to beta/scale — it does not change the scale's
-            # units, only the overall width — so it composes with either.
-            # Signed offsets, not one symmetric q_hat: the band recentres on the
-            # q50 residual's own median, so an upward-biased q50 no longer forces
-            # a symmetric band inflated by its fat tail. The served multiplier is
-            # a width correction, so it scales both legs equally. An artifact
-            # without the pair yields (-q_hat, +q_hat) here, i.e. the old band.
+            # scalar that re-solves the asymmetric split-conformal band on the served
+            # panel to the 80% nominal. 1.0 (no-op) below the MIN_FORECAST_DATES gate
+            # AND until SIGNED_BAND_SERVING_START is set — every artifact today.
+            # It is orthogonal to beta/scale (it does not change the scale's units), but
+            # NOT a pure width knob on a signed band: the factor is the quantile of the
+            # deviation measured as a fraction of the offset FROM THE q50 MID, so it must
+            # multiply q_lo/q_hi directly (`q_lo*mult, q_hi*mult`). On an asymmetric pair
+            # that also scales the band's centre offset (mult*(q_lo+q_hi)/2) — by design:
+            # that is what keeps coverage at 80%, not a second recentring. Do NOT "fix" it
+            # to hold the centre fixed; that would break the calibration guarantee.
+            # Signed offsets, not one symmetric q_hat: the band recentres on the q50
+            # residual's own median, so an upward-biased q50 no longer forces a symmetric
+            # band inflated by its fat tail. An artifact without the pair yields
+            # (-q_hat, +q_hat) here, i.e. the old band.
             mult = self.served_qhat_multiplier(horizon)
             q_lo, q_hi = self.band_offsets(horizon)
             low_ret_arr, high_ret_arr = conformal.band_signed(

@@ -35,6 +35,17 @@ logger = logging.getLogger(__name__)
 FACTOR_MIN = 0.5
 FACTOR_MAX = 2.0
 
+# The signed conformal band (asymmetric offsets about the q50 mid) changed the served band's
+# GEOMETRY. Rows served under the OLD geometry carry a symmetric band whose mid was moved by
+# `_recenter_on_direction`; the factor's nonconformity score `r` reads the STORED band shape,
+# so a factor pooled across the cutover calibrates a shape that matches neither band. The
+# `forecast_outcomes` panel has no geometry marker (no model_version column, and the served
+# `MODEL_VERSION` string deliberately does not encode config), so the only available separator
+# is the forecast_date. Set this to the date the signed band served its FIRST prod forecast.
+# Until then every stored row is old-geometry, so the multiplier stays dormant (the caller gets
+# {}) regardless of the date count — an unfiltered factor would calibrate the wrong band.
+SIGNED_BAND_SERVING_START: Optional[str] = None  # ISO date, e.g. "2026-08-25"; set at deploy.
+
 # The columns the estimator needs from forecast_outcomes.
 PANEL_COLUMNS = (
     "forecast_date", "horizon_days", "price_tier",
@@ -50,7 +61,8 @@ def _conformal_level(n: int, alpha: float) -> float:
 
 def factors_from_panel(panel: pd.DataFrame, horizons: Iterable[int], *,
                        min_dates: int = MIN_FORECAST_DATES, alpha: float = ALPHA,
-                       min_tier: int = HEADLINE_MIN_TIER) -> Dict[int, float]:
+                       min_tier: int = HEADLINE_MIN_TIER,
+                       since: Optional[str] = None) -> Dict[int, float]:
     """Per-horizon served-coverage q_hat multiplier from a forecast_outcomes frame.
 
     For each horizon, over the >= $1 served rows with a usable band, the nonconformity score is
@@ -63,12 +75,18 @@ def factors_from_panel(panel: pd.DataFrame, horizons: Iterable[int], *,
     `s >= r`, so `P80(r)` lands 80% coverage on the panel. Horizons with fewer than `min_dates`
     distinct served dates are OMITTED from the result (the caller falls back to 1.0). The factor
     is clamped to [FACTOR_MIN, FACTOR_MAX].
+
+    `since` (ISO date) is the signed-band geometry floor: rows with `forecast_date < since` are
+    dropped before anything else, because `r` reads the stored band shape and pre-cutover rows
+    carry the old symmetric geometry (see SIGNED_BAND_SERVING_START). None keeps every row.
     """
     out: Dict[int, float] = {}
     if panel is None or panel.empty:
         return out
 
     df = panel[panel["price_tier"].to_numpy() >= min_tier]
+    if since is not None:
+        df = df[pd.to_datetime(df["forecast_date"]).to_numpy() >= np.datetime64(since)]
     for h in horizons:
         rows = df[df["horizon_days"].to_numpy() == h]
         if rows.empty:
@@ -109,36 +127,52 @@ def factors_from_panel(panel: pd.DataFrame, horizons: Iterable[int], *,
     return out
 
 
-def _load_panel(session, horizons: Iterable[int]) -> pd.DataFrame:
+def _load_panel(session, horizons: Iterable[int], *,
+                since: Optional[str] = None) -> pd.DataFrame:
     """Read the scored forecast_outcomes panel from Postgres (the ops parquet mirrors are
-    stale/selected — see backend/AGENTS.md). Read-only, columns narrowed to the estimator's."""
+    stale/selected — see backend/AGENTS.md). Read-only, columns narrowed to the estimator's.
+    `since` (ISO date), when set, floors forecast_date to the signed-band geometry cutover."""
     from sqlalchemy import bindparam, text
 
     hs = [int(h) for h in horizons]
+    where = ("WHERE horizon_days IN :horizons AND actual_price IS NOT NULL "
+             "AND predicted_price_mid IS NOT NULL")
+    params: dict = {"horizons": hs}
+    if since is not None:
+        where += " AND forecast_date >= :since"
+        params["since"] = since
     sql = text(
         "SELECT forecast_date, horizon_days, price_tier, "
         "predicted_price_low, predicted_price_mid, predicted_price_high, actual_price "
-        "FROM forecast_outcomes "
-        "WHERE horizon_days IN :horizons AND actual_price IS NOT NULL "
-        "AND predicted_price_mid IS NOT NULL"
+        f"FROM forecast_outcomes {where}"
     ).bindparams(bindparam("horizons", expanding=True))
-    rows = session.execute(sql, {"horizons": hs}).mappings().all()
+    rows = session.execute(sql, params).mappings().all()
     return pd.DataFrame(rows, columns=list(PANEL_COLUMNS))
 
 
 def served_coverage_factors(session, horizons: Iterable[int], *,
                             min_dates: int = MIN_FORECAST_DATES,
-                            alpha: float = ALPHA) -> Dict[int, float]:
+                            alpha: float = ALPHA,
+                            since: Optional[str] = SIGNED_BAND_SERVING_START) -> Dict[int, float]:
     """Per-horizon served-coverage q_hat multipliers, or an empty map.
 
     Returns {} on any read failure or when no horizon clears the gate, so a missing/empty panel
     (the data-blocked default today) leaves the band byte-identical to a no-feedback artifact.
+
+    Returns {} outright when `since` is None (SIGNED_BAND_SERVING_START unset): the whole panel is
+    then pre-signed-band geometry, and a factor fit on it would calibrate the wrong band shape and
+    apply it to the signed offsets. The feedback stays dormant until the cutover date is set.
     """
     if session is None:
         return {}
+    if since is None:
+        logger.info(
+            "  served-coverage: SIGNED_BAND_SERVING_START unset; feedback dormant — the panel is "
+            "pre-signed-band geometry, so no q_hat correction is applied.")
+        return {}
     try:
-        panel = _load_panel(session, horizons)
+        panel = _load_panel(session, horizons, since=since)
     except Exception as e:                       # a panel read must never fail a retrain
         logger.warning(f"  served-coverage panel read failed ({e}); no q_hat correction applied.")
         return {}
-    return factors_from_panel(panel, horizons, min_dates=min_dates, alpha=alpha)
+    return factors_from_panel(panel, horizons, min_dates=min_dates, alpha=alpha, since=since)
