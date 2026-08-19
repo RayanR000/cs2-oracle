@@ -15,9 +15,10 @@ These four hold everywhere. The reasoning behind each is in the rule file named 
    `read_parquet('prices-*.parquet')` silently returns the first file's schema and drops
    columns without erroring. → `archive-reads`
 2. **Any loader that globs the archive must apply `archive_universe_sql_filter()`.** It
-   carries all three universe rules — the excluded bid sources, the phase-collapsed names,
-   and the phantom duplicate keys — and each is NULL-safe by construction. A bare `NOT IN`
-   drops 13 years of prices. → `item-universe`
+   carries all four universe rules — the excluded bid sources, the re-stamped
+   `historical_fallback:` prints, the phase-collapsed names, and the phantom duplicate keys —
+   and each is NULL-safe by construction. A bare `NOT IN` drops 13 years of prices.
+   → `item-universe`
 3. **Never pass a bare horizon to a purge.** The embargo is `horizon + 13`, derived at call
    time by `models/forecaster.py::embargo_days`. → `labels-and-embargo`
 4. **Never quote a directional accuracy on its own.** The headline is a Pesaran–Timmermann

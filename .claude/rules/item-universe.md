@@ -12,9 +12,9 @@ Three rules define which item-days exist. All live in `models/item_parser.py` as
 predicates, re-exported from `models/forecaster.py`, because each has already cost a
 separate fix per loader.
 
-- **Any loader that globs the archive must apply `archive_universe_sql_filter()`.** Both
-  rules are NULL-safe: a bare `NOT IN` over the pre-2026 `source IS NULL` series evaluates to
-  NULL and silently drops 13 years of prices. Every `ab_test_*` harness and
+- **Any loader that globs the archive must apply `archive_universe_sql_filter()`.** Every
+  rule is NULL-safe: a bare `NOT IN`/`NOT LIKE` over the pre-2026 `source IS NULL` series
+  evaluates to NULL and silently drops 13 years of prices. Every `ab_test_*` harness and
   `walkforward_backtest.py` route through it (2026-08-08); `ab_test_recency_weights.py` is the
   one exemption and only because it reads a pre-built frame. Pass `source_column=None` for a
   relation with no `source` column — safe only because every bid source is a 2026 feed.
@@ -33,6 +33,17 @@ separate fix per loader.
   five, because the ask panel's own dispersion is wider than the bid–ask wedge. See
   `docs/changelog/2026-08-07-bid-source-excluded-from-voting.md` and
   `docs/changelog/2026-08-09-trailing-window-sources-excluded.md`.
+- **A `historical_fallback:` re-stamp is a stale price under a fresh date, not an
+  observation.** When a day's collection misses an item, `collectors/pipeline.py:236-248`
+  re-writes a quote up to 7 days old under *today's* `day`, prefixing the original source
+  (`historical_fallback:<source>`). The production voted path already excludes it inline
+  (`forecaster.py`'s DB and DuckDB reads), but every archive-globbing loader that bypasses
+  the voted path kept it, so a stale print entered features and labels under a fresh date.
+  The rule is `historical_fallback_sql_filter` / `HISTORICAL_FALLBACK_PREFIX`, NULL-safe like
+  the bid filter and applied by `archive_universe_sql_filter` only when a `source` column is
+  present. Worth **12,655 rows over 2026-07-11..16**, on the cohort that failed to match that
+  day. This changed no voted cache (production already filtered it), so **no
+  `VOTED_CACHE_VERSION` bump**. See `docs/changelog/2026-08-19-historical-fallback-universe-filter.md`.
 - **A name that prices several assets is not in the universe.** Every Doppler and Gamma
   Doppler `market_hash_name` collapses its phases into one series, and the quoted headline is
   the *cheapest* phase 95.5% of the time — so the series steps when the cheapest phase

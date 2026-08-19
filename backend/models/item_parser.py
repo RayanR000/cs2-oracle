@@ -95,6 +95,28 @@ def bid_sources_sql_filter(column: str = "source") -> str:
     return f"({column} IS NULL OR {column} NOT IN ({quoted}))"
 
 
+# `historical_fallback:<source>` rows are a re-stamped stale price: when a day's
+# collection misses an item, `collectors/pipeline.py:236-248` re-writes a quote up
+# to 7 days old under *today's* `day`, prefixing the original source. Production
+# already drops them (`forecaster.py`'s DB and DuckDB voted reads both spell the
+# exclusion), but every archive-globbing loader that bypasses the voted path —
+# `walkforward_backtest.py`, the `ab_test_*` harnesses — kept them, so a stale
+# print entered features and labels under a fresh date. 12,655 rows over exactly
+# six days (2026-07-11..16), on the cohort that failed to match that day. See
+# docs/research/2026-08-19-deep-model-review.md 1d.
+HISTORICAL_FALLBACK_PREFIX = "historical_fallback:"
+
+
+def historical_fallback_sql_filter(column: str = "source") -> str:
+    """SQL predicate dropping re-stamped stale-fallback rows from an archive read.
+
+    NULL-safe like `bid_sources_sql_filter`: `source` is NULL for the whole
+    pre-2026 series and a bare `NOT LIKE` over a NULL evaluates to NULL, which
+    silently drops 13 years of prices.
+    """
+    return f"({column} IS NULL OR {column} NOT LIKE '{HISTORICAL_FALLBACK_PREFIX}%')"
+
+
 # Keys that are a second copy of an item already in the universe. The archive's
 # `item_slug` is `items.item_id` verbatim, and two writers keyed rows on
 # something other than the `market_hash_name` every other inserter uses:
@@ -151,14 +173,16 @@ def archive_universe_sql_filter(slug_column: str = "item_slug",
     different price consensus than the model it was advising.
 
     Pass ``source_column=None`` for a read whose relation genuinely has no
-    `source` column. That is safe only because the bid sources are all 2026
-    aggregator feeds: a file old enough to lack the column is old enough to
-    contain none of them. The slug rules carry no such caveat and always apply.
+    `source` column. That is safe only because the bid sources and the
+    ``historical_fallback:`` re-stamps are all 2026 feeds: a file old enough to
+    lack the column is old enough to contain none of them. The slug rules carry
+    no such caveat and always apply.
     """
     parts = [phase_collapsed_sql_filter(slug_column),
              phantom_slug_sql_filter(slug_column)]
     if source_column:
         parts.append(bid_sources_sql_filter(source_column))
+        parts.append(historical_fallback_sql_filter(source_column))
     return " AND ".join(parts)
 
 
