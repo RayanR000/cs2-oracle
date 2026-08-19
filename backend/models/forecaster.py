@@ -131,9 +131,14 @@ PRICE_TIER_BOUNDARIES = [(0, 1, "<$1"), (1, 5, "$1-5"), (5, 20, "$5-20"),
 BIAS_EWMA_ALPHA = 0.3
 
 # Direction upweight: multiplier for positive-return samples during training.
-# Counteracts the model's conservative bias (underpredicts "up" by ~2×).
-# Applied in _compute_sample_weights before normalization.
-DIRECTION_UPWEIGHT = 1.5
+# Applied in _compute_sample_weights before normalization. Set to 1.0 (neutral)
+# on 2026-08-19: at 1.5 it did not correct direction — the sign is supplied by
+# the classifier — it biased the q50 |mid| so the served median sat at the
+# ~58th-60th percentile (P(actual<mid) = 0.60/0.65/0.71), the biased centre the
+# signed conformal band otherwise absorbs post-hoc. Env-overridable so the 1.5
+# control can be reproduced for the paired read; the durable default is 1.0.
+# See docs/changelog/2026-08-19-direction-upweight-neutral.md.
+DIRECTION_UPWEIGHT = float(os.environ.get("DIRECTION_UPWEIGHT", "1.0"))
 
 # Recency half-life, in days, for time-decayed sample weights: a row `h` days
 # older than the newest row in the frame carries 0.5× the gradient weight.
@@ -7592,6 +7597,10 @@ class ItemForecaster:
                                                 beta, learned_scale=learned)
         self.conformal_q_lo[horizon] = q_lo
         self.conformal_q_hi[horizon] = q_hi
+        logger.info(
+            f"  {horizon}d centre-bias: P(actual<mid)={float((resid < 0).mean()):.3f} "
+            f"n={len(resid)} q_lo={q_lo:.3f} q_hi={q_hi:.3f} "
+            f"(DIRECTION_UPWEIGHT={DIRECTION_UPWEIGHT})")
         if self.sigma_exponent_enabled():
             if conformal.beta_was_clamped(resid, sigma,
                                           min_rows=self.MIN_CALIBRATION_ROWS):
