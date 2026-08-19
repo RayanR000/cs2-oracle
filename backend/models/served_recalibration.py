@@ -44,7 +44,9 @@ FACTOR_MAX = 2.0
 # is the forecast_date. Set this to the date the signed band served its FIRST prod forecast.
 # Until then every stored row is old-geometry, so the multiplier stays dormant (the caller gets
 # {}) regardless of the date count — an unfiltered factor would calibrate the wrong band.
-SIGNED_BAND_SERVING_START: Optional[str] = None  # ISO date, e.g. "2026-08-25"; set at deploy.
+SIGNED_BAND_SERVING_START: Optional[str] = "2026-08-19"  # first clean signed-band prod serve
+# (deployed via full-retrain run 32293991440; 2026-08-18 excluded — a symmetric predict-only serve
+# preceded the retrain overwrite on that date, so its geometry is ambiguous).
 
 # The columns the estimator needs from forecast_outcomes.
 PANEL_COLUMNS = (

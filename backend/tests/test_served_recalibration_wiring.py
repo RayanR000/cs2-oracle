@@ -87,14 +87,21 @@ def test_training_computes_and_stores_the_factor(_stub=None):
     assert "self.served_coverage_factor" in src
 
 
-def test_feedback_is_dormant_until_the_cutover_is_set(_stub=None):
-    """With SIGNED_BAND_SERVING_START unset (today), served_coverage_factors returns {} without
-    ever reading the panel — the whole store is pre-signed-band geometry. A session whose every
-    attribute access raises proves the panel is not touched."""
-    assert SIGNED_BAND_SERVING_START is None                  # the shipped default
-
+def test_feedback_is_dormant_when_the_cutover_is_unset(_stub=None):
+    """With no cutover (since=None), served_coverage_factors returns {} without ever reading the
+    panel — the whole store would be pre-signed-band geometry. A session whose every attribute
+    access raises proves the panel is not touched. (The shipped default is now a real date; the
+    dormancy is a property of since=None, exercised here explicitly.)"""
     class _Exploding:
         def __getattr__(self, name):
             raise AssertionError(f"panel was read ({name}) while feedback should be dormant")
 
-    assert served_coverage_factors(_Exploding(), [3, 7, 14, 30]) == {}
+    assert served_coverage_factors(_Exploding(), [3, 7, 14, 30], since=None) == {}
+
+
+def test_shipped_cutover_is_a_parseable_date(_stub=None):
+    """The deployed default must be a valid ISO date (or None) — a typo here would silently
+    filter every row out and keep the feedback dormant forever."""
+    import numpy as np
+    if SIGNED_BAND_SERVING_START is not None:
+        np.datetime64(SIGNED_BAND_SERVING_START)              # raises on a malformed date
