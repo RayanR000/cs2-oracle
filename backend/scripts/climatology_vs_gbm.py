@@ -49,7 +49,9 @@ ARCHIVE_DIR = Path(__file__).resolve().parent.parent.parent / "price-archive"
 SERVED_MIN_PRICE = 1.0         # the >=$1 cohort the band is actually served on
 HORIZONS = (3, 7, 14, 30)
 TARGET_COVERAGE = 0.80
-CALIB_FRACTION = 0.70          # earliest share of dates that fit climatology
+CALIB_FRACTION = 0.70          # (artifact mode) earliest share fitting climatology
+SCALE_FRACTION = 0.60         # archive mode: climatology scale fit before this
+CAL_FRACTION = 0.80           # archive mode: conformal lambda fit in [scale, cal)
 SHRINK_K = 20                  # n_i/(n_i+K) shrink of item -> tier dispersion
 N_BOOTSTRAP = 1000
 RNG_SEED = 42
@@ -72,16 +74,43 @@ def _load() -> pd.DataFrame:
     return df
 
 
-def _load_archive(start: str) -> pd.DataFrame:
+def _served_cohort_slugs() -> set:
+    """The trainable/backfilled cohort production serves from — the archive
+    derivation behind `_resolve_backfilled_slugs("serve")`: pre-2026 backfill
+    minus iflow-only history. Pure function of the archive (the DB's
+    `is_backfilled` is the synthetic local fixture, so it is not read)."""
+    import duckdb
+    from db.archive import prices_relation
+    from models.item_parser import archive_universe_sql_filter
+
+    con = duckdb.connect()
+    try:
+        rel = prices_relation(con, str(ARCHIVE_DIR),
+                              columns=["item_slug", "day", "source"])
+        rows = con.sql(f"""
+            SELECT DISTINCT item_slug FROM {rel} sub
+            WHERE day < DATE '2026-01-01'
+              AND source IS DISTINCT FROM 'buff_iflow'
+              AND {archive_universe_sql_filter("sub.item_slug", "sub.source")}
+        """).fetchall()
+    finally:
+        con.close()
+    return {r[0] for r in rows}
+
+
+def _load_archive(start: str, served_only: bool = False) -> pd.DataFrame:
     """Prod-faithful confirmation: vote the durable archive through the SAME
     static method the production loader calls, then engineer `price_std_60d`
     exactly as `engineer_features` does (row-based rolling 60, min_periods=1).
-    Restricted to the >=$1 served cohort. No model artifact is consulted here."""
+    Restricted to the >=$1 cohort, and to the served backfilled cohort when
+    `served_only`. No model artifact is consulted here."""
     import duckdb
 
     from db.archive import prices_relation
     from models.forecaster import ItemForecaster
     from models.item_parser import archive_universe_sql_filter
+
+    served = _served_cohort_slugs() if served_only else None
 
     con = duckdb.connect()
     try:
@@ -98,6 +127,9 @@ def _load_archive(start: str) -> pd.DataFrame:
         """).fetchdf()
     finally:
         con.close()
+
+    if served is not None:
+        raw = raw[raw["item_id"].isin(served)].copy()
 
     raw["date"] = pd.to_datetime(raw["date"])
     raw["price"] = pd.to_numeric(raw["price"], errors="coerce")
@@ -196,29 +228,53 @@ def _matched_width(abs_r: np.ndarray, w: np.ndarray) -> tuple[float, float]:
     return lam, lam * float(np.mean(ww))
 
 
+def _coverage_at_lambda(abs_r: np.ndarray, w: np.ndarray, lam: float) -> float:
+    ok = np.isfinite(abs_r) & np.isfinite(w) & (w > 0)
+    if not ok.any() or not np.isfinite(lam):
+        return np.nan
+    return float(np.mean(abs_r[ok] <= lam * w[ok]))
+
+
 def _run_horizon(df: pd.DataFrame, horizon: int, clip: dict) -> dict:
     d = df.copy()
     d["r"] = _forward_return_pct(d, horizon)
     d["w_gbm"] = _gbm_sigma(d, clip)
     d = d[np.isfinite(d["r"])].copy()
 
+    # Three temporal splits: climatology scale fit on the earliest, lambda
+    # (the conformal level) fit on the middle, coverage+width read on the
+    # latest — so both the width AND the coverage level are out of sample.
     dates = np.sort(d["date"].unique())
-    cut = dates[int(len(dates) * CALIB_FRACTION)]
-    calib = d[d["date"] < cut]
-    test = d[d["date"] >= cut].copy()
+    c1 = dates[int(len(dates) * SCALE_FRACTION)]
+    c2 = dates[int(len(dates) * CAL_FRACTION)]
+    scale_df = d[d["date"] < c1]
+    cal = d[(d["date"] >= c1) & (d["date"] < c2)].copy()
+    ev = d[d["date"] >= c2].copy()
 
-    # Climatology is fit on the calibration period's realised h-day returns.
-    calib_r = calib[["item_id", "tier", "r"]].rename(columns={"r": "r_h"})
-    test["w_clim"] = _climatology_halfwidth(
-        calib_r, test, "r_h") if not calib_r.empty else np.nan
+    scale_r = scale_df[["item_id", "tier", "r"]].rename(columns={"r": "r_h"})
+    for frame in (cal, ev):
+        frame["w_clim"] = (_climatology_halfwidth(scale_r, frame, "r_h")
+                           if not scale_r.empty else np.nan)
 
-    abs_r = test["r"].abs().to_numpy()
-    lam_g, mw_g = _matched_width(abs_r, test["w_gbm"].to_numpy())
-    lam_c, mw_c = _matched_width(abs_r, test["w_clim"].to_numpy())
+    def _method(wcol):
+        # lambda calibrated to 80% on `cal`, then coverage AND width read on `ev`.
+        lam, _ = _matched_width(cal["r"].abs().to_numpy(), cal[wcol].to_numpy())
+        w_ev = ev[wcol].to_numpy()
+        cov = _coverage_at_lambda(ev["r"].abs().to_numpy(), w_ev, lam)
+        ok = np.isfinite(w_ev) & (w_ev > 0)
+        width = float(lam * np.mean(w_ev[ok])) if ok.any() and np.isfinite(lam) else np.nan
+        return lam, cov, width
 
-    # Date-clustered bootstrap of the width ratio clim/gbm.
+    lam_g, cov_g, width_g = _method("w_gbm")
+    lam_c, cov_c, width_c = _method("w_clim")
+
+    # Matched-coverage width ratio on `ev` (both forced to exactly 80% there),
+    # with a date-clustered bootstrap — the apples-to-apples width read.
+    abs_ev = ev["r"].abs().to_numpy()
+    _, mw_g = _matched_width(abs_ev, ev["w_gbm"].to_numpy())
+    _, mw_c = _matched_width(abs_ev, ev["w_clim"].to_numpy())
     rng = np.random.default_rng(RNG_SEED)
-    by_date = {dt: g for dt, g in test.groupby("date")}
+    by_date = {dt: g for dt, g in ev.groupby("date")}
     keys = list(by_date.keys())
     ratios = np.empty(N_BOOTSTRAP)
     for b in range(N_BOOTSTRAP):
@@ -232,8 +288,10 @@ def _run_horizon(df: pd.DataFrame, horizon: int, clip: dict) -> dict:
 
     return {
         "horizon": horizon,
-        "n_test": int(len(test)),
-        "n_test_dates": int(test["date"].nunique()),
+        "n_eval": int(len(ev)),
+        "n_eval_dates": int(ev["date"].nunique()),
+        "gbm_cov": round(cov_g, 4),
+        "clim_cov": round(cov_c, 4),
         "gbm_mean_width_pct": round(mw_g, 3),
         "clim_mean_width_pct": round(mw_c, 3),
         "width_ratio_clim_over_gbm": round(mw_c / mw_g, 4) if mw_g else None,
@@ -253,24 +311,31 @@ def main() -> int:
     ap.add_argument("--clip", choices=("auto", "artifact"), default="auto",
                     help="archive mode: 'artifact' forces the persisted prod "
                          "sigma clip bounds instead of deriving them")
+    ap.add_argument("--served-cohort", action="store_true",
+                    help="archive mode: restrict to the served backfilled cohort "
+                         "(_resolve_backfilled_slugs), not the broad >=$1 universe")
     args = ap.parse_args()
 
-    df = _load_archive(args.start) if args.source == "archive" else _load()
+    df = (_load_archive(args.start, served_only=args.served_cohort)
+          if args.source == "archive" else _load())
     clip = _sigma_clip(df, args.source, args.clip)
-    print(f"[{args.source}] {len(df):,} rows, {df['item_id'].nunique():,} items, "
-          f"{df['date'].min().date()}..{df['date'].max().date()} | "
+    cohort = "served" if args.served_cohort else "all"
+    print(f"[{args.source}/{cohort}] {len(df):,} rows, {df['item_id'].nunique():,} "
+          f"items, {df['date'].min().date()}..{df['date'].max().date()} | "
           f"sigma clip floor={clip['floor']:.4f} cap={clip['cap']:.4f}\n")
-    print(f"{'h':>3} {'n_test':>9} {'dates':>6} {'GBM w%':>8} {'clim w%':>9} "
-          f"{'ratio':>7} {'90% CI':>18}")
+    print(f"{'h':>3} {'n_eval':>9} {'dates':>6} {'GBMcov':>7} {'climcov':>8} "
+          f"{'GBM w%':>8} {'clim w%':>9} {'ratio':>7} {'90% CI':>18}")
     for h in args.horizons:
         r = _run_horizon(df, h, clip)
         ci = f"[{r['ratio_ci90'][0]:.3f}, {r['ratio_ci90'][1]:.3f}]"
-        print(f"{r['horizon']:>3} {r['n_test']:>9,} {r['n_test_dates']:>6} "
+        print(f"{r['horizon']:>3} {r['n_eval']:>9,} {r['n_eval_dates']:>6} "
+              f"{r['gbm_cov']:>7} {r['clim_cov']:>8} "
               f"{r['gbm_mean_width_pct']:>8} {r['clim_mean_width_pct']:>9} "
               f"{r['width_ratio_clim_over_gbm']:>7} {ci:>18}")
-    print("\nratio = clim width / GBM width at matched 80% coverage. "
-          ">1 means the GBM is narrower (earns its place); "
-          "<=1 (CI incl.) means climatology matches or beats it.")
+    print("\nGBMcov/climcov = OUT-OF-SAMPLE marginal coverage (lambda fit on the "
+          "middle split, read on the last); target 0.80.")
+    print("ratio = clim width / GBM width at matched 80% coverage on the eval "
+          "split. <=1 (CI incl.) means climatology matches or beats the GBM.")
     return 0
 
 

@@ -88,6 +88,30 @@ small-sample artifact — the large prod-faithful panel shows climatology wins a
 bounds derived from the broad cohort instead (looser cap 2.42) the ratios are 0.41–0.43, i.e. the
 prod-clip figures above are the conservative read.
 
+## Gate #1 + #2 (served cohort, out-of-sample coverage) — 2026-08-19
+
+Before making climatology the *default* scale, two cheap gates (`--served-cohort`, a 3-way
+temporal split so both width AND the conformal level are out of sample: climatology fit on the
+earliest 60% of dates, λ fit on the next 20%, coverage+width read on the last 20%). Restricted to
+the trainable/backfilled **served** cohort (2,430 items, 190 eval dates), prod clip bounds:
+
+| h | GBM cov (OOS) | clim cov (OOS) | GBM w% | clim w% | ratio | 90% CI |
+|---|---|---|---|---|---|---|
+| 3 | 0.781 | 0.794 | 10.49 | 7.55 | **0.719** | [0.710, 0.728] |
+| 7 | 0.783 | 0.795 | 15.18 | 10.90 | **0.718** | [0.708, 0.731] |
+| 14 | 0.783 | 0.795 | 20.85 | 14.98 | **0.718** | [0.708, 0.729] |
+| 30 | 0.790 | 0.802 | 28.62 | 21.31 | **0.745** | [0.734, 0.755] |
+
+- **Gate #1 (width) PASS:** 26–28% narrower on the served cohort — smaller than the 44–47% on the
+  broad universe, but still large with tight CIs below 1 at every horizon.
+- **Gate #2 (coverage level) PASS:** climatology's out-of-sample marginal coverage (0.79–0.80) is
+  as close to, or closer to, 0.80 than the GBM's (0.78–0.79) — the tighter band does **not** cost
+  coverage.
+- **Caveat:** this is the archive/voted basis, not the production serving basis. The prod
+  over-coverage (87–91%) is a separate anchor-denominator issue that affects **both** scales
+  equally, so it does not change the relative verdict, but the *absolute* served coverage is
+  unresolved here — the served-panel A/B settles it before a default flip.
+
 ## Caveats
 
 - The centre is excluded (both centred at 0), justified by the <5%-of-width framing.
