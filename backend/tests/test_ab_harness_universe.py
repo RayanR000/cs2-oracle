@@ -30,6 +30,7 @@ from models.item_parser import (
     BID_SOURCES,
     archive_universe_sql_filter,
     bid_sources_sql_filter,
+    historical_fallback_sql_filter,
     phase_collapsed_sql_filter,
 )
 
@@ -68,6 +69,8 @@ def priced(tmp_path):
         ("AK-47 | Redline (Field-Tested)", "aggregator_buff163_buy"),
         ("★ Gut Knife | Doppler (Factory New)", "aggregator_sync"),
         ("Sticker | Doppler Poison Frog (Foil)", "aggregator_sync"),
+        # a re-stamped stale price: fresh `day`, prefixed source
+        ("AK-47 | Redline (Field-Tested)", "historical_fallback:aggregator_sync"),
     ]
     df = pd.DataFrame([
         {"item_slug": slug, "day": date(2026, 7, 10), "source": src,
@@ -93,7 +96,28 @@ class TestThePredicates:
 
     def test_the_bid_filter_drops_only_the_bid(self, priced):
         kept = _slugs(priced, bid_sources_sql_filter())
-        assert len(kept) == 5, "one bid row of six should go"
+        assert len(kept) == 6, "one bid row of seven should go"
+
+    def test_the_fallback_filter_drops_only_the_restamp(self, priced):
+        kept = _slugs(priced, historical_fallback_sql_filter())
+        assert len(kept) == 6, "one historical_fallback row of seven should go"
+        assert all("historical_fallback" not in s for s in kept)
+
+    def test_the_fallback_filter_keeps_the_null_source_era(self, priced):
+        """`NOT LIKE 'historical_fallback:%'` alone is NULL for a pre-2026 row and
+        would drop it; the predicate is NULL-safe."""
+        con = duckdb.connect()
+        try:
+            naive = con.sql(
+                f"SELECT count(*) FROM read_parquet('{priced}') "
+                f"WHERE source NOT LIKE 'historical_fallback:%'").fetchone()[0]
+            safe = con.sql(
+                f"SELECT count(*) FROM read_parquet('{priced}') "
+                f"WHERE {historical_fallback_sql_filter()}").fetchone()[0]
+        finally:
+            con.close()
+        assert naive == 4, "precondition: the naive predicate loses the NULL era"
+        assert safe == 6
 
     def test_the_bid_filter_keeps_the_null_source_era(self, priced):
         """`source NOT IN (...)` alone evaluates to NULL for a pre-2026 row and
@@ -108,12 +132,13 @@ class TestThePredicates:
                 f"WHERE {bid_sources_sql_filter()}").fetchone()[0]
         finally:
             con.close()
-        assert naive == 3, "precondition: the naive predicate loses the NULL era"
-        assert safe == 5
+        assert naive == 4, "precondition: the naive predicate loses the NULL era"
+        assert safe == 6
 
-    def test_the_universe_filter_applies_both_rules(self, priced):
+    def test_the_universe_filter_applies_all_rules(self, priced):
         kept = _slugs(priced, archive_universe_sql_filter())
-        # Both Doppler rows and the bid row go; the sticker exemption stays.
+        # Both Doppler rows, the bid row and the historical_fallback re-stamp go;
+        # the sticker exemption stays.
         assert kept == [
             "AK-47 | Redline (Field-Tested)",
             "AK-47 | Redline (Field-Tested)",
