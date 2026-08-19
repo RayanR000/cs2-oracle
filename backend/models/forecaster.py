@@ -5316,7 +5316,14 @@ class ItemForecaster:
 
         Items that move more get higher gradient weight; flat/dead items
         get down-weighted. Uses 30-day rolling std of daily returns as the
-        weight signal, clipped to [0.1, 99th percentile].
+        weight signal, winsorized to its [1st, 99th] percentile.
+
+        The signal is a FRACTION (median ~0.04 on the >=$1 cohort). A former
+        fixed 0.1 floor therefore sat 2.5x above the median and pinned 89% of
+        rows to one weight, and `.fillna(1.0)` gave the ~1.5% of rows with too
+        little history the maximum weight after clipping - both the inverse of
+        the intent. Percentile winsorization keeps the spread; no-history rows
+        get the median (neutral) rather than 1.0.
 
         Positive-return samples are additionally upweighted by DIRECTION_UPWEIGHT
         to counter the model's conservative bias (underpredicts "up" by ~2×).
@@ -5332,8 +5339,14 @@ class ItemForecaster:
             return None
         vol = tdf.groupby("item_id", group_keys=False)["price"].transform(
             lambda x: x.pct_change().rolling(30, min_periods=5).std()
-        ).fillna(1.0).values
-        vol = np.clip(vol, 0.1, np.percentile(vol, 99))
+        ).values
+        # No-history rows (fewer than 5 obs) have unknown volatility; fill with
+        # the median so they stay neutral instead of receiving the max weight.
+        median_vol = np.nanmedian(vol)
+        if not np.isfinite(median_vol):
+            median_vol = 1.0
+        vol = np.where(np.isnan(vol), median_vol, vol)
+        vol = np.clip(vol, np.percentile(vol, 1), np.percentile(vol, 99))
 
         target_col = f"target_return_{horizon}d"
         if target_col in tdf.columns and DIRECTION_UPWEIGHT != 1.0:

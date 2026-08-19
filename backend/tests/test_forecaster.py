@@ -2344,3 +2344,59 @@ class TestChunkedPrediction:
     def test_chunking_disabled_by_zero(self, forecaster, monkeypatch):
         monkeypatch.setenv("PREDICT_CHUNK_ITEMS", "0")
         assert forecaster._predict_chunk_items == 0
+
+
+class TestSampleWeights:
+    """`_compute_sample_weights` must not collapse to one weight.
+
+    The signal is a fraction (median ~0.04 on the >=$1 cohort). A former fixed
+    0.1 floor sat 2.5x above the median and pinned 89% of rows to one weight,
+    and `.fillna(1.0)` gave no-history rows the max weight after clipping — both
+    the inverse of "movers up, flat/dead down". See
+    docs/research/2026-08-19-deep-model-review.md 6b.
+    """
+
+    @staticmethod
+    def _frame():
+        rng = np.random.default_rng(0)
+        base = pd.Timestamp("2025-01-01")
+        n = 60
+        dates = [base + timedelta(days=d) for d in range(n)]
+        frames = []
+        for i in range(50):
+            scale = 0.005 if i < 40 else 0.15  # 40 flat, 10 volatile
+            price = 100 * np.cumprod(1 + rng.normal(0, scale, n))
+            frames.append(pd.DataFrame({
+                "item_id": f"it{i}", "date": dates, "price": price,
+                "target_return_7d": rng.normal(0, 0.1, n)}))
+        # A no-history item: too few observations for the rolling std.
+        frames.append(pd.DataFrame({
+            "item_id": "short",
+            "date": [base, base + timedelta(days=1), base + timedelta(days=2)],
+            "price": [10.0, 10.0, 10.0], "target_return_7d": [0.0, 0.0, 0.0]}))
+        return pd.concat(frames, ignore_index=True)
+
+    def test_weights_are_not_degenerate(self):
+        # Isolate the volatility signal from recency decay and direction upweight.
+        with patch("models.forecaster.SAMPLE_WEIGHT_HALFLIFE_DAYS", None), \
+             patch("models.forecaster.DIRECTION_UPWEIGHT", 1.0):
+            tdf = self._frame()
+            w = ItemForecaster._compute_sample_weights(tdf, 7)
+
+        # The old fixed floor pinned ~89% of rows to a single weight.
+        frac_at_min = np.mean(np.isclose(w, w.min()))
+        assert frac_at_min < 0.2, f"weights collapsed: {frac_at_min:.2%} at min"
+
+        flat = tdf["item_id"].isin([f"it{i}" for i in range(40)]).to_numpy()
+        vol = tdf["item_id"].isin([f"it{i}" for i in range(40, 50)]).to_numpy()
+        assert w[vol].mean() > w[flat].mean(), "movers must outweigh flat items"
+
+    def test_no_history_rows_are_not_max_weighted(self):
+        with patch("models.forecaster.SAMPLE_WEIGHT_HALFLIFE_DAYS", None), \
+             patch("models.forecaster.DIRECTION_UPWEIGHT", 1.0):
+            tdf = self._frame()
+            w = ItemForecaster._compute_sample_weights(tdf, 7)
+
+        short = (tdf["item_id"] == "short").to_numpy()
+        # Filled with the median, not 1.0 -> nowhere near the top of the range.
+        assert w[short].max() < np.percentile(w, 75)
