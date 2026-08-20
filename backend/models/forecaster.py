@@ -716,7 +716,12 @@ class ItemForecaster:
         | {"price_log", "macd_line", "macd_signal", "macd_histogram",
            "bb_upper", "bb_lower"}
     )
-    SHELVED_FEATURES = SHELVED_FEATURES | _DOLLAR_SCALE_FEATURES
+    #: Band-scale-only columns: the regime-reactive EWMA vols (CLIMATOLOGY_REACTIVE).
+    #: Engineered so the reactive multiplier can read them, but SHELVED so they
+    #: never reach the boosters (their _feature_group is "other", already outside
+    #: the price_technicals allowlist; shelving is belt-and-suspenders).
+    _REACTIVE_VOL_FEATURES = frozenset({"ewm_reactive_fast", "ewm_reactive_slow"})
+    SHELVED_FEATURES = SHELVED_FEATURES | _DOLLAR_SCALE_FEATURES | _REACTIVE_VOL_FEATURES
     # Horizons served as momentum (trailing return_Nd) instead of the ML median.
     # Superseded by the directional classifier (2026-07-24), which beats
     # momentum at every horizon including 30d — so this is now empty. Kept as a
@@ -980,6 +985,9 @@ class ItemForecaster:
         # Whether the band was CALIBRATED against the climatology scale. Same
         # matched-pair rule as the exceedance flag above. None = older meta.json.
         self._artifact_climatology_scale: Optional[bool] = None
+        # Whether the band was CALIBRATED with the regime-reactive multiplier on
+        # top of the climatology scale. Same matched-pair rule; None = older meta.
+        self._artifact_climatology_reactive: Optional[bool] = None
         # The median-price floor the artifact was TRAINED under. Load-bearing
         # only when the rank transform is on, and then it is load-bearing
         # absolutely: the transform's output depends on which items are in the
@@ -1350,6 +1358,40 @@ class ItemForecaster:
         if self._artifact_climatology_scale is not None:
             return self._artifact_climatology_scale
         return self.climatology_scale_enabled()
+
+    @staticmethod
+    def climatology_reactive_enabled() -> bool:
+        """Whether the climatology scale is MODULATED by recent volatility.
+
+        The static climatology scale (`CLIMATOLOGY_SCALE`) fixes one dispersion
+        level per item and never moves it, so it wins on volatile windows and
+        loses on calm ones (served-basis validation 2026-08-19). This arm scales
+        each served row by `clip(ewm_reactive_fast / ewm_reactive_slow, LO, HI)`
+        — a short-halflife date-aware EWMA of |return_1d| over a long-halflife one
+        — so the band flexes with how recent vol compares to the item's OWN recent
+        baseline while climatology keeps setting the cross-item level. The
+        multiplier is 1.0 (byte-identical to static climatology) when recent vol
+        equals the item's norm. (v1 used the lagging 60d sigma over a
+        calibration-era baseline and was refuted at serving 2026-08-20 for
+        widening the band on calm days; see the changelog.)
+
+        It is a MODIFIER of the climatology scale, not a fifth band denominator:
+        it has no effect unless climatology is the served scale. Applied at fit
+        time too, so `q_hat` is calibrated on the modulated scale (matched pair).
+        Off by default; only "1" enables. Serving follows the artifact via
+        `_climatology_reactive_served`.
+        """
+        return os.environ.get("CLIMATOLOGY_REACTIVE", "0") == "1"
+
+    def _climatology_reactive_served(self) -> bool:
+        """Whether predict() applies the reactive multiplier, per the artifact.
+
+        Same matched-pair rule as `_climatology_scale_served`: the multiplier was
+        folded into `q_hat` iff the artifact says so, so serving reads the artifact
+        and falls back to the environment only when none is loaded."""
+        if self._artifact_climatology_reactive is not None:
+            return self._artifact_climatology_reactive
+        return self.climatology_reactive_enabled()
 
     @staticmethod
     def conformal_served_basis_enabled() -> bool:
@@ -2236,6 +2278,21 @@ class ItemForecaster:
             df[f"return_{lag}d"] = (
                 (df["price"] - df[col]) / df[col].replace(0, np.nan) * 100
             ).clip(-500, 500)
+
+        # Date-aware EWMA of |return_1d|, fast and slow, for the regime-reactive
+        # band-scale multiplier (CLIMATOLOGY_REACTIVE). Date-aware (halflife as a
+        # Timedelta over the row's date) so a collection gap does not compress the
+        # window the way a row-based rolling std does — the exact lag that refuted
+        # the v1 arm. Causal (past-only). SHELVED, so the boosters never see them.
+        _abs_r1 = df["return_1d"].abs()
+        _tmp = pd.DataFrame({"item_id": df["item_id"], "d": df["_date_dt"],
+                             "r": _abs_r1}).sort_values(["item_id", "d"])
+        for col, hl in (("ewm_reactive_fast", self.CLIMATOLOGY_REACTIVE_FAST_HL),
+                        ("ewm_reactive_slow", self.CLIMATOLOGY_REACTIVE_SLOW_HL)):
+            ewm = _tmp.groupby("item_id", group_keys=False).apply(
+                lambda g: g["r"].ewm(halflife=pd.Timedelta(hl),
+                                     times=g["d"]).mean())
+            df[col] = ewm.reindex(df.index)
 
         df = df.drop(columns=["_date_dt"])
         # Re-bind groupby: the merges above returned new frames, so any earlier
@@ -7011,6 +7068,20 @@ class ItemForecaster:
     #: docs/research/2026-08-19-climatology-vs-gbm-band.md.
     CLIMATOLOGY_SHRINK_K = 20
 
+    #: Regime-reactive clip bounds (CLIMATOLOGY_REACTIVE=1): the fast/slow EWMA
+    #: vol ratio is clipped to this range before it modulates the static
+    #: climatology level, so one wild quote cannot blow the band up or a
+    #: stale-flat run collapse it.
+    CLIMATOLOGY_REACTIVE_LO = 0.5
+    CLIMATOLOGY_REACTIVE_HI = 2.0
+    #: Date-aware EWMA halflives (days) for the reactive multiplier's numerator
+    #: (fast, reactive to a spike) and denominator (slow, the item's own recent
+    #: baseline). Fast << slow so the ratio self-normalises per item near the
+    #: anchor. Fast ~9d reacts within ~1-2 weeks; the v1 arm's 60d rolling std
+    #: was refuted for lagging through calm periods after a spike.
+    CLIMATOLOGY_REACTIVE_FAST_HL = "9D"
+    CLIMATOLOGY_REACTIVE_SLOW_HL = "45D"
+
     def exceedance_probability(self, horizon: int,
                                rows: pd.DataFrame) -> Optional[np.ndarray]:
         """`P(the h-day move clears the round-trip cost)` for `rows`, from the
@@ -7055,6 +7126,12 @@ class ItemForecaster:
         if self._climatology_scale_served():
             clim = self._climatology_scale_for_rows(horizon, rows)
             if clim is not None:
+                # Regime-reactive modulation, following the artifact (matched
+                # pair). A missing baseline table => static scale, unchanged.
+                if self._climatology_reactive_served():
+                    mult = self._climatology_reactive_multiplier(rows)
+                    if mult is not None:
+                        clim = clim * mult
                 return clim
             # Flag on but no table for this horizon: fall through to sigma, which
             # is coherent because q_hat was then calibrated on sigma too.
@@ -7678,6 +7755,34 @@ class ItemForecaster:
             out[k] = v if np.isfinite(v) else g
         return out
 
+    def _climatology_reactive_multiplier(self, rows: pd.DataFrame):
+        """Per-row `clip(ewm_reactive_fast / ewm_reactive_slow, LO, HI)`, or None.
+
+        The static climatology scale is one level per item; this is the timing
+        multiplier that flexes it with how the item's RECENT realised vol
+        (`ewm_reactive_fast`, a short-halflife date-aware EWMA of |return_1d|)
+        compares to its OWN baseline (`ewm_reactive_slow`, a long-halflife EWMA).
+        Both are trailing and computed near the row's date, so the ratio is 1.0
+        when recent vol equals the item's norm (byte-identical to static
+        climatology), <1 on a genuinely calm day and >1 on a spike — self-
+        normalising per item, with no calibration-era baseline and no dependence
+        on the lagging 60d sigma (both defects the v1 arm was refuted for).
+
+        Stateless: it reads two columns and stores nothing. Returns None when the
+        frame lacks them (a stale engineered cache / older artifact), which tells
+        `band_scale` and the fit path to serve the static scale unchanged. A
+        non-finite or non-positive baseline leaves that row neutral (1.0)."""
+        if ("ewm_reactive_fast" not in rows.columns
+                or "ewm_reactive_slow" not in rows.columns):
+            return None
+        fast = rows["ewm_reactive_fast"].to_numpy(dtype=float)
+        slow = rows["ewm_reactive_slow"].to_numpy(dtype=float)
+        ok = (slow > 0) & np.isfinite(slow) & np.isfinite(fast)
+        with np.errstate(divide="ignore", invalid="ignore"):
+            ratio = np.where(ok, fast / slow, 1.0)
+        return np.clip(ratio, self.CLIMATOLOGY_REACTIVE_LO,
+                       self.CLIMATOLOGY_REACTIVE_HI)
+
     def _fit_climatology_scale(self, horizon: int, records_df: pd.DataFrame,
                                feature_frame: Optional[pd.DataFrame]):
         """Per-item climatology scale for the calibration rows, or None.
@@ -7713,6 +7818,19 @@ class ItemForecaster:
         rows = feature_frame.loc[records_df["row_index"].to_numpy()]
         scale = self._climatology_lookup(
             horizon, rows["item_id"].to_numpy(), rows["price"].to_numpy())
+        # Regime-reactive arm: fold the fast/slow-EWMA multiplier (read from the
+        # calibration rows' engineered columns) into the scale q_hat is
+        # calibrated against, so serving (matched pair) is coherent. Stateless —
+        # the columns ride the frame at serve time too.
+        if self.climatology_reactive_enabled():
+            mult = self._climatology_reactive_multiplier(rows)
+            if mult is not None:
+                scale = scale * mult
+            else:
+                logger.warning(
+                    f"  {horizon}d CLIMATOLOGY_REACTIVE=1 but the calibration "
+                    f"rows lack ewm_reactive_fast/slow — the reactive multiplier "
+                    f"is NOT in effect (static climatology q_hat).")
         logger.info(
             f"  {horizon}d climatology scale: {len(table):,} items, "
             f"median {float(np.nanmedian(scale)):.3f} on {scale.size:,} "
@@ -9972,6 +10090,10 @@ class ItemForecaster:
             # predict reconstructs the per-item scale from these — there is no
             # booster. Matched-pair rule: never difference a q_hat across this.
             "climatology_scale": self.climatology_scale_enabled(),
+            # Regime-reactive multiplier on the climatology scale. Matched-pair
+            # switch only — the multiplier is stateless (reads the engineered
+            # ewm_reactive_fast/slow columns at serve), so nothing else persists.
+            "climatology_reactive": self.climatology_reactive_enabled(),
             "climatology_scale_tables": {
                 str(h): cfg for h, cfg in self.climatology_scale.items()},
             # Provenance, not a serving switch. `predict` already converts a
@@ -10110,6 +10232,7 @@ class ItemForecaster:
         self._artifact_naive_init = meta.get("naive_init_score")
         self._artifact_exceedance_scale = meta.get("exceedance_scale")
         self._artifact_climatology_scale = meta.get("climatology_scale")
+        self._artifact_climatology_reactive = meta.get("climatology_reactive")
         # Rebuild the climatology lookup with the int keys the accessors expect
         # (JSON coerces tier keys to strings; item keys are already strings).
         self.climatology_scale = {

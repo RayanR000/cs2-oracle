@@ -207,6 +207,23 @@ on:
         required: false
         default: false
         type: boolean
+      # A MODIFIER of climatology_scale, not a fifth denominator: it multiplies
+      # the per-item climatology level by clip(ewm_reactive_fast/ewm_reactive_slow,
+      # 0.5, 2.0) — a short/long date-aware EWMA-vol ratio — so the band flexes
+      # with how recent vol compares to the item's own recent norm. Has NO effect
+      # unless climatology_scale is also on, so dispatch this arm with BOTH set,
+      # and its control with climatology_scale ONLY. Matched pair (folded into
+      # q_hat at fit), so the env var must be identical in the CV and replay
+      # steps. Local calm-anchor A/B (2026-08-20): narrows calm bands ~19% toward
+      # the 80% target and ~neutral on volatile anchors. ⚠️ Prod's clean replay
+      # anchors are all high-volatility, where this is ~neutral by design — read
+      # BAND COVERAGE + WIDTH, and expect the win to show only over calm served
+      # dates, not on this job's anchor set. meta.json carries climatology_reactive.
+      climatology_reactive:
+        description: 'Arm: regime-reactive multiplier ON climatology_scale (set BOTH; compare coverage+WIDTH)'
+        required: false
+        default: false
+        type: boolean
       # A training-ONLY arm, unlike every band arm above: time-decayed sample
       # weights (SAMPLE_WEIGHT_HALFLIFE_DAYS). It touches neither the label, the
       # features, nor calibration -- it reweights the training rows so the recent
@@ -507,6 +524,11 @@ jobs:
           # Serving follows meta.json's climatology_scale, but set it here so a
           # fresh dispatch that has not loaded an artifact still serves the arm.
           CLIMATOLOGY_SCALE: ${{ inputs.climatology_scale && '1' || '0' }}
+          # Matched-pair MODIFIER of climatology_scale: folded into q_hat at fit
+          # and read from the engineered ewm_reactive_* columns at serve, so it
+          # must be identical in the CV and replay steps. No effect unless
+          # CLIMATOLOGY_SCALE is on. meta.json carries climatology_reactive.
+          CLIMATOLOGY_REACTIVE: ${{ inputs.climatology_reactive && '1' || '0' }}
           # Rows per CV fold. Empty means "do not set it", which is what leaves
           # `ItemForecaster.CV_MAX_TRAIN_ROWS` (300,000) in charge -- an empty
           # env var would be read by `int(os.environ.get(...))` and raise, so the
@@ -583,6 +605,11 @@ jobs:
           # Serving follows meta.json's climatology_scale, but set it here so a
           # fresh dispatch that has not loaded an artifact still serves the arm.
           CLIMATOLOGY_SCALE: ${{ inputs.climatology_scale && '1' || '0' }}
+          # Matched-pair MODIFIER of climatology_scale: folded into q_hat at fit
+          # and read from the engineered ewm_reactive_* columns at serve, so it
+          # must be identical in the CV and replay steps. No effect unless
+          # CLIMATOLOGY_SCALE is on. meta.json carries climatology_reactive.
+          CLIMATOLOGY_REACTIVE: ${{ inputs.climatology_reactive && '1' || '0' }}
           # NOT provenance: this is the step the arm acts in. It changes the
           # served `current_price`, which is what the DOLLAR ERROR table below
           # scores -- and what `rankIC` divides by, which is why that column is
@@ -642,6 +669,11 @@ jobs:
           # Serving follows meta.json's climatology_scale, but set it here so a
           # fresh dispatch that has not loaded an artifact still serves the arm.
           CLIMATOLOGY_SCALE: ${{ inputs.climatology_scale && '1' || '0' }}
+          # Matched-pair MODIFIER of climatology_scale: folded into q_hat at fit
+          # and read from the engineered ewm_reactive_* columns at serve, so it
+          # must be identical in the CV and replay steps. No effect unless
+          # CLIMATOLOGY_SCALE is on. meta.json carries climatology_reactive.
+          CLIMATOLOGY_REACTIVE: ${{ inputs.climatology_reactive && '1' || '0' }}
           SERVE_OUTLIER_GATED_ANCHOR: ${{ inputs.serve_outlier_gated_anchor && '1' || '0' }}
           FORCE_HP_SEARCH: ${{ inputs.force_hp_search && '1' || '0' }}
         run: |
@@ -680,6 +712,12 @@ jobs:
           fi
           if [ "$EXCEEDANCE_SCALE" = "1" ]; then
             arms="${arms:+$arms+}exceedance_scale"
+          fi
+          if [ "$CLIMATOLOGY_SCALE" = "1" ]; then
+            arms="${arms:+$arms+}climatology"
+          fi
+          if [ "$CLIMATOLOGY_REACTIVE" = "1" ]; then
+            arms="${arms:+$arms+}reactive"
           fi
           # This one is NOT in meta.json -- it is serving-only, so the artifact
           # cannot describe it and the heading is the record.
