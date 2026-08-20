@@ -12,8 +12,10 @@ from unittest.mock import MagicMock
 import numpy as np
 import pandas as pd
 
+import models.served_recalibration as sr
 from models.forecaster import ItemForecaster
 from models.served_recalibration import (
+    CLIMATOLOGY_SERVING_START,
     FACTOR_MAX,
     FACTOR_MIN,
     SIGNED_BAND_SERVING_START,
@@ -100,8 +102,49 @@ def test_feedback_is_dormant_when_the_cutover_is_unset(_stub=None):
 
 
 def test_shipped_cutover_is_a_parseable_date(_stub=None):
-    """The deployed default must be a valid ISO date (or None) — a typo here would silently
+    """The deployed defaults must be valid ISO dates (or None) — a typo here would silently
     filter every row out and keep the feedback dormant forever."""
     import numpy as np
-    if SIGNED_BAND_SERVING_START is not None:
-        np.datetime64(SIGNED_BAND_SERVING_START)              # raises on a malformed date
+    for start in (SIGNED_BAND_SERVING_START, CLIMATOLOGY_SERVING_START):
+        if start is not None:
+            np.datetime64(start)                              # raises on a malformed date
+
+
+def test_geometry_floor_takes_the_latest_cutover(monkeypatch):
+    """Two band-geometry cutovers -> the panel floors to the LATER, so the factor is fit only on
+    rows served under the current band shape. A climatology cutover after the signed band wins;
+    one before it (or unset) leaves the signed-band floor in force."""
+    monkeypatch.setattr(sr, "SIGNED_BAND_SERVING_START", "2026-08-19")
+
+    monkeypatch.setattr(sr, "CLIMATOLOGY_SERVING_START", "2026-09-15")
+    assert sr._geometry_floor() == "2026-09-15"
+
+    monkeypatch.setattr(sr, "CLIMATOLOGY_SERVING_START", "2026-08-01")
+    assert sr._geometry_floor() == "2026-08-19"
+
+    monkeypatch.setattr(sr, "CLIMATOLOGY_SERVING_START", None)
+    assert sr._geometry_floor() == "2026-08-19"
+
+
+def test_geometry_floor_is_none_only_when_no_cutover_is_set(monkeypatch):
+    monkeypatch.setattr(sr, "SIGNED_BAND_SERVING_START", None)
+    monkeypatch.setattr(sr, "CLIMATOLOGY_SERVING_START", None)
+    assert sr._geometry_floor() is None
+
+
+def test_default_since_floors_the_panel_to_the_latest_cutover(monkeypatch):
+    """served_coverage_factors (no explicit since) reads the panel at _geometry_floor(), not the
+    signed-band start alone, once a later climatology cutover is set."""
+    monkeypatch.setattr(sr, "SIGNED_BAND_SERVING_START", "2026-08-19")
+    monkeypatch.setattr(sr, "CLIMATOLOGY_SERVING_START", "2026-09-15")
+
+    seen = {}
+
+    def _capture(session, horizons, *, since=None):
+        seen["since"] = since
+        import pandas as pd
+        return pd.DataFrame(columns=list(sr.PANEL_COLUMNS))
+
+    monkeypatch.setattr(sr, "_load_panel", _capture)
+    served_coverage_factors(object(), [3, 7, 14, 30])
+    assert seen["since"] == "2026-09-15"

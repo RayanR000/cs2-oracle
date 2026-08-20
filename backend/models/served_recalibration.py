@@ -48,6 +48,33 @@ SIGNED_BAND_SERVING_START: Optional[str] = "2026-08-19"  # first clean signed-ba
 # (deployed via full-retrain run 32293991440; 2026-08-18 excluded — a symmetric predict-only serve
 # preceded the retrain overwrite on that date, so its geometry is ambiguous).
 
+# The climatology band scale (CLIMATOLOGY_SCALE, on by default since 2026-08-19) is a SECOND band-
+# geometry change on the same panel: it replaces the sigma denominator with a per-item climatology
+# scale, so the served HALF-WIDTHS `r` reads differ from a sigma-scaled row's. A factor pooled
+# across this cutover blends two miscoverage regimes (sigma over-covers, climatology is near-
+# calibrated) and applies the blend to a climatology artifact, over-shrinking it. Set this to the
+# date the climatology band served its FIRST prod forecast (the first full-retrain deploy carrying
+# `climatology_scale: true` in meta.json). Left None until then: prod is still sigma-scaled, so the
+# signed-band floor alone is correct and the feedback need not restart its date count early.
+CLIMATOLOGY_SERVING_START: Optional[str] = None  # set to the climatology band's first prod serve
+
+# A sentinel distinguishing "caller did not pass since" from an explicit since=None (dormant).
+_UNSET = object()
+
+
+def _geometry_floor() -> Optional[str]:
+    """The forecast_date floor that isolates the CURRENT served band geometry.
+
+    Each configured start is a date on which a band-geometry change first served prod. The panel
+    must be floored to the LATEST of them: the multiplier is applied to an artifact carrying EVERY
+    change, and `r` reads the stored band shape, so any row served under an earlier geometry
+    calibrates a shape the current band no longer has. Returns None only when no cutover is set
+    (SIGNED_BAND_SERVING_START unset), which drives the dormancy in `served_coverage_factors`.
+    Read at call time so the constants can be monkeypatched in tests."""
+    starts = [s for s in (SIGNED_BAND_SERVING_START, CLIMATOLOGY_SERVING_START)
+              if s is not None]
+    return max(starts) if starts else None  # ISO dates order lexically
+
 # The columns the estimator needs from forecast_outcomes.
 PANEL_COLUMNS = (
     "forecast_date", "horizon_days", "price_tier",
@@ -155,22 +182,27 @@ def _load_panel(session, horizons: Iterable[int], *,
 def served_coverage_factors(session, horizons: Iterable[int], *,
                             min_dates: int = MIN_FORECAST_DATES,
                             alpha: float = ALPHA,
-                            since: Optional[str] = SIGNED_BAND_SERVING_START) -> Dict[int, float]:
+                            since: Optional[str] = _UNSET) -> Dict[int, float]:
     """Per-horizon served-coverage q_hat multipliers, or an empty map.
 
     Returns {} on any read failure or when no horizon clears the gate, so a missing/empty panel
     (the data-blocked default today) leaves the band byte-identical to a no-feedback artifact.
 
-    Returns {} outright when `since` is None (SIGNED_BAND_SERVING_START unset): the whole panel is
-    then pre-signed-band geometry, and a factor fit on it would calibrate the wrong band shape and
-    apply it to the signed offsets. The feedback stays dormant until the cutover date is set.
+    `since` defaults to `_geometry_floor()` — the latest of the configured band-geometry cutovers
+    (signed band, climatology scale) — so the factor is fit only on rows served under the band
+    shape it will be applied to. Returns {} outright when that floor is None (no cutover set): the
+    whole panel is then pre-signed-band geometry, and a factor fit on it would calibrate the wrong
+    band shape and apply it to the signed offsets. The feedback stays dormant until a cutover is set.
     """
+    if since is _UNSET:
+        since = _geometry_floor()
     if session is None:
         return {}
     if since is None:
         logger.info(
-            "  served-coverage: SIGNED_BAND_SERVING_START unset; feedback dormant — the panel is "
-            "pre-signed-band geometry, so no q_hat correction is applied.")
+            "  served-coverage: no band-geometry cutover set (SIGNED_BAND_SERVING_START and "
+            "CLIMATOLOGY_SERVING_START both unset); feedback dormant — the panel is pre-signed-band "
+            "geometry, so no q_hat correction is applied.")
         return {}
     try:
         panel = _load_panel(session, horizons, since=since)
