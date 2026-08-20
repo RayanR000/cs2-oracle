@@ -348,6 +348,9 @@ def _write_forecasts_to_db(db, results, model_version, slug_to_id, today,
                 "model_version": model_version,
                 "anchor_clean": anchor_clean,
                 "anchor_wedge_pct": anchor_wedge_pct,
+                # One-sided P(upside move clears round-trip cost); None on an
+                # artifact with no exceedance head. Disclosure field, NULL-safe.
+                "exceed_p": fcast.get("exceed_p"),
                 "created_at": datetime.now(timezone.utc).replace(tzinfo=None),
             })
 
@@ -381,7 +384,7 @@ def _write_forecasts_to_db(db, results, model_version, slug_to_id, today,
         # behaviour rather than to an empty ranked surface.
         from sqlalchemy import inspect as sa_inspect
         db_cols = {c["name"] for c in sa_inspect(bind).get_columns(table.name)}
-        missing = {c for c in ("anchor_clean", "anchor_wedge_pct")
+        missing = {c for c in ("anchor_clean", "anchor_wedge_pct", "exceed_p")
                    if c not in db_cols}
         if missing:
             logger.warning(

@@ -173,6 +173,14 @@ class ItemForecast(Base):
     # effect is a cliff there or monotone in |p/S - 1| is not.
     anchor_clean = Column(Boolean, nullable=True)
     anchor_wedge_pct = Column(Float, nullable=True)
+    # P(the h-day move clears the round-trip cost), ONE-SIDED: the upside
+    # exceedance-head probability (`target_exceed_{h}d = ret > thr`, not
+    # `|move| > thr`). A disclosed magnitude signal, never a directional call
+    # (invariant 4) — the market-orthogonal quantity, served as its own field
+    # rather than folded into the band width. NULL means "not recorded": every
+    # row predating this column, and every row from an artifact with no
+    # exceedance head (EXCEEDANCE_HEAD off, or a degenerate <2-class horizon).
+    exceed_p = Column(Float, nullable=True)
     created_at = Column(DateTime, default=utcnow_naive)
 
     item = relationship("Item", back_populates="forecasts")

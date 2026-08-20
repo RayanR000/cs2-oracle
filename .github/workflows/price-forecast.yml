@@ -206,6 +206,16 @@ jobs:
           # two modes: train-only sets do_train unconditionally, and predict-only
           # never reads force_retrain.
           FORCE_RETRAIN: ${{ steps.mode.outputs.mode == 'full' && '1' || '0' }}
+          # Train + serve the exceedance head: P(the h-day upside move clears the
+          # round-trip cost), disclosed per item as item_forecasts.exceed_p
+          # (migration 0024). DECOUPLED from the band scale — the band stays on
+          # the winning CLIMATOLOGY_SCALE; this only adds ~4 boosters (~65s) and
+          # emits the probability. Off would mean no head and a NULL exceed_p.
+          # Pre-flip reliability validated on replay at 3 anchors (h3 ECE <1pp,
+          # h7 <2pp on 2/3; the outlier was a directional date, not miscalibration)
+          # — docs/changelog/2026-08-20-exceedance-served-signal.md. Inert in
+          # predict-only; the head appears at the next full / train-only retrain.
+          EXCEEDANCE_HEAD: "1"
         run: |
           echo "🔮 Mode: ${{ steps.mode.outputs.mode }}"
           set -o pipefail

@@ -577,7 +577,11 @@ def _served_rows(served: pd.DataFrame, h: int) -> pd.DataFrame:
                      "current": float(r["current_price"]),
                      "mid": float(f["mid"]),
                      "low": _f(f.get("low")),
-                     "high": _f(f.get("high"))})
+                     "high": _f(f.get("high")),
+                     # Phase A disclosure: P(upside move clears cost). NaN on an
+                     # artifact with no exceedance head; carried so the
+                     # reliability table can score it against realised outcomes.
+                     "exceed_p": _f(f.get("exceed_p"))})
     return pd.DataFrame(rows)
 
 
@@ -745,6 +749,78 @@ def _sigma_line(h: int, row: dict, n_strata: int = SIGMA_STRATA) -> str:
     label = f"{row['stratum']}/{n_strata}"
     return (f"{h:>4} {label:>8} {row['n']:>7} "
             f"{100 * row['cov']:>8.2f} {100 * row['halfw']:>8.2f}")
+
+
+RELIABILITY_BINS = 5
+
+
+def _reliability_rows(frame: pd.DataFrame, actual_ret,
+                      n_bins: int = RELIABILITY_BINS) -> list[dict]:
+    """Calibration of the exceedance head: predicted `exceed_p` vs the realised
+    exceedance rate, per fixed-width bin of predicted probability.
+
+    `exceed_p` is the served ONE-SIDED head probability (Phase A). The realised
+    outcome is `actual_ret > actionable_threshold(tier, csfloat)` — the SAME bar
+    `prepare_targets` builds the label on, one-sided (a down move never clears
+    it), tier taken from the anchor quote (`frame["current"]`) via the canonical
+    `scoring.price_tier`, so this cannot drift from the label's threshold.
+
+    Fixed-width bins over [0, 1] (not quantiles) so a bin means the same thing
+    across anchors and horizons — the point is whether a stated 0.8 realises ~80%
+    of the time. Returns [] when the artifact carries no head (`exceed_p` absent,
+    or all NaN), so the table is skipped rather than printed empty. `SPREAD_BY_TIER`
+    inside the threshold is a nearest-band approximation, not measured per tier
+    (backtest/friction.py) — the calibration inherits that caveat.
+    """
+    if "exceed_p" not in frame.columns:
+        return []
+    from backtest.friction import actionable_threshold
+    from backtest.scoring import price_tier
+
+    p = frame["exceed_p"].to_numpy(dtype=float)
+    ar = np.asarray(actual_ret, dtype=float)
+    cur = frame["current"].to_numpy(dtype=float)
+    ok = np.isfinite(p) & np.isfinite(ar) & np.isfinite(cur) & (cur > 0)
+    if not ok.any():
+        return []
+    p, ar, cur = p[ok], ar[ok], cur[ok]
+    thr = np.array([actionable_threshold(price_tier(float(c)), "csfloat")
+                    for c in cur])
+    realized = (ar > thr).astype(float)
+
+    edges = np.linspace(0.0, 1.0, n_bins + 1)
+    idx = np.clip(np.digitize(p, edges[1:-1]), 0, n_bins - 1)
+    rows = []
+    for b in range(n_bins):
+        m = idx == b
+        if not m.any():
+            continue
+        rows.append({"bin": b, "lo": float(edges[b]), "hi": float(edges[b + 1]),
+                     "n": int(m.sum()), "pred": float(p[m].mean()),
+                     "realized": float(realized[m].mean())})
+    return rows
+
+
+def _reliability_ece(rows: list[dict]) -> float:
+    """Expected calibration error: count-weighted mean |pred - realized| over the
+    populated bins. NaN when there are no rows (no head), so it never takes out
+    the table."""
+    n = sum(r["n"] for r in rows)
+    if n == 0:
+        return float("nan")
+    return sum(r["n"] * abs(r["pred"] - r["realized"]) for r in rows) / n
+
+
+RELIABILITY_HEADER = (f"{'h':>4} {'p-bin':>10} {'n':>7} {'pred%':>8} "
+                      f"{'realized%':>10}")
+
+
+def _reliability_line(h: int, row: dict) -> str:
+    """One probability bin. NaN-safe like `_coverage_line`, though a populated bin
+    always has finite pred/realized."""
+    label = f"{row['lo']:.1f}-{row['hi']:.1f}"
+    return (f"{h:>4} {label:>10} {row['n']:>7} "
+            f"{100 * row['pred']:>8.2f} {100 * row['realized']:>10.2f}")
 
 
 DOLLAR_HEADER = (f"{'h':>4} {'subset':>10} {'n':>7} {'model':>8} {'p90':>8} "
@@ -981,6 +1057,7 @@ def main() -> int:
         dollar_rows: list[tuple[int, dict]] = []
         coverage_rows: list[tuple[int, dict]] = []
         sigma_rows: list[tuple[int, list[dict]]] = []
+        reliability_rows: list[tuple[int, list[dict]]] = []
         for h in horizons:
             frame = _served_rows(served, h)
             if frame.empty:
@@ -1026,6 +1103,12 @@ def main() -> int:
             # same rows -- two coverage figures over different cohorts would not
             # be decomposable into each other.
             sigma_rows.append((h, _coverage_by_sigma_rows(frame)))
+            # Exceedance-head calibration on the SAME frame. Empty (skipped
+            # below) unless the artifact carries a head — EXCEEDANCE_HEAD off
+            # emits no exceed_p, and this is the pre-flip validation of it.
+            rel = _reliability_rows(frame, actual_ret.to_numpy())
+            if rel:
+                reliability_rows.append((h, rel))
 
         # The gate of the freshness experiment, and the only table here that two
         # arms can be compared on: rank IC above divides by the served quote,
@@ -1072,6 +1155,24 @@ def main() -> int:
                       f"{covs[-1] - covs[0]:>+8.2f}   "
                       f"mean |cov-nominal| pp, and the ramp (last - first). "
                       f"NOT level-matched: read beside cov% above.")
+
+        # Exceedance-head calibration: does a stated P(upside move > cost)
+        # realise at that rate? Printed only when the artifact carries a head
+        # (EXCEEDANCE_HEAD=1 at train time); otherwise there is no exceed_p to
+        # score and the block is silent. This is the pre-flip validation, the
+        # exceedance analogue of BAND COVERAGE — it runs on replayed forecasts
+        # because no served exceed_p exists in the outcomes store yet.
+        if reliability_rows:
+            print(f"\nEXCEEDANCE RELIABILITY @ {anchor}   "
+                  f"(pred vs realised P(actual_ret > cost); one-sided, "
+                  f"tier-thresholded; well-calibrated => pred% ~ realized%)")
+            print(RELIABILITY_HEADER)
+            for h, rel in reliability_rows:
+                for r in rel:
+                    print(_reliability_line(h, r))
+                print(f"{h:>4} {'ECE':>10} {'':>7} "
+                      f"{100 * _reliability_ece(rel):>8.2f}   "
+                      f"count-weighted mean |pred-realized| pp")
 
         if "--basis-sweep" in sys.argv:
             # The SAME served mids, scored against four label bases. Everything

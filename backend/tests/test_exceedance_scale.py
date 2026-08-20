@@ -81,6 +81,7 @@ def test_calibrate_uses_sigma_times_sqrt_p_and_keeps_beta_neutral(
     f = _forecaster(tmp_path)
     recs = _records()
     monkeypatch.setenv("EXCEEDANCE_SCALE", "1")
+    monkeypatch.setenv("CLIMATOLOGY_SCALE", "0")  # default-on since 2026-08-19; mutually exclusive
     monkeypatch.delenv("LEARNED_SCALE", raising=False)
     monkeypatch.delenv("SIGMA_EXPONENT", raising=False)
 
@@ -101,6 +102,7 @@ def test_calibrate_falls_back_to_sigma_when_no_exceed_p_column(
     f = _forecaster(tmp_path)
     recs = _records().drop(columns=["exceed_p"])
     monkeypatch.setenv("EXCEEDANCE_SCALE", "1")
+    monkeypatch.setenv("CLIMATOLOGY_SCALE", "0")  # default-on since 2026-08-19; mutually exclusive
     monkeypatch.delenv("LEARNED_SCALE", raising=False)
     monkeypatch.delenv("SIGMA_EXPONENT", raising=False)
 

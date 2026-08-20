@@ -1281,6 +1281,27 @@ class ItemForecaster:
         """
         return os.environ.get("EXCEEDANCE_SCALE") == "1"
 
+    @staticmethod
+    def exceedance_head_enabled() -> bool:
+        """Whether to TRAIN the exceedance head as a disclosed per-item output,
+        independent of whether the band uses it as a width scale.
+
+        The head predicts `P(the h-day move clears the round-trip cost)` — a
+        magnitude signal, never a directional call (invariant 4). Under
+        `EXCEEDANCE_SCALE` the band divides by `sigma * sqrt(p)` and the head is
+        trained for that; but the winning band scale is the climatology one
+        (`CLIMATOLOGY_SCALE`, on by default and mutually exclusive with it), so
+        with the flag off no head is fit and no `exceed_p` is produced at all.
+        This flag decouples the head's COMPUTATION from the band-scale flag, so
+        the probability can be served as its own product signal while the band
+        stays on climatology. `EXCEEDANCE_SCALE` implies it (the scale needs the
+        head). Off by default. Serving emits `exceed_p` whenever a head is present
+        in the artifact — head presence is self-describing, so the cutover follows
+        the artifact with no separate meta flag. Set EXCEEDANCE_HEAD=1. See
+        docs/superpowers/plans/2026-08-16-exceedance-band-scale-phase2-plan.md.
+        """
+        return os.environ.get("EXCEEDANCE_HEAD") == "1"
+
     def _exceedance_scale_served(self) -> bool:
         """Whether predict() applies the exceedance scale, following the artifact.
 
@@ -5764,13 +5785,14 @@ class ItemForecaster:
             # voided); reuses the direction head's tree params and served-cohort
             # reweighting. None where <2 classes survive (a degenerate horizon).
             #
-            # Gated on the flag: q_hat only becomes exceedance-based when the OOF
-            # exceed_p is computed in the CV path, which is itself flag-gated — so a
-            # head trained with the flag off is never served and never calibrated
-            # against, and training it would only add four boosters and four files
-            # to every production retrain for nothing. Flag off => byte-identical to
-            # the pre-Phase-2 artifact.
-            if self.exceedance_scale_enabled():
+            # Trained when EITHER the band uses it as a scale (EXCEEDANCE_SCALE) OR
+            # it is served as a disclosed output (EXCEEDANCE_HEAD). The two are
+            # decoupled: the band's q_hat only becomes exceedance-based when the OOF
+            # exceed_p is computed in the CV path (gated on EXCEEDANCE_SCALE alone,
+            # a matched pair), whereas the served `exceed_p` field needs only a head
+            # in the artifact. With both flags off no head is fit and the artifact is
+            # byte-identical to the pre-Phase-2 one.
+            if self.exceedance_scale_enabled() or self.exceedance_head_enabled():
                 _exc_start = time.time()
                 self.exceedance_models[horizon] = self._fit_exceedance_classifier(
                     X_train, train_set[f"target_exceed_{horizon}d"].to_numpy(),
@@ -6989,6 +7011,31 @@ class ItemForecaster:
     #: docs/research/2026-08-19-climatology-vs-gbm-band.md.
     CLIMATOLOGY_SHRINK_K = 20
 
+    def exceedance_probability(self, horizon: int,
+                               rows: pd.DataFrame) -> Optional[np.ndarray]:
+        """`P(the h-day move clears the round-trip cost)` for `rows`, from the
+        loaded exceedance head — FLAG-INDEPENDENT.
+
+        This is the disclosed product signal, not the band denominator, so it does
+        not read `_exceedance_scale_served`: whenever a head is present it is
+        served, whether the band uses climatology, sigma, or the exceedance scale.
+        A magnitude signal, never a directional call (invariant 4). Missing head
+        features are filled from `feature_medians`, exactly as the band-scale path
+        does. Clipped to (1e-3, 1] so a degenerate zero cannot be published as a
+        certainty. Returns None when this horizon has no head (a degenerate
+        <2-class horizon, or a pre-Phase-2 artifact) so the caller emits a null
+        field rather than a fabricated probability.
+        """
+        head = self.exceedance_models.get(horizon)
+        if head is None:
+            return None
+        cols = head.feature_name()
+        X = rows.reindex(columns=cols, fill_value=0).replace(
+            [np.inf, -np.inf], np.nan)
+        if not self.feature_medians.empty:
+            X = X.fillna(self.feature_medians.reindex(cols))
+        return np.clip(head.predict(X), 1e-3, 1.0)
+
     def band_scale(self, horizon: int, rows: pd.DataFrame, sigma):
         """The learned scale for a set of rows, or None to use `sigma ** beta`.
 
@@ -7016,14 +7063,8 @@ class ItemForecaster:
         # calibrated against sigma * sqrt(p_exceed) iff `_exceedance_scale_served`,
         # so applying it on any other artifact would serve a mismatched q_hat.
         if self._exceedance_scale_served():
-            head = self.exceedance_models.get(horizon)
-            if head is not None:
-                cols = head.feature_name()
-                X = rows.reindex(columns=cols, fill_value=0).replace(
-                    [np.inf, -np.inf], np.nan)
-                if not self.feature_medians.empty:
-                    X = X.fillna(self.feature_medians.reindex(cols))
-                p = np.clip(head.predict(X), 1e-3, 1.0)
+            p = self.exceedance_probability(horizon, rows)
+            if p is not None:
                 return np.asarray(sigma, dtype=float) * np.sqrt(p)
             # Flag on but no head for this horizon (degenerate): fall through to
             # sigma. q_hat for this horizon was calibrated on plain sigma too,
@@ -8568,6 +8609,14 @@ class ItemForecaster:
             # / `confidence` fields below; it no longer moves the price.
             # See docs/superpowers/specs/2026-08-19-signed-conformal-quantile-design.md.
 
+            # Disclosed exceedance probability: P(the h-day move clears the
+            # round-trip cost). Served whenever a head is in the artifact,
+            # independent of the band scale (climatology / sigma / exceedance);
+            # None on a pre-Phase-2 or degenerate-horizon artifact, and then the
+            # field is null. `latest_rows` is aligned to `item_id_arr`, the same
+            # frame band_scale scored above.
+            exceed_p_arr = self.exceedance_probability(horizon, latest_rows)
+
             _dir_name = {0: "down", 1: "flat", 2: "up"}
             fallback_n = 0
             fallback_flat = 0
@@ -8610,6 +8659,8 @@ class ItemForecaster:
                     "high": price_high,
                     "direction": direction,
                     "confidence": confidence,
+                    "exceed_p": (float(exceed_p_arr[i])
+                                 if exceed_p_arr is not None else None),
                 }
 
             self._warn_no_classifier(horizon, fallback_n, fallback_flat)
