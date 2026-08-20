@@ -23,6 +23,7 @@ defaults:
 
 permissions:
   issues: write
+  contents: read # required by actions/checkout; without it the token is contents:none and checkout 404s
 
 jobs:
   backtest:
