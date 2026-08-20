@@ -56,7 +56,10 @@ SIGNED_BAND_SERVING_START: Optional[str] = "2026-08-19"  # first clean signed-ba
 # date the climatology band served its FIRST prod forecast (the first full-retrain deploy carrying
 # `climatology_scale: true` in meta.json). Left None until then: prod is still sigma-scaled, so the
 # signed-band floor alone is correct and the feedback need not restart its date count early.
-CLIMATOLOGY_SERVING_START: Optional[str] = None  # set to the climatology band's first prod serve
+CLIMATOLOGY_SERVING_START: Optional[str] = "2026-08-20"  # first clean climatology prod serve
+# (climatology artifact cached by full-retrain run 32323684984; that run's predict re-wrote 2026-08-19
+# on top of an earlier sigma predict-only serve, so 08-19's geometry is mixed and excluded — the first
+# aggregator-chained predict-only serve on the climatology cache is 2026-08-20).
 
 # A sentinel distinguishing "caller did not pass since" from an explicit since=None (dormant).
 _UNSET = object()
