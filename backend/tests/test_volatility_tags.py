@@ -15,6 +15,7 @@ import pytest
 
 from api.volatility_tags import (
     swing_pct, compute_thresholds, label_for, build_ranking, tag_fields,
+    move_odds_calibrated, CALIBRATED_MOVE_ODDS_HORIZONS,
 )
 
 
@@ -145,6 +146,46 @@ class TestBuildRanking:
         assert out["r"] == "Volatile"
 
 
+class TestBuildRankingLabelFilter:
+    # same universe as TestBuildRanking: swings 5/10/15/20/25% ->
+    # full-universe tertiles give Stable={a,b}, Moderate={c}, Volatile={d,e}
+    def _universe(self):
+        return [
+            _row("a", "A", 100.0, 95.0, 105.0, 100.0, exceed_p=0.30),   # 5%
+            _row("b", "B", 100.0, 90.0, 110.0, 100.0, exceed_p=0.10),   # 10%
+            _row("c", "C", 100.0, 85.0, 115.0, 100.0, exceed_p=None),   # 15%
+            _row("d", "D", 100.0, 80.0, 120.0, 100.0, exceed_p=0.50),   # 20%
+            _row("e", "E", 100.0, 75.0, 125.0, 100.0, exceed_p=0.05),   # 25%
+        ]
+
+    def test_none_returns_whole_universe(self):
+        assert len(build_ranking(self._universe(), label=None)) == 5
+
+    def test_stable_returns_only_stable(self):
+        out = build_ranking(self._universe(), label="Stable")
+        assert {r["item_id"] for r in out} == {"a", "b"}
+        assert all(r["stability_label"] == "Stable" for r in out)
+
+    def test_volatile_returns_top_tertile_sorted(self):
+        out = build_ranking(self._universe(), label="Volatile")
+        # widest tertile {d,e}, default sort is swing descending
+        assert [r["item_id"] for r in out] == ["e", "d"]
+
+    def test_filter_is_on_full_universe_labels_not_a_re_tertiled_subset(self):
+        # THE correctness property: the label is computed over the whole
+        # universe, then filtered -- not by re-tertiling the filtered subset.
+        univ = self._universe()
+        full = {r["item_id"]: r["stability_label"] for r in build_ranking(univ)}
+        for want in ("Stable", "Moderate", "Volatile"):
+            got = {r["item_id"] for r in build_ranking(univ, label=want)}
+            assert got == {i for i, lbl in full.items() if lbl == want}
+
+    def test_limit_applies_after_label_filter(self):
+        # of the two Volatile items {d,e}, limit=1 keeps the widest (e)
+        out = build_ranking(self._universe(), label="Volatile", limit=1)
+        assert [r["item_id"] for r in out] == ["e"]
+
+
 class TestTagFields:
     thresholds = (0.10, 0.20)
 
@@ -168,3 +209,49 @@ class TestTagFields:
         out = tag_fields(0.0, 10.0, 0.0, exceed_p=0.2, thresholds=self.thresholds)
         assert out["expected_swing_pct"] is None
         assert out["stability_label"] is None
+
+    def test_move_odds_suppressed_at_uncalibrated_horizon(self):
+        # exceed_p is calibrated only at h3/h7 (replay ECE <1.3pp; ~3.8pp at h30),
+        # so an uncalibrated horizon must not publish the probability.
+        out = tag_fields(80.0, 120.0, 100.0, exceed_p=0.30,
+                         thresholds=self.thresholds, calibrated_move_odds=False)
+        assert out["move_odds"] is None
+        # swing and label are band-width, valid at every horizon
+        assert out["expected_swing_pct"] == pytest.approx(0.20)
+        assert out["stability_label"] == "Moderate"
+
+
+class TestMoveOddsCalibrated:
+    def test_true_for_short_horizons(self):
+        assert move_odds_calibrated(3) is True
+        assert move_odds_calibrated(7) is True
+
+    def test_false_for_long_horizons(self):
+        assert move_odds_calibrated(14) is False
+        assert move_odds_calibrated(30) is False
+
+    def test_calibrated_set_is_exactly_3_and_7(self):
+        assert set(CALIBRATED_MOVE_ODDS_HORIZONS) == {3, 7}
+
+
+class TestBuildRankingCalibration:
+    def _rows(self):
+        return [
+            _row("a", "A", 100.0, 80.0, 120.0, 100.0, exceed_p=0.30),
+            _row("b", "B", 100.0, 90.0, 110.0, 100.0, exceed_p=0.05),
+        ]
+
+    def test_move_odds_present_when_calibrated(self):
+        out = {r["item_id"]: r["move_odds"] for r in
+               build_ranking(self._rows(), calibrated_move_odds=True)}
+        assert out == {"a": 0.30, "b": 0.05}
+
+    def test_move_odds_nulled_when_uncalibrated(self):
+        ranked = build_ranking(self._rows(), calibrated_move_odds=False)
+        assert all(r["move_odds"] is None for r in ranked)
+        # swing/label untouched
+        assert all(r["expected_swing_pct"] is not None for r in ranked)
+
+    def test_default_keeps_move_odds(self):
+        out = {r["item_id"]: r["move_odds"] for r in build_ranking(self._rows())}
+        assert out == {"a": 0.30, "b": 0.05}

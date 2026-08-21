@@ -15,6 +15,19 @@ import numpy as np
 
 Thresholds = Tuple[float, float]
 
+#: Horizons at which the exceedance head's `exceed_p` (served as `move_odds`) is
+#: calibrated enough to publish. Replay reliability is ECE <1.3pp at h3/h7,
+#: ~1.7pp (borderline) at h14 and ~3.8pp at h30, so only 3 and 7 are trusted.
+#: Outside this set `move_odds` is suppressed (None) rather than published as a
+#: number the data does not support — the same "never fabricate" rule as
+#: `swing_pct`.
+CALIBRATED_MOVE_ODDS_HORIZONS: Tuple[int, ...] = (3, 7)
+
+
+def move_odds_calibrated(horizon: int) -> bool:
+    """Whether `move_odds` may be published at this horizon (h3/h7 only)."""
+    return horizon in CALIBRATED_MOVE_ODDS_HORIZONS
+
 
 def swing_pct(low: Optional[float], high: Optional[float],
               mid: Optional[float]) -> Optional[float]:
@@ -60,16 +73,20 @@ def label_for(swing: Optional[float], thresholds: Thresholds) -> Optional[str]:
 
 def tag_fields(low: Optional[float], high: Optional[float], mid: Optional[float],
                exceed_p: Optional[float],
-               thresholds: Optional[Thresholds]) -> dict:
+               thresholds: Optional[Thresholds],
+               calibrated_move_odds: bool = True) -> dict:
     """The three per-item tag fields from a band + exceed_p + universe thresholds.
 
-    Swing and move_odds are always derivable from the row alone; the label needs
-    the within-horizon universe thresholds and is None when they are unavailable
-    (empty universe) or the band is degenerate.
+    Swing is always derivable from the row alone; the label needs the
+    within-horizon universe thresholds and is None when they are unavailable
+    (empty universe) or the band is degenerate. `move_odds` is published only
+    when `calibrated_move_odds` (h3/h7); otherwise None, since the probability
+    is not trustworthy at that horizon (see `move_odds_calibrated`).
     """
     swing = swing_pct(low, high, mid)
     label = label_for(swing, thresholds) if thresholds is not None else None
-    return {"expected_swing_pct": swing, "move_odds": exceed_p,
+    move_odds = exceed_p if calibrated_move_odds else None
+    return {"expected_swing_pct": swing, "move_odds": move_odds,
             "stability_label": label}
 
 
@@ -77,13 +94,24 @@ _SORT_FIELDS = {"swing": "expected_swing_pct", "move_odds": "move_odds"}
 
 
 def build_ranking(rows: Iterable[Mapping], sort: str = "swing",
-                  order: str = "desc", limit: Optional[int] = None) -> List[dict]:
+                  order: str = "desc", limit: Optional[int] = None,
+                  calibrated_move_odds: bool = True,
+                  label: Optional[str] = None) -> List[dict]:
     """Rank a universe of forecast rows by volatility.
 
     Each input row carries ``item_id, name, current_price, low, high, mid,
     exceed_p``. Rows with no computable swing (no band) are dropped. The
     Stable/Moderate/Volatile label is assigned from the tertiles of THIS call's
     swing distribution, so it is relative-to-peers, not an absolute cutoff.
+
+    ``move_odds`` (from ``exceed_p``) is published only when
+    ``calibrated_move_odds`` (h3/h7); otherwise it is None on every row, since
+    the probability is not trustworthy at that horizon (see
+    ``move_odds_calibrated``).
+
+    ``label`` (Stable/Moderate/Volatile), when given, keeps only rows carrying
+    it. The label is computed over the WHOLE input first, so the filter selects
+    a tertile of the full universe -- it never re-tertiles the filtered subset.
 
     Sort key is ``swing`` (expected_swing_pct) or ``move_odds``; rows missing the
     sort value sort last in either direction. ``limit`` is applied after sorting.
@@ -98,7 +126,7 @@ def build_ranking(rows: Iterable[Mapping], sort: str = "swing",
             "name": r.get("name"),
             "current_price": r.get("current_price"),
             "expected_swing_pct": s,
-            "move_odds": r.get("exceed_p"),
+            "move_odds": r.get("exceed_p") if calibrated_move_odds else None,
             "stability_label": None,  # filled once thresholds are known
         })
     if not tagged:
@@ -107,6 +135,9 @@ def build_ranking(rows: Iterable[Mapping], sort: str = "swing",
     thresholds = compute_thresholds(t["expected_swing_pct"] for t in tagged)
     for t in tagged:
         t["stability_label"] = label_for(t["expected_swing_pct"], thresholds)
+
+    if label is not None:
+        tagged = [t for t in tagged if t["stability_label"] == label]
 
     field = _SORT_FIELDS.get(sort, "expected_swing_pct")
     have = [t for t in tagged if t[field] is not None]

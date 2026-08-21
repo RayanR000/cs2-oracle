@@ -21,9 +21,10 @@ from api.schemas import (
     EventImpactOut, FeatureImportanceOut, FeatureImportanceItem,
     SocialMentionOut, SocialSentimentSummaryOut, VolatilityRankOut,
 )
-from api.serving_policy import MIN_SERVED_PRICE_USD
+from api.serving_policy import MIN_SERVED_PRICE_USD, SERVED_HORIZONS
 from api.volatility_tags import (
     build_ranking, tag_fields, swing_pct, compute_thresholds,
+    move_odds_calibrated, CALIBRATED_MOVE_ODDS_HORIZONS,
 )
 
 router = APIRouter(prefix="/items", tags=["items"])
@@ -164,23 +165,44 @@ def get_volatility_ranking(
     order: str = Query("desc", pattern="^(asc|desc)$"),
     min_price: float = Query(MIN_SERVED_PRICE_USD, ge=0.0),
     limit: int = Query(100, ge=1, le=1000),
+    label: Optional[str] = Query(
+        None, pattern="^(Stable|Moderate|Volatile)$",
+        description="Keep only items with this stability class"),
     db: Session = Depends(get_db),
 ):
     """Rank the served universe by volatility for a horizon.
 
     Each item carries its expected swing (half-band / mid), its move odds
-    (`exceed_p`, the magnitude signal), and a Stable/Moderate/Volatile label
-    from the within-horizon universe tertiles. The label is relative-to-peers.
+    (`exceed_p`, the magnitude signal, published only at calibrated horizons
+    h3/h7), and a Stable/Moderate/Volatile label from the within-horizon
+    universe tertiles. The label is relative-to-peers. `label`, when given,
+    returns only that stability class (computed over the full universe first,
+    then filtered).
     """
+    if horizon not in SERVED_HORIZONS:
+        raise HTTPException(
+            status_code=400,
+            detail=(f"horizon must be one of "
+                    f"{', '.join(map(str, SERVED_HORIZONS))}; got {horizon}"),
+        )
+    if sort == "move_odds" and not move_odds_calibrated(horizon):
+        raise HTTPException(
+            status_code=400,
+            detail=(f"move_odds is calibrated only at horizons "
+                    f"{', '.join(map(str, CALIBRATED_MOVE_ODDS_HORIZONS))}; "
+                    f"cannot sort by it at horizon {horizon}"),
+        )
     return get_or_build(
-        f"items_volatility:{horizon}:{sort}:{order}:{min_price}:{limit}",
+        f"items_volatility:{horizon}:{sort}:{order}:{min_price}:{limit}:{label}",
         600,
-        lambda: _volatility_ranking(db, horizon, sort, order, min_price, limit),
+        lambda: _volatility_ranking(db, horizon, sort, order, min_price, limit,
+                                    label),
     )
 
 
 def _volatility_ranking(db: Session, horizon: int, sort: str, order: str,
-                        min_price: float, limit: int):
+                        min_price: float, limit: int,
+                        label: Optional[str] = None):
     from datetime import date, timedelta
 
     freshness_floor = date.today() - timedelta(days=MAX_ARCHIVE_LAG_DAYS)
@@ -218,7 +240,9 @@ def _volatility_ranking(db: Session, horizon: int, sort: str, order: str,
              low=r.price_low, high=r.price_high, mid=r.price_mid, exceed_p=r.exceed_p)
         for r in rows
     ]
-    ranked = build_ranking(universe, sort=sort, order=order, limit=limit)
+    ranked = build_ranking(universe, sort=sort, order=order, limit=limit,
+                            calibrated_move_odds=move_odds_calibrated(horizon),
+                            label=label)
     return [VolatilityRankOut(**t) for t in ranked]
 
 
@@ -652,7 +676,8 @@ def _prediction_parquet(item, period: str, horizon: int, thresholds=None):
     fl = r.price_low or current_price * 0.9
     fh = r.price_high or current_price * 1.1
     fm = r.price_mid or (fl + fh) / 2
-    tags = tag_fields(fl, fh, fm, _optional_float(r.exceed_p), thresholds)
+    tags = tag_fields(fl, fh, fm, _optional_float(r.exceed_p), thresholds,
+                      calibrated_move_odds=move_odds_calibrated(horizon))
     return PredictionOut(
         item_id=item.id,
         item_name=item.name,
@@ -711,7 +736,8 @@ def get_item_prediction(
         fl = forecast.price_low or current_price * 0.9
         fh = forecast.price_high or current_price * 1.1
         fm = forecast.price_mid or (fl + fh) / 2
-        tags = tag_fields(fl, fh, fm, forecast.exceed_p, thresholds)
+        tags = tag_fields(fl, fh, fm, forecast.exceed_p, thresholds,
+                          calibrated_move_odds=move_odds_calibrated(horizon))
         return PredictionOut(
             item_id=item.id,
             item_name=item.name,
