@@ -99,6 +99,16 @@ class PredictionOut(BaseModel):
     # item's tier spread -- the move a forecast must beat to imply a trade.
     tradeable: Optional[bool] = None
     est_roundtrip_cost_pct: Optional[float] = None
+    # Volatility/stability tags (v1). Derived from the served band + exceed_p; no
+    # new modelling. `expected_swing_pct` is the calibrated half-band as a
+    # fraction of the mid ("+/-X% over the horizon"). `move_odds` is the
+    # magnitude signal P(move > round-trip cost), straight from `exceed_p`; NULL
+    # on artifacts predating the exceedance head. `stability_label` ranks the
+    # swing against the within-horizon >=$1 universe tertiles, so it is
+    # relative-to-peers, not an absolute cutoff. See api/volatility_tags.py.
+    expected_swing_pct: Optional[float] = None
+    move_odds: Optional[float] = None
+    stability_label: Optional[str] = None
 
     @model_validator(mode="after")
     def _derive_tradeability(self) -> "PredictionOut":
@@ -108,6 +118,16 @@ class PredictionOut(BaseModel):
         self.tradeable = t.tradeable
         self.est_roundtrip_cost_pct = t.est_roundtrip_cost_pct
         return self
+
+
+class VolatilityRankOut(BaseModel):
+    """One row of the /items/volatility ranking. See api/volatility_tags.py."""
+    item_id: str
+    name: str
+    current_price: float
+    expected_swing_pct: float
+    move_odds: Optional[float] = None
+    stability_label: str
 
 
 class OpportunityOut(BaseModel):

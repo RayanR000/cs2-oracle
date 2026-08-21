@@ -19,7 +19,11 @@ from api.schemas import (
     ItemOut, PricePointOut, TrendAnalysisOut, PredictionOut,
     SourcePriceOut, MultiSourcePricesOut, EventOut, TrendingItemOut,
     EventImpactOut, FeatureImportanceOut, FeatureImportanceItem,
-    SocialMentionOut, SocialSentimentSummaryOut,
+    SocialMentionOut, SocialSentimentSummaryOut, VolatilityRankOut,
+)
+from api.serving_policy import MIN_SERVED_PRICE_USD
+from api.volatility_tags import (
+    build_ranking, tag_fields, swing_pct, compute_thresholds,
 )
 
 router = APIRouter(prefix="/items", tags=["items"])
@@ -151,6 +155,108 @@ def _build_trending(db: Session, limit: int):
         if latest_prices.get(row.Item.id, 0.0) > 0
     ]
     return result[:limit]
+
+
+@router.get("/volatility", response_model=list[VolatilityRankOut])
+def get_volatility_ranking(
+    horizon: int = Query(7, description="Forecast horizon in days"),
+    sort: str = Query("swing", pattern="^(swing|move_odds)$"),
+    order: str = Query("desc", pattern="^(asc|desc)$"),
+    min_price: float = Query(MIN_SERVED_PRICE_USD, ge=0.0),
+    limit: int = Query(100, ge=1, le=1000),
+    db: Session = Depends(get_db),
+):
+    """Rank the served universe by volatility for a horizon.
+
+    Each item carries its expected swing (half-band / mid), its move odds
+    (`exceed_p`, the magnitude signal), and a Stable/Moderate/Volatile label
+    from the within-horizon universe tertiles. The label is relative-to-peers.
+    """
+    return get_or_build(
+        f"items_volatility:{horizon}:{sort}:{order}:{min_price}:{limit}",
+        600,
+        lambda: _volatility_ranking(db, horizon, sort, order, min_price, limit),
+    )
+
+
+def _volatility_ranking(db: Session, horizon: int, sort: str, order: str,
+                        min_price: float, limit: int):
+    from datetime import date, timedelta
+
+    freshness_floor = date.today() - timedelta(days=MAX_ARCHIVE_LAG_DAYS)
+    subq = (
+        db.query(
+            ItemForecast.item_id,
+            ItemForecast.forecast_date,
+            ItemForecast.price_low,
+            ItemForecast.price_mid,
+            ItemForecast.price_high,
+            ItemForecast.current_price,
+            ItemForecast.exceed_p,
+        )
+        .filter(
+            ItemForecast.forecast_date >= freshness_floor,
+            ItemForecast.horizon_days == horizon,
+            ItemForecast.current_price >= min_price,
+        )
+        .distinct(ItemForecast.item_id)
+        .order_by(ItemForecast.item_id, desc(ItemForecast.forecast_date))
+        .subquery()
+    )
+    rows = (
+        db.query(
+            Item.item_id, Item.name,
+            subq.c.price_low, subq.c.price_mid, subq.c.price_high,
+            subq.c.current_price, subq.c.exceed_p,
+        )
+        .join(subq, Item.id == subq.c.item_id)
+        .filter(backfilled_item_clause())
+        .all()
+    )
+    universe = [
+        dict(item_id=r.item_id, name=r.name, current_price=r.current_price,
+             low=r.price_low, high=r.price_high, mid=r.price_mid, exceed_p=r.exceed_p)
+        for r in rows
+    ]
+    ranked = build_ranking(universe, sort=sort, order=order, limit=limit)
+    return [VolatilityRankOut(**t) for t in ranked]
+
+
+# The stability label on a single item is relative to that horizon's whole
+# universe, so a per-item lookup needs the universe's swing tertiles. Computing
+# them per request would query every served item; memoise per (horizon, day)
+# since the served bands do not change intra-day.
+_SWING_THRESHOLD_CACHE: dict = {}
+
+
+def _horizon_swing_thresholds(db: Session, horizon: int):
+    from datetime import date, timedelta
+
+    key = (horizon, date.today())
+    if key in _SWING_THRESHOLD_CACHE:
+        return _SWING_THRESHOLD_CACHE[key]
+
+    freshness_floor = date.today() - timedelta(days=MAX_ARCHIVE_LAG_DAYS)
+    subq = (
+        db.query(
+            ItemForecast.item_id, ItemForecast.forecast_date,
+            ItemForecast.price_low, ItemForecast.price_mid, ItemForecast.price_high,
+        )
+        .filter(
+            ItemForecast.forecast_date >= freshness_floor,
+            ItemForecast.horizon_days == horizon,
+            price_floor_clause(ItemForecast.current_price),
+        )
+        .distinct(ItemForecast.item_id)
+        .order_by(ItemForecast.item_id, desc(ItemForecast.forecast_date))
+        .subquery()
+    )
+    rows = db.query(subq.c.price_low, subq.c.price_mid, subq.c.price_high).all()
+    swings = [s for s in (swing_pct(r.price_low, r.price_high, r.price_mid)
+                          for r in rows) if s is not None]
+    thresholds = compute_thresholds(swings) if swings else None
+    _SWING_THRESHOLD_CACHE[key] = thresholds
+    return thresholds
 
 
 def _parse_item_name(name: str):
@@ -538,7 +644,7 @@ def _optional_float(v):
     return None if math.isnan(f) else f
 
 
-def _prediction_parquet(item, period: str, horizon: int):
+def _prediction_parquet(item, period: str, horizon: int, thresholds=None):
     r = _forecast_parquet(item.id, horizon)
     if r is None:
         return None
@@ -546,6 +652,7 @@ def _prediction_parquet(item, period: str, horizon: int):
     fl = r.price_low or current_price * 0.9
     fh = r.price_high or current_price * 1.1
     fm = r.price_mid or (fl + fh) / 2
+    tags = tag_fields(fl, fh, fm, _optional_float(r.exceed_p), thresholds)
     return PredictionOut(
         item_id=item.id,
         item_name=item.name,
@@ -561,6 +668,7 @@ def _prediction_parquet(item, period: str, horizon: int):
         # `_DictObj` returns None for a column the mirror predates.
         anchor_clean=_optional_bool(r.anchor_clean),
         anchor_wedge_pct=_optional_float(r.anchor_wedge_pct),
+        **tags,
     )
 
 
@@ -572,9 +680,10 @@ def get_item_prediction(
 ):
     item = _resolve_item(item_id, db)
     horizon = {"3_days": 3, "7_days": 7, "14_days": 14, "30_days": 30}[period]
+    thresholds = _horizon_swing_thresholds(db, horizon)
 
     try:
-        result = _prediction_parquet(item, period, horizon)
+        result = _prediction_parquet(item, period, horizon, thresholds)
         if result is not None:
             return result
     except Exception:
@@ -602,6 +711,7 @@ def get_item_prediction(
         fl = forecast.price_low or current_price * 0.9
         fh = forecast.price_high or current_price * 1.1
         fm = forecast.price_mid or (fl + fh) / 2
+        tags = tag_fields(fl, fh, fm, forecast.exceed_p, thresholds)
         return PredictionOut(
             item_id=item.id,
             item_name=item.name,
@@ -611,6 +721,7 @@ def get_item_prediction(
             forecast_high=fh,
             forecast_period=period,
             trend_direction=forecast.direction or "neutral",
+            **tags,
         )
 
     fl = current_price * 0.9
