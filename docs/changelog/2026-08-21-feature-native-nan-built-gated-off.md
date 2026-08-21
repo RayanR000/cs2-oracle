@@ -64,6 +64,21 @@ genuinely distinct (DA/rankIC differ). Control → arm:
   most damage. Effect is SMALLER than the fixed-booster probe, because the retrained
   booster learns proper NaN directions.
 
+## CI paired dispatch (2026-08-21) — confirmed on the production archive
+
+model-diagnostics runs on branch `feature-median-impute-fix`: control `32450733074`
+(off) vs arm `32450742482` (on), anchors 2026-06-15 + 2026-06-01, ≥$1. Matrix
+h3/7/14 green both arms; h30 job failed only on the benign anchor-cutover refusal
+(06-15's 30d window spans the 07-09 consensus break — un-replayable there, not the
+change; h30 covered locally at clean 06-01). Control → arm:
+
+- **Coverage identical** (≤0.2pp), **width identical** (≤0.06%).
+- **DA slightly higher for the arm in 5/6 cells** (06-15 h14 58.4→62.5; 06-01 h14
+  rankIC −0.007→+0.012). **Center dollar error flat**, ±0.1pp.
+
+Cleaner than the local read (which was mixed): on the fuller production archive the
+arm is a no-op on the band and a whisker better on the centre. No regression.
+
 ## Status
 
 BUILT, gated off, byte-identical when off. Paired retrain shows **zero regression**
