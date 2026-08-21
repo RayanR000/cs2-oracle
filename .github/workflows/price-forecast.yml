@@ -216,6 +216,16 @@ jobs:
           # — docs/changelog/2026-08-20-exceedance-served-signal.md. Inert in
           # predict-only; the head appears at the next full / train-only retrain.
           EXCEEDANCE_HEAD: "1"
+          # Feed NaN features to LightGBM's native handling instead of filling
+          # them with the training cross-sectional median. The long-return medians
+          # are strongly positive, so median-impute handed short-history /
+          # newly-eligible backfill items a multi-month uptrend they never had
+          # (deep-review §10.4). Correctness fix: paired retrain + CI dispatch
+          # (control 32450733074 vs arm 32450742482) show coverage/width identical
+          # (≤0.2pp / ≤0.06%), DA a whisker higher in 5/6 cells, centre flat — no
+          # regression. Off = byte-identical median impute. Builds at the next
+          # full / train-only retrain — docs/changelog/2026-08-21-feature-native-nan-built-gated-off.md.
+          FEATURE_NATIVE_NAN: "1"
         run: |
           echo "🔮 Mode: ${{ steps.mode.outputs.mode }}"
           set -o pipefail

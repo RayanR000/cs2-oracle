@@ -71,6 +71,11 @@ on:
         required: false
         default: false
         type: boolean
+      feature_native_nan:
+        description: 'Arm: leave NaN features for LightGBM native handling (no median impute; deep-review §10.4). Read dollar error + BAND COVERAGE'
+        required: false
+        default: false
+        type: boolean
       # C2. A within-date lambdarank booster trained ALONGSIDE the q50, read
       # through the same rank-IC path on the same folds. Unlike the arms above it
       # needs no paired control: both bars are intra-run and on the CLEAN ANCHOR
@@ -492,6 +497,11 @@ jobs:
           # it is on with reused HP. Read `rank_ic_edge` per horizon; the bar is
           # >= 0, and it is currently negative at all four.
           NAIVE_INIT_SCORE: ${{ inputs.naive_init_score && '1' || '0' }}
+          # Changes what the boosters SEE (NaN vs median-imputed), so it must be
+          # set on the training step. Serving follows meta.json's
+          # feature_native_nan (matched pair, like naive_init_score); read the
+          # effect on dollar error + BAND COVERAGE in the replay step.
+          FEATURE_NATIVE_NAN: ${{ inputs.feature_native_nan && '1' || '0' }}
           # C2. Adds a within-date ranker in the CV path; touches no served
           # artifact. Read on the CLEAN ANCHOR line's lr_rank_ic edges.
           LAMBDARANK: ${{ inputs.lambdarank && '1' || '0' }}
@@ -576,6 +586,9 @@ jobs:
           TIER_LEAD_FEATURE: ${{ inputs.tier_lead && '1' || '0' }}
           CROSS_SECTIONAL_RANK: ${{ inputs.cross_sectional_rank && '1' || '0' }}
           NAIVE_INIT_SCORE: ${{ inputs.naive_init_score && '1' || '0' }}
+          # Serving follows meta.json's feature_native_nan; set here for symmetry
+          # so a fresh dispatch that has not loaded an artifact serves the arm.
+          FEATURE_NATIVE_NAN: ${{ inputs.feature_native_nan && '1' || '0' }}
           # Carried for provenance only -- the replay builds its own labels from
           # the archive and never calls prepare_targets, so the arm cannot reach
           # the score. That is exactly why it is the referee for this flag.
@@ -655,6 +668,7 @@ jobs:
           CROSS_SECTIONAL_RANK: ${{ inputs.cross_sectional_rank && '1' || '0' }}
           SUPPLY_CHURN_FEATURES: ${{ inputs.supply_churn && '1' || '0' }}
           NAIVE_INIT_SCORE: ${{ inputs.naive_init_score && '1' || '0' }}
+          FEATURE_NATIVE_NAN: ${{ inputs.feature_native_nan && '1' || '0' }}
           LAMBDARANK: ${{ inputs.lambdarank && '1' || '0' }}
           LABEL_SMOOTHED_ANCHOR: ${{ inputs.label_smoothed_anchor && '1' || '0' }}
           CONFORMAL_SERVED_BASIS: ${{ inputs.conformal_served_basis && '1' || '0' }}
