@@ -36,6 +36,12 @@ from backtest.scoring import price_tier
 
 MIN_SERVED_PRICE_USD = 1.0
 
+#: The horizons a model is trained and served for (mirrors
+#: ``ItemForecaster.HORIZONS``, duplicated here so ``api/`` need not import the
+#: heavy forecaster module). Any other horizon has no forecasts, so a ranking
+#: request for it is rejected rather than served as a silently-empty list.
+SERVED_HORIZONS = (3, 7, 14, 30)
+
 
 class Tradeability(NamedTuple):
     """Whether acting on a served forecast can clear its trading costs.
