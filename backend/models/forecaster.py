@@ -977,6 +977,12 @@ class ItemForecaster:
         self._artifact_tier_lead: Optional[bool] = None
         self._artifact_xs_rank: Optional[bool] = None
         self._artifact_naive_init: Optional[bool] = None
+        # Whether the artifact was TRAINED leaving NaN features unfilled for
+        # LightGBM's native handling, instead of median-imputing them. Serving
+        # must follow the artifact: a model trained on imputed frames learned no
+        # NaN default-direction, so serving it with NaN passed through (or vice
+        # versa) is a train/serve mismatch. None = older meta.json, does not say.
+        self._artifact_feature_native_nan: Optional[bool] = None
         # Whether the band was CALIBRATED against sigma * sqrt(p_exceed). Serving
         # must follow this, not the environment: q_hat and the scale are a matched
         # pair, so a plain-sigma artifact reloaded with EXCEEDANCE_SCALE=1 in the
@@ -2751,6 +2757,48 @@ class ItemForecaster:
         if self._artifact_naive_init is not None:
             return self._artifact_naive_init
         return self.naive_init_score_enabled()
+
+    @staticmethod
+    def feature_native_nan_enabled() -> bool:
+        """Whether NaN features are left for LightGBM's native handling.
+
+        Off by default (median imputation, the historical behaviour). With it
+        on, `_impute_features` is a pass-through and NaN reaches the booster,
+        which learns a per-feature default split direction from the data.
+
+        The imputation it replaces injects a bullish prior: the training
+        cross-sectional median of `return_180d`/`120d`/`90d` is strongly
+        positive (~6.3 / 4.2 / 2.8), so a newly-eligible item with no long
+        history is served a coherent multi-month uptrend it never had. This is
+        deep-model-review §10.4. Read the before/after on short-history items via
+        scripts/replay_serving.py; TRAIN and SERVE must move together (a matched
+        pair like naive_init_score), which is why serving follows the artifact.
+        """
+        return os.environ.get("FEATURE_NATIVE_NAN") == "1"
+
+    def _feature_native_nan_served(self) -> bool:
+        """Whether the LOADED artifact was fitted with NaN passed through.
+
+        Same artifact-over-environment rule as _naive_init_score_served: the
+        booster's learned NaN default-direction only exists if it was trained
+        that way, so serving must follow the artifact, not the environment.
+        """
+        if self._artifact_feature_native_nan is not None:
+            return self._artifact_feature_native_nan
+        return self.feature_native_nan_enabled()
+
+    def _impute_features(self, X, medians, served: bool = False):
+        """Fill NaN features from `medians`, or pass NaN through under the flag.
+
+        `served=True` follows the artifact (predict path); otherwise the
+        environment (train/CV path). When off this is exactly `X.fillna(medians)`
+        — byte-identical to the pre-flag behaviour.
+        """
+        native = self._feature_native_nan_served() if served else \
+            self.feature_native_nan_enabled()
+        if native:
+            return X
+        return X.fillna(medians)
 
     @classmethod
     def _minus_return_1d(cls, frame) -> np.ndarray:
@@ -5630,10 +5678,12 @@ class ItemForecaster:
             X_train_pre = train_set[self.feature_cols].replace([np.inf, -np.inf], np.nan)
             feature_medians = X_train_pre.median()
             self.feature_medians = feature_medians
-            X_train = X_train_pre.fillna(feature_medians)
+            X_train = self._impute_features(X_train_pre, feature_medians)
             y_train = train_set[f"target_return_{horizon}d"]
 
-            X_val = val_set[self.feature_cols].replace([np.inf, -np.inf], np.nan).fillna(feature_medians)
+            X_val = self._impute_features(
+                val_set[self.feature_cols].replace([np.inf, -np.inf], np.nan),
+                feature_medians)
             y_val = val_set[f"target_return_{horizon}d"]
 
             # Sample weights: down-weight historically flat items so the
@@ -5900,9 +5950,13 @@ class ItemForecaster:
                         continue
 
                     # Use global HP params (reuse Optuna results from global)
-                    r_X_train = r_train[self.feature_cols].replace([np.inf, -np.inf], np.nan).fillna(feature_medians)
+                    r_X_train = self._impute_features(
+                        r_train[self.feature_cols].replace([np.inf, -np.inf], np.nan),
+                        feature_medians)
                     r_y_train = r_train[f"target_return_{horizon}d"]
-                    r_X_val = r_val[self.feature_cols].replace([np.inf, -np.inf], np.nan).fillna(feature_medians)
+                    r_X_val = self._impute_features(
+                        r_val[self.feature_cols].replace([np.inf, -np.inf], np.nan),
+                        feature_medians)
                     r_y_val = r_val[f"target_return_{horizon}d"]
 
                     r_train_weights = self._compute_sample_weights(r_train, horizon)
@@ -7104,7 +7158,8 @@ class ItemForecaster:
         X = rows.reindex(columns=cols, fill_value=0).replace(
             [np.inf, -np.inf], np.nan)
         if not self.feature_medians.empty:
-            X = X.fillna(self.feature_medians.reindex(cols))
+            X = self._impute_features(
+                X, self.feature_medians.reindex(cols), served=True)
         return np.clip(head.predict(X), 1e-3, 1.0)
 
     def band_scale(self, horizon: int, rows: pd.DataFrame, sigma):
@@ -8489,7 +8544,12 @@ class ItemForecaster:
         )) if self.horizon_feature_cols else self.feature_cols
 
         latest_clean = latest_rows.reindex(columns=all_feature_cols, fill_value=0).replace([np.inf, -np.inf], np.nan)
-        if not self.feature_medians.empty:
+        if self._feature_native_nan_served():
+            # Pass NaN through to LightGBM's native handling, matching how the
+            # loaded artifact was trained. No median imputation (which injects a
+            # bullish prior on short-history items; deep-model-review §10.4).
+            X_batch = latest_clean
+        elif not self.feature_medians.empty:
             medians_aligned = self.feature_medians.reindex(all_feature_cols)
             medians_aligned = medians_aligned.where(medians_aligned.notna(), latest_clean.median())
             X_batch = latest_clean.fillna(medians_aligned)
@@ -9009,10 +9069,12 @@ class ItemForecaster:
 
             X_train_pre = train_df[self.feature_cols].replace([np.inf, -np.inf], np.nan)
             fold_medians = X_train_pre.median()
-            X_train = X_train_pre.fillna(fold_medians)
+            X_train = self._impute_features(X_train_pre, fold_medians)
             y_train = train_df[f"target_return_{horizon}d"]
 
-            X_val = val_df[self.feature_cols].replace([np.inf, -np.inf], np.nan).fillna(fold_medians)
+            X_val = self._impute_features(
+                val_df[self.feature_cols].replace([np.inf, -np.inf], np.nan),
+                fold_medians)
             y_val = val_df[f"target_return_{horizon}d"]
 
             # Sample weights (same as main training loop)
@@ -10085,6 +10147,10 @@ class ItemForecaster:
             # booster fitted with the offset emits a residual, so predict has to
             # know to add `-return_1d` back. See _naive_init_score_served.
             "naive_init_score": self.naive_init_score_enabled(),
+            # Whether NaN features were left for LightGBM's native handling
+            # instead of median-imputed. Serving must follow this (matched
+            # pair): see _feature_native_nan_served.
+            "feature_native_nan": self.feature_native_nan_enabled(),
             "exceedance_scale": self.exceedance_scale_enabled(),
             # The climatology band scale: a serving switch AND its lookup tables.
             # predict reconstructs the per-item scale from these — there is no
@@ -10230,6 +10296,7 @@ class ItemForecaster:
         self._artifact_cohort_items = meta.get("train_cohort_items")
         self._artifact_xs_rank_skipped = meta.get("xs_rank_skipped_cols")
         self._artifact_naive_init = meta.get("naive_init_score")
+        self._artifact_feature_native_nan = meta.get("feature_native_nan")
         self._artifact_exceedance_scale = meta.get("exceedance_scale")
         self._artifact_climatology_scale = meta.get("climatology_scale")
         self._artifact_climatology_reactive = meta.get("climatology_reactive")
