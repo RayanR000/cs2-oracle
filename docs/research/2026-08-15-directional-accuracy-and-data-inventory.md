@@ -1,5 +1,21 @@
 # Directional accuracy: can it be improved, and do we have the data?
 
+> **Status (as of 2026-08-21): the short answer below HELD, and its item 1 shipped.**
+> The `P(|r| > cost)` target this doc ranked first was built and is now served as volatility /
+> stability tags (`changelog/2026-08-20-exceedance-served-signal.md`,
+> `…-volatility-stability-tags.md`). Everything else in the "different target or more calendar
+> time" framing is confirmed by later work:
+>
+> - **"Economically worthless" is now measured, not inferred** — the actionable strategy selects
+>   **zero** rows (`docs/research/2026-08-19-deep-model-review.md` §7); accuracy is not the blocker.
+> - **The horizon escape hatch is closed.** At h=90/180 the realised move *does* clear the
+>   friction bar, but selection is null (AUC 0.51–0.53, top-decile lift ≤1.0×) and the
+>   unconditional bet lost money in every out-of-sample window. **The product is range-only.**
+> - **"Every relative/cross-sectional arm is CV-positive and serving-negative"** gained two more
+>   confirmations since: the Steam−Buff basis (shelved 2026-08-19, see
+>   `2026-08-16-cross-venue-basis-steam-buff.md`) and recency weighting (a no-op at serving).
+
+
 **Date:** 2026-08-15
 **Scope:** an investigation, not a decision. Answers "how accurate is the model at direction,
 can it be improved, and is the data there for the surviving ideas." No code changed.

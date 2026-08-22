@@ -1,5 +1,14 @@
 # Next steps from the 2026-08-07 research review
 
+> ## 🧭 Chain notice added 2026-08-21 — this is **not** the current plan
+>
+> The next-steps chain runs `2026-08-07` → `08-09` → `08-10` → `08-13` → `08-14` → `08-16`.
+> The last document in the chain is **`docs/research/2026-08-16-next-steps.md`**, and even that
+> one has been overtaken: the live ranked plan is **§12 of
+> `docs/research/2026-08-19-deep-model-review.md`**, whose items 1–12 have all since landed.
+> Read the document below only for the *content* of a labelled item, never for what to do next.
+
+
 > ## ⚠️ Superseded for ordering — 2026-08-09
 >
 > **`docs/research/2026-08-09-next-steps.md` is the live action list.** It re-ranks steps 8–11 and

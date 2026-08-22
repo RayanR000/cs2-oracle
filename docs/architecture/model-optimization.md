@@ -17,13 +17,13 @@
 
 | Metric | Value |
 |--------|-------|
-| **Models** | **8** — 4 median GBMs (4H × 1Q × 1E) + 4 directional classifiers. ⚠️ **Was 36 global (4H × 3Q × 3E) + ≤108 regime, i.e. 40 files on disk.** Collapsed 2026-08-05 by the minimal-model rewrite (`1902aab`); see `docs/changelog/2026-08-04-minimal-model-results.md`. Regime models are still supported by the code and would be 3R × 4H × 1Q × 1E = ≤12; `predict()` falls back to global cleanly and logs `no regime models trained, using global` |
+| **Models** | **12** — 4 median GBMs (4H × 1Q × 1E) + 4 directional classifiers + 4 binary exceedance heads (`exceed_clf_{h}d.txt`, added 2026-08-16; the head serves the disclosed `exceed_p`, gated on `EXCEEDANCE_HEAD` — off in code, set to `1` in CI at `price-forecast.yml:218`, so a local retrain builds 8 and a CI one builds 12). ⚠️ **Was 36 global (4H × 3Q × 3E) + ≤108 regime, i.e. 40 files on disk.** Collapsed 2026-08-05 by the minimal-model rewrite (`1902aab`); see `docs/changelog/2026-08-04-minimal-model-results.md`. Regime models are still supported by the code and would be 3R × 4H × 1Q × 1E = ≤12; `predict()` falls back to global cleanly and logs `no regime models trained, using global` |
 | **Ensemble size** | `N_ENSEMBLES = 1` (seed 42; feature fraction 0.7). ⚠️ **Was 3** (seeds 42, 73, 91; fractions 0.6, 0.7, 0.8). The 3→1 collapse is **unmeasured** — the walkforward gate never ensembled, so it cannot resolve it. Argued safe for served DA on structural grounds only (the served direction comes from the classifier, which was never ensembled). If accuracy needs recovering, `N_ENSEMBLES = 2` is the first thing to try |
 | **Horizons** | 3d, 7d, 14d, 30d — **all GBDT**. ⚠️ **14d and 30d were DART.** Removing DART was measured as an *improvement* at 14d (+3.14pp paired DA, CI [+1.96, +4.37]) and neutral at 30d, against the spec's expectation that it was the riskiest change |
-| **Quantiles** | **p50 (0.5) only.** ⚠️ **Was p10/p50/p90.** The band now comes from split conformal around the single median model (`models/conformal.py`), not from quantile models: 24 p10/p90 GBMs cost 223.2s of a 381.2s budget for 39–48% empirical coverage against an 80% target. Retained for the record: an earlier version of this row read "p90 GBDT is broken (1-3 rounds, GOSS incompatibility)" — that was backwards. p90 was the healthiest GBDT quantile; **q50** was the collapsed one (7d q50 saved 1–2 trees), because GOSS was applied to q50 only and is degenerate under the quantile objective's constant ±alpha gradients. Fixed 2026-07-29 — see `docs/changelog/2026-07-29-q50-row-sampling.md` |
+| **Quantiles** | **p50 (0.5) only.** ⚠️ **Was p10/p50/p90.** The band comes from split conformal around the single median model (`models/conformal.py`), not from quantile models — and since 2026-08-19 its per-item scale is a **featureless climatology table** (`CLIMATOLOGY_SCALE`, default on) rather than the GBM `sigma`, with **signed** `(q_lo, q_hi)` offsets rather than one symmetric `q_hat`. See `docs/architecture/model.md` § Conformal prediction band. The original saving: 24 p10/p90 GBMs cost 223.2s of a 381.2s budget for 39–48% empirical coverage against an 80% target. Retained for the record: an earlier version of this row read "p90 GBDT is broken (1-3 rounds, GOSS incompatibility)" — that was backwards. p90 was the healthiest GBDT quantile; **q50** was the collapsed one (7d q50 saved 1–2 trees), because GOSS was applied to q50 only and is degenerate under the quantile objective's constant ±alpha gradients. Fixed 2026-07-29 — see `docs/changelog/2026-07-29-q50-row-sampling.md` |
 | **Boost rounds** | 1000, early stop 50 — unconditionally. ⚠️ **`DART_NUM_BOOST_ROUND = 500` and `BOOSTING_TYPE_MAP` are both deleted** (2026-08-05), along with every `!= "dart"` branch they selected; `BOOSTING_TYPE = "gbdt"` is now a scalar. The map was never mutated by anything, so DART was already unreachable — the only remaining hard-coded user was `scripts/ab_test_hp_search.py`, itself a shelved experiment, deleted with it. `tests/test_minimal_model_shape.py::test_dart_is_gone_from_the_forecaster` guards against re-entry |
-| **Features** | **47 columns** in the shipped 2026-08-05 artifact, identical across all four horizons (`meta.json: horizon_feature_cols`). That is the count *after* correlation pruning at 0.95, `SHELVED_FEATURES`, and `FEATURE_GROUP_ALLOWLIST = ["price_technicals"]`; every other feature group is engineered on every training row and then discarded, and the allowlist logs the drop as `pre -> post`. ⚠️ **An earlier version of this row read "~70–120 features, 8 groups"; that was the engineered count, not the served count, and the doc then contradicted itself further down.** Shelving the 13 volume features (their archive column has been identically 0 since 2026-05) took the served count to **36** in the 2026-08-06 artifact, and shelving the 37 dollar-denominated columns takes it to **32** on the next retrain (training smoke run, 2026-08-06 — see `docs/changelog/2026-08-06-scale-free-features-and-fabricated-labels.md`). `MODEL_ARTIFACT_VERSION` is now **5**; each bump exists to force the retrain rather than wait out the 14-day age trigger |
-| **Rows** | `max_feature_rows = 100_000`, overridable with **`TRAIN_FEATURE_ROWS`**. This is an item-coverage budget, not a row budget: it selects **99 whole item histories of ~5,377** (1.8% of the pool). See the dedicated section below |
+| **Features** | **47 columns** in the shipped 2026-08-05 artifact, identical across all four horizons (`meta.json: horizon_feature_cols`). That is the count *after* correlation pruning at 0.95, `SHELVED_FEATURES`, and `FEATURE_GROUP_ALLOWLIST = ["price_technicals"]`; every other feature group is engineered on every training row and then discarded, and the allowlist logs the drop as `pre -> post`. ⚠️ **An earlier version of this row read "~70–120 features, 8 groups"; that was the engineered count, not the served count, and the doc then contradicted itself further down.** Shelving the 13 volume features (their archive column has been identically 0 since 2026-05) took the served count to **36** in the 2026-08-06 artifact, shelving the 37 dollar-denominated columns took it to **33**, and shelving the five dead-weight columns on 2026-08-18 (`price_cv_20d`, `price_cv_30d`, `log_return_7d`, `autocorr_7d`, `rsi_missing` — paired drop-5 ablation null at all four horizons) takes it to **28**, the current count. `SHELVED_FEATURES` now holds **63** names. `MODEL_ARTIFACT_VERSION` is now **6**; each bump exists to force the retrain rather than wait out the 14-day age trigger |
+| **Rows** | `DEFAULT_TRAIN_FEATURE_ROWS = 1_200_000` with `DEFAULT_TRAIN_MIN_MEDIAN_PRICE = 1.0`, overridable with **`TRAIN_FEATURE_ROWS`** / **`TRAIN_MIN_MEDIAN_PRICE`**. ⚠️ **Was `100_000` with no price floor**, which selected **99 whole item histories of ~5,377** (1.8% of the pool); at the current defaults the ≥$1 cohort fits with **no subsample at all**. See the dedicated section below |
 | **HP search** | 3d skipped (frozen 50-trial winner, warm-started in `_optuna_search_params`), 7d=10 trials, 14d=15, 30d=15. Cold Optuna across all four horizons measured **39.4s** total and a warm retrain logs 0.0s, so HP search is no longer a meaningful cost centre |
 | **Warm retrain** | **176.7s** measured 2026-08-05 (10-core Mac, `SKIP_REGIMES=1 --train-only`, HP cached). ⚠️ **Was 381.2s** on the same machine and flags. Booster fitting fell 330.8s → 28.1s, but the out-of-fold conformal CV rose 50.4s → ~148.6s and was then **~84% of training**, so the bottleneck is calibration, not the model. ⚠️ **These are 100K-config numbers.** The shipped ≥$1 fixed-rounds config is an **872s** cold retrain in which CV is 439.3s / 50.4% — see "Where the time goes now" |
 | **Cold retrain** | **250.1s** measured 2026-08-05 (same flags, no cached HP; Optuna 39.4s). ⚠️ **Was 12m30s** measured 2026-07-29. The first post-rewrite run is necessarily cold: the artifact-version check refuses the pre-rewrite `meta.json` |
@@ -78,7 +78,7 @@ diagnostic classifier.
 
 **Feature engineering is 7s, not 35s**, at this config — see lever 2, which is sized against it.
 
-**`n_jobs = max(1, cpu_count // 2)`** (`forecaster.py:3866`) was vestigial from the
+**`n_jobs = max(1, cpu_count // 2)`** (now `forecaster.py:5846`) was vestigial from the
 parallel-ensemble code deleted 2026-07-21, and contradicted the comment above it; it has now been
 changed to `-1`. Expect less than it looks: LightGBM is memory-bandwidth bound at this frame shape,
 and 1 → 10 threads measured only **1.55×**, so thread count is worth ~25% of the booster-fit
@@ -94,14 +94,14 @@ measures no longer exist.
 
 The knob that was missing from this document entirely, and the largest single decision in it.
 
-`TRAIN_FEATURE_ROWS` (env) → `DEFAULT_TRAIN_FEATURE_ROWS = 100_000`
-(`scripts/forecast_prices.py:45`, parsed at :54, passed to `train(max_feature_rows=...)` at :265).
+`TRAIN_FEATURE_ROWS` (env) → `DEFAULT_TRAIN_FEATURE_ROWS = 1_200_000`
+(`scripts/forecast_prices.py:51`, parsed at :161, passed to `train(max_feature_rows=...)` at :552).
 An unparseable or non-positive value logs a warning and falls back to the default. Distinct from
-`TRAIN_HORIZON_MAX_ROWS = 700_000` (:50), which caps each horizon's slice *after* feature
+`TRAIN_HORIZON_MAX_ROWS = 1_200_000` (:58), which caps each horizon's slice *after* feature
 engineering and is not the coverage dial — the two are deliberately not unified, because one number
 would otherwise move coverage and the per-horizon cap at the same time.
 
-`_stratified_item_subsample()` (`forecaster.py:2419`, applied at :2496) spends the budget on
+`_stratified_item_subsample()` (`forecaster.py:5024`) spends the budget on
 **whole item histories** — stratified by rarity, full calendar window preserved, so lags and
 rolling features stay valid. It therefore decides how much of the item universe the model ever
 sees:
@@ -110,21 +110,22 @@ sees:
 |---|---|---|---|
 | 100,000 (default) | 99 of ~5,377 (**1.8%**) | **104.6s** | 2026-08-05 |
 | 700,000 | 646 (12%) | **468.7s** | 2026-08-05 |
-| 1,200,000 **with `TRAIN_MIN_MEDIAN_PRICE=1.0`** | 926 of 5,542 — the whole ≥$1 cohort, no subsample | **538s** | 2026-08-07 |
+| 1,200,000 **with `TRAIN_MIN_MEDIAN_PRICE=1.0`** — **the current default** | 926 of 5,542 — the whole ≥$1 cohort, no subsample | **538s** | 2026-08-07 |
 
 Raising it is a ~4.5× cost increase — more than the pre-rewrite 40-model grid cost — which spends
 the entire minimal-model saving to buy 12% of the pool, and **the fresh-model gate cannot detect
 the resulting accuracy difference**. So there is no measurement that would justify the spend, and
-it was explicitly declined; the rationale is in the code at `forecaster.py:2791-2806`.
+it was explicitly declined; the rationale is in the code around `train()` (`forecaster.py:5536`).
 
 **Two 2026-08-07 corrections to how that cost should be read.** First, the retrain runs on
 **Mondays only** (`price-forecast.yml`, `date +%u = 1`); every other day is predict-only, so a
 budget increase is a weekly cost, not a daily one. Second, the third row above is the cheaper way
 to buy coverage: the median-price floor drops the 82.56% of item-days that are sub-$1 *before* the
-budget is spent, so 538s buys the entire served cohort rather than 12% of the pool. It is
-**defaulted off**. `docs/changelog/2026-08-07-training-item-universe.md`.
+budget is spent, so 538s buys the entire served cohort rather than 12% of the pool. ⚠️ **It has
+been the shipped default since 2026-08-08** — an earlier version of this line said "defaulted
+off". `docs/changelog/2026-08-07-training-item-universe.md`.
 
-Lowering it below 100K is available but no longer buys much in absolute terms: booster fitting is
+Lowering it below the default is available but no longer buys much in absolute terms: booster fitting is
 only 28.1s, so the saving would arrive mostly through CV refits. Prefer `CV_STEP_DAYS`, which cuts
 the same phase directly without shrinking item coverage further.
 
@@ -145,8 +146,8 @@ the same phase directly without shrinking item coverage further.
 | `MAX_BIN` 255 → 63 | Jul 2026 | Roughly halves histogram build cost |
 | 7d HP search reduced (`N_TRIALS_MAP[7]` 15 → 10) | 2026-07-26 | Now worth ~0s: HP is cached on warm retrains and 39.4s total when cold. A full skip is available and not worth the edit |
 | `SKIP_HP_HORIZONS = [3]` | Jul 2026 | 3d frozen on its 50-trial winner |
-| Regime training skipped on warm retrains | Jul 2026 | `forecaster.py:3076` — also skipped whenever `SKIP_REGIMES=1`. ⚠️ **An earlier version of this row said `meta.json` currently carries `trained_regimes: []`, i.e. that regimes are effectively not trained. That is wrong.** The model-cache restore step in `price-forecast.yml` is `if: mode == 'predict-only'`, so the Monday `mode=full` run is **always cold**, `_warm_retrain` is False, and CI never sets `SKIP_REGIMES`. The deployed artifact carries `trained_regimes: ['bull','range','bear']` and 7 regime boosters, and `predict()` uses them — **95.4s / 10.9%** of the shipped retrain (re-measured 2026-08-09; was 54.1s / 11.1% under early stopping). A local retrain produces them too when it is cold and does not pass `SKIP_REGIMES=1` — 8 boosters, `trained_regimes: ['bear','bull','range']` — but the documented local command *does* pass it, so **the served model depends on where it was trained** (2026-08-08) |
-| Feature-group permutation validation skipped on warm retrains | Jul 2026 | `forecaster.py:3296`; also auto-skipped when the val window has <2000 rows or <7 distinct dates, where the permutation test is pure noise and caused false-positive pruning that collapsed 14d/30d to ~4 features |
+| ~~Regime training skipped on warm retrains~~ — **reverted**; only `SKIP_REGIMES=1` skips them now | Jul 2026 | `forecaster.py:5918` states `_warm_retrain` deliberately does NOT skip regimes any more. ⚠️ **An earlier version of this row said `meta.json` currently carries `trained_regimes: []`, i.e. that regimes are effectively not trained. That is wrong.** The model-cache restore step in `price-forecast.yml` is `if: mode == 'predict-only'`, so the Monday `mode=full` run is **always cold**, `_warm_retrain` is False, and CI never sets `SKIP_REGIMES`. The deployed artifact carries `trained_regimes: ['bull','range','bear']` and 7 regime boosters, and `predict()` uses them — **95.4s / 10.9%** of the shipped retrain (re-measured 2026-08-09; was 54.1s / 11.1% under early stopping). A local retrain produces them too when it is cold and does not pass `SKIP_REGIMES=1` — 8 boosters, `trained_regimes: ['bear','bull','range']` — but the documented local command *does* pass it, so **the served model depends on where it was trained** (2026-08-08) |
+| Feature-group permutation validation skipped on warm retrains | Jul 2026 | `forecaster.py:6503`; also auto-skipped when the val window has <2000 rows or <7 distinct dates, where the permutation test is pure noise and caused false-positive pruning that collapsed 14d/30d to ~4 features |
 | Voted frame cache in `fetch_price_history` | 2026-07-29 | **35s** measured, against a ~10 min estimate in a since-deleted planning doc — the estimate was wrong by ~17×. `VOTED_CACHE=0` disables. **Bump `VOTED_CACHE_VERSION` when voting or the DuckDB query changes**, or a stale frame silently trains the next model |
 | Engineered feature cache on the predict path (3-day TTL) | Jul 2026 | Removes feature engineering from most predict runs |
 | Predict tail truncation (`PREDICT_TAIL_ITEM_DAYS = 240`) | 2026-08-04 | 3.59M → 1.39M rows in 1.4s |
@@ -162,7 +163,7 @@ the same phase directly without shrinking item coverage further.
 
 | # | Lever | Change | Speed gain | Quality risk |
 |---|-------|--------|-----------|--------------|
-| **1** | **Widen the CV stride** | `CV_STEP_DAYS` 150 → higher. Env-overridable, no code edit (`forecaster.py:316`) | Cuts folds ~linearly against a **439.3s** phase (33 folds, 50.4% of the retrain) | **Real and structural, not statistical.** Folds are the conformal calibration set *and* the confidence-threshold fit set, so fewer folds means fewer OOF points, a noisier `q_hat`, and a looser coverage guarantee. Directional accuracy is also clustered by date, so folds are the effective sample size of every CV number in this doc. ⚠️ **Fold count is now also the input to the offline rank-IC / Pesaran–Timmermann metrics, not just conformal calibration** — cutting folds degrades the evaluation as well as the band. Verify empirical coverage against `NOMINAL_COVERAGE = 0.80` before and after |
+| **1** | **Widen the CV stride** | `CV_STEP_DAYS` 150 → higher. Env-overridable, no code edit (`forecaster.py:769`, read via `_cv_step_days`) | Cuts folds ~linearly against a **439.3s** phase (33 folds, 50.4% of the retrain) | **Real and structural, not statistical.** Folds are the conformal calibration set *and* the confidence-threshold fit set, so fewer folds means fewer OOF points, a noisier `q_hat`, and a looser coverage guarantee. Directional accuracy is also clustered by date, so folds are the effective sample size of every CV number in this doc. ⚠️ **Fold count is now also the input to the offline rank-IC / Pesaran–Timmermann metrics, not just conformal calibration** — cutting folds degrades the evaluation as well as the band. Verify empirical coverage against `NOMINAL_COVERAGE = 0.80` before and after |
 | **2** | ~~Stop computing discarded features~~ — **APPLIED 2026-08-09**, see the row in the table above | — | — | — |
 | **3–6** | ~~`MAX_BIN` 63→31, `num_leaves` 47→31, aggressive correlation pruning, more regularization~~ — **REFUTED 2026-08-09, do not re-propose.** Measured per boosting round on the production frame: `max_bin` 31 → **26.3 ms**, `num_leaves` 31 → **26.2 ms**, `min_data_in_leaf` 100 → **27.1 ms**, `feature_fraction` 0.4 → **28.9 ms**, against a **25.5 ms** baseline. Every one is *slower* than doing nothing. The "~10–20% of 28.1s" figures in the earlier version of this table were estimates, never measurements | — | — |
 | **7** | Drop the 14d horizon | `HORIZONS = [3, 7, 30]` | ~25% of train + inference; −2 models | **Unjustifiable in either direction right now.** The old rationale ("loses a 55.7% DA horizon") came from the superseded scorer and there is no quotable production DA to replace it with. 14d also has the best classifier CV DA of the four and gained the most from removing DART (+3.14pp), so it is the worst horizon to cut, not the safest. Do not pull this without a measurement |
@@ -174,7 +175,7 @@ the same phase directly without shrinking item coverage further.
 | Lever | Why |
 |---|---|
 | **Parallel ensemble or horizon training** | Removed deliberately. Both the horizon `spawn` Pool and the ensemble `ThreadPoolExecutor` were deleted on 2026-07-21 (−209 lines) because they deadlocked under OpenMP and the surrounding timeouts were masking it. `AGENTS.md` documents training as fully sequential; LightGBM's OpenMP threads supply the CPU parallelism. Re-adding this reintroduces a fixed bug. See `docs/changelog/2026-07-21-remove-training-parallelism.md` |
-| **`SKIP_CV=1` in CI** | `q_hat` is derived from CV out-of-fold predictions. Skipping CV routes calibration to a single holdout that is *also* the early-stopping and Optuna scoring set, so the band under-covers. It was removed from `price-forecast.yml` and is pinned by `test_ci_workflow_does_not_skip_cv`; the rationale is repeated at `forecaster.py:3141-3160`. It survives as a local/dispatch speedup only |
+| **`SKIP_CV=1` in CI** | `q_hat` is derived from CV out-of-fold predictions. Skipping CV routes calibration to a single holdout that is *also* the early-stopping and Optuna scoring set, so the band under-covers. It was removed from `price-forecast.yml` and is pinned by `test_ci_workflow_does_not_skip_cv`; the rationale is repeated at `forecaster.py:6018-6030`. It survives as a local/dispatch speedup only |
 | **CatBoost** | Tested Jul 2026, degraded accuracy 18–20pp. No longer a dependency |
 | **Neural forecasters** (N-BEATS / PatchTST / TFT) | Slower, GPU-dependent, unknown on this data — and not worth attempting while the gate cannot resolve 1pp |
 | **Cap GBDT rounds at 500** | Moot. The lever existed because q10 was still improving at ~774 rounds; q10 no longer exists, and the surviving q50 models stop well under 500 |
@@ -219,9 +220,9 @@ SKIP_REGIMES=1 FORCE_HP_SEARCH=1 venv/bin/python scripts/forecast_prices.py --tr
 venv/bin/python scripts/walkforward_backtest.py       # fresh-model DA gate
 ```
 
-Run the whole suite as **`pytest tests`**, never bare `pytest` — `scripts/test_social_signal.py`
-imports `thefuzz`, which is not in `requirements.txt`, and collection aborts with
-"714 tests collected, 1 error … Interrupted".
+A bare `pytest` collects cleanly since 2026-08-10, when `scripts/test_social_signal.py` (the
+`thefuzz` importer that used to abort collection) was deleted — the suite is **2,464 tests across
+146 files** as of 2026-08-21. Still prefer targeted files: the full suite trains models.
 
 **Do not use `SKIP_CV=1` when anything touching the median model or the band changes.** Conformal
 `q̂` and the confidence thresholds are both fitted on the CV out-of-fold predictions that populate

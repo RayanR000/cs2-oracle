@@ -1,5 +1,14 @@
 # Next steps after the 2026-08-13 model and pipeline audit
 
+> ## 🧭 Chain notice added 2026-08-21 — this is **not** the current plan
+>
+> The next-steps chain runs `2026-08-07` → `08-09` → `08-10` → `08-13` → `08-14` → `08-16`.
+> The last document in the chain is **`docs/research/2026-08-16-next-steps.md`**, and even that
+> one has been overtaken: the live ranked plan is **§12 of
+> `docs/research/2026-08-19-deep-model-review.md`**, whose items 1–12 have all since landed.
+> Read the document below only for the *content* of a labelled item, never for what to do next.
+
+
 **Supersedes ordering in:** `docs/research/2026-08-10-next-steps.md`. Every item keeps its label
 (`C2`–`C7`, `N2`, `D2`–`D5`, `O2`, `G2`) so it traces back; that document remains the reference for
 the **content** of each. Items closed since then (`C1`, `N1`, `N2`'s own-history leg, `F1`, `F2`,

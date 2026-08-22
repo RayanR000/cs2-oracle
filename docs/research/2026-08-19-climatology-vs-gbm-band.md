@@ -1,5 +1,22 @@
 # The GBM band loses to a featureless climatology at matched coverage
 
+> **Status (as of 2026-08-21): ✅ SHIPPED. This is the finding that changed the product.**
+> The climatology band was implemented, A/B'd and **defaulted on** within a day
+> (`changelog/2026-08-19-climatology-band-scale-implemented.md`,
+> `…-climatology-band-scale-default-on.md`; PRs #21/#22/#25/#26, run `32323684984`), with
+> `CLIMATOLOGY_SERVING_START = 2026-08-20` marking the first clean climatology serve. On served
+> replay it is **33–46% narrower at matched 80% coverage AND better calibrated** than the `sigma`
+> band. This closes the §9.1 gate the deep review set: the GBM's scale was decorative.
+>
+> **One follow-up, already shelved.** `CLIMATOLOGY_REACTIVE` — a regime-reactive multiplier
+> addressing climatology's one weakness (it is item-*static*) — was built gated-off and then
+> **shelved after a prod A/B** (`changelog/2026-08-20-climatology-reactive-band-scale.md`): it
+> narrows ~20% uniformly, wins where the band over-covers, but **harms recently-calm /
+> forward-volatile dates**. The local calm-anchor test that motivated it was optimistic by
+> construction. Forward volatility on calm anchors is the wall, and this was the fourth width
+> lever to hit it.
+
+
 **Date:** 2026-08-19
 **Type:** research — the null the programme never had (deep-model-review §9.1 / §12.12)
 **Script:** `backend/scripts/climatology_vs_gbm.py` (read-only, no retrain, no serving code)

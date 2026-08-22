@@ -32,7 +32,9 @@ a day — compare against its own `max(day)`, not `CURRENT_DATE`.
 **2. Run history.** `gh run list --workflow=<file> --limit 10`, and `gh run view <id>
 --log-failed` for failures. Note that a downstream leg is *skipped*, not failed, when its
 upstream did not succeed — a chain that stopped at the aggregator shows no forecast run at all
-rather than a red one.
+rather than a red one. **Backtest Accuracy is the exception**: since it also carries its own
+`cron '0 8 * * 1-6'`, it can run (and fail) on days the chain never reached it, so check the
+run's `event` before reading its presence as evidence the forecast leg succeeded.
 
 **3. The zero-row guard.** `scripts/run_task.py` fails a run when a task reports row counts
 and every one is zero, and also on status `skipped`. It can only see count fields the task
@@ -52,8 +54,12 @@ and compare against the calendar span.
 - `reddit-sentiment.yml` and `supply-scraper.yml` were **deleted**. Reddit and Steam both 403
   / 429 GitHub runner IPs. Prod `social_mentions` holds 0 rows all-time. This is a decision,
   not a break; don't propose rebuilding either.
-- `discover-new-items.yml` is `workflow_dispatch`-only by design.
-- Only five workflows exist. `.github/workflows/` is the source of truth.
+- `discover-new-items.yml` and `ab-harness-batch.yml` are `workflow_dispatch`-only by design.
+- Nine workflows exist as of 2026-08-21: the three chain legs, plus `forecast-freshness-check`
+  (cron 12:00 daily — an independent monitor of the Price Forecast leg, so read it before
+  concluding a forecast gap yourself), `model-diagnostics` (Sun 02:00),
+  `event-correlation-analysis` (Sun 04:00), `schema-drift-check` and the two dispatch-only ones.
+  `.github/workflows/` is the source of truth.
 
 ## Safety
 

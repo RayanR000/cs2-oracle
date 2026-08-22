@@ -1,5 +1,16 @@
 # Pre-registration: does removing cross-sectional features survive the honest trainer?
 
+> **Status (as of 2026-08-21): SCORED 2026-08-13 — the founding number DOES NOT REPRODUCE; `C4`
+> reopened.** `changelog/2026-08-13-feature-contribution-plus-3.5-does-not-reproduce.md`. The
+> `+3.5pp @30d` for removing cross-sectional features — the entire basis of
+> `FEATURE_GROUP_ALLOWLIST = ["price_technicals"]` — does not survive the honest trainer.
+> **What happened next:** the feature set was pruned on a different, direct read — five
+> dead-weight features were shelved from the served set after a **null** drop-5 ablation
+> (commit `83f5e22`). A broad re-run of the nine repaired A/B harnesses was subsequently ruled
+> **out** by `2026-08-19-deep-model-review.md` §11/§12: the A/B family was never powered
+> (MDEs 1.15–7.13pp), so most stored "null" verdicts are **UNRESOLVED**, not null.
+
+
 **Date:** 2026-08-13, written and committed **before** any re-run.
 **Instrument:** `backend/scripts/ab_test_feature_contribution.py`, run paired against
 `EARLY_STOPPING=1`. One small arm addition (the placebo, below) must be committed **before**

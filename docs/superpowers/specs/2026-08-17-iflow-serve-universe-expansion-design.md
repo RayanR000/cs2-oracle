@@ -1,7 +1,14 @@
 # iflow serve-universe expansion — design
 
 **Date:** 2026-08-17
-**Status:** design, pending review
+**Status:** **IMPLEMENTED, then partly superseded — not pending work.** The train/serve universe
+split shipped (`_resolve_backfilled_slugs(universe=…)`, `Item.is_trainable`, migration `0023`),
+but the `is_trainable` DB column is **no longer the authority**: the train universe is derived
+from the Parquet archive because the managed Postgres lacked the column and the fallback loaded
+all 41,885 slugs, OOMing a cold retrain
+(`changelog/2026-08-18-train-universe-derived-from-archive.md`). The breadth motivation is also
+closed: at a fixed row budget more items is accuracy-neutral
+(`changelog/2026-08-18-training-breadth-is-accuracy-neutral.md`).
 **Author:** rane.ra@northeastern.edu (with Claude)
 
 ## Problem

@@ -1,5 +1,15 @@
 # Recoverable-Data Sidecars Implementation Plan
 
+> # ✅ EXECUTED AND CLOSED (2026-08-13) — not pending work
+>
+> The sidecar ingest and the flags landed: `VOLUME_FEATURES`, `BID_FEATURES` and
+> `STATTRAK_FEATURE` (commits `3c6ec1c`, `dc22f4e`, `461f1e3`), the build orchestrator and
+> coverage-contract test (`fb84efc`), merged as `e970721`. The panels live on
+> `RayanR000/cs2-oracle-data` (`volume-panel` / `stattrak-panel` / `supply-history` /
+> `bid-panel`.parquet). Measurement outcome: the volume features are **net negative in the band
+> scale** — `docs/changelog/2026-08-15-volume-features-remeasured.md`,
+> `docs/changelog/2026-08-17-volume-in-scale-is-net-negative.md`.
+>
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Recover volume, BUFF bid, StatTrak premium, and retroactive supply-depth into a local research dataset as four `(item_id, date)` sidecar parquets, joined into feature engineering behind off-by-default flags, without touching the durable CI archive.

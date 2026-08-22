@@ -1,5 +1,15 @@
 # Pre-registered read: C1 on the clean-anchor cohort
 
+> **Status (as of 2026-08-21): RUN AND SCORED 2026-08-11 — hypothesis NOT supported.**
+> `changelog/2026-08-11-c1-fails-the-clean-cohort-read.md`. The CV leg passed 4/4; the serving leg
+> failed (tied-cohort deltas positive at only 2/4, 2/4, **0/4**, 4/4 anchors, and 30d alone was
+> ruled insufficient in advance). Re-read on an *audited* anchor set two days later and the
+> refutation held — `changelog/2026-08-13-c1-refutation-survives-the-audited-anchors.md` (fails at
+> 3 of 4; 30d reverses). All four named explanations for the CV→serving gap are now spent
+> (`…-cohort-geometry-is-not-c1s-gap.md`, `…-serving-transforms-do-not-explain-the-cv-gap.md`,
+> `…-c1s-cv-edge-is-not-a-pre-2026-artefact.md`). **C1 is closed for good; do not re-open it.**
+
+
 **Written 2026-08-11 23:52 UTC (19:52 EDT), while runs `31547391395` (control) and `31547400215`
 (arm, `cross_sectional_rank=true`) were still in progress. No number from either was
 visible when this was written.** Both on `ab08a8b`, matrix over 3/7/14/30d, replay anchors

@@ -3,7 +3,8 @@
 **What this is.** The durable external knowledge about how the CS2 skin market works — venues,
 fees, what moves prices, how people make money, and how prices get faked. Built 2026-08-16 from
 four independent web-research passes, each claim cross-checked and graded, then reconciled against
-what this repo has *measured*.
+what this repo has *measured*. **Repo-side claims and citations re-verified 2026-08-21**; the
+external magnitudes are as-of 2026-08-16 and were not re-researched.
 
 **What this is not.** A findings doc. Our own results live in `research/`; this file is the
 outside world. Where the two disagree, the disagreement is stated and **our measurement wins** —
@@ -56,8 +57,9 @@ Steam computes the 5% and 10% components with independent floor-rounding, so the
 rises sharply as price falls**: ~16% at $0.50, up to ~66% at $0.03 `[V, consistent across 3 fee
 calculators]`. Our `1.1607` multiplier is a flat approximation of that stack.
 
-This is the outstanding **item 5c** in `research/2026-08-07-cs2-forecasting-research.md` ("the
-synthetic 1.1607 Steam fee constant is still unfixed"). The external evidence says the fix is not
+This is the outstanding **item 5** of §10 in `research/2026-08-07-cs2-forecasting-research.md`
+("Fix the listing-page backfill to use Steam's real cent-ceiling schedule" — there is no item
+"5c"; the sub-item that exists is 5b, `ingested_at`). The external evidence says the fix is not
 a better constant — it is a **rounding-aware piecewise function**, and the error is concentrated
 exactly where our cohort floor already cuts (<$1). Low priority for the ≥$1 served cohort;
 disqualifying for any sub-$1 work.
@@ -128,12 +130,18 @@ category rotation is not.
 | 2025-07 | "Trade Protected Items" — 7-day lock on trade-received items, reversible `[V]` | Friction/liquidity, no price-level shock | Market-wide |
 | 2025-10 | Market cap crosses $6B `[V]` | Pre-crash peak | — |
 | **2025-10-22/23** | **Trade-up contracts accept 5× Covert → knife/glove** `[V]` | Cap **$6B → $3.5B in ~30h** `[V]`; knives/gloves **−70–80%**; low-tier Coverts **up sharply** (one MP7 $8.77 → $104) `[V, direction; magnitudes vary $2B–$2.5B across outlets]` | **Category rotation inside a market-wide drop** |
-| ~2025-12-17 | Rare/legacy cases removed from the weekly drop pool `[V]` | Legacy case prices spiked | Category (discontinued cases) |
+| ~2025-12-17 `[date disputed]` | Rare/legacy cases removed from the weekly drop pool `[V]` | Legacy case prices spiked | Category (discontinued cases) |
 | Late 2025 | Valve bans gambling/case-site branding at licensed events `[S]` | Demand-channel restriction | Diffuse |
 | H1 2026 | Trade cooldown moves from a synchronised 9am CET daily unlock to a **per-item 168h unlock at the trade hour** `[V, month disputed]` | Kills the daily supply-dump spike | Market-wide, microstructure |
 | 2026-02-25 | **NY AG sues Valve** over loot boxes; injunction, restitution, treble damages `[V]` | No measured price effect yet | Regulatory overhang |
 | 2026-03-09 | Federal consumer class action on loot boxes `[S]` | — | Regulatory overhang |
 | Mid-2026 | Cap variously reported $6.9B–$8B `[S per figure]` | Recovery | — |
+
+> ⚠️ **Two drop-pool dates in this file do not reconcile, and neither matches our own research
+> doc.** §3 dates the rare-drop-pool removal ~2026-01-08/09; the row above says ~2025-12-17; and
+> `research/2026-08-07-cs2-forecasting-research.md` R6 dates Valve's silent zeroing of the rare
+> drop pool **2024-12-17/18**. Unresolved — do not build a regime dummy on any of the three until
+> one is pinned to an archive-observable break.
 
 > **Date reconciliation for the `tier × post` experiment.** Press dates the trade-up crash
 > **Oct 23 2025**; our `ISteamNews` capture is **2025-10-22T23:00:20Z**
@@ -206,8 +214,14 @@ Against ours: our ≥$1 floor is looser than their ≥$5, and we apply **no list
 Their ≥30–50 is a **Steam** count on an index of a few hundred items; ours is a max over four
 non-Steam venues with structurally smaller books (cohort median **18** listings), so the same
 number cuts **69% of the served cohort** and buys 0.011 of exceedance rate. The underlying effect
-is real and monotone within price tier — it just belongs in the band width.
-`research/2026-08-16-listing-count-floor.md`.
+is real and monotone within price tier, but the follow-on this doc used to recommend — put
+`log1p(listing_count)` in the **band width** instead of in a filter — was pre-registered and
+**measured dead 2026-08-18, 0 of 3 horizons**: the thin buckets that carry the whole gradient
+(1–5, 6–15 listings) hold <20 items in the served ≥$1 cohort and drop out, and the per-item band
+scale — since 2026-08-19 a per-item **climatology** (`CLIMATOLOGY_SCALE`, default on), not the GBM
+sigma — already absorbs listing information for the population actually served.
+`research/2026-08-16-listing-count-floor.md`,
+`changelog/2026-08-18-listing-count-conditioner-refuted.md`.
 
 Most-manipulable tiers, in order: new/tournament stickers, freshly retired collections, thin-float
 pattern items, anything sub-$5. These deserve wider bands, not point forecasts — which our product
@@ -234,14 +248,20 @@ Ranked by leverage, and each is a data question, not a feature question:
    moves, lift 0.31×), the volume-spike exceedance feature it turned up is one episode (81% of 13
    years of spikes are Oct 2025), and the floor's ≥30 threshold is imported from a **Steam**
    index and does not transfer to our four-venue max — it costs 69% of the cohort to buy 0.011.
-   The one live remnant: thin items *are* wilder within price tier, so **`log1p(listing_count)`
-   belongs in the band width, not in a filter**.
+   The last remnant — `log1p(listing_count)` as a band-**width** conditioner — was then
+   **measured dead 2026-08-18, 0/3 horizons**: the thin buckets that carry the gradient hold <20
+   items in the served ≥$1 cohort. **Nothing in this item survives.** Reopen only if the iflow
+   backfill materially grows the thin-listing ≥$1 cohort.
    `research/2026-08-16-wash-trade-screen-and-volume-spike-exceedance.md`,
-   `research/2026-08-16-listing-count-floor.md`.
-2. **Un-blended per-venue closes.** The wallet-lock wedge (§1) means the Steam−Buff spread is a
-   *real, persistent, mean-reverting* quantity — but our blended `aggregator_sync` destroys it
-   before we can test it. Still the strongest untested construct.
-3. **A rounding-aware Steam fee function** (item 5c) — only matters if we ever go below $1.
+   `research/2026-08-16-listing-count-floor.md`,
+   `changelog/2026-08-18-listing-count-conditioner-refuted.md`.
+2. ~~**Un-blended per-venue closes.**~~ — ⚠️ **tested and SHELVED 2026-08-19.** The wallet-lock
+   wedge (§1) does make the Steam−Buff spread a *real, persistent, mean-reverting* quantity, and
+   "Buff leads, Steam follows" stands as *description*. The **predictive** claim does not: four
+   skeptical controls each moved it the wrong way, and breaking the shared quote collapses the
+   cross-sectional IC ~70% to ~−0.06 (h ≤ 14), ~0 by h=30. Do not build the ingest.
+   `research/2026-08-16-cross-venue-basis-steam-buff.md`.
+3. **A rounding-aware Steam fee function** (item 5) — only matters if we ever go below $1.
 4. **Pattern-sensitive item names flagged and widened**, not modelled.
 5. A per-instance float/pattern feed and a pro-usage/attention feed remain the two genuinely
    missing datasets. Neither exists for free.

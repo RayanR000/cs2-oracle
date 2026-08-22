@@ -1,5 +1,27 @@
 # Refutation power tiers, and the iflow BUFF backfill
 
+> **Status (as of 2026-08-21): the power-tier framing was VINDICATED and sharpened; the iflow
+> payoff was mostly NEGATIVE.** Item by item:
+>
+> - **"Not every refutation was tested on rich enough data"** — confirmed and generalised.
+>   `docs/research/2026-08-19-deep-model-review.md` §11 finds the A/B family was **never
+>   powered** (MDEs 1.15–7.13pp; some arms have no MDE at all), so most stored "null" verdicts
+>   should read **UNRESOLVED**. ⚠️ But the prescribed remedy inverted: a **broad re-run of the
+>   nine repaired harnesses is now explicitly on the do-not-do list** (§12) — put the MDE beside
+>   each verdict and relabel instead. No 2026 A/B is interpretable at all until the
+>   consensus-estimator composition breaks (§1) are controlled.
+> - **iflow `count_in_24` as the volume-feed repair** — built, tested, **closed net-negative**
+>   (`changelog/2026-08-17-volume-in-scale-is-net-negative.md`). ⚠️ The backfill script also
+>   **splices BUFF `count_in_24` and Steam volume into one mislabeled column** — emit them
+>   separately on any future depth ingest.
+> - **iflow as a training-breadth expansion** — measured **accuracy-neutral** at a fixed row
+>   budget (`changelog/2026-08-18-training-breadth-is-accuracy-neutral.md`). The breadth path is
+>   Steam-consistent backfill, not iflow.
+> - **iflow as a Buff price source for the cross-venue basis** — the basis feature was
+>   **shelved 2026-08-19**; do not build the ingest
+>   (`docs/research/2026-08-16-cross-venue-basis-steam-buff.md`).
+
+
 *2026-08-16*
 
 Two linked findings: (1) the project's "null/refuted" feature verdicts are **not all

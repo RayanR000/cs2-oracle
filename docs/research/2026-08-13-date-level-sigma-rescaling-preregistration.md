@@ -1,5 +1,16 @@
 # Pre-registration: does dividing out `sigma`'s date-level level fix the band's coverage?
 
+> **Status (as of 2026-08-21): SCORED 2026-08-13 in two parts — NOT SHIPPED.**
+> (1) `changelog/2026-08-13-date-level-rescaling-passes-its-offline-gate.md` — passes the offline
+> gate at 3/7/30d and **voids its own instrument at 14d**.
+> (2) `changelog/2026-08-13-the-rescaling-is-a-level-fix-not-a-spread-fix.md` — on a clean audited
+> anchor set the **pre-registered mechanism claim (S) FAILS**; the effect is a *level* fix, not a
+> spread fix. The follow-up low-`L[t]` read also failed
+> (`changelog/2026-08-13-the-low-level-read-fails-its-axis.md`).
+> **Superseded:** `sigma` is no longer the band denominator — the featureless climatology scale
+> shipped 2026-08-20 (`docs/research/2026-08-19-climatology-vs-gbm-band.md`).
+
+
 **Date:** 2026-08-13 (written and committed **before** the read)
 **Instrument:** offline first — `backend/scripts/attribute_band_level.py` extended, read-only. A
 paired `model-diagnostics.yml` dispatch **only if the offline legs pass**.

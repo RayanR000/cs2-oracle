@@ -1,5 +1,13 @@
 # Pre-registration: do the three serving transforms explain the CV→serving gap?
 
+> **Status (as of 2026-08-21): SCORED 2026-08-13 — leg (2) FAILS, exactly as pre-registered.**
+> `changelog/2026-08-13-serving-transforms-do-not-explain-the-cv-gap.md`: the three serving
+> transforms do not explain the CV→serving gap, and they are not costing the signal either. The
+> pre-registered point prediction was correct. `C1` closed for good on the back of this.
+> (Two of the three transforms have since changed anyway: recentring was replaced by two signed
+> conformal quantiles and `DIRECTION_UPWEIGHT` set to 1.0 on 2026-08-19.)
+
+
 **Date:** 2026-08-13, written and committed **before** dispatch.
 **Instrument:** `REPLAY_DISABLE=blend,bias,recenter` on `model-diagnostics.yml`'s replay step.
 No code change. **No new question is opened if it fails** — the answer is a single bit either way.

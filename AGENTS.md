@@ -1,16 +1,18 @@
 # CS2 Oracle
 
 Daily pipeline pulls 7 markets' prices from the csgotrader.app dumps, archives them to
-Parquet, serves them via FastAPI, and forecasts with LightGBM — one q50 model per horizon,
-with the served band calibrated by split conformal.
+Parquet, serves them via FastAPI, and forecasts with LightGBM — one q50 model per horizon
+plus a binary exceedance head, with the served band scaled by a per-item climatology and
+calibrated by *signed* split conformal (asymmetric `(q_lo, q_hi)`, live 2026-08-19/20).
 
 **This is a RANGE (interval) forecaster, not a directional predictor.** The deliverable is a
 calibrated price range per item per horizon. Directional accuracy is **not** a shippable product
 claim: once the market-wide factor is removed there is no idiosyncratic per-item signal in the
 features, and the binding constraint is the ~14–70 *independent* market episodes the 2026 serving
 regime contains — not model capacity. Every relative/cross-sectional arm tried so far is
-CV-positive and serving-negative. Don't propose a fourth band-**width** scale either; three were
-measured and the width variable is not the lever. See
+CV-positive and serving-negative. Don't propose another **sigma**-shaped band-width scale either;
+four denominators were measured and only the featureless climatology won (shipped 2026-08-20) —
+the modelled-sigma family is the dead end, not band width as such. See
 `docs/changelog/2026-08-15-cs2-oracle-is-a-range-forecaster.md`, and invariant 4 in
 `backend/AGENTS.md` (DA is never quotable alone).
 
@@ -37,7 +39,7 @@ measured and the width variable is not the lever. See
 Backend, from `backend/`, through the venv (`venv/bin/python`, Python 3.13 locally / 3.11 in CI):
 
 - `venv/bin/python -m pytest tests/test_<name>.py -q` — targeted run.
-- `venv/bin/python -m pytest tests/ -q` — full suite. Collection is ~1.4s. It used to take
+- `venv/bin/python -m pytest tests/ -q` — full suite (146 modules, ~2,460 tests). It used to take
   ~45s and to hit **production** on the way: `tests/test_price_history.py` had no test
   functions at all, just module-level code that opened a prod session and made five live
   Steam calls with `time.sleep(10)` between them. Deleted 2026-08-10, along with

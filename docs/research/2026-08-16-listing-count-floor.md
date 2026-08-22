@@ -1,5 +1,17 @@
 # The listing-count floor: the effect is real, the threshold is imported wrong
 
+> **Status (as of 2026-08-21): the *measurement* stands; the *recommendation* is REFUTED.**
+> This doc correctly rejected the ≥30 listing-count floor, and that rejection still holds. But
+> its forward recommendation — feed `log1p(listing_count)` to the **band width** instead — was
+> pre-registered and **measured dead on 2026-08-18**, 0 of 3 horizons
+> (`changelog/2026-08-18-listing-count-conditioner-refuted.md`,
+> `docs/research/2026-08-18-listing-count-band-width-conditioner-preregistration.md`). The reason
+> is structural and is the more useful finding: the thin buckets (1–5, 6–15 listings) that carry
+> the whole gradient hold **<20 items in the served ≥$1 cohort** and drop out — per-item `sigma`
+> already absorbs listing information for the population actually served.
+> **Reopen only if** the iflow backfill materially grows the thin-listing ≥$1 cohort.
+
+
 **Date:** 2026-08-16
 **Ran:** read-only over `price-archive/supply-2026-08.parquet` (cohort cost) and a join of
 `supply-history.parquet` × `volume-panel.parquet` (payoff).

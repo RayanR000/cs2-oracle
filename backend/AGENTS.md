@@ -66,7 +66,7 @@ re-injected after `/compact` — **read the rule yourself before starting work i
   to `source IS NULL` and carry a non-zero `RuntimeError` guard (verified: 871 / 5,536 / 5,536
   items). **Still run the universe query and assert a non-zero row count before citing or
   re-running any `ab_test_*.py`** — the guard is the invariant, not a one-time fix. The six that
-  skipped `_apply_feature_allowlist` (measuring a 138–180-column model where production serves 33)
+  skipped `_apply_feature_allowlist` (measuring a 138–180-column model where production serves 28)
   now apply it. → `changelog/2026-08-13-the-null-verdicts-were-not-all-tested.md`
 - **Neither copy of `ops/forecast_outcomes.parquet` is the full scored panel — query prod
   Postgres read-only for any panel figure.** The **durable** archive that CI writes is fresh

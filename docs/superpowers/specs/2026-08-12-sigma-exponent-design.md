@@ -5,7 +5,14 @@
 **Evidence:** `changelog/2026-08-12-the-sigma-scale-is-one-exponent-per-horizon.md` (which arm),
 `changelog/2026-08-12-sigma-tilt-confirmed-on-oof-residuals.md` (the tilt, on real OOF residuals),
 `changelog/2026-08-12-marginal-over-coverage-is-half-the-sigma-mix.md` (why it also helps the level)
-**Status:** designed, **not implemented**
+**Status:** **BUILT, gated off (`SIGMA_EXPONENT=1`), and REFUTED — do not treat this as pending
+work.** The wiring landed 2026-08-12 (`band_beta()`, `conformal_beta` in `meta.json`, a
+`sigma_exponent` input on `model-diagnostics.yml`) and the flag stays OFF for two independent
+reasons: the paired read dropped served marginal coverage by 8.07/8.26/7.88/2.19pp
+(`changelog/2026-08-12-sigma-exponent-paired-read.md`), and at serving the exponent *flips* the
+sigma tilt rather than flattening it (`changelog/2026-08-12-served-sigma-profile.md`). The band
+scale that shipped instead is `CLIMATOLOGY_SCALE`, default-on since 2026-08-19 and mutually
+exclusive with this one (`specs/2026-08-19-climatology-band-scale.md`).
 
 ## The change in one line
 

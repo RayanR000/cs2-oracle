@@ -25,8 +25,11 @@ separate fix per loader.
   MA(7)/MA(30)/MA(90) trailing sale prices, the wrong *time* basis rather than the wrong side
   of the book. Both `BID_SOURCES` and `TRAILING_WINDOW_SOURCES` are dropped in
   `_apply_multi_source_voting` *before* the group is read, so neither counts toward the median
-  nor the ≥3-source gate that enables the 2σ mask. The filter is
-  `~df["source"].isin(BID_SOURCES | TRAILING_WINDOW_SOURCES)` — NULL-safe by construction,
+  nor the ≥3-source gate that enables the 2σ mask. `STEAM_SPOT_SOURCES`
+  (`aggregator_steam_spot`) joins the drop for a different reason — it would be a second Steam
+  ballot alongside `aggregator_sync`, double-counting the venue. The filter is
+  `~df["source"].isin(BID_SOURCES | TRAILING_WINDOW_SOURCES | STEAM_SPOT_SOURCES)`
+  (`forecaster.py:2103-2104`) — NULL-safe by construction,
   which is what keeps the pre-2026 `source IS NULL` series voting. An item-day whose only
   source was excluded returns **no row** rather than falling back to it. **The 2σ guard is not
   a defence for the bid**: it ran on 99.3% of bid item-days and kept the bid four times out of
@@ -76,12 +79,27 @@ separate fix per loader.
   set. **Bump `ItemForecaster.VOTED_CACHE_VERSION` if you change `_fetch_voted_price_history`,
   `_apply_multi_source_voting`, or the *contents* of `BID_SOURCES` / `TRAILING_WINDOW_SOURCES`**
   — the key cannot see code changes. Both frozensets are defined in `models/item_parser.py`,
-  and `.github/workflows/price-forecast.yml:115` hashes only `forecaster.py` into the CI cache
+  and `.github/workflows/price-forecast.yml:131` hashes only `forecaster.py` into the CI cache
   key — so editing a source name into or out of either set is invisible to CI unless the
   version constant (re-exported on `forecaster.py`, which the key does hash) moves too.
-  `VOTED_CACHE=0` disables. Now at **v6**: v2 was the `BID_SOURCES` exclusion, which changed
+  `VOTED_CACHE=0` disables. Now at **v7**: v2 was the `BID_SOURCES` exclusion, which changed
   the consensus level, so any surviving v1 frame holds a displaced price series and would have
   trained the next model on it silently; v3 dropped the phase-collapsed names; v4 dropped the
   phantom slug keys; v5 added `n_ask_sources`; v6 excluded `TRAILING_WINDOW_SOURCES` (Steam's
-  trailing-window means). A source-set change and a universe change both count as voting
-  changes.
+  trailing-window means); v7 excluded `STEAM_SPOT_SOURCES`. A source-set change and a universe
+  change both count as voting changes. ⚠️ The CI key's literal prefix still reads `voted-v6`
+  and was not bumped with v7 — harmless only because the constant lives in the hashed file.
+- **The TRAIN universe is derived from the archive; the SERVE universe is `is_backfilled` in
+  the DB.** `ItemForecaster._resolve_backfilled_slugs(universe=…)` routes them:
+  `universe="train"` calls `_archive_universe_slugs(exclude_iflow=True)` — distinct slugs with a
+  `day < 2026-01-01` row from a source other than `buff_iflow`, read through `prices_relation` +
+  `archive_universe_sql_filter` — and `universe="serve"` reads `SELECT item_id FROM items WHERE
+  is_backfilled = 1`, falling back to the same archive derivation. **`Item.is_trainable` /
+  `trainable_item_clause()` (`database.py:55,109`, migration `0023`) are NOT the authority for
+  the train universe** and no loader reads them: the managed Postgres lacked the column when the
+  split was built (migration `0023` added it later), so the DB read threw and fell back to
+  loading all 41,885 slugs, which OOMed a cold retrain. The
+  archive derivation makes the cohort a pure function of the data the model trains on. The
+  voted-frame cache key includes `universe`, because two backfill sets give different frames
+  from an identical archive. See
+  `docs/changelog/2026-08-18-train-universe-derived-from-archive.md`.

@@ -1,5 +1,15 @@
 # R13 measured: the inversion is real and worse — but its stated premise is wrong
 
+> **Status (as of 2026-08-21): ✅ the decision this doc asked for WAS TAKEN, as recommended.**
+> `MIN_SERVED_PRICE_USD` was **not** raised; the two-tier framing shipped instead — served
+> forecasts now carry a tradeability label, so the sub-$1 tier is served *and* honestly marked
+> (`changelog/2026-08-17-tradeability-label-on-served-forecasts.md`, commit `cda16ab`).
+> The over-coverage half of the finding has since been attacked on the band side rather than the
+> cohort side: the `sigma` denominator was replaced by a featureless per-item climatology scale
+> on 2026-08-20 (`docs/research/2026-08-19-climatology-vs-gbm-band.md`), which is both narrower
+> and better calibrated on served replay.
+
+
 **Date:** 2026-08-16
 **Ran:** read-only over `price-archive/ops/item_forecasts.parquet` (158,200 rows) and
 `ops/forecast_outcomes.parquet` (114,489 rows; 92,321 on `lgbm-v3*`).

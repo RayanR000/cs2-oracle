@@ -85,7 +85,10 @@ directional accuracy over price and technical features alone, and hurt at 3d and
 Cross-sectional features are excluded again at 14d and 30d, and event features at 30d.
 
 **Uncertainty.** The prediction band comes from split-conformal calibration against
-out-of-fold residuals, not from quantile models. Dedicated p10/p90 GBMs were measured and
+out-of-fold residuals, not from quantile models. The nonconformity score is normalised by
+a per-item denominator so a $5,000 knife and a $1 case do not get the same width; since
+2026-08-19 that denominator is a featureless per-item climatology rather than a modelled
+sigma (`CLIMATOLOGY_SCALE`, on by default). Dedicated p10/p90 GBMs were measured and
 removed: they consumed 223s of a 381s training budget to deliver 39–48% empirical
 coverage against an 80% target.
 
@@ -147,8 +150,7 @@ There is no frontend. It was deleted on 2026-08-10 to be rebuilt from scratch �
 [`docs/changelog/2026-08-10-frontend-removed.md`](docs/changelog/2026-08-10-frontend-removed.md).
 The API is the product surface until then.
 
-Tests: `cd backend && source venv/bin/activate && pytest tests/ -q`. Scope it to `tests/` —
-a bare `pytest` also collects a script that aborts the run on a missing optional dependency.
+Tests: `cd backend && source venv/bin/activate && pytest tests/ -q`.
 
 ## Repo layout
 
@@ -162,10 +164,10 @@ backend/
   backtest/          Price resolution, scoring, resolution gate
   db/                Parquet store and ops-table mirrors
   scripts/           Task runner and scheduled entrypoints
-  tests/             Pytest suite (87 modules, 1,773 tests)
+  tests/             Pytest suite (146 modules, 2,464 tests)
 price-archive/       Parquet price data, 2013-present
 docs/                Architecture, research, changelog, design specs
-.github/workflows/   4 cron jobs + 1 chained + 1 manual
+.github/workflows/   9 jobs: 5 cron, 1 chained, 2 manual, 1 on PR/push
 ```
 
 Operational reference — API endpoints, environment variables, task commands, workflow

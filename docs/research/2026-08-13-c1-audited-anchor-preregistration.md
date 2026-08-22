@@ -1,5 +1,14 @@
 # Pre-registration: does C1's serving failure survive an audited anchor set?
 
+> **Status (as of 2026-08-21): SCORED 2026-08-13 — bar (A) FAILS at 3 of 4 horizons. C1 stays
+> shelved.** `changelog/2026-08-13-c1-refutation-survives-the-audited-anchors.md`. The
+> mis-collected anchors were not why it failed, and 30d — which passed on the dirty set —
+> reverses on the clean one. Two companion reads closed the remaining explanations
+> (`…-cohort-geometry-is-not-c1s-gap.md`, `…-serving-transforms-do-not-explain-the-cv-gap.md`).
+> **C1 is closed for good.** Per `2026-08-16-next-steps.md` "Do not run", no further
+> cross-sectional-ranker or per-item directional arm should be proposed.
+
+
 **Date:** 2026-08-13, written and committed **before** either run is dispatched.
 **Arm:** `cross_sectional_rank=true` on `model-diagnostics.yml`, against a control dispatch on the
 **same commit**. No code change — C1 has been built and gated since 2026-08-10.

@@ -1,5 +1,19 @@
 # Pre-registered read: does the repaired volume feed improve band quality (not DA)?
 
+> **Status (as of 2026-08-21): SCORED 2026-08-17 — VOID on its own power clause, and the whole
+> volume thread is now CLOSED NET-NEGATIVE.**
+> (1) `changelog/2026-08-17-volume-band-quality-cluster-starved.md` — 8 non-overlapping folds at
+> every horizon, below the ≥14 floor this prereg fixed, so its own void condition dropped all
+> three horizons (including an h=14 pass).
+> (2) Re-run under `2026-08-17-volume-band-quality-refold-preregistration.md` → **h=14 PASSES**
+> every gate (`changelog/2026-08-17-volume-band-quality-passes-on-refold.md`).
+> (3) **It still does not ship.** The A/B tightened the **retired** q10/q90 quantile band;
+> production serves `q_hat * scale`, and volume in the learned scale *degrades* the dominant
+> `sigma`-tilt axis — net-negative (`changelog/2026-08-17-volume-in-scale-is-net-negative.md`).
+> Do not build the production integration. If ever revisited, note the ingest defect: the
+> backfill splices BUFF `count_in_24` and Steam volume into one mislabeled column.
+
+
 **Written 2026-08-17 before the A/B is run on the iflow-repaired volume feed.** No coverage or
 width delta for these arms has been scored. The bar, the placebo, the gate, and the void conditions
 below are fixed here and bind whatever the numbers turn out to be. This doc exists because the

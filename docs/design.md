@@ -5,6 +5,13 @@
 > This file is kept as **rebuild input only** — the design system it records is the starting
 > point for a rebuild, not a description of anything that currently runs. Read every present
 > tense below as past tense.
+>
+> ⚠️ Two data claims in here have since moved: the served band is now a *signed* two-quantile
+> conformal interval scaled by a per-item climatology (2026-08-19/20, see the banner in
+> `docs/README.md`), and the range product gained a magnitude signal — `move_odds` /
+> `stability_label`, ranked at `GET /items/volatility` — that no component below accounts for.
+> The `verdict-strip`'s directional-verdict cell is also no longer a shippable product claim
+> (`changelog/2026-08-15-cs2-oracle-is-a-range-forecaster.md`).
 
 <!-- THE MARKET DESK: the category standard, played straight. Chosen on 2026-08-09 via the
 standing exit on decision board 308b07a7 (roll seed 5654f592). Deal 7 of the concept-seed

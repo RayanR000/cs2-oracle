@@ -1,5 +1,14 @@
 # Souvenir / capsule × Major event study (spike)
 
+> **Status (as of 2026-08-21): the underpowered verdict stands, and the trade it pointed at is
+> DEAD.** This doc's one suggestive result is a **6–12 month** post-Major appreciation, i.e. a
+> long-horizon trade. That line was tested directly on 2026-08-20 and closed:
+> at h=90/180 the realised move magnitude *does* clear the friction bar, but **selection is null**
+> (AUC 0.507/0.526/0.532 across 3 out-of-sample windows, top-decile lift ≤1.0×) and the
+> unconditional bet **lost money in every window**. There is no tradeable edge at any horizon;
+> the product is range-only and the trade hunt is closed. Do not re-scope this as a strategy.
+
+
 **Date:** 2026-08-16
 **Type:** Spike (pre-registered probe). Deliverable is a finding + go/no-go, not shipped code.
 **Question:** Around CS Majors, do capsule + souvenir-package items earn abnormal returns — net of the 15% Steam fee — at announcement, tournament start, or tournament end?

@@ -1,5 +1,11 @@
 # Pre-registered read: does index-level mean reversion replicate out of sample?
 
+> **Status (as of 2026-08-21): SCORED 2026-08-11 — hypothesis REFUTED, both rules fail.**
+> `changelog/2026-08-11-mean-reversion-does-not-replicate.md`. On the disjoint 2014–2023 window
+> the correlation is −0.038 at 3d and the contrarian call loses to the constant call by 12.2pp;
+> the 4-of-4 negative correlation was window-specific. `N2`'s own-history leg is closed.
+
+
 **Written 2026-08-11 before the test window was scored.** The hypothesis comes from
 `2026-08-11-market-factor-is-not-forecastable-from-its-own-history.md`, where the trailing-180d
 drift correlated **negatively** with the forward market factor at 4 of 4 horizons (−0.093 to

@@ -1,5 +1,14 @@
 # Pre-registered read: does `log1p(listing_count)` as a band-width conditioner tighten conditional coverage?
 
+> **Status (as of 2026-08-21): SCORED 2026-08-18 — REFUTED, 0 of 3 horizons pass. Do not re-run.**
+> `changelog/2026-08-18-listing-count-conditioner-refuted.md`. h=3 cuts dispersion 27% but
+> worsens the worst-bucket miss (guardrail fail); h=7/14 worsen dispersion. The decisive finding
+> is **structural**: the thin buckets (1–5, 6–15 listings) that are the whole target hold <20
+> items in the served ≥$1 cohort and drop out — per-item `sigma` already absorbs listing
+> information for the population actually served. **Reopen only if** the iflow backfill
+> materially grows the thin-listing ≥$1 cohort; re-check bucket `n` first.
+
+
 **Date:** 2026-08-18
 **Status:** pre-registration. No code changed. Scored later, inline, below.
 **Owner ruler:** conditional (per-listing-bucket) coverage on **served/replayed outcomes**, NOT

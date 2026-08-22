@@ -1,6 +1,6 @@
 # Data organisation — next steps (2026-08-07)
 
-> ## Status — 2026-08-09: item 1 ✅ SHIPPED. Items 2–6 are still open.
+> ## Status — 2026-08-22: items 1 ✅ + 2 ✅ resolved; 3 🟡 partly done (local); 4, 6 open; 5 effectively resolved.
 >
 > **This is the most outstanding plan in `docs/superpowers/plans/`.** Verified against the
 > canonical `RayanR000/cs2-oracle-data` repo, not the local copy.
@@ -8,8 +8,8 @@
 > | # | Status |
 > |---|---|
 > | 1 — ship to production | ✅ **done**. Commits `b55c15b`, `c0f0349` are ancestors of `origin/main`; dispatch `31246426269` ran `Normalize the price schema: success`. **Both legs verified on the canonical repo:** `prices-2026-08.parquet` carries `item_slug, day, source, mean_price, volume, ingested_at`, and `ops/forecast_outcomes.parquet` has **22 columns including `item_slug`**. |
-> | 2 — the orphaned outcomes | ⬜ **open, and the number got worse.** The canonical `ops/forecast_outcomes.parquet` now has **11,084 of 48,241 rows with a non-NULL `item_slug` — 77% NULL**, against the 30% this document was written against. The row count also fell from 104,642, so the file was rewritten in between. Neither the accuracy comparison nor the phantom-purge question below has been answered. |
-> | 3 — move `raw/`, delete the three ambiguities | ⬜ not started. `price-archive/raw/17mafo`, `exchange-rates-2026.parquet`, `player-counts/` and `2026/` are all still present, locally **and** in the canonical repo. |
+> | 2 — the orphaned outcomes | ✅ **RESOLVED 2026-08-22: bookkeeping, not a scoring bug.** Re-measured on canonical: **109,191 rows, 34% NULL slug** (the file was rewritten again; 48,241/77% is stale). NULL-slug is perfectly determined by *which resolution run wrote the row* — all slugged rows trace to a single run (`evaluated_at 2026-08-09`, 5,542 items); 5,542 item_ids appear both mapped and unmapped, i.e. the same real item slugged on some rows and NULL on others. Scoring keys on `item_id`, not slug: `backtest_accuracy.py:208-209` computes `direction_correct`/`in_interval` per row from predicted-vs-actual, and slug is only ever attached as a projection (`_with_item_slug`/`id_to_slug.get`). The raw slug-vs-no-slug accuracy gap (cover 0.77 vs 0.92) is a horizon/run composition artifact, not identifiability. Phantom-purge worry refuted for the bulk. **Residual (cosmetic only):** 3,149 item_ids are only-ever-unmapped and can't be *named* when joining to price history until the one-off `backfill_ops_item_slug.py --apply` runs against the **canonical** archive (needs prod `items`; never done end-to-end). |
+> | 3 — move `raw/`, delete the three ambiguities | 🟡 **partly done 2026-08-22 (local checkouts only).** Deleted `raw/` (empty — a re-downloadable `merge_17mafo_gap.py` cache, not the claimed 605 MB), `2026/` (empty superseded date-layout), and the `player-counts/` **dir** of 48-byte daily CSVs — all verified unread by any runtime loader (the price loader uses a non-recursive `directory.glob("prices-*.parquet")`, `db/archive.py:35,117`). ⚠️ **`exchange-rates-2026.parquet` is NOT scratch — do not delete it.** It is live daily aggregator output (`ingest_fx_history.py:37-38`; written by `pipeline.py::fetch_exchange_rates` → `append_to_parquet.py`, committed as "prices + exchange-rates" in `aggregator-update.yml:227`) and regenerates every run. Guard held: the 16 `player-counts-YYYY.parquet` panel files were left intact. **Canonical still carries all four** — these deletions were to the local checkouts only; the canonical `cs2-oracle-data` is CI-write-only (orphan commit + force-push), so a real removal must land in CI's committed tree. |
 > | 4 — route scripts through `db/archive.py` | ⬜ not started. The two load-bearing `Path("../price-archive")` defaults still exist. |
 > | 5 — publish or `derive/` the three local-only ingests | 🟡 **effectively resolved the other way.** All three are now **published** to the canonical repo (`event-calendar.parquet`, `exchange-rates-history.parquet`, `item-metadata-bymykel.parquet` + codes JSON), so the "publish vs `derived/`" decision was taken by publishing. No `price-archive/derived/` exists. Item 5's stated cost — three extra workflow steps — is already paid. |
 > | 6 — document rarity precedence, refresh the `data.md` tree | ⬜ not started. Partial provenance exists at `docs/references/data-sources.md:34`; `data.md`'s tree is stale and omits `volume-*`, `event-calendar`, `event-news`, `exchange-rates-history` and `item-metadata-bymykel`. |
@@ -41,13 +41,23 @@ Prod still has the four-column glob read and un-joinable ops tables.
 The code is safe to ship ahead of the data migration — `prices_relation` reads a
 migrated and an unmigrated archive identically — so a partial rollout is fine.
 
-### 2. Decide what the 31,422 orphaned outcomes mean — ⬜ **STILL OPEN, and larger than stated**
+### 2. Decide what the 31,422 orphaned outcomes mean — ✅ **RESOLVED 2026-08-22: bookkeeping, not a scoring bug**
 
-> **Re-measured 2026-08-09 on the canonical repo:** 48,241 rows, of which only **11,084 carry a
-> slug — 77% NULL**, not 30%. The file was also rewritten between the two readings (104,642 →
-> 48,241 rows), so this is not a like-for-like growth: both the numerator and the denominator
-> moved, and the reconciliation is itself part of the answer. The `WHERE item_slug IS NULL`
-> comparison below has never been run.
+> **Answered 2026-08-22 on the canonical repo (109,191 rows, 34% NULL slug — the 48,241/77%
+> reading is stale; the file was rewritten again).** The `WHERE item_slug IS NULL` comparison
+> was run. Verdict: **bookkeeping.** NULL-slug is perfectly determined by *which resolution run
+> wrote the row* — every slugged row traces to a single run (`evaluated_at 2026-08-09`, 5,542
+> items), and those same 5,542 item_ids also appear unmapped in other runs, so the item is real
+> and identifiable via `item_id`; the slug column just wasn't backfilled on the older rows.
+> Scoring keys on `item_id`, never on slug (`backtest_accuracy.py:208-209` computes
+> `direction_correct`/`in_interval` per row from predicted-vs-actual; slug is attached only as a
+> projection via `_with_item_slug`/`id_to_slug.get`), so NULL slug cannot corrupt the headline.
+> The raw slug-vs-no-slug accuracy gap (coverage 0.77 vs 0.92, pct_error 11.8 vs 2.7) is a
+> horizon/run **composition** artifact — NULL rows skew to h=3 and earlier/global-only runs —
+> not identifiability. Phantom-purge hypothesis refuted for the bulk. **Residual (cosmetic
+> only):** 3,149 item_ids are only-ever-unmapped and cannot be *named* when joining to price
+> history until the one-off `backfill_ops_item_slug.py --apply` is run against the **canonical**
+> archive (needs prod `items`; never done end-to-end).
 
 `ops/forecast_outcomes.parquet` has 31,422 of 104,642 rows whose `item_id` has
 no row in `items` (30%). They keep a NULL slug after the backfill.
@@ -69,16 +79,16 @@ Cheap to answer now that the slug column exists: `WHERE item_slug IS NULL`.
 
 | # | Action | Effort | Buys |
 |---|---|---|---|
-| 3 | Move `price-archive/raw/` (605 MB, 84 JSON files) out of the archive; delete `exchange-rates-2026.parquet`, `player-counts/`, `2026/` | 15 min | −605 MB and three fewer ambiguities |
+| 3 | 🟡 partly done 2026-08-22 (local only). Deleted `raw/` (was empty, not 605 MB), `player-counts/` dir, `2026/`. **Do NOT delete `exchange-rates-2026.parquet` — it is live daily aggregator output, not scratch.** Remaining: replay the same deletion in CI's committed tree so the canonical repo drops them. | 15 min | three fewer ambiguities (the −605 MB estimate was stale; `raw/` was already empty) |
 | 4 | Route the remaining ~25 scripts through `db/archive.py` instead of their own `ARCHIVE_DIR` | ~1h | One definition; kills two CWD-relative defaults that resolve differently depending on where they are run |
 | 5 | Publish the three local-only ingests (`event-calendar`, `exchange-rates-history`, `item-metadata-bymykel`) or move them to `price-archive/derived/` | ~1h | The local/prod boundary becomes visible in `ls` |
 | 6 | Document rarity precedence across `items`, `item-metadata.parquet`, `item-metadata-bymykel.parquet`; refresh the `data.md` file tree | 30 min | — |
 
 Notes on the ones with a wrinkle:
 
-- **3** is safe but irreversible for `raw/` — it is scratch from the 17mafo
-  merge, already consumed. Confirm nothing re-reads it before deleting rather
-  than moving.
+- **3** — done for `raw/`/`player-counts/`/`2026/` (confirmed unread; `raw/` was
+  already an empty, re-downloadable `merge_17mafo_gap.py` cache). `exchange-rates-2026.parquet`
+  was in the original delete list by mistake — it is live daily aggregator output; leave it.
 - **4** is mechanical except `scripts/compact_price_archive.py:271` and
   `scripts/purge_phantom_items.py:292`, whose `Path("../price-archive")`
   defaults are load-bearing for how they are invoked in CI. Change those two

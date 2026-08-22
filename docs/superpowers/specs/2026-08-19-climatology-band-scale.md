@@ -1,6 +1,11 @@
 # Spec: climatological band scale (`CLIMATOLOGY_SCALE=1`)
 
-**Status:** proposed
+**Status:** **SHIPPED and DEFAULT ON** since 2026-08-19 (`CLIMATOLOGY_SCALE`, only the literal
+`"0"` disables); `CLIMATOLOGY_SERVING_START = 2026-08-20` is the first clean climatology serve.
+Serving follows the artifact via `_climatology_scale_served`. The regime-reactive modifier
+(`CLIMATOLOGY_REACTIVE`) was built and **shelved** after the prod A/B. See
+`changelog/2026-08-19-climatology-band-scale-default-on.md` and
+`changelog/2026-08-20-climatology-reactive-band-scale.md`. Not pending work.
 **Motivation:** `docs/research/2026-08-19-climatology-vs-gbm-band.md` — a per-item
 climatological h-day dispersion produces a band **43–47% narrower than the GBM's
 `price_std_60d`-based scale at matched 80% coverage, at every horizon**, confirmed prod-faithful

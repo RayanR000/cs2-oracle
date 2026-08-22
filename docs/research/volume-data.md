@@ -1,5 +1,18 @@
 # Volume Data Source Research
 
+> **Status (as of 2026-08-21): the 2026-08-15 banner below is now itself out of date — the feed
+> WAS repaired, and the answer to "is volume worth it?" came back NO for the served band.**
+> The banner says "**yes, if the feed is repaired**". The repair was done (iflow `count_in_24`,
+> `IFLOW_VOLUME=1`) and volume then **passed** band quality at h=14 on a re-folded A/B
+> (`changelog/2026-08-17-volume-band-quality-passes-on-refold.md`) — but on the **retired**
+> q10/q90 quantile band. Production serves `q_hat * scale`, and volume routed into the learned
+> scale **degrades the dominant `sigma`-tilt axis**: net-negative. The served-band question is
+> **closed** (`changelog/2026-08-17-volume-in-scale-is-net-negative.md`); do not build the
+> production integration. The DA gain is not a shippable claim on its own (`AGENTS.md`
+> invariant 4). Known ingest defect if this is ever revisited: the backfill splices BUFF
+> `count_in_24` and Steam volume into one mislabeled column.
+
+
 > 🔴 **THE VERDICT BELOW IS INVERTED (2026-08-15). Volume is FEED-BLOCKED, NOT REFUTED.**
 > `changelog/2026-08-15-volume-features-remeasured.md` re-ran the arm on the post-2026-08-08
 > statistics fix and the post-2026-08-13 trainer fix and found a **real directional gain at every

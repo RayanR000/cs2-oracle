@@ -1,5 +1,23 @@
 # Supply churn (Δlisting count) as a band-width / volatility signal (spike)
 
+> **Status (as of 2026-08-21): BUILT AND GATED OFF — outcome NOT YET RECORDED.**
+> The finding below was implemented as three features behind `SUPPLY_CHURN_FEATURES=1`, off by
+> default and A/B-only until measured
+> (`changelog/2026-08-17-supply-churn-band-width-feature.md`,
+> `backend/models/forecaster.py:631-651`). **No A/B result has been filed**, so this is the one
+> live band-width candidate on the board rather than a closed thread.
+>
+> ⚠️ Read it against what happened to the neighbouring levers, all of which were CV-positive and
+> serving-negative or structurally empty: `log1p(listing_count)` as a width conditioner
+> (refuted 2026-08-18), iflow volume in the learned scale (net-negative 2026-08-17), recency
+> weighting (a no-op at serving), and the label denominator (dead end). The band's denominator
+> has also **changed underneath this doc** — production now serves a featureless per-item
+> climatology scale, not `sigma` (2026-08-20) — so any A/B must be run against that baseline,
+> and `2026-08-19-deep-model-review.md` §12 lists "a fourth band-width scale" under **do not do**.
+> This feature is a *modifier* of the width signal, not a new denominator; scope it that way or
+> not at all.
+
+
 **Date:** 2026-08-17
 **Type:** Spike. Deliverable: a finding.
 **Question:** The docs flag supply depth as *mis-tested* — "predicts volatility / 2nd moment,

@@ -1,5 +1,31 @@
 # Cross-venue basis (Steam–Buff): signal + net-of-fee pressure test (spike)
 
+> ## 🔴 REFUTED 2026-08-19 — banner added 2026-08-21. The verdict below is inverted.
+>
+> This doc calls the Steam−Buff basis "**the strongest, cleanest predictive signal in the
+> project**". It is not, and the ingest it recommends scoping **must not be built**. Four
+> successive skeptical controls each moved it the wrong way:
+>
+> 1. **Serving-fair demeaning.** The pooled corr −0.12/−0.40 was inflated by in-sample demeaning.
+>    On a trailing-30d demean over 17 quarters (703k obs, 2022–2026) the incremental ΔR² is
+>    **~+1pp**, with `basis_dev` corr ≈ −0.13.
+> 2. **Intermittency.** The signal is real but fires in some quarters and is ~zero in others
+>    (near-zero in all of 2022–2023, 2024Q1, 2025Q4, 2026Q1), where it is collinear with Steam's
+>    own self-reversion.
+> 3. **The rescuing regime gate is a time confound.** "Low trailing basis-dispersion" simply
+>    relabels the strong quarters (2024Q3–2025Q2); it is not a prospective within-period gate.
+> 4. **The shared-quote wedge.** The apparently strong per-date cross-sectional IC (−0.18) is the
+>    wedge `replay_serving.py` exists to kill — `basis_dev(d)` and a `steam_d`-based return share
+>    `steam_d`, with the tell being monotone |IC| decay in horizon. Breaking the shared quote
+>    collapses it ~70% to **~−0.06 (h ≤ 14), ~0 by h=30** — and that residual is an upper bound.
+>
+> **FINAL: SHELVED.** It is the same CV-positive / serving-negative relative-arm class that is
+> 0-for-N here, on a non-shippable (DA) quantity, with very few independent episodes. The
+> "Buff leads, Steam follows" measurement stands as *description*; the **predictive** claim does
+> not. See also `docs/research/2026-08-19-deep-model-review.md` §7 (no paper-trading edge) and the
+> range-forecaster invariant in `backend/AGENTS.md`.
+
+
 **Date:** 2026-08-16
 **Type:** Spike. Deliverable: a finding.
 **Question:** The Steam–Buff basis was flagged as the last untested driver with a real

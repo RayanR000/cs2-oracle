@@ -1,5 +1,14 @@
 # Next steps after the 2026-08-14 audit — re-ranked, survivors first
 
+> ## 🧭 Chain notice added 2026-08-21 — this is **not** the current plan
+>
+> The next-steps chain runs `2026-08-07` → `08-09` → `08-10` → `08-13` → `08-14` → `08-16`.
+> The last document in the chain is **`docs/research/2026-08-16-next-steps.md`**, and even that
+> one has been overtaken: the live ranked plan is **§12 of
+> `docs/research/2026-08-19-deep-model-review.md`**, whose items 1–12 have all since landed.
+> Read the document below only for the *content* of a labelled item, never for what to do next.
+
+
 **Supersedes ordering in:** `docs/research/2026-08-13-next-steps.md` and the ranked plan in
 `docs/research/2026-08-14-what-moves-skin-prices-web-reconsideration.md`. Labels (`C2`–`C7`, `N2`,
 `D2`–`D5`, `O2`, `G2`) trace back to `2026-08-10-next-steps.md`, which remains the reference for the

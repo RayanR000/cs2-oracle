@@ -33,9 +33,13 @@ paths:
   re-append takes the *new* row's `ingested_at`. Every caller of `append_monthly` that cares
   about arrival has to restore it itself; `collectors/price_history_import.py` does. Corrected
   2026-08-09 — this rule previously stated first-arrival as archive-wide, and one importer was
-  written against that claim before it was measured. **The
-  migration has not been run**: only CI writes the canonical archive, so the column is absent
-  from every stored file until `aggregator-update.yml` runs with `normalize_schema = true`.
+  written against that claim before it was measured. **The migration HAS since run** (this rule
+  previously said it had not): verified 2026-08-21, every stored price file — working copy and
+  the `cs2-oracle-data` checkout alike — carries the normalised six columns
+  (`item_slug, day, source, mean_price, volume, ingested_at`, `day` as `DATE`), and
+  `median_price` / `min_price` / `max_price` are gone from disk entirely. The **column** is
+  therefore present everywhere; the **value** is NULL on all but ~723K of 22.2M rows, which is
+  the point above, not a failed migration.
 - **Operational tables live in `price-archive/ops/*.parquet`.** API routes read Parquet
   first with a DB fallback. See `db/parquet.py`.
 - ⚠️ **NEITHER copy of `ops/forecast_outcomes.parquet` is the full scored panel, and the LOCAL

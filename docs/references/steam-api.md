@@ -20,7 +20,7 @@ Findings from testing — do not re-test, use this as reference.
 
 **Auth:** None required (public endpoint).
 
-**Consumers:** the catalog builder (`scripts/build_market_catalog.py`, `scripts/repair_catalog_gaps.py`) and `collectors/supply_scraper.py`. There is **no working discovery entry point** — `scripts/discover_steam_items.py:20` does `from collectors.real_data_collector import get_collector` and no `real_data_collector.py` exists, so `discover-new-items.yml` dies with an ImportError before any Steam call. Item onboarding via this endpoint is currently unreachable.
+**Consumers:** the catalog builder (`scripts/build_market_catalog.py`, `scripts/repair_catalog_gaps.py`) and `collectors/supply_scraper.py`. There is **no working discovery entry point** — `scripts/discover_steam_items.py:20` does `from collectors.real_data_collector import get_collector` and no `real_data_collector.py` exists, so `discover-new-items.yml` dies with an ImportError before any Steam call. That workflow is **manual-dispatch only** (its schedule was disabled 2026-07-08), so the breakage only surfaces on a one-off run — but item onboarding via this endpoint is unreachable either way.
 
 **Parameters:**
 
@@ -186,6 +186,10 @@ Each record: `[date_str, price_float, volume_string]`
 
 ## Market Totals
 
+**Snapshot from the catalog build (2026-07-04); not re-measured since.** `catalog-build.md`
+records the total as ~34,301 from the same build, so treat 34,263 as ±40 and re-read
+`total_count` before relying on it.
+
 | Metric | Value |
 |---|---|
 | Total items on CS2 market | 34,263 |
@@ -203,6 +207,6 @@ Each record: `[date_str, price_float, volume_string]`
 
 ## Catalog Coverage
 
-The item catalog is **`backend/runtime/market_catalog.db`** — 18 MB, **31,908 `market_items`**, ~93% of the ~34,263 items on the market. See `catalog-build.md` for the per-category breakdown and how it was built.
+The item catalog is **`backend/runtime/market_catalog.db`** — 18 MB, **31,908 `market_items`** (re-counted 2026-08-21; file unchanged since 2026-07-04), ~93% of the ~34,263 items on the market. See `catalog-build.md` for the per-category breakdown and how it was built.
 
-The catalog is maintained by the backfill/catalog-build scripts, **not** by Steam discovery: `discover-new-items.yml` is broken at import (see above), so nothing currently adds items from `search/render/` on a schedule. Any older "Production DB vs Market" table (24,822 items / 5,712 stickers / ~72% coverage) is stale — that was the pre-catalog Supabase item list.
+The catalog is maintained by the backfill/catalog-build scripts, **not** by Steam discovery: `discover-new-items.yml` is both unscheduled (since 2026-07-08) and broken at import (see above), so nothing adds items from `search/render/` on a schedule. Any older "Production DB vs Market" table (24,822 items / 5,712 stickers / ~72% coverage) is stale — that was the pre-catalog Supabase item list.

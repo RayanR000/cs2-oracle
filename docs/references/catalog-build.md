@@ -2,17 +2,17 @@
 
 ## What We Built
 
-A complete catalog of every CS2 item on the Steam Community Market, stored in local SQLite. This replaces the production database's limited 24,822-item catalog with a full 31,908-item catalog scraped directly from Steam's API.
+A complete catalog of every CS2 item on the Steam Community Market, stored in local SQLite. This replaces the production database's limited 24,822-item catalog (prod count as of the 2026-07 build) with a full 31,908-item catalog scraped directly from Steam's API.
 
-**Output:** `backend/runtime/market_catalog.db` (18 MB, 31,908 `market_items`)
+**Output:** `backend/runtime/market_catalog.db` (18 MB, 31,908 `market_items`, 0 `failed_pages` — re-counted on disk 2026-08-21)
 
 ---
 
 ## Why
 
-Our production Supabase database only had 24,822 items (24,737 skins + 85 cases). The Steam Market has ~34,301 items. We were missing ~9,400 items — mostly stickers, charms, graffiti, agents, music kits, and collectibles — because they were never added to our DB.
+Our production Supabase database only had 24,822 items (24,737 skins + 85 cases) at the time of the build. The Steam Market had ~34,301 items (Steam total as of 2026-07; it drifts). We were missing ~9,400 items — mostly stickers, charms, graffiti, agents, music kits, and collectibles — because they were never added to our DB.
 
-This catalog covers 31,908 of ~34,301 items on the Steam Market for CS2 (93% coverage). The remaining ~2,393 are likely delisted/removed items.
+This catalog covers 31,908 of ~34,301 items on the Steam Market for CS2 (93% coverage, as of the 2026-07 build). The remaining ~2,393 are likely delisted/removed items. The catalog is a **frozen snapshot** — nothing refreshes it, so both the count and the coverage percentage age.
 
 ---
 
@@ -224,7 +224,7 @@ CREATE TABLE failed_pages (
 
 - `requests` — HTTP client
 - `sqlite3` — local database
-- `config.py` — settings (not used for this script, but imported)
+- `config.py` — **not** used and **not** imported (verified 2026-08-21: `build_market_catalog.py` imports only stdlib plus `requests`)
 
 ---
 
@@ -462,6 +462,11 @@ python3 -u scripts/repair_catalog_gaps.py --fetch-only
 >
 > 1. **The item-onboarding path is dead.** Nothing can currently add items past the
 >    `is_backfilled` gate, so a 31,908-item catalog does not by itself widen the served universe.
+>    Two confirmations (2026-08-21): `discover-new-items.yml` has had its schedule disabled since
+>    2026-07-08 (manual dispatch only), and `scripts/discover_steam_items.py` imports
+>    `collectors.real_data_collector`, **which no longer exists** — so the script cannot run at
+>    all. Note also that migration 0023 added a *narrower* `items.is_trainable` gate inside
+>    `is_backfilled`, so widening the served universe now means clearing two flags, not one.
 > 2. **The Steam listing route was re-verified 2026-08-09 and it works** — 0.36 requests per item
 >    via the canonical `G<id>` URL. But `backfill_steam_listing_history.py` still probes the
 >    `market_hash_name` URL, whose 230 KB SSR shell its block detector reads as a block. Fix the

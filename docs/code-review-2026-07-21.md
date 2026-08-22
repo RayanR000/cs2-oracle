@@ -1,8 +1,15 @@
-# Open Code-Review Findings — line refs verified 2026-08-05
+# Open Code-Review Findings — line refs verified 2026-08-21
 
 Live punch list, not a history. Originally produced by the 2026-07-21 review; every
-finding below was re-checked against `main` on 2026-08-05 and every line reference
+finding below was re-checked against `main` on 2026-08-21 and every line reference
 re-anchored. Ordered by severity within each section.
+
+**2026-08-21 re-audit summary.** The security cluster (#1–#3) is open verbatim, and #4, #7,
+#8, #10, #12, #13, #14 and all three DORMANT items still reproduce. Four findings closed
+because the file they lived in was deleted: **#5** (`migrate_to_parquet.py` gone,
+`append_to_parquet.py` now routes through the atomic `os.replace` helper), **#6**
+(`export_historical_parquet.py` gone), **#9** (both scripts gone), **#11**
+(`tests/test_price_history.py` gone). Those four are marked RESOLVED in place.
 
 - **LIVE** — reachable in a code path that runs today. Triage these.
 - **DORMANT** — the defect is still in the file, but the workflow or quota that
@@ -26,11 +33,11 @@ which forwards `params` to DuckDB. Every site below builds SQL by string formatt
 | File | Line(s) | Interpolated |
 |---|---|---|
 | `backend/api/routes/events.py` | 20 | `type_filter`, hand-escaped by doubling quotes |
-| `backend/api/routes/accuracy.py` | 120 | `where` clause + `limit` |
-| `backend/api/routes/accuracy.py` | 338 | `where` clause + `limit` |
-| `backend/api/routes/items.py` | 340–344 | `item_id`, `horizon_days` — **no escaping at all** |
-| `backend/api/routes/items.py` | 603–609 | `item_id`, `limit` |
-| `backend/api/routes/items.py` | 627–637 | `item_id`, `limit` |
+| `backend/api/routes/accuracy.py` | 134 | `where` clause + `limit` |
+| `backend/api/routes/accuracy.py` | 449 | `where` clause + `limit` |
+| `backend/api/routes/items.py` | 482–484 | `item_id`, `horizon_days` — **no escaping at all** |
+| `backend/api/routes/items.py` | 770–775 | `item_id`, `limit` |
+| `backend/api/routes/items.py` | 794–803 | `item_id`, `limit` |
 
 ```python
 # events.py:20 — manual quote-doubling is the entire defense
@@ -53,7 +60,7 @@ secret_key: str = "your-secret-key-for-sessions"  # Should be changed in product
 ```
 
 Session tokens are `itsdangerous.URLSafeTimedSerializer` signatures over this key
-(`api/routes/auth.py:15`). Any deployment that forgets `SECRET_KEY` gets forgeable
+(`_make_session_token`, `api/routes/auth.py:14-16`). Any deployment that forgets `SECRET_KEY` gets forgeable
 sessions with a publicly known key. This should fail closed — no default, or refuse to
 boot when `is_production()` and the value is the placeholder.
 
@@ -65,7 +72,7 @@ boot when `is_production()` and the value is the placeholder.
 redirect_url = f"{settings.frontend_url}/portfolio?session={token}"
 ```
 
-The same token is also set as an `httponly` cookie at `:108`. The cookie is sufficient;
+The same token is also set as an `httponly` cookie at `:108-112`. The cookie is sufficient;
 the query param is redundant and puts the token in browser history, server access logs,
 `Referer` headers, and any frontend analytics. Deleting the query param is a one-line
 change gated only on confirming the frontend doesn't read it.
@@ -76,12 +83,12 @@ change gated only on confirming the frontend doesn't read it.
 
 ### 4. Pagination double-slice in `/price-history`
 
-**File:** `backend/api/routes/items.py:256` and `:267`
+**File:** `backend/api/routes/items.py:398` and `:409`
 
 ```python
-records = all_records[skip:skip + limit]     # :256 — already sliced
+records = all_records[skip:skip + limit]     # :398 — already sliced
 ...
-records_slice = records[skip:skip + limit]   # :267 — re-slices the slice
+records_slice = records[skip:skip + limit]   # :409 — re-slices the slice
 ```
 
 Any request with `skip > 0` returns wrong, misaligned history. `skip=20, limit=50` over
@@ -89,32 +96,21 @@ Any request with `skip > 0` returns wrong, misaligned history. `skip=20, limit=5
 returning 30 records starting at global offset 40. Still **zero test coverage** — no test
 in `backend/tests/` exercises `/price-history`.
 
-### 5. Non-atomic Parquet writes in the migration scripts
+### 5. Non-atomic Parquet writes in the migration scripts — ✅ RESOLVED 2026-08-21
 
-**PARTIAL — the library is fixed, two scripts are not.**
+`backend/db/parquet.py` writes to a writer-unique temp and renames — `os.replace` at
+`:454` and `:475`, with `_tmp_path` at `:457` deliberately including pid + uuid so two
+writers can't interleave into one temp file.
 
-Fixed: `backend/db/parquet.py` writes to a writer-unique temp and renames —
-`os.replace` at `:454` and `:475`, with `_tmp_path` at `:457-466` deliberately
-including pid + uuid so two writers can't interleave into one temp file.
+Both offending callers are gone: `scripts/migrate_to_parquet.py` was deleted, and
+`scripts/append_to_parquet.py` no longer calls `DataFrame.to_parquet` at all — it goes
+through DuckDB and its own `os.replace` at `:232`.
 
-Still direct-to-final, so a crash mid-write corrupts the only copy:
+### 6. `export_historical_parquet.py` overwrites pre-2026 year files — ✅ RESOLVED 2026-08-21
 
-| File | Line(s) |
-|---|---|
-| `backend/scripts/append_to_parquet.py` | 194 (merge path), 197 (new-file path) |
-| `backend/scripts/migrate_to_parquet.py` | 172 (merge path), 175 (new-file path) |
-
-Fix is to route both through the `db/parquet.py` helpers rather than calling
-`combined.to_parquet(path)` directly.
-
-### 6. `export_historical_parquet.py` overwrites pre-2026 year files
-
-**PARTIAL.** `backend/scripts/export_historical_parquet.py:96` still does a whole-file
-`year_df.to_parquet(out_path)` for `year < MONTHLY_FROM_YEAR` (`MONTHLY_FROM_YEAR = 2026`,
-`:29`). Years ≥ 2026 now go through `append_monthly` at `:92` and are safe. So a rerun
-destroys any rows appended to a pre-2026 file since the last export, with no merge and no
-row-count check. Lower risk than it was — historical years rarely gain rows — but the
-destructive branch is unguarded.
+`backend/scripts/export_historical_parquet.py` no longer exists, so the destructive branch
+is gone with it. If a historical exporter is ever rebuilt, route it through the
+`db/parquet.py` helpers from #5.
 
 ---
 
@@ -125,7 +121,7 @@ destructive branch is unguarded.
 `backend/api/routes/auth.py:19` `_resolve_user` and
 `backend/api/routes/portfolio.py:13` `_get_current_user` are byte-for-byte equivalent
 token-verification helpers. Both return `None` on failure, but callers diverge:
-`auth.py:34` returns `None` as a 200 body, `portfolio.py:29` raises 401. There is no
+`auth.py:33` returns `None` as a 200 body, `portfolio.py:29` raises 401. There is no
 shared `Depends`, so the two will drift — and any hardening applied to one (e.g. the
 secret-key fix above) has to be remembered twice. Neither file has any test coverage.
 
@@ -135,17 +131,16 @@ secret-key fix above) has to be remembered twice. Neither file has any test cove
 exactly two places, neither of which is a collector:
 `backend/collectors/__init__.py:1` (re-export only) and
 `backend/tests/test_data_validation.py:6`. The actual ingest gate is
-`backend/collectors/pipeline.py:160` — `if price is not None and price > 0`. A misparsed
+`backend/collectors/pipeline.py:175` — `if price is not None and price > 0`. A misparsed
 `$50,000` or a stale-but-positive price flows straight into `price_history`. Either wire
 the validators into `pipeline.py` or delete them; the current state gives false
 confidence that validation exists.
 
-### 9. Destructive scripts have no confirmation gate
+### 9. Destructive scripts have no confirmation gate — ✅ RESOLVED 2026-08-21
 
-- `backend/scripts/migrate_historical_data.py` — bulk `DELETE` phases (`phase_1a_delete_stale_sources` at `:102-116`, dedup deletes through `:194`) guarded only by an opt-in `--dry-run` flag (`:17`). Default invocation deletes.
-- `backend/scripts/import_steam_items.py` — no `--dry-run`, no `--yes`, no `input()` prompt (arg parser at `:313-320`). **Correction to the original report:** this script is insert/update-only (`db.add` at `:199`, `:269`; commits at `:203`, `:206`, `:215`, `:272`, `:273`) — it does not DELETE. The risk is unwanted bulk item creation, not data loss.
-
-Fix: invert the default — require `--yes` for mutation, dry-run otherwise.
+Both scripts were deleted: `backend/scripts/migrate_historical_data.py` (the bulk-`DELETE`
+one) and `backend/scripts/import_steam_items.py`. The rule they motivated still stands for
+anything new — **require `--yes` for mutation, dry-run otherwise.**
 
 ### 10. Copy-pasted HTTP retry/session logic across 7 files
 
@@ -160,27 +155,24 @@ over-fetch bug below is the concrete precedent.
 
 ## 🟢 LIVE — simplification / test hygiene
 
-### 11. `tests/test_price_history.py` is not a test
+### 11. `tests/test_price_history.py` is not a test — ✅ RESOLVED (deleted 2026-08-10)
 
-`backend/tests/test_price_history.py` has **zero `assert` statements**, imports
-`SessionLocal` at module scope (`:13`) and opens a live DB session at import time
-(`:26`), and makes real `requests` calls to the Steam API against 5 hardcoded item names
-with a 10s delay each. It is a manual probe script collected by pytest. Move it to
-`scripts/` or delete it.
+The file was deleted, along with `scripts/test_social_signal.py`, which was what made a
+bare `pytest -q` abort during collection. See `AGENTS.md` → Commands.
 
 ### 12. Dead `Souvenir` strip in `steam_types.py`
 
 **File:** `backend/models/steam_types.py` — note the path; this is under `models/`, not
-`collectors/`. Lines `137-139` strip a leading `"Souvenir "`; lines `145-147` strip it
-again after the `StatTrak™` block. The second block can only fire on
+`collectors/`. Lines `141-143` strip a leading `"Souvenir "`; lines `149-151` strip it
+again after the `StatTrak™` block (`:145`). The second block can only fire on
 `"StatTrak™ Souvenir …"`, which is not a name CS2 produces — unreachable in practice.
 ~3 lines.
 
 ### 13. `QualityVariantOut` / `GroupedMarketItemOut` defined three times
 
-`backend/api/schemas.py:121` and `:133`, redefined in
+`backend/api/schemas.py:175` and `:187`, redefined in
 `backend/api/routes/market.py:31` and `:40`, and again as
-`backend/api/routes/items.py:151`. ~40 lines removable by importing from `schemas.py`.
+`backend/api/routes/items.py:293`. ~40 lines removable by importing from `schemas.py`.
 
 ### 14. Remaining untested surface
 
@@ -200,8 +192,9 @@ Do not triage these. Each is still in the file; none of them can run.
 offset advances by 10 — `current_offset += 10` at `:158` (failure path) and `:173`
 (success path). Pages are `[0-99]`, `[10-109]`, `[20-119]`: 90% overlap, ~1,000 requests
 where ~100 would do. **Dormant:** the supply-scraper workflow no longer exists in
-`.github/workflows/` (present: `aggregator-update`, `backtest-accuracy`,
-`discover-new-items`, `event-correlation-analysis`, `price-forecast`). Revive the
+`.github/workflows/` (present as of 2026-08-21: `ab-harness-batch`, `aggregator-update`,
+`backtest-accuracy`, `discover-new-items`, `event-correlation-analysis`,
+`forecast-freshness-check`, `model-diagnostics`, `price-forecast`, `schema-drift-check`). Revive the
 workflow and this ships a ban-risk bug on day one.
 
 ### D2. Silent transaction death in the social-sentiment collector
@@ -226,9 +219,9 @@ permanently exhausted across all keys; nothing calls this successfully.
 
 | Was | Fix evidence |
 |---|---|
-| Forecast fallback hardcoded `current_price = 0.0`, collapsing null Parquet bounds to zero | `api/routes/items.py:518` now `current_price = r.current_price or 0.0`; the `:519-520` low/high fallbacks derive from it correctly |
-| Race on a shared lazy `lgb.Dataset` across ensemble threads | `models/forecaster.py:2929-2930` calls `dtrain.construct()` / `dval.construct()` eagerly and single-threaded before any submit; the contract is documented in the `_train_ensemble_member` docstring at `:2338-2347`, and the same pattern is applied at `:3119-3120` |
-| CPU oversubscription (~40 threads on 10 cores) from nested process + thread pools | Both pools removed — no `ProcessPoolExecutor` or `ThreadPoolExecutor` **call sites** remain anywhere in `backend/models/` (only explanatory comments at `forecaster.py:2342`, `:2927`, `:2983`, `:3118`). Rationale: `docs/changelog/2026-07-21-remove-training-parallelism.md` |
+| Forecast fallback hardcoded `current_price = 0.0`, collapsing null Parquet bounds to zero | `api/routes/items.py:675` now `current_price = r.current_price or 0.0`; the low/high fallbacks immediately below derive from it correctly |
+| Race on a shared lazy `lgb.Dataset` across ensemble threads | `models/forecaster.py:5720-5721` calls `dtrain.construct()` / `dval.construct()` eagerly and single-threaded before any submit; the contract is documented in the `_train_ensemble_member` docstring at `:4853-4861`, and the same pattern is applied at `:5984-5985` |
+| CPU oversubscription (~40 threads on 10 cores) from nested process + thread pools | Both pools removed — no `ProcessPoolExecutor` or `ThreadPoolExecutor` **call sites** remain anywhere in `backend/models/` (only explanatory comments at `forecaster.py:4861`, `:5718`, `:5781`, `:5983`). Rationale: `docs/changelog/2026-07-21-remove-training-parallelism.md` |
 | Unsafe `joblib.load` of Ridge residual models | Residual stacking deleted; no `joblib` reference anywhere in `models/forecaster.py` |
-| `scripts/merge_hf_dataset.py` non-atomic writes | Now routes through the atomic library — `append_monthly` at `:140` and `:142`, imported at `:25`. No direct `to_parquet` |
+| `scripts/merge_hf_dataset.py` non-atomic writes | Was routed through the atomic library; the script has since been deleted entirely |
 | "All 9 API route files untested" | Partially closed: `tests/test_opportunity_selection.py`, `tests/test_serving_policy.py`, `tests/test_trending_ranking.py`, `tests/test_trend_explanation_copy.py` now import and exercise API code. Gaps that remain are itemized in #14 |

@@ -1,5 +1,32 @@
 # Next steps, 2026-08-16
 
+> ## 📌 Status header added 2026-08-21 — item-by-item, and this list is no longer the live plan
+>
+> **The live ranked plan is §12 of `docs/research/2026-08-19-deep-model-review.md`** (its
+> unblock/free-win/measurement-integrity items 1–12 have all landed). This document is the last
+> entry in the next-steps chain and is kept for item-level detail. Every item below, re-checked:
+>
+> | Item | Status as of 2026-08-21 |
+> |---|---|
+> | **1.** R13 cohort question / two-tier framing | ✅ **DECIDED as recommended.** The floor was *not* raised; the sub-$1 tier is labelled not-tradeable on served forecasts. `changelog/2026-08-17-tradeability-label-on-served-forecasts.md` (commit `cda16ab`). |
+> | **2.** Repair the volume feed | ✅ built, ❌ **CLOSED NET-NEGATIVE.** iflow `count_in_24` was wired as `IFLOW_VOLUME=1` and *passed* band quality at h=14 on a re-fold — but on the **retired** q10/q90 band. Volume in the production learned scale degrades the dominant `sigma`-tilt axis. `changelog/2026-08-17-volume-in-scale-is-net-negative.md`. Known ingest defect if revisited: BUFF `count_in_24` and Steam volume are spliced into one mislabeled column. |
+> | **3.** Re-run the nine repaired A/B harnesses | ⚠️ **RECOMMENDATION REVERSED — still open, but as a *labelling* task, not a re-run.** The batch workflow exists (`7d05b40`) and the OOM blocker is fixed (`changelog/2026-08-18-train-universe-derived-from-archive.md`), but `2026-08-19-deep-model-review.md` §11–§12 rules a broad re-run **out**: the A/B family was never powered (MDEs 1.15–7.13pp), so most stored "null" verdicts are **UNRESOLVED**, not null. The fix is to put the MDE beside each stored verdict and relabel. Also: no 2026 A/B is interpretable until the consensus-estimator composition breaks (§1) are controlled. |
+> | **4.** Over-coverage on the ≥$1 tiers | ✅ **LARGELY ADDRESSED, by a route this item did not name.** Centre fix shipped 2026-08-19 (signed conformal band + `DIRECTION_UPWEIGHT = 1.0`); the `sigma` denominator was **replaced** on 2026-08-20 by a featureless per-item climatology band — 33–46% narrower at matched 80% and better calibrated on served replay (`docs/research/2026-08-19-climatology-vs-gbm-band.md`, `changelog/2026-08-19-climatology-band-scale-default-on.md`). The regime-reactive follow-up `CLIMATOLOGY_REACTIVE` was **shelved** after a prod A/B (`changelog/2026-08-20-climatology-reactive-band-scale.md`). ⏳ Residual: the served-outcome `q_hat` feedback is armed but dormant until 20 served dates accrue. |
+> | **5.** Cross-market (Steam−Buff) basis diagnostic | ❌ **RUN AND SHELVED 2026-08-19. Do not build the ingest.** `docs/research/2026-08-16-cross-venue-basis-steam-buff.md` carries the full forward-pointer. Every skeptical control moved it the wrong way; the recorded corr −0.12 was a market-factor + shared-quote wedge artifact, and the wedge-controlled cross-sectional IC is ~−0.06 decaying to 0 by h=30. |
+> | **6.** `log1p(listing_count)` into band width | ❌ **CLOSED, refuted 2026-08-18** — already recorded in-document below. Confirmed accurate. |
+> | **7.** Recovered items: hedonic market index (08-07 item 8); **R14** mechanical supply-position features (08-07 `:813`) | 🟡 **STILL GENUINELY OPEN — the only open items on this list.** Neither has been run or closed since. R14 is now better grounded: only **5 containers still drop**, a verified finite-supply rule that replaces the old age proxy. |
+>
+> **Two closures that postdate this document and change its "Do not run" section:**
+>
+> - **`P(|move| > cost)` exceedance is the one signal that survived serving** and has **shipped** —
+>   as served volatility/stability tags, not as a trade
+>   (`changelog/2026-08-20-exceedance-served-signal.md`, `…-volatility-stability-tags.md`, PRs #28/#29).
+> - **The trade hunt is closed at every horizon.** The long-horizon (h=90/180) move magnitude does
+>   clear the friction bar, but *selection* is null (AUC 0.51–0.53 over 3 OOS windows, top-decile
+>   lift ≤1.0×) and the unconditional bet lost money in every window. The product is
+>   **range-only**. Add "another horizon-extension trade hunt" to the Do-not-run list.
+
+
 **Supersedes the ordering in `2026-08-14-next-steps.md`**, whose #1 item failed on 2026-08-15 and
 which predates a week of work that lived only in changelogs. Earlier lists keep their item-level
 detail; this one owns the ranking.

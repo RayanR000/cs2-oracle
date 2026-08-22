@@ -1,6 +1,10 @@
 # Served-outcome feedback calibration — design
 
-**Date:** 2026-08-16. **Status:** approved design, pre-implementation.
+**Date:** 2026-08-16. **Status:** **BUILT and DORMANT**, not pending work.
+`backend/models/served_recalibration.py` landed 2026-08-16 and is gated on `MIN_FORECAST_DATES`
+(20) distinct served dates per horizon, plus the band-geometry cutovers
+`SIGNED_BAND_SERVING_START = 2026-08-19` / `CLIMATOLOGY_SERVING_START = 2026-08-20` so it never
+pools across geometries. See `changelog/2026-08-16-served-outcome-feedback-calibration-built-dormant.md`.
 **Problem source:** `docs/changelog/2026-08-16-exceedance-band-scale-refuted-at-serving.md` and the
 Phase-1 debugging that followed it (this session): the served conformal band **over-covers**
 (prod panel 87.2 / 91.8 / 90.6 / 89.0% against an 80% target; A/B control @2026-04-28 covered

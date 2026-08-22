@@ -127,9 +127,11 @@ paths:
   DA by **+10.15pp at 30d** and **+5.44pp at 14d** (both intervals exclude zero); h=3 and h=7 are
   unresolved, not clean. See `docs/changelog/2026-08-08-embargo-discontinuity-measured.md`.
 - **`walkforward_backtest.py` does NOT use `fetch_price_history`.** Its own
-  `_load_all_prices` skips multi-source voting, the `historical_fallback:` source filter,
-  the dead-item filter, and `backfilled_only`. It does apply the universe rules, in SQL,
-  through `archive_universe_sql_filter`. Lags are *not* corrupted — `engineer_features`
+  `_load_all_prices` skips multi-source voting, the dead-item filter, and `backfilled_only`.
+  It *does* apply the universe rules in SQL through `archive_universe_sql_filter`, and since
+  2026-08-19 that composition includes the bid-source **and** `historical_fallback:` source
+  filters as well as the slug rules — so the source filters are no longer among the things it
+  skips (this rule previously said the fallback filter was). Lags are *not* corrupted — `engineer_features`
   collapses to one row per item-day — but it collapses the archive's 1.37× duplicate
   item-days with a plain **mean**, where production serves an **outlier-voted median**
   (sources >2σ from the median are rejected). The fresh-model gate therefore scores a

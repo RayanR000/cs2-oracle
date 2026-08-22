@@ -1,5 +1,16 @@
 # Pre-registered read #2: re-fold the volume band-quality test to reach the ≥14-cluster floor
 
+> **Status (as of 2026-08-21): SCORED 2026-08-17 — PASSES at h=14, and then the thread CLOSED
+> anyway.** `changelog/2026-08-17-volume-band-quality-passes-on-refold.md`: `rel_width` −0.233
+> [−0.370, −0.104] at h=14, coverage holds ~81%, placebo null, both robustness checks survive
+> (the effect *strengthens* without the 2025-10 spike regime); null at h=3/h=7.
+> **But the pass is on the retired q10/q90 band, not the served one.** Volume routed into the
+> production learned scale is **net-negative** — it degrades the dominant `sigma`-tilt axis —
+> so the served-band question closed the same day
+> (`changelog/2026-08-17-volume-in-scale-is-net-negative.md`). **Do not build the ingest
+> integration on the strength of the pass above.**
+
+
 **Written 2026-08-17, after the first run
 (`2026-08-17-volume-band-quality-preregistration.md`) came back cluster-starved — 8 folds at
 every horizon, below the ≥14 floor that prereg fixed. No re-folded result has been scored.** The

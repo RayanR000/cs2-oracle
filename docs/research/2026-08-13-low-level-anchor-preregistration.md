@@ -1,5 +1,16 @@
 # Pre-registration: does the date-level rescaling RAISE the band where it must?
 
+> **Status (as of 2026-08-21): SCORED 2026-08-13 — (L1) FAILS at 3 of 3 readable horizons.**
+> `changelog/2026-08-13-the-low-level-read-fails-its-axis.md`: the date-level rescaling does not
+> raise the band on calm dates, and the question was posed on the wrong axis. The date-level
+> `sigma` rescaling was not shipped, and `sigma` has since been replaced as the band denominator
+> by the featureless climatology scale (`docs/research/2026-08-19-climatology-vs-gbm-band.md`,
+> shipped 2026-08-20). Note the near-identical later result: `CLIMATOLOGY_REACTIVE` was also
+> shelved for harming recently-calm/forward-volatile dates
+> (`changelog/2026-08-20-climatology-reactive-band-scale.md`) — **forward volatility on calm
+> anchors is a recurring wall, not a lever.**
+
+
 **Date:** 2026-08-13, written and committed **before any coverage number was computed.**
 **Instrument:** `backend/scripts/attribute_band_level.py --low-legs` (offline, ~2 min, writes
 nothing). Selection ran first, through `--select-low`, which sees `L[t]`, the two audits and row

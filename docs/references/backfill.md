@@ -2,7 +2,7 @@
 
 > **DEAD — the data described here is not on disk and cannot be re-fetched.**
 >
-> 1. `backend/runtime/csmarketapi.db` is **0 bytes**. Every "Final Totals" figure below (4,940 items, ~12M rows, 7 markets, ~2.5 GB) describes data that no longer exists locally. Treat this document as a design record, not an inventory.
+> 1. `backend/runtime/csmarketapi.db` is **0 bytes** (re-checked 2026-08-21). Every "Final Totals" figure below (4,940 items, ~12M rows, 7 markets, ~2.5 GB) describes data that no longer exists locally. Treat this document as a design record, not an inventory.
 > 2. The free-tier quota is **permanently exhausted** — every key still returns 429 a month after the burn, so the monthly reset the plan assumed never happens.
 > 3. With an empty DB there is also no `backfill_state` checkpoint, so a resume would restart from item #1 even if quota existed.
 >
@@ -15,7 +15,7 @@ Backfill daily sales history (OHLCV per market) for CS2 items across all major t
 ## Constraints
 
 | Constraint | Detail |
-|---|---|---|
+|---|---|
 | CSMarketAPI free tier | 1,000 requests/month/key — **all burned, and they do not reset** |
 | Accounts available | 5 burned (skrup.chezz, breadandpoops, rrane2025, rayanrane, bobafett); code supports **6** slots (`config.py:49-50,56` → `range(1, 7)`) |
 | Total monthly budget | Nominally ~4,750 requests (950 safety threshold × 5) — **actually 0** |
@@ -69,7 +69,7 @@ Items from `market_catalog.db` sorted by `sell_listings DESC`, with CSMarketAPI-
 | `GET /v1/markets` | Supported markets (SKINBARON, CSFLOAT, DMARKET, etc.) | 12 |
 | `GET /v1/currency_rates` | Exchange rates (USD, EUR, CNY, RUB, INR) | 5 |
 | `GET /v1/player_counts/history` | CS2 player count history (2011–2026) | 10,470 |
-| `GET /v1/items` | Full item catalog | 31,417 |
+| `GET /v1/items/` | Full item catalog | 31,417 |
 
 **Per-item (1 request/item, stored in backfill DB):**
 
@@ -190,7 +190,7 @@ Rolled back `req_idx_1` and `req_idx_2` to 900 in the DB to re-expose ~50 quota 
 
 ### Final Totals (historical — none of this is on disk)
 
-These were the totals when the burn finished. `csmarketapi.db` is now 0 bytes, so read this as a record of what the quota bought, not as available data.
+These were the totals when the burn finished. `csmarketapi.db` is now 0 bytes, so read this as a record of what the quota bought, not as available data. ⚠️ **These three numbers do not reconcile and cannot be re-derived** (the DB is gone): "4,940 items completed" here, "clean stop at item #2,942" above, and 1,824 + 2,794 = **4,618** in the coverage-by-tier table below. Treat any of them as approximate.
 
 | Metric | Value |
 |---|---|
@@ -268,14 +268,14 @@ The CSMarketAPI backfill reached **4,940 items** (Steam + 6 markets) before the 
 | Method | Per-item API calls | Bulk Parquet download |
 | Auth | API keys ($9.99/mo) | CC BY 4.0 (free) |
 
-The HF dataset brought the total items with some historical data from **5,542 to ~33,000** for the Mar 22 – Apr 15 window. See `docs/references/data-sources.md` for full details. Script: `backend/scripts/merge_hf_dataset.py`.
+The HF dataset brought the total items with some historical data from **5,542 to ~33,000** for the Mar 22 – Apr 15 window. See `docs/references/data-sources.md` for full details. Script: `backend/scripts/merge_hf_dataset.py` — **deleted; it no longer exists on disk** (one-off merge, already applied to the archive). Recover it from git history if you need to re-read the mapping.
 
 ## File Reference
 
 | File | Purpose |
 |---|---|
 | `backend/collectors/csmarketapi_backfill.py` | Main backfill script |
-| `backend/scripts/merge_hf_dataset.py` | HF dataset merge into Parquet archive |
+| ~~`backend/scripts/merge_hf_dataset.py`~~ | HF dataset merge into Parquet archive — **deleted, recover from git history** |
 | `backend/config.py` | Settings model with `csmarketapi_keys` property |
 | `.env` | API keys + account names |
 | `runtime/csmarketapi.db` | Backfill database (items + sales_history + state) — **0 bytes / empty** |

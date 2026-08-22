@@ -13,7 +13,7 @@ derived from it are in `../changelog/2026-08-06-data-acquisition-ranking.md`.
 | Steam Market supply scraper | Burst scrape | Not running | Live sell_listings count | None | **Dormant** — workflow deleted (Steam 429s runner IPs); features also excluded by `FEATURE_GROUP_ALLOWLIST` |
 | CSFloat API | REST API | Not running | Live listings | API key not configured | **Degraded** |
 | Steam Web API | REST API | Manual only | Item schema/icons | STEAM_API_KEY (optional) | **Not used by any pipeline** |
-| Skinport (via aggregator) | JSON API | Daily | Reads `starting_at` correctly | None | **Active** (fixed — `csgotrader_aggregator.py:191-192, 314-317`) |
+| Skinport (via aggregator) | JSON API | Daily | Reads `starting_at` correctly | None | **Active** (fixed — `csgotrader_aggregator.py:190-194, 315-320`) |
 | Skinport (direct API) | REST API | Daily (attempted) | Live `/v1/items` `quantity` | None | **Wired, blocked** — `collectors/supply_depth.py` calls it daily; returned **HTTP 403 (WAF)** on 2026-08-06 and contributed 0 rows. Two distinct failure modes — see the Skinport section below |
 | cs2.sh archive | API stub | N/A | Not implemented | CS2SH_API_KEY | **Stub** |
 | **HF CS2 Dataset (idomanteu)** | **Parquet (Hugging Face)** | **Imported once** | **Hourly BUFF/CSFloat/YouPin, Mar 22 – Apr 15 2026** | **None (CC BY 4.0)** | **✅ Active (merged to archive 2026-07-20)** |
@@ -33,7 +33,7 @@ derived from it are in `../changelog/2026-08-06-data-acquisition-ranking.md`.
 | `somespecialone/steam-item-name-ids` | GitHub JSON | One-shot (pushed 2026-08-03) | 26,935 `market_hash_name` → `item_nameid` — unblocks `itemordershistogram` lookups | None | **Not integrated** — Steam-hosted consumer, so residential IP only (see IP-class section) and per-item |
 | `ByMykel/CSGO-API` | Raw GitHub JSON | One-shot (12 dumps, cached under `runtime/bymykel/`) | 45,362 items — rarity (`rarity_meta` token + `rarity_meta_rank`), item age, float range, StatTrak/souvenir, crate + collection | None | **Ingested** by `scripts/ingest_bymykel_metadata.py` → `item-metadata-bymykel.parquet`. Features **refuted** (2026-08-06), but it is the rarity fill source for `item-metadata.parquet`, taking coverage 50.6% → 99.9% (2026-08-07) |
 | Steam `ISteamNews/GetNewsForApp` | REST API | **Weekly** (~2 s, 4 pages) | **1,752 entries back to 2012-03-16** (439 official) — free CS2 event calendar | None | **✅ Scheduled 2026-08-08** in `event-correlation-analysis.yml`, before its only consumer. `scripts/ingest_steam_news.py` writes **two** tables: `event-calendar.parquet` (date-level panel) and `event-news.parquet` (per-event), and `scripts/sync_events_from_news.py` upserts Valve posts into the `events` DB table |
-| **iflow BUFF backfill** (`EricZhu-42/SteamTradingSiteTracker-Data`) | JSON dump via `api.iflow.work` | One-shot backfill (12h dumps) | BUFF ref price (**CNY**), `count_in_24` (**live 24h trade volume**), Steam order-book depth, buff buy/sell counts; **2022-04-18 → 2026-05-20**, ~16.6k CS+Dota items/dump | None | **🔬 Candidate (Phase 0, 2026-08-16)** — free ~4yr history; `hash_name` = `item_slug` verbatim, CNY→USD via `exchange-rates-history.parquet`. Two reasons: `count_in_24` is the **live volume series** the open volume lead needs, and 4yr history multiplies backtest episodes ~10× to re-test the underpowered depth/count nulls. See `../research/2026-08-16-refutation-power-tiers-and-iflow-backfill.md` |
+| **iflow BUFF backfill** (`EricZhu-42/SteamTradingSiteTracker-Data`) | JSON dump via `api.iflow.work` | One-shot backfill (12h dumps) | BUFF ref price (**CNY**), `count_in_24` (**live 24h trade volume**), Steam order-book depth, buff buy/sell counts; **2022-04-18 → 2026-05-20**, ~16.6k CS+Dota items/dump | None | **Built, and both original motives now closed negative** — `scripts/backfill_buff_iflow.py` exists and writes staging `prices-YYYY-MM.parquet` (`source="buff_iflow"`) + `volume-iflow-YYYY-MM.parquet`; `hash_name` = `item_slug` verbatim, CNY→USD via `exchange-rates-history.parquet`. The volume re-tests came back null/net-negative (`../changelog/2026-08-17-volume-in-scale-is-net-negative.md`) and the breadth path that preserves accuracy is **Steam-consistent backfill, not the iflow/Buff merge** (`../changelog/2026-08-18-training-breadth-is-accuracy-neutral.md`); the Steam–Buff basis feature was also shelved. **Known defect:** `backfill_buff_iflow.py:102` writes the pre-2024-02-13 BUFF `count_in_24` into the `steam_volume` column, so that column is a spliced BUFF/Steam series either side of 2024-02-13 — emit them separately on any depth ingest. Background: `../research/2026-08-16-refutation-power-tiers-and-iflow-backfill.md` |
 
 ## CSGOTrader Accuracy Issues
 
@@ -47,20 +47,27 @@ derived from it are in `../changelog/2026-08-06-data-acquisition-ranking.md`.
   parse. The daily collector has never collected volume — this is an absence, not a
   regression. Real sale counts now arrive on a separate path
   (`collectors/sales_volume.py` → `volume-YYYY-MM.parquet`).
+- **Since 2026-08-17 `steam.json`'s `last_24h` is also persisted on its own label,
+  `aggregator_steam_spot`** — Steam's point-in-time spot written *without* the
+  trailing-window (7d/30d/90d) fallback that `aggregator_sync` applies, as the clean Steam
+  leg for a cross-venue basis. It is **excluded from consensus voting**
+  (`ItemForecaster.STEAM_SPOT_SOURCES`, `models/item_parser.py:84`) so it cannot cast a
+  second Steam ballot; `VOTED_CACHE_VERSION` is 7. See
+  `../changelog/2026-08-17-steam-spot-persisted-for-basis.md`.
 - **The pipeline used to write `0` for that absence; since 2026-08-08 it writes NULL.**
   `pipeline.py`'s `VOLUME_NOT_OBSERVED` and `append_to_parquet.py`'s `_sum_observed`
   (a `min_count=1` sum, so an all-absent group stays NA). This is fix-forward only —
   stored rows through 2026-08-08 keep their fabricated zeros.
 - No freshness metadata in the JSON dump — can't detect stale/failed upstream
 - `data_validation.py` has outlier/anomaly checks but they are NEVER called in the pipeline
-- Historical fallback re-inserts stale prices with `timestamp=now`, but the rows are relabelled `historical_fallback:<source>` (`pipeline.py:39-43`) and stale items are tracked separately (`pipeline.py:183-238`) — so fallback rows *are* distinguishable downstream. Treat this as a freshness caveat, not silent corruption.
+- Historical fallback re-inserts stale prices with `timestamp=now`, but the rows are relabelled `historical_fallback:<source>` (`pipeline.py:54-58`) and stale items are tracked separately (`pipeline.py:204-258`) — so fallback rows *are* distinguishable downstream. Treat this as a freshness caveat, not silent corruption.
 
 ## Supply Scraper (Steam sell_listings) — DELETED
 
-**Added 2026-07-15, removed 2026-08.** Do not treat this as a live source. **Replaced 2026-08-06** by `collectors/supply_depth.py`, which pulls four non-Steam marketplace feeds daily inside `aggregator-update.yml` and writes `price-archive/supply-YYYY-MM.parquet`. `models/forecaster.py::_fetch_supply_snapshots` now reads that archive instead of the `supply_snapshots` table. The allowlist point below is unchanged: **the forecaster still consumes no supply-depth feature in production, and no lift has been measured.** See `../changelog/2026-08-06-supply-depth-collector.md`.
+**Added 2026-07-15, removed 2026-08.** Do not treat this as a live source. **Replaced 2026-08-06** by `collectors/supply_depth.py`, which pulls four non-Steam marketplace feeds daily inside `aggregator-update.yml` and writes `price-archive/supply-YYYY-MM.parquet`. `models/forecaster.py::_fetch_supply_snapshots` now reads that archive instead of the `supply_snapshots` table. The allowlist point below is unchanged: **the forecaster still consumes no supply-depth feature in production.** Lift has since been measured, and it is negative: the `log1p(listing_count)` band-width conditioner is refuted 0/3 horizons (`../changelog/2026-08-18-listing-count-conditioner-refuted.md`), and the deeper `supply_churn_*` features built off `supply-history.parquet` are gated off behind `SUPPLY_CHURN_FEATURES=1` pending measurement (`../changelog/2026-08-17-supply-churn-band-width-feature.md`). See `../changelog/2026-08-06-supply-depth-collector.md`.
 
 - **Why it died:** hosted GitHub runners are 429'd by `steamcommunity.com` on the *first* request. `supply-scraper.yml` was deleted (commit 0288568); `supply_snapshots` is frozen at 35,037 rows.
-- **It fed nothing anyway:** `FEATURE_GROUP_ALLOWLIST = ["price_technicals"]` (`models/forecaster.py:222`) discards supply features before training. The forecaster has never consumed supply-depth features in production.
+- **It fed nothing anyway:** `FEATURE_GROUP_ALLOWLIST = ["price_technicals"]` (`models/forecaster.py:416`) discards supply features before training. The forecaster has never consumed supply-depth features in production.
 - **Code still present but unreachable from CI:** `backend/collectors/supply_scraper.py`, entry at `backend/scripts/run_supply_scraper.py`. Runnable manually from a residential IP only.
 - **Original design (for reference):** burst scrape of `steamcommunity.com/market/search/render/` (public, no auth), 20 rapid requests → 30s pause, ~3,400 pages of 10 items → ~115 min for the full catalog.
 
@@ -68,7 +75,7 @@ derived from it are in `../changelog/2026-08-06-data-acquisition-ranking.md`.
 
 **1. HTTP 406, `Accept-Encoding`.** Skinport answers 406 to any request that does not advertise brotli, and `requests` advertises it only when a codec is importable. The historical "Cloudflare-dead" verdict was this, misdiagnosed. `brotli>=1.1.0` is pinned in `backend/requirements.txt` and `collectors/supply_depth.py::_probe_brotli` fails loudly rather than letting the feed disappear behind a header bug. macOS system `curl 8.7.1` is built without brotli, so it sends the header, gets a 200 and cannot decode the body.
 
-**2. HTTP 403, egress ASN (new, 2026-08-06).** Separately, Skinport's WAF returns **403 with an HTML challenge page** to traffic from **Cloudflare-owned egress IPs (AS13335)**. No header change fixes it; measured with brotli decoding correctly and across every User-Agent tried. `scripts/probe_supply_feeds.py` reports this as a distinct `blocked_waf` status so it cannot be folded into (1) or into a fabricated zero.
+**2. HTTP 403, egress ASN (new, 2026-08-06).** Separately, Skinport's WAF returns **403 with an HTML challenge page** to traffic from **Cloudflare-owned egress IPs (AS13335)**. No header change fixes it; measured with brotli decoding correctly and across every User-Agent tried. `scripts/probe_supply_feeds.py` reported this as a distinct `blocked_waf` status so it could not be folded into (1) or into a fabricated zero. **That script no longer exists in the repo** (as of 2026-08-21) — the finding stands, the probe would have to be rewritten.
 
 Before concluding anything about Skinport, check `server: cloudflare` on the response and the caller's egress ASN — a 403 here is about *where you are calling from*. The coverage figures for Skinport `/v1/items` and `/v1/sales/history` in the two 2026-08-06 supply entries were measured from a residential IP and are **unverified from any other egress**.
 
@@ -76,7 +83,7 @@ Before concluding anything about Skinport, check `server: cloudflare` on the res
 
 ### market.csgo.com `volume` is a listing count
 
-The field name is a landmine: in this repo `volume` means completed-sale count, refuted at |r| < 0.002. Verified as live inventory on 2026-08-06 by `scripts/probe_supply_feeds.py` on four grounds — a heavy right tail (median 13, p99 813, max 17,028); Spearman 0.56 against Waxpeer's `count`; values exceeding CSFloat's genuine daily sale count for all 9 canary items by a multiple that widens as liquidity falls (1.4x Kilowatt Case → 15x Glock Fade, the inventory ≈ trade rate × dwell time signature); and a per-physical-listing full export on the site. See `../changelog/2026-08-06-supply-depth-collector.md`.
+The field name is a landmine: in this repo `volume` means completed-sale count, refuted at |r| < 0.002. Verified as live inventory on 2026-08-06 by the then-present `scripts/probe_supply_feeds.py` (since deleted) on four grounds — a heavy right tail (median 13, p99 813, max 17,028); Spearman 0.56 against Waxpeer's `count`; values exceeding CSFloat's genuine daily sale count for all 9 canary items by a multiple that widens as liquidity falls (1.4x Kilowatt Case → 15x Glock Fade, the inventory ≈ trade rate × dwell time signature); and a per-physical-listing full export on the site. See `../changelog/2026-08-06-supply-depth-collector.md`.
 
 ## Deduplication strategy
 - Only insert price row if value actually changed vs previous row
@@ -103,7 +110,7 @@ The field name is a landmine: in this repo `volume` means completed-sale count, 
 Volume **is** present in the Parquet archive — and it is **not** limited to a 90-day window.
 
 - **Coverage:** 9,833,838 rows (**88.65%** of all 11,092,908 price rows) carry non-zero `volume`, spanning **2013-08-14 → 2026-03-29** across **5,542 unique items**.
-- **Source label:** these rows are tagged **`aggregator_sync`** in the archive. Older analysis scripts and the backfill DB still call this `STEAMCOMMUNITY` — same data; the `source` column was added later and rows without it were defaulted to `aggregator_sync` (`append_to_parquet.py:119` for the legacy CSV path, `:191` for the schema migration of existing Parquet).
+- **Source label:** these rows are tagged **`aggregator_sync`** in the archive. Older analysis scripts and the backfill DB still call this `STEAMCOMMUNITY` — same data; the `source` column was added later and rows without it were defaulted to `aggregator_sync` (`append_to_parquet.py:150` for the legacy CSV path; the in-script schema migration is gone — schema normalisation now lives in `scripts/normalize_price_schema.py`, which `aggregator-update.yml` runs daily before the append).
 - **Origin:** a Steam price-history backfill. `scripts/backfill_ssr_history.py` pulls `steamcommunity.com/market/pricehistory/` (which returns daily traded volume); the data was merged into the archive via `append_to_parquet.py` (the legacy `--backfilled-csv` path relabels Steam backfill rows to `aggregator_sync`).
 - **Per-year:** 2013–2025 are ~100% volume-populated; 2026 is partial (24.3% — only the `aggregator_sync` subset has volume; the live aggregator sources still record `volume=0`).
 
@@ -175,7 +182,9 @@ The remaining gap (**Apr 16 – Jul 8, 84 days**) is still unfilled for non-back
 
 ### Merge script
 
-`backend/scripts/merge_hf_dataset.py` — standalone script that:
+`backend/scripts/merge_hf_dataset.py` — **deleted; no longer in the repo as of 2026-08-21.**
+The merge already ran (2026-07-20) and its output is in the archive; this is a record of what
+it did, not a runnable path. It was a standalone script that:
 1. Downloads the HF Parquet file (cached at `/tmp/cs2_listing_prices_hourly.parquet`)
 2. Maps `market_hash_name` → `item_slug`, `bucket` → `day`, `close_ask` → price
 3. Aggregates hourly → daily OHLCV per `(item_slug, day, source)`
@@ -183,7 +192,7 @@ The remaining gap (**Apr 16 – Jul 8, 84 days**) is still unfilled for non-back
    (it also wrote `snapshots-YYYY.parquet`, retired 2026-08-06 — see
    `../changelog/2026-08-06-price-archive-compaction.md`)
 
-Usage: `python scripts/merge_hf_dataset.py --out-dir ..`
+Usage was `python scripts/merge_hf_dataset.py --out-dir ..` (script since removed).
 
 ## Steam market listing pages — free logged-out history (evaluated 2026-08-05)
 
@@ -365,5 +374,5 @@ for the zero-row guard, guard the `min_ask` anchor) and the open `created_at`
 ambiguity that decides whether the age features mean anything.
 
 ## Quality gaps
-- Wire `data_validation.py` checks into the pipeline — it is still dead code (only importers are `collectors/__init__.py:1` and `tests/test_data_validation.py:6`; `pipeline.py:160` validates `price > 0` only)
+- Wire `data_validation.py` checks into the pipeline — it is still dead code (only importers are `collectors/__init__.py:1` and `tests/test_data_validation.py:6`; `pipeline.py:175` validates `price > 0` only)
 - Historical fallback still emits flat-line rows with `timestamp=now`; they are labelled and tracked, but nothing downstream *excludes* them yet

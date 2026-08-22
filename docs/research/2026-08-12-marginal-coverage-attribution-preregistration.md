@@ -1,5 +1,16 @@
 # Pre-registration: does the `sigma`-mix shift explain the marginal over-coverage?
 
+> **Status (as of 2026-08-21): SCORED 2026-08-12 — every pre-registered leg PASSED; verdict
+> PARTIAL at 4 of 4.** `changelog/2026-08-12-marginal-over-coverage-is-half-the-sigma-mix.md`:
+> the served `sigma`-mix shift explains ~40–60% of the marginal over-coverage, and the 30d
+> counter-example was an artifact.
+> **Forward pointer:** the remedy line that followed is dead — `sigma` is no longer the served
+> band denominator. The featureless climatology scale shipped 2026-08-20 and beats `sigma` at
+> matched coverage (`docs/research/2026-08-19-climatology-vs-gbm-band.md`), and
+> `CLIMATOLOGY_REACTIVE` — the regime-reactive follow-up — was **shelved** after a prod A/B
+> (`changelog/2026-08-20-climatology-reactive-band-scale.md`).
+
+
 **Date:** 2026-08-12 (written and committed **before** the read)
 **Instrument:** `backend/scripts/attribute_marginal_coverage.py` (new, offline, read-only)
 **Question opened by:** `docs/changelog/2026-08-12-sigma-tilt-confirmed-on-oof-residuals.md` §"One lead

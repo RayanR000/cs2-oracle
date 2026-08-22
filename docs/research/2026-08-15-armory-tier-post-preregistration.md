@@ -1,5 +1,12 @@
 # Pre-registered read: does the 2026-07-08 Armory update move price tiers differentially?
 
+> **Status (as of 2026-08-21): SCORED 2026-08-15 — FAILS its bar AND its placebo.**
+> `changelog/2026-08-15-armory-tier-post-fails-and-fails-placebo.md`: wrong sign on
+> knives/gloves (t = 2.55) *and* the placebo window diverges more than the event window. This
+> was the #1 item of `2026-08-14-next-steps.md`; its failure is what triggered
+> `2026-08-16-next-steps.md`. **Event-study `tier × post` designs are closed on this data.**
+
+
 **Written 2026-08-15 before any return/outcome was scored.** Only coverage and tier-membership
 counts were read to fix the void thresholds below (the same order the mean-reversion prereg used).
 No per-item return over any window has been computed.

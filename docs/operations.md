@@ -16,12 +16,12 @@ There is **no hang protection except one job-level timeout** — see
 
 | Secret | Used by | If unset |
 |---|---|---|
-| `SUPABASE_DATABASE_URL` | all six workflows | every DB step fails |
-| `CS2_DATA_REPO_TOKEN` | `aggregator-update`, `price-forecast`, `backtest-accuracy` | the **archive checkout fails before any collection or forecasting runs** — the job dies at `Checkout data archive` / `Checkout price archive` |
+| `SUPABASE_DATABASE_URL` | eight of the nine workflows (all but `schema-drift-check`, which stands up its own throwaway Postgres) | every DB step fails |
+| `CS2_DATA_REPO_TOKEN` | `aggregator-update`, `price-forecast`, `backtest-accuracy`, `event-correlation-analysis`, `model-diagnostics`, `ab-harness-batch`, `forecast-freshness-check` | the **archive checkout fails before any collection or forecasting runs** — the job dies at `Checkout data archive` / `Checkout price archive` |
 
 `CS2_DATA_REPO_TOKEN` must be able to read *and* force-push
-`RayanR000/cs2-oracle-data` (`aggregator-update.yml:91`, `price-forecast.yml:63`,
-`backtest-accuracy.yml:56`). `STEAM_API_KEY` and the `CSMARKETAPI_*` keys are optional;
+`RayanR000/cs2-oracle-data` (`aggregator-update.yml:228`, `price-forecast.yml:271`,
+`backtest-accuracy.yml:104`, `event-correlation-analysis.yml:159`). `STEAM_API_KEY` and the `CSMARKETAPI_*` keys are optional;
 nothing in the daily pipeline reads them.
 
 ## Workflows
@@ -32,7 +32,10 @@ nothing in the daily pipeline reads them.
 | `price-forecast` | Chained off aggregator | ML price predictions (Monday sets `mode=full`) | `item_forecasts` + its Parquet mirror |
 | `backtest-accuracy` | Chained off forecast + 08:00 UTC Mon-Sat | Evaluate forecast accuracy, detect concept drift | `prediction_accuracy`, `forecast_outcomes`, `accuracy_alerts` |
 | `event-correlation-analysis` | Weekly Sun 04:00 UTC | Quantifies market-event price impacts | `event_correlations`, `event_impacts` |
-| `model-diagnostics` | Weekly Sun 02:00 UTC | Scores the served classifier — one matrix job per horizon, `--train-only`, measurement only | nothing (artifacts die with the runner) |
+| `model-diagnostics` | Weekly Sun 02:00 UTC | Scores the served signal and replays serving — one matrix job per horizon, `--train-only`, measurement only; `workflow_dispatch` inputs carry the gated A/B arms (`climatology_scale`, `climatology_reactive`, `exceedance_scale`, `feature_native_nan`, …) | nothing (artifacts die with the runner) |
+| `forecast-freshness-check` | 12:00 UTC daily | Independent monitor: fails loudly when yesterday's forecast never landed | nothing |
+| `schema-drift-check` | On PR / push to `main` (paths-filtered) | Pre-merge gate: applies migrations to a throwaway Postgres and diffs against `Base.metadata` | nothing |
+| `ab-harness-batch` | Manual dispatch only | Re-runs the nine repaired `ab_test_*` harnesses, one matrix job each | nothing (log artifacts only) |
 | `discover-new-items` | Manual dispatch only | **Broken at import — cannot run** | nothing |
 
 `discover-new-items` is not merely dormant: `scripts/discover_steam_items.py:20` imports
@@ -64,21 +67,22 @@ Sun 04:00  Event Correlation Analysis → event_correlations, event_impacts
 
 These three are easy to miss in a log and each one is a hard failure:
 
-1. **`Resolve snapshot date`** (`aggregator-update.yml:63-68`, `collectors/snapshot_date.py`)
+1. **`Resolve snapshot date`** (`aggregator-update.yml:88`, `collectors/snapshot_date.py`)
    — resolves the archive day **once** and exports `SNAPSHOT_DATE` for every later step.
    Before it existed, a run started after midnight (the 23:00 cron has been observed
    starting at 00:08) stamped the pipeline and the append step from two different clock
    reads, silently losing `2026-07-27`, `2026-07-30` and `2026-08-03` from the archive.
    If a day is missing from the archive, check this step's logged value first.
-2. **`Publish updated archive (flat history)`** — present in all three archive-writing
-   workflows. Each job checks out `cs2-oracle-data` into an ephemeral `archive/`, so
+2. **`Publish updated archive (flat history)`** — present in all four archive-writing
+   workflows (`aggregator-update.yml:220`, `price-forecast.yml:262`,
+   `backtest-accuracy.yml:95`, `event-correlation-analysis.yml:146`). Each job checks out `cs2-oracle-data` into an ephemeral `archive/`, so
    without this step the run's Parquet writes are discarded at teardown. This is exactly
    how `item_forecasts.parquet` froze at 2026-07-29 while Supabase kept advancing. It
    runs `if: always()` (except `train-only`) and force-pushes an orphan commit, so a red
    run can still have published. **In `price-forecast.yml` it is ordered before the
    freshness check on purpose** — reversed, the check would pass on state that does not
    survive the job.
-3. **`Verify forecasts were persisted`** (`price-forecast.yml:174-180`,
+3. **`Verify forecasts were persisted`** (`price-forecast.yml:278-284`,
    `scripts/check_forecast_freshness.py`) — fails the run unless *both* the DB and the
    Parquet mirror carry a forecast for the expected date. The API reads the mirror first
    and falls back to the DB, so a DB row without a mirror row serves nothing. A failure
@@ -132,10 +136,11 @@ The archive is **not a branch of this repo.** It lives in a separate repo,
 `RayanR000/cs2-oracle-data`, branch `main`. There is no `data-archive` branch anywhere —
 any instruction mentioning one is dead.
 
-Every writing workflow does the same three things (`aggregator-update.yml:20,86-93,112-120`;
-`price-forecast.yml:58-68,158-167`; `backtest-accuracy.yml:51-61,94-103`):
+Every writing workflow does the same three things (`aggregator-update.yml:111-117,220-228`;
+`price-forecast.yml:68-78,262-271`; `backtest-accuracy.yml:52-62,95-104`;
+`event-correlation-analysis.yml:49-59,146-159`):
 
-1. `actions/checkout@v4` of `RayanR000/cs2-oracle-data` at `ref: main`, `path: archive`,
+1. `actions/checkout@v7` of `RayanR000/cs2-oracle-data` at `ref: main`, `path: archive`,
    `fetch-depth: 1`, authenticated with `CS2_DATA_REPO_TOKEN`
 2. forecast/backtest additionally `ln -s $PWD/archive/price-archive price-archive`
 3. publish with `git checkout --orphan flat && git add -A && git commit && git push --force origin HEAD:main`
@@ -163,7 +168,7 @@ git clone --depth 1 https://github.com/RayanR000/cs2-oracle-data.git /tmp/cs2-or
 ln -s /tmp/cs2-oracle-data/price-archive "$PWD/price-archive"   # repo root; gitignored
 ```
 
-`price-archive/` is gitignored (`.gitignore:64-65`) and is expected to be a local checkout
+`price-archive/` is gitignored (`.gitignore:71`) and is expected to be a local checkout
 or symlink of that repo — same shape the workflows build. Then, from `backend/`:
 
 ```bash
@@ -190,12 +195,15 @@ even when Supabase is current.
 - Forecast chains off the aggregator automatically. A retrain costs **176.7s warm /
   250.1s cold** — ~84% of a warm retrain is conformal CV, not booster fitting. Older
   figures (~17 min predict-only, ~53 min Monday) predate the model collapse to 8 models
-  and are meaningless now.
+  and are meaningless now. ⚠️ Those two figures also predate `EXCEEDANCE_HEAD=1`
+  (`price-forecast.yml:218`, ~4 extra boosters / ~65s per the workflow comment) and
+  `FEATURE_NATIVE_NAN=1` (`:228`), both now set on the nightly retrain.
 - **Monday `mode=full` does NOT guarantee a retrain.** `full` trains only if the model is
-  ≥14 days old (`RETRAIN_INTERVAL_DAYS`, `forecast_prices.py:210`) or `FORCE_RETRAIN=1`.
+  ≥14 days old (`RETRAIN_INTERVAL_DAYS`, `forecast_prices.py:489`; the age gate itself is
+  `forecast_prices.py:509-520`, reading `_model_age_days` at `:270`) or `FORCE_RETRAIN=1`.
   A fresh model plus `mode=full` predicts and exits. Drift is report-only unless
   `ALLOW_DRIFT_RETRAIN=1`.
-- `SKIP_CV=1` is deliberately not set in CI (`price-forecast.yml:119-124`) — it biases the
+- `SKIP_CV=1` is deliberately not set in CI (`price-forecast.yml:155`) — it biases the
   conformal `q_hat` low and the served band under-covers. Never add it to buy CI minutes.
 - Backtest chains off forecast automatically, ~1-2 min
 - A/B regime comparison: `python scripts/forecast_prices.py --compare-regime` — run A (the daily
@@ -209,7 +217,7 @@ even when Supabase is current.
 
 ### Hang protection: there is only one
 
-**`timeout-minutes: 180` on the `price-forecast` job (`price-forecast.yml:36`) is the only
+**`timeout-minutes: 180` on the `price-forecast` job (`price-forecast.yml:46`) is the only
 hang protection that exists.** There are no code-level timeouts: no `TIMEOUT` constant in
 `backend/models/`, and `study.optimize()` passes no `timeout=`. Training is fully
 sequential, so there is no ensemble or horizon-pool timeout either.
@@ -228,7 +236,8 @@ will have fired.
 - **A green badge is not evidence of collection.** Three workflows reported success for
   weeks while storing nothing (see the deletion note above). Audit by querying output-table
   freshness, not by reading Actions. `run_task.py` now fails on zero rows for every count
-  field a task returns (`run_task.py:160-186`), but only tasks that go through it are covered.
+  field a task returns (`ROW_COUNT_FIELDS` at `run_task.py:45`, the guard at `:97-115`), but
+  only tasks that go through it are covered.
 
 ## Troubleshooting
 
@@ -295,7 +304,8 @@ empty but the model metadata is fresh, use `FORCE_RETRAIN=1` or `mode=train-only
 ### Data not saving
 
 - Verify `SUPABASE_DATABASE_URL` is correct
-- Check `alembic current` matches the latest migration (head is **0020**)
+- Check `alembic current` matches the latest migration (head is **0024**,
+  `migrations/versions/0024_add_forecast_exceed_p.py`)
 - Run `python scripts/run_task.py migrate` manually
 
 ### Workflows without concurrency / failure notification
@@ -303,6 +313,15 @@ empty but the model metadata is fresh, use `FORCE_RETRAIN=1` or `mode=train-only
 | Workflow | Missing concurrency | Missing failure notification |
 |----------|:-------------------:|:---------------------------:|
 | `backtest-accuracy` | ✅ absent | — |
+| `forecast-freshness-check` | ✅ absent | — |
+| `model-diagnostics` | ✅ absent | ✅ absent |
+| `schema-drift-check` | ✅ absent | ✅ absent |
+| `ab-harness-batch` | ✅ absent | ✅ absent |
+
+`schema-drift-check` and `ab-harness-batch` are PR- or dispatch-only, so a missing
+notification there is not a monitoring hole. **`model-diagnostics` is different: it is
+scheduled (Sun 02:00 UTC) and has no failure notification**, so a broken weekly diagnostic
+run goes unannounced. It writes nothing, so the blast radius is measurement only.
 
 `discover-new-items` has a failure notification step with a `schedule` trigger condition, but the workflow has no schedule trigger — the step can never fire.
 
@@ -378,8 +397,8 @@ not code:
   behind.
 
 **Rehearsing against SQLite.** `alembic upgrade` cannot replay from scratch on
-SQLite: revisions `0001`→`0020` contain Postgres-only `ALTER COLUMN ... TYPE`
-DDL. Use `alembic stamp 0020` on the snapshot first, then upgrade. Note that a
+SQLite: revisions `0001`→`0024` contain Postgres-only `ALTER COLUMN ... TYPE`
+DDL. Use `alembic stamp 0024` on the snapshot first, then upgrade. Note that a
 rehearsal still rewrites `price-archive/ops/*.parquet`, which is shared — back
 those up first.
 
@@ -387,7 +406,7 @@ The collectors for the two deleted workflows still run locally, where residentia
 not blocked: `python scripts/run_supply_scraper.py` and
 `python scripts/run_task.py reddit_social`. Neither feeds a live feature.
 
-Note: a bare `pytest` from `backend/` aborts during collection —
-`scripts/test_social_signal.py:25` is a one-off analysis script (not a test) that imports
-`thefuzz`, which is not in `requirements.txt`. Run **`pytest tests`** (714 collected)
-until it is renamed or the import is guarded.
+Note: a bare `pytest` from `backend/` now collects cleanly — `scripts/test_social_signal.py`,
+the one-off analysis script that used to abort collection on a missing `thefuzz` import, has
+been deleted. **`pytest tests`** collects **2,464** tests as of 2026-08-21. Do not run the
+full suite casually: it trains models.

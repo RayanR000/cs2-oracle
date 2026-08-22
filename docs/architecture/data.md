@@ -17,8 +17,8 @@ The canonical archive is the repo **`RayanR000/cs2-oracle-data`**, branch `main`
 force-pushed as a squashed orphan commit by every workflow that writes it. There is no
 `data-archive` branch — any command referencing one is dead.
 
-Locally, `price-archive/` is a gitignored **plain directory** (`.gitignore:65`) — despite
-what `.gitignore:64` says, it is not a symlink and not a checkout. It is an unlinked local
+Locally, `price-archive/` is a gitignored **plain directory** (`.gitignore:71`) — despite
+what `.gitignore:70` says, it is not a symlink and not a checkout. It is an unlinked local
 working copy, and it lags the canonical repo. **Compacting or repairing it does not reach
 production**; only `aggregator-update.yml` writes the data repo, which it checks out fresh
 into `archive/` each run. The empty `../cs2-oracle-data` checkout has no commits and is
@@ -26,9 +26,10 @@ not wired to anything. Never force-push the local copy over the remote — it is
 
 ```
 price-archive/                       (local working copy, NOT the canonical repo)
-  ├─ prices-YYYY.parquet             — item_slug, day, source, mean_price, volume
-  │                                    (yearly, pre-2026; source is NULL there)
-  ├─ prices-YYYY-MM.parquet          — same five columns (monthly from 2026 on)
+  ├─ prices-YYYY.parquet             — item_slug, day, source, mean_price, volume,
+  │                                    ingested_at (yearly, pre-2026; source is NULL
+  │                                    there, ingested_at NULL before 2026-08-08)
+  ├─ prices-YYYY-MM.parquet          — same six columns (monthly from 2026 on)
   │                                    2026-03/04 also carry min_price, max_price
   ├─ exchange-rates-YYYY.parquet     — currency rates
   ├─ player-counts-YYYY.parquet      — frozen; the collector was removed in 181488b
@@ -40,7 +41,10 @@ price-archive/                       (local working copy, NOT the canonical repo
        forecast_outcomes, item_forecasts, prediction_accuracy
 
 Supabase (serving + fallback):
-  ├─ items (+ is_backfilled)         — the only thing training reads from the DB
+  ├─ items (+ is_backfilled, is_trainable) — `is_backfilled` is the SERVE universe and the
+  │                                    only thing predict reads from the DB; the TRAIN
+  │                                    universe is derived from the archive instead
+  │                                    (`_resolve_backfilled_slugs`, forecaster.py:1953)
   ├─ price_history                   — stale; the aggregator writes to Parquet only
   ├─ events / event_impacts / event_correlations
   ├─ collection_runs                 — run tracking
@@ -63,10 +67,11 @@ column or it blanks. `scripts/backfill_ops_item_slug.py` fills pre-existing rows
 31,422 `forecast_outcomes` rows point at `item_id`s with no `items` row and keep
 a NULL slug.
 
-**`ops/` is read before the DB.** `db/parquet.py:37-48` points at `price-archive/ops/` and
+**`ops/` is read before the DB.** `db/parquet.py:37-38` points at `price-archive/ops/` and
 API routes query it first, falling back to Supabase only when the Parquet read returns
-nothing or raises — see `api/routes/items.py:418-424` for the pattern, repeated for
-trends, predictions, item events, event impacts and sentiment. Nested values in `ops/` are
+nothing or raises — see `api/routes/items.py:555-562` for the pattern (`_trends_parquet`
+then the DB query), repeated for predictions (:711), item events (:838), event impacts
+(:864) and sentiment (:1041). Nested values in `ops/` are
 stored as **JSON text store-wide** (`db/parquet.py::_jsonify_nested`), because DuckDB
 infers a nested column's SQL type from the batch's contents; see
 `docs/changelog/2026-08-05-backtest-red-triage.md`.
@@ -79,8 +84,9 @@ restored single-file `prices-2026.parquet` would be read *alongside* the monthly
 ### Reading the price archive
 
 **Go through `db/archive.py::prices_relation`, not a raw glob.** Every prices
-file now shares one schema (`item_slug, day, source, mean_price, volume`, `day`
-as `DATE`) after `scripts/normalize_price_schema.py`, but the reader still
+file now shares one schema (`CANONICAL_PRICE_COLUMNS` =
+`item_slug, day, source, mean_price, volume, ingested_at`, `day` as `DATE`)
+after `scripts/normalize_price_schema.py`, but the reader still
 projects an explicit column list and NULLs what is absent, so it is correct
 against an unmigrated archive too — which is what a fresh clone of the data repo
 is until *Aggregator Market Update* is dispatched with `normalize_schema = true`.
@@ -111,14 +117,16 @@ by `PHASE_COLLAPSED_EXEMPT_PATTERNS`. Both filters are written NULL-safe: a bare
 `NOT LIKE` over a NULL evaluates to NULL and drops the row, and NULL selects 13
 years here.
 
-A **third** rule, `models/item_parser.py::TRAILING_WINDOW_SOURCES`
+Two further rules, `models/item_parser.py::TRAILING_WINDOW_SOURCES`
 (`aggregator_steam_7d/30d/90d`, trailing-window mean sale prices that must not
-vote either, as of 2026-08-09), applies only inside
-`ItemForecaster._apply_multi_source_voting` — it is not part of
-`archive_universe_sql_filter()`, so it constrains anything that routes through
+vote either, as of 2026-08-09) and `::STEAM_SPOT_SOURCES`
+(`aggregator_steam_spot`, Steam's fallback-free `last_24h`, which would cast a
+second Steam ballot beside `aggregator_sync`, as of 2026-08-17), apply only inside
+`ItemForecaster._apply_multi_source_voting` (forecaster.py:2103) — they are not part of
+`archive_universe_sql_filter()`, so they constrain anything that routes through
 the vote (`fetch_price_history`), not a raw archive glob. `walkforward_backtest.py`
 and the `ab_test_*` harnesses glob the archive and apply
-`archive_universe_sql_filter()` directly, so they do not exclude these three
+`archive_universe_sql_filter()` directly, so they do not exclude these four
 sources from their own averages — a known, deferred gap (see
 `.claude/rules/item-universe.md` and `.claude/rules/labels-and-embargo.md`).
 See `../changelog/2026-08-08-phase-collapsed-names-dropped.md` and
@@ -144,7 +152,7 @@ API serving:
   GET /items/{id}/events|impacts  → ops/*.parquet, DB fallback
 ```
 
-**Long-range price history does not work.** `api/routes/items.py:234-257` accepts
+**Long-range price history does not work.** `api/routes/items.py:376-397` accepts
 `days` up to 5000 and queries Supabase `PriceHistory` unconditionally — there is no
 DuckDB/Parquet branch at any `days` threshold. Because `price_history` is stale, any
 request beyond the last few days of coverage returns near-nothing, silently. Routing this
@@ -185,8 +193,9 @@ gaps, which columns still carry information, and label coverage — see
 more than 180 days of history, and over the last 90 days `mean_price` is the only
 non-degenerate column.
 
-Growth is dominated by the daily append: **~362,586 OHLCV rows/day** across 11 source
-labels. `ops/` tables are UPSERT-or-append-and-dedup and stay under a few MB each;
+Growth is dominated by the daily append: **~362,586 OHLCV rows/day** (measured 2026-08-01)
+across the then-11 source labels; `aggregator_steam_spot` was added 2026-08-17 and is not in
+that figure. `ops/` tables are UPSERT-or-append-and-dedup and stay under a few MB each;
 `forecast_outcomes` is insert-only (see below).
 
 > ⚠️ **`ops/forecast_outcomes.parquet` exists in two copies and neither is the full scored panel.
@@ -241,8 +250,12 @@ Marks the items carrying the CSMarketAPI historical series — **not** merely "p
 archive". It is **derived from the archive, not set by hand**: `scripts/init_local_db.py`
 selects the slugs with rows before 2026-01-01 (that series predates the `source` column, so
 the same set is what `source IS NULL` selects) and re-derives the flag on **every run**,
-correcting rows written by older versions (`init_local_db.py:66-134`). ~5,542 items are
-flagged.
+correcting rows written by older versions (`init_local_db.py:72-148`). ~5,542 items are
+flagged (as of 2026-08-06). The same run derives `is_trainable` (migration 0023), which
+narrows `is_backfilled` by dropping iflow-only history — but training does **not** read that
+column: `_resolve_backfilled_slugs(universe="train")` re-derives the train cohort from the
+archive, because a DB read of a column prod did not have fell back to loading all 41,885
+slugs and OOMed a cold retrain.
 
 This replaced a static blanket flag that read 100% of items, which made
 `backfilled_only=True` admit the low-history live cohort while excluding most of the grown
@@ -286,11 +299,15 @@ After: `Item.is_backfilled == 1` (`database.py:105`)
 | 0018 | Add `social_mentions` table — Reddit sentiment (VADER) |
 | 0019 | Add `base_price` / `resolved_at` to `forecast_outcomes`, `price_tier` to `prediction_accuracy`; relax `current_price` to nullable |
 | 0020 | Include `price_tier` in the `prediction_accuracy` unique constraint |
+| 0021 | Add `base_stale_run_days` to `forecast_outcomes` |
+| 0022 | Add `anchor_clean` / `anchor_wedge_pct` to `item_forecasts` |
+| 0023 | Add `is_trainable` to `items` — the ORM column that shipped with no migration and crashed prod's aggregator on `SELECT items.is_trainable` |
+| 0024 | Add `exceed_p` to `item_forecasts` — the served exceedance probability |
 
 > `alembic upgrade` cannot replay this chain from scratch on SQLite — revisions
 > `0001`→`0018` contain Postgres-only `ALTER COLUMN ... TYPE` DDL. To rehearse
 > against a SQLite snapshot, `alembic stamp 0018` first; `0019`/`0020` are
-> dialect-aware and apply to both.
+> dialect-aware and apply to both, as are `0021`–`0024`.
 
 **`forecast_outcomes` is insert-only.** Once a row has `base_price`,
 `actual_price` and `resolved_at`, those three columns are final — the daily
@@ -313,8 +330,8 @@ no longer resolves. See `docs/changelog/2026-08-01-deterministic-backtest.md`.
 | `compact_price_archive.py` | One-off: drop the redundant `median_price`/`min_price`/`max_price` columns and retire `snapshots-*`. Idempotent; dry-run by default |
 | `db/parquet.py` | The `ops/` store: `append()` (concat-and-dedup, full rewrite) and `query()` (DuckDB context manager). Serialises nested values to JSON text |
 | `init_local_db.py` | Rebuild a local `items` table from the archive and re-derive `is_backfilled` |
-| `export_historical_parquet.py` | One-time: csmarketapi.db → year-split Parquet |
-| `merge_hf_dataset.py` | One-time: HuggingFace CS2 dataset → 2026 Parquet |
+| ~~`export_historical_parquet.py`~~ | One-time: csmarketapi.db → year-split Parquet. **Script deleted**; only the changelog record survives |
+| ~~`merge_hf_dataset.py`~~ | One-time: HuggingFace CS2 dataset → 2026 Parquet. **Script deleted**; see `docs/changelog/2026-07-20-hf-dataset-merge.md` |
 
 ### Daily run
 
@@ -324,7 +341,7 @@ Aggregator Market Update — GitHub Actions, cron 23:00 UTC
   ├─ Resolve snapshot date  (collectors/snapshot_date.py → AGGREGATOR_SNAPSHOT_DATE)
   ├─ run_task.py aggregate
   │    ├─ 7 CSGOTrader price endpoints + exchange_rates.json
-  │    ├─ 11 source labels → /tmp/aggregator-snapshots-$DATE.csv
+  │    ├─ 12 source labels → /tmp/aggregator-snapshots-$DATE.csv
   │    ├─ /tmp/aggregator-backfilled-$DATE.csv, /tmp/exchange-rates-$DATE.csv
   │    └─ CollectionRun row (no prices written to Supabase)
   ├─ Checkout RayanR000/cs2-oracle-data  (needs CS2_DATA_REPO_TOKEN)

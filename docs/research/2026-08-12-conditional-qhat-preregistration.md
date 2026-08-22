@@ -1,5 +1,16 @@
 # Pre-registered read: can a conditional `q_hat` fix the band's coverage?
 
+> **Status (as of 2026-08-21): scored — see the ❌ VOID banner immediately below. Forward pointer:**
+> the band-width thread this opened was settled by a different route. A **featureless per-item
+> climatology** band replaced the `sigma` denominator on 2026-08-20 — 33–46% narrower at matched
+> 80% coverage and better calibrated on served replay
+> (`docs/research/2026-08-19-climatology-vs-gbm-band.md`,
+> `changelog/2026-08-19-climatology-band-scale-default-on.md`) — and the centre was recentred as
+> two signed conformal quantiles (`changelog/2026-08-19-signed-conformal-band.md`). The
+> served-outcome `q_hat` feedback this doc wanted **is built and armed** but still dormant until
+> 20 served dates accrue (`changelog/2026-08-16-served-outcome-feedback-calibration-built-dormant.md`).
+
+
 > ## ❌ SCORED 2026-08-12 — VOID on the placebo clause, and the answer is on the other axis.
 > `changelog/2026-08-12-the-band-is-tilted-in-sigma.md`.
 > `S2` on the cross-sectional MAD and `S3` both cleared the primary bar — **and so did `P2`, the

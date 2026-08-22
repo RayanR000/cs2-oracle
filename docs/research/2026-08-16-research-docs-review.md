@@ -1,5 +1,22 @@
 # Research docs review — 32 docs, 9,548 lines
 
+> **Status (as of 2026-08-21): superseded in scope, and one headline claim needs a caveat.**
+> This review covered **32** docs; `docs/research/` now holds ~46. Its two structural findings
+> were both acted on: the R13 tracking gap was measured and decided (two-tier tradeability
+> label, 2026-08-17), and the misleading entry-point headlines have banners.
+>
+> Two corrections:
+> - **"All 10 preregistrations have recorded outcomes"** — still true, and now true of all
+>   **13**; every prereg carries a `Status (as of 2026-08-21)` line as of this audit.
+> - The review's §11-adjacent trust in the stored A/B verdicts does **not** survive
+>   `docs/research/2026-08-19-deep-model-review.md` §11: the A/B family was never powered
+>   (MDEs 1.15–7.13pp), so most stored "null" verdicts should read **UNRESOLVED**, and a broad
+>   re-run of the nine repaired harnesses is now on the explicit do-not-do list.
+>
+> For the record of the whole product as of the latest review, read
+> `docs/research/2026-08-19-deep-model-review.md` instead.
+
+
 **Date:** 2026-08-16
 **Scope:** every file in `docs/research/`. Four parallel read-only passes (foundational, the
 next-steps chain, model/data, preregistrations + recent), plus index and reference-integrity

@@ -1,5 +1,14 @@
 # C2 lambdarank serving-transfer read — Implementation Plan
 
+> # ❌ EXECUTED AND REFUTED (2026-08-14) — not pending work
+>
+> The driver and scoring core were built (`ccf7ad0`, `c2277e9`, `b2c7d0c`, `5586bbf`) and the
+> read ran. Serving transfer **fails at 3 of 4 horizons and h=14 is degenerate**, so lambdarank
+> was not adopted at serving. Outcome:
+> `docs/changelog/2026-08-14-lambdarank-serving-transfer-measured.md` and
+> `docs/changelog/2026-08-13-lambdarank-clears-the-diagnostic-bar.md` (the offline half that did
+> pass). Do not re-execute the tasks below.
+>
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Measure whether the CV lambdarank vs-q50 rank-IC edge (+0.026–0.065, folds ending 2026-02-09) survives to the 2026-04-18→06-08 served window on the tied cohort — read-only, writing nothing.

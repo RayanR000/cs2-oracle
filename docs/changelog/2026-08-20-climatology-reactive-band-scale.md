@@ -126,7 +126,34 @@ knobs). Underpowered (3 calm / 2 volatile anchors) and on the local-fixture arch
 robust, absolute widths differ from prod, per the climatology precedent). Still gated OFF and
 byte-identical with the flag off.
 
-**Status: direction-correct, positive — promote to a PROD A/B before shipping.** Next: add a
-`climatology_reactive` arm to `model-diagnostics.yml` and read width-at-matched-coverage on the
-served panel; if it holds, ship default-off→on like the climatology scale, with
-`CLIMATOLOGY_SERVING_START`-style geometry guard for the served-coverage feedback.
+## Prod A/B — SHELVED (2026-08-20)
+
+Added a `climatology_reactive` arm to `model-diagnostics.yml` (branch
+`climatology-reactive-band-scale`, unmerged) and dispatched control vs arm on prod's only
+clean-on-both-audits anchors, which are all high-volatility (2026-04-28, 2026-05-19; runs
+32421226400 / 32421235499, both success). BAND COVERAGE, cov→arm cov / width:
+
+| anchor | h=3 | h=7 | h=14 | h=30 |
+|---|---|---|---|---|
+| 2026-04-28 (over-covering) | 87.1→80.3 ×0.78 | 87.5→82.8 ×0.77 | 86.1→83.5 ×0.80 | 85.4→81.1 ×0.79 |
+| 2026-05-19 (forward-volatile) | 83.6→76.0 ×0.77 | 78.2→72.4 ×0.77 | 72.8→68.1 ×0.80 | 81.6→77.2 ×0.79 |
+
+**The arm narrows ~20% roughly UNIFORMLY on both anchors — it does not differentiate here.** It is
+a clean win where the band over-covers (04-28 → lands ~80%) and a clear LOSS where it does not
+(05-19: h7 78→72, h14 73→68, pushed further under target). Root cause is the mechanism, not the
+tuning: the multiplier keys on the item's *recent* realised vol, but coverage is set by *forward*
+vol, and 05-19 was recently-calm / forward-volatile — so it narrowed exactly where the band needed
+width. No clip floor fixes this (floor→1.0 is static climatology; a higher floor just mutes both
+the win and the loss). This is the same offline-plausible / serving-mixed fingerprint as
+sigma-exponent, learned-scale and exceedance-scale — the fourth width lever to hit the forward-vol
+non-predictability wall (`backend/AGENTS.md` invariant: "the width variable is not the lever").
+
+Note the local calm-anchor A/B above was optimistic by construction: anchors were selected on low
+*recent* vol, which correlates with low *forward* vol, so it only ever surfaced the upside. The
+prod A/B on an un-hand-picked anchor (05-19) caught the failure in one run — which is why the prod
+step existed.
+
+**VERDICT: shelved.** Code and the model-diagnostics arm stay BUILT + gated off (byte-identical
+off), like the refuted band-scale siblings; branch unmerged, no PR. Do not retune. Reopen only
+with a genuine *forward*-vol conditioner (recent realised vol is not one), and note exceedance —
+the one forward-magnitude signal — was itself already refuted as a band scale.

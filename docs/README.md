@@ -1,7 +1,32 @@
 # docs/
 
-Refreshed 2026-08-10 against the code. Where a doc and the code disagree, the code wins —
+Refreshed 2026-08-21 against the code. Where a doc and the code disagree, the code wins —
 report it rather than working around it.
+
+> ⭐ **Band geometry changed twice after most of the numbers below were measured.** Read every
+> coverage figure in this file as *pre-cutover* unless it is dated 2026-08-19 or later:
+> 1. **Signed conformal band, live 2026-08-19** — two quantiles, serving recentring dropped,
+>    `DIRECTION_UPWEIGHT = 1.0` (`forecaster.py:141`). Cutover pin
+>    `SIGNED_BAND_SERVING_START = "2026-08-19"` (`models/served_recalibration.py:47`).
+> 2. **Climatology band scale, default ON since 2026-08-20** — a featureless per-item
+>    climatology replaces the GBM `sigma` as the width variable. `CLIMATOLOGY_SCALE` defaults
+>    to `"1"` (`forecaster.py:1355`; only the literal `"0"` disables it), cutover pin
+>    `CLIMATOLOGY_SERVING_START = "2026-08-20"`. It is 33-46% narrower than the sigma band at
+>    matched 80% coverage and better calibrated on served replay.
+>    `changelog/2026-08-19-climatology-band-scale-implemented.md`,
+>    `changelog/2026-08-19-climatology-band-scale-default-on.md`,
+>    `research/2026-08-19-climatology-vs-gbm-band.md`.
+>
+> **Never difference a coverage number across either pin.** `CLIMATOLOGY_REACTIVE` (the
+> regime-reactive variant) is **built and SHELVED**, default `"0"` (`forecaster.py:1390`) —
+> `changelog/2026-08-20-climatology-reactive-band-scale.md`. The exceedance probability
+> `P(|move| > round-trip cost)` shipped as a **served signal** (`EXCEEDANCE_HEAD=1` on the
+> nightly retrain, migration `0024_add_forecast_exceed_p`, surfaced as `move_odds` /
+> `stability_label` on `/items/*` and `/items/volatility`) —
+> `changelog/2026-08-20-exceedance-served-signal.md`,
+> `changelog/2026-08-20-volatility-stability-tags.md`. `FEATURE_NATIVE_NAN` was added
+> 2026-08-21 gated off in code (`forecaster.py:2777`) and is **set to `1` on the nightly
+> retrain** (`price-forecast.yml:228`) — `changelog/2026-08-21-feature-native-nan-built-gated-off.md`.
 
 > ⭐ **CS2 Oracle is a RANGE (interval) forecaster, not a directional predictor (2026-08-15).**
 > The deliverable per item per horizon is a calibrated price range and its center. **Directional
@@ -48,7 +73,11 @@ report it rather than working around it.
 ## Architecture (`architecture/`)
 
 - `model.md` — the forecaster as it stands: 4 q50 LightGBM models + 4 directional
-  classifiers, the split-conformal band, sequential training, age-based retrain
+  classifiers, the conformal band, sequential training, age-based retrain. ⚠️ Check it
+  against the band-geometry banner above: `HORIZONS = [3, 7, 14, 30]` and
+  `QUANTILES = [0.5]` still hold (`forecaster.py:302,308`), but the band is now a *signed*
+  conformal interval scaled by the per-item climatology, not the symmetric split-conformal
+  one on `sigma`, and there is an extra head per horizon (the exceedance classifier)
 - `model-optimization.md` — size/speed levers, split into already-applied, still-available,
   and 🛑 do-not
 - `pipeline.md` — the aggregator and the workflows chained off it; what collects and what
@@ -291,8 +320,8 @@ report it rather than working around it.
 ### Preregistrations
 
 Written before the run, scored after — the repo's strongest discipline artifact, and unindexed
-until 2026-08-16. **All ten have a recorded outcome; there are no orphans.** ⚠️ Three had their
-gate rewritten after the result was seen, all on 2026-08-13 — marked below.
+until 2026-08-16. **All thirteen have a recorded outcome; there are no orphans.** ⚠️ Three had
+their gate rewritten after the result was seen, all on 2026-08-13 — marked below.
 
 | Preregistration | Outcome |
 |---|---|
@@ -306,6 +335,9 @@ gate rewritten after the result was seen, all on 2026-08-13 — marked below.
 | `2026-08-13-low-level-anchor-preregistration.md` | fails its axis — ⚠️ **pivoted to an unregistered h=30 axis** |
 | `2026-08-13-serving-transform-attribution-preregistration.md` | transforms do not explain the CV gap |
 | `2026-08-15-armory-tier-post-preregistration.md` | **FAIL** on both the primary bar and the placebo, scored inline |
+| `2026-08-17-volume-band-quality-preregistration.md` | cluster-starved — `changelog/2026-08-17-volume-band-quality-cluster-starved.md` |
+| `2026-08-17-volume-band-quality-refold-preregistration.md` | passes on refold — `changelog/2026-08-17-volume-band-quality-passes-on-refold.md` |
+| `2026-08-18-listing-count-band-width-conditioner-preregistration.md` | REFUTED 0/3 — `changelog/2026-08-18-listing-count-conditioner-refuted.md` |
 
 ### Also in `research/`
 
@@ -320,7 +352,7 @@ gate rewritten after the result was seen, all on 2026-08-13 — marked below.
 
 ## Design docs and plans (`superpowers/`)
 
-`specs/` holds designs (16), `plans/` the execution checklists (13). Each shipped change is
+`specs/` holds designs (23), `plans/` the execution checklists (18). Each shipped change is
 also recorded in `changelog/`, which is the durable record. Load-bearing ones:
 
 - `specs/2026-08-12-sigma-exponent-design.md` — **designed, not implemented.** The band divides by
@@ -339,12 +371,39 @@ also recorded in `changelog/`, which is the durable record. Load-bearing ones:
 ## Changelog (`changelog/`)
 
 Append-only dated decision records: bug fixes, features, audits, and refuted experiments.
-201 entries, 2026-07-08 to 2026-08-18. Entries are never edited to match later reality — several describe code that has since been
+214 entries, 2026-07-08 to 2026-08-21. Entries are never edited to match later reality — several describe code that has since been
 deleted, which is the point. Per `AGENTS.md` workflow rule 2, non-trivial decisions get a new
 dated note here.
 
 The newest:
 
+- `2026-08-21-feature-native-nan-built-gated-off.md` — LightGBM native NaN handling instead of
+  the median impute, from deep-review §10.4. Built behind `FEATURE_NATIVE_NAN`
+  (`forecaster.py:2777`, off in code) and **set to `1` on the nightly retrain**
+  (`price-forecast.yml:228`). ⚠️ The probe's served effect was modest and **downward**, the
+  opposite of the review's bull prior; the retrain is the go/no-go.
+- `2026-08-20-volatility-stability-tags.md` — the range product's first discovery surface.
+  `move_odds` (straight from `exceed_p`) and `stability_label` on the item payloads, plus
+  `GET /items/volatility`; `move_odds` is published only at the horizons where it is
+  calibrated, and the endpoint refuses the others rather than serving an uncalibrated number.
+- `2026-08-20-exceedance-served-signal.md` — Phases A-D, merged as PR #28. The exceedance
+  head (`EXCEEDANCE_HEAD=1` nightly) persists `exceed_p` (migration `0024`). This is the one
+  market-orthogonal, date-stable signal, and it is **magnitude, not direction**.
+- `2026-08-20-climatology-reactive-band-scale.md` — ❌ **SHELVED after a prod A/B.**
+  `CLIMATOLOGY_REACTIVE` narrows ~20% roughly uniformly: it wins where the band over-covers
+  and *harms* recently-calm/forward-volatile dates. A fourth width lever into the same
+  forward-vol wall. Default `"0"`; do not re-propose without a new mechanism.
+- `2026-08-19-climatology-band-scale-default-on.md` / `2026-08-19-climatology-band-scale-implemented.md`
+  — ⭐ **the featureless per-item climatology replaces the GBM `sigma` as the band-width
+  variable, and it is the current default** (`CLIMATOLOGY_SCALE=1`). 33-46% narrower at
+  matched 80% coverage, and better calibrated on served replay. Served-geometry guard plus
+  `CLIMATOLOGY_SERVING_START = 2026-08-20`.
+- `2026-08-19-signed-conformal-band.md` / `2026-08-19-direction-upweight-neutral.md` — the
+  band becomes two signed quantiles and serving recentring is dropped;
+  `DIRECTION_UPWEIGHT` goes to 1.0, which centres the q50. Live 2026-08-19.
+- `2026-08-19-schema-drift-ci-guard.md` — `Item.is_trainable` reached the ORM with no
+  migration, prod never got the column, and the nightly chain skipped silently for days. The
+  `schema-drift-check` workflow now diffs migrations against `Base.metadata` on every PR.
 - `2026-08-18-listing-count-conditioner-refuted.md` — ❌ closes the last standing band-width lever.
   `log1p(listing_count)` as a conditioner fails 0/3 horizons, and structurally: the thin buckets it
   targets hold <20 items each in the served ≥$1 cohort. Was item 6 of the live list; now do-not-run.
@@ -366,7 +425,10 @@ The newest:
   decided**. Carries an explicit do-not-propose list (a fourth width scale, the
   "different rows for `q_hat`" class, `SERVE_OUTLIER_GATED_ANCHOR=1` as a coverage fix at
   **+2.65 / +0.22 / +1.06pp away** from nominal, and `replay_serving.py` for the published-coverage
-  question, which it structurally cannot answer).
+  question, which it structurally cannot answer). ⚠️ **Its "no fourth width scale" clause was
+  overtaken:** the climatology scale (2026-08-19/20) is a fourth width lever and it *won* — it is
+  now the default. `CLIMATOLOGY_REACTIVE`, the fifth, hit the wall the clause describes and is
+  shelved. Read the clause as "do not re-propose a *sigma*-shaped width lever".
 - `2026-08-13-the-null-verdicts-were-not-all-tested.md` — ⭐ **the "accuracy surface is nearly
   exhausted" claim is not supported.** Of ~16 accuracy verdicts, **6 survive audit, 5 were
   underpowered against their own MDE, and 5 were never measured at all** — supply depth has no
@@ -564,9 +626,14 @@ reach back into earlier entries:
 
 ## Other
 
-- `code-review-2026-07-21.md` — **Live punch list**, findings re-verified 2026-08-05.
-  Most are still open, and the security findings cluster (SQL f-strings, default secret
-  key, session token in a redirect URL). Separates LIVE from DORMANT.
+- `code-review-2026-07-21.md` — **Live punch list**, line refs re-verified 2026-08-21. The
+  security cluster (SQL f-strings, default secret key, session token in a redirect URL) is
+  still open verbatim; findings 5, 6, 9 and 11 closed by file deletions. Separates LIVE from
+  DORMANT.
+- `model-review-2026-08-06-plain-english.md` — the non-technical companion to the 2026-08-06
+  scale-free-features audit. ⚠️ **Historical, not current advice.** Its framing is directional
+  accuracy, which the 2026-08-15 reclassification retired as a product claim, and its
+  "Still open" list is closed.
 - `operations.md` — runbook: workflow schedules, required secrets, load-bearing steps,
   troubleshooting
 - `design.md` — ⚠️ **describes the frontend deleted 2026-08-10.** Visual design system:

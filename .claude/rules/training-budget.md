@@ -21,7 +21,10 @@ paths:
   `TRAIN_HORIZON_MAX_ROWS` was raised to 1.2M with them to stay non-binding — the per-horizon
   frame is 958,289 rows on this universe, so the old 700K would have bound. Escape hatch:
   `TRAIN_MIN_MEDIAN_PRICE=0`. An unparseable value keeps the floor, deliberately. The
-  fresh-model gate still cannot detect any of this. See
+  fresh-model gate still cannot detect any of this. The training **window** is a third knob:
+  `TRAIN_DAYS_BACK` overrides the 4-year (1460-day) default (`forecaster.py:5566-5574`), and the
+  sweep verdict is that 1yr is worst while 2/3/4yr are tied — so do not re-run it expecting a
+  win. See
   `docs/changelog/2026-08-08-training-price-floor-shipped.md` and
   `docs/changelog/2026-08-07-training-item-universe.md`.
 - **`TRAIN_PER_ITEM_ROWS` changes what the per-horizon cap spends the budget on.** Default
@@ -162,7 +165,32 @@ paths:
   all calibrated to exactly 80% on their own records** — `sigma` over-covers (77.9/85.0/84.8/87.2),
   `σ**β` under-covers (69.7/76.7/76.9/84.9), learned under-covers (72.1/78.7/76.6/85.7). **The width
   variable is not the lever. Do not propose a fourth one.**
-  `docs/changelog/2026-08-12-learned-band-scale-measured.md`. `q_hat` and every `fold_q_hat` are byte-identical to `31611508808`, so the
+  `docs/changelog/2026-08-12-learned-band-scale-measured.md`.
+  ✅ **The fourth one was proposed anyway and it WON — read this before repeating the "do not"
+  above.** `CLIMATOLOGY_SCALE` replaces the `price_std_60d` sigma with the item's own trailing
+  h-day return dispersion, shrunk toward its price tier's pool by `n_i/(n_i+K)`, passed to
+  conformal as a `learned_scale` array. At matched 0.80 marginal coverage it is **43–47%
+  narrower** than sigma at every horizon on 285 test dates, and unlike the sigma-exponent and
+  learned-scale arms it wins **out of sample**, because it is variance reduction rather than
+  signal extraction. **Default ON since 2026-08-19** (`CLIMATOLOGY_SCALE=1`; only the literal
+  `"0"` disables, mirroring the training price floor), with `CLIMATOLOGY_SERVING_START =
+  2026-08-20` marking the first clean climatology serve. It is mutually exclusive with
+  `SIGMA_EXPONENT` / `LEARNED_SCALE` / `EXCEEDANCE_SCALE` — four alternative denominators, not
+  layers; `_calibrate_conformal` raises if combined — and serving follows the artifact via
+  `_climatology_scale_served`, so the cutover is atomic at the next retrain, not the moment the
+  flag flips. ❌ The regime-reactive modifier `CLIMATOLOGY_REACTIVE` (a fast/slow EWMA ratio on
+  `|return_1d|`, off by default) is **shelved**: it narrows ~20% uniformly but harms
+  recently-calm/forward-volatile dates. `docs/changelog/2026-08-19-climatology-band-scale-default-on.md`,
+  `docs/changelog/2026-08-20-climatology-reactive-band-scale.md`.
+  ✅ **The band is also SIGNED now.** `conformal.calibrate_signed` returns two signed quantiles
+  `(q_lo, q_hi)` and `band_signed` builds an asymmetric band around the mid; serving no longer
+  recentres. `(q_lo, q_hi)` is a **matched set** with `beta` and the scale — never substitute one
+  across a scale or beta boundary, and `band_signed(mid, sigma, -q_hat, q_hat)` is the only
+  equivalent of a pre-signed artifact. `DIRECTION_UPWEIGHT` now defaults to **1.0** (neutral).
+  `SIGNED_BAND_SERVING_START = 2026-08-19`; both start dates gate the served-outcome feedback
+  calibration in `models/served_recalibration.py` so it never pools across band geometries.
+  `docs/changelog/2026-08-19-signed-conformal-band.md`,
+  `docs/changelog/2026-08-19-direction-upweight-neutral.md`. `q_hat` and every `fold_q_hat` are byte-identical to `31611508808`, so the
   audit moved no calibration. ⚠️ **The exponent does NOT explain the marginal over-coverage**
   (87.2/91.8/90.6/89.0% vs 80%): level-matching removes exactly that before the tilt is measured,
   and on the calibration set marginal coverage is 80% by construction. Six causes examined, the
@@ -197,5 +225,16 @@ paths:
   direction classifier is untouched. Read `rank_ic_edge`, bar `>= 0`; HP was selected against the
   un-offset target, so the run WARNs and any positive needs `FORCE_HP_SEARCH=1` to size. Off by
   default and **unmeasured**. See `docs/changelog/2026-08-10-naive-init-score-instrument.md`.
+- **`FEATURE_NATIVE_NAN` is OFF in code and ON in production — read the artifact, not the
+  default.** `os.environ.get("FEATURE_NATIVE_NAN") == "1"` defaults off (median imputation, the
+  historical behaviour), but `.github/workflows/price-forecast.yml:228` sets it to `"1"`, so the
+  nightly retrain trains with NaN passed through to the booster. Same matched-pair rule as
+  `NAIVE_INIT_SCORE`: `_impute_features(served=True)` follows the artifact via
+  `_feature_native_nan_served`, and train and serve must move together. What it removes is a
+  bullish prior — the training cross-sectional medians of `return_180d/120d/90d` are ~6.3 / 4.2 /
+  2.8, so an imputed short-history item was served a multi-month uptrend it never had
+  (deep-model-review §10.4). The measured served effect is modest and **downward**
+  (mean-reversion), the opposite of what the review predicted, so a retrain under it is a go/no-go
+  read, not a known win. `docs/changelog/2026-08-21-feature-native-nan-built-gated-off.md`.
 - **Size/speed levers are already documented.** See `docs/architecture/model-optimization.md`
   for the options that retain ≥90% quality — don't re-derive them.

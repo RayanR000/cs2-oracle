@@ -1,5 +1,18 @@
 # Is the reversal a return, or a change of measurement basis?
 
+> **Status (as of 2026-08-21): the refutation below STANDS for the question it asked, but its
+> detector has a known blind spot that later work made material.**
+> This doc correctly refutes the *source-set-change* explanation of the reversal. However, its
+> count-proxy detector **misses constant-count source swaps**, and
+> `docs/research/2026-08-19-deep-model-review.md` §1 measures the consequence: the archive
+> "price" is **five stitched consensus estimators**, producing fabricated moves (e.g. ±26.5% /
+> 13.7% on 2026-07-09 / 07-11) that a constant-count swap leaves invisible here. The practical
+> upshot recorded there is that **no 2026 A/B is interpretable until composition breaks are
+> controlled** (persist `n_ask_sources` + a source bitmask, build a break calendar, exclude
+> spanning windows — §12 item 8). Read this doc as "the source *set size* is not the artifact",
+> not as "composition is clean".
+
+
 **Measured 2026-08-09** on branch `label-integrity`, against the local Parquet archive
 (4,743 calendar days, 4,739 present, 2013-08-14 → 2026-08-08, 38,413 items after the universe
 filter). Instrument:

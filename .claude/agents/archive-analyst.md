@@ -29,38 +29,47 @@ Supabase, and importing `database.py` builds a live engine against it.
 
 ```
 price-archive/
-├── prices-YYYY.parquet        item_slug, day, mean_price, volume; frozen years ≤2025
-├── prices-YYYY-MM.parquet     same + source, monthly partitions for 2026+ (GitHub 100MB cap)
+├── prices-YYYY.parquet        item_slug, day, source, mean_price, volume, ingested_at;
+│                              frozen years ≤2025
+├── prices-YYYY-MM.parquet     same schema, monthly partitions for 2026+ (GitHub 100MB cap)
 ├── item-metadata.parquet      item_slug, rarity, rarity_rank, weapon_type — that is all
-├── player-counts-YYYY.parquet CS2 concurrents, 2011+
-├── exchange-rates-2026.parquet
+├── item-metadata-bymykel.parquet
+├── player-counts-YYYY.parquet CS2 concurrents, 2011+ (plus a player-counts/ subdir)
+├── exchange-rates-2026.parquet, exchange-rates-history.parquet
+├── volume-panel / stattrak-panel / supply-history / bid-panel / supply-YYYY-MM /
+│                              event-calendar .parquet   — recoverable-data sidecars
 └── ops/*.parquet              mirrors of the operational DB tables
 ```
 
 `ops/` holds `item_forecasts`, `forecast_outcomes`, `prediction_accuracy`,
-`collection_runs`, `accuracy_alerts`, `events`, `event_impacts_denorm`, `supply_snapshots`.
-Nested values in these are **JSON text**, not structs — parse them, don't dot into them.
+`collection_runs`, `accuracy_alerts`, `events`, `event_impacts_denorm` — seven files; there is
+no `supply_snapshots` mirror (supply lives in the top-level `supply-*` sidecars).
+Nested values in these are **JSON text**, not structs — parse them, don't dot into them. Run
+`DESCRIBE` before assuming, because files predating the serialiser held real Parquet structs.
 
-## The schema-drift trap — read this before writing a glob
+## Schema drift — the trap it *was*, and what to still do
 
-The price files do not share a schema. `prices-2013.parquet` has five columns
-(`item_slug, day, mean_price, median_price, volume`); `prices-2026-08.parquet` has eight,
-adding `source`, `min_price`, `max_price`.
+**The archive is now normalised.** `scripts/normalize_price_schema.py` has been run over every
+stored file, so both the frozen yearly files and the 2026 monthly partitions carry the same six
+columns — `item_slug, day, source, mean_price, volume, ingested_at` — with `day` as `DATE` and
+`ingested_at` as `TIMESTAMP`. `median_price`, `min_price` and `max_price` are **gone from the
+stored files entirely**; do not select them. Verified 2026-08-21 on both the working copy and
+the `cs2-oracle-data` checkout.
 
-A plain `read_parquet('price-archive/prices-*.parquet')` **silently drops the three columns
-that aren't in every file.** It does not error. Values are not corrupted — DuckDB matches by
-name — but `source` vanishes, and the per-source rows collapse into what look like duplicate
-item-days. Measured: the full glob returns 20,755,907 rows over 2013-08-14 → 2026-08-04, and
-under a plain glob `source` is not a bindable column at all.
-
-Always pass `union_by_name=true` when you glob across years:
+So `source` *is* bindable under a plain glob today. It was not before the migration
+(`prices-2013.parquet` predated the column and DuckDB narrows a multi-file read to the first
+file's schema, silently dropping it with no error), and a fresh sidecar or a hand-written file
+can reintroduce the split. **Keep passing `union_by_name=true` as a cheap defence:**
 
 ```sql
 SELECT * FROM read_parquet('price-archive/prices-*.parquet', union_by_name=true)
 ```
 
-Missing columns then come back NULL. About 9.4M of the 20.8M rows (the pre-2024 files) have
-`source IS NULL`; scope with `WHERE source IS NOT NULL` when a question is per-source.
+Missing columns then come back NULL. Measured 2026-08-21 on the working copy: the full glob
+returns **22,203,660 rows over 2013-08-14 → 2026-08-08**, of which **9,429,275** — every
+pre-2026 row, i.e. all the frozen yearly files — have `source IS NULL`; scope with `WHERE source IS NOT NULL` when a question is
+per-source. `ingested_at` is non-NULL on only ~723K rows — the column exists everywhere, the
+*value* is unknowable for backfilled history (see `.claude/rules/archive-reads.md`).
 
 Never hardcode one yearly filename — the glob is what spans the frozen yearly files and the
 2026+ monthly partitions.
@@ -68,25 +77,32 @@ Never hardcode one yearly filename — the glob is what spans the frozen yearly 
 ## Source names
 
 Sources are **prefixed**, not bare market names. The families are `aggregator_steam_7d` /
-`_30d` / `_90d` / `_sync`, `aggregator_buff163`, `aggregator_buff163_buy`,
+`_30d` / `_90d` / `_sync` / `_17mafo` (the largest single source, 2.17M rows) / `_steam_spot`,
+`aggregator_buff163`, `aggregator_buff163_buy`,
 `aggregator_skinport`, `aggregator_csfloat`, `aggregator_csmoney`, `aggregator_csgotrader`,
-`aggregator_youpin`, plus `historical_fallback:*` (~19.8k rows). Production **filters
-`historical_fallback:` out** and applies outlier-voted median consensus across the rest —
+`aggregator_youpin`, plus `historical_fallback:*` (19,773 rows). Production **filters
+`historical_fallback:` out**, drops the bid (`_buy`), the trailing-window means (`_7d/_30d/_90d`)
+and `aggregator_steam_spot` from the vote, and applies outlier-voted median consensus across
+the rest (`models/item_parser.py`) —
 if you take a plain `AVG` across sources you are not computing what production serves. Say
 so when it matters to the answer.
 
 ## Other things that bite
 
-- `day` is `TIMESTAMP` in old files and `TIMESTAMP_NS` in new ones. `CAST(day AS DATE)` before
-  grouping or joining on it.
+- `day` is `DATE` in every price file since the schema normalisation, so no cast is needed to
+  group or join on it. A `CAST(day AS DATE)` is still harmless, and is required on the ops
+  mirrors and sidecar panels, which were not normalised.
 - **The archive lags the calendar.** Its max day is normally yesterday or earlier. Bound any
   "recent" question by `max(day)` from the data, never by `CURRENT_DATE`, and report the
   actual max day you found.
 - Whole days are missing in places (cron drift, not failures). Before concluding a trend,
   check day coverage — `SELECT count(DISTINCT CAST(day AS DATE))` over the window against the
   calendar span — and report gaps rather than interpolating over them.
-- `price-archive/` is a gitignored symlink to a checkout of the separate `cs2-oracle-data`
-  repo. If it is absent, say so and stop; do not clone or fall back to the DB.
+- `price-archive/` is a **gitignored local copy** of the `price-archive/` tree from the separate
+  `cs2-oracle-data` repo — a plain directory, not a symlink and not itself a git checkout, so it
+  can drift from the canonical repo. The sibling checkout (`../cs2-oracle-data/price-archive/`)
+  is the canonical one; say which you read when the answer could depend on it. If
+  `price-archive/` is absent, say so and stop; do not clone or fall back to the DB.
 
 ## Reporting
 

@@ -5,6 +5,20 @@ A non-technical companion to
 Same findings, no jargon. Every number here was verified directly against the
 shipped model artifact or the price archive.
 
+> ⚠️ **HISTORICAL — a snapshot of 2026-08-06, not current advice.** The four problems and
+> the three fixes are an accurate record. Two things have changed since, and they change how
+> the rest of the document should be read:
+>
+> 1. **The whole document is framed on directional accuracy, and that framing was retired
+>    on 2026-08-15.** CS2 Oracle is a **range (interval) forecaster**; directional accuracy
+>    is not a shippable product claim at any strength. So "Problem 4", "What good actually
+>    looks like" and the 49–53% figures describe a metric the product no longer sells.
+>    `changelog/2026-08-15-cs2-oracle-is-a-range-forecaster.md`.
+> 2. **The "Still open" section at the bottom is closed** — see the notes there.
+>
+> The band geometry it predates has also moved twice: signed conformal (2026-08-19) and the
+> climatology band scale, default on since 2026-08-20. See the banner in `docs/README.md`.
+
 ---
 
 ## The short version
@@ -117,6 +131,11 @@ For comparison, simply guessing "down" every single time, with no model at all,
 scores 49.6% at 7 days and 55.8% at 30 days. On the items you serve, the model is
 at or slightly below that.
 
+> ⚠️ **Correction (2026-08-10):** the "always down" comparison as it was computed in the
+> backtest (`constant_call_accuracy`) is **selected with hindsight per fold**, so it is an
+> oracle, not a baseline the model failed to beat. The runnable baseline is
+> `realised_down_rate`. `changelog/2026-08-10-constant-call-is-hindsight-picked.md`.
+
 ---
 
 ## What was fixed
@@ -136,7 +155,8 @@ the collector returned*, never by looking at prices. A real market crash doesn't
 change how many items get collected — so this can never delete a genuine crash.
 It triggers on 12 days out of 4,735 (0.25%).
 
-39 new tests were added. The full test suite passes (840 tests).
+39 new tests were added. The full test suite passes (840 tests as of 2026-08-06; ~2,460 as
+of 2026-08-21).
 
 **One requested change was deliberately not built.** A fourth item — a
 statistical weighting adjustment — was measured and found to do nothing here: the
@@ -159,6 +179,13 @@ moved — because the system currently can't measure its own accuracy:
 
 Running the proper before/after comparison is about a 20-minute job and hasn't
 been done yet.
+
+> **Status 2026-08-21.** The date-counting half was a code bug as much as a calendar one:
+> the scoring cohort keyed on the *configuration*, so every config change reset the panel.
+> Fixed 2026-08-11 (`changelog/2026-08-11-model-version-is-not-a-config.md`) — the panel now
+> accumulates. The before/after accuracy comparison was subsequently run many times over and
+> came back **null**: the accuracy surface is where this project stopped, which is why it was
+> reclassified as a range forecaster. Do not schedule the 20-minute job described above.
 
 ---
 
@@ -183,15 +210,22 @@ number that exists for this market. That is worth something on its own.
 
 ## Still open
 
-**A live bug (reported, not fixed by request).** In certain market conditions the
-3-day forecast is served by a model containing **one decision tree**, instead of
-the real 379-tree model. The documentation says this can't happen in production,
-but the setting that would prevent it isn't actually set anywhere in CI.
+> ⚠️ **All three items below are closed. Kept for the record only.**
 
-**Free speed.** The daily pipeline can be cut by roughly 60% with no change to any
-output. One function is slow because a comment says it handles 2% of cases — it
-actually handles 74.5%.
+**A live bug (reported, not fixed by request).** ✅ **Fixed.** In certain market conditions
+the 3-day forecast was served by a model containing **one decision tree** instead of the
+real 379-tree model. Production stopped early-stopping on 2026-08-08 and now trains a fixed
+round count; the old behaviour survives only behind an opt-in `EARLY_STOPPING=1`
+(`forecaster.py:887`), which nothing in CI sets.
+`changelog/2026-08-13-ab-harnesses-follow-productions-trainer.md`.
 
-**Free data.** Steam gives away a complete buy/sell order book and 14 years of
-patch history with no login required. The order book is genuinely new information
-— it shows *demand*, which nothing in the current model can see.
+**Free speed.** ✅ **Taken.** The cost work closed on 2026-08-09; a warm retrain now runs
+**176.7s** (250.1s cold), inside the cap, and the bottleneck moved from wall-clock to
+experiment power. `docs/operations.md` → Healthy state; `research/2026-08-10-training-cost-levers.md`.
+
+**Free data.** ❌ **Measured and shelved.** The bid/order-book side was built behind
+`BID_FEATURES` and the volume/demand panels behind `VOLUME_FEATURES` / `IFLOW_VOLUME`; both
+are off, and the cross-venue Steam↔BUFF basis feature was refuted under every skeptical
+control. `changelog/2026-08-06-volume-features-shelved.md`,
+`changelog/2026-08-17-volume-in-scale-is-net-negative.md`,
+`research/2026-08-16-cross-venue-basis-steam-buff.md`.

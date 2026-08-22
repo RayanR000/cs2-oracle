@@ -27,9 +27,17 @@ Read the caveats before quoting any number:
 
 | File group | Files | Rows | Size | Range | Columns |
 |---|---:|---:|---:|---|---|
-| `prices-YYYY.parquet` | 13 | 9,429,275 | 33 MB | 2013-08-14 → 2025-12-31 | `item_slug, day, mean_price, volume` |
-| `prices-YYYY-MM.parquet` | 9 | 11,326,763 | 56 MB | 2026-01-01 → 2026-08-04 | + `source` |
+| `prices-YYYY.parquet` | 13 | 9,429,275 | 33 MB | 2013-08-14 → 2025-12-31 | canonical 6 (see below) |
+| `prices-YYYY-MM.parquet` | 9 | 11,326,763 | 56 MB | 2026-01-01 → 2026-08-04 | canonical 6 (see below) |
 | **Total** | **22** | **20,756,038** | **89 MB** | 2013-08-14 → 2026-08-04 | |
+
+**Column set (verified 2026-08-21).** Every `prices-*.parquet`, yearly and monthly, now
+carries the same six canonical columns: `item_slug, day, source, mean_price, volume,
+ingested_at`. The split above ("yearlies lack `source`") is **stale** — `scripts/normalize_price_schema.py`
+runs daily in `aggregator-update.yml` before the append and back-fills the schema, so `source`
+and `ingested_at` are present everywhere. `source` is still *NULL-valued* on the pre-2026
+backfill rows (see §5) and `ingested_at` is NULL on anything written before 2026-08-08 —
+present-but-null, not absent.
 
 `prices-2026-03` and `prices-2026-04` additionally keep `min_price`/`max_price` — they are
 the only files where those columns hold real intraday range. `median_price` and the
@@ -42,12 +50,21 @@ cutover month).
 
 | File | Rows | Size | Range | Holds |
 |---|---:|---:|---|---|
-| `item-metadata.parquet` | 8,691 | 0.1 MB | — | `item_slug, rarity, rarity_rank, weapon_type`. **Rarity NULL on 4,296 of 8,691** |
+| `item-metadata.parquet` | 8,691 → **41,725** | 0.1 MB | — | `item_slug, rarity, rarity_rank, weapon_type`. Rarity NULL on 4,296 of 8,691 at measurement; **re-measured 2026-08-21 the file holds 41,725 rows with rarity on 40,934 (98.1%)** after the ByMykel rarity fill (2026-08-07) |
 | `player-counts-*.parquet` (16) | 4,635 | 0.2 MB | 2011-11-30 → 2026-07-16 | Daily concurrents. **The 2026 file has 1 row** — collector removed |
 | `exchange-rates-2026.parquet` | 306 | — | 2026-07-11 → 07-17 | **7 days only** |
+| `exchange-rates-history.parquet` | 18,251 | — | 2013-01-02 → 2026-08-07 | 4 currencies × 4,966 days — added after this measurement (`scripts/ingest_fx_history.py`); it, not the 7-day 2026 file, is the CNY→USD source |
 | `snapshot-tier-history-through-2026-07-08.csv.gz` | — | 1.7 MB | ≤ 2026-07-08 | gzipped CSV, not Parquet |
 | `player-counts/*.csv` | 5 | 20 KB | 2026-07-16 → 07-20 | uningested |
 | `raw/17mafo/*.json` | ~90 | **605 MB** | 2026-04-18 → 2026-07-08 | Raw Steam scrape, already ingested. Six times the size of the entire Parquet archive |
+
+**Sidecars added after this measurement** (present 2026-08-21, not in the table above):
+`bid-panel.parquet` (631,570 rows, `buff_bid`), `stattrak-panel.parquet` (4,520,182 rows,
+`st_premium`), `volume-panel.parquet` (10,675,502 rows, `steam_volume` + `steam_sale_median`),
+`supply-history.parquet` (15,404,639 rows, `buff_listing_count`), `supply-2026-08.parquet`,
+`event-calendar.parquet` (4,967 rows) and `item-metadata-bymykel.parquet`. The first four are joined by
+`ItemForecaster._attach_sidecars` off `_SIDECARS` (`models/forecaster.py:4450`), after voting so
+none of them votes as a price.
 
 ### `ops/` mirrors
 
@@ -105,6 +122,9 @@ No `target_items` table exists in the archive. Two proxies, both 100% fresh:
 | Items with any pre-2026 history | 5,542 | 5,542 (100%) |
 | Items in `item-metadata.parquet` = items forecast on 08-05 | 8,691 | 8,691 (100%) |
 
+**The second proxy no longer holds.** `item-metadata.parquet` was rebuilt to full-catalogue
+width (41,725 rows as of 2026-08-21), so it is no longer a stand-in for the served cohort.
+
 5,542 matches the recorded prod `is_backfilled` count exactly, and `item_forecasts` on
 2025-12-01 covers exactly 5,542 items, then 8,691 from 2026-07-29 onward — so the served
 cohort **grew 5,542 → 8,691** between those dates.
@@ -140,7 +160,10 @@ are declined (`buff-price-history-archive` pushes rows/item 1,341 → 1,641 and 
 > largest fold: 1,120,798 rows). The depth cliff itself is unchanged — it is a measurement of
 > the archive — but neither the `buff-price-history-archive` rejection nor the Steam
 > backfill's valuation can rest on rows/item any more.
-> `docs/changelog/2026-08-09-breadth-curve-at-1p2m-budget.md`.
+> `docs/changelog/2026-08-09-breadth-curve-at-1p2m-budget.md`. Further, breadth itself was
+> measured **accuracy-neutral** at a fixed row budget on 2026-08-18
+> (`docs/changelog/2026-08-18-training-breadth-is-accuracy-neutral.md`), so "raises training
+> breadth" is not by itself an accuracy argument for any source.
 
 ---
 
@@ -192,6 +215,12 @@ market attribution.
 Naming note: the label is `aggregator_sync`, **not** `aggregator_steam_sync`, and there is
 an `aggregator_steam_17mafo` family that is not in `data-sources.md`'s source table.
 
+**A twelfth live label arrived after this measurement:** `aggregator_steam_spot` (added
+2026-08-17), Steam's `last_24h` written *without* the trailing-window fallback. It is
+**excluded from consensus voting** (`ItemForecaster.STEAM_SPOT_SOURCES`), so it does not
+change any voted-consensus number above. See
+`../changelog/2026-08-17-steam-spot-persisted-for-basis.md`.
+
 **The multi-source era is 25 days deep, not 4.5 months.** Eight of the eleven live sources
 start 2026-07-11. Only buff163/youpin/csfloat reach back to 2026-03-22, and they have 90
 missing days inside that span — they ran 03-22 → 04-15 (the HF dataset merge), then nothing
@@ -235,7 +264,7 @@ NULL / zero rates over the last 90 days (2026-05-07 → 08-04, 8,305,434 rows):
 Non-zero for the whole 2013–2025 backfill (5,542 items, 4,523 days) and through
 2026-04-15, then **identically zero for every row since 2026-04-16 — 111 days**. Last
 non-zero day by source: buff163/youpin/csfloat 2026-04-15, `aggregator_sync` 2026-03-29.
-The column is still written, and still read by `backtest/price_resolution.py:249`.
+The column is still written, and still read by `backtest/price_resolution.py:223-240`.
 
 This supersedes the "Volume Data Status" figures in `data-sources.md`, which were measured
 on 2026-07-16 against an 11.09M-row archive and report the series running to 2026-03-29.
@@ -246,9 +275,9 @@ on 2026-07-16 against an 11.09M-row archive and report the series running to 202
 |---|---|
 | Intraday range | 2,466,349 rows carry min/max, all in 2026-03-22 → 04-30; 1,308,897 with `min != max`. Nowhere else |
 | Bid/ask | Only `aggregator_buff163_buy` vs `aggregator_buff163`. 30,377 paired items on 08-04, median ask/bid **1.283**. **25 days deep** |
-| Supply / listing counts | `ops/supply_snapshots.parquet`: 35,037 rows, 35,037 items, **all dated 2026-07-15**, source `steam_burst`. `sell_listings` populated, `skinport_quantity` NULL on all rows. A single cross-section with no time dimension — unusable as a lagged feature |
+| Supply / listing counts | `ops/supply_snapshots.parquet`: 35,037 rows, 35,037 items, **all dated 2026-07-15**, source `steam_burst`. `sell_listings` populated, `skinport_quantity` NULL on all rows. A single cross-section with no time dimension — unusable as a lagged feature. **Superseded for depth:** `supply-history.parquet` (15.4M rows of BUFF `buff_listing_count`, 2021-07 → 2024-02) gives a real time dimension, and it is what the `supply_churn_*` features (gated off) are computed from. Listing count as a band-width conditioner is refuted — `../changelog/2026-08-18-listing-count-conditioner-refuted.md` |
 | Player counts | Stalled 2026-07-16; the 2026 file has one row |
-| FX rates | 7 days — while buff163 and youpin, the two largest item-coverage sources, are CNY-denominated |
+| FX rates | The 2026 file is 7 days, but `exchange-rates-history.parquet` (2013-01-02 → 2026-08-07, 4 currencies) has since landed and is the CNY→USD source used by the iflow backfill |
 
 ---
 

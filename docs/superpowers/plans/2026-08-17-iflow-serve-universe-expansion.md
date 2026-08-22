@@ -1,5 +1,15 @@
 # iflow Serve-Universe Expansion Implementation Plan
 
+> # ✅ EXECUTED, then partly SUPERSEDED (2026-08-18) — not pending work
+>
+> The train/serve universe split landed (`701a4df`, `5e7558a`, `c4fc5fa`, migration `0023`), but
+> the `is_trainable` DB column is **no longer the authority**: `fde8314` re-derives the train
+> universe from the Parquet archive because the managed Postgres lacked the column and the
+> fallback loaded all 41,885 slugs, OOMing a cold retrain
+> (`docs/changelog/2026-08-18-train-universe-derived-from-archive.md`). The breadth motivation is
+> closed too — at a fixed row budget more items is accuracy-neutral
+> (`docs/changelog/2026-08-18-training-breadth-is-accuracy-neutral.md`).
+>
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Serve forecasts for ~11,600 iflow-backed ≥$1 items without growing the ~926-item training set.

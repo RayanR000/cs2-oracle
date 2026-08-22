@@ -1,5 +1,20 @@
 # Phase 2 implementation plan: exceedance-augmented conformal band scale
 
+> # ❌ EXECUTED AND REFUTED (2026-08-16) — not pending work
+>
+> The plan was built: the exceedance head is wired into fit/save/load and
+> `sigma × √p_exceed` exists as a band scale behind `EXCEEDANCE_SCALE=1`, with an arm on
+> `model-diagnostics.yml`. **The offline win did not transfer to serving**, so the flag is OFF
+> and the band scale that shipped instead is `CLIMATOLOGY_SCALE` (default on 2026-08-19), which
+> is mutually exclusive with it. Outcome:
+> `docs/changelog/2026-08-16-exceedance-band-scale-refuted-at-serving.md`.
+>
+> What survived is the head itself, as a **served signal** rather than a width lever: `exceed_p`
+> (migration `0024`) is published as `/volatility`'s `move_odds` at h=3/h=7 only
+> (`api/volatility_tags.py::CALIBRATED_MOVE_ODDS_HORIZONS`). See
+> `docs/changelog/2026-08-20-exceedance-served-signal.md` and
+> `docs/changelog/2026-08-20-volatility-stability-tags.md`.
+
 **Date:** 2026-08-16. **Depends on:**
 `docs/changelog/2026-08-16-exceedance-probability-improves-band-conditional-coverage.md` (the offline
 result: `sigma × √p_exceed` lifts volatile-tail coverage from 31–44% to 47–53% for ~5–15% more width,

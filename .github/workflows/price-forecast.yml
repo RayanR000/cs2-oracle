@@ -118,12 +118,15 @@ jobs:
       # fresh every run, so the key changed unconditionally and this could
       # never have hit; _archive_fingerprint is content-derived now.
       #
-      # `v6` matches ItemForecaster.VOTED_CACHE_VERSION. BUMP BOTH TOGETHER:
-      # a stale frame here is a frame voted under a superseded rule, and
-      # training would consume it silently. VOTED_CACHE_VERSION moved 4 -> 5
-      # (n_ask_sources) without this key following, so v5 never reached CI;
-      # this commit moves straight to v6 (excluding the Steam trailing-window
-      # feeds) and leaves no v5 key behind.
+      # This `v6` label LAGS ItemForecaster.VOTED_CACHE_VERSION, which is 7
+      # (v7 excluded STEAM_SPOT_SOURCES). That is cosmetic, not a leak: the
+      # version is hashed into the frame's own filename by
+      # _voted_cache_key/_voted_cache_path, so a v7 reader never finds a v6
+      # file and recomputes. The earlier claim here -- that a lagging key lets
+      # training silently consume a superseded frame -- was wrong for the same
+      # reason (VOTED_CACHE_VERSION moved 4 -> 5 -> 6 -> 7 with this key
+      # following only as far as 6). Bumping the label to v7 costs one cold
+      # run and restores the intended one-to-one; it is not a correctness fix.
       - name: Cache voted price frame
         uses: actions/cache@v4
         with:

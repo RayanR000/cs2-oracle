@@ -1,5 +1,24 @@
 # Scope: the `P(|return| > round-trip cost)` target
 
+> **Status (as of 2026-08-21): ✅ THIS SHIPPED — and it is the project's one surviving signal.**
+> The scope below was built and served. `P(|r_h| > c)` has **market-orthogonal, date-stable
+> skill** (`changelog/2026-08-15-exceedance-target-phase1-has-market-orthogonal-skill.md`) and it
+> is now exposed on the served surface as `move_odds` / `stability_label` volatility tags
+> (`changelog/2026-08-20-exceedance-served-signal.md`,
+> `changelog/2026-08-20-volatility-stability-tags.md`; PRs #28/#29). Only served-reliability
+> maturation remains.
+>
+> **Two boundaries the scope did not anticipate.** (1) Using `p` to *scale the band*
+> (`EXCEEDANCE_SCALE`) was built and then **refuted at serving** — the offline win does not
+> transfer (`changelog/2026-08-16-exceedance-band-scale-refuted-at-serving.md`); it survives only
+> as a band-**conditional-coverage** improvement
+> (`changelog/2026-08-16-exceedance-probability-improves-band-conditional-coverage.md`).
+> (2) `p` is **not a trade**. Extending it to h=90/180 — where the realised move finally clears
+> the friction bar — produced **no selection skill** (AUC 0.51–0.53 over 3 OOS windows,
+> top-decile lift ≤1.0×, unconditional bet negative in every window). The trade hunt is closed at
+> every horizon; keep `p` as an annotation on the range, exactly as this doc proposed.
+
+
 **Date:** 2026-08-15. A build scope, not a decision to ship. Grounds item 1 of
 `2026-08-15-directional-accuracy-and-data-inventory.md` in the actual forecaster code
 (`backend/models/forecaster.py`, `backend/backtest/friction.py`). Nothing built yet.
