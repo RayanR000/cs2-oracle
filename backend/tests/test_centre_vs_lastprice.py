@@ -93,3 +93,32 @@ def test_coverage_is_measured_at_identical_width(cvl):
 def test_skill_is_zero_when_the_centre_predicts_no_move(cvl):
     r = np.array([0.05, -0.03, 0.10])
     assert cvl._mae(r, np.zeros_like(r)) == pytest.approx(np.mean(np.abs(r)))
+
+
+def test_lambda_zero_wins_when_the_centre_is_pure_noise(cvl):
+    """The shrinkage dial must collapse to the random walk on a noise centre."""
+    import numpy as np
+    rng = np.random.default_rng(0)
+    r = rng.normal(0, 0.05, 5000)
+    noise = rng.normal(0, 0.05, 5000)      # independent of r
+    lam, _ = cvl._best_lambda(r, noise)
+    assert lam == 0.0
+
+
+def test_lambda_one_wins_when_the_centre_is_the_truth(cvl):
+    """...and must NOT shrink a centre that actually carries the move."""
+    import numpy as np
+    rng = np.random.default_rng(0)
+    r = rng.normal(0, 0.05, 5000)
+    lam, mae = cvl._best_lambda(r, r)
+    assert lam == 1.0
+    assert mae == pytest.approx(0.0, abs=1e-12)
+
+
+def test_lambda_recovers_a_known_over_expression(cvl):
+    """A centre twice as loud as the move shrinks to about a half."""
+    import numpy as np
+    rng = np.random.default_rng(0)
+    r = rng.normal(0, 0.05, 20000)
+    lam, _ = cvl._best_lambda(r, 2.0 * r)
+    assert lam == pytest.approx(0.5, abs=0.05)
