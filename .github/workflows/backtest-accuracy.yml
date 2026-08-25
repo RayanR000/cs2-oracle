@@ -75,6 +75,23 @@ jobs:
           set -o pipefail
           python scripts/backtest_accuracy.py --type forecast 2>&1 | tee backtest.log
 
+      # The open gate on retiring the GBM: on served rows its CENTRE loses to
+      # quoting the last price (docs/research/2026-08-25-gbm-retirement-decision.md),
+      # but every horizon was 8-11 clean dates against MIN_FORECAST_DATES=20, so
+      # the verdict is not quotable yet. `--gate` exits 1 while any horizon is
+      # short and 0 when all four are ready, so the first backtest run after the
+      # panel matures announces it here instead of waiting for someone to
+      # remember a date -- which matters because the panel is frozen while the
+      # workflows are paused, so there IS no date to remember.
+      #
+      # continue-on-error: an immature panel is the expected state for weeks and
+      # must not fail the backtest. Read the step's status, not the job's.
+      - name: Centre-vs-last-price maturity gate
+        continue-on-error: true
+        working-directory: ./backend
+        run: |
+          python scripts/centre_vs_lastprice.py --gate 2>&1 | tee centre_gate.log
+
       # backtest_accuracy.py appends forecast_outcomes and prediction_accuracy to
       # the archive (scripts/backtest_accuracy.py:111,263), which lands in the
       # ephemeral archive/ checkout — so without this step every CI backtest's
@@ -127,5 +144,8 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: backtest-logs-${{ github.run_id }}
-          path: backend/backtest.log
+          path: |
+            backend/backtest.log
+            backend/centre_gate.log
+          if-no-files-found: warn
           retention-days: 30
