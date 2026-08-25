@@ -251,21 +251,58 @@ median-of-3 window and the retained tail are the same three rows, so a gap in an
 item's history reaches the anchor through the span bound rather than through row
 count.
 
+## 9. The serving math is EXACT — so the wedge is a data change, not a code defect
+
+The audit's per-item dump makes the decisive test possible for the first time:
+compare the serving path's own smoothed value against `resolve_anchors` on the
+SAME archive, item by item. 5,536 items at anchor 2026-08-24, all resolvable:
+
+| comparison | median \|diff\| | p90 | match <0.1% |
+|---|---|---|---|
+| serving `_smoothed_price` vs `resolve_anchors` | **0.00000** | **0.00000** | **100.0%** |
+| serving raw quote vs `resolve_anchors` | 0.00000 | 0.14286 | 54.6% |
+
+**The two legs agree exactly, on every item.** Given the same data, the serving
+path computes precisely what the scorer computes — the smoothing is not
+mis-implemented, the window is not mis-sized, and the substitution is not
+introducing the wedge.
+
+That leaves one explanation for the 7.6% historical gap: **the data itself
+changed between serve time and scoring time.** The stored `current_price` was
+computed against a version of those days that the archive no longer holds, which
+is also why no reconstruction from today's archive could match it (§6) while
+`base_price` — resolved later, closer to the current version — sits within 2.2%.
+
+It also retires all three anchor arms as candidates. A, B and C each change how
+the serving path *computes* the anchor; §9 says that computation is already
+identical to the scorer's. None of them addresses a moving input.
+
+**And the revision cannot be audited retrospectively.** `cs2-oracle-data` is
+published as an orphan commit and force-pushed on every run, so `main` is a
+one-commit history and no previous version of any day survives. There is no
+diff to take. That property was adopted to keep Parquet blobs out of git
+history, and it is exactly what makes this class of question unanswerable after
+the fact.
+
 ## What follows
 
-1. **The dollar-band gap is real and large, and none of the three planned arms
-   is aimed at it.** Arm A reaches a sixth to a quarter of the ceiling (§3);
-   Arm B tunes a window that does not describe the served quote (§6). If §7 is
-   right, the fix is to stop anchoring on a day that is still being ingested —
-   quote from the last COMPLETE day, or require full source coverage before a
-   day may serve as an anchor — which is closer to Arm C's staleness guard than
-   to either of the others, but keyed on the day's completeness rather than on
-   the item's frozen runs.
-2. **Instrument the serving anchor before building any of it.** One night of
-   logged anchor inputs distinguishes §7 from the alternatives, and every arm
-   here is otherwise being chosen against an unidentified quote.
-3. **The centre should be shrunk to zero at h<=14**, which is the same change as
+1. **Do not build any of the three anchor arms.** A reaches a sixth to a
+   quarter of the ceiling (§3), B tunes a window that does not describe the
+   served quote (§6), and §9 shows the serving computation already matches the
+   scorer exactly. All three fix the arithmetic; the arithmetic is right.
+2. **Persist the serve-time quote instead.** The wedge is a moving input, so the
+   only way to make the published band and the score agree is to freeze what was
+   served: `ANCHOR_AUDIT=1` already writes the raw quote and the smoothed value
+   per item per anchor. Turning it on in `price-forecast.yml` and publishing the
+   Parquet alongside `item_forecasts` makes every future wedge attributable — and
+   makes scoring against the served basis possible rather than approximate.
+3. **The archive keeps no history, and that is now a measured cost.** The orphan
+   force-push means no previous version of any day exists, so revisions cannot
+   be diffed and this question could only be answered going forward. Worth
+   deciding deliberately whether the daily publish should retain even a shallow
+   history.
+4. **The centre should be shrunk to zero at h<=14**, which is the same change as
    retiring the GBM's centre, arrived at independently.
-4. Neither is quotable yet under `MIN_FORECAST_DATES = 20` — h=3 is at 16 dates,
+5. Neither is quotable yet under `MIN_FORECAST_DATES = 20` — h=3 is at 16 dates,
    h=7 at 17, h=14 at 11. Signs and the decile monotonicity are what these
    establish; re-read the magnitudes at 20.
