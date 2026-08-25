@@ -2,7 +2,8 @@
 
 **Date:** 2026-08-25
 **Type:** decision memo — no new measurement, consolidates four existing results
-**Status:** open decision. Nothing here changes serving.
+**Status:** MEASURED 2026-08-25. The centre loses to a random walk. Nothing here changes serving yet.
+**Script:** `backend/scripts/centre_vs_lastprice.py` (read-only; no artifact, no retrain)
 
 ## Where the cutover already stands
 
@@ -51,8 +52,59 @@ which removes the retrain, the 28-feature set, and the artifact-matching machine
 daily chain. If the GBM centre wins on level, it stays, and the honest product description is
 "a calibrated range with a small mean-reversion tilt."
 
-## Why it is not running yet
+## Result
 
-Actions minutes are exhausted and all nine workflows are `disabled_manually` until the
-billing reset. The replay is local-capable and does not need the chain; the retrain that
-would follow a "retire" verdict does.
+`centre_vs_lastprice.py`, run on the canonical archive's 32,603 resolved served
+rows (>=$1, `excluded_forecast_date` applied):
+
+| h | rows | dates | MAE_gbm | MAE_naive | skill | 90% CI | cov_gbm | cov_naive |
+|---|------|-------|---------|-----------|-------|--------|---------|-----------|
+| 3  | 11,160 | 11 | 0.03259 | 0.03076 | **-0.059** | [-0.079, -0.040] | 0.916 | 0.921 |
+| 7  | 11,681 | 11 | 0.04846 | 0.04557 | **-0.063** | [-0.107, -0.032] | 0.914 | 0.921 |
+| 14 | 7,779  | 8  | 0.08773 | 0.07886 | **-0.113** | [-0.175, -0.052] | 0.835 | 0.853 |
+| 30 | 1,983  | 2  | 0.13686 | 0.14375 | +0.048 | [+0.015, +0.078] | 0.770 | 0.718 |
+
+skill = 1 - MAE_gbm/MAE_naive; positive means the GBM beats the random walk.
+
+**The GBM centre is worse than quoting today's price at h=3, 7 and 14** — 6-11%
+more absolute error, with the date-bootstrap CI clear of zero at all three. It
+is negative on **25 of the 27 date-horizon cells** individually, so this is not
+one bad date carrying a pooled number. Coverage at identical width is a wash
+(91.6% vs 92.1%), which is the <5%-of-width finding showing up from the other
+side: the centre is too small to help the band and just large enough to hurt
+the point estimate.
+
+The h=30 win is the one positive cell and should not be believed yet: two clean
+dates, both inside the same July drawdown.
+
+**Not a trend artifact.** The panel is a falling market throughout (mean realised
+r of -0.001 to -0.068 by date) while mean `r_hat` sits at +-0.003 for most dates.
+The naive centre is not winning because it happened to bet the trend — it wins
+because `r_hat` is near-zero noise added on top of it. The two h=14 dates where
+the model leaned meaningfully down (mean `r_hat` -0.021, -0.013) are also its
+two best cells, which is consistent with mean-reversion being the only real
+signal in the centre and it being too weakly expressed to pay for itself.
+
+**Caveat, stated in the script's own output:** every horizon has 8-11 clean
+dates against `MIN_FORECAST_DATES = 20`, so by the project's own publication
+rule none of this is quotable yet. The panel reaches 20 dates at ~1/day
+(h=30 around 2026-09-06). The direction and consistency of the result are what
+this establishes; the magnitudes should be re-read at 20 dates.
+
+## Where this leaves the decision
+
+Both halves of the GBM have now lost to a featureless null on served data:
+the width to climatology (~30% narrower, clean label, every horizon), and the
+centre to a random walk (this). Retiring it collapses the serving path to
+climatology + last price and takes the retrain, the 28-feature set and the
+artifact-flag-matching machinery out of the daily chain.
+
+The one thing that argues for waiting is the date count above. The cheap,
+honest sequence is: re-run this at 20 dates per horizon after the panel matures,
+and if the sign holds, ship the retirement then.
+
+## Why the retirement is not running yet
+
+Actions minutes are exhausted and all nine workflows are `disabled_manually`
+until the billing reset. This replay is local-capable and needed neither; the
+serving change that follows a confirmed verdict does.
