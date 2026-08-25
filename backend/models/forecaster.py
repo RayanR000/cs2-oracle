@@ -1078,7 +1078,7 @@ class ItemForecaster:
             return {}
 
         anchor = pd.Timestamp(anchor)
-        cutoff = anchor - pd.Timedelta(days=MAX_WINDOW_SPAN_DAYS)
+        cutoff = anchor - pd.Timedelta(MAX_WINDOW_SPAN_DAYS, "D")
         ordered = df.sort_values(["item_id", "date"])
         # The predict frame carries datetime.date; the tests and the archive
         # path carry Timestamps. Compare in one type rather than assuming.
@@ -1150,6 +1150,78 @@ class ItemForecaster:
         else:
             base = smoothed.fillna(price)
         return base, deviates
+
+    @classmethod
+    def _audit_serving_anchor(cls, df: "pd.DataFrame", latest_rows: "pd.DataFrame",
+                              anchor) -> None:
+        """Record what the anchor was actually built from, at serve time.
+
+        The served `current_price` cannot be reproduced from the archive
+        afterwards. Six candidate reconstructions off the voted frame — last raw
+        observation, median-of-3 at three window/span settings, exact-day, and a
+        5/14d variant — each match the stored quote on at most 11.7% of rows,
+        while the shipped definition reproduces the SCORING leg (`base_price`)
+        to a median 2.6%. So the two legs disagree on ~85% of production rows by
+        a median 5.70% for a reason that is invisible in the stored data, and
+        every anchor arm in `2026-08-11-serving-anchor-freshness.md` is being
+        chosen against a quote nobody can rebuild.
+
+        The leading hypothesis is that the frame is INCOMPLETE when predict runs:
+        the chain is Aggregator (23:00 UTC) -> Price Forecast, and every row
+        stamped `day = 2026-08-04` was ingested on 08-05. The scorer then
+        resolves the same date against the finished day. Same definition, same
+        date, different data. The archive keeps no serve-time snapshot, so this
+        cannot be settled by more analysis — only by recording the inputs here,
+        which is what this does.
+
+        A DIAGNOSTIC, never a decision: it returns nothing, and every failure is
+        swallowed. A forecast must not die because an audit could not write.
+        Set `ANCHOR_AUDIT=1` for the per-item Parquet; the summary line is
+        unconditional because it is two aggregates and it is the part that
+        answers the question.
+        """
+        try:
+            dates = pd.to_datetime(df["date"])
+            on_anchor = int((dates == anchor).sum())
+            # How stale each item's newest observation is. If the frame is
+            # complete this is 0 for nearly every item; a fat tail here IS the
+            # incompleteness the hypothesis predicts.
+            last_seen = df.groupby("item_id")["date"].max()
+            lag = (anchor - pd.to_datetime(last_seen)).dt.days
+            recent = dates.value_counts().sort_index().tail(5)
+            logger.info(
+                f"  Anchor audit @ {pd.Timestamp(anchor).date()}: "
+                f"{on_anchor:,} of {len(df):,} frame rows land ON the anchor day; "
+                f"item lag to newest obs median {lag.median():.0f}d, "
+                f"p90 {lag.quantile(0.90):.0f}d, "
+                f"{(lag == 0).mean():.1%} current")
+            logger.info("  Anchor audit — rows per day (last 5): " + ", ".join(
+                f"{pd.Timestamp(d).date()}={n:,}" for d, n in recent.items()))
+
+            if os.environ.get("ANCHOR_AUDIT") != "1":
+                return
+            out = latest_rows[["item_id", "price", "_smoothed_price"]].copy()
+            out["anchor_date"] = pd.Timestamp(anchor).date()
+            out["last_obs_date"] = out["item_id"].map(last_seen)
+            out["n_obs_in_span"] = out["item_id"].map(
+                df[dates > anchor - pd.Timedelta(MAX_WINDOW_SPAN_DAYS, "D")]
+                .groupby("item_id").size())
+            out["captured_at"] = pd.Timestamp.utcnow()
+            # Into the ARCHIVE when there is one, so the daily publish carries
+            # it: this file is the only record of what was actually quoted, and
+            # the whole point is that the number cannot be recovered later. In
+            # `backend/data/` it would die with the CI runner, which is exactly
+            # how `item_forecasts.parquet` came to stop at 2026-07-29. Falls
+            # back to the cache dir for a local run with no archive checked out.
+            archive = Path(__file__).resolve().parent.parent.parent / "price-archive"
+            base = (archive / "ops" / "anchor_audit" if archive.is_dir()
+                    else Path(__file__).resolve().parent.parent / "data")
+            path = base / f"anchor_audit_{pd.Timestamp(anchor).date()}.parquet"
+            path.parent.mkdir(parents=True, exist_ok=True)
+            out.to_parquet(path, index=False)
+            logger.info(f"  Anchor audit — wrote {len(out):,} rows to {path.name}")
+        except Exception as exc:                      # noqa: BLE001
+            logger.warning(f"  Anchor audit failed (ignored): {exc}")
 
     @staticmethod
     def _anchor_disclosure(price: "pd.Series",
@@ -8516,6 +8588,11 @@ class ItemForecaster:
         # entire catalogue as clean.
         anchor_clean, anchor_wedge_pct = self._anchor_disclosure(
             latest_rows["price"], latest_rows["_smoothed_price"])
+
+        # BEFORE `_serving_base_price` too, and for the same reason as the
+        # disclosure above: afterwards `price` IS the served base, and the audit
+        # would record the answer instead of the inputs.
+        self._audit_serving_anchor(df, latest_rows, pd.to_datetime(df["date"]).max())
 
         latest_rows["price"], outlier_mask = self._serving_base_price(
             latest_rows["price"], latest_rows["_smoothed_price"])
