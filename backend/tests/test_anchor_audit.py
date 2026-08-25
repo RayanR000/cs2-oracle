@@ -26,6 +26,19 @@ def _frame(anchor="2026-08-04", lags=(0, 0, 1, 5)):
     return pd.DataFrame(rows).sort_values(["item_id", "date"])
 
 
+def _audit_path():
+    """Where the dump lands: the archive when one is checked out, else the cache
+    dir. The archive branch is the one that matters — a file written to
+    `backend/data/` dies with the CI runner."""
+    from pathlib import Path as P
+
+    root = P(__file__).resolve().parents[2]
+    archive = root / "price-archive"
+    base = (archive / "ops" / "anchor_audit" if archive.is_dir()
+            else root / "backend" / "data")
+    return base / "anchor_audit_2026-08-04.parquet"
+
+
 def _latest(df):
     out = df.groupby("item_id").last().reset_index()
     out["_smoothed_price"] = out["price"]
@@ -97,15 +110,29 @@ def test_the_per_item_dump_records_inputs_not_the_answer(tmp_path, monkeypatch, 
     one column holding the served base would be exactly the thing that cannot be
     reconstructed today."""
     monkeypatch.setenv("ANCHOR_AUDIT", "1")
-    monkeypatch.setattr("models.forecaster.Path", __import__("pathlib").Path)
     df = _frame(lags=(lag,))
     latest = _latest(df)
     latest["_smoothed_price"] = latest["price"] * 1.5     # deliberately different
     ItemForecaster._audit_serving_anchor(df, latest, pd.Timestamp("2026-08-04"))
-    from pathlib import Path as P
-    out = (P(__file__).resolve().parents[1] / "data" / "anchor_audit_2026-08-04.parquet")
-    got = pd.read_parquet(out)
+    got = pd.read_parquet(_audit_path())
     assert {"price", "_smoothed_price", "last_obs_date", "n_obs_in_span",
             "anchor_date", "captured_at"} <= set(got.columns)
     assert got["_smoothed_price"].iloc[0] != got["price"].iloc[0]
-    out.unlink()
+    _audit_path().unlink()
+
+
+def test_the_dump_lands_in_the_archive_when_one_exists(monkeypatch, caplog):
+    """It has to ride the daily publish. `item_forecasts.parquet` stopped at
+    2026-07-29 because a CI write went somewhere the publish step never saw."""
+    from pathlib import Path as P
+
+    archive = P(__file__).resolve().parents[2] / "price-archive"
+    if not archive.is_dir():
+        pytest.skip("no archive checked out")
+    monkeypatch.setenv("ANCHOR_AUDIT", "1")
+    df = _frame()
+    with caplog.at_level(logging.INFO, logger="models.forecaster"):
+        ItemForecaster._audit_serving_anchor(df, _latest(df), pd.Timestamp("2026-08-04"))
+    written = archive / "ops" / "anchor_audit" / "anchor_audit_2026-08-04.parquet"
+    assert written.exists()
+    written.unlink()

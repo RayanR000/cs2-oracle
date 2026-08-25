@@ -1207,8 +1207,16 @@ class ItemForecaster:
                 df[dates > anchor - pd.Timedelta(MAX_WINDOW_SPAN_DAYS, "D")]
                 .groupby("item_id").size())
             out["captured_at"] = pd.Timestamp.utcnow()
-            path = (Path(__file__).resolve().parent.parent / "data" /
-                    f"anchor_audit_{pd.Timestamp(anchor).date()}.parquet")
+            # Into the ARCHIVE when there is one, so the daily publish carries
+            # it: this file is the only record of what was actually quoted, and
+            # the whole point is that the number cannot be recovered later. In
+            # `backend/data/` it would die with the CI runner, which is exactly
+            # how `item_forecasts.parquet` came to stop at 2026-07-29. Falls
+            # back to the cache dir for a local run with no archive checked out.
+            archive = Path(__file__).resolve().parent.parent.parent / "price-archive"
+            base = (archive / "ops" / "anchor_audit" if archive.is_dir()
+                    else Path(__file__).resolve().parent.parent / "data")
+            path = base / f"anchor_audit_{pd.Timestamp(anchor).date()}.parquet"
             path.parent.mkdir(parents=True, exist_ok=True)
             out.to_parquet(path, index=False)
             logger.info(f"  Anchor audit — wrote {len(out):,} rows to {path.name}")

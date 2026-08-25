@@ -229,6 +229,23 @@ jobs:
           # regression. Off = byte-identical median impute. Builds at the next
           # full / train-only retrain — docs/changelog/2026-08-21-feature-native-nan-built-gated-off.md.
           FEATURE_NATIVE_NAN: "1"
+          # Persist what was actually QUOTED. The served `current_price` cannot
+          # be reconstructed afterwards -- six candidate rebuilds off today's
+          # voted frame each match the stored quote on at most 11.7% of rows --
+          # while the serving path's own smoothing agrees with the backtest
+          # resolver EXACTLY (5,536 of 5,536 items, p90 diff 0.00000) when both
+          # read the same archive. So the ~85% / median 5.70% disagreement
+          # between the served quote and the scored base is the DATA moving
+          # between serve time and scoring time, not arithmetic, and it is what
+          # drives published dollar coverage down to 54-72% against a band
+          # calibrated to 80%.
+          #
+          # This writes raw quote + smoothed value per item per anchor into
+          # price-archive/ops/anchor_audit/, so the publish step below carries
+          # it and every future wedge is attributable. ~5,500 rows a day. It
+          # cannot fail a run: the audit swallows its own exceptions.
+          # docs/changelog/2026-08-25-centre-shrinks-to-zero-and-the-dollar-band-is-the-wedge.md
+          ANCHOR_AUDIT: "1"
         run: |
           echo "🔮 Mode: ${{ steps.mode.outputs.mode }}"
           set -o pipefail
