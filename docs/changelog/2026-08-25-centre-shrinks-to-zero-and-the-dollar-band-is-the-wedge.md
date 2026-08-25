@@ -125,6 +125,48 @@ Measuring an anchor arm's true effect needs the production pairing — band on t
 served quote, outcome on `resolve_anchors` — which today exists only by waiting
 for rows to mature.
 
+## 5. Which side of the mismatch is at fault — scoped
+
+`_smoothed_anchor_prices` (serving) and `resolve_anchors` (scoring) are the SAME
+definition: median of the last 3 observations at or before the anchor, span
+bounded at 7 days. Both anchor on the same date, since `forecast_date` IS the
+serving anchor date. So the wedge should not exist at all, and there are only
+two ways it can: the archive is REVISED after serving, so the scorer resolves
+against data the serving path never saw, or the serving path is not applying
+the definition it claims.
+
+Re-resolving the panel's anchors today with `resolve_anchors` itself, against
+the real voted frame from `fetch_price_history` (546,907 rows / 5,536 items;
+11,304 of 17,849 panel anchors resolvable within span):
+
+| comparison | median \|diff\| | p90 | share > 1% |
+|---|---|---|---|
+| resolve_anchors (today) vs stored `base_price` | **0.0220** | 0.2418 | 56.6% |
+| resolve_anchors (today) vs stored `current_price` (served quote) | **0.0759** | 0.2333 | 89.0% |
+| stored `base_price` vs served quote | 0.0587 | 0.2133 | 69.8% |
+
+**The serving side is the larger error.** Today's resolver reproduces the stored
+`base_price` to a median 2.2% while sitting 7.6% away from the quote the same
+row was served on — so the scoring leg is roughly where it says it is, and the
+served quote is the leg that drifts. Archive revision is real but the smaller
+term (the 2.2% residual is what a month of revisions moved).
+
+That points the fix at the serving side, which is where arms B and C already
+live, and gives them a target: bring the served quote within ~2% of what
+`resolve_anchors` would say, which is the floor revision alone imposes.
+
+A caution on the 63% match rate: anchors the resolver drops today are exactly
+the thin/stale ones, so this table describes the resolvable majority and may
+understate the tail.
+
+**A method note worth keeping.** The first attempt at this hand-rolled the
+consensus as `median(mean_price)` over the universe filter and produced 17-22%
+disagreement with BOTH stored legs — an artefact, not a finding. `AGENTS.md`
+invariant 2 and `_outcomes`' docstring both say why: a plain median lets BUFF's
+bid and Steam's trailing-window means vote, and neither is in the consensus
+`predict` quoted from. Use `fetch_price_history` and `resolve_anchors`, never a
+hand-rolled aggregate.
+
 ## What follows
 
 1. **The dollar-band gap is real and large, but Arm A is not the fix.** The
