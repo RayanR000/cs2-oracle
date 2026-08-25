@@ -169,8 +169,17 @@ esac
 if [ "$RUN_BACKTEST" -eq 1 ] && [ "$MODE" != "train-only" ]; then
   echo "== [4/6] Resolve matured forecasts (backtest) =="
   "$PY" scripts/backtest_accuracy.py --type forecast 2>&1 | tee backtest.log
-  echo "-- centre maturity gate (informational; exit 1 = still immature) --"
-  "$PY" scripts/centre_vs_lastprice.py --gate 2>&1 | tee centre_gate.log || true
+  # The gate ships on a different branch (docs/gbm-retirement-decision) until
+  # that lands, and the first live run hit exactly that: an interpreter error
+  # where the panel counts should have been. Absent is not a failure — it is
+  # the expected state on this branch — so say so and carry on.
+  if [ -f scripts/centre_vs_lastprice.py ]; then
+    echo "-- centre maturity gate (informational; exit 1 = still immature) --"
+    "$PY" scripts/centre_vs_lastprice.py --gate 2>&1 | tee centre_gate.log || true
+  else
+    echo "-- centre maturity gate SKIPPED: scripts/centre_vs_lastprice.py is"
+    echo "   not on this branch (see docs/gbm-retirement-decision) --"
+  fi
 else
   echo "== [4/6] Backtest SKIPPED =="
 fi
