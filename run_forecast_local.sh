@@ -25,6 +25,12 @@
 #   ./run_forecast_local.sh --dry-run       # run against the LOCAL db, no push
 #   ./run_forecast_local.sh --no-backtest   # forecasts only, skip resolution
 #
+# HAZARD worth knowing before running anything else against a symlinked archive:
+# a predict run WRITES item_forecasts.parquet into whatever price-archive points
+# at, including under ENVIRONMENT=development. This script clones fresh so that
+# is contained; an ad-hoc local run pointed at a canonical checkout will dirty
+# it, and only `git checkout --` puts it back.
+#
 set -euo pipefail
 
 MODE="predict-only"
@@ -154,6 +160,12 @@ export ENGINEERED_CACHE=0
 export SKIP_REGIMES=1
 export EXCEEDANCE_HEAD=1
 export FEATURE_NATIVE_NAN=1
+# Persist the serve-time quote (raw + smoothed, per item per anchor) into
+# price-archive/ops/anchor_audit/, which the publish step below carries. It is
+# the only record of what was actually quoted: the served current_price cannot
+# be reconstructed afterwards, and that unreconstructable wedge is what drives
+# published dollar coverage to 54-72% against a band calibrated to 80%.
+export ANCHOR_AUDIT=1
 # REQUIRED for `full`: the 14d model-age gate would otherwise read the restored
 # artifact as fresh and silently degrade the retrain into a predict-only run.
 if [ "$MODE" = "full" ]; then export FORCE_RETRAIN=1; else export FORCE_RETRAIN=0; fi
