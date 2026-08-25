@@ -214,6 +214,43 @@ from it. The decisive test is cheap instrumentation rather than more analysis:
 log the anchor's inputs (observation dates, source count, per-source prices) on
 the serving path, and one night's forecast settles it.
 
+## 8. Instrumented — and the first read already narrows it
+
+`ItemForecaster._audit_serving_anchor` now runs on the serving path, before
+`_serving_base_price` overwrites `price` with the served base (after it, the
+audit would record the answer instead of the inputs — pinned by a test that
+reads the call order out of `predict`'s source). It logs, unconditionally, how
+much of the frame reaches the anchor day and the distribution of each item's lag
+to its newest observation; `ANCHOR_AUDIT=1` adds a per-item Parquet carrying the
+raw quote and the smoothed value SEPARATELY, which is exactly the pair that
+cannot be reconstructed afterwards. Every failure is swallowed: a forecast must
+not die because a diagnostic could not write.
+
+First read, a local predict against the canonical archive:
+
+```
+Anchor audit @ 2026-08-24: 5,536 of 16,608 frame rows land ON the anchor day;
+item lag to newest obs median 0d, p90 0d, 100.0% current
+Anchor audit — rows per day (last 5): 2026-08-22=5,536, 2026-08-23=5,536, 2026-08-24=5,536
+```
+
+**Every item is current.** All 5,536 have an observation on the anchor day, and
+the lag distribution is 0 at the p90. So §7's mechanism is not "items are
+missing from the frame" — at least not for a run executed hours after ingest
+completes, which is what this was.
+
+What it does NOT settle is the CI timing, which is the version of the hypothesis
+that matters: the chain runs the forecast immediately after the 23:00 aggregator,
+and every row stamped `day = 2026-08-04` arrived on 08-05. This read is from a
+run at 13:48, long after that day closed. The audit is now in place to catch the
+23:00 run, which is the one that has to be seen.
+
+The frame's depth is worth noting for whoever reads that log next: 16,608 rows is
+exactly 5,536 x 3, the tail retained by chunked engineering. The anchor's
+median-of-3 window and the retained tail are the same three rows, so a gap in an
+item's history reaches the anchor through the span bound rather than through row
+count.
+
 ## What follows
 
 1. **The dollar-band gap is real and large, and none of the three planned arms
