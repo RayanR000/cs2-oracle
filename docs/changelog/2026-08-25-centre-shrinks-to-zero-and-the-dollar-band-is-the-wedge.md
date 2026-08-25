@@ -167,17 +167,68 @@ bid and Steam's trailing-window means vote, and neither is in the consensus
 `predict` quoted from. Use `fetch_price_history` and `resolve_anchors`, never a
 hand-rolled aggregate.
 
+## 6. Arm B's premise does not survive — the quote is not a window problem
+
+Arm B shrinks `SMOOTH_WINDOW` (3→2) or the span (7→3), which assumes the served
+quote IS the median of a window and the window is the wrong size. Before
+touching a constant shared with the backtest resolver, that premise was tested:
+six candidate anchors were rebuilt from the voted frame at each row's
+`forecast_date` and compared against the stored served quote (17,801 rows).
+
+| candidate | vs SERVED quote (median) | matches quote <1% | vs base (median) |
+|---|---|---|---|
+| last raw obs        | 0.0640 | 11.5% | 0.0417 |
+| median last 3, 7d   | 0.0667 |  8.7% | **0.0262** |
+| median last 3, no span | 0.0616 | 11.7% | 0.0366 |
+| median last 2, 7d   | 0.0688 |  7.8% | 0.0316 |
+| exact-day price     | 0.0935 |  3.0% | 0.0456 |
+| median last 5, 14d  | 0.0588 | 11.3% | 0.0402 |
+
+**Nothing reproduces the served quote** — the best candidate matches it on 11.7%
+of rows — while the shipped definition reproduces `base_price` to 2.6%. No
+setting of the window recovers a number that is not a function of this frame at
+all. Arm B would be tuning a parameter that is not the cause.
+
+## 7. The likely cause: the serving path anchors on a day still being written
+
+The archive says when each row arrived:
+
+| ingest lag | rows (since 2026-07-20) |
+|---|---|
+| 0 days | 4,256,407 |
+| 1 day  | 1,246,091 |
+
+and for a single day it is starker — **every** row stamped `day = 2026-08-04`
+(300,321 rows, 10 sources, 37,910 items) was ingested LATER, on 08-05.
+
+That lands exactly inside the serve window. The chain runs Aggregator (23:00
+UTC) → Price Forecast, so the forecast quotes from a frame whose newest day is
+still filling in as it runs; the scorer resolves the same `forecast_date` days
+later, against the completed day. Same definition, same date, different data —
+which is precisely the signature above: the served quote matches no
+reconstruction, while the resolver reproduces the scoring leg.
+
+**Stated as the leading hypothesis, not a proof.** The archive holds no
+serve-time snapshot, so the frame `predict` actually saw cannot be reconstructed
+from it. The decisive test is cheap instrumentation rather than more analysis:
+log the anchor's inputs (observation dates, source count, per-source prices) on
+the serving path, and one night's forecast settles it.
+
 ## What follows
 
-1. **The dollar-band gap is real and large, but Arm A is not the fix.** The
-   ceiling is 17–29 coverage points; Arm A reaches a sixth to a quarter of it,
-   because the damage is concentrated in exactly the cohort it declines to
-   touch. Arms B (shrink the smoothing window) and C (serve raw, guarded by
-   staleness) are the ones aimed at the >10% wedges — or, more directly, close
-   the basis mismatch between what `predict` quotes from and what
-   `resolve_anchors` scores against.
-2. **The centre should be shrunk to zero at h<=14**, which is the same change as
+1. **The dollar-band gap is real and large, and none of the three planned arms
+   is aimed at it.** Arm A reaches a sixth to a quarter of the ceiling (§3);
+   Arm B tunes a window that does not describe the served quote (§6). If §7 is
+   right, the fix is to stop anchoring on a day that is still being ingested —
+   quote from the last COMPLETE day, or require full source coverage before a
+   day may serve as an anchor — which is closer to Arm C's staleness guard than
+   to either of the others, but keyed on the day's completeness rather than on
+   the item's frozen runs.
+2. **Instrument the serving anchor before building any of it.** One night of
+   logged anchor inputs distinguishes §7 from the alternatives, and every arm
+   here is otherwise being chosen against an unidentified quote.
+3. **The centre should be shrunk to zero at h<=14**, which is the same change as
    retiring the GBM's centre, arrived at independently.
-3. Neither is quotable yet under `MIN_FORECAST_DATES = 20` — h=3 is at 16 dates,
+4. Neither is quotable yet under `MIN_FORECAST_DATES = 20` — h=3 is at 16 dates,
    h=7 at 17, h=14 at 11. Signs and the decile monotonicity are what these
    establish; re-read the magnitudes at 20.
