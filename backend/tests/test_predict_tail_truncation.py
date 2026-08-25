@@ -211,8 +211,38 @@ def test_served_features_survive_truncation(forecaster):
                   "macd_line_rel", "macd_histogram_rel"}
     EWM_RTOL = 1e-4
 
+    # The regime-reactive vols are a DIFFERENT case and must not be waved
+    # through on the MACD argument. `ewm_reactive_slow` has a 45-day halflife
+    # against a 240-day tail, so the weight still on the data the truncation
+    # discards is 0.5 ** (240/45) = 2.5% — six orders of magnitude more than
+    # MACD's 2e-8, and the measured deviation is 3.6e-3, not 1e-6. That is a
+    # genuine train/serve difference, not floating point.
+    #
+    # It is tolerated here for one reason only, asserted below rather than
+    # assumed: these columns are SHELVED, so no booster reads them. They exist
+    # for the CLIMATOLOGY_REACTIVE band multiplier, which was measured and
+    # shelved on 2026-08-20.
+    #
+    # ⚠️ Unshelving CLIMATOLOGY_REACTIVE means fixing this first. At a 45-day
+    # halflife the tail has to reach ~450 days to push the discarded weight
+    # under 1e-3, so `PREDICT_TAIL_ITEM_DAYS` (240) would have to grow — or the
+    # served multiplier would be computed from a materially different vol than
+    # training saw. `ewm_reactive_fast` (9-day halflife) is unaffected: it
+    # reproduces to 7.7e-10 and is held to the strict bound.
+    TRUNCATION_SENSITIVE_UNSERVED = {"ewm_reactive_slow"}
+    UNSERVED_RTOL = 5e-3
+
+    unserved = TRUNCATION_SENSITIVE_UNSERVED & set(shared)
+    assert unserved <= ItemForecaster.SHELVED_FEATURES, (
+        f"{sorted(unserved - ItemForecaster.SHELVED_FEATURES)} is no longer "
+        f"shelved, so a booster can now read a feature this test knows is "
+        f"truncation-sensitive. Extend PREDICT_TAIL_ITEM_DAYS or re-shelve it; "
+        f"do not relax the bound."
+    )
+
     def _close(col):
-        rtol = EWM_RTOL if col in EWM_FAMILY else 1e-9
+        rtol = (UNSERVED_RTOL if col in TRUNCATION_SENSITIVE_UNSERVED
+                else EWM_RTOL if col in EWM_FAMILY else 1e-9)
         return np.allclose(a[col].to_numpy(dtype=float),
                            b[col].to_numpy(dtype=float),
                            rtol=rtol, atol=1e-9, equal_nan=True)
