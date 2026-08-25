@@ -97,6 +97,22 @@ when the workflows come back: each horizon needs 20 minus its current count
 after resume and h=30 not for ~18. The direction and consistency of the result are what
 this establishes; the magnitudes should be re-read at 20 dates.
 
+## Re-read after the first local chain run (2026-08-25)
+
+The chain was restarted from a laptop (`run_forecast_local.sh`), which resolved
+49,830 backlogged outcomes and moved the panel to 41,002 rows / 20 forecast
+dates. The result is unchanged on 26% more data:
+
+| h | dates (was) | skill (was) | 90% CI |
+|---|---|---|---|
+| 3  | 14 (11) | -0.056 (-0.059) | [-0.074, -0.041] |
+| 7  | 15 (11) | -0.050 (-0.063) | [-0.080, -0.026] |
+| 14 | 10 (8)  | -0.098 (-0.113) | [-0.152, -0.048] |
+| 30 | 2 (2)   | +0.048 | [+0.015, +0.078] |
+
+Same signs, CIs still clear of zero, magnitudes drifting slightly toward zero as
+the panel fills. h=30 did not move: its forecasts have not matured.
+
 ## Where this leaves the decision
 
 Both halves of the GBM have now lost to a featureless null on served data:
