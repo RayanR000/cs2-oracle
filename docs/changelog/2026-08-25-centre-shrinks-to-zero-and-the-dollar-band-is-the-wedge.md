@@ -81,12 +81,59 @@ quote-vs-resolved-anchor and bundles the unconditional smoothing substitution
 CEILING on what any anchor arm can buy, not a simulation of one — that needs a
 replay against the raw price frame.
 
+## 3. Arm A cannot collect most of that ceiling — corrected same day
+
+Arm A (`SERVE_OUTLIER_GATED_ANCHOR`, already built, off by default) gates the
+smoothing substitution on the >10% outlier test, so it serves the RAW quote for
+non-deviating items and keeps smoothing the deviating ones. Splitting the
+recoverable misses by wedge size asks what that leaves it:
+
+| h | dollar misses | recoverable | of those, \|wedge\| <= 10% | > 10% |
+|---|---|---|---|---|
+| 3  | 4,387 | 3,073 | 16.0% | **84.0%** |
+| 7  | 4,682 | 3,399 | 16.9% | **83.1%** |
+| 14 | 4,954 | 3,311 | 23.0% | **77.0%** |
+| 30 | 680   | 242   | 45.9% | 54.1% |
+
+**77–84% of the recoverable gap sits at wedges above 10%** — the items where Arm
+A goes on smoothing. It can address roughly a sixth to a quarter of the ceiling,
+not the whole of it. (The mapping is directional, not exact: the wedge is
+base-vs-quote across time while the arm's test is latest-vs-3d-median at the
+anchor.)
+
+## 4. And the replay harness cannot measure the arm's effect on this at all
+
+Control and arm at `REPLAY_ANCHOR=2026-07-15` (same artifact, 971 vs 970 items,
+879 deviating):
+
+| h | control cov | Arm A cov | control halfw | Arm A halfw |
+|---|---|---|---|---|
+| 3  | 90.63% | 94.85% | 7.97% | 7.92% |
+| 7  | 90.94% | 92.58% | 11.44% | 11.32% |
+| 14 | 90.32% | 92.06% | 16.73% | 16.68% |
+| 30 | 87.54% | 88.76% | 24.79% | 24.54% |
+
+The arm moves coverage +1.2 to +4.2pp at unchanged width — but note the level:
+**both arms sit at 87–95% against a nominal 80%**, nowhere near the 54–72% the
+published dollar band actually delivers. That is not a discrepancy to reconcile,
+it is the harness: `_resolve` resolves the outcome on the SAME smoothed basis
+`predict` quotes from, so the replay has no wedge by construction and cannot see
+the defect. Raising an already over-covering band is not obviously a gain
+either.
+
+Measuring an anchor arm's true effect needs the production pairing — band on the
+served quote, outcome on `resolve_anchors` — which today exists only by waiting
+for rows to mature.
+
 ## What follows
 
-1. **The anchor fix is the highest-value change on the board.** Arm A of
-   `2026-08-11-serving-anchor-freshness.md` passed its gate on dollar error and
-   was left off because its band-coverage effect was unmeasured. It is measured
-   now, from above: up to 17–29 coverage points on the product's main output.
+1. **The dollar-band gap is real and large, but Arm A is not the fix.** The
+   ceiling is 17–29 coverage points; Arm A reaches a sixth to a quarter of it,
+   because the damage is concentrated in exactly the cohort it declines to
+   touch. Arms B (shrink the smoothing window) and C (serve raw, guarded by
+   staleness) are the ones aimed at the >10% wedges — or, more directly, close
+   the basis mismatch between what `predict` quotes from and what
+   `resolve_anchors` scores against.
 2. **The centre should be shrunk to zero at h<=14**, which is the same change as
    retiring the GBM's centre, arrived at independently.
 3. Neither is quotable yet under `MIN_FORECAST_DATES = 20` — h=3 is at 16 dates,
