@@ -138,6 +138,11 @@ def main() -> int:
     ap.add_argument("--archive-dir", default=str(ARCHIVE_DIR),
                     help="price-archive directory (use the CANONICAL clone)")
     ap.add_argument("--json-out", default=None)
+    ap.add_argument("--gate", action="store_true",
+                    help="exit 1 unless EVERY horizon has >= MIN_FORECAST_DATES "
+                         "clean dates. The panel was 8-11 dates when this was "
+                         "written, so the verdict is not quotable yet; run this "
+                         "to ask whether it has matured without reading a table.")
     args = ap.parse_args()
 
     df = _load(Path(args.archive_dir))
@@ -176,6 +181,20 @@ def main() -> int:
                             median_abs_r_hat=float(np.median(np.abs(rh))),
                             mean_half_width=float(np.mean(w_lo + w_hi) / 2)))
 
+    short = [r for r in results if r["dates"] < MIN_FORECAST_DATES]
+    if short:
+        worst = min(r["dates"] for r in short)
+        print(f"\nPANEL IMMATURE: {len(short)} of {len(results)} horizon(s) below "
+              f"MIN_FORECAST_DATES={MIN_FORECAST_DATES} (shallowest: {worst} "
+              f"dates). The signs above are informative; the magnitudes are not "
+              f"quotable.")
+        print("The panel only grows when the forecast chain runs. If "
+              "item_forecasts has stopped advancing, no amount of waiting "
+              "matures it — check the workflows first.")
+    else:
+        print(f"\nPANEL MATURE: every horizon has >= {MIN_FORECAST_DATES} clean "
+              f"dates. This verdict is quotable.")
+
     print("\nskill = 1 - MAE_gbm/MAE_naive; >0 means the GBM centre beats the "
           "random walk.\ncoverage is at IDENTICAL width (the band's half-widths "
           "moved onto each centre).")
@@ -183,7 +202,7 @@ def main() -> int:
     if args.json_out:
         Path(args.json_out).write_text(json.dumps(results, indent=2))
         print(f"\nwrote {args.json_out}")
-    return 0
+    return 1 if (args.gate and short) else 0
 
 
 if __name__ == "__main__":

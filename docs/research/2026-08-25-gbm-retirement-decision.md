@@ -87,8 +87,14 @@ signal in the centre and it being too weakly expressed to pay for itself.
 
 **Caveat, stated in the script's own output:** every horizon has 8-11 clean
 dates against `MIN_FORECAST_DATES = 20`, so by the project's own publication
-rule none of this is quotable yet. The panel reaches 20 dates at ~1/day
-(h=30 around 2026-09-06). The direction and consistency of the result are what
+rule none of this is quotable yet. **And the panel is not maturing.** As of 2026-08-25 the newest
+`item_forecasts.created_at` is 2026-08-20 and the newest resolved outcome is
+2026-08-17 — nothing has been forecast or scored in five days, because the
+forecast chain is part of the billing pause. The "~1 date/day, mature around
+2026-09-06" estimate assumed a running chain and is wrong. The real clock starts
+when the workflows come back: each horizon needs 20 minus its current count
+(h=3: 9, h=7: 9, h=14: 12, h=30: 18) further chain days, so h=3/7 mature ~9 days
+after resume and h=30 not for ~18. The direction and consistency of the result are what
 this establishes; the magnitudes should be re-read at 20 dates.
 
 ## Where this leaves the decision
@@ -101,7 +107,20 @@ artifact-flag-matching machinery out of the daily chain.
 
 The one thing that argues for waiting is the date count above. The cheap,
 honest sequence is: re-run this at 20 dates per horizon after the panel matures,
-and if the sign holds, ship the retirement then.
+and if the sign holds, ship the retirement then. `--gate` answers "has it
+matured?" with an exit code, so the re-check is one command and needs no one to
+read the table:
+
+    backend/venv/bin/python backend/scripts/centre_vs_lastprice.py \
+        --archive-dir ../cs2-oracle-data/price-archive --gate
+
+It exits 1 while any horizon is short and 0 when all four are ready — which
+makes it safe to wire into the chain or a scheduled check rather than
+remembering to run it.
+
+Because the panel is frozen, the h=3/h=7 legs could also be matured immediately
+by RESUMING the chain (they need 9 chain-days each), which is a billing
+decision, not a modelling one.
 
 ## Why the retirement is not running yet
 
