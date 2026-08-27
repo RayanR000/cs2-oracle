@@ -98,12 +98,30 @@ def _served_cohort_slugs() -> set:
     return {r[0] for r in rows}
 
 
-def _load_archive(start: str, served_only: bool = False) -> pd.DataFrame:
+def _load_archive(start: str, served_only: bool = False,
+                  label: str = "voted") -> pd.DataFrame:
     """Prod-faithful confirmation: vote the durable archive through the SAME
     static method the production loader calls, then engineer `price_std_60d`
     exactly as `engineer_features` does (row-based rolling 60, min_periods=1).
     Restricted to the >=$1 cohort, and to the served backfilled cohort when
-    `served_only`. No model artifact is consulted here."""
+    `served_only`. No model artifact is consulted here.
+
+    `label='within-source'` replaces the voted single-price series with a
+    within-source-chained index (`check_label_seams.within_source_index`) whose
+    every daily step is measured inside one source, so the seams that fabricate
+    market-wide moves on 2026-03-22/07-09/07-10 never enter the price, the
+    rolling dispersion, or the forward return. The cohort and row count are held
+    identical to the voted basis, so the two runs are the same measurement one
+    label apart.
+
+    Caveat, measured 2026-08-22: on the BROAD >=$1 universe the within-source
+    index leaves a handful (<0.1%) of near-zero-price residual items whose
+    re-anchored level compounds to implausible forward returns (up to ~7e6% at
+    h=14), and because the gate reports a MEAN half-width those few items
+    dominate the h>=14 broad-cohort climatology width. The per-item median and
+    tails are unaffected (in fact tighter than voted). Run `--served-cohort`
+    for the honest comparison: that is the cohort the band is served on, it
+    excludes the residual tail, and both labels are stable there."""
     import duckdb
 
     from db.archive import prices_relation
@@ -139,6 +157,12 @@ def _load_archive(start: str, served_only: bool = False) -> pd.DataFrame:
     voted = ItemForecaster._apply_multi_source_voting(raw)
     voted["date"] = pd.to_datetime(voted["date"])
     voted = voted.sort_values(["item_id", "date"]).reset_index(drop=True)
+    if label == "within-source":
+        from scripts.check_label_seams import within_source_index
+        clean = within_source_index(raw, voted)
+        voted = voted.drop(columns=["price"]).merge(
+            clean, on=["item_id", "date"], how="inner")
+        voted = voted.sort_values(["item_id", "date"]).reset_index(drop=True)
     # price_std_60d as production engineers it: row-based rolling std (forecaster
     # .py:2184). Row-based is a known defect, but we confirm the SERVED band.
     voted["price_std_60d"] = (voted.groupby("item_id")["price"]
@@ -314,13 +338,19 @@ def main() -> int:
     ap.add_argument("--served-cohort", action="store_true",
                     help="archive mode: restrict to the served backfilled cohort "
                          "(_resolve_backfilled_slugs), not the broad >=$1 universe")
+    ap.add_argument("--label", choices=("voted", "within-source"),
+                    default="voted",
+                    help="archive mode: 'within-source' rebuilds the price on a "
+                         "seam-free within-source chained index (the clean label)")
     args = ap.parse_args()
 
-    df = (_load_archive(args.start, served_only=args.served_cohort)
+    df = (_load_archive(args.start, served_only=args.served_cohort,
+                        label=args.label)
           if args.source == "archive" else _load())
     clip = _sigma_clip(df, args.source, args.clip)
     cohort = "served" if args.served_cohort else "all"
-    print(f"[{args.source}/{cohort}] {len(df):,} rows, {df['item_id'].nunique():,} "
+    lbl = args.label if args.source == "archive" else "artifact"
+    print(f"[{args.source}/{cohort}/{lbl}] {len(df):,} rows, {df['item_id'].nunique():,} "
           f"items, {df['date'].min().date()}..{df['date'].max().date()} | "
           f"sigma clip floor={clip['floor']:.4f} cap={clip['cap']:.4f}\n")
     print(f"{'h':>3} {'n_eval':>9} {'dates':>6} {'GBMcov':>7} {'climcov':>8} "

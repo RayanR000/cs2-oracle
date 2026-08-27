@@ -19,7 +19,10 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from models.item_parser import TRAILING_WINDOW_SOURCES  # noqa: E402
+from models.item_parser import (  # noqa: E402
+    STEAM_SPOT_SOURCES,
+    TRAILING_WINDOW_SOURCES,
+)
 from scripts.measure_composition_stability import (  # noqa: E402
     MIN_DATES_TO_REPORT,
     MIN_ITEMS_PER_DATE,
@@ -511,3 +514,29 @@ def test_a_date_too_thin_in_either_cell_drops_out_of_the_pair():
 
     assert result["n_dates"] == 1
     assert result["difference"] == 2.0
+
+
+def test_source_mask_drops_every_source_the_vote_drops():
+    """The mask's exclusion set must be the vote's, not a copy of it.
+
+    `STEAM_SPOT_SOURCES` joined `_apply_multi_source_voting`'s exclusion after
+    `source_masks` was written, so the mask counted a source that never voted
+    and `load_voted_series`'s `bitwise_count == n_ask_sources` guard raised on
+    every window containing 2026-08-18 or later. The failure is loud, which is
+    why it was survivable; the cost was that no measurement could run over the
+    current archive at all.
+    """
+    day = date(2026, 8, 18)
+    rows = pd.DataFrame([
+        {"item_id": "a", "date": day, "source": "aggregator_sync",
+         "price": 10.0},
+        {"item_id": "a", "date": day, "source": next(iter(STEAM_SPOT_SOURCES)),
+         "price": 10.5},
+        {"item_id": "a", "date": day,
+         "source": next(iter(TRAILING_WINDOW_SOURCES)), "price": 9.0},
+    ])
+    masks = source_masks(rows)
+    assert len(masks) == 1
+    # One voting source, so one bit -- the spot and trailing rows contribute
+    # none, matching the `n_ask_sources = 1` the vote would report.
+    assert int(masks.loc[0, "source_mask"]).bit_count() == 1

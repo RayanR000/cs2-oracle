@@ -96,6 +96,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from db.archive import prices_relation  # noqa: E402
 from models.item_parser import (  # noqa: E402
+    STEAM_SPOT_SOURCES,
     TRAILING_WINDOW_SOURCES,
     archive_universe_sql_filter,
 )
@@ -145,9 +146,39 @@ def load_voted_series(archive_dir: Path, start: date, end: date | None = None
     Returns columns ``item_id, date, price, volume, n_ask_sources,
     source_mask``.
     """
-    import duckdb
-
     from models.forecaster import ItemForecaster
+
+    df = load_source_rows(archive_dir, start, end)
+    voted = ItemForecaster._apply_multi_source_voting(df)
+    voted = voted.merge(source_masks(df), on=["item_id", "date"], how="left",
+                        validate="one_to_one")
+
+    # The two bases must agree on cardinality or one of them is describing rows
+    # the other did not see. This is the only cheap check that the set was built
+    # from the same rows production voted on.
+    mismatch = int((np.bitwise_count(voted["source_mask"].to_numpy())
+                    != voted["n_ask_sources"].to_numpy()).sum())
+    if mismatch:
+        raise ValueError(
+            f"{mismatch:,} item-days where the source set's size disagrees with "
+            "n_ask_sources; the set and the vote are reading different rows")
+    return voted
+
+
+def load_source_rows(archive_dir: Path, start: date, end: date | None = None
+                     ) -> pd.DataFrame:
+    """The archive's raw per-source rows, universe-filtered, before the vote.
+
+    Reads through :func:`db.archive.prices_relation` with
+    :func:`models.item_parser.archive_universe_sql_filter` applied — a bare
+    glob returns the first file's schema and a bare ``NOT IN`` over the
+    pre-2026 ``source IS NULL`` series drops 13 years of prices.
+
+    Returns columns ``item_id, timestamp, date, price, volume, source``, one
+    row per source per item-day. This is the frame the vote consumes, so
+    anything measuring what the vote *did* to the label has to start here.
+    """
+    import duckdb
 
     con = duckdb.connect()
     try:
@@ -173,22 +204,7 @@ def load_voted_series(archive_dir: Path, start: date, end: date | None = None
     # then coerces the whole column to string.
     df["price"] = pd.to_numeric(df["price"], errors="coerce")
     df["volume"] = pd.to_numeric(df["volume"], errors="coerce")
-    df = df.dropna(subset=["price"])
-
-    voted = ItemForecaster._apply_multi_source_voting(df)
-    voted = voted.merge(source_masks(df), on=["item_id", "date"], how="left",
-                        validate="one_to_one")
-
-    # The two bases must agree on cardinality or one of them is describing rows
-    # the other did not see. This is the only cheap check that the set was built
-    # from the same rows production voted on.
-    mismatch = int((np.bitwise_count(voted["source_mask"].to_numpy())
-                    != voted["n_ask_sources"].to_numpy()).sum())
-    if mismatch:
-        raise ValueError(
-            f"{mismatch:,} item-days where the source set's size disagrees with "
-            "n_ask_sources; the set and the vote are reading different rows")
-    return voted
+    return df.dropna(subset=["price"])
 
 
 def source_masks(df: pd.DataFrame) -> pd.DataFrame:
@@ -199,14 +215,19 @@ def source_masks(df: pd.DataFrame) -> pd.DataFrame:
     rows ``n_ask_sources`` counted. Computing it from a separate query would let
     the two drift apart while both still looked right.
 
-    ``TRAILING_WINDOW_SOURCES`` (Steam's trailing-window means) are also
-    dropped here, the same way ``_apply_multi_source_voting`` drops them before
-    it counts ``n_ask_sources``: those three sources are not excluded at the
-    SQL level (only bids are, via ``archive_universe_sql_filter``), they are
-    excluded *inside* the vote. Without this, the mask would count a source
-    that never actually voted, and ``load_voted_series``'s
-    ``bitwise_count(source_mask) == n_ask_sources`` guard would fire on every
-    item-day where a trailing-window source sat alongside a real ask.
+    ``TRAILING_WINDOW_SOURCES`` (Steam's trailing-window means) and
+    ``STEAM_SPOT_SOURCES`` are also dropped here, the same way
+    ``_apply_multi_source_voting`` drops them before it counts
+    ``n_ask_sources``: those sources are not excluded at the SQL level (only
+    bids are, via ``archive_universe_sql_filter``), they are excluded *inside*
+    the vote. Without this, the mask would count a source that never actually
+    voted, and ``load_voted_series``'s ``bitwise_count(source_mask) ==
+    n_ask_sources`` guard would fire on every item-day where such a source sat
+    alongside a real ask. The exclusion set has to be read off the vote rather
+    than restated: ``STEAM_SPOT_SOURCES`` joined it after this function was
+    written, and every window containing 2026-08-18 or later — the first
+    ``aggregator_steam_spot`` day — raised that guard until this was corrected
+    on 2026-08-22.
     ``.isin()`` on a ``frozenset`` is False for NaN, which is what keeps the
     whole pre-2026 ``source IS NULL`` series in the mask.
 
@@ -219,7 +240,7 @@ def source_masks(df: pd.DataFrame) -> pd.DataFrame:
     loader and a later task on this branch owns its cache version; adding a
     column here keeps that surface untouched.
     """
-    df = df[~df["source"].isin(TRAILING_WINDOW_SOURCES)]
+    df = df[~df["source"].isin(TRAILING_WINDOW_SOURCES | STEAM_SPOT_SOURCES)]
     codes, names = pd.factorize(df["source"].fillna(NULL_SOURCE_LABEL))
     if len(names) > 62:
         raise ValueError(

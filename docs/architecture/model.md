@@ -110,6 +110,16 @@ of a thin item toward its tier pool at `CLIMATOLOGY_SHRINK_K = 20`. It measured 
 narrower at matched 80% coverage** than `sigma ** beta` and better-calibrated on served replay.
 `../research/2026-08-19-climatology-vs-gbm-band.md`,
 `../changelog/2026-08-19-climatology-band-scale-default-on.md`.
+
+⭐ **The GBM band is decorative, and a clean label confirms it (2026-08-22).** The one
+remaining objection to the climatology gate — that the GBM's loss was an artifact of a
+seam-corrupted training label — was tested and refused. On a **seam-free within-source label**
+(`scripts/check_label_seams.py::within_source_index`, re-run through
+`scripts/climatology_vs_gbm.py --label within-source`, no retrain), climatology is **~30%
+narrower** at matched coverage vs ~25% on the dirty label, and the GBM's OOS coverage *falls*
+0.78 → 0.73 because the seams were inflating its `price_std_60d` scale. The GBM `sigma` band is
+**instrumentation, not the deliverable**. This changed nothing in the serving path — climatology
+was already the served scale. `../changelog/2026-08-22-gbm-band-decorative-on-clean-label.md`.
 `CLIMATOLOGY_REACTIVE` (:1390, a multiplier off fast/slow EWMA vol) is a **shelved** modifier,
 default off, after a prod A/B: `../changelog/2026-08-20-climatology-reactive-band-scale.md`.
 
