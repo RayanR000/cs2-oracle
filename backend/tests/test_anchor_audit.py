@@ -7,6 +7,7 @@ overwritten (or it records the answer, not the inputs), and it cannot take down
 a forecast.
 """
 import logging
+from pathlib import Path
 
 import pandas as pd
 import pytest
@@ -136,3 +137,86 @@ def test_the_dump_lands_in_the_archive_when_one_exists(monkeypatch, caplog):
     written = archive / "ops" / "anchor_audit" / "anchor_audit_2026-08-04.parquet"
     assert written.exists()
     written.unlink()
+
+
+# ---------------------------------------------------------------------------
+# The record has to be self-describing across arms.
+#
+# The dump is written BEFORE `_serving_base_price`, which is what keeps the two
+# inputs separable. But under `SERVE_OUTLIER_GATED_ANCHOR=1` the served base is
+# a per-item CHOICE between them, and the choice leaves no trace in the file —
+# so an archived Parquet cannot say which price was actually quoted unless the
+# resolved base and the mask ride along with the inputs.
+#
+# Recording the answer BESIDE the inputs, never instead of them: the pair is
+# what `test_the_per_item_dump_records_inputs_not_the_answer` protects.
+# ---------------------------------------------------------------------------
+
+def test_the_dump_records_the_served_base_beside_the_inputs(monkeypatch):
+    """The resolved base has to be in the file, not inferred from it later."""
+    monkeypatch.setenv("ANCHOR_AUDIT", "1")
+    monkeypatch.delenv("SERVE_OUTLIER_GATED_ANCHOR", raising=False)
+    df = _frame(lags=(0,))
+    latest = _latest(df)
+    latest["_smoothed_price"] = latest["price"] * 1.5
+    ItemForecaster._audit_serving_anchor(df, latest, pd.Timestamp("2026-08-04"))
+    got = pd.read_parquet(_audit_path())
+    assert {"served_base", "anchor_deviates", "serve_outlier_gated"} <= set(got.columns)
+    # Inputs survive alongside the answer.
+    assert got["price"].iloc[0] != got["_smoothed_price"].iloc[0]
+    # Shipped arm: the base is the smoothed value for every item.
+    assert got["served_base"].iloc[0] == pytest.approx(got["_smoothed_price"].iloc[0])
+    assert bool(got["serve_outlier_gated"].iloc[0]) is False
+    _audit_path().unlink()
+
+
+def test_the_gated_arm_is_distinguishable_in_the_file(monkeypatch):
+    """Under the gated arm the base is per-item, so the file must name the arm
+    and carry the mask — otherwise two arms write indistinguishable records."""
+    monkeypatch.setenv("ANCHOR_AUDIT", "1")
+    monkeypatch.setenv("SERVE_OUTLIER_GATED_ANCHOR", "1")
+    # item-0 sits on its median, item-1 spikes far off it.
+    df = _frame(lags=(0, 0))
+    latest = _latest(df)
+    latest["_smoothed_price"] = [latest["price"].iloc[0], latest["price"].iloc[1] * 3]
+    ItemForecaster._audit_serving_anchor(df, latest, pd.Timestamp("2026-08-04"))
+    got = pd.read_parquet(_audit_path()).sort_values("item_id").reset_index(drop=True)
+    assert bool(got["serve_outlier_gated"].iloc[0]) is True
+    # The tied item keeps its quote; the deviating one is smoothed.
+    assert not bool(got["anchor_deviates"].iloc[0])
+    assert bool(got["anchor_deviates"].iloc[1])
+    assert got["served_base"].iloc[0] == pytest.approx(got["price"].iloc[0])
+    assert got["served_base"].iloc[1] == pytest.approx(got["_smoothed_price"].iloc[1])
+    _audit_path().unlink()
+
+
+def test_recording_the_base_does_not_disturb_the_caller(monkeypatch):
+    """The audit resolves the base itself to record it. `_serving_base_price` is
+    pure, so calling it twice is free — but the audit must not mutate the frame
+    the serving path is about to read."""
+    monkeypatch.setenv("ANCHOR_AUDIT", "1")
+    df = _frame(lags=(0,))
+    latest = _latest(df)
+    latest["_smoothed_price"] = latest["price"] * 1.5
+    before = latest.copy(deep=True)
+    ItemForecaster._audit_serving_anchor(df, latest, pd.Timestamp("2026-08-04"))
+    pd.testing.assert_frame_equal(latest, before)
+    _audit_path().unlink()
+
+
+def test_an_unpublished_dump_says_so(monkeypatch, caplog, tmp_path):
+    """A fallback write that reports success is how `item_forecasts.parquet` sat
+    stopped at 2026-07-29 for a month, and it happened again to the 2026-08-25
+    local run — 5,536 audit rows landed in `backend/data/` and were never
+    published. The write is allowed to degrade; it is not allowed to be quiet."""
+    import db.archive as archive_mod
+
+    monkeypatch.setenv("ANCHOR_AUDIT", "1")
+    monkeypatch.setattr(archive_mod, "ARCHIVE_ROOT", tmp_path / "absent")
+    df = _frame(lags=(0,))
+    with caplog.at_level(logging.WARNING, logger="models.forecaster"):
+        ItemForecaster._audit_serving_anchor(df, _latest(df), pd.Timestamp("2026-08-04"))
+    assert any("NOT PUBLISHED" in r.message for r in caplog.records)
+    assert not any("wrote" in r.message for r in caplog.records)
+    (Path(__file__).resolve().parents[1] / "data"
+     / "anchor_audit_2026-08-04.parquet").unlink()

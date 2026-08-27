@@ -923,6 +923,28 @@ def _requested_horizons(argv) -> Optional[set]:
     return {int(h) for h in raw.split(",") if h.strip()}
 
 
+def _model_dir() -> Optional[str]:
+    """Which artifact directory to SERVE from.
+
+    None keeps `ItemForecaster`'s default (`models/saved_models/`), the deployed
+    artifact. The same variable `forecast_prices._model_dir` reads, deliberately:
+    a band-geometry arm is trained into a scratch directory with
+    `FORECAST_MODEL_DIR` set, and the replay has to be pointable at that SAME
+    directory or the arm and its control both replay the deployed artifact and
+    return identical numbers. Nothing is written here -- the replay only reads --
+    but the directory is created so a typo surfaces as an empty-artifact refusal
+    rather than a silent fall back to production's model.
+    """
+    raw = os.environ.get("FORECAST_MODEL_DIR")
+    if not raw:
+        return None
+    path = Path(raw).expanduser()
+    path.mkdir(parents=True, exist_ok=True)
+    logger.info(f"FORECAST_MODEL_DIR override: serving the artifact under "
+                f"{path} — models/saved_models/ is not read")
+    return str(path)
+
+
 def main() -> int:
     want = _requested_horizons(sys.argv)
     anchor = ItemForecaster.replay_anchor()
@@ -986,7 +1008,8 @@ def main() -> int:
 
     db = SessionLocal()
     try:
-        fc = ItemForecaster(db_session=db, prune_failed_groups=False)
+        fc = ItemForecaster(db_session=db, prune_failed_groups=False,
+                            model_dir=_model_dir())
         if not fc.load_models():
             logger.error("No usable model artifact. Train one first — the "
                          "replay serves an artifact, it does not build one.")

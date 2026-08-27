@@ -32,7 +32,7 @@ def _write(tmp_path, rows):
 
 
 def _row(**kw):
-    base = dict(forecast_date=pd.Timestamp("2026-08-04"), horizon_days=3,
+    base = dict(item_id=1, forecast_date=pd.Timestamp("2026-08-04"), horizon_days=3,
                 base_price=100.0, actual_price=110.0, current_price=100.0,
                 predicted_price_low=95.0, predicted_price_mid=105.0,
                 predicted_price_high=115.0, model_version="lgbm-v3",

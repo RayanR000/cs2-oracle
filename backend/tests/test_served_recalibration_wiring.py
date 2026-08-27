@@ -105,7 +105,8 @@ def test_shipped_cutover_is_a_parseable_date(_stub=None):
     """The deployed defaults must be valid ISO dates (or None) — a typo here would silently
     filter every row out and keep the feedback dormant forever."""
     import numpy as np
-    for start in (SIGNED_BAND_SERVING_START, CLIMATOLOGY_SERVING_START):
+    for start in (SIGNED_BAND_SERVING_START, CLIMATOLOGY_SERVING_START,
+                  sr.SHRINK_K_SERVING_START):
         if start is not None:
             np.datetime64(start)                              # raises on a malformed date
 
@@ -148,3 +149,29 @@ def test_default_since_floors_the_panel_to_the_latest_cutover(monkeypatch):
     monkeypatch.setattr(sr, "_load_panel", _capture)
     served_coverage_factors(object(), [3, 7, 14, 30])
     assert seen["since"] == "2026-09-15"
+
+
+def test_geometry_floor_includes_the_shrink_k_cutover(monkeypatch):
+    """`CLIMATOLOGY_SHRINK_K` moved 20 -> 320 on 2026-08-26, which is a THIRD
+    band-geometry change on the same panel: pooling harder changes the served
+    half-widths, so `r` reads a different band shape. A factor pooled across the
+    cutover would calibrate the K=20 shape and apply it to a K=320 artifact, so
+    the floor has to take this cutover into account like the other two."""
+    monkeypatch.setattr(sr, "SIGNED_BAND_SERVING_START", "2026-08-19")
+    monkeypatch.setattr(sr, "CLIMATOLOGY_SERVING_START", "2026-08-20")
+
+    monkeypatch.setattr(sr, "SHRINK_K_SERVING_START", "2026-09-10")
+    assert sr._geometry_floor() == "2026-09-10"
+
+    monkeypatch.setattr(sr, "SHRINK_K_SERVING_START", "2026-08-01")
+    assert sr._geometry_floor() == "2026-08-20"
+
+    monkeypatch.setattr(sr, "SHRINK_K_SERVING_START", None)
+    assert sr._geometry_floor() == "2026-08-20"
+
+
+def test_shrink_k_cutover_ships_dormant_until_the_chain_serves_it():
+    """It must ship as None: the forecast chain is paused, so no prod forecast
+    has served K=320 yet and there is no date to floor to. A non-None value here
+    would filter the whole panel out and hide the dormancy."""
+    assert sr.SHRINK_K_SERVING_START is None

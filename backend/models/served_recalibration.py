@@ -61,6 +61,22 @@ CLIMATOLOGY_SERVING_START: Optional[str] = "2026-08-20"  # first clean climatolo
 # on top of an earlier sigma predict-only serve, so 08-19's geometry is mixed and excluded — the first
 # aggregator-chained predict-only serve on the climatology cache is 2026-08-20).
 
+# Raising CLIMATOLOGY_SHRINK_K from 20 to 320 (2026-08-26) is a THIRD band-geometry change on the
+# same panel. It does not swap the denominator the way the climatology cutover did, but it pools a
+# well-observed item's dispersion far harder toward its tier -- 6.5-15.4% narrower at matched 80%
+# coverage across h=3..30 -- so the served half-widths, and therefore the `r` this estimator reads,
+# are a different band shape. A factor pooled across the cutover would fit the K=20 miscoverage and
+# apply it to a K=320 artifact, over-shrinking a band that is already narrower. Set this to the date
+# the K=320 band serves its FIRST prod forecast (the first deploy whose artifact was BUILT at
+# K=320 -- the tables are persisted in meta.json, so a predict-only run on a K=20 cache still serves
+# the old geometry). That deploy is now IDENTIFIABLE rather than remembered: `meta.json` records
+# `climatology_shrink_k`, and `ItemForecaster.climatology_geometry_matches_code()` is False whenever
+# the loaded cache predates a K change. Take the date from the first run whose artifact reports
+# K=320, not from whichever run happened to be green. Left None until then: the forecast chain is
+# paused for billing, so no prod forecast has served it and the climatology floor alone is correct.
+SHRINK_K_SERVING_START: Optional[str] = None
+# docs/changelog/2026-08-26-climatology-shrink-k-re-swept.md
+
 # A sentinel distinguishing "caller did not pass since" from an explicit since=None (dormant).
 _UNSET = object()
 
@@ -74,7 +90,8 @@ def _geometry_floor() -> Optional[str]:
     calibrates a shape the current band no longer has. Returns None only when no cutover is set
     (SIGNED_BAND_SERVING_START unset), which drives the dormancy in `served_coverage_factors`.
     Read at call time so the constants can be monkeypatched in tests."""
-    starts = [s for s in (SIGNED_BAND_SERVING_START, CLIMATOLOGY_SERVING_START)
+    starts = [s for s in (SIGNED_BAND_SERVING_START, CLIMATOLOGY_SERVING_START,
+                          SHRINK_K_SERVING_START)
               if s is not None]
     return max(starts) if starts else None  # ISO dates order lexically
 

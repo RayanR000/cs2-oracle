@@ -991,6 +991,14 @@ class ItemForecaster:
         # Whether the band was CALIBRATED against the climatology scale. Same
         # matched-pair rule as the exceedance flag above. None = older meta.json.
         self._artifact_climatology_scale: Optional[bool] = None
+        # WHICH CLIMATOLOGY_SHRINK_K built the persisted tables. Not a switch:
+        # the tables already encode the shrink, so serving needs no branch on
+        # it. It is recorded so the band GEOMETRY is identifiable after the fact
+        # — `served_recalibration.SHRINK_K_SERVING_START` has to be set to the
+        # date the first K=320 artifact served, and a predict-only run on a K=20
+        # cache serves the old geometry while looking identical. None = an
+        # artifact written before the key existed.
+        self._artifact_climatology_shrink_k: Optional[int] = None
         # Whether the band was CALIBRATED with the regime-reactive multiplier on
         # top of the climatology scale. Same matched-pair rule; None = older meta.
         self._artifact_climatology_reactive: Optional[bool] = None
@@ -1201,6 +1209,22 @@ class ItemForecaster:
             if os.environ.get("ANCHOR_AUDIT") != "1":
                 return
             out = latest_rows[["item_id", "price", "_smoothed_price"]].copy()
+            # The ANSWER, beside the inputs -- never instead of them. The call
+            # site is before `_serving_base_price` so the two inputs stay
+            # separable, but under `SERVE_OUTLIER_GATED_ANCHOR` the served base
+            # is a per-item CHOICE between them and that choice leaves no trace
+            # in the file. Two arms would write indistinguishable records, and
+            # the whole point of the archive copy is that it can be read years
+            # later without knowing which arm produced it.
+            #
+            # `_serving_base_price` is pure, so resolving it a second time here
+            # costs one vectorised comparison and cannot disturb the frame the
+            # serving path is about to read -- `out` is already a copy.
+            base, deviates = cls._serving_base_price(
+                out["price"], out["_smoothed_price"])
+            out["served_base"] = base
+            out["anchor_deviates"] = deviates
+            out["serve_outlier_gated"] = cls.outlier_gated_anchor_enabled()
             out["anchor_date"] = pd.Timestamp(anchor).date()
             out["last_obs_date"] = out["item_id"].map(last_seen)
             out["n_obs_in_span"] = out["item_id"].map(
@@ -1213,13 +1237,30 @@ class ItemForecaster:
             # `backend/data/` it would die with the CI runner, which is exactly
             # how `item_forecasts.parquet` came to stop at 2026-07-29. Falls
             # back to the cache dir for a local run with no archive checked out.
-            archive = Path(__file__).resolve().parent.parent.parent / "price-archive"
-            base = (archive / "ops" / "anchor_audit" if archive.is_dir()
+            from db.archive import ARCHIVE_ROOT
+            # The SAME constant the rest of the archive layer resolves against,
+            # imported rather than recomputed: a private copy of this path is
+            # how a write silently lands somewhere the publish step never looks.
+            archive = ARCHIVE_ROOT
+            in_archive = archive.is_dir()
+            base = (archive / "ops" / "anchor_audit" if in_archive
                     else Path(__file__).resolve().parent.parent / "data")
             path = base / f"anchor_audit_{pd.Timestamp(anchor).date()}.parquet"
             path.parent.mkdir(parents=True, exist_ok=True)
             out.to_parquet(path, index=False)
-            logger.info(f"  Anchor audit — wrote {len(out):,} rows to {path.name}")
+            # The fallback is LOUD. A run that writes the audit to the cache dir
+            # produces a file, prints a success line and publishes nothing — the
+            # exact shape of the failure that left item_forecasts.parquet
+            # stopped at 2026-07-29 for a month. It happened again on the
+            # 2026-08-25 local run: 5,536 rows landed in backend/data/ and never
+            # reached the archive. Silence here is what made that survivable.
+            if in_archive:
+                logger.info(f"  Anchor audit — wrote {len(out):,} rows to {path.name}")
+            else:
+                logger.warning(
+                    f"  Anchor audit — NOT PUBLISHED: no archive at {archive}, "
+                    f"so {len(out):,} rows went to {path.parent} and will die "
+                    f"with this run. Point price-archive at a checkout to keep them.")
         except Exception as exc:                      # noqa: BLE001
             logger.warning(f"  Anchor audit failed (ignored): {exc}")
 
@@ -1436,6 +1477,30 @@ class ItemForecaster:
         if self._artifact_climatology_scale is not None:
             return self._artifact_climatology_scale
         return self.climatology_scale_enabled()
+
+    def climatology_shrink_k_served(self) -> int:
+        """The shrink constant the LOADED artifact's tables were built with.
+
+        Falls back to the code constant when the artifact records none, which is
+        the cold-start and pre-key case. Unlike the `_..._served` flags this
+        gates no branch — the persisted tables already encode the shrink — so it
+        exists purely so the served band geometry can be named.
+        """
+        if self._artifact_climatology_shrink_k is not None:
+            return int(self._artifact_climatology_shrink_k)
+        return int(self.CLIMATOLOGY_SHRINK_K)
+
+    def climatology_geometry_matches_code(self) -> bool:
+        """Whether the loaded artifact was built at the CURRENT shrink constant.
+
+        False means the cache predates a K change, so it serves the old band
+        geometry and a `SHRINK_K_SERVING_START` set from this run's date would be
+        wrong. A legacy artifact (no key) returns True: its K is unknowable, and
+        flagging every old cache would make the signal worthless.
+        """
+        if self._artifact_climatology_shrink_k is None:
+            return True
+        return int(self._artifact_climatology_shrink_k) == int(self.CLIMATOLOGY_SHRINK_K)
 
     @staticmethod
     def climatology_reactive_enabled() -> bool:
@@ -7190,9 +7255,24 @@ class ItemForecaster:
         self.climatology_scale: Dict[int, dict] = {}
 
     #: James-Stein shrink of a thin item's own h-day dispersion toward its tier
-    #: pool: weight = n_i / (n_i + K). Validated at K=20 (insensitive 5..100),
-    #: docs/research/2026-08-19-climatology-vs-gbm-band.md.
-    CLIMATOLOGY_SHRINK_K = 20
+    #: pool: weight = n_i / (n_i + K). Originally validated at K=20 and reported
+    #: "insensitive 5..100" (docs/research/2026-08-19-climatology-vs-gbm-band.md)
+    #: -- but that sweep STOPPED at 100 and the optimum is past it. A
+    #: walk-forward re-sweep on 2026-08-26 (scripts/magnitude_vs_climatology.py
+    #: --k-sweep --folds 4, 4 folds x 4 horizons, matched 80% coverage) put the
+    #: optimum on a broad 240..640 plateau, flat to <1% across it: against K=20,
+    #: K=320 is 6.5 / 7.4 / 9.7 / 15.4% NARROWER at h=3/7/14/30, winning 4 of 4
+    #: folds at EVERY horizon with every worst-fold ratio below 1. K=320 is
+    #: taken mid-plateau so the choice is insensitive to the exact value.
+    #:
+    #: The finding is that per-item dispersion OVER-FITS item-level noise, worse
+    #: at longer horizons -- a pooled global constant also beats K=20 everywhere,
+    #: and only loses to the 240..640 plateau by <1%, so a little per-item
+    #: information is real and K=20 simply over-weighted it. This is variance
+    #: reduction, not signal extraction, which is why it survives out of sample
+    #: where every modelled-sigma denominator did not (see the root AGENTS.md).
+    #: docs/changelog/2026-08-26-climatology-shrink-k-re-swept.md
+    CLIMATOLOGY_SHRINK_K = 320
 
     #: Regime-reactive clip bounds (CLIMATOLOGY_REACTIVE=1): the fast/slow EWMA
     #: vol ratio is clipped to this range before it modulates the static
@@ -10239,6 +10319,11 @@ class ItemForecaster:
             "climatology_reactive": self.climatology_reactive_enabled(),
             "climatology_scale_tables": {
                 str(h): cfg for h, cfg in self.climatology_scale.items()},
+            # WHICH K built those tables. Deliberately NOT folded into
+            # MODEL_ARTIFACT_VERSION: an artifact written before this key is
+            # otherwise byte-identical, so bumping would force a needless
+            # retrain on every checkout. See climatology_geometry_matches_code.
+            "climatology_shrink_k": int(self.CLIMATOLOGY_SHRINK_K),
             # Provenance, not a serving switch. `predict` already converts a
             # return to dollars against the smoothed anchor, so an artifact
             # trained under this flag is the COHERENT pairing and needs nothing
@@ -10376,6 +10461,7 @@ class ItemForecaster:
         self._artifact_feature_native_nan = meta.get("feature_native_nan")
         self._artifact_exceedance_scale = meta.get("exceedance_scale")
         self._artifact_climatology_scale = meta.get("climatology_scale")
+        self._artifact_climatology_shrink_k = meta.get("climatology_shrink_k")
         self._artifact_climatology_reactive = meta.get("climatology_reactive")
         # Rebuild the climatology lookup with the int keys the accessors expect
         # (JSON coerces tier keys to strings; item keys are already strings).

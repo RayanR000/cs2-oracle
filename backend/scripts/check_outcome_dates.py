@@ -11,7 +11,7 @@ shrinking) shows up immediately.
 Run it now for a baseline, then again in a few days:
     backend/venv/bin/python backend/scripts/check_outcome_dates.py
 
-Snapshots are appended to backend/scripts/outcome_date_snapshots.jsonl.
+Snapshots are appended to backend/data/outcome_date_snapshots.jsonl.
 Read-only against the repo; writes only the local snapshot log.
 """
 from __future__ import annotations
@@ -29,7 +29,7 @@ REPO = "RayanR000/cs2-oracle-data"
 REMOTE_PATH = "price-archive/ops/forecast_outcomes.parquet"
 TARGET_DATES = 20  # MIN_FORECAST_DATES (backend/backtest/scoring.py)
 HORIZONS = [3, 7, 14, 30]
-SNAPSHOT_LOG = Path(__file__).with_name("outcome_date_snapshots.jsonl")
+SNAPSHOT_LOG = Path(__file__).resolve().parents[1] / "data" / "outcome_date_snapshots.jsonl"
 
 
 def download_remote() -> Path:

@@ -80,7 +80,7 @@ RNG_SEED = 42
 
 #: One column list, two stores. The WHERE clause is valid in both dialects.
 _SELECT = """
-    SELECT forecast_date, horizon_days, base_price, actual_price,
+    SELECT item_id, forecast_date, horizon_days, base_price, actual_price,
            current_price,
            predicted_price_low, predicted_price_mid, predicted_price_high,
            model_version, base_stale_run_days
@@ -91,7 +91,7 @@ _SELECT = """
       AND base_price >= {min_price}
 """
 
-_COLUMNS = ["forecast_date", "horizon_days", "base_price", "actual_price",
+_COLUMNS = ["item_id", "forecast_date", "horizon_days", "base_price", "actual_price",
             "current_price", "predicted_price_low", "predicted_price_mid",
             "predicted_price_high", "model_version", "base_stale_run_days"]
 

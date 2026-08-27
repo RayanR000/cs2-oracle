@@ -82,6 +82,12 @@ class TestTheMatchedPairSurvivesTheArtifact:
     def _train_a_scale(self, tmp_path, monkeypatch):
         monkeypatch.setenv("LEARNED_SCALE", "1")
         monkeypatch.delenv("SIGMA_EXPONENT", raising=False)
+        # CLIMATOLOGY_SCALE went default-ON on 2026-08-19 and is a fourth
+        # alternative band denominator, so leaving it set makes
+        # `_calibrate_conformal` raise the mutual-exclusion guard before this
+        # helper can fit anything. Neutralised the same way
+        # tests/test_exceedance_scale.py neutralises it to test its own arm.
+        monkeypatch.setenv("CLIMATOLOGY_SCALE", "0")
         fc = _forecaster(tmp_path)
         fc.feature_cols = ["price_std_60d", "return_1d"]
         fc.horizon_feature_cols = {7: ["price_std_60d", "return_1d"]}
