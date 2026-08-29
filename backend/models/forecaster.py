@@ -24,6 +24,8 @@ from models import scale_model
 from models import served_recalibration
 from models.item_parser import (
     BID_SOURCES,
+    CONDITIONAL_STEAM_SOURCES,
+    MIN_ASKS_TO_DROP_SYNC,
     PHASE_COLLAPSED_EXEMPT_PATTERNS,
     PHASE_COLLAPSED_SLUG_PATTERNS,
     STEAM_SPOT_SOURCES,
@@ -298,6 +300,7 @@ class ItemForecaster:
     BID_SOURCES = BID_SOURCES
     TRAILING_WINDOW_SOURCES = TRAILING_WINDOW_SOURCES
     STEAM_SPOT_SOURCES = STEAM_SPOT_SOURCES
+    CONDITIONAL_STEAM_SOURCES = CONDITIONAL_STEAM_SOURCES
 
     HORIZONS = [3, 7, 14, 30]
     # The band no longer comes from quantile models — see models/conformal.py.
@@ -930,7 +933,12 @@ class ItemForecaster:
     # v7: STEAM_SPOT_SOURCES (aggregator_steam_spot) leaves the voting pool. A
     # v6 frame built after 2026-08-17 would let Steam's clean spot vote as a
     # second Steam ballot alongside aggregator_sync, double-counting the venue.
-    VOTED_CACHE_VERSION = 7
+    # v8: aggregator_sync stands down conditionally (CONDITIONAL_STEAM_SOURCES,
+    # >=MIN_ASKS_TO_DROP_SYNC other asks). A v7 frame lets sync vote on every
+    # item-day, which split-half measurement puts at 0.011-0.059 of lost label
+    # reliability -- 17% relative at h=30 -- so every return computed across a
+    # v7 frame is measurably noisier than the same day rebuilt under v8.
+    VOTED_CACHE_VERSION = 8
     VOTED_CACHE_PREFIX = "voted_"
     VOTED_CACHE_MAX_ENTRIES = 3
 
@@ -2239,6 +2247,26 @@ class ItemForecaster:
         # basis feature's spot leg only.
         excluded = BID_SOURCES | TRAILING_WINDOW_SOURCES | STEAM_SPOT_SOURCES
         df = df[~df["source"].isin(excluded)]
+
+        # CONDITIONAL stand-down for `aggregator_sync`. It is `last_24h`
+        # degrading to the trailing means on the illiquid items, and measured
+        # split-half it carries ~no latent-price information (0.003-0.011) while
+        # COSTING the composite 0.011-0.059 of reliability, worst at h=30. But an
+        # outright drop deletes 2026-01/02 in full, where sync is the only ask, so
+        # it stands down only where >=MIN_ASKS_TO_DROP_SYNC genuine asks already
+        # vote. NULL sources collapse to a single bucket via fillna (matching
+        # `vote`'s n_ask_sources), so the pre-2026 series can never reach the
+        # threshold on its own and strand a sync row.
+        is_cond = df["source"].isin(CONDITIONAL_STEAM_SOURCES)
+        if is_cond.any():
+            n_other = (
+                df.loc[~is_cond]
+                .assign(_s=lambda d: d["source"].fillna("__null__"))
+                .groupby(["item_id", "date"])["_s"].nunique()
+            )
+            keys = pd.MultiIndex.from_arrays([df["item_id"], df["date"]])
+            enough = n_other.reindex(keys).fillna(0).to_numpy() >= MIN_ASKS_TO_DROP_SYNC
+            df = df[~(is_cond.to_numpy() & enough)]
         if df.empty:
             # Every input row was a bid or a trailing-window mean. 2,338
             # item-days across 217 items have no ask at all from the bid drop

@@ -83,6 +83,39 @@ TRAILING_WINDOW_SOURCES = frozenset({
 # `source IS NULL` series voting.
 STEAM_SPOT_SOURCES = frozenset({"aggregator_steam_spot"})
 
+# Steam's `last_24h` FALLING BACK to the 7d/30d/90d means on exactly the
+# illiquid items (collectors/csgotrader_aggregator.py:296-305) -- a trailing
+# mean wearing a spot label. Unlike the sets above this is a CONDITIONAL
+# stand-down, not an exclusion: sync keeps voting when it is the only ask
+# there is, and steps aside only once >=2 genuine asks are present.
+#
+# MEASURED 2026-08-29, split-half reliability on the 2026 archive with sync
+# added to ONE half only (adding it to BOTH shares its noise across the halves
+# and inflates the correlation by +0.11..+0.23 -- an artifact, not evidence):
+#
+#     h    corr(A,B)   corr(A+sync,B)   delta    corr(sync alone, B)
+#     1     0.1265        0.1154       -0.0111        0.0028
+#     7     0.2284        0.2083       -0.0201        0.0050
+#     14    0.2834        0.2530       -0.0304        0.0108
+#     30    0.3510        0.2921       -0.0590        0.0095
+#
+# sync carries essentially NO information about the common latent price
+# (0.003-0.011 alone) and costs 17% of reliability at h=30. Steam-vs-venue
+# RETURN correlation is ~0.05 even though LEVEL correlation is 0.96, so this
+# is a time-basis defect, not a level one -- the same defect as
+# TRAILING_WINDOW_SOURCES, which is what sync degrades into.
+#
+# Why not an outright drop: that "deletes 2026-01 and 2026-02 in full for the
+# >=$1 cohort (52,048 item-days)", as the comment above records. The threshold
+# keeps every one of those item-days while removing sync from exactly the
+# item-days where it was measured to hurt.
+CONDITIONAL_STEAM_SOURCES = frozenset({"aggregator_sync"})
+
+# How many DISTINCT other ask sources must be present before sync stands down.
+# 2, not 1: against a single other ask there is no consensus to defer to, and
+# dropping would leave one unchecked quote with no outlier mask.
+MIN_ASKS_TO_DROP_SYNC = 2
+
 
 def bid_sources_sql_filter(column: str = "source") -> str:
     """SQL predicate dropping the bid sources from an archive read.
