@@ -24,7 +24,7 @@ from typing import Dict, Iterable, Optional
 import numpy as np
 import pandas as pd
 
-from backtest.scoring import HEADLINE_MIN_TIER, MIN_FORECAST_DATES
+from backtest.scoring import HEADLINE_MIN_TIER, MIN_FORECAST_DATES, price_tier
 from models.conformal import ALPHA
 
 logger = logging.getLogger(__name__)
@@ -72,9 +72,19 @@ CLIMATOLOGY_SERVING_START: Optional[str] = "2026-08-20"  # first clean climatolo
 # the old geometry). That deploy is now IDENTIFIABLE rather than remembered: `meta.json` records
 # `climatology_shrink_k`, and `ItemForecaster.climatology_geometry_matches_code()` is False whenever
 # the loaded cache predates a K change. Take the date from the first run whose artifact reports
-# K=320, not from whichever run happened to be green. Left None until then: the forecast chain is
-# paused for billing, so no prod forecast has served it and the climatology floor alone is correct.
-SHRINK_K_SERVING_START: Optional[str] = None
+# K=320, not from whichever run happened to be green.
+#
+# SET 2026-09-07 to the anchor date of Price Forecast run 34080103996, the first prod run since the
+# billing pause. It is `mode=full`, so it BUILT the climatology tables at the code's K=320 rather
+# than loading a K=20 cache, and it served forecast_date 2026-09-06. Nothing earlier qualifies:
+# K=320 landed on main in f02320b at 2026-08-27 19:47 -0400, and no Price Forecast run executed
+# between 2026-08-22 and 2026-09-03 (the pause), so the 2026-08-25..27 rows in `item_forecasts`
+# predate the merge and carry K=20.
+#
+# This floor SUPERSEDES the 2026-08-20 climatology floor, which drops the post-floor panel to a
+# single date. That is the correct cost: the 2026-08-20..27 served rows carry the K=20 band shape,
+# and a factor fitted on them would over-shrink an already-narrower K=320 band.
+SHRINK_K_SERVING_START: Optional[str] = "2026-09-06"
 # docs/changelog/2026-08-26-climatology-shrink-k-re-swept.md
 
 # A sentinel distinguishing "caller did not pass since" from an explicit since=None (dormant).
@@ -190,13 +200,27 @@ def _load_panel(session, horizons: Iterable[int], *,
     if since is not None:
         where += " AND forecast_date >= :since"
         params["since"] = since
+    # `forecast_outcomes` has no `price_tier` column -- that lives on `prediction_accuracy`
+    # (added there by migration 0019). Selecting it here raised UndefinedColumn on every prod
+    # run, and `served_coverage_factors` swallows the read failure, so the feedback was silently
+    # dormant for reasons that had nothing to do with panel depth. The tier is a pure function of
+    # the serve-time price, so derive it with the canonical banding rather than storing it: that
+    # keeps the >= $1 cohort here identical to the one the headline scores, and works on the rows
+    # already in the table instead of only on ones written after a migration.
     sql = text(
-        "SELECT forecast_date, horizon_days, price_tier, "
+        "SELECT forecast_date, horizon_days, "
+        "COALESCE(base_price, current_price) AS tier_price, "
         "predicted_price_low, predicted_price_mid, predicted_price_high, actual_price "
         f"FROM forecast_outcomes {where}"
     ).bindparams(bindparam("horizons", expanding=True))
     rows = session.execute(sql, params).mappings().all()
-    return pd.DataFrame(rows, columns=list(PANEL_COLUMNS))
+    cols = ["tier_price" if c == "price_tier" else c for c in PANEL_COLUMNS]
+    df = pd.DataFrame(rows, columns=cols)
+    # A NULL serve-time price tiers to 0, which is below HEADLINE_MIN_TIER and so drops the row --
+    # the same treatment a sub-$1 item gets, which is the conservative side for a band factor.
+    px = pd.to_numeric(df["tier_price"], errors="coerce").fillna(0.0).to_numpy(dtype=float)
+    df["price_tier"] = [price_tier(float(v)) for v in px]
+    return df[list(PANEL_COLUMNS)]
 
 
 def served_coverage_factors(session, horizons: Iterable[int], *,
