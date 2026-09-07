@@ -324,3 +324,58 @@ def test_collect_reports_row_count_field_for_the_guard(tmp_path, monkeypatch):
     )
     summary = collect(tmp_path, snapshot_day=DAY)
     assert summary["supply_rows"] == 4
+
+
+# ── Ladder aggregation throughput ─────────────────────────────────────────────
+
+def test_ladder_aggregation_is_vectorised_not_per_listing():
+    """The daily lis-skins export is ~2.1M listings; the reduction must be
+    vectorised, not a per-listing Python loop.
+
+    Guarding throughput rather than implementation because the cost is not
+    obvious from reading the code: a scalar `pd.to_datetime` per listing pays
+    pandas' full inference path ~2.1M times, which took 962s of an 18-minute
+    workflow on 2026-09-07 while the 173 MB download took 45s. A vectorised
+    parse does the same work in ~1s.
+
+    200k listings is 1/10th of a real day, so a 10s budget here corresponds to
+    a ~100s worst case on the full export -- still slower than the vectorised
+    path, but far enough below the 962s regression to fail loudly if the
+    per-listing loop ever comes back.
+    """
+    import time
+
+    listings = [
+        _listing(f"Item {i % 2000}", 10.0 + (i % 97) * 0.01, "2026-08-01T00:00:00Z", i)
+        for i in range(200_000)
+    ]
+
+    start = time.perf_counter()
+    rows = aggregate_lis_skins(listings, DAY, NOW)
+    elapsed = time.perf_counter() - start
+
+    assert len(rows) == 2000
+    assert elapsed < 10.0, f"aggregation took {elapsed:.1f}s for 200k listings"
+
+
+def test_ladder_handles_a_messy_multi_item_payload():
+    """Pins the drop/keep rules across items, since a vectorised rewrite is
+    most likely to drift on the rows that are meant to be excluded."""
+    listings = [
+        _listing("Keep", 10.0, "2026-08-01T00:00:00Z", 1),
+        _listing("Keep", 12.0, "not a timestamp", 2),      # kept, but not aged
+        _listing("Keep", 0.0, "2026-08-01T00:00:00Z", 3),  # zero price: no ladder
+        _listing("Keep", None, "2026-08-01T00:00:00Z", 4),
+        _listing("Drop", None, "2026-08-01T00:00:00Z", 5),  # no usable price
+        _listing(None, 10.0, "2026-08-01T00:00:00Z", 6),    # no name
+        "not a dict",
+    ]
+
+    rows = aggregate_lis_skins(listings, DAY, NOW)
+
+    assert set(rows["item_slug"]) == {"Keep"}
+    r = rows.iloc[0]
+    assert r["listing_count"] == 4                       # all four Keep entries
+    assert r["min_ask"] == pytest.approx(10.0)           # 0.0 and None excluded
+    assert r["age_median_days"] == pytest.approx(6.0, abs=0.5)
+    assert r["inflow_24h"] == 0

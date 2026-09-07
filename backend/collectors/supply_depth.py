@@ -366,6 +366,27 @@ def _parse_created_at(raw: Any) -> pd.Timestamp | None:
     return None if pd.isna(ts) else ts
 
 
+def _parse_created_at_series(raw: pd.Series) -> pd.Series:
+    """Vectorised `created_at` parse, with a per-element fallback.
+
+    The fast path pins `format="ISO8601"`, which the feed emits and which pandas
+    can apply to the whole column at C speed. Rows that fail it are retried with
+    `format="mixed"`, which is per-element and slow but only ever runs on the
+    failures -- so a uniform export costs one vectorised call, and an off-format
+    one still parses rather than silently dropping ages. Passing no format at all
+    would be wrong here: a single unparseable value defeats pandas' inference and
+    silently sends all 2.1M rows down the per-element dateutil path, which is the
+    cost this function exists to avoid.
+    """
+    parsed = pd.to_datetime(raw, utc=True, errors="coerce", format="ISO8601")
+    unparsed = parsed.isna() & raw.notna() & raw.ne("")
+    if unparsed.any():
+        parsed.loc[unparsed] = pd.to_datetime(
+            raw[unparsed], utc=True, errors="coerce", format="mixed"
+        )
+    return parsed
+
+
 def aggregate_lis_skins(
     listings: Sequence[dict],
     snapshot_day: date,
@@ -389,79 +410,105 @@ def aggregate_lis_skins(
                                             listing-id set, so a later run can
                                             tell whether `created_at` moves for
                                             listings that persist
+
+    Every reduction below is a grouped/vectorised op. This used to be a Python
+    loop per listing, which cost 962s of an 18-minute workflow on 2026-09-07 --
+    almost all of it a scalar `pd.to_datetime` paying pandas' inference path
+    2.1M times, against 45s to download the export it was parsing. Group with
+    `sort=False` throughout so rows stay in first-appearance order, as the old
+    dict-insertion loop emitted them.
     """
-    by_item: dict[str, list[dict]] = {}
-    for entry in listings:
-        if not isinstance(entry, dict):
-            continue
-        name = entry.get("name")
-        if not name:
-            continue
-        by_item.setdefault(name, []).append(entry)
-
     day_end = datetime.combine(snapshot_day, datetime.min.time(), tzinfo=timezone.utc) + timedelta(days=1)
-    records = []
 
-    for slug, entries in by_item.items():
-        prices = np.array(
-            [p for p in (_coerce_float(e.get("price")) for e in entries) if p is not None and p > 0],
-            dtype=float,
-        )
-        if prices.size == 0:
-            continue
+    frame = pd.DataFrame.from_records(
+        [
+            (entry.get("name"), entry.get("price"), entry.get("created_at"), entry.get("id"))
+            for entry in listings
+            if isinstance(entry, dict) and entry.get("name")
+        ],
+        columns=["item_slug", "price", "created_at", "listing_id"],
+    )
+    if frame.empty:
+        return pd.DataFrame(columns=SUPPLY_COLUMNS)
 
-        min_ask = float(prices.min())
-        p05 = float(np.quantile(prices, DEPTH_ANCHOR_Q))
-        p25 = float(np.quantile(prices, 0.25))
-        median_ask = float(np.median(prices))
+    slug = frame["item_slug"]
+    counts = frame.groupby(slug, sort=False).size().rename("listing_count")
 
-        # Depth from the trimmed anchor, not the raw minimum -- one mispriced
-        # listing must not redefine "near the bottom of the book".
-        depth_5 = int((prices <= p05 * 1.05).sum())
-        depth_10 = int((prices <= p05 * 1.10).sum())
+    # ── Ask ladder. Non-numeric, non-finite and non-positive prices drop out,
+    # and an item with no usable price is dropped entirely (not zero-filled).
+    price = pd.to_numeric(frame["price"], errors="coerce")
+    usable = price.gt(0) & np.isfinite(price)
+    priced_slug, priced_price = slug[usable], price[usable]
+    by_price = priced_price.groupby(priced_slug, sort=False)
+    ladder = pd.DataFrame(
+        {
+            "min_ask": by_price.min(),
+            "p05_ask": by_price.quantile(DEPTH_ANCHOR_Q),
+            "p25_ask": by_price.quantile(0.25),
+            "median_ask": by_price.median(),
+        }
+    )
 
-        ages = []
-        inflow = 0
-        for e in entries:
-            created = _parse_created_at(e.get("created_at"))
-            if created is None:
-                continue
-            age_days = (day_end - created).total_seconds() / 86400.0
-            if age_days < 0:
-                # Listed after the snapshot boundary; counting it as age 0 would
-                # fabricate a real-looking value at a meaningful edge.
-                continue
-            ages.append(age_days)
-            if age_days <= 1.0:
-                inflow += 1
+    # Depth from the trimmed anchor, not the raw minimum -- one mispriced
+    # listing must not redefine "near the bottom of the book".
+    anchor = priced_slug.map(ladder["p05_ask"])
+    depth = pd.DataFrame(
+        {
+            "depth_5pct": priced_price.le(anchor * 1.05).groupby(priced_slug, sort=False).sum(),
+            "depth_10pct": priced_price.le(anchor * 1.10).groupby(priced_slug, sort=False).sum(),
+        }
+    )
 
-        age_median = float(np.median(ages)) if ages else None
-        age_p90 = float(np.quantile(ages, 0.90)) if ages else None
+    # ── Listing age. A negative age means the timestamp disagrees with the
+    # snapshot boundary; clipping it to 0 would fabricate a real-looking value
+    # at a meaningful edge, so those rows are excluded from the age stats (but
+    # still counted as supply).
+    age_days = (day_end - _parse_created_at_series(frame["created_at"])).dt.total_seconds() / 86400.0
+    dated = age_days.notna() & age_days.ge(0)
+    aged_slug, aged_age = slug[dated], age_days[dated]
+    by_age = aged_age.groupby(aged_slug, sort=False)
+    ages = pd.DataFrame(
+        {
+            "age_median_days": by_age.median(),
+            "age_p90_days": by_age.quantile(0.90),
+            "inflow_24h": aged_age.le(1.0).groupby(aged_slug, sort=False).sum(),
+        }
+    )
 
-        ids = sorted(str(e.get("id")) for e in entries if e.get("id") is not None)
-        digest = hashlib.sha1("|".join(ids).encode()).hexdigest()[:16] if ids else None
+    # sorted() then join, so the digest depends on the id set and not on payload
+    # ordering. Grouped-apply rather than a sort_values, to keep Python's exact
+    # string collation.
+    has_id = frame["listing_id"].notna()
+    digest = (
+        frame.loc[has_id, "listing_id"]
+        .astype(str)
+        .groupby(slug[has_id], sort=False)
+        .apply(lambda ids: hashlib.sha1("|".join(sorted(ids)).encode()).hexdigest()[:16])
+        .rename("listing_id_digest")
+    )
 
-        records.append(
-            {
-                "item_slug": slug,
-                "snapshot_day": snapshot_day,
-                "source": "lis_skins",
-                "listing_count": len(entries),
-                "min_ask": min_ask,
-                "p05_ask": p05,
-                "p25_ask": p25,
-                "median_ask": median_ask,
-                "depth_5pct": depth_5,
-                "depth_10pct": depth_10,
-                "age_median_days": age_median,
-                "age_p90_days": age_p90,
-                "inflow_24h": inflow,
-                "listing_id_digest": digest,
-                "collected_at": collected_at,
-            }
-        )
+    out = (
+        pd.DataFrame(index=counts.index)
+        .join([counts, ladder, depth, ages, digest])
+        .rename_axis("item_slug")
+        .reset_index()
+    )
+    out = out[out["min_ask"].notna()].copy()
+    if out.empty:
+        return pd.DataFrame(columns=SUPPLY_COLUMNS)
 
-    return pd.DataFrame(records, columns=SUPPLY_COLUMNS)
+    out["snapshot_day"] = snapshot_day
+    out["source"] = "lis_skins"
+    # ns, not the us that pandas 2.x infers for a datetime scalar: every
+    # existing supply-*.parquet is timestamp[ns], and a per-file precision
+    # change is the schema drift a plain glob read swallows silently.
+    out["collected_at"] = pd.Series(
+        [collected_at] * len(out), index=out.index, dtype="datetime64[ns, UTC]"
+    )
+    for col in ("listing_count", "depth_5pct", "depth_10pct", "inflow_24h"):
+        out[col] = out[col].fillna(0).astype(int)
+
+    return out[SUPPLY_COLUMNS].reset_index(drop=True)
 
 
 # ── Feed registry ─────────────────────────────────────────────────────────────
