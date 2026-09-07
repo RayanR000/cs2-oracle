@@ -72,9 +72,19 @@ CLIMATOLOGY_SERVING_START: Optional[str] = "2026-08-20"  # first clean climatolo
 # the old geometry). That deploy is now IDENTIFIABLE rather than remembered: `meta.json` records
 # `climatology_shrink_k`, and `ItemForecaster.climatology_geometry_matches_code()` is False whenever
 # the loaded cache predates a K change. Take the date from the first run whose artifact reports
-# K=320, not from whichever run happened to be green. Left None until then: the forecast chain is
-# paused for billing, so no prod forecast has served it and the climatology floor alone is correct.
-SHRINK_K_SERVING_START: Optional[str] = None
+# K=320, not from whichever run happened to be green.
+#
+# SET 2026-09-07 to the anchor date of Price Forecast run 34080103996, the first prod run since the
+# billing pause. It is `mode=full`, so it BUILT the climatology tables at the code's K=320 rather
+# than loading a K=20 cache, and it served forecast_date 2026-09-06. Nothing earlier qualifies:
+# K=320 landed on main in f02320b at 2026-08-27 19:47 -0400, and no Price Forecast run executed
+# between 2026-08-22 and 2026-09-03 (the pause), so the 2026-08-25..27 rows in `item_forecasts`
+# predate the merge and carry K=20.
+#
+# This floor SUPERSEDES the 2026-08-20 climatology floor, which drops the post-floor panel to a
+# single date. That is the correct cost: the 2026-08-20..27 served rows carry the K=20 band shape,
+# and a factor fitted on them would over-shrink an already-narrower K=320 band.
+SHRINK_K_SERVING_START: Optional[str] = "2026-09-06"
 # docs/changelog/2026-08-26-climatology-shrink-k-re-swept.md
 
 # A sentinel distinguishing "caller did not pass since" from an explicit since=None (dormant).

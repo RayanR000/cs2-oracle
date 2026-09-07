@@ -116,6 +116,7 @@ def test_geometry_floor_takes_the_latest_cutover(monkeypatch):
     rows served under the current band shape. A climatology cutover after the signed band wins;
     one before it (or unset) leaves the signed-band floor in force."""
     monkeypatch.setattr(sr, "SIGNED_BAND_SERVING_START", "2026-08-19")
+    monkeypatch.setattr(sr, "SHRINK_K_SERVING_START", None)
 
     monkeypatch.setattr(sr, "CLIMATOLOGY_SERVING_START", "2026-09-15")
     assert sr._geometry_floor() == "2026-09-15"
@@ -130,6 +131,7 @@ def test_geometry_floor_takes_the_latest_cutover(monkeypatch):
 def test_geometry_floor_is_none_only_when_no_cutover_is_set(monkeypatch):
     monkeypatch.setattr(sr, "SIGNED_BAND_SERVING_START", None)
     monkeypatch.setattr(sr, "CLIMATOLOGY_SERVING_START", None)
+    monkeypatch.setattr(sr, "SHRINK_K_SERVING_START", None)
     assert sr._geometry_floor() is None
 
 
@@ -138,6 +140,7 @@ def test_default_since_floors_the_panel_to_the_latest_cutover(monkeypatch):
     signed-band start alone, once a later climatology cutover is set."""
     monkeypatch.setattr(sr, "SIGNED_BAND_SERVING_START", "2026-08-19")
     monkeypatch.setattr(sr, "CLIMATOLOGY_SERVING_START", "2026-09-15")
+    monkeypatch.setattr(sr, "SHRINK_K_SERVING_START", None)
 
     seen = {}
 
@@ -170,8 +173,19 @@ def test_geometry_floor_includes_the_shrink_k_cutover(monkeypatch):
     assert sr._geometry_floor() == "2026-08-20"
 
 
-def test_shrink_k_cutover_ships_dormant_until_the_chain_serves_it():
-    """It must ship as None: the forecast chain is paused, so no prod forecast
-    has served K=320 yet and there is no date to floor to. A non-None value here
-    would filter the whole panel out and hide the dormancy."""
-    assert sr.SHRINK_K_SERVING_START is None
+def test_shrink_k_cutover_is_armed_to_the_first_k320_serve():
+    """Armed 2026-09-07 (was None while the chain was paused for billing).
+
+    Price Forecast run 34080103996 is the first prod run since the pause and is `mode=full`, so it
+    BUILT the climatology tables at the code's K=320 instead of loading a K=20 cache, and it served
+    forecast_date 2026-09-06. K=320 only landed on main at 2026-08-27 19:47 -0400 (f02320b) and no
+    Price Forecast run executed between 2026-08-22 and 2026-09-03, so the 2026-08-25..27 rows in
+    `item_forecasts` carry K=20 and must stay below the floor.
+
+    The date must not drift ahead of the K constant it names: a floor later than the first K=320
+    serve silently discards served rows the factor is entitled to use.
+    """
+    assert sr.SHRINK_K_SERVING_START == "2026-09-06"
+    assert sr._geometry_floor() == "2026-09-06", (
+        "the K=320 cutover is the latest band-geometry change, so it must win the floor"
+    )
