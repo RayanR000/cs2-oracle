@@ -379,3 +379,40 @@ def test_ladder_handles_a_messy_multi_item_payload():
     assert r["min_ask"] == pytest.approx(10.0)           # 0.0 and None excluded
     assert r["age_median_days"] == pytest.approx(6.0, abs=0.5)
     assert r["inflow_24h"] == 0
+
+
+# ── The reader side: which archive files count as supply depth ────────
+
+
+def test_reader_ignores_the_supply_history_sidecar(tmp_path):
+    """A `supply-`-prefixed sidecar must not take down the depth panel.
+
+    `supply-history.parquet` is the BUFF listing sidecar (`item_id`, `date`,
+    `buff_listing_count`), joined by `_attach_sidecars` and unrelated to this
+    collector's `supply-YYYY-MM.parquet` (`item_slug`, `snapshot_day`, ...). It
+    landed in f206da6 sharing the prefix, and a `supply-*.parquet` glob read it
+    with the depth column list, raising `No match for FieldRef.Name(item_slug)`
+    and discarding every real supply row with it.
+    """
+    from unittest.mock import MagicMock
+
+    from models.forecaster import ItemForecaster
+
+    write_supply_rows(
+        parse_skinport([{"market_hash_name": "Item", "quantity": 5}], DAY, NOW),
+        tmp_path, DAY,
+    )
+    pd.DataFrame({
+        "item_id": ["Item"],
+        "date": [DAY],
+        "buff_listing_count": [123],
+    }).to_parquet(tmp_path / "supply-history.parquet", index=False)
+
+    f = ItemForecaster(db_session=MagicMock())
+    f.archive_dir = tmp_path
+    depth = f._fetch_supply_snapshots()
+
+    assert list(depth.columns) == ["item_id", "date", "sell_listings", "skinport_quantity"]
+    assert len(depth) == 1, "the sidecar must not discard the real supply rows"
+    assert depth.iloc[0]["item_id"] == "Item"
+    assert depth.iloc[0]["sell_listings"] == 5

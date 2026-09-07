@@ -3186,10 +3186,16 @@ class ItemForecaster:
             return self._supply_snap_cache
 
         empty = pd.DataFrame(columns=["item_id", "date", "sell_listings", "skinport_quantity"])
-        archive_dir = Path(__file__).parent.parent.parent / "price-archive"
-        paths = sorted(archive_dir.glob("supply-*.parquet"))
+        # Month partitions ONLY, matching `supply_depth.supply_parquet_path`'s
+        # `supply-{%Y-%m}.parquet`. A bare `supply-*.parquet` also matches
+        # `supply-history.parquet` -- the BUFF listing sidecar `_attach_sidecars`
+        # joins, keyed `item_id`/`date` instead of `item_slug`/`snapshot_day`.
+        # Reading it with the column list below raises, and because the read is
+        # inside one try covering every file, it discarded the whole panel
+        # rather than just itself (silent since f206da6, 2026-08-13).
+        paths = sorted(self.archive_dir.glob("supply-[0-9][0-9][0-9][0-9]-[0-9][0-9].parquet"))
         if not paths:
-            logger.info("  supply snapshots: no supply-*.parquet in the archive")
+            logger.info("  supply snapshots: no monthly supply-*.parquet in the archive")
             self._supply_snap_cache = empty
             return empty
 
