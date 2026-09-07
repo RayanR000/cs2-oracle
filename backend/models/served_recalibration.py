@@ -24,7 +24,7 @@ from typing import Dict, Iterable, Optional
 import numpy as np
 import pandas as pd
 
-from backtest.scoring import HEADLINE_MIN_TIER, MIN_FORECAST_DATES
+from backtest.scoring import HEADLINE_MIN_TIER, MIN_FORECAST_DATES, price_tier
 from models.conformal import ALPHA
 
 logger = logging.getLogger(__name__)
@@ -190,13 +190,27 @@ def _load_panel(session, horizons: Iterable[int], *,
     if since is not None:
         where += " AND forecast_date >= :since"
         params["since"] = since
+    # `forecast_outcomes` has no `price_tier` column -- that lives on `prediction_accuracy`
+    # (added there by migration 0019). Selecting it here raised UndefinedColumn on every prod
+    # run, and `served_coverage_factors` swallows the read failure, so the feedback was silently
+    # dormant for reasons that had nothing to do with panel depth. The tier is a pure function of
+    # the serve-time price, so derive it with the canonical banding rather than storing it: that
+    # keeps the >= $1 cohort here identical to the one the headline scores, and works on the rows
+    # already in the table instead of only on ones written after a migration.
     sql = text(
-        "SELECT forecast_date, horizon_days, price_tier, "
+        "SELECT forecast_date, horizon_days, "
+        "COALESCE(base_price, current_price) AS tier_price, "
         "predicted_price_low, predicted_price_mid, predicted_price_high, actual_price "
         f"FROM forecast_outcomes {where}"
     ).bindparams(bindparam("horizons", expanding=True))
     rows = session.execute(sql, params).mappings().all()
-    return pd.DataFrame(rows, columns=list(PANEL_COLUMNS))
+    cols = ["tier_price" if c == "price_tier" else c for c in PANEL_COLUMNS]
+    df = pd.DataFrame(rows, columns=cols)
+    # A NULL serve-time price tiers to 0, which is below HEADLINE_MIN_TIER and so drops the row --
+    # the same treatment a sub-$1 item gets, which is the conservative side for a band factor.
+    px = pd.to_numeric(df["tier_price"], errors="coerce").fillna(0.0).to_numpy(dtype=float)
+    df["price_tier"] = [price_tier(float(v)) for v in px]
+    return df[list(PANEL_COLUMNS)]
 
 
 def served_coverage_factors(session, horizons: Iterable[int], *,
