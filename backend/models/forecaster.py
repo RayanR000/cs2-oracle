@@ -273,6 +273,8 @@ def _feature_group(name: str) -> str:
         return "temporal"
     if name.startswith("event_"):
         return "events"
+    if name.startswith("google_trends_"):
+        return "events"
     if any(name.startswith(p) for p in ("market_", "market_regime_")):
         return "cross_sectional"
     if name.startswith("social_"):
@@ -969,6 +971,8 @@ class ItemForecaster:
         # (Phase 2), never a directional call. A value is None where the
         # horizon had fewer than two classes to fit.
         self.exceedance_models: Dict[int, Optional[lgb.Booster]] = {}
+        self.vol_rank_models: Dict[int, List[lgb.Booster]] = {}
+        self.vol_rank_norm: Dict[int, float] = {}
         self.regime_feature_cols: Dict[Tuple[int, str], List[str]] = {}
         self.feature_cols: List[str] = []
         self.prune_failed_groups = prune_failed_groups
@@ -1010,6 +1014,7 @@ class ItemForecaster:
         # Whether the band was CALIBRATED with the regime-reactive multiplier on
         # top of the climatology scale. Same matched-pair rule; None = older meta.
         self._artifact_climatology_reactive: Optional[bool] = None
+        self._artifact_vol_rank_gbm: Optional[bool] = None
         # The median-price floor the artifact was TRAINED under. Load-bearing
         # only when the rank transform is on, and then it is load-bearing
         # absolutely: the transform's output depends on which items are in the
@@ -1474,6 +1479,26 @@ class ItemForecaster:
         `docs/superpowers/specs/2026-08-19-climatology-band-scale.md`.
         """
         return os.environ.get("CLIMATOLOGY_SCALE", "1") != "0"
+
+    @staticmethod
+    def vol_rank_gbm_enabled() -> bool:
+        """Whether to train a volatility-ranking GBM that modulates climatology.
+
+        Trains a regression GBM on |target_return_{h}d| per horizon, then uses
+        its cross-sectional predictions to reshape the climatology scale: items
+        the model predicts as more volatile get wider bands, less volatile get
+        narrower. The mean multiplier is 1.0 by construction, so q_hat's level
+        is preserved and the matched-pair rule holds.
+
+        Requires CLIMATOLOGY_SCALE=1 (the base it modulates). Off by default.
+        """
+        return os.environ.get("VOLATILITY_RANK_GBM") == "1"
+
+    def _vol_rank_gbm_served(self) -> bool:
+        """Whether predict() serves the vol-rank-modulated climatology."""
+        if self._artifact_vol_rank_gbm is not None:
+            return self._artifact_vol_rank_gbm
+        return self.vol_rank_gbm_enabled()
 
     def _climatology_scale_served(self) -> bool:
         """Whether predict() serves the climatology scale, following the artifact.
@@ -3980,6 +4005,43 @@ class ItemForecaster:
                 lambda x: x.rolling(365, min_periods=30).rank(pct=True)
             )
 
+        # Google Trends interest (market-wide macro signal)
+        df = self._apply_google_trends(df)
+
+        return df
+
+    _google_trends_cache: Optional[pd.DataFrame] = None
+
+    def _load_google_trends(self) -> pd.DataFrame:
+        if self._google_trends_cache is not None:
+            return self._google_trends_cache
+
+        trends_path = Path(__file__).parent.parent / "data" / "google_trends.parquet"
+        if not trends_path.exists():
+            logger.info("  google_trends: no data file")
+            self._google_trends_cache = pd.DataFrame()
+            return self._google_trends_cache
+
+        gt = pd.read_parquet(trends_path)
+        gt["date"] = pd.to_datetime(gt["date"]).dt.date
+        gt = gt.sort_values("date").drop_duplicates(subset=["date"], keep="last")
+        gt["google_trends_interest_7d"] = gt["interest"].rolling(7, min_periods=1).mean()
+        gt["google_trends_interest_30d"] = gt["interest"].rolling(30, min_periods=1).mean()
+        gt = gt.rename(columns={"interest": "google_trends_interest"})
+        logger.info("  google_trends: %d rows, %s to %s",
+                     len(gt), gt["date"].min(), gt["date"].max())
+        self._google_trends_cache = gt
+        return self._google_trends_cache
+
+    def _apply_google_trends(self, df: pd.DataFrame) -> pd.DataFrame:
+        gt = self._load_google_trends()
+        if gt.empty:
+            return df
+        gt_indexed = gt.set_index("date")
+        for col in ("google_trends_interest", "google_trends_interest_7d",
+                     "google_trends_interest_30d"):
+            if col in gt_indexed.columns:
+                df[col] = df["date"].map(gt_indexed[col]).astype(np.float32)
         return df
 
     def _add_item_identity_features(self, df: pd.DataFrame) -> pd.DataFrame:
@@ -6084,6 +6146,26 @@ class ItemForecaster:
                 logger.info(f"  [timing] {horizon}d exceedance classifier: "
                             f"{time.time() - _exc_start:.1f}s")
 
+            # Volatility-ranking GBM: predict |return| to reshape climatology
+            # cross-sectionally. Requires CLIMATOLOGY_SCALE to be on (the base
+            # it modulates). Trained on the same split and features.
+            if (self.vol_rank_gbm_enabled()
+                    and self.climatology_scale_enabled()):
+                _vr_start = time.time()
+                target_col = f"target_return_{horizon}d"
+                y_abs_train = train_set[target_col].abs()
+                y_abs_val = val_set[target_col].abs()
+                self.vol_rank_models[horizon] = self._fit_vol_rank_model(
+                    X_train, y_abs_train, X_val, y_abs_val,
+                    boosting_type,
+                    self._direction_tree_params(per_quantile_params),
+                    horizon=horizon,
+                    num_boost_round=boost_rounds,
+                )
+                logger.info(
+                    f"  [timing] {horizon}d vol-rank GBM: "
+                    f"{time.time() - _vr_start:.1f}s")
+
             # Train regime-specific models (optional: SKIP_REGIMES=1 to skip)
             #
             # `_warm_retrain` deliberately does NOT skip these, though it used to.
@@ -7145,6 +7227,86 @@ class ItemForecaster:
         return lgb.train(params, dtrain, num_boost_round=num_boost_round,
                          valid_sets=valid_sets, callbacks=callbacks)
 
+    def _fit_vol_rank_model(
+        self, X_train, y_abs_train, X_val, y_abs_val,
+        boosting_type: str, tree_params: dict,
+        horizon: int, num_boost_round: int = 200,
+    ) -> List[lgb.Booster]:
+        """Train a regression GBM on |return| to rank items by volatility.
+
+        Returns an ensemble of boosters whose mean prediction is the expected
+        absolute move per item. The caller normalises predictions to a mean-1
+        multiplier on climatology.
+        """
+        ds_params = {"max_bin": self.MAX_BIN, "feature_pre_filter": False}
+        dtrain = lgb.Dataset(X_train, y_abs_train, params=ds_params)
+        dval = lgb.Dataset(X_val, y_abs_val, reference=dtrain, params=ds_params)
+        dtrain.construct()
+        dval.construct()
+
+        # Tree structure params are objective-agnostic; reusing direction's.
+        base = dict(tree_params)
+        base.update({
+            "objective": "regression",
+            "metric": "mae",
+            "boosting_type": boosting_type,
+            "verbosity": -1,
+            "n_jobs": -1,
+            "max_bin": self.MAX_BIN,
+            "feature_pre_filter": False,
+            "min_gain_to_split": 0.1,
+        })
+
+        ensemble = []
+        for ei in range(self.N_ENSEMBLES):
+            p = base.copy()
+            p["random_state"] = self.ENSEMBLE_SEEDS[ei]
+            p["feature_fraction"] = self.ENSEMBLE_FEATURE_FRACTIONS[ei]
+            cbs = [lgb.log_evaluation(0)]
+            if self._early_stopping_enabled():
+                cbs.insert(0, lgb.early_stopping(20))
+            model = lgb.train(
+                p, dtrain,
+                num_boost_round=num_boost_round,
+                valid_sets=[dval],
+                callbacks=cbs,
+            )
+            ensemble.append(model)
+        return ensemble
+
+    def _predict_vol_rank(self, horizon: int, X) -> Optional[np.ndarray]:
+        """Mean ensemble prediction from the vol-rank model, or None."""
+        models = self.vol_rank_models.get(horizon)
+        if not models:
+            return None
+        preds = [m.predict(X) for m in models]
+        return np.mean(preds, axis=0)
+
+    def _vol_rank_multiplier(self, horizon: int, X) -> Optional[np.ndarray]:
+        """Normalised vol-rank multiplier (mean 1.0), or None if no model."""
+        raw = self._predict_vol_rank(horizon, X)
+        if raw is None:
+            return None
+        raw = np.clip(raw, 0.01, None)
+        norm = self.vol_rank_norm.get(horizon)
+        if norm is None or norm <= 0:
+            norm = float(np.mean(raw))
+        if norm <= 0:
+            return None
+        mult = raw / norm
+        return np.clip(mult, 0.25, 4.0)
+
+    def _vol_rank_feature_frame(
+        self, rows: pd.DataFrame, horizon: int, *, served: bool = False,
+    ) -> pd.DataFrame:
+        """Prepare features for the vol-rank model, shared by calibration and serving."""
+        cols = self.horizon_feature_cols.get(horizon, self.feature_cols)
+        cols = [c for c in cols if c in rows.columns]
+        X = rows[cols].replace([np.inf, -np.inf], np.nan)
+        if not self.feature_medians.empty:
+            X = self._impute_features(X, self.feature_medians, served=served)
+        return X
+
     def _fit_exceedance_classifier(self, X_train, y_train,
                                    boosting_type: str, tree_params: dict,
                                    horizon: Optional[int] = None,
@@ -8072,6 +8234,25 @@ class ItemForecaster:
                     f"  {horizon}d CLIMATOLOGY_REACTIVE=1 but the calibration "
                     f"rows lack ewm_reactive_fast/slow — the reactive multiplier "
                     f"is NOT in effect (static climatology q_hat).")
+        # Vol-rank GBM modulation: reshape climatology cross-sectionally using
+        # the model's per-row volatility prediction. The multiplier has mean 1.0
+        # by construction, so q_hat's level is preserved.
+        if (self.vol_rank_gbm_enabled()
+                and self.climatology_scale_enabled()
+                and horizon in self.vol_rank_models):
+            X_calib = self._vol_rank_feature_frame(rows, horizon, served=False)
+            raw_pred = self._predict_vol_rank(horizon, X_calib.values)
+            if raw_pred is not None:
+                raw_pred = np.clip(raw_pred, 0.01, None)
+                self.vol_rank_norm[horizon] = float(np.mean(raw_pred))
+            vr_mult = self._vol_rank_multiplier(horizon, X_calib.values)
+            if vr_mult is not None:
+                scale = scale * vr_mult
+                logger.info(
+                    f"  {horizon}d vol-rank modulation: mult range "
+                    f"[{float(vr_mult.min()):.3f}, {float(vr_mult.max()):.3f}], "
+                    f"median {float(np.median(vr_mult)):.3f}")
+
         logger.info(
             f"  {horizon}d climatology scale: {len(table):,} items, "
             f"median {float(np.nanmedian(scale)):.3f} on {scale.size:,} "
@@ -8086,8 +8267,14 @@ class ItemForecaster:
             return None
         if "item_id" not in rows.columns or "price" not in rows.columns:
             return None
-        return self._climatology_lookup(
+        scale = self._climatology_lookup(
             horizon, rows["item_id"].to_numpy(), rows["price"].to_numpy())
+        if self._vol_rank_gbm_served() and horizon in self.vol_rank_models:
+            X = self._vol_rank_feature_frame(rows, horizon, served=True)
+            vr_mult = self._vol_rank_multiplier(horizon, X.values)
+            if vr_mult is not None:
+                scale = scale * vr_mult
+        return scale
 
     def _scale_feature_frame(self, rows: pd.DataFrame, sigma,
                              horizon: int) -> pd.DataFrame:
@@ -10240,6 +10427,25 @@ class ItemForecaster:
         if _n_exc:
             logger.info(f"  Saved {_n_exc} exceedance classifiers")
 
+        # Save vol-rank models (one ensemble per horizon).
+        _n_vr = 0
+        for horizon, ensemble in self.vol_rank_models.items():
+            for ei, model in enumerate(ensemble):
+                path = os.path.join(
+                    self.model_dir, f"vol_rank_{horizon}d_e{ei}.txt")
+                model.save_model(path)
+            _n_vr += 1
+        if _n_vr:
+            logger.info(f"  Saved {_n_vr} vol-rank models")
+        for horizon in self.HORIZONS:
+            if horizon in self.vol_rank_models:
+                continue
+            for ei in range(self.N_ENSEMBLES):
+                stale = os.path.join(
+                    self.model_dir, f"vol_rank_{horizon}d_e{ei}.txt")
+                if os.path.exists(stale):
+                    os.remove(stale)
+
         # Remove orphaned regime-model files: any lgb_*_{regime}_*.txt on disk
         # that isn't in the current self.regime_models. Without this, a
         # regime-free (SKIP_REGIMES) run would leave stale regime artifacts
@@ -10351,6 +10557,8 @@ class ItemForecaster:
             # switch only — the multiplier is stateless (reads the engineered
             # ewm_reactive_fast/slow columns at serve), so nothing else persists.
             "climatology_reactive": self.climatology_reactive_enabled(),
+            "vol_rank_gbm": self.vol_rank_gbm_enabled(),
+            "vol_rank_norm": {str(h): v for h, v in self.vol_rank_norm.items()},
             "climatology_scale_tables": {
                 str(h): cfg for h, cfg in self.climatology_scale.items()},
             # WHICH K built those tables. Deliberately NOT folded into
@@ -10497,6 +10705,11 @@ class ItemForecaster:
         self._artifact_climatology_scale = meta.get("climatology_scale")
         self._artifact_climatology_shrink_k = meta.get("climatology_shrink_k")
         self._artifact_climatology_reactive = meta.get("climatology_reactive")
+        self._artifact_vol_rank_gbm = meta.get("vol_rank_gbm")
+        self.vol_rank_norm = {
+            int(h): float(v)
+            for h, v in meta.get("vol_rank_norm", {}).items()
+        }
         # Rebuild the climatology lookup with the int keys the accessors expect
         # (JSON coerces tier keys to strings; item keys are already strings).
         self.climatology_scale = {
@@ -10702,6 +10915,24 @@ class ItemForecaster:
                     logger.warning(f"  Corrupt exceedance classifier {epath}, skipping: {e}")
         if self.exceedance_models:
             logger.info(f"  Loaded {len(self.exceedance_models)} exceedance classifiers")
+
+        # Load vol-rank models (one ensemble per horizon, where saved).
+        for horizon in self.HORIZONS:
+            ensemble = []
+            for ei in range(self.N_ENSEMBLES):
+                vpath = os.path.join(
+                    self.model_dir, f"vol_rank_{horizon}d_e{ei}.txt")
+                if os.path.exists(vpath):
+                    try:
+                        ensemble.append(lgb.Booster(model_file=vpath))
+                    except (lgb.basic.LightGBMError, Exception) as e:
+                        logger.warning(
+                            f"  Corrupt vol-rank model {vpath}, skipping: {e}")
+            if ensemble:
+                self.vol_rank_models[horizon] = ensemble
+        if self.vol_rank_models:
+            logger.info(
+                f"  Loaded {len(self.vol_rank_models)} vol-rank models")
 
         # Build per-horizon feature sets from the loaded models.
         # Each model internally stores the feature names it was trained with.
