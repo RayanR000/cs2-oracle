@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Fail when a forecast run did not persist today's forecasts.
+"""Fail when a forecast run did not persist the current snapshot day's forecasts.
 
 Green CI is not evidence of collection — see the collector audit in
 docs/changelog/2026-07-31-accuracy-work-closed.md, where three scheduled jobs
@@ -25,6 +25,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from sqlalchemy import func
 
+from collectors.snapshot_date import resolve_snapshot_date
 from database import SessionLocal, ItemForecast
 from db.parquet import ParquetQuery
 
@@ -86,13 +87,25 @@ def _parquet_newest():
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--expected-date", default=None, help="ISO date; defaults to today (UTC).")
+    parser.add_argument(
+        "--expected-date",
+        default=None,
+        help="ISO date; defaults to the current snapshot day (resolve_snapshot_date).",
+    )
     args = parser.parse_args()
 
+    # Not the wall-clock date. A forecast is stamped with the day of the price
+    # dump it was anchored on, and `resolve_snapshot_date` is the single source
+    # of truth for that (boundary 22:00 UTC, see collectors/snapshot_date.py).
+    # Comparing against `utcnow().date()` failed every run between 00:00 and
+    # 22:00 UTC on forecasts that were correctly dated -- the scheduled chain
+    # only passed because the aggregator cron fires at 23:00, after the
+    # boundary. Both sides must read the same rule or the gate reports a
+    # persistence failure that did not happen.
     expected = (
         datetime.fromisoformat(args.expected_date).date()
         if args.expected_date
-        else datetime.utcnow().date()
+        else resolve_snapshot_date()
     )
 
     ok, message = freshness_verdict(_db_newest(), _parquet_newest(), expected)
