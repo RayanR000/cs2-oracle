@@ -246,6 +246,18 @@ jobs:
           # cannot fail a run: the audit swallows its own exceptions.
           # docs/changelog/2026-08-25-centre-shrinks-to-zero-and-the-dollar-band-is-the-wedge.md
           ANCHOR_AUDIT: "1"
+          # Widen the exceedance head with 9 item-metadata features (rarity,
+          # stattrak/souvenir, float range, crate/collection IDs). Implies
+          # BYMYKEL_METADATA=1. Main model unchanged — only the exceedance
+          # head sees the extra columns. Builds at the next retrain.
+          EXCEEDANCE_META: "1"
+          # Anomaly/regime GBM: P(|return_h| > 2σ_item). Served as anomaly_p
+          # in the API — an alert flag, not a band input. Builds at retrain.
+          ANOMALY_GBM: "1"
+          # Per-item shrinkage K: replaces the global CLIMATOLOGY_SHRINK_K=320
+          # with a per-item optimal K predicted by a GBM from item statistics.
+          # Baked into the climatology table at retrain — no serving-time cost.
+          SHRINK_K_GBM: "1"
         run: |
           echo "🔮 Mode: ${{ steps.mode.outputs.mode }}"
           set -o pipefail

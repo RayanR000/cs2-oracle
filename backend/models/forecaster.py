@@ -277,6 +277,8 @@ def _feature_group(name: str) -> str:
         return "events"
     if name.startswith("google_trends_"):
         return "events"
+    if name.startswith("player_count_"):
+        return "events"
     if any(name.startswith(p) for p in ("market_", "market_regime_")):
         return "cross_sectional"
     if name.startswith("social_"):
@@ -996,6 +998,7 @@ class ItemForecaster:
         # (Phase 2), never a directional call. A value is None where the
         # horizon had fewer than two classes to fit.
         self.exceedance_models: Dict[int, Optional[lgb.Booster]] = {}
+        self.anomaly_models: Dict[int, Optional[lgb.Booster]] = {}
         self.vol_rank_models: Dict[int, List[lgb.Booster]] = {}
         self.vol_rank_norm: Dict[int, float] = {}
         self.regime_feature_cols: Dict[Tuple[int, str], List[str]] = {}
@@ -1025,6 +1028,7 @@ class ItemForecaster:
         # pair, so a plain-sigma artifact reloaded with EXCEEDANCE_SCALE=1 in the
         # env must keep serving plain sigma. None = "older meta.json, does not say".
         self._artifact_exceedance_scale: Optional[bool] = None
+        self._artifact_exceedance_meta: Optional[bool] = None
         # Whether the band was CALIBRATED against the climatology scale. Same
         # matched-pair rule as the exceedance flag above. None = older meta.json.
         self._artifact_climatology_scale: Optional[bool] = None
@@ -1040,6 +1044,9 @@ class ItemForecaster:
         # top of the climatology scale. Same matched-pair rule; None = older meta.
         self._artifact_climatology_reactive: Optional[bool] = None
         self._artifact_vol_rank_gbm: Optional[bool] = None
+        self._artifact_anomaly_gbm: Optional[bool] = None
+        self._artifact_shrink_k_gbm: Optional[bool] = None
+        self.shrink_k_models: Dict[int, Optional[lgb.Booster]] = {}
         # The median-price floor the artifact was TRAINED under. Load-bearing
         # only when the rank transform is on, and then it is load-bearing
         # absolutely: the transform's output depends on which items are in the
@@ -1467,6 +1474,37 @@ class ItemForecaster:
         """
         return os.environ.get("EXCEEDANCE_HEAD") == "1"
 
+    @staticmethod
+    def exceedance_meta_enabled() -> bool:
+        """Whether the exceedance head trains on item-metadata features.
+
+        When on, the exceedance classifier receives the bymykel_metadata
+        feature group in addition to the main model's allowlisted groups.
+        Implies BYMYKEL_METADATA=1 (the columns must be engineered).
+        The main model's feature set is unchanged — only the exceedance
+        head widens.  Set EXCEEDANCE_META=1.
+        """
+        return os.environ.get("EXCEEDANCE_META") == "1"
+
+    def _exceedance_feature_matrix(
+        self, train_set: pd.DataFrame, feature_cols: list,
+    ) -> pd.DataFrame:
+        """Build the exceedance head's feature matrix, optionally wider.
+
+        When exceedance_meta_enabled(), adds bymykel_metadata columns that
+        are present in train_set but excluded from the main allowlist.
+        """
+        if not self.exceedance_meta_enabled():
+            return train_set[feature_cols]
+        meta_cols = [c for c in self.BYMYKEL_META_FEATURES
+                     if c in train_set.columns and c not in feature_cols]
+        if not meta_cols:
+            return train_set[feature_cols]
+        cols = list(feature_cols) + sorted(meta_cols)
+        logger.info(f"  Exceedance meta: {len(meta_cols)} extra features "
+                     f"({len(feature_cols)} -> {len(cols)})")
+        return train_set[cols]
+
     def _exceedance_scale_served(self) -> bool:
         """Whether predict() applies the exceedance scale, following the artifact.
 
@@ -1518,6 +1556,37 @@ class ItemForecaster:
         Requires CLIMATOLOGY_SCALE=1 (the base it modulates). Off by default.
         """
         return os.environ.get("VOLATILITY_RANK_GBM") == "1"
+
+    @staticmethod
+    def anomaly_gbm_enabled() -> bool:
+        """Whether to train a binary anomaly/regime classifier per horizon.
+
+        Predicts P(|return_h| > 2σ_item) where σ is the item's trailing 60-day
+        return std. Served as anomaly_p in the API — an alert/flag, not a
+        band input. Set ANOMALY_GBM=1.
+        """
+        return os.environ.get("ANOMALY_GBM") == "1"
+
+    def _anomaly_gbm_served(self) -> bool:
+        if self._artifact_anomaly_gbm is not None:
+            return self._artifact_anomaly_gbm
+        return self.anomaly_gbm_enabled()
+
+    @staticmethod
+    def shrink_k_gbm_enabled() -> bool:
+        """Whether to train a per-item shrinkage K predictor.
+
+        Replaces the global CLIMATOLOGY_SHRINK_K with a per-item K predicted
+        from item features (count, raw volatility, tier, metadata). The GBM
+        is trained to minimize band width at ~80% coverage using cross-validated
+        per-item optimal K values. Requires CLIMATOLOGY_SCALE=1. Set SHRINK_K_GBM=1.
+        """
+        return os.environ.get("SHRINK_K_GBM") == "1"
+
+    def _shrink_k_gbm_served(self) -> bool:
+        if self._artifact_shrink_k_gbm is not None:
+            return self._artifact_shrink_k_gbm
+        return self.shrink_k_gbm_enabled()
 
     def _vol_rank_gbm_served(self) -> bool:
         """Whether predict() serves the vol-rank-modulated climatology."""
@@ -2856,7 +2925,8 @@ class ItemForecaster:
 
         Off by default. See BYMYKEL_META_FEATURES for why.
         """
-        return os.environ.get("BYMYKEL_METADATA") == "1"
+        return (os.environ.get("BYMYKEL_METADATA") == "1"
+                or ItemForecaster.exceedance_meta_enabled())
 
     @staticmethod
     def tier_lead_enabled() -> bool:
@@ -4129,8 +4199,14 @@ class ItemForecaster:
                 lambda x: x.rolling(365, min_periods=30).rank(pct=True)
             )
 
-        # Google Trends interest (market-wide macro signal)
-        df = self._apply_google_trends(df)
+        # Google Trends + player counts: wired but OFF. Both features hurt OOS
+        # in a 2025-09→2026-07 walk-forward (MAE +14-72%, rank IC flips negative).
+        # The +0.28 lead-lag with future vol is real in-sample but driven by 1-2
+        # regime events (knife crash). Same wall as every other feature: the GBM
+        # overfits to rare events. Collectors keep accumulating data; re-evaluate
+        # when the served panel has ≥20 clean dates.
+        # df = self._apply_google_trends(df)
+        # df = self._apply_player_counts(df)
 
         return df
 
@@ -4166,6 +4242,58 @@ class ItemForecaster:
                      "google_trends_interest_30d"):
             if col in gt_indexed.columns:
                 df[col] = df["date"].map(gt_indexed[col]).astype(np.float32)
+        return df
+
+    _player_counts_cache: Optional[pd.DataFrame] = None
+
+    def _load_player_counts(self) -> pd.DataFrame:
+        if self._player_counts_cache is not None:
+            return self._player_counts_cache
+
+        db_path = Path(__file__).parent.parent / "runtime" / "csmarketapi_reference.db"
+        if not db_path.exists():
+            logger.info("  player_counts: no reference DB")
+            self._player_counts_cache = pd.DataFrame()
+            return self._player_counts_cache
+
+        import sqlite3
+        con = sqlite3.connect(str(db_path))
+        try:
+            raw = pd.read_sql(
+                "SELECT timestamp, players FROM player_counts", con
+            )
+        finally:
+            con.close()
+
+        if raw.empty:
+            logger.info("  player_counts: empty table")
+            self._player_counts_cache = pd.DataFrame()
+            return self._player_counts_cache
+
+        raw["timestamp"] = pd.to_datetime(raw["timestamp"])
+        raw["date"] = raw["timestamp"].dt.date
+        daily = raw.groupby("date")["players"].agg(["mean", "max"]).reset_index()
+        daily.columns = ["date", "player_count_mean", "player_count_peak"]
+        daily = daily.sort_values("date")
+        daily["player_count_mean_7d"] = daily["player_count_mean"].rolling(7, min_periods=1).mean()
+        daily["player_count_mean_30d"] = daily["player_count_mean"].rolling(30, min_periods=1).mean()
+        daily["player_count_change_7d"] = daily["player_count_mean"].pct_change(7) * 100
+
+        logger.info("  player_counts: %d days, %s to %s",
+                     len(daily), daily["date"].min(), daily["date"].max())
+        self._player_counts_cache = daily
+        return self._player_counts_cache
+
+    def _apply_player_counts(self, df: pd.DataFrame) -> pd.DataFrame:
+        pc = self._load_player_counts()
+        if pc.empty:
+            return df
+        pc_indexed = pc.set_index("date")
+        for col in ("player_count_mean", "player_count_peak",
+                     "player_count_mean_7d", "player_count_mean_30d",
+                     "player_count_change_7d"):
+            if col in pc_indexed.columns:
+                df[col] = df["date"].map(pc_indexed[col]).astype(np.float32)
         return df
 
     def _add_item_identity_features(self, df: pd.DataFrame) -> pd.DataFrame:
@@ -5200,6 +5328,20 @@ class ItemForecaster:
         exceed = (ret.to_numpy(dtype=float) > thr_pct).astype(float)
         exceed[ret.isna().to_numpy()] = np.nan
         df[f"target_exceed_{horizon}d"] = exceed
+
+        # Anomaly label: does the h-day move exceed 2× the item's trailing
+        # 60-day return standard deviation? A regime signal, not a trade
+        # signal — gated by ANOMALY_GBM=1. Uses the same winsorized return
+        # and voids as the exceedance label.
+        if self.anomaly_gbm_enabled():
+            item_std = (df.groupby("item_id")[f"target_return_{horizon}d"]
+                        .transform(lambda s: s.shift(1).rolling(60, min_periods=10).std()))
+            anomaly_thr = 2.0 * item_std
+            anom = (ret.abs() > anomaly_thr).astype(float)
+            anom[ret.isna().to_numpy()] = np.nan
+            anom[item_std.isna().to_numpy()] = np.nan
+            df[f"target_anomaly_{horizon}d"] = anom
+
         return df
 
     # ------------------------------------------------------------------
@@ -6037,6 +6179,13 @@ class ItemForecaster:
             # Replace INF with NaN before imputation (division-by-zero artifacts)
             X_train_pre = train_set[self.feature_cols].replace([np.inf, -np.inf], np.nan)
             feature_medians = X_train_pre.median()
+            if self.exceedance_meta_enabled():
+                meta_cols = [c for c in self.BYMYKEL_META_FEATURES
+                             if c in train_set.columns and c not in self.feature_cols]
+                if meta_cols:
+                    meta_medians = train_set[meta_cols].replace(
+                        [np.inf, -np.inf], np.nan).median()
+                    feature_medians = pd.concat([feature_medians, meta_medians])
             self.feature_medians = feature_medians
             X_train = self._impute_features(X_train_pre, feature_medians)
             y_train = train_set[f"target_return_{horizon}d"]
@@ -6261,8 +6410,12 @@ class ItemForecaster:
             # byte-identical to the pre-Phase-2 one.
             if self.exceedance_scale_enabled() or self.exceedance_head_enabled():
                 _exc_start = time.time()
+                X_exc = self._exceedance_feature_matrix(
+                    train_set, self.feature_cols)
+                X_exc_clean = X_exc.replace([np.inf, -np.inf], np.nan)
+                X_exc = self._impute_features(X_exc_clean, X_exc_clean.median())
                 self.exceedance_models[horizon] = self._fit_exceedance_classifier(
-                    X_train, train_set[f"target_exceed_{horizon}d"].to_numpy(),
+                    X_exc, train_set[f"target_exceed_{horizon}d"].to_numpy(),
                     boosting_type,
                     self._direction_tree_params(per_quantile_params),
                     horizon=horizon,
@@ -6292,6 +6445,25 @@ class ItemForecaster:
                 logger.info(
                     f"  [timing] {horizon}d vol-rank GBM: "
                     f"{time.time() - _vr_start:.1f}s")
+
+            # Anomaly classifier: P(|return_h| > 2σ_item). An alert signal,
+            # not a band input. Gate: ANOMALY_GBM=1.
+            if self.anomaly_gbm_enabled():
+                _anom_start = time.time()
+                anom_col = f"target_anomaly_{horizon}d"
+                if anom_col in train_set.columns:
+                    self.anomaly_models[horizon] = self._fit_anomaly_classifier(
+                        X_train, train_set[anom_col].to_numpy(),
+                        boosting_type,
+                        self._direction_tree_params(per_quantile_params),
+                        horizon=horizon,
+                        tier_train=(train_set["price_tier"].to_numpy()
+                                    if "price_tier" in train_set.columns else None),
+                        num_boost_round=boost_rounds,
+                    )
+                    logger.info(
+                        f"  [timing] {horizon}d anomaly classifier: "
+                        f"{time.time() - _anom_start:.1f}s")
 
             # Train regime-specific models (optional: SKIP_REGIMES=1 to skip)
             #
@@ -6978,6 +7150,7 @@ class ItemForecaster:
         # float column the dtype filter would otherwise admit, and it IS the answer
         # the exceedance head predicts — never a feature.
         exclude |= {f"target_exceed_{h}d" for h in horizons}
+        exclude |= {f"target_anomaly_{h}d" for h in horizons}
         # The market factor is computed from other items' FUTURE prices. It is
         # a label input, never a feature -- if it reaches feature_cols the
         # model trains on the answer.
@@ -7486,6 +7659,59 @@ class ItemForecaster:
         return lgb.train(params, dtrain, num_boost_round=num_boost_round,
                          callbacks=[lgb.log_evaluation(0)])
 
+    def _fit_anomaly_classifier(self, X_train, y_train,
+                                boosting_type: str, tree_params: dict,
+                                horizon: Optional[int] = None,
+                                tier_train=None,
+                                num_boost_round: int = 200,
+                                random_state: int = 42):
+        """Binary LightGBM: P(|return_h| > 2σ of item's trailing history).
+
+        Same structure as the exceedance classifier — drops NaN labels,
+        applies served-cohort reweighting. Returns None when fewer than
+        two classes survive.
+        """
+        y = np.asarray(y_train, dtype=float)
+        keep = ~np.isnan(y)
+        X = X_train.loc[keep] if isinstance(X_train, pd.DataFrame) \
+            else np.asarray(X_train)[keep]
+        yk = y[keep].astype(int)
+        if len(np.unique(yk)) < 2:
+            logger.warning(
+                f"  {horizon}d anomaly classifier: <2 classes after dropping "
+                f"NaN labels ({len(yk):,} rows) — skipping")
+            return None
+
+        w = np.ones(len(yk))
+        tiers = np.asarray(tier_train)[keep] if tier_train is not None else None
+        if self.served_cohort_share is not None and tiers is not None:
+            m = self._served_cohort_multiplier(w, tiers, self.served_cohort_share)
+            served = tiers >= HEADLINE_MIN_TIER
+            w[served] *= m
+
+        ds = {"max_bin": self.MAX_BIN, "feature_pre_filter": False}
+        dtrain = lgb.Dataset(X, yk, params=ds, weight=w)
+        params = dict(tree_params)
+        params.update(objective="binary", metric="binary_logloss",
+                      boosting_type=boosting_type, verbosity=-1, n_jobs=-1,
+                      random_state=random_state)
+        return lgb.train(params, dtrain, num_boost_round=num_boost_round,
+                         callbacks=[lgb.log_evaluation(0)])
+
+    def anomaly_probability(self, horizon: int,
+                            rows: pd.DataFrame) -> Optional[np.ndarray]:
+        """P(|return_h| > 2σ_item) for the given rows, or None if no head."""
+        head = self.anomaly_models.get(horizon)
+        if head is None:
+            return None
+        cols = head.feature_name()
+        X = rows.reindex(columns=cols, fill_value=0).replace(
+            [np.inf, -np.inf], np.nan)
+        if not self.feature_medians.empty:
+            X = self._impute_features(
+                X, self.feature_medians.reindex(cols), served=True)
+        return np.clip(head.predict(X), 1e-3, 1.0)
+
     @staticmethod
     def _direction_tree_params(per_quantile_params: dict) -> dict:
         """Extract objective-agnostic tree params from the p50 quantile config
@@ -7974,7 +8200,14 @@ class ItemForecaster:
         if self.exceedance_scale_enabled():
             head = self.exceedance_models.get(horizon)
             if head is not None:
-                holdout_exceed = head.predict(X_val)
+                exc_cols = head.feature_name()
+                X_exc_ho = val_set.reindex(columns=exc_cols, fill_value=0).replace(
+                    [np.inf, -np.inf], np.nan)
+                if not self.feature_medians.empty:
+                    X_exc_ho = self._impute_features(
+                        X_exc_ho, self.feature_medians.reindex(exc_cols),
+                        served=False)
+                holdout_exceed = head.predict(X_exc_ho)
         records = self._conformal_records(
             p50, y_val.values, self._sigma_for_rows(val_set),
             val_set["price"].values,
@@ -8273,6 +8506,158 @@ class ItemForecaster:
             table[str(iid)] = float(w * raw + (1.0 - w) * pool)
         return table, tier_pool, global_std
 
+    @classmethod
+    def _compute_per_item_optimal_k(cls, df: pd.DataFrame, tcol: str,
+                                     k_grid=None,
+                                     target_coverage: float = 0.80) -> pd.DataFrame:
+        """Find per-item optimal K via normalized-residual calibration.
+
+        For each item, the band is `q_hat * scale(K)`. A global q_hat absorbs
+        the level, so the K that makes this item's normalized |return|/scale(K)
+        distribution closest to the cross-sectional average is optimal — it
+        means a single q_hat works well for this item. The metric is the p80
+        of |return_i| / scale_i(K); the K that minimizes it wins (the item
+        needs the least q_hat to reach 80% coverage).
+
+        Items with < 15 observations get the global CLIMATOLOGY_SHRINK_K.
+        """
+        if k_grid is None:
+            k_grid = [10, 20, 50, 100, 200, 320, 500, 1000]
+
+        d = df[np.isfinite(df[tcol].to_numpy())].copy()
+        if d.empty:
+            return pd.DataFrame()
+        d["tier"] = cls._price_tier_array(d["price"].to_numpy())
+        global_std = float(d[tcol].std())
+        tier_std = d.groupby("tier")[tcol].std()
+        tier_pool = {int(t): (float(v) if np.isfinite(v) and v > 0 else global_std)
+                     for t, v in tier_std.items()}
+
+        agg = d.groupby("item_id").agg(
+            raw_std=(tcol, "std"),
+            count=(tcol, "count"),
+            median_price=("price", "median"),
+        )
+        agg["tier"] = cls._price_tier_array(agg["median_price"].to_numpy())
+        agg["pool_std"] = agg["tier"].map(
+            lambda t: tier_pool.get(int(t), global_std))
+
+        item_returns = d.groupby("item_id")[tcol].apply(np.array)
+
+        results = []
+        default_k = float(cls.CLIMATOLOGY_SHRINK_K)
+        for iid, row in agg.iterrows():
+            n = float(row["count"])
+            raw = row["raw_std"]
+            pool = row["pool_std"]
+            if not np.isfinite(raw) or raw <= 0:
+                raw = pool
+
+            rets = item_returns.get(iid)
+            if rets is None or len(rets) < 15:
+                results.append({
+                    "item_id": iid, "optimal_k": default_k,
+                    "count": n, "raw_std": raw,
+                    "tier": int(row["tier"]), "pool_std": pool,
+                    "std_ratio": raw / pool if pool > 0 else 1.0,
+                })
+                continue
+
+            abs_rets = np.abs(rets)
+            best_k = default_k
+            best_q = float("inf")
+            for k in k_grid:
+                w = n / (n + k)
+                shrunk = w * raw + (1.0 - w) * pool
+                if shrunk <= 0:
+                    continue
+                normalized = abs_rets / shrunk
+                q80 = float(np.quantile(normalized, target_coverage))
+                if q80 < best_q:
+                    best_q = q80
+                    best_k = k
+
+            results.append({
+                "item_id": iid, "optimal_k": best_k,
+                "count": n, "raw_std": raw,
+                "tier": int(row["tier"]), "pool_std": pool,
+                "std_ratio": raw / pool if pool > 0 else 1.0,
+            })
+        return pd.DataFrame(results)
+
+    def _fit_shrink_k_model(self, item_features: pd.DataFrame,
+                            target_k: np.ndarray,
+                            tree_params: dict,
+                            boosting_type: str = "gbdt",
+                            num_boost_round: int = 100) -> lgb.Booster:
+        """Train a regression GBM to predict per-item optimal K from features."""
+        feature_cols = ["count", "raw_std", "tier", "pool_std", "std_ratio"]
+        X = item_features[feature_cols].values
+        y = np.log1p(target_k.astype(float))
+
+        ds = {"max_bin": 63, "feature_pre_filter": False}
+        dtrain = lgb.Dataset(X, y, params=ds, feature_name=feature_cols)
+        params = dict(tree_params) if tree_params else {}
+        params.update({
+            "objective": "regression",
+            "metric": "mae",
+            "boosting_type": boosting_type,
+            "verbosity": -1,
+            "n_jobs": -1,
+            "num_leaves": 15,
+            "min_data_in_leaf": 20,
+            "learning_rate": 0.05,
+        })
+        return lgb.train(params, dtrain, num_boost_round=num_boost_round,
+                         callbacks=[lgb.log_evaluation(0)])
+
+    def predict_shrink_k(self, horizon: int, item_stats: pd.DataFrame) -> np.ndarray:
+        """Predict per-item K from the loaded shrink-K model.
+
+        item_stats must have columns: count, raw_std, tier, pool_std, std_ratio.
+        Returns an array of K values (one per row), clipped to [5, 2000].
+        """
+        model = self.shrink_k_models.get(horizon)
+        if model is None:
+            return np.full(len(item_stats), float(self.CLIMATOLOGY_SHRINK_K))
+        feature_cols = ["count", "raw_std", "tier", "pool_std", "std_ratio"]
+        X = item_stats[feature_cols].fillna(0).values
+        log_k = model.predict(X)
+        return np.clip(np.expm1(log_k), 5, 2000)
+
+    def _build_climatology_table_adaptive(self, df: pd.DataFrame, tcol: str,
+                                           horizon: int):
+        """Like _build_climatology_table but with per-item K from the GBM."""
+        d = df[np.isfinite(df[tcol].to_numpy())].copy()
+        if d.empty:
+            return {}, {}, float("nan")
+        d["tier"] = self._price_tier_array(d["price"].to_numpy())
+        global_std = float(d[tcol].std())
+        tier_std = d.groupby("tier")[tcol].std()
+        tier_pool = {int(t): (float(v) if np.isfinite(v) and v > 0 else global_std)
+                     for t, v in tier_std.items()}
+        agg = d.groupby("item_id").agg(
+            raw_std=(tcol, "std"),
+            count=(tcol, "count"),
+            median_price=("price", "median"),
+        )
+        agg["tier"] = self._price_tier_array(agg["median_price"].to_numpy())
+        agg["pool_std"] = agg["tier"].map(
+            lambda t: tier_pool.get(int(t), global_std))
+        agg["std_ratio"] = agg["raw_std"] / agg["pool_std"].replace(0, 1)
+
+        k_arr = self.predict_shrink_k(horizon, agg)
+        table = {}
+        for (iid, row), k in zip(agg.iterrows(), k_arr):
+            n = float(row["count"])
+            pool = row["pool_std"]
+            raw = row["raw_std"]
+            if not np.isfinite(raw) or raw <= 0:
+                raw = pool
+            w = n / (n + k)
+            table[str(iid)] = float(w * raw + (1.0 - w) * pool)
+        return table, tier_pool, global_std
+
     def _climatology_lookup(self, horizon: int, item_ids, prices):
         """Per-row climatology scale from the persisted table, tier-pool fallback
         for unseen items, global fallback for unseen tiers. None if no table."""
@@ -8339,8 +8724,25 @@ class ItemForecaster:
                 f"back to sigma. The arm is NOT in effect for this horizon."
             )
             return None
-        table, tier_pool, g = self._build_climatology_table(
-            feature_frame[["item_id", "price", tcol]], tcol)
+        if self.shrink_k_gbm_enabled() and horizon not in self.shrink_k_models:
+            _sk_start = time.time()
+            item_stats = self._compute_per_item_optimal_k(
+                feature_frame[["item_id", "price", tcol]], tcol)
+            if not item_stats.empty:
+                self.shrink_k_models[horizon] = self._fit_shrink_k_model(
+                    item_stats, item_stats["optimal_k"].to_numpy(),
+                    tree_params={}, boosting_type="gbdt")
+                logger.info(
+                    f"  [timing] {horizon}d shrink-K GBM: "
+                    f"{time.time() - _sk_start:.1f}s "
+                    f"({len(item_stats)} items)")
+
+        if self._shrink_k_gbm_served() and horizon in self.shrink_k_models:
+            table, tier_pool, g = self._build_climatology_table_adaptive(
+                feature_frame[["item_id", "price", tcol]], tcol, horizon)
+        else:
+            table, tier_pool, g = self._build_climatology_table(
+                feature_frame[["item_id", "price", tcol]], tcol)
         if not table:
             logger.warning(
                 f"  {horizon}d climatology scale: no usable h-day return "
@@ -9303,6 +9705,7 @@ class ItemForecaster:
             # field is null. `latest_rows` is aligned to `item_id_arr`, the same
             # frame band_scale scored above.
             exceed_p_arr = self.exceedance_probability(horizon, latest_rows)
+            anomaly_p_arr = self.anomaly_probability(horizon, latest_rows)
 
             _dir_name = {0: "down", 1: "flat", 2: "up"}
             fallback_n = 0
@@ -9348,6 +9751,8 @@ class ItemForecaster:
                     "confidence": confidence,
                     "exceed_p": (float(exceed_p_arr[i])
                                  if exceed_p_arr is not None else None),
+                    "anomaly_p": (float(anomaly_p_arr[i])
+                                  if anomaly_p_arr is not None else None),
                 }
 
             self._warn_no_classifier(horizon, fallback_n, fallback_flat)
@@ -9872,8 +10277,13 @@ class ItemForecaster:
             # unless the flag is on, no head is fit and no cost is paid.
             fold_exceed_p = None
             if self.exceedance_scale_enabled():
+                X_exc_train = self._exceedance_feature_matrix(
+                    train_df, self.feature_cols)
+                X_exc_train_clean = X_exc_train.replace([np.inf, -np.inf], np.nan)
+                exc_train_medians = X_exc_train_clean.median()
+                X_exc_train = self._impute_features(X_exc_train_clean, exc_train_medians)
                 exc_clf = self._fit_exceedance_classifier(
-                    X_train, train_df[f"target_exceed_{horizon}d"].to_numpy(),
+                    X_exc_train, train_df[f"target_exceed_{horizon}d"].to_numpy(),
                     self.BOOSTING_TYPE,
                     self._direction_tree_params(per_quantile_params),
                     horizon=horizon,
@@ -9881,7 +10291,12 @@ class ItemForecaster:
                                 if "price_tier" in train_df.columns else None),
                     num_boost_round=self._boost_rounds(horizon, cv=True))
                 if exc_clf is not None:
-                    fold_exceed_p = exc_clf.predict(X_val)
+                    X_exc_val = self._exceedance_feature_matrix(
+                        val_df, self.feature_cols)
+                    X_exc_val = self._impute_features(
+                        X_exc_val.replace([np.inf, -np.inf], np.nan),
+                        exc_train_medians)
+                    fold_exceed_p = exc_clf.predict(X_exc_val)
 
             # Build per-row records for pooled calibration. Same builder the
             # single-holdout path uses, so the two calibrations are comparable.
@@ -10558,6 +10973,25 @@ class ItemForecaster:
         if _n_exc:
             logger.info(f"  Saved {_n_exc} exceedance classifiers")
 
+        # Save anomaly classifiers.
+        _n_anom = 0
+        for horizon, clf in self.anomaly_models.items():
+            if clf is not None:
+                clf.save_model(os.path.join(self.model_dir, f"anomaly_clf_{horizon}d.txt"))
+                _n_anom += 1
+        if _n_anom:
+            logger.info(f"  Saved {_n_anom} anomaly classifiers")
+
+        # Save shrink-K models.
+        _n_sk = 0
+        for horizon, model in self.shrink_k_models.items():
+            if model is not None:
+                model.save_model(os.path.join(
+                    self.model_dir, f"shrink_k_{horizon}d.txt"))
+                _n_sk += 1
+        if _n_sk:
+            logger.info(f"  Saved {_n_sk} shrink-K models")
+
         # Save vol-rank models (one ensemble per horizon).
         _n_vr = 0
         for horizon, ensemble in self.vol_rank_models.items():
@@ -10680,6 +11114,7 @@ class ItemForecaster:
             # pair): see _feature_native_nan_served.
             "feature_native_nan": self.feature_native_nan_enabled(),
             "exceedance_scale": self.exceedance_scale_enabled(),
+            "exceedance_meta": self.exceedance_meta_enabled(),
             # The climatology band scale: a serving switch AND its lookup tables.
             # predict reconstructs the per-item scale from these — there is no
             # booster. Matched-pair rule: never difference a q_hat across this.
@@ -10688,6 +11123,8 @@ class ItemForecaster:
             # switch only — the multiplier is stateless (reads the engineered
             # ewm_reactive_fast/slow columns at serve), so nothing else persists.
             "climatology_reactive": self.climatology_reactive_enabled(),
+            "anomaly_gbm": self.anomaly_gbm_enabled(),
+            "shrink_k_gbm": self.shrink_k_gbm_enabled(),
             "vol_rank_gbm": self.vol_rank_gbm_enabled(),
             "vol_rank_norm": {str(h): v for h, v in self.vol_rank_norm.items()},
             "climatology_scale_tables": {
@@ -10833,9 +11270,12 @@ class ItemForecaster:
         self._artifact_naive_init = meta.get("naive_init_score")
         self._artifact_feature_native_nan = meta.get("feature_native_nan")
         self._artifact_exceedance_scale = meta.get("exceedance_scale")
+        self._artifact_exceedance_meta = meta.get("exceedance_meta")
         self._artifact_climatology_scale = meta.get("climatology_scale")
         self._artifact_climatology_shrink_k = meta.get("climatology_shrink_k")
         self._artifact_climatology_reactive = meta.get("climatology_reactive")
+        self._artifact_anomaly_gbm = meta.get("anomaly_gbm")
+        self._artifact_shrink_k_gbm = meta.get("shrink_k_gbm")
         self._artifact_vol_rank_gbm = meta.get("vol_rank_gbm")
         self.vol_rank_norm = {
             int(h): float(v)
@@ -11046,6 +11486,28 @@ class ItemForecaster:
                     logger.warning(f"  Corrupt exceedance classifier {epath}, skipping: {e}")
         if self.exceedance_models:
             logger.info(f"  Loaded {len(self.exceedance_models)} exceedance classifiers")
+
+        # Load anomaly classifiers.
+        for horizon in self.HORIZONS:
+            apath = os.path.join(self.model_dir, f"anomaly_clf_{horizon}d.txt")
+            if os.path.exists(apath):
+                try:
+                    self.anomaly_models[horizon] = lgb.Booster(model_file=apath)
+                except (lgb.basic.LightGBMError, Exception) as e:
+                    logger.warning(f"  Corrupt anomaly classifier {apath}, skipping: {e}")
+        if self.anomaly_models:
+            logger.info(f"  Loaded {len(self.anomaly_models)} anomaly classifiers")
+
+        # Load shrink-K models.
+        for horizon in self.HORIZONS:
+            spath = os.path.join(self.model_dir, f"shrink_k_{horizon}d.txt")
+            if os.path.exists(spath):
+                try:
+                    self.shrink_k_models[horizon] = lgb.Booster(model_file=spath)
+                except (lgb.basic.LightGBMError, Exception) as e:
+                    logger.warning(f"  Corrupt shrink-K model {spath}, skipping: {e}")
+        if self.shrink_k_models:
+            logger.info(f"  Loaded {len(self.shrink_k_models)} shrink-K models")
 
         # Load vol-rank models (one ensemble per horizon, where saved).
         for horizon in self.HORIZONS:

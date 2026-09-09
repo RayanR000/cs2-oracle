@@ -351,6 +351,7 @@ def _write_forecasts_to_db(db, results, model_version, slug_to_id, today,
                 # One-sided P(upside move clears round-trip cost); None on an
                 # artifact with no exceedance head. Disclosure field, NULL-safe.
                 "exceed_p": fcast.get("exceed_p"),
+                "anomaly_p": fcast.get("anomaly_p"),
                 "created_at": datetime.now(timezone.utc).replace(tzinfo=None),
             })
 

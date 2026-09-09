@@ -181,6 +181,7 @@ class ItemForecast(Base):
     # row predating this column, and every row from an artifact with no
     # exceedance head (EXCEEDANCE_HEAD off, or a degenerate <2-class horizon).
     exceed_p = Column(Float, nullable=True)
+    anomaly_p = Column(Float, nullable=True)
     created_at = Column(DateTime, default=utcnow_naive)
 
     item = relationship("Item", back_populates="forecasts")

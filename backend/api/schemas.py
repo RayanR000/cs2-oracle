@@ -109,6 +109,7 @@ class PredictionOut(BaseModel):
     expected_swing_pct: Optional[float] = None
     move_odds: Optional[float] = None
     stability_label: Optional[str] = None
+    anomaly_p: Optional[float] = None
 
     @model_validator(mode="after")
     def _derive_tradeability(self) -> "PredictionOut":

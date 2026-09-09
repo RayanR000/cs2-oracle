@@ -354,6 +354,140 @@ def band(mid_pct, sigma, q_hat: float,
     return mid - half, mid + half
 
 
+WACI_N_BINS = 10
+WACI_KERNEL_BW = 0.5
+
+
+def calibrate_signed_waci(
+    residuals_pct, sigma, alpha: float = ALPHA,
+    beta: float = BETA_NEUTRAL, learned_scale=None,
+    n_bins: int = WACI_N_BINS, kernel_bw: float = WACI_KERNEL_BW,
+) -> dict:
+    """Width-Adaptive Conformal Inference: per-scale-bin signed quantiles.
+
+    Instead of one global (q_lo, q_hi), partitions the calibration set by
+    `scale` (the band-width denominator) into `n_bins` quantile bins and
+    computes a signed conformal quantile pair per bin. At serve time each
+    item's scale selects its bin's quantiles via Gaussian-kernel interpolation,
+    so the coverage guarantee is conditional on band width rather than only
+    marginal.
+
+    Returns a dict with keys:
+        bin_edges: array of shape (n_bins - 1,) — scale quantile boundaries
+        bin_q_lo:  array of shape (n_bins,) — lower quantile per bin
+        bin_q_hi:  array of shape (n_bins,) — upper quantile per bin
+        bin_centres: array of shape (n_bins,) — median scale in each bin
+        fallback_q_lo: float — global q_lo (for items outside the range)
+        fallback_q_hi: float — global q_hi
+    """
+    res = np.asarray(residuals_pct, dtype=float)
+    sig = np.asarray(sigma, dtype=float)
+    if res.size == 0:
+        raise ValueError("empty calibration set")
+
+    sc = resolve_scale(sig, beta, learned_scale)
+    with np.errstate(divide="ignore", invalid="ignore"):
+        scores = res / sc
+    ok = np.isfinite(scores) & np.isfinite(sc) & (sc > 0)
+    scores, sc = scores[ok], sc[ok]
+    if scores.size < n_bins * 10:
+        q_lo, q_hi = calibrate_signed(residuals_pct, sigma, alpha, beta,
+                                       learned_scale)
+        return {
+            "bin_edges": np.array([]),
+            "bin_q_lo": np.array([q_lo]),
+            "bin_q_hi": np.array([q_hi]),
+            "bin_centres": np.array([float(np.median(sc))]),
+            "fallback_q_lo": q_lo,
+            "fallback_q_hi": q_hi,
+        }
+
+    n = scores.size
+    level_hi = min(np.ceil((n + 1) * (1.0 - alpha / 2.0)) / n, 1.0)
+    level_lo = max(np.floor((n + 1) * (alpha / 2.0)) / n, 0.0)
+
+    fallback_q_lo = float(np.quantile(scores, level_lo))
+    fallback_q_hi = float(np.quantile(scores, level_hi))
+
+    edges = np.quantile(sc, np.linspace(0.0, 1.0, n_bins + 1)[1:-1])
+    bin_idx = np.searchsorted(edges, sc, side="right")
+
+    bin_q_lo = np.empty(n_bins)
+    bin_q_hi = np.empty(n_bins)
+    bin_centres = np.empty(n_bins)
+
+    for b in range(n_bins):
+        mask = bin_idx == b
+        if mask.sum() < 20:
+            bin_q_lo[b] = fallback_q_lo
+            bin_q_hi[b] = fallback_q_hi
+            bin_centres[b] = float(np.median(sc))
+            continue
+        bin_scores = scores[mask]
+        nb = bin_scores.size
+        lhi = min(np.ceil((nb + 1) * (1.0 - alpha / 2.0)) / nb, 1.0)
+        llo = max(np.floor((nb + 1) * (alpha / 2.0)) / nb, 0.0)
+        bin_q_lo[b] = float(np.quantile(bin_scores, llo))
+        bin_q_hi[b] = float(np.quantile(bin_scores, lhi))
+        bin_centres[b] = float(np.median(sc[mask]))
+
+    return {
+        "bin_edges": edges,
+        "bin_q_lo": bin_q_lo,
+        "bin_q_hi": bin_q_hi,
+        "bin_centres": bin_centres,
+        "fallback_q_lo": fallback_q_lo,
+        "fallback_q_hi": fallback_q_hi,
+    }
+
+
+def waci_lookup(scale_values, waci_params: dict,
+                kernel_bw: float = WACI_KERNEL_BW
+                ) -> tuple[np.ndarray, np.ndarray]:
+    """Look up per-item (q_lo, q_hi) from WACI parameters via kernel smoothing.
+
+    For each item's scale value, computes a Gaussian-kernel-weighted average
+    of the bin quantiles, so the transition between bins is smooth.
+    """
+    sc = np.asarray(scale_values, dtype=float)
+    centres = waci_params["bin_centres"]
+    bq_lo = waci_params["bin_q_lo"]
+    bq_hi = waci_params["bin_q_hi"]
+
+    if centres.size <= 1:
+        return (np.full(sc.shape, waci_params["fallback_q_lo"]),
+                np.full(sc.shape, waci_params["fallback_q_hi"]))
+
+    q_lo_out = np.empty(sc.shape)
+    q_hi_out = np.empty(sc.shape)
+
+    for i, s in enumerate(sc):
+        dists = (s - centres) / (kernel_bw * np.std(centres) + 1e-12)
+        weights = np.exp(-0.5 * dists ** 2)
+        weights /= weights.sum() + 1e-12
+        q_lo_out[i] = float(np.dot(weights, bq_lo))
+        q_hi_out[i] = float(np.dot(weights, bq_hi))
+
+    return q_lo_out, q_hi_out
+
+
+def band_signed_waci(mid_pct, sigma, waci_params: dict,
+                     beta: float = BETA_NEUTRAL,
+                     learned_scale=None,
+                     kernel_bw: float = WACI_KERNEL_BW
+                     ) -> tuple[np.ndarray, np.ndarray]:
+    """Asymmetric band using Width-Adaptive per-item quantiles.
+
+    Like `band_signed` but each item gets its own (q_lo, q_hi) based on
+    its scale value, producing tighter bands for low-vol items and wider
+    bands for high-vol items — fixing the sigma-tilt coverage profile.
+    """
+    mid = np.asarray(mid_pct, dtype=float)
+    sc = resolve_scale(sigma, beta, learned_scale)
+    q_lo_arr, q_hi_arr = waci_lookup(sc, waci_params, kernel_bw)
+    return mid + q_lo_arr * sc, mid + q_hi_arr * sc
+
+
 def band_signed(mid_pct, sigma, q_lo: float, q_hi: float,
                 beta: float = BETA_NEUTRAL,
                 learned_scale=None) -> tuple[np.ndarray, np.ndarray]:

@@ -693,6 +693,7 @@ def _prediction_parquet(item, period: str, horizon: int, thresholds=None):
         # `_DictObj` returns None for a column the mirror predates.
         anchor_clean=_optional_bool(r.anchor_clean),
         anchor_wedge_pct=_optional_float(r.anchor_wedge_pct),
+        anomaly_p=_optional_float(r.anomaly_p),
         **tags,
     )
 
@@ -747,6 +748,7 @@ def get_item_prediction(
             forecast_high=fh,
             forecast_period=period,
             trend_direction=forecast.direction or "neutral",
+            anomaly_p=forecast.anomaly_p,
             **tags,
         )
 
