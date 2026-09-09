@@ -1,10 +1,11 @@
 """The ByMykel bundle's wiring into the feature pipeline.
 
-Four things here are silent when they break, which is why each has a test:
+Five things here are silent when they break, which is why each has a test:
 the flag defaulting on, the nullable-Int64 columns being dropped by
 `_select_feature_cols`, the allowlist admitting neighbouring refuted groups
-along with the nine measured columns, and `item_age_meta_days` colliding with
-the unrelated `item_age_days` that `_add_temporal_features` already produces.
+along with the nine measured columns, `item_age_meta_days` colliding with
+the unrelated `item_age_days` that `_add_temporal_features` already produces,
+and `EXCEEDANCE_META` widening a group it is not supposed to widen.
 """
 import sys
 import numpy as np
@@ -189,3 +190,67 @@ class TestArtifactGuard:
         monkeypatch.delenv("BYMYKEL_METADATA", raising=False)
         meta = {"model_artifact_version": ItemForecaster.MODEL_ARTIFACT_VERSION}
         self._forecaster()._check_artifact_version(meta)
+
+
+class TestExceedanceMetaGate:
+    """`EXCEEDANCE_META` widens only the exceedance head's matrix.
+
+    Silent-when-broken in both directions: a gate that leaks would put nine
+    refuted columns into the main model behind a flag that claims not to, and a
+    gate that widens without the columns present would KeyError a whole retrain
+    on any date the ByMykel join came back empty.
+    """
+
+    @staticmethod
+    def _train_set():
+        return pd.DataFrame({
+            "return_1d": [0.1, -0.2, 0.0],
+            "price_zscore_30d": [1.0, 0.0, -1.0],
+            "rarity_meta_rank": [6, 3, 1],
+            "is_meta_stattrak": [1, 0, 0],
+            "float_meta_min": [0.0, 0.07, 0.15],
+            "target_exceed_7d": [1, 0, 1],
+        })
+
+    FEATURE_COLS = ["return_1d", "price_zscore_30d"]
+
+    def test_defaults_off(self, monkeypatch):
+        monkeypatch.delenv("EXCEEDANCE_META", raising=False)
+        assert ItemForecaster.exceedance_meta_enabled() is False
+
+    @pytest.mark.parametrize("value,expected", [
+        ("1", True), ("0", False), ("", False), ("true", False),
+    ])
+    def test_only_the_literal_one_enables_it(self, monkeypatch, value, expected):
+        monkeypatch.setenv("EXCEEDANCE_META", value)
+        assert ItemForecaster.exceedance_meta_enabled() is expected
+
+    def test_disabled_matrix_is_exactly_the_allowlist(self, monkeypatch):
+        monkeypatch.delenv("EXCEEDANCE_META", raising=False)
+        fc = ItemForecaster.__new__(ItemForecaster)
+        X = fc._exceedance_feature_matrix(self._train_set(), self.FEATURE_COLS)
+        assert list(X.columns) == self.FEATURE_COLS
+
+    def test_enabled_appends_present_meta_columns_sorted(self, monkeypatch):
+        monkeypatch.setenv("EXCEEDANCE_META", "1")
+        fc = ItemForecaster.__new__(ItemForecaster)
+        X = fc._exceedance_feature_matrix(self._train_set(), self.FEATURE_COLS)
+        # Allowlist order is preserved; the widening is appended, sorted, so the
+        # column order is a function of the flag alone and not of frame order.
+        assert list(X.columns) == self.FEATURE_COLS + [
+            "float_meta_min", "is_meta_stattrak", "rarity_meta_rank"]
+
+    def test_enabled_with_no_meta_columns_does_not_raise(self, monkeypatch):
+        monkeypatch.setenv("EXCEEDANCE_META", "1")
+        fc = ItemForecaster.__new__(ItemForecaster)
+        bare = self._train_set().drop(columns=[
+            "rarity_meta_rank", "is_meta_stattrak", "float_meta_min"])
+        X = fc._exceedance_feature_matrix(bare, self.FEATURE_COLS)
+        assert list(X.columns) == self.FEATURE_COLS
+
+    def test_a_meta_column_already_allowlisted_is_not_duplicated(self, monkeypatch):
+        monkeypatch.setenv("EXCEEDANCE_META", "1")
+        fc = ItemForecaster.__new__(ItemForecaster)
+        cols = self.FEATURE_COLS + ["rarity_meta_rank"]
+        X = fc._exceedance_feature_matrix(self._train_set(), cols)
+        assert list(X.columns) == cols + ["float_meta_min", "is_meta_stattrak"]

@@ -246,13 +246,29 @@ jobs:
           # cannot fail a run: the audit swallows its own exceptions.
           # docs/changelog/2026-08-25-centre-shrinks-to-zero-and-the-dollar-band-is-the-wedge.md
           ANCHOR_AUDIT: "1"
-          # Widen the exceedance head with 9 item-metadata features (rarity,
-          # stattrak/souvenir, float range, crate/collection IDs). Implies
-          # BYMYKEL_METADATA=1. Main model unchanged — only the exceedance
-          # head sees the extra columns. Builds at the next retrain.
-          EXCEEDANCE_META: "1"
+          # EXCEEDANCE_META REMOVED 2026-09-09 — measured and REFUTED, and it
+          # was harmful, not merely null. Paired over 25-26 walk-forward folds
+          # per horizon (scripts/exceedance_meta_ab.py): held-out log loss is
+          # WORSE at all four horizons (significant at 7/14/30d, up to +0.014 at
+          # 30d) and held-out AUC is significantly NEGATIVE at 7d (-0.029, better
+          # in only 8 of 26 folds). The trained-cohort gains are memorisation
+          # through type_meta_crate_id / type_meta_collection_id (~110-300 levels
+          # over ~870 items) — a permuted placebo is null in all 16 cells, and a
+          # static_only arm without the ID columns is null out of sample. The
+          # same nine columns were already refuted against the centre on
+          # 2026-08-06. Do not re-add without a NEW column family.
+          # docs/changelog/2026-09-09-exceedance-meta-refuted.md
+          #
           # Anomaly/regime GBM: P(|return_h| > 2σ_item). Served as anomaly_p
           # in the API — an alert flag, not a band input. Builds at retrain.
+          # MEASURED 2026-09-09 and it holds up: held-out AUC +0.139/+0.153/
+          # +0.128/+0.129 over a featureless null at 3/7/14/30d, every interval
+          # clear of zero, log loss better at 3/7/14d and a tie at 30d — the
+          # first GBM here to beat a featureless rule. The label's 2σ threshold
+          # was rebuilt the same day to use the strictly-prior return_{h}d
+          # instead of trailing target_return_{h}d, which resolved h days after
+          # its own row; the AUC survives the fix unchanged to slightly better.
+          # docs/changelog/2026-09-09-anomaly-head-beats-its-null.md
           ANOMALY_GBM: "1"
           # Per-item shrinkage K: replaces the global CLIMATOLOGY_SHRINK_K=320
           # with a per-item optimal K predicted by a GBM from item statistics.

@@ -102,7 +102,8 @@ class PredictionOut(BaseModel):
     # Volatility/stability tags (v1). Derived from the served band + exceed_p; no
     # new modelling. `expected_swing_pct` is the calibrated half-band as a
     # fraction of the mid ("+/-X% over the horizon"). `move_odds` is the
-    # magnitude signal P(move > round-trip cost), straight from `exceed_p`; NULL
+    # magnitude signal P(move > round-trip cost), `exceed_p` through the
+    # isotonic calibrator (raw head output on artifacts predating it); NULL
     # on artifacts predating the exceedance head. `stability_label` ranks the
     # swing against the within-horizon >=$1 universe tertiles, so it is
     # relative-to-peers, not an absolute cutoff. See api/volatility_tags.py.

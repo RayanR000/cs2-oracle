@@ -998,6 +998,20 @@ class ItemForecaster:
         # (Phase 2), never a directional call. A value is None where the
         # horizon had fewer than two classes to fit.
         self.exceedance_models: Dict[int, Optional[lgb.Booster]] = {}
+        # Per-horizon isotonic calibrator for the exceedance head, fitted on
+        # OUT-OF-FOLD (p_raw, y) pairs from the CV path: {horizon: {"xs": [...],
+        # "ys": [...]}} — a monotone stepwise map raw p -> calibrated p,
+        # applied by exceedance_probability() before serving as `move_odds`.
+        # Absent (old artifact, degenerate horizon, or EXCEEDANCE_CALIBRATE=0)
+        # means "serve the raw head output". The BAND never reads this: its
+        # q_hat is dimensionally tied to the RAW p (matched pair), so
+        # band_scale() explicitly asks for calibrated=False.
+        self.exceedance_calibrators: Dict[int, Dict[str, List[float]]] = {}
+        # Per-horizon fit report beside the map above: {horizon: {"method",
+        # "n_rows", "brier_raw", "brier_cal", "ece_raw", "ece_cal", ...}}.
+        # Report-only (nothing serves from it); persisted so a reader of the
+        # artifact can quote the calibration without re-running training.
+        self.exceedance_calibration_meta: Dict[int, Dict[str, Any]] = {}
         self.anomaly_models: Dict[int, Optional[lgb.Booster]] = {}
         self.vol_rank_models: Dict[int, List[lgb.Booster]] = {}
         self.vol_rank_norm: Dict[int, float] = {}
@@ -1473,6 +1487,24 @@ class ItemForecaster:
         docs/superpowers/plans/2026-08-16-exceedance-band-scale-phase2-plan.md.
         """
         return os.environ.get("EXCEEDANCE_HEAD") == "1"
+
+    @staticmethod
+    def exceedance_calibrate_enabled() -> bool:
+        """Whether to fit the isotonic calibrator on the exceedance head's OOF
+        (p_raw, y) pairs and serve the calibrated probability as `move_odds`.
+
+        The head is a raw LightGBM binary output with no probability-calibration
+        layer: replay reliability reads ECE <1.3pp at h3/h7 but ~3.8pp at h30,
+        so the served number is not trustworthy where it is most needed. The
+        calibrator is a monotone stepwise map fitted on the CV path's
+        out-of-fold pairs — honest by construction, the same cross-fit argument
+        as the learned band scale — and persisted beside the head. Serving
+        applies it to the disclosed `exceed_p` only; the BAND keeps the raw p
+        (`band_scale` asks for `calibrated=False`) because its q_hat is
+        dimensionally tied to it. On by default; set EXCEEDANCE_CALIBRATE=0 to
+        serve raw probabilities (only "0" disables).
+        """
+        return os.environ.get("EXCEEDANCE_CALIBRATE", "1") != "0"
 
     @staticmethod
     def exceedance_meta_enabled() -> bool:
@@ -5334,13 +5366,32 @@ class ItemForecaster:
         # signal — gated by ANOMALY_GBM=1. Uses the same winsorized return
         # and voids as the exceedance label.
         if self.anomaly_gbm_enabled():
-            item_std = (df.groupby("item_id")[f"target_return_{horizon}d"]
-                        .transform(lambda s: s.shift(1).rolling(60, min_periods=10).std()))
-            anomaly_thr = 2.0 * item_std
-            anom = (ret.abs() > anomaly_thr).astype(float)
-            anom[ret.isna().to_numpy()] = np.nan
-            anom[item_std.isna().to_numpy()] = np.nan
-            df[f"target_anomaly_{horizon}d"] = anom
+            # The threshold is built from `return_{h}d` -- the BACKWARD h-day
+            # return, already observed at the row's own date -- and not from
+            # trailing `target_return_{h}d`, which was the original definition.
+            # Each trailing target resolves h days AFTER its own row, so at h>1
+            # that threshold was normalised by returns overlapping the
+            # prediction window and neighbouring rows shared it. Measured
+            # 2026-09-09 (docs/changelog/2026-09-09-anomaly-head-beats-its-null.md):
+            # switching to the strictly-prior threshold leaves the head's
+            # held-out AUC unchanged to slightly better (+0.139/+0.153/+0.128/
+            # +0.129 over a featureless null at 3/7/14/30d), so the overlap was
+            # never what the head was reading -- but the label is now knowable
+            # at serve time, which the old one was not.
+            ret_col = f"return_{horizon}d"
+            if ret_col not in df.columns:
+                logger.warning(
+                    f"  ANOMALY_GBM=1 but {ret_col} is absent — the anomaly "
+                    f"label needs a strictly-prior threshold and will not be "
+                    f"built. Run prepare_targets on an engineered frame.")
+            else:
+                prior_std = (df.groupby("item_id")[ret_col]
+                             .transform(lambda s: s.shift(1)
+                                        .rolling(60, min_periods=10).std()))
+                anom = (ret.abs() > 2.0 * prior_std).astype(float)
+                anom[ret.isna().to_numpy()] = np.nan
+                anom[prior_std.isna().to_numpy()] = np.nan
+                df[f"target_anomaly_{horizon}d"] = anom
 
         return df
 
@@ -6657,6 +6708,17 @@ class ItemForecaster:
                 )
             self._calibrate_confidence(horizon=horizon, records_df=records_df)
 
+            # Isotonic calibration of the exceedance head on the same OOF
+            # (p, y) pairs q_hat just used. Ordered AFTER the conformal fit so
+            # the log reads band-then-probability, and it must stay
+            # report-plus-map: the band above is untouched (it serves raw p),
+            # while the disclosed move_odds serves through the map this fits.
+            # None when the horizon has no usable pairs — visibly absent from
+            # cv_results rather than a zero, same rule classifier_accuracy_ge1
+            # follows.
+            exceed_cal_report = self._fit_exceedance_calibrator(
+                horizon, records_df, out_of_sample)
+
             # The sigma axis, on the real OOF residuals. Ordered AFTER
             # calibration so it audits the same records q_hat was fitted on, and
             # it must stay report-only: see _sigma_tilt_audit.
@@ -6960,6 +7022,12 @@ class ItemForecaster:
                 **rank_ic_summary,
                 "mean_trees_per_fold": mean_trees,
                 "pt": pt,
+                # Isotonic calibration of the disclosed exceedance probability.
+                # None when the horizon produced no usable OOF (p, y) pairs —
+                # visibly absent, never a zero. Carries Brier raw->cal, ECE
+                # raw->cal, and both reliability curves, so the served
+                # move_odds number is quotable beside its calibration.
+                "exceedance_calibration": exceed_cal_report,
                 # The expanding-window screen. None when fewer than 3 folds
                 # reported a `fold_q_hat` — visibly absent rather than a rho
                 # over two points. Diagnostic; nothing builds a band from it.
@@ -7841,8 +7909,214 @@ class ItemForecaster:
     CLIMATOLOGY_REACTIVE_FAST_HL = "9D"
     CLIMATOLOGY_REACTIVE_SLOW_HL = "45D"
 
+    #: Fewest usable (p_raw, y) pairs an isotonic calibrator may be fitted on.
+    #: Below this the stepwise map is decided by a handful of tail draws and
+    #: would memorise noise into the served probability. Refuse (serve raw)
+    #: rather than fit.
+    MIN_EXCEEDANCE_CALIBRATION_ROWS = 200
+
+    #: Fixed reliability bins for the exceedance report. Fixed-width over
+    #: [0, 1] (not quantiles) so a bin means the same thing across horizons
+    #: and runs — the point is whether a stated 0.8 realises ~80% of the time.
+    #: Same convention as scripts/replay_serving.py::_reliability_rows.
+    EXCEEDANCE_RELIABILITY_BINS = 10
+
+    @staticmethod
+    def exceedance_brier_score(p, y) -> float:
+        """Mean squared error of a probability forecast: mean((p - y)^2).
+
+        NaN when there are no finite pairs, so a degenerate horizon never
+        takes out the report that carries it.
+        """
+        p = np.asarray(p, dtype=float)
+        y = np.asarray(y, dtype=float)
+        ok = np.isfinite(p) & np.isfinite(y)
+        if not ok.any():
+            return float("nan")
+        return float(np.mean((p[ok] - y[ok]) ** 2))
+
+    @staticmethod
+    def exceedance_reliability_table(p, y,
+                                     n_bins: int = EXCEEDANCE_RELIABILITY_BINS
+                                     ) -> List[Dict[str, float]]:
+        """Predicted-vs-realised exceedance rate per fixed-width probability bin.
+
+        Each row carries {lo, hi, n, pred, realized}: the bin edges, the row
+        count, the mean predicted probability and the realised exceedance rate.
+        Empty bins are skipped. Returns [] when there are no finite pairs, so
+        the report is skipped rather than printed empty.
+        """
+        p = np.asarray(p, dtype=float)
+        y = np.asarray(y, dtype=float)
+        ok = np.isfinite(p) & np.isfinite(y)
+        if not ok.any():
+            return []
+        p, y = p[ok], y[ok]
+        edges = np.linspace(0.0, 1.0, n_bins + 1)
+        idx = np.clip(np.digitize(p, edges[1:-1]), 0, n_bins - 1)
+        rows = []
+        for b in range(n_bins):
+            m = idx == b
+            if not m.any():
+                continue
+            rows.append({"lo": float(edges[b]), "hi": float(edges[b + 1]),
+                         "n": int(m.sum()), "pred": float(p[m].mean()),
+                         "realized": float(y[m].mean())})
+        return rows
+
+    @staticmethod
+    def exceedance_ece(table: List[Dict[str, float]]) -> float:
+        """Expected calibration error: count-weighted mean |pred - realized|.
+
+        NaN on an empty table (no head), so it never takes out the report.
+        Same definition as scripts/replay_serving.py::_reliability_ece.
+        """
+        n = sum(r["n"] for r in table)
+        if n == 0:
+            return float("nan")
+        return float(sum(r["n"] * abs(r["pred"] - r["realized"])
+                         for r in table) / n)
+
+    @staticmethod
+    def _isotonic_fit(p_raw: np.ndarray,
+                      y: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
+        """Monotone non-decreasing stepwise fit of y on p_raw via Pool Adjacent
+        Violators, in pure numpy (no sklearn dependency).
+
+        Sorts by p_raw, pools adjacent blocks while a block average exceeds its
+        successor's, and compresses to changepoints: xs are block-mean
+        predicted probabilities, ys the block realised rates. Returns
+        (xs, ys), strictly increasing in xs, each y in [0, 1].
+        """
+        order = np.argsort(p_raw, kind="stable")
+        ps = p_raw[order]
+        vs = y[order].astype(float)
+        # Block sums / counts; pool while the previous block exceeds this one.
+        sums: List[float] = []
+        counts: List[int] = []
+        psum: List[float] = []
+        for i in range(len(vs)):
+            sums.append(vs[i])
+            counts.append(1)
+            psum.append(ps[i])
+            while len(sums) >= 2 and sums[-2] / counts[-2] > sums[-1] / counts[-1]:
+                sums[-2] += sums[-1]
+                counts[-2] += counts[-1]
+                psum[-2] += psum[-1]
+                del sums[-1]
+                del counts[-1]
+                del psum[-1]
+        xs = np.array([s / c for s, c in zip(psum, counts)], dtype=float)
+        ys = np.array([np.clip(s / c, 0.0, 1.0) for s, c in zip(sums, counts)],
+                      dtype=float)
+        # Merge duplicate xs (constant-p blocks), keeping the last (pooled) y.
+        keep = np.ones(len(xs), dtype=bool)
+        keep[:-1] = np.diff(xs) > 0
+        return xs[keep], ys[keep]
+
+    def _fit_exceedance_calibrator(self, horizon: int,
+                                   records_df: pd.DataFrame,
+                                   out_of_sample: bool) -> Optional[Dict[str, Any]]:
+        """Fit the isotonic map raw p -> calibrated p on OOF (p, y) pairs.
+
+        Reads `exceed_p` (the per-fold head's held-out probability) and
+        `exceed_y` (the realised label) off the same calibration records q_hat
+        uses, so the fit is honest whenever the records are out-of-fold. Stores
+        the map in `self.exceedance_calibrators[horizon]` and the Brier/ECE
+        before/after report in `self.exceedance_calibration_meta[horizon]`,
+        and returns that report for `cv_results`.
+
+        Returns None — and leaves any previous entry for this horizon REMOVED,
+        never stale — when the flag is off, the records carry no usable pairs,
+        or the horizon degenerated. On the SKIP_CV holdout path the pairs are
+        in-sample (the served head scored its own training rows) and the fit
+        is optimistic: fitted anyway, and said so loudly.
+        """
+        self.exceedance_calibrators.pop(horizon, None)
+        self.exceedance_calibration_meta.pop(horizon, None)
+        if not self.exceedance_calibrate_enabled():
+            return None
+        if ("exceed_p" not in records_df.columns
+                or "exceed_y" not in records_df.columns):
+            return None
+        p = records_df["exceed_p"].to_numpy(dtype=float)
+        y = records_df["exceed_y"].to_numpy(dtype=float)
+        ok = np.isfinite(p) & np.isfinite(y)
+        if int(ok.sum()) < self.MIN_EXCEEDANCE_CALIBRATION_ROWS:
+            logger.warning(
+                f"  {horizon}d exceedance calibration: only {int(ok.sum())} "
+                f"usable (p, y) pairs (need >= "
+                f"{self.MIN_EXCEEDANCE_CALIBRATION_ROWS}) — serving the raw "
+                f"head output for this horizon."
+            )
+            return None
+        p, y = np.clip(p[ok], 1e-3, 1.0), y[ok].astype(float)
+        xs, ys = self._isotonic_fit(p, y)
+        p_cal = np.interp(p, xs, ys, left=float(ys[0]), right=float(ys[-1]))
+        raw_table = self.exceedance_reliability_table(p, y)
+        cal_table = self.exceedance_reliability_table(p_cal, y)
+        meta: Dict[str, Any] = {
+            "method": "isotonic",
+            "n_rows": int(ok.sum()),
+            "out_of_sample": bool(out_of_sample),
+            "n_steps": int(len(xs)),
+            "base_rate": round(float(y.mean()), 4),
+            "brier_raw": round(self.exceedance_brier_score(p, y), 5),
+            "brier_cal": round(self.exceedance_brier_score(p_cal, y), 5),
+            "ece_raw_pp": round(100.0 * self.exceedance_ece(raw_table), 3),
+            "ece_cal_pp": round(100.0 * self.exceedance_ece(cal_table), 3),
+            "reliability_raw": [
+                {k: (round(v, 4) if isinstance(v, float) else v)
+                 for k, v in r.items()} for r in raw_table],
+            "reliability_cal": [
+                {k: (round(v, 4) if isinstance(v, float) else v)
+                 for k, v in r.items()} for r in cal_table],
+        }
+        self.exceedance_calibrators[horizon] = {
+            "xs": [float(v) for v in xs], "ys": [float(v) for v in ys]}
+        self.exceedance_calibration_meta[horizon] = meta
+        oof_note = "OOF" if out_of_sample else "IN-SAMPLE (holdout path)"
+        logger.info(
+            f"  {horizon}d exceedance calibration [isotonic, {oof_note}, "
+            f"n={meta['n_rows']}, steps={meta['n_steps']}]: "
+            f"Brier {meta['brier_raw']:.5f} -> {meta['brier_cal']:.5f}, "
+            f"ECE {meta['ece_raw_pp']:.2f}pp -> {meta['ece_cal_pp']:.2f}pp, "
+            f"base rate {meta['base_rate']:.3f}."
+        )
+        if not out_of_sample:
+            logger.warning(
+                f"  {horizon}d exceedance calibrator was fitted IN-SAMPLE "
+                f"(the holdout head scored its own training rows), so the "
+                f"Brier/ECE improvement above is optimistic. Run without "
+                f"SKIP_CV=1 for an honest fit."
+            )
+        return dict(meta)
+
+    def _apply_exceedance_calibrator(self, horizon: int,
+                                     p_raw: np.ndarray) -> np.ndarray:
+        """Map raw head probabilities through this horizon's isotonic fit.
+
+        Piecewise-linear interpolation over the stored changepoints, flat
+        outside (a served p beyond anything seen in calibration gets the edge
+        rate, never an extrapolation). No calibrator (old artifact, degenerate
+        horizon, flag off) returns the input unchanged — the caller cannot tell
+        and must not need to.
+        """
+        if not self.exceedance_calibrate_enabled():
+            return np.asarray(p_raw, dtype=float)
+        cal = self.exceedance_calibrators.get(horizon)
+        if not cal:
+            return np.asarray(p_raw, dtype=float)
+        xs = np.asarray(cal["xs"], dtype=float)
+        ys = np.asarray(cal["ys"], dtype=float)
+        if xs.size == 0:
+            return np.asarray(p_raw, dtype=float)
+        return np.interp(np.asarray(p_raw, dtype=float),
+                         xs, ys, left=float(ys[0]), right=float(ys[-1]))
+
     def exceedance_probability(self, horizon: int,
-                               rows: pd.DataFrame) -> Optional[np.ndarray]:
+                               rows: pd.DataFrame,
+                               calibrated: bool = True) -> Optional[np.ndarray]:
         """`P(the h-day move clears the round-trip cost)` for `rows`, from the
         loaded exceedance head — FLAG-INDEPENDENT.
 
@@ -7851,7 +8125,18 @@ class ItemForecaster:
         served, whether the band uses climatology, sigma, or the exceedance scale.
         A magnitude signal, never a directional call (invariant 4). Missing head
         features are filled from `feature_medians`, exactly as the band-scale path
-        does. Clipped to (1e-3, 1] so a degenerate zero cannot be published as a
+        does.
+
+        With `calibrated=True` (the default — the disclosed `exceed_p` /
+        `move_odds` path) the raw head output is mapped through this horizon's
+        isotonic calibrator, fitted on out-of-fold (p, y) pairs at train time;
+        with no calibrator (an artifact written before this existed, a
+        degenerate horizon, or EXCEEDANCE_CALIBRATE=0) the raw output is served
+        unchanged. `band_scale` passes `calibrated=False`: the band's q_hat was
+        calibrated against the RAW p, so serving it a calibrated one would put
+        a mismatched q_hat behind the band.
+
+        Clipped to (1e-3, 1] so a degenerate zero cannot be published as a
         certainty. Returns None when this horizon has no head (a degenerate
         <2-class horizon, or a pre-Phase-2 artifact) so the caller emits a null
         field rather than a fabricated probability.
@@ -7865,7 +8150,11 @@ class ItemForecaster:
         if not self.feature_medians.empty:
             X = self._impute_features(
                 X, self.feature_medians.reindex(cols), served=True)
-        return np.clip(head.predict(X), 1e-3, 1.0)
+        p = np.clip(head.predict(X), 1e-3, 1.0)
+        if calibrated:
+            p = np.clip(self._apply_exceedance_calibrator(horizon, p),
+                        1e-3, 1.0)
+        return p
 
     def band_scale(self, horizon: int, rows: pd.DataFrame, sigma):
         """The learned scale for a set of rows, or None to use `sigma ** beta`.
@@ -7900,7 +8189,11 @@ class ItemForecaster:
         # calibrated against sigma * sqrt(p_exceed) iff `_exceedance_scale_served`,
         # so applying it on any other artifact would serve a mismatched q_hat.
         if self._exceedance_scale_served():
-            p = self.exceedance_probability(horizon, rows)
+            # RAW probability, deliberately: q_hat was calibrated against
+            # sigma * sqrt(p_raw), so a calibrated p here would serve a
+            # mismatched q_hat. The disclosed exceed_p path calibrates; the
+            # band denominator never does.
+            p = self.exceedance_probability(horizon, rows, calibrated=False)
             if p is not None:
                 return np.asarray(sigma, dtype=float) * np.sqrt(p)
             # Flag on but no head for this horizon (degenerate): fall through to
@@ -8039,7 +8332,8 @@ class ItemForecaster:
                            direction_class=None,
                            residual_actual_ret=None,
                            row_index=None,
-                           exceed_p=None) -> List[Dict[str, float]]:
+                           exceed_p=None,
+                           exceed_y=None) -> List[Dict[str, float]]:
         """Per-row calibration records, shared by the CV and holdout paths.
 
         `residual_pct` / `sigma` are what q_hat is fitted on, `mid_ret` is what
@@ -8125,6 +8419,19 @@ class ItemForecaster:
                 f"calibration rows. It is positional: a mismatched length means "
                 f"the caller's arrays are not on one frame."
             )
+        # The realised exceedance LABEL behind that probability (NaN where the
+        # return label was voided). Carried so the isotonic calibrator and the
+        # Brier/reliability report can be fitted on the same OOF rows q_hat
+        # uses — honest by construction, no second data pass. NaN labels are
+        # kept on the record (the band still calibrates on the row) and
+        # filtered at fit time.
+        exc_y = None if exceed_y is None else np.asarray(exceed_y, dtype=float)
+        if exc_y is not None and exc_y.shape[0] != mid.shape[0]:
+            raise ValueError(
+                f"exceed_y has {exc_y.shape[0]} entries against {mid.shape[0]} "
+                f"calibration rows. It is positional: a mismatched length means "
+                f"the caller's arrays are not on one frame."
+            )
         idx = None if row_index is None else np.asarray(row_index)
         if idx is not None and idx.shape[0] != mid.shape[0]:
             # Loud, because the silent version attaches one item's error to
@@ -8150,6 +8457,8 @@ class ItemForecaster:
                 rec["row_index"] = idx[i]
             if exc is not None:
                 rec["exceed_p"] = float(exc[i])
+            if exc_y is not None:
+                rec["exceed_y"] = float(exc_y[i])
             records.append(rec)
         return records
 
@@ -8215,6 +8524,8 @@ class ItemForecaster:
             residual_actual_ret=self._calibration_returns(
                 val_set, horizon, y_val.values),
             exceed_p=holdout_exceed,
+            exceed_y=(val_set[f"target_exceed_{horizon}d"].to_numpy(dtype=float)
+                      if f"target_exceed_{horizon}d" in val_set.columns else None),
             # Carried here too. Without it a learned scale would silently have
             # no features on exactly the horizons that fell back to this path --
             # the short-history ones, which are the hardest to size a band for.
@@ -10270,13 +10581,19 @@ class ItemForecaster:
                     pred_cls, actual_cls, val_df["date"]))
 
             # Out-of-fold exceedance probability for the band scale
-            # (EXCEEDANCE_SCALE). Fit ON THIS FOLD's train and predict on its
-            # held-out val, so the p that scales q_hat never saw the rows it
-            # scales — the same cross-fit honesty the learned scale needs, gotten
-            # here for free because the fold split already holds val out. Gated:
-            # unless the flag is on, no head is fit and no cost is paid.
+            # (EXCEEDANCE_SCALE) AND for the isotonic calibrator + Brier /
+            # reliability report below. Fit ON THIS FOLD's train and predict on
+            # its held-out val, so the p that scales q_hat — and the (p, y)
+            # pairs the calibrator is fitted on — never saw the rows they
+            # describe: the same cross-fit honesty the learned scale needs,
+            # gotten here for free because the fold split already holds val
+            # out. Gated on EITHER flag that trains the head: with
+            # EXCEEDANCE_HEAD=1 (production: disclosed move_odds on a
+            # climatology band) the scale gate alone would leave no OOF p and
+            # the head would serve uncalibrated with no Brier anywhere.
             fold_exceed_p = None
-            if self.exceedance_scale_enabled():
+            if (self.exceedance_scale_enabled()
+                    or self.exceedance_head_enabled()):
                 X_exc_train = self._exceedance_feature_matrix(
                     train_df, self.feature_cols)
                 X_exc_train_clean = X_exc_train.replace([np.inf, -np.inf], np.nan)
@@ -10307,6 +10624,8 @@ class ItemForecaster:
                 fold_p50, actual_returns, fold_sigma, current_prices,
                 direction_class=pred_cls, residual_actual_ret=cal_returns,
                 exceed_p=fold_exceed_p,
+                exceed_y=(val_df[f"target_exceed_{horizon}d"].to_numpy(dtype=float)
+                          if f"target_exceed_{horizon}d" in val_df.columns else None),
                 # `val_df` is a boolean-mask slice of `tdf` with no
                 # `reset_index`, and `tdf` carries a unique RangeIndex out of
                 # `prepare_targets`' merge -- so these labels index straight back
@@ -11115,6 +11434,21 @@ class ItemForecaster:
             "feature_native_nan": self.feature_native_nan_enabled(),
             "exceedance_scale": self.exceedance_scale_enabled(),
             "exceedance_meta": self.exceedance_meta_enabled(),
+            # The isotonic map raw p -> calibrated p per horizon, fitted on
+            # the CV path's out-of-fold (p, y) pairs, plus the Brier/ECE
+            # before/after report. The disclosed exceed_p serves THROUGH the
+            # map; the band serves raw p (matched pair with q_hat), so this
+            # key changes no band width. Absent on every artifact written
+            # before this existed — and then the raw head output is served,
+            # which is exactly what those artifacts' move_odds always was.
+            "exceedance_calibration": {
+                str(h): {
+                    "xs": list(cal["xs"]),
+                    "ys": list(cal["ys"]),
+                    "meta": dict(self.exceedance_calibration_meta.get(h, {})),
+                }
+                for h, cal in self.exceedance_calibrators.items()
+            },
             # The climatology band scale: a serving switch AND its lookup tables.
             # predict reconstructs the per-item scale from these — there is no
             # booster. Matched-pair rule: never difference a q_hat across this.
@@ -11271,6 +11605,39 @@ class ItemForecaster:
         self._artifact_feature_native_nan = meta.get("feature_native_nan")
         self._artifact_exceedance_scale = meta.get("exceedance_scale")
         self._artifact_exceedance_meta = meta.get("exceedance_meta")
+        # The isotonic calibrators. `.get` default {} for the same reason as
+        # `conformal_beta`: absent on every artifact written before this
+        # existed, and absence means "serve the raw head output" through
+        # `_apply_exceedance_calibrator`, which is what those artifacts'
+        # move_odds always was. A horizon whose map fails to parse is dropped
+        # rather than defaulted — a fabricated map is worse than raw p.
+        self.exceedance_calibrators = {}
+        self.exceedance_calibration_meta = {}
+        for h_str, cfg in meta.get("exceedance_calibration", {}).items():
+            try:
+                h = int(h_str)
+                xs = [float(v) for v in cfg.get("xs", [])]
+                ys = [float(v) for v in cfg.get("ys", [])]
+            except (ValueError, TypeError):
+                continue
+            if (len(xs) != len(ys) or len(xs) == 0
+                    or any(not np.isfinite(v) for v in xs + ys)
+                    or any(b < a for a, b in zip(xs, xs[1:]))
+                    or min(ys) < 0.0 or max(ys) > 1.0):
+                logger.warning(
+                    f"  Dropping corrupt exceedance calibrator for {h_str}d "
+                    f"({len(xs)} points) — serving the raw head output."
+                )
+                continue
+            self.exceedance_calibrators[h] = {"xs": xs, "ys": ys}
+            if isinstance(cfg.get("meta"), dict):
+                self.exceedance_calibration_meta[h] = dict(cfg["meta"])
+        if self.exceedance_calibrators:
+            logger.info(
+                f"  Loaded {len(self.exceedance_calibrators)} exceedance "
+                f"calibrators ({sorted(self.exceedance_calibrators)}d) — "
+                f"move_odds serves through the isotonic map, the band on raw p."
+            )
         self._artifact_climatology_scale = meta.get("climatology_scale")
         self._artifact_climatology_shrink_k = meta.get("climatology_shrink_k")
         self._artifact_climatology_reactive = meta.get("climatology_reactive")
