@@ -1242,8 +1242,17 @@ def backtest_forecasts(db, today=None, min_price=0, reresolve=False, rescore=Fal
             # a row can satisfy both predicates. Both are non-fatal, so the
             # precedence only decides which reason gets reported — name the one
             # an operator can act on.
+            # Counted over the leg-effective window, not the whole horizon: the
+            # actual leg can only draw from (max(f, target - MAX_WINDOW_SPAN_DAYS),
+            # target] — older days fail the anchor-staleness rule and days at or
+            # before f fail the disjoint guard — so a hole at the target end of
+            # a long horizon is a gap even when the horizon as a whole still
+            # holds SMOOTH_WINDOW days. Whole-horizon counting pinned the
+            # 2026-09-09 run at 14.3% fresh over 16,626 h=30 rows whose leg
+            # window held exactly 2 days globally where 3 are required.
             gap = classify_archive_gap(
-                f_date, target_date, covered_days, SMOOTH_WINDOW
+                f_date, target_date, covered_days, SMOOTH_WINDOW,
+                staleness_days=MAX_WINDOW_SPAN_DAYS,
             )
 
             def _count_unresolvable():

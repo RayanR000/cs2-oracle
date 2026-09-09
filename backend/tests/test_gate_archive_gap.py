@@ -27,7 +27,7 @@ instead of becoming a silent excuse.
 """
 from __future__ import annotations
 
-from datetime import date
+from datetime import date, timedelta
 
 import pytest
 
@@ -168,6 +168,101 @@ class TestBackwardCompatibility:
         )
         assert r.ok, r.reason
         assert r.gap_pct is None or r.gap_pct == 0
+
+
+class TestLegWindowAboveTheStalenessBound:
+    """The horizon-wide count is blind past the resolver's staleness bound.
+
+    Run 34351633071 (2026-09-09): the 2026-08-28..09-05 collection holes left
+    exactly 2 covered days in the 7-day window the h=30 actual leg may draw
+    from, while the 30-day horizon still held 23-24. Whole-horizon counting
+    read all 16,626 as FRESH and failed the run at 14.3% over a hole no item
+    could resolve through — at most 2 observations existed globally where
+    ``resolve_anchors`` requires 3 within 7 days of the anchor. Counting only
+    the leg-effective range (``f < day <= target`` with ``day >= target -
+    staleness``) classifies them as the collection gap they are.
+    """
+
+    HOLES = {
+        date(2026, 8, 28), date(2026, 8, 30), date(2026, 8, 31),
+        date(2026, 9, 1), date(2026, 9, 3), date(2026, 9, 4),
+        date(2026, 9, 5),
+    }
+
+    def _covered(self, f_date, target_date):
+        days = set()
+        d = f_date
+        while d <= target_date:
+            days.add(d)
+            d = date.fromordinal(d.toordinal() + 1)
+        return days - self.HOLES
+
+    def test_hole_at_the_target_end_of_a_long_horizon_is_a_gap(self):
+        """h=30 dated 08-05, target 09-04: 24 days in the horizon, 2 in the leg."""
+        f_date, target = date(2026, 8, 5), date(2026, 9, 4)
+        covered = self._covered(f_date, target)
+        assert len([d for d in covered if f_date < d <= target]) == 24
+        assert classify_archive_gap(
+            f_date=f_date, target_date=target, covered_days=covered,
+            staleness_days=7,
+        )
+
+    def test_the_legacy_count_misses_it(self):
+        """Without the bound the same row reads FRESH — the 2026-09-09 failure."""
+        f_date, target = date(2026, 8, 5), date(2026, 9, 4)
+        assert not classify_archive_gap(
+            f_date=f_date, target_date=target,
+            covered_days=self._covered(f_date, target),
+        )
+
+    def test_a_full_leg_window_is_not_a_gap_at_any_horizon(self):
+        """h=30 dated 08-09, target 09-08: 4 leg days, resolves in production."""
+        f_date, target = date(2026, 8, 9), date(2026, 9, 8)
+        assert not classify_archive_gap(
+            f_date=f_date, target_date=target,
+            covered_days=self._covered(f_date, target),
+            staleness_days=7,
+        )
+
+    def test_exactly_a_window_in_the_leg_is_not_a_gap(self):
+        """h=30 dated 08-04, target 09-03: leg holds {08-27, 08-29, 09-02}.
+
+        The staleness floor is inclusive — resolve_anchors keeps an observation
+        exactly MAX_WINDOW_SPAN_DAYS back — so this cohort resolves and must
+        not be excused.
+        """
+        f_date, target = date(2026, 8, 4), date(2026, 9, 3)
+        covered = self._covered(f_date, target)
+        leg = sorted(d for d in covered
+                     if f_date < d <= target and d >= date(2026, 8, 27))
+        assert leg == [date(2026, 8, 27), date(2026, 8, 29), date(2026, 9, 2)]
+        assert not classify_archive_gap(
+            f_date=f_date, target_date=target, covered_days=covered,
+            staleness_days=7,
+        )
+
+    def test_a_hole_far_from_the_target_is_not_a_gap(self):
+        """h=30 missing one day 25 days out: 29 present, leg full — not excused."""
+        f_date, target = date(2026, 8, 5), date(2026, 9, 4)
+        covered = {f_date + timedelta(days=i) for i in range(1, 31)}
+        covered.discard(date(2026, 8, 11))
+        assert not classify_archive_gap(
+            f_date=f_date, target_date=target, covered_days=covered,
+            staleness_days=7,
+        )
+
+    def test_short_horizons_are_unchanged_by_the_bound(self):
+        """Below the bound the leg range IS the horizon, so the parameter is a no-op."""
+        covered = {date(2026, 7, 31), date(2026, 8, 1), date(2026, 8, 4)}
+        assert classify_archive_gap(
+            f_date=date(2026, 8, 1), target_date=date(2026, 8, 4),
+            covered_days=covered, staleness_days=7,
+        )
+        full = {date(2026, 7, d) for d in range(20, 32)}
+        assert not classify_archive_gap(
+            f_date=date(2026, 7, 25), target_date=date(2026, 7, 28),
+            covered_days=full, staleness_days=7,
+        )
 
 
 class TestClassifyArchiveGap:
