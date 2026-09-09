@@ -257,6 +257,8 @@ def _feature_group(name: str) -> str:
         return "price_technicals"
     if name.startswith("supply_churn"):
         return "supply_churn"
+    if name.startswith("ob_"):
+        return "orderbook"
     if name.startswith("supply_"):
         return "supply_depth"
     # Before the item_identity / temporal prefixes below, none of which can
@@ -431,7 +433,7 @@ class ItemForecaster:
     ALL_FEATURE_GROUPS = frozenset({
         "price_technicals", "supply_depth", "item_identity", "item_metadata",
         "temporal", "events", "cross_sectional", "social", "other",
-        "tier_lead", "supply_churn",
+        "tier_lead", "supply_churn", "orderbook",
     })
     # The tier lead-lag group, gated by tier_lead_enabled() the way
     # bymykel_metadata is -- the allowlist alone cannot admit it, because a group
@@ -442,6 +444,29 @@ class ItemForecaster:
     # dormant supply_depth group's other (live-snapshot) columns. Gated the same
     # way tier_lead is: the allowlist alone cannot admit it.
     SUPPLY_CHURN_GROUP = "supply_churn"
+    # Steam order-book group (2026-09-08 accuracy note, priority 1/3). Isolated
+    # so an A/B admits only the order-book columns, not the dormant
+    # supply_depth group's snapshot columns. Gated the same way tier_lead is:
+    # default OFF, enabled by ORDERBOOK_FEATURES=1 for the gated evaluation
+    # only. Accumulation is the long pole; nothing trains until the continuity
+    # gate (scripts/check_sidecar_continuity.py) reports enough dates.
+    #
+    # Free-source note: there is no paid book feed. These are ASK-SIDE proxies
+    # derived from the free supply panel's lis-skins ladder (p05/p25 asks,
+    # depth_5/10pct, inflow_24h, age, listing_count), which the doc notes is
+    # "collected but not yet evaluated". Bid-side quantities (spread,
+    # bid/ask imbalance, price impact) have no free source and are NOT
+    # represented here — a null on this group does not test those.
+    ORDERBOOK_GROUP = "orderbook"
+    ORDERBOOK_FEATURES = (
+        "ob_ladder_slope",
+        "ob_depth_concentration",
+        "ob_inflow_log",
+        "ob_age_median",
+        "ob_churn",
+        "ob_turnover",
+        "ob_present",
+    )
     TIER_LEAD_FEATURES = ("tier_lead_return_1d",)
     # The naive predictor N1 boosts from, negated: the one runnable baseline the
     # model measurably loses to on rank IC. See naive_init_score_enabled().
@@ -3327,6 +3352,105 @@ class ItemForecaster:
         logger.info("  supply depth features added")
         return df
 
+    @staticmethod
+    def _orderbook_enabled() -> bool:
+        """Whether the order-book evaluation features reach the frame.
+
+        Default OFF. Derives ask-side proxies from the free supply panel
+        (``supply-YYYY-MM.parquet``, lis-skins ladder). Set ORDERBOOK_FEATURES=1
+        for the gated A/B only — after the continuity gate reports enough
+        independent forecast dates, with a shuffled-feature placebo, and served
+        confirmation before anything ships.
+        """
+        return os.environ.get("ORDERBOOK_FEATURES") == "1"
+
+    def _fetch_orderbook(self) -> pd.DataFrame:
+        """Load ask-side book proxies from the free supply panel.
+
+        Filters to ``source == 'lis_skins'`` (the only feed with ladder
+        columns) and max-collapses per item-day. Returns item_id/date plus the
+        raw ladder fields the feature builder needs.
+        """
+        if hasattr(self, "_orderbook_cache") and self._orderbook_cache is not None:
+            return self._orderbook_cache
+        empty = pd.DataFrame(columns=["item_id", "date", "p05_ask", "p25_ask",
+                                      "depth_5pct", "depth_10pct", "listing_count",
+                                      "age_median_days", "inflow_24h"])
+        # Month partitions ONLY — same guard as _fetch_supply_snapshots: a bare
+        # `supply-*.parquet` also matches the BUFF `supply-history.parquet`
+        # sidecar, which is keyed differently and would raise inside this read.
+        paths = sorted(self.archive_dir.glob("supply-[0-9][0-9][0-9][0-9]-[0-9][0-9].parquet"))
+        if not paths:
+            self._orderbook_cache = empty
+            return empty
+        try:
+            frames = [pd.read_parquet(p, columns=["item_slug", "snapshot_day", "source",
+                                                  "listing_count", "p05_ask", "p25_ask",
+                                                  "depth_5pct", "depth_10pct",
+                                                  "age_median_days", "inflow_24h"])
+                      for p in paths]
+            raw = pd.concat(frames, ignore_index=True)
+            raw = raw[raw["source"] == "lis_skins"]
+            if raw.empty:
+                self._orderbook_cache = empty
+                return empty
+            df = (raw.groupby(["item_slug", "snapshot_day"], as_index=False).max()
+                  .rename(columns={"item_slug": "item_id", "snapshot_day": "date"}))
+            # The groupby carries the constant 'lis_skins' label through max();
+            # it is not a feature and must not reach the frame as a string col.
+            df = df.drop(columns=["source"], errors="ignore")
+            df["date"] = pd.to_datetime(df["date"]).dt.date
+            df = df.sort_values(["item_id", "date"]).reset_index(drop=True)
+            self._orderbook_cache = df
+            return df
+        except Exception as e:
+            logger.warning(f"  Failed to load ask-side book proxies: {e}")
+            self._orderbook_cache = empty
+            return empty
+
+    def _compute_orderbook_features(self, df: pd.DataFrame) -> pd.DataFrame:
+        """Attach ask-side book proxies (A/B only).
+
+        ``ob_ladder_slope`` — (p25-p05)/p05 ask dispersion (ask-side slope).
+        ``ob_depth_concentration`` — depth_5pct/depth_10pct (near-touch share).
+        ``ob_inflow_log`` — log1p(inflow_24h) listing inflow.
+        ``ob_age_median`` — median listing age in days (staleness).
+        ``ob_churn`` — day-over-day change in log1p(listing_count), the
+        velocity variant the doc argues is predictive (level is ~0pp).
+        ``ob_turnover`` — trailing volume / depth_5pct where both exist.
+
+        Missing book is missing: ``ob_present`` is 0 and levels are NaN where
+        no ladder row joined — never zero-filled.
+        """
+        book = self._fetch_orderbook()
+        if book.empty:
+            for col in self.ORDERBOOK_FEATURES:
+                df[col] = np.nan if col != "ob_present" else 0
+            df["ob_present"] = df["ob_present"].astype(int)
+            return df
+        df = df.merge(book, on=["item_id", "date"], how="left")
+        df["ob_present"] = df["p05_ask"].notna().astype(int)
+        anchor = df["p05_ask"].replace(0, np.nan)
+        df["ob_ladder_slope"] = ((df["p25_ask"] - df["p05_ask"]) / anchor).astype(np.float32)
+        df["ob_depth_concentration"] = (
+            df["depth_5pct"] / df["depth_10pct"].replace(0, np.nan)
+        ).astype(np.float32)
+        df["ob_inflow_log"] = np.log1p(df["inflow_24h"].where(df["inflow_24h"] >= 0)).astype(np.float32)
+        df["ob_age_median"] = df["age_median_days"].astype(np.float32)
+        loglist = np.log1p(df["listing_count"].where(df["listing_count"] > 0))
+        df["ob_churn"] = loglist.groupby(df["item_id"]).diff().astype(np.float32)
+        vol_col = next((c for c in ("volume_30d", "volume_mean_30d", "volume") if c in df.columns), None)
+        if vol_col is not None:
+            df["ob_turnover"] = (
+                df[vol_col].fillna(np.nan) / df["depth_5pct"].replace(0, np.nan)
+            ).astype(np.float32)
+        else:
+            df["ob_turnover"] = np.nan
+        df = df.drop(columns=["p05_ask", "p25_ask", "depth_5pct", "depth_10pct",
+                               "listing_count", "age_median_days", "inflow_24h"],
+                     errors="ignore")
+        return df
+
     # ── Social sentiment features (Reddit mentions, VADER scores) ──────
 
     def _fetch_social_mentions(self) -> pd.DataFrame:
@@ -5437,6 +5561,9 @@ class ItemForecaster:
         if self.TIER_LEAD_GROUP not in skip:
             df = self._add_tier_lead_features(df)
 
+        if self.ORDERBOOK_GROUP not in skip:
+            df = self._compute_orderbook_features(df)
+
         # Define feature columns (exclude metadata and target columns)
         self.feature_cols = self._select_feature_cols(
             df, self.HORIZONS, self._active_shelved_features())
@@ -6881,6 +7008,8 @@ class ItemForecaster:
             allowlist.add(self.TIER_LEAD_GROUP)
         if self._supply_churn_features_enabled():
             allowlist.add(self.SUPPLY_CHURN_GROUP)
+        if self._orderbook_enabled():
+            allowlist.add(self.ORDERBOOK_GROUP)
         return set(self.ALL_FEATURE_GROUPS) - allowlist - {"other"}
 
     def _reduce_feature_cols(self, df: pd.DataFrame) -> None:
@@ -6904,6 +7033,8 @@ class ItemForecaster:
             allowlist.append(self.TIER_LEAD_GROUP)
         if allowlist and self._supply_churn_features_enabled():
             allowlist.append(self.SUPPLY_CHURN_GROUP)
+        if allowlist and self._orderbook_enabled():
+            allowlist.append(self.ORDERBOOK_GROUP)
 
         def _allow():
             if not allowlist:

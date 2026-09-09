@@ -53,6 +53,9 @@ ROW_COUNT_FIELDS = (
     "inserted",             # collectors/social_sentiment.py
     "supply_rows",          # collectors/supply_depth.py
     "volume_rows",          # collectors/sales_volume.py
+    "reddit_event_rows",    # collectors/reddit_events.py
+    "case_panel_rows",      # scripts/build_case_panel.py
+    "sticker_panel_rows",   # scripts/build_sticker_panel.py
 )
 
 # Statuses that mean "this task legitimately had nothing to do", as opposed to

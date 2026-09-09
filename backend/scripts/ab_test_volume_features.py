@@ -118,6 +118,19 @@ if IFLOW_VOLUME:
     # iflow count_in_24 runs through 2026-05-20; the native cliff was 2026-04-30.
     VOLUME_LIVE_THROUGH = "2026-05-20"
 
+# Live-feed repair arm (2026-09-08 accuracy note, priority 2). With
+# SKINPORT_VOLUME=1 the `volume` column is sourced from the free Skinport
+# completed-sale series (`volume-YYYY-MM.parquet`, source=skinport_sales,
+# collected daily since 2026-08-08) instead of the dead native aggregator
+# column. Same single-series rule as IFLOW_VOLUME: never coalesced with
+# another definition — Skinport's trailing windows are a different quantity
+# from Steam's daily counts, and averaging them inside a 30d/60d rolling
+# window corrupts the treatment arm exactly the way the cliff-straddle does.
+# `sales_24h` is the closest analogue of a daily sale count. Set
+# SKINPORT_ERA_FROM to the first accumulated day when running.
+SKINPORT_VOLUME = os.getenv("SKINPORT_VOLUME") == "1"
+SKINPORT_ERA_FROM = os.getenv("SKINPORT_ERA_FROM", "2026-08-08")
+
 # Walk-forward fold scheme, exposed as run params for the re-fold prereg
 # (docs/research/2026-08-17-volume-band-quality-refold-preregistration.md).
 # Defaults reproduce the original hardcoded scheme (2/3 split, 60-day step,
@@ -246,6 +259,35 @@ def _load_iflow_volume(con, slugs):
     df = con.sql(f"""
         SELECT item_slug AS item_id, day AS date,
                MAX(steam_volume) AS iflow_volume
+        FROM ({union})
+        WHERE item_slug IN ({placeholders})
+        GROUP BY item_slug, day
+    """, params=slugs).df()
+    df["date"] = pd.to_datetime(df["date"]).dt.date
+    return df
+
+
+def _load_skinport_live_volume(con, slugs: list, archive_dir=None) -> pd.DataFrame:
+    """The free Skinport live sale counts (item_id, date, live_volume).
+
+    Reads ``volume-YYYY-MM.parquet`` from the archive (source=skinport_sales,
+    ``sales_24h`` trailing window). Raises when empty so a stalled accumulator
+    cannot present as a measured null.
+    """
+    base = Path(archive_dir) if archive_dir else ARCHIVE_DIR
+    files = sorted(str(p) for p in base.glob("volume-[0-9][0-9][0-9][0-9]-[0-9][0-9].parquet"))
+    if not files:
+        raise RuntimeError(
+            "SKINPORT_VOLUME=1 but no volume-*.parquet in the archive. "
+            "Run scripts/run_sales_volume.py daily until the continuity "
+            "gate (scripts/check_sidecar_continuity.py) reports enough dates."
+        )
+    union = " UNION ALL BY NAME ".join(
+        f"SELECT item_slug, day, sales_24h FROM read_parquet('{f}')" for f in files)
+    placeholders = ", ".join("?" for _ in slugs)
+    df = con.sql(f"""
+        SELECT item_slug AS item_id, day AS date,
+               MAX(sales_24h) AS live_volume
         FROM ({union})
         WHERE item_slug IN ({placeholders})
         GROUP BY item_slug, day
@@ -472,13 +514,52 @@ def _build_frame_uncached(max_items):
             all_prices["volume"] = all_prices["iflow_volume"]
             all_prices = all_prices.drop(columns=["iflow_volume"])
 
+        # Skinport live repair: same single-series rule, free trailing-24h sale counts.
+        if SKINPORT_VOLUME:
+            _pre_era = len(all_prices)
+            all_prices = all_prices[
+                all_prices["timestamp"] >= pd.Timestamp(SKINPORT_ERA_FROM)
+            ].reset_index(drop=True)
+            logger.info(
+                f"  skinport-live era >= {SKINPORT_ERA_FROM}: "
+                f"{_pre_era:,} -> {len(all_prices):,} price rows"
+            )
+            nvol = _load_skinport_live_volume(con, slugs)
+            all_prices = all_prices.merge(nvol, on=["item_id", "date"], how="left")
+            _cov = float(all_prices["live_volume"].notna().mean())
+            logger.info(
+                f"  skinport-live volume join: {_cov:.1%} of price rows carry "
+                f"sales_24h ({all_prices['live_volume'].notna().sum():,} of {len(all_prices):,})"
+            )
+            if _cov < 0.80:
+                logger.warning(
+                    f"  skinport-live join coverage {_cov:.1%} < 80% -- feed not "
+                    f"repaired for this cohort; the prereg voids this run.")
+            all_prices["volume"] = all_prices["live_volume"]
+            all_prices = all_prices.drop(columns=["live_volume"])
+            # The live feed is ongoing, so the archive arm's VOLUME_LIVE_THROUGH
+            # (2026-04-30, the native cliff) would empty this panel. Bound it
+            # instead by the last accumulated live day — anything later has no
+            # volume by construction and would enter as dead weight.
+            _live_through = nvol["date"].max()
+            _pre_cut = len(all_prices)
+            all_prices = all_prices[
+                all_prices["date"] <= _live_through
+            ].reset_index(drop=True)
+            logger.info(
+                f"  skinport-live cutoff {_live_through}: "
+                f"{_pre_cut:,} -> {len(all_prices):,} price rows"
+            )
+
         # Cut before feature engineering, not after: a 30d/60d rolling volume
         # window that straddles the cliff would average real volume with the
-        # zeros and quietly corrupt the treatment arm.
+        # zeros and quietly corrupt the treatment arm. Skipped for the live
+        # arm, which bounds itself above (no cliff inside its era).
         _pre = len(all_prices)
-        all_prices = all_prices[
-            all_prices["timestamp"] <= pd.Timestamp(VOLUME_LIVE_THROUGH)
-        ].reset_index(drop=True)
+        if not SKINPORT_VOLUME:
+            all_prices = all_prices[
+                all_prices["timestamp"] <= pd.Timestamp(VOLUME_LIVE_THROUGH)
+            ].reset_index(drop=True)
         logger.info(
             f"  Volume-live cutoff {VOLUME_LIVE_THROUGH}: "
             f"{_pre:,} -> {len(all_prices):,} price rows"
