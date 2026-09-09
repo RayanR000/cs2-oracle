@@ -79,11 +79,26 @@ loophole this module exists to prevent:
   the comment on the gap branch.
 * If the gap swallows the entire cohort there is no metric left and the run fails
   regardless.
-"""
+
+LEG WINDOW, added 2026-09-09. The check above counts covered days over the whole
+``(f_date, target_date]`` horizon, which coincides with the leg's effective range
+only while the horizon fits inside the resolver's staleness bound. Past it the
+count is blind: the 2026-08-28..09-05 collection holes left exactly 2 covered
+days in the 7-day window the h=30 actual leg may draw from while the 30-day
+horizon still held 23-24, so 16,626 forecasts read as FRESH and failed the run
+at 14.3% over a hole no item could resolve through — at most 2 observations
+  existed globally where 3 are required. The caller therefore passes the
+  staleness bound and only ``f < day <= target`` with ``day >= target -
+  staleness`` is counted: the days ``resolve_anchors`` can actually select,
+  since anything older fails the anchor-staleness rule and anything at or
+  before the forecast fails the disjoint-leg guard. Identical below the
+  bound; strictly the leg above it.
+  """
 
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import timedelta
 
 # Above this rate, refuse to report a number rather than silently score a
 # shrunken cohort. Applied to both ratios below.
@@ -276,7 +291,13 @@ def evaluate_gate(
     )
 
 
-def classify_archive_gap(f_date, target_date, covered_days, window: int = 3) -> bool:
+def classify_archive_gap(
+    f_date,
+    target_date,
+    covered_days,
+    window: int = 3,
+    staleness_days: int | None = None,
+) -> bool:
     """True when the archive cannot supply a clean actual leg for this forecast.
 
     The actual leg needs *window* observations drawn from ``(f_date,
@@ -291,14 +312,45 @@ def classify_archive_gap(f_date, target_date, covered_days, window: int = 3) -> 
     *window* is the resolver's ``SMOOTH_WINDOW``. It is a parameter rather than
     an import so this module stays free of pandas and the collectors package.
 
+    *staleness_days* is the resolver's ``MAX_WINDOW_SPAN_DAYS``. The anchor is
+    unresolvable unless *window* observations sit within *staleness_days* of it,
+    and the disjoint-leg guard additionally excludes every day at or before the
+    forecast — so the only days that can ever back the actual leg satisfy
+    ``f_date < day <= target_date`` with ``day >= target_date - staleness_days``. Days outside
+    that range cannot be selected by ``resolve_anchors`` under any data, which
+    makes counting them a statement about the calendar rather than about the
+    leg. Pass the bound and only that range is counted; leave it None for the
+    legacy whole-horizon count, which coincides exactly whenever
+    ``target_date - f_date <= staleness_days`` (every production horizon at or
+    below the bound, including the h=3 shape this category was built for).
+
+    The legacy count is blind past the bound: the 2026-08-28..09-05 collection
+    holes left exactly 2 covered days in the 7-day leg window before the
+    09-04/05/06 targets while the 30-day horizon still held 23-24, so 16,626
+    h=30 forecasts read as FRESH and pinned the gate at 14.3% over a hole no
+    item could have resolved through — at most 2 observations existed globally
+    where 3 are required.
+
     An empty *covered_days* means we have no coverage information, which is not
     evidence of a gap — returns False so an unknown never becomes an excuse.
     """
     if not covered_days or f_date is None or target_date is None:
         return False
-    present = sum(
-        1 for day in covered_days if f_date < day <= target_date
-    )
+    # The staleness floor is INCLUSIVE: resolve_anchors drops an observation
+    # only when (anchor - day).days > max_span_days, so target - staleness
+    # itself still backs the leg. The forecast side stays exclusive — the
+    # disjoint-leg guard requires the oldest supporting observation to
+    # strictly post-date it.
+    if staleness_days is None:
+        present = sum(
+            1 for day in covered_days if f_date < day <= target_date
+        )
+    else:
+        floor = target_date - timedelta(days=staleness_days)
+        present = sum(
+            1 for day in covered_days
+            if f_date < day <= target_date and day >= floor
+        )
     return present < window
 
 
