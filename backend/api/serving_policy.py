@@ -123,3 +123,34 @@ def meets_anchor_gate(anchor_clean: bool | None) -> bool:
     if anchor_clean is None:
         return True
     return bool(anchor_clean)
+
+#: The served ``trend_direction`` is WITHHELD at every horizon, 2026-09-10.
+#:
+#: Measured on the first backtest panel after the leg-window resolver fix
+#: (2a0ace3; run 34427386566). Pesaran-Timmermann on the >=$1 ``lgbm-v3%``
+#: cohort is negative at every horizon -- -1.62pp (p=0.032, 17 dates), -0.66pp
+#: (p=0.193, 23), -0.54pp (p=0.617, 23), -1.31pp (p=0.118, 8) at 3/7/14/30d --
+#: directional accuracy is below a coin flip everywhere (43.8/48.2/48.9/45.3%),
+#: and a constant "down" call beats the model at every horizon (55.0/58.1/65.2%
+#: down-rate). Two cells are significant-negative: h=3 at >=$1 and h=7 at the
+#: >=$20 floor (-1.89pp, p=0.037). Nothing is positive at any floor, so the
+#: call is anti-informative, not merely null -- and consumers act on it.
+#:
+#: Unlike ``ANOMALY_SERVED_HORIZONS`` this is not a per-horizon tuple: no
+#: horizon earned disclosure, so there is no partial gate to keep in sync.
+#: This mirrors the 2026-08-12 ``confidence`` withdrawal -- the ``direction``
+#: column is still written by the forecaster and still scored, it is simply no
+#: longer disclosed. Republish only once a panel shows positive PT.
+DIRECTION_DISCLOSED = False
+
+
+def served_direction(raw: Optional[str], horizon: Optional[int] = None) -> str:
+    """The direction label to serve, given the model's stored ``raw`` call.
+
+    Always ``"neutral"`` while ``DIRECTION_DISCLOSED`` is False. ``raw`` and
+    ``horizon`` are accepted so callers read as a policy lookup rather than a
+    constant, and so republishing is a change here and not in every route.
+    """
+    if not DIRECTION_DISCLOSED:
+        return "neutral"
+    return {"up": "bullish", "down": "bearish"}.get(raw or "", "neutral")

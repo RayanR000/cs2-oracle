@@ -45,6 +45,8 @@ class TrendAnalysisOut(BaseModel):
     item_id: int
     item_name: str
     current_price: float
+    # WITHHELD 2026-09-10: always "neutral". The direction call is
+    # anti-informative, not merely null -- see serving_policy.served_direction.
     trend_direction: str
     # `confidence` withdrawn 2026-08-12: the served label is uncalibrated and
     # carries no measurable directional information. See PredictionOut below.
@@ -73,6 +75,15 @@ class PredictionOut(BaseModel):
     forecast_mid: float
     forecast_high: float
     forecast_period: str
+    # WITHHELD 2026-09-10: always "neutral", at every horizon. Pesaran-
+    # Timmermann on the >=$1 `lgbm-v3%` panel is NEGATIVE at all four horizons
+    # (-1.62pp p=0.032 / -0.66 / -0.54 / -1.31 at 3/7/14/30d), directional
+    # accuracy is below a coin flip everywhere (43.8-48.9%), and a constant
+    # "down" call beats the model at every horizon. h=3 (>=$1) and h=7 (>=$20,
+    # -1.89pp p=0.037) are significant-negative. The field is kept on the
+    # schema because the frontend consumes it and removal is breaking; the
+    # `direction` column is still written and still scored. Republish only once
+    # a panel shows positive PT. See serving_policy.served_direction.
     trend_direction: str
     # `confidence` is WITHDRAWN, 2026-08-12. It was a bare `>= 0.5` cut on the
     # directional classifier's max class probability, never calibrated against

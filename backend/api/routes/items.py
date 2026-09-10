@@ -21,7 +21,8 @@ from api.schemas import (
     EventImpactOut, FeatureImportanceOut, FeatureImportanceItem,
     SocialMentionOut, SocialSentimentSummaryOut, VolatilityRankOut,
 )
-from api.serving_policy import MIN_SERVED_PRICE_USD, SERVED_HORIZONS
+from api.serving_policy import (MIN_SERVED_PRICE_USD, SERVED_HORIZONS,
+                                served_direction)
 from api.volatility_tags import (
     build_ranking, tag_fields, swing_pct, compute_thresholds,
     move_odds_calibrated, CALIBRATED_MOVE_ODDS_HORIZONS,
@@ -494,8 +495,7 @@ def _trends_parquet(item, item_id: str, db: Session):
     r = _forecast_parquet(item.id, 7)
     if r is None:
         return None
-    direction_map = {"up": "bullish", "down": "bearish", "flat": "neutral", None: "neutral"}
-    trend_dir = direction_map.get(r.direction, "neutral")
+    trend_dir = served_direction(r.direction, 7)
     latest_price = (
         db.query(PriceHistory)
         .filter(PriceHistory.item_id == item.id)
@@ -524,10 +524,6 @@ def _trends_parquet(item, item_id: str, db: Session):
             factors.append("RSI overbought (>70)")
         elif rsi < 30:
             factors.append("RSI oversold (<30)")
-    if trend_dir == "bullish":
-        factors.append("Forecast predicts upward movement")
-    elif trend_dir == "bearish":
-        factors.append("Forecast predicts downward movement")
     if support is not None and resistance is not None:
         band_width = ((resistance - support) / support) * 100
         factors.append(f"Trading range: {band_width:.1f}%")
@@ -580,8 +576,8 @@ def get_item_trends(item_id: str, db: Session = Depends(get_db)):
     )
     current_price = latest_price.price if latest_price else 0.0
 
-    direction_map = {"up": "bullish", "down": "bearish", "flat": "neutral", None: "neutral"}
-    trend_dir = direction_map.get(latest_forecast.direction if latest_forecast else None, "neutral")
+    trend_dir = served_direction(
+        latest_forecast.direction if latest_forecast else None, 7)
 
     explanation = _build_trend_explanation(trend_dir, current_price)
 
@@ -613,10 +609,6 @@ def get_item_trends(item_id: str, db: Session = Depends(get_db)):
             factors.append("RSI overbought (>70)")
         elif rsi < 30:
             factors.append("RSI oversold (<30)")
-    if trend_dir == "bullish":
-        factors.append("Forecast predicts upward movement")
-    elif trend_dir == "bearish":
-        factors.append("Forecast predicts downward movement")
     if support is not None and resistance is not None:
         band_width = ((resistance - support) / support) * 100
         factors.append(f"Trading range: {band_width:.1f}%")
@@ -686,7 +678,7 @@ def _prediction_parquet(item, period: str, horizon: int, thresholds=None):
         forecast_mid=fm,
         forecast_high=fh,
         forecast_period=period,
-        trend_direction=r.direction or "neutral",
+        trend_direction=served_direction(r.direction, horizon),
         # Disclosed, not gated. `/opportunities` drops the deviating cohort
         # because ranking is what the clean-anchor evidence covers; a lookup by
         # name still answers, and says which cohort the answer comes from.
@@ -747,7 +739,7 @@ def get_item_prediction(
             forecast_mid=fm,
             forecast_high=fh,
             forecast_period=period,
-            trend_direction=forecast.direction or "neutral",
+            trend_direction=served_direction(forecast.direction, horizon),
             anomaly_p=forecast.anomaly_p,
             **tags,
         )
@@ -762,7 +754,7 @@ def get_item_prediction(
         forecast_mid=(fl + fh) / 2,
         forecast_high=fh,
         forecast_period=period,
-        trend_direction="neutral",
+        trend_direction=served_direction(None, horizon),
     )
 
 
