@@ -38,23 +38,31 @@ are already in context — pick from that listing rather than restating it here.
 For codebase search use the built-in `Explore`; for diff review use the `/code-review`
 and `/security-review` skills. Don't build project agents that duplicate those.
 
-### Offloading grunt work to opencode
+### Delegation to opencode (coordinator pattern)
 
-`opencode` (CLI, installed globally) runs in its own process on a free model. Its tool
-calls and file dumps never enter this context — only its final stdout does. Use it to keep
-bulk mechanical work off the token budget:
+Claude Code is the **coordinator**: plan, verify, chat. `opencode` (CLI, installed
+globally, free model) handles mechanical execution. Its tool calls and file dumps never
+enter this context — only final stdout does. Delegate aggressively to keep the token
+budget for judgment.
 
 ```
 opencode run "<self-contained task; state the exact output format>"
 ```
 
 No agent definitions needed; the default `build` primary agent already has full tool
-permissions. Do **not** pass `--auto` — Claude Code's auto-mode classifier blocks it, and
-it is unnecessary.
+permissions. Do **not** pass `--auto` — Claude Code's auto-mode classifier blocks it.
 
-Good fits: repo-wide counts and inventories, greps across the archive, bulk renames,
-boilerplate, mechanical doc edits. Anything with a cheaply verifiable answer.
+**Delegate by default:**
+- **Exploration** — multi-file greps, "find all X", codebase inventories, archive scans.
+- **Implementation** — boilerplate, mechanical edits, bulk renames, adding flags/args,
+  wiring plumbing that doesn't require modelling judgment.
+- **Docs** — changelog entries, docstring updates, README sections, doc scaffolding.
 
-Bad fits: modelling judgment, anything touching the forecast chain, and tasks where
-checking the weak model's work costs more than doing it. Progress is invisible mid-run, so
-the task must be self-contained and the result must be verifiable in one step.
+**Keep inline** (don't delegate):
+- Single file reads or quick 1-2 line edits — spawning a subprocess is slower.
+- Modelling judgment, anything touching the forecast chain or ML parameters.
+- Tasks where verifying the weak model's output costs more than doing it yourself.
+- Iterative work requiring intermediate inspection (progress is invisible mid-run).
+
+**Rule of thumb:** delegate when the task would put ≥3 tool calls of low-value output
+into context. A quick `Read` isn't worth a round-trip; grepping 50 files is.
