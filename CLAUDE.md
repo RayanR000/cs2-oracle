@@ -37,3 +37,24 @@ are already in context — pick from that listing rather than restating it here.
 
 For codebase search use the built-in `Explore`; for diff review use the `/code-review`
 and `/security-review` skills. Don't build project agents that duplicate those.
+
+### Offloading grunt work to opencode
+
+`opencode` (CLI, installed globally) runs in its own process on a free model. Its tool
+calls and file dumps never enter this context — only its final stdout does. Use it to keep
+bulk mechanical work off the token budget:
+
+```
+opencode run "<self-contained task; state the exact output format>"
+```
+
+No agent definitions needed; the default `build` primary agent already has full tool
+permissions. Do **not** pass `--auto` — Claude Code's auto-mode classifier blocks it, and
+it is unnecessary.
+
+Good fits: repo-wide counts and inventories, greps across the archive, bulk renames,
+boilerplate, mechanical doc edits. Anything with a cheaply verifiable answer.
+
+Bad fits: modelling judgment, anything touching the forecast chain, and tasks where
+checking the weak model's work costs more than doing it. Progress is invisible mid-run, so
+the task must be self-contained and the result must be verifiable in one step.
