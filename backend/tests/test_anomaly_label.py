@@ -107,3 +107,27 @@ class TestDegenerateInputs:
         out = forecaster.prepare_targets(_frame(n=400, seed=7), 7)
         rate = out[COL].mean()
         assert 0.0 < rate < 0.5
+
+
+class TestServedHorizons:
+    def test_thirty_day_head_is_withheld_until_calibrated(self, forecaster):
+        # 2026-09-09 measured the 30d head as rank-only: AUC +0.129 over the
+        # null but log loss a dead tie, so disclosing it as a probability
+        # overstates what was measured. The head still TRAINS at 30d (only the
+        # disclosure is gated), so the calibration follow-up needs no cold
+        # start. 3/7/14d disclose whenever a head is loaded.
+        class _StubHead:
+            def feature_name(self):
+                return ["a"]
+
+            def predict(self, X):
+                return np.full(len(X), 0.2)
+
+        assert forecaster.ANOMALY_SERVED_HORIZONS == (3, 7, 14)
+        for h in (3, 7, 14, 30):
+            forecaster.anomaly_models[h] = _StubHead()
+        rows = pd.DataFrame({"a": [1.0, 2.0]})
+        for h in (3, 7, 14):
+            out = forecaster.anomaly_probability(h, rows)
+            assert out is not None and (out == 0.2).all()
+        assert forecaster.anomaly_probability(30, rows) is None

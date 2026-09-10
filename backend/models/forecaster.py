@@ -1589,6 +1589,17 @@ class ItemForecaster:
         """
         return os.environ.get("VOLATILITY_RANK_GBM") == "1"
 
+    #: Horizons whose anomaly head may be DISCLOSED as `anomaly_p`. Measured
+    #: 2026-09-09 (docs/changelog/2026-09-09-anomaly-head-beats-its-null.md):
+    #: held-out log loss beats the featureless null at 3/7/14d but is a dead
+    #: tie at 30d — the head ranks there (AUC +0.129) without calibrating, so a
+    #: consumer reading the 30d value as a probability is reading more precision
+    #: than was measured. 30d stays NULL until its head is calibrated against
+    #: the pooled rate (the doc's stated follow-up) or an isotonic layer like
+    #: the exceedance head's. Training is unaffected — the 30d head still fits,
+    #: so the follow-up can be measured without a cold start.
+    ANOMALY_SERVED_HORIZONS = (3, 7, 14)
+
     @staticmethod
     def anomaly_gbm_enabled() -> bool:
         """Whether to train a binary anomaly/regime classifier per horizon.
@@ -7768,7 +7779,14 @@ class ItemForecaster:
 
     def anomaly_probability(self, horizon: int,
                             rows: pd.DataFrame) -> Optional[np.ndarray]:
-        """P(|return_h| > 2σ_item) for the given rows, or None if no head."""
+        """P(|return_h| > 2σ_item) for the given rows, or None if no head.
+
+        None also at horizons outside ANOMALY_SERVED_HORIZONS: the 30d head
+        ranks but does not calibrate (log loss ties the featureless null), so
+        disclosing it as a probability would overstate what was measured.
+        """
+        if horizon not in self.ANOMALY_SERVED_HORIZONS:
+            return None
         head = self.anomaly_models.get(horizon)
         if head is None:
             return None
