@@ -86,9 +86,11 @@ class SequenceDataset(Dataset):
             [h / norm_max for h in self.horizons], dtype=np.float32
         ).reshape(-1, 1)
 
-        if date_filter is not None:
-            date_set = set(date_filter)
-            df = df[df["date"].isin(date_set)]
+        # date_filter restricts ANCHOR dates, not rows: windows draw their
+        # 60-day lookback (and 30-day targets) from the full history. Filtering
+        # rows first would leave any <90-day validation window with zero
+        # samples and make predict-on-latest-date always empty.
+        date_set = set(date_filter) if date_filter is not None else None
 
         self.samples: list[tuple[dict, int]] = []
         for item_id, group in df.groupby("item_id"):
@@ -98,6 +100,8 @@ class SequenceDataset(Dataset):
             item_data = _preprocess_item(group)
             n_days = len(group)
             for t in range(lookback, n_days - self.max_horizon):
+                if date_set is not None and item_data["dates"][t] not in date_set:
+                    continue
                 self.samples.append((item_data, t))
 
     def __len__(self) -> int:
