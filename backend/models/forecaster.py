@@ -142,6 +142,14 @@ BIAS_EWMA_ALPHA = 0.3
 # See docs/changelog/2026-08-19-direction-upweight-neutral.md.
 DIRECTION_UPWEIGHT = float(os.environ.get("DIRECTION_UPWEIGHT", "1.0"))
 
+# TFT centre model gate (2026-09-10). Off by default: LightGBM remains the
+# shipped model. When "1", train() also fits the Temporal Fusion Transformer
+# centre (models/tft) on the voted price history and predict() prefers it
+# where a checkpoint exists. TFT OOF residuals flow through
+# conformal.calibrate_signed() — TFT ships no bands of its own. torch is
+# imported lazily inside the TFT methods so non-TFT runs never need it.
+TFT_CENTRE = os.environ.get("TFT_CENTRE") == "1"
+
 # Recency half-life, in days, for time-decayed sample weights: a row `h` days
 # older than the newest row in the frame carries 0.5× the gradient weight.
 # Set to 0 to disable decay entirely.
@@ -6196,11 +6204,99 @@ class ItemForecaster:
                 f"{ {h: round(v, 4) for h, v in self.served_coverage_factor.items()} }")
 
         _train_elapsed = (datetime.now() - _train_start).total_seconds()
+        if TFT_CENTRE:
+            self._train_tft(days_back=train_days_back,
+                            min_median_price=min_median_price)
         self.save_models()
         logger.info(f"\n{'='*60}")
         logger.info(f"TRAINING COMPLETE in {_train_elapsed:.0f}s ({_train_elapsed/60:.1f}min)")
         logger.info(f"{'='*60}")
         logger.info(f"  [timing] TOTAL training: {_train_elapsed:.1f}s")
+
+    def _train_tft(self, price_df: pd.DataFrame = None,
+                   days_back: int = 1460,
+                   min_median_price: Optional[float] = 1.0) -> None:
+        """Train TFT centre model on raw price series. Gated by TFT_CENTRE=1.
+
+        Accepts the voted price DataFrame when the caller has it; otherwise
+        re-fetches it (fetch_price_history caches the voted frame, so the
+        second read after build_training_data is cheap). OOF residuals are
+        left in conformal's hands — TFT ships no bands of its own.
+        """
+        try:
+            from models.tft import TFTTrainer, TFTConfig
+        except ImportError:
+            logger.warning("PyTorch not installed — skipping TFT training")
+            return
+
+        logger.info("=" * 60)
+        logger.info("TRAINING TFT CENTRE MODEL")
+        logger.info("=" * 60)
+
+        if price_df is None:
+            price_df = self.fetch_price_history(days_back=days_back,
+                                                backfilled_only=True,
+                                                universe="train")
+            price_df = self._filter_dead_items(price_df)
+            if min_median_price:
+                price_df = self._filter_by_median_price(price_df,
+                                                        min_median_price)
+
+        tft_dir = os.path.join(self.model_dir, "tft")
+        config = TFTConfig(hidden_dim=32, num_heads=4, dropout=0.1)
+        trainer = TFTTrainer(config, model_dir=tft_dir)
+
+        sorted_dates = sorted(price_df["date"].unique())
+        folds = self._compute_cv_splits(sorted_dates, purge_days=0)
+        if not folds:
+            logger.warning("  No CV folds — skipping TFT")
+            return
+
+        oof = trainer.train_cv(price_df, folds, max_epochs=50, patience=5)
+        logger.info(f"  TFT OOF: {len(oof)} rows across {oof['fold'].nunique()} folds")
+
+        # Log OOF rank IC per horizon
+        for h in self.HORIZONS:
+            pred_col = f"pred_{h}d"
+            actual_col = f"actual_{h}d"
+            if pred_col in oof.columns and actual_col in oof.columns:
+                valid = oof[[pred_col, actual_col]].dropna()
+                if len(valid) > 10:
+                    from scipy.stats import spearmanr
+                    ic, _ = spearmanr(valid[pred_col], valid[actual_col])
+                    logger.info(f"  TFT {h}d OOF rank IC: {ic:.4f}")
+
+        # Train final model on all data
+        trainer.train_fold(price_df, sorted_dates[:-30], sorted_dates[-30:],
+                           max_epochs=50, patience=5)
+        trainer.save()
+        logger.info(f"  TFT model saved to {tft_dir}")
+
+    def _predict_tft(self, price_df: pd.DataFrame) -> Dict[int, pd.Series] | None:
+        """Load trained TFT and produce per-horizon return predictions."""
+        tft_dir = os.path.join(self.model_dir, "tft")
+        if not os.path.exists(os.path.join(tft_dir, "tft_model.pt")):
+            return None
+        try:
+            from models.tft import TFTTrainer
+        except ImportError:
+            return None
+
+        trainer = TFTTrainer.load(tft_dir)
+        dates = sorted(price_df["date"].unique())
+        latest_dates = dates[-1:]  # predict for latest date only
+
+        preds = trainer.predict(price_df, latest_dates)
+        if preds.empty:
+            return None
+
+        result = {}
+        for h in self.HORIZONS:
+            col = f"pred_{h}d"
+            if col in preds.columns:
+                series = preds.set_index("item_id")[col]
+                result[h] = series
+        return result if result else None
 
     def _train_horizon_inline(self, horizon: int, df: pd.DataFrame,
                                 max_rows: int = 300_000,
