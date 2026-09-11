@@ -35,7 +35,13 @@ def main():
     forecaster = ItemForecaster(db_session=MagicMock(), model_dir=model_dir)
 
     logger.info("Loading price history...")
-    price_df = forecaster.fetch_price_history(days_back=1460, backfilled_only=True)
+    # universe="train": archive-derived cohort, no DB read. This is also the
+    # universe train() (and ItemForecaster._train_tft) uses, so the eval
+    # scores the same population TFT trains on. The "serve" universe needs
+    # is_backfilled from Postgres, which a local MagicMock-db run cannot
+    # provide (and backend/.env points at production — see AGENTS.md).
+    price_df = forecaster.fetch_price_history(days_back=1460, backfilled_only=True,
+                                              universe="train")
     # NOTE: the plan drafted this filter via transform("median").loc[...].index,
     # but that compares item_ids against row indices and selects nothing.
     # Filter on the per-item median directly (same statistic as
@@ -85,6 +91,9 @@ def main():
         })
 
     if rows:
+        # train_cv() never persists a checkpoint, so the eval dir may not exist
+        # (only TFTTrainer.save() calls makedirs). Create it before writing.
+        os.makedirs(os.path.join(model_dir, "tft_eval"), exist_ok=True)
         pd.DataFrame(rows).to_csv(
             os.path.join(model_dir, "tft_eval", "tft_eval.csv"), index=False)
         logger.info(f"\nResults saved to {model_dir}/tft_eval/tft_eval.csv")
