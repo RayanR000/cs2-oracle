@@ -93,6 +93,19 @@ at 14.3% over a hole no item could resolve through — at most 2 observations
   since anything older fails the anchor-staleness rule and anything at or
   before the forecast fails the disjoint-leg guard. Identical below the
   bound; strictly the leg above it.
+
+BASE LEG, added 2026-09-12. The leg-window check above is blind in the other
+direction: the base anchor resolves from up to ``staleness`` days BEFORE the
+forecast, and a hole there starves it symmetrically. The same 08-28..09-05
+holes left exactly 2 covered days in ``[09-06 - 7, 09-06]`` ({09-02, 09-06})
+where ``resolve_anchors`` requires 3, so the whole 5,536-forecast h=3 cohort
+dated 09-06 — the first forecast date after the hole — dropped on ``base_none``
+while its actual leg (09-07/08/09, all present) classified clean. It counted
+FRESH and pinned three runs at 20-25% (34691910482) over a hole no item could
+resolve through — permanently, since history is fixed: 08-29 will always sit 8
+days before 09-06, so the cell re-enters ``to_resolve`` forever and taxes every
+future fresh rate until dilution. ``classify_base_gap`` counts the base window
+on the same positive-evidence standard; behaviour elsewhere is unchanged.
   """
 
 from __future__ import annotations
@@ -242,8 +255,10 @@ def evaluate_gate(
             reason=(
                 f"{n_unresolvable_gap:,} of {n_mature:,} mature forecasts "
                 f"({gap_pct:.1f}%) are unscoreable: days are missing from the "
-                f"archive inside their actual-leg window, so the leg cannot be "
-                f"established without reusing pre-forecast observations. This is "
+                f"archive inside the window one of their legs resolves from — "
+                f"the actual leg's (f, target] range or the base leg's "
+                f"[f - staleness, f] range — so the leg cannot be established "
+                f"within the resolver's window. This is "
                 f"a collection gap, not a resolver regression — the fresh "
                 f"resolution rate is measured over the {n_attempted_fresh:,} "
                 f"attempts that carried information.{chronic_note} That leaves "
@@ -351,6 +366,42 @@ def classify_archive_gap(
             1 for day in covered_days
             if f_date < day <= target_date and day >= floor
         )
+    return present < window
+
+
+def classify_base_gap(
+    f_date,
+    covered_days,
+    window: int = 3,
+    *,
+    staleness_days: int,
+) -> bool:
+    """True when the archive cannot supply a clean BASE leg for this forecast.
+
+    The base anchor is the median of the last *window* observations at or
+    before ``f_date`` lying within *staleness_days* of it: ``resolve_anchors``
+    keeps ``d <= anchor`` and drops the anchor unless the oldest selected
+    observation satisfies ``(anchor - day).days <= max_span_days``. So the
+    question is whether the range ``[f_date - staleness_days, f_date]`` — both
+    ends inclusive, matching the resolver's strict ``>`` comparison — holds
+    even *window* covered days globally. Fewer, and no item resolves its base
+    through the hole: the h=3 cohort dated 2026-09-06 holds exactly {09-02,
+    09-06} in that range against the 08-28..09-05 collection holes.
+
+    The twin of ``classify_archive_gap`` for the other leg, on the same
+    positive-evidence standard: an empty *covered_days* is no coverage
+    information, not evidence of a gap, and returns False — and item-level
+    sparsity (enough days globally, this item still failing) still counts
+    FRESH. Only a globally missing range is excused.
+
+    *staleness_days* is required and has no legacy default: unlike the actual
+    leg there is no pre-bound caller to stay compatible with, and an unbounded
+    lookback would span the whole history and silently never fire.
+    """
+    if not covered_days or f_date is None:
+        return False
+    floor = f_date - timedelta(days=staleness_days)
+    present = sum(1 for day in covered_days if floor <= day <= f_date)
     return present < window
 
 

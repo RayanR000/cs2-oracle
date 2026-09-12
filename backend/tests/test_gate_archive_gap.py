@@ -34,6 +34,7 @@ import pytest
 from backtest.resolution_gate import (
     MAX_UNRESOLVABLE_PCT,
     classify_archive_gap,
+    classify_base_gap,
     evaluate_gate,
 )
 
@@ -267,7 +268,6 @@ class TestLegWindowAboveTheStalenessBound:
 
 class TestClassifyArchiveGap:
     COVERED = {date(2026, 7, 31), date(2026, 8, 1), date(2026, 8, 4)}
-
     def test_window_spanning_a_missing_day_is_a_gap(self):
         """h=3 dated 08-01, target 08-04: 08-02 and 08-03 are absent."""
         assert classify_archive_gap(
@@ -300,3 +300,126 @@ class TestClassifyArchiveGap:
             target_date=date(2026, 8, 4),
             covered_days=set(),
         )
+
+
+class TestBaseLegGap:
+    """The gap classifier was blind to the base leg's backward window.
+
+    Run 34691910482 (2026-09-12): "resolution rate: 5,536 of 27,680
+    newly-resolvable forecasts (20.0%)". All 5,536 are the h=3 cohort dated
+    09-06 — the first forecast date after the 08-28..09-05 collection holes.
+    Reproduced read-only against prod with the full h=3 group load (105,374
+    anchors / 99,817 resolved, matching CI exactly): the cell drops 5,536 of
+    5,536 on ``base_none`` while every one of its target anchors resolves,
+    because the base window [08-30, 09-06] holds exactly {09-02, 09-06} where
+    ``resolve_anchors`` requires 3 observations within 7 days (08-29 sits 8
+    back). The actual-leg check reads clean — 09-07/08/09 are all present — so
+    the failure counted FRESH. It is permanent and deterministic: history is
+    fixed, so the cell re-enters ``to_resolve`` forever and taxes every future
+    fresh rate until dilution. No item could resolve through the hole, so it is
+    the same collection gap, on the other leg.
+    """
+
+    HOLES = {
+        date(2026, 8, 28), date(2026, 8, 30), date(2026, 8, 31),
+        date(2026, 9, 1), date(2026, 9, 3), date(2026, 9, 4),
+        date(2026, 9, 5),
+    }
+
+    def _covered(self, start, end):
+        days = set()
+        d = start
+        while d <= end:
+            days.add(d)
+            d = date.fromordinal(d.toordinal() + 1)
+        return days - self.HOLES
+
+    def test_first_date_after_the_hole_is_a_base_gap(self):
+        """h=3 dated 09-06: the base window holds {09-02, 09-06}, 2 where 3
+        are required. Pins the production shape, not a toy range."""
+        covered = self._covered(date(2026, 8, 20), date(2026, 9, 11))
+        base = sorted(
+            d for d in covered
+            if date(2026, 8, 30) <= d <= date(2026, 9, 6)
+        )
+        assert base == [date(2026, 9, 2), date(2026, 9, 6)]
+        assert classify_base_gap(
+            f_date=date(2026, 9, 6), covered_days=covered,
+            window=3, staleness_days=7,
+        )
+
+    def test_the_actual_leg_check_misses_it(self):
+        """09-07/08/09 are all present, so the old code reads FRESH — the
+        2026-09-12 failure mode."""
+        assert not classify_archive_gap(
+            f_date=date(2026, 9, 6), target_date=date(2026, 9, 9),
+            covered_days=self._covered(date(2026, 8, 20), date(2026, 9, 11)),
+            staleness_days=7,
+        )
+
+    def test_second_date_after_the_hole_is_not_a_base_gap(self):
+        """h=3 dated 09-07 resolves in production: [08-31, 09-07] holds
+        {09-02, 09-06, 09-07}."""
+        assert not classify_base_gap(
+            f_date=date(2026, 9, 7),
+            covered_days=self._covered(date(2026, 8, 20), date(2026, 9, 11)),
+            window=3, staleness_days=7,
+        )
+
+    def test_the_staleness_floor_is_inclusive(self):
+        """An observation exactly staleness_days back still backs the leg —
+        resolve_anchors drops only on strict ``>``. f=09-09, floor 09-02."""
+        assert not classify_base_gap(
+            f_date=date(2026, 9, 9),
+            covered_days={date(2026, 9, 2), date(2026, 9, 8), date(2026, 9, 9)},
+            window=3, staleness_days=7,
+        )
+
+    def test_the_forecast_date_itself_counts(self):
+        """The base leg draws at or before f, f included."""
+        assert not classify_base_gap(
+            f_date=date(2026, 9, 9),
+            covered_days={date(2026, 9, 7), date(2026, 9, 8), date(2026, 9, 9)},
+            window=3, staleness_days=7,
+        )
+
+    def test_no_coverage_information_is_not_a_gap(self):
+        """An empty covered set means we do not know; do not excuse the row."""
+        assert not classify_base_gap(
+            f_date=date(2026, 9, 6), covered_days=set(),
+            window=3, staleness_days=7,
+        )
+
+    def test_a_missing_f_date_is_not_a_gap(self):
+        assert not classify_base_gap(
+            f_date=None, covered_days={date(2026, 9, 6)},
+            window=3, staleness_days=7,
+        )
+
+    def test_the_failing_run_numbers_fail_without_the_fix(self):
+        """Run 34691910482 as the old code counted it: 5,536 fresh of 27,680
+        informative attempts (20.0%) over a 1.1% coverage — fatal."""
+        r = evaluate_gate(
+            n_mature=526208,
+            n_attempted=88828,
+            n_unresolvable_fresh=5536,
+            n_unresolvable_chronic=210,
+            n_unresolvable_gap=60938,
+        )
+        assert not r.ok
+        assert "resolution rate" in r.reason
+
+    def test_the_same_run_passes_once_the_cell_is_excused(self):
+        """The 09-06 cell moves fresh -> gap: 0 fresh failures over 22,144
+        informative attempts, 66,474 gap warned on, 210 chronic. Green."""
+        r = evaluate_gate(
+            n_mature=526208,
+            n_attempted=88828,
+            n_unresolvable_fresh=0,
+            n_unresolvable_chronic=210,
+            n_unresolvable_gap=66474,
+        )
+        assert r.ok, r.reason
+        assert r.warn
+        assert r.fresh_rate_pct == pytest.approx(0.0)
+        assert "66,474" in r.reason

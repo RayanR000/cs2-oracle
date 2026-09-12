@@ -35,6 +35,7 @@ from backtest.price_resolution import (
 from backtest.resolution_gate import (
     MAX_UNRESOLVABLE_PCT as _MAX_UNRESOLVABLE_PCT,
     classify_archive_gap,
+    classify_base_gap,
     classify_chronic,
     evaluate_gate,
 )
@@ -1250,8 +1251,21 @@ def backtest_forecasts(db, today=None, min_price=0, reresolve=False, rescore=Fal
             # holds SMOOTH_WINDOW days. Whole-horizon counting pinned the
             # 2026-09-09 run at 14.3% fresh over 16,626 h=30 rows whose leg
             # window held exactly 2 days globally where 3 are required.
+            #
+            # And the actual leg is only half the pair. The base anchor resolves
+            # from [f - MAX_WINDOW_SPAN_DAYS, f], so a hole BEFORE the forecast
+            # starves it symmetrically: the 08-28..09-05 holes left exactly
+            # {09-02, 09-06} in 09-06's base window where 3 are required,
+            # dropping the whole 5,536-forecast h=3 cell on base_none while its
+            # actual leg classified clean — a permanent fresh-tax that pinned
+            # three runs at 20-25% (34691910482), since history is fixed and the
+            # cell re-enters to_resolve forever. Checked on the same
+            # positive-evidence standard as the actual leg.
             gap = classify_archive_gap(
                 f_date, target_date, covered_days, SMOOTH_WINDOW,
+                staleness_days=MAX_WINDOW_SPAN_DAYS,
+            ) or classify_base_gap(
+                f_date, covered_days, SMOOTH_WINDOW,
                 staleness_days=MAX_WINDOW_SPAN_DAYS,
             )
 
