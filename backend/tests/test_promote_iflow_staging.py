@@ -58,8 +58,20 @@ def test_load_staged_rejects_empty_range(tmp_path):
 def test_validate_coverage_flags_missing_day():
     prices = _staged(["2026-04-16", "2026-04-18"], ITEMS)
 
-    with pytest.raises(AssertionError, match="missing day 2026-04-17"):
+    with pytest.raises(AssertionError, match="1 days absent"):
         p.validate_coverage(prices, "2026-04-16", "2026-04-18", min_items=1)
+
+
+def test_validate_coverage_tolerates_allowed_missing_days():
+    """Upstream feed gaps are tolerated up to the explicit budget."""
+    prices = _staged(["2026-04-16", "2026-04-18"], ITEMS)
+
+    p.validate_coverage(prices, "2026-04-16", "2026-04-18",
+                        min_items=1, max_missing_days=1)
+
+    with pytest.raises(AssertionError, match="2 days absent"):
+        p.validate_coverage(prices, "2026-04-16", "2026-04-19",
+                            min_items=1, max_missing_days=1)
 
 
 def test_validate_coverage_flags_sparse_day():
