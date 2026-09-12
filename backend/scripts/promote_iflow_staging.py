@@ -77,12 +77,25 @@ def load_staged(staging_dir: Path, start: str, end: str) -> pd.DataFrame:
 
 
 def validate_coverage(prices: pd.DataFrame, start: str, end: str,
-                      min_items: int = 1000) -> None:
-    """Raise AssertionError on a missing or too-sparse day in [start, end]."""
+                      min_items: int = 1000, max_missing_days: int = 0) -> None:
+    """Raise AssertionError on a too-sparse day, or too many absent days.
+
+    The upstream iflow feed drops the occasional day (five in 2025), so a small
+    number of absent days is tolerable; a run of them is not, and neither is a
+    day that is present but thin. ``max_missing_days`` bounds the former.
+    """
     expected = pd.date_range(start=start, end=end, freq="D")
     present = set(prices["day"].unique())
+    missing = [ts for ts in expected if ts not in present]
+    assert len(missing) <= max_missing_days, (
+        f"{len(missing)} days absent from staged rows "
+        f"(limit {max_missing_days}): {[str(t.date()) for t in missing[:10]]}")
+    if missing:
+        print(f"Tolerating {len(missing)} absent day(s): "
+              f"{[str(t.date()) for t in missing]}")
     for ts in expected:
-        assert ts in present, f"missing day {ts.date()} in staged rows"
+        if ts in missing:
+            continue
         count = prices.loc[prices["day"] == ts, "item_slug"].nunique()
         assert count >= min_items, f"low item count for {ts.date()}: {count} < {min_items}"
 
@@ -136,7 +149,7 @@ def cross_check_buff163(prices: pd.DataFrame, archive_glob: str) -> dict | None:
 
 
 def run(start: str, end: str, staging_dir: Path, out_dir: Path,
-        dry_run: bool = False, min_items: int = 1000,
+        dry_run: bool = False, min_items: int = 1000, max_missing_days: int = 0,
         check_start: str = DEFAULT_CHECK_START,
         check_end: str = DEFAULT_CHECK_END) -> pd.DataFrame:
     if end > IFLOW_FEED_END:
@@ -149,7 +162,8 @@ def run(start: str, end: str, staging_dir: Path, out_dir: Path,
           f"{prices['item_slug'].nunique():,} items, "
           f"{prices['day'].nunique()} days ({start}..{end})")
 
-    validate_coverage(prices, start, end, min_items=min_items)
+    validate_coverage(prices, start, end, min_items=min_items,
+                      max_missing_days=max_missing_days)
     print("Coverage validation passed")
 
     try:
@@ -186,6 +200,8 @@ def main():
     ap.add_argument("--staging-dir", default="../buff-iflow-staging/price-archive")
     ap.add_argument("--out-dir", default="../price-archive")
     ap.add_argument("--min-items", type=int, default=1000)
+    ap.add_argument("--max-missing-days", type=int, default=0,
+                    help="tolerate this many absent days (upstream feed gaps)")
     ap.add_argument("--check-start", default=DEFAULT_CHECK_START,
                     help="pre-gap window used to validate staged levels")
     ap.add_argument("--check-end", default=DEFAULT_CHECK_END)
@@ -194,6 +210,7 @@ def main():
 
     run(args.start, args.end, Path(args.staging_dir), Path(args.out_dir),
         dry_run=args.dry_run, min_items=args.min_items,
+        max_missing_days=args.max_missing_days,
         check_start=args.check_start, check_end=args.check_end)
 
 
