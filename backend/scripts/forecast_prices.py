@@ -385,12 +385,14 @@ def _write_forecasts_to_db(db, results, model_version, slug_to_id, today,
         # behaviour rather than to an empty ranked surface.
         from sqlalchemy import inspect as sa_inspect
         db_cols = {c["name"] for c in sa_inspect(bind).get_columns(table.name)}
-        missing = {c for c in ("anchor_clean", "anchor_wedge_pct", "exceed_p")
+        missing = {c for c in ("anchor_clean", "anchor_wedge_pct", "exceed_p",
+                               "anomaly_p")
                    if c not in db_cols}
         if missing:
             logger.warning(
                 f"  ⚠ item_forecasts is missing {sorted(missing)} — writing "
-                f"forecasts WITHOUT the clean-anchor disclosure. "
+                f"forecasts WITHOUT those disclosure fields "
+                f"(clean-anchor 0022/0024, exceed_p, anomaly_p 0025). "
                 f"/opportunities cannot gate on a column that is not there, so "
                 f"it will rank the deviating cohort as before. Run "
                 f"`venv/bin/python -m alembic upgrade head` from backend/ "
