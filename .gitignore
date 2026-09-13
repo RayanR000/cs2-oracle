@@ -79,11 +79,19 @@ backend/models/saved_models/*.txt
 backend/models/saved_models/*.pkl
 backend/models/saved_models/bias_corrections.json
 backend/models/saved_models/engineered_data.parquet
+# Untracked 2026-09-13. It had been the ONE tracked artifact, and the committed
+# copy had drifted five weeks behind prod (2026-08-09, 33 feature_cols, no
+# anomaly_gbm, while prod serves lgbm-v3 with the 28-col set and anomaly heads).
+# A stale artifact description that reads as authoritative is worse than none:
+# CI restores the real one from the Actions cache, and the booster-count guard
+# in price-forecast.yml already hard-errors on a cache miss, so a fresh checkout
+# having no meta.json is the honest state rather than a new failure mode.
+backend/models/saved_models/meta.json
 # Rollback snapshots of the above (saved_models_pre2026_*, _bak_*, ...). The
 # rules above are path-exact, so a snapshot DIRECTORY escaped them: 8783c67
 # committed 1.8G this way, incl. a 1.7GB engineered_data.parquet that GitHub
 # rejects outright (100MB cap), which silently blocked every push for 5 days.
-# Does not match saved_models/ itself -- meta.json there stays tracked.
+# Does not match saved_models/ itself (which is now fully ignored above).
 backend/models/saved_models_*/
 # The rule above keys on the `_` separator, so `saved_models.bak/` escaped it in
 # turn and sat tracked at 58MB (73 boosters, 2026-07-17) until 2026-08-10.
