@@ -1,0 +1,68 @@
+name: Lint & Smoke Test
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'backend/**'
+      - 'pyproject.toml'
+      - 'uv.lock'
+  pull_request:
+    paths:
+      - 'backend/**'
+      - 'pyproject.toml'
+      - 'uv.lock'
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v6
+        with:
+          python-version: '3.13'
+
+      - name: Install dependencies
+        run: |
+          uv sync --frozen --no-dev
+          echo "$PWD/.venv/bin" >> $GITHUB_PATH
+
+      - name: Ruff lint (changed files)
+        run: |
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            BASE=${{ github.event.pull_request.base.sha }}
+          else
+            BASE=${{ github.event.before }}
+          fi
+          FILES=$(git diff --name-only --diff-filter=ACMR "$BASE" HEAD -- 'backend/**.py' | tr '\n' ' ')
+          if [ -n "$FILES" ]; then
+            echo "Linting: $FILES"
+            uv run --frozen --extra dev ruff check $FILES
+          else
+            echo "No Python files changed."
+          fi
+
+      - name: Import smoke test
+        working-directory: ./backend
+        run: |
+          python -c "
+          import config
+          import database
+          import api
+          import models.forecaster
+          import models.conformal
+          import models.item_parser
+          import collectors.snapshot_date
+          print('All key modules import successfully.')
+          "
