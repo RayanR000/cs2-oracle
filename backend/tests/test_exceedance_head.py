@@ -12,6 +12,7 @@ These guard: the flag, the flag-independent serving accessor, the training gate,
 that band_scale reuses the one accessor, and that predict emits the field. Scope:
 docs/superpowers/plans/2026-08-16-exceedance-band-scale-phase2-plan.md.
 """
+
 from __future__ import annotations
 
 import inspect
@@ -19,7 +20,6 @@ from unittest.mock import MagicMock
 
 import numpy as np
 import pandas as pd
-
 from models.forecaster import ItemForecaster
 
 
@@ -34,11 +34,12 @@ def _exc_head(f, cols=("f", "g"), seed=0):
     y = (x > 0.5).astype(float)
     X = pd.DataFrame({cols[0]: x, cols[1]: rng.normal(size=n)})
     return f._fit_exceedance_classifier(
-        X, y, boosting_type="gbdt", tree_params={}, horizon=7,
-        tier_train=np.full(n, 2), num_boost_round=60)
+        X, y, boosting_type="gbdt", tree_params={}, horizon=7, tier_train=np.full(n, 2), num_boost_round=60
+    )
 
 
 # --- the flag -------------------------------------------------------------
+
 
 def test_head_flag_reads_the_environment(monkeypatch):
     monkeypatch.delenv("EXCEEDANCE_HEAD", raising=False)
@@ -48,6 +49,7 @@ def test_head_flag_reads_the_environment(monkeypatch):
 
 
 # --- the flag-independent serving accessor --------------------------------
+
 
 def test_exceedance_probability_is_clipped_and_flag_independent(tmp_path, monkeypatch):
     """The served probability comes from the loaded head regardless of BOTH scale
@@ -91,12 +93,14 @@ def test_exceedance_probability_fills_missing_features_with_medians(tmp_path):
 
 # --- band_scale reuses the one accessor -----------------------------------
 
+
 def test_band_scale_reuses_exceedance_probability(tmp_path):
     src = inspect.getsource(ItemForecaster.band_scale)
     assert "exceedance_probability(" in src
 
 
 # --- training gate --------------------------------------------------------
+
 
 def test_training_fits_head_under_head_flag_without_scale():
     """The production head must train when EXCEEDANCE_HEAD is set even if the band
@@ -106,6 +110,7 @@ def test_training_fits_head_under_head_flag_without_scale():
 
 
 # --- predict emits the field ----------------------------------------------
+
 
 def test_predict_emits_exceed_p_on_forecast_record():
     src = inspect.getsource(ItemForecaster.predict)

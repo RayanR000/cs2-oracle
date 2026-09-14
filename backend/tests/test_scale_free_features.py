@@ -21,6 +21,7 @@ The load-bearing test here is `test_model_features_are_invariant_to_price_scale`
 which asserts the *property* rather than a name list — a new dollar-scale feature
 added later fails it without anyone remembering to update a list.
 """
+
 from __future__ import annotations
 
 from datetime import date, timedelta
@@ -29,14 +30,12 @@ from unittest.mock import MagicMock
 import numpy as np
 import pandas as pd
 import pytest
-
 from models.forecaster import ItemForecaster
 
 
 @pytest.fixture
 def forecaster(tmp_path_factory):
-    return ItemForecaster(db_session=MagicMock(),
-                          model_dir=str(tmp_path_factory.mktemp("saved_models")))
+    return ItemForecaster(db_session=MagicMock(), model_dir=str(tmp_path_factory.mktemp("saved_models")))
 
 
 def _series(n_items=2, n_days=400, scale=1.0, start=date(2024, 1, 1)):
@@ -47,12 +46,14 @@ def _series(n_items=2, n_days=400, scale=1.0, start=date(2024, 1, 1)):
         price = 10.0 + i
         for d in range(n_days):
             price *= 1.0 + rng.normal(0.0005, 0.02)
-            rows.append({
-                "item_id": f"item-{i}",
-                "date": start + timedelta(days=d),
-                "price": price * scale,
-                "volume": 0.0,
-            })
+            rows.append(
+                {
+                    "item_id": f"item-{i}",
+                    "date": start + timedelta(days=d),
+                    "price": price * scale,
+                    "volume": 0.0,
+                }
+            )
     return pd.DataFrame(rows)
 
 
@@ -66,14 +67,11 @@ SCALE_DEPENDENT_BY_DESIGN = {"price_tier"}
 
 def _model_features(forecaster, df):
     """The columns that actually reach a booster: select -> shelve -> allowlist."""
-    cols = ItemForecaster._select_feature_cols(
-        df, ItemForecaster.HORIZONS, ItemForecaster.SHELVED_FEATURES)
-    return ItemForecaster._apply_feature_allowlist(
-        cols, ItemForecaster.FEATURE_GROUP_ALLOWLIST)
+    cols = ItemForecaster._select_feature_cols(df, ItemForecaster.HORIZONS, ItemForecaster.SHELVED_FEATURES)
+    return ItemForecaster._apply_feature_allowlist(cols, ItemForecaster.FEATURE_GROUP_ALLOWLIST)
 
 
 class TestScaleInvariance:
-
     def test_model_features_are_invariant_to_price_scale(self, forecaster):
         """THE LOAD-BEARING TEST.
 
@@ -83,8 +81,7 @@ class TestScaleInvariance:
         base = forecaster.engineer_features(_series(scale=1.0), _EVENTS)
         scaled = forecaster.engineer_features(_series(scale=100.0), _EVENTS)
 
-        feats = [c for c in _model_features(forecaster, base)
-                 if c not in SCALE_DEPENDENT_BY_DESIGN]
+        feats = [c for c in _model_features(forecaster, base) if c not in SCALE_DEPENDENT_BY_DESIGN]
         assert feats, "precondition: there are model features to check"
 
         offenders = []
@@ -96,8 +93,7 @@ class TestScaleInvariance:
                 continue
             if not np.allclose(a[both], b[both], rtol=1e-6, atol=1e-9):
                 denom = np.maximum(np.abs(a[both]), 1e-12)
-                offenders.append(
-                    f"{col} (max rel diff {np.max(np.abs(b[both] - a[both]) / denom):.3g})")
+                offenders.append(f"{col} (max rel diff {np.max(np.abs(b[both] - a[both]) / denom):.3g})")
 
         assert not offenders, (
             "These model features change when every price is multiplied by 100, "
@@ -121,7 +117,6 @@ class TestScaleInvariance:
 
 
 class TestCoefficientOfVariationColumns:
-
     @pytest.mark.parametrize("window", [7, 14, 20, 30, 60])
     def test_price_cv_is_the_std_over_price(self, forecaster, window):
         df = forecaster.engineer_features(_series(), _EVENTS)
@@ -135,13 +130,15 @@ class TestCoefficientOfVariationColumns:
         """conformal.sigma_from_columns is price_std_60d / price. The feature and
         the band must not drift apart into two definitions of the same thing."""
         from models import conformal
+
         df = forecaster.engineer_features(_series(), _EVENTS)
         # Non-binding floor/cap: this pins the *definition* (std/price), not the
         # clipping, which is a separate serving concern.
         sigma = conformal.sigma_from_columns(
             price_std_60d=df["price_std_60d"].to_numpy(dtype=float),
             price=df["price"].to_numpy(dtype=float),
-            floor=1e-12, cap=1e12,
+            floor=1e-12,
+            cap=1e12,
         )
         got = df["price_cv_60d"].to_numpy(dtype=float)
         both = np.isfinite(sigma) & np.isfinite(got)
@@ -155,9 +152,15 @@ class TestDollarScaleColumnsAreShelved:
     booster."""
 
     DOLLAR_COLUMNS = [
-        "price_std_7d", "price_std_14d", "price_std_20d",
-        "price_std_30d", "price_std_60d",
-        "price_log", "macd_line", "macd_signal", "macd_histogram",
+        "price_std_7d",
+        "price_std_14d",
+        "price_std_20d",
+        "price_std_30d",
+        "price_std_60d",
+        "price_log",
+        "macd_line",
+        "macd_signal",
+        "macd_histogram",
     ]
 
     @pytest.mark.parametrize("col", DOLLAR_COLUMNS)
@@ -175,10 +178,10 @@ class TestDollarScaleColumnsAreShelved:
         """
         df = forecaster.engineer_features(_series(), _EVENTS)
         forecaster.feature_cols = ItemForecaster._select_feature_cols(
-            df, ItemForecaster.HORIZONS, ItemForecaster.SHELVED_FEATURES)
+            df, ItemForecaster.HORIZONS, ItemForecaster.SHELVED_FEATURES
+        )
         pruned = forecaster._prune_features(df)
-        final = ItemForecaster._apply_feature_allowlist(
-            pruned, ItemForecaster.FEATURE_GROUP_ALLOWLIST)
+        final = ItemForecaster._apply_feature_allowlist(pruned, ItemForecaster.FEATURE_GROUP_ALLOWLIST)
 
         leaked = [c for c in self.DOLLAR_COLUMNS if c in final]
         leaked += [c for c in final if c.startswith("price_lag_")]

@@ -64,9 +64,13 @@ BID_SOURCES = frozenset({"aggregator_buff163_buy"})
 #
 # Do NOT also drop aggregator_sync: that deletes 2026-01 and 2026-02 in full
 # for the >=$1 cohort (52,048 item-days) to buy a further 1.4pp.
-TRAILING_WINDOW_SOURCES = frozenset({
-    "aggregator_steam_7d", "aggregator_steam_30d", "aggregator_steam_90d",
-})
+TRAILING_WINDOW_SOURCES = frozenset(
+    {
+        "aggregator_steam_7d",
+        "aggregator_steam_30d",
+        "aggregator_steam_90d",
+    }
+)
 
 # Steam's point-in-time `last_24h` price, stored WITHOUT the trailing-window
 # fallback that contaminates `aggregator_sync` (which is `last_24h` falling back
@@ -180,8 +184,7 @@ def is_phantom_slug(item_slug: str) -> bool:
     """
     if not isinstance(item_slug, str):
         return False
-    return (re.fullmatch(PHANTOM_SLUG_PATTERN, item_slug) is not None
-            or item_slug.startswith(PHANTOM_SLUG_PREFIX))
+    return re.fullmatch(PHANTOM_SLUG_PATTERN, item_slug) is not None or item_slug.startswith(PHANTOM_SLUG_PREFIX)
 
 
 def phantom_slug_sql_filter(column: str = "item_slug") -> str:
@@ -190,13 +193,14 @@ def phantom_slug_sql_filter(column: str = "item_slug") -> str:
     NULL-safe like the other two: a bare `NOT regexp_full_match` over a NULL
     slug evaluates to NULL and silently drops the row.
     """
-    return (f"({column} IS NULL OR NOT ("
-            f"regexp_full_match({column}, '{PHANTOM_SLUG_PATTERN}')"
-            f" OR starts_with({column}, '{PHANTOM_SLUG_PREFIX}')))")
+    return (
+        f"({column} IS NULL OR NOT ("
+        f"regexp_full_match({column}, '{PHANTOM_SLUG_PATTERN}')"
+        f" OR starts_with({column}, '{PHANTOM_SLUG_PREFIX}')))"
+    )
 
 
-def archive_universe_sql_filter(slug_column: str = "item_slug",
-                                source_column: str = "source") -> str:
+def archive_universe_sql_filter(slug_column: str = "item_slug", source_column: str = "source") -> str:
     """Every universe rule at once, for a loader that reads the archive direct.
 
     Production applies these inside `_fetch_voted_price_history`; anything that
@@ -211,8 +215,7 @@ def archive_universe_sql_filter(slug_column: str = "item_slug",
     lack the column is old enough to contain none of them. The slug rules carry
     no such caveat and always apply.
     """
-    parts = [phase_collapsed_sql_filter(slug_column),
-             phantom_slug_sql_filter(slug_column)]
+    parts = [phase_collapsed_sql_filter(slug_column), phantom_slug_sql_filter(slug_column)]
     if source_column:
         parts.append(bid_sources_sql_filter(source_column))
         parts.append(historical_fallback_sql_filter(source_column))
@@ -249,10 +252,8 @@ def phase_collapsed_sql_filter(column: str = "item_slug") -> str:
     way — the bid exclusion needed three separate fixes because each loader
     carried its own glob.
     """
-    hits = " OR ".join(f"lower({column}) LIKE '%{p}%'"
-                       for p in PHASE_COLLAPSED_SLUG_PATTERNS)
-    exempt = " OR ".join(f"lower({column}) LIKE '%{p}%'"
-                         for p in PHASE_COLLAPSED_EXEMPT_PATTERNS)
+    hits = " OR ".join(f"lower({column}) LIKE '%{p}%'" for p in PHASE_COLLAPSED_SLUG_PATTERNS)
+    exempt = " OR ".join(f"lower({column}) LIKE '%{p}%'" for p in PHASE_COLLAPSED_EXEMPT_PATTERNS)
     # NULL-safe like the BID_SOURCES filter: a bare NOT LIKE over a NULL slug
     # evaluates to NULL and silently drops the row.
     return f"({column} IS NULL OR NOT ({hits}) OR ({exempt}))"
@@ -366,10 +367,15 @@ def parse_item_name(name: str) -> dict:
         result["quality_rank"] = QUALITY_RANK.get(raw_quality, 0)
 
     # Weapon & skin name extraction (only for skin-type items)
-    if not any([
-        result["is_sticker"], result["is_music_kit"],
-        result["is_graffiti"], result["is_agent"], result["is_charm"],
-    ]):
+    if not any(
+        [
+            result["is_sticker"],
+            result["is_music_kit"],
+            result["is_graffiti"],
+            result["is_agent"],
+            result["is_charm"],
+        ]
+    ):
         clean = name
         if result["is_souvenir"]:
             clean = re.sub(r"^Souvenir\s+", "", clean)

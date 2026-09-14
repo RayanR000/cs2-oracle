@@ -7,13 +7,14 @@ The API surface turns a forecast band into a per-item volatility tag:
 Kept separate from the routes so the arithmetic and the labelling rule are
 unit-testable in isolation and the endpoints stay thin.
 """
+
 from __future__ import annotations
 
-from typing import Iterable, List, Mapping, Optional, Sequence, Tuple
+from collections.abc import Iterable, Mapping
 
 import numpy as np
 
-Thresholds = Tuple[float, float]
+Thresholds = tuple[float, float]
 
 #: Horizons at which the exceedance head's `exceed_p` (served as `move_odds`) is
 #: calibrated enough to publish. Replay reliability is ECE <1.3pp at h3/h7,
@@ -21,7 +22,7 @@ Thresholds = Tuple[float, float]
 #: Outside this set `move_odds` is suppressed (None) rather than published as a
 #: number the data does not support — the same "never fabricate" rule as
 #: `swing_pct`.
-CALIBRATED_MOVE_ODDS_HORIZONS: Tuple[int, ...] = (3, 7)
+CALIBRATED_MOVE_ODDS_HORIZONS: tuple[int, ...] = (3, 7)
 
 
 def move_odds_calibrated(horizon: int) -> bool:
@@ -29,8 +30,7 @@ def move_odds_calibrated(horizon: int) -> bool:
     return horizon in CALIBRATED_MOVE_ODDS_HORIZONS
 
 
-def swing_pct(low: Optional[float], high: Optional[float],
-              mid: Optional[float]) -> Optional[float]:
+def swing_pct(low: float | None, high: float | None, mid: float | None) -> float | None:
     """Half-band as a fraction of the mid: ((high - low) / 2) / mid.
 
     Returns None when any input is missing or the mid is non-positive, so a
@@ -43,7 +43,7 @@ def swing_pct(low: Optional[float], high: Optional[float],
     return ((high - low) / 2.0) / mid
 
 
-def compute_thresholds(swings: Iterable[Optional[float]]) -> Thresholds:
+def compute_thresholds(swings: Iterable[float | None]) -> Thresholds:
     """The 1/3 and 2/3 quantile cut points of a swing distribution.
 
     None values are dropped. Raises ValueError on an empty distribution rather
@@ -56,7 +56,7 @@ def compute_thresholds(swings: Iterable[Optional[float]]) -> Thresholds:
     return float(lo), float(hi)
 
 
-def label_for(swing: Optional[float], thresholds: Thresholds) -> Optional[str]:
+def label_for(swing: float | None, thresholds: Thresholds) -> str | None:
     """Stable (<= low tertile), Volatile (> high tertile), else Moderate.
 
     None swing has no label.
@@ -71,10 +71,14 @@ def label_for(swing: Optional[float], thresholds: Thresholds) -> Optional[str]:
     return "Moderate"
 
 
-def tag_fields(low: Optional[float], high: Optional[float], mid: Optional[float],
-               exceed_p: Optional[float],
-               thresholds: Optional[Thresholds],
-               calibrated_move_odds: bool = True) -> dict:
+def tag_fields(
+    low: float | None,
+    high: float | None,
+    mid: float | None,
+    exceed_p: float | None,
+    thresholds: Thresholds | None,
+    calibrated_move_odds: bool = True,
+) -> dict:
     """The three per-item tag fields from a band + exceed_p + universe thresholds.
 
     Swing is always derivable from the row alone; the label needs the
@@ -86,17 +90,20 @@ def tag_fields(low: Optional[float], high: Optional[float], mid: Optional[float]
     swing = swing_pct(low, high, mid)
     label = label_for(swing, thresholds) if thresholds is not None else None
     move_odds = exceed_p if calibrated_move_odds else None
-    return {"expected_swing_pct": swing, "move_odds": move_odds,
-            "stability_label": label}
+    return {"expected_swing_pct": swing, "move_odds": move_odds, "stability_label": label}
 
 
 _SORT_FIELDS = {"swing": "expected_swing_pct", "move_odds": "move_odds"}
 
 
-def build_ranking(rows: Iterable[Mapping], sort: str = "swing",
-                  order: str = "desc", limit: Optional[int] = None,
-                  calibrated_move_odds: bool = True,
-                  label: Optional[str] = None) -> List[dict]:
+def build_ranking(
+    rows: Iterable[Mapping],
+    sort: str = "swing",
+    order: str = "desc",
+    limit: int | None = None,
+    calibrated_move_odds: bool = True,
+    label: str | None = None,
+) -> list[dict]:
     """Rank a universe of forecast rows by volatility.
 
     Each input row carries ``item_id, name, current_price, low, high, mid,
@@ -121,14 +128,16 @@ def build_ranking(rows: Iterable[Mapping], sort: str = "swing",
         s = swing_pct(r.get("low"), r.get("high"), r.get("mid"))
         if s is None:
             continue  # no band -> not rankable
-        tagged.append({
-            "item_id": r.get("item_id"),
-            "name": r.get("name"),
-            "current_price": r.get("current_price"),
-            "expected_swing_pct": s,
-            "move_odds": r.get("exceed_p") if calibrated_move_odds else None,
-            "stability_label": None,  # filled once thresholds are known
-        })
+        tagged.append(
+            {
+                "item_id": r.get("item_id"),
+                "name": r.get("name"),
+                "current_price": r.get("current_price"),
+                "expected_swing_pct": s,
+                "move_odds": r.get("exceed_p") if calibrated_move_odds else None,
+                "stability_label": None,  # filled once thresholds are known
+            }
+        )
     if not tagged:
         return []
 

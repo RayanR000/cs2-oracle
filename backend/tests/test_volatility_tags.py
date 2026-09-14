@@ -7,21 +7,25 @@ These back the API surface that exposes, per item x horizon:
 No forecasting here - just the arithmetic and the labelling rule, tested in
 isolation so the endpoints can stay thin. See the v1 design in chat.
 """
+
 from __future__ import annotations
 
 import math
 
 import pytest
-
 from api.volatility_tags import (
-    swing_pct, compute_thresholds, label_for, build_ranking, tag_fields,
-    move_odds_calibrated, CALIBRATED_MOVE_ODDS_HORIZONS,
+    CALIBRATED_MOVE_ODDS_HORIZONS,
+    build_ranking,
+    compute_thresholds,
+    label_for,
+    move_odds_calibrated,
+    swing_pct,
+    tag_fields,
 )
 
 
 def _row(item_id, name, price, low, high, mid, exceed_p=None):
-    return dict(item_id=item_id, name=name, current_price=price,
-                low=low, high=high, mid=mid, exceed_p=exceed_p)
+    return dict(item_id=item_id, name=name, current_price=price, low=low, high=high, mid=mid, exceed_p=exceed_p)
 
 
 class TestSwingPct:
@@ -92,19 +96,19 @@ class TestBuildRanking:
     # five items with swings 5%,10%,15%,20%,25% (mid=100, half-band = pct*100)
     def _universe(self):
         return [
-            _row("a", "A", 100.0, 95.0, 105.0, 100.0, exceed_p=0.30),   # 5%
-            _row("b", "B", 100.0, 90.0, 110.0, 100.0, exceed_p=0.10),   # 10%
-            _row("c", "C", 100.0, 85.0, 115.0, 100.0, exceed_p=None),   # 15%
-            _row("d", "D", 100.0, 80.0, 120.0, 100.0, exceed_p=0.50),   # 20%
-            _row("e", "E", 100.0, 75.0, 125.0, 100.0, exceed_p=0.05),   # 25%
+            _row("a", "A", 100.0, 95.0, 105.0, 100.0, exceed_p=0.30),  # 5%
+            _row("b", "B", 100.0, 90.0, 110.0, 100.0, exceed_p=0.10),  # 10%
+            _row("c", "C", 100.0, 85.0, 115.0, 100.0, exceed_p=None),  # 15%
+            _row("d", "D", 100.0, 80.0, 120.0, 100.0, exceed_p=0.50),  # 20%
+            _row("e", "E", 100.0, 75.0, 125.0, 100.0, exceed_p=0.05),  # 25%
         ]
 
     def test_computes_swing_move_odds_and_label(self):
         out = build_ranking(self._universe())
         by_id = {r["item_id"]: r for r in out}
         assert by_id["a"]["expected_swing_pct"] == pytest.approx(0.05)
-        assert by_id["d"]["move_odds"] == pytest.approx(0.50)      # exceed_p passthrough
-        assert by_id["c"]["move_odds"] is None                     # missing exceed_p
+        assert by_id["d"]["move_odds"] == pytest.approx(0.50)  # exceed_p passthrough
+        assert by_id["c"]["move_odds"] is None  # missing exceed_p
         # tertiles of {.05,.10,.15,.20,.25}: label ends span Stable..Volatile
         assert by_id["a"]["stability_label"] == "Stable"
         assert by_id["e"]["stability_label"] == "Volatile"
@@ -137,9 +141,9 @@ class TestBuildRanking:
     def test_labels_reflect_within_call_universe_not_absolute(self):
         # a universe of only calm items -> the widest is still "Volatile" relative to peers
         calm = [
-            _row("p", "P", 100.0, 99.0, 101.0, 100.0),   # 1%
-            _row("q", "Q", 100.0, 98.0, 102.0, 100.0),   # 2%
-            _row("r", "R", 100.0, 97.0, 103.0, 100.0),   # 3%
+            _row("p", "P", 100.0, 99.0, 101.0, 100.0),  # 1%
+            _row("q", "Q", 100.0, 98.0, 102.0, 100.0),  # 2%
+            _row("r", "R", 100.0, 97.0, 103.0, 100.0),  # 3%
         ]
         out = {r["item_id"]: r["stability_label"] for r in build_ranking(calm)}
         assert out["p"] == "Stable"
@@ -151,11 +155,11 @@ class TestBuildRankingLabelFilter:
     # full-universe tertiles give Stable={a,b}, Moderate={c}, Volatile={d,e}
     def _universe(self):
         return [
-            _row("a", "A", 100.0, 95.0, 105.0, 100.0, exceed_p=0.30),   # 5%
-            _row("b", "B", 100.0, 90.0, 110.0, 100.0, exceed_p=0.10),   # 10%
-            _row("c", "C", 100.0, 85.0, 115.0, 100.0, exceed_p=None),   # 15%
-            _row("d", "D", 100.0, 80.0, 120.0, 100.0, exceed_p=0.50),   # 20%
-            _row("e", "E", 100.0, 75.0, 125.0, 100.0, exceed_p=0.05),   # 25%
+            _row("a", "A", 100.0, 95.0, 105.0, 100.0, exceed_p=0.30),  # 5%
+            _row("b", "B", 100.0, 90.0, 110.0, 100.0, exceed_p=0.10),  # 10%
+            _row("c", "C", 100.0, 85.0, 115.0, 100.0, exceed_p=None),  # 15%
+            _row("d", "D", 100.0, 80.0, 120.0, 100.0, exceed_p=0.50),  # 20%
+            _row("e", "E", 100.0, 75.0, 125.0, 100.0, exceed_p=0.05),  # 25%
         ]
 
     def test_none_returns_whole_universe(self):
@@ -191,13 +195,12 @@ class TestTagFields:
 
     def test_full_tags(self):
         out = tag_fields(80.0, 120.0, 100.0, exceed_p=0.30, thresholds=self.thresholds)
-        assert out == {"expected_swing_pct": pytest.approx(0.20),
-                       "move_odds": 0.30, "stability_label": "Moderate"}
+        assert out == {"expected_swing_pct": pytest.approx(0.20), "move_odds": 0.30, "stability_label": "Moderate"}
 
     def test_missing_exceed_p_gives_null_move_odds(self):
         out = tag_fields(90.0, 110.0, 100.0, exceed_p=None, thresholds=self.thresholds)
         assert out["move_odds"] is None
-        assert out["stability_label"] == "Stable"   # 10% swing at low boundary
+        assert out["stability_label"] == "Stable"  # 10% swing at low boundary
 
     def test_no_thresholds_leaves_label_none_but_keeps_swing(self):
         out = tag_fields(80.0, 120.0, 100.0, exceed_p=0.4, thresholds=None)
@@ -213,8 +216,7 @@ class TestTagFields:
     def test_move_odds_suppressed_at_uncalibrated_horizon(self):
         # exceed_p is calibrated only at h3/h7 (replay ECE <1.3pp; ~3.8pp at h30),
         # so an uncalibrated horizon must not publish the probability.
-        out = tag_fields(80.0, 120.0, 100.0, exceed_p=0.30,
-                         thresholds=self.thresholds, calibrated_move_odds=False)
+        out = tag_fields(80.0, 120.0, 100.0, exceed_p=0.30, thresholds=self.thresholds, calibrated_move_odds=False)
         assert out["move_odds"] is None
         # swing and label are band-width, valid at every horizon
         assert out["expected_swing_pct"] == pytest.approx(0.20)
@@ -242,8 +244,7 @@ class TestBuildRankingCalibration:
         ]
 
     def test_move_odds_present_when_calibrated(self):
-        out = {r["item_id"]: r["move_odds"] for r in
-               build_ranking(self._rows(), calibrated_move_odds=True)}
+        out = {r["item_id"]: r["move_odds"] for r in build_ranking(self._rows(), calibrated_move_odds=True)}
         assert out == {"a": 0.30, "b": 0.05}
 
     def test_move_odds_nulled_when_uncalibrated(self):

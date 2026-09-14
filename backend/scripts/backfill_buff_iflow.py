@@ -6,12 +6,19 @@ Source: api.iflow.work `priority_archive` (EricZhu-42/SteamTradingSiteTracker-Da
 write two staging outputs under --out-dir/price-archive:
 
   prices-YYYY-MM.parquet   canonical rows, source="buff_iflow", BUFF ask in USD
-  volume-iflow-YYYY-MM.parquet   item_slug, day, steam_volume, buff_buy_num,
-                                 buff_sell_num  (the liquidity re-test inputs)
+  volume-iflow-YYYY-MM.parquet   item_slug, day,
+                                 count_in_24_pre_restructure,
+                                 steam_volume_post_restructure,
+                                 buff_buy_num, buff_sell_num
 
 Two dump schemas are handled (the 2024-02-13 DB restructure):
   - <=2024-02-13  "DATA" db:     buff_reference_price (CNY), count_in_24
   - >=2024-02-13  "priority" db: buff_sell.price (CNY), steam_volume.volume
+
+The two volume series are NEVER collapsed into one column: they come from
+different upstreams on either side of an era boundary and are incomparable
+(docs/specs/2026-09-14-wait-window-workplan.md Item 4). Consumers must pick an
+era explicitly; there is no merged `steam_vol`/`steam_volume` output.
 
 BUFF prices are raw CNY; converted to USD via exchange-rates-history.parquet
 (rate = CNY per USD, so usd = cny / rate), forward-filled.
@@ -20,6 +27,7 @@ Usage (from backend/):
   venv/bin/python scripts/backfill_buff_iflow.py --dry-run --start 2026-04-01 --end 2026-04-07
   venv/bin/python scripts/backfill_buff_iflow.py --out-dir ../buff-iflow-staging
 """
+
 from __future__ import annotations
 
 import argparse
@@ -28,7 +36,7 @@ import json
 import sys
 import zipfile
 from concurrent.futures import ThreadPoolExecutor
-from datetime import date, datetime, timedelta
+from datetime import date, datetime
 from pathlib import Path
 
 import duckdb
@@ -63,7 +71,7 @@ def list_dumps() -> dict[date, str]:
     return by_day
 
 
-def load_fx() -> "pd.DataFrame":
+def load_fx() -> pd.DataFrame:
     fx = pd.read_parquet(ARCHIVE / "exchange-rates-history.parquet")
     fx = fx[fx["currency"] == "CNY"][["day", "rate"]].copy()
     fx["day"] = pd.to_datetime(fx["day"]).dt.date
@@ -81,8 +89,20 @@ def load_known_slugs() -> set[str]:
     return set(df["item_slug"])
 
 
+# Era-explicit volume output columns. The pre/post series share no column by
+# design (Item 4): a row may populate at most one of them, chosen by dump era.
+VOL_PRE_RESTRUCTURE = "count_in_24_pre_restructure"  # DATA db `count_in_24`, day <= RESTRUCTURE
+VOL_POST_RESTRUCTURE = "steam_volume_post_restructure"  # priority db `steam_volume.volume`, day > RESTRUCTURE
+
+
 def parse_dump(raw: bytes, day: date) -> list[dict]:
-    """CS records from one dump -> [{slug, buff_cny, steam_vol, buy_num, sell_num}]."""
+    """CS records from one dump.
+
+    Each record carries exactly one eligible volume column: pre-restructure
+    days populate VOL_PRE_RESTRUCTURE (the other key is None) and
+    post-restructure days populate VOL_POST_RESTRUCTURE. The two series are
+    never merged -- a downstream consumer that wants volume must pick an era.
+    """
     zf = zipfile.ZipFile(io.BytesIO(raw))
     old = day <= RESTRUCTURE
     out = []
@@ -99,7 +119,8 @@ def parse_dump(raw: bytes, day: date) -> list[dict]:
                 continue
             if old:
                 cny = r.get("buff_reference_price")
-                steam_vol = r.get("count_in_24")
+                vol_pre = r.get("count_in_24")
+                vol_post = None
                 buy_num = r.get("buff_buy_num")
                 sell_num = r.get("buff_sell_num")
             else:
@@ -107,11 +128,20 @@ def parse_dump(raw: bytes, day: date) -> list[dict]:
                 cny = bs.get("price")
                 sell_num = bs.get("count")
                 buy_num = (r.get("buff_buy") or {}).get("count")
-                steam_vol = (r.get("steam_volume") or {}).get("volume")
+                vol_pre = None
+                vol_post = (r.get("steam_volume") or {}).get("volume")
             if cny is None or cny <= 0:
                 continue
-            out.append({"slug": slug, "cny": float(cny), "steam_vol": steam_vol,
-                        "buy_num": buy_num, "sell_num": sell_num})
+            out.append(
+                {
+                    "slug": slug,
+                    "cny": float(cny),
+                    VOL_PRE_RESTRUCTURE: vol_pre,
+                    VOL_POST_RESTRUCTURE: vol_post,
+                    "buy_num": buy_num,
+                    "sell_num": sell_num,
+                }
+            )
     return out
 
 
@@ -178,10 +208,16 @@ def main() -> None:
                     stats["dropped_cheap"] += 1
                     continue
                 price_rows.append((r["slug"], day, round(usd, 4)))
-                vol_rows.append({"item_slug": r["slug"], "day": day,
-                                 "steam_volume": r["steam_vol"],
-                                 "buff_buy_num": r["buy_num"],
-                                 "buff_sell_num": r["sell_num"]})
+                vol_rows.append(
+                    {
+                        "item_slug": r["slug"],
+                        "day": day,
+                        VOL_PRE_RESTRUCTURE: r[VOL_PRE_RESTRUCTURE],
+                        VOL_POST_RESTRUCTURE: r[VOL_POST_RESTRUCTURE],
+                        "buff_buy_num": r["buy_num"],
+                        "buff_sell_num": r["sell_num"],
+                    }
+                )
             done += 1
             if done % 100 == 0:
                 print(f"  parsed {done}/{len(days)} days, {len(price_rows)} price rows")
@@ -194,9 +230,11 @@ def main() -> None:
 
     if args.dry_run:
         pr = pd.DataFrame(price_rows, columns=["item_slug", "day", "usd"])
-        print(f"\n[dry-run] distinct items={pr['item_slug'].nunique()}, "
-              f"day span {pr['day'].min()}..{pr['day'].max()}, "
-              f"median price ${pr['usd'].median():.2f}")
+        print(
+            f"\n[dry-run] distinct items={pr['item_slug'].nunique()}, "
+            f"day span {pr['day'].min()}..{pr['day'].max()}, "
+            f"median price ${pr['usd'].median():.2f}"
+        )
         return
 
     frame = to_archive_frame(price_rows, SOURCE, datetime.utcnow())
@@ -204,8 +242,7 @@ def main() -> None:
     vol = pd.DataFrame(vol_rows)
     vol["source"] = SOURCE
     append_monthly(out_prices, "volume-iflow", vol, ["item_slug", "day", "source"])
-    print(f"\nwrote {n} price rows (source={SOURCE}) + {len(vol)} volume rows "
-          f"-> {out_prices}")
+    print(f"\nwrote {n} price rows (source={SOURCE}) + {len(vol)} volume rows -> {out_prices}")
 
 
 if __name__ == "__main__":

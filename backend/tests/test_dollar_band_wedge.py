@@ -6,6 +6,7 @@ both is the band's own. Getting that classification backwards would invert the
 recommendation, so it is pinned here rather than trusted to a reading of the
 table.
 """
+
 import importlib.util
 from pathlib import Path
 
@@ -24,11 +25,18 @@ def wedge():
 
 
 def _row(**kw):
-    base = dict(forecast_date=pd.Timestamp("2026-08-04").date(), horizon_days=3,
-                base_price=100.0, actual_price=100.0, current_price=100.0,
-                predicted_price_low=90.0, predicted_price_mid=100.0,
-                predicted_price_high=110.0, model_version="lgbm-v3",
-                base_stale_run_days=0.0)
+    base = dict(
+        forecast_date=pd.Timestamp("2026-08-04").date(),
+        horizon_days=3,
+        base_price=100.0,
+        actual_price=100.0,
+        current_price=100.0,
+        predicted_price_low=90.0,
+        predicted_price_mid=100.0,
+        predicted_price_high=110.0,
+        model_version="lgbm-v3",
+        base_stale_run_days=0.0,
+    )
     base.update(kw)
     return base
 
@@ -48,9 +56,18 @@ def test_no_wedge_makes_the_two_predicates_identical(wedge):
 def test_a_miss_the_wedge_explains_is_recoverable(wedge):
     """Quoted off 50 while the outcome resolved off 100: the published band is
     [45, 55] but the calibrated one is [90, 110], and 105 lands in the latter."""
-    d = _prep(wedge, [_row(current_price=50.0, actual_price=105.0,
-                           predicted_price_low=45.0, predicted_price_mid=50.0,
-                           predicted_price_high=55.0)])
+    d = _prep(
+        wedge,
+        [
+            _row(
+                current_price=50.0,
+                actual_price=105.0,
+                predicted_price_low=45.0,
+                predicted_price_mid=50.0,
+                predicted_price_high=55.0,
+            )
+        ],
+    )
     assert not d["cov_dollar"].iloc[0]
     assert d["cov_calibrated"].iloc[0]
     assert d["recoverable"].iloc[0]
@@ -59,9 +76,18 @@ def test_a_miss_the_wedge_explains_is_recoverable(wedge):
 
 def test_a_miss_outside_both_bands_is_genuine(wedge):
     """No anchor fix reaches this one, and it must not be counted as if it did."""
-    d = _prep(wedge, [_row(current_price=50.0, actual_price=500.0,
-                           predicted_price_low=45.0, predicted_price_mid=50.0,
-                           predicted_price_high=55.0)])
+    d = _prep(
+        wedge,
+        [
+            _row(
+                current_price=50.0,
+                actual_price=500.0,
+                predicted_price_low=45.0,
+                predicted_price_mid=50.0,
+                predicted_price_high=55.0,
+            )
+        ],
+    )
     assert not d["cov_dollar"].iloc[0]
     assert not d["cov_calibrated"].iloc[0]
     assert d["genuine_miss"].iloc[0]
@@ -70,13 +96,18 @@ def test_a_miss_outside_both_bands_is_genuine(wedge):
 
 def test_every_dollar_miss_is_exactly_one_of_the_two(wedge):
     """The attribution must partition the misses, or the shares do not sum."""
-    d = _prep(wedge, [
-        _row(actual_price=105.0),                                    # covered
-        _row(current_price=50.0, actual_price=105.0,
-             predicted_price_low=45.0, predicted_price_high=55.0),   # recoverable
-        _row(current_price=50.0, actual_price=500.0,
-             predicted_price_low=45.0, predicted_price_high=55.0),   # genuine
-    ])
+    d = _prep(
+        wedge,
+        [
+            _row(actual_price=105.0),  # covered
+            _row(
+                current_price=50.0, actual_price=105.0, predicted_price_low=45.0, predicted_price_high=55.0
+            ),  # recoverable
+            _row(
+                current_price=50.0, actual_price=500.0, predicted_price_low=45.0, predicted_price_high=55.0
+            ),  # genuine
+        ],
+    )
     misses = ~d["cov_dollar"]
     assert (d["recoverable"] ^ d["genuine_miss"])[misses].all()
     assert not (d["recoverable"] | d["genuine_miss"])[~misses].any()

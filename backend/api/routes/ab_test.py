@@ -2,13 +2,8 @@
 A/B test results API — serves regime-switching vs global-only and ensemble-size comparison data.
 """
 
-from typing import Optional
-from fastapi import APIRouter, Depends, Query
-from sqlalchemy.orm import Session
-from sqlalchemy import desc
-from datetime import date
-
-from database import get_db, PredictionAccuracy
+from database import PredictionAccuracy, get_db
+from fastapi import APIRouter, Depends
 
 router = APIRouter(prefix="/ab-test", tags=["ab_test"])
 
@@ -28,49 +23,63 @@ def _row_to_dict(row: PredictionAccuracy) -> dict:
 
 @router.get("/regime")
 def get_regime_ab_test(
-    db = Depends(get_db),
+    db=Depends(get_db),
 ):
     """Return the latest A/B test comparison between regime and global-only models."""
     from sqlalchemy import text
 
     # Get the latest evaluation date for ab_test_regime_delta records
-    latest_date = db.execute(text("""
+    latest_date = db.execute(
+        text("""
         SELECT MAX(evaluation_date)
         FROM prediction_accuracy
         WHERE prediction_type = 'ab_test_regime_delta'
-    """)).scalar()
+    """)
+    ).scalar()
 
     if not latest_date:
-        return {"status": "no_data", "message": "No A/B test results found. Run `python scripts/ab_test_regime.py` first."}
+        return {
+            "status": "no_data",
+            "message": "No A/B test results found. Run `python scripts/ab_test_regime.py` first.",
+        }
 
     # Fetch regime metrics
-    regime_rows = db.execute(text("""
+    regime_rows = db.execute(
+        text("""
         SELECT horizon_days, sample_count, metrics
         FROM prediction_accuracy
         WHERE prediction_type = 'ab_test_regime'
           AND model_version = 'lgbm-v3-regime'
           AND evaluation_date = :d
         ORDER BY horizon_days
-    """), {"d": latest_date}).fetchall()
+    """),
+        {"d": latest_date},
+    ).fetchall()
 
     # Fetch global-only metrics
-    global_rows = db.execute(text("""
+    global_rows = db.execute(
+        text("""
         SELECT horizon_days, sample_count, metrics
         FROM prediction_accuracy
         WHERE prediction_type = 'ab_test_regime'
           AND model_version = 'lgbm-v3-global-only'
           AND evaluation_date = :d
         ORDER BY horizon_days
-    """), {"d": latest_date}).fetchall()
+    """),
+        {"d": latest_date},
+    ).fetchall()
 
     # Fetch delta records
-    delta_rows = db.execute(text("""
+    delta_rows = db.execute(
+        text("""
         SELECT horizon_days, metrics
         FROM prediction_accuracy
         WHERE prediction_type = 'ab_test_regime_delta'
           AND evaluation_date = :d
         ORDER BY horizon_days
-    """), {"d": latest_date}).fetchall()
+    """),
+        {"d": latest_date},
+    ).fetchall()
 
     regime_by_h = {r.horizon_days: r for r in regime_rows}
     global_by_h = {r.horizon_days: r for r in global_rows}
@@ -97,45 +106,59 @@ def get_regime_ab_test(
 
 @router.get("/ensemble")
 def get_ensemble_ab_test(
-    db = Depends(get_db),
+    db=Depends(get_db),
 ):
     """Return the latest A/B test comparison between 3-member and 6-member ensembles."""
     from sqlalchemy import text
 
-    latest_date = db.execute(text("""
+    latest_date = db.execute(
+        text("""
         SELECT MAX(evaluation_date)
         FROM prediction_accuracy
         WHERE prediction_type = 'ab_test_ensemble_delta'
-    """)).scalar()
+    """)
+    ).scalar()
 
     if not latest_date:
-        return {"status": "no_data", "message": "No ensemble A/B test results found. Run `python scripts/ab_test_ensemble.py` first."}
+        return {
+            "status": "no_data",
+            "message": "No ensemble A/B test results found. Run `python scripts/ab_test_ensemble.py` first.",
+        }
 
-    ens3_rows = db.execute(text("""
+    ens3_rows = db.execute(
+        text("""
         SELECT horizon_days, sample_count, metrics
         FROM prediction_accuracy
         WHERE prediction_type = 'ab_test_ensemble'
           AND model_version = 'lgbm-v3-ens3'
           AND evaluation_date = :d
         ORDER BY horizon_days
-    """), {"d": latest_date}).fetchall()
+    """),
+        {"d": latest_date},
+    ).fetchall()
 
-    ens6_rows = db.execute(text("""
+    ens6_rows = db.execute(
+        text("""
         SELECT horizon_days, sample_count, metrics
         FROM prediction_accuracy
         WHERE prediction_type = 'ab_test_ensemble'
           AND model_version = 'lgbm-v3-ens6'
           AND evaluation_date = :d
         ORDER BY horizon_days
-    """), {"d": latest_date}).fetchall()
+    """),
+        {"d": latest_date},
+    ).fetchall()
 
-    delta_rows = db.execute(text("""
+    delta_rows = db.execute(
+        text("""
         SELECT horizon_days, metrics
         FROM prediction_accuracy
         WHERE prediction_type = 'ab_test_ensemble_delta'
           AND evaluation_date = :d
         ORDER BY horizon_days
-    """), {"d": latest_date}).fetchall()
+    """),
+        {"d": latest_date},
+    ).fetchall()
 
     ens3_by_h = {r.horizon_days: r for r in ens3_rows}
     ens6_by_h = {r.horizon_days: r for r in ens6_rows}

@@ -41,22 +41,23 @@ Read-only: reads a voted panel and writes a CSV. No DB, no artifacts.
 
     venv/bin/python -m scripts.design_sigma_scale --horizons 3,7,14,30
 """
+
 from __future__ import annotations
 
 import argparse
 import logging
 import os
 import sys
-from typing import Callable
+from collections.abc import Callable
 
 import numpy as np
 import pandas as pd
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from models import conformal  # noqa: E402
-from models.forecaster import ItemForecaster, embargo_days  # noqa: E402
-from scripts.measure_conditional_qhat import (  # noqa: E402
+from models import conformal
+from models.forecaster import ItemForecaster, embargo_days
+from scripts.measure_conditional_qhat import (
     MIN_DATES_PER_HORIZON,
     MIN_HISTORY_DAYS,
     MIN_ROWS_PER_DATE,
@@ -70,17 +71,16 @@ from scripts.measure_conditional_qhat import (  # noqa: E402
 logger = logging.getLogger("design_sigma_scale")
 
 TARGET = conformal.NOMINAL_COVERAGE
-REFIT_EVERY_DAYS = 14        # production's age-based retrain cadence
+REFIT_EVERY_DAYS = 14  # production's age-based retrain cadence
 N_DECILES = 10
-N_BLOCKS = 6                 # time blocks for the beta-stability read
-N_SCALE_BINS = 20            # sigma bins for the binned-scale arm
+N_BLOCKS = 6  # time blocks for the beta-stability read
+N_SCALE_BINS = 20  # sigma bins for the binned-scale arm
 SELECT_FRACTION = 2.0 / 3.0  # fit/select here, report on the remainder
-MARGINAL_TOLERANCE = 0.02    # |marginal - 80%| gate on the selection period
-SIMPLICITY_SLACK_PP = 1.0    # prefer a simpler arm within this of the best
+MARGINAL_TOLERANCE = 0.02  # |marginal - 80%| gate on the selection period
+SIMPLICITY_SLACK_PP = 1.0  # prefer a simpler arm within this of the best
 
 # Simplest first. The tiebreak order, and also the order they are reported in.
-ARM_ORDER = ["P0_production", "P1_global_beta", "P2_shrunk_beta",
-             "P3_binned_scale", "P4_per_bin_qhat"]
+ARM_ORDER = ["P0_production", "P1_global_beta", "P2_shrunk_beta", "P3_binned_scale", "P4_per_bin_qhat"]
 
 WidthFn = Callable[[np.ndarray], np.ndarray]
 Fitter = Callable[[np.ndarray, np.ndarray, np.ndarray], WidthFn]
@@ -90,6 +90,7 @@ Fitter = Callable[[np.ndarray, np.ndarray, np.ndarray], WidthFn]
 # --------------------------------------------------------------------------- #
 # the four candidates, plus production
 # --------------------------------------------------------------------------- #
+
 
 def _fit_beta(resid: np.ndarray, sigma: np.ndarray) -> float:
     b = conformal.elasticity(resid, sigma)
@@ -111,8 +112,8 @@ def fit_global_beta(resid, sigma, dates) -> WidthFn:
     reason the implementation has to write both or neither.
     """
     b = _fit_beta(resid, sigma)
-    q = conformal.calibrate(resid, sigma ** b)
-    return lambda s: q * s ** b
+    q = conformal.calibrate(resid, sigma**b)
+    return lambda s: q * s**b
 
 
 def beta_blocks(resid, sigma, dates, n_blocks: int = N_BLOCKS) -> np.ndarray:
@@ -152,8 +153,8 @@ def fit_shrunk_beta(resid, sigma, dates) -> WidthFn:
     b_hat = _fit_beta(resid, sigma)
     lam = shrink_factor(beta_blocks(resid, sigma, dates), b_hat)
     b = 1.0 + lam * (b_hat - 1.0)
-    q = conformal.calibrate(resid, sigma ** b)
-    return lambda s: q * s ** b
+    q = conformal.calibrate(resid, sigma**b)
+    return lambda s: q * s**b
 
 
 def fit_binned_scale(resid, sigma, dates) -> WidthFn:
@@ -199,8 +200,7 @@ def fit_per_bin_qhat(resid, sigma, dates) -> WidthFn:
     pooled = conformal.calibrate(resid, sigma)
     for k in range(N_DECILES):
         sel = idx == k
-        qs[k] = conformal.calibrate(resid[sel], sigma[sel]) if sel.sum() >= 200 \
-            else pooled
+        qs[k] = conformal.calibrate(resid[sel], sigma[sel]) if sel.sum() >= 200 else pooled
 
     def width(s: np.ndarray) -> np.ndarray:
         return qs[np.searchsorted(edges, s, side="right")] * s
@@ -220,6 +220,7 @@ FITTERS: dict[str, Fitter] = {
 # --------------------------------------------------------------------------- #
 # walk-forward evaluation
 # --------------------------------------------------------------------------- #
+
 
 def refit_dates(test_dates: list, every: int = REFIT_EVERY_DAYS) -> list:
     out = [test_dates[0]]
@@ -241,8 +242,7 @@ def walk_forward(resid, sigma, dates, test_dates, embargo, fitter) -> pd.DataFra
     refits = refit_dates(test_dates, REFIT_EVERY_DAYS)
     fitted: list[tuple[np.datetime64, WidthFn]] = []
     for day in refits:
-        hi = int(np.searchsorted(d, day - np.timedelta64(embargo, "D"),
-                                 side="right"))
+        hi = int(np.searchsorted(d, day - np.timedelta64(embargo, "D"), side="right"))
         if hi < TRAILING_MIN_ROWS:
             continue
         fitted.append((day, fitter(r[:hi], s[:hi], d[:hi])))
@@ -261,15 +261,21 @@ def walk_forward(resid, sigma, dates, test_dates, embargo, fitter) -> pd.DataFra
             continue
         st = s[lo:hi]
         w = fitted[j][1](st)
-        rows.append(pd.DataFrame({
-            "date": np.full(hi - lo, day), "sigma": st, "width": w,
-            "resid_abs": np.abs(r[lo:hi]),
-            "covered": np.abs(r[lo:hi]) <= w}))
+        rows.append(
+            pd.DataFrame(
+                {
+                    "date": np.full(hi - lo, day),
+                    "sigma": st,
+                    "width": w,
+                    "resid_abs": np.abs(r[lo:hi]),
+                    "covered": np.abs(r[lo:hi]) <= w,
+                }
+            )
+        )
     return pd.concat(rows, ignore_index=True) if rows else pd.DataFrame()
 
 
-def score(res: pd.DataFrame, prod_width_median: float | None,
-          resid_abs: np.ndarray) -> dict:
+def score(res: pd.DataFrame, prod_width_median: float | None, resid_abs: np.ndarray) -> dict:
     """Marginal coverage, the sigma-decile error, the date spread, and width.
 
     `decile_err_lm_pp` is the same decile error after every arm's widths are
@@ -308,12 +314,10 @@ def score(res: pd.DataFrame, prod_width_median: float | None,
         "decile_profile": " ".join(f"{v * 100:.0f}" for v in dec.sort_index()),
         "level_match_c": c,
         "decile_err_lm_pp": float(np.mean(np.abs(dec_lm - TARGET))) * 100.0,
-        "decile_profile_lm": " ".join(f"{v * 100:.0f}"
-                                      for v in dec_lm.sort_index()),
+        "decile_profile_lm": " ".join(f"{v * 100:.0f}" for v in dec_lm.sort_index()),
         "date_sd_pp": float(per_date.std()) * 100.0,
         "median_width_pct": med_w,
-        "width_vs_prod": (med_w / prod_width_median
-                          if prod_width_median else 1.0),
+        "width_vs_prod": (med_w / prod_width_median if prod_width_median else 1.0),
     }
 
 
@@ -339,38 +343,45 @@ def main() -> int:
         embargo = embargo_days(h)
         uniq = np.unique(dates)
         first = uniq.min()
-        td = [d for d in uniq
-              if d - first >= np.timedelta64(MIN_HISTORY_DAYS + embargo, "D")]
+        td = [d for d in uniq if d - first >= np.timedelta64(MIN_HISTORY_DAYS + embargo, "D")]
         logger.info("")
-        logger.info("=== h=%dd: %s rows, %d test dates, embargo %dd, "
-                    "%d refits ===", h, f"{len(sc):,}", len(td), embargo,
-                    len(refit_dates(td)))
+        logger.info(
+            "=== h=%dd: %s rows, %d test dates, embargo %dd, %d refits ===",
+            h,
+            f"{len(sc):,}",
+            len(td),
+            embargo,
+            len(refit_dates(td)),
+        )
         if len(td) < MIN_DATES_PER_HORIZON:
             logger.warning("  VOID: %d test dates", len(td))
             continue
 
         cut = td[int(len(td) * SELECT_FRACTION)]
-        logger.info("  selection period ends %s; held-out period is %s -> %s",
-                    pd.Timestamp(cut).date(), pd.Timestamp(cut).date(),
-                    pd.Timestamp(td[-1]).date())
+        logger.info(
+            "  selection period ends %s; held-out period is %s -> %s",
+            pd.Timestamp(cut).date(),
+            pd.Timestamp(cut).date(),
+            pd.Timestamp(td[-1]).date(),
+        )
 
         # Is `beta` noisy, or is the shape wrong? Answered before any arm runs.
-        hist_hi = int(np.searchsorted(np.sort(dates),
-                                      cut - np.timedelta64(embargo, "D"),
-                                      side="right"))
+        hist_hi = int(np.searchsorted(np.sort(dates), cut - np.timedelta64(embargo, "D"), side="right"))
         o = np.argsort(dates, kind="stable")
         b_hat = _fit_beta(resid[o][:hist_hi], sigma[o][:hist_hi])
-        blocks = beta_blocks(resid[o][:hist_hi], sigma[o][:hist_hi],
-                             dates[o][:hist_hi])
+        blocks = beta_blocks(resid[o][:hist_hi], sigma[o][:hist_hi], dates[o][:hist_hi])
         lam = shrink_factor(blocks, b_hat)
-        logger.info("  beta=%.3f on the selection history; per-block %s "
-                    "(sd %.3f, se %.3f); departure from 1 is %.3f -> shrink "
-                    "keeps lambda=%.3f", b_hat,
-                    " ".join(f"{b:.3f}" for b in blocks),
-                    float(np.std(blocks, ddof=1)) if blocks.size > 1 else 0.0,
-                    (float(np.std(blocks, ddof=1)) / np.sqrt(blocks.size)
-                     if blocks.size > 1 else 0.0),
-                    b_hat - 1.0, lam)
+        logger.info(
+            "  beta=%.3f on the selection history; per-block %s "
+            "(sd %.3f, se %.3f); departure from 1 is %.3f -> shrink "
+            "keeps lambda=%.3f",
+            b_hat,
+            " ".join(f"{b:.3f}" for b in blocks),
+            float(np.std(blocks, ddof=1)) if blocks.size > 1 else 0.0,
+            (float(np.std(blocks, ddof=1)) / np.sqrt(blocks.size) if blocks.size > 1 else 0.0),
+            b_hat - 1.0,
+            lam,
+        )
 
         sel, held, prod_w = {}, {}, {}
         for name in ARM_ORDER:
@@ -381,12 +392,9 @@ def main() -> int:
             s_res = res[res["date"] < cut]
             h_res = res[res["date"] >= cut]
             if name == "P0_production":
-                prod_w = {"sel": float(s_res["width"].median()),
-                          "held": float(h_res["width"].median())}
-            sel[name] = score(s_res, prod_w.get("sel"),
-                              s_res["resid_abs"].to_numpy())
-            held[name] = score(h_res, prod_w.get("held"),
-                               h_res["resid_abs"].to_numpy())
+                prod_w = {"sel": float(s_res["width"].median()), "held": float(h_res["width"].median())}
+            sel[name] = score(s_res, prod_w.get("sel"), s_res["resid_abs"].to_numpy())
+            held[name] = score(h_res, prod_w.get("held"), h_res["resid_abs"].to_numpy())
 
         for label, book in (("SELECTION", sel), ("HELD-OUT", held)):
             logger.info("  --- %s ---", label)
@@ -394,30 +402,32 @@ def main() -> int:
                 if name not in book:
                     continue
                 m = book[name]
-                logger.info("  %-16s marg=%5.1f%%  decile_err=%5.2fpp  "
-                            "TILT(level-matched)=%5.2fpp  date_sd=%4.1fpp  "
-                            "width=%6.2f%% (%.2fx prod)", name,
-                            m["marginal"] * 100, m["decile_err_pp"],
-                            m["decile_err_lm_pp"], m["date_sd_pp"],
-                            m["median_width_pct"], m["width_vs_prod"])
-                logger.info("  %-16s   raw %s | level-matched %s", "",
-                            m["decile_profile"], m["decile_profile_lm"])
-                rows.append({"horizon": h, "period": label, "arm": name,
-                             "beta_hat": b_hat, "lambda": lam, **m})
+                logger.info(
+                    "  %-16s marg=%5.1f%%  decile_err=%5.2fpp  "
+                    "TILT(level-matched)=%5.2fpp  date_sd=%4.1fpp  "
+                    "width=%6.2f%% (%.2fx prod)",
+                    name,
+                    m["marginal"] * 100,
+                    m["decile_err_pp"],
+                    m["decile_err_lm_pp"],
+                    m["date_sd_pp"],
+                    m["median_width_pct"],
+                    m["width_vs_prod"],
+                )
+                logger.info("  %-16s   raw %s | level-matched %s", "", m["decile_profile"], m["decile_profile_lm"])
+                rows.append({"horizon": h, "period": label, "arm": name, "beta_hat": b_hat, "lambda": lam, **m})
 
         # The pinned selection rule, applied to the selection period only.
-        ok = [n for n in ARM_ORDER if n in sel
-              and abs(sel[n]["marginal"] - TARGET) <= MARGINAL_TOLERANCE]
+        ok = [n for n in ARM_ORDER if n in sel and abs(sel[n]["marginal"] - TARGET) <= MARGINAL_TOLERANCE]
         if not ok:
             logger.warning("  no arm inside the marginal gate; no pick")
             continue
         best = min(sel[n]["decile_err_pp"] for n in ok)
-        pick = next(n for n in ok
-                    if sel[n]["decile_err_pp"] <= best + SIMPLICITY_SLACK_PP)
-        logger.info("  PINNED PICK (selection period, simplest within %.0fpp of "
-                    "%.2fpp): %s", SIMPLICITY_SLACK_PP, best, pick)
-        logger.info("    arms inside the %.0fpp marginal gate: %s",
-                    MARGINAL_TOLERANCE * 100, ", ".join(ok))
+        pick = next(n for n in ok if sel[n]["decile_err_pp"] <= best + SIMPLICITY_SLACK_PP)
+        logger.info(
+            "  PINNED PICK (selection period, simplest within %.0fpp of %.2fpp): %s", SIMPLICITY_SLACK_PP, best, pick
+        )
+        logger.info("    arms inside the %.0fpp marginal gate: %s", MARGINAL_TOLERANCE * 100, ", ".join(ok))
 
         # ⚠️ POST-HOC, labelled. The gate above admits an arm on its marginal
         # coverage in ONE period and then asks it about the tilt in ANOTHER, while
@@ -430,14 +440,16 @@ def main() -> int:
             if name not in held:
                 continue
             m = held[name]
-            logger.info("      %-16s tilt %5.2f -> %5.2fpp (%+.0f%%)  "
-                        "|marg-80| %4.1f -> %4.1fpp  width %.2fx", name,
-                        p0h["decile_err_lm_pp"], m["decile_err_lm_pp"],
-                        (m["decile_err_lm_pp"] / p0h["decile_err_lm_pp"] - 1)
-                        * 100,
-                        abs(p0h["marginal"] - TARGET) * 100,
-                        abs(m["marginal"] - TARGET) * 100,
-                        m["width_vs_prod"])
+            logger.info(
+                "      %-16s tilt %5.2f -> %5.2fpp (%+.0f%%)  |marg-80| %4.1f -> %4.1fpp  width %.2fx",
+                name,
+                p0h["decile_err_lm_pp"],
+                m["decile_err_lm_pp"],
+                (m["decile_err_lm_pp"] / p0h["decile_err_lm_pp"] - 1) * 100,
+                abs(p0h["marginal"] - TARGET) * 100,
+                abs(m["marginal"] - TARGET) * 100,
+                m["width_vs_prod"],
+            )
 
     if not rows:
         logger.error("no results")

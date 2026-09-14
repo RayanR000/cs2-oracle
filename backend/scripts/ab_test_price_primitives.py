@@ -32,38 +32,35 @@ Embargo (added 2026-08-08):
 """
 
 NEW_PRIMITIVES = (
-    "vol_semidev_down_30d", "vol_semidev_up_30d", "vol_skew_30d",
-    "rsi_divergence_7d", "rsi_price_divergence_7d", "macd_hist_slope_7d",
+    "vol_semidev_down_30d",
+    "vol_semidev_up_30d",
+    "vol_skew_30d",
+    "rsi_divergence_7d",
+    "rsi_price_divergence_7d",
+    "macd_hist_slope_7d",
 )
 
+import hashlib
+import json
+import logging
 import os
 import sys
-import json
-import math
-import hashlib
-import logging
 from pathlib import Path
-from datetime import datetime, date, timedelta
-from collections import defaultdict
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
+import lightgbm as lgb
 import numpy as np
 import pandas as pd
-import lightgbm as lgb
-
-from database import SessionLocal
 from backtest.paired_mde import format_paired, paired_arm_contrasts
 from backtest.walkforward_records import (
     paired_records,
     without_records,
 )
+from database import SessionLocal
 from models.forecaster import ItemForecaster, phase_collapsed_sql_filter
 
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-)
+logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s")
 logger = logging.getLogger("ab_test_price_primitives")
 
 ARCHIVE_DIR = Path(__file__).parent.parent.parent / "price-archive"
@@ -122,8 +119,7 @@ def build_frame(max_items=200, cache_path=None):
                 )
             if meta.get("max_items") != max_items:
                 raise SystemExit(
-                    f"Frame cache {cache_path} was built with max_items="
-                    f"{meta.get('max_items')}, not {max_items}."
+                    f"Frame cache {cache_path} was built with max_items={meta.get('max_items')}, not {max_items}."
                 )
             df = pd.read_parquet(cache_path)
             logger.info(f"  Loaded cached frame {cache_path} ({len(df):,} rows)")
@@ -139,13 +135,17 @@ def build_frame(max_items=200, cache_path=None):
         tmp_frame = cache_path.with_suffix(f".{os.getpid()}.tmp.parquet")
         tmp_meta = cache_path.with_suffix(f".{os.getpid()}.tmp.json")
         df.to_parquet(tmp_frame, index=False)
-        tmp_meta.write_text(json.dumps({
-            "fingerprint": _frame_fingerprint(),
-            "max_items": max_items,
-            "pruned": pruned,
-            "present_new": present_new,
-            "rows": len(df),
-        }))
+        tmp_meta.write_text(
+            json.dumps(
+                {
+                    "fingerprint": _frame_fingerprint(),
+                    "max_items": max_items,
+                    "pruned": pruned,
+                    "present_new": present_new,
+                    "rows": len(df),
+                }
+            )
+        )
         os.replace(tmp_frame, cache_path)
         os.replace(tmp_meta, cache_path.with_suffix(".meta.json"))
         logger.info(f"  Wrote frame cache {cache_path} ({len(df):,} rows)")
@@ -155,6 +155,7 @@ def build_frame(max_items=200, cache_path=None):
 
 def _build_frame_uncached(max_items):
     import duckdb
+
     con = duckdb.connect()
     db = SessionLocal()
 
@@ -205,31 +206,30 @@ def _build_frame_uncached(max_items):
         # `items` order (row_count DESC), day-ascending within each item.
         slugs = [r[0] for r in items]
         placeholders = ", ".join("?" for _ in slugs)
-        all_prices = con.sql(f"""
+        all_prices = con.sql(
+            f"""
             SELECT item_slug AS item_id, day AS timestamp,
                    mean_price AS price, volume
             FROM ({union_sql})
             WHERE item_slug IN ({placeholders})
-        """, params=slugs).df()
+        """,
+            params=slugs,
+        ).df()
 
         all_prices["timestamp"] = pd.to_datetime(all_prices["timestamp"])
         all_prices["date"] = all_prices["timestamp"].dt.date
-        all_prices["item_id"] = pd.Categorical(
-            all_prices["item_id"], categories=slugs, ordered=True
-        )
-        all_prices = all_prices.sort_values(
-            ["item_id", "timestamp"], kind="stable"
-        ).reset_index(drop=True)
+        all_prices["item_id"] = pd.Categorical(all_prices["item_id"], categories=slugs, ordered=True)
+        all_prices = all_prices.sort_values(["item_id", "timestamp"], kind="stable").reset_index(drop=True)
         all_prices["item_id"] = all_prices["item_id"].astype(str)
 
         # ── Build features once ─────────────────────────────────────
         df = forecaster.engineer_features(all_prices, events_df)
         df = forecaster._add_cross_sectional_features(df)
 
-        EXCLUDE = {"item_id", "date", "timestamp", "price", "volume",
-                   "name", "release_date"}
-        all_feature_cols = [c for c in df.columns if c not in EXCLUDE
-                            and df[c].dtype in (np.float64, np.float32, np.int64, int, float)]
+        EXCLUDE = {"item_id", "date", "timestamp", "price", "volume", "name", "release_date"}
+        all_feature_cols = [
+            c for c in df.columns if c not in EXCLUDE and df[c].dtype in (np.float64, np.float32, np.int64, int, float)
+        ]
 
         # Prune highly correlated
         if len(all_feature_cols) > 2:
@@ -256,8 +256,7 @@ def _build_frame_uncached(max_items):
         con.close()
 
 
-def run_evaluation(df, pruned, present_new, horizon_filter=None, arm_filter=None,
-                   n_jobs=None, q50_only=False):
+def run_evaluation(df, pruned, present_new, horizon_filter=None, arm_filter=None, n_jobs=None, q50_only=False):
     """Walk-forward evaluation over the prebuilt frame.
 
     Returns results[horizon][arm]. `horizon_filter` restricts to one horizon so
@@ -282,10 +281,8 @@ def run_evaluation(df, pruned, present_new, horizon_filter=None, arm_filter=None
         # experiment. Before this the arms differed by 6 columns on a ~138-column
         # base production does not serve, which dilutes toward null. See 2026-08-13
         # harness repin.
-        base_cols = [c for c in pruned
-                     if c not in ItemForecaster.SHELVED_FEATURES]
-        base_cols = ItemForecaster._apply_feature_allowlist(
-            base_cols, ItemForecaster.FEATURE_GROUP_ALLOWLIST)
+        base_cols = [c for c in pruned if c not in ItemForecaster.SHELVED_FEATURES]
+        base_cols = ItemForecaster._apply_feature_allowlist(base_cols, ItemForecaster.FEATURE_GROUP_ALLOWLIST)
         subsets = {
             "baseline": base_cols,
             "treatment": base_cols + present_new,
@@ -365,16 +362,15 @@ def run_evaluation(df, pruned, present_new, horizon_filter=None, arm_filter=None
                 VAL_WINDOW_DAYS = 21
                 step = 60
                 for window_end in range(split_idx + 1, len(dates), step):
-                    val_dates = dates[window_end:window_end + VAL_WINDOW_DAYS]
+                    val_dates = dates[window_end : window_end + VAL_WINDOW_DAYS]
                     if len(val_dates) < 7:
                         continue
 
                     train_df = ItemForecaster._purge_overlapping_train_rows(
-                        sub[tdf_days <= dates_dt[window_end - 1]],
-                        val_dates[0], horizon)
+                        sub[tdf_days <= dates_dt[window_end - 1]], val_dates[0], horizon
+                    )
                     val_df = sub[
-                        (tdf_days >= dates_dt[window_end])
-                        & (tdf_days <= dates_dt[window_end + len(val_dates) - 1])
+                        (tdf_days >= dates_dt[window_end]) & (tdf_days <= dates_dt[window_end + len(val_dates) - 1])
                     ]
 
                     if config_name == "placebo" and present_new:
@@ -403,10 +399,8 @@ def run_evaluation(df, pruned, present_new, horizon_filter=None, arm_filter=None
                     # them, and alpha plays no part in Dataset construction, so
                     # rebuilding per quantile re-binned identical data 3x.
                     Xtr_v, Xv_v = X_train.values, X_val.values
-                    dtrain = lgb.Dataset(Xtr_v, y_train.values, params=DS_PARAMS,
-                                         free_raw_data=False)
-                    dval = lgb.Dataset(Xv_v, y_val.values, reference=dtrain,
-                                       params=DS_PARAMS, free_raw_data=False)
+                    dtrain = lgb.Dataset(Xtr_v, y_train.values, params=DS_PARAMS, free_raw_data=False)
+                    dval = lgb.Dataset(Xv_v, y_val.values, reference=dtrain, params=DS_PARAMS, free_raw_data=False)
 
                     models = {}
                     for q in quantiles:
@@ -444,9 +438,10 @@ def run_evaluation(df, pruned, present_new, horizon_filter=None, arm_filter=None
                         # passed and is ignored unless EARLY_STOPPING=1, which
                         # is how the leaky arm gets reproduced deliberately.
                         model = ItemForecaster._train_ensemble_member(
-                            params, dtrain, dval,
-                            num_boost_round=ItemForecaster._boost_rounds(
-                                horizon, cv=True),
+                            params,
+                            dtrain,
+                            dval,
+                            num_boost_round=ItemForecaster._boost_rounds(horizon, cv=True),
                             early_stopping=ItemForecaster._early_stopping_enabled(),
                         )
                         models[q] = model.predict(Xv_v)
@@ -465,10 +460,12 @@ def run_evaluation(df, pruned, present_new, horizon_filter=None, arm_filter=None
                     low_ret = np.minimum(p10_ret, p50_ret)
                     high_ret = np.maximum(p50_ret, p90_ret)
                     if non_crossing.any():
-                        avg_hw = np.mean([
-                            np.mean(p50_ret[non_crossing] - p10_ret[non_crossing]),
-                            np.mean(p90_ret[non_crossing] - p50_ret[non_crossing]),
-                        ])
+                        avg_hw = np.mean(
+                            [
+                                np.mean(p50_ret[non_crossing] - p10_ret[non_crossing]),
+                                np.mean(p90_ret[non_crossing] - p50_ret[non_crossing]),
+                            ]
+                        )
                         if avg_hw > 0:
                             low_ret[crossing_mask] = p50_ret[crossing_mask] - avg_hw
                             high_ret[crossing_mask] = p50_ret[crossing_mask] + avg_hw
@@ -482,18 +479,17 @@ def run_evaluation(df, pruned, present_new, horizon_filter=None, arm_filter=None
                     # returns map to sign 0, matching the old string-compare
                     # path where a NaN failed both > and < and fell to "flat".
                     fold_total = len(val_df)
-                    fold_hits = int(np.count_nonzero(
-                        np.sign(np.nan_to_num(ar)) == np.sign(np.nan_to_num(p50_ret))
-                    ))
+                    fold_hits = int(np.count_nonzero(np.sign(np.nan_to_num(ar)) == np.sign(np.nan_to_num(p50_ret))))
 
                     abs_err = np.abs(cp * (1 + p50_ret / 100) - cp * (1 + ar / 100))
                     fold_mae = float(abs_err.sum())
 
                     actual_future = cp * (1 + ar / 100)
-                    fold_int_hits = int(np.count_nonzero(
-                        (cp * (1 + low_ret / 100) <= actual_future)
-                        & (actual_future <= cp * (1 + high_ret / 100))
-                    ))
+                    fold_int_hits = int(
+                        np.count_nonzero(
+                            (cp * (1 + low_ret / 100) <= actual_future) & (actual_future <= cp * (1 + high_ret / 100))
+                        )
+                    )
                     fold_int_total = fold_total
 
                     directional_hits += fold_hits
@@ -508,31 +504,34 @@ def run_evaluation(df, pruned, present_new, horizon_filter=None, arm_filter=None
                     # exactly 0.0 matches it for free. `window_end` rather than
                     # a running counter: a counter drifts the moment one arm
                     # skips a fold the other kept.
-                    _match = (np.sign(np.nan_to_num(ar))
-                              == np.sign(np.nan_to_num(p50_ret)))
+                    _match = np.sign(np.nan_to_num(ar)) == np.sign(np.nan_to_num(p50_ret))
                     _scored = (np.asarray(ar) != 0) & (np.asarray(cp) >= 1.0)
-                    records.extend(paired_records(
-                        item_ids=val_df["item_id"].to_numpy(),
-                        forecast_dates=val_df["date"].to_numpy(),
-                        fold_id=window_end,
-                        keep=_scored,
-                        direction_correct=_match,
-                    ))
+                    records.extend(
+                        paired_records(
+                            item_ids=val_df["item_id"].to_numpy(),
+                            forecast_dates=val_df["date"].to_numpy(),
+                            fold_id=window_end,
+                            keep=_scored,
+                            direction_correct=_match,
+                        )
+                    )
 
                     mae_total += fold_mae
                     mae_count += fold_total
                     interval_hits += fold_int_hits
                     interval_total += fold_total
 
-                    per_fold.append({
-                        "fold": len(per_fold) + 1,
-                        "val_start": str(val_dates[0]),
-                        "val_end": str(val_dates[-1]),
-                        "dir_acc": round(fold_hits / fold_total * 100, 1) if fold_total > 0 else 0,
-                        "mae": round(fold_mae / fold_total, 4) if fold_total > 0 else 0,
-                        "int_cov": round(fold_int_hits / fold_int_total * 100, 1) if fold_int_total > 0 else 0,
-                        "n": fold_total,
-                    })
+                    per_fold.append(
+                        {
+                            "fold": len(per_fold) + 1,
+                            "val_start": str(val_dates[0]),
+                            "val_end": str(val_dates[-1]),
+                            "dir_acc": round(fold_hits / fold_total * 100, 1) if fold_total > 0 else 0,
+                            "mae": round(fold_mae / fold_total, 4) if fold_total > 0 else 0,
+                            "int_cov": round(fold_int_hits / fold_int_total * 100, 1) if fold_int_total > 0 else 0,
+                            "n": fold_total,
+                        }
+                    )
 
                 if directional_total > 0:
                     dir_acc = directional_hits / directional_total * 100
@@ -565,22 +564,26 @@ def run_evaluation(df, pruned, present_new, horizon_filter=None, arm_filter=None
                     result["improvement_over_baseline_pp"] = round(dir_acc - baseline_2class, 1)
                     results[horizon][config_name] = result
 
-                    logger.info(f"      DirAcc={dir_acc:.1f}% ({directional_total:,} samples, "
-                                f"{result['improvement_over_baseline_pp']:.1f}pp above baseline)")
+                    logger.info(
+                        f"      DirAcc={dir_acc:.1f}% ({directional_total:,} samples, "
+                        f"{result['improvement_over_baseline_pp']:.1f}pp above baseline)"
+                    )
 
             # Fold-clustered paired intervals, the harness's actual verdict.
             # Until 2026-08-08 this reported a pooled `treatment - baseline`
             # delta against a +/-0.5pp emoji threshold, which is not a test:
             # the item-level MDE here is 2.21-3.69pp, so a 0.5pp "win" is
             # inside the noise floor by a factor of five.
-            arms = {a: r.get("records", []) for a, r in results[horizon].items()
-                    if not a.startswith("_") and r.get("records")}
+            arms = {
+                a: r.get("records", [])
+                for a, r in results[horizon].items()
+                if not a.startswith("_") and r.get("records")
+            }
             if "baseline" in arms and len(arms) > 1:
                 contrasts = paired_arm_contrasts(arms, base="baseline")
                 results[horizon]["_paired_vs_baseline"] = contrasts
                 for arm, paired in contrasts.items():
-                    logger.info(f"      paired {arm:<10} vs baseline: "
-                                f"{format_paired(paired)}")
+                    logger.info(f"      paired {arm:<10} vs baseline: {format_paired(paired)}")
             else:
                 # `--arm` shards one arm per process, so a shard has nothing to
                 # contrast against. Say so: a missing verdict must not read as
@@ -589,7 +592,8 @@ def run_evaluation(df, pruned, present_new, horizon_filter=None, arm_filter=None
                 logger.info(
                     f"      paired: not computed — this run holds "
                     f"{sorted(arms) or 'no'} arm(s). Merge the shards with "
-                    f"scripts/merge_price_primitives_ab.py for the verdict.")
+                    f"scripts/merge_price_primitives_ab.py for the verdict."
+                )
 
         logger.info("\n" + "=" * 64)
         logger.info("SHIP DECISION SUMMARY (dir-acc %, treatment vs baseline vs placebo)")
@@ -603,7 +607,7 @@ def run_evaluation(df, pruned, present_new, horizon_filter=None, arm_filter=None
             p = r["placebo"]["dir_acc"]
             logger.info(
                 f"  {h:>2}d  baseline={b:5.2f}  treatment={t:5.2f}  "
-                f"placebo={p:5.2f}  (t-b={t-b:+.2f}, t-p={t-p:+.2f})"
+                f"placebo={p:5.2f}  (t-b={t - b:+.2f}, t-p={t - p:+.2f})"
             )
 
         return results
@@ -646,20 +650,22 @@ def print_comparison(results):
             label = config_labels.get(cfg, cfg)
             cov = r.get("interval_coverage")
             cov_str = f"{cov:>6.1f}%" if cov is not None else f"{'n/a':>7}"
-            print(f"  │ {label:<26} {dir_acc:>7.1f}% {delta_str:>9} ${r['mae']:>5.2f} "
-                  f"{cov_str} {r['fold_count']:>5}  {r['sample_count']:>8,}")
+            print(
+                f"  │ {label:<26} {dir_acc:>7.1f}% {delta_str:>9} ${r['mae']:>5.2f} "
+                f"{cov_str} {r['fold_count']:>5}  {r['sample_count']:>8,}"
+            )
 
         print(f"  └{'─' * 78}┘")
 
     # ── Ship decision guidance ───────────────────────────────────────
     print(f"\n  {'=' * 100}")
-    print(f"  INTERPRETATION")
+    print("  INTERPRETATION")
     print(f"  {'=' * 100}")
-    print(f"")
-    print(f"  'vs Base' compares each arm to baseline (the 6 new primitives dropped).")
-    print(f"  Ship the primitives only if treatment beats baseline by a meaningful,")
-    print(f"  non-flat margin AND treatment beats placebo (rules out capacity inflation)")
-    print(f"  AND no horizon regresses beyond the 0.5-1.5pp budget.")
+    print("")
+    print("  'vs Base' compares each arm to baseline (the 6 new primitives dropped).")
+    print("  Ship the primitives only if treatment beats baseline by a meaningful,")
+    print("  non-flat margin AND treatment beats placebo (rules out capacity inflation)")
+    print("  AND no horizon regresses beyond the 0.5-1.5pp budget.")
 
     # ── Verdict: new primitives, short vs long horizons ─────────────
     short_horizons, long_horizons = [3, 7], [14, 30]
@@ -675,61 +681,71 @@ def print_comparison(results):
             if h in long_horizons:
                 long_deltas.append(delta)
 
-    print(f"\n  New Primitives (treatment vs baseline):")
+    print("\n  New Primitives (treatment vs baseline):")
     if short_deltas:
         avg_short = np.mean(short_deltas)
-        print(f"    Short horizons (3d/7d):    avg Δ = {avg_short:+.2f}pp "
-              f"{'📈 helpful' if avg_short > 0.3 else '📉 harmful' if avg_short < -0.3 else '➡️ neutral'}")
+        print(
+            f"    Short horizons (3d/7d):    avg Δ = {avg_short:+.2f}pp "
+            f"{'📈 helpful' if avg_short > 0.3 else '📉 harmful' if avg_short < -0.3 else '➡️ neutral'}"
+        )
     if long_deltas:
         avg_long = np.mean(long_deltas)
-        print(f"    Long horizons (14d/30d):   avg Δ = {avg_long:+.2f}pp "
-              f"{'📈 helpful' if avg_long > 0.3 else '📉 harmful' if avg_long < -0.3 else '➡️ neutral'}")
+        print(
+            f"    Long horizons (14d/30d):   avg Δ = {avg_long:+.2f}pp "
+            f"{'📈 helpful' if avg_long > 0.3 else '📉 harmful' if avg_long < -0.3 else '➡️ neutral'}"
+        )
 
     print("")
 
 
 def main():
     import argparse
-    parser = argparse.ArgumentParser(
-        description="A/B test: price technical primitives contribution per horizon"
+
+    parser = argparse.ArgumentParser(description="A/B test: price technical primitives contribution per horizon")
+    parser.add_argument("--max-items", type=int, default=200, help="Number of items to evaluate (default: 200)")
+    parser.add_argument("--horizon", type=int, default=None, help="Only evaluate this horizon (default: all)")
+    parser.add_argument(
+        "--arm",
+        choices=["baseline", "treatment", "placebo"],
+        default=None,
+        help="Only evaluate this arm (default: all three)",
     )
-    parser.add_argument("--max-items", type=int, default=200,
-                        help="Number of items to evaluate (default: 200)")
-    parser.add_argument("--horizon", type=int, default=None,
-                        help="Only evaluate this horizon (default: all)")
-    parser.add_argument("--arm", choices=["baseline", "treatment", "placebo"],
-                        default=None,
-                        help="Only evaluate this arm (default: all three)")
-    parser.add_argument("--frame-cache", default=None,
-                        help="Read/write the engineered frame at this path")
-    parser.add_argument("--build-cache-only", action="store_true",
-                        help="Build the frame cache and exit (run once before workers)")
-    parser.add_argument("--out", default=None,
-                        help="Write results JSON here instead of stdout")
-    parser.add_argument("--n-jobs", type=int, default=None,
-                        help="LightGBM threads per process. When sharding by "
-                             "horizon, set this to cores/shards (default: "
-                             "cores/2, matching production training)")
-    parser.add_argument("--q50-only", action="store_true",
-                        help="Train only the median quantile — 3x faster, and "
-                             "the ship rule only reads dir-acc. Interval "
-                             "coverage is not meaningful in this mode")
+    parser.add_argument("--frame-cache", default=None, help="Read/write the engineered frame at this path")
+    parser.add_argument(
+        "--build-cache-only", action="store_true", help="Build the frame cache and exit (run once before workers)"
+    )
+    parser.add_argument("--out", default=None, help="Write results JSON here instead of stdout")
+    parser.add_argument(
+        "--n-jobs",
+        type=int,
+        default=None,
+        help="LightGBM threads per process. When sharding by "
+        "horizon, set this to cores/shards (default: "
+        "cores/2, matching production training)",
+    )
+    parser.add_argument(
+        "--q50-only",
+        action="store_true",
+        help="Train only the median quantile — 3x faster, and "
+        "the ship rule only reads dir-acc. Interval "
+        "coverage is not meaningful in this mode",
+    )
     args = parser.parse_args()
 
     logger.info("=" * 70)
     logger.info("A/B TEST: Price Technical Primitives (baseline/treatment/placebo)")
     logger.info("=" * 70)
 
-    df, pruned, present_new = build_frame(
-        max_items=args.max_items, cache_path=args.frame_cache
-    )
+    df, pruned, present_new = build_frame(max_items=args.max_items, cache_path=args.frame_cache)
 
     if args.build_cache_only:
         logger.info("Frame cache built; exiting before evaluation.")
         return 0
 
     results = run_evaluation(
-        df, pruned, present_new,
+        df,
+        pruned,
+        present_new,
         horizon_filter=args.horizon,
         arm_filter=args.arm,
         n_jobs=args.n_jobs,
@@ -737,8 +753,7 @@ def main():
     )
 
     if args.out:
-        Path(args.out).write_text(
-            json.dumps(without_records(results), indent=2, default=str))
+        Path(args.out).write_text(json.dumps(without_records(results), indent=2, default=str))
         logger.info(f"Wrote {args.out}")
         return 0
 

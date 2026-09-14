@@ -13,6 +13,7 @@ The AGENTS.md invariant these tests pin: training and analysis data come from
 `price-archive/*.parquet`; the DB supplies only the `is_backfilled` flag and the
 events metadata.
 """
+
 from __future__ import annotations
 
 import math
@@ -20,10 +21,6 @@ from datetime import date, datetime, timedelta
 
 import pandas as pd
 import pytest
-from sqlalchemy import create_engine
-from sqlalchemy.orm import sessionmaker
-from sqlalchemy.pool import StaticPool
-
 import scripts.event_correlation_analysis as eca
 from database import (
     Base,
@@ -43,11 +40,14 @@ from scripts.event_correlation_analysis import (
     _price_on_date,
     run_analysis,
 )
-
+from sqlalchemy import create_engine
+from sqlalchemy.orm import sessionmaker
+from sqlalchemy.pool import StaticPool
 
 # ---------------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------
+
 
 def _store(rows: list[tuple[int, date, float]]) -> PriceStore:
     """Build a PriceStore from (db_item_id, day, price) triples."""
@@ -118,6 +118,7 @@ def captured_mirror(monkeypatch):
 # 1. The price store's window mean
 # ---------------------------------------------------------------------------
 
+
 class TestWindowMean:
     def test_bounds_are_inclusive_on_both_ends(self):
         store = _day_numbered_store()
@@ -143,10 +144,12 @@ class TestWindowMean:
 
     def test_averages_only_the_days_present(self):
         """One row per item-day, and gaps are gaps — not carried forward."""
-        store = _store([
-            (1, date(2026, 5, 1), 10.0),
-            (1, date(2026, 5, 5), 20.0),
-        ])
+        store = _store(
+            [
+                (1, date(2026, 5, 1), 10.0),
+                (1, date(2026, 5, 5), 20.0),
+            ]
+        )
         assert store.window_mean(1, date(2026, 5, 1), date(2026, 5, 31)) == 15.0
 
     def test_items_with_prices_counts_covered_items(self):
@@ -157,6 +160,7 @@ class TestWindowMean:
 # ---------------------------------------------------------------------------
 # 2. The documented day ranges
 # ---------------------------------------------------------------------------
+
 
 class TestWindowSemantics:
     def test_pre_event_window_is_the_seven_days_before(self):
@@ -172,12 +176,14 @@ class TestWindowSemantics:
         assert _price_on_date(store, 1, date(2026, 5, 20)) == 20.0
         # The mean equalling the target day is not enough to catch a shift:
         # check the bound days explicitly via a store missing one side.
-        one_sided = _store([
-            (1, date(2026, 5, 19), 1.0),
-            (1, date(2026, 5, 20), 2.0),
-            (1, date(2026, 5, 21), 6.0),
-            (1, date(2026, 5, 22), 100.0),  # outside the window
-        ])
+        one_sided = _store(
+            [
+                (1, date(2026, 5, 19), 1.0),
+                (1, date(2026, 5, 20), 2.0),
+                (1, date(2026, 5, 21), 6.0),
+                (1, date(2026, 5, 22), 100.0),  # outside the window
+            ]
+        )
         assert _price_on_date(one_sided, 1, date(2026, 5, 20)) == 3.0
 
     def test_post_event_offsets_land_on_the_documented_days(self):
@@ -199,6 +205,7 @@ class TestWindowSemantics:
 # ---------------------------------------------------------------------------
 # 3. Leave-one-out control statistics
 # ---------------------------------------------------------------------------
+
 
 def _naive_stats(changes: dict[int, float], exclude: int) -> tuple[float, float]:
     """Recompute the control stats from scratch without *exclude*.
@@ -236,9 +243,7 @@ class TestLeaveOneOutControls:
             for delta in (-1, 0, 1):
                 rows.append((item_id, target + timedelta(days=delta), after))
         store = _store(rows)
-        dist = _control_change_distribution(
-            store, list(offsets), event_day, offset_days
-        )
+        dist = _control_change_distribution(store, list(offsets), event_day, offset_days)
         return dist
 
     def test_changes_are_percentage_moves(self):
@@ -247,13 +252,15 @@ class TestLeaveOneOutControls:
         assert dist.changes[2] == pytest.approx(-20.0)
 
     def test_closed_form_matches_naive_recompute_for_every_item(self):
-        dist = self._distribution({
-            1: (10.0, 11.0),
-            2: (10.0, 8.0),
-            3: (4.0, 4.6),
-            4: (50.0, 49.0),
-            5: (2.0, 2.0),
-        })
+        dist = self._distribution(
+            {
+                1: (10.0, 11.0),
+                2: (10.0, 8.0),
+                3: (4.0, 4.6),
+                4: (50.0, 49.0),
+                5: (2.0, 2.0),
+            }
+        )
         for item_id in dist.changes:
             got = dist.excluding(item_id)
             want = _naive_stats(dist.changes, item_id)
@@ -302,6 +309,7 @@ class TestLeaveOneOutControls:
 # 4. Prices come from the archive, not the DB  (the regression test)
 # ---------------------------------------------------------------------------
 
+
 def _seed_items(session, specs: list[tuple[int, str, str]]):
     for db_id, slug, type_ in specs:
         session.add(Item(id=db_id, item_id=slug, name=slug, type=type_, is_backfilled=1))
@@ -309,25 +317,23 @@ def _seed_items(session, specs: list[tuple[int, str, str]]):
 
 
 def _seed_event(session, event_id: int, when: datetime, type_: str = "operation"):
-    session.add(Event(
-        id=event_id, type=type_, timestamp=when,
-        description=f"test event {event_id}",
-    ))
+    session.add(
+        Event(
+            id=event_id,
+            type=type_,
+            timestamp=when,
+            description=f"test event {event_id}",
+        )
+    )
     session.commit()
 
 
 def _archive_rows(slugs, start: date, days: int, price_of):
-    return [
-        (slug, start + timedelta(days=i), price_of(slug, i))
-        for slug in slugs
-        for i in range(days)
-    ]
+    return [(slug, start + timedelta(days=i), price_of(slug, i)) for slug in slugs for i in range(days)]
 
 
 class TestPricesComeFromTheArchive:
-    def test_impacts_are_computed_with_an_empty_price_history_table(
-        self, session, tmp_path, captured_mirror
-    ):
+    def test_impacts_are_computed_with_an_empty_price_history_table(self, session, tmp_path, captured_mirror):
         """THE regression test. Postgres `price_history` holds nothing; every
         price window must resolve out of `prices-2026-05.parquet`."""
         slugs = [f"item-{i}" for i in range(1, 6)]
@@ -337,7 +343,9 @@ class TestPricesComeFromTheArchive:
         archive = _write_archive(
             tmp_path,
             _archive_rows(
-                slugs, date(2026, 5, 1), 31,
+                slugs,
+                date(2026, 5, 1),
+                31,
                 # Each slug drifts at its own rate, so impacts are non-zero and
                 # the control distribution has spread.
                 lambda slug, i: 10.0 + i * (0.1 * (int(slug.split("-")[1]))),
@@ -358,42 +366,34 @@ class TestPricesComeFromTheArchive:
         assert impact.price_day_7 is not None
         assert impact.impact_pct_7day > 0  # every slug drifts upward
 
-    def test_a_missing_archive_raises_rather_than_reading_as_no_prices(
-        self, session, tmp_path
-    ):
+    def test_a_missing_archive_raises_rather_than_reading_as_no_prices(self, session, tmp_path):
         """A missing archive checkout is a broken run, not an empty market."""
         _seed_items(session, [(1, "item-1", "skin")])
         _seed_event(session, 1, datetime(2026, 5, 20, 13, 45))
 
-        result = run_analysis(
-            days_back=120, db=session, archive_dir=tmp_path / "does-not-exist"
-        )
+        result = run_analysis(days_back=120, db=session, archive_dir=tmp_path / "does-not-exist")
         assert result["status"] == "error"
         assert "price archive not found" in result["error"]
 
-    def test_archive_without_the_universe_slugs_is_a_loud_error(
-        self, session, tmp_path
-    ):
+    def test_archive_without_the_universe_slugs_is_a_loud_error(self, session, tmp_path):
         """Universe non-empty, events present, zero items priced: a collection
         gap, not "no impacts". The message has to carry enough to tell them
         apart without a second run."""
         _seed_items(session, [(1, "item-1", "skin")])
         _seed_event(session, 1, datetime(2026, 5, 20, 13, 45))
-        archive = _write_archive(
-            tmp_path, _archive_rows(["someone-else"], date(2026, 5, 1), 31,
-                                    lambda slug, i: 10.0)
-        )
+        archive = _write_archive(tmp_path, _archive_rows(["someone-else"], date(2026, 5, 1), 31, lambda slug, i: 10.0))
 
         result = run_analysis(days_back=120, db=session, archive_dir=archive)
 
         assert result["status"] == "error"
-        assert "1" in result["error"]           # slugs requested
+        assert "1" in result["error"]  # slugs requested
         assert "2026-05-31" in result["error"]  # archive coverage edge
 
 
 # ---------------------------------------------------------------------------
 # 5. No events in window is an explicit, non-failing outcome
 # ---------------------------------------------------------------------------
+
 
 class TestNoEventsInWindow:
     def test_zero_events_returns_the_distinct_status(self, session, tmp_path):
@@ -409,9 +409,7 @@ class TestNoEventsInWindow:
         """It returns before loading prices, so an absent archive is not
         reported as the reason."""
         _seed_items(session, [(1, "item-1", "skin")])
-        result = run_analysis(
-            days_back=90, db=session, archive_dir=tmp_path / "nope"
-        )
+        result = run_analysis(days_back=90, db=session, archive_dir=tmp_path / "nope")
         assert result["status"] == NO_EVENTS_STATUS
 
     def test_run_task_treats_the_status_as_exit_zero_and_says_so(self, caplog):
@@ -421,15 +419,20 @@ class TestNoEventsInWindow:
         from scripts.run_task import check_results
 
         with caplog.at_level("WARNING"):
-            check_results("event_correlation", (
-                {"status": NO_EVENTS_STATUS, "events_analyzed": 0,
-                 "impacts_written": 0, "patterns_written": 0,
-                 "correlations_written": 0},
-            ))  # must not raise
+            check_results(
+                "event_correlation",
+                (
+                    {
+                        "status": NO_EVENTS_STATUS,
+                        "events_analyzed": 0,
+                        "impacts_written": 0,
+                        "patterns_written": 0,
+                        "correlations_written": 0,
+                    },
+                ),
+            )  # must not raise
 
-        assert any(
-            NO_EVENTS_STATUS in record.getMessage() for record in caplog.records
-        ), caplog.text
+        assert any(NO_EVENTS_STATUS in record.getMessage() for record in caplog.records), caplog.text
         assert "nothing to do" in caplog.text
 
     def test_run_task_still_fails_on_events_with_zero_impacts(self):
@@ -437,11 +440,18 @@ class TestNoEventsInWindow:
         from scripts.run_task import check_results
 
         with pytest.raises(SystemExit) as exc:
-            check_results("event_correlation", (
-                {"status": "success", "events_analyzed": 4,
-                 "impacts_written": 0, "patterns_written": 0,
-                 "correlations_written": 0},
-            ))
+            check_results(
+                "event_correlation",
+                (
+                    {
+                        "status": "success",
+                        "events_analyzed": 4,
+                        "impacts_written": 0,
+                        "patterns_written": 0,
+                        "correlations_written": 0,
+                    },
+                ),
+            )
         assert exc.value.code == 1
 
     def test_run_task_still_fails_on_error_status(self):
@@ -453,20 +463,27 @@ class TestNoEventsInWindow:
     def test_run_task_passes_a_normal_success(self):
         from scripts.run_task import check_results
 
-        check_results("event_correlation", (
-            {"status": "success", "events_analyzed": 2, "impacts_written": 10,
-             "patterns_written": 10, "correlations_written": 10},
-        ))
+        check_results(
+            "event_correlation",
+            (
+                {
+                    "status": "success",
+                    "events_analyzed": 2,
+                    "impacts_written": 10,
+                    "patterns_written": 10,
+                    "correlations_written": 10,
+                },
+            ),
+        )
 
 
 # ---------------------------------------------------------------------------
 # 6. The denorm mirror carries confidence_score for EVERY item
 # ---------------------------------------------------------------------------
 
+
 class TestDenormMirror:
-    def test_every_row_carries_its_own_confidence_score(
-        self, session, tmp_path, captured_mirror
-    ):
+    def test_every_row_carries_its_own_confidence_score(self, session, tmp_path, captured_mirror):
         """The old code appended the rows with `confidence_score: None`, then
         read the whole file back and patched it from
         `{... for r in [data]}` — `data` being whatever the correlations loop
@@ -477,8 +494,7 @@ class TestDenormMirror:
         _seed_event(session, 1, datetime(2026, 5, 20, 13, 45))
         archive = _write_archive(
             tmp_path,
-            _archive_rows(slugs, date(2026, 5, 1), 31,
-                          lambda slug, i: 10.0 + i * 0.2 * int(slug.split("-")[1])),
+            _archive_rows(slugs, date(2026, 5, 1), 31, lambda slug, i: 10.0 + i * 0.2 * int(slug.split("-")[1])),
         )
 
         result = run_analysis(days_back=120, db=session, archive_dir=archive)
@@ -490,18 +506,13 @@ class TestDenormMirror:
         assert appends[0]["dedup_keys"] == ["event_id", "item_id"]
         assert len(rows) == 3
 
-        from_db = {
-            c.item_id: c.confidence_score
-            for c in session.query(EventCorrelation).all()
-        }
+        from_db = {c.item_id: c.confidence_score for c in session.query(EventCorrelation).all()}
         assert len(from_db) == 3
         for row in rows:
             assert row["confidence_score"] is not None
             assert row["confidence_score"] == from_db[row["item_id"]]
 
-    def test_correlations_see_the_patterns_written_in_the_same_run(
-        self, session, tmp_path, captured_mirror
-    ):
+    def test_correlations_see_the_patterns_written_in_the_same_run(self, session, tmp_path, captured_mirror):
         """The pattern rows are now preloaded in ONE query instead of one per
         item, which only works because `_compute_and_upsert_patterns` commits
         before the correlations pass. A `pattern_consistency_score` of None on
@@ -510,8 +521,9 @@ class TestDenormMirror:
         _seed_event(session, 1, datetime(2026, 5, 20, 13, 45))
         archive = _write_archive(
             tmp_path,
-            _archive_rows(["item-1", "item-2"], date(2026, 5, 1), 31,
-                          lambda slug, i: 10.0 + i * 0.3 * int(slug.split("-")[1])),
+            _archive_rows(
+                ["item-1", "item-2"], date(2026, 5, 1), 31, lambda slug, i: 10.0 + i * 0.3 * int(slug.split("-")[1])
+            ),
         )
 
         run_analysis(days_back=120, db=session, archive_dir=archive)
@@ -526,17 +538,14 @@ class TestDenormMirror:
             # dependent (a single event gives no holdout split).
             assert row.confidence_score >= 0.55
 
-    def test_no_nested_values_reach_append_table(
-        self, session, tmp_path, captured_mirror
-    ):
+    def test_no_nested_values_reach_append_table(self, session, tmp_path, captured_mirror):
         """AGENTS.md: never hand raw dicts to `append_table`. These rows are all
         scalars; keep them that way."""
         _seed_items(session, [(1, "item-1", "skin"), (2, "item-2", "skin")])
         _seed_event(session, 1, datetime(2026, 5, 20, 13, 45))
         archive = _write_archive(
             tmp_path,
-            _archive_rows(["item-1", "item-2"], date(2026, 5, 1), 31,
-                          lambda slug, i: 10.0 + i * 0.3),
+            _archive_rows(["item-1", "item-2"], date(2026, 5, 1), 31, lambda slug, i: 10.0 + i * 0.3),
         )
 
         run_analysis(days_back=120, db=session, archive_dir=archive)

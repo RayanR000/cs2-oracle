@@ -44,12 +44,12 @@ DEFAULT_VENUE = "csfloat"
 # sub-$1 items are midpoints of a book nobody could transact in. This is also
 # the reason a DA pooled across tiers is uninterpretable.
 SPREAD_BY_TIER = {
-    0: 0.355,   # < $1
-    1: 0.211,   # $1 - 5
-    2: 0.173,   # $5 - 20
-    3: 0.173,   # $20 - 100
-    4: 0.108,   # $100 - 1000
-    5: 0.052,   # >= $1000
+    0: 0.355,  # < $1
+    1: 0.211,  # $1 - 5
+    2: 0.173,  # $5 - 20
+    3: 0.173,  # $20 - 100
+    4: 0.108,  # $100 - 1000
+    5: 0.052,  # >= $1000
 }
 
 # Which measured band each tier's spread came from. Present so the borrowing is

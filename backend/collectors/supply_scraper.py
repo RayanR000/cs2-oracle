@@ -10,16 +10,14 @@ Source:
 """
 
 import logging
-import time
 import random
-from datetime import datetime, timezone, date
-from typing import Dict, Optional, Set, List, Tuple
+import time
+from datetime import date
 
 import requests
+from database import SupplySnapshot, utcnow_naive
 from sqlalchemy import text
 from sqlalchemy.orm import Session
-
-from database import SupplySnapshot, utcnow_naive
 
 logger = logging.getLogger(__name__)
 
@@ -40,7 +38,7 @@ def _rotate_ua(session: requests.Session):
     session.headers["User-Agent"] = random.choice(USER_AGENTS)
 
 
-def _fetch_steam_page(session: requests.Session, offset: int) -> Optional[Tuple[List[Dict], int]]:
+def _fetch_steam_page(session: requests.Session, offset: int) -> tuple[list[dict], int] | None:
     """Fetch one page (10 items) from Steam Market.
 
     Returns (results_list, total_count) or None on failure.
@@ -68,14 +66,14 @@ def _fetch_steam_page(session: requests.Session, offset: int) -> Optional[Tuple[
             return data["results"], data.get("total_count", 0)
 
         except requests.exceptions.RequestException as e:
-            logger.warning(f"Request failed at offset={offset} (attempt {attempt+1}): {e}")
+            logger.warning(f"Request failed at offset={offset} (attempt {attempt + 1}): {e}")
             if attempt < len(RETRY_BACKOFF) - 1:
                 time.sleep(backoff)
 
     return None
 
 
-def get_total_item_count(session: requests.Session) -> Optional[int]:
+def get_total_item_count(session: requests.Session) -> int | None:
     """Get total number of items on the Steam Market."""
     result = _fetch_steam_page(session, 0)
     if result:
@@ -87,8 +85,7 @@ def get_total_item_count(session: requests.Session) -> Optional[int]:
 class SupplyScraper:
     """Collects daily supply snapshots from Steam Market."""
 
-    def __init__(self, db: Session, burst_size: int = DEFAULT_BURST_SIZE,
-                 burst_pause: float = DEFAULT_BURST_PAUSE):
+    def __init__(self, db: Session, burst_size: int = DEFAULT_BURST_SIZE, burst_pause: float = DEFAULT_BURST_PAUSE):
         self.db = db
         self.burst_size = burst_size
         self.burst_pause = burst_pause
@@ -97,23 +94,25 @@ class SupplyScraper:
 
     # ── Steam scrape ─────────────────────────────────────────────────
 
-    def _load_tracked_hash_names(self) -> Set[str]:
+    def _load_tracked_hash_names(self) -> set[str]:
         """Load market_hash_names for items in the prediction DB.
 
         Uses the canonical item name column as the Steam market hash name.
         Returns a set for fast membership checks during catalog traversal.
         """
-        rows = self.db.execute(text("""
+        rows = self.db.execute(
+            text("""
             SELECT DISTINCT i.name
             FROM items i
             WHERE i.is_backfilled = 1
                OR EXISTS (SELECT 1 FROM price_history ph WHERE ph.item_id = i.id)
-        """)).fetchall()
+        """)
+        ).fetchall()
         names = {r[0] for r in rows if r[0]}
         logger.info(f"Tracking {len(names):,} items for supply snapshots")
         return names
 
-    def scrape_steam(self, tracked: Optional[Set[str]] = None) -> Dict[str, int]:
+    def scrape_steam(self, tracked: set[str] | None = None) -> dict[str, int]:
         """Scrape sell_listings from Steam Market.
 
         Paginates the full catalog using burst rate limiting. Only stores
@@ -136,7 +135,7 @@ class SupplyScraper:
 
         logger.info(f"  Total items on market: {total:,}")
 
-        results: Dict[str, int] = {}
+        results: dict[str, int] = {}
         current_offset = 0
         found = 0
         stats_ok = 0
@@ -183,7 +182,7 @@ class SupplyScraper:
                 f"  [{current_offset:>6,}/{total:,}] ({pct:3d}%) "
                 f"found:{found:,}  "
                 f"rate:{rate:.0f}items/min  "
-                f"ETA:{eta/60:.0f}m"
+                f"ETA:{eta / 60:.0f}m"
             )
 
             if current_offset >= total:
@@ -197,12 +196,12 @@ class SupplyScraper:
 
         elapsed = time.time() - start_time
         logger.info(f"  Done: {stats_ok} pages OK, {stats_429} rate-limited, {stats_failed} failed")
-        logger.info(f"  Matched {found:,} tracked items in {elapsed/60:.1f} min")
+        logger.info(f"  Matched {found:,} tracked items in {elapsed / 60:.1f} min")
         return results
 
     # ── Storage ───────────────────────────────────────────────────────
 
-    def store_snapshots(self, steam_data: Dict[str, int]):
+    def store_snapshots(self, steam_data: dict[str, int]):
         """Write today's supply snapshots into DB + Parquet.
 
         Uses the item name → id mapping to resolve hash names.
@@ -211,10 +210,8 @@ class SupplyScraper:
         today = date.today()
 
         # Build name → id lookup
-        name_ids: Dict[str, int] = {}
-        rows = self.db.execute(text(
-            "SELECT id, name FROM items"
-        )).fetchall()
+        name_ids: dict[str, int] = {}
+        rows = self.db.execute(text("SELECT id, name FROM items")).fetchall()
         for row in rows:
             name_ids[row[1]] = row[0]
         logger.info(f"  Name→id map: {len(name_ids):,} items")
@@ -227,7 +224,7 @@ class SupplyScraper:
                 continue
             existing = self.db.execute(
                 text("SELECT 1 FROM supply_snapshots WHERE item_id = :iid AND snapshot_date = :sd"),
-                {"iid": item_id, "sd": today}
+                {"iid": item_id, "sd": today},
             ).fetchone()
             if existing:
                 self.db.execute(
@@ -236,7 +233,7 @@ class SupplyScraper:
                         SET sell_listings = :sl, source = 'steam_burst', created_at = :now
                         WHERE item_id = :iid AND snapshot_date = :sd
                     """),
-                    {"sl": listings, "iid": item_id, "sd": today, "now": utcnow_naive()}
+                    {"sl": listings, "iid": item_id, "sd": today, "now": utcnow_naive()},
                 )
             else:
                 snap = SupplySnapshot(
@@ -246,27 +243,30 @@ class SupplyScraper:
                     source="steam_burst",
                 )
                 self.db.add(snap)
-            parquet_rows.append({
-                "item_id": item_id,
-                "snapshot_date": today,
-                "sell_listings": listings,
-                "skinport_quantity": None,
-                "source": "steam_burst",
-                "created_at": utcnow_naive(),
-            })
+            parquet_rows.append(
+                {
+                    "item_id": item_id,
+                    "snapshot_date": today,
+                    "sell_listings": listings,
+                    "skinport_quantity": None,
+                    "source": "steam_burst",
+                    "created_at": utcnow_naive(),
+                }
+            )
             written += 1
 
         self.db.commit()
 
         if parquet_rows:
             from db.parquet import append_table
+
             append_table("supply_snapshots", parquet_rows, ["item_id", "snapshot_date"])
 
         logger.info(f"  Stored {written:,} Steam snapshots")
 
     # ── Full run ──────────────────────────────────────────────────────
 
-    def run(self, tracked: Optional[Set[str]] = None) -> Dict:
+    def run(self, tracked: set[str] | None = None) -> dict:
         """Execute a full supply-scrape cycle: Steam burst → DB.
 
         Returns a status dict matching the pipeline convention.

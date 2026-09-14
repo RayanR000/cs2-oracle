@@ -26,7 +26,10 @@ def upgrade() -> None:
         sa.Column("skinport_quantity", sa.Integer(), nullable=True),
         sa.Column("source", sa.String(50), nullable=False, server_default="steam_burst"),
         sa.Column("created_at", sa.DateTime(), nullable=True),
-        sa.ForeignKeyConstraint(["item_id"], ["items.id"], ),
+        sa.ForeignKeyConstraint(
+            ["item_id"],
+            ["items.id"],
+        ),
         sa.PrimaryKeyConstraint("item_id", "snapshot_date"),
     )
     op.create_index("idx_supply_item_date", "supply_snapshots", ["item_id", "snapshot_date"])

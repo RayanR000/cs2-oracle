@@ -57,7 +57,6 @@ from pathlib import Path
 import lightgbm as lgb
 import numpy as np
 import pytest
-
 from models.forecaster import ItemForecaster
 
 SCRIPTS = Path(__file__).resolve().parents[1] / "scripts"
@@ -74,14 +73,8 @@ SCRIPTS = Path(__file__).resolve().parents[1] / "scripts"
 #: matching only the literal would quietly drop each file out of the sweep at
 #: the moment it was fixed, leaving the checks below asserting nothing.
 _TRAINS_RE = re.compile(r"\blgb\.train\s*\(|\b_train_ensemble_member\s*\(")
-TRAINS = sorted(
-    p.stem for p in SCRIPTS.glob("ab_test_*.py")
-    if _TRAINS_RE.search(p.read_text())
-)
-NO_TRAIN = sorted(
-    p.stem for p in SCRIPTS.glob("ab_test_*.py")
-    if not _TRAINS_RE.search(p.read_text())
-)
+TRAINS = sorted(p.stem for p in SCRIPTS.glob("ab_test_*.py") if _TRAINS_RE.search(p.read_text()))
+NO_TRAIN = sorted(p.stem for p in SCRIPTS.glob("ab_test_*.py") if not _TRAINS_RE.search(p.read_text()))
 
 
 def _informative_split(seed: int = 20260813):
@@ -99,12 +92,19 @@ def _informative_split(seed: int = 20260813):
 
 
 _PARAMS = {
-    "objective": "quantile", "alpha": 0.5, "metric": "quantile",
-    "num_leaves": 31, "max_depth": 5, "min_data_in_leaf": 15,
-    "learning_rate": 0.05, "verbosity": -1, "seed": 7,
-    "num_threads": 1, "deterministic": True, "force_row_wise": True,
+    "objective": "quantile",
+    "alpha": 0.5,
+    "metric": "quantile",
+    "num_leaves": 31,
+    "max_depth": 5,
+    "min_data_in_leaf": 15,
+    "learning_rate": 0.05,
+    "verbosity": -1,
+    "seed": 7,
+    "num_threads": 1,
+    "deterministic": True,
+    "force_row_wise": True,
 }
-
 
 
 class TestTheTwoTrainersAreNotInterchangeable:
@@ -127,32 +127,34 @@ class TestTheTwoTrainersAreNotInterchangeable:
         dtrain = lgb.Dataset(Xtr, ytr)
         dval = lgb.Dataset(Xva, yva, reference=dtrain)
         model = lgb.train(
-            _PARAMS, dtrain, num_boost_round=200, valid_sets=[dval],
-            callbacks=[lgb.early_stopping(15, verbose=False),
-                       lgb.log_evaluation(0)],
+            _PARAMS,
+            dtrain,
+            num_boost_round=200,
+            valid_sets=[dval],
+            callbacks=[lgb.early_stopping(15, verbose=False), lgb.log_evaluation(0)],
         )
-        assert 1 < model.best_iteration < 200, (
-            f"nothing was selected: best_iteration={model.best_iteration}"
-        )
+        assert 1 < model.best_iteration < 200, f"nothing was selected: best_iteration={model.best_iteration}"
 
     def test_the_two_trainers_disagree_on_the_same_data(self):
         (Xtr, ytr), (Xva, yva), _ = _informative_split()
         dtrain = lgb.Dataset(Xtr, ytr)
         dval = lgb.Dataset(Xva, yva, reference=dtrain)
         stopped = lgb.train(
-            _PARAMS, dtrain, num_boost_round=200, valid_sets=[dval],
-            callbacks=[lgb.early_stopping(15, verbose=False),
-                       lgb.log_evaluation(0)],
+            _PARAMS,
+            dtrain,
+            num_boost_round=200,
+            valid_sets=[dval],
+            callbacks=[lgb.early_stopping(15, verbose=False), lgb.log_evaluation(0)],
         )
         fixed = lgb.train(
-            _PARAMS, dtrain,
+            _PARAMS,
+            dtrain,
             num_boost_round=ItemForecaster._boost_rounds(14, cv=True),
             callbacks=[lgb.log_evaluation(0)],
         )
         assert stopped.num_trees() != fixed.num_trees()
         assert not np.allclose(stopped.predict(Xva), fixed.predict(Xva)), (
-            "the two trainers agree, which would make every stored verdict "
-            "transferable and this change cosmetic"
+            "the two trainers agree, which would make every stored verdict transferable and this change cosmetic"
         )
 
 
@@ -168,8 +170,7 @@ class TestProductionSuppliesTheRoundCount:
             assert ItemForecaster._boost_rounds(h, cv=True) > 0
 
     def test_it_is_the_cv_table_and_not_the_production_one(self):
-        assert (ItemForecaster._boost_rounds(14, cv=True)
-                != ItemForecaster._boost_rounds(14, cv=False))
+        assert ItemForecaster._boost_rounds(14, cv=True) != ItemForecaster._boost_rounds(14, cv=False)
 
     def test_an_unknown_horizon_does_not_train_zero_rounds(self):
         assert ItemForecaster._boost_rounds(None, cv=True) > 0
@@ -197,16 +198,17 @@ class TestTheEscapeHatchStillReproducesTheOldArm:
         dtrain = lgb.Dataset(Xtr, ytr)
         dval = lgb.Dataset(Xva, yva, reference=dtrain)
         return ItemForecaster._train_ensemble_member(
-            _PARAMS, dtrain, dval, num_boost_round=200,
+            _PARAMS,
+            dtrain,
+            dval,
+            num_boost_round=200,
             early_stopping=early_stopping,
         )
 
     def test_off_by_default_it_runs_every_round(self):
         model = self._fit(early_stopping=False)
         assert model.num_trees() == 200
-        assert not model.best_iteration, (
-            "best_iteration is set, so something was still selected"
-        )
+        assert not model.best_iteration, "best_iteration is set, so something was still selected"
 
     def test_on_it_stops_early_and_records_the_iteration(self):
         model = self._fit(early_stopping=True)
@@ -225,7 +227,6 @@ class TestTheEscapeHatchStillReproducesTheOldArm:
 
 @pytest.mark.parametrize("name", TRAINS)
 class TestNoHarnessSelectsOnTheRowsItScores:
-
     def test_early_stopping_is_not_unconditional(self, name):
         """A bare `lgb.early_stopping(...)` in a callback list is the defect.
 
@@ -234,9 +235,9 @@ class TestNoHarnessSelectsOnTheRowsItScores:
         """
         src = (SCRIPTS / f"{name}.py").read_text()
         offenders = [
-            line.strip() for line in src.splitlines()
-            if "lgb.early_stopping(" in line
-            and not line.strip().startswith("#")
+            line.strip()
+            for line in src.splitlines()
+            if "lgb.early_stopping(" in line and not line.strip().startswith("#")
         ]
         assert not offenders, (
             f"{name} still selects its iteration on the rows it scores: "
@@ -257,13 +258,11 @@ class TestNoHarnessSelectsOnTheRowsItScores:
         trainer that the fix missed."""
         src = (SCRIPTS / f"{name}.py").read_text()
         literals = [
-            line.strip() for line in src.splitlines()
-            if re.search(r"num_boost_round\s*=\s*\d+", line)
-            and not line.strip().startswith("#")
+            line.strip()
+            for line in src.splitlines()
+            if re.search(r"num_boost_round\s*=\s*\d+", line) and not line.strip().startswith("#")
         ]
-        assert not literals, (
-            f"{name} still hardcodes a round count: {literals}"
-        )
+        assert not literals, f"{name} still hardcodes a round count: {literals}"
 
 
 def test_the_ad_hoc_opt_out_flags_are_gone():
@@ -271,8 +270,7 @@ def test_the_ad_hoc_opt_out_flags_are_gone():
     to the leak. One mechanism replaces them, and it defaults the other way."""
     for name in TRAINS:
         src = (SCRIPTS / f"{name}.py").read_text()
-        for dead in ("--no-early-stop", "no_early_stop",
-                     "--fixed-rounds", "fixed_rounds"):
+        for dead in ("--no-early-stop", "no_early_stop", "--fixed-rounds", "fixed_rounds"):
             assert dead not in src, (
                 f"{name} still carries {dead}; fixed rounds are the default "
                 f"now and EARLY_STOPPING=1 is the only opt-out"

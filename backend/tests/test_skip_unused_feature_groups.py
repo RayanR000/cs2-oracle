@@ -11,6 +11,7 @@ The two constraints this file exists to pin:
    group in the allowlist and its columns absent -- median-filled to zero,
    undetectably.
 """
+
 from __future__ import annotations
 
 import inspect
@@ -36,8 +37,7 @@ def test_skip_set_excludes_the_allowlisted_group(tmp_path):
 def test_skip_set_covers_the_discarded_groups(tmp_path):
     f = _f(tmp_path)
     skipped = f._skipped_feature_groups()
-    for group in ("temporal", "events", "cross_sectional", "social",
-                  "item_identity", "item_metadata", "supply_depth"):
+    for group in ("temporal", "events", "cross_sectional", "social", "item_identity", "item_metadata", "supply_depth"):
         assert group in skipped
 
 

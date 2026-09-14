@@ -1,6 +1,6 @@
+from datetime import datetime
+
 from pydantic import BaseModel, model_validator
-from typing import Optional, List, Dict
-from datetime import datetime, date
 
 
 class ItemOut(BaseModel):
@@ -8,8 +8,8 @@ class ItemOut(BaseModel):
     item_id: str
     name: str
     type: str
-    icon_url: Optional[str] = None
-    release_date: Optional[datetime] = None
+    icon_url: str | None = None
+    release_date: datetime | None = None
     created_at: datetime
     updated_at: datetime
 
@@ -22,7 +22,7 @@ class TrendingItemOut(BaseModel):
     item_id: str
     name: str
     type: str
-    icon_url: Optional[str] = None
+    icon_url: str | None = None
     latest_price: float
 
     class Config:
@@ -32,10 +32,10 @@ class TrendingItemOut(BaseModel):
 class PricePointOut(BaseModel):
     timestamp: datetime
     price: float
-    volume: Optional[int] = None
-    median_price: Optional[float] = None
-    sma_7: Optional[float] = None
-    sma_30: Optional[float] = None
+    volume: int | None = None
+    median_price: float | None = None
+    sma_7: float | None = None
+    sma_30: float | None = None
 
     class Config:
         from_attributes = True
@@ -51,17 +51,17 @@ class TrendAnalysisOut(BaseModel):
     # `confidence` withdrawn 2026-08-12: the served label is uncalibrated and
     # carries no measurable directional information. See PredictionOut below.
     explanation: str
-    rsi: Optional[float] = None
-    bollinger_upper: Optional[float] = None
-    bollinger_middle: Optional[float] = None
-    bollinger_lower: Optional[float] = None
-    macd: Optional[float] = None
-    macd_signal: Optional[float] = None
-    support: Optional[float] = None
-    resistance: Optional[float] = None
-    factors: List[str] = []
-    sma_7: Optional[float] = None
-    sma_30: Optional[float] = None
+    rsi: float | None = None
+    bollinger_upper: float | None = None
+    bollinger_middle: float | None = None
+    bollinger_lower: float | None = None
+    macd: float | None = None
+    macd_signal: float | None = None
+    support: float | None = None
+    resistance: float | None = None
+    factors: list[str] = []
+    sma_7: float | None = None
+    sma_30: float | None = None
 
     class Config:
         from_attributes = True
@@ -101,15 +101,15 @@ class PredictionOut(BaseModel):
     # from a cohort with no measured ordering skill. Those items are kept OFF
     # /opportunities entirely; a lookup by name still gets its forecast, with
     # this flag. None = not recorded (rows predating the 2026-08-11 column).
-    anchor_clean: Optional[bool] = None
-    anchor_wedge_pct: Optional[float] = None
+    anchor_clean: bool | None = None
+    anchor_wedge_pct: float | None = None
     # Every item is served a forecast; sub-$1 items are flagged not economically
     # tradeable rather than withheld. Derived from current_price below so every
     # route that builds a PredictionOut is correct by construction.
     # `est_roundtrip_cost_pct` is the round trip at the cheapest venue plus the
     # item's tier spread -- the move a forecast must beat to imply a trade.
-    tradeable: Optional[bool] = None
-    est_roundtrip_cost_pct: Optional[float] = None
+    tradeable: bool | None = None
+    est_roundtrip_cost_pct: float | None = None
     # Volatility/stability tags (v1). Derived from the served band + exceed_p; no
     # new modelling. `expected_swing_pct` is the calibrated half-band as a
     # fraction of the mid ("+/-X% over the horizon"). `move_odds` is the
@@ -118,13 +118,13 @@ class PredictionOut(BaseModel):
     # on artifacts predating the exceedance head. `stability_label` ranks the
     # swing against the within-horizon >=$1 universe tertiles, so it is
     # relative-to-peers, not an absolute cutoff. See api/volatility_tags.py.
-    expected_swing_pct: Optional[float] = None
-    move_odds: Optional[float] = None
-    stability_label: Optional[str] = None
+    expected_swing_pct: float | None = None
+    move_odds: float | None = None
+    stability_label: str | None = None
     # P(|return_h| > 2σ_item) from the anomaly head. Served at 3/7/14d only —
     # the 30d head ranks but ties the featureless null on log loss, so it is
     # withheld (None) until calibrated. See ANOMALY_SERVED_HORIZONS.
-    anomaly_p: Optional[float] = None
+    anomaly_p: float | None = None
 
     @model_validator(mode="after")
     def _derive_tradeability(self) -> "PredictionOut":
@@ -138,11 +138,12 @@ class PredictionOut(BaseModel):
 
 class VolatilityRankOut(BaseModel):
     """One row of the /items/volatility ranking. See api/volatility_tags.py."""
+
     item_id: str
     name: str
     current_price: float
     expected_swing_pct: float
-    move_odds: Optional[float] = None
+    move_odds: float | None = None
     stability_label: str
 
 
@@ -154,7 +155,7 @@ class OpportunityOut(BaseModel):
     opportunity_score: float
     reason: str
     current_trend: str
-    volatility: Optional[float] = None
+    volatility: float | None = None
 
     class Config:
         from_attributes = True
@@ -163,8 +164,8 @@ class OpportunityOut(BaseModel):
 class SourcePriceOut(BaseModel):
     timestamp: datetime
     price: float
-    volume: Optional[int] = None
-    median_price: Optional[float] = None
+    volume: int | None = None
+    median_price: float | None = None
 
     class Config:
         from_attributes = True
@@ -173,8 +174,8 @@ class SourcePriceOut(BaseModel):
 class MultiSourcePricesOut(BaseModel):
     item_id: str
     name: str
-    sources: List[str]
-    data: Dict[str, List[SourcePriceOut]]
+    sources: list[str]
+    data: dict[str, list[SourcePriceOut]]
 
 
 class EventOut(BaseModel):
@@ -192,9 +193,9 @@ class QualityVariantOut(BaseModel):
     item_id: str
     name: str
     quality: str
-    current_price: Optional[float] = None
-    price_change_24h: Optional[float] = None
-    volume_24h: Optional[int] = None
+    current_price: float | None = None
+    price_change_24h: float | None = None
+    volume_24h: int | None = None
 
     class Config:
         from_attributes = True
@@ -203,22 +204,22 @@ class QualityVariantOut(BaseModel):
 class GroupedMarketItemOut(BaseModel):
     base_name: str
     type: str
-    icon_url: Optional[str] = None
-    price_avg: Optional[float] = None
-    price_min: Optional[float] = None
-    price_max: Optional[float] = None
-    price_change_24h: Optional[float] = None
-    volatility: Optional[float] = None
-    volume_24h: Optional[int] = None
+    icon_url: str | None = None
+    price_avg: float | None = None
+    price_min: float | None = None
+    price_max: float | None = None
+    price_change_24h: float | None = None
+    volatility: float | None = None
+    volume_24h: int | None = None
     quality_count: int = 1
-    qualities: List[QualityVariantOut] = []
+    qualities: list[QualityVariantOut] = []
 
 
 class UserOut(BaseModel):
     id: int
     steam_id: str
-    username: Optional[str] = None
-    avatar_url: Optional[str] = None
+    username: str | None = None
+    avatar_url: str | None = None
 
     class Config:
         from_attributes = True
@@ -229,18 +230,18 @@ class EventImpactOut(BaseModel):
     event_type: str
     event_description: str
     event_timestamp: datetime
-    price_day_before: Optional[float] = None
-    price_day_1: Optional[float] = None
-    price_day_3: Optional[float] = None
-    price_day_7: Optional[float] = None
-    impact_pct_1day: Optional[float] = None
-    impact_pct_3day: Optional[float] = None
-    impact_pct_7day: Optional[float] = None
-    peak_impact_pct: Optional[float] = None
-    peak_impact_day: Optional[int] = None
-    duration_days: Optional[int] = None
-    z_score: Optional[float] = None
-    confidence_score: Optional[float] = None
+    price_day_before: float | None = None
+    price_day_1: float | None = None
+    price_day_3: float | None = None
+    price_day_7: float | None = None
+    impact_pct_1day: float | None = None
+    impact_pct_3day: float | None = None
+    impact_pct_7day: float | None = None
+    peak_impact_pct: float | None = None
+    peak_impact_day: int | None = None
+    duration_days: int | None = None
+    z_score: float | None = None
+    confidence_score: float | None = None
 
     class Config:
         from_attributes = True
@@ -259,10 +260,10 @@ class FeatureImportanceOut(BaseModel):
 
 class SocialMentionOut(BaseModel):
     post_id: str
-    subreddit: Optional[str] = None
-    post_title: Optional[str] = None
-    post_score: Optional[int] = None
-    sentiment_score: Optional[float] = None
+    subreddit: str | None = None
+    post_title: str | None = None
+    post_score: int | None = None
+    sentiment_score: float | None = None
     mentioned_at: datetime
 
     class Config:
@@ -277,7 +278,7 @@ class SocialSentimentSummaryOut(BaseModel):
     mention_velocity: float
     avg_sentiment_7d: float
     avg_score_7d: float
-    recent_mentions: List[SocialMentionOut] = []
+    recent_mentions: list[SocialMentionOut] = []
 
 
 class HealthOut(BaseModel):

@@ -33,7 +33,4 @@ def downgrade() -> None:
             PRIMARY KEY (item_id, day)
         )
     """)
-    op.execute(
-        "CREATE INDEX IF NOT EXISTS idx_chart_point_item_day "
-        "ON chart_points (item_id, day)"
-    )
+    op.execute("CREATE INDEX IF NOT EXISTS idx_chart_point_item_day ON chart_points (item_id, day)")

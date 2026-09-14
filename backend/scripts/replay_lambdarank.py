@@ -10,6 +10,7 @@ test on the ranker's within-date directional call. Writes nothing.
 
 Design: docs/superpowers/specs/2026-08-14-lambdarank-serving-transfer-design.md
 """
+
 from __future__ import annotations
 
 import logging
@@ -17,20 +18,24 @@ import os
 import sys
 from datetime import date, timedelta
 from pathlib import Path
-from typing import Optional
 
 import numpy as np
 import pandas as pd
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from backtest.directional_test import pesaran_timmermann          # noqa: E402
-from backtest.longshort import (                                  # noqa: E402
-    decile_longshort_by_date, direction_records, net_of_cost)
-from models.forecaster import ItemForecaster, embargo_days         # noqa: E402
-from scripts.replay_serving import (                              # noqa: E402
-    _resolve, _tied_mask, _feed_profile, audit_anchor_feed,
-    cutovers_from_counts, cutovers_in_outcome_window, _outcomes)
+from backtest.directional_test import pesaran_timmermann
+from backtest.longshort import decile_longshort_by_date, direction_records, net_of_cost
+from models.forecaster import ItemForecaster, embargo_days
+from scripts.replay_serving import (
+    _feed_profile,
+    _outcomes,
+    _resolve,
+    _tied_mask,
+    audit_anchor_feed,
+    cutovers_from_counts,
+    cutovers_in_outcome_window,
+)
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(message)s")
 logger = logging.getLogger(__name__)
@@ -48,8 +53,7 @@ RETRAIN_CADENCE_DAYS = 14
 ROUNDTRIP_COST = 2 * (0.15 + 0.05)
 
 
-def _anchor_metrics(anchor, horizon, val_df, lr_scores, q50_scores,
-                    naive_scores, outcomes, floor, tied) -> Optional[dict]:
+def _anchor_metrics(anchor, horizon, val_df, lr_scores, q50_scores, naive_scores, outcomes, floor, tied) -> dict | None:
     """Score one anchor date on its TIED, served (`current >= floor`) cohort.
 
     Returns per-anchor rank ICs (lr / q50 / naive), the decile long-short
@@ -60,8 +64,7 @@ def _anchor_metrics(anchor, horizon, val_df, lr_scores, q50_scores,
     its own anchor quote.
     """
     target = anchor.date() if isinstance(anchor, pd.Timestamp) else anchor
-    realised = _resolve(outcomes, target + timedelta(days=int(horizon)),
-                        after=target)
+    realised = _resolve(outcomes, target + timedelta(days=int(horizon)), after=target)
     frame = val_df.copy()
     frame["lr"] = np.asarray(lr_scores, dtype=float)
     frame["q50"] = np.asarray(q50_scores, dtype=float)
@@ -76,23 +79,21 @@ def _anchor_metrics(anchor, horizon, val_df, lr_scores, q50_scores,
 
     ret = (frame["realised"] / frame["current"] - 1.0).to_numpy()
     dates = frame["date"].to_numpy()
+
     # One anchor is one date, so min_rows is the tied-count floor above and the
     # detail reader returns a single-date IC (or None if degenerate).
     def _ic(pred):
-        return ItemForecaster._within_date_rank_ic_detail(
-            pred, ret, dates, min_rows=MIN_TIED_ROWS)[0]
+        return ItemForecaster._within_date_rank_ic_detail(pred, ret, dates, min_rows=MIN_TIED_ROWS)[0]
 
-    ls = decile_longshort_by_date(frame["lr"].to_numpy(), ret, dates,
-                                  min_rows=MIN_TIED_ROWS)
+    ls = decile_longshort_by_date(frame["lr"].to_numpy(), ret, dates, min_rows=MIN_TIED_ROWS)
     return {
         "anchor": str(target),
-        "n_tied": int(len(frame)),
+        "n_tied": len(frame),
         "lr_ic": _ic(frame["lr"].to_numpy()),
         "q50_ic": _ic(frame["q50"].to_numpy()),
         "naive_ic": _ic(frame["naive"].to_numpy()),
         "ls_spread": ls["mean"],
-        "pt_records": direction_records(frame["lr"].to_numpy(), ret, dates,
-                                        min_rows=MIN_TIED_ROWS),
+        "pt_records": direction_records(frame["lr"].to_numpy(), ret, dates, min_rows=MIN_TIED_ROWS),
     }
 
 
@@ -120,13 +121,13 @@ def frozen_anchors(fc, horizon, window=SERVED_WINDOW) -> list:
         ok, _ = audit_anchor_feed(d, profile)
         if ok:
             span = _feed_profile(d, window=horizon)
-            cutovers = cutovers_from_counts(
-                span.set_index(pd.to_datetime(span["day"]).dt.date)["items"])
+            cutovers = cutovers_from_counts(span.set_index(pd.to_datetime(span["day"]).dt.date)["items"])
             if not cutovers_in_outcome_window(d, [horizon], cutovers):
                 surviving.append(d)
         d = d + timedelta(days=1)
-    logger.info("FROZEN anchor set (h=%s): %d dates — %s", horizon,
-                len(surviving), ", ".join(a.isoformat() for a in surviving))
+    logger.info(
+        "FROZEN anchor set (h=%s): %d dates — %s", horizon, len(surviving), ", ".join(a.isoformat() for a in surviving)
+    )
     return surviving
 
 
@@ -147,15 +148,13 @@ def _master_frame(fc, horizon, cutoff, floor):
         events_df = fc.fetch_events()
         feat = fc.engineer_features(price_df, events_df)
         # Production's feature selection: allowlist + correlation prune → ~33 cols.
-        fc.feature_cols = fc._select_feature_cols(
-            feat, fc.HORIZONS, fc._active_shelved_features())
+        fc.feature_cols = fc._select_feature_cols(feat, fc.HORIZONS, fc._active_shelved_features())
         fc._reduce_feature_cols(feat)
         tdf = fc.prepare_targets(feat, horizon)
     finally:
         os.environ.pop("REPLAY_ANCHOR", None)
     embargo = embargo_days(horizon)
-    keep = pd.to_datetime(tdf["date"]) <= (
-        pd.Timestamp(cutoff) - pd.Timedelta(days=embargo))
+    keep = pd.to_datetime(tdf["date"]) <= (pd.Timestamp(cutoff) - pd.Timedelta(days=embargo))
     train_df = tdf[keep].sort_values("date")
     cap = fc.CV_MAX_TRAIN_ROWS
     if len(train_df) > cap:
@@ -185,15 +184,15 @@ def main() -> int:
         return 2
     horizon = int(sys.argv[sys.argv.index("--horizon") + 1])
 
-    from database import SessionLocal
     from api.serving_policy import MIN_SERVED_PRICE_USD
+    from database import SessionLocal
+
     db = SessionLocal()
     try:
         fc = ItemForecaster(db_session=db, prune_failed_groups=False)
         anchors = frozen_anchors(fc, horizon)
         if not anchors:
-            logger.error("No clean anchors in %s at h=%s.", SERVED_WINDOW,
-                         horizon)
+            logger.error("No clean anchors in %s at h=%s.", SERVED_WINDOW, horizon)
             return 1
         points = _retrain_points(SERVED_WINDOW)
         # Outcomes over the whole window+horizon, resolved once from the full
@@ -217,14 +216,14 @@ def main() -> int:
         # this adds no look-ahead.
         os.environ.pop("REPLAY_ANCHOR", None)
         val_price = fc._filter_by_median_price(
-            fc.fetch_price_history(days_back=1100, backfilled_only=True, universe="train"), floor)
+            fc.fetch_price_history(days_back=1100, backfilled_only=True, universe="train"), floor
+        )
         val_feat = fc.engineer_features(val_price, fc.fetch_events())
 
         rows = []
         all_pt = []
         for i, cutoff in enumerate(points):
-            block_hi = (points[i + 1] if i + 1 < len(points)
-                        else SERVED_WINDOW[1] + timedelta(days=1))
+            block_hi = points[i + 1] if i + 1 < len(points) else SERVED_WINDOW[1] + timedelta(days=1)
             block = [a for a in anchors if cutoff <= a < block_hi]
             if not block:
                 continue
@@ -234,37 +233,40 @@ def main() -> int:
             # is redundant. Concatenate the anchors' val rows, train once, then
             # split the scores back by anchor (concat preserves row order).
             block_vals = [(a, _val_frame(val_feat, a)) for a in block]
-            block_vals = [(a, v) for a, v in block_vals
-                          if len(v) >= MIN_TIED_ROWS]
+            block_vals = [(a, v) for a, v in block_vals if len(v) >= MIN_TIED_ROWS]
             if not block_vals:
                 continue
             train_df, _ = _master_frame(fc, horizon, cutoff, floor)
-            logger.info("retrain @ %s: %d train rows, %d/%d anchors scorable",
-                        cutoff, len(train_df), len(block_vals), len(block))
+            logger.info(
+                "retrain @ %s: %d train rows, %d/%d anchors scorable",
+                cutoff,
+                len(train_df),
+                len(block_vals),
+                len(block),
+            )
             val_all = pd.concat([v for _, v in block_vals], ignore_index=True)
-            lr_all = np.asarray(fc._lambdarank_fold_scores(
-                train_df, val_all, horizon, per_quantile_params))
-            q50_all = np.asarray(fc._fold_q50_scores(
-                train_df, val_all, horizon, per_quantile_params))
-            naive_all = (-val_all["return_1d"].to_numpy(dtype=float)
-                         if "return_1d" in val_all.columns
-                         else np.zeros(len(val_all)))
+            lr_all = np.asarray(fc._lambdarank_fold_scores(train_df, val_all, horizon, per_quantile_params))
+            q50_all = np.asarray(fc._fold_q50_scores(train_df, val_all, horizon, per_quantile_params))
+            naive_all = (
+                -val_all["return_1d"].to_numpy(dtype=float)
+                if "return_1d" in val_all.columns
+                else np.zeros(len(val_all))
+            )
             off = 0
             for a, v in block_vals:
                 n = len(v)
                 sl = slice(off, off + n)
                 off += n
                 tied = _tied_mask(outcomes, a)
-                m = _anchor_metrics(pd.Timestamp(a), horizon, v,
-                                    lr_all[sl], q50_all[sl], naive_all[sl],
-                                    outcomes, floor, tied)
+                m = _anchor_metrics(
+                    pd.Timestamp(a), horizon, v, lr_all[sl], q50_all[sl], naive_all[sl], outcomes, floor, tied
+                )
                 if m is not None:
                     rows.append(m)
                     all_pt.extend(m["pt_records"])
 
         if not rows:
-            logger.error("No anchor produced >= %d tied resolved rows.",
-                         MIN_TIED_ROWS)
+            logger.error("No anchor produced >= %d tied resolved rows.", MIN_TIED_ROWS)
             return 1
 
         def _mean(key):
@@ -275,8 +277,7 @@ def main() -> int:
             # Mean of the per-anchor difference, the pre-registered metric — not
             # a difference of means, which would average the two legs over
             # different calendars when one degenerates on a subset of anchors.
-            diffs = [r[a_key] - r[b_key] for r in rows
-                     if r[a_key] is not None and r[b_key] is not None]
+            diffs = [r[a_key] - r[b_key] for r in rows if r[a_key] is not None and r[b_key] is not None]
             return float(np.mean(diffs)) if diffs else None
 
         lr_ic, q50_ic, naive_ic = _mean("lr_ic"), _mean("q50_ic"), _mean("naive_ic")
@@ -285,20 +286,22 @@ def main() -> int:
         ls = _mean("ls_spread")
         pt = pesaran_timmermann(all_pt, min_dates=len(rows))
 
-        print(f"\nC2 SERVING-TRANSFER @ h={horizon}   "
-              f"(tied cohort, {len(rows)} anchor-dates, floor >= ${floor:g})")
+        print(f"\nC2 SERVING-TRANSFER @ h={horizon}   (tied cohort, {len(rows)} anchor-dates, floor >= ${floor:g})")
         print(f"  lr rank IC      {lr_ic}")
         print(f"  q50 rank IC     {q50_ic}")
         print(f"  naive rank IC   {naive_ic}")
         print(f"  EDGE vs q50     {edge_q50}   <-- primary bar: > 0 confirms")
         print(f"  edge vs naive   {edge_naive}")
-        print(f"  decile L/S      gross {ls}   "
-              f"net {None if ls is None else net_of_cost(ls, ROUNDTRIP_COST)}")
-        print(f"  PT (lr call)    excess_pp={pt['pt_excess_pp']} "
-              f"t={pt['pt_t_stat']} verdict={pt['pt_verdict']} "
-              f"n_dates={pt['pt_n_dates']}")
-        print("\nEDGE vs q50 is the pre-registered pass/fail. Decile net and "
-              "PT are descriptive; DA/MAE are undefined for a ranker.")
+        print(f"  decile L/S      gross {ls}   net {None if ls is None else net_of_cost(ls, ROUNDTRIP_COST)}")
+        print(
+            f"  PT (lr call)    excess_pp={pt['pt_excess_pp']} "
+            f"t={pt['pt_t_stat']} verdict={pt['pt_verdict']} "
+            f"n_dates={pt['pt_n_dates']}"
+        )
+        print(
+            "\nEDGE vs q50 is the pre-registered pass/fail. Decile net and "
+            "PT are descriptive; DA/MAE are undefined for a ranker."
+        )
         return 0
     finally:
         db.close()

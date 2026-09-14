@@ -9,6 +9,7 @@ the archive read is the *input* to that arithmetic and moves week to week.
 
 See `docs/changelog/2026-08-13-the-band-is-sized-on-trailing-volatility.md`.
 """
+
 from __future__ import annotations
 
 import datetime
@@ -16,8 +17,8 @@ import datetime
 import numpy as np
 import pandas as pd
 import pytest
-
 from scripts.attribute_band_level import (
+    SIGMA_TRAILING_WINDOW_DAYS,
     anchor_coverage,
     date_levels,
     decompose,
@@ -25,7 +26,6 @@ from scripts.attribute_band_level import (
     mean_abs_miss,
     overshoot_breaches,
     pooled_anchor_coverage,
-    SIGMA_TRAILING_WINDOW_DAYS,
     select_low_level_anchors,
     shuffled_levels,
 )
@@ -36,9 +36,7 @@ OTHER = ["2026-06-09", "2026-06-10", "2026-06-11"]
 
 def _panel(rows):
     """rows: (item_id, 'YYYY-MM-DD', sigma, |resid|)."""
-    return pd.DataFrame(
-        [{"item_id": i, "date": pd.Timestamp(d).date(), "sigma": s, "absr": r}
-         for i, d, s, r in rows])
+    return pd.DataFrame([{"item_id": i, "date": pd.Timestamp(d).date(), "sigma": s, "absr": r} for i, d, s, r in rows])
 
 
 def _uniform(items, dates, sigma, absr):
@@ -51,8 +49,7 @@ def test_a_date_effect_is_reported_on_both_bases():
     must report the same thing -- a sigma ratio of 1.5 and a score ratio of 1/1.5.
     """
     items = [f"item-{n}" for n in range(20)]
-    panel = _panel(_uniform(items, OTHER, 0.08, 4.0)
-                   + _uniform(items, [ANCHOR], 0.12, 4.0))
+    panel = _panel(_uniform(items, OTHER, 0.08, 4.0) + _uniform(items, [ANCHOR], 0.12, 4.0))
     d = decompose(panel, [pd.Timestamp(ANCHOR).date()])
     assert d["same_sigma"] == pytest.approx(1.5)
     assert d["same_absr"] == pytest.approx(1.0)
@@ -72,11 +69,9 @@ def test_a_pure_composition_effect_vanishes_on_the_same_items_basis():
     # is constructing would not show up in a median ratio at all.
     calm = [f"calm-{n}" for n in range(30)]
     wild = [f"wild-{n}" for n in range(10)]
-    panel = _panel(_uniform(calm, OTHER + [ANCHOR], 0.05, 2.0)
-                   + _uniform(wild, OTHER + [ANCHOR], 0.20, 8.0))
+    panel = _panel(_uniform(calm, OTHER + [ANCHOR], 0.05, 2.0) + _uniform(wild, OTHER + [ANCHOR], 0.20, 8.0))
     # Only the volatile items are quoted on the anchor.
-    panel = panel[(panel["date"] != pd.Timestamp(ANCHOR).date())
-                  | (panel["item_id"].str.startswith("wild"))]
+    panel = panel[(panel["date"] != pd.Timestamp(ANCHOR).date()) | (panel["item_id"].str.startswith("wild"))]
     d = decompose(panel, [pd.Timestamp(ANCHOR).date()])
     assert d["same_sigma"] == pytest.approx(1.0)
     assert d["same_absr"] == pytest.approx(1.0)
@@ -91,8 +86,7 @@ def test_a_matched_residual_leaves_the_score_alone():
     measured 0.65-0.76 could not be read as over-coverage.
     """
     items = [f"item-{n}" for n in range(20)]
-    panel = _panel(_uniform(items, OTHER, 0.08, 4.0)
-                   + _uniform(items, [ANCHOR], 0.16, 8.0))
+    panel = _panel(_uniform(items, OTHER, 0.08, 4.0) + _uniform(items, [ANCHOR], 0.16, 8.0))
     d = decompose(panel, [pd.Timestamp(ANCHOR).date()])
     assert d["same_sigma"] == pytest.approx(2.0)
     assert d["same_absr"] == pytest.approx(2.0)
@@ -106,12 +100,12 @@ def test_an_item_served_but_never_pooled_elsewhere_does_not_inflate_the_ratio():
     NaN or a division by a foreign median would silently bias the median ratio.
     """
     items = [f"item-{n}" for n in range(9)]
-    panel = _panel(_uniform(items, OTHER, 0.08, 4.0)
-                   + _uniform(items, [ANCHOR], 0.16, 4.0)
-                   + [("newcomer", ANCHOR, 0.40, 20.0)])
+    panel = _panel(
+        _uniform(items, OTHER, 0.08, 4.0) + _uniform(items, [ANCHOR], 0.16, 4.0) + [("newcomer", ANCHOR, 0.40, 20.0)]
+    )
     d = decompose(panel, [pd.Timestamp(ANCHOR).date()])
     assert d["n_served"] == 10
-    assert d["same_sigma"] == pytest.approx(2.0)   # the newcomer's own is 1.0
+    assert d["same_sigma"] == pytest.approx(2.0)  # the newcomer's own is 1.0
     assert np.isfinite(d["score_same"])
 
 
@@ -124,6 +118,7 @@ def test_no_served_row_returns_empty_rather_than_a_ratio_of_nothing():
 # the date-level rescaling arm
 # `docs/research/2026-08-13-date-level-sigma-rescaling-preregistration.md`
 # --------------------------------------------------------------------------- #
+
 
 def _level_panel(levels, item_factors, resid_tracks_level, eps=None):
     """A panel whose date effect is known by construction.
@@ -139,14 +134,12 @@ def _level_panel(levels, item_factors, resid_tracks_level, eps=None):
     for t, (d, lev) in enumerate(sorted(levels.items())):
         for i, (f, e) in enumerate(zip(item_factors, eps)):
             r = f * e * (lev if resid_tracks_level else 1.0)
-            rows.append({"item_id": f"item-{i}", "date": d,
-                         "sigma": lev * f, "resid": r * (1 if i % 2 else -1)})
+            rows.append({"item_id": f"item-{i}", "date": d, "sigma": lev * f, "resid": r * (1 if i % 2 else -1)})
     return pd.DataFrame(rows)
 
 
 def _levels_over(n_dates, values, start="2026-01-01"):
-    days = [pd.Timestamp(start).date() + datetime.timedelta(days=k)
-            for k in range(n_dates)]
+    days = [pd.Timestamp(start).date() + datetime.timedelta(days=k) for k in range(n_dates)]
     return {d: values[k % len(values)] for k, d in enumerate(days)}
 
 
@@ -203,9 +196,7 @@ def test_the_bootstrap_resamples_dates_so_a_noisy_fit_reports_a_wide_interval():
     noise = {d: float(rng.lognormal(0.0, 0.5)) for d in levels}
     panel["resid"] = panel["resid"] * panel["date"].map(noise)
     wide = fit_level_elasticity(panel, n_boot=400)
-    tight = fit_level_elasticity(
-        _level_panel(levels, [1.0, 1.5, 2.0, 2.5], resid_tracks_level=False),
-        n_boot=400)
+    tight = fit_level_elasticity(_level_panel(levels, [1.0, 1.5, 2.0, 2.5], resid_tracks_level=False), n_boot=400)
     assert (wide["ci_hi"] - wide["ci_lo"]) > (tight["ci_hi"] - tight["ci_lo"])
 
 
@@ -246,7 +237,7 @@ def test_dividing_out_the_level_flattens_coverage_across_dates():
     arm = anchor_coverage(panel, anchors, horizon=3, gamma=1.0)
     spread_control = max(control.values()) - min(control.values())
     spread_arm = max(arm.values()) - min(arm.values())
-    assert spread_control > 0.10          # the defect is present to begin with
+    assert spread_control > 0.10  # the defect is present to begin with
     assert spread_arm < spread_control / 2
 
 
@@ -280,8 +271,7 @@ def test_the_pooled_coverage_is_row_weighted_not_an_average_of_anchors():
     dates = sorted(panel["date"].unique())
     anchors = [dates[-4], dates[-2]]
     # Thin one anchor out so equal-weight and row-weight cannot coincide.
-    thin = panel[(panel["date"] != anchors[0])
-                 | (panel["item_id"].isin({f"item-{n}" for n in range(5)}))]
+    thin = panel[(panel["date"] != anchors[0]) | (panel["item_id"].isin({f"item-{n}" for n in range(5)}))]
     per = anchor_coverage(thin, anchors, horizon=3)
     n = thin[thin["date"].isin(anchors)].groupby("date").size()
     expected = float(sum(per[a] * n[a] for a in anchors) / sum(n[a] for a in anchors))
@@ -294,6 +284,7 @@ def test_the_pooled_coverage_is_row_weighted_not_an_average_of_anchors():
 # the low-level anchor selection rule
 # `docs/research/2026-08-13-low-level-anchor-preregistration.md`
 # --------------------------------------------------------------------------- #
+
 
 def _levels(pairs):
     return pd.Series({pd.Timestamp(d).date(): v for d, v in pairs}).sort_index()
@@ -310,21 +301,16 @@ def _rows(levels, n=500):
 def test_the_low_set_is_taken_in_ascending_level():
     """The rule is "lowest `L[t]` first", because the arm's untested direction is
     the one where it must RAISE the band, and dose is what separates it from noise."""
-    lv = _levels([("2024-01-01", 0.09), ("2024-03-01", 0.02),
-                  ("2024-05-01", 0.05), ("2024-07-01", 0.04)])
-    got = select_low_level_anchors(lv, _all_eligible(lv), _rows(lv),
-                                   n=3, spacing_days=30, quantile=1.0)
-    assert got == [datetime.date(2024, 3, 1), datetime.date(2024, 7, 1),
-                   datetime.date(2024, 5, 1)], got
+    lv = _levels([("2024-01-01", 0.09), ("2024-03-01", 0.02), ("2024-05-01", 0.05), ("2024-07-01", 0.04)])
+    got = select_low_level_anchors(lv, _all_eligible(lv), _rows(lv), n=3, spacing_days=30, quantile=1.0)
+    assert got == [datetime.date(2024, 3, 1), datetime.date(2024, 7, 1), datetime.date(2024, 5, 1)], got
 
 
 def test_two_anchors_closer_than_the_spacing_cannot_both_be_taken():
     """Adjacent dates share a cross-section and a calibration pool, and at 30d
     they share an outcome window. Two of those are a replication, not evidence."""
-    lv = _levels([("2024-03-01", 0.02), ("2024-03-05", 0.021),
-                  ("2024-06-01", 0.03)])
-    got = select_low_level_anchors(lv, _all_eligible(lv), _rows(lv),
-                                   n=3, spacing_days=30, quantile=1.0)
+    lv = _levels([("2024-03-01", 0.02), ("2024-03-05", 0.021), ("2024-06-01", 0.03)])
+    got = select_low_level_anchors(lv, _all_eligible(lv), _rows(lv), n=3, spacing_days=30, quantile=1.0)
     assert got == [datetime.date(2024, 3, 1), datetime.date(2024, 6, 1)], got
 
 
@@ -334,30 +320,26 @@ def test_a_date_failing_either_audit_at_any_horizon_is_not_selected():
     horizon the read scores, before an anchor set is fixed."""
     lv = _levels([("2024-03-01", 0.02), ("2024-06-01", 0.03)])
     elig = _all_eligible(lv)
-    elig[datetime.date(2024, 3, 1)] = {3, 7, 14}      # 30d refused
-    got = select_low_level_anchors(lv, elig, _rows(lv),
-                                   n=2, spacing_days=30, quantile=1.0)
+    elig[datetime.date(2024, 3, 1)] = {3, 7, 14}  # 30d refused
+    got = select_low_level_anchors(lv, elig, _rows(lv), n=2, spacing_days=30, quantile=1.0)
     assert got == [datetime.date(2024, 6, 1)], got
 
 
 def test_a_thin_date_is_not_selected():
     """A coverage rate on 40 rows is not a coverage rate."""
     lv = _levels([("2024-03-01", 0.02), ("2024-06-01", 0.03)])
-    rows = pd.Series({datetime.date(2024, 3, 1): 40,
-                      datetime.date(2024, 6, 1): 500})
-    got = select_low_level_anchors(lv, _all_eligible(lv), rows,
-                                   n=2, spacing_days=30, quantile=1.0)
+    rows = pd.Series({datetime.date(2024, 3, 1): 40, datetime.date(2024, 6, 1): 500})
+    got = select_low_level_anchors(lv, _all_eligible(lv), rows, n=2, spacing_days=30, quantile=1.0)
     assert got == [datetime.date(2024, 6, 1)], got
 
 
 def test_only_the_bottom_quantile_of_the_level_is_eligible():
-    """"Low" is defined against the panel's own distribution, fixed in advance --
+    """ "Low" is defined against the panel's own distribution, fixed in advance --
     not "the lowest six whatever they are", which would select a set from an
     ordinary regime if the panel happened to hold no calm dates."""
     lv = _levels([(f"2024-{m:02d}-01", 0.02 + 0.01 * m) for m in range(1, 13)])
-    got = select_low_level_anchors(lv, _all_eligible(lv), _rows(lv),
-                                   n=6, spacing_days=1, quantile=0.25)
-    assert len(got) == 3, got            # 3 of 12 dates sit at or below the p25
+    got = select_low_level_anchors(lv, _all_eligible(lv), _rows(lv), n=6, spacing_days=1, quantile=0.25)
+    assert len(got) == 3, got  # 3 of 12 dates sit at or below the p25
     assert max(lv[d] for d in got) <= lv.quantile(0.25)
 
 
@@ -366,8 +348,7 @@ def test_an_unsatisfiable_set_is_returned_short_rather_than_relaxed():
     what exists. Relaxing the rule to reach a count is how a set stops being
     the set that was pre-registered."""
     lv = _levels([("2024-03-01", 0.02), ("2024-03-02", 0.021)])
-    got = select_low_level_anchors(lv, _all_eligible(lv), _rows(lv),
-                                   n=6, spacing_days=30, quantile=1.0)
+    got = select_low_level_anchors(lv, _all_eligible(lv), _rows(lv), n=6, spacing_days=30, quantile=1.0)
     assert got == [datetime.date(2024, 3, 1)], got
 
 
@@ -376,9 +357,8 @@ def test_restricting_the_candidates_does_not_move_what_low_means():
     no calm dates would have its quietest ordinary ones relabelled — which is the
     selection-on-the-arm's-own-axis trap. The cut stays the panel's."""
     lv = _levels([(f"2024-{m:02d}-01", 0.02 + 0.01 * m) for m in range(1, 13)])
-    late = [d for d in lv.index if d.month >= 7]           # all above the panel p25
-    assert select_low_level_anchors(lv, _all_eligible(lv), _rows(lv),
-                                    candidates=late, n=6, spacing_days=1) == []
+    late = [d for d in lv.index if d.month >= 7]  # all above the panel p25
+    assert select_low_level_anchors(lv, _all_eligible(lv), _rows(lv), candidates=late, n=6, spacing_days=1) == []
 
 
 def test_the_trailing_windows_warm_up_is_not_a_calm_date():
@@ -388,9 +368,14 @@ def test_the_trailing_windows_warm_up_is_not_a_calm_date():
     it would have been the largest dose in the set, and it measures the warm-up."""
     lv = _levels([("2024-07-09", 0.002), ("2024-09-21", 0.05)])
     got = select_low_level_anchors(
-        lv, _all_eligible(lv), _rows(lv), n=2, spacing_days=30, quantile=1.0,
-        not_before=datetime.date(2024, 7, 9)
-        + datetime.timedelta(days=SIGMA_TRAILING_WINDOW_DAYS))
+        lv,
+        _all_eligible(lv),
+        _rows(lv),
+        n=2,
+        spacing_days=30,
+        quantile=1.0,
+        not_before=datetime.date(2024, 7, 9) + datetime.timedelta(days=SIGMA_TRAILING_WINDOW_DAYS),
+    )
     assert got == [datetime.date(2024, 9, 21)], got
 
 
@@ -398,8 +383,8 @@ def test_the_warm_up_window_is_the_feature_s_own():
     """Pinned against the rolling feature it is derived from, so a change to the
     feature set cannot leave this constant silently describing nothing."""
     from models.forecaster import ItemForecaster
-    assert (f"price_std_{SIGMA_TRAILING_WINDOW_DAYS}d"
-            in ItemForecaster._DOLLAR_SCALE_FEATURES)
+
+    assert f"price_std_{SIGMA_TRAILING_WINDOW_DAYS}d" in ItemForecaster._DOLLAR_SCALE_FEATURES
 
 
 def test_the_miss_statistic_weights_each_date_once():
@@ -417,7 +402,7 @@ def test_an_overshoot_in_either_direction_is_a_breach():
     control = {"a": 0.82, "b": 0.78, "c": 0.60}
     arm = {"a": 0.93, "b": 0.68, "c": 0.95}
     got = {a for a, _, _ in overshoot_breaches(control, arm)}
-    assert got == {"a", "b"}, got      # "c" was already far out: not thrown there
+    assert got == {"a", "b"}, got  # "c" was already far out: not thrown there
 
 
 def test_an_anchor_the_arm_never_scored_is_not_a_breach():

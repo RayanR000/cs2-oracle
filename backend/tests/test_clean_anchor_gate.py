@@ -24,6 +24,7 @@ Two things this is NOT:
   equality, matching `replay_serving._tied_mask`, because that is the split
   every published figure came from.
 """
+
 from __future__ import annotations
 
 from datetime import date, timedelta
@@ -33,10 +34,8 @@ import lightgbm as lgb
 import numpy as np
 import pandas as pd
 import pytest
-
 from api.serving_policy import anchor_clean_clause, meets_anchor_gate
 from models.forecaster import ItemForecaster
-
 
 # --------------------------------------------------------------- the predicate
 
@@ -61,10 +60,8 @@ def test_the_sql_clause_and_the_python_predicate_agree():
     query plan."""
     from database import ItemForecast
 
-    clause = str(anchor_clean_clause(ItemForecast.anchor_clean).compile(
-        compile_kwargs={"literal_binds": True}))
-    assert "IS NULL" in clause.upper(), (
-        f"the SQL leg drops unknown rows where the Python leg keeps them: {clause}")
+    clause = str(anchor_clean_clause(ItemForecast.anchor_clean).compile(compile_kwargs={"literal_binds": True}))
+    assert "IS NULL" in clause.upper(), f"the SQL leg drops unknown rows where the Python leg keeps them: {clause}"
 
 
 # ------------------------------------------------------- what predict computes
@@ -86,12 +83,11 @@ def test_the_wedge_is_measured_against_the_raw_quote(forecaster_with_models):
     clean = dict(zip(result["item_id"], result["anchor_clean"]))
     assert clean["item_flat"] is True
     assert clean["item_spike"] is False, (
-        "every item read as clean — the mask was computed after the served "
-        "base replaced the raw quote")
+        "every item read as clean — the mask was computed after the served base replaced the raw quote"
+    )
 
 
-def test_the_wedge_percentage_is_signed_and_relative_to_the_median(
-        forecaster_with_models):
+def test_the_wedge_percentage_is_signed_and_relative_to_the_median(forecaster_with_models):
     """The value, not just the flag. The split at exact equality is what was
     measured; whether the effect is really a cliff there or monotone in
     |p/S - 1| is unmeasured, and publishing the size is what makes that
@@ -104,8 +100,7 @@ def test_the_wedge_percentage_is_signed_and_relative_to_the_median(
     assert wedge["item_spike"] > 50.0
 
 
-def test_the_flag_does_not_move_with_the_freshness_arm(
-        forecaster_with_models, monkeypatch):
+def test_the_flag_does_not_move_with_the_freshness_arm(forecaster_with_models, monkeypatch):
     """`SERVE_OUTLIER_GATED_ANCHOR` changes which price is served, not which
     items the model can order. If the flag followed it, the two arms would be
     scored on different cohorts -- the failure the tied cohort exists to
@@ -135,17 +130,22 @@ def test_the_gate_is_not_the_ten_percent_outlier_test(forecaster_with_models):
 
 def _forecast(item_id, mid, current=10.0, clean=True, direction="up"):
     from database import ItemForecast
+
     return ItemForecast(
-        item_id=item_id, forecast_date=date(2026, 8, 11), horizon_days=7,
-        price_mid=mid, current_price=current, direction=direction,
+        item_id=item_id,
+        forecast_date=date(2026, 8, 11),
+        horizon_days=7,
+        price_mid=mid,
+        current_price=current,
+        direction=direction,
         anchor_clean=clean,
     )
 
 
 def _items(ids):
     from database import Item
-    return {i: Item(id=i, name=f"AK-47 | Skin {i}", item_id=f"ak_{i}")
-            for i in ids}
+
+    return {i: Item(id=i, name=f"AK-47 | Skin {i}", item_id=f"ak_{i}") for i in ids}
 
 
 def test_a_deviating_item_is_not_ranked():
@@ -154,8 +154,7 @@ def test_a_deviating_item_is_not_ranked():
     forecasts = [_forecast(1, 20.0, clean=False), _forecast(2, 11.0, clean=True)]
     out = select_opportunities(forecasts, _items([1, 2]), None, 10)
 
-    assert [o.item_id for o in out] == [2], (
-        "the deviating item scored the larger move and would top the list")
+    assert [o.item_id for o in out] == [2], "the deviating item scored the larger move and would top the list"
 
 
 def test_an_unknown_anchor_is_still_ranked():
@@ -218,11 +217,18 @@ def test_the_item_lookup_serves_a_deviating_forecast_and_says_so():
     from api.routes import items as items_route
 
     item = type("I", (), {"id": 7, "name": "AK-47 | Redline"})()
-    row = items_route._DictObj({
-        "current_price": 10.0, "price_low": 9.0, "price_mid": 11.0,
-        "price_high": 13.0, "direction": "up", "confidence": "low",
-        "anchor_clean": False, "anchor_wedge_pct": -13.5,
-    })
+    row = items_route._DictObj(
+        {
+            "current_price": 10.0,
+            "price_low": 9.0,
+            "price_mid": 11.0,
+            "price_high": 13.0,
+            "direction": "up",
+            "confidence": "low",
+            "anchor_clean": False,
+            "anchor_wedge_pct": -13.5,
+        }
+    )
     with patch.object(items_route, "_forecast_parquet", return_value=row):
         out = items_route._prediction_parquet(item, "7_days", 7)
 
@@ -235,21 +241,37 @@ def test_the_item_lookup_serves_a_deviating_forecast_and_says_so():
 
 
 def test_the_write_path_carries_both_columns():
-    from scripts.forecast_prices import _write_forecasts_to_db
 
-    results = pd.DataFrame([{
-        "item_id": "ak_1",
-        "current_price": 10.0,
-        "anchor_clean": False,
-        "anchor_wedge_pct": -13.5,
-        "forecasts": {7: {"low": 9.0, "mid": 10.5, "high": 12.0,
-                          "direction": "up", "confidence": "low"}},
-    }])
+    results = pd.DataFrame(
+        [
+            {
+                "item_id": "ak_1",
+                "current_price": 10.0,
+                "anchor_clean": False,
+                "anchor_wedge_pct": -13.5,
+                "forecasts": {7: {"low": 9.0, "mid": 10.5, "high": 12.0, "direction": "up", "confidence": "low"}},
+            }
+        ]
+    )
 
-    rows = _write_and_capture(results, db_columns={
-        "item_id", "forecast_date", "horizon_days", "price_low", "price_mid",
-        "price_high", "current_price", "direction", "confidence",
-        "model_version", "created_at", "anchor_clean", "anchor_wedge_pct"})
+    rows = _write_and_capture(
+        results,
+        db_columns={
+            "item_id",
+            "forecast_date",
+            "horizon_days",
+            "price_low",
+            "price_mid",
+            "price_high",
+            "current_price",
+            "direction",
+            "confidence",
+            "model_version",
+            "created_at",
+            "anchor_clean",
+            "anchor_wedge_pct",
+        },
+    )
 
     assert rows[0]["anchor_clean"] is False
     assert rows[0]["anchor_wedge_pct"] == pytest.approx(-13.5)
@@ -264,18 +286,35 @@ def test_an_unmigrated_table_does_not_take_the_forecast_run_down(caplog):
     It degrades, and it says so: a silent skip is how this project has ended up
     with a green run and no data more than once.
     """
-    results = pd.DataFrame([{
-        "item_id": "ak_1", "current_price": 10.0,
-        "anchor_clean": False, "anchor_wedge_pct": -13.5,
-        "forecasts": {7: {"low": 9.0, "mid": 10.5, "high": 12.0,
-                          "direction": "up", "confidence": "low"}},
-    }])
+    results = pd.DataFrame(
+        [
+            {
+                "item_id": "ak_1",
+                "current_price": 10.0,
+                "anchor_clean": False,
+                "anchor_wedge_pct": -13.5,
+                "forecasts": {7: {"low": 9.0, "mid": 10.5, "high": 12.0, "direction": "up", "confidence": "low"}},
+            }
+        ]
+    )
 
     with caplog.at_level("WARNING"):
-        rows = _write_and_capture(results, db_columns={
-            "item_id", "forecast_date", "horizon_days", "price_low",
-            "price_mid", "price_high", "current_price", "direction",
-            "confidence", "model_version", "created_at"})
+        rows = _write_and_capture(
+            results,
+            db_columns={
+                "item_id",
+                "forecast_date",
+                "horizon_days",
+                "price_low",
+                "price_mid",
+                "price_high",
+                "current_price",
+                "direction",
+                "confidence",
+                "model_version",
+                "created_at",
+            },
+        )
 
     # The mirror keeps them; only the DB payload is narrowed.
     assert rows[0]["anchor_clean"] is False
@@ -298,26 +337,21 @@ def _write_and_capture(results, db_columns):
             return None
 
         def get_bind(self):
-            return type("_Bind", (), {"dialect": type("_D", (), {
-                "name": "postgresql"})()})()
+            return type("_Bind", (), {"dialect": type("_D", (), {"name": "postgresql"})()})()
 
     class _Inspector:
         def get_columns(self, name):
             return [{"name": c} for c in db_columns]
 
-    with patch("db.parquet.append_table",
-               side_effect=lambda name, rows, keys: captured.update(rows=rows)):
+    with patch("db.parquet.append_table", side_effect=lambda name, rows, keys: captured.update(rows=rows)):
         with patch("sqlalchemy.inspect", return_value=_Inspector()):
             with patch("sqlalchemy.dialects.postgresql.insert") as ins:
-                (ins.return_value.values.return_value
-                 .on_conflict_do_update.return_value) = "stmt"
-                _write_forecasts_to_db(_DB(), results, "lgbm-v3", {"ak_1": 1},
-                                       date(2026, 8, 11))
+                (ins.return_value.values.return_value.on_conflict_do_update.return_value) = "stmt"
+                _write_forecasts_to_db(_DB(), results, "lgbm-v3", {"ak_1": 1}, date(2026, 8, 11))
                 values_call = ins.return_value.values.call_args
     batch = values_call[0][0]
     for column in ("anchor_clean", "anchor_wedge_pct"):
-        assert (column in batch[0]) == (column in db_columns), (
-            f"{column} in the DB payload but not in the table")
+        assert (column in batch[0]) == (column in db_columns), f"{column} in the DB payload but not in the table"
     return captured["rows"]
 
 
@@ -335,22 +369,16 @@ def _price_frame():
     rows = []
     for d in range(40):
         day = date(2026, 6, 1) + timedelta(days=d)
-        rows.append({"item_id": "item_flat", "date": day, "price": 100.0 + (d % 3) - 1,
-                     "volume": 100})
-        rows.append({"item_id": "item_spike", "date": day, "price": 100.0 + d * 0.5,
-                     "volume": 100})
-        rows.append({"item_id": "item_drift", "date": day, "price": 50.0 + (d % 3) - 1,
-                     "volume": 100})
-        rows.append({"item_id": "item_trend", "date": day, "price": 30.0 + d * 0.5,
-                     "volume": 100})
+        rows.append({"item_id": "item_flat", "date": day, "price": 100.0 + (d % 3) - 1, "volume": 100})
+        rows.append({"item_id": "item_spike", "date": day, "price": 100.0 + d * 0.5, "volume": 100})
+        rows.append({"item_id": "item_drift", "date": day, "price": 50.0 + (d % 3) - 1, "volume": 100})
+        rows.append({"item_id": "item_trend", "date": day, "price": 30.0 + d * 0.5, "volume": 100})
     df = pd.DataFrame(rows)
     last = df["date"].max()
     # `item_flat` must land exactly on its own 3-day median on the last day.
-    df.loc[(df["item_id"] == "item_flat") & (df["date"] >= last - timedelta(days=2)),
-           "price"] = [99.0, 101.0, 100.0]
+    df.loc[(df["item_id"] == "item_flat") & (df["date"] >= last - timedelta(days=2)), "price"] = [99.0, 101.0, 100.0]
     df.loc[(df["item_id"] == "item_spike") & (df["date"] == last), "price"] = 200.0
-    df.loc[(df["item_id"] == "item_drift") & (df["date"] >= last - timedelta(days=2)),
-           "price"] = [49.0, 51.0, 51.5]
+    df.loc[(df["item_id"] == "item_drift") & (df["date"] >= last - timedelta(days=2)), "price"] = [49.0, 51.0, 51.5]
     return df
 
 
@@ -369,10 +397,18 @@ def forecaster_with_models(tmp_path):
     rng = np.random.default_rng(0)
     X = rng.normal(size=(200, 2)).astype(np.float32)
     y = rng.normal(size=200)
-    booster = lgb.train({"objective": "regression", "verbosity": -1,
-                         "max_bin": 63, "min_data_in_leaf": 1, "num_leaves": 3,
-                         "learning_rate": 0.1},
-                        lgb.Dataset(X, y), num_boost_round=5)
+    booster = lgb.train(
+        {
+            "objective": "regression",
+            "verbosity": -1,
+            "max_bin": 63,
+            "min_data_in_leaf": 1,
+            "num_leaves": 3,
+            "learning_rate": 0.1,
+        },
+        lgb.Dataset(X, y),
+        num_boost_round=5,
+    )
     f.models[(7, 0.5)] = [booster]
     f.conformal_calibration = {7: 1.5}
     return f, _price_frame()

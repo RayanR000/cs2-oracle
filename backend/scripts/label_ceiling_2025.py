@@ -15,18 +15,18 @@ Compare to the earlier 87-date 2026 measurement which used up to 7 sources.
 Usage:
     venv/bin/python -m scripts.label_ceiling_2025 --out /tmp/label_ceiling_2025.json
 """
+
 import json
 import sys
 from pathlib import Path
 
 import duckdb
 import numpy as np
-import pandas as pd
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from db.archive import prices_relation  # noqa: E402
-from models.item_parser import archive_universe_sql_filter  # noqa: E402
+from db.archive import prices_relation
+from models.item_parser import archive_universe_sql_filter
 
 HORIZONS = [1, 3, 7, 14, 30]
 MIN_PRICE = 1.0
@@ -51,15 +51,15 @@ def load_2025_sources():
     ge1 = set(medians[medians >= MIN_PRICE].index)
     df = df[df["item_slug"].isin(ge1)].copy()
 
-    steam = df[df["source"].isna()].rename(
-        columns={"mean_price": "price_steam"}).drop(columns=["source"])
-    buff = df[df["source"] == "buff_iflow"].rename(
-        columns={"mean_price": "price_buff"}).drop(columns=["source"])
+    steam = df[df["source"].isna()].rename(columns={"mean_price": "price_steam"}).drop(columns=["source"])
+    buff = df[df["source"] == "buff_iflow"].rename(columns={"mean_price": "price_buff"}).drop(columns=["source"])
 
     merged = steam.merge(buff, on=["item_slug", "day"], how="inner")
-    print(f"Loaded {len(merged):,} matched (item, day) pairs, "
-          f"{merged['item_slug'].nunique()} items, "
-          f"{merged['day'].nunique()} days")
+    print(
+        f"Loaded {len(merged):,} matched (item, day) pairs, "
+        f"{merged['item_slug'].nunique()} items, "
+        f"{merged['day'].nunique()} days"
+    )
     return merged
 
 
@@ -90,8 +90,7 @@ def measure_reliability(merged):
 
         obs_sd_steam = float(np.std(r_steam))
         obs_sd_buff = float(np.std(r_buff))
-        true_sd = float(np.sqrt(max(0, sb_reliability)) *
-                        (obs_sd_steam + obs_sd_buff) / 2)
+        true_sd = float(np.sqrt(max(0, sb_reliability)) * (obs_sd_steam + obs_sd_buff) / 2)
 
         results[h] = {
             "n_pairs": int(ok.sum()),
@@ -108,19 +107,21 @@ def measure_reliability(merged):
 
 
 def print_table(results):
-    print(f"\n{'h':>4} {'n_pairs':>10} {'r(A,B)':>8} {'SB_rel':>8} "
-          f"{'max_R2':>8} {'max_IC':>8} {'true_SD%':>9}")
+    print(f"\n{'h':>4} {'n_pairs':>10} {'r(A,B)':>8} {'SB_rel':>8} {'max_R2':>8} {'max_IC':>8} {'true_SD%':>9}")
     print("-" * 65)
     for h in HORIZONS:
         r = results[h]
-        print(f"{h:>4} {r['n_pairs']:>10,} {r['single_source_corr']:>8.4f} "
-              f"{r['sb_reliability']:>8.4f} {r['max_R2']:>8.4f} "
-              f"{r['max_IC']:>8.4f} {r['true_sd_pct']:>8.2f}%")
+        print(
+            f"{h:>4} {r['n_pairs']:>10,} {r['single_source_corr']:>8.4f} "
+            f"{r['sb_reliability']:>8.4f} {r['max_R2']:>8.4f} "
+            f"{r['max_IC']:>8.4f} {r['true_sd_pct']:>8.2f}%"
+        )
     print()
 
 
 def main():
     import argparse
+
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--out", default=None)
     args = ap.parse_args()

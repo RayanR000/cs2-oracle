@@ -8,13 +8,13 @@ _prune_features keeps the LOWER-INDEXED member of each >0.95 pair and index
 order does not follow group, so that is a property of the frame, not a theorem.
 Hence the flag and this test.
 """
+
 from __future__ import annotations
 
 from unittest.mock import MagicMock
 
 import numpy as np
 import pandas as pd
-
 from models.forecaster import ItemForecaster
 
 

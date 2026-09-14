@@ -1,15 +1,15 @@
 """Tests for the historical price-source import."""
+
 from datetime import date, datetime
 
 import duckdb
 import pandas as pd
 import pytest
-
-from collectors.price_history_sources import cs2_prices_tracker as tracker
 from collectors.price_history_import import (
     StalledSourceError,
     detect_stalled_days,
 )
+from collectors.price_history_sources import cs2_prices_tracker as tracker
 
 
 def test_source_label_is_exact():
@@ -19,21 +19,14 @@ def test_source_label_is_exact():
 def test_day_url_uses_the_dated_price_file():
     url = tracker.day_url(date(2025, 6, 15))
     assert url == (
-        "https://raw.githubusercontent.com/LukeX404/cs2-prices-tracker/"
-        "main/static/prices/date/2025-06-15.json"
+        "https://raw.githubusercontent.com/LukeX404/cs2-prices-tracker/main/static/prices/date/2025-06-15.json"
     )
 
 
 def test_parse_day_reads_last_24h_only():
-    payload = {
-        "AK-47 | Redline (Field-Tested)": {
-            "steam": {"last_24h": 12.5, "last_7d": 99.0, "last_30d": 98.0}
-        }
-    }
+    payload = {"AK-47 | Redline (Field-Tested)": {"steam": {"last_24h": 12.5, "last_7d": 99.0, "last_30d": 98.0}}}
     records = tracker.parse_day(payload, date(2025, 6, 15))
-    assert [(r[0], r[1]) for r in records] == [
-        ("AK-47 | Redline (Field-Tested)", date(2025, 6, 15))
-    ]
+    assert [(r[0], r[1]) for r in records] == [("AK-47 | Redline (Field-Tested)", date(2025, 6, 15))]
     assert records[0][2] == pytest.approx(12.5 / tracker.STEAM_FEE_MULTIPLIER)
 
 
@@ -75,9 +68,7 @@ def test_detect_stalled_days_finds_consecutive_identical_files():
         date(2026, 7, 29): "bbb",
         date(2026, 7, 30): "ccc",
     }
-    assert detect_stalled_days(digests) == [
-        [date(2026, 7, 27), date(2026, 7, 28), date(2026, 7, 29)]
-    ]
+    assert detect_stalled_days(digests) == [[date(2026, 7, 27), date(2026, 7, 28), date(2026, 7, 29)]]
 
 
 def test_detect_stalled_days_ignores_identical_files_that_are_not_adjacent():
@@ -121,6 +112,7 @@ def _gaps_only(records):
 
 def test_max_gap_matches_the_archive_window_constant():
     from backtest.price_resolution import MAX_WINDOW_SPAN_DAYS
+
     assert MAX_GAP_DAYS == MAX_WINDOW_SPAN_DAYS == 7
 
 
@@ -209,8 +201,8 @@ def test_records_are_deduplicated_on_item_and_day_keeping_the_first():
     assert report.kept_rows == 2
 
 
-from db.archive import CANONICAL_PRICE_COLUMNS, prices_relation
 from collectors.price_history_import import to_archive_frame, write_archive_frame
+from db.archive import CANONICAL_PRICE_COLUMNS, prices_relation
 
 _INGESTED = datetime(2026, 8, 8, 12, 0, 0)
 
@@ -263,9 +255,7 @@ def test_written_rows_read_back_through_the_typed_reader(tmp_path):
             archive_dir=out_dir,
             columns=["item_slug", "day", "source", "mean_price", "volume"],
         )
-        rows = con.sql(
-            f"SELECT item_slug, source, mean_price, volume FROM {rel} ORDER BY day"
-        ).fetchall()
+        rows = con.sql(f"SELECT item_slug, source, mean_price, volume FROM {rel} ORDER BY day").fetchall()
     finally:
         con.close()
 
@@ -307,9 +297,7 @@ def test_a_reappend_keeps_the_first_arrival_not_the_latest(tmp_path):
 
     con = duckdb.connect()
     try:
-        rel = prices_relation(
-            con, archive_dir=out_dir, columns=["item_slug", "ingested_at"]
-        )
+        rel = prices_relation(con, archive_dir=out_dir, columns=["item_slug", "ingested_at"])
         stored = con.sql(f"SELECT ingested_at FROM {rel}").fetchall()
     finally:
         con.close()
@@ -321,9 +309,7 @@ def test_a_reappend_keeps_the_first_arrival_not_the_latest(tmp_path):
 def test_a_row_with_no_prior_arrival_takes_the_new_timestamp(tmp_path):
     """min skips NaT: a row predating the column must not stay unknown."""
     out_dir = tmp_path / "price-archive"
-    stamped = to_archive_frame(
-        [("Item A", date(2025, 6, 1), 10.0)], "tracker_steam_24h", _INGESTED
-    )
+    stamped = to_archive_frame([("Item A", date(2025, 6, 1), 10.0)], "tracker_steam_24h", _INGESTED)
     unstamped = stamped.copy()
     unstamped["ingested_at"] = pd.NaT
     write_archive_frame(unstamped, out_dir)
@@ -331,9 +317,7 @@ def test_a_row_with_no_prior_arrival_takes_the_new_timestamp(tmp_path):
 
     con = duckdb.connect()
     try:
-        rel = prices_relation(
-            con, archive_dir=out_dir, columns=["item_slug", "ingested_at"]
-        )
+        rel = prices_relation(con, archive_dir=out_dir, columns=["item_slug", "ingested_at"])
         stored = con.sql(f"SELECT ingested_at FROM {rel}").fetchall()
     finally:
         con.close()
@@ -371,9 +355,7 @@ from scripts.import_price_history_source import (
 
 def test_daterange_is_inclusive_of_both_ends():
     days = daterange(date(2025, 6, 1), date(2025, 6, 4))
-    assert days == [
-        date(2025, 6, 1), date(2025, 6, 2), date(2025, 6, 3), date(2025, 6, 4)
-    ]
+    assert days == [date(2025, 6, 1), date(2025, 6, 2), date(2025, 6, 3), date(2025, 6, 4)]
 
 
 def test_daterange_rejects_an_inverted_range():
@@ -480,6 +462,7 @@ def test_parse_day_returns_net_of_the_steam_fee():
 
 def test_steam_fee_multiplier_matches_the_repo_constant():
     from scripts.backfill_steam_listing_history import STEAM_FEE_MULTIPLIER
+
     assert tracker.STEAM_FEE_MULTIPLIER == STEAM_FEE_MULTIPLIER == 1.1607
 
 
@@ -500,9 +483,7 @@ def test_the_gate_drops_items_below_the_median_price_floor():
 
 def test_the_floor_uses_the_median_not_the_last_price():
     """One spike must not carry an otherwise-cheap item over the floor."""
-    records = _series("Spiky", range(199), price=0.50) + [
-        ("Spiky", date(2025, 6, 1) + timedelta(days=199), 500.0)
-    ]
+    records = _series("Spiky", range(199), price=0.50) + [("Spiky", date(2025, 6, 1) + timedelta(days=199), 500.0)]
     kept, report = apply_gap_gate(records, min_median_price=1.0)
     assert kept == []
     assert report.rejected_cheap_items == 1

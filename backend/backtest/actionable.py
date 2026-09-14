@@ -119,10 +119,7 @@ def actionable_metrics(
     if horizon_days not in ACTIONABLE_HORIZONS:
         return _empty("out_of_scope", venue)
 
-    usable = [
-        r for r in records
-        if r.get("predicted_mid") is not None and (r.get("base_price") or 0) > 0
-    ]
+    usable = [r for r in records if r.get("predicted_mid") is not None and (r.get("base_price") or 0) > 0]
     if records and not usable:
         # Distinguishable from "nothing cleared the threshold": these rows carry
         # no prediction leg at all, so the metric was never computable on them.
@@ -145,22 +142,14 @@ def actionable_metrics(
     out["actionable_n"] = len(subset)
     out["actionable_n_served_basis"] = n_served
     out["actionable_n_fallback_basis"] = len(usable) - n_served
-    out["actionable_share_pct"] = (
-        round(len(subset) / len(usable) * 100, 2) if usable else 0.0
-    )
+    out["actionable_share_pct"] = round(len(subset) / len(usable) * 100, 2) if usable else 0.0
     if not subset:
         return out
 
     hits = sum(1 for _, r_hat, r_act in subset if _sign(r_act) == _sign(r_hat))
-    net = [
-        _sign(r_hat) * r_act - actionable_threshold(r["price_tier"], venue)
-        for r, r_hat, r_act in subset
-    ]
+    net = [_sign(r_hat) * r_act - actionable_threshold(r["price_tier"], venue) for r, r_hat, r_act in subset]
 
     out["actionable_da"] = round(hits / len(subset) * 100, 2)
     out["actionable_e_net_pct"] = round(sum(net) / len(net) * 100, 4)
-    out.update({
-        f"actionable_{k}": v
-        for k, v in pesaran_timmermann([r for r, _, _ in subset], min_dates).items()
-    })
+    out.update({f"actionable_{k}": v for k, v in pesaran_timmermann([r for r, _, _ in subset], min_dates).items()})
     return out

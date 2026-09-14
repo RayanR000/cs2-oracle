@@ -13,18 +13,19 @@ Usage:
     python scripts/backfill_supply_metadata.py --parquet-only           # Parquet only (default)
 """
 
-import sys
-import logging
 import argparse
+import logging
+import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-import pandas as pd
 import sqlite3
+
 import duckdb
-from models.steam_types import parse_steam_type
+import pandas as pd
 from models.item_parser import parse_item_name
+from models.steam_types import parse_steam_type
 
 logging.basicConfig(
     level=logging.INFO,
@@ -93,8 +94,7 @@ def build_name_lookup(cat_rows) -> dict:
 BYMYKEL_PARQUET = PRICE_ARCHIVE / "item-metadata-bymykel.parquet"
 
 
-def coalesce_rarity(steam_df: "pd.DataFrame",
-                    bymykel_df: "pd.DataFrame") -> "pd.DataFrame":
+def coalesce_rarity(steam_df: "pd.DataFrame", bymykel_df: "pd.DataFrame") -> "pd.DataFrame":
     """Fill rarity from ByMykel wherever Steam's catalog left it empty.
 
     After key normalisation, 1,938 of 8,691 items still have no rarity — not a
@@ -116,8 +116,7 @@ def coalesce_rarity(steam_df: "pd.DataFrame",
         return out
 
     bm = bymykel_df[bymykel_df["rarity_meta"].notna()]
-    direct = {r.item_slug: (r.rarity_meta, r.rarity_meta_rank)
-              for r in bm.itertuples()}
+    direct = {r.item_slug: (r.rarity_meta, r.rarity_meta_rank) for r in bm.itertuples()}
     normalised: dict[str, tuple] = {}
     for key, val in direct.items():
         normalised.setdefault(_normalise_key(key), val)
@@ -140,8 +139,7 @@ def coalesce_rarity(steam_df: "pd.DataFrame",
     # `items.rarity_rank` is an Integer column and would receive a numpy float.
     out["rarity_rank"] = pd.array(ranks, dtype="Int64")
     out.attrs["rarity_filled_from_bymykel"] = filled
-    logger.info(f"ByMykel fill: {filled:,} rarities recovered where the Steam "
-                f"catalog had none")
+    logger.info(f"ByMykel fill: {filled:,} rarities recovered where the Steam catalog had none")
     return out
 
 
@@ -179,86 +177,193 @@ WEAPON_TYPE_FROM_PARSER = {
 
 # Weapon → weapon_type mapping (display names)
 WEAPON_TO_TYPE = {
-    "AK-47": "rifle", "M4A4": "rifle", "M4A1-S": "rifle",
-    "AUG": "rifle", "SG 553": "rifle", "FAMAS": "rifle",
-    "Galil AR": "rifle", "AWP": "sniper", "SSG 08": "sniper",
-    "SCAR-20": "sniper", "G3SG1": "sniper",
-    "MAC-10": "smg", "MP9": "smg", "MP7": "smg", "MP5-SD": "smg",
-    "UMP-45": "smg", "P90": "smg", "PP-Bizon": "smg",
-    "Nova": "shotgun", "XM1014": "shotgun", "MAG-7": "shotgun",
-    "Sawed-Off": "shotgun", "M249": "machinegun", "Negev": "machinegun",
-    "Desert Eagle": "pistol", "R8 Revolver": "pistol",
-    "USP-S": "pistol", "P2000": "pistol", "Glock-18": "pistol",
-    "P250": "pistol", "Five-SeveN": "pistol", "CZ75-Auto": "pistol",
-    "Tec-9": "pistol", "Dual Berettas": "pistol",
-    "Bayonet": "knife", "Flip Knife": "knife", "Gut Knife": "knife",
-    "Karambit": "knife", "M9 Bayonet": "knife", "Huntsman Knife": "knife",
-    "Falchion Knife": "knife", "Bowie Knife": "knife",
-    "Butterfly Knife": "knife", "Shadow Daggers": "knife",
-    "Navaja Knife": "knife", "Stiletto Knife": "knife",
-    "Talon Knife": "knife", "Ursus Knife": "knife",
-    "Classic Knife": "knife", "Paracord Knife": "knife",
-    "Survival Knife": "knife", "Nomad Knife": "knife",
-    "Skeleton Knife": "knife", "Kukri Knife": "knife",
-    "Zeus x27": "pistol", "Zeus X27": "pistol",
-    "Bloodhound Gloves": "glove", "Driver Gloves": "glove",
-    "Hand Wraps": "glove", "Moto Gloves": "glove",
-    "Specialist Gloves": "glove", "Sport Gloves": "glove",
+    "AK-47": "rifle",
+    "M4A4": "rifle",
+    "M4A1-S": "rifle",
+    "AUG": "rifle",
+    "SG 553": "rifle",
+    "FAMAS": "rifle",
+    "Galil AR": "rifle",
+    "AWP": "sniper",
+    "SSG 08": "sniper",
+    "SCAR-20": "sniper",
+    "G3SG1": "sniper",
+    "MAC-10": "smg",
+    "MP9": "smg",
+    "MP7": "smg",
+    "MP5-SD": "smg",
+    "UMP-45": "smg",
+    "P90": "smg",
+    "PP-Bizon": "smg",
+    "Nova": "shotgun",
+    "XM1014": "shotgun",
+    "MAG-7": "shotgun",
+    "Sawed-Off": "shotgun",
+    "M249": "machinegun",
+    "Negev": "machinegun",
+    "Desert Eagle": "pistol",
+    "R8 Revolver": "pistol",
+    "USP-S": "pistol",
+    "P2000": "pistol",
+    "Glock-18": "pistol",
+    "P250": "pistol",
+    "Five-SeveN": "pistol",
+    "CZ75-Auto": "pistol",
+    "Tec-9": "pistol",
+    "Dual Berettas": "pistol",
+    "Bayonet": "knife",
+    "Flip Knife": "knife",
+    "Gut Knife": "knife",
+    "Karambit": "knife",
+    "M9 Bayonet": "knife",
+    "Huntsman Knife": "knife",
+    "Falchion Knife": "knife",
+    "Bowie Knife": "knife",
+    "Butterfly Knife": "knife",
+    "Shadow Daggers": "knife",
+    "Navaja Knife": "knife",
+    "Stiletto Knife": "knife",
+    "Talon Knife": "knife",
+    "Ursus Knife": "knife",
+    "Classic Knife": "knife",
+    "Paracord Knife": "knife",
+    "Survival Knife": "knife",
+    "Nomad Knife": "knife",
+    "Skeleton Knife": "knife",
+    "Kukri Knife": "knife",
+    "Zeus x27": "pistol",
+    "Zeus X27": "pistol",
+    "Bloodhound Gloves": "glove",
+    "Driver Gloves": "glove",
+    "Hand Wraps": "glove",
+    "Moto Gloves": "glove",
+    "Specialist Gloves": "glove",
+    "Sport Gloves": "glove",
     "Broken Fang Gloves": "glove",
 }
 
 # Slug-form weapon map (lowercase, hyphenated)
 WEAPON_SLUG_TO_TYPE = {
-    "ak-47": "rifle", "m4a4": "rifle", "m4a1-s": "rifle", "m4a1s": "rifle",
-    "aug": "rifle", "sg-553": "rifle", "sg 553": "rifle",
-    "famas": "rifle", "galil-ar": "rifle", "galil ar": "rifle",
-    "awp": "sniper", "ssg-08": "sniper", "ssg 08": "sniper",
-    "scar-20": "sniper", "g3sg1": "sniper",
-    "mac-10": "smg", "mp9": "smg", "mp7": "smg", "mp5-sd": "smg",
-    "ump-45": "smg", "p90": "smg", "pp-bizon": "smg",
-    "nova": "shotgun", "xm1014": "shotgun", "mag-7": "shotgun",
+    "ak-47": "rifle",
+    "m4a4": "rifle",
+    "m4a1-s": "rifle",
+    "m4a1s": "rifle",
+    "aug": "rifle",
+    "sg-553": "rifle",
+    "sg 553": "rifle",
+    "famas": "rifle",
+    "galil-ar": "rifle",
+    "galil ar": "rifle",
+    "awp": "sniper",
+    "ssg-08": "sniper",
+    "ssg 08": "sniper",
+    "scar-20": "sniper",
+    "g3sg1": "sniper",
+    "mac-10": "smg",
+    "mp9": "smg",
+    "mp7": "smg",
+    "mp5-sd": "smg",
+    "ump-45": "smg",
+    "p90": "smg",
+    "pp-bizon": "smg",
+    "nova": "shotgun",
+    "xm1014": "shotgun",
+    "mag-7": "shotgun",
     "sawed-off": "shotgun",
-    "m249": "machinegun", "negev": "machinegun",
-    "desert-eagle": "pistol", "r8-revolver": "pistol",
-    "usp-s": "pistol", "p2000": "pistol", "glock-18": "pistol",
-    "p250": "pistol", "five-seven": "pistol", "cz75-auto": "pistol",
-    "tec-9": "pistol", "dual-berettas": "pistol",
-    "bayonet": "knife", "flip-knife": "knife", "gut-knife": "knife",
-    "karambit": "knife", "m9-bayonet": "knife", "huntsman-knife": "knife",
-    "falchion-knife": "knife", "bowie-knife": "knife",
-    "butterfly-knife": "knife", "shadow-daggers": "knife",
-    "navaja-knife": "knife", "stiletto-knife": "knife",
-    "talon-knife": "knife", "ursus-knife": "knife",
-    "classic-knife": "knife", "paracord-knife": "knife",
-    "survival-knife": "knife", "nomad-knife": "knife",
-    "skeleton-knife": "knife", "kukri-knife": "knife",
-    "bloodhound-gloves": "glove", "driver-gloves": "glove",
-    "hand-wraps": "glove", "moto-gloves": "glove",
-    "specialist-gloves": "glove", "sport-gloves": "glove",
+    "m249": "machinegun",
+    "negev": "machinegun",
+    "desert-eagle": "pistol",
+    "r8-revolver": "pistol",
+    "usp-s": "pistol",
+    "p2000": "pistol",
+    "glock-18": "pistol",
+    "p250": "pistol",
+    "five-seven": "pistol",
+    "cz75-auto": "pistol",
+    "tec-9": "pistol",
+    "dual-berettas": "pistol",
+    "bayonet": "knife",
+    "flip-knife": "knife",
+    "gut-knife": "knife",
+    "karambit": "knife",
+    "m9-bayonet": "knife",
+    "huntsman-knife": "knife",
+    "falchion-knife": "knife",
+    "bowie-knife": "knife",
+    "butterfly-knife": "knife",
+    "shadow-daggers": "knife",
+    "navaja-knife": "knife",
+    "stiletto-knife": "knife",
+    "talon-knife": "knife",
+    "ursus-knife": "knife",
+    "classic-knife": "knife",
+    "paracord-knife": "knife",
+    "survival-knife": "knife",
+    "nomad-knife": "knife",
+    "skeleton-knife": "knife",
+    "kukri-knife": "knife",
+    "bloodhound-gloves": "glove",
+    "driver-gloves": "glove",
+    "hand-wraps": "glove",
+    "moto-gloves": "glove",
+    "specialist-gloves": "glove",
+    "sport-gloves": "glove",
     "broken-fang-gloves": "glove",
-    "zeus-x27": "pistol", "zeus x27": "pistol", "zeus-x27": "pistol",
+    "zeus-x27": "pistol",
+    "zeus x27": "pistol",
+    "zeus-x27": "pistol",
 }
 
 # Agent NPC names
 AGENT_SLUGS = {
-    "sir-bloody", "the-elite", "special-agent", "bio-haz-specialist",
-    "dragomir", "1st-lieutenant", "doctor-romanov", "two-times",
-    "medium-rare", "professor", "colonel", "commander", "operator",
-    "soldier", "slingshot", "arno",
+    "sir-bloody",
+    "the-elite",
+    "special-agent",
+    "bio-haz-specialist",
+    "dragomir",
+    "1st-lieutenant",
+    "doctor-romanov",
+    "two-times",
+    "medium-rare",
+    "professor",
+    "colonel",
+    "commander",
+    "operator",
+    "soldier",
+    "slingshot",
+    "arno",
 }
 
 # Sticker/tournament prefixes (items named by event, not by "sticker-")
 STICKER_EVENT_PREFIXES = {
-    "berlin-2019", "stockholm-2021", "antwerp-2022", "rio-2022",
-    "paris-2023", "copenhagen-2024", "shanghai-2024", "austin-2025",
-    "budapest-2025", "colonge-2026", "london-2018", "boston-2018",
-    "katowice-2019", "dreamhack-",
+    "berlin-2019",
+    "stockholm-2021",
+    "antwerp-2022",
+    "rio-2022",
+    "paris-2023",
+    "copenhagen-2024",
+    "shanghai-2024",
+    "austin-2025",
+    "budapest-2025",
+    "colonge-2026",
+    "london-2018",
+    "boston-2018",
+    "katowice-2019",
+    "dreamhack-",
 }
 
 # Quality suffixes that indicate a skin item
 WEAR_SUFFIXES = [
-    "factory-new", "minimal-wear", "field-tested", "well-worn", "battle-scarred",
-    "factory new", "minimal wear", "field tested", "well worn", "battle scarred",
+    "factory-new",
+    "minimal-wear",
+    "field-tested",
+    "well-worn",
+    "battle-scarred",
+    "factory new",
+    "minimal wear",
+    "field tested",
+    "well worn",
+    "battle scarred",
 ]
 
 
@@ -283,10 +388,10 @@ def infer_weapon_type_from_name(name: str) -> str | None:
     # Remove Stattrak/Souvenir prefix
     orig_slug = slug
     if slug.startswith("stattrak-") or slug.startswith("stattrak™-"):
-        slug = slug[len("stattrak-"):] if slug.startswith("stattrak-") else slug
-        slug = slug[len("stattrak™-"):] if slug.startswith("stattrak™-") else slug
+        slug = slug[len("stattrak-") :] if slug.startswith("stattrak-") else slug
+        slug = slug[len("stattrak™-") :] if slug.startswith("stattrak™-") else slug
     if slug.startswith("souvenir-"):
-        slug = slug[len("souvenir-"):]
+        slug = slug[len("souvenir-") :]
 
     # Remove ★- prefix
     if slug.startswith("★-") or slug.startswith("star-"):
@@ -401,10 +506,10 @@ def infer_weapon_type_from_name(name: str) -> str | None:
     cleaned = slug
     for suffix in WEAR_SUFFIXES:
         if cleaned.endswith("-" + suffix):
-            cleaned = cleaned[:-(len(suffix) + 1)]
+            cleaned = cleaned[: -(len(suffix) + 1)]
             break
         if cleaned.endswith(" " + suffix):
-            cleaned = cleaned[:-(len(suffix) + 1)]
+            cleaned = cleaned[: -(len(suffix) + 1)]
             break
 
     # Try weapon slug match on the remaining text
@@ -431,9 +536,7 @@ def build_metadata() -> pd.DataFrame:
     else:
         cat = sqlite3.connect(str(CATALOG_DB))
         try:
-            cat_rows = cat.execute(
-                "SELECT hash_name, name, type FROM market_items"
-            ).fetchall()
+            cat_rows = cat.execute("SELECT hash_name, name, type FROM market_items").fetchall()
             logger.info(f"Loaded {len(cat_rows):,} items from market_catalog.db")
         finally:
             cat.close()
@@ -446,11 +549,13 @@ def build_metadata() -> pd.DataFrame:
     # ── 3. Get all unique item_slugs from price Parquet files ──
     con = duckdb.connect()
     try:
-        all_slugs = con.sql("""
+        all_slugs = con.sql(
+            """
             SELECT DISTINCT item_slug
             FROM read_parquet('{}')
             ORDER BY item_slug
-        """.format(PRICE_ARCHIVE / "prices-*.parquet")).fetchall()
+        """.format(PRICE_ARCHIVE / "prices-*.parquet")
+        ).fetchall()
         all_slugs = [r[0] for r in all_slugs]
         logger.info(f"Found {len(all_slugs):,} unique items in price Parquet archive")
     finally:
@@ -502,19 +607,20 @@ def build_metadata() -> pd.DataFrame:
         else:
             from_source["catalog"] += 1
 
-        records.append({
-            "item_slug": slug,
-            "rarity": rarity,
-            "rarity_rank": rarity_rank,
-            "weapon_type": weapon_type,
-        })
+        records.append(
+            {
+                "item_slug": slug,
+                "rarity": rarity,
+                "rarity_rank": rarity_rank,
+                "weapon_type": weapon_type,
+            }
+        )
 
     df = pd.DataFrame(records)
     logger.info(f"Metadata built: {from_source}")
     df = coalesce_rarity(df, load_bymykel())
     have = df["rarity"].notna().sum()
-    logger.info(f"Rarity coverage: {have:,}/{len(df):,} "
-                f"({have / max(len(df), 1) * 100:.1f}%)")
+    logger.info(f"Rarity coverage: {have:,}/{len(df):,} ({have / max(len(df), 1) * 100:.1f}%)")
     return df
 
 
@@ -527,7 +633,7 @@ def write_parquet(df: pd.DataFrame):
 def write_db(df: pd.DataFrame):
     """Update rarity, weapon_type in the main DB items table."""
     try:
-        from database import SessionLocal, Item, engine
+        from database import Item, SessionLocal, engine
     except ImportError:
         logger.error("Could not import database module; DB write skipped")
         return
@@ -535,6 +641,7 @@ def write_db(df: pd.DataFrame):
     # Ensure new columns exist (idempotent — skips if present)
     try:
         from sqlalchemy import text as sa_text
+
         for col, col_type in [("rarity", "VARCHAR(50)"), ("rarity_rank", "INTEGER"), ("weapon_type", "VARCHAR(50)")]:
             try:
                 with engine.connect() as conn:

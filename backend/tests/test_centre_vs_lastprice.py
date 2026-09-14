@@ -6,6 +6,7 @@ anchor wedge, not the centre: `predict()` quotes the triple off `current_price`
 while the outcome legs resolve off `base_price`. These tests pin the corrected
 basis so the wedge cannot creep back in behind a plausible-looking figure.
 """
+
 import importlib.util
 from pathlib import Path
 
@@ -32,11 +33,19 @@ def _write(tmp_path, rows):
 
 
 def _row(**kw):
-    base = dict(item_id=1, forecast_date=pd.Timestamp("2026-08-04"), horizon_days=3,
-                base_price=100.0, actual_price=110.0, current_price=100.0,
-                predicted_price_low=95.0, predicted_price_mid=105.0,
-                predicted_price_high=115.0, model_version="lgbm-v3",
-                base_stale_run_days=0.0)
+    base = dict(
+        item_id=1,
+        forecast_date=pd.Timestamp("2026-08-04"),
+        horizon_days=3,
+        base_price=100.0,
+        actual_price=110.0,
+        current_price=100.0,
+        predicted_price_low=95.0,
+        predicted_price_mid=105.0,
+        predicted_price_high=115.0,
+        model_version="lgbm-v3",
+        base_stale_run_days=0.0,
+    )
     base.update(kw)
     return base
 
@@ -45,10 +54,12 @@ def test_r_hat_is_read_off_the_quote_not_the_resolved_base(cvl, tmp_path):
     """A stale quote must not be charged to the model as a centre error."""
     # Quoted from 50 while the outcome resolved off 100: the model predicted a
     # +5% move (52.5/50), and that is what must be read, not +425% (52.5/100-1).
-    d = cvl._load(_write(tmp_path, [_row(current_price=50.0,
-                                         predicted_price_low=47.5,
-                                         predicted_price_mid=52.5,
-                                         predicted_price_high=57.5)]))
+    d = cvl._load(
+        _write(
+            tmp_path,
+            [_row(current_price=50.0, predicted_price_low=47.5, predicted_price_mid=52.5, predicted_price_high=57.5)],
+        )
+    )
     assert d["r_hat"].iloc[0] == pytest.approx(0.05)
     assert d["r_actual"].iloc[0] == pytest.approx(0.10)
     # Half-widths ride the same basis.
@@ -66,11 +77,16 @@ def test_a_missing_quote_falls_back_to_the_base(cvl, tmp_path):
 
 def test_excluded_forecast_dates_are_dropped(cvl, tmp_path):
     """The panel matches the published one, or the numbers are incomparable."""
-    d = cvl._load(_write(tmp_path, [
-        _row(forecast_date=pd.Timestamp("2026-07-19")),   # dead-band rule
-        _row(forecast_date=pd.Timestamp("2025-12-01")),   # replay
-        _row(forecast_date=pd.Timestamp("2026-08-04")),   # kept
-    ]))
+    d = cvl._load(
+        _write(
+            tmp_path,
+            [
+                _row(forecast_date=pd.Timestamp("2026-07-19")),  # dead-band rule
+                _row(forecast_date=pd.Timestamp("2025-12-01")),  # replay
+                _row(forecast_date=pd.Timestamp("2026-08-04")),  # kept
+            ],
+        )
+    )
     assert len(d) == 1
     assert d["forecast_date"].iloc[0] == pd.Timestamp("2026-08-04").date()
 
@@ -86,7 +102,7 @@ def test_coverage_is_measured_at_identical_width(cvl):
     w_lo = w_hi = np.array([0.10, 0.10])
     gbm = cvl._covered(r, np.array([0.15, 0.0]), w_lo, w_hi)
     naive = cvl._covered(r, np.zeros(2), w_lo, w_hi)
-    assert gbm.tolist() == [True, False]     # the centre moved onto the move
+    assert gbm.tolist() == [True, False]  # the centre moved onto the move
     assert naive.tolist() == [False, False]  # ...and the widths never changed
 
 
@@ -98,9 +114,10 @@ def test_skill_is_zero_when_the_centre_predicts_no_move(cvl):
 def test_lambda_zero_wins_when_the_centre_is_pure_noise(cvl):
     """The shrinkage dial must collapse to the random walk on a noise centre."""
     import numpy as np
+
     rng = np.random.default_rng(0)
     r = rng.normal(0, 0.05, 5000)
-    noise = rng.normal(0, 0.05, 5000)      # independent of r
+    noise = rng.normal(0, 0.05, 5000)  # independent of r
     lam, _ = cvl._best_lambda(r, noise)
     assert lam == 0.0
 
@@ -108,6 +125,7 @@ def test_lambda_zero_wins_when_the_centre_is_pure_noise(cvl):
 def test_lambda_one_wins_when_the_centre_is_the_truth(cvl):
     """...and must NOT shrink a centre that actually carries the move."""
     import numpy as np
+
     rng = np.random.default_rng(0)
     r = rng.normal(0, 0.05, 5000)
     lam, mae = cvl._best_lambda(r, r)
@@ -118,6 +136,7 @@ def test_lambda_one_wins_when_the_centre_is_the_truth(cvl):
 def test_lambda_recovers_a_known_over_expression(cvl):
     """A centre twice as loud as the move shrinks to about a half."""
     import numpy as np
+
     rng = np.random.default_rng(0)
     r = rng.normal(0, 0.05, 20000)
     lam, _ = cvl._best_lambda(r, 2.0 * r)

@@ -38,6 +38,7 @@ Read-only: reads a voted price panel, writes a CSV. No DB, no artifacts.
 
     venv/bin/python -m scripts.measure_waci --horizons 3,7,14,30
 """
+
 from __future__ import annotations
 
 import argparse
@@ -50,9 +51,9 @@ import pandas as pd
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from models import conformal  # noqa: E402
-from models.forecaster import ItemForecaster  # noqa: E402
-from scripts.measure_conditional_qhat import (  # noqa: E402
+from models import conformal
+from models.forecaster import ItemForecaster
+from scripts.measure_conditional_qhat import (
     MIN_DATES_PER_HORIZON,
     MIN_ROWS_PER_DATE,
     TARGET,
@@ -91,7 +92,7 @@ def fit_waci(p, day, shuffle: bool = False, seed: int = PLACEBO_SEED):
         return None
     resid, sigma = p.resid[:hi], p.sigma[:hi]
     if shuffle:
-        rng = np.random.default_rng(seed + int(pd.Timestamp(day).value % (2 ** 31)))
+        rng = np.random.default_rng(seed + int(pd.Timestamp(day).value % (2**31)))
         sigma = rng.permutation(sigma)
     try:
         return conformal.calibrate_signed_waci(resid, sigma, n_bins=WACI_BINS)
@@ -115,8 +116,7 @@ def _cond_err(dates: np.ndarray, covered: np.ndarray) -> float:
     return float(np.mean(np.abs(cov - TARGET))) * 100.0
 
 
-def _sigma_stratum_err(sigma: np.ndarray, covered: np.ndarray,
-                       n_strata: int = N_STRATA) -> tuple[float, str]:
+def _sigma_stratum_err(sigma: np.ndarray, covered: np.ndarray, n_strata: int = N_STRATA) -> tuple[float, str]:
     edges = np.quantile(sigma, np.linspace(0, 1, n_strata + 1)[1:-1])
     idx = np.searchsorted(edges, sigma, side="right")
     cov = pd.Series(covered).groupby(pd.Series(idx)).mean()
@@ -124,8 +124,7 @@ def _sigma_stratum_err(sigma: np.ndarray, covered: np.ndarray,
     return err, " ".join(f"{v * 100:.0f}" for v in cov.sort_index())
 
 
-def _level_match(scores: np.ndarray, q_lo: np.ndarray, q_hi: np.ndarray
-                 ) -> float:
+def _level_match(scores: np.ndarray, q_lo: np.ndarray, q_hi: np.ndarray) -> float:
     """Scalar c with mean((scores >= c*q_lo) & (scores <= c*q_hi)) == 80%.
 
     Monotone in c > 0 (widening a centred-toward-mid interval only adds rows
@@ -209,15 +208,14 @@ def main() -> int:
     rows = []
     for h in [int(x) for x in args.horizons.split(",")]:
         sc = score_frame(fc, df, h, floor, cap)
-        p = __import__("scripts.measure_conditional_qhat",
-                       fromlist=["Panel"]).Panel(sc, h, state)
+        p = __import__("scripts.measure_conditional_qhat", fromlist=["Panel"]).Panel(sc, h, state)
         td = test_dates_for(p)
         logger.info("")
-        logger.info("h=%dd: %s scored rows, %d anchor dates, %d test dates",
-                    h, f"{len(sc):,}", len(p.unique_dates), len(td))
+        logger.info(
+            "h=%dd: %s scored rows, %d anchor dates, %d test dates", h, f"{len(sc):,}", len(p.unique_dates), len(td)
+        )
         if len(td) < MIN_DATES_PER_HORIZON:
-            logger.warning("  VOID: %d test dates < %d required",
-                           len(td), MIN_DATES_PER_HORIZON)
+            logger.warning("  VOID: %d test dates < %d required", len(td), MIN_DATES_PER_HORIZON)
         for name, fn in arms.items():
             m = evaluate(p, fn, td)
             if not m:
@@ -226,12 +224,16 @@ def main() -> int:
             m.update(horizon=h, scheme=name)
             rows.append(m)
             logger.info(
-                "  %-18s M1=%.1f%% M2=%5.2fpp sig=%5.2fpp | LM c=%.3f "
-                "M2*=%5.2fpp sig*=%5.2fpp [%s]",
-                name, m["M1_marginal"] * 100, m["M2_cond_err_pp"],
-                m["M2_sigma_err_pp"], m["level_match_c"],
-                m["M2lm_cond_err_pp"], m["M2lm_sigma_err_pp"],
-                m["sigma_decile_cov_lm"])
+                "  %-18s M1=%.1f%% M2=%5.2fpp sig=%5.2fpp | LM c=%.3f M2*=%5.2fpp sig*=%5.2fpp [%s]",
+                name,
+                m["M1_marginal"] * 100,
+                m["M2_cond_err_pp"],
+                m["M2_sigma_err_pp"],
+                m["level_match_c"],
+                m["M2lm_cond_err_pp"],
+                m["M2lm_sigma_err_pp"],
+                m["sigma_decile_cov_lm"],
+            )
 
     out = pd.DataFrame(rows)
     if out.empty:
@@ -245,13 +247,18 @@ def main() -> int:
     for name in ("WACI_per_width_bin", "P_shuffled_scale"):
         arm = out[out["scheme"] == name].set_index("horizon")
         common = arm.index.intersection(base.index)
-        sig_better = int((arm.loc[common, "M2lm_sigma_err_pp"]
-                          < base.loc[common, "M2lm_sigma_err_pp"]).sum())
-        inband = int(((arm.loc[common, "M1_marginal"] - TARGET).abs()
-                      <= 0.03).sum())
+        sig_better = int((arm.loc[common, "M2lm_sigma_err_pp"] < base.loc[common, "M2lm_sigma_err_pp"]).sum())
+        inband = int(((arm.loc[common, "M1_marginal"] - TARGET).abs() <= 0.03).sum())
         verdict = "PASS" if (sig_better >= 3 and inband >= 3) else "fail"
-        logger.info("  %-18s LM-sigma better at %d/%d, M1 in band at %d/%d -> %s",
-                    name, sig_better, len(common), inband, len(common), verdict)
+        logger.info(
+            "  %-18s LM-sigma better at %d/%d, M1 in band at %d/%d -> %s",
+            name,
+            sig_better,
+            len(common),
+            inband,
+            len(common),
+            verdict,
+        )
     logger.info("A P_shuffled_scale PASS voids the bar.")
     return 0
 

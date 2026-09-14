@@ -1,4 +1,5 @@
 """Tests for db.parquet.append_monthly — the canonical month-partition writer."""
+
 import sys
 from pathlib import Path
 
@@ -12,10 +13,7 @@ KEYS = ["item_slug", "day", "source"]
 
 
 def _rows(day, items):
-    return pd.DataFrame([
-        {"item_slug": s, "day": pd.Timestamp(day), "source": "src", "price": p}
-        for s, p in items
-    ])
+    return pd.DataFrame([{"item_slug": s, "day": pd.Timestamp(day), "source": "src", "price": p} for s, p in items])
 
 
 def _count(pq):
@@ -23,11 +21,14 @@ def _count(pq):
 
 
 def test_routes_rows_to_per_month_files(tmp_path):
-    df = pd.concat([
-        _rows("2026-07-31", [("a", 1.0)]),
-        _rows("2026-08-01", [("b", 2.0)]),
-        _rows("2026-08-15", [("c", 3.0)]),
-    ], ignore_index=True)
+    df = pd.concat(
+        [
+            _rows("2026-07-31", [("a", 1.0)]),
+            _rows("2026-08-01", [("b", 2.0)]),
+            _rows("2026-08-15", [("c", 3.0)]),
+        ],
+        ignore_index=True,
+    )
     append_monthly(tmp_path, "prices", df, KEYS)
 
     assert (tmp_path / "prices-2026-07.parquet").exists()
@@ -45,8 +46,7 @@ def test_appends_and_dedups_within_month(tmp_path):
 
     pq = tmp_path / "prices-2026-08.parquet"
     assert _count(pq) == 2
-    price_a = duckdb.connect().sql(
-        f"SELECT price FROM read_parquet('{pq}') WHERE item_slug='a'").fetchone()[0]
+    price_a = duckdb.connect().sql(f"SELECT price FROM read_parquet('{pq}') WHERE item_slug='a'").fetchone()[0]
     assert price_a == 9.9  # kept the last write
 
 
@@ -59,6 +59,5 @@ def test_glob_matches_monthly_files(tmp_path):
     """Readers use prices-*.parquet — confirm monthly files are picked up."""
     append_monthly(tmp_path, "prices", _rows("2026-08-01", [("a", 1.0)]), KEYS)
     append_monthly(tmp_path, "prices", _rows("2026-09-01", [("b", 2.0)]), KEYS)
-    total = duckdb.connect().sql(
-        f"SELECT count(*) FROM read_parquet('{tmp_path}/prices-*.parquet')").fetchone()[0]
+    total = duckdb.connect().sql(f"SELECT count(*) FROM read_parquet('{tmp_path}/prices-*.parquet')").fetchone()[0]
     assert total == 2

@@ -22,6 +22,7 @@ Not a trade sim — no direction, no P&L. It measures the RAW move distribution
 against the cost bar, which is the ceiling on what any long-only strategy at that
 horizon could clear.
 """
+
 from __future__ import annotations
 
 import argparse
@@ -33,8 +34,8 @@ import pandas as pd
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from backtest.friction import ROUND_TRIP_COST, SPREAD_BY_TIER  # noqa: E402
-from backtest.scoring import price_tier                        # noqa: E402
+from backtest.friction import ROUND_TRIP_COST, SPREAD_BY_TIER
+from backtest.scoring import price_tier
 
 # Anchor->target matching tolerance. The archive has day gaps, and a resolved
 # price is knowable within LAG_TOLERANCE_DAYS of its nominal date, so a target
@@ -48,8 +49,9 @@ HORIZONS = (14, 30, 60, 90, 180)
 SPREAD_CROSSINGS = {"round_trip": 1.0, "sell_only": 0.5}
 
 
-def forward_returns(days: np.ndarray, prices: np.ndarray, horizon: int,
-                    tol: int = TARGET_TOL_DAYS) -> tuple[np.ndarray, np.ndarray]:
+def forward_returns(
+    days: np.ndarray, prices: np.ndarray, horizon: int, tol: int = TARGET_TOL_DAYS
+) -> tuple[np.ndarray, np.ndarray]:
     """Anchor prices and their forward returns over `horizon` days, for ONE item.
 
     `days` is the anchor day as an integer ordinal, sorted ascending; `prices`
@@ -77,8 +79,7 @@ def _selftest() -> None:
     ap, ret = forward_returns(np.array([0, 40]), np.array([100.0, 110.0]), 30)
     assert ap.size == 0, (ap, ret)
     # Earliest target in the window wins, not the closest to nominal.
-    ap, ret = forward_returns(np.array([0, 32, 33]),
-                              np.array([100.0, 120.0, 150.0]), 30)
+    ap, ret = forward_returns(np.array([0, 32, 33]), np.array([100.0, 120.0, 150.0]), 30)
     assert abs(ret[0] - 0.20) < 1e-9, (ap, ret)
     print("selftest OK")
 
@@ -86,7 +87,6 @@ def _selftest() -> None:
 def _load_voted(days_back: int, min_price: float) -> pd.DataFrame:
     """Voted consensus price per item per day, over the last `days_back` days."""
     import duckdb
-
     from db.archive import prices_relation
     from models.forecaster import ItemForecaster
     from models.item_parser import (
@@ -96,18 +96,16 @@ def _load_voted(days_back: int, min_price: float) -> pd.DataFrame:
 
     con = duckdb.connect()
     try:
-        rel = prices_relation(
-            con, columns=["item_slug", "day", "mean_price", "volume", "source"])
-        cutoff = (pd.Timestamp.utcnow().tz_localize(None)
-                  - pd.Timedelta(days=days_back)).strftime("%Y-%m-%d")
+        rel = prices_relation(con, columns=["item_slug", "day", "mean_price", "volume", "source"])
+        cutoff = (pd.Timestamp.utcnow().tz_localize(None) - pd.Timedelta(days=days_back)).strftime("%Y-%m-%d")
         df = con.sql(f"""
             SELECT item_slug AS item_id, day AS timestamp,
                    mean_price AS price, volume, source
             FROM {rel} sub
             WHERE day >= '{cutoff}'
               AND (source IS NULL OR source NOT LIKE 'historical_fallback:%')
-              AND {phase_collapsed_sql_filter('sub.item_slug')}
-              AND {phantom_slug_sql_filter('sub.item_slug')}
+              AND {phase_collapsed_sql_filter("sub.item_slug")}
+              AND {phantom_slug_sql_filter("sub.item_slug")}
         """).fetchdf()
     finally:
         con.close()
@@ -147,28 +145,31 @@ def _scan(voted: pd.DataFrame, venue: str) -> pd.DataFrame:
         spread = np.array([SPREAD_BY_TIER[t] for t in tiers])
         for mode, crossing in SPREAD_CROSSINGS.items():
             bar = ROUND_TRIP_COST[venue] + spread * crossing
-            rows.append({
-                "horizon": horizon,
-                "mode": mode,
-                "n": int(ret.size),
-                "median_abs_move_%": round(float(np.median(np.abs(ret))) * 100, 2),
-                "p90_abs_move_%": round(float(np.percentile(np.abs(ret), 90)) * 100, 2),
-                "median_bar_%": round(float(np.median(bar)) * 100, 2),
-                # Long clears: the UP move exceeds the round trip you'd pay.
-                "pct_long_clears": round(float(np.mean(ret > bar)) * 100, 2),
-                # Magnitude clears either side — the ceiling if you could pick
-                # direction perfectly. There is no per-item direction signal, so
-                # this is an unreachable upper bound, shown to bound the gap.
-                "pct_abs_clears": round(float(np.mean(np.abs(ret) > bar)) * 100, 2),
-            })
+            rows.append(
+                {
+                    "horizon": horizon,
+                    "mode": mode,
+                    "n": int(ret.size),
+                    "median_abs_move_%": round(float(np.median(np.abs(ret))) * 100, 2),
+                    "p90_abs_move_%": round(float(np.percentile(np.abs(ret), 90)) * 100, 2),
+                    "median_bar_%": round(float(np.median(bar)) * 100, 2),
+                    # Long clears: the UP move exceeds the round trip you'd pay.
+                    "pct_long_clears": round(float(np.mean(ret > bar)) * 100, 2),
+                    # Magnitude clears either side — the ceiling if you could pick
+                    # direction perfectly. There is no per-item direction signal, so
+                    # this is an unreachable upper bound, shown to bound the gap.
+                    "pct_abs_clears": round(float(np.mean(np.abs(ret) > bar)) * 100, 2),
+                }
+            )
     return pd.DataFrame(rows)
 
 
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--min-price", type=float, default=1.0)
-    ap.add_argument("--days-back", type=int, default=1460,
-                    help="anchor window in days (default 1460 = 4yr, current regime)")
+    ap.add_argument(
+        "--days-back", type=int, default=1460, help="anchor window in days (default 1460 = 4yr, current regime)"
+    )
     ap.add_argument("--venue", default="csfloat", choices=sorted(ROUND_TRIP_COST))
     ap.add_argument("--selftest", action="store_true")
     args = ap.parse_args()
@@ -178,12 +179,16 @@ def main() -> None:
         return
 
     voted = _load_voted(args.days_back, args.min_price)
-    print(f"horizon-vs-friction scan  venue={args.venue}  "
-          f"min_price=${args.min_price:g}  days_back={args.days_back}  "
-          f"items={voted['item_id'].nunique():,}  item-days={len(voted):,}")
-    print("pct_long_clears = share of windows whose UP move beats the round trip; "
-          "pct_abs_clears = either-direction ceiling (no per-item direction signal "
-          "exists to reach it).\n")
+    print(
+        f"horizon-vs-friction scan  venue={args.venue}  "
+        f"min_price=${args.min_price:g}  days_back={args.days_back}  "
+        f"items={voted['item_id'].nunique():,}  item-days={len(voted):,}"
+    )
+    print(
+        "pct_long_clears = share of windows whose UP move beats the round trip; "
+        "pct_abs_clears = either-direction ceiling (no per-item direction signal "
+        "exists to reach it).\n"
+    )
     out = _scan(voted, args.venue)
     with pd.option_context("display.width", 140, "display.max_columns", None):
         print(out.to_string(index=False))

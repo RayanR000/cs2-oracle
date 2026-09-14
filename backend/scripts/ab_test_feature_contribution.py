@@ -32,32 +32,25 @@ Embargo (added 2026-08-08):
     event-calendar arm, and has never been replicated in this repo.
 """
 
-import sys
 import json
-import math
 import logging
+import sys
 from pathlib import Path
-from datetime import datetime, date, timedelta
-from collections import defaultdict
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
+import lightgbm as lgb
 import numpy as np
 import pandas as pd
-import lightgbm as lgb
-
-from database import SessionLocal
 from backtest.paired_mde import format_paired, paired_arm_contrasts
 from backtest.walkforward_records import (
     paired_records,
     without_records,
 )
+from database import SessionLocal
 from models.forecaster import ItemForecaster, phase_collapsed_sql_filter
 
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-)
+logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s")
 logger = logging.getLogger("ab_test_feature_contribution")
 
 ARCHIVE_DIR = Path(__file__).parent.parent.parent / "price-archive"
@@ -81,6 +74,7 @@ def run_evaluation(max_items=200, horizon_filter=None):
       full, no_cross_sectional, no_events.
     """
     import duckdb
+
     con = duckdb.connect()
     db = SessionLocal()
 
@@ -127,22 +121,24 @@ def run_evaluation(max_items=200, horizon_filter=None):
         if not items:
             raise RuntimeError(
                 "feature_contribution universe query selected 0 items — the source "
-                "pin or the >=$1 floor matched no rows (see 2026-08-13 harness repin).")
+                "pin or the >=$1 floor matched no rows (see 2026-08-13 harness repin)."
+            )
         logger.info(f"  {len(items)} items for evaluation")
 
         # ── Load all price data ─────────────────────────────────────
         all_rows = []
         for item_slug, _, _, _ in items:
-            item_rows = con.sql(f"""
+            item_rows = con.sql(
+                f"""
                 SELECT item_slug AS item_id, day AS timestamp,
                        mean_price AS price, volume
                 FROM ({union_sql})
                 WHERE item_slug = ?
                 ORDER BY day
-            """, params=[item_slug]).fetchall()
-            item_df = pd.DataFrame(
-                item_rows, columns=["item_id", "timestamp", "price", "volume"]
-            )
+            """,
+                params=[item_slug],
+            ).fetchall()
+            item_df = pd.DataFrame(item_rows, columns=["item_id", "timestamp", "price", "volume"])
             item_df["timestamp"] = pd.to_datetime(item_df["timestamp"])
             item_df["date"] = item_df["timestamp"].dt.date
             all_rows.append(item_df)
@@ -153,10 +149,10 @@ def run_evaluation(max_items=200, horizon_filter=None):
         df = forecaster.engineer_features(all_prices, events_df)
         df = forecaster._add_cross_sectional_features(df)
 
-        EXCLUDE = {"item_id", "date", "timestamp", "price", "volume",
-                   "name", "release_date"}
-        all_feature_cols = [c for c in df.columns if c not in EXCLUDE
-                            and df[c].dtype in (np.float64, np.float32, np.int64, int, float)]
+        EXCLUDE = {"item_id", "date", "timestamp", "price", "volume", "name", "release_date"}
+        all_feature_cols = [
+            c for c in df.columns if c not in EXCLUDE and df[c].dtype in (np.float64, np.float32, np.int64, int, float)
+        ]
 
         # Prune highly correlated
         if len(all_feature_cols) > 2:
@@ -256,13 +252,13 @@ def run_evaluation(max_items=200, horizon_filter=None):
                 step = 60
                 for window_end in range(split_idx + 1, len(dates), step):
                     train_dates = dates[:window_end]
-                    val_dates = dates[window_end:window_end + VAL_WINDOW_DAYS]
+                    val_dates = dates[window_end : window_end + VAL_WINDOW_DAYS]
                     if len(val_dates) < 7:
                         continue
 
                     train_df = ItemForecaster._purge_overlapping_train_rows(
-                        tdf[tdf["date"].isin(train_dates)],
-                        val_dates[0], horizon)
+                        tdf[tdf["date"].isin(train_dates)], val_dates[0], horizon
+                    )
                     val_df = tdf[tdf["date"].isin(val_dates)]
 
                     if len(val_df) < 50:
@@ -307,9 +303,10 @@ def run_evaluation(max_items=200, horizon_filter=None):
                         # early-stopped on `dval` and scored `X_val` — the same
                         # rows. `dval` is ignored unless EARLY_STOPPING=1.
                         model = ItemForecaster._train_ensemble_member(
-                            params, dtrain, dval,
-                            num_boost_round=ItemForecaster._boost_rounds(
-                                horizon, cv=True),
+                            params,
+                            dtrain,
+                            dval,
+                            num_boost_round=ItemForecaster._boost_rounds(horizon, cv=True),
                             early_stopping=ItemForecaster._early_stopping_enabled(),
                         )
                         models[q] = model.predict(X_val.values)
@@ -324,10 +321,12 @@ def run_evaluation(max_items=200, horizon_filter=None):
                     low_ret = np.minimum(p10_ret, p50_ret)
                     high_ret = np.maximum(p50_ret, p90_ret)
                     if non_crossing.any():
-                        avg_hw = np.mean([
-                            np.mean(p50_ret[non_crossing] - p10_ret[non_crossing]),
-                            np.mean(p90_ret[non_crossing] - p50_ret[non_crossing]),
-                        ])
+                        avg_hw = np.mean(
+                            [
+                                np.mean(p50_ret[non_crossing] - p10_ret[non_crossing]),
+                                np.mean(p90_ret[non_crossing] - p50_ret[non_crossing]),
+                            ]
+                        )
                         if avg_hw > 0:
                             low_ret[crossing_mask] = p50_ret[crossing_mask] - avg_hw
                             high_ret[crossing_mask] = p50_ret[crossing_mask] + avg_hw
@@ -376,27 +375,29 @@ def run_evaluation(max_items=200, horizon_filter=None):
                     # the arms pair row for row. `window_end` rather than a
                     # running counter: a counter drifts the moment one arm
                     # skips a fold the other kept.
-                    _match = (np.sign(np.nan_to_num(actual_returns))
-                              == np.sign(np.nan_to_num(p50_ret)))
-                    _scored = ((np.asarray(actual_returns) != 0)
-                               & (np.asarray(current_prices, dtype=float) >= 1.0))
-                    records.extend(paired_records(
-                        item_ids=val_df["item_id"].to_numpy(),
-                        forecast_dates=val_df["date"].to_numpy(),
-                        fold_id=window_end,
-                        keep=_scored,
-                        direction_correct=_match,
-                    ))
+                    _match = np.sign(np.nan_to_num(actual_returns)) == np.sign(np.nan_to_num(p50_ret))
+                    _scored = (np.asarray(actual_returns) != 0) & (np.asarray(current_prices, dtype=float) >= 1.0)
+                    records.extend(
+                        paired_records(
+                            item_ids=val_df["item_id"].to_numpy(),
+                            forecast_dates=val_df["date"].to_numpy(),
+                            fold_id=window_end,
+                            keep=_scored,
+                            direction_correct=_match,
+                        )
+                    )
 
-                    per_fold.append({
-                        "fold": len(per_fold) + 1,
-                        "val_start": str(val_dates[0]),
-                        "val_end": str(val_dates[-1]),
-                        "dir_acc": round(fold_hits / fold_total * 100, 1) if fold_total > 0 else 0,
-                        "mae": round(fold_mae / fold_total, 4) if fold_total > 0 else 0,
-                        "int_cov": round(fold_int_hits / fold_int_total * 100, 1) if fold_int_total > 0 else 0,
-                        "n": fold_total,
-                    })
+                    per_fold.append(
+                        {
+                            "fold": len(per_fold) + 1,
+                            "val_start": str(val_dates[0]),
+                            "val_end": str(val_dates[-1]),
+                            "dir_acc": round(fold_hits / fold_total * 100, 1) if fold_total > 0 else 0,
+                            "mae": round(fold_mae / fold_total, 4) if fold_total > 0 else 0,
+                            "int_cov": round(fold_int_hits / fold_int_total * 100, 1) if fold_int_total > 0 else 0,
+                            "n": fold_total,
+                        }
+                    )
 
                 if directional_total > 0:
                     dir_acc = directional_hits / directional_total * 100
@@ -422,22 +423,26 @@ def run_evaluation(max_items=200, horizon_filter=None):
                     result["improvement_over_baseline_pp"] = round(dir_acc - baseline_2class, 1)
                     results[horizon][config_name] = result
 
-                    logger.info(f"      DirAcc={dir_acc:.1f}% ({directional_total:,} samples, "
-                                f"{result['improvement_over_baseline_pp']:.1f}pp above baseline)")
+                    logger.info(
+                        f"      DirAcc={dir_acc:.1f}% ({directional_total:,} samples, "
+                        f"{result['improvement_over_baseline_pp']:.1f}pp above baseline)"
+                    )
 
             # Fold-clustered paired intervals against the full-feature arm,
             # which is this harness's control. Until 2026-08-08 an ablation was
             # judged on a pooled delta against a +/-0.5pp emoji threshold, and
             # the item-level MDE here is 2.21-3.69pp -- so every green tick it
             # ever printed was inside the noise floor by a factor of five.
-            arms = {a: r.get("records", []) for a, r in results[horizon].items()
-                    if not a.startswith("_") and r.get("records")}
+            arms = {
+                a: r.get("records", [])
+                for a, r in results[horizon].items()
+                if not a.startswith("_") and r.get("records")
+            }
             if "full" in arms and len(arms) > 1:
                 contrasts = paired_arm_contrasts(arms, base="full")
                 results[horizon]["_paired_vs_full"] = contrasts
                 for arm, paired in contrasts.items():
-                    logger.info(f"      paired {arm:<20} vs full: "
-                                f"{format_paired(paired)}")
+                    logger.info(f"      paired {arm:<20} vs full: {format_paired(paired)}")
 
         return results
 
@@ -478,24 +483,26 @@ def print_comparison(results):
             delta = dir_acc - base_dir_acc
             delta_str = f"{delta:+.2f}pp" + (" ✅" if delta > 0.5 else " ❌" if delta < -0.5 else "  ")
             label = config_labels.get(cfg, cfg)
-            print(f"  │ {label:<22} {dir_acc:>7.1f}% {delta_str:>9} ${r['mae']:>5.2f} "
-                  f"{r['interval_coverage']:>6.1f}% {r['fold_count']:>5}  {r['sample_count']:>8,}")
+            print(
+                f"  │ {label:<22} {dir_acc:>7.1f}% {delta_str:>9} ${r['mae']:>5.2f} "
+                f"{r['interval_coverage']:>6.1f}% {r['fold_count']:>5}  {r['sample_count']:>8,}"
+            )
 
         print(f"  └{'─' * 78}┘")
 
     # ── Per-feature-group summary ──────────────────────────────────
     print(f"\n  {'=' * 100}")
-    print(f"  INTERPRETATION")
+    print("  INTERPRETATION")
     print(f"  {'=' * 100}")
-    print(f"")
-    print(f"  A positive delta for 'No Cross-Sec' or 'No Events' means removing")
-    print(f"  those features IMPROVED accuracy (the features added noise).")
-    print(f"  A negative delta means the features were genuinely helpful.")
-    print(f"")
-    print(f"  Check whether the delta for 14d/30d is materially different from 3d/7d:")
-    print(f"  - If cross-sectional helps 3d/7d but NOT 14d/30d → shorter-horizon signal")
-    print(f"  - If events helps short horizons but not long → supports the hypothesis")
-    print(f"    that longer horizons are dominated by unforecastable events")
+    print("")
+    print("  A positive delta for 'No Cross-Sec' or 'No Events' means removing")
+    print("  those features IMPROVED accuracy (the features added noise).")
+    print("  A negative delta means the features were genuinely helpful.")
+    print("")
+    print("  Check whether the delta for 14d/30d is materially different from 3d/7d:")
+    print("  - If cross-sectional helps 3d/7d but NOT 14d/30d → shorter-horizon signal")
+    print("  - If events helps short horizons but not long → supports the hypothesis")
+    print("    that longer horizons are dominated by unforecastable events")
 
     # ── Verdict per feature group ──────────────────────────────────
     for feat_name, feat_key, short_horizons, long_horizons in [
@@ -518,25 +525,26 @@ def print_comparison(results):
         print(f"\n  {feat_name}:")
         if short_deltas:
             avg_short = np.mean(short_deltas)
-            print(f"    Short horizons (3d/7d):    avg Δ = {avg_short:+.2f}pp "
-                  f"{'📈 harmful' if avg_short > 0.3 else '📉 helpful' if avg_short < -0.3 else '➡️ neutral'}")
+            print(
+                f"    Short horizons (3d/7d):    avg Δ = {avg_short:+.2f}pp "
+                f"{'📈 harmful' if avg_short > 0.3 else '📉 helpful' if avg_short < -0.3 else '➡️ neutral'}"
+            )
         if long_deltas:
             avg_long = np.mean(long_deltas)
-            print(f"    Long horizons (14d/30d):   avg Δ = {avg_long:+.2f}pp "
-                  f"{'📈 harmful' if avg_long > 0.3 else '📉 helpful' if avg_long < -0.3 else '➡️ neutral'}")
+            print(
+                f"    Long horizons (14d/30d):   avg Δ = {avg_long:+.2f}pp "
+                f"{'📈 harmful' if avg_long > 0.3 else '📉 helpful' if avg_long < -0.3 else '➡️ neutral'}"
+            )
 
     print("")
 
 
 def main():
     import argparse
-    parser = argparse.ArgumentParser(
-        description="A/B test: cross-sectional & event feature contribution per horizon"
-    )
-    parser.add_argument("--max-items", type=int, default=200,
-                        help="Number of items to evaluate (default: 200)")
-    parser.add_argument("--horizon", type=int, default=None,
-                        help="Only evaluate this horizon (default: all)")
+
+    parser = argparse.ArgumentParser(description="A/B test: cross-sectional & event feature contribution per horizon")
+    parser.add_argument("--max-items", type=int, default=200, help="Number of items to evaluate (default: 200)")
+    parser.add_argument("--horizon", type=int, default=None, help="Only evaluate this horizon (default: all)")
     args = parser.parse_args()
 
     logger.info("=" * 70)

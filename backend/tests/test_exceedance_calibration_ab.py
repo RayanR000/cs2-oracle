@@ -13,6 +13,7 @@ Two failure modes from the band programme are designed out in advance (see
 
 These tests pin the mechanism, not the verdict.
 """
+
 from __future__ import annotations
 
 import sys
@@ -23,27 +24,22 @@ import pandas as pd
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from models.forecaster import ItemForecaster, embargo_days  # noqa: E402
-from scripts.ab_test_item_metadata import _stratified_sample  # noqa: E402
-from scripts.exceedance_calibration_ab import (  # noqa: E402
-    ARMS, P_CLIP, _brier, _clip)
+from models.forecaster import ItemForecaster, embargo_days
+from scripts.ab_test_item_metadata import _stratified_sample
+from scripts.exceedance_calibration_ab import ARMS, P_CLIP, _brier, _clip
 
 
 def _train_frame(n_dates=40, n_items=4):
     dates = pd.date_range("2026-01-01", periods=n_dates, freq="D")
     items = [f"item_{i}" for i in range(n_items)]
-    return pd.DataFrame([
-        {"item_id": it, "date": d, "price": 10.0}
-        for d in dates for it in items
-    ])
+    return pd.DataFrame([{"item_id": it, "date": d, "price": 10.0} for d in dates for it in items])
 
 
 def test_arms_cover_both_bars():
     """The shipping test needs gbm_cal vs global_rate; the layer test needs
     gbm_cal vs gbm_inner. A refactor dropping either arm silently voids the
     prereg."""
-    assert set(ARMS) == {"gbm", "gbm_inner", "gbm_cal", "item_rate",
-                         "global_rate"}
+    assert set(ARMS) == {"gbm", "gbm_inner", "gbm_cal", "item_rate", "global_rate"}
 
 
 def test_stratified_sample_is_pinned_across_arms():
@@ -59,6 +55,7 @@ def test_stratified_sample_is_pinned_across_arms():
 
 def test_inner_split_is_date_disjoint_and_embargoed():
     from scripts.anomaly_calibration_ab import inner_calibration_split
+
     df = _train_frame(n_dates=60)
     horizon = 7
     inner, calib = inner_calibration_split(df, horizon=horizon, calib_frac=0.25)
@@ -69,8 +66,8 @@ def test_inner_split_is_date_disjoint_and_embargoed():
 
 def test_split_refuses_when_the_embargo_eats_the_inner_train():
     from scripts.anomaly_calibration_ab import inner_calibration_split
-    inner, _ = inner_calibration_split(_train_frame(n_dates=12), horizon=30,
-                                       calib_frac=0.25)
+
+    inner, _ = inner_calibration_split(_train_frame(n_dates=12), horizon=30, calib_frac=0.25)
     assert inner is None
 
 
@@ -85,6 +82,7 @@ def test_clip_matches_what_exceedance_probability_serves():
     """Behavioural: a stub head emitting out-of-range p through production's
     own disclosed path (no calibrator -> raw, clipped) must equal the
     harness clip. If the served clip moves, this fails."""
+
     class _Head:
         def feature_name(self):
             return ["f"]

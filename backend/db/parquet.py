@@ -20,9 +20,10 @@ import json
 import logging
 import math
 import os
+from collections.abc import Iterable
 from functools import lru_cache
 from pathlib import Path
-from typing import Any, Iterable, Optional
+from typing import Any
 from uuid import uuid4
 
 import duckdb
@@ -51,6 +52,7 @@ def _table_path(table: str) -> Path:
 # ---------------------------------------------------------------------------
 # Core helpers
 # ---------------------------------------------------------------------------
+
 
 def _coerce_dates(df: pd.DataFrame) -> pd.DataFrame:
     for col in df.columns:
@@ -99,11 +101,7 @@ _NESTED_TYPE_PREFIXES = ("STRUCT", "MAP")
 
 def _is_nested_type(sql_type: str) -> bool:
     """True if *sql_type* is a DuckDB nested type, i.e. a pre-JSON column."""
-    return (
-        sql_type == "JSON"
-        or sql_type.endswith("[]")
-        or sql_type.startswith(_NESTED_TYPE_PREFIXES)
-    )
+    return sql_type == "JSON" or sql_type.endswith("[]") or sql_type.startswith(_NESTED_TYPE_PREFIXES)
 
 
 def _json_default(value):
@@ -114,9 +112,9 @@ def _json_default(value):
     and silently corrupts the metric. numpy scalars and dates are converted;
     anything else raises.
     """
-    if hasattr(value, "item"):        # numpy scalar
+    if hasattr(value, "item"):  # numpy scalar
         return value.item()
-    if hasattr(value, "isoformat"):   # date / datetime
+    if hasattr(value, "isoformat"):  # date / datetime
         return value.isoformat()
     raise TypeError(
         f"{type(value).__name__} is not JSON-serialisable and has no known "
@@ -136,6 +134,7 @@ def _jsonify_nested(df: pd.DataFrame) -> pd.DataFrame:
     otherwise cosmetic here: the value is opaque text on disk and comes back as
     a dict.
     """
+
     def _convert(value):
         if isinstance(value, (dict, list)):
             return json.dumps(value, sort_keys=True, default=_json_default)
@@ -146,11 +145,7 @@ def _jsonify_nested(df: pd.DataFrame) -> pd.DataFrame:
             return None
         return value
 
-    nested = [
-        c for c in df.columns
-        if df[c].dtype == object
-        and any(isinstance(v, (dict, list)) for v in df[c])
-    ]
+    nested = [c for c in df.columns if df[c].dtype == object and any(isinstance(v, (dict, list)) for v in df[c])]
     if not nested:
         return df
     df = df.copy()
@@ -200,9 +195,7 @@ def _append_parquet(path: Path, new_data: pd.DataFrame, dedup_keys: list[str]):
     con = duckdb.connect()
     try:
         con.register("_new", new_data)
-        described = con.execute(
-            f"DESCRIBE SELECT * FROM read_parquet('{path}')"
-        ).fetchall()
+        described = con.execute(f"DESCRIBE SELECT * FROM read_parquet('{path}')").fetchall()
         existing_cols = [r[0] for r in described]
         existing_nested = {r[0] for r in described if _is_nested_type(r[1])}
         new_cols = list(new_data.columns)
@@ -216,6 +209,7 @@ def _append_parquet(path: Path, new_data: pd.DataFrame, dedup_keys: list[str]):
             are converted to JSON text, so both sides of the UNION agree on
             VARCHAR and the file lands fully migrated.
             """
+
             def _one(c):
                 if c not in cols_present:
                     return f"NULL AS {c}"
@@ -243,17 +237,15 @@ def _append_parquet(path: Path, new_data: pd.DataFrame, dedup_keys: list[str]):
         # from the file it dropped out of usable_keys entirely and dedup ran on
         # the four non-NULL keys, which happened to be correct.
         usable_keys = [k for k in dedup_keys if k in new_cols and k in existing_cols]
-        dedup_conditions = " AND ".join(
-            f"_existing.{k} IS NOT DISTINCT FROM _new.{k}" for k in usable_keys
-        )
+        dedup_conditions = " AND ".join(f"_existing.{k} IS NOT DISTINCT FROM _new.{k}" for k in usable_keys)
         if not dedup_conditions:
             dedup_conditions = "1=0"
 
         con.execute(f"""
             COPY (
-                SELECT {_project(new_cols, '_new')} FROM _new
+                SELECT {_project(new_cols, "_new")} FROM _new
                 UNION ALL
-                SELECT {_project(existing_cols, '_existing', existing_nested)}
+                SELECT {_project(existing_cols, "_existing", existing_nested)}
                 FROM read_parquet('{path}') _existing
                 WHERE NOT EXISTS (
                     SELECT 1 FROM _new
@@ -296,7 +288,7 @@ def append_monthly(
         )
 
 
-def read_table(table: str, columns: Optional[list[str]] = None) -> pd.DataFrame:
+def read_table(table: str, columns: list[str] | None = None) -> pd.DataFrame:
     """Return all rows from *table* as a DataFrame."""
     path = _table_path(table)
     if not path.exists():
@@ -390,9 +382,7 @@ def replace_rows(
     tmp = _tmp_path(path)
     con = duckdb.connect()
     try:
-        described = con.execute(
-            f"DESCRIBE SELECT * FROM read_parquet('{path}')"
-        ).fetchall()
+        described = con.execute(f"DESCRIBE SELECT * FROM read_parquet('{path}')").fetchall()
         existing_cols = [r[0] for r in described]
         # Still a DuckDB nested type on disk: converted to JSON text as the rows
         # are rewritten, the same migration _append_parquet performs.
@@ -416,25 +406,17 @@ def replace_rows(
                     f"rows would silently lose them. Supply the whole row."
                 )
             con.register("_new", new_rows)
-            new_types = {
-                r[0]: r[1]
-                for r in con.execute("DESCRIBE SELECT * FROM _new").fetchall()
-            }
+            new_types = {r[0]: r[1] for r in con.execute("DESCRIBE SELECT * FROM _new").fetchall()}
             added = [c for c in new_rows.columns if c not in existing_cols]
             out_cols = existing_cols + added
             new_select = f"SELECT {', '.join(out_cols)} FROM _new UNION ALL "
             existing_select = ", ".join(
-                _existing_col(c) if c in existing_cols
-                else f"CAST(NULL AS {new_types[c]}) AS {c}"
-                for c in out_cols
+                _existing_col(c) if c in existing_cols else f"CAST(NULL AS {new_types[c]}) AS {c}" for c in out_cols
             )
 
         if keys:
             con.register("_del", pd.DataFrame({"_k": keys}))
-            keep = (
-                f"WHERE NOT EXISTS (SELECT 1 FROM _del "
-                f"WHERE _del._k = _existing.{key_column})"
-            )
+            keep = f"WHERE NOT EXISTS (SELECT 1 FROM _del WHERE _del._k = _existing.{key_column})"
         else:
             keep = ""
 
@@ -479,6 +461,7 @@ def _atomic_write(path: Path, df: pd.DataFrame):
 # DuckDB connection context — for ad-hoc queries in API routes
 # ---------------------------------------------------------------------------
 
+
 class ParquetQuery:
     """Wraps a DuckDB connection that reads from an ops table.
 
@@ -490,8 +473,8 @@ class ParquetQuery:
 
     def __init__(self, table: str):
         self._table = table
-        self._con: Optional[duckdb.DuckDBPyConnection] = None
-        self._path: Optional[Path] = None
+        self._con: duckdb.DuckDBPyConnection | None = None
+        self._path: Path | None = None
 
     def __enter__(self):
         path = _table_path(self._table)
@@ -519,12 +502,12 @@ class ParquetQuery:
             return pd.DataFrame()
         return self._con.sql(f"SELECT * FROM {self._table}").fetchdf()
 
-    def query(self, sql: str, params: Optional[dict] = None) -> pd.DataFrame:
+    def query(self, sql: str, params: dict | None = None) -> pd.DataFrame:
         if self._con is None:
             return pd.DataFrame()
         return self._con.sql(sql, params=params if params else {}).fetchdf()
 
-    def scalar(self, sql: str, params: Optional[dict] = None):
+    def scalar(self, sql: str, params: dict | None = None):
         if self._con is None:
             return None
         r = self._con.sql(sql, params=params if params else {}).fetchone()
@@ -554,7 +537,7 @@ def delete_table(table: str, key_filters: dict[str, Any]):
 
 
 @lru_cache(maxsize=1)
-def _get_ops_schema(table: str) -> Optional[dict]:
+def _get_ops_schema(table: str) -> dict | None:
     path = _table_path(table)
     if not path.exists():
         return None

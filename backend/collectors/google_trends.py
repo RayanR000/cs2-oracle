@@ -13,11 +13,9 @@ Run directly:
 
 import json
 import logging
-import sys
 import time
 from datetime import date, datetime, timedelta
 from pathlib import Path
-from typing import Optional
 
 import pandas as pd
 import requests
@@ -49,14 +47,14 @@ BASE_DELAY = 5.0
 
 def _strip_xssi(text: str) -> str:
     if text.startswith(ANTI_XSSI_PREFIX):
-        return text[len(ANTI_XSSI_PREFIX):]
+        return text[len(ANTI_XSSI_PREFIX) :]
     if text.startswith(")]}'"):
         idx = text.index("\n")
-        return text[idx + 1:]
+        return text[idx + 1 :]
     return text
 
 
-def _fetch_interest(keyword: str, time_range: str, session: requests.Session) -> Optional[pd.DataFrame]:
+def _fetch_interest(keyword: str, time_range: str, session: requests.Session) -> pd.DataFrame | None:
     """Fetch daily interest for a single keyword over a time range.
 
     time_range: Google Trends format, e.g. "2025-09-01 2026-09-01"
@@ -76,7 +74,7 @@ def _fetch_interest(keyword: str, time_range: str, session: requests.Session) ->
                 timeout=30,
             )
             if resp.status_code == 429:
-                wait = BASE_DELAY * (2 ** attempt)
+                wait = BASE_DELAY * (2**attempt)
                 logger.warning("Rate limited on explore, waiting %.0fs", wait)
                 time.sleep(wait)
                 continue
@@ -110,7 +108,7 @@ def _fetch_interest(keyword: str, time_range: str, session: requests.Session) ->
                 timeout=30,
             )
             if resp2.status_code == 429:
-                wait = BASE_DELAY * (2 ** attempt)
+                wait = BASE_DELAY * (2**attempt)
                 logger.warning("Rate limited on multiline, waiting %.0fs", wait)
                 time.sleep(wait)
                 continue
@@ -132,7 +130,7 @@ def _fetch_interest(keyword: str, time_range: str, session: requests.Session) ->
             return pd.DataFrame(rows)
 
         except requests.RequestException as e:
-            wait = BASE_DELAY * (2 ** attempt)
+            wait = BASE_DELAY * (2**attempt)
             logger.warning("Request error for %r (attempt %d): %s", keyword, attempt + 1, e)
             time.sleep(wait)
         except (json.JSONDecodeError, KeyError, IndexError) as e:
@@ -212,7 +210,8 @@ def collect(backfill_days: int = 180) -> dict:
         for i, kf in enumerate(keyword_frames[1:], 1):
             combined = combined.merge(
                 kf.rename(columns={"interest": f"i{i}"}),
-                on="date", how="outer",
+                on="date",
+                how="outer",
             )
         interest_cols = [c for c in combined.columns if c.startswith("i")]
         combined["interest"] = combined[interest_cols].mean(axis=1).round().astype(int)
@@ -238,9 +237,9 @@ def collect(backfill_days: int = 180) -> dict:
 
 def run():
     import argparse
+
     parser = argparse.ArgumentParser(description="Google Trends CS2 collector")
-    parser.add_argument("--backfill", type=int, default=365,
-                        help="Days to backfill (default: 365)")
+    parser.add_argument("--backfill", type=int, default=365, help="Days to backfill (default: 365)")
     args = parser.parse_args()
 
     result = collect(backfill_days=args.backfill)

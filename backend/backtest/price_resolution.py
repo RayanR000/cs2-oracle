@@ -18,7 +18,6 @@ from datetime import date
 from pathlib import Path
 
 import pandas as pd
-
 from collectors.pipeline import FALLBACK_MAX_AGE_DAYS
 from db.archive import price_files, prices_relation
 
@@ -89,16 +88,11 @@ def archive_covered_days(archive_dir: Path) -> set[date]:
     con = duckdb.connect()
     try:
         relation = prices_relation(con, archive_dir, columns=["day"])
-        rows = con.sql(
-            f"SELECT DISTINCT day FROM {relation} WHERE day IS NOT NULL"
-        ).fetchall()
+        rows = con.sql(f"SELECT DISTINCT day FROM {relation} WHERE day IS NOT NULL").fetchall()
     finally:
         con.close()
 
-    return {
-        r[0] if isinstance(r[0], date) else pd.Timestamp(r[0]).date()
-        for r in rows
-    }
+    return {r[0] if isinstance(r[0], date) else pd.Timestamp(r[0]).date() for r in rows}
 
 
 @dataclass(frozen=True)
@@ -218,9 +212,7 @@ def load_voted_prices(
 
     con = duckdb.connect()
     try:
-        relation = prices_relation(
-            con, archive_dir,
-            columns=["item_slug", "day", "mean_price", "source", "volume"])
+        relation = prices_relation(con, archive_dir, columns=["item_slug", "day", "mean_price", "source", "volume"])
 
         con.register("wanted_slugs", pd.DataFrame({"item_slug": slugs}))
         rows = con.sql(

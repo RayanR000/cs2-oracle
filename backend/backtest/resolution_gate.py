@@ -106,7 +106,7 @@ resolve through — permanently, since history is fixed: 08-29 will always sit 8
 days before 09-06, so the cell re-enters ``to_resolve`` forever and taxes every
 future fresh rate until dilution. ``classify_base_gap`` counts the base window
 on the same positive-evidence standard; behaviour elsewhere is unchanged.
-  """
+"""
 
 from __future__ import annotations
 
@@ -158,15 +158,11 @@ def evaluate_gate(
     # the same set; removing them leaves the attempts that carried information.
     # Gap attempts are removed for the same reason — the archive decided their
     # outcome, not the resolver.
-    n_attempted_fresh = max(
-        0, n_attempted - n_unresolvable_chronic - n_unresolvable_gap
-    )
+    n_attempted_fresh = max(0, n_attempted - n_unresolvable_chronic - n_unresolvable_gap)
 
     coverage_pct = (n_unresolvable / n_mature * 100) if n_mature else None
     gap_pct = (n_unresolvable_gap / n_mature * 100) if n_mature else None
-    fresh_rate_pct = (
-        (n_unresolvable_fresh / n_attempted_fresh * 100) if n_attempted_fresh else None
-    )
+    fresh_rate_pct = (n_unresolvable_fresh / n_attempted_fresh * 100) if n_attempted_fresh else None
 
     # Checked before the ratios: if nothing is scoreable there is no number to
     # report and no ratio worth quoting, however clean the survivors look.
@@ -245,9 +241,7 @@ def evaluate_gate(
     # change what the run fails on — this is a reporting fix only.
     if n_unresolvable_gap:
         chronic_note = (
-            f" A further {n_unresolvable_chronic:,} are chronically unresolvable."
-            if n_unresolvable_chronic
-            else ""
+            f" A further {n_unresolvable_chronic:,} are chronically unresolvable." if n_unresolvable_chronic else ""
         )
         return GateResult(
             ok=True,
@@ -293,10 +287,7 @@ def evaluate_gate(
     if coverage_pct is not None:
         parts.append(f"coverage {n_unresolvable:,}/{n_mature:,} ({coverage_pct:.1f}%)")
     if fresh_rate_pct is not None:
-        parts.append(
-            f"fresh rate {n_unresolvable_fresh:,}/{n_attempted_fresh:,} "
-            f"({fresh_rate_pct:.1f}%)"
-        )
+        parts.append(f"fresh rate {n_unresolvable_fresh:,}/{n_attempted_fresh:,} ({fresh_rate_pct:.1f}%)")
     return GateResult(
         ok=True,
         reason="; ".join(parts) or "nothing mature to resolve",
@@ -357,15 +348,10 @@ def classify_archive_gap(
     # disjoint-leg guard requires the oldest supporting observation to
     # strictly post-date it.
     if staleness_days is None:
-        present = sum(
-            1 for day in covered_days if f_date < day <= target_date
-        )
+        present = sum(1 for day in covered_days if f_date < day <= target_date)
     else:
         floor = target_date - timedelta(days=staleness_days)
-        present = sum(
-            1 for day in covered_days
-            if f_date < day <= target_date and day >= floor
-        )
+        present = sum(1 for day in covered_days if f_date < day <= target_date and day >= floor)
     return present < window
 
 

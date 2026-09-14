@@ -140,25 +140,25 @@ def parse_steam_type(raw: str) -> dict:
 
     if t.startswith("Souvenir "):
         result["is_souvenir"] = True
-        t = t[len("Souvenir "):]
+        t = t[len("Souvenir ") :]
 
     if t.startswith("StatTrak\u2122 "):
         result["is_stattrak"] = True
-        t = t[len("StatTrak\u2122 "):]
+        t = t[len("StatTrak\u2122 ") :]
 
     if t.startswith("Souvenir "):
         result["is_souvenir"] = True
-        t = t[len("Souvenir "):]
+        t = t[len("Souvenir ") :]
 
     if t.startswith("Customized "):
-        t = t[len("Customized "):]
+        t = t[len("Customized ") :]
 
     t_lower = t.lower()
     for keyword, rarity in RARITY_KEYWORDS:
         if t_lower.startswith(keyword):
             result["rarity"] = rarity
             result["rarity_rank"] = RARITY_RANK.get(rarity, 0)
-            t = t[len(keyword):].strip()
+            t = t[len(keyword) :].strip()
             break
 
     if t:

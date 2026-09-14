@@ -57,10 +57,11 @@ Usage:
         --frame-cache /tmp/exc_meta_frame.parquet --out /tmp/anom_mod_h7.json
     python -m scripts.anomaly_band_modulator_ab --max-folds 2  # recent folds only
 """
-import os
-import sys
+
 import json
 import logging
+import os
+import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
@@ -72,17 +73,16 @@ os.environ["ANOMALY_GBM"] = "1"
 
 import numpy as np
 import pandas as pd
-
+from api.serving_policy import MIN_SERVED_PRICE_USD
 from database import SessionLocal
 from models.forecaster import ItemForecaster
-from api.serving_policy import MIN_SERVED_PRICE_USD
 from scripts.ab_test_item_metadata import (
     ROW_BUDGET,
     STEP_DAYS,
     VAL_WINDOW_DAYS,
+    _stratified_sample,
     assign_items,
     build_frame,
-    _stratified_sample,
 )
 from scripts.exceedance_meta_ab import (
     TREE_PARAMS,
@@ -176,7 +176,7 @@ def fit_anomaly_multiplier(p_fit, abs_r_fit, scale_fit, n_bins=N_DECILES):
     p = np.asarray(p_fit, dtype=float)
     r = np.asarray(abs_r_fit, dtype=float)
     s = np.asarray(scale_fit, dtype=float)
-    ok = (np.isfinite(p) & np.isfinite(r) & np.isfinite(s) & (s > 0))
+    ok = np.isfinite(p) & np.isfinite(r) & np.isfinite(s) & (s > 0)
     p, r, s = p[ok], r[ok], s[ok]
     if p.size < MIN_FIT_ROWS:
         return _flat_model()
@@ -211,11 +211,9 @@ def fit_anomaly_multiplier(p_fit, abs_r_fit, scale_fit, n_bins=N_DECILES):
     if len(raws) < 3:
         return _flat_model()
     order = np.argsort(centres, kind="stable")
-    iso = isotonic_increasing(np.asarray(raws)[order],
-                              np.asarray(counts, dtype=float)[order])
+    iso = isotonic_increasing(np.asarray(raws)[order], np.asarray(counts, dtype=float)[order])
     # Which original bin each kept position came from, in centre order.
-    all_bins = np.array([k for k in range(n_bins)
-                         if int((idx == k).sum()) >= MIN_BIN_ROWS])
+    all_bins = np.array([k for k in range(n_bins) if int((idx == k).sum()) >= MIN_BIN_ROWS])
     kept_bins_ordered = all_bins[order]
     kept_centres = np.asarray(centres)[order]
     # Map the isotonised values onto every bin: kept bins take their own
@@ -228,20 +226,16 @@ def fit_anomaly_multiplier(p_fit, abs_r_fit, scale_fit, n_bins=N_DECILES):
             full[k] = bin_to_iso[k]
             continue
         sel = idx == k
-        c = float(np.median(p[sel])) if sel.any() \
-            else float(np.quantile(p, (k + 0.5) / n_bins))
+        c = float(np.median(p[sel])) if sel.any() else float(np.quantile(p, (k + 0.5) / n_bins))
         full[k] = iso[int(np.argmin(np.abs(kept_centres - c)))]
     # Enforce monotonicity across the filled bins (nearest-centre mapping can
     # only break it at dropped bins) and normalise to mean 1.0 on fit.
-    full = isotonic_increasing(full,
-                               np.array([(idx == k).sum() for k in range(n_bins)],
-                                        dtype=float))
+    full = isotonic_increasing(full, np.array([(idx == k).sum() for k in range(n_bins)], dtype=float))
     mean_fit = float(np.mean(full[idx]))
     if not np.isfinite(mean_fit) or mean_fit <= 0:
         return _flat_model()
     values = np.clip(full / mean_fit, F_LO, F_HI)
-    return {"edges": np.asarray(edges, dtype=float),
-            "values": np.asarray(values, dtype=float)}
+    return {"edges": np.asarray(edges, dtype=float), "values": np.asarray(values, dtype=float)}
 
 
 def apply_anomaly_multiplier(p, model):
@@ -268,14 +262,12 @@ def anomaly_decile_error(abs_r, scale, p, q, edges, n_bins=N_DECILES):
     scale = np.asarray(scale, dtype=float)
     p = np.asarray(p, dtype=float)
     edges = np.asarray(edges, dtype=float)
-    ok = (np.isfinite(abs_r) & np.isfinite(scale) & (scale > 0)
-          & np.isfinite(p) & np.isfinite(q))
+    ok = np.isfinite(abs_r) & np.isfinite(scale) & (scale > 0) & np.isfinite(p) & np.isfinite(q)
     if not ok.any() or edges.size != n_bins - 1:
         return float("nan")
     covered = abs_r[ok] <= float(q) * scale[ok]
     idx = np.searchsorted(edges, p[ok], side="right")
-    per = np.array([covered[idx == k].mean() if (idx == k).any() else np.nan
-                    for k in range(n_bins)])
+    per = np.array([covered[idx == k].mean() if (idx == k).any() else np.nan for k in range(n_bins)])
     if np.all(np.isnan(per)):
         return float("nan")
     return float(np.nanmean(np.abs(per - TARGET_COVERAGE))) * 100.0
@@ -289,8 +281,7 @@ def _scoring_edges(p_val, fit_edges, n_bins=N_DECILES):
     which case the fold votes on width only.
     """
     fit_edges = np.asarray(fit_edges, dtype=float)
-    if (fit_edges.size == n_bins - 1 and np.all(np.isfinite(fit_edges))
-            and np.all(np.diff(fit_edges) > 0)):
+    if fit_edges.size == n_bins - 1 and np.all(np.isfinite(fit_edges)) and np.all(np.diff(fit_edges) > 0):
         return fit_edges
     p = np.asarray(p_val, dtype=float)
     p = p[np.isfinite(p)]
@@ -329,12 +320,10 @@ def run(df, pruned, horizon_filter=None, n_jobs=None, max_folds=None):
     if not forecaster.anomaly_gbm_enabled():
         raise SystemExit("ANOMALY_GBM did not take effect — no labels to score.")
     try:
-        horizons = [h for h in ItemForecaster.HORIZONS
-                    if horizon_filter is None or h == horizon_filter]
+        horizons = [h for h in ItemForecaster.HORIZONS if horizon_filter is None or h == horizon_filter]
         results = {}
         for horizon in horizons:
-            logger.info(f"\n  {'=' * 60}\n  Anomaly modulator {horizon}d\n"
-                        f"  {'=' * 60}")
+            logger.info(f"\n  {'=' * 60}\n  Anomaly modulator {horizon}d\n  {'=' * 60}")
             tdf = forecaster.prepare_targets(df, horizon)
             tcol = f"target_return_{horizon}d"
             acol = f"target_anomaly_{horizon}d"
@@ -352,8 +341,7 @@ def run(df, pruned, horizon_filter=None, n_jobs=None, max_folds=None):
             if not base_cols:
                 logger.warning("    no allowlisted feature columns — skipping")
                 continue
-            sub = tdf[["item_id", "date", "price", tcol, acol]
-                      + base_cols].copy()
+            sub = tdf[["item_id", "date", "price", tcol, acol] + base_cols].copy()
 
             dates = sorted(sub["date"].unique())
             split_idx = len(dates) * 2 // 3
@@ -369,117 +357,111 @@ def run(df, pruned, horizon_filter=None, n_jobs=None, max_folds=None):
 
             per_fold = {"control": [], "anomaly_mod": [], "shuffled_mod": []}
             for fold_idx, window_end in enumerate(fold_list):
-                val_dates = dates[window_end:window_end + VAL_WINDOW_DAYS]
+                val_dates = dates[window_end : window_end + VAL_WINDOW_DAYS]
                 if len(val_dates) < 7:
                     continue
                 in_fit = sub_days <= dates_dt[window_end - 1]
-                in_val = ((sub_days >= dates_dt[window_end])
-                          & (sub_days <= dates_dt[window_end + len(val_dates) - 1]))
+                in_val = (sub_days >= dates_dt[window_end]) & (sub_days <= dates_dt[window_end + len(val_dates) - 1])
                 fit_df = ItemForecaster._purge_overlapping_train_rows(
-                    sub[in_fit & is_train_item], val_dates[0], horizon)
+                    sub[in_fit & is_train_item], val_dates[0], horizon
+                )
                 val_df = sub[in_val & (is_heldout | is_trained_eval)]
                 val_df = val_df[val_df["price"] >= MIN_SERVED_PRICE_USD]
                 if len(val_df) < MIN_EVAL_ROWS or fit_df.empty:
                     continue
-                fit_sample = _stratified_sample(
-                    fit_df, train_items, ROW_BUDGET, fold_idx)
+                fit_sample = _stratified_sample(fit_df, train_items, ROW_BUDGET, fold_idx)
 
                 med = fit_sample[base_cols].median()
                 X_train = fit_sample[base_cols].fillna(med)
                 head = forecaster._fit_anomaly_classifier(
-                    X_train, fit_sample[acol].to_numpy(),
-                    "gbdt", dict(TREE_PARAMS, n_jobs=n_jobs), horizon=horizon,
+                    X_train,
+                    fit_sample[acol].to_numpy(),
+                    "gbdt",
+                    dict(TREE_PARAMS, n_jobs=n_jobs),
+                    horizon=horizon,
                     tier_train=None,
                     num_boost_round=ItemForecaster._boost_rounds(horizon, cv=True),
                 )
                 if head is None:
                     continue
-                p_fit = np.clip(np.asarray(
-                    head.predict(fit_df[base_cols].fillna(med)), dtype=float),
-                    1e-6, 1.0 - 1e-6)
-                p_val = np.clip(np.asarray(
-                    head.predict(val_df[base_cols].fillna(med)), dtype=float),
-                    1e-6, 1.0 - 1e-6)
+                p_fit = np.clip(np.asarray(head.predict(fit_df[base_cols].fillna(med)), dtype=float), 1e-6, 1.0 - 1e-6)
+                p_val = np.clip(np.asarray(head.predict(val_df[base_cols].fillna(med)), dtype=float), 1e-6, 1.0 - 1e-6)
 
                 fit_min = fit_df[["item_id", "price", tcol]]
-                table, pool, g = ItemForecaster._build_climatology_table(
-                    fit_min, tcol)
+                table, pool, g = ItemForecaster._build_climatology_table(fit_min, tcol)
                 if not table:
                     continue
                 cfg = {"table": table, "tier_pool": pool, "global": g}
                 ctl_fit = _lookup_scale(
-                    forecaster, horizon, cfg,
-                    fit_df["item_id"].to_numpy(),
-                    fit_df["price"].to_numpy(dtype=float))
+                    forecaster, horizon, cfg, fit_df["item_id"].to_numpy(), fit_df["price"].to_numpy(dtype=float)
+                )
                 ctl_val = _lookup_scale(
-                    forecaster, horizon, cfg,
-                    val_df["item_id"].to_numpy(),
-                    val_df["price"].to_numpy(dtype=float))
+                    forecaster, horizon, cfg, val_df["item_id"].to_numpy(), val_df["price"].to_numpy(dtype=float)
+                )
 
                 abs_r_fit = fit_df[tcol].abs().to_numpy(dtype=float)
-                served_fit = fit_df["price"].to_numpy(dtype=float) \
-                    >= MIN_SERVED_PRICE_USD
-                fmodel = fit_anomaly_multiplier(
-                    p_fit[served_fit], abs_r_fit[served_fit], ctl_fit[served_fit])
+                served_fit = fit_df["price"].to_numpy(dtype=float) >= MIN_SERVED_PRICE_USD
+                fmodel = fit_anomaly_multiplier(p_fit[served_fit], abs_r_fit[served_fit], ctl_fit[served_fit])
                 rng = np.random.default_rng(SHUFFLE_SEED + fold_idx)
                 fshuf = fit_anomaly_multiplier(
-                    rng.permutation(p_fit[served_fit]),
-                    abs_r_fit[served_fit], ctl_fit[served_fit])
+                    rng.permutation(p_fit[served_fit]), abs_r_fit[served_fit], ctl_fit[served_fit]
+                )
 
                 abs_r_val = val_df[tcol].abs().to_numpy(dtype=float)
-                scales = {"control": ctl_val,
-                          "anomaly_mod": ctl_val * apply_anomaly_multiplier(
-                              p_val, fmodel),
-                          "shuffled_mod": ctl_val * apply_anomaly_multiplier(
-                              p_val, fshuf)}
+                scales = {
+                    "control": ctl_val,
+                    "anomaly_mod": ctl_val * apply_anomaly_multiplier(p_val, fmodel),
+                    "shuffled_mod": ctl_val * apply_anomaly_multiplier(p_val, fshuf),
+                }
                 edges = _scoring_edges(p_val, fmodel["edges"])
                 auc, _, _ = _score(val_df[acol].to_numpy(dtype=float), p_val)
 
-                row = {"fold": fold_idx, "val_start": str(val_dates[0]),
-                       "n_fit": len(fit_df), "n_eval": len(val_df),
-                       "head_auc_val": auc,
-                       "mean_f_val": float(np.mean(
-                           apply_anomaly_multiplier(p_val, fmodel))),
-                       "f_values": [float(v) for v in
-                                    np.asarray(fmodel["values"]).ravel()],
-                       "f_flat": bool(np.asarray(fmodel["edges"]).size == 0)}
+                row = {
+                    "fold": fold_idx,
+                    "val_start": str(val_dates[0]),
+                    "n_fit": len(fit_df),
+                    "n_eval": len(val_df),
+                    "head_auc_val": auc,
+                    "mean_f_val": float(np.mean(apply_anomaly_multiplier(p_val, fmodel))),
+                    "f_values": [float(v) for v in np.asarray(fmodel["values"]).ravel()],
+                    "f_flat": bool(np.asarray(fmodel["edges"]).size == 0),
+                }
                 for arm, scale in scales.items():
                     q, w = matched_width(abs_r_val, scale)
-                    per_fold[arm].append(dict(
-                        row,
-                        width=(None if not np.isfinite(w) else float(w)),
-                        log_width=(None if not np.isfinite(w) or w <= 0
-                                   else float(np.log(w))),
-                        decile_err=(None if q is None or not np.isfinite(q)
-                                    else float(anomaly_decile_error(
-                                        abs_r_val, scale, p_val, q, edges)))))
+                    per_fold[arm].append(
+                        dict(
+                            row,
+                            width=(None if not np.isfinite(w) else float(w)),
+                            log_width=(None if not np.isfinite(w) or w <= 0 else float(np.log(w))),
+                            decile_err=(
+                                None
+                                if q is None or not np.isfinite(q)
+                                else float(anomaly_decile_error(abs_r_val, scale, p_val, q, edges))
+                            ),
+                        )
+                    )
 
             if not [r for r in per_fold["control"] if r["width"] is not None]:
                 logger.warning(f"    no usable folds at {horizon}d")
                 continue
-            results[horizon] = {arm: {"per_fold": rows}
-                                for arm, rows in per_fold.items()}
+            results[horizon] = {arm: {"per_fold": rows} for arm, rows in per_fold.items()}
             results[horizon]["_paired"] = {
-                f"{arm}_{metric}": paired_fold_deltas(
-                    per_fold["control"], per_fold[arm], metric)
+                f"{arm}_{metric}": paired_fold_deltas(per_fold["control"], per_fold[arm], metric)
                 for arm in ("anomaly_mod", "shuffled_mod")
                 for metric in ("log_width", "decile_err")
             }
             for arm in ("control", "anomaly_mod", "shuffled_mod"):
-                ws = [r["width"] for r in per_fold[arm]
-                      if r["width"] is not None]
-                es = [r["decile_err"] for r in per_fold[arm]
-                      if r["decile_err"] is not None]
-                aucs = [r["head_auc_val"] for r in per_fold[arm]
-                        if r["head_auc_val"] is not None]
+                ws = [r["width"] for r in per_fold[arm] if r["width"] is not None]
+                es = [r["decile_err"] for r in per_fold[arm] if r["decile_err"] is not None]
+                aucs = [r["head_auc_val"] for r in per_fold[arm] if r["head_auc_val"] is not None]
                 if ws:
                     logger.info(
                         f"      {arm:12s} mean matched width={np.mean(ws):.3f}% "
                         f"mean decile_err={np.mean(es):.2f}pp "
-                        f"({len(ws)} folds)")
+                        f"({len(ws)} folds)"
+                    )
                 if aucs and arm == "control":
-                    logger.info(f"      anomaly head mean val AUC="
-                                f"{np.mean(aucs):.4f}")
+                    logger.info(f"      anomaly head mean val AUC={np.mean(aucs):.4f}")
         return results
     finally:
         db.close()
@@ -492,62 +474,70 @@ def print_summary(results):
     print("decile_err: negative = more EQUAL coverage across anomaly_p (good)")
     print("=" * 78)
     for horizon, entry in sorted(results.items()):
-        n_ctl = sum(1 for r in entry["control"]["per_fold"]
-                    if r["width"] is not None)
+        n_ctl = sum(1 for r in entry["control"]["per_fold"] if r["width"] is not None)
         print(f"\nh={horizon}d   control folds={n_ctl}")
         for arm in ("anomaly_mod", "shuffled_mod"):
             rows = entry[arm]["per_fold"]
-            base_w = {r["fold"]: r["width"] for r in
-                      entry["control"]["per_fold"]}
-            base_e = {r["fold"]: r["decile_err"] for r in
-                      entry["control"]["per_fold"]}
-            w_ratios = [r["width"] / base_w[r["fold"]] for r in rows
-                        if r["width"] is not None
-                        and base_w.get(r["fold"]) is not None
-                        and base_w[r["fold"]] > 0]
-            e_ratios = [r["decile_err"] / base_e[r["fold"]] for r in rows
-                        if r["decile_err"] is not None
-                        and base_e.get(r["fold"]) is not None
-                        and base_e[r["fold"]] > 0]
-            winfo = (f"width ratio {np.mean(w_ratios):.4f}, "
-                     f"narrower {sum(x < 1.0 for x in w_ratios)}/{len(w_ratios)}"
-                     if w_ratios else "no paired folds")
-            einfo = (f"decile ratio {np.mean(e_ratios):.4f}, "
-                     f"more equal {sum(x < 1.0 for x in e_ratios)}/{len(e_ratios)}"
-                     if e_ratios else "no paired folds")
+            base_w = {r["fold"]: r["width"] for r in entry["control"]["per_fold"]}
+            base_e = {r["fold"]: r["decile_err"] for r in entry["control"]["per_fold"]}
+            w_ratios = [
+                r["width"] / base_w[r["fold"]]
+                for r in rows
+                if r["width"] is not None and base_w.get(r["fold"]) is not None and base_w[r["fold"]] > 0
+            ]
+            e_ratios = [
+                r["decile_err"] / base_e[r["fold"]]
+                for r in rows
+                if r["decile_err"] is not None and base_e.get(r["fold"]) is not None and base_e[r["fold"]] > 0
+            ]
+            winfo = (
+                f"width ratio {np.mean(w_ratios):.4f}, narrower {sum(x < 1.0 for x in w_ratios)}/{len(w_ratios)}"
+                if w_ratios
+                else "no paired folds"
+            )
+            einfo = (
+                f"decile ratio {np.mean(e_ratios):.4f}, more equal {sum(x < 1.0 for x in e_ratios)}/{len(e_ratios)}"
+                if e_ratios
+                else "no paired folds"
+            )
             for metric, info in (("log_width", winfo), ("decile_err", einfo)):
                 d = entry["_paired"][f"{arm}_{metric}"]
                 if d is None:
-                    print(f"  {arm:12s} {metric:10s} — too few paired folds; "
-                          f"{info}")
+                    print(f"  {arm:12s} {metric:10s} — too few paired folds; {info}")
                     continue
                 flag = "*" if d["excludes_zero"] else " "
                 better = d["n_folds"] - d["wins"]  # lower is better, both metrics
-                print(f"  {arm:12s} {metric:10s} d={d['mean']:+.5f} "
-                      f"[{d['ci_low']:+.5f}, {d['ci_high']:+.5f}]{flag} "
-                      f"better {better}/{d['n_folds']}; {info}")
-    print("\n* = 95% interval excludes zero. The modulator earns a production "
-          "follow-up\n  only with a negative decile_err interval AND no "
-          "significant widening.")
+                print(
+                    f"  {arm:12s} {metric:10s} d={d['mean']:+.5f} "
+                    f"[{d['ci_low']:+.5f}, {d['ci_high']:+.5f}]{flag} "
+                    f"better {better}/{d['n_folds']}; {info}"
+                )
+    print(
+        "\n* = 95% interval excludes zero. The modulator earns a production "
+        "follow-up\n  only with a negative decile_err interval AND no "
+        "significant widening."
+    )
 
 
 def main():
     import argparse
+
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--horizon", type=int, default=None)
     parser.add_argument("--frame-cache", default=None)
     parser.add_argument("--metadata-parquet", default=None)
-    parser.add_argument("--max-folds", type=int, default=None,
-                        help="score only the K most recent folds "
-                             "(quick read; the verdict needs the full run)")
+    parser.add_argument(
+        "--max-folds",
+        type=int,
+        default=None,
+        help="score only the K most recent folds (quick read; the verdict needs the full run)",
+    )
     parser.add_argument("--out", default=None)
     parser.add_argument("--n-jobs", type=int, default=None)
     args = parser.parse_args()
 
-    df, pruned, _ = build_frame(args.metadata_parquet,
-                                cache_path=args.frame_cache)
-    results = run(df, pruned, horizon_filter=args.horizon,
-                  n_jobs=args.n_jobs, max_folds=args.max_folds)
+    df, pruned, _ = build_frame(args.metadata_parquet, cache_path=args.frame_cache)
+    results = run(df, pruned, horizon_filter=args.horizon, n_jobs=args.n_jobs, max_folds=args.max_folds)
     print_summary(results)
     if args.out:
         Path(args.out).write_text(json.dumps(results, indent=2, default=str))

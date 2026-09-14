@@ -65,18 +65,17 @@ Usage:
     python -m scripts.exceedance_meta_ab --horizon 7 \
         --frame-cache /tmp/exc_meta_frame.parquet --out /tmp/exc_meta.json
 """
-import os
-import sys
+
 import json
 import logging
+import os
+import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 import numpy as np
 import pandas as pd
-from sklearn.metrics import roc_auc_score, log_loss
-
 from database import SessionLocal
 from models.forecaster import ItemForecaster
 from scripts.ab_test_item_metadata import (
@@ -86,10 +85,11 @@ from scripts.ab_test_item_metadata import (
     ROW_BUDGET,
     STEP_DAYS,
     VAL_WINDOW_DAYS,
+    _stratified_sample,
     assign_items,
     build_frame,
-    _stratified_sample,
 )
+from sklearn.metrics import log_loss, roc_auc_score
 
 logging.basicConfig(
     level=logging.INFO,
@@ -120,9 +120,7 @@ def paired_fold_deltas(base_folds, arm_folds, key):
     gets mistaken for a verdict (see `ab-family-was-never-powered`).
     """
     base = {f["fold"]: f.get(key) for f in base_folds}
-    deltas = [f[key] - base[f["fold"]]
-              for f in arm_folds
-              if f.get(key) is not None and base.get(f["fold"]) is not None]
+    deltas = [f[key] - base[f["fold"]] for f in arm_folds if f.get(key) is not None and base.get(f["fold"]) is not None]
     if len(deltas) < 2:
         return None
     d = np.asarray(deltas, dtype=float)
@@ -133,10 +131,14 @@ def paired_fold_deltas(base_folds, arm_folds, key):
     # "CI must exclude zero", and an optimistic interval makes that rule
     # harder to satisfy honestly, not easier.
     half = 1.96 * se
-    return {"n_folds": len(d), "mean": round(mean, 5),
-            "ci_low": round(mean - half, 5), "ci_high": round(mean + half, 5),
-            "wins": int((d > 0).sum()),
-            "excludes_zero": bool((mean - half) * (mean + half) > 0)}
+    return {
+        "n_folds": len(d),
+        "mean": round(mean, 5),
+        "ci_low": round(mean - half, 5),
+        "ci_high": round(mean + half, 5),
+        "wins": int((d > 0).sum()),
+        "excludes_zero": bool((mean - half) * (mean + half) > 0),
+    }
 
 
 def fold_tally(metric_name, d):
@@ -162,9 +164,7 @@ def _score(y, p):
     y, p = y[keep].astype(int), np.asarray(p, dtype=float)[keep]
     if len(y) < 20 or len(np.unique(y)) < 2:
         return None, None, len(y)
-    return (float(roc_auc_score(y, p)),
-            float(log_loss(y, np.clip(p, 1e-6, 1 - 1e-6), labels=[0, 1])),
-            len(y))
+    return (float(roc_auc_score(y, p)), float(log_loss(y, np.clip(p, 1e-6, 1 - 1e-6), labels=[0, 1])), len(y))
 
 
 def run(df, pruned, meta_present, horizon_filter=None, n_jobs=None):
@@ -176,17 +176,17 @@ def run(df, pruned, meta_present, horizon_filter=None, n_jobs=None):
         raise SystemExit(
             "No metadata columns present in the frame — the ByMykel join came "
             "back empty, so there is nothing to test. Check "
-            "price-archive/item-metadata-bymykel.parquet.")
-    meta_static = [c for c in META_STATIC if c in meta_present
-                   and c not in ("type_meta_crate_id", "type_meta_collection_id")]
-    arms = {"baseline": [], "treatment": meta_all, "placebo": meta_all,
-            "static_only": meta_static}
+            "price-archive/item-metadata-bymykel.parquet."
+        )
+    meta_static = [
+        c for c in META_STATIC if c in meta_present and c not in ("type_meta_crate_id", "type_meta_collection_id")
+    ]
+    arms = {"baseline": [], "treatment": meta_all, "placebo": meta_all, "static_only": meta_static}
 
     db = SessionLocal()
     forecaster = ItemForecaster(db_session=db)
     try:
-        horizons = [h for h in ItemForecaster.HORIZONS
-                    if horizon_filter is None or h == horizon_filter]
+        horizons = [h for h in ItemForecaster.HORIZONS if horizon_filter is None or h == horizon_filter]
         results = {}
         for horizon in horizons:
             logger.info(f"\n  {'=' * 60}\n  Exceedance {horizon}d\n  {'=' * 60}")
@@ -201,8 +201,7 @@ def run(df, pruned, meta_present, horizon_filter=None, n_jobs=None):
                 continue
 
             base_cols = [c for c in pruned if c in tdf.columns]
-            keep = (["item_id", "date", "price", target_col]
-                    + base_cols + meta_all)
+            keep = ["item_id", "date", "price", target_col] + base_cols + meta_all
             sub = tdf[[c for c in keep if c in tdf.columns]].copy()
 
             dates = sorted(sub["date"].unique())
@@ -218,21 +217,21 @@ def run(df, pruned, meta_present, horizon_filter=None, n_jobs=None):
                 features = base_cols + extra
                 logger.info(f"\n    --- {arm} ({len(features)} features) ---")
                 per_fold = []
-                for fold_idx, window_end in enumerate(
-                        range(split_idx + 1, len(dates), STEP_DAYS)):
-                    val_dates = dates[window_end:window_end + VAL_WINDOW_DAYS]
+                for fold_idx, window_end in enumerate(range(split_idx + 1, len(dates), STEP_DAYS)):
+                    val_dates = dates[window_end : window_end + VAL_WINDOW_DAYS]
                     if len(val_dates) < 7:
                         continue
                     in_train = sub_days <= dates_dt[window_end - 1]
-                    in_val = ((sub_days >= dates_dt[window_end])
-                              & (sub_days <= dates_dt[window_end + len(val_dates) - 1]))
+                    in_val = (sub_days >= dates_dt[window_end]) & (
+                        sub_days <= dates_dt[window_end + len(val_dates) - 1]
+                    )
                     train_df = ItemForecaster._purge_overlapping_train_rows(
-                        sub[in_train & is_train_item], val_dates[0], horizon)
+                        sub[in_train & is_train_item], val_dates[0], horizon
+                    )
                     val_df = sub[in_val & (is_heldout | is_trained_eval)]
                     if len(val_df) < 50 or train_df.empty:
                         continue
-                    train_df = _stratified_sample(
-                        train_df, train_items, ROW_BUDGET, fold_idx)
+                    train_df = _stratified_sample(train_df, train_items, ROW_BUDGET, fold_idx)
 
                     if arm == "placebo" and extra:
                         rng = np.random.default_rng(PLACEBO_SEED)
@@ -246,11 +245,13 @@ def run(df, pruned, meta_present, horizon_filter=None, n_jobs=None):
                     X_val = val_df[features].fillna(med)
                     params = dict(TREE_PARAMS, n_jobs=n_jobs)
                     head = forecaster._fit_exceedance_classifier(
-                        X_train, train_df[target_col].to_numpy(),
-                        "gbdt", params, horizon=horizon,
+                        X_train,
+                        train_df[target_col].to_numpy(),
+                        "gbdt",
+                        params,
+                        horizon=horizon,
                         tier_train=None,
-                        num_boost_round=ItemForecaster._boost_rounds(
-                            horizon, cv=True),
+                        num_boost_round=ItemForecaster._boost_rounds(horizon, cv=True),
                     )
                     if head is None:
                         continue
@@ -260,8 +261,7 @@ def run(df, pruned, meta_present, horizon_filter=None, n_jobs=None):
                     y = val_df[target_col].to_numpy(dtype=float)
                     price = val_df["price"].to_numpy(dtype=float)
 
-                    row = {"fold": fold_idx, "val_start": str(val_dates[0]),
-                           "n_train": len(train_df)}
+                    row = {"fold": fold_idx, "val_start": str(val_dates[0]), "n_train": len(train_df)}
                     # Served cohort only (>=$1), matching every other read on
                     # this panel; a sub-$1 tail has its own exceedance regime.
                     for cohort, mask in (("heldout", held), ("trained", ~held)):
@@ -275,15 +275,14 @@ def run(df, pruned, meta_present, horizon_filter=None, n_jobs=None):
                 if not per_fold:
                     logger.warning(f"    {arm}: no usable folds")
                     continue
-                results[horizon][arm] = {"n_features": len(features),
-                                         "per_fold": per_fold}
+                results[horizon][arm] = {"n_features": len(features), "per_fold": per_fold}
                 for cohort in ("heldout", "trained"):
-                    aucs = [f[f"{cohort}_auc"] for f in per_fold
-                            if f[f"{cohort}_auc"] is not None]
+                    aucs = [f[f"{cohort}_auc"] for f in per_fold if f[f"{cohort}_auc"] is not None]
                     logger.info(
-                        f"      {cohort}: mean AUC="
-                        f"{np.mean(aucs):.4f} over {len(aucs)} folds"
-                        if aucs else f"      {cohort}: no scorable fold")
+                        f"      {cohort}: mean AUC={np.mean(aucs):.4f} over {len(aucs)} folds"
+                        if aucs
+                        else f"      {cohort}: no scorable fold"
+                    )
 
             base = results[horizon].get("baseline")
             if not base:
@@ -294,8 +293,8 @@ def run(df, pruned, meta_present, horizon_filter=None, n_jobs=None):
                     continue
                 paired[arm] = {
                     f"{cohort}_{metric}": paired_fold_deltas(
-                        base["per_fold"], results[horizon][arm]["per_fold"],
-                        f"{cohort}_{metric}")
+                        base["per_fold"], results[horizon][arm]["per_fold"], f"{cohort}_{metric}"
+                    )
                     for cohort in ("heldout", "trained")
                     for metric in ("auc", "logloss")
                 }
@@ -304,7 +303,8 @@ def run(df, pruned, meta_present, horizon_filter=None, n_jobs=None):
                     f"{cohort}_{metric}": paired_fold_deltas(
                         results[horizon]["placebo"]["per_fold"],
                         results[horizon]["treatment"]["per_fold"],
-                        f"{cohort}_{metric}")
+                        f"{cohort}_{metric}",
+                    )
                     for cohort in ("heldout", "trained")
                     for metric in ("auc", "logloss")
                 }
@@ -324,8 +324,7 @@ def print_summary(results):
         for arm, entry in sorted(arms.items()):
             if arm == "_paired":
                 continue
-            print(f"  {arm:22s} {entry['n_features']} features, "
-                  f"{len(entry['per_fold'])} folds")
+            print(f"  {arm:22s} {entry['n_features']} features, {len(entry['per_fold'])} folds")
         for arm, metrics in (arms.get("_paired") or {}).items():
             print(f"  vs {arm}:")
             for name, d in sorted(metrics.items()):
@@ -333,16 +332,21 @@ def print_summary(results):
                     print(f"    {name:20s} — too few paired folds")
                     continue
                 flag = "*" if d["excludes_zero"] else " "
-                print(f"    {name:20s} {d['mean']:+.5f} "
-                      f"[{d['ci_low']:+.5f}, {d['ci_high']:+.5f}]{flag} "
-                      f"{fold_tally(name, d)}")
-    print("\n* = 95% interval excludes zero. A verdict needs treatment to beat "
-          "\n  BOTH baseline and placebo, on AUC and log loss, in the same "
-          "direction.")
+                print(
+                    f"    {name:20s} {d['mean']:+.5f} "
+                    f"[{d['ci_low']:+.5f}, {d['ci_high']:+.5f}]{flag} "
+                    f"{fold_tally(name, d)}"
+                )
+    print(
+        "\n* = 95% interval excludes zero. A verdict needs treatment to beat "
+        "\n  BOTH baseline and placebo, on AUC and log loss, in the same "
+        "direction."
+    )
 
 
 def main():
     import argparse
+
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--horizon", type=int, default=None)
     parser.add_argument("--frame-cache", default=None)
@@ -352,13 +356,11 @@ def main():
     parser.add_argument("--n-jobs", type=int, default=None)
     args = parser.parse_args()
 
-    df, pruned, meta_present = build_frame(
-        args.metadata_parquet, cache_path=args.frame_cache)
+    df, pruned, meta_present = build_frame(args.metadata_parquet, cache_path=args.frame_cache)
     if args.build_cache_only:
         logger.info("  Frame cache built; exiting before evaluation.")
         return
-    results = run(df, pruned, meta_present,
-                  horizon_filter=args.horizon, n_jobs=args.n_jobs)
+    results = run(df, pruned, meta_present, horizon_filter=args.horizon, n_jobs=args.n_jobs)
     print_summary(results)
     if args.out:
         Path(args.out).write_text(json.dumps(results, indent=2, default=str))

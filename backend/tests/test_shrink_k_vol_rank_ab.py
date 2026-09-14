@@ -5,9 +5,9 @@
 harness — if either drifts, the paired read is meaningless, so both are pinned
 here rather than trusted to review.
 """
-import numpy as np
 
-from scripts.shrink_k_vol_rank_ab import (  # noqa: E402
+import numpy as np
+from scripts.shrink_k_vol_rank_ab import (
     matched_width,
     vol_rank_multiplier,
 )
@@ -59,8 +59,7 @@ class TestVolRankMultiplier:
         mult = vol_rank_multiplier(raw, float(np.mean(np.clip(raw, 0.01, None))))
         assert abs(float(np.mean(mult)) - 1.0) < 1e-9
         wide = rng.uniform(0.05, 20.0, size=2000)
-        mult_w = vol_rank_multiplier(
-            wide, float(np.mean(np.clip(wide, 0.01, None))))
+        mult_w = vol_rank_multiplier(wide, float(np.mean(np.clip(wide, 0.01, None))))
         assert abs(float(np.mean(mult_w)) - 1.0) < 0.05
 
     def test_eval_uses_the_fit_mean_not_its_own(self):

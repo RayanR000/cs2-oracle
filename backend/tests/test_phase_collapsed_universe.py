@@ -15,13 +15,12 @@ composition. See docs/research/2026-08-07-cs2-forecasting-research.md 25.
 
 from __future__ import annotations
 
-from datetime import date, datetime, timedelta, timezone
+from datetime import UTC, date, datetime, timedelta
 from unittest.mock import MagicMock
 
 import duckdb
 import pandas as pd
 import pytest
-
 from models.forecaster import (
     PHASE_COLLAPSED_SLUG_PATTERNS,
     ItemForecaster,
@@ -61,19 +60,21 @@ def _archive(tmp_path, slugs, days=3):
     rows = []
     for slug in slugs:
         for i in range(days):
-            rows.append((slug, start + timedelta(days=i), 100.0 + i, 1,
-                         "aggregator_csfloat"))
-    pd.DataFrame({
-        "item_slug": [r[0] for r in rows],
-        "day": pd.to_datetime([r[1] for r in rows]),
-        "mean_price": [r[2] for r in rows],
-        "volume": [r[3] for r in rows],
-        "source": [r[4] for r in rows],
-    }).to_parquet(archive / "prices-2026.parquet")
+            rows.append((slug, start + timedelta(days=i), 100.0 + i, 1, "aggregator_csfloat"))
+    pd.DataFrame(
+        {
+            "item_slug": [r[0] for r in rows],
+            "day": pd.to_datetime([r[1] for r in rows]),
+            "mean_price": [r[2] for r in rows],
+            "volume": [r[3] for r in rows],
+            "source": [r[4] for r in rows],
+        }
+    ).to_parquet(archive / "prices-2026.parquet")
     return archive
 
 
 # -- the predicate ---------------------------------------------------------
+
 
 @pytest.mark.parametrize("slug", COLLAPSED)
 def test_phase_collapsed_names_are_recognised(slug):
@@ -106,9 +107,7 @@ def test_sql_filter_is_null_safe(tmp_path):
     try:
         con.sql("CREATE TABLE t (item_slug VARCHAR)")
         con.sql("INSERT INTO t VALUES (NULL)")
-        kept = con.sql(
-            f"SELECT count(*) FROM t WHERE {phase_collapsed_sql_filter()}"
-        ).fetchone()[0]
+        kept = con.sql(f"SELECT count(*) FROM t WHERE {phase_collapsed_sql_filter()}").fetchone()[0]
     finally:
         con.close()
 
@@ -122,11 +121,8 @@ def test_predicate_and_sql_filter_agree(tmp_path):
     con = duckdb.connect()
     try:
         con.sql("CREATE TABLE t (item_slug VARCHAR)")
-        con.executemany("INSERT INTO t VALUES (?)",
-                        [(s,) for s in COLLAPSED + SINGLE_ASSET])
-        kept = {r[0] for r in con.sql(
-            f"SELECT item_slug FROM t WHERE {phase_collapsed_sql_filter()}"
-        ).fetchall()}
+        con.executemany("INSERT INTO t VALUES (?)", [(s,) for s in COLLAPSED + SINGLE_ASSET])
+        kept = {r[0] for r in con.sql(f"SELECT item_slug FROM t WHERE {phase_collapsed_sql_filter()}").fetchall()}
     finally:
         con.close()
 
@@ -135,14 +131,14 @@ def test_predicate_and_sql_filter_agree(tmp_path):
 
 # -- the training and serving read -----------------------------------------
 
+
 def test_training_read_drops_them(tmp_path):
     """`_fetch_voted_price_history` is the one archive read behind both
     `train()` and `predict()`, so filtering there removes the names from the
     training universe *and* stops the product forecasting them."""
-    f = ItemForecaster(db_session=MagicMock(),
-                       model_dir=str(tmp_path / "saved_models"))
+    f = ItemForecaster(db_session=MagicMock(), model_dir=str(tmp_path / "saved_models"))
     f.archive_dir = _archive(tmp_path, COLLAPSED + SINGLE_ASSET)
-    f._now = lambda: datetime(2026, 7, 20, tzinfo=timezone.utc)
+    f._now = lambda: datetime(2026, 7, 20, tzinfo=UTC)
 
     out = f._fetch_voted_price_history(days_back=30, backfilled_only=False)
 
@@ -157,6 +153,7 @@ def test_voted_cache_is_invalidated(tmp_path):
 
 
 # -- the published gate's own loaders --------------------------------------
+
 
 def test_gate_price_loader_drops_them(tmp_path, monkeypatch):
     """`walkforward_backtest` never calls `fetch_price_history`; it globs the
@@ -194,6 +191,7 @@ def test_gate_item_selection_drops_them(tmp_path, monkeypatch):
 
 # -- the ranked product surfaces -------------------------------------------
 
+
 def test_opportunities_drop_them():
     """`opportunities` takes each item's *latest* forecast with no date bound,
     so an item that stops being forecast keeps its final row on the ranked
@@ -207,9 +205,11 @@ def test_opportunities_drop_them():
         def __init__(self, id, name):
             self.id, self.name, self.item_id = id, name, name
 
-    items = [_Item(1, "★ Gut Knife | Doppler (Factory New)"),
-             _Item(2, "AK-47 | Redline (Field-Tested)"),
-             _Item(3, "Sticker | Doppler Poison Frog (Foil)")]
+    items = [
+        _Item(1, "★ Gut Knife | Doppler (Factory New)"),
+        _Item(2, "AK-47 | Redline (Field-Tested)"),
+        _Item(3, "Sticker | Doppler Poison Frog (Foil)"),
+    ]
 
     class _Query:
         def filter(self, *a, **k):

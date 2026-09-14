@@ -49,13 +49,14 @@ Steam edits a title. Re-running is safe and reports 0 inserted.
 `backend/` writes to prod. That is what CI does deliberately; be sure that is
 what you want locally.
 """
+
 from __future__ import annotations
 
 import argparse
 import json
 import logging
 import sys
-from datetime import date, datetime, timedelta
+from datetime import date, timedelta
 from pathlib import Path
 
 import pandas as pd
@@ -68,9 +69,7 @@ logging.basicConfig(
 )
 logger = logging.getLogger("sync_events_from_news")
 
-DEFAULT_EVENTS_PARQUET = (
-    Path(__file__).parent.parent.parent / "price-archive" / "event-news.parquet"
-)
+DEFAULT_EVENTS_PARQUET = Path(__file__).parent.parent.parent / "price-archive" / "event-news.parquet"
 
 # One type, deliberately -- see the module docstring.
 EVENT_TYPE = "update"
@@ -134,10 +133,10 @@ def sync(
     if rows.empty:
         logger.warning(
             "No Valve announcements in %s%s -- nothing to sync.",
-            parquet_path, f" on or after {since}" if since else "",
+            parquet_path,
+            f" on or after {since}" if since else "",
         )
-        return {"status": "success", "candidates": 0, "events_inserted": 0,
-                "already_present": 0, "dry_run": dry_run}
+        return {"status": "success", "candidates": 0, "events_inserted": 0, "already_present": 0, "dry_run": dry_run}
 
     existing = {
         desc.rsplit(GID_MARKER, 1)[1].rstrip("]")
@@ -149,13 +148,15 @@ def sync(
     for row in rows.itertuples(index=False):
         if row.gid in existing:
             continue
-        to_add.append(Event(
-            type=EVENT_TYPE,
-            timestamp=pd.Timestamp(row.published_at).tz_localize(None)
-            if pd.Timestamp(row.published_at).tzinfo
-            else pd.Timestamp(row.published_at),
-            description=format_description(row.title, row.gid),
-        ))
+        to_add.append(
+            Event(
+                type=EVENT_TYPE,
+                timestamp=pd.Timestamp(row.published_at).tz_localize(None)
+                if pd.Timestamp(row.published_at).tzinfo
+                else pd.Timestamp(row.published_at),
+                description=format_description(row.title, row.gid),
+            )
+        )
 
     if to_add and not dry_run:
         db.add_all(to_add)
@@ -163,12 +164,14 @@ def sync(
 
     logger.info(
         "Valve announcements: %d candidates, %d already present, %d %s",
-        len(rows), len(rows) - len(to_add), len(to_add),
+        len(rows),
+        len(rows) - len(to_add),
+        len(to_add),
         "would be inserted (dry run)" if dry_run else "inserted",
     )
     return {
         "status": "success",
-        "candidates": int(len(rows)),
+        "candidates": len(rows),
         "events_inserted": 0 if dry_run else len(to_add),
         "would_insert": len(to_add) if dry_run else 0,
         "already_present": int(len(rows) - len(to_add)),
@@ -181,13 +184,13 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--events-parquet", type=Path, default=DEFAULT_EVENTS_PARQUET)
     parser.add_argument(
-        "--since", default=None,
+        "--since",
+        default=None,
         help="Only sync announcements on or after this YYYY-MM-DD. Defaults to "
-             "the analyser's own lookback plus a margin, so a weekly run does "
-             "not re-scan 13 years of feed on every pass.",
+        "the analyser's own lookback plus a margin, so a weekly run does "
+        "not re-scan 13 years of feed on every pass.",
     )
-    parser.add_argument("--all", action="store_true",
-                        help="Ignore --since and sync the full history.")
+    parser.add_argument("--all", action="store_true", help="Ignore --since and sync the full history.")
     parser.add_argument("--dry-run", action="store_true")
     args = parser.parse_args()
 
@@ -205,8 +208,7 @@ def main() -> int:
         summary = sync(args.events_parquet, db, since=since, dry_run=args.dry_run)
     except FileNotFoundError as exc:
         logger.error("%s", exc)
-        print(json.dumps({"status": "failed", "events_inserted": 0,
-                          "error": str(exc)}, indent=2))
+        print(json.dumps({"status": "failed", "events_inserted": 0, "error": str(exc)}, indent=2))
         return 1
     finally:
         db.close()

@@ -5,22 +5,19 @@ maturity but blind to holes *inside* the range. The 2026-08-02/03 outage is
 exactly such a hole: max day was 08-04 and looked healthy, while two days in the
 middle held nothing. `classify_archive_gap` needs the interior, not the edge.
 """
+
 from __future__ import annotations
 
 from datetime import date
 
 import pandas as pd
 import pytest
-
 from backtest.price_resolution import archive_covered_days
 
 
 def _write_archive(tmp_path, days):
     """Write a minimal prices-*.parquet holding one row per day given."""
-    rows = [
-        {"item_slug": "ak47", "day": pd.Timestamp(d), "source": "steam", "price": 1.0}
-        for d in days
-    ]
+    rows = [{"item_slug": "ak47", "day": pd.Timestamp(d), "source": "steam", "price": 1.0} for d in days]
     df = pd.DataFrame(rows)
     for ym, group in df.groupby(df["day"].dt.strftime("%Y-%m")):
         group.to_parquet(tmp_path / f"prices-{ym}.parquet", index=False)
@@ -33,9 +30,7 @@ class TestCoveredDays:
         from pathlib import Path
 
         with tempfile.TemporaryDirectory() as td:
-            d = _write_archive(
-                Path(td), [date(2026, 8, 1), date(2026, 8, 2), date(2026, 8, 3)]
-            )
+            d = _write_archive(Path(td), [date(2026, 8, 1), date(2026, 8, 2), date(2026, 8, 3)])
             assert archive_covered_days(d) == {
                 date(2026, 8, 1),
                 date(2026, 8, 2),
@@ -67,9 +62,7 @@ class TestCoveredDays:
         from pathlib import Path
 
         with tempfile.TemporaryDirectory() as td:
-            d = _write_archive(
-                Path(td), [date(2026, 8, 1), date(2026, 8, 1), date(2026, 8, 1)]
-            )
+            d = _write_archive(Path(td), [date(2026, 8, 1), date(2026, 8, 1), date(2026, 8, 1)])
             assert archive_covered_days(d) == {date(2026, 8, 1)}
 
 
@@ -85,6 +78,5 @@ class TestMissingArchiveIsLoud:
         import tempfile
         from pathlib import Path
 
-        with tempfile.TemporaryDirectory() as td:
-            with pytest.raises(FileNotFoundError):
-                archive_covered_days(Path(td))
+        with tempfile.TemporaryDirectory() as td, pytest.raises(FileNotFoundError):
+            archive_covered_days(Path(td))

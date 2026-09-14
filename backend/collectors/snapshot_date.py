@@ -35,6 +35,7 @@ double-stamps one. Widening the gap between ~21:40 and the boundary trades that
 risk against upstream drift; the boundary is deliberately kept a comfortable
 margin after 21:40 rather than tight against it.
 """
+
 from __future__ import annotations
 
 import os

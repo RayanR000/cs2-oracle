@@ -4,22 +4,29 @@ The substantive logic (swing, tertile label, ranking) is behaviour-tested in
 test_volatility_tags.py. Here we pin only the wiring: the schema carries the
 fields, and the ranking endpoint exists and routes through the tested helper.
 """
+
 from __future__ import annotations
 
 import inspect
 
-import pytest
-from fastapi import HTTPException
-
-from api.schemas import PredictionOut
 import api.routes.items as items_mod
+import pytest
+from api.schemas import PredictionOut
+from fastapi import HTTPException
 
 
 class TestPredictionOutCarriesTags:
     def _minimal(self, **kw):
-        base = dict(item_id=1, item_name="X", current_price=100.0,
-                    forecast_low=90.0, forecast_mid=100.0, forecast_high=110.0,
-                    forecast_period="7_days", trend_direction="neutral")
+        base = dict(
+            item_id=1,
+            item_name="X",
+            current_price=100.0,
+            forecast_low=90.0,
+            forecast_mid=100.0,
+            forecast_high=110.0,
+            forecast_period="7_days",
+            trend_direction="neutral",
+        )
         base.update(kw)
         return PredictionOut(**base)
 
@@ -30,8 +37,7 @@ class TestPredictionOutCarriesTags:
         assert p.stability_label is None
 
     def test_tag_fields_round_trip(self):
-        p = self._minimal(expected_swing_pct=0.12, move_odds=0.30,
-                          stability_label="Moderate")
+        p = self._minimal(expected_swing_pct=0.12, move_odds=0.30, stability_label="Moderate")
         assert p.expected_swing_pct == 0.12
         assert p.move_odds == 0.30
         assert p.stability_label == "Moderate"
@@ -64,8 +70,8 @@ class TestVolatilityRoute:
         # The guard runs before any DB access, so db=None is safe here.
         with pytest.raises(HTTPException) as exc:
             items_mod.get_volatility_ranking(
-                horizon=30, sort="move_odds", order="desc",
-                min_price=1.0, limit=10, db=None)
+                horizon=30, sort="move_odds", order="desc", min_price=1.0, limit=10, db=None
+            )
         assert exc.value.status_code == 400
 
     def test_unserved_horizon_rejected(self):
@@ -73,20 +79,15 @@ class TestVolatilityRoute:
         # so reject it explicitly instead of a silently-empty ranking.
         # The guard runs before any DB access, so db=None is safe here.
         with pytest.raises(HTTPException) as exc:
-            items_mod.get_volatility_ranking(
-                horizon=5, sort="swing", order="desc",
-                min_price=1.0, limit=10, db=None)
+            items_mod.get_volatility_ranking(horizon=5, sort="swing", order="desc", min_price=1.0, limit=10, db=None)
         assert exc.value.status_code == 400
 
     def test_served_horizon_is_accepted_past_the_guard(self):
         # a served horizon must not be rejected by the horizon guard; it fails
         # later on db=None (an AttributeError/TypeError), NOT an HTTPException 400.
         with pytest.raises(Exception) as exc:
-            items_mod.get_volatility_ranking(
-                horizon=14, sort="swing", order="desc",
-                min_price=1.0, limit=10, db=None)
-        assert not (isinstance(exc.value, HTTPException)
-                    and exc.value.status_code == 400)
+            items_mod.get_volatility_ranking(horizon=14, sort="swing", order="desc", min_price=1.0, limit=10, db=None)
+        assert not (isinstance(exc.value, HTTPException) and exc.value.status_code == 400)
 
     def test_route_gates_move_odds_by_calibration(self):
         # the ranking path must thread the calibration flag through, not publish

@@ -13,11 +13,11 @@ shipped tree count, the shipped hyperparameters and the classifier's stopping
 point were all selected against partly-seen labels.
 """
 
-import pandas as pd
-import pytest
 from datetime import timedelta
 from unittest.mock import MagicMock
 
+import pandas as pd
+import pytest
 from models.forecaster import ItemForecaster, embargo_days
 
 
@@ -31,15 +31,16 @@ def forecaster(tmp_path_factory):
 
 def _frame(start="2026-01-01", days=120):
     dates = pd.date_range(start, periods=days, freq="D")
-    return pd.DataFrame({
-        "item_id": 1,
-        "date": [d.date() for d in dates],
-        "price": 10.0,
-    })
+    return pd.DataFrame(
+        {
+            "item_id": 1,
+            "date": [d.date() for d in dates],
+            "price": 10.0,
+        }
+    )
 
 
 class TestPurgeOverlappingTrainRows:
-
     def test_rows_labelled_from_the_validation_window_are_dropped(self, forecaster):
         df = _frame()
         split = pd.Timestamp("2026-04-01")
@@ -54,8 +55,7 @@ class TestPurgeOverlappingTrainRows:
         assert latest + timedelta(days=30) < split
 
     @pytest.mark.parametrize("horizon", [3, 7, 14, 30])
-    def test_purge_band_is_the_embargo_not_the_bare_horizon(
-            self, forecaster, horizon):
+    def test_purge_band_is_the_embargo_not_the_bare_horizon(self, forecaster, horizon):
         """`horizon + 13`, not `horizon` — the label's support, not its date.
 
         Widened 2026-08-08. The label at `d + horizon` is a resolved anchor,
@@ -80,29 +80,21 @@ class TestPurgeOverlappingTrainRows:
         split = max_date - timedelta(days=ItemForecaster.VALIDATION_WINDOW_DAYS)
         train = df[pd.to_datetime(df["date"]) < split]
 
-        leaking = [
-            d for d in pd.to_datetime(train["date"])
-            if d + timedelta(days=30) >= split
-        ]
+        leaking = [d for d in pd.to_datetime(train["date"]) if d + timedelta(days=30) >= split]
         assert len(leaking) == 30, "precondition: unpurged split leaks 30 rows"
 
         purged = forecaster._purge_overlapping_train_rows(train, split, horizon=30)
-        still_leaking = [
-            d for d in pd.to_datetime(purged["date"])
-            if d + timedelta(days=30) >= split
-        ]
+        still_leaking = [d for d in pd.to_datetime(purged["date"]) if d + timedelta(days=30) >= split]
         assert still_leaking == []
 
     def test_empty_frame_is_returned_unchanged(self, forecaster):
         empty = pd.DataFrame(columns=["item_id", "date", "price"])
-        out = forecaster._purge_overlapping_train_rows(
-            empty, pd.Timestamp("2026-04-01"), horizon=7)
+        out = forecaster._purge_overlapping_train_rows(empty, pd.Timestamp("2026-04-01"), horizon=7)
         assert out.empty
 
     def test_frame_without_a_date_column_is_returned_unchanged(self, forecaster):
         no_date = pd.DataFrame({"item_id": [1, 2], "price": [1.0, 2.0]})
-        out = forecaster._purge_overlapping_train_rows(
-            no_date, pd.Timestamp("2026-04-01"), horizon=7)
+        out = forecaster._purge_overlapping_train_rows(no_date, pd.Timestamp("2026-04-01"), horizon=7)
         assert len(out) == 2
 
     def test_a_horizon_wider_than_the_frame_purges_everything(self, forecaster):

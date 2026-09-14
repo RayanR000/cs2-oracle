@@ -27,16 +27,14 @@ Usage:
 """
 
 import argparse
-import json
 import logging
 import signal
 import sqlite3
 import sys
 import time
 from collections import Counter
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
-from typing import Optional
 
 import requests
 
@@ -44,12 +42,12 @@ sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 from backend.config import settings
 
 # ── Paths ────────────────────────────────────────────────────────────────────
-LOCAL_DB   = Path(__file__).parent.parent / "runtime" / "market_catalog.db"
-OUTPUT_DB  = Path(__file__).parent.parent / "runtime" / "csmarketapi.db"
-REF_DB     = Path(__file__).parent.parent / "runtime" / "csmarketapi_reference.db"
-LOG_DIR    = Path(__file__).parent.parent / "runtime" / "logs"
+LOCAL_DB = Path(__file__).parent.parent / "runtime" / "market_catalog.db"
+OUTPUT_DB = Path(__file__).parent.parent / "runtime" / "csmarketapi.db"
+REF_DB = Path(__file__).parent.parent / "runtime" / "csmarketapi_reference.db"
+LOG_DIR = Path(__file__).parent.parent / "runtime" / "logs"
 LOG_DIR.mkdir(parents=True, exist_ok=True)
-LOG_FILE   = LOG_DIR / f"csmarketapi_backfill_{datetime.now().strftime('%Y%m%d_%H%M%S')}.log"
+LOG_FILE = LOG_DIR / f"csmarketapi_backfill_{datetime.now().strftime('%Y%m%d_%H%M%S')}.log"
 
 BASE_URL = "https://api.csmarketapi.com/v1"
 MAX_REQUESTS_PER_KEY = 1000
@@ -68,6 +66,7 @@ log = logging.getLogger(__name__)
 # ── Signal handling ──────────────────────────────────────────────────────────
 _shutdown_requested = False
 
+
 def _handle_signal(signum, frame):
     global _shutdown_requested
     if _shutdown_requested:
@@ -77,6 +76,7 @@ def _handle_signal(signum, frame):
     log.warning("Interrupt received — finishing current item then stopping")
     signal.signal(signum, _handle_signal)
 
+
 signal.signal(signal.SIGINT, _handle_signal)
 signal.signal(signal.SIGTERM, _handle_signal)
 
@@ -84,6 +84,7 @@ signal.signal(signal.SIGTERM, _handle_signal)
 # ═══════════════════════════════════════════════════════════════════════════════
 # DB
 # ═══════════════════════════════════════════════════════════════════════════════
+
 
 def connect_db(path: str, readonly: bool = False) -> sqlite3.Connection:
     conn = sqlite3.connect(f"file:{path}?mode=ro" if readonly else path, uri=readonly)
@@ -139,13 +140,11 @@ def init_output_db(conn: sqlite3.Connection):
         );
     """)
 
-    for k, v in {"last_hash_name": "", "total_attempted": "0",
-                 "total_completed": "0", "total_failed": "0"}.items():
+    for k, v in {"last_hash_name": "", "total_attempted": "0", "total_completed": "0", "total_failed": "0"}.items():
         conn.execute("INSERT OR IGNORE INTO backfill_state (key, value) VALUES (?, ?)", (k, v))
 
     for i in range(len(settings.csmarketapi_keys)):
-        conn.execute("INSERT OR IGNORE INTO backfill_state (key, value) VALUES (?, '0')",
-                     (f"req_idx_{i}",))
+        conn.execute("INSERT OR IGNORE INTO backfill_state (key, value) VALUES (?, '0')", (f"req_idx_{i}",))
     conn.execute("INSERT OR IGNORE INTO backfill_state (key, value) VALUES ('active_key_idx', '0')")
     conn.commit()
 
@@ -192,8 +191,8 @@ def inc(conn: sqlite3.Connection, key: str, n: int = 1):
 # API client
 # ═══════════════════════════════════════════════════════════════════════════════
 
-def api_get(endpoint: str, api_key: str,
-            params: dict | None = None) -> Optional[dict | list]:
+
+def api_get(endpoint: str, api_key: str, params: dict | None = None) -> dict | list | None:
     url = f"{BASE_URL}{endpoint}"
     query = dict(params or {})
     query["key"] = api_key
@@ -210,7 +209,7 @@ def api_get(endpoint: str, api_key: str,
             if resp.status_code >= 500:
                 log.warning(f"  {resp.status_code} server error (attempt {attempt}/{MAX_RETRIES})")
                 if attempt <= MAX_RETRIES:
-                    time.sleep(2 ** attempt)
+                    time.sleep(2**attempt)
                     continue
                 return None
             log.warning(f"  Unexpected {resp.status_code}: {resp.text[:200]}")
@@ -218,7 +217,7 @@ def api_get(endpoint: str, api_key: str,
         except requests.RequestException as e:
             log.warning(f"  Request failed (attempt {attempt}/{MAX_RETRIES}): {e}")
             if attempt <= MAX_RETRIES:
-                time.sleep(2 ** attempt)
+                time.sleep(2**attempt)
                 continue
             return None
     return None
@@ -227,6 +226,7 @@ def api_get(endpoint: str, api_key: str,
 # ═══════════════════════════════════════════════════════════════════════════════
 # Reference data (markets, currency_rates, player_counts)
 # ═══════════════════════════════════════════════════════════════════════════════
+
 
 def fetch_reference_data(apikey: str):
     log.info("─" * 50)
@@ -247,13 +247,12 @@ def fetch_reference_data(apikey: str):
 
     # 2) Currency rates
     data = api_get("/currency_rates", apikey)
-    now = datetime.now(timezone.utc).isoformat()
+    now = datetime.now(UTC).isoformat()
     if isinstance(data, list):
         ref_conn.execute("DELETE FROM currency_rates")
         ref_conn.executemany(
             "INSERT OR REPLACE INTO currency_rates (currency, rate, currency_name, updated_at) VALUES (?, ?, ?, ?)",
-            [(r.get("currency_code", ""), r.get("rate"),
-              r.get("currency_name", ""), now) for r in data],
+            [(r.get("currency_code", ""), r.get("rate"), r.get("currency_name", ""), now) for r in data],
         )
         ref_conn.commit()
         log.info(f"  Currency rates: 1 request → {len(data)} currencies stored")
@@ -293,11 +292,12 @@ def fetch_reference_data(apikey: str):
 # Key rotation
 # ═══════════════════════════════════════════════════════════════════════════════
 
+
 def req_count(conn: sqlite3.Connection, idx: int) -> int:
     return int(gv(conn, f"req_idx_{idx}") or "0")
 
 
-def find_key(conn: sqlite3.Connection) -> Optional[int]:
+def find_key(conn: sqlite3.Connection) -> int | None:
     keys = settings.csmarketapi_keys
     if not keys:
         return None
@@ -313,12 +313,11 @@ def find_key(conn: sqlite3.Connection) -> Optional[int]:
 # Queue builder
 # ═══════════════════════════════════════════════════════════════════════════════
 
-def build_queue(local_conn: sqlite3.Connection,
-                api_items: set[str],
-                out_conn: sqlite3.Connection = None) -> list[tuple[str, int]]:
-    c = local_conn.execute(
-        "SELECT hash_name, sell_listings FROM market_items ORDER BY sell_listings DESC"
-    )
+
+def build_queue(
+    local_conn: sqlite3.Connection, api_items: set[str], out_conn: sqlite3.Connection = None
+) -> list[tuple[str, int]]:
+    c = local_conn.execute("SELECT hash_name, sell_listings FROM market_items ORDER BY sell_listings DESC")
     queue = [(r[0], r[1] or 0) for r in c.fetchall() if r[0]]
 
     local_names = {h for h, _ in queue}
@@ -333,7 +332,8 @@ def build_queue(local_conn: sqlite3.Connection,
             for row in out_conn.execute(
                 "SELECT market_hash_name, sell_listings FROM items WHERE market_hash_name IN ({})".format(
                     ",".join("?" for _ in missing)
-                ), missing
+                ),
+                missing,
             ):
                 lookup[row[0]] = row[1] or 0
             queue.extend((h, lookup.get(h, 0)) for h in missing)
@@ -343,12 +343,18 @@ def build_queue(local_conn: sqlite3.Connection,
 
     tiers = Counter()
     for _, sl in queue:
-        if sl < 0:     tiers["unknown"] += 1
-        elif sl == 0:  tiers["0"] += 1
-        elif sl < 10:  tiers["1-9"] += 1
-        elif sl < 100: tiers["10-99"] += 1
-        elif sl < 1000:tiers["100-999"] += 1
-        else:          tiers["1000+"] += 1
+        if sl < 0:
+            tiers["unknown"] += 1
+        elif sl == 0:
+            tiers["0"] += 1
+        elif sl < 10:
+            tiers["1-9"] += 1
+        elif sl < 100:
+            tiers["10-99"] += 1
+        elif sl < 1000:
+            tiers["100-999"] += 1
+        else:
+            tiers["1000+"] += 1
 
     log.info(f"  Queue: {len(queue)} items total")
     for t in ["1000+", "100-999", "10-99", "1-9", "0", "unknown"]:
@@ -360,6 +366,7 @@ def build_queue(local_conn: sqlite3.Connection,
 # ═══════════════════════════════════════════════════════════════════════════════
 # Main backfill
 # ═══════════════════════════════════════════════════════════════════════════════
+
 
 def run_backfill(dry_run: bool = False, limit: int = 0):
     global _shutdown_requested
@@ -381,7 +388,7 @@ def run_backfill(dry_run: bool = False, limit: int = 0):
         sys.exit(1)
 
     local_conn = connect_db(str(LOCAL_DB), readonly=True)
-    out_conn   = connect_db(str(OUTPUT_DB))
+    out_conn = connect_db(str(OUTPUT_DB))
     init_output_db(out_conn)
 
     # ── Dry-run ──────────────────────────────────────────────────────────────
@@ -389,10 +396,10 @@ def run_backfill(dry_run: bool = False, limit: int = 0):
         log.info("─" * 50)
         log.info("[DRY-RUN] Building queue from local DB only (no catalog fetch)…")
         queue = build_queue(local_conn, set(), out_conn)
-        log.info(f"[DRY-RUN] Top 25 items:")
+        log.info("[DRY-RUN] Top 25 items:")
         for h, _ in queue[:25]:
             log.info(f"  {h}")
-        log.info(f"[DRY-RUN] … and {max(0, len(queue)-25)} more")
+        log.info(f"[DRY-RUN] … and {max(0, len(queue) - 25)} more")
         return
 
     # ── Find first key ──────────────────────────────────────────────────────
@@ -429,19 +436,21 @@ def run_backfill(dry_run: bool = False, limit: int = 0):
 
         inserts = []
         for i in catalog:
-            inserts.append((
-                i.get("market_hash_name", ""),
-                i.get("hash_name", ""),
-                i.get("nameid"),
-                i.get("classid"),
-                i.get("exterior"),
-                i.get("category"),
-                i.get("weapon"),
-                i.get("quality"),
-                i.get("type"),
-                i.get("sticker_type"),
-                i.get("sticker_collection") or i.get("collection"),
-            ))
+            inserts.append(
+                (
+                    i.get("market_hash_name", ""),
+                    i.get("hash_name", ""),
+                    i.get("nameid"),
+                    i.get("classid"),
+                    i.get("exterior"),
+                    i.get("category"),
+                    i.get("weapon"),
+                    i.get("quality"),
+                    i.get("type"),
+                    i.get("sticker_type"),
+                    i.get("sticker_collection") or i.get("collection"),
+                )
+            )
         out_conn.executemany(
             """INSERT OR REPLACE INTO items
                (market_hash_name, hash_name, nameid, classid, exterior,
@@ -450,19 +459,14 @@ def run_backfill(dry_run: bool = False, limit: int = 0):
             inserts,
         )
 
-        for h, sl in local_conn.execute(
-                "SELECT hash_name, sell_listings FROM market_items").fetchall():
-            out_conn.execute(
-                "UPDATE items SET sell_listings = ? WHERE hash_name = ?",
-                (sl or 0, h))
+        for h, sl in local_conn.execute("SELECT hash_name, sell_listings FROM market_items").fetchall():
+            out_conn.execute("UPDATE items SET sell_listings = ? WHERE hash_name = ?", (sl or 0, h))
         out_conn.commit()
         log.info(f"  Catalog stored — {len(catalog)} items in DB")
     else:
         log.info(f"  Items table already has {c:,} rows — skipping catalog fetch")
 
-    api_names = {r[0] for r in
-                 out_conn.execute("SELECT market_hash_name FROM items").fetchall()
-                 if r[0]}
+    api_names = {r[0] for r in out_conn.execute("SELECT market_hash_name FROM items").fetchall() if r[0]}
 
     # ── Build queue ─────────────────────────────────────────────────────────
     log.info("─" * 50)
@@ -487,11 +491,11 @@ def run_backfill(dry_run: bool = False, limit: int = 0):
 
     if limit:
         remaining = remaining[:limit]
-        queue = queue[:resume_idx + limit]
+        queue = queue[: resume_idx + limit]
 
     log.info(f"  Items remaining this session: {len(remaining)}")
     completed_before = int(gv(out_conn, "total_completed") or "0")
-    failed_before    = int(gv(out_conn, "total_failed")    or "0")
+    failed_before = int(gv(out_conn, "total_failed") or "0")
     log.info(f"  Stats from previous runs: {completed_before} completed, {failed_before} failed")
 
     # ── Main loop ───────────────────────────────────────────────────────────
@@ -509,14 +513,12 @@ def run_backfill(dry_run: bool = False, limit: int = 0):
         item_num = resume_idx + i + 1
         total = len(queue)
 
-        r = out_conn.execute(
-            "SELECT COUNT(*) FROM sales_history WHERE market_hash_name = ?", (hash_name,))
+        r = out_conn.execute("SELECT COUNT(*) FROM sales_history WHERE market_hash_name = ?", (hash_name,))
         if r.fetchone()[0] > 0:
             inc(out_conn, "total_completed")
             sv(out_conn, "last_hash_name", hash_name)
             log.info(
-                f"[{item_num:,}/{total:,}] ({100*item_num//total:3d}%) "
-                f"⏭️  {hash_name}  — already in DB (skipping)"
+                f"[{item_num:,}/{total:,}] ({100 * item_num // total:3d}%) ⏭️  {hash_name}  — already in DB (skipping)"
             )
             continue
 
@@ -524,8 +526,7 @@ def run_backfill(dry_run: bool = False, limit: int = 0):
         if key_idx is None:
             log.warning("─" * 50)
             log.warning("ALL KEYS EXHAUSTED — pausing backfill")
-            log.warning(f"  Completed: {gv(out_conn, 'total_completed')}  "
-                        f"Failed: {gv(out_conn, 'total_failed')}")
+            log.warning(f"  Completed: {gv(out_conn, 'total_completed')}  Failed: {gv(out_conn, 'total_failed')}")
             log.warning(f"  Next item: {hash_name}")
             break
 
@@ -546,16 +547,17 @@ def run_backfill(dry_run: bool = False, limit: int = 0):
         log.info(
             f"       via {cred['account']:<15}  "
             f"quota:{quota_left:>3}/{KEY_SWITCH_THRESHOLD}  "
-            f"rate:{rate:.2f}it/s  ETA:{eta_secs/60:.0f}m  {tier}"
+            f"rate:{rate:.2f}it/s  ETA:{eta_secs / 60:.0f}m  {tier}"
         )
 
         inc(out_conn, "total_attempted")
-        sales_data = api_get("/sales/history/aggregate", cred["key"],
-                             params={"market_hash_name": hash_name, "currency": "USD"})
+        sales_data = api_get(
+            "/sales/history/aggregate", cred["key"], params={"market_hash_name": hash_name, "currency": "USD"}
+        )
         inc(out_conn, f"req_idx_{key_idx}")
 
         if sales_data is None:
-            log.warning(f"       FAILED — rotating key")
+            log.warning("       FAILED — rotating key")
             out_conn.execute(
                 "INSERT INTO failed_items (hash_name, reason, key_account, attempted_at, listings) VALUES (?, ?, ?, ?, ?)",
                 (hash_name, "429 / exhausted", cred["account"], datetime.now().isoformat(), listings),
@@ -579,12 +581,16 @@ def run_backfill(dry_run: bool = False, limit: int = 0):
                        (market_hash_name, day, market, mean_price, min_price,
                         max_price, median_price, volume)
                        VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
-                    (hash_name, day, mkt,
-                     sale.get("mean_price"),
-                     sale.get("min_price"),
-                     sale.get("max_price"),
-                     sale.get("median_price"),
-                     sale.get("volume")),
+                    (
+                        hash_name,
+                        day,
+                        mkt,
+                        sale.get("mean_price"),
+                        sale.get("min_price"),
+                        sale.get("max_price"),
+                        sale.get("median_price"),
+                        sale.get("volume"),
+                    ),
                 )
                 total_rows += 1
         out_conn.commit()
@@ -593,20 +599,14 @@ def run_backfill(dry_run: bool = False, limit: int = 0):
         sv(out_conn, "last_hash_name", hash_name)
 
         total_done = int(gv(out_conn, "total_completed") or "0")
-        total_fail = int(gv(out_conn, "total_failed")    or "0")
+        total_fail = int(gv(out_conn, "total_failed") or "0")
 
-        market_summary = ", ".join(
-            f"{m}:{n}" for m, n in market_rows.most_common(5)
-        )
+        market_summary = ", ".join(f"{m}:{n}" for m, n in market_rows.most_common(5))
         extra_markets = len(market_rows) - 5
         if extra_markets > 0:
             market_summary += f" …+{extra_markets}"
 
-        log.info(
-            f"       ✓ {total_rows:>5} rows  "
-            f"[{market_summary}]  "
-            f"({total_done} done, {total_fail} failed)"
-        )
+        log.info(f"       ✓ {total_rows:>5} rows  [{market_summary}]  ({total_done} done, {total_fail} failed)")
 
         if _shutdown_requested:
             break
@@ -621,7 +621,7 @@ def run_backfill(dry_run: bool = False, limit: int = 0):
 
     log.info("=" * 60)
     log.info("Backfill session finished")
-    log.info(f"  Session runtime:     {elapsed/60:.1f}m")
+    log.info(f"  Session runtime:     {elapsed / 60:.1f}m")
     log.info(f"  Total completed:     {final_done}")
     log.info(f"  Total failed:        {final_fail}")
     log.info(f"  Checkpoint:          {final_last}")
@@ -640,6 +640,7 @@ def run_backfill(dry_run: bool = False, limit: int = 0):
 # Stats
 # ═══════════════════════════════════════════════════════════════════════════════
 
+
 def show_stats():
     if not OUTPUT_DB.exists():
         log.info("No backfill database found — run the backfill first.")
@@ -647,15 +648,13 @@ def show_stats():
 
     conn = connect_db(str(OUTPUT_DB))
     items_total = conn.execute("SELECT COUNT(*) FROM items").fetchone()[0]
-    items_hist  = conn.execute(
-        "SELECT COUNT(DISTINCT market_hash_name) FROM sales_history").fetchone()[0]
-    price_rows  = conn.execute("SELECT COUNT(*) FROM sales_history").fetchone()[0]
-    days        = conn.execute("SELECT COUNT(DISTINCT day) FROM sales_history").fetchone()[0]
-    markets_list = [r[0] for r in
-                    conn.execute("SELECT DISTINCT market FROM sales_history ORDER BY market").fetchall()]
-    completed   = gv(conn, "total_completed")
-    failed      = gv(conn, "total_failed")
-    last_item   = gv(conn, "last_hash_name")
+    items_hist = conn.execute("SELECT COUNT(DISTINCT market_hash_name) FROM sales_history").fetchone()[0]
+    price_rows = conn.execute("SELECT COUNT(*) FROM sales_history").fetchone()[0]
+    days = conn.execute("SELECT COUNT(DISTINCT day) FROM sales_history").fetchone()[0]
+    markets_list = [r[0] for r in conn.execute("SELECT DISTINCT market FROM sales_history ORDER BY market").fetchall()]
+    completed = gv(conn, "total_completed")
+    failed = gv(conn, "total_failed")
+    last_item = gv(conn, "last_hash_name")
     conn.close()
 
     # Reference DB stats
@@ -663,16 +662,16 @@ def show_stats():
     ref_markets = ref_currencies = ref_pcount = 0
     if ref_exists:
         ref = connect_db(str(REF_DB))
-        ref_markets    = ref.execute("SELECT COUNT(*) FROM markets").fetchone()[0]
+        ref_markets = ref.execute("SELECT COUNT(*) FROM markets").fetchone()[0]
         ref_currencies = ref.execute("SELECT COUNT(*) FROM currency_rates").fetchone()[0]
-        ref_pcount     = ref.execute("SELECT COUNT(*) FROM player_counts").fetchone()[0]
+        ref_pcount = ref.execute("SELECT COUNT(*) FROM player_counts").fetchone()[0]
         ref.close()
 
     mkt_dist = {}
     if items_hist:
         conn2 = connect_db(str(OUTPUT_DB))
         for r in conn2.execute(
-                "SELECT market, COUNT(*) as c FROM sales_history GROUP BY market ORDER BY c DESC"
+            "SELECT market, COUNT(*) as c FROM sales_history GROUP BY market ORDER BY c DESC"
         ).fetchall():
             mkt_dist[r[0]] = r[1]
         conn2.close()
@@ -694,11 +693,11 @@ def show_stats():
     print(f"  Player counts:  {ref_pcount:>6,}" if ref_exists else "")
 
     if mkt_dist:
-        print(f"\n  ── Per-market price rows ──")
+        print("\n  ── Per-market price rows ──")
         print(f"  {'Market':<20} {'Rows':>10} {'%':>7}")
-        print(f"  {'─'*20} {'─'*10} {'─'*7}")
+        print(f"  {'─' * 20} {'─' * 10} {'─' * 7}")
         for mkt, cnt in sorted(mkt_dist.items(), key=lambda x: -x[1]):
-            print(f"  {mkt:<20} {cnt:>10,} {100*cnt/price_rows:>6.1f}%")
+            print(f"  {mkt:<20} {cnt:>10,} {100 * cnt / price_rows:>6.1f}%")
 
     # Failed items
     conn3 = connect_db(str(OUTPUT_DB))
@@ -718,15 +717,15 @@ def show_stats():
     fail_count = conn3.execute("SELECT COUNT(*) FROM failed_items").fetchone()[0]
     conn3.close()
     if fail_rows:
-        print(f"\n  ── Recent failures (last 10) ──")
+        print("\n  ── Recent failures (last 10) ──")
         print(f"  {'Item':<45} {'Reason':<20} {'Key':<18} {'Time':<19}")
-        print(f"  {'─'*45} {'─'*20} {'─'*18} {'─'*19}")
+        print(f"  {'─' * 45} {'─' * 20} {'─' * 18} {'─' * 19}")
         for h, r, k, t in fail_rows:
             print(f"  {h:<45} {r:<20} {k:<18} {t[:19]}")
         if fail_count > 10:
             print(f"  … and {fail_count - 10} more")
 
-    print(f"\n  ── Key quota ──")
+    print("\n  ── Key quota ──")
     for i, cred in enumerate(settings.csmarketapi_keys):
         conn3 = connect_db(str(OUTPUT_DB))
         r = req_count(conn3, i)
@@ -740,6 +739,7 @@ def show_stats():
 # ═══════════════════════════════════════════════════════════════════════════════
 # Reset
 # ═══════════════════════════════════════════════════════════════════════════════
+
 
 def reset_state():
     if not OUTPUT_DB.exists():
@@ -757,19 +757,18 @@ def reset_state():
 # CLI
 # ═══════════════════════════════════════════════════════════════════════════════
 
+
 def main():
-    parser = argparse.ArgumentParser(
-        description="CSMarketAPI Multi-Market Price History Backfill")
-    parser.add_argument("--dry-run", action="store_true",
-                        help="Show queue without API calls")
-    parser.add_argument("--stats", action="store_true",
-                        help="Show progress, quota, reference data")
-    parser.add_argument("--reset", action="store_true",
-                        help="Reset backfill checkpoint (data kept, restart from beginning)")
-    parser.add_argument("--refresh-ref", action="store_true",
-                        help="Re-fetch reference data (markets, currency_rates, player_counts)")
-    parser.add_argument("--limit", type=int, default=0,
-                        help="Max items to fetch this session (for testing)")
+    parser = argparse.ArgumentParser(description="CSMarketAPI Multi-Market Price History Backfill")
+    parser.add_argument("--dry-run", action="store_true", help="Show queue without API calls")
+    parser.add_argument("--stats", action="store_true", help="Show progress, quota, reference data")
+    parser.add_argument(
+        "--reset", action="store_true", help="Reset backfill checkpoint (data kept, restart from beginning)"
+    )
+    parser.add_argument(
+        "--refresh-ref", action="store_true", help="Re-fetch reference data (markets, currency_rates, player_counts)"
+    )
+    parser.add_argument("--limit", type=int, default=0, help="Max items to fetch this session (for testing)")
     args = parser.parse_args()
 
     if args.stats:

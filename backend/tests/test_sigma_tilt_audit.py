@@ -19,13 +19,13 @@ on.
 must not be until this lands: three of the five causes already excluded in this
 investigation were refuted by a sign rather than a size.
 """
+
 from __future__ import annotations
 
 import inspect
 
 import numpy as np
 import pytest
-
 from models import conformal
 from models.forecaster import ItemForecaster
 
@@ -34,7 +34,7 @@ def _planted(n=40_000, beta=0.4, seed=0):
     """Residuals whose elasticity to sigma is `beta` by construction."""
     rng = np.random.default_rng(seed)
     sigma = rng.uniform(0.02, 0.5, size=n)
-    resid = rng.normal(scale=(sigma ** beta) * 3.0, size=n)
+    resid = rng.normal(scale=(sigma**beta) * 3.0, size=n)
     return resid, sigma
 
 
@@ -54,11 +54,9 @@ def test_the_stratum_read_is_level_matched_by_construction():
     """
     resid, sigma = _planted()
     for exponent in (0.2, 1.0, 1.5):
-        per, err, threshold = conformal.coverage_by_sigma_stratum(
-            resid, sigma, exponent=exponent)
-        scores = np.abs(resid) / (sigma ** exponent)
-        assert float((scores <= threshold).mean()) == pytest.approx(
-            conformal.NOMINAL_COVERAGE, abs=0.005)
+        per, err, threshold = conformal.coverage_by_sigma_stratum(resid, sigma, exponent=exponent)
+        scores = np.abs(resid) / (sigma**exponent)
+        assert float((scores <= threshold).mean()) == pytest.approx(conformal.NOMINAL_COVERAGE, abs=0.005)
         # A per-stratum mean cannot be outside [0, 1] and the error follows it.
         assert per.min() >= 0.0 and per.max() <= 1.0
         assert err >= 0.0
@@ -91,8 +89,7 @@ def test_a_sub_unit_elasticity_under_covers_the_LOW_sigma_rows():
 
     # And the mirror case, so the assertion above is not just true of any data.
     resid_hi, sigma_hi = _planted(beta=1.6)
-    per_hi, _, _ = conformal.coverage_by_sigma_stratum(
-        resid_hi, sigma_hi, exponent=1.0)
+    per_hi, _, _ = conformal.coverage_by_sigma_stratum(resid_hi, sigma_hi, exponent=1.0)
     assert per_hi[0] > conformal.NOMINAL_COVERAGE
     assert per_hi[-1] < conformal.NOMINAL_COVERAGE
 
@@ -196,7 +193,6 @@ def test_the_audit_honours_the_calibration_floor():
     assert src.count("self.MIN_CALIBRATION_ROWS") >= 2  # pooled and held-out
 
     # And the pure helpers degrade rather than raise on a thin input.
-    per, err, thr = conformal.coverage_by_sigma_stratum(
-        np.array([1.0, 2.0]), np.array([0.1, 0.2]))
+    per, err, thr = conformal.coverage_by_sigma_stratum(np.array([1.0, 2.0]), np.array([0.1, 0.2]))
     assert per.size == 0 and np.isnan(err) and np.isnan(thr)
     assert np.isnan(conformal.elasticity(np.array([]), np.array([])))

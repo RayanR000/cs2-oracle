@@ -3,17 +3,17 @@
 Derivation, pairing, qualification and bars are the referee — pinned here on
 synthetic frames. No DB, no archive.
 """
+
 import numpy as np
 import pandas as pd
 import pytest
-
-from scripts.served_centre_rank import (  # noqa: E402
-    derive_panel,
-    select_primary,
+from scripts.served_centre_rank import (
     attach_naive,
-    qualify,
-    summarize,
+    derive_panel,
     evaluate_confirmation,
+    qualify,
+    select_primary,
+    summarize,
 )
 
 
@@ -21,15 +21,17 @@ def _served(n=60, seed=0, clean=True, wedge=0.0):
     rng = np.random.default_rng(seed)
     base = rng.uniform(2, 50, size=n)
     cur = base * (1 + wedge)
-    return pd.DataFrame({
-        "forecast_date": ["2026-08-01"] * n,
-        "base_price": base,
-        "actual_price": base * (1 + rng.normal(0, 0.05, size=n)),
-        "current_price": cur,
-        "predicted_price_mid": cur * (1 + rng.normal(0, 0.02, size=n)),
-        "slug": [f"item-{i % 20}" for i in range(n)],
-        "anchor_clean": [clean] * n,
-    })
+    return pd.DataFrame(
+        {
+            "forecast_date": ["2026-08-01"] * n,
+            "base_price": base,
+            "actual_price": base * (1 + rng.normal(0, 0.05, size=n)),
+            "current_price": cur,
+            "predicted_price_mid": cur * (1 + rng.normal(0, 0.02, size=n)),
+            "slug": [f"item-{i % 20}" for i in range(n)],
+            "anchor_clean": [clean] * n,
+        }
+    )
 
 
 class TestDerivePanel:
@@ -70,8 +72,7 @@ class TestSelectPrimary:
 class TestAttachNaive:
     def test_missing_naive_drops_the_row_from_both_arms(self):
         df = derive_panel(_served(n=40))
-        m = {(s, pd.Timestamp("2026-08-01").date()): 0.01
-             for s in df["slug"].unique()[:10]}
+        m = {(s, pd.Timestamp("2026-08-01").date()): 0.01 for s in df["slug"].unique()[:10]}
         paired, dropped = attach_naive(df, m)
         assert dropped == 20 and len(paired) == 20
         assert np.isfinite(paired["naive"]).all()

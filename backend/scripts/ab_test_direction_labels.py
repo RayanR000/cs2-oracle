@@ -19,31 +19,28 @@ Usage:
     python -m scripts.ab_test_direction_labels [--max-items 200] [--horizon 14]
                                                 [--purge-days N]
 """
-import sys
+
 import itertools
 import logging
+import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 import numpy as np
 import pandas as pd
-
 from backtest.paired_mde import format_paired, paired_arm_contrasts
 from backtest.walkforward_records import paired_records
 from database import SessionLocal
 from models.forecaster import (
-    ItemForecaster,
-    DIRECTION_LABEL_VOL_COL,
     DIRECTION_FLAT_TOLERANCE_PCT,
+    DIRECTION_LABEL_VOL_COL,
+    ItemForecaster,
     embargo_days,
     phase_collapsed_sql_filter,
 )
 
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-)
+logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s")
 logger = logging.getLogger("ab_test_direction_labels")
 
 ARCHIVE_DIR = Path(__file__).parent.parent.parent / "price-archive"
@@ -82,8 +79,7 @@ def score_fixed_yardstick(pred_cls, actual_returns):
     pred = np.asarray(pred_cls, dtype=int)
     overall = float((pred == actual_cls).mean()) if len(pred) else float("nan")
     mover_mask = np.abs(actual) > DIRECTION_FLAT_TOLERANCE_PCT
-    movers = (float((pred[mover_mask] == actual_cls[mover_mask]).mean())
-              if mover_mask.any() else float("nan"))
+    movers = float((pred[mover_mask] == actual_cls[mover_mask]).mean()) if mover_mask.any() else float("nan")
     return overall, movers
 
 
@@ -100,7 +96,9 @@ def load_features(con, forecaster, events_df, max_items):
             # `source = 'STEAMCOMMUNITY'` matches 0 rows post archive-rebuild, so
             # this degenerated to the NULL (pre-2026) branch; the dead disjunct is
             # dropped, keeping the intended pre-2026 cohort. See 2026-08-13 repin.
-            pq_queries.append(f"SELECT item_slug, day, mean_price, volume FROM read_parquet('{pqf}') WHERE source IS NULL AND {_UNIVERSE}")
+            pq_queries.append(
+                f"SELECT item_slug, day, mean_price, volume FROM read_parquet('{pqf}') WHERE source IS NULL AND {_UNIVERSE}"
+            )
         else:
             pq_queries.append(f"SELECT item_slug, day, mean_price, volume FROM read_parquet('{pqf}') WHERE {_UNIVERSE}")
     union_sql = " UNION ALL BY NAME ".join(pq_queries)
@@ -114,15 +112,19 @@ def load_features(con, forecaster, events_df, max_items):
     if not items:
         raise RuntimeError(
             "direction_labels universe query selected 0 items — the source pin "
-            "matched no rows (see 2026-08-13 harness repin).")
+            "matched no rows (see 2026-08-13 harness repin)."
+        )
     logger.info(f"  {len(items)} items for evaluation")
 
     all_rows = []
     for item_slug, _ in items:
-        rows = con.sql(f"""
+        rows = con.sql(
+            f"""
             SELECT item_slug AS item_id, day AS timestamp, mean_price AS price, volume
             FROM ({union_sql}) WHERE item_slug = ? ORDER BY day
-        """, params=[item_slug]).fetchall()
+        """,
+            params=[item_slug],
+        ).fetchall()
         idf = pd.DataFrame(rows, columns=["item_id", "timestamp", "price", "volume"])
         idf["timestamp"] = pd.to_datetime(idf["timestamp"])
         idf["date"] = idf["timestamp"].dt.date
@@ -133,8 +135,9 @@ def load_features(con, forecaster, events_df, max_items):
     df = forecaster._add_cross_sectional_features(df)
 
     EXCLUDE = {"item_id", "date", "timestamp", "price", "volume", "name", "release_date"}
-    feat_cols = [c for c in df.columns if c not in EXCLUDE
-                 and df[c].dtype in (np.float64, np.float32, np.int64, int, float)]
+    feat_cols = [
+        c for c in df.columns if c not in EXCLUDE and df[c].dtype in (np.float64, np.float32, np.int64, int, float)
+    ]
     if len(feat_cols) > 2:
         corr = df[feat_cols].corr().abs()
         upper = corr.where(np.triu(np.ones(corr.shape), k=1).astype(bool))
@@ -199,13 +202,16 @@ def _run_horizon(fc, tdf, feat_cols, horizon, purge_days):
                 sigma_train = tr[DIRECTION_LABEL_VOL_COL].to_numpy(dtype=float)
                 sigma_val = va[DIRECTION_LABEL_VOL_COL].to_numpy(dtype=float)
             clf = fc._fit_direction_classifier(
-                X_tr, tr[target_col].to_numpy(dtype=float),
-                X_va, va[target_col].to_numpy(dtype=float),
+                X_tr,
+                tr[target_col].to_numpy(dtype=float),
+                X_va,
+                va[target_col].to_numpy(dtype=float),
                 boosting_type,
                 fc._direction_tree_params({}),
                 horizon,
                 sigma_train=sigma_train,
-                sigma_val=sigma_val)
+                sigma_val=sigma_val,
+            )
             pred_cls = clf.predict(X_va).argmax(axis=1)
             actual = va[target_col].to_numpy(dtype=float)
             ov, mv = score_fixed_yardstick(pred_cls, actual)
@@ -218,17 +224,20 @@ def _run_horizon(fc, tdf, feat_cols, horizon, purge_days):
             # not a directional call and the control cell answers "flat" for
             # free on it. Every cell sees identical folds and identical rows,
             # so the pairing is exact.
-            actual_cls = ItemForecaster._direction_classes(
-                actual, DIRECTION_FLAT_TOLERANCE_PCT)
-            records.extend(paired_records(
-                item_ids=va["item_id"].to_numpy(),
-                forecast_dates=va["date"].to_numpy(),
-                fold_id=fold_idx,
-                keep=np.abs(actual) > DIRECTION_FLAT_TOLERANCE_PCT,
-                direction_correct=(np.asarray(pred_cls, dtype=int) == actual_cls),
-            ))
+            actual_cls = ItemForecaster._direction_classes(actual, DIRECTION_FLAT_TOLERANCE_PCT)
+            records.extend(
+                paired_records(
+                    item_ids=va["item_id"].to_numpy(),
+                    forecast_dates=va["date"].to_numpy(),
+                    fold_id=fold_idx,
+                    keep=np.abs(actual) > DIRECTION_FLAT_TOLERANCE_PCT,
+                    direction_correct=(np.asarray(pred_cls, dtype=int) == actual_cls),
+                )
+            )
         yield {
-            "horizon": horizon, "k": "ctrl" if is_control else k, "mover_weight": mw,
+            "horizon": horizon,
+            "k": "ctrl" if is_control else k,
+            "mover_weight": mw,
             "overall_acc": round(100 * np.nanmean(fold_overall), 2) if fold_overall else None,
             "movers_acc": round(100 * np.nanmean(fold_movers), 2) if fold_movers else None,
             "n_folds": len(fold_overall),
@@ -238,6 +247,7 @@ def _run_horizon(fc, tdf, feat_cols, horizon, purge_days):
 
 def run(max_items, horizon_filter, purge_days_arg):
     import duckdb
+
     con = duckdb.connect()
     db = SessionLocal()
     try:
@@ -264,25 +274,27 @@ def run(max_items, horizon_filter, purge_days_arg):
         if tdf.empty:
             logger.warning(f"  no targets for {horizon}d")
             continue
-        purge_days = (purge_days_arg if purge_days_arg is not None
-                      else embargo_days(horizon))
+        purge_days = purge_days_arg if purge_days_arg is not None else embargo_days(horizon)
 
         best, control = None, None
         for row in _run_horizon(forecaster, tdf, feat_cols, horizon, purge_days):
             results.append(row)
-            print(f"{row['horizon']:>3} {str(row['k']):>4} {row['mover_weight']:>4} "
-                  f"{str(row['overall_acc']):>9} {str(row['movers_acc']):>8} {row['n_folds']:>6}")
+            print(
+                f"{row['horizon']:>3} {row['k']!s:>4} {row['mover_weight']:>4} "
+                f"{row['overall_acc']!s:>9} {row['movers_acc']!s:>8} {row['n_folds']:>6}"
+            )
             if row["k"] == "ctrl":
                 control = row
                 continue
             if row["overall_acc"] is not None and (best is None or row["overall_acc"] > best["overall_acc"]):
                 best = row
         if control:
-            print(f"  -> control {horizon}d: overall={control['overall_acc']}% "
-                  f"movers={control['movers_acc']}%")
+            print(f"  -> control {horizon}d: overall={control['overall_acc']}% movers={control['movers_acc']}%")
         if best:
-            print(f"  -> best {horizon}d: k={best['k']} mover_weight={best['mover_weight']} "
-                  f"overall={best['overall_acc']}% movers={best['movers_acc']}%")
+            print(
+                f"  -> best {horizon}d: k={best['k']} mover_weight={best['mover_weight']} "
+                f"overall={best['overall_acc']}% movers={best['movers_acc']}%"
+            )
 
         # Fold-clustered paired intervals against the control cell. Until
         # 2026-08-08 this sweep reported a raw mean per cell and picked the
@@ -292,14 +304,14 @@ def run(max_items, horizon_filter, purge_days_arg):
         if control and control.get("records"):
             cells = {
                 f"k={r['k']},mw={r['mover_weight']}": r["records"]
-                for r in results if r["horizon"] == horizon and r.get("records")
+                for r in results
+                if r["horizon"] == horizon and r.get("records")
             }
             ctrl_key = f"k=ctrl,mw={control['mover_weight']}"
             if ctrl_key in cells and len(cells) > 1:
                 contrasts = paired_arm_contrasts(cells, base=ctrl_key)
                 for cell, paired in sorted(contrasts.items()):
-                    print(f"     paired {cell:<20} vs control (movers): "
-                          f"{format_paired(paired)}")
+                    print(f"     paired {cell:<20} vs control (movers): {format_paired(paired)}")
                 control["paired_vs_control"] = contrasts
 
         # The records are the pairing input, not a result. Dropping them keeps
@@ -313,20 +325,24 @@ def run(max_items, horizon_filter, purge_days_arg):
 
 def main():
     import argparse
+
     ap = argparse.ArgumentParser(
         description="Sweep vol multiplier k / mover weight for the directional "
-                    "classifier, scored against the fixed ±0.5% yardstick")
+        "classifier, scored against the fixed ±0.5% yardstick"
+    )
     ap.add_argument("--max-items", type=int, default=200)
     ap.add_argument("--horizon", type=int, default=None, choices=HORIZONS)
-    ap.add_argument("--purge-days", type=int, default=None,
-                    help="CV purge/embargo gap in days; default = "
-                         "embargo_days(horizon), i.e. horizon + 13")
+    ap.add_argument(
+        "--purge-days",
+        type=int,
+        default=None,
+        help="CV purge/embargo gap in days; default = embargo_days(horizon), i.e. horizon + 13",
+    )
     args = ap.parse_args()
 
     logger.info("=" * 70)
     logger.info("SWEEP: directional classifier vol-multiplier k / mover-weight")
-    logger.info(f"  max_items={args.max_items} horizon={args.horizon} "
-                f"purge_days={args.purge_days}")
+    logger.info(f"  max_items={args.max_items} horizon={args.horizon} purge_days={args.purge_days}")
     logger.info("=" * 70)
 
     run(args.max_items, args.horizon, args.purge_days)

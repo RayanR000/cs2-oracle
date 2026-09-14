@@ -4,13 +4,13 @@ These use an in-memory SQLite session and pass it in explicitly. `backend/.env`
 points at PRODUCTION Supabase and the engine binds at import, so a test that let
 `sync` open its own session would be writing to prod.
 """
+
 from __future__ import annotations
 
 import sys
 from datetime import date, datetime
 from pathlib import Path
 
-import pandas as pd
 import pytest
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
@@ -38,8 +38,13 @@ def db():
 
 
 def _news_item(gid, ts, title, feed_type=1):
-    return {"gid": gid, "date": int(ts.timestamp()), "title": title,
-            "feed_type": feed_type, "url": f"https://example/{gid}"}
+    return {
+        "gid": gid,
+        "date": int(ts.timestamp()),
+        "title": title,
+        "feed_type": feed_type,
+        "url": f"https://example/{gid}",
+    }
 
 
 def _parquet(tmp_path, items):
@@ -62,10 +67,12 @@ class TestNewsRows:
     def test_cross_posts_of_one_announcement_collapse(self):
         """Steam publishes one announcement under several gids. Counting them
         separately would duplicate the `events` row for one real event."""
-        rows = news_rows([
-            _news_item("g1", VALVE, "Same announcement"),
-            _news_item("g2", VALVE, "Same announcement"),
-        ])
+        rows = news_rows(
+            [
+                _news_item("g1", VALVE, "Same announcement"),
+                _news_item("g2", VALVE, "Same announcement"),
+            ]
+        )
         assert len(rows) == 1
 
     def test_press_is_carried_but_flagged(self):
@@ -75,17 +82,23 @@ class TestNewsRows:
 
 class TestLoading:
     def test_press_is_excluded(self, tmp_path):
-        path = _parquet(tmp_path, [
-            _news_item("g1", VALVE, "Valve post"),
-            _news_item("p1", PRESS, "Press piece", feed_type=0),
-        ])
+        path = _parquet(
+            tmp_path,
+            [
+                _news_item("g1", VALVE, "Valve post"),
+                _news_item("p1", PRESS, "Press piece", feed_type=0),
+            ],
+        )
         assert load_valve_events(path, None)["gid"].tolist() == ["g1"]
 
     def test_since_bounds_the_scan(self, tmp_path):
-        path = _parquet(tmp_path, [
-            _news_item("old", datetime(2015, 1, 1), "Ancient"),
-            _news_item("new", VALVE, "Recent"),
-        ])
+        path = _parquet(
+            tmp_path,
+            [
+                _news_item("old", datetime(2015, 1, 1), "Ancient"),
+                _news_item("new", VALVE, "Recent"),
+            ],
+        )
         assert load_valve_events(path, date(2026, 1, 1))["gid"].tolist() == ["new"]
 
     def test_a_missing_table_says_which_script_writes_it(self, tmp_path):

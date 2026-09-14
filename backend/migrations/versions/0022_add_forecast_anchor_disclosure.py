@@ -39,16 +39,13 @@ depends_on = None
 # Column instance binds to the first table it is added to, and `Column.copy()`
 # is deprecated in SQLAlchemy 2.0.
 _COLUMNS = (
-    ("anchor_clean", lambda: sa.Column("anchor_clean", sa.Boolean(),
-                                       nullable=True)),
-    ("anchor_wedge_pct", lambda: sa.Column("anchor_wedge_pct", sa.Float(),
-                                           nullable=True)),
+    ("anchor_clean", lambda: sa.Column("anchor_clean", sa.Boolean(), nullable=True)),
+    ("anchor_wedge_pct", lambda: sa.Column("anchor_wedge_pct", sa.Float(), nullable=True)),
 )
 
 
 def _existing() -> set[str]:
-    return {c["name"] for c in sa.inspect(op.get_bind()).get_columns(
-        "item_forecasts")}
+    return {c["name"] for c in sa.inspect(op.get_bind()).get_columns("item_forecasts")}
 
 
 def upgrade() -> None:

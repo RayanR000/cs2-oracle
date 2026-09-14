@@ -81,6 +81,7 @@ Usage::
     venv/bin/python scripts/measure_composition_stability.py \\
         --horizon 3 --from 2013-08-14 --basis count
 """
+
 from __future__ import annotations
 
 import argparse
@@ -94,8 +95,8 @@ import pandas as pd
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from db.archive import prices_relation  # noqa: E402
-from models.item_parser import (  # noqa: E402
+from db.archive import prices_relation
+from models.item_parser import (
     STEAM_SPOT_SOURCES,
     TRAILING_WINDOW_SOURCES,
     archive_universe_sql_filter,
@@ -132,8 +133,7 @@ ARCHIVE_ROOT = Path(__file__).resolve().parent.parent.parent / "price-archive"
 _EPOCH = pd.Timestamp("2013-01-01")
 
 
-def load_voted_series(archive_dir: Path, start: date, end: date | None = None
-                      ) -> pd.DataFrame:
+def load_voted_series(archive_dir: Path, start: date, end: date | None = None) -> pd.DataFrame:
     """The voted daily series over the archive, as production computes it.
 
     Reads through :func:`db.archive.prices_relation` with
@@ -150,23 +150,21 @@ def load_voted_series(archive_dir: Path, start: date, end: date | None = None
 
     df = load_source_rows(archive_dir, start, end)
     voted = ItemForecaster._apply_multi_source_voting(df)
-    voted = voted.merge(source_masks(df), on=["item_id", "date"], how="left",
-                        validate="one_to_one")
+    voted = voted.merge(source_masks(df), on=["item_id", "date"], how="left", validate="one_to_one")
 
     # The two bases must agree on cardinality or one of them is describing rows
     # the other did not see. This is the only cheap check that the set was built
     # from the same rows production voted on.
-    mismatch = int((np.bitwise_count(voted["source_mask"].to_numpy())
-                    != voted["n_ask_sources"].to_numpy()).sum())
+    mismatch = int((np.bitwise_count(voted["source_mask"].to_numpy()) != voted["n_ask_sources"].to_numpy()).sum())
     if mismatch:
         raise ValueError(
             f"{mismatch:,} item-days where the source set's size disagrees with "
-            "n_ask_sources; the set and the vote are reading different rows")
+            "n_ask_sources; the set and the vote are reading different rows"
+        )
     return voted
 
 
-def load_source_rows(archive_dir: Path, start: date, end: date | None = None
-                     ) -> pd.DataFrame:
+def load_source_rows(archive_dir: Path, start: date, end: date | None = None) -> pd.DataFrame:
     """The archive's raw per-source rows, universe-filtered, before the vote.
 
     Reads through :func:`db.archive.prices_relation` with
@@ -182,9 +180,7 @@ def load_source_rows(archive_dir: Path, start: date, end: date | None = None
 
     con = duckdb.connect()
     try:
-        relation = prices_relation(
-            con, archive_dir,
-            columns=["item_slug", "day", "mean_price", "volume", "source"])
+        relation = prices_relation(con, archive_dir, columns=["item_slug", "day", "mean_price", "volume", "source"])
         window = f"AND day <= DATE '{end}'" if end is not None else ""
         df = con.sql(f"""
             SELECT item_slug AS item_id, day AS timestamp, mean_price AS price,
@@ -244,8 +240,8 @@ def source_masks(df: pd.DataFrame) -> pd.DataFrame:
     codes, names = pd.factorize(df["source"].fillna(NULL_SOURCE_LABEL))
     if len(names) > 62:
         raise ValueError(
-            f"{len(names)} distinct sources will not fit in an int64 bitmask; "
-            "the set basis needs a different encoding")
+            f"{len(names)} distinct sources will not fit in an int64 bitmask; the set basis needs a different encoding"
+        )
 
     # Group on one integer key rather than on the (item_id, date) object pair.
     # The pair is a string and a `datetime.date`, and grouping 20M rows of those
@@ -254,21 +250,25 @@ def source_masks(df: pd.DataFrame) -> pd.DataFrame:
     date_codes, dates = pd.factorize(df["date"])
     key = item_codes.astype(np.int64) * len(dates) + date_codes
 
-    distinct = pd.DataFrame({
-        "key": key,
-        "bit": (np.int64(1) << codes.astype(np.int64)),
-    }).drop_duplicates()
+    distinct = pd.DataFrame(
+        {
+            "key": key,
+            "bit": (np.int64(1) << codes.astype(np.int64)),
+        }
+    ).drop_duplicates()
     # Summing DISTINCT bits within an item-day is a bitwise OR, which pandas has
     # no groupby aggregation for. The drop_duplicates above is what makes the
     # sum an OR rather than a count.
     masks = distinct.groupby("key", sort=False)["bit"].sum()
 
     grouped_key = masks.index.to_numpy()
-    return pd.DataFrame({
-        "item_id": items.to_numpy()[grouped_key // len(dates)],
-        "date": dates.to_numpy()[grouped_key % len(dates)],
-        "source_mask": masks.to_numpy(),
-    })
+    return pd.DataFrame(
+        {
+            "item_id": items.to_numpy()[grouped_key // len(dates)],
+            "date": dates.to_numpy()[grouped_key % len(dates)],
+            "source_mask": masks.to_numpy(),
+        }
+    )
 
 
 def voided_dates(voted: pd.DataFrame) -> tuple[frozenset, frozenset]:
@@ -282,12 +282,10 @@ def voided_dates(voted: pd.DataFrame) -> tuple[frozenset, frozenset]:
     from models.forecaster import ItemForecaster
 
     forecaster = ItemForecaster(db_session=None, model_dir=tempfile.mkdtemp())
-    return (forecaster._snapshot_dates(voted),
-            forecaster._collection_shift_dates(voted))
+    return (forecaster._snapshot_dates(voted), forecaster._collection_shift_dates(voted))
 
 
-def voided_anchors(snapshots: frozenset, shifts: frozenset, horizon: int
-                   ) -> frozenset:
+def voided_anchors(snapshots: frozenset, shifts: frozenset, horizon: int) -> frozenset:
     """Anchor dates ``t`` whose ``t-1 … t+h`` window is unusable.
 
     A snapshot at ``d`` voids the anchors that would read it as an endpoint:
@@ -303,8 +301,7 @@ def voided_anchors(snapshots: frozenset, shifts: frozenset, horizon: int
     return frozenset(void)
 
 
-def build_windows(voted: pd.DataFrame, horizon: int, min_price: float,
-                  basis: str = "set") -> pd.DataFrame:
+def build_windows(voted: pd.DataFrame, horizon: int, min_price: float, basis: str = "set") -> pd.DataFrame:
     """One row per usable ``(item, t)``, with its returns and stability flag.
 
     Columns: ``date``, ``x`` (``-r_t``), ``y`` (the forward ``horizon``-day
@@ -316,8 +313,8 @@ def build_windows(voted: pd.DataFrame, horizon: int, min_price: float,
     """
     composition_col = COMPOSITION_COLUMN[basis]
     wanted = ["item_id", "date", "price", "n_ask_sources"]
-    if composition_col not in wanted:      # the count basis reads a column
-        wanted.append(composition_col)     # that is already in the list
+    if composition_col not in wanted:  # the count basis reads a column
+        wanted.append(composition_col)  # that is already in the list
     frame = voted[wanted].copy()
     frame["date"] = pd.to_datetime(frame["date"])
 
@@ -348,44 +345,43 @@ def build_windows(voted: pd.DataFrame, horizon: int, min_price: float,
     # column to float, and a 62-bit source mask does not survive that intact.
     positions = pd.Series(np.arange(len(frame), dtype=np.int64), index=keys)
     values = frame[composition_col].to_numpy(dtype=np.int64)
-    window = [positions.reindex(keys + k).to_numpy(dtype=float)
-              for k in range(-1, horizon + 1)]
+    window = [positions.reindex(keys + k).to_numpy(dtype=float) for k in range(-1, horizon + 1)]
 
     # An absent day comes back NaN — an unobserved composition, not a matching
     # one.
     present = np.ones(len(frame), dtype=bool)
     for offset in window:
         present &= ~np.isnan(offset)
-    resolved = [np.nan_to_num(offset, nan=0.0).astype(np.int64)
-                for offset in window]
+    resolved = [np.nan_to_num(offset, nan=0.0).astype(np.int64) for offset in window]
     same = np.ones(len(frame), dtype=bool)
     for offset in resolved[1:]:
-        same &= (values[offset] == values[resolved[0]])
+        same &= values[offset] == values[resolved[0]]
     stable = present & same
 
-    out = pd.DataFrame({
-        "date": frame["date"].to_numpy(),
-        "x": -r_1d,
-        "y": forward,
-        # `present` is published separately from `stable` because their
-        # complement is not one thing: `not stable` means "the composition
-        # changed" OR "a day of the window was never observed", and those two
-        # are different claims about the data. Pooling them under one label
-        # puts gap-driven rows in the cell a reader will read as evidence about
-        # composition change.
-        "present": present,
-        "stable": stable,
-        "n_ask_sources": frame["n_ask_sources"].to_numpy(),
-        "price": p_t,
-    })
+    out = pd.DataFrame(
+        {
+            "date": frame["date"].to_numpy(),
+            "x": -r_1d,
+            "y": forward,
+            # `present` is published separately from `stable` because their
+            # complement is not one thing: `not stable` means "the composition
+            # changed" OR "a day of the window was never observed", and those two
+            # are different claims about the data. Pooling them under one label
+            # puts gap-driven rows in the cell a reader will read as evidence about
+            # composition change.
+            "present": present,
+            "stable": stable,
+            "n_ask_sources": frame["n_ask_sources"].to_numpy(),
+            "price": p_t,
+        }
+    )
     usable = np.isfinite(out["x"]) & np.isfinite(out["y"])
     # Never pool across price tiers: the cheap tail is a different market with a
     # different staleness rate, and mixing it in is the penny-item score.
     return out[usable & (out["price"] >= min_price)].drop(columns=["price"])
 
 
-def per_date_ic(cell: pd.DataFrame,
-                min_items: int = MIN_ITEMS_PER_DATE) -> pd.Series:
+def per_date_ic(cell: pd.DataFrame, min_items: int = MIN_ITEMS_PER_DATE) -> pd.Series:
     """The within-date Spearman of ``x`` against ``y``, indexed by date.
 
     Ranks are taken within each date and correlated there. A pooled Spearman
@@ -397,11 +393,13 @@ def per_date_ic(cell: pd.DataFrame,
         return pd.Series(dtype=float)
 
     grouped = cell.groupby("date", sort=True)
-    ranks = pd.DataFrame({
-        "date": cell["date"].to_numpy(),
-        "rx": grouped["x"].rank().to_numpy(),
-        "ry": grouped["y"].rank().to_numpy(),
-    })
+    ranks = pd.DataFrame(
+        {
+            "date": cell["date"].to_numpy(),
+            "rx": grouped["x"].rank().to_numpy(),
+            "ry": grouped["y"].rank().to_numpy(),
+        }
+    )
     ranks["xy"] = ranks["rx"] * ranks["ry"]
     ranks["xx"] = ranks["rx"] ** 2
     ranks["yy"] = ranks["ry"] ** 2
@@ -412,13 +410,12 @@ def per_date_ic(cell: pd.DataFrame,
     sxy, sxx, syy = by_date["xy"].sum(), by_date["xx"].sum(), by_date["yy"].sum()
 
     numerator = sxy - sx * sy / n
-    denominator = np.sqrt((sxx - sx ** 2 / n) * (syy - sy ** 2 / n))
+    denominator = np.sqrt((sxx - sx**2 / n) * (syy - sy**2 / n))
     # A date where either side is constant has no defined correlation; it is
     # dropped rather than counted as zero, which would be an assertion the data
     # does not make.
     with np.errstate(divide="ignore", invalid="ignore"):
-        return (numerator / denominator)[
-            (n >= min_items) & (denominator > 0)].dropna()
+        return (numerator / denominator)[(n >= min_items) & (denominator > 0)].dropna()
 
 
 def _mean_and_t(series: pd.Series) -> tuple[float | None, float | None]:
@@ -433,8 +430,7 @@ def _mean_and_t(series: pd.Series) -> tuple[float | None, float | None]:
     return mean, (float(mean / (sd / np.sqrt(n))) if sd > 0 else None)
 
 
-def rank_ic(cell: pd.DataFrame,
-            min_items: int = MIN_ITEMS_PER_DATE) -> dict:
+def rank_ic(cell: pd.DataFrame, min_items: int = MIN_ITEMS_PER_DATE) -> dict:
     """Mean within-date rank IC for a cell, and its t statistic."""
     per_date = per_date_ic(cell, min_items)
     mean, t_stat = _mean_and_t(per_date)
@@ -446,8 +442,7 @@ def rank_ic(cell: pd.DataFrame,
     }
 
 
-def paired_difference(left: pd.DataFrame, right: pd.DataFrame,
-                      min_items: int = MIN_ITEMS_PER_DATE) -> dict:
+def paired_difference(left: pd.DataFrame, right: pd.DataFrame, min_items: int = MIN_ITEMS_PER_DATE) -> dict:
     """``left - right`` per-date rank IC, on the dates both cells occupy.
 
     The two cells are drawn from the same days, so the market factor that moves
@@ -480,8 +475,7 @@ def partitions(windows: pd.DataFrame) -> list[tuple[str, pd.DataFrame]]:
         ("composition changed (present)", windows[present & ~stable]),
         ("window incomplete", windows[~present]),
         ("stable & single source", windows[stable & (n_src == 1)]),
-        (f"stable & >={MULTI_SOURCE_FLOOR} sources",
-         windows[stable & (n_src >= MULTI_SOURCE_FLOOR)]),
+        (f"stable & >={MULTI_SOURCE_FLOOR} sources", windows[stable & (n_src >= MULTI_SOURCE_FLOOR)]),
     ]
 
 
@@ -495,25 +489,27 @@ def verdict(n_dates: int) -> str:
     return "measured" if n_dates >= MIN_DATES_TO_REPORT else "underpowered"
 
 
-def measure(archive_dir: Path, horizon: int, start: date, min_price: float,
-            basis: str = "set", end: date | None = None,
-            min_items: int = MIN_ITEMS_PER_DATE) -> tuple[list[dict], dict]:
+def measure(
+    archive_dir: Path,
+    horizon: int,
+    start: date,
+    min_price: float,
+    basis: str = "set",
+    end: date | None = None,
+    min_items: int = MIN_ITEMS_PER_DATE,
+) -> tuple[list[dict], dict]:
     voted = load_voted_series(archive_dir, start, end)
-    print(f"voted series: {len(voted):,} item-days, "
-          f"{voted['item_id'].nunique():,} items")
+    print(f"voted series: {len(voted):,} item-days, {voted['item_id'].nunique():,} items")
 
     snapshots, shifts = voided_dates(voted)
-    print(f"snapshot dates ({len(snapshots)}): "
-          f"{', '.join(str(d) for d in sorted(snapshots)) or 'none'}")
-    print(f"collection shift dates ({len(shifts)}): "
-          f"{', '.join(str(d) for d in sorted(shifts)) or 'none'}")
+    print(f"snapshot dates ({len(snapshots)}): {', '.join(str(d) for d in sorted(snapshots)) or 'none'}")
+    print(f"collection shift dates ({len(shifts)}): {', '.join(str(d) for d in sorted(shifts)) or 'none'}")
 
     windows = build_windows(voted, horizon, min_price, basis)
     void = voided_anchors(snapshots, shifts, horizon)
     before = len(windows)
     windows = windows[~windows["date"].dt.date.isin(void)]
-    print(f"voided {before - len(windows):,} of {before:,} windows on "
-          f"{len(void)} anchor dates")
+    print(f"voided {before - len(windows):,} of {before:,} windows on {len(void)} anchor dates")
     print(f"usable (item, t) windows at >= ${min_price:g}: {len(windows):,}")
 
     cells = dict(partitions(windows))
@@ -524,27 +520,27 @@ def measure(archive_dir: Path, horizon: int, start: date, min_price: float,
         stats["verdict"] = verdict(stats["n_dates"])
         results.append(stats)
 
-    paired = paired_difference(cells[PAIRED_CELLS[0]], cells[PAIRED_CELLS[1]],
-                               min_items)
+    paired = paired_difference(cells[PAIRED_CELLS[0]], cells[PAIRED_CELLS[1]], min_items)
     paired["verdict"] = verdict(paired["n_dates"])
     return results, paired
 
 
-def report(results: list[dict], paired: dict, horizon: int, start: date,
-           min_price: float, basis: str,
-           min_items: int = MIN_ITEMS_PER_DATE) -> None:
-    described = ("the SET of source names" if basis == "set"
-                 else "the COUNT of ask sources")
+def report(
+    results: list[dict],
+    paired: dict,
+    horizon: int,
+    start: date,
+    min_price: float,
+    basis: str,
+    min_items: int = MIN_ITEMS_PER_DATE,
+) -> None:
+    described = "the SET of source names" if basis == "set" else "the COUNT of ask sources"
     print()
-    print(f"rank IC of -r_t vs the forward {horizon}d return, "
-          f">= ${min_price:g}, from {start}")
-    print(f"composition basis: {basis} ({described}); "
-          f"min items per date: {min_items}")
-    print(f"(within-date Spearman, averaged across dates; "
-          f"cells under {MIN_DATES_TO_REPORT} dates are not quotable)")
+    print(f"rank IC of -r_t vs the forward {horizon}d return, >= ${min_price:g}, from {start}")
+    print(f"composition basis: {basis} ({described}); min items per date: {min_items}")
+    print(f"(within-date Spearman, averaged across dates; cells under {MIN_DATES_TO_REPORT} dates are not quotable)")
     print()
-    print(f"{'cell':32s} {'n_dates':>8s} {'n_rows':>12s} "
-          f"{'rank_ic':>9s} {'t':>8s}  verdict")
+    print(f"{'cell':32s} {'n_dates':>8s} {'n_rows':>12s} {'rank_ic':>9s} {'t':>8s}  verdict")
     for row in results:
         if row["verdict"] == "measured":
             ic = f"{row['rank_ic']:+9.4f}"
@@ -553,8 +549,7 @@ def report(results: list[dict], paired: dict, horizon: int, start: date,
             # Never print a number for an underpowered cell. The whole point of
             # the floor is that the nearest quotable figure is not available.
             ic, t = f"{'--':>9s}", f"{'--':>8s}"
-        print(f"{row['cell']:32s} {row['n_dates']:8d} {row['n_rows']:12,d} "
-              f"{ic} {t}  {row['verdict']}")
+        print(f"{row['cell']:32s} {row['n_dates']:8d} {row['n_rows']:12,d} {ic} {t}  {row['verdict']}")
 
     print()
     if paired["verdict"] == "measured":
@@ -562,43 +557,47 @@ def report(results: list[dict], paired: dict, horizon: int, start: date,
         t = "     n/a" if paired["t"] is None else f"{paired['t']:8.1f}"
     else:
         difference, t = f"{'--':>9s}", f"{'--':>8s}"
-    print(f"paired difference, {PAIRED_CELLS[0]} minus {PAIRED_CELLS[1]}, "
-          f"on the dates both occupy:")
-    print(f"{'stable - changed':32s} {paired['n_dates']:8d} {'':12s} "
-          f"{difference} {t}  {paired['verdict']}")
+    print(f"paired difference, {PAIRED_CELLS[0]} minus {PAIRED_CELLS[1]}, on the dates both occupy:")
+    print(f"{'stable - changed':32s} {paired['n_dates']:8d} {'':12s} {difference} {t}  {paired['verdict']}")
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     parser.add_argument("--horizon", type=int, default=3, choices=[3, 7, 14, 30])
-    parser.add_argument("--from", dest="start", default="2013-08-14",
-                        help="first archive day to read (default: the archive's "
-                             "first day)")
-    parser.add_argument("--to", dest="end", default=None,
-                        help="last archive day to read; for prototyping on a "
-                             "narrow range")
-    parser.add_argument("--min-price", type=float, default=1.0,
-                        help="anchor-price floor in USD (default: 1.0)")
-    parser.add_argument("--basis", default="set",
-                        choices=sorted(COMPOSITION_COLUMN),
-                        help="what composition means: the set of source names "
-                             "(default) or their count")
-    parser.add_argument("--min-items-per-date", type=int,
-                        default=MIN_ITEMS_PER_DATE,
-                        help=f"items a date needs in a cell to contribute an IC "
-                             f"(default: {MIN_ITEMS_PER_DATE}). Exposed so the "
-                             f"sensitivity of a cell to it can be published "
-                             f"from this script rather than estimated.")
+    parser.add_argument(
+        "--from",
+        dest="start",
+        default="2013-08-14",
+        help="first archive day to read (default: the archive's first day)",
+    )
+    parser.add_argument(
+        "--to", dest="end", default=None, help="last archive day to read; for prototyping on a narrow range"
+    )
+    parser.add_argument("--min-price", type=float, default=1.0, help="anchor-price floor in USD (default: 1.0)")
+    parser.add_argument(
+        "--basis",
+        default="set",
+        choices=sorted(COMPOSITION_COLUMN),
+        help="what composition means: the set of source names (default) or their count",
+    )
+    parser.add_argument(
+        "--min-items-per-date",
+        type=int,
+        default=MIN_ITEMS_PER_DATE,
+        help=f"items a date needs in a cell to contribute an IC "
+        f"(default: {MIN_ITEMS_PER_DATE}). Exposed so the "
+        f"sensitivity of a cell to it can be published "
+        f"from this script rather than estimated.",
+    )
     parser.add_argument("--archive-dir", type=Path, default=ARCHIVE_ROOT)
     args = parser.parse_args()
 
     start = date.fromisoformat(args.start)
     end = date.fromisoformat(args.end) if args.end else None
-    results, paired = measure(args.archive_dir, args.horizon, start,
-                              args.min_price, args.basis, end,
-                              args.min_items_per_date)
-    report(results, paired, args.horizon, start, args.min_price, args.basis,
-           args.min_items_per_date)
+    results, paired = measure(
+        args.archive_dir, args.horizon, start, args.min_price, args.basis, end, args.min_items_per_date
+    )
+    report(results, paired, args.horizon, start, args.min_price, args.basis, args.min_items_per_date)
 
 
 if __name__ == "__main__":

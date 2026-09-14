@@ -27,8 +27,8 @@ canonical archive is the `cs2-oracle-data` repo and only CI can migrate it.
 
 from __future__ import annotations
 
+from collections.abc import Iterable, Sequence
 from pathlib import Path
-from typing import Iterable, Optional, Sequence
 
 ARCHIVE_ROOT = Path(__file__).resolve().parent.parent.parent / "price-archive"
 
@@ -38,7 +38,12 @@ PRICE_GLOB = "prices-*.parquet"
 #: emits exactly this for a new month, and `normalize_price_schema.py` rewrites
 #: the older files into it.
 CANONICAL_PRICE_COLUMNS: tuple[str, ...] = (
-    "item_slug", "day", "source", "mean_price", "volume", "ingested_at",
+    "item_slug",
+    "day",
+    "source",
+    "mean_price",
+    "volume",
+    "ingested_at",
 )
 
 #: `ingested_at` is when the row ARRIVED, as distinct from `day`, which is what
@@ -93,7 +98,7 @@ def canonical_order(present: Iterable[str]) -> list[str]:
     return head + rng + [c for c in present if c not in placed]
 
 
-def resolve_archive_dir(archive_dir: Optional[Path] = None) -> Path:
+def resolve_archive_dir(archive_dir: Path | None = None) -> Path:
     """The archive directory to read, defaulting to the repo-root copy.
 
     Every caller used to spell this as its own
@@ -104,7 +109,7 @@ def resolve_archive_dir(archive_dir: Optional[Path] = None) -> Path:
     return Path(archive_dir) if archive_dir is not None else ARCHIVE_ROOT
 
 
-def price_files(archive_dir: Optional[Path] = None) -> list[Path]:
+def price_files(archive_dir: Path | None = None) -> list[Path]:
     """Every `prices-*.parquet` in the archive, sorted.
 
     Raises FileNotFoundError when the directory is missing or holds none.
@@ -116,8 +121,7 @@ def price_files(archive_dir: Optional[Path] = None) -> list[Path]:
         raise FileNotFoundError(f"price archive not found at {directory}")
     files = sorted(directory.glob(PRICE_GLOB))
     if not files:
-        raise FileNotFoundError(
-            f"price archive at {directory} contains no {PRICE_GLOB}")
+        raise FileNotFoundError(f"price archive at {directory} contains no {PRICE_GLOB}")
     return files
 
 
@@ -129,21 +133,18 @@ def _file_list_sql(files: Sequence[Path]) -> str:
     return "[" + ", ".join(_quote(p) for p in files) + "]"
 
 
-def present_columns(con, archive_dir: Optional[Path] = None) -> set[str]:
+def present_columns(con, archive_dir: Path | None = None) -> set[str]:
     """The union of column names across every prices file."""
     files = price_files(archive_dir)
-    rows = con.sql(
-        f"DESCRIBE SELECT * FROM read_parquet({_file_list_sql(files)}, "
-        f"union_by_name = true)"
-    ).fetchall()
+    rows = con.sql(f"DESCRIBE SELECT * FROM read_parquet({_file_list_sql(files)}, union_by_name = true)").fetchall()
     return {r[0] for r in rows}
 
 
 def prices_relation(
     con,
-    archive_dir: Optional[Path] = None,
-    columns: Optional[Iterable[str]] = None,
-    where: Optional[str] = None,
+    archive_dir: Path | None = None,
+    columns: Iterable[str] | None = None,
+    where: str | None = None,
 ) -> str:
     """A SQL table expression over the whole price archive.
 
@@ -167,8 +168,7 @@ def prices_relation(
 
     unknown = [c for c in wanted if c not in COLUMN_TYPES]
     if unknown:
-        raise ValueError(
-            f"unknown price column(s) {unknown}; known: {sorted(COLUMN_TYPES)}")
+        raise ValueError(f"unknown price column(s) {unknown}; known: {sorted(COLUMN_TYPES)}")
 
     present = present_columns(con, archive_dir)
     projection = ", ".join(
@@ -176,13 +176,11 @@ def prices_relation(
         # files and TIMESTAMP_NS in the monthly ones, and callers compare it
         # against dates. Normalising here means they all see one type whether
         # or not the archive has been migrated yet.
-        (f"CAST({c} AS {COLUMN_TYPES[c]}) AS {c}" if c in present
-         else f"NULL::{COLUMN_TYPES[c]} AS {c}")
+        (f"CAST({c} AS {COLUMN_TYPES[c]}) AS {c}" if c in present else f"NULL::{COLUMN_TYPES[c]} AS {c}")
         for c in wanted
     )
 
-    sql = (f"SELECT {projection} FROM read_parquet({_file_list_sql(files)}, "
-           f"union_by_name = true)")
+    sql = f"SELECT {projection} FROM read_parquet({_file_list_sql(files)}, union_by_name = true)"
     if where:
         sql = f"SELECT * FROM ({sql}) WHERE {where}"
     return f"({sql})"

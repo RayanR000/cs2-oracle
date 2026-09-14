@@ -16,15 +16,16 @@ Gated on MIN_FORECAST_DATES distinct served dates per horizon (data-blocked toda
 so it ships dormant and self-activates. Clamped so a contaminated panel cannot wreck the band.
 Design: docs/superpowers/specs/2026-08-16-served-outcome-feedback-calibration-design.md.
 """
+
 from __future__ import annotations
 
 import logging
-from typing import Dict, Iterable, Optional
+from collections.abc import Iterable
 
 import numpy as np
 import pandas as pd
-
 from backtest.scoring import HEADLINE_MIN_TIER, MIN_FORECAST_DATES, price_tier
+
 from models.conformal import ALPHA
 
 logger = logging.getLogger(__name__)
@@ -44,7 +45,7 @@ FACTOR_MAX = 2.0
 # is the forecast_date. Set this to the date the signed band served its FIRST prod forecast.
 # Until then every stored row is old-geometry, so the multiplier stays dormant (the caller gets
 # {}) regardless of the date count — an unfiltered factor would calibrate the wrong band.
-SIGNED_BAND_SERVING_START: Optional[str] = "2026-08-19"  # first clean signed-band prod serve
+SIGNED_BAND_SERVING_START: str | None = "2026-08-19"  # first clean signed-band prod serve
 # (deployed via full-retrain run 32293991440; 2026-08-18 excluded — a symmetric predict-only serve
 # preceded the retrain overwrite on that date, so its geometry is ambiguous).
 
@@ -56,7 +57,7 @@ SIGNED_BAND_SERVING_START: Optional[str] = "2026-08-19"  # first clean signed-ba
 # date the climatology band served its FIRST prod forecast (the first full-retrain deploy carrying
 # `climatology_scale: true` in meta.json). Left None until then: prod is still sigma-scaled, so the
 # signed-band floor alone is correct and the feedback need not restart its date count early.
-CLIMATOLOGY_SERVING_START: Optional[str] = "2026-08-20"  # first clean climatology prod serve
+CLIMATOLOGY_SERVING_START: str | None = "2026-08-20"  # first clean climatology prod serve
 # (climatology artifact cached by full-retrain run 32323684984; that run's predict re-wrote 2026-08-19
 # on top of an earlier sigma predict-only serve, so 08-19's geometry is mixed and excluded — the first
 # aggregator-chained predict-only serve on the climatology cache is 2026-08-20).
@@ -84,14 +85,14 @@ CLIMATOLOGY_SERVING_START: Optional[str] = "2026-08-20"  # first clean climatolo
 # This floor SUPERSEDES the 2026-08-20 climatology floor, which drops the post-floor panel to a
 # single date. That is the correct cost: the 2026-08-20..27 served rows carry the K=20 band shape,
 # and a factor fitted on them would over-shrink an already-narrower K=320 band.
-SHRINK_K_SERVING_START: Optional[str] = "2026-09-06"
+SHRINK_K_SERVING_START: str | None = "2026-09-06"
 # docs/changelog/2026-08-26-climatology-shrink-k-re-swept.md
 
 # A sentinel distinguishing "caller did not pass since" from an explicit since=None (dormant).
 _UNSET = object()
 
 
-def _geometry_floor() -> Optional[str]:
+def _geometry_floor() -> str | None:
     """The forecast_date floor that isolates the CURRENT served band geometry.
 
     Each configured start is a date on which a band-geometry change first served prod. The panel
@@ -100,15 +101,20 @@ def _geometry_floor() -> Optional[str]:
     calibrates a shape the current band no longer has. Returns None only when no cutover is set
     (SIGNED_BAND_SERVING_START unset), which drives the dormancy in `served_coverage_factors`.
     Read at call time so the constants can be monkeypatched in tests."""
-    starts = [s for s in (SIGNED_BAND_SERVING_START, CLIMATOLOGY_SERVING_START,
-                          SHRINK_K_SERVING_START)
-              if s is not None]
+    starts = [
+        s for s in (SIGNED_BAND_SERVING_START, CLIMATOLOGY_SERVING_START, SHRINK_K_SERVING_START) if s is not None
+    ]
     return max(starts) if starts else None  # ISO dates order lexically
+
 
 # The columns the estimator needs from forecast_outcomes.
 PANEL_COLUMNS = (
-    "forecast_date", "horizon_days", "price_tier",
-    "predicted_price_low", "predicted_price_mid", "predicted_price_high",
+    "forecast_date",
+    "horizon_days",
+    "price_tier",
+    "predicted_price_low",
+    "predicted_price_mid",
+    "predicted_price_high",
     "actual_price",
 )
 
@@ -118,10 +124,15 @@ def _conformal_level(n: int, alpha: float) -> float:
     return min(np.ceil((n + 1) * (1.0 - alpha)) / n, 1.0)
 
 
-def factors_from_panel(panel: pd.DataFrame, horizons: Iterable[int], *,
-                       min_dates: int = MIN_FORECAST_DATES, alpha: float = ALPHA,
-                       min_tier: int = HEADLINE_MIN_TIER,
-                       since: Optional[str] = None) -> Dict[int, float]:
+def factors_from_panel(
+    panel: pd.DataFrame,
+    horizons: Iterable[int],
+    *,
+    min_dates: int = MIN_FORECAST_DATES,
+    alpha: float = ALPHA,
+    min_tier: int = HEADLINE_MIN_TIER,
+    since: str | None = None,
+) -> dict[int, float]:
     """Per-horizon served-coverage q_hat multiplier from a forecast_outcomes frame.
 
     For each horizon, over the >= $1 served rows with a usable band, the nonconformity score is
@@ -139,7 +150,7 @@ def factors_from_panel(panel: pd.DataFrame, horizons: Iterable[int], *,
     dropped before anything else, because `r` reads the stored band shape and pre-cutover rows
     carry the old symmetric geometry (see SIGNED_BAND_SERVING_START). None keeps every row.
     """
-    out: Dict[int, float] = {}
+    out: dict[int, float] = {}
     if panel is None or panel.empty:
         return out
 
@@ -186,16 +197,14 @@ def factors_from_panel(panel: pd.DataFrame, horizons: Iterable[int], *,
     return out
 
 
-def _load_panel(session, horizons: Iterable[int], *,
-                since: Optional[str] = None) -> pd.DataFrame:
+def _load_panel(session, horizons: Iterable[int], *, since: str | None = None) -> pd.DataFrame:
     """Read the scored forecast_outcomes panel from Postgres (the ops parquet mirrors are
     stale/selected — see backend/AGENTS.md). Read-only, columns narrowed to the estimator's.
     `since` (ISO date), when set, floors forecast_date to the signed-band geometry cutover."""
     from sqlalchemy import bindparam, text
 
     hs = [int(h) for h in horizons]
-    where = ("WHERE horizon_days IN :horizons AND actual_price IS NOT NULL "
-             "AND predicted_price_mid IS NOT NULL")
+    where = "WHERE horizon_days IN :horizons AND actual_price IS NOT NULL AND predicted_price_mid IS NOT NULL"
     params: dict = {"horizons": hs}
     if since is not None:
         where += " AND forecast_date >= :since"
@@ -223,10 +232,14 @@ def _load_panel(session, horizons: Iterable[int], *,
     return df[list(PANEL_COLUMNS)]
 
 
-def served_coverage_factors(session, horizons: Iterable[int], *,
-                            min_dates: int = MIN_FORECAST_DATES,
-                            alpha: float = ALPHA,
-                            since: Optional[str] = _UNSET) -> Dict[int, float]:
+def served_coverage_factors(
+    session,
+    horizons: Iterable[int],
+    *,
+    min_dates: int = MIN_FORECAST_DATES,
+    alpha: float = ALPHA,
+    since: str | None = _UNSET,
+) -> dict[int, float]:
     """Per-horizon served-coverage q_hat multipliers, or an empty map.
 
     Returns {} on any read failure or when no horizon clears the gate, so a missing/empty panel
@@ -246,11 +259,12 @@ def served_coverage_factors(session, horizons: Iterable[int], *,
         logger.info(
             "  served-coverage: no band-geometry cutover set (SIGNED_BAND_SERVING_START and "
             "CLIMATOLOGY_SERVING_START both unset); feedback dormant — the panel is pre-signed-band "
-            "geometry, so no q_hat correction is applied.")
+            "geometry, so no q_hat correction is applied."
+        )
         return {}
     try:
         panel = _load_panel(session, horizons, since=since)
-    except Exception as e:                       # a panel read must never fail a retrain
+    except Exception as e:  # a panel read must never fail a retrain
         logger.warning(f"  served-coverage panel read failed ({e}); no q_hat correction applied.")
         return {}
     return factors_from_panel(panel, horizons, min_dates=min_dates, alpha=alpha, since=since)

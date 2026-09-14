@@ -9,6 +9,7 @@ mirror — which has no schema to violate — keeps it regardless.
 
 Scope: docs/superpowers/plans/2026-08-16-exceedance-band-scale-phase2-plan.md.
 """
+
 from __future__ import annotations
 
 from datetime import date
@@ -17,9 +18,19 @@ from unittest.mock import patch
 import pandas as pd
 
 _BASE_DB_COLS = {
-    "item_id", "forecast_date", "horizon_days", "price_low", "price_mid",
-    "price_high", "current_price", "direction", "confidence",
-    "model_version", "created_at", "anchor_clean", "anchor_wedge_pct",
+    "item_id",
+    "forecast_date",
+    "horizon_days",
+    "price_low",
+    "price_mid",
+    "price_high",
+    "current_price",
+    "direction",
+    "confidence",
+    "model_version",
+    "created_at",
+    "anchor_clean",
+    "anchor_wedge_pct",
 }
 
 
@@ -38,42 +49,40 @@ def _capture_rows(results, *, db_columns, today=date(2026, 8, 15)):
             return None
 
         def get_bind(self):
-            return type("_Bind", (), {"dialect": type("_D", (), {
-                "name": "postgresql"})()})()
+            return type("_Bind", (), {"dialect": type("_D", (), {"name": "postgresql"})()})()
 
     class _Inspector:
         def get_columns(self, name):
             return [{"name": c} for c in db_columns]
 
-    with patch("db.parquet.append_table",
-               side_effect=lambda name, rows, keys: captured.update(rows=rows)):
+    with patch("db.parquet.append_table", side_effect=lambda name, rows, keys: captured.update(rows=rows)):
         with patch("sqlalchemy.inspect", return_value=_Inspector()):
             with patch("sqlalchemy.dialects.postgresql.insert") as ins:
-                (ins.return_value.values.return_value
-                 .on_conflict_do_update.return_value) = "stmt"
-                _write_forecasts_to_db(
-                    _DB(), results, "lgbm-v3", {"ak_1": 1}, today)
+                (ins.return_value.values.return_value.on_conflict_do_update.return_value) = "stmt"
+                _write_forecasts_to_db(_DB(), results, "lgbm-v3", {"ak_1": 1}, today)
     return captured["rows"]
 
 
 def _result(forecast):
-    return pd.DataFrame([{
-        "item_id": "ak_1",
-        "current_price": 10.0,
-        "anchor_clean": True,
-        "anchor_wedge_pct": 0.0,
-        "anchor_date": date(2026, 8, 14),
-        "forecasts": {7: forecast},
-    }])
+    return pd.DataFrame(
+        [
+            {
+                "item_id": "ak_1",
+                "current_price": 10.0,
+                "anchor_clean": True,
+                "anchor_wedge_pct": 0.0,
+                "anchor_date": date(2026, 8, 14),
+                "forecasts": {7: forecast},
+            }
+        ]
+    )
 
 
-_FCAST = {"low": 9.0, "mid": 10.5, "high": 12.0,
-          "direction": "up", "confidence": "low", "exceed_p": 0.42}
+_FCAST = {"low": 9.0, "mid": 10.5, "high": 12.0, "direction": "up", "confidence": "low", "exceed_p": 0.42}
 
 
 def test_exceed_p_is_written_when_the_column_exists():
-    rows = _capture_rows(_result(dict(_FCAST)),
-                         db_columns=_BASE_DB_COLS | {"exceed_p"})
+    rows = _capture_rows(_result(dict(_FCAST)), db_columns=_BASE_DB_COLS | {"exceed_p"})
     assert rows[0]["exceed_p"] == 0.42
 
 

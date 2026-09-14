@@ -26,12 +26,12 @@ This is NOT a staleness fix -- aggregator_sync and aggregator_steam_17mafo are
 last_24h FALLING BACK to these same windows on exactly the illiquid items.
 There is no point-in-time Steam price in this archive at all.
 """
+
 from __future__ import annotations
 
 from unittest.mock import MagicMock
 
 import pandas as pd
-
 from models.forecaster import ItemForecaster
 
 
@@ -40,51 +40,52 @@ def _f(tmp_path):
 
 
 def _rows(*specs):
-    return pd.DataFrame([
-        {"item_id": i, "date": pd.Timestamp(d), "price": p, "source": s}
-        for i, d, p, s in specs
-    ])
+    return pd.DataFrame([{"item_id": i, "date": pd.Timestamp(d), "price": p, "source": s} for i, d, p, s in specs])
 
 
 def test_the_three_windows_are_named():
-    assert ItemForecaster.TRAILING_WINDOW_SOURCES == frozenset({
-        "aggregator_steam_7d", "aggregator_steam_30d", "aggregator_steam_90d"})
+    assert (
+        frozenset({"aggregator_steam_7d", "aggregator_steam_30d", "aggregator_steam_90d"})
+        == ItemForecaster.TRAILING_WINDOW_SOURCES
+    )
 
 
 def test_they_are_separate_from_bid_sources():
     """A bid is the wrong side of the book; an MA is the wrong time basis.
     Overloading BID_SOURCES would make the next reader think these are bids."""
-    assert not (ItemForecaster.TRAILING_WINDOW_SOURCES
-                & set(ItemForecaster.BID_SOURCES))
+    assert not (ItemForecaster.TRAILING_WINDOW_SOURCES & set(ItemForecaster.BID_SOURCES))
 
 
 def test_trailing_windows_do_not_move_the_median(tmp_path):
     """Two asks and three MA legs: the vote must be the asks' median alone."""
-    out = _f(tmp_path)._apply_multi_source_voting(_rows(
-        ("a", "2026-07-11", 10.0, "aggregator_buff163"),
-        ("a", "2026-07-11", 10.4, "aggregator_csfloat"),
-        ("a", "2026-07-11", 7.0, "aggregator_steam_7d"),
-        ("a", "2026-07-11", 6.5, "aggregator_steam_30d"),
-        ("a", "2026-07-11", 6.0, "aggregator_steam_90d"),
-    ))
+    out = _f(tmp_path)._apply_multi_source_voting(
+        _rows(
+            ("a", "2026-07-11", 10.0, "aggregator_buff163"),
+            ("a", "2026-07-11", 10.4, "aggregator_csfloat"),
+            ("a", "2026-07-11", 7.0, "aggregator_steam_7d"),
+            ("a", "2026-07-11", 6.5, "aggregator_steam_30d"),
+            ("a", "2026-07-11", 6.0, "aggregator_steam_90d"),
+        )
+    )
     assert out["price"].iloc[0] == 10.2
 
 
 def test_a_trailing_only_item_day_is_dropped_not_zeroed(tmp_path):
     """650 item-days of 2,589,787 have no other source. They must vanish, not
     become a 0 or a NaN price."""
-    out = _f(tmp_path)._apply_multi_source_voting(
-        _rows(("a", "2026-07-11", 7.0, "aggregator_steam_7d")))
+    out = _f(tmp_path)._apply_multi_source_voting(_rows(("a", "2026-07-11", 7.0, "aggregator_steam_7d")))
     assert len(out) == 0
 
 
 def test_exclusion_is_null_safe(tmp_path):
     """Invariant 2: a bare NOT IN against a NULL source drops 13 years of
     prices. Every pre-2026 row has source IS NULL."""
-    out = _f(tmp_path)._apply_multi_source_voting(_rows(
-        ("a", "2020-01-01", 10.0, None),
-        ("b", "2020-01-01", 20.0, None),
-    ))
+    out = _f(tmp_path)._apply_multi_source_voting(
+        _rows(
+            ("a", "2020-01-01", 10.0, None),
+            ("b", "2020-01-01", 20.0, None),
+        )
+    )
     assert len(out) == 2
 
 
@@ -97,18 +98,19 @@ def test_17mafo_is_not_caught_by_the_exclusion(tmp_path):
     would leave TRAILING_WINDOW_SOURCES untouched, pass every other test here,
     and silently delete effectively all 2026 price data for those 86 days.
     This item-day must survive and vote alone."""
-    out = _f(tmp_path)._apply_multi_source_voting(
-        _rows(("a", "2026-05-01", 10.0, "aggregator_steam_17mafo")))
+    out = _f(tmp_path)._apply_multi_source_voting(_rows(("a", "2026-05-01", 10.0, "aggregator_steam_17mafo")))
     assert len(out) == 1
     assert out["price"].iloc[0] == 10.0
     assert out["n_ask_sources"].iloc[0] == 1
 
 
 def test_n_ask_sources_excludes_trailing_windows(tmp_path):
-    out = _f(tmp_path)._apply_multi_source_voting(_rows(
-        ("a", "2026-07-11", 10.0, "aggregator_buff163"),
-        ("a", "2026-07-11", 7.0, "aggregator_steam_7d"),
-    ))
+    out = _f(tmp_path)._apply_multi_source_voting(
+        _rows(
+            ("a", "2026-07-11", 10.0, "aggregator_buff163"),
+            ("a", "2026-07-11", 7.0, "aggregator_steam_7d"),
+        )
+    )
     assert out["n_ask_sources"].iloc[0] == 1
 
 

@@ -1,11 +1,11 @@
 """The gate must be able to score cheap baselines on identical folds."""
+
 from __future__ import annotations
 
 import inspect
 
 import numpy as np
 import pytest
-
 import scripts.walkforward_backtest as wf
 
 
@@ -52,19 +52,23 @@ def test_ridge_arm_requires_the_scaler_to_fit_ill_scaled_features():
     """
     rng = np.random.default_rng(0)
     n_train, n_val = 200, 40
-    X_train = np.column_stack([
-        rng.normal(0, 1, n_train),
-        rng.normal(0, 1000, n_train),
-        rng.normal(0, 0.001, n_train),
-        rng.normal(0, 1, n_train),
-    ])
+    X_train = np.column_stack(
+        [
+            rng.normal(0, 1, n_train),
+            rng.normal(0, 1000, n_train),
+            rng.normal(0, 0.001, n_train),
+            rng.normal(0, 1, n_train),
+        ]
+    )
     y_train = X_train[:, 0] * 2.0 + X_train[:, 2] * 5000.0 + rng.normal(0, 0.1, n_train)
-    X_val = np.column_stack([
-        rng.normal(0, 1, n_val),
-        rng.normal(0, 1000, n_val),
-        rng.normal(0, 0.001, n_val),
-        rng.normal(0, 1, n_val),
-    ])
+    X_val = np.column_stack(
+        [
+            rng.normal(0, 1, n_val),
+            rng.normal(0, 1000, n_val),
+            rng.normal(0, 0.001, n_val),
+            rng.normal(0, 1, n_val),
+        ]
+    )
     y_val_true = X_val[:, 0] * 2.0 + X_val[:, 2] * 5000.0
 
     mid, low, high, classes = wf._ridge_predict(X_train, y_train, X_val)
@@ -116,10 +120,10 @@ def test_item_selection_is_deterministic_under_row_count_ties():
     otherwise silent.
     """
     import duckdb
+
     src = inspect.getsource(wf._load_parquet_items)
     assert "ORDER BY row_count DESC, item_slug" in src, (
-        "row_count needs a tie-break on item_slug or the universe is not "
-        "reproducible between runs"
+        "row_count needs a tie-break on item_slug or the universe is not reproducible between runs"
     )
 
     con = duckdb.connect()

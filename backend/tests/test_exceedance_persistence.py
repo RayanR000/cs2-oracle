@@ -6,6 +6,7 @@ boosters beside `clf_{h}d.txt`. A warm retrain restores the artifact, so the hea
 band scale reads must survive save/load — a served scale calibrated against a head the reload
 dropped would mis-size the band. These guard the storage seam, not the offline A/B.
 """
+
 from __future__ import annotations
 
 import inspect
@@ -13,7 +14,6 @@ from unittest.mock import MagicMock
 
 import numpy as np
 import pandas as pd
-
 from models.forecaster import ItemForecaster
 
 
@@ -28,8 +28,8 @@ def _trained_head(f, horizon=7):
     y = (x > 0.5).astype(float)
     X = pd.DataFrame({"f": x, "g": rng.normal(size=n)})
     return X, f._fit_exceedance_classifier(
-        X, y, boosting_type="gbdt", tree_params={}, horizon=horizon,
-        tier_train=np.full(n, 2), num_boost_round=100)
+        X, y, boosting_type="gbdt", tree_params={}, horizon=horizon, tier_train=np.full(n, 2), num_boost_round=100
+    )
 
 
 def test_fresh_forecaster_exposes_an_empty_exceedance_head_store(tmp_path):
@@ -50,8 +50,7 @@ def test_exceedance_head_round_trips_through_save_and_load(tmp_path):
     g = _forecaster(tmp_path)
     g.load_models()
     assert 7 in g.exceedance_models
-    np.testing.assert_allclose(
-        g.exceedance_models[7].predict(X), head.predict(X), rtol=0, atol=0)
+    np.testing.assert_allclose(g.exceedance_models[7].predict(X), head.predict(X), rtol=0, atol=0)
 
 
 def test_training_loop_fits_and_stores_the_exceedance_head(tmp_path):

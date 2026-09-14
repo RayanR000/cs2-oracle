@@ -22,6 +22,7 @@ in the model directory, so the artifact's flags must match the flags you set or
 arithmetic on historical features, not a historical run -- anything read from
 live state carries today's value unless it was pinned.
 """
+
 from __future__ import annotations
 
 import logging
@@ -29,7 +30,6 @@ import os
 import sys
 from datetime import date, timedelta
 from pathlib import Path
-from typing import Optional
 
 import duckdb
 import numpy as np
@@ -37,13 +37,12 @@ import pandas as pd
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from database import SessionLocal                      # noqa: E402
-from db.archive import prices_relation                 # noqa: E402
-from models import conformal                           # noqa: E402
-from models.forecaster import ItemForecaster           # noqa: E402
-from models.item_parser import (                       # noqa: E402
-    archive_universe_sql_filter)
-from api.serving_policy import MIN_SERVED_PRICE_USD    # noqa: E402
+from api.serving_policy import MIN_SERVED_PRICE_USD
+from database import SessionLocal
+from db.archive import prices_relation
+from models import conformal
+from models.forecaster import ItemForecaster
+from models.item_parser import archive_universe_sql_filter
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(message)s")
 logger = logging.getLogger(__name__)
@@ -92,8 +91,9 @@ ALLOW_DIRTY_ANCHOR_ENV = "ALLOW_DIRTY_ANCHOR"
 DEFAULT_AUDIT_HORIZONS = (3, 7, 14, 30)
 
 
-def _feed_profile(anchor: date, archive_dir: Optional[Path] = None,
-                  window: int = ANCHOR_NEIGHBOURHOOD_DAYS) -> pd.DataFrame:
+def _feed_profile(
+    anchor: date, archive_dir: Path | None = None, window: int = ANCHOR_NEIGHBOURHOOD_DAYS
+) -> pd.DataFrame:
     """Per day around `anchor`: which sources wrote it, and how many items.
 
     Two columns, one aggregate query. Through `prices_relation` and
@@ -110,8 +110,7 @@ def _feed_profile(anchor: date, archive_dir: Optional[Path] = None,
     hi = anchor + timedelta(days=window)
     con = duckdb.connect()
     try:
-        relation = prices_relation(
-            con, archive_dir, columns=["item_slug", "day", "source"])
+        relation = prices_relation(con, archive_dir, columns=["item_slug", "day", "source"])
         return con.sql(f"""
             SELECT CAST(day AS DATE) AS day,
                    count(DISTINCT item_slug) AS items,
@@ -147,26 +146,28 @@ def audit_anchor_feed(anchor: date, profile: pd.DataFrame) -> tuple[bool, list[s
     """
     lines: list[str] = []
     if profile.empty:
-        return False, [f"the archive holds NO rows within "
-                       f"{ANCHOR_NEIGHBOURHOOD_DAYS} days of {anchor}."]
+        return False, [f"the archive holds NO rows within {ANCHOR_NEIGHBOURHOOD_DAYS} days of {anchor}."]
 
-    days = {pd.Timestamp(d).date(): row for d, row in
-            zip(profile["day"], profile.to_dict("records"))}
+    days = {pd.Timestamp(d).date(): row for d, row in zip(profile["day"], profile.to_dict("records"))}
     me = days.get(anchor)
     if me is None:
-        return False, [f"{anchor} is not in the archive at all — it is one of "
-                       f"the dropped calendar days. Neighbours present: "
-                       f"{', '.join(str(d) for d in sorted(days))}."]
+        return False, [
+            f"{anchor} is not in the archive at all — it is one of "
+            f"the dropped calendar days. Neighbours present: "
+            f"{', '.join(str(d) for d in sorted(days))}."
+        ]
 
     others = [r for d, r in days.items() if d != anchor]
     if not others:
-        return False, [f"{anchor} is the only day the archive holds within "
-                       f"±{ANCHOR_NEIGHBOURHOOD_DAYS} days, so there is "
-                       f"nothing to compare its collection against."]
+        return False, [
+            f"{anchor} is the only day the archive holds within "
+            f"±{ANCHOR_NEIGHBOURHOOD_DAYS} days, so there is "
+            f"nothing to compare its collection against."
+        ]
 
     my_sources = frozenset(me["sources"])
 
-    def modal(rows) -> Optional[frozenset]:
+    def modal(rows) -> frozenset | None:
         """The most common source set among *rows*, not their union.
 
         The union would widen the reference by any one neighbour that sat inside
@@ -191,29 +192,31 @@ def audit_anchor_feed(anchor: date, profile: pd.DataFrame) -> tuple[bool, list[s
     after = [r for d, r in days.items() if d > anchor]
     ref_before, ref_after = modal(before), modal(after)
 
-    matching = [r for r in others
-                if frozenset(r["sources"]) in {ref_before, ref_after}
-                and frozenset(r["sources"]) == my_sources]
+    matching = [
+        r
+        for r in others
+        if frozenset(r["sources"]) in {ref_before, ref_after} and frozenset(r["sources"]) == my_sources
+    ]
     pool = matching or others
     ref_items = float(np.median([r["items"] for r in pool]))
     share = me["items"] / ref_items if ref_items else float("nan")
 
-    lines.append(f"anchor {anchor}: {me['items']:,} items from "
-                 f"{len(my_sources)} source(s); {len(before)} day(s) before it "
-                 f"and {len(after)} after, reference {ref_items:,.0f} items")
+    lines.append(
+        f"anchor {anchor}: {me['items']:,} items from "
+        f"{len(my_sources)} source(s); {len(before)} day(s) before it "
+        f"and {len(after)} after, reference {ref_items:,.0f} items"
+    )
 
     ok = True
     for side, ref, consequence in (
-            ("BEFORE", ref_before,
-             "the anchor's own features read a synthetic jump across the change"),
-            ("AFTER", ref_after,
-             "the outcome resolves on a basis the anchor was not quoted on")):
+        ("BEFORE", ref_before, "the anchor's own features read a synthetic jump across the change"),
+        ("AFTER", ref_after, "the outcome resolves on a basis the anchor was not quoted on"),
+    ):
         if ref is None or ref == my_sources:
             continue
         ok = False
         missing, extra = ref - my_sources, my_sources - ref
-        lines.append(f"  the days {side} the anchor were collected differently "
-                     f"— {consequence}:")
+        lines.append(f"  the days {side} the anchor were collected differently — {consequence}:")
         if missing:
             lines.append(f"    absent on the anchor: {', '.join(sorted(missing))}")
         if extra:
@@ -222,13 +225,14 @@ def audit_anchor_feed(anchor: date, profile: pd.DataFrame) -> tuple[bool, list[s
         # Only reachable when one side is None: if both sides had days and the
         # audit still passes, both equal `my_sources` and so equal each other.
         # So this says "half the comparison was unavailable", not "a change".
-        lines.append("  (only one side of the window has days to compare "
-                     "against; the anchor matches the side it has)")
+        lines.append("  (only one side of the window has days to compare against; the anchor matches the side it has)")
     if np.isfinite(share) and share < ANCHOR_MIN_ITEM_SHARE:
         ok = False
-        lines.append(f"  item count is {share:.0%} of that reference "
-                     f"(floor {ANCHOR_MIN_ITEM_SHARE:.0%}): a partial day, so "
-                     f"most items are served from a quote before the anchor.")
+        lines.append(
+            f"  item count is {share:.0%} of that reference "
+            f"(floor {ANCHOR_MIN_ITEM_SHARE:.0%}): a partial day, so "
+            f"most items are served from a quote before the anchor."
+        )
     return ok, lines
 
 
@@ -246,9 +250,7 @@ def cutovers_from_counts(counts: pd.Series) -> list:
         return []
     prev = c.shift(1)
     change = (c - prev).abs() / prev.replace(0, np.nan)
-    return [d for d, hit in
-            zip(c.index, change > ItemForecaster.COLLECTION_SHIFT_FRACTION)
-            if bool(hit)]
+    return [d for d, hit in zip(c.index, change > ItemForecaster.COLLECTION_SHIFT_FRACTION) if bool(hit)]
 
 
 def cutovers_in_outcome_window(anchor: date, horizons, cutovers) -> dict:
@@ -303,8 +305,7 @@ def _outcomes(fc: ItemForecaster, anchor: date, horizons):
     return out[["item_id", "day", "price"]]
 
 
-def _resolve(outcomes: pd.DataFrame, target: date, tolerance=OUTCOME_TOLERANCE_DAYS,
-             after: date | None = None):
+def _resolve(outcomes: pd.DataFrame, target: date, tolerance=OUTCOME_TOLERANCE_DAYS, after: date | None = None):
     """Smoothed price at `target` per item -- the same statistic the anchor is.
 
     `predict` converts return-space output to dollars against
@@ -360,9 +361,7 @@ def _naive_baseline(fc: ItemForecaster, outcomes: pd.DataFrame, anchor: date):
     s_prev = fc._smoothed_anchor_prices(hist[hist["date"] <= t_prev], t_prev)
     naive = pd.DataFrame({"item_id": list(s_now)})
     naive["naive"] = [
-        (-(s_now[i] / s_prev[i] - 1.0)
-         if s_prev.get(i) and s_prev[i] > 0 else np.nan)
-        for i in naive["item_id"]
+        (-(s_now[i] / s_prev[i] - 1.0) if s_prev.get(i) and s_prev[i] > 0 else np.nan) for i in naive["item_id"]
     ]
     return naive[np.isfinite(naive["naive"])].reset_index(drop=True)
 
@@ -378,8 +377,7 @@ def _exact_day(outcomes: pd.DataFrame, day: date) -> pd.DataFrame:
     measured.
     """
     d = outcomes[outcomes["day"] == pd.Timestamp(day)]
-    return (d.groupby("item_id", as_index=False)["price"].median()
-             .rename(columns={"price": "px"}))
+    return d.groupby("item_id", as_index=False)["price"].median().rename(columns={"price": "px"})
 
 
 def _pin_matches_production() -> bool:
@@ -395,8 +393,8 @@ def _pin_matches_production() -> bool:
     value that was set somewhere else.
     """
     from backtest.price_resolution import MAX_WINDOW_SPAN_DAYS, SMOOTH_WINDOW
-    return (SMOOTH_WINDOW == PINNED_SMOOTH_WINDOW
-            and MAX_WINDOW_SPAN_DAYS == PINNED_MAX_SPAN_DAYS)
+
+    return SMOOTH_WINDOW == PINNED_SMOOTH_WINDOW and MAX_WINDOW_SPAN_DAYS == PINNED_MAX_SPAN_DAYS
 
 
 def _pinned_anchor(outcomes: pd.DataFrame, anchor: date) -> pd.Series:
@@ -423,8 +421,7 @@ def _pinned_anchor(outcomes: pd.DataFrame, anchor: date) -> pd.Series:
     # DeprecationWarning, which the rest of the codebase already avoids.
     span = pd.to_timedelta(PINNED_MAX_SPAN_DAYS, unit="D")
     in_window = hist[hist["day"] >= at - span]
-    smoothed = (in_window.groupby("item_id").tail(PINNED_SMOOTH_WINDOW)
-                .groupby("item_id")["price"].median())
+    smoothed = in_window.groupby("item_id").tail(PINNED_SMOOTH_WINDOW).groupby("item_id")["price"].median()
     latest = hist.groupby("item_id")["price"].last()
     pinned = pd.Series(latest.to_dict() | smoothed.to_dict(), name="d_fixed")
     pinned.index.name = "item_id"
@@ -493,16 +490,17 @@ def _tied_mask(outcomes: pd.DataFrame, anchor: date) -> pd.Series:
     pinned = _pinned_anchor(outcomes, anchor)
     idx = raw.index.union(pinned.index)
     mask = pd.Series(
-        np.isclose(raw.reindex(idx).to_numpy(dtype=float),
-                   pinned.reindex(idx).to_numpy(dtype=float),
-                   rtol=0, atol=1e-9),
-        index=idx, name="anchor_is_tied")
+        np.isclose(
+            raw.reindex(idx).to_numpy(dtype=float), pinned.reindex(idx).to_numpy(dtype=float), rtol=0, atol=1e-9
+        ),
+        index=idx,
+        name="anchor_is_tied",
+    )
     mask.index.name = "item_id"
     return mask
 
 
-def _dollar_error_rows(frame: pd.DataFrame, pinned: pd.Series,
-                       tied: pd.Series) -> list[dict]:
+def _dollar_error_rows(frame: pd.DataFrame, pinned: pd.Series, tied: pd.Series) -> list[dict]:
     """The dollar-error table for one horizon: pooled, tied, deviating.
 
     Three predictions per subset, all scored against the same realised price:
@@ -529,27 +527,28 @@ def _dollar_error_rows(frame: pd.DataFrame, pinned: pd.Series,
     # then emits a downcasting FutureWarning on exactly that case.
     is_tied = frame["item_id"].map(tied).eq(True).to_numpy()
     d = frame["item_id"].map(pinned).to_numpy(dtype=float)
-    naive_mid = np.where(np.isfinite(d) & (d > 0),
-                         d * (1.0 + frame["naive"].to_numpy(dtype=float)),
-                         np.nan)
+    naive_mid = np.where(np.isfinite(d) & (d > 0), d * (1.0 + frame["naive"].to_numpy(dtype=float)), np.nan)
     mid = frame["mid"].to_numpy(dtype=float)
     current = frame["current"].to_numpy(dtype=float)
     realised = frame["realised"].to_numpy(dtype=float)
     scorable = np.isfinite(realised) & (realised > 0)
 
     rows = []
-    for subset, mask in (("pooled", np.ones(len(frame), dtype=bool)),
-                         ("tied", is_tied),
-                         ("deviating", ~is_tied)):
+    for subset, mask in (("pooled", np.ones(len(frame), dtype=bool)), ("tied", is_tied), ("deviating", ~is_tied)):
         med, p90 = _rel_abs_error(mid[mask], realised[mask])
         quote, _ = _rel_abs_error(current[mask], realised[mask])
         naive, _ = _rel_abs_error(naive_mid[mask], realised[mask])
-        rows.append({
-            "subset": subset,
-            "n": int((mask & scorable & np.isfinite(mid)).sum()),
-            "model": med, "p90": p90, "quote": quote, "naive": naive,
-            "n_naive": int((mask & scorable & np.isfinite(naive_mid)).sum()),
-        })
+        rows.append(
+            {
+                "subset": subset,
+                "n": int((mask & scorable & np.isfinite(mid)).sum()),
+                "model": med,
+                "p90": p90,
+                "quote": quote,
+                "naive": naive,
+                "n_naive": int((mask & scorable & np.isfinite(naive_mid)).sum()),
+            }
+        )
     return rows
 
 
@@ -565,6 +564,7 @@ def _served_rows(served: pd.DataFrame, h: int) -> pd.DataFrame:
     A row whose band is missing keeps its mid: it still scores DA and rank IC,
     and dropping it here would shrink every other table in this script.
     """
+
     def _f(v) -> float:
         return float(v) if v is not None else float("nan")
 
@@ -573,15 +573,19 @@ def _served_rows(served: pd.DataFrame, h: int) -> pd.DataFrame:
         f = r["forecasts"].get(h)
         if not f or f.get("mid") is None or not r.get("current_price"):
             continue
-        rows.append({"item_id": r["item_id"],
-                     "current": float(r["current_price"]),
-                     "mid": float(f["mid"]),
-                     "low": _f(f.get("low")),
-                     "high": _f(f.get("high")),
-                     # Phase A disclosure: P(upside move clears cost). NaN on an
-                     # artifact with no exceedance head; carried so the
-                     # reliability table can score it against realised outcomes.
-                     "exceed_p": _f(f.get("exceed_p"))})
+        rows.append(
+            {
+                "item_id": r["item_id"],
+                "current": float(r["current_price"]),
+                "mid": float(f["mid"]),
+                "low": _f(f.get("low")),
+                "high": _f(f.get("high")),
+                # Phase A disclosure: P(upside move clears cost). NaN on an
+                # artifact with no exceedance head; carried so the
+                # reliability table can score it against realised outcomes.
+                "exceed_p": _f(f.get("exceed_p")),
+            }
+        )
     return pd.DataFrame(rows)
 
 
@@ -608,16 +612,14 @@ def _coverage_row(frame: pd.DataFrame) -> dict:
     lo = frame["low"].to_numpy(dtype=float)
     hi = frame["high"].to_numpy(dtype=float)
     real = frame["realised"].to_numpy(dtype=float)
-    ok = (np.isfinite(lo) & np.isfinite(hi) & np.isfinite(real)
-          & (real > 0))
+    ok = np.isfinite(lo) & np.isfinite(hi) & np.isfinite(real) & (real > 0)
     n = int(ok.sum())
     if n == 0:
         nan = float("nan")
         return {"n": 0, "cov": nan, "below": nan, "above": nan, "halfw": nan}
     centre = (hi[ok] + lo[ok]) / 2.0
     with np.errstate(divide="ignore", invalid="ignore"):
-        rel_half = np.where(centre > 0, (hi[ok] - lo[ok]) / 2.0 / centre,
-                            np.nan)
+        rel_half = np.where(centre > 0, (hi[ok] - lo[ok]) / 2.0 / centre, np.nan)
     return {
         "n": n,
         "cov": float(((real[ok] >= lo[ok]) & (real[ok] <= hi[ok])).mean()),
@@ -625,13 +627,11 @@ def _coverage_row(frame: pd.DataFrame) -> dict:
         "above": float((real[ok] > hi[ok]).mean()),
         # nanmedian of an all-NaN slice warns and returns NaN, which is the
         # right answer here and must not take out the table.
-        "halfw": (float("nan") if not np.isfinite(rel_half).any()
-                  else float(np.nanmedian(rel_half))),
+        "halfw": (float("nan") if not np.isfinite(rel_half).any() else float(np.nanmedian(rel_half))),
     }
 
 
-COVERAGE_HEADER = (f"{'h':>4} {'n':>7} {'cov%':>8} {'target%':>8} "
-                   f"{'miss<low':>9} {'miss>high':>10} {'halfw%':>8}")
+COVERAGE_HEADER = f"{'h':>4} {'n':>7} {'cov%':>8} {'target%':>8} {'miss<low':>9} {'miss>high':>10} {'halfw%':>8}"
 
 
 def _coverage_line(h: int, row: dict) -> str:
@@ -641,17 +641,18 @@ def _coverage_line(h: int, row: dict) -> str:
     # `.get`, not `row['halfw']`: this formats dicts that callers built before
     # the column existed, and a KeyError here would take out the whole table.
     halfw = row.get("halfw", float("nan"))
-    return (f"{h:>4} {row['n']:>7} {100 * row['cov']:>8.2f} "
-            f"{100 * conformal.NOMINAL_COVERAGE:>8.2f} "
-            f"{100 * row['below']:>9.2f} {100 * row['above']:>10.2f} "
-            f"{100 * halfw:>8.2f}")
+    return (
+        f"{h:>4} {row['n']:>7} {100 * row['cov']:>8.2f} "
+        f"{100 * conformal.NOMINAL_COVERAGE:>8.2f} "
+        f"{100 * row['below']:>9.2f} {100 * row['above']:>10.2f} "
+        f"{100 * halfw:>8.2f}"
+    )
 
 
 SIGMA_STRATA = 5
 
 
-def _coverage_by_sigma_rows(frame: pd.DataFrame,
-                            n_strata: int = SIGMA_STRATA) -> list[dict]:
+def _coverage_by_sigma_rows(frame: pd.DataFrame, n_strata: int = SIGMA_STRATA) -> list[dict]:
     """Served coverage within strata of `sigma` — the property `SIGMA_EXPONENT`
     targets, on the path that actually serves it.
 
@@ -696,8 +697,7 @@ def _coverage_by_sigma_rows(frame: pd.DataFrame,
     centre = (hi + lo) / 2.0
     with np.errstate(divide="ignore", invalid="ignore"):
         rel_half = np.where(centre > 0, (hi - lo) / 2.0 / centre, np.nan)
-    ok = (np.isfinite(lo) & np.isfinite(hi) & np.isfinite(real) & (real > 0)
-          & np.isfinite(rel_half))
+    ok = np.isfinite(lo) & np.isfinite(hi) & np.isfinite(real) & (real > 0) & np.isfinite(rel_half)
     if ok.sum() < n_strata:
         return []
 
@@ -713,9 +713,9 @@ def _coverage_by_sigma_rows(frame: pd.DataFrame,
         m = edges == s
         if not m.any():
             continue
-        rows.append({"stratum": s + 1, "n": int(m.sum()),
-                     "cov": float(covered[m].mean()),
-                     "halfw": float(np.median(w[m]))})
+        rows.append(
+            {"stratum": s + 1, "n": int(m.sum()), "cov": float(covered[m].mean()), "halfw": float(np.median(w[m]))}
+        )
     return rows
 
 
@@ -733,11 +733,10 @@ def sigma_tilt_pp(rows: list[dict]) -> float:
     """
     if not rows:
         return float("nan")
-    return float(np.mean([abs(100 * r["cov"] - 100 * conformal.NOMINAL_COVERAGE)
-                          for r in rows]))
+    return float(np.mean([abs(100 * r["cov"] - 100 * conformal.NOMINAL_COVERAGE) for r in rows]))
 
 
-SIGMA_HEADER = (f"{'h':>4} {'stratum':>8} {'n':>7} {'cov%':>8} {'halfw%':>8}")
+SIGMA_HEADER = f"{'h':>4} {'stratum':>8} {'n':>7} {'cov%':>8} {'halfw%':>8}"
 
 
 def _sigma_line(h: int, row: dict, n_strata: int = SIGMA_STRATA) -> str:
@@ -747,15 +746,13 @@ def _sigma_line(h: int, row: dict, n_strata: int = SIGMA_STRATA) -> str:
     where a same-quote nesting is a syntax error rather than the 3.12 behaviour.
     """
     label = f"{row['stratum']}/{n_strata}"
-    return (f"{h:>4} {label:>8} {row['n']:>7} "
-            f"{100 * row['cov']:>8.2f} {100 * row['halfw']:>8.2f}")
+    return f"{h:>4} {label:>8} {row['n']:>7} {100 * row['cov']:>8.2f} {100 * row['halfw']:>8.2f}"
 
 
 RELIABILITY_BINS = 5
 
 
-def _reliability_rows(frame: pd.DataFrame, actual_ret,
-                      n_bins: int = RELIABILITY_BINS) -> list[dict]:
+def _reliability_rows(frame: pd.DataFrame, actual_ret, n_bins: int = RELIABILITY_BINS) -> list[dict]:
     """Calibration of the exceedance head: predicted `exceed_p` vs the realised
     exceedance rate, per fixed-width bin of predicted probability.
 
@@ -784,8 +781,7 @@ def _reliability_rows(frame: pd.DataFrame, actual_ret,
     if not ok.any():
         return []
     p, ar, cur = p[ok], ar[ok], cur[ok]
-    thr = np.array([actionable_threshold(price_tier(float(c)), "csfloat")
-                    for c in cur])
+    thr = np.array([actionable_threshold(price_tier(float(c)), "csfloat") for c in cur])
     realized = (ar > thr).astype(float)
 
     edges = np.linspace(0.0, 1.0, n_bins + 1)
@@ -795,9 +791,16 @@ def _reliability_rows(frame: pd.DataFrame, actual_ret,
         m = idx == b
         if not m.any():
             continue
-        rows.append({"bin": b, "lo": float(edges[b]), "hi": float(edges[b + 1]),
-                     "n": int(m.sum()), "pred": float(p[m].mean()),
-                     "realized": float(realized[m].mean())})
+        rows.append(
+            {
+                "bin": b,
+                "lo": float(edges[b]),
+                "hi": float(edges[b + 1]),
+                "n": int(m.sum()),
+                "pred": float(p[m].mean()),
+                "realized": float(realized[m].mean()),
+            }
+        )
     return rows
 
 
@@ -811,20 +814,17 @@ def _reliability_ece(rows: list[dict]) -> float:
     return sum(r["n"] * abs(r["pred"] - r["realized"]) for r in rows) / n
 
 
-RELIABILITY_HEADER = (f"{'h':>4} {'p-bin':>10} {'n':>7} {'pred%':>8} "
-                      f"{'realized%':>10}")
+RELIABILITY_HEADER = f"{'h':>4} {'p-bin':>10} {'n':>7} {'pred%':>8} {'realized%':>10}"
 
 
 def _reliability_line(h: int, row: dict) -> str:
     """One probability bin. NaN-safe like `_coverage_line`, though a populated bin
     always has finite pred/realized."""
     label = f"{row['lo']:.1f}-{row['hi']:.1f}"
-    return (f"{h:>4} {label:>10} {row['n']:>7} "
-            f"{100 * row['pred']:>8.2f} {100 * row['realized']:>10.2f}")
+    return f"{h:>4} {label:>10} {row['n']:>7} {100 * row['pred']:>8.2f} {100 * row['realized']:>10.2f}"
 
 
-DOLLAR_HEADER = (f"{'h':>4} {'subset':>10} {'n':>7} {'model':>8} {'p90':>8} "
-                 f"{'quote':>8} {'naive':>8} {'nNaive':>7}")
+DOLLAR_HEADER = f"{'h':>4} {'subset':>10} {'n':>7} {'model':>8} {'p90':>8} {'quote':>8} {'naive':>8} {'nNaive':>7}"
 
 
 def _dollar_line(h: int, row: dict) -> str:
@@ -834,14 +834,15 @@ def _dollar_line(h: int, row: dict) -> str:
     covered: a cohort under three items scores NaN, and a `%`-formatted NaN
     raising would take out an hour of CI at the point where the table prints.
     """
-    return (f"{h:>4} {row['subset']:>10} {row['n']:>7} "
-            f"{100 * row['model']:>8.2f} {100 * row['p90']:>8.2f} "
-            f"{100 * row['quote']:>8.2f} {100 * row['naive']:>8.2f} "
-            f"{row['n_naive']:>7}")
+    return (
+        f"{h:>4} {row['subset']:>10} {row['n']:>7} "
+        f"{100 * row['model']:>8.2f} {100 * row['p90']:>8.2f} "
+        f"{100 * row['quote']:>8.2f} {100 * row['naive']:>8.2f} "
+        f"{row['n_naive']:>7}"
+    )
 
 
-def _basis_frame(fc: ItemForecaster, outcomes: pd.DataFrame, anchor: date,
-                 horizon: int) -> pd.DataFrame:
+def _basis_frame(fc: ItemForecaster, outcomes: pd.DataFrame, anchor: date, horizon: int) -> pd.DataFrame:
     """The four label bases, per item, on one anchor.
 
     The serving replay and CV disagree by 0.1-0.2 rank IC on the same artifact
@@ -868,34 +869,36 @@ def _basis_frame(fc: ItemForecaster, outcomes: pd.DataFrame, anchor: date,
     # The day before the anchor. NOT a clean denominator -- it is `return_1d`'s
     # own denominator, so it carries the same shared-quote channel with the sign
     # flipped. Included because it bounds the effect from the other side.
-    lag_anchor = _exact_day(outcomes, anchor - timedelta(days=1)) \
-        .rename(columns={"px": "anchor_lag"})
-    raw_target = _exact_day(outcomes, anchor + timedelta(days=horizon)) \
-        .rename(columns={"px": "out_raw"})
-    med_target = _resolve(outcomes, anchor + timedelta(days=horizon), after=anchor) \
-        .rename(columns={"realised": "out_med"})
+    lag_anchor = _exact_day(outcomes, anchor - timedelta(days=1)).rename(columns={"px": "anchor_lag"})
+    raw_target = _exact_day(outcomes, anchor + timedelta(days=horizon)).rename(columns={"px": "out_raw"})
+    med_target = _resolve(outcomes, anchor + timedelta(days=horizon), after=anchor).rename(
+        columns={"realised": "out_med"}
+    )
 
-    f = (raw_anchor.merge(smoothed.reset_index(), on="item_id", how="outer")
-                   .merge(lag_anchor, on="item_id", how="outer")
-                   .merge(raw_target, on="item_id", how="outer")
-                   .merge(med_target, on="item_id", how="outer"))
+    f = (
+        raw_anchor.merge(smoothed.reset_index(), on="item_id", how="outer")
+        .merge(lag_anchor, on="item_id", how="outer")
+        .merge(raw_target, on="item_id", how="outer")
+        .merge(med_target, on="item_id", how="outer")
+    )
     # The quote at the anchor sits in the label's denominator AND in the
     # features. Where it equals the local median there is no deviation for the
     # model to read, so this flag splits the cross-section into the half where
     # the hypothesised channel can operate and the half where it cannot.
     # `_tied_mask` and not an inline `isclose`: the dollar table reads the same
     # split, and two copies would drift.
-    f = f.merge(_tied_mask(outcomes, anchor).reset_index(), on="item_id",
-                how="left")
+    f = f.merge(_tied_mask(outcomes, anchor).reset_index(), on="item_id", how="left")
     f["anchor_is_tied"] = f["anchor_is_tied"].eq(True)
-    for name, num, den in (("served", "out_med", "anchor_smooth"),
-                           ("cv", "out_raw", "anchor_raw"),
-                           ("num_only", "out_raw", "anchor_smooth"),
-                           ("den_only", "out_med", "anchor_raw"),
-                           ("cv_lag", "out_raw", "anchor_lag")):
-        f[name] = np.where(f[den].to_numpy(dtype=float) > 0,
-                           f[num].to_numpy(dtype=float)
-                           / f[den].to_numpy(dtype=float) - 1.0, np.nan)
+    for name, num, den in (
+        ("served", "out_med", "anchor_smooth"),
+        ("cv", "out_raw", "anchor_raw"),
+        ("num_only", "out_raw", "anchor_smooth"),
+        ("den_only", "out_med", "anchor_raw"),
+        ("cv_lag", "out_raw", "anchor_lag"),
+    ):
+        f[name] = np.where(
+            f[den].to_numpy(dtype=float) > 0, f[num].to_numpy(dtype=float) / f[den].to_numpy(dtype=float) - 1.0, np.nan
+        )
     return f
 
 
@@ -906,7 +909,7 @@ def _rank_ic(pred: np.ndarray, actual: np.ndarray) -> float:
     return float(pd.Series(pred).corr(pd.Series(actual), method="spearman"))
 
 
-def _requested_horizons(argv) -> Optional[set]:
+def _requested_horizons(argv) -> set | None:
     """`--horizons 3,7` restricts which rows are scored.
 
     The reason is `model-diagnostics.yml`: its matrix trains ONE horizon per job
@@ -923,7 +926,7 @@ def _requested_horizons(argv) -> Optional[set]:
     return {int(h) for h in raw.split(",") if h.strip()}
 
 
-def _model_dir() -> Optional[str]:
+def _model_dir() -> str | None:
     """Which artifact directory to SERVE from.
 
     None keeps `ItemForecaster`'s default (`models/saved_models/`), the deployed
@@ -940,8 +943,7 @@ def _model_dir() -> Optional[str]:
         return None
     path = Path(raw).expanduser()
     path.mkdir(parents=True, exist_ok=True)
-    logger.info(f"FORECAST_MODEL_DIR override: serving the artifact under "
-                f"{path} — models/saved_models/ is not read")
+    logger.info(f"FORECAST_MODEL_DIR override: serving the artifact under {path} — models/saved_models/ is not read")
     return str(path)
 
 
@@ -949,9 +951,11 @@ def main() -> int:
     want = _requested_horizons(sys.argv)
     anchor = ItemForecaster.replay_anchor()
     if anchor is None:
-        logger.error("REPLAY_ANCHOR is not set. Refusing to run: without it "
-                     "this would 'replay' today and score a forecast whose "
-                     "outcome does not exist yet.")
+        logger.error(
+            "REPLAY_ANCHOR is not set. Refusing to run: without it "
+            "this would 'replay' today and score a forecast whose "
+            "outcome does not exist yet."
+        )
         return 2
 
     # Before the artifact, before predict(): a bad anchor makes every number
@@ -969,7 +973,8 @@ def main() -> int:
             f"reversed four horizons at once "
             f"(changelog/2026-08-12-july-09-anchor-is-a-feed-substitution.md). "
             f"Pick another anchor, or set {ALLOW_DIRTY_ANCHOR_ENV}=1 to replay "
-            f"it deliberately as a diagnosis.")
+            f"it deliberately as a diagnosis."
+        )
         return 2
     # The OUTCOME side, which the feed audit's ±3 day window cannot reach. An
     # anchor whose own collection is ordinary can still resolve across a basis
@@ -978,47 +983,54 @@ def main() -> int:
     audit_horizons = sorted(want) if want else sorted(DEFAULT_AUDIT_HORIZONS)
     span = _feed_profile(anchor, window=max(audit_horizons))
     spanned = cutovers_in_outcome_window(
-        anchor, audit_horizons,
-        cutovers_from_counts(
-            span.set_index(pd.to_datetime(span["day"]).dt.date)["items"]))
+        anchor, audit_horizons, cutovers_from_counts(span.set_index(pd.to_datetime(span["day"]).dt.date)["items"])
+    )
     if spanned:
         for h, cuts in sorted(spanned.items()):
             logger.warning(
                 "h=%s resolves ACROSS a collector cutover on %s — the anchor is "
                 "quoted on one source basis and its outcome on another, which "
-                "`prepare_targets` voids as a label.", h,
-                ", ".join(c.isoformat() for c in cuts))
+                "`prepare_targets` voids as a label.",
+                h,
+                ", ".join(c.isoformat() for c in cuts),
+            )
         survivors = [h for h in audit_horizons if h not in spanned]
         if not survivors and not allowed:
             logger.error(
                 f"REFUSING {anchor}: every requested horizon spans a cutover. "
-                f"Pick another anchor, or set {ALLOW_DIRTY_ANCHOR_ENV}=1.")
+                f"Pick another anchor, or set {ALLOW_DIRTY_ANCHOR_ENV}=1."
+            )
             return 2
         if survivors:
-            logger.warning("dropping %s; replaying %s",
-                           ",".join(str(h) for h in sorted(spanned)),
-                           ",".join(str(h) for h in survivors))
+            logger.warning(
+                "dropping %s; replaying %s",
+                ",".join(str(h) for h in sorted(spanned)),
+                ",".join(str(h) for h in survivors),
+            )
             want = set(survivors)
 
     if not ok:
         logger.warning(
             f"{ALLOW_DIRTY_ANCHOR_ENV}=1: proceeding on an anchor that FAILED "
             f"the feed audit above. These numbers describe the archive's "
-            f"collection, not the model — do not publish them as a measurement.")
+            f"collection, not the model — do not publish them as a measurement."
+        )
 
     db = SessionLocal()
     try:
-        fc = ItemForecaster(db_session=db, prune_failed_groups=False,
-                            model_dir=_model_dir())
+        fc = ItemForecaster(db_session=db, prune_failed_groups=False, model_dir=_model_dir())
         if not fc.load_models():
-            logger.error("No usable model artifact. Train one first — the "
-                         "replay serves an artifact, it does not build one.")
+            logger.error(
+                "No usable model artifact. Train one first — the replay serves an artifact, it does not build one."
+            )
             return 2
 
         logger.info(f"Replaying the serving path at anchor {anchor}")
-        logger.info(f"  artifact: xs_rank={fc._artifact_xs_rank} "
-                    f"floor={fc._artifact_min_median_price} "
-                    f"skipped={fc._artifact_xs_rank_skipped}")
+        logger.info(
+            f"  artifact: xs_rank={fc._artifact_xs_rank} "
+            f"floor={fc._artifact_min_median_price} "
+            f"skipped={fc._artifact_xs_rank_skipped}"
+        )
 
         served = fc.predict()
         if served.empty:
@@ -1029,16 +1041,18 @@ def main() -> int:
         if want is not None:
             missing = want - set(horizons)
             if missing:
-                logger.error(f"--horizons asked for {sorted(missing)}, which "
-                             f"this artifact does not serve ({horizons}).")
+                logger.error(
+                    f"--horizons asked for {sorted(missing)}, which this artifact does not serve ({horizons})."
+                )
                 return 2
             horizons = sorted(want)
-            logger.info(f"  scoring only {horizons} -- the rest of this "
-                        f"artifact's boosters were not trained under these "
-                        f"flags, so their rows would not be a measurement.")
+            logger.info(
+                f"  scoring only {horizons} -- the rest of this "
+                f"artifact's boosters were not trained under these "
+                f"flags, so their rows would not be a measurement."
+            )
         outcomes = _outcomes(fc, anchor, horizons)
-        logger.info(f"  {len(served):,} served rows, "
-                    f"{outcomes['item_id'].nunique():,} items in the outcome window")
+        logger.info(f"  {len(served):,} served rows, {outcomes['item_id'].nunique():,} items in the outcome window")
 
         naive = _naive_baseline(fc, outcomes, anchor)
         logger.info(f"  -return_1d available for {len(naive):,} items")
@@ -1050,7 +1064,8 @@ def main() -> int:
                 f"  the artifact records no train_min_median_price; scoring the "
                 f"served cohort at >= ${floor:g} instead. Pooling every item "
                 f"would report the penny-item score "
-                f"(docs/changelog offline-DA-inflated-by-stale-prices).")
+                f"(docs/changelog offline-DA-inflated-by-stale-prices)."
+            )
         # One denominator for every arm, computed once per anchor. `rankIC`
         # below divides by what THIS run quoted; `pinnedIC` divides by the
         # shipped smoothed anchor whatever this run quoted, so two arms that
@@ -1064,18 +1079,21 @@ def main() -> int:
         # arm being scored.
         tied = _tied_mask(outcomes, anchor)
         if not _pin_matches_production():
-            from backtest.price_resolution import (MAX_WINDOW_SPAN_DAYS,
-                                                   SMOOTH_WINDOW)
+            from backtest.price_resolution import MAX_WINDOW_SPAN_DAYS, SMOOTH_WINDOW
+
             logger.warning(
                 f"  the pinned denominator ({PINNED_SMOOTH_WINDOW} obs / "
                 f"{PINNED_MAX_SPAN_DAYS}d) no longer matches production "
                 f"({SMOOTH_WINDOW} obs / {MAX_WINDOW_SPAN_DAYS}d). `pinnedIC` "
                 f"is still comparable across arms; it is no longer the basis "
-                f"production quotes from. Check FALLBACK_MAX_AGE_DAYS.")
+                f"production quotes from. Check FALLBACK_MAX_AGE_DAYS."
+            )
 
         print(f"\nSERVING REPLAY @ {anchor}   (cohort floor >= ${floor:g})")
-        print(f"{'h':>4} {'n':>7} {'DA%':>7} {'down%':>7} {'edge':>7} "
-              f"{'rankIC':>8} {'naiveIC':>8} {'vs naive':>9} {'pinnedIC':>9}")
+        print(
+            f"{'h':>4} {'n':>7} {'DA%':>7} {'down%':>7} {'edge':>7} "
+            f"{'rankIC':>8} {'naiveIC':>8} {'vs naive':>9} {'pinnedIC':>9}"
+        )
 
         dollar_rows: list[tuple[int, dict]] = []
         coverage_rows: list[tuple[int, dict]] = []
@@ -1093,8 +1111,7 @@ def main() -> int:
             frame = frame.merge(naive, on="item_id", how="left")
             # The served cohort is the only population the headline describes.
             frame = frame[frame["current"] >= floor]
-            frame = frame[np.isfinite(frame["realised"])
-                          & (frame["current"] > 0)].reset_index(drop=True)
+            frame = frame[np.isfinite(frame["realised"]) & (frame["current"] > 0)].reset_index(drop=True)
             if len(frame) < 3:
                 print(f"{h:>4} {len(frame):>7}   too few resolved outcomes")
                 continue
@@ -1103,7 +1120,7 @@ def main() -> int:
             pred_ret = frame["mid"] / frame["current"] - 1.0
 
             hit = (np.sign(pred_ret) == np.sign(actual_ret)) & (actual_ret != 0)
-            scored = (actual_ret != 0)
+            scored = actual_ret != 0
             da = 100.0 * hit.sum() / max(scored.sum(), 1)
             down = 100.0 * (actual_ret < 0).mean()
             # The runnable baseline is always-down, never constant_call --
@@ -1112,15 +1129,18 @@ def main() -> int:
             ic = _rank_ic(pred_ret.to_numpy(), actual_ret.to_numpy())
             # The baseline the model measurably loses to on rank IC in CV.
             have_naive = frame["naive"].notna().to_numpy()
-            naive_ic = (_rank_ic(frame["naive"].to_numpy()[have_naive],
-                                 actual_ret.to_numpy()[have_naive])
-                        if have_naive.sum() >= 3 else float("nan"))
+            naive_ic = (
+                _rank_ic(frame["naive"].to_numpy()[have_naive], actual_ret.to_numpy()[have_naive])
+                if have_naive.sum() >= 3
+                else float("nan")
+            )
             pinned_ic = _pinned_rank_ic(frame, pinned)
-            print(f"{h:>4} {len(frame):>7} {da:>7.2f} {down:>7.2f} "
-                  f"{da - base:>+7.2f} {ic:>8.4f} {naive_ic:>8.4f} "
-                  f"{ic - naive_ic:>+9.4f} {pinned_ic:>9.4f}")
-            dollar_rows += [(h, r) for r in
-                            _dollar_error_rows(frame, pinned, tied)]
+            print(
+                f"{h:>4} {len(frame):>7} {da:>7.2f} {down:>7.2f} "
+                f"{da - base:>+7.2f} {ic:>8.4f} {naive_ic:>8.4f} "
+                f"{ic - naive_ic:>+9.4f} {pinned_ic:>9.4f}"
+            )
+            dollar_rows += [(h, r) for r in _dollar_error_rows(frame, pinned, tied)]
             coverage_rows.append((h, _coverage_row(frame)))
             # Same frame, so the marginal and conditional tables describe the
             # same rows -- two coverage figures over different cohorts would not
@@ -1139,8 +1159,7 @@ def main() -> int:
         # that chooses between the raw quote and its own median serves the same
         # price, so a pooled number dilutes the effect with rows that cannot
         # move (`2026-08-11-smoothed-anchor-label-measured.md`).
-        print(f"\nDOLLAR ERROR @ {anchor}   "
-              f"(|x - realised| / realised, %; basis-free)")
+        print(f"\nDOLLAR ERROR @ {anchor}   (|x - realised| / realised, %; basis-free)")
         print(DOLLAR_HEADER)
         for h, r in dollar_rows:
             print(_dollar_line(h, r))
@@ -1152,10 +1171,8 @@ def main() -> int:
         # `conformal_centre` in meta.json says which centre this artifact's q_hat
         # was fitted around.
         centre = getattr(fc, "conformal_centre", {}) or {}
-        centres = ", ".join(f"{h}d={centre.get(h, 'unknown')}"
-                            for h, _ in coverage_rows)
-        print(f"\nBAND COVERAGE @ {anchor}   "
-              f"(low <= realised <= high; conformal_centre: {centres})")
+        centres = ", ".join(f"{h}d={centre.get(h, 'unknown')}" for h, _ in coverage_rows)
+        print(f"\nBAND COVERAGE @ {anchor}   (low <= realised <= high; conformal_centre: {centres})")
         print(COVERAGE_HEADER)
         for h, r in coverage_rows:
             print(_coverage_line(h, r))
@@ -1164,20 +1181,24 @@ def main() -> int:
         # marginally while covering 57% of its low-sigma items and 96% of its
         # high-sigma ones -- which is what the OOF records say this band does.
         # Stratum 1 is the NARROWEST band, i.e. the lowest sigma.
-        print(f"\nBAND COVERAGE BY SIGMA @ {anchor}   "
-              f"(quintiles of the served half-width, which is monotone in "
-              f"sigma; stratum 1 = lowest sigma)")
+        print(
+            f"\nBAND COVERAGE BY SIGMA @ {anchor}   "
+            f"(quintiles of the served half-width, which is monotone in "
+            f"sigma; stratum 1 = lowest sigma)"
+        )
         print(SIGMA_HEADER)
         for h, srows in sigma_rows:
             for r in srows:
                 print(_sigma_line(h, r))
             if srows:
                 covs = [100 * r["cov"] for r in srows]
-                print(f"{h:>4} {'tilt':>8} {'':>7} "
-                      f"{sigma_tilt_pp(srows):>8.2f} "
-                      f"{covs[-1] - covs[0]:>+8.2f}   "
-                      f"mean |cov-nominal| pp, and the ramp (last - first). "
-                      f"NOT level-matched: read beside cov% above.")
+                print(
+                    f"{h:>4} {'tilt':>8} {'':>7} "
+                    f"{sigma_tilt_pp(srows):>8.2f} "
+                    f"{covs[-1] - covs[0]:>+8.2f}   "
+                    f"mean |cov-nominal| pp, and the ramp (last - first). "
+                    f"NOT level-matched: read beside cov% above."
+                )
 
         # Exceedance-head calibration: does a stated P(upside move > cost)
         # realise at that rate? Printed only when the artifact carries a head
@@ -1186,23 +1207,26 @@ def main() -> int:
         # exceedance analogue of BAND COVERAGE — it runs on replayed forecasts
         # because no served exceed_p exists in the outcomes store yet.
         if reliability_rows:
-            print(f"\nEXCEEDANCE RELIABILITY @ {anchor}   "
-                  f"(pred vs realised P(actual_ret > cost); one-sided, "
-                  f"tier-thresholded; well-calibrated => pred% ~ realized%)")
+            print(
+                f"\nEXCEEDANCE RELIABILITY @ {anchor}   "
+                f"(pred vs realised P(actual_ret > cost); one-sided, "
+                f"tier-thresholded; well-calibrated => pred% ~ realized%)"
+            )
             print(RELIABILITY_HEADER)
             for h, rel in reliability_rows:
                 for r in rel:
                     print(_reliability_line(h, r))
-                print(f"{h:>4} {'ECE':>10} {'':>7} "
-                      f"{100 * _reliability_ece(rel):>8.2f}   "
-                      f"count-weighted mean |pred-realized| pp")
+                print(
+                    f"{h:>4} {'ECE':>10} {'':>7} "
+                    f"{100 * _reliability_ece(rel):>8.2f}   "
+                    f"count-weighted mean |pred-realized| pp"
+                )
 
         if "--basis-sweep" in sys.argv:
             # The SAME served mids, scored against four label bases. Everything
             # else -- artifact, anchor, items, transforms -- is held fixed, so a
             # difference here is the label definition and nothing else.
-            print(f"\nLABEL BASIS SWEEP @ {anchor}   "
-                  f"(same served mids; 'cv' is prepare_targets' own basis)")
+            print(f"\nLABEL BASIS SWEEP @ {anchor}   (same served mids; 'cv' is prepare_targets' own basis)")
             print(f"{'h':>4} {'basis':>10} {'n':>7} {'rankIC':>8} {'vs served':>10}")
             for h in horizons:
                 base_f = _served_rows(served, h)
@@ -1218,8 +1242,7 @@ def main() -> int:
                 served_ic = None
                 for name in ("served", "cv", "num_only", "den_only", "cv_lag"):
                     ok = np.isfinite(merged[name].to_numpy()) & np.isfinite(pred)
-                    ic_b = (_rank_ic(pred[ok], merged[name].to_numpy()[ok])
-                            if ok.sum() >= 3 else float("nan"))
+                    ic_b = _rank_ic(pred[ok], merged[name].to_numpy()[ok]) if ok.sum() >= 3 else float("nan")
                     if name == "served":
                         served_ic = ic_b
                     delta = "" if name == "served" else f"{ic_b - served_ic:>+10.4f}"
@@ -1236,21 +1259,28 @@ def main() -> int:
                 # how this was caught -- but "no anchor observed" is not "tied".
                 tied = merged["anchor_is_tied"].fillna(False).astype(bool).to_numpy()
                 for label, mask in (("tied", tied), ("deviating", ~tied)):
-                    fin = (np.isfinite(merged["cv"].to_numpy())
-                           & np.isfinite(merged["served"].to_numpy())
-                           & np.isfinite(pred) & mask)
+                    fin = (
+                        np.isfinite(merged["cv"].to_numpy())
+                        & np.isfinite(merged["served"].to_numpy())
+                        & np.isfinite(pred)
+                        & mask
+                    )
                     if fin.sum() < 3:
                         print(f"{h:>4} {label:>10} {int(fin.sum()):>7}   too few")
                         continue
                     ic_cv = _rank_ic(pred[fin], merged["cv"].to_numpy()[fin])
                     ic_sv = _rank_ic(pred[fin], merged["served"].to_numpy()[fin])
-                    print(f"{h:>4} {label:>10} {int(fin.sum()):>7} "
-                          f"{ic_sv:>8.4f} {ic_cv - ic_sv:>+10.4f}  "
-                          f"(cv {ic_cv:+.4f})")
+                    print(
+                        f"{h:>4} {label:>10} {int(fin.sum()):>7} "
+                        f"{ic_sv:>8.4f} {ic_cv - ic_sv:>+10.4f}  "
+                        f"(cv {ic_cv:+.4f})"
+                    )
 
-        print("\nDA is quotable only beside down% and the PT test "
-              "(backend/AGENTS.md invariant 4). One anchor is one date: this "
-              "is a path check with a number attached, not an accuracy result.")
+        print(
+            "\nDA is quotable only beside down% and the PT test "
+            "(backend/AGENTS.md invariant 4). One anchor is one date: this "
+            "is a path check with a number attached, not an accuracy result."
+        )
         return 0
     finally:
         db.close()

@@ -1,9 +1,8 @@
 from __future__ import annotations
 
-from collectors.csgotrader_aggregator import CSGOTraderAggregator
-
-
 from datetime import datetime
+
+from collectors.csgotrader_aggregator import CSGOTraderAggregator
 
 
 def _make_steam_source(data: dict) -> dict:
@@ -38,10 +37,14 @@ def test_collect_batch_items_does_not_cross_match_sticker_event_suffix_without_b
 
 def test_collect_batch_items_still_prefers_exact_sticker_match(monkeypatch):
     aggregator = CSGOTraderAggregator()
-    aggregator._raw_sources = {"steam": _make_steam_source({
-        "Sticker | noway (Holo)": 12.34,
-        "Sticker | noway (Holo) | Shanghai 2024": 56.78,
-    })}
+    aggregator._raw_sources = {
+        "steam": _make_steam_source(
+            {
+                "Sticker | noway (Holo)": 12.34,
+                "Sticker | noway (Holo) | Shanghai 2024": 56.78,
+            }
+        )
+    }
 
     results = aggregator.collect_batch_items(["Sticker | noway (Holo) | Shanghai 2024"])
 
@@ -104,10 +107,14 @@ def test_collect_batch_items_matches_knife_without_leading_star(monkeypatch):
 
 def test_collect_batch_items_prefers_exact_starred_knife_match(monkeypatch):
     aggregator = CSGOTraderAggregator()
-    aggregator._raw_sources = {"steam": _make_steam_source({
-        "Skeleton Knife | Damascus Steel (Well-Worn)": 88.8,
-        "★ Skeleton Knife | Damascus Steel (Well-Worn)": 99.9,
-    })}
+    aggregator._raw_sources = {
+        "steam": _make_steam_source(
+            {
+                "Skeleton Knife | Damascus Steel (Well-Worn)": 88.8,
+                "★ Skeleton Knife | Damascus Steel (Well-Worn)": 99.9,
+            }
+        )
+    }
 
     results = aggregator.collect_batch_items(["★ Skeleton Knife | Damascus Steel (Well-Worn)"])
 
@@ -116,21 +123,21 @@ def test_collect_batch_items_prefers_exact_starred_knife_match(monkeypatch):
 
 def test_collect_batch_items_matches_souvenir_charm_without_charm_word(monkeypatch):
     aggregator = CSGOTraderAggregator()
-    aggregator._raw_sources = {"steam": _make_steam_source({"Souvenir | Austin 2025 Highlight | Almost 500 Damage": 17.5})}
+    aggregator._raw_sources = {
+        "steam": _make_steam_source({"Souvenir | Austin 2025 Highlight | Almost 500 Damage": 17.5})
+    }
 
-    results = aggregator.collect_batch_items([
-        "Souvenir Charm | Austin 2025 Highlight | Almost 500 Damage"
-    ])
+    results = aggregator.collect_batch_items(["Souvenir Charm | Austin 2025 Highlight | Almost 500 Damage"])
 
     _assert_sources(results, "Souvenir Charm | Austin 2025 Highlight | Almost 500 Damage", 17.5)
 
 
 def test_collect_batch_items_does_not_cross_match_souvenir_charm_event(monkeypatch):
     aggregator = CSGOTraderAggregator()
-    aggregator._raw_sources = {"steam": _make_steam_source({"Souvenir | Paris 2023 Highlight | Almost 500 Damage": 17.5})}
+    aggregator._raw_sources = {
+        "steam": _make_steam_source({"Souvenir | Paris 2023 Highlight | Almost 500 Damage": 17.5})
+    }
 
-    results = aggregator.collect_batch_items([
-        "Souvenir Charm | Austin 2025 Highlight | Almost 500 Damage"
-    ])
+    results = aggregator.collect_batch_items(["Souvenir Charm | Austin 2025 Highlight | Almost 500 Damage"])
 
     assert "Souvenir Charm | Austin 2025 Highlight | Almost 500 Damage" not in results

@@ -6,15 +6,15 @@ check_concept_drift averages stored prediction_accuracy rows. Those rows span
 average tracks which way the market moved rather than model decay. See
 docs/changelog/2026-08-03-accuracy-is-clustered-by-forecast-date.md.
 """
+
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from unittest.mock import MagicMock
 
 import pandas as pd
 import pytest
-
 from backtest.scoring import MIN_FORECAST_DATES
 from models.forecaster import ItemForecaster
 
@@ -104,9 +104,7 @@ def test_drift_alert_is_still_written(tmp_path):
 # The predict-only path must not retrain.
 # ---------------------------------------------------------------------------
 
-FORECAST_PRICES_SRC = (
-    Path(__file__).resolve().parent.parent / "scripts" / "forecast_prices.py"
-)
+FORECAST_PRICES_SRC = Path(__file__).resolve().parent.parent / "scripts" / "forecast_prices.py"
 
 
 def test_predict_only_branch_has_no_retrain_trigger():
@@ -118,27 +116,26 @@ def test_predict_only_branch_has_no_retrain_trigger():
     """
     src = FORECAST_PRICES_SRC.read_text()
     start = src.index("elif predict_only and has_models:")
-    branch = src[start:src.index("if do_train:", start)]
+    branch = src[start : src.index("if do_train:", start)]
 
     # The retrain must exist only behind the explicit opt-in.
     assert "if drifted_horizons and allow_retrain:" in branch, (
         "Retraining must be gated on the ALLOW_DRIFT_RETRAIN opt-in."
     )
     assert branch.count("do_train = True") == 1, (
-        "Exactly one gated retrain assignment expected in this branch; found "
-        f"{branch.count('do_train = True')}."
+        f"Exactly one gated retrain assignment expected in this branch; found {branch.count('do_train = True')}."
     )
-    assert "ALLOW_DRIFT_RETRAIN" in branch, (
-        "The opt-in escape hatch must be present in this branch."
-    )
+    assert "ALLOW_DRIFT_RETRAIN" in branch, "The opt-in escape hatch must be present in this branch."
 
 
 # ---------------------------------------------------------------------------
 # Full mode retrains on model age, not on drift.
 # ---------------------------------------------------------------------------
 
+
 def test_drift_detected_helper_is_gone():
     import scripts.forecast_prices as m
+
     assert not hasattr(m, "_drift_detected"), (
         "_drift_detected's only caller was the full-mode retrain condition. "
         "Leaving it behind invites the trigger being reinstated."
@@ -148,11 +145,10 @@ def test_drift_detected_helper_is_gone():
 def test_full_mode_retrains_on_age_not_drift():
     src = FORECAST_PRICES_SRC.read_text()
     start = src.index("if age is None or age >= retrain_interval")
-    condition = src[start:src.index(":", start)]
+    condition = src[start : src.index(":", start)]
 
     assert "drifted" not in condition, (
-        "Full mode must retrain on model age alone. Drift reads a 1-2-date "
-        "sample and cannot support the decision."
+        "Full mode must retrain on model age alone. Drift reads a 1-2-date sample and cannot support the decision."
     )
     assert "retrain_interval" in condition
 
@@ -166,6 +162,7 @@ def test_full_mode_retrains_on_age_not_drift():
 # with a fake forecaster and assert on whether train() is actually called.
 # ---------------------------------------------------------------------------
 
+
 class _TrainCalled(Exception):
     """Raised by the fake's train() so the run stops before any real DB work."""
 
@@ -176,10 +173,13 @@ def _fake_forecast_env(monkeypatch, tmp_path, *, drifted, trained_days_ago=0):
 
     import scripts.forecast_prices as fp
 
-    (tmp_path / "meta.json").write_text(json.dumps({
-        "trained_at": (datetime.now(timezone.utc)
-                       - timedelta(days=trained_days_ago)).isoformat(),
-    }))
+    (tmp_path / "meta.json").write_text(
+        json.dumps(
+            {
+                "trained_at": (datetime.now(UTC) - timedelta(days=trained_days_ago)).isoformat(),
+            }
+        )
+    )
 
     class FakeForecaster:
         HORIZONS = [3, 7, 14, 30]
@@ -218,8 +218,7 @@ def test_predict_only_does_not_train_though_drift_is_reported(monkeypatch, tmp_p
     fake = _fake_forecast_env(monkeypatch, tmp_path, drifted=True)
     fp.run_forecast(predict_only=True)
     assert fake.train_called is False, (
-        "Drift is reported on every real run. Retraining on it costs a measured "
-        "465s of an 835s daily step."
+        "Drift is reported on every real run. Retraining on it costs a measured 465s of an 835s daily step."
     )
 
 
@@ -256,8 +255,7 @@ def test_full_mode_does_not_train_on_drift_alone(monkeypatch, tmp_path):
     """
     import scripts.forecast_prices as fp
 
-    fake = _fake_forecast_env(monkeypatch, tmp_path, drifted=True,
-                              trained_days_ago=0)
+    fake = _fake_forecast_env(monkeypatch, tmp_path, drifted=True, trained_days_ago=0)
     fp.run_forecast()
     assert fake.train_called is False
 
@@ -265,7 +263,6 @@ def test_full_mode_does_not_train_on_drift_alone(monkeypatch, tmp_path):
 def test_full_mode_still_trains_a_stale_model(monkeypatch, tmp_path):
     import scripts.forecast_prices as fp
 
-    fake = _fake_forecast_env(monkeypatch, tmp_path, drifted=False,
-                              trained_days_ago=99)
+    fake = _fake_forecast_env(monkeypatch, tmp_path, drifted=False, trained_days_ago=99)
     fp.run_forecast()
     assert fake.train_called is True

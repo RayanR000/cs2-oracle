@@ -20,6 +20,7 @@ is no 180d signal and the trading thread closes for good.
 
     venv/bin/python -m scripts.signal_probe_180d --min-price 1 --days-back 3650
 """
+
 from __future__ import annotations
 
 import argparse
@@ -31,15 +32,14 @@ import pandas as pd
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from scripts.horizon_friction_scan import _load_voted, forward_returns  # noqa: E402
+from scripts.horizon_friction_scan import _load_voted
 
 HORIZON = 180
-MIN_ITEMS_PER_DATE = 30   # a within-date IC on fewer names is noise
+MIN_ITEMS_PER_DATE = 30  # a within-date IC on fewer names is noise
 FEATURES = ("mom_30", "mom_90", "vol_30", "rev_z_90")
 
 
-def _trailing_return(days: np.ndarray, prices: np.ndarray, back: int,
-                     tol: int = 15) -> np.ndarray:
+def _trailing_return(days: np.ndarray, prices: np.ndarray, back: int, tol: int = 15) -> np.ndarray:
     """Return over the last `back` calendar days: price now / price ~`back` ago.
 
     The reference is the last observation on or before `d - back`, accepted only
@@ -69,20 +69,23 @@ def _engineer(voted: pd.DataFrame) -> pd.DataFrame:
     for item_id, g in voted.sort_values(["item_id", "date"]).groupby("item_id"):
         g = g.set_index(pd.to_datetime(g["date"]))
         p = g["price"]
-        days = (g.index.astype("int64").to_numpy() // 86_400_000_000_000)
+        days = g.index.astype("int64").to_numpy() // 86_400_000_000_000
         prices = p.to_numpy()
         logret = np.log(p).diff()
-        frames.append(pd.DataFrame({
-            "item_id": item_id,
-            "date": g.index.to_numpy(),
-            "price": prices,
-            "mom_30": _trailing_return(days, prices, 30),
-            "mom_90": _trailing_return(days, prices, 90),
-            "vol_30": logret.rolling("30D").std().to_numpy(),
-            # Distance from the 90d mean in 90d-vol units: a mean-reversion score.
-            "rev_z_90": ((p - p.rolling("90D").mean())
-                         / p.rolling("90D").std()).to_numpy(),
-        }))
+        frames.append(
+            pd.DataFrame(
+                {
+                    "item_id": item_id,
+                    "date": g.index.to_numpy(),
+                    "price": prices,
+                    "mom_30": _trailing_return(days, prices, 30),
+                    "mom_90": _trailing_return(days, prices, 90),
+                    "vol_30": logret.rolling("30D").std().to_numpy(),
+                    # Distance from the 90d mean in 90d-vol units: a mean-reversion score.
+                    "rev_z_90": ((p - p.rolling("90D").mean()) / p.rolling("90D").std()).to_numpy(),
+                }
+            )
+        )
     return pd.concat(frames, ignore_index=True)
 
 
@@ -90,16 +93,14 @@ def _forward_return_col(voted: pd.DataFrame) -> pd.DataFrame:
     """The 180d forward return per anchor, matched with the scan's tolerance."""
     out = []
     for item_id, g in voted.sort_values(["item_id", "date"]).groupby("item_id"):
-        days = (pd.to_datetime(g["date"]).astype("int64").to_numpy()
-                // 86_400_000_000_000)
+        days = pd.to_datetime(g["date"]).astype("int64").to_numpy() // 86_400_000_000_000
         prices = g["price"].to_numpy()
         targets = days + HORIZON
         idx = np.searchsorted(days, targets, side="left")
         ok = (idx < len(days)) & (days[np.clip(idx, 0, len(days) - 1)] <= targets + 3)
         fwd = np.full(len(days), np.nan)
         fwd[ok] = prices[idx[ok]] / prices[ok] - 1.0
-        out.append(pd.DataFrame({"item_id": item_id,
-                                 "date": g["date"].to_numpy(), "fwd": fwd}))
+        out.append(pd.DataFrame({"item_id": item_id, "date": g["date"].to_numpy(), "fwd": fwd}))
     return pd.concat(out, ignore_index=True)
 
 
@@ -126,8 +127,9 @@ def _within_date_ic(df: pd.DataFrame, feat: str, seed: int | None = None) -> pd.
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--min-price", type=float, default=1.0)
-    ap.add_argument("--days-back", type=int, default=3650,
-                    help="history window; longer = more independent 180d episodes")
+    ap.add_argument(
+        "--days-back", type=int, default=3650, help="history window; longer = more independent 180d episodes"
+    )
     args = ap.parse_args()
 
     voted = _load_voted(args.days_back, args.min_price)
@@ -140,8 +142,10 @@ def main() -> None:
     # scoring every overlapping day.
     df = df[df["date"].dt.is_month_start | (df["date"].dt.day <= 3)]
 
-    print(f"signal probe h={HORIZON}d  min_price=${args.min_price:g}  "
-          f"days_back={args.days_back}  items={voted['item_id'].nunique():,}")
+    print(
+        f"signal probe h={HORIZON}d  min_price=${args.min_price:g}  "
+        f"days_back={args.days_back}  items={voted['item_id'].nunique():,}"
+    )
     rows = []
     for feat in FEATURES:
         ic = _within_date_ic(df, feat)
@@ -155,20 +159,24 @@ def main() -> None:
                 indep_dates.append(d)
                 last = d
         ic_indep = ic.loc[indep_dates]
-        t = (ic_indep.mean() / (ic_indep.std(ddof=1) / np.sqrt(len(ic_indep)))
-             if len(ic_indep) > 1 and ic_indep.std(ddof=1) > 0 else np.nan)
-        rows.append({
-            "feature": feat,
-            "n_dates": len(ic),
-            "mean_ic_all": round(ic.mean(), 4),
-            "n_indep": len(ic_indep),
-            "mean_ic_indep": round(ic_indep.mean(), 4),
-            "t_indep": round(float(t), 2),
-            "placebo_ic": round(placebo.mean(), 4),
-        })
+        t = (
+            ic_indep.mean() / (ic_indep.std(ddof=1) / np.sqrt(len(ic_indep)))
+            if len(ic_indep) > 1 and ic_indep.std(ddof=1) > 0
+            else np.nan
+        )
+        rows.append(
+            {
+                "feature": feat,
+                "n_dates": len(ic),
+                "mean_ic_all": round(ic.mean(), 4),
+                "n_indep": len(ic_indep),
+                "mean_ic_indep": round(ic_indep.mean(), 4),
+                "t_indep": round(float(t), 2),
+                "placebo_ic": round(placebo.mean(), 4),
+            }
+        )
     out = pd.DataFrame(rows)
-    print("\nRead t_indep against +-2. mean_ic_all is inflated by overlap; "
-          "placebo_ic is the ~0 floor.\n")
+    print("\nRead t_indep against +-2. mean_ic_all is inflated by overlap; placebo_ic is the ~0 floor.\n")
     with pd.option_context("display.width", 140):
         print(out.to_string(index=False))
 

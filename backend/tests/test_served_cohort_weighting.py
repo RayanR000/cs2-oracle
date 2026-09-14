@@ -13,11 +13,11 @@ the old weights, and the degenerate partitions.
 
 See docs/superpowers/specs/2026-08-06-served-cohort-weighting-design.md.
 """
+
 from __future__ import annotations
 
 import numpy as np
 import pytest
-
 from backtest.scoring import HEADLINE_MIN_TIER
 from models.forecaster import DIRECTION_FLAT_TOLERANCE_PCT, ItemForecaster
 
@@ -39,22 +39,19 @@ class TestControlArmIsUnchanged:
         r = np.array([5.0, -5.0, 0.1, -0.2, 9.0])
         tiers = np.array([0, 1, 0, 2, 0])
         base = ItemForecaster._direction_sample_weights(r, THR, MOVER)
-        with_none = ItemForecaster._direction_sample_weights(
-            r, THR, MOVER, tiers=tiers, served_share=None)
+        with_none = ItemForecaster._direction_sample_weights(r, THR, MOVER, tiers=tiers, served_share=None)
         np.testing.assert_array_equal(base, with_none)
 
     def test_tiers_without_a_share_is_a_no_op(self):
         r = np.array([5.0, -5.0, 0.1])
         base = ItemForecaster._direction_sample_weights(r, THR, MOVER)
-        got = ItemForecaster._direction_sample_weights(
-            r, THR, MOVER, tiers=np.array([1, 1, 1]), served_share=None)
+        got = ItemForecaster._direction_sample_weights(r, THR, MOVER, tiers=np.array([1, 1, 1]), served_share=None)
         np.testing.assert_array_equal(base, got)
 
     def test_a_share_without_tiers_is_a_no_op(self):
         r = np.array([5.0, -5.0, 0.1])
         base = ItemForecaster._direction_sample_weights(r, THR, MOVER)
-        got = ItemForecaster._direction_sample_weights(
-            r, THR, MOVER, tiers=None, served_share=0.5)
+        got = ItemForecaster._direction_sample_weights(r, THR, MOVER, tiers=None, served_share=0.5)
         np.testing.assert_array_equal(base, got)
 
     def test_the_base_weight_array_is_not_mutated_in_place(self):
@@ -72,8 +69,7 @@ class TestTheShareIsHit:
     def test_half_share_puts_half_the_weight_on_served_rows(self):
         r = np.array([5.0, -5.0, 0.1, -0.2, 9.0, 0.0])
         tiers = np.array([0, 0, 0, 0, 1, 1])
-        w = ItemForecaster._direction_sample_weights(
-            r, THR, MOVER, tiers=tiers, served_share=0.5)
+        w = ItemForecaster._direction_sample_weights(r, THR, MOVER, tiers=tiers, served_share=0.5)
         assert _served_weight_share(w, tiers) == pytest.approx(0.5)
 
     @pytest.mark.parametrize("share", [0.1, 0.25, 0.5, 0.75, 0.9])
@@ -81,8 +77,7 @@ class TestTheShareIsHit:
         rng = np.random.RandomState(0)
         r = rng.normal(0, 5, 500)
         tiers = (rng.random_sample(500) < 0.17).astype(int)  # ~the real mix
-        w = ItemForecaster._direction_sample_weights(
-            r, THR, MOVER, tiers=tiers, served_share=share)
+        w = ItemForecaster._direction_sample_weights(r, THR, MOVER, tiers=tiers, served_share=share)
         assert _served_weight_share(w, tiers) == pytest.approx(share)
 
     def test_the_share_is_exact_after_composing_with_the_mover_weight(self):
@@ -92,8 +87,7 @@ class TestTheShareIsHit:
         # from the mover weights hits the share.
         r = np.array([0.0, 0.1, 9.0, -9.0])
         tiers = np.array([1, 1, 0, 0])
-        w = ItemForecaster._direction_sample_weights(
-            r, THR, MOVER, tiers=tiers, served_share=0.5)
+        w = ItemForecaster._direction_sample_weights(r, THR, MOVER, tiers=tiers, served_share=0.5)
         assert _served_weight_share(w, tiers) == pytest.approx(0.5)
         # and it is emphatically not the count-based answer
         served = tiers >= HEADLINE_MIN_TIER
@@ -104,8 +98,7 @@ class TestTheShareIsHit:
         # served too.
         r = np.array([9.0, 9.0, 9.0, 9.0])
         tiers = np.array([0, 1, 2, 4])
-        w = ItemForecaster._direction_sample_weights(
-            r, THR, MOVER, tiers=tiers, served_share=0.75)
+        w = ItemForecaster._direction_sample_weights(r, THR, MOVER, tiers=tiers, served_share=0.75)
         assert _served_weight_share(w, tiers) == pytest.approx(0.75)
         assert w[1] == w[2] == w[3]
 
@@ -113,8 +106,7 @@ class TestTheShareIsHit:
         # Legitimate and allowed: the knob is a target, not a ratchet.
         r = np.array([9.0, 9.0, 9.0, 9.0])
         tiers = np.array([1, 1, 1, 0])
-        w = ItemForecaster._direction_sample_weights(
-            r, THR, MOVER, tiers=tiers, served_share=0.25)
+        w = ItemForecaster._direction_sample_weights(r, THR, MOVER, tiers=tiers, served_share=0.25)
         assert _served_weight_share(w, tiers) == pytest.approx(0.25)
         assert w[0] < MOVER
 
@@ -124,8 +116,7 @@ class TestDegeneratePartitions:
         r = np.array([5.0, -5.0, 0.1])
         tiers = np.array([0, 0, 0])
         base = ItemForecaster._direction_sample_weights(r, THR, MOVER)
-        got = ItemForecaster._direction_sample_weights(
-            r, THR, MOVER, tiers=tiers, served_share=0.5)
+        got = ItemForecaster._direction_sample_weights(r, THR, MOVER, tiers=tiers, served_share=0.5)
         np.testing.assert_array_equal(base, got)
 
     def test_all_served_rows_leaves_weights_untouched(self):
@@ -134,21 +125,17 @@ class TestDegeneratePartitions:
         r = np.array([5.0, -5.0, 0.1])
         tiers = np.array([1, 2, 3])
         base = ItemForecaster._direction_sample_weights(r, THR, MOVER)
-        got = ItemForecaster._direction_sample_weights(
-            r, THR, MOVER, tiers=tiers, served_share=0.5)
+        got = ItemForecaster._direction_sample_weights(r, THR, MOVER, tiers=tiers, served_share=0.5)
         np.testing.assert_array_equal(base, got)
 
     def test_multiplier_is_one_when_a_partition_is_empty(self):
-        assert ItemForecaster._served_cohort_multiplier(
-            np.array([1.0, 1.0]), np.array([0, 0]), 0.5) == 1.0
-        assert ItemForecaster._served_cohort_multiplier(
-            np.array([1.0, 1.0]), np.array([1, 1]), 0.5) == 1.0
+        assert ItemForecaster._served_cohort_multiplier(np.array([1.0, 1.0]), np.array([0, 0]), 0.5) == 1.0
+        assert ItemForecaster._served_cohort_multiplier(np.array([1.0, 1.0]), np.array([1, 1]), 0.5) == 1.0
 
     @pytest.mark.parametrize("bad", [0.0, 1.0, -0.5, 1.5])
     def test_a_share_outside_the_open_unit_interval_is_rejected(self, bad):
         with pytest.raises(ValueError, match="served_share"):
-            ItemForecaster._served_cohort_multiplier(
-                np.array([1.0, 1.0]), np.array([0, 1]), bad)
+            ItemForecaster._served_cohort_multiplier(np.array([1.0, 1.0]), np.array([0, 1]), bad)
 
 
 class TestConstructorValidation:
@@ -176,8 +163,7 @@ class TestClassPriorTracksTheWeighting:
         r = np.array([9.0, 9.0, -9.0, -9.0, -9.0, -9.0])
         tiers = np.array([1, 1, 0, 0, 0, 0])
         flat = ItemForecaster._direction_class_prior(r, THR, MOVER)
-        tilted = ItemForecaster._direction_class_prior(
-            r, THR, MOVER, tiers=tiers, served_share=0.8)
+        tilted = ItemForecaster._direction_class_prior(r, THR, MOVER, tiers=tiers, served_share=0.8)
         assert flat[2] == pytest.approx(1 / 3)
         assert tilted[2] == pytest.approx(0.8)
         assert tilted[0] == pytest.approx(0.2)
@@ -185,17 +171,16 @@ class TestClassPriorTracksTheWeighting:
     def test_the_prior_is_unchanged_without_a_share(self):
         r = np.array([9.0, -9.0, 0.0])
         tiers = np.array([1, 0, 1])
-        assert (ItemForecaster._direction_class_prior(r, THR, MOVER)
-                == ItemForecaster._direction_class_prior(
-                    r, THR, MOVER, tiers=tiers, served_share=None))
+        assert ItemForecaster._direction_class_prior(r, THR, MOVER) == ItemForecaster._direction_class_prior(
+            r, THR, MOVER, tiers=tiers, served_share=None
+        )
 
     def test_tiers_are_filtered_by_the_same_finite_mask_as_returns(self):
         # A caller passing the raw columns must not have them misalign when
         # _direction_class_prior drops non-finite returns.
         r = np.array([np.nan, 9.0, 9.0, -9.0, -9.0, -9.0, -9.0])
         tiers = np.array([1, 1, 1, 0, 0, 0, 0])
-        got = ItemForecaster._direction_class_prior(
-            r, THR, MOVER, tiers=tiers, served_share=0.8)
+        got = ItemForecaster._direction_class_prior(r, THR, MOVER, tiers=tiers, served_share=0.8)
         assert got[2] == pytest.approx(0.8)
         assert got[0] == pytest.approx(0.2)
 
@@ -212,10 +197,16 @@ class TestClassifierFitAcceptsTiers:
 
         f = ItemForecaster(db_session=None, served_cohort_share=0.5)
         booster = f._fit_direction_classifier(
-            X, y, None, None, "gbdt",
-            {"num_leaves": 7, "learning_rate": 0.1, "max_depth": 3,
-             "min_data_in_leaf": 5},
-            horizon=7, num_boost_round=10, tier_train=tiers)
+            X,
+            y,
+            None,
+            None,
+            "gbdt",
+            {"num_leaves": 7, "learning_rate": 0.1, "max_depth": 3, "min_data_in_leaf": 5},
+            horizon=7,
+            num_boost_round=10,
+            tier_train=tiers,
+        )
         assert booster.predict(X).shape == (n, 3)
 
     def test_tier_train_none_still_trains(self):
@@ -224,8 +215,14 @@ class TestClassifierFitAcceptsTiers:
         y = rng.normal(0, 10, 200)
         f = ItemForecaster(db_session=None, served_cohort_share=0.5)
         booster = f._fit_direction_classifier(
-            X, y, None, None, "gbdt",
-            {"num_leaves": 7, "learning_rate": 0.1, "max_depth": 3,
-             "min_data_in_leaf": 5},
-            horizon=7, num_boost_round=10, tier_train=None)
+            X,
+            y,
+            None,
+            None,
+            "gbdt",
+            {"num_leaves": 7, "learning_rate": 0.1, "max_depth": 3, "min_data_in_leaf": 5},
+            horizon=7,
+            num_boost_round=10,
+            tier_train=None,
+        )
         assert booster.predict(X).shape == (200, 3)

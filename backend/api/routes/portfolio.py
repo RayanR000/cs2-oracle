@@ -1,16 +1,13 @@
-from typing import Optional
-from fastapi import APIRouter, Depends, HTTPException, Request
-from sqlalchemy.orm import Session
-from sqlalchemy import desc
-from database import get_db, User, Item
-from api.schemas import ItemOut
-from itsdangerous import URLSafeTimedSerializer
 from config import settings
+from database import User, get_db
+from fastapi import APIRouter, Depends, HTTPException, Request
+from itsdangerous import URLSafeTimedSerializer
+from sqlalchemy.orm import Session
 
 router = APIRouter(prefix="/portfolio", tags=["portfolio"])
 
 
-def _get_current_user(request: Request, db: Session) -> Optional[User]:
+def _get_current_user(request: Request, db: Session) -> User | None:
     token = request.cookies.get("session")
     if not token:
         return None

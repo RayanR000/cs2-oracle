@@ -4,12 +4,11 @@ FastAPI server for CS2 Market Intelligence Platform
 
 import threading
 
-from fastapi import FastAPI
-from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
+from api.routes import ab_test, accuracy, auth, events, items, market, opportunities, portfolio
 from config import settings
 from database import init_db
-from api.routes import items, opportunities, events, auth, portfolio, market, accuracy, ab_test
+from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
 
 app = FastAPI(
     title=settings.api_title,
@@ -53,15 +52,13 @@ async def cache_control_middleware(request, call_next):
 
 def _warm_cache():
     """Pre-build the expensive market summary so the first page load is fast."""
-    from database import SessionLocal
     from api.cache import get_or_build
     from api.routes.market import _build_market_summary
+    from database import SessionLocal
 
     db = SessionLocal()
     try:
-        get_or_build(
-            "market_summary::", 600, lambda: _build_market_summary(db, None, None)
-        )
+        get_or_build("market_summary::", 600, lambda: _build_market_summary(db, None, None))
     except Exception:  # warming is best-effort; requests build on miss anyway
         pass
     finally:

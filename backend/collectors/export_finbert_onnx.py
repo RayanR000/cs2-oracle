@@ -12,7 +12,7 @@ from pathlib import Path
 import numpy as np
 import onnx
 import torch
-from onnxruntime.quantization import quantize_dynamic, QuantType
+from onnxruntime.quantization import QuantType, quantize_dynamic
 from transformers import AutoModelForSequenceClassification, AutoTokenizer
 
 logger = logging.getLogger("export_finbert_onnx")
@@ -29,7 +29,9 @@ def _strip_and_quantize(onnx_fp32: str, onnx_int8: str) -> bool:
     onnx.save(model, cleaned)
     try:
         quantize_dynamic(
-            cleaned, onnx_int8, weight_type=QuantType.QInt8,
+            cleaned,
+            onnx_int8,
+            weight_type=QuantType.QInt8,
             op_types_to_quantize=["MatMul"],
         )
         return True
@@ -107,10 +109,13 @@ def verify():
 
     def score(text: str) -> float:
         inp = tokenizer(text, return_tensors="np", truncation=True, max_length=128)
-        logits = session.run(None, {
-            "input_ids": inp["input_ids"],
-            "attention_mask": inp["attention_mask"],
-        })[0][0]
+        logits = session.run(
+            None,
+            {
+                "input_ids": inp["input_ids"],
+                "attention_mask": inp["attention_mask"],
+            },
+        )[0][0]
         exp = np.exp(logits - np.max(logits))
         probs = exp / exp.sum()
         return float(probs[2] - probs[0])

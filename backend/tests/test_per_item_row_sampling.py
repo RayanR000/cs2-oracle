@@ -23,13 +23,13 @@ destroyed once already (`2026-07-16-training-window-audit.md`).
 
 Default off. Production is byte-identical until TRAIN_PER_ITEM_ROWS is set.
 """
+
 from __future__ import annotations
 
 import inspect
 
 import pandas as pd
 import pytest
-
 from models.forecaster import ItemForecaster
 
 
@@ -38,8 +38,7 @@ def _frame(rows_per_item: dict, start: str = "2024-01-01") -> pd.DataFrame:
     recs = []
     for item_id, n in rows_per_item.items():
         dates = pd.date_range(start, periods=n, freq="D").date
-        recs.extend({"item_id": item_id, "date": d, "price": 1.0 + i}
-                    for i, d in enumerate(dates))
+        recs.extend({"item_id": item_id, "date": d, "price": 1.0 + i} for i, d in enumerate(dates))
     return pd.DataFrame(recs)
 
 
@@ -56,9 +55,7 @@ class TestQuota:
         out = ItemForecaster._per_item_row_sample(df, max_rows=110, seed=42)
 
         counts = out.groupby("item_id").size()
-        assert counts.max() == counts.min() == 10, (
-            f"quota is not equal across items: {counts.to_dict()}"
-        )
+        assert counts.max() == counts.min() == 10, f"quota is not equal across items: {counts.to_dict()}"
 
     def test_keeps_every_item(self):
         """Diversity is the objective, so no item may be dropped."""
@@ -105,9 +102,7 @@ class TestSamplingProperties:
 
         span_in = (max(df["date"]) - min(df["date"])).days
         span_out = (max(out["date"]) - min(out["date"])).days
-        assert span_out >= span_in * 0.95, (
-            f"calendar window collapsed from {span_in}d to {span_out}d"
-        )
+        assert span_out >= span_in * 0.95, f"calendar window collapsed from {span_in}d to {span_out}d"
 
     def test_is_deterministic_for_a_seed(self):
         df = _frame({f"item_{i}": 100 for i in range(10)})
@@ -146,19 +141,15 @@ class TestSplitWiring:
         sig = inspect.signature(ItemForecaster._build_production_split)
         assert "per_item_row_sampling" in sig.parameters
         assert sig.parameters["per_item_row_sampling"].default is False, (
-            "defaulting this on would change production's training set with "
-            "no measurement behind it"
+            "defaulting this on would change production's training set with no measurement behind it"
         )
 
     def test_off_leaves_the_uniform_cap_in_place(self, monkeypatch):
         called = []
-        monkeypatch.setattr(
-            ItemForecaster, "_per_item_row_sample",
-            staticmethod(lambda *a, **k: called.append(1)))
+        monkeypatch.setattr(ItemForecaster, "_per_item_row_sample", staticmethod(lambda *a, **k: called.append(1)))
 
         forecaster = ItemForecaster.__new__(ItemForecaster)
-        train_set, _ = ItemForecaster._build_production_split(
-            forecaster, self._tdf(), horizon=7, max_rows=500)
+        train_set, _ = ItemForecaster._build_production_split(forecaster, self._tdf(), horizon=7, max_rows=500)
 
         assert not called, "the per-item sampler ran with the flag off"
         assert len(train_set) <= 500
@@ -172,17 +163,15 @@ class TestSplitWiring:
             seen["n_rows_in"] = len(train_set)
             return real(train_set, max_rows, seed)
 
-        monkeypatch.setattr(ItemForecaster, "_per_item_row_sample",
-                            staticmethod(_spy))
+        monkeypatch.setattr(ItemForecaster, "_per_item_row_sample", staticmethod(_spy))
 
         forecaster = ItemForecaster.__new__(ItemForecaster)
         train_set, _ = ItemForecaster._build_production_split(
-            forecaster, self._tdf(), horizon=7, max_rows=500,
-            per_item_row_sampling=True)
+            forecaster, self._tdf(), horizon=7, max_rows=500, per_item_row_sampling=True
+        )
 
         assert seen.get("max_rows") == 500, (
-            f"the sampler got max_rows={seen.get('max_rows')!r}; the budget "
-            "must be the caller's per-horizon cap"
+            f"the sampler got max_rows={seen.get('max_rows')!r}; the budget must be the caller's per-horizon cap"
         )
         assert len(train_set) <= 500
 
@@ -194,13 +183,12 @@ class TestSplitWiring:
 
         forecaster = ItemForecaster.__new__(ItemForecaster)
         train_set, _ = ItemForecaster._build_production_split(
-            forecaster, tdf, horizon=7, max_rows=210,
-            per_item_row_sampling=True)
+            forecaster, tdf, horizon=7, max_rows=210, per_item_row_sampling=True
+        )
 
         counts = train_set.groupby("item_id").size()
         assert counts.max() - counts.min() <= 1, (
-            f"item shares are still skewed through the split: "
-            f"max={counts.max()} min={counts.min()}"
+            f"item shares are still skewed through the split: max={counts.max()} min={counts.min()}"
         )
 
     def test_the_validation_set_is_never_thinned(self):
@@ -210,11 +198,10 @@ class TestSplitWiring:
         tdf = self._tdf()
         forecaster = ItemForecaster.__new__(ItemForecaster)
 
-        _, val_off = ItemForecaster._build_production_split(
-            forecaster, tdf, horizon=7, max_rows=100)
+        _, val_off = ItemForecaster._build_production_split(forecaster, tdf, horizon=7, max_rows=100)
         _, val_on = ItemForecaster._build_production_split(
-            forecaster, tdf, horizon=7, max_rows=100,
-            per_item_row_sampling=True)
+            forecaster, tdf, horizon=7, max_rows=100, per_item_row_sampling=True
+        )
 
         pd.testing.assert_frame_equal(val_off, val_on)
 
@@ -253,6 +240,7 @@ class TestTrainPerItemRowsEnv:
     @staticmethod
     def _fn():
         from scripts.forecast_prices import _train_per_item_rows
+
         return _train_per_item_rows
 
     def test_unset_is_off(self, monkeypatch):
@@ -276,6 +264,7 @@ class TestTrainPerItemRowsEnv:
 
     def test_the_production_caller_passes_it(self):
         from scripts import forecast_prices
+
         src = inspect.getsource(forecast_prices)
         assert "per_item_row_sampling=_train_per_item_rows()" in src, (
             "the knob must reach forecaster.train() from the production path"

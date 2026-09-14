@@ -7,10 +7,10 @@ test. `apply_anomaly_multiplier`, `anomaly_decile_error` and
 `isotonic_increasing` are pinned alongside, since a drift in binning or in
 the level-matched error would move the verdict without touching the fit.
 """
+
 import numpy as np
 import pytest
-
-from scripts.anomaly_band_modulator_ab import (  # noqa: E402
+from scripts.anomaly_band_modulator_ab import (
     F_HI,
     F_LO,
     anomaly_decile_error,
@@ -88,17 +88,13 @@ class TestFitAnomalyMultiplier:
     def test_constant_anomaly_p_votes_flat(self):
         rng = np.random.default_rng(3)
         n = 2000
-        m = fit_anomaly_multiplier(np.full(n, 0.05),
-                                   rng.uniform(0.5, 5.0, size=n),
-                                   np.full(n, 5.0))
+        m = fit_anomaly_multiplier(np.full(n, 0.05), rng.uniform(0.5, 5.0, size=n), np.full(n, 5.0))
         assert m["edges"].size == 0
         np.testing.assert_array_equal(m["values"], np.array([1.0]))
 
     def test_too_few_rows_vote_flat(self):
         rng = np.random.default_rng(4)
-        m = fit_anomaly_multiplier(rng.uniform(0, 1, 100),
-                                   rng.uniform(0.5, 5.0, 100),
-                                   np.full(100, 5.0))
+        m = fit_anomaly_multiplier(rng.uniform(0, 1, 100), rng.uniform(0.5, 5.0, 100), np.full(100, 5.0))
         assert m["edges"].size == 0
 
     def test_non_finite_rows_are_dropped_not_fatal(self):
@@ -116,9 +112,7 @@ class TestFitAnomalyMultiplier:
         # only come from the eval folds, never from a fit-time shape violation.
         rng = np.random.default_rng(5)
         n = 3000
-        m = fit_anomaly_multiplier(rng.uniform(0, 1, n),
-                                   rng.uniform(0.5, 5.0, n),
-                                   np.full(n, 5.0))
+        m = fit_anomaly_multiplier(rng.uniform(0, 1, n), rng.uniform(0.5, 5.0, n), np.full(n, 5.0))
         assert np.all(np.isfinite(m["values"]))
         assert np.all(np.diff(m["values"]) >= -1e-12)
 
@@ -134,15 +128,11 @@ class TestApplyAnomalyMultiplier:
         assert hi > lo  # high anomaly_p never means a narrower band
 
     def test_flat_model_returns_ones(self):
-        out = apply_anomaly_multiplier(np.array([0.0, 0.5, 1.0]),
-                                       {"edges": np.array([]),
-                                        "values": np.array([1.0])})
+        out = apply_anomaly_multiplier(np.array([0.0, 0.5, 1.0]), {"edges": np.array([]), "values": np.array([1.0])})
         np.testing.assert_array_equal(out, np.ones(3))
 
     def test_mismatched_model_returns_ones(self):
-        out = apply_anomaly_multiplier(np.array([0.5]),
-                                       {"edges": np.array([0.3]),
-                                        "values": np.array([0.8, 1.2, 9.9])})
+        out = apply_anomaly_multiplier(np.array([0.5]), {"edges": np.array([0.3]), "values": np.array([0.8, 1.2, 9.9])})
         np.testing.assert_array_equal(out, np.ones(1))
 
 
@@ -152,6 +142,7 @@ class TestAnomalyDecileError:
         # must score a smaller level-matched decile error than the constant
         # scale on the rows the multiplier was fitted on.
         from scripts.shrink_k_vol_rank_ab import matched_width
+
         p, abs_r, scale = _signal_frame()
         m = fit_anomaly_multiplier(p, abs_r, scale)
         mod = scale * apply_anomaly_multiplier(p, m)
@@ -167,6 +158,7 @@ class TestAnomalyDecileError:
         # Same property the width read has: a pure re-levelling must not read
         # as a conditional fix.
         from scripts.shrink_k_vol_rank_ab import matched_width
+
         p, abs_r, scale = _signal_frame()
         m = fit_anomaly_multiplier(p, abs_r, scale)
         q1, _ = matched_width(abs_r, scale)
@@ -176,10 +168,7 @@ class TestAnomalyDecileError:
         assert e1 == e2 == abs(e1)
 
     def test_degenerate_input_votes_nan_not_zero(self):
-        assert np.isnan(anomaly_decile_error(np.array([]), np.array([]),
-                                             np.array([]), 1.0,
-                                             np.full(9, np.nan)))
+        assert np.isnan(anomaly_decile_error(np.array([]), np.array([]), np.array([]), 1.0, np.full(9, np.nan)))
         p, abs_r, scale = _signal_frame(n=500)
         m = fit_anomaly_multiplier(p, abs_r, scale)
-        assert np.isnan(anomaly_decile_error(abs_r, scale, p, float("nan"),
-                                             m["edges"]))
+        assert np.isnan(anomaly_decile_error(abs_r, scale, p, float("nan"), m["edges"]))

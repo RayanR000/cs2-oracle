@@ -1,10 +1,11 @@
 import sys
 from pathlib import Path
+
 import numpy as np
 import pandas as pd
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
-from models.forecaster import ItemForecaster  # noqa: E402
+from models.forecaster import ItemForecaster
 
 
 def test_present_indicator():

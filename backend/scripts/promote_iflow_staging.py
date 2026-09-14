@@ -20,6 +20,7 @@ Usage (from backend/):
     venv/bin/python scripts/promote_iflow_staging.py \
         --start 2026-04-16 --end 2026-05-20
 """
+
 from __future__ import annotations
 
 import argparse
@@ -32,7 +33,7 @@ import pandas as pd
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from db.parquet import append_monthly  # noqa: E402
+from db.parquet import append_monthly
 
 SOURCE = "buff_iflow"
 PRICE_COLS = ["item_slug", "day", "source", "mean_price", "volume", "ingested_at"]
@@ -76,8 +77,9 @@ def load_staged(staging_dir: Path, start: str, end: str) -> pd.DataFrame:
     return out[PRICE_COLS]
 
 
-def validate_coverage(prices: pd.DataFrame, start: str, end: str,
-                      min_items: int = 1000, max_missing_days: int = 0) -> None:
+def validate_coverage(
+    prices: pd.DataFrame, start: str, end: str, min_items: int = 1000, max_missing_days: int = 0
+) -> None:
     """Raise AssertionError on a too-sparse day, or too many absent days.
 
     The upstream iflow feed drops the occasional day (five in 2025), so a small
@@ -89,10 +91,10 @@ def validate_coverage(prices: pd.DataFrame, start: str, end: str,
     missing = [ts for ts in expected if ts not in present]
     assert len(missing) <= max_missing_days, (
         f"{len(missing)} days absent from staged rows "
-        f"(limit {max_missing_days}): {[str(t.date()) for t in missing[:10]]}")
+        f"(limit {max_missing_days}): {[str(t.date()) for t in missing[:10]]}"
+    )
     if missing:
-        print(f"Tolerating {len(missing)} absent day(s): "
-              f"{[str(t.date()) for t in missing]}")
+        print(f"Tolerating {len(missing)} absent day(s): {[str(t.date()) for t in missing]}")
     for ts in expected:
         if ts in missing:
             continue
@@ -140,49 +142,60 @@ def cross_check_buff163(prices: pd.DataFrame, archive_glob: str) -> dict | None:
         "tail_frac_gt25pct": float((lr.abs() > 0.25).mean()),
     }
     assert abs(stats["median_log_ratio"]) <= MAX_MEDIAN_LOG_RATIO, (
-        f"median log-ratio {stats['median_log_ratio']:.4f} exceeds "
-        f"{MAX_MEDIAN_LOG_RATIO} — suspect FX or slug mapping")
+        f"median log-ratio {stats['median_log_ratio']:.4f} exceeds {MAX_MEDIAN_LOG_RATIO} — suspect FX or slug mapping"
+    )
     assert stats["tail_frac_gt25pct"] <= MAX_TAIL_FRACTION, (
-        f"{stats['tail_frac_gt25pct']:.1%} of rows disagree by >25%, "
-        f"limit {MAX_TAIL_FRACTION:.0%}")
+        f"{stats['tail_frac_gt25pct']:.1%} of rows disagree by >25%, limit {MAX_TAIL_FRACTION:.0%}"
+    )
     return stats
 
 
-def run(start: str, end: str, staging_dir: Path, out_dir: Path,
-        dry_run: bool = False, min_items: int = 1000, max_missing_days: int = 0,
-        check_start: str = DEFAULT_CHECK_START,
-        check_end: str = DEFAULT_CHECK_END) -> pd.DataFrame:
+def run(
+    start: str,
+    end: str,
+    staging_dir: Path,
+    out_dir: Path,
+    dry_run: bool = False,
+    min_items: int = 1000,
+    max_missing_days: int = 0,
+    check_start: str = DEFAULT_CHECK_START,
+    check_end: str = DEFAULT_CHECK_END,
+) -> pd.DataFrame:
     if end > IFLOW_FEED_END:
         raise ValueError(
             f"--end {end} is past the iflow feed end {IFLOW_FEED_END}; "
-            "days after that cannot be filled from this source")
+            "days after that cannot be filled from this source"
+        )
 
     prices = load_staged(staging_dir, start, end)
-    print(f"Loaded {len(prices):,} staged rows, "
-          f"{prices['item_slug'].nunique():,} items, "
-          f"{prices['day'].nunique()} days ({start}..{end})")
+    print(
+        f"Loaded {len(prices):,} staged rows, "
+        f"{prices['item_slug'].nunique():,} items, "
+        f"{prices['day'].nunique()} days ({start}..{end})"
+    )
 
-    validate_coverage(prices, start, end, min_items=min_items,
-                      max_missing_days=max_missing_days)
+    validate_coverage(prices, start, end, min_items=min_items, max_missing_days=max_missing_days)
     print("Coverage validation passed")
 
     try:
         check_rows = load_staged(staging_dir, check_start, check_end)
     except ValueError:
         check_rows = None
-    stats = None if check_rows is None else cross_check_buff163(
-        check_rows, str(out_dir / "prices-*.parquet"))
+    stats = None if check_rows is None else cross_check_buff163(check_rows, str(out_dir / "prices-*.parquet"))
     if stats is None:
-        print(f"Cross-check skipped: no canonical aggregator_buff163 overlap "
-              f"in {check_start}..{check_end}")
+        print(f"Cross-check skipped: no canonical aggregator_buff163 overlap in {check_start}..{check_end}")
     else:
-        print(f"Cross-check vs aggregator_buff163 on {check_start}..{check_end}: "
-              f"{stats['rows']:,} rows / "
-              f"{stats['items']:,} items / {stats['dates']} dates")
-        print(f"  log-level corr {stats['log_level_corr']:.4f}  "
-              f"median log-ratio {stats['median_log_ratio']:+.4f}  "
-              f"p10/p90 {stats['p10_log_ratio']:+.4f}/{stats['p90_log_ratio']:+.4f}  "
-              f"tail>25% {stats['tail_frac_gt25pct']:.2%}")
+        print(
+            f"Cross-check vs aggregator_buff163 on {check_start}..{check_end}: "
+            f"{stats['rows']:,} rows / "
+            f"{stats['items']:,} items / {stats['dates']} dates"
+        )
+        print(
+            f"  log-level corr {stats['log_level_corr']:.4f}  "
+            f"median log-ratio {stats['median_log_ratio']:+.4f}  "
+            f"p10/p90 {stats['p10_log_ratio']:+.4f}/{stats['p90_log_ratio']:+.4f}  "
+            f"tail>25% {stats['tail_frac_gt25pct']:.2%}"
+        )
 
     if dry_run:
         print("Dry run — no files written")
@@ -200,18 +213,25 @@ def main():
     ap.add_argument("--staging-dir", default="../buff-iflow-staging/price-archive")
     ap.add_argument("--out-dir", default="../price-archive")
     ap.add_argument("--min-items", type=int, default=1000)
-    ap.add_argument("--max-missing-days", type=int, default=0,
-                    help="tolerate this many absent days (upstream feed gaps)")
-    ap.add_argument("--check-start", default=DEFAULT_CHECK_START,
-                    help="pre-gap window used to validate staged levels")
+    ap.add_argument(
+        "--max-missing-days", type=int, default=0, help="tolerate this many absent days (upstream feed gaps)"
+    )
+    ap.add_argument("--check-start", default=DEFAULT_CHECK_START, help="pre-gap window used to validate staged levels")
     ap.add_argument("--check-end", default=DEFAULT_CHECK_END)
     ap.add_argument("--dry-run", action="store_true")
     args = ap.parse_args()
 
-    run(args.start, args.end, Path(args.staging_dir), Path(args.out_dir),
-        dry_run=args.dry_run, min_items=args.min_items,
+    run(
+        args.start,
+        args.end,
+        Path(args.staging_dir),
+        Path(args.out_dir),
+        dry_run=args.dry_run,
+        min_items=args.min_items,
         max_missing_days=args.max_missing_days,
-        check_start=args.check_start, check_end=args.check_end)
+        check_start=args.check_start,
+        check_end=args.check_end,
+    )
 
 
 if __name__ == "__main__":

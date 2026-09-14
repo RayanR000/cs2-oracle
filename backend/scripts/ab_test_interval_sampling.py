@@ -68,33 +68,30 @@ Usage:
         --fold-start 0 --fold-count 4 --out h14a.csv
     python -m scripts.ab_test_interval_sampling --merge h14a.csv h14b.csv
 """
+
+import json
+import logging
 import os
 import sys
-import json
 import time
-import logging
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
+import lightgbm as lgb
 import numpy as np
 import pandas as pd
-import lightgbm as lgb
-
-from database import SessionLocal
-from db.archive import ARCHIVE_ROOT, prices_relation
 from backtest.paired_mde import format_paired, paired_arm_contrasts
 from backtest.walkforward_records import fold_level_records
+from database import SessionLocal
+from db.archive import ARCHIVE_ROOT, prices_relation
 from models.forecaster import (
     ItemForecaster,
     embargo_days,
     phase_collapsed_sql_filter,
 )
 
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-)
+logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s")
 logger = logging.getLogger("ab_test_interval_sampling")
 
 ARCHIVE_DIR = ARCHIVE_ROOT
@@ -120,8 +117,8 @@ MIN_VAL_ROWS = 400
 MAX_FOLDS = 8
 
 # Gate thresholds (pre-registered)
-GATE_MIN_REL_PINBALL_GAIN = 0.005    # 0.5% relative, mean over q10+q90
-GATE_MAX_REL_WIDTH_INCREASE = 0.02   # 2% relative conformalized width
+GATE_MIN_REL_PINBALL_GAIN = 0.005  # 0.5% relative, mean over q10+q90
+GATE_MAX_REL_WIDTH_INCREASE = 0.02  # 2% relative conformalized width
 
 # Nominal coverage of the raw [p10, p90] band, and the conformal target
 # production calibrates to (forecaster.py: alpha = 0.10).
@@ -152,8 +149,7 @@ def conformal_q_hat(y_cal, low_cal, high_cal, alpha=CONFORMAL_ALPHA):
     (1-alpha)(1+1/n) quantile is the finite-sample-corrected level.
     """
     y_cal = np.asarray(y_cal, dtype=float)
-    scores = np.maximum(np.asarray(low_cal, dtype=float) - y_cal,
-                        y_cal - np.asarray(high_cal, dtype=float))
+    scores = np.maximum(np.asarray(low_cal, dtype=float) - y_cal, y_cal - np.asarray(high_cal, dtype=float))
     n = len(scores)
     if n == 0:
         return 0.0
@@ -166,8 +162,7 @@ def interval_metrics(y, low, high):
     y = np.asarray(y, dtype=float)
     low = np.asarray(low, dtype=float)
     high = np.asarray(high, dtype=float)
-    return (float(np.mean((y >= low) & (y <= high))),
-            float(np.mean(high - low)))
+    return (float(np.mean((y >= low) & (y <= high))), float(np.mean(high - low)))
 
 
 def load_features(con, forecaster, events_df, max_items):
@@ -182,9 +177,11 @@ def load_features(con, forecaster, events_df, max_items):
     # degenerated to the NULL (pre-2026) branch; the dead disjunct is dropped,
     # keeping the intended pre-2026 cohort. See 2026-08-13 harness repin.
     union_sql = prices_relation(
-        con, ARCHIVE_DIR,
+        con,
+        ARCHIVE_DIR,
         columns=["item_slug", "day", "mean_price", "volume", "source"],
-        where=f"source IS NULL AND {_UNIVERSE}")
+        where=f"source IS NULL AND {_UNIVERSE}",
+    )
 
     items = con.sql(f"""
         SELECT item_slug, COUNT(*) AS row_count
@@ -195,15 +192,19 @@ def load_features(con, forecaster, events_df, max_items):
     if not items:
         raise RuntimeError(
             "interval_sampling universe query selected 0 items — the source pin "
-            "matched no rows (see 2026-08-13 harness repin).")
+            "matched no rows (see 2026-08-13 harness repin)."
+        )
     logger.info(f"  {len(items)} items for evaluation")
 
     all_rows = []
     for item_slug, _ in items:
-        rows = con.sql(f"""
+        rows = con.sql(
+            f"""
             SELECT item_slug AS item_id, day AS timestamp, mean_price AS price, volume
             FROM {union_sql} WHERE item_slug = ? ORDER BY day
-        """, params=[item_slug]).fetchall()
+        """,
+            params=[item_slug],
+        ).fetchall()
         idf = pd.DataFrame(rows, columns=["item_id", "timestamp", "price", "volume"])
         idf["timestamp"] = pd.to_datetime(idf["timestamp"])
         idf["date"] = idf["timestamp"].dt.date
@@ -214,8 +215,9 @@ def load_features(con, forecaster, events_df, max_items):
     df = forecaster._add_cross_sectional_features(df)
 
     EXCLUDE = {"item_id", "date", "timestamp", "price", "volume", "name", "release_date"}
-    feat_cols = [c for c in df.columns if c not in EXCLUDE
-                 and df[c].dtype in (np.float64, np.float32, np.int64, int, float)]
+    feat_cols = [
+        c for c in df.columns if c not in EXCLUDE and df[c].dtype in (np.float64, np.float32, np.int64, int, float)
+    ]
     if len(feat_cols) > 2:
         corr = df[feat_cols].corr().abs()
         upper = corr.where(np.triu(np.ones(corr.shape), k=1).astype(bool))
@@ -238,8 +240,7 @@ def load_production_params(horizon, quantile):
     src = tp.get(str(horizon)) or tp.get(horizon) or {}
     q = src.get(str(quantile)) or src.get(quantile)
     if not q:
-        raise RuntimeError(f"no persisted q{quantile} params for horizon "
-                           f"{horizon} in {META_PATH}")
+        raise RuntimeError(f"no persisted q{quantile} params for horizon {horizon} in {META_PATH}")
     return dict(q)
 
 
@@ -263,8 +264,7 @@ def build_arm_params(base, arm, quantile, boosting_type, forecaster):
         p["n_jobs"] = int(os.environ["AB_N_JOBS"])
 
     # Rewrite row sampling from scratch so nothing cached in meta.json leaks.
-    for k in ("data_sample_strategy", "top_rate", "other_rate",
-              "subsample", "bagging_fraction", "bagging_freq"):
+    for k in ("data_sample_strategy", "top_rate", "other_rate", "subsample", "bagging_fraction", "bagging_freq"):
         p.pop(k, None)
     p["data_sample_strategy"] = "bagging"
     p["subsample"] = float(base.get("subsample", 0.8))
@@ -279,24 +279,20 @@ def build_arm_params(base, arm, quantile, boosting_type, forecaster):
     return p
 
 
-def _fit_quantile(params, X_tr, y_tr, w_tr, X_va, y_va, w_va,
-                  nbr, boosting_type, max_bin):
+def _fit_quantile(params, X_tr, y_tr, w_tr, X_va, y_va, w_va, nbr, boosting_type, max_bin):
     """Train one quantile model and return (predictions, trees, best_iter)."""
     ds_params = {"max_bin": max_bin, "feature_pre_filter": False}
-    dtrain = lgb.Dataset(X_tr, y_tr, params=ds_params,
-                         **({"weight": w_tr} if w_tr is not None else {}))
-    dval = lgb.Dataset(X_va, y_va, reference=dtrain, params=ds_params,
-                       **({"weight": w_va} if w_va is not None else {}))
+    dtrain = lgb.Dataset(X_tr, y_tr, params=ds_params, **({"weight": w_tr} if w_tr is not None else {}))
+    dval = lgb.Dataset(X_va, y_va, reference=dtrain, params=ds_params, **({"weight": w_va} if w_va is not None else {}))
 
     model = ItemForecaster._train_ensemble_member(
-        params, dtrain, dval, num_boost_round=nbr,
-        early_stopping=ItemForecaster._early_stopping_enabled())
+        params, dtrain, dval, num_boost_round=nbr, early_stopping=ItemForecaster._early_stopping_enabled()
+    )
     pred = model.predict(X_va, num_iteration=model.best_iteration or None)
     return pred, int(model.num_trees()), int(model.best_iteration or model.num_trees())
 
 
-def _run_horizon(fc, tdf, feat_cols, horizon, max_folds, arms,
-                 fold_start=0, fold_count=None):
+def _run_horizon(fc, tdf, feat_cols, horizon, max_folds, arms, fold_start=0, fold_count=None):
     """Train every arm on identical folds; yield one record per (arm, fold).
 
     `fold_start`/`fold_count` shard the fold list across processes. Fold
@@ -315,9 +311,11 @@ def _run_horizon(fc, tdf, feat_cols, horizon, max_folds, arms,
     n_total = len(folds)
     end = n_total if fold_count is None else fold_start + fold_count
     sharded = list(enumerate(folds))[fold_start:end]
-    logger.info(f"  {horizon}d: {n_total} folds total, running "
-                f"{len(sharded)} (global idx {fold_start}..{end - 1}), "
-                f"boosting={boosting_type}, arms={arms}")
+    logger.info(
+        f"  {horizon}d: {n_total} folds total, running "
+        f"{len(sharded)} (global idx {fold_start}..{end - 1}), "
+        f"boosting={boosting_type}, arms={arms}"
+    )
 
     base_by_q = {q: load_production_params(horizon, q) for q in QUANTILES}
     # Production's per-horizon table, not a 1000-round cap. `best_iter` in
@@ -330,8 +328,7 @@ def _run_horizon(fc, tdf, feat_cols, horizon, max_folds, arms,
         tr = tdf[tdf["date"].isin(train_dates)]
         va = tdf[tdf["date"].isin(val_dates)]
         if len(tr) < MIN_TRAIN_ROWS or len(va) < MIN_VAL_ROWS:
-            logger.info(f"    fold {fold_idx}: skipped "
-                        f"({len(tr)} train, {len(va)} val)")
+            logger.info(f"    fold {fold_idx}: skipped ({len(tr)} train, {len(va)} val)")
             continue
 
         X_tr = tr[feat_cols].replace([np.inf, -np.inf], np.nan)
@@ -355,11 +352,10 @@ def _run_horizon(fc, tdf, feat_cols, horizon, max_folds, arms,
             t0 = time.time()
             preds, trees, best_iters = {}, {}, {}
             for q in QUANTILES:
-                params = build_arm_params(base_by_q[q], arm, q,
-                                          boosting_type, fc)
+                params = build_arm_params(base_by_q[q], arm, q, boosting_type, fc)
                 preds[q], trees[q], best_iters[q] = _fit_quantile(
-                    params, X_tr, y_tr, w_tr, X_va, y_va, w_va,
-                    nbr, boosting_type, fc.MAX_BIN)
+                    params, X_tr, y_tr, w_tr, X_va, y_va, w_va, nbr, boosting_type, fc.MAX_BIN
+                )
             fit_s = time.time() - t0
 
             low, high = preds[LOW_Q], preds[HIGH_Q]
@@ -374,11 +370,9 @@ def _run_horizon(fc, tdf, feat_cols, horizon, max_folds, arms,
             # Conformalized sharpness: derive q_hat on the calibration half,
             # score coverage/width on the held-out half.
             if cal_mask is not None and cal_mask.sum() >= 50 and (~cal_mask).sum() >= 50:
-                q_hat = conformal_q_hat(y_va[cal_mask], low[cal_mask],
-                                        high[cal_mask])
+                q_hat = conformal_q_hat(y_va[cal_mask], low[cal_mask], high[cal_mask])
                 te = ~cal_mask
-                conf_cov, conf_width = interval_metrics(
-                    y_va[te], low[te] - q_hat, high[te] + q_hat)
+                conf_cov, conf_width = interval_metrics(y_va[te], low[te] - q_hat, high[te] + q_hat)
             else:
                 q_hat, conf_cov, conf_width = float("nan"), float("nan"), float("nan")
 
@@ -406,9 +400,10 @@ def _run_horizon(fc, tdf, feat_cols, horizon, max_folds, arms,
                 f"    fold {fold_idx} {arm:>13}: "
                 f"pinball={rec['pinball_mean']:.5f} "
                 f"(q10={pin_lo:.5f} q90={pin_hi:.5f}) "
-                f"rawcov={100*raw_cov:.1f}% w={raw_width:.2f} "
-                f"confcov={100*conf_cov:.1f}% confw={conf_width:.2f} "
-                f"trees={trees[LOW_Q]}/{trees[HIGH_Q]} ({fit_s:.1f}s)")
+                f"rawcov={100 * raw_cov:.1f}% w={raw_width:.2f} "
+                f"confcov={100 * conf_cov:.1f}% confw={conf_width:.2f} "
+                f"trees={trees[LOW_Q]}/{trees[HIGH_Q]} ({fit_s:.1f}s)"
+            )
             yield rec
 
 
@@ -421,27 +416,29 @@ def summarize(records):
 
     print("\n" + "=" * 104)
     print("PAIRED RESULTS (each arm vs control, same folds)")
-    print(f"raw coverage target {100*TARGET_RAW_COVERAGE:.0f}% | "
-          f"conformal target {100*(1-CONFORMAL_ALPHA):.0f}%")
+    print(f"raw coverage target {100 * TARGET_RAW_COVERAGE:.0f}% | conformal target {100 * (1 - CONFORMAL_ALPHA):.0f}%")
     print("=" * 104)
-    print(f"{'h':>3} {'arm':>14} {'pinball':>9} {'q10':>9} {'q90':>9} "
-          f"{'rawcov%':>8} {'raww':>7} {'confcov%':>9} {'confw':>7} "
-          f"{'trees10':>8} {'trees90':>8} {'folds':>6} {'fit_s':>7}")
+    print(
+        f"{'h':>3} {'arm':>14} {'pinball':>9} {'q10':>9} {'q90':>9} "
+        f"{'rawcov%':>8} {'raww':>7} {'confcov%':>9} {'confw':>7} "
+        f"{'trees10':>8} {'trees90':>8} {'folds':>6} {'fit_s':>7}"
+    )
 
     verdicts = {}
     for horizon in sorted(df["horizon"].unique()):
         hd = df[df["horizon"] == horizon]
         arms_present = [a for a in hd["arm"].unique()]
-        ordered = ([CONTROL_ARM] if CONTROL_ARM in arms_present else []) + \
-                  [a for a in arms_present if a != CONTROL_ARM]
+        ordered = ([CONTROL_ARM] if CONTROL_ARM in arms_present else []) + [a for a in arms_present if a != CONTROL_ARM]
         for arm in ordered:
             a = hd[hd["arm"] == arm]
-            print(f"{horizon:>3} {arm:>14} {a['pinball_mean'].mean():>9.5f} "
-                  f"{a['pinball_q10'].mean():>9.5f} {a['pinball_q90'].mean():>9.5f} "
-                  f"{100*a['raw_coverage'].mean():>8.2f} {a['raw_width'].mean():>7.2f} "
-                  f"{100*a['conf_coverage'].mean():>9.2f} {a['conf_width'].mean():>7.2f} "
-                  f"{a['trees_q10'].mean():>8.1f} {a['trees_q90'].mean():>8.1f} "
-                  f"{len(a):>6} {a['fit_s'].sum():>7.1f}")
+            print(
+                f"{horizon:>3} {arm:>14} {a['pinball_mean'].mean():>9.5f} "
+                f"{a['pinball_q10'].mean():>9.5f} {a['pinball_q90'].mean():>9.5f} "
+                f"{100 * a['raw_coverage'].mean():>8.2f} {a['raw_width'].mean():>7.2f} "
+                f"{100 * a['conf_coverage'].mean():>9.2f} {a['conf_width'].mean():>7.2f} "
+                f"{a['trees_q10'].mean():>8.1f} {a['trees_q90'].mean():>8.1f} "
+                f"{len(a):>6} {a['fit_s'].sum():>7.1f}"
+            )
 
         ctl = hd[hd["arm"] == CONTROL_ARM].set_index("fold")
         if ctl.empty:
@@ -455,12 +452,10 @@ def summarize(records):
                 continue
             c, t = ctl.loc[common], trt.loc[common]
 
-            rel_gain = ((c["pinball_mean"] - t["pinball_mean"])
-                        / c["pinball_mean"]).mean()
+            rel_gain = ((c["pinball_mean"] - t["pinball_mean"]) / c["pinball_mean"]).mean()
             folds_won = int((t["pinball_mean"] < c["pinball_mean"]).sum())
             # Positive => the arm's conformalized interval got wider (worse).
-            rel_width = float(((t["conf_width"] - c["conf_width"])
-                               / c["conf_width"]).mean())
+            rel_width = float(((t["conf_width"] - c["conf_width"]) / c["conf_width"]).mean())
 
             # Fold-clustered paired interval on the pinball difference,
             # replacing the "wins on at least half the folds" condition this
@@ -468,44 +463,47 @@ def summarize(records):
             # differing only by seed clear it half the time. Lower pinball is
             # better, so a SHIP needs the interval strictly below zero.
             paired = paired_arm_contrasts(
-                {"control": fold_level_records(
-                    common, c["pinball_mean"], metric="pinball"),
-                 arm: fold_level_records(
-                     common, t["pinball_mean"], metric="pinball")},
-                base="control", value_key="pinball", scale=1.0,
-                higher_is_better=False)[arm]
+                {
+                    "control": fold_level_records(common, c["pinball_mean"], metric="pinball"),
+                    arm: fold_level_records(common, t["pinball_mean"], metric="pinball"),
+                },
+                base="control",
+                value_key="pinball",
+                scale=1.0,
+                higher_is_better=False,
+            )[arm]
 
             c1 = rel_gain >= GATE_MIN_REL_PINBALL_GAIN
             c2 = paired["verdict"] == "positive"
-            c3 = (not np.isfinite(rel_width)) or \
-                rel_width <= GATE_MAX_REL_WIDTH_INCREASE
+            c3 = (not np.isfinite(rel_width)) or rel_width <= GATE_MAX_REL_WIDTH_INCREASE
             ship = bool(c1 and c2 and c3)
             verdicts[(horizon, arm)] = {
-                "ship": ship, "rel_pinball_gain": rel_gain,
-                "folds_won": folds_won, "n_folds": len(common),
+                "ship": ship,
+                "rel_pinball_gain": rel_gain,
+                "folds_won": folds_won,
+                "n_folds": len(common),
                 "rel_conf_width_change": rel_width,
                 "paired_pinball": paired,
-                "gate": {"pinball_gain": c1, "paired_interval": c2,
-                         "width_no_regress": c3},
+                "gate": {"pinball_gain": c1, "paired_interval": c2, "width_no_regress": c3},
             }
-            print(f"  -> {horizon}d {arm} vs control: "
-                  f"pinball {rel_gain*100:+.2f}% "
-                  f"(gate >= +{GATE_MIN_REL_PINBALL_GAIN*100:.1f}%) "
-                  f"[{'PASS' if c1 else 'FAIL'}] | "
-                  f"paired {format_paired(paired, unit='')} "
-                  f"[{'PASS' if c2 else 'FAIL'}] | "
-                  f"conf width {rel_width*100:+.2f}% "
-                  f"(gate <= +{GATE_MAX_REL_WIDTH_INCREASE*100:.0f}%) "
-                  f"[{'PASS' if c3 else 'FAIL'}] | "
-                  f"folds won {folds_won}/{len(common)} (context, not a gate)")
-            print(f"     VERDICT {horizon}d {arm}: "
-                  f"{'SHIP' if ship else 'KEEP control'}")
+            print(
+                f"  -> {horizon}d {arm} vs control: "
+                f"pinball {rel_gain * 100:+.2f}% "
+                f"(gate >= +{GATE_MIN_REL_PINBALL_GAIN * 100:.1f}%) "
+                f"[{'PASS' if c1 else 'FAIL'}] | "
+                f"paired {format_paired(paired, unit='')} "
+                f"[{'PASS' if c2 else 'FAIL'}] | "
+                f"conf width {rel_width * 100:+.2f}% "
+                f"(gate <= +{GATE_MAX_REL_WIDTH_INCREASE * 100:.0f}%) "
+                f"[{'PASS' if c3 else 'FAIL'}] | "
+                f"folds won {folds_won}/{len(common)} (context, not a gate)"
+            )
+            print(f"     VERDICT {horizon}d {arm}: {'SHIP' if ship else 'KEEP control'}")
 
     return df, verdicts
 
 
-def run(max_items, horizon_filter, max_folds, arms, fold_start=0,
-        fold_count=None, feature_cache=None):
+def run(max_items, horizon_filter, max_folds, arms, fold_start=0, fold_count=None, feature_cache=None):
     db = SessionLocal()
     forecaster = ItemForecaster(db_session=db)
     events_df = forecaster.fetch_events()
@@ -523,17 +521,17 @@ def run(max_items, horizon_filter, max_folds, arms, fold_start=0,
             t0 = time.time()
             df = pd.read_parquet(cpath)
             feat_cols = json.loads(ccols.read_text())
-            logger.info(f"  loaded cached features {cpath.name} "
-                        f"({time.time()-t0:.0f}s, {df.shape})")
+            logger.info(f"  loaded cached features {cpath.name} ({time.time() - t0:.0f}s, {df.shape})")
             cache_ok = True
 
     if not cache_ok:
         import duckdb
+
         con = duckdb.connect()
         try:
             t0 = time.time()
             df, feat_cols = load_features(con, forecaster, events_df, max_items)
-            logger.info(f"  feature build took {time.time()-t0:.0f}s")
+            logger.info(f"  feature build took {time.time() - t0:.0f}s")
         finally:
             con.close()
         if feature_cache:
@@ -542,26 +540,23 @@ def run(max_items, horizon_filter, max_folds, arms, fold_start=0,
             logger.info(f"  wrote feature cache {cpath.name}")
 
     # Match production: price_technicals only.
-    feat_cols = forecaster._apply_feature_allowlist(
-        feat_cols, ItemForecaster.FEATURE_GROUP_ALLOWLIST)
+    feat_cols = forecaster._apply_feature_allowlist(feat_cols, ItemForecaster.FEATURE_GROUP_ALLOWLIST)
     feat_cols = [c for c in feat_cols if c in df.columns]
     logger.info(f"  {len(feat_cols)} features after production allowlist")
 
-    horizons = [h for h in HORIZONS
-                if horizon_filter is None or h == horizon_filter]
+    horizons = [h for h in HORIZONS if horizon_filter is None or h == horizon_filter]
 
     records = []
     for horizon in horizons:
         target_col = f"target_return_{horizon}d"
         tdf = forecaster.prepare_targets(df, horizon)
-        tdf = tdf.dropna(subset=[target_col]).sort_values(
-            ["item_id", "date"]).copy()
+        tdf = tdf.dropna(subset=[target_col]).sort_values(["item_id", "date"]).copy()
         if tdf.empty:
             logger.warning(f"  no targets for {horizon}d")
             continue
-        for rec in _run_horizon(forecaster, tdf, feat_cols, horizon, max_folds,
-                                arms, fold_start=fold_start,
-                                fold_count=fold_count):
+        for rec in _run_horizon(
+            forecaster, tdf, feat_cols, horizon, max_folds, arms, fold_start=fold_start, fold_count=fold_count
+        ):
             records.append(rec)
 
     return summarize(records)
@@ -569,28 +564,30 @@ def run(max_items, horizon_filter, max_folds, arms, fold_start=0,
 
 def main():
     import argparse
+
     ap = argparse.ArgumentParser(
-        description="A/B q10/q90 row sampling: production bagging_freq=0 "
-                    "no-op vs bagging_freq=1")
+        description="A/B q10/q90 row sampling: production bagging_freq=0 no-op vs bagging_freq=1"
+    )
     ap.add_argument("--max-items", type=int, default=200)
     ap.add_argument("--horizon", type=int, default=None, choices=HORIZONS)
     ap.add_argument("--max-folds", type=int, default=MAX_FOLDS)
-    ap.add_argument("--single-fold", action="store_true",
-                    help="1 fold only — for timing calibration")
-    ap.add_argument("--with-gain0", action="store_true",
-                    help=f"add the {GAIN0_ARM} arm (min_gain_to_split=0)")
-    ap.add_argument("--out", type=str, default=None,
-                    help="write per-fold records to this CSV")
-    ap.add_argument("--fold-start", type=int, default=0,
-                    help="shard: first (global) fold index to run")
-    ap.add_argument("--fold-count", type=int, default=None,
-                    help="shard: number of folds to run from --fold-start")
-    ap.add_argument("--feature-cache", type=str, default=None,
-                    help="path prefix for caching the engineered feature "
-                         "matrix across runs/shards (skips the ~30s rebuild)")
-    ap.add_argument("--merge", nargs="+", default=None,
-                    help="merge per-shard CSVs and print the combined gate "
-                         "verdict; skips all training")
+    ap.add_argument("--single-fold", action="store_true", help="1 fold only — for timing calibration")
+    ap.add_argument("--with-gain0", action="store_true", help=f"add the {GAIN0_ARM} arm (min_gain_to_split=0)")
+    ap.add_argument("--out", type=str, default=None, help="write per-fold records to this CSV")
+    ap.add_argument("--fold-start", type=int, default=0, help="shard: first (global) fold index to run")
+    ap.add_argument("--fold-count", type=int, default=None, help="shard: number of folds to run from --fold-start")
+    ap.add_argument(
+        "--feature-cache",
+        type=str,
+        default=None,
+        help="path prefix for caching the engineered feature matrix across runs/shards (skips the ~30s rebuild)",
+    )
+    ap.add_argument(
+        "--merge",
+        nargs="+",
+        default=None,
+        help="merge per-shard CSVs and print the combined gate verdict; skips all training",
+    )
     args = ap.parse_args()
 
     # Merge mode: recombine shard CSVs and apply the gate over all folds.
@@ -599,8 +596,7 @@ def main():
         allrecs = pd.concat(frames, ignore_index=True)
         dupes = allrecs.duplicated(subset=["horizon", "arm", "fold"]).sum()
         if dupes:
-            logger.warning(f"{dupes} duplicate (horizon,arm,fold) rows — "
-                           f"check shard fold ranges for overlap")
+            logger.warning(f"{dupes} duplicate (horizon,arm,fold) rows — check shard fold ranges for overlap")
         logger.info(f"merged {len(allrecs)} records from {len(args.merge)} files")
         summarize(allrecs.to_dict("records"))
         return 0
@@ -610,15 +606,20 @@ def main():
 
     logger.info("=" * 70)
     logger.info("A/B: q10/q90 row sampling (bagging_freq no-op vs =1)")
-    logger.info(f"  max_items={args.max_items} horizon={args.horizon} "
-                f"max_folds={max_folds} arms={arms}")
+    logger.info(f"  max_items={args.max_items} horizon={args.horizon} max_folds={max_folds} arms={arms}")
     logger.info("=" * 70)
 
     t0 = time.time()
-    df, verdicts = run(args.max_items, args.horizon, max_folds, arms,
-                       fold_start=args.fold_start, fold_count=args.fold_count,
-                       feature_cache=args.feature_cache)
-    logger.info(f"total wall clock: {time.time()-t0:.0f}s")
+    df, verdicts = run(
+        args.max_items,
+        args.horizon,
+        max_folds,
+        arms,
+        fold_start=args.fold_start,
+        fold_count=args.fold_count,
+        feature_cache=args.feature_cache,
+    )
+    logger.info(f"total wall clock: {time.time() - t0:.0f}s")
 
     if args.out and not df.empty:
         df.to_csv(args.out, index=False)

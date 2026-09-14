@@ -10,6 +10,7 @@ These tests pin the fix: a second, additive accuracy restricted to the
 production cohort, without disturbing the all-tiers series or the trust gate
 that reads it.
 """
+
 from __future__ import annotations
 
 from datetime import date, timedelta
@@ -18,7 +19,6 @@ from unittest.mock import MagicMock
 import numpy as np
 import pandas as pd
 import pytest
-
 from backtest.scoring import HEADLINE_MIN_TIER
 from models.forecaster import ItemForecaster
 
@@ -106,12 +106,10 @@ def test_fold_metrics_score_the_dollar_cohort_separately(tmp_path):
 
     for m in fold_metrics:
         assert m["classifier_accuracy_ge1"] is not None, (
-            "the mixed frame has >=$1 rows in every fold, so the cohort "
-            "accuracy must be a number"
+            "the mixed frame has >=$1 rows in every fold, so the cohort accuracy must be a number"
         )
         assert m["classifier_accuracy_ge1"] < m["classifier_accuracy"] - 5, (
-            f"pooled={m['classifier_accuracy']} ge1={m['classifier_accuracy_ge1']} "
-            f"— the >=$1 filter did not apply"
+            f"pooled={m['classifier_accuracy']} ge1={m['classifier_accuracy_ge1']} — the >=$1 filter did not apply"
         )
 
 
@@ -123,16 +121,13 @@ def test_dollar_cohort_accuracy_is_none_not_zero_when_a_fold_is_all_penny(tmp_pa
 
     for m in fold_metrics:
         assert m["classifier_accuracy_ge1"] is None
-        assert m["classifier_accuracy"] is not None, (
-            "the all-tiers figure is unconditional and must still be scored"
-        )
+        assert m["classifier_accuracy"] is not None, "the all-tiers figure is unconditional and must still be scored"
 
 
 def test_dollar_cohort_accuracy_is_none_when_the_frame_has_no_price_tier(tmp_path):
     """`price_tier` is a real column in production, but CV is also driven over
     frames that predate it. A missing column is 'cannot tell', not zero."""
-    fold_metrics = _run_cv(
-        tmp_path, MIXED_PRICES, with_tier=False, feature_cols=("feat_a", "feat_b"))
+    fold_metrics = _run_cv(tmp_path, MIXED_PRICES, with_tier=False, feature_cols=("feat_a", "feat_b"))
 
     for m in fold_metrics:
         assert m["classifier_accuracy_ge1"] is None
@@ -156,15 +151,17 @@ def _train_frame(n_dates=140, seed=5):
         price = base
         for d in range(n_dates):
             price = max(price * (1.0 + rng.normal(0.001, 0.02)), 0.05)
-            rows.append({
-                "item_id": f"item_{item}",
-                "date": date(2025, 1, 1) + timedelta(days=d),
-                "price": price,
-                "price_tier": _tier(price),
-                "price_std_60d": abs(rng.normal(base * 0.05, base * 0.01)) + 1e-9,
-                "feat_a": rng.normal(),
-                "feat_b": rng.normal(),
-            })
+            rows.append(
+                {
+                    "item_id": f"item_{item}",
+                    "date": date(2025, 1, 1) + timedelta(days=d),
+                    "price": price,
+                    "price_tier": _tier(price),
+                    "price_std_60d": abs(rng.normal(base * 0.05, base * 0.01)) + 1e-9,
+                    "feat_a": rng.normal(),
+                    "feat_b": rng.normal(),
+                }
+            )
     return pd.DataFrame(rows)
 
 
@@ -177,7 +174,7 @@ def trained():
     with tempfile.TemporaryDirectory() as tmp:
         f = ItemForecaster(db_session=MagicMock(), model_dir=tmp)
         f.N_ENSEMBLES = 1
-        f.SKIP_HP_HORIZONS = list(f.HORIZONS)   # no Optuna
+        f.SKIP_HP_HORIZONS = list(f.HORIZONS)  # no Optuna
         f.CV_MIN_TRAIN_DAYS = 40
         f.CV_STEP_DAYS = 25
         f.VALIDATION_WINDOW_DAYS = 10
@@ -192,10 +189,11 @@ def trained():
         # function-scoped _diagnostic_classifier_on fixture can apply. It has
         # to opt in itself or train() runs with the diagnostic off and
         # mean_classifier_acc comes back None.
-        with patch.object(f, "build_training_data", fake_build), \
-                patch.object(f, "save_models", lambda *a, **kw: None), \
-                patch.dict("os.environ", {"SKIP_REGIMES": "1",
-                                          "CV_DIAGNOSTIC_CLASSIFIER": "1"}):
+        with (
+            patch.object(f, "build_training_data", fake_build),
+            patch.object(f, "save_models", lambda *a, **kw: None),
+            patch.dict("os.environ", {"SKIP_REGIMES": "1", "CV_DIAGNOSTIC_CLASSIFIER": "1"}),
+        ):
             f.train()
         yield f
 
@@ -206,12 +204,12 @@ def test_cv_results_carry_the_dollar_cohort_alongside_the_all_tiers_series(train
     for h in trained.HORIZONS:
         cv = trained.cv_results[h]
         assert cv["mean_classifier_acc"] is not None, (
-            "the all-tiers series must survive — every historical meta.json "
-            "holds it and the trust gate reads it"
+            "the all-tiers series must survive — every historical meta.json holds it and the trust gate reads it"
         )
 
-        per_fold = [m["classifier_accuracy_ge1"] for m in cv["per_fold"]
-                    if m.get("classifier_accuracy_ge1") is not None]
+        per_fold = [
+            m["classifier_accuracy_ge1"] for m in cv["per_fold"] if m.get("classifier_accuracy_ge1") is not None
+        ]
         assert per_fold, f"{h}d frame has >=$1 rows, so folds must score them"
         expected = round(float(np.mean(per_fold)), 1)
         assert cv["mean_classifier_acc_ge1"] == pytest.approx(expected), (
@@ -226,14 +224,12 @@ def test_the_trust_gate_still_reads_the_all_tiers_classifier_accuracy(trained):
     number is additive only."""
     for h in trained.HORIZONS:
         cv = trained.cv_results[h]
-        baselines = [b for b in (cv["mean_persistence_acc"], cv["mean_momentum_acc"])
-                     if b is not None]
+        baselines = [b for b in (cv["mean_persistence_acc"], cv["mean_momentum_acc"]) if b is not None]
         if not baselines or cv["edge_vs_best_baseline"] is None:
             continue
         expected = round(cv["mean_classifier_acc"] - max(baselines), 1)
         assert cv["edge_vs_best_baseline"] == pytest.approx(expected), (
-            f"{h}d: the edge is no longer computed from the all-tiers "
-            f"classifier accuracy"
+            f"{h}d: the edge is no longer computed from the all-tiers classifier accuracy"
         )
 
 

@@ -18,6 +18,7 @@ range forecaster (``AGENTS.md``), and the harness exists to price that, not to b
 it. Steam is reported on its own line and labelled WALLET-ONLY: its proceeds are not
 cashable, so its return is never a cash P&L.
 """
+
 from __future__ import annotations
 
 import argparse
@@ -29,18 +30,18 @@ from sqlalchemy import text
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from backtest.papertrade import (                     # noqa: E402
+from backtest.papertrade import (
     PAPER_TRADE_HORIZONS,
     WALLED_VENUES,
     all_strategies,
 )
-from backtest.scoring import (                         # noqa: E402
+from backtest.scoring import (
     MIN_FORECAST_DATES,
     excluded_forecast_date,
     price_tier,
 )
-from config import settings                            # noqa: E402
-from database import SessionLocal                      # noqa: E402
+from config import settings
+from database import SessionLocal
 
 # Cash venues to report, cheapest first. Steam is handled apart (walled).
 CASH_VENUES = ("csfloat", "skinport")
@@ -75,18 +76,20 @@ def _load_records(db, min_price: float) -> list[dict]:
             continue
         if excluded_forecast_date(r.forecast_date):
             continue
-        records.append({
-            "item_id": r.item_id,
-            "horizon_days": r.horizon_days,
-            "forecast_date": r.forecast_date,
-            "base_price": base,
-            "actual_price": actual,
-            "current_price": r.current_price,
-            "predicted_mid": mid,
-            "predicted_low": r.predicted_price_low,
-            "price_tier": price_tier(base),
-            "base_stale_run_days": r.base_stale_run_days,
-        })
+        records.append(
+            {
+                "item_id": r.item_id,
+                "horizon_days": r.horizon_days,
+                "forecast_date": r.forecast_date,
+                "base_price": base,
+                "actual_price": actual,
+                "current_price": r.current_price,
+                "predicted_mid": mid,
+                "predicted_low": r.predicted_price_low,
+                "price_tier": price_tier(base),
+                "base_stale_run_days": r.base_stale_run_days,
+            }
+        )
     return records
 
 
@@ -94,35 +97,39 @@ def _fmt(v, suffix="") -> str:
     return "   —  " if v is None else f"{v}{suffix}"
 
 
-def _print_block(records: list[dict], horizon: int, venue: str,
-                 mode: str) -> None:
+def _print_block(records: list[dict], horizon: int, venue: str, mode: str) -> None:
     walled = venue in WALLED_VENUES
     tag = "  [WALLET-ONLY — NOT CASH]" if walled else ""
     print(f"\n  venue={venue}{tag}")
-    print(f"    {'strategy':<14}{'n/cand':>10}{'mean net%':>12}"
-          f"{'win%':>8}{'CI low%':>10}{'CI high%':>10}{'profit?':>9}")
-    out = all_strategies(records, horizon, MIN_FORECAST_DATES, venue=venue,
-                         mode=mode)
+    print(
+        f"    {'strategy':<14}{'n/cand':>10}{'mean net%':>12}{'win%':>8}{'CI low%':>10}{'CI high%':>10}{'profit?':>9}"
+    )
+    out = all_strategies(records, horizon, MIN_FORECAST_DATES, venue=venue, mode=mode)
     for name in ("buy_and_hold", "exceedance", "q50_clears"):
         m = out[name]
         if m["pt_scope"] == "out_of_scope":
             continue
         nc = "  —  " if m["pt_n"] is None else f"{m['pt_n']}/{m['pt_n_candidates']}"
-        print(f"    {name:<14}{nc:>10}{_fmt(m['pt_mean_net_pct']):>12}"
-              f"{_fmt(m['pt_win_rate_pct']):>8}{_fmt(m['pt_mean_net_ci_lower']):>10}"
-              f"{_fmt(m['pt_mean_net_ci_upper']):>10}"
-              f"{_fmt(m['pt_profitable']):>9}")
+        print(
+            f"    {name:<14}{nc:>10}{_fmt(m['pt_mean_net_pct']):>12}"
+            f"{_fmt(m['pt_win_rate_pct']):>8}{_fmt(m['pt_mean_net_ci_lower']):>10}"
+            f"{_fmt(m['pt_mean_net_ci_upper']):>10}"
+            f"{_fmt(m['pt_profitable']):>9}"
+        )
 
 
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__)
-    ap.add_argument("--min-price", type=float, default=1.0,
-                    help="price floor in USD (default 1.0, the >=$1 headline cohort)")
-    ap.add_argument("--by-tier", action="store_true",
-                    help="break results out by price tier as well as pooled")
-    ap.add_argument("--sell-only", action="store_true",
-                    help="charge sell-side friction only (fee + half spread), as "
-                         "when timing the sale of inventory you already hold")
+    ap.add_argument(
+        "--min-price", type=float, default=1.0, help="price floor in USD (default 1.0, the >=$1 headline cohort)"
+    )
+    ap.add_argument("--by-tier", action="store_true", help="break results out by price tier as well as pooled")
+    ap.add_argument(
+        "--sell-only",
+        action="store_true",
+        help="charge sell-side friction only (fee + half spread), as "
+        "when timing the sale of inventory you already hold",
+    )
     args = ap.parse_args()
     mode = "sell_only" if args.sell_only else "round_trip"
 
@@ -132,12 +139,16 @@ def main() -> None:
     finally:
         db.close()
 
-    cost_desc = ("fee + HALF spread (sell-only: inventory buy is sunk)"
-                 if mode == "sell_only" else "fee + full spread (round trip)")
-    print(f"paper-trade report  env={settings.environment}  mode={mode}  "
-          f"min_price=${args.min_price:g}  n_records={len(records)}")
-    print(f"P&L on the resolver basis (buy base_price, sell actual_price) net of "
-          f"{cost_desc}. Read-only.")
+    cost_desc = (
+        "fee + HALF spread (sell-only: inventory buy is sunk)"
+        if mode == "sell_only"
+        else "fee + full spread (round trip)"
+    )
+    print(
+        f"paper-trade report  env={settings.environment}  mode={mode}  "
+        f"min_price=${args.min_price:g}  n_records={len(records)}"
+    )
+    print(f"P&L on the resolver basis (buy base_price, sell actual_price) net of {cost_desc}. Read-only.")
 
     by_h = defaultdict(list)
     for r in records:
@@ -145,7 +156,7 @@ def main() -> None:
 
     for horizon in sorted(h for h in PAPER_TRADE_HORIZONS if h in by_h):
         rows = by_h[horizon]
-        print(f"\n{'='*72}\nhorizon={horizon}d   n={len(rows)}")
+        print(f"\n{'=' * 72}\nhorizon={horizon}d   n={len(rows)}")
         for venue in (*CASH_VENUES, *sorted(WALLED_VENUES)):
             _print_block(rows, horizon, venue, mode)
             if args.by_tier:

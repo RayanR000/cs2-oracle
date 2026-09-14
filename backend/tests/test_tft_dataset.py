@@ -1,6 +1,6 @@
-import pytest
 import numpy as np
 import pandas as pd
+import pytest
 
 torch = pytest.importorskip("torch")
 
@@ -14,19 +14,21 @@ def _make_price_df(n_items=5, n_days=120, seed=42):
         price = 10.0 + rng.randn() * 2
         for d in range(n_days):
             price *= np.exp(rng.randn() * 0.02)
-            rows.append({
-                "item_id": f"item_{i}",
-                "date": (base_date + pd.Timedelta(days=d)).date(),
-                "price": round(max(price, 0.5), 2),
-                "volume": max(1, int(rng.poisson(20))),
-            })
+            rows.append(
+                {
+                    "item_id": f"item_{i}",
+                    "date": (base_date + pd.Timedelta(days=d)).date(),
+                    "price": round(max(price, 0.5), 2),
+                    "volume": max(1, int(rng.poisson(20))),
+                }
+            )
     return pd.DataFrame(rows)
 
 
 class TestSequenceDataset:
-
     def test_dataset_length(self):
         from models.tft.dataset import SequenceDataset
+
         df = _make_price_df(n_items=3, n_days=100)
         ds = SequenceDataset(df, lookback=60, horizons=[3, 7, 14, 30])
         # Each item has 100 days. Valid anchors: day 60..69 (day+30 <= 99).
@@ -35,18 +37,20 @@ class TestSequenceDataset:
 
     def test_sample_shapes(self):
         from models.tft.dataset import SequenceDataset
+
         df = _make_price_df(n_items=2, n_days=100)
         ds = SequenceDataset(df, lookback=60, horizons=[3, 7, 14, 30])
         past, static, future, targets, meta = ds[0]
-        assert past.shape == (60, 5)       # lookback × n_past_features
-        assert static.shape == (1,)        # price_tier
-        assert future.shape == (4, 1)      # n_horizons × n_future_features
-        assert targets.shape == (4,)       # n_horizons
+        assert past.shape == (60, 5)  # lookback × n_past_features
+        assert static.shape == (1,)  # price_tier
+        assert future.shape == (4, 1)  # n_horizons × n_future_features
+        assert targets.shape == (4,)  # n_horizons
         assert "item_id" in meta
         assert "date" in meta
 
     def test_targets_are_percentage_returns(self):
         from models.tft.dataset import SequenceDataset
+
         df = _make_price_df(n_items=1, n_days=100)
         ds = SequenceDataset(df, lookback=60, horizons=[3])
         _, _, _, targets, meta = ds[0]
@@ -61,6 +65,7 @@ class TestSequenceDataset:
 
     def test_no_nan_in_past_features(self):
         from models.tft.dataset import SequenceDataset
+
         df = _make_price_df(n_items=2, n_days=100)
         ds = SequenceDataset(df, lookback=60, horizons=[3, 7, 14, 30])
         for i in range(min(10, len(ds))):
@@ -69,6 +74,7 @@ class TestSequenceDataset:
 
     def test_nan_targets_when_future_missing(self):
         from models.tft.dataset import SequenceDataset
+
         # NOTE: the plan specified n_days=75 here, but with lookback=60 and
         # max_horizon=30 a 75-day history holds no anchor where ALL horizons
         # are valid (75 < 60 + 30), so the dataset is empty and both asserts
@@ -85,17 +91,21 @@ class TestSequenceDataset:
 
 
 class TestBuildDataloaders:
-
     def test_train_val_split(self):
-        from models.tft.dataset import SequenceDataset, build_dataloaders
+        from models.tft.dataset import build_dataloaders
+
         df = _make_price_df(n_items=5, n_days=200)
         dates = sorted(df["date"].unique())
         split = len(dates) // 2
         train_dates = dates[:split]
         val_dates = dates[split:]
         train_dl, val_dl = build_dataloaders(
-            df, train_dates, val_dates,
-            lookback=60, horizons=[3, 7, 14, 30], batch_size=16,
+            df,
+            train_dates,
+            val_dates,
+            lookback=60,
+            horizons=[3, 7, 14, 30],
+            batch_size=16,
         )
         assert len(train_dl) > 0
         assert len(val_dl) > 0

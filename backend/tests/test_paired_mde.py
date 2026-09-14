@@ -5,12 +5,12 @@ their fixtures predate `fold_id` and they pin the date-grain resampling
 behaviour. Production callers cluster on `fold_id` — see the fold-clustering
 block at the bottom of this file and the `paired_mde` module docstring.
 """
+
 from __future__ import annotations
 
 from datetime import date
 
 import pytest
-
 from backtest.paired_mde import paired_da_difference
 
 
@@ -27,9 +27,7 @@ def _rec(item, day, correct, fold=None):
 
 def _arm(pattern):
     """pattern: {day: [(item, correct), ...]}"""
-    return [_rec(item, day, correct)
-            for day, entries in pattern.items()
-            for item, correct in entries]
+    return [_rec(item, day, correct) for day, entries in pattern.items() for item, correct in entries]
 
 
 def test_identical_arms_have_zero_mean_difference():
@@ -91,15 +89,19 @@ def test_bootstrap_is_seeded_deterministically():
     """
     # Create test data with varying differences across dates
     # Date 1: all +1, Date 2: mixed +0, Date 3: all -1, Date 4: mixed -1
-    a = [_rec(f"i{i}", 1, 1) for i in range(5)] + \
-        [_rec(f"i{i}", 2, 1) for i in range(5)] + \
-        [_rec(f"i{i}", 3, 1) for i in range(5)] + \
-        [_rec(f"i{i}", 4, 1) for i in range(5)]
+    a = (
+        [_rec(f"i{i}", 1, 1) for i in range(5)]
+        + [_rec(f"i{i}", 2, 1) for i in range(5)]
+        + [_rec(f"i{i}", 3, 1) for i in range(5)]
+        + [_rec(f"i{i}", 4, 1) for i in range(5)]
+    )
 
-    b = [_rec(f"i{i}", 1, 1) for i in range(5)] + \
-        [_rec(f"i{i}", 2, 1 if i < 2 else 0) for i in range(5)] + \
-        [_rec(f"i{i}", 3, 0) for i in range(5)] + \
-        [_rec(f"i{i}", 4, 0 if i < 2 else 1) for i in range(5)]
+    b = (
+        [_rec(f"i{i}", 1, 1) for i in range(5)]
+        + [_rec(f"i{i}", 2, 1 if i < 2 else 0) for i in range(5)]
+        + [_rec(f"i{i}", 3, 0) for i in range(5)]
+        + [_rec(f"i{i}", 4, 0 if i < 2 else 1) for i in range(5)]
+    )
 
     out = paired_da_difference(a, b, cluster_key="forecast_date")
     # These are recorded outputs under BOOTSTRAP_RNG_SEED = 42
@@ -132,13 +134,17 @@ def test_varying_differences_across_dates_discriminates_resampling_axis():
     the weighted average (5*1 + 10*0 + 20*(-1)) / (5+10+20) = -42.857%,
     not the unweighted mean of date means (which would be 0%).
     """
-    a = [_rec(f"i{i}", 1, 0) for i in range(5)] + \
-        [_rec(f"i{i}", 2, 0) for i in range(10)] + \
-        [_rec(f"i{i}", 3, 1) for i in range(20)]
+    a = (
+        [_rec(f"i{i}", 1, 0) for i in range(5)]
+        + [_rec(f"i{i}", 2, 0) for i in range(10)]
+        + [_rec(f"i{i}", 3, 1) for i in range(20)]
+    )
 
-    b = [_rec(f"i{i}", 1, 1) for i in range(5)] + \
-        [_rec(f"i{i}", 2, 0) for i in range(10)] + \
-        [_rec(f"i{i}", 3, 0) for i in range(20)]
+    b = (
+        [_rec(f"i{i}", 1, 1) for i in range(5)]
+        + [_rec(f"i{i}", 2, 0) for i in range(10)]
+        + [_rec(f"i{i}", 3, 0) for i in range(20)]
+    )
 
     out = paired_da_difference(a, b, cluster_key="forecast_date")
 
@@ -159,6 +165,7 @@ def test_varying_differences_across_dates_discriminates_resampling_axis():
 # Fold clustering (2026-08-07). The bug this replaces made intervals too NARROW,
 # so these tests assert the direction of the correction, not just that it runs.
 # --------------------------------------------------------------------------
+
 
 def _folded(n_folds, dates_per_fold, rows_per_date, diff_by_fold):
     """Two arms whose difference is constant within a fold and varies across.

@@ -23,6 +23,7 @@ defines the population every 2026-08-11 result was measured on; a copy that drif
 from it would let CV and the replay print the same word for different cohorts, so
 one test here holds the two against each other on the same panel.
 """
+
 from __future__ import annotations
 
 from datetime import date, timedelta
@@ -31,15 +32,12 @@ from unittest.mock import MagicMock
 import numpy as np
 import pandas as pd
 import pytest
-
-from backtest.scoring import HEADLINE_MIN_TIER
 from models.forecaster import ANCHOR_TIED_COL, ItemForecaster
 
 
 @pytest.fixture
 def forecaster(tmp_path_factory):
-    return ItemForecaster(db_session=MagicMock(),
-                          model_dir=str(tmp_path_factory.mktemp("saved_models")))
+    return ItemForecaster(db_session=MagicMock(), model_dir=str(tmp_path_factory.mktemp("saved_models")))
 
 
 def _row(out, item, day):
@@ -59,12 +57,14 @@ def test_the_anchor_quote_that_is_its_own_median_is_tied(forecaster):
     price, and it must not need one.
     """
     day = date(2026, 2, 10)
-    df = pd.DataFrame([
-        {"item_id": "a", "date": day - timedelta(days=2), "price": 10.0},
-        {"item_id": "a", "date": day - timedelta(days=1), "price": 14.0},
-        {"item_id": "a", "date": day, "price": 12.0},
-        {"item_id": "a", "date": day + timedelta(days=3), "price": 13.0},
-    ])
+    df = pd.DataFrame(
+        [
+            {"item_id": "a", "date": day - timedelta(days=2), "price": 10.0},
+            {"item_id": "a", "date": day - timedelta(days=1), "price": 14.0},
+            {"item_id": "a", "date": day, "price": 12.0},
+            {"item_id": "a", "date": day + timedelta(days=3), "price": 13.0},
+        ]
+    )
     assert bool(_row(forecaster.prepare_targets(df, 3), "a", day)[ANCHOR_TIED_COL])
 
 
@@ -73,12 +73,14 @@ def test_a_trending_quote_is_not_tied(forecaster):
     its median -- so a trending item is deviating, and the cohort is not simply
     'items that did not move'."""
     day = date(2026, 2, 10)
-    df = pd.DataFrame([
-        {"item_id": "a", "date": day - timedelta(days=2), "price": 10.0},
-        {"item_id": "a", "date": day - timedelta(days=1), "price": 11.0},
-        {"item_id": "a", "date": day, "price": 12.0},
-        {"item_id": "a", "date": day + timedelta(days=3), "price": 13.0},
-    ])
+    df = pd.DataFrame(
+        [
+            {"item_id": "a", "date": day - timedelta(days=2), "price": 10.0},
+            {"item_id": "a", "date": day - timedelta(days=1), "price": 11.0},
+            {"item_id": "a", "date": day, "price": 12.0},
+            {"item_id": "a", "date": day + timedelta(days=3), "price": 13.0},
+        ]
+    )
     assert not bool(_row(forecaster.prepare_targets(df, 3), "a", day)[ANCHOR_TIED_COL])
 
 
@@ -86,12 +88,14 @@ def test_a_spike_at_the_anchor_is_deviating(forecaster):
     """The row the whole finding is about: one noisy-high print inflates
     `return_1d` and deflates the label at once."""
     day = date(2026, 2, 10)
-    df = pd.DataFrame([
-        {"item_id": "a", "date": day - timedelta(days=2), "price": 10.0},
-        {"item_id": "a", "date": day - timedelta(days=1), "price": 10.5},
-        {"item_id": "a", "date": day, "price": 40.0},
-        {"item_id": "a", "date": day + timedelta(days=3), "price": 10.2},
-    ])
+    df = pd.DataFrame(
+        [
+            {"item_id": "a", "date": day - timedelta(days=2), "price": 10.0},
+            {"item_id": "a", "date": day - timedelta(days=1), "price": 10.5},
+            {"item_id": "a", "date": day, "price": 40.0},
+            {"item_id": "a", "date": day + timedelta(days=3), "price": 10.2},
+        ]
+    )
     assert not bool(_row(forecaster.prepare_targets(df, 3), "a", day)[ANCHOR_TIED_COL])
 
 
@@ -100,10 +104,12 @@ def test_an_items_first_observation_is_tied(forecaster):
     belongs in the clean cohort. `replay_serving._pinned_anchor` falls back to
     the latest observation for exactly this case; the two must agree."""
     day = date(2026, 2, 10)
-    df = pd.DataFrame([
-        {"item_id": "a", "date": day, "price": 10.0},
-        {"item_id": "a", "date": day + timedelta(days=3), "price": 11.0},
-    ])
+    df = pd.DataFrame(
+        [
+            {"item_id": "a", "date": day, "price": 10.0},
+            {"item_id": "a", "date": day + timedelta(days=3), "price": 11.0},
+        ]
+    )
     assert bool(_row(forecaster.prepare_targets(df, 3), "a", day)[ANCHOR_TIED_COL])
 
 
@@ -120,9 +126,7 @@ def test_the_mask_does_not_move_with_the_label_arm(forecaster, monkeypatch):
         price = 10.0 + i
         for d in range(40):
             price *= 1.0 + rng.normal(0.0, 0.02)
-            rows.append({"item_id": f"i{i}",
-                         "date": date(2026, 1, 1) + timedelta(days=d),
-                         "price": price})
+            rows.append({"item_id": f"i{i}", "date": date(2026, 1, 1) + timedelta(days=d), "price": price})
     df = pd.DataFrame(rows)
 
     monkeypatch.delenv("LABEL_SMOOTHED_ANCHOR", raising=False)
@@ -149,9 +153,7 @@ def test_it_agrees_with_the_replays_definition(forecaster):
         price = 5.0 + i
         for d in range(30):
             price *= 1.0 + rng.normal(0.0, 0.03)
-            rows.append({"item_id": f"i{i}",
-                         "date": date(2026, 1, 1) + timedelta(days=d),
-                         "price": price})
+            rows.append({"item_id": f"i{i}", "date": date(2026, 1, 1) + timedelta(days=d), "price": price})
     df = pd.DataFrame(rows)
 
     anchor = date(2026, 1, 25)
@@ -189,8 +191,7 @@ def _cv_forecaster(tmp_path):
     return f
 
 
-def _tdf(n_items=60, n_dates=80, horizon=3, seed=3, with_tied=True,
-         tied_price=5.0, deviating_price=5.0):
+def _tdf(n_items=60, n_dates=80, horizon=3, seed=3, with_tied=True, tied_price=5.0, deviating_price=5.0):
     """A tdf in the shape `_cv_evaluate_horizon` consumes, carrying the mask.
 
     Half the items are tied and their label is a clean monotone function of
@@ -236,8 +237,8 @@ def test_folds_carry_the_tied_cohort_beside_the_pooled_one(tmp_path):
     for m in _run_cv(tmp_path):
         assert m["rank_ic"] is not None and m["rank_ic_tied"] is not None
         assert m["rank_ic_tied"] > m["rank_ic"] + 0.05, (
-            f"pooled={m['rank_ic']} tied={m['rank_ic_tied']} — the mask did "
-            f"not apply")
+            f"pooled={m['rank_ic']} tied={m['rank_ic_tied']} — the mask did not apply"
+        )
 
 
 def test_the_naive_baseline_is_scored_on_the_same_cohort(tmp_path):
@@ -258,8 +259,7 @@ def test_the_tied_cohort_is_intersected_with_the_served_one(tmp_path):
     assert all(m["n_tied"] > 0 for m in served)
     for m in penny:
         assert m["n_tied"] == 0
-        assert m["rank_ic_tied"] is None, (
-            "no served tied rows is 'cannot tell', never a number")
+        assert m["rank_ic_tied"] is None, "no served tied rows is 'cannot tell', never a number"
 
 
 def test_a_frame_without_the_mask_reports_none_not_a_fallback(tmp_path):
@@ -298,8 +298,8 @@ def test_cv_results_publish_the_tied_edge(tmp_path):
     assert summary["mean_rank_ic_tied"] is not None
     assert summary["mean_naive_rank_ic_tied"] is not None
     assert summary["rank_ic_edge_vs_naive_tied"] == pytest.approx(
-        round(summary["mean_rank_ic_tied"]
-              - summary["mean_naive_rank_ic_tied"], 4))
+        round(summary["mean_rank_ic_tied"] - summary["mean_naive_rank_ic_tied"], 4)
+    )
     assert summary["rank_ic_edge_vs_naive_tied"] != summary["rank_ic_edge_vs_naive"]
 
 
@@ -315,14 +315,15 @@ def test_the_diagnostics_summary_greps_the_line_that_carries_it(tmp_path):
     import re
     from pathlib import Path
 
-    wf = (Path(__file__).resolve().parents[2]
-          / ".github/workflows/model-diagnostics.yml").read_text()
+    wf = (Path(__file__).resolve().parents[2] / ".github/workflows/model-diagnostics.yml").read_text()
     pattern = re.search(r'grep -E "([^"]+)" \\\n\s+diagnostics-', wf)
     assert pattern, "the diagnostics grep moved — re-point this test"
 
-    emitted = ("  Cross-sectional (>=$1, CLEAN ANCHOR): rank_ic=0.1321 vs "
-               "naive=0.0842 → edge=0.0479 | 12,004 rows, 31 of 44 date-folds. "
-               "← RANK ARMS ON THIS LINE.")
+    emitted = (
+        "  Cross-sectional (>=$1, CLEAN ANCHOR): rank_ic=0.1321 vs "
+        "naive=0.0842 → edge=0.0479 | 12,004 rows, 31 of 44 date-folds. "
+        "← RANK ARMS ON THIS LINE."
+    )
     assert re.search(pattern.group(1), emitted)
 
 
@@ -335,5 +336,4 @@ def test_the_pooled_series_is_unchanged(tmp_path):
     summary = f._summarise_rank_ic(fold_metrics)
 
     pooled = [m["rank_ic"] for m in fold_metrics if m["rank_ic"] is not None]
-    assert summary["mean_rank_ic"] == pytest.approx(
-        round(float(np.mean(pooled)), 4))
+    assert summary["mean_rank_ic"] == pytest.approx(round(float(np.mean(pooled)), 4))

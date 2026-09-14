@@ -34,13 +34,14 @@ and left in place, because for an unpaired row the phantom is the only copy.
 `--dry-run` is the DEFAULT here, inverting the repo convention, because this
 mutates production and is not reversible.
 """
+
 import argparse
 import logging
 import re
 import sys
+from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Iterable, List, Optional, Sequence, Tuple
 
 logging.basicConfig(
     level=logging.INFO,
@@ -105,8 +106,9 @@ CHILD_EDGE_SQL = """
 
 
 def order_child_tables(
-    tables: Iterable[str], edges: Iterable[Tuple[str, str]],
-) -> List[str]:
+    tables: Iterable[str],
+    edges: Iterable[tuple[str, str]],
+) -> list[str]:
     """Delete order: a table is emitted before anything it references.
 
     *edges* is (child, parent) meaning child holds a FK onto parent. A table
@@ -114,7 +116,7 @@ def order_child_tables(
     """
     remaining = set(tables)
     edges = [(c, p) for c, p in edges if c != p]
-    order: List[str] = []
+    order: list[str] = []
     while remaining:
         referenced = {p for c, p in edges if c in remaining and p in remaining}
         ready = sorted(t for t in remaining if t not in referenced)
@@ -127,7 +129,7 @@ def order_child_tables(
     return order
 
 
-def discover_child_tables(conn) -> List[Tuple[str, str]]:
+def discover_child_tables(conn) -> list[tuple[str, str]]:
     """(table, fk_column) for every table referencing items.id, in delete order."""
     from sqlalchemy import text
 
@@ -141,15 +143,15 @@ class Phantom:
     id: int
     item_id: str
     name: str
-    keeper_id: Optional[int] = None
-    keeper_item_id: Optional[str] = None
+    keeper_id: int | None = None
+    keeper_item_id: str | None = None
     reason: str = "paired"
     slug_confirms: bool = False
 
 
 def pair_phantoms(
     rows: Iterable[Sequence],
-) -> Tuple[List[Phantom], List[Phantom]]:
+) -> tuple[list[Phantom], list[Phantom]]:
     """Split `items` rows into (deletable phantoms, unresolved phantoms).
 
     `rows` yields (id, item_id, name). Returns phantoms that have an identified
@@ -157,35 +159,34 @@ def pair_phantoms(
     """
     rows = [(int(r[0]), str(r[1]), str(r[2])) for r in rows]
     # Index the correctly-keyed rows by the name they claim.
-    keepers = {
-        name: (rid, item_id)
-        for rid, item_id, name in rows
-        if not is_mangled_key(item_id)
-    }
+    keepers = {name: (rid, item_id) for rid, item_id, name in rows if not is_mangled_key(item_id)}
 
-    paired: List[Phantom] = []
-    unresolved: List[Phantom] = []
+    paired: list[Phantom] = []
+    unresolved: list[Phantom] = []
     for rid, item_id, name in rows:
         if not is_mangled_key(item_id):
             continue
         # `init_local_db.populate_items` mirrors archive keys back as
         # `name = item_id`. Such a row has lost its link to the real identity.
         if name == item_id:
-            unresolved.append(
-                Phantom(rid, item_id, name, reason="name-overwritten"))
+            unresolved.append(Phantom(rid, item_id, name, reason="name-overwritten"))
             continue
         keeper = keepers.get(name)
         if keeper is None:
             unresolved.append(Phantom(rid, item_id, name, reason="no-keeper"))
             continue
         keeper_id, keeper_item_id = keeper
-        paired.append(Phantom(
-            rid, item_id, name,
-            keeper_id=keeper_id,
-            keeper_item_id=keeper_item_id,
-            reason="paired",
-            slug_confirms=slugify(name) == item_id,
-        ))
+        paired.append(
+            Phantom(
+                rid,
+                item_id,
+                name,
+                keeper_id=keeper_id,
+                keeper_item_id=keeper_item_id,
+                reason="paired",
+                slug_confirms=slugify(name) == item_id,
+            )
+        )
     return paired, unresolved
 
 
@@ -198,6 +199,7 @@ def purge_archive_frame(frame):
 # ----------------------------------------------------------------------
 # Database side
 # ----------------------------------------------------------------------
+
 
 def _require_postgres(engine) -> None:
     """Mirror of init_local_db's guard, inverted.
@@ -218,8 +220,8 @@ def _require_postgres(engine) -> None:
 
 
 def purge_database(apply: bool) -> int:
-    from sqlalchemy import text
     from database import engine
+    from sqlalchemy import text
 
     _require_postgres(engine)
     logger.info("Engine: %s", str(engine.url).split("@")[-1])
@@ -234,9 +236,7 @@ def purge_database(apply: bool) -> int:
 
         unconfirmed = [p for p in paired if not p.slug_confirms]
         if unconfirmed:
-            logger.warning(
-                "%s paired by name but slugify(name) != item_id -- review these:",
-                f"{len(unconfirmed):,}")
+            logger.warning("%s paired by name but slugify(name) != item_id -- review these:", f"{len(unconfirmed):,}")
             for p in unconfirmed[:10]:
                 logger.warning("    id=%s %r name=%r", p.id, p.item_id, p.name)
 
@@ -251,9 +251,11 @@ def purge_database(apply: bool) -> int:
 
         ids = [p.id for p in paired]
         child_tables = discover_child_tables(conn)
-        logger.info("Child rows referencing the %s phantoms "
-                    "(%s FK tables, from the live catalog):",
-                    f"{len(ids):,}", len(child_tables))
+        logger.info(
+            "Child rows referencing the %s phantoms (%s FK tables, from the live catalog):",
+            f"{len(ids):,}",
+            len(child_tables),
+        )
         total_children = 0
         for table, col in child_tables:
             n = conn.execute(
@@ -280,8 +282,7 @@ def purge_database(apply: bool) -> int:
                 {"ids": ids},
             )
             logger.info("Deleted %s from %s", f"{res.rowcount:,}", table)
-        res = conn.execute(
-            text("DELETE FROM items WHERE id = ANY(:ids)"), {"ids": ids})
+        res = conn.execute(text("DELETE FROM items WHERE id = ANY(:ids)"), {"ids": ids})
         logger.info("Deleted %s from items", f"{res.rowcount:,}")
     logger.info("Database purge complete.")
     return len(ids)
@@ -290,6 +291,7 @@ def purge_database(apply: bool) -> int:
 # ----------------------------------------------------------------------
 # Archive side
 # ----------------------------------------------------------------------
+
 
 def purge_archive(archive_dir: Path, apply: bool) -> int:
     """Rewrite each prices- parquet with phantom rows removed.
@@ -318,11 +320,12 @@ def purge_archive(archive_dir: Path, apply: bool) -> int:
         if dropped == 0:
             logger.info("%-34s clean", path.name)
             continue
-        phantom_items = frame["item_slug"][
-            frame["item_slug"].astype(str).map(is_mangled_key)].nunique()
+        phantom_items = frame["item_slug"][frame["item_slug"].astype(str).map(is_mangled_key)].nunique()
         logger.info(
             "%-34s %s rows / %s items %s",
-            path.name, f"{dropped:,}", f"{phantom_items:,}",
+            path.name,
+            f"{dropped:,}",
+            f"{phantom_items:,}",
             "WOULD DROP" if not apply else "DROPPED",
         )
         if apply:
@@ -334,18 +337,21 @@ def purge_archive(archive_dir: Path, apply: bool) -> int:
     return total_dropped
 
 
-def main(argv: Optional[Sequence[str]] = None) -> int:
+def main(argv: Sequence[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     ap.add_argument(
-        "--apply", action="store_true",
-        help="Actually write. Omitted, the script only reports (the default).")
+        "--apply", action="store_true", help="Actually write. Omitted, the script only reports (the default)."
+    )
     ap.add_argument(
-        "--target", choices=["db", "archive", "both"], default="db",
+        "--target",
+        choices=["db", "archive", "both"],
+        default="db",
         help="Which side to purge. Default 'db' -- that alone stops the daily "
-             "leak, since the aggregator re-reads items every run.")
+        "leak, since the aggregator re-reads items every run.",
+    )
     ap.add_argument(
-        "--archive-dir", type=Path, default=Path("../price-archive"),
-        help="Directory holding prices-*.parquet.")
+        "--archive-dir", type=Path, default=Path("../price-archive"), help="Directory holding prices-*.parquet."
+    )
     args = ap.parse_args(argv)
 
     if args.target in ("db", "both"):

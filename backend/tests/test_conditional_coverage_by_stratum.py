@@ -5,6 +5,7 @@ when it breaks is the stratum assignment (a width tertile that collapses, a
 staleness bucket that mislabels NULL, a rebase that measures the wedge instead
 of the centre). Each has a test here.
 """
+
 import sys
 from pathlib import Path
 
@@ -13,20 +14,38 @@ import pandas as pd
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from scripts.conditional_coverage_by_stratum import (  # noqa: E402
+from scripts.conditional_coverage_by_stratum import (
     assign_width_tertile,
     bucket_staleness,
     prepare,
 )
 
 
-def _row(mid=110.0, low=100.0, high=125.0, base=100.0, actual=112.0,
-         current=105.0, stale=0.0, family="skin", h=7, date="2026-08-10"):
-    return dict(item_id=1, forecast_date=date, horizon_days=h,
-                base_price=base, actual_price=actual, current_price=current,
-                predicted_price_low=low, predicted_price_mid=mid,
-                predicted_price_high=high, base_stale_run_days=stale,
-                family=family)
+def _row(
+    mid=110.0,
+    low=100.0,
+    high=125.0,
+    base=100.0,
+    actual=112.0,
+    current=105.0,
+    stale=0.0,
+    family="skin",
+    h=7,
+    date="2026-08-10",
+):
+    return dict(
+        item_id=1,
+        forecast_date=date,
+        horizon_days=h,
+        base_price=base,
+        actual_price=actual,
+        current_price=current,
+        predicted_price_low=low,
+        predicted_price_mid=mid,
+        predicted_price_high=high,
+        base_stale_run_days=stale,
+        family=family,
+    )
 
 
 def test_covered_uses_own_quote_not_base():

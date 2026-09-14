@@ -4,6 +4,7 @@ Uses the --snapshot-csv path, which never touches the database, so these run
 without a live DB (a dummy DATABASE_URL is injected only to satisfy the lazy
 engine import).
 """
+
 import os
 import subprocess
 import sys
@@ -21,28 +22,25 @@ SCRIPT = BACKEND / "scripts" / "append_to_parquet.py"
 
 
 def _run(date, out_dir, csv_path):
-    env = {**os.environ, "DATABASE_URL": "postgresql://u:p@localhost:5432/db",
-           "ENVIRONMENT": "test"}
+    env = {**os.environ, "DATABASE_URL": "postgresql://u:p@localhost:5432/db", "ENVIRONMENT": "test"}
     res = subprocess.run(
-        [sys.executable, str(SCRIPT), "--date", date,
-         "--out-dir", str(out_dir), "--snapshot-csv", str(csv_path)],
-        cwd=str(BACKEND), env=env, capture_output=True, text=True,
+        [sys.executable, str(SCRIPT), "--date", date, "--out-dir", str(out_dir), "--snapshot-csv", str(csv_path)],
+        cwd=str(BACKEND),
+        env=env,
+        capture_output=True,
+        text=True,
     )
     assert res.returncode == 0, f"script failed:\n{res.stdout}\n{res.stderr}"
     return res
 
 
 def _write_csv(path, day, rows):
-    df = pd.DataFrame([
-        {"item_slug": s, "day": day, "source": src, "price": p, "volume": v}
-        for (s, src, p, v) in rows
-    ])
+    df = pd.DataFrame([{"item_slug": s, "day": day, "source": src, "price": p, "volume": v} for (s, src, p, v) in rows])
     df.to_csv(path, index=False)
 
 
 def _count(pq):
-    return duckdb.connect().sql(
-        f"SELECT count(*) FROM read_parquet('{pq}')").fetchone()[0]
+    return duckdb.connect().sql(f"SELECT count(*) FROM read_parquet('{pq}')").fetchone()[0]
 
 
 def test_writes_monthly_files_not_yearly(tmp_path):
@@ -73,8 +71,7 @@ def test_redundant_price_columns_are_not_written(tmp_path):
     _run("2026-08-03", tmp_path, csv)
 
     pq = tmp_path / "price-archive" / "prices-2026-08.parquet"
-    cols = [r[0] for r in duckdb.connect().sql(
-        f"DESCRIBE SELECT * FROM read_parquet('{pq}')").fetchall()]
+    cols = [r[0] for r in duckdb.connect().sql(f"DESCRIBE SELECT * FROM read_parquet('{pq}')").fetchall()]
     assert set(cols) == set(CANONICAL_PRICE_COLUMNS)
 
 
@@ -113,8 +110,7 @@ def test_different_months_go_to_separate_files(tmp_path):
 
 
 def _schema(pq):
-    return [(r[0], r[1]) for r in duckdb.connect().sql(
-        f"DESCRIBE SELECT * FROM read_parquet('{pq}')").fetchall()]
+    return [(r[0], r[1]) for r in duckdb.connect().sql(f"DESCRIBE SELECT * FROM read_parquet('{pq}')").fetchall()]
 
 
 def test_day_is_written_as_date_not_timestamp(tmp_path):
@@ -149,15 +145,26 @@ def test_exchange_rates_day_is_also_a_date(tmp_path):
     csv = tmp_path / "snap.csv"
     _write_csv(csv, "2026-09-03", [("AK-47 | Redline (FT)", "aggregator_sync", 10.0, 3)])
     fx = tmp_path / "fx.csv"
-    pd.DataFrame([{"currency": "EUR", "rate": 0.92, "day": "2026-09-03"}]).to_csv(
-        fx, index=False)
-    env = {**os.environ, "DATABASE_URL": "postgresql://u:p@localhost:5432/db",
-           "ENVIRONMENT": "test"}
+    pd.DataFrame([{"currency": "EUR", "rate": 0.92, "day": "2026-09-03"}]).to_csv(fx, index=False)
+    env = {**os.environ, "DATABASE_URL": "postgresql://u:p@localhost:5432/db", "ENVIRONMENT": "test"}
     res = subprocess.run(
-        [sys.executable, str(SCRIPT), "--date", "2026-09-03",
-         "--out-dir", str(tmp_path), "--snapshot-csv", str(csv),
-         "--exchange-rates-csv", str(fx)],
-        cwd=str(BACKEND), env=env, capture_output=True, text=True)
+        [
+            sys.executable,
+            str(SCRIPT),
+            "--date",
+            "2026-09-03",
+            "--out-dir",
+            str(tmp_path),
+            "--snapshot-csv",
+            str(csv),
+            "--exchange-rates-csv",
+            str(fx),
+        ],
+        cwd=str(BACKEND),
+        env=env,
+        capture_output=True,
+        text=True,
+    )
     assert res.returncode == 0, f"{res.stdout}\n{res.stderr}"
     pq = tmp_path / "price-archive" / "exchange-rates-2026.parquet"
     assert dict(_schema(pq))["day"] == "DATE"
@@ -188,15 +195,16 @@ class TestIngestedAt:
 
     def test_a_fresh_row_is_stamped_with_a_timestamp(self, tmp_path):
         csv = tmp_path / "snap.csv"
-        _write_csv(csv, "2026-09-03",
-                   [("AK-47 | Redline (FT)", "aggregator_sync", 10.0, 3)])
+        _write_csv(csv, "2026-09-03", [("AK-47 | Redline (FT)", "aggregator_sync", 10.0, 3)])
         _run("2026-09-03", tmp_path, csv)
         pq = tmp_path / "price-archive" / "prices-2026-09.parquet"
 
         assert dict(_schema(pq))["ingested_at"] == "TIMESTAMP"
-        stamped = duckdb.connect().sql(
-            f"SELECT count(*) FROM read_parquet('{pq}') "
-            f"WHERE ingested_at IS NOT NULL").fetchone()[0]
+        stamped = (
+            duckdb.connect()
+            .sql(f"SELECT count(*) FROM read_parquet('{pq}') WHERE ingested_at IS NOT NULL")
+            .fetchone()[0]
+        )
         assert stamped == 1
 
     def test_arrival_is_not_the_day_being_exported(self, tmp_path):
@@ -204,13 +212,11 @@ class TestIngestedAt:
         old day is something that happens now, and that is the fact worth
         recording."""
         csv = tmp_path / "snap.csv"
-        _write_csv(csv, "2026-01-05",
-                   [("AK-47 | Redline (FT)", "aggregator_sync", 10.0, 3)])
+        _write_csv(csv, "2026-01-05", [("AK-47 | Redline (FT)", "aggregator_sync", 10.0, 3)])
         _run("2026-01-05", tmp_path, csv)
         pq = tmp_path / "price-archive" / "prices-2026-01.parquet"
 
-        day, arrived = duckdb.connect().sql(
-            f"SELECT day, ingested_at FROM read_parquet('{pq}')").fetchone()
+        day, arrived = duckdb.connect().sql(f"SELECT day, ingested_at FROM read_parquet('{pq}')").fetchone()
         assert str(day) == "2026-01-05"
         assert pd.Timestamp(arrived) > pd.Timestamp("2026-01-06")
 
@@ -220,20 +226,16 @@ class TestIngestedAt:
         on every re-run would date the whole month forward and make the column
         useless as an embargo input."""
         csv = tmp_path / "snap.csv"
-        _write_csv(csv, "2026-09-03",
-                   [("AK-47 | Redline (FT)", "aggregator_sync", 10.0, 3)])
+        _write_csv(csv, "2026-09-03", [("AK-47 | Redline (FT)", "aggregator_sync", 10.0, 3)])
         _run("2026-09-03", tmp_path, csv)
         pq = tmp_path / "price-archive" / "prices-2026-09.parquet"
-        first = duckdb.connect().sql(
-            f"SELECT ingested_at FROM read_parquet('{pq}')").fetchone()[0]
+        first = duckdb.connect().sql(f"SELECT ingested_at FROM read_parquet('{pq}')").fetchone()[0]
 
         corrected = tmp_path / "snap2.csv"
-        _write_csv(corrected, "2026-09-03",
-                   [("AK-47 | Redline (FT)", "aggregator_sync", 11.0, 3)])
+        _write_csv(corrected, "2026-09-03", [("AK-47 | Redline (FT)", "aggregator_sync", 11.0, 3)])
         _run("2026-09-03", tmp_path, corrected)
 
-        price, arrived = duckdb.connect().sql(
-            f"SELECT mean_price, ingested_at FROM read_parquet('{pq}')").fetchone()
+        price, arrived = duckdb.connect().sql(f"SELECT mean_price, ingested_at FROM read_parquet('{pq}')").fetchone()
         assert price == 11.0, "the corrected price should win"
         assert arrived == first, "the original arrival should not"
 
@@ -252,45 +254,73 @@ class TestVolumeAbsenceIsNull:
 
     def test_missing_volume_lands_as_null(self, tmp_path):
         csv = tmp_path / "snap.csv"
-        pd.DataFrame([{
-            "item_slug": "AK-47 | Redline (FT)", "day": "2026-10-02",
-            "source": "aggregator_csgotrader", "price": 10.0, "volume": None,
-        }]).to_csv(csv, index=False)
+        pd.DataFrame(
+            [
+                {
+                    "item_slug": "AK-47 | Redline (FT)",
+                    "day": "2026-10-02",
+                    "source": "aggregator_csgotrader",
+                    "price": 10.0,
+                    "volume": None,
+                }
+            ]
+        ).to_csv(csv, index=False)
         _run("2026-10-02", tmp_path, csv)
 
         pq = tmp_path / "price-archive" / "prices-2026-10.parquet"
-        vol = duckdb.connect().sql(
-            f"SELECT volume FROM read_parquet('{pq}')").fetchone()[0]
+        vol = duckdb.connect().sql(f"SELECT volume FROM read_parquet('{pq}')").fetchone()[0]
         assert vol is None, f"absent volume must stay NULL, got {vol!r}"
 
     def test_a_real_volume_still_sums(self, tmp_path):
         """The NULL path must not cost the aggregation its real values."""
         csv = tmp_path / "snap.csv"
-        pd.DataFrame([
-            {"item_slug": "AWP | Asiimov (FT)", "day": "2026-10-02",
-             "source": "aggregator_sync", "price": 10.0, "volume": 3},
-            {"item_slug": "AWP | Asiimov (FT)", "day": "2026-10-02",
-             "source": "aggregator_sync", "price": 12.0, "volume": 4},
-        ]).to_csv(csv, index=False)
+        pd.DataFrame(
+            [
+                {
+                    "item_slug": "AWP | Asiimov (FT)",
+                    "day": "2026-10-02",
+                    "source": "aggregator_sync",
+                    "price": 10.0,
+                    "volume": 3,
+                },
+                {
+                    "item_slug": "AWP | Asiimov (FT)",
+                    "day": "2026-10-02",
+                    "source": "aggregator_sync",
+                    "price": 12.0,
+                    "volume": 4,
+                },
+            ]
+        ).to_csv(csv, index=False)
         _run("2026-10-02", tmp_path, csv)
 
         pq = tmp_path / "price-archive" / "prices-2026-10.parquet"
-        vol = duckdb.connect().sql(
-            f"SELECT volume FROM read_parquet('{pq}')").fetchone()[0]
+        vol = duckdb.connect().sql(f"SELECT volume FROM read_parquet('{pq}')").fetchone()[0]
         assert vol == 7, f"two observed volumes should sum, got {vol!r}"
 
     def test_a_partial_group_sums_only_what_was_observed(self, tmp_path):
         """One NULL among real values is a gap in the panel, not a zero."""
         csv = tmp_path / "snap.csv"
-        pd.DataFrame([
-            {"item_slug": "M4A4 | Howl (FN)", "day": "2026-10-02",
-             "source": "aggregator_sync", "price": 10.0, "volume": 5},
-            {"item_slug": "M4A4 | Howl (FN)", "day": "2026-10-02",
-             "source": "aggregator_sync", "price": 12.0, "volume": None},
-        ]).to_csv(csv, index=False)
+        pd.DataFrame(
+            [
+                {
+                    "item_slug": "M4A4 | Howl (FN)",
+                    "day": "2026-10-02",
+                    "source": "aggregator_sync",
+                    "price": 10.0,
+                    "volume": 5,
+                },
+                {
+                    "item_slug": "M4A4 | Howl (FN)",
+                    "day": "2026-10-02",
+                    "source": "aggregator_sync",
+                    "price": 12.0,
+                    "volume": None,
+                },
+            ]
+        ).to_csv(csv, index=False)
         _run("2026-10-02", tmp_path, csv)
 
         pq = tmp_path / "price-archive" / "prices-2026-10.parquet"
-        vol = duckdb.connect().sql(
-            f"SELECT volume FROM read_parquet('{pq}')").fetchone()[0]
+        vol = duckdb.connect().sql(f"SELECT volume FROM read_parquet('{pq}')").fetchone()[0]
         assert vol == 5

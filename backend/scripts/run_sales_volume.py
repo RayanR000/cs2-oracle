@@ -21,6 +21,7 @@ Exit codes: 0 on success, 1 if the feed failed. A 403 from a Cloudflare-owned
 egress IP is a WAF block on the *caller*, not an outage — the error message says
 so, because this has been misdiagnosed as "Skinport is dead" twice.
 """
+
 from __future__ import annotations
 
 import argparse
@@ -32,7 +33,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from collectors.sales_volume import SalesVolumeError, collect  # noqa: E402
+from collectors.sales_volume import SalesVolumeError, collect
 
 logging.basicConfig(
     level=logging.INFO,
@@ -46,15 +47,19 @@ DEFAULT_ARCHIVE = Path(__file__).parent.parent.parent / "price-archive"
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
-        "--archive-dir", type=Path, default=DEFAULT_ARCHIVE,
+        "--archive-dir",
+        type=Path,
+        default=DEFAULT_ARCHIVE,
         help="Where volume-YYYY-MM.parquet is written (default: ../price-archive)",
     )
     parser.add_argument(
-        "--date", type=str, default=None,
+        "--date",
+        type=str,
+        default=None,
         help="Snapshot day as YYYY-MM-DD. Defaults to the aggregator's resolved "
-             "snapshot date so these rows carry the same day label as the price "
-             "rows they join to. Skinport's windows are trailing and have no "
-             "as-of parameter, so this only labels the observation.",
+        "snapshot date so these rows carry the same day label as the price "
+        "rows they join to. Skinport's windows are trailing and have no "
+        "as-of parameter, so this only labels the observation.",
     )
     parser.add_argument("--dry-run", action="store_true", help="Fetch and parse, write nothing.")
     args = parser.parse_args()

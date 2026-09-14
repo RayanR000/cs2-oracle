@@ -5,12 +5,12 @@ Covers the three rules the pre-registration fixes ahead of data
 the +-2 day forward anchor, the whole-DAY frozen exclusion (never row-level),
 and the absolute VOID bar below 20 qualifying dates.
 """
+
 import datetime as dt
 
 import numpy as np
 import pandas as pd
 import pytest
-
 from scripts.archive_basis_centre_rank import (
     MIN_DATES,
     archive_legs,
@@ -105,16 +105,17 @@ class TestArchiveLegs:
         return {(s, d): p for s, d, p in rows}
 
     def _panel(self):
-        return pd.DataFrame({
-            "forecast_date": [D("2026-08-12"), D("2026-08-12")],
-            "slug": ["i0", "i1"],
-            "predicted_price_mid": [10.5, 21.0],
-        })
+        return pd.DataFrame(
+            {
+                "forecast_date": [D("2026-08-12"), D("2026-08-12")],
+                "slug": ["i0", "i1"],
+                "predicted_price_mid": [10.5, 21.0],
+            }
+        )
 
     def test_all_three_legs_use_the_archive_anchor(self):
         px = self._prices()
-        out = archive_legs(self._panel(), px, horizon=14,
-                           available=sorted({d for _, d in px}), frozen=set())
+        out = archive_legs(self._panel(), px, horizon=14, available=sorted({d for _, d in px}), frozen=set())
         assert len(out) == 2
         row = out.iloc[0]
         anchor = px[("i0", D("2026-08-12"))]
@@ -126,25 +127,22 @@ class TestArchiveLegs:
 
     def test_row_missing_any_leg_drops_entirely(self):
         px = self._prices()
-        del px[("i1", D("2026-08-26"))]        # i1 loses its forward leg
-        del px[("i1", D("2026-08-24"))]        # ... and both tolerated fallbacks
+        del px[("i1", D("2026-08-26"))]  # i1 loses its forward leg
+        del px[("i1", D("2026-08-24"))]  # ... and both tolerated fallbacks
         del px[("i1", D("2026-08-25"))]
-        out = archive_legs(self._panel(), px, horizon=14,
-                           available=sorted({d for _, d in px}), frozen=set())
+        out = archive_legs(self._panel(), px, horizon=14, available=sorted({d for _, d in px}), frozen=set())
         assert out["slug"].tolist() == ["i0"]
 
     def test_naive_requires_a_consecutive_prior_day(self):
         px = self._prices()
         del px[("i0", D("2026-08-11"))]
-        out = archive_legs(self._panel(), px, horizon=14,
-                           available=sorted({d for _, d in px}), frozen=set())
+        out = archive_legs(self._panel(), px, horizon=14, available=sorted({d for _, d in px}), frozen=set())
         assert out["slug"].tolist() == ["i1"]
 
     def test_forward_offset_is_recorded(self):
         px = self._prices()
         avail = sorted({d for _, d in px} - {D("2026-08-26")})
-        out = archive_legs(self._panel(), px, horizon=14,
-                           available=avail, frozen=set())
+        out = archive_legs(self._panel(), px, horizon=14, available=avail, frozen=set())
         # 08-26 gone -> tie between 08-25 and (absent) 08-27 -> earlier.
         assert set(out["fwd_offset"]) == {-1}
 
@@ -165,13 +163,10 @@ class TestEvaluateBars:
         assert v["verdict"] == "CONFIRMED"
 
     def test_kill_when_model_ci_spans_zero(self):
-        assert evaluate_bars(self.SPANS, self.POS,
-                             n_dates=MIN_DATES)["verdict"] == "KILL"
+        assert evaluate_bars(self.SPANS, self.POS, n_dates=MIN_DATES)["verdict"] == "KILL"
 
     def test_kill_when_paired_ci_is_not_positive(self):
-        assert evaluate_bars(self.POS, self.SPANS,
-                             n_dates=MIN_DATES)["verdict"] == "KILL"
+        assert evaluate_bars(self.POS, self.SPANS, n_dates=MIN_DATES)["verdict"] == "KILL"
 
     def test_missing_ci_is_void_not_kill(self):
-        assert evaluate_bars(None, self.POS,
-                             n_dates=MIN_DATES)["verdict"] == "VOID"
+        assert evaluate_bars(None, self.POS, n_dates=MIN_DATES)["verdict"] == "VOID"

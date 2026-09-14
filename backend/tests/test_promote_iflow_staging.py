@@ -8,14 +8,20 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
 import promote_iflow_staging as p
 
 
-def _staged(days, items=("AK-47 | Redline (Field-Tested)",), price=10.0,
-            source=p.SOURCE):
+def _staged(days, items=("AK-47 | Redline (Field-Tested)",), price=10.0, source=p.SOURCE):
     rows = []
     for d in days:
         for it in items:
-            rows.append({"item_slug": it, "day": pd.Timestamp(d), "source": source,
-                         "mean_price": price, "volume": None,
-                         "ingested_at": pd.Timestamp("2026-08-29")})
+            rows.append(
+                {
+                    "item_slug": it,
+                    "day": pd.Timestamp(d),
+                    "source": source,
+                    "mean_price": price,
+                    "volume": None,
+                    "ingested_at": pd.Timestamp("2026-08-29"),
+                }
+            )
     return pd.DataFrame(rows, columns=p.PRICE_COLS)
 
 
@@ -66,12 +72,10 @@ def test_validate_coverage_tolerates_allowed_missing_days():
     """Upstream feed gaps are tolerated up to the explicit budget."""
     prices = _staged(["2026-04-16", "2026-04-18"], ITEMS)
 
-    p.validate_coverage(prices, "2026-04-16", "2026-04-18",
-                        min_items=1, max_missing_days=1)
+    p.validate_coverage(prices, "2026-04-16", "2026-04-18", min_items=1, max_missing_days=1)
 
     with pytest.raises(AssertionError, match="2 days absent"):
-        p.validate_coverage(prices, "2026-04-16", "2026-04-19",
-                            min_items=1, max_missing_days=1)
+        p.validate_coverage(prices, "2026-04-16", "2026-04-19", min_items=1, max_missing_days=1)
 
 
 def test_validate_coverage_flags_sparse_day():
@@ -100,15 +104,13 @@ def test_cross_check_returns_none_without_overlap(tmp_path):
 
 
 def test_cross_check_returns_none_without_archive(tmp_path):
-    assert p.cross_check_buff163(_staged(DAYS, ITEMS),
-                                 str(tmp_path / "nope" / "prices-*.parquet")) is None
+    assert p.cross_check_buff163(_staged(DAYS, ITEMS), str(tmp_path / "nope" / "prices-*.parquet")) is None
 
 
 def test_cross_check_accepts_agreeing_levels(tmp_path):
     out = _canon(tmp_path, DAYS, ITEMS, 10.0)
 
-    stats = p.cross_check_buff163(_staged(DAYS, ITEMS, price=10.1),
-                                  str(out / "prices-*.parquet"))
+    stats = p.cross_check_buff163(_staged(DAYS, ITEMS, price=10.1), str(out / "prices-*.parquet"))
 
     assert stats["rows"] == len(DAYS) * len(ITEMS)
     assert stats["median_log_ratio"] == pytest.approx(0.00995, abs=1e-4)
@@ -119,8 +121,7 @@ def test_cross_check_rejects_biased_levels(tmp_path):
     out = _canon(tmp_path, DAYS, ITEMS, 10.0)
 
     with pytest.raises(AssertionError, match="suspect FX or slug mapping"):
-        p.cross_check_buff163(_staged(DAYS, ITEMS, price=20.0),
-                              str(out / "prices-*.parquet"))
+        p.cross_check_buff163(_staged(DAYS, ITEMS, price=20.0), str(out / "prices-*.parquet"))
 
 
 def test_run_refuses_past_feed_end(tmp_path):
@@ -170,8 +171,9 @@ def test_run_validates_against_pre_gap_window(tmp_path, capsys):
     staging = _write_staging(tmp_path, _staged(CHECK_DAYS + DAYS, ITEMS, price=10.1))
     out = _canon(tmp_path, CHECK_DAYS, ITEMS, 10.0)
 
-    p.run(DAYS[0], DAYS[-1], staging, out, dry_run=True, min_items=5,
-          check_start=CHECK_DAYS[0], check_end=CHECK_DAYS[-1])
+    p.run(
+        DAYS[0], DAYS[-1], staging, out, dry_run=True, min_items=5, check_start=CHECK_DAYS[0], check_end=CHECK_DAYS[-1]
+    )
 
     printed = capsys.readouterr().out
     assert "Cross-check vs aggregator_buff163 on 2026-04-01..2026-04-03" in printed
@@ -182,8 +184,9 @@ def test_run_skips_check_when_window_absent_from_staging(tmp_path, capsys):
     staging = _write_staging(tmp_path, _staged(DAYS, ITEMS))
     out = _canon(tmp_path, CHECK_DAYS, ITEMS, 10.0)
 
-    p.run(DAYS[0], DAYS[-1], staging, out, dry_run=True, min_items=5,
-          check_start=CHECK_DAYS[0], check_end=CHECK_DAYS[-1])
+    p.run(
+        DAYS[0], DAYS[-1], staging, out, dry_run=True, min_items=5, check_start=CHECK_DAYS[0], check_end=CHECK_DAYS[-1]
+    )
 
     assert "Cross-check skipped" in capsys.readouterr().out
 
@@ -193,5 +196,13 @@ def test_run_propagates_biased_check_window(tmp_path):
     out = _canon(tmp_path, CHECK_DAYS, ITEMS, 10.0)
 
     with pytest.raises(AssertionError, match="suspect FX or slug mapping"):
-        p.run(DAYS[0], DAYS[-1], staging, out, dry_run=True, min_items=5,
-              check_start=CHECK_DAYS[0], check_end=CHECK_DAYS[-1])
+        p.run(
+            DAYS[0],
+            DAYS[-1],
+            staging,
+            out,
+            dry_run=True,
+            min_items=5,
+            check_start=CHECK_DAYS[0],
+            check_end=CHECK_DAYS[-1],
+        )

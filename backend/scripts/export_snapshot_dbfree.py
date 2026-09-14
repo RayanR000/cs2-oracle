@@ -56,8 +56,7 @@ SOURCE_LABELS = {
 }
 
 
-def write_snapshot_csv(aggregator: CSGOTraderAggregator, agg_date: str,
-                       snapshot_csv_path: str) -> int:
+def write_snapshot_csv(aggregator: CSGOTraderAggregator, agg_date: str, snapshot_csv_path: str) -> int:
     """Write every raw dump row to a snapshot CSV. Returns the row count.
 
     Reproduces the raw-source branch of
@@ -78,7 +77,10 @@ def write_snapshot_csv(aggregator: CSGOTraderAggregator, agg_date: str,
                     p30 = _get_safe(info.get("last_30d")) if isinstance(info, dict) else None
                     p90 = _get_safe(info.get("last_90d")) if isinstance(info, dict) else None
                     for label, p in [
-                        ("aggregator_sync", p24 if p24 is not None else (p7 if p7 is not None else (p30 if p30 is not None else p90))),
+                        (
+                            "aggregator_sync",
+                            p24 if p24 is not None else (p7 if p7 is not None else (p30 if p30 is not None else p90)),
+                        ),
                         # Clean Steam spot: last_24h with NO fallback, empty on
                         # illiquid items where aggregator_sync degrades to a
                         # trailing mean. The cross-venue basis feature's Steam leg.
@@ -111,11 +113,7 @@ def write_snapshot_csv(aggregator: CSGOTraderAggregator, agg_date: str,
                         if ho_p is not None and ho_p > 0:
                             w.writerow([item_key, agg_date, "aggregator_buff163_buy", ho_p, VOLUME_NOT_OBSERVED])
                             raw_count += 1
-                elif src_name == "csfloat":
-                    p = _get_safe(info.get("price"))
-                elif src_name == "csmoney":
-                    p = _get_safe(info.get("price"))
-                elif src_name == "csgotrader":
+                elif src_name == "csfloat" or src_name == "csmoney" or src_name == "csgotrader":
                     p = _get_safe(info.get("price"))
                 elif src_name == "youpin":
                     p = _get_safe(info.get("price")) or _get_safe(info)

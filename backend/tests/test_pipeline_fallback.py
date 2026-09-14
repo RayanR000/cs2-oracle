@@ -3,15 +3,14 @@ from __future__ import annotations
 from datetime import datetime, timedelta
 from types import SimpleNamespace
 
+import collectors.csgotrader_aggregator as aggregator_module
+import database as database_module
 import pytest
+from collectors.pipeline import FALLBACK_MAX_AGE_DAYS, DataPipeline
+from database import CollectionRun, Item, PriceHistory
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
-
-import database as database_module
-import collectors.csgotrader_aggregator as aggregator_module
-from collectors.pipeline import DataPipeline, FALLBACK_MAX_AGE_DAYS
-from database import Item, PriceHistory, CollectionRun
 
 
 class FakeAggregator:
@@ -302,9 +301,7 @@ def test_missing_name_report_groups_by_conservative_pattern():
         "stattrak_items",
         "souvenir_charm_items",
     ]
-    assert report["buckets"][1]["subgroups"][1]["subgroups"][0]["sample"] == [
-        "StatTrak™ M249 | Hypnosis (Factory New)"
-    ]
+    assert report["buckets"][1]["subgroups"][1]["subgroups"][0]["sample"] == ["StatTrak™ M249 | Hypnosis (Factory New)"]
     assert report["buckets"][1]["subgroups"][1]["subgroups"][1]["sample"] == [
         "Souvenir Charm | Austin 2025 Highlight | Almost 500 Damage",
         "Souvenir Charm | Austin 2025 Highlight | Spinx Quadra Kill",

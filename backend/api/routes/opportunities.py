@@ -1,10 +1,9 @@
-from typing import Optional
+from database import Item, ItemForecast, get_db
 from fastapi import APIRouter, Depends, Query
-from sqlalchemy.orm import Session
+from models.item_parser import is_phantom_slug, is_phase_collapsed
 from sqlalchemy import desc, func
-from datetime import date
+from sqlalchemy.orm import Session
 
-from database import get_db, ItemForecast, Item
 from api.cache import get_or_build
 from api.schemas import OpportunityOut
 from api.serving_policy import (
@@ -13,14 +12,15 @@ from api.serving_policy import (
     meets_price_floor,
     price_floor_clause,
 )
-from models.item_parser import is_phantom_slug, is_phase_collapsed
 
 router = APIRouter(prefix="/opportunities", tags=["opportunities"])
 
 
 def _build_opportunity(item: Item, forecast: ItemForecast, opp_type: str) -> OpportunityOut:
     current_price = forecast.current_price or 0.0
-    predicted_return = ((forecast.price_mid or current_price) - current_price) / current_price * 100 if current_price > 0 else 0
+    predicted_return = (
+        ((forecast.price_mid or current_price) - current_price) / current_price * 100 if current_price > 0 else 0
+    )
     return OpportunityOut(
         item_id=item.id,
         item_name=item.name,
@@ -60,9 +60,7 @@ def _load_items(item_ids: list[int], db: Session) -> dict[int, Item]:
     if not item_ids:
         return {}
     items = db.query(Item).filter(Item.id.in_(item_ids)).all()
-    return {i.id: i for i in items
-            if not is_phase_collapsed(i.name)
-            and not is_phantom_slug(i.item_id)}
+    return {i.id: i for i in items if not is_phase_collapsed(i.name) and not is_phantom_slug(i.item_id)}
 
 
 def _latest_forecasts(db: Session, horizon_days: int = 7):
@@ -98,7 +96,7 @@ def _latest_forecasts(db: Session, horizon_days: int = 7):
 
 @router.get("/", response_model=list[OpportunityOut])
 def get_opportunities(
-    type: Optional[str] = Query(None),
+    type: str | None = Query(None),
     limit: int = Query(20, ge=1, le=100),
     db: Session = Depends(get_db),
 ):
@@ -109,14 +107,14 @@ def get_opportunities(
     )
 
 
-def _build_opportunities(db: Session, type: Optional[str], limit: int):
+def _build_opportunities(db: Session, type: str | None, limit: int):
     forecasts = _latest_forecasts(db)
     item_ids = [f.item_id for f in forecasts if f.direction is not None]
     items_map = _load_items(item_ids, db)
     return select_opportunities(forecasts, items_map, type, limit)
 
 
-def opportunity_type_for(direction: Optional[str]) -> str:
+def opportunity_type_for(direction: str | None) -> str:
     """Direction alone decides the label.
 
     This previously required ``confidence == "high"`` for the directional
@@ -187,11 +185,7 @@ def get_undervalued(
             price_floor_clause(ItemForecast.current_price),
             ItemForecast.price_mid.isnot(None),
         )
-        .order_by(
-            desc(
-                (ItemForecast.price_mid - ItemForecast.current_price) / ItemForecast.current_price * 100
-            )
-        )
+        .order_by(desc((ItemForecast.price_mid - ItemForecast.current_price) / ItemForecast.current_price * 100))
         .limit(limit)
         .all()
     )
@@ -233,11 +227,7 @@ def get_overheated(
             price_floor_clause(ItemForecast.current_price),
             ItemForecast.price_mid.isnot(None),
         )
-        .order_by(
-            desc(
-                (ItemForecast.current_price - ItemForecast.price_mid) / ItemForecast.current_price * 100
-            )
-        )
+        .order_by(desc((ItemForecast.current_price - ItemForecast.price_mid) / ItemForecast.current_price * 100))
         .limit(limit)
         .all()
     )
@@ -276,9 +266,7 @@ def get_momentum(
             ItemForecast.price_mid.isnot(None),
         )
         .order_by(
-            desc(
-                func.abs((ItemForecast.price_mid - ItemForecast.current_price) / ItemForecast.current_price * 100)
-            )
+            desc(func.abs((ItemForecast.price_mid - ItemForecast.current_price) / ItemForecast.current_price * 100))
         )
         .limit(limit)
         .all()

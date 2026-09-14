@@ -31,6 +31,7 @@ Read-only: reads a voted price panel, writes nothing.
 
     venv/bin/python -m scripts.attribute_band_level --horizons 3,7,14,30
 """
+
 from __future__ import annotations
 
 import argparse
@@ -44,20 +45,21 @@ import pandas as pd
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from models import conformal  # noqa: E402
-from models.forecaster import ItemForecaster, embargo_days  # noqa: E402
-from scripts.measure_conditional_qhat import (  # noqa: E402
+from models import conformal
+from models.forecaster import ItemForecaster, embargo_days
+from scripts.measure_conditional_qhat import (
     default_voted_panel,
     load_panel,
     score_frame,
     sigma_bounds_for_panel,
 )
+
 # Both audits come from `replay_serving`, including the private profile query.
 # Re-spelling that SQL here would put a second definition of "how was this day
 # collected" in the repo -- which is the exact failure `cutovers_from_counts`
 # was written to end -- and would have to re-apply AGENTS.md invariants 1 and 2
 # by hand.
-from scripts.replay_serving import (  # noqa: E402
+from scripts.replay_serving import (
     ANCHOR_NEIGHBOURHOOD_DAYS,
     DEFAULT_AUDIT_HORIZONS,
     _feed_profile,
@@ -81,8 +83,8 @@ SERVED_ANCHOR_COVERAGE = {
     14: {"2026-04-22": 95.90, "2026-05-16": 82.38, "2026-06-16": 85.99, "2026-07-06": 80.08},
     30: {"2026-04-22": 93.76, "2026-05-16": 88.12, "2026-06-16": 84.92, "2026-07-06": 77.94},
 }
-VALIDITY_MAE_PP = 3.0     # leg (V) bar
-PLACEBO_MAX_PP = 1.0      # leg (P) bar
+VALIDITY_MAE_PP = 3.0  # leg (V) bar
+PLACEBO_MAX_PP = 1.0  # leg (P) bar
 
 # The four anchors that pass `replay_serving.audit_anchor_feed`, i.e. the ones run
 # `31657639707` served the 9.80 / 14.75 / 21.22 / 31.32% widths on.
@@ -93,16 +95,15 @@ SERVED_WIDTH_RATIO = {3: 1.529, 7: 1.548, 14: 1.553, 30: 1.520}
 # The arm's anchor set, fixed by the pre-registration: six, not four, because the
 # spread and dose-response bars are about variation ACROSS dates and four points
 # cannot carry them. All six pass `replay_serving.audit_anchor_feed`.
-ARM_ANCHORS = ["2026-02-14", "2026-03-10", "2026-04-06", "2026-04-22",
-               "2026-06-16", "2026-07-06"]
+ARM_ANCHORS = ["2026-02-14", "2026-03-10", "2026-04-06", "2026-04-22", "2026-06-16", "2026-07-06"]
 
 # ---- the low-level read, fixed by
 # `docs/research/2026-08-13-low-level-anchor-preregistration.md` BEFORE any
 # coverage was computed. Do not tune.
-LOW_LEVEL_QUANTILE = 0.25        # "low" = the bottom quartile of `L[t]`
-LOW_ANCHOR_SPACING_DAYS = 30     # >= the longest horizon, so no two outcome windows overlap
-LOW_ANCHOR_COUNT = 6             # the size of the high-vol set it is compared against
-MIN_ANCHOR_ROWS = 300            # a rate on fewer rows than this is not a rate
+LOW_LEVEL_QUANTILE = 0.25  # "low" = the bottom quartile of `L[t]`
+LOW_ANCHOR_SPACING_DAYS = 30  # >= the longest horizon, so no two outcome windows overlap
+LOW_ANCHOR_COUNT = 6  # the size of the high-vol set it is compared against
+MIN_ANCHOR_ROWS = 300  # a rate on fewer rows than this is not a rate
 # `sigma` is `price_std_60d / price`, so the panel's first 60 days hold a
 # trailing window that is not yet 60 days long. Measured on this panel before
 # any coverage was computed: 2024-07-09 has **100%** of its rows pinned at the
@@ -114,10 +115,9 @@ SIGMA_TRAILING_WINDOW_DAYS = 60
 # coverage was computed. Leg B is the six lowest-`L[t]` eligible dates; every one
 # is pre-2026, because the served regime holds only LEG_A_ANCHORS in the panel's
 # bottom quartile at all four horizons. Leg A carries no bar: n = 1.
-LOW_ANCHORS = ["2024-09-21", "2024-11-04", "2024-12-04",
-               "2025-01-03", "2025-04-01", "2025-07-12"]
+LOW_ANCHORS = ["2024-09-21", "2024-11-04", "2024-12-04", "2025-01-03", "2025-04-01", "2025-07-12"]
 LEG_A_ANCHORS = ["2026-02-19"]
-NOMINAL_COVERAGE_PP = 80.0       # the target every |cov - 80| below is measured against
+NOMINAL_COVERAGE_PP = 80.0  # the target every |cov - 80| below is measured against
 
 
 def _med_ratio(num: pd.Series, den: pd.Series) -> float:
@@ -148,14 +148,12 @@ def decompose(frame: pd.DataFrame, anchors) -> dict:
     own_sigma = frame.groupby("item_id")["sigma"].median()
     own_absr = frame.groupby("item_id")["absr"].median()
     out = {
-        "n_served": int(len(served)),
-        "n_pooled": int(len(frame)),
+        "n_served": len(served),
+        "n_pooled": len(frame),
         "pooled_sigma": _med_ratio(served["sigma"], frame["sigma"]),
         "pooled_absr": _med_ratio(served["absr"], frame["absr"]),
-        "same_sigma": float(np.nanmedian(
-            served["sigma"] / served["item_id"].map(own_sigma))),
-        "same_absr": float(np.nanmedian(
-            served["absr"] / served["item_id"].map(own_absr))),
+        "same_sigma": float(np.nanmedian(served["sigma"] / served["item_id"].map(own_sigma))),
+        "same_absr": float(np.nanmedian(served["absr"] / served["item_id"].map(own_absr))),
     }
     for basis in ("pooled", "same"):
         s = out[f"{basis}_sigma"]
@@ -166,6 +164,7 @@ def decompose(frame: pd.DataFrame, anchors) -> dict:
 # --------------------------------------------------------------------------- #
 # the date-level rescaling arm: sigma_tilde = sigma / L[t] ** gamma
 # --------------------------------------------------------------------------- #
+
 
 def date_levels(frame: pd.DataFrame) -> pd.Series:
     """`L[t]`: the cross-sectional median of `sigma` on each date.
@@ -178,8 +177,7 @@ def date_levels(frame: pd.DataFrame) -> pd.Series:
     return frame.groupby("date")["sigma"].median().sort_index()
 
 
-def scaled_sigma(frame: pd.DataFrame, levels: pd.Series | None,
-                 gamma: float) -> np.ndarray:
+def scaled_sigma(frame: pd.DataFrame, levels: pd.Series | None, gamma: float) -> np.ndarray:
     """`sigma / L[t] ** gamma`. `gamma = 0` returns `sigma` untouched."""
     sig = frame["sigma"].to_numpy(dtype=float)
     if not gamma:
@@ -187,11 +185,10 @@ def scaled_sigma(frame: pd.DataFrame, levels: pd.Series | None,
     if levels is None:
         levels = date_levels(frame)
     lv = frame["date"].map(levels).to_numpy(dtype=float)
-    return sig / lv ** gamma
+    return sig / lv**gamma
 
 
-def fit_level_elasticity(frame: pd.DataFrame, n_boot: int = N_BOOTSTRAP,
-                         seed: int = DATE_LEVEL_SEED) -> dict:
+def fit_level_elasticity(frame: pd.DataFrame, n_boot: int = N_BOOTSTRAP, seed: int = DATE_LEVEL_SEED) -> dict:
     """`b`, the elasticity of forward dispersion to the trailing level.
 
     OLS of `log median_i |resid[i,t]|` on `log L[t]` across dates, and
@@ -220,10 +217,10 @@ def fit_level_elasticity(frame: pd.DataFrame, n_boot: int = N_BOOTSTRAP,
         s = _ols_slope(x[take], y[take])
         if np.isfinite(s):
             draws.append(s)
-    lo, hi = (float(np.percentile(draws, 2.5)), float(np.percentile(draws, 97.5))) \
-        if draws else (float("nan"), float("nan"))
-    return {"b": b, "gamma": 1.0 - b, "ci_lo": lo, "ci_hi": hi,
-            "n_dates": int(x.size)}
+    lo, hi = (
+        (float(np.percentile(draws, 2.5)), float(np.percentile(draws, 97.5))) if draws else (float("nan"), float("nan"))
+    )
+    return {"b": b, "gamma": 1.0 - b, "ci_lo": lo, "ci_hi": hi, "n_dates": int(x.size)}
 
 
 def _ols_slope(x: np.ndarray, y: np.ndarray) -> float:
@@ -234,9 +231,9 @@ def _ols_slope(x: np.ndarray, y: np.ndarray) -> float:
     return float(np.dot(xc, y - y.mean()) / denom)
 
 
-def anchor_coverage(frame: pd.DataFrame, anchors, horizon: int,
-                    gamma: float = 0.0,
-                    levels: pd.Series | None = None) -> dict:
+def anchor_coverage(
+    frame: pd.DataFrame, anchors, horizon: int, gamma: float = 0.0, levels: pd.Series | None = None
+) -> dict:
     """Per-anchor coverage of the pooled-`p80` band, on `sigma / L ** gamma`.
 
     `q_hat` comes from `conformal.calibrate` over every row anchored at or before
@@ -248,13 +245,12 @@ def anchor_coverage(frame: pd.DataFrame, anchors, horizon: int,
     `q_hat` absorbs `L ** gamma` and is therefore NOT comparable across gamma; only
     the coverage it produces is.
     """
-    return {a: float(np.mean(c))
-            for a, c in _covered(frame, anchors, horizon, gamma, levels).items()}
+    return {a: float(np.mean(c)) for a, c in _covered(frame, anchors, horizon, gamma, levels).items()}
 
 
-def pooled_anchor_coverage(frame: pd.DataFrame, anchors, horizon: int,
-                           gamma: float = 0.0,
-                           levels: pd.Series | None = None) -> float:
+def pooled_anchor_coverage(
+    frame: pd.DataFrame, anchors, horizon: int, gamma: float = 0.0, levels: pd.Series | None = None
+) -> float:
     """Marginal coverage over the anchor set, ROW-weighted.
 
     The quantity the placebo differences. Row-weighted, not a mean of the
@@ -267,8 +263,7 @@ def pooled_anchor_coverage(frame: pd.DataFrame, anchors, horizon: int,
     return float(np.mean(np.concatenate(list(cov.values()))))
 
 
-def _covered(frame: pd.DataFrame, anchors, horizon: int, gamma: float,
-             levels: pd.Series | None) -> dict:
+def _covered(frame: pd.DataFrame, anchors, horizon: int, gamma: float, levels: pd.Series | None) -> dict:
     """{anchor: boolean array over that anchor's rows}. One `q_hat` per anchor."""
     lv = levels if levels is not None else (date_levels(frame) if gamma else None)
     scale = scaled_sigma(frame, lv, gamma)
@@ -286,8 +281,7 @@ def _covered(frame: pd.DataFrame, anchors, horizon: int, gamma: float,
     return out
 
 
-def audit_eligibility(dates, horizons=DEFAULT_AUDIT_HORIZONS,
-                      archive_dir=None) -> dict:
+def audit_eligibility(dates, horizons=DEFAULT_AUDIT_HORIZONS, archive_dir=None) -> dict:
     """`{date: {horizons that pass BOTH audits}}`, over one archive read.
 
     The feed audit asks how the anchor day itself was collected; the cutover
@@ -307,8 +301,7 @@ def audit_eligibility(dates, horizons=DEFAULT_AUDIT_HORIZONS,
     lo = ds[0] - datetime.timedelta(days=ANCHOR_NEIGHBOURHOOD_DAYS)
     hi = ds[-1] + datetime.timedelta(days=span + ANCHOR_NEIGHBOURHOOD_DAYS)
     mid = lo + (hi - lo) / 2
-    profile = _feed_profile(mid, archive_dir,
-                            window=(hi - lo).days // 2 + 1)
+    profile = _feed_profile(mid, archive_dir, window=(hi - lo).days // 2 + 1)
     if profile.empty:
         return {d: set() for d in ds}
     profile = profile.assign(day=pd.to_datetime(profile["day"]).dt.date)
@@ -319,7 +312,8 @@ def audit_eligibility(dates, horizons=DEFAULT_AUDIT_HORIZONS,
     for d in ds:
         near = profile[
             (profile["day"] >= d - datetime.timedelta(days=ANCHOR_NEIGHBOURHOOD_DAYS))
-            & (profile["day"] <= d + datetime.timedelta(days=ANCHOR_NEIGHBOURHOOD_DAYS))]
+            & (profile["day"] <= d + datetime.timedelta(days=ANCHOR_NEIGHBOURHOOD_DAYS))
+        ]
         ok, _ = audit_anchor_feed(d, near)
         if not ok:
             out[d] = set()
@@ -329,13 +323,19 @@ def audit_eligibility(dates, horizons=DEFAULT_AUDIT_HORIZONS,
     return out
 
 
-def select_low_level_anchors(levels: pd.Series, eligible: dict, rows: pd.Series,
-                             *, n: int = LOW_ANCHOR_COUNT,
-                             spacing_days: int = LOW_ANCHOR_SPACING_DAYS,
-                             quantile: float = LOW_LEVEL_QUANTILE,
-                             horizons=DEFAULT_AUDIT_HORIZONS,
-                             min_rows: int = MIN_ANCHOR_ROWS,
-                             candidates=None, not_before=None) -> list:
+def select_low_level_anchors(
+    levels: pd.Series,
+    eligible: dict,
+    rows: pd.Series,
+    *,
+    n: int = LOW_ANCHOR_COUNT,
+    spacing_days: int = LOW_ANCHOR_SPACING_DAYS,
+    quantile: float = LOW_LEVEL_QUANTILE,
+    horizons=DEFAULT_AUDIT_HORIZONS,
+    min_rows: int = MIN_ANCHOR_ROWS,
+    candidates=None,
+    not_before=None,
+) -> list:
     """The lowest-`L[t]` dates the panel can referee, greedily spaced.
 
     **Selection sees `L[t]`, eligibility and row counts. It never sees coverage** —
@@ -384,8 +384,7 @@ def select_low_level_anchors(levels: pd.Series, eligible: dict, rows: pd.Series,
     return taken
 
 
-def shuffled_levels(levels: pd.Series, seed: int = DATE_LEVEL_SEED,
-                    n_perm: int = N_PERMUTATIONS):
+def shuffled_levels(levels: pd.Series, seed: int = DATE_LEVEL_SEED, n_perm: int = N_PERMUTATIONS):
     """`L[t]` with the date correspondence destroyed, `n_perm` times.
 
     The same marginal distribution of levels and the same rescaling arithmetic,
@@ -410,17 +409,21 @@ def run_legs(frame: pd.DataFrame, horizon: int, arm_anchors) -> None:
     """
     fit = fit_level_elasticity(frame)
     gamma = fit["gamma"]
-    logger.info("\n  (0) LEVEL ELASTICITY  b = %.3f  [%.3f, %.3f]  ->  gamma = %.3f"
-                "   (%s dates)", fit["b"], fit["ci_lo"], fit["ci_hi"], gamma,
-                f"{fit['n_dates']:,}")
+    logger.info(
+        "\n  (0) LEVEL ELASTICITY  b = %.3f  [%.3f, %.3f]  ->  gamma = %.3f   (%s dates)",
+        fit["b"],
+        fit["ci_lo"],
+        fit["ci_hi"],
+        gamma,
+        f"{fit['n_dates']:,}",
+    )
     void = []
     if not 0.0 <= fit["b"] <= 1.0:
         void.append(f"b = {fit['b']:.3f} outside [0, 1]")
     if fit["ci_lo"] <= 0.0 and fit["ci_hi"] >= 1.0:
         void.append("CI contains both 0 and 1")
     if void:
-        logger.info("      ⚠️  VOID: %s — no defensible gamma, nothing dispatched.",
-                    "; ".join(void))
+        logger.info("      ⚠️  VOID: %s — no defensible gamma, nothing dispatched.", "; ".join(void))
         return
 
     # (V) The panel is a stand-in. If it cannot reproduce the control it cannot
@@ -437,13 +440,17 @@ def run_legs(frame: pd.DataFrame, horizon: int, arm_anchors) -> None:
             continue
         panel_pp, served_pp = got[a] * 100.0, want[key]
         errs.append(abs(panel_pp - served_pp))
-        logger.info("      %s  panel %6.2f%%   served %6.2f%%   |err| %5.2fpp",
-                    key, panel_pp, served_pp, errs[-1])
+        logger.info("      %s  panel %6.2f%%   served %6.2f%%   |err| %5.2fpp", key, panel_pp, served_pp, errs[-1])
     mae = float(np.mean(errs)) if errs else float("nan")
     ok_v = np.isfinite(mae) and mae <= VALIDITY_MAE_PP
-    logger.info("      MAE %.2fpp over %d of %d anchors — %s (bar %.1fpp)",
-                mae, len(errs), len(audited), "PASS" if ok_v else "FAIL",
-                VALIDITY_MAE_PP)
+    logger.info(
+        "      MAE %.2fpp over %d of %d anchors — %s (bar %.1fpp)",
+        mae,
+        len(errs),
+        len(audited),
+        "PASS" if ok_v else "FAIL",
+        VALIDITY_MAE_PP,
+    )
 
     # (P) The leg that decides whether this is the refuted date-level class.
     present = [a for a in arm_anchors if a in set(frame["date"])]
@@ -451,23 +458,34 @@ def run_legs(frame: pd.DataFrame, horizon: int, arm_anchors) -> None:
     arm = pooled_anchor_coverage(frame, present, horizon, gamma=gamma)
     real_delta = (arm - control) * 100.0
     levels = date_levels(frame)
-    null = np.array([
-        pooled_anchor_coverage(frame, present, horizon, gamma, perm) - control
-        for perm in shuffled_levels(levels)]) * 100.0
-    logger.info("  (P) PLACEBO on %d anchors  control %.2f%%  arm %.2f%%  "
-                "real delta %+.2fpp", len(present), control * 100.0,
-                arm * 100.0, real_delta)
-    logger.info("      shuffled delta: mean %+.2fpp  |mean| %.2fpp  "
-                "p50 %+.2fpp  p95 %+.2fpp  max|.| %.2fpp",
-                float(np.mean(null)), abs(float(np.mean(null))),
-                float(np.percentile(null, 50)), float(np.percentile(null, 95)),
-                float(np.max(np.abs(null))))
+    null = (
+        np.array(
+            [pooled_anchor_coverage(frame, present, horizon, gamma, perm) - control for perm in shuffled_levels(levels)]
+        )
+        * 100.0
+    )
+    logger.info(
+        "  (P) PLACEBO on %d anchors  control %.2f%%  arm %.2f%%  real delta %+.2fpp",
+        len(present),
+        control * 100.0,
+        arm * 100.0,
+        real_delta,
+    )
+    logger.info(
+        "      shuffled delta: mean %+.2fpp  |mean| %.2fpp  p50 %+.2fpp  p95 %+.2fpp  max|.| %.2fpp",
+        float(np.mean(null)),
+        abs(float(np.mean(null))),
+        float(np.percentile(null, 50)),
+        float(np.percentile(null, 95)),
+        float(np.max(np.abs(null))),
+    )
     ok_p = abs(float(np.mean(null))) <= PLACEBO_MAX_PP
-    logger.info("      placebo %s (bar |mean delta| <= %.1fpp); real effect is "
-                "%.1fx the shuffled mean", "PASS" if ok_p else "FAIL",
-                PLACEBO_MAX_PP,
-                abs(real_delta) / abs(float(np.mean(null)))
-                if np.mean(null) else float("inf"))
+    logger.info(
+        "      placebo %s (bar |mean delta| <= %.1fpp); real effect is %.1fx the shuffled mean",
+        "PASS" if ok_p else "FAIL",
+        PLACEBO_MAX_PP,
+        abs(real_delta) / abs(float(np.mean(null))) if np.mean(null) else float("inf"),
+    )
 
     # The spread, which is the claim (S). Offline preview only: the bar is on the
     # served band, and these anchors are the panel's own cohort.
@@ -476,12 +494,14 @@ def run_legs(frame: pd.DataFrame, horizon: int, arm_anchors) -> None:
     if len(per_c) >= 2:
         sc = (max(per_c.values()) - min(per_c.values())) * 100.0
         sa = (max(per_a.values()) - min(per_a.values())) * 100.0
-        logger.info("  (S) across-anchor SPREAD  control %.2fpp  arm %.2fpp  "
-                    "(%+.0f%%, offline stand-in)", sc, sa,
-                    (sa - sc) / sc * 100.0 if sc else float("nan"))
+        logger.info(
+            "  (S) across-anchor SPREAD  control %.2fpp  arm %.2fpp  (%+.0f%%, offline stand-in)",
+            sc,
+            sa,
+            (sa - sc) / sc * 100.0 if sc else float("nan"),
+        )
         for a in sorted(per_c):
-            logger.info("      %s  control %6.2f%%  arm %6.2f%%",
-                        a.isoformat(), per_c[a] * 100.0, per_a[a] * 100.0)
+            logger.info("      %s  control %6.2f%%  arm %6.2f%%", a.isoformat(), per_c[a] * 100.0, per_a[a] * 100.0)
 
 
 def mean_abs_miss(per_anchor: dict) -> float:
@@ -494,12 +514,10 @@ def mean_abs_miss(per_anchor: dict) -> float:
     """
     if not per_anchor:
         return float("nan")
-    return float(np.mean([abs(v * 100.0 - NOMINAL_COVERAGE_PP)
-                          for v in per_anchor.values()]))
+    return float(np.mean([abs(v * 100.0 - NOMINAL_COVERAGE_PP) for v in per_anchor.values()]))
 
 
-def overshoot_breaches(control: dict, arm: dict, near_pp: float = 5.0,
-                       far_pp: float = 10.0) -> list:
+def overshoot_breaches(control: dict, arm: dict, near_pp: float = 5.0, far_pp: float = 10.0) -> list:
     """Anchors the arm threw out of calibration. Bar (L3).
 
     A date the control already covers within `near_pp` of target that the arm
@@ -513,14 +531,12 @@ def overshoot_breaches(control: dict, arm: dict, near_pp: float = 5.0,
         if a not in arm:
             continue
         c_pp, a_pp = c * 100.0, arm[a] * 100.0
-        if (abs(c_pp - NOMINAL_COVERAGE_PP) <= near_pp
-                and abs(a_pp - NOMINAL_COVERAGE_PP) > far_pp):
+        if abs(c_pp - NOMINAL_COVERAGE_PP) <= near_pp and abs(a_pp - NOMINAL_COVERAGE_PP) > far_pp:
             out.append((a, c_pp, a_pp))
     return out
 
 
-def run_low_legs(frame: pd.DataFrame, horizon: int, low_anchors,
-                 high_anchors, leg_a_anchors) -> None:
+def run_low_legs(frame: pd.DataFrame, horizon: int, low_anchors, high_anchors, leg_a_anchors) -> None:
     """The low-`L[t]` read, bars fixed by
     `docs/research/2026-08-13-low-level-anchor-preregistration.md`.
 
@@ -531,11 +547,16 @@ def run_low_legs(frame: pd.DataFrame, horizon: int, low_anchors,
     fit = fit_level_elasticity(frame)
     gamma = fit["gamma"]
     levels = date_levels(frame)
-    logger.info("\nh=%-2s  gamma = %.3f  (b = %.3f [%.3f, %.3f], %s dates)%s",
-                horizon, gamma, fit["b"], fit["ci_lo"], fit["ci_hi"],
-                f"{fit['n_dates']:,}",
-                "   ⚠️ VOIDED as a measurement (leg V, 4.53pp)"
-                if horizon == 14 else "")
+    logger.info(
+        "\nh=%-2s  gamma = %.3f  (b = %.3f [%.3f, %.3f], %s dates)%s",
+        horizon,
+        gamma,
+        fit["b"],
+        fit["ci_lo"],
+        fit["ci_hi"],
+        f"{fit['n_dates']:,}",
+        "   ⚠️ VOIDED as a measurement (leg V, 4.53pp)" if horizon == 14 else "",
+    )
     if not 0.0 <= fit["b"] <= 1.0 or (fit["ci_lo"] <= 0.0 <= 1.0 <= fit["ci_hi"]):
         logger.info("      ⚠️  VOID: b = %.3f has no defensible gamma.", fit["b"])
         return
@@ -547,49 +568,72 @@ def run_low_legs(frame: pd.DataFrame, horizon: int, low_anchors,
         logger.info("      no leg-B anchor has rows at this horizon")
         return
     for a in sorted(con):
-        logger.info("      %s  L %.4f (%.3fx)  control %6.2f%%  arm %6.2f%%  "
-                    "%+6.2fpp", a, levels.get(a, float("nan")),
-                    levels.get(a, float("nan")) / float(levels.median()),
-                    con[a] * 100.0, arm[a] * 100.0,
-                    (arm[a] - con[a]) * 100.0)
+        logger.info(
+            "      %s  L %.4f (%.3fx)  control %6.2f%%  arm %6.2f%%  %+6.2fpp",
+            a,
+            levels.get(a, float("nan")),
+            levels.get(a, float("nan")) / float(levels.median()),
+            con[a] * 100.0,
+            arm[a] * 100.0,
+            (arm[a] - con[a]) * 100.0,
+        )
 
     pooled_c = pooled_anchor_coverage(frame, present, horizon)
     pooled_a = pooled_anchor_coverage(frame, present, horizon, gamma, levels)
-    logger.info("  (L1) DIRECTION   pooled control %6.2f%%  arm %6.2f%%  "
-                "%+.2fpp  — %s", pooled_c * 100.0, pooled_a * 100.0,
-                (pooled_a - pooled_c) * 100.0,
-                "UP" if pooled_a > pooled_c else "DOWN")
+    logger.info(
+        "  (L1) DIRECTION   pooled control %6.2f%%  arm %6.2f%%  %+.2fpp  — %s",
+        pooled_c * 100.0,
+        pooled_a * 100.0,
+        (pooled_a - pooled_c) * 100.0,
+        "UP" if pooled_a > pooled_c else "DOWN",
+    )
     mc, ma = mean_abs_miss(con), mean_abs_miss(arm)
-    logger.info("  (L2) CALIBRATION mean |cov-80| control %.2fpp  arm %.2fpp  "
-                "(%+.2fpp)", mc, ma, ma - mc)
+    logger.info("  (L2) CALIBRATION mean |cov-80| control %.2fpp  arm %.2fpp  (%+.2fpp)", mc, ma, ma - mc)
     breach = overshoot_breaches(con, arm)
-    logger.info("  (L3) OVERSHOOT   %s", "none" if not breach else "; ".join(
-        f"{a} {c:.2f}% -> {v:.2f}%" for a, c, v in breach))
+    logger.info(
+        "  (L3) OVERSHOOT   %s", "none" if not breach else "; ".join(f"{a} {c:.2f}% -> {v:.2f}%" for a, c, v in breach)
+    )
 
-    null = np.array([
-        pooled_anchor_coverage(frame, present, horizon, gamma, perm) - pooled_c
-        for perm in shuffled_levels(levels)]) * 100.0
-    logger.info("  (P)  PLACEBO     shuffled mean %+.2fpp  p95 %+.2fpp  "
-                "max|.| %.2fpp  — %s (bar %.1fpp)", float(np.mean(null)),
-                float(np.percentile(null, 95)), float(np.max(np.abs(null))),
-                "PASS" if abs(float(np.mean(null))) <= PLACEBO_MAX_PP else "FAIL",
-                PLACEBO_MAX_PP)
+    null = (
+        np.array(
+            [
+                pooled_anchor_coverage(frame, present, horizon, gamma, perm) - pooled_c
+                for perm in shuffled_levels(levels)
+            ]
+        )
+        * 100.0
+    )
+    logger.info(
+        "  (P)  PLACEBO     shuffled mean %+.2fpp  p95 %+.2fpp  max|.| %.2fpp  — %s (bar %.1fpp)",
+        float(np.mean(null)),
+        float(np.percentile(null, 95)),
+        float(np.max(np.abs(null))),
+        "PASS" if abs(float(np.mean(null))) <= PLACEBO_MAX_PP else "FAIL",
+        PLACEBO_MAX_PP,
+    )
 
-    joint = sorted(set(present) | {a for a in high_anchors
-                                   if a in set(frame["date"])})
+    joint = sorted(set(present) | {a for a in high_anchors if a in set(frame["date"])})
     jc = anchor_coverage(frame, joint, horizon)
     ja = anchor_coverage(frame, joint, horizon, gamma=gamma, levels=levels)
-    logger.info("  (J)  JOINT       %d anchors  mean |cov-80| control %.2fpp  "
-                "arm %.2fpp  (%+.2fpp)", len(jc), mean_abs_miss(jc),
-                mean_abs_miss(ja), mean_abs_miss(ja) - mean_abs_miss(jc))
+    logger.info(
+        "  (J)  JOINT       %d anchors  mean |cov-80| control %.2fpp  arm %.2fpp  (%+.2fpp)",
+        len(jc),
+        mean_abs_miss(jc),
+        mean_abs_miss(ja),
+        mean_abs_miss(ja) - mean_abs_miss(jc),
+    )
 
     a_present = [a for a in leg_a_anchors if a in set(frame["date"])]
     ac = anchor_coverage(frame, a_present, horizon)
     aa = anchor_coverage(frame, a_present, horizon, gamma=gamma, levels=levels)
     for a in sorted(ac):
-        logger.info("  (A)  IN-REGIME   %s  control %6.2f%%  arm %6.2f%%  "
-                    "%+6.2fpp  — NO BAR, n=1 by construction",
-                    a, ac[a] * 100.0, aa[a] * 100.0, (aa[a] - ac[a]) * 100.0)
+        logger.info(
+            "  (A)  IN-REGIME   %s  control %6.2f%%  arm %6.2f%%  %+6.2fpp  — NO BAR, n=1 by construction",
+            a,
+            ac[a] * 100.0,
+            aa[a] * 100.0,
+            (aa[a] - ac[a]) * 100.0,
+        )
 
 
 def main() -> int:
@@ -599,25 +643,23 @@ def main() -> int:
     ap.add_argument("--horizons", default="3,7,14,30")
     ap.add_argument("--anchors", default=",".join(AUDITED_ANCHORS))
     ap.add_argument("--arm-anchors", default=",".join(ARM_ANCHORS))
-    ap.add_argument("--legs", action="store_true",
-                    help="run the date-level rescaling legs (0)/(V)/(P)/(S)")
-    ap.add_argument("--low-legs", action="store_true",
-                    help="run the low-`L[t]` read (L1)/(L2)/(L3)/(P)/(J)/(A)")
+    ap.add_argument("--legs", action="store_true", help="run the date-level rescaling legs (0)/(V)/(P)/(S)")
+    ap.add_argument("--low-legs", action="store_true", help="run the low-`L[t]` read (L1)/(L2)/(L3)/(P)/(J)/(A)")
     ap.add_argument("--low-anchors", default=",".join(LOW_ANCHORS))
     ap.add_argument("--leg-a-anchors", default=",".join(LEG_A_ANCHORS))
-    ap.add_argument("--select-low", action="store_true",
-                    help="print the low-`L[t]` anchor sets and exit, seeing no "
-                         "coverage — this is how the set is fixed before the read")
+    ap.add_argument(
+        "--select-low",
+        action="store_true",
+        help="print the low-`L[t]` anchor sets and exit, seeing no "
+        "coverage — this is how the set is fixed before the read",
+    )
     args = ap.parse_args()
 
     horizons = [int(h) for h in args.horizons.split(",") if h.strip()]
     anchors = [pd.Timestamp(a).date() for a in args.anchors.split(",") if a.strip()]
-    arm_anchors = [pd.Timestamp(a).date()
-                   for a in args.arm_anchors.split(",") if a.strip()]
-    low_anchors = [pd.Timestamp(a).date()
-                   for a in args.low_anchors.split(",") if a.strip()]
-    leg_a_anchors = [pd.Timestamp(a).date()
-                     for a in args.leg_a_anchors.split(",") if a.strip()]
+    arm_anchors = [pd.Timestamp(a).date() for a in args.arm_anchors.split(",") if a.strip()]
+    low_anchors = [pd.Timestamp(a).date() for a in args.low_anchors.split(",") if a.strip()]
+    leg_a_anchors = [pd.Timestamp(a).date() for a in args.leg_a_anchors.split(",") if a.strip()]
 
     panel = load_panel(args.voted or default_voted_panel())
     floor, cap = sigma_bounds_for_panel(panel)
@@ -636,8 +678,7 @@ def main() -> int:
     trend["ym"] = pd.to_datetime(trend["date"]).dt.to_period("Q").astype(str)
     logger.info("\nmedian sigma by quarter (panel, >=$1):")
     for ym, g in trend.groupby("ym"):
-        logger.info("  %s  n=%7s  median sigma %.4f", ym, f"{len(g):,}",
-                    float(np.nanmedian(g["sigma_raw"])))
+        logger.info("  %s  n=%7s  median sigma %.4f", ym, f"{len(g):,}", float(np.nanmedian(g["sigma_raw"])))
 
     if args.select_low:
         # Scored on the SHORTEST horizon's frame, because a date must survive
@@ -648,23 +689,35 @@ def main() -> int:
         frame["date"] = pd.to_datetime(frame["date"]).dt.date
         lv, rows = date_levels(frame), frame.groupby("date").size()
         elig = audit_eligibility(list(lv.index), tuple(horizons))
-        for label, keep in (("B (full panel)", list(lv.index)),
-                            ("A (2026 only)",
-                             [d for d in lv.index if d.year == 2026])):
+        for label, keep in (
+            ("B (full panel)", list(lv.index)),
+            ("A (2026 only)", [d for d in lv.index if d.year == 2026]),
+        ):
             got = select_low_level_anchors(
-                lv, elig, rows, candidates=keep, horizons=tuple(horizons),
-                not_before=min(lv.index) + datetime.timedelta(
-                    days=SIGMA_TRAILING_WINDOW_DAYS))
-            logger.info("\nleg %s: %d of %d candidate dates eligible at all of "
-                        "%s; panel p%d of L = %.4f",
-                        label, sum(1 for d in keep
-                                   if set(horizons) <= set(elig.get(d, ()))),
-                        len(keep), horizons, int(LOW_LEVEL_QUANTILE * 100),
-                        float(lv.quantile(LOW_LEVEL_QUANTILE)))
+                lv,
+                elig,
+                rows,
+                candidates=keep,
+                horizons=tuple(horizons),
+                not_before=min(lv.index) + datetime.timedelta(days=SIGMA_TRAILING_WINDOW_DAYS),
+            )
+            logger.info(
+                "\nleg %s: %d of %d candidate dates eligible at all of %s; panel p%d of L = %.4f",
+                label,
+                sum(1 for d in keep if set(horizons) <= set(elig.get(d, ()))),
+                len(keep),
+                horizons,
+                int(LOW_LEVEL_QUANTILE * 100),
+                float(lv.quantile(LOW_LEVEL_QUANTILE)),
+            )
             for d in got:
-                logger.info("    %s  L = %.4f  (%.3fx the panel median)  n = %s",
-                            d, lv[d], lv[d] / float(lv.median()),
-                            f"{int(rows[d]):,}")
+                logger.info(
+                    "    %s  L = %.4f  (%.3fx the panel median)  n = %s",
+                    d,
+                    lv[d],
+                    lv[d] / float(lv.median()),
+                    f"{int(rows[d]):,}",
+                )
             logger.info("    --arm-anchors %s", ",".join(str(d) for d in got))
         return 0
 
@@ -680,20 +733,28 @@ def main() -> int:
         d = decompose(frame, anchors)
         logger.info(
             "\nh=%-2s  served n=%s of %s pooled | measured served/cal WIDTH ratio %.3f",
-            h, f"{d['n_served']:,}", f"{d['n_pooled']:,}",
-            SERVED_WIDTH_RATIO.get(h, float("nan")))
-        logger.info("  pooled basis (which items AND when):  sigma %.3fx   "
-                    "|resid| %.3fx   score |resid|/sigma %.3fx",
-                    d["pooled_sigma"], d["pooled_absr"], d["score_pooled"])
-        logger.info("  same items (when only):               sigma %.3fx   "
-                    "|resid| %.3fx   score |resid|/sigma %.3fx",
-                    d["same_sigma"], d["same_absr"], d["score_same"])
+            h,
+            f"{d['n_served']:,}",
+            f"{d['n_pooled']:,}",
+            SERVED_WIDTH_RATIO.get(h, float("nan")),
+        )
+        logger.info(
+            "  pooled basis (which items AND when):  sigma %.3fx   |resid| %.3fx   score |resid|/sigma %.3fx",
+            d["pooled_sigma"],
+            d["pooled_absr"],
+            d["score_pooled"],
+        )
+        logger.info(
+            "  same items (when only):               sigma %.3fx   |resid| %.3fx   score |resid|/sigma %.3fx",
+            d["same_sigma"],
+            d["same_absr"],
+            d["score_same"],
+        )
         for a in anchors:
             sa = served[served["date"] == a]
             if sa.empty:
                 continue
-            logger.info("    %s  n=%5s  sigma %.3fx pooled", a, f"{len(sa):,}",
-                        _med_ratio(sa["sigma"], frame["sigma"]))
+            logger.info("    %s  n=%5s  sigma %.3fx pooled", a, f"{len(sa):,}", _med_ratio(sa["sigma"], frame["sigma"]))
         if args.legs:
             run_legs(frame, h, arm_anchors)
         if args.low_legs:

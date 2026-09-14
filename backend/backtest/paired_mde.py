@@ -41,6 +41,7 @@ fall back to dates when the key is missing: silent fallback would restore
 exactly the bug above on any caller that forgot to thread the fold through.
 Pass `cluster_key="forecast_date"` deliberately if you want the old behaviour.
 """
+
 from __future__ import annotations
 
 from collections import defaultdict
@@ -93,8 +94,7 @@ def paired_metric_difference(
     design can resolve. None when fewer than 2 clusters are shared, because a
     single cluster carries no between-cluster variance to resample.
     """
-    index_a = {(r["item_id"], r["forecast_date"]): r[value_key]
-               for r in records_a}
+    index_a = {(r["item_id"], r["forecast_date"]): r[value_key] for r in records_a}
     by_cluster: dict = defaultdict(list)
     dates_seen: set = set()
     n_paired = 0
@@ -114,8 +114,7 @@ def paired_metric_difference(
         # float() on both sides: `direction_correct` reaches here as a Python
         # bool from one harness and a np.bool_ from another, and np.bool_ has
         # no `-`.
-        by_cluster[r[cluster_key]].append(
-            float(r[value_key]) - float(index_a[key]))
+        by_cluster[r[cluster_key]].append(float(r[value_key]) - float(index_a[key]))
         dates_seen.add(r["forecast_date"])
         n_paired += 1
 
@@ -181,9 +180,12 @@ def paired_da_difference(
     harnesses could stop verdicting on fold win-counts.
     """
     out = paired_metric_difference(
-        records_a, records_b,
+        records_a,
+        records_b,
         value_key="direction_correct",
-        n_resamples=n_resamples, ci=ci, cluster_key=cluster_key,
+        n_resamples=n_resamples,
+        ci=ci,
+        cluster_key=cluster_key,
         scale=100.0,
     )
     return {
@@ -225,8 +227,8 @@ def paired_arm_contrasts(
             continue
         try:
             paired = paired_metric_difference(
-                arm_records[base], records,
-                value_key=value_key, scale=scale, cluster_key=cluster_key)
+                arm_records[base], records, value_key=value_key, scale=scale, cluster_key=cluster_key
+            )
         except NoPairedRows as exc:
             # Only this one is reportable. A missing `cluster_key` is a wiring
             # bug in the caller and propagates.
@@ -252,18 +254,16 @@ def format_paired(paired: dict, unit: str = "pp") -> str:
         # A caller that could not get far enough to estimate anything. Print
         # the verdict and whatever counts it does have; a `+nan` alongside a
         # confident-looking interval reads worse than saying nothing.
-        return (f"{paired.get('verdict', '?'):<8} "
-                f"(no estimate — "
-                f"{paired.get('n_clusters', 0)} shared cluster(s))")
+        return f"{paired.get('verdict', '?'):<8} (no estimate — {paired.get('n_clusters', 0)} shared cluster(s))"
     lo, hi = paired.get("ci_lower"), paired.get("ci_upper")
-    interval = ("interval unresolved"
-                if lo is None or not np.isfinite(lo)
-                else f"[{lo:+.3f}, {hi:+.3f}]{unit}")
-    return (f"{paired.get('verdict', '?'):<8} "
-            f"{mean:+.3f}{unit} "
-            f"{interval} "
-            f"n={paired.get('n_paired', 0):,} "
-            f"folds={paired.get('n_clusters', 0)}")
+    interval = "interval unresolved" if lo is None or not np.isfinite(lo) else f"[{lo:+.3f}, {hi:+.3f}]{unit}"
+    return (
+        f"{paired.get('verdict', '?'):<8} "
+        f"{mean:+.3f}{unit} "
+        f"{interval} "
+        f"n={paired.get('n_paired', 0):,} "
+        f"folds={paired.get('n_clusters', 0)}"
+    )
 
 
 def verdict(paired: dict, higher_is_better: bool = True) -> str:
@@ -282,8 +282,7 @@ def verdict(paired: dict, higher_is_better: bool = True) -> str:
     # `< 0` and would fall through to `null`, printing "no effect" for a
     # comparison that produced no number at all. One NaN row is enough — it
     # propagates through `np.percentile` to both bounds.
-    if (lower is None or upper is None
-            or not np.isfinite(lower) or not np.isfinite(upper)):
+    if lower is None or upper is None or not np.isfinite(lower) or not np.isfinite(upper):
         return "unresolved"
     if lower > 0:
         return "positive" if higher_is_better else "negative"

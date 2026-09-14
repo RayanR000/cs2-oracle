@@ -7,6 +7,7 @@ burned by exactly this shape before -- every band arm so far has been
 CV-positive and serving-negative -- so the split boundaries are pinned here
 rather than eyeballed.
 """
+
 from __future__ import annotations
 
 import sys
@@ -18,7 +19,7 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts"))
 
-from magnitude_vs_climatology import _folds  # noqa: E402
+from magnitude_vs_climatology import _folds
 
 
 def _dates(n: int) -> np.ndarray:

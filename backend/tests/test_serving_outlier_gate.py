@@ -14,11 +14,11 @@ the arm attacks it at source in the serving basis instead of in the label.
 Arm A of `docs/superpowers/plans/2026-08-11-serving-anchor-freshness.md`: make
 the substitution conditional on the outlier test the comment already claims.
 """
+
 from __future__ import annotations
 
 import pandas as pd
 import pytest
-
 from models.forecaster import ItemForecaster
 
 
@@ -102,7 +102,7 @@ class TestTheBoundary:
         arm's raw cohort and the other's smoothed one for a reason that is not
         the arm."""
         monkeypatch.setenv("SERVE_OUTLIER_GATED_ANCHOR", "1")
-        price, smoothed = _pair([11.0], [10.0])       # exactly +10%
+        price, smoothed = _pair([11.0], [10.0])  # exactly +10%
         base, deviates = ItemForecaster._serving_base_price(price, smoothed)
         assert not deviates.iloc[0]
         assert base.iloc[0] == pytest.approx(11.0)
@@ -115,7 +115,7 @@ class TestTheBoundary:
         assert base.iloc[0] == pytest.approx(10.0)
 
     def test_the_tolerance_is_the_ten_percent_the_log_message_claims(self):
-        assert ItemForecaster.ANCHOR_OUTLIER_TOLERANCE == pytest.approx(0.10)
+        assert pytest.approx(0.10) == ItemForecaster.ANCHOR_OUTLIER_TOLERANCE
 
 
 class TestDegradeNeverDrop:
@@ -163,6 +163,7 @@ class TestItIsWiredIntoServing:
         extraction that predict() does not call would leave the flag inert and
         the two dispatches identical, which reads as a null result."""
         import inspect
+
         src = inspect.getsource(ItemForecaster.predict)
         assert "_serving_base_price(" in src
 
@@ -171,5 +172,6 @@ class TestItIsWiredIntoServing:
         the same one either way. The log line is the only record of which price
         a stored replay number was scored against."""
         import inspect
+
         src = inspect.getsource(ItemForecaster.predict)
         assert "SERVE_OUTLIER_GATED_ANCHOR" in src

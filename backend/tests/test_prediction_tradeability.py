@@ -4,6 +4,7 @@ Every item is served a forecast regardless of price; the sub-$1 tier is flagged
 not economically tradeable rather than withheld. Deriving the fields on the
 schema keeps every route that builds a PredictionOut correct by construction.
 """
+
 from __future__ import annotations
 
 from api.schemas import PredictionOut

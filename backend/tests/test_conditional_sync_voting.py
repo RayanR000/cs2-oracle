@@ -28,12 +28,12 @@ cohort (52,048 item-days)", where sync is the only source there is. So sync
 stays as the sole-source fallback and only stands down once >=2 genuine asks
 are present -- exactly the item-days where the measurement above says it hurts.
 """
+
 from __future__ import annotations
 
 from unittest.mock import MagicMock
 
 import pandas as pd
-
 from models.forecaster import ItemForecaster
 from models.item_parser import CONDITIONAL_STEAM_SOURCES, MIN_ASKS_TO_DROP_SYNC
 
@@ -43,15 +43,13 @@ def _f(tmp_path):
 
 
 def _rows(*specs):
-    return pd.DataFrame([
-        {"item_id": i, "date": pd.Timestamp(d), "price": p, "source": s,
-         "volume": 0.0}
-        for i, d, p, s in specs
-    ])
+    return pd.DataFrame(
+        [{"item_id": i, "date": pd.Timestamp(d), "price": p, "source": s, "volume": 0.0} for i, d, p, s in specs]
+    )
 
 
 def test_the_conditional_source_is_named():
-    assert CONDITIONAL_STEAM_SOURCES == frozenset({"aggregator_sync"})
+    assert frozenset({"aggregator_sync"}) == CONDITIONAL_STEAM_SOURCES
     assert MIN_ASKS_TO_DROP_SYNC == 2
     assert ItemForecaster.CONDITIONAL_STEAM_SOURCES == CONDITIONAL_STEAM_SOURCES
 
@@ -60,10 +58,8 @@ def test_it_is_separate_from_the_unconditional_drops():
     """A conditional stand-down is a different rule from an outright exclusion;
     folding it into TRAILING_WINDOW_SOURCES would delete 2026-01 and 2026-02."""
     assert not (CONDITIONAL_STEAM_SOURCES & set(ItemForecaster.BID_SOURCES))
-    assert not (CONDITIONAL_STEAM_SOURCES
-                & set(ItemForecaster.TRAILING_WINDOW_SOURCES))
-    assert not (CONDITIONAL_STEAM_SOURCES
-                & set(ItemForecaster.STEAM_SPOT_SOURCES))
+    assert not (CONDITIONAL_STEAM_SOURCES & set(ItemForecaster.TRAILING_WINDOW_SOURCES))
+    assert not (CONDITIONAL_STEAM_SOURCES & set(ItemForecaster.STEAM_SPOT_SOURCES))
 
 
 def test_sync_stands_down_when_two_genuine_asks_are_present(tmp_path):
@@ -78,7 +74,7 @@ def test_sync_stands_down_when_two_genuine_asks_are_present(tmp_path):
     out = _f(tmp_path)._apply_multi_source_voting(df)
     assert len(out) == 1
     assert out.iloc[0]["n_ask_sources"] == 2
-    assert out.iloc[0]["price"] == 11.0          # median(10, 12), sync excluded
+    assert out.iloc[0]["price"] == 11.0  # median(10, 12), sync excluded
 
 
 def test_sync_keeps_voting_when_it_is_the_only_source(tmp_path):
@@ -124,4 +120,4 @@ def test_a_null_series_does_not_trigger_the_stand_down(tmp_path):
         (1, "2026-08-01", 30.0, "aggregator_sync"),
     )
     out = _f(tmp_path)._apply_multi_source_voting(df)
-    assert out.iloc[0]["n_ask_sources"] == 2      # {NULL, sync}: sync stays
+    assert out.iloc[0]["n_ask_sources"] == 2  # {NULL, sync}: sync stays

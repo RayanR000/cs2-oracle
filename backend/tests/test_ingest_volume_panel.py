@@ -1,20 +1,23 @@
 import sys
-from pathlib import Path
 from datetime import date
+from pathlib import Path
+
 import pandas as pd
 import pytest
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
-from scripts.ingest_volume_panel import build_volume_panel  # noqa: E402
+from scripts.ingest_volume_panel import build_volume_panel
 
 
 def _src():
-    return pd.DataFrame({
-        "market_hash_name": ["AK-47 | Redline (Field-Tested)", "AK-47 | Redline (Field-Tested)", "Sticker | X"],
-        "date": [date(2026, 5, 1), date(2026, 5, 1), date(2026, 5, 1)],
-        "price_median": [10.0, 12.0, 1.0],
-        "volume": [5, 7, 0],
-    })
+    return pd.DataFrame(
+        {
+            "market_hash_name": ["AK-47 | Redline (Field-Tested)", "AK-47 | Redline (Field-Tested)", "Sticker | X"],
+            "date": [date(2026, 5, 1), date(2026, 5, 1), date(2026, 5, 1)],
+            "price_median": [10.0, 12.0, 1.0],
+            "volume": [5, 7, 0],
+        }
+    )
 
 
 def test_maps_name_to_item_id_and_keeps_volume():

@@ -8,7 +8,6 @@ order rather than the sorted order the scan needs internally.
 import numpy as np
 import pandas as pd
 import pytest
-
 from models.staleness import (
     STALE_RUN_GAP_BREAK_DAYS,
     stale_run_days,
@@ -26,8 +25,7 @@ def _days(start, n):
 
 def test_fresh_level_is_zero_and_repeats_count_up():
     d = _days("2026-01-01", 4)
-    df = _frame([("a", d[0], 1.0), ("a", d[1], 1.0),
-                 ("a", d[2], 1.0), ("a", d[3], 2.0)])
+    df = _frame([("a", d[0], 1.0), ("a", d[1], 1.0), ("a", d[2], 1.0), ("a", d[3], 2.0)])
     assert list(stale_run_days(df)) == [0, 1, 2, 0]
 
 
@@ -39,23 +37,20 @@ def test_run_restarts_when_the_price_returns_to_an_earlier_level():
     moving and is not stale.
     """
     d = _days("2026-01-01", 4)
-    df = _frame([("a", d[0], 1.0), ("a", d[1], 2.0),
-                 ("a", d[2], 1.0), ("a", d[3], 1.0)])
+    df = _frame([("a", d[0], 1.0), ("a", d[1], 2.0), ("a", d[2], 1.0), ("a", d[3], 1.0)])
     assert list(stale_run_days(df)) == [0, 0, 0, 1]
 
 
 def test_runs_do_not_cross_items():
     d = _days("2026-01-01", 2)
-    df = _frame([("a", d[0], 5.0), ("a", d[1], 5.0),
-                 ("b", d[0], 5.0), ("b", d[1], 5.0)])
+    df = _frame([("a", d[0], 5.0), ("a", d[1], 5.0), ("b", d[0], 5.0), ("b", d[1], 5.0)])
     assert list(stale_run_days(df)) == [0, 1, 0, 1]
 
 
 def test_a_gap_at_the_break_width_still_continues_the_run():
     """The bound is inclusive: <= STALE_RUN_GAP_BREAK_DAYS continues."""
     start = pd.Timestamp("2026-01-01").date()
-    later = pd.Timestamp("2026-01-01") + pd.to_timedelta(
-        int(STALE_RUN_GAP_BREAK_DAYS), unit="D")
+    later = pd.Timestamp("2026-01-01") + pd.to_timedelta(int(STALE_RUN_GAP_BREAK_DAYS), unit="D")
     df = _frame([("a", start, 3.0), ("a", later.date(), 3.0)])
     assert list(stale_run_days(df)) == [0, 1]
 
@@ -63,8 +58,7 @@ def test_a_gap_at_the_break_width_still_continues_the_run():
 def test_a_gap_wider_than_the_break_width_starts_a_fresh_level():
     """The collector-outage case. Nothing was observed in between to be frozen."""
     start = pd.Timestamp("2026-01-01").date()
-    later = pd.Timestamp("2026-01-01") + pd.to_timedelta(
-        int(STALE_RUN_GAP_BREAK_DAYS) + 1, unit="D")
+    later = pd.Timestamp("2026-01-01") + pd.to_timedelta(int(STALE_RUN_GAP_BREAK_DAYS) + 1, unit="D")
     df = _frame([("a", start, 3.0), ("a", later.date(), 3.0)])
     assert list(stale_run_days(df)) == [0, 0]
 
@@ -76,8 +70,7 @@ def test_a_null_price_breaks_the_run_and_scores_zero():
     spanning the whole series.
     """
     d = _days("2026-01-01", 4)
-    df = _frame([("a", d[0], 1.0), ("a", d[1], np.nan),
-                 ("a", d[2], 1.0), ("a", d[3], 1.0)])
+    df = _frame([("a", d[0], 1.0), ("a", d[1], np.nan), ("a", d[2], 1.0), ("a", d[3], 1.0)])
     assert list(stale_run_days(df)) == [0, 0, 0, 1]
 
 

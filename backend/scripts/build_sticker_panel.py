@@ -16,6 +16,7 @@ applications is a real observation and absence of data is not it.
 Rankings must be collection-relative, never global: ``substitute_group`` keys
 the relevant collection/event so downstream scoring stays within substitutes.
 """
+
 from __future__ import annotations
 
 import argparse
@@ -65,7 +66,7 @@ def substitute_group(slug: str) -> str:
     s = slug.lower()
     for prefix in ("sticker-", "steam_sticker_", "steam_sticker-"):
         if s.startswith(prefix):
-            s = s[len(prefix):]
+            s = s[len(prefix) :]
             break
     m = _EVENT_PREFIX.match(s) or _EVENT_PREFIX.search(slug.lower())
     if m:
@@ -96,12 +97,19 @@ def build_sticker_panel(
         return pd.DataFrame(columns=STICKER_PANEL_COLUMNS)
     frame = supply.copy()
     frame["snapshot_day"] = pd.to_datetime(frame["snapshot_day"]).dt.date
-    slugs = universe if universe is not None else sorted({s for s in frame["item_slug"].unique() if _is_sticker_slug(str(s))})
+    slugs = (
+        universe
+        if universe is not None
+        else sorted({s for s in frame["item_slug"].unique() if _is_sticker_slug(str(s))})
+    )
     frame = frame[frame["item_slug"].isin(slugs)]
     if frame.empty:
         return pd.DataFrame(columns=STICKER_PANEL_COLUMNS)
-    vis = (frame.groupby(["item_slug", "snapshot_day"], as_index=False)["listing_count"]
-           .max().rename(columns={"snapshot_day": "date", "listing_count": "visible_supply"}))
+    vis = (
+        frame.groupby(["item_slug", "snapshot_day"], as_index=False)["listing_count"]
+        .max()
+        .rename(columns={"snapshot_day": "date", "listing_count": "visible_supply"})
+    )
     event_by_date: dict = {}
     if events is not None and not events.empty and "date" in events.columns:
         ev = events.copy()
@@ -119,8 +127,7 @@ def build_sticker_panel(
 
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__)
-    ap.add_argument("--archive-dir", type=Path,
-                    default=Path(__file__).parent.parent.parent / "price-archive")
+    ap.add_argument("--archive-dir", type=Path, default=Path(__file__).parent.parent.parent / "price-archive")
     ap.add_argument("--write", action="store_true", help="Write sticker-panel.parquet.")
     ap.add_argument("--json-out", type=Path, default=None)
     args = ap.parse_args()
@@ -129,15 +136,20 @@ def main() -> int:
     if not supply_files:
         print(json.dumps({"status": "failed", "error": "no supply-*.parquet in archive"}, indent=2))
         return 1
-    supply = pd.concat([pd.read_parquet(p, columns=["item_slug", "snapshot_day", "listing_count"])
-                        for p in supply_files], ignore_index=True)
+    supply = pd.concat(
+        [pd.read_parquet(p, columns=["item_slug", "snapshot_day", "listing_count"]) for p in supply_files],
+        ignore_index=True,
+    )
     events = None
     ev_path = args.archive_dir / "event-calendar.parquet"
     if ev_path.exists():
         events = pd.read_parquet(ev_path)
     panel = build_sticker_panel(supply, events)
-    summary = {"status": "success", "sticker_panel_rows": len(panel),
-               "distinct_stickers": int(panel["item_slug"].nunique()) if len(panel) else 0}
+    summary = {
+        "status": "success",
+        "sticker_panel_rows": len(panel),
+        "distinct_stickers": int(panel["item_slug"].nunique()) if len(panel) else 0,
+    }
     print(json.dumps(summary, indent=2, default=str))
     if args.write:
         panel.to_parquet(args.archive_dir / SIDECAR_NAME, index=False, compression="zstd")

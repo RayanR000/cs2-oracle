@@ -19,13 +19,12 @@ See docs/changelog/2026-08-06-steam-listing-backfill-and-phantom-items.md.
 
 from __future__ import annotations
 
-from datetime import date, datetime, timedelta, timezone
+from datetime import UTC, date, datetime, timedelta
 from unittest.mock import MagicMock
 
 import duckdb
 import pandas as pd
 import pytest
-
 from models.forecaster import ItemForecaster
 from models.item_parser import (
     archive_universe_sql_filter,
@@ -71,15 +70,16 @@ def _archive(tmp_path, slugs, days=3):
     rows = []
     for slug in slugs:
         for i in range(days):
-            rows.append((slug, start + timedelta(days=i), 100.0 + i, 1,
-                         "aggregator_csfloat"))
-    pd.DataFrame({
-        "item_slug": [r[0] for r in rows],
-        "day": pd.to_datetime([r[1] for r in rows]),
-        "mean_price": [r[2] for r in rows],
-        "volume": [r[3] for r in rows],
-        "source": [r[4] for r in rows],
-    }).to_parquet(archive / "prices-2026.parquet")
+            rows.append((slug, start + timedelta(days=i), 100.0 + i, 1, "aggregator_csfloat"))
+    pd.DataFrame(
+        {
+            "item_slug": [r[0] for r in rows],
+            "day": pd.to_datetime([r[1] for r in rows]),
+            "mean_price": [r[2] for r in rows],
+            "volume": [r[3] for r in rows],
+            "source": [r[4] for r in rows],
+        }
+    ).to_parquet(archive / "prices-2026.parquet")
     return archive
 
 
@@ -88,13 +88,13 @@ def _kept(slugs, where):
     try:
         con.sql("CREATE TABLE t (item_slug VARCHAR)")
         con.executemany("INSERT INTO t VALUES (?)", [(s,) for s in slugs])
-        return {r[0] for r in
-                con.sql(f"SELECT item_slug FROM t WHERE {where}").fetchall()}
+        return {r[0] for r in con.sql(f"SELECT item_slug FROM t WHERE {where}").fetchall()}
     finally:
         con.close()
 
 
 # -- the predicate ---------------------------------------------------------
+
 
 @pytest.mark.parametrize("slug", PHANTOM)
 def test_phantom_keys_are_recognised(slug):
@@ -114,9 +114,7 @@ def test_sql_filter_is_null_safe():
     try:
         con.sql("CREATE TABLE t (item_slug VARCHAR)")
         con.sql("INSERT INTO t VALUES (NULL)")
-        kept = con.sql(
-            f"SELECT count(*) FROM t WHERE {phantom_slug_sql_filter()}"
-        ).fetchone()[0]
+        kept = con.sql(f"SELECT count(*) FROM t WHERE {phantom_slug_sql_filter()}").fetchone()[0]
     finally:
         con.close()
 
@@ -133,11 +131,11 @@ def test_universe_filter_carries_the_rule():
     """Invariant 2 in backend/AGENTS.md: a loader that globs the archive gets
     every universe rule from this one call. A harness that had to add the
     phantom exclusion separately is a harness that will forget to."""
-    assert _kept(PHANTOM + REAL,
-                 archive_universe_sql_filter(source_column=None)) == set(REAL)
+    assert _kept(PHANTOM + REAL, archive_universe_sql_filter(source_column=None)) == set(REAL)
 
 
 # -- the training and serving read -----------------------------------------
+
 
 def test_training_read_drops_the_phantom_and_keeps_the_twin(tmp_path):
     """`_fetch_voted_price_history` is the one archive read behind both
@@ -145,10 +143,9 @@ def test_training_read_drops_the_phantom_and_keeps_the_twin(tmp_path):
     series from the training universe without losing the item: every phantom
     has a correctly-keyed twin, which is why this is a de-duplication and not a
     universe reduction."""
-    f = ItemForecaster(db_session=MagicMock(),
-                       model_dir=str(tmp_path / "saved_models"))
+    f = ItemForecaster(db_session=MagicMock(), model_dir=str(tmp_path / "saved_models"))
     f.archive_dir = _archive(tmp_path, PHANTOM + REAL)
-    f._now = lambda: datetime(2026, 7, 20, tzinfo=timezone.utc)
+    f._now = lambda: datetime(2026, 7, 20, tzinfo=UTC)
 
     out = f._fetch_voted_price_history(days_back=30, backfilled_only=False)
 

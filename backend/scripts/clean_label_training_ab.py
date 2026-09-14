@@ -29,10 +29,11 @@ Usage:
         --metadata-parquet ../price-archive/item-metadata-bymykel.parquet \\
         --out /tmp/clean_label_ab.json
 """
-import os
-import sys
+
 import json
 import logging
+import os
+import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
@@ -41,16 +42,15 @@ os.environ.setdefault("CLIMATOLOGY_SCALE", "1")
 
 import numpy as np
 import pandas as pd
-
+from api.serving_policy import MIN_SERVED_PRICE_USD
 from database import SessionLocal
 from models.forecaster import ItemForecaster
-from api.serving_policy import MIN_SERVED_PRICE_USD
 from scripts.ab_test_item_metadata import (
     assign_items,
     build_frame,
 )
 from scripts.exceedance_meta_ab import paired_fold_deltas
-from scripts.shrink_k_vol_rank_ab import matched_width, _lookup
+from scripts.shrink_k_vol_rank_ab import _lookup, matched_width
 
 logging.basicConfig(
     level=logging.INFO,
@@ -76,8 +76,7 @@ def _filter_fit(fit_df, arm, fold_boundary_date):
         return fit_df
     dates = pd.to_datetime(fit_df["date"])
     if arm == "clean_2025":
-        mask = (dates >= pd.Timestamp(CLEAN_2025_START)) & (
-            dates <= pd.Timestamp(CLEAN_2025_END))
+        mask = (dates >= pd.Timestamp(CLEAN_2025_START)) & (dates <= pd.Timestamp(CLEAN_2025_END))
         return fit_df[mask]
     if arm == "recent_1yr":
         cutoff = pd.Timestamp(fold_boundary_date) - pd.Timedelta(days=365)
@@ -91,8 +90,7 @@ def run(df, horizon_filter=None, max_folds=None):
     db = SessionLocal()
     forecaster = ItemForecaster(db_session=db)
     try:
-        horizons = [h for h in ItemForecaster.HORIZONS
-                    if horizon_filter is None or h == horizon_filter]
+        horizons = [h for h in ItemForecaster.HORIZONS if horizon_filter is None or h == horizon_filter]
         results = {}
         for horizon in horizons:
             logger.info(f"\n  {'=' * 60}\n  Clean-label training {horizon}d\n  {'=' * 60}")
@@ -115,9 +113,7 @@ def run(df, horizon_filter=None, max_folds=None):
 
             # Only eval on 2026+ dates so no arm's training overlaps eval.
             _eval_ts = pd.Timestamp(EVAL_START)
-            eval_start_idx = next(
-                (i for i, d in enumerate(dates)
-                 if pd.Timestamp(d) >= _eval_ts), None)
+            eval_start_idx = next((i for i, d in enumerate(dates) if pd.Timestamp(d) >= _eval_ts), None)
             if eval_start_idx is None:
                 logger.warning("    no 2026+ dates — skipping")
                 continue
@@ -128,14 +124,14 @@ def run(df, horizon_filter=None, max_folds=None):
 
             per_fold = {arm: [] for arm in ARMS}
             for fold_idx, window_end in enumerate(fold_list):
-                val_dates = dates[window_end:window_end + VAL_WINDOW_DAYS]
+                val_dates = dates[window_end : window_end + VAL_WINDOW_DAYS]
                 if len(val_dates) < 7:
                     continue
                 in_fit = sub_days <= dates_dt[window_end - 1]
-                in_val = ((sub_days >= dates_dt[window_end])
-                          & (sub_days <= dates_dt[window_end + len(val_dates) - 1]))
+                in_val = (sub_days >= dates_dt[window_end]) & (sub_days <= dates_dt[window_end + len(val_dates) - 1])
                 fit_df_full = ItemForecaster._purge_overlapping_train_rows(
-                    sub[in_fit & is_train_item], val_dates[0], horizon)
+                    sub[in_fit & is_train_item], val_dates[0], horizon
+                )
                 val_df = sub[in_val & (is_heldout | is_trained_eval)]
                 val_df = val_df[val_df["price"] >= MIN_SERVED_PRICE_USD]
                 if len(val_df) < MIN_EVAL_ROWS or fit_df_full.empty:
@@ -146,73 +142,62 @@ def run(df, horizon_filter=None, max_folds=None):
                 abs_r = val_df[tcol].abs().to_numpy(dtype=float)
                 fold_boundary = pd.Timestamp(dates[window_end - 1])
 
-                row = {"fold": fold_idx, "val_start": str(val_dates[0]),
-                       "n_eval": len(val_df)}
+                row = {"fold": fold_idx, "val_start": str(val_dates[0]), "n_eval": len(val_df)}
 
                 for arm in ARMS:
                     arm_fit = _filter_fit(fit_df_full, arm, fold_boundary)
                     if arm_fit.empty or len(arm_fit) < 100:
-                        per_fold[arm].append(dict(row, width=None,
-                                                  log_width=None,
-                                                  n_fit=0))
-                        logger.warning(f"    fold {fold_idx} {arm}: "
-                                       f"only {len(arm_fit)} fit rows — skipped")
+                        per_fold[arm].append(dict(row, width=None, log_width=None, n_fit=0))
+                        logger.warning(f"    fold {fold_idx} {arm}: only {len(arm_fit)} fit rows — skipped")
                         continue
                     fit_min = arm_fit[["item_id", "price", tcol]]
                     try:
-                        table, pool, g = ItemForecaster._build_climatology_table(
-                            fit_min, tcol)
+                        table, pool, g = ItemForecaster._build_climatology_table(fit_min, tcol)
                     except Exception as exc:
-                        per_fold[arm].append(dict(row, width=None,
-                                                  log_width=None,
-                                                  n_fit=len(arm_fit)))
-                        logger.warning(f"    fold {fold_idx} {arm}: "
-                                       f"climatology failed ({exc!r})")
+                        per_fold[arm].append(dict(row, width=None, log_width=None, n_fit=len(arm_fit)))
+                        logger.warning(f"    fold {fold_idx} {arm}: climatology failed ({exc!r})")
                         continue
                     if not table:
-                        per_fold[arm].append(dict(row, width=None,
-                                                  log_width=None,
-                                                  n_fit=len(arm_fit)))
+                        per_fold[arm].append(dict(row, width=None, log_width=None, n_fit=len(arm_fit)))
                         continue
-                    scale = _lookup(forecaster, horizon,
-                                    {"table": table, "tier_pool": pool,
-                                     "global": g},
-                                    val_ids, val_px)
+                    scale = _lookup(
+                        forecaster, horizon, {"table": table, "tier_pool": pool, "global": g}, val_ids, val_px
+                    )
                     forecaster.climatology_scale.pop(horizon, None)
 
                     _, w = matched_width(abs_r, scale)
-                    per_fold[arm].append(dict(
-                        row,
-                        n_fit=len(arm_fit),
-                        width=(None if not np.isfinite(w) else float(w)),
-                        log_width=(None if not np.isfinite(w) or w <= 0
-                                   else float(np.log(w)))))
+                    per_fold[arm].append(
+                        dict(
+                            row,
+                            n_fit=len(arm_fit),
+                            width=(None if not np.isfinite(w) else float(w)),
+                            log_width=(None if not np.isfinite(w) or w <= 0 else float(np.log(w))),
+                        )
+                    )
 
                 for arm in ARMS:
                     r = per_fold[arm][-1]
-                    w_str = f"{r['width']:.3f}%" if r.get('width') else "n/a"
-                    logger.info(f"    fold {fold_idx} ({val_dates[0]}): "
-                                f"{arm:12s} n_fit={r.get('n_fit', '?'):>7} "
-                                f"width={w_str}")
+                    w_str = f"{r['width']:.3f}%" if r.get("width") else "n/a"
+                    logger.info(
+                        f"    fold {fold_idx} ({val_dates[0]}): {arm:12s} n_fit={r.get('n_fit', '?'):>7} width={w_str}"
+                    )
 
             if not [r for r in per_fold["control"] if r["width"] is not None]:
                 logger.warning(f"    no usable folds at {horizon}d")
                 continue
-            results[horizon] = {arm: {"per_fold": rows}
-                                for arm, rows in per_fold.items()}
+            results[horizon] = {arm: {"per_fold": rows} for arm, rows in per_fold.items()}
             results[horizon]["_paired"] = {
-                arm: paired_fold_deltas(per_fold["control"], per_fold[arm],
-                                        "log_width")
-                for arm in ARMS if arm != "control"
+                arm: paired_fold_deltas(per_fold["control"], per_fold[arm], "log_width")
+                for arm in ARMS
+                if arm != "control"
             }
             for arm in ARMS:
-                ws = [r["width"] for r in per_fold[arm]
-                      if r["width"] is not None]
-                fits = [r.get("n_fit", 0) for r in per_fold[arm]
-                        if r["width"] is not None]
+                ws = [r["width"] for r in per_fold[arm] if r["width"] is not None]
+                fits = [r.get("n_fit", 0) for r in per_fold[arm] if r["width"] is not None]
                 if ws:
-                    logger.info(f"      {arm:12s} mean width={np.mean(ws):.3f}% "
-                                f"mean fit={np.mean(fits):.0f} ({len(ws)} folds)")
+                    logger.info(
+                        f"      {arm:12s} mean width={np.mean(ws):.3f}% mean fit={np.mean(fits):.0f} ({len(ws)} folds)"
+                    )
         return results
     finally:
         db.close()
@@ -224,45 +209,46 @@ def print_summary(results):
     print("negative delta = NARROWER at matched 80% coverage (good)")
     print("=" * 80)
     for horizon, entry in sorted(results.items()):
-        n_ctl = sum(1 for r in entry["control"]["per_fold"]
-                    if r["width"] is not None)
-        ctl_fits = [r.get("n_fit", 0) for r in entry["control"]["per_fold"]
-                    if r["width"] is not None]
-        print(f"\nh={horizon}d   control folds={n_ctl} "
-              f"mean_fit={np.mean(ctl_fits):.0f}")
+        n_ctl = sum(1 for r in entry["control"]["per_fold"] if r["width"] is not None)
+        ctl_fits = [r.get("n_fit", 0) for r in entry["control"]["per_fold"] if r["width"] is not None]
+        print(f"\nh={horizon}d   control folds={n_ctl} mean_fit={np.mean(ctl_fits):.0f}")
         for arm in ARMS:
             if arm == "control":
                 continue
             d = entry["_paired"].get(arm)
             rows = entry[arm]["per_fold"]
-            arm_fits = [r.get("n_fit", 0) for r in rows
-                        if r["width"] is not None]
-            base = {r["fold"]: r["width"] for r in
-                    entry["control"]["per_fold"]}
-            ratios = [r["width"] / base[r["fold"]] for r in rows
-                      if r["width"] is not None
-                      and base.get(r["fold"]) is not None
-                      and base[r["fold"]] > 0]
-            rinfo = (f"mean ratio {np.mean(ratios):.4f}, "
-                     f"worst {np.max(ratios):.4f}, "
-                     f"best {np.min(ratios):.4f}, "
-                     f"narrower {sum(x < 1.0 for x in ratios)}/{len(ratios)}"
-                     if ratios else "no paired folds")
-            fit_info = (f"mean_fit={np.mean(arm_fits):.0f}"
-                        if arm_fits else "no fits")
+            arm_fits = [r.get("n_fit", 0) for r in rows if r["width"] is not None]
+            base = {r["fold"]: r["width"] for r in entry["control"]["per_fold"]}
+            ratios = [
+                r["width"] / base[r["fold"]]
+                for r in rows
+                if r["width"] is not None and base.get(r["fold"]) is not None and base[r["fold"]] > 0
+            ]
+            rinfo = (
+                f"mean ratio {np.mean(ratios):.4f}, "
+                f"worst {np.max(ratios):.4f}, "
+                f"best {np.min(ratios):.4f}, "
+                f"narrower {sum(x < 1.0 for x in ratios)}/{len(ratios)}"
+                if ratios
+                else "no paired folds"
+            )
+            fit_info = f"mean_fit={np.mean(arm_fits):.0f}" if arm_fits else "no fits"
             if d is None:
                 print(f"  {arm:14s} — too few paired folds; {fit_info}; {rinfo}")
                 continue
             flag = "*" if d["excludes_zero"] else " "
             better = d["n_folds"] - d["wins"]
-            print(f"  {arm:14s} d={d['mean']:+.5f} "
-                  f"[{d['ci_low']:+.5f}, {d['ci_high']:+.5f}]{flag} "
-                  f"narrower {better}/{d['n_folds']}; {fit_info}; {rinfo}")
+            print(
+                f"  {arm:14s} d={d['mean']:+.5f} "
+                f"[{d['ci_low']:+.5f}, {d['ci_high']:+.5f}]{flag} "
+                f"narrower {better}/{d['n_folds']}; {fit_info}; {rinfo}"
+            )
     print("\n* = 95% interval excludes zero.")
 
 
 def main():
     import argparse
+
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--horizon", type=int, default=None)
     ap.add_argument("--frame-cache", default=None)

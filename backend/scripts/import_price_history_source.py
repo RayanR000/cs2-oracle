@@ -19,6 +19,7 @@ interrupted run resumes without re-downloading ~2.3 GB.
 `backend/.env` points at production Supabase, but nothing here imports
 ``database``, so this script holds no DB connection.
 """
+
 import argparse
 import hashlib
 import json
@@ -32,9 +33,8 @@ import requests
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-import duckdb  # noqa: E402
-
-from collectors.price_history_import import (  # noqa: E402
+import duckdb
+from collectors.price_history_import import (
     MIN_DISTINCT_DAYS,
     StalledSourceError,
     apply_gap_gate,
@@ -42,8 +42,8 @@ from collectors.price_history_import import (  # noqa: E402
     to_archive_frame,
     write_archive_frame,
 )
-from collectors.price_history_sources import ADAPTERS  # noqa: E402
-from db.archive import prices_relation  # noqa: E402
+from collectors.price_history_sources import ADAPTERS
+from db.archive import prices_relation
 
 logger = logging.getLogger(__name__)
 
@@ -102,9 +102,7 @@ def fetch_days(adapter, source_name, days, cache_dir, session):
 
         digests[day] = hashlib.md5(path.read_bytes()).hexdigest()
 
-    logger.info(
-        f"  fetched {fetched:,}, cached {skipped:,}, absent upstream {missing:,}"
-    )
+    logger.info(f"  fetched {fetched:,}, cached {skipped:,}, absent upstream {missing:,}")
     return digests
 
 
@@ -200,16 +198,21 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--end", required=True, help="inclusive, YYYY-MM-DD")
     ap.add_argument("--cache-dir", default="runtime/price_history_cache")
     ap.add_argument("--out-dir", default="../archive-staging")
-    ap.add_argument("--fetch-only", action="store_true",
-                    help="populate the cache and stop, writing nothing")
-    ap.add_argument("--report", action="store_true",
-                    help="report the promotion-gate numbers for an existing "
-                         "staging import and exit, fetching nothing")
-    ap.add_argument("--archive-dir", default="../price-archive",
-                    help="the real archive, compared against for the seam read")
-    ap.add_argument("--min-median-price", type=float, default=1.0,
-                    help="drop items whose median price falls below this; "
-                         "the fee correction is unreliable below $1")
+    ap.add_argument("--fetch-only", action="store_true", help="populate the cache and stop, writing nothing")
+    ap.add_argument(
+        "--report",
+        action="store_true",
+        help="report the promotion-gate numbers for an existing staging import and exit, fetching nothing",
+    )
+    ap.add_argument(
+        "--archive-dir", default="../price-archive", help="the real archive, compared against for the seam read"
+    )
+    ap.add_argument(
+        "--min-median-price",
+        type=float,
+        default=1.0,
+        help="drop items whose median price falls below this; the fee correction is unreliable below $1",
+    )
     args = ap.parse_args(argv)
 
     adapter = ADAPTERS[args.source]
@@ -224,13 +227,8 @@ def main(argv: list[str] | None = None) -> int:
             logger.info(f"  {key}: {value}")
         return 0
 
-    days = daterange(
-        date.fromisoformat(args.start), date.fromisoformat(args.end)
-    )
-    logger.info(
-        f"{args.source}: {len(days):,} days, "
-        f"{days[0].isoformat()} -> {days[-1].isoformat()}"
-    )
+    days = daterange(date.fromisoformat(args.start), date.fromisoformat(args.end))
+    logger.info(f"{args.source}: {len(days):,} days, {days[0].isoformat()} -> {days[-1].isoformat()}")
 
     session = requests.Session()
     digests = fetch_days(adapter, args.source, days, Path(args.cache_dir), session)
@@ -268,10 +266,7 @@ def main(argv: list[str] | None = None) -> int:
 
     pre_2026 = sum(1 for r in kept if r[1] < date(2026, 1, 1))
     gate_items = len({r[0] for r in kept if r[1] < date(2026, 1, 1)})
-    logger.info(
-        f"pre-2026 rows {pre_2026:,} across {gate_items:,} items "
-        f"— these are what is_backfilled tests for"
-    )
+    logger.info(f"pre-2026 rows {pre_2026:,} across {gate_items:,} items — these are what is_backfilled tests for")
     return 0
 
 

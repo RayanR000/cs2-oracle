@@ -7,14 +7,12 @@ This repo has shipped that bug twice (the Steam supply scraper's 16 green days
 storing nothing, the Reddit collector's 403s), so the tests assert that bad input
 raises or drops rather than zero-filling.
 """
-from datetime import date, datetime, timezone
 
-import numpy as np
+from datetime import UTC, date, datetime
+
 import pandas as pd
 import pytest
-
 from collectors.supply_depth import (
-    DEDUP_KEYS,
     SUPPLY_COLUMNS,
     SupplyFeedError,
     aggregate_lis_skins,
@@ -28,15 +26,17 @@ from collectors.supply_depth import (
 )
 
 DAY = date(2026, 8, 6)
-NOW = datetime(2026, 8, 6, 12, 0, tzinfo=timezone.utc)
+NOW = datetime(2026, 8, 6, 12, 0, tzinfo=UTC)
 
 
 # ── Scalar feed parsers ───────────────────────────────────────────────────────
 
+
 def test_skinport_parses_quantity():
     rows = parse_skinport(
         [{"market_hash_name": "AK-47 | Redline (Field-Tested)", "quantity": 412, "min_price": 7.62}],
-        DAY, NOW,
+        DAY,
+        NOW,
     )
     assert list(rows.columns) == SUPPLY_COLUMNS
     assert rows.iloc[0]["listing_count"] == 412
@@ -52,7 +52,8 @@ def test_market_csgo_coerces_string_volume():
     """
     rows = parse_market_csgo(
         {"items": [{"market_hash_name": "Kilowatt Case", "volume": "1873", "price": "0.42"}]},
-        DAY, NOW,
+        DAY,
+        NOW,
     )
     assert rows.iloc[0]["listing_count"] == 1873
     assert rows.iloc[0]["min_ask"] == pytest.approx(0.42)
@@ -60,16 +61,12 @@ def test_market_csgo_coerces_string_volume():
 
 def test_waxpeer_normalises_millicent_price():
     """Waxpeer quotes `min` in thousandths; `min_ask` must mean USD everywhere."""
-    rows = parse_waxpeer(
-        {"items": [{"name": "Kilowatt Case", "count": 900, "min": 420}]}, DAY, NOW
-    )
+    rows = parse_waxpeer({"items": [{"name": "Kilowatt Case", "count": 900, "min": 420}]}, DAY, NOW)
     assert rows.iloc[0]["min_ask"] == pytest.approx(0.42)
 
 
 def test_bitskins_normalises_millicent_price():
-    rows = parse_bitskins(
-        {"list": [{"name": "Kilowatt Case", "quantity": 55, "price_min": 420}]}, DAY, NOW
-    )
+    rows = parse_bitskins({"list": [{"name": "Kilowatt Case", "quantity": 55, "price_min": 420}]}, DAY, NOW)
     assert rows.iloc[0]["min_ask"] == pytest.approx(0.42)
     assert rows.iloc[0]["listing_count"] == 55
 
@@ -86,7 +83,8 @@ def test_unparseable_count_is_dropped_not_zero_filled():
             {"market_hash_name": "Bad", "quantity": "not-a-number"},
             {"market_hash_name": "Zero", "quantity": 0},
         ],
-        DAY, NOW,
+        DAY,
+        NOW,
     )
     slugs = set(rows["item_slug"])
     assert slugs == {"Good", "Zero"}
@@ -100,7 +98,8 @@ def test_duplicate_names_keep_deepest():
             {"market_hash_name": "Dupe", "quantity": 10},
             {"market_hash_name": "Dupe", "quantity": 90},
         ],
-        DAY, NOW,
+        DAY,
+        NOW,
     )
     assert len(rows) == 1
     assert rows.iloc[0]["listing_count"] == 90
@@ -112,6 +111,7 @@ def test_missing_slug_is_skipped():
 
 
 # ── lis-skins ladder aggregation ──────────────────────────────────────────────
+
 
 def _listing(name, price, created_at, lid):
     return {"name": name, "price": price, "created_at": created_at, "id": lid}
@@ -143,15 +143,15 @@ def test_depth_anchor_resists_a_single_mispriced_listing():
     base = aggregate_lis_skins(normal, DAY, NOW).iloc[0]
     poisoned = aggregate_lis_skins(with_outlier, DAY, NOW).iloc[0]
 
-    assert poisoned["min_ask"] == pytest.approx(0.001)      # raw min IS moved
+    assert poisoned["min_ask"] == pytest.approx(0.001)  # raw min IS moved
     assert poisoned["depth_5pct"] >= base["depth_5pct"] * 0.5  # depth is not destroyed
 
 
 def test_age_and_inflow_from_created_at():
     listings = [
-        _listing("Item", 10, "2026-08-06T06:00:00Z", 1),   # <1 day old
-        _listing("Item", 11, "2026-08-01T00:00:00Z", 2),   # ~6 days
-        _listing("Item", 12, "2026-07-07T00:00:00Z", 3),   # ~31 days
+        _listing("Item", 10, "2026-08-06T06:00:00Z", 1),  # <1 day old
+        _listing("Item", 11, "2026-08-01T00:00:00Z", 2),  # ~6 days
+        _listing("Item", 12, "2026-07-07T00:00:00Z", 3),  # ~31 days
     ]
     r = aggregate_lis_skins(listings, DAY, NOW).iloc[0]
     assert r["inflow_24h"] == 1
@@ -177,22 +177,21 @@ def test_listing_created_after_snapshot_is_not_aged_zero():
     same mistake the forecaster's item-age handling explicitly avoids.
     """
     listings = [
-        _listing("Item", 10, "2026-08-09T00:00:00Z", 1),   # after the day ends
+        _listing("Item", 10, "2026-08-09T00:00:00Z", 1),  # after the day ends
         _listing("Item", 11, "2026-08-01T00:00:00Z", 2),
     ]
     r = aggregate_lis_skins(listings, DAY, NOW).iloc[0]
-    assert r["listing_count"] == 2          # still counted as supply
+    assert r["listing_count"] == 2  # still counted as supply
     assert r["age_median_days"] == pytest.approx(6.0, abs=0.5)  # but not aged
 
 
 def test_ladder_skips_items_with_no_usable_price():
-    rows = aggregate_lis_skins(
-        [_listing("NoPrice", None, "2026-08-01T00:00:00Z", 1)], DAY, NOW
-    )
+    rows = aggregate_lis_skins([_listing("NoPrice", None, "2026-08-01T00:00:00Z", 1)], DAY, NOW)
     assert rows.empty
 
 
 # ── Persistence ───────────────────────────────────────────────────────────────
+
 
 def test_write_is_idempotent_per_day_and_source(tmp_path):
     rows = parse_skinport([{"market_hash_name": "Item", "quantity": 5}], DAY, NOW)
@@ -208,9 +207,7 @@ def test_write_is_idempotent_per_day_and_source(tmp_path):
 
 def test_write_preserves_other_sources_same_day(tmp_path):
     write_supply_rows(parse_skinport([{"market_hash_name": "Item", "quantity": 5}], DAY, NOW), tmp_path, DAY)
-    write_supply_rows(
-        parse_waxpeer({"items": [{"name": "Item", "count": 7}]}, DAY, NOW), tmp_path, DAY
-    )
+    write_supply_rows(parse_waxpeer({"items": [{"name": "Item", "count": 7}]}, DAY, NOW), tmp_path, DAY)
     stored = pd.read_parquet(supply_parquet_path(tmp_path, DAY))
     assert set(stored["source"]) == {"skinport", "waxpeer"}
     assert len(stored) == 2
@@ -223,6 +220,7 @@ def test_write_partitions_by_month(tmp_path):
 
 # ── The zero-row guard contract ───────────────────────────────────────────────
 
+
 def test_collect_raises_when_every_feed_fails(tmp_path, monkeypatch):
     """All feeds down is indistinguishable from a network block.
 
@@ -232,11 +230,13 @@ def test_collect_raises_when_every_feed_fails(tmp_path, monkeypatch):
     import collectors.supply_depth as sd
 
     monkeypatch.setattr(
-        sd, "fetch_feed",
+        sd,
+        "fetch_feed",
         lambda feed, day, now, session=None: sd.FeedResult(feed.source, error="boom"),
     )
     monkeypatch.setattr(
-        sd, "fetch_lis_skins",
+        sd,
+        "fetch_lis_skins",
         lambda day, now, session=None: sd.FeedResult("lis_skins", error="boom"),
     )
 
@@ -253,15 +253,14 @@ def test_collect_survives_one_dead_feed_but_reports_it(tmp_path, monkeypatch):
             return sd.FeedResult("bitskins", error="HTTP 503")
         return sd.FeedResult(
             feed.source,
-            rows=parse_skinport([{"market_hash_name": "Item", "quantity": 3}], day, now).assign(
-                source=feed.source
-            ),
+            rows=parse_skinport([{"market_hash_name": "Item", "quantity": 3}], day, now).assign(source=feed.source),
             raw_items=1,
         )
 
     monkeypatch.setattr(sd, "fetch_feed", fake_fetch)
     monkeypatch.setattr(
-        sd, "fetch_lis_skins",
+        sd,
+        "fetch_lis_skins",
         lambda day, now, session=None: sd.FeedResult("lis_skins", error="skipped"),
     )
 
@@ -285,16 +284,16 @@ def test_snapshot_day_matches_the_aggregator_not_the_wall_clock(tmp_path, monkey
 
     monkeypatch.setenv("AGGREGATOR_SNAPSHOT_DATE", "2026-08-06")
     monkeypatch.setattr(
-        sd, "fetch_feed",
+        sd,
+        "fetch_feed",
         lambda feed, day, now, session=None: sd.FeedResult(
             feed.source,
-            rows=parse_skinport([{"market_hash_name": "I", "quantity": 1}], day, now).assign(
-                source=feed.source
-            ),
+            rows=parse_skinport([{"market_hash_name": "I", "quantity": 1}], day, now).assign(source=feed.source),
         ),
     )
     monkeypatch.setattr(
-        sd, "fetch_lis_skins",
+        sd,
+        "fetch_lis_skins",
         lambda day, now, session=None: sd.FeedResult("lis_skins", error="skipped"),
     )
 
@@ -310,16 +309,16 @@ def test_collect_reports_row_count_field_for_the_guard(tmp_path, monkeypatch):
     assert "supply_rows" in ROW_COUNT_FIELDS
 
     monkeypatch.setattr(
-        sd, "fetch_feed",
+        sd,
+        "fetch_feed",
         lambda feed, day, now, session=None: sd.FeedResult(
             feed.source,
-            rows=parse_skinport([{"market_hash_name": "I", "quantity": 1}], day, now).assign(
-                source=feed.source
-            ),
+            rows=parse_skinport([{"market_hash_name": "I", "quantity": 1}], day, now).assign(source=feed.source),
         ),
     )
     monkeypatch.setattr(
-        sd, "fetch_lis_skins",
+        sd,
+        "fetch_lis_skins",
         lambda day, now, session=None: sd.FeedResult("lis_skins", error="skipped"),
     )
     summary = collect(tmp_path, snapshot_day=DAY)
@@ -327,6 +326,7 @@ def test_collect_reports_row_count_field_for_the_guard(tmp_path, monkeypatch):
 
 
 # ── Ladder aggregation throughput ─────────────────────────────────────────────
+
 
 def test_ladder_aggregation_is_vectorised_not_per_listing():
     """The daily lis-skins export is ~2.1M listings; the reduction must be
@@ -345,10 +345,7 @@ def test_ladder_aggregation_is_vectorised_not_per_listing():
     """
     import time
 
-    listings = [
-        _listing(f"Item {i % 2000}", 10.0 + (i % 97) * 0.01, "2026-08-01T00:00:00Z", i)
-        for i in range(200_000)
-    ]
+    listings = [_listing(f"Item {i % 2000}", 10.0 + (i % 97) * 0.01, "2026-08-01T00:00:00Z", i) for i in range(200_000)]
 
     start = time.perf_counter()
     rows = aggregate_lis_skins(listings, DAY, NOW)
@@ -363,11 +360,11 @@ def test_ladder_handles_a_messy_multi_item_payload():
     most likely to drift on the rows that are meant to be excluded."""
     listings = [
         _listing("Keep", 10.0, "2026-08-01T00:00:00Z", 1),
-        _listing("Keep", 12.0, "not a timestamp", 2),      # kept, but not aged
+        _listing("Keep", 12.0, "not a timestamp", 2),  # kept, but not aged
         _listing("Keep", 0.0, "2026-08-01T00:00:00Z", 3),  # zero price: no ladder
         _listing("Keep", None, "2026-08-01T00:00:00Z", 4),
         _listing("Drop", None, "2026-08-01T00:00:00Z", 5),  # no usable price
-        _listing(None, 10.0, "2026-08-01T00:00:00Z", 6),    # no name
+        _listing(None, 10.0, "2026-08-01T00:00:00Z", 6),  # no name
         "not a dict",
     ]
 
@@ -375,8 +372,8 @@ def test_ladder_handles_a_messy_multi_item_payload():
 
     assert set(rows["item_slug"]) == {"Keep"}
     r = rows.iloc[0]
-    assert r["listing_count"] == 4                       # all four Keep entries
-    assert r["min_ask"] == pytest.approx(10.0)           # 0.0 and None excluded
+    assert r["listing_count"] == 4  # all four Keep entries
+    assert r["min_ask"] == pytest.approx(10.0)  # 0.0 and None excluded
     assert r["age_median_days"] == pytest.approx(6.0, abs=0.5)
     assert r["inflow_24h"] == 0
 
@@ -400,13 +397,16 @@ def test_reader_ignores_the_supply_history_sidecar(tmp_path):
 
     write_supply_rows(
         parse_skinport([{"market_hash_name": "Item", "quantity": 5}], DAY, NOW),
-        tmp_path, DAY,
+        tmp_path,
+        DAY,
     )
-    pd.DataFrame({
-        "item_id": ["Item"],
-        "date": [DAY],
-        "buff_listing_count": [123],
-    }).to_parquet(tmp_path / "supply-history.parquet", index=False)
+    pd.DataFrame(
+        {
+            "item_id": ["Item"],
+            "date": [DAY],
+            "buff_listing_count": [123],
+        }
+    ).to_parquet(tmp_path / "supply-history.parquet", index=False)
 
     f = ItemForecaster(db_session=MagicMock())
     f.archive_dir = tmp_path

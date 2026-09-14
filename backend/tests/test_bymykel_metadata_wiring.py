@@ -7,17 +7,18 @@ along with the nine measured columns, `item_age_meta_days` colliding with
 the unrelated `item_age_days` that `_add_temporal_features` already produces,
 and `EXCEEDANCE_META` widening a group it is not supposed to widen.
 """
+
 import sys
-import numpy as np
+from pathlib import Path
+
 import pandas as pd
 import pytest
-from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from models.forecaster import (  # noqa: E402
-    ItemForecaster,
+from models.forecaster import (
     IncompatibleModelArtifact,
+    ItemForecaster,
     _feature_group,
 )
 
@@ -31,28 +32,30 @@ def enabled(monkeypatch):
 
 @pytest.fixture
 def meta_frame():
-    return pd.DataFrame({
-        "item_slug": ["A", "B", "C"],
-        "item_age_first_sale_date": pd.to_datetime(
-            ["2013-09-20", "2020-01-01", None]),
-        "item_age_ambiguous": pd.array([1, 0, 0], dtype="int8"),
-        "rarity_meta_rank": pd.array([6, 3, None], dtype="Int64"),
-        "is_meta_stattrak": pd.array([1, 0, 0], dtype="int8"),
-        "is_meta_souvenir": pd.array([0, 0, 0], dtype="int8"),
-        "float_meta_min": [0.0, 0.1, None],
-        "float_meta_max": [0.08, 0.7, None],
-        "type_meta_crate_id": pd.array([12, 40, None], dtype="Int64"),
-        "type_meta_collection_id": pd.array([3, None, None], dtype="Int64"),
-    })
+    return pd.DataFrame(
+        {
+            "item_slug": ["A", "B", "C"],
+            "item_age_first_sale_date": pd.to_datetime(["2013-09-20", "2020-01-01", None]),
+            "item_age_ambiguous": pd.array([1, 0, 0], dtype="int8"),
+            "rarity_meta_rank": pd.array([6, 3, None], dtype="Int64"),
+            "is_meta_stattrak": pd.array([1, 0, 0], dtype="int8"),
+            "is_meta_souvenir": pd.array([0, 0, 0], dtype="int8"),
+            "float_meta_min": [0.0, 0.1, None],
+            "float_meta_max": [0.08, 0.7, None],
+            "type_meta_crate_id": pd.array([12, 40, None], dtype="Int64"),
+            "type_meta_collection_id": pd.array([3, None, None], dtype="Int64"),
+        }
+    )
 
 
 @pytest.fixture
 def price_frame():
-    return pd.DataFrame({
-        "item_id": ["A", "A", "B", "C", "D"],
-        "date": pd.to_datetime(
-            ["2014-01-01", "2015-01-01", "2021-01-01", "2021-01-01", "2021-01-01"]),
-    })
+    return pd.DataFrame(
+        {
+            "item_id": ["A", "A", "B", "C", "D"],
+            "date": pd.to_datetime(["2014-01-01", "2015-01-01", "2021-01-01", "2021-01-01", "2021-01-01"]),
+        }
+    )
 
 
 @pytest.fixture
@@ -69,9 +72,15 @@ class TestFlag:
         monkeypatch.delenv("BYMYKEL_METADATA", raising=False)
         assert ItemForecaster.bymykel_metadata_enabled() is False
 
-    @pytest.mark.parametrize("value,expected", [
-        ("1", True), ("0", False), ("", False), ("true", False),
-    ])
+    @pytest.mark.parametrize(
+        "value,expected",
+        [
+            ("1", True),
+            ("0", False),
+            ("", False),
+            ("true", False),
+        ],
+    )
     def test_only_the_literal_one_enables_it(self, monkeypatch, value, expected):
         monkeypatch.setenv("BYMYKEL_METADATA", value)
         assert ItemForecaster.bymykel_metadata_enabled() is expected
@@ -96,10 +105,8 @@ class TestFeatureGroup:
         assert _feature_group("type_rifle") == "item_metadata"
 
     def test_allowlist_admits_the_bundle_and_nothing_else_new(self):
-        cols = META_COLS + ["price_mean_7d", "item_age_days", "rarity_ordinal",
-                            "type_rifle", "supply_listings"]
-        kept = ItemForecaster._apply_feature_allowlist(
-            cols, ["price_technicals", "bymykel_metadata"])
+        cols = META_COLS + ["price_mean_7d", "item_age_days", "rarity_ordinal", "type_rifle", "supply_listings"]
+        kept = ItemForecaster._apply_feature_allowlist(cols, ["price_technicals", "bymykel_metadata"])
         assert sorted(kept) == sorted(META_COLS + ["price_mean_7d"])
 
 
@@ -115,8 +122,7 @@ class TestJoin:
         a = out[out["item_id"] == "A"]["item_age_meta_days"].tolist()
         assert a == [103, 468]
 
-    def test_does_not_touch_the_unrelated_item_age_days(self, forecaster,
-                                                        price_frame, enabled):
+    def test_does_not_touch_the_unrelated_item_age_days(self, forecaster, price_frame, enabled):
         df = price_frame.copy()
         df["item_age_days"] = 7.0
         out = forecaster._add_bymykel_metadata_features(df)
@@ -129,8 +135,7 @@ class TestJoin:
         assert pd.isna(row["item_age_meta_days"].iloc[0])
         assert pd.isna(row["rarity_meta_rank"].iloc[0])
 
-    def test_missing_first_sale_date_yields_null_age(self, forecaster,
-                                                     price_frame, enabled):
+    def test_missing_first_sale_date_yields_null_age(self, forecaster, price_frame, enabled):
         out = forecaster._add_bymykel_metadata_features(price_frame.copy())
         assert pd.isna(out[out["item_id"] == "C"]["item_age_meta_days"].iloc[0])
 
@@ -142,15 +147,13 @@ class TestJoin:
         out = forecaster._add_bymykel_metadata_features(df)
         assert pd.isna(out["item_age_meta_days"].iloc[0])
 
-    def test_columns_survive_select_feature_cols(self, forecaster, price_frame,
-                                                 enabled):
+    def test_columns_survive_select_feature_cols(self, forecaster, price_frame, enabled):
         # The regression this exists for: the source columns are pandas nullable
         # Int64, and _select_feature_cols keeps a column only if its dtype is in
         # (float64, float32, int64, int, float). Int64 is none of those, so an
         # uncast column is dropped silently and the arm measures a clean null.
         out = forecaster._add_bymykel_metadata_features(price_frame.copy())
-        kept = ItemForecaster._select_feature_cols(
-            out, ItemForecaster.HORIZONS, frozenset())
+        kept = ItemForecaster._select_feature_cols(out, ItemForecaster.HORIZONS, frozenset())
         assert set(META_COLS).issubset(kept)
 
     def test_empty_metadata_is_a_no_op(self, price_frame, enabled):
@@ -166,22 +169,19 @@ class TestArtifactGuard:
 
     def test_flag_mismatch_refuses_to_load(self, monkeypatch):
         monkeypatch.setenv("BYMYKEL_METADATA", "1")
-        meta = {"model_artifact_version": ItemForecaster.MODEL_ARTIFACT_VERSION,
-                "bymykel_metadata": False}
+        meta = {"model_artifact_version": ItemForecaster.MODEL_ARTIFACT_VERSION, "bymykel_metadata": False}
         with pytest.raises(IncompatibleModelArtifact, match="BYMYKEL_METADATA"):
             self._forecaster()._check_artifact_version(meta)
 
     def test_flag_mismatch_the_other_way_also_refuses(self, monkeypatch):
         monkeypatch.delenv("BYMYKEL_METADATA", raising=False)
-        meta = {"model_artifact_version": ItemForecaster.MODEL_ARTIFACT_VERSION,
-                "bymykel_metadata": True}
+        meta = {"model_artifact_version": ItemForecaster.MODEL_ARTIFACT_VERSION, "bymykel_metadata": True}
         with pytest.raises(IncompatibleModelArtifact, match="BYMYKEL_METADATA"):
             self._forecaster()._check_artifact_version(meta)
 
     def test_matching_flag_loads(self, monkeypatch):
         monkeypatch.delenv("BYMYKEL_METADATA", raising=False)
-        meta = {"model_artifact_version": ItemForecaster.MODEL_ARTIFACT_VERSION,
-                "bymykel_metadata": False}
+        meta = {"model_artifact_version": ItemForecaster.MODEL_ARTIFACT_VERSION, "bymykel_metadata": False}
         self._forecaster()._check_artifact_version(meta)
 
     def test_a_pre_flag_artifact_reads_as_disabled(self, monkeypatch):
@@ -203,14 +203,16 @@ class TestExceedanceMetaGate:
 
     @staticmethod
     def _train_set():
-        return pd.DataFrame({
-            "return_1d": [0.1, -0.2, 0.0],
-            "price_zscore_30d": [1.0, 0.0, -1.0],
-            "rarity_meta_rank": [6, 3, 1],
-            "is_meta_stattrak": [1, 0, 0],
-            "float_meta_min": [0.0, 0.07, 0.15],
-            "target_exceed_7d": [1, 0, 1],
-        })
+        return pd.DataFrame(
+            {
+                "return_1d": [0.1, -0.2, 0.0],
+                "price_zscore_30d": [1.0, 0.0, -1.0],
+                "rarity_meta_rank": [6, 3, 1],
+                "is_meta_stattrak": [1, 0, 0],
+                "float_meta_min": [0.0, 0.07, 0.15],
+                "target_exceed_7d": [1, 0, 1],
+            }
+        )
 
     FEATURE_COLS = ["return_1d", "price_zscore_30d"]
 
@@ -218,9 +220,15 @@ class TestExceedanceMetaGate:
         monkeypatch.delenv("EXCEEDANCE_META", raising=False)
         assert ItemForecaster.exceedance_meta_enabled() is False
 
-    @pytest.mark.parametrize("value,expected", [
-        ("1", True), ("0", False), ("", False), ("true", False),
-    ])
+    @pytest.mark.parametrize(
+        "value,expected",
+        [
+            ("1", True),
+            ("0", False),
+            ("", False),
+            ("true", False),
+        ],
+    )
     def test_only_the_literal_one_enables_it(self, monkeypatch, value, expected):
         monkeypatch.setenv("EXCEEDANCE_META", value)
         assert ItemForecaster.exceedance_meta_enabled() is expected
@@ -237,14 +245,12 @@ class TestExceedanceMetaGate:
         X = fc._exceedance_feature_matrix(self._train_set(), self.FEATURE_COLS)
         # Allowlist order is preserved; the widening is appended, sorted, so the
         # column order is a function of the flag alone and not of frame order.
-        assert list(X.columns) == self.FEATURE_COLS + [
-            "float_meta_min", "is_meta_stattrak", "rarity_meta_rank"]
+        assert list(X.columns) == self.FEATURE_COLS + ["float_meta_min", "is_meta_stattrak", "rarity_meta_rank"]
 
     def test_enabled_with_no_meta_columns_does_not_raise(self, monkeypatch):
         monkeypatch.setenv("EXCEEDANCE_META", "1")
         fc = ItemForecaster.__new__(ItemForecaster)
-        bare = self._train_set().drop(columns=[
-            "rarity_meta_rank", "is_meta_stattrak", "float_meta_min"])
+        bare = self._train_set().drop(columns=["rarity_meta_rank", "is_meta_stattrak", "float_meta_min"])
         X = fc._exceedance_feature_matrix(bare, self.FEATURE_COLS)
         assert list(X.columns) == self.FEATURE_COLS
 

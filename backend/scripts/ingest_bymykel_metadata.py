@@ -43,21 +43,21 @@ Usage:
     python scripts/ingest_bymykel_metadata.py --offline        # use cached dumps
     python scripts/ingest_bymykel_metadata.py --coverage-only  # report, no write
 """
+
 from __future__ import annotations
 
-import re
-import sys
+import argparse
 import json
 import logging
-import argparse
-from pathlib import Path
+import re
+import sys
 from datetime import date
+from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 import pandas as pd
 import requests
-
 from models.steam_types import RARITY_KEYWORDS, RARITY_RANK
 
 logging.basicConfig(
@@ -75,8 +75,18 @@ CODE_BOOK = PRICE_ARCHIVE / "item-metadata-bymykel-codes.json"
 # skins.json first: it is the only dump needing name expansion, and the only one
 # carrying float caps. The rest are keyed by market_hash_name and merely add rows.
 DUMPS = (
-    "skins", "crates", "collections", "stickers", "sticker_slabs", "graffiti",
-    "collectibles", "highlights", "music_kits", "patches", "keychains", "agents",
+    "skins",
+    "crates",
+    "collections",
+    "stickers",
+    "sticker_slabs",
+    "graffiti",
+    "collectibles",
+    "highlights",
+    "music_kits",
+    "patches",
+    "keychains",
+    "agents",
 )
 # Dumps that are a straight market_hash_name -> attributes read.
 NAME_KEYED_DUMPS = tuple(d for d in DUMPS if d not in ("skins", "collections"))
@@ -241,7 +251,7 @@ def expand_skin_names(entry: dict) -> list[tuple[str, bool, bool]]:
     star = ""
     base = name
     if base.startswith(STAR_PREFIX):
-        star, base = STAR_PREFIX, base[len(STAR_PREFIX):]
+        star, base = STAR_PREFIX, base[len(STAR_PREFIX) :]
 
     variants = [("", False, False)]
     if entry.get("stattrak"):
@@ -249,8 +259,7 @@ def expand_skin_names(entry: dict) -> list[tuple[str, bool, bool]]:
     if entry.get("souvenir"):
         variants.append((SOUVENIR_PREFIX, False, True))
 
-    wears = [w.get("name") for w in (entry.get("wears") or [])
-             if isinstance(w, dict) and w.get("name")]
+    wears = [w.get("name") for w in (entry.get("wears") or []) if isinstance(w, dict) and w.get("name")]
     suffixes = [f" ({w})" for w in wears] or [""]
 
     out = []
@@ -263,6 +272,7 @@ def expand_skin_names(entry: dict) -> list[tuple[str, bool, bool]]:
 # --------------------------------------------------------------------------
 # Fetching
 # --------------------------------------------------------------------------
+
 
 def fetch_dump(name: str, cache_dir: Path, offline: bool = False):
     """Read one dump, from cache when offline or when already downloaded."""
@@ -278,20 +288,19 @@ def fetch_dump(name: str, cache_dir: Path, offline: bool = False):
     resp.raise_for_status()
     payload = resp.json()
     path.write_text(json.dumps(payload))
-    logger.info(f"  {name:14s} {len(payload):>6,} entries "
-                f"({len(resp.content) / 1e6:.1f} MB)")
+    logger.info(f"  {name:14s} {len(payload):>6,} entries ({len(resp.content) / 1e6:.1f} MB)")
     return payload
 
 
 def fetch_all(cache_dir: Path, offline: bool = False) -> dict:
-    logger.info(f"Fetching {len(DUMPS)} dumps from ByMykel/CSGO-API"
-                f"{' (offline, from cache)' if offline else ''}...")
+    logger.info(f"Fetching {len(DUMPS)} dumps from ByMykel/CSGO-API{' (offline, from cache)' if offline else ''}...")
     return {name: fetch_dump(name, cache_dir, offline) for name in DUMPS}
 
 
 # --------------------------------------------------------------------------
 # Build
 # --------------------------------------------------------------------------
+
 
 def build_date_maps(dumps: dict) -> tuple[dict, dict]:
     """crate id -> first sale date, collection id -> release date.
@@ -320,16 +329,17 @@ def build_date_maps(dumps: dict) -> tuple[dict, dict]:
         released = collection_dates.get(entry["id"])
         if released is None:
             continue
-        for crate in (entry.get("crates") or []):
+        for crate in entry.get("crates") or []:
             crate_id = crate.get("id") if isinstance(crate, dict) else None
             if crate_id and crate_id not in crate_dates:
                 crate_dates[crate_id] = released
 
-    logger.info(f"  crate first_sale_date:    {n_direct:>5,}/"
-                f"{len(dumps['crates']):,} direct, "
-                f"{len(crate_dates) - n_direct:,} inherited from a collection")
-    logger.info(f"  collection release_date:  {len(collection_dates):>5,}/"
-                f"{len(dumps['collections']):,}")
+    logger.info(
+        f"  crate first_sale_date:    {n_direct:>5,}/"
+        f"{len(dumps['crates']):,} direct, "
+        f"{len(crate_dates) - n_direct:,} inherited from a collection"
+    )
+    logger.info(f"  collection release_date:  {len(collection_dates):>5,}/{len(dumps['collections']):,}")
     return crate_dates, collection_dates
 
 
@@ -347,7 +357,7 @@ def build_crate_index(dumps: dict) -> dict[str, list[str]]:
         if not crate_id:
             continue
         for key in ("contains", "contains_rare"):
-            for item in (crate.get(key) or []):
+            for item in crate.get(key) or []:
                 item_id = item.get("id") if isinstance(item, dict) else None
                 if item_id:
                     index.setdefault(item_id, []).append(crate_id)
@@ -378,13 +388,22 @@ def build_records(dumps: dict, codebook: CodeBook) -> dict[str, dict]:
     crate_dates, collection_dates = build_date_maps(dumps)
     crate_index = build_crate_index(dumps)
     codebook.assign("crate", (c["id"] for c in dumps["crates"] if c.get("id")))
-    codebook.assign("collection",
-                    (c["id"] for c in dumps["collections"] if c.get("id")))
+    codebook.assign("collection", (c["id"] for c in dumps["collections"] if c.get("id")))
     records: dict[str, dict] = {}
 
-    def upsert(slug, rarity, crates, collections, *, entity_id=None,
-               own_date=None, stattrak=False, souvenir=False,
-               float_min=None, float_max=None):
+    def upsert(
+        slug,
+        rarity,
+        crates,
+        collections,
+        *,
+        entity_id=None,
+        own_date=None,
+        stattrak=False,
+        souvenir=False,
+        float_min=None,
+        float_max=None,
+    ):
         crate_ids = [c["id"] for c in (crates or []) if isinstance(c, dict) and c.get("id")]
         crate_ids = sorted(set(crate_ids) | set(crate_index.get(entity_id, [])))
         coll_ids = [c["id"] for c in (collections or []) if isinstance(c, dict) and c.get("id")]
@@ -427,19 +446,31 @@ def build_records(dumps: dict, codebook: CodeBook) -> dict[str, dict]:
 
     for entry in dumps["skins"]:
         for slug, is_st, is_sv in expand_skin_names(entry):
-            upsert(slug, entry.get("rarity"), entry.get("crates"),
-                   entry.get("collections"), entity_id=entry.get("id"),
-                   stattrak=is_st, souvenir=is_sv,
-                   float_min=entry.get("min_float"), float_max=entry.get("max_float"))
+            upsert(
+                slug,
+                entry.get("rarity"),
+                entry.get("crates"),
+                entry.get("collections"),
+                entity_id=entry.get("id"),
+                stattrak=is_st,
+                souvenir=is_sv,
+                float_min=entry.get("min_float"),
+                float_max=entry.get("max_float"),
+            )
 
     for dump_name in NAME_KEYED_DUMPS:
         for entry in dumps[dump_name]:
             slug = entry.get("market_hash_name")
             if not slug:
                 continue
-            upsert(slug, entry.get("rarity"), entry.get("crates"),
-                   entry.get("collections"), entity_id=entry.get("id"),
-                   own_date=normalise_date(entry.get("first_sale_date")))
+            upsert(
+                slug,
+                entry.get("rarity"),
+                entry.get("crates"),
+                entry.get("collections"),
+                entity_id=entry.get("id"),
+                own_date=normalise_date(entry.get("first_sale_date")),
+            )
 
     return records
 
@@ -447,8 +478,7 @@ def build_records(dumps: dict, codebook: CodeBook) -> dict[str, dict]:
 def build_frame(dumps: dict, codebook: CodeBook) -> pd.DataFrame:
     records = build_records(dumps, codebook)
     df = pd.DataFrame.from_records(list(records.values()), columns=list(OUTPUT_COLUMNS))
-    df["item_age_first_sale_date"] = pd.to_datetime(
-        df["item_age_first_sale_date"], errors="coerce")
+    df["item_age_first_sale_date"] = pd.to_datetime(df["item_age_first_sale_date"], errors="coerce")
     for col in ("item_age_ambiguous", "is_meta_stattrak", "is_meta_souvenir"):
         df[col] = df[col].astype("int8")
     for col in ("rarity_meta_rank", "type_meta_crate_id", "type_meta_collection_id"):
@@ -462,8 +492,8 @@ def build_frame(dumps: dict, codebook: CodeBook) -> pd.DataFrame:
 # Coverage
 # --------------------------------------------------------------------------
 
-def archive_slugs(min_price: float | None = None, min_days: int | None = None,
-                  before: str | None = None) -> set[str]:
+
+def archive_slugs(min_price: float | None = None, min_days: int | None = None, before: str | None = None) -> set[str]:
     """Distinct item_slug in the local price archive, optionally cohort-filtered.
 
     The cohorts mirror `ab_test_item_metadata.py`: the deep >=$1 universe is
@@ -471,6 +501,7 @@ def archive_slugs(min_price: float | None = None, min_days: int | None = None,
     on the `aggregator_sync` series; the served cohort is the plain >=$1 median.
     """
     import duckdb
+
     con = duckdb.connect()
     files = sorted(str(p) for p in PRICE_ARCHIVE.glob("prices-*.parquet"))
     if not files:
@@ -478,11 +509,9 @@ def archive_slugs(min_price: float | None = None, min_days: int | None = None,
 
     parts = []
     for path in files:
-        cols = {r[0] for r in con.sql(
-            f"DESCRIBE SELECT * FROM read_parquet('{path}')").fetchall()}
+        cols = {r[0] for r in con.sql(f"DESCRIBE SELECT * FROM read_parquet('{path}')").fetchall()}
         where = " WHERE source = 'aggregator_sync'" if "source" in cols else ""
-        parts.append(f"SELECT item_slug, day, mean_price FROM "
-                     f"read_parquet('{path}'){where}")
+        parts.append(f"SELECT item_slug, day, mean_price FROM read_parquet('{path}'){where}")
     union = " UNION ALL BY NAME ".join(parts)
 
     having = []
@@ -494,8 +523,7 @@ def archive_slugs(min_price: float | None = None, min_days: int | None = None,
         having.append(f"min(day) < DATE '{before}'")
     clause = f" HAVING {' AND '.join(having)}" if having else ""
 
-    rows = con.sql(f"SELECT item_slug FROM ({union}) "
-                   f"GROUP BY item_slug{clause}").fetchall()
+    rows = con.sql(f"SELECT item_slug FROM ({union}) GROUP BY item_slug{clause}").fetchall()
     return {r[0] for r in rows}
 
 
@@ -509,8 +537,7 @@ def report_coverage(df: pd.DataFrame, label: str, slugs: set[str]) -> None:
     """
     matched = df[df["item_slug"].isin(slugs)]
     n = len(slugs)
-    logger.info(f"{label}: {n:,} slugs, {len(matched):,} matched "
-                f"({100.0 * len(matched) / n:.1f}%)")
+    logger.info(f"{label}: {n:,} slugs, {len(matched):,} matched ({100.0 * len(matched) / n:.1f}%)")
     for col in OUTPUT_COLUMNS[1:]:
         if col in ("is_meta_stattrak", "is_meta_souvenir", "item_age_ambiguous"):
             # Zero is a real value on these, so "populated" means the row exists
@@ -520,27 +547,26 @@ def report_coverage(df: pd.DataFrame, label: str, slugs: set[str]) -> None:
         else:
             populated = int(matched[col].notna().sum())
             extra = ""
-        logger.info(f"    {col:26s} {populated:>7,}/{n:,} "
-                    f"({100.0 * populated / n:5.1f}%){extra}")
+        logger.info(f"    {col:26s} {populated:>7,}/{n:,} ({100.0 * populated / n:5.1f}%){extra}")
 
 
 # --------------------------------------------------------------------------
 
+
 def main() -> int:
-    parser = argparse.ArgumentParser(
-        description="Ingest ByMykel/CSGO-API item metadata")
-    parser.add_argument("--offline", action="store_true",
-                        help="Use cached dumps instead of refetching")
+    parser = argparse.ArgumentParser(description="Ingest ByMykel/CSGO-API item metadata")
+    parser.add_argument("--offline", action="store_true", help="Use cached dumps instead of refetching")
     parser.add_argument("--cache-dir", default=str(CACHE_DIR))
     parser.add_argument("--out", default=str(OUTPUT_PARQUET))
-    parser.add_argument("--code-book", default=str(CODE_BOOK),
-                        help="Append-only crate/collection code assignment. "
-                             "Delete it only alongside a retrain: existing "
-                             "codes are what a trained booster's splits mean.")
-    parser.add_argument("--coverage-only", action="store_true",
-                        help="Report coverage and exit without writing")
-    parser.add_argument("--skip-coverage", action="store_true",
-                        help="Skip the archive join (no DuckDB read)")
+    parser.add_argument(
+        "--code-book",
+        default=str(CODE_BOOK),
+        help="Append-only crate/collection code assignment. "
+        "Delete it only alongside a retrain: existing "
+        "codes are what a trained booster's splits mean.",
+    )
+    parser.add_argument("--coverage-only", action="store_true", help="Report coverage and exit without writing")
+    parser.add_argument("--skip-coverage", action="store_true", help="Skip the archive join (no DuckDB read)")
     args = parser.parse_args()
 
     dumps = fetch_all(Path(args.cache_dir), offline=args.offline)
@@ -551,8 +577,7 @@ def main() -> int:
 
     if not args.skip_coverage:
         logger.info("Coverage against the local price archive:")
-        report_coverage(df, "  deep >=$1 universe",
-                        archive_slugs(min_price=1.0, min_days=180, before="2026-01-01"))
+        report_coverage(df, "  deep >=$1 universe", archive_slugs(min_price=1.0, min_days=180, before="2026-01-01"))
         report_coverage(df, "  served >=$1 cohort", archive_slugs(min_price=1.0))
         report_coverage(df, "  full archive", archive_slugs())
 

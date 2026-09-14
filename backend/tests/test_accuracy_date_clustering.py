@@ -8,12 +8,12 @@ persistent "down" bias makes it score 33% on the up date and 64% on the down
 one. Resampling items as if independent turns two market days into a tight
 confidence interval around a number that is really one coin flip per date.
 """
+
 from __future__ import annotations
 
 from datetime import date
 
 import pytest
-
 from backtest.scoring import (
     MIN_FORECAST_DATES,
     block_bootstrap_ci,
@@ -46,10 +46,7 @@ D2 = date(2026, 7, 17)
 
 class TestDateCoverageIsReported:
     def test_distinct_forecast_dates_is_in_the_metrics(self):
-        records = (
-            [_record(1, D1, item_id=i) for i in range(50)]
-            + [_record(0, D2, item_id=100 + i) for i in range(50)]
-        )
+        records = [_record(1, D1, item_id=i) for i in range(50)] + [_record(0, D2, item_id=100 + i) for i in range(50)]
         metrics, n = score_cohort(records)
         assert n == 100
         assert metrics["distinct_forecast_dates"] == 2
@@ -63,10 +60,7 @@ class TestDateCoverageIsReported:
         )
 
     def test_sufficiency_threshold_is_met_at_the_minimum(self):
-        records = [
-            _record(1, date(2026, 1, d + 1), item_id=d)
-            for d in range(MIN_FORECAST_DATES)
-        ]
+        records = [_record(1, date(2026, 1, d + 1), item_id=d) for d in range(MIN_FORECAST_DATES)]
         metrics, _ = score_cohort(records)
         assert metrics["distinct_forecast_dates"] == MIN_FORECAST_DATES
         assert metrics["date_coverage_sufficient"] is True
@@ -84,19 +78,16 @@ class TestBlockBootstrapWidensWithClustering:
         interval around 50%; resampling dates must admit that the truth could
         be either date's answer.
         """
-        records = (
-            [_record(1, D1, item_id=i) for i in range(500)]
-            + [_record(0, D2, item_id=1000 + i) for i in range(500)]
-        )
+        records = [_record(1, D1, item_id=i) for i in range(500)] + [
+            _record(0, D2, item_id=1000 + i) for i in range(500)
+        ]
         values = [r["direction_correct"] for r in records]
         clusters = [r["forecast_date"] for r in records]
 
         naive_lo, naive_hi = bootstrap_ci(values)
         block_lo, block_hi = block_bootstrap_ci(values, clusters)
 
-        assert (block_hi - block_lo) > (naive_hi - naive_lo), (
-            "clustered CI must be wider than the item-resampled one"
-        )
+        assert (block_hi - block_lo) > (naive_hi - naive_lo), "clustered CI must be wider than the item-resampled one"
         # Resampling 2 all-or-nothing dates must reach both extremes.
         assert block_lo == pytest.approx(0.0, abs=0.01)
         assert block_hi == pytest.approx(1.0, abs=0.01)
@@ -117,17 +108,12 @@ class TestBlockBootstrapWidensWithClustering:
         assert lo is None and hi is None
 
     def test_score_cohort_reports_the_clustered_interval(self):
-        records = (
-            [_record(1, D1, item_id=i) for i in range(500)]
-            + [_record(0, D2, item_id=1000 + i) for i in range(500)]
-        )
+        records = [_record(1, D1, item_id=i) for i in range(500)] + [
+            _record(0, D2, item_id=1000 + i) for i in range(500)
+        ]
         metrics, _ = score_cohort(records)
-        naive_width = (
-            metrics["directional_accuracy_ci_upper"]
-            - metrics["directional_accuracy_ci_lower"]
-        )
+        naive_width = metrics["directional_accuracy_ci_upper"] - metrics["directional_accuracy_ci_lower"]
         clustered_width = (
-            metrics["directional_accuracy_ci_clustered_upper"]
-            - metrics["directional_accuracy_ci_clustered_lower"]
+            metrics["directional_accuracy_ci_clustered_upper"] - metrics["directional_accuracy_ci_clustered_lower"]
         )
         assert clustered_width > naive_width

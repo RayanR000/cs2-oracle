@@ -1,31 +1,49 @@
-from typing import Optional, List
-from fastapi import APIRouter, Depends, HTTPException, Query
-from sqlalchemy.orm import Session
-from sqlalchemy import desc, asc, func, text
-from datetime import datetime, timedelta, timezone
-from pydantic import BaseModel
-import re
+import json
 import math
 import os
-import json
+import re
+from datetime import UTC, datetime, timedelta
 
 from database import (
-    get_db, Item, PriceHistory, ItemForecast,
-    Event, EventImpact, EventCorrelation, backfilled_item_clause,
+    Event,
+    EventCorrelation,
+    EventImpact,
+    Item,
+    ItemForecast,
+    PriceHistory,
+    backfilled_item_clause,
+    get_db,
 )
+from fastapi import APIRouter, Depends, HTTPException, Query
+from pydantic import BaseModel
+from sqlalchemy import desc, func, text
+from sqlalchemy.orm import Session
+
 from api.cache import get_or_build
-from api.serving_policy import price_floor_clause
 from api.schemas import (
-    ItemOut, PricePointOut, TrendAnalysisOut, PredictionOut,
-    SourcePriceOut, MultiSourcePricesOut, EventOut, TrendingItemOut,
-    EventImpactOut, FeatureImportanceOut, FeatureImportanceItem,
-    SocialMentionOut, SocialSentimentSummaryOut, VolatilityRankOut,
+    EventImpactOut,
+    EventOut,
+    FeatureImportanceItem,
+    FeatureImportanceOut,
+    ItemOut,
+    MultiSourcePricesOut,
+    PredictionOut,
+    PricePointOut,
+    SocialMentionOut,
+    SocialSentimentSummaryOut,
+    SourcePriceOut,
+    TrendAnalysisOut,
+    TrendingItemOut,
+    VolatilityRankOut,
 )
-from api.serving_policy import (MIN_SERVED_PRICE_USD, SERVED_HORIZONS,
-                                served_direction)
+from api.serving_policy import MIN_SERVED_PRICE_USD, SERVED_HORIZONS, price_floor_clause, served_direction
 from api.volatility_tags import (
-    build_ranking, tag_fields, swing_pct, compute_thresholds,
-    move_odds_calibrated, CALIBRATED_MOVE_ODDS_HORIZONS,
+    CALIBRATED_MOVE_ODDS_HORIZONS,
+    build_ranking,
+    compute_thresholds,
+    move_odds_calibrated,
+    swing_pct,
+    tag_fields,
 )
 
 router = APIRouter(prefix="/items", tags=["items"])
@@ -52,7 +70,7 @@ def items_count(db: Session = Depends(get_db)):
 
 @router.get("/", response_model=list[ItemOut])
 def list_items(
-    type: Optional[str] = Query(None),
+    type: str | None = Query(None),
     skip: int = Query(0, ge=0),
     limit: int = Query(50, ge=1, le=200),
     db: Session = Depends(get_db),
@@ -72,11 +90,7 @@ def search_items(
     db: Session = Depends(get_db),
 ):
     return (
-        db.query(Item)
-        .filter(Item.name.ilike(f"%{q}%"), backfilled_item_clause())
-        .order_by(Item.name)
-        .limit(50)
-        .all()
+        db.query(Item).filter(Item.name.ilike(f"%{q}%"), backfilled_item_clause()).order_by(Item.name).limit(50).all()
     )
 
 
@@ -85,9 +99,7 @@ def trending_items(
     limit: int = Query(10, ge=1, le=100),
     db: Session = Depends(get_db),
 ):
-    return get_or_build(
-        f"items_trending:{limit}", 600, lambda: _build_trending(db, limit)
-    )
+    return get_or_build(f"items_trending:{limit}", 600, lambda: _build_trending(db, limit))
 
 
 def _latest_prices(db: Session, item_ids: list[int]) -> dict[int, float]:
@@ -166,9 +178,9 @@ def get_volatility_ranking(
     order: str = Query("desc", pattern="^(asc|desc)$"),
     min_price: float = Query(MIN_SERVED_PRICE_USD, ge=0.0),
     limit: int = Query(100, ge=1, le=1000),
-    label: Optional[str] = Query(
-        None, pattern="^(Stable|Moderate|Volatile)$",
-        description="Keep only items with this stability class"),
+    label: str | None = Query(
+        None, pattern="^(Stable|Moderate|Volatile)$", description="Keep only items with this stability class"
+    ),
     db: Session = Depends(get_db),
 ):
     """Rank the served universe by volatility for a horizon.
@@ -183,27 +195,27 @@ def get_volatility_ranking(
     if horizon not in SERVED_HORIZONS:
         raise HTTPException(
             status_code=400,
-            detail=(f"horizon must be one of "
-                    f"{', '.join(map(str, SERVED_HORIZONS))}; got {horizon}"),
+            detail=(f"horizon must be one of {', '.join(map(str, SERVED_HORIZONS))}; got {horizon}"),
         )
     if sort == "move_odds" and not move_odds_calibrated(horizon):
         raise HTTPException(
             status_code=400,
-            detail=(f"move_odds is calibrated only at horizons "
-                    f"{', '.join(map(str, CALIBRATED_MOVE_ODDS_HORIZONS))}; "
-                    f"cannot sort by it at horizon {horizon}"),
+            detail=(
+                f"move_odds is calibrated only at horizons "
+                f"{', '.join(map(str, CALIBRATED_MOVE_ODDS_HORIZONS))}; "
+                f"cannot sort by it at horizon {horizon}"
+            ),
         )
     return get_or_build(
         f"items_volatility:{horizon}:{sort}:{order}:{min_price}:{limit}:{label}",
         600,
-        lambda: _volatility_ranking(db, horizon, sort, order, min_price, limit,
-                                    label),
+        lambda: _volatility_ranking(db, horizon, sort, order, min_price, limit, label),
     )
 
 
-def _volatility_ranking(db: Session, horizon: int, sort: str, order: str,
-                        min_price: float, limit: int,
-                        label: Optional[str] = None):
+def _volatility_ranking(
+    db: Session, horizon: int, sort: str, order: str, min_price: float, limit: int, label: str | None = None
+):
     from datetime import date, timedelta
 
     freshness_floor = date.today() - timedelta(days=MAX_ARCHIVE_LAG_DAYS)
@@ -228,22 +240,33 @@ def _volatility_ranking(db: Session, horizon: int, sort: str, order: str,
     )
     rows = (
         db.query(
-            Item.item_id, Item.name,
-            subq.c.price_low, subq.c.price_mid, subq.c.price_high,
-            subq.c.current_price, subq.c.exceed_p,
+            Item.item_id,
+            Item.name,
+            subq.c.price_low,
+            subq.c.price_mid,
+            subq.c.price_high,
+            subq.c.current_price,
+            subq.c.exceed_p,
         )
         .join(subq, Item.id == subq.c.item_id)
         .filter(backfilled_item_clause())
         .all()
     )
     universe = [
-        dict(item_id=r.item_id, name=r.name, current_price=r.current_price,
-             low=r.price_low, high=r.price_high, mid=r.price_mid, exceed_p=r.exceed_p)
+        dict(
+            item_id=r.item_id,
+            name=r.name,
+            current_price=r.current_price,
+            low=r.price_low,
+            high=r.price_high,
+            mid=r.price_mid,
+            exceed_p=r.exceed_p,
+        )
         for r in rows
     ]
-    ranked = build_ranking(universe, sort=sort, order=order, limit=limit,
-                            calibrated_move_odds=move_odds_calibrated(horizon),
-                            label=label)
+    ranked = build_ranking(
+        universe, sort=sort, order=order, limit=limit, calibrated_move_odds=move_odds_calibrated(horizon), label=label
+    )
     return [VolatilityRankOut(**t) for t in ranked]
 
 
@@ -264,8 +287,11 @@ def _horizon_swing_thresholds(db: Session, horizon: int):
     freshness_floor = date.today() - timedelta(days=MAX_ARCHIVE_LAG_DAYS)
     subq = (
         db.query(
-            ItemForecast.item_id, ItemForecast.forecast_date,
-            ItemForecast.price_low, ItemForecast.price_mid, ItemForecast.price_high,
+            ItemForecast.item_id,
+            ItemForecast.forecast_date,
+            ItemForecast.price_low,
+            ItemForecast.price_mid,
+            ItemForecast.price_high,
         )
         .filter(
             ItemForecast.forecast_date >= freshness_floor,
@@ -277,15 +303,14 @@ def _horizon_swing_thresholds(db: Session, horizon: int):
         .subquery()
     )
     rows = db.query(subq.c.price_low, subq.c.price_mid, subq.c.price_high).all()
-    swings = [s for s in (swing_pct(r.price_low, r.price_high, r.price_mid)
-                          for r in rows) if s is not None]
+    swings = [s for s in (swing_pct(r.price_low, r.price_high, r.price_mid) for r in rows) if s is not None]
     thresholds = compute_thresholds(swings) if swings else None
     _SWING_THRESHOLD_CACHE[key] = thresholds
     return thresholds
 
 
 def _parse_item_name(name: str):
-    match = re.match(r'^(.+?)\s*\(([^)]+)\)\s*$', name)
+    match = re.match(r"^(.+?)\s*\(([^)]+)\)\s*$", name)
     if match:
         return match.group(1).strip(), match.group(2).strip()
     return name, None
@@ -295,12 +320,12 @@ class QualityVariantOut(BaseModel):
     item_id: str
     name: str
     quality: str
-    current_price: Optional[float] = None
-    price_change_24h: Optional[float] = None
-    volume_24h: Optional[int] = None
+    current_price: float | None = None
+    price_change_24h: float | None = None
+    volume_24h: int | None = None
 
 
-@router.get("/{item_id}/variants", response_model=List[QualityVariantOut])
+@router.get("/{item_id}/variants", response_model=list[QualityVariantOut])
 def get_item_variants(
     item_id: str,
     db: Session = Depends(get_db),
@@ -308,10 +333,14 @@ def get_item_variants(
     item = _resolve_item(item_id, db)
     base_name, _ = _parse_item_name(item.name)
 
-    all_items = db.query(Item).filter(
-        Item.name.ilike(f"%{base_name}%"),
-        Item.type == item.type,
-    ).all()
+    all_items = (
+        db.query(Item)
+        .filter(
+            Item.name.ilike(f"%{base_name}%"),
+            Item.type == item.type,
+        )
+        .all()
+    )
 
     matching = [i for i in all_items if _parse_item_name(i.name)[0] == base_name]
     if not matching:
@@ -319,7 +348,7 @@ def get_item_variants(
 
     item_ids = [i.id for i in matching]
 
-    cutoff = datetime.now(timezone.utc) - timedelta(days=2)
+    cutoff = datetime.now(UTC) - timedelta(days=2)
     price_rows = (
         db.query(PriceHistory)
         .filter(
@@ -354,7 +383,9 @@ def get_item_variants(
         _, quality = _parse_item_name(i.name)
         quality = quality or "Standard"
 
-        if quality not in by_quality or (current_price is not None and by_quality[quality].get("current_price") is None):
+        if quality not in by_quality or (
+            current_price is not None and by_quality[quality].get("current_price") is None
+        ):
             by_quality[quality] = {
                 "item_id": i.item_id,
                 "name": i.name,
@@ -384,7 +415,7 @@ def get_price_history(
 ):
     item = _resolve_item(item_id, db)
 
-    cutoff = datetime.now(timezone.utc) - timedelta(days=days)
+    cutoff = datetime.now(UTC) - timedelta(days=days)
     all_records = (
         db.query(PriceHistory)
         .filter(
@@ -396,7 +427,7 @@ def get_price_history(
     )
     all_prices = [r.price for r in all_records]
     if all_records:
-        records = all_records[skip:skip + limit]
+        records = all_records[skip : skip + limit]
     else:
         records = []
 
@@ -407,7 +438,7 @@ def get_price_history(
     if len(all_prices) >= 30:
         sma_30 = sum(all_prices[-30:]) / 30
 
-    records_slice = records[skip:skip + limit]
+    records_slice = records[skip : skip + limit]
 
     return [
         PricePointOut(
@@ -431,6 +462,7 @@ def _compute_bollinger_bands(prices, window=20, num_std=2):
     std = math.sqrt(variance)
     return sma + num_std * std, sma, sma - num_std * std
 
+
 def _compute_rsi(prices, window=14):
     if len(prices) < window + 1:
         return None
@@ -448,20 +480,24 @@ def _compute_rsi(prices, window=14):
     rs = avg_gain / avg_loss
     return 100.0 - (100.0 / (1.0 + rs))
 
+
 def _compute_macd(prices, fast=12, slow=26, signal=9):
     if len(prices) < slow + signal:
         return None, None
+
     def ema(data, period):
         k = 2.0 / (period + 1)
         result = [data[0]]
         for v in data[1:]:
             result.append(v * k + result[-1] * (1 - k))
         return result
+
     fast_ema = ema(prices, fast)
     slow_ema = ema(prices, slow)
     macd_line = [f - s for f, s in zip(fast_ema, slow_ema)]
     signal_line = ema(macd_line, signal)
     return macd_line[-1], signal_line[-1]
+
 
 def _compute_support_resistance(prices, window=20):
     if len(prices) < window:
@@ -473,12 +509,14 @@ def _compute_support_resistance(prices, window=20):
 class _DictObj:
     def __init__(self, d):
         self.__dict__["_d"] = d
+
     def __getattr__(self, k):
         return self._d.get(k)
 
 
 def _forecast_parquet(item_id: int, horizon_days: int = 7):
     from db.parquet import ParquetQuery
+
     with ParquetQuery("item_forecasts") as q:
         df = q.query(f"""
             SELECT * FROM item_forecasts
@@ -497,20 +535,13 @@ def _trends_parquet(item, item_id: str, db: Session):
         return None
     trend_dir = served_direction(r.direction, 7)
     latest_price = (
-        db.query(PriceHistory)
-        .filter(PriceHistory.item_id == item.id)
-        .order_by(desc(PriceHistory.timestamp))
-        .first()
+        db.query(PriceHistory).filter(PriceHistory.item_id == item.id).order_by(desc(PriceHistory.timestamp)).first()
     )
     current_price = latest_price.price if latest_price else 0.0
     explanation = _build_trend_explanation(trend_dir, current_price)
     price_points = [
-        p.price for p in (
-            db.query(PriceHistory)
-            .filter(PriceHistory.item_id == item.id)
-            .order_by(PriceHistory.timestamp)
-            .all()
-        )
+        p.price
+        for p in (db.query(PriceHistory).filter(PriceHistory.item_id == item.id).order_by(PriceHistory.timestamp).all())
     ]
     sma_7 = sum(price_points[-7:]) / 7 if len(price_points) >= 7 else None
     sma_30 = sum(price_points[-30:]) / 30 if len(price_points) >= 30 else None
@@ -569,25 +600,17 @@ def get_item_trends(item_id: str, db: Session = Depends(get_db)):
     )
 
     latest_price = (
-        db.query(PriceHistory)
-        .filter(PriceHistory.item_id == item.id)
-        .order_by(desc(PriceHistory.timestamp))
-        .first()
+        db.query(PriceHistory).filter(PriceHistory.item_id == item.id).order_by(desc(PriceHistory.timestamp)).first()
     )
     current_price = latest_price.price if latest_price else 0.0
 
-    trend_dir = served_direction(
-        latest_forecast.direction if latest_forecast else None, 7)
+    trend_dir = served_direction(latest_forecast.direction if latest_forecast else None, 7)
 
     explanation = _build_trend_explanation(trend_dir, current_price)
 
     price_points = [
-        r.price for r in (
-            db.query(PriceHistory)
-            .filter(PriceHistory.item_id == item.id)
-            .order_by(PriceHistory.timestamp)
-            .all()
-        )
+        r.price
+        for r in (db.query(PriceHistory).filter(PriceHistory.item_id == item.id).order_by(PriceHistory.timestamp).all())
     ]
 
     # Compute SMAs from raw price history
@@ -668,8 +691,9 @@ def _prediction_parquet(item, period: str, horizon: int, thresholds=None):
     fl = r.price_low or current_price * 0.9
     fh = r.price_high or current_price * 1.1
     fm = r.price_mid or (fl + fh) / 2
-    tags = tag_fields(fl, fh, fm, _optional_float(r.exceed_p), thresholds,
-                      calibrated_move_odds=move_odds_calibrated(horizon))
+    tags = tag_fields(
+        fl, fh, fm, _optional_float(r.exceed_p), thresholds, calibrated_move_odds=move_odds_calibrated(horizon)
+    )
     return PredictionOut(
         item_id=item.id,
         item_name=item.name,
@@ -718,10 +742,7 @@ def get_item_prediction(
     )
 
     latest_price = (
-        db.query(PriceHistory)
-        .filter(PriceHistory.item_id == item.id)
-        .order_by(desc(PriceHistory.timestamp))
-        .first()
+        db.query(PriceHistory).filter(PriceHistory.item_id == item.id).order_by(desc(PriceHistory.timestamp)).first()
     )
     current_price = latest_price.price if latest_price else 0.0
 
@@ -729,8 +750,7 @@ def get_item_prediction(
         fl = forecast.price_low or current_price * 0.9
         fh = forecast.price_high or current_price * 1.1
         fm = forecast.price_mid or (fl + fh) / 2
-        tags = tag_fields(fl, fh, fm, forecast.exceed_p, thresholds,
-                          calibrated_move_odds=move_odds_calibrated(horizon))
+        tags = tag_fields(fl, fh, fm, forecast.exceed_p, thresholds, calibrated_move_odds=move_odds_calibrated(horizon))
         return PredictionOut(
             item_id=item.id,
             item_name=item.name,
@@ -760,6 +780,7 @@ def get_item_prediction(
 
 def _item_events_parquet(item_id: int, limit: int):
     from db.parquet import ParquetQuery
+
     with ParquetQuery("event_impacts_denorm") as q:
         df = q.query(f"""
             SELECT DISTINCT event_id, event_type, event_description, event_timestamp
@@ -784,6 +805,7 @@ def _item_events_parquet(item_id: int, limit: int):
 
 def _event_impacts_parquet(item_id: int, limit: int):
     from db.parquet import ParquetQuery
+
     with ParquetQuery("event_impacts_denorm") as q:
         df = q.query(f"""
             SELECT event_id, event_type, event_description, event_timestamp,
@@ -800,24 +822,32 @@ def _event_impacts_parquet(item_id: int, limit: int):
             return []
         result = []
         for r in df.itertuples():
-            result.append(EventImpactOut(
-                event_id=int(r.event_id),
-                event_type=str(r.event_type),
-                event_description=str(r.event_description),
-                event_timestamp=r.event_timestamp,
-                price_day_before=r.price_day_before,
-                price_day_1=r.price_day_1,
-                price_day_3=r.price_day_3,
-                price_day_7=r.price_day_7,
-                impact_pct_1day=r.impact_pct_1day,
-                impact_pct_3day=r.impact_pct_3day,
-                impact_pct_7day=r.impact_pct_7day,
-                peak_impact_pct=r.peak_impact_pct,
-                peak_impact_day=int(r.peak_impact_day) if r.peak_impact_day is not None and not (isinstance(r.peak_impact_day, float) and r.peak_impact_day != r.peak_impact_day) else None,
-                duration_days=int(r.duration_days) if r.duration_days is not None and not (isinstance(r.duration_days, float) and r.duration_days != r.duration_days) else None,
-                z_score=r.z_score,
-                confidence_score=r.confidence_score,
-            ))
+            result.append(
+                EventImpactOut(
+                    event_id=int(r.event_id),
+                    event_type=str(r.event_type),
+                    event_description=str(r.event_description),
+                    event_timestamp=r.event_timestamp,
+                    price_day_before=r.price_day_before,
+                    price_day_1=r.price_day_1,
+                    price_day_3=r.price_day_3,
+                    price_day_7=r.price_day_7,
+                    impact_pct_1day=r.impact_pct_1day,
+                    impact_pct_3day=r.impact_pct_3day,
+                    impact_pct_7day=r.impact_pct_7day,
+                    peak_impact_pct=r.peak_impact_pct,
+                    peak_impact_day=int(r.peak_impact_day)
+                    if r.peak_impact_day is not None
+                    and not (isinstance(r.peak_impact_day, float) and r.peak_impact_day != r.peak_impact_day)
+                    else None,
+                    duration_days=int(r.duration_days)
+                    if r.duration_days is not None
+                    and not (isinstance(r.duration_days, float) and r.duration_days != r.duration_days)
+                    else None,
+                    z_score=r.z_score,
+                    confidence_score=r.confidence_score,
+                )
+            )
         return result
 
 
@@ -832,18 +862,8 @@ def get_item_events(
         return _item_events_parquet(item.id, limit)
     except Exception:
         pass
-    event_ids = (
-        db.query(EventImpact.event_id)
-        .filter(EventImpact.item_id == item.id)
-        .subquery()
-    )
-    events = (
-        db.query(Event)
-        .filter(Event.id.in_(event_ids))
-        .order_by(desc(Event.timestamp))
-        .limit(limit)
-        .all()
-    )
+    event_ids = db.query(EventImpact.event_id).filter(EventImpact.item_id == item.id).subquery()
+    events = db.query(Event).filter(Event.id.in_(event_ids)).order_by(desc(Event.timestamp)).limit(limit).all()
     return events
 
 
@@ -863,8 +883,7 @@ def get_item_event_impacts(
         .join(Event, Event.id == EventImpact.event_id)
         .outerjoin(
             EventCorrelation,
-            (EventCorrelation.event_id == EventImpact.event_id) &
-            (EventCorrelation.item_id == EventImpact.item_id),
+            (EventCorrelation.event_id == EventImpact.event_id) & (EventCorrelation.item_id == EventImpact.item_id),
         )
         .filter(EventImpact.item_id == item.id)
         .order_by(desc(Event.timestamp))
@@ -873,24 +892,26 @@ def get_item_event_impacts(
     )
     result = []
     for impact, event, confidence in rows:
-        result.append(EventImpactOut(
-            event_id=event.id,
-            event_type=event.type,
-            event_description=event.description,
-            event_timestamp=event.timestamp,
-            price_day_before=impact.price_day_before,
-            price_day_1=impact.price_day_1,
-            price_day_3=impact.price_day_3,
-            price_day_7=impact.price_day_7,
-            impact_pct_1day=impact.impact_pct_1day,
-            impact_pct_3day=impact.impact_pct_3day,
-            impact_pct_7day=impact.impact_pct_7day,
-            peak_impact_pct=impact.peak_impact_pct,
-            peak_impact_day=impact.peak_impact_day,
-            duration_days=impact.duration_days,
-            z_score=impact.z_score,
-            confidence_score=confidence,
-        ))
+        result.append(
+            EventImpactOut(
+                event_id=event.id,
+                event_type=event.type,
+                event_description=event.description,
+                event_timestamp=event.timestamp,
+                price_day_before=impact.price_day_before,
+                price_day_1=impact.price_day_1,
+                price_day_3=impact.price_day_3,
+                price_day_7=impact.price_day_7,
+                impact_pct_1day=impact.impact_pct_1day,
+                impact_pct_3day=impact.impact_pct_3day,
+                impact_pct_7day=impact.impact_pct_7day,
+                peak_impact_pct=impact.peak_impact_pct,
+                peak_impact_day=impact.peak_impact_day,
+                duration_days=impact.duration_days,
+                z_score=impact.z_score,
+                confidence_score=confidence,
+            )
+        )
     return result
 
 
@@ -901,7 +922,6 @@ def get_item_feature_importance(
 ):
     item = _resolve_item(item_id, db)
     meta_path = os.path.join(os.path.dirname(__file__), "..", "..", "models", "saved_models", "meta.json")
-    import json
     if not os.path.exists(meta_path):
         raise HTTPException(status_code=404, detail="No trained model found")
 
@@ -932,17 +952,14 @@ def get_multi_source_prices(
     item = _resolve_item(item_id, db)
     requested = [s.strip() for s in source.split(",") if s.strip()]
 
-    cutoff = datetime.now(timezone.utc) - timedelta(days=days)
+    cutoff = datetime.now(UTC) - timedelta(days=days)
     data: dict[str, list[SourcePriceOut]] = {}
 
-    query = (
-        db.query(PriceHistory)
-        .filter(
-            PriceHistory.item_id == item.id,
-            PriceHistory.timestamp >= cutoff,
-            ~PriceHistory.source.like('synthetic_demo'),
-            ~PriceHistory.source.like('historical_fallback:%'),
-        )
+    query = db.query(PriceHistory).filter(
+        PriceHistory.item_id == item.id,
+        PriceHistory.timestamp >= cutoff,
+        ~PriceHistory.source.like("synthetic_demo"),
+        ~PriceHistory.source.like("historical_fallback:%"),
     )
     if requested and "all" not in requested:
         query = query.filter(PriceHistory.source.in_(requested))
@@ -970,7 +987,8 @@ def get_multi_source_prices(
 
 def _social_sentiment_parquet(item_id: int, item_slug: str, item_name: str):
     from db.parquet import ParquetQuery
-    now = datetime.now(timezone.utc)
+
+    now = datetime.now(UTC)
     cutoff_24h = now - timedelta(days=1)
     cutoff_7d = now - timedelta(days=7)
 
@@ -978,28 +996,47 @@ def _social_sentiment_parquet(item_id: int, item_slug: str, item_name: str):
         all_df = q.query("SELECT * FROM social_mentions")
         if all_df.empty:
             return SocialSentimentSummaryOut(
-                item_id=item_slug, item_name=item_name,
-                mentions_24h=0, mentions_7d=0, mention_velocity=0,
-                avg_sentiment_7d=0, avg_score_7d=0, recent_mentions=[],
+                item_id=item_slug,
+                item_name=item_name,
+                mentions_24h=0,
+                mentions_7d=0,
+                mention_velocity=0,
+                avg_sentiment_7d=0,
+                avg_score_7d=0,
+                recent_mentions=[],
             )
         item_df = all_df[all_df["item_id"] == item_id]
         if item_df.empty:
             return SocialSentimentSummaryOut(
-                item_id=item_slug, item_name=item_name,
-                mentions_24h=0, mentions_7d=0, mention_velocity=0,
-                avg_sentiment_7d=0, avg_score_7d=0, recent_mentions=[],
+                item_id=item_slug,
+                item_name=item_name,
+                mentions_24h=0,
+                mentions_7d=0,
+                mention_velocity=0,
+                avg_sentiment_7d=0,
+                avg_score_7d=0,
+                recent_mentions=[],
             )
         item_df = item_df[item_df["source"] == "reddit"]
         if item_df.empty:
             return SocialSentimentSummaryOut(
-                item_id=item_slug, item_name=item_name,
-                mentions_24h=0, mentions_7d=0, mention_velocity=0,
-                avg_sentiment_7d=0, avg_score_7d=0, recent_mentions=[],
+                item_id=item_slug,
+                item_name=item_name,
+                mentions_24h=0,
+                mentions_7d=0,
+                mention_velocity=0,
+                avg_sentiment_7d=0,
+                avg_score_7d=0,
+                recent_mentions=[],
             )
-        mentions_24h = int(len(item_df[item_df["mentioned_at"] >= cutoff_24h]))
-        mentions_7d = int(len(item_df[item_df["mentioned_at"] >= cutoff_7d]))
-        avg_sent = float(item_df[item_df["mentioned_at"] >= cutoff_7d]["sentiment_score"].mean()) if mentions_7d > 0 else 0.0
-        avg_score = float(item_df[item_df["mentioned_at"] >= cutoff_7d]["post_score"].mean()) if mentions_7d > 0 else 0.0
+        mentions_24h = len(item_df[item_df["mentioned_at"] >= cutoff_24h])
+        mentions_7d = len(item_df[item_df["mentioned_at"] >= cutoff_7d])
+        avg_sent = (
+            float(item_df[item_df["mentioned_at"] >= cutoff_7d]["sentiment_score"].mean()) if mentions_7d > 0 else 0.0
+        )
+        avg_score = (
+            float(item_df[item_df["mentioned_at"] >= cutoff_7d]["post_score"].mean()) if mentions_7d > 0 else 0.0
+        )
         mention_velocity = mentions_24h / max(mentions_7d, 1)
         recent = item_df.sort_values("mentioned_at", ascending=False).head(20)
         recent_mentions = [
@@ -1035,38 +1072,56 @@ def item_social_sentiment(
         return _social_sentiment_parquet(item.id, item.item_id, item.name)
     except Exception:
         pass
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     cutoff_24h = now - timedelta(days=1)
     cutoff_7d = now - timedelta(days=7)
 
-    mentions_24h = db.execute(text("""
+    mentions_24h = (
+        db.execute(
+            text("""
         SELECT COUNT(*) FROM social_mentions
         WHERE item_id = :iid AND source = 'reddit' AND mentioned_at >= :cutoff
-    """), {"iid": item.id, "cutoff": cutoff_24h}).scalar() or 0
+    """),
+            {"iid": item.id, "cutoff": cutoff_24h},
+        ).scalar()
+        or 0
+    )
 
-    mentions_7d = db.execute(text("""
+    mentions_7d = (
+        db.execute(
+            text("""
         SELECT COUNT(*) FROM social_mentions
         WHERE item_id = :iid AND source = 'reddit' AND mentioned_at >= :cutoff
-    """), {"iid": item.id, "cutoff": cutoff_7d}).scalar() or 0
+    """),
+            {"iid": item.id, "cutoff": cutoff_7d},
+        ).scalar()
+        or 0
+    )
 
-    sentiment_row = db.execute(text("""
+    sentiment_row = db.execute(
+        text("""
         SELECT AVG(sentiment_score) AS avg_sent, AVG(post_score) AS avg_score
         FROM social_mentions
         WHERE item_id = :iid AND source = 'reddit' AND mentioned_at >= :cutoff
-    """), {"iid": item.id, "cutoff": cutoff_7d}).first()
+    """),
+        {"iid": item.id, "cutoff": cutoff_7d},
+    ).first()
     avg_sent = float(sentiment_row.avg_sent) if sentiment_row and sentiment_row.avg_sent else 0.0
     avg_score = float(sentiment_row.avg_score) if sentiment_row and sentiment_row.avg_score else 0.0
 
     mention_velocity = mentions_24h / max(mentions_7d, 1)
 
-    recent_rows = db.execute(text("""
+    recent_rows = db.execute(
+        text("""
         SELECT post_id, subreddit, post_title, post_score,
                sentiment_score, mentioned_at
         FROM social_mentions
         WHERE item_id = :iid AND source = 'reddit'
         ORDER BY mentioned_at DESC
         LIMIT 20
-    """), {"iid": item.id}).fetchall()
+    """),
+        {"iid": item.id},
+    ).fetchall()
 
     recent_mentions = [
         SocialMentionOut(

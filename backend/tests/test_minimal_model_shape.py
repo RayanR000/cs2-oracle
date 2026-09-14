@@ -6,20 +6,19 @@ safe: item-varying width, a finite band for short-history items, ordering
 without the crossing fix, and an artifact that cannot be loaded by the wrong
 code version.
 """
-from __future__ import annotations
 
-from datetime import date, datetime, timedelta, timezone
-from pathlib import Path
-from unittest.mock import MagicMock, patch
+from __future__ import annotations
 
 import inspect
 import logging
+from datetime import UTC, date, datetime, timedelta
+from pathlib import Path
+from unittest.mock import MagicMock, patch
 
 import numpy as np
 import pandas as pd
 import pytest
 import yaml
-
 from models import conformal
 from models.conformal import ALPHA
 from models.forecaster import ItemForecaster
@@ -34,7 +33,7 @@ def test_sigma_clip_defaults_are_present_and_finite():
 
 
 def test_alpha_matches_the_pinned_nominal_coverage():
-    assert ALPHA == pytest.approx(0.20)
+    assert pytest.approx(0.20) == ALPHA
 
 
 def test_sigma_for_rows_uses_persisted_clip_bounds():
@@ -47,11 +46,13 @@ def test_sigma_for_rows_uses_persisted_clip_bounds():
     ItemForecaster._init_conformal_state(f)
     f.sigma_clip = {"floor": 0.02, "cap": 0.30, "fallback": 0.11}
 
-    rows = pd.DataFrame({
-        # std/price = 0.001 (below floor), 0.5 (above cap), 0.1 (in range)
-        "price_std_60d": [0.1, 50.0, 1.0],
-        "price": [100.0, 100.0, 10.0],
-    })
+    rows = pd.DataFrame(
+        {
+            # std/price = 0.001 (below floor), 0.5 (above cap), 0.1 (in range)
+            "price_std_60d": [0.1, 50.0, 1.0],
+            "price": [100.0, 100.0, 10.0],
+        }
+    )
     sigma = f._sigma_for_rows(rows)
     assert sigma.tolist() == [0.02, 0.30, 0.1]
 
@@ -66,10 +67,12 @@ def test_sigma_for_rows_never_returns_nan():
     ItemForecaster._init_conformal_state(f)
     f.sigma_clip = {"floor": 0.02, "cap": 0.30, "fallback": 0.11}
 
-    rows = pd.DataFrame({
-        "price_std_60d": [np.nan, 0.0, 1.0],
-        "price": [100.0, 100.0, 0.0],
-    })
+    rows = pd.DataFrame(
+        {
+            "price_std_60d": [np.nan, 0.0, 1.0],
+            "price": [100.0, 100.0, 0.0],
+        }
+    )
     sigma = f._sigma_for_rows(rows)
     assert np.isfinite(sigma).all()
     assert sigma.tolist() == [0.11, 0.11, 0.11]
@@ -96,13 +99,15 @@ def _records(n=400, seed=0):
     sigma = rng.uniform(0.05, 0.25, n)
     resid = rng.normal(0.0, 1.0, n) * sigma * 20.0
     mid = rng.normal(0.0, 2.0, n)
-    return pd.DataFrame({
-        "mid_ret": mid,
-        "residual_pct": resid,
-        "sigma": sigma,
-        "change_pct": np.abs(mid) / 100.0,
-        "hit": rng.integers(0, 2, n).astype(float),
-    })
+    return pd.DataFrame(
+        {
+            "mid_ret": mid,
+            "residual_pct": resid,
+            "sigma": sigma,
+            "change_pct": np.abs(mid) / 100.0,
+            "hit": rng.integers(0, 2, n).astype(float),
+        }
+    )
 
 
 def test_calibrate_conformal_stores_q_hat_and_adds_numeric_range_pct():
@@ -195,15 +200,17 @@ def _cv_frame(n_items=8, n_dates=80, horizon=3, seed=11):
         base = 10.0 * (item + 1)
         for d in range(n_dates):
             price = base * (1.0 + 0.002 * d) + rng.normal(0, base * 0.02)
-            rows.append({
-                "item_id": f"item_{item}",
-                "date": date(2025, 1, 1) + timedelta(days=d),
-                "price": max(price, 0.5),
-                "price_std_60d": abs(rng.normal(base * 0.05, base * 0.01)),
-                "feat_a": rng.normal(),
-                "feat_b": rng.normal(),
-                f"target_return_{horizon}d": rng.normal(0, 3.0),
-            })
+            rows.append(
+                {
+                    "item_id": f"item_{item}",
+                    "date": date(2025, 1, 1) + timedelta(days=d),
+                    "price": max(price, 0.5),
+                    "price_std_60d": abs(rng.normal(base * 0.05, base * 0.01)),
+                    "feat_a": rng.normal(),
+                    "feat_b": rng.normal(),
+                    f"target_return_{horizon}d": rng.normal(0, 3.0),
+                }
+            )
     return pd.DataFrame(rows)
 
 
@@ -232,9 +239,7 @@ def test_every_cv_fold_produces_oof_records(tmp_path, quantiles):
     tdf = _cv_frame(horizon=3)
 
     result = f._cv_evaluate_horizon(tdf, 3, {q: {} for q in quantiles})
-    assert len(result) == 4, (
-        "return tuple must be "
-        "(oof_records, fold_metrics, pt_records, pt_records_clf)")
+    assert len(result) == 4, "return tuple must be (oof_records, fold_metrics, pt_records, pt_records_clf)"
     oof_records, fold_metrics, pt_records, _ = result
 
     assert len(fold_metrics) >= 2
@@ -302,14 +307,11 @@ def test_conformal_records_measure_the_residual_against_the_served_centre():
     ItemForecaster._init_conformal_state(f)
 
     mid, actual, sigma, price, served_class = _served_centre_inputs(n=200)
-    records = pd.DataFrame(f._conformal_records(
-        mid, actual, sigma, price, direction_class=served_class))
+    records = pd.DataFrame(f._conformal_records(mid, actual, sigma, price, direction_class=served_class))
     assert len(records) == len(mid), "no row should be dropped in this fixture"
 
-    _, served_mid, _ = ItemForecaster._recenter_on_direction(
-        mid, mid, mid, served_class)
-    assert records["residual_pct"].to_numpy() == pytest.approx(
-        actual - served_mid)
+    _, served_mid, _ = ItemForecaster._recenter_on_direction(mid, mid, mid, served_class)
+    assert records["residual_pct"].to_numpy() == pytest.approx(actual - served_mid)
     # The served centre is carried so the calibration can describe itself, and
     # it must differ from the q50 mid — otherwise the fixture proves nothing.
     assert records["served_mid_ret"].to_numpy() == pytest.approx(served_mid)
@@ -328,8 +330,7 @@ def test_conformal_records_leave_the_confidence_columns_on_the_q50_mid():
 
     mid, actual, sigma, price, served_class = _served_centre_inputs(n=200)
     plain = pd.DataFrame(f._conformal_records(mid, actual, sigma, price))
-    served = pd.DataFrame(f._conformal_records(
-        mid, actual, sigma, price, direction_class=served_class))
+    served = pd.DataFrame(f._conformal_records(mid, actual, sigma, price, direction_class=served_class))
 
     for col in ("mid_ret", "sigma", "change_pct", "hit"):
         assert served[col].to_numpy() == pytest.approx(plain[col].to_numpy())
@@ -356,18 +357,17 @@ def test_served_band_covers_nominal_on_a_held_out_split():
     half = len(mid) // 2
     fit, ev = slice(0, half), slice(half, None)
 
-    records = pd.DataFrame(f._conformal_records(
-        mid[fit], actual[fit], sigma[fit], price[fit],
-        direction_class=served_class[fit]))
+    records = pd.DataFrame(
+        f._conformal_records(mid[fit], actual[fit], sigma[fit], price[fit], direction_class=served_class[fit])
+    )
     q_hat = f._calibrate_conformal(7, records)
 
     low, high = conformal.band(mid[ev], sigma[ev], q_hat)
-    s_low, _, s_high = ItemForecaster._recenter_on_direction(
-        low, mid[ev], high, served_class[ev])
+    s_low, _, s_high = ItemForecaster._recenter_on_direction(low, mid[ev], high, served_class[ev])
     covered = ((actual[ev] >= s_low) & (actual[ev] <= s_high)).mean()
     assert covered >= conformal.NOMINAL_COVERAGE - 0.02, (
-        f"served band covers {covered:.1%} against a "
-        f"{conformal.NOMINAL_COVERAGE:.0%} target")
+        f"served band covers {covered:.1%} against a {conformal.NOMINAL_COVERAGE:.0%} target"
+    )
 
 
 def test_calibration_records_which_centre_it_fitted():
@@ -385,10 +385,10 @@ def test_calibration_records_which_centre_it_fitted():
     f.direction_models = {}
 
     mid, actual, sigma, price, served_class = _served_centre_inputs(n=600)
-    f._calibrate_conformal(7, pd.DataFrame(f._conformal_records(
-        mid, actual, sigma, price, direction_class=served_class)))
-    f._calibrate_conformal(14, pd.DataFrame(f._conformal_records(
-        mid, actual, sigma, price)))
+    f._calibrate_conformal(
+        7, pd.DataFrame(f._conformal_records(mid, actual, sigma, price, direction_class=served_class))
+    )
+    f._calibrate_conformal(14, pd.DataFrame(f._conformal_records(mid, actual, sigma, price)))
 
     assert f.conformal_centre == {7: "served", 14: "q50"}
 
@@ -407,16 +407,16 @@ def test_calibrating_on_the_q50_centre_warns_when_a_classifier_will_recentre(cap
 
     mid, actual, sigma, price, _ = _served_centre_inputs(n=600)
     with caplog.at_level(logging.WARNING):
-        f._calibrate_conformal(7, pd.DataFrame(
-            f._conformal_records(mid, actual, sigma, price)))
+        f._calibrate_conformal(7, pd.DataFrame(f._conformal_records(mid, actual, sigma, price)))
     assert any("recentre" in r.message for r in caplog.records), caplog.text
 
     # And it must stay quiet when the two centres agree, or the warning is noise.
     caplog.clear()
     _, _, _, _, served_class = _served_centre_inputs(n=600)
     with caplog.at_level(logging.WARNING):
-        f._calibrate_conformal(7, pd.DataFrame(f._conformal_records(
-            mid, actual, sigma, price, direction_class=served_class)))
+        f._calibrate_conformal(
+            7, pd.DataFrame(f._conformal_records(mid, actual, sigma, price, direction_class=served_class))
+        )
     assert not caplog.records, caplog.text
 
 
@@ -480,13 +480,17 @@ def test_load_models_tolerates_an_artifact_with_no_conformal_centre(tmp_path):
     """
     import json
 
-    (tmp_path / "meta.json").write_text(json.dumps({
-        "model_artifact_version": ItemForecaster.MODEL_ARTIFACT_VERSION,
-        "feature_cols": ["feat_a", "feat_b"],
-        "sigma_clip": {"floor": 0.01, "cap": 2.0, "fallback": 0.15},
-        "conformal_calibration": {"3": 1.1},
-        "n_ensembles": 1,
-    }))
+    (tmp_path / "meta.json").write_text(
+        json.dumps(
+            {
+                "model_artifact_version": ItemForecaster.MODEL_ARTIFACT_VERSION,
+                "feature_cols": ["feat_a", "feat_b"],
+                "sigma_clip": {"floor": 0.01, "cap": 2.0, "fallback": 0.15},
+                "conformal_calibration": {"3": 1.1},
+                "n_ensembles": 1,
+            }
+        )
+    )
     f = ItemForecaster(db_session=MagicMock(), model_dir=str(tmp_path))
     f.load_models()
     assert f.conformal_centre == {}
@@ -514,14 +518,16 @@ def _train_frame(n_items=10, n_dates=140, seed=5):
         price = base
         for d in range(n_dates):
             price = max(price * (1.0 + rng.normal(0.001, 0.02)), 0.5)
-            rows.append({
-                "item_id": f"item_{item}",
-                "date": date(2025, 1, 1) + timedelta(days=d),
-                "price": price,
-                "price_std_60d": abs(rng.normal(base * 0.05, base * 0.01)),
-                "feat_a": rng.normal(),
-                "feat_b": rng.normal(),
-            })
+            rows.append(
+                {
+                    "item_id": f"item_{item}",
+                    "date": date(2025, 1, 1) + timedelta(days=d),
+                    "price": price,
+                    "price_std_60d": abs(rng.normal(base * 0.05, base * 0.01)),
+                    "feat_a": rng.normal(),
+                    "feat_b": rng.normal(),
+                }
+            )
     return pd.DataFrame(rows)
 
 
@@ -537,16 +543,25 @@ def _fast_forecaster(tmp_path, warm=False):
     """
     f = ItemForecaster(db_session=MagicMock(), model_dir=str(tmp_path))
     f.N_ENSEMBLES = 1
-    f.SKIP_HP_HORIZONS = list(f.HORIZONS)   # no Optuna
+    f.SKIP_HP_HORIZONS = list(f.HORIZONS)  # no Optuna
     f.CV_MIN_TRAIN_DAYS = 40
     f.CV_STEP_DAYS = 25
     f.VALIDATION_WINDOW_DAYS = 10
     if warm:
         f.tuned_params = {
-            h: {q: {"num_leaves": 15, "learning_rate": 0.05, "max_depth": 4,
-                    "min_data_in_leaf": 10, "objective": "quantile",
-                    "alpha": q, "metric": "quantile", "verbosity": -1}
-                for q in f.QUANTILES}
+            h: {
+                q: {
+                    "num_leaves": 15,
+                    "learning_rate": 0.05,
+                    "max_depth": 4,
+                    "min_data_in_leaf": 10,
+                    "objective": "quantile",
+                    "alpha": q,
+                    "metric": "quantile",
+                    "verbosity": -1,
+                }
+                for q in f.QUANTILES
+            }
             for h in f.HORIZONS
         }
     return f
@@ -561,6 +576,7 @@ def _run_train(f, monkeypatch, df, skip_regimes=True):
     `skip_regimes=False` exercises the regime branch, which is the one a warm
     retrain used to bypass entirely.
     """
+
     def fake_build(*a, **kw):
         f.feature_cols = ["feat_a", "feat_b"]
         f._base_feature_cols = list(f.feature_cols)
@@ -583,8 +599,7 @@ def test_ci_workflow_does_not_skip_cv():
     the band under-covers. This pins the workflow so the flag cannot come back
     as a CI-minutes optimization.
     """
-    wf = (Path(__file__).resolve().parents[2]
-          / ".github" / "workflows" / "price-forecast.yml")
+    wf = Path(__file__).resolve().parents[2] / ".github" / "workflows" / "price-forecast.yml"
     spec = yaml.safe_load(wf.read_text())
 
     def env_keys(node):
@@ -615,8 +630,7 @@ def test_ci_restores_the_model_cache_on_training_runs_and_forces_the_retrain():
     as fresh, and silently serve a predict-only run. FORCE_RETRAIN is what keeps
     `full` a retrain. Pinned together so neither can be reverted on its own.
     """
-    wf = (Path(__file__).resolve().parents[2]
-          / ".github" / "workflows" / "price-forecast.yml")
+    wf = Path(__file__).resolve().parents[2] / ".github" / "workflows" / "price-forecast.yml"
     spec = yaml.safe_load(wf.read_text())
     steps = spec["jobs"]["forecast"]["steps"]
 
@@ -656,11 +670,9 @@ def test_ci_skips_regime_models_so_the_artifact_does_not_depend_on_its_runner():
     different thing: that regime training is not coupled to the warm-retrain
     gate. Both must stay true.
     """
-    wf = (Path(__file__).resolve().parents[2]
-          / ".github" / "workflows" / "price-forecast.yml")
+    wf = Path(__file__).resolve().parents[2] / ".github" / "workflows" / "price-forecast.yml"
     spec = yaml.safe_load(wf.read_text())
-    run_step = next(s for s in spec["jobs"]["forecast"]["steps"]
-                    if s.get("name") == "Run ML price forecasting")
+    run_step = next(s for s in spec["jobs"]["forecast"]["steps"] if s.get("name") == "Run ML price forecasting")
     assert str(run_step["env"]["SKIP_REGIMES"]) == "1"
 
 
@@ -686,8 +698,7 @@ def test_warm_retrain_still_trains_regime_models(tmp_path, monkeypatch, caplog):
     assert entered, "the regime branch never ran on a warm retrain"
 
 
-def test_warm_retrain_does_not_carry_stale_regime_models_forward(
-        tmp_path, monkeypatch):
+def test_warm_retrain_does_not_carry_stale_regime_models_forward(tmp_path, monkeypatch):
     """Refitting has to clear the restored artifact's regime models first.
 
     On a warm run `self.regime_models` arrives populated from load_models(). A
@@ -701,8 +712,7 @@ def test_warm_retrain_does_not_carry_stale_regime_models_forward(
 
     _run_train(f, monkeypatch, _train_frame(), skip_regimes=False)
 
-    assert sentinel not in f.regime_models or (
-        f.regime_models[sentinel] != ["stale-ensemble"]), (
+    assert sentinel not in f.regime_models or (f.regime_models[sentinel] != ["stale-ensemble"]), (
         "a restored regime model survived a retrain of its horizon"
     )
 
@@ -729,16 +739,19 @@ def test_engineered_cache_write_is_suppressible(tmp_path, monkeypatch):
     assert len(pd.read_parquet(path)) == 2
 
 
-@pytest.mark.parametrize("raw,expected", [
-    ("30", [30]),
-    ("3,7", [3, 7]),
-    (" 7 , 30 ", [7, 30]),
-    ("", None),            # unset -> every horizon
-    ("   ", None),
-    ("nonsense", None),    # a typo must not narrow the run
-    ("5", None),           # not a real horizon
-    ("3,999", None),       # one bad member poisons the whole list
-])
+@pytest.mark.parametrize(
+    "raw,expected",
+    [
+        ("30", [30]),
+        ("3,7", [3, 7]),
+        (" 7 , 30 ", [7, 30]),
+        ("", None),  # unset -> every horizon
+        ("   ", None),
+        ("nonsense", None),  # a typo must not narrow the run
+        ("5", None),  # not a real horizon
+        ("3,999", None),  # one bad member poisons the whole list
+    ],
+)
 def test_train_horizons_override_parses_or_falls_back(raw, expected, monkeypatch):
     """A typo must train everything, never a silent subset.
 
@@ -761,22 +774,25 @@ def test_diagnostics_workflow_cannot_promote_its_artifact():
     model. Also pins the classifier on: without it the whole workflow is a slower
     copy of the daily run.
     """
-    wf = (Path(__file__).resolve().parents[2]
-          / ".github" / "workflows" / "model-diagnostics.yml")
+    wf = Path(__file__).resolve().parents[2] / ".github" / "workflows" / "model-diagnostics.yml"
     spec = yaml.safe_load(wf.read_text())
     steps = spec["jobs"]["diagnose"]["steps"]
 
-    saves = [s for s in steps
-             if "cache/save" in str(s.get("uses", ""))
-             or (str(s.get("uses", "")).startswith("actions/cache@")
-                 and "saved_models" in str(s.get("with", {}).get("path", "")))]
+    saves = [
+        s
+        for s in steps
+        if "cache/save" in str(s.get("uses", ""))
+        or (
+            str(s.get("uses", "")).startswith("actions/cache@")
+            and "saved_models" in str(s.get("with", {}).get("path", ""))
+        )
+    ]
     assert not saves, (
         f"the diagnostics job writes a model cache ({[s.get('name') for s in saves]}); "
         f"a partial artifact would be promoted to production by the daily predict run"
     )
 
-    env = next(s for s in steps
-               if s.get("name") == "Run CV with the served classifier scored")["env"]
+    env = next(s for s in steps if s.get("name") == "Run CV with the served classifier scored")["env"]
     # Default-ON, and it cannot use the `&& '1' || '0'` idiom the arms use: a
     # scheduled event carries no inputs, so that form would resolve to '0' and
     # silently turn the Sunday run into the q50-centred band. The fallback form
@@ -804,34 +820,41 @@ def test_diagnostics_arms_default_to_the_control():
     being comparable to the ones before it -- which is exactly the failure the
     repo already has with pre-873148b A/B verdicts.
     """
-    wf = (Path(__file__).resolve().parents[2]
-          / ".github" / "workflows" / "model-diagnostics.yml")
+    wf = Path(__file__).resolve().parents[2] / ".github" / "workflows" / "model-diagnostics.yml"
     spec = yaml.safe_load(wf.read_text())
 
     inputs = spec[True]["workflow_dispatch"]["inputs"]
-    for name in ("tier_lead", "cross_sectional_rank", "naive_init_score",
-                 "label_smoothed_anchor", "serve_outlier_gated_anchor",
-                 "force_hp_search"):
+    for name in (
+        "tier_lead",
+        "cross_sectional_rank",
+        "naive_init_score",
+        "label_smoothed_anchor",
+        "serve_outlier_gated_anchor",
+        "force_hp_search",
+    ):
         assert inputs[name]["default"] is False, (
             f"{name} defaults on; the Sunday scheduled run would stop being a control"
         )
 
-    env = next(s for s in spec["jobs"]["diagnose"]["steps"]
-               if s.get("name") == "Run CV with the served classifier scored")["env"]
+    env = next(
+        s for s in spec["jobs"]["diagnose"]["steps"] if s.get("name") == "Run CV with the served classifier scored"
+    )["env"]
     # The `&& '1' || '0'` form is what makes a missing input resolve to '0'
     # rather than to an empty string, which ItemForecaster would read as off
     # anyway -- but only because the gate tests for exactly "1". Pin the shape so
     # the two cannot drift apart.
-    for key, inp in (("TIER_LEAD_FEATURE", "tier_lead"),
-                     ("CROSS_SECTIONAL_RANK", "cross_sectional_rank"),
-                     ("NAIVE_INIT_SCORE", "naive_init_score"),
-                     ("LABEL_SMOOTHED_ANCHOR", "label_smoothed_anchor"),
-                     # Serving-only, so it reaches nothing this step trains --
-                     # but predict_smoke runs predict() from here, and an arm
-                     # that leaked into the scheduled run would move the served
-                     # `current_price` with nothing in meta.json to say so.
-                     ("SERVE_OUTLIER_GATED_ANCHOR", "serve_outlier_gated_anchor"),
-                     ("FORCE_HP_SEARCH", "force_hp_search")):
+    for key, inp in (
+        ("TIER_LEAD_FEATURE", "tier_lead"),
+        ("CROSS_SECTIONAL_RANK", "cross_sectional_rank"),
+        ("NAIVE_INIT_SCORE", "naive_init_score"),
+        ("LABEL_SMOOTHED_ANCHOR", "label_smoothed_anchor"),
+        # Serving-only, so it reaches nothing this step trains --
+        # but predict_smoke runs predict() from here, and an arm
+        # that leaked into the scheduled run would move the served
+        # `current_price` with nothing in meta.json to say so.
+        ("SERVE_OUTLIER_GATED_ANCHOR", "serve_outlier_gated_anchor"),
+        ("FORCE_HP_SEARCH", "force_hp_search"),
+    ):
         expr = str(env[key])
         assert f"inputs.{inp}" in expr and "'1'" in expr and "'0'" in expr, (
             f"{key} is {expr!r}; it must resolve to '0' when the input is absent"
@@ -849,8 +872,7 @@ def test_the_conformal_centre_knobs_default_to_todays_behaviour():
     with `recenter` off, the served mid IS the q50 mid, and the q50-centred
     `q_hat` is already correct for it.
     """
-    wf = (Path(__file__).resolve().parents[2]
-          / ".github" / "workflows" / "model-diagnostics.yml")
+    wf = Path(__file__).resolve().parents[2] / ".github" / "workflows" / "model-diagnostics.yml"
     spec = yaml.safe_load(wf.read_text())
     inputs = spec[True]["workflow_dispatch"]["inputs"]
 
@@ -867,22 +889,18 @@ def test_the_conformal_centre_knobs_default_to_todays_behaviour():
 
     # And it must NOT reach training: REPLAY_DISABLE names serving transforms,
     # so a training step that honoured it would report a skip it never made.
-    train = next(s for s in steps
-                 if s.get("name") == "Run CV with the served classifier scored")
+    train = next(s for s in steps if s.get("name") == "Run CV with the served classifier scored")
     assert "REPLAY_DISABLE" not in train["env"]
 
 
 def test_ci_suppresses_the_engineered_cache_write():
-    wf = (Path(__file__).resolve().parents[2]
-          / ".github" / "workflows" / "price-forecast.yml")
+    wf = Path(__file__).resolve().parents[2] / ".github" / "workflows" / "price-forecast.yml"
     spec = yaml.safe_load(wf.read_text())
-    run_step = next(s for s in spec["jobs"]["forecast"]["steps"]
-                    if s.get("name") == "Run ML price forecasting")
+    run_step = next(s for s in spec["jobs"]["forecast"]["steps"] if s.get("name") == "Run ML price forecasting")
     assert str(run_step["env"]["ENGINEERED_CACHE"]) == "0"
 
 
-def test_the_holdout_fallback_still_fits_q_hat_for_every_horizon(
-        tmp_path, monkeypatch):
+def test_the_holdout_fallback_still_fits_q_hat_for_every_horizon(tmp_path, monkeypatch):
     """The degraded path must degrade, not disappear.
 
     SKIP_CV=1 is now a local-only speedup, and a horizon with too few distinct
@@ -894,8 +912,7 @@ def test_the_holdout_fallback_still_fits_q_hat_for_every_horizon(
     _run_train(f, monkeypatch, _train_frame())
 
     assert set(f.conformal_calibration) == set(f.HORIZONS), (
-        f"horizons with no fitted q_hat: "
-        f"{sorted(set(f.HORIZONS) - set(f.conformal_calibration))}"
+        f"horizons with no fitted q_hat: {sorted(set(f.HORIZONS) - set(f.conformal_calibration))}"
     )
     assert all(v > 0 for v in f.conformal_calibration.values())
     # And the confidence thresholds must be on the conformal scale, which
@@ -930,8 +947,7 @@ def test_warm_retrain_calibrates_from_cv_not_the_holdout(tmp_path, monkeypatch):
     assert set(f.conformal_calibration) == set(f.HORIZONS)
     assert all(v > 0 for v in f.conformal_calibration.values())
     assert f.conformal_calibration != stale, (
-        "q_hat was inherited from the previous run instead of refitted "
-        "against the models this run trained"
+        "q_hat was inherited from the previous run instead of refitted against the models this run trained"
     )
 
 
@@ -950,8 +966,7 @@ def test_train_measures_sigma_clip_from_the_training_frame(tmp_path, monkeypatch
     assert set(f.sigma_clip) == {"floor", "cap", "fallback"}
     assert f.sigma_clip != defaults
     assert 0 < f.sigma_clip["floor"] < f.sigma_clip["cap"]
-    assert (f.sigma_clip["floor"] <= f.sigma_clip["fallback"]
-            <= f.sigma_clip["cap"])
+    assert f.sigma_clip["floor"] <= f.sigma_clip["fallback"] <= f.sigma_clip["cap"]
 
 
 # ---------------------------------------------------------------------------
@@ -972,17 +987,19 @@ def test_loading_a_pre_rewrite_artifact_raises(tmp_path):
     model_dir = tmp_path / "saved_models"
     model_dir.mkdir()
     # A pre-rewrite meta.json: CQR floats, no artifact version, no sigma clip.
-    (model_dir / "meta.json").write_text(json.dumps({
-        "conformal_calibration": {"3": 4.21, "7": 6.02},
-        "n_ensembles": 3,
-        "quantiles": [0.1, 0.5, 0.9],
-    }))
+    (model_dir / "meta.json").write_text(
+        json.dumps(
+            {
+                "conformal_calibration": {"3": 4.21, "7": 6.02},
+                "n_ensembles": 3,
+                "quantiles": [0.1, 0.5, 0.9],
+            }
+        )
+    )
 
     f = ItemForecaster.__new__(ItemForecaster)
     with pytest.raises(IncompatibleModelArtifact, match="artifact version"):
-        ItemForecaster._check_artifact_version(f, json.loads(
-            (model_dir / "meta.json").read_text()
-        ))
+        ItemForecaster._check_artifact_version(f, json.loads((model_dir / "meta.json").read_text()))
 
 
 def test_current_artifact_version_is_accepted():
@@ -1003,11 +1020,15 @@ def test_load_models_raises_before_reading_any_other_field(tmp_path):
 
     from models.forecaster import IncompatibleModelArtifact
 
-    (tmp_path / "meta.json").write_text(json.dumps({
-        "feature_cols": ["feat_a", "feat_b"],
-        "conformal_calibration": {"3": 1.567, "7": 1.673, "14": 4.440, "30": 7.419},
-        "n_ensembles": 3,
-    }))
+    (tmp_path / "meta.json").write_text(
+        json.dumps(
+            {
+                "feature_cols": ["feat_a", "feat_b"],
+                "conformal_calibration": {"3": 1.567, "7": 1.673, "14": 4.440, "30": 7.419},
+                "n_ensembles": 3,
+            }
+        )
+    )
     f = ItemForecaster(db_session=MagicMock(), model_dir=str(tmp_path))
     with pytest.raises(IncompatibleModelArtifact, match="artifact version"):
         f.load_models()
@@ -1020,12 +1041,16 @@ def test_load_models_raises_on_missing_sigma_clip_even_at_current_version(tmp_pa
     """
     import json
 
-    (tmp_path / "meta.json").write_text(json.dumps({
-        "model_artifact_version": ItemForecaster.MODEL_ARTIFACT_VERSION,
-        "feature_cols": ["feat_a", "feat_b"],
-        "conformal_calibration": {"3": 1.1, "7": 2.2, "14": 3.3, "30": 4.4},
-        "n_ensembles": 1,
-    }))
+    (tmp_path / "meta.json").write_text(
+        json.dumps(
+            {
+                "model_artifact_version": ItemForecaster.MODEL_ARTIFACT_VERSION,
+                "feature_cols": ["feat_a", "feat_b"],
+                "conformal_calibration": {"3": 1.1, "7": 2.2, "14": 3.3, "30": 4.4},
+                "n_ensembles": 1,
+            }
+        )
+    )
     f = ItemForecaster(db_session=MagicMock(), model_dir=str(tmp_path))
     with pytest.raises(KeyError, match="sigma_clip"):
         f.load_models()
@@ -1034,12 +1059,16 @@ def test_load_models_raises_on_missing_sigma_clip_even_at_current_version(tmp_pa
 def test_load_models_raises_on_missing_conformal_calibration_even_at_current_version(tmp_path):
     import json
 
-    (tmp_path / "meta.json").write_text(json.dumps({
-        "model_artifact_version": ItemForecaster.MODEL_ARTIFACT_VERSION,
-        "feature_cols": ["feat_a", "feat_b"],
-        "sigma_clip": {"floor": 0.01, "cap": 2.0, "fallback": 0.15},
-        "n_ensembles": 1,
-    }))
+    (tmp_path / "meta.json").write_text(
+        json.dumps(
+            {
+                "model_artifact_version": ItemForecaster.MODEL_ARTIFACT_VERSION,
+                "feature_cols": ["feat_a", "feat_b"],
+                "sigma_clip": {"floor": 0.01, "cap": 2.0, "fallback": 0.15},
+                "n_ensembles": 1,
+            }
+        )
+    )
     f = ItemForecaster(db_session=MagicMock(), model_dir=str(tmp_path))
     with pytest.raises(KeyError, match="conformal_calibration"):
         f.load_models()
@@ -1068,13 +1097,16 @@ def test_save_then_load_round_trips_conformal_and_sigma_clip(tmp_path):
 def _tiny_booster():
     """A real one-tree Booster, so this exercises the actual file format."""
     import lightgbm as lgb
+
     rng = np.random.RandomState(0)
     X = rng.rand(60, 2)
     y = X[:, 0] * 2.0
     ds = lgb.Dataset(X, y)
-    return lgb.train({"objective": "quantile", "alpha": 0.5, "verbosity": -1,
-                      "num_leaves": 2, "min_data_in_leaf": 5}, ds,
-                     num_boost_round=1)
+    return lgb.train(
+        {"objective": "quantile", "alpha": 0.5, "verbosity": -1, "num_leaves": 2, "min_data_in_leaf": 5},
+        ds,
+        num_boost_round=1,
+    )
 
 
 def test_single_member_ensemble_round_trips_through_disk(tmp_path):
@@ -1097,8 +1129,7 @@ def test_single_member_ensemble_round_trips_through_disk(tmp_path):
     g = ItemForecaster(db_session=MagicMock(), model_dir=str(tmp_path))
     g.load_models()
 
-    assert (3, 0.5) in g.models, f"models empty after load; on disk: " \
-        f"{sorted(p.name for p in tmp_path.glob('*.txt'))}"
+    assert (3, 0.5) in g.models, f"models empty after load; on disk: {sorted(p.name for p in tmp_path.glob('*.txt'))}"
     members = g.models[(3, 0.5)]
     assert isinstance(members, list) and len(members) == 1
 
@@ -1133,6 +1164,7 @@ def test_saved_meta_records_the_current_artifact_version(tmp_path):
     f.save_models()
 
     import json
+
     meta = json.loads((tmp_path / "meta.json").read_text())
     assert meta["model_artifact_version"] == ItemForecaster.MODEL_ARTIFACT_VERSION
     assert meta["sigma_clip"] == f.sigma_clip
@@ -1143,6 +1175,7 @@ def test_saved_meta_records_the_current_artifact_version(tmp_path):
 # cache when the run is willing to train, and must not paper over it in
 # predict-only, which has no recovery path of its own.
 # ---------------------------------------------------------------------------
+
 
 def _fake_incompatible_forecast_env(monkeypatch, tmp_path):
     """Same shape as test_drift_retrain_guard.py's fixture, but load_models
@@ -1164,9 +1197,7 @@ def _fake_incompatible_forecast_env(monkeypatch, tmp_path):
             type(self).instance = self
 
         def load_models(self):
-            raise IncompatibleModelArtifact(
-                "saved model artifact version None != expected 2"
-            )
+            raise IncompatibleModelArtifact("saved model artifact version None != expected 2")
 
         def check_concept_drift(self, horizon=7, sliding_window=7, threshold=None):
             return None
@@ -1192,8 +1223,7 @@ def test_incompatible_artifact_triggers_a_full_retrain_not_a_crash(monkeypatch, 
     fake = _fake_incompatible_forecast_env(monkeypatch, tmp_path)
     fp.run_forecast()
     assert fake.train_called is True, (
-        "A rejected cache must read as 'no usable models' for a mode that is "
-        "willing to train, not crash the run."
+        "A rejected cache must read as 'no usable models' for a mode that is willing to train, not crash the run."
     )
 
 
@@ -1240,8 +1270,7 @@ def test_predict_no_longer_calls_the_crossing_fix():
 
     src = inspect.getsource(ItemForecaster.predict)
     assert "_fix_quantile_crossing" not in src, (
-        "a symmetric band around the median cannot cross; the crossing fix "
-        "survives only for walkforward's baseline arm"
+        "a symmetric band around the median cannot cross; the crossing fix survives only for walkforward's baseline arm"
     )
 
 
@@ -1261,8 +1290,7 @@ def test_predict_never_indexes_the_p10_or_p90_prediction():
     import inspect
 
     src = inspect.getsource(ItemForecaster.predict)
-    for dead in ("preds[0.1]", "preds[0.9]", "p10_ret", "p90_ret",
-                 "len(preds) != 3"):
+    for dead in ("preds[0.1]", "preds[0.9]", "p10_ret", "p90_ret", "len(preds) != 3"):
         assert dead not in src, f"predict() still references {dead}"
 
 
@@ -1271,17 +1299,20 @@ def test_band_from_conformal_varies_by_item_and_is_finite():
     ItemForecaster._init_conformal_state(f)
     f.sigma_clip = {"floor": 0.01, "cap": 2.0, "fallback": 0.25}
 
-    rows = pd.DataFrame({
-        "price": [100.0, 100.0, 50.0],
-        # third row: no 60d history, the short-history case
-        "price_std_60d": [5.0, 20.0, np.nan],
-    })
+    rows = pd.DataFrame(
+        {
+            "price": [100.0, 100.0, 50.0],
+            # third row: no 60d history, the short-history case
+            "price_std_60d": [5.0, 20.0, np.nan],
+        }
+    )
     sigma = ItemForecaster._sigma_for_rows(f, rows)
     assert np.all(np.isfinite(sigma))
-    assert sigma[1] > sigma[0]          # more volatile item, wider sigma
-    assert sigma[2] == pytest.approx(0.25)   # fallback, not NaN
+    assert sigma[1] > sigma[0]  # more volatile item, wider sigma
+    assert sigma[2] == pytest.approx(0.25)  # fallback, not NaN
 
     from models.conformal import band
+
     low, high = band(np.zeros(3), sigma, q_hat=3.0)
     widths = high - low
     assert widths[1] > widths[0]
@@ -1290,6 +1321,7 @@ def test_band_from_conformal_varies_by_item_and_is_finite():
 
 
 # --- behavioural: drive the real predict() over a synthetic catalogue -------
+
 
 class _StubBooster:
     """Minimal LightGBM Booster stand-in for _predict_ensemble_safe.
@@ -1322,8 +1354,7 @@ class _StubClassifier:
 # Two items at the same price level with an order of magnitude between their
 # volatilities, plus a cheap item as volatile as the second. Deterministic:
 # the sigma ordering asserted below must not depend on a seed.
-_PREDICT_ITEMS = {"calm100": (100.0, 1.0), "wild100": (100.0, 20.0),
-                  "wild5": (5.0, 1.0)}
+_PREDICT_ITEMS = {"calm100": (100.0, 1.0), "wild100": (100.0, 20.0), "wild5": (5.0, 1.0)}
 
 
 def _predict_price_frame(n_dates=70):
@@ -1331,22 +1362,23 @@ def _predict_price_frame(n_dates=70):
     for d in range(n_dates):
         day = date(2026, 6, 1) + timedelta(days=d)
         for iid, (base, amp) in _PREDICT_ITEMS.items():
-            rows.append({
-                "item_id": iid,
-                "date": day,
-                "price": base + (amp if d % 2 else -amp),
-                "volume": 100,
-            })
+            rows.append(
+                {
+                    "item_id": iid,
+                    "date": day,
+                    "price": base + (amp if d % 2 else -amp),
+                    "volume": 100,
+                }
+            )
     return pd.DataFrame(rows)
 
 
-_MID_RET = 4.0          # the stub median model's return, in percent
-_Q_HAT = 10.0           # sigma is a ratio and mid is in percent, so q_hat
-                        # absorbs the factor of 100 — see conformal.calibrate
+_MID_RET = 4.0  # the stub median model's return, in percent
+_Q_HAT = 10.0  # sigma is a ratio and mid is in percent, so q_hat
+# absorbs the factor of 100 — see conformal.calibrate
 
 
-def _predict_forecaster(tmp_path, q_hat=_Q_HAT, horizons=None,
-                        classifier=None):
+def _predict_forecaster(tmp_path, q_hat=_Q_HAT, horizons=None, classifier=None):
     """A forecaster wired for predict() with a stub median model per horizon.
 
     `db=None` disables prior-forecast blending, and bias corrections /
@@ -1356,11 +1388,8 @@ def _predict_forecaster(tmp_path, q_hat=_Q_HAT, horizons=None,
     f = ItemForecaster(db_session=None, model_dir=str(tmp_path))
     f.feature_cols = ["price", "price_std_60d"]
     f.horizon_feature_cols = {}
-    f.conformal_calibration = ({h: q_hat for h in f.HORIZONS}
-                               if horizons is None
-                               else {h: q_hat for h in horizons})
-    f.models = {(h, 0.5): [_StubBooster(len(f.feature_cols), _MID_RET)]
-                for h in f.HORIZONS}
+    f.conformal_calibration = {h: q_hat for h in f.HORIZONS} if horizons is None else {h: q_hat for h in horizons}
+    f.models = {(h, 0.5): [_StubBooster(len(f.feature_cols), _MID_RET)] for h in f.HORIZONS}
     if classifier is not None:
         f.direction_models = {h: classifier for h in f.HORIZONS}
     return f
@@ -1368,18 +1397,17 @@ def _predict_forecaster(tmp_path, q_hat=_Q_HAT, horizons=None,
 
 def _run_predict(f):
     """Call the real predict() with only the two data fetches stubbed."""
-    empty_events = pd.DataFrame(columns=["id", "type", "timestamp",
-                                         "description"])
-    with patch.object(f, "fetch_price_history",
-                      return_value=_predict_price_frame()), \
-            patch.object(f, "fetch_events", return_value=empty_events):
+    empty_events = pd.DataFrame(columns=["id", "type", "timestamp", "description"])
+    with (
+        patch.object(f, "fetch_price_history", return_value=_predict_price_frame()),
+        patch.object(f, "fetch_events", return_value=empty_events),
+    ):
         return f.predict()
 
 
 def _forecast_rows(result, horizon):
     """{item_id: forecast dict} for one horizon."""
-    return {r["item_id"]: r["forecasts"][horizon]
-            for r in result.to_dict("records")}
+    return {r["item_id"]: r["forecasts"][horizon] for r in result.to_dict("records")}
 
 
 def test_predict_serves_a_band_centred_on_the_median(tmp_path):
@@ -1392,8 +1420,7 @@ def test_predict_serves_a_band_centred_on_the_median(tmp_path):
         for iid, fc in _forecast_rows(result, h).items():
             assert fc["low"] <= fc["mid"] <= fc["high"], (h, iid, fc)
             # round(, 2) on each leg, so allow one cent of asymmetry.
-            assert (fc["high"] - fc["mid"]) == pytest.approx(
-                fc["mid"] - fc["low"], abs=0.011), (h, iid, fc)
+            assert (fc["high"] - fc["mid"]) == pytest.approx(fc["mid"] - fc["low"], abs=0.011), (h, iid, fc)
 
 
 def test_predict_half_width_is_q_hat_times_the_clipped_sigma(tmp_path):
@@ -1420,10 +1447,8 @@ def test_predict_half_width_is_q_hat_times_the_clipped_sigma(tmp_path):
         for iid, fc in _forecast_rows(result, h).items():
             base = seen["price"][iid]
             expected_half = base * (_Q_HAT * seen["sigma"][iid]) / 100.0
-            assert (fc["high"] - fc["mid"]) == pytest.approx(
-                expected_half, abs=0.011), (h, iid, fc)
-            assert fc["mid"] == pytest.approx(
-                base * (1 + _MID_RET / 100.0), abs=0.011)
+            assert (fc["high"] - fc["mid"]) == pytest.approx(expected_half, abs=0.011), (h, iid, fc)
+            assert fc["mid"] == pytest.approx(base * (1 + _MID_RET / 100.0), abs=0.011)
 
 
 def test_predict_band_width_scales_with_item_volatility(tmp_path):
@@ -1439,8 +1464,7 @@ def test_predict_band_width_scales_with_item_volatility(tmp_path):
     # Same volatility, ten times cheaper: normalization makes the relative
     # width comparable and the absolute width scale with price.
     assert rel_width("wild5") == pytest.approx(rel_width("wild100"), rel=0.5)
-    assert (fcs["wild100"]["high"] - fcs["wild100"]["low"]) > (
-        fcs["wild5"]["high"] - fcs["wild5"]["low"])
+    assert (fcs["wild100"]["high"] - fcs["wild100"]["low"]) > (fcs["wild5"]["high"] - fcs["wild5"]["low"])
 
 
 def test_predict_refuses_to_serve_a_horizon_with_no_q_hat(tmp_path):
@@ -1488,14 +1512,24 @@ def test_predict_still_serves_the_classifier_direction(tmp_path):
 
 
 def _one_row_result(cur, low, mid, high, horizon=7, item_id="itm"):
-    return pd.DataFrame([{
-        "item_id": item_id,
-        "current_price": float(cur),
-        "forecasts": {horizon: {"low": float(low), "mid": float(mid),
-                                "high": float(high), "direction": "down",
-                                "confidence": "high"}},
-        "generated_at": datetime.now(timezone.utc),
-    }])
+    return pd.DataFrame(
+        [
+            {
+                "item_id": item_id,
+                "current_price": float(cur),
+                "forecasts": {
+                    horizon: {
+                        "low": float(low),
+                        "mid": float(mid),
+                        "high": float(high),
+                        "direction": "down",
+                        "confidence": "high",
+                    }
+                },
+                "generated_at": datetime.now(UTC),
+            }
+        ]
+    )
 
 
 def test_a_conformal_band_wide_enough_to_go_negative_stays_ordered(tmp_path):
@@ -1511,10 +1545,9 @@ def test_a_conformal_band_wide_enough_to_go_negative_stays_ordered(tmp_path):
     cur, mid_ret, sigma, q_hat = 100.0, -20.0, 2.0, 60.0
     low_ret, high_ret = band(np.array([mid_ret]), np.array([sigma]), q_hat)
 
-    assert low_ret[0] == pytest.approx(-140.0)   # below -100%: negative price
+    assert low_ret[0] == pytest.approx(-140.0)  # below -100%: negative price
     to_price = lambda r: round(cur * (1 + r / 100.0), 2)
-    result = _one_row_result(cur, to_price(low_ret[0]), to_price(mid_ret),
-                             to_price(high_ret[0]))
+    result = _one_row_result(cur, to_price(low_ret[0]), to_price(mid_ret), to_price(high_ret[0]))
     assert result.iloc[0]["forecasts"][7]["low"] == pytest.approx(-40.0)
 
     fc = f._sanitize_forecasts(result).iloc[0]["forecasts"][7]
@@ -1538,8 +1571,7 @@ def test_ordering_holds_for_any_band_width(tmp_path, mid_ret, sigma, q_hat):
     cur = 100.0
     low_ret, high_ret = band(np.array([mid_ret]), np.array([sigma]), q_hat)
     to_price = lambda r: round(cur * (1 + r / 100.0), 2)
-    result = _one_row_result(cur, to_price(low_ret[0]), to_price(mid_ret),
-                             to_price(high_ret[0]))
+    result = _one_row_result(cur, to_price(low_ret[0]), to_price(mid_ret), to_price(high_ret[0]))
 
     fc = f._sanitize_forecasts(result).iloc[0]["forecasts"][7]
     assert fc["low"] <= fc["mid"] <= fc["high"], (mid_ret, sigma, q_hat, fc)
@@ -1588,16 +1620,14 @@ def test_dart_is_gone_from_the_forecaster():
     assert ItemForecaster.BOOSTING_TYPE == "gbdt"
 
     src = inspect.getsource(inspect.getmodule(ItemForecaster))
-    offenders = [ln for ln in src.splitlines()
-                 if "dart" in ln.lower() and not ln.lstrip().startswith("#")]
+    offenders = [ln for ln in src.splitlines() if "dart" in ln.lower() and not ln.lstrip().startswith("#")]
     assert not offenders, f"dart re-entered non-comment code: {offenders}"
 
 
 def test_trained_model_count_is_eight():
     # 4 median GBMs + 4 directional classifiers. Guards accidental
     # re-expansion of the quantile/ensemble grid.
-    expected = len(ItemForecaster.HORIZONS) * len(ItemForecaster.QUANTILES) \
-        * ItemForecaster.N_ENSEMBLES
+    expected = len(ItemForecaster.HORIZONS) * len(ItemForecaster.QUANTILES) * ItemForecaster.N_ENSEMBLES
     assert expected == 4
     assert expected + len(ItemForecaster.HORIZONS) == 8
 
@@ -1624,8 +1654,7 @@ def test_dart_params_are_gone():
 
 def test_direction_records_from_classes_maps_the_class_encoding():
     """0=down, 1=flat, 2=up, matching _direction_classes."""
-    recs = ItemForecaster._direction_records_from_classes(
-        [0, 1, 2], [0, 2, 2], ["2026-01-01"] * 3)
+    recs = ItemForecaster._direction_records_from_classes([0, 1, 2], [0, 2, 2], ["2026-01-01"] * 3)
 
     assert [r["predicted_direction"] for r in recs] == ["down", "flat", "up"]
     assert [r["actual_direction"] for r in recs] == ["down", "up", "up"]
@@ -1633,8 +1662,7 @@ def test_direction_records_from_classes_maps_the_class_encoding():
     assert all(r["forecast_date"] == "2026-01-01" for r in recs)
 
 
-def test_classifier_pt_records_are_empty_when_the_diagnostic_is_off(
-        tmp_path, monkeypatch):
+def test_classifier_pt_records_are_empty_when_the_diagnostic_is_off(tmp_path, monkeypatch):
     """CV_DIAGNOSTIC_CLASSIFIER=0 must yield NO served-side records.
 
     Not a fallback to the quantile sign — absent. A PT verdict that changes
@@ -1643,31 +1671,26 @@ def test_classifier_pt_records_are_empty_when_the_diagnostic_is_off(
     monkeypatch.setenv("CV_DIAGNOSTIC_CLASSIFIER", "0")
     f = _cv_forecaster(tmp_path, [0.5])
 
-    _, _, pt_records, pt_records_clf = f._cv_evaluate_horizon(
-        _cv_frame(horizon=3), 3, {0.5: {}})
+    _, _, pt_records, pt_records_clf = f._cv_evaluate_horizon(_cv_frame(horizon=3), 3, {0.5: {}})
 
     assert pt_records, "quantile-sign records should still be built"
     assert pt_records_clf == []
 
 
-def test_classifier_pt_records_are_built_when_the_diagnostic_is_on(
-        tmp_path, monkeypatch):
+def test_classifier_pt_records_are_built_when_the_diagnostic_is_on(tmp_path, monkeypatch):
     monkeypatch.setenv("CV_DIAGNOSTIC_CLASSIFIER", "1")
     f = _cv_forecaster(tmp_path, [0.5])
 
-    _, fold_metrics, pt_records, pt_records_clf = f._cv_evaluate_horizon(
-        _cv_frame(horizon=3), 3, {0.5: {}})
+    _, fold_metrics, pt_records, pt_records_clf = f._cv_evaluate_horizon(_cv_frame(horizon=3), 3, {0.5: {}})
 
     assert pt_records_clf, "served classifier produced no PT records"
     # One record per validation row, same as the quantile-sign stream.
     assert len(pt_records_clf) == len(pt_records)
     assert len(pt_records_clf) == sum(m["n_val"] for m in fold_metrics)
-    assert {r["predicted_direction"] for r in pt_records_clf} <= {
-        "down", "flat", "up"}
+    assert {r["predicted_direction"] for r in pt_records_clf} <= {"down", "flat", "up"}
     # The outcomes are a property of the labels, so both streams must agree on
     # them row-for-row. That is what lets constant_call be shared.
-    assert ([r["actual_direction"] for r in pt_records_clf]
-            == [r["actual_direction"] for r in pt_records])
+    assert [r["actual_direction"] for r in pt_records_clf] == [r["actual_direction"] for r in pt_records]
 
 
 def test_cv_results_publish_both_invariant_4_signals():
@@ -1700,6 +1723,7 @@ def test_predict_smoke_writes_nothing():
     are frozen into outcomes. This mode must return before any writer.
     """
     import inspect
+
     from scripts import forecast_prices
 
     src = inspect.getsource(forecast_prices.run_forecast)
@@ -1713,13 +1737,13 @@ def test_predict_smoke_writes_nothing():
 
 
 def test_predict_smoke_is_off_unless_asked():
-    wf = (Path(__file__).resolve().parents[2]
-          / ".github" / "workflows" / "model-diagnostics.yml")
+    wf = Path(__file__).resolve().parents[2] / ".github" / "workflows" / "model-diagnostics.yml"
     spec = yaml.safe_load(wf.read_text())
     assert spec[True]["workflow_dispatch"]["inputs"]["predict_smoke"]["default"] is False
 
-    run_step = next(s for s in spec["jobs"]["diagnose"]["steps"]
-                    if s.get("name") == "Run CV with the served classifier scored")
+    run_step = next(
+        s for s in spec["jobs"]["diagnose"]["steps"] if s.get("name") == "Run CV with the served classifier scored"
+    )
     # The scheduled run carries no inputs, so the comparison is false and the
     # mode stays --train-only.
     assert "--train-only" in run_step["run"]
@@ -1740,6 +1764,5 @@ def test_predict_smoke_always_trains():
     src = inspect.getsource(forecast_prices.run_forecast)
     decision = src.split("do_train = False")[1].split("if do_train:")[0]
     assert "if train_only or predict_smoke:" in decision, (
-        "predict_smoke no longer forces training; it would predict from "
-        "whatever the model cache happened to restore"
+        "predict_smoke no longer forces training; it would predict from whatever the model cache happened to restore"
     )

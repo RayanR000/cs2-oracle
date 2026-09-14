@@ -78,8 +78,7 @@ WALLED_VENUES = frozenset({"steam"})
 _SPREAD_CROSSINGS = {"round_trip": 1.0, "sell_only": 0.5}
 
 
-def net_return(record: dict, venue: str = DEFAULT_VENUE,
-               mode: str = "round_trip") -> float:
+def net_return(record: dict, venue: str = DEFAULT_VENUE, mode: str = "round_trip") -> float:
     """Net fractional return of one long trade, on the resolver basis.
 
     Buy at ``base_price``, sell at ``actual_price`` — both frozen resolver legs —
@@ -94,8 +93,7 @@ def net_return(record: dict, venue: str = DEFAULT_VENUE,
     """
     base = record["base_price"]
     gross = (record["actual_price"] - base) / base
-    friction = (ROUND_TRIP_COST[venue]
-                + SPREAD_BY_TIER[record["price_tier"]] * _SPREAD_CROSSINGS[mode])
+    friction = ROUND_TRIP_COST[venue] + SPREAD_BY_TIER[record["price_tier"]] * _SPREAD_CROSSINGS[mode]
     return gross - friction
 
 
@@ -263,12 +261,9 @@ def strategy_metrics(
     # every row resolved before 2026-08-08 carries NULL).
     fresh = [n for n, r in zip(nets, selected) if r.get("base_stale_run_days") == 0]
     out["pt_n_fresh"] = len(fresh)
-    out["pt_n_stale"] = sum(
-        1 for r in selected if (r.get("base_stale_run_days") or 0) > 0)
-    out["pt_n_stale_unknown"] = sum(
-        1 for r in selected if r.get("base_stale_run_days") is None)
-    out["pt_mean_net_fresh_pct"] = (
-        round(sum(fresh) / len(fresh) * 100, 4) if fresh else None)
+    out["pt_n_stale"] = sum(1 for r in selected if (r.get("base_stale_run_days") or 0) > 0)
+    out["pt_n_stale_unknown"] = sum(1 for r in selected if r.get("base_stale_run_days") is None)
+    out["pt_mean_net_fresh_pct"] = round(sum(fresh) / len(fresh) * 100, 4) if fresh else None
 
     lower, upper = _cluster_mean_ci(nets, dates)
     out["pt_mean_net_ci_lower"] = lower
@@ -291,7 +286,4 @@ def all_strategies(
     together and never in isolation.
     """
     names = [_BASELINE, *STRATEGIES]
-    return {
-        name: strategy_metrics(records, name, horizon_days, min_dates, venue, mode)
-        for name in names
-    }
+    return {name: strategy_metrics(records, name, horizon_days, min_dates, venue, mode) for name in names}

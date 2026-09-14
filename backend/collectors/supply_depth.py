@@ -70,14 +70,16 @@ NULL for its entire life.
   snapshots can, by tracking whether `created_at` moves for a listing `id` that
   persists. `listing_id_digest` exists for exactly that diagnostic.
 """
+
 from __future__ import annotations
 
 import hashlib
 import logging
+from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass
-from datetime import date, datetime, timedelta, timezone
+from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
-from typing import Any, Callable, Iterable, Sequence
+from typing import Any
 
 import numpy as np
 import pandas as pd
@@ -152,6 +154,7 @@ class FeedResult:
 
 # ── HTTP ──────────────────────────────────────────────────────────────────────
 
+
 def _probe_brotli() -> None:
     """Fail loudly if brotli is unavailable.
 
@@ -196,6 +199,7 @@ def _get_json(url: str, timeout: int, session: requests.Session | None = None) -
 
 
 # ── Parsers (pure; no network, so they are unit-testable) ─────────────────────
+
 
 def _coerce_int(value: Any) -> int | None:
     """Parse a count that may arrive as int, float or string.
@@ -297,11 +301,7 @@ def parse_waxpeer(payload: Any, snapshot_day: date, collected_at: datetime) -> p
         return None if raw is None else raw / 1000.0
 
     return _scalar_rows(
-        (
-            (it.get("name"), _coerce_int(it.get("count")), _price(it))
-            for it in items
-            if isinstance(it, dict)
-        ),
+        ((it.get("name"), _coerce_int(it.get("count")), _price(it)) for it in items if isinstance(it, dict)),
         "waxpeer",
         snapshot_day,
         collected_at,
@@ -381,9 +381,7 @@ def _parse_created_at_series(raw: pd.Series) -> pd.Series:
     parsed = pd.to_datetime(raw, utc=True, errors="coerce", format="ISO8601")
     unparsed = parsed.isna() & raw.notna() & raw.ne("")
     if unparsed.any():
-        parsed.loc[unparsed] = pd.to_datetime(
-            raw[unparsed], utc=True, errors="coerce", format="mixed"
-        )
+        parsed.loc[unparsed] = pd.to_datetime(raw[unparsed], utc=True, errors="coerce", format="mixed")
     return parsed
 
 
@@ -418,7 +416,7 @@ def aggregate_lis_skins(
     `sort=False` throughout so rows stay in first-appearance order, as the old
     dict-insertion loop emitted them.
     """
-    day_end = datetime.combine(snapshot_day, datetime.min.time(), tzinfo=timezone.utc) + timedelta(days=1)
+    day_end = datetime.combine(snapshot_day, datetime.min.time(), tzinfo=UTC) + timedelta(days=1)
 
     frame = pd.DataFrame.from_records(
         [
@@ -502,9 +500,7 @@ def aggregate_lis_skins(
     # ns, not the us that pandas 2.x infers for a datetime scalar: every
     # existing supply-*.parquet is timestamp[ns], and a per-file precision
     # change is the schema drift a plain glob read swallows silently.
-    out["collected_at"] = pd.Series(
-        [collected_at] * len(out), index=out.index, dtype="datetime64[ns, UTC]"
-    )
+    out["collected_at"] = pd.Series([collected_at] * len(out), index=out.index, dtype="datetime64[ns, UTC]")
     for col in ("listing_count", "depth_5pct", "depth_10pct", "inflow_24h"):
         out[col] = out[col].fillna(0).astype(int)
 
@@ -512,6 +508,7 @@ def aggregate_lis_skins(
 
 
 # ── Feed registry ─────────────────────────────────────────────────────────────
+
 
 @dataclass(frozen=True)
 class Feed:
@@ -533,10 +530,11 @@ SCALAR_FEEDS: tuple[Feed, ...] = (
 LIS_SKINS_URL = "https://lis-skins.com/market_export_json/api_csgo_full.json"
 
 
-def fetch_feed(feed: Feed, snapshot_day: date, collected_at: datetime,
-               session: requests.Session | None = None) -> FeedResult:
+def fetch_feed(
+    feed: Feed, snapshot_day: date, collected_at: datetime, session: requests.Session | None = None
+) -> FeedResult:
     """Pull and parse one scalar feed. Never raises; failure is carried in the result."""
-    started = datetime.now(timezone.utc)
+    started = datetime.now(UTC)
     try:
         payload = _get_json(feed.url, feed.timeout, session)
         rows = feed.parser(payload, snapshot_day, collected_at)
@@ -546,19 +544,18 @@ def fetch_feed(feed: Feed, snapshot_day: date, collected_at: datetime,
                 f"{feed.source}: {raw} raw items but 0 parsed -- the payload shape "
                 "has probably changed; refusing to record an empty feed as success"
             )
-        elapsed = (datetime.now(timezone.utc) - started).total_seconds()
+        elapsed = (datetime.now(UTC) - started).total_seconds()
         logger.info("  %s: %s items in %.1fs", feed.source, f"{len(rows):,}", elapsed)
         return FeedResult(feed.source, rows=rows, raw_items=raw, elapsed_s=elapsed)
     except SupplyFeedError as exc:
-        elapsed = (datetime.now(timezone.utc) - started).total_seconds()
+        elapsed = (datetime.now(UTC) - started).total_seconds()
         logger.warning("  %s FAILED: %s", feed.source, exc)
         return FeedResult(feed.source, error=str(exc), elapsed_s=elapsed)
 
 
-def fetch_lis_skins(snapshot_day: date, collected_at: datetime,
-                    session: requests.Session | None = None) -> FeedResult:
+def fetch_lis_skins(snapshot_day: date, collected_at: datetime, session: requests.Session | None = None) -> FeedResult:
     """Pull the 173 MB lis-skins export and reduce it to per-item aggregates."""
-    started = datetime.now(timezone.utc)
+    started = datetime.now(UTC)
     try:
         payload = _get_json(LIS_SKINS_URL, LIS_SKINS_TIMEOUT_S, session)
         listings = payload.get("items") if isinstance(payload, dict) else payload
@@ -567,20 +564,19 @@ def fetch_lis_skins(snapshot_day: date, collected_at: datetime,
         rows = aggregate_lis_skins(listings, snapshot_day, collected_at)
         if rows.empty:
             raise SupplyFeedError(
-                f"lis_skins: {len(listings)} listings but 0 items aggregated -- "
-                "payload shape has probably changed"
+                f"lis_skins: {len(listings)} listings but 0 items aggregated -- payload shape has probably changed"
             )
-        elapsed = (datetime.now(timezone.utc) - started).total_seconds()
-        logger.info("  lis_skins: %s listings -> %s items in %.1fs",
-                    f"{len(listings):,}", f"{len(rows):,}", elapsed)
+        elapsed = (datetime.now(UTC) - started).total_seconds()
+        logger.info("  lis_skins: %s listings -> %s items in %.1fs", f"{len(listings):,}", f"{len(rows):,}", elapsed)
         return FeedResult("lis_skins", rows=rows, raw_items=len(listings), elapsed_s=elapsed)
     except SupplyFeedError as exc:
-        elapsed = (datetime.now(timezone.utc) - started).total_seconds()
+        elapsed = (datetime.now(UTC) - started).total_seconds()
         logger.warning("  lis_skins FAILED: %s", exc)
         return FeedResult("lis_skins", error=str(exc), elapsed_s=elapsed)
 
 
 # ── Persistence ───────────────────────────────────────────────────────────────
+
 
 def supply_parquet_path(archive_dir: Path, snapshot_day: date) -> Path:
     """Monthly partition, matching `prices-YYYY-MM.parquet`.
@@ -623,6 +619,7 @@ def write_supply_rows(rows: pd.DataFrame, archive_dir: Path, snapshot_day: date)
 
 # ── Orchestration ─────────────────────────────────────────────────────────────
 
+
 def collect(
     archive_dir: Path,
     snapshot_day: date | None = None,
@@ -652,12 +649,10 @@ def collect(
     # stamp supply D+1 against prices D and the join would silently miss every
     # item. `AGGREGATOR_SNAPSHOT_DATE` pins one value across all workflow steps.
     snapshot_day = snapshot_day or resolve_snapshot_date()
-    collected_at = datetime.now(timezone.utc)
+    collected_at = datetime.now(UTC)
     session = requests.Session()
 
-    results: list[FeedResult] = [
-        fetch_feed(feed, snapshot_day, collected_at, session) for feed in feeds
-    ]
+    results: list[FeedResult] = [fetch_feed(feed, snapshot_day, collected_at, session) for feed in feeds]
     if include_ladder:
         results.append(fetch_lis_skins(snapshot_day, collected_at, session))
 
@@ -683,13 +678,14 @@ def collect(
     if not good:
         # Every feed down is indistinguishable from a network-level block, which
         # is precisely the condition that must never exit 0.
-        raise SupplyFeedError(
-            f"all {len(results)} supply feeds failed: {summary['feeds_failed']}"
-        )
+        raise SupplyFeedError(f"all {len(results)} supply feeds failed: {summary['feeds_failed']}")
 
     logger.info(
         "Supply depth %s: %s rows across %s items from %s/%s feeds",
-        snapshot_day, f"{summary['supply_rows']:,}",
-        f"{summary['distinct_items']:,}", len(good), len(results),
+        snapshot_day,
+        f"{summary['supply_rows']:,}",
+        f"{summary['distinct_items']:,}",
+        len(good),
+        len(results),
     )
     return summary

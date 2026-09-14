@@ -34,15 +34,13 @@ import sqlite3
 import sys
 import time
 import urllib.parse
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 import requests
-
-from scripts.backfill_ssr_history import HealthMonitor, USER_AGENTS
+from scripts.backfill_ssr_history import USER_AGENTS, HealthMonitor
 
 RUNTIME = Path(__file__).parent.parent / "runtime"
 RUNTIME.mkdir(parents=True, exist_ok=True)
@@ -92,7 +90,7 @@ def _unescape(raw: str) -> str:
     return re.sub(r'\\+"', '"', raw).replace("\\\\", "")
 
 
-def extract_series(html: str) -> Dict[str, List[dict]]:
+def extract_series(html: str) -> dict[str, list[dict]]:
     """Pull every {market_hash_name: [{time, price_median, purchases}...]} on the page.
 
     Each prices array precedes the queryKey that names it, so pair each array
@@ -103,7 +101,7 @@ def extract_series(html: str) -> Dict[str, List[dict]]:
     if not prices or not keys:
         return {}
 
-    out: Dict[str, List[dict]] = {}
+    out: dict[str, list[dict]] = {}
     for pos, raw in prices:
         nxt = next((name for kpos, name in keys if kpos > pos), None)
         if not nxt:
@@ -131,16 +129,16 @@ def extract_series(html: str) -> Dict[str, List[dict]]:
 STEAM_FEE_MULTIPLIER = 1.1607
 
 
-def to_daily_rows(name: str, series: List[dict]) -> List[Tuple[str, str, float, int]]:
+def to_daily_rows(name: str, series: list[dict]) -> list[tuple[str, str, float, int]]:
     """Collapse Steam's mixed hourly/daily points into one row per UTC day.
 
     Recent points are hourly; older ones daily. Volume sums within a day and
     price is volume-weighted, matching how the archive stores a daily median.
     """
-    buckets: Dict[str, Tuple[float, int]] = {}
+    buckets: dict[str, tuple[float, int]] = {}
     for p in series:
         try:
-            day = datetime.fromtimestamp(p["time"], timezone.utc).strftime("%Y-%m-%d")
+            day = datetime.fromtimestamp(p["time"], UTC).strftime("%Y-%m-%d")
             price = float(p["price_median"])
             vol = int(p["purchases"])
         except (KeyError, TypeError, ValueError, OSError):
@@ -149,11 +147,7 @@ def to_daily_rows(name: str, series: List[dict]) -> List[Tuple[str, str, float, 
             vol = 1
         acc_p, acc_v = buckets.get(day, (0.0, 0))
         buckets[day] = (acc_p + price * vol, acc_v + vol)
-    return [
-        (name, d, round(pv / v / STEAM_FEE_MULTIPLIER, 4), v)
-        for d, (pv, v) in sorted(buckets.items())
-        if v > 0
-    ]
+    return [(name, d, round(pv / v / STEAM_FEE_MULTIPLIER, 4), v) for d, (pv, v) in sorted(buckets.items()) if v > 0]
 
 
 def init_db() -> sqlite3.Connection:
@@ -172,12 +166,11 @@ def init_db() -> sqlite3.Connection:
     return conn
 
 
-def store(conn: sqlite3.Connection, rows: List[Tuple[str, str, float, int]]) -> int:
+def store(conn: sqlite3.Connection, rows: list[tuple[str, str, float, int]]) -> int:
     if not rows:
         return 0
     cur = conn.executemany(
-        "INSERT OR REPLACE INTO price_history (item_name, day, median_price, volume) "
-        "VALUES (?, ?, ?, ?)",
+        "INSERT OR REPLACE INTO price_history (item_name, day, median_price, volume) VALUES (?, ?, ?, ?)",
         rows,
     )
     conn.commit()
@@ -200,10 +193,10 @@ def is_mangled_key(item_slug: str) -> bool:
 
 
 def load_targets(
-    min_price: Optional[float],
-    shuffle_seed: Optional[int],
+    min_price: float | None,
+    shuffle_seed: int | None,
     active_days: int = 1,
-) -> List[str]:
+) -> list[str]:
     """Items the daily aggregator is actively collecting, that training drops.
 
     Three conditions, all required:
@@ -218,7 +211,6 @@ def load_targets(
     anything failing until `--min-price` was next passed.
     """
     import duckdb
-
     from db.archive import prices_relation
     from models.item_parser import archive_universe_sql_filter
 
@@ -233,13 +225,9 @@ def load_targets(
     con.execute("CREATE TABLE gate AS SELECT DISTINCT item_slug FROM arch WHERE day < '2026-01-01'")
 
     recent = [
-        r[0]
-        for r in con.execute(
-            f"SELECT DISTINCT day FROM arch ORDER BY day DESC LIMIT {active_days}"
-        ).fetchall()
+        r[0] for r in con.execute(f"SELECT DISTINCT day FROM arch ORDER BY day DESC LIMIT {active_days}").fetchall()
     ]
-    logger.info(f"active window = {len(recent)} most recent archive day(s): "
-                f"{', '.join(str(d)[:10] for d in recent)}")
+    logger.info(f"active window = {len(recent)} most recent archive day(s): {', '.join(str(d)[:10] for d in recent)}")
     con.execute("CREATE TABLE act(day DATE)")
     con.executemany("INSERT INTO act VALUES (?)", [(d,) for d in recent])
 
@@ -285,7 +273,7 @@ def classify(r: requests.Response) -> str:
     return "EMPTY"
 
 
-def fetch(session: requests.Session, name: str) -> Tuple[str, Optional[str]]:
+def fetch(session: requests.Session, name: str) -> tuple[str, str | None]:
     """Return (status, html). status is OK | EMPTY | 429 | FAILED."""
     url = BASE_URL + urllib.parse.quote(name, safe="")
     try:
@@ -322,17 +310,16 @@ def main() -> int:
     ap.add_argument("--min-price", type=float, default=None, help="only items reaching this price")
     ap.add_argument("--delay", type=float, default=REQUEST_DELAY)
     ap.add_argument("--seed", type=int, default=None, help="shuffle targets for a representative sample")
-    ap.add_argument("--active-days", type=int, default=1,
-                    help="require presence on the N most recent archive days (default 1)")
+    ap.add_argument(
+        "--active-days", type=int, default=1, help="require presence on the N most recent archive days (default 1)"
+    )
     ap.add_argument("--dry-run", action="store_true")
     args = ap.parse_args()
 
     conn = init_db()
 
     if args.status:
-        n_items, n_rows = conn.execute(
-            "SELECT COUNT(DISTINCT item_name), COUNT(*) FROM price_history"
-        ).fetchone()
+        n_items, n_rows = conn.execute("SELECT COUNT(DISTINCT item_name), COUNT(*) FROM price_history").fetchone()
         prog = load_progress()
         logger.info(f"stored: {n_items} items, {n_rows} rows | requested: {len(prog['done'])}")
         return 0
@@ -346,9 +333,7 @@ def main() -> int:
         # variant of some other page. A page carries ~4.5 series, 3.7 of which
         # are themselves targets, so ignoring the second set would re-request
         # items we already hold and inflate the run ~3.7x.
-        already = {
-            r[0] for r in conn.execute("SELECT DISTINCT item_name FROM price_history")
-        }
+        already = {r[0] for r in conn.execute("SELECT DISTINCT item_name FROM price_history")}
         done = set(prog["done"]) | already
         before = len(targets)
         targets = [t for t in targets if t not in done]
@@ -382,9 +367,7 @@ def main() -> int:
     t0 = time.time()
     total_rows = 0
     # Seed from the staging DB so the in-run skip also covers earlier runs.
-    harvested: set = {
-        r[0] for r in conn.execute("SELECT DISTINCT item_name FROM price_history")
-    }
+    harvested: set = {r[0] for r in conn.execute("SELECT DISTINCT item_name FROM price_history")}
     cooldown_used = False
 
     skipped_inrun = 0

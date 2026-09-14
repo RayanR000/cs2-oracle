@@ -19,6 +19,7 @@ Usage:
     venv/bin/python scripts/check_sidecar_continuity.py --archive-dir ../price-archive
     venv/bin/python scripts/check_sidecar_continuity.py --gate --min-days 45
 """
+
 from __future__ import annotations
 
 import argparse
@@ -41,8 +42,15 @@ WATCHED = {
 def _audit_table(archive_dir: Path, pattern: str, day_col: str, source_col: str) -> dict:
     paths = sorted(archive_dir.glob(pattern))
     if not paths:
-        return {"files": 0, "days": 0, "dates": [], "gaps": [], "longest_run": 0,
-                "latest": None, "per_source_latest": {}}
+        return {
+            "files": 0,
+            "days": 0,
+            "dates": [],
+            "gaps": [],
+            "longest_run": 0,
+            "latest": None,
+            "per_source_latest": {},
+        }
     frames = []
     for p in paths:
         try:
@@ -54,8 +62,15 @@ def _audit_table(archive_dir: Path, pattern: str, day_col: str, source_col: str)
         df[day_col] = pd.to_datetime(df[day_col]).dt.date
         frames.append(df)
     if not frames:
-        return {"files": len(paths), "days": 0, "dates": [], "gaps": [],
-                "longest_run": 0, "latest": None, "per_source_latest": {}}
+        return {
+            "files": len(paths),
+            "days": 0,
+            "dates": [],
+            "gaps": [],
+            "longest_run": 0,
+            "latest": None,
+            "per_source_latest": {},
+        }
     all_days = pd.concat(frames, ignore_index=True)
     dates = sorted(all_days[day_col].unique())
     gaps = [str(d) for d in pd.date_range(dates[0], dates[-1]).date if d not in set(dates)]
@@ -68,21 +83,24 @@ def _audit_table(archive_dir: Path, pattern: str, day_col: str, source_col: str)
     if source_col in all_days.columns:
         last = all_days[all_days[day_col] == latest]
         per_source = {str(k): int(v) for k, v in last[source_col].value_counts().items()}
-    return {"files": len(paths), "days": len(dates),
-            "dates": [str(d) for d in dates], "gaps": gaps,
-            "longest_run": longest, "latest": str(latest),
-            "per_source_latest": per_source}
+    return {
+        "files": len(paths),
+        "days": len(dates),
+        "dates": [str(d) for d in dates],
+        "gaps": gaps,
+        "longest_run": longest,
+        "latest": str(latest),
+        "per_source_latest": per_source,
+    }
 
 
 def audit(archive_dir: Path) -> dict:
-    return {name: _audit_table(archive_dir, pat, dcol, scol)
-            for name, (pat, dcol, scol) in WATCHED.items()}
+    return {name: _audit_table(archive_dir, pat, dcol, scol) for name, (pat, dcol, scol) in WATCHED.items()}
 
 
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__)
-    ap.add_argument("--archive-dir", type=Path,
-                    default=Path(__file__).parent.parent.parent / "price-archive")
+    ap.add_argument("--archive-dir", type=Path, default=Path(__file__).parent.parent.parent / "price-archive")
     ap.add_argument("--gate", action="store_true")
     ap.add_argument("--min-days", type=int, default=45)
     ap.add_argument("--max-staleness-days", type=int, default=7)

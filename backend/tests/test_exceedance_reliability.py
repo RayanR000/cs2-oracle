@@ -9,14 +9,14 @@ band coverage was validated before it was confirmed on served outcomes.
 
 Scope: docs/superpowers/plans/2026-08-16-exceedance-band-scale-phase2-plan.md.
 """
+
 from __future__ import annotations
 
 import numpy as np
 import pandas as pd
 import pytest
-
 from backtest.friction import actionable_threshold
-from scripts.replay_serving import _reliability_rows, _reliability_ece
+from scripts.replay_serving import _reliability_ece, _reliability_rows
 
 
 def _frame(exceed_p, current):
@@ -62,8 +62,7 @@ def test_bins_are_fixed_width_over_the_unit_interval():
 
 
 def test_ece_is_the_count_weighted_abs_gap():
-    rows = [{"n": 1, "pred": 0.9, "realized": 0.0},
-            {"n": 3, "pred": 0.1, "realized": 0.0}]
+    rows = [{"n": 1, "pred": 0.9, "realized": 0.0}, {"n": 3, "pred": 0.1, "realized": 0.0}]
     assert _reliability_ece(rows) == pytest.approx((1 * 0.9 + 3 * 0.1) / 4)
 
 

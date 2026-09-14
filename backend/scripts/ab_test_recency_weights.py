@@ -37,25 +37,24 @@ Usage:
     python -m scripts.ab_test_recency_weights [--horizon 7] [--max-folds 8]
         --frame /path/prod_frame.parquet --cols /path/prod_frame.cols.json
 """
-import sys
+
 import json
-import time
 import logging
+import sys
+import time
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
+import lightgbm as lgb
+import models.forecaster as fmod
 import numpy as np
 import pandas as pd
-import lightgbm as lgb
-
-import models.forecaster as fmod
 from backtest.paired_mde import format_paired, paired_arm_contrasts
 from backtest.walkforward_records import fold_level_records
 from models.forecaster import ItemForecaster, embargo_days
 
-logging.basicConfig(level=logging.INFO,
-                    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s")
 logger = logging.getLogger("ab_test_recency_weights")
 
 META_PATH = Path(__file__).parent.parent / "models" / "saved_models" / "meta.json"
@@ -87,7 +86,8 @@ def pinball(y, p, a):
 
 
 def directional_accuracy(y, p):
-    y = np.asarray(y, float); p = np.asarray(p, float)
+    y = np.asarray(y, float)
+    p = np.asarray(p, float)
     m = y != 0
     return float((np.sign(p[m]) == np.sign(y[m])).mean()) if m.any() else float("nan")
 
@@ -131,9 +131,11 @@ def run_horizon(fc, tdf, feat_cols, horizon, max_folds):
             logger.info(f"    fold {fi}: skipped ({len(tr)}/{len(va)})")
             continue
         X_tr = tr[feat_cols].replace([np.inf, -np.inf], np.nan)
-        med = X_tr.median(); X_tr = X_tr.fillna(med)
+        med = X_tr.median()
+        X_tr = X_tr.fillna(med)
         X_va = va[feat_cols].replace([np.inf, -np.inf], np.nan).fillna(med)
-        y_tr = tr[target].to_numpy(float); y_va = va[target].to_numpy(float)
+        y_tr = tr[target].to_numpy(float)
+        y_va = va[target].to_numpy(float)
 
         # Weights per arm. flat/decay differ only by the half-life the weight
         # helper reads (patched around weight computation only). placebo keeps
@@ -156,14 +158,17 @@ def run_horizon(fc, tdf, feat_cols, horizon, max_folds):
         # recency multiplier 0.5^(age/hl); permuting it row-wise (fixed seed per
         # fold) preserves its distribution while breaking its alignment to age.
         rng = np.random.default_rng(PLACEBO_SEED + fi)
+
         def _placebo(w_flat, w_decay):
             ratio = w_decay / np.maximum(w_flat, 1e-12)
             w = w_flat * rng.permutation(ratio)
             return (w / max(float(np.mean(w)), 1e-8)).astype(np.float32)
-        weights = {"flat": (w_flat_tr, w_flat_va),
-                   "decay": (w_decay_tr, w_decay_va),
-                   "placebo": (_placebo(w_flat_tr, w_decay_tr),
-                               _placebo(w_flat_va, w_decay_va))}
+
+        weights = {
+            "flat": (w_flat_tr, w_flat_va),
+            "decay": (w_decay_tr, w_decay_va),
+            "placebo": (_placebo(w_flat_tr, w_decay_tr), _placebo(w_flat_va, w_decay_va)),
+        }
 
         for arm in ARM_ORDER:
             w_tr, w_va = weights[arm]
@@ -171,44 +176,61 @@ def run_horizon(fc, tdf, feat_cols, horizon, max_folds):
             preds, iters = {}, {}
             for q in QUANTILES:
                 p = dict(base[q])
-                p.update(objective="quantile", alpha=q, metric="quantile",
-                         boosting_type=boosting, max_bin=fc.MAX_BIN,
-                         feature_pre_filter=False, verbosity=-1, device="cpu",
-                         feature_fraction=SINGLE_MEMBER_FEATURE_FRACTION)
+                p.update(
+                    objective="quantile",
+                    alpha=q,
+                    metric="quantile",
+                    boosting_type=boosting,
+                    max_bin=fc.MAX_BIN,
+                    feature_pre_filter=False,
+                    verbosity=-1,
+                    device="cpu",
+                    feature_fraction=SINGLE_MEMBER_FEATURE_FRACTION,
+                )
                 ds = {"max_bin": fc.MAX_BIN, "feature_pre_filter": False}
                 dtr = lgb.Dataset(X_tr, y_tr, params=ds, weight=w_tr)
                 dva = lgb.Dataset(X_va, y_va, reference=dtr, params=ds, weight=w_va)
                 m = ItemForecaster._train_ensemble_member(
-                    p, dtr, dva, num_boost_round=nbr,
-                    early_stopping=ItemForecaster._early_stopping_enabled())
+                    p, dtr, dva, num_boost_round=nbr, early_stopping=ItemForecaster._early_stopping_enabled()
+                )
                 bi = m.best_iteration or m.num_trees()
                 preds[q] = m.predict(X_va, num_iteration=bi)
                 iters[q] = bi
             fit_s = time.time() - t0
 
-            rec = {"horizon": horizon, "arm": arm, "fold": fi,
-                   "pinball_q50": pinball(y_va, preds[0.5], 0.5),
-                   "pinball_mean": float(np.mean([pinball(y_va, preds[q], q)
-                                                  for q in QUANTILES])),
-                   "da": directional_accuracy(y_va, preds[0.5]),
-                   "iter_q10": iters[0.1], "iter_q50": iters[0.5],
-                   "iter_q90": iters[0.9], "fit_s": round(fit_s, 1),
-                   "n_train": len(tr), "n_val": len(va)}
-            logger.info(f"    fold {fi} {arm:>5}: q50_pinball={rec['pinball_q50']:.5f} "
-                        f"mean={rec['pinball_mean']:.5f} da={100*rec['da']:.2f}% "
-                        f"iters={iters[0.1]}/{iters[0.5]}/{iters[0.9]} ({fit_s:.0f}s)")
+            rec = {
+                "horizon": horizon,
+                "arm": arm,
+                "fold": fi,
+                "pinball_q50": pinball(y_va, preds[0.5], 0.5),
+                "pinball_mean": float(np.mean([pinball(y_va, preds[q], q) for q in QUANTILES])),
+                "da": directional_accuracy(y_va, preds[0.5]),
+                "iter_q10": iters[0.1],
+                "iter_q50": iters[0.5],
+                "iter_q90": iters[0.9],
+                "fit_s": round(fit_s, 1),
+                "n_train": len(tr),
+                "n_val": len(va),
+            }
+            logger.info(
+                f"    fold {fi} {arm:>5}: q50_pinball={rec['pinball_q50']:.5f} "
+                f"mean={rec['pinball_mean']:.5f} da={100 * rec['da']:.2f}% "
+                f"iters={iters[0.1]}/{iters[0.5]}/{iters[0.9]} ({fit_s:.0f}s)"
+            )
             yield rec
 
 
 def summarize(records):
     df = pd.DataFrame(records)
     if df.empty:
-        print("\nno results"); return df, {}
+        print("\nno results")
+        return df, {}
     print("\n" + "=" * 96)
     print("PAIRED RESULTS — recency decay vs flat weights (same folds)")
     print("=" * 96)
-    print(f"{'h':>3} {'arm':>6} {'q50_pinball':>12} {'mean_pinball':>13} {'da%':>7} "
-          f"{'iter q10/q50/q90':>20} {'folds':>6}")
+    print(
+        f"{'h':>3} {'arm':>6} {'q50_pinball':>12} {'mean_pinball':>13} {'da%':>7} {'iter q10/q50/q90':>20} {'folds':>6}"
+    )
     verdicts = {}
     for h in sorted(df.horizon.unique()):
         hd = df[df.horizon == h]
@@ -216,10 +238,12 @@ def summarize(records):
             a = hd[hd.arm == arm]
             if a.empty:
                 continue
-            print(f"{h:>3} {arm:>8} {a.pinball_q50.mean():>12.5f} "
-                  f"{a.pinball_mean.mean():>13.5f} {100*a.da.mean():>7.2f} "
-                  f"{a.iter_q10.mean():>6.0f}/{a.iter_q50.mean():.0f}/"
-                  f"{a.iter_q90.mean():<.0f}{'':>4} {len(a):>6}")
+            print(
+                f"{h:>3} {arm:>8} {a.pinball_q50.mean():>12.5f} "
+                f"{a.pinball_mean.mean():>13.5f} {100 * a.da.mean():>7.2f} "
+                f"{a.iter_q10.mean():>6.0f}/{a.iter_q50.mean():.0f}/"
+                f"{a.iter_q90.mean():<.0f}{'':>4} {len(a):>6}"
+            )
         c = hd[hd.arm == CONTROL].set_index("fold")
 
         def _contrast(arm_name):
@@ -235,12 +259,23 @@ def summarize(records):
             won = int((tt.pinball_q50 < cc.pinball_q50).sum())
             da_pp = 100 * (tt.da.mean() - cc.da.mean())
             paired = paired_arm_contrasts(
-                {"flat": fold_level_records(common, cc.pinball_q50, metric="pinball"),
-                 arm_name: fold_level_records(common, tt.pinball_q50, metric="pinball")},
-                base="flat", value_key="pinball", scale=1.0,
-                higher_is_better=False)[arm_name]
-            return {"gain": gain, "won": won, "n": len(common),
-                    "da_pp": da_pp, "paired": paired, "iter_sd": tt.iter_q50.std()}
+                {
+                    "flat": fold_level_records(common, cc.pinball_q50, metric="pinball"),
+                    arm_name: fold_level_records(common, tt.pinball_q50, metric="pinball"),
+                },
+                base="flat",
+                value_key="pinball",
+                scale=1.0,
+                higher_is_better=False,
+            )[arm_name]
+            return {
+                "gain": gain,
+                "won": won,
+                "n": len(common),
+                "da_pp": da_pp,
+                "paired": paired,
+                "iter_sd": tt.iter_q50.std(),
+            }
 
         decay = _contrast("decay")
         placebo = _contrast("placebo")
@@ -254,22 +289,30 @@ def summarize(records):
         # "gain" is weight-variance/capacity, not recency structure.
         g4 = (placebo is None) or (placebo["paired"]["verdict"] != "positive")
         ship = bool(g1 and g2 and g3 and g4)
-        verdicts[h] = {"ship": ship, "rel_gain": decay["gain"],
-                       "folds_won": decay["won"], "n_folds": decay["n"],
-                       "da_delta_pp": decay["da_pp"],
-                       "paired_pinball": decay["paired"],
-                       "placebo_paired": placebo["paired"] if placebo else None,
-                       "placebo_gain": placebo["gain"] if placebo else None,
-                       "iter_q50_sd_flat": c.iter_q50.std(),
-                       "iter_q50_sd_decay": decay["iter_sd"]}
-        print(f"  -> {h}d: q50 pinball {decay['gain']*100:+.2f}% [{'PASS' if g1 else 'FAIL'}] | "
-              f"paired {format_paired(decay['paired'], unit='')} [{'PASS' if g2 else 'FAIL'}] | "
-              f"DA {decay['da_pp']:+.2f}pp [{'PASS' if g3 else 'FAIL'}] | "
-              f"folds {decay['won']}/{decay['n']} (context, not a gate)")
+        verdicts[h] = {
+            "ship": ship,
+            "rel_gain": decay["gain"],
+            "folds_won": decay["won"],
+            "n_folds": decay["n"],
+            "da_delta_pp": decay["da_pp"],
+            "paired_pinball": decay["paired"],
+            "placebo_paired": placebo["paired"] if placebo else None,
+            "placebo_gain": placebo["gain"] if placebo else None,
+            "iter_q50_sd_flat": c.iter_q50.std(),
+            "iter_q50_sd_decay": decay["iter_sd"],
+        }
+        print(
+            f"  -> {h}d: q50 pinball {decay['gain'] * 100:+.2f}% [{'PASS' if g1 else 'FAIL'}] | "
+            f"paired {format_paired(decay['paired'], unit='')} [{'PASS' if g2 else 'FAIL'}] | "
+            f"DA {decay['da_pp']:+.2f}pp [{'PASS' if g3 else 'FAIL'}] | "
+            f"folds {decay['won']}/{decay['n']} (context, not a gate)"
+        )
         if placebo is not None:
-            print(f"     PLACEBO {placebo['gain']*100:+.2f}% "
-                  f"paired {format_paired(placebo['paired'], unit='')} "
-                  f"[{'null=PASS' if g4 else 'POSITIVE=FAIL'}]")
+            print(
+                f"     PLACEBO {placebo['gain'] * 100:+.2f}% "
+                f"paired {format_paired(placebo['paired'], unit='')} "
+                f"[{'null=PASS' if g4 else 'POSITIVE=FAIL'}]"
+            )
         print(f"     q50 stopping-round sd: flat={c.iter_q50.std():.0f} decay={decay['iter_sd']:.0f}")
         print(f"     VERDICT {h}d: {'SHIP decay' if ship else 'KEEP flat'}")
     return df, verdicts
@@ -277,6 +320,7 @@ def summarize(records):
 
 def main():
     import argparse
+
     ap = argparse.ArgumentParser()
     ap.add_argument("--frame", required=True)
     ap.add_argument("--cols", required=True)
@@ -292,20 +336,18 @@ def main():
     fc.label_voiding = {}
     df = pd.read_parquet(args.frame)
     feat_cols = [c for c in json.loads(Path(args.cols).read_text()) if c in df.columns]
-    logger.info(f"frame {df.shape}, {len(feat_cols)} features, "
-                f"items={df['item_id'].nunique()}")
+    logger.info(f"frame {df.shape}, {len(feat_cols)} features, items={df['item_id'].nunique()}")
 
     records = []
     t0 = time.time()
-    for h in ([args.horizon] if args.horizon else HORIZONS):
+    for h in [args.horizon] if args.horizon else HORIZONS:
         tdf = ItemForecaster.prepare_targets(fc, df, h)
-        tdf = tdf.dropna(subset=[f"target_return_{h}d"]).sort_values(
-            ["item_id", "date"]).copy()
+        tdf = tdf.dropna(subset=[f"target_return_{h}d"]).sort_values(["item_id", "date"]).copy()
         if tdf.empty:
             continue
         records += list(run_horizon(fc, tdf, feat_cols, h, args.max_folds))
     out, _ = summarize(records)
-    logger.info(f"total wall clock: {time.time()-t0:.0f}s")
+    logger.info(f"total wall clock: {time.time() - t0:.0f}s")
     if args.out and not out.empty:
         out.to_csv(args.out, index=False)
     return 0

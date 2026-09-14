@@ -26,6 +26,7 @@ that would show the claim becoming true.
 
 See docs/changelog/2026-08-12-served-confidence-withdrawn.md.
 """
+
 from __future__ import annotations
 
 from pathlib import Path

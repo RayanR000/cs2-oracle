@@ -29,8 +29,7 @@ depends_on = None
 
 
 def _existing() -> set[str]:
-    return {c["name"] for c in sa.inspect(op.get_bind()).get_columns(
-        "item_forecasts")}
+    return {c["name"] for c in sa.inspect(op.get_bind()).get_columns("item_forecasts")}
 
 
 def upgrade() -> None:

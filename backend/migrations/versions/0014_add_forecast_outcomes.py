@@ -39,8 +39,14 @@ def upgrade() -> None:
         sa.Column("pct_error", sa.Float(), nullable=True),
         sa.Column("model_version", sa.String(50), nullable=True),
         sa.Column("evaluated_at", sa.DateTime(), nullable=False),
-        sa.ForeignKeyConstraint(["forecast_id"], ["item_forecasts.id"], ),
-        sa.ForeignKeyConstraint(["item_id"], ["items.id"], ),
+        sa.ForeignKeyConstraint(
+            ["forecast_id"],
+            ["item_forecasts.id"],
+        ),
+        sa.ForeignKeyConstraint(
+            ["item_id"],
+            ["items.id"],
+        ),
         sa.PrimaryKeyConstraint("id"),
     )
     op.create_index("idx_outcome_forecast_id", "forecast_outcomes", ["forecast_id"])

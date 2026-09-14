@@ -7,6 +7,7 @@ against the SAME scale it is served against — a matched pair, exactly like SIG
 q_hat/beta. These guard the flag, the mutual exclusion, the matched calibrate/serve identity,
 and the meta round-trip. The offline A/B is Task 3, run from the controller.
 """
+
 from __future__ import annotations
 
 import inspect
@@ -16,7 +17,6 @@ from unittest.mock import MagicMock
 import numpy as np
 import pandas as pd
 import pytest
-
 from models import conformal
 from models.forecaster import ItemForecaster
 
@@ -30,12 +30,14 @@ def _records(n=300, seed=0):
     sigma = np.clip(np.abs(rng.normal(0.07, 0.03, n)), 0.02, 0.65)
     resid = np.abs(rng.normal(0, 5.0, n))
     p = np.clip(rng.uniform(0, 1, n), 1e-3, 1.0)
-    return pd.DataFrame({
-        "residual_pct": resid,
-        "sigma": sigma,
-        "mid_ret": rng.normal(0, 2.0, n),
-        "exceed_p": p,
-    })
+    return pd.DataFrame(
+        {
+            "residual_pct": resid,
+            "sigma": sigma,
+            "mid_ret": rng.normal(0, 2.0, n),
+            "exceed_p": p,
+        }
+    )
 
 
 def _exc_head(f, cols=("f", "g"), seed=0):
@@ -45,11 +47,12 @@ def _exc_head(f, cols=("f", "g"), seed=0):
     y = (x > 0.5).astype(float)
     X = pd.DataFrame({cols[0]: x, cols[1]: rng.normal(size=n)})
     return f._fit_exceedance_classifier(
-        X, y, boosting_type="gbdt", tree_params={}, horizon=7,
-        tier_train=np.full(n, 2), num_boost_round=60)
+        X, y, boosting_type="gbdt", tree_params={}, horizon=7, tier_train=np.full(n, 2), num_boost_round=60
+    )
 
 
 # --- the flag -------------------------------------------------------------
+
 
 def test_flag_reads_the_environment(monkeypatch):
     monkeypatch.delenv("EXCEEDANCE_SCALE", raising=False)
@@ -58,8 +61,7 @@ def test_flag_reads_the_environment(monkeypatch):
     assert ItemForecaster.exceedance_scale_enabled() is True
 
 
-def test_exceedance_scale_is_mutually_exclusive_with_learned_and_exponent(
-        tmp_path, monkeypatch):
+def test_exceedance_scale_is_mutually_exclusive_with_learned_and_exponent(tmp_path, monkeypatch):
     f = _forecaster(tmp_path)
     recs = _records()
     monkeypatch.setenv("EXCEEDANCE_SCALE", "1")
@@ -76,8 +78,8 @@ def test_exceedance_scale_is_mutually_exclusive_with_learned_and_exponent(
 
 # --- the matched calibrate scale ------------------------------------------
 
-def test_calibrate_uses_sigma_times_sqrt_p_and_keeps_beta_neutral(
-        tmp_path, monkeypatch):
+
+def test_calibrate_uses_sigma_times_sqrt_p_and_keeps_beta_neutral(tmp_path, monkeypatch):
     f = _forecaster(tmp_path)
     recs = _records()
     monkeypatch.setenv("EXCEEDANCE_SCALE", "1")
@@ -87,17 +89,19 @@ def test_calibrate_uses_sigma_times_sqrt_p_and_keeps_beta_neutral(
 
     q_hat = f._calibrate_conformal(7, recs.copy())
 
-    expected_scale = recs["sigma"].to_numpy() * np.sqrt(
-        np.clip(recs["exceed_p"].to_numpy(), 1e-3, 1.0))
+    expected_scale = recs["sigma"].to_numpy() * np.sqrt(np.clip(recs["exceed_p"].to_numpy(), 1e-3, 1.0))
     expected_q = conformal.calibrate(
-        recs["residual_pct"].to_numpy(), recs["sigma"].to_numpy(),
-        conformal.ALPHA, conformal.BETA_NEUTRAL, learned_scale=expected_scale)
+        recs["residual_pct"].to_numpy(),
+        recs["sigma"].to_numpy(),
+        conformal.ALPHA,
+        conformal.BETA_NEUTRAL,
+        learned_scale=expected_scale,
+    )
     assert q_hat == pytest.approx(expected_q)
     assert f.conformal_beta[7] == conformal.BETA_NEUTRAL
 
 
-def test_calibrate_falls_back_to_sigma_when_no_exceed_p_column(
-        tmp_path, monkeypatch):
+def test_calibrate_falls_back_to_sigma_when_no_exceed_p_column(tmp_path, monkeypatch):
     """Flag on but the records carry no OOF probability -> sigma band, loudly."""
     f = _forecaster(tmp_path)
     recs = _records().drop(columns=["exceed_p"])
@@ -108,12 +112,13 @@ def test_calibrate_falls_back_to_sigma_when_no_exceed_p_column(
 
     q_hat = f._calibrate_conformal(7, recs.copy())
     plain = conformal.calibrate(
-        recs["residual_pct"].to_numpy(), recs["sigma"].to_numpy(),
-        conformal.ALPHA, conformal.BETA_NEUTRAL)
+        recs["residual_pct"].to_numpy(), recs["sigma"].to_numpy(), conformal.ALPHA, conformal.BETA_NEUTRAL
+    )
     assert q_hat == pytest.approx(plain)
 
 
 # --- serving --------------------------------------------------------------
+
 
 def test_band_scale_serves_sigma_times_sqrt_p_when_the_artifact_says_on(tmp_path):
     f = _forecaster(tmp_path)
@@ -143,6 +148,7 @@ def test_band_scale_ignores_env_when_the_artifact_says_off(tmp_path, monkeypatch
 
 # --- persistence ----------------------------------------------------------
 
+
 def test_flag_round_trips_through_meta_json(tmp_path, monkeypatch):
     monkeypatch.setenv("EXCEEDANCE_SCALE", "1")
     monkeypatch.delenv("BYMYKEL_METADATA", raising=False)
@@ -162,6 +168,7 @@ def test_flag_round_trips_through_meta_json(tmp_path, monkeypatch):
 
 
 # --- OOF honesty (source guard; real proof is the Task 3 controller run) --
+
 
 def test_cv_loop_fits_a_per_fold_exceedance_head_for_calibration():
     """q_hat must be calibrated on OUT-OF-FOLD p_exceed: the served head trains on

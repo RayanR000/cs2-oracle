@@ -6,22 +6,21 @@ The estimator selected `price_tier` from `forecast_outcomes`, but that column li
 when it was schema-blocked. These tests run the real query against a schema built from the ORM
 metadata, so a column that does not exist on the table fails here instead of silently in prod.
 """
+
 import datetime as dt
 
 import pytest
+from backtest.scoring import HEADLINE_MIN_TIER
+from database import Base, ForecastOutcome
+from models.served_recalibration import PANEL_COLUMNS, _load_panel
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
-from database import Base, ForecastOutcome
-from backtest.scoring import HEADLINE_MIN_TIER
-from models.served_recalibration import PANEL_COLUMNS, _load_panel
-
 
 @pytest.fixture()
 def session():
-    engine = create_engine("sqlite://", connect_args={"check_same_thread": False},
-                           poolclass=StaticPool)
+    engine = create_engine("sqlite://", connect_args={"check_same_thread": False}, poolclass=StaticPool)
     Base.metadata.create_all(engine)
     yield sessionmaker(bind=engine)()
     engine.dispose()
@@ -29,10 +28,19 @@ def session():
 
 def _outcome(**kw):
     base = dict(
-        forecast_id=1, item_id=1, forecast_date=dt.date(2026, 8, 21), horizon_days=7,
-        target_date=dt.date(2026, 8, 28), base_price=10.0, current_price=10.0,
-        predicted_price_low=9.0, predicted_price_mid=10.0, predicted_price_high=11.0,
-        actual_price=10.5, direction_correct=0, abs_error=0.5,
+        forecast_id=1,
+        item_id=1,
+        forecast_date=dt.date(2026, 8, 21),
+        horizon_days=7,
+        target_date=dt.date(2026, 8, 28),
+        base_price=10.0,
+        current_price=10.0,
+        predicted_price_low=9.0,
+        predicted_price_mid=10.0,
+        predicted_price_high=11.0,
+        actual_price=10.5,
+        direction_correct=0,
+        abs_error=0.5,
     )
     base.update(kw)
     return ForecastOutcome(**base)

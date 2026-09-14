@@ -3,7 +3,6 @@ from __future__ import annotations
 import json
 import logging
 import os
-from pathlib import Path
 
 import numpy as np
 import pandas as pd
@@ -13,8 +12,11 @@ from torch.optim import Adam
 from torch.optim.lr_scheduler import OneCycleLR
 
 from models.tft.dataset import (
-    SequenceDataset, build_dataloaders,
-    N_PAST_FEATURES, N_STATIC_FEATURES, N_FUTURE_FEATURES,
+    N_FUTURE_FEATURES,
+    N_PAST_FEATURES,
+    N_STATIC_FEATURES,
+    SequenceDataset,
+    build_dataloaders,
 )
 from models.tft.model import TemporalFusionTransformer, TFTConfig
 
@@ -26,14 +28,15 @@ CONFIG_NAME = "tft_config.json"
 
 
 def quantile_loss(
-    pred: torch.Tensor, target: torch.Tensor, quantile: float = 0.5,
+    pred: torch.Tensor,
+    target: torch.Tensor,
+    quantile: float = 0.5,
 ) -> torch.Tensor:
     error = target - pred
     return torch.mean(torch.max(quantile * error, (quantile - 1) * error))
 
 
 class TFTTrainer:
-
     def __init__(
         self,
         config: TFTConfig | None = None,
@@ -77,8 +80,11 @@ class TFTTrainer:
         """Train on one fold. Returns best validation loss."""
         self.model = self._build_model()
         train_dl, val_dl = build_dataloaders(
-            df, train_dates, val_dates,
-            lookback=self.lookback, horizons=self.horizons,
+            df,
+            train_dates,
+            val_dates,
+            lookback=self.lookback,
+            horizons=self.horizons,
             batch_size=self.batch_size,
         )
         if len(train_dl) == 0:
@@ -87,8 +93,10 @@ class TFTTrainer:
 
         optimizer = Adam(self.model.parameters(), lr=self.lr)
         scheduler = OneCycleLR(
-            optimizer, max_lr=self.lr,
-            steps_per_epoch=len(train_dl), epochs=max_epochs,
+            optimizer,
+            max_lr=self.lr,
+            steps_per_epoch=len(train_dl),
+            epochs=max_epochs,
         )
 
         best_val_loss = float("inf")
@@ -124,8 +132,7 @@ class TFTTrainer:
 
             if epoch % 10 == 0 or no_improve == 0:
                 logger.info(
-                    f"  Epoch {epoch}: train_loss={train_loss:.4f} "
-                    f"val_loss={val_loss:.4f} best={best_val_loss:.4f}"
+                    f"  Epoch {epoch}: train_loss={train_loss:.4f} val_loss={val_loss:.4f} best={best_val_loss:.4f}"
                 )
 
             if no_improve >= patience:
@@ -156,7 +163,9 @@ class TFTTrainer:
         self.model.eval()
 
         ds = SequenceDataset(
-            df, lookback=self.lookback, horizons=self.horizons,
+            df,
+            lookback=self.lookback,
+            horizons=self.horizons,
             date_filter=dates,
         )
         if len(ds) == 0:
@@ -164,9 +173,10 @@ class TFTTrainer:
             return pd.DataFrame(columns=cols)
 
         from torch.utils.data import DataLoader
+
         from models.tft.dataset import _collate_fn
-        dl = DataLoader(ds, batch_size=self.batch_size, shuffle=False,
-                        collate_fn=_collate_fn)
+
+        dl = DataLoader(ds, batch_size=self.batch_size, shuffle=False, collate_fn=_collate_fn)
 
         all_preds = []
         all_items = []
@@ -179,10 +189,12 @@ class TFTTrainer:
             all_dates.extend(meta["date"])
 
         preds_arr = np.concatenate(all_preds, axis=0)
-        result = pd.DataFrame({
-            "item_id": all_items,
-            "date": all_dates,
-        })
+        result = pd.DataFrame(
+            {
+                "item_id": all_items,
+                "date": all_dates,
+            }
+        )
         for i, h in enumerate(self.horizons):
             result[f"pred_{h}d"] = preds_arr[:, i]
         return result
@@ -198,15 +210,12 @@ class TFTTrainer:
         all_oof = []
 
         for fi, (train_dates, val_dates) in enumerate(folds):
-            logger.info(f"TFT CV fold {fi + 1}/{len(folds)}: "
-                        f"train={len(train_dates)}d val={len(val_dates)}d")
-            self.train_fold(df, train_dates, val_dates,
-                            max_epochs=max_epochs, patience=patience)
+            logger.info(f"TFT CV fold {fi + 1}/{len(folds)}: train={len(train_dates)}d val={len(val_dates)}d")
+            self.train_fold(df, train_dates, val_dates, max_epochs=max_epochs, patience=patience)
             fold_preds = self.predict(df, val_dates)
 
             # Attach actuals
-            ds = SequenceDataset(df, lookback=self.lookback, horizons=self.horizons,
-                                 date_filter=val_dates)
+            ds = SequenceDataset(df, lookback=self.lookback, horizons=self.horizons, date_filter=val_dates)
             actuals = {}
             for idx in range(len(ds)):
                 _, _, _, targets, meta = ds[idx]
@@ -215,9 +224,8 @@ class TFTTrainer:
 
             for i, h in enumerate(self.horizons):
                 fold_preds[f"actual_{h}d"] = fold_preds.apply(
-                    lambda r: actuals.get(
-                        (r["item_id"], str(r["date"])), np.full(len(self.horizons), np.nan)
-                    )[i], axis=1,
+                    lambda r: actuals.get((r["item_id"], str(r["date"])), np.full(len(self.horizons), np.nan))[i],
+                    axis=1,
                 )
             fold_preds["fold"] = fi
             all_oof.append(fold_preds)
@@ -261,7 +269,6 @@ class TFTTrainer:
             lr=cfg.get("lr", 1e-3),
         )
         trainer.model = trainer._build_model()
-        state = torch.load(os.path.join(model_dir, CHECKPOINT_NAME),
-                           weights_only=True)
+        state = torch.load(os.path.join(model_dir, CHECKPOINT_NAME), weights_only=True)
         trainer.model.load_state_dict(state)
         return trainer

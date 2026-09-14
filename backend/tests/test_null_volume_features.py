@@ -14,6 +14,7 @@ volume column.
 The expected value is False -- "no volume confirmation" -- which is what the
 numpy path already produced, since `NaN > 0` is False.
 """
+
 from __future__ import annotations
 
 from unittest.mock import MagicMock
@@ -21,18 +22,19 @@ from unittest.mock import MagicMock
 import numpy as np
 import pandas as pd
 import pytest
-
 from models.forecaster import ItemForecaster
 
 
 def _frame(volume) -> pd.DataFrame:
     n = len(volume)
-    return pd.DataFrame({
-        "item_id": ["ak47"] * n,
-        "date": pd.date_range("2026-01-01", periods=n, freq="D"),
-        "price": np.linspace(10.0, 12.0, n),
-        "volume": volume,
-    })
+    return pd.DataFrame(
+        {
+            "item_id": ["ak47"] * n,
+            "date": pd.date_range("2026-01-01", periods=n, freq="D"),
+            "price": np.linspace(10.0, 12.0, n),
+            "volume": volume,
+        }
+    )
 
 
 @pytest.fixture
@@ -52,7 +54,7 @@ def test_partially_null_volume_does_not_crash(forecaster):
     True, so the log-change path runs and the astype(int) is reached."""
     vol = [100] * 5 + [None] * 35
     df = _frame(pd.array(vol, dtype="Int64"))
-    out = forecaster._compute_price_features(df)      # must not raise
+    out = forecaster._compute_price_features(df)  # must not raise
     assert "volume_price_conf_7d" in out
     assert "volume_price_conf_1d" in out
 
@@ -77,6 +79,4 @@ def test_nullable_and_numpy_dtypes_agree(forecaster):
     nullable = forecaster._compute_price_features(_frame(pd.array(vol, dtype="Int64")))
     numpy_ = forecaster._compute_price_features(_frame(np.array(vol, dtype=float)))
     for col in ("volume_price_conf_7d", "volume_price_conf_1d"):
-        pd.testing.assert_series_equal(
-            nullable[col].astype(float), numpy_[col].astype(float),
-            check_names=False)
+        pd.testing.assert_series_equal(nullable[col].astype(float), numpy_[col].astype(float), check_names=False)

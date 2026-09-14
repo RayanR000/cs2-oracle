@@ -24,15 +24,15 @@ It is a convention, not a derivation: the sharp break in the tier evidence is
 nearer $0.50 (27.6% actual-flat below it against ~1% above). Matching the
 headline is what earns the number its meaning.
 """
+
 from __future__ import annotations
 
-from typing import NamedTuple, Optional
-
-from sqlalchemy import or_
-from sqlalchemy.sql.elements import ColumnElement
+from typing import NamedTuple
 
 from backtest.friction import actionable_threshold
 from backtest.scoring import price_tier
+from sqlalchemy import or_
+from sqlalchemy.sql.elements import ColumnElement
 
 MIN_SERVED_PRICE_USD = 1.0
 
@@ -59,10 +59,10 @@ class Tradeability(NamedTuple):
     """
 
     tradeable: bool
-    est_roundtrip_cost_pct: Optional[float]
+    est_roundtrip_cost_pct: float | None
 
 
-def tradeability(price: Optional[float]) -> Tradeability:
+def tradeability(price: float | None) -> Tradeability:
     """Tradeability of a served forecast at ``price``.
 
     Tradeable is the same $1 line as the ranked/headline floor: below it the
@@ -124,6 +124,7 @@ def meets_anchor_gate(anchor_clean: bool | None) -> bool:
         return True
     return bool(anchor_clean)
 
+
 #: The served ``trend_direction`` is WITHHELD at every horizon, 2026-09-10.
 #:
 #: Measured on the first backtest panel after the leg-window resolver fix
@@ -144,7 +145,7 @@ def meets_anchor_gate(anchor_clean: bool | None) -> bool:
 DIRECTION_DISCLOSED = False
 
 
-def served_direction(raw: Optional[str], horizon: Optional[int] = None) -> str:
+def served_direction(raw: str | None, horizon: int | None = None) -> str:
     """The direction label to serve, given the model's stored ``raw`` call.
 
     Always ``"neutral"`` while ``DIRECTION_DISCLOSED`` is False. ``raw`` and

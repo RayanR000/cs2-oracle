@@ -70,6 +70,7 @@ Usage:
     python scripts/ab_test_training_breadth.py --frame-cache /tmp/breadth_frame.parquet \
         --horizon 7 --out /tmp/breadth_h7.json
 """
+
 from __future__ import annotations
 
 # ── Universe ────────────────────────────────────────────────────────────
@@ -125,28 +126,27 @@ STEP_DAYS = 60
 SPLIT_SEED = 20260806
 SAMPLE_SEED = 4242
 
+import hashlib
+import json
+import logging
 import os
 import sys
-import json
-import hashlib
-import logging
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
+import lightgbm as lgb
 import numpy as np
 import pandas as pd
-import lightgbm as lgb
-
-from database import SessionLocal
-from models.forecaster import ItemForecaster, phase_collapsed_sql_filter
-from backtest.paired_mde import paired_da_difference
 from backtest.directional_test import (
     constant_call_baseline,
     pesaran_timmermann,
     realised_down_rate,
 )
+from backtest.paired_mde import paired_da_difference
 from backtest.scoring import MIN_FORECAST_DATES as MIN_PT_DATES
+from database import SessionLocal
+from models.forecaster import ItemForecaster, phase_collapsed_sql_filter
 
 logging.basicConfig(
     level=logging.INFO,
@@ -184,10 +184,17 @@ def _frame_fingerprint():
     """
     src = Path(__file__).parent.parent / "models" / "forecaster.py"
     h = hashlib.sha256(src.read_bytes())
-    h.update(repr((
-        MIN_MEDIAN_PRICE, MIN_ITEM_DAYS, N_UNIVERSE, CORR_PRUNE_THRESHOLD,
-        _UNIVERSE,
-    )).encode())
+    h.update(
+        repr(
+            (
+                MIN_MEDIAN_PRICE,
+                MIN_ITEM_DAYS,
+                N_UNIVERSE,
+                CORR_PRUNE_THRESHOLD,
+                _UNIVERSE,
+            )
+        ).encode()
+    )
     return h.hexdigest()[:16]
 
 
@@ -215,11 +222,15 @@ def build_frame(cache_path=None):
         tmp_frame = cache_path.with_suffix(f".{os.getpid()}.tmp.parquet")
         tmp_meta = cache_path.with_suffix(f".{os.getpid()}.tmp.json")
         df.to_parquet(tmp_frame, index=False)
-        tmp_meta.write_text(json.dumps({
-            "fingerprint": _frame_fingerprint(),
-            "pruned": pruned,
-            "rows": len(df),
-        }))
+        tmp_meta.write_text(
+            json.dumps(
+                {
+                    "fingerprint": _frame_fingerprint(),
+                    "pruned": pruned,
+                    "rows": len(df),
+                }
+            )
+        )
         os.replace(tmp_frame, cache_path)
         os.replace(tmp_meta, cache_path.with_suffix(".meta.json"))
         logger.info(f"  Wrote frame cache {cache_path} ({len(df):,} rows)")
@@ -246,15 +257,13 @@ def _archive_union_sql(con):
                 f"WHERE (source IS NULL OR source = 'aggregator_sync') AND {_UNIVERSE}"
             )
         else:
-            queries.append(
-                f"SELECT item_slug, day, mean_price, volume FROM read_parquet('{pqf}') "
-                f"WHERE {_UNIVERSE}"
-            )
+            queries.append(f"SELECT item_slug, day, mean_price, volume FROM read_parquet('{pqf}') WHERE {_UNIVERSE}")
     return " UNION ALL BY NAME ".join(queries)
 
 
 def _build_frame_uncached():
     import duckdb
+
     con = duckdb.connect()
     db = SessionLocal()
 
@@ -304,42 +313,38 @@ def _build_frame_uncached():
         # column to exist. Every feature derived from it is in SHELVED_FEATURES
         # (it has been identically 0 archive-wide since 2026-04-16), so none of
         # them survives the shelving step below.
-        all_prices = con.sql(f"""
+        all_prices = con.sql(
+            f"""
             SELECT item_slug AS item_id, day AS timestamp,
                    mean_price AS price, volume
             FROM ({union_sql})
             WHERE item_slug IN ({placeholders})
-        """, params=slugs).df()
+        """,
+            params=slugs,
+        ).df()
 
         all_prices["timestamp"] = pd.to_datetime(all_prices["timestamp"])
         all_prices["date"] = all_prices["timestamp"].dt.date
         # Deterministic row order: items in universe order, day-ascending
         # within each item. LightGBM's bagging reads row order.
-        all_prices["item_id"] = pd.Categorical(
-            all_prices["item_id"], categories=slugs, ordered=True
-        )
-        all_prices = all_prices.sort_values(
-            ["item_id", "timestamp"], kind="stable"
-        ).reset_index(drop=True)
+        all_prices["item_id"] = pd.Categorical(all_prices["item_id"], categories=slugs, ordered=True)
+        all_prices = all_prices.sort_values(["item_id", "timestamp"], kind="stable").reset_index(drop=True)
         all_prices["item_id"] = all_prices["item_id"].astype(str)
         logger.info(f"  Loaded {len(all_prices):,} price rows")
 
         df = forecaster.engineer_features(all_prices, events_df)
         df = forecaster._add_cross_sectional_features(df)
 
-        EXCLUDE = {"item_id", "date", "timestamp", "price", "volume",
-                   "name", "release_date"}
+        EXCLUDE = {"item_id", "date", "timestamp", "price", "volume", "name", "release_date"}
         numeric = (np.float64, np.float32, np.int64, int, float)
-        all_cols = [c for c in df.columns
-                    if c not in EXCLUDE and df[c].dtype in numeric]
+        all_cols = [c for c in df.columns if c not in EXCLUDE and df[c].dtype in numeric]
 
         # Match production's feature set exactly: shelved columns out, then the
         # group allowlist. Without this the frame carries the eleven dead
         # volume columns (identically 0 from 2026-04-16) and the dollar-scale
         # columns that left the feature set at MODEL_ARTIFACT_VERSION 5.
         kept = [c for c in all_cols if c not in ItemForecaster.SHELVED_FEATURES]
-        kept = ItemForecaster._apply_feature_allowlist(
-            kept, ItemForecaster.FEATURE_GROUP_ALLOWLIST)
+        kept = ItemForecaster._apply_feature_allowlist(kept, ItemForecaster.FEATURE_GROUP_ALLOWLIST)
         logger.info(
             f"  Features: {len(all_cols)} engineered -> {len(kept)} after "
             f"shelving + allowlist {ItemForecaster.FEATURE_GROUP_ALLOWLIST}"
@@ -387,7 +392,7 @@ def assign_items(df):
     for name, n in ARM_ITEM_COUNTS.items():
         if n > len(pool):
             raise SystemExit(f"arm {name} needs {n} items, pool has {len(pool)}")
-        arms[name] = sorted(pool[:n])   # nested by construction
+        arms[name] = sorted(pool[:n])  # nested by construction
 
     logger.info(f"  Eval items (held out): {len(eval_items)}")
     for name in ARM_ITEM_COUNTS:
@@ -441,8 +446,7 @@ def _direction_label(value):
     return "flat"
 
 
-def run_evaluation(df, pruned, horizon_filter=None, n_jobs=None,
-                   row_budget=None):
+def run_evaluation(df, pruned, horizon_filter=None, n_jobs=None, row_budget=None):
     """Walk-forward over the prebuilt frame. Returns results[horizon][arm].
 
     `row_budget` overrides ROW_BUDGET. Note that above ~1.2M it stops binding
@@ -501,33 +505,29 @@ def run_evaluation(df, pruned, horizon_filter=None, n_jobs=None,
             for arm, items in arms.items():
                 effective_budget = ROW_BUDGET if row_budget is None else row_budget
                 budget = None if arm == "wide_unbudgeted" else effective_budget
-                logger.info(
-                    f"\n    --- {arm} ({len(items)} items, "
-                    f"budget={budget if budget else 'none'}) ---"
-                )
+                logger.info(f"\n    --- {arm} ({len(items)} items, budget={budget if budget else 'none'}) ---")
                 item_set = set(items)
                 is_train_item = sub["item_id"].isin(item_set).to_numpy()
 
                 records = []
                 per_fold = []
                 n_flat = 0
-                for fold_idx, window_end in enumerate(
-                        range(split_idx + 1, len(dates), STEP_DAYS)):
-                    val_dates = dates[window_end:window_end + VAL_WINDOW_DAYS]
+                for fold_idx, window_end in enumerate(range(split_idx + 1, len(dates), STEP_DAYS)):
+                    val_dates = dates[window_end : window_end + VAL_WINDOW_DAYS]
                     if len(val_dates) < 7:
                         continue
 
                     in_train_window = sub_days <= dates_dt[window_end - 1]
-                    in_val_window = (
-                        (sub_days >= dates_dt[window_end])
-                        & (sub_days <= dates_dt[window_end + len(val_dates) - 1])
+                    in_val_window = (sub_days >= dates_dt[window_end]) & (
+                        sub_days <= dates_dt[window_end + len(val_dates) - 1]
                     )
                     # Embargo the TRAIN side only, via production's own purge
                     # (see the "Embargo" section of the module docstring). The
                     # val mask above is untouched: purging it would shrink the
                     # 21-day window and empty it outright at 30d.
                     train_df = ItemForecaster._purge_overlapping_train_rows(
-                        sub[in_train_window & is_train_item], val_dates[0], horizon)
+                        sub[in_train_window & is_train_item], val_dates[0], horizon
+                    )
                     # Eval rows are the SAME in every arm -- held-out items
                     # only. That is what lets paired_da_difference pair on
                     # (item_id, forecast_date) rather than compare two pooled
@@ -536,8 +536,7 @@ def run_evaluation(df, pruned, horizon_filter=None, n_jobs=None,
                     if len(val_df) < 50 or train_df.empty:
                         continue
 
-                    train_df = _stratified_sample(
-                        train_df, items, budget, fold_idx)
+                    train_df = _stratified_sample(train_df, items, budget, fold_idx)
 
                     train_median = train_df[available].median()
                     X_train = train_df[available].fillna(train_median).values
@@ -545,19 +544,26 @@ def run_evaluation(df, pruned, horizon_filter=None, n_jobs=None,
                     X_val = val_df[available].fillna(train_median).values
                     y_val = val_df[target_col].values
 
-                    dtrain = lgb.Dataset(X_train, y_train, params=DS_PARAMS,
-                                         free_raw_data=False)
-                    dval = lgb.Dataset(X_val, y_val, reference=dtrain,
-                                       params=DS_PARAMS, free_raw_data=False)
+                    dtrain = lgb.Dataset(X_train, y_train, params=DS_PARAMS, free_raw_data=False)
+                    dval = lgb.Dataset(X_val, y_val, reference=dtrain, params=DS_PARAMS, free_raw_data=False)
                     params = {
-                        "objective": "quantile", "alpha": 0.5,
-                        "metric": "quantile", "boosting_type": "gbdt",
-                        "num_leaves": 31, "max_depth": 5,
-                        "min_data_in_leaf": 15, "min_gain_to_split": 0.1,
-                        "learning_rate": 0.03, "feature_fraction": 0.7,
-                        "bagging_fraction": 0.7, "bagging_freq": 5,
-                        "lambda_l1": 0.5, "lambda_l2": 0.5,
-                        "verbosity": -1, "random_state": 42, "n_jobs": n_jobs,
+                        "objective": "quantile",
+                        "alpha": 0.5,
+                        "metric": "quantile",
+                        "boosting_type": "gbdt",
+                        "num_leaves": 31,
+                        "max_depth": 5,
+                        "min_data_in_leaf": 15,
+                        "min_gain_to_split": 0.1,
+                        "learning_rate": 0.03,
+                        "feature_fraction": 0.7,
+                        "bagging_fraction": 0.7,
+                        "bagging_freq": 5,
+                        "lambda_l1": 0.5,
+                        "lambda_l2": 0.5,
+                        "verbosity": -1,
+                        "random_state": 42,
+                        "n_jobs": n_jobs,
                         # Pinned for the same reason as the volume harness:
                         # LightGBM's auto row/col-wise choice picks col-wise at
                         # low thread counts on this shape and costs ~6x.
@@ -565,9 +571,10 @@ def run_evaluation(df, pruned, horizon_filter=None, n_jobs=None,
                         **DS_PARAMS,
                     }
                     model = ItemForecaster._train_ensemble_member(
-                        params, dtrain, dval,
-                        num_boost_round=ItemForecaster._boost_rounds(
-                            horizon, cv=True),
+                        params,
+                        dtrain,
+                        dval,
+                        num_boost_round=ItemForecaster._boost_rounds(horizon, cv=True),
                         early_stopping=ItemForecaster._early_stopping_enabled(),
                     )
                     pred = model.predict(X_val)
@@ -578,44 +585,47 @@ def run_evaluation(df, pruned, horizon_filter=None, n_jobs=None,
                     # is what inflated the old penny-cohort DA by ~31pp.
                     price = val_df["price"].to_numpy(dtype=float)
                     actual = np.asarray(y_val, dtype=float)
-                    match = (np.sign(np.nan_to_num(actual))
-                             == np.sign(np.nan_to_num(pred)))
+                    match = np.sign(np.nan_to_num(actual)) == np.sign(np.nan_to_num(pred))
                     scored = (actual != 0) & (price >= 1.0)
                     n_flat += int((~(actual != 0)).sum())
 
                     ids = val_df["item_id"].to_numpy()
                     dts = val_df["date"].to_numpy()
                     for i in np.flatnonzero(scored):
-                        records.append({
-                            "item_id": ids[i],
-                            "forecast_date": str(dts[i]),
-                            # The resampling cluster. Dates inside one 21-day
-                            # validation window come from a single fitted
-                            # model, so clustering on them understates the
-                            # variance -- see paired_mde's module docstring,
-                            # which names this experiment as one to re-derive.
-                            "fold_id": fold_idx,
-                            "direction_correct": bool(match[i]),
-                            # Backend invariant 4: a DA is quotable only beside
-                            # the constant call and the realised down rate, with
-                            # Pesaran-Timmermann as the headline. These two keys
-                            # are what make those computable, and they use the
-                            # label vocabulary backtest/directional_test.py
-                            # expects rather than a private encoding.
-                            "actual_direction": _direction_label(actual[i]),
-                            "predicted_direction": _direction_label(pred[i]),
-                        })
+                        records.append(
+                            {
+                                "item_id": ids[i],
+                                "forecast_date": str(dts[i]),
+                                # The resampling cluster. Dates inside one 21-day
+                                # validation window come from a single fitted
+                                # model, so clustering on them understates the
+                                # variance -- see paired_mde's module docstring,
+                                # which names this experiment as one to re-derive.
+                                "fold_id": fold_idx,
+                                "direction_correct": bool(match[i]),
+                                # Backend invariant 4: a DA is quotable only beside
+                                # the constant call and the realised down rate, with
+                                # Pesaran-Timmermann as the headline. These two keys
+                                # are what make those computable, and they use the
+                                # label vocabulary backtest/directional_test.py
+                                # expects rather than a private encoding.
+                                "actual_direction": _direction_label(actual[i]),
+                                "predicted_direction": _direction_label(pred[i]),
+                            }
+                        )
                     hits = int(np.count_nonzero(match & scored))
                     tot = int(scored.sum())
-                    per_fold.append({
-                        "fold": len(per_fold) + 1,
-                        "val_start": str(val_dates[0]),
-                        "val_end": str(val_dates[-1]),
-                        "n_train": len(train_df),
-                        "n_train_items": int(train_df["item_id"].nunique()),
-                        "n_scored": tot,
-                        "dir_acc": round(hits / tot * 100, 2) if tot else None,
-                    })
+                    per_fold.append(
+                        {
+                            "fold": len(per_fold) + 1,
+                            "val_start": str(val_dates[0]),
+                            "val_end": str(val_dates[-1]),
+                            "n_train": len(train_df),
+                            "n_train_items": int(train_df["item_id"].nunique()),
+                            "n_scored": tot,
+                            "dir_acc": round(hits / tot * 100, 2) if tot else None,
+                        }
+                    )
 
                 if not per_fold:
                     logger.warning(f"    {arm}: no usable folds")
@@ -634,8 +644,8 @@ def run_evaluation(df, pruned, horizon_filter=None, n_jobs=None,
                     "fold_std": round(float(np.std(accs)), 2) if len(accs) > 1 else None,
                     "mean_rows_per_fold": int(np.mean([f["n_train"] for f in per_fold])),
                     "mean_rows_per_item": round(
-                        float(np.mean([f["n_train"] / max(1, f["n_train_items"])
-                                       for f in per_fold])), 1),
+                        float(np.mean([f["n_train"] / max(1, f["n_train_items"]) for f in per_fold])), 1
+                    ),
                     "per_fold": per_fold,
                     "records": records,
                 }
@@ -644,13 +654,10 @@ def run_evaluation(df, pruned, horizon_filter=None, n_jobs=None,
                 # record-stripping into the artifact.
                 call, call_acc = constant_call_baseline(records)
                 results[horizon][arm]["constant_call"] = call
-                results[horizon][arm]["constant_call_accuracy"] = (
-                    round(call_acc, 2) if call_acc is not None else None)
+                results[horizon][arm]["constant_call_accuracy"] = round(call_acc, 2) if call_acc is not None else None
                 down = realised_down_rate(records)
-                results[horizon][arm]["realised_down_rate"] = (
-                    round(down, 2) if down is not None else None)
-                results[horizon][arm].update(
-                    pesaran_timmermann(records, min_dates=MIN_PT_DATES))
+                results[horizon][arm]["realised_down_rate"] = round(down, 2) if down is not None else None
+                results[horizon][arm].update(pesaran_timmermann(records, min_dates=MIN_PT_DATES))
                 logger.info(
                     f"      DA(strict,>=$1)={results[horizon][arm]['dir_acc_strict_ge1']}% "
                     f"n={scored_n:,} folds={len(per_fold)} "
@@ -666,10 +673,8 @@ def run_evaluation(df, pruned, horizon_filter=None, n_jobs=None,
                 for arm in results[horizon]:
                     if arm in ("narrow",) or arm.startswith("_"):
                         continue
-                    results[horizon]["_paired_vs_narrow"][arm] = (
-                        paired_da_difference(base["records"],
-                                             results[horizon][arm]["records"],
-                                             cluster_key="fold_id")
+                    results[horizon]["_paired_vs_narrow"][arm] = paired_da_difference(
+                        base["records"], results[horizon][arm]["records"], cluster_key="fold_id"
                     )
         return results
     finally:
@@ -683,41 +688,48 @@ def print_summary(results):
     for h in sorted(k for k in results if isinstance(k, int)):
         r = results[h]
         print(f"\n  {h}d horizon")
-        print(f"    {'arm':<18} {'items':>6} {'rows/fold':>10} {'rows/item':>10} "
-              f"{'DA':>7} {'folds':>6} {'n':>9}")
+        print(f"    {'arm':<18} {'items':>6} {'rows/fold':>10} {'rows/item':>10} {'DA':>7} {'folds':>6} {'n':>9}")
         print(f"    {'-' * 74}")
         for arm in ("narrow", "mid", "wide", "wide_unbudgeted"):
             a = r.get(arm)
             if not a:
                 continue
-            print(f"    {arm:<18} {a['n_items']:>6} {a['mean_rows_per_fold']:>10,} "
-                  f"{a['mean_rows_per_item']:>10.1f} "
-                  f"{a['dir_acc_strict_ge1']:>6.2f}% {a['fold_count']:>6} "
-                  f"{a['n_scored']:>9,}")
+            print(
+                f"    {arm:<18} {a['n_items']:>6} {a['mean_rows_per_fold']:>10,} "
+                f"{a['mean_rows_per_item']:>10.1f} "
+                f"{a['dir_acc_strict_ge1']:>6.2f}% {a['fold_count']:>6} "
+                f"{a['n_scored']:>9,}"
+            )
         paired = r.get("_paired_vs_narrow", {})
         if paired:
-            print(f"\n    paired vs narrow (dates clustered, held-out items):")
+            print("\n    paired vs narrow (dates clustered, held-out items):")
             for arm, p in paired.items():
-                ci = (f"[{p['ci_lower_pp']:+.2f}, {p['ci_upper_pp']:+.2f}]"
-                      if p.get("ci_lower_pp") is not None else "n/a")
+                ci = (
+                    f"[{p['ci_lower_pp']:+.2f}, {p['ci_upper_pp']:+.2f}]" if p.get("ci_lower_pp") is not None else "n/a"
+                )
                 mde = f"{p['mde_pp']:.2f}" if p.get("mde_pp") is not None else "n/a"
-                print(f"      {arm:<18} {p['mean_diff_pp']:+.2f}pp  95% CI {ci}"
-                      f"  MDE {mde}pp  n={p['n_paired']:,} over {p['n_dates']} dates")
+                print(
+                    f"      {arm:<18} {p['mean_diff_pp']:+.2f}pp  95% CI {ci}"
+                    f"  MDE {mde}pp  n={p['n_paired']:,} over {p['n_dates']} dates"
+                )
     print("")
 
 
 def main():
     import argparse
-    parser = argparse.ArgumentParser(
-        description="A/B: more items vs more history at a fixed row budget")
+
+    parser = argparse.ArgumentParser(description="A/B: more items vs more history at a fixed row budget")
     parser.add_argument("--horizon", type=int, default=None)
     parser.add_argument("--frame-cache", default=None)
     parser.add_argument("--build-cache-only", action="store_true")
     parser.add_argument("--out", default=None)
     parser.add_argument("--n-jobs", type=int, default=None)
-    parser.add_argument("--row-budget", type=int, default=None,
-                        help="Override ROW_BUDGET. Above ~1.2M it does not "
-                             "bind on this universe -- see run_evaluation.")
+    parser.add_argument(
+        "--row-budget",
+        type=int,
+        default=None,
+        help="Override ROW_BUDGET. Above ~1.2M it does not bind on this universe -- see run_evaluation.",
+    )
     args = parser.parse_args()
 
     logger.info("=" * 70)
@@ -729,8 +741,7 @@ def main():
         logger.info("Frame cache built; exiting before evaluation.")
         return 0
 
-    results = run_evaluation(df, pruned, horizon_filter=args.horizon,
-                            n_jobs=args.n_jobs, row_budget=args.row_budget)
+    results = run_evaluation(df, pruned, horizon_filter=args.horizon, n_jobs=args.n_jobs, row_budget=args.row_budget)
 
     if args.out:
         # Per-row records are what make the pairing possible but they dominate
@@ -739,8 +750,9 @@ def main():
         for h, r in results.items():
             slim[h] = {}
             for arm, a in r.items():
-                slim[h][arm] = ({k: v for k, v in a.items() if k != "records"}
-                                if isinstance(a, dict) and "records" in a else a)
+                slim[h][arm] = (
+                    {k: v for k, v in a.items() if k != "records"} if isinstance(a, dict) and "records" in a else a
+                )
         Path(args.out).write_text(json.dumps(slim, indent=2, default=str))
         logger.info(f"Wrote {args.out}")
 

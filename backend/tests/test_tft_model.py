@@ -2,12 +2,13 @@ import pytest
 
 torch = pytest.importorskip("torch")
 
-from models.tft.dataset import N_PAST_FEATURES, N_STATIC_FEATURES, N_FUTURE_FEATURES
+from models.tft.dataset import N_FUTURE_FEATURES, N_PAST_FEATURES, N_STATIC_FEATURES
 
 
 class TestTFTConfig:
     def test_defaults(self):
         from models.tft.model import TFTConfig
+
         cfg = TFTConfig()
         assert cfg.hidden_dim == 32
         assert cfg.n_horizons == 4
@@ -17,6 +18,7 @@ class TestTFTConfig:
 class TestTFTForwardPass:
     def _make_model(self):
         from models.tft.model import TemporalFusionTransformer, TFTConfig
+
         cfg = TFTConfig(
             n_past_features=N_PAST_FEATURES,
             n_static_features=N_STATIC_FEATURES,

@@ -12,6 +12,7 @@ quantile models were supplying.
 
 Pure: numpy only, no LightGBM, no I/O, no clock.
 """
+
 from __future__ import annotations
 
 import numpy as np
@@ -65,8 +66,7 @@ def sigma_bounds(sigma_raw) -> tuple[float, float]:
     return floor, cap
 
 
-def sigma_from_columns(price_std_60d, price, floor: float, cap: float,
-                       fallback: float | None = None) -> np.ndarray:
+def sigma_from_columns(price_std_60d, price, floor: float, cap: float, fallback: float | None = None) -> np.ndarray:
     """Per-item volatility scale: the 60-day coefficient of variation.
 
     `price_std_60d` is in dollars, so it is divided by price to make the scale
@@ -109,8 +109,7 @@ def scale(sigma, beta: float = BETA_NEUTRAL) -> np.ndarray:
         return s ** float(beta)
 
 
-def resolve_scale(sigma, beta: float = BETA_NEUTRAL,
-                  learned=None) -> np.ndarray:
+def resolve_scale(sigma, beta: float = BETA_NEUTRAL, learned=None) -> np.ndarray:
     """THE one place a nonconformity denominator is chosen.
 
     Two answers to the same question, and they are alternatives rather than
@@ -176,8 +175,7 @@ def beta_was_clamped(residuals_pct, sigma, min_rows: int = 1_000) -> bool:
     return bool(np.isfinite(b) and (b < BETA_MIN or b > BETA_MAX))
 
 
-def calibrate(residuals_pct, sigma, alpha: float = ALPHA,
-              beta: float = BETA_NEUTRAL, learned_scale=None) -> float:
+def calibrate(residuals_pct, sigma, alpha: float = ALPHA, beta: float = BETA_NEUTRAL, learned_scale=None) -> float:
     """q_hat: the conformal quantile of normalized absolute residuals.
 
     `residuals_pct` are y - y_hat in percentage-return space, from
@@ -208,9 +206,9 @@ def calibrate(residuals_pct, sigma, alpha: float = ALPHA,
     return float(np.quantile(scores, level))
 
 
-def calibrate_signed(residuals_pct, sigma, alpha: float = ALPHA,
-                     beta: float = BETA_NEUTRAL,
-                     learned_scale=None) -> tuple[float, float]:
+def calibrate_signed(
+    residuals_pct, sigma, alpha: float = ALPHA, beta: float = BETA_NEUTRAL, learned_scale=None
+) -> tuple[float, float]:
     """Two SIGNED conformal quantiles of `residual / scale`: `(q_lo, q_hi)`.
 
     Where `calibrate` folds the residual with `np.abs` and returns one q_hat for
@@ -245,8 +243,7 @@ def calibrate_signed(residuals_pct, sigma, alpha: float = ALPHA,
     n = scores.size
     level_hi = min(np.ceil((n + 1) * (1.0 - alpha / 2.0)) / n, 1.0)
     level_lo = max(np.floor((n + 1) * (alpha / 2.0)) / n, 0.0)
-    return (float(np.quantile(scores, level_lo)),
-            float(np.quantile(scores, level_hi)))
+    return (float(np.quantile(scores, level_lo)), float(np.quantile(scores, level_hi)))
 
 
 def elasticity(residuals_pct, sigma) -> float:
@@ -281,9 +278,9 @@ def elasticity(residuals_pct, sigma) -> float:
     return float(np.dot(xc, y - y.mean()) / denom)
 
 
-def coverage_by_sigma_stratum(residuals_pct, sigma, exponent: float = 1.0,
-                              n_strata: int = 10, alpha: float = ALPHA
-                              ) -> tuple[np.ndarray, float, float]:
+def coverage_by_sigma_stratum(
+    residuals_pct, sigma, exponent: float = 1.0, n_strata: int = 10, alpha: float = ALPHA
+) -> tuple[np.ndarray, float, float]:
     """LEVEL-MATCHED conditional coverage across strata of `sigma`.
 
     DIAGNOSTIC. Returns `(coverage_per_stratum, mean_abs_error_pp, threshold)`.
@@ -324,15 +321,12 @@ def coverage_by_sigma_stratum(residuals_pct, sigma, exponent: float = 1.0,
     # be the same rows whatever `exponent` is, or two calls are not comparable.
     edges = np.quantile(s, np.linspace(0.0, 1.0, n_strata + 1)[1:-1])
     idx = np.searchsorted(edges, s, side="right")
-    per = np.array([covered[idx == k].mean() if np.any(idx == k) else np.nan
-                    for k in range(n_strata)])
+    per = np.array([covered[idx == k].mean() if np.any(idx == k) else np.nan for k in range(n_strata)])
     err = float(np.nanmean(np.abs(per - (1.0 - alpha)))) * 100.0
     return per, err, threshold
 
 
-def band(mid_pct, sigma, q_hat: float,
-         beta: float = BETA_NEUTRAL,
-         learned_scale=None) -> tuple[np.ndarray, np.ndarray]:
+def band(mid_pct, sigma, q_hat: float, beta: float = BETA_NEUTRAL, learned_scale=None) -> tuple[np.ndarray, np.ndarray]:
     """Symmetric band around the median, in percentage-return space.
 
     Cannot cross by construction, which is why predict() no longer needs
@@ -359,9 +353,13 @@ WACI_KERNEL_BW = 0.5
 
 
 def calibrate_signed_waci(
-    residuals_pct, sigma, alpha: float = ALPHA,
-    beta: float = BETA_NEUTRAL, learned_scale=None,
-    n_bins: int = WACI_N_BINS, kernel_bw: float = WACI_KERNEL_BW,
+    residuals_pct,
+    sigma,
+    alpha: float = ALPHA,
+    beta: float = BETA_NEUTRAL,
+    learned_scale=None,
+    n_bins: int = WACI_N_BINS,
+    kernel_bw: float = WACI_KERNEL_BW,
 ) -> dict:
     """Width-Adaptive Conformal Inference: per-scale-bin signed quantiles.
 
@@ -391,8 +389,7 @@ def calibrate_signed_waci(
     ok = np.isfinite(scores) & np.isfinite(sc) & (sc > 0)
     scores, sc = scores[ok], sc[ok]
     if scores.size < n_bins * 10:
-        q_lo, q_hi = calibrate_signed(residuals_pct, sigma, alpha, beta,
-                                       learned_scale)
+        q_lo, q_hi = calibrate_signed(residuals_pct, sigma, alpha, beta, learned_scale)
         return {
             "bin_edges": np.array([]),
             "bin_q_lo": np.array([q_lo]),
@@ -441,9 +438,7 @@ def calibrate_signed_waci(
     }
 
 
-def waci_lookup(scale_values, waci_params: dict,
-                kernel_bw: float = WACI_KERNEL_BW
-                ) -> tuple[np.ndarray, np.ndarray]:
+def waci_lookup(scale_values, waci_params: dict, kernel_bw: float = WACI_KERNEL_BW) -> tuple[np.ndarray, np.ndarray]:
     """Look up per-item (q_lo, q_hi) from WACI parameters via kernel smoothing.
 
     For each item's scale value, computes a Gaussian-kernel-weighted average
@@ -455,15 +450,14 @@ def waci_lookup(scale_values, waci_params: dict,
     bq_hi = waci_params["bin_q_hi"]
 
     if centres.size <= 1:
-        return (np.full(sc.shape, waci_params["fallback_q_lo"]),
-                np.full(sc.shape, waci_params["fallback_q_hi"]))
+        return (np.full(sc.shape, waci_params["fallback_q_lo"]), np.full(sc.shape, waci_params["fallback_q_hi"]))
 
     q_lo_out = np.empty(sc.shape)
     q_hi_out = np.empty(sc.shape)
 
     for i, s in enumerate(sc):
         dists = (s - centres) / (kernel_bw * np.std(centres) + 1e-12)
-        weights = np.exp(-0.5 * dists ** 2)
+        weights = np.exp(-0.5 * dists**2)
         weights /= weights.sum() + 1e-12
         q_lo_out[i] = float(np.dot(weights, bq_lo))
         q_hi_out[i] = float(np.dot(weights, bq_hi))
@@ -471,11 +465,9 @@ def waci_lookup(scale_values, waci_params: dict,
     return q_lo_out, q_hi_out
 
 
-def band_signed_waci(mid_pct, sigma, waci_params: dict,
-                     beta: float = BETA_NEUTRAL,
-                     learned_scale=None,
-                     kernel_bw: float = WACI_KERNEL_BW
-                     ) -> tuple[np.ndarray, np.ndarray]:
+def band_signed_waci(
+    mid_pct, sigma, waci_params: dict, beta: float = BETA_NEUTRAL, learned_scale=None, kernel_bw: float = WACI_KERNEL_BW
+) -> tuple[np.ndarray, np.ndarray]:
     """Asymmetric band using Width-Adaptive per-item quantiles.
 
     Like `band_signed` but each item gets its own (q_lo, q_hi) based on
@@ -488,9 +480,9 @@ def band_signed_waci(mid_pct, sigma, waci_params: dict,
     return mid + q_lo_arr * sc, mid + q_hi_arr * sc
 
 
-def band_signed(mid_pct, sigma, q_lo: float, q_hi: float,
-                beta: float = BETA_NEUTRAL,
-                learned_scale=None) -> tuple[np.ndarray, np.ndarray]:
+def band_signed(
+    mid_pct, sigma, q_lo: float, q_hi: float, beta: float = BETA_NEUTRAL, learned_scale=None
+) -> tuple[np.ndarray, np.ndarray]:
     """Asymmetric band from a signed `(q_lo, q_hi)` pair: `mid + q·scale`.
 
     The signed counterpart of `band`. `q_lo` is typically negative, so the low

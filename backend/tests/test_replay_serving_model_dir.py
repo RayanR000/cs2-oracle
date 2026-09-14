@@ -7,6 +7,7 @@ clobber `forecast_prices._model_dir` exists to prevent. This gives the replay th
 same `FORECAST_MODEL_DIR` override, so an arm and its control can be replayed at
 one anchor without touching the deployed model.
 """
+
 from __future__ import annotations
 
 import sys
@@ -15,7 +16,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts"))
 
-import replay_serving as rs  # noqa: E402
+import replay_serving as rs
 
 
 class TestModelDirOverride:

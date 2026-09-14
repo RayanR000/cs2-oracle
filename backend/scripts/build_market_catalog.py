@@ -21,17 +21,14 @@ Usage:
     python scripts/build_market_catalog.py --burst-pause 60   # Custom pause between bursts
 """
 
-import sys
-import os
-import sqlite3
-import time
-import json
 import argparse
 import logging
 import random
+import sqlite3
+import sys
+import time
+from datetime import UTC, datetime
 from pathlib import Path
-from datetime import datetime, timezone
-from typing import Optional, List, Dict
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
@@ -58,16 +55,16 @@ CATALOG_DB_PATH = Path(__file__).parent.parent / "runtime" / "market_catalog.db"
 PROGRESS_FILE = Path(__file__).parent.parent / "runtime" / "market_catalog_progress.json"
 
 # Rate limiting — burst pattern
-DEFAULT_BURST_SIZE = 10        # requests per burst
-DEFAULT_BURST_PAUSE = 30.0     # seconds between bursts
-MAX_RETRIES = 3                # retries per request on 429
+DEFAULT_BURST_SIZE = 10  # requests per burst
+DEFAULT_BURST_PAUSE = 30.0  # seconds between bursts
+MAX_RETRIES = 3  # retries per request on 429
 RETRY_BACKOFF = [30, 60, 120]  # seconds to wait after each 429
 
 # Auto-pause thresholds
 MAX_CONSECUTIVE_429 = 3
 MAX_CONSECUTIVE_FAILURES = 10
 
-HEALTH_REPORT_INTERVAL = 500   # log health report every N items
+HEALTH_REPORT_INTERVAL = 500  # log health report every N items
 
 USER_AGENTS = [
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
@@ -79,6 +76,7 @@ USER_AGENTS = [
 # ---------------------------------------------------------------------------
 # Local SQLite schema
 # ---------------------------------------------------------------------------
+
 
 def init_catalog_db(db_path: Path) -> sqlite3.Connection:
     """Create/open the local market catalog database."""
@@ -131,11 +129,11 @@ def init_catalog_db(db_path: Path) -> sqlite3.Connection:
 # Progress tracking
 # ---------------------------------------------------------------------------
 
-def load_progress(local_conn: sqlite3.Connection) -> Dict:
+
+def load_progress(local_conn: sqlite3.Connection) -> dict:
     """Load catalog progress from local DB."""
     row = local_conn.execute(
-        "SELECT last_offset, total_items, started_at, updated_at "
-        "FROM catalog_progress WHERE id = 1"
+        "SELECT last_offset, total_items, started_at, updated_at FROM catalog_progress WHERE id = 1"
     ).fetchone()
 
     if row:
@@ -159,7 +157,7 @@ def save_progress(
     total_items: int,
 ):
     """Save or update catalog progress."""
-    now = datetime.now(timezone.utc).replace(tzinfo=None).isoformat()
+    now = datetime.now(UTC).replace(tzinfo=None).isoformat()
     existing = load_progress(local_conn)
     started = existing.get("started_at") or now
 
@@ -178,7 +176,7 @@ def record_failed_page(
     reason: str = "all retries exhausted",
 ):
     """Record a failed page offset for later retry."""
-    now = datetime.now(timezone.utc).replace(tzinfo=None).isoformat()
+    now = datetime.now(UTC).replace(tzinfo=None).isoformat()
     local_conn.execute(
         "INSERT OR REPLACE INTO failed_pages (offset, error_reason, failed_at) VALUES (?, ?, ?)",
         (offset, reason, now),
@@ -192,7 +190,7 @@ def clear_failed_page(local_conn: sqlite3.Connection, offset: int):
     local_conn.commit()
 
 
-def load_failed_pages(local_conn: sqlite3.Connection) -> List[int]:
+def load_failed_pages(local_conn: sqlite3.Connection) -> list[int]:
     """Load all failed page offsets, sorted."""
     rows = local_conn.execute("SELECT offset FROM failed_pages ORDER BY offset").fetchall()
     return [r[0] for r in rows]
@@ -206,6 +204,7 @@ def get_failed_pages_count(local_conn: sqlite3.Connection) -> int:
 # ---------------------------------------------------------------------------
 # Health monitor
 # ---------------------------------------------------------------------------
+
 
 class HealthMonitor:
     """Tracks API health during catalog build."""
@@ -255,7 +254,7 @@ class HealthMonitor:
         if len(self.last_results) > 20:
             self.last_results.pop(0)
 
-    def should_pause(self) -> Optional[str]:
+    def should_pause(self) -> str | None:
         """Check if we should auto-pause. Returns reason string or None."""
         if self.consecutive_429 >= self.max_consecutive_429:
             return (
@@ -264,10 +263,7 @@ class HealthMonitor:
                 f"Possible cause: IP banned. Wait before resuming."
             )
         if self.consecutive_failures >= MAX_CONSECUTIVE_FAILURES:
-            return (
-                f"PAUSE: {self.consecutive_failures} consecutive failures "
-                f"(threshold: {MAX_CONSECUTIVE_FAILURES})."
-            )
+            return f"PAUSE: {self.consecutive_failures} consecutive failures (threshold: {MAX_CONSECUTIVE_FAILURES})."
         return None
 
     def log_health_report(self, offset: int, total: int, elapsed: float):
@@ -278,15 +274,18 @@ class HealthMonitor:
         eta_seconds = (total_pages - pages_done) / (pages_done / elapsed) if pages_done > 0 and elapsed > 0 else 0
 
         logger.info("=" * 70)
-        logger.info(f"HEALTH REPORT — offset {offset}/{total} ({offset*100//total}%)")
-        logger.info(f"  OK: {self.total_ok} | Failed: {self.total_failed} | "
-                     f"429s: {self.total_429}")
-        logger.info(f"  Items fetched: {self.total_items_fetched} | "
-                     f"Rate: {items_per_min:.0f} items/min | "
-                     f"ETA: {eta_seconds/3600:.1f} hrs")
-        logger.info(f"  Consecutive — OK: {self.consecutive_ok} | "
-                     f"Failures: {self.consecutive_failures} | "
-                     f"429: {self.consecutive_429}")
+        logger.info(f"HEALTH REPORT — offset {offset}/{total} ({offset * 100 // total}%)")
+        logger.info(f"  OK: {self.total_ok} | Failed: {self.total_failed} | 429s: {self.total_429}")
+        logger.info(
+            f"  Items fetched: {self.total_items_fetched} | "
+            f"Rate: {items_per_min:.0f} items/min | "
+            f"ETA: {eta_seconds / 3600:.1f} hrs"
+        )
+        logger.info(
+            f"  Consecutive — OK: {self.consecutive_ok} | "
+            f"Failures: {self.consecutive_failures} | "
+            f"429: {self.consecutive_429}"
+        )
         if self.banned:
             logger.warning("  WARNING: IP ban detected")
         logger.info("=" * 70)
@@ -299,7 +298,7 @@ class HealthMonitor:
         logger.info(f"  Total items: {self.total_items_fetched}")
         logger.info(f"  Failed pages: {self.total_failed}")
         logger.info(f"  Rate limited (429): {self.total_429}")
-        logger.info(f"  Duration: {elapsed/3600:.1f} hours")
+        logger.info(f"  Duration: {elapsed / 3600:.1f} hours")
         if self.banned:
             logger.warning("  IP ban detected — wait before resuming")
         logger.info("=" * 70)
@@ -308,6 +307,7 @@ class HealthMonitor:
 # ---------------------------------------------------------------------------
 # Steam Market API client (burst pattern)
 # ---------------------------------------------------------------------------
+
 
 class SteamMarketCatalogClient:
     """Fetches item catalog from Steam's /market/search/render/ endpoint."""
@@ -324,7 +324,7 @@ class SteamMarketCatalogClient:
         ua = random.choice(USER_AGENTS)
         self.session.headers["User-Agent"] = ua
 
-    def fetch_page(self, offset: int) -> Optional[List[Dict]]:
+    def fetch_page(self, offset: int) -> list[dict] | None:
         """
         Fetch a single page of results (10 items).
         Returns list of item dicts or None on failure.
@@ -357,13 +357,13 @@ class SteamMarketCatalogClient:
                 return data.get("results", [])
 
             except requests.exceptions.RequestException as e:
-                logger.warning(f"Request failed at offset={offset} (attempt {attempt+1}): {e}")
+                logger.warning(f"Request failed at offset={offset} (attempt {attempt + 1}): {e}")
                 if attempt < len(RETRY_BACKOFF) - 1:
                     time.sleep(backoff)
 
         return None
 
-    def get_total_count(self) -> Optional[int]:
+    def get_total_count(self) -> int | None:
         """Get total number of items on the market."""
         params = {"appid": 730, "norender": 1, "start": 0, "count": 10}
         try:
@@ -380,35 +380,38 @@ class SteamMarketCatalogClient:
 # Item storage
 # ---------------------------------------------------------------------------
 
+
 def store_items(
     local_conn: sqlite3.Connection,
-    items: List[Dict],
+    items: list[dict],
     dry_run: bool = False,
 ) -> int:
     """Store items from a search/render page into the catalog. Returns rows inserted."""
     if not items:
         return 0
 
-    now = datetime.now(timezone.utc).replace(tzinfo=None).isoformat()
+    now = datetime.now(UTC).replace(tzinfo=None).isoformat()
     rows = []
     for item in items:
         asset = item.get("asset_description", {})
-        rows.append((
-            item.get("hash_name"),
-            item.get("name"),
-            asset.get("type"),
-            item.get("sell_price"),
-            item.get("sell_price_text"),
-            item.get("sale_price_text"),
-            item.get("sell_listings"),
-            asset.get("tradable"),
-            asset.get("commodity"),
-            asset.get("classid"),
-            asset.get("name_color"),
-            asset.get("icon_url"),
-            asset.get("market_bucket_group_id"),
-            now,
-        ))
+        rows.append(
+            (
+                item.get("hash_name"),
+                item.get("name"),
+                asset.get("type"),
+                item.get("sell_price"),
+                item.get("sell_price_text"),
+                item.get("sale_price_text"),
+                item.get("sell_listings"),
+                asset.get("tradable"),
+                asset.get("commodity"),
+                asset.get("classid"),
+                asset.get("name_color"),
+                asset.get("icon_url"),
+                asset.get("market_bucket_group_id"),
+                now,
+            )
+        )
 
     if dry_run:
         return len(rows)
@@ -428,6 +431,7 @@ def store_items(
 # ---------------------------------------------------------------------------
 # Main catalog build
 # ---------------------------------------------------------------------------
+
 
 def run_catalog_build(
     resume: bool = False,
@@ -462,10 +466,7 @@ def run_catalog_build(
 
     if resume and progress["last_offset"] is not None:
         start_offset = progress["last_offset"] + 10  # next page
-        logger.info(
-            f"Resuming from offset={start_offset} — "
-            f"previously fetched {progress['total_items']} items"
-        )
+        logger.info(f"Resuming from offset={start_offset} — previously fetched {progress['total_items']} items")
 
     total_pages = (total + 9) // 10
     start_page = start_offset // 10
@@ -538,12 +539,14 @@ def run_catalog_build(
             if pages_done % 100 == 0:
                 elapsed = time.time() - start_time
                 items_per_min = health.total_items_fetched / (elapsed / 60) if elapsed > 0 else 0
-                eta_seconds = ((total_pages - pages_done) / (pages_done / elapsed)) if pages_done > 0 and elapsed > 0 else 0
+                eta_seconds = (
+                    ((total_pages - pages_done) / (pages_done / elapsed)) if pages_done > 0 and elapsed > 0 else 0
+                )
                 logger.info(
                     f"Progress: {pages_done}/{total_pages} pages | "
                     f"Items: {health.total_items_fetched} | "
                     f"Rate: {items_per_min:.0f} items/min | "
-                    f"ETA: {eta_seconds/3600:.1f} hrs"
+                    f"ETA: {eta_seconds / 3600:.1f} hrs"
                 )
 
             # Health report every HEALTH_REPORT_INTERVAL items
@@ -577,7 +580,7 @@ def run_catalog_build(
         logger.info(f"Catalog build {'(DRY RUN) ' if dry_run else ''}Complete")
     logger.info(f"  Items fetched: {health.total_items_fetched}")
     logger.info(f"  Rows stored: {total_rows}")
-    logger.info(f"  Duration: {elapsed/3600:.1f} hours")
+    logger.info(f"  Duration: {elapsed / 3600:.1f} hours")
     logger.info("=" * 70)
 
     print_catalog_summary(local_conn)
@@ -602,7 +605,7 @@ def print_catalog_summary(local_conn: sqlite3.Connection):
     logger.info(f"  Failed pages: {failed_count}")
     logger.info(f"  DB size: {db_size:.1f} MB")
     if types:
-        logger.info(f"  Top types:")
+        logger.info("  Top types:")
         for t, c in types:
             logger.info(f"    {t}: {c}")
 
@@ -640,7 +643,7 @@ def run_retry_failed(
 
     # Process failed offsets in bursts
     for burst_start_idx in range(0, len(failed_offsets), burst_size):
-        burst_offsets = failed_offsets[burst_start_idx:burst_start_idx + burst_size]
+        burst_offsets = failed_offsets[burst_start_idx : burst_start_idx + burst_size]
         burst_time = time.time()
 
         for offset in burst_offsets:
@@ -696,7 +699,7 @@ def run_retry_failed(
     logger.info(f"  Still failed: {still_failed}")
     logger.info(f"  Items recovered: {health.total_items_fetched}")
     logger.info(f"  Rows stored: {total_rows}")
-    logger.info(f"  Duration: {elapsed/60:.1f} minutes")
+    logger.info(f"  Duration: {elapsed / 60:.1f} minutes")
     logger.info("=" * 70)
 
     remaining = get_failed_pages_count(local_conn)
@@ -728,7 +731,7 @@ def print_status():
     if failed_count > 0:
         failed_offsets = load_failed_pages(local_conn)
         logger.info(f"  Failed offsets: {failed_offsets[:20]}{'...' if len(failed_offsets) > 20 else ''}")
-        logger.info(f"  To retry: python scripts/build_market_catalog.py --retry-failed")
+        logger.info("  To retry: python scripts/build_market_catalog.py --retry-failed")
 
     # Parse log for health
     log_path = Path(__file__).parent.parent / "runtime" / "market_catalog.log"
@@ -765,12 +768,13 @@ if __name__ == "__main__":
     parser.add_argument("--dry-run", action="store_true", help="Preview without writing to DB")
     parser.add_argument("--status", action="store_true", help="Show current progress")
     parser.add_argument(
-        "--burst-size", type=int, default=DEFAULT_BURST_SIZE,
-        help=f"Requests per burst (default: {DEFAULT_BURST_SIZE})"
+        "--burst-size", type=int, default=DEFAULT_BURST_SIZE, help=f"Requests per burst (default: {DEFAULT_BURST_SIZE})"
     )
     parser.add_argument(
-        "--burst-pause", type=float, default=DEFAULT_BURST_PAUSE,
-        help=f"Seconds between bursts (default: {DEFAULT_BURST_PAUSE})"
+        "--burst-pause",
+        type=float,
+        default=DEFAULT_BURST_PAUSE,
+        help=f"Seconds between bursts (default: {DEFAULT_BURST_PAUSE})",
     )
     args = parser.parse_args()
 

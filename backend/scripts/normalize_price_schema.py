@@ -47,14 +47,14 @@ import argparse
 import logging
 import os
 import sys
+from collections.abc import Sequence
 from pathlib import Path
-from typing import Optional, Sequence
 
 import duckdb
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from db.archive import (  # noqa: E402
+from db.archive import (
     CANONICAL_PRICE_COLUMNS,
     COLUMN_TYPES,
     RANGE_PRICE_COLUMNS,
@@ -79,8 +79,7 @@ def target_columns(present: Sequence[str]) -> list[str]:
 
 
 def _describe(con, path: Path) -> list[tuple[str, str]]:
-    return [(r[0], r[1]) for r in con.sql(
-        f"DESCRIBE SELECT * FROM read_parquet('{path}')").fetchall()]
+    return [(r[0], r[1]) for r in con.sql(f"DESCRIBE SELECT * FROM read_parquet('{path}')").fetchall()]
 
 
 def needs_rewrite(present: Sequence[tuple[str, str]]) -> bool:
@@ -100,13 +99,12 @@ def _assert_midnight(con, path: Path, day_type: str) -> None:
     """
     if day_type == DAY_TYPE:
         return
-    n = con.sql(
-        f"SELECT count(*) FROM read_parquet('{path}') "
-        f"WHERE day <> date_trunc('day', day)").fetchone()[0]
+    n = con.sql(f"SELECT count(*) FROM read_parquet('{path}') WHERE day <> date_trunc('day', day)").fetchone()[0]
     if n:
         raise RuntimeError(
             f"{path.name}: {n:,} rows have a non-midnight `day`; casting to "
-            f"DATE would truncate them. Refusing to rewrite.")
+            f"DATE would truncate them. Refusing to rewrite."
+        )
 
 
 def _fingerprint(con, relation: str, cols: Sequence[str]) -> tuple:
@@ -120,8 +118,7 @@ def _fingerprint(con, relation: str, cols: Sequence[str]) -> tuple:
     does not register as a difference — the non-midnight guard above is what
     proves that cast lossless.
     """
-    parts = ["count(*)", "count(DISTINCT item_slug)",
-             "min(CAST(day AS DATE))", "max(CAST(day AS DATE))"]
+    parts = ["count(*)", "count(DISTINCT item_slug)", "min(CAST(day AS DATE))", "max(CAST(day AS DATE))"]
     if "mean_price" in cols:
         parts += ["sum(mean_price::DECIMAL(24,8))", "count(mean_price)"]
     if "volume" in cols:
@@ -171,14 +168,14 @@ def normalize_file(con, path: Path, apply: bool) -> bool:
     before = _fingerprint(con, f"read_parquet('{path}')", checked)
 
     projection = ", ".join(
-        f"CAST(day AS {DAY_TYPE}) AS day" if c == "day"
+        f"CAST(day AS {DAY_TYPE}) AS day"
+        if c == "day"
         # A materialised column is NULLed to the type `prices_relation` will
         # read it back as. It used to be VARCHAR unconditionally, which was
         # right only as long as `source` was the sole column ever missing;
         # `ingested_at` is a TIMESTAMP, and a VARCHAR NULL in its place makes
         # the migrated file disagree with the reader's own CAST.
-        else (f'"{c}"' if c in names
-              else f"NULL::{COLUMN_TYPES[c]} AS {c}")
+        else (f'"{c}"' if c in names else f"NULL::{COLUMN_TYPES[c]} AS {c}")
         for c in want
     )
     tmp = path.with_suffix(".parquet.tmp")
@@ -186,14 +183,11 @@ def normalize_file(con, path: Path, apply: bool) -> bool:
         # DuckDB preserves insertion order, so the physical row order (and the
         # item clustering some files have) survives the rewrite.
         con.sql(
-            f"COPY (SELECT {projection} FROM read_parquet('{path}')) "
-            f"TO '{tmp}' (FORMAT PARQUET, COMPRESSION SNAPPY)"
+            f"COPY (SELECT {projection} FROM read_parquet('{path}')) TO '{tmp}' (FORMAT PARQUET, COMPRESSION SNAPPY)"
         )
         after = _fingerprint(con, f"read_parquet('{tmp}')", checked)
         if after != before:
-            raise RuntimeError(
-                f"{path.name}: fingerprint changed, refusing to replace "
-                f"(before={before} after={after})")
+            raise RuntimeError(f"{path.name}: fingerprint changed, refusing to replace (before={before} after={after})")
         os.replace(tmp, path)
     finally:
         tmp.unlink(missing_ok=True)
@@ -218,8 +212,7 @@ def normalize_archive(archive_dir: Path, apply: bool) -> int:
     finally:
         con.close()
 
-    logger.info("%d of %d file(s) %s", changed, len(targets),
-                "rewritten" if apply else "need rewriting")
+    logger.info("%d of %d file(s) %s", changed, len(targets), "rewritten" if apply else "need rewriting")
     return changed
 
 
@@ -227,25 +220,24 @@ def verify(archive_dir: Path) -> bool:
     """True if a plain `SELECT *` over the glob now sees every column."""
     con = duckdb.connect()
     try:
-        cols = [r[0] for r in con.sql(
-            f"DESCRIBE SELECT * FROM "
-            f"read_parquet('{archive_dir}/prices-*.parquet')").fetchall()]
+        cols = [
+            r[0] for r in con.sql(f"DESCRIBE SELECT * FROM read_parquet('{archive_dir}/prices-*.parquet')").fetchall()
+        ]
     finally:
         con.close()
-    ok = cols[:len(CANONICAL_PRICE_COLUMNS)] == list(CANONICAL_PRICE_COLUMNS)
-    logger.info("Plain glob read now sees: %s  [%s]",
-                ", ".join(cols), "OK" if ok else "STILL NARROWED")
+    ok = cols[: len(CANONICAL_PRICE_COLUMNS)] == list(CANONICAL_PRICE_COLUMNS)
+    logger.info("Plain glob read now sees: %s  [%s]", ", ".join(cols), "OK" if ok else "STILL NARROWED")
     return ok
 
 
-def main(argv: Optional[Sequence[str]] = None) -> int:
+def main(argv: Sequence[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[1])
     ap.add_argument(
-        "--archive-dir", type=Path, default=Path("../price-archive"),
-        help="Directory holding prices-*.parquet.")
+        "--archive-dir", type=Path, default=Path("../price-archive"), help="Directory holding prices-*.parquet."
+    )
     ap.add_argument(
-        "--apply", action="store_true",
-        help="Actually write. Omitted, the script only reports (the default).")
+        "--apply", action="store_true", help="Actually write. Omitted, the script only reports (the default)."
+    )
     args = ap.parse_args(argv)
 
     logging.basicConfig(level=logging.INFO, format="%(message)s")
@@ -258,8 +250,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     # treats "no files" as nothing to do. Without this, a typo'd path exits 0
     # having normalized nothing. Same guard as compact_price_archive.py.
     if not any(args.archive_dir.glob("prices-*.parquet")):
-        logger.error(
-            "No prices-*.parquet under %s — wrong --archive-dir?", args.archive_dir)
+        logger.error("No prices-*.parquet under %s — wrong --archive-dir?", args.archive_dir)
         return 1
 
     normalize_archive(args.archive_dir, apply=args.apply)

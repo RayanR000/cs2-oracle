@@ -4,11 +4,11 @@ Replaces 24 p10/p90 quantile GBMs whose empirical coverage was 39-48% against
 a nominal target the old code stated two ways (forecaster.py:3088 said 80%,
 :3092 set alpha=0.10 for 90%). Nominal is pinned at 80% here.
 """
+
 from __future__ import annotations
 
 import numpy as np
 import pytest
-
 from models.conformal import (
     ALPHA,
     BETA_NEUTRAL,
@@ -25,7 +25,7 @@ from models.conformal import (
 
 def test_nominal_coverage_is_pinned_at_eighty_percent():
     assert NOMINAL_COVERAGE == 0.80
-    assert ALPHA == pytest.approx(0.20)
+    assert pytest.approx(0.20) == ALPHA
 
 
 def test_sigma_is_a_coefficient_of_variation():
@@ -34,7 +34,8 @@ def test_sigma_is_a_coefficient_of_variation():
     sigma = sigma_from_columns(
         price_std_60d=np.array([10.0, 0.10]),
         price=np.array([100.0, 1.0]),
-        floor=0.001, cap=10.0,
+        floor=0.001,
+        cap=10.0,
     )
     assert sigma == pytest.approx([0.10, 0.10])
 
@@ -43,7 +44,8 @@ def test_sigma_is_clipped_to_the_bounds():
     sigma = sigma_from_columns(
         price_std_60d=np.array([0.0, 1000.0]),
         price=np.array([100.0, 1.0]),
-        floor=0.01, cap=2.0,
+        floor=0.01,
+        cap=2.0,
     )
     assert sigma == pytest.approx([0.01, 2.0])
 
@@ -54,7 +56,8 @@ def test_sigma_falls_back_for_missing_or_zero_history():
     sigma = sigma_from_columns(
         price_std_60d=np.array([np.nan, 0.0]),
         price=np.array([100.0, 50.0]),
-        floor=0.02, cap=2.0,
+        floor=0.02,
+        cap=2.0,
         fallback=0.35,
     )
     assert sigma == pytest.approx([0.35, 0.35])
@@ -65,7 +68,9 @@ def test_sigma_falls_back_when_price_is_nonpositive():
     sigma = sigma_from_columns(
         price_std_60d=np.array([1.0]),
         price=np.array([0.0]),
-        floor=0.02, cap=2.0, fallback=0.35,
+        floor=0.02,
+        cap=2.0,
+        fallback=0.35,
     )
     assert sigma == pytest.approx([0.35])
 
@@ -100,7 +105,7 @@ def test_calibrate_achieves_held_out_marginal_coverage():
     residuals = rng.normal(scale=sigma * 10.0, size=n)
 
     idx = rng.permutation(n)
-    cal_idx, test_idx = idx[: n // 2], idx[n // 2:]
+    cal_idx, test_idx = idx[: n // 2], idx[n // 2 :]
 
     q_hat = calibrate(residuals[cal_idx], sigma[cal_idx], ALPHA)
     low, high = band(np.zeros(test_idx.size), sigma[test_idx], q_hat)
@@ -127,7 +132,7 @@ def test_calibrate_gives_conditional_coverage_across_volatility_strata():
     residuals = rng.normal(scale=sigma * 10.0, size=n)
 
     idx = rng.permutation(n)
-    cal_idx, test_idx = idx[: n // 2], idx[n // 2:]
+    cal_idx, test_idx = idx[: n // 2], idx[n // 2 :]
     sigma_test = sigma[test_idx]
     residuals_test = residuals[test_idx]
 
@@ -151,7 +156,7 @@ def _coverage_by_sigma_decile(sigma, residuals, denom_cal, denom_test, rng):
     """
     n = sigma.size
     idx = rng.permutation(n)
-    cal, test = idx[: n // 2], idx[n // 2:]
+    cal, test = idx[: n // 2], idx[n // 2 :]
     q_hat = calibrate(residuals[cal], denom_cal[cal], ALPHA)
     covered = np.abs(residuals[test]) <= q_hat * denom_test[test]
 
@@ -192,10 +197,9 @@ def test_sigma_normalization_fails_when_the_elasticity_is_not_one():
     n = 40_000
     beta = 0.4
     sigma = rng.uniform(0.02, 0.5, size=n)
-    residuals = rng.normal(scale=(sigma ** beta) * 3.0, size=n)
+    residuals = rng.normal(scale=(sigma**beta) * 3.0, size=n)
 
-    marginal, per = _coverage_by_sigma_decile(
-        sigma, residuals, sigma, sigma, np.random.default_rng(1))
+    marginal, per = _coverage_by_sigma_decile(sigma, residuals, sigma, sigma, np.random.default_rng(1))
 
     # The marginal guarantee is untouched -- this defect is invisible to it.
     assert marginal == pytest.approx(NOMINAL_COVERAGE, abs=0.02)
@@ -208,9 +212,7 @@ def test_sigma_normalization_fails_when_the_elasticity_is_not_one():
     # sigma**beta instead of sigma. `calibrate` and `band` already take the
     # denominator as an argument, so the exponent is a fitted CONSTANT the
     # artifact would have to persist -- not new math.
-    marginal_b, per_b = _coverage_by_sigma_decile(
-        sigma, residuals, sigma ** beta, sigma ** beta,
-        np.random.default_rng(1))
+    marginal_b, per_b = _coverage_by_sigma_decile(sigma, residuals, sigma**beta, sigma**beta, np.random.default_rng(1))
     assert marginal_b == pytest.approx(NOMINAL_COVERAGE, abs=0.02)
     assert per_b.max() - per_b.min() < 0.10
 
@@ -279,7 +281,7 @@ def test_calibrate_signed_is_narrower_than_the_absolute_band_on_biased_residuals
     rng = np.random.default_rng(0)
     n = 8000
     sigma = np.full(n, 0.2)
-    residuals = rng.normal(loc=2.0, scale=1.0, size=n)   # biased upward
+    residuals = rng.normal(loc=2.0, scale=1.0, size=n)  # biased upward
 
     q_hat = calibrate(residuals, sigma, ALPHA)
     lo_s, hi_s = band(np.zeros(n), sigma, q_hat)
@@ -305,7 +307,7 @@ def test_calibrate_signed_achieves_held_out_marginal_coverage():
     residuals = rng.normal(loc=sigma * 3.0, scale=sigma * 10.0, size=n)
 
     idx = rng.permutation(n)
-    cal_idx, test_idx = idx[: n // 2], idx[n // 2:]
+    cal_idx, test_idx = idx[: n // 2], idx[n // 2 :]
 
     q_lo, q_hi = calibrate_signed(residuals[cal_idx], sigma[cal_idx], ALPHA)
     lo, hi = band_signed(np.zeros(test_idx.size), sigma[test_idx], q_lo, q_hi)
@@ -327,8 +329,7 @@ def test_band_signed_width_scales_with_sigma():
     """band_signed goes through resolve_scale like band, so a doubled sigma
     doubles the width -- the property that keeps the pair a matched set with
     beta and the learned scale."""
-    lo, hi = band_signed(np.zeros(3), np.array([0.1, 0.2, 0.4]),
-                         q_lo=-4.0, q_hi=6.0)
+    lo, hi = band_signed(np.zeros(3), np.array([0.1, 0.2, 0.4]), q_lo=-4.0, q_hi=6.0)
     widths = hi - lo
     assert widths[1] == pytest.approx(widths[0] * 2)
     assert widths[2] == pytest.approx(widths[0] * 4)
@@ -347,8 +348,7 @@ def test_resolve_scale_returns_sigma_when_nothing_is_learned():
     learned scale existed."""
     sig = np.array([0.02, 0.07, 0.5])
     assert np.array_equal(resolve_scale(sig), sig)
-    assert np.array_equal(resolve_scale(sig, BETA_NEUTRAL),
-                          sig)
+    assert np.array_equal(resolve_scale(sig, BETA_NEUTRAL), sig)
 
 
 def test_resolve_scale_serves_a_learned_scale_as_is():
@@ -365,8 +365,7 @@ def test_stacking_a_learned_scale_on_an_exponent_raises():
     2026-08-12-served-sigma-profile.md -- so there is no sensible reading of
     the request and it must not silently pick one."""
     with pytest.raises(ValueError, match="alternative denominators"):
-        resolve_scale(np.array([0.07]), beta=0.35,
-                                learned=np.array([1.0]))
+        resolve_scale(np.array([0.07]), beta=0.35, learned=np.array([1.0]))
 
 
 def test_calibrate_and_band_round_trip_through_a_learned_scale():
@@ -389,11 +388,11 @@ def test_a_learned_q_hat_served_against_sigma_is_not_a_degraded_band():
     rng = np.random.default_rng(12)
     n = 20_000
     s = rng.uniform(0.5, 4.0, n)
-    sigma = s ** 2.0 / 50.0          # a different variable, different units
+    sigma = s**2.0 / 50.0  # a different variable, different units
     resid = rng.normal(scale=s)
 
     q_learned = calibrate(resid, sigma=None, learned_scale=s)
-    lo, hi = band(np.zeros(n), sigma, q_hat=q_learned)   # mismatched
+    lo, hi = band(np.zeros(n), sigma, q_hat=q_learned)  # mismatched
     covered = ((resid >= lo) & (resid <= hi)).mean()
     assert abs(covered - NOMINAL_COVERAGE) > 0.15, (
         f"a mismatched scale covered {covered:.3f}, close enough to nominal to "

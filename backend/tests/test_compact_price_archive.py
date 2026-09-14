@@ -9,7 +9,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from scripts.compact_price_archive import (  # noqa: E402
+from scripts.compact_price_archive import (
     absorb_orphan_snapshot_rows,
     columns_to_drop,
     compact_columns,
@@ -17,22 +17,22 @@ from scripts.compact_price_archive import (  # noqa: E402
     main,
 )
 
-
-EIGHT_COL = ["item_slug", "day", "mean_price", "median_price",
-             "volume", "min_price", "max_price", "source"]
+EIGHT_COL = ["item_slug", "day", "mean_price", "median_price", "volume", "min_price", "max_price", "source"]
 
 
 def _prices_frame(n=4, collapsed=True):
-    return pd.DataFrame({
-        "item_slug": [f"AK-47 | Redline (Field-Tested) {i}" for i in range(n)],
-        "day": pd.to_datetime(["2026-05-01"] * n),
-        "mean_price": [10.0 + i for i in range(n)],
-        "median_price": [10.0 + i for i in range(n)],
-        "volume": [0] * n,
-        "min_price": [10.0 + i if collapsed else 1.0 for i in range(n)],
-        "max_price": [10.0 + i if collapsed else 99.0 for i in range(n)],
-        "source": ["aggregator_sync"] * n,
-    })[EIGHT_COL]
+    return pd.DataFrame(
+        {
+            "item_slug": [f"AK-47 | Redline (Field-Tested) {i}" for i in range(n)],
+            "day": pd.to_datetime(["2026-05-01"] * n),
+            "mean_price": [10.0 + i for i in range(n)],
+            "median_price": [10.0 + i for i in range(n)],
+            "volume": [0] * n,
+            "min_price": [10.0 + i if collapsed else 1.0 for i in range(n)],
+            "max_price": [10.0 + i if collapsed else 99.0 for i in range(n)],
+            "source": ["aggregator_sync"] * n,
+        }
+    )[EIGHT_COL]
 
 
 def _write(archive, name, frame):
@@ -42,8 +42,7 @@ def _write(archive, name, frame):
 def _cols(path):
     con = duckdb.connect()
     try:
-        return [r[0] for r in con.sql(
-            f"DESCRIBE SELECT * FROM read_parquet('{path}')").fetchall()]
+        return [r[0] for r in con.sql(f"DESCRIBE SELECT * FROM read_parquet('{path}')").fetchall()]
     finally:
         con.close()
 
@@ -57,10 +56,11 @@ def archive(tmp_path):
 
 # ── column policy ──────────────────────────────────────────────────────
 
+
 def test_median_price_is_dropped_from_every_prices_file():
-    assert columns_to_drop("prices-2019.parquet",
-                           ["item_slug", "day", "mean_price", "median_price", "volume"]) \
-        == ["median_price"]
+    assert columns_to_drop("prices-2019.parquet", ["item_slug", "day", "mean_price", "median_price", "volume"]) == [
+        "median_price"
+    ]
 
 
 def test_march_and_april_2026_keep_their_range_columns():
@@ -70,8 +70,7 @@ def test_march_and_april_2026_keep_their_range_columns():
 
 
 def test_other_2026_files_lose_the_collapsed_range_columns():
-    assert columns_to_drop("prices-2026-07.parquet", EIGHT_COL) == [
-        "median_price", "min_price", "max_price"]
+    assert columns_to_drop("prices-2026-07.parquet", EIGHT_COL) == ["median_price", "min_price", "max_price"]
 
 
 def test_volume_is_never_dropped():
@@ -87,6 +86,7 @@ def test_item_slug_day_and_source_are_never_dropped():
 
 
 # ── rewrite behaviour ──────────────────────────────────────────────────
+
 
 def test_dry_run_leaves_files_untouched(archive):
     _write(archive, "prices-2026-07.parquet", _prices_frame())
@@ -163,9 +163,9 @@ def test_a_dir_with_prices_files_succeeds(archive):
 
 # ── snapshot retirement ────────────────────────────────────────────────
 
+
 def _snapshot_frame(prices):
-    return prices[["item_slug", "day", "source"]].assign(
-        price=prices["mean_price"], volume=prices["volume"])
+    return prices[["item_slug", "day", "source"]].assign(price=prices["mean_price"], volume=prices["volume"])
 
 
 def test_derivable_snapshot_is_deleted(archive):
@@ -226,12 +226,14 @@ def test_fingerprint_is_stable_across_reads_of_the_same_data(archive):
     """Guards the DOUBLE-vs-DECIMAL trap: a float sum is not reproducible."""
     from scripts.compact_price_archive import _describe, _fingerprint
 
-    frame = pd.DataFrame({
-        "item_slug": [f"item {i}" for i in range(20000)],
-        "day": pd.to_datetime(["2026-05-01"] * 20000),
-        "mean_price": [0.01 * (i + 1) for i in range(20000)],
-        "volume": [i for i in range(20000)],
-    })
+    frame = pd.DataFrame(
+        {
+            "item_slug": [f"item {i}" for i in range(20000)],
+            "day": pd.to_datetime(["2026-05-01"] * 20000),
+            "mean_price": [0.01 * (i + 1) for i in range(20000)],
+            "volume": [i for i in range(20000)],
+        }
+    )
     _write(archive, "prices-2026-05.parquet", frame)
     path = archive / "prices-2026-05.parquet"
 
@@ -256,13 +258,15 @@ def test_a_real_value_change_is_caught(archive):
     con = duckdb.connect()
     try:
         cols = _describe(con, archive / "prices-2026-05.parquet")
-        assert _fingerprint(con, archive / "prices-2026-05.parquet", cols) != \
-            _fingerprint(con, archive / "prices-2026-06.parquet", cols)
+        assert _fingerprint(con, archive / "prices-2026-05.parquet", cols) != _fingerprint(
+            con, archive / "prices-2026-06.parquet", cols
+        )
     finally:
         con.close()
 
 
 # ── orphan absorption ──────────────────────────────────────────────────
+
 
 def test_orphan_rows_are_absorbed_into_prices(archive):
     prices = _prices_frame(n=3)
@@ -295,8 +299,7 @@ def test_absorption_does_not_resurrect_dropped_columns(archive):
     compact_columns(archive, apply=True)
     absorb_orphan_snapshot_rows(archive, apply=True)
 
-    assert _cols(archive / "prices-2026-07.parquet") == [
-        "item_slug", "day", "mean_price", "volume", "source"]
+    assert _cols(archive / "prices-2026-07.parquet") == ["item_slug", "day", "mean_price", "volume", "source"]
 
 
 def test_absorption_is_a_no_op_when_nothing_is_orphaned(archive):
@@ -336,5 +339,4 @@ def test_snapshot_check_runs_against_already_compacted_prices(archive):
     main(["--archive-dir", str(archive), "--apply"])
 
     assert not (archive / "snapshots-2026-07.parquet").exists()
-    assert _cols(archive / "prices-2026-07.parquet") == [
-        "item_slug", "day", "mean_price", "volume", "source"]
+    assert _cols(archive / "prices-2026-07.parquet") == ["item_slug", "day", "mean_price", "volume", "source"]

@@ -69,6 +69,7 @@ Usage:
     python scripts/ab_test_item_metadata.py --frame-cache /tmp/meta_frame.parquet \
         --horizon 7 --out /tmp/meta_h7.json
 """
+
 from __future__ import annotations
 
 MIN_MEDIAN_PRICE = 1.0
@@ -114,9 +115,15 @@ META_AGE_ONLY = ("item_age_days", "rarity_meta_rank")
 # Every metadata column EXCEPT the age pair. These are static per item: they
 # carry no date component at all, so an arm built from them cannot act as a
 # calendar proxy.
-META_STATIC = ("rarity_meta_rank", "is_meta_stattrak", "is_meta_souvenir",
-               "float_meta_min", "float_meta_max",
-               "type_meta_crate_id", "type_meta_collection_id")
+META_STATIC = (
+    "rarity_meta_rank",
+    "is_meta_stattrak",
+    "is_meta_souvenir",
+    "float_meta_min",
+    "float_meta_max",
+    "type_meta_crate_id",
+    "type_meta_collection_id",
+)
 # The leakage control. `item_age_days` is (observation date - first sale date):
 # for a fixed item that is the calendar date plus a constant, and the folds are
 # ordered in time, so it is a date proxy as much as it is an item property.
@@ -130,26 +137,25 @@ DATE_PROXY_COL = "date_ordinal"
 # encoding rather than the identity.
 META_CATEGORICAL = ("type_meta_crate_id", "type_meta_collection_id")
 
+import hashlib
+import json
+import logging
 import os
 import sys
-import json
-import hashlib
-import logging
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
+import lightgbm as lgb
 import numpy as np
 import pandas as pd
-import lightgbm as lgb
-
+from backtest.paired_mde import paired_da_difference
 from database import SessionLocal
 from models.forecaster import ItemForecaster, phase_collapsed_sql_filter
 from models.market_factor import (
     build_market_index,
     market_factor_for_horizon,
 )
-from backtest.paired_mde import paired_da_difference
 
 logging.basicConfig(
     level=logging.INFO,
@@ -172,8 +178,7 @@ DS_PARAMS = {"max_bin": 63, "feature_pre_filter": False}
 def _frame_fingerprint(metadata_parquet):
     src = Path(__file__).parent.parent / "models" / "forecaster.py"
     h = hashlib.sha256(src.read_bytes())
-    h.update(repr((MIN_MEDIAN_PRICE, MIN_ITEM_DAYS, N_UNIVERSE,
-                   CORR_PRUNE_THRESHOLD, META_ALL, _UNIVERSE)).encode())
+    h.update(repr((MIN_MEDIAN_PRICE, MIN_ITEM_DAYS, N_UNIVERSE, CORR_PRUNE_THRESHOLD, META_ALL, _UNIVERSE)).encode())
     if metadata_parquet:
         h.update(hashlib.sha256(Path(metadata_parquet).read_bytes()).digest())
     return h.hexdigest()[:16]
@@ -194,11 +199,10 @@ def _archive_union_sql(con):
         if "source" in {r[0] for r in cols}:
             queries.append(
                 f"SELECT item_slug, day, mean_price, volume FROM "
-                f"read_parquet('{pqf}') WHERE (source IS NULL OR source = 'aggregator_sync') AND {_UNIVERSE}")
+                f"read_parquet('{pqf}') WHERE (source IS NULL OR source = 'aggregator_sync') AND {_UNIVERSE}"
+            )
         else:
-            queries.append(
-                f"SELECT item_slug, day, mean_price, volume FROM "
-                f"read_parquet('{pqf}') WHERE {_UNIVERSE}")
+            queries.append(f"SELECT item_slug, day, mean_price, volume FROM read_parquet('{pqf}') WHERE {_UNIVERSE}")
     return " UNION ALL BY NAME ".join(queries)
 
 
@@ -211,7 +215,8 @@ def build_frame(metadata_parquet, cache_path=None):
             if meta.get("fingerprint") != _frame_fingerprint(metadata_parquet):
                 raise SystemExit(
                     f"Frame cache {cache_path} was built from different feature "
-                    f"code, constants or metadata. Rebuild with --build-cache-only.")
+                    f"code, constants or metadata. Rebuild with --build-cache-only."
+                )
             df = pd.read_parquet(cache_path)
             logger.info(f"  Loaded cached frame {cache_path} ({len(df):,} rows)")
             return df, meta["pruned"], meta["meta_present"]
@@ -222,10 +227,16 @@ def build_frame(metadata_parquet, cache_path=None):
         tmp_frame = cache_path.with_suffix(f".{os.getpid()}.tmp.parquet")
         tmp_meta = cache_path.with_suffix(f".{os.getpid()}.tmp.json")
         df.to_parquet(tmp_frame, index=False)
-        tmp_meta.write_text(json.dumps({
-            "fingerprint": _frame_fingerprint(metadata_parquet),
-            "pruned": pruned, "meta_present": meta_present, "rows": len(df),
-        }))
+        tmp_meta.write_text(
+            json.dumps(
+                {
+                    "fingerprint": _frame_fingerprint(metadata_parquet),
+                    "pruned": pruned,
+                    "meta_present": meta_present,
+                    "rows": len(df),
+                }
+            )
+        )
         os.replace(tmp_frame, cache_path)
         os.replace(tmp_meta, cache_path.with_suffix(".meta.json"))
         logger.info(f"  Wrote frame cache {cache_path} ({len(df):,} rows)")
@@ -234,6 +245,7 @@ def build_frame(metadata_parquet, cache_path=None):
 
 def _build_frame_uncached(metadata_parquet):
     import duckdb
+
     con = duckdb.connect()
     db = SessionLocal()
     try:
@@ -256,18 +268,19 @@ def _build_frame_uncached(metadata_parquet):
         logger.info(f"  Universe: {len(slugs)} deep >=$1 items")
 
         placeholders = ", ".join("?" for _ in slugs)
-        all_prices = con.sql(f"""
+        all_prices = con.sql(
+            f"""
             SELECT item_slug AS item_id, day AS timestamp,
                    mean_price AS price, volume
             FROM ({union_sql}) WHERE item_slug IN ({placeholders})
-        """, params=slugs).df()
+        """,
+            params=slugs,
+        ).df()
 
         all_prices["timestamp"] = pd.to_datetime(all_prices["timestamp"])
         all_prices["date"] = all_prices["timestamp"].dt.date
-        all_prices["item_id"] = pd.Categorical(
-            all_prices["item_id"], categories=slugs, ordered=True)
-        all_prices = all_prices.sort_values(
-            ["item_id", "timestamp"], kind="stable").reset_index(drop=True)
+        all_prices["item_id"] = pd.Categorical(all_prices["item_id"], categories=slugs, ordered=True)
+        all_prices = all_prices.sort_values(["item_id", "timestamp"], kind="stable").reset_index(drop=True)
         all_prices["item_id"] = all_prices["item_id"].astype(str)
         logger.info(f"  Loaded {len(all_prices):,} price rows")
 
@@ -277,8 +290,7 @@ def _build_frame_uncached(metadata_parquet):
         # and thinning the item set would thin the median.
         market_index = build_market_index(all_prices)
         n_valid = int(market_index["valid"].sum()) if not market_index.empty else 0
-        logger.info(f"  market index: {len(market_index):,} dates, "
-                    f"{n_valid:,} valid")
+        logger.info(f"  market index: {len(market_index):,} dates, {n_valid:,} valid")
 
         df = forecaster.engineer_features(all_prices, events_df)
         df = forecaster._add_cross_sectional_features(df)
@@ -297,16 +309,12 @@ def _build_frame_uncached(metadata_parquet):
             logger.info(f"  market factor {h}d coverage: {cov:.1f}% of rows")
             mf_cols.append(col)
 
-        EXCLUDE = {"item_id", "date", "timestamp", "price", "volume",
-                   "name", "release_date"}
+        EXCLUDE = {"item_id", "date", "timestamp", "price", "volume", "name", "release_date"}
         numeric = (np.float64, np.float32, np.int64, int, float)
-        all_cols = [c for c in df.columns
-                    if c not in EXCLUDE and df[c].dtype in numeric]
+        all_cols = [c for c in df.columns if c not in EXCLUDE and df[c].dtype in numeric]
         kept = [c for c in all_cols if c not in ItemForecaster.SHELVED_FEATURES]
-        kept = ItemForecaster._apply_feature_allowlist(
-            kept, ItemForecaster.FEATURE_GROUP_ALLOWLIST)
-        logger.info(f"  Features: {len(all_cols)} -> {len(kept)} after "
-                    f"shelving + allowlist")
+        kept = ItemForecaster._apply_feature_allowlist(kept, ItemForecaster.FEATURE_GROUP_ALLOWLIST)
+        logger.info(f"  Features: {len(all_cols)} -> {len(kept)} after shelving + allowlist")
 
         if len(kept) > 2:
             corr = df[kept].corr().abs()
@@ -342,8 +350,7 @@ def _join_metadata(df, metadata_parquet):
     meta = pd.read_parquet(metadata_parquet)
     if "item_slug" not in meta.columns:
         raise SystemExit(f"{metadata_parquet} has no item_slug column")
-    logger.info(f"  Metadata table: {len(meta):,} rows, "
-                f"{len(meta.columns)} columns")
+    logger.info(f"  Metadata table: {len(meta):,} rows, {len(meta.columns)} columns")
 
     meta = meta.drop_duplicates(subset=["item_slug"])
     date_col = "item_age_first_sale_date"
@@ -357,8 +364,7 @@ def _join_metadata(df, metadata_parquet):
         meta["_first_sale"] = first_sale.values
 
     matched = df["item_id"].isin(meta.index)
-    logger.info(f"  Joined {matched.sum():,}/{len(df):,} rows "
-                f"({df.loc[matched, 'item_id'].nunique()} items matched)")
+    logger.info(f"  Joined {matched.sum():,}/{len(df):,} rows ({df.loc[matched, 'item_id'].nunique()} items matched)")
 
     aligned = meta.reindex(df["item_id"].to_numpy())
     if "_first_sale" in aligned.columns:
@@ -372,8 +378,9 @@ def _join_metadata(df, metadata_parquet):
         n_neg = int(np.nansum(age < 0))
         age[age < 0] = np.nan
         df["item_age_days"] = age
-        logger.info(f"  item_age_days: {np.isfinite(age).sum():,}/{len(age):,} "
-                    f"rows non-null ({n_neg:,} negative -> null)")
+        logger.info(
+            f"  item_age_days: {np.isfinite(age).sum():,}/{len(age):,} rows non-null ({n_neg:,} negative -> null)"
+        )
         aligned = aligned.drop(columns=["_first_sale"])
 
     for col in aligned.columns:
@@ -391,8 +398,7 @@ def _join_metadata(df, metadata_parquet):
             logger.warning(f"  metadata column {col} is entirely null — dropped")
             df.drop(columns=[col], inplace=True)
             continue
-        logger.info(f"  {col:26s} {n:>10,}/{len(df):,} non-null "
-                    f"({100.0 * n / len(df):.1f}%)")
+        logger.info(f"  {col:26s} {n:>10,}/{len(df):,} non-null ({100.0 * n / len(df):.1f}%)")
         present.append(col)
     return present
 
@@ -409,7 +415,7 @@ def assign_items(df):
 
     eval_items = sorted(shuffled[:N_EVAL_ITEMS])
     pool = shuffled[N_EVAL_ITEMS:]
-    if N_TRAIN_ITEMS > len(pool):
+    if len(pool) < N_TRAIN_ITEMS:
         raise SystemExit(f"need {N_TRAIN_ITEMS} training items, pool has {len(pool)}")
     train_items = sorted(pool[:N_TRAIN_ITEMS])
     trained_eval = sorted(train_items[:N_TRAINED_EVAL_ITEMS])
@@ -434,15 +440,13 @@ def _stratified_sample(train_df, items, budget, fold_idx):
     rng = np.random.default_rng(SAMPLE_SEED + fold_idx)
     keep = []
     for _, idx in sub.groupby("item_id", sort=True).indices.items():
-        keep.append(idx if len(idx) <= per_item
-                    else rng.choice(idx, size=per_item, replace=False))
+        keep.append(idx if len(idx) <= per_item else rng.choice(idx, size=per_item, replace=False))
     picked = np.concatenate(keep)
     picked.sort()
     return sub.iloc[picked]
 
 
-def run_evaluation(df, pruned, meta_present, horizon_filter=None, n_jobs=None,
-                   market_relative=False):
+def run_evaluation(df, pruned, meta_present, horizon_filter=None, n_jobs=None, market_relative=False):
     if n_jobs is None:
         n_jobs = max(1, (os.cpu_count() or 4) // 2)
     eval_items, train_items, trained_eval = assign_items(df)
@@ -458,8 +462,9 @@ def run_evaluation(df, pruned, meta_present, horizon_filter=None, n_jobs=None,
         "date_proxy": [DATE_PROXY_COL],
     }
     for name, extra in arms.items():
-        logger.info(f"  Arm {name:12s}: {len(pruned) + len(extra)} features "
-                    f"({len(pruned)} price + {len(extra)} metadata)")
+        logger.info(
+            f"  Arm {name:12s}: {len(pruned) + len(extra)} features ({len(pruned)} price + {len(extra)} metadata)"
+        )
 
     db = SessionLocal()
     forecaster = ItemForecaster(db_session=db)
@@ -480,18 +485,16 @@ def run_evaluation(df, pruned, meta_present, horizon_filter=None, n_jobs=None,
                 continue
 
             base_cols = [c for c in pruned if c in tdf.columns]
-            keep_cols = (["item_id", "date", "price", target_col]
-                         + base_cols + meta_all)
+            keep_cols = ["item_id", "date", "price", target_col] + base_cols + meta_all
             mf_col = f"market_factor_{horizon}d"
             if market_relative and mf_col not in tdf.columns:
                 raise SystemExit(
-                    f"--market-relative needs {mf_col} in the frame; rebuild "
-                    f"the cache with --build-cache-only.")
+                    f"--market-relative needs {mf_col} in the frame; rebuild the cache with --build-cache-only."
+                )
             if market_relative:
                 keep_cols.append(mf_col)
             sub = tdf[[c for c in keep_cols if c in tdf.columns]].copy()
-            sub[DATE_PROXY_COL] = pd.to_datetime(
-                sub["date"]).map(lambda d: d.toordinal()).astype(float)
+            sub[DATE_PROXY_COL] = pd.to_datetime(sub["date"]).map(lambda d: d.toordinal()).astype(float)
 
             dates = sorted(sub["date"].unique())
             split_idx = len(dates) * 2 // 3
@@ -505,33 +508,32 @@ def run_evaluation(df, pruned, meta_present, horizon_filter=None, n_jobs=None,
             for arm, extra in arms.items():
                 features = base_cols + extra
                 cats = [c for c in extra if c in META_CATEGORICAL]
-                logger.info(f"\n    --- {arm} ({len(features)} features, "
-                            f"{len(cats)} categorical) ---")
+                logger.info(f"\n    --- {arm} ({len(features)} features, {len(cats)} categorical) ---")
 
                 rec = {"heldout": [], "trained": []}
                 per_fold = []
-                for fold_idx, window_end in enumerate(
-                        range(split_idx + 1, len(dates), STEP_DAYS)):
-                    val_dates = dates[window_end:window_end + VAL_WINDOW_DAYS]
+                for fold_idx, window_end in enumerate(range(split_idx + 1, len(dates), STEP_DAYS)):
+                    val_dates = dates[window_end : window_end + VAL_WINDOW_DAYS]
                     if len(val_dates) < 7:
                         continue
                     in_train = sub_days <= dates_dt[window_end - 1]
-                    in_val = ((sub_days >= dates_dt[window_end])
-                              & (sub_days <= dates_dt[window_end + len(val_dates) - 1]))
+                    in_val = (sub_days >= dates_dt[window_end]) & (
+                        sub_days <= dates_dt[window_end + len(val_dates) - 1]
+                    )
 
                     # Embargo the TRAIN side only, via production's own purge
                     # (see the "Embargo" section of the module docstring).
                     # The val mask above is untouched: purging it would shrink
                     # the 21-day window and empty it outright at 30d.
                     train_df = ItemForecaster._purge_overlapping_train_rows(
-                        sub[in_train & is_train_item], val_dates[0], horizon)
+                        sub[in_train & is_train_item], val_dates[0], horizon
+                    )
                     # Both scoring cohorts come out of one val slice, so the
                     # two reads share a model and a fold and stay comparable.
                     val_df = sub[in_val & (is_heldout | is_trained_eval)]
                     if len(val_df) < 50 or train_df.empty:
                         continue
-                    train_df = _stratified_sample(
-                        train_df, train_items, ROW_BUDGET, fold_idx)
+                    train_df = _stratified_sample(train_df, train_items, ROW_BUDGET, fold_idx)
 
                     if arm == "placebo" and extra:
                         rng = np.random.default_rng(PLACEBO_SEED)
@@ -559,25 +561,33 @@ def run_evaluation(df, pruned, meta_present, horizon_filter=None, n_jobs=None,
                         # A missing factor demeans by zero rather than dropping
                         # the row: the arms must see identical rows for the
                         # paired comparison to hold.
-                        y_train = ItemForecaster._demean_returns(
-                            y_train, train_df[mf_col].to_numpy())
-                        y_val = ItemForecaster._demean_returns(
-                            y_val, val_df[mf_col].to_numpy())
+                        y_train = ItemForecaster._demean_returns(y_train, train_df[mf_col].to_numpy())
+                        y_val = ItemForecaster._demean_returns(y_val, val_df[mf_col].to_numpy())
                     ds_kw = {"params": DS_PARAMS, "free_raw_data": False}
                     if cats:
                         ds_kw["categorical_feature"] = cats
                     dtrain = lgb.Dataset(X_train, y_train, **ds_kw)
                     dval = lgb.Dataset(X_val, y_val, reference=dtrain, **ds_kw)
                     params = {
-                        "objective": "quantile", "alpha": 0.5,
-                        "metric": "quantile", "boosting_type": "gbdt",
-                        "num_leaves": 31, "max_depth": 5,
-                        "min_data_in_leaf": 15, "min_gain_to_split": 0.1,
-                        "learning_rate": 0.03, "feature_fraction": 0.7,
-                        "bagging_fraction": 0.7, "bagging_freq": 5,
-                        "lambda_l1": 0.5, "lambda_l2": 0.5,
-                        "verbosity": -1, "random_state": 42, "n_jobs": n_jobs,
-                        "force_row_wise": True, **DS_PARAMS,
+                        "objective": "quantile",
+                        "alpha": 0.5,
+                        "metric": "quantile",
+                        "boosting_type": "gbdt",
+                        "num_leaves": 31,
+                        "max_depth": 5,
+                        "min_data_in_leaf": 15,
+                        "min_gain_to_split": 0.1,
+                        "learning_rate": 0.03,
+                        "feature_fraction": 0.7,
+                        "bagging_fraction": 0.7,
+                        "bagging_freq": 5,
+                        "lambda_l1": 0.5,
+                        "lambda_l2": 0.5,
+                        "verbosity": -1,
+                        "random_state": 42,
+                        "n_jobs": n_jobs,
+                        "force_row_wise": True,
+                        **DS_PARAMS,
                     }
                     # Early stopping scored on `dval`, i.e. on the rows being
                     # measured. That is a leak every arm shares -- except that
@@ -587,17 +597,17 @@ def run_evaluation(df, pruned, meta_present, horizon_filter=None, n_jobs=None,
                     # trainer and round table, with `dval` ignored unless
                     # EARLY_STOPPING=1 reinstates the old arm for a paired read.
                     model = ItemForecaster._train_ensemble_member(
-                        params, dtrain, dval,
-                        num_boost_round=ItemForecaster._boost_rounds(
-                            horizon, cv=True),
+                        params,
+                        dtrain,
+                        dval,
+                        num_boost_round=ItemForecaster._boost_rounds(horizon, cv=True),
                         early_stopping=ItemForecaster._early_stopping_enabled(),
                     )
                     pred = model.predict(X_val)
 
                     price = val_df["price"].to_numpy(dtype=float)
                     actual = np.asarray(y_val, dtype=float)
-                    match = (np.sign(np.nan_to_num(actual))
-                             == np.sign(np.nan_to_num(pred)))
+                    match = np.sign(np.nan_to_num(actual)) == np.sign(np.nan_to_num(pred))
                     # Strict >=$1: flat-actual rows excluded, because sign(0)
                     # matched by a q50 emitting 0.0 is a free hit, not a call.
                     scored = (actual != 0) & (price >= 1.0)
@@ -605,39 +615,45 @@ def run_evaluation(df, pruned, meta_present, horizon_filter=None, n_jobs=None,
                     dts = val_df["date"].to_numpy()
                     held = np.isin(ids, eval_items)
 
-                    fold_row = {"fold": len(per_fold) + 1,
-                                "val_start": str(val_dates[0]),
-                                "val_end": str(val_dates[-1]),
-                                "n_train": len(train_df)}
+                    fold_row = {
+                        "fold": len(per_fold) + 1,
+                        "val_start": str(val_dates[0]),
+                        "val_end": str(val_dates[-1]),
+                        "n_train": len(train_df),
+                    }
                     for cohort, mask in (("heldout", held), ("trained", ~held)):
                         sel = scored & mask
                         for i in np.flatnonzero(sel):
-                            rec[cohort].append({
-                                "item_id": ids[i],
-                                "forecast_date": str(dts[i]),
-                                # The resampling cluster. Dates inside one
-                                # validation window share a fitted model, so
-                                # clustering on them understates the variance
-                                # -- see paired_mde's module docstring, which
-                                # names this experiment as one to re-derive.
-                                "fold_id": fold_idx,
-                                "direction_correct": bool(match[i]),
-                            })
+                            rec[cohort].append(
+                                {
+                                    "item_id": ids[i],
+                                    "forecast_date": str(dts[i]),
+                                    # The resampling cluster. Dates inside one
+                                    # validation window share a fitted model, so
+                                    # clustering on them understates the variance
+                                    # -- see paired_mde's module docstring, which
+                                    # names this experiment as one to re-derive.
+                                    "fold_id": fold_idx,
+                                    "direction_correct": bool(match[i]),
+                                }
+                            )
                         tot = int(sel.sum())
                         hits = int(np.count_nonzero(match & sel))
                         fold_row[f"{cohort}_n"] = tot
-                        fold_row[f"{cohort}_da"] = (
-                            round(hits / tot * 100, 2) if tot else None)
+                        fold_row[f"{cohort}_da"] = round(hits / tot * 100, 2) if tot else None
                     per_fold.append(fold_row)
 
                 if not per_fold:
                     logger.warning(f"    {arm}: no usable folds")
                     continue
 
-                entry = {"n_features": len(features), "fold_count": len(per_fold),
-                         "mean_rows_per_fold": int(np.mean(
-                             [f["n_train"] for f in per_fold])),
-                         "per_fold": per_fold, "records": rec}
+                entry = {
+                    "n_features": len(features),
+                    "fold_count": len(per_fold),
+                    "mean_rows_per_fold": int(np.mean([f["n_train"] for f in per_fold])),
+                    "per_fold": per_fold,
+                    "records": rec,
+                }
                 for cohort in ("heldout", "trained"):
                     n = len(rec[cohort])
                     hits = sum(int(r["direction_correct"]) for r in rec[cohort])
@@ -648,20 +664,19 @@ def run_evaluation(df, pruned, meta_present, horizon_filter=None, n_jobs=None,
                     f"      held-out DA={entry['da_heldout']}% "
                     f"(n={entry['n_heldout']:,})   "
                     f"trained DA={entry['da_trained']}% "
-                    f"(n={entry['n_trained']:,})   folds={len(per_fold)}")
+                    f"(n={entry['n_trained']:,})   folds={len(per_fold)}"
+                )
 
             base = results[horizon].get("baseline")
             if base:
                 results[horizon]["_paired"] = {}
-                for arm in ("treatment", "age_only", "placebo",
-                            "static_only", "date_proxy"):
+                for arm in ("treatment", "age_only", "placebo", "static_only", "date_proxy"):
                     if arm not in results[horizon]:
                         continue
                     results[horizon]["_paired"][arm] = {
                         cohort: paired_da_difference(
-                            base["records"][cohort],
-                            results[horizon][arm]["records"][cohort],
-                            cluster_key="fold_id")
+                            base["records"][cohort], results[horizon][arm]["records"][cohort], cluster_key="fold_id"
+                        )
                         for cohort in ("heldout", "trained")
                     }
                 # treatment vs placebo is the arm that rules out capacity
@@ -672,7 +687,8 @@ def run_evaluation(df, pruned, meta_present, horizon_filter=None, n_jobs=None,
                         cohort: paired_da_difference(
                             results[horizon]["placebo"]["records"][cohort],
                             results[horizon]["treatment"]["records"][cohort],
-                            cluster_key="fold_id")
+                            cluster_key="fold_id",
+                        )
                         for cohort in ("heldout", "trained")
                     }
         return results
@@ -687,68 +703,74 @@ def print_summary(results):
     for h in sorted(k for k in results if isinstance(k, int)):
         r = results[h]
         print(f"\n  {h}d horizon")
-        print(f"    {'arm':<12} {'feats':>6} {'held-out DA':>12} {'n':>9} "
-              f"{'trained DA':>12} {'n':>9} {'folds':>6}")
+        print(f"    {'arm':<12} {'feats':>6} {'held-out DA':>12} {'n':>9} {'trained DA':>12} {'n':>9} {'folds':>6}")
         print(f"    {'-' * 72}")
-        for arm in ("baseline", "treatment", "age_only", "placebo",
-                    "static_only", "date_proxy"):
+        for arm in ("baseline", "treatment", "age_only", "placebo", "static_only", "date_proxy"):
             a = r.get(arm)
             if not a:
                 continue
-            print(f"    {arm:<12} {a['n_features']:>6} "
-                  f"{a['da_heldout']:>11.2f}% {a['n_heldout']:>9,} "
-                  f"{a['da_trained']:>11.2f}% {a['n_trained']:>9,} "
-                  f"{a['fold_count']:>6}")
+            print(
+                f"    {arm:<12} {a['n_features']:>6} "
+                f"{a['da_heldout']:>11.2f}% {a['n_heldout']:>9,} "
+                f"{a['da_trained']:>11.2f}% {a['n_trained']:>9,} "
+                f"{a['fold_count']:>6}"
+            )
         for label, block in r.get("_paired", {}).items():
             print(f"\n    {label} (paired, dates clustered):")
             for cohort, p in block.items():
-                ci = (f"[{p['ci_lower_pp']:+.2f}, {p['ci_upper_pp']:+.2f}]"
-                      if p.get("ci_lower_pp") is not None else "n/a")
+                ci = (
+                    f"[{p['ci_lower_pp']:+.2f}, {p['ci_upper_pp']:+.2f}]" if p.get("ci_lower_pp") is not None else "n/a"
+                )
                 mde = f"{p['mde_pp']:.2f}" if p.get("mde_pp") is not None else "n/a"
-                print(f"      {cohort:<10} {p['mean_diff_pp']:+.2f}pp  95% CI {ci}"
-                      f"  MDE {mde}pp  n={p['n_paired']:,}/{p['n_dates']} dates")
+                print(
+                    f"      {cohort:<10} {p['mean_diff_pp']:+.2f}pp  95% CI {ci}"
+                    f"  MDE {mde}pp  n={p['n_paired']:,}/{p['n_dates']} dates"
+                )
     print("")
 
 
 def main():
     import argparse
-    parser = argparse.ArgumentParser(
-        description="A/B: ByMykel item metadata (age, rarity, crate, float)")
+
+    parser = argparse.ArgumentParser(description="A/B: ByMykel item metadata (age, rarity, crate, float)")
     parser.add_argument("--horizon", type=int, default=None)
     parser.add_argument("--frame-cache", default=None)
     parser.add_argument("--metadata-parquet", default=None)
     parser.add_argument("--build-cache-only", action="store_true")
     parser.add_argument("--out", default=None)
     parser.add_argument("--n-jobs", type=int, default=None)
-    parser.add_argument("--market-relative", action="store_true",
-                        help="Demean the target by the realized market factor, "
-                             "as the production directional classifier does "
-                             "when market_relative_labels is on. DA then "
-                             "measures idiosyncratic direction, so absolute "
-                             "numbers are NOT comparable across this flag -- "
-                             "only the arm contrasts are.")
+    parser.add_argument(
+        "--market-relative",
+        action="store_true",
+        help="Demean the target by the realized market factor, "
+        "as the production directional classifier does "
+        "when market_relative_labels is on. DA then "
+        "measures idiosyncratic direction, so absolute "
+        "numbers are NOT comparable across this flag -- "
+        "only the arm contrasts are.",
+    )
     args = parser.parse_args()
 
     logger.info("=" * 70)
     logger.info("A/B TEST: ByMykel item metadata")
     logger.info("=" * 70)
 
-    df, pruned, meta_present = build_frame(
-        args.metadata_parquet, cache_path=args.frame_cache)
+    df, pruned, meta_present = build_frame(args.metadata_parquet, cache_path=args.frame_cache)
     if args.build_cache_only:
         logger.info("Frame cache built; exiting before evaluation.")
         return 0
 
-    results = run_evaluation(df, pruned, meta_present,
-                             horizon_filter=args.horizon, n_jobs=args.n_jobs,
-                             market_relative=args.market_relative)
+    results = run_evaluation(
+        df, pruned, meta_present, horizon_filter=args.horizon, n_jobs=args.n_jobs, market_relative=args.market_relative
+    )
     if args.out:
         slim = {}
         for h, r in results.items():
             slim[h] = {}
             for arm, a in r.items():
-                slim[h][arm] = ({k: v for k, v in a.items() if k != "records"}
-                                if isinstance(a, dict) and "records" in a else a)
+                slim[h][arm] = (
+                    {k: v for k, v in a.items() if k != "records"} if isinstance(a, dict) and "records" in a else a
+                )
         Path(args.out).write_text(json.dumps(slim, indent=2, default=str))
         logger.info(f"Wrote {args.out}")
     print_summary(results)

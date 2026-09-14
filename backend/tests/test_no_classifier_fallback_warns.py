@@ -11,7 +11,7 @@ See `docs/changelog/2026-08-11-the-da-gap-is-the-market-direction-of-five-dates.
 
 import logging
 
-from models.forecaster import ItemForecaster, DIRECTION_FLAT_TOLERANCE_PCT
+from models.forecaster import DIRECTION_FLAT_TOLERANCE_PCT, ItemForecaster
 
 
 def _bare() -> ItemForecaster:

@@ -10,14 +10,16 @@ Resume:   python3 scripts/repair_catalog_gaps.py --resume
 Fetch:    python3 scripts/repair_catalog_gaps.py --fetch-only
 Scan:     python3 scripts/repair_catalog_gaps.py --scan-only
 """
-import sqlite3
-import time
-import requests
-import logging
+
 import argparse
+import logging
+import sqlite3
 import sys
+import time
+from datetime import UTC, datetime
 from pathlib import Path
-from datetime import datetime, timezone
+
+import requests
 
 LOG_PATH = Path(__file__).parent.parent / "runtime" / "gap_repair.log"
 
@@ -43,9 +45,7 @@ BURST_COOLDOWN = 30
 
 def get_session():
     session = requests.Session()
-    session.headers.update({
-        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36"
-    })
+    session.headers.update({"User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36"})
     return session
 
 
@@ -59,33 +59,31 @@ def fetch_page(session, offset):
                 timeout=30,
             )
             if resp.status_code == 429:
-                logger.debug(f"  429 at offset {offset} (attempt {attempt+1})")
+                logger.debug(f"  429 at offset {offset} (attempt {attempt + 1})")
                 return None, 429
             if resp.status_code != 200:
-                logger.warning(f"  HTTP {resp.status_code} at offset {offset} (attempt {attempt+1})")
+                logger.warning(f"  HTTP {resp.status_code} at offset {offset} (attempt {attempt + 1})")
                 time.sleep(5)
                 continue
             data = resp.json()
             if data.get("results") is None:
-                logger.debug(f"  Null results at offset {offset} (attempt {attempt+1})")
+                logger.debug(f"  Null results at offset {offset} (attempt {attempt + 1})")
                 return None, 429
             return data.get("results", []), 200
         except requests.exceptions.Timeout:
-            logger.warning(f"  Timeout at offset {offset} (attempt {attempt+1})")
+            logger.warning(f"  Timeout at offset {offset} (attempt {attempt + 1})")
             time.sleep(10)
         except requests.exceptions.ConnectionError as e:
-            logger.warning(f"  Connection error at offset {offset} (attempt {attempt+1}): {e}")
+            logger.warning(f"  Connection error at offset {offset} (attempt {attempt + 1}): {e}")
             time.sleep(10)
         except Exception as e:
-            logger.warning(f"  Error at offset {offset} (attempt {attempt+1}): {e}")
+            logger.warning(f"  Error at offset {offset} (attempt {attempt + 1}): {e}")
             time.sleep(10)
     return None, 0
 
 
 def item_in_db(conn, name):
-    return conn.execute(
-        "SELECT COUNT(*) FROM market_items WHERE hash_name = ?", (name,)
-    ).fetchone()[0] > 0
+    return conn.execute("SELECT COUNT(*) FROM market_items WHERE hash_name = ?", (name,)).fetchone()[0] > 0
 
 
 def insert_item(conn, item):
@@ -109,7 +107,7 @@ def insert_item(conn, item):
             item.get("name_color"),
             item.get("icon_url"),
             item.get("bucket_group_id"),
-            datetime.now(timezone.utc).isoformat(),
+            datetime.now(UTC).isoformat(),
         ),
     )
 
@@ -213,7 +211,9 @@ def scan_for_gaps(conn, session, max_offset, resume=False, start_offset=None):
             elapsed = time.time() - start
             pct = (offset / max_offset) * 100
             rate = scanned / elapsed * 60
-            logger.info(f"PROGRESS: {scanned} scanned, {len(gaps)} gaps, {pct:.0f}% of market, {rate:.0f} req/min ({elapsed/60:.1f}m)")
+            logger.info(
+                f"PROGRESS: {scanned} scanned, {len(gaps)} gaps, {pct:.0f}% of market, {rate:.0f} req/min ({elapsed / 60:.1f}m)"
+            )
 
         # Burst cooldown
         if request_count % BURST_SIZE == 0:
@@ -223,13 +223,13 @@ def scan_for_gaps(conn, session, max_offset, resume=False, start_offset=None):
 
     elapsed = time.time() - start
     logger.info("=" * 60)
-    logger.info(f"SCAN COMPLETE")
+    logger.info("SCAN COMPLETE")
     logger.info(f"  Scanned: {scanned} offsets")
     logger.info(f"  Gaps found: {len(gaps)}")
     logger.info(f"  Rate limits: {rate_limit_hits}")
     logger.info(f"  Errors: {errors}")
-    logger.info(f"  Time: {elapsed/60:.1f} min")
-    logger.info(f"  Rate: {scanned/elapsed*60:.0f} req/min")
+    logger.info(f"  Time: {elapsed / 60:.1f} min")
+    logger.info(f"  Rate: {scanned / elapsed * 60:.0f} req/min")
     logger.info("=" * 60)
     return gaps
 
@@ -280,7 +280,9 @@ def fetch_gaps(conn, session, gaps):
         conn.commit()
 
         # Per-page summary
-        logger.debug(f"  Page {offset}: {len(items)} items, {page_inserted} new, {page_existing} existing ({elapsed_req:.1f}s)")
+        logger.debug(
+            f"  Page {offset}: {len(items)} items, {page_inserted} new, {page_existing} existing ({elapsed_req:.1f}s)"
+        )
 
         # Progress every 25 gaps
         if (i + 1) % 25 == 0:
@@ -289,14 +291,14 @@ def fetch_gaps(conn, session, gaps):
             rate = (i + 1) / elapsed * 60
             db_count = conn.execute("SELECT COUNT(*) FROM market_items").fetchone()[0]
             logger.info(
-                f"FETCH PROGRESS: {i+1}/{len(gaps)} gaps ({pct:.0f}%) | "
+                f"FETCH PROGRESS: {i + 1}/{len(gaps)} gaps ({pct:.0f}%) | "
                 f"{stats['inserted']} inserted, {stats['already_exists']} existing, {stats['failed']} failed | "
-                f"DB: {db_count} items | {rate:.0f} gaps/min ({elapsed/60:.1f}m)"
+                f"DB: {db_count} items | {rate:.0f} gaps/min ({elapsed / 60:.1f}m)"
             )
 
         # Burst cooldown
         if request_count % BURST_SIZE == 0 and i + 1 < len(gaps):
-            logger.info(f"  Burst cooldown ({i+1}/{len(gaps)} gaps done)")
+            logger.info(f"  Burst cooldown ({i + 1}/{len(gaps)} gaps done)")
             time.sleep(BURST_COOLDOWN)
             request_count = 0
 
@@ -307,7 +309,7 @@ def fetch_gaps(conn, session, gaps):
 
     logger.info("=" * 60)
     logger.info("FETCH COMPLETE")
-    logger.info(f"  Time: {elapsed/60:.1f} min")
+    logger.info(f"  Time: {elapsed / 60:.1f} min")
     logger.info(f"  Gaps attempted: {len(gaps)}")
     logger.info(f"  Items inserted: {stats['inserted']}")
     logger.info(f"  Already existed: {stats['already_exists']}")
@@ -324,19 +326,21 @@ def main():
     parser.add_argument("--scan-only", action="store_true", help="Only scan, don't fetch")
     parser.add_argument("--fetch-only", action="store_true", help="Only fetch saved gaps, skip scan")
     parser.add_argument("--resume", action="store_true", help="Resume from saved gaps")
-    parser.add_argument("--start-offset", type=int, default=None, help="Start scan from this offset (overrides --resume)")
+    parser.add_argument(
+        "--start-offset", type=int, default=None, help="Start scan from this offset (overrides --resume)"
+    )
     parser.add_argument("--max-offset", type=int, default=35000, help="Max offset to scan")
     args = parser.parse_args()
 
     logger.info("=" * 60)
     logger.info("GAP REPAIR SCRIPT STARTED")
-    mode = 'fetch-only' if args.fetch_only else 'scan-only' if args.scan_only else 'scan+fetch'
+    mode = "fetch-only" if args.fetch_only else "scan-only" if args.scan_only else "scan+fetch"
     if args.start_offset is not None:
         mode += f" (start-offset={args.start_offset})"
     logger.info(f"Mode: {mode}")
     logger.info(f"DB: {DB_PATH}")
     logger.info(f"Gaps file: {GAPS_FILE}")
-    logger.info(f"Time: {datetime.now(timezone.utc).isoformat()}")
+    logger.info(f"Time: {datetime.now(UTC).isoformat()}")
     logger.info("=" * 60)
 
     conn = sqlite3.connect(str(DB_PATH))

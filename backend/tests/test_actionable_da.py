@@ -8,6 +8,7 @@ because friction is not in the loss.
 Expected production result: failure, on ``n_actionable`` first. These tests pin
 the INSTRUMENT, so that result is trustworthy when it arrives.
 """
+
 from __future__ import annotations
 
 from datetime import date
@@ -19,8 +20,12 @@ MIN_DATES = 20
 
 # Fixed keys every return must carry, so a consumer never branches on existence.
 CORE_KEYS = {
-    "actionable_scope", "actionable_venue", "actionable_n",
-    "actionable_share_pct", "actionable_da", "actionable_e_net_pct",
+    "actionable_scope",
+    "actionable_venue",
+    "actionable_n",
+    "actionable_share_pct",
+    "actionable_da",
+    "actionable_e_net_pct",
 }
 
 
@@ -47,7 +52,7 @@ def test_the_return_shape_is_fixed_and_flat():
     """A varying key set is the defect that killed a nested metrics column
     store-wide; and every value must be a scalar or None, never a dict."""
     out = actionable_metrics([_record()], horizon_days=14, min_dates=MIN_DATES)
-    assert CORE_KEYS <= set(out)
+    assert set(out) >= CORE_KEYS
     assert any(k.startswith("actionable_pt_") for k in out)
     assert not any(isinstance(v, (dict, list)) for v in out.values())
 
@@ -58,7 +63,7 @@ def test_the_return_shape_is_fixed_and_flat():
 def test_horizons_outside_the_scope_report_why_rather_than_zero():
     """h=3 is a category error, not an empty result. 'We did not measure this'
     and 'nothing was actionable' must never read the same."""
-    assert ACTIONABLE_HORIZONS == frozenset({14, 30})
+    assert frozenset({14, 30}) == ACTIONABLE_HORIZONS
     for h in (3, 7, None):
         out = actionable_metrics([_record()], horizon_days=h, min_dates=MIN_DATES)
         assert out["actionable_scope"] == "out_of_scope"
@@ -77,17 +82,15 @@ def test_in_scope_horizons_are_measured():
 def test_membership_flips_at_the_tier_threshold():
     """The threshold is per-tier, so the same predicted move is actionable on a
     liquid item and not on an illiquid one."""
-    threshold = actionable_threshold(5)          # 0.020 + 0.052 = 0.072
-    just_under = actionable_metrics(
-        [_record(tier=5, r_hat=threshold - 0.001)], 14, MIN_DATES)
-    just_over = actionable_metrics(
-        [_record(tier=5, r_hat=threshold + 0.001)], 14, MIN_DATES)
+    threshold = actionable_threshold(5)  # 0.020 + 0.052 = 0.072
+    just_under = actionable_metrics([_record(tier=5, r_hat=threshold - 0.001)], 14, MIN_DATES)
+    just_over = actionable_metrics([_record(tier=5, r_hat=threshold + 0.001)], 14, MIN_DATES)
     assert just_under["actionable_n"] == 0
     assert just_over["actionable_n"] == 1
 
 
 def test_the_same_move_is_actionable_at_tier_5_and_not_at_tier_1():
-    r_hat = 0.10   # clears 7.2% at tier 5, nowhere near 23.1% at tier 1
+    r_hat = 0.10  # clears 7.2% at tier 5, nowhere near 23.1% at tier 1
     assert actionable_metrics([_record(tier=5, r_hat=r_hat)], 14, MIN_DATES)["actionable_n"] == 1
     assert actionable_metrics([_record(tier=1, r_hat=r_hat)], 14, MIN_DATES)["actionable_n"] == 0
 
@@ -111,10 +114,9 @@ def test_a_carried_forward_price_scores_as_a_miss():
 
 
 def test_share_is_the_actionable_fraction_of_the_whole_cohort():
-    records = (
-        [_record(tier=5, r_hat=0.50, item_id=i) for i in range(3)]
-        + [_record(tier=5, r_hat=0.01, item_id=10 + i) for i in range(7)]
-    )
+    records = [_record(tier=5, r_hat=0.50, item_id=i) for i in range(3)] + [
+        _record(tier=5, r_hat=0.01, item_id=10 + i) for i in range(7)
+    ]
     out = actionable_metrics(records, 14, MIN_DATES)
     assert out["actionable_n"] == 3
     assert out["actionable_share_pct"] == 30.0
@@ -183,7 +185,7 @@ def test_venue_is_recorded_so_a_threshold_change_is_visible_in_the_data():
     assert out["actionable_venue"] == "csfloat"
     harsh = actionable_metrics([_record(tier=5, r_hat=0.10)], 14, MIN_DATES, venue="steam")
     assert harsh["actionable_venue"] == "steam"
-    assert harsh["actionable_n"] == 0   # 0.10 < 0.161 + 0.052
+    assert harsh["actionable_n"] == 0  # 0.10 < 0.161 + 0.052
 
 
 def test_the_metric_does_not_mutate_its_input():
@@ -256,8 +258,7 @@ def test_the_outcome_leg_still_divides_by_the_resolved_base():
     and 33.74% on different days.
     """
     # r_act > 0 and r_hat > 0, so a hit; E[net] carries the realised magnitude.
-    out = actionable_metrics([_wedged(r_hat_served=0.50, wedge=0.40, r_act=0.50)],
-                            14, MIN_DATES)
+    out = actionable_metrics([_wedged(r_hat_served=0.50, wedge=0.40, r_act=0.50)], 14, MIN_DATES)
     assert out["actionable_da"] == 100.0
     # sign(r_hat) * r_act - threshold, with r_act on the RESOLVED base: 0.50.
     expected = (0.50 - actionable_threshold(5, "csfloat")) * 100

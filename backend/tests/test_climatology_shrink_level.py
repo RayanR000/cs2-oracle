@@ -13,6 +13,7 @@ dispersion estimate. That is false at K=20 (weight 0.91 on the item) and true
 at K=320 (weight 0.38), so this test discriminates the decision instead of
 restating the constant.
 """
+
 from __future__ import annotations
 
 import sys
@@ -25,7 +26,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from models.forecaster import ItemForecaster  # noqa: E402
+from models.forecaster import ItemForecaster
 
 TCOL = "target_return_7d"
 N_OBS = 200
@@ -33,8 +34,7 @@ N_OBS = 200
 
 @pytest.fixture
 def fc(tmp_path_factory):
-    return ItemForecaster(db_session=MagicMock(),
-                          model_dir=str(tmp_path_factory.mktemp("saved_models")))
+    return ItemForecaster(db_session=MagicMock(), model_dir=str(tmp_path_factory.mktemp("saved_models")))
 
 
 def _frame() -> pd.DataFrame:
@@ -42,12 +42,10 @@ def _frame() -> pd.DataFrame:
     rng = np.random.default_rng(0)
     rows = []
     for _ in range(N_OBS):
-        rows.append({"item_id": "vol", "price": 50.0,
-                     TCOL: float(rng.normal(0, 30.0))})
+        rows.append({"item_id": "vol", "price": 50.0, TCOL: float(rng.normal(0, 30.0))})
     for j in range(20):
         for _ in range(N_OBS):
-            rows.append({"item_id": f"calm{j}", "price": 50.0,
-                         TCOL: float(rng.normal(0, 2.0))})
+            rows.append({"item_id": f"calm{j}", "price": 50.0, TCOL: float(rng.normal(0, 2.0))})
     return pd.DataFrame(rows)
 
 
@@ -65,7 +63,8 @@ class TestWellObservedItemsArePooled:
         pool = tier_pool[3]
         assert abs(served - pool) < abs(served - raw), (
             f"served={served:.3f} sits nearer its own estimate {raw:.3f} than "
-            f"the tier pool {pool:.3f}; K is too small to pool a 200-obs item")
+            f"the tier pool {pool:.3f}; K is too small to pool a 200-obs item"
+        )
 
     def test_the_shrink_weight_on_200_observations_is_below_a_half(self):
         w = N_OBS / (N_OBS + ItemForecaster.CLIMATOLOGY_SHRINK_K)

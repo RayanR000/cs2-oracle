@@ -29,31 +29,26 @@ Embargo (added 2026-08-08):
     event-calendar arm, and has never been replicated in this repo.
 """
 
-import sys
 import json
-import math
-import time
 import logging
+import math
+import sys
+import time
+from datetime import UTC, date, datetime
 from pathlib import Path
-from datetime import datetime, date, timedelta, timezone
-from collections import defaultdict
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
+import lightgbm as lgb
 import numpy as np
 import pandas as pd
-import lightgbm as lgb
-
-from database import SessionLocal, PredictionAccuracy
 from backtest.paired_mde import format_paired, paired_arm_contrasts
 from backtest.walkforward_records import paired_records
+from database import PredictionAccuracy, SessionLocal
 from db.archive import prices_relation
 from models.forecaster import ItemForecaster, archive_universe_sql_filter
 
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-)
+logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s")
 logger = logging.getLogger("ab_test_regime")
 
 ARCHIVE_DIR = Path(__file__).parent.parent.parent / "price-archive"
@@ -75,7 +70,6 @@ ARCHIVE_DIR = Path(__file__).parent.parent.parent / "price-archive"
 # these harnesses measure and is not part of this change.
 _PRICE_COLUMNS = ["item_slug", "day", "mean_price", "volume", "source"]
 _UNIVERSE = archive_universe_sql_filter()
-
 
 
 def _load_parquet_items(con, min_rows=90, backfilled_only=False):
@@ -103,8 +97,8 @@ def _load_parquet_items(con, min_rows=90, backfilled_only=False):
     """).fetchall()
     if not rows:
         raise RuntimeError(
-            "regime universe query selected 0 items — the source pin matched no "
-            "rows (see 2026-08-13 harness repin).")
+            "regime universe query selected 0 items — the source pin matched no rows (see 2026-08-13 harness repin)."
+        )
     return rows
 
 
@@ -112,13 +106,16 @@ def _load_all_prices(con, items):
     relation = prices_relation(con, ARCHIVE_DIR, columns=_PRICE_COLUMNS)
     all_rows = []
     for item_slug, first_day, last_day, row_count in items:
-        rows = con.sql(f"""
+        rows = con.sql(
+            f"""
             SELECT item_slug AS item_id, CAST(day AS DATE) AS timestamp,
                    mean_price AS price, volume
             FROM {relation}
             WHERE item_slug = ? AND {_UNIVERSE}
             ORDER BY day
-        """, params=[item_slug]).fetchall()
+        """,
+            params=[item_slug],
+        ).fetchall()
         item_df = pd.DataFrame(rows, columns=["item_id", "timestamp", "price", "volume"])
         item_df["timestamp"] = pd.to_datetime(item_df["timestamp"])
         item_df["date"] = item_df["timestamp"].dt.date
@@ -186,6 +183,7 @@ def run_ab_test(max_items=500, horizons=None, skip_db=False):
         return {"status": "error", "message": "Archive not found"}
 
     import duckdb
+
     con = duckdb.connect()
 
     try:
@@ -200,13 +198,16 @@ def run_ab_test(max_items=500, horizons=None, skip_db=False):
 
         all_rows = []
         for item_slug, first_day, last_day, row_count in items:
-            rows = con.sql(f"""
+            rows = con.sql(
+                f"""
                 SELECT item_slug AS item_id, CAST(day AS DATE) AS timestamp,
                        mean_price AS price, volume
                 FROM {prices_relation(con, ARCHIVE_DIR, columns=_PRICE_COLUMNS)}
                 WHERE item_slug = ? AND {_UNIVERSE}
                 ORDER BY day
-            """, params=[item_slug]).fetchall()
+            """,
+                params=[item_slug],
+            ).fetchall()
             item_df = pd.DataFrame(rows, columns=["item_id", "timestamp", "price", "volume"])
             item_df["timestamp"] = pd.to_datetime(item_df["timestamp"])
             item_df["date"] = item_df["timestamp"].dt.date
@@ -217,7 +218,7 @@ def run_ab_test(max_items=500, horizons=None, skip_db=False):
         results_by_horizon = {}
         total_train_start = time.time()
 
-        for horizon in (horizons or ItemForecaster.HORIZONS):
+        for horizon in horizons or ItemForecaster.HORIZONS:
             logger.info(f"\n  === Evaluating {horizon}d horizon ===")
 
             df = forecaster.engineer_features(all_prices, events_df)
@@ -245,12 +246,13 @@ def run_ab_test(max_items=500, horizons=None, skip_db=False):
 
             for window_end in range(split_idx + 1, len(dates), step):
                 train_dates = dates[:window_end]
-                val_dates = dates[window_end:window_end + VAL_WINDOW_DAYS]
+                val_dates = dates[window_end : window_end + VAL_WINDOW_DAYS]
                 if len(val_dates) < 7:
                     continue
 
                 train_df = ItemForecaster._purge_overlapping_train_rows(
-                    tdf[tdf["date"].isin(train_dates)], val_dates[0], horizon)
+                    tdf[tdf["date"].isin(train_dates)], val_dates[0], horizon
+                )
                 val_df = tdf[tdf["date"].isin(val_dates)]
 
                 if len(val_df) < 50:
@@ -261,22 +263,24 @@ def run_ab_test(max_items=500, horizons=None, skip_db=False):
 
                 feature_cols = [c for c in forecaster.feature_cols if c in tdf.columns]
                 if not feature_cols:
-                    exclude = {"item_id", "date", "timestamp", "price", "volume",
-                               "name", "release_date"}
+                    exclude = {"item_id", "date", "timestamp", "price", "volume", "name", "release_date"}
                     exclude |= {f"target_{h}d" for h in forecaster.HORIZONS}
                     exclude |= {f"target_return_{h}d" for h in forecaster.HORIZONS}
-                    feature_cols = [c for c in tdf.columns if c not in exclude
-                                    and tdf[c].dtype in (np.float64, np.float32, np.int64, int, float)]
+                    feature_cols = [
+                        c
+                        for c in tdf.columns
+                        if c not in exclude and tdf[c].dtype in (np.float64, np.float32, np.int64, int, float)
+                    ]
 
                 # Measure the model production serves: shelve + allowlist. This
                 # harness's arms differ only in training config, not features, so
                 # the fixed production allowlist applies to both. Without it the
                 # harness measured a 138+-column model production does not serve.
                 # See 2026-08-13 repin.
-                feature_cols = [c for c in feature_cols
-                                if c not in ItemForecaster.SHELVED_FEATURES]
+                feature_cols = [c for c in feature_cols if c not in ItemForecaster.SHELVED_FEATURES]
                 feature_cols = ItemForecaster._apply_feature_allowlist(
-                    feature_cols, ItemForecaster.FEATURE_GROUP_ALLOWLIST)
+                    feature_cols, ItemForecaster.FEATURE_GROUP_ALLOWLIST
+                )
 
                 if len(feature_cols) > 2:
                     corr = train_df[feature_cols].corr().abs()
@@ -322,9 +326,10 @@ def run_ab_test(max_items=500, horizons=None, skip_db=False):
                     # early-stopped on `dval` and scored `X_val` — the same
                     # rows. `dval` is ignored unless EARLY_STOPPING=1.
                     model = ItemForecaster._train_ensemble_member(
-                        params, dtrain, dval,
-                        num_boost_round=ItemForecaster._boost_rounds(
-                            horizon, cv=True),
+                        params,
+                        dtrain,
+                        dval,
+                        num_boost_round=ItemForecaster._boost_rounds(horizon, cv=True),
                         early_stopping=ItemForecaster._early_stopping_enabled(),
                     )
                     global_models[q] = model.predict(X_val.values)
@@ -349,18 +354,29 @@ def run_ab_test(max_items=500, horizons=None, skip_db=False):
                     r_models = {}
                     for q in [0.1, 0.5, 0.9]:
                         params = {
-                            "objective": "quantile", "alpha": q, "metric": "quantile",
-                            "boosting_type": "gbdt", "num_leaves": 31, "max_depth": 5,
-                            "min_data_in_leaf": 15, "min_gain_to_split": 0.1,
-                            "learning_rate": 0.03, "feature_fraction": 0.7,
-                            "bagging_fraction": 0.7, "bagging_freq": 5,
-                            "lambda_l1": 0.5, "lambda_l2": 0.5,
-                            "verbosity": -1, "random_state": 42, "n_jobs": -1,
+                            "objective": "quantile",
+                            "alpha": q,
+                            "metric": "quantile",
+                            "boosting_type": "gbdt",
+                            "num_leaves": 31,
+                            "max_depth": 5,
+                            "min_data_in_leaf": 15,
+                            "min_gain_to_split": 0.1,
+                            "learning_rate": 0.03,
+                            "feature_fraction": 0.7,
+                            "bagging_fraction": 0.7,
+                            "bagging_freq": 5,
+                            "lambda_l1": 0.5,
+                            "lambda_l2": 0.5,
+                            "verbosity": -1,
+                            "random_state": 42,
+                            "n_jobs": -1,
                         }
                         r_model = ItemForecaster._train_ensemble_member(
-                            params, r_dtrain, r_dval,
-                            num_boost_round=ItemForecaster._boost_rounds(
-                                horizon, cv=True),
+                            params,
+                            r_dtrain,
+                            r_dval,
+                            num_boost_round=ItemForecaster._boost_rounds(horizon, cv=True),
                             early_stopping=ItemForecaster._early_stopping_enabled(),
                         )
                         r_models[q] = r_model.predict(r_X_val.values)
@@ -368,7 +384,11 @@ def run_ab_test(max_items=500, horizons=None, skip_db=False):
                 # Predict with regime models (prefer regime, fallback to global)
                 regime_preds = {}
                 for q in [0.1, 0.5, 0.9]:
-                    if current_regime in forecaster.REGIMES and current_regime in regime_models and q in regime_models[current_regime]:
+                    if (
+                        current_regime in forecaster.REGIMES
+                        and current_regime in regime_models
+                        and q in regime_models[current_regime]
+                    ):
                         regime_preds[q] = regime_models[current_regime][q]
                     elif q in global_models:
                         regime_preds[q] = global_models[q]
@@ -382,9 +402,11 @@ def run_ab_test(max_items=500, horizons=None, skip_db=False):
 
                     # Fix quantile crossing for both
                     r_low, r_high = ItemForecaster._fix_quantile_crossing(
-                        regime_preds[0.1], regime_preds[0.5], regime_preds[0.9])
+                        regime_preds[0.1], regime_preds[0.5], regime_preds[0.9]
+                    )
                     g_low, g_high = ItemForecaster._fix_quantile_crossing(
-                        global_preds[0.1], global_preds[0.5], global_preds[0.9])
+                        global_preds[0.1], global_preds[0.5], global_preds[0.9]
+                    )
 
                     # Convert returns to prices
                     actual_prices = current_prices * (1 + actual_returns / 100)
@@ -395,8 +417,12 @@ def run_ab_test(max_items=500, horizons=None, skip_db=False):
                     g_low_prices = current_prices * (1 + g_low / 100)
                     g_high_prices = current_prices * (1 + g_high / 100)
 
-                    r_metrics = _compute_metrics(actual_prices, r_low_prices, r_mid_prices, r_high_prices, current_prices)
-                    g_metrics = _compute_metrics(actual_prices, g_low_prices, g_mid_prices, g_high_prices, current_prices)
+                    r_metrics = _compute_metrics(
+                        actual_prices, r_low_prices, r_mid_prices, r_high_prices, current_prices
+                    )
+                    g_metrics = _compute_metrics(
+                        actual_prices, g_low_prices, g_mid_prices, g_high_prices, current_prices
+                    )
 
                     if r_metrics:
                         regime_fold_results.append(r_metrics)
@@ -409,19 +435,18 @@ def run_ab_test(max_items=500, horizons=None, skip_db=False):
                     # arm, so the two pair row for row. `window_end` rather
                     # than a running counter: a counter drifts the moment one
                     # arm skips a fold the other kept.
-                    _scored = ((np.asarray(actual_returns) != 0)
-                               & (np.asarray(current_prices, dtype=float) >= 1.0))
+                    _scored = (np.asarray(actual_returns) != 0) & (np.asarray(current_prices, dtype=float) >= 1.0)
                     _sign = np.sign(np.nan_to_num(actual_returns))
-                    for bucket, preds in ((regime_records, regime_preds[0.5]),
-                                          (global_records, global_preds[0.5])):
-                        bucket.extend(paired_records(
-                            item_ids=val_df["item_id"].to_numpy(),
-                            forecast_dates=val_df["date"].to_numpy(),
-                            fold_id=window_end,
-                            keep=_scored,
-                            direction_correct=(
-                                _sign == np.sign(np.nan_to_num(preds))),
-                        ))
+                    for bucket, preds in ((regime_records, regime_preds[0.5]), (global_records, global_preds[0.5])):
+                        bucket.extend(
+                            paired_records(
+                                item_ids=val_df["item_id"].to_numpy(),
+                                forecast_dates=val_df["date"].to_numpy(),
+                                fold_id=window_end,
+                                keep=_scored,
+                                direction_correct=(_sign == np.sign(np.nan_to_num(preds))),
+                            )
+                        )
 
             # Aggregate across folds
             if regime_fold_results and global_fold_results:
@@ -431,7 +456,9 @@ def run_ab_test(max_items=500, horizons=None, skip_db=False):
                     "regime": r_agg,
                     "global_only": g_agg,
                     "delta": {
-                        "directional_accuracy_pp": round(r_agg["directional_accuracy"] - g_agg["directional_accuracy"], 2),
+                        "directional_accuracy_pp": round(
+                            r_agg["directional_accuracy"] - g_agg["directional_accuracy"], 2
+                        ),
                         "mae_delta": round(r_agg["mae"] - g_agg["mae"], 4),
                         "mape_delta": round(r_agg["mape"] - g_agg["mape"], 2),
                         "interval_coverage_pp": round(r_agg["interval_coverage"] - g_agg["interval_coverage"], 2),
@@ -443,32 +470,36 @@ def run_ab_test(max_items=500, horizons=None, skip_db=False):
                 }
                 if regime_records and global_records:
                     contrasts = paired_arm_contrasts(
-                        {"global_only": global_records, "regime": regime_records},
-                        base="global_only")
-                    results_by_horizon[horizon]["paired_regime_vs_global"] = (
-                        contrasts["regime"])
+                        {"global_only": global_records, "regime": regime_records}, base="global_only"
+                    )
+                    results_by_horizon[horizon]["paired_regime_vs_global"] = contrasts["regime"]
 
                 logger.info(f"\n  === {horizon}d A/B Results ===")
-                logger.info(f"  Regime:     DirAcc={r_agg['directional_accuracy']:.1f}% "
-                            f"MAE=${r_agg['mae']:.2f} MAPE={r_agg['mape']:.1f}% "
-                            f"IntCov={r_agg['interval_coverage']:.1f}%")
-                logger.info(f"  Global:     DirAcc={g_agg['directional_accuracy']:.1f}% "
-                            f"MAE=${g_agg['mae']:.2f} MAPE={g_agg['mape']:.1f}% "
-                            f"IntCov={g_agg['interval_coverage']:.1f}%")
+                logger.info(
+                    f"  Regime:     DirAcc={r_agg['directional_accuracy']:.1f}% "
+                    f"MAE=${r_agg['mae']:.2f} MAPE={r_agg['mape']:.1f}% "
+                    f"IntCov={r_agg['interval_coverage']:.1f}%"
+                )
+                logger.info(
+                    f"  Global:     DirAcc={g_agg['directional_accuracy']:.1f}% "
+                    f"MAE=${g_agg['mae']:.2f} MAPE={g_agg['mape']:.1f}% "
+                    f"IntCov={g_agg['interval_coverage']:.1f}%"
+                )
                 delta = results_by_horizon[horizon]["delta"]
-                logger.info(f"  Delta:      DirAcc={delta['directional_accuracy_pp']:+.2f}pp "
-                            f"MAE=${delta['mae_delta']:+.4f} "
-                            f"IntCov={delta['interval_coverage_pp']:+.2f}pp")
+                logger.info(
+                    f"  Delta:      DirAcc={delta['directional_accuracy_pp']:+.2f}pp "
+                    f"MAE=${delta['mae_delta']:+.4f} "
+                    f"IntCov={delta['interval_coverage_pp']:+.2f}pp"
+                )
                 paired = results_by_horizon[horizon].get("paired_regime_vs_global")
                 if paired:
-                    logger.info(f"  Paired (regime - global, >=$1 non-flat): "
-                                f"{format_paired(paired)}")
+                    logger.info(f"  Paired (regime - global, >=$1 non-flat): {format_paired(paired)}")
                 else:
                     logger.info("  Paired: unresolved — no scored rows")
 
         total_elapsed = time.time() - total_train_start
-        logger.info(f"\n{'='*60}")
-        logger.info(f"A/B TEST COMPLETE in {total_elapsed:.0f}s ({total_elapsed/60:.1f}min)")
+        logger.info(f"\n{'=' * 60}")
+        logger.info(f"A/B TEST COMPLETE in {total_elapsed:.0f}s ({total_elapsed / 60:.1f}min)")
 
         # Build report
         report = {
@@ -486,23 +517,27 @@ def run_ab_test(max_items=500, horizons=None, skip_db=False):
         if not skip_db:
             _store_ab_results(db, report)
 
-        logger.info(f"\n{'='*60}")
+        logger.info(f"\n{'=' * 60}")
         logger.info("A/B TEST REPORT")
         logger.info("=" * 60)
         for h, hr in sorted(results_by_horizon.items()):
             r, g = hr["regime"], hr["global_only"]
             d = hr["delta"]
             logger.info(f"\n  {h}d:")
-            logger.info(f"    Regime:  DirAcc={r['directional_accuracy']:.1f}%  MAE=${r['mae']:.2f}  MAPE={r['mape']:.1f}%  IntCov={r['interval_coverage']:.1f}%")
-            logger.info(f"    Global:  DirAcc={g['directional_accuracy']:.1f}%  MAE=${g['mae']:.2f}  MAPE={g['mape']:.1f}%  IntCov={g['interval_coverage']:.1f}%")
-            logger.info(f"    Delta:   DirAcc={d['directional_accuracy_pp']:+.2f}pp  MAE=${d['mae_delta']:+.4f}  IntCov={d['interval_coverage_pp']:+.2f}pp")
+            logger.info(
+                f"    Regime:  DirAcc={r['directional_accuracy']:.1f}%  MAE=${r['mae']:.2f}  MAPE={r['mape']:.1f}%  IntCov={r['interval_coverage']:.1f}%"
+            )
+            logger.info(
+                f"    Global:  DirAcc={g['directional_accuracy']:.1f}%  MAE=${g['mae']:.2f}  MAPE={g['mape']:.1f}%  IntCov={g['interval_coverage']:.1f}%"
+            )
+            logger.info(
+                f"    Delta:   DirAcc={d['directional_accuracy_pp']:+.2f}pp  MAE=${d['mae_delta']:+.4f}  IntCov={d['interval_coverage_pp']:+.2f}pp"
+            )
             # The verdict, and the last line an operator reads. `regime_wins`
             # is a bare `a > b` and is reported beside it as context only.
             paired = hr.get("paired_regime_vs_global")
-            logger.info(f"    Verdict: "
-                        f"{format_paired(paired) if paired else 'unresolved'}")
-            logger.info(f"    (regime_wins={hr['regime_wins']} — a bare a>b, "
-                        f"not a test)")
+            logger.info(f"    Verdict: {format_paired(paired) if paired else 'unresolved'}")
+            logger.info(f"    (regime_wins={hr['regime_wins']} — a bare a>b, not a test)")
 
         con.close()
         db.close()
@@ -554,7 +589,7 @@ def _store_ab_results(db, report):
                     "interval_coverage": metrics["interval_coverage"],
                     "fold_count": metrics.get("fold_count", 0),
                 },
-                "created_at": datetime.now(timezone.utc).replace(tzinfo=None),
+                "created_at": datetime.now(UTC).replace(tzinfo=None),
             }
             _upsert_accuracy(db, [row])
 
@@ -576,16 +611,11 @@ def _store_ab_results(db, report):
                 # two that is a test. Stored flat: `db/parquet.py` serialises
                 # nested values, but a reader should not have to parse JSON to
                 # find out whether the effect was real.
-                "paired_verdict": (h_results.get("paired_regime_vs_global") or {})
-                    .get("verdict", "unresolved"),
-                "paired_mean_diff_pp": (
-                    h_results.get("paired_regime_vs_global") or {}).get("mean_diff"),
-                "paired_ci_lower_pp": (
-                    h_results.get("paired_regime_vs_global") or {}).get("ci_lower"),
-                "paired_ci_upper_pp": (
-                    h_results.get("paired_regime_vs_global") or {}).get("ci_upper"),
-                "paired_n_clusters": (
-                    h_results.get("paired_regime_vs_global") or {}).get("n_clusters"),
+                "paired_verdict": (h_results.get("paired_regime_vs_global") or {}).get("verdict", "unresolved"),
+                "paired_mean_diff_pp": (h_results.get("paired_regime_vs_global") or {}).get("mean_diff"),
+                "paired_ci_lower_pp": (h_results.get("paired_regime_vs_global") or {}).get("ci_lower"),
+                "paired_ci_upper_pp": (h_results.get("paired_regime_vs_global") or {}).get("ci_upper"),
+                "paired_n_clusters": (h_results.get("paired_regime_vs_global") or {}).get("n_clusters"),
                 "regime_dir_acc": h_results["regime"]["directional_accuracy"],
                 "global_dir_acc": h_results["global_only"]["directional_accuracy"],
                 "regime_mae": h_results["regime"]["mae"],
@@ -599,7 +629,7 @@ def _store_ab_results(db, report):
                 "regime_fold_count": h_results["regime"].get("fold_count", 0),
                 "global_fold_count": h_results["global_only"].get("fold_count", 0),
             },
-            "created_at": datetime.now(timezone.utc).replace(tzinfo=None),
+            "created_at": datetime.now(UTC).replace(tzinfo=None),
         }
         _upsert_accuracy(db, [drow])
 
@@ -607,7 +637,6 @@ def _store_ab_results(db, report):
 
 
 def _upsert_accuracy(db, rows):
-    from database import PredictionAccuracy
     for row in rows:
         filters = {
             "prediction_type": row["prediction_type"],
@@ -628,13 +657,11 @@ def _upsert_accuracy(db, rows):
 
 def main():
     import argparse
+
     parser = argparse.ArgumentParser(description="A/B test regime-switching vs global-only models")
-    parser.add_argument("--max-items", type=int, default=500,
-                        help="Number of items to evaluate (default: 500)")
-    parser.add_argument("--horizons", type=int, nargs="+", default=None,
-                        help="Horizons to test (default: all)")
-    parser.add_argument("--skip-db", action="store_true",
-                        help="Skip writing results to database")
+    parser.add_argument("--max-items", type=int, default=500, help="Number of items to evaluate (default: 500)")
+    parser.add_argument("--horizons", type=int, nargs="+", default=None, help="Horizons to test (default: all)")
+    parser.add_argument("--skip-db", action="store_true", help="Skip writing results to database")
     args = parser.parse_args()
 
     report = run_ab_test(

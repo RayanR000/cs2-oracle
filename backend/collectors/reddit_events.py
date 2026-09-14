@@ -24,6 +24,7 @@ or ``REDDIT_BEARER_TOKEN``). Without them ``collect()`` returns
 ``status=skipped`` — never a silent zero-row success. Nothing here imports
 ``database``.
 """
+
 from __future__ import annotations
 
 import hashlib
@@ -32,7 +33,7 @@ import os
 import re
 import time
 from dataclasses import dataclass
-from datetime import date, datetime, timezone
+from datetime import UTC, date, datetime
 from pathlib import Path
 from typing import Any
 
@@ -154,7 +155,7 @@ def posts_to_events(
     ``item_slug`` (optional entity map), ``family`` (optional).
     Posts dated after ``snapshot_day`` end are dropped (leakage guard).
     """
-    day_end = datetime(snapshot_day.year, snapshot_day.month, snapshot_day.day, tzinfo=timezone.utc)
+    day_end = datetime(snapshot_day.year, snapshot_day.month, snapshot_day.day, tzinfo=UTC)
     day_end = day_end.replace(hour=23, minute=59, second=59)
     records: dict[str, dict[str, Any]] = {}
     for post in posts:
@@ -165,7 +166,7 @@ def posts_to_events(
             continue
         created = post.get("created_utc")
         try:
-            seen = datetime.fromtimestamp(float(created), tz=timezone.utc) if created else collected_at
+            seen = datetime.fromtimestamp(float(created), tz=UTC) if created else collected_at
         except (TypeError, ValueError):
             seen = collected_at
         if seen > day_end:
@@ -286,7 +287,7 @@ def collect(
         from collectors.snapshot_date import resolve_snapshot_date
 
         snapshot_day = resolve_snapshot_date()
-    collected_at = datetime.now(timezone.utc)
+    collected_at = datetime.now(UTC)
     sess = session or requests.Session()
     started = time.monotonic()
     try:

@@ -3,15 +3,18 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 import torch
-from torch.utils.data import Dataset, DataLoader
-
+from torch.utils.data import DataLoader, Dataset
 
 PAST_FEATURE_NAMES = [
-    "log_price", "log_volume", "return_1d", "volatility_20d", "momentum_14d",
+    "log_price",
+    "log_volume",
+    "return_1d",
+    "volatility_20d",
+    "momentum_14d",
 ]
 N_PAST_FEATURES = len(PAST_FEATURE_NAMES)
-N_STATIC_FEATURES = 1   # price_tier
-N_FUTURE_FEATURES = 1   # normalized horizon index
+N_STATIC_FEATURES = 1  # price_tier
+N_FUTURE_FEATURES = 1  # normalized horizon index
 PRICE_TIER_BINS = [0, 1, 3, 7, 15, 30, 70, 150, 400, 1000, float("inf")]
 
 
@@ -40,9 +43,9 @@ def _preprocess_item(item_df: pd.DataFrame) -> dict:
     vol = np.zeros_like(prices)
     for t in range(len(prices)):
         start = max(0, t - 19)
-        window = returns[start:t + 1]
+        window = returns[start : t + 1]
         if len(window) >= 2:
-            vol[t] = np.std(window) / max(np.mean(np.abs(prices[start:t + 1])), 1e-6) * 100
+            vol[t] = np.std(window) / max(np.mean(np.abs(prices[start : t + 1])), 1e-6) * 100
         else:
             vol[t] = 0.0
 
@@ -82,9 +85,7 @@ class SequenceDataset(Dataset):
         self.horizons = horizons or [3, 7, 14, 30]
         self.max_horizon = max(self.horizons)
         norm_max = float(self.max_horizon)
-        self.horizon_indices = np.array(
-            [h / norm_max for h in self.horizons], dtype=np.float32
-        ).reshape(-1, 1)
+        self.horizon_indices = np.array([h / norm_max for h in self.horizons], dtype=np.float32).reshape(-1, 1)
 
         # date_filter restricts ANCHOR dates, not rows: windows draw their
         # 60-day lookback (and 30-day targets) from the full history. Filtering
@@ -111,16 +112,15 @@ class SequenceDataset(Dataset):
         item_data, t = self.samples[idx]
         lb = self.lookback
 
-        past = torch.from_numpy(item_data["features"][t - lb:t].copy())
+        past = torch.from_numpy(item_data["features"][t - lb : t].copy())
         static = torch.tensor([item_data["tier"]], dtype=torch.long)
         future = torch.from_numpy(self.horizon_indices.copy())
 
         # Targets: percentage return at each horizon
         anchor_price = item_data["prices"][t]
-        targets = np.array([
-            (item_data["prices"][t + h] - anchor_price) / anchor_price * 100
-            for h in self.horizons
-        ], dtype=np.float32)
+        targets = np.array(
+            [(item_data["prices"][t + h] - anchor_price) / anchor_price * 100 for h in self.horizons], dtype=np.float32
+        )
         targets = torch.from_numpy(targets)
 
         meta = {
@@ -152,12 +152,8 @@ def build_dataloaders(
     batch_size: int = 256,
 ) -> tuple[DataLoader, DataLoader]:
     """Build train and validation DataLoaders from date-based splits."""
-    train_ds = SequenceDataset(df, lookback=lookback, horizons=horizons,
-                               date_filter=train_dates)
-    val_ds = SequenceDataset(df, lookback=lookback, horizons=horizons,
-                             date_filter=val_dates)
-    train_dl = DataLoader(train_ds, batch_size=batch_size, shuffle=True,
-                          collate_fn=_collate_fn, drop_last=False)
-    val_dl = DataLoader(val_ds, batch_size=batch_size, shuffle=False,
-                        collate_fn=_collate_fn, drop_last=False)
+    train_ds = SequenceDataset(df, lookback=lookback, horizons=horizons, date_filter=train_dates)
+    val_ds = SequenceDataset(df, lookback=lookback, horizons=horizons, date_filter=val_dates)
+    train_dl = DataLoader(train_ds, batch_size=batch_size, shuffle=True, collate_fn=_collate_fn, drop_last=False)
+    val_dl = DataLoader(val_ds, batch_size=batch_size, shuffle=False, collate_fn=_collate_fn, drop_last=False)
     return train_dl, val_dl

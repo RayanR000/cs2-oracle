@@ -1,4 +1,5 @@
 """Tests for the sidecar continuity audit (Phase 1 gate)."""
+
 from __future__ import annotations
 
 import sys
@@ -14,12 +15,14 @@ from scripts.check_sidecar_continuity import audit  # noqa: E402
 
 
 def _supply_day(tmp_path: Path, day: date, n: int = 3):
-    rows = pd.DataFrame({
-        "item_slug": [f"item-{i}" for i in range(n)],
-        "snapshot_day": [day] * n,
-        "source": ["waxpeer"] * n,
-        "listing_count": [10] * n,
-    })
+    rows = pd.DataFrame(
+        {
+            "item_slug": [f"item-{i}" for i in range(n)],
+            "snapshot_day": [day] * n,
+            "source": ["waxpeer"] * n,
+            "listing_count": [10] * n,
+        }
+    )
     path = tmp_path / f"supply-{day:%Y-%m}.parquet"
     if path.exists():
         prev = pd.read_parquet(path)

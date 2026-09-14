@@ -14,8 +14,8 @@ reasoned about and tested without loading a 5,600-line module.
 
 Design: docs/superpowers/specs/2026-08-06-market-relative-labels-design.md
 """
+
 import logging
-from typing import Optional
 
 import numpy as np
 import pandas as pd
@@ -48,9 +48,9 @@ TRAILING_K_WINDOWS = 4
 _INDEX_COLUMNS = ["log_return", "n_items", "valid", "level", "invalid_cum"]
 
 
-def build_market_index(price_df: pd.DataFrame,
-                       min_items: int = MIN_INDEX_ITEMS,
-                       min_price: float = MARKET_MIN_PRICE_USD) -> pd.DataFrame:
+def build_market_index(
+    price_df: pd.DataFrame, min_items: int = MIN_INDEX_ITEMS, min_price: float = MARKET_MIN_PRICE_USD
+) -> pd.DataFrame:
     """Chain-linked equal-weighted daily price index over the >= $1 cohort.
 
     Chain-linked (median of paired day-over-day log returns, cumulated) rather
@@ -73,16 +73,14 @@ def build_market_index(price_df: pd.DataFrame,
       invalid_cum running count of invalid days
     """
     if price_df is None or price_df.empty:
-        return pd.DataFrame(columns=_INDEX_COLUMNS,
-                            index=pd.DatetimeIndex([], name="date"))
+        return pd.DataFrame(columns=_INDEX_COLUMNS, index=pd.DatetimeIndex([], name="date"))
 
     df = price_df[["item_id", "date", "price"]].copy()
     df["date"] = pd.to_datetime(df["date"])
     df["price"] = pd.to_numeric(df["price"], errors="coerce")
     df = df[df["price"] > 0].dropna(subset=["price"])
     if df.empty:
-        return pd.DataFrame(columns=_INDEX_COLUMNS,
-                            index=pd.DatetimeIndex([], name="date"))
+        return pd.DataFrame(columns=_INDEX_COLUMNS, index=pd.DatetimeIndex([], name="date"))
 
     # One row per (item, date). Duplicate sources are already voted upstream,
     # but a stray duplicate would double-count an item in the median.
@@ -96,9 +94,7 @@ def build_market_index(price_df: pd.DataFrame,
     # Consecutive calendar days only. A gap means the "daily" return would
     # silently span multiple days and overstate that day's move.
     pairs = df[
-        df["prev_price"].notna()
-        & (df["prev_price"] >= min_price)
-        & ((df["date"] - df["prev_date"]).dt.days == 1)
+        df["prev_price"].notna() & (df["prev_price"] >= min_price) & ((df["date"] - df["prev_date"]).dt.days == 1)
     ].copy()
     pairs["log_return"] = np.log(pairs["price"] / pairs["prev_price"])
 
@@ -114,9 +110,9 @@ def build_market_index(price_df: pd.DataFrame,
     return out[_INDEX_COLUMNS]
 
 
-def market_factor_for_horizon(index: pd.DataFrame, horizon: int,
-                              tolerance_days: int = INDEX_TOLERANCE_DAYS
-                              ) -> pd.Series:
+def market_factor_for_horizon(
+    index: pd.DataFrame, horizon: int, tolerance_days: int = INDEX_TOLERANCE_DAYS
+) -> pd.Series:
     """Realized market move over ``d -> d + horizon``, in percent.
 
     NaN when the window's end date is absent beyond ``tolerance_days``, or when
@@ -142,8 +138,7 @@ def market_factor_for_horizon(index: pd.DataFrame, horizon: int,
     in_range = pos < n
     end_pos = np.where(in_range, np.minimum(pos, n - 1), n - 1)
     end_dates = dates[end_pos]
-    within = in_range & (
-        (end_dates - targets).days <= tolerance_days)
+    within = in_range & ((end_dates - targets).days <= tolerance_days)
 
     level = index["level"].to_numpy(dtype=float)
     invalid_cum = index["invalid_cum"].to_numpy()
@@ -172,8 +167,7 @@ def _returns_as_of(index: pd.DataFrame, as_of) -> pd.Series:
     return window.loc[window["valid"], "log_return"].astype(float)
 
 
-def forecast_market_factor(index: pd.DataFrame, as_of, horizon: int,
-                           trailing_days: int = TRAILING_DRIFT_DAYS) -> float:
+def forecast_market_factor(index: pd.DataFrame, as_of, horizon: int, trailing_days: int = TRAILING_DRIFT_DAYS) -> float:
     """History-only forecast of ``m[as_of, horizon]``, in percent.
 
     Pre-registered estimator: the trailing ``trailing_days`` mean daily index
@@ -193,8 +187,7 @@ def forecast_market_factor(index: pd.DataFrame, as_of, horizon: int,
     return float((np.exp(horizon * recent.mean()) - 1.0) * 100.0)
 
 
-def forecast_market_factor_diagnostics(index: pd.DataFrame, as_of,
-                                       horizon: int) -> dict:
+def forecast_market_factor_diagnostics(index: pd.DataFrame, as_of, horizon: int) -> dict:
     """Two alternate estimators alongside the pre-registered one.
 
     Reported so the estimator choice cannot be blamed for a negative result,
@@ -216,11 +209,9 @@ def forecast_market_factor_diagnostics(index: pd.DataFrame, as_of,
     if len(tail) >= horizon:
         usable = len(tail) - (len(tail) % horizon)
         blocks = tail.iloc[-usable:].to_numpy().reshape(-1, horizon).sum(axis=1)
-        out["trailing_k_median"] = float(
-            (np.exp(np.median(blocks)) - 1.0) * 100.0)
+        out["trailing_k_median"] = float((np.exp(np.median(blocks)) - 1.0) * 100.0)
 
     window = rets.iloc[-horizon:]
     if not window.empty:
-        out["past_h_momentum"] = float(
-            (np.exp(window.sum()) - 1.0) * 100.0)
+        out["past_h_momentum"] = float((np.exp(window.sum()) - 1.0) * 100.0)
     return out

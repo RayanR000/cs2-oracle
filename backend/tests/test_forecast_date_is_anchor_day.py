@@ -15,22 +15,21 @@ See docs/research/2026-08-15-directional-accuracy-and-data-inventory.md and
 docs/changelog/2026-08-15-cs2-oracle-is-a-range-forecaster.md (the ops/data-
 freshness thread).
 """
+
 from __future__ import annotations
 
 from datetime import date
 from unittest.mock import patch
 
 import pandas as pd
-import pytest
 
 # Reuse the real-booster fixture and the predict driver from the anchor-gate
 # suite: the same two-feature forecaster is all this plumbing needs to travel
 # through.
 from tests.test_clean_anchor_gate import (  # noqa: F401
-    forecaster_with_models,
     _predict,
+    forecaster_with_models,
 )
-
 
 # ------------------------------------------------------- what predict computes
 
@@ -44,8 +43,7 @@ def test_predict_exposes_the_anchor_day(forecaster_with_models):
 
     result = _predict(f, price_df)
 
-    assert "anchor_date" in result.columns, (
-        "predict does not expose the anchor day; the writer cannot recover it")
+    assert "anchor_date" in result.columns, "predict does not expose the anchor day; the writer cannot recover it"
     assert set(result["anchor_date"]) == {expected}
 
 
@@ -59,9 +57,19 @@ def _write_and_capture_forecast_date(results, *, today, override=None):
 
     captured = {}
     db_columns = {
-        "item_id", "forecast_date", "horizon_days", "price_low", "price_mid",
-        "price_high", "current_price", "direction", "confidence",
-        "model_version", "created_at", "anchor_clean", "anchor_wedge_pct",
+        "item_id",
+        "forecast_date",
+        "horizon_days",
+        "price_low",
+        "price_mid",
+        "price_high",
+        "current_price",
+        "direction",
+        "confidence",
+        "model_version",
+        "created_at",
+        "anchor_clean",
+        "anchor_wedge_pct",
     }
 
     class _DB:
@@ -72,35 +80,33 @@ def _write_and_capture_forecast_date(results, *, today, override=None):
             return None
 
         def get_bind(self):
-            return type("_Bind", (), {"dialect": type("_D", (), {
-                "name": "postgresql"})()})()
+            return type("_Bind", (), {"dialect": type("_D", (), {"name": "postgresql"})()})()
 
     class _Inspector:
         def get_columns(self, name):
             return [{"name": c} for c in db_columns]
 
-    with patch("db.parquet.append_table",
-               side_effect=lambda name, rows, keys: captured.update(rows=rows)):
+    with patch("db.parquet.append_table", side_effect=lambda name, rows, keys: captured.update(rows=rows)):
         with patch("sqlalchemy.inspect", return_value=_Inspector()):
             with patch("sqlalchemy.dialects.postgresql.insert") as ins:
-                (ins.return_value.values.return_value
-                 .on_conflict_do_update.return_value) = "stmt"
-                _write_forecasts_to_db(
-                    _DB(), results, "lgbm-v3", {"ak_1": 1}, today,
-                    forecast_date_override=override)
+                (ins.return_value.values.return_value.on_conflict_do_update.return_value) = "stmt"
+                _write_forecasts_to_db(_DB(), results, "lgbm-v3", {"ak_1": 1}, today, forecast_date_override=override)
     return captured["rows"][0]["forecast_date"]
 
 
 def _one_result(anchor_date):
-    return pd.DataFrame([{
-        "item_id": "ak_1",
-        "current_price": 10.0,
-        "anchor_clean": True,
-        "anchor_wedge_pct": 0.0,
-        "anchor_date": anchor_date,
-        "forecasts": {7: {"low": 9.0, "mid": 10.5, "high": 12.0,
-                          "direction": "up", "confidence": "low"}},
-    }])
+    return pd.DataFrame(
+        [
+            {
+                "item_id": "ak_1",
+                "current_price": 10.0,
+                "anchor_clean": True,
+                "anchor_wedge_pct": 0.0,
+                "anchor_date": anchor_date,
+                "forecasts": {7: {"low": 9.0, "mid": 10.5, "high": 12.0, "direction": "up", "confidence": "low"}},
+            }
+        ]
+    )
 
 
 def test_writer_stamps_the_anchor_day_not_today():
@@ -109,8 +115,7 @@ def test_writer_stamps_the_anchor_day_not_today():
     anchor = date(2026, 8, 14)
     run_day = date(2026, 8, 15)
 
-    stamped = _write_and_capture_forecast_date(
-        _one_result(anchor), today=run_day)
+    stamped = _write_and_capture_forecast_date(_one_result(anchor), today=run_day)
 
     assert stamped == anchor
 
@@ -121,8 +126,7 @@ def test_an_explicit_override_still_wins():
     anchor = date(2026, 8, 14)
     override = date(2026, 1, 1)
 
-    stamped = _write_and_capture_forecast_date(
-        _one_result(anchor), today=override, override=override)
+    stamped = _write_and_capture_forecast_date(_one_result(anchor), today=override, override=override)
 
     assert stamped == override
 

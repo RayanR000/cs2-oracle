@@ -6,9 +6,8 @@ forecasts they ranked were sub-$1 items where one cent is a 20% move. The
 number quoted and the list displayed described different populations. These
 tests pin the floor to the headline tier so the two cannot drift apart again.
 """
-from __future__ import annotations
 
-from sqlalchemy.dialects import postgresql
+from __future__ import annotations
 
 from api.serving_policy import (
     MIN_SERVED_PRICE_USD,
@@ -19,6 +18,7 @@ from api.serving_policy import (
 from backtest.friction import actionable_threshold
 from backtest.scoring import HEADLINE_MIN_TIER, price_tier
 from database import ItemForecast
+from sqlalchemy.dialects import postgresql
 
 
 def _sql(clause) -> str:

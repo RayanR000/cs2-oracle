@@ -8,10 +8,11 @@ The theme running through these: a schema change must *fail the run*, never
 drain the feed quietly. A silently-empty collector behind a green badge is the
 failure mode this repo keeps hitting.
 """
+
 from __future__ import annotations
 
 import sys
-from datetime import date, datetime, timezone
+from datetime import UTC, date, datetime
 from pathlib import Path
 
 import pandas as pd
@@ -28,7 +29,7 @@ from collectors.sales_volume import (  # noqa: E402
 )
 
 DAY = date(2026, 8, 8)
-AT = datetime(2026, 8, 8, 12, 0, tzinfo=timezone.utc)
+AT = datetime(2026, 8, 8, 12, 0, tzinfo=UTC)
 
 
 def _entry(name, v24=1, v7=5, v30=20, v90=60, median=12.5):
@@ -46,7 +47,8 @@ class TestParsing:
     def test_reduces_one_row_per_item(self):
         rows = parse_sales_history(
             [_entry("AK-47 | Redline (Field-Tested)"), _entry("AWP | Asiimov (FT)")],
-            DAY, AT,
+            DAY,
+            AT,
         )
         assert len(rows) == 2
         assert list(rows["source"].unique()) == ["skinport_sales"]
@@ -78,7 +80,8 @@ class TestParsing:
     def test_entries_without_a_name_are_skipped(self):
         rows = parse_sales_history(
             [_entry("Real"), {"currency": "USD", "last_30_days": {"volume": 3}}],
-            DAY, AT,
+            DAY,
+            AT,
         )
         assert rows["item_slug"].tolist() == ["Real"]
 

@@ -1,11 +1,11 @@
 import sys
-from pathlib import Path
 from datetime import date
-import pandas as pd
+from pathlib import Path
+
 import pytest
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
-from scripts.ingest_supply_history import parse_supply_history  # noqa: E402
+from scripts.ingest_supply_history import parse_supply_history
 
 # 2023-06-01 and 2023-06-02 in unix seconds
 T1, T2 = 1685577600, 1685664000

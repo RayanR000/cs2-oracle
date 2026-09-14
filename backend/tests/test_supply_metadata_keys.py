@@ -27,10 +27,10 @@ It is currently allowlisted out of training, so this is latent, not live.
 Not covered here: the 1,926 empty-`type` rows. That is missing upstream data,
 not a defect -- `item-metadata-bymykel.parquet` is where those come from.
 """
+
 from __future__ import annotations
 
 import pytest
-
 from models.steam_types import parse_steam_type
 from scripts.backfill_supply_metadata import _normalise_key, build_name_lookup
 
@@ -38,12 +38,15 @@ from scripts.backfill_supply_metadata import _normalise_key, build_name_lookup
 class TestNormaliseKey:
     """One key format, reachable from both a display name and a slug."""
 
-    @pytest.mark.parametrize("name,expected", [
-        ("Berlin 2019 Legends (Holo/Foil)", "berlin-2019-legends-holo-foil"),
-        ("AK-47 | Asiimov (Minimal Wear)", "ak-47-asiimov-minimal-wear"),
-        ("StatTrak™ AWP | Dragon Lore", "stattrak-awp-dragon-lore"),
-        ("★ Karambit | Doppler (Factory New)", "karambit-doppler-factory-new"),
-    ])
+    @pytest.mark.parametrize(
+        "name,expected",
+        [
+            ("Berlin 2019 Legends (Holo/Foil)", "berlin-2019-legends-holo-foil"),
+            ("AK-47 | Asiimov (Minimal Wear)", "ak-47-asiimov-minimal-wear"),
+            ("StatTrak™ AWP | Dragon Lore", "stattrak-awp-dragon-lore"),
+            ("★ Karambit | Doppler (Factory New)", "karambit-doppler-factory-new"),
+        ],
+    )
     def test_display_names_normalise_to_slug_form(self, name, expected):
         assert _normalise_key(name) == expected
 
@@ -55,8 +58,7 @@ class TestNormaliseKey:
         assert _normalise_key(slug) == slug
 
     def test_the_two_formats_meet(self):
-        assert (_normalise_key("Berlin 2019 Legends (Holo/Foil)")
-                == _normalise_key("berlin-2019-legends-holo-foil"))
+        assert _normalise_key("Berlin 2019 Legends (Holo/Foil)") == _normalise_key("berlin-2019-legends-holo-foil")
 
     def test_collapses_runs_and_strips_edges(self):
         assert _normalise_key("  Sticker |  Team   (Foil) ") == "sticker-team-foil"
@@ -65,10 +67,8 @@ class TestNormaliseKey:
 class TestBuildNameLookup:
     ROWS = [
         # (hash_name, display_name, type)
-        ("Berlin 2019 Legends (Holo/Foil)", "Berlin 2019 Legends (Holo/Foil)",
-         "High Grade Sticker"),
-        ("AK-47 | Redline (Field-Tested)", "AK-47 | Redline (Field-Tested)",
-         "Classified Rifle"),
+        ("Berlin 2019 Legends (Holo/Foil)", "Berlin 2019 Legends (Holo/Foil)", "High Grade Sticker"),
+        ("AK-47 | Redline (Field-Tested)", "AK-47 | Redline (Field-Tested)", "Classified Rifle"),
     ]
 
     def test_the_slug_form_resolves(self):
@@ -93,8 +93,7 @@ class TestBuildNameLookup:
             ("foo-bar-factory-new", "foo-bar-factory-new", None),
         ]
         assert build_name_lookup(rows)["foo-bar-factory-new"]["rarity"] == "covert"
-        assert build_name_lookup(list(reversed(rows)))[
-            "foo-bar-factory-new"]["rarity"] == "covert"
+        assert build_name_lookup(list(reversed(rows)))["foo-bar-factory-new"]["rarity"] == "covert"
 
     def test_an_untyped_catalog_row_yields_no_rarity(self):
         """The other 1,926: present, matched, and genuinely rarity-less. The

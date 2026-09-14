@@ -5,6 +5,7 @@ What is silent when it breaks: a level-match that does not actually land on
 pooled pair without saying so, and a placebo that is accidentally identical
 to the treatment.
 """
+
 import sys
 from pathlib import Path
 
@@ -12,8 +13,8 @@ import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from models import conformal  # noqa: E402
-from scripts.measure_waci import (  # noqa: E402
+from models import conformal
+from scripts.measure_waci import (
     _level_match,
     apply_fit,
     fit_s0,
@@ -56,8 +57,7 @@ def _panel(n_dates=60, per_date=200, seed=0):
         resid.append(r)
         sigma.append(s)
         dates.append(np.full(per_date, day))
-    return _FakePanel(np.concatenate(resid), np.concatenate(sigma),
-                      np.concatenate(dates))
+    return _FakePanel(np.concatenate(resid), np.concatenate(sigma), np.concatenate(dates))
 
 
 def test_level_match_lands_on_target():
@@ -134,9 +134,12 @@ def test_placebo_uses_same_machinery():
 
 
 def test_conformal_waci_lookup_is_monotone_in_scale():
-    params = {"bin_centres": np.array([0.03, 0.07, 0.15]),
-              "bin_q_lo": np.array([-2.0, -2.0, -2.0]),
-              "bin_q_hi": np.array([1.0, 2.0, 4.0]),
-              "fallback_q_lo": -2.0, "fallback_q_hi": 2.0}
+    params = {
+        "bin_centres": np.array([0.03, 0.07, 0.15]),
+        "bin_q_lo": np.array([-2.0, -2.0, -2.0]),
+        "bin_q_hi": np.array([1.0, 2.0, 4.0]),
+        "fallback_q_lo": -2.0,
+        "fallback_q_hi": 2.0,
+    }
     _, hi = conformal.waci_lookup(np.array([0.03, 0.07, 0.15]), params)
     assert hi[0] < hi[1] < hi[2]

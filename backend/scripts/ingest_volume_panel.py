@@ -5,9 +5,12 @@ Source: kaggle datasets download -d devynpruden/cs2-skin-price-history-2013-2026
 It reaches 2026-06-15 (covers the serving anchors) and carries dense `volume`.
 Local research dataset only -- private/local training; do not redistribute rows.
 """
+
 from __future__ import annotations
+
 import sys
 from pathlib import Path
+
 import pandas as pd
 
 REQUIRED = ["market_hash_name", "date", "price_median", "volume"]
@@ -22,9 +25,9 @@ def build_volume_panel(src_df: pd.DataFrame) -> pd.DataFrame:
     df = df.rename(columns={"market_hash_name": "item_id"})
     df = df.dropna(subset=["item_id", "date", "volume"])
     # One row per (item_id, date): mean median-price, summed volume.
-    out = (df.groupby(["item_id", "date"], as_index=False)
-             .agg(steam_volume=("volume", "sum"),
-                  steam_sale_median=("price_median", "mean")))
+    out = df.groupby(["item_id", "date"], as_index=False).agg(
+        steam_volume=("volume", "sum"), steam_sale_median=("price_median", "mean")
+    )
     out["steam_volume"] = out["steam_volume"].astype("int64")
     return out[["item_id", "date", "steam_volume", "steam_sale_median"]]
 

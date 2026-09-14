@@ -2,18 +2,32 @@
 Database models for CS2 Market Intelligence Platform
 """
 
-from sqlalchemy import create_engine, Boolean, Column, Integer, String, Float, DateTime, Date, ForeignKey, Index, JSON, UniqueConstraint
-from sqlalchemy.orm import relationship, sessionmaker
-from sqlalchemy.orm import declarative_base
-from datetime import datetime, timezone
+from datetime import UTC, datetime
+
 from config import settings
+from sqlalchemy import (
+    JSON,
+    Boolean,
+    Column,
+    Date,
+    DateTime,
+    Float,
+    ForeignKey,
+    Index,
+    Integer,
+    String,
+    UniqueConstraint,
+    create_engine,
+)
+from sqlalchemy.orm import declarative_base, relationship, sessionmaker
 
 Base = declarative_base()
 
 
 def utcnow_naive():
     """Return a naive UTC timestamp for compatibility with the current schema."""
-    return datetime.now(timezone.utc).replace(tzinfo=None)
+    return datetime.now(UTC).replace(tzinfo=None)
+
 
 # Create engine
 engine = create_engine(
@@ -25,6 +39,7 @@ engine = create_engine(
 # Create session factory
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 
+
 def get_db():
     """Dependency for getting database session"""
     db = SessionLocal()
@@ -33,14 +48,17 @@ def get_db():
     finally:
         db.close()
 
+
 def init_db():
     """Initialize database - create all tables"""
     Base.metadata.create_all(bind=engine)
 
+
 class Item(Base):
     """Item model - skins, cases, stickers"""
+
     __tablename__ = "items"
-    
+
     id = Column(Integer, primary_key=True)
     item_id = Column(String(255), unique=True, nullable=False)
     name = Column(String(255), nullable=False, index=True)
@@ -55,21 +73,25 @@ class Item(Base):
     is_trainable = Column(Integer, default=0)  # boolean: eligible for the TRAIN universe (non-iflow pre-2026 history)
 
     # Supply-side metadata (populated from Steam Market type field)
-    rarity = Column(String(50), nullable=True)       # e.g. covert, milspec, restricted, classified, consumer, industrial, base, etc.
-    rarity_rank = Column(Integer, nullable=True)      # ordinal 0-6 (higher = rarer)
-    weapon_type = Column(String(50), nullable=True)   # e.g. rifle, pistol, smg, knife, glove, sticker, case, charm, etc.
+    rarity = Column(
+        String(50), nullable=True
+    )  # e.g. covert, milspec, restricted, classified, consumer, industrial, base, etc.
+    rarity_rank = Column(Integer, nullable=True)  # ordinal 0-6 (higher = rarer)
+    weapon_type = Column(String(50), nullable=True)  # e.g. rifle, pistol, smg, knife, glove, sticker, case, charm, etc.
 
     price_histories = relationship("PriceHistory", back_populates="item", cascade="all, delete-orphan")
     forecasts = relationship("ItemForecast", back_populates="item", cascade="all, delete-orphan")
 
     __table_args__ = (
-        Index('idx_item_type', 'type'),
-        Index('idx_item_rarity', 'rarity'),
-        Index('idx_item_weapon_type', 'weapon_type'),
+        Index("idx_item_type", "type"),
+        Index("idx_item_rarity", "rarity"),
+        Index("idx_item_weapon_type", "weapon_type"),
     )
+
 
 class PriceHistory(Base):
     """Price history model - time-series price data"""
+
     __tablename__ = "price_history"
 
     # Composite natural primary key — no surrogate id. Saves the pkey index
@@ -85,9 +107,8 @@ class PriceHistory(Base):
 
     item = relationship("Item", back_populates="price_histories")
 
-    __table_args__ = (
-        Index('idx_price_history_source', 'source'),
-    )
+    __table_args__ = (Index("idx_price_history_source", "source"),)
+
 
 # Sources whose presence marks an item as "backfilled": it has a real
 # historical price series (from CSMarketAPI STEAMCOMMUNITY data), not just a
@@ -115,6 +136,7 @@ def trainable_item_clause():
 
 class CollectionRun(Base):
     """Collection run model - persisted collector health and run metadata"""
+
     __tablename__ = "collection_runs"
 
     id = Column(Integer, primary_key=True)
@@ -130,26 +152,28 @@ class CollectionRun(Base):
     created_at = Column(DateTime, default=utcnow_naive)
 
     __table_args__ = (
-        Index('idx_collection_runs_started_at', 'started_at'),
-        Index('idx_collection_runs_status', 'status'),
+        Index("idx_collection_runs_started_at", "started_at"),
+        Index("idx_collection_runs_status", "status"),
     )
+
 
 class Event(Base):
     """Event model - market-moving events"""
+
     __tablename__ = "events"
-    
+
     id = Column(Integer, primary_key=True)
     type = Column(String(50), nullable=False)  # major, update, case_drop, operation
     timestamp = Column(DateTime, nullable=False, index=True)
     description = Column(String(500), nullable=False)
     created_at = Column(DateTime, default=utcnow_naive)
-    
-    __table_args__ = (
-        Index('idx_event_type_timestamp', 'type', 'timestamp'),
-    )
+
+    __table_args__ = (Index("idx_event_type_timestamp", "type", "timestamp"),)
+
 
 class ItemForecast(Base):
     """ML model forecasts - LightGBM quantile regression predictions"""
+
     __tablename__ = "item_forecasts"
 
     id = Column(Integer, primary_key=True)
@@ -187,14 +211,14 @@ class ItemForecast(Base):
     item = relationship("Item", back_populates="forecasts")
 
     __table_args__ = (
-        Index('idx_forecast_item_date', 'item_id', 'forecast_date', 'horizon_days'),
-        UniqueConstraint('item_id', 'forecast_date', 'horizon_days',
-                         name='uq_item_forecast_date_horizon'),
+        Index("idx_forecast_item_date", "item_id", "forecast_date", "horizon_days"),
+        UniqueConstraint("item_id", "forecast_date", "horizon_days", name="uq_item_forecast_date_horizon"),
     )
 
 
 class User(Base):
     """User model - Steam authentication"""
+
     __tablename__ = "users"
 
     id = Column(Integer, primary_key=True)
@@ -207,6 +231,7 @@ class User(Base):
 
 class EventImpact(Base):
     """Event impact model - historical price movements around events"""
+
     __tablename__ = "event_impacts"
 
     id = Column(Integer, primary_key=True)
@@ -226,13 +251,14 @@ class EventImpact(Base):
     created_at = Column(DateTime, default=utcnow_naive)
 
     __table_args__ = (
-        Index('idx_event_impact_event_item', 'event_id', 'item_id'),
-        UniqueConstraint('event_id', 'item_id', name='uq_event_impact_event_item'),
+        Index("idx_event_impact_event_item", "event_id", "item_id"),
+        UniqueConstraint("event_id", "item_id", name="uq_event_impact_event_item"),
     )
 
 
 class EventPattern(Base):
     """Event pattern model - learned patterns from historical events"""
+
     __tablename__ = "event_patterns"
 
     id = Column(Integer, primary_key=True)
@@ -249,8 +275,8 @@ class EventPattern(Base):
     updated_at = Column(DateTime, default=utcnow_naive, onupdate=utcnow_naive)
 
     __table_args__ = (
-        Index('idx_event_pattern_type_item', 'event_type', 'item_id'),
-        UniqueConstraint('event_type', 'item_id', name='uq_event_pattern_type_item'),
+        Index("idx_event_pattern_type_item", "event_type", "item_id"),
+        UniqueConstraint("event_type", "item_id", name="uq_event_pattern_type_item"),
     )
 
 
@@ -269,6 +295,7 @@ class PredictionAccuracy(Base):
                    directional_accuracy_ci_lower, directional_accuracy_ci_upper,
                    mae_ci_lower, mae_ci_upper, sample_count, horizon_days}
     """
+
     __tablename__ = "prediction_accuracy"
 
     id = Column(Integer, primary_key=True)
@@ -285,9 +312,15 @@ class PredictionAccuracy(Base):
     created_at = Column(DateTime, default=utcnow_naive)
 
     __table_args__ = (
-        Index('idx_accuracy_type_date', 'prediction_type', 'evaluation_date'),
-        UniqueConstraint('prediction_type', 'evaluation_date', 'horizon_days', 'model_version',
-                         'price_tier', name='uq_accuracy_type_date_horizon_model_tier'),
+        Index("idx_accuracy_type_date", "prediction_type", "evaluation_date"),
+        UniqueConstraint(
+            "prediction_type",
+            "evaluation_date",
+            "horizon_days",
+            "model_version",
+            "price_tier",
+            name="uq_accuracy_type_date_horizon_model_tier",
+        ),
     )
 
 
@@ -298,6 +331,7 @@ class ForecastOutcome(Base):
     actual price becomes known. Written by backtest_forecasts() during
     the daily accuracy evaluation.
     """
+
     __tablename__ = "forecast_outcomes"
 
     id = Column(Integer, primary_key=True)
@@ -384,6 +418,7 @@ class AccuracyAlert(Base):
     Alerts are generated when sliding-window directional accuracy drops
     below a threshold, indicating the model has drifted and needs retraining.
     """
+
     __tablename__ = "accuracy_alerts"
 
     id = Column(Integer, primary_key=True)
@@ -397,9 +432,7 @@ class AccuracyAlert(Base):
     resolved_at = Column(DateTime, nullable=True)
     details = Column(JSON, nullable=True)
 
-    __table_args__ = (
-        Index('idx_alert_type_triggered', 'prediction_type', 'triggered_at'),
-    )
+    __table_args__ = (Index("idx_alert_type_triggered", "prediction_type", "triggered_at"),)
 
 
 class SupplySnapshot(Base):
@@ -411,6 +444,7 @@ class SupplySnapshot(Base):
 
     Only the most recent snapshot per item is kept (upserted by date).
     """
+
     __tablename__ = "supply_snapshots"
 
     item_id = Column(Integer, ForeignKey("items.id"), primary_key=True)
@@ -420,13 +454,12 @@ class SupplySnapshot(Base):
     source = Column(String(50), default="steam_burst")  # steam_burst, skinport
     created_at = Column(DateTime, default=utcnow_naive)
 
-    __table_args__ = (
-        Index('idx_supply_item_date', 'item_id', 'snapshot_date'),
-    )
+    __table_args__ = (Index("idx_supply_item_date", "item_id", "snapshot_date"),)
 
 
 class SocialMention(Base):
     """Reddit social mention — tracks skin name mentions and VADER sentiment."""
+
     __tablename__ = "social_mentions"
 
     item_id = Column(Integer, ForeignKey("items.id"), primary_key=True)
@@ -441,13 +474,14 @@ class SocialMention(Base):
     collected_at = Column(DateTime, default=utcnow_naive)
 
     __table_args__ = (
-        Index('idx_social_item_source', 'item_id', 'source'),
-        Index('idx_social_mentioned_at', 'mentioned_at'),
+        Index("idx_social_item_source", "item_id", "source"),
+        Index("idx_social_mentioned_at", "mentioned_at"),
     )
 
 
 class EventCorrelation(Base):
     """Event correlation model - causal analysis with statistical rigor"""
+
     __tablename__ = "event_correlations"
 
     id = Column(Integer, primary_key=True)
@@ -483,6 +517,6 @@ class EventCorrelation(Base):
     created_at = Column(DateTime, default=utcnow_naive)
 
     __table_args__ = (
-        Index('idx_event_correlation_event_item', 'event_id', 'item_id'),
-        UniqueConstraint('event_id', 'item_id', name='uq_event_correlation_event_item'),
+        Index("idx_event_correlation_event_item", "event_id", "item_id"),
+        UniqueConstraint("event_id", "item_id", name="uq_event_correlation_event_item"),
     )

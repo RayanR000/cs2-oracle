@@ -5,6 +5,7 @@ and the key changed unconditionally -- the cache could never hit there. Cost of
 the miss is ~48s per run (21.1s DuckDB read + 27.2s voting), paid daily by the
 predict path too, not just by the Monday retrain.
 """
+
 from __future__ import annotations
 
 import ast
@@ -15,7 +16,6 @@ from unittest.mock import MagicMock
 
 import pandas as pd
 import pytest
-
 from models.forecaster import ItemForecaster
 
 
@@ -29,14 +29,16 @@ def _code(func) -> str:
     """
     tree = ast.parse(textwrap.dedent(inspect.getsource(func)))
     for node in ast.walk(tree):
-        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef,
-                             ast.ClassDef, ast.Module)):
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef, ast.Module)):
             body = node.body
-            if (body and isinstance(body[0], ast.Expr)
-                    and isinstance(body[0].value, ast.Constant)
-                    and isinstance(body[0].value.value, str)):
+            if (
+                body
+                and isinstance(body[0], ast.Expr)
+                and isinstance(body[0].value, ast.Constant)
+                and isinstance(body[0].value.value, str)
+            ):
                 node.body = body[1:] or [ast.Pass()]
-    return ast.unparse(tree)          # ast.unparse never emits comments
+    return ast.unparse(tree)  # ast.unparse never emits comments
 
 
 def _prices(rows: int, extra_cols: bool = False) -> pd.DataFrame:
@@ -44,14 +46,16 @@ def _prices(rows: int, extra_cols: bool = False) -> pd.DataFrame:
     first content-based fingerprint keyed on MAX(date) and passed every test
     here while failing the retrain with a binder error, because these fixtures
     had invented a `date` column."""
-    df = pd.DataFrame({
-        "item_slug": [f"item-{i}" for i in range(rows)],
-        "day": pd.to_datetime(["2026-01-01"] * rows),
-        "source": ["aggregator_sync"] * rows,
-        "mean_price": [float(i) for i in range(rows)],
-        "volume": list(range(rows)),
-        "ingested_at": pd.to_datetime(["2026-01-02"] * rows),
-    })
+    df = pd.DataFrame(
+        {
+            "item_slug": [f"item-{i}" for i in range(rows)],
+            "day": pd.to_datetime(["2026-01-01"] * rows),
+            "source": ["aggregator_sync"] * rows,
+            "mean_price": [float(i) for i in range(rows)],
+            "volume": list(range(rows)),
+            "ingested_at": pd.to_datetime(["2026-01-02"] * rows),
+        }
+    )
     if extra_cols:
         # prices-2026-03 and -04 really do carry these; 19 other files do not.
         df["min_price"] = df["mean_price"]
@@ -72,7 +76,7 @@ def test_fingerprint_survives_a_non_uniform_schema(tmp_path, archive):
     column. Regression: MAX(date) died on the real files."""
     _prices(3, extra_cols=True).to_parquet(archive / "prices-2026-03.parquet")
     f = _f(tmp_path, archive)
-    assert f._archive_fingerprint()          # does not raise
+    assert f._archive_fingerprint()  # does not raise
 
 
 def _f(tmp_path, archive):

@@ -15,6 +15,7 @@ Usage:
     python3 scripts/compute_mde.py --max-items 500
     python3 scripts/compute_mde.py --max-items 60 --step-days 120
 """
+
 from __future__ import annotations
 
 import argparse
@@ -32,8 +33,9 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--max-items", type=int, default=500)
     parser.add_argument("--horizons", type=int, nargs="+", default=None)
-    parser.add_argument("--step-days", type=int, default=wf.STEP_DAYS,
-                         help=f"Fold stride in days (default: {wf.STEP_DAYS})")
+    parser.add_argument(
+        "--step-days", type=int, default=wf.STEP_DAYS, help=f"Fold stride in days (default: {wf.STEP_DAYS})"
+    )
     args = parser.parse_args()
 
     # One horizon at a time, both seeds, emitting each result the moment it is
@@ -55,17 +57,14 @@ def main():
                 step_days=args.step_days,
                 fold_seed=seed,
             )
-            records[seed] = (report.get("horizons", {})
-                             .get(str(horizon), {})
-                             .get("records"))
+            records[seed] = report.get("horizons", {}).get(str(horizon), {}).get("records")
         a, b = records[42], records[7]
         if not a or not b:
             out[str(horizon)] = {"error": "no records returned"}
         else:
             out[str(horizon)] = paired_da_difference(a, b)
         # Flushed per horizon so an interrupted run still leaves usable output.
-        print(f"MDE h={horizon}: "
-              f"{json.dumps(out[str(horizon)], default=str)}", flush=True)
+        print(f"MDE h={horizon}: {json.dumps(out[str(horizon)], default=str)}", flush=True)
 
     print(json.dumps(out, indent=2, default=str))
     return 0

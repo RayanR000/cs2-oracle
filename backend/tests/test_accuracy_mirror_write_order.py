@@ -11,6 +11,7 @@ path already document and rely on: Parquet first, DB second. A crash between
 them leaves the mirror briefly ahead of the DB, which the next run reconciles,
 rather than leaving the served copy permanently behind.
 """
+
 from __future__ import annotations
 
 import json
@@ -18,11 +19,10 @@ from datetime import date, datetime
 
 import pandas as pd
 import pytest
+from database import Base, PredictionAccuracy
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
-
-from database import Base, PredictionAccuracy
 
 
 class _Recorder:
@@ -150,8 +150,7 @@ def test_both_stores_land_and_agree(session, tmp_path, monkeypatch):
     mirror = pd.read_parquet(tmp_path / "prediction_accuracy.parquet")
     assert len(mirror) == 2
     by_tier = {
-        (None if pd.isna(r.price_tier) else int(r.price_tier)): json.loads(r.metrics)
-        for r in mirror.itertuples()
+        (None if pd.isna(r.price_tier) else int(r.price_tier)): json.loads(r.metrics) for r in mirror.itertuples()
     }
     assert by_tier[None]["mae"] == 1.0
     assert by_tier[-1]["mae"] == 2.0

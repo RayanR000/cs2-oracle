@@ -32,6 +32,7 @@ METHOD (read-only, no retrain, no serving-path code):
 
 Run: backend/venv/bin/python scripts/climatology_vs_gbm.py
 """
+
 from __future__ import annotations
 
 import argparse
@@ -46,31 +47,27 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 ARTIFACT = Path(__file__).resolve().parent.parent / "models" / "saved_models"
 ARCHIVE_DIR = Path(__file__).resolve().parent.parent.parent / "price-archive"
-SERVED_MIN_PRICE = 1.0         # the >=$1 cohort the band is actually served on
+SERVED_MIN_PRICE = 1.0  # the >=$1 cohort the band is actually served on
 HORIZONS = (3, 7, 14, 30)
 TARGET_COVERAGE = 0.80
-CALIB_FRACTION = 0.70          # (artifact mode) earliest share fitting climatology
-SCALE_FRACTION = 0.60         # archive mode: climatology scale fit before this
-CAL_FRACTION = 0.80           # archive mode: conformal lambda fit in [scale, cal)
-SHRINK_K = 20                  # n_i/(n_i+K) shrink of item -> tier dispersion
+CALIB_FRACTION = 0.70  # (artifact mode) earliest share fitting climatology
+SCALE_FRACTION = 0.60  # archive mode: climatology scale fit before this
+CAL_FRACTION = 0.80  # archive mode: conformal lambda fit in [scale, cal)
+SHRINK_K = 20  # n_i/(n_i+K) shrink of item -> tier dispersion
 N_BOOTSTRAP = 1000
 RNG_SEED = 42
 
 
 def _load() -> pd.DataFrame:
     import duckdb
+
     p = ARTIFACT / "engineered_data.parquet"
-    df = duckdb.connect().sql(
-        f"SELECT item_id, date, price, price_std_60d "
-        f"FROM read_parquet('{p}')"
-    ).fetchdf()
+    df = duckdb.connect().sql(f"SELECT item_id, date, price, price_std_60d FROM read_parquet('{p}')").fetchdf()
     df["date"] = pd.to_datetime(df["date"])
     df = df.sort_values(["item_id", "date"]).reset_index(drop=True)
     # Vectorized backtest.scoring.price_tier (liquidity bands, not display).
     px = df["price"].to_numpy()
-    df["tier"] = np.select(
-        [px >= 1000, px >= 100, px >= 20, px >= 5, px >= 1],
-        [5, 4, 3, 2, 1], default=0)
+    df["tier"] = np.select([px >= 1000, px >= 100, px >= 20, px >= 5, px >= 1], [5, 4, 3, 2, 1], default=0)
     return df
 
 
@@ -85,8 +82,7 @@ def _served_cohort_slugs() -> set:
 
     con = duckdb.connect()
     try:
-        rel = prices_relation(con, str(ARCHIVE_DIR),
-                              columns=["item_slug", "day", "source"])
+        rel = prices_relation(con, str(ARCHIVE_DIR), columns=["item_slug", "day", "source"])
         rows = con.sql(f"""
             SELECT DISTINCT item_slug FROM {rel} sub
             WHERE day < DATE '2026-01-01'
@@ -98,8 +94,7 @@ def _served_cohort_slugs() -> set:
     return {r[0] for r in rows}
 
 
-def _load_archive(start: str, served_only: bool = False,
-                  label: str = "voted") -> pd.DataFrame:
+def _load_archive(start: str, served_only: bool = False, label: str = "voted") -> pd.DataFrame:
     """Prod-faithful confirmation: vote the durable archive through the SAME
     static method the production loader calls, then engineer `price_std_60d`
     exactly as `engineer_features` does (row-based rolling 60, min_periods=1).
@@ -123,7 +118,6 @@ def _load_archive(start: str, served_only: bool = False,
     for the honest comparison: that is the cohort the band is served on, it
     excludes the residual tail, and both labels are stable there."""
     import duckdb
-
     from db.archive import prices_relation
     from models.forecaster import ItemForecaster
     from models.item_parser import archive_universe_sql_filter
@@ -132,9 +126,7 @@ def _load_archive(start: str, served_only: bool = False,
 
     con = duckdb.connect()
     try:
-        rel = prices_relation(
-            con, str(ARCHIVE_DIR),
-            columns=["item_slug", "day", "mean_price", "volume", "source"])
+        rel = prices_relation(con, str(ARCHIVE_DIR), columns=["item_slug", "day", "mean_price", "volume", "source"])
         raw = con.sql(f"""
             SELECT item_slug AS item_id, day AS date, mean_price AS price,
                    volume, source
@@ -159,20 +151,18 @@ def _load_archive(start: str, served_only: bool = False,
     voted = voted.sort_values(["item_id", "date"]).reset_index(drop=True)
     if label == "within-source":
         from scripts.check_label_seams import within_source_index
+
         clean = within_source_index(raw, voted)
-        voted = voted.drop(columns=["price"]).merge(
-            clean, on=["item_id", "date"], how="inner")
+        voted = voted.drop(columns=["price"]).merge(clean, on=["item_id", "date"], how="inner")
         voted = voted.sort_values(["item_id", "date"]).reset_index(drop=True)
     # price_std_60d as production engineers it: row-based rolling std (forecaster
     # .py:2184). Row-based is a known defect, but we confirm the SERVED band.
-    voted["price_std_60d"] = (voted.groupby("item_id")["price"]
-                              .rolling(60, min_periods=1).std()
-                              .reset_index(level=0, drop=True))
+    voted["price_std_60d"] = (
+        voted.groupby("item_id")["price"].rolling(60, min_periods=1).std().reset_index(level=0, drop=True)
+    )
     voted = voted[voted["price"] >= SERVED_MIN_PRICE].copy()
     px = voted["price"].to_numpy()
-    voted["tier"] = np.select(
-        [px >= 1000, px >= 100, px >= 20, px >= 5, px >= 1],
-        [5, 4, 3, 2, 1], default=0)
+    voted["tier"] = np.select([px >= 1000, px >= 100, px >= 20, px >= 5, px >= 1], [5, 4, 3, 2, 1], default=0)
     return voted[["item_id", "date", "price", "price_std_60d", "tier"]]
 
 
@@ -181,8 +171,7 @@ def _forward_return_pct(df: pd.DataFrame, horizon: int) -> pd.Series:
     future = df[["item_id", "date", "price"]].copy()
     future["date"] = future["date"] - pd.Timedelta(days=horizon)
     future = future.rename(columns={"price": "price_fwd"})
-    merged = df[["item_id", "date", "price"]].merge(
-        future, on=["item_id", "date"], how="left")
+    merged = df[["item_id", "date", "price"]].merge(future, on=["item_id", "date"], how="left")
     with np.errstate(divide="ignore", invalid="ignore"):
         r = (merged["price_fwd"] / merged["price"] - 1.0) * 100.0
     return r
@@ -190,9 +179,14 @@ def _forward_return_pct(df: pd.DataFrame, horizon: int) -> pd.Series:
 
 def _gbm_sigma(df: pd.DataFrame, clip: dict) -> np.ndarray:
     from models import conformal
+
     return conformal.sigma_from_columns(
-        df["price_std_60d"].to_numpy(), df["price"].to_numpy(),
-        floor=clip["floor"], cap=clip["cap"], fallback=clip["fallback"])
+        df["price_std_60d"].to_numpy(),
+        df["price"].to_numpy(),
+        floor=clip["floor"],
+        cap=clip["cap"],
+        fallback=clip["fallback"],
+    )
 
 
 def _sigma_clip(df: pd.DataFrame, source: str, clip_source: str = "auto") -> dict:
@@ -203,6 +197,7 @@ def _sigma_clip(df: pd.DataFrame, source: str, clip_source: str = "auto") -> dic
     if source == "artifact" or clip_source == "artifact":
         return json.load(open(ARTIFACT / "meta.json"))["sigma_clip"]
     from models import conformal
+
     with np.errstate(divide="ignore", invalid="ignore"):
         raw = df["price_std_60d"].to_numpy() / df["price"].to_numpy()
     floor, cap = conformal.sigma_bounds(raw)
@@ -210,8 +205,7 @@ def _sigma_clip(df: pd.DataFrame, source: str, clip_source: str = "auto") -> dic
     return {"floor": floor, "cap": cap, "fallback": float(np.median(raw[good]))}
 
 
-def _climatology_halfwidth(calib: pd.DataFrame, test: pd.DataFrame,
-                           col: str) -> np.ndarray:
+def _climatology_halfwidth(calib: pd.DataFrame, test: pd.DataFrame, col: str) -> np.ndarray:
     """Per-test-row half-width from the item's trailing |h-day return| quantile,
     shrunk toward its price tier's pooled quantile. Fit on calibration only."""
     q = TARGET_COVERAGE
@@ -237,8 +231,7 @@ def _climatology_halfwidth(calib: pd.DataFrame, test: pd.DataFrame,
         w = n / (n + SHRINK_K)
         return w * raw + (1 - w) * base
 
-    return test.apply(lambda r: _shrunk(r["item_id"], r["tier"]),
-                      axis=1).to_numpy()
+    return test.apply(lambda r: _shrunk(r["item_id"], r["tier"]), axis=1).to_numpy()
 
 
 def _matched_width(abs_r: np.ndarray, w: np.ndarray) -> tuple[float, float]:
@@ -277,8 +270,7 @@ def _run_horizon(df: pd.DataFrame, horizon: int, clip: dict) -> dict:
 
     scale_r = scale_df[["item_id", "tier", "r"]].rename(columns={"r": "r_h"})
     for frame in (cal, ev):
-        frame["w_clim"] = (_climatology_halfwidth(scale_r, frame, "r_h")
-                           if not scale_r.empty else np.nan)
+        frame["w_clim"] = _climatology_halfwidth(scale_r, frame, "r_h") if not scale_r.empty else np.nan
 
     def _method(wcol):
         # lambda calibrated to 80% on `cal`, then coverage AND width read on `ev`.
@@ -312,7 +304,7 @@ def _run_horizon(df: pd.DataFrame, horizon: int, clip: dict) -> dict:
 
     return {
         "horizon": horizon,
-        "n_eval": int(len(ev)),
+        "n_eval": len(ev),
         "n_eval_dates": int(ev["date"].nunique()),
         "gbm_cov": round(cov_g, 4),
         "clim_cov": round(cov_c, 4),
@@ -326,46 +318,68 @@ def _run_horizon(df: pd.DataFrame, horizon: int, clip: dict) -> dict:
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--horizons", type=int, nargs="+", default=list(HORIZONS))
-    ap.add_argument("--source", choices=("artifact", "archive"),
-                    default="artifact",
-                    help="artifact: local trained engineered_data.parquet; "
-                         "archive: prod-faithful vote of the durable archive")
-    ap.add_argument("--start", default="2024-01-01",
-                    help="archive mode: earliest day to vote")
-    ap.add_argument("--clip", choices=("auto", "artifact"), default="auto",
-                    help="archive mode: 'artifact' forces the persisted prod "
-                         "sigma clip bounds instead of deriving them")
-    ap.add_argument("--served-cohort", action="store_true",
-                    help="archive mode: restrict to the served backfilled cohort "
-                         "(_resolve_backfilled_slugs), not the broad >=$1 universe")
-    ap.add_argument("--label", choices=("voted", "within-source"),
-                    default="voted",
-                    help="archive mode: 'within-source' rebuilds the price on a "
-                         "seam-free within-source chained index (the clean label)")
+    ap.add_argument(
+        "--source",
+        choices=("artifact", "archive"),
+        default="artifact",
+        help="artifact: local trained engineered_data.parquet; archive: prod-faithful vote of the durable archive",
+    )
+    ap.add_argument("--start", default="2024-01-01", help="archive mode: earliest day to vote")
+    ap.add_argument(
+        "--clip",
+        choices=("auto", "artifact"),
+        default="auto",
+        help="archive mode: 'artifact' forces the persisted prod sigma clip bounds instead of deriving them",
+    )
+    ap.add_argument(
+        "--served-cohort",
+        action="store_true",
+        help="archive mode: restrict to the served backfilled cohort "
+        "(_resolve_backfilled_slugs), not the broad >=$1 universe",
+    )
+    ap.add_argument(
+        "--label",
+        choices=("voted", "within-source"),
+        default="voted",
+        help="archive mode: 'within-source' rebuilds the price on a "
+        "seam-free within-source chained index (the clean label)",
+    )
     args = ap.parse_args()
 
-    df = (_load_archive(args.start, served_only=args.served_cohort,
-                        label=args.label)
-          if args.source == "archive" else _load())
+    df = (
+        _load_archive(args.start, served_only=args.served_cohort, label=args.label)
+        if args.source == "archive"
+        else _load()
+    )
     clip = _sigma_clip(df, args.source, args.clip)
     cohort = "served" if args.served_cohort else "all"
     lbl = args.label if args.source == "archive" else "artifact"
-    print(f"[{args.source}/{cohort}/{lbl}] {len(df):,} rows, {df['item_id'].nunique():,} "
-          f"items, {df['date'].min().date()}..{df['date'].max().date()} | "
-          f"sigma clip floor={clip['floor']:.4f} cap={clip['cap']:.4f}\n")
-    print(f"{'h':>3} {'n_eval':>9} {'dates':>6} {'GBMcov':>7} {'climcov':>8} "
-          f"{'GBM w%':>8} {'clim w%':>9} {'ratio':>7} {'90% CI':>18}")
+    print(
+        f"[{args.source}/{cohort}/{lbl}] {len(df):,} rows, {df['item_id'].nunique():,} "
+        f"items, {df['date'].min().date()}..{df['date'].max().date()} | "
+        f"sigma clip floor={clip['floor']:.4f} cap={clip['cap']:.4f}\n"
+    )
+    print(
+        f"{'h':>3} {'n_eval':>9} {'dates':>6} {'GBMcov':>7} {'climcov':>8} "
+        f"{'GBM w%':>8} {'clim w%':>9} {'ratio':>7} {'90% CI':>18}"
+    )
     for h in args.horizons:
         r = _run_horizon(df, h, clip)
         ci = f"[{r['ratio_ci90'][0]:.3f}, {r['ratio_ci90'][1]:.3f}]"
-        print(f"{r['horizon']:>3} {r['n_eval']:>9,} {r['n_eval_dates']:>6} "
-              f"{r['gbm_cov']:>7} {r['clim_cov']:>8} "
-              f"{r['gbm_mean_width_pct']:>8} {r['clim_mean_width_pct']:>9} "
-              f"{r['width_ratio_clim_over_gbm']:>7} {ci:>18}")
-    print("\nGBMcov/climcov = OUT-OF-SAMPLE marginal coverage (lambda fit on the "
-          "middle split, read on the last); target 0.80.")
-    print("ratio = clim width / GBM width at matched 80% coverage on the eval "
-          "split. <=1 (CI incl.) means climatology matches or beats the GBM.")
+        print(
+            f"{r['horizon']:>3} {r['n_eval']:>9,} {r['n_eval_dates']:>6} "
+            f"{r['gbm_cov']:>7} {r['clim_cov']:>8} "
+            f"{r['gbm_mean_width_pct']:>8} {r['clim_mean_width_pct']:>9} "
+            f"{r['width_ratio_clim_over_gbm']:>7} {ci:>18}"
+        )
+    print(
+        "\nGBMcov/climcov = OUT-OF-SAMPLE marginal coverage (lambda fit on the "
+        "middle split, read on the last); target 0.80."
+    )
+    print(
+        "ratio = clim width / GBM width at matched 80% coverage on the eval "
+        "split. <=1 (CI incl.) means climatology matches or beats the GBM."
+    )
     return 0
 
 

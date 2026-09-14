@@ -2,10 +2,10 @@
 
 See docs/superpowers/specs/2026-08-06-market-relative-labels-design.md.
 """
+
 import numpy as np
 import pandas as pd
 import pytest
-
 from models.market_factor import (
     MIN_INDEX_ITEMS,
     build_market_index,
@@ -14,17 +14,11 @@ from models.market_factor import (
 
 def _frame(rows):
     """rows: list of (item_id, 'YYYY-MM-DD', price)."""
-    return pd.DataFrame(rows, columns=["item_id", "date", "price"]).assign(
-        date=lambda d: pd.to_datetime(d["date"])
-    )
+    return pd.DataFrame(rows, columns=["item_id", "date", "price"]).assign(date=lambda d: pd.to_datetime(d["date"]))
 
 
 def _flat_panel(n_items, dates, price=10.0, start_id=0):
-    return _frame([
-        (start_id + i, d, price)
-        for i in range(n_items)
-        for d in dates
-    ])
+    return _frame([(start_id + i, d, price) for i in range(n_items) for d in dates])
 
 
 def test_index_is_flat_when_no_prices_move():
@@ -109,7 +103,7 @@ def test_items_entering_midway_do_not_create_a_jump():
     idx = build_market_index(_frame(rows), min_items=5)
     assert idx["log_return"].iloc[1] == pytest.approx(0.0)
     assert idx["log_return"].iloc[2] == pytest.approx(0.0)
-    assert idx["n_items"].iloc[1] == 40   # entrant has no prior day
+    assert idx["n_items"].iloc[1] == 40  # entrant has no prior day
     assert idx["n_items"].iloc[2] == 80
 
 
@@ -127,8 +121,7 @@ def test_non_positive_prices_are_excluded():
 def test_empty_frame_returns_empty_index():
     idx = build_market_index(_frame([]), min_items=5)
     assert idx.empty
-    assert list(idx.columns) == [
-        "log_return", "n_items", "valid", "level", "invalid_cum"]
+    assert list(idx.columns) == ["log_return", "n_items", "valid", "level", "invalid_cum"]
 
 
 from models.market_factor import (
@@ -156,7 +149,7 @@ def test_factor_is_the_percent_move_over_the_window():
     m = market_factor_for_horizon(idx, horizon=3)
     d0 = pd.Timestamp("2026-01-01")
     # 3 days of +1% compounding = 1.01^3 - 1
-    assert m.loc[d0] == pytest.approx((1.01 ** 3 - 1) * 100)
+    assert m.loc[d0] == pytest.approx((1.01**3 - 1) * 100)
 
 
 def test_factor_is_nan_past_the_end_of_the_index():
@@ -168,8 +161,7 @@ def test_factor_is_nan_past_the_end_of_the_index():
 
 def test_factor_resolves_a_short_calendar_gap_within_tolerance():
     """The window end date is missing but a date 2 days later exists."""
-    dates = pd.to_datetime(
-        ["2026-01-01", "2026-01-02", "2026-01-03", "2026-01-06"])
+    dates = pd.to_datetime(["2026-01-01", "2026-01-02", "2026-01-03", "2026-01-06"])
     idx = pd.DataFrame(index=pd.DatetimeIndex(dates, name="date"))
     idx["log_return"] = [np.nan, 0.0, 0.0, np.log(1.05)]
     idx["n_items"] = 100
@@ -194,7 +186,7 @@ def test_factor_is_nan_when_the_gap_exceeds_tolerance():
 
 
 def test_factor_is_nan_when_the_window_spans_an_invalid_day():
-    rets = [np.nan] + [0.0] * 3 + [np.nan] + [0.0] * 5   # index 4 is thin
+    rets = [np.nan] + [0.0] * 3 + [np.nan] + [0.0] * 5  # index 4 is thin
     idx = _index_from_daily(rets)
     m = market_factor_for_horizon(idx, horizon=3)
     # 2026-01-02 (i=1) -> 2026-01-05 (i=4) spans the invalid day.
@@ -210,6 +202,7 @@ def test_degenerate_all_flat_market_gives_zero_not_nan():
 
 
 # --- the leakage tests: the single most important thing in this file ---
+
 
 def test_forecast_ignores_everything_after_as_of():
     """Truncating the index at `as_of` must not change the forecast. If it
@@ -246,8 +239,7 @@ def test_all_diagnostic_estimators_ignore_the_future():
     poisoned.loc[poisoned.index > as_of, "log_return"] = 99.0
     poisoned["level"] = np.exp(poisoned["log_return"].fillna(0.0).cumsum())
     after = forecast_market_factor_diagnostics(poisoned, as_of, horizon=7)
-    assert set(before) == {
-        "trailing_drift", "trailing_k_median", "past_h_momentum"}
+    assert set(before) == {"trailing_drift", "trailing_k_median", "past_h_momentum"}
     for key in before:
         assert before[key] == pytest.approx(after[key]), key
 
@@ -267,8 +259,7 @@ def test_forecast_returns_zero_with_no_usable_history():
 
 def test_forecast_before_the_index_starts_returns_zero():
     idx = _index_from_daily([np.nan] + [0.0] * 5)
-    assert forecast_market_factor(
-        idx, pd.Timestamp("2020-01-01"), horizon=7) == 0.0
+    assert forecast_market_factor(idx, pd.Timestamp("2020-01-01"), horizon=7) == 0.0
 
 
 # --- guards retained after the market-relative label experiment was removed ---
@@ -277,25 +268,27 @@ def test_forecast_before_the_index_starts_returns_zero():
 # wiring removed (2026-08-06). The module itself survives because
 # scripts/ab_test_item_metadata.py depends on it, so these two guards stay.
 
+
 def test_market_factor_columns_are_never_features():
     """`market_factor_*` is built from other items' FUTURE prices. Any frame
     carrying it must not hand it to the model as a feature."""
     from models.forecaster import ItemForecaster
 
     f = ItemForecaster(db_session=None)
-    df = pd.DataFrame({
-        "item_id": [1, 2],
-        "date": pd.to_datetime(["2026-01-01", "2026-01-02"]),
-        "price": [10.0, 11.0],
-        "return_7d": [9.0, 10.0],
-        "target_return_3d": [10.0, 9.0],
-        "market_factor_3d": [1.0, 2.0],
-        "market_factor_7d": [1.5, 2.5],
-        "market_factor_14d": [2.0, 3.0],
-        "market_factor_30d": [2.5, 3.5],
-    })
-    cols = f._select_feature_cols(df, ItemForecaster.HORIZONS,
-                                  ItemForecaster.SHELVED_FEATURES)
+    df = pd.DataFrame(
+        {
+            "item_id": [1, 2],
+            "date": pd.to_datetime(["2026-01-01", "2026-01-02"]),
+            "price": [10.0, 11.0],
+            "return_7d": [9.0, 10.0],
+            "target_return_3d": [10.0, 9.0],
+            "market_factor_3d": [1.0, 2.0],
+            "market_factor_7d": [1.5, 2.5],
+            "market_factor_14d": [2.0, 3.0],
+            "market_factor_30d": [2.5, 3.5],
+        }
+    )
+    cols = f._select_feature_cols(df, ItemForecaster.HORIZONS, ItemForecaster.SHELVED_FEATURES)
     for h in ItemForecaster.HORIZONS:
         assert f"market_factor_{h}d" not in cols
     assert "return_7d" in cols
@@ -307,6 +300,5 @@ def test_demean_returns_survives_for_the_item_metadata_ab():
     market-relative amendments in docs/research/accuracy-opportunities.md."""
     from models.forecaster import ItemForecaster
 
-    got = ItemForecaster._demean_returns(
-        np.array([5.0, -2.0]), np.array([1.0, np.nan]))
+    got = ItemForecaster._demean_returns(np.array([5.0, -2.0]), np.array([1.0, np.nan]))
     assert got == pytest.approx([4.0, -2.0])

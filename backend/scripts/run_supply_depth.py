@@ -19,6 +19,7 @@ Exit codes: 0 on success, 1 if every feed failed. A run where *some* feeds faile
 still exits 0 but reports the failures in its JSON summary — see
 `collectors/supply_depth.collect` for why that split is drawn there.
 """
+
 from __future__ import annotations
 
 import argparse
@@ -30,7 +31,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from collectors.supply_depth import SupplyFeedError, collect  # noqa: E402
+from collectors.supply_depth import SupplyFeedError, collect
 
 logging.basicConfig(
     level=logging.INFO,
@@ -44,21 +45,26 @@ DEFAULT_ARCHIVE = Path(__file__).parent.parent.parent / "price-archive"
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
-        "--archive-dir", type=Path, default=DEFAULT_ARCHIVE,
+        "--archive-dir",
+        type=Path,
+        default=DEFAULT_ARCHIVE,
         help="Where supply-YYYY-MM.parquet is written (default: ../price-archive)",
     )
     parser.add_argument(
-        "--date", type=str, default=None,
+        "--date",
+        type=str,
+        default=None,
         help="Snapshot day as YYYY-MM-DD. Defaults to the aggregator's resolved "
-             "snapshot date so supply rows carry the same day label as the price "
-             "rows they will be joined to. These feeds are live snapshots with no "
-             "as-of parameter, so this only labels the observation -- it cannot "
-             "fetch a past day.",
+        "snapshot date so supply rows carry the same day label as the price "
+        "rows they will be joined to. These feeds are live snapshots with no "
+        "as-of parameter, so this only labels the observation -- it cannot "
+        "fetch a past day.",
     )
     parser.add_argument(
-        "--no-ladder", action="store_true",
+        "--no-ladder",
+        action="store_true",
         help="Skip the lis-skins export. Drops ask-ladder shape and listing age, "
-             "which are the only quantities here not already refuted.",
+        "which are the only quantities here not already refuted.",
     )
     parser.add_argument("--dry-run", action="store_true", help="Fetch and parse, write nothing.")
     args = parser.parse_args()

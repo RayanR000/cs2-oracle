@@ -29,6 +29,7 @@ Read-only: reads voted price panels and writes a CSV. No DB, no artifacts.
 
     venv/bin/python -m scripts.attribute_marginal_coverage --horizons 3,7,14,30
 """
+
 from __future__ import annotations
 
 import argparse
@@ -42,9 +43,9 @@ import pandas as pd
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from models import conformal  # noqa: E402
-from models.forecaster import ItemForecaster  # noqa: E402
-from scripts.measure_conditional_qhat import (  # noqa: E402
+from models import conformal
+from models.forecaster import ItemForecaster
+from scripts.measure_conditional_qhat import (
     default_voted_panel,
     load_panel,
     score_frame,
@@ -63,15 +64,16 @@ OBSERVED_MARGINAL = {3: 0.872, 7: 0.918, 14: 0.906, 30: 0.890}
 PUBLISHED_K = {3: 1.28, 7: 1.34, 14: 1.33, 30: 0.93}
 
 N_DECILES = 10
-MIN_DATES = 100                  # void condition
+MIN_DATES = 100  # void condition
 MIN_ROWS_PER_DATE = 100
 VALIDITY_BAR_PP = 2.0
-RECENT_DATES_FOR_SERVED = 10     # the served-side proxy window
+RECENT_DATES_FOR_SERVED = 10  # the served-side proxy window
 
 
 # --------------------------------------------------------------------------- #
 # the coverage-vs-sigma curve
 # --------------------------------------------------------------------------- #
+
 
 class CoverageCurve:
     """`c(sigma)` = P(covered | sigma), as a location-scale model on the logs.
@@ -90,8 +92,7 @@ class CoverageCurve:
     pre-registered validity bar is that the model reproduces them.
     """
 
-    def __init__(self, resid: np.ndarray, sigma: np.ndarray, q_hat: float,
-                 beta: float | None = None):
+    def __init__(self, resid: np.ndarray, sigma: np.ndarray, q_hat: float, beta: float | None = None):
         r = np.abs(resid)
         ok = (r > 0) & (sigma > 0) & np.isfinite(r) & np.isfinite(sigma)
         x = np.log(sigma[ok])
@@ -121,8 +122,7 @@ def decile_index(sigma: np.ndarray) -> np.ndarray:
     return np.searchsorted(edges, sigma, side="right")
 
 
-def empirical_decile_coverage(resid: np.ndarray, sigma: np.ndarray,
-                              q_hat: float) -> tuple[np.ndarray, np.ndarray]:
+def empirical_decile_coverage(resid: np.ndarray, sigma: np.ndarray, q_hat: float) -> tuple[np.ndarray, np.ndarray]:
     """Realised coverage per sigma decile, and the decile index.
 
     The modelled counterpart must be averaged over the SAME rows, not evaluated
@@ -138,8 +138,7 @@ def empirical_decile_coverage(resid: np.ndarray, sigma: np.ndarray,
     return cov, idx
 
 
-def shifted_sigma(sigma: np.ndarray, k: float, floor: float,
-                  cap: float) -> np.ndarray:
+def shifted_sigma(sigma: np.ndarray, k: float, floor: float, cap: float) -> np.ndarray:
     """`k * sigma`, re-clipped exactly as serving clips it.
 
     The clip is not cosmetic here: it is the only thing that bounds the shift's
@@ -149,8 +148,7 @@ def shifted_sigma(sigma: np.ndarray, k: float, floor: float,
     return np.clip(sigma * k, floor, cap)
 
 
-def solve_k(curve: CoverageCurve, sigma: np.ndarray, target: float,
-            floor: float, cap: float) -> float:
+def solve_k(curve: CoverageCurve, sigma: np.ndarray, target: float, floor: float, cap: float) -> float:
     """The multiplicative sigma shift whose predicted marginal coverage is `target`.
 
     Monotone in `k` while `beta < 1`, so bisection is exact to tolerance. Returns
@@ -174,6 +172,7 @@ def solve_k(curve: CoverageCurve, sigma: np.ndarray, target: float,
 # --------------------------------------------------------------------------- #
 # the served side, measured directly
 # --------------------------------------------------------------------------- #
+
 
 def served_panel_path(explicit: str | None) -> str | None:
     """The voted cache whose LAST date is newest -- the served-side proxy.
@@ -200,9 +199,9 @@ def served_panel_path(explicit: str | None) -> str | None:
 def sigma_panel(path: str, floor: float, cap: float) -> pd.DataFrame:
     """`(item_id, date, sigma)` for one panel's >=$1 cohort."""
     df = load_panel(path)
-    return df.assign(sigma=conformal.sigma_from_columns(
-        df["price_std_60d"], df["price"], floor, cap))[
-            ["item_id", "date", "sigma"]]
+    return df.assign(sigma=conformal.sigma_from_columns(df["price_std_60d"], df["price"], floor, cap))[
+        ["item_id", "date", "sigma"]
+    ]
 
 
 def cache_agreement(cal: pd.DataFrame, srv: pd.DataFrame) -> None:
@@ -229,12 +228,19 @@ def cache_agreement(cal: pd.DataFrame, srv: pd.DataFrame) -> None:
     ma = a.groupby("date")["sigma"].median()
     mb = b.groupby("date")["sigma"].median()
     ratio = (mb / ma).dropna()
-    logger.info("  cache agreement on the overlap: %d shared dates, %d shared "
-                "items, %s -> %s", len(ratio), len(items),
-                min(dates), max(dates))
-    logger.info("  served/calibration median sigma on SHARED rows: p05 %.3f  "
-                "p50 %.3f  p95 %.3f  (1.000 = the caches agree)",
-                ratio.quantile(0.05), ratio.median(), ratio.quantile(0.95))
+    logger.info(
+        "  cache agreement on the overlap: %d shared dates, %d shared items, %s -> %s",
+        len(ratio),
+        len(items),
+        min(dates),
+        max(dates),
+    )
+    logger.info(
+        "  served/calibration median sigma on SHARED rows: p05 %.3f  p50 %.3f  p95 %.3f  (1.000 = the caches agree)",
+        ratio.quantile(0.05),
+        ratio.median(),
+        ratio.quantile(0.95),
+    )
     # WHERE they disagree decides whether the direct leg is usable. The rolling
     # std is over 60 ROWS, so the shorter cache's opening dates have a shallower
     # window and a mechanically smaller sigma. That contaminates its EARLY dates
@@ -242,15 +248,20 @@ def cache_agreement(cal: pd.DataFrame, srv: pd.DataFrame) -> None:
     # is in fact confined to the opening. Printed so that is checked, not assumed.
     bad = ratio[ratio < 0.95]
     if len(bad):
-        logger.info("  disagreement (<0.95) on %d of %d shared dates, %s -> %s; "
-                    "first shared date %.3f rising to %.3f -- the 60-ROW window "
-                    "filling in the shorter cache",
-                    len(bad), len(ratio), bad.index.min(), bad.index.max(),
-                    ratio.iloc[0], ratio.iloc[-1])
+        logger.info(
+            "  disagreement (<0.95) on %d of %d shared dates, %s -> %s; "
+            "first shared date %.3f rising to %.3f -- the 60-ROW window "
+            "filling in the shorter cache",
+            len(bad),
+            len(ratio),
+            bad.index.min(),
+            bad.index.max(),
+            ratio.iloc[0],
+            ratio.iloc[-1],
+        )
 
 
-def served_sigma_by_date(df: pd.DataFrame, n_dates: int,
-                         cal_items: set) -> pd.DataFrame:
+def served_sigma_by_date(df: pd.DataFrame, n_dates: int, cal_items: set) -> pd.DataFrame:
     """Per-anchor-date `sigma` distribution on the most recent dates.
 
     NOTE `sigma` CARRIES NO HORIZON TERM. It is `price_std_60d / price` at the
@@ -272,11 +283,17 @@ def served_sigma_by_date(df: pd.DataFrame, n_dates: int,
             continue
         c = sl.loc[sl["item_id"].isin(cal_items), "sigma"].to_numpy(dtype=float)
         c = c[np.isfinite(c) & (c > 0)]
-        rows.append({"date": pd.Timestamp(d), "n": s.size,
-                     "median_sigma": float(np.median(s)),
-                     "n_common": c.size,
-                     "median_sigma_common": float(np.median(c)) if c.size else np.nan,
-                     "sigma": s, "sigma_common": c})
+        rows.append(
+            {
+                "date": pd.Timestamp(d),
+                "n": s.size,
+                "median_sigma": float(np.median(s)),
+                "n_common": c.size,
+                "median_sigma_common": float(np.median(c)) if c.size else np.nan,
+                "sigma": s,
+                "sigma_common": c,
+            }
+        )
     return pd.DataFrame(rows)
 
 
@@ -284,13 +301,12 @@ def served_sigma_by_date(df: pd.DataFrame, n_dates: int,
 # main
 # --------------------------------------------------------------------------- #
 
+
 def main() -> int:
     logging.basicConfig(level=logging.INFO, format="%(message)s")
     ap = argparse.ArgumentParser(description=__doc__)
-    ap.add_argument("--voted", default=None,
-                    help="calibration-side panel (default: longest span)")
-    ap.add_argument("--served", default=None,
-                    help="served-side panel (default: newest last date)")
+    ap.add_argument("--voted", default=None, help="calibration-side panel (default: longest span)")
+    ap.add_argument("--served", default=None, help="served-side panel (default: newest last date)")
     ap.add_argument("--horizons", default="3,7,14,30")
     ap.add_argument("--out", default="marginal_coverage_attribution.csv")
     args = ap.parse_args()
@@ -299,8 +315,11 @@ def main() -> int:
     logger.info("CALIBRATION panel")
     cal = load_panel(cal_path)
     floor, cap = sigma_bounds_for_panel(cal)
-    logger.info("sigma clip: floor=%.6f cap=%.6f (this panel's own, applied to "
-                "BOTH sides -- read ratios, not levels)", floor, cap)
+    logger.info(
+        "sigma clip: floor=%.6f cap=%.6f (this panel's own, applied to BOTH sides -- read ratios, not levels)",
+        floor,
+        cap,
+    )
 
     srv_path = served_panel_path(args.served)
     served = pd.DataFrame()
@@ -308,11 +327,9 @@ def main() -> int:
         logger.info("")
         logger.info("SERVED panel (direct sigma, not half_pct/q_hat)")
         srv = sigma_panel(srv_path, floor, cap)
-        cal_sig = cal.assign(sigma=conformal.sigma_from_columns(
-            cal["price_std_60d"], cal["price"], floor, cap))
+        cal_sig = cal.assign(sigma=conformal.sigma_from_columns(cal["price_std_60d"], cal["price"], floor, cap))
         cache_agreement(cal_sig[["item_id", "date", "sigma"]], srv)
-        served = served_sigma_by_date(srv, RECENT_DATES_FOR_SERVED,
-                                      set(cal["item_id"]))
+        served = served_sigma_by_date(srv, RECENT_DATES_FOR_SERVED, set(cal["item_id"]))
     else:
         logger.warning("no distinct served-side panel; the direct leg is skipped")
 
@@ -327,32 +344,31 @@ def main() -> int:
         dates = pd.to_datetime(sc["date"]).to_numpy()
         n_dates = len(np.unique(dates))
         logger.info("")
-        logger.info("=== h=%dd: %s rows, %d anchor dates ===", h,
-                    f"{len(sc):,}", n_dates)
+        logger.info("=== h=%dd: %s rows, %d anchor dates ===", h, f"{len(sc):,}", n_dates)
         if n_dates < MIN_DATES:
             logger.warning("  VOID: %d dates < %d required", n_dates, MIN_DATES)
             continue
 
         q_hat = conformal.calibrate(resid, sigma)
         curve = CoverageCurve(resid, sigma, q_hat)
-        flat = CoverageCurve(resid, sigma, q_hat, beta=1.0)   # the placebo
+        flat = CoverageCurve(resid, sigma, q_hat, beta=1.0)  # the placebo
         cal_med = float(np.median(sigma))
-        logger.info("  q_hat=%.2f  beta=%.3f  median sigma=%.4f",
-                    q_hat, curve.beta, cal_med)
+        logger.info("  q_hat=%.2f  beta=%.3f  median sigma=%.4f", q_hat, curve.beta, cal_med)
 
         # ---- V: does the model reproduce the bins it is fitted on? ----------
         emp_cov, dec = empirical_decile_coverage(resid, sigma, q_hat)
         c_all = curve(sigma)
         mod_cov = np.array([c_all[dec == k].mean() for k in range(N_DECILES)])
         v_err = float(np.mean(np.abs(mod_cov - emp_cov))) * 100.0
-        logger.info("  V empirical decile cov  %s",
-                    " ".join(f"{v * 100:.0f}" for v in emp_cov))
-        logger.info("  V modelled  decile cov  %s   MAE=%.2fpp  %s",
-                    " ".join(f"{v * 100:.0f}" for v in mod_cov), v_err,
-                    "PASS" if v_err <= VALIDITY_BAR_PP else "FAIL")
+        logger.info("  V empirical decile cov  %s", " ".join(f"{v * 100:.0f}" for v in emp_cov))
+        logger.info(
+            "  V modelled  decile cov  %s   MAE=%.2fpp  %s",
+            " ".join(f"{v * 100:.0f}" for v in mod_cov),
+            v_err,
+            "PASS" if v_err <= VALIDITY_BAR_PP else "FAIL",
+        )
         base = curve.marginal(sigma)
-        logger.info("  model marginal on calibration sigma: %.2f%% "
-                    "(construction: 80%%)", base * 100)
+        logger.info("  model marginal on calibration sigma: %.2f%% (construction: 80%%)", base * 100)
 
         # ---- A: the published shift, and the placebo -------------------------
         obs = OBSERVED_MARGINAL[h]
@@ -361,54 +377,72 @@ def main() -> int:
         flat_pub = flat.marginal(shifted_sigma(sigma, k_pub, floor, cap))
         flat_move = abs(flat_pub - flat.marginal(sigma)) * 100.0
         a_pub = ((pred_pub - TARGET) / (obs - TARGET)) if obs != TARGET else float("nan")
-        logger.info("  A published k=%.2f -> predicted marginal %.2f%%  "
-                    "(+%.2fpp of the +%.2fpp excess, A=%.3f)",
-                    k_pub, pred_pub * 100, (pred_pub - TARGET) * 100,
-                    (obs - TARGET) * 100, a_pub)
-        logger.info("  P placebo beta=1.0 at the same k moves marginal by "
-                    "%.4fpp  %s", flat_move,
-                    "PASS" if flat_move <= 0.05 else "VOID")
+        logger.info(
+            "  A published k=%.2f -> predicted marginal %.2f%%  (+%.2fpp of the +%.2fpp excess, A=%.3f)",
+            k_pub,
+            pred_pub * 100,
+            (pred_pub - TARGET) * 100,
+            (obs - TARGET) * 100,
+            a_pub,
+        )
+        logger.info(
+            "  P placebo beta=1.0 at the same k moves marginal by %.4fpp  %s",
+            flat_move,
+            "PASS" if flat_move <= 0.05 else "VOID",
+        )
 
         # ---- K: what shift would the whole excess need? ---------------------
         k_star = solve_k(curve, sigma, obs, floor, cap)
-        clipped_at_star = (float(np.mean(sigma * k_star >= cap)) * 100.0
-                           if np.isfinite(k_star) else float("nan"))
-        logger.info("  K k* for the FULL excess (%.1f%%): %s   "
-                    "(rows at the cap under k*: %s)",
-                    obs * 100,
-                    f"{k_star:.2f}x" if np.isfinite(k_star) else "UNREACHABLE",
-                    f"{clipped_at_star:.1f}%" if np.isfinite(k_star) else "n/a")
+        clipped_at_star = float(np.mean(sigma * k_star >= cap)) * 100.0 if np.isfinite(k_star) else float("nan")
+        logger.info(
+            "  K k* for the FULL excess (%.1f%%): %s   (rows at the cap under k*: %s)",
+            obs * 100,
+            f"{k_star:.2f}x" if np.isfinite(k_star) else "UNREACHABLE",
+            f"{clipped_at_star:.1f}%" if np.isfinite(k_star) else "n/a",
+        )
 
         # The shift grid, so the curve's whole shape is on the record.
         grid = [0.8, 0.9, 1.0, 1.1, 1.2, 1.3, 1.5, 2.0, 3.0, 5.0]
-        logger.info("  shift grid  %s", "  ".join(
-            f"{k:g}x={curve.marginal(shifted_sigma(sigma, k, floor, cap)) * 100:.1f}%"
-            for k in grid))
+        logger.info(
+            "  shift grid  %s",
+            "  ".join(f"{k:g}x={curve.marginal(shifted_sigma(sigma, k, floor, cap)) * 100:.1f}%" for k in grid),
+        )
 
         # ---- F: does the sigma mix predict realised per-date coverage? -------
-        covered = (np.abs(resid) / sigma <= q_hat)
-        by_date = pd.DataFrame({"date": dates, "covered": covered,
-                                "pred": c_all, "sigma": sigma}).groupby("date")
-        agg = by_date.agg(n=("covered", "size"), realised=("covered", "mean"),
-                          predicted=("pred", "mean"),
-                          med_sigma=("sigma", "median"))
+        covered = np.abs(resid) / sigma <= q_hat
+        by_date = pd.DataFrame({"date": dates, "covered": covered, "pred": c_all, "sigma": sigma}).groupby("date")
+        agg = by_date.agg(
+            n=("covered", "size"),
+            realised=("covered", "mean"),
+            predicted=("pred", "mean"),
+            med_sigma=("sigma", "median"),
+        )
         agg = agg[agg["n"] >= MIN_ROWS_PER_DATE]
         f_corr = float(agg["realised"].corr(agg["predicted"]))
-        logger.info("  F per-date: realised cov %.1f-%.1f%% (sd %.1fpp), "
-                    "sigma-mix predicted %.1f-%.1f%% (sd %.1fpp), corr=%+.3f  %s",
-                    agg["realised"].min() * 100, agg["realised"].max() * 100,
-                    agg["realised"].std() * 100,
-                    agg["predicted"].min() * 100, agg["predicted"].max() * 100,
-                    agg["predicted"].std() * 100, f_corr,
-                    "PASS" if f_corr > 0 else "fail")
+        logger.info(
+            "  F per-date: realised cov %.1f-%.1f%% (sd %.1fpp), "
+            "sigma-mix predicted %.1f-%.1f%% (sd %.1fpp), corr=%+.3f  %s",
+            agg["realised"].min() * 100,
+            agg["realised"].max() * 100,
+            agg["realised"].std() * 100,
+            agg["predicted"].min() * 100,
+            agg["predicted"].max() * 100,
+            agg["predicted"].std() * 100,
+            f_corr,
+            "PASS" if f_corr > 0 else "fail",
+        )
 
         # The natural range of k across the panel's own dates -- the ceiling the
         # inverse leg is compared against.
         k_dates = agg["med_sigma"] / cal_med
-        logger.info("  K natural per-date sigma-median ratio: min %.2f  "
-                    "p05 %.2f  p50 %.2f  p95 %.2f  MAX %.2f",
-                    k_dates.min(), k_dates.quantile(0.05), k_dates.median(),
-                    k_dates.quantile(0.95), k_dates.max())
+        logger.info(
+            "  K natural per-date sigma-median ratio: min %.2f  p05 %.2f  p50 %.2f  p95 %.2f  MAX %.2f",
+            k_dates.min(),
+            k_dates.quantile(0.05),
+            k_dates.median(),
+            k_dates.quantile(0.95),
+            k_dates.max(),
+        )
 
         # THE ARTIFACT CONTROL for the direct leg. The served side comes from a
         # DIFFERENT voted cache, so an elevated served ratio could be a property
@@ -417,10 +451,14 @@ def main() -> int:
         # they are already elevated, the ratio is continuous across the two
         # caches and the shift is real.
         tail_k = k_dates.tail(RECENT_DATES_FOR_SERVED)
-        logger.info("  K calibration panel's own last %d dates: ratio %.2f-%.2f "
-                    "(ends %s) -- artifact control for the direct leg",
-                    len(tail_k), tail_k.min(), tail_k.max(),
-                    pd.Timestamp(agg.index.max()).date())
+        logger.info(
+            "  K calibration panel's own last %d dates: ratio %.2f-%.2f "
+            "(ends %s) -- artifact control for the direct leg",
+            len(tail_k),
+            tail_k.min(),
+            tail_k.max(),
+            pd.Timestamp(agg.index.max()).date(),
+        )
 
         # ---- the served side, measured directly -----------------------------
         k_direct = float("nan")
@@ -430,45 +468,63 @@ def main() -> int:
             k_direct = last["median_sigma"] / cal_med
             pred_direct = curve.marginal(np.clip(last["sigma"], floor, cap))
             ratios = served["median_sigma"] / cal_med
-            logger.info("  D direct served sigma on %s (n=%d): median %.4f "
-                        "= %.2fx calibration  -> predicted marginal %.2f%%  "
-                        "(A=%.3f)",
-                        last["date"].date(), int(last["n"]),
-                        last["median_sigma"], k_direct, pred_direct * 100,
-                        (pred_direct - TARGET) / (obs - TARGET))
-            logger.info("  D last %d served dates: ratio %.2f-%.2f, predicted "
-                        "marginal %.1f-%.1f%%",
-                        len(served), ratios.min(), ratios.max(),
-                        min(curve.marginal(np.clip(s, floor, cap))
-                            for s in served["sigma"]) * 100,
-                        max(curve.marginal(np.clip(s, floor, cap))
-                            for s in served["sigma"]) * 100)
+            logger.info(
+                "  D direct served sigma on %s (n=%d): median %.4f "
+                "= %.2fx calibration  -> predicted marginal %.2f%%  "
+                "(A=%.3f)",
+                last["date"].date(),
+                int(last["n"]),
+                last["median_sigma"],
+                k_direct,
+                pred_direct * 100,
+                (pred_direct - TARGET) / (obs - TARGET),
+            )
+            logger.info(
+                "  D last %d served dates: ratio %.2f-%.2f, predicted marginal %.1f-%.1f%%",
+                len(served),
+                ratios.min(),
+                ratios.max(),
+                min(curve.marginal(np.clip(s, floor, cap)) for s in served["sigma"]) * 100,
+                max(curve.marginal(np.clip(s, floor, cap)) for s in served["sigma"]) * 100,
+            )
             if last["n_common"]:
                 k_common = last["median_sigma_common"] / cal_med
-                pred_common = curve.marginal(
-                    np.clip(last["sigma_common"], floor, cap))
-                logger.info("  D same date, calibration items only (n=%d): "
-                            "%.2fx -> %.2f%% (A=%.3f) -- cohort composition "
-                            "removed", int(last["n_common"]), k_common,
-                            pred_common * 100,
-                            (pred_common - TARGET) / (obs - TARGET))
+                pred_common = curve.marginal(np.clip(last["sigma_common"], floor, cap))
+                logger.info(
+                    "  D same date, calibration items only (n=%d): "
+                    "%.2fx -> %.2f%% (A=%.3f) -- cohort composition "
+                    "removed",
+                    int(last["n_common"]),
+                    k_common,
+                    pred_common * 100,
+                    (pred_common - TARGET) / (obs - TARGET),
+                )
 
-        rows.append({
-            "horizon": h, "n_rows": len(sc), "n_dates": n_dates,
-            "q_hat": q_hat, "beta": curve.beta, "cal_median_sigma": cal_med,
-            "V_decile_mae_pp": v_err,
-            "model_marginal_on_cal": base,
-            "observed_marginal": obs,
-            "published_k": k_pub, "A_pred_marginal_published": pred_pub,
-            "A_fraction_published": a_pub,
-            "P_placebo_move_pp": flat_move,
-            "K_k_star": k_star,
-            "K_natural_k_max": float(k_dates.max()),
-            "F_corr_date": f_corr,
-            "D_k_direct": k_direct, "D_pred_marginal_direct": pred_direct,
-            "D_A_fraction_direct": ((pred_direct - TARGET) / (obs - TARGET)
-                                    if np.isfinite(pred_direct) else float("nan")),
-        })
+        rows.append(
+            {
+                "horizon": h,
+                "n_rows": len(sc),
+                "n_dates": n_dates,
+                "q_hat": q_hat,
+                "beta": curve.beta,
+                "cal_median_sigma": cal_med,
+                "V_decile_mae_pp": v_err,
+                "model_marginal_on_cal": base,
+                "observed_marginal": obs,
+                "published_k": k_pub,
+                "A_pred_marginal_published": pred_pub,
+                "A_fraction_published": a_pub,
+                "P_placebo_move_pp": flat_move,
+                "K_k_star": k_star,
+                "K_natural_k_max": float(k_dates.max()),
+                "F_corr_date": f_corr,
+                "D_k_direct": k_direct,
+                "D_pred_marginal_direct": pred_direct,
+                "D_A_fraction_direct": (
+                    (pred_direct - TARGET) / (obs - TARGET) if np.isfinite(pred_direct) else float("nan")
+                ),
+            }
+        )
 
     if not rows:
         logger.error("no results")
@@ -477,27 +533,32 @@ def main() -> int:
     out.to_csv(args.out, index=False)
 
     logger.info("")
-    logger.info("PRE-REGISTERED VERDICT "
-                "(docs/research/2026-08-12-marginal-coverage-attribution-preregistration.md)")
-    logger.info("  V validity     PASS at %d/%d horizons (MAE <= %.0fpp)",
-                int((out["V_decile_mae_pp"] <= VALIDITY_BAR_PP).sum()),
-                len(out), VALIDITY_BAR_PP)
-    logger.info("  P placebo      max move %.4fpp -> %s",
-                out["P_placebo_move_pp"].max(),
-                "PASS" if out["P_placebo_move_pp"].max() <= 0.05 else "VOID")
-    logger.info("  F footprint    positive at %d/%d horizons",
-                int((out["F_corr_date"] > 0).sum()), len(out))
-    for col, label in (("A_fraction_published", "published k"),
-                       ("D_A_fraction_direct", "direct k")):
+    logger.info("PRE-REGISTERED VERDICT (docs/research/2026-08-12-marginal-coverage-attribution-preregistration.md)")
+    logger.info(
+        "  V validity     PASS at %d/%d horizons (MAE <= %.0fpp)",
+        int((out["V_decile_mae_pp"] <= VALIDITY_BAR_PP).sum()),
+        len(out),
+        VALIDITY_BAR_PP,
+    )
+    logger.info(
+        "  P placebo      max move %.4fpp -> %s",
+        out["P_placebo_move_pp"].max(),
+        "PASS" if out["P_placebo_move_pp"].max() <= 0.05 else "VOID",
+    )
+    logger.info("  F footprint    positive at %d/%d horizons", int((out["F_corr_date"] > 0).sum()), len(out))
+    for col, label in (("A_fraction_published", "published k"), ("D_A_fraction_direct", "direct k")):
         a = out[col]
         n_mat = int((a >= 0.50).sum())
         n_part = int(((a >= 0.20) & (a < 0.50)).sum())
-        verdict = ("MATERIAL" if n_mat >= 3 else
-                   "PARTIAL" if n_mat + n_part >= 3 else
-                   "REFUTED as a primary cause")
-        logger.info("  A on %-11s A = %s -> material %d/4, partial %d/4 -> %s",
-                    label, " ".join(f"{v:+.2f}" for v in a), n_mat, n_part,
-                    verdict)
+        verdict = "MATERIAL" if n_mat >= 3 else "PARTIAL" if n_mat + n_part >= 3 else "REFUTED as a primary cause"
+        logger.info(
+            "  A on %-11s A = %s -> material %d/4, partial %d/4 -> %s",
+            label,
+            " ".join(f"{v:+.2f}" for v in a),
+            n_mat,
+            n_part,
+            verdict,
+        )
     logger.info("")
     logger.info("wrote %s", args.out)
     return 0

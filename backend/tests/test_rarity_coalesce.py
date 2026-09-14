@@ -20,11 +20,11 @@ Two constraints on how the two sources combine:
   `distinguished`. So the ingest has to emit the token too, which is what
   `rarity_token` covers here.
 """
+
 from __future__ import annotations
 
 import pandas as pd
 import pytest
-
 from scripts.backfill_supply_metadata import coalesce_rarity
 from scripts.ingest_bymykel_metadata import rarity_rank, rarity_token
 
@@ -32,20 +32,23 @@ from scripts.ingest_bymykel_metadata import rarity_rank, rarity_token
 class TestRarityToken:
     """The ByMykel rarity name, mapped onto the repo's existing token set."""
 
-    @pytest.mark.parametrize("name,token", [
-        ("Covert", "covert"),
-        ("Classified", "classified"),
-        ("Restricted", "restricted"),
-        ("Mil-Spec Grade", "milspec"),
-        ("Industrial Grade", "industrial"),
-        ("Consumer Grade", "consumer"),
-        ("Base Grade", "base"),
-        ("High Grade", "high_grade"),
-        ("Remarkable", "remarkable"),
-        ("Exotic", "exotic"),
-        ("Extraordinary", "extraordinary"),
-        ("Master", "master"),
-    ])
+    @pytest.mark.parametrize(
+        "name,token",
+        [
+            ("Covert", "covert"),
+            ("Classified", "classified"),
+            ("Restricted", "restricted"),
+            ("Mil-Spec Grade", "milspec"),
+            ("Industrial Grade", "industrial"),
+            ("Consumer Grade", "consumer"),
+            ("Base Grade", "base"),
+            ("High Grade", "high_grade"),
+            ("Remarkable", "remarkable"),
+            ("Exotic", "exotic"),
+            ("Extraordinary", "extraordinary"),
+            ("Master", "master"),
+        ],
+    )
     def test_maps_bymykel_names_onto_steam_tokens(self, name, token):
         assert rarity_token({"name": name}) == token
 
@@ -58,8 +61,7 @@ class TestRarityToken:
         no token at all — every reader picks one or the other.
         """
         for name in ("Covert", "Mil-Spec Grade", "High Grade", "Contraband"):
-            assert (rarity_token({"name": name}) is None) == \
-                   (rarity_rank({"name": name}) is None)
+            assert (rarity_token({"name": name}) is None) == (rarity_rank({"name": name}) is None)
 
     @pytest.mark.parametrize("bad", [None, {}, {"name": ""}, {"name": "Nonsense"}, "Covert"])
     def test_unmappable_input_yields_none(self, bad):
@@ -69,26 +71,23 @@ class TestRarityToken:
 class TestCoalesceRarity:
     @staticmethod
     def _steam(rows):
-        return pd.DataFrame(rows, columns=["item_slug", "rarity", "rarity_rank",
-                                           "weapon_type"])
+        return pd.DataFrame(rows, columns=["item_slug", "rarity", "rarity_rank", "weapon_type"])
 
     @staticmethod
     def _bymykel(rows):
-        return pd.DataFrame(rows, columns=["item_slug", "rarity_meta",
-                                           "rarity_meta_rank"])
+        return pd.DataFrame(rows, columns=["item_slug", "rarity_meta", "rarity_meta_rank"])
 
     def test_fills_an_empty_steam_rarity(self):
         out = coalesce_rarity(
             self._steam([("AK-47 | Asiimov (Minimal Wear)", None, None, "rifle")]),
-            self._bymykel([("AK-47 | Asiimov (Minimal Wear)", "covert", 6)]))
+            self._bymykel([("AK-47 | Asiimov (Minimal Wear)", "covert", 6)]),
+        )
         row = out.iloc[0]
         assert row["rarity"] == "covert"
         assert row["rarity_rank"] == 6
 
     def test_does_not_overwrite_a_populated_steam_rarity(self):
-        out = coalesce_rarity(
-            self._steam([("X", "classified", 5, "rifle")]),
-            self._bymykel([("X", "covert", 6)]))
+        out = coalesce_rarity(self._steam([("X", "classified", 5, "rifle")]), self._bymykel([("X", "covert", 6)]))
         assert out.iloc[0]["rarity"] == "classified"
         assert out.iloc[0]["rarity_rank"] == 5
 
@@ -96,27 +95,27 @@ class TestCoalesceRarity:
         """786 of the fills need this — the two files disagree on key format."""
         out = coalesce_rarity(
             self._steam([("sg-553-darkwing-field-tested", None, None, "rifle")]),
-            self._bymykel([("SG 553 | Darkwing (Field-Tested)", "restricted", 4)]))
+            self._bymykel([("SG 553 | Darkwing (Field-Tested)", "restricted", 4)]),
+        )
         assert out.iloc[0]["rarity"] == "restricted"
 
     def test_leaves_a_genuine_miss_null(self):
         out = coalesce_rarity(
-            self._steam([("nothing-knows-this", None, None, None)]),
-            self._bymykel([("Other", "covert", 6)]))
+            self._steam([("nothing-knows-this", None, None, None)]), self._bymykel([("Other", "covert", 6)])
+        )
         assert pd.isna(out.iloc[0]["rarity"])
         assert pd.isna(out.iloc[0]["rarity_rank"])
 
     def test_base_grade_keeps_rank_zero_through_the_fill(self):
         """Rank 0 is a real value; the fill must not treat it as absent."""
         out = coalesce_rarity(
-            self._steam([("Some Capsule", None, None, "case")]),
-            self._bymykel([("Some Capsule", "base", 0)]))
+            self._steam([("Some Capsule", None, None, "case")]), self._bymykel([("Some Capsule", "base", 0)])
+        )
         assert out.iloc[0]["rarity"] == "base"
         assert out.iloc[0]["rarity_rank"] == 0
 
     def test_row_count_and_order_are_preserved(self):
-        steam = self._steam([("a", None, None, None), ("b", "covert", 6, "rifle"),
-                             ("c", None, None, None)])
+        steam = self._steam([("a", None, None, None), ("b", "covert", 6, "rifle"), ("c", None, None, None)])
         out = coalesce_rarity(steam, self._bymykel([("a", "milspec", 3)]))
         assert list(out["item_slug"]) == ["a", "b", "c"]
 
@@ -130,8 +129,8 @@ class TestCoalesceRarity:
         as `6.0` and `items.rarity_rank` (an Integer column) receives a float.
         """
         out = coalesce_rarity(
-            self._steam([("a", None, None, None), ("b", "covert", 6, None)]),
-            self._bymykel([("a", "milspec", 3)]))
+            self._steam([("a", None, None, None), ("b", "covert", 6, None)]), self._bymykel([("a", "milspec", 3)])
+        )
         assert str(out["rarity_rank"].dtype) == "Int64"
         assert out.loc[out["item_slug"] == "b", "rarity_rank"].iloc[0] == 6
 
@@ -140,6 +139,6 @@ class TestCoalesceRarity:
         has to be observable rather than inferred from a diff.
         """
         out = coalesce_rarity(
-            self._steam([("a", None, None, None), ("b", "covert", 6, None)]),
-            self._bymykel([("a", "milspec", 3)]))
+            self._steam([("a", None, None, None), ("b", "covert", 6, None)]), self._bymykel([("a", "milspec", 3)])
+        )
         assert out.attrs.get("rarity_filled_from_bymykel") == 1

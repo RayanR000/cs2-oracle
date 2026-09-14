@@ -11,25 +11,20 @@ Usage:
     python scripts/forecast_prices.py --compare-regime  # A/B test regime vs global-only + backtest
 """
 
-import sys
-import os
 import json
-import math
 import logging
+import os
+import sys
+from datetime import UTC, date, datetime
 from pathlib import Path
-from datetime import datetime, date, timezone
-from typing import Optional
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from database import SessionLocal, ItemForecast, Item
-from models.forecaster import ItemForecaster, IncompatibleModelArtifact
+from database import ItemForecast, SessionLocal
+from models.forecaster import IncompatibleModelArtifact, ItemForecaster
 from sqlalchemy import text
 
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-)
+logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s")
 logger = logging.getLogger("forecast_prices")
 
 MODEL_VERSION = "lgbm-v3"
@@ -73,23 +68,17 @@ DEFAULT_TRAIN_MIN_MEDIAN_PRICE = 1.0
 DEFAULT_SERVED_COHORT_SHARE = None
 
 
-def _served_cohort_share() -> Optional[float]:
+def _served_cohort_share() -> float | None:
     raw = os.environ.get("TRAIN_SERVED_COHORT_SHARE")
     if not raw:
         return DEFAULT_SERVED_COHORT_SHARE
     try:
         share = float(raw)
     except ValueError:
-        logger.warning(
-            f"TRAIN_SERVED_COHORT_SHARE={raw!r} is not a number; using "
-            f"{DEFAULT_SERVED_COHORT_SHARE}"
-        )
+        logger.warning(f"TRAIN_SERVED_COHORT_SHARE={raw!r} is not a number; using {DEFAULT_SERVED_COHORT_SHARE}")
         return DEFAULT_SERVED_COHORT_SHARE
     if not 0.0 < share < 1.0:
-        logger.warning(
-            f"TRAIN_SERVED_COHORT_SHARE={share} is not in (0, 1); using "
-            f"{DEFAULT_SERVED_COHORT_SHARE}"
-        )
+        logger.warning(f"TRAIN_SERVED_COHORT_SHARE={share} is not in (0, 1); using {DEFAULT_SERVED_COHORT_SHARE}")
         return DEFAULT_SERVED_COHORT_SHARE
     logger.info(
         f"TRAIN_SERVED_COHORT_SHARE override: {share:.2f} of the direction "
@@ -101,7 +90,7 @@ def _served_cohort_share() -> Optional[float]:
     return share
 
 
-def _model_dir() -> Optional[str]:
+def _model_dir() -> str | None:
     """Override where model artifacts are read from and written to.
 
     None keeps ItemForecaster's default (models/saved_models/), which is the
@@ -124,7 +113,7 @@ def _model_dir() -> Optional[str]:
     return str(path)
 
 
-def _train_horizons() -> Optional[list]:
+def _train_horizons() -> list | None:
     """`TRAIN_HORIZONS=30` or `TRAIN_HORIZONS=3,7` restricts which horizons train.
 
     Exists for the scheduled diagnostics job, which turns the CV diagnostic
@@ -144,16 +133,15 @@ def _train_horizons() -> Optional[list]:
     try:
         picked = [int(tok) for tok in raw.split(",") if tok.strip()]
     except ValueError:
-        logger.warning(f"TRAIN_HORIZONS={raw!r} is not a comma-separated int "
-                       f"list; training every horizon")
+        logger.warning(f"TRAIN_HORIZONS={raw!r} is not a comma-separated int list; training every horizon")
         return None
     unknown = [h for h in picked if h not in ItemForecaster.HORIZONS]
     if unknown or not picked:
-        logger.warning(f"TRAIN_HORIZONS={raw!r} names unknown horizons "
-                       f"{unknown or '[]'}; training every horizon")
+        logger.warning(f"TRAIN_HORIZONS={raw!r} names unknown horizons {unknown or '[]'}; training every horizon")
         return None
-    logger.info(f"TRAIN_HORIZONS override: training {picked} only — the saved "
-                f"artifact will be PARTIAL and must not be served")
+    logger.info(
+        f"TRAIN_HORIZONS override: training {picked} only — the saved artifact will be PARTIAL and must not be served"
+    )
     return picked
 
 
@@ -164,16 +152,10 @@ def _train_feature_rows() -> int:
     try:
         budget = int(raw)
     except ValueError:
-        logger.warning(
-            f"TRAIN_FEATURE_ROWS={raw!r} is not an integer; using "
-            f"{DEFAULT_TRAIN_FEATURE_ROWS:,}"
-        )
+        logger.warning(f"TRAIN_FEATURE_ROWS={raw!r} is not an integer; using {DEFAULT_TRAIN_FEATURE_ROWS:,}")
         return DEFAULT_TRAIN_FEATURE_ROWS
     if budget <= 0:
-        logger.warning(
-            f"TRAIN_FEATURE_ROWS={budget} is not positive; using "
-            f"{DEFAULT_TRAIN_FEATURE_ROWS:,}"
-        )
+        logger.warning(f"TRAIN_FEATURE_ROWS={budget} is not positive; using {DEFAULT_TRAIN_FEATURE_ROWS:,}")
         return DEFAULT_TRAIN_FEATURE_ROWS
     if budget != DEFAULT_TRAIN_FEATURE_ROWS:
         logger.info(
@@ -184,7 +166,7 @@ def _train_feature_rows() -> int:
     return budget
 
 
-def _train_min_median_price() -> Optional[float]:
+def _train_min_median_price() -> float | None:
     """Median-price floor on the training universe, or None for no filter.
 
     Shipped at $1 on 2026-08-08 — step 7 of
@@ -260,14 +242,11 @@ def _train_per_item_rows() -> bool:
         )
         return True
     if raw not in {"0", "false", "no", "off"}:
-        logger.warning(
-            f"TRAIN_PER_ITEM_ROWS={raw!r} is not a boolean; leaving per-item "
-            f"row sampling off"
-        )
+        logger.warning(f"TRAIN_PER_ITEM_ROWS={raw!r} is not a boolean; leaving per-item row sampling off")
     return False
 
 
-def _model_age_days(forecaster) -> Optional[int]:
+def _model_age_days(forecaster) -> int | None:
     """Days since the currently saved model was trained, or None if unknown."""
     meta_path = os.path.join(forecaster.model_dir, "meta.json")
     if not os.path.exists(meta_path):
@@ -284,11 +263,12 @@ def _model_age_days(forecaster) -> Optional[int]:
         trained = datetime.fromisoformat(trained_at)
     except ValueError:
         return None
-    return (datetime.now(timezone.utc) - trained).days
+    return (datetime.now(UTC) - trained).days
 
 
-def _write_forecasts_to_db(db, results, model_version, slug_to_id, today,
-                           model_config=None, forecast_date_override=None):
+def _write_forecasts_to_db(
+    db, results, model_version, slug_to_id, today, model_config=None, forecast_date_override=None
+):
     """Write forecast results to the item_forecasts table. Returns count.
 
     `model_version` is the served artifact's IDENTITY and nothing else.
@@ -335,25 +315,27 @@ def _write_forecasts_to_db(db, results, model_version, slug_to_id, today,
             forecast_date = anchor_date if isinstance(anchor_date, date) else today
 
         for horizon, fcast in forecasts.items():
-            forecast_rows.append({
-                "item_id": item_id,
-                "forecast_date": forecast_date,
-                "horizon_days": horizon,
-                "price_low": fcast.get("low"),
-                "price_mid": fcast.get("mid"),
-                "price_high": fcast.get("high"),
-                "current_price": current_price,
-                "direction": fcast.get("direction"),
-                "confidence": fcast.get("confidence"),
-                "model_version": model_version,
-                "anchor_clean": anchor_clean,
-                "anchor_wedge_pct": anchor_wedge_pct,
-                # One-sided P(upside move clears round-trip cost); None on an
-                # artifact with no exceedance head. Disclosure field, NULL-safe.
-                "exceed_p": fcast.get("exceed_p"),
-                "anomaly_p": fcast.get("anomaly_p"),
-                "created_at": datetime.now(timezone.utc).replace(tzinfo=None),
-            })
+            forecast_rows.append(
+                {
+                    "item_id": item_id,
+                    "forecast_date": forecast_date,
+                    "horizon_days": horizon,
+                    "price_low": fcast.get("low"),
+                    "price_mid": fcast.get("mid"),
+                    "price_high": fcast.get("high"),
+                    "current_price": current_price,
+                    "direction": fcast.get("direction"),
+                    "confidence": fcast.get("confidence"),
+                    "model_version": model_version,
+                    "anchor_clean": anchor_clean,
+                    "anchor_wedge_pct": anchor_wedge_pct,
+                    # One-sided P(upside move clears round-trip cost); None on an
+                    # artifact with no exceedance head. Disclosure field, NULL-safe.
+                    "exceed_p": fcast.get("exceed_p"),
+                    "anomaly_p": fcast.get("anomaly_p"),
+                    "created_at": datetime.now(UTC).replace(tzinfo=None),
+                }
+            )
 
     if forecast_rows:
         from sqlalchemy.dialects.postgresql import insert as pg_insert
@@ -367,6 +349,7 @@ def _write_forecasts_to_db(db, results, model_version, slug_to_id, today,
             logger.warning("  DB connection stale, reconnecting...")
             db.close()
             from database import SessionLocal
+
             db = SessionLocal()
 
         bind = db.get_bind()
@@ -384,10 +367,9 @@ def _write_forecasts_to_db(db, results, model_version, slug_to_id, today,
         # recorded" and passes it, so dropping these degrades to the old
         # behaviour rather than to an empty ranked surface.
         from sqlalchemy import inspect as sa_inspect
+
         db_cols = {c["name"] for c in sa_inspect(bind).get_columns(table.name)}
-        missing = {c for c in ("anchor_clean", "anchor_wedge_pct", "exceed_p",
-                               "anomaly_p")
-                   if c not in db_cols}
+        missing = {c for c in ("anchor_clean", "anchor_wedge_pct", "exceed_p", "anomaly_p") if c not in db_cols}
         if missing:
             logger.warning(
                 f"  ⚠ item_forecasts is missing {sorted(missing)} — writing "
@@ -396,23 +378,24 @@ def _write_forecasts_to_db(db, results, model_version, slug_to_id, today,
                 f"/opportunities cannot gate on a column that is not there, so "
                 f"it will rank the deviating cohort as before. Run "
                 f"`venv/bin/python -m alembic upgrade head` from backend/ "
-                f"(the `venv/bin/alembic` shim carries a stale shebang).")
+                f"(the `venv/bin/alembic` shim carries a stale shebang)."
+            )
         # Only the DB payload is narrowed. The Parquet mirror below has no
         # schema to violate and `_append_parquet` widens on write, so the
         # disclosure still lands there and the ops read works either way.
-        db_rows = ([{k: v for k, v in r.items() if k not in missing}
-                    for r in forecast_rows] if missing else forecast_rows)
+        db_rows = (
+            [{k: v for k, v in r.items() if k not in missing} for r in forecast_rows] if missing else forecast_rows
+        )
 
         batch_size = 90 if is_sqlite else 5000
         for i in range(0, len(db_rows), batch_size):
-            batch = db_rows[i:i + batch_size]
+            batch = db_rows[i : i + batch_size]
             stmt = insert_stmt(table).values(batch)
             excluded = stmt.excluded
             update_cols = {
                 col.name: getattr(excluded, col.name)
                 for col in table.columns
-                if col.name not in {"id", "item_id", "forecast_date",
-                                    "horizon_days", "created_at"}
+                if col.name not in {"id", "item_id", "forecast_date", "horizon_days", "created_at"}
                 and col.name not in missing
             }
             stmt = stmt.on_conflict_do_update(
@@ -427,10 +410,13 @@ def _write_forecasts_to_db(db, results, model_version, slug_to_id, today,
                     break
                 except Exception as e:
                     if attempt < max_retries - 1:
-                        logger.warning(f"  Batch insert failed (attempt {attempt + 1}/{max_retries}), reconnecting and retrying: {e}")
+                        logger.warning(
+                            f"  Batch insert failed (attempt {attempt + 1}/{max_retries}), reconnecting and retrying: {e}"
+                        )
                         db.rollback()
                         db.close()
                         from database import SessionLocal
+
                         db = SessionLocal()
                     else:
                         logger.error(f"  Batch insert failed after {max_retries} attempts: {e}")
@@ -444,27 +430,28 @@ def _write_forecasts_to_db(db, results, model_version, slug_to_id, today,
         # has no such column.
         id_to_slug = {v: k for k, v in slug_to_id.items()}
         from db.parquet import append_table
+
         append_table(
             "item_forecasts",
-            [{**r,
-              "item_slug": id_to_slug.get(r["item_id"]),
-              "model_config": model_config}
-             for r in forecast_rows],
+            [{**r, "item_slug": id_to_slug.get(r["item_id"]), "model_config": model_config} for r in forecast_rows],
             ["item_id", "forecast_date", "horizon_days"],
         )
 
     return len(forecast_rows)
 
 
-def run_forecast(train_only: bool = False, predict_only: bool = False,
-                 compare_regime: bool = False,
-                 update_bias: bool = False,
-                 predict_smoke: bool = False):
+def run_forecast(
+    train_only: bool = False,
+    predict_only: bool = False,
+    compare_regime: bool = False,
+    update_bias: bool = False,
+    predict_smoke: bool = False,
+):
     db = SessionLocal()
     try:
-        forecaster = ItemForecaster(db_session=db, prune_failed_groups=False,
-                                    served_cohort_share=_served_cohort_share(),
-                                    model_dir=_model_dir())
+        forecaster = ItemForecaster(
+            db_session=db, prune_failed_groups=False, served_cohort_share=_served_cohort_share(), model_dir=_model_dir()
+        )
         # Instance override, so the class default is untouched for anything else
         # importing ItemForecaster in this process.
         _horizons = _train_horizons()
@@ -482,10 +469,7 @@ def run_forecast(train_only: bool = False, predict_only: bool = False,
         except IncompatibleModelArtifact as e:
             if predict_only:
                 raise
-            logger.warning(
-                f"Saved model cache is incompatible ({e}); ignoring it and "
-                f"training from scratch."
-            )
+            logger.warning(f"Saved model cache is incompatible ({e}); ignoring it and training from scratch.")
             has_models = False
 
         force_retrain = os.environ.get("FORCE_RETRAIN") == "1"
@@ -514,14 +498,11 @@ def run_forecast(train_only: bool = False, predict_only: bool = False,
                 # reads a 1-2-forecast-date sample, so it tracks market
                 # direction rather than model decay.
                 if age is None or age >= retrain_interval:
-                    reason = ("model stale" if (age is not None and age >= retrain_interval)
-                              else "unknown age")
+                    reason = "model stale" if (age is not None and age >= retrain_interval) else "unknown age"
                     logger.info(f"Retraining ({reason}): age={age}, interval={retrain_interval}d")
                     do_train = True
                 else:
-                    logger.info(
-                        f"Skipping retrain: model {age}d old (<{retrain_interval}d)"
-                    )
+                    logger.info(f"Skipping retrain: model {age}d old (<{retrain_interval}d)")
         elif predict_only and has_models:
             # Drift is reported but does NOT trigger a retrain. The signal it
             # reads spans 1-2 distinct forecast dates, so it tracks market
@@ -552,10 +533,12 @@ def run_forecast(train_only: bool = False, predict_only: bool = False,
         if do_train:
             if has_models:
                 logger.info("Saved models found, retraining...")
-            forecaster.train(max_rows=TRAIN_HORIZON_MAX_ROWS,
-                             max_feature_rows=_train_feature_rows(),
-                             min_median_price=_train_min_median_price(),
-                             per_item_row_sampling=_train_per_item_rows())
+            forecaster.train(
+                max_rows=TRAIN_HORIZON_MAX_ROWS,
+                max_feature_rows=_train_feature_rows(),
+                min_median_price=_train_min_median_price(),
+                per_item_row_sampling=_train_per_item_rows(),
+            )
             has_models = True
             logger.info("Refreshing DB connection after training...")
             try:
@@ -583,16 +566,18 @@ def run_forecast(train_only: bool = False, predict_only: bool = False,
             n_items = int(results["item_id"].nunique()) if len(results) else 0
             # A row whose `forecasts` dict is empty reached the writer with
             # nothing to write -- the shape failure this mode is looking for.
-            with_forecasts = int(
-                sum(1 for f in results.get("forecasts", []) if f)
-            ) if len(results) else 0
+            with_forecasts = int(sum(1 for f in results.get("forecasts", []) if f)) if len(results) else 0
             logger.info(
                 f"  predict-smoke: {len(results):,} rows, {n_items:,} items, "
                 f"{with_forecasts:,} carrying a non-empty forecast dict"
             )
-            return {"status": "success", "mode": "predict_smoke",
-                    "rows": len(results), "items": n_items,
-                    "with_forecasts": with_forecasts}
+            return {
+                "status": "success",
+                "mode": "predict_smoke",
+                "rows": len(results),
+                "items": n_items,
+                "with_forecasts": with_forecasts,
+            }
 
         if train_only:
             logger.info("Train-only mode, skipping forecast generation.")
@@ -603,9 +588,7 @@ def run_forecast(train_only: bool = False, predict_only: bool = False,
             return {"status": "error", "message": "No trained models"}
 
         # Map item slugs to integer IDs
-        slug_rows = db.execute(
-            text("SELECT id, item_id FROM items WHERE is_backfilled = 1")
-        ).fetchall()
+        slug_rows = db.execute(text("SELECT id, item_id FROM items WHERE is_backfilled = 1")).fetchall()
         slug_to_id = {r.item_id: r.id for r in slug_rows}
         logger.info(f"Loaded {len(slug_to_id)} slug->ID mappings from DB")
         override = os.environ.get("FORECAST_DATE_OVERRIDE")
@@ -627,9 +610,9 @@ def run_forecast(train_only: bool = False, predict_only: bool = False,
         # has one, which is exactly why this has to be observed rather than
         # assumed.
         config_a = "regime" if forecaster.regime_models else "global-only"
-        n_regime = _write_forecasts_to_db(db, results, MODEL_VERSION, slug_to_id,
-                                          today, model_config=config_a,
-                                          forecast_date_override=override_date)
+        n_regime = _write_forecasts_to_db(
+            db, results, MODEL_VERSION, slug_to_id, today, model_config=config_a, forecast_date_override=override_date
+        )
         logger.info(f"Wrote {n_regime} forecasts ({config_a} config) to item_forecasts table")
 
         # Update bias corrections from outcomes if requested
@@ -650,10 +633,15 @@ def run_forecast(train_only: bool = False, predict_only: bool = False,
             logger.info(f"  Cleared {n_cleared} regime model groups")
 
             results_global = forecaster.predict()
-            n_global = _write_forecasts_to_db(db, results_global, MODEL_VERSION,
-                                              slug_to_id, today,
-                                              model_config="global-only",
-                                              forecast_date_override=override_date)
+            n_global = _write_forecasts_to_db(
+                db,
+                results_global,
+                MODEL_VERSION,
+                slug_to_id,
+                today,
+                model_config="global-only",
+                forecast_date_override=override_date,
+            )
             logger.info(f"Wrote {n_global} forecasts (global-only config) to item_forecasts table")
 
             # Run backtest on both configs. They no longer score as separate
@@ -665,6 +653,7 @@ def run_forecast(train_only: bool = False, predict_only: bool = False,
             logger.info("=" * 60)
             try:
                 from scripts.backtest_accuracy import backtest_forecasts
+
                 bt_results = backtest_forecasts(db, today)
                 logger.info(f"Backtest complete: {len(bt_results or [])} accuracy records")
             except Exception as e:
@@ -711,10 +700,13 @@ def main():
     update_bias = "--update-bias" in args
     predict_smoke = "--predict-smoke" in args
 
-    result = run_forecast(train_only=train_only, predict_only=predict_only,
-                          compare_regime=compare_regime,
-                          update_bias=update_bias,
-                          predict_smoke=predict_smoke)
+    result = run_forecast(
+        train_only=train_only,
+        predict_only=predict_only,
+        compare_regime=compare_regime,
+        update_bias=update_bias,
+        predict_smoke=predict_smoke,
+    )
     print(f"RESULT: {result}")
     return 0 if result.get("status") == "success" else 1
 

@@ -6,12 +6,12 @@ properties matter more than the numbers it prints: it runs BEFORE the base is
 overwritten (or it records the answer, not the inputs), and it cannot take down
 a forecast.
 """
+
 import logging
 from pathlib import Path
 
 import pandas as pd
 import pytest
-
 from models.forecaster import ItemForecaster
 
 
@@ -22,8 +22,7 @@ def _frame(anchor="2026-08-04", lags=(0, 0, 1, 5)):
     for i, lag in enumerate(lags):
         last = anchor - pd.Timedelta(lag, "D")
         for k in range(3):
-            rows.append({"item_id": f"item-{i}", "date": last - pd.Timedelta(k, "D"),
-                         "price": 100.0 + k})
+            rows.append({"item_id": f"item-{i}", "date": last - pd.Timedelta(k, "D"), "price": 100.0 + k})
     return pd.DataFrame(rows).sort_values(["item_id", "date"])
 
 
@@ -35,8 +34,7 @@ def _audit_path():
 
     root = P(__file__).resolve().parents[2]
     archive = root / "price-archive"
-    base = (archive / "ops" / "anchor_audit" if archive.is_dir()
-            else root / "backend" / "data")
+    base = archive / "ops" / "anchor_audit" if archive.is_dir() else root / "backend" / "data"
     return base / "anchor_audit_2026-08-04.parquet"
 
 
@@ -54,7 +52,7 @@ def test_it_reports_frame_currency_at_the_anchor(caplog):
         ItemForecaster._audit_serving_anchor(df, _latest(df), pd.Timestamp("2026-08-04"))
     line = next(r.message for r in caplog.records if "Anchor audit @" in r.message)
     assert "2026-08-04" in line
-    assert "50.0% current" in line          # two of four items land on the anchor
+    assert "50.0% current" in line  # two of four items land on the anchor
     assert "median 0d" in line
     assert any("rows per day" in r.message for r in caplog.records)
 
@@ -69,7 +67,7 @@ def test_a_stale_frame_is_visible_as_lag(caplog):
     # No row reaches the anchor day at all — which is the state the hypothesis
     # says the serving path is quoting from.
     assert line.split("audit @")[1].strip().startswith("2026-08-04: 0 of 12")
-    assert "median 4d" in line   # lags 2,3,4,5
+    assert "median 4d" in line  # lags 2,3,4,5
 
 
 def test_it_never_raises(caplog):
@@ -113,11 +111,12 @@ def test_the_per_item_dump_records_inputs_not_the_answer(tmp_path, monkeypatch, 
     monkeypatch.setenv("ANCHOR_AUDIT", "1")
     df = _frame(lags=(lag,))
     latest = _latest(df)
-    latest["_smoothed_price"] = latest["price"] * 1.5     # deliberately different
+    latest["_smoothed_price"] = latest["price"] * 1.5  # deliberately different
     ItemForecaster._audit_serving_anchor(df, latest, pd.Timestamp("2026-08-04"))
     got = pd.read_parquet(_audit_path())
-    assert {"price", "_smoothed_price", "last_obs_date", "n_obs_in_span",
-            "anchor_date", "captured_at"} <= set(got.columns)
+    assert {"price", "_smoothed_price", "last_obs_date", "n_obs_in_span", "anchor_date", "captured_at"} <= set(
+        got.columns
+    )
     assert got["_smoothed_price"].iloc[0] != got["price"].iloc[0]
     _audit_path().unlink()
 
@@ -151,6 +150,7 @@ def test_the_dump_lands_in_the_archive_when_one_exists(monkeypatch, caplog):
 # Recording the answer BESIDE the inputs, never instead of them: the pair is
 # what `test_the_per_item_dump_records_inputs_not_the_answer` protects.
 # ---------------------------------------------------------------------------
+
 
 def test_the_dump_records_the_served_base_beside_the_inputs(monkeypatch):
     """The resolved base has to be in the file, not inferred from it later."""
@@ -218,5 +218,4 @@ def test_an_unpublished_dump_says_so(monkeypatch, caplog, tmp_path):
         ItemForecaster._audit_serving_anchor(df, _latest(df), pd.Timestamp("2026-08-04"))
     assert any("NOT PUBLISHED" in r.message for r in caplog.records)
     assert not any("wrote" in r.message for r in caplog.records)
-    (Path(__file__).resolve().parents[1] / "data"
-     / "anchor_audit_2026-08-04.parquet").unlink()
+    (Path(__file__).resolve().parents[1] / "data" / "anchor_audit_2026-08-04.parquet").unlink()

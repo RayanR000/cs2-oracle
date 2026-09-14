@@ -104,8 +104,8 @@ EXCLUDED_FORECAST_DATES = {
     # MIN_FORECAST_DATES — which is the honest state: there is no valid h=30
     # measurement yet. See docs/research/2026-08-19-deep-model-review.md §3.
     date(2025, 12, 1): "replay (created 2026-07-17); quote matches the 2026-07-18"
-                       " frame, not its nominal date — the only h=30 date, so it"
-                       " carried every h=30 figure",
+    " frame, not its nominal date — the only h=30 date, so it"
+    " carried every h=30 figure",
 }
 
 
@@ -223,8 +223,7 @@ def score_by_staleness(records: list[dict]) -> dict:
             # None rather than 0.0 on an empty band: an empty band has no
             # accuracy, and a zero reads as the model scoring nothing.
             "directional_accuracy": (
-                round(sum(r["direction_correct"] for r in rows) / len(rows) * 100, 2)
-                if rows else None
+                round(sum(r["direction_correct"] for r in rows) / len(rows) * 100, 2) if rows else None
             ),
         }
     return out
@@ -365,15 +364,9 @@ def score_cohort(records: list[dict]) -> tuple[dict, int]:
     interval_total = len(interval_records)
     interval_hits = sum(r["in_interval"] for r in interval_records)
     interval_coverage = (interval_hits / interval_total * 100) if interval_total else 0
-    dollar_hits = sum(
-        r.get("in_interval_dollar", r["in_interval"]) for r in interval_records
-    )
-    interval_coverage_dollar_basis = (
-        (dollar_hits / interval_total * 100) if interval_total else 0
-    )
-    interval_n_served_basis = sum(
-        1 for r in interval_records if r.get("interval_basis_served")
-    )
+    dollar_hits = sum(r.get("in_interval_dollar", r["in_interval"]) for r in interval_records)
+    interval_coverage_dollar_basis = (dollar_hits / interval_total * 100) if interval_total else 0
+    interval_n_served_basis = sum(1 for r in interval_records if r.get("interval_basis_served"))
 
     total_actual = sum(r["actual_price"] for r in records)
     wmape = (sum(r["abs_error"] for r in records) / total_actual * 100) if total_actual > 0 else 0
@@ -381,10 +374,7 @@ def score_cohort(records: list[dict]) -> tuple[dict, int]:
     tier_errors = defaultdict(list)
     for r in records:
         tier_errors[r["price_tier"]].append(r["pct_error"])
-    mape_by_tier = {
-        f"tier_{t}": round(sum(errs) / len(errs), 2)
-        for t, errs in sorted(tier_errors.items())
-    }
+    mape_by_tier = {f"tier_{t}": round(sum(errs) / len(errs), 2) for t, errs in sorted(tier_errors.items())}
 
     # NOTE: this is the always-FLAT call specifically, not the best constant
     # call. It is kept under its original name because the stored series goes
@@ -431,8 +421,7 @@ def score_cohort(records: list[dict]) -> tuple[dict, int]:
 
     high_interval = [r for r in high_conf if r["in_interval"] is not None]
     high_int_cov = (
-        round(sum(r["in_interval"] for r in high_interval) / len(high_interval) * 100, 2)
-        if high_interval else 0
+        round(sum(r["in_interval"] for r in high_interval) / len(high_interval) * 100, 2) if high_interval else 0
     )
 
     # The bootstraps average the raw 0/1 direction_correct indicators, so their
@@ -448,9 +437,7 @@ def score_cohort(records: list[dict]) -> tuple[dict, int]:
     #
     # mae_ci_* is deliberately NOT rescaled: it is in dollars, the same units as
     # mae, and always was.
-    dir_ci_lower, dir_ci_upper = _as_percent(
-        bootstrap_ci([r["direction_correct"] for r in records])
-    )
+    dir_ci_lower, dir_ci_upper = _as_percent(bootstrap_ci([r["direction_correct"] for r in records]))
     mae_ci_lower, mae_ci_upper = bootstrap_ci([r["abs_error"] for r in records])
 
     # Records predating this field score with no date attributed rather than
@@ -475,9 +462,7 @@ def score_cohort(records: list[dict]) -> tuple[dict, int]:
         if raw and r.get("forecast_date") is not None:
             config_dates[raw].add(r["forecast_date"])
     dir_ci_cl_lower, dir_ci_cl_upper = _as_percent(
-        block_bootstrap_ci(
-            [r["direction_correct"] for r in records], forecast_dates
-        )
+        block_bootstrap_ci([r["direction_correct"] for r in records], forecast_dates)
     )
 
     # Serial-correlation-robust Pesaran-Timmermann, computed per forecast date
@@ -493,9 +478,7 @@ def score_cohort(records: list[dict]) -> tuple[dict, int]:
     # The horizon is read off the first record because records are grouped by
     # (horizon, model_version) before they get here, so a cohort cannot mix
     # horizons. A record predating the field yields None, which is out_of_scope.
-    actionable = actionable_metrics(
-        records, records[0].get("horizon_days"), MIN_FORECAST_DATES
-    )
+    actionable = actionable_metrics(records, records[0].get("horizon_days"), MIN_FORECAST_DATES)
 
     metrics = {
         "mae": round(mae, 4),
@@ -506,9 +489,7 @@ def score_cohort(records: list[dict]) -> tuple[dict, int]:
         "directional_accuracy": round(directional_accuracy, 2),
         # The two figures DA must never be quoted without. See the triple
         # comment above.
-        "constant_call_accuracy": (
-            None if constant_call_accuracy is None else round(constant_call_accuracy, 2)
-        ),
+        "constant_call_accuracy": (None if constant_call_accuracy is None else round(constant_call_accuracy, 2)),
         "constant_call_direction": constant_call_direction,
         "realised_down_rate": None if down_rate is None else round(down_rate, 2),
         # Carry-forward split. See the comment above the partition.
@@ -548,9 +529,7 @@ def score_cohort(records: list[dict]) -> tuple[dict, int]:
         "mae_ci_upper": mae_ci_upper,
     }
     if config_dates:
-        metrics["config_dates"] = {
-            k: len(v) for k, v in sorted(config_dates.items())
-        }
+        metrics["config_dates"] = {k: len(v) for k, v in sorted(config_dates.items())}
     metrics.update(pt)
     metrics.update(actionable)
     return metrics, n

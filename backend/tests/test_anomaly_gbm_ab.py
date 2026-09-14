@@ -5,23 +5,25 @@ artificially weak turns a decorative head into an apparent win. Two ways that
 can happen silently — reading val labels, and letting a three-row item post a
 rate of 0.0 or 1.0 — each get a test.
 """
+
 import sys
+from pathlib import Path
+
 import numpy as np
 import pandas as pd
 import pytest
-from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from scripts.anomaly_gbm_ab import item_rate_predictions  # noqa: E402
+from scripts.anomaly_gbm_ab import item_rate_predictions
 
 TARGET = "target_anomaly_7d"
 
 
 def _df(pairs):
-    return pd.DataFrame({"item_id": [i for i, _ in pairs],
-                         TARGET: [v for _, v in pairs]}, dtype=object).astype(
-        {TARGET: float})
+    return pd.DataFrame({"item_id": [i for i, _ in pairs], TARGET: [v for _, v in pairs]}, dtype=object).astype(
+        {TARGET: float}
+    )
 
 
 class TestItemRatePredictions:
@@ -83,15 +85,18 @@ class TestCleanAnomalyLabel:
     @staticmethod
     def _frame(n=40, item="A"):
         rng = np.random.default_rng(0)
-        return pd.DataFrame({
-            "item_id": [item] * n,
-            "date": pd.date_range("2025-01-01", periods=n, freq="D"),
-            "return_7d": rng.normal(0, 5, n),
-            "target_return_7d": rng.normal(0, 5, n),
-        })
+        return pd.DataFrame(
+            {
+                "item_id": [item] * n,
+                "date": pd.date_range("2025-01-01", periods=n, freq="D"),
+                "return_7d": rng.normal(0, 5, n),
+                "target_return_7d": rng.normal(0, 5, n),
+            }
+        )
 
     def test_a_later_row_cannot_change_an_earlier_label(self):
         from scripts.anomaly_gbm_ab import clean_anomaly_label
+
         base = self._frame()
         bumped = base.copy()
         bumped.loc[bumped.index[-1], "return_7d"] = 400.0
@@ -102,15 +107,16 @@ class TestCleanAnomalyLabel:
 
     def test_the_row_s_own_return_is_excluded_from_its_threshold(self):
         from scripts.anomaly_gbm_ab import clean_anomaly_label
+
         base = self._frame()
         bumped = base.copy()
         i = 30
         bumped.loc[bumped.index[i], "return_7d"] = 400.0
-        assert clean_anomaly_label(base, 7).iloc[i] == \
-            clean_anomaly_label(bumped, 7).iloc[i]
+        assert clean_anomaly_label(base, 7).iloc[i] == clean_anomaly_label(bumped, 7).iloc[i]
 
     def test_rows_without_enough_history_are_nan_not_false(self):
         from scripts.anomaly_gbm_ab import clean_anomaly_label
+
         out = clean_anomaly_label(self._frame(), 7, min_periods=10)
         # shift(1) + min_periods=10 means the first 10 rows cannot form one.
         assert out.iloc[:10].isna().all()
@@ -118,22 +124,25 @@ class TestCleanAnomalyLabel:
 
     def test_a_void_target_stays_void(self):
         from scripts.anomaly_gbm_ab import clean_anomaly_label
+
         df = self._frame()
         df.loc[df.index[20], "target_return_7d"] = np.nan
         assert np.isnan(clean_anomaly_label(df, 7).iloc[20])
 
     def test_thresholds_do_not_bleed_across_items(self):
         from scripts.anomaly_gbm_ab import clean_anomaly_label
+
         a = self._frame(item="A")
         b = self._frame(item="B")
         b["return_7d"] = b["return_7d"] * 50
         both = pd.concat([a, b], ignore_index=True)
         alone = clean_anomaly_label(a, 7)
-        joint = clean_anomaly_label(both, 7).iloc[:len(a)]
+        joint = clean_anomaly_label(both, 7).iloc[: len(a)]
         pd.testing.assert_series_equal(alone, joint, check_names=False)
 
     def test_a_missing_return_column_is_a_hard_error(self):
         from scripts.anomaly_gbm_ab import clean_anomaly_label
+
         df = self._frame().drop(columns=["return_7d"])
         with pytest.raises(SystemExit, match="return_7d"):
             clean_anomaly_label(df, 7)

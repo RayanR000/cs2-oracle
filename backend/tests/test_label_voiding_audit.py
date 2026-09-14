@@ -10,14 +10,12 @@ These tests pin the audit trail. They do NOT touch either detector's logic --
 the universe-size rule is what makes it impossible for the detector to mask a
 real crash.
 """
+
 from __future__ import annotations
 
-from datetime import date
 from unittest.mock import MagicMock
 
-import numpy as np
 import pandas as pd
-
 from models.forecaster import ItemForecaster
 
 
@@ -43,15 +41,17 @@ def _frame_with_a_cutover(n_items=60, n_dates=40, cutover_at=20):
     for d in range(n_dates):
         live = n_items if d < cutover_at else n_items // 3
         for item in range(live):
-            rows.append({
-                "item_id": f"item-{item}",
-                # prepare_targets merges this against a future-frame date column
-                # normalised to python `date` (see its `.dt.date` cast); a
-                # datetime64 column here trips a pandas dtype-mismatch merge
-                # error, not label-voiding logic, so match that convention.
-                "date": (start + pd.Timedelta(days=d)).date(),
-                "price": 10.0 + item * 0.01 + d * 1e-6,
-            })
+            rows.append(
+                {
+                    "item_id": f"item-{item}",
+                    # prepare_targets merges this against a future-frame date column
+                    # normalised to python `date` (see its `.dt.date` cast); a
+                    # datetime64 column here trips a pandas dtype-mismatch merge
+                    # error, not label-voiding logic, so match that convention.
+                    "date": (start + pd.Timedelta(days=d)).date(),
+                    "price": 10.0 + item * 0.01 + d * 1e-6,
+                }
+            )
     return pd.DataFrame(rows)
 
 
@@ -69,11 +69,13 @@ def _frame_with_flat_prices(n_items=60, n_dates=40):
     start = pd.Timestamp("2026-01-01")
     for d in range(n_dates):
         for item in range(n_items):
-            rows.append({
-                "item_id": f"item-{item}",
-                "date": (start + pd.Timedelta(days=d)).date(),
-                "price": 10.0 + item * 0.01,
-            })
+            rows.append(
+                {
+                    "item_id": f"item-{item}",
+                    "date": (start + pd.Timedelta(days=d)).date(),
+                    "price": 10.0 + item * 0.01,
+                }
+            )
     return pd.DataFrame(rows)
 
 
@@ -106,8 +108,8 @@ def test_audit_counts_voided_labels_per_horizon(tmp_path):
     counts = f.label_voiding["voided_labels_by_horizon"]
     assert set(counts) == {3, 7}
     assert counts[7] >= counts[3], (
-        "a longer horizon spans the cutover from more anchor dates, so it "
-        "cannot void fewer labels")
+        "a longer horizon spans the cutover from more anchor dates, so it cannot void fewer labels"
+    )
 
 
 def test_dates_are_sorted_iso_strings(tmp_path):
@@ -133,13 +135,14 @@ def _frame_with_one_frozen_item(n_items=60, n_dates=40, frozen_item=0):
     start = pd.Timestamp("2026-01-01")
     for d in range(n_dates):
         for item in range(n_items):
-            price = 10.0 if item == frozen_item else (
-                10.0 + item * 0.01 + d * (item + 1) * 1e-3)
-            rows.append({
-                "item_id": f"item-{item}",
-                "date": (start + pd.Timedelta(days=d)).date(),
-                "price": price,
-            })
+            price = 10.0 if item == frozen_item else (10.0 + item * 0.01 + d * (item + 1) * 1e-3)
+            rows.append(
+                {
+                    "item_id": f"item-{item}",
+                    "date": (start + pd.Timedelta(days=d)).date(),
+                    "price": price,
+                }
+            )
     return pd.DataFrame(rows)
 
 
@@ -152,11 +155,11 @@ def test_frozen_run_labels_published_separately_from_voided_total(tmp_path):
     f = _f(tmp_path)
     f.prepare_targets(_frame_with_one_frozen_item(), horizon=3)
     assert f.label_voiding["collection_shift_dates"] == [], (
-        "fixture must not also trip the cutover rule, or it isn't isolating "
-        "the frozen-run rule")
+        "fixture must not also trip the cutover rule, or it isn't isolating the frozen-run rule"
+    )
     assert f.label_voiding["snapshot_dates"] == [], (
-        "fixture must not also trip the snapshot rule, or it isn't isolating "
-        "the frozen-run rule")
+        "fixture must not also trip the snapshot rule, or it isn't isolating the frozen-run rule"
+    )
     frozen = f.label_voiding["frozen_run_labels"]
     assert frozen[3] > 0, "the frozen item's own labels must be counted"
     assert frozen[3] <= f.label_voiding["voided_labels_by_horizon"][3]

@@ -29,8 +29,8 @@ import argparse
 import logging
 import os
 import sys
+from collections.abc import Sequence
 from pathlib import Path
-from typing import Optional, Sequence
 
 import duckdb
 import pandas as pd
@@ -47,38 +47,36 @@ DEFAULT_TABLES = ("item_forecasts", "forecast_outcomes", "event_impacts_denorm")
 
 def load_id_to_slug() -> dict:
     """`items.id` -> `items.item_id`. Read-only; the DB is never written."""
-    from sqlalchemy import text
-
     from database import SessionLocal
+    from sqlalchemy import text
 
     db = SessionLocal()
     try:
-        return {r.id: r.item_id
-                for r in db.execute(text("SELECT id, item_id FROM items")).fetchall()}
+        return {r.id: r.item_id for r in db.execute(text("SELECT id, item_id FROM items")).fetchall()}
     finally:
         db.close()
 
 
 def backfill_table(con, path: Path, id_to_slug: dict, apply: bool) -> tuple:
     """Fill `item_slug` on one ops file. Returns (filled, unmapped, total)."""
-    cols = [r[0] for r in con.sql(
-        f"DESCRIBE SELECT * FROM read_parquet('{path}')").fetchall()]
+    cols = [r[0] for r in con.sql(f"DESCRIBE SELECT * FROM read_parquet('{path}')").fetchall()]
     if "item_id" not in cols:
         logger.info("%-24s no item_id column — skipped", path.name)
         return (0, 0, 0)
 
     has_slug = "item_slug" in cols
     total = con.sql(f"SELECT count(*) FROM read_parquet('{path}')").fetchone()[0]
-    todo = total if not has_slug else con.sql(
-        f"SELECT count(*) FROM read_parquet('{path}') WHERE item_slug IS NULL"
-    ).fetchone()[0]
+    todo = (
+        total
+        if not has_slug
+        else con.sql(f"SELECT count(*) FROM read_parquet('{path}') WHERE item_slug IS NULL").fetchone()[0]
+    )
 
     if not todo:
         logger.info("%-24s all %s row(s) already carry a slug", path.name, f"{total:,}")
         return (0, 0, total)
 
-    mapping = pd.DataFrame(
-        {"_map_id": list(id_to_slug.keys()), "_map_slug": list(id_to_slug.values())})
+    mapping = pd.DataFrame({"_map_id": list(id_to_slug.keys()), "_map_slug": list(id_to_slug.values())})
     con.register("_slug_map", mapping)
 
     unmapped = con.sql(f"""
@@ -90,7 +88,9 @@ def backfill_table(con, path: Path, id_to_slug: dict, apply: bool) -> tuple:
 
     logger.info(
         "%-24s %s of %s row(s) to fill%s",
-        path.name, f"{todo:,}", f"{total:,}",
+        path.name,
+        f"{todo:,}",
+        f"{total:,}",
         f"; {unmapped:,} have no items row and stay NULL" if unmapped else "",
     )
     if not apply:
@@ -100,7 +100,7 @@ def backfill_table(con, path: Path, id_to_slug: dict, apply: bool) -> tuple:
     # Every original column, in its original order, with item_slug appended
     # (or coalesced onto, on a re-run over a partially filled file).
     kept = [c for c in cols if c != "item_slug"]
-    slug_expr = ("COALESCE(o.item_slug, m._map_slug)" if has_slug else "m._map_slug")
+    slug_expr = "COALESCE(o.item_slug, m._map_slug)" if has_slug else "m._map_slug"
     projection = ", ".join(f'o."{c}"' for c in kept) + f", {slug_expr} AS item_slug"
 
     tmp = path.with_suffix(".parquet.tmp")
@@ -120,22 +120,19 @@ def backfill_table(con, path: Path, id_to_slug: dict, apply: bool) -> tuple:
             # served outcome table.
             raise RuntimeError(
                 f"{path.name}: expected {total:,} rows, got {after:,} — the id "
-                f"mapping is not unique. Refusing to replace.")
+                f"mapping is not unique. Refusing to replace."
+            )
         os.replace(tmp, path)
     finally:
         con.unregister("_slug_map")
         tmp.unlink(missing_ok=True)
 
-    filled = con.sql(
-        f"SELECT count(*) FROM read_parquet('{path}') WHERE item_slug IS NOT NULL"
-    ).fetchone()[0]
-    logger.info("%-24s -> %s of %s row(s) now carry a slug",
-                "", f"{filled:,}", f"{total:,}")
+    filled = con.sql(f"SELECT count(*) FROM read_parquet('{path}') WHERE item_slug IS NOT NULL").fetchone()[0]
+    logger.info("%-24s -> %s of %s row(s) now carry a slug", "", f"{filled:,}", f"{total:,}")
     return (todo - unmapped, unmapped, total)
 
 
-def backfill(archive_dir: Path, tables: Sequence[str], id_to_slug: dict,
-             apply: bool) -> int:
+def backfill(archive_dir: Path, tables: Sequence[str], id_to_slug: dict, apply: bool) -> int:
     """Backfill every named ops table. Returns rows filled."""
     ops_dir = archive_dir / "ops"
     if not ops_dir.is_dir():
@@ -155,19 +152,22 @@ def backfill(archive_dir: Path, tables: Sequence[str], id_to_slug: dict,
     finally:
         con.close()
 
-    logger.info("%s row(s) %s", f"{filled:,}",
-                "filled" if apply else "would be filled")
+    logger.info("%s row(s) %s", f"{filled:,}", "filled" if apply else "would be filled")
     return filled
 
 
-def main(argv: Optional[Sequence[str]] = None) -> int:
+def main(argv: Sequence[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[1])
-    ap.add_argument("--archive-dir", type=Path, default=Path("../price-archive"),
-                    help="Archive root; ops/ lives under it.")
-    ap.add_argument("--tables", nargs="+", default=list(DEFAULT_TABLES),
-                    help=f"Ops tables to stamp (default: {' '.join(DEFAULT_TABLES)}).")
-    ap.add_argument("--apply", action="store_true",
-                    help="Actually write. Omitted, the script only reports.")
+    ap.add_argument(
+        "--archive-dir", type=Path, default=Path("../price-archive"), help="Archive root; ops/ lives under it."
+    )
+    ap.add_argument(
+        "--tables",
+        nargs="+",
+        default=list(DEFAULT_TABLES),
+        help=f"Ops tables to stamp (default: {' '.join(DEFAULT_TABLES)}).",
+    )
+    ap.add_argument("--apply", action="store_true", help="Actually write. Omitted, the script only reports.")
     args = ap.parse_args(argv)
 
     logging.basicConfig(level=logging.INFO, format="%(message)s")

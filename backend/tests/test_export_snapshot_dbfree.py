@@ -7,7 +7,7 @@ and no DB. They pin the schema `append_to_parquet.py --snapshot-csv` expects.
 import csv
 
 from collectors.csgotrader_aggregator import CSGOTraderAggregator
-from scripts.export_snapshot_dbfree import write_snapshot_csv, write_exchange_rates_csv
+from scripts.export_snapshot_dbfree import write_exchange_rates_csv, write_snapshot_csv
 
 
 def _read(path):
@@ -38,9 +38,16 @@ def test_snapshot_csv_schema_and_rows(tmp_path):
 
     labels = {r[2] for r in body}
     # steam expands to sync + spot + 7d/30d/90d; buff163 to listing + buy; csfloat one.
-    assert {"aggregator_sync", "aggregator_steam_spot", "aggregator_steam_7d",
-            "aggregator_steam_30d", "aggregator_steam_90d",
-            "aggregator_buff163", "aggregator_buff163_buy", "aggregator_csfloat"} <= labels
+    assert {
+        "aggregator_sync",
+        "aggregator_steam_spot",
+        "aggregator_steam_7d",
+        "aggregator_steam_30d",
+        "aggregator_steam_90d",
+        "aggregator_buff163",
+        "aggregator_buff163_buy",
+        "aggregator_csfloat",
+    } <= labels
 
     # Every row: same slug + day, empty volume, positive price.
     for r in body:
@@ -70,7 +77,7 @@ def test_steam_spot_absent_when_no_24h(tmp_path):
     write_snapshot_csv(agg, "2026-08-23", out)
     body = _read(out)[1:]
     labels = {r[2] for r in body}
-    assert "aggregator_sync" in labels          # fell back to 7d
+    assert "aggregator_sync" in labels  # fell back to 7d
     assert "aggregator_steam_spot" not in labels  # no 24h -> no spot
 
 

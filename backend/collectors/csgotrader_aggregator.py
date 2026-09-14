@@ -4,15 +4,15 @@ Fetches comprehensive price data from public JSON endpoints.
 """
 
 import logging
-import requests
-from datetime import datetime, timezone
 import re
 import unicodedata
-from typing import Dict, List, Optional, Tuple
+from datetime import UTC, datetime
+
+import requests
 
 logger = logging.getLogger(__name__)
 
-SourceData = Dict[str, Tuple[float, Optional[int], datetime]]
+SourceData = dict[str, tuple[float, int | None, datetime]]
 
 
 def _get_safe(value, default=None):
@@ -39,8 +39,8 @@ class CSGOTraderAggregator:
     def __init__(self):
         self.session = requests.Session()
         self.session.headers.update({"User-Agent": "Mozilla/5.0 (compatible; CS2Analyzer/1.0)"})
-        self._raw_sources: Dict[str, Dict[str, dict]] = {}
-        self._price_cache: Dict[str, float] = {}
+        self._raw_sources: dict[str, dict[str, dict]] = {}
+        self._price_cache: dict[str, float] = {}
 
     @staticmethod
     def _normalize_name(name: str) -> str:
@@ -56,13 +56,31 @@ class CSGOTraderAggregator:
         return lower.startswith("sticker | ") or lower.startswith("sticker slab | ")
 
     @staticmethod
-    def _diagnostic_terms(name: str) -> List[str]:
+    def _diagnostic_terms(name: str) -> list[str]:
         normalized = CSGOTraderAggregator._normalize_name(name)
         stop_terms = {
-            "sticker", "holo", "foil", "glitter", "gold", "paper",
-            "team", "capsule", "legends", "challengers", "contenders",
-            "2021", "2022", "2023", "2024", "2025",
-            "rio", "stockholm", "antwerp", "paris", "copenhagen", "shanghai",
+            "sticker",
+            "holo",
+            "foil",
+            "glitter",
+            "gold",
+            "paper",
+            "team",
+            "capsule",
+            "legends",
+            "challengers",
+            "contenders",
+            "2021",
+            "2022",
+            "2023",
+            "2024",
+            "2025",
+            "rio",
+            "stockholm",
+            "antwerp",
+            "paris",
+            "copenhagen",
+            "shanghai",
         }
         tokens = []
         for token in re.split(r"[^a-z0-9]+", normalized):
@@ -71,13 +89,13 @@ class CSGOTraderAggregator:
             tokens.append(token)
         return tokens
 
-    def find_source_key_candidates(self, name: str, limit: int = 10) -> List[str]:
+    def find_source_key_candidates(self, name: str, limit: int = 10) -> list[str]:
         if not self._price_cache:
             self.fetch_all_market_data()
         terms = self._diagnostic_terms(name)
         if not terms:
             return []
-        candidates: List[str] = []
+        candidates: list[str] = []
         for source_key in self._price_cache.keys():
             normalized_key = self._normalize_name(source_key)
             if any(term in normalized_key for term in terms):
@@ -87,42 +105,40 @@ class CSGOTraderAggregator:
         return candidates
 
     @staticmethod
-    def _sticker_match_candidates(name: str) -> List[str]:
+    def _sticker_match_candidates(name: str) -> list[str]:
         if not CSGOTraderAggregator._is_sticker_name(name):
             return [name]
         candidates = [name]
 
         stripped_variant = re.sub(
             r"\s*\((Holo|Glitter|Gold|Foil|Paper)\)(?=\s*\|)",
-            "", name, flags=re.IGNORECASE,
+            "",
+            name,
+            flags=re.IGNORECASE,
         )
         if stripped_variant != name:
             candidates.append(stripped_variant)
 
         if name.lower().startswith("sticker slab | "):
-            as_sticker = "Sticker | " + name[len("Sticker Slab | "):]
+            as_sticker = "Sticker | " + name[len("Sticker Slab | ") :]
             if as_sticker not in candidates:
                 candidates.append(as_sticker)
 
         return list(dict.fromkeys(candidate.strip() for candidate in candidates if candidate.strip()))
 
     @staticmethod
-    def _general_match_candidates(name: str) -> List[str]:
+    def _general_match_candidates(name: str) -> list[str]:
         candidates = [name]
         if name.startswith("★ "):
             candidates.append(name[2:].strip())
         if name.lower().startswith("souvenir charm | "):
             candidates.append("Souvenir | " + name.split("| ", 1)[1])
 
-        stripped_stattrak = re.sub(
-            r"^\s*(★\s*)?StatTrak™\s*", "", name, flags=re.IGNORECASE
-        ).strip()
+        stripped_stattrak = re.sub(r"^\s*(★\s*)?StatTrak™\s*", "", name, flags=re.IGNORECASE).strip()
         if stripped_stattrak != name:
             candidates.append(stripped_stattrak)
 
-        stripped_souvenir = re.sub(
-            r"^\s*Souvenir\s+", "", name, flags=re.IGNORECASE
-        ).strip()
+        stripped_souvenir = re.sub(r"^\s*Souvenir\s+", "", name, flags=re.IGNORECASE).strip()
         if stripped_souvenir != name and stripped_souvenir not in candidates:
             candidates.append(stripped_souvenir)
 
@@ -132,7 +148,7 @@ class CSGOTraderAggregator:
 
         return list(dict.fromkeys(candidate.strip() for candidate in candidates if candidate.strip()))
 
-    def fetch_all_market_data(self) -> Dict[str, Dict[str, dict]]:
+    def fetch_all_market_data(self) -> dict[str, dict[str, dict]]:
         """Fetch raw data from all configured endpoints.
 
         Returns:
@@ -182,7 +198,7 @@ class CSGOTraderAggregator:
         return self._raw_sources
 
     @staticmethod
-    def _extract_primary_price(source: str, info) -> Optional[float]:
+    def _extract_primary_price(source: str, info) -> float | None:
         """Extract the primary/representative price from a source data dict."""
         if not isinstance(info, dict):
             return _get_safe(info)
@@ -204,17 +220,15 @@ class CSGOTraderAggregator:
         return None
 
     @staticmethod
-    def _build_source_lookup(source_data: Dict[str, dict]) -> Tuple[Dict[str, str], Dict[str, str]]:
+    def _build_source_lookup(source_data: dict[str, dict]) -> tuple[dict[str, str], dict[str, str]]:
         """Pre-build lowercase + normalized lookup dicts for a source."""
-        cache_keys = {k.lower(): k for k in source_data.keys()}
+        cache_keys = {k.lower(): k for k in source_data}
         normalized_cache_keys = {}
-        for k in source_data.keys():
+        for k in source_data:
             normalized_cache_keys[CSGOTraderAggregator._normalize_name(k)] = k
         return cache_keys, normalized_cache_keys
 
-    def _match_item(self, name: str,
-                    cache_keys: Dict[str, str],
-                    normalized_cache_keys: Dict[str, str]) -> Optional[str]:
+    def _match_item(self, name: str, cache_keys: dict[str, str], normalized_cache_keys: dict[str, str]) -> str | None:
         """Fuzzy-match an item name against pre-built lookup dicts. Returns the matched key or None."""
         name_lower = name.lower()
         normalized_name = self._normalize_name(name)
@@ -250,7 +264,7 @@ class CSGOTraderAggregator:
                     return normalized_cache_keys[normalized_candidate]
         return None
 
-    def collect_batch_items(self, item_names: List[str]) -> Dict[str, Optional[SourceData]]:
+    def collect_batch_items(self, item_names: list[str]) -> dict[str, SourceData | None]:
         """Fetch prices for a list of items from all available sources.
 
         Returns:
@@ -263,14 +277,14 @@ class CSGOTraderAggregator:
             logger.error("No market data available — returning empty results")
             return {}
 
-        now = datetime.now(timezone.utc).replace(tzinfo=None)
+        now = datetime.now(UTC).replace(tzinfo=None)
 
         # Pre-build lookup dicts once per source instead of per item per source
-        source_lookups: Dict[str, Tuple[Dict[str, str], Dict[str, str]]] = {}
+        source_lookups: dict[str, tuple[dict[str, str], dict[str, str]]] = {}
         for src_name, src_data in self._raw_sources.items():
             source_lookups[src_name] = self._build_source_lookup(src_data)
 
-        results: Dict[str, Optional[SourceData]] = {}
+        results: dict[str, SourceData | None] = {}
 
         matched_count = 0
         for name in item_names:
@@ -357,17 +371,20 @@ class CSGOTraderAggregator:
                 results[name] = sources
                 matched_count += 1
 
-        logger.info("Aggregator match results: %s/%s items matched across sources",
-                     matched_count, len(item_names))
+        logger.info("Aggregator match results: %s/%s items matched across sources", matched_count, len(item_names))
         if matched_count == 0:
             logger.warning("No items matched any source — check upstream data format")
         elif matched_count < len(item_names) * 0.5:
-            logger.warning("Low match rate: %s/%s (%.0f%%) — sources may have changed format",
-                           matched_count, len(item_names), 100 * matched_count / len(item_names))
+            logger.warning(
+                "Low match rate: %s/%s (%.0f%%) — sources may have changed format",
+                matched_count,
+                len(item_names),
+                100 * matched_count / len(item_names),
+            )
 
         return results
 
-    def fetch_exchange_rates(self) -> Optional[Dict[str, float]]:
+    def fetch_exchange_rates(self) -> dict[str, float] | None:
         """Fetch currency exchange rates from CSGOTrader."""
         try:
             response = self.session.get(self.EXCHANGE_RATES_URL, timeout=15)

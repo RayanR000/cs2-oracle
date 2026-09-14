@@ -5,13 +5,13 @@ grew `calibrate_signed`/`band_signed`; these guard the forecaster seam that pers
 `(q_lo, q_hi)` pair and serves it, plus the symmetric fallback that keeps an artifact
 without the pair byte-identical to the old band. They do not run a full train (~5 min).
 """
+
 from __future__ import annotations
 
 import inspect
 from unittest.mock import MagicMock
 
 import numpy as np
-
 from models.forecaster import ItemForecaster
 
 
@@ -58,6 +58,7 @@ def test_signed_pair_round_trips_through_save_and_load(tmp_path):
     f.conformal_q_hi = {7: 4.1, 14: 3.3}
     f.feature_cols = ["f", "g"]
     import pandas as pd
+
     f.feature_medians = pd.Series({"f": 0.0, "g": 0.0})
     f.save_models()
 

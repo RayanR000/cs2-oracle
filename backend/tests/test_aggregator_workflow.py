@@ -1,17 +1,15 @@
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
-from types import SimpleNamespace
+from datetime import UTC, datetime, timedelta
 
+import collectors.csgotrader_aggregator as aggregator_module
+import database as database_module
 import pytest
-from sqlalchemy import create_engine, text
+from collectors.pipeline import DataPipeline
+from database import CollectionRun, Item, PriceHistory
+from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
-
-import database as database_module
-import collectors.csgotrader_aggregator as aggregator_module
-from collectors.pipeline import DataPipeline
-from database import Item, PriceHistory, CollectionRun
 
 
 class FakeAggregator:
@@ -22,7 +20,7 @@ class FakeAggregator:
 
     def collect_batch_items(self, item_names):
         results = {}
-        now = datetime.now(timezone.utc).replace(tzinfo=None)
+        now = datetime.now(UTC).replace(tzinfo=None)
         for name in item_names:
             if name in self._price_data:
                 price = float(self._price_data[name])
@@ -78,13 +76,28 @@ class TestHappyPath:
     def test_full_workflow_collects_items_and_records_run(self, monkeypatch):
         db = database_module.SessionLocal()
         try:
-            items = seed_items(db, [
-                {"item_id": "ak-47-redline-field-tested", "name": "AK-47 | Redline (Field-Tested)", "type": "skin"},
-                {"item_id": "stattrak-usp-s-cortex-factory-new", "name": "StatTrak USPS | Cortex (Factory New)", "type": "skin"},
-                {"item_id": "sticker-s1mple-holo-shanghai-2024", "name": "Sticker | s1mple (Holo) | Shanghai 2024", "type": "sticker"},
-                {"item_id": "skeleton-knife-night-stained-field-tested", "name": "Skeleton Knife | Night Stained (Field-Tested)", "type": "skin"},
-                {"item_id": "operation-riptide-case", "name": "Operation Riptide Case", "type": "case"},
-            ])
+            items = seed_items(
+                db,
+                [
+                    {"item_id": "ak-47-redline-field-tested", "name": "AK-47 | Redline (Field-Tested)", "type": "skin"},
+                    {
+                        "item_id": "stattrak-usp-s-cortex-factory-new",
+                        "name": "StatTrak USPS | Cortex (Factory New)",
+                        "type": "skin",
+                    },
+                    {
+                        "item_id": "sticker-s1mple-holo-shanghai-2024",
+                        "name": "Sticker | s1mple (Holo) | Shanghai 2024",
+                        "type": "sticker",
+                    },
+                    {
+                        "item_id": "skeleton-knife-night-stained-field-tested",
+                        "name": "Skeleton Knife | Night Stained (Field-Tested)",
+                        "type": "skin",
+                    },
+                    {"item_id": "operation-riptide-case", "name": "Operation Riptide Case", "type": "case"},
+                ],
+            )
 
             fake_prices = {
                 "AK-47 | Redline (Field-Tested)": 22.50,
@@ -93,7 +106,8 @@ class TestHappyPath:
                 "Operation Riptide Case": 0.50,
             }
             monkeypatch.setattr(
-                aggregator_module, "CSGOTraderAggregator",
+                aggregator_module,
+                "CSGOTraderAggregator",
                 lambda: FakeAggregator(price_data=fake_prices),
             )
 
@@ -113,9 +127,7 @@ class TestHappyPath:
         finally:
             db.close()
 
-    def test_snapshot_csv_is_named_from_the_snapshot_date_not_the_clock(
-        self, monkeypatch
-    ):
+    def test_snapshot_csv_is_named_from_the_snapshot_date_not_the_clock(self, monkeypatch):
         """The archive lost whole days to a wall-clock filename.
 
         `agg_date` came from the pipeline's own `datetime.utcnow()`, and the
@@ -130,11 +142,15 @@ class TestHappyPath:
         monkeypatch.setenv("AGGREGATOR_SNAPSHOT_DATE", "2026-07-27")
         db = database_module.SessionLocal()
         try:
-            seed_items(db, [
-                {"item_id": "ak-47-redline-field-tested", "name": "AK-47 | Redline (Field-Tested)", "type": "skin"},
-            ])
+            seed_items(
+                db,
+                [
+                    {"item_id": "ak-47-redline-field-tested", "name": "AK-47 | Redline (Field-Tested)", "type": "skin"},
+                ],
+            )
             monkeypatch.setattr(
-                aggregator_module, "CSGOTraderAggregator",
+                aggregator_module,
+                "CSGOTraderAggregator",
                 lambda: FakeAggregator(price_data={"AK-47 | Redline (Field-Tested)": 22.50}),
             )
 
@@ -142,9 +158,7 @@ class TestHappyPath:
             result = pipeline.run_full_aggregator_collection()
 
             assert result["status"] == "success"
-            assert result["snapshot_csv_path"].endswith(
-                "aggregator-snapshots-2026-07-27.csv"
-            )
+            assert result["snapshot_csv_path"].endswith("aggregator-snapshots-2026-07-27.csv")
         finally:
             db.close()
 
@@ -164,11 +178,15 @@ class TestHappyPath:
 
         db = database_module.SessionLocal()
         try:
-            seed_items(db, [
-                {"item_id": "ak-47-redline-field-tested", "name": "AK-47 | Redline (Field-Tested)", "type": "skin"},
-            ])
+            seed_items(
+                db,
+                [
+                    {"item_id": "ak-47-redline-field-tested", "name": "AK-47 | Redline (Field-Tested)", "type": "skin"},
+                ],
+            )
             monkeypatch.setattr(
-                aggregator_module, "CSGOTraderAggregator",
+                aggregator_module,
+                "CSGOTraderAggregator",
                 lambda: RatesAggregator(price_data={"AK-47 | Redline (Field-Tested)": 22.50}),
             )
 
@@ -176,9 +194,7 @@ class TestHappyPath:
             result = pipeline.run_full_aggregator_collection()
 
             assert result["status"] == "success"
-            assert result["exchange_rates_csv_path"].endswith(
-                "exchange-rates-2026-07-30.csv"
-            )
+            assert result["exchange_rates_csv_path"].endswith("exchange-rates-2026-07-30.csv")
         finally:
             db.close()
 
@@ -187,21 +203,31 @@ class TestHappyPath:
         recovers from the last non-aggregator price history."""
         db = database_module.SessionLocal()
         try:
-            [item] = seed_items(db, [
-                {"item_id": "glock-18-royal-legion-minimal-wear", "name": "Glock-18 | Royal Legion (Minimal Wear)", "type": "skin"},
-            ])
+            [item] = seed_items(
+                db,
+                [
+                    {
+                        "item_id": "glock-18-royal-legion-minimal-wear",
+                        "name": "Glock-18 | Royal Legion (Minimal Wear)",
+                        "type": "skin",
+                    },
+                ],
+            )
 
-            db.add(PriceHistory(
-                item_id=item.id,
-                timestamp=datetime.utcnow() - timedelta(days=1),
-                price=3.75,
-                volume=10,
-                source="steam_batch",
-            ))
+            db.add(
+                PriceHistory(
+                    item_id=item.id,
+                    timestamp=datetime.utcnow() - timedelta(days=1),
+                    price=3.75,
+                    volume=10,
+                    source="steam_batch",
+                )
+            )
             db.commit()
 
             monkeypatch.setattr(
-                aggregator_module, "CSGOTraderAggregator",
+                aggregator_module,
+                "CSGOTraderAggregator",
                 lambda: FakeAggregator(price_data={}),
             )
 
@@ -219,7 +245,8 @@ class TestHappyPath:
         db = database_module.SessionLocal()
         try:
             monkeypatch.setattr(
-                aggregator_module, "CSGOTraderAggregator",
+                aggregator_module,
+                "CSGOTraderAggregator",
                 lambda: FakeAggregator(price_data={"AK-47 | Redline": 22.50}),
             )
 
@@ -236,18 +263,23 @@ class TestHappyPath:
         CollectionRun is recorded."""
         db = database_module.SessionLocal()
         try:
-            [item] = seed_items(db, [
-                {"item_id": "test-item-blows-up", "name": "Weapon | Will Explode", "type": "skin"},
-            ])
+            [item] = seed_items(
+                db,
+                [
+                    {"item_id": "test-item-blows-up", "name": "Weapon | Will Explode", "type": "skin"},
+                ],
+            )
 
             class ExplodingAggregator:
                 def collect_batch_items(self, item_names):
                     raise RuntimeError("simulated network failure")
+
                 def find_source_key_candidates(self, name, limit=5):
                     return []
 
             monkeypatch.setattr(
-                aggregator_module, "CSGOTraderAggregator",
+                aggregator_module,
+                "CSGOTraderAggregator",
                 lambda: ExplodingAggregator(),
             )
 
@@ -274,13 +306,11 @@ class TestHappyPath:
                 "Desert Eagle | Code Red (Minimal Wear)",
                 "USP-S | Kill Confirmed (Field-Tested)",
             ]
-            items = seed_items(db, [
-                {"item_id": f"test-{i}", "name": names[i], "type": "skin"}
-                for i in range(5)
-            ])
+            items = seed_items(db, [{"item_id": f"test-{i}", "name": names[i], "type": "skin"} for i in range(5)])
             fake_prices = {name: float(i + 1) * 10.0 for i, name in enumerate(names)}
             monkeypatch.setattr(
-                aggregator_module, "CSGOTraderAggregator",
+                aggregator_module,
+                "CSGOTraderAggregator",
                 lambda: FakeAggregator(price_data=fake_prices),
             )
 
@@ -297,7 +327,9 @@ class TestHappyPath:
     def test_collect_batch_items_returns_sources_dict(self):
         """Verify the raw aggregator returns the expected sources dict."""
         aggregator = aggregator_module.CSGOTraderAggregator()
-        aggregator._raw_sources = {"steam": {"Sticker | test (Holo)": {"last_24h": 5.50, "last_7d": 4.50, "last_30d": 4.00, "last_90d": 3.50}}}
+        aggregator._raw_sources = {
+            "steam": {"Sticker | test (Holo)": {"last_24h": 5.50, "last_7d": 4.50, "last_30d": 4.00, "last_90d": 3.50}}
+        }
 
         results = aggregator.collect_batch_items(["Sticker | test (Holo)"])
         assert "Sticker | test (Holo)" in results

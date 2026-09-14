@@ -5,6 +5,7 @@ constant), Mondrian edges fitted on test rows (leakage), a level-match that
 does not land on 80% (the verdict is level-matched), and a placebo
 indistinguishable from treatment.
 """
+
 import sys
 from pathlib import Path
 
@@ -12,7 +13,7 @@ import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from scripts.measure_qhat_bagging_mondrian import (  # noqa: E402
+from scripts.measure_qhat_bagging_mondrian import (
     _level_match_c,
     apply_fit,
     evaluate,
@@ -58,13 +59,11 @@ def _panel(n_dates=400, per_date=200, seed=0, tilt: float = 0.0):
         resid.append(r)
         sigma.append(s)
         dates.append(np.full(per_date, day))
-    return _FakePanel(np.concatenate(resid), np.concatenate(sigma),
-                      np.concatenate(dates))
+    return _FakePanel(np.concatenate(resid), np.concatenate(sigma), np.concatenate(dates))
 
 
 def test_val_windows_end_anchored_and_disjoint():
-    dates = np.array([np.datetime64("2024-01-01") + np.timedelta64(d, "D")
-                      for d in range(500)])
+    dates = np.array([np.datetime64("2024-01-01") + np.timedelta64(d, "D") for d in range(500)])
     wins = val_windows(dates)
     assert wins, "no windows on 500 dates"
     assert wins[-1][1] == 500, "newest window must abut the frame end"
@@ -140,7 +139,6 @@ def test_evaluate_reports_width_and_guardrail_fields():
     td = [d for d in p.unique_dates if d > np.datetime64("2024-10-01")][:60]
     m = evaluate(p, lambda pp, d: fit_s0(pp, d, grids[0]), td)
     assert m, "no fit on a dense fake panel"
-    for k in ("M1_marginal", "mean_width", "level_match_c", "mean_width_lm",
-              "min_decile_cov_lm", "M2lm_sigma_err_pp"):
+    for k in ("M1_marginal", "mean_width", "level_match_c", "mean_width_lm", "min_decile_cov_lm", "M2lm_sigma_err_pp"):
         assert np.isfinite(m[k]), k
     assert abs(m["M1lm_marginal"] - 0.80) < 0.005

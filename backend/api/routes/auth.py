@@ -1,12 +1,13 @@
-from typing import Optional
-from fastapi import APIRouter, Depends, HTTPException, Request, Response
-from sqlalchemy.orm import Session
-from itsdangerous import URLSafeTimedSerializer
-from config import settings
-from database import get_db, User
-from api.schemas import UserOut
-import requests
 from urllib.parse import urlencode
+
+import requests
+from config import settings
+from database import User, get_db
+from fastapi import APIRouter, Depends, HTTPException, Request, Response
+from itsdangerous import URLSafeTimedSerializer
+from sqlalchemy.orm import Session
+
+from api.schemas import UserOut
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 
@@ -16,7 +17,7 @@ def _make_session_token(user_id: int) -> str:
     return s.dumps({"user_id": user_id})
 
 
-def _resolve_user(request: Request, db: Session) -> Optional[User]:
+def _resolve_user(request: Request, db: Session) -> User | None:
     token = request.cookies.get("session")
     if not token:
         return None
@@ -104,6 +105,7 @@ def steam_callback(
 
     redirect_url = f"{settings.frontend_url}/portfolio?session={token}"
     from fastapi.responses import RedirectResponse
+
     resp = RedirectResponse(url=redirect_url)
     resp.set_cookie(
         key="session",

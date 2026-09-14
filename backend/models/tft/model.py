@@ -5,7 +5,7 @@ from dataclasses import dataclass
 import torch
 import torch.nn as nn
 
-from models.tft.components import GatedResidualNetwork, GatedLinearUnit
+from models.tft.components import GatedLinearUnit, GatedResidualNetwork
 
 
 @dataclass
@@ -23,7 +23,6 @@ class TFTConfig:
 
 
 class TemporalFusionTransformer(nn.Module):
-
     def __init__(self, config: TFTConfig):
         super().__init__()
         self.config = config
@@ -74,16 +73,16 @@ class TemporalFusionTransformer(nn.Module):
 
     def forward(
         self,
-        past: torch.Tensor,      # [B, T, n_past]
-        static: torch.Tensor,     # [B, 1] long
-        future: torch.Tensor,     # [B, H, n_future]
-    ) -> torch.Tensor:            # [B, H]
+        past: torch.Tensor,  # [B, T, n_past]
+        static: torch.Tensor,  # [B, 1] long
+        future: torch.Tensor,  # [B, H, n_future]
+    ) -> torch.Tensor:  # [B, H]
         B = past.shape[0]
         d = self.config.hidden_dim
 
         # Static context
         static_emb = self.tier_embedding(static.squeeze(-1))  # [B, d]
-        static_ctx = self.static_grn(static_emb)               # [B, d]
+        static_ctx = self.static_grn(static_emb)  # [B, d]
 
         # Encode past
         past_proj = self.past_input_proj(past)  # [B, T, d]
@@ -121,12 +120,12 @@ class InterpretableMultiHeadAttention(nn.Module):
         self.v_proj = nn.Linear(d_model, self.d_k)  # shared across heads
         self.out_proj = nn.Linear(self.d_k, d_model)
         self.dropout = nn.Dropout(dropout)
-        self.scale = self.d_k ** 0.5
+        self.scale = self.d_k**0.5
 
     def forward(
         self,
         query: torch.Tensor,  # [B, T_q, d]
-        key: torch.Tensor,    # [B, T_k, d]
+        key: torch.Tensor,  # [B, T_k, d]
         value: torch.Tensor,  # [B, T_k, d]
     ) -> tuple[torch.Tensor, torch.Tensor]:
         B, T_q, _ = query.shape

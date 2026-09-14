@@ -24,22 +24,21 @@ Usage:
     venv/bin/python -m scripts.archive_basis_centre_rank \\
         --archive-dir ../price-archive --out /tmp/abcr_h14.json
 """
+
 from __future__ import annotations
 
-import sys
+import datetime as dt
 import json
 import logging
-import datetime as dt
+import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 import numpy as np
 import pandas as pd
-
-from scripts.served_centre_rank import load_served, derive_panel, DURABLE_ARCHIVE
-from scripts.clean_era_centre_ab import (  # noqa: E402
-    per_date_ic, bootstrap_ci, paired_delta_ci)
+from scripts.clean_era_centre_ab import bootstrap_ci, paired_delta_ci, per_date_ic
+from scripts.served_centre_rank import DURABLE_ARCHIVE, derive_panel, load_served
 
 logging.basicConfig(
     level=logging.INFO,
@@ -59,6 +58,7 @@ FROZEN_SENSITIVITY = 0.50
 # Pure functions (unit-tested; see tests/test_archive_basis_centre_rank.py)
 # --------------------------------------------------------------------------
 
+
 def resolve_forward_anchor(target, available, frozen, tol=ANCHOR_TOL_DAYS):
     """Nearest available non-frozen archive day to `target` within +-tol.
 
@@ -71,7 +71,7 @@ def resolve_forward_anchor(target, available, frozen, tol=ANCHOR_TOL_DAYS):
         day = target + dt.timedelta(days=off)
         if day not in avail:
             continue
-        key = (abs(off), day)          # nearest first, then earliest
+        key = (abs(off), day)  # nearest first, then earliest
         if best is None or key < best[0]:
             best = (key, day)
     return None if best is None else best[1]
@@ -97,8 +97,7 @@ def frozen_anchor_dates(voted, threshold=FROZEN_THRESHOLD):
     return {d for d, v in share.items() if v >= threshold}
 
 
-def archive_legs(panel, price_map, horizon, available, frozen,
-                 tol=ANCHOR_TOL_DAYS):
+def archive_legs(panel, price_map, horizon, available, frozen, tol=ANCHOR_TOL_DAYS):
     """Attach archive-anchored r_hat / realized / naive; drop rows missing any.
 
     `price_map` maps (slug, date) -> voted archive price. Pairing is on identical
@@ -118,8 +117,7 @@ def archive_legs(panel, price_map, horizon, available, frozen,
             continue
         target = d + dt.timedelta(days=horizon)
         if target not in fwd_cache:
-            fwd_cache[target] = resolve_forward_anchor(
-                target, available, frozen, tol=tol)
+            fwd_cache[target] = resolve_forward_anchor(target, available, frozen, tol=tol)
         fwd_day = fwd_cache[target]
         if fwd_day is None:
             continue
@@ -147,27 +145,28 @@ def evaluate_bars(model_ci, paired_ci, n_dates, min_dates=MIN_DATES):
     gate cleared — so a VOID result cannot be quietly read as underpowered.
     """
     if n_dates < min_dates:
-        return {"verdict": "VOID", "n_dates": n_dates,
-                "reason": f"{n_dates} qualifying dates < {min_dates}; "
-                          "no statistic read (prereg bar)"}
+        return {
+            "verdict": "VOID",
+            "n_dates": n_dates,
+            "reason": f"{n_dates} qualifying dates < {min_dates}; no statistic read (prereg bar)",
+        }
     if model_ci is None or paired_ci is None:
-        return {"verdict": "VOID", "n_dates": n_dates,
-                "reason": "a required interval could not be formed"}
+        return {"verdict": "VOID", "n_dates": n_dates, "reason": "a required interval could not be formed"}
     verdict = "CONFIRMED" if (_positive(model_ci) and _positive(paired_ci)) else "KILL"
-    return {"verdict": verdict, "n_dates": n_dates,
-            "model_ic": model_ci, "paired": paired_ci}
+    return {"verdict": verdict, "n_dates": n_dates, "model_ic": model_ci, "paired": paired_ci}
 
 
 # --------------------------------------------------------------------------
 # Loaders
 # --------------------------------------------------------------------------
 
+
 def load_voted(slugs, day_min, day_max, archive_dir):
     """Voted archive composite over the panel slugs. Read-only DuckDB."""
     import duckdb
     from db.archive import prices_relation
-    from models.item_parser import archive_universe_sql_filter
     from models.forecaster import ItemForecaster
+    from models.item_parser import archive_universe_sql_filter
 
     con = duckdb.connect()
     try:
@@ -176,14 +175,17 @@ def load_voted(slugs, day_min, day_max, archive_dir):
         lo = (pd.Timestamp(day_min) - pd.Timedelta(days=5)).date()
         hi = (pd.Timestamp(day_max) + pd.Timedelta(days=HORIZON + ANCHOR_TOL_DAYS)).date()
         placeholders = ", ".join("?" for _ in slugs)
-        frame = con.sql(f"""
+        frame = con.sql(
+            f"""
             SELECT item_slug AS item_id, CAST(day AS DATE) AS date, source,
                    mean_price AS price, volume
             FROM {rel}
             WHERE CAST(day AS DATE) BETWEEN DATE '{lo}' AND DATE '{hi}'
               AND item_slug IN ({placeholders})
               AND ({uni}) AND mean_price IS NOT NULL AND mean_price > 0
-        """, params=list(slugs)).fetchdf()
+        """,
+            params=list(slugs),
+        ).fetchdf()
     finally:
         con.close()
     frame["date"] = pd.to_datetime(frame["date"])
@@ -206,44 +208,40 @@ def run(archive_dir=None, frozen_threshold=FROZEN_THRESHOLD, exact_only=False):
     panel = derive_panel(load_served())
     panel = panel[panel["coh_clean"] | panel["coh_wedge"]].copy()
     slugs = sorted(panel["slug"].unique())
-    logger.info(f"panel: {len(panel):,} rows / "
-                f"{panel['forecast_date'].nunique()} dates / {len(slugs):,} slugs")
+    logger.info(f"panel: {len(panel):,} rows / {panel['forecast_date'].nunique()} dates / {len(slugs):,} slugs")
 
-    voted = load_voted(slugs, panel["forecast_date"].min(),
-                       panel["forecast_date"].max(), archive_dir)
+    voted = load_voted(slugs, panel["forecast_date"].min(), panel["forecast_date"].max(), archive_dir)
     frozen = frozen_anchor_dates(voted, threshold=frozen_threshold)
-    logger.info(f"frozen anchor days (>= {frozen_threshold:.2f}): "
-                f"{sorted(str(d) for d in frozen)}")
+    logger.info(f"frozen anchor days (>= {frozen_threshold:.2f}): {sorted(str(d) for d in frozen)}")
 
     available = sorted(voted["date"].dt.date.unique())
-    price_map = {(str(s), d.date()): float(p) for s, d, p
-                 in zip(voted["item_id"], voted["date"], voted["price"])}
+    price_map = {(str(s), d.date()): float(p) for s, d, p in zip(voted["item_id"], voted["date"], voted["price"])}
 
     tol = 0 if exact_only else ANCHOR_TOL_DAYS
     legs = archive_legs(panel, price_map, HORIZON, available, frozen, tol=tol)
     logger.info(f"legs formed on {len(legs):,} rows")
 
-    result = {"archive_dir": str(archive_dir),
-              "frozen_threshold": frozen_threshold,
-              "frozen_days": sorted(str(d) for d in frozen),
-              "exact_only": exact_only,
-              "cohorts": {}}
+    result = {
+        "archive_dir": str(archive_dir),
+        "frozen_threshold": frozen_threshold,
+        "frozen_days": sorted(str(d) for d in frozen),
+        "exact_only": exact_only,
+        "cohorts": {},
+    }
 
     for name, col in (("clean", "coh_clean"), ("wedge", "coh_wedge"), ("all", None)):
         sub = legs[legs[col]] if col else legs
         dates = _cohort_dates(sub, None)
         sub = sub[sub["forecast_date"].isin(dates)]
         if sub.empty:
-            result["cohorts"][name] = {"verdict": "VOID", "n_dates": 0,
-                                       "reason": "no qualifying dates"}
+            result["cohorts"][name] = {"verdict": "VOID", "n_dates": 0, "reason": "no qualifying dates"}
             continue
         model = per_date_ic(sub["forecast_date"], sub["r_hat"], sub["realized"])
         naive = per_date_ic(sub["forecast_date"], sub["naive"], sub["realized"])
         n_dates = len(model)
-        cell = evaluate_bars(bootstrap_ci(model), paired_delta_ci(model, naive),
-                             n_dates)
+        cell = evaluate_bars(bootstrap_ci(model), paired_delta_ci(model, naive), n_dates)
         cell["naive_ic"] = bootstrap_ci(naive)
-        cell["rows"] = int(len(sub))
+        cell["rows"] = len(sub)
         cell["dates"] = [str(d) for d in sorted(model)]
         result["cohorts"][name] = cell
 
@@ -258,31 +256,35 @@ def gate(archive_dir=None):
     clean = panel[panel["coh_clean"]]
     n = clean.groupby("forecast_date").size()
     dates = sorted(n[n >= MIN_ROWS_PER_DATE].index)
-    return {"qualifying_dates": len(dates), "min_dates": MIN_DATES,
-            "runnable": len(dates) >= MIN_DATES,
-            "dates": [str(d) for d in dates],
-            "panel_dates": int(panel["forecast_date"].nunique()),
-            "panel_rows": int(len(panel))}
+    return {
+        "qualifying_dates": len(dates),
+        "min_dates": MIN_DATES,
+        "runnable": len(dates) >= MIN_DATES,
+        "dates": [str(d) for d in dates],
+        "panel_dates": int(panel["forecast_date"].nunique()),
+        "panel_rows": len(panel),
+    }
 
 
 def main():
     import argparse
+
     ap = argparse.ArgumentParser()
-    ap.add_argument("--gate", action="store_true",
-                    help="print the power gate and exit; reads no statistic")
+    ap.add_argument("--gate", action="store_true", help="print the power gate and exit; reads no statistic")
     ap.add_argument("--archive-dir", default=None)
     ap.add_argument("--frozen-threshold", type=float, default=FROZEN_THRESHOLD)
-    ap.add_argument("--exact-only", action="store_true",
-                    help="sensitivity: require the exact d+14 anchor")
+    ap.add_argument("--exact-only", action="store_true", help="sensitivity: require the exact d+14 anchor")
     ap.add_argument("--out", default=None)
     args = ap.parse_args()
 
     if args.gate:
         g = gate(args.archive_dir)
         print(json.dumps(g, indent=2))
-        print(f"\n{'RUNNABLE' if g['runnable'] else 'VOID'}: "
-              f"{g['qualifying_dates']} qualifying anchor_clean dates "
-              f"(need {g['min_dates']})")
+        print(
+            f"\n{'RUNNABLE' if g['runnable'] else 'VOID'}: "
+            f"{g['qualifying_dates']} qualifying anchor_clean dates "
+            f"(need {g['min_dates']})"
+        )
         return
 
     g = gate(args.archive_dir)
@@ -290,7 +292,8 @@ def main():
         print(json.dumps(g, indent=2))
         raise SystemExit(
             f"VOID: {g['qualifying_dates']} qualifying dates < {g['min_dates']}. "
-            "The prereg bars this leg below the gate — no statistic is read.")
+            "The prereg bars this leg below the gate — no statistic is read."
+        )
 
     result = run(args.archive_dir, args.frozen_threshold, args.exact_only)
     print(json.dumps(result, indent=2, default=str))

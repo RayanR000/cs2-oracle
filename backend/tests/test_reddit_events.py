@@ -3,10 +3,11 @@
 The classifier is pure: no creds, no network. Future-dated posts must never
 enter a past panel (leakage guard).
 """
+
 from __future__ import annotations
 
 import sys
-from datetime import date, datetime, timezone
+from datetime import UTC, date, datetime
 from pathlib import Path
 
 BACKEND = Path(__file__).resolve().parents[1]
@@ -19,14 +20,21 @@ from collectors.reddit_events import (  # noqa: E402
 )
 
 DAY = date(2026, 9, 8)
-AT = datetime(2026, 9, 8, 12, 0, tzinfo=timezone.utc)
-TS = datetime(2026, 9, 8, 10, 0, tzinfo=timezone.utc).timestamp()
+AT = datetime(2026, 9, 8, 12, 0, tzinfo=UTC)
+TS = datetime(2026, 9, 8, 10, 0, tzinfo=UTC).timestamp()
 
 
 def _post(title="Whale sweeping the Kilowatt Case supply", **kw):
-    base = {"title": title, "body": "", "created_utc": TS, "score": 100,
-            "num_comments": 20, "url": "https://example.com/p",
-            "item_slug": "kilowatt-case", "family": "case"}
+    base = {
+        "title": title,
+        "body": "",
+        "created_utc": TS,
+        "score": 100,
+        "num_comments": 20,
+        "url": "https://example.com/p",
+        "item_slug": "kilowatt-case",
+        "family": "case",
+    }
     base.update(kw)
     return base
 
@@ -54,7 +62,7 @@ class TestPanel:
         assert whale["item_slug"] == "kilowatt-case"
 
     def test_future_posts_are_dropped(self):
-        future = _post(created_utc=datetime(2026, 9, 9, 12, 0, tzinfo=timezone.utc).timestamp())
+        future = _post(created_utc=datetime(2026, 9, 9, 12, 0, tzinfo=UTC).timestamp())
         rows = posts_to_events([future], DAY, AT)
         assert rows.empty
 

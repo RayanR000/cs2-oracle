@@ -22,23 +22,18 @@ Usage:
     python scripts/backfill_ssr_history.py --max-consecutive-failures 5   # Custom threshold
 """
 
-import sys
-import os
-import sqlite3
-import time
-import json
 import argparse
 import logging
-from pathlib import Path
-from datetime import datetime, timedelta, timezone
-from typing import List, Dict, Optional, Tuple
+import sqlite3
+import sys
+import time
 from collections import defaultdict
+from datetime import UTC, datetime
+from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 import requests
-from sqlalchemy import text
-
 from config import settings
 
 # Ensure runtime directory exists before setting up file logging
@@ -70,7 +65,7 @@ MODELED_MIN_HISTORY_DAYS = 365
 PROGRESS_FILE = Path(__file__).parent.parent / "runtime" / "ssr_backfill_progress.json"
 
 REQUEST_DELAY = 4.0  # seconds between API calls (~15 req/min — ArchiSteamFarm-safe rate)
-RETRY_ATTEMPTS = 5   # retries for genuine network errors (not 429s)
+RETRY_ATTEMPTS = 5  # retries for genuine network errors (not 429s)
 RETRY_DELAY = 10.0
 BACKOFF_MULTIPLIER = 2.0
 # 429s are NOT hammered: hitting Steam during an IP cooldown *refreshes* the ban.
@@ -83,7 +78,7 @@ RATE_LIMITED = object()
 
 # Auto-pause thresholds (configurable via CLI)
 DEFAULT_MAX_CONSECUTIVE_FAILURES = 10
-DEFAULT_MAX_CONSECUTIVE_429 = 3   # pause fast on a real cooldown so we stop refreshing it
+DEFAULT_MAX_CONSECUTIVE_429 = 3  # pause fast on a real cooldown so we stop refreshing it
 DEFAULT_MAX_CONSECUTIVE_EMPTY_AFTER_OK = 50
 HEALTH_REPORT_INTERVAL = 500  # log health report every N items
 
@@ -96,8 +91,8 @@ USER_AGENTS = [
 # Downsampling tiers (applied on ingest)
 DOWNSAMPLE_TIERS = [
     # (max_age_days, granularity): daily/weekly/monthly
-    (90, "daily"),      # 0-90 days: daily candles
-    (730, "weekly"),    # 91-730 days: weekly candles
+    (90, "daily"),  # 0-90 days: daily candles
+    (730, "weekly"),  # 91-730 days: weekly candles
     (float("inf"), "monthly"),  # 731+ days: monthly candles
 ]
 
@@ -105,6 +100,7 @@ DOWNSAMPLE_TIERS = [
 # ---------------------------------------------------------------------------
 # Health monitor
 # ---------------------------------------------------------------------------
+
 
 class HealthMonitor:
     """Tracks API health, detects rate limits, bans, and session expiry."""
@@ -189,7 +185,7 @@ class HealthMonitor:
         if len(self.last_results) > 20:
             self.last_results.pop(0)
 
-    def should_pause(self) -> Optional[str]:
+    def should_pause(self) -> str | None:
         """Check if we should auto-pause. Returns reason string or None."""
         if self.consecutive_failures >= self.max_consecutive_failures:
             return (
@@ -220,15 +216,19 @@ class HealthMonitor:
         success_rate = (self.total_ok / total_items * 100) if total_items > 0 else 0
 
         logger.info("=" * 70)
-        logger.info(f"HEALTH REPORT — {idx}/{total} ({idx*100//total}%)")
-        logger.info(f"  OK: {self.total_ok} | EMPTY: {self.total_empty} | "
-                     f"Failed: {self.total_failed} | 429s: {self.total_429} | "
-                     f"Exceptions: {self.total_exceptions}")
+        logger.info(f"HEALTH REPORT — {idx}/{total} ({idx * 100 // total}%)")
+        logger.info(
+            f"  OK: {self.total_ok} | EMPTY: {self.total_empty} | "
+            f"Failed: {self.total_failed} | 429s: {self.total_429} | "
+            f"Exceptions: {self.total_exceptions}"
+        )
         logger.info(f"  Success rate: {success_rate:.1f}% | Rate: {rate:.0f} items/hr | ETA: {eta_hours:.1f} hrs")
-        logger.info(f"  Consecutive — OK: {self.consecutive_ok} | "
-                     f"Failures: {self.consecutive_failures} | "
-                     f"429: {self.consecutive_429} | "
-                     f"Empty(after OK): {self.consecutive_empty_after_ok}")
+        logger.info(
+            f"  Consecutive — OK: {self.consecutive_ok} | "
+            f"Failures: {self.consecutive_failures} | "
+            f"429: {self.consecutive_429} | "
+            f"Empty(after OK): {self.consecutive_empty_after_ok}"
+        )
         if self.session_expired:
             logger.warning("  WARNING: Session expiry detected")
         if self.banned:
@@ -249,7 +249,7 @@ class HealthMonitor:
         logger.info(f"  Rate limited (429): {self.total_429}")
         logger.info(f"  Exceptions: {self.total_exceptions}")
         logger.info(f"  Success rate: {success_rate:.1f}%")
-        logger.info(f"  Duration: {elapsed/3600:.1f} hours")
+        logger.info(f"  Duration: {elapsed / 3600:.1f} hours")
         if self.session_expired:
             logger.warning("  Session expired during run — update cookies before resuming")
         if self.banned:
@@ -260,6 +260,7 @@ class HealthMonitor:
 # ---------------------------------------------------------------------------
 # Local SQLite schema
 # ---------------------------------------------------------------------------
+
 
 def init_local_db(db_path: Path) -> sqlite3.Connection:
     """Create/open the local SSR history database."""
@@ -310,9 +311,10 @@ def init_local_db(db_path: Path) -> sqlite3.Connection:
 # Item loading from production DB
 # ---------------------------------------------------------------------------
 
-def load_items_from_prod() -> List[Dict]:
+
+def load_items_from_prod() -> list[dict]:
     """Load item list from the production Supabase database."""
-    from database import SessionLocal, Item
+    from database import Item, SessionLocal
 
     db = SessionLocal()
     try:
@@ -322,7 +324,7 @@ def load_items_from_prod() -> List[Dict]:
         db.close()
 
 
-def load_items_from_catalog() -> List[Dict]:
+def load_items_from_catalog() -> list[dict]:
     """Load item list from the local market catalog database."""
     import sqlite3
 
@@ -332,14 +334,9 @@ def load_items_from_catalog() -> List[Dict]:
 
     conn = sqlite3.connect(str(CATALOG_DB_PATH))
     try:
-        rows = conn.execute(
-            "SELECT id, hash_name, name, type FROM market_items ORDER BY id"
-        ).fetchall()
+        rows = conn.execute("SELECT id, hash_name, name, type FROM market_items ORDER BY id").fetchall()
         logger.info(f"Loaded {len(rows)} items from market catalog")
-        return [
-            {"id": row[0], "item_id": row[1], "name": row[2], "type": row[3] or ""}
-            for row in rows
-        ]
+        return [{"id": row[0], "item_id": row[1], "name": row[2], "type": row[3] or ""} for row in rows]
     finally:
         conn.close()
 
@@ -377,12 +374,13 @@ def load_modeled_item_slugs() -> set:
     slugs = {r[0] for r in rows if r[0]}
     logger.info(
         "Modeled backbone: %s items with >= %s days of history",
-        f"{len(slugs):,}", MODELED_MIN_HISTORY_DAYS,
+        f"{len(slugs):,}",
+        MODELED_MIN_HISTORY_DAYS,
     )
     return slugs
 
 
-def sync_items_to_local(prod_items: List[Dict], local_conn: sqlite3.Connection):
+def sync_items_to_local(prod_items: list[dict], local_conn: sqlite3.Connection):
     """Copy item catalog from production to local SQLite."""
     local_conn.executemany(
         "INSERT OR IGNORE INTO items (id, item_id, name, type) VALUES (?, ?, ?, ?)",
@@ -396,24 +394,23 @@ def sync_items_to_local(prod_items: List[Dict], local_conn: sqlite3.Connection):
 # Steam API client
 # ---------------------------------------------------------------------------
 
+
 class SteamPriceHistoryClient:
     """Fetches full price history from Steam's authenticated endpoint."""
 
     def __init__(self):
         self.session = requests.Session()
-        self.session.headers.update({
-            "User-Agent": USER_AGENTS[0],
-            "Referer": "https://steamcommunity.com/market/",
-        })
+        self.session.headers.update(
+            {
+                "User-Agent": USER_AGENTS[0],
+                "Referer": "https://steamcommunity.com/market/",
+            }
+        )
         # Attach login cookies for the authenticated pricehistory endpoint.
         if settings.steam_login_secure:
-            self.session.cookies.set(
-                "steamLoginSecure", settings.steam_login_secure, domain="steamcommunity.com"
-            )
+            self.session.cookies.set("steamLoginSecure", settings.steam_login_secure, domain="steamcommunity.com")
         if settings.steam_session_id:
-            self.session.cookies.set(
-                "sessionid", settings.steam_session_id, domain="steamcommunity.com"
-            )
+            self.session.cookies.set("sessionid", settings.steam_session_id, domain="steamcommunity.com")
         if not settings.steam_login_secure:
             logger.warning(
                 "STEAM_LOGIN_SECURE not set in .env — pricehistory requests will be unauthenticated "
@@ -424,6 +421,7 @@ class SteamPriceHistoryClient:
 
     def _rotate_ua(self):
         import random
+
         ua = random.choice(USER_AGENTS)
         self.session.headers["User-Agent"] = ua
 
@@ -527,13 +525,14 @@ class SteamPriceHistoryClient:
 # Downsampling
 # ---------------------------------------------------------------------------
 
-def downsample_prices(prices: List[List]) -> List[Tuple[str, float, int]]:
+
+def downsample_prices(prices: list[list]) -> list[tuple[str, float, int]]:
     """
     Downsample raw price history into tiered candles.
     Input: [[date_str, price, volume_str], ...]
     Output: [(timestamp_str, avg_price, total_volume), ...]
     """
-    now = datetime.now(timezone.utc).replace(tzinfo=None)
+    now = datetime.now(UTC).replace(tzinfo=None)
 
     # Parse all records into (datetime, price, volume)
     parsed = []
@@ -551,9 +550,9 @@ def downsample_prices(prices: List[List]) -> List[Tuple[str, float, int]]:
         return []
 
     # Group by tier
-    daily_records = []      # 0-90 days
-    weekly_records = []     # 91-730 days
-    monthly_records = []    # 731+ days
+    daily_records = []  # 0-90 days
+    weekly_records = []  # 91-730 days
+    monthly_records = []  # 731+ days
 
     for dt, price, volume in parsed:
         age_days = (now - dt).days
@@ -608,10 +607,11 @@ def downsample_prices(prices: List[List]) -> List[Tuple[str, float, int]]:
 # Storage
 # ---------------------------------------------------------------------------
 
+
 def store_price_history(
     local_conn: sqlite3.Connection,
     item_local_id: int,
-    candles: List[Tuple[str, float, int]],
+    candles: list[tuple[str, float, int]],
     dry_run: bool = False,
 ) -> int:
     """Store downsampled candles into local SQLite. Returns rows inserted."""
@@ -636,7 +636,8 @@ def store_price_history(
 # Progress tracking
 # ---------------------------------------------------------------------------
 
-def load_progress(local_conn: sqlite3.Connection) -> Dict:
+
+def load_progress(local_conn: sqlite3.Connection) -> dict:
     """Load backfill progress from local DB."""
     row = local_conn.execute(
         "SELECT last_item_id, last_item_name, items_completed, items_failed, started_at, updated_at "
@@ -670,7 +671,7 @@ def save_progress(
     failed: int,
 ):
     """Save or update backfill progress."""
-    now = datetime.now(timezone.utc).replace(tzinfo=None).isoformat()
+    now = datetime.now(UTC).replace(tzinfo=None).isoformat()
     existing = load_progress(local_conn)
     started = existing.get("started_at") or now
 
@@ -687,8 +688,9 @@ def save_progress(
 # Main backfill
 # ---------------------------------------------------------------------------
 
+
 def run_backfill(
-    limit: Optional[int] = None,
+    limit: int | None = None,
     resume: bool = False,
     dry_run: bool = False,
     max_consecutive_failures: int = DEFAULT_MAX_CONSECUTIVE_FAILURES,
@@ -740,8 +742,7 @@ def run_backfill(
             before = len(prod_items)
             prod_items = [it for it in prod_items if it["name"] in slugs]
             logger.info(
-                f"--modeled-only: {before} -> {len(prod_items)} deep-history items "
-                f"(>= {MODELED_MIN_HISTORY_DAYS} days)"
+                f"--modeled-only: {before} -> {len(prod_items)} deep-history items (>= {MODELED_MIN_HISTORY_DAYS} days)"
             )
 
     # 3. Initialize local DB
@@ -806,7 +807,7 @@ def run_backfill(
             rate = idx / elapsed * 3600
             eta_hours = (total - idx) / rate if rate > 0 else 0
             logger.info(
-                f"Progress: {idx}/{total} ({idx*100//total}%) | "
+                f"Progress: {idx}/{total} ({idx * 100 // total}%) | "
                 f"Completed: {completed} | Failed: {failed} | "
                 f"Rate: {rate:.0f} items/hr | ETA: {eta_hours:.1f} hrs"
             )
@@ -829,7 +830,7 @@ def run_backfill(
             if pause_reason:
                 logger.critical(pause_reason)
                 logger.critical(
-                    f"Auto-paused at item {idx+1}/{total}. "
+                    f"Auto-paused at item {idx + 1}/{total}. "
                     f"Progress saved. Use --resume to continue after fixing the issue."
                 )
                 paused = True
@@ -846,7 +847,7 @@ def run_backfill(
             if pause_reason:
                 logger.critical(pause_reason)
                 logger.critical(
-                    f"Auto-paused at item {idx+1}/{total} on rate limits. Progress saved at last "
+                    f"Auto-paused at item {idx + 1}/{total} on rate limits. Progress saved at last "
                     f"good item. Wait for the cooldown to clear, then --resume."
                 )
                 paused = True
@@ -866,7 +867,7 @@ def run_backfill(
             if pause_reason:
                 logger.critical(pause_reason)
                 logger.critical(
-                    f"Auto-paused at item {idx+1}/{total}. "
+                    f"Auto-paused at item {idx + 1}/{total}. "
                     f"Progress saved. Use --resume to continue after fixing the issue."
                 )
                 paused = True
@@ -884,7 +885,7 @@ def run_backfill(
             if pause_reason:
                 logger.critical(pause_reason)
                 logger.critical(
-                    f"Auto-paused at item {idx+1}/{total}. "
+                    f"Auto-paused at item {idx + 1}/{total}. "
                     f"Progress saved. Use --resume to continue after fixing the issue."
                 )
                 paused = True
@@ -908,14 +909,14 @@ def run_backfill(
 
     logger.info("=" * 70)
     if paused:
-        logger.info(f"Backfill PAUSED (auto-pause triggered)")
+        logger.info("Backfill PAUSED (auto-pause triggered)")
     else:
         logger.info(f"Backfill {'(DRY RUN) ' if dry_run else ''}Complete")
     logger.info(f"  Items processed: {completed + failed}")
     logger.info(f"  Completed: {completed}")
     logger.info(f"  Failed: {failed}")
     logger.info(f"  Total rows: {total_rows}")
-    logger.info(f"  Duration: {elapsed/3600:.1f} hours")
+    logger.info(f"  Duration: {elapsed / 3600:.1f} hours")
     logger.info("=" * 70)
 
     print_progress_summary(local_conn, db_path=local_db_path)
@@ -925,14 +926,12 @@ def run_backfill(
     return paused
 
 
-def print_progress_summary(local_conn: sqlite3.Connection, db_path: Optional[Path] = None):
+def print_progress_summary(local_conn: sqlite3.Connection, db_path: Path | None = None):
     """Print a summary of what's in the local database."""
     db_path = db_path or LOCAL_DB_PATH
     item_count = local_conn.execute("SELECT COUNT(*) FROM items").fetchone()[0]
     price_count = local_conn.execute("SELECT COUNT(*) FROM price_history").fetchone()[0]
-    unique_items = local_conn.execute(
-        "SELECT COUNT(DISTINCT item_id) FROM price_history"
-    ).fetchone()[0]
+    unique_items = local_conn.execute("SELECT COUNT(DISTINCT item_id) FROM price_history").fetchone()[0]
 
     db_size = db_path.stat().st_size / (1024 * 1024) if db_path.exists() else 0
 
@@ -976,8 +975,10 @@ def print_status(source: str = "prod"):
             exceptions = sum(1 for l in recent if " [ERROR] Exception" in l)
 
             logger.info("  --- Recent Log Activity (last 500 lines) ---")
-            logger.info(f"  OK: {ok_count} | EMPTY: {empty_count} | "
-                        f"Failed: {failed_count} | 429s: {rate_429} | Exceptions: {exceptions}")
+            logger.info(
+                f"  OK: {ok_count} | EMPTY: {empty_count} | "
+                f"Failed: {failed_count} | 429s: {rate_429} | Exceptions: {exceptions}"
+            )
 
             # Check for auto-pause in log
             pause_lines = [l for l in lines if "Auto-paused" in l or "PAUSE:" in l]
@@ -1002,25 +1003,34 @@ if __name__ == "__main__":
     parser.add_argument("--dry-run", action="store_true", help="Preview without writing to DB")
     parser.add_argument("--status", action="store_true", help="Show current progress")
     parser.add_argument(
-        "--source", choices=["prod", "catalog"], default="prod",
-        help="Source of item list: prod (Supabase, 24k items) or catalog (local market_catalog.db, 32k items)"
+        "--source",
+        choices=["prod", "catalog"],
+        default="prod",
+        help="Source of item list: prod (Supabase, 24k items) or catalog (local market_catalog.db, 32k items)",
     )
     parser.add_argument(
-        "--modeled-only", action="store_true",
+        "--modeled-only",
+        action="store_true",
         help="Only backfill the deep-history backbone (>= 365 days in the archive, ~4.8K items) — "
-             "the forecaster's core set. ~8-9h at 4s/req vs ~2 days for the full catalog."
+        "the forecaster's core set. ~8-9h at 4s/req vs ~2 days for the full catalog.",
     )
     parser.add_argument(
-        "--max-consecutive-failures", type=int, default=DEFAULT_MAX_CONSECUTIVE_FAILURES,
-        help=f"Auto-pause after N consecutive failures (default: {DEFAULT_MAX_CONSECUTIVE_FAILURES})"
+        "--max-consecutive-failures",
+        type=int,
+        default=DEFAULT_MAX_CONSECUTIVE_FAILURES,
+        help=f"Auto-pause after N consecutive failures (default: {DEFAULT_MAX_CONSECUTIVE_FAILURES})",
     )
     parser.add_argument(
-        "--max-consecutive-429", type=int, default=DEFAULT_MAX_CONSECUTIVE_429,
-        help=f"Auto-pause after N consecutive 429 rate limits (default: {DEFAULT_MAX_CONSECUTIVE_429})"
+        "--max-consecutive-429",
+        type=int,
+        default=DEFAULT_MAX_CONSECUTIVE_429,
+        help=f"Auto-pause after N consecutive 429 rate limits (default: {DEFAULT_MAX_CONSECUTIVE_429})",
     )
     parser.add_argument(
-        "--max-consecutive-empty-after-ok", type=int, default=DEFAULT_MAX_CONSECUTIVE_EMPTY_AFTER_OK,
-        help=f"Auto-pause after N consecutive EMPTY responses following OKs (default: {DEFAULT_MAX_CONSECUTIVE_EMPTY_AFTER_OK})"
+        "--max-consecutive-empty-after-ok",
+        type=int,
+        default=DEFAULT_MAX_CONSECUTIVE_EMPTY_AFTER_OK,
+        help=f"Auto-pause after N consecutive EMPTY responses following OKs (default: {DEFAULT_MAX_CONSECUTIVE_EMPTY_AFTER_OK})",
     )
     args = parser.parse_args()
 

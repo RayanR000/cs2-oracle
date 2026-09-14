@@ -1,11 +1,9 @@
 from __future__ import annotations
 
 from datetime import date, timedelta
-from pathlib import Path
 
 import pandas as pd
 import pytest
-
 from backtest.price_resolution import (
     MAX_WINDOW_SPAN_DAYS,
     SMOOTH_WINDOW,
@@ -42,9 +40,9 @@ def test_flat_series_gives_exactly_the_flat_price():
 def test_uses_median_of_last_three_observations_at_or_before_anchor():
     rows = [
         ("ak", date(2026, 7, 1), 1.0),
-        ("ak", date(2026, 7, 2), 10.0),   # spike
+        ("ak", date(2026, 7, 2), 10.0),  # spike
         ("ak", date(2026, 7, 3), 2.0),
-        ("ak", date(2026, 7, 4), 3.0),    # after the anchor — must be ignored
+        ("ak", date(2026, 7, 4), 3.0),  # after the anchor — must be ignored
     ]
     out = smoothed_prices(_frame(rows), {("ak", date(2026, 7, 3))})
     # median(1.0, 10.0, 2.0) == 2.0 — the spike is filtered, 07-04 excluded
@@ -207,9 +205,7 @@ def test_the_anchor_rule_subsumes_the_between_observations_rule():
                 # either way they all fit the 3-slot window and 0 is the oldest.
                 selected_oldest = start
                 anchor_ok = (anchor - selected_oldest).days <= MAX_WINDOW_SPAN_DAYS
-                window_ok = (
-                    (start + timedelta(days=days[-1])) - selected_oldest
-                ).days <= MAX_WINDOW_SPAN_DAYS
+                window_ok = ((start + timedelta(days=days[-1])) - selected_oldest).days <= MAX_WINDOW_SPAN_DAYS
 
                 assert bool(out) == anchor_ok, (days, anchor_gap)
                 # The subsumption itself: anchor-pass implies window-pass.

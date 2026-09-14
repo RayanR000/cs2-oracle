@@ -11,7 +11,6 @@ import random
 from datetime import date, timedelta
 
 import pytest
-
 from backtest.directional_test import (
     PT_MIN_ROWS_PER_DATE,
     PT_T_HURDLE,
@@ -199,9 +198,7 @@ def test_records_with_no_forecast_date_are_excluded_not_pooled():
 
 
 def test_a_single_date_yields_no_statistic():
-    result = pesaran_timmermann(
-        _table(BASE_DATE, a=95, b=5, c=65, d=35), MIN_FORECAST_DATES
-    )
+    result = pesaran_timmermann(_table(BASE_DATE, a=95, b=5, c=65, d=35), MIN_FORECAST_DATES)
     assert result["pt_n_dates"] == 1
     assert result["pt_t_stat"] is None
     assert result["pt_excess_pp"] is None
@@ -209,9 +206,7 @@ def test_a_single_date_yields_no_statistic():
 
 
 def test_the_result_shape_is_constant_so_an_absent_statistic_is_visible():
-    computed = pesaran_timmermann(
-        _panel(lambda fd, i: _table(fd, 95, 5, 65, 35)), MIN_FORECAST_DATES
-    )
+    computed = pesaran_timmermann(_panel(lambda fd, i: _table(fd, 95, 5, 65, 35)), MIN_FORECAST_DATES)
     absent = pesaran_timmermann([], MIN_FORECAST_DATES)
     assert set(computed) == set(absent)
     assert absent["pt_verdict"] == "insufficient_dates"
@@ -272,10 +267,7 @@ def test_constant_call_baseline_is_the_majority_class_not_flat():
 
 
 def test_constant_call_baseline_breaks_ties_deterministically():
-    records = (
-        [_rec("up", "down", BASE_DATE) for _ in range(50)]
-        + [_rec("up", "up", BASE_DATE) for _ in range(50)]
-    )
+    records = [_rec("up", "down", BASE_DATE) for _ in range(50)] + [_rec("up", "up", BASE_DATE) for _ in range(50)]
     first = constant_call_baseline(records)
     assert first == constant_call_baseline(list(reversed(records)))
     assert first[0] == "up"  # max() on (count, label): "up" > "down"

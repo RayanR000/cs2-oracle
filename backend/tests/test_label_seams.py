@@ -8,6 +8,7 @@ a return taken across a calendar gap fabricates exactly the move under test, a
 the voted return wearing a different name, and a threshold read against a
 window that contains the seam is inflated by it.
 """
+
 from __future__ import annotations
 
 import sys
@@ -19,7 +20,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from scripts.check_label_seams import (  # noqa: E402
+from scripts.check_label_seams import (
     NULL_SOURCE_LABEL,
     daily_median_returns,
     flag_seams,
@@ -32,18 +33,13 @@ START = date(2026, 7, 1)
 
 def _voted(rows) -> pd.DataFrame:
     """`(item_id, day_offset, price)` tuples as a voted daily frame."""
-    return pd.DataFrame(
-        [{"item_id": i, "date": START + timedelta(days=d), "price": p}
-         for i, d, p in rows]
-    )
+    return pd.DataFrame([{"item_id": i, "date": START + timedelta(days=d), "price": p} for i, d, p in rows])
 
 
 def _raw(rows) -> pd.DataFrame:
     """`(item_id, day_offset, source, price)` tuples as a per-source frame."""
     return pd.DataFrame(
-        [{"item_id": i, "date": START + timedelta(days=d), "source": s,
-          "price": p}
-         for i, d, s, p in rows]
+        [{"item_id": i, "date": START + timedelta(days=d), "source": s, "price": p} for i, d, s, p in rows]
     )
 
 
@@ -54,8 +50,7 @@ class TestDailyMedianReturns:
         An as-of lookup would carry day 0's price to day 2 and report the whole
         two-day move as a daily return -- which is the artifact under test.
         """
-        frame = _voted([("a", 0, 10.0), ("a", 2, 12.0),
-                        ("b", 0, 10.0), ("b", 1, 11.0)])
+        frame = _voted([("a", 0, 10.0), ("a", 2, 12.0), ("b", 0, 10.0), ("b", 1, 11.0)])
         out = daily_median_returns(frame, min_price=1.0)
         assert list(out["date"]) == [pd.Timestamp(START + timedelta(days=1))]
         assert out.loc[0, "n_items"] == 1
@@ -67,8 +62,7 @@ class TestDailyMedianReturns:
         Filtering on the *later* price lets a sub-$1 item that mooned into the
         cohort join it, which is selection on the outcome.
         """
-        frame = _voted([("cheap", 0, 0.50), ("cheap", 1, 5.00),
-                        ("dear", 0, 10.0), ("dear", 1, 10.5)])
+        frame = _voted([("cheap", 0, 0.50), ("cheap", 1, 5.00), ("dear", 0, 10.0), ("dear", 1, 10.5)])
         out = daily_median_returns(frame, min_price=1.0)
         assert out.loc[0, "n_items"] == 1
         assert out.loc[0, "median_return"] == pytest.approx(0.05)
@@ -82,8 +76,7 @@ class TestWithinSourceReturns:
         return. Within-source has no common source across the pair and so
         reports nothing, which is the whole point of the basis.
         """
-        rows = _raw([("a", 0, "aggregator_sync", 10.0),
-                     ("a", 1, "aggregator_steam_17mafo", 13.0)])
+        rows = _raw([("a", 0, "aggregator_sync", 10.0), ("a", 1, "aggregator_steam_17mafo", 13.0)])
         assert within_source_returns(rows).empty
 
     def test_common_source_is_the_only_leg_used(self):
@@ -92,9 +85,13 @@ class TestWithinSourceReturns:
         `sync` is on both days and is flat; `17mafo` appears only on day 1 at a
         different level. The return is the flat one.
         """
-        rows = _raw([("a", 0, "aggregator_sync", 10.0),
-                     ("a", 1, "aggregator_sync", 10.0),
-                     ("a", 1, "aggregator_steam_17mafo", 13.0)])
+        rows = _raw(
+            [
+                ("a", 0, "aggregator_sync", 10.0),
+                ("a", 1, "aggregator_sync", 10.0),
+                ("a", 1, "aggregator_steam_17mafo", 13.0),
+            ]
+        )
         out = within_source_returns(rows)
         assert len(out) == 1
         assert out.loc[0, "return"] == pytest.approx(0.0)
@@ -119,18 +116,21 @@ class TestWithinSourceReturns:
         contribute: it is the wrong side of the book, and a trailing mean is
         the wrong time basis.
         """
-        rows = _raw([("a", 0, "aggregator_buff163_buy", 10.0),
-                     ("a", 1, "aggregator_buff163_buy", 11.0),
-                     ("b", 0, "aggregator_steam_30d", 10.0),
-                     ("b", 1, "aggregator_steam_30d", 11.0)])
+        rows = _raw(
+            [
+                ("a", 0, "aggregator_buff163_buy", 10.0),
+                ("a", 1, "aggregator_buff163_buy", 11.0),
+                ("b", 0, "aggregator_steam_30d", 10.0),
+                ("b", 1, "aggregator_steam_30d", 11.0),
+            ]
+        )
         assert within_source_returns(rows).empty
 
 
 class TestFlagSeams:
     def _daily(self, moves) -> pd.DataFrame:
         return pd.DataFrame(
-            [{"date": START + timedelta(days=d), "n_items": 1000,
-              "median_return": m} for d, m in enumerate(moves)]
+            [{"date": START + timedelta(days=d), "n_items": 1000, "median_return": m} for d, m in enumerate(moves)]
         )
 
     def test_a_market_wide_move_is_flagged(self):
@@ -173,8 +173,7 @@ class TestWithinSourceIndex:
         at 13 (a +30% cross-source offset). The clean index must stay at 10 --
         the level is carried forward, not re-anchored to the other feed.
         """
-        rows = _raw([("a", 0, "aggregator_sync", 10.0),
-                     ("a", 1, "aggregator_steam_17mafo", 13.0)])
+        rows = _raw([("a", 0, "aggregator_sync", 10.0), ("a", 1, "aggregator_steam_17mafo", 13.0)])
         voted = _voted([("a", 0, 10.0), ("a", 1, 13.0)])
         out = within_source_index(rows, voted).sort_values("date")
         assert list(out["price"].round(6)) == [10.0, 10.0]
@@ -185,23 +184,28 @@ class TestWithinSourceIndex:
         `sync` goes 10 -> 11 (+10%) then 11 -> 13.2 (+20%); the index compounds
         to 10, 11, 13.2 regardless of a one-sided second feed on day 1.
         """
-        rows = _raw([("a", 0, "aggregator_sync", 10.0),
-                     ("a", 1, "aggregator_sync", 11.0),
-                     ("a", 1, "aggregator_steam_17mafo", 99.0),
-                     ("a", 2, "aggregator_sync", 13.2)])
+        rows = _raw(
+            [
+                ("a", 0, "aggregator_sync", 10.0),
+                ("a", 1, "aggregator_sync", 11.0),
+                ("a", 1, "aggregator_steam_17mafo", 99.0),
+                ("a", 2, "aggregator_sync", 13.2),
+            ]
+        )
         voted = _voted([("a", 0, 10.0), ("a", 1, 11.0), ("a", 2, 13.2)])
         out = within_source_index(rows, voted).sort_values("date")
         assert list(out["price"].round(6)) == [10.0, 11.0, 13.2]
 
     def test_cohort_matches_the_voted_basis(self):
         """One index row per voted item-day, so the two bases stay paired."""
-        rows = _raw([("a", 0, "aggregator_sync", 10.0),
-                     ("a", 1, "aggregator_sync", 11.0),
-                     ("b", 0, "aggregator_sync", 5.0)])
+        rows = _raw(
+            [("a", 0, "aggregator_sync", 10.0), ("a", 1, "aggregator_sync", 11.0), ("b", 0, "aggregator_sync", 5.0)]
+        )
         voted = _voted([("a", 0, 10.0), ("a", 1, 11.0), ("b", 0, 5.0)])
         out = within_source_index(rows, voted)
         assert len(out) == len(voted)
-        assert set(map(tuple, out[["item_id"]].assign(
-            d=out["date"]).itertuples(index=False, name=None))) == {
-            ("a", pd.Timestamp(START)), ("a", pd.Timestamp(START + timedelta(days=1))),
-            ("b", pd.Timestamp(START))}
+        assert set(map(tuple, out[["item_id"]].assign(d=out["date"]).itertuples(index=False, name=None))) == {
+            ("a", pd.Timestamp(START)),
+            ("a", pd.Timestamp(START + timedelta(days=1))),
+            ("b", pd.Timestamp(START)),
+        }

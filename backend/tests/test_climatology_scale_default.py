@@ -7,6 +7,7 @@ mutual-exclusion raise (`forecaster.py`, "alternative band denominators, not lay
 The signed band is a centring / two-quantile change, NOT a scale denominator, so it is
 absent from that raise and the two are orthogonal. No full train (~5 min).
 """
+
 from __future__ import annotations
 
 import inspect
@@ -37,9 +38,7 @@ def test_default_flags_do_not_trip_the_mutual_exclusion_raise(monkeypatch):
         monkeypatch.delenv(other, raising=False)
 
     would_raise = ItemForecaster.climatology_scale_enabled() and (
-        scale_model.enabled()
-        or ItemForecaster.sigma_exponent_enabled()
-        or ItemForecaster.exceedance_scale_enabled()
+        scale_model.enabled() or ItemForecaster.sigma_exponent_enabled() or ItemForecaster.exceedance_scale_enabled()
     )
     assert would_raise is False
 
@@ -52,8 +51,7 @@ def test_signed_band_is_absent_from_the_mutual_exclusion_guard():
     the cutover; the wider method legitimately persists `conformal_q_lo/hi`."""
     src = inspect.getsource(ItemForecaster._calibrate_conformal)
     start = src.index("if self.climatology_scale_enabled() and (")
-    guard = src[start:src.index("Pick one.", start)]
+    guard = src[start : src.index("Pick one.", start)]
     assert "another band-scale flag" in guard  # anchored on the right block
-    for signed_symbol in ("band_signed", "band_offsets",
-                          "conformal_q_lo", "conformal_q_hi"):
+    for signed_symbol in ("band_signed", "band_offsets", "conformal_q_lo", "conformal_q_hi"):
         assert signed_symbol not in guard

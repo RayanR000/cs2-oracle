@@ -7,16 +7,12 @@ The Optuna objective was not touched: it still scored
 FIXED_BOOST_ROUNDS comment records the conflict directly -- at 14d and 30d the
 val-loss optimum is 25 rounds while rank IC peaks at 500-750.
 """
+
 from __future__ import annotations
 
 import ast
 import inspect
 import textwrap
-from unittest.mock import MagicMock
-
-import numpy as np
-import pandas as pd
-import pytest
 
 from models.forecaster import ItemForecaster
 
@@ -30,27 +26,30 @@ def _code(func) -> str:
     """
     tree = ast.parse(textwrap.dedent(inspect.getsource(func)))
     for node in ast.walk(tree):
-        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef,
-                             ast.ClassDef, ast.Module)):
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef, ast.Module)):
             body = node.body
-            if (body and isinstance(body[0], ast.Expr)
-                    and isinstance(body[0].value, ast.Constant)
-                    and isinstance(body[0].value.value, str)):
+            if (
+                body
+                and isinstance(body[0], ast.Expr)
+                and isinstance(body[0].value, ast.Constant)
+                and isinstance(body[0].value.value, str)
+            ):
                 node.body = body[1:] or [ast.Pass()]
-    return ast.unparse(tree)          # ast.unparse never emits comments
+    return ast.unparse(tree)  # ast.unparse never emits comments
 
 
 def test_optuna_does_not_early_stop():
     assert "early_stopping" not in _code(ItemForecaster._optuna_search_params), (
-        "Optuna still early-stops on the window it scores; that is the "
-        "criterion FIXED_BOOST_ROUNDS replaced.")
+        "Optuna still early-stops on the window it scores; that is the criterion FIXED_BOOST_ROUNDS replaced."
+    )
 
 
 def test_optuna_does_not_prune_on_the_old_metric():
     src = _code(ItemForecaster._optuna_search_params)
     assert "LightGBMPruningCallback" not in src, (
         "the pruner prunes on LightGBM's reported `quantile` metric, not on "
-        "the returned objective, so it re-introduces the replaced criterion.")
+        "the returned objective, so it re-introduces the replaced criterion."
+    )
 
 
 def test_optuna_scores_within_date_rank_ic():
@@ -62,18 +61,19 @@ def test_optuna_scores_within_date_rank_ic():
 def test_optuna_takes_val_dates():
     sig = inspect.signature(ItemForecaster._optuna_search_params)
     assert "val_dates" in sig.parameters, (
-        "rank IC is within-date; a pooled Spearman would re-introduce the "
-        "market factor the PT test exists to reject.")
+        "rank IC is within-date; a pooled Spearman would re-introduce the market factor the PT test exists to reject."
+    )
 
 
 def test_optuna_tunes_at_cv_rounds_not_production_rounds():
     src = _code(ItemForecaster._optuna_search_params)
     assert "cv=True" in src, (
         "tuning at production rounds and evaluating at CV rounds selects "
-        "params that only pay off at a depth CV never reaches.")
+        "params that only pay off at a depth CV never reaches."
+    )
 
 
 def test_artifact_version_bumped():
     assert ItemForecaster.MODEL_ARTIFACT_VERSION >= 6, (
-        "a cached meta.json would otherwise supply params chosen under the "
-        "old criterion.")
+        "a cached meta.json would otherwise supply params chosen under the old criterion."
+    )

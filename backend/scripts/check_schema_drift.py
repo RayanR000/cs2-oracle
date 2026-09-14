@@ -27,10 +27,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from alembic.autogenerate import compare_metadata
 from alembic.migration import MigrationContext
-from sqlalchemy import create_engine
-
 from config import settings
 from database import Base
+from sqlalchemy import create_engine
 
 # Ops that mean "the ORM and the migrations disagree about what exists". These are the
 # missing-migration signature and carry no reflection noise.

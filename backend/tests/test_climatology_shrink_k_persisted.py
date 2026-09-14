@@ -12,6 +12,7 @@ neighbouring flags are not: an artifact written before the key existed is
 otherwise byte-identical, so bumping would force every checkout into a
 needless retrain.
 """
+
 from __future__ import annotations
 
 import inspect
@@ -23,13 +24,12 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from models.forecaster import ItemForecaster  # noqa: E402
+from models.forecaster import ItemForecaster
 
 
 @pytest.fixture
 def fc(tmp_path_factory):
-    return ItemForecaster(db_session=MagicMock(),
-                          model_dir=str(tmp_path_factory.mktemp("saved_models")))
+    return ItemForecaster(db_session=MagicMock(), model_dir=str(tmp_path_factory.mktemp("saved_models")))
 
 
 class TestTheArtifactField:

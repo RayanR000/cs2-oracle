@@ -13,6 +13,7 @@ excludes the point estimate by 49 points. ``_score_groups`` compensated with a
 ``* 100`` in the log line only, so the console was right and the stored row was
 not, and the stored row is what gets audited.
 """
+
 from __future__ import annotations
 
 from datetime import date, timedelta
@@ -63,14 +64,12 @@ def test_the_interval_brackets_the_point_estimate():
 
     for lo_key, hi_key in (
         ("directional_accuracy_ci_lower", "directional_accuracy_ci_upper"),
-        ("directional_accuracy_ci_clustered_lower",
-         "directional_accuracy_ci_clustered_upper"),
+        ("directional_accuracy_ci_clustered_lower", "directional_accuracy_ci_clustered_upper"),
     ):
         lo, hi = metrics[lo_key], metrics[hi_key]
         assert lo is not None and hi is not None
         assert lo <= da <= hi, (
-            f"{lo_key}..{hi_key} = {lo}..{hi} does not bracket "
-            f"directional_accuracy = {da} — units disagree"
+            f"{lo_key}..{hi_key} = {lo}..{hi} does not bracket directional_accuracy = {da} — units disagree"
         )
 
 
@@ -79,18 +78,13 @@ def test_the_bounds_are_on_a_percent_scale():
     for field in CI_FIELDS:
         value = metrics[field]
         assert value is not None
-        assert 1.0 < value <= 100.0, (
-            f"{field} = {value} looks like a fraction, not a percent"
-        )
+        assert 1.0 < value <= 100.0, f"{field} = {value} looks like a fraction, not a percent"
 
 
 def test_an_all_correct_cohort_reports_a_hundred_not_one():
     """The sharpest discriminator: a fraction bound would be exactly 1.0."""
     d0 = date(2026, 7, 1)
-    records = [
-        _record(1, d0 + timedelta(days=i))
-        for i in range(6) for _ in range(10)
-    ]
+    records = [_record(1, d0 + timedelta(days=i)) for i in range(6) for _ in range(10)]
     metrics, _ = score_cohort(records)
     assert metrics["directional_accuracy"] == 100.0
     for field in CI_FIELDS:

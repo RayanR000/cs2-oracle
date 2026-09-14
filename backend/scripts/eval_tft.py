@@ -7,19 +7,19 @@ Usage (from backend/):
 Reads the voted price history, runs expanding-window CV for TFT,
 and compares against LightGBM OOF predictions (from meta.json cv_results).
 """
+
 from __future__ import annotations
 
 import logging
 import os
 import sys
 
-import numpy as np
 import pandas as pd
 from scipy.stats import spearmanr
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from models.tft import TFTTrainer, TFTConfig
+from models.tft import TFTConfig, TFTTrainer
 
 logging.basicConfig(level=logging.INFO, format="%(message)s")
 logger = logging.getLogger(__name__)
@@ -28,8 +28,9 @@ HORIZONS = [3, 7, 14, 30]
 
 
 def main():
-    from models.forecaster import ItemForecaster
     from unittest.mock import MagicMock
+
+    from models.forecaster import ItemForecaster
 
     model_dir = os.path.join(os.path.dirname(__file__), "..", "models", "saved_models")
     forecaster = ItemForecaster(db_session=MagicMock(), model_dir=model_dir)
@@ -40,8 +41,7 @@ def main():
     # scores the same population TFT trains on. The "serve" universe needs
     # is_backfilled from Postgres, which a local MagicMock-db run cannot
     # provide (and backend/.env points at production — see AGENTS.md).
-    price_df = forecaster.fetch_price_history(days_back=1460, backfilled_only=True,
-                                              universe="train")
+    price_df = forecaster.fetch_price_history(days_back=1460, backfilled_only=True, universe="train")
     # NOTE: the plan drafted this filter via transform("median").loc[...].index,
     # but that compares item_ids against row indices and selects nothing.
     # Filter on the per-item median directly (same statistic as
@@ -85,17 +85,21 @@ def main():
             f"naive_MAE={naive_mae:.2f}%  edge={naive_mae - mae:+.2f}%  "
             f"n={len(valid):,}"
         )
-        rows.append({
-            "horizon": h, "rank_ic": ic, "mae": mae,
-            "naive_mae": naive_mae, "n": len(valid),
-        })
+        rows.append(
+            {
+                "horizon": h,
+                "rank_ic": ic,
+                "mae": mae,
+                "naive_mae": naive_mae,
+                "n": len(valid),
+            }
+        )
 
     if rows:
         # train_cv() never persists a checkpoint, so the eval dir may not exist
         # (only TFTTrainer.save() calls makedirs). Create it before writing.
         os.makedirs(os.path.join(model_dir, "tft_eval"), exist_ok=True)
-        pd.DataFrame(rows).to_csv(
-            os.path.join(model_dir, "tft_eval", "tft_eval.csv"), index=False)
+        pd.DataFrame(rows).to_csv(os.path.join(model_dir, "tft_eval", "tft_eval.csv"), index=False)
         logger.info(f"\nResults saved to {model_dir}/tft_eval/tft_eval.csv")
 
 

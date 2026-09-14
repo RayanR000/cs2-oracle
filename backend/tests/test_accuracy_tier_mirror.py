@@ -10,12 +10,12 @@ The headline is a separate hole: ``_score_groups`` computed it and only logged
 it, so the one number quoted as "the model's accuracy" was never stored and
 could not be audited.
 """
+
 from __future__ import annotations
 
 import pandas as pd
 import pytest
-
-from backtest.scoring import HEADLINE_TIER, HEADLINE_MIN_TIER, score_by_tier
+from backtest.scoring import HEADLINE_MIN_TIER, HEADLINE_TIER, score_by_tier
 from db.parquet import _append_parquet
 
 
@@ -40,16 +40,19 @@ class TestMirrorSchemaWidening:
     def test_append_adds_a_column_the_existing_file_lacks(self, tmp_path):
         """The regression: a mirror written before 0019 must gain price_tier."""
         path = tmp_path / "prediction_accuracy.parquet"
-        pd.DataFrame([
-            {"prediction_type": "forecast", "horizon_days": 3, "sample_count": 10},
-        ]).to_parquet(path, index=False)
+        pd.DataFrame(
+            [
+                {"prediction_type": "forecast", "horizon_days": 3, "sample_count": 10},
+            ]
+        ).to_parquet(path, index=False)
 
         _append_parquet(
             path,
-            pd.DataFrame([
-                {"prediction_type": "forecast", "horizon_days": 3,
-                 "sample_count": 20, "price_tier": 1},
-            ]),
+            pd.DataFrame(
+                [
+                    {"prediction_type": "forecast", "horizon_days": 3, "sample_count": 20, "price_tier": 1},
+                ]
+            ),
             ["prediction_type", "horizon_days", "price_tier"],
         )
 
@@ -59,16 +62,19 @@ class TestMirrorSchemaWidening:
 
     def test_pre_existing_rows_survive_with_null_in_the_new_column(self, tmp_path):
         path = tmp_path / "t.parquet"
-        pd.DataFrame([
-            {"prediction_type": "forecast", "horizon_days": 7, "sample_count": 10},
-        ]).to_parquet(path, index=False)
+        pd.DataFrame(
+            [
+                {"prediction_type": "forecast", "horizon_days": 7, "sample_count": 10},
+            ]
+        ).to_parquet(path, index=False)
 
         _append_parquet(
             path,
-            pd.DataFrame([
-                {"prediction_type": "forecast", "horizon_days": 3,
-                 "sample_count": 20, "price_tier": 2},
-            ]),
+            pd.DataFrame(
+                [
+                    {"prediction_type": "forecast", "horizon_days": 3, "sample_count": 20, "price_tier": 2},
+                ]
+            ),
             ["prediction_type", "horizon_days", "price_tier"],
         )
 
@@ -78,16 +84,19 @@ class TestMirrorSchemaWidening:
 
     def test_a_column_the_new_rows_lack_is_not_blanked_on_survivors(self, tmp_path):
         path = tmp_path / "t.parquet"
-        pd.DataFrame([
-            {"prediction_type": "forecast", "horizon_days": 7,
-             "sample_count": 10, "evaluation_window_days": 30},
-        ]).to_parquet(path, index=False)
+        pd.DataFrame(
+            [
+                {"prediction_type": "forecast", "horizon_days": 7, "sample_count": 10, "evaluation_window_days": 30},
+            ]
+        ).to_parquet(path, index=False)
 
         _append_parquet(
             path,
-            pd.DataFrame([
-                {"prediction_type": "forecast", "horizon_days": 3, "sample_count": 20},
-            ]),
+            pd.DataFrame(
+                [
+                    {"prediction_type": "forecast", "horizon_days": 3, "sample_count": 20},
+                ]
+            ),
             ["prediction_type", "horizon_days"],
         )
 
@@ -99,14 +108,15 @@ class TestMirrorSchemaWidening:
         """Two tiers of the same (type, horizon) are distinct rows, not a collision."""
         path = tmp_path / "t.parquet"
         keys = ["prediction_type", "horizon_days", "price_tier"]
-        rows = [{"prediction_type": "forecast", "horizon_days": 3,
-                 "sample_count": 10 * t, "price_tier": t} for t in (0, 1, 2)]
+        rows = [
+            {"prediction_type": "forecast", "horizon_days": 3, "sample_count": 10 * t, "price_tier": t}
+            for t in (0, 1, 2)
+        ]
         _append_parquet(path, pd.DataFrame(rows), keys)
         # re-writing tier 1 must replace only tier 1
         _append_parquet(
             path,
-            pd.DataFrame([{"prediction_type": "forecast", "horizon_days": 3,
-                           "sample_count": 999, "price_tier": 1}]),
+            pd.DataFrame([{"prediction_type": "forecast", "horizon_days": 3, "sample_count": 999, "price_tier": 1}]),
             keys,
         )
         out = pd.read_parquet(path).sort_values("price_tier")
@@ -118,8 +128,8 @@ class TestMirrorSchemaWidening:
 class TestHeadlineIsPersisted:
     def test_score_by_tier_emits_a_headline_row(self):
         records = (
-            [_record(0, 1, base=0.5)] * 8      # penny, all correct
-            + [_record(1, 0, base=2.0)] * 4    # >=$1, all wrong
+            [_record(0, 1, base=0.5)] * 8  # penny, all correct
+            + [_record(1, 0, base=2.0)] * 4  # >=$1, all wrong
             + [_record(2, 0, base=7.0)] * 4
         )
         out = score_by_tier(records)

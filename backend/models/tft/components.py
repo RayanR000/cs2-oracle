@@ -33,21 +33,17 @@ class GatedResidualNetwork(nn.Module):
     ):
         super().__init__()
         self.fc1 = nn.Linear(input_dim, hidden_dim)
-        self.context_proj = (
-            nn.Linear(context_dim, hidden_dim, bias=False)
-            if context_dim is not None else None
-        )
+        self.context_proj = nn.Linear(context_dim, hidden_dim, bias=False) if context_dim is not None else None
         self.fc2 = nn.Linear(hidden_dim, output_dim)
         self.glu = GatedLinearUnit(output_dim)
         self.dropout = nn.Dropout(dropout)
         self.layer_norm = nn.LayerNorm(output_dim)
-        self.skip = (
-            nn.Linear(input_dim, output_dim)
-            if input_dim != output_dim else None
-        )
+        self.skip = nn.Linear(input_dim, output_dim) if input_dim != output_dim else None
 
     def forward(
-        self, x: torch.Tensor, context: torch.Tensor | None = None,
+        self,
+        x: torch.Tensor,
+        context: torch.Tensor | None = None,
     ) -> torch.Tensor:
         residual = self.skip(x) if self.skip is not None else x
         hidden = self.fc1(x)
@@ -78,19 +74,23 @@ class VariableSelectionNetwork(nn.Module):
         context_dim: int | None = None,
     ):
         super().__init__()
-        self.grns = nn.ModuleList([
-            GatedResidualNetwork(input_dim, hidden_dim, input_dim, dropout)
-            for _ in range(num_inputs)
-        ])
+        self.grns = nn.ModuleList(
+            [GatedResidualNetwork(input_dim, hidden_dim, input_dim, dropout) for _ in range(num_inputs)]
+        )
         flattened_dim = input_dim * num_inputs
         self.weight_grn = GatedResidualNetwork(
-            flattened_dim, hidden_dim, num_inputs, dropout,
+            flattened_dim,
+            hidden_dim,
+            num_inputs,
+            dropout,
             context_dim=context_dim,
         )
         self.num_inputs = num_inputs
 
     def forward(
-        self, x: torch.Tensor, context: torch.Tensor | None = None,
+        self,
+        x: torch.Tensor,
+        context: torch.Tensor | None = None,
     ) -> tuple[torch.Tensor, torch.Tensor]:
         # x: [batch, num_inputs, input_dim]
         processed = []

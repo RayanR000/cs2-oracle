@@ -28,6 +28,7 @@ The fix widens the calendar window backwards until it clears the floors, which
 keeps validation a recent contiguous window. The positional split survives only
 for a frame too small for widening to help.
 """
+
 from __future__ import annotations
 
 from datetime import date, timedelta
@@ -36,14 +37,12 @@ from unittest.mock import MagicMock
 import numpy as np
 import pandas as pd
 import pytest
-
 from models.forecaster import ItemForecaster
 
 
 @pytest.fixture
 def forecaster(tmp_path_factory):
-    return ItemForecaster(db_session=MagicMock(),
-                          model_dir=str(tmp_path_factory.mktemp("saved_models")))
+    return ItemForecaster(db_session=MagicMock(), model_dir=str(tmp_path_factory.mktemp("saved_models")))
 
 
 def _panel(n_items=70, n_days=206, start=date(2026, 1, 1)):
@@ -53,9 +52,7 @@ def _panel(n_items=70, n_days=206, start=date(2026, 1, 1)):
         price = 10.0 + i
         for d in range(n_days):
             price *= 1.0 + rng.normal(0.0, 0.01)
-            rows.append({"item_id": f"i{i}",
-                         "date": start + timedelta(days=d),
-                         "price": price})
+            rows.append({"item_id": f"i{i}", "date": start + timedelta(days=d), "price": price})
     return pd.DataFrame(rows)
 
 
@@ -70,7 +67,7 @@ def _republish(df, day):
 
 def _drop_items(df, day, share=0.3):
     """Shrink the collected universe from `day` on — a source cutover."""
-    keep = sorted(df["item_id"].unique())[int(len(df["item_id"].unique()) * share):]
+    keep = sorted(df["item_id"].unique())[int(len(df["item_id"].unique()) * share) :]
     return df[(df["date"] < day) | (df["item_id"].isin(keep))]
 
 
@@ -81,7 +78,6 @@ def _window(tdf, split_date):
 
 
 class TestChooseValidationSplit:
-
     def test_a_healthy_frame_keeps_the_default_window(self, forecaster):
         tdf = _panel()
         max_date = pd.to_datetime(tdf["date"].max())
@@ -89,8 +85,7 @@ class TestChooseValidationSplit:
         split, ok = forecaster._choose_validation_split(tdf)
 
         assert ok
-        assert split == max_date - timedelta(
-            days=ItemForecaster.VALIDATION_WINDOW_DAYS)
+        assert split == max_date - timedelta(days=ItemForecaster.VALIDATION_WINDOW_DAYS)
 
     def test_a_row_starved_window_widens_until_it_clears_the_floor(self, forecaster):
         """The production case: enough dates, not enough rows.
@@ -99,8 +94,7 @@ class TestChooseValidationSplit:
         the 90-day cap can clear it (91 x 40 = 3,640).
         """
         tdf = _panel(n_items=40)
-        default = pd.to_datetime(tdf["date"].max()) - timedelta(
-            days=ItemForecaster.VALIDATION_WINDOW_DAYS)
+        default = pd.to_datetime(tdf["date"].max()) - timedelta(days=ItemForecaster.VALIDATION_WINDOW_DAYS)
         assert _window(tdf, default)[0] < ItemForecaster.MIN_VAL_ROWS, "precondition"
 
         split, ok = forecaster._choose_validation_split(tdf)
@@ -115,10 +109,8 @@ class TestChooseValidationSplit:
         tdf = _panel(n_items=900, n_days=97)
         last = pd.to_datetime(tdf["date"].max())
         # Keep only 3 dates inside the trailing window.
-        keep = pd.to_datetime(tdf["date"]).isin(
-            [last, last - timedelta(days=1), last - timedelta(days=2)])
-        inside = pd.to_datetime(tdf["date"]) >= (
-            last - timedelta(days=ItemForecaster.VALIDATION_WINDOW_DAYS))
+        keep = pd.to_datetime(tdf["date"]).isin([last, last - timedelta(days=1), last - timedelta(days=2)])
+        inside = pd.to_datetime(tdf["date"]) >= (last - timedelta(days=ItemForecaster.VALIDATION_WINDOW_DAYS))
         tdf = tdf[keep | ~inside]
         default = last - timedelta(days=ItemForecaster.VALIDATION_WINDOW_DAYS)
         rows, dates = _window(tdf, default)
@@ -167,17 +159,14 @@ class TestBuildProductionSplit:
 
         _, val = forecaster._build_production_split(tdf, horizon=7, max_rows=10**6)
 
-        assert pd.to_datetime(val["date"]).min() == max_date - timedelta(
-            days=ItemForecaster.VALIDATION_WINDOW_DAYS)
+        assert pd.to_datetime(val["date"]).min() == max_date - timedelta(days=ItemForecaster.VALIDATION_WINDOW_DAYS)
         assert pd.to_datetime(val["date"]).max() == max_date
 
     @pytest.mark.parametrize("horizon", [3, 7, 14, 30])
-    def test_train_rows_labelled_inside_the_window_are_purged(self, forecaster,
-                                                              horizon):
+    def test_train_rows_labelled_inside_the_window_are_purged(self, forecaster, horizon):
         tdf = _panel().sort_values("date")
 
-        train, val = forecaster._build_production_split(
-            tdf, horizon=horizon, max_rows=10**6)
+        train, val = forecaster._build_production_split(tdf, horizon=horizon, max_rows=10**6)
 
         latest_label = pd.to_datetime(train["date"]).max() + timedelta(days=horizon)
         assert latest_label < pd.to_datetime(val["date"]).min()
@@ -194,21 +183,18 @@ class TestBuildProductionSplit:
         assert pd.to_datetime(val["date"]).max() == max_date
         assert len(val) >= ItemForecaster.MIN_VAL_ROWS
 
-    def test_a_frame_too_small_to_widen_still_falls_back_positionally(self,
-                                                                      forecaster):
+    def test_a_frame_too_small_to_widen_still_falls_back_positionally(self, forecaster):
         """The safety net stays for frames widening cannot rescue."""
         tdf = _panel(n_items=1, n_days=400, start=date(2025, 6, 1)).sort_values("date")
 
-        train, val = forecaster._build_production_split(
-            tdf, horizon=7, max_rows=10**6)
+        train, val = forecaster._build_production_split(tdf, horizon=7, max_rows=10**6)
 
         assert len(val) == len(tdf) - int(len(tdf) * 0.8)
 
     def test_the_positional_fallback_is_still_purged(self, forecaster):
         tdf = _panel(n_items=1, n_days=400, start=date(2025, 6, 1)).sort_values("date")
 
-        train, val = forecaster._build_production_split(
-            tdf, horizon=7, max_rows=10**6)
+        train, val = forecaster._build_production_split(tdf, horizon=7, max_rows=10**6)
 
         latest_label = pd.to_datetime(train["date"]).max() + timedelta(days=7)
         assert latest_label < pd.to_datetime(val["date"]).min()
@@ -216,8 +202,7 @@ class TestBuildProductionSplit:
     def test_the_train_row_cap_is_respected(self, forecaster):
         tdf = _panel().sort_values("date")
 
-        train, _ = forecaster._build_production_split(
-            tdf, horizon=7, max_rows=500)
+        train, _ = forecaster._build_production_split(tdf, horizon=7, max_rows=500)
 
         assert len(train) == 500
 
@@ -225,14 +210,11 @@ class TestBuildProductionSplit:
         """Sampling must be random, never `tail()` — truncating the calendar
         window silently disables expanding-window CV."""
         tdf = _panel().sort_values("date")
-        uncapped, _ = forecaster._build_production_split(
-            tdf, horizon=7, max_rows=10**6)
+        uncapped, _ = forecaster._build_production_split(tdf, horizon=7, max_rows=10**6)
 
-        capped, _ = forecaster._build_production_split(
-            tdf, horizon=7, max_rows=500)
+        capped, _ = forecaster._build_production_split(tdf, horizon=7, max_rows=500)
 
-        assert pd.to_datetime(capped["date"]).min() == pd.to_datetime(
-            uncapped["date"]).min()
+        assert pd.to_datetime(capped["date"]).min() == pd.to_datetime(uncapped["date"]).min()
 
 
 class TestVoidedLabelsNoLongerCollapseTheSplit:
@@ -242,26 +224,23 @@ class TestVoidedLabelsNoLongerCollapseTheSplit:
     def voided(self):
         """A panel carrying both archive defects inside the trailing window."""
         df = _panel(n_items=70)
-        df = _drop_items(df, date(2026, 7, 9))          # cutover
-        df = _republish(df, date(2026, 7, 16))          # snapshot
+        df = _drop_items(df, date(2026, 7, 9))  # cutover
+        df = _republish(df, date(2026, 7, 16))  # snapshot
         return df
 
     @pytest.mark.parametrize("horizon", [3, 7, 14])
-    def test_the_trailing_window_is_thinned_by_voiding(self, forecaster, voided,
-                                                       horizon):
+    def test_the_trailing_window_is_thinned_by_voiding(self, forecaster, voided, horizon):
         """Precondition for the fix: this is the bug's trigger."""
         tdf = forecaster.prepare_targets(voided, horizon)
         kept = tdf.dropna(subset=[f"target_return_{horizon}d"])
-        default = pd.to_datetime(kept["date"].max()) - timedelta(
-            days=ItemForecaster.VALIDATION_WINDOW_DAYS)
+        default = pd.to_datetime(kept["date"].max()) - timedelta(days=ItemForecaster.VALIDATION_WINDOW_DAYS)
 
         before = _window(tdf, default)[0]
         after = _window(kept, default)[0]
         assert after < before, "voiding must thin the trailing window"
 
     @pytest.mark.parametrize("horizon", [3, 7, 14, 30])
-    def test_voiding_never_forces_the_positional_fallback(self, forecaster,
-                                                          voided, horizon):
+    def test_voiding_never_forces_the_positional_fallback(self, forecaster, voided, horizon):
         tdf = forecaster.prepare_targets(voided, horizon)
         tdf = tdf.dropna(subset=[f"target_return_{horizon}d"]).sort_values("date")
 
@@ -273,8 +252,7 @@ class TestVoidedLabelsNoLongerCollapseTheSplit:
         assert dates >= ItemForecaster.MIN_VAL_DATES
 
     @pytest.mark.parametrize("horizon", [3, 7, 14, 30])
-    def test_the_purge_is_applied_at_the_widened_split(self, forecaster, voided,
-                                                       horizon):
+    def test_the_purge_is_applied_at_the_widened_split(self, forecaster, voided, horizon):
         """Widening must not reintroduce the leak the purge closes."""
         tdf = forecaster.prepare_targets(voided, horizon)
         tdf = tdf.dropna(subset=[f"target_return_{horizon}d"]).sort_values("date")

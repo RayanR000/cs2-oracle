@@ -6,13 +6,10 @@ the relevance must be a WITHIN-date rank bucket (a global bucketing would
 re-import the market factor as relevance — see the design spec). These tests pin
 that construction; the trainer and CV wiring are exercised separately.
 """
-import os
+
 import numpy as np
 import pandas as pd
-import pytest
-
 from models.forecaster import ItemForecaster
-
 
 K = 8
 
@@ -89,10 +86,8 @@ class TestLambdarankTrainer:
     def test_fold_scores_align_to_val_rows(self):
         rng = np.random.default_rng(1)
         feats = ["f0", "f1", "f2"]
-        train_dates = np.repeat(
-            pd.to_datetime(["2026-01-01", "2026-01-02", "2026-01-03"]), 40)
-        val_dates = np.repeat(
-            pd.to_datetime(["2026-01-10", "2026-01-11"]), 30)
+        train_dates = np.repeat(pd.to_datetime(["2026-01-01", "2026-01-02", "2026-01-03"]), 40)
+        val_dates = np.repeat(pd.to_datetime(["2026-01-10", "2026-01-11"]), 30)
         train_df = self._frame(train_dates, feats, rng)
         val_df = self._frame(val_dates, feats, rng)
         fc = self._forecaster(feats)
@@ -103,8 +98,7 @@ class TestLambdarankTrainer:
     def test_trainer_tolerates_unsorted_train_dates(self):
         rng = np.random.default_rng(2)
         feats = ["f0", "f1"]
-        train_dates = pd.to_datetime(
-            ["2026-01-02", "2026-01-01", "2026-01-02", "2026-01-01"] * 15)
+        train_dates = pd.to_datetime(["2026-01-02", "2026-01-01", "2026-01-02", "2026-01-01"] * 15)
         val_dates = np.repeat(pd.to_datetime(["2026-01-10"]), 25)
         train_df = self._frame(train_dates, feats, rng)
         val_df = self._frame(val_dates, feats, rng)
@@ -140,9 +134,12 @@ class TestFoldQ50Scores:
 
     def _frame(self, dates, feats, rng):
         n = len(dates)
-        data = {"date": dates, "target_return_7d": rng.normal(size=n),
-                "price": rng.uniform(1, 100, size=n),
-                "item_id": [f"item_{i % 10}" for i in range(n)]}
+        data = {
+            "date": dates,
+            "target_return_7d": rng.normal(size=n),
+            "price": rng.uniform(1, 100, size=n),
+            "item_id": [f"item_{i % 10}" for i in range(n)],
+        }
         for f in feats:
             data[f] = rng.normal(size=n)
         return pd.DataFrame(data)
@@ -150,12 +147,8 @@ class TestFoldQ50Scores:
     def test_q50_scores_align_to_val_rows(self):
         rng = np.random.default_rng(3)
         feats = ["f0", "f1", "f2"]
-        train_df = self._frame(
-            np.repeat(pd.to_datetime(["2026-01-01", "2026-01-02"]), 60),
-            feats, rng)
-        val_df = self._frame(
-            np.repeat(pd.to_datetime(["2026-01-10", "2026-01-11"]), 30),
-            feats, rng)
+        train_df = self._frame(np.repeat(pd.to_datetime(["2026-01-01", "2026-01-02"]), 60), feats, rng)
+        val_df = self._frame(np.repeat(pd.to_datetime(["2026-01-10", "2026-01-11"]), 30), feats, rng)
         fc = self._forecaster(feats)
         scores = fc._fold_q50_scores(train_df, val_df, 7, {0.5: {}})
         assert len(scores) == len(val_df)
@@ -167,10 +160,15 @@ class TestFoldQ50Scores:
         n = 400
         dates = np.repeat(pd.to_datetime(["2026-01-01", "2026-01-02"]), n // 2)
         f0 = rng.normal(size=n)
-        train_df = pd.DataFrame({"date": dates, "f0": f0,
-                                 "price": rng.uniform(1, 100, size=n),
-                                 "item_id": [f"item_{i % 10}" for i in range(n)],
-                                 "target_return_7d": f0 + 0.1 * rng.normal(size=n)})
+        train_df = pd.DataFrame(
+            {
+                "date": dates,
+                "f0": f0,
+                "price": rng.uniform(1, 100, size=n),
+                "item_id": [f"item_{i % 10}" for i in range(n)],
+                "target_return_7d": f0 + 0.1 * rng.normal(size=n),
+            }
+        )
         val_df = train_df.copy()
         fc = self._forecaster(["f0"])
         scores = np.asarray(fc._fold_q50_scores(train_df, val_df, 7, {0.5: {}}))

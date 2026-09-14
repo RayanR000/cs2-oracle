@@ -11,6 +11,7 @@ fallback, so a DB-only write still serves nothing.
 
 See docs/superpowers/specs/2026-08-03-served-forecast-surface-design.md.
 """
+
 from __future__ import annotations
 
 from datetime import date

@@ -25,14 +25,13 @@ So GAP is a third category: reported and warned on every run, excluded from the
 fatal ratio, and attributed to the specific missing days so it stays actionable
 instead of becoming a silent excuse.
 """
+
 from __future__ import annotations
 
 from datetime import date, timedelta
 
 import pytest
-
 from backtest.resolution_gate import (
-    MAX_UNRESOLVABLE_PCT,
     classify_archive_gap,
     classify_base_gap,
     evaluate_gate,
@@ -185,8 +184,12 @@ class TestLegWindowAboveTheStalenessBound:
     """
 
     HOLES = {
-        date(2026, 8, 28), date(2026, 8, 30), date(2026, 8, 31),
-        date(2026, 9, 1), date(2026, 9, 3), date(2026, 9, 4),
+        date(2026, 8, 28),
+        date(2026, 8, 30),
+        date(2026, 8, 31),
+        date(2026, 9, 1),
+        date(2026, 9, 3),
+        date(2026, 9, 4),
         date(2026, 9, 5),
     }
 
@@ -204,7 +207,9 @@ class TestLegWindowAboveTheStalenessBound:
         covered = self._covered(f_date, target)
         assert len([d for d in covered if f_date < d <= target]) == 24
         assert classify_archive_gap(
-            f_date=f_date, target_date=target, covered_days=covered,
+            f_date=f_date,
+            target_date=target,
+            covered_days=covered,
             staleness_days=7,
         )
 
@@ -212,7 +217,8 @@ class TestLegWindowAboveTheStalenessBound:
         """Without the bound the same row reads FRESH — the 2026-09-09 failure."""
         f_date, target = date(2026, 8, 5), date(2026, 9, 4)
         assert not classify_archive_gap(
-            f_date=f_date, target_date=target,
+            f_date=f_date,
+            target_date=target,
             covered_days=self._covered(f_date, target),
         )
 
@@ -220,7 +226,8 @@ class TestLegWindowAboveTheStalenessBound:
         """h=30 dated 08-09, target 09-08: 4 leg days, resolves in production."""
         f_date, target = date(2026, 8, 9), date(2026, 9, 8)
         assert not classify_archive_gap(
-            f_date=f_date, target_date=target,
+            f_date=f_date,
+            target_date=target,
             covered_days=self._covered(f_date, target),
             staleness_days=7,
         )
@@ -234,11 +241,12 @@ class TestLegWindowAboveTheStalenessBound:
         """
         f_date, target = date(2026, 8, 4), date(2026, 9, 3)
         covered = self._covered(f_date, target)
-        leg = sorted(d for d in covered
-                     if f_date < d <= target and d >= date(2026, 8, 27))
+        leg = sorted(d for d in covered if f_date < d <= target and d >= date(2026, 8, 27))
         assert leg == [date(2026, 8, 27), date(2026, 8, 29), date(2026, 9, 2)]
         assert not classify_archive_gap(
-            f_date=f_date, target_date=target, covered_days=covered,
+            f_date=f_date,
+            target_date=target,
+            covered_days=covered,
             staleness_days=7,
         )
 
@@ -248,7 +256,9 @@ class TestLegWindowAboveTheStalenessBound:
         covered = {f_date + timedelta(days=i) for i in range(1, 31)}
         covered.discard(date(2026, 8, 11))
         assert not classify_archive_gap(
-            f_date=f_date, target_date=target, covered_days=covered,
+            f_date=f_date,
+            target_date=target,
+            covered_days=covered,
             staleness_days=7,
         )
 
@@ -256,18 +266,23 @@ class TestLegWindowAboveTheStalenessBound:
         """Below the bound the leg range IS the horizon, so the parameter is a no-op."""
         covered = {date(2026, 7, 31), date(2026, 8, 1), date(2026, 8, 4)}
         assert classify_archive_gap(
-            f_date=date(2026, 8, 1), target_date=date(2026, 8, 4),
-            covered_days=covered, staleness_days=7,
+            f_date=date(2026, 8, 1),
+            target_date=date(2026, 8, 4),
+            covered_days=covered,
+            staleness_days=7,
         )
         full = {date(2026, 7, d) for d in range(20, 32)}
         assert not classify_archive_gap(
-            f_date=date(2026, 7, 25), target_date=date(2026, 7, 28),
-            covered_days=full, staleness_days=7,
+            f_date=date(2026, 7, 25),
+            target_date=date(2026, 7, 28),
+            covered_days=full,
+            staleness_days=7,
         )
 
 
 class TestClassifyArchiveGap:
     COVERED = {date(2026, 7, 31), date(2026, 8, 1), date(2026, 8, 4)}
+
     def test_window_spanning_a_missing_day_is_a_gap(self):
         """h=3 dated 08-01, target 08-04: 08-02 and 08-03 are absent."""
         assert classify_archive_gap(
@@ -321,8 +336,12 @@ class TestBaseLegGap:
     """
 
     HOLES = {
-        date(2026, 8, 28), date(2026, 8, 30), date(2026, 8, 31),
-        date(2026, 9, 1), date(2026, 9, 3), date(2026, 9, 4),
+        date(2026, 8, 28),
+        date(2026, 8, 30),
+        date(2026, 8, 31),
+        date(2026, 9, 1),
+        date(2026, 9, 3),
+        date(2026, 9, 4),
         date(2026, 9, 5),
     }
 
@@ -338,21 +357,21 @@ class TestBaseLegGap:
         """h=3 dated 09-06: the base window holds {09-02, 09-06}, 2 where 3
         are required. Pins the production shape, not a toy range."""
         covered = self._covered(date(2026, 8, 20), date(2026, 9, 11))
-        base = sorted(
-            d for d in covered
-            if date(2026, 8, 30) <= d <= date(2026, 9, 6)
-        )
+        base = sorted(d for d in covered if date(2026, 8, 30) <= d <= date(2026, 9, 6))
         assert base == [date(2026, 9, 2), date(2026, 9, 6)]
         assert classify_base_gap(
-            f_date=date(2026, 9, 6), covered_days=covered,
-            window=3, staleness_days=7,
+            f_date=date(2026, 9, 6),
+            covered_days=covered,
+            window=3,
+            staleness_days=7,
         )
 
     def test_the_actual_leg_check_misses_it(self):
         """09-07/08/09 are all present, so the old code reads FRESH — the
         2026-09-12 failure mode."""
         assert not classify_archive_gap(
-            f_date=date(2026, 9, 6), target_date=date(2026, 9, 9),
+            f_date=date(2026, 9, 6),
+            target_date=date(2026, 9, 9),
             covered_days=self._covered(date(2026, 8, 20), date(2026, 9, 11)),
             staleness_days=7,
         )
@@ -363,7 +382,8 @@ class TestBaseLegGap:
         assert not classify_base_gap(
             f_date=date(2026, 9, 7),
             covered_days=self._covered(date(2026, 8, 20), date(2026, 9, 11)),
-            window=3, staleness_days=7,
+            window=3,
+            staleness_days=7,
         )
 
     def test_the_staleness_floor_is_inclusive(self):
@@ -372,7 +392,8 @@ class TestBaseLegGap:
         assert not classify_base_gap(
             f_date=date(2026, 9, 9),
             covered_days={date(2026, 9, 2), date(2026, 9, 8), date(2026, 9, 9)},
-            window=3, staleness_days=7,
+            window=3,
+            staleness_days=7,
         )
 
     def test_the_forecast_date_itself_counts(self):
@@ -380,20 +401,25 @@ class TestBaseLegGap:
         assert not classify_base_gap(
             f_date=date(2026, 9, 9),
             covered_days={date(2026, 9, 7), date(2026, 9, 8), date(2026, 9, 9)},
-            window=3, staleness_days=7,
+            window=3,
+            staleness_days=7,
         )
 
     def test_no_coverage_information_is_not_a_gap(self):
         """An empty covered set means we do not know; do not excuse the row."""
         assert not classify_base_gap(
-            f_date=date(2026, 9, 6), covered_days=set(),
-            window=3, staleness_days=7,
+            f_date=date(2026, 9, 6),
+            covered_days=set(),
+            window=3,
+            staleness_days=7,
         )
 
     def test_a_missing_f_date_is_not_a_gap(self):
         assert not classify_base_gap(
-            f_date=None, covered_days={date(2026, 9, 6)},
-            window=3, staleness_days=7,
+            f_date=None,
+            covered_days={date(2026, 9, 6)},
+            window=3,
+            staleness_days=7,
         )
 
     def test_the_failing_run_numbers_fail_without_the_fix(self):

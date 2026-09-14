@@ -57,16 +57,17 @@ Usage:
     python scripts/ingest_steam_news.py --offline        # use cached dumps
     python scripts/ingest_steam_news.py --coverage-only  # report, no write
 """
+
 from __future__ import annotations
 
+import argparse
+import json
+import logging
 import re
 import sys
-import json
 import time
-import logging
-import argparse
+from datetime import UTC, date, datetime
 from pathlib import Path
-from datetime import date, datetime, timedelta, timezone
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
@@ -151,6 +152,7 @@ _DATE_RE = re.compile(r"^\s*(\d{4})[/-](\d{1,2})[/-](\d{1,2})\s*$")
 # Fetching
 # --------------------------------------------------------------------------
 
+
 def normalise_date(raw) -> date | None:
     """Parse ByMykel's date strings, which mix separators and zero-padding.
 
@@ -169,8 +171,7 @@ def normalise_date(raw) -> date | None:
         return None
 
 
-def fetch_news(cache_dir: Path, offline: bool = False,
-               session: requests.Session | None = None) -> list[dict]:
+def fetch_news(cache_dir: Path, offline: bool = False, session: requests.Session | None = None) -> list[dict]:
     """Page the news feed backwards via `enddate` until it stops yielding new gids.
 
     Dedupe is on `gid` first, then on `(day, title)`: Steam cross-posts the same
@@ -180,8 +181,7 @@ def fetch_news(cache_dir: Path, offline: bool = False,
     cache = cache_dir / "newsitems.json"
     if offline:
         if not cache.exists():
-            raise FileNotFoundError(
-                f"--offline but no cache at {cache}. Run once without it.")
+            raise FileNotFoundError(f"--offline but no cache at {cache}. Run once without it.")
         items = json.loads(cache.read_text())
         logger.info(f"Loaded {len(items):,} cached news items from {cache}")
         return items
@@ -203,8 +203,9 @@ def fetch_news(cache_dir: Path, offline: bool = False,
         for i in items:
             by_gid.setdefault(i["gid"], i)
         oldest = min(i["date"] for i in items)
-        logger.info(f"  page {page}: {len(items)} items, {new} new, "
-                    f"oldest {datetime.fromtimestamp(oldest, timezone.utc).date()}")
+        logger.info(
+            f"  page {page}: {len(items)} items, {new} new, oldest {datetime.fromtimestamp(oldest, UTC).date()}"
+        )
         if new == 0:
             break
         end = oldest - 1
@@ -219,8 +220,7 @@ def fetch_news(cache_dir: Path, offline: bool = False,
     return items
 
 
-def fetch_crates(cache_dir: Path, offline: bool = False,
-                 session: requests.Session | None = None) -> dict[str, list]:
+def fetch_crates(cache_dir: Path, offline: bool = False, session: requests.Session | None = None) -> dict[str, list]:
     """Fetch crates.json and collections.json, the dated-issuance half."""
     out = {}
     session = session or requests.Session()
@@ -247,6 +247,7 @@ def fetch_crates(cache_dir: Path, offline: bool = False,
 # Event extraction
 # --------------------------------------------------------------------------
 
+
 def news_events(items: list[dict]) -> pd.DataFrame:
     """Collapse news items to per-day counts of Valve posts and press articles.
 
@@ -262,7 +263,7 @@ def news_events(items: list[dict]) -> pd.DataFrame:
         ts = i.get("date")
         if not isinstance(ts, (int, float)):
             continue
-        day = datetime.fromtimestamp(ts, timezone.utc).date()
+        day = datetime.fromtimestamp(ts, UTC).date()
         key = (day, i.get("title", ""))
         if key in seen:
             continue
@@ -273,10 +274,14 @@ def news_events(items: list[dict]) -> pd.DataFrame:
         return pd.DataFrame(columns=["day", "valve_announcements", "press_articles"])
 
     df = pd.DataFrame(rows)
-    grouped = df.groupby("day").agg(
-        valve_announcements=("is_valve", "sum"),
-        press_articles=("is_valve", lambda s: int((s == 0).sum())),
-    ).reset_index()
+    grouped = (
+        df.groupby("day")
+        .agg(
+            valve_announcements=("is_valve", "sum"),
+            press_articles=("is_valve", lambda s: int((s == 0).sum())),
+        )
+        .reset_index()
+    )
     return grouped
 
 
@@ -299,21 +304,23 @@ def news_rows(items: list[dict]) -> pd.DataFrame:
         if not isinstance(ts, (int, float)):
             continue
         title = i.get("title", "") or ""
-        day = datetime.fromtimestamp(ts, timezone.utc).date()
+        day = datetime.fromtimestamp(ts, UTC).date()
         key = (day, title)
         if key in seen:
             continue
         seen.add(key)
         feed_type = i.get("feed_type")
-        rows.append({
-            "gid": str(i.get("gid", "")),
-            "day": day,
-            "published_at": datetime.fromtimestamp(ts, timezone.utc),
-            "feed_type": int(feed_type) if isinstance(feed_type, (int, float)) else None,
-            "is_valve": int(feed_type == 1),
-            "title": title,
-            "url": i.get("url", "") or "",
-        })
+        rows.append(
+            {
+                "gid": str(i.get("gid", "")),
+                "day": day,
+                "published_at": datetime.fromtimestamp(ts, UTC),
+                "feed_type": int(feed_type) if isinstance(feed_type, (int, float)) else None,
+                "is_valve": int(feed_type == 1),
+                "title": title,
+                "url": i.get("url", "") or "",
+            }
+        )
 
     if not rows:
         return pd.DataFrame(columns=list(EVENT_COLUMNS))
@@ -342,28 +349,30 @@ def crate_events(dumps: dict[str, list]) -> pd.DataFrame:
         elif ctype in CAPSULE_TYPES:
             capsule_days.append(day)
 
-    coll_days = [d for d in (normalise_date(c.get("release_date"))
-                             for c in dumps.get("collections", [])) if d]
+    coll_days = [d for d in (normalise_date(c.get("release_date")) for c in dumps.get("collections", [])) if d]
 
     frames = []
-    for days, col in ((case_days, "crate_case_first_sales"),
-                      (capsule_days, "crate_capsule_first_sales"),
-                      (coll_days, "collection_releases")):
+    for days, col in (
+        (case_days, "crate_case_first_sales"),
+        (capsule_days, "crate_capsule_first_sales"),
+        (coll_days, "collection_releases"),
+    ):
         if days:
             s = pd.Series(days).value_counts().rename(col)
             s.index.name = "day"
             frames.append(s)
 
     if not frames:
-        return pd.DataFrame(columns=["day", "crate_case_first_sales",
-                                     "crate_capsule_first_sales",
-                                     "collection_releases"])
+        return pd.DataFrame(
+            columns=["day", "crate_case_first_sales", "crate_capsule_first_sales", "collection_releases"]
+        )
     return pd.concat(frames, axis=1).reset_index().rename(columns={"index": "day"})
 
 
 # --------------------------------------------------------------------------
 # Calendar assembly
 # --------------------------------------------------------------------------
+
 
 def _days_since(flags: pd.Series) -> pd.Series:
     """Days since the last day whose count was > 0, counting the event day as 0.
@@ -378,11 +387,11 @@ def _days_since(flags: pd.Series) -> pd.Series:
     return (idx - last).astype("Float64")
 
 
-def build_calendar(news: pd.DataFrame, crates: pd.DataFrame,
-                   start: date = CALENDAR_START,
-                   end: date | None = None) -> pd.DataFrame:
+def build_calendar(
+    news: pd.DataFrame, crates: pd.DataFrame, start: date = CALENDAR_START, end: date | None = None
+) -> pd.DataFrame:
     """One dense row per day over [start, end], with trailing windows."""
-    end = end or datetime.now(timezone.utc).date()
+    end = end or datetime.now(UTC).date()
     days = pd.date_range(start, end, freq="D")
     cal = pd.DataFrame({"day": days})
 
@@ -393,9 +402,13 @@ def build_calendar(news: pd.DataFrame, crates: pd.DataFrame,
         s["day"] = pd.to_datetime(s["day"])
         cal = cal.merge(s, on="day", how="left")
 
-    count_cols = ["valve_announcements", "press_articles",
-                  "crate_case_first_sales", "crate_capsule_first_sales",
-                  "collection_releases"]
+    count_cols = [
+        "valve_announcements",
+        "press_articles",
+        "crate_case_first_sales",
+        "crate_capsule_first_sales",
+        "collection_releases",
+    ]
     for col in count_cols:
         if col not in cal.columns:
             cal[col] = 0
@@ -403,21 +416,19 @@ def build_calendar(news: pd.DataFrame, crates: pd.DataFrame,
 
     # Trailing windows include the current day, so nothing reads forward.
     for w in TRAILING_WINDOWS:
-        cal[f"valve_announcements_{w}d"] = (
-            cal["valve_announcements"].rolling(w, min_periods=1).sum().astype("int64"))
-        cal[f"press_articles_{w}d"] = (
-            cal["press_articles"].rolling(w, min_periods=1).sum().astype("int64"))
+        cal[f"valve_announcements_{w}d"] = cal["valve_announcements"].rolling(w, min_periods=1).sum().astype("int64")
+        cal[f"press_articles_{w}d"] = cal["press_articles"].rolling(w, min_periods=1).sum().astype("int64")
     cal["crate_capsule_first_sales_30d"] = (
-        cal["crate_capsule_first_sales"].rolling(30, min_periods=1).sum().astype("int64"))
+        cal["crate_capsule_first_sales"].rolling(30, min_periods=1).sum().astype("int64")
+    )
     # A year of case issuance is the closest thing here to a supply-dilution rate.
     cal["crate_case_first_sales_365d"] = (
-        cal["crate_case_first_sales"].rolling(ISSUANCE_WINDOW, min_periods=1)
-        .sum().astype("int64"))
+        cal["crate_case_first_sales"].rolling(ISSUANCE_WINDOW, min_periods=1).sum().astype("int64")
+    )
 
     cal["days_since_valve_announcement"] = _days_since(cal["valve_announcements"])
     cal["days_since_crate_case_first_sale"] = _days_since(cal["crate_case_first_sales"])
-    cal["days_since_crate_capsule_first_sale"] = _days_since(
-        cal["crate_capsule_first_sales"])
+    cal["days_since_crate_capsule_first_sale"] = _days_since(cal["crate_capsule_first_sales"])
     cal["days_since_collection_release"] = _days_since(cal["collection_releases"])
 
     cal["day"] = cal["day"].dt.date
@@ -428,33 +439,35 @@ def report_coverage(cal: pd.DataFrame) -> None:
     """Print what fraction of the calendar actually carries each event class."""
     n = len(cal)
     logger.info(f"Calendar: {n:,} days, {cal['day'].min()} -> {cal['day'].max()}")
-    for col in ("valve_announcements", "press_articles", "crate_case_first_sales",
-                "crate_capsule_first_sales", "collection_releases"):
+    for col in (
+        "valve_announcements",
+        "press_articles",
+        "crate_case_first_sales",
+        "crate_capsule_first_sales",
+        "collection_releases",
+    ):
         days = int((cal[col] > 0).sum())
         total = int(cal[col].sum())
-        logger.info(f"    {col:32s} {days:>6,} days ({100.0 * days / n:5.2f}%), "
-                    f"{total:,} events")
+        logger.info(f"    {col:32s} {days:>6,} days ({100.0 * days / n:5.2f}%), {total:,} events")
     for col in OUTPUT_COLUMNS:
         if col.startswith("days_since_"):
             na = int(cal[col].isna().sum())
-            logger.info(f"    {col:32s} NA on first {na:,} days "
-                        f"(before the first event)")
+            logger.info(f"    {col:32s} NA on first {na:,} days (before the first event)")
 
 
 # --------------------------------------------------------------------------
 
+
 def main() -> int:
-    parser = argparse.ArgumentParser(
-        description="Ingest a date-level CS2 event calendar")
-    parser.add_argument("--offline", action="store_true",
-                        help="Use cached dumps instead of refetching")
+    parser = argparse.ArgumentParser(description="Ingest a date-level CS2 event calendar")
+    parser.add_argument("--offline", action="store_true", help="Use cached dumps instead of refetching")
     parser.add_argument("--cache-dir", default=str(CACHE_DIR))
     parser.add_argument("--out", default=str(OUTPUT_PARQUET))
-    parser.add_argument("--events-out", default=str(EVENTS_PARQUET),
-                        help="Per-event companion table (event-news.parquet)")
+    parser.add_argument(
+        "--events-out", default=str(EVENTS_PARQUET), help="Per-event companion table (event-news.parquet)"
+    )
     parser.add_argument("--start", default=CALENDAR_START.isoformat())
-    parser.add_argument("--coverage-only", action="store_true",
-                        help="Report coverage and exit without writing")
+    parser.add_argument("--coverage-only", action="store_true", help="Report coverage and exit without writing")
     args = parser.parse_args()
 
     cache_dir = Path(args.cache_dir)
@@ -465,8 +478,7 @@ def main() -> int:
     logger.info("Fetching ByMykel crate dumps...")
     dumps = fetch_crates(cache_dir, offline=args.offline, session=session)
 
-    cal = build_calendar(news_events(items), crate_events(dumps),
-                         start=date.fromisoformat(args.start))
+    cal = build_calendar(news_events(items), crate_events(dumps), start=date.fromisoformat(args.start))
     report_coverage(cal)
 
     if args.coverage_only:
@@ -476,17 +488,18 @@ def main() -> int:
     out = Path(args.out)
     out.parent.mkdir(parents=True, exist_ok=True)
     cal.to_parquet(out, index=False)
-    logger.info(f"Wrote {out} ({out.stat().st_size / 1e3:.1f} KB, "
-                f"{len(cal):,} rows x {len(cal.columns)} columns)")
+    logger.info(f"Wrote {out} ({out.stat().st_size / 1e3:.1f} KB, {len(cal):,} rows x {len(cal.columns)} columns)")
 
     events = news_rows(items)
     events_out = Path(args.events_out)
     events_out.parent.mkdir(parents=True, exist_ok=True)
     events.to_parquet(events_out, index=False)
-    logger.info(f"Wrote {events_out} ({len(events):,} events, "
-                f"{int(events['is_valve'].sum()) if len(events) else 0} from Valve, "
-                f"{events['day'].min() if len(events) else '-'}.."
-                f"{events['day'].max() if len(events) else '-'})")
+    logger.info(
+        f"Wrote {events_out} ({len(events):,} events, "
+        f"{int(events['is_valve'].sum()) if len(events) else 0} from Valve, "
+        f"{events['day'].min() if len(events) else '-'}.."
+        f"{events['day'].max() if len(events) else '-'})"
+    )
     return 0
 
 

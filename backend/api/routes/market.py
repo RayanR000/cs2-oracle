@@ -1,14 +1,14 @@
 import re
-from typing import Optional, List
-from fastapi import APIRouter, Depends, Query
-from sqlalchemy.orm import Session
-from sqlalchemy import or_, func, case
-from datetime import datetime, timedelta, timezone
 from collections import defaultdict
+from datetime import UTC, datetime, timedelta
 
-from database import get_db, Item, PriceHistory, backfilled_item_clause
-from api.cache import get_or_build
+from database import Item, PriceHistory, backfilled_item_clause, get_db
+from fastapi import APIRouter, Depends, Query
 from pydantic import BaseModel
+from sqlalchemy import case, func, or_
+from sqlalchemy.orm import Session
+
+from api.cache import get_or_build
 
 router = APIRouter(prefix="/market", tags=["market"])
 
@@ -18,11 +18,11 @@ class MarketItemOut(BaseModel):
     item_id: str
     name: str
     type: str
-    icon_url: Optional[str] = None
-    current_price: Optional[float] = None
-    price_change_24h: Optional[float] = None
-    volatility: Optional[float] = None
-    volume_24h: Optional[int] = None
+    icon_url: str | None = None
+    current_price: float | None = None
+    price_change_24h: float | None = None
+    volatility: float | None = None
+    volume_24h: int | None = None
 
     class Config:
         from_attributes = True
@@ -32,28 +32,28 @@ class QualityVariantOut(BaseModel):
     item_id: str
     name: str
     quality: str
-    current_price: Optional[float] = None
-    price_change_24h: Optional[float] = None
-    volume_24h: Optional[int] = None
+    current_price: float | None = None
+    price_change_24h: float | None = None
+    volume_24h: int | None = None
 
 
 class GroupedMarketItemOut(BaseModel):
     base_name: str
     type: str
-    icon_url: Optional[str] = None
-    price_avg: Optional[float] = None
-    price_min: Optional[float] = None
-    price_max: Optional[float] = None
-    price_change_24h: Optional[float] = None
-    volatility: Optional[float] = None
-    volume_24h: Optional[int] = None
+    icon_url: str | None = None
+    price_avg: float | None = None
+    price_min: float | None = None
+    price_max: float | None = None
+    price_change_24h: float | None = None
+    volatility: float | None = None
+    volume_24h: int | None = None
     quality_count: int = 1
-    qualities: List[QualityVariantOut] = []
+    qualities: list[QualityVariantOut] = []
 
 
 def _normalize(s: str) -> str:
     """Strip non-alphanumeric characters and lowercase for fuzzy matching."""
-    return re.sub(r'[^a-zA-Z0-9]', '', s).lower()
+    return re.sub(r"[^a-zA-Z0-9]", "", s).lower()
 
 
 def _parse_item_name(name: str):
@@ -64,7 +64,7 @@ def _parse_item_name(name: str):
         'StatTrak™ M4A4 | Desolate (FN)' -> ('StatTrak™ M4A4 | Desolate', 'FN')
         'Sticker | Dragon' -> ('Sticker | Dragon', None)
     """
-    match = re.match(r'^(.+?)\s*\(([^)]+)\)\s*$', name)
+    match = re.match(r"^(.+?)\s*\(([^)]+)\)\s*$", name)
     if match:
         return match.group(1).strip(), match.group(2).strip()
     return name, None
@@ -72,8 +72,8 @@ def _parse_item_name(name: str):
 
 @router.get("/summary", response_model=list[GroupedMarketItemOut])
 def market_summary(
-    type: Optional[str] = Query(None),
-    q: Optional[str] = Query(None, description="Search query for item name"),
+    type: str | None = Query(None),
+    q: str | None = Query(None, description="Search query for item name"),
     skip: int = Query(0, ge=0),
     limit: int = Query(50, ge=1, le=200),
     db: Session = Depends(get_db),
@@ -86,16 +86,16 @@ def market_summary(
         ttl_seconds=120 if q else 600,
         builder=lambda: _build_market_summary(db, type, q),
     )
-    return groups[skip:skip + limit]
+    return groups[skip : skip + limit]
 
 
-def _build_market_summary(db: Session, type: Optional[str], q: Optional[str]):
+def _build_market_summary(db: Session, type: str | None, q: str | None):
     query = db.query(Item).filter(backfilled_item_clause())
     if type:
         query = query.filter(Item.type == type)
     if q:
         normalized = _normalize(q)
-        name_norm = func.regexp_replace(func.lower(Item.name), '[^a-zA-Z0-9]', '', 'g')
+        name_norm = func.regexp_replace(func.lower(Item.name), "[^a-zA-Z0-9]", "", "g")
 
         direct = Item.name.ilike(f"%{q}%")
         norm_match = name_norm.ilike(f"%{normalized}%")
@@ -121,7 +121,7 @@ def _build_market_summary(db: Session, type: Optional[str], q: Optional[str]):
 
     item_ids = [i.id for i in items]
 
-    cutoff = datetime.now(timezone.utc) - timedelta(days=2)
+    cutoff = datetime.now(UTC) - timedelta(days=2)
     price_query = db.query(PriceHistory).filter(PriceHistory.timestamp >= cutoff)
     if q or type:
         price_query = price_query.filter(PriceHistory.item_id.in_(item_ids))
@@ -184,28 +184,32 @@ def _build_market_summary(db: Session, type: Optional[str], q: Optional[str]):
 
         quality_list = []
         for v in variants:
-            quality_list.append(QualityVariantOut(
-                item_id=v["item"].item_id,
-                name=v["item"].name,
-                quality=v["quality"] or "Standard",
-                current_price=v["current_price"],
-                price_change_24h=v["price_change_24h"],
-                volume_24h=v["volume_24h"],
-            ))
+            quality_list.append(
+                QualityVariantOut(
+                    item_id=v["item"].item_id,
+                    name=v["item"].name,
+                    quality=v["quality"] or "Standard",
+                    current_price=v["current_price"],
+                    price_change_24h=v["price_change_24h"],
+                    volume_24h=v["volume_24h"],
+                )
+            )
 
         quality_list.sort(key=lambda x: x.quality)
 
-        result.append(GroupedMarketItemOut(
-            base_name=base_name,
-            type=item.type,
-            icon_url=item.icon_url,
-            price_avg=price_avg,
-            price_min=price_min,
-            price_max=price_max,
-            price_change_24h=avg_change,
-            volume_24h=total_volume,
-            quality_count=len(variants),
-            qualities=quality_list,
-        ))
+        result.append(
+            GroupedMarketItemOut(
+                base_name=base_name,
+                type=item.type,
+                icon_url=item.icon_url,
+                price_avg=price_avg,
+                price_min=price_min,
+                price_max=price_max,
+                price_change_24h=avg_change,
+                volume_24h=total_volume,
+                quality_count=len(variants),
+                qualities=quality_list,
+            )
+        )
 
     return result

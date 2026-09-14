@@ -9,6 +9,7 @@ credentials the run reports status=skipped (not a failure, not a success with
 zero rows). Research panel only: nothing trains on it until a preregistered,
 date-purged, placebo-controlled A/B clears. Never touches Postgres.
 """
+
 from __future__ import annotations
 
 import argparse
@@ -20,7 +21,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from collectors.reddit_events import collect  # noqa: E402
+from collectors.reddit_events import collect
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s")
 logger = logging.getLogger("run_reddit_events")

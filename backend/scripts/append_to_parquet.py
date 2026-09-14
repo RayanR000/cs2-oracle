@@ -34,7 +34,7 @@ Usage:
 import argparse
 import os
 import sys
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import duckdb
@@ -79,7 +79,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
         "--date",
-        default=datetime.now(timezone.utc).strftime("%Y-%m-%d"),
+        default=datetime.now(UTC).strftime("%Y-%m-%d"),
         help="UTC day to export (YYYY-MM-DD, default: today)",
     )
     parser.add_argument(
@@ -135,10 +135,12 @@ def main():
             ).fetchall()
 
         if snapshot_rows:
-            legacy_frames.append(pd.DataFrame(
-                snapshot_rows,
-                columns=["item_slug", "day", "price", "volume", "median_price", "source"],
-            ))
+            legacy_frames.append(
+                pd.DataFrame(
+                    snapshot_rows,
+                    columns=["item_slug", "day", "price", "volume", "median_price", "source"],
+                )
+            )
 
         if args.backfilled_csv:
             csv_path = Path(args.backfilled_csv)
@@ -156,13 +158,17 @@ def main():
                 print(f"Warning: --backfilled-csv path does not exist: {csv_path} — skipping OHLCV Parquet")
 
     # ── Write prices-YYYY-MM.parquet (OHLCV, all sources) ──────────────────
-    arrived = datetime.now(timezone.utc).replace(tzinfo=None)
+    arrived = datetime.now(UTC).replace(tzinfo=None)
 
     if snapshots_df is not None and not snapshots_df.empty:
-        daily = snapshots_df.groupby(["item_slug", "day", "source"]).agg(
-            mean_price=("price", "mean"),
-            volume=("volume", _sum_observed),
-        ).reset_index()
+        daily = (
+            snapshots_df.groupby(["item_slug", "day", "source"])
+            .agg(
+                mean_price=("price", "mean"),
+                volume=("volume", _sum_observed),
+            )
+            .reset_index()
+        )
         daily["volume"] = daily["volume"].astype("Int64")
         daily["day"] = pd.to_datetime(daily["day"])
         daily["ingested_at"] = arrived
@@ -171,10 +177,14 @@ def main():
 
     if legacy_frames:
         df = pd.concat(legacy_frames, ignore_index=True)
-        daily = df.groupby(["item_slug", "day", "source"]).agg(
-            mean_price=("price", "mean"),
-            volume=("volume", _sum_observed),
-        ).reset_index()
+        daily = (
+            df.groupby(["item_slug", "day", "source"])
+            .agg(
+                mean_price=("price", "mean"),
+                volume=("volume", _sum_observed),
+            )
+            .reset_index()
+        )
         daily["volume"] = daily["volume"].astype("Int64")
         daily["day"] = pd.to_datetime(daily["day"])
         daily["ingested_at"] = arrived
@@ -194,7 +204,6 @@ def main():
                 print(f"Warning: exchange_rates CSV {csv_path.name} is empty")
         else:
             print(f"Warning: --exchange-rates-csv path does not exist: {csv_path} — skipping exchange-rates Parquet")
-
 
     if not legacy_frames and snapshots_df is None:
         print(f"No data found for {args.date}")
@@ -219,16 +228,12 @@ def _write_parquet(con, path: Path, frame: pd.DataFrame):
     month's archive.
     """
     ordered = canonical_order(frame.columns)
-    projection = ", ".join(
-        f'CAST("{c}" AS DATE) AS "{c}"' if c in DATE_COLUMNS else f'"{c}"'
-        for c in ordered
-    )
+    projection = ", ".join(f'CAST("{c}" AS DATE) AS "{c}"' if c in DATE_COLUMNS else f'"{c}"' for c in ordered)
     tmp = path.with_suffix(".parquet.tmp")
     escaped = str(tmp).replace("'", "''")
     con.register("_append_out", frame[ordered])
     try:
-        con.sql(f"COPY (SELECT {projection} FROM _append_out) "
-                f"TO '{escaped}' (FORMAT PARQUET, COMPRESSION SNAPPY)")
+        con.sql(f"COPY (SELECT {projection} FROM _append_out) TO '{escaped}' (FORMAT PARQUET, COMPRESSION SNAPPY)")
         os.replace(tmp, path)
     finally:
         con.unregister("_append_out")
@@ -265,9 +270,7 @@ def _append_parquet(path: Path, new_data: pd.DataFrame, dedup_keys: list):
             # any re-run. `min` skips NaT, so a row that predates the column
             # takes the new timestamp rather than staying unknown.
             if "ingested_at" in combined.columns:
-                combined["ingested_at"] = (combined
-                                           .groupby(dedup_keys, dropna=False)
-                                           ["ingested_at"].transform("min"))
+                combined["ingested_at"] = combined.groupby(dedup_keys, dropna=False)["ingested_at"].transform("min")
             combined = combined.drop_duplicates(subset=dedup_keys, keep="last")
             _write_parquet(con, path, combined)
             print(f"  {path.name}: {len(new_data)} appended, {len(combined)} total")

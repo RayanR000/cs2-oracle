@@ -30,34 +30,29 @@ Usage:
     python scripts/walkforward_backtest.py --no-purge --skip-db  # legacy split
 """
 
-import sys
 import json
-import time
 import logging
+import sys
+import time
+from datetime import UTC, date, datetime
 from pathlib import Path
-from datetime import datetime, date, timedelta, timezone
-from collections import defaultdict
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
+import lightgbm as lgb
 import numpy as np
 import pandas as pd
-import lightgbm as lgb
-
-from database import SessionLocal, PredictionAccuracy
+from backtest.scoring import FLOOR_SWEEP, HEADLINE_TIER, score_by_tier
+from backtest.walkforward_records import fold_records
+from database import PredictionAccuracy, SessionLocal
 from models.forecaster import (
     DIRECTION_FLAT_TOLERANCE_PCT,
     ItemForecaster,
     archive_universe_sql_filter,
     embargo_days,
 )
-from backtest.scoring import FLOOR_SWEEP, HEADLINE_TIER, score_by_tier
-from backtest.walkforward_records import fold_records
 
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-)
+logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s")
 logger = logging.getLogger("walkforward_backtest")
 
 ARCHIVE_DIR = Path(__file__).parent.parent.parent / "price-archive"
@@ -87,9 +82,13 @@ def _load_parquet_items(con, backfilled_only=True):
     for pqf in pq_files:
         cols = [r[0] for r in con.sql(f"DESCRIBE SELECT * FROM read_parquet('{pqf}')").fetchall()]
         if "source" in cols:
-            pq_queries.append(f"SELECT item_slug, CAST(day AS DATE) AS day, mean_price AS price, source, volume FROM read_parquet('{pqf}')")
+            pq_queries.append(
+                f"SELECT item_slug, CAST(day AS DATE) AS day, mean_price AS price, source, volume FROM read_parquet('{pqf}')"
+            )
         else:
-            pq_queries.append(f"SELECT item_slug, CAST(day AS DATE) AS day, mean_price AS price, NULL::VARCHAR AS source, volume FROM read_parquet('{pqf}')")
+            pq_queries.append(
+                f"SELECT item_slug, CAST(day AS DATE) AS day, mean_price AS price, NULL::VARCHAR AS source, volume FROM read_parquet('{pqf}')"
+            )
     union_sql = " UNION ALL BY NAME ".join(pq_queries)
 
     # Apply the universe here as well as in _load_all_prices, so the
@@ -137,9 +136,8 @@ def _load_all_prices(con, items):
     # rejection at all — so without this filter the bid enters the published
     # Backtest Accuracy number undiluted.
     from db.archive import prices_relation
-    relation = prices_relation(
-        con, ARCHIVE_DIR,
-        columns=["item_slug", "day", "mean_price", "volume", "source"])
+
+    relation = prices_relation(con, ARCHIVE_DIR, columns=["item_slug", "day", "mean_price", "volume", "source"])
     rows = con.sql(f"""
         SELECT item_slug AS item_id, CAST(day AS DATE) AS timestamp,
                mean_price AS price, volume
@@ -160,9 +158,19 @@ def _load_all_prices(con, items):
 DIRECTION_NUM_ROUNDS = 200
 
 
-def _score_fold(*, item_ids, forecast_dates, base_prices, actual_returns_pct,
-                mid_returns_pct, low_returns_pct, high_returns_pct,
-                predicted_classes, fold_id=None, horizon_days=None):
+def _score_fold(
+    *,
+    item_ids,
+    forecast_dates,
+    base_prices,
+    actual_returns_pct,
+    mid_returns_pct,
+    low_returns_pct,
+    high_returns_pct,
+    predicted_classes,
+    fold_id=None,
+    horizon_days=None,
+):
     """Records for one fold, for both estimators.
 
     Returns (classifier_records, median_sign_records). Both describe the same
@@ -213,10 +221,7 @@ def _naive_predict(trailing_returns_pct):
     """Arm D: the forecast IS the trailing return over the same horizon."""
     mid = np.asarray(trailing_returns_pct, dtype=float)
     mid = np.nan_to_num(mid, nan=0.0, posinf=0.0, neginf=0.0)
-    return (mid,
-            mid - PLACEHOLDER_BAND_PCT,
-            mid + PLACEHOLDER_BAND_PCT,
-            _classes_from_returns(mid))
+    return (mid, mid - PLACEHOLDER_BAND_PCT, mid + PLACEHOLDER_BAND_PCT, _classes_from_returns(mid))
 
 
 def _impute_non_finite(X_train, X_val):
@@ -252,13 +257,9 @@ def _ridge_predict(X_train, y_train, X_val, alpha: float = 5.0):
     # (forecaster.py:251-260) — do not remove the scaler.
     scaler = StandardScaler().fit(np.asarray(X_train, dtype=float))
     model = Ridge(alpha=alpha, random_state=42)
-    model.fit(scaler.transform(np.asarray(X_train, dtype=float)),
-              np.asarray(y_train, dtype=float))
+    model.fit(scaler.transform(np.asarray(X_train, dtype=float)), np.asarray(y_train, dtype=float))
     mid = model.predict(scaler.transform(np.asarray(X_val, dtype=float)))
-    return (mid,
-            mid - PLACEHOLDER_BAND_PCT,
-            mid + PLACEHOLDER_BAND_PCT,
-            _classes_from_returns(mid))
+    return (mid, mid - PLACEHOLDER_BAND_PCT, mid + PLACEHOLDER_BAND_PCT, _classes_from_returns(mid))
 
 
 def _aggregate_records(records):
@@ -280,14 +281,16 @@ def _aggregate_records(records):
     out = dict(headline or all_tiers or {})
     out["by_tier"] = {
         (
-            "all" if tier is None
-            else "headline" if tier == HEADLINE_TIER
+            "all"
+            if tier is None
+            else "headline"
+            if tier == HEADLINE_TIER
             # Without this a floor sentinel keys as "tier_-2", which reads as a
             # price band and is not one.
-            else f"floor_{FLOOR_SWEEP[tier]:g}" if tier in FLOOR_SWEEP
+            else f"floor_{FLOOR_SWEEP[tier]:g}"
+            if tier in FLOOR_SWEEP
             else f"tier_{tier}"
-        ):
-            {"directional_accuracy": m["directional_accuracy"], "sample_count": n}
+        ): {"directional_accuracy": m["directional_accuracy"], "sample_count": n}
         for tier, m, n in scored
     }
     return out
@@ -312,7 +315,6 @@ def _get_tuned_params(meta, horizon, q):
 
 
 def _upsert_accuracy(db, rows):
-    from database import PredictionAccuracy
     for row in rows:
         filters = {
             "prediction_type": row["prediction_type"],
@@ -339,26 +341,33 @@ def _build_horizons_report(results_by_horizon, return_records):
     default must stay "excluded"; the flag is what makes them retrievable.
     """
     return {
-        str(h): {k: v for k, v in m.items()
-                 if return_records or k != "records"}
-        for h, m in results_by_horizon.items()
+        str(h): {k: v for k, v in m.items() if return_records or k != "records"} for h, m in results_by_horizon.items()
     }
 
 
-def run_walkforward(max_items=500, horizons=None, skip_db=False, return_records=False,
-                     step_days: int = STEP_DAYS, fold_seed: int = FOLD_SEED, arm="gbm",
-                     purge: bool = True):
+def run_walkforward(
+    max_items=500,
+    horizons=None,
+    skip_db=False,
+    return_records=False,
+    step_days: int = STEP_DAYS,
+    fold_seed: int = FOLD_SEED,
+    arm="gbm",
+    purge: bool = True,
+):
     if arm not in ARMS:
         raise ValueError(f"unknown arm {arm!r}; expected one of {ARMS}")
 
     logger.info("=" * 60)
     logger.info("WALK-FORWARD BACKTEST")
-    logger.info("  train-side embargo: %s",
-                "ON (purge=horizon+13)" if purge
-                else "OFF -- legacy split, not comparable to a default run")
+    logger.info(
+        "  train-side embargo: %s",
+        "ON (purge=horizon+13)" if purge else "OFF -- legacy split, not comparable to a default run",
+    )
     logger.info("=" * 60)
 
     import duckdb
+
     con = duckdb.connect()
 
     try:
@@ -409,7 +418,7 @@ def run_walkforward(max_items=500, horizons=None, skip_db=False, return_records=
 
             for window_end in range(split_idx + 1, len(dates), step_days):
                 train_dates = dates[:window_end]
-                val_dates = dates[window_end:window_end + VAL_WINDOW_DAYS]
+                val_dates = dates[window_end : window_end + VAL_WINDOW_DAYS]
 
                 if len(val_dates) < 7:
                     continue
@@ -422,8 +431,7 @@ def run_walkforward(max_items=500, horizons=None, skip_db=False, return_records=
                     # this cannot drift from `_compute_cv_splits` the way it
                     # did before 2026-08-07. Purging the val side would shrink
                     # VAL_WINDOW_DAYS=21 and empty it at h=30.
-                    train_df = ItemForecaster._purge_overlapping_train_rows(
-                        train_df, val_dates[0], horizon)
+                    train_df = ItemForecaster._purge_overlapping_train_rows(train_df, val_dates[0], horizon)
 
                 if len(val_df) < MIN_VAL_SAMPLES or train_df.empty:
                     continue
@@ -436,8 +444,11 @@ def run_walkforward(max_items=500, horizons=None, skip_db=False, return_records=
                     exclude = {"item_id", "date", "timestamp", "price", "volume"}
                     exclude |= {f"target_{h}d" for h in forecaster.HORIZONS}
                     exclude |= {f"target_return_{h}d" for h in forecaster.HORIZONS}
-                    feature_cols = [c for c in tdf.columns if c not in exclude
-                                    and tdf[c].dtype in (np.float64, np.float32, np.int64, int, float)]
+                    feature_cols = [
+                        c
+                        for c in tdf.columns
+                        if c not in exclude and tdf[c].dtype in (np.float64, np.float32, np.int64, int, float)
+                    ]
 
                 if len(feature_cols) > 2:
                     corr = train_df[feature_cols].corr().abs()
@@ -472,22 +483,25 @@ def run_walkforward(max_items=500, horizons=None, skip_db=False, return_records=
                     preds = {}
                     for q in QUANTILES:
                         params = _get_tuned_params(meta, horizon, q)
-                        params.update({
-                            "objective": "quantile",
-                            "alpha": q,
-                            "metric": "quantile",
-                            "verbosity": -1,
-                            "random_state": fold_seed,
-                            "n_jobs": -1,
-                        })
+                        params.update(
+                            {
+                                "objective": "quantile",
+                                "alpha": q,
+                                "metric": "quantile",
+                                "verbosity": -1,
+                                "random_state": fold_seed,
+                                "n_jobs": -1,
+                            }
+                        )
 
                         dtrain = lgb.Dataset(X_train.values, y_train.values)
                         dval = lgb.Dataset(X_val.values, y_val.values, reference=dtrain)
                         model = lgb.train(
-                            params, dtrain,
+                            params,
+                            dtrain,
                             num_boost_round=200,
                             valid_sets=[dval],
-                            callbacks=[lgb.early_stopping(20, verbose=False), lgb.log_evaluation(0)]
+                            callbacks=[lgb.early_stopping(20, verbose=False), lgb.log_evaluation(0)],
                         )
                         preds[q] = model.predict(X_val.values)
 
@@ -505,12 +519,12 @@ def run_walkforward(max_items=500, horizons=None, skip_db=False, return_records=
                     # sigma_val stay None so the fixed-band labels production
                     # selects are used (forecaster.py:2984-2993).
                     clf = forecaster._fit_direction_classifier(
-                        X_train.values, y_train.values,
-                        X_val.values, y_val.values,
+                        X_train.values,
+                        y_train.values,
+                        X_val.values,
+                        y_val.values,
                         _get_tuned_params(meta, horizon, 0.5).get("boosting_type", "gbdt"),
-                        ItemForecaster._direction_tree_params(
-                            {0.5: _get_tuned_params(meta, horizon, 0.5)}
-                        ),
+                        ItemForecaster._direction_tree_params({0.5: _get_tuned_params(meta, horizon, 0.5)}),
                         horizon=horizon,
                         sigma_train=None,
                         sigma_val=None,
@@ -567,14 +581,12 @@ def run_walkforward(max_items=500, horizons=None, skip_db=False, return_records=
                 f"clustered95={ci_txt}   "
                 f"median-sign DirAcc={agg_median['directional_accuracy']:.1f}%"
             )
-            logger.info(
-                f"      MAE=${agg_clf['mae']:.2f}  MAPE={agg_clf['mape']:.1f}%"
-            )
+            logger.info(f"      MAE=${agg_clf['mae']:.2f}  MAPE={agg_clf['mape']:.1f}%")
 
         total_elapsed = time.time() - total_start
-        logger.info(f"\n{'='*60}")
-        logger.info(f"Backtest complete in {total_elapsed:.0f}s ({total_elapsed/60:.1f}min)")
-        logger.info(f"{'='*60}")
+        logger.info(f"\n{'=' * 60}")
+        logger.info(f"Backtest complete in {total_elapsed:.0f}s ({total_elapsed / 60:.1f}min)")
+        logger.info(f"{'=' * 60}")
 
         if not skip_db:
             # A FRESH session. The one opened at the top of this function was
@@ -590,50 +602,58 @@ def run_walkforward(max_items=500, horizons=None, skip_db=False, return_records=
             today = date.today()
             for horizon, entry in results_by_horizon.items():
                 clf = entry["classifier"]
-                _upsert_accuracy(db, [{
-                    "prediction_type": "walkforward_backtest",
-                    "evaluation_date": today,
-                    "horizon_days": horizon,
-                    # Bumped twice, both times because the number stopped
-                    # meaning what the previous rows meant:
-                    #   lgbm-v3-tuned    -> lgbm-v3-clustered: the metric
-                    #     definition changed (3-label with a flat band,
-                    #     classifier-sourced direction, clustered CI).
-                    #   lgbm-v3-clustered -> lgbm-v4-embargoed (2026-08-08):
-                    #     the train side is now embargoed by default, and the
-                    #     module docstring calls that a discontinuity in so
-                    #     many words. Appending purged rows to the unpurged
-                    #     series would surface as a model regression on the
-                    #     dashboard trend and in `backtest-triage`, with
-                    #     nothing stored to say otherwise.
-                    "model_version": ("lgbm-v4-embargoed" if purge
-                                      else "lgbm-v3-clustered"),
-                    "evaluation_window_days": None,
-                    "sample_count": entry["sample_count"],
-                    "metrics": {
-                        k: clf[k] for k in [
-                            "mae", "rmse", "mape", "wmape",
-                            "directional_accuracy",
-                            "directional_accuracy_ci_clustered_lower",
-                            "directional_accuracy_ci_clustered_upper",
-                            "distinct_forecast_dates",
-                            "date_coverage_sufficient",
-                            # interval_coverage is deliberately NOT persisted:
-                            # every arm's band is PLACEHOLDER_BAND_PCT, so the
-                            # figure describes the placeholder, not a model.
-                        ]
-                    } | {
-                        "median_sign_directional_accuracy":
-                            entry["median_sign"]["directional_accuracy"],
-                        "by_tier": clf["by_tier"],
-                        # Stored as well as version-encoded, so a row is
-                        # self-describing without anyone having to know what
-                        # the version strings mean.
-                        "purge": bool(purge),
-                        "embargo_days": embargo_days(horizon) if purge else 0,
-                    },
-                    "created_at": datetime.now(timezone.utc).replace(tzinfo=None),
-                }])
+                _upsert_accuracy(
+                    db,
+                    [
+                        {
+                            "prediction_type": "walkforward_backtest",
+                            "evaluation_date": today,
+                            "horizon_days": horizon,
+                            # Bumped twice, both times because the number stopped
+                            # meaning what the previous rows meant:
+                            #   lgbm-v3-tuned    -> lgbm-v3-clustered: the metric
+                            #     definition changed (3-label with a flat band,
+                            #     classifier-sourced direction, clustered CI).
+                            #   lgbm-v3-clustered -> lgbm-v4-embargoed (2026-08-08):
+                            #     the train side is now embargoed by default, and the
+                            #     module docstring calls that a discontinuity in so
+                            #     many words. Appending purged rows to the unpurged
+                            #     series would surface as a model regression on the
+                            #     dashboard trend and in `backtest-triage`, with
+                            #     nothing stored to say otherwise.
+                            "model_version": ("lgbm-v4-embargoed" if purge else "lgbm-v3-clustered"),
+                            "evaluation_window_days": None,
+                            "sample_count": entry["sample_count"],
+                            "metrics": {
+                                k: clf[k]
+                                for k in [
+                                    "mae",
+                                    "rmse",
+                                    "mape",
+                                    "wmape",
+                                    "directional_accuracy",
+                                    "directional_accuracy_ci_clustered_lower",
+                                    "directional_accuracy_ci_clustered_upper",
+                                    "distinct_forecast_dates",
+                                    "date_coverage_sufficient",
+                                    # interval_coverage is deliberately NOT persisted:
+                                    # every arm's band is PLACEHOLDER_BAND_PCT, so the
+                                    # figure describes the placeholder, not a model.
+                                ]
+                            }
+                            | {
+                                "median_sign_directional_accuracy": entry["median_sign"]["directional_accuracy"],
+                                "by_tier": clf["by_tier"],
+                                # Stored as well as version-encoded, so a row is
+                                # self-describing without anyone having to know what
+                                # the version strings mean.
+                                "purge": bool(purge),
+                                "embargo_days": embargo_days(horizon) if purge else 0,
+                            },
+                            "created_at": datetime.now(UTC).replace(tzinfo=None),
+                        }
+                    ],
+                )
 
         con.close()
         try:
@@ -653,6 +673,7 @@ def run_walkforward(max_items=500, horizons=None, skip_db=False, return_records=
     except Exception as e:
         logger.error(f"Backtest failed: {e}", exc_info=True)
         import traceback
+
         traceback.print_exc()
         return {"status": "error", "message": str(e)}
 
@@ -675,8 +696,7 @@ def _write_records(report, path):
         for r in entry.get("records", []):
             r = dict(r)
             r["item_id"] = str(r["item_id"])
-            r["forecast_date"] = str(np.datetime_as_string(
-                np.datetime64(r["forecast_date"]), unit="D"))
+            r["forecast_date"] = str(np.datetime_as_string(np.datetime64(r["forecast_date"]), unit="D"))
             rows.append(r)
         out[str(h)] = rows
     with open(path, "w") as f:
@@ -693,41 +713,53 @@ def build_parser():
     on the published gate.
     """
     import argparse
+
     parser = argparse.ArgumentParser(description="Walk-forward backtest with tuned params")
     parser.add_argument("--max-items", type=int, default=500, help="Items to evaluate (default: 500)")
     parser.add_argument("--horizons", type=int, nargs="+", default=None, help="Horizons to test (default: all)")
     parser.add_argument("--skip-db", action="store_true", help="Skip writing to database")
-    parser.add_argument("--step-days", type=int, default=STEP_DAYS,
-                         help=f"Fold stride in days (default: {STEP_DAYS})")
-    parser.add_argument("--arm", choices=list(ARMS), default="gbm",
-                        help="gbm (current design), ridge, or naive baseline")
-    parser.add_argument("--no-purge", dest="purge", action="store_false",
-                        help="Drop the train-side embargo and reproduce the "
-                             "pre-2026-08-08 split. For a like-for-like read "
-                             "against a stored run from before the flip only — "
-                             "the resulting accuracy is inflated by boundary "
-                             "overlap and must not be published.")
+    parser.add_argument("--step-days", type=int, default=STEP_DAYS, help=f"Fold stride in days (default: {STEP_DAYS})")
+    parser.add_argument(
+        "--arm", choices=list(ARMS), default="gbm", help="gbm (current design), ridge, or naive baseline"
+    )
+    parser.add_argument(
+        "--no-purge",
+        dest="purge",
+        action="store_false",
+        help="Drop the train-side embargo and reproduce the "
+        "pre-2026-08-08 split. For a like-for-like read "
+        "against a stored run from before the flip only — "
+        "the resulting accuracy is inflated by boundary "
+        "overlap and must not be published.",
+    )
     parser.set_defaults(purge=True)
-    parser.add_argument("--save-records", metavar="PATH", default=None,
-                        help="Write per-horizon records to PATH as JSON, for "
-                             "paired_mde.paired_da_difference")
+    parser.add_argument(
+        "--save-records",
+        metavar="PATH",
+        default=None,
+        help="Write per-horizon records to PATH as JSON, for paired_mde.paired_da_difference",
+    )
     return parser
 
 
 def main():
     args = build_parser().parse_args()
 
-    report = run_walkforward(max_items=args.max_items, horizons=args.horizons,
-                              skip_db=args.skip_db, step_days=args.step_days,
-                              arm=args.arm, purge=args.purge,
-                              return_records=bool(args.save_records))
+    report = run_walkforward(
+        max_items=args.max_items,
+        horizons=args.horizons,
+        skip_db=args.skip_db,
+        step_days=args.step_days,
+        arm=args.arm,
+        purge=args.purge,
+        return_records=bool(args.save_records),
+    )
     if args.save_records:
         _write_records(report, args.save_records)
     # Records are large and already on disk if requested; keep them out of stdout.
     printable = dict(report)
     printable["horizons"] = _build_horizons_report(
-        {h: {k: v for k, v in m.items() if k != "records"}
-         for h, m in report.get("horizons", {}).items()},
+        {h: {k: v for k, v in m.items() if k != "records"} for h, m in report.get("horizons", {}).items()},
         return_records=False,
     )
     print(f"\nRESULT: {json.dumps(printable, indent=2, default=str)}")

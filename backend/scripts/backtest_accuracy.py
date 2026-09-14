@@ -12,18 +12,17 @@ Usage:
     python scripts/backtest_accuracy.py --reresolve      # re-read the archive
 """
 
-import os
-import sys
 import json
 import logging
-from pathlib import Path
-from datetime import datetime, date, timedelta, timezone
+import os
+import sys
 from collections import defaultdict
+from datetime import UTC, date, datetime, timedelta
+from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from database import SessionLocal, PredictionAccuracy
-from sqlalchemy import bindparam, select, text
+from backtest.directional_test import PT_T_HURDLE
 from backtest.price_resolution import (
     MAX_WINDOW_SPAN_DAYS,
     SMOOTH_WINDOW,
@@ -34,20 +33,18 @@ from backtest.price_resolution import (
 )
 from backtest.resolution_gate import (
     MAX_UNRESOLVABLE_PCT as _MAX_UNRESOLVABLE_PCT,
+)
+from backtest.resolution_gate import (
     classify_archive_gap,
     classify_base_gap,
     classify_chronic,
     evaluate_gate,
 )
-from backtest.directional_test import PT_T_HURDLE
-from models.staleness import stale_run_lookup
 from backtest.scoring import (
-    FLAT_TOLERANCE,
     FLOOR_SWEEP,
     HEADLINE_MIN_TIER,
     HEADLINE_TIER,
     MIN_FORECAST_DATES,
-    bootstrap_ci,
     direction_from_return,
     excluded_forecast_date,
     price_tier,
@@ -55,6 +52,9 @@ from backtest.scoring import (
     score_cohort,
     served_identity,
 )
+from database import PredictionAccuracy, SessionLocal
+from models.staleness import stale_run_lookup
+from sqlalchemy import bindparam, select, text
 
 # Re-exported so the gate's threshold has one definition. The gate itself —
 # and the reason it needs two ratios rather than one — lives in
@@ -82,10 +82,7 @@ VERDICT_COLUMNS = (
 # absorbs round-tripping through the DB driver.
 _VERDICT_EPS = 1e-9
 
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-)
+logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s")
 logger = logging.getLogger("backtest_accuracy")
 
 
@@ -110,9 +107,12 @@ def _upsert_accuracy(db, rows):
     """
     if rows:
         from db.parquet import append_table
-        append_table("prediction_accuracy", rows,
-                     ["prediction_type", "evaluation_date", "horizon_days",
-                      "model_version", "price_tier"])
+
+        append_table(
+            "prediction_accuracy",
+            rows,
+            ["prediction_type", "evaluation_date", "horizon_days", "model_version", "price_tier"],
+        )
 
     for row in rows:
         filters = {
@@ -143,6 +143,7 @@ def _upsert_accuracy(db, rows):
 # ---------------------------------------------------------------------------
 # 1. Forecast backtesting
 # ---------------------------------------------------------------------------
+
 
 def _quote_basis(current_price, base):
     """The price the forecast was QUOTED FROM, falling back to the resolved base.
@@ -207,18 +208,13 @@ def _derive_verdict(base, actual, mid, low, high, direction_predicted, *, quote)
     return {
         "direction_actual": actual_direction,
         "direction_correct": 1 if predicted_direction == actual_direction else 0,
-        "in_interval": (
-            None if no_band
-            else (1 if low * rebase <= actual <= high * rebase else 0)
-        ),
+        "in_interval": (None if no_band else (1 if low * rebase <= actual <= high * rebase else 0)),
         # The published-dollar question, kept because it is a real one: the API
         # serves a dollar band and a consumer reads it in dollars. Reported
         # beside the calibrated figure rather than in place of it — the gap
         # between the two IS the anchor wedge, which makes it attributable.
         # Not a stored column; `_verdict_for_storage` drops it.
-        "in_interval_dollar": (
-            None if no_band else (1 if low <= actual <= high else 0)
-        ),
+        "in_interval_dollar": (None if no_band else (1 if low <= actual <= high else 0)),
         "abs_error": abs_error,
         # Divided by the BASE leg, not the actual. Explicit human ruling.
         "pct_error": abs(abs_error / base) * 100,
@@ -303,10 +299,7 @@ def _iter_outcome_rows(db, forecast_ids=None, batch=None):
     if forecast_ids is None:
         last_id = -1
         while True:
-            rows = db.execute(
-                select(tbl).where(tbl.c.id > last_id)
-                .order_by(tbl.c.id).limit(batch)
-            ).fetchall()
+            rows = db.execute(select(tbl).where(tbl.c.id > last_id).order_by(tbl.c.id).limit(batch)).fetchall()
             if not rows:
                 return
             last_id = rows[-1].id
@@ -316,9 +309,7 @@ def _iter_outcome_rows(db, forecast_ids=None, batch=None):
     else:
         ids = list(forecast_ids)
         for i in range(0, len(ids), batch):
-            rows = db.execute(
-                select(tbl).where(tbl.c.forecast_id.in_(ids[i:i + batch]))
-            ).fetchall()
+            rows = db.execute(select(tbl).where(tbl.c.forecast_id.in_(ids[i : i + batch]))).fetchall()
             if rows:
                 yield rows
 
@@ -331,8 +322,7 @@ def _id_to_slug(db) -> dict:
     be joined to its own price history without a round-trip to Supabase, which
     is the network hop the Parquet store exists to avoid.
     """
-    return {r.id: r.item_id
-            for r in db.execute(text("SELECT id, item_id FROM items")).fetchall()}
+    return {r.id: r.item_id for r in db.execute(text("SELECT id, item_id FROM items")).fetchall()}
 
 
 def _with_item_slug(rows, id_to_slug):
@@ -373,10 +363,11 @@ def _flush_verdict_refresh(db, updates, mirror):
     is a replace, not a duplicate.
     """
     from db.parquet import append_table
+
     append_table("forecast_outcomes", mirror, ["forecast_id"])
 
     for i in range(0, len(updates), CHUNK):
-        db.execute(_REFRESH_VERDICTS_SQL, updates[i:i + CHUNK])
+        db.execute(_REFRESH_VERDICTS_SQL, updates[i : i + CHUNK])
     db.commit()
 
 
@@ -412,7 +403,7 @@ def _refresh_verdict_columns(db, forecast_ids=None) -> int:
 
     Returns the number of rows refreshed.
     """
-    now = datetime.now(timezone.utc).replace(tzinfo=None)
+    now = datetime.now(UTC).replace(tzinfo=None)
     updates, mirror = [], []
     total = 0
     # Read once for the whole walk. The mirror row must carry item_slug or the
@@ -425,11 +416,17 @@ def _refresh_verdict_columns(db, forecast_ids=None) -> int:
             base, actual, mid = r.base_price, r.actual_price, r.predicted_price_mid
             if base is None or base <= 0 or actual is None or actual <= 0 or mid is None:
                 continue
-            derived = _verdict_for_storage(_derive_verdict(
-                base, actual, mid,
-                r.predicted_price_low, r.predicted_price_high, r.direction_predicted,
-                quote=r.current_price,
-            ))
+            derived = _verdict_for_storage(
+                _derive_verdict(
+                    base,
+                    actual,
+                    mid,
+                    r.predicted_price_low,
+                    r.predicted_price_high,
+                    r.direction_predicted,
+                    quote=r.current_price,
+                )
+            )
             if not _verdicts_differ(r, derived):
                 continue
 
@@ -470,9 +467,7 @@ def _refresh_verdict_columns(db, forecast_ids=None) -> int:
     return total
 
 
-def _store_forecast_outcomes(
-    db, outcomes, reresolve: bool = False, considered_ids=None, id_to_slug=None
-) -> int:
+def _store_forecast_outcomes(db, outcomes, reresolve: bool = False, considered_ids=None, id_to_slug=None) -> int:
     """Persist per-forecast outcomes. Insert-only unless *reresolve*.
 
     Resolved actuals are frozen: a forecast_id that already has a row keeps
@@ -529,10 +524,8 @@ def _store_forecast_outcomes(
         all_fids = [o["forecast_id"] for o in outcomes]
         existing_ids = set()
         for i in range(0, len(all_fids), CHUNK):
-            batch = all_fids[i:i + CHUNK]
-            rows = db.query(ForecastOutcome.forecast_id).filter(
-                ForecastOutcome.forecast_id.in_(batch)
-            ).all()
+            batch = all_fids[i : i + CHUNK]
+            rows = db.query(ForecastOutcome.forecast_id).filter(ForecastOutcome.forecast_id.in_(batch)).all()
             existing_ids.update(r[0] for r in rows)
         to_write = [o for o in outcomes if o["forecast_id"] not in existing_ids]
 
@@ -541,7 +534,7 @@ def _store_forecast_outcomes(
             logger.info(f"  All {len(outcomes):,} outcomes already resolved (frozen)")
             return 0
 
-    resolved_at = datetime.now(timezone.utc).replace(tzinfo=None)
+    resolved_at = datetime.now(UTC).replace(tzinfo=None)
     for o in to_write:
         o["evaluated_at"] = resolved_at
         o["resolved_at"] = resolved_at
@@ -571,9 +564,11 @@ def _store_forecast_outcomes(
         deleted = 0
         ids = sorted(delete_ids)
         for i in range(0, len(ids), CHUNK):
-            deleted += db.query(ForecastOutcome).filter(
-                ForecastOutcome.forecast_id.in_(ids[i:i + CHUNK])
-            ).delete(synchronize_session=False)
+            deleted += (
+                db.query(ForecastOutcome)
+                .filter(ForecastOutcome.forecast_id.in_(ids[i : i + CHUNK]))
+                .delete(synchronize_session=False)
+            )
         if to_write:
             db.bulk_insert_mappings(ForecastOutcome, to_write)
         db.commit()
@@ -591,12 +586,10 @@ def _store_forecast_outcomes(
     db.commit()
 
     from db.parquet import append_table
+
     append_table("forecast_outcomes", mirror, ["forecast_id"])
 
-    logger.info(
-        f"  Resolved {len(to_write):,} new outcomes "
-        f"({len(outcomes) - len(to_write):,} already frozen)"
-    )
+    logger.info(f"  Resolved {len(to_write):,} new outcomes ({len(outcomes) - len(to_write):,} already frozen)")
     return len(to_write)
 
 
@@ -641,13 +634,11 @@ def _records_from_frozen_outcomes(db, min_price=0, forecast_ids=None):
     if forecast_ids is None:
         rows = db.execute(text(select_sql)).fetchall()
     else:
-        stmt = text(select_sql + " WHERE o.forecast_id IN :ids").bindparams(
-            bindparam("ids", expanding=True)
-        )
+        stmt = text(select_sql + " WHERE o.forecast_id IN :ids").bindparams(bindparam("ids", expanding=True))
         ids = list(forecast_ids)
         rows = []
         for i in range(0, len(ids), 900):
-            rows.extend(db.execute(stmt, {"ids": ids[i:i + 900]}).fetchall())
+            rows.extend(db.execute(stmt, {"ids": ids[i : i + 900]}).fetchall())
 
     n_unusable = 0
     n_below_min_price = 0
@@ -663,7 +654,8 @@ def _records_from_frozen_outcomes(db, min_price=0, forecast_ids=None):
         logger.warning(
             "  SCORE_ALL_DATES=1: scoring dates served by superseded direction "
             "rules. NOT a publishable figure — for comparison against pre-"
-            "exclusion numbers only.")
+            "exclusion numbers only."
+        )
 
     groups = defaultdict(list)
     for r in rows:
@@ -681,8 +673,12 @@ def _records_from_frozen_outcomes(db, min_price=0, forecast_ids=None):
                 continue
 
         verdict = _derive_verdict(
-            base, actual, mid,
-            r.predicted_price_low, r.predicted_price_high, r.direction_predicted,
+            base,
+            actual,
+            mid,
+            r.predicted_price_low,
+            r.predicted_price_high,
+            r.direction_predicted,
             quote=r.current_price,
         )
 
@@ -690,77 +686,72 @@ def _records_from_frozen_outcomes(db, min_price=0, forecast_ids=None):
         # configuration are one cohort, or no cohort ever reaches
         # MIN_FORECAST_DATES. The raw label rides on the record so the merge is
         # disclosed in `config_dates` rather than silent.
-        groups[(r.horizon_days, served_identity(r.model_version))].append({
-            # The forecast's OWN stored label, which is where the configuration
-            # survives: the outcome carries the identity (it is what the next run
-            # groups on), and item_forecasts is not migrated, so the legacy
-            # `-regime` / `-global-only` fork stays readable from this side.
-            # Falls back to the outcome's label when the join finds no forecast
-            # row.
-            "model_version_raw": (
-                getattr(r, "forecast_model_version", None) or r.model_version
-            ),
-            "abs_error": verdict["abs_error"],
-            "pct_error": verdict["pct_error"],
-            "sq_error": (mid - actual) ** 2,
-            "direction_correct": verdict["direction_correct"],
-            "predicted_direction": r.direction_predicted or "flat",
-            "actual_direction": verdict["direction_actual"],
-            "in_interval": verdict["in_interval"],
-            # The two coverage figures and which basis formed this row's band.
-            # `interval_coverage` alone cannot say whether it describes the
-            # calibrated width or the published dollars, and the stored series
-            # breaks at 2026-08-11 — a payload that cannot name its own
-            # convention is not self-describing.
-            "in_interval_dollar": verdict["in_interval_dollar"],
-            "interval_basis_served": _quote_basis(r.current_price, base) != base,
-            "confidence": r.confidence or "low",
-            "base_price": base,
-            "actual_price": actual,
-            "price_tier": price_tier(base),
-            # Frozen at resolution time, so the staleness axis stays available
-            # to an archive-free --rescore. None on every row resolved before
-            # 2026-08-08; score_by_staleness buckets those as `unknown`.
-            "base_stale_run_days": getattr(r, "base_stale_run_days", None),
-            "item_id": r.item_id,
-            # The clustering unit. Outcomes sharing a forecast_date share a
-            # market-wide move, so the CI must resample these, not items.
-            "forecast_date": r.forecast_date,
-            # The prediction leg, for the friction-conditioned metric. Both
-            # columns are frozen, so this stays archive-free and --rescore keeps
-            # working.
-            #
-            # `current_price` is here because `r_hat` divides by the price the
-            # forecast was QUOTED FROM -- `predicted_mid` was built as
-            # `current_price x (1 + r_hat)`, and dividing by the resolved base
-            # instead recovers the wedge between the two bases, which is a median
-            # 13.74% on this cohort against a 7.2-37.5% bar. It does NOT breach
-            # "current_price is never scored on": the legs of `actual_ret` are
-            # untouched and both stay on resolve_anchors.
-            # docs/changelog/2026-08-11-actionable-selection-is-the-base-wedge.md
-            "predicted_mid": mid,
-            "current_price": r.current_price,
-            # ActionableDA is scoped to h in {14, 30}. Carried on the record
-            # rather than passed into score_cohort: the grouping key already
-            # fixes it per cohort, and eight test modules call score_cohort
-            # positionally.
-            "horizon_days": r.horizon_days,
-        })
+        groups[(r.horizon_days, served_identity(r.model_version))].append(
+            {
+                # The forecast's OWN stored label, which is where the configuration
+                # survives: the outcome carries the identity (it is what the next run
+                # groups on), and item_forecasts is not migrated, so the legacy
+                # `-regime` / `-global-only` fork stays readable from this side.
+                # Falls back to the outcome's label when the join finds no forecast
+                # row.
+                "model_version_raw": (getattr(r, "forecast_model_version", None) or r.model_version),
+                "abs_error": verdict["abs_error"],
+                "pct_error": verdict["pct_error"],
+                "sq_error": (mid - actual) ** 2,
+                "direction_correct": verdict["direction_correct"],
+                "predicted_direction": r.direction_predicted or "flat",
+                "actual_direction": verdict["direction_actual"],
+                "in_interval": verdict["in_interval"],
+                # The two coverage figures and which basis formed this row's band.
+                # `interval_coverage` alone cannot say whether it describes the
+                # calibrated width or the published dollars, and the stored series
+                # breaks at 2026-08-11 — a payload that cannot name its own
+                # convention is not self-describing.
+                "in_interval_dollar": verdict["in_interval_dollar"],
+                "interval_basis_served": _quote_basis(r.current_price, base) != base,
+                "confidence": r.confidence or "low",
+                "base_price": base,
+                "actual_price": actual,
+                "price_tier": price_tier(base),
+                # Frozen at resolution time, so the staleness axis stays available
+                # to an archive-free --rescore. None on every row resolved before
+                # 2026-08-08; score_by_staleness buckets those as `unknown`.
+                "base_stale_run_days": getattr(r, "base_stale_run_days", None),
+                "item_id": r.item_id,
+                # The clustering unit. Outcomes sharing a forecast_date share a
+                # market-wide move, so the CI must resample these, not items.
+                "forecast_date": r.forecast_date,
+                # The prediction leg, for the friction-conditioned metric. Both
+                # columns are frozen, so this stays archive-free and --rescore keeps
+                # working.
+                #
+                # `current_price` is here because `r_hat` divides by the price the
+                # forecast was QUOTED FROM -- `predicted_mid` was built as
+                # `current_price x (1 + r_hat)`, and dividing by the resolved base
+                # instead recovers the wedge between the two bases, which is a median
+                # 13.74% on this cohort against a 7.2-37.5% bar. It does NOT breach
+                # "current_price is never scored on": the legs of `actual_ret` are
+                # untouched and both stay on resolve_anchors.
+                # docs/changelog/2026-08-11-actionable-selection-is-the-base-wedge.md
+                "predicted_mid": mid,
+                "current_price": r.current_price,
+                # ActionableDA is scoped to h in {14, 30}. Carried on the record
+                # rather than passed into score_cohort: the grouping key already
+                # fixes it per cohort, and eight test modules call score_cohort
+                # positionally.
+                "horizon_days": r.horizon_days,
+            }
+        )
 
     n_scored = sum(len(v) for v in groups.values())
-    logger.info(
-        f"  Frozen outcomes: {n_scored:,} scored of {len(rows):,} considered"
-    )
+    logger.info(f"  Frozen outcomes: {n_scored:,} scored of {len(rows):,} considered")
     if n_below_min_price:
-        logger.info(
-            f"  {n_below_min_price:,} frozen outcome(s) below --min-price ${min_price:.2f}"
-        )
+        logger.info(f"  {n_below_min_price:,} frozen outcome(s) below --min-price ${min_price:.2f}")
     for reason, n in sorted(n_excluded_date.items()):
         # WARNING, not info: this shrinks the panel MIN_FORECAST_DATES counts,
         # and the reason has to travel with the number every run.
         logger.warning(
-            f"  {n:,} frozen outcome(s) excluded — {reason}. "
-            f"SCORE_ALL_DATES=1 restores them for comparison only."
+            f"  {n:,} frozen outcome(s) excluded — {reason}. SCORE_ALL_DATES=1 restores them for comparison only."
         )
     if n_unusable:
         # Loud on purpose. These rows are re-resolved by nothing and counted by
@@ -874,10 +865,7 @@ def _headline_line(horizon, model_version, metrics, n) -> tuple[int, str]:
     # Already percent, same units as directional_accuracy — the * 100 that used
     # to live here was compensating for a scoring bug that is now fixed at the
     # source. See the units note in score_cohort.
-    ci_str = (
-        f" [CI: {lo:.1f}–{hi:.1f}]" if lo is not None
-        else " [CI: n/a, <2 forecast dates]"
-    )
+    ci_str = f" [CI: {lo:.1f}–{hi:.1f}]" if lo is not None else " [CI: n/a, <2 forecast dates]"
     triple = (
         f"DA={metrics['directional_accuracy']:.1f}%{ci_str} "
         f"vs constant-call {_pct(metrics['constant_call_accuracy'])} "
@@ -908,18 +896,12 @@ def _headline_line(horizon, model_version, metrics, n) -> tuple[int, str]:
     configs = metrics.get("config_dates") or {}
     config_str = ""
     if len(configs) > 1:
-        config_str = " pooling " + ", ".join(
-            f"{k}:{v}d" for k, v in sorted(configs.items())
-        )
-    prefix = (
-        f"  [{horizon}d / {model_version}] >=$1: {n:,} samples over "
-        f"{n_dates} forecast dates{config_str}"
-    )
+        config_str = " pooling " + ", ".join(f"{k}:{v}d" for k, v in sorted(configs.items()))
+    prefix = f"  [{horizon}d / {model_version}] >=$1: {n:,} samples over {n_dates} forecast dates{config_str}"
 
     if verdict == "skill":
         return logging.INFO, (
-            f"{prefix} — DIRECTIONAL SKILL (PT t > {PT_T_HURDLE}): "
-            f"PT={_pt_str(metrics)} {triple} {common}"
+            f"{prefix} — DIRECTIONAL SKILL (PT t > {PT_T_HURDLE}): PT={_pt_str(metrics)} {triple} {common}"
         )
     if verdict == "perverse":
         return logging.WARNING, (
@@ -956,27 +938,25 @@ def _score_groups(groups, today):
             continue
 
         for tier, metrics, n in tiered:
-            results.append({
-                "prediction_type": "forecast",
-                "evaluation_date": today,
-                "horizon_days": horizon,
-                "model_version": model_version,
-                "price_tier": tier,
-                "evaluation_window_days": None,
-                "sample_count": n,
-                "metrics": metrics,
-                "created_at": datetime.now(timezone.utc).replace(tzinfo=None),
-            })
+            results.append(
+                {
+                    "prediction_type": "forecast",
+                    "evaluation_date": today,
+                    "horizon_days": horizon,
+                    "model_version": model_version,
+                    "price_tier": tier,
+                    "evaluation_window_days": None,
+                    "sample_count": n,
+                    "metrics": metrics,
+                    "created_at": datetime.now(UTC).replace(tzinfo=None),
+                }
+            )
 
         # The logged headline is the row that was just stored, not a second
         # derivation of it. A headline that is computed only for the log is a
         # number nothing can audit — see HEADLINE_TIER in backtest.scoring.
-        head_metrics, head_n = next(
-            ((m, n) for t, m, n in tiered if t == HEADLINE_TIER), ({}, 0)
-        )
-        penny_metrics, penny_n = score_cohort(
-            [r for r in records if r["price_tier"] < HEADLINE_MIN_TIER]
-        )
+        head_metrics, head_n = next(((m, n) for t, m, n in tiered if t == HEADLINE_TIER), ({}, 0))
+        penny_metrics, penny_n = score_cohort([r for r in records if r["price_tier"] < HEADLINE_MIN_TIER])
 
         if head_n:
             logger.log(*_headline_line(horizon, model_version, head_metrics, head_n))
@@ -987,9 +967,7 @@ def _score_groups(groups, today):
         sweep = [(FLOOR_SWEEP[t], m, n) for t, m, n in tiered if t in FLOOR_SWEEP]
         if len(sweep) > 1:
             parts = " | ".join(
-                f">=${floor:g}: n={n:,} DA={m['directional_accuracy']:.1f}% "
-                f"PT={_pt_str(m)}"
-                for floor, m, n in sweep
+                f">=${floor:g}: n={n:,} DA={m['directional_accuracy']:.1f}% PT={_pt_str(m)}" for floor, m, n in sweep
             )
             logger.info(f"  [{horizon}d / {model_version}] floor sweep — {parts}")
         if penny_n:
@@ -1106,13 +1084,15 @@ def backtest_forecasts(db, today=None, min_price=0, reresolve=False, rescore=Fal
         )
 
     # Fetch all forecasts with a midpoint price, filter for maturity in Python
-    rows = db.execute(text("""
+    rows = db.execute(
+        text("""
         SELECT f.id, f.item_id, f.forecast_date, f.horizon_days,
                f.price_low, f.price_mid, f.price_high,
                f.current_price, f.direction, f.confidence, f.model_version
         FROM item_forecasts f
         WHERE f.price_mid IS NOT NULL
-    """)).fetchall()
+    """)
+    ).fetchall()
 
     # Filter for mature forecasts (forecast_date + horizon <= cutoff)
     mature = []
@@ -1140,17 +1120,11 @@ def backtest_forecasts(db, today=None, min_price=0, reresolve=False, rescore=Fal
     frozen_rows = []
     if not reresolve:
         for i in range(0, len(mature_ids), 900):
-            batch = mature_ids[i:i + 900]
-            frozen_rows.extend(
-                db.query(ForecastOutcome)
-                .filter(ForecastOutcome.forecast_id.in_(batch))
-                .all()
-            )
+            batch = mature_ids[i : i + 900]
+            frozen_rows.extend(db.query(ForecastOutcome).filter(ForecastOutcome.forecast_id.in_(batch)).all())
     frozen_ids = {o.forecast_id for o in frozen_rows}
     to_resolve = [r for r in mature if r.id not in frozen_ids]
-    logger.info(
-        f"  {len(frozen_ids):,} already frozen, {len(to_resolve):,} to resolve"
-    )
+    logger.info(f"  {len(frozen_ids):,} already frozen, {len(to_resolve):,} to resolve")
 
     # Group by horizon + served identity. Only the unfrozen forecasts are
     # grouped: a group with nothing new performs no archive read at all.
@@ -1205,7 +1179,9 @@ def backtest_forecasts(db, today=None, min_price=0, reresolve=False, rescore=Fal
             slug = id_to_slug.get(f.item_id)
             if slug is None:
                 continue
-            f_date = f.forecast_date if isinstance(f.forecast_date, date) else date.fromisoformat(str(f.forecast_date)[:10])
+            f_date = (
+                f.forecast_date if isinstance(f.forecast_date, date) else date.fromisoformat(str(f.forecast_date)[:10])
+            )
             slugs.add(slug)
             anchors.add((slug, f_date))
             anchors.add((slug, f_date + timedelta(days=horizon)))
@@ -1234,7 +1210,9 @@ def backtest_forecasts(db, today=None, min_price=0, reresolve=False, rescore=Fal
         for f in forecasts:
             n_considered += 1
             slug = id_to_slug.get(f.item_id)
-            f_date = f.forecast_date if isinstance(f.forecast_date, date) else date.fromisoformat(str(f.forecast_date)[:10])
+            f_date = (
+                f.forecast_date if isinstance(f.forecast_date, date) else date.fromisoformat(str(f.forecast_date)[:10])
+            )
             target_date = f_date + timedelta(days=horizon)
 
             chronic = classify_chronic(target_date, coverage_end, MAX_WINDOW_SPAN_DAYS)
@@ -1262,10 +1240,15 @@ def backtest_forecasts(db, today=None, min_price=0, reresolve=False, rescore=Fal
             # cell re-enters to_resolve forever. Checked on the same
             # positive-evidence standard as the actual leg.
             gap = classify_archive_gap(
-                f_date, target_date, covered_days, SMOOTH_WINDOW,
+                f_date,
+                target_date,
+                covered_days,
+                SMOOTH_WINDOW,
                 staleness_days=MAX_WINDOW_SPAN_DAYS,
             ) or classify_base_gap(
-                f_date, covered_days, SMOOTH_WINDOW,
+                f_date,
+                covered_days,
+                SMOOTH_WINDOW,
                 staleness_days=MAX_WINDOW_SPAN_DAYS,
             )
 
@@ -1340,42 +1323,43 @@ def backtest_forecasts(db, today=None, min_price=0, reresolve=False, rescore=Fal
             # freshly written row is by construction already "current" and the
             # refresh below finds nothing to do for it.
             verdict = _verdict_for_storage(
-                _derive_verdict(base, actual, mid, low, high, f.direction,
-                                quote=f.current_price)
+                _derive_verdict(base, actual, mid, low, high, f.direction, quote=f.current_price)
             )
 
-            new_outcomes.append({
-                "forecast_id": f.id,
-                "item_id": f.item_id,
-                "forecast_date": f_date,
-                "horizon_days": horizon,
-                "target_date": target_date,
-                # current_price is the PREDICTION's basis and is now read for
-                # scoring twice — `r_hat` in backtest/actionable.py and the band
-                # rebase in `_derive_verdict` — because `predict()` quoted the
-                # whole triple from it. It is never synthesized. Written through
-                # as-is (nullable) so it stays distinguishable from base_price,
-                # which is always archive-resolved. Downstream consumers
-                # (update_bias_corrections_from_outcomes, retro_bias_check,
-                # tiered_breakdown) still read this column and must see the
-                # real serving-time value or a genuine NULL, not a stand-in.
-                "current_price": f.current_price,
-                "base_price": base,
-                # None, not 0, when the slug-day is absent from `voted` — an
-                # unknown run length must never read as "the price was fresh".
-                "base_stale_run_days": stale_runs.get((slug, f_date)),
-                "predicted_price_low": low,
-                "predicted_price_mid": mid,
-                "predicted_price_high": high,
-                "actual_price": actual,
-                "direction_predicted": f.direction or "flat",
-                "direction_actual": verdict["direction_actual"],
-                "direction_correct": verdict["direction_correct"],
-                "in_interval": verdict["in_interval"],
-                "abs_error": verdict["abs_error"],
-                "pct_error": verdict["pct_error"],
-                "model_version": model_version,
-            })
+            new_outcomes.append(
+                {
+                    "forecast_id": f.id,
+                    "item_id": f.item_id,
+                    "forecast_date": f_date,
+                    "horizon_days": horizon,
+                    "target_date": target_date,
+                    # current_price is the PREDICTION's basis and is now read for
+                    # scoring twice — `r_hat` in backtest/actionable.py and the band
+                    # rebase in `_derive_verdict` — because `predict()` quoted the
+                    # whole triple from it. It is never synthesized. Written through
+                    # as-is (nullable) so it stays distinguishable from base_price,
+                    # which is always archive-resolved. Downstream consumers
+                    # (update_bias_corrections_from_outcomes, retro_bias_check,
+                    # tiered_breakdown) still read this column and must see the
+                    # real serving-time value or a genuine NULL, not a stand-in.
+                    "current_price": f.current_price,
+                    "base_price": base,
+                    # None, not 0, when the slug-day is absent from `voted` — an
+                    # unknown run length must never read as "the price was fresh".
+                    "base_stale_run_days": stale_runs.get((slug, f_date)),
+                    "predicted_price_low": low,
+                    "predicted_price_mid": mid,
+                    "predicted_price_high": high,
+                    "actual_price": actual,
+                    "direction_predicted": f.direction or "flat",
+                    "direction_actual": verdict["direction_actual"],
+                    "direction_correct": verdict["direction_correct"],
+                    "in_interval": verdict["in_interval"],
+                    "abs_error": verdict["abs_error"],
+                    "pct_error": verdict["pct_error"],
+                    "model_version": model_version,
+                }
+            )
 
     # Both ratios are evaluated against the whole mature cohort and against
     # this run's informative attempts respectively — see
@@ -1415,7 +1399,10 @@ def backtest_forecasts(db, today=None, min_price=0, reresolve=False, rescore=Fal
         # can discriminate a "default path deletes" mutation. Verified: that
         # mutation fails that test alone.
         _store_forecast_outcomes(
-            db, all_outcomes, reresolve=reresolve, considered_ids=considered_ids,
+            db,
+            all_outcomes,
+            reresolve=reresolve,
+            considered_ids=considered_ids,
             # Already read above for anchor resolution; passed so the mirror's
             # item_slug costs no second scan of `items`.
             id_to_slug=id_to_slug,
@@ -1433,9 +1420,7 @@ def backtest_forecasts(db, today=None, min_price=0, reresolve=False, rescore=Fal
     # that has already been reported. That separation is the point of the plan:
     # before it, the same 5,512-forecast cohort scored 61.76%, 33.74%, 61.54%
     # and 57.91% on four consecutive evaluation dates.
-    groups = _records_from_frozen_outcomes(
-        db, min_price=min_price, forecast_ids=mature_ids
-    )
+    groups = _records_from_frozen_outcomes(db, min_price=min_price, forecast_ids=mature_ids)
     results = _score_groups(groups, today)
 
     if results:
@@ -1445,10 +1430,10 @@ def backtest_forecasts(db, today=None, min_price=0, reresolve=False, rescore=Fal
     return results
 
 
-
 # ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
+
 
 def run_backtest(types=None, min_price=0, update_bias=False, reresolve=False, rescore=False):
     db = SessionLocal()
@@ -1475,6 +1460,7 @@ def run_backtest(types=None, min_price=0, update_bias=False, reresolve=False, re
             logger.info("=" * 60)
             try:
                 from models.forecaster import ItemForecaster
+
                 forecaster = ItemForecaster(db_session=db)
                 forecaster.load_models()
                 forecaster.update_bias_corrections_from_outcomes()
@@ -1518,8 +1504,11 @@ def main():
     if update_bias:
         logger.info("Bias correction update enabled")
     result = run_backtest(
-        types, min_price=min_price, update_bias=update_bias,
-        reresolve=reresolve, rescore=rescore,
+        types,
+        min_price=min_price,
+        update_bias=update_bias,
+        reresolve=reresolve,
+        rescore=rescore,
     )
     print(f"RESULT: {json.dumps(result, default=str)}")
     return 0 if result.get("status") == "success" else 1

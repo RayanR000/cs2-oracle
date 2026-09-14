@@ -56,7 +56,9 @@ def upgrade() -> None:
             sa.Column("model_version", sa.String(length=50), nullable=True),
             sa.Column("created_at", sa.DateTime(), nullable=True),
             sa.UniqueConstraint(
-                "item_id", "forecast_date", "horizon_days",
+                "item_id",
+                "forecast_date",
+                "horizon_days",
                 name="uq_item_forecast_date_horizon",
             ),
         )

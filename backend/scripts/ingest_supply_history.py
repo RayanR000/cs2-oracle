@@ -6,12 +6,15 @@ Format: {name: [[unix_s...],[cny*100...],[listing_count...]]}. Third array is
 listing count, populated only after 2023-01-25; coverage ends 2024-01-19.
 TRAINING-ONLY (no 2026 coverage). Private/local; do not redistribute rows.
 """
+
 from __future__ import annotations
+
 import json
 import lzma
 import sys
-from datetime import date, timezone, datetime
+from datetime import UTC, datetime
 from pathlib import Path
+
 import pandas as pd
 
 SIDECAR_NAME = "supply-history.parquet"
@@ -28,7 +31,7 @@ def parse_supply_history(raw: dict) -> pd.DataFrame:
         for ts, cnt in zip(stamps, counts):
             if cnt is None:
                 continue
-            d = datetime.fromtimestamp(ts, tz=timezone.utc).date()
+            d = datetime.fromtimestamp(ts, tz=UTC).date()
             records.append((name, d, int(cnt)))
     out = pd.DataFrame(records, columns=["item_id", "date", "buff_listing_count"])
     if not out.empty:

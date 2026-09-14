@@ -35,14 +35,14 @@ import argparse
 import logging
 import os
 import sys
+from collections.abc import Sequence
 from pathlib import Path
-from typing import Optional, Sequence
 
 import duckdb
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from db.archive import COLUMN_TYPES  # noqa: E402
+from db.archive import COLUMN_TYPES
 
 logger = logging.getLogger("compact_price_archive")
 
@@ -109,7 +109,9 @@ def compact_columns(archive_dir: Path, apply: bool) -> int:
 
             logger.info(
                 "%-24s drop %-34s %.1f MB",
-                path.name, ",".join(drop), before_bytes / 1e6,
+                path.name,
+                ",".join(drop),
+                before_bytes / 1e6,
             )
             if not apply:
                 continue
@@ -119,23 +121,23 @@ def compact_columns(archive_dir: Path, apply: bool) -> int:
             # DuckDB preserves insertion order, so the existing physical row
             # order (and the item clustering it gives some files) survives.
             con.sql(
-                f"COPY (SELECT {col_list} FROM read_parquet('{path}')) "
-                f"TO '{tmp}' (FORMAT PARQUET, COMPRESSION SNAPPY)"
+                f"COPY (SELECT {col_list} FROM read_parquet('{path}')) TO '{tmp}' (FORMAT PARQUET, COMPRESSION SNAPPY)"
             )
             after = _fingerprint(con, tmp, keep)
             if after != before:
                 tmp.unlink(missing_ok=True)
                 raise RuntimeError(
-                    f"{path.name}: fingerprint changed, refusing to replace "
-                    f"(before={before} after={after})"
+                    f"{path.name}: fingerprint changed, refusing to replace (before={before} after={after})"
                 )
             os.replace(tmp, path)
             after_bytes = path.stat().st_size
             saved += before_bytes - after_bytes
             logger.info(
                 "%-24s -> %.1f MB (saved %.1f MB), %s rows verified",
-                path.name, after_bytes / 1e6,
-                (before_bytes - after_bytes) / 1e6, f"{before[0]:,}",
+                path.name,
+                after_bytes / 1e6,
+                (before_bytes - after_bytes) / 1e6,
+                f"{before[0]:,}",
             )
     finally:
         con.close()
@@ -171,11 +173,13 @@ def absorb_orphan_snapshot_rows(archive_dir: Path, apply: bool) -> int:
             n = con.sql(f"SELECT count(*) FROM ({orphan_sql})").fetchone()[0]
             if not n:
                 continue
-            days = con.sql(
-                f"SELECT min(day), max(day) FROM ({orphan_sql})").fetchone()
+            days = con.sql(f"SELECT min(day), max(day) FROM ({orphan_sql})").fetchone()
             logger.info(
                 "%-28s %s orphan rows (%s..%s) %s",
-                snap.name, f"{n:,}", days[0], days[1],
+                snap.name,
+                f"{n:,}",
+                days[0],
+                days[1],
                 "ABSORBED" if apply else "WOULD ABSORB",
             )
             absorbed += n
@@ -204,14 +208,11 @@ def absorb_orphan_snapshot_rows(archive_dir: Path, apply: bool) -> int:
                 f"SELECT {', '.join(proj)} FROM ({orphan_sql}) o) "
                 f"TO '{tmp}' (FORMAT PARQUET, COMPRESSION SNAPPY)"
             )
-            before = con.sql(
-                f"SELECT count(*) FROM read_parquet('{prices}')").fetchone()[0]
-            after = con.sql(
-                f"SELECT count(*) FROM read_parquet('{tmp}')").fetchone()[0]
+            before = con.sql(f"SELECT count(*) FROM read_parquet('{prices}')").fetchone()[0]
+            after = con.sql(f"SELECT count(*) FROM read_parquet('{tmp}')").fetchone()[0]
             if after != before + n:
                 tmp.unlink(missing_ok=True)
-                raise RuntimeError(
-                    f"{prices.name}: expected {before + n} rows, got {after}")
+                raise RuntimeError(f"{prices.name}: expected {before + n} rows, got {after}")
             os.replace(tmp, prices)
             logger.info("%-28s -> %s now %s rows", "", prices.name, f"{after:,}")
     finally:
@@ -222,7 +223,7 @@ def absorb_orphan_snapshot_rows(archive_dir: Path, apply: bool) -> int:
     return absorbed
 
 
-def _verify_snapshot_is_derivable(con, archive_dir: Path, snap: Path) -> Optional[str]:
+def _verify_snapshot_is_derivable(con, archive_dir: Path, snap: Path) -> str | None:
     """Return None if `snap` is fully reproducible from the matching prices file."""
     prices = archive_dir / snap.name.replace("snapshots-", "prices-")
     if not prices.exists():
@@ -261,7 +262,9 @@ def drop_snapshots(archive_dir: Path, apply: bool) -> int:
                 continue
             logger.info(
                 "%-28s %.1f MB %s",
-                path.name, size / 1e6, "DELETED" if apply else "WOULD DELETE",
+                path.name,
+                size / 1e6,
+                "DELETED" if apply else "WOULD DELETE",
             )
             if apply:
                 path.unlink()
@@ -273,18 +276,19 @@ def drop_snapshots(archive_dir: Path, apply: bool) -> int:
     return freed
 
 
-def main(argv: Optional[Sequence[str]] = None) -> int:
+def main(argv: Sequence[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[1])
     ap.add_argument(
-        "--archive-dir", type=Path, default=Path("../price-archive"),
-        help="Directory holding prices-*.parquet / snapshots-*.parquet.")
+        "--archive-dir",
+        type=Path,
+        default=Path("../price-archive"),
+        help="Directory holding prices-*.parquet / snapshots-*.parquet.",
+    )
     ap.add_argument(
-        "--apply", action="store_true",
-        help="Actually write. Omitted, the script only reports (the default).")
-    ap.add_argument(
-        "--skip-columns", action="store_true", help="Leave prices-* columns alone.")
-    ap.add_argument(
-        "--skip-snapshots", action="store_true", help="Leave snapshots-* in place.")
+        "--apply", action="store_true", help="Actually write. Omitted, the script only reports (the default)."
+    )
+    ap.add_argument("--skip-columns", action="store_true", help="Leave prices-* columns alone.")
+    ap.add_argument("--skip-snapshots", action="store_true", help="Leave snapshots-* in place.")
     args = ap.parse_args(argv)
 
     logging.basicConfig(level=logging.INFO, format="%(message)s")
@@ -297,8 +301,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     # below treats "no files" as nothing to do. Without this, a typo'd path
     # exits 0 having silently compacted nothing.
     if not any(args.archive_dir.glob("prices-*.parquet")):
-        logger.error(
-            "No prices-*.parquet under %s — wrong --archive-dir?", args.archive_dir)
+        logger.error("No prices-*.parquet under %s — wrong --archive-dir?", args.archive_dir)
         return 1
 
     if not args.skip_columns:

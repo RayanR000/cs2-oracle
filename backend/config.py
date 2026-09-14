@@ -2,52 +2,52 @@
 Configuration management for the backend
 """
 
-from pydantic_settings import BaseSettings
 from pydantic import ConfigDict
-from typing import Optional
+from pydantic_settings import BaseSettings
+
 
 class Settings(BaseSettings):
     # Database
     database_url: str = "sqlite:///backend/cs2_market.db"
-    
+
     # Application
     app_name: str = "CS2 Market Intelligence API"
     environment: str = "development"
     debug: bool = True
-    
+
     # API
     api_title: str = "CS2 Market Intelligence"
     api_version: str = "0.1.0"
-    
+
     # Steam Integration
     # Steam Web API key from https://steamcommunity.com/dev/apikey
     # Daily limit: 100,000 calls per day (https://steamcommunity.com/dev/apiterms)
     # Used for: GetAssetClassInfo, GetSchemaItems, inventory lookups
-    steam_api_key: Optional[str] = None
-    cs2sh_api_key: Optional[str] = None
+    steam_api_key: str | None = None
+    cs2sh_api_key: str | None = None
 
     # Steam Community login cookies (for the authenticated /market/pricehistory/ endpoint).
     # Grab from a logged-in browser: DevTools > Application > Cookies > steamcommunity.com.
     #   STEAM_SESSION_ID   = cookie "sessionid"
     #   STEAM_LOGIN_SECURE = cookie "steamLoginSecure"
     # These expire (esp. steamLoginSecure) — refresh when the backfill reports session invalid.
-    steam_session_id: Optional[str] = None
-    steam_login_secure: Optional[str] = None
+    steam_session_id: str | None = None
+    steam_login_secure: str | None = None
 
     # CSMarketAPI keys (https://csmarketapi.com)
     # Each key gets 1,000 free requests/month. Add account name for tracking.
-    csmarketapi_key_1: Optional[str] = None
-    csmarketapi_account_1: Optional[str] = None
-    csmarketapi_key_2: Optional[str] = None
-    csmarketapi_account_2: Optional[str] = None
-    csmarketapi_key_3: Optional[str] = None
-    csmarketapi_account_3: Optional[str] = None
-    csmarketapi_key_4: Optional[str] = None
-    csmarketapi_account_4: Optional[str] = None
-    csmarketapi_key_5: Optional[str] = None
-    csmarketapi_account_5: Optional[str] = None
-    csmarketapi_key_6: Optional[str] = None
-    csmarketapi_account_6: Optional[str] = None
+    csmarketapi_key_1: str | None = None
+    csmarketapi_account_1: str | None = None
+    csmarketapi_key_2: str | None = None
+    csmarketapi_account_2: str | None = None
+    csmarketapi_key_3: str | None = None
+    csmarketapi_account_3: str | None = None
+    csmarketapi_key_4: str | None = None
+    csmarketapi_account_4: str | None = None
+    csmarketapi_key_5: str | None = None
+    csmarketapi_account_5: str | None = None
+    csmarketapi_key_6: str | None = None
+    csmarketapi_account_6: str | None = None
 
     @property
     def csmarketapi_keys(self) -> list[dict[str, str]]:
@@ -62,7 +62,7 @@ class Settings(BaseSettings):
 
     frontend_url: str = "http://localhost:3000"
     api_url: str = "http://localhost:8000"
-    
+
     # Security
     secret_key: str = "your-secret-key-for-sessions"  # Should be changed in production
     model_config = ConfigDict(
@@ -84,5 +84,6 @@ class Settings(BaseSettings):
         for local iteration, while production stays on the live collection path.
         """
         return not self.is_production()
+
 
 settings = Settings()

@@ -56,6 +56,7 @@ Exit status is 1 when any date is flagged, so this can gate a retrain.
     venv/bin/python scripts/check_label_seams.py --from 2026-06-01 \
         --archive-dir ../../cs2-oracle-data/price-archive
 """
+
 from __future__ import annotations
 
 import argparse
@@ -68,12 +69,12 @@ import pandas as pd
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from models.item_parser import (  # noqa: E402
+from models.item_parser import (
     BID_SOURCES,
     STEAM_SPOT_SOURCES,
     TRAILING_WINDOW_SOURCES,
 )
-from scripts.measure_composition_stability import (  # noqa: E402
+from scripts.measure_composition_stability import (
     ARCHIVE_ROOT,
     NULL_SOURCE_LABEL,
     load_source_rows,
@@ -104,8 +105,10 @@ EXCLUDED_SOURCES = BID_SOURCES | TRAILING_WINDOW_SOURCES | STEAM_SPOT_SOURCES
 _MAD_TO_SD = 1.4826
 
 
-def daily_median_returns(prices: pd.DataFrame, min_price: float,
-                         ) -> pd.DataFrame:
+def daily_median_returns(
+    prices: pd.DataFrame,
+    min_price: float,
+) -> pd.DataFrame:
     """Cross-sectional median one-day return per date.
 
     *prices* is `item_id, date, price` -- one price per item-day, whatever
@@ -131,11 +134,13 @@ def daily_median_returns(prices: pd.DataFrame, min_price: float,
 
     out = pd.DataFrame({"date": frame["date"], "return": returns})
     grouped = out.groupby("date")["return"]
-    return pd.DataFrame({
-        "date": grouped.median().index,
-        "n_items": grouped.size().to_numpy(),
-        "median_return": grouped.median().to_numpy(),
-    }).reset_index(drop=True)
+    return pd.DataFrame(
+        {
+            "date": grouped.median().index,
+            "n_items": grouped.size().to_numpy(),
+            "median_return": grouped.median().to_numpy(),
+        }
+    ).reset_index(drop=True)
 
 
 def within_source_returns(rows: pd.DataFrame) -> pd.DataFrame:
@@ -157,13 +162,11 @@ def within_source_returns(rows: pd.DataFrame) -> pd.DataFrame:
     frame["price"] = pd.to_numeric(frame["price"], errors="coerce")
     frame = frame.dropna(subset=["price"])
     if frame.empty:
-        return pd.DataFrame(
-            columns=["item_id", "date", "return", "sources"])
+        return pd.DataFrame(columns=["item_id", "date", "return", "sources"])
 
     # One price per (item, date, source): a source can print an item twice in a
     # day, and the median over its own prints is the same rule the vote uses.
-    frame = frame.groupby(["item_id", "date", "source"], as_index=False)[
-        "price"].median()
+    frame = frame.groupby(["item_id", "date", "source"], as_index=False)["price"].median()
 
     frame = frame.sort_values(["item_id", "source", "date"])
     key = ["item_id", "source"]
@@ -172,14 +175,14 @@ def within_source_returns(rows: pd.DataFrame) -> pd.DataFrame:
     paired = ((frame["date"] - prev_date).dt.days == 1) & (prev_price > 0)
     frame = frame[paired]
     if frame.empty:
-        return pd.DataFrame(
-            columns=["item_id", "date", "return", "sources"])
+        return pd.DataFrame(columns=["item_id", "date", "return", "sources"])
     frame["return"] = frame["price"] / prev_price[frame.index] - 1.0
 
-    out = frame.groupby(["item_id", "date"]).agg(
-        **{"return": ("return", "median"),
-           "sources": ("source", lambda s: "+".join(sorted(s)))}
-    ).reset_index()
+    out = (
+        frame.groupby(["item_id", "date"])
+        .agg(**{"return": ("return", "median"), "sources": ("source", lambda s: "+".join(sorted(s)))})
+        .reset_index()
+    )
     return out
 
 
@@ -222,10 +225,8 @@ def within_source_index(rows: pd.DataFrame, voted: pd.DataFrame) -> pd.DataFrame
     prev_price = merged.groupby("item_id")["price"].shift(1)
     voted_ret = merged["price"] / prev_price - 1.0
     # First day of each item (prev_price is NaN) anchors: factor 1.0.
-    factor = np.where(merged["has_within"].to_numpy() & prev_price.notna().to_numpy(),
-                      1.0 + voted_ret.to_numpy(), 1.0)
-    merged["cum"] = pd.Series(factor, index=merged.index).groupby(
-        merged["item_id"]).cumprod()
+    factor = np.where(merged["has_within"].to_numpy() & prev_price.notna().to_numpy(), 1.0 + voted_ret.to_numpy(), 1.0)
+    merged["cum"] = pd.Series(factor, index=merged.index).groupby(merged["item_id"]).cumprod()
     anchor = merged.groupby("item_id")["price"].transform("first")
     merged["price"] = anchor * merged["cum"]
     return merged[["item_id", "date", "price"]]
@@ -245,12 +246,14 @@ def within_source_prices(rows: pd.DataFrame) -> pd.DataFrame:
     frame["source"] = frame["source"].fillna(NULL_SOURCE_LABEL)
     frame = frame[~frame["source"].isin(EXCLUDED_SOURCES)]
     frame["price"] = pd.to_numeric(frame["price"], errors="coerce")
-    return frame.dropna(subset=["price"]).groupby(
-        ["item_id", "date"], as_index=False)["price"].median()
+    return frame.dropna(subset=["price"]).groupby(["item_id", "date"], as_index=False)["price"].median()
 
 
-def flag_seams(daily: pd.DataFrame, threshold: float, min_items: int,
-               ) -> pd.DataFrame:
+def flag_seams(
+    daily: pd.DataFrame,
+    threshold: float,
+    min_items: int,
+) -> pd.DataFrame:
     """Mark the dates whose median move is too large to be a market.
 
     Adds `flagged` and `robust_z`. The robust scale is a MAD over the
@@ -259,15 +262,11 @@ def flag_seams(daily: pd.DataFrame, threshold: float, min_items: int,
     report understate how anomalous they are.
     """
     out = daily.copy()
-    out["flagged"] = (out["median_return"].abs() >= threshold) & (
-        out["n_items"] >= min_items)
+    out["flagged"] = (out["median_return"].abs() >= threshold) & (out["n_items"] >= min_items)
 
     bulk = out.loc[~out["flagged"], "median_return"]
-    scale = float(_MAD_TO_SD * (bulk - bulk.median()).abs().median()) if len(
-        bulk) else 0.0
-    out["robust_z"] = (
-        (out["median_return"] - (bulk.median() if len(bulk) else 0.0)) / scale
-        if scale > 0 else np.nan)
+    scale = float(_MAD_TO_SD * (bulk - bulk.median()).abs().median()) if len(bulk) else 0.0
+    out["robust_z"] = (out["median_return"] - (bulk.median() if len(bulk) else 0.0)) / scale if scale > 0 else np.nan
     return out
 
 
@@ -281,8 +280,7 @@ def attribute(daily: pd.DataFrame, rows: pd.DataFrame) -> pd.DataFrame:
     frame["date"] = pd.to_datetime(frame["date"])
     frame["source"] = frame["source"].fillna(NULL_SOURCE_LABEL)
     frame = frame[~frame["source"].isin(EXCLUDED_SOURCES)]
-    sets = frame.groupby(["item_id", "date"])["source"].agg(
-        lambda s: "+".join(sorted(set(s)))).reset_index()
+    sets = frame.groupby(["item_id", "date"])["source"].agg(lambda s: "+".join(sorted(set(s)))).reset_index()
 
     sets = sets.sort_values(["item_id", "date"])
     prev_date = sets.groupby("item_id")["date"].shift(1)
@@ -294,39 +292,44 @@ def attribute(daily: pd.DataFrame, rows: pd.DataFrame) -> pd.DataFrame:
     return daily.merge(share, on="date", how="left")
 
 
-def report(flagged: pd.DataFrame, basis: str, min_price: float,
-           threshold: float) -> None:
-    print(f"\nLabel seam check - basis={basis}, >=${min_price:.2f} cohort, "
-          f"threshold={threshold:.1%}")
-    print(f"{'date':12s} {'items':>8s} {'median ret':>11s} {'robust z':>9s} "
-          f"{'src changed':>12s}  flag")
+def report(flagged: pd.DataFrame, basis: str, min_price: float, threshold: float) -> None:
+    print(f"\nLabel seam check - basis={basis}, >=${min_price:.2f} cohort, threshold={threshold:.1%}")
+    print(f"{'date':12s} {'items':>8s} {'median ret':>11s} {'robust z':>9s} {'src changed':>12s}  flag")
     for _, row in flagged.iterrows():
         changed = row.get("source_set_changed")
         changed = "-" if pd.isna(changed) else f"{changed:11.1%}"
         z = "-" if pd.isna(row["robust_z"]) else f"{row['robust_z']:9.1f}"
-        print(f"{row['date'].date()!s:12s} {int(row['n_items']):8,d} "
-              f"{row['median_return']:10.2%} {z} {changed}  "
-              f"{'FLAG' if row['flagged'] else ''}")
+        print(
+            f"{row['date'].date()!s:12s} {int(row['n_items']):8,d} "
+            f"{row['median_return']:10.2%} {z} {changed}  "
+            f"{'FLAG' if row['flagged'] else ''}"
+        )
 
     n = int(flagged["flagged"].sum())
     if n:
         worst = flagged.loc[flagged["flagged"], "median_return"].abs().max()
-        print(f"\nFAIL: {n} date(s) move the cross-sectional median by more "
-              f"than {threshold:.0%} (worst {worst:.1%}). On the `voted` basis "
-              f"this is the label, and every feature and label computed across "
-              f"such a date is fabricated.")
+        print(
+            f"\nFAIL: {n} date(s) move the cross-sectional median by more "
+            f"than {threshold:.0%} (worst {worst:.1%}). On the `voted` basis "
+            f"this is the label, and every feature and label computed across "
+            f"such a date is fabricated."
+        )
     else:
-        print(f"\nPASS: no date moves the cross-sectional median by more than "
-              f"{threshold:.0%}.")
+        print(f"\nPASS: no date moves the cross-sectional median by more than {threshold:.0%}.")
 
 
-def measure(archive_dir: Path, start: date, end: date | None, basis: str,
-            min_price: float, threshold: float, min_items: int,
-            ) -> pd.DataFrame:
+def measure(
+    archive_dir: Path,
+    start: date,
+    end: date | None,
+    basis: str,
+    min_price: float,
+    threshold: float,
+    min_items: int,
+) -> pd.DataFrame:
     rows = load_source_rows(archive_dir, start, end)
     if basis == "voted":
-        prices = load_voted_series(archive_dir, start, end)[
-            ["item_id", "date", "price"]]
+        prices = load_voted_series(archive_dir, start, end)[["item_id", "date", "price"]]
         daily = daily_median_returns(prices, min_price)
     else:
         returns = within_source_returns(rows)
@@ -337,11 +340,13 @@ def measure(archive_dir: Path, start: date, end: date | None, basis: str,
         eligible = _eligible_pairs(prices, min_price)
         returns = returns.merge(eligible, on=["item_id", "date"], how="inner")
         grouped = returns.groupby("date")["return"]
-        daily = pd.DataFrame({
-            "date": grouped.median().index,
-            "n_items": grouped.size().to_numpy(),
-            "median_return": grouped.median().to_numpy(),
-        }).reset_index(drop=True)
+        daily = pd.DataFrame(
+            {
+                "date": grouped.median().index,
+                "n_items": grouped.size().to_numpy(),
+                "median_return": grouped.median().to_numpy(),
+            }
+        ).reset_index(drop=True)
 
     daily = flag_seams(daily, threshold, min_items)
     return attribute(daily, rows)
@@ -360,29 +365,41 @@ def _eligible_pairs(prices: pd.DataFrame, min_price: float) -> pd.DataFrame:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__.split("\n")[0])
-    parser.add_argument("--from", dest="start", default="2026-01-01",
-                        help="first archive day to read (default: 2026-01-01)")
-    parser.add_argument("--to", dest="end", default=None,
-                        help="last archive day to read")
-    parser.add_argument("--basis", default="voted",
-                        choices=["voted", "within-source"],
-                        help="which label to measure (default: voted, i.e. "
-                             "production's)")
-    parser.add_argument("--min-price", type=float, default=1.0,
-                        help="anchor-price floor in USD (default: 1.0)")
-    parser.add_argument("--threshold", type=float, default=DEFAULT_THRESHOLD,
-                        help=f"median move that reads as a basis change "
-                             f"(default: {DEFAULT_THRESHOLD:.0%})")
-    parser.add_argument("--min-items", type=int, default=DEFAULT_MIN_ITEMS,
-                        help=f"items a date needs before it can flag "
-                             f"(default: {DEFAULT_MIN_ITEMS})")
+    parser.add_argument(
+        "--from", dest="start", default="2026-01-01", help="first archive day to read (default: 2026-01-01)"
+    )
+    parser.add_argument("--to", dest="end", default=None, help="last archive day to read")
+    parser.add_argument(
+        "--basis",
+        default="voted",
+        choices=["voted", "within-source"],
+        help="which label to measure (default: voted, i.e. production's)",
+    )
+    parser.add_argument("--min-price", type=float, default=1.0, help="anchor-price floor in USD (default: 1.0)")
+    parser.add_argument(
+        "--threshold",
+        type=float,
+        default=DEFAULT_THRESHOLD,
+        help=f"median move that reads as a basis change (default: {DEFAULT_THRESHOLD:.0%})",
+    )
+    parser.add_argument(
+        "--min-items",
+        type=int,
+        default=DEFAULT_MIN_ITEMS,
+        help=f"items a date needs before it can flag (default: {DEFAULT_MIN_ITEMS})",
+    )
     parser.add_argument("--archive-dir", type=Path, default=ARCHIVE_ROOT)
     args = parser.parse_args()
 
-    flagged = measure(args.archive_dir, date.fromisoformat(args.start),
-                      date.fromisoformat(args.end) if args.end else None,
-                      args.basis, args.min_price, args.threshold,
-                      args.min_items)
+    flagged = measure(
+        args.archive_dir,
+        date.fromisoformat(args.start),
+        date.fromisoformat(args.end) if args.end else None,
+        args.basis,
+        args.min_price,
+        args.threshold,
+        args.min_items,
+    )
     report(flagged, args.basis, args.min_price, args.threshold)
     sys.exit(1 if bool(flagged["flagged"].any()) else 0)
 

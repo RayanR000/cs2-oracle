@@ -1,25 +1,29 @@
 # backend/tests/test_sidecar_attach.py
 import sys
-from pathlib import Path
 from datetime import date
+from pathlib import Path
+
 import pandas as pd
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
-from models.forecaster import ItemForecaster  # noqa: E402
+from models.forecaster import ItemForecaster
 
 
 def _daily():
-    return pd.DataFrame({
-        "item_id": ["AK | X", "AK | X"],
-        "date": [date(2026, 5, 1), date(2026, 5, 2)],
-        "price": [10.0, 11.0],
-        "volume": [0, 0],  # archive volume is dead
-    })
+    return pd.DataFrame(
+        {
+            "item_id": ["AK | X", "AK | X"],
+            "date": [date(2026, 5, 1), date(2026, 5, 2)],
+            "price": [10.0, 11.0],
+            "volume": [0, 0],  # archive volume is dead
+        }
+    )
 
 
 def test_volume_overwritten_from_sidecar(tmp_path, monkeypatch):
-    vp = pd.DataFrame({"item_id": ["AK | X"], "date": [date(2026, 5, 1)],
-                       "steam_volume": [55], "steam_sale_median": [10.0]})
+    vp = pd.DataFrame(
+        {"item_id": ["AK | X"], "date": [date(2026, 5, 1)], "steam_volume": [55], "steam_sale_median": [10.0]}
+    )
     vp.to_parquet(tmp_path / "volume-panel.parquet", index=False)
     f = ItemForecaster.__new__(ItemForecaster)
     f.archive_dir = tmp_path
@@ -56,16 +60,18 @@ def test_raw_sidecar_columns_excluded_from_feature_cols():
     would leak training-only availability into the model. Exclusion must be
     structural (named in _select_feature_cols), not incidental to the shelf.
     """
-    df = pd.DataFrame({
-        "item_id": ["AK | X"],
-        "date": [date(2026, 5, 1)],
-        "price": [10.0],
-        "volume": [55.0],
-        "buff_bid": [8.5],
-        "st_premium": [1.2],
-        "buff_listing_count": [40.0],
-        "steam_sale_median": [9.9],
-    })
+    df = pd.DataFrame(
+        {
+            "item_id": ["AK | X"],
+            "date": [date(2026, 5, 1)],
+            "price": [10.0],
+            "volume": [55.0],
+            "buff_bid": [8.5],
+            "st_premium": [1.2],
+            "buff_listing_count": [40.0],
+            "steam_sale_median": [9.9],
+        }
+    )
     selected = ItemForecaster._select_feature_cols(df, horizons=[3, 7, 14, 30], shelved=set())
     for raw_col in ("buff_bid", "st_premium", "buff_listing_count", "steam_sale_median"):
         assert raw_col not in selected
@@ -83,11 +89,13 @@ def test_merge_normalizes_sidecar_date_dtype(tmp_path):
     dtype drift between a sidecar writer and `daily` can't silently zero out
     coverage via an all-NaN merge.
     """
-    bp = pd.DataFrame({
-        "item_id": ["AK | X"],
-        "date": pd.to_datetime([pd.Timestamp(2026, 5, 1)]),
-        "buff_bid": [8.5],
-    })
+    bp = pd.DataFrame(
+        {
+            "item_id": ["AK | X"],
+            "date": pd.to_datetime([pd.Timestamp(2026, 5, 1)]),
+            "buff_bid": [8.5],
+        }
+    )
     bp.to_parquet(tmp_path / "bid-panel.parquet", index=False)
     f = ItemForecaster.__new__(ItemForecaster)
     f.archive_dir = tmp_path

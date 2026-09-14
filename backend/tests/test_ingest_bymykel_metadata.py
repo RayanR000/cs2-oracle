@@ -5,42 +5,55 @@ formats in one upstream file, the forward expansion of skin base names into
 Steam market hash names, and the earliest-member pick that decides both item age
 and crate identity.
 """
-import sys
-from pathlib import Path
-from datetime import date
 
-import pytest
+import sys
+from datetime import date
+from pathlib import Path
+
 import pandas as pd
+import pytest
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from scripts.ingest_bymykel_metadata import (  # noqa: E402
+from scripts.ingest_bymykel_metadata import (
+    CodeBook,
+    _earliest,
+    build_crate_index,
+    build_date_maps,
+    build_frame,
+    build_records,
+    expand_skin_names,
     normalise_date,
     rarity_rank,
-    CodeBook,
-    expand_skin_names,
-    _earliest,
-    build_date_maps,
-    build_crate_index,
-    build_records,
-    build_frame,
 )
 
 
 class TestNormaliseDate:
-    @pytest.mark.parametrize("raw,expected", [
-        ("2024-01-16", date(2024, 1, 16)),   # ISO
-        ("2013/12/17", date(2013, 12, 17)),  # slashes, padded
-        ("2014/5/2", date(2014, 5, 2)),      # neither padded
-        ("2014/12/5", date(2014, 12, 5)),    # day unpadded
-        ("2014-2-19", date(2014, 2, 19)),    # ISO separator, unpadded month
-    ])
+    @pytest.mark.parametrize(
+        "raw,expected",
+        [
+            ("2024-01-16", date(2024, 1, 16)),  # ISO
+            ("2013/12/17", date(2013, 12, 17)),  # slashes, padded
+            ("2014/5/2", date(2014, 5, 2)),  # neither padded
+            ("2014/12/5", date(2014, 12, 5)),  # day unpadded
+            ("2014-2-19", date(2014, 2, 19)),  # ISO separator, unpadded month
+        ],
+    )
     def test_accepts_every_upstream_format(self, raw, expected):
         assert normalise_date(raw) == expected
 
-    @pytest.mark.parametrize("raw", [
-        None, "", "not a date", "2024", "2024-13-01", "2024-02-30", 20240116,
-    ])
+    @pytest.mark.parametrize(
+        "raw",
+        [
+            None,
+            "",
+            "not a date",
+            "2024",
+            "2024-13-01",
+            "2024-02-30",
+            20240116,
+        ],
+    )
     def test_rejects_rather_than_guesses(self, raw):
         assert normalise_date(raw) is None
 
@@ -109,7 +122,8 @@ class TestExpandSkinNames:
     def test_plain_skin_across_wears(self):
         entry = {
             "name": "AK-47 | Redline",
-            "stattrak": False, "souvenir": False,
+            "stattrak": False,
+            "souvenir": False,
             "wears": [{"name": "Factory New"}, {"name": "Field-Tested"}],
         }
         assert expand_skin_names(entry) == [
@@ -120,7 +134,8 @@ class TestExpandSkinNames:
     def test_stattrak_prefix_goes_after_the_star(self):
         entry = {
             "name": "★ Karambit | Fade",
-            "stattrak": True, "souvenir": False,
+            "stattrak": True,
+            "souvenir": False,
             "wears": [{"name": "Factory New"}],
         }
         names = [n for n, _, _ in expand_skin_names(entry)]
@@ -132,15 +147,17 @@ class TestExpandSkinNames:
     def test_souvenir_variant(self):
         entry = {
             "name": "AWP | Safari Mesh",
-            "stattrak": False, "souvenir": True,
+            "stattrak": False,
+            "souvenir": True,
             "wears": [{"name": "Battle-Scarred"}],
         }
-        assert ("Souvenir AWP | Safari Mesh (Battle-Scarred)", False, True) \
-            in expand_skin_names(entry)
+        assert ("Souvenir AWP | Safari Mesh (Battle-Scarred)", False, True) in expand_skin_names(entry)
 
     def test_flags_track_the_emitted_variant_not_the_capability(self):
         entry = {
-            "name": "AK-47 | Redline", "stattrak": True, "souvenir": False,
+            "name": "AK-47 | Redline",
+            "stattrak": True,
+            "souvenir": False,
             "wears": [{"name": "Factory New"}],
         }
         by_name = {n: (st, sv) for n, st, sv in expand_skin_names(entry)}
@@ -187,54 +204,83 @@ def codebook(tmp_path):
 @pytest.fixture
 def dumps():
     """A miniature twelve-dump set exercising every join path."""
-    empty = {name: [] for name in (
-        "sticker_slabs", "graffiti", "collectibles", "highlights",
-        "music_kits", "patches", "keychains", "agents")}
+    empty = {
+        name: []
+        for name in (
+            "sticker_slabs",
+            "graffiti",
+            "collectibles",
+            "highlights",
+            "music_kits",
+            "patches",
+            "keychains",
+            "agents",
+        )
+    }
     return {
         "skins": [
-            {   # single crate, StatTrak-capable, float caps
+            {  # single crate, StatTrak-capable, float caps
                 "name": "AK-47 | Redline",
                 "rarity": {"name": "Classified"},
-                "min_float": 0.1, "max_float": 0.7,
-                "stattrak": True, "souvenir": False,
+                "min_float": 0.1,
+                "max_float": 0.7,
+                "stattrak": True,
+                "souvenir": False,
                 "wears": [{"name": "Field-Tested"}],
                 "crates": [{"id": "crate-A"}],
                 "collections": [{"id": "coll-A"}],
             },
-            {   # knife in two crates with different dates -> ambiguous
+            {  # knife in two crates with different dates -> ambiguous
                 "name": "★ Karambit | Fade",
                 "rarity": {"name": "Covert"},
-                "min_float": 0.0, "max_float": 0.08,
-                "stattrak": False, "souvenir": False,
+                "min_float": 0.0,
+                "max_float": 0.08,
+                "stattrak": False,
+                "souvenir": False,
                 "wears": [{"name": "Factory New"}],
                 "crates": [{"id": "crate-A"}, {"id": "crate-B"}],
                 "collections": [],
             },
-            {   # no crate at all -> falls back to the collection release date
+            {  # no crate at all -> falls back to the collection release date
                 "name": "P250 | Sand Dune",
                 "rarity": {"name": "Consumer Grade"},
-                "min_float": 0.0, "max_float": 1.0,
-                "stattrak": False, "souvenir": False,
+                "min_float": 0.0,
+                "max_float": 1.0,
+                "stattrak": False,
+                "souvenir": False,
                 "wears": [{"name": "Factory New"}],
                 "crates": [],
                 "collections": [{"id": "coll-A"}],
             },
         ],
         "crates": [
-            {"id": "crate-A", "market_hash_name": "Crate A",
-             "first_sale_date": "2013/9/20", "rarity": {"name": "Base Grade"},
-             "crates": [], "collections": []},
-            {"id": "crate-B", "market_hash_name": "Crate B",
-             "first_sale_date": "2017-05-01", "rarity": {"name": "Base Grade"},
-             "crates": [], "collections": []},
+            {
+                "id": "crate-A",
+                "market_hash_name": "Crate A",
+                "first_sale_date": "2013/9/20",
+                "rarity": {"name": "Base Grade"},
+                "crates": [],
+                "collections": [],
+            },
+            {
+                "id": "crate-B",
+                "market_hash_name": "Crate B",
+                "first_sale_date": "2017-05-01",
+                "rarity": {"name": "Base Grade"},
+                "crates": [],
+                "collections": [],
+            },
         ],
         "collections": [
             {"id": "coll-A", "release_date": "2014-2-19"},
         ],
         "stickers": [
-            {"market_hash_name": "Sticker | Titan (Holo) | Katowice 2014",
-             "rarity": {"name": "Exotic"}, "crates": [{"id": "crate-B"}],
-             "collections": []},
+            {
+                "market_hash_name": "Sticker | Titan (Holo) | Katowice 2014",
+                "rarity": {"name": "Exotic"},
+                "crates": [{"id": "crate-B"}],
+                "collections": [],
+            },
         ],
         **empty,
     }
@@ -248,9 +294,15 @@ class TestBuildDateMaps:
 
     def test_undated_crate_inherits_its_collection_release_date(self, dumps, codebook):
         dumps["crates"].append(
-            {"id": "crate-C", "market_hash_name": "Crate C",
-             "first_sale_date": None, "rarity": {"name": "Base Grade"},
-             "crates": [], "collections": []})
+            {
+                "id": "crate-C",
+                "market_hash_name": "Crate C",
+                "first_sale_date": None,
+                "rarity": {"name": "Base Grade"},
+                "crates": [],
+                "collections": [],
+            }
+        )
         dumps["collections"][0]["crates"] = [{"id": "crate-C"}]
         crate_dates, _ = build_date_maps(dumps)
         assert crate_dates["crate-C"] == date(2014, 2, 19)
@@ -293,7 +345,7 @@ class TestBuildRecords:
         assert "AK-47 | Redline (Field-Tested)" in recs
         assert "StatTrak™ AK-47 | Redline (Field-Tested)" in recs
         assert "★ Karambit | Fade (Factory New)" in recs
-        assert "Crate A" in recs                                   # name-keyed dump
+        assert "Crate A" in recs  # name-keyed dump
         assert "Sticker | Titan (Holo) | Katowice 2014" in recs
 
     def test_item_age_comes_from_the_earliest_crate(self, dumps, codebook):
@@ -308,13 +360,11 @@ class TestBuildRecords:
     def test_a_crate_gets_its_own_first_sale_date_as_its_age(self, dumps, codebook):
         # A crate is itself a tradable item; its age is its own sale date, not
         # anything inferred from what it contains.
-        assert build_records(dumps, codebook)["Crate A"]["item_age_first_sale_date"] \
-            == date(2013, 9, 20)
+        assert build_records(dumps, codebook)["Crate A"]["item_age_first_sale_date"] == date(2013, 9, 20)
 
     def test_own_date_beats_a_date_inferred_from_contents(self, dumps, codebook):
         dumps["crates"][1]["crates"] = [{"id": "crate-A"}]  # older than its own
-        assert build_records(dumps, codebook)["Crate B"]["item_age_first_sale_date"] \
-            == date(2017, 5, 1)
+        assert build_records(dumps, codebook)["Crate B"]["item_age_first_sale_date"] == date(2017, 5, 1)
 
     def test_collection_release_date_is_the_fallback(self, dumps, codebook):
         rec = build_records(dumps, codebook)["P250 | Sand Dune (Factory New)"]
@@ -340,10 +390,17 @@ class TestBuildFrame:
     def test_schema_and_key(self, dumps, codebook):
         df = build_frame(dumps, codebook)
         assert list(df.columns) == [
-            "item_slug", "item_age_first_sale_date", "item_age_ambiguous",
-            "rarity_meta_rank", "rarity_meta", "is_meta_stattrak",
-            "is_meta_souvenir", "float_meta_min", "float_meta_max",
-            "type_meta_crate_id", "type_meta_collection_id",
+            "item_slug",
+            "item_age_first_sale_date",
+            "item_age_ambiguous",
+            "rarity_meta_rank",
+            "rarity_meta",
+            "is_meta_stattrak",
+            "is_meta_souvenir",
+            "float_meta_min",
+            "float_meta_max",
+            "type_meta_crate_id",
+            "type_meta_collection_id",
         ]
         assert df["item_slug"].is_unique
 

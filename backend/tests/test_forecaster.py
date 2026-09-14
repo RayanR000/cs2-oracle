@@ -7,21 +7,20 @@ and injecting them directly into the methods under test.
 """
 
 import logging
-
-import pytest
-import numpy as np
-import pandas as pd
-import lightgbm as lgb
-from datetime import date, datetime, timedelta, timezone
+from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
-from models.forecaster import ItemForecaster, SAMPLE_WEIGHT_HALFLIFE_DAYS
-
+import lightgbm as lgb
+import numpy as np
+import pandas as pd
+import pytest
+from models.forecaster import SAMPLE_WEIGHT_HALFLIFE_DAYS, ItemForecaster
 
 # ---------------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------
+
 
 @pytest.fixture
 def forecaster(tmp_path_factory):
@@ -31,8 +30,7 @@ def forecaster(tmp_path_factory):
     anything that persists — train(), save_models() — would otherwise clobber
     production artifacts, which are gitignored and so unrecoverable.
     """
-    f = ItemForecaster(db_session=MagicMock(),
-                       model_dir=str(tmp_path_factory.mktemp("saved_models")))
+    f = ItemForecaster(db_session=MagicMock(), model_dir=str(tmp_path_factory.mktemp("saved_models")))
     return f
 
 
@@ -47,12 +45,14 @@ def basic_price_df():
             d = date(2026, 1, 1) + timedelta(days=day_offset)
             trend = price * (1 + 0.001 * day_offset)  # upward drift
             noise = np.random.normal(0, trend * 0.01)
-            rows.append({
-                "item_id": f"item_{item_id}",
-                "date": d,
-                "price": round(trend + noise, 2),
-                "volume": int(np.random.poisson(100 + day_offset * 2)),
-            })
+            rows.append(
+                {
+                    "item_id": f"item_{item_id}",
+                    "date": d,
+                    "price": round(trend + noise, 2),
+                    "volume": int(np.random.poisson(100 + day_offset * 2)),
+                }
+            )
     return pd.DataFrame(rows)
 
 
@@ -64,17 +64,27 @@ def empty_events_df():
 @pytest.fixture
 def events_df():
     dates = [date(2026, 2, 1), date(2026, 3, 15), date(2026, 4, 1)]
-    return pd.DataFrame([
-        {"id": 1, "type": "major", "timestamp": pd.Timestamp(d), "description": "Test Major", "date": d}
-        for d in dates
-    ] + [
-        {"id": 2, "type": "update", "timestamp": pd.Timestamp(date(2026, 3, 1)), "description": "Test Update", "date": date(2026, 3, 1)}
-    ])
+    return pd.DataFrame(
+        [
+            {"id": 1, "type": "major", "timestamp": pd.Timestamp(d), "description": "Test Major", "date": d}
+            for d in dates
+        ]
+        + [
+            {
+                "id": 2,
+                "type": "update",
+                "timestamp": pd.Timestamp(date(2026, 3, 1)),
+                "description": "Test Update",
+                "date": date(2026, 3, 1),
+            }
+        ]
+    )
 
 
 # ---------------------------------------------------------------------------
 # Feature Engineering
 # ---------------------------------------------------------------------------
+
 
 class TestFeatureEngineering:
     def test_compute_price_features_lags_and_returns(self, forecaster, basic_price_df):
@@ -91,16 +101,29 @@ class TestFeatureEngineering:
         """New (2026-07-24) longer-lookback trend features must be computed and
         classified into the price_technicals allowlist group."""
         from models.forecaster import _feature_group
+
         rows = []
         price = 20.0
         np.random.seed(0)
         for d in range(250):
             price *= 1 + np.random.randn() * 0.01
-            rows.append({"item_id": "a", "date": date(2025, 1, 1) + timedelta(days=d),
-                         "price": round(max(price, 0.01), 2), "volume": 100})
+            rows.append(
+                {
+                    "item_id": "a",
+                    "date": date(2025, 1, 1) + timedelta(days=d),
+                    "price": round(max(price, 0.01), 2),
+                    "volume": 100,
+                }
+            )
         df = forecaster._compute_price_features(pd.DataFrame(rows))
-        new_cols = ["return_90d", "return_120d", "return_180d",
-                    "price_dist_ma100", "price_dist_ma200", "trend_up_fraction_30d"]
+        new_cols = [
+            "return_90d",
+            "return_120d",
+            "return_180d",
+            "price_dist_ma100",
+            "price_dist_ma200",
+            "trend_up_fraction_30d",
+        ]
         for c in new_cols:
             assert c in df.columns, f"missing {c}"
             assert _feature_group(c) == "price_technicals", f"{c} not in price group"
@@ -119,8 +142,9 @@ class TestFeatureEngineering:
         rows = []
         # continuous days 0..19 at price 10, GAP days 20..39, then days 40..49 at price 20
         for d in list(range(0, 20)) + list(range(40, 50)):
-            rows.append({"item_id": "a", "date": base + timedelta(days=d),
-                         "price": 10.0 if d < 20 else 20.0, "volume": 100})
+            rows.append(
+                {"item_id": "a", "date": base + timedelta(days=d), "price": 10.0 if d < 20 else 20.0, "volume": 100}
+            )
         df = forecaster._compute_price_features(pd.DataFrame(rows))
         row = lambda d: df[df["date"] == base + timedelta(days=d)].iloc[0]
         # day 45: return_14d looks for day 31 (inside the gap) -> NaN, NOT +100%
@@ -143,8 +167,7 @@ class TestFeatureEngineering:
         base = date(2026, 1, 1)
         # days 0..20 present, 21 and 22 missing, 23 present. price = 10 + d
         present = list(range(0, 21)) + [23]
-        rows = [{"item_id": "a", "date": base + timedelta(days=d),
-                 "price": 10.0 + d, "volume": 100} for d in present]
+        rows = [{"item_id": "a", "date": base + timedelta(days=d), "price": 10.0 + d, "volume": 100} for d in present]
         df = forecaster._compute_price_features(pd.DataFrame(rows))
         anchor = df[df["date"] == base + timedelta(days=23)].iloc[0]
 
@@ -160,8 +183,7 @@ class TestFeatureEngineering:
         base = date(2026, 1, 1)
         # days 0..20 present, 21..24 missing (4 days), 25 present
         present = list(range(0, 21)) + [25]
-        rows = [{"item_id": "a", "date": base + timedelta(days=d),
-                 "price": 10.0 + d, "volume": 100} for d in present]
+        rows = [{"item_id": "a", "date": base + timedelta(days=d), "price": 10.0 + d, "volume": 100} for d in present]
         df = forecaster._compute_price_features(pd.DataFrame(rows))
         anchor = df[df["date"] == base + timedelta(days=25)].iloc[0]
 
@@ -170,12 +192,14 @@ class TestFeatureEngineering:
         assert pd.isna(anchor["return_1d"])
 
     def test_returns_winsorized(self, forecaster):
-        df = pd.DataFrame({
-            "item_id": ["a"] * 10,
-            "date": [date(2026, 1, 1) + timedelta(days=i) for i in range(10)],
-            "price": [1.0, 10.0, 50.0, 1.0, 2.0, 3.0, 1.0, 1.0, 1.0, 1.0],
-            "volume": [100] * 10,
-        })
+        df = pd.DataFrame(
+            {
+                "item_id": ["a"] * 10,
+                "date": [date(2026, 1, 1) + timedelta(days=i) for i in range(10)],
+                "price": [1.0, 10.0, 50.0, 1.0, 2.0, 3.0, 1.0, 1.0, 1.0, 1.0],
+                "volume": [100] * 10,
+            }
+        )
         result = forecaster._compute_price_features(df)
         price_lag_1 = result["price_lag_1d"]
         return_1 = result["return_1d"]
@@ -226,6 +250,7 @@ class TestFeatureEngineering:
 
     def test_vol_asymmetry_present_and_price_group(self, forecaster, basic_price_df):
         from models.forecaster import _feature_group
+
         df = forecaster._compute_price_features(basic_price_df)
         for col in ["vol_semidev_down_30d", "vol_semidev_up_30d", "vol_skew_30d"]:
             assert col in df.columns
@@ -245,17 +270,18 @@ class TestFeatureEngineering:
         rows = []
         for d in range(120):
             if d % 2 == 0:
-                price *= 1 + rng.uniform(0.03, 0.06)    # big ups
+                price *= 1 + rng.uniform(0.03, 0.06)  # big ups
             else:
                 price *= 1 - rng.uniform(0.002, 0.006)  # tiny downs
-            rows.append({"item_id": "a",
-                         "date": date(2026, 1, 1) + timedelta(days=d),
-                         "price": round(price, 2), "volume": 100})
+            rows.append(
+                {"item_id": "a", "date": date(2026, 1, 1) + timedelta(days=d), "price": round(price, 2), "volume": 100}
+            )
         df = forecaster._compute_price_features(pd.DataFrame(rows))
         assert df["vol_skew_30d"].dropna().iloc[-1] > 1.0
 
     def test_oscillator_divergence_present_and_price_group(self, forecaster, basic_price_df):
         from models.forecaster import _feature_group
+
         df = forecaster._compute_price_features(basic_price_df)
         for col in ["rsi_divergence_7d", "rsi_price_divergence_7d", "macd_hist_slope_7d"]:
             assert col in df.columns
@@ -271,24 +297,28 @@ class TestFeatureEngineering:
         # Phase 1: Days 0-15 — strong uptrend (large daily gains ~2%)
         for d in range(16):
             price *= 1.02
-            rows.append({
-                "item_id": "a",
-                "date": date(2026, 1, 1) + timedelta(days=d),
-                "price": round(price, 2),
-                "volume": 100,
-            })
+            rows.append(
+                {
+                    "item_id": "a",
+                    "date": date(2026, 1, 1) + timedelta(days=d),
+                    "price": round(price, 2),
+                    "volume": 100,
+                }
+            )
         # Phase 2: Days 16-40 — deceleration with small gains/losses (~0.3%)
         # to let RSI fall while the 7-day return remains positive
         rng = np.random.default_rng(0)
         for d in range(16, 45):
             move = rng.normal(0.003, 0.01)  # net positive but with small oscillations
-            price *= (1.0 + move)
-            rows.append({
-                "item_id": "a",
-                "date": date(2026, 1, 1) + timedelta(days=d),
-                "price": round(max(price, 100), 2),
-                "volume": 100,
-            })
+            price *= 1.0 + move
+            rows.append(
+                {
+                    "item_id": "a",
+                    "date": date(2026, 1, 1) + timedelta(days=d),
+                    "price": round(max(price, 100), 2),
+                    "volume": 100,
+                }
+            )
         df_in = pd.DataFrame(rows)
         df = forecaster._compute_price_features(df_in)
 
@@ -297,22 +327,26 @@ class TestFeatureEngineering:
         bearish = df[(df["return_7d"] > 0) & (df["rsi_divergence_7d"] < 0)]
         assert len(bearish) > 0, "Expected at least one row with bearish divergence (price up, RSI down)"
         # In this condition, rsi_price_divergence_7d should be positive
-        assert (bearish["rsi_price_divergence_7d"] > 0).all(), \
+        assert (bearish["rsi_price_divergence_7d"] > 0).all(), (
             f"Bearish divergence rows must have rsi_price_divergence_7d > 0; found min={bearish['rsi_price_divergence_7d'].min()}"
+        )
 
         # Symmetric guard: bullish divergence (price down, RSI up) → negative
         bullish = df[(df["return_7d"] < 0) & (df["rsi_divergence_7d"] > 0)]
         if len(bullish) > 0:
-            assert (bullish["rsi_price_divergence_7d"] < 0).all(), \
+            assert (bullish["rsi_price_divergence_7d"] < 0).all(), (
                 "Bullish divergence rows should have rsi_price_divergence_7d < 0"
+            )
 
     def test_divergence_nan_on_short_history(self, forecaster):
-        df_in = pd.DataFrame({
-            "item_id": ["a"] * 3,
-            "date": [date(2026, 1, 1) + timedelta(days=d) for d in range(3)],
-            "price": [100.0, 101.0, 102.0],
-            "volume": [100, 100, 100],
-        })
+        df_in = pd.DataFrame(
+            {
+                "item_id": ["a"] * 3,
+                "date": [date(2026, 1, 1) + timedelta(days=d) for d in range(3)],
+                "price": [100.0, 101.0, 102.0],
+                "volume": [100, 100, 100],
+            }
+        )
         df = forecaster._compute_price_features(df_in)
         # 7-day shift is impossible with 3 rows -> NaN.
         assert df["rsi_divergence_7d"].isna().all()
@@ -322,8 +356,7 @@ class TestFeatureEngineering:
 class TestTemporalFeatures:
     def test_temporal_features_added(self, forecaster, basic_price_df):
         df = forecaster._add_temporal_features(basic_price_df)
-        for col in ["day_of_week", "month", "quarter", "is_weekend",
-                     "dow_sin", "dow_cos", "month_sin", "month_cos"]:
+        for col in ["day_of_week", "month", "quarter", "is_weekend", "dow_sin", "dow_cos", "month_sin", "month_cos"]:
             assert col in df.columns
 
     def test_is_weekend_correct(self, forecaster, basic_price_df):
@@ -362,8 +395,7 @@ class TestEventFeatures:
         # After the first event (Feb 2+), decay should be positive and decreasing.
         # The event date itself (Feb 1) has decay=0 because searchsorted finds
         # the previous event, and there is none before Feb 1.
-        feb_rows = item_0[(pd.to_datetime(item_0["date"]).dt.month == 2)
-                          & (pd.to_datetime(item_0["date"]).dt.day > 1)]
+        feb_rows = item_0[(pd.to_datetime(item_0["date"]).dt.month == 2) & (pd.to_datetime(item_0["date"]).dt.day > 1)]
         if len(feb_rows) > 5:
             feb_decay = feb_rows[decay_col].values
             assert feb_decay[0] > feb_decay[-1], "Decay should decrease between events"
@@ -407,12 +439,14 @@ class TestCrossSectionalFeatures:
 class TestFeaturePruning:
     def test_prune_features_removes_highly_correlated(self, forecaster):
         forecaster.feature_cols = ["a", "b", "c", "d"]
-        df = pd.DataFrame({
-            "a": np.random.randn(100),
-            "b": np.random.randn(100),
-            "c": np.random.randn(100),
-            "d": np.random.randn(100),
-        })
+        df = pd.DataFrame(
+            {
+                "a": np.random.randn(100),
+                "b": np.random.randn(100),
+                "c": np.random.randn(100),
+                "d": np.random.randn(100),
+            }
+        )
         df["b"] = df["a"] * 2 + 0.01  # nearly perfect correlation
         pruned = forecaster._prune_features(df)
         assert "b" not in pruned, "b should be pruned (correlated with a)"
@@ -420,16 +454,19 @@ class TestFeaturePruning:
 
     def test_no_pruning_when_not_correlated(self, forecaster):
         forecaster.feature_cols = ["x", "y", "z"]
-        df = pd.DataFrame({
-            "x": np.random.randn(100),
-            "y": np.random.randn(100),
-            "z": np.random.randn(100),
-        })
+        df = pd.DataFrame(
+            {
+                "x": np.random.randn(100),
+                "y": np.random.randn(100),
+                "z": np.random.randn(100),
+            }
+        )
         pruned = forecaster._prune_features(df)
         assert len(pruned) == 3
 
     def test_validate_feature_groups_passes_statistically_significant(
-        self, forecaster,
+        self,
+        forecaster,
     ):
         """A feature group that causally affects predictions should pass both
         the statistical (p < 0.05) and practical (drop >= 0.5pp) gates.
@@ -442,32 +479,42 @@ class TestFeaturePruning:
 
         ds = lgb.Dataset(X, y)
         model = lgb.train(
-            {"objective": "quantile", "alpha": 0.5, "verbosity": -1,
-             "max_bin": 63, "min_data_in_leaf": 1, "num_leaves": 4,
-             "learning_rate": 0.1, "metric": "quantile"},
-            ds, num_boost_round=30,
+            {
+                "objective": "quantile",
+                "alpha": 0.5,
+                "verbosity": -1,
+                "max_bin": 63,
+                "min_data_in_leaf": 1,
+                "num_leaves": 4,
+                "learning_rate": 0.1,
+                "metric": "quantile",
+            },
+            ds,
+            num_boost_round=30,
         )
         forecaster.models[(7, 0.5)] = model
 
         # Feature names: "price_technicals" group (cols 0-1, predictive),
         # "events" group (cols 2-3, pure noise)
-        feature_names = ["price_momentum_1", "price_momentum_2",
-                         "event_major_1", "event_major_2"]
+        feature_names = ["price_momentum_1", "price_momentum_2", "event_major_1", "event_major_2"]
         results = forecaster._validate_feature_groups(
-            X, y, feature_names, horizon=7,
-            n_shuffles=30, min_drop_pp=0.5, significance_level=0.05,
+            X,
+            y,
+            feature_names,
+            horizon=7,
+            n_shuffles=30,
+            min_drop_pp=0.5,
+            significance_level=0.05,
         )
 
         # The "price_technicals" group — causally linked to y — should PASS
         pt = results["price_technicals"]
-        assert pt["passed"], (
-            f"Expected 'price_technicals' to pass (drop_pp={pt['drop_pp']}, "
-            f"p={pt['p_value']})"
-        )
+        assert pt["passed"], f"Expected 'price_technicals' to pass (drop_pp={pt['drop_pp']}, p={pt['p_value']})"
         assert pt["p_value"] < 0.05
 
     def test_validate_feature_groups_fails_noisy_group(
-        self, forecaster,
+        self,
+        forecaster,
     ):
         """A feature group with no causal signal should fail the statistical
         significance gate (p >= 0.05), even if the drop happens to be >= 0.5pp
@@ -480,42 +527,60 @@ class TestFeaturePruning:
 
         ds = lgb.Dataset(X, y)
         model = lgb.train(
-            {"objective": "quantile", "alpha": 0.5, "verbosity": -1,
-             "max_bin": 63, "min_data_in_leaf": 1, "num_leaves": 4,
-             "learning_rate": 0.1, "metric": "quantile"},
-            ds, num_boost_round=30,
+            {
+                "objective": "quantile",
+                "alpha": 0.5,
+                "verbosity": -1,
+                "max_bin": 63,
+                "min_data_in_leaf": 1,
+                "num_leaves": 4,
+                "learning_rate": 0.1,
+                "metric": "quantile",
+            },
+            ds,
+            num_boost_round=30,
         )
         forecaster.models[(7, 0.5)] = model
 
         # Feature names: "price_technicals" group (cols 0-2, predictive),
         # "events" group (cols 3-5, pure noise — no relation to y)
         feature_names = [
-            "price_momentum_1", "price_momentum_2", "price_momentum_3",
-            "event_major_1", "event_major_2", "event_major_3",
+            "price_momentum_1",
+            "price_momentum_2",
+            "price_momentum_3",
+            "event_major_1",
+            "event_major_2",
+            "event_major_3",
         ]
         results = forecaster._validate_feature_groups(
-            X, y, feature_names, horizon=7,
-            n_shuffles=30, min_drop_pp=0.5, significance_level=0.05,
+            X,
+            y,
+            feature_names,
+            horizon=7,
+            n_shuffles=30,
+            min_drop_pp=0.5,
+            significance_level=0.05,
         )
 
         # The "events" group (cols 3-5) has no causal link to y — should FAIL
         events = results["events"]
-        assert not events["passed"], (
-            f"Expected 'events' to fail (drop_pp={events['drop_pp']}, "
-            f"p={events['p_value']})"
-        )
+        assert not events["passed"], f"Expected 'events' to fail (drop_pp={events['drop_pp']}, p={events['p_value']})"
         assert events["p_value"] >= 0.05
 
     def test_validate_feature_groups_skips_no_model(self, forecaster):
         """When no p50 model exists for the horizon, validation returns {}."""
         assert forecaster.models == {}
         results = forecaster._validate_feature_groups(
-            np.empty((10, 2)), np.empty(10), ["a", "b"], horizon=7,
+            np.empty((10, 2)),
+            np.empty(10),
+            ["a", "b"],
+            horizon=7,
         )
         assert results == {}
 
     def test_prune_features_filters_by_significance(
-        self, forecaster,
+        self,
+        forecaster,
     ):
         """Integration: _validate_feature_groups gates pruning in train().
         Non-causal groups are dropped; causal groups are kept."""
@@ -527,20 +592,32 @@ class TestFeaturePruning:
 
         ds = lgb.Dataset(X, y)
         model = lgb.train(
-            {"objective": "quantile", "alpha": 0.5, "verbosity": -1,
-             "max_bin": 63, "min_data_in_leaf": 1, "num_leaves": 4,
-             "learning_rate": 0.1, "metric": "quantile"},
-            ds, num_boost_round=30,
+            {
+                "objective": "quantile",
+                "alpha": 0.5,
+                "verbosity": -1,
+                "max_bin": 63,
+                "min_data_in_leaf": 1,
+                "num_leaves": 4,
+                "learning_rate": 0.1,
+                "metric": "quantile",
+            },
+            ds,
+            num_boost_round=30,
         )
         forecaster.models[(7, 0.5)] = model
 
         # Feature groups: "price_technicals" (predictive cols 0-1) and
         # "events" (noise cols 2-3)
-        forecaster.feature_cols = ["price_momentum_1", "price_momentum_2",
-                                   "event_major_1", "event_major_2"]
+        forecaster.feature_cols = ["price_momentum_1", "price_momentum_2", "event_major_1", "event_major_2"]
         results = forecaster._validate_feature_groups(
-            X, y, forecaster.feature_cols, horizon=7,
-            n_shuffles=30, min_drop_pp=0.5, significance_level=0.05,
+            X,
+            y,
+            forecaster.feature_cols,
+            horizon=7,
+            n_shuffles=30,
+            min_drop_pp=0.5,
+            significance_level=0.05,
         )
 
         # "price_technicals" should pass, "events" should fail
@@ -554,15 +631,18 @@ class TestFeaturePruning:
 # Target Preparation
 # ---------------------------------------------------------------------------
 
+
 class TestTargetPreparation:
     def test_prepare_targets_horizon(self, forecaster):
         dates = [date(2026, 1, 1) + timedelta(days=i) for i in range(40)]
-        df = pd.DataFrame({
-            "item_id": ["a"] * 40 + ["b"] * 40,
-            "date": dates * 2,
-            "price": [float(i + 1) for i in range(40)] * 2,
-            "volume": [100] * 80,
-        })
+        df = pd.DataFrame(
+            {
+                "item_id": ["a"] * 40 + ["b"] * 40,
+                "date": dates * 2,
+                "price": [float(i + 1) for i in range(40)] * 2,
+                "volume": [100] * 80,
+            }
+        )
         result = forecaster.prepare_targets(df, 7)
         assert "target_return_7d" in result.columns
         assert "target_7d" in result.columns
@@ -581,10 +661,12 @@ class TestTargetPreparation:
 # Quantile Monotonicity
 # ---------------------------------------------------------------------------
 
+
 class TestQuantileMonotonicity:
     def test_already_monotonic_unchanged(self):
         """Items with p10 <= p50 <= p90 should not be altered."""
         from models.forecaster import ItemForecaster
+
         low, high = ItemForecaster._fix_quantile_crossing(
             np.array([1.0, 3.0, 5.0]),
             np.array([2.0, 4.0, 6.0]),
@@ -596,6 +678,7 @@ class TestQuantileMonotonicity:
     def test_p10_greater_than_p50_pooled(self):
         """When p10 > p50, first two are pooled to their mean."""
         from models.forecaster import ItemForecaster
+
         low, high = ItemForecaster._fix_quantile_crossing(
             np.array([5.0, 5.0]),
             np.array([3.0, 3.0]),
@@ -607,6 +690,7 @@ class TestQuantileMonotonicity:
     def test_p50_greater_than_p90_pooled(self):
         """When p50 > p90, last two are pooled to their mean."""
         from models.forecaster import ItemForecaster
+
         low, high = ItemForecaster._fix_quantile_crossing(
             np.array([1.0, 1.0]),
             np.array([5.0, 5.0]),
@@ -618,6 +702,7 @@ class TestQuantileMonotonicity:
     def test_all_three_cross_pooled_equally(self):
         """When p10 > p50 > p90, all three are pooled to their common mean."""
         from models.forecaster import ItemForecaster
+
         low, high = ItemForecaster._fix_quantile_crossing(
             np.array([8.0, 8.0]),
             np.array([5.0, 5.0]),
@@ -629,6 +714,7 @@ class TestQuantileMonotonicity:
     def test_mixed_mask_handles_both_crossing_and_non(self):
         """Mixed arrays with some crossing and some monotonic items."""
         from models.forecaster import ItemForecaster
+
         low, high = ItemForecaster._fix_quantile_crossing(
             np.array([1.0, 8.0]),
             np.array([5.0, 5.0]),
@@ -644,6 +730,7 @@ class TestQuantileMonotonicity:
     def test_returns_low_high_only(self):
         """Method returns only (low, high); mid is left for caller to keep."""
         from models.forecaster import ItemForecaster
+
         low, high = ItemForecaster._fix_quantile_crossing(
             np.array([5.0, 1.0, 7.0]),
             np.array([3.0, 3.0, 5.0]),
@@ -658,36 +745,25 @@ class TestQuantileMonotonicity:
 # Confidence Computation
 # ---------------------------------------------------------------------------
 
+
 class TestConfidence:
     def test_confidence_narrow_range_high(self, forecaster):
-        forecaster.confidence_thresholds = {
-            7: {"high_range": 0.15, "high_change": 0.02}
-        }
-        result = forecaster._compute_confidence(
-            mid=10.0, low=9.5, high=10.5, current=9.5, horizon=7
-        )
+        forecaster.confidence_thresholds = {7: {"high_range": 0.15, "high_change": 0.02}}
+        result = forecaster._compute_confidence(mid=10.0, low=9.5, high=10.5, current=9.5, horizon=7)
         assert result == "high"
 
     def test_confidence_wide_range_low(self, forecaster):
-        forecaster.confidence_thresholds = {
-            7: {"high_range": 0.15, "high_change": 0.02}
-        }
-        result = forecaster._compute_confidence(
-            mid=10.0, low=5.0, high=15.0, current=9.5, horizon=7
-        )
+        forecaster.confidence_thresholds = {7: {"high_range": 0.15, "high_change": 0.02}}
+        result = forecaster._compute_confidence(mid=10.0, low=5.0, high=15.0, current=9.5, horizon=7)
         assert result == "low"
 
     def test_confidence_fallback_defaults(self, forecaster):
         forecaster.confidence_thresholds = {}
-        result = forecaster._compute_confidence(
-            mid=10.0, low=8.0, high=12.0, current=9.5, horizon=7
-        )
+        result = forecaster._compute_confidence(mid=10.0, low=8.0, high=12.0, current=9.5, horizon=7)
         assert result in ("high", "low")
 
     def test_confidence_zero_mid(self, forecaster):
-        result = forecaster._compute_confidence(
-            mid=0.0, low=0.0, high=0.0, current=10.0, horizon=7
-        )
+        result = forecaster._compute_confidence(mid=0.0, low=0.0, high=0.0, current=10.0, horizon=7)
         assert result == "low"
 
 
@@ -695,17 +771,21 @@ class TestConfidence:
 # Sanitization
 # ---------------------------------------------------------------------------
 
+
 class TestSanitization:
     def test_sanitize_invalid_prices_clamped(self, forecaster):
-        result_df = pd.DataFrame([{
-            "item_id": "test",
-            "current_price": 10.0,
-            "forecasts": {
-                7: {"low": -5.0, "mid": np.nan, "high": 20.0,
-                     "direction": "up", "confidence": "high"},
-            },
-            "generated_at": datetime.now(timezone.utc),
-        }])
+        result_df = pd.DataFrame(
+            [
+                {
+                    "item_id": "test",
+                    "current_price": 10.0,
+                    "forecasts": {
+                        7: {"low": -5.0, "mid": np.nan, "high": 20.0, "direction": "up", "confidence": "high"},
+                    },
+                    "generated_at": datetime.now(UTC),
+                }
+            ]
+        )
         cleaned = forecaster._sanitize_forecasts(result_df)
         fc = cleaned.iloc[0]["forecasts"][7]
         assert fc["mid"] == 10.0  # clamped to current price
@@ -713,16 +793,19 @@ class TestSanitization:
         assert fc["confidence"] == "low"
 
     def test_sanitize_zero_volume_downgrades(self, forecaster):
-        result_df = pd.DataFrame([{
-            "item_id": "test",
-            "current_price": 10.0,
-            "volume": 0,
-            "forecasts": {
-                7: {"low": 9.5, "mid": 11.0, "high": 12.0,
-                     "direction": "up", "confidence": "high"},
-            },
-            "generated_at": datetime.now(timezone.utc),
-        }])
+        result_df = pd.DataFrame(
+            [
+                {
+                    "item_id": "test",
+                    "current_price": 10.0,
+                    "volume": 0,
+                    "forecasts": {
+                        7: {"low": 9.5, "mid": 11.0, "high": 12.0, "direction": "up", "confidence": "high"},
+                    },
+                    "generated_at": datetime.now(UTC),
+                }
+            ]
+        )
         cleaned = forecaster._sanitize_forecasts(result_df)
         fc = cleaned.iloc[0]["forecasts"][7]
         assert fc["confidence"] == "low"
@@ -735,15 +818,18 @@ class TestSanitization:
         low > mid. mid and high are deliberately both != current_price so a
         clamp on either would be visible.
         """
-        result_df = pd.DataFrame([{
-            "item_id": "test",
-            "current_price": 100.0,
-            "forecasts": {
-                7: {"low": -40.0, "mid": 80.0, "high": 200.0,
-                    "direction": "down", "confidence": "high"},
-            },
-            "generated_at": datetime.now(timezone.utc),
-        }])
+        result_df = pd.DataFrame(
+            [
+                {
+                    "item_id": "test",
+                    "current_price": 100.0,
+                    "forecasts": {
+                        7: {"low": -40.0, "mid": 80.0, "high": 200.0, "direction": "down", "confidence": "high"},
+                    },
+                    "generated_at": datetime.now(UTC),
+                }
+            ]
+        )
         cleaned = forecaster._sanitize_forecasts(result_df)
         fc = cleaned.iloc[0]["forecasts"][7]
 
@@ -757,15 +843,18 @@ class TestSanitization:
 
     def test_sanitize_keeps_a_valid_band_untouched(self, forecaster):
         """The ordering guard must be a no-op on a well-formed band."""
-        result_df = pd.DataFrame([{
-            "item_id": "test",
-            "current_price": 100.0,
-            "forecasts": {
-                7: {"low": 90.0, "mid": 95.0, "high": 101.0,
-                    "direction": "down", "confidence": "high"},
-            },
-            "generated_at": datetime.now(timezone.utc),
-        }])
+        result_df = pd.DataFrame(
+            [
+                {
+                    "item_id": "test",
+                    "current_price": 100.0,
+                    "forecasts": {
+                        7: {"low": 90.0, "mid": 95.0, "high": 101.0, "direction": "down", "confidence": "high"},
+                    },
+                    "generated_at": datetime.now(UTC),
+                }
+            ]
+        )
         cleaned = forecaster._sanitize_forecasts(result_df)
         fc = cleaned.iloc[0]["forecasts"][7]
         assert (fc["low"], fc["mid"], fc["high"]) == (90.0, 95.0, 101.0)
@@ -775,15 +864,18 @@ class TestSanitization:
     def test_sanitize_warns_when_a_leg_is_clamped(self, forecaster, caplog):
         """A systematically clipping sigma must be visible in forecast.log,
         not only in the served numbers."""
-        result_df = pd.DataFrame([{
-            "item_id": "loud_item",
-            "current_price": 100.0,
-            "forecasts": {
-                7: {"low": -40.0, "mid": 80.0, "high": 200.0,
-                    "direction": "down", "confidence": "high"},
-            },
-            "generated_at": datetime.now(timezone.utc),
-        }])
+        result_df = pd.DataFrame(
+            [
+                {
+                    "item_id": "loud_item",
+                    "current_price": 100.0,
+                    "forecasts": {
+                        7: {"low": -40.0, "mid": 80.0, "high": 200.0, "direction": "down", "confidence": "high"},
+                    },
+                    "generated_at": datetime.now(UTC),
+                }
+            ]
+        )
         with caplog.at_level(logging.WARNING):
             forecaster._sanitize_forecasts(result_df)
         assert "loud_item" in caplog.text
@@ -794,6 +886,7 @@ class TestSanitization:
 # Feature Engineering Pipeline (Integration)
 # ---------------------------------------------------------------------------
 
+
 class TestFeaturePipeline:
     def test_engineer_features_resamples_daily(self, forecaster, events_df):
         """Multiple rows per day should be aggregated to one row per item per day."""
@@ -802,12 +895,14 @@ class TestFeaturePipeline:
             for day_offset in range(10):
                 d = date(2026, 1, 1) + timedelta(days=day_offset)
                 for _ in range(3):  # 3 observations per day
-                    rows.append({
-                        "item_id": item_id,
-                        "date": d,
-                        "price": 10.0 + day_offset + np.random.randn() * 0.1,
-                        "volume": 100,
-                    })
+                    rows.append(
+                        {
+                            "item_id": item_id,
+                            "date": d,
+                            "price": 10.0 + day_offset + np.random.randn() * 0.1,
+                            "volume": 100,
+                        }
+                    )
         multi_df = pd.DataFrame(rows)
         result = forecaster.engineer_features(multi_df, events_df)
         daily_counts = result.groupby(["item_id", "date"]).size()
@@ -817,6 +912,7 @@ class TestFeaturePipeline:
         """After the 2026-07-24 simplification, build_training_data keeps only
         price/technical features (FEATURE_GROUP_ALLOWLIST); event/social/
         cross-sectional groups are excluded."""
+
         # Mock fetch_price_history and fetch_events to return synthetic data
         def mock_fetch(*args, **kwargs):
             np.random.seed(42)
@@ -826,26 +922,43 @@ class TestFeaturePipeline:
                 for day_offset in range(200):
                     d = date(2026, 1, 1) + timedelta(days=day_offset)
                     price *= 1 + np.random.randn() * 0.01
-                    rows.append({
-                        "item_id": f"item_{item_id}",
-                        "date": d,
-                        "price": round(max(price, 0.01), 2),
-                        "volume": int(max(np.random.poisson(200), 0)),
-                    })
+                    rows.append(
+                        {
+                            "item_id": f"item_{item_id}",
+                            "date": d,
+                            "price": round(max(price, 0.01), 2),
+                            "volume": int(max(np.random.poisson(200), 0)),
+                        }
+                    )
             return pd.DataFrame(rows)
 
         def mock_events(*args, **kwargs):
-            return pd.DataFrame([
-                {"id": 1, "type": "major", "timestamp": pd.Timestamp("2026-06-01"), "description": "Major", "date": date(2026, 6, 1)},
-                {"id": 2, "type": "update", "timestamp": pd.Timestamp("2026-07-01"), "description": "Update", "date": date(2026, 7, 1)},
-            ])
+            return pd.DataFrame(
+                [
+                    {
+                        "id": 1,
+                        "type": "major",
+                        "timestamp": pd.Timestamp("2026-06-01"),
+                        "description": "Major",
+                        "date": date(2026, 6, 1),
+                    },
+                    {
+                        "id": 2,
+                        "type": "update",
+                        "timestamp": pd.Timestamp("2026-07-01"),
+                        "description": "Update",
+                        "date": date(2026, 7, 1),
+                    },
+                ]
+            )
 
-        with patch.object(forecaster, 'fetch_price_history', mock_fetch):
-            with patch.object(forecaster, 'fetch_events', mock_events):
+        with patch.object(forecaster, "fetch_price_history", mock_fetch):
+            with patch.object(forecaster, "fetch_events", mock_events):
                 df = forecaster.build_training_data(days_back=200, backfilled_only=False)
 
         # Price/technical categories must be present...
         from models.forecaster import _feature_group
+
         feature_set = set(forecaster.feature_cols)
         assert any("return_" in c for c in feature_set), "Missing return features"
         assert any("bb_" in c for c in feature_set), "Missing Bollinger features"
@@ -854,8 +967,9 @@ class TestFeaturePipeline:
         # ...and non-price groups must be excluded by the allowlist.
         assert not any(c.startswith("event_") for c in feature_set), "Event features leaked past allowlist"
         assert not any(c.startswith("market_") for c in feature_set), "Market features leaked past allowlist"
-        assert all(_feature_group(c) == "price_technicals" for c in feature_set), \
+        assert all(_feature_group(c) == "price_technicals" for c in feature_set), (
             f"Non-price feature groups present: {[c for c in feature_set if _feature_group(c) != 'price_technicals']}"
+        )
         # Shelved features never reach training (they are price technicals by
         # name, so the allowlist alone would admit them).
         leaked = forecaster.SHELVED_FEATURES & feature_set
@@ -867,11 +981,16 @@ class TestFeaturePipeline:
         # engineer_features(skip_unused_groups=False); see
         # test_shelved_compute_skipped_in_prod.py.
         skipped_on_prod = forecaster.VOLUME_FEATURE_NAMES | {
-            "vol_semidev_down_30d", "vol_semidev_up_30d", "vol_skew_30d",
-            "rsi_divergence_7d", "rsi_price_divergence_7d", "macd_hist_slope_7d",
+            "vol_semidev_down_30d",
+            "vol_semidev_up_30d",
+            "vol_skew_30d",
+            "rsi_divergence_7d",
+            "rsi_price_divergence_7d",
+            "macd_hist_slope_7d",
         }
-        assert skipped_on_prod.isdisjoint(df.columns), \
+        assert skipped_on_prod.isdisjoint(df.columns), (
             f"shelved-and-unused compute ran on the prod build: {sorted(skipped_on_prod & set(df.columns))}"
+        )
 
         # Check no float64 feature columns remain (memory optimization)
         float64_cols = [c for c in forecaster.feature_cols if c in df.columns and df[c].dtype == np.float64]
@@ -884,6 +1003,7 @@ class TestFeaturePipeline:
 
     def test_build_training_data_feature_count(self, forecaster):
         """Feature count should be reasonable (not too few, not too many)."""
+
         def mock_fetch(*args, **kwargs):
             np.random.seed(42)
             rows = []
@@ -892,22 +1012,31 @@ class TestFeaturePipeline:
                 for day_offset in range(200):
                     d = date(2026, 1, 1) + timedelta(days=day_offset)
                     price *= 1 + np.random.randn() * 0.01
-                    rows.append({
-                        "item_id": f"item_{item_id}",
-                        "date": d,
-                        "price": round(max(price, 0.01), 2),
-                        "volume": int(max(np.random.poisson(200), 0)),
-                    })
+                    rows.append(
+                        {
+                            "item_id": f"item_{item_id}",
+                            "date": d,
+                            "price": round(max(price, 0.01), 2),
+                            "volume": int(max(np.random.poisson(200), 0)),
+                        }
+                    )
             return pd.DataFrame(rows)
 
         def mock_events(*args, **kwargs):
-            return pd.DataFrame([
-                {"id": 1, "type": "major", "timestamp": pd.Timestamp("2026-06-01"),
-                 "description": "Major", "date": date(2026, 6, 1)},
-            ])
+            return pd.DataFrame(
+                [
+                    {
+                        "id": 1,
+                        "type": "major",
+                        "timestamp": pd.Timestamp("2026-06-01"),
+                        "description": "Major",
+                        "date": date(2026, 6, 1),
+                    },
+                ]
+            )
 
-        with patch.object(forecaster, 'fetch_price_history', mock_fetch):
-            with patch.object(forecaster, 'fetch_events', mock_events):
+        with patch.object(forecaster, "fetch_price_history", mock_fetch):
+            with patch.object(forecaster, "fetch_events", mock_events):
                 df = forecaster.build_training_data(days_back=200, backfilled_only=False)
 
         n_features = len(forecaster.feature_cols)
@@ -928,6 +1057,7 @@ class TestFeaturePipeline:
 # ---------------------------------------------------------------------------
 # Concept Drift Monitoring
 # ---------------------------------------------------------------------------
+
 
 class TestConceptDrift:
     def _make_mock_record(self, metrics_dict):
@@ -951,14 +1081,13 @@ class TestConceptDrift:
         return mock_execute
 
     def test_drift_detected_when_accuracy_low(self, forecaster):
-        from database import AccuracyAlert
         mock_records = [
             self._make_mock_record({"directional_accuracy": 45.0}),
             self._make_mock_record({"directional_accuracy": 42.0}),
             self._make_mock_record({"directional_accuracy": 48.0}),
         ]
         forecaster.db.execute = self._make_mock_execute(mock_records)
-        with patch.object(forecaster.db, 'query') as mock_query:
+        with patch.object(forecaster.db, "query") as mock_query:
             mock_query.return_value.filter.return_value.first.return_value = None
             result = forecaster.check_concept_drift(horizon=7, sliding_window=7, threshold=60.0)
             assert result is not None
@@ -989,6 +1118,7 @@ class TestConceptDrift:
 # Calibration
 # ---------------------------------------------------------------------------
 
+
 class TestCalibration:
     def test_holdout_calibration_refuses_a_thin_validation_window(self, forecaster):
         """Too few rows must raise, not silently default.
@@ -1000,12 +1130,12 @@ class TestCalibration:
         n = forecaster.MIN_CALIBRATION_ROWS - 1
         X_val = pd.DataFrame({"f": np.zeros(n)})
         y_val = pd.Series(np.zeros(n))
-        val_set = pd.DataFrame({"price": np.full(n, 10.0),
-                                "price_std_60d": np.full(n, 1.0)})
-        with patch.object(forecaster, "_get_ensemble_prediction",
-                          return_value=np.zeros(n)):
-            with pytest.raises(RuntimeError, match="Refusing to fabricate"):
-                forecaster._holdout_conformal_records(7, X_val, y_val, val_set)
+        val_set = pd.DataFrame({"price": np.full(n, 10.0), "price_std_60d": np.full(n, 1.0)})
+        with (
+            patch.object(forecaster, "_get_ensemble_prediction", return_value=np.zeros(n)),
+            pytest.raises(RuntimeError, match="Refusing to fabricate"),
+        ):
+            forecaster._holdout_conformal_records(7, X_val, y_val, val_set)
         assert forecaster.confidence_thresholds.get(7) is None
 
     def test_holdout_calibration_refuses_a_missing_median_model(self, forecaster):
@@ -1013,10 +1143,11 @@ class TestCalibration:
         X_val = pd.DataFrame({"f": np.zeros(100)})
         y_val = pd.Series(np.zeros(100))
         val_set = pd.DataFrame({"price": np.full(100, 10.0)})
-        with patch.object(forecaster, "_get_ensemble_prediction",
-                          return_value=None):
-            with pytest.raises(RuntimeError, match="No median model"):
-                forecaster._holdout_conformal_records(7, X_val, y_val, val_set)
+        with (
+            patch.object(forecaster, "_get_ensemble_prediction", return_value=None),
+            pytest.raises(RuntimeError, match="No median model"),
+        ):
+            forecaster._holdout_conformal_records(7, X_val, y_val, val_set)
 
     def test_confidence_thresholds_per_horizon(self, forecaster):
         """Different horizons should have different threshold dicts."""
@@ -1035,10 +1166,12 @@ class TestCalibration:
 # Conformal Calibration (CQR)
 # ---------------------------------------------------------------------------
 
+
 class TestConformalCalibration:
     def test_q_hat_zero_when_all_scores_zero(self):
         """If all nonconformity scores are 0, q_hat should be 0."""
         from models.forecaster import ItemForecaster
+
         f = ItemForecaster.__new__(ItemForecaster)
         f.conformal_calibration = {}
         f.confidence_thresholds = {}
@@ -1084,13 +1217,18 @@ class TestConformalCalibration:
 # Predict method edge cases
 # ---------------------------------------------------------------------------
 
+
 class TestPredictEdgeCases:
     def test_predict_empty_results_no_items(self, forecaster):
         """predict() should handle empty item list gracefully."""
-        with patch.object(forecaster, 'fetch_price_history',
-                          return_value=pd.DataFrame(columns=["item_id", "date", "price", "volume"])):
-            with patch.object(forecaster, 'fetch_events',
-                              return_value=pd.DataFrame(columns=["id", "type", "timestamp", "description"])):
+        with patch.object(
+            forecaster, "fetch_price_history", return_value=pd.DataFrame(columns=["item_id", "date", "price", "volume"])
+        ):
+            with patch.object(
+                forecaster,
+                "fetch_events",
+                return_value=pd.DataFrame(columns=["id", "type", "timestamp", "description"]),
+            ):
                 result = forecaster.predict()
                 assert result.empty
 
@@ -1099,16 +1237,21 @@ class TestPredictEdgeCases:
         rows = []
         for i in range(3):
             for d in range(5 if i == 0 else 30):  # item_0 has only 5 days
-                rows.append({
-                    "item_id": f"item_{i}",
-                    "date": date(2026, 6, 1) + timedelta(days=d),
-                    "price": 10.0 + d * 0.1,
-                    "volume": 100,
-                })
+                rows.append(
+                    {
+                        "item_id": f"item_{i}",
+                        "date": date(2026, 6, 1) + timedelta(days=d),
+                        "price": 10.0 + d * 0.1,
+                        "volume": 100,
+                    }
+                )
         price_df = pd.DataFrame(rows)
-        with patch.object(forecaster, 'fetch_price_history', return_value=price_df):
-            with patch.object(forecaster, 'fetch_events',
-                              return_value=pd.DataFrame(columns=["id", "type", "timestamp", "description"])):
+        with patch.object(forecaster, "fetch_price_history", return_value=price_df):
+            with patch.object(
+                forecaster,
+                "fetch_events",
+                return_value=pd.DataFrame(columns=["id", "type", "timestamp", "description"]),
+            ):
                 result = forecaster.predict()
                 # Should not crash; may be empty if no models loaded
                 assert isinstance(result, pd.DataFrame)
@@ -1118,19 +1261,24 @@ class TestPredictEdgeCases:
         np.random.seed(42)
         rows = []
         for d in range(30):
-            rows.append({
-                "item_id": "item_0",
-                "date": date(2026, 6, 1) + timedelta(days=d),
-                "price": 100.0 + d * 0.5,
-                "volume": 100,
-            })
+            rows.append(
+                {
+                    "item_id": "item_0",
+                    "date": date(2026, 6, 1) + timedelta(days=d),
+                    "price": 100.0 + d * 0.5,
+                    "volume": 100,
+                }
+            )
         # Add a spike on the last day (200 instead of ~115)
         rows[-1] = {**rows[-1], "price": 200.0}
 
         price_df = pd.DataFrame(rows)
-        with patch.object(forecaster, 'fetch_price_history', return_value=price_df):
-            with patch.object(forecaster, 'fetch_events',
-                              return_value=pd.DataFrame(columns=["id", "type", "timestamp", "description"])):
+        with patch.object(forecaster, "fetch_price_history", return_value=price_df):
+            with patch.object(
+                forecaster,
+                "fetch_events",
+                return_value=pd.DataFrame(columns=["id", "type", "timestamp", "description"]),
+            ):
                 result = forecaster.predict()
                 # Should not crash
                 assert isinstance(result, pd.DataFrame)
@@ -1139,6 +1287,7 @@ class TestPredictEdgeCases:
 # ---------------------------------------------------------------------------
 # Model persistence
 # ---------------------------------------------------------------------------
+
 
 class TestModelPersistence:
     def test_save_load_empty_models(self, forecaster, tmp_path):
@@ -1156,8 +1305,7 @@ class TestModelPersistence:
         forecaster.models = {}
         forecaster.regime_models = {}
         # simulate stale regime artifacts from a prior regime-enabled run
-        for name in ["lgb_14d_q50_bear_e0.txt", "lgb_7d_q10_bull_e1.txt",
-                     "lgb_30d_q90_range.txt"]:
+        for name in ["lgb_14d_q50_bear_e0.txt", "lgb_7d_q10_bull_e1.txt", "lgb_30d_q90_range.txt"]:
             (tmp_path / name).write_text("stale")
         # a global model file must be left untouched
         (tmp_path / "lgb_14d_q50_e0.txt").write_text("keep")
@@ -1188,10 +1336,8 @@ class TestModelPersistence:
         forecaster.feature_cols = ["a", "b"]
         forecaster.confidence_thresholds = {}
         forecaster.tuned_params = {
-            7: {0.5: {"objective": "quantile", "alpha": 0.5, "max_bin": 63,
-                      "num_leaves": 31, "learning_rate": 0.03}},
-            30: {0.9: {"objective": "quantile", "alpha": 0.9, "max_bin": 63,
-                       "num_leaves": 23, "learning_rate": 0.05}},
+            7: {0.5: {"objective": "quantile", "alpha": 0.5, "max_bin": 63, "num_leaves": 31, "learning_rate": 0.03}},
+            30: {0.9: {"objective": "quantile", "alpha": 0.9, "max_bin": 63, "num_leaves": 23, "learning_rate": 0.05}},
         }
         forecaster.save_models()
         f2 = ItemForecaster(db_session=MagicMock(), model_dir=str(tmp_path))
@@ -1212,16 +1358,18 @@ class TestFeatureCache:
     def test_save_and_load_cache(self, forecaster, tmp_path):
         """Cached feature DataFrame round-trips through Parquet."""
         import os
+
         forecaster.model_dir = str(tmp_path)
-        df = pd.DataFrame({
-            "item_id": ["a", "b", "a", "b"],
-            "date": [date(2026, 1, 1), date(2026, 1, 1),
-                     date(2026, 1, 2), date(2026, 1, 2)],
-            "price": [10.0, 20.0, 11.0, 21.0],
-            "volume": [100, 200, 110, 220],
-            "feature_1": [0.1, 0.2, 0.3, 0.4],
-            "feature_2": [1.0, 2.0, 3.0, 4.0],
-        })
+        df = pd.DataFrame(
+            {
+                "item_id": ["a", "b", "a", "b"],
+                "date": [date(2026, 1, 1), date(2026, 1, 1), date(2026, 1, 2), date(2026, 1, 2)],
+                "price": [10.0, 20.0, 11.0, 21.0],
+                "volume": [100, 200, 110, 220],
+                "feature_1": [0.1, 0.2, 0.3, 0.4],
+                "feature_2": [1.0, 2.0, 3.0, 4.0],
+            }
+        )
         forecaster._save_engineered_cache(df)
         cache_path = os.path.join(str(tmp_path), ItemForecaster.ENGINEERED_CACHE_NAME)
         assert os.path.exists(cache_path)
@@ -1242,13 +1390,19 @@ class TestFeatureCache:
         """Cache older than 3 days triggers refresh (returns None)."""
         import json
         import os
+
         import pyarrow.parquet as pq
+
         forecaster.model_dir = str(tmp_path)
-        df = pd.DataFrame({
-            "item_id": ["a"], "date": [date(2020, 1, 1)],
-            "price": [10.0], "volume": [100],
-            "feature_1": [0.1],
-        })
+        df = pd.DataFrame(
+            {
+                "item_id": ["a"],
+                "date": [date(2020, 1, 1)],
+                "price": [10.0],
+                "volume": [100],
+                "feature_1": [0.1],
+            }
+        )
         # _save_engineered_cache sets attrs to today; overwrite PANDAS_ATTRS manually
         forecaster._save_engineered_cache(df)
         path = os.path.join(str(tmp_path), ItemForecaster.ENGINEERED_CACHE_NAME)
@@ -1274,19 +1428,20 @@ class TestTrainingWindow:
         base = date(2025, 1, 1)
         for item_id in range(200):
             for day_offset in range(250):
-                rows.append({
-                    "item_id": f"item_{item_id}",
-                    "date": base + timedelta(days=day_offset),
-                    "price": 10.0 + item_id,
-                    "volume": 100,
-                })
+                rows.append(
+                    {
+                        "item_id": f"item_{item_id}",
+                        "date": base + timedelta(days=day_offset),
+                        "price": 10.0 + item_id,
+                        "volume": 100,
+                    }
+                )
         return pd.DataFrame(rows)
 
     def test_subsample_bounds_rows_and_preserves_calendar(self, forecaster, wide_price_df):
         """Subsampling must cut rows but keep the full calendar window intact
         so expanding-window CV still has enough distinct dates."""
-        forecaster._supply_meta_cache = pd.DataFrame(
-            columns=["item_id", "rarity", "rarity_rank", "weapon_type"])
+        forecaster._supply_meta_cache = pd.DataFrame(columns=["item_id", "rarity", "rarity_rank", "weapon_type"])
 
         dates_before = wide_price_df["date"].nunique()
         out = forecaster._stratified_item_subsample(wide_price_df, max_rows=10_000)
@@ -1300,8 +1455,7 @@ class TestTrainingWindow:
     def test_subsample_keeps_full_item_history(self, forecaster, wide_price_df):
         """Whole item histories are kept (not individual rows) so lag/rolling
         features stay valid."""
-        forecaster._supply_meta_cache = pd.DataFrame(
-            columns=["item_id", "rarity", "rarity_rank", "weapon_type"])
+        forecaster._supply_meta_cache = pd.DataFrame(columns=["item_id", "rarity", "rarity_rank", "weapon_type"])
         out = forecaster._stratified_item_subsample(wide_price_df, max_rows=10_000)
         counts = out.groupby("item_id").size()
         assert (counts == 250).all()  # every kept item has its full history
@@ -1329,8 +1483,7 @@ class TestTrainingWindow:
         """purge_days=0 (default) must reproduce the un-purged splits exactly."""
         base = date(2025, 1, 1)
         sorted_dates = [base + timedelta(days=i) for i in range(500)]
-        assert (forecaster._compute_cv_splits(sorted_dates)
-                == forecaster._compute_cv_splits(sorted_dates, purge_days=0))
+        assert forecaster._compute_cv_splits(sorted_dates) == forecaster._compute_cv_splits(sorted_dates, purge_days=0)
 
     def test_cv_last_fold_validates_on_frame_end(self, forecaster):
         """The grid is end-anchored: the most recent fold must validate on the
@@ -1387,9 +1540,18 @@ class TestFeatureAllowlist:
     """Restricting the model to price/technical features (2026-07-24 ablation)."""
 
     def test_allowlist_keeps_only_price_group(self, forecaster):
-        cols = ["price_lag_1d", "return_7d", "rsi_14", "macd_line",
-                "event_decay_major", "social_mentions_7d", "market_return_30d",
-                "is_knife", "day_of_week", "supply_sell_listings"]
+        cols = [
+            "price_lag_1d",
+            "return_7d",
+            "rsi_14",
+            "macd_line",
+            "event_decay_major",
+            "social_mentions_7d",
+            "market_return_30d",
+            "is_knife",
+            "day_of_week",
+            "supply_sell_listings",
+        ]
         kept = forecaster._apply_feature_allowlist(cols, ["price_technicals"])
         assert kept == ["price_lag_1d", "return_7d", "rsi_14", "macd_line"]
 
@@ -1422,13 +1584,17 @@ class TestMomentumRecenter:
         assert np.allclose(nh, [16.0, 1.0])
 
     def test_nan_momentum_keeps_model_forecast(self, forecaster):
-        low = np.array([-4.0]); mid = np.array([1.0]); high = np.array([6.0])
+        low = np.array([-4.0])
+        mid = np.array([1.0])
+        high = np.array([6.0])
         mom = np.array([np.nan])
         nl, nm, nh = forecaster._recenter_on_momentum(low, mid, high, mom)
         assert np.allclose([nl[0], nm[0], nh[0]], [-4.0, 1.0, 6.0])
 
     def test_recentred_triple_stays_monotone(self, forecaster):
-        low = np.array([-4.0, -1.0]); mid = np.array([0.0, 2.0]); high = np.array([6.0, 3.0])
+        low = np.array([-4.0, -1.0])
+        mid = np.array([0.0, 2.0])
+        high = np.array([6.0, 3.0])
         mom = np.array([10.0, -20.0])
         nl, nm, nh = forecaster._recenter_on_momentum(low, mid, high, mom)
         assert np.all(nl <= nm) and np.all(nm <= nh)
@@ -1456,7 +1622,7 @@ class TestDirectionClassifierHelpers:
         high = np.array([5.0, 5.0, 5.0])
         cls = np.array([0, 1, 2])  # down, flat, up
         nl, nm, nh = forecaster._recenter_on_direction(low, mid, high, cls)
-        assert list(nm) == [-2.0, 0.0, 2.0]           # sign follows class, |mid| kept
+        assert list(nm) == [-2.0, 0.0, 2.0]  # sign follows class, |mid| kept
         # half-widths preserved: low_off=2, high_off=3
         assert list(nl) == [-4.0, -2.0, 0.0]
         assert list(nh) == [1.0, 3.0, 5.0]
@@ -1466,8 +1632,16 @@ class TestDirectionClassifierHelpers:
         # drop_rate is a DART dropout param and used to be carried through. No
         # horizon boosts with DART any more, so it is no longer an extracted key
         # and must be left behind like objective/alpha.
-        pqp = {0.5: {"num_leaves": 63, "learning_rate": 0.04, "objective": "quantile",
-                     "alpha": 0.5, "max_depth": 6, "drop_rate": 0.1}}
+        pqp = {
+            0.5: {
+                "num_leaves": 63,
+                "learning_rate": 0.04,
+                "objective": "quantile",
+                "alpha": 0.5,
+                "max_depth": 6,
+                "drop_rate": 0.1,
+            }
+        }
         tp = forecaster._direction_tree_params(pqp)
         assert tp == {"num_leaves": 63, "learning_rate": 0.04, "max_depth": 6}
         assert "objective" not in tp and "alpha" not in tp
@@ -1531,8 +1705,11 @@ class TestQ50RowSampling:
         """Params cached by an older build carry GOSS keys for q50; the warm
         retrain path must not let them through."""
         cached = {
-            "num_leaves": 47, "learning_rate": 0.01,
-            "data_sample_strategy": "goss", "top_rate": 0.2, "other_rate": 0.1,
+            "num_leaves": 47,
+            "learning_rate": 0.01,
+            "data_sample_strategy": "goss",
+            "top_rate": 0.2,
+            "other_rate": 0.1,
         }
         out = forecaster._apply_row_sampling(dict(cached), 0.5)
         assert out["data_sample_strategy"] == "bagging"
@@ -1541,8 +1718,7 @@ class TestQ50RowSampling:
         assert out["num_leaves"] == 47 and out["learning_rate"] == 0.01
 
     def test_apply_preserves_cached_subsample(self, forecaster):
-        out = forecaster._apply_row_sampling(
-            {"subsample": 0.7}, 0.5, subsample=0.7)
+        out = forecaster._apply_row_sampling({"subsample": 0.7}, 0.5, subsample=0.7)
         assert out["subsample"] == 0.7
 
 
@@ -1567,14 +1743,15 @@ class TestRecencyWeighting:
     @pytest.fixture(autouse=True)
     def _enable_decay(self, monkeypatch):
         import models.forecaster as fmod
-        monkeypatch.setattr(fmod, "SAMPLE_WEIGHT_HALFLIFE_DAYS",
-                            float(self.HALF_LIFE))
+
+        monkeypatch.setattr(fmod, "SAMPLE_WEIGHT_HALFLIFE_DAYS", float(self.HALF_LIFE))
 
     def test_production_default_is_disabled(self):
         """Guards the 2026-07-29 A/B decision: decay is off in production."""
         assert SAMPLE_WEIGHT_HALFLIFE_DAYS == 0.0, (
             "recency decay was A/B'd and failed its gate on 3 of 4 horizons; "
-            "re-enabling needs a fresh A/B, not a constant edit")
+            "re-enabling needs a fresh A/B, not a constant edit"
+        )
 
     @staticmethod
     def _frame(n_items=4, n_days=800, end="2026-07-18"):
@@ -1582,9 +1759,14 @@ class TestRecencyWeighting:
         rows = []
         for i in range(n_items):
             for d in dates:
-                rows.append({"item_id": f"item_{i}", "date": d.date(),
-                             "price": 10.0 + (i + 1) * 0.01 * (d.dayofyear % 7),
-                             "target_return_7d": 1.0})
+                rows.append(
+                    {
+                        "item_id": f"item_{i}",
+                        "date": d.date(),
+                        "price": 10.0 + (i + 1) * 0.01 * (d.dayofyear % 7),
+                        "target_return_7d": 1.0,
+                    }
+                )
         return pd.DataFrame(rows)
 
     def test_recent_rows_weigh_more_than_old(self, forecaster):
@@ -1596,8 +1778,8 @@ class TestRecencyWeighting:
         by_date = df.groupby("date")["w"].mean().sort_index()
         # Newest day must carry strictly more gradient weight than the oldest.
         assert by_date.iloc[-1] > by_date.iloc[0], (
-            f"no recency decay: newest={by_date.iloc[-1]:.4f} "
-            f"oldest={by_date.iloc[0]:.4f}")
+            f"no recency decay: newest={by_date.iloc[-1]:.4f} oldest={by_date.iloc[0]:.4f}"
+        )
 
     def test_decay_matches_configured_half_life(self, forecaster):
         # The price pattern repeats weekly, so the 30-day rolling vol is
@@ -1606,13 +1788,14 @@ class TestRecencyWeighting:
         hl = self.HALF_LIFE
         df = self._frame(n_items=2, n_days=2 * hl + 1)
         w = forecaster._compute_sample_weights(df, 7)
-        df = df.copy(); df["w"] = w
+        df = df.copy()
+        df["w"] = w
         by_date = df.groupby("date")["w"].mean().sort_index()
         newest, one_half_life = by_date.iloc[-1], by_date.iloc[-1 - hl]
         assert newest > 0
         assert one_half_life / newest == pytest.approx(0.5, rel=0.05), (
-            f"expected ~0.5 at one half-life, got "
-            f"{one_half_life / newest:.4f}")
+            f"expected ~0.5 at one half-life, got {one_half_life / newest:.4f}"
+        )
 
     def test_weights_stay_mean_normalized(self, forecaster):
         w = forecaster._compute_sample_weights(self._frame(), 7)
@@ -1620,14 +1803,15 @@ class TestRecencyWeighting:
 
     def test_decay_disabled_by_zero_half_life(self, forecaster, monkeypatch):
         import models.forecaster as fmod
+
         monkeypatch.setattr(fmod, "SAMPLE_WEIGHT_HALFLIFE_DAYS", 0)
         df = self._frame()
         w = forecaster._compute_sample_weights(df, 7)
-        df = df.copy(); df["w"] = w
+        df = df.copy()
+        df["w"] = w
         by_date = df.groupby("date")["w"].mean().sort_index()
         # With decay off, age must not matter: interior oldest ~= newest.
-        assert by_date.iloc[-1] == pytest.approx(by_date.iloc[40], rel=0.02), (
-            "half-life 0 must disable decay entirely")
+        assert by_date.iloc[-1] == pytest.approx(by_date.iloc[40], rel=0.02), "half-life 0 must disable decay entirely"
 
     def test_missing_date_column_is_tolerated(self, forecaster):
         df = self._frame().drop(columns=["date"])
@@ -1640,9 +1824,12 @@ class TestPredictEnsembleSafe:
 
     class _FakeModel:
         def __init__(self, nf, val):
-            self._nf = nf; self._val = val
+            self._nf = nf
+            self._val = val
+
         def num_feature(self):
             return self._nf
+
         def predict(self, X):
             return np.full(len(X), self._val)
 
@@ -1650,7 +1837,7 @@ class TestPredictEnsembleSafe:
         X = pd.DataFrame(np.zeros((4, 3)))  # 3 features
         ensemble = [self._FakeModel(3, 1.0), self._FakeModel(2, 9.0), self._FakeModel(3, 2.0)]
         out = forecaster._predict_ensemble_safe(ensemble, X)
-        assert len(out) == 2                       # the 2-feature model is skipped
+        assert len(out) == 2  # the 2-feature model is skipped
         assert all(np.allclose(a, v) for a, v in zip(out, [1.0, 2.0]))
 
     def test_all_incompatible_returns_empty(self, forecaster):
@@ -1671,6 +1858,7 @@ class TestPredictEnsembleSafe:
         backfilled and the guard is removed, so training/CV now cover 2026
         (the current regime). This guards against the guard being
         reintroduced and silently truncating recent data again."""
+
         def mock_fetch(*args, **kwargs):
             np.random.seed(7)
             rows = []
@@ -1680,19 +1868,21 @@ class TestPredictEnsembleSafe:
                 for day_offset in range(300):
                     d = date(2025, 6, 1) + timedelta(days=day_offset)
                     price *= 1 + np.random.randn() * 0.01
-                    rows.append({
-                        "item_id": f"item_{item_id}",
-                        "date": d,
-                        "price": round(max(price, 0.01), 2),
-                        "volume": int(max(np.random.poisson(200), 0)),
-                    })
+                    rows.append(
+                        {
+                            "item_id": f"item_{item_id}",
+                            "date": d,
+                            "price": round(max(price, 0.01), 2),
+                            "volume": int(max(np.random.poisson(200), 0)),
+                        }
+                    )
             return pd.DataFrame(rows)
 
         def mock_events(*args, **kwargs):
             return pd.DataFrame(columns=["id", "type", "timestamp", "description", "date"])
 
-        with patch.object(forecaster, 'fetch_price_history', mock_fetch):
-            with patch.object(forecaster, 'fetch_events', mock_events):
+        with patch.object(forecaster, "fetch_price_history", mock_fetch):
+            with patch.object(forecaster, "fetch_events", mock_events):
                 df = forecaster.build_training_data(days_back=300, backfilled_only=False)
 
         years = pd.DatetimeIndex(df["date"]).year
@@ -1736,13 +1926,31 @@ class TestForecastBlending:
     def test_prior_forecast_parses_return_space(self, forecaster):
         forecaster.db = MagicMock()
         rows = [
-            MagicMock(item_id=1, price_low=11.0, price_mid=12.0, price_high=13.0,
-                      current_price=10.0, forecast_date=date(2026, 7, 15)),
+            MagicMock(
+                item_id=1,
+                price_low=11.0,
+                price_mid=12.0,
+                price_high=13.0,
+                current_price=10.0,
+                forecast_date=date(2026, 7, 15),
+            ),
             # Older forecast for the same item — must be ignored.
-            MagicMock(item_id=1, price_low=10.5, price_mid=11.0, price_high=12.5,
-                      current_price=10.0, forecast_date=date(2026, 7, 14)),
-            MagicMock(item_id=2, price_low=9.0, price_mid=10.0, price_high=11.0,
-                      current_price=20.0, forecast_date=date(2026, 7, 15)),
+            MagicMock(
+                item_id=1,
+                price_low=10.5,
+                price_mid=11.0,
+                price_high=12.5,
+                current_price=10.0,
+                forecast_date=date(2026, 7, 14),
+            ),
+            MagicMock(
+                item_id=2,
+                price_low=9.0,
+                price_mid=10.0,
+                price_high=11.0,
+                current_price=20.0,
+                forecast_date=date(2026, 7, 15),
+            ),
         ]
         slug_rows = [
             MagicMock(item_id="1", id=1),
@@ -1773,13 +1981,13 @@ class TestForecastBlending:
             "mid_ret": np.array([15.0, 5.0]),
             "high_ret": np.array([15.0, 5.0]),
         }
-        low, mid, high = forecaster._blend_returns_with_prior(
-            current.copy(), current.copy(), current.copy(), prior, w)
+        low, mid, high = forecaster._blend_returns_with_prior(current.copy(), current.copy(), current.copy(), prior, w)
         # Blended value lies strictly between current and prior (toward prior).
         assert np.all(mid > current) and np.all(mid < prior["mid_ret"])
         # With weight 0 the prediction is unchanged.
         low0, mid0, high0 = forecaster._blend_returns_with_prior(
-            current.copy(), current.copy(), current.copy(), prior, 0.0)
+            current.copy(), current.copy(), current.copy(), prior, 0.0
+        )
         assert np.all(mid0 == current)
 
     def test_blend_noop_without_prior(self, forecaster):
@@ -1791,13 +1999,15 @@ class TestForecastBlending:
             "high_ret": np.full(2, np.nan),
         }
         low, mid, high = forecaster._blend_returns_with_prior(
-            current.copy(), current.copy(), current.copy(), prior, 0.15)
+            current.copy(), current.copy(), current.copy(), prior, 0.15
+        )
         assert np.all(mid == current)
 
 
 # ---------------------------------------------------------------------------
 # Regime-switching models
 # ---------------------------------------------------------------------------
+
 
 class TestRegimeSwitching:
     def test_assign_regime_label_bear(self, forecaster):
@@ -1820,10 +2030,12 @@ class TestRegimeSwitching:
 
     def test_assign_regime_labels_dataframe(self, forecaster):
         """_assign_regime_labels should label rows based on market_return_30d."""
-        df = pd.DataFrame({
-            "market_return_30d": [-5.0, 0.0, 5.0, np.nan],
-            "price": [10.0] * 4,
-        })
+        df = pd.DataFrame(
+            {
+                "market_return_30d": [-5.0, 0.0, 5.0, np.nan],
+                "price": [10.0] * 4,
+            }
+        )
         labels = forecaster._assign_regime_labels(df)
         assert labels.iloc[0] == "bear"
         assert labels.iloc[1] == "range"
@@ -1838,25 +2050,31 @@ class TestRegimeSwitching:
 
     def test_detect_current_regime_from_latest(self, forecaster):
         """_detect_current_regime uses the most recent row's market_return_30d."""
-        df = pd.DataFrame({
-            "market_return_30d": [1.0, 2.0, -5.0, 0.5],
-            "date": pd.date_range("2026-01-01", periods=4),
-        })
+        df = pd.DataFrame(
+            {
+                "market_return_30d": [1.0, 2.0, -5.0, 0.5],
+                "date": pd.date_range("2026-01-01", periods=4),
+            }
+        )
         regime = forecaster._detect_current_regime(df)
         assert regime == "range"  # latest row has 0.5
 
     def test_detect_current_regime_bull(self, forecaster):
-        df = pd.DataFrame({
-            "market_return_30d": [1.0, 5.0],
-            "date": pd.date_range("2026-01-01", periods=2),
-        })
+        df = pd.DataFrame(
+            {
+                "market_return_30d": [1.0, 5.0],
+                "date": pd.date_range("2026-01-01", periods=2),
+            }
+        )
         assert forecaster._detect_current_regime(df) == "bull"
 
     def test_detect_current_regime_bear(self, forecaster):
-        df = pd.DataFrame({
-            "market_return_30d": [1.0, -10.0],
-            "date": pd.date_range("2026-01-01", periods=2),
-        })
+        df = pd.DataFrame(
+            {
+                "market_return_30d": [1.0, -10.0],
+                "date": pd.date_range("2026-01-01", periods=2),
+            }
+        )
         assert forecaster._detect_current_regime(df) == "bear"
 
     def test_detect_current_regime_missing_column(self, forecaster):
@@ -1866,14 +2084,17 @@ class TestRegimeSwitching:
 
     def test_detect_current_regime_empty_series(self, forecaster):
         """If market_return_30d is all NaN, default to range."""
-        df = pd.DataFrame({
-            "market_return_30d": [np.nan, np.nan],
-            "date": pd.date_range("2026-01-01", periods=2),
-        })
+        df = pd.DataFrame(
+            {
+                "market_return_30d": [np.nan, np.nan],
+                "date": pd.date_range("2026-01-01", periods=2),
+            }
+        )
         assert forecaster._detect_current_regime(df) == "range"
 
     def test_regime_columns_on_training_data(self, forecaster):
         """_regime column should be present after prepare_targets."""
+
         def mock_fetch(*args, **kwargs):
             np.random.seed(42)
             rows = []
@@ -1882,22 +2103,31 @@ class TestRegimeSwitching:
                 for day_offset in range(200):
                     d = date(2025, 1, 1) + timedelta(days=day_offset)
                     price *= 1 + np.random.randn() * 0.01
-                    rows.append({
-                        "item_id": f"item_{item_id}",
-                        "date": d,
-                        "price": round(max(price, 0.01), 2),
-                        "volume": int(max(np.random.poisson(200), 0)),
-                    })
+                    rows.append(
+                        {
+                            "item_id": f"item_{item_id}",
+                            "date": d,
+                            "price": round(max(price, 0.01), 2),
+                            "volume": int(max(np.random.poisson(200), 0)),
+                        }
+                    )
             return pd.DataFrame(rows)
 
         def mock_events(*args, **kwargs):
-            return pd.DataFrame([
-                {"id": 1, "type": "major", "timestamp": pd.Timestamp("2025-06-01"),
-                 "description": "Major", "date": date(2025, 6, 1)},
-            ])
+            return pd.DataFrame(
+                [
+                    {
+                        "id": 1,
+                        "type": "major",
+                        "timestamp": pd.Timestamp("2025-06-01"),
+                        "description": "Major",
+                        "date": date(2025, 6, 1),
+                    },
+                ]
+            )
 
-        with patch.object(forecaster, 'fetch_price_history', mock_fetch):
-            with patch.object(forecaster, 'fetch_events', mock_events):
+        with patch.object(forecaster, "fetch_price_history", mock_fetch):
+            with patch.object(forecaster, "fetch_events", mock_events):
                 df = forecaster.build_training_data(days_back=200, backfilled_only=False)
 
         # Simulate the train() flow: prepare targets and check _regime column
@@ -1933,29 +2163,41 @@ class TestRegimeSwitching:
                     d = date(2024, 1, 1) + timedelta(days=day_offset)
                     # Vary returns to create different regimes
                     price *= 1 + np.random.randn() * 0.02
-                    rows.append({
-                        "item_id": f"item_{item_id}",
-                        "date": d,
-                        "price": round(max(price, 0.01), 2),
-                        "volume": int(max(np.random.poisson(200), 0)),
-                    })
+                    rows.append(
+                        {
+                            "item_id": f"item_{item_id}",
+                            "date": d,
+                            "price": round(max(price, 0.01), 2),
+                            "volume": int(max(np.random.poisson(200), 0)),
+                        }
+                    )
             df = pd.DataFrame(rows)
             return df
 
         def mock_events(*args, **kwargs):
-            return pd.DataFrame([
-                {"id": 1, "type": "major", "timestamp": pd.Timestamp("2025-06-01"),
-                 "description": "Major", "date": date(2025, 6, 1)},
-            ])
+            return pd.DataFrame(
+                [
+                    {
+                        "id": 1,
+                        "type": "major",
+                        "timestamp": pd.Timestamp("2025-06-01"),
+                        "description": "Major",
+                        "date": date(2025, 6, 1),
+                    },
+                ]
+            )
 
-        with patch.object(f, 'fetch_price_history', mock_fetch):
-            with patch.object(f, 'fetch_events', mock_events):
-                with patch.object(f, '_fetch_supply_metadata',
-                                  return_value=pd.DataFrame(columns=["item_id", "rarity", "rarity_rank", "weapon_type"])):
-                    with patch.object(f, '_fetch_item_metadata',
-                                      return_value=pd.DataFrame(columns=["item_id", "name", "type"])):
-                        with patch.dict('os.environ', {'SKIP_CV': '1', 'FORCE_HP_SEARCH': '1'}):
-                            f.train(max_rows=100_000)
+        with patch.object(f, "fetch_price_history", mock_fetch), patch.object(f, "fetch_events", mock_events):
+            with patch.object(
+                f,
+                "_fetch_supply_metadata",
+                return_value=pd.DataFrame(columns=["item_id", "rarity", "rarity_rank", "weapon_type"]),
+            ):
+                with patch.object(
+                    f, "_fetch_item_metadata", return_value=pd.DataFrame(columns=["item_id", "name", "type"])
+                ):
+                    with patch.dict("os.environ", {"SKIP_CV": "1", "FORCE_HP_SEARCH": "1"}):
+                        f.train(max_rows=100_000)
 
         # Should have global models for all horizons and quantiles
         for h in f.HORIZONS:
@@ -1974,10 +2216,14 @@ class TestRegimeSwitching:
 
     def test_predict_falls_back_to_global_when_no_regime_model(self, forecaster):
         """When no regime models exist, predict should use global models."""
-        with patch.object(forecaster, 'fetch_price_history',
-                          return_value=pd.DataFrame(columns=["item_id", "date", "price", "volume"])):
-            with patch.object(forecaster, 'fetch_events',
-                              return_value=pd.DataFrame(columns=["id", "type", "timestamp", "description"])):
+        with patch.object(
+            forecaster, "fetch_price_history", return_value=pd.DataFrame(columns=["item_id", "date", "price", "volume"])
+        ):
+            with patch.object(
+                forecaster,
+                "fetch_events",
+                return_value=pd.DataFrame(columns=["id", "type", "timestamp", "description"]),
+            ):
                 # No regime models loaded, should use global (which are also empty)
                 result = forecaster.predict()
                 assert isinstance(result, pd.DataFrame)
@@ -1994,10 +2240,18 @@ class TestRegimeSwitching:
         X = np.random.randn(100, 2).astype(np.float32)
         y = np.random.randn(100)
         ds = lgb.Dataset(X, y)
-        model = lgb.train({"objective": "regression", "verbosity": -1,
-                           "max_bin": 63, "min_data_in_leaf": 1,
-                           "num_leaves": 3, "learning_rate": 0.1},
-                          ds, num_boost_round=5)
+        model = lgb.train(
+            {
+                "objective": "regression",
+                "verbosity": -1,
+                "max_bin": 63,
+                "min_data_in_leaf": 1,
+                "num_leaves": 3,
+                "learning_rate": 0.1,
+            },
+            ds,
+            num_boost_round=5,
+        )
 
         forecaster.regime_models[("range", 7, 0.5)] = [model]
         forecaster.confidence_thresholds = {7: {"high_range": 0.15, "high_change": 0.01, "high_accuracy": 99.0}}
@@ -2024,13 +2278,15 @@ class TestRegimeSwitching:
                 regime = "bull"
             for item_id in range(3):
                 price = 50.0 + (10.0 if regime == "bull" else -10.0 if regime == "bear" else 0.0)
-                rows.append({
-                    "item_id": f"item_{item_id}",
-                    "date": d,
-                    "price": price + np.random.randn() * 0.5,
-                    "volume": 100,
-                    "_regime": regime,
-                })
+                rows.append(
+                    {
+                        "item_id": f"item_{item_id}",
+                        "date": d,
+                        "price": price + np.random.randn() * 0.5,
+                        "volume": 100,
+                        "_regime": regime,
+                    }
+                )
 
         tdf = pd.DataFrame(rows)
 
@@ -2044,6 +2300,7 @@ class TestRegimeSwitching:
 # ---------------------------------------------------------------------------
 # Voted price frame cache
 # ---------------------------------------------------------------------------
+
 
 class TestVotedPriceCache:
     """The voted frame dominates ``fetch_price_history`` and is a pure
@@ -2064,12 +2321,14 @@ class TestVotedPriceCache:
         archive_dir = tmp_path / "price-archive"
         archive_dir.mkdir()
         for year in (2025, 2026):
-            pd.DataFrame({
-                "item_slug": ["ak47", "awp"],
-                # `day`, as the real archive names it -- not `date`.
-                "day": pd.to_datetime([f"{year}-01-01", f"{year}-01-02"]),
-                "mean_price": [10.5, 99.9],
-            }).to_parquet(archive_dir / f"prices-{year}.parquet")
+            pd.DataFrame(
+                {
+                    "item_slug": ["ak47", "awp"],
+                    # `day`, as the real archive names it -- not `date`.
+                    "day": pd.to_datetime([f"{year}-01-01", f"{year}-01-02"]),
+                    "mean_price": [10.5, 99.9],
+                }
+            ).to_parquet(archive_dir / f"prices-{year}.parquet")
         forecaster.cache_dir = str(cache_dir)
         forecaster.archive_dir = archive_dir
         return forecaster
@@ -2077,14 +2336,16 @@ class TestVotedPriceCache:
     @pytest.fixture
     def voted_df(self):
         """A voted frame shaped like fetch_price_history's return value."""
-        return pd.DataFrame({
-            "item_id": ["ak47", "ak47", "awp"],
-            "timestamp": pd.to_datetime(["2026-01-01", "2026-01-02", "2026-01-01"]),
-            "date": [date(2026, 1, 1), date(2026, 1, 2), date(2026, 1, 1)],
-            "price": [10.5, 11.0, 99.9],
-            "volume": [100, 120, 5],
-            "source": ["steamcommunity", "steamcommunity", None],
-        })
+        return pd.DataFrame(
+            {
+                "item_id": ["ak47", "ak47", "awp"],
+                "timestamp": pd.to_datetime(["2026-01-01", "2026-01-02", "2026-01-01"]),
+                "date": [date(2026, 1, 1), date(2026, 1, 2), date(2026, 1, 1)],
+                "price": [10.5, 11.0, 99.9],
+                "volume": [100, 120, 5],
+                "source": ["steamcommunity", "steamcommunity", None],
+            }
+        )
 
     # -- key derivation ---------------------------------------------------
 
@@ -2099,21 +2360,25 @@ class TestVotedPriceCache:
         before = f._voted_cache_key(1460, False, None)
         # Aggregator appends a day: same filename, one more row. Both legs of
         # the fingerprint (row count and byte size) move.
-        pd.DataFrame({
-            "item_slug": ["ak47", "awp", "m4a4"],
-            "day": pd.to_datetime(["2026-01-01", "2026-01-02", "2026-01-03"]),
-            "mean_price": [10.5, 99.9, 42.0],
-        }).to_parquet(f.archive_dir / "prices-2026.parquet")
+        pd.DataFrame(
+            {
+                "item_slug": ["ak47", "awp", "m4a4"],
+                "day": pd.to_datetime(["2026-01-01", "2026-01-02", "2026-01-03"]),
+                "mean_price": [10.5, 99.9, 42.0],
+            }
+        ).to_parquet(f.archive_dir / "prices-2026.parquet")
         assert f._voted_cache_key(1460, False, None) != before
 
     def test_key_changes_when_archive_gains_a_file(self, cached_forecaster):
         f = cached_forecaster
         before = f._voted_cache_key(1460, False, None)
-        pd.DataFrame({
-            "item_slug": ["ak47"],
-            "day": pd.to_datetime(["2027-01-01"]),
-            "mean_price": [12.0],
-        }).to_parquet(f.archive_dir / "prices-2027.parquet")
+        pd.DataFrame(
+            {
+                "item_slug": ["ak47"],
+                "day": pd.to_datetime(["2027-01-01"]),
+                "mean_price": [12.0],
+            }
+        ).to_parquet(f.archive_dir / "prices-2027.parquet")
         assert f._voted_cache_key(1460, False, None) != before
 
     def test_key_ignores_non_price_files(self, cached_forecaster):
@@ -2133,14 +2398,12 @@ class TestVotedPriceCache:
 
     def test_key_varies_with_slug_set(self, cached_forecaster):
         f = cached_forecaster
-        assert (f._voted_cache_key(1460, True, {"ak47"})
-                != f._voted_cache_key(1460, True, {"ak47", "awp"}))
+        assert f._voted_cache_key(1460, True, {"ak47"}) != f._voted_cache_key(1460, True, {"ak47", "awp"})
 
     def test_key_ignores_slug_set_ordering(self, cached_forecaster):
         """The slug set comes from an unordered DB query."""
         f = cached_forecaster
-        assert (f._voted_cache_key(1460, True, {"ak47", "awp"})
-                == f._voted_cache_key(1460, True, {"awp", "ak47"}))
+        assert f._voted_cache_key(1460, True, {"ak47", "awp"}) == f._voted_cache_key(1460, True, {"awp", "ak47"})
 
     def test_key_varies_with_cache_version(self, cached_forecaster):
         """Bumping the version constant invalidates every entry — the escape
@@ -2207,8 +2470,7 @@ class TestVotedPriceCache:
 
     # -- kill switch ------------------------------------------------------
 
-    def test_disabled_by_env_skips_read_and_write(self, cached_forecaster, voted_df,
-                                                  monkeypatch):
+    def test_disabled_by_env_skips_read_and_write(self, cached_forecaster, voted_df, monkeypatch):
         f = cached_forecaster
         key = f._voted_cache_key(1460, False, None)
         f._save_voted_cache(key, voted_df)
@@ -2219,8 +2481,7 @@ class TestVotedPriceCache:
 
     # -- integration with fetch_price_history ------------------------------
 
-    def test_fetch_price_history_skips_voting_on_cache_hit(self, cached_forecaster,
-                                                           voted_df):
+    def test_fetch_price_history_skips_voting_on_cache_hit(self, cached_forecaster, voted_df):
         """The whole point: a second fetch over an unchanged archive must not
         re-run the price query or the voting pass.
 
@@ -2234,22 +2495,22 @@ class TestVotedPriceCache:
         key = f._voted_cache_key(1460, False, None)
         f._save_voted_cache(key, voted_df)
 
-        with patch.object(f, "_apply_multi_source_voting") as vote, \
-             patch.object(f, "_fetch_voted_price_history") as query:
+        with (
+            patch.object(f, "_apply_multi_source_voting") as vote,
+            patch.object(f, "_fetch_voted_price_history") as query,
+        ):
             out = f.fetch_price_history(days_back=1460, backfilled_only=False)
 
         vote.assert_not_called()
         query.assert_not_called()
         pd.testing.assert_frame_equal(out, voted_df)
 
-    def test_fetch_price_history_populates_cache_on_miss(self, cached_forecaster,
-                                                         voted_df, monkeypatch):
+    def test_fetch_price_history_populates_cache_on_miss(self, cached_forecaster, voted_df, monkeypatch):
         f = cached_forecaster
         key = f._voted_cache_key(1460, False, None)
         assert f._load_voted_cache(key) is None
 
-        monkeypatch.setattr(f, "_fetch_voted_price_history",
-                            lambda **kw: voted_df.copy())
+        monkeypatch.setattr(f, "_fetch_voted_price_history", lambda **kw: voted_df.copy())
         out = f.fetch_price_history(days_back=1460, backfilled_only=False)
 
         pd.testing.assert_frame_equal(out, voted_df)
@@ -2259,6 +2520,7 @@ class TestVotedPriceCache:
 # ---------------------------------------------------------------------------
 # Chunked prediction (bounded-memory feature engineering)
 # ---------------------------------------------------------------------------
+
 
 class TestChunkedPrediction:
     """The chunked predict path must be numerically identical to the whole-frame
@@ -2273,12 +2535,14 @@ class TestChunkedPrediction:
             for day_offset in range(n_days):
                 d = date(2026, 1, 1) + timedelta(days=day_offset)
                 trend = price * (1 + 0.001 * day_offset)
-                rows.append({
-                    "item_id": f"item_{item_id}",
-                    "date": d,
-                    "price": round(trend + np.random.normal(0, trend * 0.01), 2),
-                    "volume": int(np.random.poisson(100 + day_offset * 2)),
-                })
+                rows.append(
+                    {
+                        "item_id": f"item_{item_id}",
+                        "date": d,
+                        "price": round(trend + np.random.normal(0, trend * 0.01), 2),
+                        "volume": int(np.random.poisson(100 + day_offset * 2)),
+                    }
+                )
         return pd.DataFrame(rows)
 
     @staticmethod
@@ -2293,19 +2557,17 @@ class TestChunkedPrediction:
         price_df = self._wide_price_df()
         df = forecaster.engineer_features(price_df, empty_events_df)
 
-        whole = forecaster._market_from_partials(
-            [forecaster._accumulate_market_partials(df)]
-        )
+        whole = forecaster._market_from_partials([forecaster._accumulate_market_partials(df)])
 
         items = sorted(df["item_id"].unique())
-        chunked = forecaster._market_from_partials([
-            forecaster._accumulate_market_partials(df[df["item_id"].isin(c)])
-            for c in (items[:5], items[5:9], items[9:])
-        ])
-
-        pd.testing.assert_frame_equal(
-            whole.sort_index(), chunked.sort_index(), check_like=True
+        chunked = forecaster._market_from_partials(
+            [
+                forecaster._accumulate_market_partials(df[df["item_id"].isin(c)])
+                for c in (items[:5], items[5:9], items[9:])
+            ]
         )
+
+        pd.testing.assert_frame_equal(whole.sort_index(), chunked.sort_index(), check_like=True)
 
     def test_chunked_engineering_matches_whole_frame(self, forecaster, empty_events_df):
         """End-to-end: chunked tails == whole-frame tails, value for value."""
@@ -2326,20 +2588,17 @@ class TestChunkedPrediction:
 
         # Chunked path, forced to several chunks.
         import os as _os
+
         _os.environ["PREDICT_CHUNK_ITEMS"] = "4"
         try:
-            chunked = forecaster._engineer_features_chunked(
-                price_df, empty_events_df, eligible
-            )
+            chunked = forecaster._engineer_features_chunked(price_df, empty_events_df, eligible)
         finally:
             _os.environ.pop("PREDICT_CHUNK_ITEMS", None)
 
         chunked = chunked.sort_values(["item_id", "date"]).reset_index(drop=True)
 
         assert len(chunked) == len(whole_tail)
-        pd.testing.assert_frame_equal(
-            whole_tail, chunked, check_like=True, rtol=1e-9, atol=1e-9
-        )
+        pd.testing.assert_frame_equal(whole_tail, chunked, check_like=True, rtol=1e-9, atol=1e-9)
 
     def test_chunking_disabled_by_zero(self, forecaster, monkeypatch):
         monkeypatch.setenv("PREDICT_CHUNK_ITEMS", "0")
@@ -2366,20 +2625,30 @@ class TestSampleWeights:
         for i in range(50):
             scale = 0.005 if i < 40 else 0.15  # 40 flat, 10 volatile
             price = 100 * np.cumprod(1 + rng.normal(0, scale, n))
-            frames.append(pd.DataFrame({
-                "item_id": f"it{i}", "date": dates, "price": price,
-                "target_return_7d": rng.normal(0, 0.1, n)}))
+            frames.append(
+                pd.DataFrame(
+                    {"item_id": f"it{i}", "date": dates, "price": price, "target_return_7d": rng.normal(0, 0.1, n)}
+                )
+            )
         # A no-history item: too few observations for the rolling std.
-        frames.append(pd.DataFrame({
-            "item_id": "short",
-            "date": [base, base + timedelta(days=1), base + timedelta(days=2)],
-            "price": [10.0, 10.0, 10.0], "target_return_7d": [0.0, 0.0, 0.0]}))
+        frames.append(
+            pd.DataFrame(
+                {
+                    "item_id": "short",
+                    "date": [base, base + timedelta(days=1), base + timedelta(days=2)],
+                    "price": [10.0, 10.0, 10.0],
+                    "target_return_7d": [0.0, 0.0, 0.0],
+                }
+            )
+        )
         return pd.concat(frames, ignore_index=True)
 
     def test_weights_are_not_degenerate(self):
         # Isolate the volatility signal from recency decay and direction upweight.
-        with patch("models.forecaster.SAMPLE_WEIGHT_HALFLIFE_DAYS", None), \
-             patch("models.forecaster.DIRECTION_UPWEIGHT", 1.0):
+        with (
+            patch("models.forecaster.SAMPLE_WEIGHT_HALFLIFE_DAYS", None),
+            patch("models.forecaster.DIRECTION_UPWEIGHT", 1.0),
+        ):
             tdf = self._frame()
             w = ItemForecaster._compute_sample_weights(tdf, 7)
 
@@ -2392,8 +2661,10 @@ class TestSampleWeights:
         assert w[vol].mean() > w[flat].mean(), "movers must outweigh flat items"
 
     def test_no_history_rows_are_not_max_weighted(self):
-        with patch("models.forecaster.SAMPLE_WEIGHT_HALFLIFE_DAYS", None), \
-             patch("models.forecaster.DIRECTION_UPWEIGHT", 1.0):
+        with (
+            patch("models.forecaster.SAMPLE_WEIGHT_HALFLIFE_DAYS", None),
+            patch("models.forecaster.DIRECTION_UPWEIGHT", 1.0),
+        ):
             tdf = self._frame()
             w = ItemForecaster._compute_sample_weights(tdf, 7)
 

@@ -26,6 +26,7 @@ training label and was refuted.
 
 See docs/changelog/2026-08-12-conformal-basis-follows-serving.md.
 """
+
 from __future__ import annotations
 
 from unittest.mock import MagicMock
@@ -33,10 +34,8 @@ from unittest.mock import MagicMock
 import numpy as np
 import pandas as pd
 import pytest
-
 from models.conformal import ALPHA, NOMINAL_COVERAGE, band, calibrate
-from models.forecaster import (ANCHOR_TIED_COL, ItemForecaster,
-                               calibration_target_col)
+from models.forecaster import ANCHOR_TIED_COL, ItemForecaster, calibration_target_col
 
 
 def _forecaster(tmp_path):
@@ -58,8 +57,8 @@ class TestTheMechanism:
         # The raw quote sits `k` away from its own local median.
         k = np.clip(1.0 + rng.normal(scale=anchor_deviation_sd, size=n), 0.2, 5.0)
 
-        raw_basis = ((1.0 + r) / k - 1.0) * 100      # what q_hat is fitted on
-        served_basis = r * 100                        # what the band is scored on
+        raw_basis = ((1.0 + r) / k - 1.0) * 100  # what q_hat is fitted on
+        served_basis = r * 100  # what the band is scored on
 
         q_hat = calibrate(raw_basis, sigma, ALPHA)
         low, high = band(np.zeros(n), sigma, q_hat)
@@ -113,8 +112,7 @@ class TestPrepareTargets:
         df = _forecaster(tmp_path).prepare_targets(_frame(), horizon=3)
         tied = df[df[ANCHOR_TIED_COL] & df["target_return_3d"].notna()]
         assert len(tied) >= 10
-        assert np.allclose(tied["target_return_3d"],
-                           tied[calibration_target_col(3)])
+        assert np.allclose(tied["target_return_3d"], tied[calibration_target_col(3)])
 
     def test_the_two_bases_differ_on_every_deviating_anchor(self, tmp_path):
         """The whole point: wherever the raw quote is off its own median, a
@@ -122,8 +120,7 @@ class TestPrepareTargets:
         df = _forecaster(tmp_path).prepare_targets(_frame(), horizon=3)
         dev = df[~df[ANCHOR_TIED_COL] & df["target_return_3d"].notna()]
         assert len(dev) >= 10
-        assert not np.any(np.isclose(dev["target_return_3d"],
-                                     dev[calibration_target_col(3)]))
+        assert not np.any(np.isclose(dev["target_return_3d"], dev[calibration_target_col(3)]))
 
     def test_a_voided_label_voids_the_calibration_column_too(self, tmp_path):
         """A void means the return is fabricated, which is a property of the
@@ -139,7 +136,10 @@ class TestConformalRecords:
     def test_residual_is_measured_against_the_served_basis(self, tmp_path):
         fc = _forecaster(tmp_path)
         records = fc._conformal_records(
-            mid_ret=[1.0], actual_ret=[9.0], sigma=[0.1], current_price=[10.0],
+            mid_ret=[1.0],
+            actual_ret=[9.0],
+            sigma=[0.1],
+            current_price=[10.0],
             residual_actual_ret=[4.0],
         )
         assert records[0]["residual_pct"] == pytest.approx(4.0 - 1.0)
@@ -149,11 +149,17 @@ class TestConformalRecords:
         under cover of this change would alter a second thing silently."""
         fc = _forecaster(tmp_path)
         served = fc._conformal_records(
-            mid_ret=[1.0], actual_ret=[9.0], sigma=[0.1], current_price=[10.0],
+            mid_ret=[1.0],
+            actual_ret=[9.0],
+            sigma=[0.1],
+            current_price=[10.0],
             residual_actual_ret=[-9.0],
         )
         control = fc._conformal_records(
-            mid_ret=[1.0], actual_ret=[9.0], sigma=[0.1], current_price=[10.0],
+            mid_ret=[1.0],
+            actual_ret=[9.0],
+            sigma=[0.1],
+            current_price=[10.0],
         )
         assert served[0]["hit"] == control[0]["hit"]
         assert served[0]["change_pct"] == pytest.approx(control[0]["change_pct"])
@@ -169,8 +175,10 @@ class TestConformalRecords:
         """
         fc = _forecaster(tmp_path)
         records = fc._conformal_records(
-            mid_ret=[1.0, 1.0, 1.0], actual_ret=[9.0, 9.0, 9.0],
-            sigma=[0.1, 0.1, 0.1], current_price=[10.0, 0.0, 10.0],
+            mid_ret=[1.0, 1.0, 1.0],
+            actual_ret=[9.0, 9.0, 9.0],
+            sigma=[0.1, 0.1, 0.1],
+            current_price=[10.0, 0.0, 10.0],
             row_index=[500, 501, 502],
         )
         assert [r["row_index"] for r in records] == [500, 502]
@@ -179,8 +187,11 @@ class TestConformalRecords:
         fc = _forecaster(tmp_path)
         with pytest.raises(ValueError, match="positional"):
             fc._conformal_records(
-                mid_ret=[1.0, 1.0], actual_ret=[9.0, 9.0], sigma=[0.1, 0.1],
-                current_price=[10.0, 10.0], row_index=[7],
+                mid_ret=[1.0, 1.0],
+                actual_ret=[9.0, 9.0],
+                sigma=[0.1, 0.1],
+                current_price=[10.0, 10.0],
+                row_index=[7],
             )
 
     def test_the_row_index_is_absent_unless_asked_for(self, tmp_path):
@@ -188,7 +199,10 @@ class TestConformalRecords:
         reach every consumer of the calibration frame."""
         fc = _forecaster(tmp_path)
         records = fc._conformal_records(
-            mid_ret=[1.0], actual_ret=[9.0], sigma=[0.1], current_price=[10.0],
+            mid_ret=[1.0],
+            actual_ret=[9.0],
+            sigma=[0.1],
+            current_price=[10.0],
         )
         assert "row_index" not in records[0]
 

@@ -44,12 +44,13 @@ over 4.47M rows and nothing here reopens that.
 - The entry point must report row counts. `scripts/run_task.py`'s zero-row guard
   is the only thing standing between a dead collector and a green badge.
 """
+
 from __future__ import annotations
 
 import logging
 import time
 from dataclasses import dataclass
-from datetime import date, datetime, timezone
+from datetime import UTC, date, datetime
 from pathlib import Path
 from typing import Any
 
@@ -258,15 +259,15 @@ def fetch_sales_history(
     try:
         payload = resp.json()
     except ValueError as exc:
-        raise SalesVolumeError(
-            f"{SKINPORT_SALES_URL}: response was not JSON ({len(resp.content)} bytes)"
-        ) from exc
+        raise SalesVolumeError(f"{SKINPORT_SALES_URL}: response was not JSON ({len(resp.content)} bytes)") from exc
 
     rows = parse_sales_history(payload, snapshot_day, collected_at)
     elapsed = time.monotonic() - started
     logger.info(
         "  skinport_sales: %s payload entries -> %s items in %.1fs",
-        len(payload), len(rows), elapsed,
+        len(payload),
+        len(rows),
+        elapsed,
     )
     return SalesVolumeResult(rows=rows, raw_items=len(payload), elapsed_s=elapsed)
 
@@ -316,9 +317,10 @@ def collect(
     """
     if snapshot_day is None:
         from collectors.snapshot_date import resolve_snapshot_date
+
         snapshot_day = resolve_snapshot_date()
 
-    collected_at = datetime.now(timezone.utc)
+    collected_at = datetime.now(UTC)
     result = fetch_sales_history(snapshot_day, collected_at, session=session)
     written = 0 if dry_run else write_volume_rows(result.rows, archive_dir, snapshot_day)
 
@@ -326,7 +328,10 @@ def collect(
     with_sales = int((rows["sales_30d"].fillna(0) > 0).sum())
     logger.info(
         "Sales volume %s: %s rows, %s items, %s with a 30d sale",
-        snapshot_day, written, len(rows), with_sales,
+        snapshot_day,
+        written,
+        len(rows),
+        with_sales,
     )
     return {
         "status": "success",

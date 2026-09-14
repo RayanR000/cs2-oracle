@@ -22,10 +22,7 @@ def _index_exists(bind, table_name: str, index_name: str) -> bool:
     # recreated separately; skip index creation when the table is absent.
     if table_name not in inspector.get_table_names():
         return True
-    return any(
-        idx["name"] == index_name
-        for idx in inspector.get_indexes(table_name)
-    )
+    return any(idx["name"] == index_name for idx in inspector.get_indexes(table_name))
 
 
 def upgrade() -> None:

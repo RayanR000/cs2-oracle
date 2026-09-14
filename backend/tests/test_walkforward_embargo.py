@@ -33,6 +33,7 @@ Three invariants are locked down here:
   3. every harness that builds folds is wired to one of the two production
      helpers, and none of them re-derives the rule locally.
 """
+
 from __future__ import annotations
 
 import inspect
@@ -42,7 +43,6 @@ from unittest.mock import MagicMock
 
 import pandas as pd
 import pytest
-
 import scripts.ab_test_csfloat_basis as cf
 import scripts.ab_test_direction_labels as dirlab
 import scripts.ab_test_ensemble as ensemble
@@ -62,7 +62,8 @@ from models.forecaster import ItemForecaster, embargo_days
 # The three fixed 2026-08-07. They share a code shape the assertions below
 # match on literally, which the six fixed 2026-08-08 do not.
 AB_HARNESSES = pytest.mark.parametrize(
-    "module", [cf, meta, breadth],
+    "module",
+    [cf, meta, breadth],
     ids=["csfloat_basis", "item_metadata", "training_breadth"],
 )
 
@@ -71,9 +72,17 @@ AB_HARNESSES = pytest.mark.parametrize(
 ROLLED_FOLD_HARNESSES = pytest.mark.parametrize(
     "module",
     [cf, meta, breadth, volume, primitives, featcon, supply, regime, ensemble],
-    ids=["csfloat_basis", "item_metadata", "training_breadth", "volume_features",
-         "price_primitives", "feature_contribution", "supply_side", "regime",
-         "ensemble"],
+    ids=[
+        "csfloat_basis",
+        "item_metadata",
+        "training_breadth",
+        "volume_features",
+        "price_primitives",
+        "feature_contribution",
+        "supply_side",
+        "regime",
+        "ensemble",
+    ],
 )
 
 # The four that take their folds from production's `_compute_cv_splits`, which
@@ -81,9 +90,9 @@ ROLLED_FOLD_HARNESSES = pytest.mark.parametrize(
 # `embargo_days(horizon)` -- passing the bare horizon is the old, too-narrow
 # band, and it is silent.
 CV_SPLIT_HARNESSES = pytest.mark.parametrize(
-    "module", [interval, q50, recency, dirlab],
-    ids=["interval_sampling", "q50_sampling", "recency_weights",
-         "direction_labels"],
+    "module",
+    [interval, q50, recency, dirlab],
+    ids=["interval_sampling", "q50_sampling", "recency_weights", "direction_labels"],
 )
 
 HORIZONS = [3, 7, 14, 30]
@@ -100,56 +109,46 @@ def forecaster(tmp_path_factory):
 def _daily_frame(start="2024-01-01", days=400, items=(1, 2)):
     """One row per item per calendar day -- the geometry the harnesses assume."""
     dates = pd.date_range(start, periods=days, freq="D")
-    return pd.DataFrame([
-        {"item_id": i, "date": d.date(), "price": 10.0}
-        for i in items for d in dates
-    ])
+    return pd.DataFrame([{"item_id": i, "date": d.date(), "price": 10.0} for i in items for d in dates])
 
 
 class TestTheEmbargoRemovesTheRightRows:
     """Semantics, at the harnesses' own fold geometry (21-day val window)."""
 
     @pytest.mark.parametrize("horizon", HORIZONS)
-    def test_train_stops_an_embargo_band_before_the_window(
-            self, forecaster, horizon):
+    def test_train_stops_an_embargo_band_before_the_window(self, forecaster, horizon):
         df = _daily_frame()
         dates = sorted(df["date"].unique())
         window_end = len(dates) * 2 // 3 + 1
-        val_dates = dates[window_end:window_end + cf.VAL_WINDOW_DAYS]
+        val_dates = dates[window_end : window_end + cf.VAL_WINDOW_DAYS]
         val_start = val_dates[0]
 
         unpurged = df[df["date"] <= dates[window_end - 1]]
-        purged = forecaster._purge_overlapping_train_rows(
-            unpurged, val_start, horizon)
+        purged = forecaster._purge_overlapping_train_rows(unpurged, val_start, horizon)
 
         # Exactly the `embargo_days(horizon)` calendar days before val_start
         # are gone — `horizon` for the label's nominal date plus 13 for the
         # resolved anchor's carry behind it.
         band = embargo_days(horizon)
-        dropped_days = (set(pd.to_datetime(unpurged["date"]).dt.date)
-                        - set(pd.to_datetime(purged["date"]).dt.date))
+        dropped_days = set(pd.to_datetime(unpurged["date"]).dt.date) - set(pd.to_datetime(purged["date"]).dt.date)
         assert len(dropped_days) == band
         assert max(dropped_days) == val_start - timedelta(days=1)
         assert min(dropped_days) == val_start - timedelta(days=band)
 
     @pytest.mark.parametrize("horizon", HORIZONS)
-    def test_every_surviving_label_lands_before_the_window_opens(
-            self, forecaster, horizon):
+    def test_every_surviving_label_lands_before_the_window_opens(self, forecaster, horizon):
         df = _daily_frame()
         dates = sorted(df["date"].unique())
         window_end = len(dates) * 2 // 3 + 1
         val_start = dates[window_end]
 
         unpurged = df[df["date"] <= dates[window_end - 1]]
-        leaking = [d for d in unpurged["date"]
-                   if d + timedelta(days=horizon) >= val_start]
+        leaking = [d for d in unpurged["date"] if d + timedelta(days=horizon) >= val_start]
         assert len(leaking) > 0, "precondition: the un-purged split leaks"
 
-        purged = forecaster._purge_overlapping_train_rows(
-            unpurged, val_start, horizon)
+        purged = forecaster._purge_overlapping_train_rows(unpurged, val_start, horizon)
         assert not purged.empty
-        assert all(d + timedelta(days=horizon) < val_start
-                   for d in purged["date"])
+        assert all(d + timedelta(days=horizon) < val_start for d in purged["date"])
 
     @pytest.mark.parametrize("horizon", HORIZONS)
     def test_the_validation_window_width_is_unchanged(self, forecaster, horizon):
@@ -158,18 +157,16 @@ class TestTheEmbargoRemovesTheRightRows:
         df = _daily_frame()
         dates = sorted(df["date"].unique())
         window_end = len(dates) * 2 // 3 + 1
-        val_dates = dates[window_end:window_end + cf.VAL_WINDOW_DAYS]
+        val_dates = dates[window_end : window_end + cf.VAL_WINDOW_DAYS]
         val_df = df[df["date"].isin(val_dates)]
 
-        forecaster._purge_overlapping_train_rows(
-            df[df["date"] <= dates[window_end - 1]], val_dates[0], horizon)
+        forecaster._purge_overlapping_train_rows(df[df["date"] <= dates[window_end - 1]], val_dates[0], horizon)
 
         assert len(val_dates) == cf.VAL_WINDOW_DAYS == 21
         assert val_df["date"].nunique() == 21
         assert len(df[df["date"].isin(val_dates)]) == len(val_df)
 
-    def test_the_purge_is_a_no_op_on_a_gap_wider_than_the_horizon(
-            self, forecaster):
+    def test_the_purge_is_a_no_op_on_a_gap_wider_than_the_horizon(self, forecaster):
         """Nothing is dropped when the train side already stops early enough."""
         df = _daily_frame(days=60)
         val_start = df["date"].max() + timedelta(days=45)
@@ -195,11 +192,9 @@ class TestTheEmbargoWidthIsDerived:
         assert embargo_days(horizon) == horizon + 13
 
     def test_the_carry_is_the_sum_of_the_three_resolution_constants(self):
-        from backtest.price_resolution import (
-            MAX_WINDOW_SPAN_DAYS, SMOOTH_WINDOW)
+        from backtest.price_resolution import MAX_WINDOW_SPAN_DAYS, SMOOTH_WINDOW
 
-        carry = (ItemForecaster.LAG_TOLERANCE_DAYS
-                 + SMOOTH_WINDOW + MAX_WINDOW_SPAN_DAYS)
+        carry = ItemForecaster.LAG_TOLERANCE_DAYS + SMOOTH_WINDOW + MAX_WINDOW_SPAN_DAYS
         assert embargo_days(0) == carry
 
     def test_at_30d_the_embargo_exceeds_the_validation_window(self):
@@ -234,12 +229,8 @@ class TestTheAbHarnessesAreWired:
         """The exact defect: a training frame sliced straight off the window
         bound, with nothing between it and the validation set."""
         src = inspect.getsource(module)
-        offenders = re.findall(
-            r"^\s*train_df\s*=\s*(?:sub|tdf)\[[^\]]*\]\s*$", src, flags=re.M)
-        assert not offenders, (
-            f"{module.__name__} still builds an un-embargoed training frame: "
-            f"{offenders}"
-        )
+        offenders = re.findall(r"^\s*train_df\s*=\s*(?:sub|tdf)\[[^\]]*\]\s*$", src, flags=re.M)
+        assert not offenders, f"{module.__name__} still builds an un-embargoed training frame: {offenders}"
 
     def test_the_purge_is_unconditional(self, module):
         """These are research tools: there is no un-purged mode to fall back to.
@@ -250,34 +241,28 @@ class TestTheAbHarnessesAreWired:
         """
         src = inspect.getsource(module)
         for token in ("--no-purge", "--purge-days", "purge=False", "if purge"):
-            assert token not in src, (
-                f"{module.__name__} exposes {token!r}; the embargo must be the "
-                "only behaviour here"
-            )
+            assert token not in src, f"{module.__name__} exposes {token!r}; the embargo must be the only behaviour here"
 
     def test_the_val_side_is_never_purged(self, module):
         src = inspect.getsource(module)
         for line in src.splitlines():
             if "_purge_overlapping_train_rows" in line:
                 assert "val_df" not in line, (
-                    f"{module.__name__} purges the validation frame; at h=30 "
-                    "that empties the 21-day window"
+                    f"{module.__name__} purges the validation frame; at h=30 that empties the 21-day window"
                 )
 
     def test_the_purge_is_handed_the_windows_first_date(self, module):
         """`val_dates[0]`, not `window_end` or a train-side date. The band is
         measured backwards from where validation opens."""
         src = inspect.getsource(module)
-        calls = re.findall(
-            r"_purge_overlapping_train_rows\((.*?)\)\s*$",
-            src, flags=re.S | re.M)
+        calls = re.findall(r"_purge_overlapping_train_rows\((.*?)\)\s*$", src, flags=re.S | re.M)
         assert calls, module.__name__
         for call in calls:
             if "val_start" in call or "val_dates[0]" in call:
                 continue
             pytest.fail(
-                f"{module.__name__} purges against {call.strip()!r} rather "
-                f"than the validation window's first date")
+                f"{module.__name__} purges against {call.strip()!r} rather than the validation window's first date"
+            )
 
 
 @AB_HARNESSES
@@ -285,27 +270,23 @@ class TestTheOriginalThreeKeepTheirShape:
     """Shape assertions that only hold for the 2026-08-07 three."""
 
     def test_the_val_mask_is_built_off_the_window_bounds(self, module):
-        assert re.search(r"sub_days\s*>=\s*dates_dt\[window_end\]",
-                         inspect.getsource(module))
+        assert re.search(r"sub_days\s*>=\s*dates_dt\[window_end\]", inspect.getsource(module))
 
 
 @CV_SPLIT_HARNESSES
 class TestTheCvSplitHarnessesPassTheFullEmbargo:
-
     def test_it_does_not_pass_the_bare_horizon(self, module):
         """`purge_days=horizon` is the pre-2026-08-08 band. It is 13 days too
         narrow and nothing about the call site says so."""
         src = inspect.getsource(module)
         assert "purge_days=horizon)" not in src, (
-            f"{module.__name__} passes the bare horizon as the embargo; it "
-            f"must pass embargo_days(horizon)"
+            f"{module.__name__} passes the bare horizon as the embargo; it must pass embargo_days(horizon)"
         )
 
     def test_it_derives_the_band_from_production(self, module):
         src = inspect.getsource(module)
         assert "embargo_days" in src, (
-            f"{module.__name__} must take the band from "
-            f"models.forecaster.embargo_days rather than spelling one"
+            f"{module.__name__} must take the band from models.forecaster.embargo_days rather than spelling one"
         )
 
 
@@ -321,8 +302,7 @@ class TestTheProductionGateEmbargoesByDefault:
         assert "purge" in inspect.signature(wf.run_walkforward).parameters
 
     def test_purge_defaults_to_on(self):
-        assert (inspect.signature(wf.run_walkforward)
-                .parameters["purge"].default is True)
+        assert inspect.signature(wf.run_walkforward).parameters["purge"].default is True
 
     def test_the_cli_exposes_an_opt_out_flag(self):
         src = inspect.getsource(wf.build_parser)
@@ -344,8 +324,7 @@ class TestTheProductionGateEmbargoesByDefault:
         src = inspect.getsource(wf.run_walkforward)
         assert "_purge_overlapping_train_rows(" in src
         # Train side only -- val_df is built before the purge and not touched.
-        purge_lines = [l for l in src.splitlines()
-                       if "_purge_overlapping_train_rows" in l]
+        purge_lines = [l for l in src.splitlines() if "_purge_overlapping_train_rows" in l]
         assert purge_lines and all("val_df" not in l for l in purge_lines)
 
     def test_the_report_records_which_way_it_ran(self):

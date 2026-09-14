@@ -25,14 +25,15 @@ from pathlib import Path
 import duckdb
 import pandas as pd
 import pytest
-from sqlalchemy import create_engine, inspect as sa_inspect
+from sqlalchemy import create_engine
+from sqlalchemy import inspect as sa_inspect
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from database import Base, Item, ItemForecast  # noqa: E402
-from scripts.forecast_prices import (  # noqa: E402
+from database import Base, Item, ItemForecast
+from scripts.forecast_prices import (
     MODEL_VERSION,
     _write_forecasts_to_db,
     run_forecast,
@@ -41,8 +42,7 @@ from scripts.forecast_prices import (  # noqa: E402
 
 @pytest.fixture
 def session():
-    engine = create_engine("sqlite://", connect_args={"check_same_thread": False},
-                           poolclass=StaticPool)
+    engine = create_engine("sqlite://", connect_args={"check_same_thread": False}, poolclass=StaticPool)
     Base.metadata.create_all(engine)
     db = sessionmaker(bind=engine)()
     db.add(Item(id=1, item_id="ak", name="ak", type="skin"))
@@ -56,22 +56,30 @@ def ops(tmp_path, monkeypatch):
     """Redirect the ops store into tmp_path. The real price-archive/ops/ is
     production data and no test may write it."""
     import db.parquet as parquet_mod
+
     monkeypatch.setattr(parquet_mod, "OPS_DIR", tmp_path / "ops")
     return tmp_path / "ops"
 
 
 def _results():
-    return pd.DataFrame([{
-        "item_id": "ak",
-        "current_price": 3.0,
-        "forecasts": {3: {"low": 2.0, "mid": 3.0, "high": 4.0,
-                          "direction": "flat", "confidence": "high"}},
-    }])
+    return pd.DataFrame(
+        [
+            {
+                "item_id": "ak",
+                "current_price": 3.0,
+                "forecasts": {3: {"low": 2.0, "mid": 3.0, "high": 4.0, "direction": "flat", "confidence": "high"}},
+            }
+        ]
+    )
 
 
 def _write(session, config):
     return _write_forecasts_to_db(
-        session, _results(), MODEL_VERSION, {"ak": 1}, date(2026, 8, 11),
+        session,
+        _results(),
+        MODEL_VERSION,
+        {"ak": 1},
+        date(2026, 8, 11),
         model_config=config,
     )
 
@@ -103,9 +111,7 @@ def test_the_config_reaches_the_mirror(session, ops):
     where the archive is analysed, and the DB carries only what is served."""
     _write(session, "global-only")
 
-    df = duckdb.sql(
-        f"SELECT * FROM read_parquet('{ops / 'item_forecasts.parquet'}')"
-    ).df()
+    df = duckdb.sql(f"SELECT * FROM read_parquet('{ops / 'item_forecasts.parquet'}')").df()
     assert df["model_version"].tolist() == ["lgbm-v3"]
     assert df["model_config"].tolist() == ["global-only"]
 
@@ -134,5 +140,5 @@ def test_no_writer_appends_a_config_suffix_to_the_version():
     import scripts.forecast_prices as fp
 
     src = Path(fp.__file__).read_text()
-    assert 'MODEL_VERSION}-' not in src
+    assert "MODEL_VERSION}-" not in src
     assert 'MODEL_VERSION + "-' not in src

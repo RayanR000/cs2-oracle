@@ -1,8 +1,6 @@
 import numpy as np
 import pandas as pd
-
-from backtest.longshort import (
-    decile_longshort_by_date, net_of_cost, direction_records)
+from backtest.longshort import decile_longshort_by_date, direction_records, net_of_cost
 
 
 def _one_date(n, rng):
@@ -39,8 +37,7 @@ def test_mask_restricts_to_tied_rows():
     realised = rng.normal(size=n)
     mask = np.zeros(n, dtype=bool)
     mask[:10] = True  # too few rows after masking → no date read
-    out = decile_longshort_by_date(score, realised, dates, mask=mask,
-                                   min_rows=20)
+    out = decile_longshort_by_date(score, realised, dates, mask=mask, min_rows=20)
     assert out["n_dates"] == 0
     assert out["mean"] is None
 
@@ -56,8 +53,7 @@ def test_direction_records_shape_and_correctness():
     dates = np.repeat(pd.to_datetime(["2026-05-01"]), len(score))
     recs = direction_records(score, realised, dates, min_rows=20)
     assert len(recs) == len(score)
-    assert set(recs[0]) == {"predicted_direction", "actual_direction",
-                            "direction_correct", "forecast_date"}
+    assert set(recs[0]) == {"predicted_direction", "actual_direction", "direction_correct", "forecast_date"}
     # score == realised → every call correct
     assert all(r["direction_correct"] for r in recs)
     assert recs[0]["forecast_date"] == "2026-05-01"

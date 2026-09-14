@@ -36,12 +36,12 @@ calibration-set change and needs its own decision.
 
 See docs/changelog/2026-08-12-conformal-basis-follows-serving.md.
 """
+
 from __future__ import annotations
 
 import numpy as np
 import pandas as pd
 import pytest
-
 from models import conformal
 from models.conformal import ALPHA, calibrate
 
@@ -64,8 +64,7 @@ def test_a_weaker_model_yields_a_larger_q_hat():
     assert q_weak > q_strong
 
     # Pooling the two and serving the strong model over-covers.
-    q_pooled = calibrate(np.concatenate([strong_resid, weak_resid]),
-                         np.concatenate([sigma, sigma]), ALPHA)
+    q_pooled = calibrate(np.concatenate([strong_resid, weak_resid]), np.concatenate([sigma, sigma]), ALPHA)
     low, high = conformal.band(np.zeros(n), sigma, q_pooled)
     covered = float(((strong_resid >= low) & (strong_resid <= high)).mean())
     assert covered > conformal.NOMINAL_COVERAGE + 0.05
@@ -145,14 +144,12 @@ def test_the_trend_screen_recovers_a_planted_decline():
     """The screen's arithmetic, on a series with the hypothesised shape. Spearman
     over (n_train, q_hat) must be -1 when q_hat declines monotonically, and the
     pooled/last ratio must exceed 1 when the early folds are the wide ones."""
-    fold_q_hats = [(87_224, 130.0), (150_000, 120.0), (220_000, 105.0),
-                   (300_000, 95.0)]
+    fold_q_hats = [(87_224, 130.0), (150_000, 120.0), (220_000, 105.0), (300_000, 95.0)]
     n = pd.Series([a for a, _ in fold_q_hats], dtype=float)
     q = pd.Series([b for _, b in fold_q_hats], dtype=float)
     assert float(n.corr(q, method="spearman")) == -1.0
 
-    pooled = float(np.quantile(
-        np.concatenate([np.full(1000, v) for _, v in fold_q_hats]), 0.8))
+    pooled = float(np.quantile(np.concatenate([np.full(1000, v) for _, v in fold_q_hats]), 0.8))
     assert pooled / fold_q_hats[-1][1] > 1.0
 
     # And the null shape: no relation between training size and width leaves

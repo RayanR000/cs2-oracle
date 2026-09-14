@@ -6,12 +6,12 @@ with ``price_tier``'s cuts — so these tests pin the mapping RULE, not just the
 values, because a silently re-pointed band would move every actionable number
 downstream without failing anything.
 """
+
 from __future__ import annotations
 
 import math
 
 import pytest
-
 from backtest.friction import (
     DEFAULT_VENUE,
     ROUND_TRIP_COST,
@@ -48,12 +48,12 @@ def test_spread_is_monotone_decreasing_in_price():
 
 
 def test_spread_values_are_the_measured_band_medians():
-    assert SPREAD_BY_TIER[0] == 0.355   # <$1
-    assert SPREAD_BY_TIER[1] == 0.211   # $1-10
-    assert SPREAD_BY_TIER[2] == 0.173   # $10-50
-    assert SPREAD_BY_TIER[3] == 0.173   # $10-50
-    assert SPREAD_BY_TIER[4] == 0.108   # $50-500
-    assert SPREAD_BY_TIER[5] == 0.052   # $1000+
+    assert SPREAD_BY_TIER[0] == 0.355  # <$1
+    assert SPREAD_BY_TIER[1] == 0.211  # $1-10
+    assert SPREAD_BY_TIER[2] == 0.173  # $10-50
+    assert SPREAD_BY_TIER[3] == 0.173  # $10-50
+    assert SPREAD_BY_TIER[4] == 0.108  # $50-500
+    assert SPREAD_BY_TIER[5] == 0.052  # $1000+
 
 
 def test_each_tier_borrowed_its_nearest_source_band_by_log_geometric_midpoint():
@@ -64,11 +64,11 @@ def test_each_tier_borrowed_its_nearest_source_band_by_log_geometric_midpoint():
     later editor from re-pointing a band by eye.
     """
     source_mid = {
-        "<$1": 0.5,          # open at the bottom
+        "<$1": 0.5,  # open at the bottom
         "$1-10": math.sqrt(1 * 10),
         "$10-50": math.sqrt(10 * 50),
         "$50-500": math.sqrt(50 * 500),
-        "$1000+": 2000.0,    # open at the top
+        "$1000+": 2000.0,  # open at the top
     }
     tier_mid = {
         0: 0.5,

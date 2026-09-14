@@ -15,7 +15,7 @@ Or via the task runner:
 import logging
 import re
 import sys
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 import numpy as np
@@ -59,8 +59,7 @@ class FinbertScorer:
                 str(onnx_path),
                 providers=["CPUExecutionProvider"],
             )
-            logger.info("FinBERT ONNX INT8 scorer ready (%s, %.0f MB)",
-                        onnx_path.name, onnx_path.stat().st_size / 1e6)
+            logger.info("FinBERT ONNX INT8 scorer ready (%s, %.0f MB)", onnx_path.name, onnx_path.stat().st_size / 1e6)
         except Exception as e:
             logger.warning("Failed to load FinBERT ONNX model: %s", e)
 
@@ -70,12 +69,18 @@ class FinbertScorer:
             return 0.0
         try:
             inp = self.tokenizer(
-                text, return_tensors="np", truncation=True, max_length=128,
+                text,
+                return_tensors="np",
+                truncation=True,
+                max_length=128,
             )
-            logits = self.session.run(None, {
-                "input_ids": inp["input_ids"],
-                "attention_mask": inp["attention_mask"],
-            })[0][0]
+            logits = self.session.run(
+                None,
+                {
+                    "input_ids": inp["input_ids"],
+                    "attention_mask": inp["attention_mask"],
+                },
+            )[0][0]
             exp = np.exp(logits - np.max(logits))
             probs = exp / exp.sum()
             return float(probs[2] - probs[0])
@@ -90,6 +95,7 @@ _finbert = FinbertScorer()
 def score_sentiment(text: str) -> float:
     """Return sentiment score in [-1, 1]."""
     return _finbert.score(text)
+
 
 SUBREDDITS = {
     "GlobalOffensiveTrade": 150,
@@ -111,9 +117,7 @@ def fetch_item_names(db) -> dict[str, int]:
 
     Returns a dict mapping normalized name -> item_id.
     """
-    rows = db.execute(
-        text("SELECT id, name FROM items")
-    ).fetchall()
+    rows = db.execute(text("SELECT id, name FROM items")).fetchall()
     mapping = {}
     for row in rows:
         mapping[row.name.lower().strip()] = row.id
@@ -187,13 +191,15 @@ def fetch_subreddit_posts(subreddit: str, limit: int = 100) -> list[dict]:
             elif href.startswith("https://"):
                 post_url = href
 
-        posts.append({
-            "id": post_id,
-            "title": title,
-            "score": score,
-            "url": post_url,
-            "timestamp": timestamp or utcnow_naive(),
-        })
+        posts.append(
+            {
+                "id": post_id,
+                "title": title,
+                "score": score,
+                "url": post_url,
+                "timestamp": timestamp or utcnow_naive(),
+            }
+        )
 
     logger.info("  r/%-25s → %d posts", subreddit, len(posts))
     return posts
@@ -209,7 +215,7 @@ def collect_social_mentions(db) -> dict:
 
     Returns a stats dict with counts of mentions found.
     """
-    start = datetime.now(timezone.utc)
+    start = datetime.now(UTC)
     logger.info("=" * 60)
     logger.info("Reddit Social Sentiment Collection")
     logger.info("=" * 60)
@@ -270,37 +276,44 @@ def collect_social_mentions(db) -> dict:
                             "sentiment": sentiment,
                             "mentioned_at": post["timestamp"],
                             "collected_at": now,
+                        },
+                    )
+                    parquet_rows.append(
+                        {
+                            "item_id": item_id,
+                            "source": "reddit",
+                            "post_id": post["id"],
+                            "subreddit": subreddit,
+                            "post_title": post["title"][:500] if post["title"] else "",
+                            "post_score": post["score"],
+                            "post_url": post["url"][:500] if post["url"] else "",
+                            "sentiment_score": sentiment,
+                            "mentioned_at": post["timestamp"],
+                            "collected_at": now,
                         }
                     )
-                    parquet_rows.append({
-                        "item_id": item_id,
-                        "source": "reddit",
-                        "post_id": post["id"],
-                        "subreddit": subreddit,
-                        "post_title": post["title"][:500] if post["title"] else "",
-                        "post_score": post["score"],
-                        "post_url": post["url"][:500] if post["url"] else "",
-                        "sentiment_score": sentiment,
-                        "mentioned_at": post["timestamp"],
-                        "collected_at": now,
-                    })
                     inserted += 1
                 except Exception as e:
                     logger.warning(
                         "  Failed to insert mention (item=%s, post=%s): %s",
-                        item_id, post["id"], e,
+                        item_id,
+                        post["id"],
+                        e,
                     )
 
         db.commit()
 
     if parquet_rows:
         from db.parquet import append_table
+
         append_table("social_mentions", parquet_rows, ["item_id", "source", "post_id"])
 
-    elapsed = (datetime.now(timezone.utc) - start).total_seconds()
+    elapsed = (datetime.now(UTC) - start).total_seconds()
     logger.info(
         "Done: %d total mentions, %d inserted in %.1fs",
-        total_mentions, inserted, elapsed,
+        total_mentions,
+        inserted,
+        elapsed,
     )
 
     return {

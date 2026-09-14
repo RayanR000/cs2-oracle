@@ -12,6 +12,7 @@ scripts/walkforward_backtest.py:
    is what production serves (forecaster.py:2981-2982). The old code took the
    sign of the p50 regression.
 """
+
 from __future__ import annotations
 
 import numpy as np
@@ -40,8 +41,7 @@ def fold_level_records(fold_ids, values, *, metric: str):
     ids = list(fold_ids)
     vals = list(values)
     if len(ids) != len(vals):
-        raise ValueError(
-            f"fold_ids has {len(ids)} entries, values has {len(vals)}")
+        raise ValueError(f"fold_ids has {len(ids)} entries, values has {len(vals)}")
     return [
         # Pairing key and cluster key are the same here, by construction: the
         # fold IS the observation. `paired_metric_difference` pairs on
@@ -108,9 +108,7 @@ def paired_records(*, item_ids, forecast_dates, fold_id, keep=None, **metrics):
         checked.append(("keep", np.asarray(keep)))
     for name, arr in checked:
         if len(arr) != n:
-            raise ValueError(
-                f"all inputs must be of equal length; {name} has {len(arr)}, "
-                f"expected {n}")
+            raise ValueError(f"all inputs must be of equal length; {name} has {len(arr)}, expected {n}")
 
     idx = np.flatnonzero(np.asarray(keep)) if keep is not None else range(n)
     return [
@@ -176,13 +174,10 @@ def fold_records(
     n = len(base_prices)
     for name, arr in arrays.items():
         if len(arr) != n:
-            raise ValueError(
-                f"all inputs must be of equal length; {name} has {len(arr)}, expected {n}"
-            )
+            raise ValueError(f"all inputs must be of equal length; {name} has {len(arr)}, expected {n}")
     if predicted_classes is not None and len(predicted_classes) != n:
         raise ValueError(
-            f"all inputs must be of equal length; predicted_classes has "
-            f"{len(predicted_classes)}, expected {n}"
+            f"all inputs must be of equal length; predicted_classes has {len(predicted_classes)}, expected {n}"
         )
 
     base = np.asarray(base_prices, dtype=float)
@@ -209,35 +204,37 @@ def fold_records(
             predicted_direction = direction_from_return(mid_ret[i] / 100.0)
 
         abs_error = abs(mid[i] - actual[i])
-        records.append({
-            "abs_error": abs_error,
-            "sq_error": (mid[i] - actual[i]) ** 2,
-            # Divided by the BASE leg, matching backtest_accuracy._derive_verdict.
-            "pct_error": abs(abs_error / base[i]) * 100.0,
-            "direction_correct": 1 if predicted_direction == actual_direction else 0,
-            "predicted_direction": predicted_direction,
-            "actual_direction": actual_direction,
-            # No rebase, unlike backtest_accuracy._derive_verdict: the band here
-            # is built as `base * (1 + ret)` a few lines up, so the resolved base
-            # IS the quote and the two predicates coincide. score_cohort defaults
-            # its dollar-basis split to this value for the same reason.
-            "in_interval": 1 if low[i] <= actual[i] <= high[i] else 0,
-            # The harness has no confidence estimator, so score_cohort's
-            # conf_* fields are structurally degenerate for these arms.
-            "confidence": "low",
-            "base_price": float(base[i]),
-            "actual_price": float(actual[i]),
-            # The prediction leg and the horizon, for the friction-conditioned
-            # metric. See backtest/actionable.py.
-            "predicted_mid": float(mid[i]),
-            "horizon_days": horizon_days,
-            "price_tier": price_tier(float(base[i])),
-            "item_id": item_ids[i],
-            # Rows sharing a date share one market move. This is the PAIRING key
-            # (with item_id), and it is the right grain for that. It is NOT the
-            # resampling unit — see `fold_id` and the docstring above.
-            "forecast_date": forecast_dates[i],
-            # The clustering unit: rows sharing a fold share one trained model.
-            "fold_id": fold_id,
-        })
+        records.append(
+            {
+                "abs_error": abs_error,
+                "sq_error": (mid[i] - actual[i]) ** 2,
+                # Divided by the BASE leg, matching backtest_accuracy._derive_verdict.
+                "pct_error": abs(abs_error / base[i]) * 100.0,
+                "direction_correct": 1 if predicted_direction == actual_direction else 0,
+                "predicted_direction": predicted_direction,
+                "actual_direction": actual_direction,
+                # No rebase, unlike backtest_accuracy._derive_verdict: the band here
+                # is built as `base * (1 + ret)` a few lines up, so the resolved base
+                # IS the quote and the two predicates coincide. score_cohort defaults
+                # its dollar-basis split to this value for the same reason.
+                "in_interval": 1 if low[i] <= actual[i] <= high[i] else 0,
+                # The harness has no confidence estimator, so score_cohort's
+                # conf_* fields are structurally degenerate for these arms.
+                "confidence": "low",
+                "base_price": float(base[i]),
+                "actual_price": float(actual[i]),
+                # The prediction leg and the horizon, for the friction-conditioned
+                # metric. See backtest/actionable.py.
+                "predicted_mid": float(mid[i]),
+                "horizon_days": horizon_days,
+                "price_tier": price_tier(float(base[i])),
+                "item_id": item_ids[i],
+                # Rows sharing a date share one market move. This is the PAIRING key
+                # (with item_id), and it is the right grain for that. It is NOT the
+                # resampling unit — see `fold_id` and the docstring above.
+                "forecast_date": forecast_dates[i],
+                # The clustering unit: rows sharing a fold share one trained model.
+                "fold_id": fold_id,
+            }
+        )
     return records

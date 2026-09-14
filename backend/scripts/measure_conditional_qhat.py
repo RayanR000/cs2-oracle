@@ -26,6 +26,7 @@ Read-only: reads a voted price panel and writes a CSV. No DB, no artifacts.
 
     venv/bin/python -m scripts.measure_conditional_qhat --horizons 3,7,14,30
 """
+
 from __future__ import annotations
 
 import argparse
@@ -33,15 +34,15 @@ import glob
 import logging
 import os
 import sys
-from typing import Callable
+from collections.abc import Callable
 
 import numpy as np
 import pandas as pd
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from models import conformal  # noqa: E402
-from models.forecaster import ItemForecaster, embargo_days  # noqa: E402
+from models import conformal
+from models.forecaster import ItemForecaster, embargo_days
 
 logger = logging.getLogger("conditional_qhat")
 
@@ -50,7 +51,7 @@ TRAILING_WINDOW_DAYS = 60
 TRAILING_MIN_ROWS = 2_000
 MIN_HISTORY_DAYS = 120
 MIN_ROWS_PER_DATE = 100
-MIN_DATES_PER_HORIZON = 100      # void condition
+MIN_DATES_PER_HORIZON = 100  # void condition
 TARGET = conformal.NOMINAL_COVERAGE
 MARKET_VOL_WINDOW = 20
 PLACEBO_SEED = 20260812
@@ -66,6 +67,7 @@ SHIPPED_Q_HAT = {3: 94.72, 7: 141.77, 14: 204.34, 30: 312.05}
 # --------------------------------------------------------------------------- #
 # panel
 # --------------------------------------------------------------------------- #
+
 
 def default_voted_panel() -> str:
     """The local voted cache with the LONGEST date span.
@@ -84,8 +86,7 @@ def default_voted_panel() -> str:
     found = glob.glob(os.path.join(here, "data", "voted_*.parquet"))
     if not found:
         raise SystemExit(
-            "no data/voted_*.parquet found. Run a train once to populate the "
-            "voted cache, or pass --voted."
+            "no data/voted_*.parquet found. Run a train once to populate the voted cache, or pass --voted."
         )
     spans = {}
     for f in found:
@@ -93,31 +94,36 @@ def default_voted_panel() -> str:
         spans[f] = d.nunique()
     best = max(spans, key=spans.get)
     if len(spans) > 1:
-        logger.info("voted caches available: %s", ", ".join(
-            f"{os.path.basename(k)}={v}d" for k, v in sorted(
-                spans.items(), key=lambda kv: -kv[1])))
+        logger.info(
+            "voted caches available: %s",
+            ", ".join(f"{os.path.basename(k)}={v}d" for k, v in sorted(spans.items(), key=lambda kv: -kv[1])),
+        )
     return best
 
 
 def load_panel(path: str) -> pd.DataFrame:
     df = pd.read_parquet(path)[["item_id", "date", "price"]]
-    logger.info("panel %s: %s rows, %s dates, %s items, %s -> %s",
-                os.path.basename(path), f"{len(df):,}", df["date"].nunique(),
-                df["item_id"].nunique(), df["date"].min(), df["date"].max())
+    logger.info(
+        "panel %s: %s rows, %s dates, %s items, %s -> %s",
+        os.path.basename(path),
+        f"{len(df):,}",
+        df["date"].nunique(),
+        df["item_id"].nunique(),
+        df["date"].min(),
+        df["date"].max(),
+    )
 
     med = df.groupby("item_id")["price"].median()
     df = df[df["item_id"].isin(set(med[med >= MIN_MEDIAN_PRICE].index))].copy()
     df = df.sort_values(["item_id", "date"]).reset_index(drop=True)
-    logger.info(">=$%.0f cohort: %s rows, %s items",
-                MIN_MEDIAN_PRICE, f"{len(df):,}", df["item_id"].nunique())
+    logger.info(">=$%.0f cohort: %s rows, %s items", MIN_MEDIAN_PRICE, f"{len(df):,}", df["item_id"].nunique())
 
     # Exactly engineer_features:1864-1868 -- ROW-based rolling over 60 rows with
     # min_periods=1, grouped by item. NOT a 60-calendar-day window; an item with
     # gaps gets a longer effective span, and that is what production's sigma sees.
-    df["price_std_60d"] = (df.groupby("item_id")["price"]
-                           .rolling(60, min_periods=1).std().values)
+    df["price_std_60d"] = df.groupby("item_id")["price"].rolling(60, min_periods=1).std().values
     # State-variable input only: never a label, never compared across arms.
-    df["return_1d"] = (df.groupby("item_id")["price"].pct_change() * 100.0)
+    df["return_1d"] = df.groupby("item_id")["price"].pct_change() * 100.0
     return df
 
 
@@ -133,8 +139,7 @@ def sigma_bounds_for_panel(df: pd.DataFrame) -> tuple[float, float]:
     return conformal.sigma_bounds(raw.dropna())
 
 
-def score_frame(fc: ItemForecaster, df: pd.DataFrame, horizon: int,
-                floor: float, cap: float) -> pd.DataFrame:
+def score_frame(fc: ItemForecaster, df: pd.DataFrame, horizon: int, floor: float, cap: float) -> pd.DataFrame:
     """One row per surviving item-day: the residual and the sigma it scales by.
 
     `prepare_targets` is production's, so every label-voiding rule applies here
@@ -144,12 +149,10 @@ def score_frame(fc: ItemForecaster, df: pd.DataFrame, horizon: int,
     t = fc.prepare_targets(df.copy(), horizon)
     col = f"target_return_{horizon}d"
     t = t[np.isfinite(t[col])].copy()
-    t["sigma"] = conformal.sigma_from_columns(
-        t["price_std_60d"], t["price"], floor, cap)
+    t["sigma"] = conformal.sigma_from_columns(t["price_std_60d"], t["price"], floor, cap)
     t["resid"] = t[col].to_numpy(dtype=float)
     out = t[["date", "item_id", "resid", "sigma"]].copy()
-    out = out[np.isfinite(out["resid"]) & np.isfinite(out["sigma"])
-              & (out["sigma"] > 0)]
+    out = out[np.isfinite(out["resid"]) & np.isfinite(out["sigma"]) & (out["sigma"] > 0)]
     return out.sort_values("date").reset_index(drop=True)
 
 
@@ -159,12 +162,11 @@ def state_variables(df: pd.DataFrame, floor: float, cap: float) -> pd.DataFrame:
     V1/V2 read date `d` itself, which serving has; V3 is a trailing window
     ending at `d`. None of them touches a price after `d`.
     """
-    sig = pd.Series(
-        conformal.sigma_from_columns(df["price_std_60d"], df["price"], floor, cap),
-        index=df.index)
+    sig = pd.Series(conformal.sigma_from_columns(df["price_std_60d"], df["price"], floor, cap), index=df.index)
     by_date = df.assign(_sigma=sig).groupby("date")
 
     v1 = by_date["_sigma"].median().rename("V1_xs_med_sigma")
+
     def _mad(s: pd.Series) -> float:
         # The panel's first date has no return_1d at all, and nanmedian of an
         # empty slice warns and returns NaN. NaN is the right answer; the warning
@@ -177,8 +179,7 @@ def state_variables(df: pd.DataFrame, floor: float, cap: float) -> pd.DataFrame:
 
     v2 = by_date["return_1d"].apply(_mad).rename("V2_xs_mad_ret1d")
     factor = by_date["return_1d"].mean()
-    v3 = (factor.rolling(MARKET_VOL_WINDOW, min_periods=5).std()
-          .rename("V3_mkt_vol_20d"))
+    v3 = factor.rolling(MARKET_VOL_WINDOW, min_periods=5).std().rename("V3_mkt_vol_20d")
 
     st = pd.concat([v1, v2, v3], axis=1).reset_index()
     return st.sort_values("date").reset_index(drop=True)
@@ -187,6 +188,7 @@ def state_variables(df: pd.DataFrame, floor: float, cap: float) -> pd.DataFrame:
 # --------------------------------------------------------------------------- #
 # schemes
 # --------------------------------------------------------------------------- #
+
 
 class Panel:
     """Date-indexed views over one horizon's score frame.
@@ -197,8 +199,7 @@ class Panel:
     constants (see .claude/rules/labels-and-embargo.md).
     """
 
-    def __init__(self, scores: pd.DataFrame, horizon: int,
-                 state: pd.DataFrame):
+    def __init__(self, scores: pd.DataFrame, horizon: int, state: pd.DataFrame):
         self.horizon = horizon
         self.embargo = embargo_days(horizon)
         self.resid = scores["resid"].to_numpy(dtype=float)
@@ -234,8 +235,7 @@ class Panel:
             sl = self.rows_on(day)
             if sl.stop - sl.start < MIN_ROWS_PER_DATE:
                 continue
-            out[pd.Timestamp(day)] = conformal.calibrate(
-                self.resid[sl], self.sigma[sl])
+            out[pd.Timestamp(day)] = conformal.calibrate(self.resid[sl], self.sigma[sl])
         return pd.Series(out, dtype=float).sort_index()
 
 
@@ -374,6 +374,7 @@ def make_s1_placebo() -> Scheme:
 # evaluation
 # --------------------------------------------------------------------------- #
 
+
 def _cond_err(days: np.ndarray, covered: np.ndarray) -> tuple[float, float, pd.Series]:
     """mean_d |cov[d] - 80%| in pp, plus the fraction of dates inside 10pp."""
     cov = pd.Series(covered).groupby(pd.Series(days)).mean()
@@ -382,8 +383,7 @@ def _cond_err(days: np.ndarray, covered: np.ndarray) -> tuple[float, float, pd.S
     return err, within, cov
 
 
-def _sigma_stratum_err(sigma: np.ndarray, covered: np.ndarray,
-                       n_strata: int = 10) -> tuple[float, str]:
+def _sigma_stratum_err(sigma: np.ndarray, covered: np.ndarray, n_strata: int = 10) -> tuple[float, str]:
     """The same statistic over sigma deciles instead of dates.
 
     Added AFTER the primary read, and it is the dimension `S3` actually
@@ -437,7 +437,7 @@ def evaluate(p: Panel, scheme: Scheme, test_dates) -> dict:
     sc = np.concatenate(sc)
     qh = np.concatenate(qh)
 
-    covered = (sc <= qh)
+    covered = sc <= qh
     err, within, cov = _cond_err(days, covered)
 
     # The multiplier that lands marginal coverage on 80% exactly. Monotone in c,
@@ -450,7 +450,7 @@ def evaluate(p: Panel, scheme: Scheme, test_dates) -> dict:
         else:
             hi = mid
     c = (lo + hi) / 2
-    cov_lm = (sc <= qh * c)
+    cov_lm = sc <= qh * c
     err_lm, within_lm, cov_lm_series = _cond_err(days, cov_lm)
 
     sig_err, sig_profile = _sigma_stratum_err(sig, cov_lm)
@@ -496,8 +496,9 @@ def main() -> int:
     path = args.voted or default_voted_panel()
     df = load_panel(path)
     floor, cap = sigma_bounds_for_panel(df)
-    logger.info("sigma clip: floor=%.6f cap=%.6f (this panel's own, not the "
-                "artifact's -- read ratios, not levels)", floor, cap)
+    logger.info(
+        "sigma clip: floor=%.6f cap=%.6f (this panel's own, not the artifact's -- read ratios, not levels)", floor, cap
+    )
     state = state_variables(df, floor, cap)
     fc = ItemForecaster(db_session=None)
 
@@ -521,12 +522,16 @@ def main() -> int:
         p = Panel(sc, h, state)
         td = test_dates_for(p)
         logger.info("")
-        logger.info("h=%dd: %s scored rows, %d anchor dates, embargo %dd, "
-                    "%d test dates", h, f"{len(sc):,}", len(p.unique_dates),
-                    p.embargo, len(td))
+        logger.info(
+            "h=%dd: %s scored rows, %d anchor dates, embargo %dd, %d test dates",
+            h,
+            f"{len(sc):,}",
+            len(p.unique_dates),
+            p.embargo,
+            len(td),
+        )
         if len(td) < MIN_DATES_PER_HORIZON:
-            logger.warning("  VOID: %d test dates < %d required",
-                           len(td), MIN_DATES_PER_HORIZON)
+            logger.warning("  VOID: %d test dates < %d required", len(td), MIN_DATES_PER_HORIZON)
         for name, scheme in schemes.items():
             m = evaluate(p, scheme, td)
             if not m:
@@ -537,9 +542,15 @@ def main() -> int:
             logger.info(
                 "  %-22s M1=%.1f%%  M2=%5.2fpp | LEVEL-MATCHED c=%.3f "
                 "M2*=%5.2fpp  sigma-strata*=%5.2fpp  sd*=%4.1fpp  beta=%.3f",
-                name, m["M1_marginal"] * 100, m["M2_cond_err_pp"],
-                m["level_match_c"], m["M2lm_cond_err_pp"],
-                m["M2lm_sigma_err_pp"], m["covlm_sd_pp"], m["beta_mean"])
+                name,
+                m["M1_marginal"] * 100,
+                m["M2_cond_err_pp"],
+                m["level_match_c"],
+                m["M2lm_cond_err_pp"],
+                m["M2lm_sigma_err_pp"],
+                m["covlm_sd_pp"],
+                m["beta_mean"],
+            )
         # The sigma dimension, as a shape rather than a summary. Coverage by
         # sigma decile under production's exponent and under the fitted one --
         # both level-matched, so a tilt here is conditional miscalibration and
@@ -547,8 +558,7 @@ def main() -> int:
         for name in ("S0_pooled", "S3_sigma_exponent"):
             got = [r for r in rows if r["horizon"] == h and r["scheme"] == name]
             if got:
-                logger.info("    sigma-decile cov %-18s %s",
-                            name, got[0]["sigma_decile_cov"])
+                logger.info("    sigma-decile cov %-18s %s", name, got[0]["sigma_decile_cov"])
 
     out = pd.DataFrame(rows)
     if out.empty:
@@ -562,41 +572,47 @@ def main() -> int:
     # M2 alone. Both legs, at >= 3 of 4 horizons, and the placebo must fail.
     base = out[out["scheme"] == "S0_pooled"].set_index("horizon")
     logger.info("")
-    logger.info("PRE-REGISTERED PRIMARY BAR — M2 below S0 at >=3 of 4 horizons "
-                "AND M1 within 80+/-3pp at >=3 of 4.")
-    logger.info("A `P*` row passing this bar VOIDS it: see the pre-registration's "
-                "placebo clause.")
+    logger.info("PRE-REGISTERED PRIMARY BAR — M2 below S0 at >=3 of 4 horizons AND M1 within 80+/-3pp at >=3 of 4.")
+    logger.info("A `P*` row passing this bar VOIDS it: see the pre-registration's placebo clause.")
     for name in out["scheme"].unique():
         if name == "S0_pooled":
             continue
         arm = out[out["scheme"] == name].set_index("horizon")
         common = arm.index.intersection(base.index)
-        better = int((arm.loc[common, "M2_cond_err_pp"]
-                      < base.loc[common, "M2_cond_err_pp"]).sum())
-        inband = int((
-            (arm.loc[common, "M1_marginal"] - TARGET).abs() <= 0.03).sum())
+        better = int((arm.loc[common, "M2_cond_err_pp"] < base.loc[common, "M2_cond_err_pp"]).sum())
+        inband = int(((arm.loc[common, "M1_marginal"] - TARGET).abs() <= 0.03).sum())
         verdict = "PASS" if (better >= 3 and inband >= 3) else "fail"
-        logger.info("  %-22s M2 better at %d/%d, M1 in band at %d/%d -> %s",
-                    name, better, len(common), inband, len(common), verdict)
+        logger.info(
+            "  %-22s M2 better at %d/%d, M1 in band at %d/%d -> %s",
+            name,
+            better,
+            len(common),
+            inband,
+            len(common),
+            verdict,
+        )
 
     logger.info("")
-    logger.info("LEVEL-MATCHED READ — every arm forced to 80%% marginal first, "
-                "so only conditional information can move these.")
-    logger.info("  This is NOT the pre-registered statistic. It exists because "
-                "M2 above cannot separate a level fix from a conditional one.")
+    logger.info(
+        "LEVEL-MATCHED READ — every arm forced to 80%% marginal first, so only conditional information can move these."
+    )
+    logger.info(
+        "  This is NOT the pre-registered statistic. It exists because "
+        "M2 above cannot separate a level fix from a conditional one."
+    )
     for name in out["scheme"].unique():
         if name == "S0_pooled":
             continue
         arm = out[out["scheme"] == name].set_index("horizon")
         common = arm.index.intersection(base.index)
-        d_date = (arm.loc[common, "M2lm_cond_err_pp"]
-                  - base.loc[common, "M2lm_cond_err_pp"])
-        d_sig = (arm.loc[common, "M2lm_sigma_err_pp"]
-                 - base.loc[common, "M2lm_sigma_err_pp"])
-        logger.info("  %-22s dM2*(date) %s | dM2*(sigma) %s",
-                    name,
-                    " ".join(f"{v:+5.2f}" for v in d_date),
-                    " ".join(f"{v:+5.2f}" for v in d_sig))
+        d_date = arm.loc[common, "M2lm_cond_err_pp"] - base.loc[common, "M2lm_cond_err_pp"]
+        d_sig = arm.loc[common, "M2lm_sigma_err_pp"] - base.loc[common, "M2lm_sigma_err_pp"]
+        logger.info(
+            "  %-22s dM2*(date) %s | dM2*(sigma) %s",
+            name,
+            " ".join(f"{v:+5.2f}" for v in d_date),
+            " ".join(f"{v:+5.2f}" for v in d_sig),
+        )
     return 0
 
 

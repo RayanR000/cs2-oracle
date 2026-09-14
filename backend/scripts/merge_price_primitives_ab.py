@@ -20,14 +20,13 @@ Usage:
     python scripts/merge_price_primitives_ab.py /tmp/ab_*.json
 """
 
-import sys
 import json
+import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 import numpy as np
-
 from backtest.paired_mde import format_paired, paired_arm_contrasts
 from backtest.walkforward_records import fold_level_records
 from scripts.ab_test_price_primitives import print_comparison
@@ -60,10 +59,7 @@ def fold_win_counts(merged):
     for h, arms in merged.items():
         if not all(a in arms and arms[a].get("per_fold") for a in ARMS):
             continue
-        by_arm = {
-            a: {f["val_start"]: f["dir_acc"] for f in arms[a]["per_fold"]}
-            for a in ARMS
-        }
+        by_arm = {a: {f["val_start"]: f["dir_acc"] for f in arms[a]["per_fold"]} for a in ARMS}
         shared = set.intersection(*(set(v) for v in by_arm.values()))
         t_b = sum(1 for k in shared if by_arm["treatment"][k] > by_arm["baseline"][k])
         t_p = sum(1 for k in shared if by_arm["treatment"][k] > by_arm["placebo"][k])
@@ -84,29 +80,25 @@ def paired_verdicts(merged):
     """
     out = {}
     for h, arms in merged.items():
-        usable = {a: arms[a] for a in ARMS
-                  if a in arms and arms[a].get("per_fold")}
+        usable = {a: arms[a] for a in ARMS if a in arms and arms[a].get("per_fold")}
         if "baseline" not in usable or len(usable) < 2:
             continue
-        shared = set.intersection(*(
-            {f["val_start"] for f in v["per_fold"]} for v in usable.values()))
+        shared = set.intersection(*({f["val_start"] for f in v["per_fold"]} for v in usable.values()))
         if len(shared) < 2:
             # One shared fold is one cluster, and one cluster carries no
             # between-cluster variance to resample. `unresolved`, never `null`.
-            out[h] = {a: {"verdict": "unresolved", "n_clusters": len(shared)}
-                      for a in usable if a != "baseline"}
+            out[h] = {a: {"verdict": "unresolved", "n_clusters": len(shared)} for a in usable if a != "baseline"}
             continue
         folds = sorted(shared)
         records = {
             a: fold_level_records(
                 folds,
-                [next(f["dir_acc"] for f in v["per_fold"]
-                      if f["val_start"] == k) for k in folds],
-                metric="dir_acc")
+                [next(f["dir_acc"] for f in v["per_fold"] if f["val_start"] == k) for k in folds],
+                metric="dir_acc",
+            )
             for a, v in usable.items()
         }
-        out[h] = paired_arm_contrasts(
-            records, base="baseline", value_key="dir_acc", scale=1.0)
+        out[h] = paired_arm_contrasts(records, base="baseline", value_key="dir_acc", scale=1.0)
     return out
 
 
@@ -117,9 +109,7 @@ def main():
 
     merged = merge(paths)
 
-    missing = {
-        h: [a for a in ARMS if a not in arms] for h, arms in merged.items()
-    }
+    missing = {h: [a for a in ARMS if a not in arms] for h, arms in merged.items()}
     missing = {h: m for h, m in missing.items() if m}
 
     print_comparison(merged)
@@ -131,8 +121,7 @@ def main():
         print(f"  {'=' * 100}")
         for h in sorted(verdicts):
             for arm in sorted(verdicts[h]):
-                print(f"    {h:>2}d  {arm:<10} "
-                      f"{format_paired(verdicts[h][arm])}")
+                print(f"    {h:>2}d  {arm:<10} {format_paired(verdicts[h][arm])}")
 
     wins = fold_win_counts(merged)
     if wins:
@@ -141,20 +130,17 @@ def main():
         print(f"  {'=' * 100}")
         for h in sorted(wins):
             t_b, t_p, n = wins[h]
-            print(f"    {h:>2}d  treatment>baseline {t_b}/{n} folds   "
-                  f"treatment>placebo {t_p}/{n} folds")
+            print(f"    {h:>2}d  treatment>baseline {t_b}/{n} folds   treatment>placebo {t_p}/{n} folds")
 
     deltas = []
     for h, arms in merged.items():
         if "baseline" in arms and "treatment" in arms:
             deltas.append(arms["treatment"]["dir_acc"] - arms["baseline"]["dir_acc"])
     if deltas:
-        print(f"\n  Mean treatment-baseline across {len(deltas)} horizons: "
-              f"{np.mean(deltas):+.2f}pp")
+        print(f"\n  Mean treatment-baseline across {len(deltas)} horizons: {np.mean(deltas):+.2f}pp")
 
     if missing:
-        print("\n  ⚠️  Incomplete — these horizons are missing arms, so the ship "
-              "rule cannot be applied to them:")
+        print("\n  ⚠️  Incomplete — these horizons are missing arms, so the ship rule cannot be applied to them:")
         for h in sorted(missing):
             print(f"    {h}d: missing {', '.join(missing[h])}")
 

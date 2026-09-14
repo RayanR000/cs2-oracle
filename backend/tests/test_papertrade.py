@@ -15,12 +15,12 @@ The rules encoded here are the repo's own verified microstructure
 
 These tests pin the INSTRUMENT so its verdict is trustworthy when it arrives.
 """
+
 from __future__ import annotations
 
 from datetime import date
 
 import pytest
-
 from backtest.friction import ROUND_TRIP_COST, SPREAD_BY_TIER
 from backtest.papertrade import (
     PAPER_TRADE_HORIZONS,
@@ -35,16 +35,27 @@ MIN_DATES = 20
 
 # Fixed keys every payload must carry, so a consumer never branches on existence.
 CORE_KEYS = {
-    "pt_strategy", "pt_venue", "pt_cashable", "pt_scope",
-    "pt_n", "pt_n_candidates", "pt_share_pct",
-    "pt_mean_net_pct", "pt_total_net_pct", "pt_win_rate_pct",
-    "pt_n_fresh", "pt_n_stale", "pt_n_stale_unknown", "pt_mean_net_fresh_pct",
-    "pt_mean_net_ci_lower", "pt_mean_net_ci_upper", "pt_profitable",
+    "pt_strategy",
+    "pt_venue",
+    "pt_cashable",
+    "pt_scope",
+    "pt_n",
+    "pt_n_candidates",
+    "pt_share_pct",
+    "pt_mean_net_pct",
+    "pt_total_net_pct",
+    "pt_win_rate_pct",
+    "pt_n_fresh",
+    "pt_n_stale",
+    "pt_n_stale_unknown",
+    "pt_mean_net_fresh_pct",
+    "pt_mean_net_ci_lower",
+    "pt_mean_net_ci_upper",
+    "pt_profitable",
 }
 
 
-def _record(tier=5, base=2000.0, gross=0.50, quote=None, low=None, day=1,
-            item_id=1, stale=0, horizon=14):
+def _record(tier=5, base=2000.0, gross=0.50, quote=None, low=None, day=1, item_id=1, stale=0, horizon=14):
     """One frozen outcome record with the round-trip legs as fractions of base."""
     return {
         "base_price": base,
@@ -104,7 +115,7 @@ def test_steam_is_a_walled_venue():
 def test_only_the_executable_horizons_are_in_scope():
     """7-day market lock + trade protection: nothing under ~8 days is tradable,
     so only h in {14, 30} may be simulated."""
-    assert PAPER_TRADE_HORIZONS == frozenset({14, 30})
+    assert frozenset({14, 30}) == PAPER_TRADE_HORIZONS
 
 
 # --- strategy_metrics -------------------------------------------------------
@@ -114,21 +125,18 @@ def test_the_return_shape_is_fixed_and_flat():
     """A varying key set is the defect that forced a nested metrics store
     repo-wide; every value is a scalar or None, never a container. And the key
     set must not depend on the data."""
-    out = strategy_metrics([_record()], "buy_and_hold", horizon_days=14,
-                           min_dates=MIN_DATES)
-    assert CORE_KEYS <= set(out)
+    out = strategy_metrics([_record()], "buy_and_hold", horizon_days=14, min_dates=MIN_DATES)
+    assert set(out) >= CORE_KEYS
     assert not any(isinstance(v, (dict, list)) for v in out.values())
 
-    empty = strategy_metrics([], "buy_and_hold", horizon_days=14,
-                             min_dates=MIN_DATES)
+    empty = strategy_metrics([], "buy_and_hold", horizon_days=14, min_dates=MIN_DATES)
     assert set(out) == set(empty), "the key set must not depend on the data"
 
 
 def test_horizon_outside_scope_reports_why_rather_than_zero():
     """h=7 is not executable, which is a different state from 'nothing traded'.
     The two must never read the same."""
-    out = strategy_metrics([_record(horizon=7)], "buy_and_hold", horizon_days=7,
-                           min_dates=MIN_DATES)
+    out = strategy_metrics([_record(horizon=7)], "buy_and_hold", horizon_days=7, min_dates=MIN_DATES)
     assert out["pt_scope"] == "out_of_scope"
     assert out["pt_n"] is None
 
@@ -137,14 +145,13 @@ def test_no_candidates_is_distinct_from_a_rule_that_fired_on_nothing():
     """A cohort with no eligible rows (no candidate) and a cohort where the rule
     simply selected zero rows are different verdicts."""
     # Exceedance needs a band floor; a record without one is not even a candidate.
-    no_band = strategy_metrics([_record(low=None)], "exceedance",
-                               horizon_days=14, min_dates=MIN_DATES)
+    no_band = strategy_metrics([_record(low=None)], "exceedance", horizon_days=14, min_dates=MIN_DATES)
     assert no_band["pt_scope"] == "no_candidates"
 
     # A candidate exists but sits above its band floor, so the rule selects none.
     not_cheap = strategy_metrics(
-        [_record(base=100.0, quote=100.0, low=90.0, tier=4)],
-        "exceedance", horizon_days=14, min_dates=MIN_DATES)
+        [_record(base=100.0, quote=100.0, low=90.0, tier=4)], "exceedance", horizon_days=14, min_dates=MIN_DATES
+    )
     assert not_cheap["pt_scope"] == "in_scope"
     assert not_cheap["pt_n_candidates"] == 1
     assert not_cheap["pt_n"] == 0
@@ -154,8 +161,7 @@ def test_exceedance_selects_only_items_below_their_band_floor():
     """Undervalued = the quote a trader saw sits below the forecast band's low."""
     cheap = _record(base=100.0, quote=80.0, low=90.0, tier=4, item_id=1)
     rich = _record(base=100.0, quote=95.0, low=90.0, tier=4, item_id=2)
-    out = strategy_metrics([cheap, rich], "exceedance", horizon_days=14,
-                           min_dates=MIN_DATES)
+    out = strategy_metrics([cheap, rich], "exceedance", horizon_days=14, min_dates=MIN_DATES)
     assert out["pt_n_candidates"] == 2
     assert out["pt_n"] == 1
     assert out["pt_share_pct"] == pytest.approx(50.0)
@@ -177,8 +183,7 @@ def test_stale_anchors_are_bucketed_separately():
     fresh = _record(gross=0.40, stale=0, item_id=1, day=1)
     stale = _record(gross=0.40, stale=5, item_id=2, day=2)
     unknown = _record(gross=0.40, stale=None, item_id=3, day=3)
-    out = strategy_metrics([fresh, stale, unknown], "buy_and_hold",
-                           horizon_days=14, min_dates=MIN_DATES)
+    out = strategy_metrics([fresh, stale, unknown], "buy_and_hold", horizon_days=14, min_dates=MIN_DATES)
     assert out["pt_n_fresh"] == 1
     assert out["pt_n_stale"] == 1
     assert out["pt_n_stale_unknown"] == 1
@@ -190,10 +195,8 @@ def test_stale_anchors_are_bucketed_separately():
 def test_steam_metrics_are_flagged_non_cashable():
     """A Steam payload must announce it is wallet-only so a consumer never sums
     it into a cash return; a cash venue is cashable."""
-    steam = strategy_metrics([_record()], "buy_and_hold", horizon_days=14,
-                             min_dates=MIN_DATES, venue="steam")
-    cash = strategy_metrics([_record()], "buy_and_hold", horizon_days=14,
-                            min_dates=MIN_DATES, venue="csfloat")
+    steam = strategy_metrics([_record()], "buy_and_hold", horizon_days=14, min_dates=MIN_DATES, venue="steam")
+    cash = strategy_metrics([_record()], "buy_and_hold", horizon_days=14, min_dates=MIN_DATES, venue="csfloat")
     assert steam["pt_cashable"] is False
     assert cash["pt_cashable"] is True
 
@@ -202,28 +205,23 @@ def test_a_profitable_cohort_has_a_ci_lower_above_zero():
     """Many trades, all clearing friction across distinct dates, resolve as
     profitable; a break-even cohort does not."""
     winners = [_record(gross=0.60, item_id=i, day=i) for i in range(1, 25)]
-    win_out = strategy_metrics(winners, "buy_and_hold", horizon_days=14,
-                               min_dates=MIN_DATES)
+    win_out = strategy_metrics(winners, "buy_and_hold", horizon_days=14, min_dates=MIN_DATES)
     assert win_out["pt_mean_net_ci_lower"] > 0
     assert win_out["pt_profitable"] is True
 
     # Gross exactly equal to friction => net ~0 => not distinguishable from zero.
     breakeven_gross = ROUND_TRIP_COST["csfloat"] + SPREAD_BY_TIER[5]
     flats = [_record(gross=breakeven_gross, item_id=i, day=i) for i in range(1, 25)]
-    flat_out = strategy_metrics(flats, "buy_and_hold", horizon_days=14,
-                                min_dates=MIN_DATES)
+    flat_out = strategy_metrics(flats, "buy_and_hold", horizon_days=14, min_dates=MIN_DATES)
     assert flat_out["pt_profitable"] is False
 
 
 def test_the_ci_is_invariant_to_input_row_order():
     """The CI bootstrap is seeded, so cluster order must be pinned: an unordered
     DB scan would otherwise return a different `pt_profitable` run to run."""
-    recs = [_record(gross=0.1 + 0.05 * (i % 7), item_id=i, day=1 + (i % 9))
-            for i in range(1, 40)]
-    ordered = strategy_metrics(recs, "buy_and_hold", horizon_days=14,
-                               min_dates=MIN_DATES)
-    shuffled = strategy_metrics(list(reversed(recs)), "buy_and_hold",
-                                horizon_days=14, min_dates=MIN_DATES)
+    recs = [_record(gross=0.1 + 0.05 * (i % 7), item_id=i, day=1 + (i % 9)) for i in range(1, 40)]
+    ordered = strategy_metrics(recs, "buy_and_hold", horizon_days=14, min_dates=MIN_DATES)
+    shuffled = strategy_metrics(list(reversed(recs)), "buy_and_hold", horizon_days=14, min_dates=MIN_DATES)
     assert ordered["pt_mean_net_ci_lower"] == shuffled["pt_mean_net_ci_lower"]
     assert ordered["pt_mean_net_ci_upper"] == shuffled["pt_mean_net_ci_upper"]
     assert ordered["pt_profitable"] == shuffled["pt_profitable"]
@@ -233,21 +231,17 @@ def test_sell_only_mode_threads_through_to_the_metrics():
     """A sell-only cohort keeps more of the move than the same round-trip cohort,
     because it is charged half the spread."""
     recs = [_record(gross=0.30, item_id=i, day=i) for i in range(1, 25)]
-    rt = strategy_metrics(recs, "buy_and_hold", horizon_days=14,
-                          min_dates=MIN_DATES, mode="round_trip")
-    so = strategy_metrics(recs, "buy_and_hold", horizon_days=14,
-                          min_dates=MIN_DATES, mode="sell_only")
+    rt = strategy_metrics(recs, "buy_and_hold", horizon_days=14, min_dates=MIN_DATES, mode="round_trip")
+    so = strategy_metrics(recs, "buy_and_hold", horizon_days=14, min_dates=MIN_DATES, mode="sell_only")
     assert so["pt_mean_net_pct"] > rt["pt_mean_net_pct"]
     # The gap is exactly half the tier-5 spread, in percent.
-    assert so["pt_mean_net_pct"] - rt["pt_mean_net_pct"] == pytest.approx(
-        SPREAD_BY_TIER[5] / 2 * 100)
+    assert so["pt_mean_net_pct"] - rt["pt_mean_net_pct"] == pytest.approx(SPREAD_BY_TIER[5] / 2 * 100)
 
 
 def test_buy_and_hold_baseline_trades_every_candidate():
     """all_strategies runs the baseline plus each rule; buy-and-hold selects
     every candidate, which is what the rules are judged against."""
-    recs = [_record(base=100.0, quote=95.0, low=90.0, tier=4, item_id=i, day=i)
-            for i in range(1, 6)]
+    recs = [_record(base=100.0, quote=95.0, low=90.0, tier=4, item_id=i, day=i) for i in range(1, 6)]
     out = all_strategies(recs, horizon_days=14, min_dates=MIN_DATES)
     assert "buy_and_hold" in out
     assert set(STRATEGIES) <= set(out)

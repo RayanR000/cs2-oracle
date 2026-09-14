@@ -15,6 +15,7 @@ partially corrected. So `beta` reaching only SOME of the call sites is worse tha
 the flag being off, and several tests here are about that pairing rather than
 about coverage.
 """
+
 from __future__ import annotations
 
 import inspect
@@ -22,7 +23,6 @@ import json
 
 import numpy as np
 import pytest
-
 from models import conformal
 from models.forecaster import ItemForecaster
 
@@ -31,7 +31,7 @@ def _panel(elasticity: float, n: int = 60_000, seed: int = 20260812):
     """`|resid| = sigma ** elasticity * lognormal noise`, by construction."""
     rng = np.random.default_rng(seed)
     sigma = np.exp(rng.normal(np.log(0.07), 0.6, n))
-    resid = (sigma ** elasticity) * np.exp(rng.normal(0.0, 0.5, n)) * 100.0
+    resid = (sigma**elasticity) * np.exp(rng.normal(0.0, 0.5, n)) * 100.0
     resid *= rng.choice([-1.0, 1.0], n)
     return resid, sigma
 
@@ -39,6 +39,7 @@ def _panel(elasticity: float, n: int = 60_000, seed: int = 20260812):
 # --------------------------------------------------------------------------- #
 # 1. beta = 1.0 is a no-op, bit for bit
 # --------------------------------------------------------------------------- #
+
 
 def test_beta_one_is_bit_identical_to_the_old_band():
     """The gate-off path must be provably unchanged, not merely close.
@@ -50,12 +51,10 @@ def test_beta_one_is_bit_identical_to_the_old_band():
     mid = np.linspace(-5.0, 5.0, sigma.size)
 
     assert conformal.scale(sigma, 1.0) is not None
-    np.testing.assert_array_equal(conformal.scale(sigma, conformal.BETA_NEUTRAL),
-                                  sigma)
+    np.testing.assert_array_equal(conformal.scale(sigma, conformal.BETA_NEUTRAL), sigma)
 
     q_default = conformal.calibrate(resid, sigma)
-    q_explicit = conformal.calibrate(resid, sigma, conformal.ALPHA,
-                                     conformal.BETA_NEUTRAL)
+    q_explicit = conformal.calibrate(resid, sigma, conformal.ALPHA, conformal.BETA_NEUTRAL)
     assert q_default == q_explicit
 
     lo_a, hi_a = conformal.band(mid, sigma, q_default)
@@ -68,14 +67,14 @@ def test_beta_one_is_bit_identical_to_the_old_band():
 # 2. the fix works on data whose answer is known
 # --------------------------------------------------------------------------- #
 
+
 def test_fitted_beta_recovers_a_known_elasticity_and_flattens_the_deciles():
     resid, sigma = _panel(elasticity=0.4)
     beta = conformal.fit_beta(resid, sigma)
     assert beta == pytest.approx(0.4, abs=0.02)
 
     _, err_1, _ = conformal.coverage_by_sigma_stratum(resid, sigma, exponent=1.0)
-    prof_b, err_b, _ = conformal.coverage_by_sigma_stratum(resid, sigma,
-                                                           exponent=beta)
+    prof_b, err_b, _ = conformal.coverage_by_sigma_stratum(resid, sigma, exponent=beta)
     # The defect, then the fix. The ramp is what production serves.
     assert err_1 > 8.0
     assert err_b < 1.5
@@ -118,12 +117,16 @@ def test_the_exponent_narrows_the_band_overall():
 # 3. fit_beta never returns anything a band cannot be built from
 # --------------------------------------------------------------------------- #
 
-@pytest.mark.parametrize("resid,sigma,why", [
-    (np.array([1.0, 2.0]), np.array([0.05, 0.06]), "too few rows"),
-    (np.full(5_000, 3.0), np.full(5_000, 0.07), "sigma has no spread"),
-    (np.zeros(5_000), np.linspace(0.02, 0.5, 5_000), "no positive residuals"),
-    (np.full(5_000, np.nan), np.linspace(0.02, 0.5, 5_000), "all NaN residuals"),
-])
+
+@pytest.mark.parametrize(
+    "resid,sigma,why",
+    [
+        (np.array([1.0, 2.0]), np.array([0.05, 0.06]), "too few rows"),
+        (np.full(5_000, 3.0), np.full(5_000, 0.07), "sigma has no spread"),
+        (np.zeros(5_000), np.linspace(0.02, 0.5, 5_000), "no positive residuals"),
+        (np.full(5_000, np.nan), np.linspace(0.02, 0.5, 5_000), "all NaN residuals"),
+    ],
+)
 def test_fit_beta_falls_back_to_neutral_never_nan(resid, sigma, why):
     """A NaN beta would reach `scale`, produce a NaN half-width, and surface."""
     beta = conformal.fit_beta(resid, sigma)
@@ -165,6 +168,7 @@ def test_fit_beta_clamps_and_says_so():
 # --------------------------------------------------------------------------- #
 # 4. the matched pair, which is the dangerous part
 # --------------------------------------------------------------------------- #
+
 
 def test_serving_a_beta_qhat_at_the_wrong_exponent_is_catastrophic_not_subtle():
     """Justifies every "written together or not at all" guard in the spec.
@@ -219,19 +223,18 @@ def test_load_round_trips_the_exponent(tmp_path):
     p = tmp_path / "meta.json"
     p.write_text(json.dumps(meta))
 
-    loaded = {int(h): float(b)
-              for h, b in json.loads(p.read_text())
-              .get("conformal_beta", {}).items()}
+    loaded = {int(h): float(b) for h, b in json.loads(p.read_text()).get("conformal_beta", {}).items()}
     fc = ItemForecaster(db_session=None)
     fc.conformal_beta = loaded
     assert fc.band_beta(3) == pytest.approx(0.4291)
     assert fc.band_beta(30) == pytest.approx(0.3641)
-    assert fc.band_beta(7) == conformal.BETA_NEUTRAL      # absent -> neutral
+    assert fc.band_beta(7) == conformal.BETA_NEUTRAL  # absent -> neutral
 
 
 # --------------------------------------------------------------------------- #
 # 5. no fifth call site may appear without failing this suite
 # --------------------------------------------------------------------------- #
+
 
 def test_every_band_and_calibrate_call_passes_an_exponent():
     """A new call site that forgets `beta` serves a mismatched pair silently.
@@ -267,17 +270,14 @@ def test_every_band_and_calibrate_call_passes_an_exponent():
     )
     # None may be called positionally-short: every call names or passes an
     # exponent, so grep for the neutral constant or a beta variable at each.
-    for call in ("conformal.band(", "conformal.band_signed(",
-                 "conformal.calibrate(", "conformal.calibrate_signed("):
+    for call in ("conformal.band(", "conformal.band_signed(", "conformal.calibrate(", "conformal.calibrate_signed("):
         i = 0
         while True:
             i = src.find(call, i)
             if i < 0:
                 break
-            frag = src[i:i + 320]
-            assert ("beta" in frag or "BETA_NEUTRAL" in frag), (
-                f"a {call} site does not pass an exponent:\n{frag[:200]}"
-            )
+            frag = src[i : i + 320]
+            assert "beta" in frag or "BETA_NEUTRAL" in frag, f"a {call} site does not pass an exponent:\n{frag[:200]}"
             i += len(call)
 
 
@@ -290,10 +290,14 @@ def test_the_fold_diagnostic_is_pinned_at_neutral_on_purpose():
     exist yet when folds run. Converting it would silently break the published
     0.94/0.91/0.92/0.84x series. `fold_beta` carries the new information instead.
     """
-    src = inspect.getsource(ItemForecaster._run_walk_forward_cv) \
-        if hasattr(ItemForecaster, "_run_walk_forward_cv") else None
+    src = (
+        inspect.getsource(ItemForecaster._run_walk_forward_cv)
+        if hasattr(ItemForecaster, "_run_walk_forward_cv")
+        else None
+    )
     if src is None:
         import models.forecaster as fmod
+
         src = inspect.getsource(fmod)
     assert "conformal.BETA_NEUTRAL)" in src
     assert 'fold_metrics[-1]["fold_beta"] = fold_beta' in src

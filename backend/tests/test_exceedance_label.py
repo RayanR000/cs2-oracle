@@ -8,13 +8,13 @@ the range model does. Scope: docs/superpowers/plans/2026-08-16-exceedance-band-s
 The production change that makes this fail if reverted: the label block appended to
 `prepare_targets` after label voiding.
 """
+
 from __future__ import annotations
 
 from unittest.mock import MagicMock
 
 import numpy as np
 import pandas as pd
-
 from models.forecaster import ItemForecaster
 
 
@@ -28,8 +28,8 @@ def _frame():
     # tier 2 throughout ($5-20). 3d-forward returns are hand-chosen around the
     # csfloat tier-2 threshold (2.0% + 17.3% = 19.3%).
     prices = {
-        "2026-01-01": 10.00,   # ->01-04 13.00 : +30.0%  > 19.3%  => exceed 1
-        "2026-01-02": 10.10,   # ->01-05 10.35 : +2.48%           => exceed 0
+        "2026-01-01": 10.00,  # ->01-04 13.00 : +30.0%  > 19.3%  => exceed 1
+        "2026-01-02": 10.10,  # ->01-05 10.35 : +2.48%           => exceed 0
         "2026-01-03": 10.20,
         "2026-01-04": 13.00,
         "2026-01-05": 10.35,
@@ -37,13 +37,15 @@ def _frame():
         "2026-01-07": 10.50,
         "2026-01-08": 10.60,
         "2026-01-09": 10.70,
-        "2026-01-10": 10.80,   # ->01-13 absent => target NaN => exceed NaN
+        "2026-01-10": 10.80,  # ->01-13 absent => target NaN => exceed NaN
     }
-    return pd.DataFrame({
-        "item_id": "A",
-        "date": [pd.to_datetime(d).date() for d in prices],
-        "price": list(prices.values()),
-    })
+    return pd.DataFrame(
+        {
+            "item_id": "A",
+            "date": [pd.to_datetime(d).date() for d in prices],
+            "price": list(prices.values()),
+        }
+    )
 
 
 def test_exceedance_label_is_one_sided_and_inherits_voiding(tmp_path):
@@ -52,8 +54,8 @@ def test_exceedance_label_is_one_sided_and_inherits_voiding(tmp_path):
     col = "target_exceed_3d"
 
     assert col in out.columns
-    assert out.loc[pd.to_datetime("2026-01-01").date(), col] == 1.0   # +30% clears 19.3%
-    assert out.loc[pd.to_datetime("2026-01-02").date(), col] == 0.0   # +2.5% does not
+    assert out.loc[pd.to_datetime("2026-01-01").date(), col] == 1.0  # +30% clears 19.3%
+    assert out.loc[pd.to_datetime("2026-01-02").date(), col] == 0.0  # +2.5% does not
     # Missing target -> return is NaN -> exceedance label must be NaN, not 0.
     assert np.isnan(out.loc[pd.to_datetime("2026-01-10").date(), col])
 
@@ -66,4 +68,4 @@ def test_exceedance_label_is_never_selected_as_a_feature(tmp_path):
     out = f.prepare_targets(_frame(), horizon=3)
     cols = ItemForecaster._select_feature_cols(out, [3], shelved=[])
     assert "target_exceed_3d" not in cols
-    assert "target_return_3d" not in cols   # guards the existing invariant too
+    assert "target_return_3d" not in cols  # guards the existing invariant too

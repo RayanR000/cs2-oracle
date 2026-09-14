@@ -52,6 +52,7 @@ Usage:
     python -m scripts.ab_test_frozen_runs --max-items 300 --horizons 7 30
     python -m scripts.ab_test_frozen_runs --thresholds none 0 1
 """
+
 from __future__ import annotations
 
 import argparse
@@ -66,10 +67,7 @@ from backtest.paired_mde import NoPairedRows, paired_da_difference
 from models import forecaster as fc
 from scripts import walkforward_backtest as wf
 
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-)
+logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s")
 logger = logging.getLogger("ab_test_frozen_runs")
 
 # The two seeds compute_mde.py uses. Kept identical so a floor measured here is
@@ -107,14 +105,11 @@ def _measure_floor(threshold, horizon, max_items, step_days):
             step_days=step_days,
             fold_seed=seed,
         )
-        records[seed] = (report.get("horizons", {})
-                         .get(str(horizon), {})
-                         .get("records"))
+        records[seed] = report.get("horizons", {}).get(str(horizon), {}).get("records")
 
     a, b = records[SEEDS[0]], records[SEEDS[1]]
     if not a or not b:
-        return {"error": "no records returned",
-                "n_a": len(a or []), "n_b": len(b or [])}
+        return {"error": "no records returned", "n_a": len(a or []), "n_b": len(b or [])}
     try:
         paired = paired_da_difference(a, b)
     except NoPairedRows as exc:
@@ -123,9 +118,9 @@ def _measure_floor(threshold, horizon, max_items, step_days):
     # The absolute DA of each arm, so a moved point estimate is visible rather
     # than hidden behind a width that did not move.
     paired["arm_da"] = {
-        str(seed): round(
-            sum(r["direction_correct"] for r in recs) / len(recs) * 100, 3)
-        for seed, recs in records.items() if recs
+        str(seed): round(sum(r["direction_correct"] for r in recs) / len(recs) * 100, 3)
+        for seed, recs in records.items()
+        if recs
     }
     paired["n_rows"] = {str(seed): len(recs or []) for seed, recs in records.items()}
     return paired
@@ -137,9 +132,11 @@ def main():
     parser.add_argument("--horizons", type=int, nargs="+", default=None)
     parser.add_argument("--step-days", type=int, default=wf.STEP_DAYS)
     parser.add_argument(
-        "--thresholds", nargs="+", default=["none", "0"],
-        help="Label regimes to measure. 'none' disables the rule "
-             "(default: none 0)")
+        "--thresholds",
+        nargs="+",
+        default=["none", "0"],
+        help="Label regimes to measure. 'none' disables the rule (default: none 0)",
+    )
     args = parser.parse_args()
 
     thresholds = [_parse_threshold(t) for t in args.thresholds]
@@ -158,28 +155,23 @@ def main():
             per_regime = {}
             for threshold in thresholds:
                 label = _label(threshold)
-                logger.info(
-                    f"h={horizon} regime={label}: measuring the seed-pair floor")
-                per_regime[label] = _measure_floor(
-                    threshold, horizon, args.max_items, args.step_days)
+                logger.info(f"h={horizon} regime={label}: measuring the seed-pair floor")
+                per_regime[label] = _measure_floor(threshold, horizon, args.max_items, args.step_days)
 
             baseline = per_regime.get("off", {})
             base_mde = baseline.get("mde_pp")
             for label, res in per_regime.items():
                 if label == "off" or base_mde in (None, 0) or res.get("mde_pp") is None:
                     continue
-                res["narrowing_pct"] = round(
-                    (base_mde - res["mde_pp"]) / base_mde * 100, 2)
+                res["narrowing_pct"] = round((base_mde - res["mde_pp"]) / base_mde * 100, 2)
                 # A fold-count difference means the regimes did not measure the
                 # same design, so the widths are not comparable. Reported on the
                 # row rather than logged, so a stored result carries it.
-                res["comparable_folds"] = (
-                    res.get("n_clusters") == baseline.get("n_clusters"))
+                res["comparable_folds"] = res.get("n_clusters") == baseline.get("n_clusters")
 
             out[str(horizon)] = per_regime
             # Flushed per horizon: a run killed partway still leaves usable output.
-            print(f"FROZEN-RUN MDE h={horizon}: "
-                  f"{json.dumps(per_regime, default=str)}", flush=True)
+            print(f"FROZEN-RUN MDE h={horizon}: {json.dumps(per_regime, default=str)}", flush=True)
     finally:
         fc.LABEL_MAX_STALE_RUN_DAYS = original
 
@@ -194,8 +186,7 @@ def main():
             if narrowing is None:
                 logger.info(f"  h={horizon} {label}: no comparison available")
                 continue
-            note = "" if res.get("comparable_folds") else \
-                "  [NOT COMPARABLE: fold counts differ]"
+            note = "" if res.get("comparable_folds") else "  [NOT COMPARABLE: fold counts differ]"
             logger.info(
                 f"  h={horizon} {label}: MDE {base.get('mde_pp')}pp -> "
                 f"{res.get('mde_pp')}pp ({narrowing:+.1f}% narrowing){note}"

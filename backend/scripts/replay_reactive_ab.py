@@ -8,12 +8,12 @@ artifact dir in turn. Run from the repo root (dev env).
 
     backend/venv/bin/python backend/scripts/replay_reactive_ab.py
 """
+
 from __future__ import annotations
 
 import os
 import re
 import subprocess
-import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -25,8 +25,10 @@ CALM = ["2026-04-07", "2026-06-16", "2026-07-01"]  # 04-13 crosses a cutover
 VOLATILE = ["2026-03-24", "2026-03-27"]
 
 # BAND COVERAGE columns: h  n  cov%  target%  miss<low  miss>high  halfw%
-ROW = re.compile(r"^\s*(\d+)\s+([\d,]+)\s+([\d.]+)\s+([\d.]+)\s+"
-                 r"([\d.]+)\s+([\d.]+)\s+([\d.]+)")
+ROW = re.compile(
+    r"^\s*(\d+)\s+([\d,]+)\s+([\d.]+)\s+([\d.]+)\s+"
+    r"([\d.]+)\s+([\d.]+)\s+([\d.]+)"
+)
 
 
 def _point(dir_path: Path):
@@ -40,6 +42,7 @@ def _point(dir_path: Path):
                 SB.rename(bak)
             else:
                 import shutil
+
                 shutil.rmtree(SB)
     SB.symlink_to(dir_path)
 
@@ -51,9 +54,12 @@ def _replay(anchor: str, reactive: bool) -> dict:
     env["CLIMATOLOGY_REACTIVE"] = "1" if reactive else "0"
     env["PYTHONPATH"] = str(ROOT / "backend")
     p = subprocess.run(
-        [str(ROOT / "backend" / "venv" / "bin" / "python"),
-         "-m", "scripts.replay_serving"],
-        cwd=str(ROOT), env=env, capture_output=True, text=True)
+        [str(ROOT / "backend" / "venv" / "bin" / "python"), "-m", "scripts.replay_serving"],
+        cwd=str(ROOT),
+        env=env,
+        capture_output=True,
+        text=True,
+    )
     out = p.stdout + p.stderr
     raw = ROOT / f"ab_raw_{anchor}_{'arm' if reactive else 'ctrl'}.log"
     raw.write_text(out)
@@ -66,16 +72,17 @@ def _replay(anchor: str, reactive: bool) -> dict:
             m = ROW.match(line)
             if m:
                 h = int(m.group(1))
-                rows[h] = {"n": int(m.group(2).replace(",", "")),
-                           "cov": float(m.group(3)),
-                           "target": float(m.group(4)),
-                           "halfw": float(m.group(7))}
+                rows[h] = {
+                    "n": int(m.group(2).replace(",", "")),
+                    "cov": float(m.group(3)),
+                    "target": float(m.group(4)),
+                    "halfw": float(m.group(7)),
+                }
             elif line.strip() and not line.startswith(" ") and rows:
                 in_band = False
     if not rows:
         (ROOT / "scratchpad_replay_fail.log").write_text(out[-4000:])
-        print(f"    !! no BAND COVERAGE parsed for {anchor} "
-              f"reactive={reactive} (rc={p.returncode}); tail saved")
+        print(f"    !! no BAND COVERAGE parsed for {anchor} reactive={reactive} (rc={p.returncode}); tail saved")
     return rows
 
 
@@ -91,11 +98,12 @@ def main() -> int:
             for h in sorted(set(ctrl) & set(arm)):
                 c, r = ctrl[h], arm[h]
                 ratio = r["halfw"] / c["halfw"] if c["halfw"] else float("nan")
-                print(f"  h={h:>2}  cov ctrl {c['cov']:.1f}% -> arm {r['cov']:.1f}% "
-                      f"| halfw ctrl {c['halfw']:.3f} -> arm {r['halfw']:.3f} "
-                      f"(x{ratio:.3f})  n={c['n']}")
-                results.append((label, a, h, c["cov"], r["cov"],
-                                c["halfw"], r["halfw"], ratio))
+                print(
+                    f"  h={h:>2}  cov ctrl {c['cov']:.1f}% -> arm {r['cov']:.1f}% "
+                    f"| halfw ctrl {c['halfw']:.3f} -> arm {r['halfw']:.3f} "
+                    f"(x{ratio:.3f})  n={c['n']}"
+                )
+                results.append((label, a, h, c["cov"], r["cov"], c["halfw"], r["halfw"], ratio))
     print("\n================ SUMMARY (arm/ctrl width ratio) ================")
     for label in ("CALM", "VOLATILE"):
         for h in (3, 7, 14, 30):
@@ -103,8 +111,11 @@ def main() -> int:
             cc = [x[4] - x[3] for x in results if x[0] == label and x[2] == h]
             if rr:
                 import numpy as np
-                print(f"  {label:>8} h={h:>2}: width x{np.mean(rr):.3f} "
-                      f"(n_anchors={len(rr)}), mean cov Δ {np.mean(cc):+.1f}pp")
+
+                print(
+                    f"  {label:>8} h={h:>2}: width x{np.mean(rr):.3f} "
+                    f"(n_anchors={len(rr)}), mean cov Δ {np.mean(cc):+.1f}pp"
+                )
     return 0
 
 

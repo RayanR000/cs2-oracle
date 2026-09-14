@@ -13,7 +13,6 @@ See `docs/changelog/2026-08-11-the-da-gap-is-the-market-direction-of-five-dates.
 from datetime import date, datetime
 
 import pytest
-
 from backtest.scoring import (
     EXCLUDED_FORECAST_DATES,
     excluded_forecast_date,
@@ -38,12 +37,15 @@ def test_the_replayed_h30_date_is_excluded_with_a_reason():
     assert "replay" in reason
 
 
-@pytest.mark.parametrize("d", [
-    date(2026, 7, 17),
-    date(2026, 7, 18),
-    date(2026, 7, 29),
-    date(2026, 8, 7),
-])
+@pytest.mark.parametrize(
+    "d",
+    [
+        date(2026, 7, 17),
+        date(2026, 7, 18),
+        date(2026, 7, 29),
+        date(2026, 8, 7),
+    ],
+)
 def test_every_other_panel_date_is_kept(d):
     assert excluded_forecast_date(d) is None
 
@@ -54,12 +56,15 @@ def test_a_datetime_is_normalised_to_its_date():
     assert excluded_forecast_date(datetime(2026, 7, 20, 0, 0, 0)) is None
 
 
-@pytest.mark.parametrize("s, excluded", [
-    ("2026-07-19", True),
-    ("2026-07-19 23:39:12", True),
-    ("2026-07-19T23:39:12", True),
-    ("2026-07-18", False),
-])
+@pytest.mark.parametrize(
+    "s, excluded",
+    [
+        ("2026-07-19", True),
+        ("2026-07-19 23:39:12", True),
+        ("2026-07-19T23:39:12", True),
+        ("2026-07-18", False),
+    ],
+)
 def test_an_iso_string_is_normalised(s, excluded):
     """SQLite hands the column back as a string, psycopg2 as a date.
 

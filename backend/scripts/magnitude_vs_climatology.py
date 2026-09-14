@@ -64,6 +64,7 @@ for good. Only a ratio clearly below 1 justifies spending a production retrain.
 
 Run: backend/venv/bin/python scripts/magnitude_vs_climatology.py
 """
+
 from __future__ import annotations
 
 import argparse
@@ -77,13 +78,13 @@ import pandas as pd
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 ARTIFACT = Path(__file__).resolve().parent.parent / "models" / "saved_models"
-SERVED_MIN_PRICE = 1.0         # the >=$1 cohort the band is actually served on
+SERVED_MIN_PRICE = 1.0  # the >=$1 cohort the band is actually served on
 HORIZONS = (3, 7, 14, 30)
 TARGET_COVERAGE = 0.80
-SCALE_FRACTION = 0.60          # climatology scale + booster fit before this
-CAL_FRACTION = 0.80            # conformal lambda fit in [scale, cal)
-EARLY_STOP_TAIL = 0.15         # tail of the fit split held for early stopping
-SHRINK_K = 20                  # n_i/(n_i+K) shrink of item -> tier dispersion
+SCALE_FRACTION = 0.60  # climatology scale + booster fit before this
+CAL_FRACTION = 0.80  # conformal lambda fit in [scale, cal)
+EARLY_STOP_TAIL = 0.15  # tail of the fit split held for early stopping
+SHRINK_K = 20  # n_i/(n_i+K) shrink of item -> tier dispersion
 N_BOOTSTRAP = 1000
 RNG_SEED = 42
 N_ESTIMATORS = 3000
@@ -124,6 +125,7 @@ def _served_cohort_slugs() -> set:
     archive slug set exactly), so the set applies to this frame unmapped.
     """
     from climatology_vs_gbm import _served_cohort_slugs as _impl
+
     return _impl()
 
 
@@ -131,12 +133,12 @@ def _load(feats: list, served_only: bool = False) -> pd.DataFrame:
     import duckdb
 
     p = ARTIFACT / "engineered_data.parquet"
-    have = {r[0] for r in duckdb.connect().sql(
-        f"DESCRIBE SELECT * FROM read_parquet('{p}')").fetchall()}
+    have = {r[0] for r in duckdb.connect().sql(f"DESCRIBE SELECT * FROM read_parquet('{p}')").fetchall()}
     # The dollar sources needed to rebuild the scale-free features, plus the
     # band's own sigma input.
-    need = {"item_id", "date", "price", "price_std_60d", "macd_line",
-            "macd_histogram"} | {f"price_std_{w}d" for w in (7, 14, 20, 30, 60)}
+    need = {"item_id", "date", "price", "price_std_60d", "macd_line", "macd_histogram"} | {
+        f"price_std_{w}d" for w in (7, 14, 20, 30, 60)
+    }
     need |= {c for c in feats if c in have}
     cols = ", ".join(sorted(need & have))
     df = duckdb.connect().sql(f"SELECT {cols} FROM read_parquet('{p}')").fetchdf()
@@ -148,18 +150,14 @@ def _load(feats: list, served_only: bool = False) -> pd.DataFrame:
         served = _served_cohort_slugs()
         before = df["item_id"].nunique()
         df = df[df["item_id"].isin(served)].copy()
-        print(f"served cohort: {df['item_id'].nunique():,} of {before:,} artifact "
-              f"items retained")
+        print(f"served cohort: {df['item_id'].nunique():,} of {before:,} artifact items retained")
     px = df["price"].to_numpy()
     # backtest.scoring.price_tier (liquidity bands, not display), vectorized --
     # same expression climatology_vs_gbm.py uses, so the tier pools match.
-    df["tier"] = np.select(
-        [px >= 1000, px >= 100, px >= 20, px >= 5, px >= 1],
-        [5, 4, 3, 2, 1], default=0)
+    df["tier"] = np.select([px >= 1000, px >= 100, px >= 20, px >= 5, px >= 1], [5, 4, 3, 2, 1], default=0)
     missing = [c for c in feats if c not in df.columns]
     if missing:
-        print(f"WARNING: {len(missing)} feature(s) unavailable, dropped from the "
-              f"magnitude arm: {missing}")
+        print(f"WARNING: {len(missing)} feature(s) unavailable, dropped from the magnitude arm: {missing}")
     return df.reset_index(drop=True)
 
 
@@ -173,8 +171,7 @@ def _forward_return_pct(df: pd.DataFrame, horizon: int) -> pd.Series:
     future = df[["item_id", "date", "price"]].copy()
     future["date"] = future["date"] - pd.Timedelta(horizon, unit="D")
     future = future.rename(columns={"price": "price_fwd"})
-    merged = df[["item_id", "date", "price"]].merge(
-        future, on=["item_id", "date"], how="left")
+    merged = df[["item_id", "date", "price"]].merge(future, on=["item_id", "date"], how="left")
     with np.errstate(divide="ignore", invalid="ignore"):
         return (merged["price_fwd"] / merged["price"] - 1.0) * 100.0
 
@@ -187,12 +184,15 @@ def _sigma_halfwidth(df: pd.DataFrame) -> np.ndarray:
     clip = json.load(open(ARTIFACT / "meta.json"))["sigma_clip"]
     # sigma is a FRACTION; the labels here are percent, so scale to match.
     return 100.0 * conformal.sigma_from_columns(
-        df["price_std_60d"].to_numpy(), df["price"].to_numpy(),
-        floor=clip["floor"], cap=clip["cap"], fallback=clip["fallback"])
+        df["price_std_60d"].to_numpy(),
+        df["price"].to_numpy(),
+        floor=clip["floor"],
+        cap=clip["cap"],
+        fallback=clip["fallback"],
+    )
 
 
-def _climatology_halfwidth(calib: pd.DataFrame, test: pd.DataFrame,
-                           col: str, k: float = SHRINK_K) -> np.ndarray:
+def _climatology_halfwidth(calib: pd.DataFrame, test: pd.DataFrame, col: str, k: float = SHRINK_K) -> np.ndarray:
     """Per-test-row half-width from the item's trailing |h-day return| quantile,
     shrunk toward its price tier's pooled quantile. Fit on `calib` only.
 
@@ -227,8 +227,7 @@ def _climatology_halfwidth(calib: pd.DataFrame, test: pd.DataFrame,
         w = 1.0 if k <= 0 else n / (n + k)
         return w * raw + (1 - w) * base
 
-    return np.array([_shrunk(i, t) for i, t
-                     in zip(test["item_id"], test["tier"])], dtype=float)
+    return np.array([_shrunk(i, t) for i, t in zip(test["item_id"], test["tier"])], dtype=float)
 
 
 def _tuned_params(horizon: int) -> dict:
@@ -240,14 +239,18 @@ def _tuned_params(horizon: int) -> dict:
     base = dict((tuned.get(str(horizon), {}) or {}).get("0.5", {}))
     base.pop("alpha", None)
     base.pop("metric", None)
-    base.update(objective="quantile", alpha=TARGET_COVERAGE,
-                metric="quantile", verbosity=-1, n_jobs=-1,
-                feature_pre_filter=False)
+    base.update(
+        objective="quantile",
+        alpha=TARGET_COVERAGE,
+        metric="quantile",
+        verbosity=-1,
+        n_jobs=-1,
+        feature_pre_filter=False,
+    )
     return base
 
 
-def _fit_magnitude(fit: pd.DataFrame, feats: list, horizon: int,
-                   objective: str) -> tuple:
+def _fit_magnitude(fit: pd.DataFrame, feats: list, horizon: int, objective: str) -> tuple:
     """Quantile-regress |r_h| on the artifact's features. Returns (model, cols).
 
     The last EARLY_STOP_TAIL of the fit split (by date) is held out for early
@@ -271,9 +274,12 @@ def _fit_magnitude(fit: pd.DataFrame, feats: list, horizon: int,
         params.update(objective="regression_l1", metric="l1")
         params.pop("alpha", None)
     model = lgb.LGBMRegressor(n_estimators=N_ESTIMATORS, **params)
-    model.fit(tr[cols], tr["y"],
-              eval_set=[(va[cols], va["y"])],
-              callbacks=[lgb.early_stopping(EARLY_STOPPING_ROUNDS, verbose=False)])
+    model.fit(
+        tr[cols],
+        tr["y"],
+        eval_set=[(va[cols], va["y"])],
+        callbacks=[lgb.early_stopping(EARLY_STOPPING_ROUNDS, verbose=False)],
+    )
     return model, cols
 
 
@@ -305,8 +311,7 @@ def _folds(dates: np.ndarray, n_folds: int) -> list:
         ev_start = CAL_FRACTION + i * tile
         ev_end = CAL_FRACTION + (i + 1) * tile if i < n_folds - 1 else 1.0
         fit_end = ev_start - cal_width
-        cuts = (dates[_at(fit_end)], dates[_at(ev_start)],
-                dates[_at(ev_end)] if ev_end < 1.0 else dates[n - 1])
+        cuts = (dates[_at(fit_end)], dates[_at(ev_start)], dates[_at(ev_end)] if ev_end < 1.0 else dates[n - 1])
         # A fold whose windows collapse onto each other measures nothing.
         if not (cuts[0] < cuts[1] < cuts[2]):
             return []
@@ -342,24 +347,21 @@ def _coverage_at_lambda(abs_r: np.ndarray, w: np.ndarray, lam: float) -> float:
 ARMS = ("sigma", "clim", "pool", "mag")
 
 
-def _run_fold(d: pd.DataFrame, horizon: int, feats: list, objective: str,
-              cuts: tuple, is_last: bool) -> dict:
+def _run_fold(d: pd.DataFrame, horizon: int, feats: list, objective: str, cuts: tuple, is_last: bool) -> dict:
     """One walk-forward fold: fit < cuts[0], lambda in [cuts[0], cuts[1]),
     eval in [cuts[1], cuts[2]]. The final fold takes the tail inclusively so no
     dates are silently dropped."""
     c0, c1, c2 = cuts
     fit = d[d["date"] < c0].copy()
     cal = d[(d["date"] >= c0) & (d["date"] < c1)].copy()
-    ev = (d[d["date"] >= c1] if is_last
-          else d[(d["date"] >= c1) & (d["date"] < c2)]).copy()
+    ev = (d[d["date"] >= c1] if is_last else d[(d["date"] >= c1) & (d["date"] < c2)]).copy()
     if fit.empty or cal.empty or ev.empty:
         return {"horizon": horizon, "skipped": "a fold window is empty"}
 
     # --- climatology arm: scale from the fit split only (causal) -------------
     scale_r = fit[["item_id", "tier", "r"]].rename(columns={"r": "r_h"})
     for frame in (cal, ev):
-        frame["w_clim"] = (_climatology_halfwidth(scale_r, frame, "r_h")
-                           if not scale_r.empty else np.nan)
+        frame["w_clim"] = _climatology_halfwidth(scale_r, frame, "r_h") if not scale_r.empty else np.nan
 
     # --- pooled arm: one global constant from the fit split ------------------
     pooled = fit["r"].abs().to_numpy()
@@ -384,19 +386,20 @@ def _run_fold(d: pd.DataFrame, horizon: int, feats: list, objective: str,
         w_ev = ev[wcol].to_numpy()
         cov = _coverage_at_lambda(ev["r"].abs().to_numpy(), w_ev, lam)
         ok = np.isfinite(w_ev) & (w_ev > 0)
-        width = (float(lam * np.mean(w_ev[ok]))
-                 if ok.any() and np.isfinite(lam) else np.nan)
+        width = float(lam * np.mean(w_ev[ok])) if ok.any() and np.isfinite(lam) else np.nan
         return lam, cov, width
 
-    out = {"horizon": horizon,
-           "ev_start": str(pd.Timestamp(c1).date()),
-           "ev_stop": str(ev["date"].max().date()),
-           "n_fit": int(len(fit)), "n_cal": int(len(cal)),
-           "n_eval": int(len(ev)),
-           "n_eval_dates": int(ev["date"].nunique()),
-           "n_features": len(cols),
-           "best_iteration": (int(getattr(model, "best_iteration_", 0) or 0)
-                              if model is not None else None)}
+    out = {
+        "horizon": horizon,
+        "ev_start": str(pd.Timestamp(c1).date()),
+        "ev_stop": str(ev["date"].max().date()),
+        "n_fit": len(fit),
+        "n_cal": len(cal),
+        "n_eval": len(ev),
+        "n_eval_dates": int(ev["date"].nunique()),
+        "n_features": len(cols),
+        "best_iteration": (int(getattr(model, "best_iteration_", 0) or 0) if model is not None else None),
+    }
 
     abs_ev = ev["r"].abs().to_numpy()
     for arm in ARMS:
@@ -411,15 +414,11 @@ def _run_fold(d: pd.DataFrame, horizon: int, feats: list, objective: str,
     _, mw_c = _matched_width(abs_ev, ev["w_clim"].to_numpy())
     _, mw_m = _matched_width(abs_ev, ev["w_mag"].to_numpy())
     _, mw_s = _matched_width(abs_ev, ev["w_sigma"].to_numpy())
-    out["ratio_mag_over_clim"] = (round(mw_m / mw_c, 4)
-                                  if mw_c and np.isfinite(mw_m) else None)
-    out["ratio_mag_over_sigma"] = (round(mw_m / mw_s, 4)
-                                   if mw_s and np.isfinite(mw_m) else None)
+    out["ratio_mag_over_clim"] = round(mw_m / mw_c, 4) if mw_c and np.isfinite(mw_m) else None
+    out["ratio_mag_over_sigma"] = round(mw_m / mw_s, 4) if mw_s and np.isfinite(mw_m) else None
     _, mw_p = _matched_width(abs_ev, ev["w_pool"].to_numpy())
-    out["ratio_mag_over_pool"] = (round(mw_m / mw_p, 4)
-                                  if mw_p and np.isfinite(mw_m) else None)
-    out["ratio_pool_over_clim"] = (round(mw_p / mw_c, 4)
-                                   if mw_c and np.isfinite(mw_p) else None)
+    out["ratio_mag_over_pool"] = round(mw_m / mw_p, 4) if mw_p and np.isfinite(mw_m) else None
+    out["ratio_pool_over_clim"] = round(mw_p / mw_c, 4) if mw_c and np.isfinite(mw_p) else None
 
     rng = np.random.default_rng(RNG_SEED)
     by_date = {dt: g for dt, g in ev.groupby("date")}
@@ -438,8 +437,7 @@ def _run_fold(d: pd.DataFrame, horizon: int, feats: list, objective: str,
     return out
 
 
-def _run_horizon(df: pd.DataFrame, horizon: int, feats: list,
-                 objective: str, n_folds: int = 1) -> list:
+def _run_horizon(df: pd.DataFrame, horizon: int, feats: list, objective: str, n_folds: int = 1) -> list:
     """Every fold for one horizon. A single fold is the original single split."""
     d = df.copy()
     d["r"] = _forward_return_pct(d, horizon)
@@ -449,16 +447,14 @@ def _run_horizon(df: pd.DataFrame, horizon: int, feats: list,
     dates = np.sort(d["date"].unique())
     folds = _folds(dates, n_folds)
     if not folds:
-        return [{"horizon": horizon,
-                 "skipped": f"{len(dates)} date(s) will not support "
-                            f"{n_folds} fold(s)"}]
-    return [_run_fold(d, horizon, feats, objective, cuts,
-                      is_last=(i == len(folds) - 1))
-            for i, cuts in enumerate(folds)]
+        return [{"horizon": horizon, "skipped": f"{len(dates)} date(s) will not support {n_folds} fold(s)"}]
+    return [
+        _run_fold(d, horizon, feats, objective, cuts, is_last=(i == len(folds) - 1)) for i, cuts in enumerate(folds)
+    ]
 
 
-K_GRID = (0, 10, 20, 40, 80, 160, 320, 10 ** 9)
-PROD_K = SHRINK_K          # what models/forecaster.py currently serves
+K_GRID = (0, 10, 20, 40, 80, 160, 320, 10**9)
+PROD_K = SHRINK_K  # what models/forecaster.py currently serves
 
 
 def _run_k_sweep(df: pd.DataFrame, horizon: int, n_folds: int) -> dict:
@@ -480,8 +476,7 @@ def _run_k_sweep(df: pd.DataFrame, horizon: int, n_folds: int) -> dict:
     for i, (c0, c1, c2) in enumerate(folds):
         fit = d[d["date"] < c0]
         cal = d[(d["date"] >= c0) & (d["date"] < c1)].copy()
-        ev = (d[d["date"] >= c1] if i == len(folds) - 1
-              else d[(d["date"] >= c1) & (d["date"] < c2)]).copy()
+        ev = (d[d["date"] >= c1] if i == len(folds) - 1 else d[(d["date"] >= c1) & (d["date"] < c2)]).copy()
         if fit.empty or cal.empty or ev.empty:
             continue
         scale_r = fit[["item_id", "tier", "r"]].rename(columns={"r": "r_h"})
@@ -492,26 +487,27 @@ def _run_k_sweep(df: pd.DataFrame, horizon: int, n_folds: int) -> dict:
             per_k[k].append(mw)
 
     base = np.array(per_k[PROD_K], dtype=float)
-    out = {"horizon": horizon, "n_folds": int(len(base)), "per_k": {}}
+    out = {"horizon": horizon, "n_folds": len(base), "per_k": {}}
     for k in K_GRID:
         arr = np.array(per_k[k], dtype=float)
         ok = np.isfinite(arr) & np.isfinite(base)
         if not ok.any():
             continue
         ratio = arr[ok] / base[ok]
-        out["per_k"][k] = {"mean_width_pct": round(float(np.mean(arr[ok])), 3),
-                           "mean_ratio_vs_prod_k": round(float(np.mean(ratio)), 4),
-                           "worst_ratio": round(float(np.max(ratio)), 4),
-                           "folds_narrower": int(np.sum(ratio < 1.0)),
-                           "n": int(ok.sum())}
+        out["per_k"][k] = {
+            "mean_width_pct": round(float(np.mean(arr[ok])), 3),
+            "mean_ratio_vs_prod_k": round(float(np.mean(ratio)), 4),
+            "worst_ratio": round(float(np.max(ratio)), 4),
+            "folds_narrower": int(np.sum(ratio < 1.0)),
+            "n": int(ok.sum()),
+        }
     return out
 
 
 def _print_k_sweep(rows: list) -> None:
     print(f"\n=== CLIMATOLOGY_SHRINK_K sweep (production K = {PROD_K}) ===")
     print("ratio < 1 means NARROWER than production at the same 80% coverage.\n")
-    hdr = (f"{'h':>3} {'K':>11} {'width%':>8} {'ratio':>8} {'worst':>8} "
-           f"{'wins':>7}")
+    hdr = f"{'h':>3} {'K':>11} {'width%':>8} {'ratio':>8} {'worst':>8} {'wins':>7}"
     print(hdr)
     print("-" * len(hdr))
     for r in rows:
@@ -520,90 +516,124 @@ def _print_k_sweep(rows: list) -> None:
             continue
         n = r["n_folds"]
         for k, v in r["per_k"].items():
-            label = "pool(inf)" if k >= 10 ** 9 else str(k)
+            label = "pool(inf)" if k >= 10**9 else str(k)
             star = "  <-- prod" if k == PROD_K else ""
-            print(f"{r['horizon']:>3} {label:>11} {v['mean_width_pct']:>8} "
-                  f"{v['mean_ratio_vs_prod_k']:>8.4f} {v['worst_ratio']:>8.4f} "
-                  f"{str(v['folds_narrower']) + '/' + str(n):>7}{star}")
+            print(
+                f"{r['horizon']:>3} {label:>11} {v['mean_width_pct']:>8} "
+                f"{v['mean_ratio_vs_prod_k']:>8.4f} {v['worst_ratio']:>8.4f} "
+                f"{str(v['folds_narrower']) + '/' + str(n):>7}{star}"
+            )
         print()
     print("width% = mean matched-80%-coverage half-width, averaged over folds.")
-    print("ratio  = mean of the PER-FOLD ratio against production K (paired, so "
-          "it is not\n         distorted by folds sitting in wider eras).")
-    print("worst  = the single worst fold's ratio. A K is only deployable if "
-          "worst < 1 too --\n         a mean win with a losing fold is the "
-          "shape every refuted band arm had.")
+    print(
+        "ratio  = mean of the PER-FOLD ratio against production K (paired, so "
+        "it is not\n         distorted by folds sitting in wider eras)."
+    )
+    print(
+        "worst  = the single worst fold's ratio. A K is only deployable if "
+        "worst < 1 too --\n         a mean win with a losing fold is the "
+        "shape every refuted band arm had."
+    )
     print("wins   = folds where this K is narrower than production K.")
 
 
 def _print_report(rows: list) -> None:
-    hdr = (f"{'h':>3} {'eval from':>11} {'n_eval':>9} {'dates':>6} {'rounds':>7} "
-           f"{'clim w%':>9} {'pool w%':>9} {'mag w%':>8} "
-           f"{'mag/clim':>9} {'90% CI':>18} {'mag/pool':>9} {'pool/clim':>10}")
+    hdr = (
+        f"{'h':>3} {'eval from':>11} {'n_eval':>9} {'dates':>6} {'rounds':>7} "
+        f"{'clim w%':>9} {'pool w%':>9} {'mag w%':>8} "
+        f"{'mag/clim':>9} {'90% CI':>18} {'mag/pool':>9} {'pool/clim':>10}"
+    )
     print(hdr)
     print("-" * len(hdr))
     for r in rows:
         if r.get("skipped"):
             print(f"{r['horizon']:>3}  SKIPPED: {r['skipped']}")
             continue
-        ci = (f"[{r['ratio_ci90'][0]:.3f}, {r['ratio_ci90'][1]:.3f}]"
-              if r.get("ratio_ci90") else "n/a")
-        print(f"{r['horizon']:>3} {r['ev_start']:>11} {r['n_eval']:>9,} "
-              f"{r['n_eval_dates']:>6} "
-              f"{str(r['best_iteration']):>7} "
-              f"{str(r['clim_matched_width_pct']):>9} "
-              f"{str(r['pool_matched_width_pct']):>9} "
-              f"{str(r['mag_matched_width_pct']):>8} "
-              f"{str(r['ratio_mag_over_clim']):>9} {ci:>18} "
-              f"{str(r['ratio_mag_over_pool']):>9} "
-              f"{str(r['ratio_pool_over_clim']):>10}")
-    print("\nw% = mean half-width in PERCENT at matched 80% coverage on the eval "
-          "split.\nmag/clim < 1 means the magnitude booster is narrower than the "
-          "featureless\nclimatology; the verdict is the CI, not the point estimate "
-          "-- if it covers 1.0\nthe features add nothing to the band and the "
-          "magnitude target is dead too.")
-    print("mag/pool ~ 1.0 means the booster is doing NO feature work -- it has "
-          "collapsed to a\nglobal constant, and pool/clim then says whether "
-          "per-item climatology is simply\nover-fitting item noise. Only "
-          "mag/pool clearly BELOW 1 is evidence that the 33\nfeatures carry "
-          "usable volatility signal.")
+        ci = f"[{r['ratio_ci90'][0]:.3f}, {r['ratio_ci90'][1]:.3f}]" if r.get("ratio_ci90") else "n/a"
+        print(
+            f"{r['horizon']:>3} {r['ev_start']:>11} {r['n_eval']:>9,} "
+            f"{r['n_eval_dates']:>6} "
+            f"{r['best_iteration']!s:>7} "
+            f"{r['clim_matched_width_pct']!s:>9} "
+            f"{r['pool_matched_width_pct']!s:>9} "
+            f"{r['mag_matched_width_pct']!s:>8} "
+            f"{r['ratio_mag_over_clim']!s:>9} {ci:>18} "
+            f"{r['ratio_mag_over_pool']!s:>9} "
+            f"{r['ratio_pool_over_clim']!s:>10}"
+        )
+    print(
+        "\nw% = mean half-width in PERCENT at matched 80% coverage on the eval "
+        "split.\nmag/clim < 1 means the magnitude booster is narrower than the "
+        "featureless\nclimatology; the verdict is the CI, not the point estimate "
+        "-- if it covers 1.0\nthe features add nothing to the band and the "
+        "magnitude target is dead too."
+    )
+    print(
+        "mag/pool ~ 1.0 means the booster is doing NO feature work -- it has "
+        "collapsed to a\nglobal constant, and pool/clim then says whether "
+        "per-item climatology is simply\nover-fitting item noise. Only "
+        "mag/pool clearly BELOW 1 is evidence that the 33\nfeatures carry "
+        "usable volatility signal."
+    )
 
 
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--horizons", type=int, nargs="+", default=list(HORIZONS))
-    ap.add_argument("--objective", choices=("quantile", "l1"), default="quantile",
-                    help="quantile: regress the 80th pct of |r| directly (the "
-                         "half-width itself). l1: regress median |r| and let "
-                         "lambda rescale -- a robustness check, not the headline.")
-    ap.add_argument("--served-cohort", action="store_true",
-                    help="restrict to the served backfilled cohort "
-                         "(_resolve_backfilled_slugs) rather than the broad >=$1 "
-                         "artifact population. The broad cohort carries a "
-                         "near-zero residual tail that flatters any width "
-                         "estimator, so this is the deployable read.")
-    ap.add_argument("--folds", type=int, default=1,
-                    help="walk-forward eval windows. >1 makes the width win "
-                         "REPEAT across eras instead of appearing once in the "
-                         "final 20%% of dates -- the shape in which every "
-                         "previous band arm was CV-positive and "
-                         "serving-negative.")
-    ap.add_argument("--k-sweep", action="store_true",
-                    help="sweep CLIMATOLOGY_SHRINK_K on the climatology arm "
-                         "alone (no booster, no pool arm) and report the "
-                         "matched-coverage width against the production K.")
-    ap.add_argument("--k-grid", type=float, nargs="+", default=None,
-                    help="override the K sweep grid. The production K is "
-                         "always inserted, since every ratio is measured "
-                         "against it.")
+    ap.add_argument(
+        "--objective",
+        choices=("quantile", "l1"),
+        default="quantile",
+        help="quantile: regress the 80th pct of |r| directly (the "
+        "half-width itself). l1: regress median |r| and let "
+        "lambda rescale -- a robustness check, not the headline.",
+    )
+    ap.add_argument(
+        "--served-cohort",
+        action="store_true",
+        help="restrict to the served backfilled cohort "
+        "(_resolve_backfilled_slugs) rather than the broad >=$1 "
+        "artifact population. The broad cohort carries a "
+        "near-zero residual tail that flatters any width "
+        "estimator, so this is the deployable read.",
+    )
+    ap.add_argument(
+        "--folds",
+        type=int,
+        default=1,
+        help="walk-forward eval windows. >1 makes the width win "
+        "REPEAT across eras instead of appearing once in the "
+        "final 20%% of dates -- the shape in which every "
+        "previous band arm was CV-positive and "
+        "serving-negative.",
+    )
+    ap.add_argument(
+        "--k-sweep",
+        action="store_true",
+        help="sweep CLIMATOLOGY_SHRINK_K on the climatology arm "
+        "alone (no booster, no pool arm) and report the "
+        "matched-coverage width against the production K.",
+    )
+    ap.add_argument(
+        "--k-grid",
+        type=float,
+        nargs="+",
+        default=None,
+        help="override the K sweep grid. The production K is "
+        "always inserted, since every ratio is measured "
+        "against it.",
+    )
     ap.add_argument("--json-out", default=None)
     args = ap.parse_args()
 
     feats = _feature_cols()
     df = _load(feats, served_only=args.served_cohort)
     cohort = "served" if args.served_cohort else "all"
-    print(f"[artifact/{cohort}] {len(df):,} rows, {df['item_id'].nunique():,} items, "
-          f"{df['date'].min().date()}..{df['date'].max().date()} | "
-          f"{len(feats)} served features | objective={args.objective}\n")
+    print(
+        f"[artifact/{cohort}] {len(df):,} rows, {df['item_id'].nunique():,} items, "
+        f"{df['date'].min().date()}..{df['date'].max().date()} | "
+        f"{len(feats)} served features | objective={args.objective}\n"
+    )
     if args.k_grid:
         global K_GRID
         K_GRID = tuple(sorted({PROD_K, *(int(k) for k in args.k_grid)}))
@@ -611,15 +641,23 @@ def main() -> int:
         rows = [_run_k_sweep(df, h, args.folds) for h in args.horizons]
         _print_k_sweep(rows)
     else:
-        rows = [r for h in args.horizons
-                for r in _run_horizon(df, h, feats, args.objective, args.folds)]
+        rows = [r for h in args.horizons for r in _run_horizon(df, h, feats, args.objective, args.folds)]
         _print_report(rows)
 
     if args.json_out:
-        Path(args.json_out).write_text(json.dumps(
-            {"target_coverage": TARGET_COVERAGE, "objective": args.objective,
-             "cohort": cohort, "folds": args.folds,
-             "horizons": rows}, indent=2, default=str))
+        Path(args.json_out).write_text(
+            json.dumps(
+                {
+                    "target_coverage": TARGET_COVERAGE,
+                    "objective": args.objective,
+                    "cohort": cohort,
+                    "folds": args.folds,
+                    "horizons": rows,
+                },
+                indent=2,
+                default=str,
+            )
+        )
         print(f"\nwrote {args.json_out}")
     return 0
 

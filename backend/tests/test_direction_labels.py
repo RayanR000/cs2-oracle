@@ -1,6 +1,6 @@
 import numpy as np
 import pandas as pd
-from models.forecaster import ItemForecaster, DIRECTION_LABEL_VOL_COL
+from models.forecaster import DIRECTION_LABEL_VOL_COL, ItemForecaster
 
 
 def test_direction_threshold_scales_with_sqrt_horizon():
@@ -15,7 +15,7 @@ def test_direction_threshold_scales_with_sqrt_horizon():
 def test_direction_threshold_applies_floor_and_cap():
     sigma = np.array([0.0, 1000.0])  # degenerate low and high vol
     t = ItemForecaster._direction_threshold(sigma, horizon=7, k=1.0, floor=0.2, cap=15.0)
-    assert t[0] == 0.2   # floored
+    assert t[0] == 0.2  # floored
     assert t[1] == 15.0  # capped
 
 
@@ -55,8 +55,7 @@ def test_label_vol_column_is_trailing_and_grouped():
     # two items; smooth-trend item -> low vol, noisy item -> higher vol
     n = 60
     dates = pd.date_range("2025-01-01", periods=n, freq="D")
-    calm = pd.DataFrame({"item_id": "calm", "date": dates,
-                         "price": np.linspace(10.0, 12.0, n)})
+    calm = pd.DataFrame({"item_id": "calm", "date": dates, "price": np.linspace(10.0, 12.0, n)})
     # ~1% daily oscillation -> should land on a PERCENT scale (~0.5-3), not ~0.01
     noisy_price = 10.0 * (1 + 0.01 * np.sin(np.arange(n)))
     noisy = pd.DataFrame({"item_id": "noisy", "date": dates, "price": noisy_price})
@@ -80,6 +79,7 @@ def test_label_vol_column_is_trailing_and_grouped():
 
 def test_fit_classifier_signature_accepts_horizon_and_sigma():
     import inspect
+
     sig = inspect.signature(ItemForecaster._fit_direction_classifier)
     params = list(sig.parameters)
     assert "horizon" in params
@@ -95,15 +95,14 @@ def test_fit_classifier_vol_scaling_changes_labels():
     y = rng.randn(400) * 2.0  # returns in percent, spread around 0
     big_sigma = np.full(400, 50.0)  # huge vol -> band hits cap 15% -> most flat
     legacy = fc._direction_classes(y)  # fixed 0.5%
-    thr = fc._direction_threshold(big_sigma, horizon=3,
-                                  k=fc.DIRECTION_VOL_MULTIPLIER_MAP[3],
-                                  floor=0.2, cap=15.0)
+    thr = fc._direction_threshold(big_sigma, horizon=3, k=fc.DIRECTION_VOL_MULTIPLIER_MAP[3], floor=0.2, cap=15.0)
     scaled = fc._direction_classes(y, thr)
     assert (scaled == 1).sum() > (legacy == 1).sum()
 
 
 def test_sweep_grid_and_eval_are_importable():
     import importlib
+
     mod = importlib.import_module("scripts.ab_test_direction_labels")
     # grid constants exist and are non-empty
     assert len(mod.K_GRID) >= 2
@@ -114,6 +113,7 @@ def test_sweep_grid_and_eval_are_importable():
 
 def test_sweep_max_folds_and_grids():
     import importlib
+
     mod = importlib.import_module("scripts.ab_test_direction_labels")
     assert isinstance(mod.MAX_FOLDS, int)
     assert mod.K_GRID == [0.25, 0.5, 1.0]
@@ -122,8 +122,9 @@ def test_sweep_max_folds_and_grids():
 
 def test_score_fixed_yardstick_ignores_training_threshold():
     from scripts.ab_test_direction_labels import score_fixed_yardstick
+
     actual_returns = np.array([1.0, -1.0, 0.1])  # up, down, flat @0.5%
-    pred_cls = np.array([2, 0, 1])                # all correct vs fixed band
+    pred_cls = np.array([2, 0, 1])  # all correct vs fixed band
     acc, movers_acc = score_fixed_yardstick(pred_cls, actual_returns)
     assert acc == 1.0
     assert movers_acc == 1.0  # only the two movers, both correct

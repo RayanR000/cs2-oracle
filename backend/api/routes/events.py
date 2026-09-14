@@ -1,23 +1,22 @@
-from typing import Optional
+from database import Event, get_db
 from fastapi import APIRouter, Depends, Query
-from sqlalchemy.orm import Session
 from sqlalchemy import desc
+from sqlalchemy.orm import Session
 
-from database import get_db, Event
 from api.schemas import EventOut
 
 router = APIRouter(prefix="/events", tags=["events"])
 
 
-def _read_events_parquet(type_filter: Optional[str] = None,
-                         skip: int = 0, limit: int = 50,
-                         recent_only: bool = False,
-                         recent_limit: int = 20):
+def _read_events_parquet(
+    type_filter: str | None = None, skip: int = 0, limit: int = 50, recent_only: bool = False, recent_limit: int = 20
+):
     from db.parquet import ParquetQuery
+
     with ParquetQuery("events") as q:
         where = []
         if type_filter:
-            where.append(f"type = '{type_filter.replace(chr(39), chr(39)+chr(39))}'")
+            where.append(f"type = '{type_filter.replace(chr(39), chr(39) + chr(39))}'")
         if recent_only:
             where.append("1=1")
         where_clause = " AND ".join(where) if where else "1=1"
@@ -43,7 +42,7 @@ def _read_events_parquet(type_filter: Optional[str] = None,
 
 @router.get("/", response_model=list[EventOut])
 def list_events(
-    type: Optional[str] = Query(None),
+    type: str | None = Query(None),
     skip: int = Query(0, ge=0),
     limit: int = Query(50, ge=1, le=200),
     db: Session = Depends(get_db),
@@ -65,9 +64,4 @@ def recent_events(
     try:
         return _read_events_parquet(recent_only=True, recent_limit=limit)
     except Exception:
-        return (
-            db.query(Event)
-            .order_by(desc(Event.timestamp))
-            .limit(limit)
-            .all()
-        )
+        return db.query(Event).order_by(desc(Event.timestamp)).limit(limit).all()

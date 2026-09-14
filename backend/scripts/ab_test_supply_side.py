@@ -27,35 +27,27 @@ Embargo (added 2026-08-08):
     event-calendar arm, and has never been replicated in this repo.
 """
 
+import json
+import logging
 import os
 import sys
-import json
-import math
-import logging
-import copy
 from pathlib import Path
-from datetime import datetime, date, timedelta, timezone
-from collections import defaultdict
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
+import lightgbm as lgb
 import numpy as np
 import pandas as pd
-import lightgbm as lgb
-
-from database import SessionLocal
 from backtest.paired_mde import format_paired, paired_arm_contrasts
 from backtest.walkforward_records import (
     paired_records,
     without_records,
 )
+from database import SessionLocal
 from db.archive import prices_relation
 from models.forecaster import ItemForecaster, archive_universe_sql_filter
 
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-)
+logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s")
 logger = logging.getLogger("ab_test_supply_side")
 
 ARCHIVE_DIR = Path(__file__).parent.parent.parent / "price-archive"
@@ -83,7 +75,6 @@ _UNIVERSE = archive_universe_sql_filter()
 DS_PARAMS = {"max_bin": 63, "feature_pre_filter": False}
 
 
-
 def _frame_fingerprint():
     """Identify the feature-producing code so a cached frame can't outlive it.
 
@@ -92,6 +83,7 @@ def _frame_fingerprint():
     key cannot see a code change.
     """
     import hashlib
+
     src = (Path(__file__).parent.parent / "models" / "forecaster.py").read_bytes()
     h = hashlib.sha256(src)
     h.update(repr((_UNIVERSE, DS_PARAMS, "supply-side-rarity-q50-v1")).encode())
@@ -109,6 +101,7 @@ def _build_frame_uncached(max_items):
     itself); rarity_cols is the tested addition, kept whole. The arm picks which.
     """
     import duckdb
+
     con = duckdb.connect()
     db = SessionLocal()
     try:
@@ -135,20 +128,23 @@ def _build_frame_uncached(max_items):
         if not rows:
             raise RuntimeError(
                 "supply_side universe query selected 0 items — the source pin or "
-                "the >=$1 floor matched no rows (see 2026-08-13 harness repin).")
+                "the >=$1 floor matched no rows (see 2026-08-13 harness repin)."
+            )
         logger.info(f"  {len(rows)} items for evaluation")
 
         all_rows = []
         for item_slug, _, _, _ in rows:
-            item_rows = con.sql(f"""
+            item_rows = con.sql(
+                f"""
                 SELECT item_slug AS item_id, day AS timestamp,
                        mean_price AS price, volume
                 FROM {relation}
                 WHERE item_slug = ? AND {_UNIVERSE}
                 ORDER BY day
-            """, params=[item_slug]).fetchall()
-            item_df = pd.DataFrame(
-                item_rows, columns=["item_id", "timestamp", "price", "volume"])
+            """,
+                params=[item_slug],
+            ).fetchall()
+            item_df = pd.DataFrame(item_rows, columns=["item_id", "timestamp", "price", "volume"])
             item_df["timestamp"] = pd.to_datetime(item_df["timestamp"])
             item_df["date"] = item_df["timestamp"].dt.date
             all_rows.append(item_df)
@@ -162,16 +158,15 @@ def _build_frame_uncached(max_items):
         df = forecaster.engineer_features(all_prices, events_df)
         df = forecaster._add_cross_sectional_features(df)
 
-        exclude = {"item_id", "date", "timestamp", "price", "volume",
-                   "name", "release_date"}
-        feature_cols = [c for c in df.columns if c not in exclude
-                        and df[c].dtype in (np.float64, np.float32, np.int64, int, float)]
-        feature_cols = [c for c in feature_cols
-                        if c not in ItemForecaster.SHELVED_FEATURES]
+        exclude = {"item_id", "date", "timestamp", "price", "volume", "name", "release_date"}
+        feature_cols = [
+            c for c in df.columns if c not in exclude and df[c].dtype in (np.float64, np.float32, np.int64, int, float)
+        ]
+        feature_cols = [c for c in feature_cols if c not in ItemForecaster.SHELVED_FEATURES]
         rarity_cols = [c for c in feature_cols if c.startswith("rarity_")]
         base_cols = ItemForecaster._apply_feature_allowlist(
-            [c for c in feature_cols if not c.startswith("rarity_")],
-            ItemForecaster.FEATURE_GROUP_ALLOWLIST)
+            [c for c in feature_cols if not c.startswith("rarity_")], ItemForecaster.FEATURE_GROUP_ALLOWLIST
+        )
 
         # Correlation-prune the production base among itself (control's set, and
         # treatment's base). Rarity is the tested addition and is kept whole, as
@@ -185,8 +180,7 @@ def _build_frame_uncached(max_items):
                     continue
                 to_drop.update(upper[col][upper[col] > 0.95].index)
             base_cols = [c for c in base_cols if c not in to_drop]
-        logger.info("  %d production base + %d rarity columns",
-                    len(base_cols), len(rarity_cols))
+        logger.info("  %d production base + %d rarity columns", len(base_cols), len(rarity_cols))
 
         keep = ["item_id", "date", "price", "volume"] + base_cols + rarity_cols
         keep = [c for c in dict.fromkeys(keep) if c in df.columns]
@@ -204,12 +198,12 @@ def build_frame(max_items=200, cache_path=None):
             meta = json.loads(meta_path.read_text())
             if meta.get("fingerprint") != _frame_fingerprint():
                 raise SystemExit(
-                    f"Frame cache {cache_path} was built from different feature "
-                    f"code. Rebuild with --build-cache-only.")
+                    f"Frame cache {cache_path} was built from different feature code. Rebuild with --build-cache-only."
+                )
             if meta.get("max_items") != max_items:
                 raise SystemExit(
-                    f"Frame cache {cache_path} was built with max_items="
-                    f"{meta.get('max_items')}, not {max_items}.")
+                    f"Frame cache {cache_path} was built with max_items={meta.get('max_items')}, not {max_items}."
+                )
             df = pd.read_parquet(cache_path)
             logger.info(f"  Loaded cached frame {cache_path} ({len(df):,} rows)")
             return df, meta["base_cols"], meta["rarity_cols"]
@@ -220,9 +214,17 @@ def build_frame(max_items=200, cache_path=None):
         tmp_frame = cache_path.with_suffix(f".{os.getpid()}.tmp.parquet")
         tmp_meta = cache_path.with_suffix(f".{os.getpid()}.tmp.json")
         df.to_parquet(tmp_frame, index=False)
-        tmp_meta.write_text(json.dumps({
-            "fingerprint": _frame_fingerprint(), "max_items": max_items,
-            "base_cols": base_cols, "rarity_cols": rarity_cols, "rows": len(df)}))
+        tmp_meta.write_text(
+            json.dumps(
+                {
+                    "fingerprint": _frame_fingerprint(),
+                    "max_items": max_items,
+                    "base_cols": base_cols,
+                    "rarity_cols": rarity_cols,
+                    "rows": len(df),
+                }
+            )
+        )
         os.replace(tmp_frame, cache_path)
         os.replace(tmp_meta, cache_path.with_suffix(".meta.json"))
         logger.info(f"  Wrote frame cache {cache_path} ({len(df):,} rows)")
@@ -237,19 +239,21 @@ def run_evaluation(df, base_cols, rarity_cols, arm, horizon_filter=None):
     train and val per fold — the capacity control the 2026-08-13 leak audit
     requires (a real rarity effect must beat shuffled rarity, not just control).
     """
-    placebo = (arm == "placebo")
-    feature_cols = list(base_cols) + (
-        list(rarity_cols) if arm != "control" else [])
-    logger.info("  arm=%s: %d features (%d base%s)", arm, len(feature_cols),
-                len(base_cols),
-                f" + {len(rarity_cols)} rarity" if arm != "control" else "")
+    placebo = arm == "placebo"
+    feature_cols = list(base_cols) + (list(rarity_cols) if arm != "control" else [])
+    logger.info(
+        "  arm=%s: %d features (%d base%s)",
+        arm,
+        len(feature_cols),
+        len(base_cols),
+        f" + {len(rarity_cols)} rarity" if arm != "control" else "",
+    )
 
     try:
         forecaster = ItemForecaster(db_session=None)
 
         results_by_horizon = {}
-        horizons = (ItemForecaster.HORIZONS if horizon_filter is None
-                    else [horizon_filter])
+        horizons = ItemForecaster.HORIZONS if horizon_filter is None else [horizon_filter]
         for horizon in horizons:
             logger.info(f"\n  Evaluating {horizon}d horizon...")
 
@@ -275,12 +279,13 @@ def run_evaluation(df, base_cols, rarity_cols, arm, horizon_filter=None):
             step = 60
             for window_end in range(split_idx + 1, len(dates), step):
                 train_dates = dates[:window_end]
-                val_dates = dates[window_end:window_end + VAL_WINDOW_DAYS]
+                val_dates = dates[window_end : window_end + VAL_WINDOW_DAYS]
                 if len(val_dates) < 7:
                     continue
 
                 train_df = ItemForecaster._purge_overlapping_train_rows(
-                    tdf[tdf["date"].isin(train_dates)], val_dates[0], horizon)
+                    tdf[tdf["date"].isin(train_dates)], val_dates[0], horizon
+                )
                 val_df = tdf[tdf["date"].isin(val_dates)]
 
                 if len(val_df) < 50:
@@ -337,15 +342,15 @@ def run_evaluation(df, base_cols, rarity_cols, arm, horizon_filter=None):
                 }
                 ds_kw = {"params": DS_PARAMS, "free_raw_data": False}
                 dtrain = lgb.Dataset(X_train.values, y_train.values, **ds_kw)
-                dval = lgb.Dataset(X_val.values, y_val.values,
-                                   reference=dtrain, **ds_kw)
+                dval = lgb.Dataset(X_val.values, y_val.values, reference=dtrain, **ds_kw)
                 # Production's trainer and round table. The old call early-stopped
                 # on `dval` and scored `X_val` — the same rows. `dval` is ignored
                 # unless EARLY_STOPPING=1.
                 model = ItemForecaster._train_ensemble_member(
-                    params, dtrain, dval,
-                    num_boost_round=ItemForecaster._boost_rounds(
-                        horizon, cv=True),
+                    params,
+                    dtrain,
+                    dval,
+                    num_boost_round=ItemForecaster._boost_rounds(horizon, cv=True),
                     early_stopping=ItemForecaster._early_stopping_enabled(),
                 )
                 p50_ret = model.predict(X_val.values)
@@ -381,26 +386,28 @@ def run_evaluation(df, base_cols, rarity_cols, arm, horizon_filter=None):
                 # pair row for row. `window_end` rather than a running counter:
                 # a counter drifts the moment one arm skips a fold the other
                 # kept.
-                _match = (np.sign(np.nan_to_num(actual_returns))
-                          == np.sign(np.nan_to_num(p50_ret)))
-                _scored = ((np.asarray(actual_returns) != 0)
-                           & (np.asarray(current_prices, dtype=float) >= 1.0))
-                records.extend(paired_records(
-                    item_ids=val_df["item_id"].to_numpy(),
-                    forecast_dates=val_df["date"].to_numpy(),
-                    fold_id=window_end,
-                    keep=_scored,
-                    direction_correct=_match,
-                ))
+                _match = np.sign(np.nan_to_num(actual_returns)) == np.sign(np.nan_to_num(p50_ret))
+                _scored = (np.asarray(actual_returns) != 0) & (np.asarray(current_prices, dtype=float) >= 1.0)
+                records.extend(
+                    paired_records(
+                        item_ids=val_df["item_id"].to_numpy(),
+                        forecast_dates=val_df["date"].to_numpy(),
+                        fold_id=window_end,
+                        keep=_scored,
+                        direction_correct=_match,
+                    )
+                )
 
-                per_fold.append({
-                    "fold": len(per_fold) + 1,
-                    "val_start": str(val_dates[0]),
-                    "val_end": str(val_dates[-1]),
-                    "dir_acc": round(fold_hits / fold_total * 100, 1) if fold_total > 0 else 0,
-                    "mae": round(fold_mae / fold_total, 4) if fold_total > 0 else 0,
-                    "n": fold_total,
-                })
+                per_fold.append(
+                    {
+                        "fold": len(per_fold) + 1,
+                        "val_start": str(val_dates[0]),
+                        "val_end": str(val_dates[-1]),
+                        "dir_acc": round(fold_hits / fold_total * 100, 1) if fold_total > 0 else 0,
+                        "mae": round(fold_mae / fold_total, 4) if fold_total > 0 else 0,
+                        "n": fold_total,
+                    }
+                )
 
             if directional_total > 0:
                 dir_acc = directional_hits / directional_total * 100
@@ -428,9 +435,11 @@ def run_evaluation(df, base_cols, rarity_cols, arm, horizon_filter=None):
                 result["improvement_over_baseline_pp"] = round(dir_acc - baseline_2class, 1)
                 results_by_horizon[horizon] = result
 
-                logger.info(f"  === {horizon}d: DirAcc={dir_acc:.1f}% "
-                            f"({directional_total:,} samples, "
-                            f"{result['improvement_over_baseline_pp']:.1f}pp above baseline)")
+                logger.info(
+                    f"  === {horizon}d: DirAcc={dir_acc:.1f}% "
+                    f"({directional_total:,} samples, "
+                    f"{result['improvement_over_baseline_pp']:.1f}pp above baseline)"
+                )
 
         return results_by_horizon
 
@@ -445,26 +454,35 @@ _ARMS = ("control", "treatment", "placebo")
 
 def main():
     import argparse
+
     parser = argparse.ArgumentParser()
-    parser.add_argument("--max-items", type=int, default=200,
-                        help="Number of items to evaluate (default: 200)")
-    parser.add_argument("--arm", choices=_ARMS, default=None,
-                        help="Run one arm only and write its result to --out. "
-                             "Shards the run so each arm fits the 30-min cap; "
-                             "merge with scripts/merge_supply_side_ab.py.")
-    parser.add_argument("--horizon", type=int, default=None,
-                        choices=ItemForecaster.HORIZONS,
-                        help="Restrict to one horizon (finer shard, if an arm "
-                             "still exceeds the cap).")
-    parser.add_argument("--frame-cache", default=None,
-                        help="Path to the shared frame parquet. All arm shards "
-                             "MUST pass the same one so their fold grids match — "
-                             "per-arm frame builds drift by a day and never pair.")
-    parser.add_argument("--build-cache-only", action="store_true",
-                        help="Build --frame-cache and exit (run once before the "
-                             "arm shards).")
-    parser.add_argument("--out", default=None,
-                        help="Write the (records-stripped) shard JSON here.")
+    parser.add_argument("--max-items", type=int, default=200, help="Number of items to evaluate (default: 200)")
+    parser.add_argument(
+        "--arm",
+        choices=_ARMS,
+        default=None,
+        help="Run one arm only and write its result to --out. "
+        "Shards the run so each arm fits the 30-min cap; "
+        "merge with scripts/merge_supply_side_ab.py.",
+    )
+    parser.add_argument(
+        "--horizon",
+        type=int,
+        default=None,
+        choices=ItemForecaster.HORIZONS,
+        help="Restrict to one horizon (finer shard, if an arm still exceeds the cap).",
+    )
+    parser.add_argument(
+        "--frame-cache",
+        default=None,
+        help="Path to the shared frame parquet. All arm shards "
+        "MUST pass the same one so their fold grids match — "
+        "per-arm frame builds drift by a day and never pair.",
+    )
+    parser.add_argument(
+        "--build-cache-only", action="store_true", help="Build --frame-cache and exit (run once before the arm shards)."
+    )
+    parser.add_argument("--out", default=None, help="Write the (records-stripped) shard JSON here.")
     args = parser.parse_args()
 
     if args.build_cache_only:
@@ -473,17 +491,14 @@ def main():
         build_frame(max_items=args.max_items, cache_path=args.frame_cache)
         return 0
 
-    df, base_cols, rarity_cols = build_frame(
-        max_items=args.max_items, cache_path=args.frame_cache)
+    df, base_cols, rarity_cols = build_frame(max_items=args.max_items, cache_path=args.frame_cache)
 
     # ── Sharded path: one arm (optionally one horizon), write JSON ────
     if args.arm is not None:
         logger.info("=" * 70)
-        logger.info("A/B TEST (SHARD): arm=%s horizon=%s", args.arm,
-                    args.horizon or "all")
+        logger.info("A/B TEST (SHARD): arm=%s horizon=%s", args.arm, args.horizon or "all")
         logger.info("=" * 70)
-        results = run_evaluation(df, base_cols, rarity_cols, args.arm,
-                                 horizon_filter=args.horizon)
+        results = run_evaluation(df, base_cols, rarity_cols, args.arm, horizon_filter=args.horizon)
         payload = without_records({args.arm: results})
         if args.out:
             Path(args.out).write_text(json.dumps(payload, indent=2, default=str))
@@ -582,11 +597,20 @@ def main():
         print(f"    {h:>2}d:  Control: MAE=${wo_mae:.2f}  n={wo_n}")
         print(f"           Treat:  MAE=${w_mae:.2f}  n={w_n}")
 
-    print(f"\n  JSON: {json.dumps(without_records({
-        'control': results_without,
-        'treatment': results_with,
-        'placebo': results_placebo,
-    }), indent=2)}")
+    print(
+        f"\n  JSON: {
+            json.dumps(
+                without_records(
+                    {
+                        'control': results_without,
+                        'treatment': results_with,
+                        'placebo': results_placebo,
+                    }
+                ),
+                indent=2,
+            )
+        }"
+    )
 
     return 0
 

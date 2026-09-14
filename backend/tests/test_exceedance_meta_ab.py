@@ -5,14 +5,16 @@ verdict silently, and the harness costs minutes per fold to run, so they are
 tested directly. `paired_fold_deltas` is where an underpowered read turns into
 a false verdict; `_score` is where a single-class fold does.
 """
+
 import sys
+from pathlib import Path
+
 import numpy as np
 import pytest
-from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from scripts.exceedance_meta_ab import paired_fold_deltas, _score  # noqa: E402
+from scripts.exceedance_meta_ab import _score, paired_fold_deltas
 
 
 def _folds(**by_fold):
@@ -24,11 +26,8 @@ class TestPairedFoldDeltas:
         # The arms can drop different folds (a fold with <50 val rows, or a
         # degenerate head). Pairing by list position would then subtract
         # unrelated folds and report a difference that is really fold variance.
-        base = [{"fold": 0, "heldout_auc": 0.60},
-                {"fold": 1, "heldout_auc": 0.50},
-                {"fold": 2, "heldout_auc": 0.70}]
-        arm = [{"fold": 0, "heldout_auc": 0.62},
-               {"fold": 2, "heldout_auc": 0.72}]
+        base = [{"fold": 0, "heldout_auc": 0.60}, {"fold": 1, "heldout_auc": 0.50}, {"fold": 2, "heldout_auc": 0.70}]
+        arm = [{"fold": 0, "heldout_auc": 0.62}, {"fold": 2, "heldout_auc": 0.72}]
         d = paired_fold_deltas(base, arm, "heldout_auc")
         assert d["n_folds"] == 2
         assert d["mean"] == pytest.approx(0.02)
@@ -42,12 +41,8 @@ class TestPairedFoldDeltas:
     def test_none_metric_folds_are_dropped_not_zeroed(self):
         # A single-class fold scores None. Coercing it to 0.0 would pull the
         # mean toward "no effect" and inflate the fold count.
-        base = [{"fold": 0, "heldout_auc": 0.60},
-                {"fold": 1, "heldout_auc": 0.50},
-                {"fold": 2, "heldout_auc": 0.55}]
-        arm = [{"fold": 0, "heldout_auc": 0.65},
-               {"fold": 1, "heldout_auc": None},
-               {"fold": 2, "heldout_auc": 0.60}]
+        base = [{"fold": 0, "heldout_auc": 0.60}, {"fold": 1, "heldout_auc": 0.50}, {"fold": 2, "heldout_auc": 0.55}]
+        arm = [{"fold": 0, "heldout_auc": 0.65}, {"fold": 1, "heldout_auc": None}, {"fold": 2, "heldout_auc": 0.60}]
         d = paired_fold_deltas(base, arm, "heldout_auc")
         assert d["n_folds"] == 2
         assert d["mean"] == pytest.approx(0.05)
@@ -57,8 +52,7 @@ class TestPairedFoldDeltas:
         steady = [{"fold": i, "heldout_auc": 0.55} for i in range(5)]
         assert paired_fold_deltas(base, steady, "heldout_auc")["excludes_zero"]
 
-        noisy = [{"fold": i, "heldout_auc": v} for i, v in
-                 enumerate([0.80, 0.20, 0.75, 0.25, 0.55])]
+        noisy = [{"fold": i, "heldout_auc": v} for i, v in enumerate([0.80, 0.20, 0.75, 0.25, 0.55])]
         assert not paired_fold_deltas(base, noisy, "heldout_auc")["excludes_zero"]
 
     def test_sign_is_arm_minus_baseline(self):
@@ -111,9 +105,10 @@ class TestFoldTally:
 
     def test_auc_counts_positive_folds(self):
         from scripts.exceedance_meta_ab import fold_tally
+
         assert fold_tally("heldout_auc", {"wins": 20, "n_folds": 26}) == "better 20/26"
 
     def test_logloss_counts_negative_folds(self):
         from scripts.exceedance_meta_ab import fold_tally
-        assert fold_tally("heldout_logloss",
-                          {"wins": 4, "n_folds": 26}) == "better 22/26"
+
+        assert fold_tally("heldout_logloss", {"wins": 4, "n_folds": 26}) == "better 22/26"

@@ -97,6 +97,7 @@ Usage (from `backend/`, ~1-2h per horizon):
     venv/bin/python scripts/ab_test_train_universe.py --horizon 30 \\
         --out /tmp/universe_h30.json
 """
+
 from __future__ import annotations
 
 # ── Universe ────────────────────────────────────────────────────────────
@@ -126,28 +127,26 @@ VAL_WINDOW_DAYS = 21
 STEP_DAYS = 60
 CORR_PRUNE_THRESHOLD = 0.95
 
-SPLIT_SEED = 20260807     # as the original, so the eval draw is comparable
-MATCH_SEED = 909_000      # the per-fold downsample
-MATCH_SEED_B = 606_000    # ... and its placebo twin
+SPLIT_SEED = 20260807  # as the original, so the eval draw is comparable
+MATCH_SEED = 909_000  # the per-fold downsample
+MATCH_SEED_B = 606_000  # ... and its placebo twin
 
+import hashlib
+import json
+import logging
 import os
 import sys
-import json
-import hashlib
-import logging
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
+import lightgbm as lgb
 import numpy as np
 import pandas as pd
-import lightgbm as lgb
-
+from backtest.paired_mde import format_paired, paired_arm_contrasts
 from database import SessionLocal
 from db.archive import prices_relation
-from models.forecaster import (ItemForecaster, archive_universe_sql_filter,
-                               embargo_days)
-from backtest.paired_mde import paired_arm_contrasts, format_paired
+from models.forecaster import ItemForecaster, archive_universe_sql_filter, embargo_days
 
 logging.basicConfig(
     level=logging.INFO,
@@ -157,8 +156,7 @@ logger = logging.getLogger("ab_test_train_universe")
 
 DS_PARAMS = {"max_bin": 63, "feature_pre_filter": False}
 
-ARMS = ("prod_pool", "prod_pool_b", "full_sample", "per_fold",
-        "full_sample_matched", "full_sample_matched_b")
+ARMS = ("prod_pool", "prod_pool_b", "full_sample", "per_fold", "full_sample_matched", "full_sample_matched_b")
 BASE_ARM = "prod_pool"
 
 # The universe predicate, spelled into the cache key. A frame cache
@@ -170,8 +168,7 @@ _UNIVERSE = archive_universe_sql_filter(source_column="source")
 def _frame_fingerprint():
     src = Path(__file__).parent.parent / "models" / "forecaster.py"
     h = hashlib.sha256(src.read_bytes())
-    h.update(repr((MIN_MEDIAN_PRICE, MIN_ITEM_DAYS, CORR_PRUNE_THRESHOLD,
-                   _UNIVERSE)).encode())
+    h.update(repr((MIN_MEDIAN_PRICE, MIN_ITEM_DAYS, CORR_PRUNE_THRESHOLD, _UNIVERSE)).encode())
     return h.hexdigest()[:16]
 
 
@@ -197,16 +194,14 @@ def _fold_cutoffs(con, relation, horizon):
     inside `run()` from the horizon's own date grid; this is a superset of
     them because that grid is a subset of these days.
     """
-    dates = [r[0] for r in con.sql(
-        f"SELECT DISTINCT day FROM {relation} ORDER BY day").fetchall()]
+    dates = [r[0] for r in con.sql(f"SELECT DISTINCT day FROM {relation} ORDER BY day").fetchall()]
     split_idx = len(dates) * 2 // 3
     out = []
     for we in range(split_idx + 1, len(dates), STEP_DAYS):
-        val_dates = dates[we:we + VAL_WINDOW_DAYS]
+        val_dates = dates[we : we + VAL_WINDOW_DAYS]
         if len(val_dates) < 7:
             continue
-        out.append(pd.Timestamp(val_dates[0])
-                   - pd.Timedelta(days=embargo_days(horizon)))
+        out.append(pd.Timestamp(val_dates[0]) - pd.Timedelta(days=embargo_days(horizon)))
     return dates, out
 
 
@@ -226,7 +221,8 @@ def build_frame(horizons, cache_path=None):
             if meta.get("fingerprint") != _frame_fingerprint():
                 raise SystemExit(
                     f"Frame cache {cache_path} was built from different feature "
-                    f"code or constants. Rebuild with --build-cache-only.")
+                    f"code or constants. Rebuild with --build-cache-only."
+                )
             df = pd.read_parquet(cache_path)
             logger.info(f"  Loaded cached frame {cache_path} ({len(df):,} rows)")
             return df, meta["pruned"]
@@ -239,10 +235,15 @@ def build_frame(horizons, cache_path=None):
         tmp_frame = cache_path.with_suffix(f".{os.getpid()}.tmp.parquet")
         tmp_meta = cache_path.with_suffix(f".{os.getpid()}.tmp.json")
         df.to_parquet(tmp_frame, index=False)
-        tmp_meta.write_text(json.dumps({
-            "fingerprint": _frame_fingerprint(),
-            "pruned": pruned, "rows": len(df),
-        }))
+        tmp_meta.write_text(
+            json.dumps(
+                {
+                    "fingerprint": _frame_fingerprint(),
+                    "pruned": pruned,
+                    "rows": len(df),
+                }
+            )
+        )
         os.replace(tmp_frame, cache_path)
         os.replace(tmp_meta, cache_path.with_suffix(".meta.json"))
         logger.info(f"  Wrote frame cache {cache_path} ({len(df):,} rows)")
@@ -252,6 +253,7 @@ def build_frame(horizons, cache_path=None):
 
 def _build_frame_uncached(horizons):
     import duckdb
+
     con = duckdb.connect()
     db = SessionLocal()
 
@@ -262,36 +264,42 @@ def _build_frame_uncached(horizons):
 
         relation = _prices_sql(con)
 
-        full = {r[0] for r in con.sql(f"""
+        full = {
+            r[0]
+            for r in con.sql(f"""
             SELECT item_slug FROM {relation}
             GROUP BY item_slug
             HAVING COUNT(DISTINCT day) >= {MIN_ITEM_DAYS}
                AND MEDIAN(mean_price) >= {MIN_MEDIAN_PRICE}
                AND MIN(day) < DATE '2026-01-01'
-        """).fetchall()}
-        logger.info(f"  Full-sample >=${MIN_MEDIAN_PRICE:g} universe: "
-                    f"{len(full)} items")
+        """).fetchall()
+        }
+        logger.info(f"  Full-sample >=${MIN_MEDIAN_PRICE:g} universe: {len(full)} items")
 
         union = set()
         for horizon in horizons:
             _, cutoffs = _fold_cutoffs(con, relation, horizon)
             for cutoff in cutoffs:
-                union |= {r[0] for r in con.sql(f"""
+                union |= {
+                    r[0]
+                    for r in con.sql(f"""
                     SELECT item_slug FROM {relation}
                     WHERE day < DATE '{cutoff.date()}'
                     GROUP BY item_slug
                     HAVING COUNT(DISTINCT day) >= {MIN_ITEM_DAYS}
                        AND MEDIAN(mean_price) >= {MIN_MEDIAN_PRICE}
-                """).fetchall()}
-            logger.info(f"  h={horizon}: {len(cutoffs)} fold cutoffs, "
-                        f"running per-fold union {len(union)} items")
+                """).fetchall()
+                }
+            logger.info(f"  h={horizon}: {len(cutoffs)} fold cutoffs, running per-fold union {len(union)} items")
 
         # The sub-$1 pool exists so `prod_pool` can be built: production applies
         # no price filter, so 82 of its 99 drawn items are sub-$1 and the
         # +3.50pp is measured against that mix. Without it there is no baseline
         # to reproduce and the harness can only say whether the leak is
         # load-bearing, not whether the floor is worth shipping.
-        sub1 = [r[0] for r in con.sql(f"""
+        sub1 = [
+            r[0]
+            for r in con.sql(f"""
             SELECT item_slug FROM {relation}
             GROUP BY item_slug
             HAVING COUNT(DISTINCT day) >= {MIN_ITEM_DAYS}
@@ -301,36 +309,40 @@ def _build_frame_uncached(horizons):
             -- picks a different pool, and a different item order, run to run.
             ORDER BY COUNT(DISTINCT day) DESC, item_slug
             LIMIT {N_SUB1_POOL}
-        """).fetchall()]
+        """).fetchall()
+        ]
         logger.info(f"  Sub-$1 pool: {len(sub1)} items")
 
-        slugs = sorted((full | union | set(sub1)))
+        slugs = sorted(full | union | set(sub1))
         logger.info(
             f"  Frame superset: {len(slugs)} items "
             f"({len(union - full)} reachable only per-fold, "
-            f"{len(full - union)} only full-sample, {len(sub1)} sub-$1)")
+            f"{len(full - union)} only full-sample, {len(sub1)} sub-$1)"
+        )
 
         if not slugs:
             raise SystemExit(
                 "Universe is empty. That is the 2026-08-08 archive-migration "
-                "failure mode, not a data statement — check the source filter.")
+                "failure mode, not a data statement — check the source filter."
+            )
 
         placeholders = ", ".join("?" for _ in slugs)
         # `volume` is selected only because engineer_features requires the
         # column to exist; every feature derived from it is in SHELVED_FEATURES.
-        all_prices = con.sql(f"""
+        all_prices = con.sql(
+            f"""
             SELECT item_slug AS item_id, day AS timestamp,
                    mean_price AS price, volume
             FROM {relation} WHERE item_slug IN ({placeholders})
-        """, params=slugs).df()
+        """,
+            params=slugs,
+        ).df()
 
         all_prices["timestamp"] = pd.to_datetime(all_prices["timestamp"])
         all_prices["date"] = all_prices["timestamp"].dt.date
         # Deterministic row order: LightGBM's bagging reads it.
-        all_prices["item_id"] = pd.Categorical(
-            all_prices["item_id"], categories=slugs, ordered=True)
-        all_prices = all_prices.sort_values(
-            ["item_id", "timestamp"], kind="stable").reset_index(drop=True)
+        all_prices["item_id"] = pd.Categorical(all_prices["item_id"], categories=slugs, ordered=True)
+        all_prices = all_prices.sort_values(["item_id", "timestamp"], kind="stable").reset_index(drop=True)
         all_prices["item_id"] = all_prices["item_id"].astype(str)
         logger.info(f"  Loaded {len(all_prices):,} price rows")
 
@@ -339,17 +351,15 @@ def _build_frame_uncached(horizons):
         # docstring. Do not move this inside the fold loop without saying so.
         df = forecaster._add_cross_sectional_features(df)
 
-        EXCLUDE = {"item_id", "date", "timestamp", "price", "volume",
-                   "name", "release_date"}
+        EXCLUDE = {"item_id", "date", "timestamp", "price", "volume", "name", "release_date"}
         numeric = (np.float64, np.float32, np.int64, int, float)
-        all_cols = [c for c in df.columns
-                    if c not in EXCLUDE and df[c].dtype in numeric]
+        all_cols = [c for c in df.columns if c not in EXCLUDE and df[c].dtype in numeric]
         kept = [c for c in all_cols if c not in ItemForecaster.SHELVED_FEATURES]
-        kept = ItemForecaster._apply_feature_allowlist(
-            kept, ItemForecaster.FEATURE_GROUP_ALLOWLIST)
+        kept = ItemForecaster._apply_feature_allowlist(kept, ItemForecaster.FEATURE_GROUP_ALLOWLIST)
         logger.info(
             f"  Features: {len(all_cols)} engineered -> {len(kept)} after "
-            f"shelving + allowlist {ItemForecaster.FEATURE_GROUP_ALLOWLIST}")
+            f"shelving + allowlist {ItemForecaster.FEATURE_GROUP_ALLOWLIST}"
+        )
 
         if len(kept) > 2:
             corr = df[kept].corr().abs()
@@ -383,8 +393,7 @@ def _per_fold_items(df, cutoff):
     Fixing only the median would leave the day-count survivorship in and
     produce a confident null.
     """
-    priced = ItemForecaster._fold_median_price_items(
-        df, MIN_MEDIAN_PRICE, cutoff)
+    priced = ItemForecaster._fold_median_price_items(df, MIN_MEDIAN_PRICE, cutoff)
     past = df[pd.to_datetime(df["date"]) < pd.Timestamp(cutoff)]
     n_days = past.groupby("item_id")["date"].nunique()
     deep = set(n_days[n_days >= MIN_ITEM_DAYS].index)
@@ -425,17 +434,15 @@ def assign_prod_draws(df, eval_set, full_items):
     """
     sub1 = sorted(df.loc[df["_sub1"], "item_id"].unique())
     rng = np.random.default_rng(SPLIT_SEED)
-    ge1 = [i for i in
-           (full_items[j] for j in rng.permutation(len(full_items)))]
+    ge1 = [i for i in (full_items[j] for j in rng.permutation(len(full_items)))]
     sub1 = [sub1[j] for j in rng.permutation(len(sub1))]
 
     n_sub = N_PROD_ITEMS - N_PROD_GE1
     a = sorted(ge1[:N_PROD_GE1] + sub1[:n_sub])
-    b = sorted(ge1[N_PROD_GE1:2 * N_PROD_GE1] + sub1[n_sub:2 * n_sub])
+    b = sorted(ge1[N_PROD_GE1 : 2 * N_PROD_GE1] + sub1[n_sub : 2 * n_sub])
     assert not (set(a) & set(b)), "the placebo draw must share no item"
     assert not ((set(a) | set(b)) & eval_set)
-    logger.info(f"  prod_pool: {len(a)} items ({N_PROD_GE1} >=$1), "
-                f"prod_pool_b: {len(b)} disjoint")
+    logger.info(f"  prod_pool: {len(a)} items ({N_PROD_GE1} >=$1), prod_pool_b: {len(b)} disjoint")
     return a, b
 
 
@@ -470,19 +477,17 @@ def run(df, pruned, horizon, n_jobs):
     per_fold = {arm: [] for arm in ARMS}
 
     for fold_idx, we in enumerate(range(split_idx + 1, len(dates), STEP_DAYS)):
-        val_dates = dates[we:we + VAL_WINDOW_DAYS]
+        val_dates = dates[we : we + VAL_WINDOW_DAYS]
         if len(val_dates) < 7:
             continue
         val_start = val_dates[0]
-        cutoff = pd.Timestamp(val_start) - pd.Timedelta(
-            days=embargo_days(horizon))
+        cutoff = pd.Timestamp(val_start) - pd.Timedelta(days=embargo_days(horizon))
 
         # The selection statistic is a function of prices, so it is computed on
         # the embargoed cutoff, never on val_start.
         fold_items = sorted(_per_fold_items(df, cutoff) - eval_set)
         if not fold_items:
-            logger.info(f"    fold {fold_idx}: empty per-fold universe at "
-                        f"{cutoff.date()}, skipped")
+            logger.info(f"    fold {fold_idx}: empty per-fold universe at {cutoff.date()}, skipped")
             continue
 
         arm_items = {
@@ -490,14 +495,11 @@ def run(df, pruned, horizon, n_jobs):
             "prod_pool_b": prod_b,
             "full_sample": full_items,
             "per_fold": fold_items,
-            "full_sample_matched": _match(
-                full_items, len(fold_items), MATCH_SEED, fold_idx),
-            "full_sample_matched_b": _match(
-                full_items, len(fold_items), MATCH_SEED_B, fold_idx),
+            "full_sample_matched": _match(full_items, len(fold_items), MATCH_SEED, fold_idx),
+            "full_sample_matched_b": _match(full_items, len(fold_items), MATCH_SEED_B, fold_idx),
         }
 
-        in_val = ((days >= ddt[we])
-                  & (days <= ddt[we + len(val_dates) - 1]))
+        in_val = (days >= ddt[we]) & (days <= ddt[we + len(val_dates) - 1])
         val_df = sub[in_val & is_eval]
         if len(val_df) < 50:
             continue
@@ -507,16 +509,15 @@ def run(df, pruned, horizon, n_jobs):
             f"    fold {fold_idx} val {val_start} cutoff {cutoff.date()}: "
             f"full_sample {len(full_items)} items, per_fold {len(fold_items)} "
             f"({len(set(fold_items) - set(full_items))} unreachable "
-            f"full-sample), val n={len(val_df):,}")
+            f"full-sample), val n={len(val_df):,}"
+        )
 
         for arm in ARMS:
             items = set(arm_items[arm])
-            train_df = sub[in_train_window
-                           & sub["item_id"].isin(items).to_numpy()]
+            train_df = sub[in_train_window & sub["item_id"].isin(items).to_numpy()]
             # Embargo the TRAIN side only, through production's own purge. The
             # val side is never purged: at h=30 that would empty the window.
-            train_df = ItemForecaster._purge_overlapping_train_rows(
-                train_df, val_start, horizon)
+            train_df = ItemForecaster._purge_overlapping_train_rows(train_df, val_start, horizon)
             if train_df.empty:
                 continue
 
@@ -526,25 +527,36 @@ def run(df, pruned, horizon, n_jobs):
             X_val = val_df[avail].fillna(train_median).values
             y_val = val_df[tcol].values
 
-            dtrain = lgb.Dataset(X_train, y_train, params=DS_PARAMS,
-                                 free_raw_data=False)
-            dval = lgb.Dataset(X_val, y_val, reference=dtrain,
-                               params=DS_PARAMS, free_raw_data=False)
+            dtrain = lgb.Dataset(X_train, y_train, params=DS_PARAMS, free_raw_data=False)
+            dval = lgb.Dataset(X_val, y_val, reference=dtrain, params=DS_PARAMS, free_raw_data=False)
             params = {
-                "objective": "quantile", "alpha": 0.5, "metric": "quantile",
-                "boosting_type": "gbdt", "num_leaves": 31, "max_depth": 5,
-                "min_data_in_leaf": 15, "min_gain_to_split": 0.1,
-                "learning_rate": 0.03, "feature_fraction": 0.7,
-                "bagging_fraction": 0.7, "bagging_freq": 5,
-                "lambda_l1": 0.5, "lambda_l2": 0.5, "verbosity": -1,
-                "random_state": 42, "n_jobs": n_jobs,
-                "force_row_wise": True, **DS_PARAMS,
+                "objective": "quantile",
+                "alpha": 0.5,
+                "metric": "quantile",
+                "boosting_type": "gbdt",
+                "num_leaves": 31,
+                "max_depth": 5,
+                "min_data_in_leaf": 15,
+                "min_gain_to_split": 0.1,
+                "learning_rate": 0.03,
+                "feature_fraction": 0.7,
+                "bagging_fraction": 0.7,
+                "bagging_freq": 5,
+                "lambda_l1": 0.5,
+                "lambda_l2": 0.5,
+                "verbosity": -1,
+                "random_state": 42,
+                "n_jobs": n_jobs,
+                "force_row_wise": True,
+                **DS_PARAMS,
             }
             # Production's trainer and round table. The old call early-stopped
             # on `dval` and scored `X_val` — the same rows. `dval` is ignored
             # unless EARLY_STOPPING=1.
             model = ItemForecaster._train_ensemble_member(
-                params, dtrain, dval,
+                params,
+                dtrain,
+                dval,
                 num_boost_round=ItemForecaster._boost_rounds(horizon, cv=True),
                 early_stopping=ItemForecaster._early_stopping_enabled(),
             )
@@ -554,29 +566,34 @@ def run(df, pruned, horizon, n_jobs):
             # is what inflated the old penny-cohort DA by ~31pp.
             price = val_df["price"].to_numpy(dtype=float)
             actual = np.asarray(y_val, dtype=float)
-            match = (np.sign(np.nan_to_num(actual))
-                     == np.sign(np.nan_to_num(pred)))
+            match = np.sign(np.nan_to_num(actual)) == np.sign(np.nan_to_num(pred))
             scored = (actual != 0) & (price >= 1.0)
 
             ids = val_df["item_id"].to_numpy()
             dts = val_df["date"].to_numpy()
             for i in np.flatnonzero(scored):
-                records[arm].append({
-                    "item_id": ids[i], "forecast_date": str(dts[i]),
-                    # fold_id, not forecast_date, is the resampling cluster:
-                    # dates inside one 21-day window share a fitted model.
-                    "fold_id": fold_idx,
-                    "direction_correct": bool(match[i]),
-                })
+                records[arm].append(
+                    {
+                        "item_id": ids[i],
+                        "forecast_date": str(dts[i]),
+                        # fold_id, not forecast_date, is the resampling cluster:
+                        # dates inside one 21-day window share a fitted model.
+                        "fold_id": fold_idx,
+                        "direction_correct": bool(match[i]),
+                    }
+                )
             tot = int(scored.sum())
-            per_fold[arm].append({
-                "fold": fold_idx, "val_start": str(val_start),
-                "cutoff": str(cutoff.date()),
-                "n_items": len(items), "n_train": len(train_df),
-                "n_scored": tot,
-                "dir_acc": round(int((match & scored).sum()) / tot * 100, 2)
-                           if tot else None,
-            })
+            per_fold[arm].append(
+                {
+                    "fold": fold_idx,
+                    "val_start": str(val_start),
+                    "cutoff": str(cutoff.date()),
+                    "n_items": len(items),
+                    "n_train": len(train_df),
+                    "n_scored": tot,
+                    "dir_acc": round(int((match & scored).sum()) / tot * 100, 2) if tot else None,
+                }
+            )
 
     summary = {}
     for arm in ARMS:
@@ -588,7 +605,8 @@ def run(df, pruned, horizon, n_jobs):
         hits = sum(int(r["direction_correct"]) for r in records[arm])
         summary[arm] = {
             "DA": round(hits / n * 100, 2) if n else None,
-            "n_scored": n, "folds": len(folds),
+            "n_scored": n,
+            "folds": len(folds),
             "mean_items": round(float(np.mean([f["n_items"] for f in folds])), 1),
             "mean_rows_per_fold": int(np.mean([f["n_train"] for f in folds])),
             "per_fold": folds,
@@ -596,56 +614,54 @@ def run(df, pruned, horizon, n_jobs):
         logger.info(
             f"    {arm:24s} DA={summary[arm]['DA']}%  n={n:,}  "
             f"folds={len(folds)}  items/fold={summary[arm]['mean_items']}  "
-            f"rows/fold={summary[arm]['mean_rows_per_fold']:,}")
+            f"rows/fold={summary[arm]['mean_rows_per_fold']:,}"
+        )
 
     def _against(base, arms):
         return paired_arm_contrasts(
-            {k: v for k, v in records.items() if k in (base, *arms)},
-            base, cluster_key="fold_id")
+            {k: v for k, v in records.items() if k in (base, *arms)}, base, cluster_key="fold_id"
+        )
 
     return {
         "arms": summary,
         # The headline: `full_sample` here IS `ge1_full`, and its contrast with
         # `prod_pool` is the +3.50pp being re-derived. `per_fold` beside it is
         # the same claim with the look-ahead removed.
-        "vs_prod_pool": paired_arm_contrasts(
-            records, BASE_ARM, cluster_key="fold_id"),
+        "vs_prod_pool": paired_arm_contrasts(records, BASE_ARM, cluster_key="fold_id"),
         # The leak in isolation, at equal universe size. A contrast between two
         # non-base arms, so it is computed explicitly.
         "per_fold_vs_matched": _against("full_sample_matched", ["per_fold"]),
         # Two noise floors, read before anything above. `prod_pool_b` is the
         # item draw's; `full_sample_matched_b` is the matching draw's.
         "placebo_prod": _against("prod_pool", ["prod_pool_b"]),
-        "placebo_matched": _against(
-            "full_sample_matched", ["full_sample_matched_b"]),
+        "placebo_matched": _against("full_sample_matched", ["full_sample_matched_b"]),
     }
 
 
 def print_summary(results):
     print("\n" + "=" * 86)
-    print("PER-FOLD PRICE FILTER — DA(strict, >=$1) on 150 held-out items, "
-          "train side only")
+    print("PER-FOLD PRICE FILTER — DA(strict, >=$1) on 150 held-out items, train side only")
     print("=" * 86)
     for h in sorted(results):
         r = results[h]
         print(f"\n  {h}d horizon")
-        print(f"    {'arm':<24} {'items/fold':>11} {'rows/fold':>11} "
-              f"{'DA':>7} {'folds':>6} {'n':>9}")
+        print(f"    {'arm':<24} {'items/fold':>11} {'rows/fold':>11} {'DA':>7} {'folds':>6} {'n':>9}")
         print(f"    {'-' * 74}")
         for arm in ARMS:
             a = r["arms"].get(arm)
             if not a:
                 continue
-            print(f"    {arm:<24} {a['mean_items']:>11.1f} "
-                  f"{a['mean_rows_per_fold']:>11,} {a['DA']:>6.2f}% "
-                  f"{a['folds']:>6} {a['n_scored']:>9,}")
+            print(
+                f"    {arm:<24} {a['mean_items']:>11.1f} "
+                f"{a['mean_rows_per_fold']:>11,} {a['DA']:>6.2f}% "
+                f"{a['folds']:>6} {a['n_scored']:>9,}"
+            )
 
         print("\n    PLACEBOS FIRST — neither may read as an effect:")
         for key in ("placebo_prod", "placebo_matched"):
             for arm, p in r[key].items():
                 print(f"      {arm:<24} {format_paired(p)}")
-        print("\n    THE STORED RESULT — vs prod_pool "
-              "(`ge1_full` vs `prod_a` was +3.50pp at 30d):")
+        print("\n    THE STORED RESULT — vs prod_pool (`ge1_full` vs `prod_a` was +3.50pp at 30d):")
         for arm, p in r["vs_prod_pool"].items():
             if arm == "prod_pool_b":
                 continue
@@ -658,10 +674,9 @@ def print_summary(results):
 
 def main():
     import argparse
-    parser = argparse.ArgumentParser(
-        description="Re-derive the $1 training floor without the look-ahead")
-    parser.add_argument("--horizon", type=int, action="append", default=None,
-                        help="repeatable; defaults to 30 then 14")
+
+    parser = argparse.ArgumentParser(description="Re-derive the $1 training floor without the look-ahead")
+    parser.add_argument("--horizon", type=int, action="append", default=None, help="repeatable; defaults to 30 then 14")
     parser.add_argument("--frame-cache", default=None)
     parser.add_argument("--build-cache-only", action="store_true")
     parser.add_argument("--out", default=None)
@@ -685,8 +700,7 @@ def main():
         logger.info(f"\n  {'=' * 60}\n  Evaluating {horizon}d\n  {'=' * 60}")
         results[horizon] = run(df, pruned, horizon, n_jobs)
         if args.out:
-            Path(args.out).write_text(
-                json.dumps(results, indent=2, default=str))
+            Path(args.out).write_text(json.dumps(results, indent=2, default=str))
             logger.info(f"  Wrote {args.out}")
 
     print_summary(results)

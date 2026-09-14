@@ -17,12 +17,12 @@ Two failure modes pull in opposite directions, and the gate has to hold both:
 Count cannot separate the two — 225 chronic and 500 fresh failures look
 identical. Chronicity can: has the archive already moved past the target date?
 """
+
 from __future__ import annotations
 
 from datetime import date
 
 import pytest
-
 from backtest.resolution_gate import (
     MAX_UNRESOLVABLE_PCT,
     classify_chronic,
@@ -34,8 +34,10 @@ class TestTheLiveBug:
     def test_frozen_cohort_with_chronic_stragglers_passes(self):
         """The exact 2026-08-03 numbers. Must not fail."""
         r = evaluate_gate(
-            n_mature=75195, n_attempted=225,
-            n_unresolvable_fresh=0, n_unresolvable_chronic=225,
+            n_mature=75195,
+            n_attempted=225,
+            n_unresolvable_fresh=0,
+            n_unresolvable_chronic=225,
         )
         assert r.ok, r.reason
         assert r.coverage_pct == pytest.approx(225 / 75195 * 100)
@@ -43,15 +45,19 @@ class TestTheLiveBug:
     def test_chronic_rows_do_not_create_a_fresh_rate_at_all(self):
         """225 chronic attempts leave zero informative attempts, not a 100% rate."""
         r = evaluate_gate(
-            n_mature=75195, n_attempted=225,
-            n_unresolvable_fresh=0, n_unresolvable_chronic=225,
+            n_mature=75195,
+            n_attempted=225,
+            n_unresolvable_fresh=0,
+            n_unresolvable_chronic=225,
         )
         assert r.fresh_rate_pct is None
 
     def test_the_chronic_population_is_still_surfaced_loudly(self):
         r = evaluate_gate(
-            n_mature=75195, n_attempted=225,
-            n_unresolvable_fresh=0, n_unresolvable_chronic=225,
+            n_mature=75195,
+            n_attempted=225,
+            n_unresolvable_fresh=0,
+            n_unresolvable_chronic=225,
         )
         assert r.ok and r.warn
         assert "225" in r.reason
@@ -66,7 +72,9 @@ class TestDilutionIsStillCaught:
         under.
         """
         r = evaluate_gate(
-            n_mature=75195, n_attempted=500, n_unresolvable_fresh=500,
+            n_mature=75195,
+            n_attempted=500,
+            n_unresolvable_fresh=500,
         )
         assert not r.ok
         assert "resolution rate" in r.reason.lower()
@@ -74,8 +82,10 @@ class TestDilutionIsStillCaught:
     def test_a_broken_resolver_is_caught_even_alongside_chronic_rows(self):
         """The chronic tail must not dilute the fresh signal either."""
         r = evaluate_gate(
-            n_mature=75195, n_attempted=725,
-            n_unresolvable_fresh=500, n_unresolvable_chronic=225,
+            n_mature=75195,
+            n_attempted=725,
+            n_unresolvable_fresh=500,
+            n_unresolvable_chronic=225,
         )
         assert not r.ok
         assert "resolution rate" in r.reason.lower()
@@ -83,14 +93,18 @@ class TestDilutionIsStillCaught:
     def test_a_small_fresh_breakage_is_not_excused_by_being_small(self):
         """20 of 20 fresh failures is 100% and must fail. Count is not the test."""
         r = evaluate_gate(
-            n_mature=75195, n_attempted=20, n_unresolvable_fresh=20,
+            n_mature=75195,
+            n_attempted=20,
+            n_unresolvable_fresh=20,
         )
         assert not r.ok
 
     def test_mass_shrinkage_fails_on_coverage(self):
         """The 2026-08-01 shape: 30,859 of 80,737 mature and unresolvable."""
         r = evaluate_gate(
-            n_mature=80737, n_attempted=80737, n_unresolvable_fresh=30859,
+            n_mature=80737,
+            n_attempted=80737,
+            n_unresolvable_fresh=30859,
         )
         assert not r.ok
         assert r.coverage_pct > MAX_UNRESOLVABLE_PCT
@@ -98,8 +112,10 @@ class TestDilutionIsStillCaught:
     def test_a_chronic_population_large_enough_to_matter_still_fails(self):
         """Chronic rows are excused from the rate, never from coverage."""
         r = evaluate_gate(
-            n_mature=1000, n_attempted=500,
-            n_unresolvable_fresh=0, n_unresolvable_chronic=500,
+            n_mature=1000,
+            n_attempted=500,
+            n_unresolvable_fresh=0,
+            n_unresolvable_chronic=500,
         )
         assert not r.ok
         assert r.coverage_pct == pytest.approx(50.0)
@@ -108,7 +124,9 @@ class TestDilutionIsStillCaught:
 class TestBoundaries:
     def test_healthy_run_passes_clean(self):
         r = evaluate_gate(
-            n_mature=10000, n_attempted=1000, n_unresolvable_fresh=20,
+            n_mature=10000,
+            n_attempted=1000,
+            n_unresolvable_fresh=20,
         )
         assert r.ok and not r.warn
 
@@ -126,8 +144,10 @@ class TestBoundaries:
         """Mutation guard: swapping the coverage denominator for n_attempted
         would make this 100% and fail the run."""
         r = evaluate_gate(
-            n_mature=100000, n_attempted=100,
-            n_unresolvable_fresh=0, n_unresolvable_chronic=100,
+            n_mature=100000,
+            n_attempted=100,
+            n_unresolvable_fresh=0,
+            n_unresolvable_chronic=100,
         )
         assert r.coverage_pct == pytest.approx(0.1)
         assert r.ok
@@ -135,14 +155,18 @@ class TestBoundaries:
     def test_a_full_cohort_backfill_still_gates_on_rate(self):
         """--reresolve attempts everything; both denominators coincide."""
         r = evaluate_gate(
-            n_mature=60962, n_attempted=60962, n_unresolvable_fresh=225,
+            n_mature=60962,
+            n_attempted=60962,
+            n_unresolvable_fresh=225,
         )
         assert r.ok
         assert r.fresh_rate_pct == pytest.approx(225 / 60962 * 100)
 
     def test_failure_reason_names_both_numbers(self):
         r = evaluate_gate(
-            n_mature=1000, n_attempted=1000, n_unresolvable_fresh=900,
+            n_mature=1000,
+            n_attempted=1000,
+            n_unresolvable_fresh=900,
         )
         assert not r.ok
         assert "900" in r.reason and "1,000" in r.reason

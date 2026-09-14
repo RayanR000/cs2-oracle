@@ -61,16 +61,17 @@ Usage:
     python scripts/ingest_fx_history.py --offline
     python scripts/ingest_fx_history.py --stats-only
 """
+
 from __future__ import annotations
 
-import sys
-import json
-import math
-import logging
 import argparse
+import json
+import logging
+import math
 import statistics
+import sys
+from datetime import UTC, date, datetime
 from pathlib import Path
-from datetime import date, datetime, timezone
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
@@ -105,24 +106,22 @@ MAX_FILL_DAYS = 7
 OUTPUT_COLUMNS = ("day", "currency", "rate", "is_filled")
 
 
-def fetch_rates(start: date, end: date, cache_dir: Path,
-                offline: bool = False,
-                session: requests.Session | None = None) -> dict[str, dict]:
+def fetch_rates(
+    start: date, end: date, cache_dir: Path, offline: bool = False, session: requests.Session | None = None
+) -> dict[str, dict]:
     """Fetch the full daily series in one range call, USD as base."""
     cache = cache_dir / f"frankfurter-{start}-{end}.json"
     if offline:
         candidates = sorted(cache_dir.glob("frankfurter-*.json")) if cache_dir.exists() else []
         if not candidates:
-            raise FileNotFoundError(
-                f"--offline but no cache in {cache_dir}. Run once without it.")
+            raise FileNotFoundError(f"--offline but no cache in {cache_dir}. Run once without it.")
         payload = json.loads(candidates[-1].read_text())
         logger.info(f"Loaded cached rates from {candidates[-1]}")
         return payload.get("rates", {})
 
     session = session or requests.Session()
     url = f"{FRANKFURTER_URL}/{start.isoformat()}..{end.isoformat()}"
-    resp = session.get(url, params={"base": "USD", "symbols": ",".join(SYMBOLS)},
-                       timeout=60)
+    resp = session.get(url, params={"base": "USD", "symbols": ",".join(SYMBOLS)}, timeout=60)
     resp.raise_for_status()
     payload = resp.json()
     cache_dir.mkdir(parents=True, exist_ok=True)
@@ -137,9 +136,11 @@ def build_frame(rates: dict[str, dict], start: date, end: date) -> pd.DataFrame:
     if not rates:
         return pd.DataFrame(columns=list(OUTPUT_COLUMNS))
 
-    quoted = pd.DataFrame(
-        [{"day": pd.Timestamp(d), **vals} for d, vals in sorted(rates.items())]
-    ).set_index("day").sort_index()
+    quoted = (
+        pd.DataFrame([{"day": pd.Timestamp(d), **vals} for d, vals in sorted(rates.items())])
+        .set_index("day")
+        .sort_index()
+    )
 
     dense = quoted.reindex(pd.date_range(start, end, freq="D"))
     filled = dense.ffill(limit=MAX_FILL_DAYS)
@@ -147,14 +148,18 @@ def build_frame(rates: dict[str, dict], start: date, end: date) -> pd.DataFrame:
     frames = []
     for cur in [c for c in SYMBOLS if c in filled.columns]:
         col = filled[cur]
-        frames.append(pd.DataFrame({
-            "day": col.index.date,
-            "currency": cur,
-            "rate": col.to_numpy(),
-            # A day is "filled" when the source had no quote for it (weekend,
-            # holiday) but a prior quote was carried forward.
-            "is_filled": dense[cur].isna().to_numpy().astype("int64"),
-        }))
+        frames.append(
+            pd.DataFrame(
+                {
+                    "day": col.index.date,
+                    "currency": cur,
+                    "rate": col.to_numpy(),
+                    # A day is "filled" when the source had no quote for it (weekend,
+                    # holiday) but a prior quote was carried forward.
+                    "is_filled": dense[cur].isna().to_numpy().astype("int64"),
+                }
+            )
+        )
 
     out = pd.concat(frames, ignore_index=True)
     # Leading days before the first ECB quote have no rate to carry; drop rather
@@ -183,7 +188,8 @@ def report_stats(df: pd.DataFrame) -> None:
             f"    {cur}: {len(sub):,} days ({len(quoted):,} quoted, "
             f"{len(sub) - len(quoted):,} filled)  "
             f"daily sd {sd * 100:.4f}%  annualised {sd * math.sqrt(252) * 100:.2f}%  "
-            f"max 1d {max(abs(r) for r in rets) * 100:.2f}%")
+            f"max 1d {max(abs(r) for r in rets) * 100:.2f}%"
+        )
 
 
 def main() -> int:
@@ -192,12 +198,11 @@ def main() -> int:
     parser.add_argument("--cache-dir", default=str(CACHE_DIR))
     parser.add_argument("--out", default=str(OUTPUT_PARQUET))
     parser.add_argument("--start", default=START.isoformat())
-    parser.add_argument("--stats-only", action="store_true",
-                        help="Report and exit without writing")
+    parser.add_argument("--stats-only", action="store_true", help="Report and exit without writing")
     args = parser.parse_args()
 
     start = date.fromisoformat(args.start)
-    end = datetime.now(timezone.utc).date()
+    end = datetime.now(UTC).date()
 
     rates = fetch_rates(start, end, Path(args.cache_dir), offline=args.offline)
     df = build_frame(rates, start, end)

@@ -8,12 +8,12 @@ it and removing a field is a breaking change — it is simply no longer narrated
 
 See docs/superpowers/specs/2026-08-03-served-forecast-surface-design.md.
 """
+
 from __future__ import annotations
 
 import inspect
 
 import pytest
-
 from api.routes.items import _build_trend_explanation
 
 

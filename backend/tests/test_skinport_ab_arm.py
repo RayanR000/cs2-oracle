@@ -1,4 +1,5 @@
 """Skinport live-volume A/B arm: the loader must fail loudly on a stalled feed."""
+
 from __future__ import annotations
 
 import sys
@@ -25,12 +26,20 @@ def test_loader_raises_with_no_volume_files(tmp_path):
 
 
 def test_loader_reads_sales_24h(tmp_path):
-    pd.DataFrame([{
-        "item_slug": "some-item", "day": date(2026, 8, 9),
-        "source": "skinport_sales", "sales_24h": 7,
-        "sales_7d": 40, "sales_30d": 150, "sales_90d": 400,
-        "median_30d": 10.0,
-    }]).to_parquet(tmp_path / "volume-2026-08.parquet", index=False)
+    pd.DataFrame(
+        [
+            {
+                "item_slug": "some-item",
+                "day": date(2026, 8, 9),
+                "source": "skinport_sales",
+                "sales_24h": 7,
+                "sales_7d": 40,
+                "sales_30d": 150,
+                "sales_90d": 400,
+                "median_30d": 10.0,
+            }
+        ]
+    ).to_parquet(tmp_path / "volume-2026-08.parquet", index=False)
     con = duckdb.connect()
     try:
         df = _load_skinport_live_volume(con, ["some-item"], archive_dir=tmp_path)

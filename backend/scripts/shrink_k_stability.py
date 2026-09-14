@@ -36,30 +36,30 @@ Usage:
     venv/bin/python scripts/shrink_k_stability.py \\
         --frame-cache /tmp/sks_frame.parquet
 """
+
 import os
 
 os.environ["CLIMATOLOGY_SCALE"] = "1"
 os.environ["SHRINK_K_GBM"] = "1"
 
-import sys
 import json
 import logging
+import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 import numpy as np
 import pandas as pd
-
 from database import SessionLocal
 from models.forecaster import ItemForecaster
 from scripts.ab_test_item_metadata import (
     ROW_BUDGET,
     STEP_DAYS,
     VAL_WINDOW_DAYS,
+    _stratified_sample,
     assign_items,
     build_frame,
-    _stratified_sample,
 )
 
 logging.basicConfig(
@@ -183,7 +183,7 @@ def run(df, horizon_filter=None):
                         preds = forecaster.predict_shrink_k(horizon, ref_stats)
                     finally:
                         forecaster.shrink_k_models.pop(horizon, None)
-                except Exception as exc:  # noqa: BLE001 — a failed fold skips
+                except Exception as exc:
                     logger.warning(f"    fold {fold_idx}: shrink-K fit failed ({exc!r}) — skipped")
                     continue
                 preds = np.asarray(preds, dtype=float)
@@ -196,7 +196,7 @@ def run(df, horizon_filter=None):
                         "fold": fold_idx,
                         "val_start": str(val_dates[0]),
                         "val_end": str(val_dates[-1]),
-                        "n_fit_rows": int(len(fit_df)),
+                        "n_fit_rows": len(fit_df),
                         "n_fit_items": int(item_stats["item_id"].nunique()),
                     }
                 )
@@ -228,9 +228,7 @@ def run(df, horizon_filter=None):
                         consec_rhos.append(r)
 
             pooled_pred = mat[np.isfinite(mat)]
-            pooled_oracle = (
-                np.concatenate(oracle_pool) if oracle_pool else np.array([], dtype=float)
-            )
+            pooled_oracle = np.concatenate(oracle_pool) if oracle_pool else np.array([], dtype=float)
 
             per_item = [
                 {
@@ -283,8 +281,10 @@ def print_summary(results):
     for horizon in sorted(results):
         e = results[horizon]
         pk = e["pred_k_percentiles"]
+
         def _f(v, fmt):
-            return ("  n/a" if v is None else format(v, fmt))
+            return "  n/a" if v is None else format(v, fmt)
+
         print(
             f"  {horizon:>4}d {e['n_folds']:>6} {e['n_common_items']:>6} "
             f"{_f(e['median_cv'], '>9.3f')} {_f(e['mean_cv'], '>8.3f')} "
@@ -306,9 +306,7 @@ def main():
     parser.add_argument("--out", default="/tmp/shrink_k_stability.json")
     args = parser.parse_args()
 
-    df, pruned, _meta_present = build_frame(
-        args.metadata_parquet, cache_path=args.frame_cache
-    )
+    df, pruned, _meta_present = build_frame(args.metadata_parquet, cache_path=args.frame_cache)
     logger.info(f"  Frame: {len(df):,} rows, {len(pruned)} pruned features")
     _ = _stratified_sample  # imported for parity with the harness family
     results = run(df, horizon_filter=args.horizon)

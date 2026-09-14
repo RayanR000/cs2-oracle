@@ -14,10 +14,10 @@ This mirrors the 2026-08-12 `confidence` withdrawal: the `direction` column is
 still written by the forecaster and still scored as `pt_pp`/`da_pct`, it is
 simply no longer disclosed. Republish only once a panel shows positive PT.
 """
+
 from __future__ import annotations
 
 import pytest
-
 from api.serving_policy import SERVED_HORIZONS, served_direction
 
 
@@ -42,11 +42,11 @@ class TestServedDirection:
         route-level mapping only.
         """
         from pathlib import Path
+
         import api.routes.items as items
 
         src = Path(items.__file__).read_text()
         assert "direction_map" not in src, (
-            "a route is reconstructing the withheld direction label; "
-            "route it through served_direction() instead"
+            "a route is reconstructing the withheld direction label; route it through served_direction() instead"
         )
         assert 'direction or "neutral"' not in src

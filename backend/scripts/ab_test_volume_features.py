@@ -42,11 +42,19 @@ Embargo (added 2026-08-08):
 # 30d partners -- but they re-enter once the partners are dropped, so the arms
 # have to name them explicitly.
 NEW_PRIMITIVES = (
-    "volume_missing", "volume_lag_1d", "volume_lag_7d",
-    "volume_mean_30d", "volume_std_30d", "volume_mean_60d",
-    "volume_log_change_1d", "volume_log_change_7d", "volume_zscore_30d",
-    "volume_price_conf_7d", "volume_price_conf_1d",
-    "volume_mean_7d", "volume_std_60d",
+    "volume_missing",
+    "volume_lag_1d",
+    "volume_lag_7d",
+    "volume_mean_30d",
+    "volume_std_30d",
+    "volume_mean_60d",
+    "volume_log_change_1d",
+    "volume_log_change_7d",
+    "volume_zscore_30d",
+    "volume_price_conf_7d",
+    "volume_price_conf_1d",
+    "volume_mean_7d",
+    "volume_std_60d",
 )
 
 # Last day on which the archive carries real volume. See the docstring.
@@ -67,35 +75,27 @@ VOLUME_LIVE_THROUGH = "2026-04-30"
 # depending on horizon, so this filter fixes the metric and the cohort at once.
 MIN_MEDIAN_PRICE = 1.0
 
+import hashlib
+import json
+import logging
 import os
 import sys
-import json
-import math
-import hashlib
-import logging
 from pathlib import Path
-from datetime import datetime, date, timedelta
-from collections import defaultdict
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
+import lightgbm as lgb
 import numpy as np
 import pandas as pd
-import lightgbm as lgb
-
-from database import SessionLocal
-from backtest.paired_mde import (
-    format_paired, paired_arm_contrasts, paired_metric_difference)
+from backtest.paired_mde import format_paired, paired_arm_contrasts, paired_metric_difference
 from backtest.walkforward_records import (
     paired_records,
     without_records,
 )
+from database import SessionLocal
 from models.forecaster import ItemForecaster, phase_collapsed_sql_filter
 
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-)
+logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s")
 logger = logging.getLogger("ab_test_volume_features")
 
 ARCHIVE_DIR = Path(__file__).parent.parent.parent / "price-archive"
@@ -183,10 +183,22 @@ def _frame_fingerprint():
     """
     src = Path(__file__).parent.parent / "models" / "forecaster.py"
     h = hashlib.sha256(src.read_bytes())
-    h.update(repr((NEW_PRIMITIVES, CORR_PRUNE_THRESHOLD, VOLUME_LIVE_THROUGH,
-                   MIN_MEDIAN_PRICE, _UNIVERSE, IFLOW_VOLUME,
-                   IFLOW_ERA_FROM if IFLOW_VOLUME else None,
-                   SPLIT_FRACTION, STEP_DAYS, VAL_WINDOW_DAYS)).encode())
+    h.update(
+        repr(
+            (
+                NEW_PRIMITIVES,
+                CORR_PRUNE_THRESHOLD,
+                VOLUME_LIVE_THROUGH,
+                MIN_MEDIAN_PRICE,
+                _UNIVERSE,
+                IFLOW_VOLUME,
+                IFLOW_ERA_FROM if IFLOW_VOLUME else None,
+                SPLIT_FRACTION,
+                STEP_DAYS,
+                VAL_WINDOW_DAYS,
+            )
+        ).encode()
+    )
     return h.hexdigest()[:16]
 
 
@@ -208,8 +220,7 @@ def build_frame(max_items=200, cache_path=None):
                 )
             if meta.get("max_items") != max_items:
                 raise SystemExit(
-                    f"Frame cache {cache_path} was built with max_items="
-                    f"{meta.get('max_items')}, not {max_items}."
+                    f"Frame cache {cache_path} was built with max_items={meta.get('max_items')}, not {max_items}."
                 )
             df = pd.read_parquet(cache_path)
             logger.info(f"  Loaded cached frame {cache_path} ({len(df):,} rows)")
@@ -225,13 +236,17 @@ def build_frame(max_items=200, cache_path=None):
         tmp_frame = cache_path.with_suffix(f".{os.getpid()}.tmp.parquet")
         tmp_meta = cache_path.with_suffix(f".{os.getpid()}.tmp.json")
         df.to_parquet(tmp_frame, index=False)
-        tmp_meta.write_text(json.dumps({
-            "fingerprint": _frame_fingerprint(),
-            "max_items": max_items,
-            "pruned": pruned,
-            "present_new": present_new,
-            "rows": len(df),
-        }))
+        tmp_meta.write_text(
+            json.dumps(
+                {
+                    "fingerprint": _frame_fingerprint(),
+                    "max_items": max_items,
+                    "pruned": pruned,
+                    "present_new": present_new,
+                    "rows": len(df),
+                }
+            )
+        )
         os.replace(tmp_frame, cache_path)
         os.replace(tmp_meta, cache_path.with_suffix(".meta.json"))
         logger.info(f"  Wrote frame cache {cache_path} ({len(df):,} rows)")
@@ -240,7 +255,15 @@ def build_frame(max_items=200, cache_path=None):
 
 
 def _load_iflow_volume(con, slugs):
-    """The iflow count_in_24 series (item_id, date, iflow_volume) for `slugs`.
+    """The iflow volume series (item_id, date, iflow_volume) for `slugs`.
+
+    The staging files carry the two eras in separate columns
+    (`count_in_24_pre_restructure` / `steam_volume_post_restructure`, split at
+    the 2024-02-13 upstream restructure -- see scripts/backfill_buff_iflow.py).
+    The two series are incomparable and must never be merged: this loader uses
+    the post-restructure series only and REFUSES a panel containing pre-era
+    rows rather than silently splicing them. An experiment spanning the
+    boundary must pick an era explicitly.
 
     Keyed on (item_slug, day); one dump/day is written by the backfill, and the
     MAX collapse is defensive against a duplicate. Universe safety is inherited
@@ -252,19 +275,34 @@ def _load_iflow_volume(con, slugs):
     if not files:
         raise RuntimeError(
             f"IFLOW_VOLUME=1 but no iflow-liquidity-*.parquet in {IFLOW_VOLUME_DIR}. "
-            f"Run scripts/backfill_buff_iflow.py first.")
+            f"Run scripts/backfill_buff_iflow.py first."
+        )
     union = " UNION ALL BY NAME ".join(
-        f"SELECT item_slug, day, steam_volume FROM read_parquet('{f}')" for f in files)
+        f"SELECT item_slug, day, count_in_24_pre_restructure, steam_volume_post_restructure FROM read_parquet('{f}')"
+        for f in files
+    )
     placeholders = ", ".join("?" for _ in slugs)
-    df = con.sql(f"""
+    df = con.sql(
+        f"""
         SELECT item_slug AS item_id, day AS date,
-               MAX(steam_volume) AS iflow_volume
+               MAX(count_in_24_pre_restructure) AS vol_pre,
+               MAX(steam_volume_post_restructure) AS vol_post
         FROM ({union})
         WHERE item_slug IN ({placeholders})
         GROUP BY item_slug, day
-    """, params=slugs).df()
+    """,
+        params=slugs,
+    ).df()
     df["date"] = pd.to_datetime(df["date"]).dt.date
-    return df
+    n_pre = int(df["vol_pre"].notna().sum())
+    if n_pre:
+        raise RuntimeError(
+            f"IFLOW_VOLUME=1 but {n_pre:,} joined row(s) carry the pre-2024-02-13 "
+            f"`count_in_24` series, which is incomparable with the post-restructure "
+            f"`steam_volume` series (backfill era split). Restrict the panel to one "
+            f"era instead of merging them."
+        )
+    return df.rename(columns={"vol_post": "iflow_volume"})[["item_id", "date", "iflow_volume"]]
 
 
 def _load_skinport_live_volume(con, slugs: list, archive_dir=None) -> pd.DataFrame:
@@ -282,16 +320,18 @@ def _load_skinport_live_volume(con, slugs: list, archive_dir=None) -> pd.DataFra
             "Run scripts/run_sales_volume.py daily until the continuity "
             "gate (scripts/check_sidecar_continuity.py) reports enough dates."
         )
-    union = " UNION ALL BY NAME ".join(
-        f"SELECT item_slug, day, sales_24h FROM read_parquet('{f}')" for f in files)
+    union = " UNION ALL BY NAME ".join(f"SELECT item_slug, day, sales_24h FROM read_parquet('{f}')" for f in files)
     placeholders = ", ".join("?" for _ in slugs)
-    df = con.sql(f"""
+    df = con.sql(
+        f"""
         SELECT item_slug AS item_id, day AS date,
                MAX(sales_24h) AS live_volume
         FROM ({union})
         WHERE item_slug IN ({placeholders})
         GROUP BY item_slug, day
-    """, params=slugs).df()
+    """,
+        params=slugs,
+    ).df()
     df["date"] = pd.to_datetime(df["date"]).dt.date
     return df
 
@@ -352,8 +392,7 @@ def _stratified_coverage(resid, denom, strat, n_strata=10, alpha=0.20):
     covered = score <= thr
     edges = np.quantile(st, np.linspace(0.0, 1.0, n_strata + 1)[1:-1])
     idx = np.searchsorted(edges, st, side="right")
-    per = np.array([covered[idx == k].mean() if np.any(idx == k) else np.nan
-                    for k in range(n_strata)])
+    per = np.array([covered[idx == k].mean() if np.any(idx == k) else np.nan for k in range(n_strata)])
     return float(np.nanmean(np.abs(per - (1.0 - alpha)))) * 100.0
 
 
@@ -367,6 +406,7 @@ def _run_scale_probe(records, present_new):
     volume-stratified error for volume to be real band information.
     """
     from models import scale_model
+
     rec = pd.DataFrame(records)
     resid = rec["residual_pct"].to_numpy(dtype=float)
     sigma = rec["sigma"].to_numpy(dtype=float)
@@ -392,28 +432,42 @@ def _run_scale_probe(records, present_new):
     # Stratify on sigma (the documented tilt axis) and on a CONTINUOUS volume
     # proxy (the new axis under test). Skip volume_missing -- a 0/1 flag has no
     # deciles and collapses the stratum error to 0. Prefer a level/z-score.
-    _pref = ["volume_mean_30d", "volume_mean_60d", "volume_zscore_30d",
-             "volume_lag_7d", "volume_mean_7d", "volume_lag_1d"]
-    _cont = [c for c in _pref if c in volcols] + \
-            [c for c in volcols if c != "volume_missing"]
+    _pref = [
+        "volume_mean_30d",
+        "volume_mean_60d",
+        "volume_zscore_30d",
+        "volume_lag_7d",
+        "volume_mean_7d",
+        "volume_lag_1d",
+    ]
+    _cont = [c for c in _pref if c in volcols] + [c for c in volcols if c != "volume_missing"]
     strat_vol_col = _cont[0] if _cont else volcols[0]
     strat_vol = rec[strat_vol_col].to_numpy(dtype=float)
 
     out = {}
-    for name, denom in [("sigma", sigma), ("scale_sigma_only", scale_sig),
-                        ("scale_volume", scale_vol), ("scale_placebo", scale_shuf)]:
+    for name, denom in [
+        ("sigma", sigma),
+        ("scale_sigma_only", scale_sig),
+        ("scale_volume", scale_vol),
+        ("scale_placebo", scale_shuf),
+    ]:
         out[name] = {
             "err_sigma_strata_pp": _stratified_coverage(resid, denom, sigma),
             "err_volume_strata_pp": _stratified_coverage(resid, denom, strat_vol),
         }
-    out["_meta"] = {"n_rows": len(rec), "n_folds": int(rec["fold"].nunique()),
-                    "n_scale_models": nv, "volcols": volcols,
-                    "strat_vol_col": strat_vol_col}
+    out["_meta"] = {
+        "n_rows": len(rec),
+        "n_folds": int(rec["fold"].nunique()),
+        "n_scale_models": nv,
+        "volcols": volcols,
+        "strat_vol_col": strat_vol_col,
+    }
     return out
 
 
 def _build_frame_uncached(max_items):
     import duckdb
+
     con = duckdb.connect()
     db = SessionLocal()
 
@@ -466,25 +520,26 @@ def _build_frame_uncached(max_items):
         # `items` order (row_count DESC), day-ascending within each item.
         slugs = [r[0] for r in items]
         placeholders = ", ".join("?" for _ in slugs)
-        all_prices = con.sql(f"""
+        all_prices = con.sql(
+            f"""
             SELECT item_slug AS item_id, day AS timestamp,
                    mean_price AS price, volume
             FROM ({union_sql})
             WHERE item_slug IN ({placeholders})
-        """, params=slugs).df()
+        """,
+            params=slugs,
+        ).df()
 
         all_prices["timestamp"] = pd.to_datetime(all_prices["timestamp"])
         all_prices["date"] = all_prices["timestamp"].dt.date
-        all_prices["item_id"] = pd.Categorical(
-            all_prices["item_id"], categories=slugs, ordered=True
-        )
-        all_prices = all_prices.sort_values(
-            ["item_id", "timestamp"], kind="stable"
-        ).reset_index(drop=True)
+        all_prices["item_id"] = pd.Categorical(all_prices["item_id"], categories=slugs, ordered=True)
+        all_prices = all_prices.sort_values(["item_id", "timestamp"], kind="stable").reset_index(drop=True)
         all_prices["item_id"] = all_prices["item_id"].astype(str)
 
         # Feed repair: replace the native `volume` column with the iflow
-        # count_in_24 series (never coalesced -- see the IFLOW_VOLUME note).
+        # post-restructure series (never coalesced -- see the IFLOW_VOLUME note,
+        # and _load_iflow_volume refuses panels reaching into the pre-2024-02-13
+        # `count_in_24` era rather than splicing the two).
         # Restrict the panel to the iflow era first: iflow begins 2022-04-18, so
         # pre-2022 rows can carry no volume by construction and would enter the
         # treatment arm as 68% dead-weight zeros, diluting the effect and making
@@ -493,37 +548,28 @@ def _build_frame_uncached(max_items):
         # panel" the prereg scoped.
         if IFLOW_VOLUME:
             _pre_era = len(all_prices)
-            all_prices = all_prices[
-                all_prices["timestamp"] >= pd.Timestamp(IFLOW_ERA_FROM)
-            ].reset_index(drop=True)
-            logger.info(
-                f"  iflow era >= {IFLOW_ERA_FROM}: "
-                f"{_pre_era:,} -> {len(all_prices):,} price rows"
-            )
+            all_prices = all_prices[all_prices["timestamp"] >= pd.Timestamp(IFLOW_ERA_FROM)].reset_index(drop=True)
+            logger.info(f"  iflow era >= {IFLOW_ERA_FROM}: {_pre_era:,} -> {len(all_prices):,} price rows")
             ivol = _load_iflow_volume(con, slugs)
             all_prices = all_prices.merge(ivol, on=["item_id", "date"], how="left")
             _cov = float(all_prices["iflow_volume"].notna().mean())
             logger.info(
-                f"  iflow volume join: {_cov:.1%} of price rows carry count_in_24 "
+                f"  iflow volume join: {_cov:.1%} of price rows carry post-restructure volume "
                 f"({all_prices['iflow_volume'].notna().sum():,} of {len(all_prices):,})"
             )
             if _cov < 0.80:
                 logger.warning(
                     f"  iflow join coverage {_cov:.1%} < 80% -- feed not repaired "
-                    f"for this cohort; the prereg voids this run.")
+                    f"for this cohort; the prereg voids this run."
+                )
             all_prices["volume"] = all_prices["iflow_volume"]
             all_prices = all_prices.drop(columns=["iflow_volume"])
 
         # Skinport live repair: same single-series rule, free trailing-24h sale counts.
         if SKINPORT_VOLUME:
             _pre_era = len(all_prices)
-            all_prices = all_prices[
-                all_prices["timestamp"] >= pd.Timestamp(SKINPORT_ERA_FROM)
-            ].reset_index(drop=True)
-            logger.info(
-                f"  skinport-live era >= {SKINPORT_ERA_FROM}: "
-                f"{_pre_era:,} -> {len(all_prices):,} price rows"
-            )
+            all_prices = all_prices[all_prices["timestamp"] >= pd.Timestamp(SKINPORT_ERA_FROM)].reset_index(drop=True)
+            logger.info(f"  skinport-live era >= {SKINPORT_ERA_FROM}: {_pre_era:,} -> {len(all_prices):,} price rows")
             nvol = _load_skinport_live_volume(con, slugs)
             all_prices = all_prices.merge(nvol, on=["item_id", "date"], how="left")
             _cov = float(all_prices["live_volume"].notna().mean())
@@ -534,7 +580,8 @@ def _build_frame_uncached(max_items):
             if _cov < 0.80:
                 logger.warning(
                     f"  skinport-live join coverage {_cov:.1%} < 80% -- feed not "
-                    f"repaired for this cohort; the prereg voids this run.")
+                    f"repaired for this cohort; the prereg voids this run."
+                )
             all_prices["volume"] = all_prices["live_volume"]
             all_prices = all_prices.drop(columns=["live_volume"])
             # The live feed is ongoing, so the archive arm's VOLUME_LIVE_THROUGH
@@ -543,13 +590,8 @@ def _build_frame_uncached(max_items):
             # volume by construction and would enter as dead weight.
             _live_through = nvol["date"].max()
             _pre_cut = len(all_prices)
-            all_prices = all_prices[
-                all_prices["date"] <= _live_through
-            ].reset_index(drop=True)
-            logger.info(
-                f"  skinport-live cutoff {_live_through}: "
-                f"{_pre_cut:,} -> {len(all_prices):,} price rows"
-            )
+            all_prices = all_prices[all_prices["date"] <= _live_through].reset_index(drop=True)
+            logger.info(f"  skinport-live cutoff {_live_through}: {_pre_cut:,} -> {len(all_prices):,} price rows")
 
         # Cut before feature engineering, not after: a 30d/60d rolling volume
         # window that straddles the cliff would average real volume with the
@@ -557,22 +599,17 @@ def _build_frame_uncached(max_items):
         # arm, which bounds itself above (no cliff inside its era).
         _pre = len(all_prices)
         if not SKINPORT_VOLUME:
-            all_prices = all_prices[
-                all_prices["timestamp"] <= pd.Timestamp(VOLUME_LIVE_THROUGH)
-            ].reset_index(drop=True)
-        logger.info(
-            f"  Volume-live cutoff {VOLUME_LIVE_THROUGH}: "
-            f"{_pre:,} -> {len(all_prices):,} price rows"
-        )
+            all_prices = all_prices[all_prices["timestamp"] <= pd.Timestamp(VOLUME_LIVE_THROUGH)].reset_index(drop=True)
+        logger.info(f"  Volume-live cutoff {VOLUME_LIVE_THROUGH}: {_pre:,} -> {len(all_prices):,} price rows")
 
         # ── Build features once ─────────────────────────────────────
         df = forecaster.engineer_features(all_prices, events_df)
         df = forecaster._add_cross_sectional_features(df)
 
-        EXCLUDE = {"item_id", "date", "timestamp", "price", "volume",
-                   "name", "release_date"}
-        all_feature_cols = [c for c in df.columns if c not in EXCLUDE
-                            and df[c].dtype in (np.float64, np.float32, np.int64, int, float)]
+        EXCLUDE = {"item_id", "date", "timestamp", "price", "volume", "name", "release_date"}
+        all_feature_cols = [
+            c for c in df.columns if c not in EXCLUDE and df[c].dtype in (np.float64, np.float32, np.int64, int, float)
+        ]
 
         # Prune highly correlated
         if len(all_feature_cols) > 2:
@@ -599,8 +636,7 @@ def _build_frame_uncached(max_items):
         con.close()
 
 
-def run_evaluation(df, pruned, present_new, horizon_filter=None, arm_filter=None,
-                   n_jobs=None, q50_only=False):
+def run_evaluation(df, pruned, present_new, horizon_filter=None, arm_filter=None, n_jobs=None, q50_only=False):
     """Walk-forward evaluation over the prebuilt frame.
 
     Returns results[horizon][arm]. `horizon_filter` restricts to one horizon so
@@ -624,10 +660,8 @@ def run_evaluation(df, pruned, present_new, horizon_filter=None, arm_filter=None
         # only in treatment/placebo — the honest "does adding these to production
         # help?" experiment. Before this the arms differed by a handful of columns
         # on a ~138-column base production does not serve. See 2026-08-13 repin.
-        base_cols = [c for c in pruned
-                     if c not in ItemForecaster.SHELVED_FEATURES]
-        base_cols = ItemForecaster._apply_feature_allowlist(
-            base_cols, ItemForecaster.FEATURE_GROUP_ALLOWLIST)
+        base_cols = [c for c in pruned if c not in ItemForecaster.SHELVED_FEATURES]
+        base_cols = ItemForecaster._apply_feature_allowlist(base_cols, ItemForecaster.FEATURE_GROUP_ALLOWLIST)
         subsets = {
             "baseline": base_cols,
             "treatment": base_cols + present_new,
@@ -721,16 +755,15 @@ def run_evaluation(df, pruned, present_new, horizon_filter=None, arm_filter=None
 
                 step = STEP_DAYS
                 for window_end in range(split_idx + 1, len(dates), step):
-                    val_dates = dates[window_end:window_end + VAL_WINDOW_DAYS]
+                    val_dates = dates[window_end : window_end + VAL_WINDOW_DAYS]
                     if len(val_dates) < 7:
                         continue
 
                     train_df = ItemForecaster._purge_overlapping_train_rows(
-                        sub[tdf_days <= dates_dt[window_end - 1]],
-                        val_dates[0], horizon)
+                        sub[tdf_days <= dates_dt[window_end - 1]], val_dates[0], horizon
+                    )
                     val_df = sub[
-                        (tdf_days >= dates_dt[window_end])
-                        & (tdf_days <= dates_dt[window_end + len(val_dates) - 1])
+                        (tdf_days >= dates_dt[window_end]) & (tdf_days <= dates_dt[window_end + len(val_dates) - 1])
                     ]
 
                     if config_name == "placebo" and present_new:
@@ -759,10 +792,8 @@ def run_evaluation(df, pruned, present_new, horizon_filter=None, arm_filter=None
                     # them, and alpha plays no part in Dataset construction, so
                     # rebuilding per quantile re-binned identical data 3x.
                     Xtr_v, Xv_v = X_train.values, X_val.values
-                    dtrain = lgb.Dataset(Xtr_v, y_train.values, params=DS_PARAMS,
-                                         free_raw_data=False)
-                    dval = lgb.Dataset(Xv_v, y_val.values, reference=dtrain,
-                                       params=DS_PARAMS, free_raw_data=False)
+                    dtrain = lgb.Dataset(Xtr_v, y_train.values, params=DS_PARAMS, free_raw_data=False)
+                    dval = lgb.Dataset(Xv_v, y_val.values, reference=dtrain, params=DS_PARAMS, free_raw_data=False)
 
                     models = {}
                     for q in quantiles:
@@ -797,9 +828,10 @@ def run_evaluation(df, pruned, present_new, horizon_filter=None, arm_filter=None
                         # early-stopped on `dval` and scored `Xv_v` — the same
                         # rows. `dval` is ignored unless EARLY_STOPPING=1.
                         model = ItemForecaster._train_ensemble_member(
-                            params, dtrain, dval,
-                            num_boost_round=ItemForecaster._boost_rounds(
-                                horizon, cv=True),
+                            params,
+                            dtrain,
+                            dval,
+                            num_boost_round=ItemForecaster._boost_rounds(horizon, cv=True),
                             early_stopping=ItemForecaster._early_stopping_enabled(),
                         )
                         models[q] = model.predict(Xv_v)
@@ -818,10 +850,12 @@ def run_evaluation(df, pruned, present_new, horizon_filter=None, arm_filter=None
                     low_ret = np.minimum(p10_ret, p50_ret)
                     high_ret = np.maximum(p50_ret, p90_ret)
                     if non_crossing.any():
-                        avg_hw = np.mean([
-                            np.mean(p50_ret[non_crossing] - p10_ret[non_crossing]),
-                            np.mean(p90_ret[non_crossing] - p50_ret[non_crossing]),
-                        ])
+                        avg_hw = np.mean(
+                            [
+                                np.mean(p50_ret[non_crossing] - p10_ret[non_crossing]),
+                                np.mean(p90_ret[non_crossing] - p50_ret[non_crossing]),
+                            ]
+                        )
                         if avg_hw > 0:
                             low_ret[crossing_mask] = p50_ret[crossing_mask] - avg_hw
                             high_ret[crossing_mask] = p50_ret[crossing_mask] + avg_hw
@@ -835,25 +869,23 @@ def run_evaluation(df, pruned, present_new, horizon_filter=None, arm_filter=None
                     # returns map to sign 0, matching the old string-compare
                     # path where a NaN failed both > and < and fell to "flat".
                     fold_total = len(val_df)
-                    fold_hits = int(np.count_nonzero(
-                        np.sign(np.nan_to_num(ar)) == np.sign(np.nan_to_num(p50_ret))
-                    ))
+                    fold_hits = int(np.count_nonzero(np.sign(np.nan_to_num(ar)) == np.sign(np.nan_to_num(p50_ret))))
 
                     abs_err = np.abs(cp * (1 + p50_ret / 100) - cp * (1 + ar / 100))
                     fold_mae = float(abs_err.sum())
 
                     actual_future = cp * (1 + ar / 100)
-                    fold_int_hits = int(np.count_nonzero(
-                        (cp * (1 + low_ret / 100) <= actual_future)
-                        & (actual_future <= cp * (1 + high_ret / 100))
-                    ))
+                    fold_int_hits = int(
+                        np.count_nonzero(
+                            (cp * (1 + low_ret / 100) <= actual_future) & (actual_future <= cp * (1 + high_ret / 100))
+                        )
+                    )
                     fold_int_total = fold_total
 
                     directional_hits += fold_hits
                     directional_total += fold_total
 
-                    _match = (np.sign(np.nan_to_num(ar))
-                              == np.sign(np.nan_to_num(p50_ret)))
+                    _match = np.sign(np.nan_to_num(ar)) == np.sign(np.nan_to_num(p50_ret))
                     _nonflat = np.asarray(ar) != 0
                     strict_hits += int(np.count_nonzero(_match & _nonflat))
                     strict_total += int(_nonflat.sum())
@@ -877,19 +909,20 @@ def run_evaluation(df, pruned, present_new, horizon_filter=None, arm_filter=None
                     # mode low_ret==high_ret==p50_ret so rel_width is 0 and coverage
                     # degenerate -- do not interpret the width contrast in that mode.
                     _in_interval = (
-                        (cp * (1 + low_ret / 100) <= actual_future)
-                        & (actual_future <= cp * (1 + high_ret / 100))
+                        (cp * (1 + low_ret / 100) <= actual_future) & (actual_future <= cp * (1 + high_ret / 100))
                     ).astype(float)
                     _rel_width = (high_ret - low_ret) / 100.0
-                    records.extend(paired_records(
-                        item_ids=val_df["item_id"].to_numpy(),
-                        forecast_dates=val_df["date"].to_numpy(),
-                        fold_id=window_end,
-                        keep=_nonflat & _ge1,
-                        direction_correct=_match,
-                        in_interval=_in_interval,
-                        rel_width=_rel_width,
-                    ))
+                    records.extend(
+                        paired_records(
+                            item_ids=val_df["item_id"].to_numpy(),
+                            forecast_dates=val_df["date"].to_numpy(),
+                            fold_id=window_end,
+                            keep=_nonflat & _ge1,
+                            direction_correct=_match,
+                            in_interval=_in_interval,
+                            rel_width=_rel_width,
+                        )
+                    )
 
                     # SCALE_PROBE: capture the baseline model's OOF residuals on
                     # the same >=$1 non-flat cohort. sigma and volume are joined
@@ -897,33 +930,38 @@ def run_evaluation(df, pruned, present_new, horizon_filter=None, arm_filter=None
                     # arm's column set. residual_pct = actual - predicted (pct).
                     if SCALE_PROBE and config_name == "baseline":
                         _keep = _nonflat & _ge1
-                        _scale_probe_rows.append(pd.DataFrame({
-                            "item_id": val_df["item_id"].to_numpy()[_keep],
-                            "date": val_df["date"].to_numpy()[_keep],
-                            "residual_pct": (ar - p50_ret)[_keep],
-                            "fold": window_end,
-                        }))
+                        _scale_probe_rows.append(
+                            pd.DataFrame(
+                                {
+                                    "item_id": val_df["item_id"].to_numpy()[_keep],
+                                    "date": val_df["date"].to_numpy()[_keep],
+                                    "residual_pct": (ar - p50_ret)[_keep],
+                                    "fold": window_end,
+                                }
+                            )
+                        )
 
                     if _ge1.any():
-                        ge1_hits += int(np.count_nonzero(
-                            (np.sign(np.nan_to_num(ar)) == np.sign(np.nan_to_num(p50_ret)))
-                            & _ge1
-                        ))
+                        ge1_hits += int(
+                            np.count_nonzero((np.sign(np.nan_to_num(ar)) == np.sign(np.nan_to_num(p50_ret))) & _ge1)
+                        )
                         ge1_total += int(_ge1.sum())
                     mae_total += fold_mae
                     mae_count += fold_total
                     interval_hits += fold_int_hits
                     interval_total += fold_total
 
-                    per_fold.append({
-                        "fold": len(per_fold) + 1,
-                        "val_start": str(val_dates[0]),
-                        "val_end": str(val_dates[-1]),
-                        "dir_acc": round(fold_hits / fold_total * 100, 1) if fold_total > 0 else 0,
-                        "mae": round(fold_mae / fold_total, 4) if fold_total > 0 else 0,
-                        "int_cov": round(fold_int_hits / fold_int_total * 100, 1) if fold_int_total > 0 else 0,
-                        "n": fold_total,
-                    })
+                    per_fold.append(
+                        {
+                            "fold": len(per_fold) + 1,
+                            "val_start": str(val_dates[0]),
+                            "val_end": str(val_dates[-1]),
+                            "dir_acc": round(fold_hits / fold_total * 100, 1) if fold_total > 0 else 0,
+                            "mae": round(fold_mae / fold_total, 4) if fold_total > 0 else 0,
+                            "int_cov": round(fold_int_hits / fold_int_total * 100, 1) if fold_int_total > 0 else 0,
+                            "n": fold_total,
+                        }
+                    )
 
                 if directional_total > 0:
                     dir_acc = directional_hits / directional_total * 100
@@ -939,9 +977,13 @@ def run_evaluation(df, pruned, present_new, horizon_filter=None, arm_filter=None
                         "n_ge1": ge1_total,
                         "dir_acc_strict": round(strict_hits / strict_total * 100, 2) if strict_total else None,
                         "n_strict": strict_total,
-                        "dir_acc_strict_ge1": round(strict_ge1_hits / strict_ge1_total * 100, 2) if strict_ge1_total else None,
+                        "dir_acc_strict_ge1": round(strict_ge1_hits / strict_ge1_total * 100, 2)
+                        if strict_ge1_total
+                        else None,
                         "n_strict_ge1": strict_ge1_total,
-                        "pct_flat": round(100.0 * (1 - strict_total / directional_total), 2) if directional_total else None,
+                        "pct_flat": round(100.0 * (1 - strict_total / directional_total), 2)
+                        if directional_total
+                        else None,
                         "mae": round(mae, 4),
                         # None, not a number, when there was no interval to
                         # score — a zero-width band would otherwise report a
@@ -963,59 +1005,56 @@ def run_evaluation(df, pruned, present_new, horizon_filter=None, arm_filter=None
                     result["improvement_over_baseline_pp"] = round(dir_acc - baseline_2class, 1)
                     results[horizon][config_name] = result
 
-                    logger.info(f"      DirAcc={dir_acc:.1f}% ({directional_total:,} samples, "
-                                f"{result['improvement_over_baseline_pp']:.1f}pp above baseline)")
+                    logger.info(
+                        f"      DirAcc={dir_acc:.1f}% ({directional_total:,} samples, "
+                        f"{result['improvement_over_baseline_pp']:.1f}pp above baseline)"
+                    )
 
             # Fold-clustered paired intervals, the harness's actual verdict.
             # Until 2026-08-08 this reported a pooled `treatment - baseline`
             # delta against a +/-0.5pp emoji threshold, which is not a test:
             # the item-level MDE here is 2.21-3.69pp, so a 0.5pp "win" is
             # inside the noise floor by a factor of five.
-            arms = {a: r.get("records", []) for a, r in results[horizon].items()
-                    if not a.startswith("_") and r.get("records")}
+            arms = {
+                a: r.get("records", [])
+                for a, r in results[horizon].items()
+                if not a.startswith("_") and r.get("records")
+            }
             if "baseline" in arms and len(arms) > 1:
                 # DA stays (diagnostic only, per invariant 4). The ship gate is
                 # rel_width (lower better) subject to the coverage gate; both are
                 # fold-clustered contrasts on the same paired records.
                 contrasts = paired_arm_contrasts(arms, base="baseline")
-                width = paired_arm_contrasts(
-                    arms, base="baseline", value_key="rel_width",
-                    higher_is_better=False)
-                coverage = paired_arm_contrasts(
-                    arms, base="baseline", value_key="in_interval",
-                    higher_is_better=True)
+                width = paired_arm_contrasts(arms, base="baseline", value_key="rel_width", higher_is_better=False)
+                coverage = paired_arm_contrasts(arms, base="baseline", value_key="in_interval", higher_is_better=True)
                 results[horizon]["_paired_vs_baseline"] = contrasts
                 results[horizon]["_paired_width_vs_baseline"] = width
                 results[horizon]["_paired_coverage_vs_baseline"] = coverage
                 for arm in contrasts:
-                    logger.info(f"      paired {arm:<10} DA:       "
-                                f"{format_paired(contrasts[arm])}")
-                    logger.info(f"      paired {arm:<10} rel_width:"
-                                f" {format_paired(width[arm])}")
-                    logger.info(f"      paired {arm:<10} coverage: "
-                                f"{format_paired(coverage[arm])}")
+                    logger.info(f"      paired {arm:<10} DA:       {format_paired(contrasts[arm])}")
+                    logger.info(f"      paired {arm:<10} rel_width: {format_paired(width[arm])}")
+                    logger.info(f"      paired {arm:<10} coverage: {format_paired(coverage[arm])}")
 
                 # Gating width robustness (refold prereg): treatment vs baseline
                 # must survive leave-one-fold-out and leave-out-2025-10.
                 if "treatment" in arms:
-                    worst, no_oct = _width_robustness(
-                        arms["baseline"], arms["treatment"])
+                    worst, no_oct = _width_robustness(arms["baseline"], arms["treatment"])
                     if worst is not None:
                         _s = "SURVIVES" if worst["ci_upper"] < 0 else "FAILS"
                         logger.info(
                             f"      robustness LOO width [{_s}]: worst drop="
                             f"fold {worst['dropped_fold']} -> "
                             f"{worst['mean_diff']:+.3f} "
-                            f"[{worst['ci_lower']:+.3f}, {worst['ci_upper']:+.3f}]")
-                    _s2 = ("SURVIVES" if no_oct.get("ci_upper") is not None
-                           and no_oct["ci_upper"] < 0 else "FAILS")
+                            f"[{worst['ci_lower']:+.3f}, {worst['ci_upper']:+.3f}]"
+                        )
+                    _s2 = "SURVIVES" if no_oct.get("ci_upper") is not None and no_oct["ci_upper"] < 0 else "FAILS"
                     logger.info(
                         f"      robustness -2025-10 width [{_s2}]: dropped "
                         f"{no_oct['n_oct25_rows_dropped']:,} rows -> "
                         f"{no_oct['mean_diff']:+.3f} "
-                        f"[{no_oct['ci_lower']:+.3f}, {no_oct['ci_upper']:+.3f}]")
-                    results[horizon]["_width_robustness"] = {
-                        "loo_worst": worst, "no_oct25": no_oct}
+                        f"[{no_oct['ci_lower']:+.3f}, {no_oct['ci_upper']:+.3f}]"
+                    )
+                    results[horizon]["_width_robustness"] = {"loo_worst": worst, "no_oct25": no_oct}
             else:
                 # `--arm` shards one arm per process, so a shard has nothing to
                 # contrast against. Say so: a missing verdict must not read as
@@ -1024,17 +1063,18 @@ def run_evaluation(df, pruned, present_new, horizon_filter=None, arm_filter=None
                 logger.info(
                     f"      paired: not computed — this run holds "
                     f"{sorted(arms) or 'no'} arm(s). Merge the shards with "
-                    f"scripts/merge_price_primitives_ab.py for the verdict.")
+                    f"scripts/merge_price_primitives_ab.py for the verdict."
+                )
 
             if SCALE_PROBE and _scale_probe_rows:
                 if "price_std_60d" not in df.columns:
                     logger.warning("  scale probe: price_std_60d absent; skipping")
                 else:
                     rec = pd.concat(_scale_probe_rows, ignore_index=True)
-                    cols_needed = ["item_id", "date", "price", "price_std_60d"] + \
-                        [c for c in present_new if c in df.columns]
-                    merged = rec.merge(df[cols_needed], on=["item_id", "date"],
-                                       how="left")
+                    cols_needed = ["item_id", "date", "price", "price_std_60d"] + [
+                        c for c in present_new if c in df.columns
+                    ]
+                    merged = rec.merge(df[cols_needed], on=["item_id", "date"], how="left")
                     with np.errstate(divide="ignore", invalid="ignore"):
                         merged["sigma"] = merged["price_std_60d"] / merged["price"]
                     probe = _run_scale_probe(merged, present_new)
@@ -1044,15 +1084,16 @@ def run_evaluation(df, pruned, present_new, horizon_filter=None, arm_filter=None
                         logger.info(
                             f"      SCALE PROBE h={horizon}: {m['n_rows']:,} rows, "
                             f"{m['n_folds']} folds, {m['n_scale_models']} scale "
-                            f"models, strat_vol={m['strat_vol_col']}")
-                        for nm in ("sigma", "scale_sigma_only",
-                                   "scale_volume", "scale_placebo"):
+                            f"models, strat_vol={m['strat_vol_col']}"
+                        )
+                        for nm in ("sigma", "scale_sigma_only", "scale_volume", "scale_placebo"):
                             e = probe[nm]
                             logger.info(
                                 f"        {nm:<17} sigma-strata "
                                 f"err={e['err_sigma_strata_pp']:.2f}pp  "
                                 f"volume-strata "
-                                f"err={e['err_volume_strata_pp']:.2f}pp")
+                                f"err={e['err_volume_strata_pp']:.2f}pp"
+                            )
 
         logger.info("\n" + "=" * 64)
         logger.info("SHIP DECISION SUMMARY (dir-acc %, treatment vs baseline vs placebo)")
@@ -1066,20 +1107,19 @@ def run_evaluation(df, pruned, present_new, horizon_filter=None, arm_filter=None
             p = r["placebo"]["dir_acc"]
             logger.info(
                 f"  {h:>2}d  baseline={b:5.2f}  treatment={t:5.2f}  "
-                f"placebo={p:5.2f}  (t-b={t-b:+.2f}, t-p={t-p:+.2f})"
+                f"placebo={p:5.2f}  (t-b={t - b:+.2f}, t-p={t - p:+.2f})"
             )
             for label, key, nkey in (
                 (">=$1 ", "dir_acc_ge1", "n_ge1"),
                 ("STRICT", "dir_acc_strict", "n_strict"),
                 ("STR>=1", "dir_acc_strict_ge1", "n_strict_ge1"),
             ):
-                bg, tg, pg = (r[k].get(key) for k in
-                              ("baseline", "treatment", "placebo"))
+                bg, tg, pg = (r[k].get(key) for k in ("baseline", "treatment", "placebo"))
                 if None in (bg, tg, pg):
                     continue
                 logger.info(
                     f"       {label} baseline={bg:5.2f}  treatment={tg:5.2f}  "
-                    f"placebo={pg:5.2f}  (t-b={tg-bg:+.2f}, t-p={tg-pg:+.2f})"
+                    f"placebo={pg:5.2f}  (t-b={tg - bg:+.2f}, t-p={tg - pg:+.2f})"
                     f"  n={r['treatment'][nkey]:,}"
                 )
             logger.info(f"       flat-actual rows: {r['treatment'].get('pct_flat')}%")
@@ -1124,20 +1164,22 @@ def print_comparison(results):
             label = config_labels.get(cfg, cfg)
             cov = r.get("interval_coverage")
             cov_str = f"{cov:>6.1f}%" if cov is not None else f"{'n/a':>7}"
-            print(f"  │ {label:<26} {dir_acc:>7.1f}% {delta_str:>9} ${r['mae']:>5.2f} "
-                  f"{cov_str} {r['fold_count']:>5}  {r['sample_count']:>8,}")
+            print(
+                f"  │ {label:<26} {dir_acc:>7.1f}% {delta_str:>9} ${r['mae']:>5.2f} "
+                f"{cov_str} {r['fold_count']:>5}  {r['sample_count']:>8,}"
+            )
 
         print(f"  └{'─' * 78}┘")
 
     # ── Ship decision guidance ───────────────────────────────────────
     print(f"\n  {'=' * 100}")
-    print(f"  INTERPRETATION")
+    print("  INTERPRETATION")
     print(f"  {'=' * 100}")
-    print(f"")
-    print(f"  'vs Base' compares each arm to baseline (the volume columns dropped).")
-    print(f"  Ship the primitives only if treatment beats baseline by a meaningful,")
-    print(f"  non-flat margin AND treatment beats placebo (rules out capacity inflation)")
-    print(f"  AND no horizon regresses beyond the 0.5-1.5pp budget.")
+    print("")
+    print("  'vs Base' compares each arm to baseline (the volume columns dropped).")
+    print("  Ship the primitives only if treatment beats baseline by a meaningful,")
+    print("  non-flat margin AND treatment beats placebo (rules out capacity inflation)")
+    print("  AND no horizon regresses beyond the 0.5-1.5pp budget.")
 
     # ── Verdict: new primitives, short vs long horizons ─────────────
     short_horizons, long_horizons = [3, 7], [14, 30]
@@ -1153,61 +1195,71 @@ def print_comparison(results):
             if h in long_horizons:
                 long_deltas.append(delta)
 
-    print(f"\n  New Primitives (treatment vs baseline):")
+    print("\n  New Primitives (treatment vs baseline):")
     if short_deltas:
         avg_short = np.mean(short_deltas)
-        print(f"    Short horizons (3d/7d):    avg Δ = {avg_short:+.2f}pp "
-              f"{'📈 helpful' if avg_short > 0.3 else '📉 harmful' if avg_short < -0.3 else '➡️ neutral'}")
+        print(
+            f"    Short horizons (3d/7d):    avg Δ = {avg_short:+.2f}pp "
+            f"{'📈 helpful' if avg_short > 0.3 else '📉 harmful' if avg_short < -0.3 else '➡️ neutral'}"
+        )
     if long_deltas:
         avg_long = np.mean(long_deltas)
-        print(f"    Long horizons (14d/30d):   avg Δ = {avg_long:+.2f}pp "
-              f"{'📈 helpful' if avg_long > 0.3 else '📉 harmful' if avg_long < -0.3 else '➡️ neutral'}")
+        print(
+            f"    Long horizons (14d/30d):   avg Δ = {avg_long:+.2f}pp "
+            f"{'📈 helpful' if avg_long > 0.3 else '📉 harmful' if avg_long < -0.3 else '➡️ neutral'}"
+        )
 
     print("")
 
 
 def main():
     import argparse
-    parser = argparse.ArgumentParser(
-        description="A/B test: price technical primitives contribution per horizon"
+
+    parser = argparse.ArgumentParser(description="A/B test: price technical primitives contribution per horizon")
+    parser.add_argument("--max-items", type=int, default=200, help="Number of items to evaluate (default: 200)")
+    parser.add_argument("--horizon", type=int, default=None, help="Only evaluate this horizon (default: all)")
+    parser.add_argument(
+        "--arm",
+        choices=["baseline", "treatment", "placebo"],
+        default=None,
+        help="Only evaluate this arm (default: all three)",
     )
-    parser.add_argument("--max-items", type=int, default=200,
-                        help="Number of items to evaluate (default: 200)")
-    parser.add_argument("--horizon", type=int, default=None,
-                        help="Only evaluate this horizon (default: all)")
-    parser.add_argument("--arm", choices=["baseline", "treatment", "placebo"],
-                        default=None,
-                        help="Only evaluate this arm (default: all three)")
-    parser.add_argument("--frame-cache", default=None,
-                        help="Read/write the engineered frame at this path")
-    parser.add_argument("--build-cache-only", action="store_true",
-                        help="Build the frame cache and exit (run once before workers)")
-    parser.add_argument("--out", default=None,
-                        help="Write results JSON here instead of stdout")
-    parser.add_argument("--n-jobs", type=int, default=None,
-                        help="LightGBM threads per process. When sharding by "
-                             "horizon, set this to cores/shards (default: "
-                             "cores/2, matching production training)")
-    parser.add_argument("--q50-only", action="store_true",
-                        help="Train only the median quantile — 3x faster, and "
-                             "the ship rule only reads dir-acc. Interval "
-                             "coverage is not meaningful in this mode")
+    parser.add_argument("--frame-cache", default=None, help="Read/write the engineered frame at this path")
+    parser.add_argument(
+        "--build-cache-only", action="store_true", help="Build the frame cache and exit (run once before workers)"
+    )
+    parser.add_argument("--out", default=None, help="Write results JSON here instead of stdout")
+    parser.add_argument(
+        "--n-jobs",
+        type=int,
+        default=None,
+        help="LightGBM threads per process. When sharding by "
+        "horizon, set this to cores/shards (default: "
+        "cores/2, matching production training)",
+    )
+    parser.add_argument(
+        "--q50-only",
+        action="store_true",
+        help="Train only the median quantile — 3x faster, and "
+        "the ship rule only reads dir-acc. Interval "
+        "coverage is not meaningful in this mode",
+    )
     args = parser.parse_args()
 
     logger.info("=" * 70)
     logger.info("A/B TEST: Shelved Volume Features (baseline/treatment/placebo)")
     logger.info("=" * 70)
 
-    df, pruned, present_new = build_frame(
-        max_items=args.max_items, cache_path=args.frame_cache
-    )
+    df, pruned, present_new = build_frame(max_items=args.max_items, cache_path=args.frame_cache)
 
     if args.build_cache_only:
         logger.info("Frame cache built; exiting before evaluation.")
         return 0
 
     results = run_evaluation(
-        df, pruned, present_new,
+        df,
+        pruned,
+        present_new,
         horizon_filter=args.horizon,
         arm_filter=args.arm,
         n_jobs=args.n_jobs,
@@ -1215,8 +1267,7 @@ def main():
     )
 
     if args.out:
-        Path(args.out).write_text(
-            json.dumps(without_records(results), indent=2, default=str))
+        Path(args.out).write_text(json.dumps(without_records(results), indent=2, default=str))
         logger.info(f"Wrote {args.out}")
         return 0
 

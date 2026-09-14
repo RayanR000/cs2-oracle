@@ -28,11 +28,9 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 from db.parquet import append_monthly
 
 SOURCE = "aggregator_steam_17mafo"
-PRICE_COLS = ["item_slug", "day", "source", "mean_price", "min_price",
-              "max_price", "median_price", "volume"]
+PRICE_COLS = ["item_slug", "day", "source", "mean_price", "min_price", "max_price", "median_price", "volume"]
 SNAP_COLS = ["item_slug", "day", "source", "price", "volume"]
-RAW_URL_TEMPLATE = ("https://raw.githubusercontent.com/17mafo/cs-price-tracker/"
-                    "main/static/prices/{date}.json")
+RAW_URL_TEMPLATE = "https://raw.githubusercontent.com/17mafo/cs-price-tracker/main/static/prices/{date}.json"
 _SESSION = requests.Session()
 
 DEFAULT_START = "2026-04-16"
@@ -63,16 +61,18 @@ def transform_day(day_obj: dict, day: str) -> pd.DataFrame:
                 break
         if price is None:
             continue
-        rows.append({
-            "item_slug": slug,
-            "day": ts,
-            "source": SOURCE,
-            "mean_price": price,
-            "min_price": price,
-            "max_price": price,
-            "median_price": price,
-            "volume": 0,
-        })
+        rows.append(
+            {
+                "item_slug": slug,
+                "day": ts,
+                "source": SOURCE,
+                "mean_price": price,
+                "min_price": price,
+                "max_price": price,
+                "median_price": price,
+                "volume": 0,
+            }
+        )
     return pd.DataFrame(rows, columns=PRICE_COLS)
 
 
@@ -89,16 +89,14 @@ def gap_dates(start: str, end: str) -> list[str]:
     return [d.strftime("%Y-%m-%d") for d in rng]
 
 
-def validate_coverage(prices: pd.DataFrame, expected_dates: list[str],
-                      min_items: int = 24000) -> None:
+def validate_coverage(prices: pd.DataFrame, expected_dates: list[str], min_items: int = 24000) -> None:
     """Raise AssertionError if any expected day is missing or too sparse."""
     present = {pd.Timestamp(d) for d in prices["day"].unique()}
     for d in expected_dates:
         ts = pd.Timestamp(d)
         assert ts in present, f"missing day {d} in backfill"
         count = prices.loc[prices["day"] == ts, "item_slug"].nunique()
-        assert count >= min_items, (
-            f"low item count for {d}: {count} < {min_items}")
+        assert count >= min_items, f"low item count for {d}: {count} < {min_items}"
 
 
 def load_day(path: Path) -> dict:
@@ -106,8 +104,7 @@ def load_day(path: Path) -> dict:
         return json.load(fh)
 
 
-def fetch_day(date: str, cache_dir: Path, refresh: bool = False,
-              session=None) -> Path:
+def fetch_day(date: str, cache_dir: Path, refresh: bool = False, session=None) -> Path:
     """Return local path to <date>.json, downloading + caching if needed."""
     cache_dir.mkdir(parents=True, exist_ok=True)
     path = cache_dir / f"{date}.json"
@@ -121,8 +118,7 @@ def fetch_day(date: str, cache_dir: Path, refresh: bool = False,
     return path
 
 
-def compute_basis_factors(prices_path, overlap_start: str = OVERLAP_START,
-                          overlap_end: str = OVERLAP_END):
+def compute_basis_factors(prices_path, overlap_start: str = OVERLAP_START, overlap_end: str = OVERLAP_END):
     """Per-item Steam->basis factors from the post-gap overlap window.
 
     Returns (start_factors, start_global, end_factors, end_global):
@@ -136,8 +132,10 @@ def compute_basis_factors(prices_path, overlap_start: str = OVERLAP_START,
     # Accept a single file or a glob (e.g. prices-2026-*.parquet) so this works
     # with the monthly-partitioned archive as well as a single yearly file.
     prices_path = str(prices_path)
-    import duckdb
     import statistics
+
+    import duckdb
+
     steam_list = ",".join(f"'{s}'" for s in STEAM_WINDOW_SOURCES)
     buff_list = ",".join(f"'{s}'" for s in BUFF_BASIS_SOURCES)
     con = duckdb.connect()
@@ -172,9 +170,15 @@ def compute_basis_factors(prices_path, overlap_start: str = OVERLAP_START,
     return start_factors, start_global, end_factors, end_global
 
 
-def apply_rescale(prices, start_factors: dict, start_global: float,
-                  end_factors: dict, end_global: float,
-                  start_date: str = DEFAULT_START, end_date: str = DEFAULT_END):
+def apply_rescale(
+    prices,
+    start_factors: dict,
+    start_global: float,
+    end_factors: dict,
+    end_global: float,
+    start_date: str = DEFAULT_START,
+    end_date: str = DEFAULT_END,
+):
     """Log-linearly ramp each item's Steam->basis factor across the gap.
 
     factor(day) = f_start^(1-t) * f_end^t, t = (day-start)/(end-start) in [0,1].
@@ -185,10 +189,12 @@ def apply_rescale(prices, start_factors: dict, start_global: float,
         return prices
     out = prices.copy()
     span = (pd.Timestamp(end_date) - pd.Timestamp(start_date)).days
+
     def _t(day):
         if span <= 0:
             return 0.0
         return (day - pd.Timestamp(start_date)).days / span
+
     t = out["day"].map(_t).clip(0.0, 1.0)
     f_start = out["item_slug"].map(start_factors).fillna(start_global)
     f_end = out["item_slug"].map(end_factors).fillna(end_global)
@@ -198,9 +204,16 @@ def apply_rescale(prices, start_factors: dict, start_global: float,
     return out
 
 
-def run(start: str, end: str, out_dir: Path, cache_dir: Path,
-        dry_run: bool = False, refresh: bool = False,
-        min_items: int = 24000, fetch=fetch_day) -> pd.DataFrame:
+def run(
+    start: str,
+    end: str,
+    out_dir: Path,
+    cache_dir: Path,
+    dry_run: bool = False,
+    refresh: bool = False,
+    min_items: int = 24000,
+    fetch=fetch_day,
+) -> pd.DataFrame:
     dates = gap_dates(start, end)
     frames = []
     for d in dates:
@@ -211,8 +224,7 @@ def run(start: str, end: str, out_dir: Path, cache_dir: Path,
 
     start_f, start_g, end_f, end_g = compute_basis_factors(out_dir / "prices-*.parquet")
     prices = apply_rescale(prices, start_f, start_g, end_f, end_g, start, end)
-    print(f"Rescaled (ramp): {len(start_f):,} per-item factors, "
-          f"start global {start_g:.3f}, end global {end_g:.3f}")
+    print(f"Rescaled (ramp): {len(start_f):,} per-item factors, start global {start_g:.3f}, end global {end_g:.3f}")
 
     validate_coverage(prices, dates, min_items=min_items)
     print("Coverage validation passed")
@@ -242,8 +254,7 @@ def main():
 
     out_dir = Path(args.out_dir)
     cache_dir = out_dir / "raw" / "17mafo"
-    run(args.start_date, args.end_date, out_dir, cache_dir,
-        dry_run=args.dry_run, refresh=args.refresh)
+    run(args.start_date, args.end_date, out_dir, cache_dir, dry_run=args.dry_run, refresh=args.refresh)
 
 
 if __name__ == "__main__":

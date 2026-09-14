@@ -7,6 +7,7 @@ and live in ``collectors/price_history_import.py``.
 
 A second backfill source is expected; add a module here and register it below.
 """
+
 from . import cs2_prices_tracker
 
 ADAPTERS = {

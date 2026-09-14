@@ -27,30 +27,32 @@ Usage:
     python scripts/event_correlation_analysis.py --days-back 90
 """
 
-import sys
-import math
+import argparse
 import bisect
 import logging
-import argparse
-from dataclasses import dataclass, field
-from pathlib import Path
-from datetime import date, datetime, timedelta, timezone
+import math
+import sys
 from collections import defaultdict
+from dataclasses import dataclass, field
+from datetime import UTC, date, datetime, timedelta
+from pathlib import Path
 from typing import NamedTuple
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from database import (
-    SessionLocal, Event, EventImpact, EventPattern, EventCorrelation, Item,
-)
 from backtest.price_resolution import archive_max_day, load_voted_prices
-from db.parquet import append_table
-from sqlalchemy import func, desc
-
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+from database import (
+    Event,
+    EventCorrelation,
+    EventImpact,
+    EventPattern,
+    Item,
+    SessionLocal,
 )
+from db.parquet import append_table
+from sqlalchemy import desc, func
+
+logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s")
 logger = logging.getLogger("event_correlation")
 
 # Repo-root `price-archive/`, the same resolution `scripts/evaluate_forecaster.py`
@@ -67,10 +69,10 @@ ARCHIVE_DIR = Path(__file__).resolve().parent.parent.parent / "price-archive"
 # every bound below is a date and the windows are exactly what the docstrings
 # advertise. This is a deliberate documented change: the pre-event window is now
 # always 7 days, where before it was 7 or 8 depending on the event's timestamp.
-PRE_EVENT_WINDOW_DAYS = 7      # [event_day - 7, event_day - 1] inclusive
-CENTRED_WINDOW_DAYS = 3        # [target - 1, target + 1] inclusive
-IMPACT_OFFSETS = (1, 3, 7)     # days after the event that get an impact column
-CONTROL_OFFSET_DAYS = 7        # the offset the z-score's control group uses
+PRE_EVENT_WINDOW_DAYS = 7  # [event_day - 7, event_day - 1] inclusive
+CENTRED_WINDOW_DAYS = 3  # [target - 1, target + 1] inclusive
+IMPACT_OFFSETS = (1, 3, 7)  # days after the event that get an impact column
+CONTROL_OFFSET_DAYS = 7  # the offset the z-score's control group uses
 
 # `run_analysis`'s status when the lookback window holds no events at all.
 # `data/cs2_events.json`'s newest event is 2026-05-10, so at days_back=90 the
@@ -146,8 +148,7 @@ class PriceStore:
         return cls(series)
 
     @classmethod
-    def load(cls, archive_dir: Path, universe: dict[int, ItemRef],
-             min_date: date, max_date: date) -> "PriceStore":
+    def load(cls, archive_dir: Path, universe: dict[int, ItemRef], min_date: date, max_date: date) -> "PriceStore":
         voted = load_voted_prices(
             Path(archive_dir),
             [ref.slug for ref in universe.values()],
@@ -233,13 +234,12 @@ def _event_day(event: Event) -> date:
     return ts.date() if isinstance(ts, datetime) else ts
 
 
-def _price_on_date(store: PriceStore, item_id: int, target: date,
-                   window_days: int = CENTRED_WINDOW_DAYS) -> float | None:
+def _price_on_date(
+    store: PriceStore, item_id: int, target: date, window_days: int = CENTRED_WINDOW_DAYS
+) -> float | None:
     """Average price around a target date (centered window)."""
     half = window_days // 2
-    return store.window_mean(
-        item_id, target - timedelta(days=half), target + timedelta(days=half)
-    )
+    return store.window_mean(item_id, target - timedelta(days=half), target + timedelta(days=half))
 
 
 def _pre_event_price(store: PriceStore, item_id: int, event_day: date) -> float | None:
@@ -251,15 +251,14 @@ def _pre_event_price(store: PriceStore, item_id: int, event_day: date) -> float 
     )
 
 
-def _post_event_price(store: PriceStore, item_id: int, event_day: date,
-                      offset_days: int) -> float | None:
+def _post_event_price(store: PriceStore, item_id: int, event_day: date, offset_days: int) -> float | None:
     """Average price at offset_days after the event (3-day centered window)."""
     return _price_on_date(store, item_id, event_day + timedelta(days=offset_days))
 
 
-def _control_change_distribution(store: PriceStore, item_ids: list[int],
-                                 event_day: date,
-                                 offset_days: int) -> _ControlChanges:
+def _control_change_distribution(
+    store: PriceStore, item_ids: list[int], event_day: date, offset_days: int
+) -> _ControlChanges:
     """Pct change from the pre-event window to the offset window, per item.
 
     *item_ids* is the control cohort — every item of the same type. Items
@@ -284,8 +283,7 @@ def _control_change_distribution(store: PriceStore, item_ids: list[int],
     return dist
 
 
-def _compute_impacts(event: Event, item_ids: list[int], store: PriceStore,
-                     universe: dict[int, ItemRef]):
+def _compute_impacts(event: Event, item_ids: list[int], store: PriceStore, universe: dict[int, ItemRef]):
     """Compute impact metrics for all items around an event."""
     event_day = _event_day(event)
     pre_prices: dict[int, float] = {}
@@ -335,7 +333,9 @@ def _compute_impacts(event: Event, item_ids: list[int], store: PriceStore,
         item_type = (universe[item_id].type if item_id in universe else None) or "skin"
         if item_type not in control_cache:
             control_cache[item_type] = _control_change_distribution(
-                store, ids_by_type.get(item_type, []), event_day,
+                store,
+                ids_by_type.get(item_type, []),
+                event_day,
                 CONTROL_OFFSET_DAYS,
             )
         control_mean, control_std = control_cache[item_type].excluding(item_id)
@@ -343,27 +343,30 @@ def _compute_impacts(event: Event, item_ids: list[int], store: PriceStore,
         item_impact = impact_7d or impact_3d or impact_1d or 0.0
         z_score = (item_impact - control_mean) / control_std if control_std > 0 else 0.0
 
-        impacts.append({
-            "event_id": event.id,
-            "item_id": item_id,
-            "price_day_before": price_before,
-            "price_day_1": p1,
-            "price_day_3": p3,
-            "price_day_7": p7,
-            "impact_pct_1day": impact_1d,
-            "impact_pct_3day": impact_3d,
-            "impact_pct_7day": impact_7d,
-            "peak_impact_pct": peak,
-            "peak_impact_day": peak_day,
-            "duration_days": duration,
-            "z_score": round(z_score, 4),
-        })
+        impacts.append(
+            {
+                "event_id": event.id,
+                "item_id": item_id,
+                "price_day_before": price_before,
+                "price_day_1": p1,
+                "price_day_3": p3,
+                "price_day_7": p7,
+                "impact_pct_1day": impact_1d,
+                "impact_pct_3day": impact_3d,
+                "impact_pct_7day": impact_7d,
+                "peak_impact_pct": peak,
+                "peak_impact_day": peak_day,
+                "duration_days": duration,
+                "z_score": round(z_score, 4),
+            }
+        )
 
     return impacts
 
 
-def _upsert_event_impacts(db, impacts: list[dict], event_type: str = "",
-                          event_description: str = "", event_timestamp=None):
+def _upsert_event_impacts(
+    db, impacts: list[dict], event_type: str = "", event_description: str = "", event_timestamp=None
+):
     """Write event_impacts rows to the DB and return the denormalised mirror.
 
     The mirror rows are RETURNED, not written: `confidence_score` is only known
@@ -417,8 +420,7 @@ def _upsert_event_impacts(db, impacts: list[dict], event_type: str = "",
     return written, denorm_rows
 
 
-def _write_impacts_mirror(denorm_rows: list[dict],
-                          confidence_by_item: dict[int, float]) -> int:
+def _write_impacts_mirror(denorm_rows: list[dict], confidence_by_item: dict[int, float]) -> int:
     """Append the event_impacts_denorm mirror once, confidence already filled.
 
     Every value here is a scalar. Per AGENTS.md, nested values reaching
@@ -509,8 +511,7 @@ def _compute_and_upsert_patterns(db, event_type: str, impacts: list[dict]):
     return len(by_item)
 
 
-def _compute_and_upsert_correlations(db, event: Event, db_item_ids: list[int],
-                                      impacts: list[dict]):
+def _compute_and_upsert_correlations(db, event: Event, db_item_ids: list[int], impacts: list[dict]):
     """Write event_correlations with statistical rigor checks.
 
     Returns (rows_written, {item_id: confidence_score}). The scores go into the
@@ -541,10 +542,7 @@ def _compute_and_upsert_correlations(db, event: Event, db_item_ids: list[int],
     confounding_passed = 1 if confounding == 0 else 0
 
     patterns_by_item = {
-        p.item_id: p
-        for p in db.query(EventPattern)
-                   .filter(EventPattern.event_type == event.type)
-                   .all()
+        p.item_id: p for p in db.query(EventPattern).filter(EventPattern.event_type == event.type).all()
     }
 
     written = 0
@@ -578,8 +576,14 @@ def _compute_and_upsert_correlations(db, event: Event, db_item_ids: list[int],
         validation_passed = 1 if (holdout_acc is not None and holdout_acc >= 0.6) else 0
 
         # Overall confidence score (weighted average of 6 checks)
-        checks = [significance_passed, control_passed, pattern_passed,
-                  confounding_passed, lag_passed, validation_passed]
+        checks = [
+            significance_passed,
+            control_passed,
+            pattern_passed,
+            confounding_passed,
+            lag_passed,
+            validation_passed,
+        ]
         weights = [0.25, 0.10, 0.20, 0.10, 0.15, 0.20]
         confidence = sum(c * w for c, w in zip(checks, weights))
 
@@ -635,14 +639,9 @@ def run_analysis(days_back: int = 90, db=None, archive_dir: Path | None = None):
     if owns_session:
         db = SessionLocal()
     try:
-        cutoff = datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(days=days_back)
+        cutoff = datetime.now(UTC).replace(tzinfo=None) - timedelta(days=days_back)
 
-        events = (
-            db.query(Event)
-            .filter(Event.timestamp >= cutoff)
-            .order_by(desc(Event.timestamp))
-            .all()
-        )
+        events = db.query(Event).filter(Event.timestamp >= cutoff).order_by(desc(Event.timestamp)).all()
         logger.info(f"Found {len(events)} events in the last {days_back} days")
 
         if not events:
@@ -663,7 +662,9 @@ def run_analysis(days_back: int = 90, db=None, archive_dir: Path | None = None):
                 "the 'Refresh the CS2 event calendar' step, which is "
                 "continue-on-error and may have failed silently. Returning %r "
                 "(not a failure).",
-                days_back, cutoff.date(), NO_EVENTS_STATUS,
+                days_back,
+                cutoff.date(),
+                NO_EVENTS_STATUS,
             )
             return {
                 "status": NO_EVENTS_STATUS,
@@ -678,9 +679,7 @@ def run_analysis(days_back: int = 90, db=None, archive_dir: Path | None = None):
         # item inside the impact loop.
         universe = {
             r.id: ItemRef(r.item_id, r.type or "skin")
-            for r in db.query(Item.id, Item.item_id, Item.type)
-                       .filter(Item.is_backfilled == 1)
-                       .all()
+            for r in db.query(Item.id, Item.item_id, Item.type).filter(Item.is_backfilled == 1).all()
         }
         item_ids = list(universe)
         logger.info(f"Found {len(item_ids)} backfilled items for analysis")
@@ -689,7 +688,7 @@ def run_analysis(days_back: int = 90, db=None, archive_dir: Path | None = None):
             return {
                 "status": "error",
                 "error": "no items have is_backfilled = 1 — the archive-derived "
-                         "backfill gate is empty, so there is nothing to analyse",
+                "backfill gate is empty, so there is nothing to analyse",
             }
 
         event_days = [_event_day(e) for e in events]
@@ -698,7 +697,10 @@ def run_analysis(days_back: int = 90, db=None, archive_dir: Path | None = None):
         store = PriceStore.load(archive_dir, universe, min_date, max_date)
         logger.info(
             "Loaded archive prices for %d/%d items over %s..%s",
-            store.items_with_prices, len(item_ids), min_date, max_date,
+            store.items_with_prices,
+            len(item_ids),
+            min_date,
+            max_date,
         )
 
         if store.items_with_prices == 0:
@@ -726,12 +728,14 @@ def run_analysis(days_back: int = 90, db=None, archive_dir: Path | None = None):
             if not impacts:
                 logger.warning(
                     "  No archive prices in event #%s's windows (%s), skipping",
-                    event.id, _event_day(event),
+                    event.id,
+                    _event_day(event),
                 )
                 continue
 
             n_impacts, denorm_rows = _upsert_event_impacts(
-                db, impacts,
+                db,
+                impacts,
                 event_type=event.type,
                 event_description=event.description,
                 event_timestamp=event.timestamp,
@@ -744,7 +748,10 @@ def run_analysis(days_back: int = 90, db=None, archive_dir: Path | None = None):
             logger.info(f"  Wrote {n_patterns} event_patterns")
 
             n_correlations, confidence_by_item = _compute_and_upsert_correlations(
-                db, event, item_ids, impacts,
+                db,
+                event,
+                item_ids,
+                impacts,
             )
             total_correlations += n_correlations
             logger.info(f"  Wrote {n_correlations} event_correlations")
@@ -773,7 +780,9 @@ def run_analysis(days_back: int = 90, db=None, archive_dir: Path | None = None):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Event correlation analysis")
     parser.add_argument(
-        "--days-back", type=int, default=90,
+        "--days-back",
+        type=int,
+        default=90,
         help="Analyze events within this many days (default: 90)",
     )
     args = parser.parse_args()

@@ -5,7 +5,9 @@ Revises: 0017_add_item_rarity_columns
 Create Date: 2026-07-19
 
 """
-from typing import Sequence, Union
+
+from typing import Union
+from collections.abc import Sequence
 from alembic import op
 import sqlalchemy as sa
 
@@ -31,12 +33,8 @@ def upgrade() -> None:
         sa.ForeignKeyConstraint(["item_id"], ["items.id"]),
         sa.PrimaryKeyConstraint("item_id", "source", "post_id"),
     )
-    op.create_index(
-        "idx_social_item_source", "social_mentions", ["item_id", "source"]
-    )
-    op.create_index(
-        "idx_social_mentioned_at", "social_mentions", ["mentioned_at"]
-    )
+    op.create_index("idx_social_item_source", "social_mentions", ["item_id", "source"])
+    op.create_index("idx_social_mentioned_at", "social_mentions", ["mentioned_at"])
 
 
 def downgrade() -> None:

@@ -32,7 +32,6 @@ from __future__ import annotations
 
 import numpy as np
 import pandas as pd
-
 from collectors.pipeline import FALLBACK_MAX_AGE_DAYS
 
 # A gap wider than this breaks a run rather than continuing it. Two identical
@@ -81,15 +80,16 @@ def stale_run_days(
         return empty
     missing = {item_col, date_col, price_col} - set(df.columns)
     if missing:
-        raise KeyError(
-            f"stale_run_days requires {sorted(missing)}; got {list(df.columns)}"
-        )
+        raise KeyError(f"stale_run_days requires {sorted(missing)}; got {list(df.columns)}")
 
-    work = pd.DataFrame({
-        "item": df[item_col].to_numpy(),
-        "date": pd.to_datetime(df[date_col], errors="coerce"),
-        "price": pd.to_numeric(df[price_col], errors="coerce"),
-    }, index=df.index)
+    work = pd.DataFrame(
+        {
+            "item": df[item_col].to_numpy(),
+            "date": pd.to_datetime(df[date_col], errors="coerce"),
+            "price": pd.to_numeric(df[price_col], errors="coerce"),
+        },
+        index=df.index,
+    )
 
     # Sort is by (item, date) only. A stable kind keeps duplicate item-days in
     # their original order rather than an arbitrary one, so the result is
@@ -106,13 +106,7 @@ def stale_run_days(
     # A row CONTINUES the previous run only if every one of these holds. Any
     # NaN in the comparison chain makes `continues` False, which is the
     # conservative direction: an unknown is a fresh level, never a repeat.
-    continues = (
-        same_item
-        & same_price
-        & within_gap
-        & usable
-        & usable.shift(1, fill_value=False)
-    )
+    continues = same_item & same_price & within_gap & usable & usable.shift(1, fill_value=False)
 
     # Gaps-and-islands: each break opens a new group, and position within the
     # group is the run length.
@@ -141,12 +135,11 @@ def stale_run_lookup(
     if df.empty:
         return {}
     runs = stale_run_days(
-        df, item_col=item_col, date_col=date_col,
-        price_col=price_col, gap_break_days=gap_break_days,
+        df,
+        item_col=item_col,
+        date_col=date_col,
+        price_col=price_col,
+        gap_break_days=gap_break_days,
     )
     dates = pd.to_datetime(df[date_col], errors="coerce")
-    return {
-        (item, d.date()): int(r)
-        for item, d, r in zip(df[item_col], dates, runs)
-        if pd.notna(d)
-    }
+    return {(item, d.date()): int(r) for item, d, r in zip(df[item_col], dates, runs) if pd.notna(d)}

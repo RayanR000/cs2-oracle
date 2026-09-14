@@ -53,12 +53,11 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-import duckdb  # noqa: E402
-import numpy as np  # noqa: E402
-import pandas as pd  # noqa: E402
-
-from db.archive import prices_relation  # noqa: E402
-from models.item_parser import archive_universe_sql_filter  # noqa: E402
+import duckdb
+import numpy as np
+import pandas as pd
+from db.archive import prices_relation
+from models.item_parser import archive_universe_sql_filter
 
 HORIZONS = (1, 3, 7, 14, 30)
 MIN_MEDIAN_PRICE = 1.0
@@ -70,6 +69,7 @@ DEFAULT_OUT = "/tmp/label_ceiling_2025.json"
 # --------------------------------------------------------------------------- #
 # panel
 # --------------------------------------------------------------------------- #
+
 
 def load_source_frames() -> tuple[pd.DataFrame, pd.DataFrame]:
     """Steam (source IS NULL) and BUFF (source='buff_iflow') 2025 frames.
@@ -104,9 +104,9 @@ def apply_median_filter(
     steam: pd.DataFrame, buff: pd.DataFrame, min_price: float
 ) -> tuple[pd.DataFrame, pd.DataFrame, int]:
     """Keep only items whose combined-2025 median price >= min_price."""
-    combined_med = pd.concat(
-        [steam[["item_slug", "price"]], buff[["item_slug", "price"]]]
-    ).groupby("item_slug")["price"].median()
+    combined_med = (
+        pd.concat([steam[["item_slug", "price"]], buff[["item_slug", "price"]]]).groupby("item_slug")["price"].median()
+    )
     keep = set(combined_med[combined_med >= min_price].index)
     return (
         steam[steam["item_slug"].isin(keep)].copy(),
@@ -119,6 +119,7 @@ def apply_median_filter(
 # returns + reliability
 # --------------------------------------------------------------------------- #
 
+
 def forward_returns(df: pd.DataFrame, h: int) -> pd.DataFrame:
     """Per-(item, day) h-day forward log return within one source.
 
@@ -130,9 +131,7 @@ def forward_returns(df: pd.DataFrame, h: int) -> pd.DataFrame:
     fwd = df[["item_slug", "day", "price"]].copy()
     fwd["day"] = fwd["day"] - pd.to_timedelta(h, unit="D")
     fwd = fwd.rename(columns={"price": "price_fwd"})
-    m = df[["item_slug", "day", "price"]].merge(
-        fwd, on=["item_slug", "day"], how="inner"
-    )
+    m = df[["item_slug", "day", "price"]].merge(fwd, on=["item_slug", "day"], how="inner")
     m["ret"] = np.log(m["price_fwd"] / m["price"])
     m = m[np.isfinite(m["ret"])]
     return m[["item_slug", "day", "ret"]]
@@ -146,9 +145,7 @@ def pearson(x: np.ndarray, y: np.ndarray) -> float:
     return float(np.corrcoef(x, y)[0, 1])
 
 
-def horizon_stats(
-    steam: pd.DataFrame, buff: pd.DataFrame, h: int
-) -> dict:
+def horizon_stats(steam: pd.DataFrame, buff: pd.DataFrame, h: int) -> dict:
     """Split-half stats for one horizon on pairwise-complete returns."""
     sr = forward_returns(steam, h).rename(columns={"ret": "ret_steam"})
     br = forward_returns(buff, h).rename(columns={"ret": "ret_buff"})
@@ -157,12 +154,17 @@ def horizon_stats(
     n_items = int(paired["item_slug"].nunique()) if n else 0
     if n < 3:
         return {
-            "horizon": h, "n": n, "n_items": n_items,
+            "horizon": h,
+            "n": n,
+            "n_items": n_items,
             "single_source_corr": float("nan"),
             "composite_reliability": float("nan"),
-            "max_R2": float("nan"), "max_IC": float("nan"),
-            "sd_steam": float("nan"), "sd_buff": float("nan"),
-            "sd_pooled": float("nan"), "true_sd": float("nan"),
+            "max_R2": float("nan"),
+            "max_IC": float("nan"),
+            "sd_steam": float("nan"),
+            "sd_buff": float("nan"),
+            "sd_pooled": float("nan"),
+            "true_sd": float("nan"),
         }
     xs = paired["ret_steam"].to_numpy(dtype=float)
     xb = paired["ret_buff"].to_numpy(dtype=float)
@@ -197,6 +199,7 @@ def horizon_stats(
 # main
 # --------------------------------------------------------------------------- #
 
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--out", default=DEFAULT_OUT)
@@ -204,9 +207,7 @@ def main() -> int:
     args = ap.parse_args()
 
     steam, buff = load_source_frames()
-    n_items_raw = pd.concat([steam[["item_slug"]], buff[["item_slug"]]])[
-        "item_slug"
-    ].nunique()
+    n_items_raw = pd.concat([steam[["item_slug"]], buff[["item_slug"]]])["item_slug"].nunique()
     print(
         f"loaded 2025 universe-filtered panel: "
         f"steam {len(steam):,} rows / {steam['item_slug'].nunique():,} items, "
@@ -218,15 +219,13 @@ def main() -> int:
         return 1
 
     joint_days = len(
-        steam[["item_slug", "day"]].merge(buff[["item_slug", "day"]],
-                                         on=["item_slug", "day"], how="inner")
+        steam[["item_slug", "day"]].merge(buff[["item_slug", "day"]], on=["item_slug", "day"], how="inner")
     )
     print(f"joint (item, day) with both sources at d: {joint_days:,}")
 
     steam, buff, n_kept = apply_median_filter(steam, buff, args.min_price)
     joint_kept = len(
-        steam[["item_slug", "day"]].merge(buff[["item_slug", "day"]],
-                                         on=["item_slug", "day"], how="inner")
+        steam[["item_slug", "day"]].merge(buff[["item_slug", "day"]], on=["item_slug", "day"], how="inner")
     )
     print(
         f"median >= ${args.min_price:.2f} (combined 2025): {n_kept:,} items; "
@@ -240,9 +239,11 @@ def main() -> int:
 
     rows = [horizon_stats(steam, buff, h) for h in HORIZONS]
 
-    header = (f"{'h':>3} {'n_pairs':>9} {'n_items':>8} {'single_r':>9} "
-              f"{'rel2':>8} {'max_R2':>8} {'max_IC':>8} "
-              f"{'sd_pool':>8} {'true_sd':>8}")
+    header = (
+        f"{'h':>3} {'n_pairs':>9} {'n_items':>8} {'single_r':>9} "
+        f"{'rel2':>8} {'max_R2':>8} {'max_IC':>8} "
+        f"{'sd_pool':>8} {'true_sd':>8}"
+    )
     print("")
     print("split-half reliability: steam log-returns vs buff log-returns")
     print(header)
@@ -255,21 +256,22 @@ def main() -> int:
             f"{r['sd_pooled']:>8.4f} {r['true_sd']:>8.4f}"
         )
     print("")
-    print("single_r = Pearson corr of the two sources' returns (= one-source "
-          "reliability); rel2 = 2r/(1+r) = reliability of the 2-source "
-          "average = max R^2 predicting the composite; max_IC = sqrt(rel2); "
-          "true_sd = pooled observed SD * sqrt(r).")
+    print(
+        "single_r = Pearson corr of the two sources' returns (= one-source "
+        "reliability); rel2 = 2r/(1+r) = reliability of the 2-source "
+        "average = max R^2 predicting the composite; max_IC = sqrt(rel2); "
+        "true_sd = pooled observed SD * sqrt(r)."
+    )
 
     payload = {
         "meta": {
             "start": START,
             "end": END,
             "min_median_price": args.min_price,
-            "median_def": "median(mean_price) over combined 2025 "
-                          "universe-filtered rows (both sources)",
+            "median_def": "median(mean_price) over combined 2025 universe-filtered rows (both sources)",
             "sources": {"steam": "source IS NULL", "buff": "source=buff_iflow"},
             "return_def": "ln(price[d+h]/price[d]), calendar-exact within "
-                          "source; paired rows require both returns finite",
+            "source; paired rows require both returns finite",
             "formulas": {
                 "single_source_corr": "Pearson(ret_steam, ret_buff)",
                 "composite_reliability": "2r/(1+r)",

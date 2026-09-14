@@ -23,11 +23,10 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from sqlalchemy import func
-
 from collectors.snapshot_date import resolve_snapshot_date
-from database import SessionLocal, ItemForecast
+from database import ItemForecast, SessionLocal
 from db.parquet import ParquetQuery
+from sqlalchemy import func
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 logger = logging.getLogger(__name__)
@@ -47,15 +46,12 @@ def freshness_verdict(db_newest, parquet_newest, expected):
     if db_newest is None:
         problems.append("item_forecasts (DB) holds no forecasts at all")
     elif db_newest < expected:
-        problems.append(
-            f"item_forecasts (DB) newest forecast_date is {db_newest}, expected {expected}"
-        )
+        problems.append(f"item_forecasts (DB) newest forecast_date is {db_newest}, expected {expected}")
     if parquet_newest is None:
         problems.append("the item_forecasts Parquet mirror holds no forecasts at all")
     elif parquet_newest < expected:
         problems.append(
-            f"the item_forecasts Parquet mirror newest forecast_date is "
-            f"{parquet_newest}, expected {expected}"
+            f"the item_forecasts Parquet mirror newest forecast_date is {parquet_newest}, expected {expected}"
         )
     if problems:
         return False, "; ".join(problems)
@@ -102,11 +98,7 @@ def main():
     # only passed because the aggregator cron fires at 23:00, after the
     # boundary. Both sides must read the same rule or the gate reports a
     # persistence failure that did not happen.
-    expected = (
-        datetime.fromisoformat(args.expected_date).date()
-        if args.expected_date
-        else resolve_snapshot_date()
-    )
+    expected = datetime.fromisoformat(args.expected_date).date() if args.expected_date else resolve_snapshot_date()
 
     ok, message = freshness_verdict(_db_newest(), _parquet_newest(), expected)
     if ok:

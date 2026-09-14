@@ -15,7 +15,6 @@ from datetime import date
 
 import pandas as pd
 import pytest
-
 from scripts import backfill_steam_listing_history as mod
 
 
@@ -28,33 +27,64 @@ def archive(tmp_path):
     supplies the `is_backfilled` gate: an item with a pre-2026 row is one
     training already has, and is not a backfill target.
     """
-    pd.DataFrame([
-        {"item_slug": "AK-47 | Redline (Field-Tested)",
-         "day": date(2013, 8, 14), "mean_price": 5.0, "volume": 1},
-    ]).to_parquet(tmp_path / "prices-2013.parquet", index=False)
+    pd.DataFrame(
+        [
+            {"item_slug": "AK-47 | Redline (Field-Tested)", "day": date(2013, 8, 14), "mean_price": 5.0, "volume": 1},
+        ]
+    ).to_parquet(tmp_path / "prices-2013.parquet", index=False)
 
-    pd.DataFrame([
-        # gated: has pre-2026 history, so training is not dropping it
-        {"item_slug": "AK-47 | Redline (Field-Tested)", "day": date(2026, 8, 7),
-         "source": "aggregator_sync", "mean_price": 6.0, "volume": 1},
-        # a target, above any sane floor
-        {"item_slug": "Glock-18 | Fade (Factory New)", "day": date(2026, 8, 7),
-         "source": "aggregator_sync", "mean_price": 400.0, "volume": 1},
-        # a target, below a $1 floor
-        {"item_slug": "P250 | Sand Dune (Well-Worn)", "day": date(2026, 8, 7),
-         "source": "aggregator_sync", "mean_price": 0.10, "volume": 1},
-        # phase-collapsed: one name over every Doppler phase, out of universe
-        {"item_slug": "★ StatTrak™ M9 Bayonet | Doppler (Minimal Wear)",
-         "day": date(2026, 8, 7), "source": "aggregator_sync",
-         "mean_price": 1200.0, "volume": 1},
-        # priced only by a BUFF bid, which does not vote
-        {"item_slug": "MP9 | Bulldozer (Factory New)", "day": date(2026, 8, 7),
-         "source": "aggregator_buff163_buy", "mean_price": 50.0, "volume": 1},
-        # mangled slug key — a duplicate of an already-gated item
-        {"item_slug": "sealed-graffiti-popdog-battle-green",
-         "day": date(2026, 8, 7), "source": "aggregator_sync",
-         "mean_price": 5.0, "volume": 1},
-    ]).to_parquet(tmp_path / "prices-2026-08.parquet", index=False)
+    pd.DataFrame(
+        [
+            # gated: has pre-2026 history, so training is not dropping it
+            {
+                "item_slug": "AK-47 | Redline (Field-Tested)",
+                "day": date(2026, 8, 7),
+                "source": "aggregator_sync",
+                "mean_price": 6.0,
+                "volume": 1,
+            },
+            # a target, above any sane floor
+            {
+                "item_slug": "Glock-18 | Fade (Factory New)",
+                "day": date(2026, 8, 7),
+                "source": "aggregator_sync",
+                "mean_price": 400.0,
+                "volume": 1,
+            },
+            # a target, below a $1 floor
+            {
+                "item_slug": "P250 | Sand Dune (Well-Worn)",
+                "day": date(2026, 8, 7),
+                "source": "aggregator_sync",
+                "mean_price": 0.10,
+                "volume": 1,
+            },
+            # phase-collapsed: one name over every Doppler phase, out of universe
+            {
+                "item_slug": "★ StatTrak™ M9 Bayonet | Doppler (Minimal Wear)",
+                "day": date(2026, 8, 7),
+                "source": "aggregator_sync",
+                "mean_price": 1200.0,
+                "volume": 1,
+            },
+            # priced only by a BUFF bid, which does not vote
+            {
+                "item_slug": "MP9 | Bulldozer (Factory New)",
+                "day": date(2026, 8, 7),
+                "source": "aggregator_buff163_buy",
+                "mean_price": 50.0,
+                "volume": 1,
+            },
+            # mangled slug key — a duplicate of an already-gated item
+            {
+                "item_slug": "sealed-graffiti-popdog-battle-green",
+                "day": date(2026, 8, 7),
+                "source": "aggregator_sync",
+                "mean_price": 5.0,
+                "volume": 1,
+            },
+        ]
+    ).to_parquet(tmp_path / "prices-2026-08.parquet", index=False)
     return tmp_path
 
 

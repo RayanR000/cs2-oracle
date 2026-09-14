@@ -11,18 +11,18 @@ Run from backend/ directory:
     python scripts/init_local_db.py
 """
 
-import sys
 import json
 import logging
+import sys
+from datetime import UTC, datetime
 from pathlib import Path
-from datetime import datetime, date, timezone
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from database import SessionLocal, init_db, Item, Event
+from database import Event, Item, SessionLocal, init_db
 from sqlalchemy import text
 
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s")
 logger = logging.getLogger("init_local_db")
 
 ARCHIVE_DIR = Path(__file__).parent.parent.parent / "price-archive"
@@ -62,6 +62,7 @@ def assert_local_db():
 def populate_items(db):
     logger.info("Reading items from parquet archive...")
     import duckdb
+
     con = duckdb.connect()
     try:
         rows = con.sql(f"""
@@ -82,7 +83,8 @@ def populate_items(db):
         # Cross-checked against the documented priority queue — 93% of them sit
         # in its sell_listings-DESC head, which is the order the backfill ran.
         backfilled = {
-            r[0] for r in con.sql(f"""
+            r[0]
+            for r in con.sql(f"""
                 SELECT DISTINCT item_slug
                 FROM read_parquet('{ARCHIVE_DIR}/prices-*.parquet', union_by_name=true)
                 WHERE day < '2026-01-01'
@@ -94,7 +96,8 @@ def populate_items(db):
         # `source IS DISTINCT FROM 'buff_iflow'` keeps the NULL-source legacy
         # rows (source predates this column) while excluding buff_iflow rows.
         trainable = {
-            r[0] for r in con.sql(f"""
+            r[0]
+            for r in con.sql(f"""
                 SELECT DISTINCT item_slug
                 FROM read_parquet('{ARCHIVE_DIR}/prices-*.parquet', union_by_name=true)
                 WHERE day < '2026-01-01' AND source IS DISTINCT FROM 'buff_iflow'
@@ -104,30 +107,33 @@ def populate_items(db):
         con.close()
 
     total = len(rows)
-    logger.info(f"Found {total:,} unique items in parquet "
-                f"({len(backfilled):,} carrying the historical backfill, "
-                f"{len(trainable):,} trainable)")
+    logger.info(
+        f"Found {total:,} unique items in parquet "
+        f"({len(backfilled):,} carrying the historical backfill, "
+        f"{len(trainable):,} trainable)"
+    )
 
     existing = {r[0] for r in db.query(Item.item_id).all()}
     to_insert = []
     for (slug,) in rows:
         if slug not in existing:
-            to_insert.append(Item(
-                item_id=slug,
-                name=slug,
-                type="skin",
-                is_backfilled=1 if slug in backfilled else 0,
-                is_trainable=1 if slug in trainable else 0,
-                created_at=datetime.now(timezone.utc).replace(tzinfo=None),
-                updated_at=datetime.now(timezone.utc).replace(tzinfo=None),
-            ))
+            to_insert.append(
+                Item(
+                    item_id=slug,
+                    name=slug,
+                    type="skin",
+                    is_backfilled=1 if slug in backfilled else 0,
+                    is_trainable=1 if slug in trainable else 0,
+                    created_at=datetime.now(UTC).replace(tzinfo=None),
+                    updated_at=datetime.now(UTC).replace(tzinfo=None),
+                )
+            )
 
     if to_insert:
         db.add_all(to_insert)
         db.commit()
         n_bf = sum(1 for i in to_insert if i.is_backfilled)
-        logger.info(f"Inserted {len(to_insert)} new items "
-                    f"({n_bf} backfilled, {len(to_insert) - n_bf} not)")
+        logger.info(f"Inserted {len(to_insert)} new items ({n_bf} backfilled, {len(to_insert) - n_bf} not)")
     else:
         logger.info("No new items to insert")
 
@@ -140,8 +146,12 @@ def populate_items(db):
         want_tr = 1 if item_id in trainable else 0
         if (bf or 0) != want_bf or (tr or 0) != want_tr:
             db.query(Item).filter(Item.item_id == item_id).update(
-                {"is_backfilled": want_bf, "is_trainable": want_tr,
-                 "updated_at": datetime.now(timezone.utc).replace(tzinfo=None)})
+                {
+                    "is_backfilled": want_bf,
+                    "is_trainable": want_tr,
+                    "updated_at": datetime.now(UTC).replace(tzinfo=None),
+                }
+            )
             changed += 1
     if changed:
         db.commit()
@@ -150,8 +160,7 @@ def populate_items(db):
     total_in_db = db.query(Item).count()
     n_flagged = db.query(Item).filter(Item.is_backfilled == 1).count()
     n_trainable = db.query(Item).filter(Item.is_trainable == 1).count()
-    logger.info(f"Total items in DB: {total_in_db:,} "
-                f"({n_flagged:,} is_backfilled=1, {n_trainable:,} is_trainable=1)")
+    logger.info(f"Total items in DB: {total_in_db:,} ({n_flagged:,} is_backfilled=1, {n_trainable:,} is_trainable=1)")
 
 
 def populate_events(db):
@@ -177,12 +186,14 @@ def populate_events(db):
             continue
 
         if (ev_type, parsed_date) not in existing:
-            to_insert.append(Event(
-                type=ev_type,
-                timestamp=datetime.combine(parsed_date, datetime.min.time()),
-                description=ev.get("description", ""),
-                created_at=datetime.now(timezone.utc).replace(tzinfo=None),
-            ))
+            to_insert.append(
+                Event(
+                    type=ev_type,
+                    timestamp=datetime.combine(parsed_date, datetime.min.time()),
+                    description=ev.get("description", ""),
+                    created_at=datetime.now(UTC).replace(tzinfo=None),
+                )
+            )
 
     if to_insert:
         db.add_all(to_insert)
@@ -190,15 +201,18 @@ def populate_events(db):
         logger.info(f"Inserted {len(to_insert)} new events")
 
         from db.parquet import append_table
+
         parquet_rows = []
         for ev in to_insert:
-            parquet_rows.append({
-                "id": ev.id,
-                "type": ev.type,
-                "timestamp": ev.timestamp,
-                "description": ev.description,
-                "created_at": ev.created_at,
-            })
+            parquet_rows.append(
+                {
+                    "id": ev.id,
+                    "type": ev.type,
+                    "timestamp": ev.timestamp,
+                    "description": ev.description,
+                    "created_at": ev.created_at,
+                }
+            )
         append_table("events", parquet_rows, ["id"])
     else:
         logger.info("No new events to insert")
@@ -221,8 +235,15 @@ def main():
         populate_events(db)
 
         logger.info("\nFinal table counts:")
-        for table in ["items", "events", "item_forecasts", "prediction_accuracy",
-                       "forecast_outcomes", "accuracy_alerts", "price_history"]:
+        for table in [
+            "items",
+            "events",
+            "item_forecasts",
+            "prediction_accuracy",
+            "forecast_outcomes",
+            "accuracy_alerts",
+            "price_history",
+        ]:
             try:
                 count = db.execute(text(f"SELECT COUNT(*) FROM {table}")).scalar()
                 logger.info(f"  {table}: {count:,}")

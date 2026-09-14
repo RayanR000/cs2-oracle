@@ -5,6 +5,7 @@ history, an OOF panel that drops the date join (fold is then the only
 partition and the embargo is unenforced), and default params that drift
 from the trainer's SKIP_HP block.
 """
+
 import sys
 from pathlib import Path
 
@@ -13,7 +14,7 @@ import pandas as pd
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from scripts.confirm_mondrian_oof import (  # noqa: E402
+from scripts.confirm_mondrian_oof import (
     DEFAULT_Q50,
     default_q50_params,
     last_test_folds,
@@ -31,9 +32,15 @@ def _oof(n_folds=6, per_fold=3000, seed=0):
         for i in range(per_fold):
             day = start + np.timedelta64(int(i % 30), "D")
             s = float(rng.lognormal(-2.6, 0.6))
-            rows.append({"residual_pct": float(rng.normal(0, s * 150)),
-                         "sigma": s, "fold": f, "date": day,
-                         "row_index": len(rows)})
+            rows.append(
+                {
+                    "residual_pct": float(rng.normal(0, s * 150)),
+                    "sigma": s,
+                    "fold": f,
+                    "date": day,
+                    "row_index": len(rows),
+                }
+            )
     return pd.DataFrame(rows)
 
 
@@ -45,7 +52,7 @@ def test_last_test_folds_are_last_and_oldest_first():
 
 def test_last_test_folds_skips_thin_folds():
     oof = _oof()
-    oof = oof[~((oof["fold"] == 5))].copy()
+    oof = oof[~(oof["fold"] == 5)].copy()
     thin = oof[oof["fold"] == 4].head(10).copy()
     oof = pd.concat([oof[oof["fold"] != 4], thin])
     got = last_test_folds(oof, 3, min_rows=1000)
@@ -74,15 +81,20 @@ def test_oof_panel_sorts_dates_and_drops_nonfinite():
 
 def test_default_params_match_skip_hp_block():
     for k, v in DEFAULT_Q50.items():
-        assert k in ("num_leaves", "learning_rate", "lambda_l1",
-                     "lambda_l2", "max_depth", "min_data_in_leaf"), k
-    assert DEFAULT_Q50 == {"num_leaves": 47, "learning_rate": 0.01,
-                           "lambda_l1": 0.0, "lambda_l2": 1.5,
-                           "max_depth": 5, "min_data_in_leaf": 15}
+        assert k in ("num_leaves", "learning_rate", "lambda_l1", "lambda_l2", "max_depth", "min_data_in_leaf"), k
+    assert DEFAULT_Q50 == {
+        "num_leaves": 47,
+        "learning_rate": 0.01,
+        "lambda_l1": 0.0,
+        "lambda_l2": 1.5,
+        "max_depth": 5,
+        "min_data_in_leaf": 15,
+    }
 
 
 def test_default_q50_params_shape():
-    from models.forecaster import ItemForecaster  # noqa: E402
+    from models.forecaster import ItemForecaster
+
     fc = ItemForecaster.__new__(ItemForecaster)
     p = default_q50_params(fc)
     assert p["objective"] == "quantile" and p["alpha"] == 0.5

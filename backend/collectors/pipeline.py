@@ -6,9 +6,10 @@ Manages scheduled data collection, validation, and storage
 import csv
 import logging
 import os
-from datetime import datetime, timedelta
 from collections import Counter, defaultdict
-from typing import Any, Optional, List, Dict
+from datetime import datetime, timedelta
+from typing import Any
+
 from sqlalchemy import func
 from sqlalchemy.orm import scoped_session
 
@@ -54,17 +55,17 @@ VOLUME_NOT_OBSERVED = None
 def _historical_fallback_source(source: str) -> str:
     """Normalize fallback source labels so retries do not stack prefixes."""
     while source.startswith("historical_fallback:"):
-        source = source[len("historical_fallback:"):]
+        source = source[len("historical_fallback:") :]
     return f"historical_fallback:{source}"
 
 
 class DataPipeline:
     """Orchestrates data collection and processing pipeline"""
-    
+
     def __init__(self, db_session=None):
         """
         Initialize data pipeline
-        
+
         Args:
             db_session: SQLAlchemy database session
         """
@@ -74,21 +75,23 @@ class DataPipeline:
         """Return a thread-safe session. Creates a thread-local one if none was injected."""
         if self.db_session is None:
             from database import SessionLocal
+
             self.db_session = scoped_session(SessionLocal)
         return self.db_session
-    
+
     def run_priority_collection(self):
         """Execute priority collection for top 2000 items using fast aggregator"""
         return self.run_full_aggregator_collection(limit=2000)
 
-    def run_full_aggregator_collection(self, limit: Optional[int] = None):
+    def run_full_aggregator_collection(self, limit: int | None = None):
         """
         Execute collection for items using fast aggregator.
         If limit is None, updates ALL items in the database.
         Records execution to collection_runs table for monitoring.
         """
+        from database import CollectionRun, Item, PriceHistory
+
         from collectors.csgotrader_aggregator import CSGOTraderAggregator
-        from database import Item, PriceHistory, CollectionRun
 
         start_time = datetime.utcnow()
         primary_items_collected = 0
@@ -96,9 +99,9 @@ class DataPipeline:
         fallback_stale_items: set = set()
         errors_count = 0
         duplicate_name_count = 0
-        duplicate_name_sample: List[str] = []
-        missing_names: List[str] = []
-        missing_name_report: Dict[str, Any] = {}
+        duplicate_name_sample: list[str] = []
+        missing_names: list[str] = []
+        missing_name_report: dict[str, Any] = {}
 
         try:
             logger.info(f"Starting aggregator collection (limit: {limit if limit else 'ALL'})")
@@ -112,6 +115,7 @@ class DataPipeline:
             if limit:
                 # Use liquidity-based sorting for limited runs
                 from repositories import ItemRepository
+
                 items = ItemRepository.get_top_items(self.db_session, limit=limit)
             else:
                 items = query.all()
@@ -175,13 +179,15 @@ class DataPipeline:
                         if price is not None and price > 0:
                             db_source = SOURCE_LABELS.get(src_key, f"aggregator_{src_key}")
                             for item in matched_items:
-                                price_records.append(PriceHistory(
-                                    item_id=item.id,
-                                    timestamp=now,
-                                    price=price,
-                                    volume=volume,
-                                    source=db_source,
-                                ))
+                                price_records.append(
+                                    PriceHistory(
+                                        item_id=item.id,
+                                        timestamp=now,
+                                        price=price,
+                                        volume=volume,
+                                        source=db_source,
+                                    )
+                                )
                             if src_key == "steam":
                                 has_primary = True
                     if has_primary:
@@ -196,11 +202,7 @@ class DataPipeline:
 
             if missing_names:
                 fallback_cutoff = now - timedelta(days=FALLBACK_MAX_AGE_DAYS)
-                missing_item_ids = {
-                    item.id
-                    for missing_name in missing_names
-                    for item in item_map[missing_name]
-                }
+                missing_item_ids = {item.id for missing_name in missing_names for item in item_map[missing_name]}
                 non_aggregator_prices, stale_non_aggregator = self._load_latest_non_aggregator_prices(
                     missing_item_ids, cutoff=fallback_cutoff
                 )
@@ -238,13 +240,15 @@ class DataPipeline:
                         continue
 
                     for item in matched_items:
-                        price_records.append(PriceHistory(
-                            item_id=item.id,
-                            timestamp=now,
-                            price=recovered_row.price,
-                            volume=recovered_row.volume,
-                            source=_historical_fallback_source(recovered_row.source),
-                        ))
+                        price_records.append(
+                            PriceHistory(
+                                item_id=item.id,
+                                timestamp=now,
+                                price=recovered_row.price,
+                                volume=recovered_row.volume,
+                                source=_historical_fallback_source(recovered_row.source),
+                            )
+                        )
                         fallback_items_collected += 1
 
                 missing_names = still_missing_names
@@ -292,7 +296,9 @@ class DataPipeline:
                     for d in rows_as_dicts:
                         slug = id_to_slug.get(d["item_id"])
                         if slug:
-                            writer.writerow([slug, agg_date, d["source"], d["price"], d.get("volume", VOLUME_NOT_OBSERVED)])
+                            writer.writerow(
+                                [slug, agg_date, d["source"], d["price"], d.get("volume", VOLUME_NOT_OBSERVED)]
+                            )
                 logger.info("Wrote %s snapshot rows to %s (all sources)", len(rows_as_dicts), snapshot_csv_path)
 
                 # ── Append ALL raw CSGOTrader items (even those not matched to a DB Item) ──
@@ -302,9 +308,7 @@ class DataPipeline:
                 from collectors.csgotrader_aggregator import _get_safe as _agg_get_safe
 
                 written = {
-                    (id_to_slug[d["item_id"]], d["source"])
-                    for d in rows_as_dicts
-                    if id_to_slug.get(d["item_id"])
+                    (id_to_slug[d["item_id"]], d["source"]) for d in rows_as_dicts if id_to_slug.get(d["item_id"])
                 }
 
                 raw_count = 0
@@ -318,7 +322,12 @@ class DataPipeline:
                                 p30 = _agg_get_safe(info.get("last_30d"))
                                 p90 = _agg_get_safe(info.get("last_90d"))
                                 for label, p in [
-                                    ("aggregator_sync", p24 if p24 is not None else (p7 if p7 is not None else (p30 if p30 is not None else p90))),
+                                    (
+                                        "aggregator_sync",
+                                        p24
+                                        if p24 is not None
+                                        else (p7 if p7 is not None else (p30 if p30 is not None else p90)),
+                                    ),
                                     # Clean Steam spot: last_24h with NO fallback, so it is
                                     # empty on the illiquid items where aggregator_sync degrades
                                     # to a trailing mean. Excluded from voting (STEAM_SPOT_SOURCES);
@@ -355,11 +364,7 @@ class DataPipeline:
                                         if (item_key, label) not in written:
                                             w.writerow([item_key, agg_date, label, ho_p, VOLUME_NOT_OBSERVED])
                                             raw_count += 1
-                            elif src_name == "csfloat":
-                                p = _agg_get_safe(info.get("price"))
-                            elif src_name == "csmoney":
-                                p = _agg_get_safe(info.get("price"))
-                            elif src_name == "csgotrader":
+                            elif src_name == "csfloat" or src_name == "csmoney" or src_name == "csgotrader":
                                 p = _agg_get_safe(info.get("price"))
                             elif src_name == "youpin":
                                 p = _agg_get_safe(info.get("price")) or _agg_get_safe(info)
@@ -384,7 +389,9 @@ class DataPipeline:
                         for d in backfilled_dicts:
                             slug = id_to_slug.get(d["item_id"])
                             if slug:
-                                writer.writerow([slug, agg_date, d["source"], d["price"], d.get("volume", VOLUME_NOT_OBSERVED)])
+                                writer.writerow(
+                                    [slug, agg_date, d["source"], d["price"], d.get("volume", VOLUME_NOT_OBSERVED)]
+                                )
                     backfilled_csv_path = csv_path
                     logger.info("Wrote %s backfilled rows to %s (all sources)", len(backfilled_dicts), csv_path)
 
@@ -402,7 +409,6 @@ class DataPipeline:
                     for currency, rate in rates.items():
                         writer.writerow([currency, rate, agg_date])
                 logger.info("Wrote %s exchange rates to %s", len(rates), exchange_rates_csv_path)
-
 
             if missing_names:
                 sample_missing = missing_names[:20]
@@ -440,10 +446,14 @@ class DataPipeline:
                                         break
                                 break
                         break
-                souvenir_charm_diagnostics = {
-                    missing_name: aggregator.find_source_key_candidates(missing_name, limit=5)
-                    for missing_name in souvenir_charm_samples
-                } if souvenir_charm_samples else {}
+                souvenir_charm_diagnostics = (
+                    {
+                        missing_name: aggregator.find_source_key_candidates(missing_name, limit=5)
+                        for missing_name in souvenir_charm_samples
+                    }
+                    if souvenir_charm_samples
+                    else {}
+                )
                 logger.warning(
                     "Aggregator source-key diagnostics for missing sample: %s",
                     diagnostic_map,
@@ -470,24 +480,24 @@ class DataPipeline:
             # Parquet copy would silently stop updating. Stale-fallback counts
             # go in the returned dict and the log line instead.
             source_breakdown = {
-                'aggregator': primary_items_collected,
-                'historical_fallback': fallback_items_collected,
-                'aggregator_steam_7d': sum(1 for r in price_records if r.source == 'aggregator_steam_7d'),
-                'aggregator_steam_30d': sum(1 for r in price_records if r.source == 'aggregator_steam_30d'),
-                'aggregator_steam_90d': sum(1 for r in price_records if r.source == 'aggregator_steam_90d'),
-                'aggregator_skinport': sum(1 for r in price_records if r.source == 'aggregator_skinport'),
-                'aggregator_buff163': sum(1 for r in price_records if r.source == 'aggregator_buff163'),
-                'aggregator_buff163_buy': sum(1 for r in price_records if r.source == 'aggregator_buff163_buy'),
-                'aggregator_csfloat': sum(1 for r in price_records if r.source == 'aggregator_csfloat'),
-                'aggregator_csmoney': sum(1 for r in price_records if r.source == 'aggregator_csmoney'),
-                'aggregator_csgotrader': sum(1 for r in price_records if r.source == 'aggregator_csgotrader'),
-                'aggregator_youpin': sum(1 for r in price_records if r.source == 'aggregator_youpin'),
+                "aggregator": primary_items_collected,
+                "historical_fallback": fallback_items_collected,
+                "aggregator_steam_7d": sum(1 for r in price_records if r.source == "aggregator_steam_7d"),
+                "aggregator_steam_30d": sum(1 for r in price_records if r.source == "aggregator_steam_30d"),
+                "aggregator_steam_90d": sum(1 for r in price_records if r.source == "aggregator_steam_90d"),
+                "aggregator_skinport": sum(1 for r in price_records if r.source == "aggregator_skinport"),
+                "aggregator_buff163": sum(1 for r in price_records if r.source == "aggregator_buff163"),
+                "aggregator_buff163_buy": sum(1 for r in price_records if r.source == "aggregator_buff163_buy"),
+                "aggregator_csfloat": sum(1 for r in price_records if r.source == "aggregator_csfloat"),
+                "aggregator_csmoney": sum(1 for r in price_records if r.source == "aggregator_csmoney"),
+                "aggregator_csgotrader": sum(1 for r in price_records if r.source == "aggregator_csgotrader"),
+                "aggregator_youpin": sum(1 for r in price_records if r.source == "aggregator_youpin"),
             }
 
             collection_run = CollectionRun(
                 started_at=start_time,
                 finished_at=end_time,
-                status='completed',
+                status="completed",
                 total_items=len(items),
                 successful=total_collected,
                 failed=errors_count,
@@ -498,32 +508,37 @@ class DataPipeline:
             self.db_session.commit()
 
             try:
-                from db.parquet import append_table
                 import json
-                append_table("collection_runs", [{
-                    "id": collection_run.id,
-                    "started_at": start_time,
-                    "finished_at": end_time,
-                    "status": "completed",
-                    "total_items": len(items),
-                    "successful": total_collected,
-                    "failed": errors_count,
-                    "duration_seconds": duration_seconds,
-                    "error_message": None,
-                    "source_breakdown": json.dumps(source_breakdown),
-                }], ["id"])
+
+                from db.parquet import append_table
+
+                append_table(
+                    "collection_runs",
+                    [
+                        {
+                            "id": collection_run.id,
+                            "started_at": start_time,
+                            "finished_at": end_time,
+                            "status": "completed",
+                            "total_items": len(items),
+                            "successful": total_collected,
+                            "failed": errors_count,
+                            "duration_seconds": duration_seconds,
+                            "error_message": None,
+                            "source_breakdown": json.dumps(source_breakdown),
+                        }
+                    ],
+                    ["id"],
+                )
             except Exception as pq_err:
                 logger.warning("Parquet write for collection_runs failed: %s", pq_err)
 
             if total_collected == 0:
                 logger.error(
-                    "ZERO items collected in this run — all endpoints may be down "
-                    "or upstream data format has changed"
+                    "ZERO items collected in this run — all endpoints may be down or upstream data format has changed"
                 )
 
-            logger.info(
-                f"✅ Collection complete: {total_collected}/{len(items)} items in {duration_seconds:.1f}s"
-            )
+            logger.info(f"✅ Collection complete: {total_collected}/{len(items)} items in {duration_seconds:.1f}s")
             return {
                 "status": "success",
                 "items_collected": total_collected,
@@ -536,9 +551,10 @@ class DataPipeline:
                 "missing_name_sample": missing_names[:20],
                 "missing_name_report": missing_name_report,
                 "missing_name_diagnostics": {
-                    name: aggregator.find_source_key_candidates(name, limit=5)
-                    for name in missing_names[:5]
-                } if missing_names else {},
+                    name: aggregator.find_source_key_candidates(name, limit=5) for name in missing_names[:5]
+                }
+                if missing_names
+                else {},
                 "duration_seconds": duration_seconds,
                 "backfilled_csv_path": backfilled_csv_path,
                 "snapshot_csv_path": snapshot_csv_path,
@@ -557,10 +573,11 @@ class DataPipeline:
             failed_run_id = None
             try:
                 from database import CollectionRun
+
                 failed_run = CollectionRun(
                     started_at=start_time,
                     finished_at=end_time,
-                    status='failed',
+                    status="failed",
                     total_items=0,
                     successful=0,
                     failed=1,
@@ -576,20 +593,28 @@ class DataPipeline:
                 logger.error(f"Could not record failed run: {record_error}")
 
             try:
-                from db.parquet import append_table
                 import json
-                append_table("collection_runs", [{
-                    "id": failed_run_id,
-                    "started_at": start_time,
-                    "finished_at": end_time,
-                    "status": "failed",
-                    "total_items": 0,
-                    "successful": 0,
-                    "failed": 1,
-                    "duration_seconds": duration_seconds,
-                    "error_message": error_text,
-                    "source_breakdown": None,
-                }], ["id"])
+
+                from db.parquet import append_table
+
+                append_table(
+                    "collection_runs",
+                    [
+                        {
+                            "id": failed_run_id,
+                            "started_at": start_time,
+                            "finished_at": end_time,
+                            "status": "failed",
+                            "total_items": 0,
+                            "successful": 0,
+                            "failed": 1,
+                            "duration_seconds": duration_seconds,
+                            "error_message": error_text,
+                            "source_breakdown": None,
+                        }
+                    ],
+                    ["id"],
+                )
             except Exception as pq_err:
                 logger.warning("Parquet write for collection_runs (failed) failed: %s", pq_err)
 
@@ -612,9 +637,9 @@ class DataPipeline:
             self.db_session.query(PriceHistory)
             .filter(
                 PriceHistory.item_id.in_(item_ids),
-                PriceHistory.source != 'aggregator_sync',
-                ~PriceHistory.source.like('synthetic_demo'),
-                ~PriceHistory.source.like('historical_fallback:%'),
+                PriceHistory.source != "aggregator_sync",
+                ~PriceHistory.source.like("synthetic_demo"),
+                ~PriceHistory.source.like("historical_fallback:%"),
             )
             .order_by(
                 PriceHistory.item_id,
@@ -642,8 +667,8 @@ class DataPipeline:
             self.db_session.query(PriceHistory)
             .filter(
                 PriceHistory.item_id.in_(item_ids),
-                ~PriceHistory.source.like('synthetic_demo'),
-                ~PriceHistory.source.like('historical_fallback:%'),
+                ~PriceHistory.source.like("synthetic_demo"),
+                ~PriceHistory.source.like("historical_fallback:%"),
             )
             .order_by(
                 PriceHistory.item_id,
@@ -678,7 +703,7 @@ class DataPipeline:
         return fresh_by_item_id, stale_item_ids
 
     @staticmethod
-    def _classify_missing_name(name: str, matched_items: List[Any]) -> str:
+    def _classify_missing_name(name: str, matched_items: list[Any]) -> str:
         """Assign a conservative bucket to a missing item name."""
         name_lower = name.lower()
         item_types = {getattr(item, "type", None) for item in matched_items if getattr(item, "type", None)}
@@ -732,10 +757,10 @@ class DataPipeline:
 
     def _build_missing_name_report(
         self,
-        missing_names: List[str],
-        item_map: Dict[str, List[Any]],
+        missing_names: list[str],
+        item_map: dict[str, list[Any]],
         sample_size: int = 5,
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         """Build an ordered, conservative breakdown of unresolved names."""
         if not missing_names:
             return {
@@ -868,9 +893,7 @@ class DataPipeline:
 
         if buckets["skin_variant_items"]["count"] > 0:
             buckets["skin_variant_items"]["subgroups"] = [
-                variant_buckets[key]
-                for key in variant_bucket_order
-                if variant_buckets[key]["count"] > 0
+                variant_buckets[key] for key in variant_bucket_order if variant_buckets[key]["count"] > 0
             ]
         if variant_buckets["stattrak_souvenir_items"]["count"] > 0:
             variant_buckets["stattrak_souvenir_items"]["subgroups"] = [
@@ -893,8 +916,9 @@ class DataPipeline:
         unavailable (e.g. on CI runners where price-archive lives on a separate
         branch) or when the parquet read fails for any other reason.
         """
-        from database import PriceHistory
         from pathlib import Path
+
+        from database import PriceHistory
 
         if not item_ids:
             return {}
@@ -911,16 +935,17 @@ class DataPipeline:
                 logger.warning("Parquet archive not found at %s, falling back to DB", archive_dir)
 
         cutoff = datetime.utcnow() - timedelta(days=days)
-        rows = self.db_session.query(
-            PriceHistory.item_id,
-            PriceHistory.timestamp,
-            PriceHistory.price
-        ).filter(
-            PriceHistory.item_id.in_(item_ids),
-            PriceHistory.timestamp >= cutoff,
-            ~PriceHistory.source.like('synthetic_demo'),
-            ~PriceHistory.source.like('historical_fallback:%'),
-        ).order_by(PriceHistory.item_id, PriceHistory.timestamp).all()
+        rows = (
+            self.db_session.query(PriceHistory.item_id, PriceHistory.timestamp, PriceHistory.price)
+            .filter(
+                PriceHistory.item_id.in_(item_ids),
+                PriceHistory.timestamp >= cutoff,
+                ~PriceHistory.source.like("synthetic_demo"),
+                ~PriceHistory.source.like("historical_fallback:%"),
+            )
+            .order_by(PriceHistory.item_id, PriceHistory.timestamp)
+            .all()
+        )
 
         histories = defaultdict(list)
         for item_id, timestamp, price in rows:
@@ -934,16 +959,15 @@ class DataPipeline:
         Maps internal item_ids to item_slugs, queries the Parquet files,
         and returns results in the same {item_id: [(timestamp, price)]} format.
         """
+        from pathlib import Path
+
         import duckdb
         from database import Item
-        from pathlib import Path
 
         if not item_ids or not self.db_session:
             return {}
 
-        slug_rows = self.db_session.query(Item.id, Item.item_id).filter(
-            Item.id.in_(item_ids)
-        ).all()
+        slug_rows = self.db_session.query(Item.id, Item.item_id).filter(Item.id.in_(item_ids)).all()
         int_to_slug = {row.id: row.item_id for row in slug_rows}
         slug_to_int = {v: k for k, v in int_to_slug.items()}
 
@@ -953,14 +977,17 @@ class DataPipeline:
         con = duckdb.connect()
         try:
             slug_list = list(slug_to_int.keys())
-            placeholders = ','.join('?' for _ in slug_list)
-            rows = con.sql(f"""
+            placeholders = ",".join("?" for _ in slug_list)
+            rows = con.sql(
+                f"""
                 SELECT item_slug, day, mean_price AS price
                 FROM read_parquet('{archive_dir}/prices-*.parquet')
                 WHERE item_slug IN ({placeholders})
                   AND day >= ?
                 ORDER BY item_slug, day
-            """, params=[*slug_list, cutoff.isoformat()]).fetchall()
+            """,
+                params=[*slug_list, cutoff.isoformat()],
+            ).fetchall()
 
             histories = defaultdict(list)
             for slug, day, price in rows:
@@ -982,22 +1009,21 @@ class DataPipeline:
             return {}
 
         cutoff = datetime.utcnow() - timedelta(days=days)
-        rows = self.db_session.query(
-            PriceHistory.item_id,
-            func.count(PriceHistory.item_id)
-        ).filter(
-            PriceHistory.item_id.in_(item_ids),
-            PriceHistory.timestamp >= cutoff,
-            ~PriceHistory.source.like('synthetic_demo'),
-            ~PriceHistory.source.like('historical_fallback:%'),
-        ).group_by(PriceHistory.item_id).all()
+        rows = (
+            self.db_session.query(PriceHistory.item_id, func.count(PriceHistory.item_id))
+            .filter(
+                PriceHistory.item_id.in_(item_ids),
+                PriceHistory.timestamp >= cutoff,
+                ~PriceHistory.source.like("synthetic_demo"),
+                ~PriceHistory.source.like("historical_fallback:%"),
+            )
+            .group_by(PriceHistory.item_id)
+            .all()
+        )
 
         return {item_id: count for item_id, count in rows}
-    
+
     def run_trend_analysis(self):
         """Trend analysis is deprecated — ML forecasts handle all signal generation."""
         logger.info("Trend analysis is deprecated (removed). Skipping.")
         return {"status": "success", "message": "Deprecated — no-op"}
-
-    
-

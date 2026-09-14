@@ -40,31 +40,30 @@ Usage:
         --frame-cache /tmp/exc_cal_frame.parquet --out /tmp/exc_cal_h7.json
     python -m scripts.exceedance_calibration_ab --served-only  # maturity + raw served reliability, no fit
 """
-import os
-import sys
+
 import json
 import logging
+import os
+import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 import numpy as np
 import pandas as pd
-
 from database import SessionLocal
 from models.forecaster import ItemForecaster
 from scripts.ab_test_item_metadata import (
     ROW_BUDGET,
     STEP_DAYS,
     VAL_WINDOW_DAYS,
+    _stratified_sample,
     assign_items,
     build_frame,
-    _stratified_sample,
 )
-from scripts.exceedance_meta_ab import (
-    TREE_PARAMS, paired_fold_deltas, _score)
-from scripts.anomaly_gbm_ab import item_rate_predictions
 from scripts.anomaly_calibration_ab import inner_calibration_split
+from scripts.anomaly_gbm_ab import item_rate_predictions
+from scripts.exceedance_meta_ab import TREE_PARAMS, _score, paired_fold_deltas
 
 logging.basicConfig(
     level=logging.INFO,
@@ -94,8 +93,7 @@ def _brier(y, p):
     return float(np.mean((p[ok] - y[ok]) ** 2))
 
 
-def run(df, pruned, horizon_filter=7, n_jobs=None, calib_frac=0.25,
-        max_folds=None):
+def run(df, pruned, horizon_filter=7, n_jobs=None, calib_frac=0.25, max_folds=None):
     if n_jobs is None:
         n_jobs = max(1, (os.cpu_count() or 4) // 2)
     # One item split for every arm: the grid is pinned, never re-derived.
@@ -104,12 +102,10 @@ def run(df, pruned, horizon_filter=7, n_jobs=None, calib_frac=0.25,
     db = SessionLocal()
     forecaster = ItemForecaster(db_session=db)
     try:
-        horizons = [h for h in ItemForecaster.HORIZONS
-                    if horizon_filter is None or h == horizon_filter]
+        horizons = [h for h in ItemForecaster.HORIZONS if horizon_filter is None or h == horizon_filter]
         results = {}
         for horizon in horizons:
-            logger.info(f"\n  {'=' * 60}\n  Exceedance calibration {horizon}d"
-                        f"\n  {'=' * 60}")
+            logger.info(f"\n  {'=' * 60}\n  Exceedance calibration {horizon}d\n  {'=' * 60}")
             tdf = forecaster.prepare_targets(df, horizon)
             target_col = f"target_exceed_{horizon}d"
             if target_col not in tdf.columns:
@@ -119,8 +115,7 @@ def run(df, pruned, horizon_filter=7, n_jobs=None, calib_frac=0.25,
             if tdf.empty:
                 logger.warning(f"    No valid exceedance labels for {horizon}d")
                 continue
-            logger.info(f"    label base rate: {tdf[target_col].mean():.4f} "
-                        f"over {len(tdf):,} rows")
+            logger.info(f"    label base rate: {tdf[target_col].mean():.4f} over {len(tdf):,} rows")
 
             base_cols = [c for c in pruned if c in tdf.columns]
             if not base_cols:
@@ -144,20 +139,19 @@ def run(df, pruned, horizon_filter=7, n_jobs=None, calib_frac=0.25,
             cal_meta = []
             pooled = {a: {"p": [], "y": []} for a in ARMS}
             for fold_idx, window_end in enumerate(fold_list):
-                val_dates = dates[window_end:window_end + VAL_WINDOW_DAYS]
+                val_dates = dates[window_end : window_end + VAL_WINDOW_DAYS]
                 if len(val_dates) < 7:
                     continue
                 in_train = sub_days <= dates_dt[window_end - 1]
-                in_val = ((sub_days >= dates_dt[window_end])
-                          & (sub_days <= dates_dt[window_end + len(val_dates) - 1]))
+                in_val = (sub_days >= dates_dt[window_end]) & (sub_days <= dates_dt[window_end + len(val_dates) - 1])
                 train_df = ItemForecaster._purge_overlapping_train_rows(
-                    sub[in_train & is_train_item], val_dates[0], horizon)
+                    sub[in_train & is_train_item], val_dates[0], horizon
+                )
                 val_df = sub[in_val & (is_heldout | is_trained_eval)]
                 if len(val_df) < 50 or train_df.empty:
                     continue
                 # Pinned: one sample per fold, shared by every arm.
-                train_df = _stratified_sample(
-                    train_df, train_items, ROW_BUDGET, fold_idx)
+                train_df = _stratified_sample(train_df, train_items, ROW_BUDGET, fold_idx)
 
                 med = train_df[base_cols].median()
                 X_train = train_df[base_cols].fillna(med)
@@ -165,40 +159,40 @@ def run(df, pruned, horizon_filter=7, n_jobs=None, calib_frac=0.25,
 
                 def _fit(Xtr, ytr):
                     return forecaster._fit_exceedance_classifier(
-                        Xtr, ytr, "gbdt", dict(TREE_PARAMS, n_jobs=n_jobs),
-                        horizon=horizon, tier_train=None,
-                        num_boost_round=ItemForecaster._boost_rounds(
-                            horizon, cv=True))
+                        Xtr,
+                        ytr,
+                        "gbdt",
+                        dict(TREE_PARAMS, n_jobs=n_jobs),
+                        horizon=horizon,
+                        tier_train=None,
+                        num_boost_round=ItemForecaster._boost_rounds(horizon, cv=True),
+                    )
 
                 head = _fit(X_train, train_df[target_col].to_numpy())
                 if head is None:
                     continue
 
-                inner, calib = inner_calibration_split(
-                    train_df, horizon, calib_frac)
+                inner, calib = inner_calibration_split(train_df, horizon, calib_frac)
                 p_inner = p_cal = None
                 if inner is not None:
-                    inner_head = _fit(inner[base_cols].fillna(med),
-                                      inner[target_col].to_numpy())
+                    inner_head = _fit(inner[base_cols].fillna(med), inner[target_col].to_numpy())
                     if inner_head is not None:
                         p_inner = inner_head.predict(X_val)
-                        p_fit = _clip(inner_head.predict(
-                            calib[base_cols].fillna(med)))
+                        p_fit = _clip(inner_head.predict(calib[base_cols].fillna(med)))
                         y_fit = calib[target_col].to_numpy(dtype=float)
                         if len(p_fit) >= forecaster.MIN_EXCEEDANCE_CALIBRATION_ROWS:
                             xs, ys = forecaster._isotonic_fit(p_fit, y_fit)
-                            p_cal = np.interp(_clip(p_inner), xs, ys,
-                                              left=float(ys[0]),
-                                              right=float(ys[-1]))
-                            cal_meta.append({
-                                "fold": fold_idx,
-                                "n_calib": int(len(p_fit)),
-                                "n_steps": int(len(xs)),
-                                "calib_base_rate": round(float(y_fit.mean()), 4),
-                            })
+                            p_cal = np.interp(_clip(p_inner), xs, ys, left=float(ys[0]), right=float(ys[-1]))
+                            cal_meta.append(
+                                {
+                                    "fold": fold_idx,
+                                    "n_calib": len(p_fit),
+                                    "n_steps": len(xs),
+                                    "calib_base_rate": round(float(y_fit.mean()), 4),
+                                }
+                            )
 
-                p_item, pooled_rate = item_rate_predictions(
-                    train_df, val_df, target_col)
+                p_item, pooled_rate = item_rate_predictions(train_df, val_df, target_col)
                 preds = {
                     "gbm": head.predict(X_val),
                     "gbm_inner": p_inner,
@@ -215,8 +209,7 @@ def run(df, pruned, horizon_filter=7, n_jobs=None, calib_frac=0.25,
                     if p is None:
                         continue
                     p = _clip(p)
-                    row = {"fold": fold_idx, "val_start": str(val_dates[0]),
-                           "n_train": len(train_df)}
+                    row = {"fold": fold_idx, "val_start": str(val_dates[0]), "n_train": len(train_df)}
                     for cohort, mask in (("heldout", held), ("trained", ~held)):
                         sel = mask & (price >= 1.0)
                         auc, ll, n = _score(y[sel], p[sel])
@@ -244,38 +237,35 @@ def run(df, pruned, horizon_filter=7, n_jobs=None, calib_frac=0.25,
                 y_all = np.concatenate(pooled[arm]["y"])
                 table = ItemForecaster.exceedance_reliability_table(p_all, y_all)
                 entry["_reliability"][arm] = {
-                    "n": int(len(p_all)),
+                    "n": len(p_all),
                     "brier": round(float(np.mean((p_all - y_all) ** 2)), 5),
-                    "ece_pp": round(
-                        100.0 * ItemForecaster.exceedance_ece(table), 3),
+                    "ece_pp": round(100.0 * ItemForecaster.exceedance_ece(table), 3),
                     "table": table,
                 }
             results[horizon] = entry
             for arm in ARMS:
                 rows = per_fold[arm]
                 for cohort in ("heldout", "trained"):
-                    lls = [r[f"{cohort}_logloss"] for r in rows
-                           if r[f"{cohort}_logloss"] is not None]
+                    lls = [r[f"{cohort}_logloss"] for r in rows if r[f"{cohort}_logloss"] is not None]
                     if lls:
-                        aucs = [r[f"{cohort}_auc"] for r in rows
-                                if r[f"{cohort}_auc"] is not None]
-                        auc_txt = (f"AUC={np.mean(aucs):.4f} "
-                                   if aucs else "AUC=n/a ")
+                        aucs = [r[f"{cohort}_auc"] for r in rows if r[f"{cohort}_auc"] is not None]
+                        auc_txt = f"AUC={np.mean(aucs):.4f} " if aucs else "AUC=n/a "
                         logger.info(
-                            f"      {arm:12s} {cohort:8s} {auc_txt}"
-                            f"logloss={np.mean(lls):.5f} ({len(lls)} folds)")
+                            f"      {arm:12s} {cohort:8s} {auc_txt}logloss={np.mean(lls):.5f} ({len(lls)} folds)"
+                        )
 
             results[horizon]["_paired"] = {
                 f"{treat}_vs_{null}": {
-                    f"{cohort}_{metric}": paired_fold_deltas(
-                        per_fold[null], per_fold[treat], f"{cohort}_{metric}")
+                    f"{cohort}_{metric}": paired_fold_deltas(per_fold[null], per_fold[treat], f"{cohort}_{metric}")
                     for cohort in ("heldout", "trained")
                     for metric in ("auc", "logloss", "brier")
                 }
-                for treat, null in (("gbm_cal", "global_rate"),
-                                    ("gbm_cal", "item_rate"),
-                                    ("gbm_cal", "gbm_inner"),
-                                    ("gbm", "global_rate"))
+                for treat, null in (
+                    ("gbm_cal", "global_rate"),
+                    ("gbm_cal", "item_rate"),
+                    ("gbm_cal", "gbm_inner"),
+                    ("gbm", "global_rate"),
+                )
             }
         return results
     finally:
@@ -290,26 +280,24 @@ def served_panel():
     `cv_results[h]["exceedance_calibration"]` will be checked against once the
     panel matures past MIN_FORECAST_DATES=20.
     """
-    from sqlalchemy import text
-
     from backtest.friction import actionable_threshold
-    from backtest.scoring import (
-        MIN_FORECAST_DATES, excluded_forecast_date, price_tier)
+    from backtest.scoring import MIN_FORECAST_DATES, excluded_forecast_date, price_tier
+    from sqlalchemy import text
 
     db = SessionLocal()
     try:
-        rows = db.execute(text("""
+        rows = db.execute(
+            text("""
             SELECT o.horizon_days, o.forecast_date, o.base_price,
                    o.actual_price, o.current_price, f.exceed_p
             FROM forecast_outcomes o
             JOIN item_forecasts f ON f.id = o.forecast_id
             WHERE o.actual_price IS NOT NULL AND o.base_price >= 1.0
-        """)).fetchall()
+        """)
+        ).fetchall()
     finally:
         db.close()
-    df = pd.DataFrame(rows, columns=["h", "forecast_date", "base_price",
-                                     "actual_price", "current_price",
-                                     "exceed_p"])
+    df = pd.DataFrame(rows, columns=["h", "forecast_date", "base_price", "actual_price", "current_price", "exceed_p"])
     if df.empty:
         return {"mature": False, "note": "empty served panel"}
     df["forecast_date"] = pd.to_datetime(df["forecast_date"]).dt.date
@@ -328,20 +316,21 @@ def served_panel():
         have = np.isfinite(p) & np.isfinite(actual_ret) & np.isfinite(q) & (q > 0)
         n_dates = int(g["forecast_date"].nunique())
         n_dates_p = int(g.loc[have, "forecast_date"].nunique())
-        entry = {"rows": int(len(g)), "dates": n_dates,
-                 "rows_with_exceed_p": int(have.sum()),
-                 "dates_with_exceed_p": n_dates_p,
-                 "mature": bool(n_dates_p >= MIN_FORECAST_DATES)}
+        entry = {
+            "rows": len(g),
+            "dates": n_dates,
+            "rows_with_exceed_p": int(have.sum()),
+            "dates_with_exceed_p": n_dates_p,
+            "mature": bool(n_dates_p >= MIN_FORECAST_DATES),
+        }
         if have.any():
-            thr = np.array([actionable_threshold(price_tier(float(c)), "csfloat")
-                            for c in q[have]])
+            thr = np.array([actionable_threshold(price_tier(float(c)), "csfloat") for c in q[have]])
             y = (actual_ret[have] > thr).astype(float)
             pc = _clip(p[have])
             table = ItemForecaster.exceedance_reliability_table(pc, y)
             entry["base_rate"] = round(float(y.mean()), 4)
             entry["brier_raw"] = round(float(np.mean((pc - y) ** 2)), 5)
-            entry["ece_raw_pp"] = round(
-                100.0 * ItemForecaster.exceedance_ece(table), 3)
+            entry["ece_raw_pp"] = round(100.0 * ItemForecaster.exceedance_ece(table), 3)
             entry["reliability_raw"] = table
         out["horizons"][int(h)] = entry
     return out
@@ -358,51 +347,54 @@ def print_summary(results):
                 if not isinstance(d, dict) or d.get("mean") is None:
                     continue
                 lo, hi = d.get("ci_low"), d.get("ci_high")
-                sig = "" if lo is None or hi is None else (
-                    "  SIG" if (lo > 0 or hi < 0) else "  ns")
-                print(f"    {cell:18s} {d['mean']:+.5f} "
-                      f"[{lo:+.5f}, {hi:+.5f}] "
-                      f"n={d.get('n_folds')}{sig}")
+                sig = "" if lo is None or hi is None else ("  SIG" if (lo > 0 or hi < 0) else "  ns")
+                print(f"    {cell:18s} {d['mean']:+.5f} [{lo:+.5f}, {hi:+.5f}] n={d.get('n_folds')}{sig}")
         rel = res.get("_reliability", {})
         for arm, r in rel.items():
-            print(f"    [pooled held-out] {arm:12s} n={r['n']:,} "
-                  f"brier={r['brier']:.5f} ECE={r['ece_pp']:.2f}pp")
+            print(f"    [pooled held-out] {arm:12s} n={r['n']:,} brier={r['brier']:.5f} ECE={r['ece_pp']:.2f}pp")
 
 
 def print_served(served):
     print("\n=== served exceed_p panel (read-only, no fit) ===")
     for h, e in sorted(served.get("horizons", {}).items()):
         tag = "MATURE" if e["mature"] else "immature"
-        print(f"  h={h}: {e['rows_with_exceed_p']:,} rows / "
-              f"{e['dates_with_exceed_p']} dates [{tag}] "
-              f"(gate={served['min_forecast_dates']})", end="")
+        print(
+            f"  h={h}: {e['rows_with_exceed_p']:,} rows / "
+            f"{e['dates_with_exceed_p']} dates [{tag}] "
+            f"(gate={served['min_forecast_dates']})",
+            end="",
+        )
         if "ece_raw_pp" in e:
-            print(f" base={e['base_rate']:.3f} brier={e['brier_raw']:.5f} "
-                  f"ECE={e['ece_raw_pp']:.2f}pp")
+            print(f" base={e['base_rate']:.3f} brier={e['brier_raw']:.5f} ECE={e['ece_raw_pp']:.2f}pp")
             for r in e["reliability_raw"]:
-                print(f"      [{r['lo']:.1f}-{r['hi']:.1f}] n={r['n']:>5,} "
-                      f"pred={r['pred']:.3f} realized={r['realized']:.3f}")
+                print(
+                    f"      [{r['lo']:.1f}-{r['hi']:.1f}] n={r['n']:>5,} "
+                    f"pred={r['pred']:.3f} realized={r['realized']:.3f}"
+                )
         else:
             print(" (no exceed_p)")
 
 
 def main():
     import argparse
+
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--horizon", type=int, default=None)
-    parser.add_argument("--horizons", type=str, default=None,
-                        help="comma list, e.g. 3,7,14 (overrides --horizon)")
+    parser.add_argument("--horizons", type=str, default=None, help="comma list, e.g. 3,7,14 (overrides --horizon)")
     parser.add_argument("--frame-cache", default=None)
     parser.add_argument("--metadata-parquet", default=None)
     parser.add_argument("--out", default=None)
     parser.add_argument("--n-jobs", type=int, default=None)
-    parser.add_argument("--calib-frac", type=float, default=0.25,
-                        help="fraction of train DATES held out to fit the map")
-    parser.add_argument("--max-folds", type=int, default=None,
-                        help="score only the K most recent folds "
-                             "(quick read; the verdict needs the full run)")
-    parser.add_argument("--served-only", action="store_true",
-                        help="report served maturity + raw reliability only")
+    parser.add_argument(
+        "--calib-frac", type=float, default=0.25, help="fraction of train DATES held out to fit the map"
+    )
+    parser.add_argument(
+        "--max-folds",
+        type=int,
+        default=None,
+        help="score only the K most recent folds (quick read; the verdict needs the full run)",
+    )
+    parser.add_argument("--served-only", action="store_true", help="report served maturity + raw reliability only")
     args = parser.parse_args()
 
     if args.served_only:
@@ -420,19 +412,20 @@ def main():
     else:
         wanted = None
 
-    df, pruned, _ = build_frame(args.metadata_parquet,
-                                cache_path=args.frame_cache)
+    df, pruned, _ = build_frame(args.metadata_parquet, cache_path=args.frame_cache)
     # One run() per horizon: the item split is re-seeded identically each
     # call (fixed SPLIT_SEED), so the grid stays pinned across arms within
     # every horizon; cross-horizon pinning is meaningless (different labels
     # and embargo per h). Looping also avoids paying for h=30 when the
     # prereg scopes the verdict to 3/7/14.
     from models.forecaster import ItemForecaster as _F
+
     wanted_list = [h for h in _F.HORIZONS if wanted is None or h in wanted]
     results = {}
     for h in wanted_list:
-        results.update(run(df, pruned, horizon_filter=h, n_jobs=args.n_jobs,
-                           calib_frac=args.calib_frac, max_folds=args.max_folds))
+        results.update(
+            run(df, pruned, horizon_filter=h, n_jobs=args.n_jobs, calib_frac=args.calib_frac, max_folds=args.max_folds)
+        )
     served = served_panel()
     results["served"] = served
     print_summary(results)

@@ -3,6 +3,7 @@
 Source-specific fetching and parsing live in ``collectors/price_history_sources/``.
 Everything here is source-agnostic and is what a second backfill source reuses.
 """
+
 from collections import defaultdict
 from dataclasses import dataclass
 from datetime import date, datetime
@@ -10,7 +11,6 @@ from pathlib import Path
 
 import duckdb
 import pandas as pd
-
 from backtest.price_resolution import MAX_WINDOW_SPAN_DAYS
 from db.archive import CANONICAL_PRICE_COLUMNS, prices_relation
 from db.parquet import append_monthly
@@ -28,13 +28,8 @@ class StalledSourceError(Exception):
 
     def __init__(self, groups: list[list[date]]):
         self.groups = groups
-        summary = "; ".join(
-            f"{g[0].isoformat()}..{g[-1].isoformat()} ({len(g)} days)"
-            for g in groups
-        )
-        super().__init__(
-            f"upstream source stalled — byte-identical files across {summary}"
-        )
+        summary = "; ".join(f"{g[0].isoformat()}..{g[-1].isoformat()} ({len(g)} days)" for g in groups)
+        super().__init__(f"upstream source stalled — byte-identical files across {summary}")
 
 
 def detect_stalled_days(day_digests: dict[date, str]) -> list[list[date]]:
@@ -151,8 +146,7 @@ def apply_gap_gate(
         if min_median_price is not None:
             prices = sorted(observations[day] for day in days)
             mid = len(prices) // 2
-            median_price = (prices[mid] if len(prices) % 2
-                            else (prices[mid - 1] + prices[mid]) / 2)
+            median_price = prices[mid] if len(prices) % 2 else (prices[mid - 1] + prices[mid]) / 2
             if median_price < min_median_price:
                 rejected_cheap += 1
                 rejected_rows += len(days)
@@ -209,9 +203,7 @@ def to_archive_frame(
     return frame[list(CANONICAL_PRICE_COLUMNS)]
 
 
-def _preserve_first_arrival(
-    frame: pd.DataFrame, out_dir: Path | str
-) -> pd.DataFrame:
+def _preserve_first_arrival(frame: pd.DataFrame, out_dir: Path | str) -> pd.DataFrame:
     """Roll each row's ``ingested_at`` back to its earliest recorded arrival.
 
     ``append_monthly`` replaces a colliding row wholesale, so without this a
@@ -233,9 +225,7 @@ def _preserve_first_arrival(
             archive_dir=Path(out_dir),
             columns=["item_slug", "day", "source", "ingested_at"],
         )
-        existing = con.sql(
-            f"SELECT item_slug, day, source, ingested_at FROM {rel}"
-        ).fetchdf()
+        existing = con.sql(f"SELECT item_slug, day, source, ingested_at FROM {rel}").fetchdf()
     finally:
         con.close()
 
@@ -261,6 +251,5 @@ def write_archive_frame(frame: pd.DataFrame, out_dir: Path | str) -> int:
     """
     if frame.empty:
         return 0
-    append_monthly(out_dir, "prices", _preserve_first_arrival(frame, out_dir),
-                   DEDUP_KEYS)
+    append_monthly(out_dir, "prices", _preserve_first_arrival(frame, out_dir), DEDUP_KEYS)
     return len(frame)

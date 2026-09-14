@@ -14,6 +14,7 @@ them would repeat that error.
 Keys are the raw ``market_hash_name``, which is what the archive uses as
 ``item_slug`` (verified 2026-08-08: 0 key-format failures across 24,238 names).
 """
+
 from datetime import date
 
 #: Distinct label so the rows stay attributable and a read-time filter can drop
@@ -31,10 +32,7 @@ SOURCE = "tracker_steam_24h"
 #: there is one number to fix if it is ever re-measured.
 STEAM_FEE_MULTIPLIER = 1.1607
 
-_BASE = (
-    "https://raw.githubusercontent.com/LukeX404/cs2-prices-tracker/"
-    "main/static/prices/date"
-)
+_BASE = "https://raw.githubusercontent.com/LukeX404/cs2-prices-tracker/main/static/prices/date"
 
 
 def day_url(day: date) -> str:

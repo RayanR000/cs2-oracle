@@ -25,7 +25,6 @@ from pathlib import Path
 import duckdb
 import pandas as pd
 import pytest
-
 from models.item_parser import (
     BID_SOURCES,
     archive_universe_sql_filter,
@@ -72,11 +71,12 @@ def priced(tmp_path):
         # a re-stamped stale price: fresh `day`, prefixed source
         ("AK-47 | Redline (Field-Tested)", "historical_fallback:aggregator_sync"),
     ]
-    df = pd.DataFrame([
-        {"item_slug": slug, "day": date(2026, 7, 10), "source": src,
-         "mean_price": 10.0, "volume": 1}
-        for slug, src in rows
-    ])
+    df = pd.DataFrame(
+        [
+            {"item_slug": slug, "day": date(2026, 7, 10), "source": src, "mean_price": 10.0, "volume": 1}
+            for slug, src in rows
+        ]
+    )
     path = tmp_path / "prices-2026-07.parquet"
     df.to_parquet(path, index=False)
     return path
@@ -85,15 +85,12 @@ def priced(tmp_path):
 def _slugs(priced, where):
     con = duckdb.connect()
     try:
-        return sorted(r[0] for r in con.sql(
-            f"SELECT item_slug FROM read_parquet('{priced}') WHERE {where}"
-        ).fetchall())
+        return sorted(r[0] for r in con.sql(f"SELECT item_slug FROM read_parquet('{priced}') WHERE {where}").fetchall())
     finally:
         con.close()
 
 
 class TestThePredicates:
-
     def test_the_bid_filter_drops_only_the_bid(self, priced):
         kept = _slugs(priced, bid_sources_sql_filter())
         assert len(kept) == 6, "one bid row of seven should go"
@@ -109,11 +106,11 @@ class TestThePredicates:
         con = duckdb.connect()
         try:
             naive = con.sql(
-                f"SELECT count(*) FROM read_parquet('{priced}') "
-                f"WHERE source NOT LIKE 'historical_fallback:%'").fetchone()[0]
+                f"SELECT count(*) FROM read_parquet('{priced}') WHERE source NOT LIKE 'historical_fallback:%'"
+            ).fetchone()[0]
             safe = con.sql(
-                f"SELECT count(*) FROM read_parquet('{priced}') "
-                f"WHERE {historical_fallback_sql_filter()}").fetchone()[0]
+                f"SELECT count(*) FROM read_parquet('{priced}') WHERE {historical_fallback_sql_filter()}"
+            ).fetchone()[0]
         finally:
             con.close()
         assert naive == 4, "precondition: the naive predicate loses the NULL era"
@@ -125,11 +122,11 @@ class TestThePredicates:
         con = duckdb.connect()
         try:
             naive = con.sql(
-                f"SELECT count(*) FROM read_parquet('{priced}') "
-                f"WHERE source NOT IN ('aggregator_buff163_buy')").fetchone()[0]
+                f"SELECT count(*) FROM read_parquet('{priced}') WHERE source NOT IN ('aggregator_buff163_buy')"
+            ).fetchone()[0]
             safe = con.sql(
-                f"SELECT count(*) FROM read_parquet('{priced}') "
-                f"WHERE {bid_sources_sql_filter()}").fetchone()[0]
+                f"SELECT count(*) FROM read_parquet('{priced}') WHERE {bid_sources_sql_filter()}"
+            ).fetchone()[0]
         finally:
             con.close()
         assert naive == 4, "precondition: the naive predicate loses the NULL era"
@@ -184,30 +181,27 @@ def test_the_exempt_harnesses_really_do_not_read_the_archive(name):
     """
     src = (SCRIPTS / f"{name}.py").read_text()
     reads = [
-        line.strip() for line in src.splitlines()
+        line.strip()
+        for line in src.splitlines()
         # `prices_relation` is the archive reader outright. A bare
         # `read_parquet(` is DuckDB's, inside a SQL string, and is an archive
         # glob; `pd.read_parquet(` is pandas opening a file the CALLER named,
         # which is how `recency_weights` takes its `--frame` and is not an
         # archive read at all.
-        if re.search(r"prices_relation\s*\(", line)
-        or re.search(r"(?<!pd\.)(?<!pandas\.)\bread_parquet\s*\(", line)
+        if re.search(r"prices_relation\s*\(", line) or re.search(r"(?<!pd\.)(?<!pandas\.)\bread_parquet\s*\(", line)
         if not line.strip().startswith("#")
     ]
     assert not reads, (
-        f"{name} is in NO_ARCHIVE_READ but reads the archive: {reads}. "
-        f"Remove the exemption and declare _UNIVERSE."
+        f"{name} is in NO_ARCHIVE_READ but reads the archive: {reads}. Remove the exemption and declare _UNIVERSE."
     )
 
 
 @pytest.mark.parametrize("name", READS_ARCHIVE)
 class TestNoHarnessGlobsUnfiltered:
-
     def test_it_declares_the_universe(self, name):
         src = (SCRIPTS / f"{name}.py").read_text()
         assert "_UNIVERSE" in src, (
-            f"{name} reads the archive without declaring the universe it "
-            f"reads; see models/item_parser.py"
+            f"{name} reads the archive without declaring the universe it reads; see models/item_parser.py"
         )
 
     def test_every_archive_read_carries_it(self, name):
@@ -218,8 +212,7 @@ class TestNoHarnessGlobsUnfiltered:
         came to carry two.
         """
         src = (SCRIPTS / f"{name}.py").read_text()
-        reads = len(re.findall(
-            r"FROM \{?(?:read_parquet|relation|union_sql|prices_relation)", src))
+        reads = len(re.findall(r"FROM \{?(?:read_parquet|relation|union_sql|prices_relation)", src))
         assert src.count("_UNIVERSE") - 1 >= 1, f"{name} defines but never uses it"
         assert reads > 0, f"{name} was listed as reading the archive but does not"
 
@@ -229,10 +222,9 @@ class TestNoHarnessGlobsUnfiltered:
         either an error or a lie. See backend/AGENTS.md."""
         src = (SCRIPTS / f"{name}.py").read_text()
         offenders = [
-            line.strip() for line in src.splitlines()
-            if "prices-*.parquet" in line
-            and "glob(" not in line
-            and not line.strip().startswith("#")
+            line.strip()
+            for line in src.splitlines()
+            if "prices-*.parquet" in line and "glob(" not in line and not line.strip().startswith("#")
         ]
         assert not offenders, f"{name} still globs the archive raw: {offenders}"
 
@@ -265,15 +257,29 @@ def migrated_archive(tmp_path):
     questions had the same answer; after it, the pre-2026 file takes the
     `source = '...'` branch, matches nothing, and 13 years of prices vanish.
     """
-    old = pd.DataFrame([
-        {"item_slug": "AK-47 | Redline (Field-Tested)", "day": date(2025, 6, 1),
-         "source": None, "mean_price": 10.0, "volume": 1},
-    ])
+    old = pd.DataFrame(
+        [
+            {
+                "item_slug": "AK-47 | Redline (Field-Tested)",
+                "day": date(2025, 6, 1),
+                "source": None,
+                "mean_price": 10.0,
+                "volume": 1,
+            },
+        ]
+    )
     old.to_parquet(tmp_path / "prices-2025.parquet", index=False)
-    new = pd.DataFrame([
-        {"item_slug": "AK-47 | Redline (Field-Tested)", "day": date(2026, 7, 10),
-         "source": "aggregator_sync", "mean_price": 11.0, "volume": 1},
-    ])
+    new = pd.DataFrame(
+        [
+            {
+                "item_slug": "AK-47 | Redline (Field-Tested)",
+                "day": date(2026, 7, 10),
+                "source": "aggregator_sync",
+                "mean_price": 11.0,
+                "volume": 1,
+            },
+        ]
+    )
     new.to_parquet(tmp_path / "prices-2026-07.parquet", index=False)
     return tmp_path
 
@@ -287,19 +293,17 @@ class TestTheMigratedArchiveStillYieldsThePre2026Series:
     pinned behaviourally and not just by reading the source.
     """
 
-    @pytest.mark.parametrize(
-        "name", ["ab_test_csfloat_basis", "ab_test_item_metadata",
-                 "ab_test_training_breadth"])
-    def test_the_union_returns_pre_2026_rows(self, name, migrated_archive,
-                                             monkeypatch):
+    @pytest.mark.parametrize("name", ["ab_test_csfloat_basis", "ab_test_item_metadata", "ab_test_training_breadth"])
+    def test_the_union_returns_pre_2026_rows(self, name, migrated_archive, monkeypatch):
         import importlib
+
         mod = importlib.import_module(f"scripts.{name}")
         monkeypatch.setattr(mod, "ARCHIVE_DIR", migrated_archive)
         con = duckdb.connect()
         try:
             n_old = con.sql(
-                f"SELECT count(*) FROM ({mod._archive_union_sql(con)}) "
-                f"WHERE day < DATE '2026-01-01'").fetchone()[0]
+                f"SELECT count(*) FROM ({mod._archive_union_sql(con)}) WHERE day < DATE '2026-01-01'"
+            ).fetchone()[0]
         finally:
             con.close()
         assert n_old == 1, (

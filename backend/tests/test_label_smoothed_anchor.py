@@ -18,6 +18,7 @@ LABEL change, so a rank IC measured under it is NOT comparable to one measured
 without it -- the two arms are scored against different targets. The referee is
 `scripts/replay_serving.py`, which scores both on one basis.
 """
+
 from __future__ import annotations
 
 from datetime import date, timedelta
@@ -26,15 +27,13 @@ from unittest.mock import MagicMock
 import numpy as np
 import pandas as pd
 import pytest
-
 from backtest.price_resolution import MAX_WINDOW_SPAN_DAYS, SMOOTH_WINDOW
 from models.forecaster import ItemForecaster
 
 
 @pytest.fixture
 def forecaster(tmp_path_factory):
-    return ItemForecaster(db_session=MagicMock(),
-                          model_dir=str(tmp_path_factory.mktemp("saved_models")))
+    return ItemForecaster(db_session=MagicMock(), model_dir=str(tmp_path_factory.mktemp("saved_models")))
 
 
 @pytest.fixture
@@ -50,9 +49,7 @@ def _panel(n_items=8, n_days=40, start=date(2026, 1, 1), seed=7):
         price = 10.0 + i
         for d in range(n_days):
             price *= 1.0 + rng.normal(0.0, 0.01)
-            rows.append({"item_id": f"i{i}",
-                         "date": start + timedelta(days=d),
-                         "price": price})
+            rows.append({"item_id": f"i{i}", "date": start + timedelta(days=d), "price": price})
     return pd.DataFrame(rows)
 
 
@@ -112,8 +109,7 @@ def test_denominator_is_the_span_bounded_median(forecaster, smoothed):
     row = _row(out, "i0", day)
 
     den = float(np.median(_series(df, "i0", day)[-SMOOTH_WINDOW:]))
-    assert row["target_return_3d"] == pytest.approx(
-        (row["target_3d"] - den) / den * 100, abs=1e-9)
+    assert row["target_return_3d"] == pytest.approx((row["target_3d"] - den) / den * 100, abs=1e-9)
 
 
 def test_it_matches_the_price_predict_quotes_from(forecaster, smoothed):
@@ -127,11 +123,10 @@ def test_it_matches_the_price_predict_quotes_from(forecaster, smoothed):
     day = date(2026, 1, 20)
     out = forecaster.prepare_targets(df, horizon=3)
 
-    served = ItemForecaster._smoothed_anchor_prices(
-        df[df["date"] <= day], pd.Timestamp(day))
+    served = ItemForecaster._smoothed_anchor_prices(df[df["date"] <= day], pd.Timestamp(day))
     for item in df["item_id"].unique():
         row = _row(out, item, day)
-        implied = row["target_3d"] / (1 + row[f"target_return_3d"] / 100)
+        implied = row["target_3d"] / (1 + row["target_return_3d"] / 100)
         assert implied == pytest.approx(served[item], rel=1e-9)
 
 
@@ -156,11 +151,9 @@ def test_a_spike_at_the_anchor_barely_reaches_the_label(forecaster, monkeypatch)
         return s
 
     monkeypatch.delenv("LABEL_SMOOTHED_ANCHOR", raising=False)
-    raw = [_row(forecaster.prepare_targets(_spike(m), 3), "i0", day)["target_return_3d"]
-           for m in (1.0, 1.4, 10.0)]
+    raw = [_row(forecaster.prepare_targets(_spike(m), 3), "i0", day)["target_return_3d"] for m in (1.0, 1.4, 10.0)]
     monkeypatch.setenv("LABEL_SMOOTHED_ANCHOR", "1")
-    sm = [_row(forecaster.prepare_targets(_spike(m), 3), "i0", day)["target_return_3d"]
-          for m in (1.0, 1.4, 10.0)]
+    sm = [_row(forecaster.prepare_targets(_spike(m), 3), "i0", day)["target_return_3d"] for m in (1.0, 1.4, 10.0)]
 
     # Raw: unbounded in the size of the spike, and tens of points at 1.4x alone.
     assert abs(raw[1] - raw[0]) > 20
@@ -182,12 +175,14 @@ def test_an_observation_outside_the_span_does_not_vote(forecaster, smoothed):
     """
     day = date(2026, 2, 1)
     old = day - timedelta(days=MAX_WINDOW_SPAN_DAYS + 5)
-    df = pd.DataFrame([
-        {"item_id": "a", "date": old, "price": 1000.0},
-        {"item_id": "a", "date": day - timedelta(days=1), "price": 10.0},
-        {"item_id": "a", "date": day, "price": 20.0},
-        {"item_id": "a", "date": day + timedelta(days=3), "price": 30.0},
-    ])
+    df = pd.DataFrame(
+        [
+            {"item_id": "a", "date": old, "price": 1000.0},
+            {"item_id": "a", "date": day - timedelta(days=1), "price": 10.0},
+            {"item_id": "a", "date": day, "price": 20.0},
+            {"item_id": "a", "date": day + timedelta(days=3), "price": 30.0},
+        ]
+    )
     row = _row(forecaster.prepare_targets(df, horizon=3), "a", day)
     # In span: {10, 20} -> 15. An unbounded tail(3) would take {1000, 10, 20}
     # -> 20, which is also the raw anchor, so all three readings differ.
@@ -197,8 +192,10 @@ def test_an_observation_outside_the_span_does_not_vote(forecaster, smoothed):
 def test_only_the_last_smooth_window_observations_vote(forecaster, smoothed):
     """Four in-span observations, and the oldest must not count."""
     day = date(2026, 2, 8)
-    rows = [{"item_id": "a", "date": day - timedelta(days=k), "price": p}
-            for k, p in zip(range(SMOOTH_WINDOW, -1, -1), [1000.0, 10.0, 12.0, 20.0])]
+    rows = [
+        {"item_id": "a", "date": day - timedelta(days=k), "price": p}
+        for k, p in zip(range(SMOOTH_WINDOW, -1, -1), [1000.0, 10.0, 12.0, 20.0])
+    ]
     rows.append({"item_id": "a", "date": day + timedelta(days=3), "price": 24.0})
     df = pd.DataFrame(rows)
 
@@ -262,10 +259,12 @@ def test_zero_denominator_yields_no_label(forecaster, smoothed):
     `.replace(0, np.nan)`; the smoothed one needs its own guard.
     """
     day = date(2026, 2, 1)
-    df = pd.DataFrame([
-        {"item_id": "a", "date": day, "price": 0.0},
-        {"item_id": "a", "date": day + timedelta(days=3), "price": 5.0},
-    ])
+    df = pd.DataFrame(
+        [
+            {"item_id": "a", "date": day, "price": 0.0},
+            {"item_id": "a", "date": day + timedelta(days=3), "price": 5.0},
+        ]
+    )
     out = forecaster.prepare_targets(df, horizon=3)
     assert pd.isna(_row(out, "a", day)["target_return_3d"])
 
@@ -281,5 +280,4 @@ def test_row_order_is_preserved(forecaster, smoothed):
     # row's label belongs to that row's item and date.
     row = _row(out, "i5", date(2026, 1, 20))
     den = float(np.median(_series(df, "i5", date(2026, 1, 20))[-SMOOTH_WINDOW:]))
-    assert row["target_return_3d"] == pytest.approx(
-        (row["target_3d"] - den) / den * 100, abs=1e-9)
+    assert row["target_return_3d"] == pytest.approx((row["target_3d"] - den) / den * 100, abs=1e-9)

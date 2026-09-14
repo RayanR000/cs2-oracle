@@ -9,10 +9,10 @@ docs/research/2026-08-08-model-review.md.
 These tests pin the mechanism, not the calibrated numbers: the counts in
 FIXED_BOOST_ROUNDS are expected to move when the sweep is re-run.
 """
+
 import numpy as np
 import pandas as pd
 import pytest
-
 from models.forecaster import ItemForecaster
 
 
@@ -27,8 +27,7 @@ class TestBoostRoundSelection:
             assert h in ItemForecaster.CV_FIXED_BOOST_ROUNDS
 
     def test_counts_are_positive(self):
-        for table in (ItemForecaster.FIXED_BOOST_ROUNDS,
-                      ItemForecaster.CV_FIXED_BOOST_ROUNDS):
+        for table in (ItemForecaster.FIXED_BOOST_ROUNDS, ItemForecaster.CV_FIXED_BOOST_ROUNDS):
             assert all(v > 0 for v in table.values())
 
     def test_unknown_horizon_falls_back_rather_than_training_zero_rounds(self):
@@ -59,24 +58,29 @@ class TestEnsembleMemberHonoursTheFlag:
     @staticmethod
     def _fit(monkeypatch, early_stopping):
         import lightgbm as lgb
+
         rng = np.random.default_rng(0)
         X = rng.standard_normal((400, 3))
         y = X[:, 0] + rng.standard_normal(400) * 0.1
-        params = {"objective": "regression", "verbosity": -1, "num_leaves": 4,
-                  "learning_rate": 0.2, "min_data_in_leaf": 5}
+        params = {
+            "objective": "regression",
+            "verbosity": -1,
+            "num_leaves": 4,
+            "learning_rate": 0.2,
+            "min_data_in_leaf": 5,
+        }
         ds = {"feature_pre_filter": False}
         dtrain = lgb.Dataset(X, y, params=ds)
         dval = lgb.Dataset(X[:100], y[:100], reference=dtrain, params=ds)
         dtrain.construct()
         dval.construct()
         return ItemForecaster._train_ensemble_member(
-            params, dtrain, dval, num_boost_round=30,
-            early_stopping=early_stopping)
+            params, dtrain, dval, num_boost_round=30, early_stopping=early_stopping
+        )
 
     def test_fixed_rounds_trains_the_full_count(self, monkeypatch):
         booster = self._fit(monkeypatch, early_stopping=False)
-        assert booster.num_trees() == 30, (
-            "early stopping is off, so every requested round must be trained")
+        assert booster.num_trees() == 30, "early stopping is off, so every requested round must be trained"
 
     def test_early_stopping_path_still_works(self, monkeypatch):
         booster = self._fit(monkeypatch, early_stopping=True)
@@ -117,13 +121,12 @@ class TestRankIC:
     def test_a_constant_prediction_contributes_nothing(self):
         """No variation means no ordering, which is absent, not zero."""
         dates = pd.Series(["2026-01-01"] * 30)
-        assert ItemForecaster._within_date_rank_ic(
-            np.ones(30), np.arange(30, dtype=float), dates) is None
+        assert ItemForecaster._within_date_rank_ic(np.ones(30), np.arange(30, dtype=float), dates) is None
 
     def test_mask_restricts_to_the_served_cohort(self):
         dates = pd.Series(["2026-01-01"] * 60)
         a = np.arange(60, dtype=float)
-        pred = np.concatenate([a[:30], -a[30:]])       # ordered, then reversed
+        pred = np.concatenate([a[:30], -a[30:]])  # ordered, then reversed
         served = np.array([True] * 30 + [False] * 30)
         assert ItemForecaster._within_date_rank_ic(pred, a, dates, served) == pytest.approx(1.0)
 
@@ -131,26 +134,26 @@ class TestRankIC:
 class TestDirectionRecords:
     def test_shape_matches_what_the_pt_test_consumes(self):
         from backtest.directional_test import pesaran_timmermann
-        recs = ItemForecaster._direction_records(
-            [5.0, -5.0, 0.0], [5.0, -5.0, 0.0],
-            pd.Series(["2026-01-01"] * 3))
-        assert {"predicted_direction", "actual_direction",
-                "direction_correct", "forecast_date"} <= set(recs[0])
-        pesaran_timmermann(recs, 20)          # must not raise
+
+        recs = ItemForecaster._direction_records([5.0, -5.0, 0.0], [5.0, -5.0, 0.0], pd.Series(["2026-01-01"] * 3))
+        assert {"predicted_direction", "actual_direction", "direction_correct", "forecast_date"} <= set(recs[0])
+        pesaran_timmermann(recs, 20)  # must not raise
 
     def test_flat_band_matches_the_scorer(self):
         from models.forecaster import DIRECTION_FLAT_TOLERANCE_PCT as tol
+
         recs = ItemForecaster._direction_records(
-            [tol * 2, -tol * 2, 0.0], [0.0, 0.0, 0.0],
-            pd.Series(["2026-01-01"] * 3))
+            [tol * 2, -tol * 2, 0.0], [0.0, 0.0, 0.0], pd.Series(["2026-01-01"] * 3)
+        )
         assert [r["predicted_direction"] for r in recs] == ["up", "down", "flat"]
         assert [r["actual_direction"] for r in recs] == ["flat"] * 3
 
     def test_constant_call_baseline_reads_these_records(self):
         from backtest.directional_test import constant_call_baseline
+
         recs = ItemForecaster._direction_records(
-            np.zeros(10), np.array([-5.0] * 7 + [5.0] * 3),
-            pd.Series(["2026-01-01"] * 10))
+            np.zeros(10), np.array([-5.0] * 7 + [5.0] * 3), pd.Series(["2026-01-01"] * 10)
+        )
         direction, acc = constant_call_baseline(recs)
         assert direction == "down"
         assert acc == pytest.approx(70.0)
@@ -178,8 +181,8 @@ class TestDiagnosticClassifierGate:
 def test_ci_skips_the_diagnostic_classifier_but_never_cv():
     """The CI workflow buys minutes from the diagnostic, not from calibration."""
     from pathlib import Path
-    wf = (Path(__file__).resolve().parents[2]
-          / ".github" / "workflows" / "price-forecast.yml").read_text()
+
+    wf = (Path(__file__).resolve().parents[2] / ".github" / "workflows" / "price-forecast.yml").read_text()
     assert 'CV_DIAGNOSTIC_CLASSIFIER: "0"' in wf
     assert "SKIP_CV: " not in wf, "SKIP_CV must never be set in CI"
 

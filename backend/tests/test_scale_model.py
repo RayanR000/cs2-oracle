@@ -8,7 +8,6 @@ that a degenerate prediction cannot collapse a band.
 import numpy as np
 import pandas as pd
 import pytest
-
 from models import conformal, scale_model
 
 
@@ -26,11 +25,13 @@ def _heteroscedastic(n=24_000, seed=0):
     noise = rng.normal(size=n)
     true_scale = driver
     resid = rng.normal(scale=true_scale)
-    X = pd.DataFrame({
-        "driver": driver,
-        "noise": noise,
-        "sigma": driver ** 2.0,          # over-reacts, exactly like the real one
-    })
+    X = pd.DataFrame(
+        {
+            "driver": driver,
+            "noise": noise,
+            "sigma": driver**2.0,  # over-reacts, exactly like the real one
+        }
+    )
     return X, resid, X["sigma"].to_numpy()
 
 
@@ -60,8 +61,7 @@ def test_the_learned_scale_flattens_a_tilt_that_sigma_leaves():
     tilt_sigma = np.mean(np.abs(prof_sigma - conformal.NOMINAL_COVERAGE))
     tilt_learned = np.mean(np.abs(prof_learned - conformal.NOMINAL_COVERAGE))
     assert tilt_learned < tilt_sigma / 2, (
-        f"learned scale did not flatten the profile: "
-        f"sigma {prof_sigma.round(3)} -> learned {prof_learned.round(3)}"
+        f"learned scale did not flatten the profile: sigma {prof_sigma.round(3)} -> learned {prof_learned.round(3)}"
     )
 
 
@@ -92,21 +92,18 @@ def test_cross_fit_never_scores_a_row_with_a_model_that_saw_its_fold():
     # A feature that is CONSTANT within a fold and differs between them. A model
     # that saw the row's own fold can read the fold's residual level off it; one
     # that did not has never seen this value and cannot.
-    X = pd.DataFrame({"fold_marker": fold.astype(float),
-                      "noise": rng.normal(size=n)})
+    X = pd.DataFrame({"fold_marker": fold.astype(float), "noise": rng.normal(size=n)})
     # Each fold has a wildly different error scale, keyed to the marker.
     resid = rng.normal(scale=np.array([0.1, 1.0, 10.0, 100.0])[fold])
 
-    learned, _ = scale_model.cross_fit(X, resid, fold,
-                                       fallback=np.ones(n))
+    learned, _ = scale_model.cross_fit(X, resid, fold, fallback=np.ones(n))
     # An in-sample fit would track the per-fold scale across four orders of
     # magnitude. An out-of-sample one cannot: it is extrapolating to a marker
     # value it never saw, so the spread between fold means must stay small
     # relative to the 1000x spread in the truth.
     means = np.array([learned[fold == f].mean() for f in range(4)])
     assert means.max() / means.min() < 50.0, (
-        f"cross_fit leaked its own fold: per-fold scale means {means.round(3)} "
-        f"track the 1000x truth too closely"
+        f"cross_fit leaked its own fold: per-fold scale means {means.round(3)} track the 1000x truth too closely"
     )
 
 
@@ -117,10 +114,9 @@ def test_a_fold_whose_complement_is_too_small_falls_back_rather_than_leaking():
     X = pd.DataFrame({"a": rng.normal(size=n)})
     resid = rng.normal(size=n)
     fold = np.zeros(n, dtype=int)
-    fold[: n // 2] = 1     # two folds, each complement is 3,000 < MIN_FIT_ROWS
+    fold[: n // 2] = 1  # two folds, each complement is 3,000 < MIN_FIT_ROWS
 
-    learned, n_models = scale_model.cross_fit(X, resid, fold,
-                                              fallback=np.full(n, 7.0))
+    learned, n_models = scale_model.cross_fit(X, resid, fold, fallback=np.full(n, 7.0))
     assert n_models == 0
     assert np.allclose(learned, 7.0)
 

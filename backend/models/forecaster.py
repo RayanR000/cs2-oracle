@@ -4,44 +4,21 @@ Trains quantile regression models for 3d, 7d, 14d and 30d horizons,
 using price history, technical indicators, events, and item metadata.
 """
 
-import os
 import gc
-import sys
-import json
-import time
 import hashlib
+import json
 import logging
+import os
+import sys
+import time
+from datetime import UTC, date, datetime, timedelta
+from pathlib import Path
+from typing import Any
+
+import lightgbm as lgb
 import numpy as np
 import pandas as pd
-import lightgbm as lgb
-from scipy.stats import spearmanr
-from datetime import datetime, timedelta, timezone, date
-from typing import Dict, List, Optional, Tuple, Any
-from pathlib import Path
-from sqlalchemy import text
-from models import conformal
-from models import scale_model
-from models import served_recalibration
-from models.item_parser import (
-    BID_SOURCES,
-    CONDITIONAL_STEAM_SOURCES,
-    MIN_ASKS_TO_DROP_SYNC,
-    PHASE_COLLAPSED_EXEMPT_PATTERNS,
-    PHASE_COLLAPSED_SLUG_PATTERNS,
-    STEAM_SPOT_SOURCES,
-    TRAILING_WINDOW_SOURCES,
-    archive_universe_sql_filter,
-    bid_sources_sql_filter,
-    is_phantom_slug,
-    is_phase_collapsed,
-    parse_item_name,
-    phantom_slug_sql_filter,
-    phase_collapsed_sql_filter,
-)
-from models.staleness import STALE_RUN_GAP_BREAK_DAYS, stale_run_days
-from backtest.scoring import HEADLINE_MIN_TIER, MIN_FORECAST_DATES, price_tier
-from backtest.friction import actionable_threshold
-from backtest.price_resolution import MAX_WINDOW_SPAN_DAYS, SMOOTH_WINDOW
+
 # Invariant #4 (backend/AGENTS.md): a directional accuracy is quotable only
 # beside the constant call and the realised down rate, with Pesaran-Timmermann
 # as the headline. These lived in backtest/ and were applied only to production
@@ -51,6 +28,26 @@ from backtest.directional_test import (
     pesaran_timmermann,
     realised_down_rate,
 )
+from backtest.friction import actionable_threshold
+from backtest.price_resolution import MAX_WINDOW_SPAN_DAYS, SMOOTH_WINDOW
+from backtest.scoring import HEADLINE_MIN_TIER, MIN_FORECAST_DATES, price_tier
+from scipy.stats import spearmanr
+from sqlalchemy import text
+
+from models import conformal, scale_model, served_recalibration
+from models.item_parser import (
+    BID_SOURCES,
+    CONDITIONAL_STEAM_SOURCES,
+    MIN_ASKS_TO_DROP_SYNC,
+    PHASE_COLLAPSED_SLUG_PATTERNS,
+    STEAM_SPOT_SOURCES,
+    TRAILING_WINDOW_SOURCES,
+    archive_universe_sql_filter,
+    parse_item_name,
+    phantom_slug_sql_filter,
+    phase_collapsed_sql_filter,
+)
+from models.staleness import stale_run_days
 
 logger = logging.getLogger(__name__)
 
@@ -92,7 +89,7 @@ def calibration_target_col(horizon: int) -> str:
 
 
 # Cached result of GPU availability check (avoids repeated subprocess probes)
-_GPU_AVAILABLE_CACHE: Optional[bool] = None
+_GPU_AVAILABLE_CACHE: bool | None = None
 
 # `BID_SOURCES`, `PHASE_COLLAPSED_SLUG_PATTERNS` and the SQL filters over them
 # are imported from `models/item_parser.py` above and re-exported here. The
@@ -122,14 +119,18 @@ def embargo_days(horizon: int) -> int:
     correct cost of the overlap, not a bug: it means a 30d fold cannot be built
     from 30 days of history, which was always true and was previously hidden.
     """
-    carry = (ItemForecaster.LAG_TOLERANCE_DAYS
-             + SMOOTH_WINDOW + MAX_WINDOW_SPAN_DAYS)
+    carry = ItemForecaster.LAG_TOLERANCE_DAYS + SMOOTH_WINDOW + MAX_WINDOW_SPAN_DAYS
     return int(horizon) + carry
 
 
 # Price tier boundaries for per-tier bias correction
-PRICE_TIER_BOUNDARIES = [(0, 1, "<$1"), (1, 5, "$1-5"), (5, 20, "$5-20"),
-                         (20, 100, "$20-100"), (100, float("inf"), ">$100")]
+PRICE_TIER_BOUNDARIES = [
+    (0, 1, "<$1"),
+    (1, 5, "$1-5"),
+    (5, 20, "$5-20"),
+    (20, 100, "$20-100"),
+    (100, float("inf"), ">$100"),
+]
 BIAS_EWMA_ALPHA = 0.3
 
 # Direction upweight: multiplier for positive-return samples during training.
@@ -218,9 +219,8 @@ def _gpu_available() -> bool:
         return _GPU_AVAILABLE_CACHE
     try:
         import subprocess
-        result = subprocess.run(
-            ["nvidia-smi"], capture_output=True, text=True, timeout=5
-        )
+
+        result = subprocess.run(["nvidia-smi"], capture_output=True, text=True, timeout=5)
         if result.returncode != 0:
             _GPU_AVAILABLE_CACHE = False
             return False
@@ -234,7 +234,9 @@ def _gpu_available() -> bool:
         )
         probe = subprocess.run(
             [sys.executable, "-c", _probe_code],
-            capture_output=True, text=True, timeout=30,
+            capture_output=True,
+            text=True,
+            timeout=30,
         )
         _GPU_AVAILABLE_CACHE = probe.returncode == 0
         return _GPU_AVAILABLE_CACHE
@@ -248,20 +250,42 @@ def _gpu_available() -> bool:
 # `rarity_meta_rank` the item_identity prefixes, and `type_meta_*` the item_metadata
 # one. Declared here rather than on the class because _feature_group is a module
 # function; ItemForecaster.BYMYKEL_META_FEATURES is the same frozenset.
-_BYMYKEL_META_FEATURES = frozenset({
-    "item_age_meta_days", "item_age_ambiguous", "rarity_meta_rank",
-    "is_meta_stattrak", "is_meta_souvenir", "float_meta_min", "float_meta_max",
-    "type_meta_crate_id", "type_meta_collection_id",
-})
+_BYMYKEL_META_FEATURES = frozenset(
+    {
+        "item_age_meta_days",
+        "item_age_ambiguous",
+        "rarity_meta_rank",
+        "is_meta_stattrak",
+        "is_meta_souvenir",
+        "float_meta_min",
+        "float_meta_max",
+        "type_meta_crate_id",
+        "type_meta_collection_id",
+    }
+)
 
 
 def _feature_group(name: str) -> str:
     if name in _BYMYKEL_META_FEATURES:
         return "bymykel_metadata"
-    if any(name.startswith(p) for p in ("price_", "return_", "log_return_", "bb_",
-                                         "rsi_", "macd_", "vol_", "trend_",
-                                         "price_accel_", "autocorr_", "support_",
-                                         "volume_", "vol_price_")):
+    if any(
+        name.startswith(p)
+        for p in (
+            "price_",
+            "return_",
+            "log_return_",
+            "bb_",
+            "rsi_",
+            "macd_",
+            "vol_",
+            "trend_",
+            "price_accel_",
+            "autocorr_",
+            "support_",
+            "volume_",
+            "vol_price_",
+        )
+    ):
         return "price_technicals"
     if name.startswith("supply_churn"):
         return "supply_churn"
@@ -278,8 +302,7 @@ def _feature_group(name: str) -> str:
         return "item_identity"
     if name.startswith("type_"):
         return "item_metadata"
-    if any(name.startswith(p) for p in ("day_", "month_", "quarter_", "week_",
-                                         "item_age", "weekend")):
+    if any(name.startswith(p) for p in ("day_", "month_", "quarter_", "week_", "item_age", "weekend")):
         return "temporal"
     if name.startswith("event_"):
         return "events"
@@ -390,8 +413,8 @@ class ItemForecaster:
     # keeps "recent" meaningful and keeps the window off the CV folds' turf.
     MAX_VALIDATION_WINDOW_DAYS = 90
     REGIMES = ["bear", "range", "bull"]
-    REGIME_RETURN_THRESHOLD_BEAR = -3.0   # market_return_30d < -3% → bear
-    REGIME_RETURN_THRESHOLD_BULL = 3.0    # market_return_30d > 3% → bull
+    REGIME_RETURN_THRESHOLD_BEAR = -3.0  # market_return_30d < -3% → bear
+    REGIME_RETURN_THRESHOLD_BULL = 3.0  # market_return_30d > 3% → bull
     # Single member. The 3-seed / 3-feature-fraction ensemble was estimated at
     # 0.3-0.5pp in docs/architecture/model-optimization.md, which is below the
     # MDE the gate reports, so it cannot be resolved in isolation. If the
@@ -440,11 +463,22 @@ class ItemForecaster:
     ALLOWLIST_BEFORE_PRUNE = True
     # Every name _feature_group() can return, minus bymykel_metadata, which is
     # gated by bymykel_metadata_enabled() rather than by the allowlist alone.
-    ALL_FEATURE_GROUPS = frozenset({
-        "price_technicals", "supply_depth", "item_identity", "item_metadata",
-        "temporal", "events", "cross_sectional", "social", "other",
-        "tier_lead", "supply_churn", "orderbook",
-    })
+    ALL_FEATURE_GROUPS = frozenset(
+        {
+            "price_technicals",
+            "supply_depth",
+            "item_identity",
+            "item_metadata",
+            "temporal",
+            "events",
+            "cross_sectional",
+            "social",
+            "other",
+            "tier_lead",
+            "supply_churn",
+            "orderbook",
+        }
+    )
     # The tier lead-lag group, gated by tier_lead_enabled() the way
     # bymykel_metadata is -- the allowlist alone cannot admit it, because a group
     # that is allowlisted but never engineered yields columns absent and
@@ -538,51 +572,53 @@ class ItemForecaster:
     # pre-2026-05 training rows and are dead on every served row, which is a
     # pure train/serve gap on 100% of items. Reinstate them only with a repaired
     # feed. See docs/changelog/2026-08-06-volume-features-shelved.md.
-    SHELVED_FEATURES = frozenset({
-        "vol_semidev_down_30d",
-        "vol_semidev_up_30d",
-        "vol_skew_30d",
-        "rsi_divergence_7d",
-        "rsi_price_divergence_7d",
-        "macd_hist_slope_7d",
-        "volume_missing",
-        "volume_lag_1d",
-        "volume_lag_7d",
-        "volume_mean_30d",
-        "volume_std_30d",
-        "volume_mean_60d",
-        "volume_log_change_1d",
-        "volume_log_change_7d",
-        "volume_zscore_30d",
-        "volume_price_conf_7d",
-        "volume_price_conf_1d",
-        # These two were never in the 47-column feature_cols: the >0.95
-        # correlation prune dropped them in favour of their 30d partners.
-        # Shelving those partners removes what they correlated against, so
-        # without this they SURVIVE the prune and re-enter production — the one
-        # failure mode a name-list assertion cannot see. See
-        # test_no_volume_feature_survives_the_real_selection_and_prune.
-        "volume_mean_7d",
-        "volume_std_60d",
-        # Dead weight inside the served set (2026-08-18). These five reach a
-        # booster but never rank in any horizon's top-20 gain and are
-        # redundant or near-constant: price_cv_20d/30d sit between the ranking
-        # price_cv_14d/60d, log_return_7d duplicates return_7d, autocorr_7d
-        # never ranks while autocorr_1d does, and rsi_missing is near-constant
-        # zero (RSI uses min_periods=1 so it is almost never NaN — unlike
-        # macd_missing, which is kept). A paired drop-5 ablation on the real
-        # archive (400 items, 24-25 folds, n~180-190k) found removing them
-        # NULL at all four horizons (drop5 vs base33: -0.02/+0.11/-0.14/-0.07pp,
-        # every CI straddles zero). They have no consumer outside the booster,
-        # so shelving (not deleting the compute) keeps the A/B harnesses that
-        # build their own feature list from the frame reproducible. Drops the
-        # served set 33 -> 28 on the next retrain.
-        "price_cv_20d",
-        "price_cv_30d",
-        "log_return_7d",
-        "autocorr_7d",
-        "rsi_missing",
-    })
+    SHELVED_FEATURES = frozenset(
+        {
+            "vol_semidev_down_30d",
+            "vol_semidev_up_30d",
+            "vol_skew_30d",
+            "rsi_divergence_7d",
+            "rsi_price_divergence_7d",
+            "macd_hist_slope_7d",
+            "volume_missing",
+            "volume_lag_1d",
+            "volume_lag_7d",
+            "volume_mean_30d",
+            "volume_std_30d",
+            "volume_mean_60d",
+            "volume_log_change_1d",
+            "volume_log_change_7d",
+            "volume_zscore_30d",
+            "volume_price_conf_7d",
+            "volume_price_conf_1d",
+            # These two were never in the 47-column feature_cols: the >0.95
+            # correlation prune dropped them in favour of their 30d partners.
+            # Shelving those partners removes what they correlated against, so
+            # without this they SURVIVE the prune and re-enter production — the one
+            # failure mode a name-list assertion cannot see. See
+            # test_no_volume_feature_survives_the_real_selection_and_prune.
+            "volume_mean_7d",
+            "volume_std_60d",
+            # Dead weight inside the served set (2026-08-18). These five reach a
+            # booster but never rank in any horizon's top-20 gain and are
+            # redundant or near-constant: price_cv_20d/30d sit between the ranking
+            # price_cv_14d/60d, log_return_7d duplicates return_7d, autocorr_7d
+            # never ranks while autocorr_1d does, and rsi_missing is near-constant
+            # zero (RSI uses min_periods=1 so it is almost never NaN — unlike
+            # macd_missing, which is kept). A paired drop-5 ablation on the real
+            # archive (400 items, 24-25 folds, n~180-190k) found removing them
+            # NULL at all four horizons (drop5 vs base33: -0.02/+0.11/-0.14/-0.07pp,
+            # every CI straddles zero). They have no consumer outside the booster,
+            # so shelving (not deleting the compute) keeps the A/B harnesses that
+            # build their own feature list from the frame reproducible. Drops the
+            # served set 33 -> 28 on the next retrain.
+            "price_cv_20d",
+            "price_cv_30d",
+            "log_return_7d",
+            "autocorr_7d",
+            "rsi_missing",
+        }
+    )
 
     # The volume-derived subset of SHELVED_FEATURES (see the comment above and
     # tests/test_volume_features_shelved.py) -- every column
@@ -593,21 +629,23 @@ class ItemForecaster:
     # volume_std_60d (which the prune would otherwise drop in favour of their
     # 30d partners) must be un-shelved together with those partners or they
     # silently survive the prune and re-enter production alone.
-    VOLUME_FEATURE_NAMES = frozenset({
-        "volume_missing",
-        "volume_lag_1d",
-        "volume_lag_7d",
-        "volume_mean_7d",
-        "volume_mean_30d",
-        "volume_std_30d",
-        "volume_mean_60d",
-        "volume_std_60d",
-        "volume_log_change_1d",
-        "volume_log_change_7d",
-        "volume_zscore_30d",
-        "volume_price_conf_7d",
-        "volume_price_conf_1d",
-    })
+    VOLUME_FEATURE_NAMES = frozenset(
+        {
+            "volume_missing",
+            "volume_lag_1d",
+            "volume_lag_7d",
+            "volume_mean_7d",
+            "volume_mean_30d",
+            "volume_std_30d",
+            "volume_mean_60d",
+            "volume_std_60d",
+            "volume_log_change_1d",
+            "volume_log_change_7d",
+            "volume_zscore_30d",
+            "volume_price_conf_7d",
+            "volume_price_conf_1d",
+        }
+    )
 
     @staticmethod
     def _volume_features_enabled() -> bool:
@@ -639,9 +677,7 @@ class ItemForecaster:
         if "buff_bid" not in df.columns:
             df["buff_bid"] = np.nan
         df["bid_present"] = df["buff_bid"].notna().astype(int)
-        df["bid_ask_spread"] = np.where(
-            df["price"] > 0, (df["price"] - df["buff_bid"]) / df["price"], np.nan
-        )
+        df["bid_ask_spread"] = np.where(df["price"] > 0, (df["price"] - df["buff_bid"]) / df["price"], np.nan)
         return df
 
     @staticmethod
@@ -701,9 +737,7 @@ class ItemForecaster:
             df["buff_listing_count"] = np.nan
         df = df.sort_values(["item_id", "date"])
         present = df["buff_listing_count"] > 0
-        df["supply_churn_present"] = (
-            df["buff_listing_count"].notna() & present
-        ).astype(int)
+        df["supply_churn_present"] = (df["buff_listing_count"].notna() & present).astype(int)
         # A 0 listing count is "no supply observed", not a real level -- masking
         # it to NaN keeps a 0->N day from manufacturing a huge log jump.
         loglist = np.log1p(df["buff_listing_count"].where(present))
@@ -753,8 +787,7 @@ class ItemForecaster:
         | {f"price_min_{w}d" for w in (7, 14, 20, 30, 60)}
         | {f"price_max_{w}d" for w in (7, 14, 20, 30, 60)}
         | {f"price_lag_{n}d" for n in (1, 3, 7, 14, 30, 60, 90, 120, 180)}
-        | {"price_log", "macd_line", "macd_signal", "macd_histogram",
-           "bb_upper", "bb_lower"}
+        | {"price_log", "macd_line", "macd_signal", "macd_histogram", "bb_upper", "bb_lower"}
     )
     #: Band-scale-only columns: the regime-reactive EWMA vols (CLIMATOLOGY_REACTIVE).
     #: Engineered so the reactive multiplier can read them, but SHELVED so they
@@ -806,8 +839,9 @@ class ItemForecaster:
     # validation DATES, not rows — widening the window and adding folds is what
     # actually tightens the CI on mean directional accuracy (and gives the
     # conformal calibration more OOF points).
-    CV_STEP_DAYS = 150            # was 200; ~7 non-overlapping folds on real data
-    CV_MIN_TRAIN_DAYS = 200       # Minimum unique dates before first validation fold
+    CV_STEP_DAYS = 150  # was 200; ~7 non-overlapping folds on real data
+    CV_MIN_TRAIN_DAYS = 200  # Minimum unique dates before first validation fold
+
     # Overridable because this is the dominant training cost. Post-minimal-model
     # the out-of-fold conformal CV is ~84% of a warm retrain (~148.6s of 176.7s),
     # since it refits a median model per fold per horizon purely to generate the
@@ -927,7 +961,7 @@ class ItemForecaster:
         return os.environ.get("EARLY_STOPPING") == "1"
 
     @classmethod
-    def _boost_rounds(cls, horizon: Optional[int], cv: bool = False) -> int:
+    def _boost_rounds(cls, horizon: int | None, cv: bool = False) -> int:
         """Fixed round count for a horizon, or the legacy cap under EARLY_STOPPING=1.
 
         Falls back to the legacy caps for an unknown horizon so a HORIZONS
@@ -946,7 +980,7 @@ class ItemForecaster:
     # pyarrow round-trip on pandas 2.3.3) rather than as a column: the predict
     # frame reaches ~2M rows and copying it to append a constant would double
     # peak memory on the path that already OOMs in CI.
-    ENGINEERED_CACHE_VERSION = 4   # v4: supply_churn_* features off buff_listing_count
+    ENGINEERED_CACHE_VERSION = 4  # v4: supply_churn_* features off buff_listing_count
 
     # --- Voted price frame cache ---
     # Bump VOTED_CACHE_VERSION whenever _fetch_voted_price_history or
@@ -979,8 +1013,13 @@ class ItemForecaster:
     VOTED_CACHE_PREFIX = "voted_"
     VOTED_CACHE_MAX_ENTRIES = 3
 
-    def __init__(self, db_session, model_dir: str = None, prune_failed_groups: bool = True,
-                 served_cohort_share: Optional[float] = None):
+    def __init__(
+        self,
+        db_session,
+        model_dir: str = None,
+        prune_failed_groups: bool = True,
+        served_cohort_share: float | None = None,
+    ):
         self.db = db_session
         # Share of the directional classifier's training weight to place on the
         # >= $1 cohort production serves. None = no tier weighting, which is
@@ -988,24 +1027,22 @@ class ItemForecaster:
         # TRAIN_SERVED_COHORT_SHARE by scripts/forecast_prices.py. See
         # docs/superpowers/specs/2026-08-06-served-cohort-weighting-design.md.
         if served_cohort_share is not None and not 0.0 < served_cohort_share < 1.0:
-            raise ValueError(
-                f"served_cohort_share must be in (0, 1) or None, "
-                f"got {served_cohort_share!r}")
+            raise ValueError(f"served_cohort_share must be in (0, 1) or None, got {served_cohort_share!r}")
         self.served_cohort_share = served_cohort_share
         self.model_dir = model_dir or str(Path(__file__).parent / "saved_models")
         # Kept off model_dir: that holds gitignored production model artifacts,
         # and tests assert nothing else lands there.
         self.cache_dir = str(Path(__file__).parent.parent / "data")
         self.archive_dir = Path(__file__).parent.parent.parent / "price-archive"
-        self.models: Dict[Tuple[int, float], lgb.Booster] = {}
-        self.regime_models: Dict[Tuple[str, int, float], list] = {}
+        self.models: dict[tuple[int, float], lgb.Booster] = {}
+        self.regime_models: dict[tuple[str, int, float], list] = {}
         # Per-horizon 3-class directional classifier (down/flat/up).
-        self.direction_models: Dict[int, lgb.Booster] = {}
+        self.direction_models: dict[int, lgb.Booster] = {}
         # Per-horizon binary exceedance head, P(the h-day move clears the
         # round-trip cost). A magnitude signal used as a band-width scale
         # (Phase 2), never a directional call. A value is None where the
         # horizon had fewer than two classes to fit.
-        self.exceedance_models: Dict[int, Optional[lgb.Booster]] = {}
+        self.exceedance_models: dict[int, lgb.Booster | None] = {}
         # Per-horizon isotonic calibrator for the exceedance head, fitted on
         # OUT-OF-FOLD (p_raw, y) pairs from the CV path: {horizon: {"xs": [...],
         # "ys": [...]}} — a monotone stepwise map raw p -> calibrated p,
@@ -1014,21 +1051,21 @@ class ItemForecaster:
         # means "serve the raw head output". The BAND never reads this: its
         # q_hat is dimensionally tied to the RAW p (matched pair), so
         # band_scale() explicitly asks for calibrated=False.
-        self.exceedance_calibrators: Dict[int, Dict[str, List[float]]] = {}
+        self.exceedance_calibrators: dict[int, dict[str, list[float]]] = {}
         # Per-horizon fit report beside the map above: {horizon: {"method",
         # "n_rows", "brier_raw", "brier_cal", "ece_raw", "ece_cal", ...}}.
         # Report-only (nothing serves from it); persisted so a reader of the
         # artifact can quote the calibration without re-running training.
-        self.exceedance_calibration_meta: Dict[int, Dict[str, Any]] = {}
-        self.anomaly_models: Dict[int, Optional[lgb.Booster]] = {}
-        self.vol_rank_models: Dict[int, List[lgb.Booster]] = {}
-        self.vol_rank_norm: Dict[int, float] = {}
-        self.regime_feature_cols: Dict[Tuple[int, str], List[str]] = {}
-        self.feature_cols: List[str] = []
+        self.exceedance_calibration_meta: dict[int, dict[str, Any]] = {}
+        self.anomaly_models: dict[int, lgb.Booster | None] = {}
+        self.vol_rank_models: dict[int, list[lgb.Booster]] = {}
+        self.vol_rank_norm: dict[int, float] = {}
+        self.regime_feature_cols: dict[tuple[int, str], list[str]] = {}
+        self.feature_cols: list[str] = []
         self.prune_failed_groups = prune_failed_groups
-        self.tuned_params: Dict[int, Dict[float, Dict[str, Any]]] = {}
+        self.tuned_params: dict[int, dict[float, dict[str, Any]]] = {}
         # Per-horizon confidence thresholds: {horizon: {"high_range": ..., "high_change": ..., "high_accuracy": ...}}
-        self.confidence_thresholds: Dict[int, Dict[str, float]] = {}
+        self.confidence_thresholds: dict[int, dict[str, float]] = {}
         self.feature_medians: pd.Series = pd.Series(dtype=np.float64)
         # What the LOADED artifact was trained with, or None when nothing has
         # been loaded. Read on the predict path via _tier_lead_served /
@@ -1036,24 +1073,24 @@ class ItemForecaster:
         # than whatever the environment happens to hold; training reads the
         # environment directly. None, not False, so "absent from an older
         # meta.json" is distinguishable from "trained with it off".
-        self._artifact_tier_lead: Optional[bool] = None
-        self._artifact_xs_rank: Optional[bool] = None
-        self._artifact_naive_init: Optional[bool] = None
+        self._artifact_tier_lead: bool | None = None
+        self._artifact_xs_rank: bool | None = None
+        self._artifact_naive_init: bool | None = None
         # Whether the artifact was TRAINED leaving NaN features unfilled for
         # LightGBM's native handling, instead of median-imputing them. Serving
         # must follow the artifact: a model trained on imputed frames learned no
         # NaN default-direction, so serving it with NaN passed through (or vice
         # versa) is a train/serve mismatch. None = older meta.json, does not say.
-        self._artifact_feature_native_nan: Optional[bool] = None
+        self._artifact_feature_native_nan: bool | None = None
         # Whether the band was CALIBRATED against sigma * sqrt(p_exceed). Serving
         # must follow this, not the environment: q_hat and the scale are a matched
         # pair, so a plain-sigma artifact reloaded with EXCEEDANCE_SCALE=1 in the
         # env must keep serving plain sigma. None = "older meta.json, does not say".
-        self._artifact_exceedance_scale: Optional[bool] = None
-        self._artifact_exceedance_meta: Optional[bool] = None
+        self._artifact_exceedance_scale: bool | None = None
+        self._artifact_exceedance_meta: bool | None = None
         # Whether the band was CALIBRATED against the climatology scale. Same
         # matched-pair rule as the exceedance flag above. None = older meta.json.
-        self._artifact_climatology_scale: Optional[bool] = None
+        self._artifact_climatology_scale: bool | None = None
         # WHICH CLIMATOLOGY_SHRINK_K built the persisted tables. Not a switch:
         # the tables already encode the shrink, so serving needs no branch on
         # it. It is recorded so the band GEOMETRY is identifiable after the fact
@@ -1061,30 +1098,30 @@ class ItemForecaster:
         # date the first K=320 artifact served, and a predict-only run on a K=20
         # cache serves the old geometry while looking identical. None = an
         # artifact written before the key existed.
-        self._artifact_climatology_shrink_k: Optional[int] = None
+        self._artifact_climatology_shrink_k: int | None = None
         # Whether the band was CALIBRATED with the regime-reactive multiplier on
         # top of the climatology scale. Same matched-pair rule; None = older meta.
-        self._artifact_climatology_reactive: Optional[bool] = None
-        self._artifact_vol_rank_gbm: Optional[bool] = None
-        self._artifact_anomaly_gbm: Optional[bool] = None
-        self._artifact_shrink_k_gbm: Optional[bool] = None
-        self.shrink_k_models: Dict[int, Optional[lgb.Booster]] = {}
+        self._artifact_climatology_reactive: bool | None = None
+        self._artifact_vol_rank_gbm: bool | None = None
+        self._artifact_anomaly_gbm: bool | None = None
+        self._artifact_shrink_k_gbm: bool | None = None
+        self.shrink_k_models: dict[int, lgb.Booster | None] = {}
         # The median-price floor the artifact was TRAINED under. Load-bearing
         # only when the rank transform is on, and then it is load-bearing
         # absolutely: the transform's output depends on which items are in the
         # cross-section, and training's is the >= $1 cohort while predict's
         # frame is every backfilled item. See _reference_cohort_mask.
-        self._artifact_min_median_price: Optional[float] = None
-        self._artifact_cohort_items: Optional[int] = None
+        self._artifact_min_median_price: float | None = None
+        self._artifact_cohort_items: int | None = None
         # Set by train() so save_models can record what the frame was built
         # under. Not read on the predict path -- that reads the artifact.
-        self._train_min_median_price: Optional[float] = None
-        self._train_cohort_items: Optional[int] = None
+        self._train_min_median_price: float | None = None
+        self._train_cohort_items: int | None = None
         # Which columns the date-constant skip removed at training. None means
         # "the artifact does not say"; [] means "nothing was skipped", and the
         # two are not the same -- see the predict guard.
-        self._artifact_xs_rank_skipped: Optional[List[str]] = None
-        self._train_xs_rank_skipped: Optional[List[str]] = None
+        self._artifact_xs_rank_skipped: list[str] | None = None
+        self._train_xs_rank_skipped: list[str] | None = None
         # Conformal calibration per horizon. NOTE: the meaning changed with the
         # minimal model — q_hat is now a DIMENSIONLESS multiplier of the
         # per-item sigma, not a percentage-point addend. Applied as:
@@ -1093,13 +1130,13 @@ class ItemForecaster:
         # constant. Loading an old artifact into this code would silently
         # produce a band computed two different ways, which is why
         # MODEL_ARTIFACT_VERSION exists.
-        self.conformal_calibration: Dict[int, float] = {}
+        self.conformal_calibration: dict[int, float] = {}
         self._init_conformal_state()
         # Expanding-window CV results per horizon: {horizon: {fold_count, fold_accs, per_fold, ...}}
-        self.cv_results: Dict[int, Dict] = {}
+        self.cv_results: dict[int, dict] = {}
         # Event decay constants (grid-searchable per event type)
-        self.horizon_feature_cols: Dict[int, List[str]] = {}
-        self.event_decay_constants: Dict[str, float] = {
+        self.horizon_feature_cols: dict[int, list[str]] = {}
+        self.event_decay_constants: dict[str, float] = {
             "major": 60,
             "operation": 21,
             "case_drop": 14,
@@ -1109,13 +1146,13 @@ class ItemForecaster:
         # Per-tier bias corrections: {horizon: {tier_label: correction_pct}}
         # Correction is ADDED to mid_ret (positive shifts predictions upward)
         # DEPRECATED in favor of bias_thresholds below.
-        self.bias_corrections: Dict[int, Dict[str, float]] = {}
+        self.bias_corrections: dict[int, dict[str, float]] = {}
         # Threshold-based corrections: {horizon: {tier_label: {"t_down": x, "t_up": y}}}
         # Recalibrates classification boundaries to match the true outcome base rate
         # instead of shifting mid_ret (which pushes predictions into the flat dead-zone).
-        self.bias_thresholds: Dict[int, Dict[str, dict]] = {}
+        self.bias_thresholds: dict[int, dict[str, dict]] = {}
         # EWMA state for tracking which tiers have been seen
-        self.bias_ewma_state: Dict[int, Dict[str, int]] = {}
+        self.bias_ewma_state: dict[int, dict[str, int]] = {}
         # What the label path voided, recorded so a reader can tell a handled
         # cutover from an unhandled one. `_collection_shift_dates` fires 12
         # times in 4,735 days and that list has never been written down, which
@@ -1124,7 +1161,7 @@ class ItemForecaster:
         self.label_voiding: dict = {}
 
     @staticmethod
-    def _smoothed_anchor_prices(df: "pd.DataFrame", anchor) -> Dict[Any, float]:
+    def _smoothed_anchor_prices(df: "pd.DataFrame", anchor) -> dict[Any, float]:
         """Per-item base price for the dollar conversion: a span-bounded median.
 
         The median of the most recent SMOOTH_WINDOW observations that lie
@@ -1160,10 +1197,7 @@ class ItemForecaster:
         dates = pd.to_datetime(ordered["date"])
 
         in_window = ordered[(dates >= cutoff) & (dates <= anchor)]
-        smoothed = (
-            in_window.groupby("item_id").tail(SMOOTH_WINDOW)
-            .groupby("item_id")["price"].median()
-        )
+        smoothed = in_window.groupby("item_id").tail(SMOOTH_WINDOW).groupby("item_id")["price"].median()
 
         # Items with no in-window observation keep their latest known price.
         latest = ordered.groupby("item_id")["price"].last()
@@ -1202,8 +1236,7 @@ class ItemForecaster:
         return os.environ.get("SERVE_OUTLIER_GATED_ANCHOR") == "1"
 
     @classmethod
-    def _serving_base_price(cls, price: "pd.Series",
-                            smoothed: "pd.Series") -> "tuple[pd.Series, pd.Series]":
+    def _serving_base_price(cls, price: "pd.Series", smoothed: "pd.Series") -> "tuple[pd.Series, pd.Series]":
         """The base price the dollar conversion uses, and the deviation mask.
 
         Returns `(base, deviates)`. `deviates` is **arm-invariant**: it is what
@@ -1215,9 +1248,7 @@ class ItemForecaster:
         deviation, and under either arm it keeps its raw quote. Serving degrades,
         it never drops -- a NaN base price would void the item's whole forecast.
         """
-        deviates = (smoothed > 0) & (
-            (price - smoothed).abs() / smoothed > cls.ANCHOR_OUTLIER_TOLERANCE
-        )
+        deviates = (smoothed > 0) & ((price - smoothed).abs() / smoothed > cls.ANCHOR_OUTLIER_TOLERANCE)
         if cls.outlier_gated_anchor_enabled():
             # Raw unless it spikes. `where` keeps `price` where the mask is
             # False, so a NaN or zero smoothed value falls through to the quote.
@@ -1227,8 +1258,7 @@ class ItemForecaster:
         return base, deviates
 
     @classmethod
-    def _audit_serving_anchor(cls, df: "pd.DataFrame", latest_rows: "pd.DataFrame",
-                              anchor) -> None:
+    def _audit_serving_anchor(cls, df: "pd.DataFrame", latest_rows: "pd.DataFrame", anchor) -> None:
         """Record what the anchor was actually built from, at serve time.
 
         The served `current_price` cannot be reproduced from the archive
@@ -1269,9 +1299,12 @@ class ItemForecaster:
                 f"{on_anchor:,} of {len(df):,} frame rows land ON the anchor day; "
                 f"item lag to newest obs median {lag.median():.0f}d, "
                 f"p90 {lag.quantile(0.90):.0f}d, "
-                f"{(lag == 0).mean():.1%} current")
-            logger.info("  Anchor audit — rows per day (last 5): " + ", ".join(
-                f"{pd.Timestamp(d).date()}={n:,}" for d, n in recent.items()))
+                f"{(lag == 0).mean():.1%} current"
+            )
+            logger.info(
+                "  Anchor audit — rows per day (last 5): "
+                + ", ".join(f"{pd.Timestamp(d).date()}={n:,}" for d, n in recent.items())
+            )
 
             if os.environ.get("ANCHOR_AUDIT") != "1":
                 return
@@ -1287,16 +1320,15 @@ class ItemForecaster:
             # `_serving_base_price` is pure, so resolving it a second time here
             # costs one vectorised comparison and cannot disturb the frame the
             # serving path is about to read -- `out` is already a copy.
-            base, deviates = cls._serving_base_price(
-                out["price"], out["_smoothed_price"])
+            base, deviates = cls._serving_base_price(out["price"], out["_smoothed_price"])
             out["served_base"] = base
             out["anchor_deviates"] = deviates
             out["serve_outlier_gated"] = cls.outlier_gated_anchor_enabled()
             out["anchor_date"] = pd.Timestamp(anchor).date()
             out["last_obs_date"] = out["item_id"].map(last_seen)
             out["n_obs_in_span"] = out["item_id"].map(
-                df[dates > anchor - pd.Timedelta(MAX_WINDOW_SPAN_DAYS, "D")]
-                .groupby("item_id").size())
+                df[dates > anchor - pd.Timedelta(MAX_WINDOW_SPAN_DAYS, "D")].groupby("item_id").size()
+            )
             out["captured_at"] = pd.Timestamp.utcnow()
             # Into the ARCHIVE when there is one, so the daily publish carries
             # it: this file is the only record of what was actually quoted, and
@@ -1305,13 +1337,13 @@ class ItemForecaster:
             # how `item_forecasts.parquet` came to stop at 2026-07-29. Falls
             # back to the cache dir for a local run with no archive checked out.
             from db.archive import ARCHIVE_ROOT
+
             # The SAME constant the rest of the archive layer resolves against,
             # imported rather than recomputed: a private copy of this path is
             # how a write silently lands somewhere the publish step never looks.
             archive = ARCHIVE_ROOT
             in_archive = archive.is_dir()
-            base = (archive / "ops" / "anchor_audit" if in_archive
-                    else Path(__file__).resolve().parent.parent / "data")
+            base = archive / "ops" / "anchor_audit" if in_archive else Path(__file__).resolve().parent.parent / "data"
             path = base / f"anchor_audit_{pd.Timestamp(anchor).date()}.parquet"
             path.parent.mkdir(parents=True, exist_ok=True)
             out.to_parquet(path, index=False)
@@ -1327,13 +1359,13 @@ class ItemForecaster:
                 logger.warning(
                     f"  Anchor audit — NOT PUBLISHED: no archive at {archive}, "
                     f"so {len(out):,} rows went to {path.parent} and will die "
-                    f"with this run. Point price-archive at a checkout to keep them.")
-        except Exception as exc:                      # noqa: BLE001
+                    f"with this run. Point price-archive at a checkout to keep them."
+                )
+        except Exception as exc:
             logger.warning(f"  Anchor audit failed (ignored): {exc}")
 
     @staticmethod
-    def _anchor_disclosure(price: "pd.Series",
-                           smoothed: "pd.Series") -> "tuple[pd.Series, pd.Series]":
+    def _anchor_disclosure(price: "pd.Series", smoothed: "pd.Series") -> "tuple[pd.Series, pd.Series]":
         """`(anchor_clean, anchor_wedge_pct)` for the served rows.
 
         `anchor_clean` is the cohort split every 2026-08-11 served-signal figure
@@ -1363,12 +1395,12 @@ class ItemForecaster:
         p = price.to_numpy(dtype=float)
         s = smoothed.to_numpy(dtype=float)
         usable = np.isfinite(s) & (s > 0) & np.isfinite(p)
-        clean = pd.Series(np.isclose(p, s, rtol=0, atol=1e-9) & usable,
-                          index=price.index, name=ANCHOR_TIED_COL)
+        clean = pd.Series(np.isclose(p, s, rtol=0, atol=1e-9) & usable, index=price.index, name=ANCHOR_TIED_COL)
         wedge = pd.Series(
-            np.where(usable, (p / np.where(usable, s, 1.0) - 1.0) * 100.0,
-                     np.nan),
-            index=price.index, name="anchor_wedge_pct")
+            np.where(usable, (p / np.where(usable, s, 1.0) - 1.0) * 100.0, np.nan),
+            index=price.index,
+            name="anchor_wedge_pct",
+        )
         return clean, wedge
 
     @staticmethod
@@ -1527,7 +1559,9 @@ class ItemForecaster:
         return os.environ.get("EXCEEDANCE_META") == "1"
 
     def _exceedance_feature_matrix(
-        self, train_set: pd.DataFrame, feature_cols: list,
+        self,
+        train_set: pd.DataFrame,
+        feature_cols: list,
     ) -> pd.DataFrame:
         """Build the exceedance head's feature matrix, optionally wider.
 
@@ -1536,13 +1570,11 @@ class ItemForecaster:
         """
         if not self.exceedance_meta_enabled():
             return train_set[feature_cols]
-        meta_cols = [c for c in self.BYMYKEL_META_FEATURES
-                     if c in train_set.columns and c not in feature_cols]
+        meta_cols = [c for c in self.BYMYKEL_META_FEATURES if c in train_set.columns and c not in feature_cols]
         if not meta_cols:
             return train_set[feature_cols]
         cols = list(feature_cols) + sorted(meta_cols)
-        logger.info(f"  Exceedance meta: {len(meta_cols)} extra features "
-                     f"({len(feature_cols)} -> {len(cols)})")
+        logger.info(f"  Exceedance meta: {len(meta_cols)} extra features ({len(feature_cols)} -> {len(cols)})")
         return train_set[cols]
 
     def _exceedance_scale_served(self) -> bool:
@@ -1814,10 +1846,10 @@ class ItemForecaster:
         """
         smoothed = cls._rolling_anchor_prices(df)
         return pd.Series(
-            np.isclose(df["price"].to_numpy(dtype=float),
-                       smoothed.to_numpy(dtype=float),
-                       rtol=0, atol=1e-9),
-            index=df.index, name=ANCHOR_TIED_COL)
+            np.isclose(df["price"].to_numpy(dtype=float), smoothed.to_numpy(dtype=float), rtol=0, atol=1e-9),
+            index=df.index,
+            name=ANCHOR_TIED_COL,
+        )
 
     @staticmethod
     def _get_price_tier(price: float) -> str:
@@ -1861,8 +1893,10 @@ class ItemForecaster:
                     self.bias_thresholds = {int(k): v for k, v in raw_thresholds.items()}
                     self.bias_ewma_state = {int(k): v for k, v in data.get("ewma_state", {}).items()}
                 self._fill_missing_threshold_defaults()
-                logger.info(f"  Loaded bias corrections for {len(self.bias_corrections)} horizons, "
-                            f"thresholds for {len(self.bias_thresholds)} horizons")
+                logger.info(
+                    f"  Loaded bias corrections for {len(self.bias_corrections)} horizons, "
+                    f"thresholds for {len(self.bias_thresholds)} horizons"
+                )
             except (json.JSONDecodeError, ValueError, KeyError) as e:
                 logger.warning(f"  Corrupt bias_corrections.json ({e}), using defaults")
                 self._set_default_bias_corrections()
@@ -1935,14 +1969,16 @@ class ItemForecaster:
             # backtest_forecasts() — which refreshes — and only then calls this,
             # in the same process, so the labels fitted here are the ones the
             # headline just reported.
-            rows = self.db.execute(text("""
+            rows = self.db.execute(
+                text("""
                 SELECT fo.horizon_days, fo.current_price, fo.predicted_price_mid,
                        fo.direction_actual, fo.forecast_date
                 FROM forecast_outcomes fo
                 WHERE fo.model_version LIKE 'lgbm-v3%'
                   AND fo.current_price > 0
                   AND fo.direction_actual IS NOT NULL
-            """)).fetchall()
+            """)
+            ).fetchall()
         except Exception as e:
             logger.warning(f"  Could not query outcomes for bias update: {e}")
             return
@@ -1951,16 +1987,22 @@ class ItemForecaster:
             logger.warning("  No outcome rows found for bias update")
             return
 
-        df = pd.DataFrame(rows, columns=[
-            "horizon_days", "current_price", "predicted_price_mid",
-            "direction_actual", "forecast_date",
-        ])
+        df = pd.DataFrame(
+            rows,
+            columns=[
+                "horizon_days",
+                "current_price",
+                "predicted_price_mid",
+                "direction_actual",
+                "forecast_date",
+            ],
+        )
         df["tier"] = df["current_price"].apply(self._get_price_tier)
         df["approx_mid_ret"] = (df["predicted_price_mid"] / df["current_price"] - 1) * 100
 
         # Safety constants for threshold fitting
-        MIN_THRESHOLD_SAMPLE = 100       # require this many rows to trust percentile fit
-        MIN_FLAT_MARGIN = 0.15           # minimum flat-zone width in percentage points
+        MIN_THRESHOLD_SAMPLE = 100  # require this many rows to trust percentile fit
+        MIN_FLAT_MARGIN = 0.15  # minimum flat-zone width in percentage points
         DFLT_T_DOWN = -DIRECTION_FLAT_TOLERANCE_PCT
         DFLT_T_UP = DIRECTION_FLAT_TOLERANCE_PCT
 
@@ -1994,12 +2036,10 @@ class ItemForecaster:
 
             # t_up: threshold above which pred is "up"
             # Want P(mid_ret > t_up) = actual_up → t_up = (1-actual_up) quantile
-            t_up_est = float(np.percentile(
-                mid_rets, max(0, min(100, (1 - actual_up) * 100))))
+            t_up_est = float(np.percentile(mid_rets, max(0, min(100, (1 - actual_up) * 100))))
             # t_down: threshold below which pred is "down"
             # Want P(mid_ret < t_down) = actual_down → t_down = actual_down quantile
-            t_down_est = float(np.percentile(
-                mid_rets, max(0, min(100, actual_down * 100))))
+            t_down_est = float(np.percentile(mid_rets, max(0, min(100, actual_down * 100))))
 
             # Clamp to [-3, 3]
             t_up_est = max(-3.0, min(3.0, t_up_est))
@@ -2047,10 +2087,12 @@ class ItemForecaster:
                 self.bias_ewma_state[horizon] = {}
             self.bias_ewma_state[horizon][tier] = n_seen + 1
 
-            logger.info(f"  Threshold[{horizon}d, {tier}]: "
-                        f"t_down={curr_t_down:+.2f}→{new_t_down:+.2f}, "
-                        f"t_up={curr_t_up:+.2f}→{new_t_up:+.2f} "
-                        f"(actual_up={actual_up*100:.1f}% actual_down={actual_down*100:.1f}%, n={n})")
+            logger.info(
+                f"  Threshold[{horizon}d, {tier}]: "
+                f"t_down={curr_t_down:+.2f}→{new_t_down:+.2f}, "
+                f"t_up={curr_t_up:+.2f}→{new_t_up:+.2f} "
+                f"(actual_up={actual_up * 100:.1f}% actual_down={actual_down * 100:.1f}%, n={n})"
+            )
 
         self._save_bias_corrections()
 
@@ -2081,9 +2123,7 @@ class ItemForecaster:
         """
         if "market_return_30d" not in df.columns:
             return pd.Series("range", index=df.index)
-        labels = df["market_return_30d"].apply(
-            lambda x: self._assign_regime_label(x) if pd.notna(x) else "range"
-        )
+        labels = df["market_return_30d"].apply(lambda x: self._assign_regime_label(x) if pd.notna(x) else "range")
         return labels
 
     def _detect_current_regime(self, df: pd.DataFrame) -> str:
@@ -2104,7 +2144,7 @@ class ItemForecaster:
     # ------------------------------------------------------------------
 
     @staticmethod
-    def replay_anchor() -> Optional[date]:
+    def replay_anchor() -> date | None:
         """`REPLAY_ANCHOR=YYYY-MM-DD` rewinds the serving clock.
 
         Set, every window `predict` derives -- the fetch cutoff, the voted
@@ -2168,29 +2208,29 @@ class ItemForecaster:
             raise ValueError(
                 f"REPLAY_DISABLE={raw!r} names {sorted(unknown)}, which is not "
                 f"a serving transform. Known: {sorted(cls.REPLAY_DISABLABLE)}. "
-                f"A typo here reads as a control run and measures nothing.")
+                f"A typo here reads as a control run and measures nothing."
+            )
         if cls.replay_anchor() is None:
             raise ValueError(
                 f"REPLAY_DISABLE={raw!r} is set without REPLAY_ANCHOR. This "
                 f"knob is for research replays only; honouring it on the live "
-                f"path would change what production serves.")
+                f"path would change what production serves."
+            )
         return names
 
     def _now(self):
         anchor = self.replay_anchor()
         if anchor is not None:
-            return datetime(anchor.year, anchor.month, anchor.day,
-                            tzinfo=timezone.utc)
-        return datetime.now(timezone.utc)
+            return datetime(anchor.year, anchor.month, anchor.day, tzinfo=UTC)
+        return datetime.now(UTC)
 
-    def fetch_price_history(self, days_back: int = 365,
-                            backfilled_only: bool = False,
-                            universe: str = "serve") -> pd.DataFrame:
+    def fetch_price_history(
+        self, days_back: int = 365, backfilled_only: bool = False, universe: str = "serve"
+    ) -> pd.DataFrame:
         logger.info(f"Fetching price history (last {days_back}d)...")
 
         if self.archive_dir.exists() and days_back > 14:
-            backfilled_slugs = (self._resolve_backfilled_slugs(universe)
-                                if backfilled_only else None)
+            backfilled_slugs = self._resolve_backfilled_slugs(universe) if backfilled_only else None
 
             # The voted frame is a pure function of the archive contents plus
             # the query window, so repeated runs over an unchanged archive —
@@ -2198,8 +2238,7 @@ class ItemForecaster:
             # the rebuild. Measured on the full archive: 35.5s cold, 0.3s
             # cached. That is the whole win; it is not a retrain-time lever
             # (a cold retrain is ~12m30s and almost entirely model fitting).
-            cache_key = self._voted_cache_key(days_back, backfilled_only,
-                                              backfilled_slugs, universe)
+            cache_key = self._voted_cache_key(days_back, backfilled_only, backfilled_slugs, universe)
             cached = self._load_voted_cache(cache_key)
             if cached is not None:
                 return cached
@@ -2213,7 +2252,8 @@ class ItemForecaster:
             return df
 
         cutoff = self._now() - timedelta(days=days_back)
-        rows = self.db.execute(text("""
+        rows = self.db.execute(
+            text("""
             SELECT item_id, date(timestamp) AS day, source, AVG(price) AS price, SUM(volume) AS volume
             FROM price_history
             WHERE timestamp >= :cutoff
@@ -2221,7 +2261,9 @@ class ItemForecaster:
               AND source NOT LIKE 'historical_fallback:%'
             GROUP BY item_id, date(timestamp), source
             ORDER BY item_id, day
-        """), {"cutoff": cutoff}).fetchall()
+        """),
+            {"cutoff": cutoff},
+        ).fetchall()
         if not rows:
             logger.info("  No DB price history rows found")
             return pd.DataFrame(columns=["item_id", "timestamp", "price", "volume", "date"])
@@ -2232,9 +2274,11 @@ class ItemForecaster:
         n_sources_before = df["source"].nunique() if "source" in df.columns else 1
         df = self._apply_multi_source_voting(df)
         n_after = len(df)
-        logger.info(f"  {n_after:,} rows (DB, voted from {n_before:,} rows "
-                    f"across {n_sources_before} sources), "
-                    f"{df.item_id.nunique():,} items")
+        logger.info(
+            f"  {n_after:,} rows (DB, voted from {n_before:,} rows "
+            f"across {n_sources_before} sources), "
+            f"{df.item_id.nunique():,} items"
+        )
         return df
 
     def _archive_universe_slugs(self, exclude_iflow: bool) -> set:
@@ -2249,14 +2293,13 @@ class ItemForecaster:
         """
         import duckdb
         from db.archive import prices_relation
-        iflow_clause = (
-            "AND source IS DISTINCT FROM 'buff_iflow'" if exclude_iflow else "")
+
+        iflow_clause = "AND source IS DISTINCT FROM 'buff_iflow'" if exclude_iflow else ""
         with duckdb.connect() as con:
-            relation = prices_relation(
-                con, self.archive_dir,
-                columns=["item_slug", "day", "source"])
+            relation = prices_relation(con, self.archive_dir, columns=["item_slug", "day", "source"])
             return {
-                r[0] for r in con.sql(f"""
+                r[0]
+                for r in con.sql(f"""
                     SELECT DISTINCT item_slug
                     FROM {relation}
                     WHERE day < '2026-01-01'
@@ -2284,28 +2327,26 @@ class ItemForecaster:
         """
         if universe == "train":
             slugs = self._archive_universe_slugs(exclude_iflow=True)
-            logger.info(f"  Train universe (archive-derived, pre-2026 non-iflow): "
-                        f"{len(slugs)} items")
+            logger.info(f"  Train universe (archive-derived, pre-2026 non-iflow): {len(slugs)} items")
             return slugs
 
         try:
-            slug_rows = self.db.execute(text(
-                "SELECT item_id FROM items WHERE is_backfilled = 1")).fetchall()
+            slug_rows = self.db.execute(text("SELECT item_id FROM items WHERE is_backfilled = 1")).fetchall()
             slugs = {r[0] for r in slug_rows}
             logger.info(f"  Serve universe filter (is_backfilled): {len(slugs)} items from DB")
             return slugs
         except Exception as e:
-            logger.warning(f"  Could not fetch is_backfilled items from DB, "
-                           f"deriving from archive: {e}")
+            logger.warning(f"  Could not fetch is_backfilled items from DB, deriving from archive: {e}")
             return self._archive_universe_slugs(exclude_iflow=False)
 
-    def _fetch_voted_price_history(self, days_back: int,
-                                   backfilled_only: bool,
-                                   backfilled_slugs: set = None) -> pd.DataFrame:
+    def _fetch_voted_price_history(
+        self, days_back: int, backfilled_only: bool, backfilled_slugs: set = None
+    ) -> pd.DataFrame:
         """Read the Parquet archive and collapse it to one consensus price per
         item per day. The expensive half of ``fetch_price_history``."""
         archive_dir = self.archive_dir
         import duckdb
+
         cutoff = (self._now() - timedelta(days=days_back)).strftime("%Y-%m-%d")
         con = duckdb.connect()
         try:
@@ -2313,15 +2354,13 @@ class ItemForecaster:
             # lacking `source` and the TIMESTAMP/TIMESTAMP_NS split. See
             # db/archive.py for why a plain glob read is not enough.
             from db.archive import prices_relation
-            relation = prices_relation(
-                con, archive_dir,
-                columns=["item_slug", "day", "mean_price", "volume", "source"])
+
+            relation = prices_relation(con, archive_dir, columns=["item_slug", "day", "mean_price", "volume", "source"])
 
             # Filter to backfilled slugs via a temp table JOIN (handles special chars safely)
             if backfilled_slugs is not None:
                 con.sql("CREATE TEMP TABLE _backfilled (slug VARCHAR)")
-                con.executemany("INSERT INTO _backfilled VALUES (?)",
-                                [(s,) for s in backfilled_slugs])
+                con.executemany("INSERT INTO _backfilled VALUES (?)", [(s,) for s in backfilled_slugs])
                 logger.info(f"  Filtering to {len(backfilled_slugs)} backfilled items via temp table")
 
             slug_join = "JOIN _backfilled b ON sub.item_slug = b.slug" if backfilled_slugs is not None else ""
@@ -2330,13 +2369,14 @@ class ItemForecaster:
             # DuckDB to infer, and `replay_anchor()` has already parsed this
             # through `date.fromisoformat`, so it cannot carry SQL.
             _anchor = self.replay_anchor()
-            _upper_bound = (
-                f"AND day <= '{_anchor.strftime('%Y-%m-%d')}'" if _anchor else "")
+            _upper_bound = f"AND day <= '{_anchor.strftime('%Y-%m-%d')}'" if _anchor else ""
             if _anchor:
                 logger.warning(
                     f"  REPLAY_ANCHOR={_anchor}: archive read bounded at that "
-                    f"date. This is a backdated replay, not a live forecast.")
-            df = con.sql(f"""
+                    f"date. This is a backdated replay, not a live forecast."
+                )
+            df = con.sql(
+                f"""
                 SELECT item_slug, day, mean_price AS price, volume, source
                 FROM {relation} sub
                 {slug_join}
@@ -2346,13 +2386,17 @@ class ItemForecaster:
                   AND {phase_collapsed_sql_filter("sub.item_slug")}
                   AND {phantom_slug_sql_filter("sub.item_slug")}
                 ORDER BY item_slug, day, source
-            """, params=[cutoff]).fetchdf()
-            logger.info(f"  DuckDB query returned {len(df):,} rows "
-                        f"(phase-collapsed names excluded: "
-                        f"{', '.join(PHASE_COLLAPSED_SLUG_PATTERNS)}; "
-                        f"phantom duplicate keys excluded)")
+            """,
+                params=[cutoff],
+            ).fetchdf()
+            logger.info(
+                f"  DuckDB query returned {len(df):,} rows "
+                f"(phase-collapsed names excluded: "
+                f"{', '.join(PHASE_COLLAPSED_SLUG_PATTERNS)}; "
+                f"phantom duplicate keys excluded)"
+            )
             df = df.rename(columns={"item_slug": "item_id", "day": "timestamp"})
-            logger.info(f"  DataFrame created, converting types...")
+            logger.info("  DataFrame created, converting types...")
             df["timestamp"] = pd.to_datetime(df["timestamp"])
             df["date"] = df["timestamp"].dt.date
             # Some Parquet years store mean_price/volume as VARCHAR; the
@@ -2367,11 +2411,13 @@ class ItemForecaster:
             logger.info(f"  Applying multi-source voting ({n_sources_before} sources)...")
             df = self._apply_multi_source_voting(df)
             n_after = len(df)
-            logger.info(f"  {n_after:,} rows (Parquet, voted from {n_before:,} rows "
-                        f"across {n_sources_before} sources), "
-                        f"{df.item_id.nunique():,} items")
+            logger.info(
+                f"  {n_after:,} rows (Parquet, voted from {n_before:,} rows "
+                f"across {n_sources_before} sources), "
+                f"{df.item_id.nunique():,} items"
+            )
             if backfilled_only:
-                logger.info(f"  Filtered to STEAMCOMMUNITY-backfilled items only")
+                logger.info("  Filtered to STEAMCOMMUNITY-backfilled items only")
             return df
         finally:
             con.close()
@@ -2432,7 +2478,8 @@ class ItemForecaster:
             n_other = (
                 df.loc[~is_cond]
                 .assign(_s=lambda d: d["source"].fillna("__null__"))
-                .groupby(["item_id", "date"])["_s"].nunique()
+                .groupby(["item_id", "date"])["_s"]
+                .nunique()
             )
             keys = pd.MultiIndex.from_arrays([df["item_id"], df["date"]])
             enough = n_other.reindex(keys).fillna(0).to_numpy() >= MIN_ASKS_TO_DROP_SYNC
@@ -2444,9 +2491,9 @@ class ItemForecaster:
             # they drop out rather than falling back to a bid or a stale
             # window, because a series whose basis alternates fabricates the
             # wedge, or the time-basis change, as a return.
-            return pd.DataFrame(
-                columns=["item_id", "date", "price", "volume", "n_ask_sources"]
-            ).astype({"n_ask_sources": "int64"})
+            return pd.DataFrame(columns=["item_id", "date", "price", "volume", "n_ask_sources"]).astype(
+                {"n_ask_sources": "int64"}
+            )
 
         # Speedup: split into single-source (≤1 row per item/date) and multi-source groups.
         # Single-source rows use fast groupby agg; multi-source uses the vote function.
@@ -2461,9 +2508,7 @@ class ItemForecaster:
             return out
 
         multi_keys = multi_groups[["item_id", "date"]].drop_duplicates()
-        is_multi = df.set_index(["item_id", "date"]).index.isin(
-            multi_keys.set_index(["item_id", "date"]).index
-        )
+        is_multi = df.set_index(["item_id", "date"]).index.isin(multi_keys.set_index(["item_id", "date"]).index)
 
         single_df = df[~is_multi].copy()
         multi_df = df[is_multi].copy()
@@ -2480,11 +2525,13 @@ class ItemForecaster:
                 consensus = np.median(prices)
             else:
                 consensus = np.median(prices)
-                return pd.Series({
-                    "price": consensus,
-                    "volume": group["volume"].sum() if "volume" in group.columns else 0,
-                    "n_ask_sources": n_ask_sources,
-                })
+                return pd.Series(
+                    {
+                        "price": consensus,
+                        "volume": group["volume"].sum() if "volume" in group.columns else 0,
+                        "n_ask_sources": n_ask_sources,
+                    }
+                )
 
             median = consensus
             std = np.std(prices, ddof=0)
@@ -2498,11 +2545,13 @@ class ItemForecaster:
             else:
                 consensus = median
 
-            return pd.Series({
-                "price": consensus,
-                "volume": group["volume"].sum() if "volume" in group.columns else 0,
-                "n_ask_sources": n_ask_sources,
-            })
+            return pd.Series(
+                {
+                    "price": consensus,
+                    "volume": group["volume"].sum() if "volume" in group.columns else 0,
+                    "n_ask_sources": n_ask_sources,
+                }
+            )
 
         # Fast path: single-source rows -- exactly one row per item-day, so
         # exactly one ask source voted, by construction.
@@ -2517,9 +2566,7 @@ class ItemForecaster:
 
         # Slow path: multi-source rows (small subset, typically <2% of groups)
         if len(multi_df) > 0:
-            result_multi = multi_df.groupby(["item_id", "date"], as_index=False).apply(
-                vote
-            ).reset_index(drop=True)
+            result_multi = multi_df.groupby(["item_id", "date"], as_index=False).apply(vote).reset_index(drop=True)
         else:
             result_multi = pd.DataFrame(columns=["item_id", "date", "price", "volume", "n_ask_sources"])
 
@@ -2533,20 +2580,25 @@ class ItemForecaster:
         if hasattr(self, "_events_cache") and self._events_cache is not None:
             return self._events_cache
         try:
-            rows = self.db.execute(text("""
+            rows = self.db.execute(
+                text("""
                 SELECT id, type, timestamp, description
                 FROM events
                 ORDER BY timestamp
-            """)).fetchall()
+            """)
+            ).fetchall()
         except Exception:
             logger.warning("  DB connection lost, reconnecting...")
             from database import SessionLocal
+
             self.db = SessionLocal()
-            rows = self.db.execute(text("""
+            rows = self.db.execute(
+                text("""
                 SELECT id, type, timestamp, description
                 FROM events
                 ORDER BY timestamp
-            """)).fetchall()
+            """)
+            ).fetchall()
         df = pd.DataFrame(rows, columns=["id", "type", "timestamp", "description"])
         df["timestamp"] = pd.to_datetime(df["timestamp"])
         df["date"] = df["timestamp"].dt.date
@@ -2558,9 +2610,9 @@ class ItemForecaster:
     # Feature engineering
     # ------------------------------------------------------------------
 
-    def _compute_price_features(self, df: pd.DataFrame,
-                                compute_volume: bool = True,
-                                compute_shelved_primitives: bool = True) -> pd.DataFrame:
+    def _compute_price_features(
+        self, df: pd.DataFrame, compute_volume: bool = True, compute_shelved_primitives: bool = True
+    ) -> pd.DataFrame:
         # compute_volume / compute_shelved_primitives default True so every
         # caller but the production frame build (engineer_features with
         # skip_unused_groups=True) is byte-identical. Both blocks are shelved
@@ -2590,18 +2642,18 @@ class ItemForecaster:
         # caller passed un-resampled (intraday-duplicate) rows. merge_asof needs
         # both sides sorted on the join key.
         observed = (
-            df[["item_id", "_date_dt", "price"]]
-            .drop_duplicates(subset=["item_id", "_date_dt"])
-            .sort_values("_date_dt")
+            df[["item_id", "_date_dt", "price"]].drop_duplicates(subset=["item_id", "_date_dt"]).sort_values("_date_dt")
         )
         tolerance = pd.Timedelta(self.LAG_TOLERANCE_DAYS, unit="D")
         for lag in LAGS:
             col = f"price_lag_{lag}d"
-            targets = pd.DataFrame({
-                "_row": df.index,
-                "item_id": df["item_id"],
-                "_target": df["_date_dt"] - pd.Timedelta(lag, unit="D"),
-            }).sort_values("_target")
+            targets = pd.DataFrame(
+                {
+                    "_row": df.index,
+                    "item_id": df["item_id"],
+                    "_target": df["_date_dt"] - pd.Timedelta(lag, unit="D"),
+                }
+            ).sort_values("_target")
             resolved = pd.merge_asof(
                 targets,
                 observed.rename(columns={"price": col}),
@@ -2616,9 +2668,7 @@ class ItemForecaster:
         # Returns (winsorized at ±500% against residual data artifacts)
         for lag in LAGS:
             col = f"price_lag_{lag}d"
-            df[f"return_{lag}d"] = (
-                (df["price"] - df[col]) / df[col].replace(0, np.nan) * 100
-            ).clip(-500, 500)
+            df[f"return_{lag}d"] = ((df["price"] - df[col]) / df[col].replace(0, np.nan) * 100).clip(-500, 500)
 
         # Date-aware EWMA of |return_1d|, fast and slow, for the regime-reactive
         # band-scale multiplier (CLIMATOLOGY_REACTIVE). Date-aware (halflife as a
@@ -2626,13 +2676,14 @@ class ItemForecaster:
         # window the way a row-based rolling std does — the exact lag that refuted
         # the v1 arm. Causal (past-only). SHELVED, so the boosters never see them.
         _abs_r1 = df["return_1d"].abs()
-        _tmp = pd.DataFrame({"item_id": df["item_id"], "d": df["_date_dt"],
-                             "r": _abs_r1}).sort_values(["item_id", "d"])
-        for col, hl in (("ewm_reactive_fast", self.CLIMATOLOGY_REACTIVE_FAST_HL),
-                        ("ewm_reactive_slow", self.CLIMATOLOGY_REACTIVE_SLOW_HL)):
+        _tmp = pd.DataFrame({"item_id": df["item_id"], "d": df["_date_dt"], "r": _abs_r1}).sort_values(["item_id", "d"])
+        for col, hl in (
+            ("ewm_reactive_fast", self.CLIMATOLOGY_REACTIVE_FAST_HL),
+            ("ewm_reactive_slow", self.CLIMATOLOGY_REACTIVE_SLOW_HL),
+        ):
             ewm = _tmp.groupby("item_id", group_keys=False).apply(
-                lambda g: g["r"].ewm(halflife=pd.Timedelta(hl),
-                                     times=g["d"]).mean())
+                lambda g: g["r"].ewm(halflife=pd.Timedelta(hl), times=g["d"]).mean()
+            )
             df[col] = ewm.reindex(df.index)
 
         df = df.drop(columns=["_date_dt"])
@@ -2676,8 +2727,9 @@ class ItemForecaster:
 
         # Trend divergence: ratio of 30d return to 60d return.
         # Shows whether short-term momentum agrees with long-term trend.
-        df["trend_divergence_30_60"] = (df.get("return_30d", pd.Series(np.nan, index=df.index)) /
-                                        df.get("return_60d", pd.Series(np.nan, index=df.index)).replace(0, np.nan))
+        df["trend_divergence_30_60"] = df.get("return_30d", pd.Series(np.nan, index=df.index)) / df.get(
+            "return_60d", pd.Series(np.nan, index=df.index)
+        ).replace(0, np.nan)
 
         # Price acceleration (2nd derivative)
         df["price_accel_7d"] = df["return_7d"] - df["return_7d"].groupby(df["item_id"]).shift(7)
@@ -2705,9 +2757,8 @@ class ItemForecaster:
         # units, matching target_return_{h}d and the flat-band threshold
         # (k * sigma * sqrt(h)) it feeds. Trailing only (no centering) —
         # no future information leaks into the window.
-        df[DIRECTION_LABEL_VOL_COL] = (
-            df.groupby("item_id")["log_return_1d"]
-              .transform(lambda s: (s * 100.0).rolling(DIRECTION_VOL_WINDOW, min_periods=5).std())
+        df[DIRECTION_LABEL_VOL_COL] = df.groupby("item_id")["log_return_1d"].transform(
+            lambda s: (s * 100.0).rolling(DIRECTION_VOL_WINDOW, min_periods=5).std()
         )
 
         # Price autocorrelation proxy (direction agreement between lag-1 and lag-7 returns)
@@ -2723,7 +2774,7 @@ class ItemForecaster:
         df["bb_lower"] = bb_mid - 2 * bb_std
         bb_range = (df["bb_upper"] - df["bb_lower"]).replace(0, np.nan)
         df["bb_pct_b"] = ((df["price"] - df["bb_lower"]) / bb_range).clip(-2, 2)
-        df["bb_width"] = (bb_range / bb_mid.replace(0, np.nan))
+        df["bb_width"] = bb_range / bb_mid.replace(0, np.nan)
 
         # =====================================================================
         # RSI (14-day)
@@ -2772,12 +2823,17 @@ class ItemForecaster:
         # =====================================================================
         # Support / Resistance distances
         # =====================================================================
-        df["distance_to_support"] = ((df["price"] - df["price_min_30d"]).replace(0, np.nan) /
-                                      df["price_min_30d"].replace(0, np.nan) * 100)
-        df["distance_to_resistance"] = ((df["price_max_30d"] - df["price"]).replace(0, np.nan) /
-                                         df["price"].replace(0, np.nan) * 100)
-        df["high_low_range_30d"] = ((df["price_max_30d"] - df["price_min_30d"]).replace(0, np.nan) /
-                                     df["price_min_30d"].replace(0, np.nan) * 100)
+        df["distance_to_support"] = (
+            (df["price"] - df["price_min_30d"]).replace(0, np.nan) / df["price_min_30d"].replace(0, np.nan) * 100
+        )
+        df["distance_to_resistance"] = (
+            (df["price_max_30d"] - df["price"]).replace(0, np.nan) / df["price"].replace(0, np.nan) * 100
+        )
+        df["high_low_range_30d"] = (
+            (df["price_max_30d"] - df["price_min_30d"]).replace(0, np.nan)
+            / df["price_min_30d"].replace(0, np.nan)
+            * 100
+        )
 
         # =====================================================================
         # Longer-horizon trend features (added 2026-07-24)
@@ -2798,8 +2854,7 @@ class ItemForecaster:
         # High values = a persistent uptrend (what momentum exploits); ~0.5 = chop.
         up_day = (df["return_1d"] > 0).astype(float)
         df["trend_up_fraction_30d"] = (
-            up_day.groupby(df["item_id"]).rolling(30, min_periods=5).mean()
-            .reset_index(level=0, drop=True)
+            up_day.groupby(df["item_id"]).rolling(30, min_periods=5).mean().reset_index(level=0, drop=True)
         )
 
         # =====================================================================
@@ -2843,12 +2898,10 @@ class ItemForecaster:
         ret_neg = ret.where(ret < 0)
         ret_pos = ret.where(ret > 0)
         df["vol_semidev_down_30d"] = (
-            ret_neg.groupby(df["item_id"]).rolling(30, min_periods=5).std()
-            .reset_index(level=0, drop=True)
+            ret_neg.groupby(df["item_id"]).rolling(30, min_periods=5).std().reset_index(level=0, drop=True)
         )
         df["vol_semidev_up_30d"] = (
-            ret_pos.groupby(df["item_id"]).rolling(30, min_periods=5).std()
-            .reset_index(level=0, drop=True)
+            ret_pos.groupby(df["item_id"]).rolling(30, min_periods=5).std().reset_index(level=0, drop=True)
         )
         # Ratio > 1 => upside more volatile (froth); < 1 => downside sharper
         # (panic). Clipped: near-zero downside vol otherwise blows the ratio up.
@@ -2859,18 +2912,12 @@ class ItemForecaster:
         # Oscillator divergence — momentum of RSI/MACD, and price/RSI
         # disagreement. A groupby shift(7) is a clean 7-day lookback.
         # =====================================================================
-        df["rsi_divergence_7d"] = (
-            df["rsi_14"] - df.groupby("item_id")["rsi_14"].shift(7)
-        )
+        df["rsi_divergence_7d"] = df["rsi_14"] - df.groupby("item_id")["rsi_14"].shift(7)
         # Positive => price up while RSI down (bearish divergence). return_7d is
         # winsorized to +/-500; clip to +/-50 keeps typical moves on the same
         # scale as the RSI term (RSI change is bounded to +/-100).
-        df["rsi_price_divergence_7d"] = (
-            df["return_7d"].clip(-50, 50) / 50.0 - df["rsi_divergence_7d"] / 100.0
-        )
-        df["macd_hist_slope_7d"] = (
-            df["macd_histogram"] - df.groupby("item_id")["macd_histogram"].shift(7)
-        )
+        df["rsi_price_divergence_7d"] = df["return_7d"].clip(-50, 50) / 50.0 - df["rsi_divergence_7d"] / 100.0
+        df["macd_hist_slope_7d"] = df["macd_histogram"] - df.groupby("item_id")["macd_histogram"].shift(7)
         return df
 
     @staticmethod
@@ -2892,27 +2939,16 @@ class ItemForecaster:
             grouped = df.groupby("item_id")
 
         has_volume = "volume" in df.columns and df["volume"].notna().any()
-        df["volume_missing"] = (1 if not has_volume else
-                                df["volume"].isna().astype(int))
+        df["volume_missing"] = 1 if not has_volume else df["volume"].isna().astype(int)
 
         if has_volume:
             df["volume_lag_1d"] = grouped["volume"].shift(1)
             df["volume_lag_7d"] = grouped["volume"].shift(7)
-            df["volume_mean_7d"] = grouped["volume"].rolling(
-                7, min_periods=1
-            ).mean().reset_index(level=0, drop=True)
-            df["volume_mean_30d"] = grouped["volume"].rolling(
-                30, min_periods=1
-            ).mean().reset_index(level=0, drop=True)
-            df["volume_std_30d"] = grouped["volume"].rolling(
-                30, min_periods=1
-            ).std().reset_index(level=0, drop=True)
-            df["volume_mean_60d"] = grouped["volume"].rolling(
-                60, min_periods=1
-            ).mean().reset_index(level=0, drop=True)
-            df["volume_std_60d"] = grouped["volume"].rolling(
-                60, min_periods=1
-            ).std().reset_index(level=0, drop=True)
+            df["volume_mean_7d"] = grouped["volume"].rolling(7, min_periods=1).mean().reset_index(level=0, drop=True)
+            df["volume_mean_30d"] = grouped["volume"].rolling(30, min_periods=1).mean().reset_index(level=0, drop=True)
+            df["volume_std_30d"] = grouped["volume"].rolling(30, min_periods=1).std().reset_index(level=0, drop=True)
+            df["volume_mean_60d"] = grouped["volume"].rolling(60, min_periods=1).mean().reset_index(level=0, drop=True)
+            df["volume_std_60d"] = grouped["volume"].rolling(60, min_periods=1).std().reset_index(level=0, drop=True)
 
             # Log-ratio volume change (avoids division-by-zero issues)
             vol_lag_1 = df["volume_lag_1d"].replace(0, np.nan)
@@ -2922,7 +2958,7 @@ class ItemForecaster:
 
             # Volume z-score vs 30d
             vol_std_30 = df["volume_std_30d"].replace(0, np.nan)
-            df["volume_zscore_30d"] = ((df["volume"] - df["volume_mean_30d"]) / vol_std_30)
+            df["volume_zscore_30d"] = (df["volume"] - df["volume_mean_30d"]) / vol_std_30
 
             # Volume-price confirmation.
             #
@@ -2939,19 +2975,23 @@ class ItemForecaster:
             # False is the pre-existing semantics, not a new choice: on the
             # numpy path `NaN > 0` was already False, i.e. "no confirmation".
             # This is a no-op on every day before 2026-08-08.
-            df["volume_price_conf_7d"] = (
-                df["return_7d"]
-                * (df["volume_log_change_7d"] > 0).fillna(False).astype(int))
-            df["volume_price_conf_1d"] = (
-                df["return_1d"]
-                * (df["volume_log_change_1d"] > 0).fillna(False).astype(int))
+            df["volume_price_conf_7d"] = df["return_7d"] * (df["volume_log_change_7d"] > 0).fillna(False).astype(int)
+            df["volume_price_conf_1d"] = df["return_1d"] * (df["volume_log_change_1d"] > 0).fillna(False).astype(int)
         else:
-            for col in ["volume_lag_1d", "volume_lag_7d", "volume_mean_7d",
-                        "volume_mean_30d", "volume_std_30d",
-                        "volume_mean_60d", "volume_std_60d",
-                        "volume_log_change_1d", "volume_log_change_7d",
-                        "volume_zscore_30d", "volume_price_conf_7d",
-                        "volume_price_conf_1d"]:
+            for col in [
+                "volume_lag_1d",
+                "volume_lag_7d",
+                "volume_mean_7d",
+                "volume_mean_30d",
+                "volume_std_30d",
+                "volume_mean_60d",
+                "volume_std_60d",
+                "volume_log_change_1d",
+                "volume_log_change_7d",
+                "volume_zscore_30d",
+                "volume_price_conf_7d",
+                "volume_price_conf_1d",
+            ]:
                 df[col] = np.nan
         return df
 
@@ -2959,9 +2999,11 @@ class ItemForecaster:
         if hasattr(self, "_item_meta_cache") and self._item_meta_cache is not None:
             return self._item_meta_cache
         try:
-            rows = self.db.execute(text("""
+            rows = self.db.execute(
+                text("""
                 SELECT item_id, name, type FROM items
-            """)).fetchall()
+            """)
+            ).fetchall()
             df = pd.DataFrame(rows, columns=["item_id", "name", "type"])
         except Exception:
             self._item_meta_cache = pd.DataFrame(columns=["item_id", "name", "type"])
@@ -2976,8 +3018,7 @@ class ItemForecaster:
 
         Off by default. See BYMYKEL_META_FEATURES for why.
         """
-        return (os.environ.get("BYMYKEL_METADATA") == "1"
-                or ItemForecaster.exceedance_meta_enabled())
+        return os.environ.get("BYMYKEL_METADATA") == "1" or ItemForecaster.exceedance_meta_enabled()
 
     @staticmethod
     def tier_lead_enabled() -> bool:
@@ -3130,8 +3171,7 @@ class ItemForecaster:
         environment (train/CV path). When off this is exactly `X.fillna(medians)`
         — byte-identical to the pre-flag behaviour.
         """
-        native = self._feature_native_nan_served() if served else \
-            self.feature_native_nan_enabled()
+        native = self._feature_native_nan_served() if served else self.feature_native_nan_enabled()
         if native:
             return X
         return X.fillna(medians)
@@ -3164,7 +3204,7 @@ class ItemForecaster:
         v = pd.to_numeric(frame[col], errors="coerce").to_numpy(dtype=float)
         return -np.nan_to_num(v, nan=0.0, posinf=0.0, neginf=0.0)
 
-    def _naive_offset(self, frame) -> Optional[np.ndarray]:
+    def _naive_offset(self, frame) -> np.ndarray | None:
         """The training-side offset: reads the environment, per N1's gate.
 
         None when the instrument is off, which is what every call site checks
@@ -3177,7 +3217,7 @@ class ItemForecaster:
             return None
         return self._minus_return_1d(frame)
 
-    def _naive_offset_served(self, frame) -> Optional[np.ndarray]:
+    def _naive_offset_served(self, frame) -> np.ndarray | None:
         """The predict-side offset: follows the artifact, per _naive_init_score_served."""
         if not self._naive_init_score_served():
             return None
@@ -3198,9 +3238,11 @@ class ItemForecaster:
         # Overridable so scripts/paired_retrain_bymykel.py can point a placebo
         # arm at a permuted copy without a second code path. Unset in production.
         override = os.environ.get("BYMYKEL_METADATA_PATH")
-        path = (Path(override) if override else
-                Path(__file__).parent.parent.parent / "price-archive"
-                / "item-metadata-bymykel.parquet")
+        path = (
+            Path(override)
+            if override
+            else Path(__file__).parent.parent.parent / "price-archive" / "item-metadata-bymykel.parquet"
+        )
         df = pd.DataFrame()
         if path.exists():
             try:
@@ -3213,7 +3255,8 @@ class ItemForecaster:
             logger.warning(
                 f"  BYMYKEL_METADATA=1 but {path.name} is absent — the nine "
                 f"metadata features will not be added. Run "
-                f"scripts/ingest_bymykel_metadata.py.")
+                f"scripts/ingest_bymykel_metadata.py."
+            )
         self._bymykel_meta_cache = df
         return df
 
@@ -3237,9 +3280,7 @@ class ItemForecaster:
 
         if "item_age_first_sale_date" in aligned.columns:
             obs = pd.to_datetime(pd.Series(df["date"].to_numpy()))
-            first_sale = pd.to_datetime(
-                pd.Series(aligned["item_age_first_sale_date"].to_numpy()),
-                errors="coerce")
+            first_sale = pd.to_datetime(pd.Series(aligned["item_age_first_sale_date"].to_numpy()), errors="coerce")
             age = (obs - first_sale).dt.days.to_numpy(dtype=float)
             # A negative age means the item traded before the catalogue says it
             # first went on sale: the metadata is wrong for that item, not that
@@ -3255,12 +3296,10 @@ class ItemForecaster:
             # only if its dtype is in (float64, float32, int64, int, float), and
             # pandas' nullable Int64 is none of those — leaving it would drop the
             # column silently, which reads exactly like a null result.
-            df[col] = pd.to_numeric(
-                aligned[col].to_numpy(), errors="coerce").astype(np.float64)
+            df[col] = pd.to_numeric(aligned[col].to_numpy(), errors="coerce").astype(np.float64)
 
         present = sorted(c for c in self.BYMYKEL_META_FEATURES if c in df.columns)
-        logger.info(f"  ByMykel metadata features added: {len(present)} "
-                    f"({', '.join(present)})")
+        logger.info(f"  ByMykel metadata features added: {len(present)} ({', '.join(present)})")
         return df
 
     def _fetch_supply_metadata(self) -> pd.DataFrame:
@@ -3286,9 +3325,11 @@ class ItemForecaster:
                 logger.warning(f"  Failed to load supply metadata from Parquet: {e}")
 
         try:
-            rows = self.db.execute(text("""
+            rows = self.db.execute(
+                text("""
                 SELECT item_id, rarity, rarity_rank, weapon_type FROM items
-            """)).fetchall()
+            """)
+            ).fetchall()
             df = pd.DataFrame(rows, columns=["item_id", "rarity", "rarity_rank", "weapon_type"])
             logger.info(f"  supply metadata: {len(df)} items loaded from DB")
         except Exception:
@@ -3317,16 +3358,24 @@ class ItemForecaster:
         df["rarity_ordinal"] = df["rarity_rank"].fillna(0).astype(int)
 
         # Rarity one-hot dummies
-        rarity_cats = ["base", "consumer", "industrial", "milspec",
-                       "restricted", "classified", "covert",
-                       "high_grade", "remarkable", "exotic", "extraordinary"]
+        rarity_cats = [
+            "base",
+            "consumer",
+            "industrial",
+            "milspec",
+            "restricted",
+            "classified",
+            "covert",
+            "high_grade",
+            "remarkable",
+            "exotic",
+            "extraordinary",
+        ]
         for cat in rarity_cats:
             col = f"rarity_{cat}"
-            df[col] = ((df["rarity"] == cat).astype(int))
+            df[col] = (df["rarity"] == cat).astype(int)
 
         return df
-
-
 
     # ── Supply-depth features (sell_listings, skinport_quantity) ──────
 
@@ -3371,9 +3420,9 @@ class ItemForecaster:
             return empty
 
         try:
-            frames = [pd.read_parquet(p, columns=["item_slug", "snapshot_day",
-                                                  "source", "listing_count"])
-                      for p in paths]
+            frames = [
+                pd.read_parquet(p, columns=["item_slug", "snapshot_day", "source", "listing_count"]) for p in paths
+            ]
             raw = pd.concat(frames, ignore_index=True)
             raw = raw[raw["listing_count"].notna()]
             if raw.empty:
@@ -3384,9 +3433,7 @@ class ItemForecaster:
             df = (
                 raw.groupby(["item_slug", "snapshot_day"], as_index=False)["listing_count"]
                 .max()
-                .rename(columns={"item_slug": "item_id",
-                                 "snapshot_day": "date",
-                                 "listing_count": "sell_listings"})
+                .rename(columns={"item_slug": "item_id", "snapshot_day": "date", "listing_count": "sell_listings"})
             )
             df["date"] = pd.to_datetime(df["date"]).dt.date
             df["sell_listings"] = df["sell_listings"].astype(int)
@@ -3425,9 +3472,13 @@ class ItemForecaster:
         """
         snap = self._fetch_supply_snapshots()
         if snap.empty:
-            for col in ["supply_listings_log", "supply_listings_zscore",
-                        "supply_change_7d", "supply_skinport_qty_log",
-                        "supply_to_volume_ratio"]:
+            for col in [
+                "supply_listings_log",
+                "supply_listings_zscore",
+                "supply_change_7d",
+                "supply_skinport_qty_log",
+                "supply_to_volume_ratio",
+            ]:
                 df[col] = 0.0
             return df
 
@@ -3444,15 +3495,14 @@ class ItemForecaster:
         grouped = df.groupby("item_id")["sell_listings"]
         rolling_mean = grouped.transform(lambda x: x.rolling(30, min_periods=1).mean())
         rolling_std = grouped.transform(lambda x: x.rolling(30, min_periods=1).std().replace(0, np.nan))
-        df["supply_listings_zscore"] = (
-            (df["sell_listings"] - rolling_mean) / rolling_std
-        ).fillna(0).astype(np.float32)
+        df["supply_listings_zscore"] = ((df["sell_listings"] - rolling_mean) / rolling_std).fillna(0).astype(np.float32)
 
         # 7-day change in listing count
         df["supply_change_7d"] = (
-            (df["sell_listings"] - grouped.shift(7))
-            / grouped.shift(7).replace(0, np.nan) * 100
-        ).fillna(0).astype(np.float32)
+            ((df["sell_listings"] - grouped.shift(7)) / grouped.shift(7).replace(0, np.nan) * 100)
+            .fillna(0)
+            .astype(np.float32)
+        )
 
         # Supply-to-volume ratio: listings / trailing 30d volume
         vol_col = None
@@ -3461,9 +3511,9 @@ class ItemForecaster:
                 vol_col = candidate
                 break
         if vol_col:
-            df["supply_to_volume_ratio"] = (
-                df["sell_listings"] / (df[vol_col].fillna(0).replace(0, 1) + 1)
-            ).astype(np.float32)
+            df["supply_to_volume_ratio"] = (df["sell_listings"] / (df[vol_col].fillna(0).replace(0, 1) + 1)).astype(
+                np.float32
+            )
         else:
             df["supply_to_volume_ratio"] = 0.0
 
@@ -3494,9 +3544,19 @@ class ItemForecaster:
         """
         if hasattr(self, "_orderbook_cache") and self._orderbook_cache is not None:
             return self._orderbook_cache
-        empty = pd.DataFrame(columns=["item_id", "date", "p05_ask", "p25_ask",
-                                      "depth_5pct", "depth_10pct", "listing_count",
-                                      "age_median_days", "inflow_24h"])
+        empty = pd.DataFrame(
+            columns=[
+                "item_id",
+                "date",
+                "p05_ask",
+                "p25_ask",
+                "depth_5pct",
+                "depth_10pct",
+                "listing_count",
+                "age_median_days",
+                "inflow_24h",
+            ]
+        )
         # Month partitions ONLY — same guard as _fetch_supply_snapshots: a bare
         # `supply-*.parquet` also matches the BUFF `supply-history.parquet`
         # sidecar, which is keyed differently and would raise inside this read.
@@ -3505,18 +3565,34 @@ class ItemForecaster:
             self._orderbook_cache = empty
             return empty
         try:
-            frames = [pd.read_parquet(p, columns=["item_slug", "snapshot_day", "source",
-                                                  "listing_count", "p05_ask", "p25_ask",
-                                                  "depth_5pct", "depth_10pct",
-                                                  "age_median_days", "inflow_24h"])
-                      for p in paths]
+            frames = [
+                pd.read_parquet(
+                    p,
+                    columns=[
+                        "item_slug",
+                        "snapshot_day",
+                        "source",
+                        "listing_count",
+                        "p05_ask",
+                        "p25_ask",
+                        "depth_5pct",
+                        "depth_10pct",
+                        "age_median_days",
+                        "inflow_24h",
+                    ],
+                )
+                for p in paths
+            ]
             raw = pd.concat(frames, ignore_index=True)
             raw = raw[raw["source"] == "lis_skins"]
             if raw.empty:
                 self._orderbook_cache = empty
                 return empty
-            df = (raw.groupby(["item_slug", "snapshot_day"], as_index=False).max()
-                  .rename(columns={"item_slug": "item_id", "snapshot_day": "date"}))
+            df = (
+                raw.groupby(["item_slug", "snapshot_day"], as_index=False)
+                .max()
+                .rename(columns={"item_slug": "item_id", "snapshot_day": "date"})
+            )
             # The groupby carries the constant 'lis_skins' label through max();
             # it is not a feature and must not reach the frame as a string col.
             df = df.drop(columns=["source"], errors="ignore")
@@ -3553,23 +3629,28 @@ class ItemForecaster:
         df["ob_present"] = df["p05_ask"].notna().astype(int)
         anchor = df["p05_ask"].replace(0, np.nan)
         df["ob_ladder_slope"] = ((df["p25_ask"] - df["p05_ask"]) / anchor).astype(np.float32)
-        df["ob_depth_concentration"] = (
-            df["depth_5pct"] / df["depth_10pct"].replace(0, np.nan)
-        ).astype(np.float32)
+        df["ob_depth_concentration"] = (df["depth_5pct"] / df["depth_10pct"].replace(0, np.nan)).astype(np.float32)
         df["ob_inflow_log"] = np.log1p(df["inflow_24h"].where(df["inflow_24h"] >= 0)).astype(np.float32)
         df["ob_age_median"] = df["age_median_days"].astype(np.float32)
         loglist = np.log1p(df["listing_count"].where(df["listing_count"] > 0))
         df["ob_churn"] = loglist.groupby(df["item_id"]).diff().astype(np.float32)
         vol_col = next((c for c in ("volume_30d", "volume_mean_30d", "volume") if c in df.columns), None)
         if vol_col is not None:
-            df["ob_turnover"] = (
-                df[vol_col].fillna(np.nan) / df["depth_5pct"].replace(0, np.nan)
-            ).astype(np.float32)
+            df["ob_turnover"] = (df[vol_col].fillna(np.nan) / df["depth_5pct"].replace(0, np.nan)).astype(np.float32)
         else:
             df["ob_turnover"] = np.nan
-        df = df.drop(columns=["p05_ask", "p25_ask", "depth_5pct", "depth_10pct",
-                               "listing_count", "age_median_days", "inflow_24h"],
-                     errors="ignore")
+        df = df.drop(
+            columns=[
+                "p05_ask",
+                "p25_ask",
+                "depth_5pct",
+                "depth_10pct",
+                "listing_count",
+                "age_median_days",
+                "inflow_24h",
+            ],
+            errors="ignore",
+        )
         return df
 
     # ── Social sentiment features (Reddit mentions, VADER scores) ──────
@@ -3585,7 +3666,8 @@ class ItemForecaster:
             return self._social_cache
 
         try:
-            rows = self.db.execute(text("""
+            rows = self.db.execute(
+                text("""
                 SELECT
                     i.item_id,
                     DATE(sm.mentioned_at) AS date,
@@ -3596,11 +3678,9 @@ class ItemForecaster:
                 JOIN items i ON i.id = sm.item_id
                 GROUP BY i.item_id, DATE(sm.mentioned_at)
                 ORDER BY i.item_id, date
-            """)).fetchall()
-            df = pd.DataFrame(rows, columns=[
-                "item_id", "date", "mention_count",
-                "avg_sentiment", "avg_score"
-            ])
+            """)
+            ).fetchall()
+            df = pd.DataFrame(rows, columns=["item_id", "date", "mention_count", "avg_sentiment", "avg_score"])
             if df.empty:
                 logger.info("  social mentions: empty")
                 self._social_cache = df
@@ -3629,9 +3709,13 @@ class ItemForecaster:
         """
         social = self._fetch_social_mentions()
         if social.empty:
-            for col in ["social_mentions_1d", "social_mentions_7d",
-                        "social_mention_velocity", "social_sentiment_7d",
-                        "social_score_7d"]:
+            for col in [
+                "social_mentions_1d",
+                "social_mentions_7d",
+                "social_mention_velocity",
+                "social_sentiment_7d",
+                "social_score_7d",
+            ]:
                 df[col] = 0.0
             return df
 
@@ -3643,29 +3727,27 @@ class ItemForecaster:
         # Rolling mention counts per item
         df = df.sort_values(["item_id", "date"])
         grouped = df.groupby("item_id")["mention_count"]
-        df["social_mentions_1d"] = grouped.transform(
-            lambda x: x.rolling(1, min_periods=1).sum()
-        ).fillna(0).astype(np.float32)
-        df["social_mentions_7d"] = grouped.transform(
-            lambda x: x.rolling(7, min_periods=1).sum()
-        ).fillna(0).astype(np.float32)
+        df["social_mentions_1d"] = (
+            grouped.transform(lambda x: x.rolling(1, min_periods=1).sum()).fillna(0).astype(np.float32)
+        )
+        df["social_mentions_7d"] = (
+            grouped.transform(lambda x: x.rolling(7, min_periods=1).sum()).fillna(0).astype(np.float32)
+        )
 
         # Mention velocity: acceleration signal
         mentions_7d = df["social_mentions_7d"].replace(0, 1)
-        df["social_mention_velocity"] = (
-            df["social_mentions_1d"] / mentions_7d
-        ).fillna(0).astype(np.float32)
+        df["social_mention_velocity"] = (df["social_mentions_1d"] / mentions_7d).fillna(0).astype(np.float32)
 
         # Rolling 7d avg sentiment and score
         grouped_sent = df.groupby("item_id")["avg_sentiment"]
-        df["social_sentiment_7d"] = grouped_sent.transform(
-            lambda x: x.rolling(7, min_periods=1).mean()
-        ).fillna(0).astype(np.float32)
+        df["social_sentiment_7d"] = (
+            grouped_sent.transform(lambda x: x.rolling(7, min_periods=1).mean()).fillna(0).astype(np.float32)
+        )
 
         grouped_score = df.groupby("item_id")["avg_score"]
-        df["social_score_7d"] = grouped_score.transform(
-            lambda x: x.rolling(7, min_periods=1).mean()
-        ).fillna(0).astype(np.float32)
+        df["social_score_7d"] = (
+            grouped_score.transform(lambda x: x.rolling(7, min_periods=1).mean()).fillna(0).astype(np.float32)
+        )
 
         df = df.drop(columns=["mention_count", "avg_sentiment", "avg_score"], errors="ignore")
 
@@ -3687,8 +3769,7 @@ class ItemForecaster:
         df = df.drop(columns=["type"])
         return df
 
-    def _add_temporal_features(self, df: pd.DataFrame,
-                               item_first_dates=None) -> pd.DataFrame:
+    def _add_temporal_features(self, df: pd.DataFrame, item_first_dates=None) -> pd.DataFrame:
         dates = pd.to_datetime(df["date"])
         dow = dates.dt.dayofweek
         month = dates.dt.month
@@ -3713,9 +3794,7 @@ class ItemForecaster:
                 # item as exactly that many days old. Prefer the true
                 # first-seen date when the caller can supply it.
                 item_first_date = df["item_id"].map(item_first_dates)
-                item_first_date = item_first_date.fillna(
-                    df.groupby("item_id")["date"].transform("min")
-                )
+                item_first_date = item_first_date.fillna(df.groupby("item_id")["date"].transform("min"))
             else:
                 item_first_date = df.groupby("item_id")["date"].transform("min")
             df["item_age_days"] = (pd.to_datetime(df["date"]) - pd.to_datetime(item_first_date)).dt.days
@@ -3758,7 +3837,7 @@ class ItemForecaster:
             decay_val = np.zeros(len(dates), dtype=float)
             if valid.any():
                 last_event_dates = sorted_events[indices[valid]]
-                days_since = (all_dates[valid] - last_event_dates).astype('timedelta64[D]').astype(float)
+                days_since = (all_dates[valid] - last_event_dates).astype("timedelta64[D]").astype(float)
                 decay_val[valid] = np.exp(-days_since / decay_tau)
             df[f"event_decay_{event_type}"] = decay_val
 
@@ -3779,14 +3858,22 @@ class ItemForecaster:
 
         # Add relevance-weighted event signals
         # Different item types respond differently to each event type.
-        has_identity = all(c in df.columns for c in
-                           ["is_sticker", "is_case", "is_glove", "is_knife"])
+        has_identity = all(c in df.columns for c in ["is_sticker", "is_case", "is_glove", "is_knife"])
         if has_identity:
             is_skin = (
-                1 - df["is_sticker"] - df["is_case"] - df["is_music_kit"]
-                - df["is_graffiti"] - df["is_charm"] - df["is_patch"]
-                - df["is_capsule"]
-            ).clip(lower=0).astype(float)
+                (
+                    1
+                    - df["is_sticker"]
+                    - df["is_case"]
+                    - df["is_music_kit"]
+                    - df["is_graffiti"]
+                    - df["is_charm"]
+                    - df["is_patch"]
+                    - df["is_capsule"]
+                )
+                .clip(lower=0)
+                .astype(float)
+            )
 
             relevance_map = {
                 "major": (
@@ -3794,14 +3881,8 @@ class ItemForecaster:
                     + df["is_case"].astype(float) * 0.3
                     + df["is_capsule"].astype(float) * 0.6
                 ),
-                "operation": (
-                    df["is_case"].astype(float) * 1.0
-                    + is_skin * 0.3
-                ),
-                "case_drop": (
-                    df["is_case"].astype(float) * 1.0
-                    + is_skin * 0.5
-                ),
+                "operation": (df["is_case"].astype(float) * 1.0 + is_skin * 0.3),
+                "case_drop": (df["is_case"].astype(float) * 1.0 + is_skin * 0.5),
                 "update": is_skin * 0.5,
                 "game_update": is_skin * 0.3,
             }
@@ -3818,11 +3899,10 @@ class ItemForecaster:
     # from (sum, count) partials, so the identical table can be built one item
     # chunk at a time without ever holding the whole frame. See
     # _accumulate_market_partials / _market_from_partials.
-    MARKET_MEAN_COLS = ("return_1d", "return_7d", "return_14d", "return_30d",
-                        "price_std_30d", "volume")
+    MARKET_MEAN_COLS = ("return_1d", "return_7d", "return_14d", "return_30d", "price_std_30d", "volume")
 
     @staticmethod
-    def _accumulate_market_partials(df: pd.DataFrame) -> Dict[str, pd.DataFrame]:
+    def _accumulate_market_partials(df: pd.DataFrame) -> dict[str, pd.DataFrame]:
         """Per-date (sum, count) for each market column present in this frame.
 
         `count` excludes NaN, matching pandas' skipna mean, so combining
@@ -3835,7 +3915,7 @@ class ItemForecaster:
         return partials
 
     @staticmethod
-    def _market_from_partials(partial_list: List[Dict[str, pd.DataFrame]]) -> pd.DataFrame:
+    def _market_from_partials(partial_list: list[dict[str, pd.DataFrame]]) -> pd.DataFrame:
         """Combine per-chunk partials into the per-date market table."""
         present = set()
         for p in partial_list:
@@ -3864,9 +3944,7 @@ class ItemForecaster:
         if not market.empty:
             market = market.sort_index()
             if "daily_market_vol" in market.columns:
-                market["market_volume_mean_30d"] = market["daily_market_vol"].rolling(
-                    30, min_periods=1
-                ).mean()
+                market["market_volume_mean_30d"] = market["daily_market_vol"].rolling(30, min_periods=1).mean()
         return market
 
     # ------------------------------------------------------------------
@@ -3874,7 +3952,7 @@ class ItemForecaster:
     # ------------------------------------------------------------------
 
     @staticmethod
-    def _accumulate_tier_partials(df: pd.DataFrame) -> Optional[pd.DataFrame]:
+    def _accumulate_tier_partials(df: pd.DataFrame) -> pd.DataFrame | None:
         """Per-(date, price_tier) (sum, count) of `return_1d`.
 
         The same (sum, count) shape _accumulate_market_partials uses, and for the
@@ -3897,9 +3975,7 @@ class ItemForecaster:
         return df.groupby(["date", "price_tier"])["return_1d"].agg(["sum", "count"])
 
     @classmethod
-    def _tier_lead_from_partials(
-        cls, partial_list: List[Optional[pd.DataFrame]]
-    ) -> pd.DataFrame:
+    def _tier_lead_from_partials(cls, partial_list: list[pd.DataFrame | None]) -> pd.DataFrame:
         """Combine tier partials into a per-date table of each tier's LAGGED mean.
 
         Returns a frame indexed by date with one column per tier, holding that
@@ -3950,8 +4026,7 @@ class ItemForecaster:
         # pandas 2.1 and its replacement (future_stack=True) does not accept one,
         # so the NaN-preserving spelling differs across versions. melt keeps NaN
         # unconditionally and is stable API.
-        long = lagged.rename_axis(columns="lead_tier").reset_index().melt(
-            id_vars="date", value_name=col)
+        long = lagged.rename_axis(columns="lead_tier").reset_index().melt(id_vars="date", value_name=col)
         long["tier_below"] = long["lead_tier"] - 1
         long = long[long["tier_below"] >= 0][["date", "tier_below", col]]
 
@@ -3979,10 +4054,11 @@ class ItemForecaster:
 
     @staticmethod
     def _apply_cross_sectional_ranks(
-        df: pd.DataFrame, cols: List[str],
-        reference_mask: Optional[pd.Series] = None,
-        skip_cols: Optional[List[str]] = None,
-        skipped_out: Optional[List[str]] = None,
+        df: pd.DataFrame,
+        cols: list[str],
+        reference_mask: pd.Series | None = None,
+        skip_cols: list[str] | None = None,
+        skipped_out: list[str] | None = None,
     ) -> pd.DataFrame:
         """Map each column in *cols* to its centred within-date percentile.
 
@@ -4040,9 +4116,9 @@ class ItemForecaster:
         if excluded:
             logger.info(
                 f"  cross-sectional rank: NOT transforming {excluded} — "
-                f"read as a gate, not only as a feature (RANK_TRANSFORM_EXCLUDED)")
-        present = [c for c in cols if c in df.columns
-                   and c not in ItemForecaster.RANK_TRANSFORM_EXCLUDED]
+                f"read as a gate, not only as a feature (RANK_TRANSFORM_EXCLUDED)"
+            )
+        present = [c for c in cols if c in df.columns and c not in ItemForecaster.RANK_TRANSFORM_EXCLUDED]
         if not present:
             return df
 
@@ -4092,8 +4168,7 @@ class ItemForecaster:
             if ref is df:
                 df[col] = ranked
             else:
-                df[col] = ItemForecaster._place_in_reference(
-                    df, ref, col, ranked)
+                df[col] = ItemForecaster._place_in_reference(df, ref, col, ranked)
 
         if skipped:
             logger.info(
@@ -4101,16 +4176,14 @@ class ItemForecaster:
                 f"column(s) {skipped} — ranking them would zero them out"
             )
         logger.info(
-            f"  cross-sectional rank transform applied to "
-            f"{len(present) - len(skipped)}/{len(present)} features"
+            f"  cross-sectional rank transform applied to {len(present) - len(skipped)}/{len(present)} features"
         )
         if skipped_out is not None:
             skipped_out.extend(skipped)
         return df
 
     @staticmethod
-    def _place_in_reference(df: pd.DataFrame, ref: pd.DataFrame, col: str,
-                            ranked: pd.Series) -> pd.Series:
+    def _place_in_reference(df: pd.DataFrame, ref: pd.DataFrame, col: str, ranked: pd.Series) -> pd.Series:
         """Cohort rows keep *ranked*; the rest get their position within it.
 
         Two-sided `searchsorted` so a value tying with k cohort values lands at
@@ -4215,9 +4288,7 @@ class ItemForecaster:
             # RangeIndex. map() preserves the index, so reset explicitly to keep
             # the frame downstream of this function byte-for-byte as before.
             df = df.reset_index(drop=True)
-            df["item_volume_vs_market_30d"] = (
-                df["volume"] / df["market_volume_mean_30d"].replace(0, np.nan)
-            )
+            df["item_volume_vs_market_30d"] = df["volume"] / df["market_volume_mean_30d"].replace(0, np.nan)
 
         # Market regime: refined 5-state regime with duration tracking
         if "market_return_30d" in df.columns:
@@ -4229,19 +4300,29 @@ class ItemForecaster:
             df["market_regime_mania"] = (market_ret_median > 10).astype(int)
 
             # Market regime duration: consecutive days in same regime
-            regime_cols = ["market_regime_crash", "market_regime_bear",
-                           "market_regime_range", "market_regime_bull",
-                           "market_regime_mania"]
+            regime_cols = [
+                "market_regime_crash",
+                "market_regime_bear",
+                "market_regime_range",
+                "market_regime_bull",
+                "market_regime_mania",
+            ]
             combined = pd.DataFrame(index=df.index, dtype=int)
             combined["regime_id"] = 0
             for i, col in enumerate(regime_cols):
                 if col in df.columns:
                     combined.loc[df[col] == 1, "regime_id"] = i + 1
             # Count consecutive same-regime days per item
-            regime_changes = (combined["regime_id"] != combined["regime_id"].groupby(df["item_id"]).shift(1)).astype(int)
-            df["market_regime_duration_days"] = regime_changes.groupby(df["item_id"]).cumsum().groupby(
-                [df["item_id"], regime_changes.cumsum()]
-            ).cumcount() + 1
+            regime_changes = (combined["regime_id"] != combined["regime_id"].groupby(df["item_id"]).shift(1)).astype(
+                int
+            )
+            df["market_regime_duration_days"] = (
+                regime_changes.groupby(df["item_id"])
+                .cumsum()
+                .groupby([df["item_id"], regime_changes.cumsum()])
+                .cumcount()
+                + 1
+            )
 
         # Market return percentile vs rolling 365-day history
         # Uses rolling rank (fast Cython) instead of rolling+apply (slow Python loop).
@@ -4261,7 +4342,7 @@ class ItemForecaster:
 
         return df
 
-    _google_trends_cache: Optional[pd.DataFrame] = None
+    _google_trends_cache: pd.DataFrame | None = None
 
     def _load_google_trends(self) -> pd.DataFrame:
         if self._google_trends_cache is not None:
@@ -4279,8 +4360,7 @@ class ItemForecaster:
         gt["google_trends_interest_7d"] = gt["interest"].rolling(7, min_periods=1).mean()
         gt["google_trends_interest_30d"] = gt["interest"].rolling(30, min_periods=1).mean()
         gt = gt.rename(columns={"interest": "google_trends_interest"})
-        logger.info("  google_trends: %d rows, %s to %s",
-                     len(gt), gt["date"].min(), gt["date"].max())
+        logger.info("  google_trends: %d rows, %s to %s", len(gt), gt["date"].min(), gt["date"].max())
         self._google_trends_cache = gt
         return self._google_trends_cache
 
@@ -4289,13 +4369,12 @@ class ItemForecaster:
         if gt.empty:
             return df
         gt_indexed = gt.set_index("date")
-        for col in ("google_trends_interest", "google_trends_interest_7d",
-                     "google_trends_interest_30d"):
+        for col in ("google_trends_interest", "google_trends_interest_7d", "google_trends_interest_30d"):
             if col in gt_indexed.columns:
                 df[col] = df["date"].map(gt_indexed[col]).astype(np.float32)
         return df
 
-    _player_counts_cache: Optional[pd.DataFrame] = None
+    _player_counts_cache: pd.DataFrame | None = None
 
     def _load_player_counts(self) -> pd.DataFrame:
         if self._player_counts_cache is not None:
@@ -4308,11 +4387,10 @@ class ItemForecaster:
             return self._player_counts_cache
 
         import sqlite3
+
         con = sqlite3.connect(str(db_path))
         try:
-            raw = pd.read_sql(
-                "SELECT timestamp, players FROM player_counts", con
-            )
+            raw = pd.read_sql("SELECT timestamp, players FROM player_counts", con)
         finally:
             con.close()
 
@@ -4330,8 +4408,7 @@ class ItemForecaster:
         daily["player_count_mean_30d"] = daily["player_count_mean"].rolling(30, min_periods=1).mean()
         daily["player_count_change_7d"] = daily["player_count_mean"].pct_change(7) * 100
 
-        logger.info("  player_counts: %d days, %s to %s",
-                     len(daily), daily["date"].min(), daily["date"].max())
+        logger.info("  player_counts: %d days, %s to %s", len(daily), daily["date"].min(), daily["date"].max())
         self._player_counts_cache = daily
         return self._player_counts_cache
 
@@ -4340,9 +4417,13 @@ class ItemForecaster:
         if pc.empty:
             return df
         pc_indexed = pc.set_index("date")
-        for col in ("player_count_mean", "player_count_peak",
-                     "player_count_mean_7d", "player_count_mean_30d",
-                     "player_count_change_7d"):
+        for col in (
+            "player_count_mean",
+            "player_count_peak",
+            "player_count_mean_7d",
+            "player_count_mean_30d",
+            "player_count_change_7d",
+        ):
             if col in pc_indexed.columns:
                 df[col] = df["date"].map(pc_indexed[col]).astype(np.float32)
         return df
@@ -4359,9 +4440,18 @@ class ItemForecaster:
         if meta_df.empty:
             logger.warning("  No item metadata available; using default identity features")
             identity_cols = [
-                "is_stattrak", "is_souvenir", "is_knife", "is_glove",
-                "is_sticker", "is_case", "is_capsule", "is_agent",
-                "is_music_kit", "is_graffiti", "is_charm", "is_patch",
+                "is_stattrak",
+                "is_souvenir",
+                "is_knife",
+                "is_glove",
+                "is_sticker",
+                "is_case",
+                "is_capsule",
+                "is_agent",
+                "is_music_kit",
+                "is_graffiti",
+                "is_charm",
+                "is_patch",
                 "quality_rank",
             ]
             for col in identity_cols:
@@ -4378,10 +4468,18 @@ class ItemForecaster:
             item_row = item_map.get(str(item_id))
             if item_row is None:
                 identity_cache[item_id] = {
-                    "is_stattrak": 0, "is_souvenir": 0, "is_knife": 0,
-                    "is_glove": 0, "is_sticker": 0, "is_case": 0,
-                    "is_capsule": 0, "is_agent": 0, "is_music_kit": 0,
-                    "is_graffiti": 0, "is_charm": 0, "is_patch": 0,
+                    "is_stattrak": 0,
+                    "is_souvenir": 0,
+                    "is_knife": 0,
+                    "is_glove": 0,
+                    "is_sticker": 0,
+                    "is_case": 0,
+                    "is_capsule": 0,
+                    "is_agent": 0,
+                    "is_music_kit": 0,
+                    "is_graffiti": 0,
+                    "is_charm": 0,
+                    "is_patch": 0,
                     "quality_rank": 0,
                 }
                 continue
@@ -4411,9 +4509,18 @@ class ItemForecaster:
         if not identity_cache:
             logger.warning("  No identity features computed (empty cache)")
             identity_cols = [
-                "is_stattrak", "is_souvenir", "is_knife", "is_glove",
-                "is_sticker", "is_case", "is_capsule", "is_agent",
-                "is_music_kit", "is_graffiti", "is_charm", "is_patch",
+                "is_stattrak",
+                "is_souvenir",
+                "is_knife",
+                "is_glove",
+                "is_sticker",
+                "is_case",
+                "is_capsule",
+                "is_agent",
+                "is_music_kit",
+                "is_graffiti",
+                "is_charm",
+                "is_patch",
                 "quality_rank",
             ]
             for col in identity_cols:
@@ -4434,7 +4541,7 @@ class ItemForecaster:
         logger.info("  Added item identity features")
         return df
 
-    def _prune_features(self, df: pd.DataFrame) -> List[str]:
+    def _prune_features(self, df: pd.DataFrame) -> list[str]:
         """Remove highly correlated features to reduce noise and multicollinearity.
 
         Identifies feature pairs with correlation > PRUNE_CORRELATION_THRESHOLD
@@ -4470,12 +4577,16 @@ class ItemForecaster:
         return pruned
 
     def _validate_feature_groups(
-        self, X_val: np.ndarray, y_val: np.ndarray,
-        feature_names: List[str], horizon: int = 7,
-        n_shuffles: int = 20, min_drop_pp: float = 0.5,
+        self,
+        X_val: np.ndarray,
+        y_val: np.ndarray,
+        feature_names: list[str],
+        horizon: int = 7,
+        n_shuffles: int = 20,
+        min_drop_pp: float = 0.5,
         significance_level: float = 0.05,
         offset=None,
-    ) -> Dict[str, Dict]:
+    ) -> dict[str, dict]:
         """Validate feature groups via permutation importance with
         statistical significance gating.
 
@@ -4515,13 +4626,13 @@ class ItemForecaster:
         if isinstance(model, list):
             model = model[0]
 
-        groups: Dict[str, List[str]] = {}
+        groups: dict[str, list[str]] = {}
         for i, name in enumerate(feature_names):
             g = _feature_group(name)
             groups.setdefault(g, []).append(name)
 
         col_to_idx = {name: i for i, name in enumerate(feature_names)}
-        group_indices: Dict[str, List[int]] = {}
+        group_indices: dict[str, list[int]] = {}
         for g, feats in groups.items():
             idxs = [col_to_idx[f] for f in feats if f in col_to_idx]
             if idxs:
@@ -4571,12 +4682,17 @@ class ItemForecaster:
     # strip every one before rewriting them — params cached in meta.json by an
     # older build carry GOSS keys for q50 and must not leak through the warm
     # retrain path.
-    _ROW_SAMPLING_KEYS = ("data_sample_strategy", "top_rate", "other_rate",
-                          "subsample", "bagging_fraction", "bagging_freq")
+    _ROW_SAMPLING_KEYS = (
+        "data_sample_strategy",
+        "top_rate",
+        "other_rate",
+        "subsample",
+        "bagging_fraction",
+        "bagging_freq",
+    )
 
     @classmethod
-    def _row_sampling_params(cls, quantile: float,
-                             subsample: float = 0.8) -> Dict[str, Any]:
+    def _row_sampling_params(cls, quantile: float, subsample: float = 0.8) -> dict[str, Any]:
         """Row-sampling config for one quantile's LightGBM params.
 
         Every quantile uses bagging. q50 previously used GOSS, which ranks
@@ -4601,7 +4717,7 @@ class ItemForecaster:
         subsample — correcting that is a real but separate change and needs
         its own A/B before shipping; do not "tidy" it in here.
         """
-        params: Dict[str, Any] = {
+        params: dict[str, Any] = {
             "data_sample_strategy": "bagging",
             "subsample": subsample,
         }
@@ -4610,8 +4726,7 @@ class ItemForecaster:
         return params
 
     @classmethod
-    def _apply_row_sampling(cls, params: dict, quantile: float,
-                            subsample: Optional[float] = None) -> dict:
+    def _apply_row_sampling(cls, params: dict, quantile: float, subsample: float | None = None) -> dict:
         """Overwrite any row-sampling keys in `params` with the current
         strategy, mutating and returning `params`.
 
@@ -4664,7 +4779,7 @@ class ItemForecaster:
 
         folds = []
         for end in ends:
-            val_d = sorted_dates[end:end + val_window]
+            val_d = sorted_dates[end : end + val_window]
             if len(val_d) < 7:
                 continue
             val_start = val_d[0]
@@ -4713,7 +4828,7 @@ class ItemForecaster:
         return train_set[pd.to_datetime(train_set["date"]) < cutoff]
 
     @classmethod
-    def _choose_validation_split(cls, tdf) -> Tuple[Optional[pd.Timestamp], bool]:
+    def _choose_validation_split(cls, tdf) -> tuple[pd.Timestamp | None, bool]:
         """Pick the split date for the production holdout, widening if starved.
 
         Returns ``(split_date, floors_met)``; ``val_set`` is ``date >= split_date``.
@@ -4760,8 +4875,7 @@ class ItemForecaster:
                 return d, True
         return split, False
 
-    def _build_production_split(self, tdf, horizon: int, max_rows: int,
-                                per_item_row_sampling: bool = False):
+    def _build_production_split(self, tdf, horizon: int, max_rows: int, per_item_row_sampling: bool = False):
         """The production train/val split: a trailing calendar window, purged.
 
         Returns ``(train_set, val_set)``. Three things happen here, in order:
@@ -4783,8 +4897,7 @@ class ItemForecaster:
         if floors_met:
             train_set = tdf[dates < split_date]
             val_set = tdf[dates >= split_date]
-            train_set = self._purge_overlapping_train_rows(
-                train_set, split_date, horizon)
+            train_set = self._purge_overlapping_train_rows(train_set, split_date, horizon)
             span = (dates.max() - pd.to_datetime(split_date)).days
             if span > self.VALIDATION_WINDOW_DAYS:
                 logger.info(
@@ -4808,7 +4921,8 @@ class ItemForecaster:
             # opens at val_set's first date.
             if len(val_set) and "date" in val_set.columns:
                 train_set = self._purge_overlapping_train_rows(
-                    train_set, pd.to_datetime(val_set["date"].min()), horizon)
+                    train_set, pd.to_datetime(val_set["date"].min()), horizon
+                )
 
         # Safety guard only: the calendar window is already bounded by the
         # stratified item subsample in build_training_data(). Sample randomly
@@ -4826,8 +4940,7 @@ class ItemForecaster:
             if per_item_row_sampling:
                 train_set = self._per_item_row_sample(train_set, max_rows)
             else:
-                train_set = train_set.sample(
-                    n=max_rows, random_state=42).sort_values("date")
+                train_set = train_set.sample(n=max_rows, random_state=42).sort_values("date")
 
         return train_set, val_set
 
@@ -4838,18 +4951,23 @@ class ItemForecaster:
         fall back to the (weaker) holdout instead of failing the whole retrain —
         so feasibility is checked up front. Cheap: date arithmetic only, no fits.
         """
-        splits = self._compute_cv_splits(
-            sorted(tdf["date"].unique()), purge_days=embargo_days(horizon))
+        splits = self._compute_cv_splits(sorted(tdf["date"].unique()), purge_days=embargo_days(horizon))
         return len(splits) >= 2
 
-    def _optuna_search_params(self, X_train, y_train, X_val, y_val,
-                               val_dates,
-                               quantile: float = 0.5,
-                               boosting_type: str = "gbdt",
-                               n_trials: int = 15,
-                               horizon: Optional[int] = None,
-                               train_offset=None,
-                               val_offset=None) -> Dict[str, Any]:
+    def _optuna_search_params(
+        self,
+        X_train,
+        y_train,
+        X_val,
+        y_val,
+        val_dates,
+        quantile: float = 0.5,
+        boosting_type: str = "gbdt",
+        n_trials: int = 15,
+        horizon: int | None = None,
+        train_offset=None,
+        val_offset=None,
+    ) -> dict[str, Any]:
         """Bayesian hyperparameter search via Optuna.
 
         Searches over 6 key params with TPE, scored on within-date rank IC.
@@ -4885,10 +5003,8 @@ class ItemForecaster:
         # N1's offset, when the caller passed it: the search has to score the
         # same quantity the production fit will produce, which is
         # `model.predict(X) + offset`.
-        dtrain = lgb.Dataset(X_train, y_train, params=ds_params,
-                             init_score=train_offset)
-        dval = lgb.Dataset(X_val, y_val, reference=dtrain, params=ds_params,
-                           init_score=val_offset)
+        dtrain = lgb.Dataset(X_train, y_train, params=ds_params, init_score=train_offset)
+        dval = lgb.Dataset(X_val, y_val, reference=dtrain, params=ds_params, init_score=val_offset)
 
         def objective(trial):
             # Horizon-aware search bounds: 3d overrides known-losing regions.
@@ -4920,9 +5036,7 @@ class ItemForecaster:
             # Row subsampling fraction — a distinct regularization lever from
             # feature_fraction. Searched for every quantile now that q50 uses
             # bagging too (see _row_sampling_params for the GOSS removal).
-            self._apply_row_sampling(
-                params, quantile,
-                subsample=trial.suggest_float("subsample", 0.5, 0.9, step=0.1))
+            self._apply_row_sampling(params, quantile, subsample=trial.suggest_float("subsample", 0.5, 0.9, step=0.1))
             # Fixed rounds, no early stopping, no pruner: the trailing val
             # window carries ~a dozen effective observations, so early stopping
             # trips on noise (FIXED_BOOST_ROUNDS, :551-560) and
@@ -4933,7 +5047,8 @@ class ItemForecaster:
             # Tuning at production rounds and evaluating at CV rounds selects
             # params that only pay off deeper than the evaluation ever goes.
             model = lgb.train(
-                params, dtrain,
+                params,
+                dtrain,
                 num_boost_round=self._boost_rounds(horizon, cv=True),
                 callbacks=[lgb.log_evaluation(0)],
             )
@@ -4952,14 +5067,16 @@ class ItemForecaster:
         # Warm-start with the known winning params (from prior 50-trial search),
         # so TPE starts near the answer instead of rediscovering it.
         if horizon == 3:
-            study.enqueue_trial({
-                "num_leaves": 47,
-                "learning_rate": 0.01,
-                "lambda_l1": 0.0,
-                "lambda_l2": 1.5,
-                "max_depth": 5,
-                "min_data_in_leaf": 15,
-            })
+            study.enqueue_trial(
+                {
+                    "num_leaves": 47,
+                    "learning_rate": 0.01,
+                    "lambda_l1": 0.0,
+                    "lambda_l2": 1.5,
+                    "max_depth": 5,
+                    "min_data_in_leaf": 15,
+                }
+            )
 
         study.optimize(objective, n_trials=n_trials, show_progress_bar=False)
 
@@ -4975,10 +5092,7 @@ class ItemForecaster:
         # Searched for every quantile (all use bagging).
         if "subsample" in best.params:
             best_params["subsample"] = best.params["subsample"]
-        logger.info(
-            f"  Optuna search ({n_trials} trials): best loss={best.value:.6f} "
-            f"params={best_params}"
-        )
+        logger.info(f"  Optuna search ({n_trials} trials): best loss={best.value:.6f} params={best_params}")
         return best_params
 
     # Recovered demand/supply sidecars, joined AFTER voting so none of them
@@ -4990,8 +5104,7 @@ class ItemForecaster:
         "supply-history.parquet": ["buff_listing_count"],
     }
 
-    def _attach_sidecars(self, daily: pd.DataFrame,
-                         include_volume_panel: bool = True) -> pd.DataFrame:
+    def _attach_sidecars(self, daily: pd.DataFrame, include_volume_panel: bool = True) -> pd.DataFrame:
         for fname, cols in self._SIDECARS.items():
             # The volume panel only feeds shelved volume features; skip its read
             # and merge on the production build, where nothing consumes them.
@@ -5012,10 +5125,9 @@ class ItemForecaster:
                 daily = daily.drop(columns=["steam_volume"])
         return daily
 
-    def engineer_features(self, price_df: pd.DataFrame,
-                          events_df: pd.DataFrame,
-                          item_first_dates=None,
-                          skip_unused_groups: bool = False) -> pd.DataFrame:
+    def engineer_features(
+        self, price_df: pd.DataFrame, events_df: pd.DataFrame, item_first_dates=None, skip_unused_groups: bool = False
+    ) -> pd.DataFrame:
         """Engineer the full feature frame.
 
         ``item_first_dates`` is an optional item_id -> first-seen date mapping
@@ -5056,16 +5168,12 @@ class ItemForecaster:
         # Volume's only live consumers are supply_to_volume_ratio (supply_depth)
         # and item_volume_vs_market_30d (cross_sectional); VOLUME_FEATURES=1 also
         # un-shelves it into training. Build it if any of those still needs it.
-        need_volume = (self._volume_features_enabled()
-                       or "supply_depth" not in skip
-                       or "cross_sectional" not in skip)
+        need_volume = self._volume_features_enabled() or "supply_depth" not in skip or "cross_sectional" not in skip
         # The price primitives have no reinstate flag; only the full-frame A/B
         # harness (skip_unused_groups=False) reads them.
         need_primitives = not skip_unused_groups
         daily = self._attach_sidecars(daily, include_volume_panel=need_volume)
-        df = self._compute_price_features(
-            daily, compute_volume=need_volume,
-            compute_shelved_primitives=need_primitives)
+        df = self._compute_price_features(daily, compute_volume=need_volume, compute_shelved_primitives=need_primitives)
         if "temporal" not in skip:
             df = self._add_temporal_features(df, item_first_dates=item_first_dates)
         if "item_identity" not in skip:
@@ -5122,8 +5230,7 @@ class ItemForecaster:
             return frozenset()
         merged["same"] = merged["price"] == merged["price_prev"]
         agg = merged.groupby("date")["same"].agg(["mean", "size"])
-        hits = agg[(agg["mean"] >= cls.SNAPSHOT_DAY_FLAT_FRACTION)
-                   & (agg["size"] >= cls.MIN_DEGENERATE_CROSS_SECTION)]
+        hits = agg[(agg["mean"] >= cls.SNAPSHOT_DAY_FLAT_FRACTION) & (agg["size"] >= cls.MIN_DEGENERATE_CROSS_SECTION)]
         return frozenset(ts.date() for ts in hits.index)
 
     @classmethod
@@ -5185,9 +5292,7 @@ class ItemForecaster:
         # report a rank IC restricted to the cohort where neither basis carries
         # `p[d]/S[d]`; it is never a feature and never a label.
         df[ANCHOR_TIED_COL] = self._anchor_is_tied(df)
-        df[f"target_return_{horizon}d"] = (
-            (df[f"target_{horizon}d"] - base) / base * 100
-        )
+        df[f"target_return_{horizon}d"] = (df[f"target_{horizon}d"] - base) / base * 100
 
         # The CALIBRATION basis, always the served one, regardless of the arm
         # above. `q_hat` is fitted on residuals to this column and the training
@@ -5211,28 +5316,20 @@ class ItemForecaster:
         # can read at the anchor, and it was measured and rejected
         # (`2026-08-11-smoothed-anchor-label-measured.md`). q_hat is post-hoc --
         # it changes a band width and nothing the model learns.
-        cal_base = (base if self.label_smoothed_anchor_enabled()
-                    else self._rolling_anchor_prices(df).replace(0, np.nan))
-        df[calibration_target_col(horizon)] = (
-            (df[f"target_{horizon}d"] - cal_base) / cal_base * 100
-        )
+        cal_base = base if self.label_smoothed_anchor_enabled() else self._rolling_anchor_prices(df).replace(0, np.nan)
+        df[calibration_target_col(horizon)] = (df[f"target_{horizon}d"] - cal_base) / cal_base * 100
         # Winsorize extreme returns at ±500% to prevent API corruption artifacts
         # from polluting gradient estimates. The audit found 11,044 jumps >1000%,
         # 84% of which revert the next day (definitive corruption).
         winsorized = df[f"target_return_{horizon}d"].clip(-500.0, 500.0)
         n_clipped = (winsorized != df[f"target_return_{horizon}d"]).sum()
         if n_clipped:
-            logger.info(
-                f"  Winsorized {n_clipped} extreme targets for {horizon}d "
-                f"(±500% clip)"
-            )
+            logger.info(f"  Winsorized {n_clipped} extreme targets for {horizon}d (±500% clip)")
             df[f"target_return_{horizon}d"] = winsorized
         # Same clip on the calibration column, unconditionally: a ±500% outlier
         # that survives into the conformal set moves q_hat directly, and the
         # count above is the label's, not this column's.
-        df[calibration_target_col(horizon)] = (
-            df[calibration_target_col(horizon)].clip(-500.0, 500.0)
-        )
+        df[calibration_target_col(horizon)] = df[calibration_target_col(horizon)].clip(-500.0, 500.0)
 
         # Void labels the collector fabricated. Winsorization above cannot catch
         # these: a -31.6% source-cutover return and a 0% re-published return are
@@ -5282,10 +5379,8 @@ class ItemForecaster:
         # pre-2026-08-08 label set. Distinct from a large threshold, which
         # would still pay for the scan.
         n_stale = 0
-        if (LABEL_MAX_STALE_RUN_DAYS is not None
-                and not df.empty and "price" in df.columns):
-            runs = stale_run_days(
-                df, item_col="item_id", date_col="date", price_col="price")
+        if LABEL_MAX_STALE_RUN_DAYS is not None and not df.empty and "price" in df.columns:
+            runs = stale_run_days(df, item_col="item_id", date_col="date", price_col="price")
             anchor_stale = (runs > LABEL_MAX_STALE_RUN_DAYS).to_numpy()
 
             day = anchor.dt.normalize()
@@ -5305,10 +5400,7 @@ class ItemForecaster:
             ).to_numpy(dtype=bool)
 
             stale_leg = pd.Series(anchor_stale | target_stale, index=df.index)
-            n_stale = int(
-                (stale_leg & ~bad
-                 & df[f"target_return_{horizon}d"].notna()).sum()
-            )
+            n_stale = int((stale_leg & ~bad & df[f"target_return_{horizon}d"].notna()).sum())
             bad |= stale_leg
 
         pre_void_na = df[f"target_return_{horizon}d"].isna().sum()
@@ -5325,8 +5417,7 @@ class ItemForecaster:
             frozen_note = (
                 "frozen-run rule DISABLED"
                 if LABEL_MAX_STALE_RUN_DAYS is None
-                else (f"{n_stale} of them for a frozen price run "
-                      f"(> {LABEL_MAX_STALE_RUN_DAYS}d) on either leg")
+                else (f"{n_stale} of them for a frozen price run (> {LABEL_MAX_STALE_RUN_DAYS}d) on either leg")
             )
             logger.info(
                 f"  Voided {n_bad} {horizon}d targets spanning "
@@ -5373,8 +5464,7 @@ class ItemForecaster:
         # Precompute the six per-tier thresholds once (not per row); keep
         # scoring.price_tier as the tier source of truth rather than re-spelling
         # its cut bins here, so this cannot drift from the canonical tiers.
-        thr_by_tier = np.array(
-            [100.0 * actionable_threshold(t, "csfloat") for t in range(6)])
+        thr_by_tier = np.array([100.0 * actionable_threshold(t, "csfloat") for t in range(6)])
         thr_pct = thr_by_tier[df["price"].map(price_tier).to_numpy()]
         exceed = (ret.to_numpy(dtype=float) > thr_pct).astype(float)
         exceed[ret.isna().to_numpy()] = np.nan
@@ -5402,11 +5492,12 @@ class ItemForecaster:
                 logger.warning(
                     f"  ANOMALY_GBM=1 but {ret_col} is absent — the anomaly "
                     f"label needs a strictly-prior threshold and will not be "
-                    f"built. Run prepare_targets on an engineered frame.")
+                    f"built. Run prepare_targets on an engineered frame."
+                )
             else:
-                prior_std = (df.groupby("item_id")[ret_col]
-                             .transform(lambda s: s.shift(1)
-                                        .rolling(60, min_periods=10).std()))
+                prior_std = df.groupby("item_id")[ret_col].transform(
+                    lambda s: s.shift(1).rolling(60, min_periods=10).std()
+                )
                 anom = (ret.abs() > 2.0 * prior_std).astype(float)
                 anom[ret.isna().to_numpy()] = np.nan
                 anom[prior_std.isna().to_numpy()] = np.nan
@@ -5419,10 +5510,9 @@ class ItemForecaster:
     # ------------------------------------------------------------------
 
     @staticmethod
-    def _train_ensemble_member(params: dict, dtrain: lgb.Dataset,
-                                dval: lgb.Dataset,
-                                num_boost_round: int = 1000,
-                                early_stopping: bool = False) -> lgb.Booster:
+    def _train_ensemble_member(
+        params: dict, dtrain: lgb.Dataset, dval: lgb.Dataset, num_boost_round: int = 1000, early_stopping: bool = False
+    ) -> lgb.Booster:
         """Train a single ensemble member on a pre-constructed Dataset.
 
         Callers MUST call `dtrain.construct()` / `dval.construct()`
@@ -5445,7 +5535,8 @@ class ItemForecaster:
             callbacks.insert(0, lgb.early_stopping(50))
             valid_sets = [dval]
         return lgb.train(
-            params, dtrain,
+            params,
+            dtrain,
             num_boost_round=num_boost_round,
             valid_sets=valid_sets,
             callbacks=callbacks,
@@ -5468,10 +5559,7 @@ class ItemForecaster:
             logger.info(f"  Removed {pre - len(price_df)} rows with zero/negative price")
 
         item_stats = price_df.groupby("item_id")["price"].agg(["min", "max"])
-        dead_mask = (
-            (item_stats["max"] <= 0.05)
-            & ((item_stats["max"] - item_stats["min"]) / item_stats["min"] < 0.05)
-        )
+        dead_mask = (item_stats["max"] <= 0.05) & ((item_stats["max"] - item_stats["min"]) / item_stats["min"] < 0.05)
         dead_items = set(item_stats[dead_mask].index)
         if not dead_items:
             return price_df
@@ -5485,8 +5573,7 @@ class ItemForecaster:
         return filtered
 
     @staticmethod
-    def _filter_by_median_price(price_df: pd.DataFrame,
-                                min_median_price: float) -> pd.DataFrame:
+    def _filter_by_median_price(price_df: pd.DataFrame, min_median_price: float) -> pd.DataFrame:
         """Restrict the training universe to items whose median price clears
         ``min_median_price``, measured on the voted consensus price.
 
@@ -5526,9 +5613,7 @@ class ItemForecaster:
         return out
 
     @staticmethod
-    def _fold_median_price_items(price_df: pd.DataFrame,
-                                 min_median_price: float,
-                                 cutoff) -> set:
+    def _fold_median_price_items(price_df: pd.DataFrame, min_median_price: float, cutoff) -> set:
         """Items whose median price over ``date < cutoff`` clears the floor.
 
         The look-ahead-free counterpart to `_filter_by_median_price`, which
@@ -5560,9 +5645,7 @@ class ItemForecaster:
         item_median = past.groupby("item_id")["price"].median()
         return set(item_median[item_median >= min_median_price].index)
 
-    def _flag_corrupt_items(self, price_df: pd.DataFrame,
-                            jump_threshold: float = 500.0,
-                            max_jumps: int = 10) -> set:
+    def _flag_corrupt_items(self, price_df: pd.DataFrame, jump_threshold: float = 500.0, max_jumps: int = 10) -> set:
         """Identify items with frequent extreme price jumps (API corruption).
 
         Counts how many times each item's daily price jumps exceed
@@ -5579,20 +5662,15 @@ class ItemForecaster:
         is_first = pdf.groupby("item_id").cumcount() == 0
         pdf.loc[is_first, "_pct"] = 0.0
 
-        bad = pdf.groupby("item_id")["_pct"].apply(
-            lambda s: int((s.abs() > jump_threshold).sum())
-        )
+        bad = pdf.groupby("item_id")["_pct"].apply(lambda s: int((s.abs() > jump_threshold).sum()))
         bad_items = set(bad[bad > max_jumps].index)
         if bad_items:
-            logger.info(
-                f"  Flagged {len(bad_items)} corrupt items "
-                f"(>{max_jumps} jumps >{jump_threshold:.0f}%)"
-            )
+            logger.info(f"  Flagged {len(bad_items)} corrupt items (>{max_jumps} jumps >{jump_threshold:.0f}%)")
         return bad_items
 
-    def _stratified_item_subsample(self, price_df: pd.DataFrame,
-                                   max_rows: int, seed: int = 42,
-                                   exclude_items: set = None) -> pd.DataFrame:
+    def _stratified_item_subsample(
+        self, price_df: pd.DataFrame, max_rows: int, seed: int = 42, exclude_items: set = None
+    ) -> pd.DataFrame:
         """Subsample whole-item histories to bound the row count *before*
         feature engineering, while preserving per-item time-series continuity
         and the full calendar window.
@@ -5634,7 +5712,7 @@ class ItemForecaster:
         items["rarity"] = items["item_id"].map(rarity_map).fillna("unknown")
 
         rng = np.random.RandomState(seed)
-        selected: List = []
+        selected: list = []
         for _rarity, group in items.groupby("rarity"):
             frac = len(group) / n_items
             k = min(len(group), max(1, int(round(target_items * frac))))
@@ -5650,8 +5728,7 @@ class ItemForecaster:
         return out
 
     @staticmethod
-    def _per_item_row_sample(train_set: pd.DataFrame, max_rows: int,
-                             seed: int = 42) -> pd.DataFrame:
+    def _per_item_row_sample(train_set: pd.DataFrame, max_rows: int, seed: int = 42) -> pd.DataFrame:
         """Spend a row budget on item breadth: an equal quota per item.
 
         The alternative in ``_build_production_split`` is
@@ -5710,14 +5787,16 @@ class ItemForecaster:
         )
         return out.sort_values("date")
 
-    def build_training_data(self, days_back: int = 365,
-                             backfilled_only: bool = False,
-                             max_feature_rows: int = 100_000,
-                             min_median_price: Optional[float] = None,
-                             universe: str = "train") -> pd.DataFrame:
+    def build_training_data(
+        self,
+        days_back: int = 365,
+        backfilled_only: bool = False,
+        max_feature_rows: int = 100_000,
+        min_median_price: float | None = None,
+        universe: str = "train",
+    ) -> pd.DataFrame:
         _t0 = datetime.now()
-        price_df = self.fetch_price_history(days_back=days_back, backfilled_only=backfilled_only,
-                                            universe=universe)
+        price_df = self.fetch_price_history(days_back=days_back, backfilled_only=backfilled_only, universe=universe)
         logger.info(f"  fetch_price_history took {(datetime.now() - _t0).total_seconds():.0f}s")
         price_df = self._filter_dead_items(price_df)
         # Before the subsample, so the row budget is spent on the surviving
@@ -5736,9 +5815,7 @@ class ItemForecaster:
         # the dry-run coverage evidence.
 
         if max_feature_rows:
-            price_df = self._stratified_item_subsample(
-                price_df, max_feature_rows, exclude_items=corrupt_items
-            )
+            price_df = self._stratified_item_subsample(price_df, max_feature_rows, exclude_items=corrupt_items)
         else:
             price_df = price_df[~price_df["item_id"].isin(corrupt_items)].copy()
 
@@ -5752,10 +5829,11 @@ class ItemForecaster:
         # on. Measured 2026-08-09: 8.5s of engineer_features' 17.5s is blocks
         # the allowlist then discards.
         skip = self._skipped_feature_groups()
-        df = self.engineer_features(price_df, events_df,
-                                    skip_unused_groups=True)
-        logger.info(f"  engineer_features took {(datetime.now() - _t2).total_seconds():.0f}s, "
-                    f"result: {len(df):,} rows, {len(df.columns)} cols")
+        df = self.engineer_features(price_df, events_df, skip_unused_groups=True)
+        logger.info(
+            f"  engineer_features took {(datetime.now() - _t2).total_seconds():.0f}s, "
+            f"result: {len(df):,} rows, {len(df.columns)} cols"
+        )
         del price_df, events_df
 
         # Cross-sectional and supply-depth are applied here rather than inside
@@ -5764,8 +5842,7 @@ class ItemForecaster:
         _t3 = datetime.now()
         if "cross_sectional" not in skip:
             df = self._add_cross_sectional_features(df)
-            logger.info(f"  cross_sectional_features took "
-                        f"{(datetime.now() - _t3).total_seconds():.0f}s")
+            logger.info(f"  cross_sectional_features took {(datetime.now() - _t3).total_seconds():.0f}s")
 
         if "supply_depth" not in skip:
             df = self._add_supply_depth_features(df)
@@ -5777,8 +5854,7 @@ class ItemForecaster:
             df = self._compute_orderbook_features(df)
 
         # Define feature columns (exclude metadata and target columns)
-        self.feature_cols = self._select_feature_cols(
-            df, self.HORIZONS, self._active_shelved_features())
+        self.feature_cols = self._select_feature_cols(df, self.HORIZONS, self._active_shelved_features())
 
         # Restrict to the allowlisted groups and prune correlated columns,
         # in the cheaper order.
@@ -5792,9 +5868,8 @@ class ItemForecaster:
         # TRANSFORMED column -- which is what serving needs, since the booster is
         # fitted on ranks.
         if self.cross_sectional_rank_enabled():
-            skipped: List[str] = []
-            df = self._apply_cross_sectional_ranks(df, self.feature_cols,
-                                                   skipped_out=skipped)
+            skipped: list[str] = []
+            df = self._apply_cross_sectional_ranks(df, self.feature_cols, skipped_out=skipped)
             # Recorded, and mirrored onto the artifact fields for the same
             # reason as the cohort floor: after training, this process IS the
             # artifact, and predict has to follow this run's decision rather
@@ -5840,21 +5915,20 @@ class ItemForecaster:
         rewritten by the pipeline on every run and must not invalidate it.
         """
         import duckdb
+
         parts = []
         con = duckdb.connect()
         try:
             for path in sorted(self.archive_dir.glob("prices-*.parquet")):
-                (n,) = con.execute(
-                    "SELECT COUNT(*) FROM read_parquet(?)",
-                    [str(path)]).fetchone()
+                (n,) = con.execute("SELECT COUNT(*) FROM read_parquet(?)", [str(path)]).fetchone()
                 parts.append(f"{path.name}:{n}:{path.stat().st_size}")
         finally:
             con.close()
         return "|".join(parts)
 
-    def _voted_cache_key(self, days_back: int, backfilled_only: bool,
-                         backfilled_slugs: Optional[set],
-                         universe: str = "serve") -> str:
+    def _voted_cache_key(
+        self, days_back: int, backfilled_only: bool, backfilled_slugs: set | None, universe: str = "serve"
+    ) -> str:
         """Everything the voted frame depends on, hashed.
 
         The query window is keyed by its resolved cutoff date rather than
@@ -5867,26 +5941,26 @@ class ItemForecaster:
         slug_digest = ""
         if backfilled_slugs is not None:
             # Sorted: the slug set arrives from an unordered DB query.
-            slug_digest = hashlib.sha256(
-                "|".join(sorted(str(s) for s in backfilled_slugs)).encode()
-            ).hexdigest()[:16]
-        payload = "\n".join([
-            f"v={self.VOTED_CACHE_VERSION}",
-            f"cutoff={cutoff}",
-            # Without this a replay reuses the live frame, which holds every
-            # row after the anchor -- the leak the upper bound exists to stop.
-            f"anchor={self.replay_anchor() or ''}",
-            f"backfilled_only={int(backfilled_only)}",
-            f"slugs={slug_digest}",
-            f"universe={universe}",
-            f"archive={self._archive_fingerprint()}",
-        ])
+            slug_digest = hashlib.sha256("|".join(sorted(str(s) for s in backfilled_slugs)).encode()).hexdigest()[:16]
+        payload = "\n".join(
+            [
+                f"v={self.VOTED_CACHE_VERSION}",
+                f"cutoff={cutoff}",
+                # Without this a replay reuses the live frame, which holds every
+                # row after the anchor -- the leak the upper bound exists to stop.
+                f"anchor={self.replay_anchor() or ''}",
+                f"backfilled_only={int(backfilled_only)}",
+                f"slugs={slug_digest}",
+                f"universe={universe}",
+                f"archive={self._archive_fingerprint()}",
+            ]
+        )
         return hashlib.sha256(payload.encode()).hexdigest()[:24]
 
     def _voted_cache_path(self, key: str) -> str:
         return os.path.join(self.cache_dir, f"{self.VOTED_CACHE_PREFIX}{key}.parquet")
 
-    def _load_voted_cache(self, key: str) -> Optional[pd.DataFrame]:
+    def _load_voted_cache(self, key: str) -> pd.DataFrame | None:
         if not self._voted_cache_enabled():
             return None
         path = self._voted_cache_path(key)
@@ -5901,8 +5975,10 @@ class ItemForecaster:
             # An empty frame here would train the next model on zero rows.
             logger.warning(f"  Voted cache at {path} is empty — rebuilding")
             return None
-        logger.info(f"  Voted cache HIT ({len(df):,} rows, {df.item_id.nunique():,} "
-                    f"items) — skipping DuckDB read + multi-source voting")
+        logger.info(
+            f"  Voted cache HIT ({len(df):,} rows, {df.item_id.nunique():,} "
+            f"items) — skipping DuckDB read + multi-source voting"
+        )
         return df
 
     def _save_voted_cache(self, key: str, df: pd.DataFrame):
@@ -5930,7 +6006,7 @@ class ItemForecaster:
             key=lambda p: p.stat().st_mtime,
             reverse=True,
         )
-        for stale in entries[self.VOTED_CACHE_MAX_ENTRIES:]:
+        for stale in entries[self.VOTED_CACHE_MAX_ENTRIES :]:
             try:
                 stale.unlink()
                 logger.info(f"  Pruned stale voted cache {stale.name}")
@@ -5958,14 +6034,14 @@ class ItemForecaster:
         """
         path = self._engineered_cache_path
         if os.environ.get("ENGINEERED_CACHE") == "0":
-            logger.info(f"  Engineered feature cache write skipped (ENGINEERED_CACHE=0)")
+            logger.info("  Engineered feature cache write skipped (ENGINEERED_CACHE=0)")
             return
         df.attrs["_cache_date"] = str(date.today())
         df.attrs["_cache_version"] = self.ENGINEERED_CACHE_VERSION
         logger.info(f"  Saving engineered feature cache ({len(df):,} rows) to {path}")
         df.to_parquet(path, index=False)
 
-    def _load_engineered_cache(self) -> Optional[pd.DataFrame]:
+    def _load_engineered_cache(self) -> pd.DataFrame | None:
         """Load cached engineered features. Returns None if cache is missing or stale."""
         if self.replay_anchor() is not None:
             # A live cache holds features engineered from rows after the
@@ -5989,12 +6065,12 @@ class ItemForecaster:
             version = int(df.attrs.get("_cache_version", 1))
             if version != self.ENGINEERED_CACHE_VERSION:
                 logger.info(
-                    f"  Cache at {path} is v{version}, expected "
-                    f"v{self.ENGINEERED_CACHE_VERSION} — will refresh"
+                    f"  Cache at {path} is v{version}, expected v{self.ENGINEERED_CACHE_VERSION} — will refresh"
                 )
                 return None
-            logger.info(f"  Loaded engineered feature cache from {path} "
-                        f"({len(df):,} rows, cache_date={cache_date_str})")
+            logger.info(
+                f"  Loaded engineered feature cache from {path} ({len(df):,} rows, cache_date={cache_date_str})"
+            )
 
             # Check staleness: if cache is older than 3 days, trigger refresh
             if cache_date_str:
@@ -6012,22 +6088,28 @@ class ItemForecaster:
             if not cache_date_str:
                 try:
                     import duckdb
+
                     archive_dir = self.archive_dir
                     if archive_dir.exists():
                         with duckdb.connect() as con:
                             pq_files = sorted([str(p) for p in archive_dir.glob("prices-*.parquet")])
                             if pq_files:
                                 latest_archive = con.sql(
-                                    "SELECT MAX(day) FROM read_parquet(?)",
-                                    params=[pq_files[-1]]
+                                    "SELECT MAX(day) FROM read_parquet(?)", params=[pq_files[-1]]
                                 ).fetchone()[0]
                                 cache_max_date = df["date"].max() if "date" in df.columns else None
                                 if cache_max_date is not None and latest_archive is not None:
                                     archive_max = pd.to_datetime(latest_archive).date()
-                                    cache_max = pd.to_datetime(cache_max_date).date() if not isinstance(cache_max_date, date) else cache_max_date
+                                    cache_max = (
+                                        pd.to_datetime(cache_max_date).date()
+                                        if not isinstance(cache_max_date, date)
+                                        else cache_max_date
+                                    )
                                     days_diff = (archive_max - cache_max).days
                                     if days_diff > 3:
-                                        logger.info(f"  Cache max_date={cache_max} < archive max_date={archive_max} ({days_diff}d diff), refreshing")
+                                        logger.info(
+                                            f"  Cache max_date={cache_max} < archive max_date={archive_max} ({days_diff}d diff), refreshing"
+                                        )
                                         return None
                 except Exception:
                     pass
@@ -6045,13 +6127,13 @@ class ItemForecaster:
         importance = model.feature_importance(importance_type="gain")
         feature_names = model.feature_name()
         if len(feature_names) != len(importance):
-            feature_names = self.feature_cols[:len(importance)]
+            feature_names = self.feature_cols[: len(importance)]
         fi = pd.DataFrame({"feature": feature_names, "importance": importance})
         fi = fi.sort_values("importance", ascending=False).head(20)
         return fi
 
     @staticmethod
-    def _compute_sample_weights(tdf: pd.DataFrame, horizon: int) -> Optional[np.ndarray]:
+    def _compute_sample_weights(tdf: pd.DataFrame, horizon: int) -> np.ndarray | None:
         """Compute sample weights proportional to item price variance.
 
         Items that move more get higher gradient weight; flat/dead items
@@ -6077,9 +6159,11 @@ class ItemForecaster:
         """
         if tdf.empty or "price" not in tdf.columns:
             return None
-        vol = tdf.groupby("item_id", group_keys=False)["price"].transform(
-            lambda x: x.pct_change().rolling(30, min_periods=5).std()
-        ).values
+        vol = (
+            tdf.groupby("item_id", group_keys=False)["price"]
+            .transform(lambda x: x.pct_change().rolling(30, min_periods=5).std())
+            .values
+        )
         # No-history rows (fewer than 5 obs) have unknown volatility; fill with
         # the median so they stay neutral instead of receiving the max weight.
         median_vol = np.nanmedian(vol)
@@ -6105,10 +6189,13 @@ class ItemForecaster:
         vol = vol / max(np.mean(vol), 1e-8)
         return vol.astype(np.float32)
 
-    def train(self, max_rows: int = 300_000,
-              max_feature_rows: int = 1_200_000,
-              min_median_price: Optional[float] = 1.0,
-              per_item_row_sampling: bool = False):
+    def train(
+        self,
+        max_rows: int = 300_000,
+        max_feature_rows: int = 1_200_000,
+        min_median_price: float | None = 1.0,
+        per_item_row_sampling: bool = False,
+    ):
         logger.info("=" * 60)
         logger.info("TRAINING LIGHTGBM FORECASTER (ensemble, HP search, walk-forward)")
         logger.info("=" * 60)
@@ -6143,12 +6230,16 @@ class ItemForecaster:
         except ValueError:
             train_days_back = 1460
         if train_days_back != 1460:
-            logger.warning(f"  TRAIN_DAYS_BACK={train_days_back}: training window "
-                           f"overridden from the 1460-day default.")
-        df = self.build_training_data(days_back=train_days_back, backfilled_only=True,
-                                      max_feature_rows=max_feature_rows,
-                                      min_median_price=min_median_price,
-                                      universe="train")
+            logger.warning(
+                f"  TRAIN_DAYS_BACK={train_days_back}: training window overridden from the 1460-day default."
+            )
+        df = self.build_training_data(
+            days_back=train_days_back,
+            backfilled_only=True,
+            max_feature_rows=max_feature_rows,
+            min_median_price=min_median_price,
+            universe="train",
+        )
 
         # Recorded into the artifact because the rank transform's output is a
         # function of WHICH items are in the cross-section, and predict's frame
@@ -6171,8 +6262,7 @@ class ItemForecaster:
         # Measured once here, before any horizon calibrates, so every horizon's
         # q_hat and every served row share one clip.
         with np.errstate(divide="ignore", invalid="ignore"):
-            sigma_raw = (df["price_std_60d"].to_numpy(dtype=float)
-                         / df["price"].to_numpy(dtype=float))
+            sigma_raw = df["price_std_60d"].to_numpy(dtype=float) / df["price"].to_numpy(dtype=float)
         floor, cap = conformal.sigma_bounds(sigma_raw)
         finite = sigma_raw[np.isfinite(sigma_raw) & (sigma_raw > 0)]
         self.sigma_clip = {
@@ -6180,15 +6270,10 @@ class ItemForecaster:
             "cap": cap,
             "fallback": float(np.median(finite)),
         }
-        logger.info(
-            f"Sigma clip: floor={floor:.5f} cap={cap:.5f} "
-            f"fallback={self.sigma_clip['fallback']:.5f}"
-        )
+        logger.info(f"Sigma clip: floor={floor:.5f} cap={cap:.5f} fallback={self.sigma_clip['fallback']:.5f}")
 
         for hi, horizon in enumerate(self.HORIZONS, 1):
-            self._train_horizon_inline(
-                horizon, df, max_rows,
-                per_item_row_sampling=per_item_row_sampling)
+            self._train_horizon_inline(horizon, df, max_rows, per_item_row_sampling=per_item_row_sampling)
 
         del df
 
@@ -6196,26 +6281,25 @@ class ItemForecaster:
         # are set, giving the per-horizon multiplier that pulls realized served coverage
         # to 80%. Empty below the MIN_FORECAST_DATES gate (the case today), leaving the
         # band byte-identical; the read is best-effort and never fails a retrain.
-        self.served_coverage_factor = served_recalibration.served_coverage_factors(
-            self.db, self.HORIZONS)
+        self.served_coverage_factor = served_recalibration.served_coverage_factors(self.db, self.HORIZONS)
         if self.served_coverage_factor:
             logger.info(
                 f"Served-coverage factors (q_hat multipliers): "
-                f"{ {h: round(v, 4) for h, v in self.served_coverage_factor.items()} }")
+                f"{ {h: round(v, 4) for h, v in self.served_coverage_factor.items()} }"
+            )
 
         _train_elapsed = (datetime.now() - _train_start).total_seconds()
         if TFT_CENTRE:
-            self._train_tft(days_back=train_days_back,
-                            min_median_price=min_median_price)
+            self._train_tft(days_back=train_days_back, min_median_price=min_median_price)
         self.save_models()
-        logger.info(f"\n{'='*60}")
-        logger.info(f"TRAINING COMPLETE in {_train_elapsed:.0f}s ({_train_elapsed/60:.1f}min)")
-        logger.info(f"{'='*60}")
+        logger.info(f"\n{'=' * 60}")
+        logger.info(f"TRAINING COMPLETE in {_train_elapsed:.0f}s ({_train_elapsed / 60:.1f}min)")
+        logger.info(f"{'=' * 60}")
         logger.info(f"  [timing] TOTAL training: {_train_elapsed:.1f}s")
 
-    def _train_tft(self, price_df: pd.DataFrame = None,
-                   days_back: int = 1460,
-                   min_median_price: Optional[float] = 1.0) -> None:
+    def _train_tft(
+        self, price_df: pd.DataFrame = None, days_back: int = 1460, min_median_price: float | None = 1.0
+    ) -> None:
         """Train TFT centre model on raw price series. Gated by TFT_CENTRE=1.
 
         Accepts the voted price DataFrame when the caller has it; otherwise
@@ -6224,7 +6308,7 @@ class ItemForecaster:
         left in conformal's hands — TFT ships no bands of its own.
         """
         try:
-            from models.tft import TFTTrainer, TFTConfig
+            from models.tft import TFTConfig, TFTTrainer
         except ImportError:
             logger.warning("PyTorch not installed — skipping TFT training")
             return
@@ -6234,13 +6318,10 @@ class ItemForecaster:
         logger.info("=" * 60)
 
         if price_df is None:
-            price_df = self.fetch_price_history(days_back=days_back,
-                                                backfilled_only=True,
-                                                universe="train")
+            price_df = self.fetch_price_history(days_back=days_back, backfilled_only=True, universe="train")
             price_df = self._filter_dead_items(price_df)
             if min_median_price:
-                price_df = self._filter_by_median_price(price_df,
-                                                        min_median_price)
+                price_df = self._filter_by_median_price(price_df, min_median_price)
 
         tft_dir = os.path.join(self.model_dir, "tft")
         config = TFTConfig(hidden_dim=32, num_heads=4, dropout=0.1)
@@ -6263,16 +6344,16 @@ class ItemForecaster:
                 valid = oof[[pred_col, actual_col]].dropna()
                 if len(valid) > 10:
                     from scipy.stats import spearmanr
+
                     ic, _ = spearmanr(valid[pred_col], valid[actual_col])
                     logger.info(f"  TFT {h}d OOF rank IC: {ic:.4f}")
 
         # Train final model on all data
-        trainer.train_fold(price_df, sorted_dates[:-30], sorted_dates[-30:],
-                           max_epochs=50, patience=5)
+        trainer.train_fold(price_df, sorted_dates[:-30], sorted_dates[-30:], max_epochs=50, patience=5)
         trainer.save()
         logger.info(f"  TFT model saved to {tft_dir}")
 
-    def _predict_tft(self, price_df: pd.DataFrame) -> Dict[int, pd.Series] | None:
+    def _predict_tft(self, price_df: pd.DataFrame) -> dict[int, pd.Series] | None:
         """Load trained TFT and produce per-horizon return predictions."""
         tft_dir = os.path.join(self.model_dir, "tft")
         if not os.path.exists(os.path.join(tft_dir, "tft_model.pt")):
@@ -6298,12 +6379,12 @@ class ItemForecaster:
                 result[h] = series
         return result if result else None
 
-    def _train_horizon_inline(self, horizon: int, df: pd.DataFrame,
-                                max_rows: int = 300_000,
-                                per_item_row_sampling: bool = False):
-        logger.info(f"\n{'='*60}")
+    def _train_horizon_inline(
+        self, horizon: int, df: pd.DataFrame, max_rows: int = 300_000, per_item_row_sampling: bool = False
+    ):
+        logger.info(f"\n{'=' * 60}")
         logger.info(f"HORIZON {horizon}d")
-        logger.info(f"{'='*60}")
+        logger.info(f"{'=' * 60}")
         _hz_start = datetime.now()
 
         # Reset to the full correlation-pruned base set before each horizon.
@@ -6328,8 +6409,8 @@ class ItemForecaster:
             # Temporal walk-forward split: a trailing calendar window, purged of
             # the training rows it labels. See the helper.
             train_set, val_set = self._build_production_split(
-                tdf, horizon, max_rows,
-                per_item_row_sampling=per_item_row_sampling)
+                tdf, horizon, max_rows, per_item_row_sampling=per_item_row_sampling
+            )
 
             if attempt == 0:
                 logger.info(f"  {horizon}d: {len(train_set)} train, {len(val_set)} val")
@@ -6338,19 +6419,19 @@ class ItemForecaster:
             X_train_pre = train_set[self.feature_cols].replace([np.inf, -np.inf], np.nan)
             feature_medians = X_train_pre.median()
             if self.exceedance_meta_enabled():
-                meta_cols = [c for c in self.BYMYKEL_META_FEATURES
-                             if c in train_set.columns and c not in self.feature_cols]
+                meta_cols = [
+                    c for c in self.BYMYKEL_META_FEATURES if c in train_set.columns and c not in self.feature_cols
+                ]
                 if meta_cols:
-                    meta_medians = train_set[meta_cols].replace(
-                        [np.inf, -np.inf], np.nan).median()
+                    meta_medians = train_set[meta_cols].replace([np.inf, -np.inf], np.nan).median()
                     feature_medians = pd.concat([feature_medians, meta_medians])
             self.feature_medians = feature_medians
             X_train = self._impute_features(X_train_pre, feature_medians)
             y_train = train_set[f"target_return_{horizon}d"]
 
             X_val = self._impute_features(
-                val_set[self.feature_cols].replace([np.inf, -np.inf], np.nan),
-                feature_medians)
+                val_set[self.feature_cols].replace([np.inf, -np.inf], np.nan), feature_medians
+            )
             y_val = val_set[f"target_return_{horizon}d"]
 
             # Sample weights: down-weight historically flat items so the
@@ -6393,8 +6474,7 @@ class ItemForecaster:
 
             _hp_start = time.time()
             cached_hp = self.tuned_params.get(horizon, {})
-            reuse_hp = (os.environ.get("FORCE_HP_SEARCH") != "1"
-                        and all(q in cached_hp for q in self.QUANTILES))
+            reuse_hp = os.environ.get("FORCE_HP_SEARCH") != "1" and all(q in cached_hp for q in self.QUANTILES)
             if reuse_hp:
                 # HP reuse only. CV still runs: it is where the conformal
                 # calibration records come from, and they have to be unseen.
@@ -6406,7 +6486,8 @@ class ItemForecaster:
                         f"(NAIVE_INIT_SCORE=1) on hyperparameters selected "
                         f"against the UN-offset target. Read the sign of "
                         f"rank_ic_edge from this run, but confirm the size with "
-                        f"FORCE_HP_SEARCH=1 before believing it.")
+                        f"FORCE_HP_SEARCH=1 before believing it."
+                    )
                 for q in self.QUANTILES:
                     bp = dict(cached_hp[q])
                     bp["max_bin"] = self.MAX_BIN
@@ -6455,10 +6536,15 @@ class ItemForecaster:
                     # correct and safe, just not faster.
                     best_params_by_q = {}
                     for q in self.QUANTILES:
-                        logger.info(f"  Searching hyperparams for {horizon}d p{int(q*100)} "
-                                    f"(Optuna, {boosting_type}, {hz_trials} trials)...")
+                        logger.info(
+                            f"  Searching hyperparams for {horizon}d p{int(q * 100)} "
+                            f"(Optuna, {boosting_type}, {hz_trials} trials)..."
+                        )
                         best_params_by_q[q] = self._optuna_search_params(
-                            X_train, y_train, X_val, y_val,
+                            X_train,
+                            y_train,
+                            X_val,
+                            y_val,
                             val_dates=val_set["date"],
                             quantile=q,
                             boosting_type=boosting_type,
@@ -6476,9 +6562,15 @@ class ItemForecaster:
 
                     # Merge Optuna results into base params
                     if best_params:
-                        merge_keys = ["num_leaves", "learning_rate", "lambda_l1",
-                                      "lambda_l2", "max_depth", "min_data_in_leaf",
-                                      "subsample"]
+                        merge_keys = [
+                            "num_leaves",
+                            "learning_rate",
+                            "lambda_l1",
+                            "lambda_l2",
+                            "max_depth",
+                            "min_data_in_leaf",
+                            "subsample",
+                        ]
                         for k in merge_keys:
                             if k in best_params:
                                 base_params[k] = best_params[k]
@@ -6491,9 +6583,7 @@ class ItemForecaster:
                         base_params["min_data_in_leaf"] = 15
 
                     per_quantile_params[q] = dict(base_params)
-                self.tuned_params[horizon] = {
-                    q: dict(per_quantile_params[q]) for q in self.QUANTILES
-                }
+                self.tuned_params[horizon] = {q: dict(per_quantile_params[q]) for q in self.QUANTILES}
 
             _hp_elapsed = time.time() - _hp_start
             if reuse_hp:
@@ -6515,7 +6605,7 @@ class ItemForecaster:
             _es = self._early_stopping_enabled()
             for q in self.QUANTILES:
                 pq = per_quantile_params[q]
-                logger.info(f"  Training {horizon}d p{int(q*100)} ensemble ({self.N_ENSEMBLES} members)...")
+                logger.info(f"  Training {horizon}d p{int(q * 100)} ensemble ({self.N_ENSEMBLES} members)...")
                 _ens_start = datetime.now()
                 ensemble_models = []
                 for ei in range(self.N_ENSEMBLES):
@@ -6523,14 +6613,15 @@ class ItemForecaster:
                     p["random_state"] = self.ENSEMBLE_SEEDS[ei]
                     p["feature_fraction"] = self.ENSEMBLE_FEATURE_FRACTIONS[ei]
                     p["n_jobs"] = n_jobs
-                    ensemble_models.append(self._train_ensemble_member(
-                        p, dtrain, dval, boost_rounds, early_stopping=_es))
+                    ensemble_models.append(
+                        self._train_ensemble_member(p, dtrain, dval, boost_rounds, early_stopping=_es)
+                    )
 
                 self.models[(horizon, q)] = ensemble_models
                 _ens_elapsed = (datetime.now() - _ens_start).total_seconds()
                 fi = self._get_feature_importance(ensemble_models[0])
                 logger.info(f"  Done in {_ens_elapsed:.0f}s — Top features: {fi['feature'].head(5).tolist()}")
-                logger.info(f"  [timing] {horizon}d q{int(q*100)} ensemble: {_ens_elapsed:.1f}s")
+                logger.info(f"  [timing] {horizon}d q{int(q * 100)} ensemble: {_ens_elapsed:.1f}s")
 
             # Directional classifier: supplies the served up/flat/down call and
             # confidence (the quantile models only supply the interval).
@@ -6540,13 +6631,16 @@ class ItemForecaster:
             # retained in scripts/ab_test_direction_labels.py.
             _dir_start = time.time()
             self.direction_models[horizon] = self._fit_direction_classifier(
-                X_train, y_train, X_val, y_val, boosting_type,
+                X_train,
+                y_train,
+                X_val,
+                y_val,
+                boosting_type,
                 self._direction_tree_params(per_quantile_params),
                 horizon=horizon,
                 sigma_train=None,
                 sigma_val=None,
-                tier_train=(train_set["price_tier"].to_numpy()
-                            if "price_tier" in train_set.columns else None),
+                tier_train=(train_set["price_tier"].to_numpy() if "price_tier" in train_set.columns else None),
                 num_boost_round=boost_rounds,
                 early_stopping=_es,
             )
@@ -6568,41 +6662,39 @@ class ItemForecaster:
             # byte-identical to the pre-Phase-2 one.
             if self.exceedance_scale_enabled() or self.exceedance_head_enabled():
                 _exc_start = time.time()
-                X_exc = self._exceedance_feature_matrix(
-                    train_set, self.feature_cols)
+                X_exc = self._exceedance_feature_matrix(train_set, self.feature_cols)
                 X_exc_clean = X_exc.replace([np.inf, -np.inf], np.nan)
                 X_exc = self._impute_features(X_exc_clean, X_exc_clean.median())
                 self.exceedance_models[horizon] = self._fit_exceedance_classifier(
-                    X_exc, train_set[f"target_exceed_{horizon}d"].to_numpy(),
+                    X_exc,
+                    train_set[f"target_exceed_{horizon}d"].to_numpy(),
                     boosting_type,
                     self._direction_tree_params(per_quantile_params),
                     horizon=horizon,
-                    tier_train=(train_set["price_tier"].to_numpy()
-                                if "price_tier" in train_set.columns else None),
+                    tier_train=(train_set["price_tier"].to_numpy() if "price_tier" in train_set.columns else None),
                     num_boost_round=boost_rounds,
                 )
-                logger.info(f"  [timing] {horizon}d exceedance classifier: "
-                            f"{time.time() - _exc_start:.1f}s")
+                logger.info(f"  [timing] {horizon}d exceedance classifier: {time.time() - _exc_start:.1f}s")
 
             # Volatility-ranking GBM: predict |return| to reshape climatology
             # cross-sectionally. Requires CLIMATOLOGY_SCALE to be on (the base
             # it modulates). Trained on the same split and features.
-            if (self.vol_rank_gbm_enabled()
-                    and self.climatology_scale_enabled()):
+            if self.vol_rank_gbm_enabled() and self.climatology_scale_enabled():
                 _vr_start = time.time()
                 target_col = f"target_return_{horizon}d"
                 y_abs_train = train_set[target_col].abs()
                 y_abs_val = val_set[target_col].abs()
                 self.vol_rank_models[horizon] = self._fit_vol_rank_model(
-                    X_train, y_abs_train, X_val, y_abs_val,
+                    X_train,
+                    y_abs_train,
+                    X_val,
+                    y_abs_val,
                     boosting_type,
                     self._direction_tree_params(per_quantile_params),
                     horizon=horizon,
                     num_boost_round=boost_rounds,
                 )
-                logger.info(
-                    f"  [timing] {horizon}d vol-rank GBM: "
-                    f"{time.time() - _vr_start:.1f}s")
+                logger.info(f"  [timing] {horizon}d vol-rank GBM: {time.time() - _vr_start:.1f}s")
 
             # Anomaly classifier: P(|return_h| > 2σ_item). An alert signal,
             # not a band input. Gate: ANOMALY_GBM=1.
@@ -6611,17 +6703,15 @@ class ItemForecaster:
                 anom_col = f"target_anomaly_{horizon}d"
                 if anom_col in train_set.columns:
                     self.anomaly_models[horizon] = self._fit_anomaly_classifier(
-                        X_train, train_set[anom_col].to_numpy(),
+                        X_train,
+                        train_set[anom_col].to_numpy(),
                         boosting_type,
                         self._direction_tree_params(per_quantile_params),
                         horizon=horizon,
-                        tier_train=(train_set["price_tier"].to_numpy()
-                                    if "price_tier" in train_set.columns else None),
+                        tier_train=(train_set["price_tier"].to_numpy() if "price_tier" in train_set.columns else None),
                         num_boost_round=boost_rounds,
                     )
-                    logger.info(
-                        f"  [timing] {horizon}d anomaly classifier: "
-                        f"{time.time() - _anom_start:.1f}s")
+                    logger.info(f"  [timing] {horizon}d anomaly classifier: {time.time() - _anom_start:.1f}s")
 
             # Train regime-specific models (optional: SKIP_REGIMES=1 to skip)
             #
@@ -6638,7 +6728,7 @@ class ItemForecaster:
                 # so a skip run never re-persists stale regime artifacts.
                 for key in [k for k in self.regime_models if k[1] == horizon]:
                     del self.regime_models[key]
-                logger.info(f"  Regime models skipped (SKIP_REGIMES=1)")
+                logger.info("  Regime models skipped (SKIP_REGIMES=1)")
             else:
                 # Clear this horizon's regime models before refitting them. On a
                 # cold run the dict is empty anyway; on a warm one it holds the
@@ -6655,18 +6745,19 @@ class ItemForecaster:
                     MIN_REGIME_TRAIN = 500
                     MIN_REGIME_VAL = 50
                     if len(r_train) < MIN_REGIME_TRAIN or len(r_val) < MIN_REGIME_VAL:
-                        logger.info(f"  Skipping {regime} regime ({len(r_train)} train, {len(r_val)} val — "
-                                    f"below minimum)")
+                        logger.info(
+                            f"  Skipping {regime} regime ({len(r_train)} train, {len(r_val)} val — below minimum)"
+                        )
                         continue
 
                     # Use global HP params (reuse Optuna results from global)
                     r_X_train = self._impute_features(
-                        r_train[self.feature_cols].replace([np.inf, -np.inf], np.nan),
-                        feature_medians)
+                        r_train[self.feature_cols].replace([np.inf, -np.inf], np.nan), feature_medians
+                    )
                     r_y_train = r_train[f"target_return_{horizon}d"]
                     r_X_val = self._impute_features(
-                        r_val[self.feature_cols].replace([np.inf, -np.inf], np.nan),
-                        feature_medians)
+                        r_val[self.feature_cols].replace([np.inf, -np.inf], np.nan), feature_medians
+                    )
                     r_y_val = r_val[f"target_return_{horizon}d"]
 
                     r_train_weights = self._compute_sample_weights(r_train, horizon)
@@ -6694,8 +6785,9 @@ class ItemForecaster:
                     r_dtrain.construct()
                     r_dval.construct()
 
-                    logger.info(f"  Training {regime} regime models ({horizon}d, "
-                                f"{len(r_train):,} train, {len(r_val):,} val)...")
+                    logger.info(
+                        f"  Training {regime} regime models ({horizon}d, {len(r_train):,} train, {len(r_val):,} val)..."
+                    )
                     for q in self.QUANTILES:
                         pq = per_quantile_params[q]
                         r_ensemble = []
@@ -6704,14 +6796,15 @@ class ItemForecaster:
                             p["random_state"] = self.ENSEMBLE_SEEDS[ei]
                             p["feature_fraction"] = self.ENSEMBLE_FEATURE_FRACTIONS[ei]
                             p["n_jobs"] = n_jobs
-                            r_ensemble.append(self._train_ensemble_member(
-                                p, r_dtrain, r_dval, boost_rounds,
-                                early_stopping=_es))
+                            r_ensemble.append(
+                                self._train_ensemble_member(p, r_dtrain, r_dval, boost_rounds, early_stopping=_es)
+                            )
                         self.regime_models[(regime, horizon, q)] = r_ensemble
 
                     self.regime_feature_cols[(horizon, regime)] = list(self.feature_cols)
-                    logger.info(f"  {regime} regime models for {horizon}d done "
-                                f"({len(r_train)} train, {len(r_val)} val)")
+                    logger.info(
+                        f"  {regime} regime models for {horizon}d done ({len(r_train)} train, {len(r_val)} val)"
+                    )
 
             # Expanding-window CV. This is NOT optional on the production path,
             # and the reason is conformal, not metrics.
@@ -6750,13 +6843,14 @@ class ItemForecaster:
                 # and artifact saving. A fold-count change cannot be attributed
                 # against a remainder.
                 _cv_t0 = time.time()
-                (oof_records, cv_metrics, pt_records,
-                 pt_records_clf) = self._cv_evaluate_horizon(
-                    tdf, horizon, per_quantile_params,
-                    per_item_row_sampling=per_item_row_sampling)
-                logger.info(f"  [timing] {horizon}d conformal CV: "
-                            f"{time.time() - _cv_t0:.1f}s "
-                            f"({len(cv_metrics)} folds, {len(oof_records)} OOF rows)")
+                (oof_records, cv_metrics, pt_records, pt_records_clf) = self._cv_evaluate_horizon(
+                    tdf, horizon, per_quantile_params, per_item_row_sampling=per_item_row_sampling
+                )
+                logger.info(
+                    f"  [timing] {horizon}d conformal CV: "
+                    f"{time.time() - _cv_t0:.1f}s "
+                    f"({len(cv_metrics)} folds, {len(oof_records)} OOF rows)"
+                )
 
             # Calibrate. Order matters: q_hat sets the band width and the
             # confidence thresholds are fitted on that width, so the conformal
@@ -6767,8 +6861,7 @@ class ItemForecaster:
                 calibration_source = f"CV-POOLED OOF, {len(cv_metrics)} folds"
                 out_of_sample = True
             elif _skip_cv or not _cv_feasible:
-                records_df = self._holdout_conformal_records(
-                    horizon, X_val, y_val, val_set)
+                records_df = self._holdout_conformal_records(horizon, X_val, y_val, val_set)
                 calibration_source = "SINGLE HOLDOUT — expect UNDER-COVERAGE"
                 out_of_sample = False
             else:
@@ -6789,8 +6882,7 @@ class ItemForecaster:
             # half of `range_pct`, on exactly the rows q_hat was fitted on, which
             # is the basis the 0.87/0.86/0.84/0.77x prediction in
             # docs/changelog/2026-08-12-sigma-exponent-implemented.md was made on.
-            _half_pct = 50.0 * float(np.nanmedian(
-                records_df["range_pct"].to_numpy(dtype=float)))
+            _half_pct = 50.0 * float(np.nanmedian(records_df["range_pct"].to_numpy(dtype=float)))
             _cal_msg = (
                 f"  Conformal calibration [{calibration_source}]: "
                 f"q_hat={q_hat:.4f} (dimensionless x sigma), "
@@ -6823,8 +6915,7 @@ class ItemForecaster:
             # None when the horizon has no usable pairs — visibly absent from
             # cv_results rather than a zero, same rule classifier_accuracy_ge1
             # follows.
-            exceed_cal_report = self._fit_exceedance_calibrator(
-                horizon, records_df, out_of_sample)
+            exceed_cal_report = self._fit_exceedance_calibrator(horizon, records_df, out_of_sample)
 
             # The sigma axis, on the real OOF residuals. Ordered AFTER
             # calibration so it audits the same records q_hat was fitted on, and
@@ -6856,8 +6947,7 @@ class ItemForecaster:
             # over the narrow range the cap leaves.
             #
             # Reported only. `q_hat` above is what serves, unchanged.
-            fold_q_hats = [(m["n_train"], m["fold_q_hat"]) for m in cv_metrics
-                           if m.get("fold_q_hat") is not None]
+            fold_q_hats = [(m["n_train"], m["fold_q_hat"]) for m in cv_metrics if m.get("fold_q_hat") is not None]
             q_hat_trend = None
             if len(fold_q_hats) >= 3:
                 _n = np.array([a for a, _ in fold_q_hats], dtype=float)
@@ -6866,15 +6956,13 @@ class ItemForecaster:
                 # and 3-9 points cannot support a fitted slope anyway.
                 _rho = float(pd.Series(_n).corr(pd.Series(_q), method="spearman"))
                 q_hat_trend = {
-                    "spearman_n_train_vs_q_hat": (
-                        None if not np.isfinite(_rho) else round(_rho, 3)),
+                    "spearman_n_train_vs_q_hat": (None if not np.isfinite(_rho) else round(_rho, 3)),
                     "first_fold_q_hat": round(float(_q[0]), 4),
                     "last_fold_q_hat": round(float(_q[-1]), 4),
                     # None, not inf: a fold whose residuals are all zero is a
                     # broken fold, and publishing inf under a ratio key would
                     # read as an extreme confirmation of the hypothesis.
-                    "pooled_over_last_fold": (
-                        None if _q[-1] <= 0 else round(float(q_hat / _q[-1]), 4)),
+                    "pooled_over_last_fold": (None if _q[-1] <= 0 else round(float(q_hat / _q[-1]), 4)),
                     "n_folds_measured": len(fold_q_hats),
                     # How much range the screen actually had. With the cap
                     # binding, `n_train_distinct` collapses toward 1 and a rho
@@ -6883,7 +6971,7 @@ class ItemForecaster:
                     # needs this beside the rho, not in a separate log line.
                     "n_train_min": int(_n[0]),
                     "n_train_max": int(_n[-1]),
-                    "n_train_distinct": int(len(np.unique(_n))),
+                    "n_train_distinct": len(np.unique(_n)),
                     "cv_max_train_rows": self._cv_max_train_rows(),
                 }
                 logger.info(
@@ -6908,19 +6996,15 @@ class ItemForecaster:
 
             # Aggregate naive baselines for direct comparison. The model only
             # has a real directional edge if mean_dir_acc clears these.
-            persist_accs = [m["persistence_accuracy"] for m in cv_metrics
-                            if m.get("persistence_accuracy") is not None]
-            mom_accs = [m["momentum_accuracy"] for m in cv_metrics
-                        if m.get("momentum_accuracy") is not None]
+            persist_accs = [m["persistence_accuracy"] for m in cv_metrics if m.get("persistence_accuracy") is not None]
+            mom_accs = [m["momentum_accuracy"] for m in cv_metrics if m.get("momentum_accuracy") is not None]
             mean_persist = round(float(np.mean(persist_accs)), 1) if persist_accs else None
             mean_mom = round(float(np.mean(mom_accs)), 1) if mom_accs else None
-            best_baseline = max([b for b in (mean_persist, mean_mom) if b is not None],
-                                default=None)
+            best_baseline = max([b for b in (mean_persist, mean_mom) if b is not None], default=None)
 
             # The directional classifier is the SERVED signal, so the edge and
             # the trust warning are judged on it (not the quantile-median sign).
-            clf_accs = [m["classifier_accuracy"] for m in cv_metrics
-                        if m.get("classifier_accuracy") is not None]
+            clf_accs = [m["classifier_accuracy"] for m in cv_metrics if m.get("classifier_accuracy") is not None]
             mean_clf = round(float(np.mean(clf_accs)), 1) if clf_accs else None
             served_acc = mean_clf if mean_clf is not None else mean_acc
             edge = round(served_acc - best_baseline, 1) if best_baseline is not None else None
@@ -6930,8 +7014,7 @@ class ItemForecaster:
             # it; `edge` deliberately stays on the all-tiers number above so
             # the trust warning and the confidence calibration do not move.
             # None when no fold had a >=$1 cohort, matching the per-fold rule.
-            clf_ge1 = [m["classifier_accuracy_ge1"] for m in cv_metrics
-                       if m.get("classifier_accuracy_ge1") is not None]
+            clf_ge1 = [m["classifier_accuracy_ge1"] for m in cv_metrics if m.get("classifier_accuracy_ge1") is not None]
             mean_clf_ge1 = round(float(np.mean(clf_ge1)), 1) if clf_ge1 else None
 
             # Invariant #4. `edge` above is measured against persistence and
@@ -6962,8 +7045,8 @@ class ItemForecaster:
             # one key mean either signal is what made the 2026-08-10 diagnostics
             # run report a q50 verdict under a heading that said "served".
             edge_vs_constant = (
-                None if (mean_constant_call is None or not fold_accs)
-                else round(mean_acc - mean_constant_call, 2))
+                None if (mean_constant_call is None or not fold_accs) else round(mean_acc - mean_constant_call, 2)
+            )
             # Positive means the model orders items better than "bet against
             # yesterday's move". On 2026-08-08 it was negative at all four
             # horizons, which is the bar this project had never measured.
@@ -6980,21 +7063,24 @@ class ItemForecaster:
             # the same bar for both signals and are not recomputed. None when
             # CV_DIAGNOSTIC_CLASSIFIER=0 -- visibly absent, never falling back to
             # the quantile sign.
-            pt_clf = (pesaran_timmermann(pt_records_clf, MIN_FORECAST_DATES)
-                      if pt_records_clf else None)
+            pt_clf = pesaran_timmermann(pt_records_clf, MIN_FORECAST_DATES) if pt_records_clf else None
             edge_vs_constant_clf = (
-                None if (mean_constant_call is None or mean_clf is None)
-                else round(mean_clf - mean_constant_call, 2))
+                None if (mean_constant_call is None or mean_clf is None) else round(mean_clf - mean_constant_call, 2)
+            )
 
             if cv_metrics:
                 # classifier= pools all tiers and the frame is ~83% tier-0, so
                 # it reads close to the penny-item score. classifier>=$1= is
                 # the one to compare against the production headline.
-                logger.info(f"  CV ({len(cv_metrics)} folds): "
-                            f"classifier={mean_clf}% (>=$1: {mean_clf_ge1}%) "
-                            f"quantile-sign={mean_acc:.1f}% (sd={std_acc:.1f}%)")
-                logger.info(f"  Baselines: persistence={mean_persist}% "
-                            f"momentum={mean_mom}% → served(classifier) edge vs best={edge}pp")
+                logger.info(
+                    f"  CV ({len(cv_metrics)} folds): "
+                    f"classifier={mean_clf}% (>=$1: {mean_clf_ge1}%) "
+                    f"quantile-sign={mean_acc:.1f}% (sd={std_acc:.1f}%)"
+                )
+                logger.info(
+                    f"  Baselines: persistence={mean_persist}% "
+                    f"momentum={mean_mom}% → served(classifier) edge vs best={edge}pp"
+                )
                 # Invariant #4: never on its own. The constant call is the bar
                 # persistence and momentum were standing in for, and it is a
                 # much higher one.
@@ -7003,7 +7089,8 @@ class ItemForecaster:
                     f"constant-call={mean_constant_call}% "
                     f"down-rate={mean_down_rate}% → edge vs constant call="
                     f"{edge_vs_constant}pp | PT excess={pt['pt_excess_pp']}pp "
-                    f"t={pt['pt_t_stat']} verdict={pt['pt_verdict']}")
+                    f"t={pt['pt_t_stat']} verdict={pt['pt_verdict']}"
+                )
                 # The line that describes production. Absent, not substituted,
                 # when the diagnostic classifier did not run.
                 if pt_clf is not None:
@@ -7013,16 +7100,19 @@ class ItemForecaster:
                         f"down-rate={mean_down_rate}% → edge vs constant call="
                         f"{edge_vs_constant_clf}pp | PT excess="
                         f"{pt_clf['pt_excess_pp']}pp t={pt_clf['pt_t_stat']} "
-                        f"verdict={pt_clf['pt_verdict']}")
+                        f"verdict={pt_clf['pt_verdict']}"
+                    )
                 else:
                     logger.info(
                         "  Invariant #4 [SERVED classifier]: not measured "
                         "(CV_DIAGNOSTIC_CLASSIFIER=0) — the line above "
-                        "describes the q50 sign, NOT what production serves.")
+                        "describes the q50 sign, NOT what production serves."
+                    )
                 logger.info(
                     f"  Cross-sectional (>=$1): rank_ic={mean_rank_ic} vs "
                     f"naive(-return_1d)={mean_naive_rank_ic} → edge={rank_ic_edge} "
-                    f"| mean trees/fold={mean_trees}")
+                    f"| mean trees/fold={mean_trees}"
+                )
                 # Printed beside it, never instead of it. The line above is the
                 # contaminated basis every stored A/B was ranked on; this one is
                 # the cohort where `p[d]/S[d]` is 1 and the metric means what it
@@ -7034,7 +7124,8 @@ class ItemForecaster:
                         f"{rank_ic_summary['tied_rows']:,} tied served rows over "
                         f"{rank_ic_summary['tied_dates']} usable dates. Rank an "
                         "arm on the pooled line above only if you mean to rank "
-                        "it on the anchor wedge.")
+                        "it on the anchor wedge."
+                    )
                 else:
                     logger.info(
                         "  Cross-sectional (>=$1, CLEAN ANCHOR): rank_ic="
@@ -7044,7 +7135,8 @@ class ItemForecaster:
                         f"{rank_ic_summary['tied_rows']:,} rows, "
                         f"{rank_ic_summary['tied_dates']} of "
                         f"{rank_ic_summary['rank_ic_dates']} date-folds. "
-                        "← RANK ARMS ON THIS LINE.")
+                        "← RANK ARMS ON THIS LINE."
+                    )
                 # C2 lambdarank arm, read on the CLEAN ANCHOR cohort against both
                 # bars: beat the naive baseline AND the q50's own ordering.
                 if rank_ic_summary["mean_lr_rank_ic_tied"] is not None:
@@ -7054,48 +7146,55 @@ class ItemForecaster:
                         "  Cross-sectional (>=$1, CLEAN ANCHOR) LAMBDARANK: "
                         f"rank_ic={rank_ic_summary['mean_lr_rank_ic_tied']} | "
                         f"edge vs naive={lr_vs_naive}, vs q50={lr_vs_q50} — "
-                        "PASS needs BOTH > 0.")
-                    if not (lr_vs_naive and lr_vs_naive > 0
-                            and lr_vs_q50 and lr_vs_q50 > 0):
+                        "PASS needs BOTH > 0."
+                    )
+                    if not (lr_vs_naive and lr_vs_naive > 0 and lr_vs_q50 and lr_vs_q50 > 0):
                         logger.warning(
                             f"  ⚠ {horizon}d LAMBDARANK does not clear both bars "
                             f"on the clean-anchor cohort (vs naive={lr_vs_naive}, "
-                            f"vs q50={lr_vs_q50}) — no served step is licensed.")
+                            f"vs q50={lr_vs_q50}) — no served step is licensed."
+                        )
                 if edge_vs_constant is not None and edge_vs_constant <= 0:
                     logger.warning(
                         f"  ⚠ {horizon}d quantile sign does NOT beat the constant "
                         f"call ({edge_vs_constant}pp) — a single fixed direction "
-                        f"scores {mean_constant_call}% on these folds.")
+                        f"scores {mean_constant_call}% on these folds."
+                    )
                 if edge_vs_constant_clf is not None and edge_vs_constant_clf <= 0:
                     logger.warning(
                         f"  ⚠ {horizon}d SERVED classifier does NOT beat the "
                         f"constant call ({edge_vs_constant_clf}pp) — a single "
                         f"fixed direction scores {mean_constant_call}% on these "
-                        f"folds. This is the signal production ships.")
+                        f"folds. This is the signal production ships."
+                    )
                 if rank_ic_edge is not None and rank_ic_edge <= 0:
                     logger.warning(
                         f"  ⚠ {horizon}d model does NOT beat ranking by "
                         f"-return_1d (rank IC {mean_rank_ic} vs "
                         f"{mean_naive_rank_ic}) — the ML stack is subtracting "
                         f"from its own best feature. Measured on the raw-anchor "
-                        f"basis; read the CLEAN ANCHOR edge before acting on it.")
+                        f"basis; read the CLEAN ANCHOR edge before acting on it."
+                    )
                 if tied_edge is not None and tied_edge <= 0:
                     logger.warning(
                         f"  ⚠ {horizon}d model does NOT beat -return_1d on the "
                         f"CLEAN ANCHOR cohort either ({tied_edge}) — this is the "
-                        f"basis-free read, so it is the one that counts.")
+                        f"basis-free read, so it is the one that counts."
+                    )
                 if pt["pt_verdict"] not in ("skill",):
                     logger.warning(
                         f"  ⚠ {horizon}d Pesaran-Timmermann verdict is "
                         f"'{pt['pt_verdict']}' (t={pt['pt_t_stat']}) on the "
                         f"quantile sign — that call is not distinguishable "
-                        f"from chance.")
+                        f"from chance."
+                    )
                 if pt_clf is not None and pt_clf["pt_verdict"] not in ("skill",):
                     logger.warning(
                         f"  ⚠ {horizon}d Pesaran-Timmermann verdict is "
                         f"'{pt_clf['pt_verdict']}' (t={pt_clf['pt_t_stat']}) on "
                         f"the SERVED classifier — what production ships is not "
-                        f"distinguishable from chance.")
+                        f"distinguishable from chance."
+                    )
             self.cv_results[horizon] = {
                 "fold_count": len(cv_metrics),
                 "per_fold": cv_metrics,
@@ -7169,8 +7268,12 @@ class ItemForecaster:
                     X_val_np = X_val.values if hasattr(X_val, "values") else X_val
                     y_val_np = y_val.values if hasattr(y_val, "values") else y_val
                     fv = self._validate_feature_groups(
-                        X_val_np, y_val_np, self.feature_cols,
-                        horizon=horizon, n_shuffles=20, min_drop_pp=0.5,
+                        X_val_np,
+                        y_val_np,
+                        self.feature_cols,
+                        horizon=horizon,
+                        n_shuffles=20,
+                        min_drop_pp=0.5,
                         significance_level=0.05,
                         offset=val_offset,
                     )
@@ -7183,15 +7286,20 @@ class ItemForecaster:
                                 for f in fv[g]["features"]:
                                     failed_cols.add(f)
                             pre_count = len(self.feature_cols)
-                            self.feature_cols = [c for c in self.feature_cols
-                                                  if c not in failed_cols]
+                            self.feature_cols = [c for c in self.feature_cols if c not in failed_cols]
                             # Safety net: if all features were pruned, fall
                             # back to a minimal core set so LightGBM doesn't
                             # crash with 0 columns.
                             if not self.feature_cols and pre_count > 0:
-                                safe = ["price_log", "price_lag_1d", "price_lag_3d",
-                                        "price_return_1d", "price_return_3d",
-                                        "price_return_7d", "price_std_7d"]
+                                safe = [
+                                    "price_log",
+                                    "price_lag_1d",
+                                    "price_lag_3d",
+                                    "price_return_1d",
+                                    "price_return_3d",
+                                    "price_return_7d",
+                                    "price_std_7d",
+                                ]
                                 self.feature_cols = [c for c in safe if c in tdf.columns]
                                 if not self.feature_cols:
                                     self.feature_cols = tdf.select_dtypes(include=[np.number]).columns[:1].tolist()
@@ -7199,9 +7307,7 @@ class ItemForecaster:
                                     f"  All features pruned — falling back to "
                                     f"{len(self.feature_cols)} core features as safety net"
                                 )
-                            price_passed = (
-                                "price_technicals" in fv and fv["price_technicals"]["passed"]
-                            )
+                            price_passed = "price_technicals" in fv and fv["price_technicals"]["passed"]
                             if price_passed:
                                 logger.warning(
                                     f"  Pruned {len(failed_cols)} features from groups {failed} "
@@ -7228,10 +7334,7 @@ class ItemForecaster:
         base_features = list(self.feature_cols)
         excluded_groups = self.HORIZON_EXCLUDED_GROUPS.get(horizon, [])
         if excluded_groups and not _warm_retrain:
-            horizon_features = [
-                c for c in base_features
-                if _feature_group(c) not in excluded_groups
-            ]
+            horizon_features = [c for c in base_features if _feature_group(c) not in excluded_groups]
             logger.info(
                 f"  {horizon}d: excluded {len(base_features) - len(horizon_features)} features "
                 f"from groups {excluded_groups} "
@@ -7245,9 +7348,11 @@ class ItemForecaster:
         logger.info(f"  Horizon {horizon}d done in {_hz_elapsed:.0f}s")
         if self.cv_results.get(horizon):
             cv = self.cv_results[horizon]
-            logger.info(f"  CV summary: mean={cv.get('mean_dir_acc', '?'):}% "
-                        f"std={cv.get('std_dir_acc', '?'):}% "
-                        f"range=[{cv.get('min_dir_acc', '?'):}%, {cv.get('max_dir_acc', '?'):}%]")
+            logger.info(
+                f"  CV summary: mean={cv.get('mean_dir_acc', '?'):}% "
+                f"std={cv.get('std_dir_acc', '?'):}% "
+                f"range=[{cv.get('min_dir_acc', '?'):}%, {cv.get('max_dir_acc', '?'):}%]"
+            )
         del tdf
 
     # ------------------------------------------------------------------
@@ -7278,7 +7383,7 @@ class ItemForecaster:
         return round(hits / n * 100, 1) if n else 0.0
 
     @staticmethod
-    def _select_feature_cols(df, horizons, shelved) -> List[str]:
+    def _select_feature_cols(df, horizons, shelved) -> list[str]:
         """The numeric columns the trainer fits on.
 
         Drops metadata, the per-horizon targets, and everything in *shelved*.
@@ -7286,39 +7391,49 @@ class ItemForecaster:
         a full training run — a feature leaving SHELVED_FEATURES and silently
         re-entering production is exactly the regression worth a test.
         """
-        exclude = {"item_id", "date", "timestamp", "price", "volume",
-                   "name", "release_date", DIRECTION_LABEL_VOL_COL,
-                   # n_ask_sources (the composition-stability instrument's
-                   # column, added to the voted frame in v5) never reaches
-                   # this far in practice -- engineer_features' resample to
-                   # one row per item-day names only "price" and "volume" in
-                   # its groupby().agg(), which drops it -- but that is an
-                   # accident of an unrelated aggregation, and
-                   # _feature_group("n_ask_sources") falls through to
-                   # "other", which _skipped_feature_groups() never skips.
-                   # Name it here so the exclusion is a decision, not a
-                   # side effect.
-                   "n_ask_sources",
-                   # Raw sidecar columns from _attach_sidecars. Each maps to
-                   # _feature_group()'s "other" bucket, which the default
-                   # allowlist drops -- but the BID/STATTRAK A/B widens the
-                   # allowlist to admit "other", and buff_listing_count has no
-                   # gating flag at all (dense in training, NULL at serving:
-                   # availability leakage). Only the derived, flag-gated
-                   # columns (bid_ask_spread, bid_present, st_premium_present,
-                   # the volume_* features) may ever be selectable; the raw
-                   # sidecar literals must not be. steam_sale_median is the
-                   # volume panel's helper price column, not a feature. (The
-                   # raw "volume" column was already excluded above, alongside
-                   # "price" -- unrelated to this addition.)
-                   "buff_bid", "st_premium", "buff_listing_count",
-                   "steam_sale_median",
-                   # The clean-cohort mask. `prepare_targets` adds it after
-                   # this runs and the dtype filter below would drop a bool
-                   # anyway, so this is belt-and-braces -- but it is a
-                   # SCORING cohort, and a model that fitted on it would be
-                   # reading which basis its own label is contaminated by.
-                   ANCHOR_TIED_COL}
+        exclude = {
+            "item_id",
+            "date",
+            "timestamp",
+            "price",
+            "volume",
+            "name",
+            "release_date",
+            DIRECTION_LABEL_VOL_COL,
+            # n_ask_sources (the composition-stability instrument's
+            # column, added to the voted frame in v5) never reaches
+            # this far in practice -- engineer_features' resample to
+            # one row per item-day names only "price" and "volume" in
+            # its groupby().agg(), which drops it -- but that is an
+            # accident of an unrelated aggregation, and
+            # _feature_group("n_ask_sources") falls through to
+            # "other", which _skipped_feature_groups() never skips.
+            # Name it here so the exclusion is a decision, not a
+            # side effect.
+            "n_ask_sources",
+            # Raw sidecar columns from _attach_sidecars. Each maps to
+            # _feature_group()'s "other" bucket, which the default
+            # allowlist drops -- but the BID/STATTRAK A/B widens the
+            # allowlist to admit "other", and buff_listing_count has no
+            # gating flag at all (dense in training, NULL at serving:
+            # availability leakage). Only the derived, flag-gated
+            # columns (bid_ask_spread, bid_present, st_premium_present,
+            # the volume_* features) may ever be selectable; the raw
+            # sidecar literals must not be. steam_sale_median is the
+            # volume panel's helper price column, not a feature. (The
+            # raw "volume" column was already excluded above, alongside
+            # "price" -- unrelated to this addition.)
+            "buff_bid",
+            "st_premium",
+            "buff_listing_count",
+            "steam_sale_median",
+            # The clean-cohort mask. `prepare_targets` adds it after
+            # this runs and the dtype filter below would drop a bool
+            # anyway, so this is belt-and-braces -- but it is a
+            # SCORING cohort, and a model that fitted on it would be
+            # reading which basis its own label is contaminated by.
+            ANCHOR_TIED_COL,
+        }
         exclude |= {f"target_{h}d" for h in horizons}
         exclude |= {f"target_return_{h}d" for h in horizons}
         # The one-sided exceedance label prepare_targets adds after this runs. A
@@ -7332,8 +7447,9 @@ class ItemForecaster:
         exclude |= {f"market_factor_{h}d" for h in horizons}
         exclude |= set(shelved)
 
-        return [c for c in df.columns if c not in exclude
-                and df[c].dtype in (np.float64, np.float32, np.int64, int, float)]
+        return [
+            c for c in df.columns if c not in exclude and df[c].dtype in (np.float64, np.float32, np.int64, int, float)
+        ]
 
     def _skipped_feature_groups(self) -> set:
         """Groups engineer_features may skip: everything the allowlist drops.
@@ -7388,11 +7504,8 @@ class ItemForecaster:
             if not allowlist:
                 return
             pre = len(self.feature_cols)
-            self.feature_cols = self._apply_feature_allowlist(
-                self.feature_cols, allowlist)
-            logger.info(
-                f"Feature allowlist {allowlist}: "
-                f"{pre} -> {len(self.feature_cols)} features")
+            self.feature_cols = self._apply_feature_allowlist(self.feature_cols, allowlist)
+            logger.info(f"Feature allowlist {allowlist}: {pre} -> {len(self.feature_cols)} features")
 
         if self.ALLOWLIST_BEFORE_PRUNE:
             _allow()
@@ -7463,7 +7576,6 @@ class ItemForecaster:
         m = np.asarray(factor, dtype=float)
         return r - np.nan_to_num(m, nan=0.0)
 
-
     @staticmethod
     def _has_date_coverage(forecast_dates) -> bool:
         """True when distinct non-null forecast dates reach MIN_FORECAST_DATES.
@@ -7479,8 +7591,7 @@ class ItemForecaster:
         return len(distinct) >= MIN_FORECAST_DATES
 
     @staticmethod
-    def _direction_threshold(sigma, horizon: int, k: float,
-                             floor: float, cap: float) -> np.ndarray:
+    def _direction_threshold(sigma, horizon: int, k: float, floor: float, cap: float) -> np.ndarray:
         """Per-row flat-band threshold (percent) = clamp(k * sigma * sqrt(h),
         floor, cap). ``sigma`` is trailing daily-return std in percent; scalar
         or array. Always returns a float ndarray."""
@@ -7511,8 +7622,7 @@ class ItemForecaster:
         (W_n == 0) both have no multiplier that moves the share.
         """
         if not 0.0 < served_share < 1.0:
-            raise ValueError(
-                f"served_share must be in (0, 1), got {served_share!r}")
+            raise ValueError(f"served_share must be in (0, 1), got {served_share!r}")
         w = np.asarray(base_weights, dtype=float)
         served = np.asarray(tiers) >= HEADLINE_MIN_TIER
         w_served = float(w[served].sum())
@@ -7522,9 +7632,9 @@ class ItemForecaster:
         return served_share * w_other / ((1.0 - served_share) * w_served)
 
     @classmethod
-    def _direction_sample_weights(cls, returns, threshold, mover_weight: float,
-                                  tiers=None,
-                                  served_share: Optional[float] = None) -> np.ndarray:
+    def _direction_sample_weights(
+        cls, returns, threshold, mover_weight: float, tiers=None, served_share: float | None = None
+    ) -> np.ndarray:
         """Up-weight clearly-moving rows (|return| > ``threshold``) by
         ``mover_weight``; flat rows keep weight 1.0. ``threshold`` scalar or
         per-row array (percent).
@@ -7551,9 +7661,9 @@ class ItemForecaster:
         return w
 
     @classmethod
-    def _direction_class_prior(cls, returns, threshold: float,
-                               mover_weight: float, tiers=None,
-                               served_share: Optional[float] = None) -> Dict[int, float]:
+    def _direction_class_prior(
+        cls, returns, threshold: float, mover_weight: float, tiers=None, served_share: float | None = None
+    ) -> dict[int, float]:
         """Weighted training class prior as {0: down, 1: flat, 2: up}.
 
         Weighted by _direction_sample_weights, because that is the
@@ -7582,8 +7692,7 @@ class ItemForecaster:
         if tiers is not None:
             tiers = np.asarray(tiers)[finite]
         c = cls._direction_classes(r, float(threshold))
-        w = cls._direction_sample_weights(r, float(threshold), mover_weight,
-                                          tiers=tiers, served_share=served_share)
+        w = cls._direction_sample_weights(r, float(threshold), mover_weight, tiers=tiers, served_share=served_share)
         total = float(w.sum())
         if total <= 0.0:
             return {}
@@ -7610,7 +7719,8 @@ class ItemForecaster:
         logger.warning(
             f"  h={horizon}: NO directional classifier — served the "
             f"±{DIRECTION_FLAT_TOLERANCE_PCT}% dead-band fallback for {n} items, "
-            f"{n_flat} ({pct:.1f}%) called flat")
+            f"{n_flat} ({pct:.1f}%) called flat"
+        )
 
     @classmethod
     def _recenter_on_direction(cls, low_ret, mid_ret, high_ret, direction_class):
@@ -7635,14 +7745,22 @@ class ItemForecaster:
         )
         return new_mid - low_off, new_mid, new_mid + high_off
 
-    def _fit_direction_classifier(self, X_train, y_train_ret, X_val, y_val_ret,
-                                   boosting_type: str, tree_params: dict,
-                                   horizon: Optional[int] = None,
-                                   sigma_train=None, sigma_val=None,
-                                   num_boost_round: int = 200,
-                                   random_state: int = 42,
-                                   tier_train=None,
-                                   early_stopping: bool = False):
+    def _fit_direction_classifier(
+        self,
+        X_train,
+        y_train_ret,
+        X_val,
+        y_val_ret,
+        boosting_type: str,
+        tree_params: dict,
+        horizon: int | None = None,
+        sigma_train=None,
+        sigma_val=None,
+        num_boost_round: int = 200,
+        random_state: int = 42,
+        tier_train=None,
+        early_stopping: bool = False,
+    ):
         """Train a 3-class (down/flat/up) LightGBM classifier on returns,
         up-weighting movers. When ``sigma_train`` is given, the flat band is
         vol-scaled per row (k_h * sigma * sqrt(h), clamped); otherwise the
@@ -7671,15 +7789,14 @@ class ItemForecaster:
         def _thr(sigma):
             if sigma is None:
                 return DIRECTION_FLAT_TOLERANCE_PCT
-            return self._direction_threshold(np.asarray(sigma, dtype=float),
-                                              horizon, k, floor, cap)
+            return self._direction_threshold(np.asarray(sigma, dtype=float), horizon, k, floor, cap)
 
         ds = {"max_bin": self.MAX_BIN, "feature_pre_filter": False}
         thr_train = _thr(sigma_train)
         c_train = self._direction_classes(y_train_ret, thr_train)
         w_train = self._direction_sample_weights(
-            y_train_ret, thr_train, mover_weight,
-            tiers=tier_train, served_share=self.served_cohort_share)
+            y_train_ret, thr_train, mover_weight, tiers=tier_train, served_share=self.served_cohort_share
+        )
         if self.served_cohort_share is not None and tier_train is not None:
             served = np.asarray(tier_train) >= HEADLINE_MIN_TIER
             logger.info(
@@ -7692,25 +7809,34 @@ class ItemForecaster:
             )
         dtrain = lgb.Dataset(X_train, c_train, params=ds, weight=w_train)
         params = dict(tree_params)
-        params.update(objective="multiclass", num_class=3, metric="multi_logloss",
-                      boosting_type=boosting_type, verbosity=-1, n_jobs=-1,
-                      random_state=random_state)
+        params.update(
+            objective="multiclass",
+            num_class=3,
+            metric="multi_logloss",
+            boosting_type=boosting_type,
+            verbosity=-1,
+            n_jobs=-1,
+            random_state=random_state,
+        )
         callbacks = [lgb.log_evaluation(0)]
         valid_sets = None
-        if (early_stopping and X_val is not None and y_val_ret is not None
-                and len(X_val)):
-            dval = lgb.Dataset(X_val, self._direction_classes(y_val_ret, _thr(sigma_val)),
-                               reference=dtrain, params=ds)
+        if early_stopping and X_val is not None and y_val_ret is not None and len(X_val):
+            dval = lgb.Dataset(X_val, self._direction_classes(y_val_ret, _thr(sigma_val)), reference=dtrain, params=ds)
             valid_sets = [dval]
             callbacks.insert(0, lgb.early_stopping(20))
-        return lgb.train(params, dtrain, num_boost_round=num_boost_round,
-                         valid_sets=valid_sets, callbacks=callbacks)
+        return lgb.train(params, dtrain, num_boost_round=num_boost_round, valid_sets=valid_sets, callbacks=callbacks)
 
     def _fit_vol_rank_model(
-        self, X_train, y_abs_train, X_val, y_abs_val,
-        boosting_type: str, tree_params: dict,
-        horizon: int, num_boost_round: int = 200,
-    ) -> List[lgb.Booster]:
+        self,
+        X_train,
+        y_abs_train,
+        X_val,
+        y_abs_val,
+        boosting_type: str,
+        tree_params: dict,
+        horizon: int,
+        num_boost_round: int = 200,
+    ) -> list[lgb.Booster]:
         """Train a regression GBM on |return| to rank items by volatility.
 
         Returns an ensemble of boosters whose mean prediction is the expected
@@ -7725,16 +7851,18 @@ class ItemForecaster:
 
         # Tree structure params are objective-agnostic; reusing direction's.
         base = dict(tree_params)
-        base.update({
-            "objective": "regression",
-            "metric": "mae",
-            "boosting_type": boosting_type,
-            "verbosity": -1,
-            "n_jobs": -1,
-            "max_bin": self.MAX_BIN,
-            "feature_pre_filter": False,
-            "min_gain_to_split": 0.1,
-        })
+        base.update(
+            {
+                "objective": "regression",
+                "metric": "mae",
+                "boosting_type": boosting_type,
+                "verbosity": -1,
+                "n_jobs": -1,
+                "max_bin": self.MAX_BIN,
+                "feature_pre_filter": False,
+                "min_gain_to_split": 0.1,
+            }
+        )
 
         ensemble = []
         for ei in range(self.N_ENSEMBLES):
@@ -7745,7 +7873,8 @@ class ItemForecaster:
             if self._early_stopping_enabled():
                 cbs.insert(0, lgb.early_stopping(20))
             model = lgb.train(
-                p, dtrain,
+                p,
+                dtrain,
                 num_boost_round=num_boost_round,
                 valid_sets=[dval],
                 callbacks=cbs,
@@ -7753,7 +7882,7 @@ class ItemForecaster:
             ensemble.append(model)
         return ensemble
 
-    def _predict_vol_rank(self, horizon: int, X) -> Optional[np.ndarray]:
+    def _predict_vol_rank(self, horizon: int, X) -> np.ndarray | None:
         """Mean ensemble prediction from the vol-rank model, or None."""
         models = self.vol_rank_models.get(horizon)
         if not models:
@@ -7761,7 +7890,7 @@ class ItemForecaster:
         preds = [m.predict(X) for m in models]
         return np.mean(preds, axis=0)
 
-    def _vol_rank_multiplier(self, horizon: int, X) -> Optional[np.ndarray]:
+    def _vol_rank_multiplier(self, horizon: int, X) -> np.ndarray | None:
         """Normalised vol-rank multiplier (mean 1.0), or None if no model."""
         raw = self._predict_vol_rank(horizon, X)
         if raw is None:
@@ -7776,7 +7905,11 @@ class ItemForecaster:
         return np.clip(mult, 0.25, 4.0)
 
     def _vol_rank_feature_frame(
-        self, rows: pd.DataFrame, horizon: int, *, served: bool = False,
+        self,
+        rows: pd.DataFrame,
+        horizon: int,
+        *,
+        served: bool = False,
     ) -> pd.DataFrame:
         """Prepare features for the vol-rank model, shared by calibration and serving."""
         cols = self.horizon_feature_cols.get(horizon, self.feature_cols)
@@ -7786,12 +7919,17 @@ class ItemForecaster:
             X = self._impute_features(X, self.feature_medians, served=served)
         return X
 
-    def _fit_exceedance_classifier(self, X_train, y_train,
-                                   boosting_type: str, tree_params: dict,
-                                   horizon: Optional[int] = None,
-                                   tier_train=None,
-                                   num_boost_round: int = 200,
-                                   random_state: int = 42):
+    def _fit_exceedance_classifier(
+        self,
+        X_train,
+        y_train,
+        boosting_type: str,
+        tree_params: dict,
+        horizon: int | None = None,
+        tier_train=None,
+        num_boost_round: int = 200,
+        random_state: int = 42,
+    ):
         """Binary LightGBM: P(the h-day move clears the round-trip cost).
 
         Labels are the precomputed one-sided ``target_exceed_{h}d`` from
@@ -7805,13 +7943,13 @@ class ItemForecaster:
         """
         y = np.asarray(y_train, dtype=float)
         keep = ~np.isnan(y)
-        X = X_train.loc[keep] if isinstance(X_train, pd.DataFrame) \
-            else np.asarray(X_train)[keep]
+        X = X_train.loc[keep] if isinstance(X_train, pd.DataFrame) else np.asarray(X_train)[keep]
         yk = y[keep].astype(int)
         if len(np.unique(yk)) < 2:
             logger.warning(
                 f"  {horizon}d exceedance classifier: <2 classes after dropping "
-                f"NaN labels ({len(yk):,} rows) — skipping")
+                f"NaN labels ({len(yk):,} rows) — skipping"
+            )
             return None
 
         w = np.ones(len(yk))
@@ -7823,23 +7961,33 @@ class ItemForecaster:
             logger.info(
                 f"  {horizon}d exceedance classifier: served-cohort weighting to "
                 f"share={self.served_cohort_share:.2f} — {int(served.sum()):,}/"
-                f"{len(served):,} rows are >= $1")
+                f"{len(served):,} rows are >= $1"
+            )
 
         ds = {"max_bin": self.MAX_BIN, "feature_pre_filter": False}
         dtrain = lgb.Dataset(X, yk, params=ds, weight=w)
         params = dict(tree_params)
-        params.update(objective="binary", metric="binary_logloss",
-                      boosting_type=boosting_type, verbosity=-1, n_jobs=-1,
-                      random_state=random_state)
-        return lgb.train(params, dtrain, num_boost_round=num_boost_round,
-                         callbacks=[lgb.log_evaluation(0)])
+        params.update(
+            objective="binary",
+            metric="binary_logloss",
+            boosting_type=boosting_type,
+            verbosity=-1,
+            n_jobs=-1,
+            random_state=random_state,
+        )
+        return lgb.train(params, dtrain, num_boost_round=num_boost_round, callbacks=[lgb.log_evaluation(0)])
 
-    def _fit_anomaly_classifier(self, X_train, y_train,
-                                boosting_type: str, tree_params: dict,
-                                horizon: Optional[int] = None,
-                                tier_train=None,
-                                num_boost_round: int = 200,
-                                random_state: int = 42):
+    def _fit_anomaly_classifier(
+        self,
+        X_train,
+        y_train,
+        boosting_type: str,
+        tree_params: dict,
+        horizon: int | None = None,
+        tier_train=None,
+        num_boost_round: int = 200,
+        random_state: int = 42,
+    ):
         """Binary LightGBM: P(|return_h| > 2σ of item's trailing history).
 
         Same structure as the exceedance classifier — drops NaN labels,
@@ -7848,13 +7996,12 @@ class ItemForecaster:
         """
         y = np.asarray(y_train, dtype=float)
         keep = ~np.isnan(y)
-        X = X_train.loc[keep] if isinstance(X_train, pd.DataFrame) \
-            else np.asarray(X_train)[keep]
+        X = X_train.loc[keep] if isinstance(X_train, pd.DataFrame) else np.asarray(X_train)[keep]
         yk = y[keep].astype(int)
         if len(np.unique(yk)) < 2:
             logger.warning(
-                f"  {horizon}d anomaly classifier: <2 classes after dropping "
-                f"NaN labels ({len(yk):,} rows) — skipping")
+                f"  {horizon}d anomaly classifier: <2 classes after dropping NaN labels ({len(yk):,} rows) — skipping"
+            )
             return None
 
         w = np.ones(len(yk))
@@ -7867,14 +8014,17 @@ class ItemForecaster:
         ds = {"max_bin": self.MAX_BIN, "feature_pre_filter": False}
         dtrain = lgb.Dataset(X, yk, params=ds, weight=w)
         params = dict(tree_params)
-        params.update(objective="binary", metric="binary_logloss",
-                      boosting_type=boosting_type, verbosity=-1, n_jobs=-1,
-                      random_state=random_state)
-        return lgb.train(params, dtrain, num_boost_round=num_boost_round,
-                         callbacks=[lgb.log_evaluation(0)])
+        params.update(
+            objective="binary",
+            metric="binary_logloss",
+            boosting_type=boosting_type,
+            verbosity=-1,
+            n_jobs=-1,
+            random_state=random_state,
+        )
+        return lgb.train(params, dtrain, num_boost_round=num_boost_round, callbacks=[lgb.log_evaluation(0)])
 
-    def anomaly_probability(self, horizon: int,
-                            rows: pd.DataFrame) -> Optional[np.ndarray]:
+    def anomaly_probability(self, horizon: int, rows: pd.DataFrame) -> np.ndarray | None:
         """P(|return_h| > 2σ_item) for the given rows, or None if no head.
 
         None also at horizons outside ANOMALY_SERVED_HORIZONS: the 30d head
@@ -7887,11 +8037,9 @@ class ItemForecaster:
         if head is None:
             return None
         cols = head.feature_name()
-        X = rows.reindex(columns=cols, fill_value=0).replace(
-            [np.inf, -np.inf], np.nan)
+        X = rows.reindex(columns=cols, fill_value=0).replace([np.inf, -np.inf], np.nan)
         if not self.feature_medians.empty:
-            X = self._impute_features(
-                X, self.feature_medians.reindex(cols), served=True)
+            X = self._impute_features(X, self.feature_medians.reindex(cols), served=True)
         return np.clip(head.predict(X), 1e-3, 1.0)
 
     @staticmethod
@@ -7899,8 +8047,7 @@ class ItemForecaster:
         """Extract objective-agnostic tree params from the p50 quantile config
         to seed the directional classifier."""
         src = per_quantile_params.get(0.5, {}) if per_quantile_params else {}
-        keys = ("num_leaves", "learning_rate", "max_depth", "min_data_in_leaf",
-                "lambda_l1", "lambda_l2")
+        keys = ("num_leaves", "learning_rate", "max_depth", "min_data_in_leaf", "lambda_l1", "lambda_l2")
         return {k: src[k] for k in keys if k in src}
 
     # ------------------------------------------------------------------
@@ -7926,7 +8073,7 @@ class ItemForecaster:
         q_hat is calibrated against CLIPPED sigmas, so serving must clip
         identically or the coverage guarantee does not transfer.
         """
-        self.sigma_clip: Dict[str, float] = {
+        self.sigma_clip: dict[str, float] = {
             "floor": self.SIGMA_FLOOR_DEFAULT,
             "cap": self.SIGMA_CAP_DEFAULT,
             "fallback": self.SIGMA_FALLBACK_DEFAULT,
@@ -7937,7 +8084,7 @@ class ItemForecaster:
         # the served centre needs an out-of-fold direction call, which
         # CV_DIAGNOSTIC_CLASSIFIER=0 does not produce, so "q50" is a reachable
         # state and a reader of the artifact has to be able to see it.
-        self.conformal_centre: Dict[int, str] = {}
+        self.conformal_centre: dict[int, str] = {}
         # Which DENOMINATOR each horizon's q_hat was fitted on: "served" (the
         # smoothed anchor `predict` quotes from and the backtest scores in) or
         # "raw_anchor" (the training label's own denominator, which over-covers).
@@ -7945,14 +8092,14 @@ class ItemForecaster:
         # reachable whenever the conformal frame predates
         # `calibration_target_col`, and a reader of the artifact must be able to
         # tell which width they are looking at.
-        self.conformal_basis: Dict[int, str] = {}
+        self.conformal_basis: dict[int, str] = {}
         # The EXPONENT each horizon's q_hat was fitted at, and the one `band`
         # must serve it with. NOT provenance -- this one is load-bearing
         # arithmetic. Missing means 1.0, which is every artifact written before
         # 2026-08-12 and every run with SIGMA_EXPONENT off; `sigma` is ~0.07 so
         # a q_hat applied one exponent off is wrong by roughly 5x. Written
         # together with `conformal_calibration` or not at all.
-        self.conformal_beta: Dict[int, float] = {}
+        self.conformal_beta: dict[int, float] = {}
 
         # The SIGNED conformal offsets each horizon's band is served with:
         # low = mid + q_lo*scale, high = mid + q_hi*scale (q_lo typically < 0).
@@ -7963,8 +8110,8 @@ class ItemForecaster:
         # before 2026-08-19; `band_offsets` then falls back to (-q_hat, +q_hat),
         # which is byte-identical to the old symmetric band. Same matched-pair
         # rule as `conformal_beta`: served with the beta/scale it was fit at.
-        self.conformal_q_lo: Dict[int, float] = {}
-        self.conformal_q_hi: Dict[int, float] = {}
+        self.conformal_q_lo: dict[int, float] = {}
+        self.conformal_q_hi: dict[int, float] = {}
 
         # Served-outcome feedback: a per-horizon multiplier on q_hat, measured from
         # realized served interval coverage on the forecast_outcomes panel, that pulls
@@ -7972,7 +8119,7 @@ class ItemForecaster:
         # LEVEL correction, orthogonal to beta and the learned scale. Empty (=> 1.0,
         # no-op) on every artifact below the MIN_FORECAST_DATES gate, which is all of
         # them today. Read only through served_qhat_multiplier().
-        self.served_coverage_factor: Dict[int, float] = {}
+        self.served_coverage_factor: dict[int, float] = {}
 
         # The learned band scale (LEARNED_SCALE=1), and the same matched-pair
         # rule as `conformal_beta`: a q_hat calibrated against a learned scale
@@ -7980,14 +8127,14 @@ class ItemForecaster:
         # unrelated band rather than a degraded one. All four move together or
         # none of them do, and an artifact with no scale model falls back to
         # `sigma ** beta` -- which is what every pre-2026-08-12 artifact is.
-        self.scale_models: Dict[int, Any] = {}
-        self.scale_norm: Dict[int, float] = {}
-        self.scale_clip: Dict[int, tuple] = {}
-        self.scale_features: Dict[int, List[str]] = {}
+        self.scale_models: dict[int, Any] = {}
+        self.scale_norm: dict[int, float] = {}
+        self.scale_clip: dict[int, tuple] = {}
+        self.scale_features: dict[int, list[str]] = {}
         # The climatology band scale (CLIMATOLOGY_SCALE=1): per horizon a
         # {"table": {item_id: scale}, "tier_pool": {tier: scale}, "global": float}
         # persisted in meta.json and reconstructed at serve — no booster.
-        self.climatology_scale: Dict[int, dict] = {}
+        self.climatology_scale: dict[int, dict] = {}
 
     #: James-Stein shrink of a thin item's own h-day dispersion toward its tier
     #: pool: weight = n_i / (n_i + K). Originally validated at K=20 and reported
@@ -8050,9 +8197,7 @@ class ItemForecaster:
         return float(np.mean((p[ok] - y[ok]) ** 2))
 
     @staticmethod
-    def exceedance_reliability_table(p, y,
-                                     n_bins: int = EXCEEDANCE_RELIABILITY_BINS
-                                     ) -> List[Dict[str, float]]:
+    def exceedance_reliability_table(p, y, n_bins: int = EXCEEDANCE_RELIABILITY_BINS) -> list[dict[str, float]]:
         """Predicted-vs-realised exceedance rate per fixed-width probability bin.
 
         Each row carries {lo, hi, n, pred, realized}: the bin edges, the row
@@ -8073,13 +8218,19 @@ class ItemForecaster:
             m = idx == b
             if not m.any():
                 continue
-            rows.append({"lo": float(edges[b]), "hi": float(edges[b + 1]),
-                         "n": int(m.sum()), "pred": float(p[m].mean()),
-                         "realized": float(y[m].mean())})
+            rows.append(
+                {
+                    "lo": float(edges[b]),
+                    "hi": float(edges[b + 1]),
+                    "n": int(m.sum()),
+                    "pred": float(p[m].mean()),
+                    "realized": float(y[m].mean()),
+                }
+            )
         return rows
 
     @staticmethod
-    def exceedance_ece(table: List[Dict[str, float]]) -> float:
+    def exceedance_ece(table: list[dict[str, float]]) -> float:
         """Expected calibration error: count-weighted mean |pred - realized|.
 
         NaN on an empty table (no head), so it never takes out the report.
@@ -8088,12 +8239,10 @@ class ItemForecaster:
         n = sum(r["n"] for r in table)
         if n == 0:
             return float("nan")
-        return float(sum(r["n"] * abs(r["pred"] - r["realized"])
-                         for r in table) / n)
+        return float(sum(r["n"] * abs(r["pred"] - r["realized"]) for r in table) / n)
 
     @staticmethod
-    def _isotonic_fit(p_raw: np.ndarray,
-                      y: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
+    def _isotonic_fit(p_raw: np.ndarray, y: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
         """Monotone non-decreasing stepwise fit of y on p_raw via Pool Adjacent
         Violators, in pure numpy (no sklearn dependency).
 
@@ -8106,9 +8255,9 @@ class ItemForecaster:
         ps = p_raw[order]
         vs = y[order].astype(float)
         # Block sums / counts; pool while the previous block exceeds this one.
-        sums: List[float] = []
-        counts: List[int] = []
-        psum: List[float] = []
+        sums: list[float] = []
+        counts: list[int] = []
+        psum: list[float] = []
         for i in range(len(vs)):
             sums.append(vs[i])
             counts.append(1)
@@ -8121,16 +8270,15 @@ class ItemForecaster:
                 del counts[-1]
                 del psum[-1]
         xs = np.array([s / c for s, c in zip(psum, counts)], dtype=float)
-        ys = np.array([np.clip(s / c, 0.0, 1.0) for s, c in zip(sums, counts)],
-                      dtype=float)
+        ys = np.array([np.clip(s / c, 0.0, 1.0) for s, c in zip(sums, counts)], dtype=float)
         # Merge duplicate xs (constant-p blocks), keeping the last (pooled) y.
         keep = np.ones(len(xs), dtype=bool)
         keep[:-1] = np.diff(xs) > 0
         return xs[keep], ys[keep]
 
-    def _fit_exceedance_calibrator(self, horizon: int,
-                                   records_df: pd.DataFrame,
-                                   out_of_sample: bool) -> Optional[Dict[str, Any]]:
+    def _fit_exceedance_calibrator(
+        self, horizon: int, records_df: pd.DataFrame, out_of_sample: bool
+    ) -> dict[str, Any] | None:
         """Fit the isotonic map raw p -> calibrated p on OOF (p, y) pairs.
 
         Reads `exceed_p` (the per-fold head's held-out probability) and
@@ -8150,8 +8298,7 @@ class ItemForecaster:
         self.exceedance_calibration_meta.pop(horizon, None)
         if not self.exceedance_calibrate_enabled():
             return None
-        if ("exceed_p" not in records_df.columns
-                or "exceed_y" not in records_df.columns):
+        if "exceed_p" not in records_df.columns or "exceed_y" not in records_df.columns:
             return None
         p = records_df["exceed_p"].to_numpy(dtype=float)
         y = records_df["exceed_y"].to_numpy(dtype=float)
@@ -8169,25 +8316,24 @@ class ItemForecaster:
         p_cal = np.interp(p, xs, ys, left=float(ys[0]), right=float(ys[-1]))
         raw_table = self.exceedance_reliability_table(p, y)
         cal_table = self.exceedance_reliability_table(p_cal, y)
-        meta: Dict[str, Any] = {
+        meta: dict[str, Any] = {
             "method": "isotonic",
             "n_rows": int(ok.sum()),
             "out_of_sample": bool(out_of_sample),
-            "n_steps": int(len(xs)),
+            "n_steps": len(xs),
             "base_rate": round(float(y.mean()), 4),
             "brier_raw": round(self.exceedance_brier_score(p, y), 5),
             "brier_cal": round(self.exceedance_brier_score(p_cal, y), 5),
             "ece_raw_pp": round(100.0 * self.exceedance_ece(raw_table), 3),
             "ece_cal_pp": round(100.0 * self.exceedance_ece(cal_table), 3),
             "reliability_raw": [
-                {k: (round(v, 4) if isinstance(v, float) else v)
-                 for k, v in r.items()} for r in raw_table],
+                {k: (round(v, 4) if isinstance(v, float) else v) for k, v in r.items()} for r in raw_table
+            ],
             "reliability_cal": [
-                {k: (round(v, 4) if isinstance(v, float) else v)
-                 for k, v in r.items()} for r in cal_table],
+                {k: (round(v, 4) if isinstance(v, float) else v) for k, v in r.items()} for r in cal_table
+            ],
         }
-        self.exceedance_calibrators[horizon] = {
-            "xs": [float(v) for v in xs], "ys": [float(v) for v in ys]}
+        self.exceedance_calibrators[horizon] = {"xs": [float(v) for v in xs], "ys": [float(v) for v in ys]}
         self.exceedance_calibration_meta[horizon] = meta
         oof_note = "OOF" if out_of_sample else "IN-SAMPLE (holdout path)"
         logger.info(
@@ -8206,8 +8352,7 @@ class ItemForecaster:
             )
         return dict(meta)
 
-    def _apply_exceedance_calibrator(self, horizon: int,
-                                     p_raw: np.ndarray) -> np.ndarray:
+    def _apply_exceedance_calibrator(self, horizon: int, p_raw: np.ndarray) -> np.ndarray:
         """Map raw head probabilities through this horizon's isotonic fit.
 
         Piecewise-linear interpolation over the stored changepoints, flat
@@ -8225,12 +8370,9 @@ class ItemForecaster:
         ys = np.asarray(cal["ys"], dtype=float)
         if xs.size == 0:
             return np.asarray(p_raw, dtype=float)
-        return np.interp(np.asarray(p_raw, dtype=float),
-                         xs, ys, left=float(ys[0]), right=float(ys[-1]))
+        return np.interp(np.asarray(p_raw, dtype=float), xs, ys, left=float(ys[0]), right=float(ys[-1]))
 
-    def exceedance_probability(self, horizon: int,
-                               rows: pd.DataFrame,
-                               calibrated: bool = True) -> Optional[np.ndarray]:
+    def exceedance_probability(self, horizon: int, rows: pd.DataFrame, calibrated: bool = True) -> np.ndarray | None:
         """`P(the h-day move clears the round-trip cost)` for `rows`, from the
         loaded exceedance head — FLAG-INDEPENDENT.
 
@@ -8259,15 +8401,12 @@ class ItemForecaster:
         if head is None:
             return None
         cols = head.feature_name()
-        X = rows.reindex(columns=cols, fill_value=0).replace(
-            [np.inf, -np.inf], np.nan)
+        X = rows.reindex(columns=cols, fill_value=0).replace([np.inf, -np.inf], np.nan)
         if not self.feature_medians.empty:
-            X = self._impute_features(
-                X, self.feature_medians.reindex(cols), served=True)
+            X = self._impute_features(X, self.feature_medians.reindex(cols), served=True)
         p = np.clip(head.predict(X), 1e-3, 1.0)
         if calibrated:
-            p = np.clip(self._apply_exceedance_calibrator(horizon, p),
-                        1e-3, 1.0)
+            p = np.clip(self._apply_exceedance_calibrator(horizon, p), 1e-3, 1.0)
         return p
 
     def band_scale(self, horizon: int, rows: pd.DataFrame, sigma):
@@ -8329,9 +8468,9 @@ class ItemForecaster:
                 f"for this batch rather than scoring the wrong features."
             )
             return None
-        s = scale_model.predict_scale(booster, X,
-                                      clip=self.scale_clip.get(horizon),
-                                      fallback=np.asarray(sigma, dtype=float))
+        s = scale_model.predict_scale(
+            booster, X, clip=self.scale_clip.get(horizon), fallback=np.asarray(sigma, dtype=float)
+        )
         return s * float(self.scale_norm.get(horizon, 1.0))
 
     def band_beta(self, horizon: int) -> float:
@@ -8341,7 +8480,7 @@ class ItemForecaster:
         get a KeyError on an old artifact, or a NaN into a served half-width.
         """
         b = self.conformal_beta.get(horizon, conformal.BETA_NEUTRAL)
-        return (conformal.BETA_NEUTRAL if not np.isfinite(b) else float(b))
+        return conformal.BETA_NEUTRAL if not np.isfinite(b) else float(b)
 
     def band_offsets(self, horizon: int) -> tuple[float, float]:
         """The signed `(q_lo, q_hi)` this horizon's band is built from.
@@ -8355,8 +8494,7 @@ class ItemForecaster:
         """
         lo = self.conformal_q_lo.get(horizon)
         hi = self.conformal_q_hi.get(horizon)
-        if (lo is not None and hi is not None
-                and np.isfinite(lo) and np.isfinite(hi)):
+        if lo is not None and hi is not None and np.isfinite(lo) and np.isfinite(hi):
             return float(lo), float(hi)
         q_hat = float(self.conformal_calibration[horizon])
         return -q_hat, q_hat
@@ -8372,8 +8510,7 @@ class ItemForecaster:
         f = self.served_coverage_factor.get(horizon, 1.0)
         if not np.isfinite(f):
             return 1.0
-        return float(np.clip(f, served_recalibration.FACTOR_MIN,
-                             served_recalibration.FACTOR_MAX))
+        return float(np.clip(f, served_recalibration.FACTOR_MIN, served_recalibration.FACTOR_MAX))
 
     def _check_artifact_version(self, meta: dict) -> None:
         """Fail closed on any artifact not written by this exact scheme.
@@ -8441,13 +8578,18 @@ class ItemForecaster:
         )
         return np.asarray(fallback, dtype=float)
 
-    def _conformal_records(self, mid_ret, actual_ret, sigma,
-                           current_price,
-                           direction_class=None,
-                           residual_actual_ret=None,
-                           row_index=None,
-                           exceed_p=None,
-                           exceed_y=None) -> List[Dict[str, float]]:
+    def _conformal_records(
+        self,
+        mid_ret,
+        actual_ret,
+        sigma,
+        current_price,
+        direction_class=None,
+        residual_actual_ret=None,
+        row_index=None,
+        exceed_p=None,
+        exceed_y=None,
+    ) -> list[dict[str, float]]:
         """Per-row calibration records, shared by the CV and holdout paths.
 
         `residual_pct` / `sigma` are what q_hat is fitted on, `mid_ret` is what
@@ -8500,8 +8642,7 @@ class ItemForecaster:
         """
         mid = np.asarray(mid_ret, dtype=float)
         actual = np.asarray(actual_ret, dtype=float)
-        resid_actual = (actual if residual_actual_ret is None
-                        else np.asarray(residual_actual_ret, dtype=float))
+        resid_actual = actual if residual_actual_ret is None else np.asarray(residual_actual_ret, dtype=float)
         sig = np.asarray(sigma, dtype=float)
         curr = np.asarray(current_price, dtype=float)
 
@@ -8509,8 +8650,7 @@ class ItemForecaster:
         keep = (mid_price != 0) & (curr != 0) & np.isfinite(resid_actual)
 
         tol = DIRECTION_FLAT_TOLERANCE_PCT
-        hit = (self._direction_classes(actual, tol)
-               == self._direction_classes(mid, tol)).astype(float)
+        hit = (self._direction_classes(actual, tol) == self._direction_classes(mid, tol)).astype(float)
         with np.errstate(divide="ignore", invalid="ignore"):
             change_pct = np.abs(mid_price - curr) / curr
 
@@ -8520,8 +8660,7 @@ class ItemForecaster:
         # passed for all three and only the mid is read back.
         served_mid = None
         if direction_class is not None:
-            _, served_mid, _ = self._recenter_on_direction(
-                mid, mid, mid, direction_class)
+            _, served_mid, _ = self._recenter_on_direction(mid, mid, mid, direction_class)
 
         centre = mid if served_mid is None else served_mid
         # Out-of-fold exceedance probability, the band scale for EXCEEDANCE_SCALE.
@@ -8576,8 +8715,7 @@ class ItemForecaster:
             records.append(rec)
         return records
 
-    def _holdout_conformal_records(self, horizon: int, X_val, y_val,
-                                   val_set) -> pd.DataFrame:
+    def _holdout_conformal_records(self, horizon: int, X_val, y_val, val_set) -> pd.DataFrame:
         """Calibration records from the single validation holdout.
 
         LAST RESORT, not a peer of the CV path. `X_val` is the early-stopping
@@ -8613,8 +8751,7 @@ class ItemForecaster:
         # and warns about. A coherent centre on an optimistic residual beats an
         # incoherent one.
         holdout_clf = self.direction_models.get(horizon)
-        holdout_cls = (None if holdout_clf is None
-                       else holdout_clf.predict(X_val).argmax(axis=1))
+        holdout_cls = None if holdout_clf is None else holdout_clf.predict(X_val).argmax(axis=1)
         # Exceedance scale from the served head — IN-SAMPLE, like holdout_cls
         # above, because this last-resort path has no fold to hold out. The band
         # under-covers here for the same reason it does for every other quantity;
@@ -8624,22 +8761,23 @@ class ItemForecaster:
             head = self.exceedance_models.get(horizon)
             if head is not None:
                 exc_cols = head.feature_name()
-                X_exc_ho = val_set.reindex(columns=exc_cols, fill_value=0).replace(
-                    [np.inf, -np.inf], np.nan)
+                X_exc_ho = val_set.reindex(columns=exc_cols, fill_value=0).replace([np.inf, -np.inf], np.nan)
                 if not self.feature_medians.empty:
-                    X_exc_ho = self._impute_features(
-                        X_exc_ho, self.feature_medians.reindex(exc_cols),
-                        served=False)
+                    X_exc_ho = self._impute_features(X_exc_ho, self.feature_medians.reindex(exc_cols), served=False)
                 holdout_exceed = head.predict(X_exc_ho)
         records = self._conformal_records(
-            p50, y_val.values, self._sigma_for_rows(val_set),
+            p50,
+            y_val.values,
+            self._sigma_for_rows(val_set),
             val_set["price"].values,
             direction_class=holdout_cls,
-            residual_actual_ret=self._calibration_returns(
-                val_set, horizon, y_val.values),
+            residual_actual_ret=self._calibration_returns(val_set, horizon, y_val.values),
             exceed_p=holdout_exceed,
-            exceed_y=(val_set[f"target_exceed_{horizon}d"].to_numpy(dtype=float)
-                      if f"target_exceed_{horizon}d" in val_set.columns else None),
+            exceed_y=(
+                val_set[f"target_exceed_{horizon}d"].to_numpy(dtype=float)
+                if f"target_exceed_{horizon}d" in val_set.columns
+                else None
+            ),
             # Carried here too. Without it a learned scale would silently have
             # no features on exactly the horizons that fell back to this path --
             # the short-history ones, which are the hardest to size a band for.
@@ -8653,8 +8791,7 @@ class ItemForecaster:
             )
         return pd.DataFrame(records)
 
-    def _sigma_tilt_audit(self, horizon: int,
-                          records_df: pd.DataFrame) -> Optional[Dict[str, Any]]:
+    def _sigma_tilt_audit(self, horizon: int, records_df: pd.DataFrame) -> dict[str, Any] | None:
         """Is the band tilted across `sigma`, and does an exponent flatten it?
 
         REPORTED ONLY. `q_hat` above is what serves, unchanged, and nothing in
@@ -8703,24 +8840,19 @@ class ItemForecaster:
         clipped = np.isclose(sigma, floor) | np.isclose(sigma, cap)
         beta_unclipped = conformal.elasticity(resid[~clipped], sigma[~clipped])
 
-        prof_1, err_1, _ = conformal.coverage_by_sigma_stratum(
-            resid, sigma, exponent=1.0)
-        prof_b, err_b, _ = conformal.coverage_by_sigma_stratum(
-            resid, sigma, exponent=beta)
+        prof_1, err_1, _ = conformal.coverage_by_sigma_stratum(resid, sigma, exponent=1.0)
+        prof_b, err_b, _ = conformal.coverage_by_sigma_stratum(resid, sigma, exponent=beta)
 
-        out: Dict[str, Any] = {
+        out: dict[str, Any] = {
             "elasticity": round(beta, 4),
-            "elasticity_unclipped": (None if not np.isfinite(beta_unclipped)
-                                     else round(beta_unclipped, 4)),
+            "elasticity_unclipped": (None if not np.isfinite(beta_unclipped) else round(beta_unclipped, 4)),
             "pct_rows_clipped": round(100.0 * float(clipped.mean()), 3),
             "n_calibration_rows": int(resid.size),
             # Level-matched, so marginal coverage is exactly NOMINAL_COVERAGE in
             # both and only the SPREAD is comparable.
-            "decile_cov_beta1": [None if not np.isfinite(v) else round(v, 4)
-                                 for v in prof_1],
+            "decile_cov_beta1": [None if not np.isfinite(v) else round(v, 4) for v in prof_1],
             "stratum_err_pp_beta1": round(err_1, 3),
-            "decile_cov_beta_fit": [None if not np.isfinite(v) else round(v, 4)
-                                    for v in prof_b],
+            "decile_cov_beta_fit": [None if not np.isfinite(v) else round(v, 4) for v in prof_b],
             "stratum_err_pp_beta_fit": round(err_b, 3),
             "elasticity_heldout": None,
             "stratum_err_pp_beta1_heldout": None,
@@ -8732,22 +8864,18 @@ class ItemForecaster:
             folds = records_df["fold"].to_numpy()
             last = folds.max()
             fit, test = (folds < last), (folds == last)
-            if (fit.sum() >= self.MIN_CALIBRATION_ROWS
-                    and test.sum() >= self.MIN_CALIBRATION_ROWS):
+            if fit.sum() >= self.MIN_CALIBRATION_ROWS and test.sum() >= self.MIN_CALIBRATION_ROWS:
                 beta_fit = conformal.elasticity(resid[fit], sigma[fit])
                 if np.isfinite(beta_fit):
-                    _, e1, _ = conformal.coverage_by_sigma_stratum(
-                        resid[test], sigma[test], exponent=1.0)
-                    _, eb, _ = conformal.coverage_by_sigma_stratum(
-                        resid[test], sigma[test], exponent=beta_fit)
+                    _, e1, _ = conformal.coverage_by_sigma_stratum(resid[test], sigma[test], exponent=1.0)
+                    _, eb, _ = conformal.coverage_by_sigma_stratum(resid[test], sigma[test], exponent=beta_fit)
                     out["elasticity_heldout"] = round(beta_fit, 4)
                     out["stratum_err_pp_beta1_heldout"] = round(e1, 3)
                     out["stratum_err_pp_beta_heldout"] = round(eb, 3)
                     out["heldout_fold"] = int(last)
 
         def _prof(vals) -> str:
-            return " ".join("--" if v is None else f"{v * 100:.0f}"
-                            for v in vals)
+            return " ".join("--" if v is None else f"{v * 100:.0f}" for v in vals)
 
         logger.info(
             f"  Sigma-tilt audit ({horizon}d): elasticity={beta:.3f} "
@@ -8765,9 +8893,9 @@ class ItemForecaster:
         )
         return out
 
-    def _fit_learned_scale(self, horizon: int, records_df: pd.DataFrame,
-                           feature_frame: Optional[pd.DataFrame],
-                           resid, sigma):
+    def _fit_learned_scale(
+        self, horizon: int, records_df: pd.DataFrame, feature_frame: pd.DataFrame | None, resid, sigma
+    ):
         """Cross-fitted scale for calibration, plus the model that will serve.
 
         Returns the per-row scale `q_hat` should be calibrated against, or None
@@ -8821,13 +8949,9 @@ class ItemForecaster:
         X = self._scale_feature_frame(rows, sigma, horizon)
 
         t0 = time.time()
-        cross, n_models = scale_model.cross_fit(
-            X, resid, records_df["fold"].to_numpy(), fallback=sigma)
+        cross, n_models = scale_model.cross_fit(X, resid, records_df["fold"].to_numpy(), fallback=sigma)
         if n_models == 0:
-            logger.warning(
-                f"  {horizon}d learned scale: no fold produced a usable model; "
-                f"falling back to sigma."
-            )
+            logger.warning(f"  {horizon}d learned scale: no fold produced a usable model; falling back to sigma.")
             return None
 
         final = scale_model.fit(X, resid)
@@ -8836,8 +8960,7 @@ class ItemForecaster:
 
         raw = scale_model.predict_scale(final, X, clip=None, fallback=sigma)
         ok = np.isfinite(raw) & (raw > 0) & np.isfinite(cross) & (cross > 0)
-        norm = (float(np.median(cross[ok]) / np.median(raw[ok]))
-                if ok.any() else 1.0)
+        norm = float(np.median(cross[ok]) / np.median(raw[ok])) if ok.any() else 1.0
         served = raw * norm
 
         self.scale_models[horizon] = final
@@ -8856,8 +8979,7 @@ class ItemForecaster:
         )
         return cross
 
-    def _exceedance_learned_scale(self, horizon: int, records_df: pd.DataFrame,
-                                  sigma) -> Optional[np.ndarray]:
+    def _exceedance_learned_scale(self, horizon: int, records_df: pd.DataFrame, sigma) -> np.ndarray | None:
         """`sigma * sqrt(p_exceed)` for the calibration rows, or None.
 
         `p_exceed` is `records_df["exceed_p"]`, the OUT-OF-FOLD exceedance-head
@@ -8891,9 +9013,7 @@ class ItemForecaster:
     def _price_tier_array(prices) -> np.ndarray:
         """Vectorized `backtest.scoring.price_tier` (liquidity bands)."""
         px = np.asarray(prices, dtype=float)
-        return np.select(
-            [px >= 1000, px >= 100, px >= 20, px >= 5, px >= 1],
-            [5, 4, 3, 2, 1], default=0).astype(int)
+        return np.select([px >= 1000, px >= 100, px >= 20, px >= 5, px >= 1], [5, 4, 3, 2, 1], default=0).astype(int)
 
     @classmethod
     def _build_climatology_table(cls, df: pd.DataFrame, tcol: str):
@@ -8914,11 +9034,9 @@ class ItemForecaster:
         if not np.isfinite(global_std) or global_std <= 0:
             return {}, {}, float("nan")
         tier_std = d.groupby("tier")[tcol].std()
-        tier_pool = {int(t): (float(v) if np.isfinite(v) and v > 0 else global_std)
-                     for t, v in tier_std.items()}
+        tier_pool = {int(t): (float(v) if np.isfinite(v) and v > 0 else global_std) for t, v in tier_std.items()}
         agg = d.groupby("item_id")[tcol].agg(["std", "count"])
-        item_tier = cls._price_tier_array(
-            d.groupby("item_id")["price"].median().to_numpy())
+        item_tier = cls._price_tier_array(d.groupby("item_id")["price"].median().to_numpy())
         K = float(cls.CLIMATOLOGY_SHRINK_K)
         table = {}
         for (iid, row), tier in zip(agg.iterrows(), item_tier):
@@ -8932,9 +9050,9 @@ class ItemForecaster:
         return table, tier_pool, global_std
 
     @classmethod
-    def _compute_per_item_optimal_k(cls, df: pd.DataFrame, tcol: str,
-                                     k_grid=None,
-                                     target_coverage: float = 0.80) -> pd.DataFrame:
+    def _compute_per_item_optimal_k(
+        cls, df: pd.DataFrame, tcol: str, k_grid=None, target_coverage: float = 0.80
+    ) -> pd.DataFrame:
         """Find per-item optimal K via normalized-residual calibration.
 
         For each item, the band is `q_hat * scale(K)`. A global q_hat absorbs
@@ -8955,8 +9073,7 @@ class ItemForecaster:
         d["tier"] = cls._price_tier_array(d["price"].to_numpy())
         global_std = float(d[tcol].std())
         tier_std = d.groupby("tier")[tcol].std()
-        tier_pool = {int(t): (float(v) if np.isfinite(v) and v > 0 else global_std)
-                     for t, v in tier_std.items()}
+        tier_pool = {int(t): (float(v) if np.isfinite(v) and v > 0 else global_std) for t, v in tier_std.items()}
 
         agg = d.groupby("item_id").agg(
             raw_std=(tcol, "std"),
@@ -8964,8 +9081,7 @@ class ItemForecaster:
             median_price=("price", "median"),
         )
         agg["tier"] = cls._price_tier_array(agg["median_price"].to_numpy())
-        agg["pool_std"] = agg["tier"].map(
-            lambda t: tier_pool.get(int(t), global_std))
+        agg["pool_std"] = agg["tier"].map(lambda t: tier_pool.get(int(t), global_std))
 
         item_returns = d.groupby("item_id")[tcol].apply(np.array)
 
@@ -8980,12 +9096,17 @@ class ItemForecaster:
 
             rets = item_returns.get(iid)
             if rets is None or len(rets) < 15:
-                results.append({
-                    "item_id": iid, "optimal_k": default_k,
-                    "count": n, "raw_std": raw,
-                    "tier": int(row["tier"]), "pool_std": pool,
-                    "std_ratio": raw / pool if pool > 0 else 1.0,
-                })
+                results.append(
+                    {
+                        "item_id": iid,
+                        "optimal_k": default_k,
+                        "count": n,
+                        "raw_std": raw,
+                        "tier": int(row["tier"]),
+                        "pool_std": pool,
+                        "std_ratio": raw / pool if pool > 0 else 1.0,
+                    }
+                )
                 continue
 
             abs_rets = np.abs(rets)
@@ -9002,19 +9123,27 @@ class ItemForecaster:
                     best_q = q80
                     best_k = k
 
-            results.append({
-                "item_id": iid, "optimal_k": best_k,
-                "count": n, "raw_std": raw,
-                "tier": int(row["tier"]), "pool_std": pool,
-                "std_ratio": raw / pool if pool > 0 else 1.0,
-            })
+            results.append(
+                {
+                    "item_id": iid,
+                    "optimal_k": best_k,
+                    "count": n,
+                    "raw_std": raw,
+                    "tier": int(row["tier"]),
+                    "pool_std": pool,
+                    "std_ratio": raw / pool if pool > 0 else 1.0,
+                }
+            )
         return pd.DataFrame(results)
 
-    def _fit_shrink_k_model(self, item_features: pd.DataFrame,
-                            target_k: np.ndarray,
-                            tree_params: dict,
-                            boosting_type: str = "gbdt",
-                            num_boost_round: int = 100) -> lgb.Booster:
+    def _fit_shrink_k_model(
+        self,
+        item_features: pd.DataFrame,
+        target_k: np.ndarray,
+        tree_params: dict,
+        boosting_type: str = "gbdt",
+        num_boost_round: int = 100,
+    ) -> lgb.Booster:
         """Train a regression GBM to predict per-item optimal K from features."""
         feature_cols = ["count", "raw_std", "tier", "pool_std", "std_ratio"]
         X = item_features[feature_cols].values
@@ -9023,18 +9152,19 @@ class ItemForecaster:
         ds = {"max_bin": 63, "feature_pre_filter": False}
         dtrain = lgb.Dataset(X, y, params=ds, feature_name=feature_cols)
         params = dict(tree_params) if tree_params else {}
-        params.update({
-            "objective": "regression",
-            "metric": "mae",
-            "boosting_type": boosting_type,
-            "verbosity": -1,
-            "n_jobs": -1,
-            "num_leaves": 15,
-            "min_data_in_leaf": 20,
-            "learning_rate": 0.05,
-        })
-        return lgb.train(params, dtrain, num_boost_round=num_boost_round,
-                         callbacks=[lgb.log_evaluation(0)])
+        params.update(
+            {
+                "objective": "regression",
+                "metric": "mae",
+                "boosting_type": boosting_type,
+                "verbosity": -1,
+                "n_jobs": -1,
+                "num_leaves": 15,
+                "min_data_in_leaf": 20,
+                "learning_rate": 0.05,
+            }
+        )
+        return lgb.train(params, dtrain, num_boost_round=num_boost_round, callbacks=[lgb.log_evaluation(0)])
 
     def predict_shrink_k(self, horizon: int, item_stats: pd.DataFrame) -> np.ndarray:
         """Predict per-item K from the loaded shrink-K model.
@@ -9050,8 +9180,7 @@ class ItemForecaster:
         log_k = model.predict(X)
         return np.clip(np.expm1(log_k), 5, 2000)
 
-    def _build_climatology_table_adaptive(self, df: pd.DataFrame, tcol: str,
-                                           horizon: int):
+    def _build_climatology_table_adaptive(self, df: pd.DataFrame, tcol: str, horizon: int):
         """Like _build_climatology_table but with per-item K from the GBM."""
         d = df[np.isfinite(df[tcol].to_numpy())].copy()
         if d.empty:
@@ -9059,16 +9188,14 @@ class ItemForecaster:
         d["tier"] = self._price_tier_array(d["price"].to_numpy())
         global_std = float(d[tcol].std())
         tier_std = d.groupby("tier")[tcol].std()
-        tier_pool = {int(t): (float(v) if np.isfinite(v) and v > 0 else global_std)
-                     for t, v in tier_std.items()}
+        tier_pool = {int(t): (float(v) if np.isfinite(v) and v > 0 else global_std) for t, v in tier_std.items()}
         agg = d.groupby("item_id").agg(
             raw_std=(tcol, "std"),
             count=(tcol, "count"),
             median_price=("price", "median"),
         )
         agg["tier"] = self._price_tier_array(agg["median_price"].to_numpy())
-        agg["pool_std"] = agg["tier"].map(
-            lambda t: tier_pool.get(int(t), global_std))
+        agg["pool_std"] = agg["tier"].map(lambda t: tier_pool.get(int(t), global_std))
         agg["std_ratio"] = agg["raw_std"] / agg["pool_std"].replace(0, 1)
 
         k_arr = self.predict_shrink_k(horizon, agg)
@@ -9116,19 +9243,16 @@ class ItemForecaster:
         frame lacks them (a stale engineered cache / older artifact), which tells
         `band_scale` and the fit path to serve the static scale unchanged. A
         non-finite or non-positive baseline leaves that row neutral (1.0)."""
-        if ("ewm_reactive_fast" not in rows.columns
-                or "ewm_reactive_slow" not in rows.columns):
+        if "ewm_reactive_fast" not in rows.columns or "ewm_reactive_slow" not in rows.columns:
             return None
         fast = rows["ewm_reactive_fast"].to_numpy(dtype=float)
         slow = rows["ewm_reactive_slow"].to_numpy(dtype=float)
         ok = (slow > 0) & np.isfinite(slow) & np.isfinite(fast)
         with np.errstate(divide="ignore", invalid="ignore"):
             ratio = np.where(ok, fast / slow, 1.0)
-        return np.clip(ratio, self.CLIMATOLOGY_REACTIVE_LO,
-                       self.CLIMATOLOGY_REACTIVE_HI)
+        return np.clip(ratio, self.CLIMATOLOGY_REACTIVE_LO, self.CLIMATOLOGY_REACTIVE_HI)
 
-    def _fit_climatology_scale(self, horizon: int, records_df: pd.DataFrame,
-                               feature_frame: Optional[pd.DataFrame]):
+    def _fit_climatology_scale(self, horizon: int, records_df: pd.DataFrame, feature_frame: pd.DataFrame | None):
         """Per-item climatology scale for the calibration rows, or None.
 
         The scale is built from the training frame's realised h-day returns and
@@ -9141,8 +9265,7 @@ class ItemForecaster:
             return None
         tcol = f"target_return_{horizon}d"
         need = {"item_id", "price", tcol}
-        if (feature_frame is None or "row_index" not in records_df.columns
-                or not need <= set(feature_frame.columns)):
+        if feature_frame is None or "row_index" not in records_df.columns or not need <= set(feature_frame.columns):
             logger.warning(
                 f"  {horizon}d CLIMATOLOGY_SCALE=1 but the calibration rows lack "
                 f"a feature reference or the frame lacks {sorted(need)} — falling "
@@ -9151,34 +9274,29 @@ class ItemForecaster:
             return None
         if self.shrink_k_gbm_enabled() and horizon not in self.shrink_k_models:
             _sk_start = time.time()
-            item_stats = self._compute_per_item_optimal_k(
-                feature_frame[["item_id", "price", tcol]], tcol)
+            item_stats = self._compute_per_item_optimal_k(feature_frame[["item_id", "price", tcol]], tcol)
             if not item_stats.empty:
                 self.shrink_k_models[horizon] = self._fit_shrink_k_model(
-                    item_stats, item_stats["optimal_k"].to_numpy(),
-                    tree_params={}, boosting_type="gbdt")
+                    item_stats, item_stats["optimal_k"].to_numpy(), tree_params={}, boosting_type="gbdt"
+                )
                 logger.info(
-                    f"  [timing] {horizon}d shrink-K GBM: "
-                    f"{time.time() - _sk_start:.1f}s "
-                    f"({len(item_stats)} items)")
+                    f"  [timing] {horizon}d shrink-K GBM: {time.time() - _sk_start:.1f}s ({len(item_stats)} items)"
+                )
 
         if self._shrink_k_gbm_served() and horizon in self.shrink_k_models:
             table, tier_pool, g = self._build_climatology_table_adaptive(
-                feature_frame[["item_id", "price", tcol]], tcol, horizon)
+                feature_frame[["item_id", "price", tcol]], tcol, horizon
+            )
         else:
-            table, tier_pool, g = self._build_climatology_table(
-                feature_frame[["item_id", "price", tcol]], tcol)
+            table, tier_pool, g = self._build_climatology_table(feature_frame[["item_id", "price", tcol]], tcol)
         if not table:
             logger.warning(
-                f"  {horizon}d climatology scale: no usable h-day return "
-                f"dispersion — falling back to sigma."
+                f"  {horizon}d climatology scale: no usable h-day return dispersion — falling back to sigma."
             )
             return None
-        self.climatology_scale[horizon] = {
-            "table": table, "tier_pool": tier_pool, "global": g}
+        self.climatology_scale[horizon] = {"table": table, "tier_pool": tier_pool, "global": g}
         rows = feature_frame.loc[records_df["row_index"].to_numpy()]
-        scale = self._climatology_lookup(
-            horizon, rows["item_id"].to_numpy(), rows["price"].to_numpy())
+        scale = self._climatology_lookup(horizon, rows["item_id"].to_numpy(), rows["price"].to_numpy())
         # Regime-reactive arm: fold the fast/slow-EWMA multiplier (read from the
         # calibration rows' engineered columns) into the scale q_hat is
         # calibrated against, so serving (matched pair) is coherent. Stateless —
@@ -9191,13 +9309,12 @@ class ItemForecaster:
                 logger.warning(
                     f"  {horizon}d CLIMATOLOGY_REACTIVE=1 but the calibration "
                     f"rows lack ewm_reactive_fast/slow — the reactive multiplier "
-                    f"is NOT in effect (static climatology q_hat).")
+                    f"is NOT in effect (static climatology q_hat)."
+                )
         # Vol-rank GBM modulation: reshape climatology cross-sectionally using
         # the model's per-row volatility prediction. The multiplier has mean 1.0
         # by construction, so q_hat's level is preserved.
-        if (self.vol_rank_gbm_enabled()
-                and self.climatology_scale_enabled()
-                and horizon in self.vol_rank_models):
+        if self.vol_rank_gbm_enabled() and self.climatology_scale_enabled() and horizon in self.vol_rank_models:
             X_calib = self._vol_rank_feature_frame(rows, horizon, served=False)
             raw_pred = self._predict_vol_rank(horizon, X_calib.values)
             if raw_pred is not None:
@@ -9209,7 +9326,8 @@ class ItemForecaster:
                 logger.info(
                     f"  {horizon}d vol-rank modulation: mult range "
                     f"[{float(vr_mult.min()):.3f}, {float(vr_mult.max()):.3f}], "
-                    f"median {float(np.median(vr_mult)):.3f}")
+                    f"median {float(np.median(vr_mult)):.3f}"
+                )
 
         logger.info(
             f"  {horizon}d climatology scale: {len(table):,} items, "
@@ -9225,8 +9343,7 @@ class ItemForecaster:
             return None
         if "item_id" not in rows.columns or "price" not in rows.columns:
             return None
-        scale = self._climatology_lookup(
-            horizon, rows["item_id"].to_numpy(), rows["price"].to_numpy())
+        scale = self._climatology_lookup(horizon, rows["item_id"].to_numpy(), rows["price"].to_numpy())
         if self._vol_rank_gbm_served() and horizon in self.vol_rank_models:
             X = self._vol_rank_feature_frame(rows, horizon, served=True)
             vr_mult = self._vol_rank_multiplier(horizon, X.values)
@@ -9234,8 +9351,7 @@ class ItemForecaster:
                 scale = scale * vr_mult
         return scale
 
-    def _scale_feature_frame(self, rows: pd.DataFrame, sigma,
-                             horizon: int) -> pd.DataFrame:
+    def _scale_feature_frame(self, rows: pd.DataFrame, sigma, horizon: int) -> pd.DataFrame:
         """The feature matrix the learned scale is fitted on AND served from.
 
         ONE function with two callers on purpose. A scale model trained on one
@@ -9256,9 +9372,9 @@ class ItemForecaster:
         X["sigma"] = np.asarray(sigma, dtype=float)
         return X
 
-    def _calibrate_conformal(self, horizon: int,
-                             records_df: pd.DataFrame,
-                             feature_frame: Optional[pd.DataFrame] = None) -> float:
+    def _calibrate_conformal(
+        self, horizon: int, records_df: pd.DataFrame, feature_frame: pd.DataFrame | None = None
+    ) -> float:
         """Fit q_hat on pooled OOF records and attach the width they imply.
 
         Two passes are unavoidable. The nonconformity score needs only the
@@ -9288,8 +9404,7 @@ class ItemForecaster:
                 "Applying both re-tilts the band the other way — measured in "
                 "docs/changelog/2026-08-12-served-sigma-profile.md. Pick one."
             )
-        if self.exceedance_scale_enabled() and (
-                scale_model.enabled() or self.sigma_exponent_enabled()):
+        if self.exceedance_scale_enabled() and (scale_model.enabled() or self.sigma_exponent_enabled()):
             raise RuntimeError(
                 "EXCEEDANCE_SCALE=1 is set alongside LEARNED_SCALE or "
                 "SIGMA_EXPONENT. They are three alternative band denominators, "
@@ -9298,8 +9413,8 @@ class ItemForecaster:
                 "Pick one."
             )
         if self.climatology_scale_enabled() and (
-                scale_model.enabled() or self.sigma_exponent_enabled()
-                or self.exceedance_scale_enabled()):
+            scale_model.enabled() or self.sigma_exponent_enabled() or self.exceedance_scale_enabled()
+        ):
             raise RuntimeError(
                 "CLIMATOLOGY_SCALE=1 is set alongside another band-scale flag. "
                 "They are alternative band denominators, not layers — each "
@@ -9311,30 +9426,31 @@ class ItemForecaster:
         # `learned_scale` denominator, so beta stays neutral and q_hat is
         # dimensionally tied to it. Takes precedence; the others are off by the
         # guards above when it is on.
-        climatology = self._fit_climatology_scale(horizon, records_df,
-                                                  feature_frame)
+        climatology = self._fit_climatology_scale(horizon, records_df, feature_frame)
         # sigma * sqrt(p_exceed), from the OUT-OF-FOLD probabilities the record
         # builder attached (`exceed_p`). It is a full `learned_scale` denominator,
         # so beta stays neutral below and q_hat is dimensionally tied to it. Takes
         # precedence over the learned-scale path, which is off by the guard above.
-        exceedance = (None if climatology is not None
-                      else self._exceedance_learned_scale(horizon, records_df,
-                                                          sigma))
-        learned = (climatology if climatology is not None
-                   else exceedance if exceedance is not None
-                   else self._fit_learned_scale(horizon, records_df,
-                                                feature_frame, resid, sigma))
+        exceedance = None if climatology is not None else self._exceedance_learned_scale(horizon, records_df, sigma)
+        learned = (
+            climatology
+            if climatology is not None
+            else exceedance
+            if exceedance is not None
+            else self._fit_learned_scale(horizon, records_df, feature_frame, resid, sigma)
+        )
 
         # The exponent, fitted on the SAME rows q_hat is, and stored in the same
         # breath. Nothing between these two statements may raise or return, or an
         # artifact could carry one without the other -- which is worse than
         # carrying neither, because a q_hat at the wrong exponent is wrong by ~5x
         # rather than merely uncorrected.
-        beta = (conformal.fit_beta(resid, sigma,
-                                   min_rows=self.MIN_CALIBRATION_ROWS)
-                if self.sigma_exponent_enabled() else conformal.BETA_NEUTRAL)
-        q_hat = conformal.calibrate(resid, sigma, conformal.ALPHA, beta,
-                                    learned_scale=learned)
+        beta = (
+            conformal.fit_beta(resid, sigma, min_rows=self.MIN_CALIBRATION_ROWS)
+            if self.sigma_exponent_enabled()
+            else conformal.BETA_NEUTRAL
+        )
+        q_hat = conformal.calibrate(resid, sigma, conformal.ALPHA, beta, learned_scale=learned)
         self.conformal_calibration[horizon] = q_hat
         self.conformal_beta[horizon] = beta
         # The SIGNED pair `predict` actually serves, from the SAME residuals,
@@ -9342,17 +9458,16 @@ class ItemForecaster:
         # breath so an artifact can never carry one exponent's q_hat beside
         # another's offsets. `q_hat` stays: it is the symmetric fallback, and it
         # still feeds `range_pct`/`_calibrate_confidence` below unchanged.
-        q_lo, q_hi = conformal.calibrate_signed(resid, sigma, conformal.ALPHA,
-                                                beta, learned_scale=learned)
+        q_lo, q_hi = conformal.calibrate_signed(resid, sigma, conformal.ALPHA, beta, learned_scale=learned)
         self.conformal_q_lo[horizon] = q_lo
         self.conformal_q_hi[horizon] = q_hi
         logger.info(
             f"  {horizon}d centre-bias: P(actual<mid)={float((resid < 0).mean()):.3f} "
             f"n={len(resid)} q_lo={q_lo:.3f} q_hi={q_hi:.3f} "
-            f"(DIRECTION_UPWEIGHT={DIRECTION_UPWEIGHT})")
+            f"(DIRECTION_UPWEIGHT={DIRECTION_UPWEIGHT})"
+        )
         if self.sigma_exponent_enabled():
-            if conformal.beta_was_clamped(resid, sigma,
-                                          min_rows=self.MIN_CALIBRATION_ROWS):
+            if conformal.beta_was_clamped(resid, sigma, min_rows=self.MIN_CALIBRATION_ROWS):
                 # The clamp binding means the measured elasticity left
                 # [0.2, 1.0], which no window of this archive has ever produced.
                 # Data problem, not a tuning outcome.
@@ -9374,12 +9489,10 @@ class ItemForecaster:
         # covers, and only that builder knows which it was.
         self.conformal_centre[horizon] = (
             "served"
-            if ("served_mid_ret" in records_df.columns
-                and records_df["served_mid_ret"].notna().all())
+            if ("served_mid_ret" in records_df.columns and records_df["served_mid_ret"].notna().all())
             else "q50"
         )
-        if (self.conformal_centre[horizon] == "q50"
-                and self.direction_models.get(horizon) is not None):
+        if self.conformal_centre[horizon] == "q50" and self.direction_models.get(horizon) is not None:
             # Not a fallback worth passing over in silence: predict() recentres
             # whenever this classifier exists, so the band being calibrated is
             # not the band being served, and the 80% label on it is wrong.
@@ -9402,8 +9515,7 @@ class ItemForecaster:
         # Same `beta` AND the same learned scale as the calibrate above, or the
         # width `_calibrate_confidence` fits its thresholds on is not the width
         # predict() will serve.
-        low, high = conformal.band(mid, sigma, q_hat, beta,
-                                   learned_scale=learned)
+        low, high = conformal.band(mid, sigma, q_hat, beta, learned_scale=learned)
         # range_pct is (high_price - low_price) / mid_price. The current price
         # is a common factor and cancels, leaving the return-space width over
         # the mid growth factor. Rows with mid_ret == -100 (a zero mid price)
@@ -9418,8 +9530,7 @@ class ItemForecaster:
         Both are present on every frame that reaches training or prediction,
         so this adds no feature-engineering pass.
         """
-        std = rows["price_std_60d"] if "price_std_60d" in rows.columns \
-            else pd.Series(np.nan, index=rows.index)
+        std = rows["price_std_60d"] if "price_std_60d" in rows.columns else pd.Series(np.nan, index=rows.index)
         return conformal.sigma_from_columns(
             price_std_60d=std.to_numpy(dtype=float),
             price=rows["price"].to_numpy(dtype=float),
@@ -9429,8 +9540,7 @@ class ItemForecaster:
         )
 
     @staticmethod
-    def _fix_quantile_crossing(low: np.ndarray, mid: np.ndarray,
-                                high: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
+    def _fix_quantile_crossing(low: np.ndarray, mid: np.ndarray, high: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
         """Enforce low <= mid <= high via isotonic regression (PAV for 3 points).
 
         For each item where quantiles cross, projects [low, mid, high] onto
@@ -9467,9 +9577,14 @@ class ItemForecaster:
 
         return v0, v2
 
-    def _blend_returns_with_prior(self, low_ret_arr: np.ndarray, mid_ret_arr: np.ndarray,
-                                  high_ret_arr: np.ndarray, prior: Dict[str, np.ndarray],
-                                  weight: float) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+    def _blend_returns_with_prior(
+        self,
+        low_ret_arr: np.ndarray,
+        mid_ret_arr: np.ndarray,
+        high_ret_arr: np.ndarray,
+        prior: dict[str, np.ndarray],
+        weight: float,
+    ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
         """Blend current return-space predictions toward the prior day's.
 
         Returns the (low, mid, high) arrays after exponentially smoothing with
@@ -9483,7 +9598,7 @@ class ItemForecaster:
         high_ret_arr = np.where(mask, (1 - weight) * high_ret_arr + weight * prior["high_ret"], high_ret_arr)
         return low_ret_arr, mid_ret_arr, high_ret_arr
 
-    def _fetch_prior_forecasts(self, item_ids: np.ndarray, horizon: int) -> Dict[str, np.ndarray]:
+    def _fetch_prior_forecasts(self, item_ids: np.ndarray, horizon: int) -> dict[str, np.ndarray]:
         """Fetch the most recent prior-day forecast per item for blending.
 
         Returns return-space predictions (percentage return vs the prior
@@ -9503,11 +9618,14 @@ class ItemForecaster:
         # the future into a backdated prediction.
         today = self._now().date()
         try:
-            rows = self.db.execute(text("""
+            rows = self.db.execute(
+                text("""
                 SELECT item_id, price_low, price_mid, price_high, current_price, forecast_date
                 FROM item_forecasts
                 WHERE horizon_days = :h AND forecast_date < :today
-            """), {"h": horizon, "today": today}).fetchall()
+            """),
+                {"h": horizon, "today": today},
+            ).fetchall()
         except Exception as e:
             logger.warning(f"  Prior-forecast fetch failed ({e}); skipping blend.")
             return result
@@ -9515,7 +9633,7 @@ class ItemForecaster:
             return result
 
         # Keep the latest forecast_date seen per item.
-        best: Dict[int, tuple] = {}
+        best: dict[int, tuple] = {}
         for r in rows:
             iid = int(r.item_id)
             if iid not in best or r.forecast_date > best[iid][4]:
@@ -9523,9 +9641,7 @@ class ItemForecaster:
 
         # Map Parquet string slugs → integer DB IDs
         try:
-            slug_rows = self.db.execute(
-                text("SELECT id, item_id FROM items WHERE is_backfilled = 1")
-            ).fetchall()
+            slug_rows = self.db.execute(text("SELECT id, item_id FROM items WHERE is_backfilled = 1")).fetchall()
             slug_to_id = {r.item_id: r.id for r in slug_rows}
         except Exception:
             slug_to_id = {}
@@ -9546,7 +9662,9 @@ class ItemForecaster:
             cur_f = float(cur)
             result["mid_ret"][idx] = (float(mid) / cur_f - 1.0) * 100.0
             result["low_ret"][idx] = (float(low) / cur_f - 1.0) * 100.0 if low is not None else result["mid_ret"][idx]
-            result["high_ret"][idx] = (float(high) / cur_f - 1.0) * 100.0 if high is not None else result["mid_ret"][idx]
+            result["high_ret"][idx] = (
+                (float(high) / cur_f - 1.0) * 100.0 if high is not None else result["mid_ret"][idx]
+            )
         return result
 
     # Prediction consumes only the last few rows per item (tail(3) for the
@@ -9600,15 +9718,16 @@ class ItemForecaster:
         itself, so keeping every row on a retained date is safe.
         """
         before = len(price_df)
-        keep = (price_df[["item_id", "date"]]
-                .drop_duplicates()
-                .sort_values(["item_id", "date"])
-                .groupby("item_id", sort=False, group_keys=False)
-                .tail(self.PREDICT_TAIL_ITEM_DAYS))
+        keep = (
+            price_df[["item_id", "date"]]
+            .drop_duplicates()
+            .sort_values(["item_id", "date"])
+            .groupby("item_id", sort=False, group_keys=False)
+            .tail(self.PREDICT_TAIL_ITEM_DAYS)
+        )
         out = price_df.merge(keep, on=["item_id", "date"], how="inner")
         logger.info(
-            f"  Predict tail: {before:,} -> {len(out):,} rows "
-            f"(<= {self.PREDICT_TAIL_ITEM_DAYS} item-days per item)"
+            f"  Predict tail: {before:,} -> {len(out):,} rows (<= {self.PREDICT_TAIL_ITEM_DAYS} item-days per item)"
         )
         return out
 
@@ -9617,8 +9736,7 @@ class ItemForecaster:
         """Items per chunk during prediction; 0 disables chunking."""
         return int(os.getenv("PREDICT_CHUNK_ITEMS", "1000"))
 
-    def _engineer_features_chunked(self, price_df, events_df, eligible,
-                                   item_first_dates=None) -> pd.DataFrame:
+    def _engineer_features_chunked(self, price_df, events_df, eligible, item_first_dates=None) -> pd.DataFrame:
         """Engineer prediction features in item chunks with bounded memory.
 
         Two passes are required because the cross-sectional features are per-date
@@ -9631,15 +9749,13 @@ class ItemForecaster:
         """
         item_ids = list(eligible)
         size = self._predict_chunk_items
-        chunks = [item_ids[i:i + size] for i in range(0, len(item_ids), size)]
-        logger.info(
-            f"  Chunked feature engineering: {len(item_ids):,} items "
-            f"in {len(chunks)} chunks of <= {size:,}"
-        )
+        chunks = [item_ids[i : i + size] for i in range(0, len(item_ids), size)]
+        logger.info(f"  Chunked feature engineering: {len(item_ids):,} items in {len(chunks)} chunks of <= {size:,}")
 
         def _chunk_frame(chunk):
             return self.engineer_features(
-                price_df[price_df["item_id"].isin(chunk)], events_df,
+                price_df[price_df["item_id"].isin(chunk)],
+                events_df,
                 item_first_dates=item_first_dates,
             )
 
@@ -9660,8 +9776,7 @@ class ItemForecaster:
             gc.collect()
             logger.info(f"    market pass {n}/{len(chunks)}")
         market = self._market_from_partials(partials)
-        tier_lagged = (self._tier_lead_from_partials(tier_partials)
-                       if want_tier_lead else pd.DataFrame())
+        tier_lagged = self._tier_lead_from_partials(tier_partials) if want_tier_lead else pd.DataFrame()
 
         # Pass B — apply the market table, then discard all but each item's tail.
         tails = []
@@ -9671,11 +9786,7 @@ class ItemForecaster:
             cdf = self._add_supply_depth_features(cdf)
             if want_tier_lead:
                 cdf = self._apply_tier_lead(cdf, tier_lagged)
-            cdf = (
-                cdf.sort_values(["item_id", "date"])
-                .groupby("item_id", sort=False)
-                .tail(self.PREDICT_TAIL_ROWS)
-            )
+            cdf = cdf.sort_values(["item_id", "date"]).groupby("item_id", sort=False).tail(self.PREDICT_TAIL_ROWS)
             tails.append(cdf)
             del cdf
             gc.collect()
@@ -9685,7 +9796,7 @@ class ItemForecaster:
         logger.info(f"  Chunked engineering complete: {len(df):,} tail rows retained")
         return df
 
-    def predict(self, item_ids: List[int] = None) -> pd.DataFrame:
+    def predict(self, item_ids: list[int] = None) -> pd.DataFrame:
         logger.info("Generating forecasts...")
 
         # Try to load cached engineered features first (major speedup)
@@ -9695,8 +9806,7 @@ class ItemForecaster:
             logger.info(f"  Using cached engineered features ({len(df):,} rows)")
         else:
             logger.info("  No usable cache found — running full feature engineering")
-            price_df = self.fetch_price_history(
-                days_back=self.PREDICT_FETCH_DAYS, backfilled_only=True)
+            price_df = self.fetch_price_history(days_back=self.PREDICT_FETCH_DAYS, backfilled_only=True)
 
             # Skip items without a real recent series: snapshot-tier items keep
             # only a single latest row, and a "forecast" from one data point is
@@ -9720,11 +9830,9 @@ class ItemForecaster:
             price_df = self._tail_predict_frame(price_df)
 
             if self._predict_chunk_items and len(eligible) > self._predict_chunk_items:
-                df = self._engineer_features_chunked(
-                    price_df, events_df, eligible, item_first_dates=item_first_dates)
+                df = self._engineer_features_chunked(price_df, events_df, eligible, item_first_dates=item_first_dates)
             else:
-                df = self.engineer_features(price_df, events_df,
-                                            item_first_dates=item_first_dates)
+                df = self.engineer_features(price_df, events_df, item_first_dates=item_first_dates)
 
                 # Add cross-sectional features (same as training)
                 df = self._add_cross_sectional_features(df)
@@ -9753,8 +9861,7 @@ class ItemForecaster:
         # perfectly valid hit. Fail instead of median-filling a feature the
         # booster was fitted on.
         tier_lead_col = self.TIER_LEAD_FEATURES[0]
-        if (tier_lead_col in self.feature_cols
-                and tier_lead_col not in df.columns):
+        if tier_lead_col in self.feature_cols and tier_lead_col not in df.columns:
             raise RuntimeError(
                 f"{tier_lead_col} is in the model's feature_cols but absent from "
                 f"the prediction frame. The engineered cache was almost certainly "
@@ -9809,8 +9916,8 @@ class ItemForecaster:
                     f"disagree about the universe, not that the market changed"
                 )
             df = self._apply_cross_sectional_ranks(
-                df, list(self.feature_cols), reference_mask=cohort,
-                skip_cols=self._artifact_xs_rank_skipped)
+                df, list(self.feature_cols), reference_mask=cohort, skip_cols=self._artifact_xs_rank_skipped
+            )
 
         # Align features with training columns (add missing, drop extras)
         for col in self.feature_cols:
@@ -9845,8 +9952,7 @@ class ItemForecaster:
         # under the shipped arm IS `_smoothed_price` -- so a disclosure computed
         # after this line would find `p == S` for every item and publish the
         # entire catalogue as clean.
-        anchor_clean, anchor_wedge_pct = self._anchor_disclosure(
-            latest_rows["price"], latest_rows["_smoothed_price"])
+        anchor_clean, anchor_wedge_pct = self._anchor_disclosure(latest_rows["price"], latest_rows["_smoothed_price"])
 
         # BEFORE `_serving_base_price` too, and for the same reason as the
         # disclosure above: afterwards `price` IS the served base, and the audit
@@ -9854,7 +9960,8 @@ class ItemForecaster:
         self._audit_serving_anchor(df, latest_rows, pd.to_datetime(df["date"]).max())
 
         latest_rows["price"], outlier_mask = self._serving_base_price(
-            latest_rows["price"], latest_rows["_smoothed_price"])
+            latest_rows["price"], latest_rows["_smoothed_price"]
+        )
         n_outliers = int(outlier_mask.sum())
         if n_outliers:
             # The mask is arm-invariant, so this count sizes the deviating
@@ -9867,7 +9974,8 @@ class ItemForecaster:
                 f"  {n_outliers} items have latest price >"
                 f"{100 * self.ANCHOR_OUTLIER_TOLERANCE:g}% from 3d median — "
                 f"smoothing {'those items only' if gated else 'every item'} "
-                f"(SERVE_OUTLIER_GATED_ANCHOR={'1' if gated else '0'})")
+                f"(SERVE_OUTLIER_GATED_ANCHOR={'1' if gated else '0'})"
+            )
         latest_rows = latest_rows.drop(columns=["_smoothed_price"])
 
         if item_ids:
@@ -9875,9 +9983,11 @@ class ItemForecaster:
 
         # Build the full feature matrix with the union of all per-horizon feature
         # sets (each horizon may have pruned different features).
-        all_feature_cols = sorted(set().union(
-            *[set(cols) for cols in self.horizon_feature_cols.values()]
-        )) if self.horizon_feature_cols else self.feature_cols
+        all_feature_cols = (
+            sorted(set().union(*[set(cols) for cols in self.horizon_feature_cols.values()]))
+            if self.horizon_feature_cols
+            else self.feature_cols
+        )
 
         latest_clean = latest_rows.reindex(columns=all_feature_cols, fill_value=0).replace([np.inf, -np.inf], np.nan)
         if self._feature_native_nan_served():
@@ -9928,15 +10038,12 @@ class ItemForecaster:
                 "item_id": iid,
                 "current_price": float(cur),
                 "anchor_clean": bool(clean),
-                "anchor_wedge_pct": (float(wedge) if np.isfinite(wedge)
-                                     else None),
+                "anchor_wedge_pct": (float(wedge) if np.isfinite(wedge) else None),
                 "anchor_date": anchor_date,
                 "forecasts": {},
                 "generated_at": generated_at,
             }
-            for iid, cur, clean, wedge in zip(
-                item_id_arr, current_price_arr,
-                anchor_clean_arr, anchor_wedge_arr)
+            for iid, cur, clean, wedge in zip(item_id_arr, current_price_arr, anchor_clean_arr, anchor_wedge_arr)
         }
 
         # Per-item conformal scale. Loop-invariant: it depends only on
@@ -9958,13 +10065,11 @@ class ItemForecaster:
                 # so a feature-schema change can never crash prediction.
                 regime_key = (current_regime, horizon, q)
                 if current_regime in self.REGIMES and regime_key in self.regime_models:
-                    all_preds = self._predict_ensemble_safe(
-                        self.regime_models[regime_key], X_horizon)
+                    all_preds = self._predict_ensemble_safe(self.regime_models[regime_key], X_horizon)
                     if all_preds:
                         regime_count += 1
                 if not all_preds and (horizon, q) in self.models:
-                    all_preds = self._predict_ensemble_safe(
-                        self.models[(horizon, q)], X_horizon)
+                    all_preds = self._predict_ensemble_safe(self.models[(horizon, q)], X_horizon)
                     if all_preds:
                         global_count += 1
 
@@ -10045,9 +10150,13 @@ class ItemForecaster:
             mult = self.served_qhat_multiplier(horizon)
             q_lo, q_hi = self.band_offsets(horizon)
             low_ret_arr, high_ret_arr = conformal.band_signed(
-                mid_ret_arr, sigma_arr, q_lo * mult, q_hi * mult,
+                mid_ret_arr,
+                sigma_arr,
+                q_lo * mult,
+                q_hi * mult,
                 self.band_beta(horizon),
-                learned_scale=self.band_scale(horizon, latest_rows, sigma_arr))
+                learned_scale=self.band_scale(horizon, latest_rows, sigma_arr),
+            )
 
             # Momentum fallback for weak horizons (14d/30d): serve the trailing
             # return as the median, keeping the model's calibrated interval
@@ -10057,7 +10166,8 @@ class ItemForecaster:
                 if mom_col in latest_rows.columns:
                     momentum_ret = latest_rows[mom_col].to_numpy(dtype=float)
                     low_ret_arr, mid_ret_arr, high_ret_arr = self._recenter_on_momentum(
-                        low_ret_arr, mid_ret_arr, high_ret_arr, momentum_ret)
+                        low_ret_arr, mid_ret_arr, high_ret_arr, momentum_ret
+                    )
 
             # Directional classifier: the served up/flat/down call + confidence.
             # These populate the reported `direction`/`confidence` fields only.
@@ -10084,11 +10194,13 @@ class ItemForecaster:
             if _disabled:
                 logger.warning(
                     f"  REPLAY_DISABLE={sorted(_disabled)}: serving transforms "
-                    f"skipped. This is an attribution replay, not a forecast.")
+                    f"skipped. This is an attribution replay, not a forecast."
+                )
             if "blend" not in _disabled:
                 prior = self._fetch_prior_forecasts(item_id_arr, horizon)
                 low_ret_arr, mid_ret_arr, high_ret_arr = self._blend_returns_with_prior(
-                    low_ret_arr, mid_ret_arr, high_ret_arr, prior, self.FORECAST_BLEND_WEIGHT)
+                    low_ret_arr, mid_ret_arr, high_ret_arr, prior, self.FORECAST_BLEND_WEIGHT
+                )
 
             # Per-tier bias correction: threshold-based approach (preferred).
             # Recalibrates classification boundaries to match the true outcome
@@ -10136,9 +10248,7 @@ class ItemForecaster:
             fallback_n = 0
             fallback_flat = 0
             for i, iid in enumerate(item_id_arr):
-                low_ret, mid_ret, high_ret = (float(low_ret_arr[i]),
-                                               float(mid_ret_arr[i]),
-                                               float(high_ret_arr[i]))
+                low_ret, mid_ret, high_ret = (float(low_ret_arr[i]), float(mid_ret_arr[i]), float(high_ret_arr[i]))
                 current_price = float(current_price_arr[i])
 
                 # Convert return predictions to price levels
@@ -10149,8 +10259,7 @@ class ItemForecaster:
                 if dir_class_arr is not None:
                     # Served signal: the directional classifier.
                     direction = _dir_name[int(dir_class_arr[i])]
-                    confidence = ("high" if float(dir_conf_arr[i]) >= self.DIRECTION_CONFIDENCE_HIGH
-                                  else "low")
+                    confidence = "high" if float(dir_conf_arr[i]) >= self.DIRECTION_CONFIDENCE_HIGH else "low"
                 else:
                     # Fallback (no classifier): threshold-based on mid_ret.
                     tier = self._get_price_tier(float(current_price))
@@ -10164,7 +10273,8 @@ class ItemForecaster:
                     else:
                         direction = "flat"
                     confidence = self._compute_confidence(
-                        price_mid, price_low, price_high, current_price, horizon=horizon)
+                        price_mid, price_low, price_high, current_price, horizon=horizon
+                    )
                     fallback_n += 1
                     fallback_flat += direction == "flat"
 
@@ -10174,10 +10284,8 @@ class ItemForecaster:
                     "high": price_high,
                     "direction": direction,
                     "confidence": confidence,
-                    "exceed_p": (float(exceed_p_arr[i])
-                                 if exceed_p_arr is not None else None),
-                    "anomaly_p": (float(anomaly_p_arr[i])
-                                  if anomaly_p_arr is not None else None),
+                    "exceed_p": (float(exceed_p_arr[i]) if exceed_p_arr is not None else None),
+                    "anomaly_p": (float(anomaly_p_arr[i]) if anomaly_p_arr is not None else None),
                 }
 
             self._warn_no_classifier(horizon, fallback_n, fallback_flat)
@@ -10189,9 +10297,11 @@ class ItemForecaster:
         total_used = regime_count + global_count
         if total_used > 0:
             pct = regime_count / total_used * 100
-            logger.info(f"  Regime model usage: {regime_count}/{total_used} "
-                        f"({pct:.1f}%) regime, {global_count}/{total_used} "
-                        f"({100-pct:.1f}%) global")
+            logger.info(
+                f"  Regime model usage: {regime_count}/{total_used} "
+                f"({pct:.1f}%) regime, {global_count}/{total_used} "
+                f"({100 - pct:.1f}%) global"
+            )
 
         logger.info(f"  Forecasts generated for {len(result_df)} items")
         return result_df
@@ -10209,8 +10319,7 @@ class ItemForecaster:
     def _sanitize_forecasts(self, result_df: pd.DataFrame) -> pd.DataFrame:
         for h in self.HORIZONS:
             for key in ["low", "mid", "high"]:
-                vals = np.array([r["forecasts"].get(h, {}).get(key, np.nan)
-                                 for r in result_df.to_dict("records")])
+                vals = np.array([r["forecasts"].get(h, {}).get(key, np.nan) for r in result_df.to_dict("records")])
                 mask_bad = ~np.isfinite(vals) | (vals <= 0)
                 if mask_bad.any():
                     current_prices = result_df["current_price"].values
@@ -10297,7 +10406,7 @@ class ItemForecaster:
                             cf["confidence"] = "low"
         return result_df
 
-    def predict_single(self, item_id: int) -> Dict[str, Any]:
+    def predict_single(self, item_id: int) -> dict[str, Any]:
         results = self.predict(item_ids=[item_id])
         if results.empty:
             return {}
@@ -10337,8 +10446,7 @@ class ItemForecaster:
             return None
         return np.mean(all_preds, axis=0)
 
-    def _cv_evaluate_horizon(self, tdf, horizon, per_quantile_params,
-                             per_item_row_sampling: bool = False):
+    def _cv_evaluate_horizon(self, tdf, horizon, per_quantile_params, per_item_row_sampling: bool = False):
         """Run expanding-window CV for a single horizon.
 
         Trains a single model (no ensemble) per fold using the best hyperparams
@@ -10366,8 +10474,7 @@ class ItemForecaster:
         # window: a train row's target is observed `horizon` days later and the
         # anchor behind it carries 13 days further, so without this gap those
         # labels overlap the validation period (leakage).
-        splits = self._compute_cv_splits(
-            sorted_dates, purge_days=embargo_days(horizon))
+        splits = self._compute_cv_splits(sorted_dates, purge_days=embargo_days(horizon))
         if len(splits) < 2:
             raise RuntimeError(
                 f"CV produced {len(splits)} fold{'s' if splits else 's'} "
@@ -10394,8 +10501,7 @@ class ItemForecaster:
                 if per_item_row_sampling:
                     train_df = self._per_item_row_sample(train_df, cv_max_rows)
                 else:
-                    train_df = train_df.sample(
-                        n=cv_max_rows, random_state=42).sort_values("date")
+                    train_df = train_df.sample(n=cv_max_rows, random_state=42).sort_values("date")
             self._record_cv_fold_train_rows(len(train_df))
 
             if len(val_df) < 50:
@@ -10411,9 +10517,7 @@ class ItemForecaster:
             X_train = self._impute_features(X_train_pre, fold_medians)
             y_train = train_df[f"target_return_{horizon}d"]
 
-            X_val = self._impute_features(
-                val_df[self.feature_cols].replace([np.inf, -np.inf], np.nan),
-                fold_medians)
+            X_val = self._impute_features(val_df[self.feature_cols].replace([np.inf, -np.inf], np.nan), fold_medians)
             y_val = val_df[f"target_return_{horizon}d"]
 
             # Sample weights (same as main training loop)
@@ -10461,7 +10565,8 @@ class ItemForecaster:
                     fold_callbacks.insert(0, lgb.early_stopping(20))
                     fold_valid = [dval]
                 model = lgb.train(
-                    params, dtrain,
+                    params,
+                    dtrain,
                     num_boost_round=self._boost_rounds(horizon, cv=True),
                     valid_sets=fold_valid,
                     callbacks=fold_callbacks,
@@ -10501,8 +10606,20 @@ class ItemForecaster:
             for i in range(len(val_df)):
                 actual_ret = float(actual_returns[i])
                 mid_ret = float(fold_p50[i])
-                actual_dir = "up" if actual_ret > DIRECTION_FLAT_TOLERANCE_PCT else "down" if actual_ret < -DIRECTION_FLAT_TOLERANCE_PCT else "flat"
-                pred_dir = "up" if mid_ret > DIRECTION_FLAT_TOLERANCE_PCT else "down" if mid_ret < -DIRECTION_FLAT_TOLERANCE_PCT else "flat"
+                actual_dir = (
+                    "up"
+                    if actual_ret > DIRECTION_FLAT_TOLERANCE_PCT
+                    else "down"
+                    if actual_ret < -DIRECTION_FLAT_TOLERANCE_PCT
+                    else "flat"
+                )
+                pred_dir = (
+                    "up"
+                    if mid_ret > DIRECTION_FLAT_TOLERANCE_PCT
+                    else "down"
+                    if mid_ret < -DIRECTION_FLAT_TOLERANCE_PCT
+                    else "flat"
+                )
                 if pred_dir == actual_dir:
                     fold_hits += 1
 
@@ -10514,13 +10631,11 @@ class ItemForecaster:
             #  - momentum: predict the sign of the item's trailing `horizon`-day
             #    return (a backward-looking feature, no leakage). This is the
             #    real bar a directional forecaster must clear.
-            persistence_acc = self._directional_accuracy(
-                np.zeros(len(actual_returns)), actual_returns)
+            persistence_acc = self._directional_accuracy(np.zeros(len(actual_returns)), actual_returns)
             momentum_acc = None
             mom_col = f"return_{horizon}d"
             if mom_col in val_df.columns:
-                momentum_acc = self._directional_accuracy(
-                    val_df[mom_col].to_numpy(dtype=float), actual_returns)
+                momentum_acc = self._directional_accuracy(val_df[mom_col].to_numpy(dtype=float), actual_returns)
 
             # Directional classifier — the actually-served signal. Trained the
             # same way as the production model (mover-weighted 3-class) so this
@@ -10547,15 +10662,19 @@ class ItemForecaster:
             pred_cls = None
             if self._cv_diagnostic_classifier_enabled():
                 clf = self._fit_direction_classifier(
-                    X_train, y_train, X_val, y_val, self.BOOSTING_TYPE,
+                    X_train,
+                    y_train,
+                    X_val,
+                    y_val,
+                    self.BOOSTING_TYPE,
                     self._direction_tree_params(per_quantile_params),
                     horizon=horizon,
                     sigma_train=None,
                     sigma_val=None,
-                    tier_train=(train_df["price_tier"].to_numpy()
-                                if "price_tier" in train_df.columns else None),
+                    tier_train=(train_df["price_tier"].to_numpy() if "price_tier" in train_df.columns else None),
                     num_boost_round=self._boost_rounds(horizon, cv=True),
-                    early_stopping=self._early_stopping_enabled())
+                    early_stopping=self._early_stopping_enabled(),
+                )
                 pred_cls = clf.predict(X_val).argmax(axis=1)
                 classifier_acc = round(float((pred_cls == actual_cls).mean()) * 100, 1)
 
@@ -10578,8 +10697,7 @@ class ItemForecaster:
             if pred_cls is not None and "price_tier" in val_df.columns:
                 ge1 = val_df["price_tier"].to_numpy() >= HEADLINE_MIN_TIER
                 if ge1.any():
-                    classifier_acc_ge1 = round(
-                        float((pred_cls[ge1] == actual_cls[ge1]).mean()) * 100, 1)
+                    classifier_acc_ge1 = round(float((pred_cls[ge1] == actual_cls[ge1]).mean()) * 100, 1)
 
             # The bar that actually matters, and the one this CV never carried.
             # `constant_call` is the best single fixed call on THIS fold, which
@@ -10588,8 +10706,7 @@ class ItemForecaster:
             # Measured 2026-08-08: corr(fold DA, fold constant-call DA) = 0.715,
             # R^2 0.51 — half of what mean_classifier_acc moves on is the fold's
             # realised direction mix, not the model.
-            fold_records = self._direction_records(
-                fold_p50, actual_returns, val_df["date"])
+            fold_records = self._direction_records(fold_p50, actual_returns, val_df["date"])
             _, fold_constant_call = constant_call_baseline(fold_records)
             fold_down_rate = realised_down_rate(fold_records)
 
@@ -10599,17 +10716,18 @@ class ItemForecaster:
             # the base rate that dominates DA. `naive_rank_ic` is the same
             # measurement for "rank by minus yesterday's return" — the one-line
             # baseline that beat this model at all four horizons on 2026-08-08.
-            served = (val_df["price_tier"].to_numpy() >= HEADLINE_MIN_TIER
-                      if "price_tier" in val_df.columns
-                      else np.ones(len(val_df), dtype=bool))
-            naive_pred = (-val_df["return_1d"].to_numpy(dtype=float)
-                          if "return_1d" in val_df.columns else None)
+            served = (
+                val_df["price_tier"].to_numpy() >= HEADLINE_MIN_TIER
+                if "price_tier" in val_df.columns
+                else np.ones(len(val_df), dtype=bool)
+            )
+            naive_pred = -val_df["return_1d"].to_numpy(dtype=float) if "return_1d" in val_df.columns else None
             fold_rank_ic, rank_ic_dates = self._within_date_rank_ic_detail(
-                fold_p50, actual_returns, val_df["date"], served)
+                fold_p50, actual_returns, val_df["date"], served
+            )
             naive_rank_ic = None
             if naive_pred is not None:
-                naive_rank_ic = self._within_date_rank_ic(
-                    naive_pred, actual_returns, val_df["date"], served)
+                naive_rank_ic = self._within_date_rank_ic(naive_pred, actual_returns, val_df["date"], served)
 
             # The same two numbers on the cohort where the label's denominator
             # is not contaminated -- `p[d] == S[d]`, so neither the raw basis
@@ -10627,12 +10745,13 @@ class ItemForecaster:
             tied_served = np.zeros(len(val_df), dtype=bool)
             if ANCHOR_TIED_COL in val_df.columns:
                 tied_served = served & val_df[ANCHOR_TIED_COL].eq(True).to_numpy()
-                rank_ic_tied, rank_ic_tied_dates = \
-                    self._within_date_rank_ic_detail(
-                        fold_p50, actual_returns, val_df["date"], tied_served)
+                rank_ic_tied, rank_ic_tied_dates = self._within_date_rank_ic_detail(
+                    fold_p50, actual_returns, val_df["date"], tied_served
+                )
                 if naive_pred is not None:
                     naive_rank_ic_tied = self._within_date_rank_ic(
-                        naive_pred, actual_returns, val_df["date"], tied_served)
+                        naive_pred, actual_returns, val_df["date"], tied_served
+                    )
 
             # C2: a within-date ranker on the same folds, read against the same
             # naive baseline and (primarily) the same tied cohort. Its scores are
@@ -10640,46 +10759,44 @@ class ItemForecaster:
             lr_rank_ic = lr_rank_ic_tied = None
             lr_rank_ic_dates = lr_rank_ic_tied_dates = 0
             if self._lambdarank_enabled():
-                lr_scores = self._lambdarank_fold_scores(
-                    train_df, val_df, horizon, per_quantile_params)
-                lr_rank_ic, lr_rank_ic_dates = \
-                    self._within_date_rank_ic_detail(
-                        lr_scores, actual_returns, val_df["date"], served)
-                lr_rank_ic_tied, lr_rank_ic_tied_dates = \
-                    self._within_date_rank_ic_detail(
-                        lr_scores, actual_returns, val_df["date"], tied_served)
+                lr_scores = self._lambdarank_fold_scores(train_df, val_df, horizon, per_quantile_params)
+                lr_rank_ic, lr_rank_ic_dates = self._within_date_rank_ic_detail(
+                    lr_scores, actual_returns, val_df["date"], served
+                )
+                lr_rank_ic_tied, lr_rank_ic_tied_dates = self._within_date_rank_ic_detail(
+                    lr_scores, actual_returns, val_df["date"], tied_served
+                )
 
-            fold_metrics.append({
-                "fold": fold_id + 1,
-                "train_start": str(train_dates[0]),
-                "train_end": str(train_dates[-1]),
-                "val_start": str(val_dates[0]),
-                "val_end": str(val_dates[-1]),
-                "n_train": len(train_df),
-                "n_val": len(val_df),
-                "n_trees": int(model.num_trees()),
-                "directional_accuracy": fold_acc,
-                "classifier_accuracy": classifier_acc,
-                "classifier_accuracy_ge1": classifier_acc_ge1,
-                "persistence_accuracy": persistence_acc,
-                "momentum_accuracy": momentum_acc,
-                "constant_call_accuracy": (
-                    None if fold_constant_call is None
-                    else round(fold_constant_call, 1)),
-                "realised_down_rate": (
-                    None if fold_down_rate is None else round(fold_down_rate, 1)),
-                "rank_ic": fold_rank_ic,
-                "naive_rank_ic": naive_rank_ic,
-                "rank_ic_dates": rank_ic_dates,
-                "rank_ic_tied": rank_ic_tied,
-                "naive_rank_ic_tied": naive_rank_ic_tied,
-                "rank_ic_tied_dates": rank_ic_tied_dates,
-                "n_tied": int(tied_served.sum()),
-                "lr_rank_ic": lr_rank_ic,
-                "lr_rank_ic_dates": lr_rank_ic_dates,
-                "lr_rank_ic_tied": lr_rank_ic_tied,
-                "lr_rank_ic_tied_dates": lr_rank_ic_tied_dates,
-            })
+            fold_metrics.append(
+                {
+                    "fold": fold_id + 1,
+                    "train_start": str(train_dates[0]),
+                    "train_end": str(train_dates[-1]),
+                    "val_start": str(val_dates[0]),
+                    "val_end": str(val_dates[-1]),
+                    "n_train": len(train_df),
+                    "n_val": len(val_df),
+                    "n_trees": int(model.num_trees()),
+                    "directional_accuracy": fold_acc,
+                    "classifier_accuracy": classifier_acc,
+                    "classifier_accuracy_ge1": classifier_acc_ge1,
+                    "persistence_accuracy": persistence_acc,
+                    "momentum_accuracy": momentum_acc,
+                    "constant_call_accuracy": (None if fold_constant_call is None else round(fold_constant_call, 1)),
+                    "realised_down_rate": (None if fold_down_rate is None else round(fold_down_rate, 1)),
+                    "rank_ic": fold_rank_ic,
+                    "naive_rank_ic": naive_rank_ic,
+                    "rank_ic_dates": rank_ic_dates,
+                    "rank_ic_tied": rank_ic_tied,
+                    "naive_rank_ic_tied": naive_rank_ic_tied,
+                    "rank_ic_tied_dates": rank_ic_tied_dates,
+                    "n_tied": int(tied_served.sum()),
+                    "lr_rank_ic": lr_rank_ic,
+                    "lr_rank_ic_dates": lr_rank_ic_dates,
+                    "lr_rank_ic_tied": lr_rank_ic_tied,
+                    "lr_rank_ic_tied_dates": lr_rank_ic_tied_dates,
+                }
+            )
 
             # Pooled records for the Pesaran-Timmermann test. Built from the
             # quantile-median SIGN so this costs nothing even when the
@@ -10691,8 +10808,7 @@ class ItemForecaster:
             # are then published side by side, and neither key changes which
             # signal it describes depending on CV_DIAGNOSTIC_CLASSIFIER.
             if pred_cls is not None:
-                pt_records_clf.extend(self._direction_records_from_classes(
-                    pred_cls, actual_cls, val_df["date"]))
+                pt_records_clf.extend(self._direction_records_from_classes(pred_cls, actual_cls, val_df["date"]))
 
             # Out-of-fold exceedance probability for the band scale
             # (EXCEEDANCE_SCALE) AND for the isotonic calibrator + Brier /
@@ -10706,27 +10822,23 @@ class ItemForecaster:
             # climatology band) the scale gate alone would leave no OOF p and
             # the head would serve uncalibrated with no Brier anywhere.
             fold_exceed_p = None
-            if (self.exceedance_scale_enabled()
-                    or self.exceedance_head_enabled()):
-                X_exc_train = self._exceedance_feature_matrix(
-                    train_df, self.feature_cols)
+            if self.exceedance_scale_enabled() or self.exceedance_head_enabled():
+                X_exc_train = self._exceedance_feature_matrix(train_df, self.feature_cols)
                 X_exc_train_clean = X_exc_train.replace([np.inf, -np.inf], np.nan)
                 exc_train_medians = X_exc_train_clean.median()
                 X_exc_train = self._impute_features(X_exc_train_clean, exc_train_medians)
                 exc_clf = self._fit_exceedance_classifier(
-                    X_exc_train, train_df[f"target_exceed_{horizon}d"].to_numpy(),
+                    X_exc_train,
+                    train_df[f"target_exceed_{horizon}d"].to_numpy(),
                     self.BOOSTING_TYPE,
                     self._direction_tree_params(per_quantile_params),
                     horizon=horizon,
-                    tier_train=(train_df["price_tier"].to_numpy()
-                                if "price_tier" in train_df.columns else None),
-                    num_boost_round=self._boost_rounds(horizon, cv=True))
+                    tier_train=(train_df["price_tier"].to_numpy() if "price_tier" in train_df.columns else None),
+                    num_boost_round=self._boost_rounds(horizon, cv=True),
+                )
                 if exc_clf is not None:
-                    X_exc_val = self._exceedance_feature_matrix(
-                        val_df, self.feature_cols)
-                    X_exc_val = self._impute_features(
-                        X_exc_val.replace([np.inf, -np.inf], np.nan),
-                        exc_train_medians)
+                    X_exc_val = self._exceedance_feature_matrix(val_df, self.feature_cols)
+                    X_exc_val = self._impute_features(X_exc_val.replace([np.inf, -np.inf], np.nan), exc_train_medians)
                     fold_exceed_p = exc_clf.predict(X_exc_val)
 
             # Build per-row records for pooled calibration. Same builder the
@@ -10735,17 +10847,25 @@ class ItemForecaster:
             # residual is measured against the q50 mid — honest, but a mid
             # predict() does not serve. `_calibrate_conformal` warns.
             fold_conformal = self._conformal_records(
-                fold_p50, actual_returns, fold_sigma, current_prices,
-                direction_class=pred_cls, residual_actual_ret=cal_returns,
+                fold_p50,
+                actual_returns,
+                fold_sigma,
+                current_prices,
+                direction_class=pred_cls,
+                residual_actual_ret=cal_returns,
                 exceed_p=fold_exceed_p,
-                exceed_y=(val_df[f"target_exceed_{horizon}d"].to_numpy(dtype=float)
-                          if f"target_exceed_{horizon}d" in val_df.columns else None),
+                exceed_y=(
+                    val_df[f"target_exceed_{horizon}d"].to_numpy(dtype=float)
+                    if f"target_exceed_{horizon}d" in val_df.columns
+                    else None
+                ),
                 # `val_df` is a boolean-mask slice of `tdf` with no
                 # `reset_index`, and `tdf` carries a unique RangeIndex out of
                 # `prepare_targets`' merge -- so these labels index straight back
                 # into the feature frame. Every array above is built from
                 # `val_df`, which is what makes them positionally aligned to it.
-                row_index=val_df.index.to_numpy())
+                row_index=val_df.index.to_numpy(),
+            )
             # Which fold each calibration row came from. `_calibrate_conformal`
             # ignores it -- the pooled q_hat is unchanged -- but without it the
             # sigma-tilt audit can only fit and score its exponent on the same
@@ -10785,17 +10905,21 @@ class ItemForecaster:
                     # make consecutive fold_q_hats incomparable and silently
                     # break the published 0.94/0.91/0.92/0.84x series and the
                     # expanding-window audit built on it.
-                    fold_q_hat = float(conformal.calibrate(
-                        _fr["residual_pct"].values, _fr["sigma"].values,
-                        conformal.ALPHA, conformal.BETA_NEUTRAL))
+                    fold_q_hat = float(
+                        conformal.calibrate(
+                            _fr["residual_pct"].values, _fr["sigma"].values, conformal.ALPHA, conformal.BETA_NEUTRAL
+                        )
+                    )
                     # The new information instead: beta per fold. This is the
                     # quantity the 14d/30d dispute turns on -- whether the
                     # exponent drifts between folds enough to explain a weak
                     # held-out leg -- measured on real OOF residuals rather than
                     # the model-free panel. Reported only.
-                    fold_beta = float(conformal.fit_beta(
-                        _fr["residual_pct"].values, _fr["sigma"].values,
-                        min_rows=self.MIN_CALIBRATION_ROWS))
+                    fold_beta = float(
+                        conformal.fit_beta(
+                            _fr["residual_pct"].values, _fr["sigma"].values, min_rows=self.MIN_CALIBRATION_ROWS
+                        )
+                    )
                 except ValueError:
                     # No finite nonconformity scores in this fold. Diagnostic
                     # only, so it must never take out the CV that produces the
@@ -10865,6 +10989,7 @@ class ItemForecaster:
         collapses to relevance 0, contributing no pairwise signal.
         """
         from scipy.stats import rankdata
+
         darr = np.asarray(dates)
         yv = np.asarray(y, dtype=float)
         rel = np.zeros(len(yv), dtype=np.int32)
@@ -10878,13 +11003,11 @@ class ItemForecaster:
                 gy = yv[start:i]
                 if n > 1 and np.ptp(gy) > 0:
                     r = rankdata(gy, method="average")  # 1..n, ties averaged
-                    rel[start:i] = np.clip(
-                        np.floor((r - 1) / n * k), 0, k - 1).astype(np.int32)
+                    rel[start:i] = np.clip(np.floor((r - 1) / n * k), 0, k - 1).astype(np.int32)
                 start = i
         return rel, group
 
-    def _lambdarank_fold_scores(self, train_df, val_df, horizon,
-                                per_quantile_params):
+    def _lambdarank_fold_scores(self, train_df, val_df, horizon, per_quantile_params):
         """Per-fold within-date ranker scores on `val_df`, LAMBDARANK diagnostic.
 
         Trains one `lambdarank` booster on the fold's train rows — query group =
@@ -10902,8 +11025,7 @@ class ItemForecaster:
         feat = ts[self.feature_cols].replace([np.inf, -np.inf], np.nan)
         med = feat.median()
         X_tr = feat.fillna(med)
-        rel, group = self._lambdarank_labels(
-            ts["date"].to_numpy(), ts[tcol].to_numpy(), k)
+        rel, group = self._lambdarank_labels(ts["date"].to_numpy(), ts[tcol].to_numpy(), k)
         q50 = per_quantile_params.get(0.5, {})
         params = {
             "objective": "lambdarank",
@@ -10925,19 +11047,14 @@ class ItemForecaster:
             "n_jobs": -1,
             "random_state": 42,
         }
-        ds = lgb.Dataset(
-            X_tr, label=rel, group=group,
-            params={"max_bin": self.MAX_BIN, "feature_pre_filter": False})
+        ds = lgb.Dataset(X_tr, label=rel, group=group, params={"max_bin": self.MAX_BIN, "feature_pre_filter": False})
         model = lgb.train(
-            params, ds,
-            num_boost_round=self._boost_rounds(horizon, cv=True),
-            callbacks=[lgb.log_evaluation(0)])
-        X_val = val_df[self.feature_cols].replace(
-            [np.inf, -np.inf], np.nan).fillna(med)
+            params, ds, num_boost_round=self._boost_rounds(horizon, cv=True), callbacks=[lgb.log_evaluation(0)]
+        )
+        X_val = val_df[self.feature_cols].replace([np.inf, -np.inf], np.nan).fillna(med)
         return model.predict(X_val)
 
-    def _fold_q50_scores(self, train_df, val_df, horizon,
-                         per_quantile_params):
+    def _fold_q50_scores(self, train_df, val_df, horizon, per_quantile_params):
         """The q50 twin of `_lambdarank_fold_scores`: same rows, same tree HP,
         `objective="quantile"` at alpha 0.5, and the SAME sample weights the
         production fold q50 (`_cv_evaluate_horizon`) applies. That makes the
@@ -10950,8 +11067,7 @@ class ItemForecaster:
         must be revisited.
         """
         tcol = f"target_return_{horizon}d"
-        assert self._naive_offset(train_df) is None, (
-            "_fold_q50_scores assumes the N1 offset is off; it is on")
+        assert self._naive_offset(train_df) is None, "_fold_q50_scores assumes the N1 offset is off; it is on"
         feat = train_df[self.feature_cols].replace([np.inf, -np.inf], np.nan)
         med = feat.median()
         X_tr = feat.fillna(med)
@@ -10975,14 +11091,15 @@ class ItemForecaster:
         }
         train_w = self._compute_sample_weights(train_df, horizon)
         ds = lgb.Dataset(
-            X_tr, label=train_df[tcol].to_numpy(dtype=float), weight=train_w,
-            params={"max_bin": self.MAX_BIN, "feature_pre_filter": False})
+            X_tr,
+            label=train_df[tcol].to_numpy(dtype=float),
+            weight=train_w,
+            params={"max_bin": self.MAX_BIN, "feature_pre_filter": False},
+        )
         model = lgb.train(
-            params, ds,
-            num_boost_round=self._boost_rounds(horizon, cv=True),
-            callbacks=[lgb.log_evaluation(0)])
-        X_val = val_df[self.feature_cols].replace(
-            [np.inf, -np.inf], np.nan).fillna(med)
+            params, ds, num_boost_round=self._boost_rounds(horizon, cv=True), callbacks=[lgb.log_evaluation(0)]
+        )
+        X_val = val_df[self.feature_cols].replace([np.inf, -np.inf], np.nan).fillna(med)
         return model.predict(X_val)
 
     @staticmethod
@@ -11001,8 +11118,12 @@ class ItemForecaster:
         pdir = np.where(p > tol, "up", np.where(p < -tol, "down", "flat"))
         adir = np.where(a > tol, "up", np.where(a < -tol, "down", "flat"))
         return [
-            {"predicted_direction": str(pd_), "actual_direction": str(ad),
-             "direction_correct": bool(pd_ == ad), "forecast_date": str(fd)}
+            {
+                "predicted_direction": str(pd_),
+                "actual_direction": str(ad),
+                "direction_correct": bool(pd_ == ad),
+                "forecast_date": str(fd),
+            }
             for pd_, ad, fd in zip(pdir, adir, d)
         ]
 
@@ -11027,10 +11148,12 @@ class ItemForecaster:
         a = np.asarray(actual_cls, dtype=int)
         d = pd.to_datetime(pd.Series(dates).to_numpy()).strftime("%Y-%m-%d")
         return [
-            {"predicted_direction": names[int(pc)],
-             "actual_direction": names[int(ac)],
-             "direction_correct": bool(pc == ac),
-             "forecast_date": str(fd)}
+            {
+                "predicted_direction": names[int(pc)],
+                "actual_direction": names[int(ac)],
+                "direction_correct": bool(pc == ac),
+                "forecast_date": str(fd),
+            }
             for pc, ac, fd in zip(p, a, d)
         ]
 
@@ -11054,6 +11177,7 @@ class ItemForecaster:
         subset: a horizon whose tied number rests on two dates is not a
         measurement, and nothing else in the payload would say so.
         """
+
         def _mean(key):
             vals = [m[key] for m in fold_metrics if m.get(key) is not None]
             # 4 dp: a rank IC lives in [-1, 1] and the differences that matter
@@ -11062,8 +11186,7 @@ class ItemForecaster:
             return round(float(np.mean(vals)), 4) if vals else None
 
         def _edge(model, naive):
-            return (None if (model is None or naive is None)
-                    else round(model - naive, 4))
+            return None if (model is None or naive is None) else round(model - naive, 4)
 
         mean_rank_ic = _mean("rank_ic")
         mean_naive = _mean("naive_rank_ic")
@@ -11086,15 +11209,12 @@ class ItemForecaster:
             "lr_rank_ic_edge_vs_naive_tied": _edge(mean_lr_tied, mean_naive_tied),
             "lr_rank_ic_edge_vs_q50_tied": _edge(mean_lr_tied, mean_tied),
             "tied_rows": sum(int(m.get("n_tied") or 0) for m in fold_metrics),
-            "tied_dates": sum(int(m.get("rank_ic_tied_dates") or 0)
-                              for m in fold_metrics),
-            "rank_ic_dates": sum(int(m.get("rank_ic_dates") or 0)
-                                 for m in fold_metrics),
+            "tied_dates": sum(int(m.get("rank_ic_tied_dates") or 0) for m in fold_metrics),
+            "rank_ic_dates": sum(int(m.get("rank_ic_dates") or 0) for m in fold_metrics),
         }
 
     @classmethod
-    def _within_date_rank_ic(cls, pred, actual, dates, mask=None,
-                             min_rows: int = 20) -> Optional[float]:
+    def _within_date_rank_ic(cls, pred, actual, dates, mask=None, min_rows: int = 20) -> float | None:
         """Mean within-date Spearman correlation of `pred` against `actual`.
 
         The cross-sectional metric: it measures whether the model orders items
@@ -11103,13 +11223,10 @@ class ItemForecaster:
         fewer than `min_rows` served rows, or with no variation in either leg,
         contribute nothing rather than a degenerate 0.
         """
-        return cls._within_date_rank_ic_detail(
-            pred, actual, dates, mask, min_rows)[0]
+        return cls._within_date_rank_ic_detail(pred, actual, dates, mask, min_rows)[0]
 
     @staticmethod
-    def _within_date_rank_ic_detail(pred, actual, dates, mask=None,
-                                    min_rows: int = 20
-                                    ) -> "tuple[Optional[float], int]":
+    def _within_date_rank_ic_detail(pred, actual, dates, mask=None, min_rows: int = 20) -> "tuple[float | None, int]":
         """`_within_date_rank_ic`, and the number of dates it actually read.
 
         The count is not decoration. The same `min_rows` bar applied to a
@@ -11201,8 +11318,7 @@ class ItemForecaster:
         if best_high_coverage > 0:
             high_set = df[df["range_pct"] < best_high_threshold]
             if len(high_set) > 0:
-                change_thresholds = sorted(high_set["change_pct"].quantile(
-                    [i / 10 for i in range(1, 10)]).unique())
+                change_thresholds = sorted(high_set["change_pct"].quantile([i / 10 for i in range(1, 10)]).unique())
                 for ct in change_thresholds:
                     subset = high_set[high_set["change_pct"] > ct]
                     if len(subset) >= max(20, len(high_set) * 0.3):
@@ -11226,8 +11342,7 @@ class ItemForecaster:
             f"coverage={best_high_coverage / len(df) * 100:.1f}%)"
         )
 
-    def _compute_confidence(self, mid: float, low: float, high: float, current: float,
-                             horizon: int = 7) -> str:
+    def _compute_confidence(self, mid: float, low: float, high: float, current: float, horizon: int = 7) -> str:
         """Binary confidence: high (tight interval, non-trivial move) or low."""
         if mid == 0 or current == 0:
             return "low"
@@ -11247,8 +11362,9 @@ class ItemForecaster:
     # Concept drift monitoring
     # ------------------------------------------------------------------
 
-    def check_concept_drift(self, horizon: int = 7, sliding_window: int = 7,
-                             threshold: Optional[float] = None) -> Optional[Dict]:
+    def check_concept_drift(
+        self, horizon: int = 7, sliding_window: int = 7, threshold: float | None = None
+    ) -> dict | None:
         """Check if recent prediction accuracy has dropped below threshold.
 
         Queries the last `sliding_window` days of forecast backtest results and
@@ -11265,11 +11381,11 @@ class ItemForecaster:
         docs/superpowers/specs/2026-08-04-remove-accidental-retrain-work-design.md
         """
         threshold = self.DRIFT_DA_THRESHOLD if threshold is None else threshold
-        from database import PredictionAccuracy, AccuracyAlert
-        from sqlalchemy import desc
+        from database import AccuracyAlert
 
         cutoff = (self._now() - timedelta(days=sliding_window * 2)).strftime("%Y-%m-%d")
-        records = self.db.execute(text("""
+        records = self.db.execute(
+            text("""
             SELECT evaluation_date, metrics
             FROM prediction_accuracy
             WHERE prediction_type = 'forecast'
@@ -11277,7 +11393,9 @@ class ItemForecaster:
               AND evaluation_date >= :cutoff
             ORDER BY evaluation_date DESC
             LIMIT :limit
-        """), {"horizon": horizon, "cutoff": cutoff, "limit": sliding_window}).fetchall()
+        """),
+            {"horizon": horizon, "cutoff": cutoff, "limit": sliding_window},
+        ).fetchall()
 
         if not records:
             return None
@@ -11307,18 +11425,24 @@ class ItemForecaster:
             return None
 
         recent_avg = sum(accuracies) / len(accuracies)
-        logger.info(f"  Drift check ({horizon}d, {len(accuracies)} windows): "
-                     f"avg_acc={recent_avg:.1f}%, threshold={threshold:.1f}%")
+        logger.info(
+            f"  Drift check ({horizon}d, {len(accuracies)} windows): "
+            f"avg_acc={recent_avg:.1f}%, threshold={threshold:.1f}%"
+        )
 
         if recent_avg >= threshold:
             # Resolve any open alert
-            open_alert = self.db.query(AccuracyAlert).filter(
-                AccuracyAlert.prediction_type == "forecast",
-                AccuracyAlert.horizon_days == horizon,
-                AccuracyAlert.resolved_at.is_(None),
-            ).first()
+            open_alert = (
+                self.db.query(AccuracyAlert)
+                .filter(
+                    AccuracyAlert.prediction_type == "forecast",
+                    AccuracyAlert.horizon_days == horizon,
+                    AccuracyAlert.resolved_at.is_(None),
+                )
+                .first()
+            )
             if open_alert:
-                open_alert.resolved_at = datetime.now(timezone.utc).replace(tzinfo=None)
+                open_alert.resolved_at = datetime.now(UTC).replace(tzinfo=None)
                 self.db.commit()
                 logger.info(f"  Drift resolved: accuracy back to {recent_avg:.1f}%")
             return {"drifted": False, "accuracy": recent_avg, "threshold": threshold}
@@ -11331,13 +11455,12 @@ class ItemForecaster:
             current_accuracy=round(recent_avg, 2),
             threshold_accuracy=threshold,
             sample_count=len(accuracies),
-            triggered_at=datetime.now(timezone.utc).replace(tzinfo=None),
+            triggered_at=datetime.now(UTC).replace(tzinfo=None),
             details={"window_accuracies": accuracies},
         )
         self.db.add(alert)
         self.db.commit()
-        logger.warning(f"  DRIFT DETECTED ({horizon}d): accuracy={recent_avg:.1f}% "
-                        f"below threshold={threshold:.1f}%")
+        logger.warning(f"  DRIFT DETECTED ({horizon}d): accuracy={recent_avg:.1f}% below threshold={threshold:.1f}%")
         return {"drifted": True, "accuracy": recent_avg, "threshold": threshold}
 
     # ------------------------------------------------------------------
@@ -11349,26 +11472,20 @@ class ItemForecaster:
         for (horizon, q), ensemble in self.models.items():
             if isinstance(ensemble, list):
                 for ei, model in enumerate(ensemble):
-                    path = os.path.join(self.model_dir, f"lgb_{horizon}d_q{int(q*100)}_e{ei}.txt")
+                    path = os.path.join(self.model_dir, f"lgb_{horizon}d_q{int(q * 100)}_e{ei}.txt")
                     model.save_model(path)
             else:
-                path = os.path.join(self.model_dir, f"lgb_{horizon}d_q{int(q*100)}.txt")
+                path = os.path.join(self.model_dir, f"lgb_{horizon}d_q{int(q * 100)}.txt")
                 ensemble.save_model(path)
 
         # Save regime-specific models
         for (regime, horizon, q), ensemble in self.regime_models.items():
             if isinstance(ensemble, list):
                 for ei, model in enumerate(ensemble):
-                    path = os.path.join(
-                        self.model_dir,
-                        f"lgb_{horizon}d_q{int(q*100)}_{regime}_e{ei}.txt"
-                    )
+                    path = os.path.join(self.model_dir, f"lgb_{horizon}d_q{int(q * 100)}_{regime}_e{ei}.txt")
                     model.save_model(path)
             else:
-                path = os.path.join(
-                    self.model_dir,
-                    f"lgb_{horizon}d_q{int(q*100)}_{regime}.txt"
-                )
+                path = os.path.join(self.model_dir, f"lgb_{horizon}d_q{int(q * 100)}_{regime}.txt")
                 ensemble.save_model(path)
 
         # Save learned band-scale models. One per horizon, and it travels with
@@ -11376,8 +11493,7 @@ class ItemForecaster:
         # calibrated against a learned scale is in that scale's units, so an
         # artifact carrying one without the other serves an unrelated band.
         for horizon, booster in self.scale_models.items():
-            booster.save_model(
-                os.path.join(self.model_dir, f"scale_{horizon}d.txt"))
+            booster.save_model(os.path.join(self.model_dir, f"scale_{horizon}d.txt"))
         if self.scale_models:
             logger.info(f"  Saved {len(self.scale_models)} learned scale models")
         # And remove any that this run did not produce, for the same reason the
@@ -11419,8 +11535,7 @@ class ItemForecaster:
         _n_sk = 0
         for horizon, model in self.shrink_k_models.items():
             if model is not None:
-                model.save_model(os.path.join(
-                    self.model_dir, f"shrink_k_{horizon}d.txt"))
+                model.save_model(os.path.join(self.model_dir, f"shrink_k_{horizon}d.txt"))
                 _n_sk += 1
         if _n_sk:
             logger.info(f"  Saved {_n_sk} shrink-K models")
@@ -11429,8 +11544,7 @@ class ItemForecaster:
         _n_vr = 0
         for horizon, ensemble in self.vol_rank_models.items():
             for ei, model in enumerate(ensemble):
-                path = os.path.join(
-                    self.model_dir, f"vol_rank_{horizon}d_e{ei}.txt")
+                path = os.path.join(self.model_dir, f"vol_rank_{horizon}d_e{ei}.txt")
                 model.save_model(path)
             _n_vr += 1
         if _n_vr:
@@ -11439,8 +11553,7 @@ class ItemForecaster:
             if horizon in self.vol_rank_models:
                 continue
             for ei in range(self.N_ENSEMBLES):
-                stale = os.path.join(
-                    self.model_dir, f"vol_rank_{horizon}d_e{ei}.txt")
+                stale = os.path.join(self.model_dir, f"vol_rank_{horizon}d_e{ei}.txt")
                 if os.path.exists(stale):
                     os.remove(stale)
 
@@ -11449,16 +11562,18 @@ class ItemForecaster:
         # regime-free (SKIP_REGIMES) run would leave stale regime artifacts
         # behind, which load_models would then drag forward indefinitely.
         import glob as _glob
+
         expected = set()
         for (regime, horizon, q), ensemble in self.regime_models.items():
             members = ensemble if isinstance(ensemble, list) else [ensemble]
             for ei in range(len(members)):
-                expected.add(f"lgb_{horizon}d_q{int(q*100)}_{regime}_e{ei}.txt")
-            expected.add(f"lgb_{horizon}d_q{int(q*100)}_{regime}.txt")
+                expected.add(f"lgb_{horizon}d_q{int(q * 100)}_{regime}_e{ei}.txt")
+            expected.add(f"lgb_{horizon}d_q{int(q * 100)}_{regime}.txt")
         removed = 0
         for regime in self.REGIMES:
-            for path in _glob.glob(os.path.join(self.model_dir, f"lgb_*_{regime}_*.txt")) \
-                    + _glob.glob(os.path.join(self.model_dir, f"lgb_*_{regime}.txt")):
+            for path in _glob.glob(os.path.join(self.model_dir, f"lgb_*_{regime}_*.txt")) + _glob.glob(
+                os.path.join(self.model_dir, f"lgb_*_{regime}.txt")
+            ):
                 if os.path.basename(path) not in expected:
                     os.remove(path)
                     removed += 1
@@ -11469,12 +11584,10 @@ class ItemForecaster:
         thresholds_serial = {}
         for horizon, th in self.confidence_thresholds.items():
             thresholds_serial[str(horizon)] = {
-                k: float(v) if isinstance(v, (np.floating, np.integer)) else v
-                for k, v in th.items()
+                k: float(v) if isinstance(v, (np.floating, np.integer)) else v for k, v in th.items()
             }
         medians = self.feature_medians.to_dict() if not self.feature_medians.empty else {}
-        medians_serial = {k: (float(v) if isinstance(v, (np.floating, np.integer)) else v)
-                          for k, v in medians.items()}
+        medians_serial = {k: (float(v) if isinstance(v, (np.floating, np.integer)) else v) for k, v in medians.items()}
         # Compute feature importance for each horizon (average over quantiles/ensembles)
         feature_importance = {}
         for horizon in self.HORIZONS:
@@ -11575,8 +11688,7 @@ class ItemForecaster:
             "shrink_k_gbm": self.shrink_k_gbm_enabled(),
             "vol_rank_gbm": self.vol_rank_gbm_enabled(),
             "vol_rank_norm": {str(h): v for h, v in self.vol_rank_norm.items()},
-            "climatology_scale_tables": {
-                str(h): cfg for h, cfg in self.climatology_scale.items()},
+            "climatology_scale_tables": {str(h): cfg for h, cfg in self.climatology_scale.items()},
             # WHICH K built those tables. Deliberately NOT folded into
             # MODEL_ARTIFACT_VERSION: an artifact written before this key is
             # otherwise byte-identical, so bumping would force a needless
@@ -11591,9 +11703,7 @@ class ItemForecaster:
             "label_smoothed_anchor": self.label_smoothed_anchor_enabled(),
             "sigma_clip": dict(self.sigma_clip),
             "feature_cols": self.feature_cols,
-            "horizon_feature_cols": {
-                str(h): cols for h, cols in self.horizon_feature_cols.items()
-            },
+            "horizon_feature_cols": {str(h): cols for h, cols in self.horizon_feature_cols.items()},
             "regime_feature_cols": regime_cols_serial,
             "trained_regimes": trained_regimes,
             "regime_threshold_bear": self.REGIME_RETURN_THRESHOLD_BEAR,
@@ -11607,9 +11717,7 @@ class ItemForecaster:
             # must not be able to emit one without the other. Always populated —
             # an explicit 1.0 is auditable where a missing key is ambiguous about
             # whether the run had the flag off or predates the field.
-            "conformal_beta": {
-                str(h): self.band_beta(h) for h in self.conformal_calibration
-            },
+            "conformal_beta": {str(h): self.band_beta(h) for h in self.conformal_calibration},
             # The signed offsets `predict` serves, a matched set with the beta
             # above and the same rows q_hat was fit on. Written beside q_hat, and
             # loaded through `band_offsets`, which reconstructs the symmetric
@@ -11619,9 +11727,7 @@ class ItemForecaster:
             # Served-outcome feedback multiplier per horizon. Only horizons past the
             # MIN_FORECAST_DATES gate appear; a missing horizon (all of them today)
             # loads as 1.0, byte-identical to the pre-feedback band.
-            "served_coverage_factor": {
-                str(h): float(v) for h, v in self.served_coverage_factor.items()
-            },
+            "served_coverage_factor": {str(h): float(v) for h, v in self.served_coverage_factor.items()},
             # The learned scale, and the same matched-pair argument one step
             # further: `conformal_beta` decides how hard to damp `sigma`, this
             # decides whether `sigma` is the variable at all. A q_hat calibrated
@@ -11632,8 +11738,7 @@ class ItemForecaster:
             "learned_scale": {
                 str(h): {
                     "norm": float(self.scale_norm.get(h, 1.0)),
-                    "clip": [float(self.scale_clip[h][0]),
-                             float(self.scale_clip[h][1])],
+                    "clip": [float(self.scale_clip[h][0]), float(self.scale_clip[h][1])],
                     # The exact column order the booster was fitted on.
                     # `band_scale` refuses to score a frame that does not match
                     # it: the wrong columns give a plausible number from the
@@ -11664,6 +11769,7 @@ class ItemForecaster:
             "tuned_params": tuned_serial,
             "label_voiding": self.label_voiding,
         }
+
         def _json_default(o):
             if isinstance(o, np.bool_):
                 return bool(o)
@@ -11734,10 +11840,14 @@ class ItemForecaster:
                 ys = [float(v) for v in cfg.get("ys", [])]
             except (ValueError, TypeError):
                 continue
-            if (len(xs) != len(ys) or len(xs) == 0
-                    or any(not np.isfinite(v) for v in xs + ys)
-                    or any(b < a for a, b in zip(xs, xs[1:]))
-                    or min(ys) < 0.0 or max(ys) > 1.0):
+            if (
+                len(xs) != len(ys)
+                or len(xs) == 0
+                or any(not np.isfinite(v) for v in xs + ys)
+                or any(b < a for a, b in zip(xs, xs[1:]))
+                or min(ys) < 0.0
+                or max(ys) > 1.0
+            ):
                 logger.warning(
                     f"  Dropping corrupt exceedance calibrator for {h_str}d "
                     f"({len(xs)} points) — serving the raw head output."
@@ -11758,17 +11868,13 @@ class ItemForecaster:
         self._artifact_anomaly_gbm = meta.get("anomaly_gbm")
         self._artifact_shrink_k_gbm = meta.get("shrink_k_gbm")
         self._artifact_vol_rank_gbm = meta.get("vol_rank_gbm")
-        self.vol_rank_norm = {
-            int(h): float(v)
-            for h, v in meta.get("vol_rank_norm", {}).items()
-        }
+        self.vol_rank_norm = {int(h): float(v) for h, v in meta.get("vol_rank_norm", {}).items()}
         # Rebuild the climatology lookup with the int keys the accessors expect
         # (JSON coerces tier keys to strings; item keys are already strings).
         self.climatology_scale = {
             int(h): {
                 "table": dict(cfg.get("table", {})),
-                "tier_pool": {int(t): float(v)
-                              for t, v in cfg.get("tier_pool", {}).items()},
+                "tier_pool": {int(t): float(v) for t, v in cfg.get("tier_pool", {}).items()},
                 "global": float(cfg.get("global", float("nan"))),
             }
             for h, cfg in meta.get("climatology_scale_tables", {}).items()
@@ -11807,36 +11913,25 @@ class ItemForecaster:
         # _check_artifact_version has already confirmed this artifact is the
         # minimal-model scheme, so a missing key here means the artifact is
         # corrupt, not that an older field name should be defaulted around.
-        self.conformal_calibration = {
-            int(h): float(q) for h, q in meta["conformal_calibration"].items()
-        }
+        self.conformal_calibration = {int(h): float(q) for h, q in meta["conformal_calibration"].items()}
         self.sigma_clip = {k: float(v) for k, v in meta["sigma_clip"].items()}
         # The ONE non-provenance field that is loaded with `.get`, and the reason
         # is the opposite of laxness: every artifact written before 2026-08-12
         # lacks the key, and 1.0 is precisely the exponent those q_hats were
         # calibrated at, so defaulting reproduces their band exactly. A NaN or a
         # missing horizon resolves through `band_beta`, never into a half-width.
-        self.conformal_beta = {
-            int(h): float(b) for h, b in meta.get("conformal_beta", {}).items()
-        }
+        self.conformal_beta = {int(h): float(b) for h, b in meta.get("conformal_beta", {}).items()}
         # The signed offsets. `.get` default {} for the same reason as
         # `conformal_beta`: absent on every artifact before 2026-08-19, and
         # absence means the symmetric (-q_hat, +q_hat) band, which `band_offsets`
         # reconstructs. Loaded as a pair; a horizon with one leg but not the
         # other would fall back through the finiteness check in `band_offsets`.
-        self.conformal_q_lo = {
-            int(h): float(v) for h, v in meta.get("conformal_q_lo", {}).items()
-        }
-        self.conformal_q_hi = {
-            int(h): float(v) for h, v in meta.get("conformal_q_hi", {}).items()
-        }
+        self.conformal_q_lo = {int(h): float(v) for h, v in meta.get("conformal_q_lo", {}).items()}
+        self.conformal_q_hi = {int(h): float(v) for h, v in meta.get("conformal_q_hi", {}).items()}
         # Served-outcome feedback multiplier. `.get` default {}: absent on every
         # artifact before this feature and on every horizon below the data gate, and
         # absence means 1.0 (no correction) through served_qhat_multiplier.
-        self.served_coverage_factor = {
-            int(h): float(v)
-            for h, v in meta.get("served_coverage_factor", {}).items()
-        }
+        self.served_coverage_factor = {int(h): float(v) for h, v in meta.get("served_coverage_factor", {}).items()}
         # The learned scale, restored as a unit. `.get` for the same reason as
         # `conformal_beta`: absent on every artifact before 2026-08-12, and
         # absence means "this q_hat was calibrated against sigma", which
@@ -11860,8 +11955,7 @@ class ItemForecaster:
             self.scale_models[int(h)] = lgb.Booster(model_file=path)
             self.scale_norm[int(h)] = float(cfg.get("norm", 1.0))
             clip = cfg.get("clip")
-            self.scale_clip[int(h)] = (None if not clip
-                                       else (float(clip[0]), float(clip[1])))
+            self.scale_clip[int(h)] = None if not clip else (float(clip[0]), float(clip[1]))
             self.scale_features[int(h)] = list(cfg.get("features", []))
         if self.scale_models:
             logger.info(
@@ -11873,15 +11967,11 @@ class ItemForecaster:
         # conformal_calibration alone, and every artifact written before
         # 2026-08-11 lacks this key. An empty dict means "this artifact does not
         # say which mid its q_hat covers" — which is itself the honest answer.
-        self.conformal_centre = {
-            int(h): str(c) for h, c in meta.get("conformal_centre", {}).items()
-        }
+        self.conformal_centre = {int(h): str(c) for h, c in meta.get("conformal_centre", {}).items()}
         # Same contract, same reason: absent on every artifact written before
         # 2026-08-12, and an artifact that does not say is not the same as one
         # that says "raw_anchor".
-        self.conformal_basis = {
-            int(h): str(b) for h, b in meta.get("conformal_basis", {}).items()
-        }
+        self.conformal_basis = {int(h): str(b) for h, b in meta.get("conformal_basis", {}).items()}
 
         n_ensembles = meta.get("n_ensembles", 1)
 
@@ -11897,7 +11987,7 @@ class ItemForecaster:
                 # files from the 40-model grid out of the ensemble.
                 ensemble = []
                 for ei in range(max(1, n_ensembles)):
-                    path = os.path.join(self.model_dir, f"lgb_{horizon}d_q{int(q*100)}_e{ei}.txt")
+                    path = os.path.join(self.model_dir, f"lgb_{horizon}d_q{int(q * 100)}_e{ei}.txt")
                     if os.path.exists(path):
                         try:
                             ensemble.append(lgb.Booster(model_file=path))
@@ -11908,7 +11998,7 @@ class ItemForecaster:
                     continue
                 # Unsuffixed fallback: save_models still emits this name if a
                 # bare Booster (not a list) is ever assigned to self.models.
-                path = os.path.join(self.model_dir, f"lgb_{horizon}d_q{int(q*100)}.txt")
+                path = os.path.join(self.model_dir, f"lgb_{horizon}d_q{int(q * 100)}.txt")
                 if os.path.exists(path):
                     try:
                         self.models[(horizon, q)] = lgb.Booster(model_file=path)
@@ -11934,10 +12024,7 @@ class ItemForecaster:
                 for q in self.QUANTILES:
                     ensemble = []
                     for ei in range(n_ensembles):
-                        path = os.path.join(
-                            self.model_dir,
-                            f"lgb_{horizon}d_q{int(q*100)}_{regime}_e{ei}.txt"
-                        )
+                        path = os.path.join(self.model_dir, f"lgb_{horizon}d_q{int(q * 100)}_{regime}_e{ei}.txt")
                         if os.path.exists(path):
                             try:
                                 ensemble.append(lgb.Booster(model_file=path))
@@ -11994,19 +12081,16 @@ class ItemForecaster:
         for horizon in self.HORIZONS:
             ensemble = []
             for ei in range(self.N_ENSEMBLES):
-                vpath = os.path.join(
-                    self.model_dir, f"vol_rank_{horizon}d_e{ei}.txt")
+                vpath = os.path.join(self.model_dir, f"vol_rank_{horizon}d_e{ei}.txt")
                 if os.path.exists(vpath):
                     try:
                         ensemble.append(lgb.Booster(model_file=vpath))
                     except (lgb.basic.LightGBMError, Exception) as e:
-                        logger.warning(
-                            f"  Corrupt vol-rank model {vpath}, skipping: {e}")
+                        logger.warning(f"  Corrupt vol-rank model {vpath}, skipping: {e}")
             if ensemble:
                 self.vol_rank_models[horizon] = ensemble
         if self.vol_rank_models:
-            logger.info(
-                f"  Loaded {len(self.vol_rank_models)} vol-rank models")
+            logger.info(f"  Loaded {len(self.vol_rank_models)} vol-rank models")
 
         # Build per-horizon feature sets from the loaded models.
         # Each model internally stores the feature names it was trained with.
@@ -12023,8 +12107,10 @@ class ItemForecaster:
         total_groups = len(self.models) + len(self.regime_models)
         if self.regime_models:
             regimes_found = set(r for (r, h, q) in self.regime_models.keys())
-            logger.info(f"Loaded {len(self.models)} global + {len(self.regime_models)} regime "
-                        f"model groups ({regimes_found}) from {self.model_dir}")
+            logger.info(
+                f"Loaded {len(self.models)} global + {len(self.regime_models)} regime "
+                f"model groups ({regimes_found}) from {self.model_dir}"
+            )
         else:
             logger.info(f"Loaded {total_groups} model groups from {self.model_dir}")
         return total_groups > 0

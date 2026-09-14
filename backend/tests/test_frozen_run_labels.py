@@ -15,6 +15,7 @@ exact-zero return mass at h=3-14 and 31.2% at h=30; anchor-or-target reaches
 The rule is NOT neutral: 13.7-15.9% of the >=$1 labels it voids carry a
 non-zero return. See `docs/superpowers/specs/2026-08-08-frozen-price-runs-design.md`.
 """
+
 from __future__ import annotations
 
 from datetime import date, timedelta
@@ -23,7 +24,6 @@ from unittest.mock import MagicMock
 import numpy as np
 import pandas as pd
 import pytest
-
 from models import forecaster as fc
 from models.forecaster import ItemForecaster
 from models.staleness import STALE_RUN_GAP_BREAK_DAYS
@@ -31,8 +31,7 @@ from models.staleness import STALE_RUN_GAP_BREAK_DAYS
 
 @pytest.fixture
 def forecaster(tmp_path_factory):
-    return ItemForecaster(db_session=MagicMock(),
-                          model_dir=str(tmp_path_factory.mktemp("saved_models")))
+    return ItemForecaster(db_session=MagicMock(), model_dir=str(tmp_path_factory.mktemp("saved_models")))
 
 
 def _panel(n_items=40, n_days=40, start=date(2026, 1, 1), seed=7):
@@ -43,9 +42,7 @@ def _panel(n_items=40, n_days=40, start=date(2026, 1, 1), seed=7):
         price = 10.0 + i
         for d in range(n_days):
             price *= 1.0 + rng.normal(0.0, 0.01)
-            rows.append({"item_id": f"i{i}",
-                         "date": start + timedelta(days=d),
-                         "price": price})
+            rows.append({"item_id": f"i{i}", "date": start + timedelta(days=d), "price": price})
     return pd.DataFrame(rows)
 
 
@@ -53,8 +50,7 @@ def _freeze(df, item, days):
     """Carry `item`'s price forward, unchanged, across `days`."""
     df = df.copy()
     mask = (df["item_id"] == item) & (df["date"].isin(days))
-    held = df.loc[(df["item_id"] == item)
-                  & (df["date"] == min(days) - timedelta(days=1)), "price"]
+    held = df.loc[(df["item_id"] == item) & (df["date"] == min(days) - timedelta(days=1)), "price"]
     df.loc[mask, "price"] = float(held.iloc[0])
     return df
 
@@ -137,16 +133,14 @@ def test_a_gap_wider_than_the_break_breaks_the_run_rather_than_voiding(forecaste
     gap = STALE_RUN_GAP_BREAK_DAYS + 1
     rows = []
     for d in range(6):
-        rows.append({"item_id": "i0", "date": start + timedelta(days=d),
-                     "price": 10.0 + d})
+        rows.append({"item_id": "i0", "date": start + timedelta(days=d), "price": 10.0 + d})
     # One observation `gap` days after the last, at an identical price.
     resumed = start + timedelta(days=5 + gap)
     rows.append({"item_id": "i0", "date": resumed, "price": 15.0})
-    rows.append({"item_id": "i0", "date": resumed + timedelta(days=horizon),
-                 "price": 20.0})
+    rows.append({"item_id": "i0", "date": resumed + timedelta(days=horizon), "price": 20.0})
     out = ItemForecaster.prepare_targets(
-        ItemForecaster(db_session=MagicMock(), model_dir="/tmp/x"),
-        pd.DataFrame(rows), horizon=horizon)
+        ItemForecaster(db_session=MagicMock(), model_dir="/tmp/x"), pd.DataFrame(rows), horizon=horizon
+    )
 
     # `resumed` repeats 15.0 but is 8 days after it, so it is a fresh level.
     assert not pd.isna(_label(out, "i0", resumed, horizon))
@@ -177,8 +171,7 @@ def test_voiding_is_reported_in_the_log_line(forecaster, caplog):
     assert any("frozen price run" in r.message for r in caplog.records)
 
 
-def test_the_log_says_disabled_rather_than_a_count_when_the_rule_is_off(
-        forecaster, caplog, monkeypatch):
+def test_the_log_says_disabled_rather_than_a_count_when_the_rule_is_off(forecaster, caplog, monkeypatch):
     """`None` formatted into the count read as '(> Noned)', which looks like a
     threshold rather than an off switch — and the off arm is exactly the one a
     reader is checking when they scan this line."""
@@ -199,6 +192,5 @@ def test_frame_without_a_price_column_does_not_raise(forecaster):
     """prepare_targets is called on frames the caller assembled; degrade, don't crash."""
     df = _panel()[["item_id", "date"]].copy()
     df["price"] = 1.0
-    out = forecaster.prepare_targets(df.drop(columns=["price"]).assign(price=1.0),
-                                     horizon=3)
-    assert f"target_return_3d" in out.columns
+    out = forecaster.prepare_targets(df.drop(columns=["price"]).assign(price=1.0), horizon=3)
+    assert "target_return_3d" in out.columns

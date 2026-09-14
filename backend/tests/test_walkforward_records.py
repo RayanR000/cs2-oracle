@@ -5,13 +5,13 @@ owns the two conversions that are easy to get silently wrong: percent returns
 into direction_from_return's fractions, and the classifier's integer classes
 into direction labels.
 """
+
 from __future__ import annotations
 
 from datetime import date
 
 import numpy as np
 import pytest
-
 from backtest.walkforward_records import CLASS_TO_DIRECTION, fold_records
 
 
@@ -59,9 +59,9 @@ def test_prices_are_reconstructed_from_base_and_return():
     rec = fold_records(**_kwargs())[0]
     assert rec["base_price"] == pytest.approx(100.0)
     assert rec["actual_price"] == pytest.approx(102.0)
-    assert rec["abs_error"] == pytest.approx(1.0)      # mid 101 vs actual 102
+    assert rec["abs_error"] == pytest.approx(1.0)  # mid 101 vs actual 102
     assert rec["sq_error"] == pytest.approx(1.0)
-    assert rec["pct_error"] == pytest.approx(1.0)      # divided by BASE, not actual
+    assert rec["pct_error"] == pytest.approx(1.0)  # divided by BASE, not actual
 
 
 def test_in_interval_uses_price_space_band():
@@ -89,7 +89,7 @@ def test_fold_records_carry_the_prediction_leg_and_an_optional_horizon():
     """The walkforward gate scores through score_cohort, so its records need the
     same two fields — otherwise the gate silently reports out_of_scope forever."""
     rec = fold_records(**_kwargs(), horizon_days=14)[0]
-    assert rec["predicted_mid"] == pytest.approx(101.0)   # 100 * (1 + 1.0/100)
+    assert rec["predicted_mid"] == pytest.approx(101.0)  # 100 * (1 + 1.0/100)
     assert rec["horizon_days"] == 14
 
 

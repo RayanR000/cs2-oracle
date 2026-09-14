@@ -3,16 +3,16 @@ serve/train seams. The estimator itself is covered by test_served_recalibration.
 guard that predict() scales q_hat by the factor, training computes and stores it, and it
 round-trips through meta.json (no-op when absent). Real end-to-end proof waits for the data gate.
 """
+
 from __future__ import annotations
 
 import inspect
 import json
 from unittest.mock import MagicMock
 
+import models.served_recalibration as sr
 import numpy as np
 import pandas as pd
-
-import models.served_recalibration as sr
 from models.forecaster import ItemForecaster
 from models.served_recalibration import (
     CLIMATOLOGY_SERVING_START,
@@ -35,14 +35,14 @@ def test_accessor_returns_stored_factor_and_defaults_to_one(tmp_path):
     f = _f(tmp_path)
     f.served_coverage_factor = {7: 0.85}
     assert f.served_qhat_multiplier(7) == 0.85
-    assert f.served_qhat_multiplier(14) == 1.0            # absent horizon -> no-op
+    assert f.served_qhat_multiplier(14) == 1.0  # absent horizon -> no-op
 
 
 def test_accessor_guards_nonfinite_and_reclamps(tmp_path):
     f = _f(tmp_path)
     f.served_coverage_factor = {3: float("nan"), 7: 9.0, 14: -1.0}
-    assert f.served_qhat_multiplier(3) == 1.0             # NaN -> no-op
-    assert f.served_qhat_multiplier(7) == FACTOR_MAX      # re-clamped on read (defense in depth)
+    assert f.served_qhat_multiplier(3) == 1.0  # NaN -> no-op
+    assert f.served_qhat_multiplier(7) == FACTOR_MAX  # re-clamped on read (defense in depth)
     assert f.served_qhat_multiplier(14) == FACTOR_MIN
 
 
@@ -53,8 +53,7 @@ def test_factor_round_trips_through_meta_json(tmp_path):
     f.feature_medians = pd.Series({"a": 0.0})
     f.conformal_calibration = {h: 1.0 for h in f.HORIZONS}
     f.save_models()
-    assert json.loads((tmp_path / "meta.json").read_text())["served_coverage_factor"] == {
-        "3": 0.9, "7": 1.1}
+    assert json.loads((tmp_path / "meta.json").read_text())["served_coverage_factor"] == {"3": 0.9, "7": 1.1}
 
     g = _f(tmp_path)
     g.load_models()
@@ -94,6 +93,7 @@ def test_feedback_is_dormant_when_the_cutover_is_unset(_stub=None):
     panel — the whole store would be pre-signed-band geometry. A session whose every attribute
     access raises proves the panel is not touched. (The shipped default is now a real date; the
     dormancy is a property of since=None, exercised here explicitly.)"""
+
     class _Exploding:
         def __getattr__(self, name):
             raise AssertionError(f"panel was read ({name}) while feedback should be dormant")
@@ -104,11 +104,9 @@ def test_feedback_is_dormant_when_the_cutover_is_unset(_stub=None):
 def test_shipped_cutover_is_a_parseable_date(_stub=None):
     """The deployed defaults must be valid ISO dates (or None) — a typo here would silently
     filter every row out and keep the feedback dormant forever."""
-    import numpy as np
-    for start in (SIGNED_BAND_SERVING_START, CLIMATOLOGY_SERVING_START,
-                  sr.SHRINK_K_SERVING_START):
+    for start in (SIGNED_BAND_SERVING_START, CLIMATOLOGY_SERVING_START, sr.SHRINK_K_SERVING_START):
         if start is not None:
-            np.datetime64(start)                              # raises on a malformed date
+            np.datetime64(start)  # raises on a malformed date
 
 
 def test_geometry_floor_takes_the_latest_cutover(monkeypatch):
@@ -147,6 +145,7 @@ def test_default_since_floors_the_panel_to_the_latest_cutover(monkeypatch):
     def _capture(session, horizons, *, since=None):
         seen["since"] = since
         import pandas as pd
+
         return pd.DataFrame(columns=list(sr.PANEL_COLUMNS))
 
     monkeypatch.setattr(sr, "_load_panel", _capture)

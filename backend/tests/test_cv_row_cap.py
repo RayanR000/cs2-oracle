@@ -8,6 +8,7 @@ These tests pin the cap and, more importantly, pin what it must NOT touch: the
 fold count, the validation rows, and the OOF record count are the sample size of
 q_hat, mean_rank_ic and the PT statistic.
 """
+
 from __future__ import annotations
 
 import os
@@ -15,8 +16,6 @@ from unittest.mock import MagicMock, patch
 
 import numpy as np
 import pandas as pd
-import pytest
-
 from models.forecaster import ItemForecaster
 
 
@@ -38,17 +37,19 @@ def _frame(n_items=40, n_dates=120, horizon=3, seed=7):
     start = pd.Timestamp("2025-01-01")
     for item in range(n_items):
         for d in range(n_dates):
-            rows.append({
-                "item_id": f"item-{item}",
-                "date": start + pd.Timedelta(days=d),
-                # _cv_evaluate_horizon reads val_df["price"] to build the
-                # conformal records; it is not a feature.
-                "price": 10.0 + rng.normal(scale=0.5),
-                "f0": rng.normal(),
-                "f1": rng.normal(),
-                "price_tier": 2,
-                f"target_return_{horizon}d": rng.normal(scale=0.05),
-            })
+            rows.append(
+                {
+                    "item_id": f"item-{item}",
+                    "date": start + pd.Timedelta(days=d),
+                    # _cv_evaluate_horizon reads val_df["price"] to build the
+                    # conformal records; it is not a feature.
+                    "price": 10.0 + rng.normal(scale=0.5),
+                    "f0": rng.normal(),
+                    "f1": rng.normal(),
+                    "price_tier": 2,
+                    f"target_return_{horizon}d": rng.normal(scale=0.05),
+                }
+            )
     return pd.DataFrame(rows)
 
 
@@ -67,8 +68,7 @@ def test_fold_train_rows_are_capped(tmp_path):
     f = _forecaster(tmp_path, ["f0", "f1"])
     seen = []
     with patch.dict(os.environ, {"CV_MAX_TRAIN_ROWS": "500"}):
-        with patch.object(ItemForecaster, "_record_cv_fold_train_rows",
-                          side_effect=seen.append, create=True):
+        with patch.object(ItemForecaster, "_record_cv_fold_train_rows", side_effect=seen.append, create=True):
             f._cv_evaluate_horizon(_frame(), 3, {0.5: {"objective": "quantile"}})
     assert seen, "no folds ran"
     assert max(seen) <= 500

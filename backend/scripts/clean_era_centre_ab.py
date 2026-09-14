@@ -34,26 +34,26 @@ Usage:
     python -m scripts.clean_era_centre_ab --frame-cache /tmp/cec_frame.parquet \\
         --horizon 14 --out /tmp/cec_h14.json
 """
+
 from __future__ import annotations
 
+import hashlib
+import json
+import logging
 import os
 import sys
-import json
-import hashlib
-import logging
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
+import lightgbm as lgb
 import numpy as np
 import pandas as pd
-import lightgbm as lgb
-
 from database import SessionLocal
-from models.forecaster import ItemForecaster, ANCHOR_TIED_COL
 from db.archive import prices_relation
+from models.forecaster import ANCHOR_TIED_COL, ItemForecaster
 from models.item_parser import archive_universe_sql_filter
-from scripts.ab_test_item_metadata import assign_items, _stratified_sample
+from scripts.ab_test_item_metadata import _stratified_sample, assign_items
 
 logging.basicConfig(
     level=logging.INFO,
@@ -88,9 +88,21 @@ ARMS = ("model", "placebo")
 def _frame_fingerprint():
     src = Path(__file__).parent.parent / "models" / "forecaster.py"
     h = hashlib.sha256(src.read_bytes())
-    h.update(repr((PANEL_START, PANEL_END, MIN_MEDIAN_PRICE, MIN_ITEM_DAYS,
-                   N_TRAIN_ITEMS, ROW_BUDGET, VAL_WINDOW_DAYS, STEP_DAYS,
-                   FOLD_START)).encode())
+    h.update(
+        repr(
+            (
+                PANEL_START,
+                PANEL_END,
+                MIN_MEDIAN_PRICE,
+                MIN_ITEM_DAYS,
+                N_TRAIN_ITEMS,
+                ROW_BUDGET,
+                VAL_WINDOW_DAYS,
+                STEP_DAYS,
+                FOLD_START,
+            )
+        ).encode()
+    )
     return h.hexdigest()[:16]
 
 
@@ -103,6 +115,7 @@ def load_2025_voted():
     2-source average the ceiling measurement characterises).
     """
     import duckdb
+
     con = duckdb.connect()
     try:
         rel = prices_relation(con)
@@ -122,22 +135,22 @@ def load_2025_voted():
     med = rows.groupby("item_slug")["price"].median()
     days = rows.groupby("item_slug")["day"].nunique()
     keep = set(med[(med >= MIN_MEDIAN_PRICE) & (days >= MIN_ITEM_DAYS)].index)
-    logger.info(f"  2025 rows: {len(rows):,} / {rows['item_slug'].nunique():,} items; "
-                f"universe >=${MIN_MEDIAN_PRICE:.0f} + >={MIN_ITEM_DAYS}d: "
-                f"{len(keep):,} items")
+    logger.info(
+        f"  2025 rows: {len(rows):,} / {rows['item_slug'].nunique():,} items; "
+        f"universe >=${MIN_MEDIAN_PRICE:.0f} + >={MIN_ITEM_DAYS}d: "
+        f"{len(keep):,} items"
+    )
     if len(keep) < N_TRAIN_ITEMS + 150:
         raise SystemExit(
-            f"universe {len(keep)} items cannot fill "
-            f"{N_TRAIN_ITEMS} train + 150 held-out — panel UNDERPOWERED, void.")
+            f"universe {len(keep)} items cannot fill {N_TRAIN_ITEMS} train + 150 held-out — panel UNDERPOWERED, void."
+        )
     rows = rows[rows["item_slug"].isin(keep)].copy()
-    rows = rows.rename(columns={"item_slug": "item_id", "day": "date",
-                                "mean_price": "price"})
-    voted = ItemForecaster._apply_multi_source_voting(
-        rows[["item_id", "date", "source", "price", "volume"]])
+    rows = rows.rename(columns={"item_slug": "item_id", "day": "date", "mean_price": "price"})
+    voted = ItemForecaster._apply_multi_source_voting(rows[["item_id", "date", "source", "price", "volume"]])
     voted["date"] = pd.to_datetime(voted["date"])
-    logger.info(f"  voted frame: {len(voted):,} rows, "
-                f"{voted['item_id'].nunique():,} items, "
-                f"{voted['date'].nunique():,} days")
+    logger.info(
+        f"  voted frame: {len(voted):,} rows, {voted['item_id'].nunique():,} items, {voted['date'].nunique():,} days"
+    )
     return voted
 
 
@@ -150,7 +163,8 @@ def build_frame(cache_path=None):
             if meta.get("fingerprint") != _frame_fingerprint():
                 raise SystemExit(
                     f"Frame cache {cache_path} was built from different code "
-                    f"or constants. Rebuild with --build-cache-only.")
+                    f"or constants. Rebuild with --build-cache-only."
+                )
             df = pd.read_parquet(cache_path)
             logger.info(f"  Loaded cached frame {cache_path} ({len(df):,} rows)")
             return df, meta["features"]
@@ -161,24 +175,20 @@ def build_frame(cache_path=None):
         voted = load_2025_voted()
         all_prices = voted.rename(columns={"date": "timestamp"})
         all_prices["date"] = all_prices["timestamp"].dt.date
-        all_prices = all_prices.sort_values(
-            ["item_id", "timestamp"], kind="stable").reset_index(drop=True)
+        all_prices = all_prices.sort_values(["item_id", "timestamp"], kind="stable").reset_index(drop=True)
         logger.info(f"  Loaded {len(all_prices):,} voted price rows")
         df = forecaster.engineer_features(all_prices, events_df)
         df = forecaster._add_cross_sectional_features(df)
-        exclude = {"item_id", "date", "timestamp", "price", "volume",
-                   "name", "release_date"}
+        exclude = {"item_id", "date", "timestamp", "price", "volume", "name", "release_date"}
         numeric = (np.float64, np.float32, np.int64, int, float)
-        all_cols = [c for c in df.columns
-                    if c not in exclude and df[c].dtype in numeric]
+        all_cols = [c for c in df.columns if c not in exclude and df[c].dtype in numeric]
         kept = [c for c in all_cols if c not in ItemForecaster.SHELVED_FEATURES]
-        features = ItemForecaster._apply_feature_allowlist(
-            kept, ItemForecaster.FEATURE_GROUP_ALLOWLIST)
-        logger.info(f"  Features: {len(all_cols)} -> {len(features)} "
-                    f"after shelving + allowlist (no corr prune: served set)")
+        features = ItemForecaster._apply_feature_allowlist(kept, ItemForecaster.FEATURE_GROUP_ALLOWLIST)
+        logger.info(
+            f"  Features: {len(all_cols)} -> {len(features)} after shelving + allowlist (no corr prune: served set)"
+        )
         if NAIVE_COL not in features:
-            raise SystemExit(
-                f"{NAIVE_COL} not in the allowlisted set — naive arm undefined.")
+            raise SystemExit(f"{NAIVE_COL} not in the allowlisted set — naive arm undefined.")
         df = df[["item_id", "date", "price"] + features].copy()
     finally:
         db.close()
@@ -186,10 +196,15 @@ def build_frame(cache_path=None):
         tmp_frame = cache_path.with_suffix(f".{os.getpid()}.tmp.parquet")
         tmp_meta = cache_path.with_suffix(f".{os.getpid()}.tmp.json")
         df.to_parquet(tmp_frame, index=False)
-        tmp_meta.write_text(json.dumps({
-            "fingerprint": _frame_fingerprint(),
-            "features": features, "rows": len(df),
-        }))
+        tmp_meta.write_text(
+            json.dumps(
+                {
+                    "fingerprint": _frame_fingerprint(),
+                    "features": features,
+                    "rows": len(df),
+                }
+            )
+        )
         os.replace(tmp_frame, cache_path)
         os.replace(tmp_meta, cache_path.with_suffix(".meta.json"))
         logger.info(f"  Wrote frame cache {cache_path} ({len(df):,} rows)")
@@ -236,8 +251,7 @@ def per_date_ic(dates, pred, actual):
     out = {}
     for d in sorted(set(dates)):
         m = np.asarray(dates) == d
-        out[str(d)] = _spearman(np.asarray(pred, dtype=float)[m],
-                                np.asarray(actual, dtype=float)[m])
+        out[str(d)] = _spearman(np.asarray(pred, dtype=float)[m], np.asarray(actual, dtype=float)[m])
     return {d: v for d, v in out.items() if v is not None}
 
 
@@ -249,11 +263,13 @@ def bootstrap_ci(values, n=N_BOOTSTRAP, seed=BOOT_SEED):
         return None
     rng = np.random.default_rng(seed)
     arr = np.array([values[d] for d in dates], dtype=float)
-    means = np.array([arr[rng.integers(0, len(arr), len(arr))].mean()
-                      for _ in range(n)])
-    return {"n_dates": len(dates), "mean": round(float(arr.mean()), 5),
-            "ci_low": round(float(np.percentile(means, 2.5)), 5),
-            "ci_high": round(float(np.percentile(means, 97.5)), 5)}
+    means = np.array([arr[rng.integers(0, len(arr), len(arr))].mean() for _ in range(n)])
+    return {
+        "n_dates": len(dates),
+        "mean": round(float(arr.mean()), 5),
+        "ci_low": round(float(np.percentile(means, 2.5)), 5),
+        "ci_high": round(float(np.percentile(means, 97.5)), 5),
+    }
 
 
 def paired_delta_ci(a, b, n=N_BOOTSTRAP, seed=BOOT_SEED):
@@ -298,17 +314,16 @@ def run(df, features, horizon_filter=None, max_folds=None, n_jobs=None):
     if n_jobs is None:
         n_jobs = max(1, (os.cpu_count() or 4) // 2)
     if ItemForecaster.label_smoothed_anchor_enabled():
-        raise SystemExit("LABEL_SMOOTHED_ANCHOR is on: label basis is not the "
-                         "pre-registered raw composite. Refusing to run.")
+        raise SystemExit(
+            "LABEL_SMOOTHED_ANCHOR is on: label basis is not the pre-registered raw composite. Refusing to run."
+        )
     eval_items, train_items, trained_eval = assign_items(df)
-    set_eval, set_train, set_trained = (set(eval_items), set(train_items),
-                                        set(trained_eval))
+    set_eval, set_train, set_trained = (set(eval_items), set(train_items), set(trained_eval))
 
     db = SessionLocal()
     forecaster = ItemForecaster(db_session=db)
     try:
-        horizons = [h for h in ItemForecaster.HORIZONS
-                    if horizon_filter is None or h == horizon_filter]
+        horizons = [h for h in ItemForecaster.HORIZONS if horizon_filter is None or h == horizon_filter]
         results = {}
         for horizon in horizons:
             logger.info(f"\n  {'=' * 60}\n  Clean-era centre {horizon}d\n  {'=' * 60}")
@@ -322,8 +337,7 @@ def run(df, features, horizon_filter=None, max_folds=None, n_jobs=None):
             sub = sub.sort_values(["item_id", "date"]).reset_index(drop=True)
             if sub.empty:
                 continue
-            keep = (["item_id", "date", "price", tcol, ANCHOR_TIED_COL]
-                    + [c for c in features if c in sub.columns])
+            keep = ["item_id", "date", "price", tcol, ANCHOR_TIED_COL] + [c for c in features if c in sub.columns]
             sub = sub[keep].copy()
 
             dates = sorted(pd.to_datetime(sub["date"].unique()))
@@ -345,8 +359,7 @@ def run(df, features, horizon_filter=None, max_folds=None, n_jobs=None):
                 b_end = b + pd.Timedelta(days=VAL_WINDOW_DAYS)
                 in_fit = sub_days < b.to_numpy()
                 in_val = (sub_days >= b.to_numpy()) & (sub_days < b_end.to_numpy())
-                fit = ItemForecaster._purge_overlapping_train_rows(
-                    sub[in_fit & is_train_item], b, horizon)
+                fit = ItemForecaster._purge_overlapping_train_rows(sub[in_fit & is_train_item], b, horizon)
                 val = sub[in_val & (is_held | is_trained_eval)]
                 if len(val) < 50 or fit.empty:
                     continue
@@ -369,36 +382,47 @@ def run(df, features, horizon_filter=None, max_folds=None, n_jobs=None):
                         for col in feats:
                             Xf[col] = rng.permutation(Xf[col].values)
                             Xv[col] = rng.permutation(Xv[col].values)
-                    dtrain = lgb.Dataset(Xf, y_fit, params=DS_PARAMS,
-                                         free_raw_data=False)
-                    dval = lgb.Dataset(Xv, y_val, reference=dtrain,
-                                       params=DS_PARAMS, free_raw_data=False)
+                    dtrain = lgb.Dataset(Xf, y_fit, params=DS_PARAMS, free_raw_data=False)
+                    dval = lgb.Dataset(Xv, y_val, reference=dtrain, params=DS_PARAMS, free_raw_data=False)
                     params = {
-                        "objective": "quantile", "alpha": 0.5,
-                        "metric": "quantile", "boosting_type": "gbdt",
-                        "num_leaves": 31, "max_depth": 5,
-                        "min_data_in_leaf": 15, "min_gain_to_split": 0.1,
-                        "learning_rate": 0.03, "feature_fraction": 0.7,
-                        "bagging_fraction": 0.7, "bagging_freq": 5,
-                        "lambda_l1": 0.5, "lambda_l2": 0.5,
-                        "verbosity": -1, "random_state": 42, "n_jobs": n_jobs,
-                        "force_row_wise": True, **DS_PARAMS,
+                        "objective": "quantile",
+                        "alpha": 0.5,
+                        "metric": "quantile",
+                        "boosting_type": "gbdt",
+                        "num_leaves": 31,
+                        "max_depth": 5,
+                        "min_data_in_leaf": 15,
+                        "min_gain_to_split": 0.1,
+                        "learning_rate": 0.03,
+                        "feature_fraction": 0.7,
+                        "bagging_fraction": 0.7,
+                        "bagging_freq": 5,
+                        "lambda_l1": 0.5,
+                        "lambda_l2": 0.5,
+                        "verbosity": -1,
+                        "random_state": 42,
+                        "n_jobs": n_jobs,
+                        "force_row_wise": True,
+                        **DS_PARAMS,
                     }
                     booster = ItemForecaster._train_ensemble_member(
-                        params, dtrain, dval,
-                        num_boost_round=ItemForecaster._boost_rounds(
-                            horizon, cv=True),
+                        params,
+                        dtrain,
+                        dval,
+                        num_boost_round=ItemForecaster._boost_rounds(horizon, cv=True),
                         early_stopping=ItemForecaster._early_stopping_enabled(),
                     )
                     arm_pred[arm] = booster.predict(Xv)
                     if arm == "model":
-                        gain = booster.feature_importance(
-                            importance_type="gain")
+                        gain = booster.feature_importance(importance_type="gain")
                         order = np.argsort(gain)[::-1][:5]
-                        fold_gain.append({
-                            "fold": fold_idx, "val_start": str(b.date()),
-                            "top": [(feats[i], round(float(gain[i]), 1))
-                                    for i in order if gain[i] > 0]})
+                        fold_gain.append(
+                            {
+                                "fold": fold_idx,
+                                "val_start": str(b.date()),
+                                "top": [(feats[i], round(float(gain[i]), 1)) for i in order if gain[i] > 0],
+                            }
+                        )
 
                 v_dates = val["date"].to_numpy()
                 v_tied = val[ANCHOR_TIED_COL].to_numpy(dtype=bool)
@@ -408,22 +432,22 @@ def run(df, features, horizon_filter=None, max_folds=None, n_jobs=None):
                     for d, d_ic in per_date_ic(v_dates, p, y_val).items():
                         ic[arm]["all"].setdefault(d, []).append(d_ic)
                     tm = v_tied
-                    for d, d_ic in per_date_ic(v_dates[tm], p[tm],
-                                               y_val[tm]).items():
+                    for d, d_ic in per_date_ic(v_dates[tm], p[tm], y_val[tm]).items():
                         ic[arm]["tied"].setdefault(d, []).append(d_ic)
                 for d, d_ic in per_date_ic(v_dates, v_naive, y_val).items():
                     ic["naive"]["all"].setdefault(d, []).append(d_ic)
-                for d, d_ic in per_date_ic(v_dates[v_tied], v_naive[v_tied],
-                                           y_val[v_tied]).items():
+                for d, d_ic in per_date_ic(v_dates[v_tied], v_naive[v_tied], y_val[v_tied]).items():
                     ic["naive"]["tied"].setdefault(d, []).append(d_ic)
 
                 mae_m = float(np.mean(np.abs(y_val - arm_pred["model"])))
                 mae_n = float(np.mean(np.abs(y_val)))
                 fold_skills.append(1 - mae_m / mae_n if mae_n > 0 else None)
                 n_folds += 1
-                logger.info(f"    fold {fold_idx} ({b.date()}): "
-                            f"n_fit={len(fit):>6,} n_val={len(val):>5,} "
-                            f"skill={fold_skills[-1]:+.3f}")
+                logger.info(
+                    f"    fold {fold_idx} ({b.date()}): "
+                    f"n_fit={len(fit):>6,} n_val={len(val):>5,} "
+                    f"skill={fold_skills[-1]:+.3f}"
+                )
 
             # One IC per date: dates never repeat across folds (STEP == VAL),
             # but average defensively.
@@ -431,22 +455,23 @@ def run(df, features, horizon_filter=None, max_folds=None, n_jobs=None):
             for arm in list(ARMS) + ["naive"]:
                 pooled[arm] = {}
                 for cohort in ("all", "tied"):
-                    pooled[arm][cohort] = {
-                        d: float(np.mean(v)) for d, v in ic[arm][cohort].items()}
-            entry = {"n_folds": n_folds, "fold_mae_skills": fold_skills,
-                     "fold_gain": fold_gain,
-                     "per_date": pooled, "summary": {}}
+                    pooled[arm][cohort] = {d: float(np.mean(v)) for d, v in ic[arm][cohort].items()}
+            entry = {
+                "n_folds": n_folds,
+                "fold_mae_skills": fold_skills,
+                "fold_gain": fold_gain,
+                "per_date": pooled,
+                "summary": {},
+            }
             for cohort in ("all", "tied"):
                 summ = {
                     "model": bootstrap_ci(pooled["model"][cohort]),
                     "naive": bootstrap_ci(pooled["naive"][cohort]),
                     "placebo": bootstrap_ci(pooled["placebo"][cohort]),
                 }
-                summ["paired"] = paired_delta_ci(pooled["model"][cohort],
-                                                 pooled["naive"][cohort])
+                summ["paired"] = paired_delta_ci(pooled["model"][cohort], pooled["naive"][cohort])
                 skills = [s for s in fold_skills if s is not None]
-                summ["mae_skill"] = (round(float(np.mean(skills)), 5)
-                                     if skills else None)
+                summ["mae_skill"] = round(float(np.mean(skills)), 5) if skills else None
                 entry["summary"][cohort] = summ
             # Prereg bars read the TIED cohort (neither basis carries p/S).
             tied_summ = {k: v for k, v in entry["summary"]["tied"].items()}
@@ -472,26 +497,31 @@ def print_summary(results):
                     print(f"    {key:8s} n/a (<2 dates)")
                     continue
                 flag = "*" if c["ci_low"] > 0 else ("-" if c["ci_high"] < 0 else " ")
-                print(f"    {key:8s} mean={c['mean']:+.4f} "
-                      f"[{c['ci_low']:+.4f}, {c['ci_high']:+.4f}]{flag} "
-                      f"n={c['n_dates']}")
-            print(f"    mae_skill(pooled)={s['mae_skill']:+.4f} "
-                  f"(fold means: "
-                  + ", ".join(f"{v:+.3f}" for v in entry["fold_mae_skills"]
-                              if v is not None) + ")")
+                print(
+                    f"    {key:8s} mean={c['mean']:+.4f} "
+                    f"[{c['ci_low']:+.4f}, {c['ci_high']:+.4f}]{flag} "
+                    f"n={c['n_dates']}"
+                )
+            print(
+                f"    mae_skill(pooled)={s['mae_skill']:+.4f} "
+                f"(fold means: " + ", ".join(f"{v:+.3f}" for v in entry["fold_mae_skills"] if v is not None) + ")"
+            )
         print(f"  bars(h={horizon}, tied): {entry['bars'][horizon]}")
         from collections import Counter
-        lead = Counter(n for g in entry.get("fold_gain", [])
-                       for n, _ in g["top"])
+
+        lead = Counter(n for g in entry.get("fold_gain", []) for n, _ in g["top"])
         print(f"  gain top-5 counts: {lead.most_common(8)}")
         if entry.get("fold_gain"):
             print(f"  fold0 top: {entry['fold_gain'][0]['top']}")
-    print("\n* = CI entirely positive. Bars: PASS needs model>0 AND paired>0 "
-          "AND mae_skill>0 at BOTH h=14/30; KILL at either kills.")
+    print(
+        "\n* = CI entirely positive. Bars: PASS needs model>0 AND paired>0 "
+        "AND mae_skill>0 at BOTH h=14/30; KILL at either kills."
+    )
 
 
 def main():
     import argparse
+
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--horizon", type=int, default=None)
     ap.add_argument("--frame-cache", default=None)
@@ -503,8 +533,7 @@ def main():
     df, features = build_frame(args.frame_cache)
     if args.build_cache_only:
         return
-    results = run(df, features, horizon_filter=args.horizon,
-                  max_folds=args.max_folds)
+    results = run(df, features, horizon_filter=args.horizon, max_folds=args.max_folds)
     print_summary(results)
     if args.out:
         Path(args.out).write_text(json.dumps(results, indent=2, default=str))

@@ -4,6 +4,7 @@ Panels are research outputs, not forecaster inputs. Missing data stays NaN:
 a zero depletion or zero application velocity is a real observation, absence
 of data is not it.
 """
+
 from __future__ import annotations
 
 import sys
@@ -16,23 +17,24 @@ BACKEND = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(BACKEND))
 
 from scripts.build_case_panel import build_case_panel  # noqa: E402
-from scripts.build_sticker_panel import substitute_group, build_sticker_panel  # noqa: E402
+from scripts.build_sticker_panel import build_sticker_panel, substitute_group  # noqa: E402
 
 
 def _supply(slugs_days: list[tuple[str, str, int]]) -> pd.DataFrame:
     return pd.DataFrame(
-        [{"item_slug": s, "snapshot_day": pd.to_datetime(d).date(), "listing_count": c}
-         for s, d, c in slugs_days]
+        [{"item_slug": s, "snapshot_day": pd.to_datetime(d).date(), "listing_count": c} for s, d, c in slugs_days]
     )
 
 
 class TestCasePanel:
     def test_selects_case_slugs_and_measures_depletion(self):
-        supply = _supply([
-            ("kilowatt-case", "2026-09-01", 1000),
-            ("kilowatt-case", "2026-09-08", 900),
-            ("ak-47-asiimov-minimal-wear", "2026-09-08", 50),
-        ])
+        supply = _supply(
+            [
+                ("kilowatt-case", "2026-09-01", 1000),
+                ("kilowatt-case", "2026-09-08", 900),
+                ("ak-47-asiimov-minimal-wear", "2026-09-08", 50),
+            ]
+        )
         panel = build_case_panel(supply)
         assert panel["item_slug"].unique().tolist() == ["kilowatt-case"]
         row = panel[panel["date"] == date(2026, 9, 8)].iloc[0]
@@ -52,10 +54,12 @@ class TestCasePanel:
 
 class TestStickerPanel:
     def test_selects_stickers_and_scopes_substitutes(self):
-        supply = _supply([
-            ("sticker-berlin-2019-legends-holo", "2026-09-08", 40),
-            ("ak-47-asiimov-minimal-wear", "2026-09-08", 50),
-        ])
+        supply = _supply(
+            [
+                ("sticker-berlin-2019-legends-holo", "2026-09-08", 40),
+                ("ak-47-asiimov-minimal-wear", "2026-09-08", 50),
+            ]
+        )
         panel = build_sticker_panel(supply)
         assert panel["item_slug"].unique().tolist() == ["sticker-berlin-2019-legends-holo"]
         assert panel.iloc[0]["substitute_group"] == "berlin-2019"

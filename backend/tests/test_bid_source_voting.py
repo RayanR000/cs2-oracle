@@ -21,7 +21,6 @@ from datetime import date
 
 import pandas as pd
 import pytest
-
 from backtest.price_resolution import load_voted_prices
 from models.forecaster import BID_SOURCES, ItemForecaster
 
@@ -108,11 +107,13 @@ def test_bid_does_not_count_toward_the_three_source_outlier_gate():
     stays a test of the bid/gate interaction and does not also exercise
     Task 4's separate exclusion."""
     d = date(2026, 7, 15)
-    out = vote([
-        ("ak", d, 10.0, "aggregator_csfloat"),
-        ("ak", d, 30.0, "aggregator_youpin"),
-        ("ak", d, 2.0, "aggregator_buff163_buy"),
-    ])
+    out = vote(
+        [
+            ("ak", d, 10.0, "aggregator_csfloat"),
+            ("ak", d, 30.0, "aggregator_youpin"),
+            ("ak", d, 2.0, "aggregator_buff163_buy"),
+        ]
+    )
 
     # Two asks is the bare-median path: median(10.0, 30.0) = 20.0. Counting the
     # bid makes it three "sources", and the 2-sigma mask over (2, 10, 30) keeps
@@ -126,18 +127,22 @@ def test_item_day_carrying_only_a_bid_yields_no_row():
     alternates between bid and ask fabricates the wedge as a return, which is
     the whole defect."""
     d = date(2026, 7, 15)
-    out = vote([
-        ("ak", d, 6.0, "aggregator_buff163_buy"),
-        ("awp", d, 50.0, "aggregator_csfloat"),
-    ])
+    out = vote(
+        [
+            ("ak", d, 6.0, "aggregator_buff163_buy"),
+            ("awp", d, 50.0, "aggregator_csfloat"),
+        ]
+    )
 
     assert set(out["item_id"]) == {"awp"}
 
 
 def test_all_bid_input_returns_an_empty_frame_with_the_voted_columns():
-    out = vote([
-        ("ak", date(2026, 7, 15), 6.0, "aggregator_buff163_buy"),
-    ])
+    out = vote(
+        [
+            ("ak", date(2026, 7, 15), 6.0, "aggregator_buff163_buy"),
+        ]
+    )
 
     assert out.empty
     assert {"item_id", "date", "price", "volume"} <= set(out.columns)
@@ -148,10 +153,12 @@ def test_untagged_pre_2026_rows_still_vote():
     years of the archive. A NULL-safe filter is the difference between
     excluding one feed and deleting the history."""
     d = date(2019, 3, 2)
-    out = vote([
-        ("ak", d, 10.0, None),
-        ("ak", d, 12.0, None),
-    ])
+    out = vote(
+        [
+            ("ak", d, 10.0, None),
+            ("ak", d, 12.0, None),
+        ]
+    )
 
     assert out.iloc[0]["price"] == pytest.approx(11.0)
 
@@ -168,16 +175,17 @@ def test_label_resolution_path_excludes_the_bid(tmp_path):
     archive = tmp_path / "price-archive"
     archive.mkdir()
     rows = _ladder_rows()
-    pd.DataFrame({
-        "item_slug": [r[0] for r in rows],
-        "day": pd.to_datetime([r[1] for r in rows]),
-        "mean_price": [r[2] for r in rows],
-        "volume": 1,
-        "source": [r[3] for r in rows],
-    }).to_parquet(archive / "prices-2026.parquet")
+    pd.DataFrame(
+        {
+            "item_slug": [r[0] for r in rows],
+            "day": pd.to_datetime([r[1] for r in rows]),
+            "mean_price": [r[2] for r in rows],
+            "volume": 1,
+            "source": [r[3] for r in rows],
+        }
+    ).to_parquet(archive / "prices-2026.parquet")
 
-    out = load_voted_prices(archive, [LADDER_ITEM],
-                            date(2026, 7, 15), date(2026, 7, 15))
+    out = load_voted_prices(archive, [LADDER_ITEM], date(2026, 7, 15), date(2026, 7, 15))
 
     assert len(out) == 1
     assert out.iloc[0]["price"] == pytest.approx(LADDER_ASK_CONSENSUS)
@@ -191,19 +199,20 @@ def test_published_gate_loader_excludes_the_bid(tmp_path, monkeypatch):
     Accuracy number undiluted. The filter has to be in the query.
     """
     import duckdb
-
     from scripts import walkforward_backtest as wf
 
     archive = tmp_path / "price-archive"
     archive.mkdir()
     rows = _ladder_rows()
-    pd.DataFrame({
-        "item_slug": [r[0] for r in rows],
-        "day": pd.to_datetime([r[1] for r in rows]),
-        "mean_price": [r[2] for r in rows],
-        "volume": 1,
-        "source": [r[3] for r in rows],
-    }).to_parquet(archive / "prices-2026.parquet")
+    pd.DataFrame(
+        {
+            "item_slug": [r[0] for r in rows],
+            "day": pd.to_datetime([r[1] for r in rows]),
+            "mean_price": [r[2] for r in rows],
+            "volume": 1,
+            "source": [r[3] for r in rows],
+        }
+    ).to_parquet(archive / "prices-2026.parquet")
     monkeypatch.setattr(wf, "ARCHIVE_DIR", archive)
 
     con = duckdb.connect()

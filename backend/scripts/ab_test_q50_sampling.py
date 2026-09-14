@@ -38,32 +38,29 @@ Usage:
     python -m scripts.ab_test_q50_sampling [--max-items 200] [--horizon 7]
                                             [--max-folds 8] [--single-fold]
 """
+
+import json
+import logging
 import os
 import sys
-import json
 import time
-import logging
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
+import lightgbm as lgb
 import numpy as np
 import pandas as pd
-import lightgbm as lgb
-
-from database import SessionLocal
 from backtest.paired_mde import format_paired, paired_arm_contrasts
 from backtest.walkforward_records import fold_level_records
+from database import SessionLocal
 from models.forecaster import (
     ItemForecaster,
     embargo_days,
     phase_collapsed_sql_filter,
 )
 
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-)
+logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s")
 logger = logging.getLogger("ab_test_q50_sampling")
 
 ARCHIVE_DIR = Path(__file__).parent.parent.parent / "price-archive"
@@ -86,8 +83,8 @@ MIN_VAL_ROWS = 200
 MAX_FOLDS = 8
 
 # Gate thresholds (pre-registered)
-GATE_MIN_REL_PINBALL_GAIN = 0.005   # 0.5% relative
-GATE_MAX_DA_REGRESSION_PP = 0.5     # percentage points
+GATE_MIN_REL_PINBALL_GAIN = 0.005  # 0.5% relative
+GATE_MAX_DA_REGRESSION_PP = 0.5  # percentage points
 
 # Production ensemble uses feature_fraction 0.6/0.7/0.8 across members; the
 # A/B trains one member at the middle value so the arms differ only in
@@ -123,8 +120,7 @@ def load_features(con, forecaster, events_df, max_items):
     pq_files = sorted(str(p) for p in ARCHIVE_DIR.glob("prices-*.parquet"))
     pq_queries = []
     for pqf in pq_files:
-        cols = {r[0] for r in con.sql(
-            f"DESCRIBE SELECT * FROM read_parquet('{pqf}')").fetchall()}
+        cols = {r[0] for r in con.sql(f"DESCRIBE SELECT * FROM read_parquet('{pqf}')").fetchall()}
         if "source" in cols:
             # `source = 'STEAMCOMMUNITY'` matches 0 rows post archive-rebuild, so
             # this degenerated to the NULL (pre-2026) branch; the dead disjunct is
@@ -132,11 +128,10 @@ def load_features(con, forecaster, events_df, max_items):
             pq_queries.append(
                 f"SELECT item_slug, day, mean_price, volume FROM "
                 f"read_parquet('{pqf}') WHERE source IS NULL "
-                f"AND {_UNIVERSE}")
+                f"AND {_UNIVERSE}"
+            )
         else:
-            pq_queries.append(
-                f"SELECT item_slug, day, mean_price, volume FROM "
-                f"read_parquet('{pqf}') WHERE {_UNIVERSE}")
+            pq_queries.append(f"SELECT item_slug, day, mean_price, volume FROM read_parquet('{pqf}') WHERE {_UNIVERSE}")
     union_sql = " UNION ALL BY NAME ".join(pq_queries)
 
     items = con.sql(f"""
@@ -148,15 +143,19 @@ def load_features(con, forecaster, events_df, max_items):
     if not items:
         raise RuntimeError(
             "q50_sampling universe query selected 0 items — the source pin "
-            "matched no rows (see 2026-08-13 harness repin).")
+            "matched no rows (see 2026-08-13 harness repin)."
+        )
     logger.info(f"  {len(items)} items for evaluation")
 
     all_rows = []
     for item_slug, _ in items:
-        rows = con.sql(f"""
+        rows = con.sql(
+            f"""
             SELECT item_slug AS item_id, day AS timestamp, mean_price AS price, volume
             FROM ({union_sql}) WHERE item_slug = ? ORDER BY day
-        """, params=[item_slug]).fetchall()
+        """,
+            params=[item_slug],
+        ).fetchall()
         idf = pd.DataFrame(rows, columns=["item_id", "timestamp", "price", "volume"])
         idf["timestamp"] = pd.to_datetime(idf["timestamp"])
         idf["date"] = idf["timestamp"].dt.date
@@ -167,8 +166,9 @@ def load_features(con, forecaster, events_df, max_items):
     df = forecaster._add_cross_sectional_features(df)
 
     EXCLUDE = {"item_id", "date", "timestamp", "price", "volume", "name", "release_date"}
-    feat_cols = [c for c in df.columns if c not in EXCLUDE
-                 and df[c].dtype in (np.float64, np.float32, np.int64, int, float)]
+    feat_cols = [
+        c for c in df.columns if c not in EXCLUDE and df[c].dtype in (np.float64, np.float32, np.int64, int, float)
+    ]
     if len(feat_cols) > 2:
         corr = df[feat_cols].corr().abs()
         upper = corr.where(np.triu(np.ones(corr.shape), k=1).astype(bool))
@@ -191,8 +191,7 @@ def load_production_q50_params(horizon):
     src = tp.get(str(horizon)) or tp.get(horizon) or {}
     q = src.get("0.5") or src.get(0.5)
     if not q:
-        raise RuntimeError(
-            f"no persisted q50 params for horizon {horizon} in {META_PATH}")
+        raise RuntimeError(f"no persisted q50 params for horizon {horizon} in {META_PATH}")
     return dict(q)
 
 
@@ -214,8 +213,7 @@ def build_arm_params(base, arm, boosting_type, forecaster):
     # nested-pool + libomp hang documented at forecaster.py:2384.
     if os.environ.get("AB_N_JOBS"):
         p["n_jobs"] = int(os.environ["AB_N_JOBS"])
-    for k in ("data_sample_strategy", "top_rate", "other_rate",
-              "subsample", "bagging_fraction", "bagging_freq"):
+    for k in ("data_sample_strategy", "top_rate", "other_rate", "subsample", "bagging_fraction", "bagging_freq"):
         p.pop(k, None)
     if arm == "goss":
         p["data_sample_strategy"] = "goss"
@@ -228,8 +226,7 @@ def build_arm_params(base, arm, boosting_type, forecaster):
     return p
 
 
-def _run_horizon(fc, tdf, feat_cols, horizon, max_folds,
-                 fold_start=0, fold_count=None):
+def _run_horizon(fc, tdf, feat_cols, horizon, max_folds, fold_start=0, fold_count=None):
     """Train both arms on identical folds; yield one record per (arm, fold).
 
     `fold_start`/`fold_count` shard the fold list across processes. Fold
@@ -248,9 +245,11 @@ def _run_horizon(fc, tdf, feat_cols, horizon, max_folds,
     n_total = len(folds)
     end = n_total if fold_count is None else fold_start + fold_count
     sharded = list(enumerate(folds))[fold_start:end]
-    logger.info(f"  {horizon}d: {n_total} folds total, running "
-                f"{len(sharded)} (global idx {fold_start}..{end - 1}), "
-                f"boosting={boosting_type}")
+    logger.info(
+        f"  {horizon}d: {n_total} folds total, running "
+        f"{len(sharded)} (global idx {fold_start}..{end - 1}), "
+        f"boosting={boosting_type}"
+    )
 
     base = load_production_q50_params(horizon)
     # Production's per-horizon table, not a 1000-round cap for early
@@ -263,8 +262,7 @@ def _run_horizon(fc, tdf, feat_cols, horizon, max_folds,
         tr = tdf[tdf["date"].isin(train_dates)]
         va = tdf[tdf["date"].isin(val_dates)]
         if len(tr) < MIN_TRAIN_ROWS or len(va) < MIN_VAL_ROWS:
-            logger.info(f"    fold {fold_idx}: skipped "
-                        f"({len(tr)} train, {len(va)} val)")
+            logger.info(f"    fold {fold_idx}: skipped ({len(tr)} train, {len(va)} val)")
             continue
 
         X_tr = tr[feat_cols].replace([np.inf, -np.inf], np.nan)
@@ -282,14 +280,14 @@ def _run_horizon(fc, tdf, feat_cols, horizon, max_folds,
         for arm in ARMS:
             params = build_arm_params(base, arm, boosting_type, fc)
             ds_params = {"max_bin": fc.MAX_BIN, "feature_pre_filter": False}
-            dtrain = lgb.Dataset(X_tr, y_tr, params=ds_params,
-                                 **({"weight": w_tr} if w_tr is not None else {}))
-            dval = lgb.Dataset(X_va, y_va, reference=dtrain, params=ds_params,
-                               **({"weight": w_va} if w_va is not None else {}))
+            dtrain = lgb.Dataset(X_tr, y_tr, params=ds_params, **({"weight": w_tr} if w_tr is not None else {}))
+            dval = lgb.Dataset(
+                X_va, y_va, reference=dtrain, params=ds_params, **({"weight": w_va} if w_va is not None else {})
+            )
             t0 = time.time()
             model = ItemForecaster._train_ensemble_member(
-                params, dtrain, dval, num_boost_round=nbr,
-                early_stopping=ItemForecaster._early_stopping_enabled())
+                params, dtrain, dval, num_boost_round=nbr, early_stopping=ItemForecaster._early_stopping_enabled()
+            )
             fit_s = time.time() - t0
 
             pred = model.predict(X_va, num_iteration=model.best_iteration or None)
@@ -308,8 +306,9 @@ def _run_horizon(fc, tdf, feat_cols, horizon, max_folds,
             }
             logger.info(
                 f"    fold {fold_idx} {arm:>7}: pinball={rec['pinball']:.5f} "
-                f"mae={rec['mae']:.4f} da={100*rec['da']:.2f}% "
-                f"trees={rec['trees']} ({fit_s:.1f}s)")
+                f"mae={rec['mae']:.4f} da={100 * rec['da']:.2f}% "
+                f"trees={rec['trees']} ({fit_s:.1f}s)"
+            )
             yield rec
 
 
@@ -323,8 +322,7 @@ def summarize(records):
     print("\n" + "=" * 78)
     print("PAIRED RESULTS (bagging vs goss, same folds)")
     print("=" * 78)
-    print(f"{'h':>3} {'arm':>8} {'pinball':>9} {'mae':>8} {'da%':>7} "
-          f"{'trees':>7} {'folds':>6} {'fit_s':>7}")
+    print(f"{'h':>3} {'arm':>8} {'pinball':>9} {'mae':>8} {'da%':>7} {'trees':>7} {'folds':>6} {'fit_s':>7}")
 
     verdicts = {}
     for horizon in sorted(df["horizon"].unique()):
@@ -333,10 +331,12 @@ def summarize(records):
             a = hd[hd["arm"] == arm]
             if a.empty:
                 continue
-            print(f"{horizon:>3} {arm:>8} {a['pinball'].mean():>9.5f} "
-                  f"{a['mae'].mean():>8.4f} {100*a['da'].mean():>7.2f} "
-                  f"{a['trees'].mean():>7.1f} {len(a):>6} "
-                  f"{a['fit_s'].sum():>7.1f}")
+            print(
+                f"{horizon:>3} {arm:>8} {a['pinball'].mean():>9.5f} "
+                f"{a['mae'].mean():>8.4f} {100 * a['da'].mean():>7.2f} "
+                f"{a['trees'].mean():>7.1f} {len(a):>6} "
+                f"{a['fit_s'].sum():>7.1f}"
+            )
 
         g = hd[hd["arm"] == "goss"].set_index("fold")
         b = hd[hd["arm"] == "bagging"].set_index("fold")
@@ -358,34 +358,43 @@ def summarize(records):
         # 6/8 unremarkable. Lower pinball is better, so a SHIP needs the
         # interval strictly below zero.
         paired = paired_arm_contrasts(
-            {"goss": fold_level_records(common, g["pinball"], metric="pinball"),
-             "bagging": fold_level_records(common, b["pinball"], metric="pinball")},
-            base="goss", value_key="pinball", scale=1.0,
-            higher_is_better=False)["bagging"]
+            {
+                "goss": fold_level_records(common, g["pinball"], metric="pinball"),
+                "bagging": fold_level_records(common, b["pinball"], metric="pinball"),
+            },
+            base="goss",
+            value_key="pinball",
+            scale=1.0,
+            higher_is_better=False,
+        )["bagging"]
 
         c2 = paired["verdict"] == "positive"
         c3 = da_delta_pp >= -GATE_MAX_DA_REGRESSION_PP
         ship = bool(c1 and c2 and c3)
         verdicts[horizon] = {
-            "ship": ship, "rel_pinball_gain": rel_gain,
-            "folds_won": folds_won, "n_folds": len(common),
-            "da_delta_pp": da_delta_pp, "mae_delta": mae_delta,
+            "ship": ship,
+            "rel_pinball_gain": rel_gain,
+            "folds_won": folds_won,
+            "n_folds": len(common),
+            "da_delta_pp": da_delta_pp,
+            "mae_delta": mae_delta,
             "paired_pinball": paired,
             "gate": {"pinball_gain": c1, "paired_interval": c2, "da_no_regress": c3},
         }
-        print(f"  -> {horizon}d: pinball {rel_gain*100:+.2f}% "
-              f"(gate >= +{GATE_MIN_REL_PINBALL_GAIN*100:.1f}%) [{'PASS' if c1 else 'FAIL'}] | "
-              f"paired {format_paired(paired, unit='')} [{'PASS' if c2 else 'FAIL'}] | "
-              f"DA {da_delta_pp:+.2f}pp (gate >= -{GATE_MAX_DA_REGRESSION_PP}pp) "
-              f"[{'PASS' if c3 else 'FAIL'}] | MAE {mae_delta:+.4f} "
-              f"| folds won {folds_won}/{len(common)} (context, not a gate)")
+        print(
+            f"  -> {horizon}d: pinball {rel_gain * 100:+.2f}% "
+            f"(gate >= +{GATE_MIN_REL_PINBALL_GAIN * 100:.1f}%) [{'PASS' if c1 else 'FAIL'}] | "
+            f"paired {format_paired(paired, unit='')} [{'PASS' if c2 else 'FAIL'}] | "
+            f"DA {da_delta_pp:+.2f}pp (gate >= -{GATE_MAX_DA_REGRESSION_PP}pp) "
+            f"[{'PASS' if c3 else 'FAIL'}] | MAE {mae_delta:+.4f} "
+            f"| folds won {folds_won}/{len(common)} (context, not a gate)"
+        )
         print(f"     VERDICT {horizon}d: {'SHIP bagging' if ship else 'KEEP goss'}")
 
     return df, verdicts
 
 
-def run(max_items, horizon_filter, max_folds, fold_start=0, fold_count=None,
-        feature_cache=None):
+def run(max_items, horizon_filter, max_folds, fold_start=0, fold_count=None, feature_cache=None):
     db = SessionLocal()
     forecaster = ItemForecaster(db_session=db)
     events_df = forecaster.fetch_events()
@@ -402,17 +411,17 @@ def run(max_items, horizon_filter, max_folds, fold_start=0, fold_count=None,
             t0 = time.time()
             df = pd.read_parquet(cpath)
             feat_cols = json.loads(ccols.read_text())
-            logger.info(f"  loaded cached features {cpath.name} "
-                        f"({time.time()-t0:.0f}s, {df.shape})")
+            logger.info(f"  loaded cached features {cpath.name} ({time.time() - t0:.0f}s, {df.shape})")
             cache_ok = True
 
     if not cache_ok:
         import duckdb
+
         con = duckdb.connect()
         try:
             t0 = time.time()
             df, feat_cols = load_features(con, forecaster, events_df, max_items)
-            logger.info(f"  feature build took {time.time()-t0:.0f}s")
+            logger.info(f"  feature build took {time.time() - t0:.0f}s")
         finally:
             con.close()
         if feature_cache:
@@ -421,25 +430,23 @@ def run(max_items, horizon_filter, max_folds, fold_start=0, fold_count=None,
             logger.info(f"  wrote feature cache {cpath.name}")
 
     # Match production: price_technicals only.
-    feat_cols = forecaster._apply_feature_allowlist(
-        feat_cols, ItemForecaster.FEATURE_GROUP_ALLOWLIST)
+    feat_cols = forecaster._apply_feature_allowlist(feat_cols, ItemForecaster.FEATURE_GROUP_ALLOWLIST)
     feat_cols = [c for c in feat_cols if c in df.columns]
     logger.info(f"  {len(feat_cols)} features after production allowlist")
 
-    horizons = [h for h in HORIZONS
-                if horizon_filter is None or h == horizon_filter]
+    horizons = [h for h in HORIZONS if horizon_filter is None or h == horizon_filter]
 
     records = []
     for horizon in horizons:
         target_col = f"target_return_{horizon}d"
         tdf = forecaster.prepare_targets(df, horizon)
-        tdf = tdf.dropna(subset=[target_col]).sort_values(
-            ["item_id", "date"]).copy()
+        tdf = tdf.dropna(subset=[target_col]).sort_values(["item_id", "date"]).copy()
         if tdf.empty:
             logger.warning(f"  no targets for {horizon}d")
             continue
-        for rec in _run_horizon(forecaster, tdf, feat_cols, horizon, max_folds,
-                                fold_start=fold_start, fold_count=fold_count):
+        for rec in _run_horizon(
+            forecaster, tdf, feat_cols, horizon, max_folds, fold_start=fold_start, fold_count=fold_count
+        ):
             records.append(rec)
 
     return summarize(records)
@@ -447,25 +454,27 @@ def run(max_items, horizon_filter, max_folds, fold_start=0, fold_count=None,
 
 def main():
     import argparse
-    ap = argparse.ArgumentParser(
-        description="A/B q50 row sampling: GOSS (production) vs bagging")
+
+    ap = argparse.ArgumentParser(description="A/B q50 row sampling: GOSS (production) vs bagging")
     ap.add_argument("--max-items", type=int, default=200)
     ap.add_argument("--horizon", type=int, default=None, choices=HORIZONS)
     ap.add_argument("--max-folds", type=int, default=MAX_FOLDS)
-    ap.add_argument("--single-fold", action="store_true",
-                    help="1 fold only — for timing calibration")
-    ap.add_argument("--out", type=str, default=None,
-                    help="write per-fold records to this CSV")
-    ap.add_argument("--fold-start", type=int, default=0,
-                    help="shard: first (global) fold index to run")
-    ap.add_argument("--fold-count", type=int, default=None,
-                    help="shard: number of folds to run from --fold-start")
-    ap.add_argument("--feature-cache", type=str, default=None,
-                    help="path prefix for caching the engineered feature "
-                         "matrix across runs/shards (skips the ~30s rebuild)")
-    ap.add_argument("--merge", nargs="+", default=None,
-                    help="merge per-shard CSVs and print the combined gate "
-                         "verdict; skips all training")
+    ap.add_argument("--single-fold", action="store_true", help="1 fold only — for timing calibration")
+    ap.add_argument("--out", type=str, default=None, help="write per-fold records to this CSV")
+    ap.add_argument("--fold-start", type=int, default=0, help="shard: first (global) fold index to run")
+    ap.add_argument("--fold-count", type=int, default=None, help="shard: number of folds to run from --fold-start")
+    ap.add_argument(
+        "--feature-cache",
+        type=str,
+        default=None,
+        help="path prefix for caching the engineered feature matrix across runs/shards (skips the ~30s rebuild)",
+    )
+    ap.add_argument(
+        "--merge",
+        nargs="+",
+        default=None,
+        help="merge per-shard CSVs and print the combined gate verdict; skips all training",
+    )
     args = ap.parse_args()
 
     # Merge mode: recombine shard CSVs and apply the gate over all folds.
@@ -474,8 +483,7 @@ def main():
         allrecs = pd.concat(frames, ignore_index=True)
         dupes = allrecs.duplicated(subset=["horizon", "arm", "fold"]).sum()
         if dupes:
-            logger.warning(f"{dupes} duplicate (horizon,arm,fold) rows — "
-                           f"check shard fold ranges for overlap")
+            logger.warning(f"{dupes} duplicate (horizon,arm,fold) rows — check shard fold ranges for overlap")
         logger.info(f"merged {len(allrecs)} records from {len(args.merge)} files")
         summarize(allrecs.to_dict("records"))
         return 0
@@ -484,15 +492,19 @@ def main():
 
     logger.info("=" * 70)
     logger.info("A/B: q50 row-sampling strategy (goss vs bagging)")
-    logger.info(f"  max_items={args.max_items} horizon={args.horizon} "
-                f"max_folds={max_folds}")
+    logger.info(f"  max_items={args.max_items} horizon={args.horizon} max_folds={max_folds}")
     logger.info("=" * 70)
 
     t0 = time.time()
-    df, verdicts = run(args.max_items, args.horizon, max_folds,
-                       fold_start=args.fold_start, fold_count=args.fold_count,
-                       feature_cache=args.feature_cache)
-    logger.info(f"total wall clock: {time.time()-t0:.0f}s")
+    df, verdicts = run(
+        args.max_items,
+        args.horizon,
+        max_folds,
+        fold_start=args.fold_start,
+        fold_count=args.fold_count,
+        feature_cache=args.feature_cache,
+    )
+    logger.info(f"total wall clock: {time.time() - t0:.0f}s")
 
     if args.out and not df.empty:
         df.to_csv(args.out, index=False)

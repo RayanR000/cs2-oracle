@@ -8,6 +8,7 @@ history.
 
 See docs/superpowers/specs/2026-08-03-served-forecast-surface-design.md.
 """
+
 from __future__ import annotations
 
 import inspect
@@ -37,6 +38,6 @@ class TestTrendingDoesNotRankByConfidence:
         bounded recency window."""
         source = inspect.getsource(items_mod._build_trending)
         assert "forecast_date == today" not in source, (
-            "an exact-today pin goes empty once forecast_date is the anchor day")
-        assert "forecast_date >=" in source, (
-            "the freshness guard must be a bounded window, not dropped entirely")
+            "an exact-today pin goes empty once forecast_date is the anchor day"
+        )
+        assert "forecast_date >=" in source, "the freshness guard must be a bounded window, not dropped entirely"

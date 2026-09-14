@@ -17,11 +17,11 @@ actually saw; raw class counts would describe a model that was never trained.
 These tests verify that weighting and the three not-estimable paths (empty
 input, all-non-finite, zero total weight).
 """
+
 from __future__ import annotations
 
 import numpy as np
 import pytest
-
 from models.forecaster import DIRECTION_FLAT_TOLERANCE_PCT, ItemForecaster
 
 THR = DIRECTION_FLAT_TOLERANCE_PCT  # 0.5
@@ -40,7 +40,7 @@ class TestDirectionClassPrior:
         # 1 up mover (w=3), 3 flat rows (w=1 each) -> total weight 6.
         r = np.array([5.0, 0.1, 0.1, 0.1])
         prior = ItemForecaster._direction_class_prior(r, THR, MOVER)
-        assert prior[2] == pytest.approx(3.0 / 6.0)   # not 1/4
+        assert prior[2] == pytest.approx(3.0 / 6.0)  # not 1/4
         assert prior[1] == pytest.approx(3.0 / 6.0)
         assert prior[0] == pytest.approx(0.0)
 
@@ -65,11 +65,9 @@ class TestDirectionClassPrior:
         assert ItemForecaster._direction_class_prior(np.array([]), THR, MOVER) == {}
 
     def test_all_non_finite_is_not_estimable(self):
-        assert ItemForecaster._direction_class_prior(
-            np.array([np.nan, np.nan]), THR, MOVER) == {}
+        assert ItemForecaster._direction_class_prior(np.array([np.nan, np.nan]), THR, MOVER) == {}
 
     def test_zero_total_weight_is_not_estimable(self):
         # When mover_weight=0.0, all movers get weight 0. If all returns are
         # movers (|r| > threshold), then total weight is 0 and not estimable.
-        assert ItemForecaster._direction_class_prior(
-            np.array([5.0, -5.0]), 0.0, 0.0) == {}
+        assert ItemForecaster._direction_class_prior(np.array([5.0, -5.0]), 0.0, 0.0) == {}

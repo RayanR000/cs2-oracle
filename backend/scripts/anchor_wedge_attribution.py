@@ -56,13 +56,13 @@ expected state, not a failure.
 
 Run: backend/venv/bin/python scripts/anchor_wedge_attribution.py
 """
+
 from __future__ import annotations
 
 import argparse
 import json
 import sys
 from pathlib import Path
-from typing import Optional
 
 import numpy as np
 import pandas as pd
@@ -81,7 +81,7 @@ CAPTURE_MIN_SHARE = 0.999
 _LEGS = ("capture_gap", "revision", "residual")
 
 
-def attribute(df: "pd.DataFrame") -> "pd.DataFrame":
+def attribute(df: pd.DataFrame) -> pd.DataFrame:
     """The three legs plus the total, per row. Pure: no archive, no DB.
 
     Rows with a non-positive or missing price on ANY leg are dropped rather than
@@ -90,8 +90,7 @@ def attribute(df: "pd.DataFrame") -> "pd.DataFrame":
     """
     cols = ["current_price", "served_base", "base_now", "base_price"]
     out = df.copy()
-    vals = {c: pd.to_numeric(out[c], errors="coerce").to_numpy(dtype=float)
-            for c in cols}
+    vals = {c: pd.to_numeric(out[c], errors="coerce").to_numpy(dtype=float) for c in cols}
     usable = np.ones(len(out), dtype=bool)
     for c in cols:
         usable &= np.isfinite(vals[c]) & (vals[c] > 0)
@@ -106,7 +105,7 @@ def attribute(df: "pd.DataFrame") -> "pd.DataFrame":
     return out.reset_index(drop=True)
 
 
-def capture_verdict(df: "pd.DataFrame") -> "tuple[bool, str]":
+def capture_verdict(df: pd.DataFrame) -> tuple[bool, str]:
     """Did the audit record what was actually served? A precondition, so it is
     reported as a pass/fail rather than as one number among the findings."""
     if df.empty:
@@ -117,10 +116,11 @@ def capture_verdict(df: "pd.DataFrame") -> "tuple[bool, str]":
         f"capture gate {'PASS' if ok else 'FAIL'}: "
         f"{share:.4%} of {len(df):,} rows reproduce the served quote to "
         f"{CAPTURE_TOL:g} (need {CAPTURE_MIN_SHARE:.1%}); "
-        f"median |gap| {df['capture_gap'].abs().median():.6%}")
+        f"median |gap| {df['capture_gap'].abs().median():.6%}"
+    )
 
 
-def _leg_shares(df: "pd.DataFrame") -> "dict[str, float]":
+def _leg_shares(df: pd.DataFrame) -> dict[str, float]:
     """How much of the wedge's MAGNITUDE each leg carries.
 
     In log space, because that is the only scale on which multiplicative legs
@@ -132,10 +132,11 @@ def _leg_shares(df: "pd.DataFrame") -> "dict[str, float]":
     return {leg: (v / total if total else float("nan")) for leg, v in mag.items()}
 
 
-def _report(df: "pd.DataFrame") -> "dict":
+def _report(df: pd.DataFrame) -> dict:
     """Pooled and per-date. Medians and p90 — the tail is the point."""
+
     def stats(g):
-        row = {"n": int(len(g))}
+        row = {"n": len(g)}
         for leg in _LEGS + ("total_wedge",):
             row[f"{leg}_median"] = float(g[leg].median())
             row[f"{leg}_p90"] = float(g[leg].abs().quantile(0.90))
@@ -148,15 +149,17 @@ def _report(df: "pd.DataFrame") -> "dict":
     return out
 
 
-def _print(rep: "dict") -> None:
+def _print(rep: dict) -> None:
     def line(label, r):
         s = r["shares"]
-        print(f"  {label:<14} n={r['n']:>7,}  "
-              f"total {r['total_wedge_median']:+.3%} (p90 |{r['total_wedge_p90']:.3%}|)  "
-              f"| revision {r['revision_median']:+.3%} "
-              f"residual {r['residual_median']:+.3%}  "
-              f"| share rev {s['revision']:.1%} res {s['residual']:.1%} "
-              f"cap {s['capture_gap']:.1%}")
+        print(
+            f"  {label:<14} n={r['n']:>7,}  "
+            f"total {r['total_wedge_median']:+.3%} (p90 |{r['total_wedge_p90']:.3%}|)  "
+            f"| revision {r['revision_median']:+.3%} "
+            f"residual {r['residual_median']:+.3%}  "
+            f"| share rev {s['revision']:.1%} res {s['residual']:.1%} "
+            f"cap {s['capture_gap']:.1%}"
+        )
 
     print("\nWedge attribution (median per row; share = of summed |log move|)")
     line("POOLED", rep["pooled"])
@@ -170,7 +173,8 @@ def _print(rep: "dict") -> None:
 # Loading. Everything below touches the archive; the maths above does not.
 # --------------------------------------------------------------------------
 
-def _load_audit(audit_dir: Path) -> "pd.DataFrame":
+
+def _load_audit(audit_dir: Path) -> pd.DataFrame:
     """Every published audit file, concatenated.
 
     `served_base` is read, never recomputed. Files written before it was
@@ -183,7 +187,8 @@ def _load_audit(audit_dir: Path) -> "pd.DataFrame":
         raise SystemExit(
             f"no audit files in {audit_dir}. ANCHOR_AUDIT=1 is live in "
             f"price-forecast.yml, but the forecast chain has been paused since "
-            f"2026-08-20 — there is nothing to read yet.")
+            f"2026-08-20 — there is nothing to read yet."
+        )
     frames, skipped = [], []
     for f in files:
         d = pd.read_parquet(f)
@@ -201,15 +206,17 @@ def _load_audit(audit_dir: Path) -> "pd.DataFrame":
     return out
 
 
-def _slug_map(archive_dir: Optional[Path]) -> "dict":
+def _slug_map(archive_dir: Path | None) -> dict:
     """item_id -> slug, from the outcomes panel when there is one, else prod."""
     if archive_dir is not None:
         import duckdb
 
         p = archive_dir / "ops" / "forecast_outcomes.parquet"
-        d = duckdb.connect().sql(
-            f"SELECT DISTINCT item_id, item_slug FROM read_parquet('{p}') "
-            f"WHERE item_slug IS NOT NULL").fetchdf()
+        d = (
+            duckdb.connect()
+            .sql(f"SELECT DISTINCT item_id, item_slug FROM read_parquet('{p}') WHERE item_slug IS NOT NULL")
+            .fetchdf()
+        )
         return dict(zip(d["item_id"], d["item_slug"]))
     from backtest_accuracy import _id_to_slug
     from database import SessionLocal
@@ -221,7 +228,7 @@ def _slug_map(archive_dir: Optional[Path]) -> "dict":
         db.close()
 
 
-def _base_now(pairs: "set", archive: Path) -> "dict":
+def _base_now(pairs: set, archive: Path) -> dict:
     """Re-resolve each (slug, anchor_date) against TODAY's archive.
 
     Imported from `backtest.price_resolution`, never reimplemented: the leg only
@@ -238,18 +245,22 @@ def _base_now(pairs: "set", archive: Path) -> "dict":
 
 
 def main() -> int:
-    ap = argparse.ArgumentParser(description=__doc__,
-                                 formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--archive-dir", default=None, type=Path,
-                    help="read outcomes from this archive's Parquet instead of prod")
-    ap.add_argument("--audit-dir", default=None, type=Path,
-                    help="defaults to <archive>/ops/anchor_audit")
-    ap.add_argument("--price-archive", default=None, type=Path,
-                    help="archive the re-resolution reads; defaults to the canonical clone")
+    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument(
+        "--archive-dir", default=None, type=Path, help="read outcomes from this archive's Parquet instead of prod"
+    )
+    ap.add_argument("--audit-dir", default=None, type=Path, help="defaults to <archive>/ops/anchor_audit")
+    ap.add_argument(
+        "--price-archive",
+        default=None,
+        type=Path,
+        help="archive the re-resolution reads; defaults to the canonical clone",
+    )
     ap.add_argument("--json-out", default=None)
     args = ap.parse_args()
 
     from dotenv import load_dotenv
+
     load_dotenv(BACKEND / ".env")
 
     from centre_vs_lastprice import _load
@@ -269,22 +280,24 @@ def main() -> int:
     out["item_slug"] = out["item_id"].map(slugs)
     out = out.dropna(subset=["item_slug"])
     merged = out.merge(
-        audit[["item_id", "anchor_date", "price", "_smoothed_price", "served_base"]]
-            .rename(columns={"item_id": "item_slug"}),
+        audit[["item_id", "anchor_date", "price", "_smoothed_price", "served_base"]].rename(
+            columns={"item_id": "item_slug"}
+        ),
         left_on=["item_slug", "forecast_date"],
         right_on=["item_slug", "anchor_date"],
-        how="inner")
+        how="inner",
+    )
     if merged.empty:
         raise SystemExit(
             "no outcome row shares an anchor date with an audit file. The audit "
             "starts when the chain resumes; outcomes for those dates only exist "
-            "once their horizon has elapsed.")
+            "once their horizon has elapsed."
+        )
     print(f"joined {len(merged):,} outcome rows to the audit")
 
     pairs = set(zip(merged["item_slug"], merged["forecast_date"]))
     now = _base_now(pairs, price_archive)
-    merged["base_now"] = [
-        now.get((s, d)) for s, d in zip(merged["item_slug"], merged["forecast_date"])]
+    merged["base_now"] = [now.get((s, d)) for s, d in zip(merged["item_slug"], merged["forecast_date"])]
 
     df = attribute(merged)
     ok, msg = capture_verdict(df)

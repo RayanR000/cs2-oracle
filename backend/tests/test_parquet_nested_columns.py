@@ -26,22 +26,28 @@ Three ops tables carried a nested column when this was written —
 ``accuracy_alerts.details`` — so this is a property of the store, not of one
 table, and the fix lives in the store.
 """
+
 from __future__ import annotations
 
 import json
 
 import duckdb
 import pandas as pd
-
 from db.parquet import _append_parquet, replace_rows
 
 
 def _frozen_struct_file(path):
     """A file whose ``metrics`` column is a frozen STRUCT, as production's was."""
-    pd.DataFrame([
-        {"prediction_type": "forecast", "horizon_days": 7, "price_tier": 1,
-         "metrics": {"mae": 1.0, "mape_by_tier": {"tier_1": 8.0}}},
-    ]).to_parquet(path, index=False)
+    pd.DataFrame(
+        [
+            {
+                "prediction_type": "forecast",
+                "horizon_days": 7,
+                "price_tier": 1,
+                "metrics": {"mae": 1.0, "mape_by_tier": {"tier_1": 8.0}},
+            },
+        ]
+    ).to_parquet(path, index=False)
     assert "STRUCT" in _column_type(path, "metrics"), "fixture is not a STRUCT"
 
 
@@ -49,9 +55,7 @@ def _column_type(path, column):
     con = duckdb.connect()
     try:
         return next(
-            t for c, t, *_ in
-            con.execute(f"DESCRIBE SELECT * FROM read_parquet('{path}')").fetchall()
-            if c == column
+            t for c, t, *_ in con.execute(f"DESCRIBE SELECT * FROM read_parquet('{path}')").fetchall() if c == column
         )
     finally:
         con.close()
@@ -75,12 +79,26 @@ class TestNestedColumnsBecomeJson:
         path = tmp_path / "prediction_accuracy.parquet"
         _frozen_struct_file(path)
 
-        _append_parquet(path, pd.DataFrame([
-            {"prediction_type": "forecast", "horizon_days": 3, "price_tier": 1,
-             "metrics": {"mae": 2.0, "mape_by_tier": {"tier_1": 9.0},
-                         "directional_accuracy_moved": 51.2,
-                         "n_unchanged": 7, "date_coverage_sufficient": False}},
-        ]), KEYS)
+        _append_parquet(
+            path,
+            pd.DataFrame(
+                [
+                    {
+                        "prediction_type": "forecast",
+                        "horizon_days": 3,
+                        "price_tier": 1,
+                        "metrics": {
+                            "mae": 2.0,
+                            "mape_by_tier": {"tier_1": 9.0},
+                            "directional_accuracy_moved": 51.2,
+                            "n_unchanged": 7,
+                            "date_coverage_sufficient": False,
+                        },
+                    },
+                ]
+            ),
+            KEYS,
+        )
 
         assert _metrics_of(path, 3)["directional_accuracy_moved"] == 51.2
         assert _metrics_of(path, 3)["date_coverage_sufficient"] is False
@@ -95,11 +113,20 @@ class TestNestedColumnsBecomeJson:
         path = tmp_path / "prediction_accuracy.parquet"
         _frozen_struct_file(path)
 
-        _append_parquet(path, pd.DataFrame([
-            {"prediction_type": "forecast", "horizon_days": 3, "price_tier": 1,
-             "metrics": {"mae": 2.0, "skill_vs_baseline": None,
-                         "directional_accuracy_moved": None}},
-        ]), KEYS)
+        _append_parquet(
+            path,
+            pd.DataFrame(
+                [
+                    {
+                        "prediction_type": "forecast",
+                        "horizon_days": 3,
+                        "price_tier": 1,
+                        "metrics": {"mae": 2.0, "skill_vs_baseline": None, "directional_accuracy_moved": None},
+                    },
+                ]
+            ),
+            KEYS,
+        )
 
         m = _metrics_of(path, 3)
         assert m["skill_vs_baseline"] is None
@@ -112,17 +139,30 @@ class TestNestedColumnsBecomeJson:
         the batch shape that made DuckDB fall back to MAP, then to VARCHAR.
         """
         path = tmp_path / "prediction_accuracy.parquet"
-        _append_parquet(path, pd.DataFrame([
-            {"prediction_type": "forecast", "horizon_days": 7, "price_tier": 4,
-             "metrics": {"mae": 1.0, "mape_by_tier": {"tier_4": 3.0}}},
-            {"prediction_type": "forecast", "horizon_days": 7, "price_tier": None,
-             "metrics": {"mae": 2.0, "mape_by_tier": {"tier_0": 1.0, "tier_4": 3.0}}},
-        ]), KEYS)
+        _append_parquet(
+            path,
+            pd.DataFrame(
+                [
+                    {
+                        "prediction_type": "forecast",
+                        "horizon_days": 7,
+                        "price_tier": 4,
+                        "metrics": {"mae": 1.0, "mape_by_tier": {"tier_4": 3.0}},
+                    },
+                    {
+                        "prediction_type": "forecast",
+                        "horizon_days": 7,
+                        "price_tier": None,
+                        "metrics": {"mae": 2.0, "mape_by_tier": {"tier_0": 1.0, "tier_4": 3.0}},
+                    },
+                ]
+            ),
+            KEYS,
+        )
 
         out = pd.read_parquet(path)
         by_tier = {
-            (None if pd.isna(r.price_tier) else int(r.price_tier)):
-                json.loads(r.metrics)["mape_by_tier"]
+            (None if pd.isna(r.price_tier) else int(r.price_tier)): json.loads(r.metrics)["mape_by_tier"]
             for r in out.itertuples()
         }
         assert by_tier[4] == {"tier_4": 3.0}
@@ -131,36 +171,63 @@ class TestNestedColumnsBecomeJson:
     def test_the_column_lands_as_a_stable_scalar_type(self, tmp_path):
         """One type forever, so no future field can reopen this class."""
         path = tmp_path / "prediction_accuracy.parquet"
-        _append_parquet(path, pd.DataFrame([
-            {"prediction_type": "forecast", "horizon_days": 7, "price_tier": 1,
-             "metrics": {"mae": 1.0}},
-        ]), KEYS)
+        _append_parquet(
+            path,
+            pd.DataFrame(
+                [
+                    {"prediction_type": "forecast", "horizon_days": 7, "price_tier": 1, "metrics": {"mae": 1.0}},
+                ]
+            ),
+            KEYS,
+        )
         assert _column_type(path, "metrics") == "VARCHAR"
 
         # A second write with a wholly different field set keeps that type.
-        _append_parquet(path, pd.DataFrame([
-            {"prediction_type": "forecast", "horizon_days": 3, "price_tier": 1,
-             "metrics": {"something_new": [1, 2, 3]}},
-        ]), KEYS)
+        _append_parquet(
+            path,
+            pd.DataFrame(
+                [
+                    {
+                        "prediction_type": "forecast",
+                        "horizon_days": 3,
+                        "price_tier": 1,
+                        "metrics": {"something_new": [1, 2, 3]},
+                    },
+                ]
+            ),
+            KEYS,
+        )
         assert _column_type(path, "metrics") == "VARCHAR"
         assert _metrics_of(path, 3)["something_new"] == [1, 2, 3]
 
     def test_a_list_valued_column_is_also_carried(self, tmp_path):
         """accuracy_alerts.details holds STRUCT(window_accuracies DOUBLE[])."""
         path = tmp_path / "accuracy_alerts.parquet"
-        _append_parquet(path, pd.DataFrame([
-            {"id": 1, "details": {"window_accuracies": [33.7, 61.5]}},
-        ]), ["id"])
+        _append_parquet(
+            path,
+            pd.DataFrame(
+                [
+                    {"id": 1, "details": {"window_accuracies": [33.7, 61.5]}},
+                ]
+            ),
+            ["id"],
+        )
         out = pd.read_parquet(path)
         assert json.loads(out.iloc[0]["details"]) == {"window_accuracies": [33.7, 61.5]}
 
     def test_a_genuinely_null_nested_value_stays_null(self, tmp_path):
         """source_breakdown and details are both nullable columns."""
         path = tmp_path / "collection_runs.parquet"
-        _append_parquet(path, pd.DataFrame([
-            {"id": 1, "source_breakdown": {"aggregator": 5}},
-            {"id": 2, "source_breakdown": None},
-        ]), ["id"])
+        _append_parquet(
+            path,
+            pd.DataFrame(
+                [
+                    {"id": 1, "source_breakdown": {"aggregator": 5}},
+                    {"id": 2, "source_breakdown": None},
+                ]
+            ),
+            ["id"],
+        )
         out = pd.read_parquet(path).sort_values("id")
         assert json.loads(out.iloc[0]["source_breakdown"]) == {"aggregator": 5}
         assert out.iloc[1]["source_breakdown"] is None
@@ -184,27 +251,28 @@ class TestNullValuedDedupKeys:
 
     def test_a_null_key_row_is_replaced_not_duplicated(self, tmp_path):
         path = tmp_path / "prediction_accuracy.parquet"
-        row = {"prediction_type": "forecast", "horizon_days": 7,
-               "price_tier": None, "metrics": {"mae": 1.0}}
+        row = {"prediction_type": "forecast", "horizon_days": 7, "price_tier": None, "metrics": {"mae": 1.0}}
 
         _append_parquet(path, pd.DataFrame([row]), KEYS)
         _append_parquet(path, pd.DataFrame([dict(row, metrics={"mae": 2.0})]), KEYS)
 
         out = pd.read_parquet(path)
-        assert len(out) == 1, (
-            f"the all-tiers row duplicated instead of being replaced:\n{out}"
-        )
+        assert len(out) == 1, f"the all-tiers row duplicated instead of being replaced:\n{out}"
         assert json.loads(out.iloc[0]["metrics"])["mae"] == 2.0
 
     def test_a_null_key_still_does_not_collide_with_a_non_null_one(self, tmp_path):
         """The aggregate and the real tiers stay distinct rows."""
         path = tmp_path / "prediction_accuracy.parquet"
-        _append_parquet(path, pd.DataFrame([
-            {"prediction_type": "forecast", "horizon_days": 7, "price_tier": None,
-             "metrics": {"mae": 1.0}},
-            {"prediction_type": "forecast", "horizon_days": 7, "price_tier": 1,
-             "metrics": {"mae": 2.0}},
-        ]), KEYS)
+        _append_parquet(
+            path,
+            pd.DataFrame(
+                [
+                    {"prediction_type": "forecast", "horizon_days": 7, "price_tier": None, "metrics": {"mae": 1.0}},
+                    {"prediction_type": "forecast", "horizon_days": 7, "price_tier": 1, "metrics": {"mae": 2.0}},
+                ]
+            ),
+            KEYS,
+        )
         out = pd.read_parquet(path)
         assert len(out) == 2, "the aggregate and tier 1 collided"
 
@@ -219,11 +287,12 @@ class TestNullValuedDedupKeys:
 
         path = tmp_path / "prediction_accuracy.parquet"
         tiers = [0, 1, 2, 3, 4, 5, *sorted(FLOOR_SWEEP), None]
-        rows = pd.DataFrame([
-            {"prediction_type": "forecast", "horizon_days": 7, "price_tier": t,
-             "metrics": {"mae": 1.0}}
-            for t in tiers
-        ])
+        rows = pd.DataFrame(
+            [
+                {"prediction_type": "forecast", "horizon_days": 7, "price_tier": t, "metrics": {"mae": 1.0}}
+                for t in tiers
+            ]
+        )
         _append_parquet(path, rows, KEYS)
         _append_parquet(path, rows, KEYS)
         assert len(pd.read_parquet(path)) == len(tiers)
@@ -238,10 +307,20 @@ class TestExistingStructFilesAreMigratedInPlace:
         path = tmp_path / "prediction_accuracy.parquet"
         _frozen_struct_file(path)
 
-        _append_parquet(path, pd.DataFrame([
-            {"prediction_type": "forecast", "horizon_days": 3, "price_tier": 1,
-             "metrics": {"mae": 2.0, "brand_new": 1.0}},
-        ]), KEYS)
+        _append_parquet(
+            path,
+            pd.DataFrame(
+                [
+                    {
+                        "prediction_type": "forecast",
+                        "horizon_days": 3,
+                        "price_tier": 1,
+                        "metrics": {"mae": 2.0, "brand_new": 1.0},
+                    },
+                ]
+            ),
+            KEYS,
+        )
 
         # The row that was already on disk is still there, and still readable.
         assert _metrics_of(path, 7) == {"mae": 1.0, "mape_by_tier": {"tier_1": 8.0}}
@@ -251,10 +330,15 @@ class TestExistingStructFilesAreMigratedInPlace:
         """Queryability was the cost of choosing JSON; DuckDB still has it."""
         path = tmp_path / "prediction_accuracy.parquet"
         _frozen_struct_file(path)
-        _append_parquet(path, pd.DataFrame([
-            {"prediction_type": "forecast", "horizon_days": 3, "price_tier": 1,
-             "metrics": {"mae": 2.0}},
-        ]), KEYS)
+        _append_parquet(
+            path,
+            pd.DataFrame(
+                [
+                    {"prediction_type": "forecast", "horizon_days": 3, "price_tier": 1, "metrics": {"mae": 2.0}},
+                ]
+            ),
+            KEYS,
+        )
 
         con = duckdb.connect()
         try:
@@ -278,9 +362,17 @@ class TestExistingStructFilesAreMigratedInPlace:
         _frozen_struct_file(path)
 
         replace_rows(
-            "prediction_accuracy", "horizon_days", [7],
-            [{"prediction_type": "forecast", "horizon_days": 7, "price_tier": 1,
-              "metrics": {"mae": 5.0, "brand_new": 2.0}}],
+            "prediction_accuracy",
+            "horizon_days",
+            [7],
+            [
+                {
+                    "prediction_type": "forecast",
+                    "horizon_days": 7,
+                    "price_tier": 1,
+                    "metrics": {"mae": 5.0, "brand_new": 2.0},
+                }
+            ],
         )
 
         assert _column_type(path, "metrics") == "VARCHAR"

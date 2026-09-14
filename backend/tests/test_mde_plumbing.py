@@ -7,6 +7,7 @@ These tests are cheap (no walkforward run): they pin signatures and the
 source line that consumes the new parameter, since actually exercising two
 multi-minute walkforward runs is out of scope for unit tests.
 """
+
 from __future__ import annotations
 
 import inspect
@@ -25,8 +26,7 @@ def test_run_walkforward_accepts_step_days_and_fold_seed_with_module_defaults():
         "--step-days without editing the module constant between runs"
     )
     assert params["step_days"].default == wf.STEP_DAYS, (
-        "step_days must default to the module constant so a caller that "
-        "omits it gets the old fold cadence"
+        "step_days must default to the module constant so a caller that omits it gets the old fold cadence"
     )
 
     assert "fold_seed" in params, (
@@ -65,19 +65,11 @@ def test_fold_loop_steps_by_the_step_days_parameter_not_the_module_constant():
     parameter could be accepted but unused.
     """
     src = inspect.getsource(wf.run_walkforward)
-    loop_lines = [
-        line for line in src.splitlines()
-        if re.search(r"for\s+window_end\s+in\s+range\(", line)
-    ]
-    assert len(loop_lines) == 1, (
-        f"expected exactly one fold-loop range(...) call, found {len(loop_lines)}"
-    )
+    loop_lines = [line for line in src.splitlines() if re.search(r"for\s+window_end\s+in\s+range\(", line)]
+    assert len(loop_lines) == 1, f"expected exactly one fold-loop range(...) call, found {len(loop_lines)}"
     loop_line = loop_lines[0]
 
-    assert "step_days" in loop_line, (
-        f"fold loop must step by the step_days parameter, got: {loop_line!r}"
-    )
+    assert "step_days" in loop_line, f"fold loop must step by the step_days parameter, got: {loop_line!r}"
     assert not re.search(r"\bSTEP_DAYS\b", loop_line), (
-        f"fold loop must not reference the module constant directly, "
-        f"got: {loop_line!r}"
+        f"fold loop must not reference the module constant directly, got: {loop_line!r}"
     )

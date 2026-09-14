@@ -14,12 +14,13 @@ artifact, not the environment. These guard the flag, the impute helper (off =
 byte-identical fillna, on = pass-through), and the artifact-over-environment
 serving rule.
 """
+
 from __future__ import annotations
+
+from unittest.mock import MagicMock
 
 import numpy as np
 import pandas as pd
-from unittest.mock import MagicMock
-
 from models.forecaster import ItemForecaster
 
 

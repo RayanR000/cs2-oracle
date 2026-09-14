@@ -11,8 +11,8 @@ is only ever deleted once its *keeper* — the correctly-keyed row holding the s
 name — has been positively identified. Anything unpaired is reported, never
 deleted, because deleting it would destroy the only copy of that item.
 """
-import pytest
 
+import pytest
 from scripts.purge_phantom_items import (
     is_mangled_key,
     order_child_tables,
@@ -96,17 +96,19 @@ class TestPairing:
 class TestArchivePurge:
     def test_drops_mangled_slugs_and_keeps_real_ones(self):
         pd = pytest.importorskip("pandas")
-        frame = pd.DataFrame({
-            "item_slug": [
-                "AK-47 | Redline (Field-Tested)",
-                "ak-47-redline-field-tested",
-                "steam_sticker_|_sico_|_rio_2022",
-                "Prisma Case",
-            ],
-            "day": ["2026-07-20"] * 4,
-            "source": ["aggregator_steam"] * 4,
-            "mean_price": [10.0, 10.0, 2.0, 3.0],
-        })
+        frame = pd.DataFrame(
+            {
+                "item_slug": [
+                    "AK-47 | Redline (Field-Tested)",
+                    "ak-47-redline-field-tested",
+                    "steam_sticker_|_sico_|_rio_2022",
+                    "Prisma Case",
+                ],
+                "day": ["2026-07-20"] * 4,
+                "source": ["aggregator_steam"] * 4,
+                "mean_price": [10.0, 10.0, 2.0, 3.0],
+            }
+        )
         kept, dropped = purge_archive_frame(frame)
         assert dropped == 2
         assert list(kept["item_slug"]) == [
@@ -116,11 +118,13 @@ class TestArchivePurge:
 
     def test_a_clean_frame_is_returned_unchanged(self):
         pd = pytest.importorskip("pandas")
-        frame = pd.DataFrame({
-            "item_slug": ["Prisma Case"],
-            "day": ["2026-07-20"],
-            "source": ["aggregator_steam"],
-        })
+        frame = pd.DataFrame(
+            {
+                "item_slug": ["Prisma Case"],
+                "day": ["2026-07-20"],
+                "source": ["aggregator_steam"],
+            }
+        )
         kept, dropped = purge_archive_frame(frame)
         assert dropped == 0
         assert len(kept) == 1
@@ -142,9 +146,7 @@ class TestChildTableOrdering:
         """forecast_outcomes FKs item_forecasts.id, so it must come first."""
         order = order_child_tables(
             ["item_forecasts", "forecast_outcomes"],
-            [("forecast_outcomes", "item_forecasts"),
-             ("forecast_outcomes", "items"),
-             ("item_forecasts", "items")],
+            [("forecast_outcomes", "item_forecasts"), ("forecast_outcomes", "items"), ("item_forecasts", "items")],
         )
         assert order.index("forecast_outcomes") < order.index("item_forecasts")
 
@@ -175,6 +177,5 @@ class TestChildTableOrdering:
 
     def test_a_cycle_still_emits_every_table(self):
         """Ordering cannot resolve a cycle; Postgres should raise, not the sort."""
-        order = order_child_tables(
-            ["a", "b"], [("a", "b"), ("b", "a")])
+        order = order_child_tables(["a", "b"], [("a", "b"), ("b", "a")])
         assert sorted(order) == ["a", "b"]

@@ -47,10 +47,11 @@ Usage:
         --metadata-parquet ../price-archive/item-metadata-bymykel.parquet \
         --frame-cache /tmp/exc_meta_frame.parquet --out /tmp/anom_h7.json
 """
-import os
-import sys
+
 import json
 import logging
+import os
+import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
@@ -62,19 +63,17 @@ os.environ["ANOMALY_GBM"] = "1"
 
 import numpy as np
 import pandas as pd
-
 from database import SessionLocal
 from models.forecaster import ItemForecaster
 from scripts.ab_test_item_metadata import (
     ROW_BUDGET,
     STEP_DAYS,
     VAL_WINDOW_DAYS,
+    _stratified_sample,
     assign_items,
     build_frame,
-    _stratified_sample,
 )
-from scripts.exceedance_meta_ab import (
-    TREE_PARAMS, paired_fold_deltas, _score, fold_tally)
+from scripts.exceedance_meta_ab import TREE_PARAMS, _score, fold_tally, paired_fold_deltas
 
 logging.basicConfig(
     level=logging.INFO,
@@ -104,10 +103,11 @@ def clean_anomaly_label(tdf, horizon, k=2.0, window=60, min_periods=10):
     if ret_col not in tdf.columns:
         raise SystemExit(
             f"{ret_col} absent from the frame — a strictly-prior threshold "
-            f"cannot be built at h={horizon}. Rebuild the frame cache.")
-    prior_std = (tdf.groupby("item_id")[ret_col]
-                 .transform(lambda s: s.shift(1)
-                            .rolling(window, min_periods=min_periods).std()))
+            f"cannot be built at h={horizon}. Rebuild the frame cache."
+        )
+    prior_std = tdf.groupby("item_id")[ret_col].transform(
+        lambda s: s.shift(1).rolling(window, min_periods=min_periods).std()
+    )
     ret = tdf[f"target_return_{horizon}d"]
     anom = (ret.abs() > k * prior_std).astype(float)
     anom[ret.isna().to_numpy()] = np.nan
@@ -127,8 +127,7 @@ def item_rate_predictions(train_df, val_df, target_col, min_obs=10):
     rate, n = g.mean(), g.count()
     pooled = float(train_df[target_col].mean())
     usable = rate[n >= min_obs]
-    return (val_df["item_id"].map(usable).fillna(pooled)
-            .to_numpy(dtype=float), pooled)
+    return (val_df["item_id"].map(usable).fillna(pooled).to_numpy(dtype=float), pooled)
 
 
 def run(df, pruned, horizon_filter=None, n_jobs=None, clean_label=False):
@@ -141,8 +140,7 @@ def run(df, pruned, horizon_filter=None, n_jobs=None, clean_label=False):
     if not forecaster.anomaly_gbm_enabled():
         raise SystemExit("ANOMALY_GBM did not take effect — no labels to score.")
     try:
-        horizons = [h for h in ItemForecaster.HORIZONS
-                    if horizon_filter is None or h == horizon_filter]
+        horizons = [h for h in ItemForecaster.HORIZONS if horizon_filter is None or h == horizon_filter]
         results = {}
         for horizon in horizons:
             logger.info(f"\n  {'=' * 60}\n  Anomaly {horizon}d\n  {'=' * 60}")
@@ -161,10 +159,12 @@ def run(df, pruned, horizon_filter=None, n_jobs=None, clean_label=False):
             if tdf.empty:
                 logger.warning(f"    No valid anomaly labels for {horizon}d")
                 continue
-            logger.info(f"    label base rate: {tdf[target_col].mean():.4f} "
-                        f"over {len(tdf):,} rows "
-                        f"({'STRICTLY-PRIOR' if clean_label else 'production'} "
-                        f"threshold)")
+            logger.info(
+                f"    label base rate: {tdf[target_col].mean():.4f} "
+                f"over {len(tdf):,} rows "
+                f"({'STRICTLY-PRIOR' if clean_label else 'production'} "
+                f"threshold)"
+            )
 
             base_cols = [c for c in pruned if c in tdf.columns]
             sub = tdf[["item_id", "date", "price", target_col] + base_cols].copy()
@@ -178,47 +178,44 @@ def run(df, pruned, horizon_filter=None, n_jobs=None, clean_label=False):
             is_train_item = sub["item_id"].isin(set(train_items)).to_numpy()
 
             per_fold = {"gbm": [], "item_rate": [], "global_rate": []}
-            for fold_idx, window_end in enumerate(
-                    range(split_idx + 1, len(dates), STEP_DAYS)):
-                val_dates = dates[window_end:window_end + VAL_WINDOW_DAYS]
+            for fold_idx, window_end in enumerate(range(split_idx + 1, len(dates), STEP_DAYS)):
+                val_dates = dates[window_end : window_end + VAL_WINDOW_DAYS]
                 if len(val_dates) < 7:
                     continue
                 in_train = sub_days <= dates_dt[window_end - 1]
-                in_val = ((sub_days >= dates_dt[window_end])
-                          & (sub_days <= dates_dt[window_end + len(val_dates) - 1]))
+                in_val = (sub_days >= dates_dt[window_end]) & (sub_days <= dates_dt[window_end + len(val_dates) - 1])
                 train_df = ItemForecaster._purge_overlapping_train_rows(
-                    sub[in_train & is_train_item], val_dates[0], horizon)
+                    sub[in_train & is_train_item], val_dates[0], horizon
+                )
                 val_df = sub[in_val & (is_heldout | is_trained_eval)]
                 if len(val_df) < 50 or train_df.empty:
                     continue
-                train_df = _stratified_sample(
-                    train_df, train_items, ROW_BUDGET, fold_idx)
+                train_df = _stratified_sample(train_df, train_items, ROW_BUDGET, fold_idx)
 
                 med = train_df[base_cols].median()
                 X_train = train_df[base_cols].fillna(med)
                 X_val = val_df[base_cols].fillna(med)
                 head = forecaster._fit_anomaly_classifier(
-                    X_train, train_df[target_col].to_numpy(),
-                    "gbdt", dict(TREE_PARAMS, n_jobs=n_jobs), horizon=horizon,
+                    X_train,
+                    train_df[target_col].to_numpy(),
+                    "gbdt",
+                    dict(TREE_PARAMS, n_jobs=n_jobs),
+                    horizon=horizon,
                     tier_train=None,
                     num_boost_round=ItemForecaster._boost_rounds(horizon, cv=True),
                 )
                 if head is None:
                     continue
 
-                p_item, pooled = item_rate_predictions(
-                    train_df, val_df, target_col)
-                preds = {"gbm": head.predict(X_val),
-                         "item_rate": p_item,
-                         "global_rate": np.full(len(val_df), pooled)}
+                p_item, pooled = item_rate_predictions(train_df, val_df, target_col)
+                preds = {"gbm": head.predict(X_val), "item_rate": p_item, "global_rate": np.full(len(val_df), pooled)}
 
                 ids = val_df["item_id"].to_numpy()
                 held = np.isin(ids, eval_items)
                 y = val_df[target_col].to_numpy(dtype=float)
                 price = val_df["price"].to_numpy(dtype=float)
                 for arm, p in preds.items():
-                    row = {"fold": fold_idx, "val_start": str(val_dates[0]),
-                           "n_train": len(train_df)}
+                    row = {"fold": fold_idx, "val_start": str(val_dates[0]), "n_train": len(train_df)}
                     for cohort, mask in (("heldout", held), ("trained", ~held)):
                         sel = mask & (price >= 1.0)
                         auc, ll, n = _score(y[sel], p[sel])
@@ -230,25 +227,22 @@ def run(df, pruned, horizon_filter=None, n_jobs=None, clean_label=False):
             if not per_fold["gbm"]:
                 logger.warning(f"    no usable folds at {horizon}d")
                 continue
-            results[horizon] = {arm: {"per_fold": rows}
-                                for arm, rows in per_fold.items()}
+            results[horizon] = {arm: {"per_fold": rows} for arm, rows in per_fold.items()}
             for arm, rows in per_fold.items():
                 for cohort in ("heldout", "trained"):
-                    aucs = [r[f"{cohort}_auc"] for r in rows
-                            if r[f"{cohort}_auc"] is not None]
-                    lls = [r[f"{cohort}_logloss"] for r in rows
-                           if r[f"{cohort}_logloss"] is not None]
+                    aucs = [r[f"{cohort}_auc"] for r in rows if r[f"{cohort}_auc"] is not None]
+                    lls = [r[f"{cohort}_logloss"] for r in rows if r[f"{cohort}_logloss"] is not None]
                     if aucs:
                         logger.info(
                             f"      {arm:12s} {cohort:8s} AUC={np.mean(aucs):.4f} "
-                            f"logloss={np.mean(lls):.5f} ({len(aucs)} folds)")
+                            f"logloss={np.mean(lls):.5f} ({len(aucs)} folds)"
+                        )
 
             # Every delta is GBM minus a featureless null: positive AUC and
             # NEGATIVE log loss mean the features earned their place.
             results[horizon]["_paired"] = {
                 f"gbm_vs_{null}": {
-                    f"{cohort}_{metric}": paired_fold_deltas(
-                        per_fold[null], per_fold["gbm"], f"{cohort}_{metric}")
+                    f"{cohort}_{metric}": paired_fold_deltas(per_fold[null], per_fold["gbm"], f"{cohort}_{metric}")
                     for cohort in ("heldout", "trained")
                     for metric in ("auc", "logloss")
                 }
@@ -273,15 +267,20 @@ def print_summary(results):
                     print(f"    {name:20s} — too few paired folds")
                     continue
                 flag = "*" if d["excludes_zero"] else " "
-                print(f"    {name:20s} {d['mean']:+.5f} "
-                      f"[{d['ci_low']:+.5f}, {d['ci_high']:+.5f}]{flag} "
-                      f"{fold_tally(name, d)}")
-    print("\n* = 95% interval excludes zero. The head earns its place only by "
-          "beating\n  item_rate on held-out AUC AND not degrading log loss.")
+                print(
+                    f"    {name:20s} {d['mean']:+.5f} "
+                    f"[{d['ci_low']:+.5f}, {d['ci_high']:+.5f}]{flag} "
+                    f"{fold_tally(name, d)}"
+                )
+    print(
+        "\n* = 95% interval excludes zero. The head earns its place only by "
+        "beating\n  item_rate on held-out AUC AND not degrading log loss."
+    )
 
 
 def main():
     import argparse
+
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--horizon", type=int, default=None)
     parser.add_argument("--frame-cache", default=None)
@@ -289,14 +288,15 @@ def main():
     parser.add_argument("--out", default=None)
     parser.add_argument("--n-jobs", type=int, default=None)
     parser.add_argument(
-        "--clean-label", action="store_true",
+        "--clean-label",
+        action="store_true",
         help="rebuild the 2-sigma threshold from the strictly-prior "
-             "return_{h}d instead of production's forward-overlapping one")
+        "return_{h}d instead of production's forward-overlapping one",
+    )
     args = parser.parse_args()
 
     df, pruned, _ = build_frame(args.metadata_parquet, cache_path=args.frame_cache)
-    results = run(df, pruned, horizon_filter=args.horizon,
-                  n_jobs=args.n_jobs, clean_label=args.clean_label)
+    results = run(df, pruned, horizon_filter=args.horizon, n_jobs=args.n_jobs, clean_label=args.clean_label)
     print_summary(results)
     if args.out:
         Path(args.out).write_text(json.dumps(results, indent=2, default=str))

@@ -10,10 +10,10 @@ The load-bearing property here is that NULL is its own band. Every outcome
 resolved before 2026-08-08 carries one, and folding those into `fresh` would
 report 13 years of unmeasured rows as measured-fresh.
 """
+
 from __future__ import annotations
 
 import pytest
-
 from backtest.scoring import (
     STALENESS_BANDS,
     STALENESS_UNKNOWN,
@@ -27,13 +27,20 @@ def _rec(run_days, correct=True, **kw):
     base = kw.pop("base_price", 10.0)
     actual = kw.pop("actual_price", 11.0)
     r = {
-        "abs_error": 1.0, "pct_error": 10.0, "sq_error": 1.0,
+        "abs_error": 1.0,
+        "pct_error": 10.0,
+        "sq_error": 1.0,
         "direction_correct": correct,
-        "predicted_direction": "up", "actual_direction": "up",
-        "in_interval": True, "confidence": "high",
-        "base_price": base, "actual_price": actual,
-        "price_tier": 2, "item_id": 1,
-        "forecast_date": "2026-07-01", "predicted_mid": 11.0,
+        "predicted_direction": "up",
+        "actual_direction": "up",
+        "in_interval": True,
+        "confidence": "high",
+        "base_price": base,
+        "actual_price": actual,
+        "price_tier": 2,
+        "item_id": 1,
+        "forecast_date": "2026-07-01",
+        "predicted_mid": 11.0,
         "horizon_days": 7,
         "base_stale_run_days": run_days,
     }
@@ -41,14 +48,17 @@ def _rec(run_days, correct=True, **kw):
     return r
 
 
-@pytest.mark.parametrize("value,expected", [
-    (0, "fresh"),
-    (1, "repeat_1"),
-    (2, "run_2_6"),
-    (6, "run_2_6"),
-    (7, "run_7_plus"),
-    (900, "run_7_plus"),
-])
+@pytest.mark.parametrize(
+    "value,expected",
+    [
+        (0, "fresh"),
+        (1, "repeat_1"),
+        (2, "run_2_6"),
+        (6, "run_2_6"),
+        (7, "run_7_plus"),
+        (900, "run_7_plus"),
+    ],
+)
 def test_band_boundaries(value, expected):
     assert staleness_band(value) == expected
 
@@ -83,8 +93,10 @@ def test_counts_and_shares_partition_the_cohort():
 
 def test_accuracy_is_computed_within_the_band_not_pooled():
     records = [
-        _rec(0, correct=True), _rec(0, correct=True),
-        _rec(9, correct=False), _rec(9, correct=False),
+        _rec(0, correct=True),
+        _rec(0, correct=True),
+        _rec(9, correct=False),
+        _rec(9, correct=False),
     ]
     out = score_by_staleness(records)
     assert out["fresh"]["directional_accuracy"] == 100.0

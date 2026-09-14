@@ -14,6 +14,7 @@ numbers an arm is decided on:
 
 Reads nothing but the two runs' artifacts, writes nothing anywhere.
 """
+
 import argparse
 import json
 import re
@@ -50,14 +51,16 @@ def parse_replay_log(text: str) -> list[dict]:
             continue
         m = _COHORT_RE.match(line)
         if m and anchor:
-            rows.append({
-                "anchor": anchor,
-                "horizon": int(m.group(1)),
-                "cohort": m.group(2),
-                "n": int(m.group(3)),
-                "served_ic": float(m.group(4)),
-                "cv_ic": float(m.group(6)),
-            })
+            rows.append(
+                {
+                    "anchor": anchor,
+                    "horizon": int(m.group(1)),
+                    "cohort": m.group(2),
+                    "n": int(m.group(3)),
+                    "served_ic": float(m.group(4)),
+                    "cv_ic": float(m.group(6)),
+                }
+            )
     return rows
 
 
@@ -89,12 +92,13 @@ def cv_table_note(c_meta: dict, a_meta: dict, horizons=HORIZONS) -> str | None:
     terminal, and the all-missing case is the expected state for any pair of
     artifacts trained before 2026-08-11.
     """
-    if any(cv_tied_row(c_meta.get(h, {}), h) or cv_tied_row(a_meta.get(h, {}), h)
-           for h in horizons):
+    if any(cv_tied_row(c_meta.get(h, {}), h) or cv_tied_row(a_meta.get(h, {}), h) for h in horizons):
         return None
-    return ("  (no rows: neither artifact carries `mean_rank_ic_tied` — both "
-            "predate the 2026-08-11 column. The pooled keys are NOT shown in "
-            "its place.)")
+    return (
+        "  (no rows: neither artifact carries `mean_rank_ic_tied` — both "
+        "predate the 2026-08-11 column. The pooled keys are NOT shown in "
+        "its place.)"
+    )
 
 
 def pair_replay_rows(control: list[dict], arm: list[dict]) -> list[dict]:
@@ -106,6 +110,7 @@ def pair_replay_rows(control: list[dict], arm: list[dict]) -> list[dict]:
     mask is arm-invariant by construction and a differing count means the two
     runs scored different items.
     """
+
     def key(r):
         return (r["anchor"], r["horizon"], r["cohort"])
 
@@ -114,18 +119,19 @@ def pair_replay_rows(control: list[dict], arm: list[dict]) -> list[dict]:
     for k in sorted(c_by.keys() | a_by.keys()):
         c, a = c_by.get(k), a_by.get(k)
         anchor, horizon, cohort = k
-        out.append({
-            "anchor": anchor,
-            "horizon": horizon,
-            "cohort": cohort,
-            "n_control": c["n"] if c else None,
-            "n_arm": a["n"] if a else None,
-            "served_ic_control": c["served_ic"] if c else None,
-            "served_ic_arm": a["served_ic"] if a else None,
-            "delta_served_ic": (a["served_ic"] - c["served_ic"]
-                                if c and a else None),
-            "cohort_moved": bool(c and a and c["n"] != a["n"]),
-        })
+        out.append(
+            {
+                "anchor": anchor,
+                "horizon": horizon,
+                "cohort": cohort,
+                "n_control": c["n"] if c else None,
+                "n_arm": a["n"] if a else None,
+                "served_ic_control": c["served_ic"] if c else None,
+                "served_ic_arm": a["served_ic"] if a else None,
+                "delta_served_ic": (a["served_ic"] - c["served_ic"] if c and a else None),
+                "cohort_moved": bool(c and a and c["n"] != a["n"]),
+            }
+        )
     return out
 
 
@@ -134,7 +140,9 @@ def _download(run_id: str, dest: Path) -> Path:
     out.mkdir(parents=True, exist_ok=True)
     subprocess.run(
         ["gh", "run", "download", run_id, "--dir", str(out)],
-        check=True, capture_output=True, text=True,
+        check=True,
+        capture_output=True,
+        text=True,
     )
     return out
 
@@ -172,15 +180,13 @@ def main() -> int:
 
     with tempfile.TemporaryDirectory() as tmp:
         base = Path(args.dir) if args.dir else Path(tmp)
-        c_dir = (base / args.control if args.dir
-                 else _download(args.control, base))
+        c_dir = base / args.control if args.dir else _download(args.control, base)
         a_dir = base / args.arm if args.dir else _download(args.arm, base)
         c_meta, c_rows = _load(c_dir)
         a_meta, a_rows = _load(a_dir)
 
     print(f"\nCV — CLEAN-ANCHOR COHORT   control {args.control} vs arm {args.arm}")
-    print(f"{'h':>4} {'ctl IC':>9} {'arm IC':>9} {'delta':>9} "
-          f"{'ctl edge':>9} {'arm edge':>9} {'rows':>9} {'dates':>6}")
+    print(f"{'h':>4} {'ctl IC':>9} {'arm IC':>9} {'delta':>9} {'ctl edge':>9} {'arm edge':>9} {'rows':>9} {'dates':>6}")
     note = cv_table_note(c_meta, a_meta)
     if note:
         print(note)
@@ -190,28 +196,33 @@ def main() -> int:
         if not c and not a:
             continue
         delta = (a["rank_ic_tied"] - c["rank_ic_tied"]) if c and a else None
-        print(f"{h:>4} {_fmt(c and c['rank_ic_tied']):>9} "
-              f"{_fmt(a and a['rank_ic_tied']):>9} {_fmt(delta):>9} "
-              f"{_fmt(c and c['edge_vs_naive_tied']):>9} "
-              f"{_fmt(a and a['edge_vs_naive_tied']):>9} "
-              f"{(c or a)['tied_rows']:>9,} {(c or a)['tied_dates']:>6}")
+        print(
+            f"{h:>4} {_fmt(c and c['rank_ic_tied']):>9} "
+            f"{_fmt(a and a['rank_ic_tied']):>9} {_fmt(delta):>9} "
+            f"{_fmt(c and c['edge_vs_naive_tied']):>9} "
+            f"{_fmt(a and a['edge_vs_naive_tied']):>9} "
+            f"{(c or a)['tied_rows']:>9,} {(c or a)['tied_dates']:>6}"
+        )
 
-    print(f"\nSERVING REPLAY — tied cohort (deviating shown for contrast)")
-    print(f"{'anchor':>12} {'h':>4} {'cohort':>10} {'n':>7} {'ctl IC':>9} "
-          f"{'arm IC':>9} {'delta':>9}")
+    print("\nSERVING REPLAY — tied cohort (deviating shown for contrast)")
+    print(f"{'anchor':>12} {'h':>4} {'cohort':>10} {'n':>7} {'ctl IC':>9} {'arm IC':>9} {'delta':>9}")
     for r in pair_replay_rows(c_rows, a_rows):
         flag = "  <- COHORT MOVED" if r["cohort_moved"] else ""
         if r["delta_served_ic"] is None:
             flag += "  <- UNPAIRED"
         n = r["n_control"] if r["n_control"] is not None else r["n_arm"]
-        print(f"{r['anchor']:>12} {r['horizon']:>4} {r['cohort']:>10} "
-              f"{n:>7,} {_fmt(r['served_ic_control']):>9} "
-              f"{_fmt(r['served_ic_arm']):>9} "
-              f"{_fmt(r['delta_served_ic']):>9}{flag}")
+        print(
+            f"{r['anchor']:>12} {r['horizon']:>4} {r['cohort']:>10} "
+            f"{n:>7,} {_fmt(r['served_ic_control']):>9} "
+            f"{_fmt(r['served_ic_arm']):>9} "
+            f"{_fmt(r['delta_served_ic']):>9}{flag}"
+        )
 
-    print("\nThe bar is the arm's own naive column on the same folds, not a "
-          "stored number and not 50%. Four anchors are replications, not power: "
-          "read sign consistency, not magnitude.")
+    print(
+        "\nThe bar is the arm's own naive column on the same folds, not a "
+        "stored number and not 50%. Four anchors are replications, not power: "
+        "read sign consistency, not magnitude."
+    )
     return 0
 
 

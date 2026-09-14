@@ -19,6 +19,7 @@ served number is uncalibrated where it is most needed. These guard the fix:
 - the fit refuses below MIN_EXCEEDANCE_CALIBRATION_ROWS and EXCEEDANCE_CALIBRATE=0
   serves raw.
 """
+
 from __future__ import annotations
 
 import inspect
@@ -28,7 +29,6 @@ from unittest.mock import MagicMock
 import numpy as np
 import pandas as pd
 import pytest
-
 from models.forecaster import ItemForecaster
 
 
@@ -47,8 +47,7 @@ def _miscalibrated_pairs(n=4000, seed=0):
 
 
 def _records(p, y):
-    return pd.DataFrame({"exceed_p": np.asarray(p, dtype=float),
-                         "exceed_y": np.asarray(y, dtype=float)})
+    return pd.DataFrame({"exceed_p": np.asarray(p, dtype=float), "exceed_y": np.asarray(y, dtype=float)})
 
 
 def _exc_head(f, cols=("f", "g"), seed=0):
@@ -58,11 +57,12 @@ def _exc_head(f, cols=("f", "g"), seed=0):
     y = (x > 0.5).astype(float)
     X = pd.DataFrame({cols[0]: x, cols[1]: rng.normal(size=n)})
     return f._fit_exceedance_classifier(
-        X, y, boosting_type="gbdt", tree_params={}, horizon=7,
-        tier_train=np.full(n, 2), num_boost_round=60)
+        X, y, boosting_type="gbdt", tree_params={}, horizon=7, tier_train=np.full(n, 2), num_boost_round=60
+    )
 
 
 # --- the isotonic fit -----------------------------------------------------
+
 
 def test_isotonic_fit_is_monotone_bounded_and_within_range(tmp_path):
     f = _forecaster(tmp_path)
@@ -116,11 +116,11 @@ def test_flag_off_fits_nothing(tmp_path, monkeypatch):
 
 # --- the helpers ----------------------------------------------------------
 
+
 def test_brier_is_mean_squared_error():
     p = np.array([0.9, 0.1, 0.5])
     y = np.array([0.0, 0.0, 1.0])
-    assert ItemForecaster.exceedance_brier_score(p, y) == pytest.approx(
-        (0.81 + 0.01 + 0.25) / 3)
+    assert ItemForecaster.exceedance_brier_score(p, y) == pytest.approx((0.81 + 0.01 + 0.25) / 3)
     assert np.isnan(ItemForecaster.exceedance_brier_score([], []))
 
 
@@ -135,14 +135,13 @@ def test_reliability_bins_are_fixed_width():
 
 
 def test_ece_is_count_weighted():
-    rows = [{"n": 1, "pred": 0.9, "realized": 0.0},
-            {"n": 3, "pred": 0.1, "realized": 0.0}]
-    assert ItemForecaster.exceedance_ece(rows) == pytest.approx(
-        (1 * 0.9 + 3 * 0.1) / 4)
+    rows = [{"n": 1, "pred": 0.9, "realized": 0.0}, {"n": 3, "pred": 0.1, "realized": 0.0}]
+    assert ItemForecaster.exceedance_ece(rows) == pytest.approx((1 * 0.9 + 3 * 0.1) / 4)
     assert np.isnan(ItemForecaster.exceedance_ece([]))
 
 
 # --- serving: calibrated disclosed, raw band -------------------------------
+
 
 def test_disclosed_path_calibrates_while_band_stays_raw(tmp_path, monkeypatch):
     """The matched pair: q_hat is tied to RAW p, so band_scale must never see
@@ -156,8 +155,7 @@ def test_disclosed_path_calibrates_while_band_stays_raw(tmp_path, monkeypatch):
     f.feature_medians = pd.Series({"f": 0.0, "g": 0.0})
     f._artifact_exceedance_scale = True
     # A shrink toward 0.2 everywhere: calibrated != raw at every p.
-    f.exceedance_calibrators = {
-        7: {"xs": [0.001, 0.5, 1.0], "ys": [0.001, 0.2, 0.6]}}
+    f.exceedance_calibrators = {7: {"xs": [0.001, 0.5, 1.0], "ys": [0.001, 0.2, 0.6]}}
 
     rng = np.random.default_rng(1)
     rows = pd.DataFrame({"f": rng.normal(size=40), "g": rng.normal(size=40)})
@@ -168,9 +166,7 @@ def test_disclosed_path_calibrates_while_band_stays_raw(tmp_path, monkeypatch):
     np.testing.assert_allclose(scale, sigma * np.sqrt(raw))
 
     disclosed = f.exceedance_probability(7, rows)
-    np.testing.assert_allclose(
-        disclosed, np.clip(np.interp(raw, [0.001, 0.5, 1.0],
-                                     [0.001, 0.2, 0.6]), 1e-3, 1.0))
+    np.testing.assert_allclose(disclosed, np.clip(np.interp(raw, [0.001, 0.5, 1.0], [0.001, 0.2, 0.6]), 1e-3, 1.0))
     assert not np.allclose(disclosed, raw)
 
 
@@ -180,14 +176,14 @@ def test_calibrate_flag_off_serves_raw(tmp_path, monkeypatch):
     head = _exc_head(f)
     f.exceedance_models = {7: head}
     f.feature_medians = pd.Series({"f": 0.0, "g": 0.0})
-    f.exceedance_calibrators = {
-        7: {"xs": [0.001, 1.0], "ys": [0.5, 0.5]}}
+    f.exceedance_calibrators = {7: {"xs": [0.001, 1.0], "ys": [0.5, 0.5]}}
     rows = pd.DataFrame({"f": [0.1, -0.4], "g": [0.2, 0.3]})
     raw = np.clip(head.predict(rows[head.feature_name()]), 1e-3, 1.0)
     np.testing.assert_allclose(f.exceedance_probability(7, rows), raw)
 
 
 # --- persistence -----------------------------------------------------------
+
 
 def test_map_and_report_round_trip_through_meta_json(tmp_path, monkeypatch):
     monkeypatch.delenv("BYMYKEL_METADATA", raising=False)
@@ -199,15 +195,13 @@ def test_map_and_report_round_trip_through_meta_json(tmp_path, monkeypatch):
     meta = f._fit_exceedance_calibrator(7, _records(p, y), True)
     assert meta is not None
     f.save_models()
-    stored = json.loads((tmp_path / "meta.json").read_text())[
-        "exceedance_calibration"]
+    stored = json.loads((tmp_path / "meta.json").read_text())["exceedance_calibration"]
     assert "7" in stored and stored["7"]["meta"]["method"] == "isotonic"
 
     g = _forecaster(tmp_path)
     g.load_models()
     assert g.exceedance_calibrators[7] == f.exceedance_calibrators[7]
-    assert g.exceedance_calibration_meta[7]["brier_cal"] == pytest.approx(
-        meta["brier_cal"])
+    assert g.exceedance_calibration_meta[7]["brier_cal"] == pytest.approx(meta["brier_cal"])
 
 
 def test_artifact_without_a_map_serves_raw(tmp_path, monkeypatch):
@@ -229,12 +223,12 @@ def test_artifact_without_a_map_serves_raw(tmp_path, monkeypatch):
     g.load_models()
     assert g.exceedance_calibrators == {}
     rows = pd.DataFrame({"f": [0.1], "g": [0.2]})
-    raw = np.clip(
-        g.exceedance_models[7].predict(rows[["f", "g"]]), 1e-3, 1.0)
+    raw = np.clip(g.exceedance_models[7].predict(rows[["f", "g"]]), 1e-3, 1.0)
     np.testing.assert_allclose(g.exceedance_probability(7, rows), raw)
 
 
 # --- the OOF gate (source guard; real proof is a training run) --------------
+
 
 def test_cv_loop_computes_oof_whenever_a_head_flag_is_on():
     """With EXCEEDANCE_HEAD=1 alone (production: disclosed move_odds on a

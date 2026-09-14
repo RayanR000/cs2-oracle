@@ -25,6 +25,7 @@ Two distinct archive defects, measured 2026-08-06 over all 4,735 archive days:
    A cutover corrupts any label whose window SPANS it, not just one landing on
    it: the anchor is quoted on the old source basis and the target on the new.
 """
+
 from __future__ import annotations
 
 from datetime import date, timedelta
@@ -33,14 +34,12 @@ from unittest.mock import MagicMock
 import numpy as np
 import pandas as pd
 import pytest
-
 from models.forecaster import ItemForecaster
 
 
 @pytest.fixture
 def forecaster(tmp_path_factory):
-    return ItemForecaster(db_session=MagicMock(),
-                          model_dir=str(tmp_path_factory.mktemp("saved_models")))
+    return ItemForecaster(db_session=MagicMock(), model_dir=str(tmp_path_factory.mktemp("saved_models")))
 
 
 def _panel(n_items=50, n_days=60, start=date(2026, 1, 1)):
@@ -50,9 +49,7 @@ def _panel(n_items=50, n_days=60, start=date(2026, 1, 1)):
         price = 10.0 + i
         for d in range(n_days):
             price *= 1.0 + rng.normal(0.0, 0.01)
-            rows.append({"item_id": f"i{i}",
-                         "date": start + timedelta(days=d),
-                         "price": price})
+            rows.append({"item_id": f"i{i}", "date": start + timedelta(days=d), "price": price})
     return pd.DataFrame(rows)
 
 
@@ -66,7 +63,6 @@ def _republish(df, day):
 
 
 class TestSnapshotDayDetection:
-
     def test_a_republished_day_is_flagged(self, forecaster):
         day = date(2026, 1, 20)
         df = _republish(_panel(), day)
@@ -94,7 +90,6 @@ class TestSnapshotDayDetection:
 
 
 class TestCollectionShiftDetection:
-
     def test_a_universe_expansion_is_flagged(self, forecaster):
         df = _panel(n_items=50)
         cut = date(2026, 1, 30)
@@ -120,7 +115,6 @@ class TestCollectionShiftDetection:
 
 
 class TestLabelsSkipDegenerateDates:
-
     def test_a_target_landing_on_a_snapshot_day_is_dropped(self, forecaster):
         snap = date(2026, 2, 10)
         df = _republish(_panel(n_days=90), snap)

@@ -10,7 +10,6 @@ evaluation rather than whichever row happened to sort first.
 from __future__ import annotations
 
 import pytest
-
 from api.routes import accuracy as route
 from backtest.directional_test import PT_T_HURDLE
 from backtest.scoring import HEADLINE_TIER, MIN_FORECAST_DATES
@@ -75,7 +74,7 @@ def test_the_verdict_and_the_triple_are_served_together(monkeypatch):
 
 
 def test_a_row_predating_the_test_reads_untested_not_no_skill(monkeypatch):
-    """"We never ran the test" and "the test came back null" are different claims.
+    """ "We never ran the test" and "the test came back null" are different claims.
 
     Defaulting the first to the second would let the stored series quietly
     report a measurement nobody made.
@@ -90,11 +89,14 @@ def test_a_row_predating_the_test_reads_untested_not_no_skill(monkeypatch):
 
 def test_each_horizon_is_served_from_its_own_latest_evaluation(monkeypatch):
     """Rows arrive newest-first, so the first sighting of a horizon wins."""
-    _patch_rows(monkeypatch, [
-        _row(7, "2026-08-07", pt_t_stat=4.1, pt_verdict="skill"),
-        _row(30, "2026-08-07", pt_t_stat=-0.2),
-        _row(7, "2026-07-01", pt_t_stat=9.9, pt_verdict="skill"),
-    ])
+    _patch_rows(
+        monkeypatch,
+        [
+            _row(7, "2026-08-07", pt_t_stat=4.1, pt_verdict="skill"),
+            _row(30, "2026-08-07", pt_t_stat=-0.2),
+            _row(7, "2026-07-01", pt_t_stat=9.9, pt_verdict="skill"),
+        ],
+    )
     horizons = route.get_headline(db=None)["horizons"]
 
     assert [h["horizon_days"] for h in horizons] == [7, 30]
@@ -123,9 +125,7 @@ def test_no_parquet_rows_falls_through_to_the_database(monkeypatch, rows):
     a mirror written before price_tier existed holds no HEADLINE_TIER row at
     all while the DB still does.
     """
-    monkeypatch.setattr(
-        route, "_query_prediction_accuracy", lambda *a, **k: rows
-    )
+    monkeypatch.setattr(route, "_query_prediction_accuracy", lambda *a, **k: rows)
     calls = []
 
     class _Q:
@@ -159,11 +159,10 @@ def test_price_tier_query_admits_every_cohort_score_by_tier_emits():
     as `.ge` / `.le` attributes, so they are read out by type.
     """
     from annotated_types import Ge, Le
-
     from api.routes.accuracy import PRICE_TIER_QUERY
     from backtest.scoring import FLOOR_SWEEP, price_tier
 
     lower = next(c.ge for c in PRICE_TIER_QUERY.metadata if isinstance(c, Ge))
     upper = next(c.le for c in PRICE_TIER_QUERY.metadata if isinstance(c, Le))
-    assert lower == min(FLOOR_SWEEP)          # -3
-    assert upper == price_tier(50_000)        # 5
+    assert lower == min(FLOOR_SWEEP)  # -3
+    assert upper == price_tier(50_000)  # 5

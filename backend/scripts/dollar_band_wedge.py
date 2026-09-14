@@ -40,22 +40,20 @@ replay with the raw price frame.
 
 Run: backend/venv/bin/python scripts/dollar_band_wedge.py
 """
+
 from __future__ import annotations
 
 import argparse
 import json
 import sys
 from pathlib import Path
-from typing import Optional
 
 import numpy as np
 import pandas as pd
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from backtest.scoring import excluded_forecast_date       # noqa: E402
-from scripts.centre_vs_lastprice import (                 # noqa: E402
-    SERVED_MIN_PRICE, _load)
+from scripts.centre_vs_lastprice import SERVED_MIN_PRICE, _load
 
 N_BOOTSTRAP = 1000
 RNG_SEED = 42
@@ -71,7 +69,7 @@ def _prepare(df: pd.DataFrame) -> pd.DataFrame:
     """
     b = df["base_price"].to_numpy()
     q = df["current_price"].to_numpy(dtype=float)
-    q = np.where(np.isnan(q) | (q <= 0), b, q)   # `_quote_basis` fallback
+    q = np.where(np.isnan(q) | (q <= 0), b, q)  # `_quote_basis` fallback
     lo = df["predicted_price_low"].to_numpy()
     hi = df["predicted_price_high"].to_numpy()
     actual = df["actual_price"].to_numpy()
@@ -102,19 +100,22 @@ def _bootstrap_gap(g: pd.DataFrame, rng: np.random.Generator) -> tuple:
 
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__)
-    ap.add_argument("--archive-dir", default=None,
-                    help="read a Parquet copy instead of prod Postgres")
+    ap.add_argument("--archive-dir", default=None, help="read a Parquet copy instead of prod Postgres")
     ap.add_argument("--json-out", default=None)
     args = ap.parse_args()
 
     df = _prepare(_load(Path(args.archive_dir) if args.archive_dir else None))
     rng = np.random.default_rng(RNG_SEED)
 
-    print(f"\nserved cohort (>=${SERVED_MIN_PRICE:.0f}): {len(df):,} rows, "
-          f"{df['forecast_date'].nunique()} forecast dates\n")
-    hdr = (f"{'h':>4} {'rows':>7} {'cov_$':>7} {'cov_cal':>8} {'gap':>7} "
-           f"{'90% CI':>16} {'recoverable':>12} {'genuine':>8} "
-           f"{'|wedge| med':>12} {'p90':>7}")
+    print(
+        f"\nserved cohort (>=${SERVED_MIN_PRICE:.0f}): {len(df):,} rows, "
+        f"{df['forecast_date'].nunique()} forecast dates\n"
+    )
+    hdr = (
+        f"{'h':>4} {'rows':>7} {'cov_$':>7} {'cov_cal':>8} {'gap':>7} "
+        f"{'90% CI':>16} {'recoverable':>12} {'genuine':>8} "
+        f"{'|wedge| med':>12} {'p90':>7}"
+    )
     print(hdr)
     print("-" * len(hdr))
 
@@ -127,28 +128,41 @@ def main() -> int:
         rec = float(g["recoverable"].sum() / n_miss) if n_miss else float("nan")
         gen = float(g["genuine_miss"].sum() / n_miss) if n_miss else float("nan")
         aw = g["wedge"].abs()
-        print(f"{h:>4} {len(g):>7,} {cov_d:>7.3f} {cov_c:>8.3f} "
-              f"{cov_c - cov_d:>+7.3f} {'[%+.3f, %+.3f]' % (lo, hi):>16} "
-              f"{rec:>12.1%} {gen:>8.1%} {aw.median():>12.4f} "
-              f"{aw.quantile(0.90):>7.4f}")
-        results.append(dict(horizon=int(h), rows=int(len(g)),
-                            coverage_dollar=cov_d, coverage_calibrated=cov_c,
-                            gap=cov_c - cov_d, gap_ci90=[lo, hi],
-                            dollar_misses=n_miss, recoverable_share=rec,
-                            genuine_share=gen,
-                            wedge_abs_median=float(aw.median()),
-                            wedge_abs_p90=float(aw.quantile(0.90))))
+        print(
+            f"{h:>4} {len(g):>7,} {cov_d:>7.3f} {cov_c:>8.3f} "
+            f"{cov_c - cov_d:>+7.3f} {'[%+.3f, %+.3f]' % (lo, hi):>16} "
+            f"{rec:>12.1%} {gen:>8.1%} {aw.median():>12.4f} "
+            f"{aw.quantile(0.90):>7.4f}"
+        )
+        results.append(
+            dict(
+                horizon=int(h),
+                rows=len(g),
+                coverage_dollar=cov_d,
+                coverage_calibrated=cov_c,
+                gap=cov_c - cov_d,
+                gap_ci90=[lo, hi],
+                dollar_misses=n_miss,
+                recoverable_share=rec,
+                genuine_share=gen,
+                wedge_abs_median=float(aw.median()),
+                wedge_abs_p90=float(aw.quantile(0.90)),
+            )
+        )
 
-    print("\nrecoverable = share of DOLLAR misses that the rebased band covers, "
-          "i.e. the ceiling on\n              what removing the wedge could buy. "
-          "genuine = missed on both bases.\n")
+    print(
+        "\nrecoverable = share of DOLLAR misses that the rebased band covers, "
+        "i.e. the ceiling on\n              what removing the wedge could buy. "
+        "genuine = missed on both bases.\n"
+    )
 
     print("=== dollar coverage by |wedge| decile (h pooled within each cut) ===")
-    print("If the wedge is the cause, coverage falls as the wedge grows while "
-          "the calibrated\nband stays flat — the calibrated column is the "
-          "control.\n")
-    hdr2 = (f"{'decile':>7} {'|wedge| <=':>11} {'rows':>7} {'cov_$':>7} "
-            f"{'cov_cal':>8} {'gap':>7}")
+    print(
+        "If the wedge is the cause, coverage falls as the wedge grows while "
+        "the calibrated\nband stays flat — the calibrated column is the "
+        "control.\n"
+    )
+    hdr2 = f"{'decile':>7} {'|wedge| <=':>11} {'rows':>7} {'cov_$':>7} {'cov_cal':>8} {'gap':>7}"
     print(hdr2)
     print("-" * len(hdr2))
     aw = df["wedge"].abs()
@@ -161,15 +175,13 @@ def main() -> int:
         edge = float(aw[cuts == d].max())
         cov_d = float(sel["cov_dollar"].mean())
         cov_c = float(sel["cov_calibrated"].mean())
-        print(f"{int(d) + 1:>7} {edge:>11.4f} {len(sel):>7,} {cov_d:>7.3f} "
-              f"{cov_c:>8.3f} {cov_c - cov_d:>+7.3f}")
-        decile_rows.append(dict(decile=int(d) + 1, wedge_upper=edge,
-                                rows=int(len(sel)), coverage_dollar=cov_d,
-                                coverage_calibrated=cov_c))
+        print(f"{int(d) + 1:>7} {edge:>11.4f} {len(sel):>7,} {cov_d:>7.3f} {cov_c:>8.3f} {cov_c - cov_d:>+7.3f}")
+        decile_rows.append(
+            dict(decile=int(d) + 1, wedge_upper=edge, rows=len(sel), coverage_dollar=cov_d, coverage_calibrated=cov_c)
+        )
 
     if args.json_out:
-        Path(args.json_out).write_text(json.dumps(
-            {"by_horizon": results, "by_wedge_decile": decile_rows}, indent=2))
+        Path(args.json_out).write_text(json.dumps({"by_horizon": results, "by_wedge_decile": decile_rows}, indent=2))
         print(f"\nwrote {args.json_out}")
     return 0
 

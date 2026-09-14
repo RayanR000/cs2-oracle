@@ -17,16 +17,15 @@ Two failure modes are worth more than the rest, and both have a test here:
    environment about whether it is on.** Same hazard as the tier-lead and
    rank-transform instruments — see `tests/test_tier_lead_and_xs_rank.py`.
 """
+
 from __future__ import annotations
 
 import json
-import os
 from unittest.mock import MagicMock
 
 import numpy as np
 import pandas as pd
 import pytest
-
 from models.forecaster import ItemForecaster
 
 
@@ -37,6 +36,7 @@ def _fc():
 # ----------------------------------------------------------------------
 # Gating
 # ----------------------------------------------------------------------
+
 
 def test_the_instrument_is_off_by_default(monkeypatch):
     monkeypatch.delenv("NAIVE_INIT_SCORE", raising=False)
@@ -54,6 +54,7 @@ def test_only_the_exact_flag_value_enables(monkeypatch):
 # ----------------------------------------------------------------------
 # The offset itself
 # ----------------------------------------------------------------------
+
 
 def test_offset_is_minus_return_1d(monkeypatch):
     monkeypatch.setenv("NAIVE_INIT_SCORE", "1")
@@ -115,6 +116,7 @@ def test_offset_length_and_order_match_the_frame(monkeypatch):
 # ----------------------------------------------------------------------
 # Artifact over environment on the serving path
 # ----------------------------------------------------------------------
+
 
 def test_served_flag_follows_the_artifact_over_the_environment(monkeypatch):
     fc = _fc()
@@ -192,6 +194,7 @@ def test_an_artifact_written_before_the_flag_existed_loads(tmp_path, monkeypatch
 # The serving arithmetic
 # ----------------------------------------------------------------------
 
+
 def test_predict_adds_the_offset_back_to_the_served_mid(monkeypatch):
     """`p50 + offset`, on the same rows, in the same order.
 
@@ -213,6 +216,7 @@ def test_predict_adds_the_offset_back_to_the_served_mid(monkeypatch):
 # The floor property, end to end through a real fit
 # ----------------------------------------------------------------------
 
+
 def _cv_frame(n_items=30, n_dates=90, horizon=3, seed=3):
     """A tdf `_cv_evaluate_horizon` consumes, with SIGNAL-FREE features.
 
@@ -227,19 +231,21 @@ def _cv_frame(n_items=30, n_dates=90, horizon=3, seed=3):
     rows = []
     for item in range(n_items):
         for d in range(n_dates):
-            rows.append({
-                "item_id": f"item-{item}",
-                "date": start + pd.Timedelta(d, unit="D"),
-                "price": 10.0,
-                "constant_a": 1.0,
-                "constant_b": 0.0,
-                # The offset column: varies across items within a date, which is
-                # what makes a within-date rank IC defined at all.
-                "return_1d": float(rng.normal()),
-                # >= HEADLINE_MIN_TIER so the served cohort is non-empty.
-                "price_tier": 2,
-                f"target_return_{horizon}d": float(rng.normal()),
-            })
+            rows.append(
+                {
+                    "item_id": f"item-{item}",
+                    "date": start + pd.Timedelta(d, unit="D"),
+                    "price": 10.0,
+                    "constant_a": 1.0,
+                    "constant_b": 0.0,
+                    # The offset column: varies across items within a date, which is
+                    # what makes a within-date rank IC defined at all.
+                    "return_1d": float(rng.normal()),
+                    # >= HEADLINE_MIN_TIER so the served cohort is non-empty.
+                    "price_tier": 2,
+                    f"target_return_{horizon}d": float(rng.normal()),
+                }
+            )
     return pd.DataFrame(rows)
 
 
@@ -260,13 +266,11 @@ def _run_cv(tmp_path, monkeypatch, horizon=3):
     monkeypatch.setenv("CV_DIAGNOSTIC_CLASSIFIER", "0")
     f = _cv_forecaster(tmp_path)
     params = {0.5: {"num_leaves": 7, "learning_rate": 0.05, "verbosity": -1}}
-    _, fold_metrics, _, _ = f._cv_evaluate_horizon(
-        _cv_frame(horizon=horizon), horizon, params)
+    _, fold_metrics, _, _ = f._cv_evaluate_horizon(_cv_frame(horizon=horizon), horizon, params)
     return fold_metrics
 
 
-def test_a_signal_free_model_reproduces_the_naive_baselines_ranking(
-        tmp_path, monkeypatch):
+def test_a_signal_free_model_reproduces_the_naive_baselines_ranking(tmp_path, monkeypatch):
     monkeypatch.setenv("NAIVE_INIT_SCORE", "1")
     fold_metrics = _run_cv(tmp_path, monkeypatch)
 
@@ -291,21 +295,22 @@ def _train_frame(n_items=10, n_dates=140, seed=5):
         price = base
         for d in range(n_dates):
             price = max(price * (1.0 + rng.normal(0.001, 0.02)), 0.5)
-            rows.append({
-                "item_id": f"item_{item}",
-                "date": (start + pd.Timedelta(d, unit="D")).date(),
-                "price": price,
-                "price_std_60d": abs(rng.normal(base * 0.05, base * 0.01)),
-                "return_1d": float(rng.normal(scale=2.0)),
-                "feat_a": rng.normal(),
-                "feat_b": rng.normal(),
-            })
+            rows.append(
+                {
+                    "item_id": f"item_{item}",
+                    "date": (start + pd.Timedelta(d, unit="D")).date(),
+                    "price": price,
+                    "price_std_60d": abs(rng.normal(base * 0.05, base * 0.01)),
+                    "return_1d": float(rng.normal(scale=2.0)),
+                    "feat_a": rng.normal(),
+                    "feat_b": rng.normal(),
+                }
+            )
     return pd.DataFrame(rows)
 
 
 @pytest.mark.parametrize("skip_regimes", [True, False])
-def test_a_real_train_runs_with_the_instrument_on(tmp_path, monkeypatch,
-                                                 skip_regimes):
+def test_a_real_train_runs_with_the_instrument_on(tmp_path, monkeypatch, skip_regimes):
     """Every `lgb.Dataset` on the training path has to accept the offset.
 
     There are four of them (global, regime, CV, Optuna) plus the holdout
@@ -346,8 +351,7 @@ def test_a_real_train_runs_with_the_instrument_on(tmp_path, monkeypatch,
         assert np.isfinite(f.conformal_calibration[h])
 
 
-def test_without_the_instrument_the_same_model_has_no_ranking_at_all(
-        tmp_path, monkeypatch):
+def test_without_the_instrument_the_same_model_has_no_ranking_at_all(tmp_path, monkeypatch):
     """The control for the test above, so it cannot pass vacuously.
 
     With no offset and no usable features every prediction in a fold is the same

@@ -15,24 +15,20 @@ Usage:
     python scripts/backtest_walkforward_report.py --horizon 7 --window-days 60
 """
 
-import sys
 import json
-import math
 import logging
+import math
+import sys
+from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
-from datetime import datetime, date, timedelta, timezone
-from collections import defaultdict
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 import numpy as np
-from database import SessionLocal, PredictionAccuracy
+from database import PredictionAccuracy, SessionLocal
 from sqlalchemy import text
 
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-)
+logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s")
 logger = logging.getLogger("backtest_walkforward_report")
 
 
@@ -73,7 +69,7 @@ def _compute_window_metrics(rows_in_window):
     interval_total = sum(1 for r in rows_in_window if r.in_interval is not None)
 
     mae = sum(r.abs_error for r in rows_in_window) / n
-    sq_errors = sum(r.abs_error ** 2 for r in rows_in_window)
+    sq_errors = sum(r.abs_error**2 for r in rows_in_window)
     rmse = math.sqrt(sq_errors / n)
     pct_errors = [r.pct_error for r in rows_in_window if r.pct_error is not None]
     mape = sum(pct_errors) / len(pct_errors) if pct_errors else 0.0
@@ -130,9 +126,7 @@ def _detect_trend(values):
     # Linear regression slope approximation
     n = len(values)
     xs = np.arange(n)
-    slope = (n * np.sum(xs * values) - np.sum(xs) * np.sum(values)) / (
-        n * np.sum(xs ** 2) - np.sum(xs) ** 2
-    )
+    slope = (n * np.sum(xs * values) - np.sum(xs) * np.sum(values)) / (n * np.sum(xs**2) - np.sum(xs) ** 2)
     # Average absolute change per window step
     mean_abs_change = np.mean(np.abs(np.diff(values)))
     if mean_abs_change < 1.0:
@@ -156,11 +150,13 @@ def build_sliding_windows(rows, window_days, overlap_pct=0.5):
 
     # Single-day data: one window with all rows
     if total_span == 0:
-        return [{
-            "window_start": min_date,
-            "window_end": min_date + timedelta(days=1),
-            "rows": rows,
-        }]
+        return [
+            {
+                "window_start": min_date,
+                "window_end": min_date + timedelta(days=1),
+                "rows": rows,
+            }
+        ]
 
     # Shrink window if data span is too short for requested size
     effective_window = min(window_days, total_span + 1)
@@ -174,16 +170,15 @@ def build_sliding_windows(rows, window_days, overlap_pct=0.5):
         if window_end > max_date + timedelta(days=1):
             # Extend last window to cover remaining data
             window_end = max_date + timedelta(days=1)
-        window_rows = [
-            r for r in rows
-            if current_start <= r.forecast_date < window_end
-        ]
+        window_rows = [r for r in rows if current_start <= r.forecast_date < window_end]
         if window_rows:
-            windows.append({
-                "window_start": current_start,
-                "window_end": window_end,
-                "rows": window_rows,
-            })
+            windows.append(
+                {
+                    "window_start": current_start,
+                    "window_end": window_end,
+                    "rows": window_rows,
+                }
+            )
         if window_end >= max_date + timedelta(days=1):
             break
         current_start += timedelta(days=step_days)
@@ -228,11 +223,13 @@ def run_walkforward_report(window_days=30, horizon_filter=None):
             for w in windows_data:
                 metrics = _compute_window_metrics(w["rows"])
                 if metrics:
-                    windows.append({
-                        "window_start": w["window_start"].isoformat(),
-                        "window_end": w["window_end"].isoformat(),
-                        **metrics,
-                    })
+                    windows.append(
+                        {
+                            "window_start": w["window_start"].isoformat(),
+                            "window_end": w["window_end"].isoformat(),
+                            **metrics,
+                        }
+                    )
 
             if not windows:
                 logger.info(f"  [{horizon}d] Skipping — no valid windows")
@@ -288,23 +285,34 @@ def run_walkforward_report(window_days=30, horizon_filter=None):
             logger.info(f"{'=' * 65}")
             logger.info(f"  Date range:        {report['date_range']['start']} → {report['date_range']['end']}")
             logger.info(f"  Total outcomes:    {report['total_outcomes']:,}")
-            logger.info(f"  Windows:           {len(windows)} ({window_days}-day windows, "
-                        f"{window_days // 2}-day step)")
+            logger.info(f"  Windows:           {len(windows)} ({window_days}-day windows, {window_days // 2}-day step)")
             logger.info(f"  Effective baseline: {baseline:.0f}% (2-class)")
-            logger.info(f"")
-            logger.info(f"  ┌─────────────────────────── Summary ───────────────────────────┐")
+            logger.info("")
+            logger.info("  ┌─────────────────────────── Summary ───────────────────────────┐")
             s = summary
-            logger.info(f"  │ Directional Accuracy: {s['directional_accuracy_mean']:>6.1f}%  ± {s['directional_accuracy_std']:.1f}%  "
-                        f"[{s['directional_accuracy_min']:.1f}%, {s['directional_accuracy_max']:.1f}%] │")
-            logger.info(f"  │ Improvement vs 50%:  {s['improvement_over_baseline_mean']:>+6.1f}pp                              │")
+            logger.info(
+                f"  │ Directional Accuracy: {s['directional_accuracy_mean']:>6.1f}%  ± {s['directional_accuracy_std']:.1f}%  "
+                f"[{s['directional_accuracy_min']:.1f}%, {s['directional_accuracy_max']:.1f}%] │"
+            )
+            logger.info(
+                f"  │ Improvement vs 50%:  {s['improvement_over_baseline_mean']:>+6.1f}pp                              │"
+            )
             logger.info(f"  │ Trend:               {s['directional_accuracy_trend']:>14}                          │")
-            logger.info(f"  │ MAE:                 ${s['mae_mean']:>6.2f}  ± ${s['mae_std']:.2f}                         │")
-            logger.info(f"  │ MAPE:                {s['mape_mean']:>6.2f}%  ± {s['mape_std']:.2f}%                        │")
-            logger.info(f"  │ Interval Coverage:   {s['interval_coverage_mean']:>6.1f}%  ± {s['interval_coverage_std']:.1f}%                      │")
-            logger.info(f"  │ Improving windows:   {s['improving_windows']:>3} / {s['window_count']}                              │")
-            logger.info(f"  └───────────────────────────────────────────────────────────────┘")
-            logger.info(f"")
-            logger.info(f"  Per-Window Breakdown:")
+            logger.info(
+                f"  │ MAE:                 ${s['mae_mean']:>6.2f}  ± ${s['mae_std']:.2f}                         │"
+            )
+            logger.info(
+                f"  │ MAPE:                {s['mape_mean']:>6.2f}%  ± {s['mape_std']:.2f}%                        │"
+            )
+            logger.info(
+                f"  │ Interval Coverage:   {s['interval_coverage_mean']:>6.1f}%  ± {s['interval_coverage_std']:.1f}%                      │"
+            )
+            logger.info(
+                f"  │ Improving windows:   {s['improving_windows']:>3} / {s['window_count']}                              │"
+            )
+            logger.info("  └───────────────────────────────────────────────────────────────┘")
+            logger.info("")
+            logger.info("  Per-Window Breakdown:")
             logger.info(f"    {'Window Range':<28} {'N':>7} {'DirAcc':>8} {'MAE':>9} {'MAPE':>7} {'IntCov':>8}")
             logger.info(f"    {'─' * 28} {'─' * 7} {'─' * 8} {'─' * 9} {'─' * 7} {'─' * 8}")
             for w in windows:
@@ -316,7 +324,7 @@ def run_walkforward_report(window_days=30, horizon_filter=None):
                     f" {w['mape']:>5.1f}%"
                     f" {w['interval_coverage']:>6.1f}%"
                 )
-            logger.info(f"")
+            logger.info("")
 
         # ── Store to PredictionAccuracy ────────────────────────────────
         today = date.today()
@@ -343,7 +351,7 @@ def run_walkforward_report(window_days=30, horizon_filter=None):
                         "interval_hits": w.get("interval_hits", 0),
                         "interval_total": w.get("interval_total", 0),
                     },
-                    "created_at": datetime.now(timezone.utc).replace(tzinfo=None),
+                    "created_at": datetime.now(UTC).replace(tzinfo=None),
                 }
                 _upsert_accuracy(db, record)
                 stored_count += 1
@@ -357,13 +365,12 @@ def run_walkforward_report(window_days=30, horizon_filter=None):
                 "evaluation_window_days": window_days,
                 "sample_count": report["total_outcomes"],
                 "metrics": report["summary"],
-                "created_at": datetime.now(timezone.utc).replace(tzinfo=None),
+                "created_at": datetime.now(UTC).replace(tzinfo=None),
             }
             _upsert_accuracy(db, summary_record)
             stored_count += 1
 
-        logger.info(f"Walk-forward reports stored: {stored_count} records "
-                     f"across {len(reports)} horizons")
+        logger.info(f"Walk-forward reports stored: {stored_count} records across {len(reports)} horizons")
 
         return {
             "status": "success",
@@ -383,17 +390,12 @@ def run_walkforward_report(window_days=30, horizon_filter=None):
 
 def main():
     import argparse
-    parser = argparse.ArgumentParser(
-        description="Walk-forward backtest report per horizon"
-    )
+
+    parser = argparse.ArgumentParser(description="Walk-forward backtest report per horizon")
     parser.add_argument(
-        "--window-days", type=int, default=30,
-        help="Size of each evaluation window in days (default: 30)"
+        "--window-days", type=int, default=30, help="Size of each evaluation window in days (default: 30)"
     )
-    parser.add_argument(
-        "--horizon", type=int, default=None,
-        help="Only evaluate this horizon (default: all)"
-    )
+    parser.add_argument("--horizon", type=int, default=None, help="Only evaluate this horizon (default: all)")
     args = parser.parse_args()
 
     result = run_walkforward_report(

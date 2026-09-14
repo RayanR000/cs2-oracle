@@ -41,10 +41,7 @@ def upgrade() -> None:
         )
         # Backfill existing rows from is_backfilled: trainable is a subset of backfilled,
         # and the value is not read by training, so this is a safe non-NULL seed.
-        op.execute(
-            "UPDATE items SET is_trainable = COALESCE(is_backfilled, 0) "
-            "WHERE is_trainable IS NULL"
-        )
+        op.execute("UPDATE items SET is_trainable = COALESCE(is_backfilled, 0) WHERE is_trainable IS NULL")
 
 
 def downgrade() -> None:

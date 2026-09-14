@@ -31,6 +31,7 @@ Run: backend/venv/bin/python scripts/conditional_coverage_by_stratum.py
        --archive-dir ../cs2-oracle-data/price-archive
 Default is prod Postgres (read-only); --archive-dir reads a Parquet copy.
 """
+
 from __future__ import annotations
 
 import argparse
@@ -43,8 +44,7 @@ import pandas as pd
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from backtest.scoring import (  # noqa: E402
-    MIN_FORECAST_DATES, excluded_forecast_date, price_tier)
+from backtest.scoring import MIN_FORECAST_DATES, excluded_forecast_date, price_tier
 
 SERVED_MIN_PRICE = 1.0
 N_BOOTSTRAP = 1000
@@ -53,10 +53,18 @@ MIN_DATES_FOR_CI = 3
 # A spread below this is not worth a Mondrian arm even if nominally nonzero.
 FLAT_SPREAD_PP = 5.0
 
-_BASE_COLS = ["item_id", "forecast_date", "horizon_days", "base_price",
-              "actual_price", "current_price", "predicted_price_low",
-              "predicted_price_mid", "predicted_price_high",
-              "base_stale_run_days"]
+_BASE_COLS = [
+    "item_id",
+    "forecast_date",
+    "horizon_days",
+    "base_price",
+    "actual_price",
+    "current_price",
+    "predicted_price_low",
+    "predicted_price_mid",
+    "predicted_price_high",
+    "base_stale_run_days",
+]
 
 
 def _select(db_source: str, family_expr: str) -> str:
@@ -74,15 +82,12 @@ def _select(db_source: str, family_expr: str) -> str:
 
 
 def _read_db() -> pd.DataFrame:
-    from sqlalchemy import text
-
     from database import SessionLocal
+    from sqlalchemy import text
 
     db = SessionLocal()
     try:
-        sql = _select("forecast_outcomes",
-                      "items.type AS family") + \
-            " AND forecast_outcomes.item_id = items.id"
+        sql = _select("forecast_outcomes", "items.type AS family") + " AND forecast_outcomes.item_id = items.id"
         # The JOIN needs items in FROM; rebuild with it.
         cols = ", ".join(f"forecast_outcomes.{c}" for c in _BASE_COLS)
         sql = f"""
@@ -107,8 +112,7 @@ def _read_parquet(archive_dir: Path) -> pd.DataFrame:
 
     ops = archive_dir / "ops" / "forecast_outcomes.parquet"
     meta = archive_dir / "item-metadata.parquet"
-    fam = (f"LEFT JOIN read_parquet('{meta}') AS m "
-           f"ON m.item_slug = o.item_slug")
+    fam = f"LEFT JOIN read_parquet('{meta}') AS m ON m.item_slug = o.item_slug"
     cols = ", ".join(f"o.{c}" for c in _BASE_COLS + ["item_slug"])
     # item-metadata.parquet carries weapon_type, not type.
     sql = f"""
@@ -151,9 +155,14 @@ def prepare(df: pd.DataFrame) -> pd.DataFrame:
     """Rebase to the model's own quote, derive coverage and strata."""
     df = df.copy()
     df["forecast_date"] = pd.to_datetime(df["forecast_date"]).dt.date
-    for c in ("base_price", "actual_price", "current_price",
-              "predicted_price_low", "predicted_price_mid",
-              "predicted_price_high"):
+    for c in (
+        "base_price",
+        "actual_price",
+        "current_price",
+        "predicted_price_low",
+        "predicted_price_mid",
+        "predicted_price_high",
+    ):
         df[c] = pd.to_numeric(df[c], errors="coerce")
     reasons = df["forecast_date"].map(excluded_forecast_date)
     for why, n in reasons.dropna().value_counts().items():
@@ -172,17 +181,14 @@ def prepare(df: pd.DataFrame) -> pd.DataFrame:
     df["half_width"] = (w_lo + w_hi) / 2.0
     df["tier"] = [price_tier(p) for p in b]
     df["family"] = df["family"].fillna("unknown").astype(str)
-    df["stale"] = [bucket_staleness(v)
-                   for v in df["base_stale_run_days"].to_numpy()]
+    df["stale"] = [bucket_staleness(v) for v in df["base_stale_run_days"].to_numpy()]
     df["width"] = "flat"
     for h, idx in df.groupby("horizon_days").groups.items():
-        df.loc[idx, "width"] = assign_width_tertile(
-            df.loc[idx, "half_width"]).astype(str).values
+        df.loc[idx, "width"] = assign_width_tertile(df.loc[idx, "half_width"]).astype(str).values
     return df
 
 
-def _bootstrap_ci(g: pd.DataFrame,
-                  rng: np.random.Generator) -> tuple[float, float]:
+def _bootstrap_ci(g: pd.DataFrame, rng: np.random.Generator) -> tuple[float, float]:
     dates = g["forecast_date"].unique()
     if len(dates) < MIN_DATES_FOR_CI:
         return (float("nan"), float("nan"))
@@ -195,24 +201,27 @@ def _bootstrap_ci(g: pd.DataFrame,
     return (float(np.percentile(out, 5)), float(np.percentile(out, 95)))
 
 
-def stratum_table(df: pd.DataFrame, axis: str,
-                  rng: np.random.Generator) -> list:
+def stratum_table(df: pd.DataFrame, axis: str, rng: np.random.Generator) -> list:
     rows = []
     for (h, s), g in df.groupby(["horizon_days", axis]):
         lo, hi = _bootstrap_ci(g, rng)
-        rows.append(dict(horizon=int(h), stratum=str(s), rows=int(len(g)),
-                         dates=int(g["forecast_date"].nunique()),
-                         coverage=float(g["covered"].mean()),
-                         ci90=[lo, hi],
-                         median_width=float(g["half_width"].median())))
+        rows.append(
+            dict(
+                horizon=int(h),
+                stratum=str(s),
+                rows=len(g),
+                dates=int(g["forecast_date"].nunique()),
+                coverage=float(g["covered"].mean()),
+                ci90=[lo, hi],
+                median_width=float(g["half_width"].median()),
+            )
+        )
     return rows
 
 
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__)
-    ap.add_argument("--archive-dir", default=None,
-                    help="read a price-archive Parquet copy instead of prod "
-                         "Postgres.")
+    ap.add_argument("--archive-dir", default=None, help="read a price-archive Parquet copy instead of prod Postgres.")
     ap.add_argument("--json-out", default=None)
     args = ap.parse_args()
 
@@ -222,23 +231,26 @@ def main() -> int:
     rng = np.random.default_rng(RNG_SEED)
     payload: dict = {}
 
-    print(f"\nserved cohort (>=$1.0): {len(df):,} resolved rows, "
-          f"{df['forecast_date'].nunique()} forecast dates\n")
+    print(f"\nserved cohort (>=$1.0): {len(df):,} resolved rows, {df['forecast_date'].nunique()} forecast dates\n")
     for axis in ("tier", "family", "width", "stale"):
         rows = stratum_table(df, axis, rng)
         payload[axis] = rows
         print(f"=== by {axis} ===")
-        print(f"{'h':>4} {'stratum':>12} {'rows':>8} {'dates':>6} "
-              f"{'cover':>7} {'90% CI':>22} {'med_hw%':>8}")
+        print(f"{'h':>4} {'stratum':>12} {'rows':>8} {'dates':>6} {'cover':>7} {'90% CI':>22} {'med_hw%':>8}")
         for h in sorted({r["horizon"] for r in rows}):
             sub = [r for r in rows if r["horizon"] == h]
             covs = [r["coverage"] for r in sub]
             for r in sorted(sub, key=lambda d: d["stratum"]):
-                ci = "[%5.1f, %5.1f]" % (r["ci90"][0] * 100, r["ci90"][1] * 100) \
-                    if np.isfinite(r["ci90"][0]) else "(<3 dates)"
-                print(f"{h:>4} {r['stratum']:>12} {r['rows']:>8,} "
-                      f"{r['dates']:>6} {r['coverage'] * 100:>6.1f}% "
-                      f"{ci:>22} {r['median_width'] * 100:>7.2f}")
+                ci = (
+                    "[%5.1f, %5.1f]" % (r["ci90"][0] * 100, r["ci90"][1] * 100)
+                    if np.isfinite(r["ci90"][0])
+                    else "(<3 dates)"
+                )
+                print(
+                    f"{h:>4} {r['stratum']:>12} {r['rows']:>8,} "
+                    f"{r['dates']:>6} {r['coverage'] * 100:>6.1f}% "
+                    f"{ci:>22} {r['median_width'] * 100:>7.2f}"
+                )
             spread = (max(covs) - min(covs)) * 100 if covs else float("nan")
             n_dates = {r["dates"] for r in sub}
             mature = min(n_dates) >= MIN_FORECAST_DATES if n_dates else False
@@ -251,8 +263,10 @@ def main() -> int:
     if args.json_out:
         Path(args.json_out).write_text(json.dumps(payload, indent=2))
         print(f"wrote {args.json_out}")
-    print("Gate read: an axis earns a Mondrian arm only with a SPREAD that "
-          "survives its CIs. A FLAT axis at every horizon means skip the arm.")
+    print(
+        "Gate read: an axis earns a Mondrian arm only with a SPREAD that "
+        "survives its CIs. A FLAT axis at every horizon means skip the arm."
+    )
     return 0
 
 

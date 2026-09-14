@@ -56,7 +56,7 @@ from __future__ import annotations
 
 import logging
 import os
-from typing import Optional, Sequence
+from collections.abc import Sequence
 
 import lightgbm as lgb
 import numpy as np
@@ -118,8 +118,7 @@ def _target(residual_pct) -> np.ndarray:
     return np.log(np.maximum(r, LOG_RESID_FLOOR_PCT))
 
 
-def fit(X: pd.DataFrame, residual_pct,
-        params: Optional[dict] = None) -> Optional[lgb.Booster]:
+def fit(X: pd.DataFrame, residual_pct, params: dict | None = None) -> lgb.Booster | None:
     """One scale model. Returns None when the fit is not worth trusting.
 
     None is a supported outcome, not an error: the caller falls back to `sigma`,
@@ -130,8 +129,7 @@ def fit(X: pd.DataFrame, residual_pct,
     ok = np.isfinite(y) & np.isfinite(X.to_numpy(dtype=float)).all(axis=1)
     if int(ok.sum()) < MIN_FIT_ROWS:
         logger.warning(
-            f"  learned scale: {int(ok.sum()):,} usable rows < {MIN_FIT_ROWS:,}, "
-            f"falling back to sigma for this horizon"
+            f"  learned scale: {int(ok.sum()):,} usable rows < {MIN_FIT_ROWS:,}, falling back to sigma for this horizon"
         )
         return None
 
@@ -143,9 +141,9 @@ def fit(X: pd.DataFrame, residual_pct,
     return model.booster_
 
 
-def predict_scale(booster: Optional[lgb.Booster], X: pd.DataFrame,
-                  clip: Optional[tuple[float, float]] = None,
-                  fallback=None) -> np.ndarray:
+def predict_scale(
+    booster: lgb.Booster | None, X: pd.DataFrame, clip: tuple[float, float] | None = None, fallback=None
+) -> np.ndarray:
     """The scale itself: `exp(model)`, clipped.
 
     `fallback` (normally `sigma`) fills any row the model cannot score. A NaN
@@ -154,8 +152,7 @@ def predict_scale(booster: Optional[lgb.Booster], X: pd.DataFrame,
     non-finite value is replaced here, at the source.
     """
     n = len(X)
-    fb = (np.full(n, np.nan) if fallback is None
-          else np.asarray(fallback, dtype=float))
+    fb = np.full(n, np.nan) if fallback is None else np.asarray(fallback, dtype=float)
     if booster is None:
         return fb
 
@@ -184,13 +181,12 @@ def clip_bounds(scale_values) -> tuple[float, float]:
     s = s[np.isfinite(s) & (s > 0)]
     if s.size == 0:
         raise ValueError("no finite scale values: cannot derive clip bounds")
-    return (float(np.percentile(s, SCALE_FLOOR_PCTL)),
-            float(np.percentile(s, SCALE_CAP_PCTL)))
+    return (float(np.percentile(s, SCALE_FLOOR_PCTL)), float(np.percentile(s, SCALE_CAP_PCTL)))
 
 
-def cross_fit(X: pd.DataFrame, residual_pct, folds: Sequence,
-              params: Optional[dict] = None,
-              fallback=None) -> tuple[np.ndarray, int]:
+def cross_fit(
+    X: pd.DataFrame, residual_pct, folds: Sequence, params: dict | None = None, fallback=None
+) -> tuple[np.ndarray, int]:
     """Out-of-sample scale for every calibration row, by leave-one-fold-out.
 
     Returns `(scale, n_models)`. Each row is scored by a model that never saw
@@ -208,19 +204,17 @@ def cross_fit(X: pd.DataFrame, residual_pct, folds: Sequence,
     """
     f = np.asarray(folds)
     n = len(X)
-    fb = (np.full(n, np.nan) if fallback is None
-          else np.asarray(fallback, dtype=float))
+    fb = np.full(n, np.nan) if fallback is None else np.asarray(fallback, dtype=float)
     out = np.array(fb, dtype=float, copy=True)
 
     n_models = 0
     for fold in np.unique(f):
-        held = (f == fold)
+        held = f == fold
         booster = fit(X[~held], np.asarray(residual_pct)[~held], params)
         if booster is None:
             continue
         n_models += 1
         # No clip on the calibration pass: the bounds are derived FROM this
         # distribution afterwards, so clipping first would be circular.
-        out[held] = predict_scale(booster, X[held], clip=None,
-                                  fallback=fb[held])
+        out[held] = predict_scale(booster, X[held], clip=None, fallback=fb[held])
     return out, n_models

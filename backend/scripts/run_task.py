@@ -4,23 +4,21 @@ Task runner for automated maintenance and collection.
 Used by GitHub Actions to trigger specific pipeline tasks.
 """
 
-import sys
 import logging
 import subprocess
-from pathlib import Path
+import sys
 from datetime import datetime
+from pathlib import Path
 
 # Add project root to path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from database import SessionLocal
 from collectors.pipeline import DataPipeline
+from database import SessionLocal
 
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-)
+logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s")
 logger = logging.getLogger("task_runner")
+
 
 def run_migrations(revision="head"):
     """Run Alembic migrations using the current Python interpreter."""
@@ -31,10 +29,9 @@ def run_migrations(revision="head"):
         result = subprocess.run(cmd, check=True, cwd=str(Path(__file__).parent.parent))
         return {"status": "success", "revision": revision, "returncode": result.returncode}
     except (FileNotFoundError, subprocess.CalledProcessError) as e:
-        logger.error(
-            "Migration command failed. Install backend requirements and retry."
-        )
+        logger.error("Migration command failed. Install backend requirements and retry.")
         raise RuntimeError(f"Could not run migrations to {revision}: {e}")
+
 
 # Row-count fields every task can return. This guard used to key on
 # `items_collected` alone — a field only collectors/pipeline.py sets. Every other
@@ -43,19 +40,19 @@ def run_migrations(revision="head"):
 # Reddit collector (403s, never stored a single row) both stayed dead behind a
 # green CI badge.
 ROW_COUNT_FIELDS = (
-    "items_collected",      # collectors/pipeline.py
-    "total_records",        # scripts/backtest_accuracy.py
-    "impacts_written",      # scripts/event_correlation_analysis.py
-    "patterns_written",     # scripts/event_correlation_analysis.py
-    "correlations_written", # scripts/event_correlation_analysis.py
-    "steam_items",          # collectors/supply_scraper.py
-    "total_mentions",       # collectors/social_sentiment.py
-    "inserted",             # collectors/social_sentiment.py
-    "supply_rows",          # collectors/supply_depth.py
-    "volume_rows",          # collectors/sales_volume.py
-    "reddit_event_rows",    # collectors/reddit_events.py
-    "case_panel_rows",      # scripts/build_case_panel.py
-    "sticker_panel_rows",   # scripts/build_sticker_panel.py
+    "items_collected",  # collectors/pipeline.py
+    "total_records",  # scripts/backtest_accuracy.py
+    "impacts_written",  # scripts/event_correlation_analysis.py
+    "patterns_written",  # scripts/event_correlation_analysis.py
+    "correlations_written",  # scripts/event_correlation_analysis.py
+    "steam_items",  # collectors/supply_scraper.py
+    "total_mentions",  # collectors/social_sentiment.py
+    "inserted",  # collectors/social_sentiment.py
+    "supply_rows",  # collectors/supply_depth.py
+    "volume_rows",  # collectors/sales_volume.py
+    "reddit_event_rows",  # collectors/reddit_events.py
+    "case_panel_rows",  # scripts/build_case_panel.py
+    "sticker_panel_rows",  # scripts/build_sticker_panel.py
 )
 
 # Statuses that mean "this task legitimately had nothing to do", as opposed to
@@ -101,8 +98,7 @@ def check_results(task_name, results) -> None:
         """True if r reports row counts and every one of them is zero."""
         if r.get("status") != "success":
             return False
-        counts = [r[f] for f in ROW_COUNT_FIELDS
-                  if isinstance(r.get(f), (int, float))]
+        counts = [r[f] for f in ROW_COUNT_FIELDS if isinstance(r.get(f), (int, float))]
         return bool(counts) and not any(counts)
 
     # Treat zero-row results as failures (all endpoints likely down). For
@@ -123,10 +119,7 @@ def check_results(task_name, results) -> None:
     # update, which is itself a zero-row outcome worth surfacing.
     skipped = [r for r in results if r.get("status") == "skipped"]
     if skipped:
-        logger.error(
-            f"❌ TASK '{task_name}' was SKIPPED and wrote nothing: "
-            f"{skipped[0].get('reason', skipped[0])}"
-        )
+        logger.error(f"❌ TASK '{task_name}' was SKIPPED and wrote nothing: {skipped[0].get('reason', skipped[0])}")
         sys.exit(1)
 
 
@@ -139,9 +132,9 @@ def run_task(task_name):
         result = result2 = result3 = None
 
         if task_name == "aggregate":
-            logger.info("="*60)
+            logger.info("=" * 60)
             logger.info("TASK: Full Aggregator Scrape (All items)")
-            logger.info("="*60)
+            logger.info("=" * 60)
             result = pipeline.run_full_aggregator_collection()
 
             if isinstance(result, dict):
@@ -152,78 +145,84 @@ def run_task(task_name):
             print(f"RESULT: {result}")
 
         elif task_name == "priority":
-            logger.info("="*60)
+            logger.info("=" * 60)
             logger.info("TASK: Priority Aggregator Scrape (Top 2000)")
-            logger.info("="*60)
+            logger.info("=" * 60)
             result = pipeline.run_priority_collection()
             print(f"RESULT: {result}")
 
         elif task_name == "trends":
-            logger.info("="*60)
+            logger.info("=" * 60)
             logger.info("TASK: Trend Analysis — Deprecated, skipping")
-            logger.info("="*60)
+            logger.info("=" * 60)
             result = {"status": "success", "message": "Trend analysis deprecated (ML forecasts used instead)"}
             print(f"RESULT: {result}")
 
         elif task_name == "long_term_trends":
-            logger.info("="*60)
+            logger.info("=" * 60)
             logger.info("TASK: Long-Term Trend Analysis — Deprecated, skipping")
-            logger.info("="*60)
+            logger.info("=" * 60)
             result = {"status": "success", "message": "Long-term trend analysis deprecated (ML forecasts used instead)"}
             print(f"RESULT: {result}")
 
         elif task_name == "migrate":
-            logger.info("="*60)
+            logger.info("=" * 60)
             logger.info("TASK: Database Migration (Alembic upgrade head)")
-            logger.info("="*60)
+            logger.info("=" * 60)
             result = run_migrations("head")
             print(f"RESULT: {result}")
 
         elif task_name == "backtest":
-            logger.info("="*60)
+            logger.info("=" * 60)
             logger.info("TASK: Backtest Accuracy (All Types)")
-            logger.info("="*60)
+            logger.info("=" * 60)
             from scripts.backtest_accuracy import run_backtest
+
             result = run_backtest()
             print(f"RESULT: {result}")
 
         elif task_name == "backtest_historical":
-            logger.info("="*60)
+            logger.info("=" * 60)
             logger.info("TASK: Historical Walk-Forward Backtest")
-            logger.info("="*60)
+            logger.info("=" * 60)
             from scripts.backtest_accuracy import run_backtest
+
             result = run_backtest(types=["historical"])
             print(f"RESULT: {result}")
 
         elif task_name == "event_correlation":
-            logger.info("="*60)
+            logger.info("=" * 60)
             logger.info("TASK: Event Correlation Analysis")
-            logger.info("="*60)
+            logger.info("=" * 60)
             from scripts.event_correlation_analysis import run_analysis
+
             result = run_analysis(days_back=90)
             print(f"RESULT: {result}")
 
         elif task_name == "walkforward_report":
-            logger.info("="*60)
+            logger.info("=" * 60)
             logger.info("TASK: Walk-Forward Backtest Report (Per-Horizon)")
-            logger.info("="*60)
+            logger.info("=" * 60)
             from scripts.backtest_walkforward_report import run_walkforward_report
+
             result = run_walkforward_report()
             print(f"RESULT: {result}")
 
         elif task_name == "supply_scrape":
-            logger.info("="*60)
+            logger.info("=" * 60)
             logger.info("TASK: Supply Scraper (Steam sell_listings)")
-            logger.info("="*60)
+            logger.info("=" * 60)
             from scripts.run_supply_scraper import run as run_supply
+
             result = run_supply()
             print(f"RESULT: {result}")
 
         elif task_name == "reddit_social":
-            logger.info("="*60)
+            logger.info("=" * 60)
             logger.info("TASK: Reddit Social Sentiment Collection")
-            logger.info("="*60)
+            logger.info("=" * 60)
             from collectors.social_sentiment import run as run_reddit_social
+
             result = run_reddit_social()
             print(f"RESULT: {result}")
 
@@ -242,10 +241,13 @@ def run_task(task_name):
     finally:
         db.close()
 
+
 if __name__ == "__main__":
     if len(sys.argv) < 2:
         print("Usage: python run_task.py <task_name>")
-        print("Tasks: aggregate, priority, trends, long_term_trends (deprecated), migrate, backtest, backtest_historical, walkforward_report, event_correlation, supply_scrape, reddit_social")
+        print(
+            "Tasks: aggregate, priority, trends, long_term_trends (deprecated), migrate, backtest, backtest_historical, walkforward_report, event_correlation, supply_scrape, reddit_social"
+        )
         sys.exit(1)
-        
+
     run_task(sys.argv[1])

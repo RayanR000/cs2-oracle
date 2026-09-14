@@ -6,6 +6,7 @@ lever. Sweeping it is only meaningful if the two ENDS of the sweep are exactly
 what they claim to be -- K=0 the pure per-item estimate, K->inf the pure pool --
 so both ends are pinned here.
 """
+
 from __future__ import annotations
 
 import sys
@@ -18,8 +19,7 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts"))
 
-from magnitude_vs_climatology import (  # noqa: E402
-    TARGET_COVERAGE, _climatology_halfwidth)
+from magnitude_vs_climatology import TARGET_COVERAGE, _climatology_halfwidth
 
 
 def _calib() -> pd.DataFrame:
@@ -28,15 +28,14 @@ def _calib() -> pd.DataFrame:
     rows = []
     for iid, scale in [("vol", 30.0), ("calm", 2.0)]:
         for _ in range(400):
-            rows.append({"item_id": iid, "tier": 3,
-                         "r_h": float(rng.normal(0, scale))})
+            rows.append({"item_id": iid, "tier": 3, "r_h": float(rng.normal(0, scale))})
     return pd.DataFrame(rows)
 
 
 def _test_rows() -> pd.DataFrame:
-    return pd.DataFrame([{"item_id": "vol", "tier": 3},
-                         {"item_id": "calm", "tier": 3},
-                         {"item_id": "unseen", "tier": 3}])
+    return pd.DataFrame(
+        [{"item_id": "vol", "tier": 3}, {"item_id": "calm", "tier": 3}, {"item_id": "unseen", "tier": 3}]
+    )
 
 
 def _item_q(calib: pd.DataFrame, iid: str) -> float:

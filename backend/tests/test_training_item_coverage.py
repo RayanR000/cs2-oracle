@@ -22,12 +22,12 @@ own seed moves `mean_classifier_acc_ge1` by sd 1.5-3.1pp, and the +3.50pp that
 once also justified the floor does not reproduce
 (`docs/changelog/2026-08-08-per-fold-price-filter-rederived.md`).
 """
+
 from __future__ import annotations
 
 import inspect
 
 import pytest
-
 from models.forecaster import ItemForecaster
 
 
@@ -96,12 +96,10 @@ def test_train_forwards_the_actual_budget_value(monkeypatch):
 
     forecaster = ItemForecaster.__new__(ItemForecaster)
     with pytest.raises(_Abort):
-        ItemForecaster.train(forecaster, max_rows=700_000,
-                             max_feature_rows=555_000)
+        ItemForecaster.train(forecaster, max_rows=700_000, max_feature_rows=555_000)
 
     assert seen.get("max_feature_rows") == 555_000, (
-        f"train forwarded max_feature_rows={seen.get('max_feature_rows')!r}, "
-        "expected its own max_feature_rows argument"
+        f"train forwarded max_feature_rows={seen.get('max_feature_rows')!r}, expected its own max_feature_rows argument"
     )
 
 
@@ -129,8 +127,7 @@ def test_the_per_horizon_cap_does_not_leak_into_coverage(monkeypatch):
         ItemForecaster.train(forecaster, max_rows=700_000)
 
     assert seen.get("max_feature_rows") == 1_200_000, (
-        f"max_rows leaked into coverage: subsample got "
-        f"{seen.get('max_feature_rows')!r} when only max_rows was passed"
+        f"max_rows leaked into coverage: subsample got {seen.get('max_feature_rows')!r} when only max_rows was passed"
     )
 
 
@@ -145,10 +142,12 @@ class TestFeatureRowsOverride:
     @staticmethod
     def _fn():
         from scripts.forecast_prices import _train_feature_rows
+
         return _train_feature_rows
 
     def test_default_when_unset(self, monkeypatch):
         from scripts.forecast_prices import DEFAULT_TRAIN_FEATURE_ROWS
+
         monkeypatch.delenv("TRAIN_FEATURE_ROWS", raising=False)
         assert self._fn()() == DEFAULT_TRAIN_FEATURE_ROWS
 
@@ -159,15 +158,16 @@ class TestFeatureRowsOverride:
     @pytest.mark.parametrize("bad", ["", "lots", "0", "-1"])
     def test_bad_values_fall_back_to_the_default(self, monkeypatch, bad):
         from scripts.forecast_prices import DEFAULT_TRAIN_FEATURE_ROWS
+
         monkeypatch.setenv("TRAIN_FEATURE_ROWS", bad)
         assert self._fn()() == DEFAULT_TRAIN_FEATURE_ROWS
 
     def test_production_default_matches_the_forecaster_default(self):
         """One status quo, stated in two places — they must agree."""
         from scripts.forecast_prices import DEFAULT_TRAIN_FEATURE_ROWS
+
         sig = inspect.signature(ItemForecaster.train)
-        assert (DEFAULT_TRAIN_FEATURE_ROWS
-                == sig.parameters["max_feature_rows"].default)
+        assert sig.parameters["max_feature_rows"].default == DEFAULT_TRAIN_FEATURE_ROWS
 
 
 class TestMedianPriceFloor:
@@ -185,15 +185,16 @@ class TestMedianPriceFloor:
     @staticmethod
     def _frame():
         import pandas as pd
-        return pd.DataFrame({
-            "item_id": ["cheap"] * 3 + ["dear"] * 3 + ["spiky"] * 3,
-            "date": pd.to_datetime(["2026-01-01", "2026-01-02", "2026-01-03"] * 3),
-            # spiky is a penny item with one large print: its mean clears $1
-            # but its median does not.
-            "price": [0.03, 0.04, 0.05,
-                      5.00, 6.00, 7.00,
-                      0.03, 0.04, 99.0],
-        })
+
+        return pd.DataFrame(
+            {
+                "item_id": ["cheap"] * 3 + ["dear"] * 3 + ["spiky"] * 3,
+                "date": pd.to_datetime(["2026-01-01", "2026-01-02", "2026-01-03"] * 3),
+                # spiky is a penny item with one large print: its mean clears $1
+                # but its median does not.
+                "price": [0.03, 0.04, 0.05, 5.00, 6.00, 7.00, 0.03, 0.04, 99.0],
+            }
+        )
 
     def test_keeps_only_items_whose_median_clears_the_floor(self):
         out = ItemForecaster._filter_by_median_price(self._frame(), 1.0)
@@ -233,15 +234,13 @@ class TestMedianPriceFloor:
         sig = inspect.signature(ItemForecaster.train)
         assert "min_median_price" in sig.parameters
         assert sig.parameters["min_median_price"].default == 1.0
-        assert "min_median_price=min_median_price" in inspect.getsource(
-            ItemForecaster.train)
+        assert "min_median_price=min_median_price" in inspect.getsource(ItemForecaster.train)
 
     def test_floor_is_applied_before_the_subsample(self):
         """Order is the whole point: filtering after the subsample would spend
         the row budget on the pool and then throw most of it away."""
         src = inspect.getsource(ItemForecaster.build_training_data)
-        assert src.index("_filter_by_median_price") < src.index(
-            "_stratified_item_subsample"), (
+        assert src.index("_filter_by_median_price") < src.index("_stratified_item_subsample"), (
             "the price floor must narrow the universe BEFORE the budget is "
             "spent, otherwise it cannot buy served-cohort breadth"
         )
@@ -261,60 +260,55 @@ class TestFoldMedianPriceItems:
     @staticmethod
     def _frame():
         import pandas as pd
+
         # `riser` is the survivorship case: pennies before the cutoff, $50
         # after. `faller` is its mirror. Only `faller` was nameable in 2020.
-        days = pd.to_datetime(["2020-01-01", "2020-01-02",
-                               "2026-01-01", "2026-01-02"])
-        return pd.DataFrame({
-            "item_id": ["riser"] * 4 + ["faller"] * 4 + ["steady"] * 4,
-            "date": list(days) * 3,
-            "price": [0.03, 0.04, 50.0, 52.0,
-                      50.0, 52.0, 0.03, 0.04,
-                      5.0, 5.0, 5.0, 5.0],
-        })
+        days = pd.to_datetime(["2020-01-01", "2020-01-02", "2026-01-01", "2026-01-02"])
+        return pd.DataFrame(
+            {
+                "item_id": ["riser"] * 4 + ["faller"] * 4 + ["steady"] * 4,
+                "date": list(days) * 3,
+                "price": [0.03, 0.04, 50.0, 52.0, 50.0, 52.0, 0.03, 0.04, 5.0, 5.0, 5.0, 5.0],
+            }
+        )
 
     def test_an_item_that_only_clears_the_floor_later_is_excluded(self):
         import pandas as pd
-        out = ItemForecaster._fold_median_price_items(
-            self._frame(), 1.0, pd.Timestamp("2021-01-01"))
-        assert "riser" not in out, (
-            "selecting on post-cutoff prices is the look-ahead this helper "
-            "exists to remove"
-        )
+
+        out = ItemForecaster._fold_median_price_items(self._frame(), 1.0, pd.Timestamp("2021-01-01"))
+        assert "riser" not in out, "selecting on post-cutoff prices is the look-ahead this helper exists to remove"
 
     def test_an_item_that_cleared_it_and_collapsed_is_included(self):
         import pandas as pd
-        out = ItemForecaster._fold_median_price_items(
-            self._frame(), 1.0, pd.Timestamp("2021-01-01"))
+
+        out = ItemForecaster._fold_median_price_items(self._frame(), 1.0, pd.Timestamp("2021-01-01"))
         assert "faller" in out, (
-            "the universe is what was knowable at the cutoff, not what "
-            "survived to the end of the sample"
+            "the universe is what was knowable at the cutoff, not what survived to the end of the sample"
         )
 
     def test_the_full_sample_filter_disagrees_on_the_same_frame(self):
         """The two must differ here, or the fixture is not testing the leak."""
         import pandas as pd
-        full = set(ItemForecaster._filter_by_median_price(
-            self._frame(), 1.0)["item_id"])
-        fold = ItemForecaster._fold_median_price_items(
-            self._frame(), 1.0, pd.Timestamp("2021-01-01"))
+
+        full = set(ItemForecaster._filter_by_median_price(self._frame(), 1.0)["item_id"])
+        fold = ItemForecaster._fold_median_price_items(self._frame(), 1.0, pd.Timestamp("2021-01-01"))
         assert "riser" in full and "riser" not in fold
 
     def test_an_empty_pre_cutoff_window_yields_nothing(self):
         """Not everything: a fallback to "keep all" would silently restore the
         full-sample universe on the earliest folds, where the leak is largest."""
         import pandas as pd
-        out = ItemForecaster._fold_median_price_items(
-            self._frame(), 1.0, pd.Timestamp("2013-01-01"))
+
+        out = ItemForecaster._fold_median_price_items(self._frame(), 1.0, pd.Timestamp("2013-01-01"))
         assert out == set()
 
     def test_rows_on_the_cutoff_day_are_excluded(self):
         """`date < cutoff`, strictly. The cutoff is already the embargoed
         boundary, so admitting its own day reads one day of the purge."""
         import pandas as pd
+
         frame = self._frame()
-        out = ItemForecaster._fold_median_price_items(
-            frame, 1.0, pd.Timestamp("2020-01-01"))
+        out = ItemForecaster._fold_median_price_items(frame, 1.0, pd.Timestamp("2020-01-01"))
         assert out == set(), (
             "only 2020-01-01 rows exist before this cutoff if the comparison "
             "is <=, and faller would clear the floor on them"
@@ -325,10 +319,12 @@ class TestTrainMinMedianPriceEnv:
     @staticmethod
     def _fn():
         from scripts.forecast_prices import _train_min_median_price
+
         return _train_min_median_price
 
     def test_default_when_unset(self, monkeypatch):
         from scripts.forecast_prices import DEFAULT_TRAIN_MIN_MEDIAN_PRICE
+
         monkeypatch.delenv("TRAIN_MIN_MEDIAN_PRICE", raising=False)
         assert self._fn()() == DEFAULT_TRAIN_MIN_MEDIAN_PRICE
 
@@ -346,21 +342,21 @@ class TestTrainMinMedianPriceEnv:
         and the pool, and falling back to the pool is the dangerous direction.
         """
         from scripts.forecast_prices import DEFAULT_TRAIN_MIN_MEDIAN_PRICE
+
         monkeypatch.setenv("TRAIN_MIN_MEDIAN_PRICE", bad)
         assert self._fn()() == DEFAULT_TRAIN_MIN_MEDIAN_PRICE
 
     @pytest.mark.parametrize("off", ["0", "-1"])
-    def test_non_positive_is_the_escape_hatch_to_the_pooled_universe(
-            self, monkeypatch, off):
+    def test_non_positive_is_the_escape_hatch_to_the_pooled_universe(self, monkeypatch, off):
         """The one way back to the pre-2026-08-08 universe, and it is explicit."""
         monkeypatch.setenv("TRAIN_MIN_MEDIAN_PRICE", off)
         assert self._fn()() is None
 
     def test_the_production_default_matches_the_served_floor(self):
         """The training floor tracks what the product actually serves."""
-        from scripts.forecast_prices import DEFAULT_TRAIN_MIN_MEDIAN_PRICE
         from api.serving_policy import MIN_SERVED_PRICE_USD
+        from scripts.forecast_prices import DEFAULT_TRAIN_MIN_MEDIAN_PRICE
+
         assert DEFAULT_TRAIN_MIN_MEDIAN_PRICE == MIN_SERVED_PRICE_USD, (
-            "training on a different cohort than the one served is the "
-            "train/serve gap this knob closed"
+            "training on a different cohort than the one served is the train/serve gap this knob closed"
         )

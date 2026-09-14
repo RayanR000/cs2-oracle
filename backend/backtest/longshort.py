@@ -6,6 +6,7 @@ implies: the within-date rank IC (in `forecaster._within_date_rank_ic`), the
 top-minus-bottom decile spread here, and a within-date above/below-median
 directional call for the Pesaran-Timmermann test. No level metric belongs here.
 """
+
 from __future__ import annotations
 
 import numpy as np
@@ -23,8 +24,7 @@ def _grouped(score, realised, dates, mask):
     return pd.DataFrame({"d": d[fin], "p": p[fin], "a": a[fin]})
 
 
-def decile_longshort_by_date(score, realised, dates, mask=None,
-                             decile: float = 0.1, min_rows: int = 20) -> dict:
+def decile_longshort_by_date(score, realised, dates, mask=None, decile: float = 0.1, min_rows: int = 20) -> dict:
     """Per date: mean realised of the top-`decile` by score minus the bottom.
 
     A date with fewer than `min_rows` scorable rows contributes nothing (the
@@ -56,8 +56,7 @@ def net_of_cost(spread: float, roundtrip: float) -> float:
     return spread - roundtrip
 
 
-def direction_records(score, realised, dates, mask=None,
-                      min_rows: int = 20) -> list[dict]:
+def direction_records(score, realised, dates, mask=None, min_rows: int = 20) -> list[dict]:
     """Within-date above/below-median directional call, for `pesaran_timmermann`.
 
     Maps the ranker's ordinal score to a served direction the only way that
@@ -76,6 +75,12 @@ def direction_records(score, realised, dates, mask=None,
         for p, a in zip(g["p"], g["a"]):
             pdir = "up" if p > pmed else "down"
             adir = "up" if a > amed else "down"
-            out.append({"predicted_direction": pdir, "actual_direction": adir,
-                        "direction_correct": pdir == adir, "forecast_date": fd})
+            out.append(
+                {
+                    "predicted_direction": pdir,
+                    "actual_direction": adir,
+                    "direction_correct": pdir == adir,
+                    "forecast_date": fd,
+                }
+            )
     return out

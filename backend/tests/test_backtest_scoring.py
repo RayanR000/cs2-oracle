@@ -3,20 +3,21 @@ from __future__ import annotations
 from datetime import date, datetime, timedelta
 from pathlib import Path
 
+import backtest.price_resolution as price_resolution
 import pandas as pd
 import pytest
+from backtest.price_resolution import resolve_anchors
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
-
-import backtest.price_resolution as price_resolution
-from backtest.price_resolution import resolve_anchors
 
 
 def smoothed_prices(voted, anchors, **kwargs):
     """resolve_anchors projected to prices. See the note in
     tests/test_backtest_resolution.py — test-local by design."""
     return {k: r.price for k, r in resolve_anchors(voted, anchors, **kwargs).items()}
+
+
 from database import Base, ForecastOutcome, Item, ItemForecast, PredictionAccuracy
 
 
@@ -119,7 +120,7 @@ def test_price_tier_boundaries():
     assert price_tier(100.0) == 4
     assert price_tier(999.99) == 4
     assert price_tier(1000.0) == 5
-    assert price_tier(29_685.0) == 5   # the priciest name in the archive
+    assert price_tier(29_685.0) == 5  # the priciest name in the archive
 
 
 def test_tier_4_no_longer_merges_the_two_most_liquid_cohorts():
@@ -188,18 +189,9 @@ class TestUnchangedPriceSplit:
 
     def test_splits_directional_accuracy_by_whether_the_price_moved(self):
         # All 4 unchanged rows correct, 2 of 6 moved rows correct.
-        records = [
-            _record(base_price=1.0, actual_price=1.0, direction_correct=1)
-            for _ in range(4)
-        ]
-        records += [
-            _record(base_price=1.0, actual_price=1.1, direction_correct=1)
-            for _ in range(2)
-        ]
-        records += [
-            _record(base_price=1.0, actual_price=1.1, direction_correct=0)
-            for _ in range(4)
-        ]
+        records = [_record(base_price=1.0, actual_price=1.0, direction_correct=1) for _ in range(4)]
+        records += [_record(base_price=1.0, actual_price=1.1, direction_correct=1) for _ in range(2)]
+        records += [_record(base_price=1.0, actual_price=1.1, direction_correct=0) for _ in range(4)]
         metrics, _ = score_cohort(records)
         assert metrics["directional_accuracy"] == 60.0
         assert metrics["directional_accuracy_unchanged"] == 100.0
@@ -228,20 +220,13 @@ class TestUnchangedPriceSplit:
         two decimals, so each partition carries up to 0.005 of rounding error and
         the weighted recombination inherits that bound.
         """
-        records = [
-            _record(base_price=1.0, actual_price=1.0, direction_correct=i % 2)
-            for i in range(6)
-        ]
-        records += [
-            _record(base_price=1.0, actual_price=1.2, direction_correct=i % 3 == 0)
-            for i in range(9)
-        ]
+        records = [_record(base_price=1.0, actual_price=1.0, direction_correct=i % 2) for i in range(6)]
+        records += [_record(base_price=1.0, actual_price=1.2, direction_correct=i % 3 == 0) for i in range(9)]
         metrics, n = score_cohort(records)
         n_unchanged = metrics["n_unchanged"]
         n_moved = n - n_unchanged
         pooled = (
-            metrics["directional_accuracy_unchanged"] * n_unchanged
-            + metrics["directional_accuracy_moved"] * n_moved
+            metrics["directional_accuracy_unchanged"] * n_unchanged + metrics["directional_accuracy_moved"] * n_moved
         ) / n
         assert pooled == pytest.approx(metrics["directional_accuracy"], abs=0.01)
 
@@ -253,9 +238,7 @@ def test_both_legs_use_the_same_estimator_so_a_flat_market_scores_flat():
     import pandas as pd
 
     days = [date(2026, 7, 1) + timedelta(days=i) for i in range(12)]
-    voted = pd.DataFrame(
-        {"item_id": ["ak"] * 12, "date": days, "price": [3.0] * 12}
-    )
+    voted = pd.DataFrame({"item_id": ["ak"] * 12, "date": days, "price": [3.0] * 12})
 
     forecast_date, target_date = date(2026, 7, 5), date(2026, 7, 8)
     prices = smoothed_prices(voted, {("ak", forecast_date), ("ak", target_date)})
@@ -314,9 +297,20 @@ def _write_archive(tmp_path, rows):
     return archive
 
 
-def _seed(session, pk, slug, *, current_price, price_mid, direction="flat",
-          price_low=None, price_high=None, horizon=HORIZON,
-          model_version="lgbm-test", forecast_date=None):
+def _seed(
+    session,
+    pk,
+    slug,
+    *,
+    current_price,
+    price_mid,
+    direction="flat",
+    price_low=None,
+    price_high=None,
+    horizon=HORIZON,
+    model_version="lgbm-test",
+    forecast_date=None,
+):
     session.add(Item(id=pk, item_id=slug, name=slug, type="skin"))
     session.add(
         ItemForecast(
@@ -393,9 +387,7 @@ def _run_backtest(session, archive, monkeypatch, today=EVAL_DATE, **kwargs):
     return backtest_accuracy.backtest_forecasts(session, today=today, **kwargs)
 
 
-def test_maturity_is_bounded_by_archive_coverage_not_the_calendar(
-    session, tmp_path, monkeypatch
-):
+def test_maturity_is_bounded_by_archive_coverage_not_the_calendar(session, tmp_path, monkeypatch):
     """A forecast is evaluable only once the archive covers its target date.
 
     Found running Task 9's backfill against prod: maturity was
@@ -445,9 +437,7 @@ def test_maturity_is_bounded_by_archive_coverage_not_the_calendar(
     assert results[0]["sample_count"] == 1
 
 
-def test_archive_coverage_does_not_extend_maturity_past_today(
-    session, tmp_path, monkeypatch
-):
+def test_archive_coverage_does_not_extend_maturity_past_today(session, tmp_path, monkeypatch):
     """The cutoff is min(today, archive_max), not the archive alone.
 
     A backfilled archive can hold days beyond `today` (the collector writes a
@@ -455,9 +445,7 @@ def test_archive_coverage_does_not_extend_maturity_past_today(
     Clamping to the archive only would score forecasts the caller deliberately
     placed in the future.
     """
-    archive = _write_archive(
-        tmp_path, [("ak", date(2026, 7, d), 3.0) for d in range(3, 31)]
-    )
+    archive = _write_archive(tmp_path, [("ak", date(2026, 7, d), 3.0) for d in range(3, 31)])
     _seed(session, 1, "ak", current_price=3.0, price_mid=3.0)
     session.add(Item(id=2, item_id="awp", name="awp", type="skin"))
     session.add(
@@ -465,7 +453,7 @@ def test_archive_coverage_does_not_extend_maturity_past_today(
             id=2,
             item_id=2,
             forecast_date=date(2026, 7, 20),
-            horizon_days=HORIZON,   # matures 07-23, after `today`
+            horizon_days=HORIZON,  # matures 07-23, after `today`
             price_mid=3.0,
             current_price=3.0,
             direction="flat",
@@ -480,9 +468,7 @@ def test_archive_coverage_does_not_extend_maturity_past_today(
     assert [o.forecast_id for o in session.query(ForecastOutcome).all()] == [1]
 
 
-def test_backtest_scores_the_base_leg_from_the_archive_not_current_price(
-    session, tmp_path, monkeypatch
-):
+def test_backtest_scores_the_base_leg_from_the_archive_not_current_price(session, tmp_path, monkeypatch):
     """The base leg of actual_ret must be the archive-resolved smoothed price,
     not item_forecasts.current_price.
 
@@ -494,13 +480,16 @@ def test_backtest_scores_the_base_leg_from_the_archive_not_current_price(
     """
     archive = _write_archive(
         tmp_path,
-        [("ak", date(2026, 7, d), 3.0) for d in (3, 4, 5)]
-        + [("ak", date(2026, 7, d), 3.3) for d in (6, 7, 8)],
+        [("ak", date(2026, 7, d), 3.0) for d in (3, 4, 5)] + [("ak", date(2026, 7, d), 3.3) for d in (6, 7, 8)],
     )
     _seed(
-        session, 1, "ak",
-        current_price=99.0,       # deliberately nothing like the archive
-        price_mid=3.6, price_low=3.0, price_high=4.0,
+        session,
+        1,
+        "ak",
+        current_price=99.0,  # deliberately nothing like the archive
+        price_mid=3.6,
+        price_low=3.0,
+        price_high=4.0,
         direction="up",
     )
     session.commit()
@@ -524,17 +513,13 @@ def test_backtest_scores_the_base_leg_from_the_archive_not_current_price(
     assert metrics["mape_by_tier"] == {"tier_1": 10.0}
 
 
-def test_missing_current_price_is_stored_as_null_not_synthesized_from_base(
-    session, tmp_path, monkeypatch
-):
+def test_missing_current_price_is_stored_as_null_not_synthesized_from_base(session, tmp_path, monkeypatch):
     """A forecast with no serving-time current_price must store NULL, not the
     backtest-resolved base price. update_bias_corrections_from_outcomes reads
     this column to compute approx_mid_ret, which feeds production predict()
     thresholds — injecting base there would feed a backtest artefact into
     serving. A genuine NULL is distinguishable; a stand-in is not."""
-    archive = _write_archive(
-        tmp_path, [("ak", date(2026, 7, d), 3.0) for d in range(3, 9)]
-    )
+    archive = _write_archive(tmp_path, [("ak", date(2026, 7, d), 3.0) for d in range(3, 9)])
     _seed(session, 1, "ak", current_price=None, price_mid=3.0)
     session.commit()
 
@@ -545,9 +530,7 @@ def test_missing_current_price_is_stored_as_null_not_synthesized_from_base(
     assert outcome.base_price == pytest.approx(3.0)
 
 
-def test_backtest_drops_a_forecast_whose_base_leg_is_unresolvable(
-    session, tmp_path, monkeypatch
-):
+def test_backtest_drops_a_forecast_whose_base_leg_is_unresolvable(session, tmp_path, monkeypatch):
     """An unresolvable base leg must drop the forecast, not fall back to
     current_price. The dropped item carries current_price=50.0, so a fallback
     would silently produce an outcome row for it."""
@@ -608,8 +591,7 @@ def test_backtest_drops_a_target_beyond_archive_coverage_rather_than_resolving_i
     rows += [("future", date(2026, 7, d), 7.0) for d in (3, 4, 5)]
     _seed(session, 21, "future", current_price=7.0, price_mid=7.0, direction="flat")
     rows += [("stale30", date(2026, 7, d), 7.0) for d in (3, 4, 5, 10, 11, 12)]
-    _seed(session, 22, "stale30", current_price=7.0, price_mid=7.0,
-          direction="flat", horizon=30)
+    _seed(session, 22, "stale30", current_price=7.0, price_mid=7.0, direction="flat", horizon=30)
     session.commit()
 
     archive = _write_archive(tmp_path, rows)
@@ -622,9 +604,7 @@ def test_backtest_drops_a_target_beyond_archive_coverage_rather_than_resolving_i
             "price": [7.0] * 3,
         }
     )
-    both = price_resolution.resolve_anchors(
-        voted, {("future", FORECAST_DATE), ("future", TARGET_DATE)}
-    )
+    both = price_resolution.resolve_anchors(voted, {("future", FORECAST_DATE), ("future", TARGET_DATE)})
     assert both[("future", FORECAST_DATE)].price == both[("future", TARGET_DATE)].price
     # ...off the same window, whose newest observation is not after the forecast
     # date. That is what makes the equality an artefact rather than a flat market.
@@ -640,7 +620,7 @@ def test_backtest_drops_a_target_beyond_archive_coverage_rather_than_resolving_i
         }
     )
     base30 = resolve_anchors(voted30, {("stale30", FORECAST_DATE)})
-    assert ("stale30", FORECAST_DATE) in base30          # base leg resolves
+    assert ("stale30", FORECAST_DATE) in base30  # base leg resolves
     assert resolve_anchors(voted30, {("stale30", date(2026, 8, 4))}) == {}
 
     results = _run_backtest(session, archive, monkeypatch, today=date(2026, 8, 10))
@@ -652,15 +632,10 @@ def test_backtest_drops_a_target_beyond_archive_coverage_rather_than_resolving_i
     # have produced, on either leg, and none was scored as a manufactured flat.
     assert all(o.base_price == pytest.approx(3.0) for o in stored)
     assert all(o.actual_price == pytest.approx(3.0) for o in stored)
-    assert sum(
-        r["sample_count"] for r in results
-        if r["price_tier"] is None
-    ) == 20
+    assert sum(r["sample_count"] for r in results if r["price_tier"] is None) == 20
 
 
-def test_overlapping_leg_windows_are_dropped_even_with_a_post_forecast_observation(
-    session, tmp_path, monkeypatch
-):
+def test_overlapping_leg_windows_are_dropped_even_with_a_post_forecast_observation(session, tmp_path, monkeypatch):
     """Fix round 1, Important finding. A single post-forecast observation is NOT
     enough to make the actual leg a measurement.
 
@@ -705,7 +680,7 @@ def test_overlapping_leg_windows_are_dropped_even_with_a_post_forecast_observati
     both = resolve_anchors(voted, {("overlap", FORECAST_DATE), ("overlap", TARGET_DATE)})
     base_res, actual_res = both[("overlap", FORECAST_DATE)], both[("overlap", TARGET_DATE)]
     assert base_res.price == actual_res.price == 1.0  # the fabricated zero
-    assert actual_res.newest_observation > FORECAST_DATE   # newest-guard passes
+    assert actual_res.newest_observation > FORECAST_DATE  # newest-guard passes
     assert actual_res.oldest_observation <= FORECAST_DATE  # oldest-guard fires
 
     results = _run_backtest(session, archive, monkeypatch)
@@ -739,14 +714,10 @@ def test_a_fully_covered_forecast_has_disjoint_leg_windows_at_every_horizon():
         target = f + timedelta(days=h)
         res = resolve_anchors(voted, {("ak", f), ("ak", target)})
         assert res[("ak", target)].oldest_observation > f, h
-        assert res[("ak", target)].oldest_observation == target - timedelta(
-            days=SMOOTH_WINDOW - 1
-        )
+        assert res[("ak", target)].oldest_observation == target - timedelta(days=SMOOTH_WINDOW - 1)
 
 
-def test_an_actual_leg_supported_only_by_pre_forecast_observations_is_unresolvable(
-    session, tmp_path, monkeypatch
-):
+def test_an_actual_leg_supported_only_by_pre_forecast_observations_is_unresolvable(session, tmp_path, monkeypatch):
     """The drop above is a resolution failure, so it must reach the gate rather
     than quietly shrinking the cohort — the exact invisibility this plan exists
     to remove. Two beyond-coverage forecasts against seven covered ones is
@@ -781,9 +752,7 @@ def test_an_actual_leg_supported_only_by_pre_forecast_observations_is_unresolvab
     assert next(r for r in results if r["price_tier"] is None)["sample_count"] == 9
 
 
-def test_unresolvable_forecasts_count_toward_the_gate_denominator(
-    session, tmp_path, monkeypatch
-):
+def test_unresolvable_forecasts_count_toward_the_gate_denominator(session, tmp_path, monkeypatch):
     """Dropped forecasts must land in both the numerator and the denominator of
     the unresolvable gate. 1 of 9 is 11.1%, over the 10% cap, so the run must
     refuse to report a number rather than scoring the surviving 8."""
@@ -807,9 +776,7 @@ def test_unresolvable_forecasts_count_toward_the_gate_denominator(
     assert backtest_accuracy.MAX_UNRESOLVABLE_PCT == 10.0
 
 
-def test_a_forecast_spanning_a_missing_archive_day_is_a_gap_not_a_fresh_failure(
-    session, tmp_path, monkeypatch
-):
+def test_a_forecast_spanning_a_missing_archive_day_is_a_gap_not_a_fresh_failure(session, tmp_path, monkeypatch):
     """A collection outage must not read as cohort shrinkage.
 
     This is the 2026-08-02/03 shape reproduced small. Two horizon-3 forecasts
@@ -848,9 +815,7 @@ def test_a_forecast_spanning_a_missing_archive_day_is_a_gap_not_a_fresh_failure(
     assert session.query(ForecastOutcome).count() == 8
 
 
-def test_a_gap_population_does_not_excuse_a_real_resolution_failure(
-    session, tmp_path, monkeypatch
-):
+def test_a_gap_population_does_not_excuse_a_real_resolution_failure(session, tmp_path, monkeypatch):
     """The loophole check, end to end.
 
     Gap rows leave the fresh denominator, so this has to prove the FRESH RATE
@@ -952,9 +917,7 @@ def test_reresolve_overrides_the_freeze(session, monkeypatch):
     }
     bt._store_forecast_outcomes(session, [dict(outcome)])
     revised = dict(outcome, actual_price=99.0)
-    assert bt._store_forecast_outcomes(
-        session, [revised], reresolve=True, considered_ids={8}
-    ) == 1
+    assert bt._store_forecast_outcomes(session, [revised], reresolve=True, considered_ids={8}) == 1
 
     assert session.query(ForecastOutcome).filter_by(forecast_id=8).one().actual_price == 99.0
 
@@ -979,10 +942,7 @@ def test_tier_rows_partition_the_all_row():
     records += [_record(price_tier=1, item_id=100 + i) for i in range(20)]
 
     scored = score_by_tier(records)
-    per_tier = {
-        tier: n for tier, _, n in scored
-        if tier is not None and tier not in FLOOR_SWEEP
-    }
+    per_tier = {tier: n for tier, _, n in scored if tier is not None and tier not in FLOOR_SWEEP}
     all_rows = [(m, n) for tier, m, n in scored if tier is None]
 
     assert per_tier == {0: 30, 1: 20}
@@ -999,18 +959,14 @@ def test_headline_row_covers_exactly_the_tiers_at_or_above_the_minimum():
     scored = score_by_tier(records)
     headline_n = next(n for tier, _, n in scored if tier == HEADLINE_TIER)
     above_min = sum(
-        n for tier, _, n in scored
-        if tier is not None and tier != HEADLINE_TIER and tier >= HEADLINE_MIN_TIER
+        n for tier, _, n in scored if tier is not None and tier != HEADLINE_TIER and tier >= HEADLINE_MIN_TIER
     )
     assert headline_n == above_min == 25
 
 
 def test_empty_tiers_are_omitted_not_zero_filled():
     records = [_record(price_tier=4, item_id=i) for i in range(12)]
-    tiers = {
-        tier for tier, _, _ in score_by_tier(records)
-        if tier is not None and tier not in FLOOR_SWEEP
-    }
+    tiers = {tier for tier, _, _ in score_by_tier(records) if tier is not None and tier not in FLOOR_SWEEP}
     assert tiers == {4}
 
 
@@ -1027,8 +983,7 @@ def test_headline_tier_is_one_dollar_and_up():
 
 def test_score_cohort_publishes_the_actionable_metric():
     records = [
-        _record(item_id=i, base_price=2000.0, actual_price=3000.0,
-                predicted_mid=3000.0, price_tier=5, horizon_days=14)
+        _record(item_id=i, base_price=2000.0, actual_price=3000.0, predicted_mid=3000.0, price_tier=5, horizon_days=14)
         for i in range(20)
     ]
     metrics, _ = score_cohort(records)
@@ -1067,16 +1022,14 @@ def test_floor_sweep_emits_one_stored_row_per_floor():
     """The sweep answers 'where does the headline stabilise'. Stored, not just
     logged, for the reason HEADLINE_TIER is stored: a headline that exists only
     in console output cannot be audited or recomputed."""
-    records = (
-        [_record(item_id=i, base_price=2.0, price_tier=price_tier(2.0)) for i in range(10)]
-        + [_record(item_id=20 + i, base_price=50.0, price_tier=price_tier(50.0))
-           for i in range(10)]
-    )
+    records = [_record(item_id=i, base_price=2.0, price_tier=price_tier(2.0)) for i in range(10)] + [
+        _record(item_id=20 + i, base_price=50.0, price_tier=price_tier(50.0)) for i in range(10)
+    ]
     by_tier = {t: n for t, _, n in score_by_tier(records)}
     assert FLOOR_SWEEP == {-1: 1.0, -2: 5.0, -3: 20.0}
-    assert by_tier[-1] == 20     # >= $1
-    assert by_tier[-2] == 10     # >= $5
-    assert by_tier[-3] == 10     # >= $20
+    assert by_tier[-1] == 20  # >= $1
+    assert by_tier[-2] == 10  # >= $5
+    assert by_tier[-3] == 10  # >= $20
 
 
 def test_the_floors_nest():
@@ -1108,18 +1061,13 @@ def test_the_dollar_floor_is_exactly_the_old_headline_cohort():
 
 
 def test_a_floor_no_record_reaches_is_omitted_not_emitted_as_zero():
-    records = [
-        _record(item_id=i, base_price=2.0, price_tier=price_tier(2.0))
-        for i in range(10)
-    ]
+    records = [_record(item_id=i, base_price=2.0, price_tier=price_tier(2.0)) for i in range(10)]
     tiers = {t for t, _, _ in score_by_tier(records)}
     assert -1 in tiers
     assert -2 not in tiers and -3 not in tiers
 
 
-def test_forecasts_with_no_slug_mapping_count_toward_the_gate(
-    session, tmp_path, monkeypatch
-):
+def test_forecasts_with_no_slug_mapping_count_toward_the_gate(session, tmp_path, monkeypatch):
     """A whole group with no slug mappings yields no anchors and `continue`s
     before the per-forecast loop. Those forecasts are still mature and still
     unscored, so they must be counted — otherwise the gate divides by zero
@@ -1143,17 +1091,13 @@ def test_forecasts_with_no_slug_mapping_count_toward_the_gate(
     # archive stopping at FORECAST_DATE would exclude this forecast from the
     # cohort entirely and the gate would never engage. The missing slug has to
     # be the only reason it fails to resolve.
-    archive = _write_archive(
-        tmp_path, [("ak", date(2026, 7, d), 3.0) for d in range(3, 9)]
-    )
+    archive = _write_archive(tmp_path, [("ak", date(2026, 7, d), 3.0) for d in range(3, 9)])
 
     with pytest.raises(RuntimeError, match="could not be resolved"):
         _run_backtest(session, archive, monkeypatch)
 
 
-def test_rescore_path_emits_the_same_tier_rows_as_the_normal_path(
-    session, tmp_path, monkeypatch
-):
+def test_rescore_path_emits_the_same_tier_rows_as_the_normal_path(session, tmp_path, monkeypatch):
     """Task 6 introduced --rescore ahead of score_by_tier existing, so it
     scored one blended cohort per (horizon, model_version) as a placeholder.
     Now that score_by_tier exists, both paths must emit the same set of
@@ -1169,25 +1113,19 @@ def test_rescore_path_emits_the_same_tier_rows_as_the_normal_path(
         + [("awp", date(2026, 7, d), 10.0) for d in (3, 4, 5)]
         + [("awp", date(2026, 7, d), 11.0) for d in (6, 7, 8)],
     )
-    _seed(session, 1, "ak", current_price=3.0, price_mid=3.6,
-          price_low=3.0, price_high=4.0, direction="up")
-    _seed(session, 2, "awp", current_price=10.0, price_mid=11.5,
-          price_low=10.0, price_high=13.0, direction="up")
+    _seed(session, 1, "ak", current_price=3.0, price_mid=3.6, price_low=3.0, price_high=4.0, direction="up")
+    _seed(session, 2, "awp", current_price=10.0, price_mid=11.5, price_low=10.0, price_high=13.0, direction="up")
     session.commit()
 
     normal_results = _run_backtest(session, archive, monkeypatch)
 
     import db.parquet as parquet_mod
+
     monkeypatch.setattr(parquet_mod, "append_table", lambda *a, **k: None)
-    rescore_results = backtest_accuracy.backtest_forecasts(
-        session, today=EVAL_DATE, rescore=True
-    )
+    rescore_results = backtest_accuracy.backtest_forecasts(session, today=EVAL_DATE, rescore=True)
 
     def shape(results):
-        return {
-            (r["horizon_days"], r["model_version"], r["price_tier"]): r["sample_count"]
-            for r in results
-        }
+        return {(r["horizon_days"], r["model_version"], r["price_tier"]): r["sample_count"] for r in results}
 
     normal_shape = shape(normal_results)
     rescore_shape = shape(rescore_results)
@@ -1272,18 +1210,18 @@ def test_estimator_price_is_unchanged_when_archive_gains_an_outlier_source_row(t
         anchors,
     )
 
-    assert direction_from_return(
-        (before[("ak", date(2026, 7, 8))] - before[("ak", date(2026, 7, 5))])
-        / before[("ak", date(2026, 7, 5))]
-    ) == "flat"
+    assert (
+        direction_from_return(
+            (before[("ak", date(2026, 7, 8))] - before[("ak", date(2026, 7, 5))]) / before[("ak", date(2026, 7, 5))]
+        )
+        == "flat"
+    )
 
     # Voting rejects the outlier source; even unfrozen, the estimator holds.
     assert after[("ak", date(2026, 7, 8))] == before[("ak", date(2026, 7, 8))]
 
 
-def test_backtest_forecasts_reports_identical_metrics_across_an_archive_revision(
-    session, tmp_path, monkeypatch
-):
+def test_backtest_forecasts_reports_identical_metrics_across_an_archive_revision(session, tmp_path, monkeypatch):
     """Layer (b), the centrepiece: backtest_forecasts run twice across an
     archive revision, same forecast cohort both times, must report identical
     metrics and must not duplicate the frozen per-forecast outcome rows.
@@ -1304,12 +1242,24 @@ def test_backtest_forecasts_reports_identical_metrics_across_an_archive_revision
     archive = _write_archive(tmp_path, rows)
 
     _seed(
-        session, 1, "ak", current_price=3.0, price_mid=3.6,
-        price_low=3.0, price_high=4.0, direction="up",
+        session,
+        1,
+        "ak",
+        current_price=3.0,
+        price_mid=3.6,
+        price_low=3.0,
+        price_high=4.0,
+        direction="up",
     )
     _seed(
-        session, 2, "awp", current_price=10.0, price_mid=10.1,
-        price_low=9.0, price_high=11.0, direction="flat",
+        session,
+        2,
+        "awp",
+        current_price=10.0,
+        price_mid=10.1,
+        price_low=9.0,
+        price_high=11.0,
+        direction="flat",
     )
     session.commit()
 
@@ -1339,9 +1289,7 @@ def test_backtest_forecasts_reports_identical_metrics_across_an_archive_revision
             "source": ["b"],
         }
     )
-    pd.concat([base_frame, extra], ignore_index=True).to_parquet(
-        archive / "prices-2026.parquet"
-    )
+    pd.concat([base_frame, extra], ignore_index=True).to_parquet(archive / "prices-2026.parquet")
 
     results_after = _run_backtest(session, archive, monkeypatch)
 
@@ -1359,10 +1307,7 @@ def test_backtest_forecasts_reports_identical_metrics_across_an_archive_revision
     # Not just unchanged values — exactly as many rows as forecasts, both
     # before and after the revision.
     assert session.query(ForecastOutcome).count() == 2
-    outcomes = {
-        o.forecast_id: (o.base_price, o.actual_price)
-        for o in session.query(ForecastOutcome).all()
-    }
+    outcomes = {o.forecast_id: (o.base_price, o.actual_price) for o in session.query(ForecastOutcome).all()}
     assert outcomes[1] == (pytest.approx(3.0), pytest.approx(3.3))
     assert outcomes[2] == (pytest.approx(10.0), pytest.approx(10.0))
 
@@ -1392,9 +1337,7 @@ def _revise_archive(archive, rows):
     ).to_parquet(archive / "prices-2026.parquet")
 
 
-def test_frozen_values_drive_the_metric_not_a_revised_archive(
-    session, tmp_path, monkeypatch
-):
+def test_frozen_values_drive_the_metric_not_a_revised_archive(session, tmp_path, monkeypatch):
     """Run 1 freezes "ak" at base 3.0 -> actual 3.3 (MAPE 10%). The archive is
     then rewritten so "ak" would now resolve to 30.0 at the target date — a
     2-tier move that no amount of window-median robustness absorbs. A second,
@@ -1406,8 +1349,7 @@ def test_frozen_values_drive_the_metric_not_a_revised_archive(
     ak_rows += [("ak", date(2026, 7, d), 3.3) for d in (6, 7, 8)]
     archive = _write_archive(tmp_path, ak_rows)
 
-    _seed(session, 1, "ak", current_price=3.0, price_mid=3.6,
-          price_low=3.0, price_high=4.0, direction="up")
+    _seed(session, 1, "ak", current_price=3.0, price_mid=3.6, price_low=3.0, price_high=4.0, direction="up")
     session.commit()
 
     before = _run_backtest(session, archive, monkeypatch)
@@ -1420,8 +1362,7 @@ def test_frozen_values_drive_the_metric_not_a_revised_archive(
     revised += [("awp", date(2026, 7, d), 10.0) for d in (3, 4, 5, 6, 7, 8)]
     _revise_archive(archive, revised)
 
-    _seed(session, 2, "awp", current_price=10.0, price_mid=10.1,
-          price_low=9.0, price_high=11.0, direction="flat")
+    _seed(session, 2, "awp", current_price=10.0, price_mid=10.1, price_low=9.0, price_high=11.0, direction="flat")
     session.commit()
 
     after = _run_backtest(session, archive, monkeypatch)
@@ -1442,9 +1383,7 @@ def test_frozen_values_drive_the_metric_not_a_revised_archive(
     assert session.query(ForecastOutcome).count() == 2
 
 
-def test_archive_is_not_read_when_every_mature_forecast_is_frozen(
-    session, tmp_path, monkeypatch
-):
+def test_archive_is_not_read_when_every_mature_forecast_is_frozen(session, tmp_path, monkeypatch):
     """Nothing new to resolve => no archive access at all, and no divide-by-zero
     in the unresolvable gate over an empty denominator."""
     from scripts import backtest_accuracy
@@ -1453,8 +1392,7 @@ def test_archive_is_not_read_when_every_mature_forecast_is_frozen(
     rows += [("ak", date(2026, 7, d), 3.3) for d in (6, 7, 8)]
     archive = _write_archive(tmp_path, rows)
 
-    _seed(session, 1, "ak", current_price=3.0, price_mid=3.6,
-          price_low=3.0, price_high=4.0, direction="up")
+    _seed(session, 1, "ak", current_price=3.0, price_mid=3.6, price_low=3.0, price_high=4.0, direction="up")
     session.commit()
 
     before = _run_backtest(session, archive, monkeypatch)
@@ -1464,6 +1402,7 @@ def test_archive_is_not_read_when_every_mature_forecast_is_frozen(
 
     monkeypatch.setattr(backtest_accuracy, "load_voted_prices", explode)
     import db.parquet as parquet_mod
+
     monkeypatch.setattr(parquet_mod, "append_table", lambda *a, **k: None)
 
     after = backtest_accuracy.backtest_forecasts(session, today=EVAL_DATE)
@@ -1471,7 +1410,8 @@ def test_archive_is_not_read_when_every_mature_forecast_is_frozen(
     def shape(results):
         return {
             (r["horizon_days"], r["model_version"], r["price_tier"]): (
-                r["sample_count"], r["metrics"],
+                r["sample_count"],
+                r["metrics"],
             )
             for r in results
         }
@@ -1480,9 +1420,7 @@ def test_archive_is_not_read_when_every_mature_forecast_is_frozen(
     assert session.query(ForecastOutcome).count() == 1
 
 
-def test_a_scoring_fix_lands_on_frozen_rows_without_touching_the_archive(
-    session, tmp_path, monkeypatch
-):
+def test_a_scoring_fix_lands_on_frozen_rows_without_touching_the_archive(session, tmp_path, monkeypatch):
     """The reason records are re-derived rather than read back column-for-column
     from forecast_outcomes: changing the flat tolerance must change the reported
     directional accuracy of already-frozen rows, with no archive read.
@@ -1490,15 +1428,14 @@ def test_a_scoring_fix_lands_on_frozen_rows_without_touching_the_archive(
     "ak" moves 3.00 -> 3.01 (+0.33%), inside the 0.5% flat band, so a "flat"
     prediction scores correct. Widen nothing and shrink FLAT_TOLERANCE to 0.1%
     and the same frozen row is now "up" — and must score wrong."""
-    from scripts import backtest_accuracy
     import backtest.scoring as scoring
+    from scripts import backtest_accuracy
 
     rows = [("ak", date(2026, 7, d), 3.00) for d in (3, 4, 5)]
     rows += [("ak", date(2026, 7, d), 3.01) for d in (6, 7, 8)]
     archive = _write_archive(tmp_path, rows)
 
-    _seed(session, 1, "ak", current_price=3.0, price_mid=3.0,
-          price_low=2.0, price_high=4.0, direction="flat")
+    _seed(session, 1, "ak", current_price=3.0, price_mid=3.0, price_low=2.0, price_high=4.0, direction="flat")
     session.commit()
 
     before = _run_backtest(session, archive, monkeypatch)
@@ -1510,6 +1447,7 @@ def test_a_scoring_fix_lands_on_frozen_rows_without_touching_the_archive(
 
     monkeypatch.setattr(backtest_accuracy, "load_voted_prices", explode)
     import db.parquet as parquet_mod
+
     monkeypatch.setattr(parquet_mod, "append_table", lambda *a, **k: None)
     monkeypatch.setattr(scoring, "FLAT_TOLERANCE", 0.001)
 
@@ -1528,9 +1466,7 @@ def test_a_scoring_fix_lands_on_frozen_rows_without_touching_the_archive(
     assert frozen.direction_correct == 0
 
 
-def test_gate_is_not_diluted_by_the_frozen_majority(
-    session, tmp_path, monkeypatch
-):
+def test_gate_is_not_diluted_by_the_frozen_majority(session, tmp_path, monkeypatch):
     """20 frozen forecasts plus 10 new ones of which 2 are unresolvable is a 20%
     resolution failure rate and must trip the gate.
 
@@ -1571,9 +1507,7 @@ def test_gate_is_not_diluted_by_the_frozen_majority(
     assert session.query(ForecastOutcome).count() == 20
 
 
-def test_unusable_frozen_rows_are_counted_and_logged_not_swallowed(
-    session, tmp_path, monkeypatch, caplog
-):
+def test_unusable_frozen_rows_are_counted_and_logged_not_swallowed(session, tmp_path, monkeypatch, caplog):
     """A frozen row with no usable base_price is dropped from scoring — and
     because it is frozen it is never re-resolved and never reaches the
     unresolvable gate either. That combination is invisible cohort shrinkage,
@@ -1591,10 +1525,8 @@ def test_unusable_frozen_rows_are_counted_and_logged_not_swallowed(
     rows += [("awp", date(2026, 7, d), 10.0) for d in (3, 4, 5, 6, 7, 8)]
     archive = _write_archive(tmp_path, rows)
 
-    _seed(session, 1, "ak", current_price=3.0, price_mid=3.6,
-          price_low=3.0, price_high=4.0, direction="up")
-    _seed(session, 2, "awp", current_price=10.0, price_mid=10.1,
-          price_low=9.0, price_high=11.0, direction="flat")
+    _seed(session, 1, "ak", current_price=3.0, price_mid=3.6, price_low=3.0, price_high=4.0, direction="up")
+    _seed(session, 2, "awp", current_price=10.0, price_mid=10.1, price_low=9.0, price_high=11.0, direction="flat")
     session.commit()
 
     _run_backtest(session, archive, monkeypatch)
@@ -1613,10 +1545,7 @@ def test_unusable_frozen_rows_are_counted_and_logged_not_swallowed(
     assert next(r for r in after if r["price_tier"] is None)["sample_count"] == 1
     # ...but not from the run's output.
     assert "1 scored of 2 considered" in caplog.text
-    unusable = [
-        r for r in caplog.records
-        if "UNUSABLE" in r.message and r.levelno >= logging.WARNING
-    ]
+    unusable = [r for r in caplog.records if "UNUSABLE" in r.message and r.levelno >= logging.WARNING]
     assert len(unusable) == 1
     assert "1 frozen outcome(s) UNUSABLE" in unusable[0].message
 
@@ -1624,9 +1553,7 @@ def test_unusable_frozen_rows_are_counted_and_logged_not_swallowed(
     assert backtest_accuracy.MAX_UNRESOLVABLE_PCT == 10.0
 
 
-def test_the_unusable_hint_does_not_promise_reresolve_will_recover_them(
-    session, caplog
-):
+def test_the_unusable_hint_does_not_promise_reresolve_will_recover_them(session, caplog):
     """The warning used to end "Re-resolve them with --reresolve to bring them
     back into the metric." For part of the population that actually triggered it
     the truth was the opposite: --reresolve DELETES the row.
@@ -1649,17 +1576,19 @@ def test_the_unusable_hint_does_not_promise_reresolve_will_recover_them(
 
     from scripts import backtest_accuracy
 
-    session.add(ForecastOutcome(
-        forecast_id=1,
-        item_id=1,
-        forecast_date=date(2026, 7, 29),
-        horizon_days=3,
-        target_date=date(2026, 8, 1),
-        base_price=None,
-        predicted_price_mid=1.1,
-        actual_price=1.2,
-        abs_error=0.1,
-    ))
+    session.add(
+        ForecastOutcome(
+            forecast_id=1,
+            item_id=1,
+            forecast_date=date(2026, 7, 29),
+            horizon_days=3,
+            target_date=date(2026, 8, 1),
+            base_price=None,
+            predicted_price_mid=1.1,
+            actual_price=1.2,
+            abs_error=0.1,
+        )
+    )
     session.commit()
 
     caplog.clear()
@@ -1676,9 +1605,7 @@ def test_the_unusable_hint_does_not_promise_reresolve_will_recover_them(
     assert "target_date" in msg
 
 
-def test_frozen_outcome_query_is_restricted_in_sql_not_in_python(
-    session, tmp_path, monkeypatch
-):
+def test_frozen_outcome_query_is_restricted_in_sql_not_in_python(session, tmp_path, monkeypatch):
     """The forecast_ids restriction must be a chunked SQL IN list, not a full
     table scan filtered afterwards — forecast_outcomes is the largest table in
     the daily path."""
@@ -1687,8 +1614,7 @@ def test_frozen_outcome_query_is_restricted_in_sql_not_in_python(
     rows = [("ak", date(2026, 7, d), 3.0) for d in (3, 4, 5)]
     rows += [("ak", date(2026, 7, d), 3.3) for d in (6, 7, 8)]
     archive = _write_archive(tmp_path, rows)
-    _seed(session, 1, "ak", current_price=3.0, price_mid=3.6,
-          price_low=3.0, price_high=4.0, direction="up")
+    _seed(session, 1, "ak", current_price=3.0, price_mid=3.6, price_low=3.0, price_high=4.0, direction="up")
     session.commit()
     _run_backtest(session, archive, monkeypatch)
 
@@ -1699,15 +1625,11 @@ def test_frozen_outcome_query_is_restricted_in_sql_not_in_python(
     assert sum(len(v) for v in groups.values()) == 1
 
     # 2,000 ids is past the SQLite 999-parameter cap; the chunking must hold.
-    groups = backtest_accuracy._records_from_frozen_outcomes(
-        session, forecast_ids=list(range(1, 2001))
-    )
+    groups = backtest_accuracy._records_from_frozen_outcomes(session, forecast_ids=list(range(1, 2001)))
     assert sum(len(v) for v in groups.values()) == 1
 
 
-def test_frozen_outcome_records_carry_the_prediction_leg_and_the_horizon(
-    session, tmp_path, monkeypatch
-):
+def test_frozen_outcome_records_carry_the_prediction_leg_and_the_horizon(session, tmp_path, monkeypatch):
     """ActionableDA needs r_hat, so the record needs predicted_mid; and it is
     scoped by horizon, so the record needs the horizon.
 
@@ -1720,8 +1642,7 @@ def test_frozen_outcome_records_carry_the_prediction_leg_and_the_horizon(
     rows = [("ak", date(2026, 7, d), 3.0) for d in (3, 4, 5)]
     rows += [("ak", date(2026, 7, d), 3.3) for d in (6, 7, 8)]
     archive = _write_archive(tmp_path, rows)
-    _seed(session, 1, "ak", current_price=3.0, price_mid=3.6,
-          price_low=3.0, price_high=4.0, direction="up")
+    _seed(session, 1, "ak", current_price=3.0, price_mid=3.6, price_low=3.0, price_high=4.0, direction="up")
     session.commit()
     _run_backtest(session, archive, monkeypatch)
 
@@ -1733,9 +1654,7 @@ def test_frozen_outcome_records_carry_the_prediction_leg_and_the_horizon(
         assert r["horizon_days"] in (3, 7, 14, 30)
 
 
-def test_headline_log_line_handles_fewer_than_ten_samples_without_raising(
-    session, tmp_path, monkeypatch
-):
+def test_headline_log_line_handles_fewer_than_ten_samples_without_raising(session, tmp_path, monkeypatch):
     """bootstrap_ci returns (None, None) under 10 values. The >=$1 headline
     log line in backtest_forecasts guards ci_lower is not None before
     multiplying by 100 — this drives that branch explicitly with a 3-forecast
@@ -1745,8 +1664,14 @@ def test_headline_log_line_handles_fewer_than_ten_samples_without_raising(
         rows += [(f"ak{i}", date(2026, 7, d), 3.0) for d in (3, 4, 5)]
         rows += [(f"ak{i}", date(2026, 7, d), 3.3) for d in (6, 7, 8)]
         _seed(
-            session, i + 1, f"ak{i}", current_price=3.0, price_mid=3.6,
-            price_low=3.0, price_high=4.0, direction="up",
+            session,
+            i + 1,
+            f"ak{i}",
+            current_price=3.0,
+            price_mid=3.6,
+            price_low=3.0,
+            price_high=4.0,
+            direction="up",
         )
     session.commit()
 
@@ -1801,8 +1726,7 @@ def _freeze_one_flat_forecast(session, tmp_path, monkeypatch):
     rows += [("ak", date(2026, 7, d), 3.01) for d in (6, 7, 8)]
     archive = _write_archive(tmp_path, rows)
 
-    _seed(session, 1, "ak", current_price=3.0, price_mid=3.0,
-          price_low=2.0, price_high=4.0, direction="flat")
+    _seed(session, 1, "ak", current_price=3.0, price_mid=3.0, price_low=2.0, price_high=4.0, direction="flat")
     session.commit()
 
     _run_backtest(session, archive, monkeypatch)
@@ -1816,28 +1740,25 @@ def _freeze_one_flat_forecast(session, tmp_path, monkeypatch):
 def _actuals_snapshot(session):
     """The three columns the refresh must never write, plus their exact
     values, for every stored outcome."""
-    return {
-        o.forecast_id: (o.base_price, o.actual_price, o.resolved_at)
-        for o in session.query(ForecastOutcome).all()
-    }
+    return {o.forecast_id: (o.base_price, o.actual_price, o.resolved_at) for o in session.query(ForecastOutcome).all()}
 
 
-def test_a_scoring_change_refreshes_the_stored_verdict_columns(
-    session, tmp_path, monkeypatch
-):
+def test_a_scoring_change_refreshes_the_stored_verdict_columns(session, tmp_path, monkeypatch):
     """Test 1 of the brief. Shrink FLAT_TOLERANCE so the frozen row reclassifies
     from "flat" to "up", run the normal path, and the STORED verdict columns
     must now match the new derivation — while base_price, actual_price and
     resolved_at are identical to before, compared value-for-value."""
-    from scripts import backtest_accuracy
     import backtest.scoring as scoring
+    from scripts import backtest_accuracy
 
     archive = _freeze_one_flat_forecast(session, tmp_path, monkeypatch)
 
     before_row = session.query(ForecastOutcome).filter_by(forecast_id=1).one()
     before_verdict = (
-        before_row.direction_actual, before_row.direction_correct,
-        before_row.abs_error, before_row.pct_error,
+        before_row.direction_actual,
+        before_row.direction_correct,
+        before_row.abs_error,
+        before_row.pct_error,
     )
     actuals_before = _actuals_snapshot(session)
 
@@ -1874,8 +1795,8 @@ def test_a_scoring_change_refreshes_the_stored_verdict_columns(
 def test_the_verdict_refresh_is_idempotent(session, tmp_path, monkeypatch):
     """Test 2 of the brief. With no scoring change, a second pass refreshes
     zero rows and writes nothing — including nothing to the Parquet mirror."""
-    from scripts import backtest_accuracy
     import backtest.scoring as scoring
+    from scripts import backtest_accuracy
 
     _freeze_one_flat_forecast(session, tmp_path, monkeypatch)
     monkeypatch.setattr(scoring, "FLAT_TOLERANCE", 0.001)
@@ -1935,9 +1856,7 @@ def test_the_refresh_cannot_move_the_frozen_actuals(session, tmp_path, monkeypat
     assert (after.base_price, after.actual_price, after.resolved_at) == actuals_before
 
 
-def test_the_refresh_updates_the_parquet_mirror_with_the_frozen_actuals_intact(
-    session, tmp_path, monkeypatch
-):
+def test_the_refresh_updates_the_parquet_mirror_with_the_frozen_actuals_intact(session, tmp_path, monkeypatch):
     """Test 4 of the brief. forecast_outcomes lives in the DB *and* in
     price-archive/ops/forecast_outcomes.parquet, and the API reads Parquet
     first with a DB fallback (backend/AGENTS.md). A DB-only refresh would leave
@@ -1946,8 +1865,8 @@ def test_the_refresh_updates_the_parquet_mirror_with_the_frozen_actuals_intact(
     append_table dedups on forecast_id — the refreshed row replaces the stale
     one — so the whole row is supplied, with the frozen columns carried through
     from the DB row verbatim."""
-    from scripts import backtest_accuracy
     import backtest.scoring as scoring
+    from scripts import backtest_accuracy
 
     _freeze_one_flat_forecast(session, tmp_path, monkeypatch)
     frozen = session.query(ForecastOutcome).filter_by(forecast_id=1).one()
@@ -1978,14 +1897,12 @@ def test_the_refresh_updates_the_parquet_mirror_with_the_frozen_actuals_intact(
     assert mirrored["evaluated_at"] >= resolved_before
 
 
-def test_the_rescore_path_also_refreshes_the_stored_verdicts(
-    session, tmp_path, monkeypatch
-):
+def test_the_rescore_path_also_refreshes_the_stored_verdicts(session, tmp_path, monkeypatch):
     """--rescore is the other path that derives records from frozen rows. It
     must refresh too, otherwise `--rescore` reports one number while the
     columns feeding production bias correction keep another."""
-    from scripts import backtest_accuracy
     import backtest.scoring as scoring
+    from scripts import backtest_accuracy
 
     _freeze_one_flat_forecast(session, tmp_path, monkeypatch)
 
@@ -1997,11 +1914,8 @@ def test_the_rescore_path_also_refreshes_the_stored_verdicts(
 
     monkeypatch.setattr(backtest_accuracy, "load_voted_prices", explode)
 
-    results = backtest_accuracy.backtest_forecasts(
-        session, today=EVAL_DATE, rescore=True
-    )
-    assert next(r for r in results if r["price_tier"] is None)[
-        "metrics"]["directional_accuracy"] == 0.0
+    results = backtest_accuracy.backtest_forecasts(session, today=EVAL_DATE, rescore=True)
+    assert next(r for r in results if r["price_tier"] is None)["metrics"]["directional_accuracy"] == 0.0
 
     session.expire_all()
     after = session.query(ForecastOutcome).filter_by(forecast_id=1).one()
@@ -2009,9 +1923,7 @@ def test_the_rescore_path_also_refreshes_the_stored_verdicts(
     assert after.direction_correct == 0
 
 
-def test_reresolve_writes_current_verdicts_so_the_refresh_is_a_no_op(
-    session, tmp_path, monkeypatch
-):
+def test_reresolve_writes_current_verdicts_so_the_refresh_is_a_no_op(session, tmp_path, monkeypatch):
     """--reresolve rewrites the rows wholesale from the same derivation the
     refresh uses, so the refresh must find nothing to do rather than
     double-writing every row it just wrote."""
@@ -2037,23 +1949,19 @@ def test_reresolve_writes_current_verdicts_so_the_refresh_is_a_no_op(
 
     monkeypatch.setattr(backtest_accuracy, "_refresh_verdict_columns", spy)
 
-    backtest_accuracy.backtest_forecasts(
-        session, today=EVAL_DATE, reresolve=True
-    )
+    backtest_accuracy.backtest_forecasts(session, today=EVAL_DATE, reresolve=True)
 
     assert calls == [0]
     assert session.query(ForecastOutcome).count() == 1
 
 
-def test_the_refresh_logs_a_non_zero_count_legibly_and_is_quiet_at_zero(
-    session, tmp_path, monkeypatch, caplog
-):
+def test_the_refresh_logs_a_non_zero_count_legibly_and_is_quiet_at_zero(session, tmp_path, monkeypatch, caplog):
     """Zero refreshed is the normal daily case and must not add noise; a
     non-zero count follows a scoring change and must say so."""
     import logging
 
-    from scripts import backtest_accuracy
     import backtest.scoring as scoring
+    from scripts import backtest_accuracy
 
     _freeze_one_flat_forecast(session, tmp_path, monkeypatch)
     _capture_append(monkeypatch)
@@ -2071,9 +1979,7 @@ def test_the_refresh_logs_a_non_zero_count_legibly_and_is_quiet_at_zero(
     assert "were NOT touched" in caplog.text
 
 
-def test_the_refresh_skips_rows_it_cannot_derive_a_verdict_for(
-    session, tmp_path, monkeypatch
-):
+def test_the_refresh_skips_rows_it_cannot_derive_a_verdict_for(session, tmp_path, monkeypatch):
     """A legacy row with no usable base leg has no derivable verdict. It must
     be left alone rather than crashing the refresh or having its verdict
     columns nulled out — _records_from_frozen_outcomes already logs it."""
@@ -2095,9 +2001,7 @@ def test_the_refresh_skips_rows_it_cannot_derive_a_verdict_for(
     assert after.base_price is None
 
 
-def test_a_failed_mirror_write_leaves_the_refresh_able_to_re_converge(
-    session, tmp_path, monkeypatch
-):
+def test_a_failed_mirror_write_leaves_the_refresh_able_to_re_converge(session, tmp_path, monkeypatch):
     """Fix round 1, Finding 1. Idempotence keys off a DB-vs-derived diff, so if
     the DB were committed before the Parquet mirror was written, an
     append_table that raised — or a process killed between the two — would
@@ -2110,9 +2014,9 @@ def test_a_failed_mirror_write_leaves_the_refresh_able_to_re_converge(
     asserts the DB was NOT advanced past it, so the retry still sees the
     difference and converges both copies. Under the reverse order the retry
     would return 0 and write nothing."""
+    import backtest.scoring as scoring
     import db.parquet as parquet_mod
     from scripts import backtest_accuracy
-    import backtest.scoring as scoring
 
     _freeze_one_flat_forecast(session, tmp_path, monkeypatch)
     monkeypatch.setattr(scoring, "FLAT_TOLERANCE", 0.001)
@@ -2128,8 +2032,7 @@ def test_a_failed_mirror_write_leaves_the_refresh_able_to_re_converge(
     # The DB did not run ahead of the mirror, so the difference still exists.
     session.rollback()
     session.expire_all()
-    assert session.query(ForecastOutcome).filter_by(
-        forecast_id=1).one().direction_actual == "flat"
+    assert session.query(ForecastOutcome).filter_by(forecast_id=1).one().direction_actual == "flat"
 
     # The retry converges both copies.
     calls = _capture_append(monkeypatch)
@@ -2138,13 +2041,10 @@ def test_a_failed_mirror_write_leaves_the_refresh_able_to_re_converge(
     assert calls[0][1][0]["direction_actual"] == "up"
 
     session.expire_all()
-    assert session.query(ForecastOutcome).filter_by(
-        forecast_id=1).one().direction_actual == "up"
+    assert session.query(ForecastOutcome).filter_by(forecast_id=1).one().direction_actual == "up"
 
 
-def test_the_refresh_streams_in_bounded_flushes_and_never_re_reads_a_row(
-    session, tmp_path, monkeypatch
-):
+def test_the_refresh_streams_in_bounded_flushes_and_never_re_reads_a_row(session, tmp_path, monkeypatch):
     """Fix round 1, Finding 2 + the memory note. The one-off historical refresh
     is ~65k rows: it must not materialize the whole table, must not hold every
     update and mirror row at once, and must not issue a SELECT per row on the
@@ -2155,16 +2055,17 @@ def test_the_refresh_streams_in_bounded_flushes_and_never_re_reads_a_row(
     3: the refresh must flush in several bounded writes rather than one big
     one, and every row must still converge. A SELECT counter caps total queries
     well below one per row."""
-    from scripts import backtest_accuracy
     import backtest.scoring as scoring
+    from scripts import backtest_accuracy
     from sqlalchemy import event
 
     rows = []
     for i in range(12):
         rows += [(f"ak{i}", date(2026, 7, d), 3.00) for d in (3, 4, 5)]
         rows += [(f"ak{i}", date(2026, 7, d), 3.01) for d in (6, 7, 8)]
-        _seed(session, i + 1, f"ak{i}", current_price=3.0, price_mid=3.0,
-              price_low=2.0, price_high=4.0, direction="flat")
+        _seed(
+            session, i + 1, f"ak{i}", current_price=3.0, price_mid=3.0, price_low=2.0, price_high=4.0, direction="flat"
+        )
     session.commit()
     archive = _write_archive(tmp_path, rows)
     _run_backtest(session, archive, monkeypatch)
@@ -2196,8 +2097,7 @@ def test_the_refresh_streams_in_bounded_flushes_and_never_re_reads_a_row(
     flushed = [len(rows_) for _, rows_, _ in calls]
     assert flushed == [6, 6]
     assert sum(flushed) == 12
-    assert all(n <= backtest_accuracy.REFRESH_FLUSH + backtest_accuracy.CHUNK
-               for n in flushed)
+    assert all(n <= backtest_accuracy.REFRESH_FLUSH + backtest_accuracy.CHUNK for n in flushed)
 
     # The write side re-reads nothing. Only the keyset walk selects: 12 rows at
     # 3 per page is 4 pages plus the terminating empty page.
@@ -2213,9 +2113,7 @@ def test_the_refresh_streams_in_bounded_flushes_and_never_re_reads_a_row(
     assert all(o.actual_price == pytest.approx(3.01) for o in stored)
 
 
-def test_the_rescore_walk_does_not_materialize_the_whole_table(
-    session, tmp_path, monkeypatch
-):
+def test_the_rescore_walk_does_not_materialize_the_whole_table(session, tmp_path, monkeypatch):
     """The unrestricted (--rescore) read is a keyset walk over the primary key,
     not `SELECT *` into memory. Paging at 3 rows over 12 outcomes must still
     visit every row exactly once — the keyset is stable because the refresh
@@ -2239,9 +2137,7 @@ def test_the_rescore_walk_does_not_materialize_the_whole_table(
     assert len(seen) == len(set(seen))
 
 
-def test_the_refreshed_mirror_row_replaces_the_stale_one_in_a_real_parquet_file(
-    session, tmp_path, monkeypatch
-):
+def test_the_refreshed_mirror_row_replaces_the_stale_one_in_a_real_parquet_file(session, tmp_path, monkeypatch):
     """A round trip through the REAL append_table, with the ops directory
     redirected into tmp_path — the git-tracked price-archive/ops/ is never
     touched.
@@ -2253,9 +2149,9 @@ def test_the_refreshed_mirror_row_replaces_the_stale_one_in_a_real_parquet_file(
     types must match what the insert path wrote: append_table intersects the
     new frame's columns with the file's, so a column with a drifted type (or a
     missing column) corrupts or silently drops data for the whole file."""
+    import backtest.scoring as scoring
     import db.parquet as parquet_mod
     from scripts import backtest_accuracy
-    import backtest.scoring as scoring
 
     real_append = parquet_mod.append_table
 
@@ -2272,8 +2168,7 @@ def test_the_refreshed_mirror_row_replaces_the_stale_one_in_a_real_parquet_file(
     seed_row = backtest_accuracy._outcome_to_mapping(frozen)
     seed_row["evaluated_at"] = frozen.evaluated_at
     seed_row["resolved_at"] = frozen.resolved_at
-    seed_row, = backtest_accuracy._with_item_slug(
-        [seed_row], backtest_accuracy._id_to_slug(session))
+    (seed_row,) = backtest_accuracy._with_item_slug([seed_row], backtest_accuracy._id_to_slug(session))
     real_append("forecast_outcomes", [seed_row], ["forecast_id"])
 
     stored = parquet_mod.read_table("forecast_outcomes")
@@ -2340,8 +2235,9 @@ def _seed_cohort(session, tmp_path, n=12):
     MAX_UNRESOLVABLE_PCT gate, which is not weakened anywhere here.
     """
     for i in range(n):
-        _seed(session, i + 1, f"ak{i}", current_price=3.0, price_mid=3.0,
-              price_low=2.0, price_high=4.0, direction="flat")
+        _seed(
+            session, i + 1, f"ak{i}", current_price=3.0, price_mid=3.0, price_low=2.0, price_high=4.0, direction="flat"
+        )
     session.commit()
     return _write_archive(tmp_path, _cohort_rows(n))
 
@@ -2376,9 +2272,7 @@ def _run_with_real_mirror(session, archive, monkeypatch, today=EVAL_DATE, **kwar
     return backtest_accuracy.backtest_forecasts(session, today=today, **kwargs)
 
 
-def test_reresolve_deletes_the_row_of_a_forecast_that_no_longer_resolves(
-    session, tmp_path, monkeypatch
-):
+def test_reresolve_deletes_the_row_of_a_forecast_that_no_longer_resolves(session, tmp_path, monkeypatch):
     """Test 1 of the brief. The orphan is deleted from the DB.
 
     ak0 resolves on run 1 and is frozen. The archive is then revised so its
@@ -2401,15 +2295,10 @@ def test_reresolve_deletes_the_row_of_a_forecast_that_no_longer_resolves(
     assert session.query(ForecastOutcome).filter_by(forecast_id=1).first() is None
     # ...and only that one went: the other eleven were rewritten, not dropped.
     assert session.query(ForecastOutcome).count() == 11
-    assert all(
-        o.actual_price == pytest.approx(3.01)
-        for o in session.query(ForecastOutcome).all()
-    )
+    assert all(o.actual_price == pytest.approx(3.01) for o in session.query(ForecastOutcome).all())
 
 
-def test_reresolve_deletes_the_orphan_from_the_parquet_mirror_too(
-    session, tmp_path, monkeypatch
-):
+def test_reresolve_deletes_the_orphan_from_the_parquet_mirror_too(session, tmp_path, monkeypatch):
     """Test 2 of the brief, against a REAL Parquet file with OPS_DIR redirected.
 
     The mirror is what the API serves (backend/AGENTS.md: routes read Parquet
@@ -2464,8 +2353,7 @@ def test_the_default_path_never_deletes_a_frozen_row(session, tmp_path, monkeypa
     archive = _seed_cohort(session, tmp_path)
     _run_backtest(session, archive, monkeypatch)
     before = {
-        o.forecast_id: (o.base_price, o.actual_price, o.resolved_at)
-        for o in session.query(ForecastOutcome).all()
+        o.forecast_id: (o.base_price, o.actual_price, o.resolved_at) for o in session.query(ForecastOutcome).all()
     }
     assert len(before) == 12
 
@@ -2473,16 +2361,11 @@ def test_the_default_path_never_deletes_a_frozen_row(session, tmp_path, monkeypa
     _run_backtest(session, archive, monkeypatch)
 
     session.expire_all()
-    after = {
-        o.forecast_id: (o.base_price, o.actual_price, o.resolved_at)
-        for o in session.query(ForecastOutcome).all()
-    }
+    after = {o.forecast_id: (o.base_price, o.actual_price, o.resolved_at) for o in session.query(ForecastOutcome).all()}
     assert after == before
 
 
-def test_the_default_path_does_not_delete_even_when_handed_a_considered_set(
-    session, monkeypatch
-):
+def test_the_default_path_does_not_delete_even_when_handed_a_considered_set(session, monkeypatch):
     """The asymmetry asserted directly on _store_forecast_outcomes, so it holds
     whatever the caller passes: with reresolve=False, a considered id whose
     forecast produced no outcome keeps its row.
@@ -2517,17 +2400,13 @@ def test_the_default_path_does_not_delete_even_when_handed_a_considered_set(
 
     other = dict(stored, forecast_id=8)
     # 7 was considered and did not resolve; 8 did. Insert-only means 7 survives.
-    assert bt._store_forecast_outcomes(
-        session, [other], reresolve=False, considered_ids={7, 8}
-    ) == 1
+    assert bt._store_forecast_outcomes(session, [other], reresolve=False, considered_ids={7, 8}) == 1
 
     assert session.query(ForecastOutcome).filter_by(forecast_id=7).one().actual_price == 1.2
     assert session.query(ForecastOutcome).count() == 2
 
 
-def test_reresolve_replaces_a_still_resolvable_row_without_duplicating_it(
-    session, tmp_path, monkeypatch
-):
+def test_reresolve_replaces_a_still_resolvable_row_without_duplicating_it(session, tmp_path, monkeypatch):
     """Test 4 of the brief. Nothing becomes unresolvable, so a --reresolve —
     and a second one — must leave the row count exactly where it was, in the DB
     and in a real Parquet mirror. Delete-then-insert must not lose or double."""
@@ -2548,9 +2427,7 @@ def test_reresolve_replaces_a_still_resolvable_row_without_duplicating_it(
         assert sorted(mirror["forecast_id"]) == list(range(1, 13))
 
 
-def test_a_considered_forecast_that_never_had_a_row_is_harmless(
-    session, tmp_path, monkeypatch
-):
+def test_a_considered_forecast_that_never_had_a_row_is_harmless(session, tmp_path, monkeypatch):
     """Test 5 of the brief. A forecast considered for the first time and found
     unresolvable has nothing to delete; the delete must be a no-op, not an
     error, and must not disturb the rest of the cohort."""
@@ -2559,16 +2436,15 @@ def test_a_considered_forecast_that_never_had_a_row_is_harmless(
     _stub_parquet_writes(monkeypatch)
 
     # Direct: an id with no stored row at all.
-    assert bt._store_forecast_outcomes(
-        session, [], reresolve=True, considered_ids={999}
-    ) == 0
+    assert bt._store_forecast_outcomes(session, [], reresolve=True, considered_ids={999}) == 0
     assert session.query(ForecastOutcome).count() == 0
 
     # End to end: ak0 is broken from the very first run, so --reresolve
     # considers it, resolves nothing for it, and finds no row to remove.
     for i in range(12):
-        _seed(session, i + 1, f"ak{i}", current_price=3.0, price_mid=3.0,
-              price_low=2.0, price_high=4.0, direction="flat")
+        _seed(
+            session, i + 1, f"ak{i}", current_price=3.0, price_mid=3.0, price_low=2.0, price_high=4.0, direction="flat"
+        )
     session.commit()
     archive = _write_archive(tmp_path, _cohort_rows(12, broken={"ak0"}))
 
@@ -2589,9 +2465,7 @@ def test_reresolve_refuses_to_run_without_the_considered_set(session, monkeypatc
         bt._store_forecast_outcomes(session, [], reresolve=True)
 
 
-def test_reresolve_leaves_min_price_filtered_rows_alone(
-    session, tmp_path, monkeypatch
-):
+def test_reresolve_leaves_min_price_filtered_rows_alone(session, tmp_path, monkeypatch):
     """A forecast excluded by --min-price is not resolved-and-failed: the run
     writes no replacement for it, so it is not in the considered set and its
     stored row must survive. Deleting it would make `--reresolve --min-price`
@@ -2619,9 +2493,7 @@ def test_reresolve_leaves_min_price_filtered_rows_alone(
 # ---------------------------------------------------------------------------
 
 
-def test_replace_rows_widens_the_schema_instead_of_dropping_new_columns(
-    tmp_path, monkeypatch
-):
+def test_replace_rows_widens_the_schema_instead_of_dropping_new_columns(tmp_path, monkeypatch):
     """A column in the incoming rows that the file lacks must be ADDED, NULL on
     the rows that survive — not silently discarded. This is the case that
     decides whether the production mirror gets base_price at all."""
@@ -2629,9 +2501,7 @@ def test_replace_rows_widens_the_schema_instead_of_dropping_new_columns(
 
     monkeypatch.setattr(parquet_mod, "OPS_DIR", tmp_path / "ops")
 
-    parquet_mod.append_table(
-        "t", [{"k": 1, "a": 10.0}, {"k": 2, "a": 20.0}], ["k"]
-    )
+    parquet_mod.append_table("t", [{"k": 1, "a": 10.0}, {"k": 2, "a": 20.0}], ["k"])
     assert list(parquet_mod.read_table("t").columns) == ["k", "a"]
 
     parquet_mod.replace_rows("t", "k", [], [{"k": 3, "a": 30.0, "extra": 1.5}])
@@ -2675,18 +2545,14 @@ def test_replace_rows_refuses_to_narrow_the_file_schema(tmp_path, monkeypatch):
 
     # Supplying the whole row is accepted, and the untouched row keeps its
     # column and its value.
-    parquet_mod.replace_rows(
-        "t", "k", [2], [{"k": 3, "a": 30.0, "extra": "new"}]
-    )
+    parquet_mod.replace_rows("t", "k", [2], [{"k": 3, "a": 30.0, "extra": "new"}])
     out = parquet_mod.read_table("t").set_index("k").sort_index()
     assert sorted(out.index) == [1, 3]
     assert out.loc[1, "extra"] == "keep"
     assert out.loc[3, "extra"] == "new"
 
 
-def test_reresolve_adds_base_price_to_a_mirror_that_predates_the_column(
-    session, tmp_path, monkeypatch
-):
+def test_reresolve_adds_base_price_to_a_mirror_that_predates_the_column(session, tmp_path, monkeypatch):
     """The production shape, end to end: the served mirror has the pre-freeze
     18 columns and no base_price, while --reresolve writes 20. The rewritten
     file must GAIN base_price with real values, not silently drop it — the
@@ -2698,7 +2564,7 @@ def test_reresolve_adds_base_price_to_a_mirror_that_predates_the_column(
     real_replace = parquet_mod.replace_rows
 
     archive = _seed_cohort(session, tmp_path)
-    _run_backtest(session, archive, monkeypatch)          # DB only, writes stubbed
+    _run_backtest(session, archive, monkeypatch)  # DB only, writes stubbed
 
     monkeypatch.setattr(parquet_mod, "OPS_DIR", tmp_path / "ops")
     monkeypatch.setattr(parquet_mod, "append_table", real_append)
@@ -2740,9 +2606,7 @@ def _outcome_to_mapping_for_test(o):
     return backtest_accuracy._outcome_to_mapping(o)
 
 
-def test_reresolve_min_price_deletes_only_the_unresolvable(
-    session, tmp_path, monkeypatch
-):
+def test_reresolve_min_price_deletes_only_the_unresolvable(session, tmp_path, monkeypatch):
     """Fix round 1, Minor 1 — the real boundary of considered_ids under
     --min-price, in one MIXED cohort.
 
@@ -2765,10 +2629,7 @@ def test_reresolve_min_price_deletes_only_the_unresolvable(
     assert session.query(ForecastOutcome).filter_by(forecast_id=1).first() is None
     assert session.query(ForecastOutcome).count() == 11
     # The filtered-but-resolvable rows were neither deleted nor rewritten.
-    assert all(
-        o.actual_price == pytest.approx(3.01)
-        for o in session.query(ForecastOutcome).all()
-    )
+    assert all(o.actual_price == pytest.approx(3.01) for o in session.query(ForecastOutcome).all())
 
 
 def test_the_actionable_prediction_leg_reaches_the_scorer(session, tmp_path, monkeypatch):
@@ -2788,8 +2649,9 @@ def test_the_actionable_prediction_leg_reaches_the_scorer(session, tmp_path, mon
     rows += [("ak", date(2026, 7, d), 2.0) for d in (17, 18, 19)]
     archive = _write_archive(tmp_path, rows)
 
-    _seed(session, 1, "ak", current_price=2.8, price_mid=2.828,
-          price_low=2.5, price_high=3.1, direction="up", horizon=14)
+    _seed(
+        session, 1, "ak", current_price=2.8, price_mid=2.828, price_low=2.5, price_high=3.1, direction="up", horizon=14
+    )
     session.commit()
 
     out = _run_backtest(session, archive, monkeypatch)
@@ -2798,8 +2660,7 @@ def test_the_actionable_prediction_leg_reaches_the_scorer(session, tmp_path, mon
     m = scored[0]["metrics"]
     assert m["actionable_scope"] == "in_scope"
     assert m["actionable_n"] == 0, (
-        "a +1% forecast was reported as clearing a 23.1% friction bar; r_hat is "
-        "still dividing by the resolved base"
+        "a +1% forecast was reported as clearing a 23.1% friction bar; r_hat is still dividing by the resolved base"
     )
     assert m["actionable_n_served_basis"] == 1
     assert m["actionable_n_fallback_basis"] == 0
@@ -2873,12 +2734,12 @@ def test_the_dollar_predicate_is_not_a_stored_column():
     the stored set would need a migration, and `_REFRESH_VERDICTS_SQL` binds
     exactly the columns `_verdict_for_storage` hands it."""
     from scripts.backtest_accuracy import (
-        VERDICT_COLUMNS, _derive_verdict, _verdict_for_storage,
+        VERDICT_COLUMNS,
+        _derive_verdict,
+        _verdict_for_storage,
     )
 
-    stored = _verdict_for_storage(
-        _derive_verdict(10.0, 13.0, 12.6, 10.8, 13.8, "up", quote=12.0)
-    )
+    stored = _verdict_for_storage(_derive_verdict(10.0, 13.0, 12.6, 10.8, 13.8, "up", quote=12.0))
     assert "in_interval_dollar" not in stored
     assert set(stored) == set(VERDICT_COLUMNS)
 
@@ -2892,13 +2753,21 @@ def test_score_cohort_reports_both_bases_and_which_rows_used_which():
 
     def rec(in_interval, in_interval_dollar, served):
         return {
-            "abs_error": 0.1, "sq_error": 0.01, "pct_error": 1.0,
-            "direction_correct": 1, "predicted_direction": "up",
-            "actual_direction": "up", "in_interval": in_interval,
+            "abs_error": 0.1,
+            "sq_error": 0.01,
+            "pct_error": 1.0,
+            "direction_correct": 1,
+            "predicted_direction": "up",
+            "actual_direction": "up",
+            "in_interval": in_interval,
             "in_interval_dollar": in_interval_dollar,
             "interval_basis_served": served,
-            "confidence": "low", "base_price": 10.0, "actual_price": 10.5,
-            "price_tier": 1, "item_id": 1, "forecast_date": date(2026, 7, 5),
+            "confidence": "low",
+            "base_price": 10.0,
+            "actual_price": 10.5,
+            "price_tier": 1,
+            "item_id": 1,
+            "forecast_date": date(2026, 7, 5),
         }
 
     metrics, _ = score_cohort([rec(1, 0, True), rec(1, 1, True), rec(0, 0, False)])
@@ -2915,11 +2784,19 @@ def test_score_cohort_defaults_the_dollar_split_to_the_rebased_predicate():
     from backtest.scoring import score_cohort
 
     rec = {
-        "abs_error": 0.1, "sq_error": 0.01, "pct_error": 1.0,
-        "direction_correct": 1, "predicted_direction": "up",
-        "actual_direction": "up", "in_interval": 1,
-        "confidence": "low", "base_price": 10.0, "actual_price": 10.5,
-        "price_tier": 1, "item_id": 1, "forecast_date": date(2026, 7, 5),
+        "abs_error": 0.1,
+        "sq_error": 0.01,
+        "pct_error": 1.0,
+        "direction_correct": 1,
+        "predicted_direction": "up",
+        "actual_direction": "up",
+        "in_interval": 1,
+        "confidence": "low",
+        "base_price": 10.0,
+        "actual_price": 10.5,
+        "price_tier": 1,
+        "item_id": 1,
+        "forecast_date": date(2026, 7, 5),
     }
     metrics, _ = score_cohort([rec])
     assert metrics["interval_coverage"] == 100.0
@@ -2928,9 +2805,7 @@ def test_score_cohort_defaults_the_dollar_split_to_the_rebased_predicate():
     assert metrics["interval_n_fallback_basis"] == 1
 
 
-def test_a_wedged_forecast_is_scored_against_the_band_it_was_quoted_from(
-    session, tmp_path, monkeypatch
-):
+def test_a_wedged_forecast_is_scored_against_the_band_it_was_quoted_from(session, tmp_path, monkeypatch):
     """End to end, through the real resolver: the wedge must not decide coverage.
 
     The archive resolves "ak" to a base of 2.0 and an actual of 2.1 (+5%).
@@ -2942,8 +2817,7 @@ def test_a_wedged_forecast_is_scored_against_the_band_it_was_quoted_from(
     rows += [("ak", date(2026, 7, d), 2.1) for d in (6, 7, 8)]
     archive = _write_archive(tmp_path, rows)
 
-    _seed(session, 1, "ak", current_price=2.8, price_mid=2.828,
-          price_low=2.52, price_high=3.22, direction="up")
+    _seed(session, 1, "ak", current_price=2.8, price_mid=2.828, price_low=2.52, price_high=3.22, direction="up")
     session.commit()
 
     out = _run_backtest(session, archive, monkeypatch)
@@ -2985,8 +2859,7 @@ def test_served_identity_does_not_merge_genuinely_different_artifacts():
     would pool cohorts that never shared an artifact."""
     from backtest.scoring import served_identity
 
-    for label in ("lgbm-v1", "lgbm-catboost-v2", "lgbm-v3-ens3", "lgbm-v3-ens6",
-                  "lgbm-v4", "lgbm-v3-clustered"):
+    for label in ("lgbm-v1", "lgbm-catboost-v2", "lgbm-v3-ens3", "lgbm-v3-ens6", "lgbm-v4", "lgbm-v3-clustered"):
         assert served_identity(label) == label
 
 
@@ -3004,13 +2877,8 @@ def test_a_merged_cohort_reports_which_configs_it_pooled():
     forecast dates per stored label, not row counts: dates are the unit
     MIN_FORECAST_DATES counts, and a config that contributed one date to a
     20-date panel is a different claim from one that contributed ten."""
-    records = [
-        _record(model_version_raw="lgbm-v3-regime", forecast_date=date(2026, 8, d))
-        for d in (1, 2, 3)
-    ]
-    records += [
-        _record(model_version_raw="lgbm-v3-global-only", forecast_date=date(2026, 8, 4))
-    ]
+    records = [_record(model_version_raw="lgbm-v3-regime", forecast_date=date(2026, 8, d)) for d in (1, 2, 3)]
+    records += [_record(model_version_raw="lgbm-v3-global-only", forecast_date=date(2026, 8, 4))]
     # Two rows, one date -- must count once.
     records += [
         _record(model_version_raw="lgbm-v3", forecast_date=date(2026, 7, 17)),
@@ -3040,17 +2908,32 @@ def test_scoring_merges_two_configs_into_one_cohort(session, tmp_path, monkeypat
     one date each."""
     from scripts import backtest_accuracy
 
-    rows = [(slug, date(2026, 7, d), 3.0)
-            for slug in ("ak", "ak2") for d in range(1, 9)]
+    rows = [(slug, date(2026, 7, d), 3.0) for slug in ("ak", "ak2") for d in range(1, 9)]
     archive = _write_archive(tmp_path, rows)
 
-    _seed(session, 1, "ak", current_price=3.0, price_mid=3.0,
-          price_low=2.0, price_high=4.0, direction="flat",
-          model_version="lgbm-v3-regime")
-    _seed(session, 2, "ak2", current_price=3.0, price_mid=3.0,
-          price_low=2.0, price_high=4.0, direction="flat",
-          model_version="lgbm-v3-global-only",
-          forecast_date=FORECAST_DATE - timedelta(days=1))
+    _seed(
+        session,
+        1,
+        "ak",
+        current_price=3.0,
+        price_mid=3.0,
+        price_low=2.0,
+        price_high=4.0,
+        direction="flat",
+        model_version="lgbm-v3-regime",
+    )
+    _seed(
+        session,
+        2,
+        "ak2",
+        current_price=3.0,
+        price_mid=3.0,
+        price_low=2.0,
+        price_high=4.0,
+        direction="flat",
+        model_version="lgbm-v3-global-only",
+        forecast_date=FORECAST_DATE - timedelta(days=1),
+    )
     session.commit()
     _run_backtest(session, archive, monkeypatch)
 
@@ -3067,18 +2950,24 @@ def test_scoring_merges_two_configs_into_one_cohort(session, tmp_path, monkeypat
     }
 
 
-def test_the_frozen_outcome_inherits_the_canonical_label(
-    session, tmp_path, monkeypatch
-):
+def test_the_frozen_outcome_inherits_the_canonical_label(session, tmp_path, monkeypatch):
     """The stored outcome must carry the identity, not the config: it is what
     the next run groups on, and a suffixed row would re-fork the panel from
     the outcome side even after the forecast side was fixed."""
     rows = [("ak", date(2026, 7, d), 3.0) for d in (3, 4, 5)]
     rows += [("ak", date(2026, 7, d), 3.3) for d in (6, 7, 8)]
     archive = _write_archive(tmp_path, rows)
-    _seed(session, 1, "ak", current_price=3.0, price_mid=3.6,
-          price_low=3.0, price_high=4.0, direction="up",
-          model_version="lgbm-v3-regime")
+    _seed(
+        session,
+        1,
+        "ak",
+        current_price=3.0,
+        price_mid=3.6,
+        price_low=3.0,
+        price_high=4.0,
+        direction="up",
+        model_version="lgbm-v3-regime",
+    )
     session.commit()
     _run_backtest(session, archive, monkeypatch)
 
@@ -3117,14 +3006,30 @@ def _seed_two_dates(session, tmp_path):
     into the table, which is the point — the exclusion is a SCORING rule, so the
     row must survive resolution and then not reach a metric.
     """
-    _seed(session, 1, "kept", current_price=3.0, price_mid=3.6, price_low=3.0,
-          price_high=4.0, direction="up", forecast_date=date(2026, 7, 17))
-    _seed(session, 2, "dropped", current_price=3.0, price_mid=3.6, price_low=3.0,
-          price_high=4.0, direction="up", forecast_date=date(2026, 7, 19))
+    _seed(
+        session,
+        1,
+        "kept",
+        current_price=3.0,
+        price_mid=3.6,
+        price_low=3.0,
+        price_high=4.0,
+        direction="up",
+        forecast_date=date(2026, 7, 17),
+    )
+    _seed(
+        session,
+        2,
+        "dropped",
+        current_price=3.0,
+        price_mid=3.6,
+        price_low=3.0,
+        price_high=4.0,
+        direction="up",
+        forecast_date=date(2026, 7, 19),
+    )
     session.commit()
-    rows = [(slug, date(2026, 7, d), 3.0)
-            for slug in ("kept", "dropped")
-            for d in range(15, 23)]
+    rows = [(slug, date(2026, 7, d), 3.0) for slug in ("kept", "dropped") for d in range(15, 23)]
     return _write_archive(tmp_path, rows)
 
 

@@ -24,24 +24,15 @@ def upgrade() -> None:
     else:
         op.drop_index("idx_chart_point_item_day", table_name="chart_points")
 
-    op.execute(
-        "DELETE FROM price_history "
-        "WHERE item_id IN (SELECT id FROM items WHERE is_backfilled = 1)"
-    )
+    op.execute("DELETE FROM price_history WHERE item_id IN (SELECT id FROM items WHERE is_backfilled = 1)")
 
 
 def downgrade() -> None:
     bind = op.get_bind()
 
     if bind.dialect.name == "postgresql":
-        op.execute(
-            "CREATE INDEX IF NOT EXISTS idx_chart_point_item_day "
-            "ON chart_points (item_id, day)"
-        )
+        op.execute("CREATE INDEX IF NOT EXISTS idx_chart_point_item_day ON chart_points (item_id, day)")
     else:
         op.create_index("idx_chart_point_item_day", "chart_points", ["item_id", "day"])
 
-    print(
-        "WARNING: Downgrade cannot restore deleted price_history rows. "
-        "Run the aggregator pipeline to repopulate."
-    )
+    print("WARNING: Downgrade cannot restore deleted price_history rows. Run the aggregator pipeline to repopulate.")

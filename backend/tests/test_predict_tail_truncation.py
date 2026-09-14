@@ -11,6 +11,7 @@ rows always span >= N calendar days. That invariant is what makes a row-based
 tail satisfy both requirements at once, and test_voting_yields_one_row_per_item_day
 is what keeps it true.
 """
+
 from __future__ import annotations
 
 from datetime import date, timedelta
@@ -19,14 +20,12 @@ from unittest.mock import MagicMock
 import numpy as np
 import pandas as pd
 import pytest
-
 from models.forecaster import ItemForecaster
 
 
 @pytest.fixture
 def forecaster(tmp_path_factory):
-    return ItemForecaster(db_session=MagicMock(),
-                          model_dir=str(tmp_path_factory.mktemp("saved_models")))
+    return ItemForecaster(db_session=MagicMock(), model_dir=str(tmp_path_factory.mktemp("saved_models")))
 
 
 def _price_frame(n_items=3, n_days=1460, start=date(2022, 1, 1)):
@@ -37,12 +36,14 @@ def _price_frame(n_items=3, n_days=1460, start=date(2022, 1, 1)):
         price = 10.0 + i
         for d in range(n_days):
             price *= 1.0 + rng.normal(0.0005, 0.02)
-            rows.append({
-                "item_id": f"item-{i}",
-                "date": start + timedelta(days=d),
-                "price": round(max(price, 0.05), 4),
-                "volume": float(rng.integers(1, 500)),
-            })
+            rows.append(
+                {
+                    "item_id": f"item-{i}",
+                    "date": start + timedelta(days=d),
+                    "price": round(max(price, 0.05), 4),
+                    "volume": float(rng.integers(1, 500)),
+                }
+            )
     return pd.DataFrame(rows)
 
 
@@ -100,19 +101,19 @@ def test_voting_yields_one_row_per_item_day(forecaster):
     """
     raw = _price_frame(n_items=2, n_days=30)
     # Same item-days observed by three sources, plus one outlier per day.
-    multi = pd.concat([
-        raw.assign(source="STEAMCOMMUNITY"),
-        raw.assign(source="BUFF163", price=raw["price"] * 1.01),
-        raw.assign(source="CSFLOAT", price=raw["price"] * 20),
-    ], ignore_index=True)
+    multi = pd.concat(
+        [
+            raw.assign(source="STEAMCOMMUNITY"),
+            raw.assign(source="BUFF163", price=raw["price"] * 1.01),
+            raw.assign(source="CSFLOAT", price=raw["price"] * 20),
+        ],
+        ignore_index=True,
+    )
 
     voted = forecaster._apply_multi_source_voting(multi)
 
     dupes = voted.groupby(["item_id", "date"]).size()
-    assert (dupes == 1).all(), (
-        f"Voting emitted duplicate item-days: "
-        f"{dupes[dupes > 1].head().to_dict()}"
-    )
+    assert (dupes == 1).all(), f"Voting emitted duplicate item-days: {dupes[dupes > 1].head().to_dict()}"
 
 
 def test_tail_is_a_noop_for_short_history_items(forecaster):
@@ -179,19 +180,17 @@ def test_served_features_survive_truncation(forecaster):
 
     full_feats = forecaster.engineer_features(full, events)
     tail_feats = forecaster.engineer_features(
-        forecaster._tail_predict_frame(full), events,
+        forecaster._tail_predict_frame(full),
+        events,
         item_first_dates=first_dates,
     )
 
     def _last_rows(df):
-        return (df.sort_values(["item_id", "date"])
-                  .groupby("item_id").last()
-                  .sort_index())
+        return df.sort_values(["item_id", "date"]).groupby("item_id").last().sort_index()
 
     a, b = _last_rows(full_feats), _last_rows(tail_feats)
 
-    shared = [c for c in a.columns if c in b.columns
-              and pd.api.types.is_numeric_dtype(a[c])]
+    shared = [c for c in a.columns if c in b.columns and pd.api.types.is_numeric_dtype(a[c])]
     assert shared, "No numeric feature columns to compare"
 
     # MACD is the one exception, and it is arithmetic, not a window shortfall.
@@ -206,9 +205,14 @@ def test_served_features_survive_truncation(forecaster):
     # property exactly. They are also the members of this family that now reach
     # a booster — the dollar forms are shelved — so the bound matters more here
     # than it did when only the raw columns were listed.
-    EWM_FAMILY = {"macd_line", "macd_signal", "macd_histogram",
-                  "macd_hist_slope_7d",
-                  "macd_line_rel", "macd_histogram_rel"}
+    EWM_FAMILY = {
+        "macd_line",
+        "macd_signal",
+        "macd_histogram",
+        "macd_hist_slope_7d",
+        "macd_line_rel",
+        "macd_histogram_rel",
+    }
     EWM_RTOL = 1e-4
 
     # The regime-reactive vols are a DIFFERENT case and must not be waved
@@ -241,17 +245,13 @@ def test_served_features_survive_truncation(forecaster):
     )
 
     def _close(col):
-        rtol = (UNSERVED_RTOL if col in TRUNCATION_SENSITIVE_UNSERVED
-                else EWM_RTOL if col in EWM_FAMILY else 1e-9)
-        return np.allclose(a[col].to_numpy(dtype=float),
-                           b[col].to_numpy(dtype=float),
-                           rtol=rtol, atol=1e-9, equal_nan=True)
+        rtol = UNSERVED_RTOL if col in TRUNCATION_SENSITIVE_UNSERVED else EWM_RTOL if col in EWM_FAMILY else 1e-9
+        return np.allclose(
+            a[col].to_numpy(dtype=float), b[col].to_numpy(dtype=float), rtol=rtol, atol=1e-9, equal_nan=True
+        )
 
     mismatched = [c for c in shared if not _close(c)]
-    assert not mismatched, (
-        f"Truncation changed {len(mismatched)} served feature(s): "
-        f"{sorted(mismatched)[:12]}"
-    )
+    assert not mismatched, f"Truncation changed {len(mismatched)} served feature(s): {sorted(mismatched)[:12]}"
 
 
 def test_item_age_days_needs_the_true_first_seen_date(forecaster):
@@ -267,8 +267,7 @@ def test_item_age_days_needs_the_true_first_seen_date(forecaster):
     tail = forecaster._tail_predict_frame(full)
 
     def _age(feats):
-        return (feats.sort_values(["item_id", "date"])
-                     .groupby("item_id")["item_age_days"].last())
+        return feats.sort_values(["item_id", "date"]).groupby("item_id")["item_age_days"].last()
 
     truth = _age(forecaster.engineer_features(full, events))
 
@@ -277,8 +276,7 @@ def test_item_age_days_needs_the_true_first_seen_date(forecaster):
     assert (naive == ItemForecaster.PREDICT_TAIL_ITEM_DAYS - 1).all()
 
     # With it: correct.
-    fixed = _age(forecaster.engineer_features(
-        tail, events, item_first_dates=full.groupby("item_id")["date"].min()))
+    fixed = _age(forecaster.engineer_features(tail, events, item_first_dates=full.groupby("item_id")["date"].min()))
     pd.testing.assert_series_equal(truth, fixed)
 
 
@@ -289,7 +287,7 @@ def test_v1_engineered_cache_is_rejected(forecaster):
     it — this isolates the version guard.
     """
     df = _price_frame(n_items=2, n_days=20)
-    df.attrs["_cache_date"] = str(date.today())      # fresh, but unversioned
+    df.attrs["_cache_date"] = str(date.today())  # fresh, but unversioned
     df.to_parquet(forecaster._engineered_cache_path, index=False)
     assert forecaster._load_engineered_cache() is None
 

@@ -21,9 +21,7 @@ def upgrade() -> None:
 
     # Add is_backfilled column to items
     if bind.dialect.name == "postgresql":
-        op.execute(
-            "ALTER TABLE items ADD COLUMN IF NOT EXISTS is_backfilled INTEGER DEFAULT 0"
-        )
+        op.execute("ALTER TABLE items ADD COLUMN IF NOT EXISTS is_backfilled INTEGER DEFAULT 0")
     else:
         inspector = sa.inspect(bind)
         columns = {c["name"] for c in inspector.get_columns("items")}
@@ -40,10 +38,7 @@ def upgrade() -> None:
                 PRIMARY KEY (item_id, day)
             )
         """)
-        op.execute(
-            "CREATE INDEX IF NOT EXISTS idx_chart_point_item_day "
-            "ON chart_points (item_id, day)"
-        )
+        op.execute("CREATE INDEX IF NOT EXISTS idx_chart_point_item_day ON chart_points (item_id, day)")
     else:
         op.create_table(
             "chart_points",

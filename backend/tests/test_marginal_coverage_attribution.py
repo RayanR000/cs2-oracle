@@ -14,11 +14,11 @@ synthetic data with a KNOWN elasticity rather than on the archive:
 
 See `docs/research/2026-08-12-marginal-coverage-attribution-preregistration.md`.
 """
+
 from __future__ import annotations
 
 import numpy as np
 import pytest
-
 from models import conformal
 from scripts.attribute_marginal_coverage import (
     CoverageCurve,
@@ -27,14 +27,14 @@ from scripts.attribute_marginal_coverage import (
     solve_k,
 )
 
-FLOOR, CAP = 1e-4, 1e4          # wide, so the clip is not what the test measures
+FLOOR, CAP = 1e-4, 1e4  # wide, so the clip is not what the test measures
 
 
 def _panel(elasticity: float, n: int = 60_000, seed: int = 20260812):
     """`|resid| = sigma ** elasticity * lognormal noise`, by construction."""
     rng = np.random.default_rng(seed)
     sigma = np.exp(rng.normal(np.log(0.07), 0.6, n))
-    resid = (sigma ** elasticity) * np.exp(rng.normal(0.0, 0.5, n)) * 100.0
+    resid = (sigma**elasticity) * np.exp(rng.normal(0.0, 0.5, n)) * 100.0
     return resid, sigma
 
 
@@ -77,8 +77,7 @@ def test_solve_k_inverts_the_shift():
 
     k = solve_k(curve, sigma, 0.87, FLOOR, CAP)
     assert np.isfinite(k) and k > 1.0
-    assert curve.marginal(shifted_sigma(sigma, k, FLOOR, CAP)) == pytest.approx(
-        0.87, abs=1e-3)
+    assert curve.marginal(shifted_sigma(sigma, k, FLOOR, CAP)) == pytest.approx(0.87, abs=1e-3)
 
 
 def test_solve_k_reports_an_unreachable_target_rather_than_a_number():
@@ -87,7 +86,7 @@ def test_solve_k_reports_an_unreachable_target_rather_than_a_number():
     The inverse leg's whole use is to say "the mechanism cannot produce this",
     so returning a clamped `k` would turn a refutation into a false attribution.
     """
-    resid, sigma = _panel(elasticity=1.0)      # flat curve: nothing is reachable
+    resid, sigma = _panel(elasticity=1.0)  # flat curve: nothing is reachable
     q_hat = conformal.calibrate(resid, sigma)
     flat = CoverageCurve(resid, sigma, q_hat, beta=1.0)
     assert np.isnan(solve_k(flat, sigma, 0.95, FLOOR, CAP))
@@ -128,5 +127,4 @@ def test_the_decile_comparison_averages_over_rows_not_the_median_sigma():
     at_median = curve(np.array([np.median(sigma[dec == k]) for k in range(10)]))
 
     assert abs(by_row[0] - emp[0]) < abs(at_median[0] - emp[0])
-    assert float(np.mean(np.abs(at_median - emp))) > float(
-        np.mean(np.abs(by_row - emp)))
+    assert float(np.mean(np.abs(at_median - emp))) > float(np.mean(np.abs(by_row - emp)))
