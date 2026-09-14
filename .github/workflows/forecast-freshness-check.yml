@@ -38,18 +38,15 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v7
 
-      - name: Set up Python
-        uses: actions/setup-python@v7
+      - name: Install uv
+        uses: astral-sh/setup-uv@v6
         with:
           python-version: '3.11'
-          cache: pip
-          cache-dependency-path: backend/requirements.txt
 
       - name: Install dependencies
-        working-directory: ./backend
         run: |
-          python -m pip install --upgrade pip
-          pip install -r requirements.txt
+          uv sync --frozen --no-dev
+          echo "$PWD/.venv/bin" >> $GITHUB_PATH
 
       # The check reads the Parquet mirror as well as the DB, because api/routes
       # serves Parquet first — a DB row without a mirror row serves nothing.
