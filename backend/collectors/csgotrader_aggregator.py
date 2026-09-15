@@ -6,6 +6,7 @@ Fetches comprehensive price data from public JSON endpoints.
 import logging
 import re
 import unicodedata
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import UTC, datetime
 
 import requests
@@ -41,6 +42,15 @@ class CSGOTraderAggregator:
         self.session.headers.update({"User-Agent": "Mozilla/5.0 (compatible; CS2Analyzer/1.0)"})
         self._raw_sources: dict[str, dict[str, dict]] = {}
         self._price_cache: dict[str, float] = {}
+
+    def close(self):
+        self.session.close()
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        self.close()
 
     @staticmethod
     def _normalize_name(name: str) -> str:
@@ -148,6 +158,12 @@ class CSGOTraderAggregator:
 
         return list(dict.fromkeys(candidate.strip() for candidate in candidates if candidate.strip()))
 
+    def _fetch_one(self, source_name: str, url: str) -> tuple[str, dict]:
+        """Fetch one endpoint's raw JSON. Runs in a worker thread."""
+        response = self.session.get(url, timeout=30)
+        response.raise_for_status()
+        return source_name, response.json()
+
     def fetch_all_market_data(self) -> dict[str, dict[str, dict]]:
         """Fetch raw data from all configured endpoints.
 
@@ -167,11 +183,21 @@ class CSGOTraderAggregator:
         self._price_cache = {}
 
         failed = 0
-        for source_name, url in endpoints.items():
-            try:
-                response = self.session.get(url, timeout=30)
-                response.raise_for_status()
-                data = response.json()
+        # requests.Session is thread-safe for concurrent GET reads; parsing and
+        # cache mutation stay on this thread via as_completed.
+        with ThreadPoolExecutor(max_workers=max(1, len(endpoints))) as pool:
+            futures = {
+                pool.submit(self._fetch_one, name, url): (name, url)
+                for name, url in endpoints.items()
+            }
+            for future in as_completed(futures):
+                source_name, url = futures[future]
+                try:
+                    _, data = future.result()
+                except Exception as e:
+                    failed += 1
+                    logger.warning("Failed to fetch %s: %s", url, e)
+                    continue
                 if "data" in data:
                     data = data["data"]
                 if isinstance(data, dict):
@@ -184,9 +210,6 @@ class CSGOTraderAggregator:
                 else:
                     failed += 1
                     logger.warning("Unexpected response format from %s", url)
-            except Exception as e:
-                failed += 1
-                logger.warning("Failed to fetch %s: %s", url, e)
 
         ok = len(endpoints) - failed
         logger.info("Market data fetch complete: %s/%s endpoints succeeded", ok, len(endpoints))

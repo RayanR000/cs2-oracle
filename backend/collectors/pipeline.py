@@ -479,19 +479,20 @@ class DataPipeline:
             # append fail its cast — swallowed by the `except` below, so the
             # Parquet copy would silently stop updating. Stale-fallback counts
             # go in the returned dict and the log line instead.
+            source_counts = Counter(r.source for r in price_records)
             source_breakdown = {
                 "aggregator": primary_items_collected,
                 "historical_fallback": fallback_items_collected,
-                "aggregator_steam_7d": sum(1 for r in price_records if r.source == "aggregator_steam_7d"),
-                "aggregator_steam_30d": sum(1 for r in price_records if r.source == "aggregator_steam_30d"),
-                "aggregator_steam_90d": sum(1 for r in price_records if r.source == "aggregator_steam_90d"),
-                "aggregator_skinport": sum(1 for r in price_records if r.source == "aggregator_skinport"),
-                "aggregator_buff163": sum(1 for r in price_records if r.source == "aggregator_buff163"),
-                "aggregator_buff163_buy": sum(1 for r in price_records if r.source == "aggregator_buff163_buy"),
-                "aggregator_csfloat": sum(1 for r in price_records if r.source == "aggregator_csfloat"),
-                "aggregator_csmoney": sum(1 for r in price_records if r.source == "aggregator_csmoney"),
-                "aggregator_csgotrader": sum(1 for r in price_records if r.source == "aggregator_csgotrader"),
-                "aggregator_youpin": sum(1 for r in price_records if r.source == "aggregator_youpin"),
+                "aggregator_steam_7d": source_counts.get("aggregator_steam_7d", 0),
+                "aggregator_steam_30d": source_counts.get("aggregator_steam_30d", 0),
+                "aggregator_steam_90d": source_counts.get("aggregator_steam_90d", 0),
+                "aggregator_skinport": source_counts.get("aggregator_skinport", 0),
+                "aggregator_buff163": source_counts.get("aggregator_buff163", 0),
+                "aggregator_buff163_buy": source_counts.get("aggregator_buff163_buy", 0),
+                "aggregator_csfloat": source_counts.get("aggregator_csfloat", 0),
+                "aggregator_csmoney": source_counts.get("aggregator_csmoney", 0),
+                "aggregator_csgotrader": source_counts.get("aggregator_csgotrader", 0),
+                "aggregator_youpin": source_counts.get("aggregator_youpin", 0),
             }
 
             collection_run = CollectionRun(

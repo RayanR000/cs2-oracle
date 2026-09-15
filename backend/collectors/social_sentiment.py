@@ -89,11 +89,14 @@ class FinbertScorer:
             return 0.0
 
 
-_finbert = FinbertScorer()
+_finbert: FinbertScorer | None = None
 
 
 def score_sentiment(text: str) -> float:
     """Return sentiment score in [-1, 1]."""
+    global _finbert
+    if _finbert is None:
+        _finbert = FinbertScorer()
     return _finbert.score(text)
 
 
@@ -233,6 +236,8 @@ def collect_social_mentions(db) -> dict:
 
     for subreddit, limit in SUBREDDITS.items():
         posts = fetch_subreddit_posts(subreddit, limit=limit)
+        mention_params = []
+        pending_parquet = []
         for post in posts:
             matches = name_regex.findall(post["title"])
             if not matches:
@@ -247,54 +252,60 @@ def collect_social_mentions(db) -> dict:
                     continue
 
                 total_mentions += 1
-                try:
-                    db.execute(
-                        text("""
-                            INSERT INTO social_mentions
-                                (item_id, source, post_id, subreddit, post_title,
-                                 post_score, post_url, sentiment_score,
-                                 mentioned_at, collected_at)
-                            VALUES
-                                (:item_id, 'reddit', :post_id, :subreddit, :title,
-                                 :score, :url, :sentiment,
-                                 :mentioned_at, :collected_at)
-                            ON CONFLICT (item_id, source, post_id)
-                            DO NOTHING
-                        """),
-                        {
-                            "item_id": item_id,
-                            "post_id": post["id"],
-                            "subreddit": subreddit,
-                            "title": post["title"][:500] if post["title"] else "",
-                            "score": post["score"],
-                            "url": post["url"][:500] if post["url"] else "",
-                            "sentiment": sentiment,
-                            "mentioned_at": post["timestamp"],
-                            "collected_at": now,
-                        },
-                    )
-                    parquet_rows.append(
-                        {
-                            "item_id": item_id,
-                            "source": "reddit",
-                            "post_id": post["id"],
-                            "subreddit": subreddit,
-                            "post_title": post["title"][:500] if post["title"] else "",
-                            "post_score": post["score"],
-                            "post_url": post["url"][:500] if post["url"] else "",
-                            "sentiment_score": sentiment,
-                            "mentioned_at": post["timestamp"],
-                            "collected_at": now,
-                        }
-                    )
-                    inserted += 1
-                except Exception as e:
-                    logger.warning(
-                        "  Failed to insert mention (item=%s, post=%s): %s",
-                        item_id,
-                        post["id"],
-                        e,
-                    )
+                mention_params.append(
+                    {
+                        "item_id": item_id,
+                        "post_id": post["id"],
+                        "subreddit": subreddit,
+                        "title": post["title"][:500] if post["title"] else "",
+                        "score": post["score"],
+                        "url": post["url"][:500] if post["url"] else "",
+                        "sentiment": sentiment,
+                        "mentioned_at": post["timestamp"],
+                        "collected_at": now,
+                    }
+                )
+                pending_parquet.append(
+                    {
+                        "item_id": item_id,
+                        "source": "reddit",
+                        "post_id": post["id"],
+                        "subreddit": subreddit,
+                        "post_title": post["title"][:500] if post["title"] else "",
+                        "post_score": post["score"],
+                        "post_url": post["url"][:500] if post["url"] else "",
+                        "sentiment_score": sentiment,
+                        "mentioned_at": post["timestamp"],
+                        "collected_at": now,
+                    }
+                )
+
+        if mention_params:
+            try:
+                db.execute(
+                    text("""
+                        INSERT INTO social_mentions
+                            (item_id, source, post_id, subreddit, post_title,
+                             post_score, post_url, sentiment_score,
+                             mentioned_at, collected_at)
+                        VALUES
+                            (:item_id, 'reddit', :post_id, :subreddit, :title,
+                             :score, :url, :sentiment,
+                             :mentioned_at, :collected_at)
+                        ON CONFLICT (item_id, source, post_id)
+                        DO NOTHING
+                    """),
+                    mention_params,
+                )
+                parquet_rows.extend(pending_parquet)
+                inserted += len(mention_params)
+            except Exception as e:
+                logger.warning(
+                    "  Failed to insert %d mentions (subreddit=%s): %s",
+                    len(mention_params),
+                    subreddit,
+                    e,
+                )
 
         db.commit()
 

@@ -288,28 +288,41 @@ def collect(
 
         snapshot_day = resolve_snapshot_date()
     collected_at = datetime.now(UTC)
+    owns_session = session is None
     sess = session or requests.Session()
     started = time.monotonic()
     try:
-        token = _bearer_token(sess)
-    except RedditEventError as exc:
-        logger.warning("Reddit events skipped: %s", exc)
-        return {"status": "skipped", "reason": str(exc), "snapshot_day": str(snapshot_day)}
-    posts: list[dict[str, Any]] = []
-    for sub in SUBREDDITS:
         try:
-            posts.extend(fetch_subreddit_posts(sub, token, sess))
+            token = _bearer_token(sess)
         except RedditEventError as exc:
-            logger.warning("  r/%s FAILED: %s", sub, exc)
-    rows = posts_to_events(posts, snapshot_day, collected_at)
-    written = 0 if dry_run else write_reddit_event_rows(rows, archive_dir, snapshot_day)
-    elapsed = time.monotonic() - started
-    logger.info("Reddit events %s: %s posts -> %s events", snapshot_day, len(posts), written)
-    return {
-        "status": "success",
-        "snapshot_day": str(snapshot_day),
-        "reddit_event_rows": written,
-        "raw_posts": len(posts),
-        "elapsed_seconds": round(elapsed, 2),
-        "dry_run": dry_run,
-    }
+            logger.warning("Reddit events skipped: %s", exc)
+            return {"status": "skipped", "reason": str(exc), "snapshot_day": str(snapshot_day)}
+        posts: list[dict[str, Any]] = []
+        from concurrent.futures import ThreadPoolExecutor, as_completed
+
+        with ThreadPoolExecutor(max_workers=len(SUBREDDITS)) as pool:
+            futures = {
+                pool.submit(fetch_subreddit_posts, sub, token, sess): sub
+                for sub in SUBREDDITS
+            }
+            for fut in as_completed(futures):
+                sub = futures[fut]
+                try:
+                    posts.extend(fut.result())
+                except RedditEventError as exc:
+                    logger.warning("  r/%s FAILED: %s", sub, exc)
+        rows = posts_to_events(posts, snapshot_day, collected_at)
+        written = 0 if dry_run else write_reddit_event_rows(rows, archive_dir, snapshot_day)
+        elapsed = time.monotonic() - started
+        logger.info("Reddit events %s: %s posts -> %s events", snapshot_day, len(posts), written)
+        return {
+            "status": "success",
+            "snapshot_day": str(snapshot_day),
+            "reddit_event_rows": written,
+            "raw_posts": len(posts),
+            "elapsed_seconds": round(elapsed, 2),
+            "dry_run": dry_run,
+        }
+    finally:
+        if owns_session:
+            sess.close()

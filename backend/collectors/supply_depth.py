@@ -175,6 +175,7 @@ def _probe_brotli() -> None:
 
 def _get_json(url: str, timeout: int, session: requests.Session | None = None) -> Any:
     """GET and decode JSON, raising on anything that is not a usable payload."""
+    owns_session = session is None
     sess = session or requests.Session()
     try:
         resp = sess.get(
@@ -184,6 +185,9 @@ def _get_json(url: str, timeout: int, session: requests.Session | None = None) -
         )
     except requests.RequestException as exc:
         raise SupplyFeedError(f"{url}: request failed: {exc}") from exc
+    finally:
+        if owns_session:
+            sess.close()
 
     if resp.status_code != 200:
         raise SupplyFeedError(f"{url}: HTTP {resp.status_code}")
@@ -650,11 +654,24 @@ def collect(
     # item. `AGGREGATOR_SNAPSHOT_DATE` pins one value across all workflow steps.
     snapshot_day = snapshot_day or resolve_snapshot_date()
     collected_at = datetime.now(UTC)
-    session = requests.Session()
 
-    results: list[FeedResult] = [fetch_feed(feed, snapshot_day, collected_at, session) for feed in feeds]
+    # Parallel fetch — each thread gets its own session since a shared
+    # requests.Session is not safe for concurrent use beyond simple GETs,
+    # and per-thread sessions isolate connection-pool state.
+    from concurrent.futures import ThreadPoolExecutor
+
+    def _fetch_with_own_session(feed: Feed) -> FeedResult:
+        with requests.Session() as s:
+            return fetch_feed(feed, snapshot_day, collected_at, s)
+
+    if feeds:
+        with ThreadPoolExecutor(max_workers=len(feeds)) as pool:
+            results: list[FeedResult] = list(pool.map(_fetch_with_own_session, feeds))
+    else:
+        results = []
     if include_ladder:
-        results.append(fetch_lis_skins(snapshot_day, collected_at, session))
+        with requests.Session() as ladder_session:
+            results.append(fetch_lis_skins(snapshot_day, collected_at, ladder_session))
 
     good = [r for r in results if r.ok and r.row_count]
     failed = [r for r in results if not r.ok]

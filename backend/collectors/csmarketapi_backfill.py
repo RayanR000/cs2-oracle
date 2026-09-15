@@ -180,7 +180,6 @@ def gv(conn: sqlite3.Connection, key: str) -> str:
 
 def sv(conn: sqlite3.Connection, key: str, value: str):
     conn.execute("REPLACE INTO backfill_state (key, value) VALUES (?, ?)", (key, value))
-    conn.commit()
 
 
 def inc(conn: sqlite3.Connection, key: str, n: int = 1):
@@ -444,8 +443,11 @@ def run_backfill(dry_run: bool = False, limit: int = 0):
             inserts,
         )
 
-        for h, sl in local_conn.execute("SELECT hash_name, sell_listings FROM market_items").fetchall():
-            out_conn.execute("UPDATE items SET sell_listings = ? WHERE hash_name = ?", (sl or 0, h))
+        listings = local_conn.execute("SELECT hash_name, sell_listings FROM market_items").fetchall()
+        out_conn.executemany(
+            "UPDATE items SET sell_listings = ? WHERE hash_name = ?",
+            [(sl or 0, h) for h, sl in listings],
+        )
         out_conn.commit()
         log.info(f"  Catalog stored — {len(catalog)} items in DB")
     else:
@@ -556,16 +558,13 @@ def run_backfill(dry_run: bool = False, limit: int = 0):
 
         market_rows = Counter()
         total_rows = 0
+        rows = []
         for day_entry in sales_data:
             day = day_entry.get("day", "")
             for sale in day_entry.get("sales", []):
                 mkt = sale.get("market", "UNKNOWN")
                 market_rows[mkt] += 1
-                out_conn.execute(
-                    """INSERT OR IGNORE INTO sales_history
-                       (market_hash_name, day, market, mean_price, min_price,
-                        max_price, median_price, volume)
-                       VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+                rows.append(
                     (
                         hash_name,
                         day,
@@ -575,9 +574,17 @@ def run_backfill(dry_run: bool = False, limit: int = 0):
                         sale.get("max_price"),
                         sale.get("median_price"),
                         sale.get("volume"),
-                    ),
+                    )
                 )
                 total_rows += 1
+        if rows:
+            out_conn.executemany(
+                """INSERT OR IGNORE INTO sales_history
+                   (market_hash_name, day, market, mean_price, min_price,
+                    max_price, median_price, volume)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+                rows,
+            )
         out_conn.commit()
 
         inc(out_conn, "total_completed")
@@ -599,6 +606,7 @@ def run_backfill(dry_run: bool = False, limit: int = 0):
         time.sleep(REQUEST_DELAY)
 
     # ── Final summary ───────────────────────────────────────────────────────
+    out_conn.commit()  # flush trailing sv()/inc() state (sv no longer commits per call)
     elapsed = time.time() - t0
     final_done = gv(out_conn, "total_completed")
     final_fail = gv(out_conn, "total_failed")
