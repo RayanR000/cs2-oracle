@@ -47,9 +47,9 @@ jobs:
           - 5432:5432
         options: >-
           --health-cmd pg_isready
-          --health-interval 5s
+          --health-interval 2s
           --health-timeout 5s
-          --health-retries 10
+          --health-retries 5
 
     env:
       DATABASE_URL: postgresql://cs2:cs2@localhost:5432/cs2_scratch
@@ -58,11 +58,14 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v7
+        with:
+          fetch-depth: 1
 
       - name: Install uv
         uses: astral-sh/setup-uv@v6
         with:
           python-version: '3.13'
+          enable-cache: true
 
       - name: Install dependencies
         run: |
@@ -73,14 +76,11 @@ jobs:
       # longer than Alembic's default alembic_version.version_num column (VARCHAR(32)), so
       # a from-scratch `upgrade head` truncates and fails. Prod never hit this because it
       # was built up incrementally; pre-creating the table wider matches prod's reality.
-      - name: Pre-create a wide alembic_version table
+      - name: Apply migrations to the scratch database
         working-directory: ./backend
         run: |
           python -c "import os, psycopg2; c = psycopg2.connect(os.environ['DATABASE_URL']); c.autocommit = True; c.cursor().execute('CREATE TABLE IF NOT EXISTS alembic_version (version_num VARCHAR(255) NOT NULL, CONSTRAINT alembic_version_pkc PRIMARY KEY (version_num))')"
-
-      - name: Apply migrations to the scratch database
-        working-directory: ./backend
-        run: alembic upgrade head
+          alembic upgrade head
 
       - name: Compare Base.metadata against the migrated schema
         working-directory: ./backend

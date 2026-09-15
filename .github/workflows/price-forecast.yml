@@ -56,6 +56,7 @@ jobs:
         uses: astral-sh/setup-uv@v6
         with:
           python-version: '3.13'
+          enable-cache: true
 
       - name: Install dependencies
         run: |
@@ -115,21 +116,18 @@ jobs:
       # fresh every run, so the key changed unconditionally and this could
       # never have hit; _archive_fingerprint is content-derived now.
       #
-      # This `v6` label LAGS ItemForecaster.VOTED_CACHE_VERSION, which is 7
-      # (v7 excluded STEAM_SPOT_SOURCES). That is cosmetic, not a leak: the
-      # version is hashed into the frame's own filename by
-      # _voted_cache_key/_voted_cache_path, so a v7 reader never finds a v6
-      # file and recomputes. The earlier claim here -- that a lagging key lets
-      # training silently consume a superseded frame -- was wrong for the same
-      # reason (VOTED_CACHE_VERSION moved 4 -> 5 -> 6 -> 7 with this key
-      # following only as far as 6). Bumping the label to v7 costs one cold
-      # run and restores the intended one-to-one; it is not a correctness fix.
+      # Bumped from v6 to v7 to match ItemForecaster.VOTED_CACHE_VERSION (v7
+      # excluded STEAM_SPOT_SOURCES). The version is hashed into the frame's
+      # own filename by _voted_cache_key/_voted_cache_path, so a v7 reader
+      # never finds a v6 file and recomputes — the lagging key meant the cache
+      # could never hit. One cold run after this bump, then every subsequent
+      # run saves ~48s (21.1s DuckDB read + 27.2s multi-source voting).
       - name: Cache voted price frame
         uses: actions/cache@v4
         with:
           path: backend/data
-          key: voted-v6-${{ hashFiles('backend/models/forecaster.py') }}
-          restore-keys: voted-v6-
+          key: voted-v7-${{ hashFiles('backend/models/forecaster.py') }}
+          restore-keys: voted-v7-
 
       # Fail loudly here rather than 60s later with the opaque "No models
       # available for prediction" that hid this breakage for 17 days.

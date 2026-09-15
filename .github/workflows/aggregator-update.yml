@@ -55,11 +55,14 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v7
+        with:
+          fetch-depth: 1
 
       - name: Install uv
         uses: astral-sh/setup-uv@v6
         with:
           python-version: '3.13'
+          enable-cache: true
 
       - name: Install dependencies
         run: |
@@ -180,36 +183,32 @@ jobs:
       # AGGREGATOR_SNAPSHOT_DATE pins the same day label the price rows got, so
       # the two join. Without it a run straddling midnight labels supply D+1
       # against prices D.
-      - name: Collect supply depth
+      # Supply depth (~7min) and sales volume (~2s) are independent collectors
+      # hitting different endpoints (lis-skins vs Skinport). Run them in parallel
+      # so the ~2s volume call doesn't wait behind the ~7min depth call.
+      #
+      # `continue-on-error` because Price Forecast and Backtest Accuracy chain
+      # off THIS workflow's success. Supply depth is an unproven experiment; a
+      # marketplace outage must not take down the daily forecast. Sales volume is
+      # the pipeline's ONLY real trade-volume feed (no aggregator feed carries a
+      # volume field, probed 2026-08-08). Skinport answers 403 to Cloudflare-owned
+      # egress (AS13335), so this can pass from CI and fail from a laptop on WARP.
+      - name: Collect supply depth + sales volume (parallel)
         continue-on-error: true
         working-directory: ./backend
         env:
           AGGREGATOR_SNAPSHOT_DATE: ${{ env.SNAPSHOT_DATE }}
         run: |
           echo "📦 Collecting supply depth (scalar feeds ~2s, lis-skins ladder ~7min)..."
-          python scripts/run_supply_depth.py --archive-dir ../archive/price-archive
-
-      # Same placement and the same reasoning as supply depth above: inside this
-      # workflow so the day's sale counts ride the same orphan commit as the
-      # day's prices.
-      #
-      # This is the pipeline's ONLY real trade-volume feed. No aggregator feed
-      # carries a volume field (probed 2026-08-08), which is why
-      # prices-*.parquet's `volume` column has been unobserved since the HF
-      # merge ran out on 2026-04-15. It writes volume-YYYY-MM.parquet and does
-      # NOT repair that column -- see collectors/sales_volume.py for why.
-      #
-      # `continue-on-error` for the same reason: one call to one cash venue must
-      # not take down the daily forecast. Skinport answers 403 to Cloudflare-owned
-      # egress (AS13335), so this can pass from CI and fail from a laptop on WARP.
-      - name: Collect sales volume
-        continue-on-error: true
-        working-directory: ./backend
-        env:
-          AGGREGATOR_SNAPSHOT_DATE: ${{ env.SNAPSHOT_DATE }}
-        run: |
+          python scripts/run_supply_depth.py --archive-dir ../archive/price-archive &
+          PID_SUPPLY=$!
           echo "📊 Collecting completed-sale volume (Skinport, 1 call ~2s)..."
-          python scripts/run_sales_volume.py --archive-dir ../archive/price-archive
+          python scripts/run_sales_volume.py --archive-dir ../archive/price-archive &
+          PID_VOLUME=$!
+          FAIL=0
+          wait $PID_SUPPLY || { echo "::warning::Supply depth collection failed"; FAIL=1; }
+          wait $PID_VOLUME || { echo "::warning::Sales volume collection failed"; FAIL=1; }
+          exit $FAIL
 
       # The parquet files ARE the data (each holds full history), so git history
       # of them has no value and only bloats the repo. Republish the archive as a
