@@ -163,6 +163,11 @@ later refuted. This item needs a written pre-registration before any statistic i
 
 ## Item 4 — Fix the `count_in_24` source splice (latent, cheap)
 
+**DONE (verified 2026-09-15).** The script already emits two era-explicit columns
+(`count_in_24_pre_restructure`, `steam_volume_post_restructure`); no merged `steam_vol`
+exists. Five tests in `tests/test_backfill_buff_iflow.py` cover all three acceptance
+criteria and pass.
+
 **Problem.** `scripts/backfill_buff_iflow.py` writes a single `steam_vol` field from two
 different upstreams depending on era (`scripts/backfill_buff_iflow.py:95-115`): for pre-
 2024-02-13 rows it reads `count_in_24` from the BUFF "DATA" db, and for later rows
