@@ -1,7 +1,7 @@
 from database import Item, ItemForecast, get_db
 from fastapi import APIRouter, Depends, Query
 from models.item_parser import is_phantom_slug, is_phase_collapsed
-from sqlalchemy import desc, func
+from sqlalchemy import desc
 from sqlalchemy.orm import Session
 
 from api.cache import get_or_build
@@ -157,125 +157,56 @@ def select_opportunities(forecasts, items_map, type_filter, limit):
     return results[:limit]
 
 
-@router.get("/undervalued", response_model=list[OpportunityOut])
-def get_undervalued(
-    limit: int = Query(10, ge=1, le=100),
-    db: Session = Depends(get_db),
-):
-    subq = (
-        db.query(
-            ItemForecast.item_id,
-            ItemForecast.forecast_date,
-        )
-        .filter(
-            ItemForecast.horizon_days == 7,
-            ItemForecast.direction == "up",
-        )
-        .distinct(ItemForecast.item_id)
-        .order_by(ItemForecast.item_id, desc(ItemForecast.forecast_date))
-        .subquery()
-    )
-    forecasts = (
-        db.query(ItemForecast)
-        .join(subq, (ItemForecast.item_id == subq.c.item_id) & (ItemForecast.forecast_date == subq.c.forecast_date))
-        .filter(
-            ItemForecast.horizon_days == 7,
-            ItemForecast.direction == "up",
-            ItemForecast.current_price.isnot(None),
-            price_floor_clause(ItemForecast.current_price),
-            ItemForecast.price_mid.isnot(None),
-        )
-        .order_by(desc((ItemForecast.price_mid - ItemForecast.current_price) / ItemForecast.current_price * 100))
-        .limit(limit)
-        .all()
-    )
-    items_map = _load_items([f.item_id for f in forecasts], db)
+def select_momentum(forecasts, items_map, limit):
+    """Momentum surface: same gates and |predicted return| ranking as
+    `select_opportunities`, but every row keeps the "momentum" label whatever
+    its direction — the old `/momentum` endpoint ranked movers cross-direction.
+    """
     results = []
     for f in forecasts:
-        item = items_map.get(f.item_id)
-        if not item:
+        if f.direction is None:
             continue
-        results.append(_build_opportunity(item, f, "undervalued"))
-    return results
-
-
-@router.get("/overheated", response_model=list[OpportunityOut])
-def get_overheated(
-    limit: int = Query(10, ge=1, le=100),
-    db: Session = Depends(get_db),
-):
-    subq = (
-        db.query(
-            ItemForecast.item_id,
-            ItemForecast.forecast_date,
-        )
-        .filter(
-            ItemForecast.horizon_days == 7,
-            ItemForecast.direction == "down",
-        )
-        .distinct(ItemForecast.item_id)
-        .order_by(ItemForecast.item_id, desc(ItemForecast.forecast_date))
-        .subquery()
-    )
-    forecasts = (
-        db.query(ItemForecast)
-        .join(subq, (ItemForecast.item_id == subq.c.item_id) & (ItemForecast.forecast_date == subq.c.forecast_date))
-        .filter(
-            ItemForecast.horizon_days == 7,
-            ItemForecast.direction == "down",
-            ItemForecast.current_price.isnot(None),
-            price_floor_clause(ItemForecast.current_price),
-            ItemForecast.price_mid.isnot(None),
-        )
-        .order_by(desc((ItemForecast.current_price - ItemForecast.price_mid) / ItemForecast.current_price * 100))
-        .limit(limit)
-        .all()
-    )
-    items_map = _load_items([f.item_id for f in forecasts], db)
-    results = []
-    for f in forecasts:
-        item = items_map.get(f.item_id)
-        if not item:
+        if not meets_price_floor(f.current_price):
             continue
-        results.append(_build_opportunity(item, f, "overheated"))
-    return results
-
-
-@router.get("/momentum", response_model=list[OpportunityOut])
-def get_momentum(
-    limit: int = Query(10, ge=1, le=100),
-    db: Session = Depends(get_db),
-):
-    subq = (
-        db.query(
-            ItemForecast.item_id,
-            ItemForecast.forecast_date,
-        )
-        .filter(ItemForecast.horizon_days == 7)
-        .distinct(ItemForecast.item_id)
-        .order_by(ItemForecast.item_id, desc(ItemForecast.forecast_date))
-        .subquery()
-    )
-    forecasts = (
-        db.query(ItemForecast)
-        .join(subq, (ItemForecast.item_id == subq.c.item_id) & (ItemForecast.forecast_date == subq.c.forecast_date))
-        .filter(
-            ItemForecast.horizon_days == 7,
-            ItemForecast.current_price.isnot(None),
-            price_floor_clause(ItemForecast.current_price),
-            ItemForecast.price_mid.isnot(None),
-        )
-        .order_by(
-            desc(func.abs((ItemForecast.price_mid - ItemForecast.current_price) / ItemForecast.current_price * 100))
-        )
-        .limit(limit)
-        .all()
-    )
-    items_map = _load_items([f.item_id for f in forecasts], db)
-    results = []
-    for f in forecasts:
+        if not meets_anchor_gate(getattr(f, "anchor_clean", None)):
+            continue
         item = items_map.get(f.item_id)
         if not item:
             continue
         results.append(_build_opportunity(item, f, "momentum"))
-    return results
+
+    results.sort(key=lambda x: abs(x.opportunity_score), reverse=True)
+    return results[:limit]
+
+
+@router.get("/undervalued", response_model=list[OpportunityOut])
+def get_undervalued(
+    horizon_days: int = Query(7, ge=1, le=30),
+    limit: int = Query(10, ge=1, le=100),
+    db: Session = Depends(get_db),
+):
+    forecasts = _latest_forecasts(db, horizon_days)
+    items_map = _load_items([f.item_id for f in forecasts if f.direction is not None], db)
+    return select_opportunities(forecasts, items_map, type_filter="undervalued", limit=limit)
+
+
+@router.get("/overheated", response_model=list[OpportunityOut])
+def get_overheated(
+    horizon_days: int = Query(7, ge=1, le=30),
+    limit: int = Query(10, ge=1, le=100),
+    db: Session = Depends(get_db),
+):
+    forecasts = _latest_forecasts(db, horizon_days)
+    items_map = _load_items([f.item_id for f in forecasts if f.direction is not None], db)
+    return select_opportunities(forecasts, items_map, type_filter="overheated", limit=limit)
+
+
+@router.get("/momentum", response_model=list[OpportunityOut])
+def get_momentum(
+    horizon_days: int = Query(7, ge=1, le=30),
+    limit: int = Query(10, ge=1, le=100),
+    db: Session = Depends(get_db),
+):
+    forecasts = _latest_forecasts(db, horizon_days)
+    items_map = _load_items([f.item_id for f in forecasts if f.direction is not None], db)
+    return select_momentum(forecasts, items_map, limit)

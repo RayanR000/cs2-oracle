@@ -86,8 +86,7 @@ def _build_market_summary(db: Session, type: str | None, q: str | None):
 
     cutoff = datetime.now(UTC) - timedelta(days=2)
     price_query = db.query(PriceHistory).filter(PriceHistory.timestamp >= cutoff)
-    if q or type:
-        price_query = price_query.filter(PriceHistory.item_id.in_(item_ids))
+    price_query = price_query.filter(PriceHistory.item_id.in_(item_ids))
     price_rows = price_query.order_by(PriceHistory.item_id, PriceHistory.timestamp).all()
     prices_by_item: dict[int, list] = {}
     for pr in price_rows:

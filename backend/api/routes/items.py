@@ -104,18 +104,25 @@ def trending_items(
 
 
 def _latest_prices(db: Session, item_ids: list[int]) -> dict[int, float]:
-    """Latest price per item from price_history."""
-    prices = {}
-    for iid in item_ids:
-        ph = (
-            db.query(PriceHistory.price)
-            .filter(PriceHistory.item_id == iid)
-            .order_by(desc(PriceHistory.timestamp))
-            .first()
+    """Latest price per item from price_history (single batched query)."""
+    if not item_ids:
+        return {}
+    subq = (
+        db.query(
+            PriceHistory.item_id,
+            PriceHistory.price,
+            func.row_number()
+            .over(
+                partition_by=PriceHistory.item_id,
+                order_by=PriceHistory.timestamp.desc(),
+            )
+            .label("rn"),
         )
-        if ph:
-            prices[iid] = ph.price
-    return prices
+        .filter(PriceHistory.item_id.in_(item_ids))
+        .subquery()
+    )
+    rows = db.query(subq.c.item_id, subq.c.price).filter(subq.c.rn == 1).all()
+    return {r.item_id: float(r.price) for r in rows}
 
 
 def _build_trending(db: Session, limit: int):
@@ -401,27 +408,38 @@ def get_price_history(
     item = _resolve_item(item_id, db)
 
     cutoff = datetime.now(UTC) - timedelta(days=days)
-    all_records = (
+    # SMA computation — only needs the last 30 prices (lightweight query)
+    sma_prices = (
+        db.query(PriceHistory.price)
+        .filter(
+            PriceHistory.item_id == item.id,
+            PriceHistory.timestamp >= cutoff,
+        )
+        .order_by(desc(PriceHistory.timestamp))
+        .limit(30)
+        .all()
+    )
+    sma_values = [r.price for r in reversed(sma_prices)]
+
+    # Paginated main query — page slice is applied in SQL, not memory
+    records = (
         db.query(PriceHistory)
         .filter(
             PriceHistory.item_id == item.id,
             PriceHistory.timestamp >= cutoff,
         )
         .order_by(PriceHistory.timestamp)
+        .offset(skip)
+        .limit(limit)
         .all()
     )
-    all_prices = [r.price for r in all_records]
-    if all_records:
-        records = all_records[skip : skip + limit]
-    else:
-        records = []
 
     sma_7 = None
     sma_30 = None
-    if len(all_prices) >= 7:
-        sma_7 = sum(all_prices[-7:]) / 7
-    if len(all_prices) >= 30:
-        sma_30 = sum(all_prices[-30:]) / 30
+    if len(sma_values) >= 7:
+        sma_7 = sum(sma_values[-7:]) / 7
+    if len(sma_values) >= 30:
+        sma_30 = sum(sma_values[-30:]) / 30
 
     records_slice = records
 
@@ -550,20 +568,27 @@ def _trend_indicators(price_points: list) -> dict:
     }
 
 
+def _recent_price_points(db: Session, item_db_id: int, n: int = 35) -> list[float]:
+    """Last `n` prices in chronological order — the full window every trend
+    indicator needs (MACD slow 26 + signal 9 = 35, SMA-30, Bollinger 20)."""
+    rows = (
+        db.query(PriceHistory.price)
+        .filter(PriceHistory.item_id == item_db_id)
+        .order_by(desc(PriceHistory.timestamp))
+        .limit(n)
+        .all()
+    )
+    return [r.price for r in reversed(rows)]
+
+
 def _trends_parquet(item, item_id: str, db: Session):
     r = _forecast_parquet(item.id, 7)
     if r is None:
         return None
     trend_dir = served_direction(r.direction, 7)
-    latest_price = (
-        db.query(PriceHistory).filter(PriceHistory.item_id == item.id).order_by(desc(PriceHistory.timestamp)).first()
-    )
-    current_price = latest_price.price if latest_price else 0.0
+    price_points = _recent_price_points(db, item.id)
+    current_price = price_points[-1] if price_points else 0.0
     explanation = _build_trend_explanation(trend_dir, current_price)
-    price_points = [
-        p.price
-        for p in (db.query(PriceHistory).filter(PriceHistory.item_id == item.id).order_by(PriceHistory.timestamp).all())
-    ]
     ind = _trend_indicators(price_points)
     return TrendAnalysisOut(
         item_id=item.id,
@@ -606,19 +631,12 @@ def get_item_trends(item_id: str, db: Session = Depends(get_db)):
         .first()
     )
 
-    latest_price = (
-        db.query(PriceHistory).filter(PriceHistory.item_id == item.id).order_by(desc(PriceHistory.timestamp)).first()
-    )
-    current_price = latest_price.price if latest_price else 0.0
+    price_points = _recent_price_points(db, item.id)
+    current_price = price_points[-1] if price_points else 0.0
 
     trend_dir = served_direction(latest_forecast.direction if latest_forecast else None, 7)
 
     explanation = _build_trend_explanation(trend_dir, current_price)
-
-    price_points = [
-        r.price
-        for r in (db.query(PriceHistory).filter(PriceHistory.item_id == item.id).order_by(PriceHistory.timestamp).all())
-    ]
 
     ind = _trend_indicators(price_points)
 

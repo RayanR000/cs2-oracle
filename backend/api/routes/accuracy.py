@@ -108,6 +108,17 @@ def _tier_clause(price_tier: int | None, column: str = "price_tier") -> str:
         return f"{column} IS NULL"
     return f"{column} = {int(price_tier)}"
 
+_PA_HAS_PRICE_TIER: bool | None = None
+
+
+def _has_price_tier(q) -> bool:
+    """Cached mirror-schema check — the DESCRIBE runs once per process, not per request."""
+    global _PA_HAS_PRICE_TIER
+    if _PA_HAS_PRICE_TIER is None:
+        cols = set(q.query("DESCRIBE SELECT * FROM prediction_accuracy").iloc[:, 0].tolist())
+        _PA_HAS_PRICE_TIER = "price_tier" in cols
+    return _PA_HAS_PRICE_TIER
+
 
 def _query_prediction_accuracy(
     prediction_type: str | None = None,
@@ -118,7 +129,7 @@ def _query_prediction_accuracy(
 
     try:
         with ParquetQuery("prediction_accuracy") as q:
-            cols = set(q.query("DESCRIBE SELECT * FROM prediction_accuracy").iloc[:, 0].tolist())
+            has_tier = _has_price_tier(q)
             clauses = []
             if prediction_type:
                 pt = prediction_type.replace("'", "''")
@@ -543,14 +554,21 @@ def outcome_stats(
     except Exception:
         pass
 
-    total_st = db.query(func.count(ForecastOutcome.id)).scalar() or 0
+    row = db.query(
+        func.count(ForecastOutcome.id),
+        func.sum(ForecastOutcome.direction_correct),
+        func.avg(ForecastOutcome.abs_error),
+        func.avg(ForecastOutcome.pct_error),
+    ).one()
+    total_st, correct_st, avg_error_st, avg_pct_st = row
+    total_st = total_st or 0
     if total_st == 0:
         return {"total_outcomes": 0}
 
-    correct_st = db.query(func.count(ForecastOutcome.id)).filter(ForecastOutcome.direction_correct == 1).scalar() or 0
+    correct_st = correct_st or 0
 
-    avg_error_st = db.query(func.avg(ForecastOutcome.abs_error)).scalar() or 0
-    avg_pct_st = db.query(func.avg(ForecastOutcome.pct_error)).scalar() or 0
+    avg_error_st = avg_error_st or 0
+    avg_pct_st = avg_pct_st or 0
 
     per_horizon_st = db.execute(
         text("""
