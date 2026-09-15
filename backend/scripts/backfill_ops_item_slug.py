@@ -37,6 +37,8 @@ import pandas as pd
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
+from db.archive import ARCHIVE_ROOT
+
 logger = logging.getLogger("backfill_ops_item_slug")
 
 #: Every ops table keyed on the surrogate `item_id`. `event_impacts_denorm`
@@ -159,7 +161,7 @@ def backfill(archive_dir: Path, tables: Sequence[str], id_to_slug: dict, apply: 
 def main(argv: Sequence[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[1])
     ap.add_argument(
-        "--archive-dir", type=Path, default=Path("../price-archive"), help="Archive root; ops/ lives under it."
+        "--archive-dir", type=Path, default=ARCHIVE_ROOT, help="Archive root; ops/ lives under it."
     )
     ap.add_argument(
         "--tables",

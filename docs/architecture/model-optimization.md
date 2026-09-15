@@ -108,7 +108,7 @@ sees:
 
 | `TRAIN_FEATURE_ROWS` | Items selected | Training time | Measured |
 |---|---|---|---|
-| 100,000 (default) | 99 of ~5,377 (**1.8%**) | **104.6s** | 2026-08-05 |
+| 100,000 (pre-2026-08-08 default; historical — the shipped default is the 1.2M row below) | 99 of ~5,377 (**1.8%**) | **104.6s** | 2026-08-05 |
 | 700,000 | 646 (12%) | **468.7s** | 2026-08-05 |
 | 1,200,000 **with `TRAIN_MIN_MEDIAN_PRICE=1.0`** — **the current default** | 926 of 5,542 — the whole ≥$1 cohort, no subsample | **538s** | 2026-08-07 |
 

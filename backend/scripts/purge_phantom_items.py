@@ -55,6 +55,7 @@ logger = logging.getLogger("purge_phantom_items")
 # which items exist. Also the predicate the Steam backfill uses to keep these
 # keys out of its target list (`backfill_steam_listing_history.py:195-199`).
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from db.archive import ARCHIVE_ROOT  # noqa: E402
 from models.item_parser import is_phantom_slug as is_mangled_key  # noqa: E402
 
 
@@ -350,7 +351,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         "leak, since the aggregator re-reads items every run.",
     )
     ap.add_argument(
-        "--archive-dir", type=Path, default=Path("../price-archive"), help="Directory holding prices-*.parquet."
+        "--archive-dir", type=Path, default=ARCHIVE_ROOT, help="Directory holding prices-*.parquet."
     )
     args = ap.parse_args(argv)
 

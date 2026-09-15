@@ -43,7 +43,7 @@ from collectors.price_history_import import (
     write_archive_frame,
 )
 from collectors.price_history_sources import ADAPTERS
-from db.archive import prices_relation
+from db.archive import ARCHIVE_ROOT, prices_relation
 
 logger = logging.getLogger(__name__)
 
@@ -205,7 +205,7 @@ def main(argv: list[str] | None = None) -> int:
         help="report the promotion-gate numbers for an existing staging import and exit, fetching nothing",
     )
     ap.add_argument(
-        "--archive-dir", default="../price-archive", help="the real archive, compared against for the seam read"
+        "--archive-dir", default=ARCHIVE_ROOT, help="the real archive, compared against for the seam read"
     )
     ap.add_argument(
         "--min-median-price",

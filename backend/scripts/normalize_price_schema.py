@@ -55,6 +55,7 @@ import duckdb
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from db.archive import (
+    ARCHIVE_ROOT,
     CANONICAL_PRICE_COLUMNS,
     COLUMN_TYPES,
     RANGE_PRICE_COLUMNS,
@@ -233,7 +234,7 @@ def verify(archive_dir: Path) -> bool:
 def main(argv: Sequence[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[1])
     ap.add_argument(
-        "--archive-dir", type=Path, default=Path("../price-archive"), help="Directory holding prices-*.parquet."
+        "--archive-dir", type=Path, default=ARCHIVE_ROOT, help="Directory holding prices-*.parquet."
     )
     ap.add_argument(
         "--apply", action="store_true", help="Actually write. Omitted, the script only reports (the default)."

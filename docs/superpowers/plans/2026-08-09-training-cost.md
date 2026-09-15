@@ -7,10 +7,12 @@
 > **Measured outcome: `docs/changelog/2026-08-09-training-cost-levers.md` — read that, not this.**
 >
 > **🟡 Task 7 Step 4, half landed.** ✅ The withdrawn +3.50pp is corrected at
-> `docs/architecture/model.md:212` and `:540` (`895005a`). ⬜ Still outstanding: `:189-196` /
-> `:204-217` / `:529-537` describe the 99-item / 100K-row config as production, and
-> `model-optimization.md` repeats the defect. Tracked as **O2** in
-> `docs/research/2026-08-09-next-steps.md`.
+> `docs/architecture/model.md:212` and `:540` (`895005a`). ✅ O2 closed 2026-09-15:
+> the last stale cell (`model-optimization.md` row-budget table "100,000 (default)")
+> now reads as the pre-2026-08-08 historical default; the shipped default
+> (`DEFAULT_TRAIN_FEATURE_ROWS = 1_200_000` + `$1` floor, `forecast_prices.py:46,58`)
+> was already stated in the same table. `model.md:189-196` no longer describes the
+> 99-item config as production.
 >
 > **The goal in the line below was not met, and the target was not sound.** The cold retrain
 > measured **1426.3s**, not ≈600s, because Task 2 removed early stopping from the trial loop and

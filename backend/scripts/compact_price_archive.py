@@ -42,7 +42,7 @@ import duckdb
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from db.archive import COLUMN_TYPES
+from db.archive import ARCHIVE_ROOT, COLUMN_TYPES
 
 logger = logging.getLogger("compact_price_archive")
 
@@ -281,7 +281,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     ap.add_argument(
         "--archive-dir",
         type=Path,
-        default=Path("../price-archive"),
+        default=ARCHIVE_ROOT,
         help="Directory holding prices-*.parquet / snapshots-*.parquet.",
     )
     ap.add_argument(

@@ -33,6 +33,7 @@ import pandas as pd
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
+from db.archive import ARCHIVE_ROOT
 from db.parquet import append_monthly
 
 SOURCE = "buff_iflow"
@@ -210,8 +211,8 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--start", default=DEFAULT_START)
     ap.add_argument("--end", default=DEFAULT_END)
-    ap.add_argument("--staging-dir", default="../buff-iflow-staging/price-archive")
-    ap.add_argument("--out-dir", default="../price-archive")
+    ap.add_argument("--staging-dir", default=ARCHIVE_ROOT.parent / "buff-iflow-staging" / "price-archive")
+    ap.add_argument("--out-dir", default=ARCHIVE_ROOT)
     ap.add_argument("--min-items", type=int, default=1000)
     ap.add_argument(
         "--max-missing-days", type=int, default=0, help="tolerate this many absent days (upstream feed gaps)"

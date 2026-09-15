@@ -25,6 +25,7 @@ import requests
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
+from db.archive import ARCHIVE_ROOT
 from db.parquet import append_monthly
 
 SOURCE = "aggregator_steam_17mafo"
@@ -247,7 +248,7 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--start-date", default=DEFAULT_START)
     ap.add_argument("--end-date", default=DEFAULT_END)
-    ap.add_argument("--out-dir", default="../price-archive")
+    ap.add_argument("--out-dir", default=ARCHIVE_ROOT)
     ap.add_argument("--dry-run", action="store_true")
     ap.add_argument("--refresh", action="store_true")
     args = ap.parse_args()

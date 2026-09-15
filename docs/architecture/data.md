@@ -32,13 +32,38 @@ price-archive/                       (local working copy, NOT the canonical repo
   ├─ prices-YYYY-MM.parquet          — same six columns (monthly from 2026 on)
   │                                    2026-03/04 also carry min_price, max_price
   ├─ exchange-rates-YYYY.parquet     — currency rates
+  ├─ exchange-rates-history.parquet  — daily USD-base FX history (`ingest_fx_history.py`)
   ├─ player-counts-YYYY.parquet      — frozen; the collector was removed in 181488b
-  ├─ item-metadata.parquet           — 8,691 item rows
+  ├─ item-metadata.parquet           — 8,691 item rows (rarity/rarity_rank/weapon_type; § Rarity precedence)
+  ├─ item-metadata-bymykel.parquet   — raw ByMykel/CSGO-API dump (45,362 items) + codes JSON; the rarity fill source
   ├─ supply-YYYY-MM.parquet          — item_slug, snapshot_day, source, listing_count,
   │                                    ask-ladder quantiles, depth, listing age (monthly)
+  ├─ supply-history.parquet          — long-run supply panel (`supply_churn_*` features read this)
+  ├─ volume-YYYY-MM.parquet          — Skinport trade volume (`collectors/sales_volume.py`;
+  │                                    `volume-iflow-YYYY-MM` exists only in dormant iflow staging)
+  ├─ volume-panel.parquet            — sidecar: steam_volume, steam_sale_median (`ingest_volume_panel.py`)
+  ├─ bid-panel.parquet               — sidecar: buff_bid (`build_bid_panel.py`)
+  ├─ stattrak-panel.parquet          — sidecar: st_premium (`build_stattrak_panel.py`)
+  ├─ event-calendar.parquet          — date-level CS2 event panel (`ingest_steam_news.py`;
+  │                                    per-event `event-news.parquet` alongside it in canonical)
+  ├─ snapshot-tier-history-through-2026-07-08.csv.gz — one-off tier snapshot; no code reads it
   └─ ops/                            — operational tables, one Parquet file per table
        accuracy_alerts, collection_runs, event_impacts_denorm, events,
        forecast_outcomes, item_forecasts, prediction_accuracy
+       anchor_audit/                 — per-date anchor audit frames (`anchor_wedge_attribution.py` reads them)
+
+### Rarity precedence
+
+Four layers, first hit wins. `forecaster.py::_fetch_supply_metadata` reads
+`item-metadata.parquet` and falls back to the `items` DB table; nothing reads
+`item-metadata-bymykel.parquet` at serve time — it is the *build-time* fill
+source. The chain: Steam catalog `type` field (`backfill_supply_metadata.py`,
+via `market_catalog.db`) seeds `item-metadata.parquet`; the ByMykel ingest
+(`ingest_bymykel_metadata.py` → `item-metadata-bymykel.parquet`) fills the gaps,
+taking rarity coverage 50.6% → 99.9% (2026-08-07). The `items` table
+(`rarity`, `rarity_rank`, `weapon_type`, migration 0017) is the DB mirror and
+the fallback read. ByMykel metadata *features* (`BYMYKEL_META_FEATURES`) are a
+separate, refuted modelling input — not the rarity fill path.
 
 Supabase (serving + fallback):
   ├─ items (+ is_backfilled, is_trainable) — `is_backfilled` is the SERVE universe and the
