@@ -26,8 +26,6 @@ Missing supply is missing: depletion windows with no anchor read NaN, not 0.
 
 from __future__ import annotations
 
-import argparse
-import json
 import logging
 import sys
 from datetime import timedelta
@@ -36,6 +34,17 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 import pandas as pd
+
+from scripts._panel_common import (
+    collapse_visible_supply,
+    emit_panel_result,
+    fail_no_supply,
+    index_events_by_date,
+    load_events,
+    load_supply,
+    normalise_supply_frame,
+    panel_arg_parser,
+)
 
 logger = logging.getLogger("build_case_panel")
 
@@ -98,19 +107,14 @@ def build_case_panel(
     """
     if supply.empty:
         return pd.DataFrame(columns=CASE_PANEL_COLUMNS)
-    frame = supply.copy()
-    frame["snapshot_day"] = pd.to_datetime(frame["snapshot_day"]).dt.date
+    frame = normalise_supply_frame(supply)
     slugs = (
         universe if universe is not None else sorted({s for s in frame["item_slug"].unique() if _is_case_slug(str(s))})
     )
     frame = frame[frame["item_slug"].isin(slugs)]
     if frame.empty:
         return pd.DataFrame(columns=CASE_PANEL_COLUMNS)
-    vis = (
-        frame.groupby(["item_slug", "snapshot_day"], as_index=False)["listing_count"]
-        .max()
-        .rename(columns={"snapshot_day": "date", "listing_count": "visible_supply"})
-    )
+    vis = collapse_visible_supply(frame)
     vis = vis.sort_values(["item_slug", "date"])
     # Date-anchored depletion: shift(window) would shift ROWS, which is wrong
     # on a sparse panel (a 7-day-apart pair is 1 row apart, not 7). Look up the
@@ -129,11 +133,7 @@ def build_case_panel(
                 fracs.append(float((anchor - cur) / anchor))
         vis[f"net_depletion_{stem}"] = nets
         vis[f"supply_depletion_{stem}"] = fracs
-    event_by_date: dict = {}
-    if events is not None and not events.empty and "date" in events.columns:
-        ev = events.copy()
-        ev["date"] = pd.to_datetime(ev["date"]).dt.date
-        event_by_date = {d: g.iloc[0].to_dict() for d, g in ev.groupby("date")}
+    event_by_date = index_events_by_date(events)
     vis["drop_pool_status"] = [
         _drop_pool_status(slug, event_by_date.get(d)) for slug, d in zip(vis["item_slug"], vis["date"])
     ]
@@ -144,24 +144,13 @@ def build_case_panel(
 
 
 def main() -> int:
-    ap = argparse.ArgumentParser(description=__doc__)
-    ap.add_argument("--archive-dir", type=Path, default=Path(__file__).parent.parent.parent / "price-archive")
-    ap.add_argument("--write", action="store_true", help="Write case-panel.parquet.")
-    ap.add_argument("--json-out", type=Path, default=None)
+    ap = panel_arg_parser(__doc__, write_help="Write case-panel.parquet.")
     args = ap.parse_args()
 
-    supply_files = sorted(args.archive_dir.glob("supply-[0-9][0-9][0-9][0-9]-[0-9][0-9].parquet"))
-    if not supply_files:
-        print(json.dumps({"status": "failed", "error": "no supply-*.parquet in archive"}, indent=2))
-        return 1
-    supply = pd.concat(
-        [pd.read_parquet(p, columns=["item_slug", "snapshot_day", "listing_count"]) for p in supply_files],
-        ignore_index=True,
-    )
-    events = None
-    ev_path = args.archive_dir / "event-calendar.parquet"
-    if ev_path.exists():
-        events = pd.read_parquet(ev_path)
+    supply = load_supply(args.archive_dir)
+    if supply is None:
+        return fail_no_supply()
+    events = load_events(args.archive_dir)
     panel = build_case_panel(supply, events)
     summary = {
         "status": "success",
@@ -169,12 +158,14 @@ def main() -> int:
         "distinct_cases": int(panel["item_slug"].nunique()) if len(panel) else 0,
         "drop_pool_status": panel["drop_pool_status"].value_counts().to_dict() if len(panel) else {},
     }
-    print(json.dumps(summary, indent=2, default=str))
-    if args.write:
-        panel.to_parquet(args.archive_dir / SIDECAR_NAME, index=False, compression="zstd")
-    if args.json_out:
-        args.json_out.write_text(json.dumps(summary, indent=2, default=str))
-    return 0
+    return emit_panel_result(
+        panel,
+        summary,
+        archive_dir=args.archive_dir,
+        sidecar_name=SIDECAR_NAME,
+        write=args.write,
+        json_out=args.json_out,
+    )
 
 
 if __name__ == "__main__":

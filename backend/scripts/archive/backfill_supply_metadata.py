@@ -547,14 +547,20 @@ def build_metadata() -> pd.DataFrame:
     logger.info(f"Built metadata for {len(name_to_meta):,} catalog entries")
 
     # ── 3. Get all unique item_slugs from price Parquet files ──
+    # Through prices_relation, never a raw glob (backend/AGENTS.md invariant 1:
+    # a bare read_parquet('prices-*.parquet') narrows to the first file's
+    # schema). Only item_slug is needed here, so only it is projected.
+    from db.archive import prices_relation
+
     con = duckdb.connect()
     try:
+        rel = prices_relation(con, PRICE_ARCHIVE, columns=["item_slug"])
         all_slugs = con.sql(
-            """
+            f"""
             SELECT DISTINCT item_slug
-            FROM read_parquet('{}')
+            FROM {rel}
             ORDER BY item_slug
-        """.format(PRICE_ARCHIVE / "prices-*.parquet")
+        """
         ).fetchall()
         all_slugs = [r[0] for r in all_slugs]
         logger.info(f"Found {len(all_slugs):,} unique items in price Parquet archive")

@@ -77,19 +77,16 @@ FOLD_SEED = 42
 
 
 def _load_parquet_items(con, backfilled_only=True):
-    pq_files = sorted([str(p) for p in ARCHIVE_DIR.glob("prices-*.parquet")])
-    pq_queries = []
-    for pqf in pq_files:
-        cols = [r[0] for r in con.sql(f"DESCRIBE SELECT * FROM read_parquet('{pqf}')").fetchall()]
-        if "source" in cols:
-            pq_queries.append(
-                f"SELECT item_slug, CAST(day AS DATE) AS day, mean_price AS price, source, volume FROM read_parquet('{pqf}')"
-            )
-        else:
-            pq_queries.append(
-                f"SELECT item_slug, CAST(day AS DATE) AS day, mean_price AS price, NULL::VARCHAR AS source, volume FROM read_parquet('{pqf}')"
-            )
-    union_sql = " UNION ALL BY NAME ".join(pq_queries)
+    # Through prices_relation rather than a per-file DESCRIBE + UNION ALL BY
+    # NAME workaround: that loop was the same schema workaround written inline
+    # (backend/AGENTS.md invariant 1). prices_relation NULLs whatever the
+    # archive lacks, so `source` reads correctly before and after
+    # scripts/normalize_price_schema.py has run. See db/archive.py.
+    from db.archive import prices_relation
+
+    relation = prices_relation(
+        con, ARCHIVE_DIR, columns=["item_slug", "day", "mean_price", "volume", "source"]
+    )
 
     # Apply the universe here as well as in _load_all_prices, so the
     # `max_items` budget is not spent selecting items the price loader will
@@ -101,10 +98,10 @@ def _load_parquet_items(con, backfilled_only=True):
     where_clause = "WHERE " + " AND ".join(conds)
     query = f"""
         SELECT item_slug,
-               MIN(day) AS first_day,
-               MAX(day) AS last_day,
-               COUNT(*) AS row_count
-        FROM ({union_sql})
+                MIN(day) AS first_day,
+                MAX(day) AS last_day,
+                COUNT(*) AS row_count
+        FROM {relation}
         {where_clause}
         GROUP BY item_slug
         HAVING row_count >= 90
@@ -119,8 +116,7 @@ def _load_all_prices(con, items):
 
     Previously issued one query per item (up to `max_items` full glob
     scans of the multi-year Parquet archive) — this batches them into
-    one query with an IN-list, which the pq_files loop in
-    `_load_parquet_items` already proved is the correct pattern here.
+    one query with an IN-list over the shared prices_relation.
     """
     slugs = [item_slug for item_slug, *_ in items]
     if not slugs:

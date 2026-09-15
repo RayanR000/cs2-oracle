@@ -128,7 +128,7 @@ def run_task(task_name):
 
     try:
         start_time = datetime.now()
-        result = result2 = result3 = None
+        result = None
 
         if task_name == "aggregate":
             logger.info("=" * 60)
@@ -148,20 +148,6 @@ def run_task(task_name):
             logger.info("TASK: Priority Aggregator Scrape (Top 2000)")
             logger.info("=" * 60)
             result = pipeline.run_priority_collection()
-            print(f"RESULT: {result}")
-
-        elif task_name == "trends":
-            logger.info("=" * 60)
-            logger.info("TASK: Trend Analysis — Deprecated, skipping")
-            logger.info("=" * 60)
-            result = {"status": "success", "message": "Trend analysis deprecated (ML forecasts used instead)"}
-            print(f"RESULT: {result}")
-
-        elif task_name == "long_term_trends":
-            logger.info("=" * 60)
-            logger.info("TASK: Long-Term Trend Analysis — Deprecated, skipping")
-            logger.info("=" * 60)
-            result = {"status": "success", "message": "Long-term trend analysis deprecated (ML forecasts used instead)"}
             print(f"RESULT: {result}")
 
         elif task_name == "migrate":
@@ -220,7 +206,7 @@ def run_task(task_name):
             logger.error(f"Unknown task: {task_name}")
             sys.exit(1)
 
-        check_results(task_name, (result, result2, result3))
+        check_results(task_name, (result,))
 
         elapsed = (datetime.now() - start_time).total_seconds()
         logger.info(f"Total task time: {elapsed:.1f} seconds")
@@ -236,7 +222,7 @@ if __name__ == "__main__":
     if len(sys.argv) < 2:
         print("Usage: python run_task.py <task_name>")
         print(
-            "Tasks: aggregate, priority, trends, long_term_trends (deprecated), migrate, backtest, backtest_historical, walkforward_report, event_correlation, reddit_social"
+            "Tasks: aggregate, priority, migrate, backtest, backtest_historical, walkforward_report, event_correlation, reddit_social"
         )
         sys.exit(1)
 
