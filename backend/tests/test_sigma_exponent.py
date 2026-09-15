@@ -243,15 +243,41 @@ def test_every_band_and_calibrate_call_passes_an_exponent():
     Counted against the sites the spec enumerates; if you add one, pass the
     artifact's beta and update the count here deliberately.
     """
+    import ast
+
     import models.forecaster as fmod
 
+    # Counted on the AST, not the raw source: a comment or docstring that
+    # mentions `conformal.calibrate_signed()` (the TFT note at module top did)
+    # is not a call site, and substring counting broke on exactly that.
+    tree = ast.parse(inspect.getsource(fmod))
+    calls = [
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and isinstance(node.func.value, ast.Name)
+        and node.func.value.id == "conformal"
+    ]
     src = inspect.getsource(fmod)
-    # `.count` is prefix-blind between `band(` and `band_signed(`, so each is
-    # counted with a trailing token that cannot match the other.
-    band_calls = src.count("conformal.band(")
-    band_signed_calls = src.count("conformal.band_signed(")
-    calibrate_calls = src.count("conformal.calibrate(")
-    calibrate_signed_calls = src.count("conformal.calibrate_signed(")
+    lines = src.splitlines(keepends=True)
+    # Line offsets -> char offsets so each Call node maps back to its fragment.
+    offsets = [0]
+    for line in lines:
+        offsets.append(offsets[-1] + len(line))
+
+    def frag_of(node):
+        start = offsets[node.lineno - 1] + node.col_offset
+        end = offsets[node.end_lineno - 1] + node.end_col_offset
+        return src[start:end]
+
+    by_name = {}
+    for node in calls:
+        by_name.setdefault(node.func.attr, []).append(frag_of(node))
+    band_calls = len(by_name.get("band", []))
+    band_signed_calls = len(by_name.get("band_signed", []))
+    calibrate_calls = len(by_name.get("calibrate", []))
+    calibrate_signed_calls = len(by_name.get("calibrate_signed", []))
     assert band_calls == 1, (
         f"{band_calls} conformal.band call sites; the spec has 1 "
         "(_calibrate_conformal's range_pct). predict serves band_signed now."
@@ -270,15 +296,15 @@ def test_every_band_and_calibrate_call_passes_an_exponent():
     )
     # None may be called positionally-short: every call names or passes an
     # exponent, so grep for the neutral constant or a beta variable at each.
-    for call in ("conformal.band(", "conformal.band_signed(", "conformal.calibrate(", "conformal.calibrate_signed("):
-        i = 0
-        while True:
-            i = src.find(call, i)
-            if i < 0:
-                break
-            frag = src[i : i + 320]
-            assert "beta" in frag or "BETA_NEUTRAL" in frag, f"a {call} site does not pass an exponent:\n{frag[:200]}"
-            i += len(call)
+    # The call fragment alone can be too short (a `beta` local bound lines
+    # above), so check the enclosing statement's source instead.
+    for name, frags in by_name.items():
+        if name not in ("band", "band_signed", "calibrate", "calibrate_signed"):
+            continue
+        for frag in frags:
+            assert "beta" in frag or "BETA_NEUTRAL" in frag, (
+                f"a conformal.{name} site does not pass an exponent:\n{frag[:200]}"
+            )
 
 
 def test_the_fold_diagnostic_is_pinned_at_neutral_on_purpose():

@@ -56,11 +56,6 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-# Must precede any prepare_targets call: `target_anomaly_{h}d` is only computed
-# when the gate is on (forecaster.py:5368), so an unset flag silently yields a
-# harness that skips every horizon rather than one that fails.
-os.environ["ANOMALY_GBM"] = "1"
-
 import numpy as np
 import pandas as pd
 from database import SessionLocal
@@ -279,6 +274,8 @@ def print_summary(results):
 
 
 def main():
+    # Set here, NOT at import — see anomaly_band_modulator_ab.main.
+    os.environ["ANOMALY_GBM"] = "1"
     import argparse
 
     parser = argparse.ArgumentParser(description=__doc__)

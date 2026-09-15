@@ -23,6 +23,10 @@ from models import conformal
 from models.conformal import ALPHA
 from models.forecaster import ItemForecaster
 
+# Slow: trains real LightGBM boosters per test (see docs/changelog/2026-09-15-ci-test-gate.md). The fast gate
+# (`pytest -m "not slow"`) skips this file; the nightly full suite covers it.
+pytestmark = pytest.mark.slow
+
 
 def test_sigma_clip_defaults_are_present_and_finite():
     f = ItemForecaster.__new__(ItemForecaster)
@@ -411,13 +415,17 @@ def test_calibrating_on_the_q50_centre_warns_when_a_classifier_will_recentre(cap
     assert any("recentre" in r.message for r in caplog.records), caplog.text
 
     # And it must stay quiet when the two centres agree, or the warning is noise.
+    # Scoped to the recentre warning under test: bare fixture records carry no
+    # feature reference, so the later CLIMATOLOGY_SCALE arm (PR #21) legitimately
+    # logs its sigma-fallback warning here too. Any OTHER warning still fails.
     caplog.clear()
     _, _, _, _, served_class = _served_centre_inputs(n=600)
     with caplog.at_level(logging.WARNING):
         f._calibrate_conformal(
             7, pd.DataFrame(f._conformal_records(mid, actual, sigma, price, direction_class=served_class))
         )
-    assert not caplog.records, caplog.text
+    assert not any("recentre" in r.message for r in caplog.records), caplog.text
+    assert all("CLIMATOLOGY_SCALE" in r.message for r in caplog.records), caplog.text
 
 
 def test_cv_records_carry_the_served_centre_when_the_classifier_runs(tmp_path, monkeypatch):
@@ -1708,7 +1716,11 @@ def test_cv_results_publish_both_invariant_4_signals():
     assert '"pt_classifier": pt_clf' in src
 
     # pt_clf is None when the diagnostic classifier did not run -- never `pt`.
-    assert "pt_clf = (pesaran_timmermann(pt_records_clf, MIN_FORECAST_DATES)" in src
+    # (Matched as fragments, not one exact statement: the line was refactored
+    # from a parenthesised form to a conditional expression with identical
+    # semantics, and the guard is about the None-fallback, not the parens.)
+    assert "pt_clf = " in src and "pesaran_timmermann(pt_records_clf, MIN_FORECAST_DATES)" in src
+    assert "if pt_records_clf else None" in src
     assert "pt_clf = pt" not in src
     assert "pt_clf or pt" not in src
     assert "edge_vs_constant_clf or edge_vs_constant" not in src

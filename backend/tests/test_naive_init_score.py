@@ -28,6 +28,10 @@ import pandas as pd
 import pytest
 from models.forecaster import ItemForecaster
 
+# Slow: trains real LightGBM boosters per test (see docs/changelog/2026-09-15-ci-test-gate.md). The fast gate
+# (`pytest -m "not slow"`) skips this file; the nightly full suite covers it.
+pytestmark = pytest.mark.slow
+
 
 def _fc():
     return ItemForecaster.__new__(ItemForecaster)

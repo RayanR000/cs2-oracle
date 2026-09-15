@@ -24,6 +24,7 @@ Examples:
 """
 
 import re
+from typing import Any
 
 # Sources that quote a BID, not an ask. Excluded from consensus voting: a bid is
 # a different quantity, so median-voting it against asks is not noise reduction
@@ -304,7 +305,10 @@ def parse_item_name(name: str) -> dict:
     is_stattrak, is_souvenir, is_knife, is_glove, is_sticker, is_case,
     is_capsule, is_agent, is_music_kit, is_graffiti, is_charm, is_patch.
     """
-    result = {
+    # Heterogeneous by construction (None/str/int/bool per key); Any keeps
+    # mypy from inferring `int | None` from the initializers and flagging
+    # every later str assignment (4 false positives, 2026-09-15).
+    result: dict[str, Any] = {
         "weapon": None,
         "skin_name": None,
         "quality": None,

@@ -27,6 +27,10 @@ import pandas as pd
 import pytest
 from models.forecaster import ItemForecaster
 
+# Slow: full build_training_data runs per test (see docs/changelog/2026-09-15-ci-test-gate.md). The fast gate
+# (`pytest -m "not slow"`) skips this file; the nightly full suite covers it.
+pytestmark = pytest.mark.slow
+
 VOLUME_COLS = frozenset(ItemForecaster.VOLUME_FEATURE_NAMES)
 PRIMITIVE_COLS = frozenset(
     {

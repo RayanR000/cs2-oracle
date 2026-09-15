@@ -57,9 +57,14 @@ def archive_max_day(archive_dir: Path) -> date:
     con = duckdb.connect()
     try:
         relation = prices_relation(con, archive_dir, columns=["day"])
-        newest = con.sql(f"SELECT max(day) FROM {relation}").fetchone()[0]
+        row = con.sql(f"SELECT max(day) FROM {relation}").fetchone()
     finally:
         con.close()
+
+    # An aggregate query always returns exactly one row (NULL when the archive
+    # has no dated rows); the None check below is the empty-archive guard.
+    assert row is not None
+    newest = row[0]
 
     if newest is None:
         raise FileNotFoundError(f"price archive at {archive_dir} contains no dated price rows")

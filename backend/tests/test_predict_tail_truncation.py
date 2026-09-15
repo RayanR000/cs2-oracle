@@ -22,6 +22,10 @@ import pandas as pd
 import pytest
 from models.forecaster import ItemForecaster
 
+# Slow: full feature-engineering frames per test (see docs/changelog/2026-09-15-ci-test-gate.md). The fast
+# gate (`pytest -m "not slow"`) skips this file; the nightly full suite covers it.
+pytestmark = pytest.mark.slow
+
 
 @pytest.fixture
 def forecaster(tmp_path_factory):

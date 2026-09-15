@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Iterable
+from typing import Any
 
 import numpy as np
 import pandas as pd
@@ -89,7 +90,9 @@ SHRINK_K_SERVING_START: str | None = "2026-09-06"
 # docs/changelog/2026-08-26-climatology-shrink-k-re-swept.md
 
 # A sentinel distinguishing "caller did not pass since" from an explicit since=None (dormant).
-_UNSET = object()
+# Typed Any: the `since: str | None = _UNSET` default below is intentional, and
+# a bare `object()` default would otherwise fail type checking (2026-09-15).
+_UNSET: Any = object()
 
 
 def _geometry_floor() -> str | None:

@@ -22,6 +22,10 @@ import pytest
 from backtest.scoring import HEADLINE_MIN_TIER
 from models.forecaster import ItemForecaster
 
+# Slow: real CV folds per test (see docs/changelog/2026-09-15-ci-test-gate.md). The fast gate
+# (`pytest -m "not slow"`) skips this file; the nightly full suite covers it.
+pytestmark = pytest.mark.slow
+
 
 @pytest.fixture(autouse=True)
 def _diagnostic_classifier_on(monkeypatch):

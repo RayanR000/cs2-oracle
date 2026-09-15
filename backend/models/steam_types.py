@@ -13,8 +13,10 @@ flags, and item class in a single string. Examples:
     "Base Grade Container"          → rarity=base,         weapon_type=case
     "Extraordinary Sticker"         → rarity=extraordinary, weapon_type=sticker
     "Customized High Grade Charm"   → rarity=high_grade,   weapon_type=charm
-    "Highlight Base Grade Container" → rarity=highlight,   weapon_type=case
+    "Highlight Base Grade Container" → rarity=highlight,  weapon_type=case
 """
+
+from typing import Any
 
 RARITY_KEYWORDS = [
     ("base grade", "base"),
@@ -119,7 +121,9 @@ def parse_steam_type(raw: str) -> dict:
         }
 
     t = raw.strip()
-    result = {
+    # Heterogeneous by construction (bool/None/str/int per key) — see the same
+    # annotation in models/item_parser.parse_item_name (2026-09-15).
+    result: dict[str, Any] = {
         "is_souvenir": False,
         "is_stattrak": False,
         "is_knife": False,

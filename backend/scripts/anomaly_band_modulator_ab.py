@@ -66,11 +66,6 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-# Must precede any prepare_targets call: `target_anomaly_{h}d` is only computed
-# when the gate is on (forecaster.py), so an unset flag silently yields a
-# harness that skips every horizon rather than one that fails.
-os.environ["ANOMALY_GBM"] = "1"
-
 import numpy as np
 import pandas as pd
 from api.serving_policy import MIN_SERVED_PRICE_USD
@@ -520,6 +515,13 @@ def print_summary(results):
 
 
 def main():
+    # Set here, NOT at import: tests import this module's pure helpers, and an
+    # import-time set leaked ANOMALY_GBM=1 into every pytest process, changing
+    # feature engineering for all later test files. Must still precede any
+    # prepare_targets call: `target_anomaly_{h}d` is only computed when the
+    # gate is on, so an unset flag silently yields a harness that skips every
+    # horizon rather than one that fails.
+    os.environ["ANOMALY_GBM"] = "1"
     import argparse
 
     parser = argparse.ArgumentParser(description=__doc__)

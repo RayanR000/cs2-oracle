@@ -20,7 +20,7 @@ defaults:
 jobs:
   lint:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 5
 
     steps:
       - name: Checkout code
@@ -32,10 +32,11 @@ jobs:
         uses: astral-sh/setup-uv@v6
         with:
           python-version: '3.13'
+          enable-cache: true
 
       - name: Install dependencies
         run: |
-          uv sync --frozen --no-dev
+          uv sync --frozen --extra dev
           echo "$PWD/.venv/bin" >> $GITHUB_PATH
 
       - name: Ruff lint (changed files)
@@ -48,10 +49,31 @@ jobs:
           FILES=$(git diff --name-only --diff-filter=ACMR "$BASE" HEAD -- 'backend/**.py' | tr '\n' ' ')
           if [ -n "$FILES" ]; then
             echo "Linting: $FILES"
-            uv run --frozen --extra dev ruff check $FILES
+            ruff check $FILES
           else
             echo "No Python files changed."
           fi
+
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 1
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v6
+        with:
+          python-version: '3.13'
+          enable-cache: true
+
+      - name: Install dependencies
+        run: |
+          uv sync --frozen --extra dev
+          echo "$PWD/.venv/bin" >> $GITHUB_PATH
 
       - name: Import smoke test
         working-directory: ./backend
@@ -66,3 +88,45 @@ jobs:
           import collectors.snapshot_date
           print('All key modules import successfully.')
           "
+
+      - name: Fast test gate (not slow)
+        # Full suite is ~12 min; the `slow` mark (real trainers / full frames,
+        # see docs/changelog/2026-09-15-ci-test-gate.md) keeps the PR gate in
+        # budget. Collection runs first inside pytest — an unimportable test
+        # module fails this step, which is what caught the 2026-09 red main.
+        # Env guard: tests must never touch prod. backend/.env points at the
+        # production Supabase pooler, so pin a throwaway sqlite DB here —
+        # anything that needs a live DB then fails loudly instead of writing.
+        env:
+          DATABASE_URL: sqlite:////tmp/ci-gate.db
+          ENVIRONMENT: test
+        run: |
+          pytest backend/tests -m "not slow" -q
+
+  typecheck:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 1
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v6
+        with:
+          python-version: '3.13'
+          enable-cache: true
+
+      - name: Install dependencies
+        run: |
+          uv sync --frozen --extra dev
+          echo "$PWD/.venv/bin" >> $GITHUB_PATH
+
+      - name: Type check (mypy, models + backtest)
+        # Gradual adoption: clean modules gate; still-dirty ones are listed in
+        # [tool.mypy] overrides until fixed (see docs/changelog/2026-09-15-mypy-baseline.md).
+        working-directory: ./backend
+        run: |
+          mypy models backtest

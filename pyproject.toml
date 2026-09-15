@@ -39,6 +39,7 @@ dev = [
     "pytest>=7.0",
     "ruff>=0.11.0",
     "pre-commit>=3.0",
+    "mypy>=1.15",
 ]
 
 [tool.ruff]
@@ -73,3 +74,30 @@ known-first-party = ["backend"]
 
 [tool.pytest.ini_options]
 testpaths = ["backend/tests"]
+markers = [
+    "slow: real-trainer / full-frame tests excluded from the PR fast gate (see docs/changelog/2026-09-15-ci-test-gate.md)",
+]
+
+[tool.mypy]
+# Gradual adoption (2026-09-15): whole `models/` + `backtest/` gate in CI;
+# still-dirty modules are ignored below until fixed. Remove entries as you fix
+# them — do not extend the list to new code.
+# No python_version pin: the venv's numpy stubs use 3.12+ syntax, and ruff's
+# target-version = py311 already guards the language level.
+ignore_missing_imports = true
+show_error_codes = true
+warn_unused_ignores = true
+check_untyped_defs = true
+
+[[tool.mypy.overrides]]
+module = [
+    "models.forecaster",
+    "models.scale_model",
+    "models.tft.trainer",
+    "collectors.data_validation",
+    "collectors.pipeline",
+    "config",
+    "database",
+    "db.parquet",
+]
+ignore_errors = true

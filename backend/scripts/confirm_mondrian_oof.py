@@ -74,11 +74,6 @@ import pandas as pd
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-# Production footing first (call-time reads, but set before any use).
-os.environ.setdefault("FEATURE_NATIVE_NAN", "1")
-os.environ.setdefault("EXCEEDANCE_HEAD", "1")
-os.environ.setdefault("CV_DIAGNOSTIC_CLASSIFIER", "0")
-
 from models import conformal
 from models.forecaster import ItemForecaster, embargo_days
 from scripts.measure_qhat_bagging_mondrian import (
@@ -294,6 +289,14 @@ def verdict(rows: list) -> int:
 
 
 def main() -> int:
+    # Production footing, set here — NOT at import: this module is imported
+    # by tests for its pure helpers, and import-time setdefault leaked
+    # EXCEEDANCE_HEAD=1 (plus FEATURE_NATIVE_NAN=1) into every pytest process,
+    # flipping the exceedance gate in _cv_evaluate_horizon for all later test
+    # files (KeyError: target_exceed_3d on 25 tests). Explicit env still wins.
+    os.environ.setdefault("FEATURE_NATIVE_NAN", "1")
+    os.environ.setdefault("EXCEEDANCE_HEAD", "1")
+    os.environ.setdefault("CV_DIAGNOSTIC_CLASSIFIER", "0")
     logging.basicConfig(level=logging.INFO, format="%(message)s")
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--horizons", default="7,14")

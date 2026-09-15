@@ -17,6 +17,10 @@ import pandas as pd
 import pytest
 from models.forecaster import SAMPLE_WEIGHT_HALFLIFE_DAYS, ItemForecaster
 
+# Slow: trains real LightGBM boosters per test (see docs/changelog/2026-09-15-ci-test-gate.md). The fast gate
+# (`pytest -m "not slow"`) skips this file; the nightly full suite covers it.
+pytestmark = pytest.mark.slow
+
 # ---------------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------
@@ -962,7 +966,12 @@ class TestFeaturePipeline:
         feature_set = set(forecaster.feature_cols)
         assert any("return_" in c for c in feature_set), "Missing return features"
         assert any("bb_" in c for c in feature_set), "Missing Bollinger features"
-        assert any("rsi" in c for c in feature_set), "Missing RSI features"
+        # RSI is asserted on the ENGINEERED frame, not the selected set: on a
+        # random walk return_14d and rsi_14 correlate 0.98, so the >0.95 prune
+        # keeps the lower-indexed return_14d and drops rsi_14 — a data-dependent
+        # prune outcome on noise, not a missing pipeline (production's 28
+        # served features include rsi_14). Pinning selection here would pin noise.
+        assert "rsi_14" in df.columns, "RSI pipeline did not engineer rsi_14"
         assert any("macd" in c for c in feature_set), "Missing MACD features"
         # ...and non-price groups must be excluded by the allowlist.
         assert not any(c.startswith("event_") for c in feature_set), "Event features leaked past allowlist"
