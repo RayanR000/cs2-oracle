@@ -150,10 +150,11 @@ def paired_metric_difference(
     counts = np.array([g.size for g in groups], dtype=float)
     n_groups = len(groups)
 
-    stats = np.empty(n_resamples)
-    for i in range(n_resamples):
-        idx = rng.integers(0, n_groups, size=n_groups)
-        stats[i] = sums[idx].sum() / counts[idx].sum()
+    # Single vectorized draw: bit-identical to the per-iteration
+    # rng.integers(0, n_groups, size=n_groups) loop, in one
+    # (n_resamples, n_groups) operation.
+    all_idx = rng.integers(0, n_groups, size=(n_resamples, n_groups))
+    stats = sums[all_idx].sum(axis=1) / counts[all_idx].sum(axis=1)
     stats *= scale
 
     alpha = (100 - ci) / 2

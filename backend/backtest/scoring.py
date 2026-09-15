@@ -264,12 +264,13 @@ def bootstrap_ci(values, n_resamples=N_BOOTSTRAP, ci=BOOTSTRAP_CI):
     if len(values) < 10:
         return None, None
     rng = np.random.default_rng(BOOTSTRAP_RNG_SEED)
-    stats = np.empty(n_resamples)
     n = len(values)
-    arr = np.array(values)
-    for i in range(n_resamples):
-        sample = rng.choice(arr, size=n, replace=True)
-        stats[i] = np.mean(sample)
+    arr = np.asarray(values, dtype=float)
+    # Single vectorized draw: bit-identical to the per-iteration
+    # rng.choice(arr, size=n) loop (Generator.choice on an array draws
+    # integers internally), in one (n_resamples, n) operation.
+    indices = rng.choice(n, size=(n_resamples, n), replace=True)
+    stats = arr[indices].mean(axis=1)
     alpha = (100 - ci) / 2
     return (
         round(float(np.percentile(stats, alpha)), 4),
@@ -308,10 +309,12 @@ def block_bootstrap_ci(values, clusters, n_resamples=N_BOOTSTRAP, ci=BOOTSTRAP_C
     sums = np.array([g.sum() for g in groups], dtype=float)
     counts = np.array([g.size for g in groups], dtype=float)
 
-    stats = np.empty(n_resamples)
-    for i in range(n_resamples):
-        idx = rng.integers(0, n_groups, size=n_groups)
-        stats[i] = sums[idx].sum() / counts[idx].sum()
+    # Single vectorized draw: bit-identical to the per-iteration
+    # rng.integers(0, n_groups, size=n_groups) loop, in one
+    # (n_resamples, n_groups) operation. Counts are group sizes (>= 1),
+    # so the resampled totals can never divide by zero.
+    all_idx = rng.integers(0, n_groups, size=(n_resamples, n_groups))
+    stats = sums[all_idx].sum(axis=1) / counts[all_idx].sum(axis=1)
 
     alpha = (100 - ci) / 2
     return (
@@ -342,11 +345,90 @@ def score_cohort(records: list[dict]) -> tuple[dict, int]:
     if n == 0:
         return {}, 0
 
-    mae = sum(r["abs_error"] for r in records) / n
-    rmse = math.sqrt(sum(r["sq_error"] for r in records) / n)
-    mape = sum(r["pct_error"] for r in records) / n
+    # Single pass over records. Every sum/count below is accumulated here, so
+    # the ~20 one-purpose list comprehensions become one loop. The small
+    # lists retained (dir_corrects, abs_errors, forecast_dates) feed the
+    # bootstrap helpers, which resample whole vectors.
+    mae_sum = sq_sum = pct_sum = dir_sum = 0.0
+    total_actual = 0.0
+    baseline_mae_sum = 0.0
+    baseline_hits = 0
+    interval_total = 0
+    interval_hits = 0
+    dollar_hits = 0
+    interval_n_served_basis = 0
+    n_unchanged = 0
+    unchanged_dir_sum = 0
+    n_moved = 0
+    moved_dir_sum = 0
+    high_n = 0
+    high_dir_sum = 0
+    low_n = 0
+    low_dir_sum = 0
+    high_interval_total = 0
+    high_interval_hits = 0
+    tier_sums: dict = defaultdict(float)
+    tier_counts: dict = defaultdict(int)
+    dir_corrects = []
+    abs_errors = []
+    forecast_dates = []
+    config_dates: dict = defaultdict(set)
 
-    directional_accuracy = sum(r["direction_correct"] for r in records) / n * 100
+    for r in records:
+        ae = r["abs_error"]
+        mae_sum += ae
+        sq_sum += r["sq_error"]
+        pct_sum += r["pct_error"]
+        dc = r["direction_correct"]
+        dir_sum += dc
+        abs_errors.append(ae)
+        dir_corrects.append(dc)
+        total_actual += r["actual_price"]
+        baseline_mae_sum += abs(r["base_price"] - r["actual_price"])
+        if r["actual_direction"] == "flat":
+            baseline_hits += 1
+
+        in_int = r["in_interval"]
+        if in_int is not None:
+            interval_total += 1
+            interval_hits += in_int
+            dollar_hits += r.get("in_interval_dollar", in_int)
+            if r.get("interval_basis_served"):
+                interval_n_served_basis += 1
+
+        if r["actual_price"] == r["base_price"]:
+            n_unchanged += 1
+            unchanged_dir_sum += dc
+        else:
+            n_moved += 1
+            moved_dir_sum += dc
+
+        conf = r["confidence"]
+        if conf == "high":
+            high_n += 1
+            high_dir_sum += dc
+            if in_int is not None:
+                high_interval_total += 1
+                high_interval_hits += in_int
+        elif conf == "low":
+            low_n += 1
+            low_dir_sum += dc
+
+        tier = r["price_tier"]
+        tier_sums[tier] += r["pct_error"]
+        tier_counts[tier] += 1
+
+        fd = r.get("forecast_date")
+        forecast_dates.append(fd)
+        raw = r.get("model_version_raw")
+        if raw and fd is not None:
+            config_dates[raw].add(fd)
+
+    mae = mae_sum / n
+    rmse = math.sqrt(sq_sum / n)
+    mape = pct_sum / n
+
+    directional_accuracy = dir_sum / n * 100
 
     # Two coverage figures for one band, because there are two questions.
     # `interval_coverage` is the CALIBRATED one: the band rebased onto the
@@ -360,29 +442,19 @@ def score_cohort(records: list[dict]) -> tuple[dict, int]:
     # `walkforward_records` rows carry neither extra key: they build the band as
     # `base * (1 + ret)`, so their quote IS the resolved base and the two
     # predicates coincide. Defaulted, not required, for exactly that reason.
-    interval_records = [r for r in records if r["in_interval"] is not None]
-    interval_total = len(interval_records)
-    interval_hits = sum(r["in_interval"] for r in interval_records)
     interval_coverage = (interval_hits / interval_total * 100) if interval_total else 0
-    dollar_hits = sum(r.get("in_interval_dollar", r["in_interval"]) for r in interval_records)
     interval_coverage_dollar_basis = (dollar_hits / interval_total * 100) if interval_total else 0
-    interval_n_served_basis = sum(1 for r in interval_records if r.get("interval_basis_served"))
 
-    total_actual = sum(r["actual_price"] for r in records)
-    wmape = (sum(r["abs_error"] for r in records) / total_actual * 100) if total_actual > 0 else 0
+    wmape = (mae_sum / total_actual * 100) if total_actual > 0 else 0
 
-    tier_errors = defaultdict(list)
-    for r in records:
-        tier_errors[r["price_tier"]].append(r["pct_error"])
-    mape_by_tier = {f"tier_{t}": round(sum(errs) / len(errs), 2) for t, errs in sorted(tier_errors.items())}
+    mape_by_tier = {f"tier_{t}": round(tier_sums[t] / tier_counts[t], 2) for t in sorted(tier_sums)}
 
     # NOTE: this is the always-FLAT call specifically, not the best constant
     # call. It is kept under its original name because the stored series goes
     # back months under this definition; the number DA actually has to beat is
     # `constant_call_accuracy` below.
-    baseline_hits = sum(1 for r in records if r["actual_direction"] == "flat")
     baseline_directional_accuracy = baseline_hits / n * 100
-    baseline_mae = sum(abs(r["base_price"] - r["actual_price"]) for r in records) / n
+    baseline_mae = baseline_mae_sum / n
 
     # The headline triple. `directional_accuracy` on its own says nothing: the
     # realised down-rate swings 29.4% -> 76.9% between stored forecast dates
@@ -405,23 +477,16 @@ def score_cohort(records: list[dict]) -> tuple[dict, int]:
     # same reasoning the tier rows follow (see HEADLINE_MIN_TIER). Each partition
     # is None when empty rather than 0.0 — an empty partition has no accuracy,
     # and a zero would be read as the model scoring nothing.
-    unchanged = [r for r in records if r["actual_price"] == r["base_price"]]
-    moved = [r for r in records if r["actual_price"] != r["base_price"]]
-    n_unchanged = len(unchanged)
-
-    def _dir_acc(rows):
-        if not rows:
+    def _dir_acc(d_sum, count):
+        if not count:
             return None
-        return round(sum(r["direction_correct"] for r in rows) / len(rows) * 100, 2)
+        return round(d_sum / count * 100, 2)
 
-    high_conf = [r for r in records if r["confidence"] == "high"]
-    low_conf = [r for r in records if r["confidence"] == "low"]
-    high_dir_acc = sum(r["direction_correct"] for r in high_conf) / len(high_conf) * 100 if high_conf else 0
-    low_dir_acc = sum(r["direction_correct"] for r in low_conf) / len(low_conf) * 100 if low_conf else 0
+    high_dir_acc = high_dir_sum / high_n * 100 if high_n else 0
+    low_dir_acc = low_dir_sum / low_n * 100 if low_n else 0
 
-    high_interval = [r for r in high_conf if r["in_interval"] is not None]
     high_int_cov = (
-        round(sum(r["in_interval"] for r in high_interval) / len(high_interval) * 100, 2) if high_interval else 0
+        round(high_interval_hits / high_interval_total * 100, 2) if high_interval_total else 0
     )
 
     # The bootstraps average the raw 0/1 direction_correct indicators, so their
@@ -437,13 +502,12 @@ def score_cohort(records: list[dict]) -> tuple[dict, int]:
     #
     # mae_ci_* is deliberately NOT rescaled: it is in dollars, the same units as
     # mae, and always was.
-    dir_ci_lower, dir_ci_upper = _as_percent(bootstrap_ci([r["direction_correct"] for r in records]))
-    mae_ci_lower, mae_ci_upper = bootstrap_ci([r["abs_error"] for r in records])
+    dir_ci_lower, dir_ci_upper = _as_percent(bootstrap_ci(dir_corrects))
+    mae_ci_lower, mae_ci_upper = bootstrap_ci(abs_errors)
 
     # Records predating this field score with no date attributed rather than
     # crashing; they then report 0 distinct dates and fail the sufficiency
     # check, which is the correct reading of "we cannot tell".
-    forecast_dates = [r.get("forecast_date") for r in records]
     distinct_dates = len({d for d in forecast_dates if d is not None})
 
     # Which stored labels this cohort pooled, in DISTINCT FORECAST DATES each.
@@ -456,13 +520,8 @@ def score_cohort(records: list[dict]) -> tuple[dict, int]:
     # Absent, not empty, when no record carries the raw label — an empty dict
     # reads as "pooled nothing", absent reads as "this payload does not say",
     # which is what a pre-2026-08-11 record can support.
-    config_dates = defaultdict(set)
-    for r in records:
-        raw = r.get("model_version_raw")
-        if raw and r.get("forecast_date") is not None:
-            config_dates[raw].add(r["forecast_date"])
     dir_ci_cl_lower, dir_ci_cl_upper = _as_percent(
-        block_bootstrap_ci([r["direction_correct"] for r in records], forecast_dates)
+        block_bootstrap_ci(dir_corrects, forecast_dates)
     )
 
     # Serial-correlation-robust Pesaran-Timmermann, computed per forecast date
@@ -493,8 +552,8 @@ def score_cohort(records: list[dict]) -> tuple[dict, int]:
         "constant_call_direction": constant_call_direction,
         "realised_down_rate": None if down_rate is None else round(down_rate, 2),
         # Carry-forward split. See the comment above the partition.
-        "directional_accuracy_moved": _dir_acc(moved),
-        "directional_accuracy_unchanged": _dir_acc(unchanged),
+        "directional_accuracy_moved": _dir_acc(moved_dir_sum, n_moved),
+        "directional_accuracy_unchanged": _dir_acc(unchanged_dir_sum, n_unchanged),
         "n_unchanged": n_unchanged,
         "unchanged_pct": round(n_unchanged / n * 100, 2),
         # The finer staleness axis the 2-bucket carry-forward split above

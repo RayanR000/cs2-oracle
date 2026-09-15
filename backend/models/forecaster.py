@@ -2522,10 +2522,8 @@ class ItemForecaster:
             # to one bucket via fillna so a NULL-source group still counts 1.
             n_ask_sources = int(group["source"].fillna("__null__").nunique())
 
-            if n_sources >= 3:
-                consensus = np.median(prices)
-            else:
-                consensus = np.median(prices)
+            consensus = np.median(prices)
+            if n_sources < 3:
                 return pd.Series(
                     {
                         "price": consensus,
@@ -4438,14 +4436,26 @@ class ItemForecaster:
 
         results = {}
         for group, idxs in group_indices.items():
+            # In-place shuffle with save/restore: O(group_features × n_rows)
+            # instead of one full X_val copy per shuffle. RNG call order and
+            # the zero-threshold sign metric are unchanged, so results match
+            # the copy-per-shuffle version draw-for-draw. try/finally keeps
+            # the caller's X_val intact if predict raises mid-group.
+            originals = {i: X_val[:, i].copy() for i in idxs}
             shuffled_accs = []
-            for _ in range(n_shuffles):
-                X_shuf = X_val.copy()
+            try:
+                for _ in range(n_shuffles):
+                    for i in idxs:
+                        RNG.shuffle(X_val[:, i])
+                    p50_shuf = np.squeeze(model.predict(X_val)) + _off
+                    acc = np.mean((p50_shuf > 0) == (y_val > 0)) * 100
+                    shuffled_accs.append(acc)
+                    # Restore originals
+                    for i in idxs:
+                        X_val[:, i] = originals[i]
+            finally:
                 for i in idxs:
-                    RNG.shuffle(X_shuf[:, i])
-                p50_shuf = np.squeeze(model.predict(X_shuf)) + _off
-                acc = np.mean((p50_shuf > 0) == (y_val > 0)) * 100
-                shuffled_accs.append(acc)
+                    X_val[:, i] = originals[i]
 
             shuffled_arr = np.array(shuffled_accs)
             mean_shuf = float(np.mean(shuffled_arr))
@@ -10113,29 +10123,11 @@ class ItemForecaster:
             # sigma aligns positionally.
             fold_sigma = self._sigma_for_rows(val_df)
 
-            # Fold-level directional accuracy
-            fold_hits = 0
-            for i in range(len(val_df)):
-                actual_ret = float(actual_returns[i])
-                mid_ret = float(fold_p50[i])
-                actual_dir = (
-                    "up"
-                    if actual_ret > DIRECTION_FLAT_TOLERANCE_PCT
-                    else "down"
-                    if actual_ret < -DIRECTION_FLAT_TOLERANCE_PCT
-                    else "flat"
-                )
-                pred_dir = (
-                    "up"
-                    if mid_ret > DIRECTION_FLAT_TOLERANCE_PCT
-                    else "down"
-                    if mid_ret < -DIRECTION_FLAT_TOLERANCE_PCT
-                    else "flat"
-                )
-                if pred_dir == actual_dir:
-                    fold_hits += 1
-
-            fold_acc = round(fold_hits / len(val_df) * 100, 1)
+            # Fold-level directional accuracy, vectorized. Same ±
+            # DIRECTION_FLAT_TOLERANCE_PCT up/flat/down bucketing (percent
+            # scale, 1-dp percent output) as the manual loop it replaces —
+            # see models/direction.py::directional_accuracy.
+            fold_acc = direction.directional_accuracy(fold_p50, actual_returns)
 
             # Naive baselines on the same val rows, for honest comparison:
             #  - persistence: random walk in price → predict 0% return (flat).
