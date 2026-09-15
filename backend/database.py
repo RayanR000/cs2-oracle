@@ -30,11 +30,25 @@ def utcnow_naive():
 
 
 # Create engine
-engine = create_engine(
-    settings.database_url,
-    echo=settings.debug,
-    pool_pre_ping=True,  # Verify connections are alive before using
-)
+# Pool tuning applies to PostgreSQL (production). SQLite (local dev/test)
+# uses a different pool class that rejects pool_size/max_overflow and a
+# driver that rejects the statement_timeout connect arg, so it keeps defaults.
+if settings.database_url.startswith("postgresql"):
+    engine = create_engine(
+        settings.database_url,
+        echo=settings.debug,
+        pool_pre_ping=True,  # Verify connections are alive before using
+        pool_size=5,
+        max_overflow=10,
+        pool_recycle=1800,
+        connect_args={"options": "-c statement_timeout=30000"},
+    )
+else:
+    engine = create_engine(
+        settings.database_url,
+        echo=settings.debug,
+        pool_pre_ping=True,  # Verify connections are alive before using
+    )
 
 # Create session factory
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
@@ -406,7 +420,6 @@ class ForecastOutcome(Base):
     resolved_at = Column(DateTime, nullable=True)
 
     __table_args__ = (
-        Index("idx_outcome_forecast_id", "forecast_id"),
         Index("idx_outcome_item_eval", "item_id", "evaluated_at"),
         Index("idx_outcome_correct", "direction_correct", "evaluated_at"),
     )
@@ -453,8 +466,6 @@ class SupplySnapshot(Base):
     skinport_quantity = Column(Integer, nullable=True)
     source = Column(String(50), default="steam_burst")  # steam_burst, skinport
     created_at = Column(DateTime, default=utcnow_naive)
-
-    __table_args__ = (Index("idx_supply_item_date", "item_id", "snapshot_date"),)
 
 
 class SocialMention(Base):

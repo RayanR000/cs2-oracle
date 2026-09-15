@@ -20,6 +20,7 @@ import json
 import logging
 import math
 import os
+import re
 from collections.abc import Iterable
 from functools import lru_cache
 from pathlib import Path
@@ -193,6 +194,7 @@ def _append_parquet(path: Path, new_data: pd.DataFrame, dedup_keys: list[str]):
         return
 
     con = duckdb.connect()
+    tmp = _tmp_path(path)
     try:
         con.register("_new", new_data)
         described = con.execute(f"DESCRIBE SELECT * FROM read_parquet('{path}')").fetchall()
@@ -251,10 +253,15 @@ def _append_parquet(path: Path, new_data: pd.DataFrame, dedup_keys: list[str]):
                     SELECT 1 FROM _new
                     WHERE {dedup_conditions}
                 )
-            ) TO '{path}' (FORMAT PARQUET)
+            ) TO '{tmp}' (FORMAT PARQUET)
         """)
+    except BaseException:
+        tmp.unlink(missing_ok=True)
+        raise
     finally:
         con.close()
+
+    os.replace(tmp, path)
 
 
 def append_monthly(
@@ -477,6 +484,8 @@ class ParquetQuery:
         self._path: Path | None = None
 
     def __enter__(self):
+        if not re.match(r"^[a-z_][a-z0-9_]*$", self._table):
+            raise ValueError(f"Invalid table name: {self._table!r}")
         path = _table_path(self._table)
         if not path.exists():
             self._path = None
@@ -533,10 +542,10 @@ def delete_table(table: str, key_filters: dict[str, Any]):
         if col in df.columns:
             mask &= df[col] == val
     df = df[~mask]
-    df.to_parquet(path, index=False)
+    _atomic_write(path, df)
 
 
-@lru_cache(maxsize=1)
+@lru_cache(maxsize=16)  # covers all ops tables
 def _get_ops_schema(table: str) -> dict | None:
     path = _table_path(table)
     if not path.exists():
