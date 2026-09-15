@@ -67,5 +67,6 @@ Backend, from `backend/`, through the venv (`venv/bin/python`, Python 3.13 local
 
 1. Backend changes: run the relevant `pytest` files.
 2. Non-trivial decisions get a dated note in `docs/changelog/`.
-3. `docs/design.md` describes the deleted frontend. It is kept as rebuild input only —
+3. Shipped/refuted/void arms get a row in `docs/experiment_log.csv` (verdict + link) — the "has this been tried" log; `test_experiment_log.py` enforces the schema.
+4. `docs/design.md` describes the deleted frontend. It is kept as rebuild input only —
    do not treat it as a spec for anything that currently runs.

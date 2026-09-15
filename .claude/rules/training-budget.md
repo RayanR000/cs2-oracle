@@ -22,7 +22,7 @@ paths:
   frame is 958,289 rows on this universe, so the old 700K would have bound. Escape hatch:
   `TRAIN_MIN_MEDIAN_PRICE=0`. An unparseable value keeps the floor, deliberately. The
   fresh-model gate still cannot detect any of this. The training **window** is a third knob:
-  `TRAIN_DAYS_BACK` overrides the 4-year (1460-day) default (`forecaster.py:5566-5574`), and the
+  `TRAIN_DAYS_BACK` overrides the 4-year (1460-day) default (`forecaster.py::_build_production_split`, near the `TRAIN_DAYS_BACK` env read), and the
   sweep verdict is that 1yr is worst while 2/3/4yr are tied — so do not re-run it expecting a
   win. See
   `docs/changelog/2026-08-08-training-price-floor-shipped.md` and

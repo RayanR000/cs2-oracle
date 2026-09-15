@@ -13,6 +13,7 @@ paths:
   arm). This is the per-item companion to `_snapshot_dates`, which voids a day where the whole
   cross-section repeats. **A gap wider than `MAX_WINDOW_SPAN_DAYS` (7) breaks a run** rather
   than continuing it — nothing was observed across a collection outage to be frozen.
+  Note: the actual constant in `models/staleness.py` is `STALE_RUN_GAP_BREAK_DAYS` (same value of 7, aliased from `FALLBACK_MAX_AGE_DAYS`).
   **Two numbers not to misread.** The "0–1.8% stale at ≥$1" figure in the research review is
   measured on **resolved, 3-day-smoothed anchors**; the raw voted series the label path sees is
   **12–27%**. Different quantities — neither sizes the other. And the rate is a **2026 feed

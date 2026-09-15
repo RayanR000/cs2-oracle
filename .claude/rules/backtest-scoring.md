@@ -93,7 +93,7 @@ paths:
   the sole h=30 forecast date, so every published h=30 accuracy/coverage/actionable number rested
   on it. It is in `EXCLUDED_FORECAST_DATES` as of 2026-08-19, which drops it from
   `backtest_accuracy` and `papertrade_report`, leaving h=30 below `MIN_FORECAST_DATES` →
-  `insufficient_dates`. **Treat any pre-2026-08-19 h=30 headline in the docs as void**, and do not
+  `insufficient_dates`. `2026-07-19` is also excluded (reason: "dead-band direction rule"). **Treat any pre-2026-08-19 h=30 headline in the docs as void**, and do not
   quote an h=30 number until fresh h=30 dates accumulate. See
   `docs/changelog/2026-08-19-drop-replayed-2025-12-01-cohort.md`.
 - **`actionable_*` is populated only at h ∈ {14, 30}, and its stored series breaks at

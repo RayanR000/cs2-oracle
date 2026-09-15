@@ -374,5 +374,5 @@ for the zero-row guard, guard the `min_ask` anchor) and the open `created_at`
 ambiguity that decides whether the age features mean anything.
 
 ## Quality gaps
-- Wire `data_validation.py` checks into the pipeline — it is still dead code (only importers are `collectors/__init__.py:1` and `tests/test_data_validation.py:6`; `pipeline.py:175` validates `price > 0` only)
+- Wire `data_validation.py` checks into the pipeline — it is imported by `collectors/__init__.py:1` and `tests/test_data_validation.py:6`, but nothing calls the validation functions in the live pipeline; `pipeline.py:175` validates `price > 0` only
 - Historical fallback still emits flat-line rows with `timestamp=now`; they are labelled and tracked, but nothing downstream *excludes* them yet

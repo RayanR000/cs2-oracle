@@ -20,8 +20,8 @@ There is **no hang protection except one job-level timeout** — see
 | `CS2_DATA_REPO_TOKEN` | `aggregator-update`, `price-forecast`, `backtest-accuracy`, `event-correlation-analysis`, `model-diagnostics`, `ab-harness-batch`, `forecast-freshness-check` | the **archive checkout fails before any collection or forecasting runs** — the job dies at `Checkout data archive` / `Checkout price archive` |
 
 `CS2_DATA_REPO_TOKEN` must be able to read *and* force-push
-`RayanR000/cs2-oracle-data` (`aggregator-update.yml:228`, `price-forecast.yml:271`,
-`backtest-accuracy.yml:104`, `event-correlation-analysis.yml:159`). `STEAM_API_KEY` and the `CSMARKETAPI_*` keys are optional;
+`RayanR000/cs2-oracle-data` (`aggregator-update.yml:225`, `price-forecast.yml:325`,
+`backtest-accuracy.yml:118`, `event-correlation-analysis.yml:156`). `STEAM_API_KEY` and the `CSMARKETAPI_*` keys are optional;
 nothing in the daily pipeline reads them.
 
 ## Workflows
@@ -74,15 +74,15 @@ These three are easy to miss in a log and each one is a hard failure:
    reads, silently losing `2026-07-27`, `2026-07-30` and `2026-08-03` from the archive.
    If a day is missing from the archive, check this step's logged value first.
 2. **`Publish updated archive (flat history)`** — present in all four archive-writing
-   workflows (`aggregator-update.yml:220`, `price-forecast.yml:262`,
-   `backtest-accuracy.yml:95`, `event-correlation-analysis.yml:146`). Each job checks out `cs2-oracle-data` into an ephemeral `archive/`, so
+   workflows (`aggregator-update.yml:217`, `price-forecast.yml:316`,
+   `backtest-accuracy.yml:109`, `event-correlation-analysis.yml:143`). Each job checks out `cs2-oracle-data` into an ephemeral `archive/`, so
    without this step the run's Parquet writes are discarded at teardown. This is exactly
    how `item_forecasts.parquet` froze at 2026-07-29 while Supabase kept advancing. It
    runs `if: always()` (except `train-only`) and force-pushes an orphan commit, so a red
    run can still have published. **In `price-forecast.yml` it is ordered before the
    freshness check on purpose** — reversed, the check would pass on state that does not
    survive the job.
-3. **`Verify forecasts were persisted`** (`price-forecast.yml:278-284`,
+3. **`Verify forecasts were persisted`** (`price-forecast.yml:332-338`,
    `scripts/check_forecast_freshness.py`) — fails the run unless *both* the DB and the
    Parquet mirror carry a forecast for the expected date. The API reads the mirror first
    and falls back to the DB, so a DB row without a mirror row serves nothing. A failure
@@ -136,9 +136,9 @@ The archive is **not a branch of this repo.** It lives in a separate repo,
 `RayanR000/cs2-oracle-data`, branch `main`. There is no `data-archive` branch anywhere —
 any instruction mentioning one is dead.
 
-Every writing workflow does the same three things (`aggregator-update.yml:111-117,220-228`;
-`price-forecast.yml:68-78,262-271`; `backtest-accuracy.yml:52-62,95-104`;
-`event-correlation-analysis.yml:49-59,146-159`):
+Every writing workflow does the same three things (`aggregator-update.yml:108-116,217-225`;
+`price-forecast.yml:65-75,316-325`; `backtest-accuracy.yml:49-59,109-118`;
+`event-correlation-analysis.yml:46-56,143-156`):
 
 1. `actions/checkout@v7` of `RayanR000/cs2-oracle-data` at `ref: main`, `path: archive`,
    `fetch-depth: 1`, authenticated with `CS2_DATA_REPO_TOKEN`
@@ -199,8 +199,8 @@ even when Supabase is current.
   (`price-forecast.yml:218`, ~4 extra boosters / ~65s per the workflow comment) and
   `FEATURE_NATIVE_NAN=1` (`:228`), both now set on the nightly retrain.
 - **Monday `mode=full` does NOT guarantee a retrain.** `full` trains only if the model is
-  ≥14 days old (`RETRAIN_INTERVAL_DAYS`, `forecast_prices.py:489`; the age gate itself is
-  `forecast_prices.py:509-520`, reading `_model_age_days` at `:270`) or `FORCE_RETRAIN=1`.
+  ≥14 days old (`RETRAIN_INTERVAL_DAYS`, `forecast_prices.py:476`; the age gate itself is
+  `forecast_prices.py:496-505`, reading `_model_age_days` at `:249`) or `FORCE_RETRAIN=1`.
   A fresh model plus `mode=full` predicts and exits. Drift is report-only unless
   `ALLOW_DRIFT_RETRAIN=1`.
 - `SKIP_CV=1` is deliberately not set in CI (`price-forecast.yml:155`) — it biases the
@@ -236,7 +236,7 @@ will have fired.
 - **A green badge is not evidence of collection.** Three workflows reported success for
   weeks while storing nothing (see the deletion note above). Audit by querying output-table
   freshness, not by reading Actions. `run_task.py` now fails on zero rows for every count
-  field a task returns (`ROW_COUNT_FIELDS` at `run_task.py:45`, the guard at `:97-115`), but
+  field a task returns (`ROW_COUNT_FIELDS` at `run_task.py:42`, the guard at `:97-115`), but
   only tasks that go through it are covered.
 
 ## Troubleshooting
@@ -304,8 +304,8 @@ empty but the model metadata is fresh, use `FORCE_RETRAIN=1` or `mode=train-only
 ### Data not saving
 
 - Verify `SUPABASE_DATABASE_URL` is correct
-- Check `alembic current` matches the latest migration (head is **0024**,
-  `migrations/versions/0024_add_forecast_exceed_p.py`)
+- Check `alembic current` matches the latest migration (head is **0025**,
+  `migrations/versions/0025_add_forecast_anomaly_p.py`)
 - Run `python scripts/run_task.py migrate` manually
 
 ### Workflows without concurrency / failure notification
@@ -337,7 +337,7 @@ python scripts/run_task.py aggregate
 # Forecast (with saved models)
 python scripts/forecast_prices.py --predict-only
 
-# Forecast (predict, and retrain only if the age gate at forecast_prices.py:376-398
+# Forecast (predict, and retrain only if the age gate at forecast_prices.py:476-505
 # says the artifact is ≥14 days old — a fresh artifact degrades this to predict-only)
 python scripts/forecast_prices.py
 
@@ -397,8 +397,8 @@ not code:
   behind.
 
 **Rehearsing against SQLite.** `alembic upgrade` cannot replay from scratch on
-SQLite: revisions `0001`→`0024` contain Postgres-only `ALTER COLUMN ... TYPE`
-DDL. Use `alembic stamp 0024` on the snapshot first, then upgrade. Note that a
+SQLite: revisions `0001`→`0025` contain Postgres-only `ALTER COLUMN ... TYPE`
+DDL. Use `alembic stamp 0025` on the snapshot first, then upgrade. Note that a
 rehearsal still rewrites `price-archive/ops/*.parquet`, which is shared — back
 those up first.
 
@@ -408,5 +408,5 @@ not blocked: `python scripts/run_supply_scraper.py` and
 
 Note: a bare `pytest` from `backend/` now collects cleanly — `scripts/test_social_signal.py`,
 the one-off analysis script that used to abort collection on a missing `thefuzz` import, has
-been deleted. **`pytest tests`** collects **2,464** tests as of 2026-08-21. Do not run the
+been deleted. **`pytest tests`** collects **2,427** tests as of 2026-09-15. Do not run the
 full suite casually: it trains models.

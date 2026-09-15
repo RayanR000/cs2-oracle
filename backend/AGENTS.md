@@ -48,7 +48,7 @@ re-injected after `/compact` — **read the rule yourself before starting work i
 - **Social sentiment features are permanently zero in production.** `reddit-sentiment.yml`
   was deleted: old.reddit.com returns `403 Blocked` from runner IPs, and prod
   `social_mentions` holds 0 rows all-time. The features also rank outside the top 20 of
-  122 at every horizon (`docs/changelog/2026-07-22-social-feature-audit.md`), so don't
+  123 at every horizon (`docs/changelog/2026-07-22-social-feature-audit.md`), so don't
   rebuild the collector. `collectors/social_sentiment.py` is kept for local/authenticated
   runs and scores with **FinBERT ONNX INT8** — the "VADER" comments in `models/forecaster.py`
   and `database.py` are stale.

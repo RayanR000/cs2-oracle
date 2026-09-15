@@ -164,10 +164,10 @@ backend/
   backtest/          Price resolution, scoring, resolution gate
   db/                Parquet store and ops-table mirrors
   scripts/           Task runner and scheduled entrypoints
-  tests/             Pytest suite (146 modules, 2,464 tests)
+  tests/             Pytest suite (190 modules, 2,427 tests)
 price-archive/       Parquet price data, 2013-present
 docs/                Architecture, research, changelog, design specs
-.github/workflows/   9 jobs: 5 cron, 1 chained, 2 manual, 1 on PR/push
+.github/workflows/   10 jobs: 5 cron, 1 chained, 2 manual, 1 on PR/push, 1 lint
 ```
 
 Operational reference — API endpoints, environment variables, task commands, workflow

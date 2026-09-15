@@ -44,7 +44,7 @@ Supabase (serving + fallback):
   ├─ items (+ is_backfilled, is_trainable) — `is_backfilled` is the SERVE universe and the
   │                                    only thing predict reads from the DB; the TRAIN
   │                                    universe is derived from the archive instead
-  │                                    (`_resolve_backfilled_slugs`, forecaster.py:1953)
+  │                                    (`_resolve_backfilled_slugs()`, see `ItemForecaster._resolve_backfilled_slugs`)
   ├─ price_history                   — stale; the aggregator writes to Parquet only
   ├─ events / event_impacts / event_correlations
   ├─ collection_runs                 — run tracking
@@ -67,11 +67,11 @@ column or it blanks. `scripts/backfill_ops_item_slug.py` fills pre-existing rows
 31,422 `forecast_outcomes` rows point at `item_id`s with no `items` row and keep
 a NULL slug.
 
-**`ops/` is read before the DB.** `db/parquet.py:37-38` points at `price-archive/ops/` and
+**`ops/` is read before the DB.** `db/parquet.py:39` points at `price-archive/ops/` and
 API routes query it first, falling back to Supabase only when the Parquet read returns
-nothing or raises — see `api/routes/items.py:555-562` for the pattern (`_trends_parquet`
-then the DB query), repeated for predictions (:711), item events (:838), event impacts
-(:864) and sentiment (:1041). Nested values in `ops/` are
+nothing or raises — see `api/routes/items.py:532-586` for the pattern (`_trends_parquet`
+then the DB query), repeated for predictions (:728), item events (:862), event impacts
+(:878) and sentiment (:1072). Nested values in `ops/` are
 stored as **JSON text store-wide** (`db/parquet.py::_jsonify_nested`), because DuckDB
 infers a nested column's SQL type from the batch's contents; see
 `docs/changelog/2026-08-05-backtest-red-triage.md`.
@@ -122,7 +122,7 @@ Two further rules, `models/item_parser.py::TRAILING_WINDOW_SOURCES`
 vote either, as of 2026-08-09) and `::STEAM_SPOT_SOURCES`
 (`aggregator_steam_spot`, Steam's fallback-free `last_24h`, which would cast a
 second Steam ballot beside `aggregator_sync`, as of 2026-08-17), apply only inside
-`ItemForecaster._apply_multi_source_voting` (forecaster.py:2103) — they are not part of
+`ItemForecaster._apply_multi_source_voting()` (see `_apply_multi_source_voting`) — they are not part of
 `archive_universe_sql_filter()`, so they constrain anything that routes through
 the vote (`fetch_price_history`), not a raw archive glob. `walkforward_backtest.py`
 and the `ab_test_*` harnesses glob the archive and apply
@@ -152,7 +152,7 @@ API serving:
   GET /items/{id}/events|impacts  → ops/*.parquet, DB fallback
 ```
 
-**Long-range price history does not work.** `api/routes/items.py:376-397` accepts
+**Long-range price history does not work.** `api/routes/items.py:409` (`get_price_history`) accepts
 `days` up to 5000 and queries Supabase `PriceHistory` unconditionally — there is no
 DuckDB/Parquet branch at any `days` threshold. Because `price_history` is stale, any
 request beyond the last few days of coverage returns near-nothing, silently. Routing this
@@ -250,7 +250,7 @@ Marks the items carrying the CSMarketAPI historical series — **not** merely "p
 archive". It is **derived from the archive, not set by hand**: `scripts/init_local_db.py`
 selects the slugs with rows before 2026-01-01 (that series predates the `source` column, so
 the same set is what `source IS NULL` selects) and re-derives the flag on **every run**,
-correcting rows written by older versions (`init_local_db.py:72-148`). ~5,542 items are
+correcting rows written by older versions (`init_local_db.py:73-163`). ~5,542 items are
 flagged (as of 2026-08-06). The same run derives `is_trainable` (migration 0023), which
 narrows `is_backfilled` by dropping iflow-only history — but training does **not** read that
 column: `_resolve_backfilled_slugs(universe="train")` re-derives the train cohort from the
@@ -274,7 +274,7 @@ import time.
 
 Before: `EXISTS (SELECT 1 FROM price_history WHERE item_id=Item.id AND source IN ('market_csgo','steam_historical'))`
 
-After: `Item.is_backfilled == 1` (`database.py:105`)
+After: `Item.is_backfilled == 1` (`database.py:127`)
 
 ### Migration summary
 
@@ -357,7 +357,7 @@ Backtest Accuracy  ──▶  ops/forecast_outcomes.parquet, ops/prediction_accu
 
 The snapshot date is resolved **once** and pinned for every later step. Reading the clock
 twice silently lost 2026-07-27, 07-30 and 08-03 from the archive
-(`aggregator-update.yml:56-68`).
+(`aggregator-update.yml:84-90`).
 
 ---
 

@@ -6,11 +6,11 @@ report it rather than working around it.
 > ⭐ **Band geometry changed twice after most of the numbers below were measured.** Read every
 > coverage figure in this file as *pre-cutover* unless it is dated 2026-08-19 or later:
 > 1. **Signed conformal band, live 2026-08-19** — two quantiles, serving recentring dropped,
->    `DIRECTION_UPWEIGHT = 1.0` (`forecaster.py:141`). Cutover pin
->    `SIGNED_BAND_SERVING_START = "2026-08-19"` (`models/served_recalibration.py:47`).
+>    `DIRECTION_UPWEIGHT = 1.0` (`forecaster.py:149`). Cutover pin
+>    `SIGNED_BAND_SERVING_START = "2026-08-19"` (`models/served_recalibration.py:49`).
 > 2. **Climatology band scale, default ON since 2026-08-20** — a featureless per-item
 >    climatology replaces the GBM `sigma` as the width variable. `CLIMATOLOGY_SCALE` defaults
->    to `"1"` (`forecaster.py:1355`; only the literal `"0"` disables it), cutover pin
+>    to `"1"` (`forecaster.py::climatology_scale_enabled`; only the literal `"0"` disables it), cutover pin
 >    `CLIMATOLOGY_SERVING_START = "2026-08-20"`. It is 33-46% narrower than the sigma band at
 >    matched 80% coverage and better calibrated on served replay.
 >    `changelog/2026-08-19-climatology-band-scale-implemented.md`,
@@ -18,14 +18,14 @@ report it rather than working around it.
 >    `research/2026-08-19-climatology-vs-gbm-band.md`.
 >
 > **Never difference a coverage number across either pin.** `CLIMATOLOGY_REACTIVE` (the
-> regime-reactive variant) is **built and SHELVED**, default `"0"` (`forecaster.py:1390`) —
+> regime-reactive variant) is **built and SHELVED**, default `"0"` (`forecaster.py::climatology_reactive_enabled`) —
 > `changelog/2026-08-20-climatology-reactive-band-scale.md`. The exceedance probability
 > `P(|move| > round-trip cost)` shipped as a **served signal** (`EXCEEDANCE_HEAD=1` on the
 > nightly retrain, migration `0024_add_forecast_exceed_p`, surfaced as `move_odds` /
 > `stability_label` on `/items/*` and `/items/volatility`) —
 > `changelog/2026-08-20-exceedance-served-signal.md`,
 > `changelog/2026-08-20-volatility-stability-tags.md`. `FEATURE_NATIVE_NAN` was added
-> 2026-08-21 gated off in code (`forecaster.py:2777`) and is **set to `1` on the nightly
+> 2026-08-21 gated off in code (`forecaster.py::feature_native_nan_enabled`) and is **set to `1` on the nightly
 > retrain** (`price-forecast.yml:228`) — `changelog/2026-08-21-feature-native-nan-built-gated-off.md`.
 
 > ⭐ **CS2 Oracle is a RANGE (interval) forecaster, not a directional predictor (2026-08-15).**
@@ -75,7 +75,7 @@ report it rather than working around it.
 - `model.md` — the forecaster as it stands: 4 q50 LightGBM models + 4 directional
   classifiers, the conformal band, sequential training, age-based retrain. ⚠️ Check it
   against the band-geometry banner above: `HORIZONS = [3, 7, 14, 30]` and
-  `QUANTILES = [0.5]` still hold (`forecaster.py:302,308`), but the band is now a *signed*
+  `QUANTILES = [0.5]` still hold (`forecaster.py:347,353`), but the band is now a *signed*
   conformal interval scaled by the per-item climatology, not the symmetric split-conformal
   one on `sigma`, and there is an extra head per horizon (the exceedance classifier)
 - `model-optimization.md` — size/speed levers, split into already-applied, still-available,
@@ -190,7 +190,7 @@ report it rather than working around it.
 - `2026-08-16-research-docs-review.md` — ⭐ **read before trusting any older research doc.** Audit
   of all 32 docs / 9,548 lines. Two structural findings: **R13 (the cohort inversion — served
   cohort 84% sub-$1 vs a 64% ≥$1 archive) fell out of tracking on 2026-08-09 and is verified still
-  unfixed** in `database.py:105`; and **both designated entry points mislead** — the 08-07 doc
+  unfixed** in `database.py:120`; and **both designated entry points mislead** — the 08-07 doc
   still calls C1 the strongest predictor (refuted 08-13) and its replacement rank-IC headline is
   itself invalidated, while the 08-09 "start here" doc predates the range-forecaster pivot. Also:
   the live action list's #1 item failed 08-15, `volume-data.md`'s banner inverts its own verdict
@@ -371,7 +371,7 @@ also recorded in `changelog/`, which is the durable record. Load-bearing ones:
 ## Changelog (`changelog/`)
 
 Append-only dated decision records: bug fixes, features, audits, and refuted experiments.
-214 entries, 2026-07-08 to 2026-08-21. Entries are never edited to match later reality — several describe code that has since been
+199 entries, 2026-07-08 to 2026-08-21. Entries are never edited to match later reality — several describe code that has since been
 deleted, which is the point. Per `AGENTS.md` workflow rule 2, non-trivial decisions get a new
 dated note here.
 
@@ -379,7 +379,7 @@ The newest:
 
 - `2026-08-21-feature-native-nan-built-gated-off.md` — LightGBM native NaN handling instead of
   the median impute, from deep-review §10.4. Built behind `FEATURE_NATIVE_NAN`
-  (`forecaster.py:2777`, off in code) and **set to `1` on the nightly retrain**
+  (`forecaster.py::feature_native_nan_enabled`, off in code) and **set to `1` on the nightly retrain**
   (`price-forecast.yml:228`). ⚠️ The probe's served effect was modest and **downward**, the
   opposite of the review's bull prior; the retrain is the go/no-go.
 - `2026-08-20-volatility-stability-tags.md` — the range product's first discovery surface.
@@ -444,7 +444,7 @@ The newest:
 - `2026-08-13-cv-folds-are-not-time-aligned-with-serving.md` — ⭐ **diagnosis only, and it opens a
   fifth explanation for C1's CV→serving gap after the named four were declared spent.** It is not a
   cohort or a code-path difference — it is a **calendar** one. `_compute_cv_splits`
-  (`forecaster.py:3646`) strides *forward* from `CV_MIN_TRAIN_DAYS`, so the last fold lands up to
+  (`forecaster.py::_compute_cv_splits`) strides *forward* from `CV_MIN_TRAIN_DAYS`, so the last fold lands up to
   `CV_STEP_DAYS − 1 = 149` days short of the frame end. h=3 wins that rounding by single-digit dates
   and reaches **2026-06/07**; 7/14/30d lose a full stride and end at **2026-01-11 → 2026-02-09** —
   before the 2026-03-22 consensus break and with **no overlap at all** with the
@@ -462,7 +462,7 @@ The newest:
   retrain and A/B harness pays **95.4s of 872s (10.9%)** for a duplicate, and none of the thirteen
   harnesses sets the flag. Corrects the workflow comment's "covers 818K-893K of ~985K rows" — it is
   **100%** — and retires the "dropping regimes changes the served mid" claim in
-  `forecaster.py:5300-5307` and in `2026-08-10-training-cost-levers.md`, **for as long as the
+  `forecaster.py::_train_horizon_inline` (regime-training comment) and in `2026-08-10-training-cost-levers.md`, **for as long as the
   allowlist holds**. 🔑 **A live footgun for C4:** re-admitting `cross_sectional` silently reactivates
   an untested three-way model split inside the A/B measuring the feature change. Delete the branch,
   or gate it on the allowlist rather than an env flag.
