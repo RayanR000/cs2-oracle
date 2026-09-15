@@ -6,6 +6,7 @@ with SQLAlchemy fallback.
 """
 
 import json
+import logging
 
 import pandas as pd
 from backtest.directional_test import PT_T_HURDLE
@@ -18,6 +19,8 @@ from sqlalchemy.orm import Session
 from api.serving_policy import MIN_SERVED_PRICE_USD
 
 router = APIRouter(prefix="/accuracy", tags=["accuracy"])
+
+logger = logging.getLogger(__name__)
 
 
 def _json_safe(value):
@@ -181,8 +184,8 @@ def list_accuracy(
         rows = _query_prediction_accuracy(prediction_type, limit, price_tier)
         if rows is not None:
             return rows
-    except Exception:
-        pass
+    except Exception as e:
+        logger.debug("parquet accuracy read failed, falling back to DB: %s", e)
 
     q = db.query(PredictionAccuracy).order_by(desc(PredictionAccuracy.evaluation_date))
     if prediction_type:

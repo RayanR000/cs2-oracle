@@ -24,7 +24,7 @@ from models.item_parser import (
     STEAM_SPOT_SOURCES,
     TRAILING_WINDOW_SOURCES,
 )
-from scripts.measure_composition_stability import (
+from scripts.archive.measure_composition_stability import (
     MIN_DATES_TO_REPORT,
     MIN_ITEMS_PER_DATE,
     NULL_SOURCE_LABEL,

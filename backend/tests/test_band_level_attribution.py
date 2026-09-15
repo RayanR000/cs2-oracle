@@ -17,7 +17,7 @@ import datetime
 import numpy as np
 import pandas as pd
 import pytest
-from scripts.attribute_band_level import (
+from scripts.archive.attribute_band_level import (
     SIGMA_TRAILING_WINDOW_DAYS,
     anchor_coverage,
     date_levels,

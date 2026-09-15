@@ -72,6 +72,16 @@ class Settings(BaseSettings):
         extra="allow",
     )
 
+    def check_secret_key(self) -> None:
+        """Fail fast when the app boots in production with the default key.
+
+        Called from main.lifespan (server startup), not at import: settings
+        objects are also constructed by tests and offline scripts, which must
+        not fail on a key they never use for signing.
+        """
+        if self.is_production() and self.secret_key == "your-secret-key-for-sessions":
+            raise ValueError("secret_key must be set to a non-default value in production")
+
     def is_production(self) -> bool:
         """Return True when the app should avoid demo bootstrap behavior."""
         return self.environment.lower() in {"production", "prod"}

@@ -141,7 +141,7 @@ class TestAnomalyDecileError:
         # By construction each decile gets its own q80, so the modulated arm
         # must score a smaller level-matched decile error than the constant
         # scale on the rows the multiplier was fitted on.
-        from scripts.shrink_k_vol_rank_ab import matched_width
+        from scripts.archive.shrink_k_vol_rank_ab import matched_width
 
         p, abs_r, scale = _signal_frame()
         m = fit_anomaly_multiplier(p, abs_r, scale)
@@ -157,7 +157,7 @@ class TestAnomalyDecileError:
     def test_uniform_rescale_leaves_the_error_unchanged(self):
         # Same property the width read has: a pure re-levelling must not read
         # as a conditional fix.
-        from scripts.shrink_k_vol_rank_ab import matched_width
+        from scripts.archive.shrink_k_vol_rank_ab import matched_width
 
         p, abs_r, scale = _signal_frame()
         m = fit_anomaly_multiplier(p, abs_r, scale)

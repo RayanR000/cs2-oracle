@@ -9,6 +9,7 @@ from sqlalchemy import case, func, or_
 from sqlalchemy.orm import Session
 
 from api.cache import get_or_build
+from api.schemas import GroupedMarketItemOut, QualityVariantOut, parse_item_name
 
 router = APIRouter(prefix="/market", tags=["market"])
 
@@ -21,53 +22,15 @@ class MarketItemOut(BaseModel):
     icon_url: str | None = None
     current_price: float | None = None
     price_change_24h: float | None = None
-    volatility: float | None = None
     volume_24h: int | None = None
 
     class Config:
         from_attributes = True
 
 
-class QualityVariantOut(BaseModel):
-    item_id: str
-    name: str
-    quality: str
-    current_price: float | None = None
-    price_change_24h: float | None = None
-    volume_24h: int | None = None
-
-
-class GroupedMarketItemOut(BaseModel):
-    base_name: str
-    type: str
-    icon_url: str | None = None
-    price_avg: float | None = None
-    price_min: float | None = None
-    price_max: float | None = None
-    price_change_24h: float | None = None
-    volatility: float | None = None
-    volume_24h: int | None = None
-    quality_count: int = 1
-    qualities: list[QualityVariantOut] = []
-
-
 def _normalize(s: str) -> str:
     """Strip non-alphanumeric characters and lowercase for fuzzy matching."""
     return re.sub(r"[^a-zA-Z0-9]", "", s).lower()
-
-
-def _parse_item_name(name: str):
-    """Extract base name and quality from a full item name.
-
-    Examples:
-        'AK-47 | Redline (Field-Tested)' -> ('AK-47 | Redline', 'Field-Tested')
-        'StatTrak™ M4A4 | Desolate (FN)' -> ('StatTrak™ M4A4 | Desolate', 'FN')
-        'Sticker | Dragon' -> ('Sticker | Dragon', None)
-    """
-    match = re.match(r"^(.+?)\s*\(([^)]+)\)\s*$", name)
-    if match:
-        return match.group(1).strip(), match.group(2).strip()
-    return name, None
 
 
 @router.get("/summary", response_model=list[GroupedMarketItemOut])
@@ -145,7 +108,7 @@ def _build_market_summary(db: Session, type: str | None, q: str | None):
                 price_change_24h = round(((last.price - first.price) / first.price) * 100, 2)
             volume_24h = sum((p.volume or 0) for p in ph_list)
 
-        base_name, quality = _parse_item_name(item.name)
+        base_name, quality = parse_item_name(item.name)
 
         per_item[item.item_id] = {
             "base_name": base_name,

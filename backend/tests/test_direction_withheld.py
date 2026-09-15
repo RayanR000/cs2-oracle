@@ -50,3 +50,33 @@ class TestServedDirection:
             "a route is reconstructing the withheld direction label; route it through served_direction() instead"
         )
         assert 'direction or "neutral"' not in src
+
+    def test_opportunities_routes_through_served_direction(self):
+        """`/opportunities` must not leak the raw DB direction as `current_trend`."""
+        from pathlib import Path
+
+        import api.routes.opportunities as opps
+
+        src = Path(opps.__file__).read_text()
+        assert 'direction or "neutral"' not in src
+
+    def test_build_opportunity_trend_is_neutral(self):
+        from types import SimpleNamespace
+
+        from api.routes.opportunities import _build_opportunity
+
+        for raw in ("up", "down", "flat", None):
+            opp = _build_opportunity(
+                SimpleNamespace(id=1, name="Test Item"),
+                SimpleNamespace(direction=raw, current_price=10.0, price_mid=11.0),
+                "undervalued",
+            )
+            assert opp.current_trend == "neutral"
+
+    def test_reason_copy_is_range_based(self):
+        from api.routes.opportunities import _reason_for_type
+
+        for opp_type in ("undervalued", "overheated", "momentum"):
+            reason = _reason_for_type(opp_type)
+            assert "predicts upward" not in reason
+            assert "predicts downward" not in reason

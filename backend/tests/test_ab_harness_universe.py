@@ -33,7 +33,7 @@ from models.item_parser import (
     phase_collapsed_sql_filter,
 )
 
-SCRIPTS = Path(__file__).resolve().parents[1] / "scripts"
+SCRIPTS = Path(__file__).resolve().parents[1] / "scripts" / "archive"
 
 #: Every harness, and whether it reads the price archive at all.
 #:
@@ -297,7 +297,7 @@ class TestTheMigratedArchiveStillYieldsThePre2026Series:
     def test_the_union_returns_pre_2026_rows(self, name, migrated_archive, monkeypatch):
         import importlib
 
-        mod = importlib.import_module(f"scripts.{name}")
+        mod = importlib.import_module(f"scripts.archive.{name}")
         monkeypatch.setattr(mod, "ARCHIVE_DIR", migrated_archive)
         con = duckdb.connect()
         try:

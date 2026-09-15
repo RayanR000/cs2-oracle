@@ -15,7 +15,7 @@ from datetime import date
 
 import pandas as pd
 import pytest
-from scripts import backfill_steam_listing_history as mod
+from scripts.archive import backfill_steam_listing_history as mod
 
 
 @pytest.fixture

@@ -59,7 +59,7 @@ import numpy as np
 import pytest
 from models.forecaster import ItemForecaster
 
-SCRIPTS = Path(__file__).resolve().parents[1] / "scripts"
+SCRIPTS = Path(__file__).resolve().parents[1] / "scripts" / "archive"
 
 #: Every harness that trains a booster, and so has a round count to choose.
 #:

@@ -60,7 +60,7 @@ import numpy as np
 import pandas as pd
 from database import SessionLocal
 from models.forecaster import ItemForecaster
-from scripts.ab_test_item_metadata import (
+from scripts.archive.ab_test_item_metadata import (
     ROW_BUDGET,
     STEP_DAYS,
     VAL_WINDOW_DAYS,

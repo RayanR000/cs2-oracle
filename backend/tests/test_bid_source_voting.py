@@ -199,7 +199,7 @@ def test_published_gate_loader_excludes_the_bid(tmp_path, monkeypatch):
     Accuracy number undiluted. The filter has to be in the query.
     """
     import duckdb
-    from scripts import walkforward_backtest as wf
+    from scripts.archive import walkforward_backtest as wf
 
     archive = tmp_path / "price-archive"
     archive.mkdir()

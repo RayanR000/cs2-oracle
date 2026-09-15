@@ -25,7 +25,7 @@ from __future__ import annotations
 
 import pandas as pd
 import pytest
-from scripts.backfill_supply_metadata import coalesce_rarity
+from scripts.archive.backfill_supply_metadata import coalesce_rarity
 from scripts.ingest_bymykel_metadata import rarity_rank, rarity_token
 
 

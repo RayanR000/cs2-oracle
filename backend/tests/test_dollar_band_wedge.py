@@ -13,7 +13,7 @@ from pathlib import Path
 import pandas as pd
 import pytest
 
-SCRIPT = Path(__file__).resolve().parents[1] / "scripts" / "dollar_band_wedge.py"
+SCRIPT = Path(__file__).resolve().parents[1] / "scripts" / "archive" / "dollar_band_wedge.py"
 
 
 @pytest.fixture(scope="module")

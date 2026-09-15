@@ -201,6 +201,6 @@ def test_purge_script_shares_the_one_predicate():
     """`purge_phantom_items.py` decides what to delete from production. If its
     notion of a phantom drifted from the reader's, the archive and the model
     would disagree about which items exist."""
-    from scripts.purge_phantom_items import is_mangled_key
+    from scripts.archive.purge_phantom_items import is_mangled_key
 
     assert is_mangled_key is is_phantom_slug

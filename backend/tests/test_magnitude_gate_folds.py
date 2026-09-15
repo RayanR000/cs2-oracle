@@ -17,7 +17,7 @@ import numpy as np
 import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts"))
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts" / "archive"))
 
 from magnitude_vs_climatology import _folds
 

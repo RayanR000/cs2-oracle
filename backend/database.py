@@ -458,7 +458,7 @@ class SupplySnapshot(Base):
 
 
 class SocialMention(Base):
-    """Reddit social mention — tracks skin name mentions and VADER sentiment."""
+    """Reddit social mention — tracks skin name mentions and FinBERT sentiment."""
 
     __tablename__ = "social_mentions"
 

@@ -7,7 +7,7 @@ here rather than trusted to review.
 """
 
 import numpy as np
-from scripts.shrink_k_vol_rank_ab import (
+from scripts.archive.shrink_k_vol_rank_ab import (
     matched_width,
     vol_rank_multiplier,
 )

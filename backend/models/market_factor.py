@@ -41,10 +41,6 @@ MARKET_MIN_PRICE_USD = 1.0
 # Trailing window for the pre-registered drift estimator.
 TRAILING_DRIFT_DAYS = 180
 
-# Number of non-overlapping resolved windows for the trailing-median
-# diagnostic estimator.
-TRAILING_K_WINDOWS = 4
-
 _INDEX_COLUMNS = ["log_return", "n_items", "valid", "level", "invalid_cum"]
 
 
@@ -185,33 +181,3 @@ def forecast_market_factor(index: pd.DataFrame, as_of, horizon: int, trailing_da
     if recent.empty:
         return 0.0
     return float((np.exp(horizon * recent.mean()) - 1.0) * 100.0)
-
-
-def forecast_market_factor_diagnostics(index: pd.DataFrame, as_of, horizon: int) -> dict:
-    """Two alternate estimators alongside the pre-registered one.
-
-    Reported so the estimator choice cannot be blamed for a negative result,
-    but explicitly excluded from the decision rule: picking the best of three
-    after seeing the outcome is how a null result becomes a false positive.
-    """
-    rets = _returns_as_of(index, as_of)
-    out = {
-        "trailing_drift": forecast_market_factor(index, as_of, horizon),
-        "trailing_k_median": 0.0,
-        "past_h_momentum": 0.0,
-    }
-    if rets.empty:
-        return out
-
-    # K non-overlapping resolved windows immediately before `as_of`.
-    needed = TRAILING_K_WINDOWS * horizon
-    tail = rets.iloc[-needed:]
-    if len(tail) >= horizon:
-        usable = len(tail) - (len(tail) % horizon)
-        blocks = tail.iloc[-usable:].to_numpy().reshape(-1, horizon).sum(axis=1)
-        out["trailing_k_median"] = float((np.exp(np.median(blocks)) - 1.0) * 100.0)
-
-    window = rets.iloc[-horizon:]
-    if not window.empty:
-        out["past_h_momentum"] = float((np.exp(window.sum()) - 1.0) * 100.0)
-    return out

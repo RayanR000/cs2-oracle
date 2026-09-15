@@ -205,11 +205,6 @@ def fetch_subreddit_posts(subreddit: str, limit: int = 100) -> list[dict]:
     return posts
 
 
-def score_sentiment(text: str) -> float:
-    """Return sentiment score in [-1, 1] using FinBERT ONNX INT8."""
-    return _finbert.score(text)
-
-
 def collect_social_mentions(db) -> dict:
     """Main collection logic.
 

@@ -1,6 +1,6 @@
 # Re-run the repaired A/B harnesses in parallel.
 #
-# The nine `scripts/ab_test_*.py` harnesses were repinned off the dead
+# The nine `scripts/archive/ab_test_*.py` harnesses were repinned off the dead
 # `STEAMCOMMUNITY` predicate and given the production allowlist on 2026-08-13
 # (`docs/changelog/2026-08-13-harness-family-repinned-off-steamcommunity.md`) but
 # NONE were re-run, so every stored verdict is unmeasured. This dispatches them
@@ -75,7 +75,7 @@ jobs:
             ARGS="--max-items ${{ inputs.max_items }}"
           fi
           set -o pipefail
-          python -m scripts.ab_test_${{ matrix.harness }} $ARGS \
+          python -m scripts.archive.ab_test_${{ matrix.harness }} $ARGS \
             2>&1 | tee ab_test_${{ matrix.harness }}.log
 
       - name: Upload log

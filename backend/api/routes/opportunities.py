@@ -11,6 +11,7 @@ from api.serving_policy import (
     meets_anchor_gate,
     meets_price_floor,
     price_floor_clause,
+    served_direction,
 )
 
 router = APIRouter(prefix="/opportunities", tags=["opportunities"])
@@ -28,17 +29,16 @@ def _build_opportunity(item: Item, forecast: ItemForecast, opp_type: str) -> Opp
         opportunity_type=opp_type,
         opportunity_score=round(predicted_return, 2),
         reason=_reason_for_type(opp_type),
-        current_trend=forecast.direction or "neutral",
-        volatility=None,
+        current_trend=served_direction(forecast.direction, 7),
     )
 
 
 def _reason_for_type(opp_type: str) -> str:
     if opp_type == "undervalued":
-        return "ML forecast predicts upward movement over the next 7 days."
+        return "Forecast range sits above the current price over the next 7 days."
     if opp_type == "overheated":
-        return "ML forecast predicts downward movement over the next 7 days."
-    return "ML forecast shows strong predicted price movement."
+        return "Forecast range sits below the current price over the next 7 days."
+    return "Forecast range shows strong predicted price movement."
 
 
 def _load_items(item_ids: list[int], db: Session) -> dict[int, Item]:

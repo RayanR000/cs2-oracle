@@ -53,7 +53,7 @@ from database import SessionLocal
 from db.archive import prices_relation
 from models.forecaster import ANCHOR_TIED_COL, ItemForecaster
 from models.item_parser import archive_universe_sql_filter
-from scripts.ab_test_item_metadata import _stratified_sample, assign_items
+from scripts.archive.ab_test_item_metadata import _stratified_sample, assign_items
 
 logging.basicConfig(
     level=logging.INFO,

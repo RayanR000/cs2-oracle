@@ -46,9 +46,11 @@ jobs:
           ENVIRONMENT: production
           DEBUG: false
         run: |
-          echo "🔍 Starting item discovery..."
-          set -o pipefail
-          python scripts/discover_steam_items.py 2>&1 | tee discovery.log
+          echo "Discovery is disabled: scripts/discover_steam_items.py was removed"
+          echo "2026-09-15 (codebase cleanup — it imported the long-deleted"
+          echo "collectors.real_data_collector). New items arrive via the monthly"
+          echo "CSMarketAPI backfill, not Steam discovery."
+          exit 1
 
       - name: Notify on failure
         if: failure() && github.event_name == 'schedule'

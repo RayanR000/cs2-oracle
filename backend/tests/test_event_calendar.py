@@ -13,11 +13,11 @@ from datetime import UTC, date, datetime
 
 import pandas as pd
 import pytest
-from scripts.ingest_fx_history import (
+from scripts.archive.ingest_fx_history import (
     MAX_FILL_DAYS,
     build_frame,
 )
-from scripts.ingest_fx_history import (
+from scripts.archive.ingest_fx_history import (
     OUTPUT_COLUMNS as FX_COLUMNS,
 )
 from scripts.ingest_steam_news import (

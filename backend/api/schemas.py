@@ -1,3 +1,4 @@
+import re
 from datetime import datetime
 
 from pydantic import BaseModel, model_validator
@@ -155,7 +156,6 @@ class OpportunityOut(BaseModel):
     opportunity_score: float
     reason: str
     current_trend: str
-    volatility: float | None = None
 
     class Config:
         from_attributes = True
@@ -209,10 +209,23 @@ class GroupedMarketItemOut(BaseModel):
     price_min: float | None = None
     price_max: float | None = None
     price_change_24h: float | None = None
-    volatility: float | None = None
     volume_24h: int | None = None
     quality_count: int = 1
     qualities: list[QualityVariantOut] = []
+
+
+def parse_item_name(name: str):
+    """Extract base name and quality from a full item name.
+
+    Examples:
+        'AK-47 | Redline (Field-Tested)' -> ('AK-47 | Redline', 'Field-Tested')
+        'StatTrak™ M4A4 | Desolate (FN)' -> ('StatTrak™ M4A4 | Desolate', 'FN')
+        'Sticker | Dragon' -> ('Sticker | Dragon', None)
+    """
+    match = re.match(r"^(.+?)\s*\(([^)]+)\)\s*$", name)
+    if match:
+        return match.group(1).strip(), match.group(2).strip()
+    return name, None
 
 
 class UserOut(BaseModel):

@@ -14,7 +14,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
-SCRIPT = Path(__file__).resolve().parents[1] / "scripts" / "centre_vs_lastprice.py"
+SCRIPT = Path(__file__).resolve().parents[1] / "scripts" / "archive" / "centre_vs_lastprice.py"
 
 
 @pytest.fixture(scope="module")

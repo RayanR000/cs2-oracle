@@ -43,20 +43,20 @@ from unittest.mock import MagicMock
 
 import pandas as pd
 import pytest
-import scripts.ab_test_csfloat_basis as cf
-import scripts.ab_test_direction_labels as dirlab
-import scripts.ab_test_ensemble as ensemble
-import scripts.ab_test_feature_contribution as featcon
-import scripts.ab_test_interval_sampling as interval
-import scripts.ab_test_item_metadata as meta
-import scripts.ab_test_price_primitives as primitives
-import scripts.ab_test_q50_sampling as q50
-import scripts.ab_test_recency_weights as recency
-import scripts.ab_test_regime as regime
-import scripts.ab_test_supply_side as supply
-import scripts.ab_test_training_breadth as breadth
-import scripts.ab_test_volume_features as volume
-import scripts.walkforward_backtest as wf
+import scripts.archive.ab_test_csfloat_basis as cf
+import scripts.archive.ab_test_direction_labels as dirlab
+import scripts.archive.ab_test_ensemble as ensemble
+import scripts.archive.ab_test_feature_contribution as featcon
+import scripts.archive.ab_test_interval_sampling as interval
+import scripts.archive.ab_test_item_metadata as meta
+import scripts.archive.ab_test_price_primitives as primitives
+import scripts.archive.ab_test_q50_sampling as q50
+import scripts.archive.ab_test_recency_weights as recency
+import scripts.archive.ab_test_regime as regime
+import scripts.archive.ab_test_supply_side as supply
+import scripts.archive.ab_test_training_breadth as breadth
+import scripts.archive.ab_test_volume_features as volume
+import scripts.archive.walkforward_backtest as wf
 from models.forecaster import ItemForecaster, embargo_days
 
 # The three fixed 2026-08-07. They share a code shape the assertions below

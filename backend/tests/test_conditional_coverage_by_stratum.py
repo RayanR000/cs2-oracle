@@ -14,7 +14,7 @@ import pandas as pd
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from scripts.conditional_coverage_by_stratum import (
+from scripts.archive.conditional_coverage_by_stratum import (
     assign_width_tertile,
     bucket_staleness,
     prepare,

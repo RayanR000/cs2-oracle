@@ -16,7 +16,7 @@ from types import SimpleNamespace
 
 import pandas as pd
 import pytest
-from scripts.resolve_readonly import MIN_PRICE, _resolve
+from scripts.archive.resolve_readonly import MIN_PRICE, _resolve
 
 
 def _forecast(fid=1, item_id=7, f_date="2026-08-01", horizon=3, mid=110.0, low=90.0, high=130.0, quote=100.0):
@@ -40,7 +40,7 @@ def archive(tmp_path, monkeypatch):
 
     def _install(rows):
         frame = pd.DataFrame(rows)
-        monkeypatch.setattr("scripts.resolve_readonly.load_voted_prices", lambda *a, **k: frame)
+        monkeypatch.setattr("scripts.archive.resolve_readonly.load_voted_prices", lambda *a, **k: frame)
         return tmp_path
 
     return _install

@@ -45,7 +45,6 @@ ROW_COUNT_FIELDS = (
     "impacts_written",  # scripts/event_correlation_analysis.py
     "patterns_written",  # scripts/event_correlation_analysis.py
     "correlations_written",  # scripts/event_correlation_analysis.py
-    "steam_items",  # collectors/supply_scraper.py
     "total_mentions",  # collectors/social_sentiment.py
     "inserted",  # collectors/social_sentiment.py
     "supply_rows",  # collectors/supply_depth.py
@@ -203,18 +202,9 @@ def run_task(task_name):
             logger.info("=" * 60)
             logger.info("TASK: Walk-Forward Backtest Report (Per-Horizon)")
             logger.info("=" * 60)
-            from scripts.backtest_walkforward_report import run_walkforward_report
+            from scripts.archive.backtest_walkforward_report import run_walkforward_report
 
             result = run_walkforward_report()
-            print(f"RESULT: {result}")
-
-        elif task_name == "supply_scrape":
-            logger.info("=" * 60)
-            logger.info("TASK: Supply Scraper (Steam sell_listings)")
-            logger.info("=" * 60)
-            from scripts.run_supply_scraper import run as run_supply
-
-            result = run_supply()
             print(f"RESULT: {result}")
 
         elif task_name == "reddit_social":
@@ -246,7 +236,7 @@ if __name__ == "__main__":
     if len(sys.argv) < 2:
         print("Usage: python run_task.py <task_name>")
         print(
-            "Tasks: aggregate, priority, trends, long_term_trends (deprecated), migrate, backtest, backtest_historical, walkforward_report, event_correlation, supply_scrape, reddit_social"
+            "Tasks: aggregate, priority, trends, long_term_trends (deprecated), migrate, backtest, backtest_historical, walkforward_report, event_correlation, reddit_social"
         )
         sys.exit(1)
 

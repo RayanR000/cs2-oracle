@@ -71,7 +71,7 @@ import pandas as pd
 from api.serving_policy import MIN_SERVED_PRICE_USD
 from database import SessionLocal
 from models.forecaster import ItemForecaster
-from scripts.ab_test_item_metadata import (
+from scripts.archive.ab_test_item_metadata import (
     ROW_BUDGET,
     STEP_DAYS,
     VAL_WINDOW_DAYS,
@@ -84,7 +84,7 @@ from scripts.exceedance_meta_ab import (
     _score,
     paired_fold_deltas,
 )
-from scripts.shrink_k_vol_rank_ab import matched_width
+from scripts.archive.shrink_k_vol_rank_ab import matched_width
 
 logging.basicConfig(
     level=logging.INFO,

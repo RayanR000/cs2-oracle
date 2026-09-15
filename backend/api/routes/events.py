@@ -1,3 +1,5 @@
+import logging
+
 from database import Event, get_db
 from fastapi import APIRouter, Depends, Query
 from sqlalchemy import desc
@@ -6,6 +8,8 @@ from sqlalchemy.orm import Session
 from api.schemas import EventOut
 
 router = APIRouter(prefix="/events", tags=["events"])
+
+logger = logging.getLogger(__name__)
 
 
 def _read_events_parquet(
@@ -49,7 +53,8 @@ def list_events(
 ):
     try:
         return _read_events_parquet(type_filter=type, skip=skip, limit=limit)
-    except Exception:
+    except Exception as e:
+        logger.debug("parquet events read failed, falling back to DB: %s", e)
         q = db.query(Event)
         if type:
             q = q.filter(Event.type == type)
@@ -63,5 +68,6 @@ def recent_events(
 ):
     try:
         return _read_events_parquet(recent_only=True, recent_limit=limit)
-    except Exception:
+    except Exception as e:
+        logger.debug("parquet recent-events read failed, falling back to DB: %s", e)
         return db.query(Event).order_by(desc(Event.timestamp)).limit(limit).all()

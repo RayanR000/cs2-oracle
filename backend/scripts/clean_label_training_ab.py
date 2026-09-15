@@ -45,12 +45,12 @@ import pandas as pd
 from api.serving_policy import MIN_SERVED_PRICE_USD
 from database import SessionLocal
 from models.forecaster import ItemForecaster
-from scripts.ab_test_item_metadata import (
+from scripts.archive.ab_test_item_metadata import (
     assign_items,
     build_frame,
 )
 from scripts.exceedance_meta_ab import paired_fold_deltas
-from scripts.shrink_k_vol_rank_ab import _lookup, matched_width
+from scripts.archive.shrink_k_vol_rank_ab import _lookup, matched_width
 
 logging.basicConfig(
     level=logging.INFO,

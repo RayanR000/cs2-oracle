@@ -158,7 +158,7 @@ def test_voted_cache_is_invalidated(tmp_path):
 def test_gate_price_loader_drops_them(tmp_path, monkeypatch):
     """`walkforward_backtest` never calls `fetch_price_history`; it globs the
     archive itself, which is why the bid exclusion needed a second fix here."""
-    from scripts import walkforward_backtest as wf
+    from scripts.archive import walkforward_backtest as wf
 
     archive = _archive(tmp_path, COLLAPSED + SINGLE_ASSET)
     monkeypatch.setattr(wf, "ARCHIVE_DIR", archive)
@@ -175,7 +175,7 @@ def test_gate_price_loader_drops_them(tmp_path, monkeypatch):
 def test_gate_item_selection_drops_them(tmp_path, monkeypatch):
     """Selection has to agree with the price loader, or the `max_items` budget
     is spent on items that then come back with no rows."""
-    from scripts import walkforward_backtest as wf
+    from scripts.archive import walkforward_backtest as wf
 
     archive = _archive(tmp_path, COLLAPSED + SINGLE_ASSET, days=120)
     monkeypatch.setattr(wf, "ARCHIVE_DIR", archive)

@@ -147,14 +147,6 @@ BIAS_EWMA_ALPHA = 0.3
 # See docs/changelog/2026-08-19-direction-upweight-neutral.md.
 DIRECTION_UPWEIGHT = float(os.environ.get("DIRECTION_UPWEIGHT", "1.0"))
 
-# TFT centre model gate (2026-09-10). Off by default: LightGBM remains the
-# shipped model. When "1", train() also fits the Temporal Fusion Transformer
-# centre (models/tft) on the voted price history and predict() prefers it
-# where a checkpoint exists. TFT OOF residuals flow through
-# conformal.calibrate_signed() — TFT ships no bands of its own. torch is
-# imported lazily inside the TFT methods so non-TFT runs never need it.
-TFT_CENTRE = os.environ.get("TFT_CENTRE") == "1"
-
 # Recency half-life, in days, for time-decayed sample weights: a row `h` days
 # older than the newest row in the frame carries 0.5× the gradient weight.
 # Set to 0 to disable decay entirely.
@@ -309,10 +301,6 @@ def _feature_group(name: str) -> str:
     if any(name.startswith(p) for p in ("day_", "month_", "quarter_", "week_", "item_age", "weekend")):
         return "temporal"
     if name.startswith("event_"):
-        return "events"
-    if name.startswith("google_trends_"):
-        return "events"
-    if name.startswith("player_count_"):
         return "events"
     if any(name.startswith(p) for p in ("market_", "market_regime_")):
         return "cross_sectional"
@@ -799,11 +787,6 @@ class ItemForecaster:
     #: the price_technicals allowlist; shelving is belt-and-suspenders).
     _REACTIVE_VOL_FEATURES = frozenset({"ewm_reactive_fast", "ewm_reactive_slow"})
     SHELVED_FEATURES = SHELVED_FEATURES | _DOLLAR_SCALE_FEATURES | _REACTIVE_VOL_FEATURES
-    # Horizons served as momentum (trailing return_Nd) instead of the ML median.
-    # Superseded by the directional classifier (2026-07-24), which beats
-    # momentum at every horizon including 30d — so this is now empty. Kept as a
-    # knob; _recenter_on_momentum still exists for it.
-    MOMENTUM_FALLBACK_HORIZONS = []
     # Directional classifier (2026-07-24): a 3-class (down/flat/up) LightGBM
     # trained on multiclass log-loss — optimizing the served metric directly —
     # supplies the direction + confidence. Quantile models still supply the
@@ -3492,7 +3475,6 @@ class ItemForecaster:
           supply_listings_log        — log(1 + sell_listings)
           supply_listings_zscore     — z-score vs item's own history
           supply_change_7d           — % change in sell_listings (7d)
-          supply_skinport_qty_log    — log(1 + skinport_quantity)
           supply_to_volume_ratio     — sell_listings / (volume_30d + 1)
         """
         snap = self._fetch_supply_snapshots()
@@ -3501,7 +3483,6 @@ class ItemForecaster:
                 "supply_listings_log",
                 "supply_listings_zscore",
                 "supply_change_7d",
-                "supply_skinport_qty_log",
                 "supply_to_volume_ratio",
             ]:
                 df[col] = 0.0
@@ -3513,7 +3494,6 @@ class ItemForecaster:
 
         # Log transform (scale-invariant, handles right skew)
         df["supply_listings_log"] = np.log1p(df["sell_listings"]).astype(np.float32)
-        df["supply_skinport_qty_log"] = np.log1p(df["skinport_quantity"]).astype(np.float32)
 
         # Z-score vs item's own history (30d rolling)
         df = df.sort_values(["item_id", "date"])
@@ -3676,122 +3656,6 @@ class ItemForecaster:
             ],
             errors="ignore",
         )
-        return df
-
-    # ── Social sentiment features (Reddit mentions, VADER scores) ──────
-
-    def _fetch_social_mentions(self) -> pd.DataFrame:
-        """Load social mentions from the DB.
-
-        Returns DataFrame with columns:
-          item_id, date, mention_count, avg_sentiment, avg_score
-        One row per item per day with at least one mention.
-        """
-        if hasattr(self, "_social_cache") and self._social_cache is not None:
-            return self._social_cache
-
-        try:
-            rows = self.db.execute(
-                text("""
-                SELECT
-                    i.item_id,
-                    DATE(sm.mentioned_at) AS date,
-                    COUNT(*) AS mention_count,
-                    AVG(sm.sentiment_score) AS avg_sentiment,
-                    AVG(sm.post_score) AS avg_score
-                FROM social_mentions sm
-                JOIN items i ON i.id = sm.item_id
-                GROUP BY i.item_id, DATE(sm.mentioned_at)
-                ORDER BY i.item_id, date
-            """)
-            ).fetchall()
-            df = pd.DataFrame(rows, columns=["item_id", "date", "mention_count", "avg_sentiment", "avg_score"])
-            if df.empty:
-                logger.info("  social mentions: empty")
-                self._social_cache = df
-                return df
-            df["date"] = pd.to_datetime(df["date"]).dt.date
-            df["mention_count"] = df["mention_count"].fillna(0).astype(int)
-            df["avg_sentiment"] = df["avg_sentiment"].fillna(0.0).astype(float)
-            df["avg_score"] = df["avg_score"].fillna(0.0).astype(float)
-            logger.info(f"  social mentions: {len(df):,} rows, {df.item_id.nunique():,} items")
-            self._social_cache = df
-            return df
-        except Exception as e:
-            logger.warning(f"  Failed to load social mentions: {e}")
-            self._social_cache = pd.DataFrame()
-            return self._social_cache
-
-    def _add_social_features(self, df: pd.DataFrame) -> pd.DataFrame:
-        """Add social sentiment features: mention counts, velocity, sentiment.
-
-        Features:
-          social_mentions_1d       — Reddit mention count in last 24h
-          social_mentions_7d       — Reddit mention count in last 7 days
-          social_mention_velocity  — mentions_1d / max(mentions_7d, 1)
-          social_sentiment_7d      — Rolling 7d avg VADER compound score
-          social_score_7d          — Rolling 7d avg Reddit post score
-        """
-        social = self._fetch_social_mentions()
-        if social.empty:
-            for col in [
-                "social_mentions_1d",
-                "social_mentions_7d",
-                "social_mention_velocity",
-                "social_sentiment_7d",
-                "social_score_7d",
-            ]:
-                df[col] = 0.0
-            return df
-
-        df = df.merge(social, on=["item_id", "date"], how="left")
-        df["mention_count"] = df["mention_count"].fillna(0).astype(int)
-        df["avg_sentiment"] = df["avg_sentiment"].fillna(0.0).astype(float)
-        df["avg_score"] = df["avg_score"].fillna(0.0).astype(float)
-
-        # Rolling mention counts per item
-        df = df.sort_values(["item_id", "date"])
-        grouped = df.groupby("item_id")["mention_count"]
-        df["social_mentions_1d"] = (
-            grouped.transform(lambda x: x.rolling(1, min_periods=1).sum()).fillna(0).astype(np.float32)
-        )
-        df["social_mentions_7d"] = (
-            grouped.transform(lambda x: x.rolling(7, min_periods=1).sum()).fillna(0).astype(np.float32)
-        )
-
-        # Mention velocity: acceleration signal
-        mentions_7d = df["social_mentions_7d"].replace(0, 1)
-        df["social_mention_velocity"] = (df["social_mentions_1d"] / mentions_7d).fillna(0).astype(np.float32)
-
-        # Rolling 7d avg sentiment and score
-        grouped_sent = df.groupby("item_id")["avg_sentiment"]
-        df["social_sentiment_7d"] = (
-            grouped_sent.transform(lambda x: x.rolling(7, min_periods=1).mean()).fillna(0).astype(np.float32)
-        )
-
-        grouped_score = df.groupby("item_id")["avg_score"]
-        df["social_score_7d"] = (
-            grouped_score.transform(lambda x: x.rolling(7, min_periods=1).mean()).fillna(0).astype(np.float32)
-        )
-
-        df = df.drop(columns=["mention_count", "avg_sentiment", "avg_score"], errors="ignore")
-
-        logger.info("  social sentiment features added")
-        return df
-
-    def _add_item_metadata_features(self, df: pd.DataFrame) -> pd.DataFrame:
-        meta = self._fetch_item_metadata()
-        if meta.empty:
-            return df
-        df = df.merge(meta, on="item_id", how="left")
-        df["type"] = df["type"].fillna("unknown")
-        type_dummies = pd.get_dummies(df["type"], prefix="item_type").astype(int)
-        for t in ["skin", "sticker", "case", "graffiti", "musickit", "unknown"]:
-            col = f"item_type_{t}"
-            if col not in type_dummies.columns:
-                type_dummies[col] = 0
-        df = pd.concat([df, type_dummies], axis=1)
-        df = df.drop(columns=["type"])
         return df
 
     def _add_temporal_features(self, df: pd.DataFrame, item_first_dates=None) -> pd.DataFrame:
@@ -4356,101 +4220,6 @@ class ItemForecaster:
                 lambda x: x.rolling(365, min_periods=30).rank(pct=True)
             )
 
-        # Google Trends + player counts: wired but OFF. Both features hurt OOS
-        # in a 2025-09→2026-07 walk-forward (MAE +14-72%, rank IC flips negative).
-        # The +0.28 lead-lag with future vol is real in-sample but driven by 1-2
-        # regime events (knife crash). Same wall as every other feature: the GBM
-        # overfits to rare events. Collectors keep accumulating data; re-evaluate
-        # when the served panel has ≥20 clean dates.
-        # df = self._apply_google_trends(df)
-        # df = self._apply_player_counts(df)
-
-        return df
-
-    _google_trends_cache: pd.DataFrame | None = None
-
-    def _load_google_trends(self) -> pd.DataFrame:
-        if self._google_trends_cache is not None:
-            return self._google_trends_cache
-
-        trends_path = Path(__file__).parent.parent / "data" / "google_trends.parquet"
-        if not trends_path.exists():
-            logger.info("  google_trends: no data file")
-            self._google_trends_cache = pd.DataFrame()
-            return self._google_trends_cache
-
-        gt = pd.read_parquet(trends_path)
-        gt["date"] = pd.to_datetime(gt["date"]).dt.date
-        gt = gt.sort_values("date").drop_duplicates(subset=["date"], keep="last")
-        gt["google_trends_interest_7d"] = gt["interest"].rolling(7, min_periods=1).mean()
-        gt["google_trends_interest_30d"] = gt["interest"].rolling(30, min_periods=1).mean()
-        gt = gt.rename(columns={"interest": "google_trends_interest"})
-        logger.info("  google_trends: %d rows, %s to %s", len(gt), gt["date"].min(), gt["date"].max())
-        self._google_trends_cache = gt
-        return self._google_trends_cache
-
-    def _apply_google_trends(self, df: pd.DataFrame) -> pd.DataFrame:
-        gt = self._load_google_trends()
-        if gt.empty:
-            return df
-        gt_indexed = gt.set_index("date")
-        for col in ("google_trends_interest", "google_trends_interest_7d", "google_trends_interest_30d"):
-            if col in gt_indexed.columns:
-                df[col] = df["date"].map(gt_indexed[col]).astype(np.float32)
-        return df
-
-    _player_counts_cache: pd.DataFrame | None = None
-
-    def _load_player_counts(self) -> pd.DataFrame:
-        if self._player_counts_cache is not None:
-            return self._player_counts_cache
-
-        db_path = Path(__file__).parent.parent / "runtime" / "csmarketapi_reference.db"
-        if not db_path.exists():
-            logger.info("  player_counts: no reference DB")
-            self._player_counts_cache = pd.DataFrame()
-            return self._player_counts_cache
-
-        import sqlite3
-
-        con = sqlite3.connect(str(db_path))
-        try:
-            raw = pd.read_sql("SELECT timestamp, players FROM player_counts", con)
-        finally:
-            con.close()
-
-        if raw.empty:
-            logger.info("  player_counts: empty table")
-            self._player_counts_cache = pd.DataFrame()
-            return self._player_counts_cache
-
-        raw["timestamp"] = pd.to_datetime(raw["timestamp"])
-        raw["date"] = raw["timestamp"].dt.date
-        daily = raw.groupby("date")["players"].agg(["mean", "max"]).reset_index()
-        daily.columns = ["date", "player_count_mean", "player_count_peak"]
-        daily = daily.sort_values("date")
-        daily["player_count_mean_7d"] = daily["player_count_mean"].rolling(7, min_periods=1).mean()
-        daily["player_count_mean_30d"] = daily["player_count_mean"].rolling(30, min_periods=1).mean()
-        daily["player_count_change_7d"] = daily["player_count_mean"].pct_change(7) * 100
-
-        logger.info("  player_counts: %d days, %s to %s", len(daily), daily["date"].min(), daily["date"].max())
-        self._player_counts_cache = daily
-        return self._player_counts_cache
-
-    def _apply_player_counts(self, df: pd.DataFrame) -> pd.DataFrame:
-        pc = self._load_player_counts()
-        if pc.empty:
-            return df
-        pc_indexed = pc.set_index("date")
-        for col in (
-            "player_count_mean",
-            "player_count_peak",
-            "player_count_mean_7d",
-            "player_count_mean_30d",
-            "player_count_change_7d",
-        ):
-            if col in pc_indexed.columns:
-                df[col] = df["date"].map(pc_indexed[col]).astype(np.float32)
         return df
 
     def _add_item_identity_features(self, df: pd.DataFrame) -> pd.DataFrame:
@@ -5205,14 +4974,10 @@ class ItemForecaster:
             df = self._add_item_identity_features(df)
         if "events" not in skip:
             df = self._add_event_features(df, events_df)
-        if "item_metadata" not in skip:
-            df = self._add_item_metadata_features(df)
         # _feature_group assigns the supply-side columns to item_identity.
         if "item_identity" not in skip:
             df = self._add_supply_side_features(df)
         df = self._add_bymykel_metadata_features(df)
-        if "social" not in skip:
-            df = self._add_social_features(df)
         return df
 
     # ------------------------------------------------------------------
@@ -6323,95 +6088,11 @@ class ItemForecaster:
             )
 
         _train_elapsed = (datetime.now() - _train_start).total_seconds()
-        if TFT_CENTRE:
-            self._train_tft(days_back=train_days_back, min_median_price=min_median_price)
         self.save_models()
         logger.info(f"\n{'=' * 60}")
         logger.info(f"TRAINING COMPLETE in {_train_elapsed:.0f}s ({_train_elapsed / 60:.1f}min)")
         logger.info(f"{'=' * 60}")
         logger.info(f"  [timing] TOTAL training: {_train_elapsed:.1f}s")
-
-    def _train_tft(
-        self, price_df: pd.DataFrame = None, days_back: int = 1460, min_median_price: float | None = 1.0
-    ) -> None:
-        """Train TFT centre model on raw price series. Gated by TFT_CENTRE=1.
-
-        Accepts the voted price DataFrame when the caller has it; otherwise
-        re-fetches it (fetch_price_history caches the voted frame, so the
-        second read after build_training_data is cheap). OOF residuals are
-        left in conformal's hands — TFT ships no bands of its own.
-        """
-        try:
-            from models.tft import TFTConfig, TFTTrainer
-        except ImportError:
-            logger.warning("PyTorch not installed — skipping TFT training")
-            return
-
-        logger.info("=" * 60)
-        logger.info("TRAINING TFT CENTRE MODEL")
-        logger.info("=" * 60)
-
-        if price_df is None:
-            price_df = self.fetch_price_history(days_back=days_back, backfilled_only=True, universe="train")
-            price_df = self._filter_dead_items(price_df)
-            if min_median_price:
-                price_df = self._filter_by_median_price(price_df, min_median_price)
-
-        tft_dir = os.path.join(self.model_dir, "tft")
-        config = TFTConfig(hidden_dim=32, num_heads=4, dropout=0.1)
-        trainer = TFTTrainer(config, model_dir=tft_dir)
-
-        sorted_dates = sorted(price_df["date"].unique())
-        folds = self._compute_cv_splits(sorted_dates, purge_days=0)
-        if not folds:
-            logger.warning("  No CV folds — skipping TFT")
-            return
-
-        oof = trainer.train_cv(price_df, folds, max_epochs=50, patience=5)
-        logger.info(f"  TFT OOF: {len(oof)} rows across {oof['fold'].nunique()} folds")
-
-        # Log OOF rank IC per horizon
-        for h in self.HORIZONS:
-            pred_col = f"pred_{h}d"
-            actual_col = f"actual_{h}d"
-            if pred_col in oof.columns and actual_col in oof.columns:
-                valid = oof[[pred_col, actual_col]].dropna()
-                if len(valid) > 10:
-                    from scipy.stats import spearmanr
-
-                    ic, _ = spearmanr(valid[pred_col], valid[actual_col])
-                    logger.info(f"  TFT {h}d OOF rank IC: {ic:.4f}")
-
-        # Train final model on all data
-        trainer.train_fold(price_df, sorted_dates[:-30], sorted_dates[-30:], max_epochs=50, patience=5)
-        trainer.save()
-        logger.info(f"  TFT model saved to {tft_dir}")
-
-    def _predict_tft(self, price_df: pd.DataFrame) -> dict[int, pd.Series] | None:
-        """Load trained TFT and produce per-horizon return predictions."""
-        tft_dir = os.path.join(self.model_dir, "tft")
-        if not os.path.exists(os.path.join(tft_dir, "tft_model.pt")):
-            return None
-        try:
-            from models.tft import TFTTrainer
-        except ImportError:
-            return None
-
-        trainer = TFTTrainer.load(tft_dir)
-        dates = sorted(price_df["date"].unique())
-        latest_dates = dates[-1:]  # predict for latest date only
-
-        preds = trainer.predict(price_df, latest_dates)
-        if preds.empty:
-            return None
-
-        result = {}
-        for h in self.HORIZONS:
-            col = f"pred_{h}d"
-            if col in preds.columns:
-                series = preds.set_index("item_id")[col]
-                result[h] = series
-        return result if result else None
 
     def _train_horizon_inline(
         self, horizon: int, df: pd.DataFrame, max_rows: int = 300_000, per_item_row_sampling: bool = False
@@ -7403,7 +7084,6 @@ class ItemForecaster:
     _has_date_coverage = staticmethod(direction.has_date_coverage)
     _direction_threshold = staticmethod(direction.direction_threshold)
     _served_cohort_multiplier = staticmethod(direction.served_cohort_multiplier)
-    _recenter_on_momentum = staticmethod(direction.recenter_on_momentum)
     _recenter_on_direction = staticmethod(direction.recenter_on_direction)
     _fix_quantile_crossing = staticmethod(direction.fix_quantile_crossing)
     _blend_returns_with_prior = staticmethod(direction.blend_returns_with_prior)
@@ -10000,17 +9680,6 @@ class ItemForecaster:
                 self.band_beta(horizon),
                 learned_scale=self.band_scale(horizon, latest_rows, sigma_arr),
             )
-
-            # Momentum fallback for weak horizons (14d/30d): serve the trailing
-            # return as the median, keeping the model's calibrated interval
-            # width. Ablation showed momentum >= the ML model at these horizons.
-            if horizon in self.MOMENTUM_FALLBACK_HORIZONS:
-                mom_col = f"return_{horizon}d"
-                if mom_col in latest_rows.columns:
-                    momentum_ret = latest_rows[mom_col].to_numpy(dtype=float)
-                    low_ret_arr, mid_ret_arr, high_ret_arr = self._recenter_on_momentum(
-                        low_ret_arr, mid_ret_arr, high_ret_arr, momentum_ret
-                    )
 
             # Directional classifier: the served up/flat/down call + confidence.
             # These populate the reported `direction`/`confidence` fields only.

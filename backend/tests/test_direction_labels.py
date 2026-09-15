@@ -103,7 +103,7 @@ def test_fit_classifier_vol_scaling_changes_labels():
 def test_sweep_grid_and_eval_are_importable():
     import importlib
 
-    mod = importlib.import_module("scripts.ab_test_direction_labels")
+    mod = importlib.import_module("scripts.archive.ab_test_direction_labels")
     # grid constants exist and are non-empty
     assert len(mod.K_GRID) >= 2
     assert len(mod.MOVER_WEIGHT_GRID) >= 2
@@ -114,14 +114,14 @@ def test_sweep_grid_and_eval_are_importable():
 def test_sweep_max_folds_and_grids():
     import importlib
 
-    mod = importlib.import_module("scripts.ab_test_direction_labels")
+    mod = importlib.import_module("scripts.archive.ab_test_direction_labels")
     assert isinstance(mod.MAX_FOLDS, int)
     assert mod.K_GRID == [0.25, 0.5, 1.0]
     assert mod.MOVER_WEIGHT_GRID == [3.0, 5.0, 8.0]
 
 
 def test_score_fixed_yardstick_ignores_training_threshold():
-    from scripts.ab_test_direction_labels import score_fixed_yardstick
+    from scripts.archive.ab_test_direction_labels import score_fixed_yardstick
 
     actual_returns = np.array([1.0, -1.0, 0.1])  # up, down, flat @0.5%
     pred_cls = np.array([2, 0, 1])  # all correct vs fixed band

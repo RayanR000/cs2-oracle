@@ -461,7 +461,7 @@ def test_parse_day_returns_net_of_the_steam_fee():
 
 
 def test_steam_fee_multiplier_matches_the_repo_constant():
-    from scripts.backfill_steam_listing_history import STEAM_FEE_MULTIPLIER
+    from scripts.archive.backfill_steam_listing_history import STEAM_FEE_MULTIPLIER
 
     assert tracker.STEAM_FEE_MULTIPLIER == STEAM_FEE_MULTIPLIER == 1.1607
 

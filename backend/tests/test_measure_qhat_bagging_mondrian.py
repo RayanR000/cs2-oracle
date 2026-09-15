@@ -13,7 +13,7 @@ import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from scripts.measure_qhat_bagging_mondrian import (
+from scripts.archive.measure_qhat_bagging_mondrian import (
     _level_match_c,
     apply_fit,
     evaluate,

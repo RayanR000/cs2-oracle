@@ -90,7 +90,7 @@ jobs:
         continue-on-error: true
         working-directory: ./backend
         run: |
-          python scripts/centre_vs_lastprice.py --gate 2>&1 | tee centre_gate.log
+          python scripts/archive/centre_vs_lastprice.py --gate 2>&1 | tee centre_gate.log
 
       # backtest_accuracy.py appends forecast_outcomes and prediction_accuracy to
       # the archive (scripts/backtest_accuracy.py:111,263), which lands in the

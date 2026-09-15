@@ -32,7 +32,7 @@ from __future__ import annotations
 
 import pytest
 from models.steam_types import parse_steam_type
-from scripts.backfill_supply_metadata import _normalise_key, build_name_lookup
+from scripts.archive.backfill_supply_metadata import _normalise_key, build_name_lookup
 
 
 class TestNormaliseKey:

@@ -29,16 +29,12 @@ def directional_accuracy(pred_returns, actual_returns) -> float:
     tol = DIRECTION_FLAT_TOLERANCE_PCT
     pred = np.asarray(pred_returns, dtype=float)
     actual = np.asarray(actual_returns, dtype=float)
-    hits = 0
-    n = 0
-    for p, a in zip(pred, actual):
-        if np.isnan(a):
-            continue
-        a_dir = "up" if a > tol else "down" if a < -tol else "flat"
-        p_dir = "up" if p > tol else "down" if p < -tol else "flat"
-        hits += int(p_dir == a_dir)
-        n += 1
-    return round(hits / n * 100, 1) if n else 0.0
+    mask = ~np.isnan(actual)
+    n = int(mask.sum())
+    if not n:
+        return 0.0
+    hits = int((direction_classes(pred[mask], tol) == direction_classes(actual[mask], tol)).sum())
+    return round(hits / n * 100, 1)
 
 
 def direction_classes(returns, threshold=DIRECTION_FLAT_TOLERANCE_PCT) -> np.ndarray:

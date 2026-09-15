@@ -13,7 +13,7 @@ from __future__ import annotations
 import inspect
 import re
 
-import scripts.walkforward_backtest as wf
+import scripts.archive.walkforward_backtest as wf
 from models.forecaster import ItemForecaster
 
 

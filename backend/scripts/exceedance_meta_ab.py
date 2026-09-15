@@ -78,7 +78,7 @@ import numpy as np
 import pandas as pd
 from database import SessionLocal
 from models.forecaster import ItemForecaster
-from scripts.ab_test_item_metadata import (
+from scripts.archive.ab_test_item_metadata import (
     META_ALL,
     META_STATIC,
     PLACEBO_SEED,

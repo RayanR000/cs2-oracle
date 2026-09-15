@@ -6,7 +6,7 @@ import inspect
 
 import numpy as np
 import pytest
-import scripts.walkforward_backtest as wf
+import scripts.archive.walkforward_backtest as wf
 
 
 def test_run_walkforward_accepts_an_arm():

@@ -13,7 +13,7 @@ import pytest
 BACKEND = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(BACKEND))
 
-from scripts.ab_test_volume_features import _load_skinport_live_volume  # noqa: E402
+from scripts.archive.ab_test_volume_features import _load_skinport_live_volume  # noqa: E402
 
 
 def test_loader_raises_with_no_volume_files(tmp_path):

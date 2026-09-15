@@ -14,7 +14,7 @@ import inspect
 from datetime import date
 
 import pytest
-import scripts.walkforward_backtest as wf
+import scripts.archive.walkforward_backtest as wf
 from models.forecaster import ItemForecaster
 
 

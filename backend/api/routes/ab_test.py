@@ -7,6 +7,15 @@ from fastapi import APIRouter, Depends
 
 router = APIRouter(prefix="/ab-test", tags=["ab_test"])
 
+#: Served with every A/B payload. Stored results predate the 2026-08-08
+#: statistics fix and the 2026-08-13 trainer fix, so they are unpowered
+#: historical reads, not decision evidence.
+AB_RESULTS_DISCLAIMER = (
+    "Historical A/B read-out: stored results predate the 2026-08-08 statistics "
+    "fix and the 2026-08-13 trainer fix. Treat as unpowered; do not cite a "
+    "verdict without re-running the harness."
+)
+
 
 def _row_to_dict(row: PredictionAccuracy) -> dict:
     return {
@@ -100,6 +109,7 @@ def get_regime_ab_test(
 
     return {
         "test_date": latest_date.isoformat() if latest_date else None,
+        "disclaimer": AB_RESULTS_DISCLAIMER,
         "horizons": horizons,
     }
 
@@ -179,5 +189,6 @@ def get_ensemble_ab_test(
 
     return {
         "test_date": latest_date.isoformat() if latest_date else None,
+        "disclaimer": AB_RESULTS_DISCLAIMER,
         "horizons": horizons,
     }

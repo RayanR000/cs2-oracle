@@ -16,6 +16,7 @@ import numpy as np
 import pandas as pd
 import pytest
 from models.forecaster import SAMPLE_WEIGHT_HALFLIFE_DAYS, ItemForecaster
+from models.direction import recenter_on_momentum
 
 # Slow: trains real LightGBM boosters per test (see docs/changelog/2026-09-15-ci-test-gate.md). The fast gate
 # (`pytest -m "not slow"`) skips this file; the nightly full suite covers it.
@@ -1585,7 +1586,7 @@ class TestMomentumRecenter:
         mid = np.array([0.0, 5.0])
         high = np.array([6.0, 8.0])
         mom = np.array([10.0, -2.0])
-        nl, nm, nh = forecaster._recenter_on_momentum(low, mid, high, mom)
+        nl, nm, nh = recenter_on_momentum(low, mid, high, mom)
         # median becomes momentum
         assert np.allclose(nm, mom)
         # half-widths preserved: low_off=[4,5], high_off=[6,3]
@@ -1597,7 +1598,7 @@ class TestMomentumRecenter:
         mid = np.array([1.0])
         high = np.array([6.0])
         mom = np.array([np.nan])
-        nl, nm, nh = forecaster._recenter_on_momentum(low, mid, high, mom)
+        nl, nm, nh = recenter_on_momentum(low, mid, high, mom)
         assert np.allclose([nl[0], nm[0], nh[0]], [-4.0, 1.0, 6.0])
 
     def test_recentred_triple_stays_monotone(self, forecaster):
@@ -1605,7 +1606,7 @@ class TestMomentumRecenter:
         mid = np.array([0.0, 2.0])
         high = np.array([6.0, 3.0])
         mom = np.array([10.0, -20.0])
-        nl, nm, nh = forecaster._recenter_on_momentum(low, mid, high, mom)
+        nl, nm, nh = recenter_on_momentum(low, mid, high, mom)
         assert np.all(nl <= nm) and np.all(nm <= nh)
 
 

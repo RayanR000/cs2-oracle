@@ -103,7 +103,9 @@ def steam_callback(
 
     token = _make_session_token(user.id)
 
-    redirect_url = f"{settings.frontend_url}/portfolio?session={token}"
+    # The session travels in the httponly cookie set below; keep it out of
+    # the URL so it is not stored in browser history or server logs.
+    redirect_url = f"{settings.frontend_url}/portfolio"
     from fastapi.responses import RedirectResponse
 
     resp = RedirectResponse(url=redirect_url)

@@ -13,7 +13,7 @@ Per-item data (fetched in popularity order):
 Reference data (fetched once, refreshable via --refresh-ref):
   /v1/markets                   — supported markets (12 rows)
   /v1/currency_rates            — exchange rates (5 rows)
-  /v1/player_counts/history     — CS2 player count history (10k+ rows)
+  (player_counts/history NOT fetched — panel frozen, no feature reads it)
 
 Key rotation: up to 4 API keys (1,000 requests/month each), auto-cycles.
 
@@ -224,7 +224,7 @@ def api_get(endpoint: str, api_key: str, params: dict | None = None) -> dict | l
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# Reference data (markets, currency_rates, player_counts)
+# Reference data (markets, currency_rates)
 # ═══════════════════════════════════════════════════════════════════════════════
 
 
@@ -265,27 +265,12 @@ def fetch_reference_data(apikey: str):
         ref_conn.commit()
         log.info(f"  Currency rates: 1 request → {len(data)} currencies stored")
 
-    # 3) Player counts history
-    data = api_get("/player_counts/history", apikey)
-    if isinstance(data, list):
-        ref_conn.execute("DELETE FROM player_counts")
-        ref_conn.executemany(
-            "INSERT OR IGNORE INTO player_counts (timestamp, players) VALUES (?, ?)",
-            [(e.get("timestamp", ""), e.get("count", 0)) for e in data],
-        )
-        ref_conn.commit()
-        log.info(f"  Player counts:  1 request → {len(data)} data points stored")
-    elif isinstance(data, dict):
-        ref_conn.execute("DELETE FROM player_counts")
-        ref_conn.executemany(
-            "INSERT OR IGNORE INTO player_counts (timestamp, players) VALUES (?, ?)",
-            [(k, v) for k, v in data.items()],
-        )
-        ref_conn.commit()
-        log.info(f"  Player counts:  1 request → {len(data)} data points stored")
+    # Player counts are NOT refreshed: the panel is frozen and no feature
+    # reads it (REFUTED — see the forecaster cleanup 2026-09-15). Skipping
+    # saves one quota request per refresh.
 
     ref_conn.close()
-    log.info("Reference data complete (3 requests)")
+    log.info("Reference data complete (2 requests)")
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -766,7 +751,7 @@ def main():
         "--reset", action="store_true", help="Reset backfill checkpoint (data kept, restart from beginning)"
     )
     parser.add_argument(
-        "--refresh-ref", action="store_true", help="Re-fetch reference data (markets, currency_rates, player_counts)"
+        "--refresh-ref", action="store_true", help="Re-fetch reference data (markets, currency_rates)"
     )
     parser.add_argument("--limit", type=int, default=0, help="Max items to fetch this session (for testing)")
     args = parser.parse_args()

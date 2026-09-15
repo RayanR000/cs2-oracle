@@ -13,7 +13,7 @@ deleted, because deleting it would destroy the only copy of that item.
 """
 
 import pytest
-from scripts.purge_phantom_items import (
+from scripts.archive.purge_phantom_items import (
     is_mangled_key,
     order_child_tables,
     pair_phantoms,

@@ -3,18 +3,29 @@ FastAPI server for CS2 Market Intelligence Platform
 """
 
 import threading
+from contextlib import asynccontextmanager
 
-from api.routes import ab_test, accuracy, auth, events, items, market, opportunities, portfolio
+from api.routes import ab_test, accuracy, auth, events, items, market, opportunities
 from config import settings
 from database import init_db
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    settings.check_secret_key()
+    init_db()
+    threading.Thread(target=_warm_cache, daemon=True).start()
+    yield
+
 
 app = FastAPI(
     title=settings.api_title,
     version=settings.api_version,
     docs_url="/docs" if settings.debug else None,
     redoc_url="/redoc" if settings.debug else None,
+    lifespan=lifespan,
 )
 
 app.add_middleware(
@@ -29,7 +40,6 @@ app.include_router(items.router)
 app.include_router(opportunities.router)
 app.include_router(events.router)
 app.include_router(auth.router)
-app.include_router(portfolio.router)
 app.include_router(market.router)
 app.include_router(accuracy.router)
 app.include_router(ab_test.router)
@@ -63,12 +73,6 @@ def _warm_cache():
         pass
     finally:
         db.close()
-
-
-@app.on_event("startup")
-def on_startup():
-    init_db()
-    threading.Thread(target=_warm_cache, daemon=True).start()
 
 
 @app.get("/health")

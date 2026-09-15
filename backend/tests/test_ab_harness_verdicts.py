@@ -41,7 +41,7 @@ from backtest.walkforward_records import (
     without_records,
 )
 
-SCRIPTS = Path(__file__).resolve().parents[1] / "scripts"
+SCRIPTS = Path(__file__).resolve().parents[1] / "scripts" / "archive"
 
 
 def _arm(offset, *, folds=6, rows=40, seed=0, metric="pinball"):
@@ -372,7 +372,7 @@ class TestMergedShardsStillGetAVerdict:
         return {"per_fold": [{"val_start": f"2026-{i + 1:02d}-01", "dir_acc": a} for i, a in enumerate(accs)]}
 
     def test_a_clear_effect_is_resolved_across_shards(self):
-        from scripts.merge_price_primitives_ab import paired_verdicts
+        from scripts.archive.merge_price_primitives_ab import paired_verdicts
 
         merged = {
             7: {
@@ -387,7 +387,7 @@ class TestMergedShardsStillGetAVerdict:
         assert out[7]["placebo"]["verdict"] == "null"
 
     def test_one_shared_fold_is_unresolved_not_null(self):
-        from scripts.merge_price_primitives_ab import paired_verdicts
+        from scripts.archive.merge_price_primitives_ab import paired_verdicts
 
         merged = {30: {a: self._arm_folds([50]) for a in ("baseline", "treatment", "placebo")}}
         out = paired_verdicts(merged)
@@ -396,7 +396,7 @@ class TestMergedShardsStillGetAVerdict:
     def test_a_horizon_missing_an_arm_is_skipped_not_half_reported(self):
         """The ship rule is treatment-vs-baseline AND treatment-vs-placebo;
         half of it is not a weaker version of it."""
-        from scripts.merge_price_primitives_ab import paired_verdicts
+        from scripts.archive.merge_price_primitives_ab import paired_verdicts
 
         assert paired_verdicts({30: {"baseline": self._arm_folds([50, 51, 52])}}) == {}
 

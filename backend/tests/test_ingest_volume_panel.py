@@ -6,7 +6,7 @@ import pandas as pd
 import pytest
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
-from scripts.ingest_volume_panel import build_volume_panel
+from scripts.archive.ingest_volume_panel import build_volume_panel
 
 
 def _src():

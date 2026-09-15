@@ -127,7 +127,6 @@ def test_empty_frame_returns_empty_index():
 from models.market_factor import (
     INDEX_TOLERANCE_DAYS,
     forecast_market_factor,
-    forecast_market_factor_diagnostics,
     market_factor_for_horizon,
 )
 
@@ -227,21 +226,6 @@ def test_forecast_is_unchanged_when_the_future_is_nulled():
     poisoned["level"] = np.exp(poisoned["log_return"].fillna(0.0).cumsum())
     after = forecast_market_factor(poisoned, as_of, horizon=14)
     assert before == pytest.approx(after)
-
-
-def test_all_diagnostic_estimators_ignore_the_future():
-    rng = np.random.RandomState(2)
-    rets = [np.nan] + list(rng.normal(0, 0.01, 400))
-    idx = _index_from_daily(rets)
-    as_of = idx.index[300]
-    before = forecast_market_factor_diagnostics(idx, as_of, horizon=7)
-    poisoned = idx.copy()
-    poisoned.loc[poisoned.index > as_of, "log_return"] = 99.0
-    poisoned["level"] = np.exp(poisoned["log_return"].fillna(0.0).cumsum())
-    after = forecast_market_factor_diagnostics(poisoned, as_of, horizon=7)
-    assert set(before) == {"trailing_drift", "trailing_k_median", "past_h_momentum"}
-    for key in before:
-        assert before[key] == pytest.approx(after[key]), key
 
 
 def test_forecast_scales_a_constant_drift_to_the_horizon():

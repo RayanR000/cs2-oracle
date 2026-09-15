@@ -20,7 +20,7 @@ from __future__ import annotations
 import numpy as np
 import pytest
 from models import conformal
-from scripts.attribute_marginal_coverage import (
+from scripts.archive.attribute_marginal_coverage import (
     CoverageCurve,
     empirical_decile_coverage,
     shifted_sigma,
