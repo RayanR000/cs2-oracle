@@ -8,7 +8,7 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
-import pandas as pd
+import pyarrow.parquet as pq
 from scripts.build_bid_panel import SIDECAR_NAME as BID
 from scripts.build_bid_panel import main as bid_main
 from scripts.build_stattrak_panel import SIDECAR_NAME as STATTRAK
@@ -27,8 +27,13 @@ SIDECAR_NAMES = [VOL, SUPPLY, BID, STATTRAK]
 
 
 def _count_sidecars(archive_dir: Path) -> dict:
-    """Row counts for every known sidecar that exists under archive_dir."""
-    return {name: len(pd.read_parquet(archive_dir / name)) for name in SIDECAR_NAMES if (archive_dir / name).exists()}
+    """Row counts for every known sidecar that exists under archive_dir.
+
+    Metadata reads only — the files are never loaded.
+    """
+    return {
+        name: pq.read_metadata(archive_dir / name).num_rows for name in SIDECAR_NAMES if (archive_dir / name).exists()
+    }
 
 
 def run(archive_dir: Path, volume_src: Path, supply_src: Path) -> dict:

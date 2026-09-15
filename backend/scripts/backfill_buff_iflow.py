@@ -40,6 +40,7 @@ from datetime import date, datetime
 from pathlib import Path
 
 import duckdb
+import numpy as np
 import pandas as pd
 import requests
 
@@ -156,13 +157,37 @@ def fetch(day: date, fname: str, refresh: bool) -> bytes:
 
 
 def fx_lookup(fx: pd.DataFrame, day: date) -> float | None:
-    sub = fx[fx["day"] <= day]
-    if sub.empty:
+    """Latest FX fixing on or before *day* (forward fill), O(log n) via searchsorted."""
+    if fx.empty:
         return None
-    row = sub.iloc[-1]
+    idx = int(np.searchsorted(fx["day"].values, day, side="right")) - 1
+    if idx < 0:
+        return None
+    row = fx.iloc[idx]
     if (day - row["day"]).days > 7:  # MAX_FILL_DAYS
         return None
     return float(row["rate"])
+
+
+def _flush_rows(price_rows: list, vol_rows: list, out_prices: Path) -> tuple[int, int]:
+    """Write the accumulated rows through the existing per-month write path.
+
+    `write_archive_frame`/`append_monthly` already fan out by month — this just
+    bounds peak memory by calling them as each month completes instead of once
+    at the end. Returns (price rows, volume rows) written. Clears the lists.
+    """
+    n_price = n_vol = 0
+    if price_rows:
+        frame = to_archive_frame(price_rows, SOURCE, datetime.utcnow())
+        n_price = write_archive_frame(frame, out_prices)
+        price_rows.clear()
+    if vol_rows:
+        vol = pd.DataFrame(vol_rows)
+        vol["source"] = SOURCE
+        append_monthly(out_prices, "volume-iflow", vol, ["item_slug", "day", "source"])
+        n_vol = len(vol)
+        vol_rows.clear()
+    return n_price, n_vol
 
 
 def main() -> None:
@@ -188,6 +213,10 @@ def main() -> None:
     price_rows: list[tuple[str, date, float]] = []
     vol_rows: list[dict] = []
     stats = defaultdict(int)
+    current_month: tuple[int, int] | None = None
+    kept_total = 0
+    wrote_price = 0
+    wrote_vol = 0
 
     def work(day: date):
         return day, parse_dump(fetch(day, dumps[day], args.refresh), day)
@@ -195,6 +224,13 @@ def main() -> None:
     done = 0
     with ThreadPoolExecutor(max_workers=args.workers) as ex:
         for day, recs in ex.map(work, days):
+            if not args.dry_run:
+                month_key = (day.year, day.month)
+                if current_month is not None and month_key != current_month and (price_rows or vol_rows):
+                    n_p, n_v = _flush_rows(price_rows, vol_rows, out_prices)
+                    wrote_price += n_p
+                    wrote_vol += n_v
+                current_month = month_key
             rate = fx_lookup(fx, day)
             if rate is None:
                 stats["days_no_fx"] += 1
@@ -208,6 +244,7 @@ def main() -> None:
                     stats["dropped_cheap"] += 1
                     continue
                 price_rows.append((r["slug"], day, round(usd, 4)))
+                kept_total += 1
                 vol_rows.append(
                     {
                         "item_slug": r["slug"],
@@ -220,11 +257,11 @@ def main() -> None:
                 )
             done += 1
             if done % 100 == 0:
-                print(f"  parsed {done}/{len(days)} days, {len(price_rows)} price rows")
+                print(f"  parsed {done}/{len(days)} days, {kept_total} price rows")
 
-    print(f"\nkept {len(price_rows)} price rows over {done} days")
+    print(f"\nkept {kept_total} price rows over {done} days")
     print(f"dropped: {dict(stats)}")
-    if not price_rows:
+    if kept_total == 0:
         print("nothing to write.")
         return
 
@@ -237,12 +274,10 @@ def main() -> None:
         )
         return
 
-    frame = to_archive_frame(price_rows, SOURCE, datetime.utcnow())
-    n = write_archive_frame(frame, out_prices)
-    vol = pd.DataFrame(vol_rows)
-    vol["source"] = SOURCE
-    append_monthly(out_prices, "volume-iflow", vol, ["item_slug", "day", "source"])
-    print(f"\nwrote {n} price rows (source={SOURCE}) + {len(vol)} volume rows -> {out_prices}")
+    n_p, n_v = _flush_rows(price_rows, vol_rows, out_prices)
+    wrote_price += n_p
+    wrote_vol += n_v
+    print(f"\nwrote {wrote_price} price rows (source={SOURCE}) + {wrote_vol} volume rows -> {out_prices}")
 
 
 if __name__ == "__main__":

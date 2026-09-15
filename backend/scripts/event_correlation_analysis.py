@@ -377,22 +377,37 @@ def _upsert_event_impacts(
     variable happened to hold last. That wrote one item's confidence, left every
     other row NULL, and rewrote the entire table by hand outside `append_table`.
     """
+    if not impacts:
+        return 0, []
+    # Batch-fetch existing rows in one query (was one SELECT per impact —
+    # ~5.5k round-trips per event against Supabase).
+    event_ids = sorted({r["event_id"] for r in impacts})
+    existing = {
+        (r.event_id, r.item_id): r
+        for r in db.query(EventImpact).filter(EventImpact.event_id.in_(event_ids)).all()
+    }
+
     written = 0
+    to_insert: list[dict] = []
+    to_insert_keys: set[tuple] = set()
     for row in impacts:
-        existing = (
-            db.query(EventImpact)
-            .filter(
-                EventImpact.event_id == row["event_id"],
-                EventImpact.item_id == row["item_id"],
-            )
-            .first()
-        )
-        if existing:
-            for key, val in row.items():
-                setattr(existing, key, val)
+        key = (row["event_id"], row["item_id"])
+        obj = existing.get(key)
+        if obj is not None:
+            for k, val in row.items():
+                setattr(obj, k, val)
+        elif key in to_insert_keys:
+            # Duplicate key within this batch — merge onto the pending insert.
+            for idx, pending in enumerate(to_insert):
+                if (pending["event_id"], pending["item_id"]) == key:
+                    to_insert[idx] = {**pending, **row}
+                    break
         else:
-            db.add(EventImpact(**row))
+            to_insert.append(dict(row))
+            to_insert_keys.add(key)
         written += 1
+    if to_insert:
+        db.bulk_insert_mappings(EventImpact, to_insert)
     db.commit()
 
     denorm_rows = [
@@ -441,6 +456,14 @@ def _compute_and_upsert_patterns(db, event_type: str, impacts: list[dict]):
     for imp in impacts:
         by_item[imp["item_id"]].append(imp)
 
+    # Batch-fetch existing patterns for this event type in one query
+    # (was one SELECT per item).
+    existing_by_item = {
+        p.item_id: p
+        for p in db.query(EventPattern).filter(EventPattern.event_type == event_type).all()
+    }
+    to_insert: list[dict] = []
+
     for item_id, item_impacts in by_item.items():
         impacts_1d = [i["impact_pct_1day"] for i in item_impacts if i["impact_pct_1day"] is not None]
         impacts_3d = [i["impact_pct_3day"] for i in item_impacts if i["impact_pct_3day"] is not None]
@@ -485,14 +508,7 @@ def _compute_and_upsert_patterns(db, event_type: str, impacts: list[dict]):
                 correct = sum(1 for z in test_z if (z > 0) == (train_sign > 0))
                 holdout_acc = correct / len(test_z)
 
-        existing = (
-            db.query(EventPattern)
-            .filter(
-                EventPattern.event_type == event_type,
-                EventPattern.item_id == item_id,
-            )
-            .first()
-        )
+        existing = existing_by_item.get(item_id)
         data = {
             "sample_size": n,
             "avg_impact_1day": avg_1d,
@@ -506,7 +522,9 @@ def _compute_and_upsert_patterns(db, event_type: str, impacts: list[dict]):
             for key, val in data.items():
                 setattr(existing, key, val)
         else:
-            db.add(EventPattern(event_type=event_type, item_id=item_id, **data))
+            to_insert.append({"event_type": event_type, "item_id": item_id, **data})
+    if to_insert:
+        db.bulk_insert_mappings(EventPattern, to_insert)
     db.commit()
     return len(by_item)
 

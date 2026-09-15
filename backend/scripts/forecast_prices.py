@@ -18,6 +18,10 @@ import sys
 from datetime import UTC, date, datetime
 from pathlib import Path
 
+import sqlalchemy
+from sqlalchemy.dialects import postgresql as pg_dialect
+from sqlalchemy.dialects import sqlite as sqlite_dialect
+
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from database import ItemForecast, SessionLocal
@@ -266,6 +270,22 @@ def _model_age_days(forecaster) -> int | None:
     return (datetime.now(UTC) - trained).days
 
 
+# Introspected once per (bind, table): the prod schema lags its migrations, so
+# the writer probes for the disclosure columns — but a probe per call is pure
+# overhead on a hot batch path. Keyed rather than a bare global so tests (and
+# reconnects) that present different schemas never read a stale answer.
+_FORECAST_DB_COLS: dict[tuple[str, str], set[str]] = {}
+
+
+def _get_forecast_cols(bind, table) -> set[str]:
+    key = (str(bind), table.name)
+    cols = _FORECAST_DB_COLS.get(key)
+    if cols is None:
+        cols = {c["name"] for c in sqlalchemy.inspect(bind).get_columns(table.name)}
+        _FORECAST_DB_COLS[key] = cols
+    return cols
+
+
 def _write_forecasts_to_db(
     db, results, model_version, slug_to_id, today, model_config=None, forecast_date_override=None
 ):
@@ -285,21 +305,21 @@ def _write_forecasts_to_db(
     it. See docs/changelog/2026-08-11-model-version-is-not-a-config.md.
     """
     forecast_rows = []
-    for _, row in results.iterrows():
-        slug = str(row["item_id"])
+    for row in results.itertuples(index=False):
+        slug = str(row.item_id)
         item_id = slug_to_id.get(slug)
         if item_id is None:
             logger.warning(f"  Skipping unknown slug: {slug}")
             continue
-        current_price = row.get("current_price")
-        forecasts = row.get("forecasts", {})
+        current_price = getattr(row, "current_price", None)
+        forecasts = getattr(row, "forecasts", None) or {}
         # Per item, repeated onto each horizon row: the anchor is a property of
         # the price frame on the forecast date, and all four horizons are
         # quoted from it. Cannot be recovered from `current_price` later --
         # that is the SERVED base, which under the shipped arm is already the
         # smoothed median, so a backfill would call every row clean.
-        anchor_clean = row.get("anchor_clean")
-        anchor_wedge_pct = row.get("anchor_wedge_pct")
+        anchor_clean = getattr(row, "anchor_clean", None)
+        anchor_wedge_pct = getattr(row, "anchor_wedge_pct", None)
 
         # The label is the day the band was anchored on, not the wall clock of
         # the run: the archive lags the calendar, so `today` is usually a frame
@@ -311,7 +331,7 @@ def _write_forecasts_to_db(
         if forecast_date_override is not None:
             forecast_date = forecast_date_override
         else:
-            anchor_date = row.get("anchor_date")
+            anchor_date = getattr(row, "anchor_date", None)
             forecast_date = anchor_date if isinstance(anchor_date, date) else today
 
         for horizon, fcast in forecasts.items():
@@ -338,9 +358,6 @@ def _write_forecasts_to_db(
             )
 
     if forecast_rows:
-        from sqlalchemy.dialects.postgresql import insert as pg_insert
-        from sqlalchemy.dialects.sqlite import insert as sqlite_insert
-
         # Verify DB connection is still alive before the batch insert loop.
         # Training can take >1h, and the connection may have gone stale.
         try:
@@ -354,7 +371,7 @@ def _write_forecasts_to_db(
 
         bind = db.get_bind()
         is_sqlite = bind is not None and bind.dialect.name == "sqlite"
-        insert_stmt = sqlite_insert if is_sqlite else pg_insert
+        insert_stmt = sqlite_dialect.insert if is_sqlite else pg_dialect.insert
         table = ItemForecast.__table__
         # This repo's prod schema runs behind its migrations -- `daily_analysis`
         # was dropped by 0015 and is still there -- so the model declaring a
@@ -366,9 +383,7 @@ def _write_forecasts_to_db(
         # ended up with a green run and no data. The gate reads NULL as "not
         # recorded" and passes it, so dropping these degrades to the old
         # behaviour rather than to an empty ranked surface.
-        from sqlalchemy import inspect as sa_inspect
-
-        db_cols = {c["name"] for c in sa_inspect(bind).get_columns(table.name)}
+        db_cols = _get_forecast_cols(bind, table)
         missing = {c for c in ("anchor_clean", "anchor_wedge_pct", "exceed_p", "anomaly_p") if c not in db_cols}
         if missing:
             logger.warning(

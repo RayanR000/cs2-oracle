@@ -63,11 +63,17 @@ def populate_items(db):
     logger.info("Reading items from parquet archive...")
     import duckdb
 
+    # Through prices_relation, never a raw glob (backend/AGENTS.md invariant 1).
+    # day arrives as DATE and a missing source column reads as NULL, which is
+    # exactly the "pre-2026 series" predicate below.
+    from db.archive import prices_relation
+
     con = duckdb.connect()
     try:
+        rel = prices_relation(con, ARCHIVE_DIR, columns=["item_slug", "day", "source"])
         rows = con.sql(f"""
             SELECT DISTINCT item_slug
-            FROM read_parquet('{ARCHIVE_DIR}/prices-*.parquet', union_by_name=true)
+            FROM {rel}
             ORDER BY item_slug
         """).fetchall()
         # is_backfilled marks items carrying the CSMarketAPI historical series
@@ -86,7 +92,7 @@ def populate_items(db):
             r[0]
             for r in con.sql(f"""
                 SELECT DISTINCT item_slug
-                FROM read_parquet('{ARCHIVE_DIR}/prices-*.parquet', union_by_name=true)
+                FROM {rel}
                 WHERE day < '2026-01-01'
             """).fetchall()
         }
@@ -99,7 +105,7 @@ def populate_items(db):
             r[0]
             for r in con.sql(f"""
                 SELECT DISTINCT item_slug
-                FROM read_parquet('{ARCHIVE_DIR}/prices-*.parquet', union_by_name=true)
+                FROM {rel}
                 WHERE day < '2026-01-01' AND source IS DISTINCT FROM 'buff_iflow'
             """).fetchall()
         }
@@ -139,23 +145,35 @@ def populate_items(db):
 
     # Re-derive on every run so rows written by the older version of this
     # script (which flagged everything) get corrected, and so the flags keep
-    # tracking the archive as the historical backfill is extended.
-    changed = 0
-    for item_id, bf, tr in db.query(Item.item_id, Item.is_backfilled, Item.is_trainable).all():
-        want_bf = 1 if item_id in backfilled else 0
-        want_tr = 1 if item_id in trainable else 0
-        if (bf or 0) != want_bf or (tr or 0) != want_tr:
-            db.query(Item).filter(Item.item_id == item_id).update(
-                {
-                    "is_backfilled": want_bf,
-                    "is_trainable": want_tr,
-                    "updated_at": datetime.now(UTC).replace(tzinfo=None),
-                }
-            )
-            changed += 1
+    # tracking the archive as the historical backfill is extended. Batched per
+    # flag and direction — the per-row UPDATE above this replaced issued one
+    # statement per item.
+    now = datetime.now(UTC).replace(tzinfo=None)
+    rows = db.query(Item.item_id, Item.is_backfilled, Item.is_trainable).all()
+    bf_on = [iid for iid, bf, _tr in rows if not (bf or 0) and iid in backfilled]
+    bf_off = [iid for iid, bf, _tr in rows if (bf or 0) and iid not in backfilled]
+    tr_on = [iid for iid, _bf, tr in rows if not (tr or 0) and iid in trainable]
+    tr_off = [iid for iid, _bf, tr in rows if (tr or 0) and iid not in trainable]
+    changed = len(bf_on) + len(bf_off) + len(tr_on) + len(tr_off)
+    if bf_on:
+        db.query(Item).filter(Item.item_id.in_(bf_on)).update(
+            {"is_backfilled": 1, "updated_at": now}, synchronize_session=False
+        )
+    if bf_off:
+        db.query(Item).filter(Item.item_id.in_(bf_off)).update(
+            {"is_backfilled": 0, "updated_at": now}, synchronize_session=False
+        )
+    if tr_on:
+        db.query(Item).filter(Item.item_id.in_(tr_on)).update(
+            {"is_trainable": 1, "updated_at": now}, synchronize_session=False
+        )
+    if tr_off:
+        db.query(Item).filter(Item.item_id.in_(tr_off)).update(
+            {"is_trainable": 0, "updated_at": now}, synchronize_session=False
+        )
     if changed:
         db.commit()
-        logger.info(f"Corrected is_backfilled/is_trainable on {changed:,} existing items")
+        logger.info(f"Corrected is_backfilled/is_trainable on {changed:,} flag writes")
 
     total_in_db = db.query(Item).count()
     n_flagged = db.query(Item).filter(Item.is_backfilled == 1).count()

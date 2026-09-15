@@ -493,38 +493,38 @@ def build_frame(dumps: dict, codebook: CodeBook) -> pd.DataFrame:
 # --------------------------------------------------------------------------
 
 
-def archive_slugs(min_price: float | None = None, min_days: int | None = None, before: str | None = None) -> set[str]:
-    """Distinct item_slug in the local price archive, optionally cohort-filtered.
+def archive_slug_sets() -> tuple[set[str], set[str], set[str]]:
+    """(deep >=$1 universe, served >=$1 cohort, full archive) in one scan.
 
-    The cohorts mirror `ab_test_item_metadata.py`: the deep >=$1 universe is
-    median mean_price >= $1 with >=180 distinct days and first seen before 2026,
-    on the `aggregator_sync` series; the served cohort is the plain >=$1 median.
+    One GROUP BY over the archive instead of three filtered scans. The cohorts
+    mirror `ab_test_item_metadata.py`: the deep >=$1 universe is median
+    mean_price >= $1 with >=180 distinct days and first seen before 2026; the
+    served cohort is the plain >=$1 median.
     """
     import duckdb
 
+    from db.archive import prices_relation
+
     con = duckdb.connect()
-    files = sorted(str(p) for p in PRICE_ARCHIVE.glob("prices-*.parquet"))
-    if not files:
-        raise SystemExit(f"No prices-*.parquet under {PRICE_ARCHIVE}")
+    try:
+        rel = prices_relation(con, PRICE_ARCHIVE, columns=["item_slug", "day", "mean_price"])
+        df = con.execute(f"""
+            SELECT item_slug,
+                   min(day) AS first_day,
+                   count(DISTINCT day) AS n_days,
+                   median(mean_price) AS med_price
+            FROM {rel}
+            GROUP BY item_slug
+        """).fetchdf()
+    finally:
+        con.close()
 
-    parts = []
-    for path in files:
-        cols = {r[0] for r in con.sql(f"DESCRIBE SELECT * FROM read_parquet('{path}')").fetchall()}
-        where = " WHERE source = 'aggregator_sync'" if "source" in cols else ""
-        parts.append(f"SELECT item_slug, day, mean_price FROM read_parquet('{path}'){where}")
-    union = " UNION ALL BY NAME ".join(parts)
-
-    having = []
-    if min_price is not None:
-        having.append(f"median(mean_price) >= {min_price}")
-    if min_days is not None:
-        having.append(f"count(DISTINCT day) >= {min_days}")
-    if before is not None:
-        having.append(f"min(day) < DATE '{before}'")
-    clause = f" HAVING {' AND '.join(having)}" if having else ""
-
-    rows = con.sql(f"SELECT item_slug FROM ({union}) GROUP BY item_slug{clause}").fetchall()
-    return {r[0] for r in rows}
+    first_day = pd.to_datetime(df["first_day"])
+    all_slugs = set(df["item_slug"])
+    ge1 = df[df["med_price"] >= 1.0]
+    deep_slugs = set(ge1[(ge1["n_days"] >= 180) & (first_day.loc[ge1.index] < "2026-01-01")]["item_slug"])
+    served_slugs = set(ge1["item_slug"])
+    return deep_slugs, served_slugs, all_slugs
 
 
 def report_coverage(df: pd.DataFrame, label: str, slugs: set[str]) -> None:
@@ -577,9 +577,10 @@ def main() -> int:
 
     if not args.skip_coverage:
         logger.info("Coverage against the local price archive:")
-        report_coverage(df, "  deep >=$1 universe", archive_slugs(min_price=1.0, min_days=180, before="2026-01-01"))
-        report_coverage(df, "  served >=$1 cohort", archive_slugs(min_price=1.0))
-        report_coverage(df, "  full archive", archive_slugs())
+        deep_slugs, served_slugs, all_slugs = archive_slug_sets()
+        report_coverage(df, "  deep >=$1 universe", deep_slugs)
+        report_coverage(df, "  served >=$1 cohort", served_slugs)
+        report_coverage(df, "  full archive", all_slugs)
 
     if args.coverage_only:
         logger.info("--coverage-only: nothing written")

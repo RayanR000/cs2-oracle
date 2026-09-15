@@ -39,6 +39,48 @@ WATCHED = {
 }
 
 
+def _project_days_sources(paths: list[Path], day_col: str, source_col: str) -> pd.DataFrame | None:
+    """(day, source) over all files via DuckDB projection pushdown.
+
+    Only the two audit columns leave the files — the old per-file
+    `pd.read_parquet` loaded every column. No DISTINCT: `per_source_latest`
+    counts rows on the latest day, and duplicates are real listings.
+    Returns None when no file carries the day column.
+    """
+    import duckdb
+
+    quoted = ", ".join("'" + str(p).replace("'", "''") + "'" for p in paths)
+    rel = f"read_parquet([{quoted}], union_by_name=true)"
+    con = duckdb.connect()
+    try:
+        cols = {r[0] for r in con.execute(f"DESCRIBE SELECT * FROM {rel}").fetchall()}
+        if day_col not in cols:
+            return None
+        proj = day_col if source_col not in cols else f"{day_col}, {source_col}"
+        df = con.execute(f"SELECT {proj} FROM {rel}").fetchdf()
+    finally:
+        con.close()
+    df[day_col] = pd.to_datetime(df[day_col]).dt.date
+    return df
+
+
+def _project_days_sources_fallback(paths: list[Path], day_col: str, source_col: str) -> pd.DataFrame | None:
+    """Per-file read used only when the DuckDB projection fails (e.g. a corrupt file)."""
+    frames = []
+    for p in paths:
+        try:
+            df = pd.read_parquet(p, columns=[c for c in (day_col, source_col) if c])
+        except Exception:
+            continue
+        if day_col not in df.columns:
+            continue
+        df[day_col] = pd.to_datetime(df[day_col]).dt.date
+        frames.append(df)
+    if not frames:
+        return None
+    return pd.concat(frames, ignore_index=True)
+
+
 def _audit_table(archive_dir: Path, pattern: str, day_col: str, source_col: str) -> dict:
     paths = sorted(archive_dir.glob(pattern))
     if not paths:
@@ -51,17 +93,11 @@ def _audit_table(archive_dir: Path, pattern: str, day_col: str, source_col: str)
             "latest": None,
             "per_source_latest": {},
         }
-    frames = []
-    for p in paths:
-        try:
-            df = pd.read_parquet(p, columns=[c for c in (day_col, source_col) if c])
-        except Exception:
-            continue
-        if day_col not in df.columns:
-            continue
-        df[day_col] = pd.to_datetime(df[day_col]).dt.date
-        frames.append(df)
-    if not frames:
+    try:
+        all_days = _project_days_sources(paths, day_col, source_col)
+    except Exception:
+        all_days = _project_days_sources_fallback(paths, day_col, source_col)
+    if all_days is None or all_days.empty:
         return {
             "files": len(paths),
             "days": 0,
@@ -71,7 +107,6 @@ def _audit_table(archive_dir: Path, pattern: str, day_col: str, source_col: str)
             "latest": None,
             "per_source_latest": {},
         }
-    all_days = pd.concat(frames, ignore_index=True)
     dates = sorted(all_days[day_col].unique())
     gaps = [str(d) for d in pd.date_range(dates[0], dates[-1]).date if d not in set(dates)]
     longest = cur = 1
