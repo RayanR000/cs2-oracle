@@ -106,3 +106,53 @@ def test_only_train_is_thinned_never_val(tmp_path):
         assert m["n_val"] == 400
         # And the cap did bind on train, so this is not a vacuous pass.
         assert m["n_train"] <= 500
+
+
+def test_cv_row_seed_defaults_to_42(tmp_path):
+    """Unset in production: the draw is byte-identical to the hardcoded past."""
+    f = _forecaster(tmp_path, ["f0", "f1"])
+    with patch.dict(os.environ, {}, clear=False):
+        os.environ.pop("CV_ROW_SEED", None)
+        assert f._cv_row_seed() == 42
+
+
+def test_cv_row_seed_env_override(tmp_path):
+    f = _forecaster(tmp_path, ["f0", "f1"])
+    with patch.dict(os.environ, {"CV_ROW_SEED": "7"}):
+        assert f._cv_row_seed() == 7
+
+
+def test_row_seed_moves_rows_never_cohort(tmp_path):
+    """The placebo lever: a different seed redraws the capped training rows
+    while fold count, validation rows and OOF rows stay put."""
+    frame = _frame()
+    params = {0.5: {"objective": "quantile", "num_leaves": 7, "verbosity": -1}}
+
+    f_a = _forecaster(tmp_path / "a", ["f0", "f1"])
+    with patch.dict(os.environ, {"CV_MAX_TRAIN_ROWS": "500", "CV_ROW_SEED": "42"}):
+        oof_a, folds_a = f_a._cv_evaluate_horizon(frame, 3, params)[:2]
+
+    f_b = _forecaster(tmp_path / "b", ["f0", "f1"])
+    with patch.dict(os.environ, {"CV_MAX_TRAIN_ROWS": "500", "CV_ROW_SEED": "7"}):
+        oof_b, folds_b = f_b._cv_evaluate_horizon(frame, 3, params)[:2]
+
+    assert len(folds_a) == len(folds_b)
+    assert len(oof_a) == len(oof_b)
+    for ma, mb in zip(folds_a, folds_b):
+        assert ma["n_val"] == mb["n_val"] == 400
+        assert ma["n_train"] == mb["n_train"] <= 500
+
+
+def test_different_row_seeds_redraw_the_cap(tmp_path):
+    """Same seed reproduces the draw exactly; a different seed moves it.
+    Without this the placebo arm would re-read control's noise."""
+    f = _forecaster(tmp_path, ["f0", "f1"])
+    big = _frame()  # 4,800 rows, cap binds
+    with patch.dict(os.environ, {"CV_ROW_SEED": "42"}):
+        a1 = f._sample_cv_train_rows(big, 500)
+        a2 = f._sample_cv_train_rows(big, 500)
+    with patch.dict(os.environ, {"CV_ROW_SEED": "7"}):
+        b = f._sample_cv_train_rows(big, 500)
+    assert len(a1) == len(a2) == len(b) == 500
+    pd.testing.assert_frame_equal(a1, a2)
+    assert not a1.equals(b)

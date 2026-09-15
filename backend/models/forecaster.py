@@ -857,6 +857,15 @@ class ItemForecaster:
     def _cv_step_days(self) -> int:
         return int(os.environ.get("CV_STEP_DAYS", self.CV_STEP_DAYS))
 
+    # Seed for the per-fold CV row-cap draw (the `train_df.sample` in
+    # `_cv_evaluate_horizon`). Hardcoded 42 on every other path; the env
+    # override exists ONLY for the q_hat fold-design dispersion probe
+    # (prereg 2026-09-14), whose placebo arm measures the sampling-noise
+    # floor on an identical grid. Unset in production: the default keeps
+    # every existing artifact byte-identical.
+    def _cv_row_seed(self) -> int:
+        return int(os.environ.get("CV_ROW_SEED", 42))
+
     # Cap on each CV fold's TRAINING rows. `max_rows` was applied only in
     # _build_production_split, so _cv_evaluate_horizon took the whole expanding
     # window every fold: nine folds per horizon summed to 4.2x the frame and the
@@ -883,6 +892,11 @@ class ItemForecaster:
 
     def _cv_max_train_rows(self) -> int:
         return int(os.environ.get("CV_MAX_TRAIN_ROWS", self.CV_MAX_TRAIN_ROWS))
+
+    def _sample_cv_train_rows(self, train_df, cv_max_rows):
+        """Random (never tail) cap draw so the calendar window survives and
+        expanding-window CV is not silently disabled. Seed via _cv_row_seed."""
+        return train_df.sample(n=cv_max_rows, random_state=self._cv_row_seed()).sort_values("date")
 
     @staticmethod
     def _record_cv_fold_train_rows(n: int) -> None:
@@ -10330,7 +10344,7 @@ class ItemForecaster:
                 if per_item_row_sampling:
                     train_df = self._per_item_row_sample(train_df, cv_max_rows)
                 else:
-                    train_df = train_df.sample(n=cv_max_rows, random_state=42).sort_values("date")
+                    train_df = self._sample_cv_train_rows(train_df, cv_max_rows)
             self._record_cv_fold_train_rows(len(train_df))
 
             if len(val_df) < 50:
