@@ -33,7 +33,7 @@ from backtest.price_resolution import MAX_WINDOW_SPAN_DAYS, SMOOTH_WINDOW
 from backtest.scoring import HEADLINE_MIN_TIER, MIN_FORECAST_DATES, price_tier
 from sqlalchemy import text
 
-from models import conformal, direction, scale_model, served_recalibration
+from models import conformal, direction, mlflow_utils, scale_model, served_recalibration
 from models.direction import DIRECTION_FLAT_TOLERANCE_PCT as DIRECTION_FLAT_TOLERANCE_PCT
 from models.item_parser import (
     BID_SOURCES,
@@ -6089,67 +6089,80 @@ class ItemForecaster:
             logger.warning(
                 f"  TRAIN_DAYS_BACK={train_days_back}: training window overridden from the 1460-day default."
             )
-        df = self.build_training_data(
-            days_back=train_days_back,
-            backfilled_only=True,
-            max_feature_rows=max_feature_rows,
-            min_median_price=min_median_price,
-            universe="train",
-        )
-
-        # Recorded into the artifact because the rank transform's output is a
-        # function of WHICH items are in the cross-section, and predict's frame
-        # is not this one. See _reference_cohort_mask.
-        self._train_min_median_price = min_median_price
-        self._train_cohort_items = int(df["item_id"].nunique())
-        # After training, the in-memory model IS the artifact, so the predict
-        # path's cohort lookup has to see this run's floor rather than the one
-        # belonging to whatever was loaded from cache beforehand. Without this,
-        # train-then-predict in one process reads a stale (or absent) floor and
-        # either refuses to serve or ranks against the wrong cohort.
-        self._artifact_min_median_price = min_median_price
-        self._artifact_cohort_items = self._train_cohort_items
-
-        self.horizon_feature_cols = {}
-
-        # Sigma clip bounds come from the cross-sectional distribution of the
-        # TRAINING frame, then are frozen into the artifact. q_hat is
-        # calibrated against clipped sigmas, so serving must clip identically.
-        # Measured once here, before any horizon calibrates, so every horizon's
-        # q_hat and every served row share one clip.
-        with np.errstate(divide="ignore", invalid="ignore"):
-            sigma_raw = df["price_std_60d"].to_numpy(dtype=float) / df["price"].to_numpy(dtype=float)
-        floor, cap = conformal.sigma_bounds(sigma_raw)
-        finite = sigma_raw[np.isfinite(sigma_raw) & (sigma_raw > 0)]
-        self.sigma_clip = {
-            "floor": floor,
-            "cap": cap,
-            "fallback": float(np.median(finite)),
-        }
-        logger.info(f"Sigma clip: floor={floor:.5f} cap={cap:.5f} fallback={self.sigma_clip['fallback']:.5f}")
-
-        for hi, horizon in enumerate(self.HORIZONS, 1):
-            self._train_horizon_inline(horizon, df, max_rows, per_item_row_sampling=per_item_row_sampling)
-
-        del df
-
-        # Served-outcome feedback: one panel read for all horizons after the CV q_hats
-        # are set, giving the per-horizon multiplier that pulls realized served coverage
-        # to 80%. Empty below the MIN_FORECAST_DATES gate (the case today), leaving the
-        # band byte-identical; the read is best-effort and never fails a retrain.
-        self.served_coverage_factor = served_recalibration.served_coverage_factors(self.db, self.HORIZONS)
-        if self.served_coverage_factor:
-            logger.info(
-                f"Served-coverage factors (q_hat multipliers): "
-                f"{ {h: round(v, 4) for h, v in self.served_coverage_factor.items()} }"
+        with mlflow_utils.training_run(
+            params={
+                "max_rows": max_rows,
+                "max_feature_rows": max_feature_rows,
+                "min_median_price": min_median_price,
+                "per_item_row_sampling": per_item_row_sampling,
+                "train_days_back": train_days_back,
+                "climatology_scale": self.climatology_scale_enabled(),
+                "exceedance_head": self.exceedance_head_enabled(),
+                "anomaly_gbm": self.anomaly_gbm_enabled(),
+                "feature_native_nan": self.feature_native_nan_enabled(),
+            }
+        ):
+            df = self.build_training_data(
+                days_back=train_days_back,
+                backfilled_only=True,
+                max_feature_rows=max_feature_rows,
+                min_median_price=min_median_price,
+                universe="train",
             )
 
-        _train_elapsed = (datetime.now() - _train_start).total_seconds()
-        self.save_models()
-        logger.info(f"\n{'=' * 60}")
-        logger.info(f"TRAINING COMPLETE in {_train_elapsed:.0f}s ({_train_elapsed / 60:.1f}min)")
-        logger.info(f"{'=' * 60}")
-        logger.info(f"  [timing] TOTAL training: {_train_elapsed:.1f}s")
+            # Recorded into the artifact because the rank transform's output is a
+            # function of WHICH items are in the cross-section, and predict's frame
+            # is not this one. See _reference_cohort_mask.
+            self._train_min_median_price = min_median_price
+            self._train_cohort_items = int(df["item_id"].nunique())
+            # After training, the in-memory model IS the artifact, so the predict
+            # path's cohort lookup has to see this run's floor rather than the one
+            # belonging to whatever was loaded from cache beforehand. Without this,
+            # train-then-predict in one process reads a stale (or absent) floor and
+            # either refuses to serve or ranks against the wrong cohort.
+            self._artifact_min_median_price = min_median_price
+            self._artifact_cohort_items = self._train_cohort_items
+
+            self.horizon_feature_cols = {}
+
+            # Sigma clip bounds come from the cross-sectional distribution of the
+            # TRAINING frame, then are frozen into the artifact. q_hat is
+            # calibrated against clipped sigmas, so serving must clip identically.
+            # Measured once here, before any horizon calibrates, so every horizon's
+            # q_hat and every served row share one clip.
+            with np.errstate(divide="ignore", invalid="ignore"):
+                sigma_raw = df["price_std_60d"].to_numpy(dtype=float) / df["price"].to_numpy(dtype=float)
+            floor, cap = conformal.sigma_bounds(sigma_raw)
+            finite = sigma_raw[np.isfinite(sigma_raw) & (sigma_raw > 0)]
+            self.sigma_clip = {
+                "floor": floor,
+                "cap": cap,
+                "fallback": float(np.median(finite)),
+            }
+            logger.info(f"Sigma clip: floor={floor:.5f} cap={cap:.5f} fallback={self.sigma_clip['fallback']:.5f}")
+
+            for hi, horizon in enumerate(self.HORIZONS, 1):
+                self._train_horizon_inline(horizon, df, max_rows, per_item_row_sampling=per_item_row_sampling)
+
+            del df
+
+            # Served-outcome feedback: one panel read for all horizons after the CV q_hats
+            # are set, giving the per-horizon multiplier that pulls realized served coverage
+            # to 80%. Empty below the MIN_FORECAST_DATES gate (the case today), leaving the
+            # band byte-identical; the read is best-effort and never fails a retrain.
+            self.served_coverage_factor = served_recalibration.served_coverage_factors(self.db, self.HORIZONS)
+            if self.served_coverage_factor:
+                logger.info(
+                    f"Served-coverage factors (q_hat multipliers): "
+                    f"{ {h: round(v, 4) for h, v in self.served_coverage_factor.items()} }"
+                )
+
+            _train_elapsed = (datetime.now() - _train_start).total_seconds()
+            self.save_models()
+            logger.info(f"\n{'=' * 60}")
+            logger.info(f"TRAINING COMPLETE in {_train_elapsed:.0f}s ({_train_elapsed / 60:.1f}min)")
+            logger.info(f"{'=' * 60}")
+            logger.info(f"  [timing] TOTAL training: {_train_elapsed:.1f}s")
 
     def _train_horizon_inline(
         self, horizon: int, df: pd.DataFrame, max_rows: int = 300_000, per_item_row_sampling: bool = False
@@ -7159,6 +7172,14 @@ class ItemForecaster:
                 f"std={cv.get('std_dir_acc', '?'):}% "
                 f"range=[{cv.get('min_dir_acc', '?'):}%, {cv.get('max_dir_acc', '?'):}%]"
             )
+
+        mlflow_utils.log_horizon_metrics(horizon, {
+            "mae": self.cv_results.get(horizon, {}).get("mae", 0),
+            "q_hat": self.conformal_calibration.get(horizon, 0),
+            "q_lo": float(self.conformal_q_lo.get(horizon, 0)),
+            "q_hi": float(self.conformal_q_hi.get(horizon, 0)),
+        })
+
         del tdf
 
     # ------------------------------------------------------------------
@@ -11327,6 +11348,8 @@ class ItemForecaster:
 
         with open(os.path.join(self.model_dir, "meta.json"), "w") as f:
             json.dump(meta, f, default=_json_default)
+
+        mlflow_utils.log_artifact_file(os.path.join(self.model_dir, "meta.json"))
 
         # Save per-tier bias corrections
         self._save_bias_corrections()

@@ -36,6 +36,11 @@ frontend/.turbo/
 *~
 .DS_Store
 
+# MLflow
+mlruns/
+mlruns.db
+mlartifacts/
+
 # Tooling (local dev artifacts)
 .impeccable/
 
