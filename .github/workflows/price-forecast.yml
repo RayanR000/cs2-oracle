@@ -303,6 +303,15 @@ jobs:
               ;;
           esac
 
+      - name: Run drift detection
+        if: steps.mode.outputs.mode == 'predict-only'
+        working-directory: backend
+        run: |
+          python -m scripts.run_drift_check --output-dir data/drift_reports
+        env:
+          DRIFT_REPORT_DIR: data/drift_reports
+        continue-on-error: true
+
       # forecast_prices.py writes the item_forecasts Parquet mirror into the
       # ephemeral archive/ checkout, so without this step every CI run's mirror
       # write is discarded at teardown. That is why item_forecasts.parquet
