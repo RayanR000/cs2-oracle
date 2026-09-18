@@ -47,6 +47,14 @@ def detect_drift(
         ref = reference[common].select_dtypes(include="number")
         cur = current[common].select_dtypes(include="number")
 
+    # Evidently raises on all-NaN columns; drop them.
+    non_empty = [c for c in ref.columns if ref[c].notna().any() and cur[c].notna().any()]
+    dropped = len(ref.columns) - len(non_empty)
+    if dropped:
+        logger.info(f"Dropped {dropped} all-NaN columns before drift check")
+    ref = ref[non_empty]
+    cur = cur[non_empty]
+
     report = Report(metrics=[DataDriftPreset()])
     snapshot = report.run(reference_data=ref, current_data=cur)
 
