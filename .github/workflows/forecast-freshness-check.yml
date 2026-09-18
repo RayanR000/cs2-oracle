@@ -27,7 +27,6 @@ defaults:
 
 permissions:
   contents: read
-  issues: write
 
 jobs:
   freshness:
@@ -80,20 +79,3 @@ jobs:
           ENVIRONMENT: production
         run: python scripts/check_forecast_freshness.py --expected-date "$(date -u -d yesterday +%F)"
 
-      # A red scheduled run emails the owner, but that is easy to lose. File (or
-      # update) a single tracking issue so a persistent stall is visible and
-      # de-duplicated rather than spawning one issue per day.
-      - name: Open a tracking issue on failure
-        if: failure()
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          TITLE="Forecast freshness check failed"
-          EXISTING=$(gh issue list --state open --search "$TITLE in:title" \
-            --json number --jq '.[0].number' || true)
-          BODY="The daily forecast freshness check failed on $(date -u +%F) — no fresh forecast landed in item_forecasts (DB and/or Parquet mirror). Run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
-          if [ -n "$EXISTING" ]; then
-            gh issue comment "$EXISTING" --body "$BODY"
-          else
-            gh issue create --title "$TITLE" --body "$BODY"
-          fi

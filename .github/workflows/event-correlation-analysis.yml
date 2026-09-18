@@ -10,7 +10,6 @@ defaults:
     shell: bash
 
 permissions:
-  issues: write
   # Stays read even though this job now publishes: the archive lives in the
   # cs2-oracle-data repo and is pushed with CS2_DATA_REPO_TOKEN, not GITHUB_TOKEN.
   contents: read
@@ -158,20 +157,6 @@ jobs:
           git commit -m "archive: event impacts $(date -u +%F)"
           git push --force origin HEAD:main
 
-      - name: Notify on failure
-        if: failure() && github.event_name == 'schedule'
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          gh issue create \
-            --title "[${{ github.workflow }}] Failed - $(date +%F)" \
-            --body "Workflow **${{ github.workflow }}** failed.
-
-          Run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
-          Branch: ${{ github.ref_name }}
-          Trigger: ${{ github.event_name }}" \
-            --label "automation" \
-            || echo "::warning::Could not file the failure issue. Check that the 'automation' label exists and the job has issues:write."
 
       - name: Upload logs
         if: always()

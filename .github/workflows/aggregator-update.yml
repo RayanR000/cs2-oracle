@@ -41,7 +41,6 @@ defaults:
     shell: bash
 
 permissions:
-  issues: write
   contents: read # archive now lives in the cs2-oracle-data repo (pushed via CS2_DATA_REPO_TOKEN)
 
 jobs:
@@ -223,20 +222,6 @@ jobs:
           git commit -m "archive: prices + exchange-rates $SNAPSHOT_DATE"
           git push --force origin HEAD:main
 
-      - name: Notify on failure
-        if: failure() && github.event_name == 'schedule'
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          gh issue create \
-            --title "[${{ github.workflow }}] Failed - $(date +%F)" \
-            --body "Workflow **${{ github.workflow }}** failed.
-
-          Run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
-          Branch: ${{ github.ref_name }}
-          Trigger: ${{ github.event_name }}" \
-            --label "automation" \
-            || echo "::warning::Could not file the failure issue. Check that the 'automation' label exists and the job has issues:write."
 
       - name: Upload aggregator logs
         if: always()
