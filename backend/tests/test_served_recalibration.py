@@ -2,7 +2,7 @@
 
 Split conformal re-run on the served forecast_outcomes panel — the factor that would have
 made the served (asymmetric, mid-anchored) band cover at the 80% nominal. Gated on
-MIN_FORECAST_DATES distinct served dates per horizon, clamped to [0.5, 2.0], no-op (absent)
+MIN_FEEDBACK_DATES distinct served dates per horizon, clamped to [0.5, 2.0], no-op (absent)
 below the gate. See docs/superpowers/specs/2026-08-16-served-outcome-feedback-calibration-design.md.
 """
 
@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import numpy as np
 import pandas as pd
-from backtest.scoring import HEADLINE_MIN_TIER, MIN_FORECAST_DATES
+from backtest.scoring import HEADLINE_MIN_TIER, MIN_FEEDBACK_DATES
 from models.served_recalibration import (
     FACTOR_MAX,
     FACTOR_MIN,
@@ -58,8 +58,8 @@ def test_under_covering_panel_widens(_stub=None):
 
 def test_gate_needs_min_forecast_dates(_stub=None):
     r = np.random.default_rng(1).uniform(0, 1.2, 200)
-    below = _panel(7, r, n_dates=MIN_FORECAST_DATES - 1)
-    at = _panel(7, r, n_dates=MIN_FORECAST_DATES)
+    below = _panel(7, r, n_dates=MIN_FEEDBACK_DATES - 1)
+    at = _panel(7, r, n_dates=MIN_FEEDBACK_DATES)
     assert 7 not in factors_from_panel(below, [7])
     assert 7 in factors_from_panel(at, [7])
 
@@ -67,7 +67,7 @@ def test_gate_needs_min_forecast_dates(_stub=None):
 def test_gate_is_per_horizon(_stub=None):
     r = np.random.default_rng(2).uniform(0, 1.2, 200)
     rich = _panel(3, r, n_dates=25)
-    poor = _panel(30, r, n_dates=MIN_FORECAST_DATES - 1)
+    poor = _panel(30, r, n_dates=MIN_FEEDBACK_DATES - 1)
     f = factors_from_panel(pd.concat([rich, poor], ignore_index=True), [3, 30])
     assert 3 in f and 30 not in f
 
@@ -108,7 +108,7 @@ def test_since_floor_drops_pre_cutover_geometry(_stub=None):
     panel = _panel(7, r, n_dates=25)  # dates run 2026-01-01 .. 2026-01-25
     assert 7 in factors_from_panel(panel, [7])  # no floor: 25 dates clear the gate
     assert 7 in factors_from_panel(panel, [7], since="2026-01-01")  # floor at the first date: all kept
-    # A floor past every date leaves zero rows, so the horizon falls below MIN_FORECAST_DATES.
+    # A floor past every date leaves zero rows, so the horizon falls below MIN_FEEDBACK_DATES.
     assert 7 not in factors_from_panel(panel, [7], since="2027-01-01")
 
 

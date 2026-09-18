@@ -16,7 +16,7 @@ from datetime import date
 from unittest.mock import MagicMock
 
 import pytest
-from backtest.scoring import MIN_FORECAST_DATES
+from backtest.scoring import MIN_HEADLINE_DATES
 from models.forecaster import ItemForecaster
 
 
@@ -34,16 +34,16 @@ def test_two_dates_lack_coverage_regardless_of_row_count():
 
 
 def test_coverage_is_met_at_the_minimum():
-    assert ItemForecaster._has_date_coverage(_dates(MIN_FORECAST_DATES, 1)) is True
+    assert ItemForecaster._has_date_coverage(_dates(MIN_HEADLINE_DATES, 1)) is True
 
 
 def test_one_below_the_minimum_lacks_coverage():
-    assert ItemForecaster._has_date_coverage(_dates(MIN_FORECAST_DATES - 1, 1)) is False
+    assert ItemForecaster._has_date_coverage(_dates(MIN_HEADLINE_DATES - 1, 1)) is False
 
 
 def test_null_dates_never_count_toward_coverage():
     # Rows predating the forecast_date backfill must not manufacture coverage.
-    dates = _dates(MIN_FORECAST_DATES, 1) + [None] * 5000
+    dates = _dates(MIN_HEADLINE_DATES, 1) + [None] * 5000
     assert ItemForecaster._has_date_coverage(dates) is True
     assert ItemForecaster._has_date_coverage([None] * 5000) is False
 
@@ -55,26 +55,26 @@ def test_empty_input_lacks_coverage():
 def test_forecaster_does_not_define_its_own_min_forecast_dates():
     """A second, drifting threshold is the failure this guards against.
 
-    scoring.MIN_FORECAST_DATES gates what gets *reported*; the guard gates
+    scoring.MIN_HEADLINE_DATES gates what gets *reported*; the guard gates
     what gets *fitted*. If forecaster.py ever grew its own
-    `MIN_FORECAST_DATES = ...` instead of importing scoring's, the two could
+    `MIN_HEADLINE_DATES = ...` instead of importing scoring's, the two could
     drift independently of each other — production could fit thresholds on a
     cohort the same codebase refuses to quote.
 
-    An `is`/`==` check on `forecaster.MIN_FORECAST_DATES` can't catch that:
+    An `is`/`==` check on `forecaster.MIN_HEADLINE_DATES` can't catch that:
     CPython caches small integers, so a module that independently defines
-    `MIN_FORECAST_DATES = 20` would still pass an identity or value check
-    against `scoring.MIN_FORECAST_DATES`. Instead, inspect forecaster.py's own
+    `MIN_HEADLINE_DATES = 20` would still pass an identity or value check
+    against `scoring.MIN_HEADLINE_DATES`. Instead, inspect forecaster.py's own
     source for a local assignment to the name -- there must be none; the only
     way the name can exist in that module is via the `from backtest.scoring
-    import MIN_FORECAST_DATES` at the top of the file.
+    import MIN_HEADLINE_DATES` at the top of the file.
     """
     from models import forecaster as fc
 
     source = inspect.getsource(fc)
-    own_assignments = [line for line in source.splitlines() if re.match(r"^MIN_FORECAST_DATES\s*=", line.strip())]
+    own_assignments = [line for line in source.splitlines() if re.match(r"^MIN_HEADLINE_DATES\s*=", line.strip())]
     assert own_assignments == [], (
-        f"forecaster.py must not define its own MIN_FORECAST_DATES -- found: {own_assignments!r}"
+        f"forecaster.py must not define its own MIN_HEADLINE_DATES -- found: {own_assignments!r}"
     )
 
 

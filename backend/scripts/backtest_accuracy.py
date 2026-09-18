@@ -44,7 +44,7 @@ from backtest.scoring import (
     FLOOR_SWEEP,
     HEADLINE_MIN_TIER,
     HEADLINE_TIER,
-    MIN_FORECAST_DATES,
+    MIN_HEADLINE_DATES,
     direction_from_return,
     excluded_forecast_date,
     price_tier,
@@ -684,7 +684,7 @@ def _records_from_frozen_outcomes(db, min_price=0, forecast_ids=None):
 
         # served_identity, not the raw label: rows differing only by serving
         # configuration are one cohort, or no cohort ever reaches
-        # MIN_FORECAST_DATES. The raw label rides on the record so the merge is
+        # MIN_HEADLINE_DATES. The raw label rides on the record so the merge is
         # disclosed in `config_dates` rather than silent.
         groups[(r.horizon_days, served_identity(r.model_version))].append(
             {
@@ -748,7 +748,7 @@ def _records_from_frozen_outcomes(db, min_price=0, forecast_ids=None):
     if n_below_min_price:
         logger.info(f"  {n_below_min_price:,} frozen outcome(s) below --min-price ${min_price:.2f}")
     for reason, n in sorted(n_excluded_date.items()):
-        # WARNING, not info: this shrinks the panel MIN_FORECAST_DATES counts,
+        # WARNING, not info: this shrinks the panel MIN_HEADLINE_DATES counts,
         # and the reason has to travel with the number every run.
         logger.warning(
             f"  {n:,} frozen outcome(s) excluded — {reason}. SCORE_ALL_DATES=1 restores them for comparison only."
@@ -918,11 +918,11 @@ def _headline_line(horizon, model_version, metrics, n) -> tuple[int, str]:
         )
     # insufficient_dates / degenerate. Refuse to quote a headline the cohort
     # cannot support: the sample_count is not the evidence here, the date count
-    # is, and a DA over <MIN_FORECAST_DATES dates mostly measures which way the
+    # is, and a DA over <MIN_HEADLINE_DATES dates mostly measures which way the
     # market moved on those days.
     return logging.WARNING, (
         f"{prefix} — NO HEADLINE ({verdict}): {metrics['pt_n_dates']} usable date(s) "
-        f"below the {MIN_FORECAST_DATES} required "
+        f"below the {MIN_HEADLINE_DATES} required "
         f"({metrics['pt_n_dates_dropped']} date(s) too thin to test). Unquotable "
         f"PT={_pt_str(metrics)} {triple} {common}"
     )

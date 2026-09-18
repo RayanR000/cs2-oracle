@@ -15,7 +15,7 @@ from unittest.mock import MagicMock
 
 import pandas as pd
 import pytest
-from backtest.scoring import MIN_FORECAST_DATES
+from backtest.scoring import MIN_HEADLINE_DATES
 from models.forecaster import ItemForecaster
 
 
@@ -31,7 +31,7 @@ def _metrics(da, *, covered=True, include_flag=True):
     m = {"directional_accuracy": da}
     if include_flag:
         m["date_coverage_sufficient"] = covered
-        m["distinct_forecast_dates"] = MIN_FORECAST_DATES if covered else 2
+        m["distinct_forecast_dates"] = MIN_HEADLINE_DATES if covered else 2
     return m
 
 

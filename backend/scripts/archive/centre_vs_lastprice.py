@@ -44,7 +44,7 @@ METHOD (read-only; the archive already holds every number):
   docs make a pooled number uninterpretable).
 * Panel: `excluded_forecast_date` is applied, the same exclusion the published
   figures use. It removes 2026-07-19 (a dead-band direction rule live for one
-  run) and 2025-12-01 (a replay), so h=30 falls below MIN_FORECAST_DATES and is
+  run) and 2025-12-01 (a replay), so h=30 falls below MIN_HEADLINE_DATES and is
   reported as UNPUBLISHABLE rather than dropped silently.
 * Uncertainty: bootstrap over forecast DATES, not rows — a date's returns are
   correlated through the market factor, so a row bootstrap would understate the
@@ -70,7 +70,7 @@ import pandas as pd
 # Archived 2026-09-15 (scripts/ -> scripts/archive/): one extra parent.
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
 
-from backtest.scoring import MIN_FORECAST_DATES, excluded_forecast_date
+from backtest.scoring import MIN_HEADLINE_DATES, excluded_forecast_date
 
 ARCHIVE_DIR = Path(__file__).resolve().parent.parent.parent.parent / "price-archive"
 SERVED_MIN_PRICE = 1.0  # the >=$1 cohort the forecast is actually served on
@@ -288,7 +288,7 @@ def main() -> int:
     ap.add_argument(
         "--gate",
         action="store_true",
-        help="exit 1 unless EVERY horizon has >= MIN_FORECAST_DATES "
+        help="exit 1 unless EVERY horizon has >= MIN_HEADLINE_DATES "
         "clean dates. The panel was 8-11 dates when this was "
         "written, so the verdict is not quotable yet; run this "
         "to ask whether it has matured without reading a table.",
@@ -326,8 +326,8 @@ def main() -> int:
             f"{cov_gbm:>8.3f} {cov_naive:>10.3f}"
         )
         n_dates = g["forecast_date"].nunique()
-        if n_dates < MIN_FORECAST_DATES:
-            print(f"     ^ h={h}: {n_dates} clean date(s) < MIN_FORECAST_DATES={MIN_FORECAST_DATES} — NOT publishable")
+        if n_dates < MIN_HEADLINE_DATES:
+            print(f"     ^ h={h}: {n_dates} clean date(s) < MIN_HEADLINE_DATES={MIN_HEADLINE_DATES} — NOT publishable")
         results.append(
             dict(
                 horizon=int(h),
@@ -346,12 +346,12 @@ def main() -> int:
 
     shrink_rows = _shrink_report(df, rng) if args.shrink else None
 
-    short = [r for r in results if r["dates"] < MIN_FORECAST_DATES]
+    short = [r for r in results if r["dates"] < MIN_HEADLINE_DATES]
     if short:
         worst = min(r["dates"] for r in short)
         print(
             f"\nPANEL IMMATURE: {len(short)} of {len(results)} horizon(s) below "
-            f"MIN_FORECAST_DATES={MIN_FORECAST_DATES} (shallowest: {worst} "
+            f"MIN_HEADLINE_DATES={MIN_HEADLINE_DATES} (shallowest: {worst} "
             f"dates). The signs above are informative; the magnitudes are not "
             f"quotable."
         )
@@ -361,7 +361,7 @@ def main() -> int:
             "matures it — check the workflows first."
         )
     else:
-        print(f"\nPANEL MATURE: every horizon has >= {MIN_FORECAST_DATES} clean dates. This verdict is quotable.")
+        print(f"\nPANEL MATURE: every horizon has >= {MIN_HEADLINE_DATES} clean dates. This verdict is quotable.")
 
     print(
         "\nskill = 1 - MAE_gbm/MAE_naive; >0 means the GBM centre beats the "

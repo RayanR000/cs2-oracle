@@ -10,7 +10,7 @@ import logging
 
 import pandas as pd
 from backtest.directional_test import PT_T_HURDLE
-from backtest.scoring import HEADLINE_TIER, MIN_FORECAST_DATES
+from backtest.scoring import HEADLINE_TIER, MIN_HEADLINE_DATES
 from database import ForecastOutcome, PredictionAccuracy, get_db
 from fastapi import APIRouter, Depends, Query
 from sqlalchemy import desc, func, text
@@ -342,7 +342,7 @@ def get_headline(db: Session = Depends(get_db)):
             "cohort": f">=${MIN_SERVED_PRICE_USD:.0f}",
             "price_tier": HEADLINE_TIER,
             "hurdle_t": PT_T_HURDLE,
-            "min_forecast_dates": MIN_FORECAST_DATES,
+            "min_forecast_dates": MIN_HEADLINE_DATES,
             "test": "Pesaran-Timmermann, per forecast date, Newey-West t over dates",
             "horizons": [_headline_entry(latest[h]) for h in sorted(latest)],
         }

@@ -9,7 +9,7 @@ should import this module directly. First cut of the forecaster decomposition
 
 import numpy as np
 import pandas as pd
-from backtest.scoring import HEADLINE_MIN_TIER, MIN_FORECAST_DATES
+from backtest.scoring import HEADLINE_MIN_TIER, MIN_HEADLINE_DATES
 from scipy.stats import spearmanr
 
 #: Flat band (percent) for the legacy fixed-threshold direction bucketing.
@@ -70,7 +70,7 @@ def demean_returns(returns, factor) -> np.ndarray:
 
 
 def has_date_coverage(forecast_dates) -> bool:
-    """True when distinct non-null forecast dates reach MIN_FORECAST_DATES.
+    """True when distinct non-null forecast dates reach MIN_HEADLINE_DATES.
 
     Row count cannot substitute for this. Items sharing a forecast_date
     share one market-wide move, so a five-figure cohort on two dates is
@@ -80,7 +80,7 @@ def has_date_coverage(forecast_dates) -> bool:
     report cannot drift apart.
     """
     distinct = {d for d in forecast_dates if d is not None and not pd.isna(d)}
-    return len(distinct) >= MIN_FORECAST_DATES
+    return len(distinct) >= MIN_HEADLINE_DATES
 
 
 def direction_threshold(sigma, horizon: int, k: float, floor: float, cap: float) -> np.ndarray:

@@ -1719,7 +1719,7 @@ def test_cv_results_publish_both_invariant_4_signals():
     # (Matched as fragments, not one exact statement: the line was refactored
     # from a parenthesised form to a conditional expression with identical
     # semantics, and the guard is about the None-fallback, not the parens.)
-    assert "pt_clf = " in src and "pesaran_timmermann(pt_records_clf, MIN_FORECAST_DATES)" in src
+    assert "pt_clf = " in src and "pesaran_timmermann(pt_records_clf, MIN_HEADLINE_DATES)" in src
     assert "if pt_records_clf else None" in src
     assert "pt_clf = pt" not in src
     assert "pt_clf or pt" not in src

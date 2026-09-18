@@ -15,7 +15,7 @@ from datetime import date
 
 import pytest
 from backtest.scoring import (
-    MIN_FORECAST_DATES,
+    MIN_HEADLINE_DATES,
     block_bootstrap_ci,
     bootstrap_ci,
     score_cohort,
@@ -60,14 +60,14 @@ class TestDateCoverageIsReported:
         )
 
     def test_sufficiency_threshold_is_met_at_the_minimum(self):
-        records = [_record(1, date(2026, 1, d + 1), item_id=d) for d in range(MIN_FORECAST_DATES)]
+        records = [_record(1, date(2026, 1, d + 1), item_id=d) for d in range(MIN_HEADLINE_DATES)]
         metrics, _ = score_cohort(records)
-        assert metrics["distinct_forecast_dates"] == MIN_FORECAST_DATES
+        assert metrics["distinct_forecast_dates"] == MIN_HEADLINE_DATES
         assert metrics["date_coverage_sufficient"] is True
 
     def test_minimum_is_greater_than_the_two_dates_currently_stored(self):
         """The stored cohorts span at most 2 dates; the gate must catch them."""
-        assert MIN_FORECAST_DATES > 2
+        assert MIN_HEADLINE_DATES > 2
 
 
 class TestBlockBootstrapWidensWithClustering:

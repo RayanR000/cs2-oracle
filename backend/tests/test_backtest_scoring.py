@@ -2844,7 +2844,7 @@ def test_a_wedged_forecast_is_scored_against_the_band_it_was_quoted_from(session
 def test_served_identity_collapses_the_serving_config_suffixes():
     """`-regime` and `-global-only` are the same artifact with SKIP_REGIMES
     flipped. Keying the scoring cohort on them forked the date panel three ways
-    and no cohort could ever reach MIN_FORECAST_DATES."""
+    and no cohort could ever reach MIN_HEADLINE_DATES."""
     from backtest.scoring import served_identity
 
     assert served_identity("lgbm-v3-regime") == "lgbm-v3"
@@ -2875,7 +2875,7 @@ def test_served_identity_names_the_missing_label_rather_than_dropping_it():
 def test_a_merged_cohort_reports_which_configs_it_pooled():
     """Merging is only honest if the payload says what was merged. Distinct
     forecast dates per stored label, not row counts: dates are the unit
-    MIN_FORECAST_DATES counts, and a config that contributed one date to a
+    MIN_HEADLINE_DATES counts, and a config that contributed one date to a
     20-date panel is a different claim from one that contributed ten."""
     records = [_record(model_version_raw="lgbm-v3-regime", forecast_date=date(2026, 8, d)) for d in (1, 2, 3)]
     records += [_record(model_version_raw="lgbm-v3-global-only", forecast_date=date(2026, 8, 4))]

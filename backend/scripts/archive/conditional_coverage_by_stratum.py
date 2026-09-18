@@ -44,7 +44,7 @@ import pandas as pd
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from backtest.scoring import MIN_FORECAST_DATES, excluded_forecast_date, price_tier
+from backtest.scoring import MIN_HEADLINE_DATES, excluded_forecast_date, price_tier
 
 SERVED_MIN_PRICE = 1.0
 N_BOOTSTRAP = 1000
@@ -253,7 +253,7 @@ def main() -> int:
                 )
             spread = (max(covs) - min(covs)) * 100 if covs else float("nan")
             n_dates = {r["dates"] for r in sub}
-            mature = min(n_dates) >= MIN_FORECAST_DATES if n_dates else False
+            mature = min(n_dates) >= MIN_HEADLINE_DATES if n_dates else False
             flat = spread < FLAT_SPREAD_PP
             tag = "FLAT" if flat else "SPREAD"
             pub = "" if mature else " (panel immature: <20 dates — informative, not quotable)"

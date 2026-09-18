@@ -12,7 +12,7 @@ from __future__ import annotations
 import pytest
 from api.routes import accuracy as route
 from backtest.directional_test import PT_T_HURDLE
-from backtest.scoring import HEADLINE_TIER, MIN_FORECAST_DATES
+from backtest.scoring import HEADLINE_TIER, MIN_HEADLINE_DATES
 
 
 def _row(horizon, evaluation_date, **metric_overrides):
@@ -61,7 +61,7 @@ def test_the_verdict_and_the_triple_are_served_together(monkeypatch):
 
     assert payload["price_tier"] == HEADLINE_TIER
     assert payload["hurdle_t"] == PT_T_HURDLE
-    assert payload["min_forecast_dates"] == MIN_FORECAST_DATES
+    assert payload["min_forecast_dates"] == MIN_HEADLINE_DATES
 
     entry = payload["horizons"][0]
     assert entry["verdict"] == "no_skill"

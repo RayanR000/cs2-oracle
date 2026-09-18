@@ -298,7 +298,7 @@ def _write_forecasts_to_db(
     Encoding the configuration in `model_version` is what F3 removed. The two
     were one string (`lgbm-v3-regime` / `lgbm-v3-global-only`), and
     `backtest/scoring.py::score_cohort` keys the cohort on it, so a config flag
-    forked the date panel and no cohort could reach MIN_FORECAST_DATES. The
+    forked the date panel and no cohort could reach MIN_HEADLINE_DATES. The
     suffix bought nothing in exchange: item_forecasts is unique on
     (item_id, forecast_date, horizon_days), so two configs writing the same day
     never coexisted as rows — the second overwrote the first and only relabelled

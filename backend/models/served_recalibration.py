@@ -12,7 +12,7 @@ LEVEL correction only — no conditional band — and it replaces the calibratio
 (OOF -> served) rather than transferring a shape between them, which is why it sidesteps the
 prior "different populations" refutations (docs/changelog/2026-08-12-served-sigma-profile.md).
 
-Gated on MIN_FORECAST_DATES distinct served dates per horizon (data-blocked today: ~0-4 exist),
+Gated on MIN_FEEDBACK_DATES distinct served dates per horizon (data-blocked today: ~0-4 exist),
 so it ships dormant and self-activates. Clamped so a contaminated panel cannot wreck the band.
 Design: docs/superpowers/specs/2026-08-16-served-outcome-feedback-calibration-design.md.
 """
@@ -25,7 +25,7 @@ from typing import Any
 
 import numpy as np
 import pandas as pd
-from backtest.scoring import HEADLINE_MIN_TIER, MIN_FORECAST_DATES, price_tier
+from backtest.scoring import HEADLINE_MIN_TIER, MIN_FEEDBACK_DATES, price_tier
 
 from models.conformal import ALPHA
 
@@ -131,7 +131,7 @@ def factors_from_panel(
     panel: pd.DataFrame,
     horizons: Iterable[int],
     *,
-    min_dates: int = MIN_FORECAST_DATES,
+    min_dates: int = MIN_FEEDBACK_DATES,
     alpha: float = ALPHA,
     min_tier: int = HEADLINE_MIN_TIER,
     since: str | None = None,
@@ -239,7 +239,7 @@ def served_coverage_factors(
     session,
     horizons: Iterable[int],
     *,
-    min_dates: int = MIN_FORECAST_DATES,
+    min_dates: int = MIN_FEEDBACK_DATES,
     alpha: float = ALPHA,
     since: str | None = _UNSET,
 ) -> dict[int, float]:

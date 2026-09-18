@@ -1,6 +1,6 @@
 #!/usr/bin/env python
 """Verify the durable forecast-outcomes store keeps accumulating distinct
-forecast dates toward MIN_FORECAST_DATES=20 and is NOT being pruned.
+forecast dates toward MIN_HEADLINE_DATES=20 and is NOT being pruned.
 
 Pulls the authoritative copy from the remote data repo
 (RayanR000/cs2-oracle-data :: price-archive/ops/forecast_outcomes.parquet),
@@ -26,9 +26,11 @@ from pathlib import Path
 
 import pandas as pd
 
+from backtest.scoring import MIN_HEADLINE_DATES
+
 REPO = "RayanR000/cs2-oracle-data"
 REMOTE_PATH = "price-archive/ops/forecast_outcomes.parquet"
-TARGET_DATES = 8  # MIN_FORECAST_DATES (backend/backtest/scoring.py)
+TARGET_DATES = MIN_HEADLINE_DATES  # backend/backtest/scoring.py
 HORIZONS = [3, 7, 14, 30]
 SNAPSHOT_LOG = Path(__file__).resolve().parents[1] / "data" / "outcome_date_snapshots.jsonl"
 

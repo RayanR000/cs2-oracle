@@ -30,7 +30,7 @@ from backtest.directional_test import (
 )
 from backtest.friction import actionable_threshold
 from backtest.price_resolution import MAX_WINDOW_SPAN_DAYS, SMOOTH_WINDOW
-from backtest.scoring import HEADLINE_MIN_TIER, MIN_FORECAST_DATES, price_tier
+from backtest.scoring import HEADLINE_MIN_TIER, MIN_HEADLINE_DATES, price_tier
 from sqlalchemy import text
 
 from models import conformal, direction, mlflow_utils, scale_model, served_recalibration
@@ -1540,7 +1540,7 @@ class ItemForecaster:
 
         Mutually exclusive with LEARNED_SCALE and SIGMA_EXPONENT — three alternative
         band denominators, not layers (`_calibrate_conformal` raises if combined).
-        Off by default; the served headline stays gated by MIN_FORECAST_DATES=8.
+        Off by default; the served headline stays gated by MIN_HEADLINE_DATES=20.
         Set EXCEEDANCE_SCALE=1. See
         docs/superpowers/plans/2026-08-16-exceedance-band-scale-phase2-plan.md.
         """
@@ -2058,7 +2058,7 @@ class ItemForecaster:
                 n_dates = g["forecast_date"].nunique(dropna=True)
                 logger.warning(
                     f"  Threshold[{horizon}d, {tier}]: refusing to fit — "
-                    f"{n_dates} distinct forecast date(s) < {MIN_FORECAST_DATES} "
+                    f"{n_dates} distinct forecast date(s) < {MIN_HEADLINE_DATES} "
                     f"(n={n} rows). Leaving this tier's stored thresholds unchanged."
                 )
                 continue
@@ -6148,7 +6148,7 @@ class ItemForecaster:
 
             # Served-outcome feedback: one panel read for all horizons after the CV q_hats
             # are set, giving the per-horizon multiplier that pulls realized served coverage
-            # to 80%. Empty below the MIN_FORECAST_DATES gate (the case today), leaving the
+            # to 80%. Empty below the MIN_FEEDBACK_DATES gate (the case today), leaving the
             # band byte-identical; the read is best-effort and never fails a retrain.
             self.served_coverage_factor = served_recalibration.served_coverage_factors(self.db, self.HORIZONS)
             if self.served_coverage_factor:
@@ -6875,14 +6875,14 @@ class ItemForecaster:
             # of outcomes, so unlike DA it cannot be passed by a base rate. Run
             # on the pooled out-of-fold rows, clustered by forecast date exactly
             # as backtest/scoring.py does in production.
-            pt = pesaran_timmermann(pt_records, MIN_FORECAST_DATES)
+            pt = pesaran_timmermann(pt_records, MIN_HEADLINE_DATES)
 
             # The same test on the SERVED classifier. `mean_constant_call` and
             # `mean_down_rate` are properties of the outcomes alone, so they are
             # the same bar for both signals and are not recomputed. None when
             # CV_DIAGNOSTIC_CLASSIFIER=0 -- visibly absent, never falling back to
             # the quantile sign.
-            pt_clf = pesaran_timmermann(pt_records_clf, MIN_FORECAST_DATES) if pt_records_clf else None
+            pt_clf = pesaran_timmermann(pt_records_clf, MIN_HEADLINE_DATES) if pt_records_clf else None
             edge_vs_constant_clf = (
                 None if (mean_constant_call is None or mean_clf is None) else round(mean_clf - mean_constant_call, 2)
             )
@@ -7885,7 +7885,7 @@ class ItemForecaster:
         # realized served interval coverage on the forecast_outcomes panel, that pulls
         # the served band toward the 80% nominal (models/served_recalibration.py). A
         # LEVEL correction, orthogonal to beta and the learned scale. Empty (=> 1.0,
-        # no-op) on every artifact below the MIN_FORECAST_DATES gate, which is all of
+        # no-op) on every artifact below the MIN_FEEDBACK_DATES gate, which is all of
         # them today. Read only through served_qhat_multiplier().
         self.served_coverage_factor: dict[int, float] = {}
 
@@ -9856,7 +9856,7 @@ class ItemForecaster:
             #
             # `served_qhat_multiplier` is the served-outcome feedback correction: a
             # scalar that re-solves the asymmetric split-conformal band on the served
-            # panel to the 80% nominal. 1.0 (no-op) below the MIN_FORECAST_DATES gate
+            # panel to the 80% nominal. 1.0 (no-op) below the MIN_FEEDBACK_DATES gate
             # AND until SIGNED_BAND_SERVING_START is set — every artifact today.
             # It is orthogonal to beta/scale (it does not change the scale's units), but
             # NOT a pure width knob on a signed band: the factor is the quantile of the
@@ -10973,7 +10973,7 @@ class ItemForecaster:
         if uncovered:
             logger.info(
                 f"  Drift check ({horizon}d): ignored {uncovered} accuracy row(s) "
-                f"lacking {MIN_FORECAST_DATES}-date coverage"
+                f"lacking {MIN_HEADLINE_DATES}-date coverage"
             )
 
         if len(accuracies) < 3:
@@ -11289,7 +11289,7 @@ class ItemForecaster:
             "conformal_q_lo": {str(h): float(v) for h, v in self.conformal_q_lo.items()},
             "conformal_q_hi": {str(h): float(v) for h, v in self.conformal_q_hi.items()},
             # Served-outcome feedback multiplier per horizon. Only horizons past the
-            # MIN_FORECAST_DATES gate appear; a missing horizon (all of them today)
+            # MIN_FEEDBACK_DATES gate appear; a missing horizon (all of them today)
             # loads as 1.0, byte-identical to the pre-feedback band.
             "served_coverage_factor": {str(h): float(v) for h, v in self.served_coverage_factor.items()},
             # The learned scale, and the same matched-pair argument one step

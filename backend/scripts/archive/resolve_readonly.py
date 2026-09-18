@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Resolve pending forecasts READ-ONLY and emit a merged outcomes panel.
 
-Why: the scored panel is 1-2 dates short of MIN_FORECAST_DATES=20 at h=3/7,
+Why: the scored panel is 1-2 dates short of MIN_HEADLINE_DATES=20 at h=3/7,
 while forecasts whose horizon has ALREADY elapsed sit unresolved in prod. The
 real fix is a backtest run, which writes prod. This reaches the same panel
 depth with zero writes: read prod, resolve against the local Parquet archive,

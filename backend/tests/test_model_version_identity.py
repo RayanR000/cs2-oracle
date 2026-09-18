@@ -5,7 +5,7 @@ F3. The two were one string: `scripts/forecast_prices.py` wrote
 run, and `backtest/scoring.py::score_cohort` keys the cohort on that string. So
 a config flag forked the date panel — the stored mirror splits 8 forecast dates
 of `-regime`, 2 of `lgbm-v3` and 1 of `-global-only` — and no cohort could reach
-`MIN_FORECAST_DATES = 20`. Run 31409508960 scored 110,615 frozen outcomes and
+`MIN_HEADLINE_DATES = 20`. Run 31409508960 scored 110,615 frozen outcomes and
 returned `NO HEADLINE (insufficient_dates)` at every horizon.
 
 The suffix bought nothing in exchange. `item_forecasts` is unique on

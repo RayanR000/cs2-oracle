@@ -20,7 +20,7 @@ from backtest.directional_test import (
     pesaran_timmermann,
     realised_down_rate,
 )
-from backtest.scoring import MIN_FORECAST_DATES, score_cohort
+from backtest.scoring import MIN_HEADLINE_DATES, score_cohort
 
 BASE_DATE = date(2026, 1, 1)
 
@@ -77,7 +77,7 @@ def test_a_constant_call_on_a_swinging_market_is_not_skill():
         return _table(forecast_date, a=n_down, b=200 - n_down, c=0, d=0)
 
     records = _panel(table)
-    result = pesaran_timmermann(records, MIN_FORECAST_DATES)
+    result = pesaran_timmermann(records, MIN_HEADLINE_DATES)
 
     raw_da = sum(r["direction_correct"] for r in records) / len(records) * 100
     assert 45 < raw_da < 65, "the raw hit rate looks like a real result"
@@ -100,7 +100,7 @@ def test_calls_independent_of_outcomes_do_not_clear_the_hurdle():
         j = rng.randint(-4, 4)
         return _table(forecast_date, a=80 + j, b=20 - j, c=80 - j, d=20 + j)
 
-    result = pesaran_timmermann(_panel(table), MIN_FORECAST_DATES)
+    result = pesaran_timmermann(_panel(table), MIN_HEADLINE_DATES)
     assert abs(result["pt_t_stat"]) < PT_T_HURDLE
     assert result["pt_verdict"] == "no_skill"
 
@@ -113,7 +113,7 @@ def test_genuine_within_date_skill_clears_the_hurdle():
         j = rng.randint(-4, 4)
         return _table(forecast_date, a=95 + j, b=5 - j, c=65 - j, d=35 + j)
 
-    result = pesaran_timmermann(_panel(table), MIN_FORECAST_DATES)
+    result = pesaran_timmermann(_panel(table), MIN_HEADLINE_DATES)
     assert result["pt_excess_pp"] > 0
     assert result["pt_t_stat"] > PT_T_HURDLE
     assert result["pt_verdict"] == "skill"
@@ -132,7 +132,7 @@ def test_anti_correlated_calls_are_reported_as_a_finding_not_a_null():
         j = rng.randint(-4, 4)
         return _table(forecast_date, a=65 + j, b=35 - j, c=95 - j, d=5 + j)
 
-    result = pesaran_timmermann(_panel(table), MIN_FORECAST_DATES)
+    result = pesaran_timmermann(_panel(table), MIN_HEADLINE_DATES)
     assert result["pt_excess_pp"] < 0
     assert result["pt_t_stat"] < -PT_T_HURDLE
     assert result["pt_verdict"] == "perverse"
@@ -151,8 +151,8 @@ def test_a_clearing_t_stat_over_too_few_dates_is_still_not_a_headline():
         j = rng.randint(-4, 4)
         return _table(forecast_date, a=95 + j, b=5 - j, c=65 - j, d=35 + j)
 
-    n_dates = MIN_FORECAST_DATES - 1
-    result = pesaran_timmermann(_panel(table, n_dates=n_dates), MIN_FORECAST_DATES)
+    n_dates = MIN_HEADLINE_DATES - 1
+    result = pesaran_timmermann(_panel(table, n_dates=n_dates), MIN_HEADLINE_DATES)
 
     assert result["pt_t_stat"] > PT_T_HURDLE
     assert result["pt_verdict"] == "insufficient_dates"
@@ -176,7 +176,7 @@ def test_dates_too_thin_to_estimate_the_null_are_dropped_and_counted():
     thin = PT_MIN_ROWS_PER_DATE - 1
     records += _table(BASE_DATE + timedelta(days=900), a=thin, b=0, c=0, d=0)
 
-    result = pesaran_timmermann(records, MIN_FORECAST_DATES)
+    result = pesaran_timmermann(records, MIN_HEADLINE_DATES)
     assert result["pt_n_dates"] == 25
     assert result["pt_n_dates_dropped"] == 1
 
@@ -192,13 +192,13 @@ def test_records_with_no_forecast_date_are_excluded_not_pooled():
     records = _panel(table, n_dates=22)
     undated = [_rec("down", "down", None) for _ in range(500)]
 
-    with_undated = pesaran_timmermann(records + undated, MIN_FORECAST_DATES)
-    without = pesaran_timmermann(records, MIN_FORECAST_DATES)
+    with_undated = pesaran_timmermann(records + undated, MIN_HEADLINE_DATES)
+    without = pesaran_timmermann(records, MIN_HEADLINE_DATES)
     assert with_undated == without
 
 
 def test_a_single_date_yields_no_statistic():
-    result = pesaran_timmermann(_table(BASE_DATE, a=95, b=5, c=65, d=35), MIN_FORECAST_DATES)
+    result = pesaran_timmermann(_table(BASE_DATE, a=95, b=5, c=65, d=35), MIN_HEADLINE_DATES)
     assert result["pt_n_dates"] == 1
     assert result["pt_t_stat"] is None
     assert result["pt_excess_pp"] is None
@@ -206,8 +206,8 @@ def test_a_single_date_yields_no_statistic():
 
 
 def test_the_result_shape_is_constant_so_an_absent_statistic_is_visible():
-    computed = pesaran_timmermann(_panel(lambda fd, i: _table(fd, 95, 5, 65, 35)), MIN_FORECAST_DATES)
-    absent = pesaran_timmermann([], MIN_FORECAST_DATES)
+    computed = pesaran_timmermann(_panel(lambda fd, i: _table(fd, 95, 5, 65, 35)), MIN_HEADLINE_DATES)
+    absent = pesaran_timmermann([], MIN_HEADLINE_DATES)
     assert set(computed) == set(absent)
     assert absent["pt_verdict"] == "insufficient_dates"
 
@@ -215,7 +215,7 @@ def test_the_result_shape_is_constant_so_an_absent_statistic_is_visible():
 def test_pesaran_timmermann_does_not_mutate_its_input():
     records = _panel(lambda fd, i: _table(fd, 95, 5, 65, 35))
     snapshot = [dict(r) for r in records]
-    pesaran_timmermann(records, MIN_FORECAST_DATES)
+    pesaran_timmermann(records, MIN_HEADLINE_DATES)
     assert records == snapshot
 
 
@@ -225,7 +225,7 @@ def test_pesaran_timmermann_does_not_mutate_its_input():
 
 
 def test_newey_west_bandwidth_matches_the_published_rule():
-    assert newey_west_lag(MIN_FORECAST_DATES) == 2  # floor(4 * 0.2^(2/9))
+    assert newey_west_lag(MIN_HEADLINE_DATES) == 2  # floor(4 * 0.2^(2/9))
     assert newey_west_lag(100) == 4
     assert newey_west_lag(1) == 0
     assert newey_west_lag(2) <= 1  # never exceeds T - 1

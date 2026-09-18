@@ -278,10 +278,10 @@ def served_panel():
     5-6 dates per horizon cannot support an honest isotonic fit, so this fits
     nothing: it is the baseline the next retrain's
     `cv_results[h]["exceedance_calibration"]` will be checked against once the
-    panel matures past MIN_FORECAST_DATES=20.
+    panel matures past MIN_HEADLINE_DATES=20.
     """
     from backtest.friction import actionable_threshold
-    from backtest.scoring import MIN_FORECAST_DATES, excluded_forecast_date, price_tier
+    from backtest.scoring import MIN_HEADLINE_DATES, excluded_forecast_date, price_tier
     from sqlalchemy import text
 
     db = SessionLocal()
@@ -303,7 +303,7 @@ def served_panel():
     df["forecast_date"] = pd.to_datetime(df["forecast_date"]).dt.date
     reasons = df["forecast_date"].map(excluded_forecast_date)
     df = df[reasons.isna()].reset_index(drop=True)
-    out = {"min_forecast_dates": MIN_FORECAST_DATES, "horizons": {}}
+    out = {"min_forecast_dates": MIN_HEADLINE_DATES, "horizons": {}}
     for h, g in sorted(df.groupby("h")):
         g = g.copy()
         b = pd.to_numeric(g["base_price"], errors="coerce").to_numpy(float)
@@ -321,7 +321,7 @@ def served_panel():
             "dates": n_dates,
             "rows_with_exceed_p": int(have.sum()),
             "dates_with_exceed_p": n_dates_p,
-            "mature": bool(n_dates_p >= MIN_FORECAST_DATES),
+            "mature": bool(n_dates_p >= MIN_HEADLINE_DATES),
         }
         if have.any():
             thr = np.array([actionable_threshold(price_tier(float(c)), "csfloat") for c in q[have]])

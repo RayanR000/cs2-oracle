@@ -33,7 +33,7 @@ CONFIDENCE_TARGET_ACCURACY = 80.0
 # (item_id, forecast_date, horizon_days) with no model_version in it — so the
 # suffix never separated a row from another, it only forked the scoring cohort.
 #
-# The fork is what kept every cohort under MIN_FORECAST_DATES: the stored panel
+# The fork is what kept every cohort under MIN_HEADLINE_DATES: the stored panel
 # split `lgbm-v3-regime` (8 forecast dates) / `lgbm-v3` (2) / `-global-only` (1),
 # and `score_cohort` keys on the label, so run 31409508960 scored 110,615 frozen
 # outcomes and returned NO HEADLINE (insufficient_dates) at every horizon.
@@ -101,7 +101,7 @@ EXCLUDED_FORECAST_DATES = {
     # dollar coverage is an artifact of the rebasing. Critically it is the ONLY
     # h=30 date in the panel, so every published h=30 figure rested on this one
     # contaminated cohort. Dropping it leaves h=30 with zero clean dates — below
-    # MIN_FORECAST_DATES — which is the honest state: there is no valid h=30
+    # MIN_HEADLINE_DATES — which is the honest state: there is no valid h=30
     # measurement yet. See docs/research/2026-08-19-deep-model-review.md §3.
     date(2025, 12, 1): "replay (created 2026-07-17); quote matches the 2026-07-18"
     " frame, not its nominal date — the only h=30 date, so it"
@@ -150,13 +150,17 @@ def excluded_forecast_date(forecast_date) -> str | None:
 # "differences" in that report are mostly which of the two dates each cohort
 # happened to contain.
 #
-# 8 is a judgement call, not a derivation: enough dates to span more than one
-# market swing without demanding a quarter of history before any number is
-# quoted. Lowered from 20 on 2026-09-17 to activate the served-outcome feedback
-# calibration sooner — the [0.5, 2.0] clamp in served_recalibration protects
-# against wild estimates on few dates, and at 8 dates the h=3 panel already has
-# 7,169 rows showing 94.7% coverage against an 80% target.
-MIN_FORECAST_DATES = 8
+# Publishable claims, PT headlines, promotion gates, and transfer conclusions.
+# 20 is a judgement call, not a derivation: enough dates to span more than one
+# market swing. It must not be lowered to activate an operational calibration
+# mechanism.
+MIN_HEADLINE_DATES = 20
+
+# Operational served-width feedback only. 8 activates the served-outcome
+# feedback calibration sooner — the [0.5, 2.0] clamp in served_recalibration
+# protects against wild estimates on few dates, and at 8 dates the h=3 panel
+# already has 7,169 rows showing 94.7% coverage against an 80% target.
+MIN_FEEDBACK_DATES = 8
 
 
 # Staleness bands over `base_stale_run_days`, as (label, lower, upper) with
@@ -286,7 +290,7 @@ def block_bootstrap_ci(values, clusters, n_resamples=N_BOOTSTRAP, ci=BOOTSTRAP_C
 
     ``bootstrap_ci`` resamples individual records, which assumes they are
     independent draws. Directional outcomes are not: they are clustered by
-    forecast date (see MIN_FORECAST_DATES). Resampling items therefore measures
+    forecast date (see MIN_HEADLINE_DATES). Resampling items therefore measures
     only the within-day spread and reports a tight interval around a quantity
     whose real uncertainty is between-day.
 
@@ -516,7 +520,7 @@ def score_cohort(records: list[dict]) -> tuple[dict, int]:
     # Which stored labels this cohort pooled, in DISTINCT FORECAST DATES each.
     # served_identity merges rows that differ only by serving configuration, and
     # a merge is only honest if the payload says what went into it. Dates rather
-    # than row counts because dates are the unit MIN_FORECAST_DATES counts: a
+    # than row counts because dates are the unit MIN_HEADLINE_DATES counts: a
     # config contributing 1 date to a 20-date panel is a different claim from one
     # contributing 10.
     #
@@ -530,7 +534,7 @@ def score_cohort(records: list[dict]) -> tuple[dict, int]:
     # Serial-correlation-robust Pesaran-Timmermann, computed per forecast date
     # with a t-stat over dates. THIS is the headline; DA is context for it. See
     # backtest/directional_test.py for why the plain version does not apply.
-    pt = pesaran_timmermann(records, MIN_FORECAST_DATES)
+    pt = pesaran_timmermann(records, MIN_HEADLINE_DATES)
 
     # Friction-conditioned accuracy, on the subset whose predicted move clears
     # the round trip plus the tier's spread. Scoped to h in {14, 30}; outside
@@ -540,7 +544,7 @@ def score_cohort(records: list[dict]) -> tuple[dict, int]:
     # The horizon is read off the first record because records are grouped by
     # (horizon, model_version) before they get here, so a cohort cannot mix
     # horizons. A record predating the field yields None, which is out_of_scope.
-    actionable = actionable_metrics(records, records[0].get("horizon_days"), MIN_FORECAST_DATES)
+    actionable = actionable_metrics(records, records[0].get("horizon_days"), MIN_HEADLINE_DATES)
 
     metrics = {
         "mae": round(mae, 4),
@@ -586,7 +590,7 @@ def score_cohort(records: list[dict]) -> tuple[dict, int]:
         "directional_accuracy_ci_clustered_lower": dir_ci_cl_lower,
         "directional_accuracy_ci_clustered_upper": dir_ci_cl_upper,
         "distinct_forecast_dates": distinct_dates,
-        "date_coverage_sufficient": distinct_dates >= MIN_FORECAST_DATES,
+        "date_coverage_sufficient": distinct_dates >= MIN_HEADLINE_DATES,
         "mae_ci_lower": mae_ci_lower,
         "mae_ci_upper": mae_ci_upper,
     }

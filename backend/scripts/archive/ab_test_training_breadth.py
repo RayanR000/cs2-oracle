@@ -144,7 +144,7 @@ from backtest.directional_test import (
     realised_down_rate,
 )
 from backtest.paired_mde import paired_da_difference
-from backtest.scoring import MIN_FORECAST_DATES as MIN_PT_DATES
+from backtest.scoring import MIN_HEADLINE_DATES as MIN_PT_DATES
 from database import SessionLocal
 from models.forecaster import ItemForecaster, phase_collapsed_sql_filter
 

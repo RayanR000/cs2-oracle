@@ -80,7 +80,7 @@ PT_T_HURDLE = 3.0
 # would drag the mean toward zero AND shrink the estimated variance, i.e. look
 # like precision that is not there.
 #
-# 30 is a judgement call in the same spirit as MIN_FORECAST_DATES: large enough
+# 30 is a judgement call in the same spirit as MIN_HEADLINE_DATES: large enough
 # that the two label distributions are estimable, small enough that no real
 # forecast date is excluded (production dates carry thousands of rows).
 PT_MIN_ROWS_PER_DATE = 30
@@ -186,7 +186,7 @@ def pesaran_timmermann(records: list[dict], min_dates: int) -> dict:
     existence, and an absent statistic is visibly absent rather than silently
     missing from the stored metrics.
 
-    ``min_dates`` is the caller's date-coverage floor (``MIN_FORECAST_DATES``);
+    ``min_dates`` is the caller's date-coverage floor (``MIN_HEADLINE_DATES``);
     it affects only ``pt_verdict``. The statistic itself is computed and
     reported whenever it is computable, because "we ran it and it was
     inconclusive" and "we could not run it" are different states and the second

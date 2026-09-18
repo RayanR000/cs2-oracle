@@ -264,7 +264,7 @@ def _aggregate_records(records):
     Replaces the old sample_count-weighted per-fold average, which treated
     every item-row inside a fold as an independent observation. Directional
     outcomes are clustered by date, so the effective sample size is the number
-    of distinct dates — see backtest/scoring.py:MIN_FORECAST_DATES.
+    of distinct dates — see backtest/scoring.py:MIN_HEADLINE_DATES.
 
     Returns the >=$1 headline cohort's metrics, matching production's headline
     tier, with the per-tier rows attached under "by_tier".
