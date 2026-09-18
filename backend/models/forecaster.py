@@ -137,6 +137,43 @@ PRICE_TIER_BOUNDARIES = [
 ]
 BIAS_EWMA_ALPHA = 0.3
 
+# Per-horizon centre objective override. The q50 model trains with "quantile"
+# (α=0.5, ≡ MAE) by default. The experiment in scripts/objective_comparison_ab.py
+# measured that MSE ("regression") wins at 30d (rank IC +0.041, significant) and
+# LambdaRank wins at 3d/7d (+0.034/+0.047) — but LambdaRank outputs ranking
+# scores, not return predictions, so it cannot drive the conformal band. MSE is
+# a drop-in replacement for the band path.
+#
+# Format: comma-separated "horizon:objective" pairs, e.g. "30:regression" or
+# "3:regression,7:regression,30:regression". Unmentioned horizons keep "quantile".
+# Set CENTRE_OBJECTIVE=quantile to force all horizons back to quantile.
+_CENTRE_OBJECTIVE_RAW = os.environ.get("CENTRE_OBJECTIVE", "30:regression")
+
+
+def _parse_centre_objectives(raw: str) -> dict[int, str]:
+    """Parse CENTRE_OBJECTIVE env var into {horizon: objective} map."""
+    if raw.strip().lower() in ("quantile", "regression", "huber"):
+        return {h: raw.strip().lower() for h in (3, 7, 14, 30)}
+    out = {}
+    for part in raw.split(","):
+        part = part.strip()
+        if not part:
+            continue
+        if ":" not in part:
+            continue
+        h_str, obj = part.split(":", 1)
+        out[int(h_str)] = obj.strip().lower()
+    return out
+
+
+CENTRE_OBJECTIVE_MAP = _parse_centre_objectives(_CENTRE_OBJECTIVE_RAW)
+
+# Per-horizon ranking head: a LambdaRank model trained alongside the q50 model,
+# producing ranking scores that are better at cross-sectional ordering than the
+# return predictions. Gated by RANKING_HEAD=1. Served as `rank_score` alongside
+# the return-based forecast.
+RANKING_HEAD_ENABLED = os.environ.get("RANKING_HEAD") == "1"
+
 # Direction upweight: multiplier for positive-return samples during training.
 # Applied in _compute_sample_weights before normalization. Set to 1.0 (neutral)
 # on 2026-08-19: at 1.5 it did not correct direction — the sign is supplied by
@@ -1059,6 +1096,7 @@ class ItemForecaster:
         # artifact can quote the calibration without re-running training.
         self.exceedance_calibration_meta: dict[int, dict[str, Any]] = {}
         self.anomaly_models: dict[int, lgb.Booster | None] = {}
+        self.ranking_models: dict[int, lgb.Booster | None] = {}
         self.vol_rank_models: dict[int, list[lgb.Booster]] = {}
         self.vol_rank_norm: dict[int, float] = {}
         self.regime_feature_cols: dict[tuple[int, str], list[str]] = {}
@@ -1507,6 +1545,10 @@ class ItemForecaster:
         docs/superpowers/plans/2026-08-16-exceedance-band-scale-phase2-plan.md.
         """
         return os.environ.get("EXCEEDANCE_SCALE") == "1"
+
+    @staticmethod
+    def ranking_head_enabled() -> bool:
+        return RANKING_HEAD_ENABLED
 
     @staticmethod
     def exceedance_head_enabled() -> bool:
@@ -4818,11 +4860,16 @@ class ItemForecaster:
             else:
                 _max_depth = trial.suggest_int("max_depth", 3, 8)
                 _lambda_l2 = trial.suggest_float("lambda_l2", 0.0, 2.0, step=0.5)
+            hz_obj = CENTRE_OBJECTIVE_MAP.get(horizon, "quantile")
+            if hz_obj == "regression":
+                obj_params = {"objective": "regression", "metric": "l2"}
+            elif hz_obj == "huber":
+                obj_params = {"objective": "huber", "alpha": 1.0, "metric": "huber"}
+            else:
+                obj_params = {"objective": "quantile", "alpha": quantile, "metric": "quantile"}
             params = {
                 "feature_pre_filter": False,
-                "objective": "quantile",
-                "alpha": quantile,
-                "metric": "quantile",
+                **obj_params,
                 "boosting_type": boosting_type,
                 "verbosity": -1,
                 "n_jobs": -1,
@@ -6107,8 +6154,9 @@ class ItemForecaster:
     def _train_horizon_inline(
         self, horizon: int, df: pd.DataFrame, max_rows: int = 300_000, per_item_row_sampling: bool = False
     ):
+        hz_obj = CENTRE_OBJECTIVE_MAP.get(horizon, "quantile")
         logger.info(f"\n{'=' * 60}")
-        logger.info(f"HORIZON {horizon}d")
+        logger.info(f"HORIZON {horizon}d (objective: {hz_obj})")
         logger.info(f"{'=' * 60}")
         _hz_start = datetime.now()
 
@@ -6219,6 +6267,19 @@ class ItemForecaster:
                     bp["feature_pre_filter"] = False
                     bp["device"] = "cuda" if _gpu_available() else "cpu"
                     bp["boosting_type"] = boosting_type
+                    hz_obj = CENTRE_OBJECTIVE_MAP.get(horizon, "quantile")
+                    if hz_obj == "regression":
+                        bp["objective"] = "regression"
+                        bp["metric"] = "l2"
+                        bp.pop("alpha", None)
+                    elif hz_obj == "huber":
+                        bp["objective"] = "huber"
+                        bp["alpha"] = 1.0
+                        bp["metric"] = "huber"
+                    else:
+                        bp["objective"] = "quantile"
+                        bp["alpha"] = q
+                        bp["metric"] = "quantile"
                     # Rewrites row sampling from the current strategy and drops
                     # any GOSS keys a pre-2026-07-29 meta.json cached for q50.
                     self._apply_row_sampling(bp, q)
@@ -6231,12 +6292,17 @@ class ItemForecaster:
 
                 base_params_by_q = {}
                 for q in self.QUANTILES:
+                    hz_obj = CENTRE_OBJECTIVE_MAP.get(horizon, "quantile")
+                    if hz_obj == "regression":
+                        obj_params = {"objective": "regression", "metric": "l2"}
+                    elif hz_obj == "huber":
+                        obj_params = {"objective": "huber", "alpha": 1.0, "metric": "huber"}
+                    else:
+                        obj_params = {"objective": "quantile", "alpha": q, "metric": "quantile"}
                     base_params_by_q[q] = {
                         "device": device,
                         "feature_pre_filter": False,
-                        "objective": "quantile",
-                        "alpha": q,
-                        "metric": "quantile",
+                        **obj_params,
                         "boosting_type": boosting_type,
                         "min_gain_to_split": 0.1,
                         "feature_fraction": 0.7,
@@ -6437,6 +6503,21 @@ class ItemForecaster:
                         num_boost_round=boost_rounds,
                     )
                     logger.info(f"  [timing] {horizon}d anomaly classifier: {time.time() - _anom_start:.1f}s")
+
+            # Ranking head: a LambdaRank model that directly optimizes
+            # within-date ranking (the production evaluation metric). Outputs
+            # ranking scores, not returns — served as `rank_score` alongside the
+            # return-based forecast for cross-sectional ordering.
+            if RANKING_HEAD_ENABLED:
+                _rank_start = time.time()
+                self.ranking_models[horizon] = self._fit_ranking_head(
+                    X_train, y_train, train_set["date"].to_numpy(),
+                    X_val, y_val, val_set["date"].to_numpy(),
+                    self._direction_tree_params(per_quantile_params),
+                    horizon=horizon,
+                    num_boost_round=boost_rounds,
+                )
+                logger.info(f"  [timing] {horizon}d ranking head: {time.time() - _rank_start:.1f}s")
 
             # Train regime-specific models (optional: SKIP_REGIMES=1 to skip)
             #
@@ -7568,6 +7649,80 @@ class ItemForecaster:
             random_state=random_state,
         )
         return lgb.train(params, dtrain, num_boost_round=num_boost_round, callbacks=[lgb.log_evaluation(0)])
+
+    def _fit_ranking_head(
+        self,
+        X_train,
+        y_train,
+        train_dates,
+        X_val,
+        y_val,
+        val_dates,
+        tree_params: dict,
+        horizon: int | None = None,
+        num_boost_round: int = 300,
+    ) -> lgb.Booster | None:
+        """LambdaRank model optimizing within-date ranking of items by return.
+
+        Converts continuous returns to per-date decile relevance labels (0-9)
+        and trains with the lambdarank objective. Outputs ranking scores that
+        are better at cross-sectional ordering than the q50 return predictions.
+        """
+        def _to_relevance(returns, dates, n_bins=10):
+            frame = pd.DataFrame({"r": returns, "d": dates})
+            frame["rel"] = 0
+            for _, g in frame.groupby("d"):
+                if len(g) < 5:
+                    frame.loc[g.index, "rel"] = n_bins // 2
+                    continue
+                nb = min(n_bins, len(g))
+                try:
+                    frame.loc[g.index, "rel"] = pd.qcut(
+                        g["r"], nb, labels=False, duplicates="drop"
+                    )
+                except ValueError:
+                    frame.loc[g.index, "rel"] = np.argsort(np.argsort(g["r"])) * (n_bins - 1) // len(g)
+            return frame["rel"].astype(int).to_numpy()
+
+        train_order = np.argsort(train_dates, kind="stable")
+        X_tr = X_train.iloc[train_order] if isinstance(X_train, pd.DataFrame) else np.asarray(X_train)[train_order]
+        y_tr_rel = _to_relevance(y_train, train_dates)[train_order]
+        tr_dates_sorted = np.asarray(train_dates)[train_order]
+        _, tr_group_counts = np.unique(tr_dates_sorted, return_counts=True)
+
+        val_order = np.argsort(val_dates, kind="stable")
+        X_vl = X_val.iloc[val_order] if isinstance(X_val, pd.DataFrame) else np.asarray(X_val)[val_order]
+        y_vl_rel = _to_relevance(y_val, val_dates)[val_order]
+        vl_dates_sorted = np.asarray(val_dates)[val_order]
+        _, vl_group_counts = np.unique(vl_dates_sorted, return_counts=True)
+
+        n_levels = int(max(y_tr_rel.max(), y_vl_rel.max())) + 1
+        label_gain = ",".join(str(2**i - 1) for i in range(n_levels))
+
+        ds_params = {"max_bin": self.MAX_BIN, "feature_pre_filter": False}
+        dtrain = lgb.Dataset(X_tr, y_tr_rel, group=tr_group_counts, params=ds_params)
+        dval = lgb.Dataset(X_vl, y_vl_rel, reference=dtrain, group=vl_group_counts, params=ds_params)
+        dtrain.construct()
+        dval.construct()
+
+        params = dict(tree_params)
+        params.update(
+            objective="lambdarank",
+            metric="ndcg",
+            eval_at=[10, 50],
+            lambdarank_truncation_level=100,
+            label_gain=label_gain,
+            verbosity=-1,
+            n_jobs=-1,
+            random_state=42,
+        )
+
+        booster = lgb.train(
+            params, dtrain, num_boost_round=num_boost_round,
+            valid_sets=[dval], callbacks=[lgb.log_evaluation(0)],
+        )
+        logger.info(f"  {horizon}d ranking head trained ({num_boost_round} rounds)")
+        return booster
 
     def _fit_anomaly_classifier(
         self,
@@ -9765,6 +9920,10 @@ class ItemForecaster:
             # frame band_scale scored above.
             exceed_p_arr = self.exceedance_probability(horizon, latest_rows)
             anomaly_p_arr = self.anomaly_probability(horizon, latest_rows)
+            rank_score_arr = None
+            rank_clf = self.ranking_models.get(horizon)
+            if rank_clf is not None:
+                rank_score_arr = rank_clf.predict(X_horizon)
 
             _dir_name = {0: "down", 1: "flat", 2: "up"}
             fallback_n = 0
@@ -9808,6 +9967,7 @@ class ItemForecaster:
                     "confidence": confidence,
                     "exceed_p": (float(exceed_p_arr[i]) if exceed_p_arr is not None else None),
                     "anomaly_p": (float(anomaly_p_arr[i]) if anomaly_p_arr is not None else None),
+                    "rank_score": (float(rank_score_arr[i]) if rank_score_arr is not None else None),
                 }
 
             self._warn_no_classifier(horizon, fallback_n, fallback_flat)
@@ -10883,6 +11043,15 @@ class ItemForecaster:
         if _n_exc:
             logger.info(f"  Saved {_n_exc} exceedance classifiers")
 
+        # Save ranking heads (LambdaRank models for cross-sectional ordering).
+        _n_rank = 0
+        for horizon, clf in self.ranking_models.items():
+            if clf is not None:
+                clf.save_model(os.path.join(self.model_dir, f"rank_{horizon}d.txt"))
+                _n_rank += 1
+        if _n_rank:
+            logger.info(f"  Saved {_n_rank} ranking heads")
+
         # Save anomaly classifiers.
         _n_anom = 0
         for horizon, clf in self.anomaly_models.items():
@@ -11124,6 +11293,7 @@ class ItemForecaster:
             "n_ensembles": self.N_ENSEMBLES,
             "ensemble_seeds": self.ENSEMBLE_SEEDS,
             "ensemble_feature_fractions": self.ENSEMBLE_FEATURE_FRACTIONS,
+            "centre_objective": {str(h): CENTRE_OBJECTIVE_MAP.get(h, "quantile") for h in self.HORIZONS},
             "training_window_days": 1460,
             "feature_importance": feature_importance,
             "cv_results": cv_serial,
@@ -11426,6 +11596,17 @@ class ItemForecaster:
                     logger.warning(f"  Corrupt anomaly classifier {apath}, skipping: {e}")
         if self.anomaly_models:
             logger.info(f"  Loaded {len(self.anomaly_models)} anomaly classifiers")
+
+        # Load ranking heads (LambdaRank models).
+        for horizon in self.HORIZONS:
+            rpath = os.path.join(self.model_dir, f"rank_{horizon}d.txt")
+            if os.path.exists(rpath):
+                try:
+                    self.ranking_models[horizon] = lgb.Booster(model_file=rpath)
+                except (lgb.basic.LightGBMError, Exception) as e:
+                    logger.warning(f"  Corrupt ranking head {rpath}, skipping: {e}")
+        if self.ranking_models:
+            logger.info(f"  Loaded {len(self.ranking_models)} ranking heads")
 
         # Load shrink-K models.
         for horizon in self.HORIZONS:

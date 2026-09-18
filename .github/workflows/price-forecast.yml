@@ -278,6 +278,17 @@ jobs:
           # Takes effect at the next full / train-only retrain (predict-only
           # serves whatever K the artifact's table was built with).
           SHRINK_K_GBM: "0"
+          # MSE ("regression") beats quantile (MAE) at 30d centre by +0.041
+          # rank IC (significant) in scripts/objective_comparison_ab.py.
+          # Unmentioned horizons keep quantile. Drop-in: the objective swap
+          # does not touch conformal or the band path.
+          CENTRE_OBJECTIVE: "30:regression"
+          # LambdaRank sidecar: beats q50 ordering on the clean-anchor
+          # cohort at all 4 horizons (+0.026 to +0.065 tied rank IC).
+          # Outputs a ranking score, not a return — served as rank_score
+          # alongside the forecast, never drives the conformal band.
+          # ~4 boosters, modest cost. Builds at the next retrain.
+          RANKING_HEAD: "1"
         run: |
           echo "🔮 Mode: ${{ steps.mode.outputs.mode }}"
           set -o pipefail
