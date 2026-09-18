@@ -73,3 +73,37 @@ def log_meta_json(meta: dict, tmp_dir: str):
     with open(path, "w") as f:
         json.dump(meta, f, default=str)
     mlflow.log_artifact(path)
+
+
+def register_model(run_id: str, model_name: str = "cs2-oracle-forecaster"):
+    """Register a training run's artifacts as a model version."""
+    if not mlflow_enabled():
+        return None
+    import mlflow
+
+    try:
+        uri = f"runs:/{run_id}/model"
+        mv = mlflow.register_model(uri, model_name)
+        logger.info(f"Registered model {model_name} version {mv.version}")
+        return mv
+    except Exception as e:
+        logger.warning(f"Model registration failed: {e}")
+        return None
+
+
+def promote_model(model_name: str, version: int, stage: str = "Production"):
+    """Transition a model version to a new stage (Staging/Production/Archived)."""
+    if not mlflow_enabled():
+        return None
+    import mlflow
+
+    client = mlflow.tracking.MlflowClient()
+    try:
+        client.transition_model_version_stage(
+            name=model_name, version=str(version), stage=stage
+        )
+        logger.info(f"Promoted {model_name} v{version} to {stage}")
+        return True
+    except Exception as e:
+        logger.warning(f"Model promotion failed: {e}")
+        return None
