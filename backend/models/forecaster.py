@@ -9487,6 +9487,19 @@ class ItemForecaster:
     def predict(self, item_ids: list[int] = None) -> pd.DataFrame:
         logger.info("Generating forecasts...")
 
+        # Live-refresh the served-coverage feedback factor from the panel if the
+        # artifact's factor is empty (pre-gate-change artifact) and a DB session
+        # is available. This lets predict-only runs pick up the feedback without
+        # waiting for a retrain to bake it into meta.json.
+        if not self.served_coverage_factor and self.db is not None:
+            live = served_recalibration.served_coverage_factors(self.db, self.HORIZONS)
+            if live:
+                self.served_coverage_factor = live
+                logger.info(
+                    f"Served-coverage factors (live panel read): "
+                    f"{ {h: round(v, 4) for h, v in live.items()} }"
+                )
+
         # Try to load cached engineered features first (major speedup)
         df = self._load_engineered_cache()
 
