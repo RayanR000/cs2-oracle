@@ -5,7 +5,7 @@ FastAPI server for CS2 Market Intelligence Platform
 import threading
 from contextlib import asynccontextmanager
 
-from api.routes import ab_test, accuracy, auth, events, items, market, opportunities
+from api.routes import ab_test, accuracy, auth, events, items, market, monitoring, opportunities
 from config import settings
 from database import init_db
 from fastapi import FastAPI
@@ -43,6 +43,7 @@ app.include_router(auth.router)
 app.include_router(market.router)
 app.include_router(accuracy.router)
 app.include_router(ab_test.router)
+app.include_router(monitoring.router)
 
 
 @app.middleware("http")
