@@ -1540,7 +1540,7 @@ class ItemForecaster:
 
         Mutually exclusive with LEARNED_SCALE and SIGMA_EXPONENT — three alternative
         band denominators, not layers (`_calibrate_conformal` raises if combined).
-        Off by default; the served headline stays gated by MIN_FORECAST_DATES=20.
+        Off by default; the served headline stays gated by MIN_FORECAST_DATES=8.
         Set EXCEEDANCE_SCALE=1. See
         docs/superpowers/plans/2026-08-16-exceedance-band-scale-phase2-plan.md.
         """

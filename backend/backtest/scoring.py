@@ -150,10 +150,13 @@ def excluded_forecast_date(forecast_date) -> str | None:
 # "differences" in that report are mostly which of the two dates each cohort
 # happened to contain.
 #
-# 20 is a judgement call, not a derivation: enough dates to span more than one
+# 8 is a judgement call, not a derivation: enough dates to span more than one
 # market swing without demanding a quarter of history before any number is
-# quoted. It is deliberately well above the 2 currently stored.
-MIN_FORECAST_DATES = 20
+# quoted. Lowered from 20 on 2026-09-17 to activate the served-outcome feedback
+# calibration sooner — the [0.5, 2.0] clamp in served_recalibration protects
+# against wild estimates on few dates, and at 8 dates the h=3 panel already has
+# 7,169 rows showing 94.7% coverage against an 80% target.
+MIN_FORECAST_DATES = 8
 
 
 # Staleness bands over `base_stale_run_days`, as (label, lower, upper) with

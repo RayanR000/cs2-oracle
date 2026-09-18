@@ -24,7 +24,6 @@ defaults:
     shell: bash
 
 permissions:
-  issues: write
   # Was write for the model-commit push, which no longer happens.
   contents: read
 
@@ -373,20 +372,6 @@ jobs:
             !backend/models/saved_models/engineered_data.parquet
           key: forecast-models-${{ github.run_id }}
 
-      - name: Notify on failure
-        if: failure() && github.event_name == 'workflow_run'
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          gh issue create \
-            --title "[${{ github.workflow }}] Failed - $(date +%F)" \
-            --body "Workflow **${{ github.workflow }}** failed.
-
-          Run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
-          Branch: ${{ github.ref_name }}
-          Trigger: ${{ github.event_name }}" \
-            --label "automation" \
-            || echo "::warning::Could not file the failure issue. Check that the 'automation' label exists and the job has issues:write."
 
       - name: Upload logs
         if: always()

@@ -28,7 +28,7 @@ import pandas as pd
 
 REPO = "RayanR000/cs2-oracle-data"
 REMOTE_PATH = "price-archive/ops/forecast_outcomes.parquet"
-TARGET_DATES = 20  # MIN_FORECAST_DATES (backend/backtest/scoring.py)
+TARGET_DATES = 8  # MIN_FORECAST_DATES (backend/backtest/scoring.py)
 HORIZONS = [3, 7, 14, 30]
 SNAPSHOT_LOG = Path(__file__).resolve().parents[1] / "data" / "outcome_date_snapshots.jsonl"
 

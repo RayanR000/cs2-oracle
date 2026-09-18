@@ -67,7 +67,7 @@ def test_gate_needs_min_forecast_dates(_stub=None):
 def test_gate_is_per_horizon(_stub=None):
     r = np.random.default_rng(2).uniform(0, 1.2, 200)
     rich = _panel(3, r, n_dates=25)
-    poor = _panel(30, r, n_dates=8)
+    poor = _panel(30, r, n_dates=MIN_FORECAST_DATES - 1)
     f = factors_from_panel(pd.concat([rich, poor], ignore_index=True), [3, 30])
     assert 3 in f and 30 not in f
 
