@@ -91,19 +91,19 @@ def register_model(run_id: str, model_name: str = "cs2-oracle-forecaster"):
         return None
 
 
-def promote_model(model_name: str, version: int, stage: str = "Production"):
-    """Transition a model version to a new stage (Staging/Production/Archived)."""
+def promote_model(model_name: str, version: int, alias: str = "production"):
+    """Set an alias on a model version (e.g. 'production', 'staging')."""
     if not mlflow_enabled():
         return None
     import mlflow
 
     client = mlflow.tracking.MlflowClient()
     try:
-        client.transition_model_version_stage(
-            name=model_name, version=str(version), stage=stage
+        client.set_registered_model_alias(
+            name=model_name, alias=alias, version=str(version)
         )
-        logger.info(f"Promoted {model_name} v{version} to {stage}")
+        logger.info(f"Set alias '{alias}' on {model_name} v{version}")
         return True
     except Exception as e:
-        logger.warning(f"Model promotion failed: {e}")
+        logger.warning(f"Model alias assignment failed: {e}")
         return None

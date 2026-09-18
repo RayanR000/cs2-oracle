@@ -40,6 +40,31 @@ class TestModelRegistry:
         result = register_model("fake-run-id", "cs2-oracle-forecaster")
         assert result is None
 
+    def test_promote_sets_alias(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("MLFLOW_ENABLED", "1")
+        monkeypatch.setenv("MLFLOW_TRACKING_URI", f"sqlite:///{tmp_path / 'mlruns.db'}")
+        _reset()
+
+        mlflow.set_tracking_uri(f"sqlite:///{tmp_path / 'mlruns.db'}")
+        mlflow.set_experiment("test-promote")
+
+        with mlflow.start_run() as run:
+            mlflow.pyfunc.log_model(
+                artifact_path="model",
+                python_model=mlflow.pyfunc.PythonModel(),
+            )
+            run_id = run.info.run_id
+
+        mv = register_model(run_id, "test-promote-model")
+        assert mv is not None
+
+        result = promote_model("test-promote-model", int(mv.version), alias="production")
+        assert result is True
+
+        client = mlflow.tracking.MlflowClient(f"sqlite:///{tmp_path / 'mlruns.db'}")
+        alias_mv = client.get_model_version_by_alias("test-promote-model", "production")
+        assert alias_mv.version == mv.version
+
     def test_promote_noop_when_disabled(self, monkeypatch):
         monkeypatch.delenv("MLFLOW_ENABLED", raising=False)
         _reset()
