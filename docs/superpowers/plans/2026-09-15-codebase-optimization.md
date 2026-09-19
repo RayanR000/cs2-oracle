@@ -36,7 +36,7 @@ Targets: `api/routes/items.py`, `api/routes/market.py`, `api/routes/opportunitie
 - Consumes: `PriceHistory` model from `database.py`, `Session` from SQLAlchemy
 - Produces: `_latest_prices(db: Session, item_ids: list[int]) -> dict[int, float]` — same signature, same return type, batched implementation
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 ```python
 # backend/tests/test_latest_prices_batch.py
@@ -60,12 +60,12 @@ def test_latest_prices_empty_list(db_session):
     assert result == {}
 ```
 
-- [ ] **Step 2: Run test to verify it fails**
+- [x] **Step 2: Run test to verify it fails**
 
 Run: `cd backend && python -m pytest tests/test_latest_prices_batch.py -v`
 Expected: FAIL — current implementation uses per-item loop
 
-- [ ] **Step 3: Replace with window-function query**
+- [x] **Step 3: Replace with window-function query**
 
 Replace lines 106-118 of `backend/api/routes/items.py`:
 
@@ -92,12 +92,12 @@ def _latest_prices(db: Session, item_ids: list[int]) -> dict[int, float]:
     return {r.item_id: float(r.price) for r in rows}
 ```
 
-- [ ] **Step 4: Run test to verify it passes**
+- [x] **Step 4: Run test to verify it passes**
 
 Run: `cd backend && python -m pytest tests/test_latest_prices_batch.py -v`
 Expected: PASS
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add backend/api/routes/items.py backend/tests/test_latest_prices_batch.py
@@ -115,7 +115,7 @@ git commit -m "perf(api): batch _latest_prices into single window-function query
 - Consumes: `_build_market_summary(db, type, q)` internals
 - Produces: Same function, same return type — just removes the conditional skip
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 ```python
 # backend/tests/test_market_summary_filter.py
@@ -132,11 +132,11 @@ def test_market_summary_always_filters_item_ids(db_session_with_items):
     assert "in_" in calls_str or len(calls_str) > 0  # structural test
 ```
 
-- [ ] **Step 2: Run test to verify it fails**
+- [x] **Step 2: Run test to verify it fails**
 
 Run: `cd backend && python -m pytest tests/test_market_summary_filter.py -v`
 
-- [ ] **Step 3: Remove the conditional guard**
+- [x] **Step 3: Remove the conditional guard**
 
 In `backend/api/routes/market.py`, change lines 87-91 from:
 
@@ -153,11 +153,11 @@ price_query = price_query.filter(PriceHistory.item_id.in_(item_ids))
 
 Always apply the `IN` filter — `item_ids` is already computed from the items query above.
 
-- [ ] **Step 4: Run test to verify it passes**
+- [x] **Step 4: Run test to verify it passes**
 
 Run: `cd backend && python -m pytest tests/test_market_summary_filter.py -v`
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add backend/api/routes/market.py backend/tests/test_market_summary_filter.py
@@ -175,7 +175,7 @@ git commit -m "perf(api): always filter market summary prices by item_ids"
 - Consumes: `get_price_history` endpoint internals
 - Produces: Same endpoint response — pagination pushed to SQL
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 ```python
 # backend/tests/test_price_history_pagination.py
@@ -202,7 +202,7 @@ def test_price_history_uses_sql_pagination(db_session_with_prices):
         pass  # endpoint call here depends on test fixture setup
 ```
 
-- [ ] **Step 2: Implement SQL-side pagination**
+- [x] **Step 2: Implement SQL-side pagination**
 
 Replace the load-all-then-slice pattern (lines 404-416) with:
 
@@ -232,11 +232,11 @@ records = (
 )
 ```
 
-- [ ] **Step 3: Run existing tests**
+- [x] **Step 3: Run existing tests**
 
 Run: `cd backend && python -m pytest tests/ -k "price_history" -v`
 
-- [ ] **Step 4: Commit**
+- [x] **Step 4: Commit**
 
 ```bash
 git add backend/api/routes/items.py
@@ -254,7 +254,7 @@ git commit -m "perf(api): use SQL OFFSET/LIMIT for price history pagination"
 - Consumes: `_trends_parquet(item, item_id, db)` and DB fallback in `get_item_trends`
 - Produces: Same return types — queries limited to the indicator window
 
-- [ ] **Step 1: Limit the price history query**
+- [x] **Step 1: Limit the price history query**
 
 In both `_trends_parquet` (lines 558-565) and the DB fallback (lines 618-621), replace:
 
@@ -283,11 +283,11 @@ price_points = [
 
 Also remove the separate `latest_price` query (line 558-560) — use `price_points[-1]` instead.
 
-- [ ] **Step 2: Run existing tests**
+- [x] **Step 2: Run existing tests**
 
 Run: `cd backend && python -m pytest tests/ -k "trend" -v`
 
-- [ ] **Step 3: Commit**
+- [x] **Step 3: Commit**
 
 ```bash
 git add backend/api/routes/items.py
@@ -305,7 +305,7 @@ git commit -m "perf(api): limit trend indicator queries to last 35 rows"
 - Consumes: `_latest_forecasts(db, horizon_days)`, `select_opportunities(forecasts, items_map, type_filter, limit)`
 - Produces: Same 3 endpoints, now routing through `_latest_forecasts` with proper anchor gating
 
-- [ ] **Step 1: Refactor `/undervalued`, `/overheated`, `/momentum` to use `_latest_forecasts`**
+- [x] **Step 1: Refactor `/undervalued`, `/overheated`, `/momentum` to use `_latest_forecasts`**
 
 Replace the 3 inlined subqueries (lines 160-281) with calls to the shared helper:
 
@@ -337,11 +337,11 @@ def get_momentum(
 
 This eliminates ~120 lines of duplicated subqueries and adds the `anchor_clean_clause` that `_latest_forecasts` already applies.
 
-- [ ] **Step 2: Run existing tests**
+- [x] **Step 2: Run existing tests**
 
 Run: `cd backend && python -m pytest tests/ -k "opportunit" -v`
 
-- [ ] **Step 3: Commit**
+- [x] **Step 3: Commit**
 
 ```bash
 git add backend/api/routes/opportunities.py
@@ -359,7 +359,7 @@ git commit -m "fix(api): route opportunity endpoints through _latest_forecasts w
 - Consumes: `_query_prediction_accuracy` internals, `outcome_stats` DB fallback
 - Produces: Same endpoints, cached schema, single-query fallback
 
-- [ ] **Step 1: Cache the DESCRIBE result**
+- [x] **Step 1: Cache the DESCRIBE result**
 
 Replace the per-request `DESCRIBE` at line 121 with a module-level cached check:
 
@@ -374,7 +374,7 @@ def _has_price_tier(q) -> bool:
     return _PA_HAS_PRICE_TIER
 ```
 
-- [ ] **Step 2: Combine the 4 DB queries in `outcome_stats` fallback into 1**
+- [x] **Step 2: Combine the 4 DB queries in `outcome_stats` fallback into 1**
 
 Replace lines 546-584 with:
 
@@ -389,11 +389,11 @@ row = db.query(
 total, dir_correct, avg_abs, avg_pct = row
 ```
 
-- [ ] **Step 3: Run existing tests**
+- [x] **Step 3: Run existing tests**
 
 Run: `cd backend && python -m pytest tests/ -k "accuracy" -v`
 
-- [ ] **Step 4: Commit**
+- [x] **Step 4: Commit**
 
 ```bash
 git add backend/api/routes/accuracy.py
@@ -411,7 +411,7 @@ git commit -m "perf(api): cache schema discovery and consolidate outcome_stats q
 - Consumes: `get_regime_ab_test`, `get_ensemble_ab_test` endpoint internals
 - Produces: `_ab_comparison(db, arms: dict[str, tuple[str, str]], ...)` shared helper
 
-- [ ] **Step 1: Extract the shared pattern**
+- [x] **Step 1: Extract the shared pattern**
 
 Both endpoints do: `MAX(evaluation_date)` → 3 × `SELECT ... WHERE evaluation_date = :d` → merge by horizon. Extract:
 
@@ -455,11 +455,11 @@ def _ab_comparison(
 
 Then both endpoints become ~5-line wrappers.
 
-- [ ] **Step 2: Run existing tests**
+- [x] **Step 2: Run existing tests**
 
 Run: `cd backend && python -m pytest tests/ -k "ab_test" -v`
 
-- [ ] **Step 3: Commit**
+- [x] **Step 3: Commit**
 
 ```bash
 git add backend/api/routes/ab_test.py
@@ -484,7 +484,7 @@ Targets: `collectors/csgotrader_aggregator.py`, `collectors/supply_depth.py`, `c
 - Consumes: `CSGOTraderAggregator.fetch_all_market_data()`, `self.session`
 - Produces: Same return type (`dict`), parallel fetch, session lifecycle
 
-- [ ] **Step 1: Write the test**
+- [x] **Step 1: Write the test**
 
 ```python
 # backend/tests/test_aggregator_parallel.py
@@ -509,7 +509,7 @@ def test_aggregator_context_manager():
     assert hasattr(agg, "close") or hasattr(agg, "__exit__")
 ```
 
-- [ ] **Step 2: Implement parallel fetch + session lifecycle**
+- [x] **Step 2: Implement parallel fetch + session lifecycle**
 
 In `csgotrader_aggregator.py`:
 
@@ -548,11 +548,11 @@ with ThreadPoolExecutor(max_workers=len(endpoints)) as pool:
 
 Note: `requests.Session` is thread-safe for concurrent reads (GET requests).
 
-- [ ] **Step 3: Run tests**
+- [x] **Step 3: Run tests**
 
 Run: `cd backend && python -m pytest tests/test_aggregator_parallel.py tests/ -k "aggregator" -v`
 
-- [ ] **Step 4: Commit**
+- [x] **Step 4: Commit**
 
 ```bash
 git add backend/collectors/csgotrader_aggregator.py backend/tests/test_aggregator_parallel.py
@@ -570,7 +570,7 @@ git commit -m "perf(collectors): parallelize csgotrader 7-endpoint fetch with Th
 - Consumes: `collect()`, `fetch_feed()`, `_get_json()`
 - Produces: Same return type, parallel scalar feeds, fixed session fallback
 
-- [ ] **Step 1: Parallelize scalar feeds**
+- [x] **Step 1: Parallelize scalar feeds**
 
 In `collect()`, replace line 655:
 
@@ -587,7 +587,7 @@ with ThreadPoolExecutor(max_workers=len(feeds)) as pool:
     results = list(pool.map(_fetch_with_own_session, feeds))
 ```
 
-- [ ] **Step 2: Fix `_get_json` session leak**
+- [x] **Step 2: Fix `_get_json` session leak**
 
 At line 178, wrap the fallback:
 
@@ -604,11 +604,11 @@ def _get_json(url: str, timeout: int, session: requests.Session | None = None) -
             sess.close()
 ```
 
-- [ ] **Step 3: Run existing tests**
+- [x] **Step 3: Run existing tests**
 
 Run: `cd backend && python -m pytest tests/ -k "supply" -v`
 
-- [ ] **Step 4: Commit**
+- [x] **Step 4: Commit**
 
 ```bash
 git add backend/collectors/supply_depth.py
@@ -626,7 +626,7 @@ git commit -m "perf(collectors): parallelize supply_depth scalar feeds, fix sess
 - Consumes: `price_records` (list of `PriceHistory` ORM objects)
 - Produces: `source_breakdown` dict — same keys, same values
 
-- [ ] **Step 1: Replace 11 linear scans with Counter**
+- [x] **Step 1: Replace 11 linear scans with Counter**
 
 Replace lines 482-495:
 
@@ -641,11 +641,11 @@ source_breakdown = {
 }
 ```
 
-- [ ] **Step 2: Run existing tests**
+- [x] **Step 2: Run existing tests**
 
 Run: `cd backend && python -m pytest tests/ -k "pipeline" -v`
 
-- [ ] **Step 3: Commit**
+- [x] **Step 3: Commit**
 
 ```bash
 git add backend/collectors/pipeline.py
@@ -663,7 +663,7 @@ git commit -m "perf(collectors): replace 11-pass source_breakdown with single Co
 - Consumes: `sv()`, `inc()`, sell_listings UPDATE loop, sales INSERT loop
 - Produces: Same data written, batched operations
 
-- [ ] **Step 1: Batch the sales INSERT loop**
+- [x] **Step 1: Batch the sales INSERT loop**
 
 Replace lines 559-580 (nested for loop with per-row INSERT):
 
@@ -683,7 +683,7 @@ if rows:
     )
 ```
 
-- [ ] **Step 2: Batch the sell_listings UPDATE**
+- [x] **Step 2: Batch the sell_listings UPDATE**
 
 Replace lines 447-449:
 
@@ -696,15 +696,15 @@ out_conn.executemany(
 out_conn.commit()
 ```
 
-- [ ] **Step 3: Remove commit from `sv()`**
+- [x] **Step 3: Remove commit from `sv()`**
 
 At line 183, remove `conn.commit()`. Add periodic commit every 50 items in the main loop instead.
 
-- [ ] **Step 4: Run existing tests**
+- [x] **Step 4: Run existing tests**
 
 Run: `cd backend && python -m pytest tests/ -k "backfill" -v`
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add backend/collectors/csmarketapi_backfill.py
@@ -722,7 +722,7 @@ git commit -m "perf(collectors): batch INSERT/UPDATE in csmarketapi_backfill"
 - Consumes: `_finbert` module-level, per-mention INSERT loop
 - Produces: Lazy-loaded scorer, batched inserts
 
-- [ ] **Step 1: Lazy-load FinBERT**
+- [x] **Step 1: Lazy-load FinBERT**
 
 Replace line 92:
 
@@ -736,7 +736,7 @@ def score_sentiment(text: str) -> float:
     return _finbert.score(text)
 ```
 
-- [ ] **Step 2: Batch the mention inserts**
+- [x] **Step 2: Batch the mention inserts**
 
 Replace the per-mention INSERT loop (lines 251-275):
 
@@ -762,11 +762,11 @@ if mention_params:
     )
 ```
 
-- [ ] **Step 3: Run existing tests**
+- [x] **Step 3: Run existing tests**
 
 Run: `cd backend && python -m pytest tests/ -k "sentiment" -v`
 
-- [ ] **Step 4: Commit**
+- [x] **Step 4: Commit**
 
 ```bash
 git add backend/collectors/social_sentiment.py
@@ -784,7 +784,7 @@ git commit -m "perf(collectors): lazy-load FinBERT, batch social mention inserts
 - Consumes: `collect_reddit_events()` internals
 - Produces: Same return type, parallel subreddit fetch, session lifecycle
 
-- [ ] **Step 1: Fix session lifecycle + parallel fetch**
+- [x] **Step 1: Fix session lifecycle + parallel fetch**
 
 ```python
 def collect_reddit_events(db=None, session=None, snapshot_day=None, ...):
@@ -807,11 +807,11 @@ def collect_reddit_events(db=None, session=None, snapshot_day=None, ...):
 
 Note: `requests.Session` is thread-safe for GETs. If the auth token is session-scoped, verify thread safety.
 
-- [ ] **Step 2: Run existing tests**
+- [x] **Step 2: Run existing tests**
 
 Run: `cd backend && python -m pytest tests/ -k "reddit" -v`
 
-- [ ] **Step 3: Commit**
+- [x] **Step 3: Commit**
 
 ```bash
 git add backend/collectors/reddit_events.py
@@ -835,7 +835,7 @@ Targets: `database.py`, `db/parquet.py`
 - Consumes: `settings.database_url` from `config.py`
 - Produces: `engine` with pool settings and statement timeout
 
-- [ ] **Step 1: Add pool configuration**
+- [x] **Step 1: Add pool configuration**
 
 Replace lines 32-37:
 
@@ -851,11 +851,11 @@ engine = create_engine(
 )
 ```
 
-- [ ] **Step 2: Verify the app starts**
+- [x] **Step 2: Verify the app starts**
 
 Run: `cd backend && python -c "from database import engine; print(engine.pool.status())"`
 
-- [ ] **Step 3: Commit**
+- [x] **Step 3: Commit**
 
 ```bash
 git add backend/database.py
@@ -874,7 +874,7 @@ git commit -m "infra(db): add pool tuning and 30s statement_timeout"
 - Consumes: `_tmp_path(path)` (line 439), `_atomic_write(path, df)` (line 450) — both already exist in the module
 - Produces: Crash-safe `_append_parquet` and `delete_table`
 
-- [ ] **Step 1: Write the test**
+- [x] **Step 1: Write the test**
 
 ```python
 # backend/tests/test_parquet_atomic.py
@@ -895,7 +895,7 @@ def test_delete_table_uses_atomic_write(tmp_path):
         # Actual call depends on delete_table's exact interface
 ```
 
-- [ ] **Step 2: Fix `_append_parquet`**
+- [x] **Step 2: Fix `_append_parquet`**
 
 In `_append_parquet` (lines 244-254), replace the `COPY TO '{path}'` with:
 
@@ -907,7 +907,7 @@ con.execute(f"""
 os.replace(tmp, path)
 ```
 
-- [ ] **Step 3: Fix `delete_table`**
+- [x] **Step 3: Fix `delete_table`**
 
 In `delete_table` (lines 523-536), replace `df.to_parquet(path)` with:
 
@@ -917,11 +917,11 @@ _atomic_write(path, filtered)
 
 Where `_atomic_write` is already defined at line 450.
 
-- [ ] **Step 4: Run tests**
+- [x] **Step 4: Run tests**
 
 Run: `cd backend && python -m pytest tests/test_parquet_atomic.py tests/test_parquet_nested_columns.py -v`
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add backend/db/parquet.py backend/tests/test_parquet_atomic.py
@@ -939,7 +939,7 @@ git commit -m "fix(db): make _append_parquet and delete_table crash-safe with at
 - Consumes: `ParquetQuery.__enter__`, `_get_ops_schema`
 - Produces: Properly-sized cache, validated table names
 
-- [ ] **Step 1: Fix LRU cache size**
+- [x] **Step 1: Fix LRU cache size**
 
 Replace line 539:
 
@@ -948,7 +948,7 @@ Replace line 539:
 def _get_ops_schema(table: str) -> dict | None:
 ```
 
-- [ ] **Step 2: Add table name validation to ParquetQuery**
+- [x] **Step 2: Add table name validation to ParquetQuery**
 
 At line 486, before the `CREATE VIEW`:
 
@@ -958,11 +958,11 @@ if not re.match(r"^[a-z_][a-z0-9_]*$", self._table):
     raise ValueError(f"Invalid table name: {self._table!r}")
 ```
 
-- [ ] **Step 3: Run existing tests**
+- [x] **Step 3: Run existing tests**
 
 Run: `cd backend && python -m pytest tests/ -k "parquet" -v`
 
-- [ ] **Step 4: Commit**
+- [x] **Step 4: Commit**
 
 ```bash
 git add backend/db/parquet.py
@@ -981,7 +981,7 @@ git commit -m "fix(db): increase _get_ops_schema cache, validate ParquetQuery ta
 - Consumes: `SupplySnapshot.__table_args__`, `ForecastOutcome.__table_args__`
 - Produces: Clean schema without redundant indexes
 
-- [ ] **Step 1: Remove duplicate index declarations from models**
+- [x] **Step 1: Remove duplicate index declarations from models**
 
 In `database.py`:
 
@@ -989,7 +989,7 @@ Line 457 — remove `Index("idx_supply_item_date", "item_id", "snapshot_date")` 
 
 Lines 408-409 — remove `Index("idx_outcome_forecast_id", "forecast_id")` from `ForecastOutcome.__table_args__` (column already has `index=True`).
 
-- [ ] **Step 2: Create migration**
+- [x] **Step 2: Create migration**
 
 ```bash
 cd backend && alembic revision --autogenerate -m "remove duplicate indexes on supply_snapshot and forecast_outcome"
@@ -997,7 +997,7 @@ cd backend && alembic revision --autogenerate -m "remove duplicate indexes on su
 
 Review the generated migration — it should contain `op.drop_index("idx_supply_item_date")` and `op.drop_index("idx_outcome_forecast_id")`.
 
-- [ ] **Step 3: Commit**
+- [x] **Step 3: Commit**
 
 ```bash
 git add backend/database.py backend/migrations/versions/
@@ -1021,7 +1021,7 @@ Targets: `models/forecaster.py`, `backtest/scoring.py`, `backtest/paired_mde.py`
 - Consumes: `direction.directional_accuracy(pred_returns, actual_returns) -> float` (already exists at `models/direction.py:20`)
 - Produces: Same `fold_acc` value, vectorized computation
 
-- [ ] **Step 1: Write a regression test**
+- [x] **Step 1: Write a regression test**
 
 ```python
 # backend/tests/test_fold_accuracy_vectorized.py
@@ -1037,11 +1037,11 @@ def test_directional_accuracy_matches_manual():
     assert abs(result - 60.0) < 0.1
 ```
 
-- [ ] **Step 2: Run test to verify it passes** (the function already exists)
+- [x] **Step 2: Run test to verify it passes** (the function already exists)
 
 Run: `cd backend && python -m pytest tests/test_fold_accuracy_vectorized.py -v`
 
-- [ ] **Step 3: Replace the manual loop**
+- [x] **Step 3: Replace the manual loop**
 
 Replace lines 10117-10138 with:
 
@@ -1052,11 +1052,11 @@ fold_acc = directional_accuracy(fold_p50, actual_returns)
 
 Remove the `for i in range(len(val_df))` loop, the `fold_hits` counter, and the per-row string comparisons.
 
-- [ ] **Step 4: Run forecaster tests**
+- [x] **Step 4: Run forecaster tests**
 
 Run: `cd backend && python -m pytest tests/test_forecaster.py -v --timeout=120`
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add backend/models/forecaster.py backend/tests/test_fold_accuracy_vectorized.py
@@ -1075,7 +1075,7 @@ git commit -m "perf(models): vectorize fold directional accuracy using existing 
 - Consumes: `bootstrap_ci(arr, n_resamples, rng)`, `block_bootstrap_ci(sums, counts, n_resamples, rng)`
 - Produces: Same return type `(lo, hi)` — vectorized implementation
 
-- [ ] **Step 1: Write regression test**
+- [x] **Step 1: Write regression test**
 
 ```python
 # backend/tests/test_bootstrap_vectorized.py
@@ -1101,7 +1101,7 @@ def test_block_bootstrap_ci_deterministic():
     assert lo == lo2 and hi == hi2
 ```
 
-- [ ] **Step 2: Vectorize `bootstrap_ci`**
+- [x] **Step 2: Vectorize `bootstrap_ci`**
 
 Replace lines 263-277:
 
@@ -1116,7 +1116,7 @@ def bootstrap_ci(arr, n_resamples=1000, rng=None, ci=0.95):
     return float(np.percentile(stats, 100 * alpha)), float(np.percentile(stats, 100 * (1 - alpha)))
 ```
 
-- [ ] **Step 3: Vectorize `block_bootstrap_ci`**
+- [x] **Step 3: Vectorize `block_bootstrap_ci`**
 
 Replace lines 280-320:
 
@@ -1133,15 +1133,15 @@ def block_bootstrap_ci(sums, counts, n_resamples=1000, rng=None, ci=0.95):
     return float(np.percentile(stats, 100 * alpha)), float(np.percentile(stats, 100 * (1 - alpha)))
 ```
 
-- [ ] **Step 4: Apply same pattern to `paired_mde.py:148-156`**
+- [x] **Step 4: Apply same pattern to `paired_mde.py:148-156`**
 
 Same vectorization — generate all bootstrap indices at once.
 
-- [ ] **Step 5: Run tests**
+- [x] **Step 5: Run tests**
 
 Run: `cd backend && python -m pytest tests/test_bootstrap_vectorized.py tests/test_backtest_scoring.py tests/test_paired_mde.py -v`
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add backend/backtest/scoring.py backend/backtest/paired_mde.py backend/tests/test_bootstrap_vectorized.py
@@ -1159,7 +1159,7 @@ git commit -m "perf(backtest): vectorize bootstrap loops — 1000 iterations to 
 - Consumes: `score_cohort(records, ...)` — list of dicts
 - Produces: Same return dict, computed in 1-2 passes instead of ~20
 
-- [ ] **Step 1: Accumulate all metrics in a single pass**
+- [x] **Step 1: Accumulate all metrics in a single pass**
 
 Replace the ~20 list comprehensions with a single accumulator loop:
 
@@ -1204,11 +1204,11 @@ def score_cohort(records, ...):
 
 Preserve the exact same output dict keys and values.
 
-- [ ] **Step 2: Run existing tests**
+- [x] **Step 2: Run existing tests**
 
 Run: `cd backend && python -m pytest tests/test_backtest_scoring.py -v`
 
-- [ ] **Step 3: Commit**
+- [x] **Step 3: Commit**
 
 ```bash
 git add backend/backtest/scoring.py
@@ -1226,7 +1226,7 @@ git commit -m "perf(backtest): consolidate score_cohort from ~20 passes to singl
 - Consumes: `_validate_feature_groups(model, X_val, y_val, groups, group_indices, ...)`
 - Produces: Same return type — in-place shuffle avoids 100 array copies
 
-- [ ] **Step 1: Replace copy-per-shuffle with save-restore pattern**
+- [x] **Step 1: Replace copy-per-shuffle with save-restore pattern**
 
 Replace lines 4440-4463:
 
@@ -1249,11 +1249,11 @@ for group_name, idxs in group_indices.items():
 
 Memory: O(group_features × n_rows) instead of O(n_shuffles × n_features × n_rows).
 
-- [ ] **Step 2: Run forecaster tests**
+- [x] **Step 2: Run forecaster tests**
 
 Run: `cd backend && python -m pytest tests/test_forecaster.py -v --timeout=120`
 
-- [ ] **Step 3: Commit**
+- [x] **Step 3: Commit**
 
 ```bash
 git add backend/models/forecaster.py
@@ -1271,7 +1271,7 @@ git commit -m "perf(models): in-place shuffle for feature group validation — e
 - Consumes: `vote(group)` inner function in `_apply_multi_source_voting`
 - Produces: Same behavior, cleaner code
 
-- [ ] **Step 1: Simplify the branch**
+- [x] **Step 1: Simplify the branch**
 
 Replace:
 ```python
@@ -1289,11 +1289,11 @@ if n_sources < 3:
     return pd.Series(...)
 ```
 
-- [ ] **Step 2: Run tests**
+- [x] **Step 2: Run tests**
 
 Run: `cd backend && python -m pytest tests/test_forecaster.py -v --timeout=120`
 
-- [ ] **Step 3: Commit**
+- [x] **Step 3: Commit**
 
 ```bash
 git add backend/models/forecaster.py
@@ -1317,7 +1317,7 @@ Targets: `scripts/event_correlation_analysis.py`, `scripts/ingest_bymykel_metada
 - Consumes: `_upsert_event_impacts(db, impacts, ...)`, `_compute_and_upsert_correlations(db, event, ...)`
 - Produces: Same data written, batched queries
 
-- [ ] **Step 1: Batch-fetch existing rows, then bulk insert/update**
+- [x] **Step 1: Batch-fetch existing rows, then bulk insert/update**
 
 For `_upsert_event_impacts` (lines 380-396):
 ```python
@@ -1346,11 +1346,11 @@ if to_insert:
 
 Apply the same pattern to `_compute_and_upsert_correlations`.
 
-- [ ] **Step 2: Run existing tests**
+- [x] **Step 2: Run existing tests**
 
 Run: `cd backend && python -m pytest tests/ -k "correlation" -v`
 
-- [ ] **Step 3: Commit**
+- [x] **Step 3: Commit**
 
 ```bash
 git add backend/scripts/event_correlation_analysis.py
@@ -1368,7 +1368,7 @@ git commit -m "perf(scripts): batch upserts in event_correlation — eliminates 
 - Consumes: `archive_slugs(min_price, min_days, before)`
 - Produces: Three slug sets from a single archive scan
 
-- [ ] **Step 1: Replace 3 calls with 1 query**
+- [x] **Step 1: Replace 3 calls with 1 query**
 
 Replace the three `archive_slugs()` calls (lines 580-583) with:
 
@@ -1397,11 +1397,11 @@ def archive_slug_sets(archive_dir: Path) -> tuple[set[str], set[str], set[str]]:
     return all_slugs, pre_2026_slugs, pre_2026_no_iflow
 ```
 
-- [ ] **Step 2: Run existing tests**
+- [x] **Step 2: Run existing tests**
 
 Run: `cd backend && python -m pytest tests/test_bymykel_metadata_wiring.py -v`
 
-- [ ] **Step 3: Commit**
+- [x] **Step 3: Commit**
 
 ```bash
 git add backend/scripts/ingest_bymykel_metadata.py
@@ -1419,7 +1419,7 @@ git commit -m "perf(scripts): single-pass archive_slugs — eliminates 2 redunda
 - Consumes: `_write_forecasts_to_db(results, db, ...)` internals
 - Produces: Same data written, using `itertuples()` and cached schema
 
-- [ ] **Step 1: Replace `iterrows()` with `itertuples()`**
+- [x] **Step 1: Replace `iterrows()` with `itertuples()`**
 
 At line 288, replace:
 ```python
@@ -1432,7 +1432,7 @@ for row in results.itertuples(index=False):
 
 Adjust attribute access from `row.get("col")` / `row["col"]` to `getattr(row, "col", None)`.
 
-- [ ] **Step 2: Cache schema introspection**
+- [x] **Step 2: Cache schema introspection**
 
 Move the `sa_inspect(bind).get_columns(table.name)` call out of `_write_forecasts_to_db` and compute once:
 
@@ -1447,15 +1447,15 @@ def _get_forecast_cols(bind, table):
     return _FORECAST_DB_COLS
 ```
 
-- [ ] **Step 3: Move lazy imports to top of file**
+- [x] **Step 3: Move lazy imports to top of file**
 
 Move `from sqlalchemy.dialects.postgresql import insert as pg_insert` (line 341) and `from sqlalchemy import inspect as sa_inspect` (line 369) to the top-level imports.
 
-- [ ] **Step 4: Run existing tests**
+- [x] **Step 4: Run existing tests**
 
 Run: `cd backend && python -m pytest tests/test_forecast_prices.py tests/test_forecast_date_is_anchor_day.py -v`
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add backend/scripts/forecast_prices.py
@@ -1473,7 +1473,7 @@ git commit -m "perf(scripts): itertuples + cached schema in forecast_prices writ
 - Consumes: DuckDB archive queries, per-row UPDATE loop
 - Produces: Same local DB state, 3 queries → 1, per-row UPDATEs → batched
 
-- [ ] **Step 1: Single GROUP BY query**
+- [x] **Step 1: Single GROUP BY query**
 
 Replace lines 68-105 (three `SELECT DISTINCT` queries) with:
 
@@ -1496,7 +1496,7 @@ pre_2026_no_iflow = set(
 )
 ```
 
-- [ ] **Step 2: Batch the UPDATE loop**
+- [x] **Step 2: Batch the UPDATE loop**
 
 Replace lines 143-158 (per-row UPDATE) with:
 
@@ -1514,7 +1514,7 @@ if needs_train:
 db.commit()
 ```
 
-- [ ] **Step 3: Commit**
+- [x] **Step 3: Commit**
 
 ```bash
 git add backend/scripts/init_local_db.py
@@ -1533,7 +1533,7 @@ git commit -m "perf(scripts): single-pass archive query + batch updates in init_
 - Consumes: `_count_sidecars(archive_dir)`, sidecar continuity check
 - Produces: Same outputs, using metadata reads instead of full file loads
 
-- [ ] **Step 1: Fix `_count_sidecars`**
+- [x] **Step 1: Fix `_count_sidecars`**
 
 Replace line 29:
 
@@ -1548,7 +1548,7 @@ def _count_sidecars(archive_dir: Path) -> dict:
     }
 ```
 
-- [ ] **Step 2: Fix `check_sidecar_continuity` to use DuckDB projection**
+- [x] **Step 2: Fix `check_sidecar_continuity` to use DuckDB projection**
 
 Replace lines 54-63:
 
@@ -1561,7 +1561,7 @@ df = con.execute(f"""
 con.close()
 ```
 
-- [ ] **Step 3: Commit**
+- [x] **Step 3: Commit**
 
 ```bash
 git add backend/scripts/build_all_sidecars.py backend/scripts/check_sidecar_continuity.py
@@ -1579,7 +1579,7 @@ git commit -m "perf(scripts): use Parquet metadata for row counts, DuckDB projec
 - Consumes: `fx_lookup(fx, day)`, accumulation loop
 - Produces: Same data, O(1) FX lookup, monthly flush
 
-- [ ] **Step 1: Replace O(n) fx_lookup with searchsorted**
+- [x] **Step 1: Replace O(n) fx_lookup with searchsorted**
 
 Replace line 158:
 
@@ -1593,7 +1593,7 @@ def fx_lookup(fx: pd.DataFrame, day: date) -> float | None:
     return float(fx.iloc[idx]["rate"])
 ```
 
-- [ ] **Step 2: Add monthly flush to accumulation loop**
+- [x] **Step 2: Add monthly flush to accumulation loop**
 
 In the accumulation loop (lines 188-229), add:
 
@@ -1613,11 +1613,11 @@ if price_rows or vol_rows:
     _flush_rows(price_rows, vol_rows, archive_dir, current_month)
 ```
 
-- [ ] **Step 3: Run existing tests**
+- [x] **Step 3: Run existing tests**
 
 Run: `cd backend && python -m pytest tests/test_backfill_buff_iflow.py -v`
 
-- [ ] **Step 4: Commit**
+- [x] **Step 4: Commit**
 
 ```bash
 git add backend/scripts/backfill_buff_iflow.py
@@ -1643,13 +1643,13 @@ These are lower-priority but reduce maintenance burden. Can be done incrementall
 - Consumes: `db.archive.prices_relation(con, archive_dir, columns, where)` — returns SQL table expression string
 - Produces: Schema-safe archive reads
 
-- [ ] **Step 1: Grep for bare read_parquet patterns**
+- [x] **Step 1: Grep for bare read_parquet patterns**
 
 ```bash
 cd backend && grep -rn "read_parquet.*prices-\*" scripts/ --include="*.py" | grep -v "prices_relation"
 ```
 
-- [ ] **Step 2: Replace each bare `read_parquet` with `prices_relation()`**
+- [x] **Step 2: Replace each bare `read_parquet` with `prices_relation()`**
 
 For each hit, replace the handrolled SQL with:
 
@@ -1659,9 +1659,9 @@ rel = prices_relation(con, archive_dir)
 # Use rel as the FROM clause
 ```
 
-- [ ] **Step 3: Run targeted tests for each modified script**
+- [x] **Step 3: Run targeted tests for each modified script**
 
-- [ ] **Step 4: Commit**
+- [x] **Step 4: Commit**
 
 ```bash
 git add backend/scripts/ backend/archive/
@@ -1680,7 +1680,7 @@ git commit -m "refactor(scripts): adopt prices_relation() — fixes silent schem
 **Interfaces:**
 - Produces: `_load_supply_and_events(archive_dir)` shared helper, `_build_panel_main(panel_fn, sidecar_name)` orchestrator
 
-- [ ] **Step 1: Extract shared code**
+- [x] **Step 1: Extract shared code**
 
 ```python
 # backend/scripts/_panel_common.py
@@ -1695,13 +1695,13 @@ def build_panel_main(panel_fn, sidecar_name: str, summary_key: str, archive_dir:
     # ... write sidecar ...
 ```
 
-- [ ] **Step 2: Slim down both scripts to use the helper**
+- [x] **Step 2: Slim down both scripts to use the helper**
 
-- [ ] **Step 3: Run tests**
+- [x] **Step 3: Run tests**
 
 Run: `cd backend && python -m pytest tests/ -k "panel or sidecar" -v`
 
-- [ ] **Step 4: Commit**
+- [x] **Step 4: Commit**
 
 ```bash
 git add backend/scripts/_panel_common.py backend/scripts/build_case_panel.py backend/scripts/build_sticker_panel.py
@@ -1718,15 +1718,15 @@ git commit -m "refactor(scripts): extract shared panel builder — eliminates ~8
 **Interfaces:**
 - Produces: Clean task runner without dead variables and deprecated stubs
 
-- [ ] **Step 1: Remove dead variables and stubs**
+- [x] **Step 1: Remove dead variables and stubs**
 
 Delete `result2 = result3 = None` (line 130-131) and the `trends` / `long_term_trends` task stubs that return hardcoded success dicts (lines 153-164).
 
-- [ ] **Step 2: Run existing tests**
+- [x] **Step 2: Run existing tests**
 
 Run: `cd backend && python -m pytest tests/ -k "run_task" -v`
 
-- [ ] **Step 3: Commit**
+- [x] **Step 3: Commit**
 
 ```bash
 git add backend/scripts/run_task.py

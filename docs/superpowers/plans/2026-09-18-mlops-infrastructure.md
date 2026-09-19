@@ -35,13 +35,13 @@
 - Consumes: `ItemForecaster.train()`, `ItemForecaster.save_models()`, `ItemForecaster.cv_results`, `ItemForecaster.conformal_calibration`
 - Produces: MLflow runs with logged params/metrics/artifacts accessible via `mlflow.get_run()`, `mlflow.search_runs()`
 
-- [ ] **Step 1: Add mlflow dependency**
+- [x] **Step 1: Add mlflow dependency**
 
 ```bash
 cd backend && venv/bin/pip install mlflow
 ```
 
-- [ ] **Step 2: Add mlruns to gitignore**
+- [x] **Step 2: Add mlruns to gitignore**
 
 Append to the repo root `.gitignore`:
 ```
@@ -50,7 +50,7 @@ mlruns/
 mlartifacts/
 ```
 
-- [ ] **Step 3: Write the failing test**
+- [x] **Step 3: Write the failing test**
 
 Create `backend/tests/test_mlflow_tracking.py`:
 
@@ -153,7 +153,7 @@ def _make_test_forecaster(tmp_path, monkeypatch):
     return forecaster
 ```
 
-- [ ] **Step 4: Run test to verify it fails**
+- [x] **Step 4: Run test to verify it fails**
 
 ```bash
 cd backend && venv/bin/python -m pytest tests/test_mlflow_tracking.py -q
@@ -161,7 +161,7 @@ cd backend && venv/bin/python -m pytest tests/test_mlflow_tracking.py -q
 
 Expected: FAIL — `mlflow` not imported or no MLflow logging in `train()`.
 
-- [ ] **Step 5: Implement MLflow tracking wrapper**
+- [x] **Step 5: Implement MLflow tracking wrapper**
 
 Add a helper module `backend/models/mlflow_utils.py` to keep the tracking logic separate from the forecaster:
 
@@ -251,7 +251,7 @@ def log_meta_json(meta: dict, tmp_dir: str):
     mlflow.log_artifact(path)
 ```
 
-- [ ] **Step 6: Wire MLflow into `forecaster.py::train()`**
+- [x] **Step 6: Wire MLflow into `forecaster.py::train()`**
 
 In `backend/models/forecaster.py`, at the top of `train()` (after `_train_start`), wrap the body in the tracking context:
 
@@ -292,7 +292,7 @@ In `save_models()`, after writing `meta.json` to disk, add:
 mlflow_utils.log_artifact_file(os.path.join(self.model_dir, "meta.json"))
 ```
 
-- [ ] **Step 7: Run tests to verify they pass**
+- [x] **Step 7: Run tests to verify they pass**
 
 ```bash
 cd backend && venv/bin/python -m pytest tests/test_mlflow_tracking.py -q
@@ -300,7 +300,7 @@ cd backend && venv/bin/python -m pytest tests/test_mlflow_tracking.py -q
 
 Expected: tests that can run with the test fixture should pass. Tests requiring full training data will need the `price-archive/` — mark those with `@pytest.mark.skipif` if the archive isn't present.
 
-- [ ] **Step 8: Commit**
+- [x] **Step 8: Commit**
 
 ```bash
 git add backend/models/mlflow_utils.py backend/tests/test_mlflow_tracking.py backend/models/forecaster.py .gitignore
@@ -322,7 +322,7 @@ Gated by MLFLOW_ENABLED=1. Logs params, per-horizon metrics
 - Consumes: `ItemForecaster.build_training_data()`, `ItemForecaster._train_horizon_inline()`, `ItemForecaster.predict()`, `mlflow_utils.training_run()`
 - Produces: `WalkForwardResult` dataclass with per-fold coverage, width, MAE, IC; overall aggregates; MLflow child runs per fold
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 Create `backend/tests/test_walk_forward_eval.py`:
 
@@ -430,7 +430,7 @@ class TestIntervalScoring:
         assert result.coverage == pytest.approx(0.5)
 ```
 
-- [ ] **Step 2: Run test to verify it fails**
+- [x] **Step 2: Run test to verify it fails**
 
 ```bash
 cd backend && venv/bin/python -m pytest tests/test_walk_forward_eval.py -q
@@ -438,7 +438,7 @@ cd backend && venv/bin/python -m pytest tests/test_walk_forward_eval.py -q
 
 Expected: FAIL — module `models.walk_forward_eval` does not exist.
 
-- [ ] **Step 3: Implement walk-forward module**
+- [x] **Step 3: Implement walk-forward module**
 
 Create `backend/models/walk_forward_eval.py`:
 
@@ -586,7 +586,7 @@ def score_intervals(
     )
 ```
 
-- [ ] **Step 4: Run tests to verify they pass**
+- [x] **Step 4: Run tests to verify they pass**
 
 ```bash
 cd backend && venv/bin/python -m pytest tests/test_walk_forward_eval.py -q
@@ -594,7 +594,7 @@ cd backend && venv/bin/python -m pytest tests/test_walk_forward_eval.py -q
 
 Expected: PASS
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add backend/models/walk_forward_eval.py backend/tests/test_walk_forward_eval.py
@@ -617,13 +617,13 @@ and scores prediction intervals on coverage, width, and adaptivity."
 - Consumes: Feature DataFrames from `ItemForecaster.build_training_data()` / `engineer_features()`
 - Produces: `DriftReport` dataclass with per-feature drift scores, overall drift detected flag, and JSON/HTML report paths
 
-- [ ] **Step 1: Install evidently**
+- [x] **Step 1: Install evidently**
 
 ```bash
 cd backend && venv/bin/pip install evidently
 ```
 
-- [ ] **Step 2: Write the failing test**
+- [x] **Step 2: Write the failing test**
 
 Create `backend/tests/test_drift_detection.py`:
 
@@ -709,7 +709,7 @@ class TestDriftDetection:
         assert "drifted" in report.drifted_features
 ```
 
-- [ ] **Step 3: Run test to verify it fails**
+- [x] **Step 3: Run test to verify it fails**
 
 ```bash
 cd backend && venv/bin/python -m pytest tests/test_drift_detection.py -q
@@ -717,7 +717,7 @@ cd backend && venv/bin/python -m pytest tests/test_drift_detection.py -q
 
 Expected: FAIL — `monitoring.drift` does not exist.
 
-- [ ] **Step 4: Implement drift detection module**
+- [x] **Step 4: Implement drift detection module**
 
 Create `backend/monitoring/__init__.py` (empty file).
 
@@ -825,7 +825,7 @@ def detect_drift(
     )
 ```
 
-- [ ] **Step 5: Run tests to verify they pass**
+- [x] **Step 5: Run tests to verify they pass**
 
 ```bash
 cd backend && venv/bin/python -m pytest tests/test_drift_detection.py -q
@@ -833,7 +833,7 @@ cd backend && venv/bin/python -m pytest tests/test_drift_detection.py -q
 
 Expected: PASS
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add backend/monitoring/__init__.py backend/monitoring/drift.py backend/tests/test_drift_detection.py
@@ -856,7 +856,7 @@ JSON + HTML reports, and flags drifted features."
 - Consumes: `monitoring.drift.DriftReport`, `mlflow` (for model registry info), drift report JSON files on disk
 - Produces: `/monitoring/drift` (latest drift report), `/monitoring/model-info` (current model metadata), `/monitoring/health` (pipeline health summary)
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 Create `backend/tests/test_monitoring_routes.py`:
 
@@ -927,7 +927,7 @@ class TestHealthEndpoint:
         assert "status" in data
 ```
 
-- [ ] **Step 2: Run test to verify it fails**
+- [x] **Step 2: Run test to verify it fails**
 
 ```bash
 cd backend && venv/bin/python -m pytest tests/test_monitoring_routes.py -q
@@ -935,7 +935,7 @@ cd backend && venv/bin/python -m pytest tests/test_monitoring_routes.py -q
 
 Expected: FAIL — monitoring router not registered.
 
-- [ ] **Step 3: Implement monitoring routes**
+- [x] **Step 3: Implement monitoring routes**
 
 Create `backend/api/routes/monitoring.py`:
 
@@ -1040,7 +1040,7 @@ def monitoring_health():
     return health
 ```
 
-- [ ] **Step 4: Register the router in main.py**
+- [x] **Step 4: Register the router in main.py**
 
 In `backend/main.py`, add the import and include:
 
@@ -1051,7 +1051,7 @@ from api.routes import ab_test, accuracy, auth, events, items, market, monitorin
 app.include_router(monitoring.router)
 ```
 
-- [ ] **Step 5: Run tests to verify they pass**
+- [x] **Step 5: Run tests to verify they pass**
 
 ```bash
 cd backend && venv/bin/python -m pytest tests/test_monitoring_routes.py -q
@@ -1059,7 +1059,7 @@ cd backend && venv/bin/python -m pytest tests/test_monitoring_routes.py -q
 
 Expected: PASS
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add backend/api/routes/monitoring.py backend/main.py backend/tests/test_monitoring_routes.py
@@ -1082,7 +1082,7 @@ Endpoints: /monitoring/drift (latest drift report),
 - Consumes: `monitoring.drift.detect_drift()`, `ItemForecaster.build_training_data()`, `ItemForecaster.engineer_features()`
 - Produces: Drift report files in `data/drift_reports/`, exit code 0 (no drift) or 1 (drift detected)
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 Create `backend/tests/test_run_drift_check.py`:
 
@@ -1117,7 +1117,7 @@ class TestDriftCheckScript:
         pd.testing.assert_frame_equal(ref, loaded)
 ```
 
-- [ ] **Step 2: Run test to verify it fails**
+- [x] **Step 2: Run test to verify it fails**
 
 ```bash
 cd backend && venv/bin/python -m pytest tests/test_run_drift_check.py -q
@@ -1125,7 +1125,7 @@ cd backend && venv/bin/python -m pytest tests/test_run_drift_check.py -q
 
 Expected: FAIL — module `scripts.run_drift_check` does not exist.
 
-- [ ] **Step 3: Implement drift check script**
+- [x] **Step 3: Implement drift check script**
 
 Create `backend/scripts/run_drift_check.py`:
 
@@ -1234,7 +1234,7 @@ if __name__ == "__main__":
     main()
 ```
 
-- [ ] **Step 4: Run tests to verify they pass**
+- [x] **Step 4: Run tests to verify they pass**
 
 ```bash
 cd backend && venv/bin/python -m pytest tests/test_run_drift_check.py -q
@@ -1242,7 +1242,7 @@ cd backend && venv/bin/python -m pytest tests/test_run_drift_check.py -q
 
 Expected: PASS
 
-- [ ] **Step 5: Add drift check to GH Actions workflow**
+- [x] **Step 5: Add drift check to GH Actions workflow**
 
 In `.github/workflows/price-forecast.yml`, add a step after the forecast step that runs drift detection. This runs only on the daily `predict-only` mode:
 
@@ -1257,7 +1257,7 @@ In `.github/workflows/price-forecast.yml`, add a step after the forecast step th
       continue-on-error: true  # drift is advisory, not blocking
 ```
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add backend/scripts/run_drift_check.py backend/tests/test_run_drift_check.py .github/workflows/price-forecast.yml
@@ -1279,7 +1279,7 @@ snapshot. Runs in GH Actions after forecast (advisory, non-blocking)."
 - Consumes: MLflow runs from Task 1
 - Produces: `register_model()` and `promote_model()` functions that move models between staging/production in MLflow's local registry
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 Create `backend/tests/test_model_registry.py`:
 
@@ -1320,7 +1320,7 @@ class TestModelRegistry:
         assert result is None
 ```
 
-- [ ] **Step 2: Run test to verify it fails**
+- [x] **Step 2: Run test to verify it fails**
 
 ```bash
 cd backend && venv/bin/python -m pytest tests/test_model_registry.py -q
@@ -1328,7 +1328,7 @@ cd backend && venv/bin/python -m pytest tests/test_model_registry.py -q
 
 Expected: FAIL — `register_model` not defined.
 
-- [ ] **Step 3: Implement registry helpers**
+- [x] **Step 3: Implement registry helpers**
 
 Add to `backend/models/mlflow_utils.py`:
 
@@ -1367,7 +1367,7 @@ def promote_model(model_name: str, version: int, stage: str = "Production"):
         return None
 ```
 
-- [ ] **Step 4: Run tests to verify they pass**
+- [x] **Step 4: Run tests to verify they pass**
 
 ```bash
 cd backend && venv/bin/python -m pytest tests/test_model_registry.py -q
@@ -1375,7 +1375,7 @@ cd backend && venv/bin/python -m pytest tests/test_model_registry.py -q
 
 Expected: PASS
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add backend/models/mlflow_utils.py backend/tests/test_model_registry.py
