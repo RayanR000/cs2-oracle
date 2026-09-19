@@ -1,9 +1,5 @@
 """Tests for MLflow tracking integration."""
 
-import json
-import os
-
-import mlflow
 import pytest
 from models.mlflow_utils import (
     _reset,
@@ -13,6 +9,8 @@ from models.mlflow_utils import (
     mlflow_enabled,
     training_run,
 )
+
+mlflow = pytest.importorskip("mlflow", reason="mlflow not installed (mlops extra)")
 
 
 @pytest.fixture(autouse=True)

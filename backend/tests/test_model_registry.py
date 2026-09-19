@@ -1,8 +1,9 @@
 """Tests for MLflow model registry helpers."""
 
 import pytest
-import mlflow
-from models.mlflow_utils import _reset, register_model, promote_model
+from models.mlflow_utils import _reset, promote_model, register_model
+
+mlflow = pytest.importorskip("mlflow", reason="mlflow not installed (mlops extra)")
 
 
 @pytest.fixture(autouse=True)
