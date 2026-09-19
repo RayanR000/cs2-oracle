@@ -798,6 +798,25 @@ def _records_from_frozen_outcomes(db, min_price=0, forecast_ids=None):
     return groups
 
 
+def _resolve_candidates(db, today, archive_dir, reresolve=False, rescore=False):
+    """Resolve shadow candidate outcomes after the production refresh.
+
+    Candidate failures never fail production scoring — except a
+    production/candidate resolution mismatch, which is an invariant
+    violation and propagates. A database without migration 0027 logs and
+    continues until the migration lands.
+    """
+    from backtest.candidate_resolution import resolve_candidate_outcomes
+
+    try:
+        return resolve_candidate_outcomes(db, today=today, archive_dir=archive_dir, reresolve=reresolve, rescore=rescore)
+    except RuntimeError:
+        raise
+    except Exception as e:
+        logger.warning(f"  Candidate resolution skipped ({e}); production scoring continues.")
+        return {}
+
+
 def _pct(value):
     return "n/a" if value is None else f"{value:.1f}%"
 
@@ -1045,6 +1064,7 @@ def backtest_forecasts(db, today=None, min_price=0, reresolve=False, rescore=Fal
     if rescore:
         logger.info("  --rescore: scoring from frozen outcomes, archive not read")
         _refresh_verdict_columns(db)
+        _resolve_candidates(db, today, archive_dir=None, reresolve=False, rescore=True)
         groups = _records_from_frozen_outcomes(db, min_price=min_price)
         results = _score_groups(groups, today)
         if results:
@@ -1407,6 +1427,10 @@ def backtest_forecasts(db, today=None, min_price=0, reresolve=False, rescore=Fal
             # item_slug costs no second scan of `items`.
             id_to_slug=id_to_slug,
         )
+
+    # Shadow candidates resolve against the same frozen legs production just
+    # wrote, preferring those rows so both arms share byte-identical outcomes.
+    _resolve_candidates(db, today, archive_dir, reresolve=reresolve)
 
     # The actuals are frozen; the verdict columns are not, because they are
     # metrics. Bring any that the current scoring logic disagrees with back in
