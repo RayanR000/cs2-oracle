@@ -8,6 +8,7 @@ from config import settings
 from sqlalchemy import (
     JSON,
     Boolean,
+    CheckConstraint,
     Column,
     Date,
     DateTime,
@@ -446,6 +447,84 @@ class AccuracyAlert(Base):
     details = Column(JSON, nullable=True)
 
     __table_args__ = (Index("idx_alert_type_triggered", "prediction_type", "triggered_at"),)
+
+
+class ForecastCandidate(Base):
+    """Shadow prediction record — exact served challenger predictions.
+
+    Production (`item_forecasts`) is authoritative and unchanged. Candidates
+    are never exposed through public schemas. Centre intervals reuse the
+    final production interval's percentage offsets (equal geometry).
+    """
+
+    __tablename__ = "forecast_candidates"
+
+    id = Column(Integer, primary_key=True)
+    item_id = Column(Integer, ForeignKey("items.id"), nullable=False)
+    forecast_date = Column(Date, nullable=False)
+    horizon_days = Column(Integer, nullable=False)
+    component = Column(String(20), nullable=False)  # centre | ranking
+    candidate_name = Column(String(50), nullable=False)  # last_price | gbm_q50 | lambdarank_v1
+    candidate_version = Column(String(50), nullable=False)
+    centre_price = Column(Float, nullable=True)  # centre candidates only
+    predicted_price_low = Column(Float, nullable=True)  # centre candidates only
+    predicted_price_high = Column(Float, nullable=True)  # centre candidates only
+    score = Column(Float, nullable=True)  # ranking candidates only
+    anchor_price = Column(Float, nullable=False)
+    feature_cutoff_at = Column(DateTime, nullable=False)
+    artifact_version = Column(String(50), nullable=True)  # null for featureless candidates
+    config_fingerprint = Column(String(64), nullable=False)
+    created_at = Column(DateTime, default=utcnow_naive, nullable=False)
+
+    __table_args__ = (
+        UniqueConstraint(
+            "item_id",
+            "forecast_date",
+            "horizon_days",
+            "component",
+            "candidate_name",
+            "candidate_version",
+            name="uq_forecast_candidate_identity",
+        ),
+        CheckConstraint("horizon_days IN (3, 7, 14, 30)", name="ck_forecast_candidate_horizon"),
+        CheckConstraint("component IN ('centre', 'ranking')", name="ck_forecast_candidate_component"),
+        CheckConstraint(
+            "(component = 'centre' AND centre_price IS NOT NULL AND predicted_price_low IS NOT NULL "
+            "AND predicted_price_high IS NOT NULL AND score IS NULL) OR "
+            "(component = 'ranking' AND score IS NOT NULL AND centre_price IS NULL "
+            "AND predicted_price_low IS NULL AND predicted_price_high IS NULL)",
+            name="ck_forecast_candidate_payload",
+        ),
+        CheckConstraint(
+            "component <> 'centre' OR (predicted_price_low > 0 AND "
+            "predicted_price_low <= centre_price AND centre_price <= predicted_price_high)",
+            name="ck_forecast_candidate_ordering",
+        ),
+        Index("idx_candidate_date_horizon_component", "forecast_date", "horizon_days", "component"),
+        Index("idx_candidate_item_date", "item_id", "forecast_date"),
+    )
+
+
+class ForecastCandidateOutcome(Base):
+    """Frozen candidate outcome — immutable after first successful resolution.
+
+    `base_price`, `actual_price`, and `resolved_at` must be byte-identical to
+    the shared production outcome. Only an explicit `--reresolve` maintenance
+    path may replace them.
+    """
+
+    __tablename__ = "forecast_candidate_outcomes"
+
+    candidate_id = Column(
+        Integer, ForeignKey("forecast_candidates.id", ondelete="CASCADE"), primary_key=True
+    )
+    base_price = Column(Float, nullable=False)
+    actual_price = Column(Float, nullable=False)
+    resolved_at = Column(DateTime, nullable=False)
+    absolute_error = Column(Float, nullable=True)
+    percentage_error = Column(Float, nullable=True)
+    in_interval = Column(Boolean, nullable=True)
+    resolution_version = Column(String(50), nullable=False)
 
 
 class SupplySnapshot(Base):
