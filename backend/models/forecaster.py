@@ -6434,29 +6434,14 @@ class ItemForecaster:
                 logger.info(f"  Done in {_ens_elapsed:.0f}s — Top features: {fi['feature'].head(5).tolist()}")
                 logger.info(f"  [timing] {horizon}d q{int(q * 100)} ensemble: {_ens_elapsed:.1f}s")
 
-            # Directional classifier: supplies the served up/flat/down call and
-            # confidence (the quantile models only supply the interval).
-            logger.info(f"  Training {horizon}d directional classifier (mover-weighted)...")
-            # Vol-scaled labels were A/B-tested (2026-07-27) and did not beat
-            # the fixed-band control; production stays fixed-band. Tooling
-            # retained in scripts/ab_test_direction_labels.py.
-            _dir_start = time.time()
-            self.direction_models[horizon] = self._fit_direction_classifier(
-                X_train,
-                y_train,
-                X_val,
-                y_val,
-                boosting_type,
-                self._direction_tree_params(per_quantile_params),
-                horizon=horizon,
-                sigma_train=None,
-                sigma_val=None,
-                tier_train=(train_set["price_tier"].to_numpy() if "price_tier" in train_set.columns else None),
-                num_boost_round=boost_rounds,
-                early_stopping=_es,
-            )
-            _dir_elapsed = time.time() - _dir_start
-            logger.info(f"  [timing] {horizon}d direction classifier: {_dir_elapsed:.1f}s")
+            # Directional classifier: OFFLINE-ONLY (2026-09-19). Routine
+            # production training fits no three-class direction booster; the
+            # served `direction`/`confidence` fields come from the no-classifier
+            # fallback in predict(), and the API discloses neutral. The
+            # reproducible benchmark lives in scripts/direction_benchmark.py.
+            # The fitting and metric helpers are retained for that offline
+            # use, as is the env-gated CV diagnostic.
+            logger.info(f"  Skipping {horizon}d directional classifier (offline-only).")
 
             # Exceedance head: P(|move| clears the round-trip cost), the band-width
             # scale for Phase 2. Trains on the same rows as the range model, off the
@@ -9512,26 +9497,22 @@ class ItemForecaster:
         logger.info(f"  Chunked engineering complete: {len(df):,} tail rows retained")
         return df
 
-    def _require_centre_artifacts(self) -> None:
-        """Verify every configured learned champion has a matching artifact.
+    def _require_centre_artifacts(self) -> list[int]:
+        """Horizons whose configured learned champion lacks its artifact.
 
-        Featureless last_price requires no artifact. An empty model dir is
+        Returns the missing horizon list — empty when nothing is required:
+        featureless last_price needs no artifact, and an empty model dir is
         the retrain path, not an error. Missing ranking artifacts disable
         only the ranking shadow (they produce no rank_score to capture).
         """
         if not self.models:
-            return
-        missing = [
+            return []
+        return [
             h
             for h in self.HORIZONS
             if centre_policy.centre_champion(h) == "gbm_q50"
             and not any(h2 == h and q == 0.5 for (h2, q) in self.models)
         ]
-        if missing:
-            raise IncompatibleModelArtifact(
-                f"centre champion gbm_q50 has no q50 artifact at horizons {missing} "
-                f"in {self.model_dir}; retrain, or match the flag."
-            )
 
     def _capture_shadow_candidates(self, result_df: pd.DataFrame) -> tuple[pd.DataFrame, list]:
         """Apply the centre policy: public triples follow the champion.
@@ -9945,17 +9926,11 @@ class ItemForecaster:
                 learned_scale=self.band_scale(horizon, latest_rows, sigma_arr),
             )
 
-            # Directional classifier: the served up/flat/down call + confidence.
-            # These populate the reported `direction`/`confidence` fields only.
-            # Range stance (2026-08-19): the classifier no longer moves the mid —
-            # the band's skew comes from the signed conformal offsets above.
-            dir_class_arr = None
-            dir_conf_arr = None
-            clf = self.direction_models.get(horizon)
-            if clf is not None:
-                probs = clf.predict(X_horizon)
-                dir_class_arr = probs.argmax(axis=1)
-                dir_conf_arr = probs.max(axis=1)
+            # Directional classifier: OFFLINE-ONLY (2026-09-19). Routine
+            # prediction always takes the no-classifier fallback below;
+            # a legacy artifact's direction boosters are ignored on load.
+            # The reproducible benchmark lives in
+            # scripts/direction_benchmark.py.
 
             # NOTE: the conformal widening used to be applied here, as a
             # per-horizon percentage-point addend. It is not missing — q_hat is
@@ -10024,7 +9999,6 @@ class ItemForecaster:
             if rank_clf is not None:
                 rank_score_arr = rank_clf.predict(X_horizon)
 
-            _dir_name = {0: "down", 1: "flat", 2: "up"}
             fallback_n = 0
             fallback_flat = 0
             for i, iid in enumerate(item_id_arr):
@@ -10036,27 +10010,23 @@ class ItemForecaster:
                 price_mid = round(current_price * (1 + mid_ret / 100), 2)
                 price_high = round(current_price * (1 + high_ret / 100), 2)
 
-                if dir_class_arr is not None:
-                    # Served signal: the directional classifier.
-                    direction = _dir_name[int(dir_class_arr[i])]
-                    confidence = "high" if float(dir_conf_arr[i]) >= self.DIRECTION_CONFIDENCE_HIGH else "low"
+                # No-classifier fallback (the only production path since
+                # 2026-09-19): threshold-based on mid_ret.
+                tier = self._get_price_tier(float(current_price))
+                th = tier_thresholds.get(tier, {})
+                t_down = th.get("t_down", -DIRECTION_FLAT_TOLERANCE_PCT)
+                t_up = th.get("t_up", DIRECTION_FLAT_TOLERANCE_PCT)
+                if mid_ret > t_up:
+                    direction = "up"
+                elif mid_ret < t_down:
+                    direction = "down"
                 else:
-                    # Fallback (no classifier): threshold-based on mid_ret.
-                    tier = self._get_price_tier(float(current_price))
-                    th = tier_thresholds.get(tier, {})
-                    t_down = th.get("t_down", -DIRECTION_FLAT_TOLERANCE_PCT)
-                    t_up = th.get("t_up", DIRECTION_FLAT_TOLERANCE_PCT)
-                    if mid_ret > t_up:
-                        direction = "up"
-                    elif mid_ret < t_down:
-                        direction = "down"
-                    else:
-                        direction = "flat"
-                    confidence = self._compute_confidence(
-                        price_mid, price_low, price_high, current_price, horizon=horizon
-                    )
-                    fallback_n += 1
-                    fallback_flat += direction == "flat"
+                    direction = "flat"
+                confidence = self._compute_confidence(
+                    price_mid, price_low, price_high, current_price, horizon=horizon
+                )
+                fallback_n += 1
+                fallback_flat += direction == "flat"
 
                 agg[iid]["forecasts"][horizon] = {
                     "low": price_low,
@@ -11135,11 +11105,11 @@ class ItemForecaster:
             if os.path.exists(stale):
                 os.remove(stale)
 
-        # Save directional classifiers (one 3-class model per horizon)
-        for horizon, clf in self.direction_models.items():
-            clf.save_model(os.path.join(self.model_dir, f"clf_{horizon}d.txt"))
-        if self.direction_models:
-            logger.info(f"  Saved {len(self.direction_models)} directional classifiers")
+        # Directional classifiers: never persisted by routine training
+        # (offline-only since 2026-09-19; see scripts/direction_benchmark.py).
+        # Legacy clf_*.txt files on disk are ignored on load, and old
+        # artifacts containing direction boosters load without affecting
+        # production output.
 
         # Save exceedance heads (one binary model per horizon; None where the
         # horizon degenerated to a single class, so it writes no file).
@@ -11660,10 +11630,16 @@ class ItemForecaster:
                     except (lgb.basic.LightGBMError, Exception) as e:
                         logger.warning(f"  Corrupt model {path}, skipping: {e}")
 
-        # A configured learned centre champion must have its artifact. Raises
-        # IncompatibleModelArtifact before anything serves from a mismatched
-        # pairing; an empty dir returns False below via the retrain path.
-        self._require_centre_artifacts()
+        # A configured learned centre champion must have its artifact. Loud,
+        # not fatal: partial caches round-trip in research flows, while
+        # production sees the gap before serving an incomplete centre set.
+        missing_centres = self._require_centre_artifacts()
+        if missing_centres:
+            logger.warning(
+                "  Centre champion gbm_q50 has no q50 artifact at horizons "
+                f"{missing_centres} in {self.model_dir}; those horizons serve "
+                "no GBM centre until a retrain."
+            )
 
         # Load regime-specific models
         trained_regimes = meta.get("trained_regimes", [])
@@ -11693,16 +11669,10 @@ class ItemForecaster:
                     if ensemble:
                         self.regime_models[(regime, horizon, q)] = ensemble
 
-        # Load directional classifiers (one 3-class model per horizon)
-        for horizon in self.HORIZONS:
-            cpath = os.path.join(self.model_dir, f"clf_{horizon}d.txt")
-            if os.path.exists(cpath):
-                try:
-                    self.direction_models[horizon] = lgb.Booster(model_file=cpath)
-                except (lgb.basic.LightGBMError, Exception) as e:
-                    logger.warning(f"  Corrupt classifier {cpath}, skipping: {e}")
-        if self.direction_models:
-            logger.info(f"  Loaded {len(self.direction_models)} directional classifiers")
+        # Directional classifiers: never restored by routine training
+        # (offline-only since 2026-09-19). A legacy artifact containing
+        # direction boosters loads without affecting production output, and
+        # the API stays neutral through the serving policy.
 
         # Load exceedance heads (one binary model per horizon, where saved).
         for horizon in self.HORIZONS:

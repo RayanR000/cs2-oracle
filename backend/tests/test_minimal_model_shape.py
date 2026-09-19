@@ -1483,26 +1483,21 @@ def test_predict_refuses_to_serve_a_horizon_with_no_q_hat(tmp_path):
         _run_predict(f)
 
 
-def test_predict_still_serves_the_classifier_direction(tmp_path):
-    """The direction call is the classifier's, not a threshold on mid_ret."""
-    up = _StubClassifier([0.05, 0.05, 0.90])
-    f = _predict_forecaster(tmp_path, classifier=up)
+def test_predict_ignores_a_legacy_classifier(tmp_path):
+    """Routine prediction takes the no-classifier fallback path.
+
+    A legacy artifact's direction boosters load into direction_models but
+    must not move the served fields. The stub median return is +4.0, above
+    the flat band, so the fallback says "up" while the legacy classifier
+    says "down" — up proves the fallback won.
+    """
+    down = _StubClassifier([0.90, 0.05, 0.05])
+    f = _predict_forecaster(tmp_path, classifier=down)
     result = _run_predict(f)
 
     for h in f.HORIZONS:
         for iid, fc in _forecast_rows(result, h).items():
             assert fc["direction"] == "up", (h, iid, fc)
-            assert fc["confidence"] == "high"
-            assert fc["low"] <= fc["mid"] <= fc["high"]
-
-    down = _StubClassifier([0.90, 0.05, 0.05])
-    f2 = _predict_forecaster(tmp_path, classifier=down)
-    result2 = _run_predict(f2)
-    for h in f2.HORIZONS:
-        for iid, fc in _forecast_rows(result2, h).items():
-            assert fc["direction"] == "down", (h, iid, fc)
-            # Range stance (2026-08-19): the classifier still sets `direction`
-            # but no longer moves the mid; the band stays ordered around the q50.
             assert fc["low"] <= fc["mid"] <= fc["high"]
 
 
@@ -1633,8 +1628,10 @@ def test_dart_is_gone_from_the_forecaster():
 
 
 def test_trained_model_count_is_eight():
-    # 4 median GBMs + 4 directional classifiers. Guards accidental
-    # re-expansion of the quantile/ensemble grid.
+    # 4 median GBMs + 4 directional classifiers. The classifiers are
+    # offline-only since 2026-09-19 (routine training fits no booster for
+    # them), but the arithmetic still guards accidental re-expansion of the
+    # quantile/ensemble grid.
     expected = len(ItemForecaster.HORIZONS) * len(ItemForecaster.QUANTILES) * ItemForecaster.N_ENSEMBLES
     assert expected == 4
     assert expected + len(ItemForecaster.HORIZONS) == 8
