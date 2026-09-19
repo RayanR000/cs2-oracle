@@ -21,12 +21,7 @@ backend/venv*/
 backend/dist/
 backend/build/
 
-# Frontend - Node
-frontend/node_modules/
-frontend/.next/
-frontend/out/
-frontend/dist/
-frontend/.turbo/
+# (frontend deleted 2026-08-10; no Node rules)
 
 # IDE
 .vscode/
@@ -67,6 +62,7 @@ backend/runtime/
 
 # Data Files
 backend/data/items/
+backend/data/drift_reports/
 backend/data/*.csv
 backend/data/*.json
 !backend/data/historical_prices_template.json
@@ -75,9 +71,9 @@ backend/data/*.json
 # Price archive (lives in the cs2-oracle-data repo; symlinked in locally)
 price-archive/
 
-# Staging archive for one-shot historical imports. Multi-GB, never committed:
+# One-shot historical-import staging (e.g. buff-iflow-staging/). Never committed:
 # promotion into the real archive goes through the cs2-oracle-data repo, not here.
-archive-staging/
+buff-iflow-staging/
 
 # ML model artifacts (regenerated on each retrain)
 backend/models/saved_models/*.txt
