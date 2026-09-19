@@ -1180,6 +1180,9 @@ class ItemForecaster:
         self._init_conformal_state()
         # Expanding-window CV results per horizon: {horizon: {fold_count, fold_accs, per_fold, ...}}
         self.cv_results: dict[int, dict] = {}
+        # Shadow CQR calibration results per horizon (CONFORMAL_CQR=1).
+        # Never drives the served band — shadow/candidate data only.
+        self.cqr_shadow: dict[int, dict] = {}
         # Event decay constants (grid-searchable per event type)
         self.horizon_feature_cols: dict[int, list[str]] = {}
         self.event_decay_constants: dict[str, float] = {
@@ -9281,7 +9284,83 @@ class ItemForecaster:
         # the mid growth factor. Rows with mid_ret == -100 (a zero mid price)
         # are already dropped by _conformal_records.
         records_df["range_pct"] = (high - low) / 100.0 / (1.0 + mid / 100.0)
+
+        # Shadow CQR calibration — runs ALONGSIDE the production conformal band
+        # when CONFORMAL_CQR=1. Never replaces the served band; logs metrics for
+        # A/B comparison only.
+        self._shadow_cqr_calibration(horizon, records_df, feature_frame)
+
         return q_hat
+
+    def _shadow_cqr_calibration(
+        self, horizon: int, records_df: pd.DataFrame, feature_frame: pd.DataFrame | None = None
+    ) -> None:
+        """Run MAPIE CQR as a shadow calibration alongside production conformal.
+
+        Gated by CONFORMAL_CQR=1. Results are stored in `self.cqr_shadow[horizon]`
+        as candidate data for comparison logging — they NEVER replace the
+        production conformal band from conformal.py.
+
+        The CQR approach conditions interval width on calibration features
+        (sigma, mid_ret) through quantile regressors, producing adaptive
+        intervals that vary with prediction difficulty. This is a fundamentally
+        different conditioning mechanism from the sigma-exponent family.
+        """
+        from models.conformal_cqr import cqr_enabled
+
+        if not cqr_enabled():
+            return
+
+        from models.conformal_cqr import calibrate_cqr
+
+        resid = records_df["residual_pct"].to_numpy(dtype=float)
+        sigma = records_df["sigma"].to_numpy(dtype=float)
+        mid = records_df["mid_ret"].to_numpy(dtype=float)
+
+        # Build a feature matrix from what calibration records carry.
+        # sigma and mid_ret are always present; row_index features would
+        # require feature_frame, which is optional.
+        X_cal = np.column_stack([sigma, mid])
+
+        # If the feature frame is available, pull in a few more columns
+        # for richer conditioning.
+        if feature_frame is not None and "row_index" in records_df.columns:
+            try:
+                idx = records_df["row_index"].to_numpy()
+                rows = feature_frame.iloc[idx]
+                extra_cols = []
+                for col in ["price", "price_std_60d", "return_1d"]:
+                    if col in rows.columns:
+                        vals = rows[col].to_numpy(dtype=float)
+                        vals = np.where(np.isfinite(vals), vals, 0.0)
+                        extra_cols.append(vals)
+                if extra_cols:
+                    X_cal = np.column_stack([X_cal] + extra_cols)
+            except Exception:
+                pass  # fall back to sigma + mid only
+
+        try:
+            result = calibrate_cqr(
+                X_cal=X_cal,
+                y_cal=resid,
+                residuals_pct=resid,
+                sigma=sigma,
+                alpha=conformal.ALPHA,
+            )
+
+            self.cqr_shadow[horizon] = {
+                "coverage": result["coverage"],
+                "mean_width": result["mean_width"],
+                "n_cal": len(resid),
+            }
+
+            logger.info(
+                f"  {horizon}d CQR shadow: coverage={result['coverage']:.3f}, "
+                f"mean_width={result['mean_width']:.4f}, n={len(resid)} "
+                f"(SHADOW ONLY — production band unchanged)"
+            )
+        except Exception as e:
+            logger.warning(f"  {horizon}d CQR shadow failed: {e}")
 
     def _sigma_for_rows(self, rows: pd.DataFrame) -> np.ndarray:
         """Per-item sigma for a feature frame, using the persisted clip bounds.
@@ -11418,6 +11497,10 @@ class ItemForecaster:
             "cv_results": cv_serial,
             "tuned_params": tuned_serial,
             "label_voiding": self.label_voiding,
+            # Shadow CQR calibration metrics per horizon. Present only when
+            # CONFORMAL_CQR=1 was set during training. Never drives serving —
+            # comparison data for evaluating CQR against production conformal.
+            "cqr_shadow": {str(h): v for h, v in self.cqr_shadow.items()} if self.cqr_shadow else {},
         }
 
         def _json_default(o):
