@@ -38,12 +38,10 @@ mlops = [
 ]
 probabilistic = [
     "ngboost>=0.5",
+    "mapie>=0.9",
 ]
 torch = [
     "torch>=2.0.0",
-]
-probabilistic = [
-    "mapie>=0.9",
 ]
 dev = [
     "pytest>=7.0",
