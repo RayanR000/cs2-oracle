@@ -9521,6 +9521,8 @@ class ItemForecaster:
         logged inside apply_centre_policy and omit that batch only — shadow
         loss never fails production.
         """
+        from collections import Counter
+
         offsets: dict[int, list[float]] = {}
         for horizon in self.HORIZONS:
             try:
@@ -9541,7 +9543,8 @@ class ItemForecaster:
                 cutoff = cutoff.tz_localize(None)  # pandas Timestamp
             except (AttributeError, TypeError):
                 cutoff = cutoff.replace(tzinfo=None)  # datetime
-        return apply_centre_policy(
+        _start = datetime.now()
+        public_df, shadows = apply_centre_policy(
             result_df,
             horizons=[h for h in self.HORIZONS],
             artifact_version=str(self.MODEL_ARTIFACT_VERSION),
@@ -9549,6 +9552,30 @@ class ItemForecaster:
             feedback_factors=dict(self.served_coverage_factor),
             interval_offsets=offsets,
         )
+        elapsed = (datetime.now() - _start).total_seconds()
+        prod_counts = Counter()
+        for forecasts in result_df["forecasts"].tolist():
+            for horizon in (forecasts or {}):
+                prod_counts[horizon] += 1
+        shadow_counts = Counter((r.horizon_days, r.component) for r in shadows)
+        for horizon in self.HORIZONS:
+            try:
+                champion = centre_policy.centre_champion(horizon)
+            except ValueError:
+                continue
+            challenger = next((c for c in ("gbm_q50", "last_price") if c != champion), None)
+            prefixes = sorted(
+                {r.config_fingerprint[:8] for r in shadows if r.horizon_days == horizon}
+            )
+            logger.info(
+                f"  Shadow {horizon}d: champion={champion} challenger={challenger} "
+                f"v1 artifact={self.MODEL_ARTIFACT_VERSION} "
+                f"prod_rows={prod_counts.get(horizon, 0)} "
+                f"centre={shadow_counts.get((horizon, 'centre'), 0)} "
+                f"ranking={shadow_counts.get((horizon, 'ranking'), 0)} "
+                f"fp={prefixes[0] if prefixes else 'none'} ({elapsed:.1f}s)"
+            )
+        return public_df, shadows
 
     def predict(self, item_ids: list[int] = None) -> pd.DataFrame:
         logger.info("Generating forecasts...")

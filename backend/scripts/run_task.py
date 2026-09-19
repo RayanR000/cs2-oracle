@@ -52,6 +52,7 @@ ROW_COUNT_FIELDS = (
     "reddit_event_rows",  # collectors/reddit_events.py
     "case_panel_rows",  # scripts/build_case_panel.py
     "sticker_panel_rows",  # scripts/build_sticker_panel.py
+    "forecasts_written",  # scripts/forecast_prices.py (production rows stay fatal at zero)
 )
 
 # Statuses that mean "this task legitimately had nothing to do", as opposed to
@@ -120,6 +121,29 @@ def check_results(task_name, results) -> None:
     if skipped:
         logger.error(f"❌ TASK '{task_name}' was SKIPPED and wrote nothing: {skipped[0].get('reason', skipped[0])}")
         sys.exit(1)
+
+    # Shadow incompleteness is loud but non-fatal: production > 0 with zero
+    # shadow trips no guard above (the production count is non-zero), and a
+    # fresh collection legitimately reports INSUFFICIENT_EVIDENCE for weeks.
+    # Only an integrity conflict fails, and that raises inside the forecast
+    # run itself rather than here.
+    for r in results:
+        if not isinstance(r, dict) or r.get("status") != "success":
+            continue
+        expected = r.get("candidate_batches_expected")
+        written = r.get("candidate_batches_written")
+        if (
+            isinstance(expected, int)
+            and isinstance(written, int)
+            and expected > 0
+            and written < expected
+        ):
+            logger.warning(
+                f"⚠️  TASK '{task_name}' wrote production but shadow collection is "
+                f"incomplete ({written}/{expected} batches). "
+                f"Centre/ranking: {r.get('centre_candidates_written')}/{r.get('ranking_candidates_written')} rows. "
+                "Reports will read INSUFFICIENT_EVIDENCE until the gate fills."
+            )
 
 
 def run_task(task_name):

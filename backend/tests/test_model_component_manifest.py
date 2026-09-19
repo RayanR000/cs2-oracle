@@ -9,8 +9,6 @@ requires none. Missing ranking artifacts disable only the ranking shadow.
 import json
 from unittest.mock import MagicMock
 
-import pytest
-
 
 def _forecaster(tmp_path):
     from models.forecaster import ItemForecaster
@@ -40,13 +38,12 @@ def test_manifest_reflects_trained_heads(tmp_path):
     assert "lambdarank_v1" in meta["components"]["ranking"]
 
 
-def test_gbm_champion_requires_its_artifact(tmp_path):
-    from models.forecaster import IncompatibleModelArtifact, ItemForecaster
+def test_gbm_champion_reports_missing_artifacts(tmp_path):
+    from models.forecaster import ItemForecaster
 
     f = ItemForecaster(db_session=MagicMock(), model_dir=str(tmp_path))
     f.models = {(3, 0.5): object()}
-    with pytest.raises(IncompatibleModelArtifact):
-        f._require_centre_artifacts()
+    assert f._require_centre_artifacts() == [7, 14, 30]
 
 
 def test_last_price_champion_requires_no_artifact(tmp_path, monkeypatch):
@@ -56,11 +53,11 @@ def test_last_price_champion_requires_no_artifact(tmp_path, monkeypatch):
     monkeypatch.setitem(CENTRE_CHAMPIONS, 7, "last_price")
     f = ItemForecaster(db_session=MagicMock(), model_dir=str(tmp_path))
     f.models = {(h, 0.5): object() for h in (3, 14, 30)}
-    f._require_centre_artifacts()  # must not raise
+    assert f._require_centre_artifacts() == []
 
 
 def test_empty_model_dir_requires_nothing(tmp_path):
     from models.forecaster import ItemForecaster
 
     f = ItemForecaster(db_session=MagicMock(), model_dir=str(tmp_path))
-    f._require_centre_artifacts()  # no artifact yet: retrain path, not an error
+    assert f._require_centre_artifacts() == []  # no artifact yet: retrain path, not an error

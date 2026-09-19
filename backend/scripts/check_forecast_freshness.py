@@ -68,6 +68,60 @@ def _as_date(value):
     return datetime.fromisoformat(str(value)[:10]).date()
 
 
+def shadow_collection_readiness(production_dates, candidate_batches, horizons=(3, 7, 14, 30), window=3):
+    """Whether shadow collection is keeping up with production.
+
+    The three most recent production forecast dates each need a centre
+    candidate batch at every horizon. A missing batch resets readiness and
+    names the gap. Pure function over dates and (date, horizon, component)
+    batch identities, so it is testable without a database.
+    """
+    recent = sorted({d for d in production_dates if d is not None})[-window:]
+    if len(recent) < window:
+        return {
+            "shadow_collection_ready": False,
+            "gap": f"only {len(recent)} production date(s), need {window}",
+        }
+    have = set(candidate_batches or ())
+    for day in recent:
+        for horizon in horizons:
+            if (day, horizon, "centre") not in have:
+                return {
+                    "shadow_collection_ready": False,
+                    "gap": f"missing centre batch for {day} h={horizon}",
+                }
+    return {"shadow_collection_ready": True, "gap": None}
+
+
+def _shadow_batches():
+    """Distinct (forecast_date, horizon, component) candidate batches, or None."""
+    from database import ForecastCandidate
+
+    db = SessionLocal()
+    try:
+        rows = db.query(
+            ForecastCandidate.forecast_date, ForecastCandidate.horizon_days, ForecastCandidate.component
+        ).distinct().all()
+        return {(_as_date(r[0]), r[1], r[2]) for r in rows}
+    finally:
+        db.close()
+
+
+def _recent_production_dates(limit=10):
+    db = SessionLocal()
+    try:
+        rows = (
+            db.query(ItemForecast.forecast_date)
+            .distinct()
+            .order_by(ItemForecast.forecast_date.desc())
+            .limit(limit)
+            .all()
+        )
+        return [_as_date(r[0]) for r in rows]
+    finally:
+        db.close()
+
+
 def _db_newest():
     db = SessionLocal()
     try:
@@ -103,14 +157,28 @@ def main():
     ok, message = freshness_verdict(_db_newest(), _parquet_newest(), expected)
     if ok:
         logger.info(message)
-        return 0
-    logger.error(message)
-    logger.error(
-        "The forecast run reported success without persisting forecasts. The API "
-        "serves the newest available forecast, so this degrades silently rather "
-        "than erroring."
-    )
-    return 1
+    else:
+        logger.error(message)
+        logger.error(
+            "The forecast run reported success without persisting forecasts. The API "
+            "serves the newest available forecast, so this degrades silently rather "
+            "than erroring."
+        )
+
+    # Shadow collection health: loud but non-fatal. A fresh collection reads
+    # INSUFFICIENT_EVIDENCE for weeks, which is expected, not broken. A
+    # database without migration 0027 reports unknown rather than failing.
+    try:
+        readiness = shadow_collection_readiness(_recent_production_dates(), _shadow_batches())
+    except Exception as e:
+        logger.warning(f"Shadow collection status unknown ({e}); skipping the readiness check.")
+        readiness = {"shadow_collection_ready": False, "gap": "unknown"}
+    if readiness["shadow_collection_ready"]:
+        logger.info("Shadow collection ready: three consecutive dates fully collected.")
+    else:
+        logger.warning(f"Shadow collection not ready: {readiness['gap']}.")
+
+    return 0 if ok else 1
 
 
 if __name__ == "__main__":

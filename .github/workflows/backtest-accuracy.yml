@@ -74,6 +74,24 @@ jobs:
           set -o pipefail
           python scripts/backtest_accuracy.py --type forecast 2>&1 | tee backtest.log
 
+      # Shadow evidence reports (read-only). Horizons below the 20-date gate
+      # exit 1 with INSUFFICIENT_EVIDENCE — the expected state for weeks, not
+      # a failure — so this step never fails the job; read the uploaded
+      # artifact, not the step status. No report here can promote anything:
+      # there is no auto-promotion step by design.
+      - name: Build candidate evidence reports
+        if: always()
+        continue-on-error: true
+        working-directory: ./backend
+        env:
+          DATABASE_URL: ${{ secrets.SUPABASE_DATABASE_URL }}
+          ENVIRONMENT: production
+          DEBUG: false
+        run: |
+          set -o pipefail
+          python scripts/centre_promotion_report.py --horizon all --json-out centre_promotion.json --markdown-out centre_promotion.md 2>&1 | tee centre_promotion.log
+          python scripts/ranking_transfer_report.py --horizon all --json-out ranking_transfer.json --markdown-out ranking_transfer.md 2>&1 | tee ranking_transfer.log
+
       # The open gate on retiring the GBM: on served rows its CENTRE loses to
       # quoting the last price (docs/research/2026-08-25-gbm-retirement-decision.md),
       # but every horizon was 8-11 clean dates against MIN_FORECAST_DATES=20, so
@@ -130,3 +148,18 @@ jobs:
             backend/centre_gate.log
           if-no-files-found: warn
           retention-days: 30
+
+      - name: Upload candidate reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: candidate-reports-${{ github.run_id }}
+          path: |
+            backend/centre_promotion.json
+            backend/centre_promotion.md
+            backend/centre_promotion.log
+            backend/ranking_transfer.json
+            backend/ranking_transfer.md
+            backend/ranking_transfer.log
+          if-no-files-found: warn
+          retention-days: 90
