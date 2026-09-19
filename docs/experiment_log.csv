@@ -34,6 +34,7 @@ date,name,hypothesis,metric,estimate,ci_lo,ci_hi,n,verdict,link
 2026-08-13,steamcommunity-universe,source=STEAMCOMMUNITY selects the served universe,selected rows,0 rows (values are NULL / aggregator_*),,,,refuted,docs/changelog/2026-08-13-harness-family-repinned-off-steamcommunity.md
 2026-08-14,recency-decay-coverage,Recency-decayed training weights transfer to served coverage,served coverage delta,,,,,refuted,docs/changelog/2026-08-14-recency-decay-does-not-transfer-to-served-coverage.md
 2026-08-14,supply-side-rarity,Rarity carries cross-sectional signal past the placebo,paired rank IC,,,,,refuted,docs/changelog/2026-08-14-supply-side-rarity-is-null-and-fails-the-placebo.md
+2026-08-14,lambdarank-serving-transfer,LambdaRank vs-q50 ordering edge transfers to the served window,paired tied rank IC edge,h7 +0.035 only; h3 -0.174; h30 -0.069; h14 degenerate,,,,refuted,docs/changelog/2026-08-14-lambdarank-serving-transfer-measured.md
 2026-08-15,armory-tier-post,Armory tier posts move prices tradably,event return,,,,,refuted,docs/changelog/2026-08-15-armory-tier-post-fails-and-fails-placebo.md
 2026-08-15,range-forecaster-positioning,The product is a calibrated range not a directional call,product definition,,,,,shipped,docs/changelog/2026-08-15-cs2-oracle-is-a-range-forecaster.md
 2026-08-15,exceedance-orthogonal-skill,P(move clears cost) has market-orthogonal skill,Brier vs null,,,,,measured,docs/changelog/2026-08-15-exceedance-target-phase1-has-market-orthogonal-skill.md
@@ -57,3 +58,4 @@ date,name,hypothesis,metric,estimate,ci_lo,ci_hi,n,verdict,link
 2026-09-13,qhat-bagging,Bagged q_hat narrows the band at matched coverage,width at matched coverage,probe width voided (placebo matched) 3rd time,,,,void,docs/changelog/2026-09-13-qhat-bagging-mondrian-probe.md
 2026-09-13,served-centre-rank,Rank on the served centre beats rank on the fitted centre,served rank IC,,,,,void,docs/changelog/2026-09-13-served-centre-rank-void.md
 2026-09-13,supply-velocity-transfer,Supply velocity transfers its archive edge to serving,served rank IC,,,,,refuted,docs/changelog/2026-09-13-supply-velocity-transfer-killed.md
+2026-09-18,multi-head-champion-challenger,Exact served shadow predictions can safely arbitrate component promotion,framework contract,,,,,shipped,docs/changelog/2026-09-18-multi-head-champion-challenger-built.md

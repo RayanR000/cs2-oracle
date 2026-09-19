@@ -377,6 +377,14 @@ dated note here.
 
 The newest:
 
+- `2026-09-18-multi-head-champion-challenger-built.md` — ⭐ **the shadow
+  forecasting backend.** GBM q50 stays production champion at every horizon;
+  last-price centre and LambdaRank collect exact shadow predictions with
+  frozen shared outcomes. Promotion is manual-only behind a 20-date paired
+  gate (`scripts/centre_promotion_report.py`,
+  `scripts/ranking_transfer_report.py`); direction is offline-only and the
+  API stays neutral.
+
 - `2026-08-21-feature-native-nan-built-gated-off.md` — LightGBM native NaN handling instead of
   the median impute, from deep-review §10.4. Built behind `FEATURE_NATIVE_NAN`
   (`forecaster.py::feature_native_nan_enabled`, off in code) and **set to `1` on the nightly retrain**

@@ -38,16 +38,22 @@
 
 ## Overview
 
-`ItemForecaster` (`backend/models/forecaster.py`) trains and serves **12 global LightGBM
-models** — a median regressor, a directional classifier and an exceedance head per horizon
+`ItemForecaster` (`backend/models/forecaster.py`) trains and serves **8 global LightGBM
+models** — a median regressor and an exceedance head per horizon
 (plus up to 3 × 4 regime q50 boosters on a cold retrain, see § Regime models):
 
 ```
-3d horizon:  1 × q50 GBM  +  1 × 3-class directional classifier  +  1 × binary exceedance head
-7d horizon:  1 × q50 GBM  +  1 × 3-class directional classifier  +  1 × binary exceedance head
-14d horizon: 1 × q50 GBM  +  1 × 3-class directional classifier  +  1 × binary exceedance head
-30d horizon: 1 × q50 GBM  +  1 × 3-class directional classifier  +  1 × binary exceedance head
+3d horizon:  1 × q50 GBM  +  1 × binary exceedance head
+7d horizon:  1 × q50 GBM  +  1 × binary exceedance head
+14d horizon: 1 × q50 GBM  +  1 × binary exceedance head
+30d horizon: 1 × q50 GBM  +  1 × binary exceedance head
 ```
+
+Anomaly (`anomaly_clf_*.txt`) and ranking (`rank_*.txt`) heads are trained
+alongside when `ANOMALY_GBM=1` / `RANKING_HEAD=1`. The 3-class directional
+classifier is **offline-only since 2026-09-18**: routine training fits,
+persists, restores and consults no direction booster
+(`changelog/2026-09-18-multi-head-champion-challenger-built.md`).
 
 The exceedance head is gated on `EXCEEDANCE_HEAD`, which is **off in the code default and set to
 `1` in CI** (`price-forecast.yml:218`) — so a production artifact carries all 12 and a plain local
@@ -58,16 +64,22 @@ retrain carries 8.
 ensemble averaging and no p10/p90 model. The 40-model grid this replaced (36 global + regime
 files) collapsed on 2026-08-05; see `docs/changelog/2026-08-04-minimal-model-results.md`.
 
-**Division of labour:** the classifier supplies the served **direction**; the q50 model supplies
-the **median**; conformal calibration over the per-item climatology scale supplies the **band**;
+**Division of labour:** the no-classifier fallback supplies the served
+**direction** (threshold on the median return; the API discloses neutral
+regardless); the q50 model supplies the **median**; conformal calibration over
+the per-item climatology scale supplies the **band**;
 the exceedance head supplies the disclosed `exceed_p` (published as `move_odds`, h3/h7 only —
 `api/volatility_tags.py::CALIBRATED_MOVE_ODDS_HORIZONS`). It also produces a `confidence` tag,
 which is stored and scored but **not published** — see "Confidence" below.
 
 **Model version:** `lgbm-v3` (`scripts/forecast_prices.py:30`)
 **Artifacts** in `backend/models/saved_models/`: `lgb_{horizon}d_q50_e0.txt` (see `_save_models`),
-`lgb_{horizon}d_q50_{regime}_e0.txt`, `clf_{horizon}d.txt`,
+`lgb_{horizon}d_q50_{regime}_e0.txt`,
 `exceed_clf_{horizon}d.txt`, `bias_corrections.json`, `meta.json`.
+Routine training writes no `clf_{horizon}d.txt`; legacy files on disk are
+ignored on load. `meta.json` carries a descriptive `components` manifest and
+the per-horizon `centre_champions` mapping (initially all `gbm_q50`) — see
+`changelog/2026-09-18-multi-head-champion-challenger-built.md`.
 `MODEL_ARTIFACT_VERSION = 6` (:373) — `load_models()` raises `IncompatibleModelArtifact` on an
 older cache rather than serving a band computed by a different scheme. v4 (2026-08-06) marks
 the as-of lag lookup, which changes feature *values* and the persisted `feature_medians`
@@ -76,7 +88,13 @@ set, after which a v4 booster's splits are thresholds in dollars and are meaning
 (2026-08-09) marks Optuna selecting on within-date rank IC instead of early-stopped pinball
 loss, so a cached `meta.json` cannot supply hyperparameters chosen under the old criterion.
 
-### Directional classifier
+### Directional classifier (offline-only since 2026-09-19)
+
+Routine production training fits no direction booster. The reproducible
+benchmark is `venv/bin/python -m scripts.direction_benchmark`
+(production universe/features, fixed rounds, horizon+13 embargo); the
+served fields come from the no-classifier fallback and the API discloses
+neutral. What follows describes the retained offline instrument.
 
 A per-horizon 3-class (down/flat/up) LightGBM trained on multiclass log-loss, which optimizes
 the served metric directly. Labels come from a fixed ±`DIRECTION_FLAT_TOLERANCE_PCT = 0.5`

@@ -9,7 +9,7 @@ events metadata.
 
 ## Invariants
 
-These four hold everywhere. The reasoning behind each is in the rule file named beside it.
+These five hold everywhere. The reasoning behind each is in the rule file named beside it.
 
 1. **Read prices through `db/archive.py::prices_relation`, never a raw glob.** A bare
    `read_parquet('prices-*.parquet')` silently returns the first file's schema and drops
@@ -26,6 +26,11 @@ These four hold everywhere. The reasoning behind each is in the rule file named 
    Of those two, **`realised_down_rate` is the runnable baseline** — `constant_call_accuracy`
    picks its direction with hindsight, so **never difference model DA against it**.
    → `backtest-scoring`
+5. **Shadow predictions never drive serving; champions change only by reviewed code.**
+   `forecast_candidates` / `rank_score` must not appear in `item_forecasts`, public
+   schemas, or the band path, and no report, scorer, or database row may mutate
+   `CENTRE_CHAMPIONS` — promotion is a separate PR after a
+   `PASS_FOR_MANUAL_PROMOTION` report.
 
 ## Rules
 
