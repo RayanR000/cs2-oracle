@@ -176,6 +176,11 @@ CENTRE_OBJECTIVE_MAP = _parse_centre_objectives(_CENTRE_OBJECTIVE_RAW)
 # the return-based forecast.
 RANKING_HEAD_ENABLED = os.environ.get("RANKING_HEAD") == "1"
 
+# NGBoost distributional head: per-prediction mean + std via Normal distribution.
+# Shadow-only — never drives serving or the band. Trained on h=7 and h=14 only
+# (where IC ceiling headroom is largest). Gated by NGBOOST_HEAD=1.
+NGBOOST_HEAD_ENABLED = os.environ.get("NGBOOST_HEAD") == "1"
+
 # Direction upweight: multiplier for positive-return samples during training.
 # Applied in _compute_sample_weights before normalization. Set to 1.0 (neutral)
 # on 2026-08-19: at 1.5 it did not correct direction — the sign is supplied by
@@ -1099,6 +1104,9 @@ class ItemForecaster:
         self.exceedance_calibration_meta: dict[int, dict[str, Any]] = {}
         self.anomaly_models: dict[int, lgb.Booster | None] = {}
         self.ranking_models: dict[int, lgb.Booster | None] = {}
+        # Per-horizon NGBoost distributional models (Normal): shadow-only,
+        # producing mean + std per prediction. Only h=7 and h=14.
+        self.ngboost_models: dict[int, Any] = {}
         # Exact shadow predictions captured by the latest predict() call:
         # centre challengers plus LambdaRank scores, keyed for
         # db/candidate_store.py. Transient — never mirrored to public
@@ -6524,6 +6532,27 @@ class ItemForecaster:
                 )
                 logger.info(f"  [timing] {horizon}d ranking head: {time.time() - _rank_start:.1f}s")
 
+            # NGBoost distributional head: Normal(mean, std) shadow predictions.
+            # Only on h=7 and h=14 — where the IC ceiling headroom is largest.
+            if NGBOOST_HEAD_ENABLED and horizon in (7, 14):
+                try:
+                    from models.ngboost_head import train_ngboost
+
+                    _ngb_start = time.time()
+                    target_col = f"target_return_{horizon}d"
+                    ngb_result = train_ngboost(
+                        X_train, train_set[target_col].to_numpy(),
+                        X_val, val_set[target_col].to_numpy(),
+                        horizon=horizon,
+                    )
+                    self.ngboost_models[horizon] = ngb_result.model
+                    logger.info(
+                        f"  [timing] {horizon}d NGBoost head: {time.time() - _ngb_start:.1f}s "
+                        f"(train_nll={ngb_result.train_nll:.4f}, val_nll={ngb_result.val_nll:.4f})"
+                    )
+                except Exception:
+                    logger.exception(f"  NGBoost {horizon}d head failed — skipping")
+
             # Train regime-specific models (optional: SKIP_REGIMES=1 to skip)
             #
             # `_warm_retrain` deliberately does NOT skip these, though it used to.
@@ -11157,6 +11186,17 @@ class ItemForecaster:
         if _n_rank:
             logger.info(f"  Saved {_n_rank} ranking heads")
 
+        # Save NGBoost distributional heads (joblib serialization).
+        _n_ngb = 0
+        for horizon, model in self.ngboost_models.items():
+            if model is not None:
+                from models.ngboost_head import save_ngboost_model
+
+                save_ngboost_model(model, os.path.join(self.model_dir, f"ngboost_{horizon}d.joblib"))
+                _n_ngb += 1
+        if _n_ngb:
+            logger.info(f"  Saved {_n_ngb} NGBoost heads")
+
         # Save anomaly classifiers.
         _n_anom = 0
         for horizon, clf in self.anomaly_models.items():
@@ -11410,6 +11450,7 @@ class ItemForecaster:
                 if self.exceedance_models
                 else {},
                 "ranking": {"lambdarank_v1": self.MODEL_ARTIFACT_VERSION} if self.ranking_models else {},
+                "ngboost": {"ngboost_normal_v1": self.MODEL_ARTIFACT_VERSION} if self.ngboost_models else {},
                 "direction": {},
             },
             "centre_champions": {str(h): centre_policy.centre_champion(h) for h in self.HORIZONS},
@@ -11733,6 +11774,19 @@ class ItemForecaster:
                     logger.warning(f"  Corrupt ranking head {rpath}, skipping: {e}")
         if self.ranking_models:
             logger.info(f"  Loaded {len(self.ranking_models)} ranking heads")
+
+        # Load NGBoost distributional heads (joblib deserialization).
+        for horizon in self.HORIZONS:
+            ngb_path = os.path.join(self.model_dir, f"ngboost_{horizon}d.joblib")
+            if os.path.exists(ngb_path):
+                try:
+                    from models.ngboost_head import load_ngboost_model
+
+                    self.ngboost_models[horizon] = load_ngboost_model(ngb_path)
+                except Exception as e:
+                    logger.warning(f"  Corrupt NGBoost model {ngb_path}, skipping: {e}")
+        if self.ngboost_models:
+            logger.info(f"  Loaded {len(self.ngboost_models)} NGBoost heads")
 
         # Load shrink-K models.
         for horizon in self.HORIZONS:
