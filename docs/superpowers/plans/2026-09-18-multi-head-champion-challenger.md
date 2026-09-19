@@ -49,7 +49,7 @@
 - Removes: `MIN_FORECAST_DATES`
 - Headline/PT/bias/reporting use the headline floor; only served-width feedback uses the feedback floor.
 
-- [ ] **Step 1: Write routing tests**
+- [x] **Step 1: Write routing tests**
 
 Create `tests/test_date_threshold_policy.py`:
 
@@ -77,7 +77,7 @@ def test_scoring_uses_only_the_headline_floor():
     assert "MIN_FEEDBACK_DATES" not in source
 ```
 
-- [ ] **Step 2: Run the test and verify it fails**
+- [x] **Step 2: Run the test and verify it fails**
 
 ```bash
 venv/bin/python -m pytest tests/test_date_threshold_policy.py -q
@@ -85,7 +85,7 @@ venv/bin/python -m pytest tests/test_date_threshold_policy.py -q
 
 Expected: FAIL because the two constants do not exist.
 
-- [ ] **Step 3: Define and route the constants**
+- [x] **Step 3: Define and route the constants**
 
 Replace the old constant in `backtest/scoring.py`:
 
@@ -105,7 +105,7 @@ Route imports as follows:
 - Served-recalibration fixtures use `MIN_FEEDBACK_DATES`.
 - Preserve the existing API key `min_forecast_dates` if compatibility requires it, but return `MIN_HEADLINE_DATES`.
 
-- [ ] **Step 4: Prove the ambiguous constant is gone**
+- [x] **Step 4: Prove the ambiguous constant is gone**
 
 ```bash
 rg -n "MIN_FORECAST_DATES" backend
@@ -113,7 +113,7 @@ rg -n "MIN_FORECAST_DATES" backend
 
 Expected: no executable import/comparison remains; historical prose in archived research scripts may be rewritten for clarity.
 
-- [ ] **Step 5: Run threshold regressions**
+- [x] **Step 5: Run threshold regressions**
 
 ```bash
 venv/bin/python -m pytest \
@@ -126,7 +126,7 @@ venv/bin/python -m pytest \
   tests/test_bias_fit_date_guard.py -q
 ```
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add backend/backtest/scoring.py backend/models/served_recalibration.py \
@@ -152,7 +152,7 @@ git commit -m "refactor(metrics): separate headline and feedback date gates"
 - Produces: `CENTRE_CHAMPIONS`, `centre_champion(horizon)`, `centre_challengers(horizon)`
 - Produces: `percentage_offsets(low, mid, high)` and `assemble_interval(centre, offsets)`
 
-- [ ] **Step 1: Write contract tests**
+- [x] **Step 1: Write contract tests**
 
 ```python
 import numpy as np
@@ -178,7 +178,7 @@ def test_ranking_rejects_nonfinite_scores():
         RankingPrediction("rank", "v1", np.array([np.nan]))
 ```
 
-- [ ] **Step 2: Write policy and assembly tests**
+- [x] **Step 2: Write policy and assembly tests**
 
 ```python
 def test_initial_champion_is_gbm_at_every_horizon():
@@ -198,17 +198,17 @@ def test_two_centres_receive_identical_percentage_geometry():
 
 Also test unknown horizons, incomplete champion mappings, empty names, unequal arrays, non-finite offsets, and non-positive centres.
 
-- [ ] **Step 3: Run tests and verify missing-module failures**
+- [x] **Step 3: Run tests and verify missing-module failures**
 
 ```bash
 venv/bin/python -m pytest tests/test_prediction_contracts.py tests/test_centre_policy.py tests/test_forecast_assembly.py -q
 ```
 
-- [ ] **Step 4: Implement immutable contracts**
+- [x] **Step 4: Implement immutable contracts**
 
 Use frozen dataclasses with `__post_init__` validation. Convert inputs with `np.asarray(..., dtype=float)` for validation; reject empty names/versions, unequal lengths, non-finite values, non-positive centre prices, and any `lower_pct > upper_pct`.
 
-- [ ] **Step 5: Implement centre policy**
+- [x] **Step 5: Implement centre policy**
 
 ```python
 HORIZONS = (3, 7, 14, 30)
@@ -238,11 +238,11 @@ def centre_challengers(horizon: int) -> tuple[str, ...]:
 _validate_policy()
 ```
 
-- [ ] **Step 6: Implement assembly**
+- [x] **Step 6: Implement assembly**
 
 Calculate offsets as `(leg / mid - 1) * 100` and assemble as `centre * (1 + offset/100)`. Reject invalid mids/order. Return NumPy arrays without rounding.
 
-- [ ] **Step 7: Run and commit**
+- [x] **Step 7: Run and commit**
 
 ```bash
 venv/bin/python -m pytest tests/test_prediction_contracts.py tests/test_centre_policy.py tests/test_forecast_assembly.py -q
@@ -265,7 +265,7 @@ git commit -m "feat(models): add component contracts and centre policy"
 - Produces ORM models `ForecastCandidate` and `ForecastCandidateOutcome`.
 - Produces Alembic head `0027_add_forecast_candidates`.
 
-- [ ] **Step 1: Write isolated SQLite schema tests**
+- [x] **Step 1: Write isolated SQLite schema tests**
 
 Use `create_engine("sqlite://")` and `Base.metadata.create_all`. Test a valid centre row, valid ranking row, invalid horizon, missing component payload, invalid centre ordering, duplicate identity, and one-to-one outcome.
 
@@ -292,13 +292,13 @@ with pytest.raises(IntegrityError):
     session.commit()
 ```
 
-- [ ] **Step 2: Run and verify import failure**
+- [x] **Step 2: Run and verify import failure**
 
 ```bash
 venv/bin/python -m pytest tests/test_forecast_candidate_schema.py -q
 ```
 
-- [ ] **Step 3: Add ORM models**
+- [x] **Step 3: Add ORM models**
 
 Use the spec columns. Define exact constraints:
 
@@ -326,11 +326,11 @@ CheckConstraint(
 
 Index candidates on `(forecast_date, horizon_days, component)` and `(item_id, forecast_date)`. Candidate outcome `candidate_id` is both PK and FK with cascade delete.
 
-- [ ] **Step 4: Add Alembic revision**
+- [x] **Step 4: Add Alembic revision**
 
 Set `revision = "0027_add_forecast_candidates"` and `down_revision = "0026_remove_duplicate_indexes"`. Create outcomes after candidates; downgrade in reverse order.
 
-- [ ] **Step 5: Verify the migration using a temporary DB**
+- [x] **Step 5: Verify the migration using a temporary DB**
 
 ```bash
 task_db=$(mktemp /tmp/cs2-candidate-schema.XXXXXX.db)
@@ -340,7 +340,7 @@ DATABASE_URL="sqlite:///$task_db" venv/bin/python -m alembic current
 
 Expected: `0027_add_forecast_candidates`.
 
-- [ ] **Step 6: Run and commit**
+- [x] **Step 6: Run and commit**
 
 ```bash
 venv/bin/python -m pytest tests/test_forecast_candidate_schema.py -q
@@ -362,19 +362,19 @@ git commit -m "feat(db): add forecast candidate shadow tables"
 - Produces: `config_fingerprint(payload) -> str`
 - Produces: `candidate_records(results, ...) -> list[CandidateRecord]`
 
-- [ ] **Step 1: Write final-geometry tests**
+- [x] **Step 1: Write final-geometry tests**
 
 Use one item with `current_price=40`, GBM `low=90, mid=100, high=125`, and `rank_score=0.7`. Assert last-price centre/legs are `40/36/50`, the ranking record score is `0.7`, input is unchanged, and `anchor_date` becomes forecast date.
 
 Test stable fingerprints under dictionary key reordering and changed fingerprints for changes in champion policy, artifact version, signed offsets, feedback factor, or relevant feature flags.
 
-- [ ] **Step 2: Run and verify missing module**
+- [x] **Step 2: Run and verify missing module**
 
 ```bash
 venv/bin/python -m pytest tests/test_candidate_predictions.py -q
 ```
 
-- [ ] **Step 3: Implement canonical SHA-256 fingerprints**
+- [x] **Step 3: Implement canonical SHA-256 fingerprints**
 
 ```python
 def config_fingerprint(payload: dict[str, Any]) -> str:
@@ -384,7 +384,7 @@ def config_fingerprint(payload: dict[str, Any]) -> str:
     return hashlib.sha256(encoded).hexdigest()
 ```
 
-- [ ] **Step 4: Implement conversion**
+- [x] **Step 4: Implement conversion**
 
 For every final forecast:
 
@@ -398,7 +398,7 @@ For every final forecast:
 
 Include component/name/version, artifact version, cutoff timestamp, anchor, and fingerprint on every record.
 
-- [ ] **Step 5: Run and commit**
+- [x] **Step 5: Run and commit**
 
 ```bash
 venv/bin/python -m pytest tests/test_candidate_predictions.py tests/test_forecast_assembly.py -q
@@ -419,23 +419,23 @@ git commit -m "feat(models): derive exact shadow candidate records"
 - Produces: `write_candidate_batches(db, records)`
 - Raises: `CandidateFingerprintConflict`
 
-- [ ] **Step 1: Write persistence tests**
+- [x] **Step 1: Write persistence tests**
 
 Using in-memory SQLite, test new writes, identical retries, conflicting fingerprints, atomic rollback of a mixed valid/invalid group, and separate centre/ranking batch counts.
 
-- [ ] **Step 2: Run and verify failure**
+- [x] **Step 2: Run and verify failure**
 
 ```bash
 venv/bin/python -m pytest tests/test_candidate_store.py -q
 ```
 
-- [ ] **Step 3: Implement grouped transactions**
+- [x] **Step 3: Implement grouped transactions**
 
 Group by `(forecast_date, horizon_days, component)`. Query existing identities, compare all fingerprints before inserts, raise on mismatch, insert missing rows inside `db.begin_nested()`, flush, and commit after all groups.
 
 Catch only connection-invalidated `DBAPIError` as transient. Roll back and report that entire group unwritten. Integrity/fingerprint failures propagate.
 
-- [ ] **Step 4: Run and commit**
+- [x] **Step 4: Run and commit**
 
 ```bash
 venv/bin/python -m pytest tests/test_candidate_store.py tests/test_forecast_candidate_schema.py -q
@@ -461,7 +461,7 @@ git commit -m "feat(db): persist idempotent shadow prediction batches"
 - Exact shadows live on transient `self.pending_candidates` and are not placed in public mirrors.
 - Metadata gains descriptive `components` and `centre_champions`.
 
-- [ ] **Step 1: Write wiring tests**
+- [x] **Step 1: Write wiring tests**
 
 ```python
 def test_initial_policy_keeps_gbm_public_and_last_price_shadow():
@@ -480,17 +480,17 @@ def test_promoted_policy_swaps_public_and_shadow(monkeypatch):
 
 Assert `_write_forecasts_to_db` receives no ranking field and API schemas remain unchanged.
 
-- [ ] **Step 2: Run and verify failure**
+- [x] **Step 2: Run and verify failure**
 
 ```bash
 venv/bin/python -m pytest tests/test_shadow_forecast_wiring.py tests/test_model_component_manifest.py -q
 ```
 
-- [ ] **Step 3: Apply policy after final sanitization**
+- [x] **Step 3: Apply policy after final sanitization**
 
 At the end of `predict()`, after `_sanitize_forecasts`, capture candidate records and replace the public triple only if policy names last-price. Clear `self.pending_candidates` at the start of each call. This ordering captures blend, bias, conformal feedback, rounding, and ordering repairs.
 
-- [ ] **Step 4: Persist candidates after production**
+- [x] **Step 4: Persist candidates after production**
 
 After `_write_forecasts_to_db` succeeds, call `write_candidate_batches`. Return/log:
 
@@ -506,7 +506,7 @@ After `_write_forecasts_to_db` succeeds, call `write_candidate_batches`. Return/
 
 Integrity failures propagate; transient candidate DB failures leave production intact and return missing batch counts.
 
-- [ ] **Step 5: Add the component manifest**
+- [x] **Step 5: Add the component manifest**
 
 Write:
 
@@ -524,7 +524,7 @@ Write:
 
 On load, a GBM champion requires a q50 artifact; last-price requires none. Missing ranking artifacts disable ranking shadow only.
 
-- [ ] **Step 6: Run focused tests**
+- [x] **Step 6: Run focused tests**
 
 ```bash
 venv/bin/python -m pytest \
@@ -537,7 +537,7 @@ venv/bin/python -m pytest \
   tests/test_forecast_anomaly_p_persistence.py -q
 ```
 
-- [ ] **Step 7: Commit**
+- [x] **Step 7: Commit**
 
 ```bash
 git add backend/models/forecaster.py backend/models/forecast_assembly.py \
@@ -563,31 +563,31 @@ git commit -m "feat(forecast): collect centre and ranking shadows"
 - API direction remains neutral.
 - Offline benchmark reports PT, DA, realised down rate, and constant-call accuracy without production writes.
 
-- [ ] **Step 1: Write disposition tests**
+- [x] **Step 1: Write disposition tests**
 
 Inspect routine train/save/load sources and assert no call/save/load of direction boosters. Load a legacy directory containing `clf_7d.txt` and assert `direction_models == {}`. Assert API routes still pass raw values through `served_direction` and `DIRECTION_DISCLOSED is False`.
 
-- [ ] **Step 2: Write report-format test**
+- [x] **Step 2: Write report-format test**
 
 Feed `format_direction_report` a fixed metric dictionary and assert one block contains `Pesaran-Timmermann`, `directional_accuracy`, `realised_down_rate`, and `constant_call_accuracy`.
 
-- [ ] **Step 3: Run and verify failures**
+- [x] **Step 3: Run and verify failures**
 
 ```bash
 venv/bin/python -m pytest tests/test_direction_training_disposition.py tests/test_direction_benchmark.py -q
 ```
 
-- [ ] **Step 4: Remove routine orchestration only**
+- [x] **Step 4: Remove routine orchestration only**
 
 Remove the direction fit/save/load blocks. Retain the fitting and metric helpers for offline research. Production prediction takes the existing no-classifier fallback path; public APIs remain neutral.
 
 Remove stale workflow `CV_DIAGNOSTIC_CLASSIFIER` comments/variable if no routine path reads it. Do not remove unrelated flags.
 
-- [ ] **Step 5: Implement offline benchmark**
+- [x] **Step 5: Implement offline benchmark**
 
 Parse `--horizon` and `--archive-dir`, use production universe/features, use `embargo_days(horizon)`, fit only in a temporary model directory, call `pesaran_timmermann(records, MIN_HEADLINE_DATES)`, format the metric quartet, and never call production save/write/config mutation.
 
-- [ ] **Step 6: Run and commit**
+- [x] **Step 6: Run and commit**
 
 ```bash
 venv/bin/python -m pytest \
@@ -616,21 +616,21 @@ git commit -m "refactor(models): move direction classifier offline"
 - Reuses canonical archive maturity, gap, voting, and anchor-resolution rules.
 - Persists immutable `ForecastCandidateOutcome` rows.
 
-- [ ] **Step 1: Write shared-leg tests**
+- [x] **Step 1: Write shared-leg tests**
 
 Create production and candidate rows in isolated SQLite. Stub the resolver and assert candidate `base_price`, `actual_price`, and `resolved_at` exactly match production.
 
-- [ ] **Step 2: Write freeze tests**
+- [x] **Step 2: Write freeze tests**
 
 Resolve once, alter the fixture, resolve normally, and assert legs do not move. Resolve with `reresolve=True` and assert they move. Rescore derived metrics and assert no archive call.
 
-- [ ] **Step 3: Run and verify missing module**
+- [x] **Step 3: Run and verify missing module**
 
 ```bash
 venv/bin/python -m pytest tests/test_candidate_resolution.py tests/test_candidate_outcome_freeze.py -q
 ```
 
-- [ ] **Step 4: Implement resolution**
+- [x] **Step 4: Implement resolution**
 
 Resolve unique `(item, date, horizon)` once. Prefer an existing frozen `ForecastOutcome`; use `load_voted_prices` and `resolve_anchors` only when no production outcome exists. Apply the same maturity, gap, stale, excluded-date, and invalid-leg rules.
 
@@ -646,11 +646,11 @@ in_interval = candidate.predicted_price_low <= actual <= candidate.predicted_pri
 
 Ranking rows store legs with null error/coverage.
 
-- [ ] **Step 5: Integrate with backtesting**
+- [x] **Step 5: Integrate with backtesting**
 
 Call candidate resolution after production outcome refresh. Under `--rescore`, refresh candidate derived metrics only; do not open the archive.
 
-- [ ] **Step 6: Run regressions and commit**
+- [x] **Step 6: Run regressions and commit**
 
 ```bash
 venv/bin/python -m pytest \
@@ -679,11 +679,11 @@ git commit -m "feat(backtest): freeze shadow candidate outcomes"
 - Produces: `evaluate_centre_promotion(...)`
 - Verdicts: `PASS_FOR_MANUAL_PROMOTION`, `REJECTED`, `UNRESOLVED`, `INSUFFICIENT_EVIDENCE`, `DATA_INTEGRITY_FAILURE`
 
-- [ ] **Step 1: Write equal-date bootstrap tests**
+- [x] **Step 1: Write equal-date bootstrap tests**
 
 Use 20 dates where one has 10,000 rows and the rest 100. Assert the point estimate is the mean of 20 daily paired means, not a row-pooled mean. Assert deterministic seed-42 bounds.
 
-- [ ] **Step 2: Write verdict matrix tests**
+- [x] **Step 2: Write verdict matrix tests**
 
 Cover:
 
@@ -694,17 +694,17 @@ Cover:
 - MAE lower bound >0 → rejected.
 - <95% overlap, <80% batch completeness, mixed fingerprints, or outcome mismatch → integrity/ineligible.
 
-- [ ] **Step 3: Run and verify failures**
+- [x] **Step 3: Run and verify failures**
 
 ```bash
 venv/bin/python -m pytest tests/test_candidate_scoring.py tests/test_centre_promotion.py -q
 ```
 
-- [ ] **Step 4: Implement equal-weight daily bootstrap**
+- [x] **Step 4: Implement equal-weight daily bootstrap**
 
 Pair item rows, average differences inside each date, resample daily means with replacement using seed 42, 1,000 resamples, and a 90% interval. Do not reuse `paired_metric_difference` because it weights dates by row count.
 
-- [ ] **Step 5: Implement explicit gates**
+- [x] **Step 5: Implement explicit gates**
 
 ```python
 MIN_SHARED_DATES = MIN_HEADLINE_DATES
@@ -717,7 +717,7 @@ PROMOTION_CI = 90
 
 Return frozen result dataclasses. `promotion.py` has no database imports.
 
-- [ ] **Step 6: Run and commit**
+- [x] **Step 6: Run and commit**
 
 ```bash
 venv/bin/python -m pytest tests/test_candidate_scoring.py tests/test_centre_promotion.py -q
@@ -742,33 +742,33 @@ git commit -m "feat(backtest): add manual centre promotion gate"
 - Centre exit codes: pass 0, unresolved/insufficient 1, integrity/execution 2, rejected 3.
 - Ranking remains non-authoritative and shadow-only.
 
-- [ ] **Step 1: Write centre report tests**
+- [x] **Step 1: Write centre report tests**
 
 Patch the DB loader with PASS, unresolved, rejected, and integrity frames. Assert exit codes, JSON keys, Markdown headings, and no update/insert/config writes.
 
-- [ ] **Step 2: Write within-date ranking tests**
+- [x] **Step 2: Write within-date ranking tests**
 
 Build a frame with positive pooled correlation but negative correlation on every date. Assert the report uses the negative within-date result. Test 99/100 items per date, 19/20 dates, mixed fingerprints, and supported/unresolved/rejected intervals.
 
-- [ ] **Step 3: Run and verify missing scripts**
+- [x] **Step 3: Run and verify missing scripts**
 
 ```bash
 venv/bin/python -m pytest tests/test_centre_promotion_report.py tests/test_ranking_transfer_report.py -q
 ```
 
-- [ ] **Step 4: Implement centre report**
+- [x] **Step 4: Implement centre report**
 
 Join candidates/outcomes/items/item_forecasts/forecast_outcomes on exact item/date/horizon identity. Apply >=$1 cohort and excluded dates. JSON includes eligibility failures, verdict, MAE/coverage/width intervals, rows/dates, per-date deltas, completeness, versions, and fingerprints. Markdown renders the same fields.
 
-- [ ] **Step 5: Implement ranking report**
+- [x] **Step 5: Implement ranking report**
 
 Per eligible date, compute Spearman IC for `lambdarank_v1.score` and production q50 implied return against canonical realised return. Pair daily ICs through Task 9. Require 20 dates, ≥100 shared items on every included date, 80% completeness, and a single version/fingerprint. Lower bound >0 is `SUPPORTED`; upper bound <0 is `REJECTED`.
 
-- [ ] **Step 6: Prove shadow-only behavior**
+- [x] **Step 6: Prove shadow-only behavior**
 
 Assert `rank_score` appears in neither `ItemForecast` nor `backend/api/schemas.py`. It may appear only in internal forecasts, `ForecastCandidate.score`, and reports.
 
-- [ ] **Step 7: Run and commit**
+- [x] **Step 7: Run and commit**
 
 ```bash
 venv/bin/python -m pytest \
@@ -797,30 +797,30 @@ git commit -m "feat(reports): add candidate evidence reports"
 - Production zero rows remain fatal.
 - Shadow incompleteness is loud but non-fatal unless caused by integrity conflict.
 
-- [ ] **Step 1: Write count-guard tests**
+- [x] **Step 1: Write count-guard tests**
 
 Add `forecasts_written` to `ROW_COUNT_FIELDS`. Assert zero production fails. Assert production >0 with zero shadow does not trip the generic zero-row guard but yields a dedicated warning.
 
-- [ ] **Step 2: Write readiness tests**
+- [x] **Step 2: Write readiness tests**
 
 Three consecutive dates with expected == written yield `shadow_collection_ready=True`. A missing date/horizon/component resets readiness and names the gap.
 
-- [ ] **Step 3: Implement logs and counters**
+- [x] **Step 3: Implement logs and counters**
 
 Per horizon log champion, challenger, versions, production rows, candidate rows, fingerprint prefix, and duration. Return all counts from `run_forecast`.
 
-- [ ] **Step 4: Update workflows**
+- [x] **Step 4: Update workflows**
 
 Keep `RANKING_HEAD=1`, remove routine direction variables/comments, add no auto-promotion step, and upload centre/ranking JSON+Markdown as `candidate-reports` after backtest resolution. Reports below the gate remain successful artifacts with insufficient evidence.
 
-- [ ] **Step 5: Run tests and YAML parse**
+- [x] **Step 5: Run tests and YAML parse**
 
 ```bash
 venv/bin/python -m pytest tests/test_run_task.py tests/test_shadow_forecast_freshness.py -q
 venv/bin/python -c "import yaml; yaml.safe_load(open('../.github/workflows/price-forecast.yml')); print('yaml ok')"
 ```
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add backend/scripts/forecast_prices.py backend/scripts/run_task.py \
@@ -844,11 +844,11 @@ git commit -m "feat(ops): expose shadow collection health and reports"
 - Documents exact production/shadow state.
 - Adds a shipped framework row without claiming candidate victory.
 
-- [ ] **Step 1: Write the changelog**
+- [x] **Step 1: Write the changelog**
 
 Record GBM as initial champion; last-price/LambdaRank shadow-only; anomaly/exceedance production; direction offline-only/API neutral; both date thresholds; report commands/exit codes; and no promotion.
 
-- [ ] **Step 2: Update architecture and experiment log**
+- [x] **Step 2: Update architecture and experiment log**
 
 Add:
 
@@ -856,7 +856,7 @@ Add:
 2026-09-18,multi-head-champion-challenger,Exact served shadow predictions can safely arbitrate component promotion,framework contract,,,,,shipped,docs/changelog/2026-09-18-multi-head-champion-challenger-built.md
 ```
 
-- [ ] **Step 3: Run documentation guards**
+- [x] **Step 3: Run documentation guards**
 
 ```bash
 venv/bin/python -m pytest tests/test_experiment_log.py -q
@@ -867,7 +867,7 @@ rg -n "automatically promote|auto-promot" \
 
 Expected: no automatic-promotion claim.
 
-- [ ] **Step 4: Run the focused feature suite**
+- [x] **Step 4: Run the focused feature suite**
 
 ```bash
 venv/bin/python -m pytest \
@@ -891,7 +891,7 @@ venv/bin/python -m pytest \
   tests/test_shadow_forecast_freshness.py -q
 ```
 
-- [ ] **Step 5: Run regressions and full verification**
+- [x] **Step 5: Run regressions and full verification**
 
 ```bash
 venv/bin/python -m pytest \
@@ -909,7 +909,7 @@ venv/bin/python -m alembic heads
 
 Expected: all tests pass and Alembic reports one head, `0027_add_forecast_candidates`.
 
-- [ ] **Step 6: Commit documentation**
+- [x] **Step 6: Commit documentation**
 
 ```bash
 git add docs/changelog/2026-09-18-multi-head-champion-challenger-built.md \
