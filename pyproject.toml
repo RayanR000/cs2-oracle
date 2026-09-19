@@ -36,6 +36,9 @@ mlops = [
     "mlflow>=3.0",
     "evidently>=0.5",
 ]
+probabilistic = [
+    "ngboost>=0.5",
+]
 torch = [
     "torch>=2.0.0",
 ]
