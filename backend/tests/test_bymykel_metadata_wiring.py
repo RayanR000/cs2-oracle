@@ -10,6 +10,7 @@ and `EXCEEDANCE_META` widening a group it is not supposed to widen.
 
 import sys
 from pathlib import Path
+from typing import ClassVar
 
 import pandas as pd
 import pytest
@@ -105,9 +106,9 @@ class TestFeatureGroup:
         assert _feature_group("type_rifle") == "item_metadata"
 
     def test_allowlist_admits_the_bundle_and_nothing_else_new(self):
-        cols = META_COLS + ["price_mean_7d", "item_age_days", "rarity_ordinal", "type_rifle", "supply_listings"]
+        cols = [*META_COLS, "price_mean_7d", "item_age_days", "rarity_ordinal", "type_rifle", "supply_listings"]
         kept = ItemForecaster._apply_feature_allowlist(cols, ["price_technicals", "bymykel_metadata"])
-        assert sorted(kept) == sorted(META_COLS + ["price_mean_7d"])
+        assert sorted(kept) == sorted([*META_COLS, "price_mean_7d"])
 
 
 class TestJoin:
@@ -214,7 +215,7 @@ class TestExceedanceMetaGate:
             }
         )
 
-    FEATURE_COLS = ["return_1d", "price_zscore_30d"]
+    FEATURE_COLS: ClassVar[list] = ["return_1d", "price_zscore_30d"]
 
     def test_defaults_off(self, monkeypatch):
         monkeypatch.delenv("EXCEEDANCE_META", raising=False)
@@ -245,7 +246,7 @@ class TestExceedanceMetaGate:
         X = fc._exceedance_feature_matrix(self._train_set(), self.FEATURE_COLS)
         # Allowlist order is preserved; the widening is appended, sorted, so the
         # column order is a function of the flag alone and not of frame order.
-        assert list(X.columns) == self.FEATURE_COLS + ["float_meta_min", "is_meta_stattrak", "rarity_meta_rank"]
+        assert list(X.columns) == [*self.FEATURE_COLS, "float_meta_min", "is_meta_stattrak", "rarity_meta_rank"]
 
     def test_enabled_with_no_meta_columns_does_not_raise(self, monkeypatch):
         monkeypatch.setenv("EXCEEDANCE_META", "1")
@@ -257,6 +258,6 @@ class TestExceedanceMetaGate:
     def test_a_meta_column_already_allowlisted_is_not_duplicated(self, monkeypatch):
         monkeypatch.setenv("EXCEEDANCE_META", "1")
         fc = ItemForecaster.__new__(ItemForecaster)
-        cols = self.FEATURE_COLS + ["rarity_meta_rank"]
+        cols = [*self.FEATURE_COLS, "rarity_meta_rank"]
         X = fc._exceedance_feature_matrix(self._train_set(), cols)
-        assert list(X.columns) == cols + ["float_meta_min", "is_meta_stattrak"]
+        assert list(X.columns) == [*cols, "float_meta_min", "is_meta_stattrak"]

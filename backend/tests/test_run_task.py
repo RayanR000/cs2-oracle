@@ -3,7 +3,6 @@
 import logging
 
 import pytest
-
 from scripts.run_task import ROW_COUNT_FIELDS, check_results
 
 

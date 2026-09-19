@@ -53,6 +53,7 @@ from database import SessionLocal
 from db.archive import prices_relation
 from models.forecaster import ANCHOR_TIED_COL, ItemForecaster
 from models.item_parser import archive_universe_sql_filter
+
 from scripts.archive.ab_test_item_metadata import _stratified_sample, assign_items
 
 logging.basicConfig(
@@ -189,7 +190,7 @@ def build_frame(cache_path=None):
         )
         if NAIVE_COL not in features:
             raise SystemExit(f"{NAIVE_COL} not in the allowlisted set — naive arm undefined.")
-        df = df[["item_id", "date", "price"] + features].copy()
+        df = df[["item_id", "date", "price", *features]].copy()
     finally:
         db.close()
     if cache_path is not None:
@@ -348,7 +349,7 @@ def run(df, features, horizon_filter=None, max_folds=None, n_jobs=None):
             is_held = sub["item_id"].isin(set_eval).to_numpy()
             is_trained_eval = sub["item_id"].isin(set_trained).to_numpy()
             is_train_item = sub["item_id"].isin(set_train).to_numpy()
-            tied = sub[ANCHOR_TIED_COL].to_numpy(dtype=bool)
+            sub[ANCHOR_TIED_COL].to_numpy(dtype=bool)
 
             ic = {arm: {"all": {}, "tied": {}} for arm in ARMS}
             ic["naive"] = {"all": {}, "tied": {}}
@@ -452,7 +453,7 @@ def run(df, features, horizon_filter=None, max_folds=None, n_jobs=None):
             # One IC per date: dates never repeat across folds (STEP == VAL),
             # but average defensively.
             pooled = {}
-            for arm in list(ARMS) + ["naive"]:
+            for arm in [*list(ARMS), "naive"]:
                 pooled[arm] = {}
                 for cohort in ("all", "tied"):
                     pooled[arm][cohort] = {d: float(np.mean(v)) for d, v in ic[arm][cohort].items()}

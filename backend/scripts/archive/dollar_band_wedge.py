@@ -130,7 +130,7 @@ def main() -> int:
         aw = g["wedge"].abs()
         print(
             f"{h:>4} {len(g):>7,} {cov_d:>7.3f} {cov_c:>8.3f} "
-            f"{cov_c - cov_d:>+7.3f} {'[%+.3f, %+.3f]' % (lo, hi):>16} "
+            f"{cov_c - cov_d:>+7.3f} {f'[{lo:+.3f}, {hi:+.3f}]':>16} "
             f"{rec:>12.1%} {gen:>8.1%} {aw.median():>12.4f} "
             f"{aw.quantile(0.90):>7.4f}"
         )

@@ -75,7 +75,7 @@ class TestScore:
     def test_nan_labels_are_dropped_before_scoring(self):
         y = np.array([0.0, 1.0] * 15 + [np.nan] * 10)
         p = np.concatenate([np.tile([0.2, 0.8], 15), np.full(10, 0.5)])
-        auc, ll, n = _score(y, p)
+        auc, _ll, n = _score(y, p)
         assert n == 30
         assert auc == pytest.approx(1.0)
 

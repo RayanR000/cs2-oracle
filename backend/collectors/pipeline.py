@@ -10,7 +10,6 @@ from collections import Counter, defaultdict
 from datetime import datetime, timedelta
 from typing import Any
 
-from sqlalchemy import func
 from sqlalchemy.orm import scoped_session
 
 from collectors.snapshot_date import resolve_snapshot_date

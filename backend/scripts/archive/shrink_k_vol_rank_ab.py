@@ -34,7 +34,7 @@ Metric is mean half-width at MATCHED 80% coverage per arm per fold
 (magnitude_vs_climatology `_matched_width`): each arm gets its own q80 on the
 eval rows, so a reshape that needs a per-item q cannot win — only a shape a
 single served q_hat can use. Reported as the paired per-fold delta on
-log-width (arm − control; negative is narrower, interval-valid and symmetric)
+log-width (arm - control; negative is narrower, interval-valid and symmetric)
 plus the mean ratio and the win count. A mean win with a losing fold is the
 shape every refuted band arm had — worst-fold is printed for that reason.
 
@@ -152,7 +152,7 @@ def run(df, pruned, horizon_filter=None, n_jobs=None, max_folds=None):
             if not base_cols:
                 logger.warning("    no allowlisted feature columns — skipping")
                 continue
-            sub = tdf[["item_id", "date", "price", tcol] + base_cols].copy()
+            sub = tdf[["item_id", "date", "price", tcol, *base_cols]].copy()
 
             dates = sorted(sub["date"].unique())
             split_idx = len(dates) * 2 // 3

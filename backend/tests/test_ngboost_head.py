@@ -5,15 +5,14 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 import pytest
-
-ngboost_mod = pytest.importorskip("ngboost", reason="ngboost not installed (probabilistic extra)")
-
 from models.ngboost_head import (
     SUPPORTED_HORIZONS,
     NGBoostPrediction,
     predict_ngboost,
     train_ngboost,
 )
+
+ngboost_mod = pytest.importorskip("ngboost", reason="ngboost not installed (probabilistic extra)")
 
 
 def _synthetic_data(n: int = 500, n_features: int = 10, seed: int = 42):
@@ -111,4 +110,4 @@ class TestSupportedHorizons:
     """Only h=7 and h=14 are supported."""
 
     def test_supported_horizons_are_7_and_14(self):
-        assert SUPPORTED_HORIZONS == frozenset({7, 14})
+        assert frozenset({7, 14}) == SUPPORTED_HORIZONS

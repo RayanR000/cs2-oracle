@@ -2,7 +2,6 @@ import copy
 from datetime import date
 
 import pandas as pd
-import pytest
 
 
 def _results():
@@ -38,8 +37,8 @@ def test_initial_policy_keeps_gbm_public_and_last_price_shadow():
 
 
 def test_promoted_policy_swaps_public_and_shadow(monkeypatch):
-    from models.centre_policy import CENTRE_CHAMPIONS
     from models.candidate_predictions import apply_centre_policy
+    from models.centre_policy import CENTRE_CHAMPIONS
 
     monkeypatch.setitem(CENTRE_CHAMPIONS, 7, "last_price")
     public, shadow = apply_centre_policy(_results())

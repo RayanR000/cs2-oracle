@@ -6,6 +6,7 @@ using price history, technical indicators, events, and item metadata.
 
 import gc
 import hashlib
+import itertools
 import json
 import logging
 import os
@@ -13,7 +14,7 @@ import sys
 import time
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
-from typing import Any
+from typing import Any, ClassVar
 
 import lightgbm as lgb
 import numpy as np
@@ -33,9 +34,8 @@ from backtest.price_resolution import MAX_WINDOW_SPAN_DAYS, SMOOTH_WINDOW
 from backtest.scoring import HEADLINE_MIN_TIER, MIN_HEADLINE_DATES, price_tier
 from sqlalchemy import text
 
-from models import conformal, direction, mlflow_utils, scale_model, served_recalibration
+from models import centre_policy, conformal, direction, mlflow_utils, scale_model, served_recalibration
 from models.candidate_predictions import apply_centre_policy
-from models import centre_policy
 from models.direction import DIRECTION_FLAT_TOLERANCE_PCT as DIRECTION_FLAT_TOLERANCE_PCT
 from models.item_parser import (
     BID_SOURCES,
@@ -140,7 +140,7 @@ PRICE_TIER_BOUNDARIES = [
 BIAS_EWMA_ALPHA = 0.3
 
 # Per-horizon centre objective override. The q50 model trains with "quantile"
-# (α=0.5, ≡ MAE) by default. The experiment in scripts/objective_comparison_ab.py
+# (alpha=0.5, ≡ MAE) by default. The experiment in scripts/objective_comparison_ab.py
 # measured that MSE ("regression") wins at 30d (rank IC +0.041, significant) and
 # LambdaRank wins at 3d/7d (+0.034/+0.047) — but LambdaRank outputs ranking
 # scores, not return predictions, so it cannot drive the conformal band. MSE is
@@ -192,12 +192,12 @@ NGBOOST_HEAD_ENABLED = os.environ.get("NGBOOST_HEAD") == "1"
 DIRECTION_UPWEIGHT = float(os.environ.get("DIRECTION_UPWEIGHT", "1.0"))
 
 # Recency half-life, in days, for time-decayed sample weights: a row `h` days
-# older than the newest row in the frame carries 0.5× the gradient weight.
+# older than the newest row in the frame carries 0.5x the gradient weight.
 # Set to 0 to disable decay entirely.
 #
 # Why (diagnosed 2026-07-29, see docs/changelog/2026-07-29-7d-q50-early-stop.md):
 # training spans 1460 days but only ~14.5% of rows fall in the last 180 days,
-# while the early-stopping validation window (most recent 30 days) has ~2× the
+# while the early-stopping validation window (most recent 30 days) has ~2x the
 # return spread of the training set overall (std 35.1 vs 21.9). The model was
 # therefore fit mostly on a calmer historical regime and validated against the
 # current volatile one, leaving the 7d q50 validation curve nearly flat (0.28%
@@ -205,8 +205,8 @@ DIRECTION_UPWEIGHT = float(os.environ.get("DIRECTION_UPWEIGHT", "1.0"))
 #
 # DISABLED (0.0) — A/B'd 2026-07-29 and it did not clear the gate.
 # `scripts/ab_test_recency_weights.py`, 8 purge-gap folds on the real 141-item
-# production frame, half-life 365d vs flat. q50 pinball: 3d −0.01% (5/8 folds),
-# 7d −0.63% (2/8), 14d −0.22% (5/8), 30d +1.23% (6/8, DA +1.17pp). Only 30d
+# production frame, half-life 365d vs flat. q50 pinball: 3d -0.01% (5/8 folds),
+# 7d -0.63% (2/8), 14d -0.22% (5/8), 30d +1.23% (6/8, DA +1.17pp). Only 30d
 # passed, and 14d — long-horizon too, and DART-configured at the time, as 30d
 # was — moved the other way, so the 30d win reads as noise, not mechanism.
 #
@@ -218,7 +218,7 @@ DIRECTION_UPWEIGHT = float(os.environ.get("DIRECTION_UPWEIGHT", "1.0"))
 # ship would need confirmation with the full 3-member ensemble first.
 #
 # 365d was deliberately mild: a 4-year-old row still carries 0.0625. The
-# roadmap's α^days_ago with α=0.99 would leave a 1460-day-old row at ~6e-7,
+# roadmap's alpha^days_ago with alpha=0.99 would leave a 1460-day-old row at ~6e-7,
 # effectively truncating training to ~200 days.
 # Env-overridable so `model-diagnostics.yml` can dispatch a recency arm without
 # a code change (like the other diagnostic arms). Training-only: the decay is
@@ -375,13 +375,13 @@ class ItemForecaster:
     STEAM_SPOT_SOURCES = STEAM_SPOT_SOURCES
     CONDITIONAL_STEAM_SOURCES = CONDITIONAL_STEAM_SOURCES
 
-    HORIZONS = [3, 7, 14, 30]
+    HORIZONS: ClassVar[list[int]] = [3, 7, 14, 30]
     # The band no longer comes from quantile models — see models/conformal.py.
     # Measured (2026-08-04 warm baseline): 24 p10/p90 GBMs cost 223.2s of a
     # 381.2s budget for 39-48% empirical coverage against an 80% target, while
     # their top feature was already price_std_60d. The 303s/462s figures this
     # comment first carried were the spec's pre-measurement estimate.
-    QUANTILES = [0.5]
+    QUANTILES: ClassVar[list[float]] = [0.5]
     # Bump when the MEANING of any persisted field changes, not just the set
     # of fields. v2: conformal_calibration became a dimensionless multiplier
     # of per-item sigma, p10/p90 models no longer exist, sigma_clip added.
@@ -448,7 +448,7 @@ class ItemForecaster:
     # months. Widening keeps validation a recent contiguous window; this bound
     # keeps "recent" meaningful and keeps the window off the CV folds' turf.
     MAX_VALIDATION_WINDOW_DAYS = 90
-    REGIMES = ["bear", "range", "bull"]
+    REGIMES: ClassVar[list[str]] = ["bear", "range", "bull"]
     REGIME_RETURN_THRESHOLD_BEAR = -3.0  # market_return_30d < -3% → bear
     REGIME_RETURN_THRESHOLD_BULL = 3.0  # market_return_30d > 3% → bull
     # Single member. The 3-seed / 3-feature-fraction ensemble was estimated at
@@ -457,8 +457,8 @@ class ItemForecaster:
     # minimal model misses its bar, restoring N_ENSEMBLES = 2 is the first
     # thing to try.
     N_ENSEMBLES = 1
-    ENSEMBLE_SEEDS = [42]
-    ENSEMBLE_FEATURE_FRACTIONS = [0.7]
+    ENSEMBLE_SEEDS: ClassVar[list[int]] = [42]
+    ENSEMBLE_FEATURE_FRACTIONS: ClassVar[list[float]] = [0.7]
     MAX_BIN = 63
     # GBDT is the only boosting type. DART was the single most expensive config
     # choice in this file and had never been measured against GBDT on a
@@ -469,16 +469,16 @@ class ItemForecaster:
     # dropout branches they selected are gone with them.
     # See docs/changelog/2026-08-04-minimal-model-results.md.
     BOOSTING_TYPE = "gbdt"
-    N_TRIALS_MAP = {3: 50, 7: 10, 14: 15, 30: 15}
+    N_TRIALS_MAP: ClassVar[dict[int, int]] = {3: 50, 7: 10, 14: 15, 30: 15}
     # 3d is frozen (50-trial search, winner warm-started in _optuna_search_params).
     # 14d/30d still search because they are the noisiest horizons; the original
     # reason (tuning DART's drop_rate/max_drop/skip_drop) went away with DART.
-    SKIP_HP_HORIZONS = [3]
+    SKIP_HP_HORIZONS: ClassVar[list[int]] = [3]
     # Horizon-specific feature exclusions based on ablation study
     # (2026-07-19-feature-contribution-by-horizon.md):
-    # - Cross-sectional features actively harm 14d (−0.9pp) and 30d (−3.5pp)
-    # - Event features harm 30d (−3.0pp) but help 14d (+2.0pp)
-    HORIZON_EXCLUDED_GROUPS = {
+    # - Cross-sectional features actively harm 14d (-0.9pp) and 30d (-3.5pp)
+    # - Event features harm 30d (-3.0pp) but help 14d (+2.0pp)
+    HORIZON_EXCLUDED_GROUPS: ClassVar[dict[int, list[str]]] = {
         14: ["cross_sectional"],
         30: ["cross_sectional", "events"],
     }
@@ -486,10 +486,10 @@ class ItemForecaster:
     # restrict the model to those groups; None uses every group.
     # Ablation (2026-07-24, 7-fold purge-gap CV): the 85 non-price features add
     # no measurable directional accuracy over price/technical features alone
-    # (full−price = −0.6/+0.1/+1.6/−1.3pp across 3/7/14/30d, all within fold
+    # (full-price = -0.6/+0.1/+1.6/-1.3pp across 3/7/14/30d, all within fold
     # noise) and hurt at 3d/30d. Restrict to price technicals; the momentum
     # (return_Nd) features live in this group, so trend signal is retained.
-    FEATURE_GROUP_ALLOWLIST = ["price_technicals"]
+    FEATURE_GROUP_ALLOWLIST: ClassVar[list[str]] = ["price_technicals"]
     # Run the allowlist BEFORE _prune_features. The correlation matrix is
     # O(rows x p^2) single-threaded pandas: 25.2s over 123 candidate columns,
     # 1.65s over the 33 the allowlist keeps (measured 2026-08-09). Output was
@@ -840,8 +840,8 @@ class ItemForecaster:
     # Per-horizon directional-label knobs (2026-07-27). Defaults: mover-weight
     # keeps the prior global 3.0; vol multiplier k=1.0 is a starting point the
     # sweep (scripts/ab_test_direction_labels.py) tunes per horizon.
-    DIRECTION_MOVER_WEIGHT_MAP = {3: 3.0, 7: 3.0, 14: 3.0, 30: 3.0}
-    DIRECTION_VOL_MULTIPLIER_MAP = {3: 1.0, 7: 1.0, 14: 1.0, 30: 1.0}
+    DIRECTION_MOVER_WEIGHT_MAP: ClassVar[dict[int, float]] = {3: 3.0, 7: 3.0, 14: 3.0, 30: 3.0}
+    DIRECTION_VOL_MULTIPLIER_MAP: ClassVar[dict[int, float]] = {3: 1.0, 7: 1.0, 14: 1.0, 30: 1.0}
     # Bumped when a fitting-logic change invalidates stored thresholds.
     # v2 (2026-08-03): thresholds must come from a date-coverage-guarded fit.
     # Unversioned files predate the guard, were fitted on a two-date cohort,
@@ -998,8 +998,8 @@ class ItemForecaster:
     # fold, so its counts are ~1.5x the CV count. The curve is very forgiving
     # upward (3d loses 1.5% of peak IC going 300 -> 1500 rounds), so erring
     # high costs wall-clock rather than accuracy.
-    FIXED_BOOST_ROUNDS = {3: 300, 7: 750, 14: 150, 30: 1000}
-    CV_FIXED_BOOST_ROUNDS = {3: 200, 7: 500, 14: 100, 30: 750}
+    FIXED_BOOST_ROUNDS: ClassVar[dict[int, int]] = {3: 300, 7: 750, 14: 150, 30: 1000}
+    CV_FIXED_BOOST_ROUNDS: ClassVar[dict[int, int]] = {3: 200, 7: 500, 14: 100, 30: 750}
 
     @staticmethod
     def _early_stopping_enabled() -> bool:
@@ -1061,7 +1061,7 @@ class ItemForecaster:
     def __init__(
         self,
         db_session,
-        model_dir: str = None,
+        model_dir: str | None = None,
         prune_failed_groups: bool = True,
         served_cohort_share: float | None = None,
     ):
@@ -1705,7 +1705,7 @@ class ItemForecaster:
     def anomaly_gbm_enabled() -> bool:
         """Whether to train a binary anomaly/regime classifier per horizon.
 
-        Predicts P(|return_h| > 2σ_item) where σ is the item's trailing 60-day
+        Predicts P(|return_h| > 2sigma_item) where sigma is the item's trailing 60-day
         return std. Served as anomaly_p in the API — an alert/flag, not a
         band input. Set ANOMALY_GBM=1.
         """
@@ -2233,7 +2233,7 @@ class ItemForecaster:
                 f"REPLAY_ANCHOR={raw!r} is not an ISO date (YYYY-MM-DD). "
                 f"Refusing to guess -- an unparsed anchor would silently "
                 f"replay against today and score a forecast on its own answer."
-            )
+            ) from None
 
     # The serving transforms that move the median, in the order `predict`
     # applies them. The conformal band is deliberately absent: it sets `low` and
@@ -2350,7 +2350,7 @@ class ItemForecaster:
         (`scripts/init_local_db.py::populate_items`). ``exclude_iflow`` drops the
         iflow-only history — the trainable narrowing. Read through
         ``prices_relation`` + ``archive_universe_sql_filter`` so the phase-
-        collapsed and phantom keys never enter the cohort (invariants 1–2).
+        collapsed and phantom keys never enter the cohort (invariants 1-2).
         """
         import duckdb
         from db.archive import prices_relation
@@ -2401,7 +2401,7 @@ class ItemForecaster:
             return self._archive_universe_slugs(exclude_iflow=False)
 
     def _fetch_voted_price_history(
-        self, days_back: int, backfilled_only: bool, backfilled_slugs: set = None
+        self, days_back: int, backfilled_only: bool, backfilled_slugs: set | None = None
     ) -> pd.DataFrame:
         """Read the Parquet archive and collapse it to one consensus price per
         item per day. The expensive half of ``fetch_price_history``."""
@@ -3460,7 +3460,7 @@ class ItemForecaster:
         on name like every other archive table.
 
         `sell_listings` is the max listing count across marketplaces for the day
-        rather than a sum. The feeds overlap heavily (Spearman 0.65–0.82, and
+        rather than a sum. The feeds overlap heavily (Spearman 0.65-0.82, and
         market.csgo.com is close to a superset of Waxpeer), so a sum would double
         count the same inventory, and — worse — would make the series lurch
         whenever a feed drops out. A max degrades gracefully: losing one
@@ -4148,8 +4148,8 @@ class ItemForecaster:
             return out
 
         others = df.loc[outside, ["date", col]]
-        for date, block in others.groupby("date", sort=False):
-            ref_vals = ref.loc[ref["date"] == date, col].dropna().to_numpy()
+        for dt, block in others.groupby("date", sort=False):
+            ref_vals = ref.loc[ref["date"] == dt, col].dropna().to_numpy()
             if ref_vals.size == 0:
                 # No cohort observation of this characteristic on this date, so
                 # there is no distribution to place anything in. NaN, which the
@@ -4385,7 +4385,7 @@ class ItemForecaster:
 
         df = df.merge(identity_df, on="item_id", how="left")
 
-        for col in identity_cache[next(iter(identity_cache))].keys():
+        for col in identity_cache[next(iter(identity_cache))]:
             if col not in df.columns:
                 df[col] = 0
             df[col] = df[col].fillna(0).astype(int)
@@ -4479,7 +4479,7 @@ class ItemForecaster:
             model = model[0]
 
         groups: dict[str, list[str]] = {}
-        for i, name in enumerate(feature_names):
+        for _i, name in enumerate(feature_names):
             g = _feature_group(name)
             groups.setdefault(g, []).append(name)
 
@@ -4496,7 +4496,7 @@ class ItemForecaster:
 
         results = {}
         for group, idxs in group_indices.items():
-            # In-place shuffle with save/restore: O(group_features × n_rows)
+            # In-place shuffle with save/restore: O(group_features x n_rows)
             # instead of one full X_val copy per shuffle. RNG call order and
             # the zero-threshold sign metric are unchanged, so results match
             # the copy-per-shuffle version draw-for-draw. try/finally keeps
@@ -4868,7 +4868,7 @@ class ItemForecaster:
         # same quantity the production fit will produce, which is
         # `model.predict(X) + offset`.
         dtrain = lgb.Dataset(X_train, y_train, params=ds_params, init_score=train_offset)
-        dval = lgb.Dataset(X_val, y_val, reference=dtrain, params=ds_params, init_score=val_offset)
+        _dval = lgb.Dataset(X_val, y_val, reference=dtrain, params=ds_params, init_score=val_offset)
 
         def objective(trial):
             # Horizon-aware search bounds: 3d overrides known-losing regions.
@@ -4966,7 +4966,7 @@ class ItemForecaster:
 
     # Recovered demand/supply sidecars, joined AFTER voting so none of them
     # votes as a price. Local research dataset only; a missing file is a no-op.
-    _SIDECARS = {
+    _SIDECARS: ClassVar[dict[str, list[str]]] = {
         "volume-panel.parquet": ["steam_volume", "steam_sale_median"],
         "bid-panel.parquet": ["buff_bid"],
         "stattrak-panel.parquet": ["st_premium"],
@@ -4982,7 +4982,7 @@ class ItemForecaster:
             path = self.archive_dir / fname
             if not path.exists():
                 continue
-            side = pd.read_parquet(path)[["item_id", "date"] + cols]
+            side = pd.read_parquet(path)[["item_id", "date", *cols]]
             # Normalize the join key so a Timestamp-vs-date dtype drift
             # between a sidecar and `daily` can't silently zero out the
             # merge instead of raising -- see the Timestamp-typed test.
@@ -5335,7 +5335,7 @@ class ItemForecaster:
         exceed[ret.isna().to_numpy()] = np.nan
         df[f"target_exceed_{horizon}d"] = exceed
 
-        # Anomaly label: does the h-day move exceed 2× the item's trailing
+        # Anomaly label: does the h-day move exceed 2x the item's trailing
         # 60-day return standard deviation? A regime signal, not a trade
         # signal — gated by ANOMALY_GBM=1. Uses the same winsorized return
         # and voids as the exceedance label.
@@ -5534,7 +5534,7 @@ class ItemForecaster:
         return bad_items
 
     def _stratified_item_subsample(
-        self, price_df: pd.DataFrame, max_rows: int, seed: int = 42, exclude_items: set = None
+        self, price_df: pd.DataFrame, max_rows: int, seed: int = 42, exclude_items: set | None = None
     ) -> pd.DataFrame:
         """Subsample whole-item histories to bound the row count *before*
         feature engineering, while preserving per-item time-series continuity
@@ -5580,7 +5580,7 @@ class ItemForecaster:
         selected: list = []
         for _rarity, group in items.groupby("rarity"):
             frac = len(group) / n_items
-            k = min(len(group), max(1, int(round(target_items * frac))))
+            k = min(len(group), max(1, round(target_items * frac)))
             selected.extend(group["item_id"].sample(n=k, random_state=rng).tolist())
 
         selected_set = set(selected)
@@ -5671,7 +5671,7 @@ class ItemForecaster:
         corrupt_items = self._flag_corrupt_items(price_df)
 
         # NOTE: A distribution-shift guard here previously excluded ALL 2026
-        # rows. It was a temporary patch for the May–June 2026 archive gap,
+        # rows. It was a temporary patch for the May-June 2026 archive gap,
         # which made 2026 sparse (some single-day, ~352-item slices where the
         # 7d validation window collapsed to noise). That gap is now backfilled
         # (2026 is continuous, ~5,360 items/day, zero <50-item days), so the
@@ -6013,7 +6013,7 @@ class ItemForecaster:
         get the median (neutral) rather than 1.0.
 
         Positive-return samples are additionally upweighted by DIRECTION_UPWEIGHT
-        to counter the model's conservative bias (underpredicts "up" by ~2×).
+        to counter the model's conservative bias (underpredicts "up" by ~2x).
 
         Weights then decay with row age at SAMPLE_WEIGHT_HALFLIFE_DAYS, so the
         current market regime dominates the gradient instead of being outvoted
@@ -6159,7 +6159,7 @@ class ItemForecaster:
             }
             logger.info(f"Sigma clip: floor={floor:.5f} cap={cap:.5f} fallback={self.sigma_clip['fallback']:.5f}")
 
-            for hi, horizon in enumerate(self.HORIZONS, 1):
+            for _hi, horizon in enumerate(self.HORIZONS, 1):
                 self._train_horizon_inline(horizon, df, max_rows, per_item_row_sampling=per_item_row_sampling)
 
             del df
@@ -6503,7 +6503,7 @@ class ItemForecaster:
                 )
                 logger.info(f"  [timing] {horizon}d vol-rank GBM: {time.time() - _vr_start:.1f}s")
 
-            # Anomaly classifier: P(|return_h| > 2σ_item). An alert signal,
+            # Anomaly classifier: P(|return_h| > 2sigma_item). An alert signal,
             # not a band input. Gate: ANOMALY_GBM=1.
             if self.anomaly_gbm_enabled():
                 _anom_start = time.time()
@@ -6864,8 +6864,8 @@ class ItemForecaster:
             # momentum, both of which the constant call beats comfortably — so
             # a positive `edge` never meant the model was useful. These are the
             # honest bars.
-            def _mean_of(key, ndigits=2):
-                vals = [m[key] for m in cv_metrics if m.get(key) is not None]
+            def _mean_of(key, ndigits=2, _cv_metrics=cv_metrics):
+                vals = [m[key] for m in _cv_metrics if m.get(key) is not None]
                 return round(float(np.mean(vals)), ndigits) if vals else None
 
             mean_constant_call = _mean_of("constant_call_accuracy")
@@ -7093,7 +7093,7 @@ class ItemForecaster:
             # permutation tests below it are pure noise and cause false-positive
             # pruning that collapses 14d/30d models to ~4 features.
             # The significance_level parameter (0.05) gates pruning further:
-            # a group must pass BOTH the statistical significance test (p < α)
+            # a group must pass BOTH the statistical significance test (p < alpha)
             # AND the practical significance test (drop_pp >= 0.5) to be kept.
             # This prevents noisy-but-spurious correlations from surviving
             # on marginal windows without fully skipping the check.
@@ -7780,7 +7780,7 @@ class ItemForecaster:
         num_boost_round: int = 200,
         random_state: int = 42,
     ):
-        """Binary LightGBM: P(|return_h| > 2σ of item's trailing history).
+        """Binary LightGBM: P(|return_h| > 2sigma of item's trailing history).
 
         Same structure as the exceedance classifier — drops NaN labels,
         applies served-cohort reweighting. Returns None when fewer than
@@ -7817,7 +7817,7 @@ class ItemForecaster:
         return lgb.train(params, dtrain, num_boost_round=num_boost_round, callbacks=[lgb.log_evaluation(0)])
 
     def anomaly_probability(self, horizon: int, rows: pd.DataFrame) -> np.ndarray | None:
-        """P(|return_h| > 2σ_item) for the given rows, or None if no head.
+        """P(|return_h| > 2sigma_item) for the given rows, or None if no head.
 
         None also at horizons outside ANOMALY_SERVED_HORIZONS: the 30d head
         ranks but does not calibrate (log loss ties the featureless null), so
@@ -9364,7 +9364,7 @@ class ItemForecaster:
                         vals = np.where(np.isfinite(vals), vals, 0.0)
                         extra_cols.append(vals)
                 if extra_cols:
-                    X_cal = np.column_stack([X_cal] + extra_cols)
+                    X_cal = np.column_stack([X_cal, *extra_cols])
             except Exception:
                 pass  # fall back to sigma + mid only
 
@@ -9685,7 +9685,7 @@ class ItemForecaster:
             )
         return public_df, shadows
 
-    def predict(self, item_ids: list[int] = None) -> pd.DataFrame:
+    def predict(self, item_ids: list[int] | None = None) -> pd.DataFrame:
         logger.info("Generating forecasts...")
         self.pending_candidates = []
 
@@ -10372,7 +10372,7 @@ class ItemForecaster:
         splits = self._compute_cv_splits(sorted_dates, purge_days=embargo_days(horizon))
         if len(splits) < 2:
             raise RuntimeError(
-                f"CV produced {len(splits)} fold{'s' if splits else 's'} "
+                f"CV produced {len(splits)} folds "
                 f"(need >=2). Cannot evaluate {horizon}d horizon — "
                 f"check that training data has enough distinct dates "
                 f"({len(sorted_dates)} available)."
@@ -11048,7 +11048,7 @@ class ItemForecaster:
         # Find change_pct threshold that filters near-zero-move predictions
         # (which are trivially correct but uninformative).
         best_change_threshold = 0.0
-        best_change_coverage = best_high_coverage
+        _best_change_coverage = best_high_coverage
         if best_high_coverage > 0:
             high_set = df[df["range_pct"] < best_high_threshold]
             if len(high_set) > 0:
@@ -11061,7 +11061,7 @@ class ItemForecaster:
                         # Accept the change_pct threshold if accuracy stays >= target
                         if acc >= target_accuracy and coverage >= best_high_coverage * 0.5:
                             best_change_threshold = ct
-                            best_change_coverage = coverage
+                            _best_change_coverage = coverage
 
         self.confidence_thresholds[horizon] = {
             "high_range": best_high_threshold,
@@ -11382,7 +11382,7 @@ class ItemForecaster:
             regime_cols_serial[f"{h}_{regime}"] = cols
 
         # Track which regimes actually have trained models
-        trained_regimes = list(set(reg for (reg, h, q) in self.regime_models.keys()))
+        trained_regimes = list(set(reg for (reg, h, q) in self.regime_models))
 
         meta = {
             "model_artifact_version": self.MODEL_ARTIFACT_VERSION,
@@ -11620,7 +11620,7 @@ class ItemForecaster:
                 len(xs) != len(ys)
                 or len(xs) == 0
                 or any(not np.isfinite(v) for v in xs + ys)
-                or any(b < a for a, b in zip(xs, xs[1:]))
+                or any(b < a for a, b in itertools.pairwise(xs))
                 or min(ys) < 0.0
                 or max(ys) > 1.0
             ):
@@ -11900,7 +11900,7 @@ class ItemForecaster:
         # Build per-horizon feature sets from the loaded models.
         # Each model internally stores the feature names it was trained with.
         self.horizon_feature_cols = {}
-        for (horizon, q), ensemble in self.models.items():
+        for (horizon, _q), ensemble in self.models.items():
             if horizon in self.horizon_feature_cols:
                 continue
             model = ensemble[0] if isinstance(ensemble, list) else ensemble
@@ -11911,7 +11911,7 @@ class ItemForecaster:
 
         total_groups = len(self.models) + len(self.regime_models)
         if self.regime_models:
-            regimes_found = set(r for (r, h, q) in self.regime_models.keys())
+            regimes_found = set(r for (r, h, q) in self.regime_models)
             logger.info(
                 f"Loaded {len(self.models)} global + {len(self.regime_models)} regime "
                 f"model groups ({regimes_found}) from {self.model_dir}"

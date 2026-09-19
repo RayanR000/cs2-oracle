@@ -11,6 +11,7 @@ from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from typing import ClassVar
 from unittest.mock import MagicMock
 
 import pandas as pd
@@ -182,7 +183,7 @@ def _fake_forecast_env(monkeypatch, tmp_path, *, drifted, trained_days_ago=0):
     )
 
     class FakeForecaster:
-        HORIZONS = [3, 7, 14, 30]
+        HORIZONS: ClassVar[list] = [3, 7, 14, 30]
         train_called = False
 
         def __init__(self, *a, **kw):

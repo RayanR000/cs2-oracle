@@ -581,7 +581,7 @@ def downsample_prices(prices: list[list]) -> list[tuple[str, float, int]]:
         iso_year, iso_week, _ = dt.isocalendar()
         key = f"{iso_year}-W{iso_week:02d}"
         weekly_groups[key].append((dt, price, volume))
-    for week_key, group in sorted(weekly_groups.items()):
+    for _week_key, group in sorted(weekly_groups.items()):
         # Use middle of the week as timestamp
         dates = [dt for dt, _, _ in group]
         mid_date = dates[len(dates) // 2]

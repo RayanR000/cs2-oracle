@@ -311,7 +311,6 @@ WEAPON_SLUG_TO_TYPE = {
     "broken-fang-gloves": "glove",
     "zeus-x27": "pistol",
     "zeus x27": "pistol",
-    "zeus-x27": "pistol",
 }
 
 # Agent NPC names
@@ -386,7 +385,6 @@ def infer_weapon_type_from_name(name: str) -> str | None:
     slug = slug.replace(" | ", "-").replace(" | ", "-").replace("|", "-")
 
     # Remove Stattrak/Souvenir prefix
-    orig_slug = slug
     if slug.startswith("stattrak-") or slug.startswith("stattrak™-"):
         slug = slug[len("stattrak-") :] if slug.startswith("stattrak-") else slug
         slug = slug[len("stattrak™-") :] if slug.startswith("stattrak™-") else slug

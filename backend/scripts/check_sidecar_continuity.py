@@ -30,6 +30,8 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
+import itertools
+
 import pandas as pd
 
 WATCHED = {
@@ -110,7 +112,7 @@ def _audit_table(archive_dir: Path, pattern: str, day_col: str, source_col: str)
     dates = sorted(all_days[day_col].unique())
     gaps = [str(d) for d in pd.date_range(dates[0], dates[-1]).date if d not in set(dates)]
     longest = cur = 1
-    for a, b in zip(dates, dates[1:]):
+    for a, b in itertools.pairwise(dates):
         cur = cur + 1 if (b - a).days == 1 else 1
         longest = max(longest, cur)
     latest = dates[-1]

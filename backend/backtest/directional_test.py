@@ -105,7 +105,7 @@ def newey_west_lag(n_obs: int) -> int:
     """
     if n_obs < 2:
         return 0
-    lag = int(math.floor(4.0 * (n_obs / 100.0) ** (2.0 / 9.0)))
+    lag = math.floor(4.0 * (n_obs / 100.0) ** (2.0 / 9.0))
     return max(0, min(lag, n_obs - 1))
 
 

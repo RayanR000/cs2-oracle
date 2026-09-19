@@ -61,7 +61,7 @@ def write_candidate_batches(db, records: list) -> CandidateWriteResult:
     for (forecast_date, horizon_days, component), group in sorted(
         groups.items(), key=lambda kv: (str(kv[0][0]), kv[0][1], kv[0][2])
     ):
-        identities = [_identity(r) for r in group]
+        [_identity(r) for r in group]
         item_ids = list({r.item_id for r in group})
         names = list({r.candidate_name for r in group})
         versions = list({r.candidate_version for r in group})

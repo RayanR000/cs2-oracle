@@ -138,7 +138,7 @@ def test_depth_anchor_resists_a_single_mispriced_listing():
     "near the bottom of the book"; the trimmed p05 anchor must not move much.
     """
     normal = [_listing("Item", 10.0 + i * 0.01, "2026-08-01T00:00:00Z", i) for i in range(100)]
-    with_outlier = normal + [_listing("Item", 0.001, "2026-08-01T00:00:00Z", 999)]
+    with_outlier = [*normal, _listing("Item", 0.001, "2026-08-01T00:00:00Z", 999)]
 
     base = aggregate_lis_skins(normal, DAY, NOW).iloc[0]
     poisoned = aggregate_lis_skins(with_outlier, DAY, NOW).iloc[0]

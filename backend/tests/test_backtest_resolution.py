@@ -235,7 +235,7 @@ def test_empty_archive_dir_raises_rather_than_returning_empty(tmp_path):
     (directory absent)."""
     archive = tmp_path / "price-archive"
     archive.mkdir()  # exists, but contains no prices-*.parquet
-    with pytest.raises(FileNotFoundError, match="no prices-\\*.parquet"):
+    with pytest.raises(FileNotFoundError, match=r"no prices-\*.parquet"):
         load_voted_prices(archive, ["ak"], date(2026, 7, 1), date(2026, 7, 9))
 
 

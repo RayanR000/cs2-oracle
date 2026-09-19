@@ -15,7 +15,7 @@ from database import (
     get_db,
 )
 from fastapi import APIRouter, Depends, HTTPException, Query
-from sqlalchemy import desc, func, text
+from sqlalchemy import desc, func
 from sqlalchemy.orm import Session
 
 from api.cache import get_or_build
@@ -47,6 +47,8 @@ from api.volatility_tags import (
 
 router = APIRouter(prefix="/items", tags=["items"])
 
+_DB_DEP = Depends(get_db)
+
 logger = logging.getLogger(__name__)
 
 # How far behind the calendar a forecast's anchor day may sit before the
@@ -65,7 +67,7 @@ def _resolve_item(item_id: str, db: Session) -> Item:
 
 
 @router.get("/count")
-def items_count(db: Session = Depends(get_db)):
+def items_count(db: Session = _DB_DEP):
     return db.query(Item).filter(backfilled_item_clause()).count()
 
 
@@ -74,7 +76,7 @@ def list_items(
     type: str | None = Query(None),
     skip: int = Query(0, ge=0),
     limit: int = Query(50, ge=1, le=200),
-    db: Session = Depends(get_db),
+    db: Session = _DB_DEP,
 ):
     def build():
         q = db.query(Item).filter(backfilled_item_clause())
@@ -88,7 +90,7 @@ def list_items(
 @router.get("/search", response_model=list[ItemOut])
 def search_items(
     q: str = Query(min_length=1),
-    db: Session = Depends(get_db),
+    db: Session = _DB_DEP,
 ):
     return (
         db.query(Item).filter(Item.name.ilike(f"%{q}%"), backfilled_item_clause()).order_by(Item.name).limit(50).all()
@@ -98,7 +100,7 @@ def search_items(
 @router.get("/trending", response_model=list[TrendingItemOut])
 def trending_items(
     limit: int = Query(10, ge=1, le=100),
-    db: Session = Depends(get_db),
+    db: Session = _DB_DEP,
 ):
     return get_or_build(f"items_trending:{limit}", 600, lambda: _build_trending(db, limit))
 
@@ -189,7 +191,7 @@ def get_volatility_ranking(
     label: str | None = Query(
         None, pattern="^(Stable|Moderate|Volatile)$", description="Keep only items with this stability class"
     ),
-    db: Session = Depends(get_db),
+    db: Session = _DB_DEP,
 ):
     """Rank the served universe by volatility for a horizon.
 
@@ -320,7 +322,7 @@ def _horizon_swing_thresholds(db: Session, horizon: int):
 @router.get("/{item_id}/variants", response_model=list[QualityVariantOut])
 def get_item_variants(
     item_id: str,
-    db: Session = Depends(get_db),
+    db: Session = _DB_DEP,
 ):
     item = _resolve_item(item_id, db)
     base_name, _ = parse_item_name(item.name)
@@ -393,7 +395,7 @@ def get_item_variants(
 
 
 @router.get("/{item_id}", response_model=ItemOut)
-def get_item(item_id: str, db: Session = Depends(get_db)):
+def get_item(item_id: str, db: Session = _DB_DEP):
     return _resolve_item(item_id, db)
 
 
@@ -403,7 +405,7 @@ def get_price_history(
     days: int = Query(30, ge=1, le=5000),
     skip: int = Query(0, ge=0),
     limit: int = Query(100, ge=1, le=500),
-    db: Session = Depends(get_db),
+    db: Session = _DB_DEP,
 ):
     item = _resolve_item(item_id, db)
 
@@ -611,7 +613,7 @@ def _trends_parquet(item, item_id: str, db: Session):
 
 
 @router.get("/{item_id}/trends", response_model=TrendAnalysisOut)
-def get_item_trends(item_id: str, db: Session = Depends(get_db)):
+def get_item_trends(item_id: str, db: Session = _DB_DEP):
     item = _resolve_item(item_id, db)
 
     try:
@@ -722,7 +724,7 @@ def _prediction_parquet(item, period: str, horizon: int, thresholds=None):
 def get_item_prediction(
     item_id: str,
     period: str = Query("7_days", pattern="^(3_days|7_days|14_days|30_days)$"),
-    db: Session = Depends(get_db),
+    db: Session = _DB_DEP,
 ):
     item = _resolve_item(item_id, db)
     horizon = {"3_days": 3, "7_days": 7, "14_days": 14, "30_days": 30}[period]
@@ -859,7 +861,7 @@ def _event_impacts_parquet(item_id: int, limit: int):
 def get_item_events(
     item_id: str,
     limit: int = Query(20, ge=1, le=100),
-    db: Session = Depends(get_db),
+    db: Session = _DB_DEP,
 ):
     item = _resolve_item(item_id, db)
     try:
@@ -875,7 +877,7 @@ def get_item_events(
 def get_item_event_impacts(
     item_id: str,
     limit: int = Query(20, ge=1, le=100),
-    db: Session = Depends(get_db),
+    db: Session = _DB_DEP,
 ):
     item = _resolve_item(item_id, db)
     try:
@@ -922,7 +924,7 @@ def get_item_event_impacts(
 @router.get("/{item_id}/feature-importance", response_model=FeatureImportanceOut)
 def get_item_feature_importance(
     item_id: str,
-    db: Session = Depends(get_db),
+    db: Session = _DB_DEP,
 ):
     item = _resolve_item(item_id, db)
     meta_path = os.path.join(os.path.dirname(__file__), "..", "..", "models", "saved_models", "meta.json")
@@ -951,7 +953,7 @@ def get_multi_source_prices(
     # Historical series reach back to 2013; the chart's "ALL" range needs
     # the full depth, not a one-year window.
     days: int = Query(30, ge=1, le=5000),
-    db: Session = Depends(get_db),
+    db: Session = _DB_DEP,
 ):
     item = _resolve_item(item_id, db)
     requested = [s.strip() for s in source.split(",") if s.strip()]

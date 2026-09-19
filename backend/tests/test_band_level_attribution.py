@@ -69,7 +69,7 @@ def test_a_pure_composition_effect_vanishes_on_the_same_items_basis():
     # is constructing would not show up in a median ratio at all.
     calm = [f"calm-{n}" for n in range(30)]
     wild = [f"wild-{n}" for n in range(10)]
-    panel = _panel(_uniform(calm, OTHER + [ANCHOR], 0.05, 2.0) + _uniform(wild, OTHER + [ANCHOR], 0.20, 8.0))
+    panel = _panel(_uniform(calm, [*OTHER, ANCHOR], 0.05, 2.0) + _uniform(wild, [*OTHER, ANCHOR], 0.20, 8.0))
     # Only the volatile items are quoted on the anchor.
     panel = panel[(panel["date"] != pd.Timestamp(ANCHOR).date()) | (panel["item_id"].str.startswith("wild"))]
     d = decompose(panel, [pd.Timestamp(ANCHOR).date()])
@@ -131,7 +131,7 @@ def _level_panel(levels, item_factors, resid_tracks_level, eps=None):
     """
     eps = eps if eps is not None else [1.0] * len(item_factors)
     rows = []
-    for t, (d, lev) in enumerate(sorted(levels.items())):
+    for _t, (d, lev) in enumerate(sorted(levels.items())):
         for i, (f, e) in enumerate(zip(item_factors, eps)):
             r = f * e * (lev if resid_tracks_level else 1.0)
             rows.append({"item_id": f"item-{i}", "date": d, "sigma": lev * f, "resid": r * (1 if i % 2 else -1)})

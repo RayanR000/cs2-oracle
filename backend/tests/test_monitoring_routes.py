@@ -1,8 +1,6 @@
 """Tests for the monitoring API routes."""
 
 import json
-import os
-from unittest.mock import patch
 
 import pytest
 from fastapi.testclient import TestClient

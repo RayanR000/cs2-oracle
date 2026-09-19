@@ -188,7 +188,7 @@ def run_evaluation(max_items=200, horizon_filter=None):
         }
 
         # Placebo: remove a RANDOM set of the same size cross-sectional removal
-        # drops (post-corr-prune), so a positive `no_cross_sectional − full`
+        # drops (post-corr-prune), so a positive `no_cross_sectional - full`
         # can be attributed to those columns rather than to capacity reduction.
         # The leak this re-read is chasing pays the higher-capacity arm most,
         # so a column-removal harness must show removing *these* columns beats

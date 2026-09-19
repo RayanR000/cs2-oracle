@@ -29,6 +29,7 @@ instead of becoming a silent excuse.
 from __future__ import annotations
 
 from datetime import date, timedelta
+from typing import ClassVar
 
 import pytest
 from backtest.resolution_gate import (
@@ -89,7 +90,7 @@ class TestTheWarningDoesNotClaimTheScoredDenominator:
     present its own survivor count as the metric's denominator.
     """
 
-    ARGS = dict(
+    ARGS: ClassVar[dict] = dict(
         n_mature=98119,
         n_attempted=23149,
         n_unresolvable_fresh=0,
@@ -183,7 +184,7 @@ class TestLegWindowAboveTheStalenessBound:
     staleness``) classifies them as the collection gap they are.
     """
 
-    HOLES = {
+    HOLES: ClassVar[set] = {
         date(2026, 8, 28),
         date(2026, 8, 30),
         date(2026, 8, 31),
@@ -281,7 +282,7 @@ class TestLegWindowAboveTheStalenessBound:
 
 
 class TestClassifyArchiveGap:
-    COVERED = {date(2026, 7, 31), date(2026, 8, 1), date(2026, 8, 4)}
+    COVERED: ClassVar[set] = {date(2026, 7, 31), date(2026, 8, 1), date(2026, 8, 4)}
 
     def test_window_spanning_a_missing_day_is_a_gap(self):
         """h=3 dated 08-01, target 08-04: 08-02 and 08-03 are absent."""
@@ -335,7 +336,7 @@ class TestBaseLegGap:
     the same collection gap, on the other leg.
     """
 
-    HOLES = {
+    HOLES: ClassVar[set] = {
         date(2026, 8, 28),
         date(2026, 8, 30),
         date(2026, 8, 31),

@@ -4,6 +4,7 @@ Source-specific fetching and parsing live in ``collectors/price_history_sources/
 Everything here is source-agnostic and is what a second backfill source reuses.
 """
 
+import itertools
 from collections import defaultdict
 from dataclasses import dataclass
 from datetime import date, datetime
@@ -131,7 +132,7 @@ def apply_gap_gate(
 
     for slug, observations in by_item.items():
         days = sorted(observations)
-        gaps = [(b - a).days for a, b in zip(days, days[1:])]
+        gaps = [(b - a).days for a, b in itertools.pairwise(days)]
         item_worst = max(gaps) if gaps else 0
 
         if item_worst > max_gap_days:

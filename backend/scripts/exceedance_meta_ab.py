@@ -78,6 +78,8 @@ import numpy as np
 import pandas as pd
 from database import SessionLocal
 from models.forecaster import ItemForecaster
+from sklearn.metrics import log_loss, roc_auc_score
+
 from scripts.archive.ab_test_item_metadata import (
     META_ALL,
     META_STATIC,
@@ -89,7 +91,6 @@ from scripts.archive.ab_test_item_metadata import (
     assign_items,
     build_frame,
 )
-from sklearn.metrics import log_loss, roc_auc_score
 
 logging.basicConfig(
     level=logging.INFO,
@@ -201,7 +202,7 @@ def run(df, pruned, meta_present, horizon_filter=None, n_jobs=None):
                 continue
 
             base_cols = [c for c in pruned if c in tdf.columns]
-            keep = ["item_id", "date", "price", target_col] + base_cols + meta_all
+            keep = ["item_id", "date", "price", target_col, *base_cols, *meta_all]
             sub = tdf[[c for c in keep if c in tdf.columns]].copy()
 
             dates = sorted(sub["date"].unique())

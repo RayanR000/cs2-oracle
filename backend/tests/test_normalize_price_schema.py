@@ -86,11 +86,11 @@ def archive(tmp_path):
 def test_target_columns_puts_range_after_canonical():
     assert target_columns(
         ["item_slug", "day", "mean_price", "volume", "min_price", "max_price", "source"]
-    ) == CANONICAL + ["min_price", "max_price"]
+    ) == [*CANONICAL, "min_price", "max_price"]
 
 
 def test_target_columns_preserves_an_unknown_column():
-    assert target_columns(CANONICAL + ["mystery"]) == CANONICAL + ["mystery"]
+    assert target_columns([*CANONICAL, "mystery"]) == [*CANONICAL, "mystery"]
 
 
 def test_needs_rewrite_is_false_for_canonical():
@@ -165,7 +165,7 @@ def test_reordered_file_is_put_back_in_canonical_order(archive):
 
 def test_range_columns_are_preserved_after_the_canonical_ones(archive):
     normalize_archive(archive, apply=True)
-    assert _cols(archive / "prices-2026-03.parquet") == CANONICAL + ["min_price", "max_price"]
+    assert _cols(archive / "prices-2026-03.parquet") == [*CANONICAL, "min_price", "max_price"]
 
 
 def test_values_survive_the_rewrite(archive):

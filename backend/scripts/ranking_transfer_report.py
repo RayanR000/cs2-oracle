@@ -28,6 +28,8 @@ import numpy as np
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
+import contextlib
+
 from backtest.candidate_scoring import paired_daily_interval
 from backtest.promotion import MIN_BATCH_COMPLETENESS, MIN_SHARED_DATES
 from backtest.scoring import HEADLINE_MIN_TIER, excluded_forecast_date, price_tier
@@ -234,7 +236,7 @@ def render_markdown(report: dict) -> str:
     ]
     if report["paired_ic"]:
         p = report["paired_ic"]
-        lines.append(f"paired rank IC (lambdarank − q50): {p['point']:.4f} [90% CI {p['lower']}, {p['upper']}]")
+        lines.append(f"paired rank IC (lambdarank - q50): {p['point']:.4f} [90% CI {p['lower']}, {p['upper']}]")
     for reason in report["reasons"]:
         lines.append(f"- {reason}")
     lines += ["", "## Per-date IC", "", "| date | n | ic_rank | ic_q50 |", "|---|---|---|---|"]
@@ -272,10 +274,8 @@ def main(argv=None) -> int:
                 logger.error("  h=%s report failed: %s", horizon, e)
                 reports[str(horizon)] = {"horizon": horizon, "verdict": DATA_INTEGRITY_FAILURE, "reasons": [str(e)]}
     finally:
-        try:
+        with contextlib.suppress(Exception):
             db.close()
-        except Exception:
-            pass
 
     payload = reports[str(horizons[0])] if len(horizons) == 1 else {"horizons": reports}
     with open(args.json_out, "w") as f:

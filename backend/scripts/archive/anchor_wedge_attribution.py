@@ -137,7 +137,7 @@ def _report(df: pd.DataFrame) -> dict:
 
     def stats(g):
         row = {"n": len(g)}
-        for leg in _LEGS + ("total_wedge",):
+        for leg in (*_LEGS, "total_wedge"):
             row[f"{leg}_median"] = float(g[leg].median())
             row[f"{leg}_p90"] = float(g[leg].abs().quantile(0.90))
         row["shares"] = _leg_shares(g)

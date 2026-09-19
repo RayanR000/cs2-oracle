@@ -76,7 +76,7 @@ def served_identity(model_version) -> str:
 # day's rows were written at 23:39 — 42 minutes inside the new rule, and
 # superseded by the classifier (`a332c2b`, 2026-07-24) before the next stored
 # run. Reconstructing the band from the stored prices matches the served call in
-# 12 of 12 (horizon × call) cells, so the attribution is not in doubt.
+# 12 of 12 (horizon x call) cells, so the attribution is not in doubt.
 #
 # It is excluded because the band is not a comparable estimator, not because it
 # scored badly: the served mid is shrunk far harder than realised returns, so it

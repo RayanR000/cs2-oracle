@@ -1,6 +1,5 @@
 """Tests for the drift check CI script."""
 
-import pytest
 
 
 class TestDriftCheckScript:
@@ -11,9 +10,9 @@ class TestDriftCheckScript:
 
     def test_reference_snapshot_roundtrip(self, tmp_path):
         """Saving and loading a reference snapshot should be lossless."""
-        import pandas as pd
         import numpy as np
-        from scripts.run_drift_check import save_reference, load_reference
+        import pandas as pd
+        from scripts.run_drift_check import load_reference, save_reference
 
         rng = np.random.default_rng(42)
         ref = pd.DataFrame({

@@ -7,6 +7,8 @@ from fastapi import APIRouter, Depends
 
 router = APIRouter(prefix="/ab-test", tags=["ab_test"])
 
+_DB_DEP = Depends(get_db)
+
 #: Served with every A/B payload. Stored results predate the 2026-08-08
 #: statistics fix and the 2026-08-13 trainer fix, so they are unpowered
 #: historical reads, not decision evidence.
@@ -111,7 +113,7 @@ def _ab_comparison(
 
 @router.get("/regime")
 def get_regime_ab_test(
-    db=Depends(get_db),
+    db=_DB_DEP,
 ):
     """Return the latest A/B test comparison between regime and global-only models."""
     return _ab_comparison(
@@ -127,7 +129,7 @@ def get_regime_ab_test(
 
 @router.get("/ensemble")
 def get_ensemble_ab_test(
-    db=Depends(get_db),
+    db=_DB_DEP,
 ):
     """Return the latest A/B test comparison between 3-member and 6-member ensembles."""
     return _ab_comparison(

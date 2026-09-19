@@ -24,6 +24,8 @@ from sqlalchemy.dialects import sqlite as sqlite_dialect
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
+import contextlib
+
 from database import ItemForecast, SessionLocal
 from models.forecaster import IncompatibleModelArtifact, ItemForecaster
 from sqlalchemy import text
@@ -599,10 +601,8 @@ def run_forecast(
             )
             has_models = True
             logger.info("Refreshing DB connection after training...")
-            try:
+            with contextlib.suppress(Exception):
                 db.close()
-            except Exception:
-                pass
             db = SessionLocal()
             forecaster.db = db
 
@@ -762,10 +762,8 @@ def run_forecast(
         return {"status": "error", "message": str(e)}
 
     finally:
-        try:
+        with contextlib.suppress(Exception):
             db.close()
-        except Exception:
-            pass
 
 
 def main():

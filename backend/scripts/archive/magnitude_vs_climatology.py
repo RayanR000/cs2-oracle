@@ -181,7 +181,8 @@ def _sigma_halfwidth(df: pd.DataFrame) -> np.ndarray:
     artifact's persisted clip bounds -- not a local re-derivation."""
     from models import conformal
 
-    clip = json.load(open(ARTIFACT / "meta.json"))["sigma_clip"]
+    with open(ARTIFACT / "meta.json") as f:
+        clip = json.load(f)["sigma_clip"]
     # sigma is a FRACTION; the labels here are percent, so scale to match.
     return 100.0 * conformal.sigma_from_columns(
         df["price_std_60d"].to_numpy(),
@@ -235,7 +236,8 @@ def _tuned_params(horizon: int) -> dict:
     magnitude target. Production already trains quantile boosters, so only
     `alpha` and the label change -- keeping everything else pinned means a win
     here is attributable to the TARGET, not to a luckier hyperparameter."""
-    tuned = json.load(open(ARTIFACT / "meta.json"))["tuned_params"]
+    with open(ARTIFACT / "meta.json") as f:
+        tuned = json.load(f)["tuned_params"]
     base = dict((tuned.get(str(horizon), {}) or {}).get("0.5", {}))
     base.pop("alpha", None)
     base.pop("metric", None)

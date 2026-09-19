@@ -179,7 +179,7 @@ def _run_horizon(fc, tdf, feat_cols, horizon, purge_days):
     # config" -- fixed ±0.5% band (sigma_train=sigma_val=None) with
     # mover_weight=3.0. This is the apples-to-apples in-harness baseline
     # that vol-scaled cells must beat.
-    combos = [(None, 3.0)] + list(itertools.product(K_GRID, MOVER_WEIGHT_GRID))
+    combos = [(None, 3.0), *list(itertools.product(K_GRID, MOVER_WEIGHT_GRID))]
 
     for k, mw in combos:
         is_control = k is None

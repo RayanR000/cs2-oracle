@@ -7,6 +7,7 @@ and the absolute VOID bar below 20 qualifying dates.
 """
 
 import datetime as dt
+from typing import ClassVar
 
 import numpy as np
 import pandas as pd
@@ -150,8 +151,8 @@ class TestArchiveLegs:
 class TestEvaluateBars:
     """Rule 3: VOID is absolute below MIN_DATES - no statistic is read."""
 
-    POS = {"ci_low": 0.05, "ci_high": 0.14, "mean": 0.09}
-    SPANS = {"ci_low": -0.02, "ci_high": 0.11, "mean": 0.04}
+    POS: ClassVar[dict] = {"ci_low": 0.05, "ci_high": 0.14, "mean": 0.09}
+    SPANS: ClassVar[dict] = {"ci_low": -0.02, "ci_high": 0.11, "mean": 0.04}
 
     def test_void_below_min_dates_even_when_both_cis_are_positive(self):
         v = evaluate_bars(self.POS, self.POS, n_dates=MIN_DATES - 1)

@@ -1,7 +1,5 @@
 from datetime import date, datetime, timedelta
 
-import pytest
-
 BASE = date(2026, 9, 1)
 T = datetime(2026, 9, 8, 12, 0, 0)
 
@@ -81,7 +79,7 @@ def test_rejected_transfer(tmp_path, monkeypatch):
 def test_thin_dates_dropped_and_counted(tmp_path, monkeypatch):
     frame = _frame(mode="supported", items=100)
     frame["rows"] = [r for r in frame["rows"] if not (r["forecast_date"] == BASE and r["item_id"] >= 50)]
-    code, payload, _ = _run_main(monkeypatch, tmp_path, frame)
+    _code, payload, _ = _run_main(monkeypatch, tmp_path, frame)
     assert payload["dropped_dates"] >= 1
     assert payload["shared_dates"] == 19
 

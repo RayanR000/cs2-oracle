@@ -2,7 +2,6 @@
 
 import numpy as np
 import pandas as pd
-import pytest
 
 
 class TestDriftDetection:
@@ -48,8 +47,9 @@ class TestDriftDetection:
         assert report.n_drifted_features >= 1
 
     def test_report_files_written(self, tmp_path):
-        from monitoring.drift import detect_drift
         import os
+
+        from monitoring.drift import detect_drift
 
         rng = np.random.default_rng(42)
         df = pd.DataFrame({"price": rng.normal(100, 10, 500)})

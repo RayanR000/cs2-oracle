@@ -106,7 +106,7 @@ class CSGOTraderAggregator:
         if not terms:
             return []
         candidates: list[str] = []
-        for source_key in self._price_cache.keys():
+        for source_key in self._price_cache:
             normalized_key = self._normalize_name(source_key)
             if any(term in normalized_key for term in terms):
                 candidates.append(source_key)

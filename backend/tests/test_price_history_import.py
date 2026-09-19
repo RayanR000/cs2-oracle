@@ -1,15 +1,28 @@
 """Tests for the historical price-source import."""
 
-from datetime import date, datetime
+import json
+from datetime import date, datetime, timedelta
 
 import duckdb
 import pandas as pd
 import pytest
 from collectors.price_history_import import (
+    MAX_GAP_DAYS,
+    MIN_DISTINCT_DAYS,
     StalledSourceError,
+    apply_gap_gate,
     detect_stalled_days,
+    to_archive_frame,
+    write_archive_frame,
 )
 from collectors.price_history_sources import cs2_prices_tracker as tracker
+from db.archive import CANONICAL_PRICE_COLUMNS, prices_relation
+from scripts.import_price_history_source import (
+    cached_path,
+    daterange,
+    load_cached_day,
+    report_promotion_gate,
+)
 
 
 def test_source_label_is_exact():
@@ -90,13 +103,6 @@ def test_stalled_source_error_is_raisable_with_the_groups():
         raise StalledSourceError([[date(2026, 7, 27), date(2026, 7, 28)]])
 
 
-from datetime import timedelta
-
-from collectors.price_history_import import (
-    MAX_GAP_DAYS,
-    MIN_DISTINCT_DAYS,
-    apply_gap_gate,
-)
 
 
 def _series(name, days, price=1.0):
@@ -200,9 +206,6 @@ def test_records_are_deduplicated_on_item_and_day_keeping_the_first():
     ]
     assert report.kept_rows == 2
 
-
-from collectors.price_history_import import to_archive_frame, write_archive_frame
-from db.archive import CANONICAL_PRICE_COLUMNS, prices_relation
 
 _INGESTED = datetime(2026, 8, 8, 12, 0, 0)
 
@@ -344,15 +347,6 @@ def test_a_reappend_does_not_duplicate_the_same_item_day_source(tmp_path):
     assert count == 1
 
 
-import json
-
-from scripts.import_price_history_source import (
-    cached_path,
-    daterange,
-    load_cached_day,
-)
-
-
 def test_daterange_is_inclusive_of_both_ends():
     days = daterange(date(2025, 6, 1), date(2025, 6, 4))
     assert days == [date(2025, 6, 1), date(2025, 6, 2), date(2025, 6, 3), date(2025, 6, 4)]
@@ -385,9 +379,6 @@ def test_load_cached_day_parses_a_good_file(tmp_path):
     good = tmp_path / "good.json"
     good.write_text(json.dumps({"Item A": {"steam": {"last_24h": 1.0}}}))
     assert load_cached_day(good) == {"Item A": {"steam": {"last_24h": 1.0}}}
-
-
-from scripts.import_price_history_source import report_promotion_gate
 
 
 def test_report_promotion_gate_counts_rows_items_and_finds_no_zero_volume(tmp_path):
@@ -483,7 +474,7 @@ def test_the_gate_drops_items_below_the_median_price_floor():
 
 def test_the_floor_uses_the_median_not_the_last_price():
     """One spike must not carry an otherwise-cheap item over the floor."""
-    records = _series("Spiky", range(199), price=0.50) + [("Spiky", date(2025, 6, 1) + timedelta(days=199), 500.0)]
+    records = [*_series("Spiky", range(199), price=0.5), ("Spiky", date(2025, 6, 1) + timedelta(days=199), 500.0)]
     kept, report = apply_gap_gate(records, min_median_price=1.0)
     assert kept == []
     assert report.rejected_cheap_items == 1

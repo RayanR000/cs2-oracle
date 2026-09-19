@@ -66,7 +66,7 @@ def test_allowlist_admits_tier_lead_only_when_enabled(monkeypatch):
     assert fc._apply_feature_allowlist(cols, list(ItemForecaster.FEATURE_GROUP_ALLOWLIST)) == ["return_1d"]
 
     monkeypatch.setenv("TIER_LEAD_FEATURE", "1")
-    allowlist = list(ItemForecaster.FEATURE_GROUP_ALLOWLIST) + [ItemForecaster.TIER_LEAD_GROUP]
+    allowlist = [*list(ItemForecaster.FEATURE_GROUP_ALLOWLIST), ItemForecaster.TIER_LEAD_GROUP]
     assert fc._apply_feature_allowlist(cols, allowlist) == cols
 
 
@@ -538,7 +538,7 @@ def _cohort_panel():
     """
     rows = []
     for date in ("2026-01-01", "2026-01-02"):
-        for i, (item, price, f) in enumerate(
+        for _i, (item, price, f) in enumerate(
             [
                 ("rich_a", 10.0, 1.0),
                 ("rich_b", 20.0, 2.0),

@@ -1,6 +1,6 @@
 """Shadow collection readiness: three consecutive complete dates."""
 
-from datetime import date, timedelta
+from datetime import date
 
 from scripts.check_forecast_freshness import shadow_collection_readiness
 

@@ -122,7 +122,7 @@ class PredictionOut(BaseModel):
     expected_swing_pct: float | None = None
     move_odds: float | None = None
     stability_label: str | None = None
-    # P(|return_h| > 2σ_item) from the anomaly head. Served at 3/7/14d only —
+    # P(|return_h| > 2*sigma_item) from the anomaly head. Served at 3/7/14d only --
     # the 30d head ranks but ties the featureless null on log loss, so it is
     # withheld (None) until calibrated. See ANOMALY_SERVED_HORIZONS.
     anomaly_p: float | None = None

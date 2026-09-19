@@ -48,6 +48,11 @@ from sqlalchemy.pool import StaticPool
 # Fixtures
 # ---------------------------------------------------------------------------
 
+# The event fixtures seed events at 2026-05-20. The lookback window must be
+# wide enough that this date stays inside it regardless of when the suite runs.
+# 365 days is safe through at least 2027-05.
+_EVENT_DAYS_BACK = 365
+
 
 def _store(rows: list[tuple[int, date, float]]) -> PriceStore:
     """Build a PriceStore from (db_item_id, day, price) triples."""
@@ -354,7 +359,7 @@ class TestPricesComeFromTheArchive:
 
         assert session.query(PriceHistory).count() == 0
 
-        result = run_analysis(days_back=120, db=session, archive_dir=archive)
+        result = run_analysis(days_back=_EVENT_DAYS_BACK, db=session, archive_dir=archive)
 
         assert result["status"] == "success", result
         assert result["events_analyzed"] == 1
@@ -371,7 +376,7 @@ class TestPricesComeFromTheArchive:
         _seed_items(session, [(1, "item-1", "skin")])
         _seed_event(session, 1, datetime(2026, 5, 20, 13, 45))
 
-        result = run_analysis(days_back=120, db=session, archive_dir=tmp_path / "does-not-exist")
+        result = run_analysis(days_back=_EVENT_DAYS_BACK, db=session, archive_dir=tmp_path / "does-not-exist")
         assert result["status"] == "error"
         assert "price archive not found" in result["error"]
 
@@ -383,7 +388,7 @@ class TestPricesComeFromTheArchive:
         _seed_event(session, 1, datetime(2026, 5, 20, 13, 45))
         archive = _write_archive(tmp_path, _archive_rows(["someone-else"], date(2026, 5, 1), 31, lambda slug, i: 10.0))
 
-        result = run_analysis(days_back=120, db=session, archive_dir=archive)
+        result = run_analysis(days_back=_EVENT_DAYS_BACK, db=session, archive_dir=archive)
 
         assert result["status"] == "error"
         assert "1" in result["error"]  # slugs requested
@@ -497,7 +502,7 @@ class TestDenormMirror:
             _archive_rows(slugs, date(2026, 5, 1), 31, lambda slug, i: 10.0 + i * 0.2 * int(slug.split("-")[1])),
         )
 
-        result = run_analysis(days_back=120, db=session, archive_dir=archive)
+        result = run_analysis(days_back=_EVENT_DAYS_BACK, db=session, archive_dir=archive)
         assert result["status"] == "success", result
 
         appends = [c for c in captured_mirror if c["table"] == "event_impacts_denorm"]
@@ -526,7 +531,7 @@ class TestDenormMirror:
             ),
         )
 
-        run_analysis(days_back=120, db=session, archive_dir=archive)
+        run_analysis(days_back=_EVENT_DAYS_BACK, db=session, archive_dir=archive)
 
         rows = session.query(EventCorrelation).all()
         assert len(rows) == 2
@@ -548,7 +553,7 @@ class TestDenormMirror:
             _archive_rows(["item-1", "item-2"], date(2026, 5, 1), 31, lambda slug, i: 10.0 + i * 0.3),
         )
 
-        run_analysis(days_back=120, db=session, archive_dir=archive)
+        run_analysis(days_back=_EVENT_DAYS_BACK, db=session, archive_dir=archive)
 
         for call in captured_mirror:
             for row in call["rows"]:

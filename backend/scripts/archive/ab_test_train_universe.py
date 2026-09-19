@@ -100,6 +100,23 @@ Usage (from `backend/`, ~1-2h per horizon):
 
 from __future__ import annotations
 
+import hashlib
+import json
+import logging
+import os
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).parent.parent))
+
+import lightgbm as lgb
+import numpy as np
+import pandas as pd
+from backtest.paired_mde import format_paired, paired_arm_contrasts
+from database import SessionLocal
+from db.archive import prices_relation
+from models.forecaster import ItemForecaster, archive_universe_sql_filter, embargo_days
+
 # ── Universe ────────────────────────────────────────────────────────────
 MIN_MEDIAN_PRICE = 1.0
 # Minimum distinct days. A full-sample clause in the original, and survivorship
@@ -130,23 +147,6 @@ CORR_PRUNE_THRESHOLD = 0.95
 SPLIT_SEED = 20260807  # as the original, so the eval draw is comparable
 MATCH_SEED = 909_000  # the per-fold downsample
 MATCH_SEED_B = 606_000  # ... and its placebo twin
-
-import hashlib
-import json
-import logging
-import os
-import sys
-from pathlib import Path
-
-sys.path.insert(0, str(Path(__file__).parent.parent))
-
-import lightgbm as lgb
-import numpy as np
-import pandas as pd
-from backtest.paired_mde import format_paired, paired_arm_contrasts
-from database import SessionLocal
-from db.archive import prices_relation
-from models.forecaster import ItemForecaster, archive_universe_sql_filter, embargo_days
 
 logging.basicConfig(
     level=logging.INFO,
@@ -374,7 +374,7 @@ def _build_frame_uncached(horizons):
             pruned = kept
         logger.info(f"  {len(kept)} -> {len(pruned)} after corr prune")
 
-        df = df[["item_id", "date", "price"] + pruned].copy()
+        df = df[["item_id", "date", "price", *pruned]].copy()
         df["_full_sample"] = df["item_id"].isin(full)
         df["_sub1"] = df["item_id"].isin(set(sub1))
         return df, pruned
@@ -465,7 +465,7 @@ def run(df, pruned, horizon, n_jobs):
     tcol = f"target_return_{horizon}d"
     tdf = tdf.dropna(subset=[tcol]).sort_values(["item_id", "date"])
     avail = [c for c in pruned if c in tdf.columns]
-    sub = tdf[["item_id", "date", "price", tcol] + avail]
+    sub = tdf[["item_id", "date", "price", tcol, *avail]]
 
     dates = sorted(sub["date"].unique())
     split_idx = len(dates) * 2 // 3

@@ -299,7 +299,7 @@ def find_key(conn: sqlite3.Connection) -> int | None:
 
 
 def build_queue(
-    local_conn: sqlite3.Connection, api_items: set[str], out_conn: sqlite3.Connection = None
+    local_conn: sqlite3.Connection, api_items: set[str], out_conn: sqlite3.Connection | None = None
 ) -> list[tuple[str, int]]:
     c = local_conn.execute("SELECT hash_name, sell_listings FROM market_items ORDER BY sell_listings DESC")
     queue = [(r[0], r[1] or 0) for r in c.fetchall() if r[0]]

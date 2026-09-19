@@ -37,6 +37,26 @@ Embargo (added 2026-08-08):
     event-calendar arm, and has never been replicated in this repo.
 """
 
+import hashlib
+import json
+import logging
+import os
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).parent.parent))
+
+import lightgbm as lgb
+import numpy as np
+import pandas as pd
+from backtest.paired_mde import format_paired, paired_arm_contrasts, paired_metric_difference
+from backtest.walkforward_records import (
+    paired_records,
+    without_records,
+)
+from database import SessionLocal
+from models.forecaster import ItemForecaster, phase_collapsed_sql_filter
+
 # The 13 shelved volume columns. The last two were never in the 47-column
 # feature_cols -- the >0.95 correlation prune dropped them in favour of their
 # 30d partners -- but they re-enter once the partners are dropped, so the arms
@@ -74,26 +94,6 @@ VOLUME_LIVE_THROUGH = "2026-04-30"
 # Production reports on the >=$1 cohort, and the flat rate there is 0.15-0.53%
 # depending on horizon, so this filter fixes the metric and the cohort at once.
 MIN_MEDIAN_PRICE = 1.0
-
-import hashlib
-import json
-import logging
-import os
-import sys
-from pathlib import Path
-
-sys.path.insert(0, str(Path(__file__).parent.parent))
-
-import lightgbm as lgb
-import numpy as np
-import pandas as pd
-from backtest.paired_mde import format_paired, paired_arm_contrasts, paired_metric_difference
-from backtest.walkforward_records import (
-    paired_records,
-    without_records,
-)
-from database import SessionLocal
-from models.forecaster import ItemForecaster, phase_collapsed_sql_filter
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s")
 logger = logging.getLogger("ab_test_volume_features")
@@ -727,7 +727,7 @@ def run_evaluation(df, pruned, present_new, horizon_filter=None, arm_filter=None
                 # `date` for the 200K row cap's sort below. Neither is a
                 # feature -- `available` is the feature list and the matrices
                 # are built from it alone.
-                sub = tdf[available + [target_col, "price", "date", "item_id"]]
+                sub = tdf[[*available, target_col, "price", "date", "item_id"]]
 
                 directional_hits = 0
                 directional_total = 0

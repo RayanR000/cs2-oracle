@@ -16,6 +16,7 @@ paths are single-file queries with no runtime join overhead.
 
 from __future__ import annotations
 
+import contextlib
 import json
 import logging
 import math
@@ -60,10 +61,8 @@ def _coerce_dates(df: pd.DataFrame) -> pd.DataFrame:
         if df[col].dtype == object:
             non_null = df[col].dropna()
             if len(non_null) > 0 and hasattr(non_null.iloc[0], "isoformat"):
-                try:
+                with contextlib.suppress(ValueError, TypeError):
                     df[col] = pd.to_datetime(df[col])
-                except (ValueError, TypeError):
-                    pass
     return df
 
 

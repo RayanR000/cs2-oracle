@@ -76,7 +76,7 @@ def test_append_parquet_cleans_temp_and_keeps_original_on_copy_failure(tmp_path,
     path = tmp_path / "t.parquet"
     _frame().to_parquet(path, index=False)
     before = path.read_bytes()
-    with pytest.raises(Exception):
+    with pytest.raises(OSError):
         _append_parquet(path, pd.DataFrame({"id": [9], "val": ["z"]}), ["id"])
     assert list(tmp_path.glob("*.tmp")) == []
     assert not (tmp_path / "no-such-dir").exists()

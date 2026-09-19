@@ -39,6 +39,8 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
+import contextlib
+
 import lightgbm as lgb
 import numpy as np
 import pandas as pd
@@ -652,10 +654,8 @@ def run_walkforward(
                 )
 
         con.close()
-        try:
+        with contextlib.suppress(Exception):
             db.close()
-        except Exception:
-            pass
 
         report = {
             "test_date": str(date.today()),

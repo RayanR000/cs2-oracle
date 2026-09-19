@@ -71,6 +71,7 @@ import pandas as pd
 from api.serving_policy import MIN_SERVED_PRICE_USD
 from database import SessionLocal
 from models.forecaster import ItemForecaster
+
 from scripts.archive.ab_test_item_metadata import (
     ROW_BUDGET,
     STEP_DAYS,
@@ -79,12 +80,12 @@ from scripts.archive.ab_test_item_metadata import (
     assign_items,
     build_frame,
 )
+from scripts.archive.shrink_k_vol_rank_ab import matched_width
 from scripts.exceedance_meta_ab import (
     TREE_PARAMS,
     _score,
     paired_fold_deltas,
 )
-from scripts.archive.shrink_k_vol_rank_ab import matched_width
 
 logging.basicConfig(
     level=logging.INFO,
@@ -336,7 +337,7 @@ def run(df, pruned, horizon_filter=None, n_jobs=None, max_folds=None):
             if not base_cols:
                 logger.warning("    no allowlisted feature columns — skipping")
                 continue
-            sub = tdf[["item_id", "date", "price", tcol, acol] + base_cols].copy()
+            sub = tdf[["item_id", "date", "price", tcol, acol, *base_cols]].copy()
 
             dates = sorted(sub["date"].unique())
             split_idx = len(dates) * 2 // 3

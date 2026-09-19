@@ -9,6 +9,8 @@ from api.schemas import EventOut
 
 router = APIRouter(prefix="/events", tags=["events"])
 
+_DB_DEP = Depends(get_db)
+
 logger = logging.getLogger(__name__)
 
 
@@ -49,7 +51,7 @@ def list_events(
     type: str | None = Query(None),
     skip: int = Query(0, ge=0),
     limit: int = Query(50, ge=1, le=200),
-    db: Session = Depends(get_db),
+    db: Session = _DB_DEP,
 ):
     try:
         return _read_events_parquet(type_filter=type, skip=skip, limit=limit)
@@ -64,7 +66,7 @@ def list_events(
 @router.get("/recent", response_model=list[EventOut])
 def recent_events(
     limit: int = Query(20, ge=1, le=100),
-    db: Session = Depends(get_db),
+    db: Session = _DB_DEP,
 ):
     try:
         return _read_events_parquet(recent_only=True, recent_limit=limit)

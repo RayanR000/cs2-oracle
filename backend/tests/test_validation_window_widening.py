@@ -187,7 +187,7 @@ class TestBuildProductionSplit:
         """The safety net stays for frames widening cannot rescue."""
         tdf = _panel(n_items=1, n_days=400, start=date(2025, 6, 1)).sort_values("date")
 
-        train, val = forecaster._build_production_split(tdf, horizon=7, max_rows=10**6)
+        _train, val = forecaster._build_production_split(tdf, horizon=7, max_rows=10**6)
 
         assert len(val) == len(tdf) - int(len(tdf) * 0.8)
 

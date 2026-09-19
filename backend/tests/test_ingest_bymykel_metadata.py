@@ -9,6 +9,7 @@ and crate identity.
 import sys
 from datetime import date
 from pathlib import Path
+from typing import ClassVar
 
 import pandas as pd
 import pytest
@@ -175,10 +176,10 @@ class TestExpandSkinNames:
 
 
 class TestEarliest:
-    DATES = {"c1": date(2013, 1, 1), "c2": date(2016, 6, 1), "c3": date(2013, 1, 1)}
+    DATES: ClassVar[dict] = {"c1": date(2013, 1, 1), "c2": date(2016, 6, 1), "c3": date(2013, 1, 1)}
 
     def test_picks_the_earliest_dated_member(self):
-        chosen, when, n = _earliest(["c2", "c1"], self.DATES)
+        chosen, when, _n = _earliest(["c2", "c1"], self.DATES)
         assert (chosen, when) == ("c1", date(2013, 1, 1))
 
     def test_counts_distinct_dates_not_members(self):

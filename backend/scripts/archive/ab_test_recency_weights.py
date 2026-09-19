@@ -93,7 +93,8 @@ def directional_accuracy(y, p):
 
 
 def load_params(horizon, q):
-    tp = json.load(open(META_PATH))["tuned_params"]
+    with open(META_PATH) as f:
+        tp = json.load(f)["tuned_params"]
     src = tp.get(str(horizon), {})
     p = src.get(str(q)) or src.get(q)
     if not p:
@@ -159,7 +160,7 @@ def run_horizon(fc, tdf, feat_cols, horizon, max_folds):
         # fold) preserves its distribution while breaking its alignment to age.
         rng = np.random.default_rng(PLACEBO_SEED + fi)
 
-        def _placebo(w_flat, w_decay):
+        def _placebo(w_flat, w_decay, rng=rng):
             ratio = w_decay / np.maximum(w_flat, 1e-12)
             w = w_flat * rng.permutation(ratio)
             return (w / max(float(np.mean(w)), 1e-8)).astype(np.float32)
@@ -246,7 +247,7 @@ def summarize(records):
             )
         c = hd[hd.arm == CONTROL].set_index("fold")
 
-        def _contrast(arm_name):
+        def _contrast(arm_name, hd=hd, c=c):
             """Fold-clustered paired interval on the q50 pinball difference vs
             flat. A win count is not a test; lower pinball is better, so a
             positive verdict needs the interval strictly below zero."""

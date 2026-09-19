@@ -1,7 +1,6 @@
 import copy
 from datetime import date, datetime
 
-import numpy as np
 import pytest
 
 

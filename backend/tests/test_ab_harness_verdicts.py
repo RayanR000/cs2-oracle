@@ -9,7 +9,7 @@ until 2026-08-08. They decided in one of three ways, and none of them is a test:
     and at the ~8 folds these run, 6/8 is unremarkable under the binomial;
   - **a pooled delta against a ±0.5pp threshold** (`volume_features`,
     `price_primitives`, `feature_contribution`, `supply_side`,
-    `direction_labels`), against a measured item-level MDE of **2.21–3.69pp** —
+    `direction_labels`), against a measured item-level MDE of **2.21-3.69pp** -
     so every green tick was inside the noise floor by a factor of five;
   - **a bare `a > b`** (`ensemble`, `regime`), which is a coin toss.
 

@@ -109,7 +109,7 @@ class TestTheMatchedPairSurvivesTheArtifact:
         return fc, frame, records, q_hat
 
     def test_the_scale_is_fitted_persisted_and_restored(self, tmp_path, monkeypatch):
-        fc, frame, records, q_hat = self._train_a_scale(tmp_path, monkeypatch)
+        fc, frame, records, _q_hat = self._train_a_scale(tmp_path, monkeypatch)
         assert 7 in fc.scale_models
         assert fc.scale_features[7][-1] == "sigma"
 
@@ -154,7 +154,7 @@ class TestTheMatchedPairSurvivesTheArtifact:
     def test_a_stale_scale_file_is_removed_rather_than_left_to_be_loaded(self, tmp_path, monkeypatch):
         """A scale_*.txt from a previous run would be loaded beside a q_hat
         calibrated without it — the matched pair coming apart across runs."""
-        fc, frame, records, q_hat = self._train_a_scale(tmp_path, monkeypatch)
+        fc, _frame, _records, _q_hat = self._train_a_scale(tmp_path, monkeypatch)
         fc.save_models()
         assert (tmp_path / "scale_7d.txt").exists()
 
@@ -168,6 +168,6 @@ class TestServingRefusesTheWrongFeatures:
         """LightGBM will score a frame whose columns mean something else and
         return a plausible number. The band built from it looks entirely
         normal, which is why this refuses rather than reindexes."""
-        fc, frame, records, q_hat = TestTheMatchedPairSurvivesTheArtifact()._train_a_scale(tmp_path, monkeypatch)
+        fc, frame, records, _q_hat = TestTheMatchedPairSurvivesTheArtifact()._train_a_scale(tmp_path, monkeypatch)
         fc.scale_features[7] = ["something_else", "sigma"]
         assert fc.band_scale(7, frame, records["sigma"].to_numpy()) is None

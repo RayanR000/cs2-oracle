@@ -65,9 +65,7 @@ def _is_sticker_slug(slug: str) -> bool:
     s = slug.lower()
     if s.startswith("sticker-") or s.startswith("steam_sticker"):
         return True
-    if _EVENT_PREFIX.match(s) and "souvenir-package" not in s:
-        return True
-    return False
+    return bool(_EVENT_PREFIX.match(s) and "souvenir-package" not in s)
 
 
 def substitute_group(slug: str) -> str:

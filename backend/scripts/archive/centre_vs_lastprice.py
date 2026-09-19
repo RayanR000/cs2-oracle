@@ -226,7 +226,7 @@ def _shrink_report(df: pd.DataFrame, rng: np.random.Generator) -> list:
         lo, hi = _bootstrap_lambda(g, rng)
         cov = float(_covered(r, lam * rh, w_lo, w_hi).mean())
         print(
-            f"{h:>4} {lam:>6.2f} {'[%.2f, %.2f]' % (lo, hi):>14} "
+            f"{h:>4} {lam:>6.2f} {f'[{lo:.2f}, {hi:.2f}]':>14} "
             f"{mae_lam:>10.5f} {mae_1:>9.5f} {mae_0:>9.5f} "
             f"{1 - mae_lam / mae_1:>+10.4f} {1 - mae_lam / mae_0:>+10.4f} "
             f"{cov:>10.3f}"
@@ -322,7 +322,7 @@ def main() -> int:
         print(
             f"{h:>4} {len(g):>8,} {g['forecast_date'].nunique():>6} "
             f"{mae_gbm:>9.5f} {mae_naive:>10.5f} {skill:>+8.4f} "
-            f"{'[%+.4f, %+.4f]' % (lo, hi):>18} "
+            f"{f'[{lo:+.4f}, {hi:+.4f}]':>18} "
             f"{cov_gbm:>8.3f} {cov_naive:>10.3f}"
         )
         n_dates = g["forecast_date"].nunique()

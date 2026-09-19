@@ -25,6 +25,8 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
+import contextlib
+
 from backtest.promotion import (
     DATA_INTEGRITY_FAILURE,
     INSUFFICIENT_EVIDENCE,
@@ -280,10 +282,10 @@ def render_markdown(report: dict) -> str:
     ]
     if report["delta_mae"]:
         m = report["delta_mae"]
-        lines.append(f"delta_mae (last − gbm): {m['point']:.4f} [90% CI {m['lower']}, {m['upper']}] over {m['n_dates']} dates")
+        lines.append(f"delta_mae (last - gbm): {m['point']:.4f} [90% CI {m['lower']}, {m['upper']}] over {m['n_dates']} dates")
     if report["delta_coverage"]:
         c = report["delta_coverage"]
-        lines.append(f"delta_coverage (last − gbm): {c['point']:.4f} [90% CI {c['lower']}, {c['upper']}]")
+        lines.append(f"delta_coverage (last - gbm): {c['point']:.4f} [90% CI {c['lower']}, {c['upper']}]")
     lines.append(f"width_delta_pp: {report['width_delta_pp']}")
     for reason in report["reasons"]:
         lines.append(f"- {reason}")
@@ -300,7 +302,7 @@ def _exit_code(verdict: str) -> int:
         return EXIT_REJECTED
     if verdict in (DATA_INTEGRITY_FAILURE,):
         return EXIT_INTEGRITY
-    if verdict == INSUFFICIENT_EVIDENCE or verdict == UNRESOLVED:
+    if verdict in (INSUFFICIENT_EVIDENCE, UNRESOLVED):
         return EXIT_UNRESOLVED
     return EXIT_INTEGRITY
 
@@ -324,10 +326,8 @@ def main(argv=None) -> int:
                 logger.error("  h=%s report failed: %s", horizon, e)
                 reports[str(horizon)] = {"horizon": horizon, "verdict": DATA_INTEGRITY_FAILURE, "reasons": [str(e)]}
     finally:
-        try:
+        with contextlib.suppress(Exception):
             db.close()
-        except Exception:
-            pass
 
     payload = reports[str(horizons[0])] if len(horizons) == 1 else {"horizons": reports}
     with open(args.json_out, "w") as f:

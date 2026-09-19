@@ -347,12 +347,14 @@ def _write_and_capture(results, db_columns):
         def get_columns(self, name):
             return [{"name": c} for c in db_columns]
 
-    with patch("db.parquet.append_table", side_effect=lambda name, rows, keys: captured.update(rows=rows)):
-        with patch("sqlalchemy.inspect", return_value=_Inspector()):
-            with patch("sqlalchemy.dialects.postgresql.insert") as ins:
-                (ins.return_value.values.return_value.on_conflict_do_update.return_value) = "stmt"
-                _write_forecasts_to_db(_DB(), results, "lgbm-v3", {"ak_1": 1}, date(2026, 8, 11))
-                values_call = ins.return_value.values.call_args
+    with (
+        patch("db.parquet.append_table", side_effect=lambda name, rows, keys: captured.update(rows=rows)),
+        patch("sqlalchemy.inspect", return_value=_Inspector()),
+        patch("sqlalchemy.dialects.postgresql.insert") as ins,
+    ):
+        (ins.return_value.values.return_value.on_conflict_do_update.return_value) = "stmt"
+        _write_forecasts_to_db(_DB(), results, "lgbm-v3", {"ak_1": 1}, date(2026, 8, 11))
+        values_call = ins.return_value.values.call_args
     batch = values_call[0][0]
     for column in ("anchor_clean", "anchor_wedge_pct"):
         assert (column in batch[0]) == (column in db_columns), f"{column} in the DB payload but not in the table"
@@ -420,8 +422,7 @@ def forecaster_with_models(tmp_path):
 
 def _predict(f, price_df):
     empty_events = pd.DataFrame(columns=["id", "type", "timestamp", "description"])
-    with patch.object(f, "fetch_price_history", return_value=price_df):
-        with patch.object(f, "fetch_events", return_value=empty_events):
-            result = f.predict()
+    with patch.object(f, "fetch_price_history", return_value=price_df), patch.object(f, "fetch_events", return_value=empty_events):
+        result = f.predict()
     assert not result.empty, "fixture produced no forecasts"
     return result

@@ -25,6 +25,7 @@ added later fails it without anyone remembering to update a list.
 from __future__ import annotations
 
 from datetime import date, timedelta
+from typing import ClassVar
 from unittest.mock import MagicMock
 
 import numpy as np
@@ -155,7 +156,7 @@ class TestDollarScaleColumnsAreShelved:
     aggregates and the log-return features all read them) but must not reach a
     booster."""
 
-    DOLLAR_COLUMNS = [
+    DOLLAR_COLUMNS: ClassVar[list] = [
         "price_std_7d",
         "price_std_14d",
         "price_std_20d",

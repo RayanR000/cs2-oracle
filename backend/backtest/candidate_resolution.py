@@ -18,6 +18,7 @@ from __future__ import annotations
 import logging
 from datetime import date, datetime, timedelta
 from pathlib import Path
+from typing import Any
 
 from sqlalchemy import text
 
@@ -139,7 +140,7 @@ def resolve_candidate_outcomes(
     for i in range(0, len(item_ids), CHUNK):
         batch = item_ids[i : i + CHUNK]
         prod_rows.extend(db.query(ForecastOutcome).filter(ForecastOutcome.item_id.in_(batch)).all())
-    prod_map: dict[tuple, object] = {}
+    prod_map: dict[tuple, Any] = {}
     for row in prod_rows:
         key = (row.item_id, _as_date(row.forecast_date), row.horizon_days)
         prod_map.setdefault(key, row)
@@ -185,6 +186,7 @@ def resolve_candidate_outcomes(
 
         for key, group in need_archive.items():
             item_id, fdate, horizon = key
+            assert fdate is not None  # narrowed at insertion site above
             slug = key_slugs[key]
             prod = prod_map.get(key)
             if slug is None:
@@ -242,8 +244,7 @@ def resolve_candidate_outcomes(
 
 def _create_or_update(db, existing, candidate, base, actual, resolved_at, stats):
     """Create or refresh one candidate outcome row with derived metrics."""
-    from database import ForecastCandidateOutcome
-    from database import utcnow_naive
+    from database import ForecastCandidateOutcome, utcnow_naive
 
     derived = _derived_metrics(candidate, base, actual)
     outcome = existing.get(candidate.id)

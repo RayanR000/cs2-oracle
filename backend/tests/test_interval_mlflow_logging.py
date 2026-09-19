@@ -2,16 +2,15 @@
 
 from __future__ import annotations
 
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
-import numpy as np
 import pytest
 
 
 class TestLogIntervalMetrics:
     def test_logs_flat_metrics(self):
         """Flat numeric metrics are logged via mlflow.log_metric."""
-        mlflow = pytest.importorskip("mlflow")
+        _mlflow = pytest.importorskip("mlflow")
         from evaluation.mlflow_logging import log_interval_metrics
 
         metrics = {
@@ -29,7 +28,7 @@ class TestLogIntervalMetrics:
             assert calls["interval_score"] == 18.3
 
     def test_logs_adaptivity_sub_keys(self):
-        mlflow = pytest.importorskip("mlflow")
+        _mlflow = pytest.importorskip("mlflow")
         from evaluation.mlflow_logging import log_interval_metrics
 
         metrics = {
@@ -46,7 +45,7 @@ class TestLogIntervalMetrics:
             assert calls["adaptivity.width_vs_sq_error"] == 0.4
 
     def test_logs_with_prefix(self):
-        mlflow = pytest.importorskip("mlflow")
+        _mlflow = pytest.importorskip("mlflow")
         from evaluation.mlflow_logging import log_interval_metrics
 
         metrics = {
@@ -63,7 +62,7 @@ class TestLogIntervalMetrics:
             assert "h7_interval_score" in calls
 
     def test_logs_coverage_by_tier(self):
-        mlflow = pytest.importorskip("mlflow")
+        _mlflow = pytest.importorskip("mlflow")
         from evaluation.mlflow_logging import log_interval_metrics
 
         metrics = {
@@ -82,7 +81,7 @@ class TestLogIntervalMetrics:
 
     def test_skips_non_numeric(self):
         """Non-numeric values (like calibration curve lists) are skipped."""
-        mlflow = pytest.importorskip("mlflow")
+        _mlflow = pytest.importorskip("mlflow")
         from evaluation.mlflow_logging import log_interval_metrics
 
         metrics = {
@@ -100,7 +99,7 @@ class TestLogIntervalMetrics:
 
     def test_nan_values_skipped(self):
         """NaN metrics should be skipped."""
-        mlflow = pytest.importorskip("mlflow")
+        _mlflow = pytest.importorskip("mlflow")
         from evaluation.mlflow_logging import log_interval_metrics
 
         metrics = {

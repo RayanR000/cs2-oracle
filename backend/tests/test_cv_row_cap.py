@@ -67,9 +67,8 @@ def test_fold_train_rows_are_capped(tmp_path):
     """Every fold's training frame is at or under the cap."""
     f = _forecaster(tmp_path, ["f0", "f1"])
     seen = []
-    with patch.dict(os.environ, {"CV_MAX_TRAIN_ROWS": "500"}):
-        with patch.object(ItemForecaster, "_record_cv_fold_train_rows", side_effect=seen.append, create=True):
-            f._cv_evaluate_horizon(_frame(), 3, {0.5: {"objective": "quantile"}})
+    with patch.dict(os.environ, {"CV_MAX_TRAIN_ROWS": "500"}), patch.object(ItemForecaster, "_record_cv_fold_train_rows", side_effect=seen.append, create=True):
+        f._cv_evaluate_horizon(_frame(), 3, {0.5: {"objective": "quantile"}})
     assert seen, "no folds ran"
     assert max(seen) <= 500
 

@@ -25,7 +25,7 @@ depends_on = None
 OLD_NAME = "uq_accuracy_type_date_horizon_model"
 NEW_NAME = "uq_accuracy_type_date_horizon_model_tier"
 OLD_COLS = ["prediction_type", "evaluation_date", "horizon_days", "model_version"]
-NEW_COLS = OLD_COLS + ["price_tier"]
+NEW_COLS = [*OLD_COLS, "price_tier"]
 
 
 def upgrade() -> None:

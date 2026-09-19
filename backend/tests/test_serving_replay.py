@@ -925,7 +925,7 @@ ORDINARY_WEEK = [(f"2026-07-{d:02d}", 26_170, ["aggregator_steam_17mafo"]) for d
 
 
 def test_an_ordinary_anchor_passes_the_feed_audit():
-    profile = _profile(ORDINARY_WEEK + [("2026-07-09", 26_190, ["aggregator_steam_17mafo"])])
+    profile = _profile([*ORDINARY_WEEK, ("2026-07-09", 26190, ["aggregator_steam_17mafo"])])
     ok, lines = audit_anchor_feed(date(2026, 7, 9), profile)
     assert ok
     # It still reports: an audit that only speaks up on failure cannot be read
@@ -940,7 +940,7 @@ def test_the_real_substitution_is_refused_on_both_sides():
     jump and its outcome resolves back on the ordinary feed -- which is why all
     four horizons reversed rather than tilting.
     """
-    profile = _profile(ORDINARY_WEEK + [("2026-07-09", 5_502, ["aggregator_sync"])])
+    profile = _profile([*ORDINARY_WEEK, ("2026-07-09", 5502, ["aggregator_sync"])])
     ok, lines = audit_anchor_feed(date(2026, 7, 9), profile)
     assert not ok
     blob = "\n".join(lines)
@@ -955,7 +955,7 @@ def test_the_real_substitution_is_refused_on_both_sides():
 def test_a_substitution_at_full_coverage_is_still_refused():
     """The item count alone would pass this. A feed that reprices the cohort at
     the same breadth is the harder case and the one a count check misses."""
-    profile = _profile(ORDINARY_WEEK + [("2026-07-09", 26_100, ["aggregator_sync"])])
+    profile = _profile([*ORDINARY_WEEK, ("2026-07-09", 26100, ["aggregator_sync"])])
     ok, lines = audit_anchor_feed(date(2026, 7, 9), profile)
     assert not ok
     assert any("collected differently" in ln for ln in lines)
@@ -966,7 +966,7 @@ def test_a_thin_day_on_the_right_feed_is_still_refused():
     """And the converse: the 07-11..07-13 transition days carry the full source
     set at a third of the breadth, so most items are served from a quote before
     the anchor -- stale rather than substituted."""
-    profile = _profile(ORDINARY_WEEK + [("2026-07-09", 5_525, ["aggregator_steam_17mafo"])])
+    profile = _profile([*ORDINARY_WEEK, ("2026-07-09", 5525, ["aggregator_steam_17mafo"])])
     ok, lines = audit_anchor_feed(date(2026, 7, 9), profile)
     assert not ok
     assert any("item count is 21%" in ln for ln in lines)

@@ -496,7 +496,7 @@ def main():
     logger.info("=" * 70)
 
     t0 = time.time()
-    df, verdicts = run(
+    df, _verdicts = run(
         args.max_items,
         args.horizon,
         max_folds,

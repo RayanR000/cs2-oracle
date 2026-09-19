@@ -11,6 +11,8 @@ from api.schemas import UserOut
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 
+_DB_DEP = Depends(get_db)
+
 
 def _make_session_token(user_id: int) -> str:
     s = URLSafeTimedSerializer(settings.secret_key, salt="session")
@@ -30,7 +32,7 @@ def _resolve_user(request: Request, db: Session) -> User | None:
 
 
 @router.get("/me")
-def get_me(request: Request, db: Session = Depends(get_db)):
+def get_me(request: Request, db: Session = _DB_DEP):
     user = _resolve_user(request, db)
     if not user:
         return None
@@ -57,7 +59,7 @@ def steam_login(request: Request):
 @router.get("/callback")
 def steam_callback(
     request: Request,
-    db: Session = Depends(get_db),
+    db: Session = _DB_DEP,
 ):
     openid_identity = request.query_params.get("openid.claimed_id")
     if not openid_identity:

@@ -88,7 +88,7 @@ class TestPairing:
             (1, "Some Item", "Some Item"),
             (2, "totally-unrelated-key", "Some Item"),
         ]
-        paired, unresolved = pair_phantoms(rows)
+        paired, _unresolved = pair_phantoms(rows)
         assert len(paired) == 1
         assert paired[0].slug_confirms is False
 

@@ -72,7 +72,8 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from models import conformal
 from models.forecaster import ItemForecaster
-from scripts.confirm_mondrian_oof import default_q50_params, readonly_session, train_oof
+
+from scripts.confirm_mondrian_oof import readonly_session, train_oof
 
 logger = logging.getLogger("qhat_dispersion")
 
@@ -199,7 +200,7 @@ def run_arm(fc: ItemForecaster, df: pd.DataFrame, arm: str, horizons: list[int],
     )
     for h in horizons:
         t0 = time.time()
-        oof_path, folds_path = train_oof(fc, df, h, arm_dir)
+        _oof_path, folds_path = train_oof(fc, df, h, arm_dir)
         logger.info("  arm %-8s h=%2d done in %.0fs -> %s", arm, h, time.time() - t0, folds_path)
     return arm_dir
 

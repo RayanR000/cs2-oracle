@@ -69,7 +69,7 @@ def test_drops_when_actual_window_reaches_before_the_forecast(archive):
     """The manufactured-flat guard: overlapping windows score a real move as 0."""
     # Only one observation post-dates the forecast, so the actual leg's median is
     # still decided by pre-forecast observations.
-    rows = _series("ak", "2026-07-30", 3, 100.0) + [{"item_id": "ak", "date": date(2026, 8, 4), "price": 150.0}]
+    rows = [*_series("ak", "2026-07-30", 3, 100.0), {"item_id": "ak", "date": date(2026, 8, 4), "price": 150.0}]
     out, dropped = _resolve([_forecast()], {7: "ak"}, archive(rows))
     assert out == []
     assert dropped == 1

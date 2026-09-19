@@ -408,7 +408,7 @@ def main() -> int:
         # bagged arms; without this B_mean/B_median each pay K fits per date.
         _bag_cache: dict = {}
 
-        def _bagged_q(pp, d, how: str):
+        def _bagged_q(pp, d, how: str, _bag_cache=_bag_cache, grids=grids):
             key = (pd.Timestamp(d).value, how)
             if key not in _bag_cache:
                 qs = []

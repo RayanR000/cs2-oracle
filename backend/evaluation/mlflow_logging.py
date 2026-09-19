@@ -27,7 +27,6 @@ def log_interval_metrics(metrics: dict, prefix: str = "") -> None:
             for sub_key, sub_val in value.items():
                 if isinstance(sub_val, (int, float)) and not math.isnan(sub_val):
                     mlflow.log_metric(f"{prefix}{key}.{sub_key}", sub_val)
-        elif isinstance(value, (int, float)):
-            if not math.isnan(value):
-                mlflow.log_metric(f"{prefix}{key}", value)
+        elif isinstance(value, (int, float)) and not math.isnan(value):
+            mlflow.log_metric(f"{prefix}{key}", value)
         # Skip lists (calibration_curve), strings, etc.

@@ -346,7 +346,7 @@ class TestTheGateCanActuallyPersist:
 
     def test_the_write_block_opens_its_own_session(self):
         src = inspect.getsource(wf.run_walkforward)
-        head, _, tail = src.partition("if not skip_db:")
+        _head, _, tail = src.partition("if not skip_db:")
         assert tail, "the write block moved; this test needs updating"
         assert "SessionLocal()" in tail, (
             "the DB write must open a fresh session — the one from the top of "

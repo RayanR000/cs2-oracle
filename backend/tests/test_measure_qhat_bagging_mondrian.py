@@ -13,6 +13,8 @@ import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+import itertools
+
 from scripts.archive.measure_qhat_bagging_mondrian import (
     _level_match_c,
     apply_fit,
@@ -67,7 +69,7 @@ def test_val_windows_end_anchored_and_disjoint():
     wins = val_windows(dates)
     assert wins, "no windows on 500 dates"
     assert wins[-1][1] == 500, "newest window must abut the frame end"
-    for (s1, e1), (s2, e2) in zip(wins, wins[1:]):
+    for (_s1, e1), (s2, _e2) in itertools.pairwise(wins):
         assert e1 <= s2, "windows must not overlap"
 
 
@@ -96,7 +98,7 @@ def test_mondrian_edges_come_from_calibration_only():
     day = np.datetime64("2024-11-01")
     fit = fit_mondrian(p, day, grids[0])
     assert fit is not None
-    edges, per_bin, fallback = fit
+    edges, per_bin, _fallback = fit
     assert len(edges) == 9 and len(per_bin) == 10
     # Per-bin qs must spread on tilted data, or the arm is a no-op.
     assert per_bin.max() - per_bin.min() > 0
@@ -111,7 +113,7 @@ def test_mondrian_falls_back_on_thin_bins():
     day = np.datetime64("2024-06-01")
     fit = fit_mondrian(p, day, grids[0])
     if fit is not None:
-        _, per_bin, fallback = fit
+        _, per_bin, _fallback = fit
         assert np.all(np.isfinite(per_bin))
 
 

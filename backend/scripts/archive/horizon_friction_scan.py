@@ -114,7 +114,7 @@ def _load_voted(days_back: int, min_price: float) -> pd.DataFrame:
     df["price"] = pd.to_numeric(df["price"], errors="coerce")
     df = df.dropna(subset=["price"])
     df["date"] = df["timestamp"].dt.date
-    # Production voting: bid/trailing sources dropped, 2σ outliers rejected with
+    # Production voting: bid/trailing sources dropped, 2sigma outliers rejected with
     # >=3 sources, median otherwise. One consensus row per item-day.
     voted = ItemForecaster._apply_multi_source_voting(df)
     voted = voted[voted["price"] >= min_price].copy()

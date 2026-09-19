@@ -182,7 +182,7 @@ def _build_frame_uncached(max_items):
             base_cols = [c for c in base_cols if c not in to_drop]
         logger.info("  %d production base + %d rarity columns", len(base_cols), len(rarity_cols))
 
-        keep = ["item_id", "date", "price", "volume"] + base_cols + rarity_cols
+        keep = ["item_id", "date", "price", "volume", *base_cols, *rarity_cols]
         keep = [c for c in dict.fromkeys(keep) if c in df.columns]
         return df[keep].copy(), base_cols, rarity_cols
     finally:
@@ -539,13 +539,13 @@ def main():
         w_acc = w.get("directional_accuracy", 0)
         wo_imp = wo.get("improvement_over_baseline_pp", 0)
         w_imp = w.get("improvement_over_baseline_pp", 0)
-        wo_samples = wo.get("sample_count", 0)
-        w_samples = w.get("sample_count", 0)
+        wo.get("sample_count", 0)
+        w.get("sample_count", 0)
         wo_mae = wo.get("mae", 0)
         w_mae = w.get("mae", 0)
 
         delta = round(w_acc - wo_acc, 2)
-        delta_imp = round(w_imp - wo_imp, 1)
+        round(w_imp - wo_imp, 1)
         total_delta += delta
         horizon_count += 1
 
@@ -597,20 +597,17 @@ def main():
         print(f"    {h:>2}d:  Control: MAE=${wo_mae:.2f}  n={wo_n}")
         print(f"           Treat:  MAE=${w_mae:.2f}  n={w_n}")
 
-    print(
-        f"\n  JSON: {
-            json.dumps(
-                without_records(
-                    {
-                        'control': results_without,
-                        'treatment': results_with,
-                        'placebo': results_placebo,
-                    }
-                ),
-                indent=2,
-            )
-        }"
+    json_str = json.dumps(
+        without_records(
+            {
+                'control': results_without,
+                'treatment': results_with,
+                'placebo': results_placebo,
+            }
+        ),
+        indent=2,
     )
+    print(f"\n  JSON: {json_str}")
 
     return 0
 

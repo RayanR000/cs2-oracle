@@ -68,7 +68,7 @@ _BASE_COLS = [
 
 
 def _select(db_source: str, family_expr: str) -> str:
-    cols = ", ".join(_BASE_COLS + [family_expr])
+    cols = ", ".join([*_BASE_COLS, family_expr])
     return f"""
     SELECT {cols}
     FROM {db_source}
@@ -104,7 +104,7 @@ def _read_db() -> pd.DataFrame:
         rows = db.execute(text(sql)).fetchall()
     finally:
         db.close()
-    return pd.DataFrame(rows, columns=_BASE_COLS + ["family"])
+    return pd.DataFrame(rows, columns=[*_BASE_COLS, "family"])
 
 
 def _read_parquet(archive_dir: Path) -> pd.DataFrame:
@@ -113,7 +113,7 @@ def _read_parquet(archive_dir: Path) -> pd.DataFrame:
     ops = archive_dir / "ops" / "forecast_outcomes.parquet"
     meta = archive_dir / "item-metadata.parquet"
     fam = f"LEFT JOIN read_parquet('{meta}') AS m ON m.item_slug = o.item_slug"
-    cols = ", ".join(f"o.{c}" for c in _BASE_COLS + ["item_slug"])
+    cols = ", ".join(f"o.{c}" for c in [*_BASE_COLS, "item_slug"])
     # item-metadata.parquet carries weapon_type, not type.
     sql = f"""
     SELECT {cols}, m.weapon_type AS family
@@ -183,7 +183,7 @@ def prepare(df: pd.DataFrame) -> pd.DataFrame:
     df["family"] = df["family"].fillna("unknown").astype(str)
     df["stale"] = [bucket_staleness(v) for v in df["base_stale_run_days"].to_numpy()]
     df["width"] = "flat"
-    for h, idx in df.groupby("horizon_days").groups.items():
+    for _h, idx in df.groupby("horizon_days").groups.items():
         df.loc[idx, "width"] = assign_width_tertile(df.loc[idx, "half_width"]).astype(str).values
     return df
 
@@ -242,7 +242,7 @@ def main() -> int:
             covs = [r["coverage"] for r in sub]
             for r in sorted(sub, key=lambda d: d["stratum"]):
                 ci = (
-                    "[%5.1f, %5.1f]" % (r["ci90"][0] * 100, r["ci90"][1] * 100)
+                    "[{:5.1f}, {:5.1f}]".format(r["ci90"][0] * 100, r["ci90"][1] * 100)
                     if np.isfinite(r["ci90"][0])
                     else "(<3 dates)"
                 )

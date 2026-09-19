@@ -30,6 +30,8 @@ not a defect -- `item-metadata-bymykel.parquet` is where those come from.
 
 from __future__ import annotations
 
+from typing import ClassVar
+
 import pytest
 from models.steam_types import parse_steam_type
 from scripts.archive.backfill_supply_metadata import _normalise_key, build_name_lookup
@@ -65,7 +67,7 @@ class TestNormaliseKey:
 
 
 class TestBuildNameLookup:
-    ROWS = [
+    ROWS: ClassVar[list] = [
         # (hash_name, display_name, type)
         ("Berlin 2019 Legends (Holo/Foil)", "Berlin 2019 Legends (Holo/Foil)", "High Grade Sticker"),
         ("AK-47 | Redline (Field-Tested)", "AK-47 | Redline (Field-Tested)", "Classified Rifle"),

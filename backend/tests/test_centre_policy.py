@@ -1,7 +1,6 @@
 import numpy as np
 import pytest
-
-from models.centre_policy import CENTRE_CHAMPIONS, centre_champion, centre_challengers
+from models.centre_policy import CENTRE_CHAMPIONS, centre_challengers, centre_champion
 from models.forecast_assembly import assemble_interval, percentage_offsets
 
 

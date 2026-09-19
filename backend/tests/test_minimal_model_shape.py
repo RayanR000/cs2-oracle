@@ -13,6 +13,7 @@ import inspect
 import logging
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
+from typing import ClassVar
 from unittest.mock import MagicMock, patch
 
 import numpy as np
@@ -244,7 +245,7 @@ def test_every_cv_fold_produces_oof_records(tmp_path, quantiles):
 
     result = f._cv_evaluate_horizon(tdf, 3, {q: {} for q in quantiles})
     assert len(result) == 4, "return tuple must be (oof_records, fold_metrics, pt_records, pt_records_clf)"
-    oof_records, fold_metrics, pt_records, _ = result
+    oof_records, fold_metrics, _pt_records, _ = result
 
     assert len(fold_metrics) >= 2
     assert oof_records, "no OOF records — calibration would be skipped"
@@ -1196,7 +1197,7 @@ def _fake_incompatible_forecast_env(monkeypatch, tmp_path):
     from models.forecaster import IncompatibleModelArtifact
 
     class FakeForecaster:
-        HORIZONS = [3, 7, 14, 30]
+        HORIZONS: ClassVar[list] = [3, 7, 14, 30]
         train_called = False
 
         def __init__(self, *a, **kw):
@@ -1549,7 +1550,9 @@ def test_a_conformal_band_wide_enough_to_go_negative_stays_ordered(tmp_path):
     low_ret, high_ret = band(np.array([mid_ret]), np.array([sigma]), q_hat)
 
     assert low_ret[0] == pytest.approx(-140.0)  # below -100%: negative price
-    to_price = lambda r: round(cur * (1 + r / 100.0), 2)
+
+    def to_price(r):
+        return round(cur * (1 + r / 100.0), 2)
     result = _one_row_result(cur, to_price(low_ret[0]), to_price(mid_ret), to_price(high_ret[0]))
     assert result.iloc[0]["forecasts"][7]["low"] == pytest.approx(-40.0)
 
@@ -1573,7 +1576,10 @@ def test_ordering_holds_for_any_band_width(tmp_path, mid_ret, sigma, q_hat):
     f = ItemForecaster(db_session=None, model_dir=str(tmp_path))
     cur = 100.0
     low_ret, high_ret = band(np.array([mid_ret]), np.array([sigma]), q_hat)
-    to_price = lambda r: round(cur * (1 + r / 100.0), 2)
+
+    def to_price(r):
+        return round(cur * (1 + r / 100.0), 2)
+
     result = _one_row_result(cur, to_price(low_ret[0]), to_price(mid_ret), to_price(high_ret[0]))
 
     fc = f._sanitize_forecasts(result).iloc[0]["forecasts"][7]

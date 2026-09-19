@@ -502,7 +502,6 @@ def archive_slug_sets() -> tuple[set[str], set[str], set[str]]:
     served cohort is the plain >=$1 median.
     """
     import duckdb
-
     from db.archive import prices_relation
 
     con = duckdb.connect()

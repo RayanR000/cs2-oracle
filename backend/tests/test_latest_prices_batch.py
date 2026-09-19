@@ -5,12 +5,11 @@ from __future__ import annotations
 from datetime import datetime, timedelta
 
 import pytest
+from api.routes.items import _latest_prices
+from database import Base, Item, PriceHistory
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
-
-from api.routes.items import _latest_prices
-from database import Base, Item, PriceHistory
 
 
 @pytest.fixture

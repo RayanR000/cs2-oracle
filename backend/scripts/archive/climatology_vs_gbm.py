@@ -281,8 +281,8 @@ def _run_horizon(df: pd.DataFrame, horizon: int, clip: dict) -> dict:
         width = float(lam * np.mean(w_ev[ok])) if ok.any() and np.isfinite(lam) else np.nan
         return lam, cov, width
 
-    lam_g, cov_g, width_g = _method("w_gbm")
-    lam_c, cov_c, width_c = _method("w_clim")
+    _lam_g, cov_g, _width_g = _method("w_gbm")
+    _lam_c, cov_c, _width_c = _method("w_clim")
 
     # Matched-coverage width ratio on `ev` (both forced to exactly 80% there),
     # with a date-clustered bootstrap — the apples-to-apples width read.

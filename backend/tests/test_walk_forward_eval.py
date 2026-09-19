@@ -1,9 +1,10 @@
 """Tests for the walk-forward temporal backtesting module."""
 
+from datetime import date
+
 import numpy as np
 import pandas as pd
 import pytest
-from datetime import date, timedelta
 
 
 class TestWalkForwardSplits:
@@ -125,8 +126,7 @@ class TestIntervalScoring:
 
 class TestWalkForwardResult:
     def test_aggregation(self):
-        from models.walk_forward_eval import WalkForwardResult, FoldResult, IntervalScore, WalkForwardSplit
-        from datetime import date
+        from models.walk_forward_eval import FoldResult, IntervalScore, WalkForwardResult, WalkForwardSplit
 
         result = WalkForwardResult(horizon=7)
         for i in range(3):

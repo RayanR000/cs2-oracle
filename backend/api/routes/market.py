@@ -13,6 +13,8 @@ from api.schemas import GroupedMarketItemOut, QualityVariantOut, parse_item_name
 
 router = APIRouter(prefix="/market", tags=["market"])
 
+_DB_DEP = Depends(get_db)
+
 
 class MarketItemOut(BaseModel):
     id: int
@@ -39,7 +41,7 @@ def market_summary(
     q: str | None = Query(None, description="Search query for item name"),
     skip: int = Query(0, ge=0),
     limit: int = Query(50, ge=1, le=200),
-    db: Session = Depends(get_db),
+    db: Session = _DB_DEP,
 ):
     # Building the grouped summary scans every item plus its recent prices
     # (~3.5s); the result only changes when the daily pipelines run, so it

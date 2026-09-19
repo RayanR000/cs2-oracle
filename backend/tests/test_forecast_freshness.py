@@ -54,11 +54,11 @@ class TestFreshnessVerdict:
         assert "Parquet" in msg
 
     def test_empty_db_fails(self):
-        ok, msg = freshness_verdict(None, TODAY, TODAY)
+        ok, _msg = freshness_verdict(None, TODAY, TODAY)
         assert ok is False
 
     def test_empty_parquet_fails(self):
-        ok, msg = freshness_verdict(TODAY, None, TODAY)
+        ok, _msg = freshness_verdict(TODAY, None, TODAY)
         assert ok is False
 
     def test_a_date_ahead_of_expected_passes(self):

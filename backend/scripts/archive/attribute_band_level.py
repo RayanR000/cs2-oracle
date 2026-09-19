@@ -505,7 +505,7 @@ def run_legs(frame: pd.DataFrame, horizon: int, arm_anchors) -> None:
 
 
 def mean_abs_miss(per_anchor: dict) -> float:
-    """Mean per-anchor `|coverage − 80|`, in pp. Bars (L2) and (J).
+    """Mean per-anchor `|coverage - 80|`, in pp. Bars (L2) and (J).
 
     Per-anchor and equal-weight, deliberately, where `pooled_anchor_coverage` is
     row-weighted: this statistic asks how far a TYPICAL DATE sits from target, so
@@ -522,7 +522,7 @@ def overshoot_breaches(control: dict, arm: dict, near_pp: float = 5.0, far_pp: f
 
     A date the control already covers within `near_pp` of target that the arm
     moves beyond `far_pp` — in EITHER direction. The high-vol read overshot
-    downward at this same `gamma` (77.68% pooled, 73–77% on two anchors); on a
+    downward at this same `gamma` (77.68% pooled, 73-77% on two anchors); on a
     calm date the same arithmetic inflates a well-calibrated band instead, and a
     mean statistic would net the two out.
     """

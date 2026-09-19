@@ -73,6 +73,28 @@ Usage:
 
 from __future__ import annotations
 
+import hashlib
+import json
+import logging
+import os
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).parent.parent))
+
+import lightgbm as lgb
+import numpy as np
+import pandas as pd
+from backtest.directional_test import (
+    constant_call_baseline,
+    pesaran_timmermann,
+    realised_down_rate,
+)
+from backtest.paired_mde import paired_da_difference
+from backtest.scoring import MIN_HEADLINE_DATES as MIN_PT_DATES
+from database import SessionLocal
+from models.forecaster import ItemForecaster, phase_collapsed_sql_filter
+
 # ── Universe ────────────────────────────────────────────────────────────
 # Minimum median price. Same rationale as ab_test_volume_features.py: without
 # it the universe is penny items, 41% of forward returns are exactly zero, and
@@ -125,28 +147,6 @@ STEP_DAYS = 60
 # item should draw the same rows for it wherever their per-item quota allows.
 SPLIT_SEED = 20260806
 SAMPLE_SEED = 4242
-
-import hashlib
-import json
-import logging
-import os
-import sys
-from pathlib import Path
-
-sys.path.insert(0, str(Path(__file__).parent.parent))
-
-import lightgbm as lgb
-import numpy as np
-import pandas as pd
-from backtest.directional_test import (
-    constant_call_baseline,
-    pesaran_timmermann,
-    realised_down_rate,
-)
-from backtest.paired_mde import paired_da_difference
-from backtest.scoring import MIN_HEADLINE_DATES as MIN_PT_DATES
-from database import SessionLocal
-from models.forecaster import ItemForecaster, phase_collapsed_sql_filter
 
 logging.basicConfig(
     level=logging.INFO,
@@ -365,7 +365,7 @@ def _build_frame_uncached():
 
         # Carry only what the evaluation needs. The engineered frame is ~10x
         # the volume harness's and the unused columns are pure memory.
-        df = df[["item_id", "date", "price"] + pruned].copy()
+        df = df[["item_id", "date", "price", *pruned]].copy()
         return df, pruned
 
     finally:
@@ -493,7 +493,7 @@ def run_evaluation(df, pruned, horizon_filter=None, n_jobs=None, row_budget=None
                 continue
 
             available = [c for c in pruned if c in tdf.columns]
-            sub = tdf[["item_id", "date", "price", target_col] + available]
+            sub = tdf[["item_id", "date", "price", target_col, *available]]
 
             dates = sorted(sub["date"].unique())
             split_idx = len(dates) * 2 // 3

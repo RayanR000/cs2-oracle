@@ -1,7 +1,10 @@
+import json
 import sys
 from pathlib import Path
 
+import duckdb
 import pandas as pd
+import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
 import merge_17mafo_gap as m
@@ -63,9 +66,6 @@ def test_prices_to_snapshots():
     assert snaps.iloc[0]["source"] == "aggregator_steam_17mafo"
 
 
-import pytest
-
-
 def _prices_for_dates(dates, n_items):
     frames = []
     for d in dates:
@@ -99,9 +99,6 @@ def test_validate_coverage_low_count_raises():
     prices = _prices_for_dates(dates, n_items=5)
     with pytest.raises(AssertionError, match="item count"):
         m.validate_coverage(prices, dates, min_items=25)
-
-
-import json
 
 
 class _FakeResp:
@@ -142,9 +139,6 @@ def test_fetch_day_raises_on_error(tmp_path):
     sess = _FakeSession(404, {})
     with pytest.raises(RuntimeError, match="404"):
         m.fetch_day("2026-04-16", tmp_path, session=sess)
-
-
-import duckdb
 
 
 def _fake_fetch_factory(payloads_by_date, cache_dir):

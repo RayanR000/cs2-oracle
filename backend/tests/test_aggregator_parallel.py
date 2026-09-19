@@ -1,7 +1,10 @@
 # backend/tests/test_aggregator_parallel.py
+import contextlib
 from concurrent.futures import Future
-from unittest.mock import patch, MagicMock
+from unittest.mock import MagicMock, patch
+
 from collectors.csgotrader_aggregator import CSGOTraderAggregator
+
 
 def _completed(result):
     f = Future()
@@ -16,10 +19,8 @@ def test_fetch_uses_parallel_execution():
         mock_pool.return_value.__exit__ = MagicMock(return_value=False)
         # Real completed futures: as_completed() hangs forever on MagicMocks.
         mock_executor.submit.side_effect = lambda fn, *a, **k: _completed((a[0], {}))
-        try:
+        with contextlib.suppress(Exception):
             agg.fetch_all_market_data()
-        except Exception:
-            pass
         assert mock_executor.submit.call_count >= 1
 
 def test_aggregator_context_manager():

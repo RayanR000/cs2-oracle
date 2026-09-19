@@ -12,11 +12,10 @@ from __future__ import annotations
 
 import numpy as np
 import pandas as pd
-from scipy.stats import norm, spearmanr
 
 # Reuse the project's price_tier function for tier-stratified coverage.
 from backtest.scoring import price_tier
-
+from scipy.stats import norm, spearmanr
 
 # ---------------------------------------------------------------------------
 # Core metrics

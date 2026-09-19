@@ -2,7 +2,7 @@
 """Does training on the 2025 clean-label era produce narrower bands?
 
 The 2025 label ceiling is R²=0.92 at h=30 (vs 0.64 for 2026), because the
-2025 era has 0.7–1.5% frozen quotes vs 18–33% in 2026. The hypothesis: a
+2025 era has 0.7-1.5% frozen quotes vs 18-33% in 2026. The hypothesis: a
 climatology table built on cleaner labels should produce narrower bands at
 matched coverage — even with less data.
 
@@ -45,12 +45,13 @@ import pandas as pd
 from api.serving_policy import MIN_SERVED_PRICE_USD
 from database import SessionLocal
 from models.forecaster import ItemForecaster
+
 from scripts.archive.ab_test_item_metadata import (
     assign_items,
     build_frame,
 )
-from scripts.exceedance_meta_ab import paired_fold_deltas
 from scripts.archive.shrink_k_vol_rank_ab import _lookup, matched_width
+from scripts.exceedance_meta_ab import paired_fold_deltas
 
 logging.basicConfig(
     level=logging.INFO,

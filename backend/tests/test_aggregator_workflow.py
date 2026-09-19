@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
+from typing import ClassVar
 
 import collectors.csgotrader_aggregator as aggregator_module
 import database as database_module
@@ -13,7 +14,7 @@ from sqlalchemy.pool import StaticPool
 
 
 class FakeAggregator:
-    _raw_sources: dict = {}
+    _raw_sources: ClassVar[dict] = {}
 
     def __init__(self, price_data=None):
         self._price_data = price_data or {}
@@ -263,7 +264,7 @@ class TestHappyPath:
         CollectionRun is recorded."""
         db = database_module.SessionLocal()
         try:
-            [item] = seed_items(
+            [_item] = seed_items(
                 db,
                 [
                     {"item_id": "test-item-blows-up", "name": "Weapon | Will Explode", "type": "skin"},
@@ -306,7 +307,7 @@ class TestHappyPath:
                 "Desert Eagle | Code Red (Minimal Wear)",
                 "USP-S | Kill Confirmed (Field-Tested)",
             ]
-            items = seed_items(db, [{"item_id": f"test-{i}", "name": names[i], "type": "skin"} for i in range(5)])
+            _items = seed_items(db, [{"item_id": f"test-{i}", "name": names[i], "type": "skin"} for i in range(5)])
             fake_prices = {name: float(i + 1) * 10.0 for i, name in enumerate(names)}
             monkeypatch.setattr(
                 aggregator_module,

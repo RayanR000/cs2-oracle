@@ -235,7 +235,7 @@ def test_backfill_preserves_the_other_columns_and_their_order(ops_dir):
     backfill(ops_dir.parent, ["item_forecasts"], MAP, apply=True)
     after = _read(path)
 
-    assert list(after.columns) == list(before.columns) + ["item_slug"]
+    assert list(after.columns) == [*list(before.columns), "item_slug"]
     pd.testing.assert_frame_equal(after[before.columns], before)
 
 

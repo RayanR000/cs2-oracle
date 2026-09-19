@@ -3,19 +3,16 @@
 from __future__ import annotations
 
 import os
-import tempfile
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 import numpy as np
 import pytest
+from models.ngboost_head import (
+    load_ngboost_model,
+    save_ngboost_model,
+)
 
 ngboost_mod = pytest.importorskip("ngboost", reason="ngboost not installed (probabilistic extra)")
-
-from models.ngboost_head import (
-    NGBoostTrainResult,
-    save_ngboost_model,
-    load_ngboost_model,
-)
 
 
 class TestNGBoostFlagGating:

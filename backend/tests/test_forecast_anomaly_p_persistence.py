@@ -51,12 +51,14 @@ def _capture_db_payload(results, *, db_columns):
         def get_columns(self, name):
             return [{"name": c} for c in db_columns]
 
-    with patch("db.parquet.append_table", side_effect=lambda *a, **k: None):
-        with patch("sqlalchemy.inspect", return_value=_Inspector()):
-            with patch("sqlalchemy.dialects.postgresql.insert") as ins:
-                (ins.return_value.values.return_value.on_conflict_do_update.return_value) = "stmt"
-                _write_forecasts_to_db(_DB(), results, "lgbm-v3", {"ak_1": 1}, date(2026, 8, 15))
-                return ins.return_value.values.call_args[0][0]
+    with (
+        patch("db.parquet.append_table", side_effect=lambda *a, **k: None),
+        patch("sqlalchemy.inspect", return_value=_Inspector()),
+        patch("sqlalchemy.dialects.postgresql.insert") as ins,
+    ):
+        (ins.return_value.values.return_value.on_conflict_do_update.return_value) = "stmt"
+        _write_forecasts_to_db(_DB(), results, "lgbm-v3", {"ak_1": 1}, date(2026, 8, 15))
+        return ins.return_value.values.call_args[0][0]
 
 
 def test_anomaly_p_is_written_when_the_column_exists():

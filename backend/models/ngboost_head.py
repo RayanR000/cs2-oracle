@@ -86,9 +86,9 @@ def train_ngboost(
     train_mask = np.isfinite(y_train)
     val_mask = np.isfinite(y_val)
 
-    X_tr = X_train[train_mask] if isinstance(X_train, pd.DataFrame) else X_train[train_mask]
+    X_tr = X_train[train_mask]
     y_tr = y_train[train_mask]
-    X_v = X_val[val_mask] if isinstance(X_val, pd.DataFrame) else X_val[val_mask]
+    X_v = X_val[val_mask]
     y_v = y_val[val_mask]
 
     logger.info(f"  NGBoost {horizon}d: {len(y_tr)} train / {len(y_v)} val rows")

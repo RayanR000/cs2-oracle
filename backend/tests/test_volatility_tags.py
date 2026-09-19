@@ -131,7 +131,7 @@ class TestBuildRanking:
         assert [r["item_id"] for r in out] == ["e", "d"]
 
     def test_rows_without_a_band_are_dropped(self):
-        rows = self._universe() + [_row("z", "Z", 100.0, None, None, None)]
+        rows = [*self._universe(), _row("z", "Z", 100.0, None, None, None)]
         out = build_ranking(rows)
         assert "z" not in {r["item_id"] for r in out}
 

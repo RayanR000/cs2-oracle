@@ -128,7 +128,7 @@ def calibrate_cqr(
         cqr.conformalize(X_conf, y_conf)
 
         # Predict intervals on the FULL calibration set for shadow comparison
-        point_preds, intervals = cqr.predict_interval(X_aug)
+        _point_preds, intervals = cqr.predict_interval(X_aug)
         # intervals shape: (n, 2, 1) — squeeze last dim
         lower = intervals[:, 0, 0]
         upper = intervals[:, 1, 0]

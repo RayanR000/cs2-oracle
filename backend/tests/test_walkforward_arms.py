@@ -19,7 +19,7 @@ def test_unknown_arm_is_rejected():
 
 
 def test_naive_arm_predicts_the_trailing_return():
-    X = np.zeros((3, 2))
+    np.zeros((3, 2))
     trailing = np.array([1.5, -2.0, 0.0])
     mid, low, high, classes = wf._naive_predict(trailing)
     assert mid == pytest.approx(trailing)
@@ -71,7 +71,7 @@ def test_ridge_arm_requires_the_scaler_to_fit_ill_scaled_features():
     )
     y_val_true = X_val[:, 0] * 2.0 + X_val[:, 2] * 5000.0
 
-    mid, low, high, classes = wf._ridge_predict(X_train, y_train, X_val)
+    mid, _low, _high, _classes = wf._ridge_predict(X_train, y_train, X_val)
 
     corr = np.corrcoef(mid, y_val_true)[0, 1]
     assert corr > 0.90, (
@@ -99,7 +99,7 @@ def test_ridge_arm_tolerates_non_finite_features():
     X_val = rng.rand(10, 3)
     X_val[2, 0] = -np.inf
 
-    mid, low, high, classes = wf._ridge_predict(X_train, y_train, X_val)
+    mid, low, high, _classes = wf._ridge_predict(X_train, y_train, X_val)
 
     assert np.isfinite(mid).all()
     assert len(mid) == len(X_val)

@@ -25,7 +25,6 @@ from datetime import UTC, date, datetime
 from pathlib import Path
 
 import pandas as pd
-
 from backtest.scoring import MIN_HEADLINE_DATES
 
 REPO = "RayanR000/cs2-oracle-data"

@@ -31,15 +31,6 @@ Embargo (added 2026-08-08):
     event-calendar arm, and has never been replicated in this repo.
 """
 
-NEW_PRIMITIVES = (
-    "vol_semidev_down_30d",
-    "vol_semidev_up_30d",
-    "vol_skew_30d",
-    "rsi_divergence_7d",
-    "rsi_price_divergence_7d",
-    "macd_hist_slope_7d",
-)
-
 import hashlib
 import json
 import logging
@@ -59,6 +50,15 @@ from backtest.walkforward_records import (
 )
 from database import SessionLocal
 from models.forecaster import ItemForecaster, phase_collapsed_sql_filter
+
+NEW_PRIMITIVES = (
+    "vol_semidev_down_30d",
+    "vol_semidev_up_30d",
+    "vol_skew_30d",
+    "rsi_divergence_7d",
+    "rsi_price_divergence_7d",
+    "macd_hist_slope_7d",
+)
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s")
 logger = logging.getLogger("ab_test_price_primitives")
@@ -348,7 +348,7 @@ def run_evaluation(df, pruned, present_new, horizon_filter=None, arm_filter=None
                 # `date` for the 200K row cap's sort below. Neither is a
                 # feature -- `available` is the feature list and the matrices
                 # are built from it alone.
-                sub = tdf[available + [target_col, "price", "date", "item_id"]]
+                sub = tdf[[*available, target_col, "price", "date", "item_id"]]
 
                 directional_hits = 0
                 directional_total = 0

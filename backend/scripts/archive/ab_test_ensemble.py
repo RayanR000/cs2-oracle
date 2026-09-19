@@ -114,7 +114,7 @@ def _load_parquet_items(con, min_rows=90, backfilled_only=False):
 def _load_all_prices(con, items):
     relation = prices_relation(con, ARCHIVE_DIR, columns=_PRICE_COLUMNS)
     all_rows = []
-    for item_slug, first_day, last_day, row_count in items:
+    for item_slug, _first_day, _last_day, _row_count in items:
         rows = con.sql(
             f"""
             SELECT item_slug AS item_id, CAST(day AS DATE) AS timestamp,

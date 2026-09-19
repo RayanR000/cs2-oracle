@@ -8,7 +8,7 @@ predicts direction; MSE (L2) has a different gradient profile that may
 capture weak signal the L1 surface misses.
 
 Arms:
-  quantile   — production baseline (α=0.5, ≡ MAE)
+  quantile   — production baseline (alpha=0.5, ≡ MAE)
   huber      — smooth L1/L2 hybrid
   mse        — L2 regression
   lambdarank — pairwise ranking, grouped by date
@@ -43,10 +43,9 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 import lightgbm as lgb
 import numpy as np
 import pandas as pd
-from scipy.stats import spearmanr
-
 from database import SessionLocal
 from models.forecaster import ItemForecaster
+from scipy.stats import spearmanr
 
 logging.basicConfig(
     level=logging.INFO,
@@ -217,7 +216,7 @@ def run(horizon_filter=None, out_path=None):
 
         boost_rounds = ItemForecaster._boost_rounds(horizon, cv=False)
 
-        # Naive baseline (−return_1d as ranking predictor)
+        # Naive baseline (-return_1d as ranking predictor)
         naive_val_pred = -val_set["return_1d"].to_numpy(dtype=float) if "return_1d" in val_set.columns else np.zeros_like(y_val)
         naive_ics = _within_date_rank_ic(naive_val_pred, y_val, val_dates)
         naive_da = _directional_accuracy(naive_val_pred, y_val)
@@ -346,7 +345,7 @@ def run(horizon_filter=None, out_path=None):
             logger.info(f"  {arm:<12} {ic_str} {ci_str:>24} {da_str:>8} {t_str:>6}{marker}")
 
         # Paired deltas: every arm vs quantile baseline
-        logger.info(f"\n  Paired deltas vs quantile baseline (IC_arm − IC_quantile):")
+        logger.info("\n  Paired deltas vs quantile baseline (IC_arm - IC_quantile):")
         q_ics = arm_ics.get("quantile", {})
         for arm in ARMS:
             if arm == "quantile":

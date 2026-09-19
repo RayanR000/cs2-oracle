@@ -136,7 +136,7 @@ def test_reordered_columns_are_matched_by_name_not_position(archive, con):
 
 def test_day_is_one_type_across_mixed_timestamp_precisions(archive, con):
     rel = prices_relation(con, archive)
-    day_type = [r[1] for r in con.sql(f"DESCRIBE SELECT * FROM {rel}").fetchall() if r[0] == "day"][0]
+    day_type = next(r[1] for r in con.sql(f"DESCRIBE SELECT * FROM {rel}").fetchall() if r[0] == "day")
     assert day_type == "DATE"
 
 

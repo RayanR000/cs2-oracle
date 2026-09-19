@@ -60,6 +60,8 @@ import numpy as np
 import pandas as pd
 from database import SessionLocal
 from models.forecaster import ItemForecaster
+
+from scripts.anomaly_gbm_ab import clean_anomaly_label, item_rate_predictions
 from scripts.archive.ab_test_item_metadata import (
     ROW_BUDGET,
     STEP_DAYS,
@@ -68,7 +70,6 @@ from scripts.archive.ab_test_item_metadata import (
     assign_items,
     build_frame,
 )
-from scripts.anomaly_gbm_ab import clean_anomaly_label, item_rate_predictions
 from scripts.exceedance_meta_ab import TREE_PARAMS, _score, paired_fold_deltas
 
 logging.basicConfig(
@@ -148,7 +149,7 @@ def run(df, pruned, horizon_filter=30, n_jobs=None, clean_label=False, calib_fra
             )
 
             base_cols = [c for c in pruned if c in tdf.columns]
-            sub = tdf[["item_id", "date", "price", target_col] + base_cols].copy()
+            sub = tdf[["item_id", "date", "price", target_col, *base_cols]].copy()
 
             dates = sorted(sub["date"].unique())
             split_idx = len(dates) * 2 // 3
@@ -178,7 +179,7 @@ def run(df, pruned, horizon_filter=30, n_jobs=None, clean_label=False, calib_fra
                 X_train = train_df[base_cols].fillna(med)
                 X_val = val_df[base_cols].fillna(med)
 
-                def _fit(Xtr, ytr):
+                def _fit(Xtr, ytr, horizon=horizon):
                     return forecaster._fit_anomaly_classifier(
                         Xtr,
                         ytr,

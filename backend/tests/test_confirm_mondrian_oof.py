@@ -80,7 +80,7 @@ def test_oof_panel_sorts_dates_and_drops_nonfinite():
 
 
 def test_default_params_match_skip_hp_block():
-    for k, v in DEFAULT_Q50.items():
+    for k, _v in DEFAULT_Q50.items():
         assert k in ("num_leaves", "learning_rate", "lambda_l1", "lambda_l2", "max_depth", "min_data_in_leaf"), k
     assert DEFAULT_Q50 == {
         "num_leaves": 47,

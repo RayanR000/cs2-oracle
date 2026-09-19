@@ -30,7 +30,7 @@ def run_migrations(revision="head"):
         return {"status": "success", "revision": revision, "returncode": result.returncode}
     except (FileNotFoundError, subprocess.CalledProcessError) as e:
         logger.error("Migration command failed. Install backend requirements and retry.")
-        raise RuntimeError(f"Could not run migrations to {revision}: {e}")
+        raise RuntimeError(f"Could not run migrations to {revision}: {e}") from e
 
 
 # Row-count fields every task can return. This guard used to key on

@@ -1,9 +1,6 @@
-from datetime import date, datetime
+from datetime import date
 
-from sqlalchemy import create_engine
-from sqlalchemy.orm import sessionmaker
-
-from tests.test_candidate_resolution import D, T, _cand, _db, _prod
+from tests.test_candidate_resolution import D, _cand, _db, _prod
 
 
 class _Legs:
@@ -88,9 +85,8 @@ def test_reresolve_moves_legs(monkeypatch):
 
 
 def test_reresolve_rejects_production_mismatch(monkeypatch):
-    import pytest
-
     import backtest.candidate_resolution as cr
+    import pytest
 
     session = _db()
     _prod(session, actual=45.0)

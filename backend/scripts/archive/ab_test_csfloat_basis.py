@@ -77,6 +77,25 @@ Usage:
 
 from __future__ import annotations
 
+import argparse
+import hashlib
+import json
+import logging
+import os
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).parent.parent))
+
+import duckdb
+import lightgbm as lgb
+import numpy as np
+import pandas as pd
+from backtest.paired_mde import paired_da_difference
+from database import SessionLocal
+from models.forecaster import ItemForecaster, phase_collapsed_sql_filter
+from models.market_factor import build_market_index, market_factor_for_horizon
+
 MIN_MEDIAN_PRICE = 1.0
 MIN_ITEM_DAYS = 180
 
@@ -106,25 +125,6 @@ CF_RAW = ("cf_basis",)
 CF_SMOOTH = ("cf_basis_7d", "cf_basis_dev_30d", "cf_basis_chg_7d")
 CF_COUNT = ("cf_log_sales_7d",)
 CF_ALL = CF_RAW + CF_SMOOTH + CF_COUNT
-
-import argparse
-import hashlib
-import json
-import logging
-import os
-import sys
-from pathlib import Path
-
-sys.path.insert(0, str(Path(__file__).parent.parent))
-
-import duckdb
-import lightgbm as lgb
-import numpy as np
-import pandas as pd
-from backtest.paired_mde import paired_da_difference
-from database import SessionLocal
-from models.forecaster import ItemForecaster, phase_collapsed_sql_filter
-from models.market_factor import build_market_index, market_factor_for_horizon
 
 logging.basicConfig(
     level=logging.INFO,
@@ -365,7 +365,7 @@ def _build_frame_uncached(probe_dir: Path):
             pruned = kept
         logger.info("  %d -> %d after corr prune", len(kept), len(pruned))
 
-        df = df[["item_id", "date", "price"] + pruned + mf_cols].copy()
+        df = df[["item_id", "date", "price", *pruned, *mf_cols]].copy()
         df["date"] = pd.to_datetime(df["date"])
         basis["date"] = pd.to_datetime(basis["date"])
         before = len(df)
@@ -481,7 +481,7 @@ def run_evaluation(df, pruned, horizon_filter=None, n_jobs=None, market_relative
                 continue
 
             base_cols = [c for c in pruned if c in tdf.columns]
-            keep_cols = ["item_id", "date", "price", target_col] + base_cols + list(CF_ALL)
+            keep_cols = ["item_id", "date", "price", target_col, *base_cols, *list(CF_ALL)]
             mf_col = f"market_factor_{horizon}d"
             if market_relative:
                 if mf_col not in tdf.columns:

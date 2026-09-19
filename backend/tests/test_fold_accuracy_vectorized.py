@@ -9,7 +9,6 @@ vacuous 100% — the fixtures below are percent-scale on purpose.
 """
 
 import numpy as np
-
 from models.direction import DIRECTION_FLAT_TOLERANCE_PCT, directional_accuracy
 
 

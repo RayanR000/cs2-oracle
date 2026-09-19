@@ -4,8 +4,6 @@ from __future__ import annotations
 
 import numpy as np
 import pandas as pd
-import pytest
-
 from evaluation.interval_scoring import (
     adaptivity,
     average_width,
@@ -17,7 +15,6 @@ from evaluation.interval_scoring import (
     relative_width,
     score_intervals,
 )
-
 
 # ---------------------------------------------------------------------------
 # Coverage
@@ -206,7 +203,7 @@ class TestCoverageByTier:
         actual = prices * 1.0  # all inside
         result = coverage_by_tier(low, high, actual, prices)
         # All inside, so every tier should be 1.0
-        for tier, cov in result.items():
+        for _tier, cov in result.items():
             assert cov == 1.0
 
     def test_tier_miss(self):
@@ -232,7 +229,6 @@ class TestCalibrationCurve:
         mid = np.full(n, 100.0)
         actual = mid + rng.normal(0, 10.0, n)
         # Build intervals at each nominal level from the known distribution
-        from scipy.stats import norm
 
         results = calibration_curve(
             mid=mid,

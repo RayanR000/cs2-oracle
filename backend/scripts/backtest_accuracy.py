@@ -884,7 +884,7 @@ def _headline_line(horizon, model_version, metrics, n) -> tuple[int, str]:
     # Already percent, same units as directional_accuracy — the * 100 that used
     # to live here was compensating for a scoring bug that is now fixed at the
     # source. See the units note in score_cohort.
-    ci_str = f" [CI: {lo:.1f}–{hi:.1f}]" if lo is not None else " [CI: n/a, <2 forecast dates]"
+    ci_str = f" [CI: {lo:.1f}-{hi:.1f}]" if lo is not None else " [CI: n/a, <2 forecast dates]"
     triple = (
         f"DA={metrics['directional_accuracy']:.1f}%{ci_str} "
         f"vs constant-call {_pct(metrics['constant_call_accuracy'])} "
@@ -1272,7 +1272,7 @@ def backtest_forecasts(db, today=None, min_price=0, reresolve=False, rescore=Fal
                 staleness_days=MAX_WINDOW_SPAN_DAYS,
             )
 
-            def _count_unresolvable():
+            def _count_unresolvable(gap=gap, chronic=chronic):
                 nonlocal n_unresolvable_fresh, n_unresolvable_chronic
                 nonlocal n_unresolvable_gap
                 if gap:

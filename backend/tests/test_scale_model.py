@@ -70,7 +70,7 @@ def test_a_constant_factor_on_the_scale_leaves_the_band_where_it_was():
     constant divides `q_hat` by it and the interval is unchanged. This is why
     the model only has to get RELATIVE variation right, and why a constant
     offset in log space is free."""
-    X, resid, sigma = _heteroscedastic(n=8_000)
+    X, resid, _sigma = _heteroscedastic(n=8_000)
     s = X["driver"].to_numpy()
 
     q1 = conformal.calibrate(resid, s, conformal.ALPHA)

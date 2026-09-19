@@ -20,6 +20,8 @@ from api.serving_policy import MIN_SERVED_PRICE_USD
 
 router = APIRouter(prefix="/accuracy", tags=["accuracy"])
 
+_DB_DEP = Depends(get_db)
+
 logger = logging.getLogger(__name__)
 
 
@@ -138,7 +140,7 @@ def _query_prediction_accuracy(
             # Such a file holds only all-tiers rows, so an unqualified request
             # is still correct; a request for a specific cohort is not, and
             # returning None falls the caller back to the DB.
-            if "price_tier" in cols:
+            if has_tier:
                 clauses.append(_tier_clause(price_tier))
             elif price_tier is not None:
                 return None
@@ -189,7 +191,7 @@ def list_accuracy(
     prediction_type: str | None = Query(None),
     limit: int = Query(50, ge=1, le=200),
     price_tier: int | None = PRICE_TIER_QUERY,
-    db: Session = Depends(get_db),
+    db: Session = _DB_DEP,
 ):
     try:
         rows = _query_prediction_accuracy(prediction_type, limit, price_tier)
@@ -212,7 +214,7 @@ def list_accuracy(
 def get_latest_accuracy(
     prediction_type: str | None = Query(None),
     price_tier: int | None = PRICE_TIER_QUERY,
-    db: Session = Depends(get_db),
+    db: Session = _DB_DEP,
 ):
     """Get the most recent accuracy record for each prediction type."""
     try:
@@ -297,7 +299,7 @@ def _headline_entry(row: dict) -> dict:
 
 
 @router.get("/headline")
-def get_headline(db: Session = Depends(get_db)):
+def get_headline(db: Session = _DB_DEP):
     """The published accuracy claim, per horizon, as a significance test.
 
     This is the endpoint the product surfaces are meant to render. It exists
@@ -353,7 +355,7 @@ def get_headline(db: Session = Depends(get_db)):
 def get_accuracy_summary(
     prediction_type: str | None = Query(None),
     price_tier: int | None = PRICE_TIER_QUERY,
-    db: Session = Depends(get_db),
+    db: Session = _DB_DEP,
 ):
     """Returns aggregated summary across all available accuracy records."""
     try:
@@ -489,7 +491,7 @@ def list_outcomes(
     horizon_days: int | None = Query(None),
     correct: bool | None = Query(None),
     limit: int = Query(50, ge=1, le=500),
-    db: Session = Depends(get_db),
+    db: Session = _DB_DEP,
 ):
     """Query individual forecast outcomes — was each prediction right or wrong?"""
     try:
@@ -512,7 +514,7 @@ def list_outcomes(
 
 @router.get("/outcomes/stats")
 def outcome_stats(
-    db: Session = Depends(get_db),
+    db: Session = _DB_DEP,
 ):
     """Aggregated stats from forecast outcomes — accuracy, error distribution."""
     try:

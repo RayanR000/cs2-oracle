@@ -7,8 +7,11 @@ import numpy as np
 import pandas as pd
 import pytest
 from models.market_factor import (
+    INDEX_TOLERANCE_DAYS,
     MIN_INDEX_ITEMS,
     build_market_index,
+    forecast_market_factor,
+    market_factor_for_horizon,
 )
 
 
@@ -78,7 +81,6 @@ def test_thin_days_are_marked_invalid_not_dropped():
 def test_an_invalid_day_does_not_poison_later_levels():
     """One thin day must not NaN the whole tail of the index."""
     rows = []
-    dates = ["2026-01-01", "2026-01-02", "2026-01-03"]
     for i in range(40):
         rows.append((i, "2026-01-01", 10.0))
         rows.append((i, "2026-01-03", 10.0))
@@ -122,13 +124,6 @@ def test_empty_frame_returns_empty_index():
     idx = build_market_index(_frame([]), min_items=5)
     assert idx.empty
     assert list(idx.columns) == ["log_return", "n_items", "valid", "level", "invalid_cum"]
-
-
-from models.market_factor import (
-    INDEX_TOLERANCE_DAYS,
-    forecast_market_factor,
-    market_factor_for_horizon,
-)
 
 
 def _index_from_daily(returns, start="2026-01-01"):
@@ -207,7 +202,7 @@ def test_forecast_ignores_everything_after_as_of():
     """Truncating the index at `as_of` must not change the forecast. If it
     does, the estimator is reading the future and any measured gain is fake."""
     rng = np.random.RandomState(0)
-    rets = [np.nan] + list(rng.normal(0, 0.01, 400))
+    rets = [np.nan, *list(rng.normal(0, 0.01, 400))]
     idx = _index_from_daily(rets)
     as_of = idx.index[300]
     full = forecast_market_factor(idx, as_of, horizon=7)
@@ -217,7 +212,7 @@ def test_forecast_ignores_everything_after_as_of():
 
 def test_forecast_is_unchanged_when_the_future_is_nulled():
     rng = np.random.RandomState(1)
-    rets = [np.nan] + list(rng.normal(0, 0.01, 400))
+    rets = [np.nan, *list(rng.normal(0, 0.01, 400))]
     idx = _index_from_daily(rets)
     as_of = idx.index[300]
     before = forecast_market_factor(idx, as_of, horizon=14)

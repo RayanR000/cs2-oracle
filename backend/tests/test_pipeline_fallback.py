@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta
 from types import SimpleNamespace
+from typing import ClassVar
 
 import collectors.csgotrader_aggregator as aggregator_module
 import database as database_module
@@ -14,7 +15,7 @@ from sqlalchemy.pool import StaticPool
 
 
 class FakeAggregator:
-    _raw_sources: dict = {}
+    _raw_sources: ClassVar[dict] = {}
 
     def collect_batch_items(self, item_names):
         return {}

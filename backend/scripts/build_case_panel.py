@@ -71,9 +71,7 @@ def _is_case_slug(slug: str) -> bool:
         return True
     if "capsule" in s or "package" in s:
         return True
-    if s.endswith("-case") or s.endswith(" case") or "weapon case" in s:
-        return True
-    return False
+    return bool(s.endswith("-case") or s.endswith(" case") or "weapon case" in s)
 
 
 def _drop_pool_status(slug: str, event_row: dict | None) -> str:

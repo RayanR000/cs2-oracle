@@ -17,9 +17,10 @@ import hashlib
 import json
 import logging
 import os
+from collections.abc import Iterable
 from dataclasses import dataclass
 from datetime import date, datetime
-from typing import Any, Iterable
+from typing import Any
 
 import numpy as np
 import pandas as pd
@@ -140,6 +141,7 @@ def candidate_records(
 
         rank_score = row.get("rank_score")
         if _finite(rank_score):
+            assert rank_score is not None  # narrowing; _finite rejects None
             records.append(
                 CandidateRecord(
                     item_id=item_id,

@@ -720,7 +720,7 @@ def _coverage_by_sigma_rows(frame: pd.DataFrame, n_strata: int = SIGMA_STRATA) -
 
 
 def sigma_tilt_pp(rows: list[dict]) -> float:
-    """Mean |coverage − nominal| across the strata, in points.
+    """Mean |coverage - nominal| across the strata, in points.
 
     The same statistic `conformal.coverage_by_sigma_stratum` returns, so a served
     number and an OOF one can be read side by side. ⚠️ It is NOT level-matched —

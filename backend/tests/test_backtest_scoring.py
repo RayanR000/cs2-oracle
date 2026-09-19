@@ -7,6 +7,18 @@ import backtest.price_resolution as price_resolution
 import pandas as pd
 import pytest
 from backtest.price_resolution import resolve_anchors
+from backtest.scoring import (
+    FLAT_TOLERANCE,
+    FLOOR_SWEEP,
+    HEADLINE_MIN_TIER,
+    HEADLINE_TIER,
+    direction_from_return,
+    floor_records,
+    price_tier,
+    score_by_tier,
+    score_cohort,
+)
+from database import Base, ForecastOutcome, Item, ItemForecast, PredictionAccuracy
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
@@ -16,9 +28,6 @@ def smoothed_prices(voted, anchors, **kwargs):
     """resolve_anchors projected to prices. See the note in
     tests/test_backtest_resolution.py — test-local by design."""
     return {k: r.price for k, r in resolve_anchors(voted, anchors, **kwargs).items()}
-
-
-from database import Base, ForecastOutcome, Item, ItemForecast, PredictionAccuracy
 
 
 @pytest.fixture()
@@ -71,14 +80,6 @@ def test_prediction_accuracy_has_price_tier(session):
     session.commit()
 
     assert session.query(PredictionAccuracy).one().price_tier == 1
-
-
-from backtest.scoring import (
-    FLAT_TOLERANCE,
-    direction_from_return,
-    price_tier,
-    score_cohort,
-)
 
 
 def _record(**overrides):
@@ -921,14 +922,6 @@ def test_reresolve_overrides_the_freeze(session, monkeypatch):
 
     assert session.query(ForecastOutcome).filter_by(forecast_id=8).one().actual_price == 99.0
 
-
-from backtest.scoring import (
-    FLOOR_SWEEP,
-    HEADLINE_MIN_TIER,
-    HEADLINE_TIER,
-    floor_records,
-    score_by_tier,
-)
 
 
 def test_tier_rows_partition_the_all_row():

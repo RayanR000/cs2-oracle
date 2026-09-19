@@ -55,11 +55,13 @@ def _capture_rows(results, *, db_columns, today=date(2026, 8, 15)):
         def get_columns(self, name):
             return [{"name": c} for c in db_columns]
 
-    with patch("db.parquet.append_table", side_effect=lambda name, rows, keys: captured.update(rows=rows)):
-        with patch("sqlalchemy.inspect", return_value=_Inspector()):
-            with patch("sqlalchemy.dialects.postgresql.insert") as ins:
-                (ins.return_value.values.return_value.on_conflict_do_update.return_value) = "stmt"
-                _write_forecasts_to_db(_DB(), results, "lgbm-v3", {"ak_1": 1}, today)
+    with (
+        patch("db.parquet.append_table", side_effect=lambda name, rows, keys: captured.update(rows=rows)),
+        patch("sqlalchemy.inspect", return_value=_Inspector()),
+        patch("sqlalchemy.dialects.postgresql.insert") as ins,
+    ):
+        (ins.return_value.values.return_value.on_conflict_do_update.return_value) = "stmt"
+        _write_forecasts_to_db(_DB(), results, "lgbm-v3", {"ak_1": 1}, today)
     return captured["rows"]
 
 

@@ -3,7 +3,7 @@
 
 Pre-registration. The model-free probe
 (`scripts/measure_qhat_bagging_mondrian.py`, 2026-09-13) found Mondrian
--20–26% narrower at matched coverage with the guardrail passing 4/4 — but
+-20-26% narrower at matched coverage with the guardrail passing 4/4 — but
 the shuffled placebo matched it on width, voiding the width bar for the
 third time. The unconfounded contrast (treatment-vs-placebo LM
 sigma-strata err) favoured Mondrian 4/4. This re-runs EXACTLY that
@@ -76,6 +76,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from models import conformal
 from models.forecaster import ItemForecaster, embargo_days
+
 from scripts.archive.measure_qhat_bagging_mondrian import (
     CalibPanel,
     evaluate,
@@ -336,7 +337,7 @@ def main() -> int:
     if args.phase in ("score", "both"):
         rows = []
         for h in horizons:
-            for name, m in score_oof(h, args.workdir, args.test_folds).items():
+            for _name, m in score_oof(h, args.workdir, args.test_folds).items():
                 rows.append(m)
         pd.DataFrame(rows).to_csv(args.out, index=False)
         logger.info("wrote %s", args.out)

@@ -68,7 +68,7 @@ def test_split_refuses_a_fold_too_short_to_hold_anything_out():
 def test_split_refuses_when_the_embargo_eats_the_inner_train():
     """A fold whose inner slice is entirely inside the embargo yields no map,
     rather than one fitted on the handful of rows that survive."""
-    inner, calib = inner_calibration_split(_train_frame(n_dates=12), horizon=30, calib_frac=0.25)
+    inner, _calib = inner_calibration_split(_train_frame(n_dates=12), horizon=30, calib_frac=0.25)
     assert inner is None
 
 

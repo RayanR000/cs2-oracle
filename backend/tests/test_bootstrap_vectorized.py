@@ -7,7 +7,6 @@ Both return (None, None) below their minimum data floors (<10 values,
 """
 
 import numpy as np
-
 from backtest.scoring import block_bootstrap_ci, bootstrap_ci
 
 

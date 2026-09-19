@@ -1,7 +1,7 @@
 """Add anomaly_p to item_forecasts.
 
 `ItemForecast.anomaly_p` is the served anomaly probability — P(|return_h| >
-2σ_item) — emitted by `predict()` when the anomaly GBM head is trained
+2*sigma_item) — emitted by `predict()` when the anomaly GBM head is trained
 (ANOMALY_GBM=1). An alert/flag signal for regime detection, not a band input.
 
 Nullable Float. NULL for rows predating the column and rows from artifacts

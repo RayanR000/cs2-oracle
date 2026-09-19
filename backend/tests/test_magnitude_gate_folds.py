@@ -19,6 +19,8 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts" / "archive"))
 
+import itertools
+
 from magnitude_vs_climatology import _folds
 
 
@@ -47,7 +49,7 @@ class TestNoLeakage:
 
     def test_eval_windows_do_not_overlap(self):
         got = _folds(_dates(300), n_folds=4)
-        for (_, prev_cal, prev_ev), (_, nxt_cal, _) in zip(got, got[1:]):
+        for (_, prev_cal, prev_ev), (_, nxt_cal, _) in itertools.pairwise(got):
             # the next fold's eval starts at its own cal_end, which must be at
             # or after the previous fold's eval end -- windows tile, never overlap
             assert nxt_cal >= prev_ev

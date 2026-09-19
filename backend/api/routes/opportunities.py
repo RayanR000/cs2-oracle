@@ -16,6 +16,8 @@ from api.serving_policy import (
 
 router = APIRouter(prefix="/opportunities", tags=["opportunities"])
 
+_DB_DEP = Depends(get_db)
+
 
 def _build_opportunity(item: Item, forecast: ItemForecast, opp_type: str) -> OpportunityOut:
     current_price = forecast.current_price or 0.0
@@ -98,7 +100,7 @@ def _latest_forecasts(db: Session, horizon_days: int = 7):
 def get_opportunities(
     type: str | None = Query(None),
     limit: int = Query(20, ge=1, le=100),
-    db: Session = Depends(get_db),
+    db: Session = _DB_DEP,
 ):
     return get_or_build(
         f"opportunities:{type or ''}:{limit}",
@@ -183,7 +185,7 @@ def select_momentum(forecasts, items_map, limit):
 def get_undervalued(
     horizon_days: int = Query(7, ge=1, le=30),
     limit: int = Query(10, ge=1, le=100),
-    db: Session = Depends(get_db),
+    db: Session = _DB_DEP,
 ):
     forecasts = _latest_forecasts(db, horizon_days)
     items_map = _load_items([f.item_id for f in forecasts if f.direction is not None], db)
@@ -194,7 +196,7 @@ def get_undervalued(
 def get_overheated(
     horizon_days: int = Query(7, ge=1, le=30),
     limit: int = Query(10, ge=1, le=100),
-    db: Session = Depends(get_db),
+    db: Session = _DB_DEP,
 ):
     forecasts = _latest_forecasts(db, horizon_days)
     items_map = _load_items([f.item_id for f in forecasts if f.direction is not None], db)
@@ -205,7 +207,7 @@ def get_overheated(
 def get_momentum(
     horizon_days: int = Query(7, ge=1, le=30),
     limit: int = Query(10, ge=1, le=100),
-    db: Session = Depends(get_db),
+    db: Session = _DB_DEP,
 ):
     forecasts = _latest_forecasts(db, horizon_days)
     items_map = _load_items([f.item_id for f in forecasts if f.direction is not None], db)

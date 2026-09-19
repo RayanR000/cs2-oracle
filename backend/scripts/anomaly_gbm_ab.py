@@ -1,13 +1,13 @@
 #!/usr/bin/env python3
 """Is the ANOMALY_GBM head better than knowing the item's own anomaly rate?
 
-`ANOMALY_GBM=1` trains a binary head per horizon on P(|return_h| > 2σ of the
+`ANOMALY_GBM=1` trains a binary head per horizon on P(|return_h| > 2sigma of the
 item's trailing 60-day return std) and serves it as `anomaly_p`. The head is
 built, persisted, reloaded and already in the public API schema
 (`api/schemas.py:113`), but it has never been measured and has no tests, so the
 field ships as a permanent null.
 
-The question is not "does the head beat chance" — a 2σ label is roughly 5%
+The question is not "does the head beat chance" — a 2sigma label is roughly 5%
 positive, and almost anything beats chance on AUC when the base rate varies
 across items. The question this project has learned to ask instead
 (`climatology-beats-gbm-band`, `gbm-decorative-on-clean-label`, and the
@@ -60,6 +60,7 @@ import numpy as np
 import pandas as pd
 from database import SessionLocal
 from models.forecaster import ItemForecaster
+
 from scripts.archive.ab_test_item_metadata import (
     ROW_BUDGET,
     STEP_DAYS,
@@ -162,7 +163,7 @@ def run(df, pruned, horizon_filter=None, n_jobs=None, clean_label=False):
             )
 
             base_cols = [c for c in pruned if c in tdf.columns]
-            sub = tdf[["item_id", "date", "price", target_col] + base_cols].copy()
+            sub = tdf[["item_id", "date", "price", target_col, *base_cols]].copy()
 
             dates = sorted(sub["date"].unique())
             split_idx = len(dates) * 2 // 3

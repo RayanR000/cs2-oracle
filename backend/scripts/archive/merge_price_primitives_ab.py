@@ -133,7 +133,7 @@ def main():
             print(f"    {h:>2}d  treatment>baseline {t_b}/{n} folds   treatment>placebo {t_p}/{n} folds")
 
     deltas = []
-    for h, arms in merged.items():
+    for _h, arms in merged.items():
         if "baseline" in arms and "treatment" in arms:
             deltas.append(arms["treatment"]["dir_acc"] - arms["baseline"]["dir_acc"])
     if deltas:

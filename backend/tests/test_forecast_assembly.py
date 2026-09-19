@@ -1,6 +1,5 @@
 import numpy as np
 import pytest
-
 from models.forecast_assembly import assemble_interval, percentage_offsets
 
 
@@ -20,7 +19,6 @@ def test_assemble_rejects_invalid_mid():
 
 def test_assemble_rejects_unordered_offsets():
     import numpy as np
-
     from models.forecast_assembly import assemble_interval
     from models.prediction_contracts import SignedIntervalOffsets
 

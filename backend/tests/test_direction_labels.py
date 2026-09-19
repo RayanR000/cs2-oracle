@@ -91,7 +91,7 @@ def test_fit_classifier_vol_scaling_changes_labels():
     # the number of up/down training labels vs the fixed-0.5% baseline.
     fc = ItemForecaster(db_session=None)
     rng = np.random.RandomState(0)
-    X = pd.DataFrame({"f0": rng.randn(400), "f1": rng.randn(400)})
+    pd.DataFrame({"f0": rng.randn(400), "f1": rng.randn(400)})
     y = rng.randn(400) * 2.0  # returns in percent, spread around 0
     big_sigma = np.full(400, 50.0)  # huge vol -> band hits cap 15% -> most flat
     legacy = fc._direction_classes(y)  # fixed 0.5%

@@ -15,8 +15,8 @@ import lightgbm as lgb
 import numpy as np
 import pandas as pd
 import pytest
-from models.forecaster import SAMPLE_WEIGHT_HALFLIFE_DAYS, ItemForecaster
 from models.direction import recenter_on_momentum
+from models.forecaster import SAMPLE_WEIGHT_HALFLIFE_DAYS, ItemForecaster
 
 # Slow: trains real LightGBM boosters per test (see docs/changelog/2026-09-15-ci-test-gate.md). The fast gate
 # (`pytest -m "not slow"`) skips this file; the nightly full suite covers it.
@@ -41,7 +41,7 @@ def forecaster(tmp_path_factory):
 
 @pytest.fixture
 def basic_price_df():
-    """10 items × 100 days of smooth price data with a known trend."""
+    """10 items x 100 days of smooth price data with a known trend."""
     np.random.seed(42)
     rows = []
     for item_id in range(10):
@@ -142,7 +142,7 @@ class TestFeatureEngineering:
     def test_date_based_lags_are_gap_robust(self, forecaster):
         """Returns must be computed by calendar date, not row position, so a gap
         in an item's series yields NaN (→ neutral) instead of a return that
-        silently spans the hole (the 2026 May–June gap bug)."""
+        silently spans the hole (the 2026 May-June gap bug)."""
         base = date(2026, 1, 1)
         rows = []
         # continuous days 0..19 at price 10, GAP days 20..39, then days 40..49 at price 20
@@ -151,7 +151,9 @@ class TestFeatureEngineering:
                 {"item_id": "a", "date": base + timedelta(days=d), "price": 10.0 if d < 20 else 20.0, "volume": 100}
             )
         df = forecaster._compute_price_features(pd.DataFrame(rows))
-        row = lambda d: df[df["date"] == base + timedelta(days=d)].iloc[0]
+
+        def row(d):
+            return df[df["date"] == base + timedelta(days=d)].iloc[0]
         # day 45: return_14d looks for day 31 (inside the gap) -> NaN, NOT +100%
         assert pd.isna(row(45)["return_14d"])
         # within the post-gap block, day 45 vs day 44 (both present, price 20) -> 0%
@@ -171,7 +173,7 @@ class TestFeatureEngineering:
         """
         base = date(2026, 1, 1)
         # days 0..20 present, 21 and 22 missing, 23 present. price = 10 + d
-        present = list(range(0, 21)) + [23]
+        present = [*list(range(0, 21)), 23]
         rows = [{"item_id": "a", "date": base + timedelta(days=d), "price": 10.0 + d, "volume": 100} for d in present]
         df = forecaster._compute_price_features(pd.DataFrame(rows))
         anchor = df[df["date"] == base + timedelta(days=23)].iloc[0]
@@ -187,7 +189,7 @@ class TestFeatureEngineering:
         rather than fabricating a return that spans the hole."""
         base = date(2026, 1, 1)
         # days 0..20 present, 21..24 missing (4 days), 25 present
-        present = list(range(0, 21)) + [25]
+        present = [*list(range(0, 21)), 25]
         rows = [{"item_id": "a", "date": base + timedelta(days=d), "price": 10.0 + d, "volume": 100} for d in present]
         df = forecaster._compute_price_features(pd.DataFrame(rows))
         anchor = df[df["date"] == base + timedelta(days=25)].iloc[0]
@@ -206,7 +208,7 @@ class TestFeatureEngineering:
             }
         )
         result = forecaster._compute_price_features(df)
-        price_lag_1 = result["price_lag_1d"]
+        _price_lag_1 = result["price_lag_1d"]
         return_1 = result["return_1d"]
         extreme = return_1.abs() > 500
         assert not extreme.any(), f"Returns not winsorized: max={return_1.max():.1f}"
@@ -957,9 +959,8 @@ class TestFeaturePipeline:
                 ]
             )
 
-        with patch.object(forecaster, "fetch_price_history", mock_fetch):
-            with patch.object(forecaster, "fetch_events", mock_events):
-                df = forecaster.build_training_data(days_back=200, backfilled_only=False)
+        with patch.object(forecaster, "fetch_price_history", mock_fetch), patch.object(forecaster, "fetch_events", mock_events):
+            df = forecaster.build_training_data(days_back=200, backfilled_only=False)
 
         # Price/technical categories must be present...
         from models.forecaster import _feature_group
@@ -1045,9 +1046,8 @@ class TestFeaturePipeline:
                 ]
             )
 
-        with patch.object(forecaster, "fetch_price_history", mock_fetch):
-            with patch.object(forecaster, "fetch_events", mock_events):
-                df = forecaster.build_training_data(days_back=200, backfilled_only=False)
+        with patch.object(forecaster, "fetch_price_history", mock_fetch), patch.object(forecaster, "fetch_events", mock_events):
+            _df = forecaster.build_training_data(days_back=200, backfilled_only=False)
 
         n_features = len(forecaster.feature_cols)
         # Lower bound was 45 until 2026-08-06, when the eleven volume features
@@ -1199,7 +1199,7 @@ class TestConformalCalibration:
         n = len(scores)
         q_level = (1.0 - alpha) * (1.0 + 1.0 / n)
         q_hat = float(np.quantile(scores, min(q_level, 0.999)))
-        # With n=10 and α=0.10, q_level = 0.9 * 1.1 = 0.99 → q_hat ≈ 0.99
+        # With n=10 and alpha=0.10, q_level = 0.9 * 1.1 = 0.99 -> q_hat ~ 0.99
         assert q_hat > 0.9
         assert q_hat <= 1.0
 
@@ -1233,14 +1233,13 @@ class TestPredictEdgeCases:
         """predict() should handle empty item list gracefully."""
         with patch.object(
             forecaster, "fetch_price_history", return_value=pd.DataFrame(columns=["item_id", "date", "price", "volume"])
+        ), patch.object(
+            forecaster,
+            "fetch_events",
+            return_value=pd.DataFrame(columns=["id", "type", "timestamp", "description"]),
         ):
-            with patch.object(
-                forecaster,
-                "fetch_events",
-                return_value=pd.DataFrame(columns=["id", "type", "timestamp", "description"]),
-            ):
-                result = forecaster.predict()
-                assert result.empty
+            result = forecaster.predict()
+            assert result.empty
 
     def test_predict_skips_items_with_insufficient_history(self, forecaster):
         """Items with < PREDICT_MIN_HISTORY_DAYS days should be skipped."""
@@ -1256,15 +1255,14 @@ class TestPredictEdgeCases:
                     }
                 )
         price_df = pd.DataFrame(rows)
-        with patch.object(forecaster, "fetch_price_history", return_value=price_df):
-            with patch.object(
-                forecaster,
-                "fetch_events",
-                return_value=pd.DataFrame(columns=["id", "type", "timestamp", "description"]),
-            ):
-                result = forecaster.predict()
-                # Should not crash; may be empty if no models loaded
-                assert isinstance(result, pd.DataFrame)
+        with patch.object(forecaster, "fetch_price_history", return_value=price_df), patch.object(
+            forecaster,
+            "fetch_events",
+            return_value=pd.DataFrame(columns=["id", "type", "timestamp", "description"]),
+        ):
+            result = forecaster.predict()
+            # Should not crash; may be empty if no models loaded
+            assert isinstance(result, pd.DataFrame)
 
     def test_predict_smooths_spike_outlier(self, forecaster):
         """Latest price outlier >10% from 3d median should be smoothed."""
@@ -1283,15 +1281,14 @@ class TestPredictEdgeCases:
         rows[-1] = {**rows[-1], "price": 200.0}
 
         price_df = pd.DataFrame(rows)
-        with patch.object(forecaster, "fetch_price_history", return_value=price_df):
-            with patch.object(
-                forecaster,
-                "fetch_events",
-                return_value=pd.DataFrame(columns=["id", "type", "timestamp", "description"]),
-            ):
-                result = forecaster.predict()
-                # Should not crash
-                assert isinstance(result, pd.DataFrame)
+        with patch.object(forecaster, "fetch_price_history", return_value=price_df), patch.object(
+            forecaster,
+            "fetch_events",
+            return_value=pd.DataFrame(columns=["id", "type", "timestamp", "description"]),
+        ):
+            result = forecaster.predict()
+            # Should not crash
+            assert isinstance(result, pd.DataFrame)
 
 
 # ---------------------------------------------------------------------------
@@ -1433,7 +1430,7 @@ class TestFeatureCache:
 class TestTrainingWindow:
     @pytest.fixture
     def wide_price_df(self):
-        """200 items × 250 days — big enough to trigger subsampling."""
+        """200 items x 250 days - big enough to trigger subsampling."""
         rows = []
         base = date(2025, 1, 1)
         for item_id in range(200):
@@ -1864,7 +1861,7 @@ class TestPredictEnsembleSafe:
         """Regression: build_training_data must NOT drop 2026 rows.
 
         A temporary distribution-shift guard used to exclude all 2026 data
-        while the May–June 2026 archive gap made it sparse. The gap is
+        while the May-June 2026 archive gap made it sparse. The gap is
         backfilled and the guard is removed, so training/CV now cover 2026
         (the current regime). This guards against the guard being
         reintroduced and silently truncating recent data again."""
@@ -1891,9 +1888,8 @@ class TestPredictEnsembleSafe:
         def mock_events(*args, **kwargs):
             return pd.DataFrame(columns=["id", "type", "timestamp", "description", "date"])
 
-        with patch.object(forecaster, "fetch_price_history", mock_fetch):
-            with patch.object(forecaster, "fetch_events", mock_events):
-                df = forecaster.build_training_data(days_back=300, backfilled_only=False)
+        with patch.object(forecaster, "fetch_price_history", mock_fetch), patch.object(forecaster, "fetch_events", mock_events):
+            df = forecaster.build_training_data(days_back=300, backfilled_only=False)
 
         years = pd.DatetimeIndex(df["date"]).year
         assert (years == 2026).any(), "2026 rows must be retained in training data"
@@ -1991,11 +1987,11 @@ class TestForecastBlending:
             "mid_ret": np.array([15.0, 5.0]),
             "high_ret": np.array([15.0, 5.0]),
         }
-        low, mid, high = forecaster._blend_returns_with_prior(current.copy(), current.copy(), current.copy(), prior, w)
+        _low, mid, _high = forecaster._blend_returns_with_prior(current.copy(), current.copy(), current.copy(), prior, w)
         # Blended value lies strictly between current and prior (toward prior).
         assert np.all(mid > current) and np.all(mid < prior["mid_ret"])
         # With weight 0 the prediction is unchanged.
-        low0, mid0, high0 = forecaster._blend_returns_with_prior(
+        _low0, mid0, _high0 = forecaster._blend_returns_with_prior(
             current.copy(), current.copy(), current.copy(), prior, 0.0
         )
         assert np.all(mid0 == current)
@@ -2008,7 +2004,7 @@ class TestForecastBlending:
             "mid_ret": np.full(2, np.nan),
             "high_ret": np.full(2, np.nan),
         }
-        low, mid, high = forecaster._blend_returns_with_prior(
+        _low, mid, _high = forecaster._blend_returns_with_prior(
             current.copy(), current.copy(), current.copy(), prior, 0.15
         )
         assert np.all(mid == current)
@@ -2136,9 +2132,8 @@ class TestRegimeSwitching:
                 ]
             )
 
-        with patch.object(forecaster, "fetch_price_history", mock_fetch):
-            with patch.object(forecaster, "fetch_events", mock_events):
-                df = forecaster.build_training_data(days_back=200, backfilled_only=False)
+        with patch.object(forecaster, "fetch_price_history", mock_fetch), patch.object(forecaster, "fetch_events", mock_events):
+            df = forecaster.build_training_data(days_back=200, backfilled_only=False)
 
         # Simulate the train() flow: prepare targets and check _regime column
         for h in forecaster.HORIZONS:
@@ -2197,17 +2192,20 @@ class TestRegimeSwitching:
                 ]
             )
 
-        with patch.object(f, "fetch_price_history", mock_fetch), patch.object(f, "fetch_events", mock_events):
-            with patch.object(
+        with (
+            patch.object(f, "fetch_price_history", mock_fetch),
+            patch.object(f, "fetch_events", mock_events),
+            patch.object(
                 f,
                 "_fetch_supply_metadata",
                 return_value=pd.DataFrame(columns=["item_id", "rarity", "rarity_rank", "weapon_type"]),
-            ):
-                with patch.object(
-                    f, "_fetch_item_metadata", return_value=pd.DataFrame(columns=["item_id", "name", "type"])
-                ):
-                    with patch.dict("os.environ", {"SKIP_CV": "1", "FORCE_HP_SEARCH": "1"}):
-                        f.train(max_rows=100_000)
+            ),
+            patch.object(
+                f, "_fetch_item_metadata", return_value=pd.DataFrame(columns=["item_id", "name", "type"])
+            ),
+            patch.dict("os.environ", {"SKIP_CV": "1", "FORCE_HP_SEARCH": "1"}),
+        ):
+            f.train(max_rows=100_000)
 
         # Should have global models for all horizons and quantiles
         for h in f.HORIZONS:
@@ -2216,7 +2214,7 @@ class TestRegimeSwitching:
 
         # Should have at least some regime models (likely range with 300 days of data)
         if f.regime_models:
-            regimes_trained = set(r for (r, h, q) in f.regime_models.keys())
+            regimes_trained = set(r for (r, h, q) in f.regime_models)
             for regime in regimes_trained:
                 for h in f.HORIZONS:
                     for q in f.QUANTILES:
@@ -2228,16 +2226,15 @@ class TestRegimeSwitching:
         """When no regime models exist, predict should use global models."""
         with patch.object(
             forecaster, "fetch_price_history", return_value=pd.DataFrame(columns=["item_id", "date", "price", "volume"])
+        ), patch.object(
+            forecaster,
+            "fetch_events",
+            return_value=pd.DataFrame(columns=["id", "type", "timestamp", "description"]),
         ):
-            with patch.object(
-                forecaster,
-                "fetch_events",
-                return_value=pd.DataFrame(columns=["id", "type", "timestamp", "description"]),
-            ):
-                # No regime models loaded, should use global (which are also empty)
-                result = forecaster.predict()
-                assert isinstance(result, pd.DataFrame)
-                assert result.empty
+            # No regime models loaded, should use global (which are also empty)
+            result = forecaster.predict()
+            assert isinstance(result, pd.DataFrame)
+            assert result.empty
 
     def test_regime_models_save_and_load(self, forecaster, tmp_path):
         """Regime-specific models should round-trip through save/load."""

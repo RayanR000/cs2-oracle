@@ -1,6 +1,5 @@
 import numpy as np
 import pytest
-
 from models.prediction_contracts import CentrePrediction, RankingPrediction, SignedIntervalOffsets
 
 

@@ -2,7 +2,7 @@
 
 The anomaly head has shipped in the API schema as `anomaly_p` since before it
 was ever measured, and until 2026-09-09 nothing tested the label it trains on.
-The property that matters is that the 2σ threshold is knowable at the row's own
+The property that matters is that the 2-sigma threshold is knowable at the row's own
 date — the original definition normalised by trailing `target_return_{h}d`,
 each of which resolves h days later. See
 `docs/changelog/2026-09-09-anomaly-head-beats-its-null.md`.

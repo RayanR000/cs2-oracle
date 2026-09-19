@@ -26,9 +26,11 @@ import pandas as pd
 # Reuse the real-booster fixture and the predict driver from the anchor-gate
 # suite: the same two-feature forecaster is all this plumbing needs to travel
 # through.
-from tests.test_clean_anchor_gate import (  # noqa: F401
+from tests.test_clean_anchor_gate import (
     _predict,
-    forecaster_with_models,
+)
+from tests.test_clean_anchor_gate import (
+    forecaster_with_models as forecaster_with_models,
 )
 
 # ------------------------------------------------------- what predict computes
@@ -86,11 +88,13 @@ def _write_and_capture_forecast_date(results, *, today, override=None):
         def get_columns(self, name):
             return [{"name": c} for c in db_columns]
 
-    with patch("db.parquet.append_table", side_effect=lambda name, rows, keys: captured.update(rows=rows)):
-        with patch("sqlalchemy.inspect", return_value=_Inspector()):
-            with patch("sqlalchemy.dialects.postgresql.insert") as ins:
-                (ins.return_value.values.return_value.on_conflict_do_update.return_value) = "stmt"
-                _write_forecasts_to_db(_DB(), results, "lgbm-v3", {"ak_1": 1}, today, forecast_date_override=override)
+    with (
+        patch("db.parquet.append_table", side_effect=lambda name, rows, keys: captured.update(rows=rows)),
+        patch("sqlalchemy.inspect", return_value=_Inspector()),
+        patch("sqlalchemy.dialects.postgresql.insert") as ins,
+    ):
+        (ins.return_value.values.return_value.on_conflict_do_update.return_value) = "stmt"
+        _write_forecasts_to_db(_DB(), results, "lgbm-v3", {"ak_1": 1}, today, forecast_date_override=override)
     return captured["rows"][0]["forecast_date"]
 
 
