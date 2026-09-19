@@ -455,6 +455,49 @@ def _write_forecasts_to_db(
     return len(forecast_rows)
 
 
+def _write_shadow_candidates(db, forecaster, slug_to_id, forecast_date_override=None):
+    """Persist pending shadow candidates after the production write.
+
+    Slugs are remapped to integer item ids; unknown slugs are skipped like
+    production. A FORECAST_DATE_OVERRIDE relabels records to the stored
+    production label. Integrity conflicts propagate (failing the run after
+    the production write); transient DB failures log inside the store and
+    leave batches absent for retry. Returns
+    (centre_written, ranking_written, batches_expected, batches_written).
+    """
+    from dataclasses import replace
+
+    from db.candidate_store import write_candidate_batches
+
+    pending = list(getattr(forecaster, "pending_candidates", None) or [])
+    if not pending:
+        return 0, 0, 0, 0
+    remapped = []
+    for record in pending:
+        item_id = slug_to_id.get(str(record.item_id))
+        if item_id is None:
+            logger.warning(f"  Skipping shadow candidate for unknown slug: {record.item_id}")
+            continue
+        if forecast_date_override is not None and record.forecast_date != forecast_date_override:
+            record = replace(record, forecast_date=forecast_date_override)
+        if item_id != record.item_id:
+            record = replace(record, item_id=item_id)
+        remapped.append(record)
+    if not remapped:
+        return 0, 0, 0, 0
+    result = write_candidate_batches(db, remapped)
+    logger.info(
+        f"Wrote {result.centre_written} centre + {result.ranking_written} ranking shadow candidates "
+        f"({result.batches_written}/{result.batches_expected} batches)"
+    )
+    return (
+        result.centre_written,
+        result.ranking_written,
+        result.batches_expected,
+        result.batches_written,
+    )
+
+
 def run_forecast(
     train_only: bool = False,
     predict_only: bool = False,
@@ -629,6 +672,13 @@ def run_forecast(
             db, results, MODEL_VERSION, slug_to_id, today, model_config=config_a, forecast_date_override=override_date
         )
         logger.info(f"Wrote {n_regime} forecasts ({config_a} config) to item_forecasts table")
+        # Shadows describe the stored production rows. In compare mode Run B
+        # overwrites Run A on the (item, date, horizon) key, so only Run B's
+        # shadows are persisted — alongside Run B's production write below.
+        if compare_regime:
+            shadow_counts = (0, 0, 0, 0)
+        else:
+            shadow_counts = _write_shadow_candidates(db, forecaster, slug_to_id, override_date)
 
         # Update bias corrections from outcomes if requested
         if update_bias:
@@ -658,6 +708,7 @@ def run_forecast(
                 forecast_date_override=override_date,
             )
             logger.info(f"Wrote {n_global} forecasts (global-only config) to item_forecasts table")
+            shadow_counts = _write_shadow_candidates(db, forecaster, slug_to_id, override_date)
 
             # Run backtest on both configs. They no longer score as separate
             # cohorts, and they never were separate rows: the second write
@@ -681,6 +732,11 @@ def run_forecast(
                 "forecasts_regime": n_regime,
                 "items_global": len(results_global),
                 "forecasts_global": n_global,
+                "forecasts_written": n_global,
+                "centre_candidates_written": shadow_counts[0],
+                "ranking_candidates_written": shadow_counts[1],
+                "candidate_batches_expected": shadow_counts[2],
+                "candidate_batches_written": shadow_counts[3],
                 "backtest_records": len(bt_results or []),
                 "model_version": MODEL_VERSION,
                 "model_config_a": config_a,
@@ -691,6 +747,11 @@ def run_forecast(
             "status": "success",
             "items": len(results),
             "forecasts": n_regime,
+            "forecasts_written": n_regime,
+            "centre_candidates_written": shadow_counts[0],
+            "ranking_candidates_written": shadow_counts[1],
+            "candidate_batches_expected": shadow_counts[2],
+            "candidate_batches_written": shadow_counts[3],
             "model_version": MODEL_VERSION,
             "model_config": config_a,
         }

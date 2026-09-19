@@ -34,6 +34,8 @@ from backtest.scoring import HEADLINE_MIN_TIER, MIN_HEADLINE_DATES, price_tier
 from sqlalchemy import text
 
 from models import conformal, direction, mlflow_utils, scale_model, served_recalibration
+from models.candidate_predictions import apply_centre_policy
+from models import centre_policy
 from models.direction import DIRECTION_FLAT_TOLERANCE_PCT as DIRECTION_FLAT_TOLERANCE_PCT
 from models.item_parser import (
     BID_SOURCES,
@@ -1097,6 +1099,11 @@ class ItemForecaster:
         self.exceedance_calibration_meta: dict[int, dict[str, Any]] = {}
         self.anomaly_models: dict[int, lgb.Booster | None] = {}
         self.ranking_models: dict[int, lgb.Booster | None] = {}
+        # Exact shadow predictions captured by the latest predict() call:
+        # centre challengers plus LambdaRank scores, keyed for
+        # db/candidate_store.py. Transient — never mirrored to public
+        # outputs, cleared at the start of every predict().
+        self.pending_candidates: list = []
         self.vol_rank_models: dict[int, list[lgb.Booster]] = {}
         self.vol_rank_norm: dict[int, float] = {}
         self.regime_feature_cols: dict[tuple[int, str], list[str]] = {}
@@ -9505,8 +9512,66 @@ class ItemForecaster:
         logger.info(f"  Chunked engineering complete: {len(df):,} tail rows retained")
         return df
 
+    def _require_centre_artifacts(self) -> None:
+        """Verify every configured learned champion has a matching artifact.
+
+        Featureless last_price requires no artifact. An empty model dir is
+        the retrain path, not an error. Missing ranking artifacts disable
+        only the ranking shadow (they produce no rank_score to capture).
+        """
+        if not self.models:
+            return
+        missing = [
+            h
+            for h in self.HORIZONS
+            if centre_policy.centre_champion(h) == "gbm_q50"
+            and not any(h2 == h and q == 0.5 for (h2, q) in self.models)
+        ]
+        if missing:
+            raise IncompatibleModelArtifact(
+                f"centre champion gbm_q50 has no q50 artifact at horizons {missing} "
+                f"in {self.model_dir}; retrain, or match the flag."
+            )
+
+    def _capture_shadow_candidates(self, result_df: pd.DataFrame) -> tuple[pd.DataFrame, list]:
+        """Apply the centre policy: public triples follow the champion.
+
+        Returns (public_df, shadow_records). Per-horizon build failures are
+        logged inside apply_centre_policy and omit that batch only — shadow
+        loss never fails production.
+        """
+        offsets: dict[int, list[float]] = {}
+        for horizon in self.HORIZONS:
+            try:
+                lo, hi = self.band_offsets(horizon)
+                offsets[horizon] = [float(lo), float(hi)]
+            except Exception:
+                continue
+        cutoff = None
+        if "generated_at" in result_df.columns:
+            for value in result_df["generated_at"].tolist():
+                if value is not None:
+                    cutoff = value
+                    break
+        if cutoff is None:
+            cutoff = self._now()
+        if getattr(cutoff, "tzinfo", None) is not None:
+            try:
+                cutoff = cutoff.tz_localize(None)  # pandas Timestamp
+            except (AttributeError, TypeError):
+                cutoff = cutoff.replace(tzinfo=None)  # datetime
+        return apply_centre_policy(
+            result_df,
+            horizons=[h for h in self.HORIZONS],
+            artifact_version=str(self.MODEL_ARTIFACT_VERSION),
+            feature_cutoff_at=cutoff,
+            feedback_factors=dict(self.served_coverage_factor),
+            interval_offsets=offsets,
+        )
+
     def predict(self, item_ids: list[int] = None) -> pd.DataFrame:
         logger.info("Generating forecasts...")
+        self.pending_candidates = []
 
         # Live-refresh the served-coverage feedback factor from the panel if the
         # artifact's factor is empty (pre-gate-change artifact) and a DB session
@@ -10009,6 +10074,15 @@ class ItemForecaster:
         result_df = pd.DataFrame([r for r in agg.values() if r["forecasts"]])
         if not result_df.empty:
             result_df = self._sanitize_forecasts(result_df)
+
+        # Shadow candidates for the champion-challenger evidence reports.
+        # Production-first: capture failures log and serve production only.
+        if not result_df.empty:
+            try:
+                result_df, self.pending_candidates = self._capture_shadow_candidates(result_df)
+            except Exception as e:
+                logger.warning("  Shadow candidate capture failed (%s); serving production only.", e)
+                self.pending_candidates = []
 
         total_used = regime_count + global_count
         if total_used > 0:
@@ -11328,6 +11402,20 @@ class ItemForecaster:
             "ensemble_seeds": self.ENSEMBLE_SEEDS,
             "ensemble_feature_fractions": self.ENSEMBLE_FEATURE_FRACTIONS,
             "centre_objective": {str(h): CENTRE_OBJECTIVE_MAP.get(h, "quantile") for h in self.HORIZONS},
+            # Component manifest: descriptive, never authoritative. Code
+            # configuration selects champions; on load a GBM champion
+            # requires its q50 artifact (see _require_centre_artifacts).
+            "components": {
+                "centre": {"gbm_q50": self.MODEL_ARTIFACT_VERSION},
+                "interval": {"signed_conformal_climatology": self.MODEL_ARTIFACT_VERSION},
+                "anomaly": {"anomaly_gbm_v1": self.MODEL_ARTIFACT_VERSION} if self.anomaly_models else {},
+                "exceedance": {"exceedance_gbm_v1": self.MODEL_ARTIFACT_VERSION}
+                if self.exceedance_models
+                else {},
+                "ranking": {"lambdarank_v1": self.MODEL_ARTIFACT_VERSION} if self.ranking_models else {},
+                "direction": {},
+            },
+            "centre_champions": {str(h): centre_policy.centre_champion(h) for h in self.HORIZONS},
             "training_window_days": 1460,
             "feature_importance": feature_importance,
             "cv_results": cv_serial,
@@ -11571,6 +11659,11 @@ class ItemForecaster:
                         self.models[(horizon, q)] = lgb.Booster(model_file=path)
                     except (lgb.basic.LightGBMError, Exception) as e:
                         logger.warning(f"  Corrupt model {path}, skipping: {e}")
+
+        # A configured learned centre champion must have its artifact. Raises
+        # IncompatibleModelArtifact before anything serves from a mismatched
+        # pairing; an empty dir returns False below via the retrain path.
+        self._require_centre_artifacts()
 
         # Load regime-specific models
         trained_regimes = meta.get("trained_regimes", [])
