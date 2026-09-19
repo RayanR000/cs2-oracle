@@ -42,6 +42,9 @@ probabilistic = [
 torch = [
     "torch>=2.0.0",
 ]
+probabilistic = [
+    "mapie>=0.9",
+]
 dev = [
     "pytest>=7.0",
     "ruff>=0.11.0",
