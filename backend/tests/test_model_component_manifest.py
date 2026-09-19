@@ -20,7 +20,7 @@ def test_manifest_present_after_save(tmp_path):
     f = _forecaster(tmp_path)
     f.save_models()
     meta = json.loads((tmp_path / "meta.json").read_text())
-    assert set(meta["components"]) == {"centre", "interval", "anomaly", "exceedance", "ranking", "direction"}
+    assert set(meta["components"]) == {"centre", "interval", "anomaly", "exceedance", "ranking", "direction", "ngboost"}
     assert meta["components"]["centre"] == {"gbm_q50": f.MODEL_ARTIFACT_VERSION}
     assert meta["components"]["direction"] == {}
     assert meta["centre_champions"] == {"3": "gbm_q50", "7": "gbm_q50", "14": "gbm_q50", "30": "gbm_q50"}

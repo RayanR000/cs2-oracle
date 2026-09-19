@@ -2,6 +2,9 @@
 
 import numpy as np
 import pandas as pd
+import pytest
+
+evidently = pytest.importorskip("evidently", reason="evidently not installed")
 
 
 class TestDriftDetection:

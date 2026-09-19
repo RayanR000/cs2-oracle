@@ -2262,6 +2262,21 @@ def _run_with_real_mirror(session, archive, monkeypatch, today=EVAL_DATE, **kwar
         return real_loader(archive, slugs, min_date, max_date, **kw)
 
     monkeypatch.setattr(backtest_accuracy, "load_voted_prices", loader)
+
+    real_max_day = price_resolution.archive_max_day
+
+    def max_day(archive_dir):
+        return real_max_day(archive)
+
+    monkeypatch.setattr(backtest_accuracy, "archive_max_day", max_day)
+
+    real_covered_days = price_resolution.archive_covered_days
+
+    def covered_days(archive_dir):
+        return real_covered_days(archive)
+
+    monkeypatch.setattr(backtest_accuracy, "archive_covered_days", covered_days)
+
     return backtest_accuracy.backtest_forecasts(session, today=today, **kwargs)
 
 
