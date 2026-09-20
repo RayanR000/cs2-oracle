@@ -14,7 +14,7 @@ which is why ``item_forecasts.current_price`` and the archive-resolved
 
 from __future__ import annotations
 
-from datetime import date
+from datetime import date, timedelta
 
 import pandas as pd
 import pytest
@@ -43,11 +43,11 @@ class TestAnchorRespectsTheSpanBound:
 
     def test_observations_beyond_the_span_are_excluded(self):
         """The regression. Two stale prices must not vote on today's anchor."""
-        stale = ANCHOR - pd.Timedelta(days=MAX_WINDOW_SPAN_DAYS + 10)
+        stale = ANCHOR - timedelta(days=MAX_WINDOW_SPAN_DAYS + 10)
         df = _frame(
             [
                 ("ak", stale.date(), 100.0),
-                ("ak", (stale + pd.Timedelta(days=1)).date(), 100.0),
+                ("ak", (stale + timedelta(days=1)).date(), 100.0),
                 ("ak", date(2026, 7, 17), 10.0),
             ]
         )
@@ -57,7 +57,7 @@ class TestAnchorRespectsTheSpanBound:
 
     def test_a_single_in_window_observation_is_used_unsmoothed(self):
         """Serving cannot drop items, so a thin window degrades to no smoothing."""
-        stale = ANCHOR - pd.Timedelta(days=MAX_WINDOW_SPAN_DAYS + 5)
+        stale = ANCHOR - timedelta(days=MAX_WINDOW_SPAN_DAYS + 5)
         df = _frame(
             [
                 ("ak", stale.date(), 99.0),
@@ -69,11 +69,11 @@ class TestAnchorRespectsTheSpanBound:
 
     def test_item_with_nothing_in_window_falls_back_to_its_latest(self):
         """Degrade, never drop: the item still gets a forecast."""
-        stale = ANCHOR - pd.Timedelta(days=MAX_WINDOW_SPAN_DAYS + 30)
+        stale = ANCHOR - timedelta(days=MAX_WINDOW_SPAN_DAYS + 30)
         df = _frame(
             [
                 ("ak", stale.date(), 42.0),
-                ("ak", (stale + pd.Timedelta(days=2)).date(), 44.0),
+                ("ak", (stale + timedelta(days=2)).date(), 44.0),
             ]
         )
         out = ItemForecaster._smoothed_anchor_prices(df, ANCHOR)
@@ -94,7 +94,7 @@ class TestAnchorRespectsTheSpanBound:
         assert out["ak"] == pytest.approx(6.0)
 
     def test_items_are_smoothed_independently(self):
-        stale = ANCHOR - pd.Timedelta(days=MAX_WINDOW_SPAN_DAYS + 3)
+        stale = ANCHOR - timedelta(days=MAX_WINDOW_SPAN_DAYS + 3)
         df = _frame(
             [
                 ("ak", date(2026, 7, 16), 10.0),

@@ -16,7 +16,7 @@ def _make_normal_prices(n_items: int = 50, n_days: int = 30) -> pd.DataFrame:
         slug = f"item_{item_idx}"
         price = 10.0 + item_idx * 2
         for day_idx in range(n_days):
-            day = pd.Timestamp("2026-01-01") + pd.Timedelta(days=day_idx)
+            day = pd.Timestamp("2026-01-01") + pd.to_timedelta(day_idx, unit="D")
             # Random walk with ~2% daily vol
             price = price * (1 + rng.normal(0, 0.02))
             rows.append(
@@ -37,7 +37,7 @@ def _make_frozen_prices(n_items: int = 50, n_days: int = 10) -> pd.DataFrame:
         slug = f"item_{item_idx}"
         price = 10.0 + item_idx
         for day_idx in range(n_days):
-            day = pd.Timestamp("2026-06-01") + pd.Timedelta(days=day_idx)
+            day = pd.Timestamp("2026-06-01") + pd.to_timedelta(day_idx, unit="D")
             # Price never changes
             rows.append(
                 {

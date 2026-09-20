@@ -86,7 +86,7 @@ def main() -> None:
     tdf = forecaster.prepare_targets(df, horizon).sort_values("date")
     dates = sorted(pd.to_datetime(tdf["date"].unique()))
     cut = dates[int(len(dates) * 0.7)]
-    holdout_start = cut + pd.Timedelta(days=embargo)
+    holdout_start = cut + pd.to_timedelta(int(embargo), unit="D")
     train_df = tdf[pd.to_datetime(tdf["date"]) < cut]
     hold_df = tdf[pd.to_datetime(tdf["date"]) >= holdout_start]
     logger.info(

@@ -213,7 +213,7 @@ def load_voted_prices(
         price_files(archive_dir)
         return pd.DataFrame(columns=["item_id", "date", "price"])
 
-    lookback_start = min_date - pd.Timedelta(days=max_span_days)
+    lookback_start = min_date - pd.to_timedelta(int(max_span_days), unit="D")
 
     con = duckdb.connect()
     try:

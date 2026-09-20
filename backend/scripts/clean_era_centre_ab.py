@@ -221,14 +221,14 @@ def fold_boundaries(dates):
     out = []
     b = pd.Timestamp(start)
     while True:
-        window = [d for d in dates if b <= d < b + pd.Timedelta(days=VAL_WINDOW_DAYS)]
+        window = [d for d in dates if b <= d < b + pd.to_timedelta(VAL_WINDOW_DAYS, unit="D")]
         if len(window) < 7:
-            if b + pd.Timedelta(days=VAL_WINDOW_DAYS) > last + pd.Timedelta(days=1):
+            if b + pd.to_timedelta(VAL_WINDOW_DAYS, unit="D") > last + pd.to_timedelta(1, unit="D"):
                 break
-            b += pd.Timedelta(days=STEP_DAYS)
+            b += pd.to_timedelta(STEP_DAYS, unit="D")
             continue
         out.append(b)
-        b += pd.Timedelta(days=STEP_DAYS)
+        b += pd.to_timedelta(STEP_DAYS, unit="D")
         if b > last:
             break
     return out
@@ -357,7 +357,7 @@ def run(df, features, horizon_filter=None, max_folds=None, n_jobs=None):
             fold_gain = []
             n_folds = 0
             for fold_idx, b in enumerate(bounds):
-                b_end = b + pd.Timedelta(days=VAL_WINDOW_DAYS)
+                b_end = b + pd.to_timedelta(VAL_WINDOW_DAYS, unit="D")
                 in_fit = sub_days < b.to_numpy()
                 in_val = (sub_days >= b.to_numpy()) & (sub_days < b_end.to_numpy())
                 fit = ItemForecaster._purge_overlapping_train_rows(sub[in_fit & is_train_item], b, horizon)

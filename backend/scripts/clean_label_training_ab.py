@@ -80,7 +80,7 @@ def _filter_fit(fit_df, arm, fold_boundary_date):
         mask = (dates >= pd.Timestamp(CLEAN_2025_START)) & (dates <= pd.Timestamp(CLEAN_2025_END))
         return fit_df[mask]
     if arm == "recent_1yr":
-        cutoff = pd.Timestamp(fold_boundary_date) - pd.Timedelta(days=365)
+        cutoff = pd.Timestamp(fold_boundary_date) - pd.to_timedelta(365, unit="D")
         return fit_df[dates >= cutoff]
     raise ValueError(f"unknown arm {arm}")
 

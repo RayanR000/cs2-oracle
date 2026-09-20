@@ -169,7 +169,7 @@ def _load_archive(start: str, served_only: bool = False, label: str = "voted") -
 def _forward_return_pct(df: pd.DataFrame, horizon: int) -> pd.Series:
     """(price[date+h]/price[date] - 1)*100 by exact calendar-date lookup."""
     future = df[["item_id", "date", "price"]].copy()
-    future["date"] = future["date"] - pd.Timedelta(days=horizon)
+    future["date"] = future["date"] - pd.to_timedelta(int(horizon), unit="D")
     future = future.rename(columns={"price": "price_fwd"})
     merged = df[["item_id", "date", "price"]].merge(future, on=["item_id", "date"], how="left")
     with np.errstate(divide="ignore", invalid="ignore"):

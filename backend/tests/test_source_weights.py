@@ -23,7 +23,7 @@ def _make_archive(n_items: int = 5, n_days: int = 10, sources=None):
         slug = f"item_{item_idx}"
         base_price = 10.0 * (item_idx + 1)
         for day_idx in range(n_days):
-            day = pd.Timestamp("2026-01-01") + pd.Timedelta(days=day_idx)
+            day = pd.Timestamp("2026-01-01") + pd.to_timedelta(day_idx, unit="D")
             for src in sources:
                 price = base_price + rng.normal(0, base_price * 0.05)
                 rows.append(
@@ -120,7 +120,7 @@ class TestHigherErrorGetsLowerWeight:
         # Use 3 good sources + 1 bad source so median is anchored by the good ones
         good_sources = ["good_a", "good_b", "good_c"]
         for day_idx in range(200):
-            day = pd.Timestamp("2026-01-01") + pd.Timedelta(days=day_idx)
+            day = pd.Timestamp("2026-01-01") + pd.to_timedelta(day_idx, unit="D")
             for item_idx in range(30):
                 slug = f"item_{item_idx}"
                 base = 50.0 + item_idx

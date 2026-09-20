@@ -5093,7 +5093,7 @@ class ItemForecaster:
         d["date"] = pd.to_datetime(d["date"])
         d = d.groupby(["item_id", "date"], as_index=False)["price"].mean()
         prev = d.copy()
-        prev["date"] = prev["date"] + pd.Timedelta(days=1)
+        prev["date"] = prev["date"] + pd.to_timedelta(1, unit="D")
         merged = d.merge(prev, on=["item_id", "date"], suffixes=("", "_prev"))
         if merged.empty:
             return frozenset()
@@ -5140,7 +5140,7 @@ class ItemForecaster:
         # date=Jan 8 with price=P becomes target=P for the row at date=Jan 1.
         future = df[["item_id", "_date_dt", "price"]].copy()
         future.columns = ["item_id", "date", f"target_{horizon}d"]
-        future["date"] = future["date"] - pd.Timedelta(days=horizon)
+        future["date"] = future["date"] - pd.to_timedelta(int(horizon), unit="D")
         future["date"] = future["date"].dt.date
 
         df = df.merge(future, on=["item_id", "date"], how="left")

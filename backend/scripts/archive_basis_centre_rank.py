@@ -173,8 +173,8 @@ def load_voted(slugs, day_min, day_max, archive_dir):
     try:
         rel = prices_relation(con, archive_dir=str(archive_dir))
         uni = archive_universe_sql_filter()
-        lo = (pd.Timestamp(day_min) - pd.Timedelta(days=5)).date()
-        hi = (pd.Timestamp(day_max) + pd.Timedelta(days=HORIZON + ANCHOR_TOL_DAYS)).date()
+        lo = (pd.Timestamp(day_min) - pd.to_timedelta(5, unit="D")).date()
+        hi = (pd.Timestamp(day_max) + pd.to_timedelta(int(HORIZON + ANCHOR_TOL_DAYS), unit="D")).date()
         placeholders = ", ".join("?" for _ in slugs)
         frame = con.sql(
             f"""

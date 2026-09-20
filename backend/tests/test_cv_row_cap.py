@@ -48,7 +48,7 @@ def _frame(n_items=40, n_dates=120, horizon=3, seed=7):
             rows.append(
                 {
                     "item_id": f"item-{item}",
-                    "date": start + pd.Timedelta(days=d),
+                    "date": start + pd.to_timedelta(d, unit="D"),
                     # _cv_evaluate_horizon reads val_df["price"] to build the
                     # conformal records; it is not a feature.
                     "price": 10.0 + rng.normal(scale=0.5),

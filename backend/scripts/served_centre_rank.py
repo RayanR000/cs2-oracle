@@ -170,7 +170,7 @@ def load_naive_returns(slugs, day_min, day_max, archive_dir):
     try:
         rel = prices_relation(con, archive_dir=archive_dir)
         uni = archive_universe_sql_filter()
-        lo = (pd.Timestamp(day_min) - pd.Timedelta(days=3)).date()
+        lo = (pd.Timestamp(day_min) - pd.to_timedelta(3, unit="D")).date()
         placeholders = ", ".join("?" for _ in slugs)
         frame = con.sql(
             f"""

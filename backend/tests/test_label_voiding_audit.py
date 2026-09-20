@@ -13,6 +13,7 @@ real crash.
 
 from __future__ import annotations
 
+from datetime import timedelta
 from unittest.mock import MagicMock
 
 import pandas as pd
@@ -48,7 +49,7 @@ def _frame_with_a_cutover(n_items=60, n_dates=40, cutover_at=20):
                     # normalised to python `date` (see its `.dt.date` cast); a
                     # datetime64 column here trips a pandas dtype-mismatch merge
                     # error, not label-voiding logic, so match that convention.
-                    "date": (start + pd.Timedelta(days=d)).date(),
+                    "date": (start + timedelta(days=d)).date(),
                     "price": 10.0 + item * 0.01 + d * 1e-6,
                 }
             )
@@ -72,7 +73,7 @@ def _frame_with_flat_prices(n_items=60, n_dates=40):
             rows.append(
                 {
                     "item_id": f"item-{item}",
-                    "date": (start + pd.Timedelta(days=d)).date(),
+                    "date": (start + timedelta(days=d)).date(),
                     "price": 10.0 + item * 0.01,
                 }
             )
@@ -139,7 +140,7 @@ def _frame_with_one_frozen_item(n_items=60, n_dates=40, frozen_item=0):
             rows.append(
                 {
                     "item_id": f"item-{item}",
-                    "date": (start + pd.Timedelta(days=d)).date(),
+                    "date": (start + timedelta(days=d)).date(),
                     "price": price,
                 }
             )

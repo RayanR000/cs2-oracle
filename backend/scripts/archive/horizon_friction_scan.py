@@ -97,7 +97,7 @@ def _load_voted(days_back: int, min_price: float) -> pd.DataFrame:
     con = duckdb.connect()
     try:
         rel = prices_relation(con, columns=["item_slug", "day", "mean_price", "volume", "source"])
-        cutoff = (pd.Timestamp.utcnow().tz_localize(None) - pd.Timedelta(days=days_back)).strftime("%Y-%m-%d")
+        cutoff = (pd.Timestamp.utcnow().tz_localize(None) - pd.to_timedelta(int(days_back), unit="D")).strftime("%Y-%m-%d")
         df = con.sql(f"""
             SELECT item_slug AS item_id, day AS timestamp,
                    mean_price AS price, volume, source

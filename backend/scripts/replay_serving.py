@@ -320,7 +320,7 @@ def _resolve(outcomes: pd.DataFrame, target: date, tolerance=OUTCOME_TOLERANCE_D
     # within a span BEFORE the anchor, and a centred window here would resolve
     # h=3 over [anchor, anchor+6] -- pulling the anchor's own price into its
     # own outcome and shrinking every return toward zero.
-    lo = t - pd.Timedelta(days=int(tolerance) + 1)
+    lo = t - pd.to_timedelta(int(tolerance) + 1, unit="D")
     if after is not None:
         # STRICTLY after the anchor. At h=3 a 4-day trailing window reaches
         # back over the anchor itself, so an item's outcome contains the very
@@ -353,7 +353,7 @@ def _naive_baseline(fc: ItemForecaster, outcomes: pd.DataFrame, anchor: date):
     """
     hist = outcomes.rename(columns={"day": "date"})
     t_now = pd.Timestamp(anchor)
-    t_prev = t_now - pd.Timedelta(days=1)
+    t_prev = t_now - pd.to_timedelta(1, unit="D")
     # Truncate before each call, don't lean on the anchor argument: an item
     # with nothing inside the span window falls back to `last()` over the WHOLE
     # frame, which here reaches past the anchor into the outcome.

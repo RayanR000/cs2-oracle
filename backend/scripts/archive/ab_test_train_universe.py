@@ -201,7 +201,7 @@ def _fold_cutoffs(con, relation, horizon):
         val_dates = dates[we : we + VAL_WINDOW_DAYS]
         if len(val_dates) < 7:
             continue
-        out.append(pd.Timestamp(val_dates[0]) - pd.Timedelta(days=embargo_days(horizon)))
+        out.append(pd.Timestamp(val_dates[0]) - pd.to_timedelta(int(embargo_days(horizon)), unit="D"))
     return dates, out
 
 
@@ -481,7 +481,7 @@ def run(df, pruned, horizon, n_jobs):
         if len(val_dates) < 7:
             continue
         val_start = val_dates[0]
-        cutoff = pd.Timestamp(val_start) - pd.Timedelta(days=embargo_days(horizon))
+        cutoff = pd.Timestamp(val_start) - pd.to_timedelta(int(embargo_days(horizon)), unit="D")
 
         # The selection statistic is a function of prices, so it is computed on
         # the embargoed cutoff, never on val_start.
