@@ -1,8 +1,6 @@
 """Tests for Adaptive Conformal Inference (ACI) — calibrate_adaptive and update_adaptive."""
 
 import numpy as np
-import pytest
-
 from models.conformal import calibrate_adaptive, update_adaptive
 
 

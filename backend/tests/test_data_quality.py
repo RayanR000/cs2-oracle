@@ -4,7 +4,6 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 import pytest
-
 from models.data_quality import compute_date_features, fit_quality_model, score_dates
 
 

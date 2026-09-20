@@ -3,8 +3,6 @@ from __future__ import annotations
 
 import numpy as np
 import pandas as pd
-import pytest
-
 from models.source_weight_model import (
     DEFAULT_WEIGHTS,
     build_training_data,
