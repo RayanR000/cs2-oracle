@@ -52,7 +52,7 @@ LOG_FILE = LOG_DIR / f"csmarketapi_backfill_{datetime.now().strftime('%Y%m%d_%H%
 BASE_URL = "https://api.csmarketapi.com/v1"
 MAX_REQUESTS_PER_KEY = 1000
 KEY_SWITCH_THRESHOLD = 950
-REQUEST_DELAY = 1.0
+REQUEST_DELAY = 0.1
 MAX_RETRIES = 3
 
 # ── Logging ──────────────────────────────────────────────────────────────────
@@ -88,8 +88,9 @@ signal.signal(signal.SIGTERM, _handle_signal)
 
 def connect_db(path: str, readonly: bool = False) -> sqlite3.Connection:
     conn = sqlite3.connect(f"file:{path}?mode=ro" if readonly else path, uri=readonly)
-    conn.execute("PRAGMA journal_mode=WAL")
-    conn.execute("PRAGMA synchronous=NORMAL")
+    if not readonly:
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute("PRAGMA synchronous=NORMAL")
     return conn
 
 
@@ -352,7 +353,7 @@ def build_queue(
 # ═══════════════════════════════════════════════════════════════════════════════
 
 
-def run_backfill(dry_run: bool = False, limit: int = 0):
+def run_backfill(dry_run: bool = False, limit: int = 0, only_catalog: bool = False):
     global _shutdown_requested
 
     log.info("=" * 60)
@@ -366,6 +367,8 @@ def run_backfill(dry_run: bool = False, limit: int = 0):
         log.info(f"    {c['account']:<20}  1,000 req/mo")
     if limit:
         log.info(f"  Limit:            {limit} items (test mode)")
+    if only_catalog:
+        log.info(f"  Mode:             only-catalog (ignoring API items table)")
 
     if not settings.csmarketapi_keys:
         log.error("No API keys in .env. Set CSMARKETAPI_KEY_N / CSMARKETAPI_ACCOUNT_N")
@@ -453,7 +456,10 @@ def run_backfill(dry_run: bool = False, limit: int = 0):
     else:
         log.info(f"  Items table already has {c:,} rows — skipping catalog fetch")
 
-    api_names = {r[0] for r in out_conn.execute("SELECT market_hash_name FROM items").fetchall() if r[0]}
+    if only_catalog:
+        api_names = set()
+    else:
+        api_names = {r[0] for r in out_conn.execute("SELECT market_hash_name FROM items").fetchall() if r[0]}
 
     # ── Build queue ─────────────────────────────────────────────────────────
     log.info("─" * 50)
@@ -762,6 +768,7 @@ def main():
         "--refresh-ref", action="store_true", help="Re-fetch reference data (markets, currency_rates)"
     )
     parser.add_argument("--limit", type=int, default=0, help="Max items to fetch this session (for testing)")
+    parser.add_argument("--only-catalog", action="store_true", help="Fetch only items in market_catalog.db, ignore API catalog")
     args = parser.parse_args()
 
     if args.stats:
@@ -776,7 +783,7 @@ def main():
         fetch_reference_data(settings.csmarketapi_keys[0]["key"])
         log.info("Reference data refreshed. These 3 requests are NOT charged to backfill quota.")
     else:
-        run_backfill(dry_run=args.dry_run, limit=args.limit)
+        run_backfill(dry_run=args.dry_run, limit=args.limit, only_catalog=args.only_catalog)
 
 
 if __name__ == "__main__":

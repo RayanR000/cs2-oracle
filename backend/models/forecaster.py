@@ -1054,7 +1054,7 @@ class ItemForecaster:
     # item-day, which split-half measurement puts at 0.011-0.059 of lost label
     # reliability -- 17% relative at h=30 -- so every return computed across a
     # v7 frame is measurably noisier than the same day rebuilt under v8.
-    VOTED_CACHE_VERSION = 8
+    VOTED_CACHE_VERSION = 9
     VOTED_CACHE_PREFIX = "voted_"
     VOTED_CACHE_MAX_ENTRIES = 3
 
