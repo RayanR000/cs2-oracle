@@ -27,6 +27,7 @@ canonical archive is the `cs2-oracle-data` repo and only CI can migrate it.
 
 from __future__ import annotations
 
+import functools
 from collections.abc import Iterable, Sequence
 from pathlib import Path
 
@@ -133,11 +134,29 @@ def _file_list_sql(files: Sequence[Path]) -> str:
     return "[" + ", ".join(_quote(p) for p in files) + "]"
 
 
+@functools.lru_cache(maxsize=8)
+def _present_columns_cached(file_paths: tuple[str, ...]) -> set[str]:
+    """Cached column discovery — uses a throwaway DuckDB connection.
+
+    The caller's ``con`` is not hashable, so the cache key is the sorted
+    tuple of file paths.  The archive is append-only and normalised, so the
+    column set is stable for any given set of files.
+    """
+    import duckdb
+
+    file_list_sql = "[" + ", ".join("'" + p.replace("'", "''") + "'" for p in file_paths) + "]"
+    with duckdb.connect() as tmp_con:
+        rows = tmp_con.sql(
+            f"DESCRIBE SELECT * FROM read_parquet({file_list_sql}, union_by_name = true)"
+        ).fetchall()
+    return {r[0] for r in rows}
+
+
 def present_columns(con, archive_dir: Path | None = None) -> set[str]:
     """The union of column names across every prices file."""
     files = price_files(archive_dir)
-    rows = con.sql(f"DESCRIBE SELECT * FROM read_parquet({_file_list_sql(files)}, union_by_name = true)").fetchall()
-    return {r[0] for r in rows}
+    file_paths = tuple(str(f) for f in files)
+    return _present_columns_cached(file_paths)
 
 
 def prices_relation(

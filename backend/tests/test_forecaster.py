@@ -18,9 +18,8 @@ import pytest
 from models.direction import recenter_on_momentum
 from models.forecaster import SAMPLE_WEIGHT_HALFLIFE_DAYS, ItemForecaster
 
-# Slow: trains real LightGBM boosters per test (see docs/changelog/2026-09-15-ci-test-gate.md). The fast gate
-# (`pytest -m "not slow"`) skips this file; the nightly full suite covers it.
-pytestmark = pytest.mark.slow
+# Most tests here are fast (MagicMock db_session, no training). Only tests that
+# call lgb.train() or forecaster.train() carry @pytest.mark.slow individually.
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -471,6 +470,7 @@ class TestFeaturePruning:
         pruned = forecaster._prune_features(df)
         assert len(pruned) == 3
 
+    @pytest.mark.slow
     def test_validate_feature_groups_passes_statistically_significant(
         self,
         forecaster,
@@ -519,6 +519,7 @@ class TestFeaturePruning:
         assert pt["passed"], f"Expected 'price_technicals' to pass (drop_pp={pt['drop_pp']}, p={pt['p_value']})"
         assert pt["p_value"] < 0.05
 
+    @pytest.mark.slow
     def test_validate_feature_groups_fails_noisy_group(
         self,
         forecaster,
@@ -585,6 +586,7 @@ class TestFeaturePruning:
         )
         assert results == {}
 
+    @pytest.mark.slow
     def test_prune_features_filters_by_significance(
         self,
         forecaster,
@@ -2147,6 +2149,7 @@ class TestRegimeSwitching:
             # At least one regime type should be present
             assert tdf["_regime"].nunique() >= 1
 
+    @pytest.mark.slow
     def test_regime_models_populated_after_train(self, tmp_path):
         """After train(), regime_models should contain entries for regimes
         with sufficient data.
@@ -2236,6 +2239,7 @@ class TestRegimeSwitching:
             assert isinstance(result, pd.DataFrame)
             assert result.empty
 
+    @pytest.mark.slow
     def test_regime_models_save_and_load(self, forecaster, tmp_path):
         """Regime-specific models should round-trip through save/load."""
         forecaster.model_dir = str(tmp_path)

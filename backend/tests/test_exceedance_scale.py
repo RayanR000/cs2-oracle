@@ -55,7 +55,7 @@ def _exc_head(f, cols=("f", "g"), seed=0):
 
 
 def test_flag_reads_the_environment(monkeypatch):
-    monkeypatch.delenv("EXCEEDANCE_SCALE", raising=False)
+    monkeypatch.setenv("EXCEEDANCE_SCALE", "0")
     assert ItemForecaster.exceedance_scale_enabled() is False
     monkeypatch.setenv("EXCEEDANCE_SCALE", "1")
     assert ItemForecaster.exceedance_scale_enabled() is True
@@ -159,7 +159,7 @@ def test_flag_round_trips_through_meta_json(tmp_path, monkeypatch):
     f.save_models()
     assert json.loads((tmp_path / "meta.json").read_text())["exceedance_scale"] is True
 
-    monkeypatch.delenv("EXCEEDANCE_SCALE", raising=False)
+    monkeypatch.setenv("EXCEEDANCE_SCALE", "0")
     g = _forecaster(tmp_path)
     g.load_models()
     assert g._artifact_exceedance_scale is True

@@ -81,6 +81,7 @@ ignore = [
 known-first-party = ["backend"]
 
 [tool.pytest.ini_options]
+addopts = "-m 'not slow'"
 testpaths = ["backend/tests"]
 markers = [
     "slow: real-trainer / full-frame tests excluded from the PR fast gate (see docs/changelog/2026-09-15-ci-test-gate.md)",

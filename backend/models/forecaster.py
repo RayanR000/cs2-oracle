@@ -1103,6 +1103,10 @@ class ItemForecaster:
         # artifact can quote the calibration without re-running training.
         self.exceedance_calibration_meta: dict[int, dict[str, Any]] = {}
         self.anomaly_models: dict[int, lgb.Booster | None] = {}
+        # Per-horizon isotonic calibrator for the anomaly head, fitted on
+        # holdout (p_raw, y) pairs: {horizon: {"xs": [...], "ys": [...]}}.
+        # Same pure-numpy PAV as the exceedance calibrator.
+        self.anomaly_calibrators: dict[int, dict[str, list[float]]] = {}
         self.ranking_models: dict[int, lgb.Booster | None] = {}
         # Per-horizon NGBoost distributional models (Normal): shadow-only,
         # producing mean + std per prediction. Only h=7 and h=14.
@@ -1587,7 +1591,7 @@ class ItemForecaster:
         the artifact with no separate meta flag. Set EXCEEDANCE_HEAD=1. See
         docs/superpowers/plans/2026-08-16-exceedance-band-scale-phase2-plan.md.
         """
-        return os.environ.get("EXCEEDANCE_HEAD") == "1"
+        return os.environ.get("EXCEEDANCE_HEAD", "1") == "1"
 
     @staticmethod
     def exceedance_calibrate_enabled() -> bool:
@@ -1709,7 +1713,7 @@ class ItemForecaster:
         return std. Served as anomaly_p in the API — an alert/flag, not a
         band input. Set ANOMALY_GBM=1.
         """
-        return os.environ.get("ANOMALY_GBM") == "1"
+        return os.environ.get("ANOMALY_GBM", "1") == "1"
 
     def _anomaly_gbm_served(self) -> bool:
         if self._artifact_anomaly_gbm is not None:
@@ -6024,18 +6028,24 @@ class ItemForecaster:
         """
         if tdf.empty or "price" not in tdf.columns:
             return None
-        vol = (
-            tdf.groupby("item_id", group_keys=False)["price"]
-            .transform(lambda x: x.pct_change().rolling(30, min_periods=5).std())
-            .values
-        )
-        # No-history rows (fewer than 5 obs) have unknown volatility; fill with
-        # the median so they stay neutral instead of receiving the max weight.
-        median_vol = np.nanmedian(vol)
-        if not np.isfinite(median_vol):
-            median_vol = 1.0
-        vol = np.where(np.isnan(vol), median_vol, vol)
-        vol = np.clip(vol, np.percentile(vol, 1), np.percentile(vol, 99))
+        # Use precomputed _vol_weight if available (set once on the full
+        # frame before splitting, so every subset inherits it without
+        # rerunning the expensive groupby + rolling std).
+        if "_vol_weight" in tdf.columns:
+            vol = tdf["_vol_weight"].values.copy()
+        else:
+            vol = (
+                tdf.groupby("item_id", group_keys=False)["price"]
+                .transform(lambda x: x.pct_change().rolling(30, min_periods=5).std())
+                .values
+            )
+            # No-history rows (fewer than 5 obs) have unknown volatility; fill with
+            # the median so they stay neutral instead of receiving the max weight.
+            median_vol = np.nanmedian(vol)
+            if not np.isfinite(median_vol):
+                median_vol = 1.0
+            vol = np.where(np.isnan(vol), median_vol, vol)
+            vol = np.clip(vol, np.percentile(vol, 1), np.percentile(vol, 99))
 
         target_col = f"target_return_{horizon}d"
         if target_col in tdf.columns and DIRECTION_UPWEIGHT != 1.0:
@@ -6198,6 +6208,22 @@ class ItemForecaster:
         self.feature_cols = list(self._base_feature_cols)
 
         tdf = self.prepare_targets(df, horizon)
+
+        # Precompute the per-row volatility weight (the expensive groupby +
+        # rolling std) once on the full frame so _compute_sample_weights can
+        # look it up on any subset without recomputing it.
+        if "price" in tdf.columns and not tdf.empty:
+            _raw_vol = (
+                tdf.groupby("item_id", group_keys=False)["price"]
+                .transform(lambda x: x.pct_change().rolling(30, min_periods=5).std())
+                .values
+            )
+            _med = np.nanmedian(_raw_vol)
+            if not np.isfinite(_med):
+                _med = 1.0
+            _raw_vol = np.where(np.isnan(_raw_vol), _med, _raw_vol)
+            _raw_vol = np.clip(_raw_vol, np.percentile(_raw_vol, 1), np.percentile(_raw_vol, 99))
+            tdf["_vol_weight"] = _raw_vol
 
         # Drop NaN targets (use percentage return as primary target)
         tdf = tdf.dropna(subset=[f"target_return_{horizon}d"]).copy()
@@ -6520,6 +6546,37 @@ class ItemForecaster:
                     )
                     logger.info(f"  [timing] {horizon}d anomaly classifier: {time.time() - _anom_start:.1f}s")
 
+                    # Isotonic calibration on holdout predictions. The anomaly
+                    # classifier is trained on train_set; get predictions on
+                    # val_set (the early-stopping holdout) for calibration.
+                    anom_head = self.anomaly_models[horizon]
+                    if anom_head is not None and anom_col in val_set.columns:
+                        anom_val_cols = anom_head.feature_name()
+                        X_anom_val = val_set.reindex(columns=anom_val_cols, fill_value=0).replace([np.inf, -np.inf], np.nan)
+                        if not self.feature_medians.empty:
+                            X_anom_val = self._impute_features(X_anom_val, self.feature_medians.reindex(anom_val_cols))
+                        anom_p_val = np.clip(anom_head.predict(X_anom_val), 1e-3, 1.0)
+                        anom_y_val = val_set[anom_col].to_numpy(dtype=float)
+                        ok = np.isfinite(anom_p_val) & np.isfinite(anom_y_val)
+                        if int(ok.sum()) >= self.MIN_EXCEEDANCE_CALIBRATION_ROWS:
+                            xs, ys = self._isotonic_fit(
+                                np.clip(anom_p_val[ok], 1e-3, 1.0),
+                                anom_y_val[ok].astype(float),
+                            )
+                            self.anomaly_calibrators[horizon] = {
+                                "xs": [float(v) for v in xs],
+                                "ys": [float(v) for v in ys],
+                            }
+                            logger.info(
+                                f"  {horizon}d anomaly isotonic calibration: "
+                                f"{int(ok.sum())} pairs, {len(xs)} steps"
+                            )
+                        else:
+                            logger.warning(
+                                f"  {horizon}d anomaly calibration: only {int(ok.sum())} "
+                                f"usable pairs — serving raw output"
+                            )
+
             # Ranking head: a LambdaRank model that directly optimizes
             # within-date ranking (the production evaluation metric). Outputs
             # ranking scores, not returns — served as `rank_score` alongside the
@@ -6556,7 +6613,7 @@ class ItemForecaster:
                 except Exception:
                     logger.exception(f"  NGBoost {horizon}d head failed — skipping")
 
-            # Train regime-specific models (optional: SKIP_REGIMES=1 to skip)
+            # Train regime-specific models (default: skipped; set SKIP_REGIMES=0 to enable)
             #
             # `_warm_retrain` deliberately does NOT skip these, though it used to.
             # `predict` at :5584 *prefers* the regime model over the global one
@@ -6566,7 +6623,7 @@ class ItemForecaster:
             # retrains only ran locally; it is not once CI restores the model
             # cache on training runs, which is what makes the warm path
             # production's steady state. Skipping them is now opt-in only.
-            if os.environ.get("SKIP_REGIMES") == "1":
+            if os.environ.get("SKIP_REGIMES", "1") != "0":
                 # Drop any regime models this horizon carried in from load_models
                 # so a skip run never re-persists stale regime artifacts.
                 for key in [k for k in self.regime_models if k[1] == horizon]:
@@ -7832,7 +7889,15 @@ class ItemForecaster:
         X = rows.reindex(columns=cols, fill_value=0).replace([np.inf, -np.inf], np.nan)
         if not self.feature_medians.empty:
             X = self._impute_features(X, self.feature_medians.reindex(cols), served=True)
-        return np.clip(head.predict(X), 1e-3, 1.0)
+        p_raw = np.clip(head.predict(X), 1e-3, 1.0)
+        # Apply isotonic calibrator if available (same pattern as exceedance).
+        cal = self.anomaly_calibrators.get(horizon)
+        if cal:
+            xs = np.asarray(cal["xs"], dtype=float)
+            ys = np.asarray(cal["ys"], dtype=float)
+            if xs.size > 0:
+                p_raw = np.interp(p_raw, xs, ys, left=float(ys[0]), right=float(ys[-1]))
+        return p_raw
 
     @staticmethod
     def _direction_tree_params(per_quantile_params: dict) -> dict:
@@ -8487,25 +8552,27 @@ class ItemForecaster:
                 f"calibration rows. It is positional: a mismatched length means "
                 f"the caller's arrays are not on one frame."
             )
-        records = []
-        for i in np.flatnonzero(keep):
-            rec = {
-                "mid_ret": float(mid[i]),
-                "residual_pct": float(resid_actual[i] - centre[i]),
-                "sigma": float(sig[i]),
-                "change_pct": float(change_pct[i]),
-                "hit": float(hit[i]),
-            }
-            if served_mid is not None:
-                rec["served_mid_ret"] = float(served_mid[i])
-            if idx is not None:
-                rec["row_index"] = idx[i]
-            if exc is not None:
-                rec["exceed_p"] = float(exc[i])
-            if exc_y is not None:
-                rec["exceed_y"] = float(exc_y[i])
-            records.append(rec)
-        return records
+        # Vectorised construction: slice all source arrays by the boolean mask
+        # at once and build a single dict-of-arrays, then construct the
+        # DataFrame in one call. Produces identical output to the previous
+        # per-row loop (same columns, dtypes, values).
+        k = keep
+        data: dict[str, Any] = {
+            "mid_ret": mid[k],
+            "residual_pct": resid_actual[k] - centre[k],
+            "sigma": sig[k],
+            "change_pct": change_pct[k],
+            "hit": hit[k],
+        }
+        if served_mid is not None:
+            data["served_mid_ret"] = served_mid[k]
+        if idx is not None:
+            data["row_index"] = idx[k]
+        if exc is not None:
+            data["exceed_p"] = exc[k]
+        if exc_y is not None:
+            data["exceed_y"] = exc_y[k]
+        return pd.DataFrame(data).to_dict("records")
 
     def _holdout_conformal_records(self, horizon: int, X_val, y_val, val_set) -> pd.DataFrame:
         """Calibration records from the single validation holdout.
@@ -9735,7 +9802,7 @@ class ItemForecaster:
             if self._predict_chunk_items and len(eligible) > self._predict_chunk_items:
                 df = self._engineer_features_chunked(price_df, events_df, eligible, item_first_dates=item_first_dates)
             else:
-                df = self.engineer_features(price_df, events_df, item_first_dates=item_first_dates)
+                df = self.engineer_features(price_df, events_df, item_first_dates=item_first_dates, skip_unused_groups=True)
 
                 # Add cross-sectional features (same as training)
                 df = self._add_cross_sectional_features(df)
@@ -11438,6 +11505,13 @@ class ItemForecaster:
             # switch only — the multiplier is stateless (reads the engineered
             # ewm_reactive_fast/slow columns at serve), so nothing else persists.
             "climatology_reactive": self.climatology_reactive_enabled(),
+            "anomaly_calibration": {
+                str(h): {
+                    "xs": list(cal["xs"]),
+                    "ys": list(cal["ys"]),
+                }
+                for h, cal in self.anomaly_calibrators.items()
+            },
             "anomaly_gbm": self.anomaly_gbm_enabled(),
             "shrink_k_gbm": self.shrink_k_gbm_enabled(),
             "vol_rank_gbm": self.vol_rank_gbm_enabled(),
@@ -11641,6 +11715,34 @@ class ItemForecaster:
         self._artifact_climatology_scale = meta.get("climatology_scale")
         self._artifact_climatology_shrink_k = meta.get("climatology_shrink_k")
         self._artifact_climatology_reactive = meta.get("climatology_reactive")
+        # Anomaly isotonic calibrators — same pattern as exceedance.
+        self.anomaly_calibrators = {}
+        for h_str, cfg in meta.get("anomaly_calibration", {}).items():
+            try:
+                h = int(h_str)
+                xs = [float(v) for v in cfg.get("xs", [])]
+                ys = [float(v) for v in cfg.get("ys", [])]
+            except (ValueError, TypeError):
+                continue
+            if (
+                len(xs) != len(ys)
+                or len(xs) == 0
+                or any(not np.isfinite(v) for v in xs + ys)
+                or any(b < a for a, b in itertools.pairwise(xs))
+                or min(ys) < 0.0
+                or max(ys) > 1.0
+            ):
+                logger.warning(
+                    f"  Dropping corrupt anomaly calibrator for {h_str}d "
+                    f"— serving the raw head output."
+                )
+                continue
+            self.anomaly_calibrators[h] = {"xs": xs, "ys": ys}
+        if self.anomaly_calibrators:
+            logger.info(
+                f"  Loaded {len(self.anomaly_calibrators)} anomaly "
+                f"calibrators ({sorted(self.anomaly_calibrators)}d)"
+            )
         self._artifact_anomaly_gbm = meta.get("anomaly_gbm")
         self._artifact_shrink_k_gbm = meta.get("shrink_k_gbm")
         self._artifact_vol_rank_gbm = meta.get("vol_rank_gbm")

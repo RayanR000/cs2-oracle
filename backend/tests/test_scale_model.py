@@ -10,6 +10,8 @@ import pandas as pd
 import pytest
 from models import conformal, scale_model
 
+pytestmark = pytest.mark.slow
+
 
 def _heteroscedastic(n=24_000, seed=0):
     """A cohort whose error size depends on a feature the model can see, and on

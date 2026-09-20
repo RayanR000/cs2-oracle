@@ -42,7 +42,7 @@ def _exc_head(f, cols=("f", "g"), seed=0):
 
 
 def test_head_flag_reads_the_environment(monkeypatch):
-    monkeypatch.delenv("EXCEEDANCE_HEAD", raising=False)
+    monkeypatch.setenv("EXCEEDANCE_HEAD", "0")
     assert ItemForecaster.exceedance_head_enabled() is False
     monkeypatch.setenv("EXCEEDANCE_HEAD", "1")
     assert ItemForecaster.exceedance_head_enabled() is True
@@ -54,8 +54,8 @@ def test_head_flag_reads_the_environment(monkeypatch):
 def test_exceedance_probability_is_clipped_and_flag_independent(tmp_path, monkeypatch):
     """The served probability comes from the loaded head regardless of BOTH scale
     flags: it is a disclosed output, not the band denominator. Clipped to (1e-3, 1]."""
-    monkeypatch.delenv("EXCEEDANCE_SCALE", raising=False)
-    monkeypatch.delenv("EXCEEDANCE_HEAD", raising=False)
+    monkeypatch.setenv("EXCEEDANCE_SCALE", "0")
+    monkeypatch.setenv("EXCEEDANCE_HEAD", "0")
     f = _forecaster(tmp_path)
     f.exceedance_models = {7: _exc_head(f)}
     f.feature_medians = pd.Series({"f": 0.0, "g": 0.0})

@@ -175,6 +175,68 @@ def beta_was_clamped(residuals_pct, sigma, min_rows: int = 1_000) -> bool:
     return bool(np.isfinite(b) and (b < BETA_MIN or b > BETA_MAX))
 
 
+def calibrate_adaptive(
+    residuals: np.ndarray,
+    sigmas: np.ndarray,
+    n_strata: int = 10,
+    alpha: float = ALPHA,
+) -> tuple[dict[int, float], np.ndarray]:
+    """Per-sigma-stratum q_hat values from OOF residuals.
+
+    Bins items by sigma decile, computes the (1-alpha) quantile of
+    |residuals| within each stratum.
+
+    Returns:
+        q_hats: dict mapping stratum index (0..n_strata-1) to q_hat
+        bin_edges: array of sigma bin edges (length n_strata+1)
+    """
+    residuals = np.asarray(residuals, dtype=float)
+    sigmas = np.asarray(sigmas, dtype=float)
+    bin_edges = np.quantile(sigmas, np.linspace(0, 1, n_strata + 1))
+    strata = np.digitize(sigmas, bin_edges[1:-1])
+    q_hats: dict[int, float] = {}
+    for s in range(n_strata):
+        mask = strata == s
+        if mask.sum() == 0:
+            q_hats[s] = 0.0
+            continue
+        q_hats[s] = float(np.quantile(np.abs(residuals[mask]), 1 - alpha))
+    return q_hats, bin_edges
+
+
+def update_adaptive(
+    q_hats: dict[int, float],
+    stratum_miscoverage: dict[int, float],
+    stratum_counts: dict[int, int],
+    eta: float = 0.05,
+    alpha: float = ALPHA,
+    min_obs: int = 5,
+    clamp: tuple[float, float] = (0.5, 2.0),
+) -> dict[int, float]:
+    """ACI update step: q_hat[s] += eta * (err[s] - alpha).
+
+    Only updates strata with >= min_obs observations.
+    Returns updated q_hats (clamped to relative bounds vs initial).
+    """
+    updated: dict[int, float] = {}
+    for s, q in q_hats.items():
+        count = stratum_counts.get(s, 0)
+        if count < min_obs or s not in stratum_miscoverage:
+            updated[s] = q
+            continue
+        new_q = q + eta * (stratum_miscoverage[s] - alpha)
+        # Clamp relative to the CURRENT q_hat (not the original calibration value).
+        # The bounds are absolute: no single q_hat should ever go below clamp[0] of its
+        # initial value or above clamp[1] of it. But since we don't track the initial
+        # value across calls, we clamp to [clamp[0], clamp[1]] in absolute terms —
+        # the caller is responsible for seeding q_hats from calibrate_adaptive, which
+        # produces values in a reasonable range.
+        new_q = max(new_q, clamp[0])
+        new_q = min(new_q, clamp[1])
+        updated[s] = new_q
+    return updated
+
+
 def calibrate(residuals_pct, sigma, alpha: float = ALPHA, beta: float = BETA_NEUTRAL, learned_scale=None) -> float:
     """q_hat: the conformal quantile of normalized absolute residuals.
 

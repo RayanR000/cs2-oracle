@@ -86,6 +86,7 @@ class TestGating:
 
 class TestMutualExclusion:
     def test_raises_beside_sigma_exponent(self, fc, monkeypatch):
+        monkeypatch.setenv("EXCEEDANCE_SCALE", "0")
         monkeypatch.setenv("CLIMATOLOGY_SCALE", "1")
         monkeypatch.setenv("SIGMA_EXPONENT", "1")
         recs = pd.DataFrame(

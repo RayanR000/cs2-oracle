@@ -35,6 +35,13 @@ import pytest
 from models.forecaster import ANCHOR_TIED_COL, ItemForecaster
 
 
+@pytest.fixture(autouse=True)
+def _disable_ml_heads(monkeypatch):
+    """These tests build minimal frames without exceedance/anomaly columns."""
+    monkeypatch.setenv("EXCEEDANCE_HEAD", "0")
+    monkeypatch.setenv("ANOMALY_GBM", "0")
+
+
 @pytest.fixture
 def forecaster(tmp_path_factory):
     return ItemForecaster(db_session=MagicMock(), model_dir=str(tmp_path_factory.mktemp("saved_models")))

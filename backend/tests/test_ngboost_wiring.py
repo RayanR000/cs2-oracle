@@ -14,6 +14,8 @@ from models.ngboost_head import (
 
 ngboost_mod = pytest.importorskip("ngboost", reason="ngboost not installed (probabilistic extra)")
 
+pytestmark = pytest.mark.slow
+
 
 class TestNGBoostFlagGating:
     """NGBOOST_HEAD env flag controls whether training runs."""

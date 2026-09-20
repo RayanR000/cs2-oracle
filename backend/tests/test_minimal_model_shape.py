@@ -596,7 +596,7 @@ def _run_train(f, monkeypatch, df, skip_regimes=True):
     if skip_regimes:
         monkeypatch.setenv("SKIP_REGIMES", "1")
     else:
-        monkeypatch.delenv("SKIP_REGIMES", raising=False)
+        monkeypatch.setenv("SKIP_REGIMES", "0")
     f.train()
 
 

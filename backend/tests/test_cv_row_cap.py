@@ -16,7 +16,15 @@ from unittest.mock import MagicMock, patch
 
 import numpy as np
 import pandas as pd
+import pytest
 from models.forecaster import ItemForecaster
+
+
+@pytest.fixture(autouse=True)
+def _disable_ml_heads(monkeypatch):
+    """These tests build minimal frames without exceedance/anomaly columns."""
+    monkeypatch.setenv("EXCEEDANCE_HEAD", "0")
+    monkeypatch.setenv("ANOMALY_GBM", "0")
 
 
 def _forecaster(tmp_path, feature_cols):

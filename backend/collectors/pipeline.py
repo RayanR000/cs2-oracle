@@ -633,21 +633,11 @@ class DataPipeline:
         if not item_ids:
             return {}, set()
 
-        rows = (
-            self.db_session.query(PriceHistory)
-            .filter(
-                PriceHistory.item_id.in_(item_ids),
+        rows = self._latest_per_item(
+            item_ids,
+            extra_filters=[
                 PriceHistory.source != "aggregator_sync",
-                ~PriceHistory.source.like("synthetic_demo"),
-                ~PriceHistory.source.like("historical_fallback:%"),
-            )
-            .order_by(
-                PriceHistory.item_id,
-                PriceHistory.timestamp.desc(),
-                PriceHistory.created_at.desc().nullslast(),
-                PriceHistory.source.desc(),
-            )
-            .all()
+            ],
         )
 
         return self._split_fresh_and_stale(rows, cutoff)
@@ -658,28 +648,59 @@ class DataPipeline:
         Returns (fresh_by_item_id, stale_item_ids); see
         `_load_latest_non_aggregator_prices`.
         """
-        from database import PriceHistory
-
         if not item_ids:
             return {}, set()
 
-        rows = (
-            self.db_session.query(PriceHistory)
-            .filter(
-                PriceHistory.item_id.in_(item_ids),
-                ~PriceHistory.source.like("synthetic_demo"),
-                ~PriceHistory.source.like("historical_fallback:%"),
-            )
-            .order_by(
-                PriceHistory.item_id,
-                PriceHistory.timestamp.desc(),
-                PriceHistory.created_at.desc().nullslast(),
-                PriceHistory.source.desc(),
-            )
-            .all()
-        )
+        rows = self._latest_per_item(item_ids, extra_filters=[])
 
         return self._split_fresh_and_stale(rows, cutoff)
+
+    def _latest_per_item(self, item_ids, extra_filters):
+        """Return the single newest PriceHistory row per item_id.
+
+        Uses ``DISTINCT ON`` on Postgres (index-friendly, single pass) and
+        falls back to the original fetch-all-then-dedup on SQLite (test-only).
+        Both return ORM-mapped objects so callers and ``_split_fresh_and_stale``
+        are unchanged.
+        """
+        from database import PriceHistory
+
+        session = self._ensure_session()
+        dialect = session.bind.dialect.name
+
+        base_filters = [
+            PriceHistory.item_id.in_(item_ids),
+            ~PriceHistory.source.like("synthetic_demo"),
+            ~PriceHistory.source.like("historical_fallback:%"),
+        ]
+        all_filters = base_filters + list(extra_filters)
+
+        order_cols = [
+            PriceHistory.timestamp.desc(),
+            PriceHistory.created_at.desc().nullslast(),
+            PriceHistory.source.desc(),
+        ]
+
+        if dialect == "postgresql":
+            # DISTINCT ON picks the first row per item_id in ORDER BY order.
+            rows = (
+                session.query(PriceHistory)
+                .distinct(PriceHistory.item_id)
+                .filter(*all_filters)
+                .order_by(PriceHistory.item_id, *order_cols)
+                .all()
+            )
+        else:
+            # SQLite (tests): fetch all ordered rows; _split_fresh_and_stale
+            # already picks the first per item_id.
+            rows = (
+                session.query(PriceHistory)
+                .filter(*all_filters)
+                .order_by(PriceHistory.item_id, *order_cols)
+                .all()
+            )
+
+        return rows
 
     @staticmethod
     def _split_fresh_and_stale(rows, cutoff=None):

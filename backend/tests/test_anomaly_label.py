@@ -51,7 +51,7 @@ def _frame(n=120, seed=0, item="A"):
 
 class TestGate:
     def test_no_label_without_the_flag(self, forecaster, monkeypatch):
-        monkeypatch.delenv("ANOMALY_GBM", raising=False)
+        monkeypatch.setenv("ANOMALY_GBM", "0")
         out = forecaster.prepare_targets(_frame(), 7)
         assert COL not in out.columns
 

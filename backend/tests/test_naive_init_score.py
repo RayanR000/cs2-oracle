@@ -343,7 +343,7 @@ def test_a_real_train_runs_with_the_instrument_on(tmp_path, monkeypatch, skip_re
     if skip_regimes:
         monkeypatch.setenv("SKIP_REGIMES", "1")
     else:
-        monkeypatch.delenv("SKIP_REGIMES", raising=False)
+        monkeypatch.setenv("SKIP_REGIMES", "0")
 
     f.train()
 
