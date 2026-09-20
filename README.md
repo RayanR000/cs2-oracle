@@ -1,164 +1,164 @@
-# CS2 Oracle
+<h1 align="center">CS2 Oracle</h1>
 
-Daily price forecasts for the Counter-Strike 2 skin market — a LightGBM pipeline that
-predicts 3/7/14/30-day returns across a 13-year price archive, with every forecast
-scored against what actually happened.
+<p align="center">
+  Calibrated price-range forecasts for the Counter-Strike 2 skin market.
+</p>
 
-[![Forecast](https://img.shields.io/github/actions/workflow/status/RayanR000/cs2-oracle/price-forecast.yml?label=forecast&style=flat-square&logo=github)](https://github.com/RayanR000/cs2-oracle/actions/workflows/price-forecast.yml)
-[![Backtest](https://img.shields.io/github/actions/workflow/status/RayanR000/cs2-oracle/backtest-accuracy.yml?label=backtest&style=flat-square&logo=github)](https://github.com/RayanR000/cs2-oracle/actions/workflows/backtest-accuracy.yml)
-[![Python 3.11](https://img.shields.io/badge/python-3.11-3776AB?logo=python&logoColor=white&style=flat-square)](https://python.org)
+<p align="center">
+  <a href="https://github.com/RayanR000/cs2-oracle/actions/workflows/price-forecast.yml"><img src="https://img.shields.io/github/actions/workflow/status/RayanR000/cs2-oracle/price-forecast.yml?label=forecast&style=flat-square&logo=github" alt="Forecast"></a>
+  <a href="https://github.com/RayanR000/cs2-oracle/actions/workflows/backtest-accuracy.yml"><img src="https://img.shields.io/github/actions/workflow/status/RayanR000/cs2-oracle/backtest-accuracy.yml?label=backtest&style=flat-square&logo=github" alt="Backtest"></a>
+  <img src="https://img.shields.io/badge/python-3.11+-3776AB?logo=python&logoColor=white&style=flat-square" alt="Python 3.11+">
+  <img src="https://img.shields.io/badge/horizons-3%2F7%2F14%2F30d-blue?style=flat-square" alt="Horizons">
+</p>
 
-## What this is
+---
 
 CS2 skins trade across a dozen marketplaces with no consolidated tape. CS2 Oracle is a
-range forecaster for that market: per item and horizon it serves a calibrated price
-range, its center, and the probability the move clears round-trip cost (`move_odds`).
-Directional accuracy is tracked but never a product claim — the market spends long
-stretches trending one way, so a constant call can look skilful while carrying no
-information.
+**range forecaster** for that market: per item and horizon it serves a calibrated price
+band, its centre, and the probability the move clears round-trip friction (`move_odds`).
+Directional accuracy is tracked but is never the product claim — the market trends long
+enough that a constant call looks skilful while carrying no information.
 
-A daily job pulls seven market price feeds, votes them into one consensus price per
-item, appends to a Parquet archive back to 2013, trains gradient-boosted models, and
-serves predictions through FastAPI. A separate job resolves every past forecast against
-the realised price and writes the accuracy back out. It runs unattended on GitHub
-Actions; most engineering effort has gone into the evaluation harness, because on this
-problem it is easy to produce an impressive-looking number that is wrong.
+The system runs unattended on GitHub Actions. Most engineering effort has gone into the
+evaluation harness, because on this problem it is easy to produce an impressive-looking
+number that is wrong.
 
-## How it works
+## Architecture
 
 ```
-  7 market feeds (CSGOTrader public dumps, 23:00 UTC daily)
-  steam · skinport · buff163 · csfloat · csmoney · csgotrader · youpin
-                          │
-                          ▼
-        Aggregator — outlier-voted median per item
-        (sources >2σ from median rejected; live asks only,
-         3-source minimum; trailing-window means excluded)
-                          │
-            ┌─────────────┴─────────────┐
-            ▼                           ▼
-    Parquet archive              PostgreSQL / Supabase
-    prices 2013–present          serving layer + metadata
-    queried via DuckDB           (yearly → monthly partitions from 2026)
-            │
-            ▼
-    ══════ TRAINING ══════════════════════════════
-    LightGBM per horizon (3/7/14/30d):
-      q50 return regressor
-      3-class directional classifier (down/flat/up)
-      binary exceedance head → P(move > cost)
-    price-technicals allowlist · regime-switching
-    Optuna tuning · expanding-window CV
-            │
-            ▼
-    Signed split-conformal band, scaled by per-item
-    climatology (featureless dispersion, default since 2026-08-20)
-            │
-            ▼
-    ══════ SERVING ═══════════════════════════════
-    FastAPI — the API is the only surface; no frontend
-            │
-            ▼
-    Backtest — resolves each forecast against the archive
-    MAE · MAPE · directional accuracy, by horizon and price tier
+ ┌─────────────────────────────────────────────────────────────────┐
+ │  DATA COLLECTION                     23:00 UTC daily            │
+ │                                                                 │
+ │  7 market feeds via CSGOTrader public dumps                     │
+ │  steam · skinport · buff163 · csfloat · csmoney · csgotrader   │
+ │  youpin                                                         │
+ │       │                                                         │
+ │       ▼                                                         │
+ │  Aggregator ─── outlier-voted median, source-quality weighted   │
+ │  (>2σ rejected · 3-source minimum · trailing means excluded)    │
+ └───────┬─────────────────────────────────┬───────────────────────┘
+         │                                 │
+         ▼                                 ▼
+ ┌───────────────────┐           ┌────────────────────┐
+ │  Parquet archive   │           │  Supabase / PG     │
+ │  2013–present      │           │  serving layer     │
+ │  queried via       │           │  monthly parts     │
+ │  DuckDB            │           │  from 2026         │
+ └───────┬────────────┘           └────────────────────┘
+         │
+         ▼
+ ┌─────────────────────────────────────────────────────────────────┐
+ │  TRAINING                            per horizon (3/7/14/30d)   │
+ │                                                                 │
+ │  Champion: LightGBM                                             │
+ │    ├─ q50 return regressor                                      │
+ │    ├─ 3-class directional classifier                            │
+ │    └─ binary exceedance head ─ P(move > cost)                   │
+ │                                                                 │
+ │  Challengers (shadow):                                          │
+ │    ├─ NGBoost distributional  (h=7, h=14)                       │
+ │    └─ MAPIE CQR conformal                                       │
+ │                                                                 │
+ │  price-technicals only · regime-switching · Optuna CV           │
+ │  data-quality scoring · MLflow experiment tracking              │
+ └───────┬─────────────────────────────────────────────────────────┘
+         │
+         ▼
+ ┌─────────────────────────────────────────────────────────────────┐
+ │  CALIBRATION                                                    │
+ │                                                                 │
+ │  Signed split-conformal band, scaled by per-item climatology    │
+ │  (featureless dispersion — shipped 2026-08-20)                  │
+ └───────┬─────────────────────────────────────────────────────────┘
+         │
+         ▼
+ ┌─────────────────────────────────────────────────────────────────┐
+ │  SERVING            FastAPI (API-only, no frontend)             │
+ └───────┬─────────────────────────────────────────────────────────┘
+         │
+         ▼
+ ┌─────────────────────────────────────────────────────────────────┐
+ │  EVALUATION                                                     │
+ │                                                                 │
+ │  Backtest: resolves every forecast against the archive          │
+ │  MAE · MAPE · interval score · directional accuracy + PT test   │
+ │  Champion–challenger promotion gate (manual, evidence-scored)   │
+ └─────────────────────────────────────────────────────────────────┘
 ```
 
-**Collection.** Feeds are read from CSGOTrader's public daily dumps rather than each
-marketplace's API — freshness traded for reliability and rate-limit headroom.
+### Design decisions
 
-**Storage.** Training reads the Parquet archive directly, keeping it reproducible from
-version-controlled files rather than mutable database state. The durable archive lives
-in the separate `cs2-oracle-data` repo (CI-only writes); the local `price-archive/`
-copy is gitignored reference.
-
-**Modelling.** The feature set is deliberately narrow: a 7-fold ablation found 85
-non-price features added no measurable directional accuracy, so training is restricted
-to price technicals. The band comes from split-conformal calibration against
-out-of-fold residuals, normalised per item so a $5,000 knife and a $1 case don't share
-a width. (Dedicated p10/p90 quantile models were measured and removed: 223s of a 381s
-budget for 39–48% coverage against an 80% target.)
-
-## Accuracy and evaluation
-
-Forecast accuracy is measured by a scheduled job, not by a number typed into this file.
-Every prediction is stored with anchor date and horizon; once the archive covers the
-target date, the backtest resolves it. The protocol:
-
-- **Both legs resolve through the same code path** (`backtest.price_resolution`).
-  The stored `current_price` is reference only — scoring against it was a real bug
-  that let one cohort read 61.76% and 33.74% on two different days.
-- **Resolved outcomes are frozen.** Re-resolution is an explicit, separate operation.
-- **Maturity is bounded by archive coverage**, not the calendar — scoring against
-  `date.today()` admits the archive lag window as guaranteed misses.
-- **Results are reported by price tier.** Sub-$1 items dominate by count and behave
-  differently; production reports the ≥$1 cohort.
-- **CV and production share one cohort definition**, so offline and live numbers compare.
-- **Directional accuracy is never quoted alone** — always beside the constant-call
-  baseline, the realised down-rate, and the serial-correlation-robust
-  Pesaran–Timmermann test.
-
-**No production accuracy headline is quotable yet** — the PT test needs ≥20 distinct
-forecast dates and the served series hasn't accumulated them. That's a calendar problem,
-and the honest thing is to say so. Live figures: `GET /accuracy/summary`.
+| Decision | Rationale |
+|----------|-----------|
+| **Price technicals only** | 7-fold ablation: 85 non-price features added zero measurable accuracy |
+| **Per-item climatology band** | 4 sigma-based denominators measured; only featureless dispersion won |
+| **Shadow challengers** | NGBoost + CQR run alongside champion; predictions frozen and scored through the same backtest before any promotion |
+| **Source-quality weighting** | Per-marketplace reliability weights in the aggregator vote |
+| **No quoted accuracy headline** | PT test needs ≥20 distinct forecast dates; the served series hasn't accumulated them yet |
 
 ## Quickstart
-
-Requires Python 3.11+ and PostgreSQL 14+ (or a Supabase project).
 
 ```bash
 cd backend
 python3 -m venv venv && source venv/bin/activate
 pip install -r requirements.txt
-cp .env.example .env          # set DATABASE_URL, STEAM_API_KEY, SECRET_KEY
+cp .env.example .env          # DATABASE_URL, STEAM_API_KEY, SECRET_KEY
 python scripts/run_task.py migrate
 uvicorn main:app --port 8000 --reload
 ```
 
-Key endpoints: `GET /items/{id}/prediction` · `GET /items/volatility` ·
-`GET /accuracy/summary`. There is no frontend (removed 2026-08-10, pending rebuild).
-
-Tests: `cd backend && source venv/bin/activate && pytest tests/ -q` (~190 modules).
+> **Endpoints** &ensp; `GET /items/{id}/prediction` · `GET /items/volatility` · `GET /accuracy/summary`
+>
+> **Tests** &ensp; `pytest tests/ -q` — 221 modules, ~2,600 tests
 
 ## Repo layout
 
 ```
 backend/
-  api/routes/        FastAPI handlers (items, market, accuracy, events, …)
-  collectors/        Aggregator, supply scraper, validation
-  models/
-    forecaster.py    Training, features, regimes, CV — the core
-    conformal.py     Split-conformal band calibration
-  backtest/          Price resolution, scoring, resolution gate
-  db/                Parquet store and ops-table mirrors
-  scripts/           Task runner and scheduled entrypoints
-  tests/             Pytest suite (~190 modules)
-price-archive/       Gitignored local copy of the price data (see above)
-docs/                Architecture, research, changelog, design specs
-.github/workflows/   10 jobs — daily chain Aggregator → Forecast → Backtest,
-                     plus freshness check, diagnostics, lint, schema drift
+  api/routes/          FastAPI handlers (items, market, accuracy, monitoring, …)
+  collectors/          Aggregator, supply scraper, source-quality weighting
+  models/              Forecaster, conformal, NGBoost, CQR, centre policy,
+                       data quality, source weights, MLflow, forecast assembly
+  backtest/            Price resolution, scoring, interval metrics,
+                       candidate resolution + scoring, promotion gate
+  db/                  Parquet store, ops-table mirrors
+  scripts/             Task runner, ~47 batch entrypoints
+  tests/               Pytest suite (221 modules)
+price-archive/         Gitignored local copy of the durable archive
+docs/                  Architecture, research log, experiment log, changelog
+.github/workflows/     10 workflows — daily chain + freshness, lint, diagnostics
 ```
 
-Operational reference — env vars, task commands, workflow schedules — lives in
-[`docs/`](docs/README.md) (`operations.md`, `architecture/pipeline.md`).
+> The durable price archive lives in the separate [`cs2-oracle-data`](https://github.com/RayanR000/cs2-oracle-data) repo (CI-only writes, orphan-commit + force-push). The local `price-archive/` is read-only reference.
+
+## Evaluation protocol
+
+Every prediction is stored with anchor date and horizon; the backtest resolves it once
+the archive covers the target date.
+
+- Both legs resolve through one code path (`backtest.price_resolution`)
+- Resolved outcomes are frozen — re-resolution is explicit and separate
+- Maturity is bounded by archive coverage, not the calendar
+- Results reported by price tier (≥$1 cohort; sub-$1 items behave differently)
+- CV and production share one cohort definition
+- Directional accuracy is never quoted alone — always beside the constant-call baseline, realised down-rate, and the Pesaran–Timmermann test
+
+Live figures: `GET /accuracy/summary`.
 
 ## Limitations
 
-- **Small training universe.** A $1 median-price floor and 1.2M-row budget leave ~900
-  of ~5,500 items. Chosen for determinism (the old subsample's seed alone moved CV
-  accuracy 1.5–3.1pp); the cost is breadth, and new items can't onboard (discovery
-  disabled, backfill quota exhausted).
-- **Naive baseline still wins.** Excluding trailing-window means from the consensus
-  (2026-08-09) cleaned the label but didn't close the gap to `−return_1d` at any horizon.
-- **Walk-forward gate isn't production-comparable.** Its loader skips multi-source
-  voting — a relative gate for config changes, not a live-accuracy estimate.
-- **Archive day gaps**, mostly from cron drift around midnight UTC, thin training and
-  bound what the backtest can resolve.
-- **Single-seed models.** A 3-seed ensemble (≈0.3–0.5pp est.) was cut as below what the
-  accuracy gate can resolve.
+| Limitation | Detail |
+|------------|--------|
+| **Small training universe** | $1 floor + 1.2M-row budget → ~900 of ~5,500 items; discovery disabled |
+| **Naive baseline competitive** | Clean consensus label didn't close the gap to `-return_1d` |
+| **Walk-forward ≠ production** | Loader skips multi-source voting; relative gate only |
+| **Archive day gaps** | Cron drift around midnight UTC thins training windows |
+| **Single-seed models** | 3-seed ensemble cut — delta below what the accuracy gate resolves |
+| **Manual promotion** | Shadow challengers produce evidence reports; promotion requires operator approval |
 
 ## Documentation
 
-[`docs/`](docs/README.md) holds architecture notes, the research log, preregistered
-experiments with recorded outcomes, and an append-only changelog of shipped changes
-with measured effects. Negative results are kept — feature families that were built,
-measured, and removed explain why.
+[`docs/`](docs/README.md) — architecture notes, research log, preregistered experiments with
+recorded outcomes, and an append-only changelog of shipped changes with measured effects.
+[`experiment_log.csv`](docs/experiment_log.csv) tracks every shipped / refuted / void arm.
+Negative results are kept.
