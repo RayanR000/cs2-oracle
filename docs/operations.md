@@ -41,8 +41,9 @@ nothing in the daily pipeline reads them.
 `discover-new-items` is not merely dormant: `scripts/discover_steam_items.py:20` imports
 `collectors.real_data_collector`, a module that does not exist. Any dispatch dies with
 `ImportError` before a single Steam request. **Item onboarding has no working path today** —
-Steam discovery is broken, and the CSMarketAPI free-key quota is permanently exhausted
-(all keys still 429). Do not tell anyone the catalog can be extended.
+Steam discovery is broken. CSMarketAPI keys reset monthly (1,000 calls each); 988 items
+were backfilled on 2026-09-20 (see changelog). 305 knives/gloves are checkpointed —
+resume with `--only-catalog` when the key resets.
 
 **Deleted 2026-07-31, do not resurrect from CI.** `supply-scraper` (Steam 429s runner
 IPs on the first request) and `reddit-sentiment` (`old.reddit.com` returns 403 to

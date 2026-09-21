@@ -31,6 +31,10 @@ price-archive/                       (local working copy, NOT the canonical repo
   │                                    there, ingested_at NULL before 2026-08-08)
   ├─ prices-YYYY-MM.parquet          — same six columns (monthly from 2026 on)
   │                                    2026-03/04 also carry min_price, max_price
+  │                                    7 `csmarketapi_*` sources (steam, csfloat,
+  │                                    marketcsgo, whitemarket, skinport, skinbaron,
+  │                                    csdeals) backfilled 2026-09-20 for 988 items
+  │                                    spanning 2013-08 to 2026-03 (3.2M rows)
   ├─ exchange-rates-YYYY.parquet     — currency rates
   ├─ exchange-rates-history.parquet  — daily USD-base FX history (`ingest_fx_history.py`)
   ├─ player-counts-YYYY.parquet      — frozen; the collector was removed in 181488b

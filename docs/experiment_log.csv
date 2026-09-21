@@ -59,3 +59,4 @@ date,name,hypothesis,metric,estimate,ci_lo,ci_hi,n,verdict,link
 2026-09-13,served-centre-rank,Rank on the served centre beats rank on the fitted centre,served rank IC,,,,,void,docs/changelog/2026-09-13-served-centre-rank-void.md
 2026-09-13,supply-velocity-transfer,Supply velocity transfers its archive edge to serving,served rank IC,,,,,refuted,docs/changelog/2026-09-13-supply-velocity-transfer-killed.md
 2026-09-18,multi-head-champion-challenger,Exact served shadow predictions can safely arbitrate component promotion,framework contract,,,,,shipped,docs/changelog/2026-09-18-multi-head-champion-challenger-built.md
+2026-09-20,csmarketapi-multi-source-labels,Multi-source labels from 7 CSMarketAPI markets improve ranking skill,clean anchor rank IC,+0.04 avg across 7d/14d/30d,,,,shipped,docs/changelog/2026-09-20-csmarketapi-backfill-and-retrain.md
