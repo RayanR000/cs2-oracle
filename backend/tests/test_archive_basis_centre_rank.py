@@ -12,7 +12,7 @@ from typing import ClassVar
 import numpy as np
 import pandas as pd
 import pytest
-from scripts.archive_basis_centre_rank import (
+from scripts.archive.archive_basis_centre_rank import (
     MIN_DATES,
     archive_legs,
     evaluate_bars,

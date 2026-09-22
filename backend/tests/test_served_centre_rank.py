@@ -7,7 +7,7 @@ synthetic frames. No DB, no archive.
 import numpy as np
 import pandas as pd
 import pytest
-from scripts.served_centre_rank import (
+from scripts.archive.served_centre_rank import (
     attach_naive,
     derive_panel,
     evaluate_confirmation,

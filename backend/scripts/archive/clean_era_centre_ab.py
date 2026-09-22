@@ -54,7 +54,9 @@ from db.archive import prices_relation
 from models.forecaster import ANCHOR_TIED_COL, ItemForecaster
 from models.item_parser import archive_universe_sql_filter
 
-from scripts.archive.ab_test_item_metadata import _stratified_sample, assign_items
+def _lazy_ab_imports():
+    from scripts.archive.ab_test_item_metadata import _stratified_sample, assign_items
+    return _stratified_sample, assign_items
 
 logging.basicConfig(
     level=logging.INFO,
@@ -318,6 +320,7 @@ def run(df, features, horizon_filter=None, max_folds=None, n_jobs=None):
         raise SystemExit(
             "LABEL_SMOOTHED_ANCHOR is on: label basis is not the pre-registered raw composite. Refusing to run."
         )
+    _stratified_sample, assign_items = _lazy_ab_imports()
     eval_items, train_items, trained_eval = assign_items(df)
     set_eval, set_train, set_trained = (set(eval_items), set(train_items), set(trained_eval))
 

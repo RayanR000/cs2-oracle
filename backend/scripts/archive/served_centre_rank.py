@@ -31,7 +31,7 @@ from backtest.scoring import excluded_forecast_date
 from database import SessionLocal
 from models.forecaster import ItemForecaster
 
-from scripts.clean_era_centre_ab import bootstrap_ci, paired_delta_ci, per_date_ic
+from scripts.archive.clean_era_centre_ab import bootstrap_ci, paired_delta_ci, per_date_ic
 
 logging.basicConfig(
     level=logging.INFO,

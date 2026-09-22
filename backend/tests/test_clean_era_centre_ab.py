@@ -9,7 +9,7 @@ of small arrays.
 import numpy as np
 import pandas as pd
 import pytest
-from scripts.clean_era_centre_ab import (
+from scripts.archive.clean_era_centre_ab import (
     _spearman,
     bootstrap_ci,
     evaluate_bars,
@@ -143,7 +143,7 @@ class TestEvaluateBars:
 
 class TestLabelBasisGuard:
     def test_smoothed_label_refuses_to_run(self, monkeypatch):
-        import scripts.clean_era_centre_ab as cec
+        import scripts.archive.clean_era_centre_ab as cec
 
         monkeypatch.setenv("LABEL_SMOOTHED_ANCHOR", "1")
         try:
