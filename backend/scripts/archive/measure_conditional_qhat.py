@@ -82,7 +82,8 @@ def default_voted_panel() -> str:
     and the local archive runs behind the durable one. The provenance line in
     `load_panel` is what makes a run citable, so it is printed, not assumed.
     """
-    here = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    # backend/, three levels up from scripts/archive/<this file>.
+    here = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
     found = glob.glob(os.path.join(here, "data", "voted_*.parquet"))
     if not found:
         raise SystemExit(

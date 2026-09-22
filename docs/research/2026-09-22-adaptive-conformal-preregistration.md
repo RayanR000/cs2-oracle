@@ -1,7 +1,7 @@
 # Pre-registration: time-adaptive conformal (ACI) vs pooled and rolling q_hat
 
 **Date:** 2026-09-22, written **before any ACI number is computed.**
-**Status:** PROPOSED. Instrument not yet built.
+**Status:** PROPOSED. Instrument: `backend/scripts/archive/measure_aci.py` (+ `tests/test_measure_aci.py`).
 **Follows:** `research/2026-08-09-model-and-data-research.md` §ACI ("ACI is the right
 drift answer"), `research/2026-08-19-deep-model-review.md` item 14 (ACI/DtACI as the
 upgrade to the batch served-feedback scalar, h=3/7 only),
@@ -60,8 +60,10 @@ two thirds the **scoring block**. All verdicts are read on the scoring block onl
   `α ← α + γ·(α* − err)`, where `α* = 0.20` and `err` is that date's cross-sectional
   miss fraction. Clip `α_t` to `[0.005, 0.60]` and initialise it at 0.20. Updates run
   on every date, so there is no stride.
-  - `γ` is chosen from `{0.005, 0.01, 0.02, 0.05}` by the lowest level-matched date
+  - `γ` is chosen from `{0.005, 0.01, 0.02, 0.05, 0.1, 0.2}` by the lowest level-matched date
     error on the tuning block, then frozen for the scoring block.
+    (Grid amended from `{0.005 … 0.05}` on 2026-09-22 **before any real-data number** —
+    see *Amendments*.)
 - **P_aci** is the placebo: A_aci with the same `γ`, fed the same `err` values in a
   permuted date order (seed fixed). This destroys the temporal information and keeps
   the machinery.
@@ -111,3 +113,19 @@ A_aci **passes a horizon** only if all of the following hold:
 
 This repo's recurring pattern is **CV-positive, serving-negative** (`AGENTS.md`). An
 offline pass is a reason to run the served confirm, not evidence of a served gain.
+
+## Amendments
+
+**2026-09-22, before any real-data run: γ grid widened to add 0.1 and 0.2.** The
+instrument's synthetic tests showed that the original grid capped how fast ACI can adapt.
+γ bounds the per-update move in α to `γ·max|α* − err|` (at most 0.03/day at γ=0.05), so
+on abrupt regime switches the band stays maladapted for about half of each regime.
+Synthetic panel, level-matched date error:
+
+| regime | S0 | γ=0.05 | γ=0.2 |
+|---|---|---|---|
+| 30-date blocks, 3× scale | 19.2pp | 17.6pp | 10.2pp |
+| 90-date blocks, 2× scale | 14.8pp | 6.9pp | 5.5pp |
+
+γ is still chosen on the tuning block only, so a wider grid does not touch the scoring
+block. No other part of the bar changed.

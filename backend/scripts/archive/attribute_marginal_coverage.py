@@ -185,7 +185,8 @@ def served_panel_path(explicit: str | None) -> str | None:
     """
     if explicit:
         return explicit
-    here = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    # backend/, three levels up from scripts/archive/<this file>.
+    here = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
     found = glob.glob(os.path.join(here, "data", "voted_*.parquet"))
     if not found:
         return None
