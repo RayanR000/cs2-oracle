@@ -70,7 +70,7 @@ from scripts.archive.ab_test_item_metadata import (
     assign_items,
     build_frame,
 )
-from scripts.exceedance_meta_ab import (
+from scripts.archive.exceedance_meta_ab import (
     TREE_PARAMS,
     paired_fold_deltas,
 )

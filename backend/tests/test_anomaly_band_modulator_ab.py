@@ -10,7 +10,7 @@ the level-matched error would move the verdict without touching the fit.
 
 import numpy as np
 import pytest
-from scripts.anomaly_band_modulator_ab import (
+from scripts.archive.anomaly_band_modulator_ab import (
     F_HI,
     F_LO,
     anomaly_decile_error,

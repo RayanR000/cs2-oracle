@@ -20,7 +20,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from scripts.check_label_seams import (
+from scripts.archive.check_label_seams import (
     NULL_SOURCE_LABEL,
     daily_median_returns,
     flag_seams,

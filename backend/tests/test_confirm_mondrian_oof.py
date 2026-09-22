@@ -14,7 +14,7 @@ import pandas as pd
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from scripts.confirm_mondrian_oof import (
+from scripts.archive.confirm_mondrian_oof import (
     DEFAULT_Q50,
     default_q50_params,
     last_test_folds,

@@ -43,7 +43,7 @@ should not be read as a serving expectation. Flagged rather than fixed: fixing
 it is a change to a production label definition and belongs in its own change.
 
 Usage:
-    python -m scripts.anomaly_gbm_ab --horizon 7 \
+    python -m scripts.archive.anomaly_gbm_ab --horizon 7 \
         --metadata-parquet ../price-archive/item-metadata-bymykel.parquet \
         --frame-cache /tmp/exc_meta_frame.parquet --out /tmp/anom_h7.json
 """
@@ -60,7 +60,6 @@ import numpy as np
 import pandas as pd
 from database import SessionLocal
 from models.forecaster import ItemForecaster
-
 from scripts.archive.ab_test_item_metadata import (
     ROW_BUDGET,
     STEP_DAYS,
@@ -69,7 +68,7 @@ from scripts.archive.ab_test_item_metadata import (
     assign_items,
     build_frame,
 )
-from scripts.exceedance_meta_ab import TREE_PARAMS, _score, fold_tally, paired_fold_deltas
+from scripts.archive.exceedance_meta_ab import TREE_PARAMS, _score, fold_tally, paired_fold_deltas
 
 logging.basicConfig(
     level=logging.INFO,

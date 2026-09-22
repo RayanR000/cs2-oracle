@@ -9,7 +9,7 @@ producing a table of the wrong rows.
 """
 
 import pytest
-from scripts.compare_diagnostics import (
+from scripts.archive.compare_diagnostics import (
     cv_table_note,
     cv_tied_row,
     pair_replay_rows,

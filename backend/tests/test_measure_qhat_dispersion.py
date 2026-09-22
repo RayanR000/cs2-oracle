@@ -14,7 +14,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from scripts.measure_qhat_dispersion import _rel_gap, dispersion_stats, evaluate_bars
+from scripts.archive.measure_qhat_dispersion import _rel_gap, dispersion_stats, evaluate_bars
 
 
 def _stats_for(cvs: dict) -> dict:

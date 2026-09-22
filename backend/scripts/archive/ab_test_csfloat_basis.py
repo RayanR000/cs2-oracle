@@ -94,7 +94,7 @@ import pandas as pd
 from backtest.paired_mde import paired_da_difference
 from database import SessionLocal
 from models.forecaster import ItemForecaster, phase_collapsed_sql_filter
-from models.market_factor import build_market_index, market_factor_for_horizon
+from scripts.archive.market_factor import build_market_index, market_factor_for_horizon
 
 MIN_MEDIAN_PRICE = 1.0
 MIN_ITEM_DAYS = 180

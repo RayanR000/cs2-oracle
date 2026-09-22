@@ -13,7 +13,7 @@ Cohorts (stored legs + serve-time mask only, never a reconstruction):
   exact:  current_price == base_price (sensitivity only)
 
 Usage:
-    venv/bin/python -m scripts.served_centre_rank --out /tmp/scr_h14.json
+    venv/bin/python -m scripts.archive.served_centre_rank --out /tmp/scr_h14.json
 """
 
 from __future__ import annotations
@@ -30,7 +30,6 @@ import pandas as pd
 from backtest.scoring import excluded_forecast_date
 from database import SessionLocal
 from models.forecaster import ItemForecaster
-
 from scripts.archive.clean_era_centre_ab import bootstrap_ci, paired_delta_ci, per_date_ic
 
 logging.basicConfig(

@@ -14,6 +14,8 @@ import pandas as pd
 import pytest
 from models.forecaster import ItemForecaster, _feature_group
 
+from tests._source import method_closure_source
+
 # ----------------------------------------------------------------------
 # Gating
 # ----------------------------------------------------------------------
@@ -664,9 +666,8 @@ def test_predict_refuses_a_rank_artifact_that_records_no_cohort():
     needs a loaded booster and a price archive. A source test is weak, but it
     fails if the guard is deleted, which is the regression that matters.
     """
-    import inspect
 
-    src = inspect.getsource(ItemForecaster.predict)
+    src = method_closure_source(ItemForecaster, "predict")
     guard = src.split("_cross_sectional_rank_served()")[1]
     assert "_artifact_min_median_price is None" in guard
     assert "raise RuntimeError" in guard
@@ -757,9 +758,8 @@ def test_serving_leaves_raw_a_column_training_skipped():
 
 
 def test_predict_refuses_when_the_artifact_records_no_skip_set():
-    import inspect
 
-    src = inspect.getsource(ItemForecaster.predict)
+    src = method_closure_source(ItemForecaster, "predict")
     guard = src.split("_cross_sectional_rank_served()")[1]
     assert "_artifact_xs_rank_skipped is None" in guard
     assert "skip_cols=" in guard

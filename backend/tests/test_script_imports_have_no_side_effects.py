@@ -27,10 +27,10 @@ BACKEND_DIR = Path(__file__).resolve().parent.parent
 # Modules that once mutated os.environ at import, plus their neighbours that
 # share the pattern. Importing the module must be enough — no function calls.
 SCRIPT_MODULES = [
-    "scripts.confirm_mondrian_oof",
-    "scripts.anomaly_gbm_ab",
-    "scripts.anomaly_calibration_ab",
-    "scripts.anomaly_band_modulator_ab",
+    "scripts.archive.confirm_mondrian_oof",
+    "scripts.archive.anomaly_gbm_ab",
+    "scripts.archive.anomaly_calibration_ab",
+    "scripts.archive.anomaly_band_modulator_ab",
 ]
 
 PROBE = (

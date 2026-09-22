@@ -5,7 +5,7 @@ from pathlib import Path
 import pandas as pd
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
-from scripts.build_stattrak_panel import base_name, build_stattrak_panel
+from scripts.archive.build_stattrak_panel import base_name, build_stattrak_panel
 
 
 def test_base_name_strips_stattrak_prefix():

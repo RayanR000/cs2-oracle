@@ -29,9 +29,9 @@ Fixed design (see prereg; do not tune after reading):
            MAE skill vs last-price positive.
 
 Usage:
-    python -m scripts.clean_era_centre_ab --frame-cache /tmp/cec_frame.parquet \\
+    python -m scripts.archive.clean_era_centre_ab --frame-cache /tmp/cec_frame.parquet \\
         --build-cache-only
-    python -m scripts.clean_era_centre_ab --frame-cache /tmp/cec_frame.parquet \\
+    python -m scripts.archive.clean_era_centre_ab --frame-cache /tmp/cec_frame.parquet \\
         --horizon 14 --out /tmp/cec_h14.json
 """
 
@@ -53,6 +53,7 @@ from database import SessionLocal
 from db.archive import prices_relation
 from models.forecaster import ANCHOR_TIED_COL, ItemForecaster
 from models.item_parser import archive_universe_sql_filter
+
 
 def _lazy_ab_imports():
     from scripts.archive.ab_test_item_metadata import _stratified_sample, assign_items

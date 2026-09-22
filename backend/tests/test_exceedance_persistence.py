@@ -9,12 +9,13 @@ dropped would mis-size the band. These guard the storage seam, not the offline A
 
 from __future__ import annotations
 
-import inspect
 from unittest.mock import MagicMock
 
 import numpy as np
 import pandas as pd
 from models.forecaster import ItemForecaster
+
+from tests._source import method_closure_source
 
 
 def _forecaster(tmp_path):
@@ -60,6 +61,6 @@ def test_training_loop_fits_and_stores_the_exceedance_head(tmp_path):
     integration proof); this guards the wiring at the seam so it cannot silently drop
     out of the loop, mirroring the source-anchored guards elsewhere in the suite.
     """
-    src = inspect.getsource(ItemForecaster._train_horizon_inline)
+    src = method_closure_source(ItemForecaster, "_train_horizon_inline")
     assert "_fit_exceedance_classifier(" in src
     assert "self.exceedance_models[horizon]" in src

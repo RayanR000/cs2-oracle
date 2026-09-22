@@ -26,7 +26,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from backtest.paired_mde import paired_da_difference
-from scripts import walkforward_backtest as wf
+from scripts.archive import walkforward_backtest as wf
 
 
 def main():

@@ -150,7 +150,7 @@ def _load_archive(start: str, served_only: bool = False, label: str = "voted") -
     voted["date"] = pd.to_datetime(voted["date"])
     voted = voted.sort_values(["item_id", "date"]).reset_index(drop=True)
     if label == "within-source":
-        from scripts.check_label_seams import within_source_index
+        from scripts.archive.check_label_seams import within_source_index
 
         clean = within_source_index(raw, voted)
         voted = voted.drop(columns=["price"]).merge(clean, on=["item_id", "date"], how="inner")

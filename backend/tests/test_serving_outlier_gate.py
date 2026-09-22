@@ -21,6 +21,8 @@ import pandas as pd
 import pytest
 from models.forecaster import ItemForecaster
 
+from tests._source import method_closure_source
+
 
 def _pair(price, smoothed):
     """Aligned (latest quote, smoothed anchor) columns, as `predict` holds them."""
@@ -162,16 +164,14 @@ class TestItIsWiredIntoServing:
         substitution is the only site that sets the served `current_price`. An
         extraction that predict() does not call would leave the flag inert and
         the two dispatches identical, which reads as a null result."""
-        import inspect
 
-        src = inspect.getsource(ItemForecaster.predict)
+        src = method_closure_source(ItemForecaster, "predict")
         assert "_serving_base_price(" in src
 
     def test_the_flag_is_logged_so_a_run_says_which_arm_it_is(self):
         """A serving-only flag leaves no trace in `meta.json`: the artifact is
         the same one either way. The log line is the only record of which price
         a stored replay number was scored against."""
-        import inspect
 
-        src = inspect.getsource(ItemForecaster.predict)
+        src = method_closure_source(ItemForecaster, "predict")
         assert "SERVE_OUTLIER_GATED_ANCHOR" in src

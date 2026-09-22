@@ -5,9 +5,9 @@ from pathlib import Path
 import pandas as pd
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
-from scripts.build_all_sidecars import SIDECAR_NAMES, _count_sidecars
-from scripts.build_bid_panel import build_bid_panel
-from scripts.build_stattrak_panel import build_stattrak_panel
+from scripts.archive.build_all_sidecars import SIDECAR_NAMES, _count_sidecars
+from scripts.archive.build_bid_panel import build_bid_panel
+from scripts.archive.build_stattrak_panel import build_stattrak_panel
 
 
 def test_every_sidecar_has_the_join_key():

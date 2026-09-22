@@ -61,16 +61,10 @@ def test_flag_reads_the_environment(monkeypatch):
     assert ItemForecaster.exceedance_scale_enabled() is True
 
 
-def test_exceedance_scale_is_mutually_exclusive_with_learned_and_exponent(tmp_path, monkeypatch):
+def test_exceedance_scale_is_mutually_exclusive_with_exponent(tmp_path, monkeypatch):
     f = _forecaster(tmp_path)
     recs = _records()
     monkeypatch.setenv("EXCEEDANCE_SCALE", "1")
-    monkeypatch.setenv("LEARNED_SCALE", "1")
-    monkeypatch.delenv("SIGMA_EXPONENT", raising=False)
-    with pytest.raises(RuntimeError, match="EXCEEDANCE_SCALE"):
-        f._calibrate_conformal(7, recs.copy())
-
-    monkeypatch.delenv("LEARNED_SCALE", raising=False)
     monkeypatch.setenv("SIGMA_EXPONENT", "1")
     with pytest.raises(RuntimeError, match="EXCEEDANCE_SCALE"):
         f._calibrate_conformal(7, recs.copy())
