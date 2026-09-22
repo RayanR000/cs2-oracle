@@ -14,6 +14,7 @@ import sys
 import time
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
+from dataclasses import dataclass, field
 from typing import Any, ClassVar
 
 import lightgbm as lgb
@@ -3440,13 +3441,13 @@ class ItemForecaster:
 
         return df
 
-    # ── Supply-depth features (sell_listings, skinport_quantity) ──────
+    # ── Supply-depth features (sell_listings) ─────────────────────────
 
     def _fetch_supply_snapshots(self) -> pd.DataFrame:
         """Load daily supply depth from `price-archive/supply-*.parquet`.
 
         Returns DataFrame with columns:
-          item_id, date, sell_listings, skinport_quantity
+          item_id, date, sell_listings
 
         Reads the archive, NOT the `supply_snapshots` Postgres table this method
         used to query. That table holds one stale day (2026-07-15) from the Steam
@@ -3468,7 +3469,7 @@ class ItemForecaster:
         if hasattr(self, "_supply_snap_cache") and self._supply_snap_cache is not None:
             return self._supply_snap_cache
 
-        empty = pd.DataFrame(columns=["item_id", "date", "sell_listings", "skinport_quantity"])
+        empty = pd.DataFrame(columns=["item_id", "date", "sell_listings"])
         # Month partitions ONLY, matching `supply_depth.supply_parquet_path`'s
         # `supply-{%Y-%m}.parquet`. A bare `supply-*.parquet` also matches
         # `supply-history.parquet` -- the BUFF listing sidecar `_attach_sidecars`
@@ -3500,12 +3501,6 @@ class ItemForecaster:
             )
             df["date"] = pd.to_datetime(df["date"]).dt.date
             df["sell_listings"] = df["sell_listings"].astype(int)
-            # Retained so `_add_supply_depth_features` keeps its column contract.
-            # The old Steam/Skinport split no longer exists — one consolidated
-            # depth series replaces it — so this stays 0 rather than being
-            # dropped, which would change the feature set as a side effect of a
-            # data-source change.
-            df["skinport_quantity"] = 0
             df = df.sort_values(["item_id", "date"]).reset_index(drop=True)
 
             logger.info(
@@ -3522,9 +3517,6 @@ class ItemForecaster:
 
     def _add_supply_depth_features(self, df: pd.DataFrame) -> pd.DataFrame:
         """Add supply-depth features: listing count, change, ratio.
-
-        Uses steam sell_listings as the primary signal, with
-        skinport_quantity as a secondary source where available.
 
         Features:
           supply_listings_log        — log(1 + sell_listings)
@@ -3545,7 +3537,6 @@ class ItemForecaster:
 
         df = df.merge(snap, on=["item_id", "date"], how="left")
         df["sell_listings"] = df["sell_listings"].fillna(0).astype(int)
-        df["skinport_quantity"] = df["skinport_quantity"].fillna(0).astype(int)
 
         # Log transform (scale-invariant, handles right skew)
         df["supply_listings_log"] = np.log1p(df["sell_listings"]).astype(np.float32)
@@ -3578,7 +3569,7 @@ class ItemForecaster:
             df["supply_to_volume_ratio"] = 0.0
 
         # Drop intermediate raw columns
-        df = df.drop(columns=["sell_listings", "skinport_quantity"], errors="ignore")
+        df = df.drop(columns=["sell_listings"], errors="ignore")
 
         logger.info("  supply depth features added")
         return df
@@ -6185,6 +6176,758 @@ class ItemForecaster:
             logger.info(f"{'=' * 60}")
             logger.info(f"  [timing] TOTAL training: {_train_elapsed:.1f}s")
 
+    def _train_auxiliary_heads(
+        self,
+        horizon: int,
+        train_set: pd.DataFrame,
+        val_set: pd.DataFrame,
+        X_train: pd.DataFrame,
+        y_train: pd.Series,
+        per_quantile_params: dict,
+        boosting_type: str,
+        boost_rounds: int,
+        feature_medians: pd.Series,
+        n_jobs: int,
+        _es: bool,
+    ) -> None:
+        """Train exceedance, vol-rank, anomaly, ranking, NGBoost, and regime models.
+
+        All auxiliary heads are independent from the main ensemble and from each
+        other.  Every result is stored on ``self`` (side-effect only, no return).
+
+        Extracted from ``_train_horizon_inline`` -- pure structural refactor,
+        zero behavioural change.
+        """
+        # Directional classifier: OFFLINE-ONLY (2026-09-19). Routine
+        # production training fits no three-class direction booster; the
+        # served `direction`/`confidence` fields come from the no-classifier
+        # fallback in predict(), and the API discloses neutral. The
+        # reproducible benchmark lives in scripts/direction_benchmark.py.
+        # The fitting and metric helpers are retained for that offline
+        # use, as is the env-gated CV diagnostic.
+        logger.info(f"  Skipping {horizon}d directional classifier (offline-only).")
+
+        # Exceedance head: P(|move| clears the round-trip cost), the band-width
+        # scale for Phase 2. Trains on the same rows as the range model, off the
+        # precomputed one-sided target_exceed_{h}d label (NaN where that label is
+        # voided); reuses the direction head's tree params and served-cohort
+        # reweighting. None where <2 classes survive (a degenerate horizon).
+        #
+        # Trained when EITHER the band uses it as a scale (EXCEEDANCE_SCALE) OR
+        # it is served as a disclosed output (EXCEEDANCE_HEAD). The two are
+        # decoupled: the band's q_hat only becomes exceedance-based when the OOF
+        # exceed_p is computed in the CV path (gated on EXCEEDANCE_SCALE alone,
+        # a matched pair), whereas the served `exceed_p` field needs only a head
+        # in the artifact. With both flags off no head is fit and the artifact is
+        # byte-identical to the pre-Phase-2 one.
+        if self.exceedance_scale_enabled() or self.exceedance_head_enabled():
+            _exc_start = time.time()
+            X_exc = self._exceedance_feature_matrix(train_set, self.feature_cols)
+            X_exc_clean = X_exc.replace([np.inf, -np.inf], np.nan)
+            X_exc = self._impute_features(X_exc_clean, X_exc_clean.median())
+            self.exceedance_models[horizon] = self._fit_exceedance_classifier(
+                X_exc,
+                train_set[f"target_exceed_{horizon}d"].to_numpy(),
+                boosting_type,
+                self._direction_tree_params(per_quantile_params),
+                horizon=horizon,
+                tier_train=(train_set["price_tier"].to_numpy() if "price_tier" in train_set.columns else None),
+                num_boost_round=boost_rounds,
+            )
+            logger.info(f"  [timing] {horizon}d exceedance classifier: {time.time() - _exc_start:.1f}s")
+
+        # Volatility-ranking GBM: predict |return| to reshape climatology
+        # cross-sectionally. Requires CLIMATOLOGY_SCALE to be on (the base
+        # it modulates). Trained on the same split and features.
+        if self.vol_rank_gbm_enabled() and self.climatology_scale_enabled():
+            _vr_start = time.time()
+            target_col = f"target_return_{horizon}d"
+            y_abs_train = train_set[target_col].abs()
+            y_abs_val = val_set[target_col].abs()
+            self.vol_rank_models[horizon] = self._fit_vol_rank_model(
+                X_train,
+                y_abs_train,
+                X_val=self._impute_features(
+                    val_set[self.feature_cols].replace([np.inf, -np.inf], np.nan), feature_medians
+                ),
+                y_abs_val=y_abs_val,
+                boosting_type=boosting_type,
+                tree_params=self._direction_tree_params(per_quantile_params),
+                horizon=horizon,
+                num_boost_round=boost_rounds,
+            )
+            logger.info(f"  [timing] {horizon}d vol-rank GBM: {time.time() - _vr_start:.1f}s")
+
+        # Anomaly classifier: P(|return_h| > 2sigma_item). An alert signal,
+        # not a band input. Gate: ANOMALY_GBM=1.
+        if self.anomaly_gbm_enabled():
+            _anom_start = time.time()
+            anom_col = f"target_anomaly_{horizon}d"
+            if anom_col in train_set.columns:
+                self.anomaly_models[horizon] = self._fit_anomaly_classifier(
+                    X_train,
+                    train_set[anom_col].to_numpy(),
+                    boosting_type,
+                    self._direction_tree_params(per_quantile_params),
+                    horizon=horizon,
+                    tier_train=(train_set["price_tier"].to_numpy() if "price_tier" in train_set.columns else None),
+                    num_boost_round=boost_rounds,
+                )
+                logger.info(f"  [timing] {horizon}d anomaly classifier: {time.time() - _anom_start:.1f}s")
+
+                # Isotonic calibration on holdout predictions. The anomaly
+                # classifier is trained on train_set; get predictions on
+                # val_set (the early-stopping holdout) for calibration.
+                anom_head = self.anomaly_models[horizon]
+                if anom_head is not None and anom_col in val_set.columns:
+                    anom_val_cols = anom_head.feature_name()
+                    X_anom_val = val_set.reindex(columns=anom_val_cols, fill_value=0).replace([np.inf, -np.inf], np.nan)
+                    if not self.feature_medians.empty:
+                        X_anom_val = self._impute_features(X_anom_val, self.feature_medians.reindex(anom_val_cols))
+                    anom_p_val = np.clip(anom_head.predict(X_anom_val), 1e-3, 1.0)
+                    anom_y_val = val_set[anom_col].to_numpy(dtype=float)
+                    ok = np.isfinite(anom_p_val) & np.isfinite(anom_y_val)
+                    if int(ok.sum()) >= self.MIN_EXCEEDANCE_CALIBRATION_ROWS:
+                        xs, ys = self._isotonic_fit(
+                            np.clip(anom_p_val[ok], 1e-3, 1.0),
+                            anom_y_val[ok].astype(float),
+                        )
+                        self.anomaly_calibrators[horizon] = {
+                            "xs": [float(v) for v in xs],
+                            "ys": [float(v) for v in ys],
+                        }
+                        logger.info(
+                            f"  {horizon}d anomaly isotonic calibration: "
+                            f"{int(ok.sum())} pairs, {len(xs)} steps"
+                        )
+                    else:
+                        logger.warning(
+                            f"  {horizon}d anomaly calibration: only {int(ok.sum())} "
+                            f"usable pairs — serving raw output"
+                        )
+
+        # Ranking head: a LambdaRank model that directly optimizes
+        # within-date ranking (the production evaluation metric). Outputs
+        # ranking scores, not returns — served as `rank_score` alongside the
+        # return-based forecast for cross-sectional ordering.
+        if RANKING_HEAD_ENABLED:
+            _rank_start = time.time()
+            self.ranking_models[horizon] = self._fit_ranking_head(
+                X_train, y_train, train_set["date"].to_numpy(),
+                self._impute_features(
+                    val_set[self.feature_cols].replace([np.inf, -np.inf], np.nan), feature_medians
+                ),
+                val_set[f"target_return_{horizon}d"],
+                val_set["date"].to_numpy(),
+                self._direction_tree_params(per_quantile_params),
+                horizon=horizon,
+                num_boost_round=boost_rounds,
+            )
+            logger.info(f"  [timing] {horizon}d ranking head: {time.time() - _rank_start:.1f}s")
+
+        # NGBoost distributional head: Normal(mean, std) shadow predictions.
+        # Only on h=7 and h=14 — where the IC ceiling headroom is largest.
+        if NGBOOST_HEAD_ENABLED and horizon in (7, 14):
+            try:
+                from models.ngboost_head import train_ngboost
+
+                _ngb_start = time.time()
+                target_col = f"target_return_{horizon}d"
+                ngb_result = train_ngboost(
+                    X_train, train_set[target_col].to_numpy(),
+                    self._impute_features(
+                        val_set[self.feature_cols].replace([np.inf, -np.inf], np.nan), feature_medians
+                    ),
+                    val_set[f"target_return_{horizon}d"].to_numpy(),
+                    horizon=horizon,
+                )
+                self.ngboost_models[horizon] = ngb_result.model
+                logger.info(
+                    f"  [timing] {horizon}d NGBoost head: {time.time() - _ngb_start:.1f}s "
+                    f"(train_nll={ngb_result.train_nll:.4f}, val_nll={ngb_result.val_nll:.4f})"
+                )
+            except Exception:
+                logger.exception(f"  NGBoost {horizon}d head failed — skipping")
+
+        # Train regime-specific models (default: skipped; set SKIP_REGIMES=0 to enable)
+        #
+        # `_warm_retrain` deliberately does NOT skip these, though it used to.
+        # `predict` at :5584 *prefers* the regime model over the global one
+        # whenever `_detect_current_regime` matches, so an artifact with no
+        # regime models serves a different mid — dropping them is a change to
+        # the forecast, not a cost saving. That was tolerable while warm
+        # retrains only ran locally; it is not once CI restores the model
+        # cache on training runs, which is what makes the warm path
+        # production's steady state. Skipping them is now opt-in only.
+        if os.environ.get("SKIP_REGIMES", "1") != "0":
+            # Drop any regime models this horizon carried in from load_models
+            # so a skip run never re-persists stale regime artifacts.
+            for key in [k for k in self.regime_models if k[1] == horizon]:
+                del self.regime_models[key]
+            logger.info("  Regime models skipped (SKIP_REGIMES=1)")
+        else:
+            # Clear this horizon's regime models before refitting them. On a
+            # cold run the dict is empty anyway; on a warm one it holds the
+            # restored artifact's, and a regime that now falls below the
+            # minimums below would otherwise keep the *previous* run's model
+            # and re-persist it beside freshly trained global models.
+            for key in [k for k in self.regime_models if k[1] == horizon]:
+                del self.regime_models[key]
+            for regime in self.REGIMES:
+                if regime == "global":
+                    continue
+                r_train = train_set[train_set["_regime"] == regime]
+                r_val = val_set[val_set["_regime"] == regime]
+                MIN_REGIME_TRAIN = 500
+                MIN_REGIME_VAL = 50
+                if len(r_train) < MIN_REGIME_TRAIN or len(r_val) < MIN_REGIME_VAL:
+                    logger.info(
+                        f"  Skipping {regime} regime ({len(r_train)} train, {len(r_val)} val — below minimum)"
+                    )
+                    continue
+
+                # Use global HP params (reuse Optuna results from global)
+                r_X_train = self._impute_features(
+                    r_train[self.feature_cols].replace([np.inf, -np.inf], np.nan), feature_medians
+                )
+                r_y_train = r_train[f"target_return_{horizon}d"]
+                r_X_val = self._impute_features(
+                    r_val[self.feature_cols].replace([np.inf, -np.inf], np.nan), feature_medians
+                )
+                r_y_val = r_val[f"target_return_{horizon}d"]
+
+                r_train_weights = self._compute_sample_weights(r_train, horizon)
+                r_val_weights = self._compute_sample_weights(r_val, horizon)
+
+                r_ds_params = {"max_bin": self.MAX_BIN, "feature_pre_filter": False}
+                r_dtrain_kw = dict(params=r_ds_params)
+                if r_train_weights is not None:
+                    r_dtrain_kw["weight"] = r_train_weights
+                r_dval_kw = dict(params=r_ds_params)
+                if r_val_weights is not None:
+                    r_dval_kw["weight"] = r_val_weights
+                # The same offset as the global fit. predict() prefers regime
+                # models over the global one, so a regime booster trained
+                # without it would be the thing actually served.
+                r_train_offset = self._naive_offset(r_train)
+                if r_train_offset is not None:
+                    r_dtrain_kw["init_score"] = r_train_offset
+                    r_dval_kw["init_score"] = self._naive_offset(r_val)
+                r_dtrain = lgb.Dataset(r_X_train, r_y_train, **r_dtrain_kw)
+                r_dval = lgb.Dataset(r_X_val, r_y_val, reference=r_dtrain, **r_dval_kw)
+                # Construct eagerly for the same reason as the global
+                # dtrain/dval above: avoid concurrent lazy-binning
+                # across the ensemble ThreadPoolExecutor.
+                r_dtrain.construct()
+                r_dval.construct()
+
+                logger.info(
+                    f"  Training {regime} regime models ({horizon}d, {len(r_train):,} train, {len(r_val):,} val)..."
+                )
+                for q in self.QUANTILES:
+                    pq = per_quantile_params[q]
+                    r_ensemble = []
+                    for ei in range(self.N_ENSEMBLES):
+                        p = pq.copy()
+                        p["random_state"] = self.ENSEMBLE_SEEDS[ei]
+                        p["feature_fraction"] = self.ENSEMBLE_FEATURE_FRACTIONS[ei]
+                        p["n_jobs"] = n_jobs
+                        r_ensemble.append(
+                            self._train_ensemble_member(p, r_dtrain, r_dval, boost_rounds, early_stopping=_es)
+                        )
+                    self.regime_models[(regime, horizon, q)] = r_ensemble
+
+                self.regime_feature_cols[(horizon, regime)] = list(self.feature_cols)
+                logger.info(
+                    f"  {regime} regime models for {horizon}d done ({len(r_train)} train, {len(r_val)} val)"
+                )
+
+    def _cv_and_calibrate(
+        self,
+        horizon: int,
+        tdf: pd.DataFrame,
+        per_quantile_params: dict,
+        per_item_row_sampling: bool,
+        X_val: pd.DataFrame,
+        y_val: pd.Series,
+        val_set: pd.DataFrame,
+        _warm_retrain: bool,
+    ) -> tuple:
+        """Run expanding-window CV and conformal calibration.
+
+        Returns a tuple of:
+            (oof_records, cv_metrics, q_hat, out_of_sample, calibration_source,
+             records_df, exceed_cal_report, sigma_tilt, q_hat_trend,
+             pt_records, pt_records_clf)
+
+        Extracted from ``_train_horizon_inline`` -- pure structural refactor,
+        zero behavioural change.
+        """
+        # Expanding-window CV. This is NOT optional on the production path,
+        # and the reason is conformal, not metrics.
+        #
+        # Split conformal only guarantees coverage if the calibration
+        # residuals are genuinely unseen. `X_val`/`y_val` is not: it is the
+        # `dval` handed to lgb.early_stopping(50) in _train_ensemble_member
+        # AND the set _optuna_search_params scores hyperparameters on. A
+        # q_hat fitted there is measured on rows the model was selected
+        # against, so its residuals are optimistically small, q_hat comes out
+        # biased low, and the served band under-covers. Only CV's out-of-fold
+        # records are unseen.
+        #
+        # So: SKIP_CV was removed from .github/workflows/price-forecast.yml
+        # (pinned by test_ci_workflow_does_not_skip_cv), and a warm retrain
+        # now reuses cached HP WITHOUT skipping CV. Those were always
+        # separable concerns — HP reuse is the point of a warm retrain,
+        # skipping calibration was collateral — and conflating them is what
+        # put an in-sample q_hat behind the served 3d/7d band.
+        #
+        # SKIP_CV=1 survives as a local/dispatch speedup only. It routes to
+        # the holdout leg, which warns that the band under-covers.
+        _skip_cv = os.environ.get("SKIP_CV") == "1"
+        _cv_feasible = self._cv_can_run(tdf, horizon)
+        if _skip_cv:
+            logger.info("  CV skipped (SKIP_CV=1 — local speedup; not the CI path)")
+            oof_records, cv_metrics, pt_records, pt_records_clf = [], [], [], []
+        elif not _cv_feasible:
+            logger.info(f"  CV cannot run for {horizon}d (<2 expanding-window folds)")
+            oof_records, cv_metrics, pt_records, pt_records_clf = [], [], [], []
+        else:
+            # Timed explicitly: post-minimal-model this is the single
+            # largest phase of a warm retrain, and the only figure on
+            # record for it was a REMAINDER (total minus the phases that
+            # were instrumented), which lumped it with feature engineering
+            # and artifact saving. A fold-count change cannot be attributed
+            # against a remainder.
+            _cv_t0 = time.time()
+            (oof_records, cv_metrics, pt_records, pt_records_clf) = self._cv_evaluate_horizon(
+                tdf, horizon, per_quantile_params, per_item_row_sampling=per_item_row_sampling
+            )
+            logger.info(
+                f"  [timing] {horizon}d conformal CV: "
+                f"{time.time() - _cv_t0:.1f}s "
+                f"({len(cv_metrics)} folds, {len(oof_records)} OOF rows)"
+            )
+
+        # Calibrate. Order matters: q_hat sets the band width and the
+        # confidence thresholds are fitted on that width, so the conformal
+        # step runs FIRST and _calibrate_confidence always sees a range_pct
+        # on the same scale _compute_confidence will compare against.
+        if oof_records:
+            records_df = pd.DataFrame(oof_records)
+            calibration_source = f"CV-POOLED OOF, {len(cv_metrics)} folds"
+            out_of_sample = True
+        elif _skip_cv or not _cv_feasible:
+            records_df = self._holdout_conformal_records(horizon, X_val, y_val, val_set)
+            calibration_source = "SINGLE HOLDOUT — expect UNDER-COVERAGE"
+            out_of_sample = False
+        else:
+            raise RuntimeError(
+                f"CV ran for the {horizon}d horizon but produced no OOF "
+                f"records. This indicates a bug — _cv_evaluate_horizon "
+                f"should have raised."
+            )
+
+        # `tdf` is the frame every calibration row's `row_index` points
+        # into, and the only reason it is passed: the learned scale needs
+        # the features behind each residual. Ignored when the flag is off.
+        q_hat = self._calibrate_conformal(horizon, records_df, tdf)
+        # The WIDTH, and the exponent it was produced at. Both are here for
+        # one reason: `q_hat` may not be differenced across SIGMA_EXPONENT
+        # (the two arms are ~5.5x apart in units), so a paired read of that
+        # flag has nothing to compare unless the width is reported. Median
+        # half of `range_pct`, on exactly the rows q_hat was fitted on, which
+        # is the basis the 0.87/0.86/0.84/0.77x prediction in
+        # docs/changelog/2026-08-12-sigma-exponent-implemented.md was made on.
+        _half_pct = 50.0 * float(np.nanmedian(records_df["range_pct"].to_numpy(dtype=float)))
+        _cal_msg = (
+            f"  Conformal calibration [{calibration_source}]: "
+            f"q_hat={q_hat:.4f} (dimensionless x sigma), "
+            f"beta={self.band_beta(horizon):.4f}, "
+            f"median half-width={_half_pct:.2f}% of mid, "
+            f"n={len(records_df)}, alpha={conformal.ALPHA}, "
+            f"target coverage={conformal.NOMINAL_COVERAGE * 100:.0f}%, "
+            f"basis={self.conformal_basis.get(horizon, 'unknown')}"
+        )
+        if out_of_sample:
+            logger.info(_cal_msg)
+        else:
+            # WARNING, not INFO: a reader of forecast.log must be able to
+            # tell that this horizon's band carries no coverage guarantee.
+            logger.warning(
+                _cal_msg + " — q_hat was fitted on X_val, which is also the "
+                "early-stopping and Optuna scoring set, so those residuals "
+                "are optimistically small and this band is expected to cover "
+                "BELOW nominal. Out-of-fold CV records are the only unseen "
+                "calibration set; run without SKIP_CV=1, or give the horizon "
+                "enough distinct dates for >=2 folds."
+            )
+        self._calibrate_confidence(horizon=horizon, records_df=records_df)
+
+        # Isotonic calibration of the exceedance head on the same OOF
+        # (p, y) pairs q_hat just used. Ordered AFTER the conformal fit so
+        # the log reads band-then-probability, and it must stay
+        # report-plus-map: the band above is untouched (it serves raw p),
+        # while the disclosed move_odds serves through the map this fits.
+        # None when the horizon has no usable pairs — visibly absent from
+        # cv_results rather than a zero, same rule classifier_accuracy_ge1
+        # follows.
+        exceed_cal_report = self._fit_exceedance_calibrator(horizon, records_df, out_of_sample)
+
+        # The sigma axis, on the real OOF residuals. Ordered AFTER
+        # calibration so it audits the same records q_hat was fitted on, and
+        # it must stay report-only: see _sigma_tilt_audit.
+        sigma_tilt = self._sigma_tilt_audit(horizon, records_df)
+
+        # The expanding-window audit, on one line. `q_hat` above is fitted
+        # on residuals pooled across folds whose models saw 87,224 to
+        # 300,000 rows, while the shipped model trains on the full
+        # TRAIN_FEATURE_ROWS budget — so if weaker fold models are what
+        # makes the served band over-cover (87.2/91.8/90.6/89.0% against
+        # 80%, 2026-08-12), `fold_q_hat` must FALL as `n_train` grows and
+        # the pooled value must sit above the late folds'.
+        #
+        # Two reasons this is a weak screen, and neither is fixable here.
+        # `n_train` is monotone in fold index by construction, so a negative
+        # rho cannot separate "more training data" from "later market
+        # period" — a calmer regime late in the window produces the same
+        # sign. And `CV_MAX_TRAIN_ROWS` (300,000, shipped 2026-08-09 as
+        # `6b6fc81`) binds on most folds, so the x-axis is heavily tied and
+        # spans at most 87K->300K against the 300K->1.2M gap that actually
+        # separates a fold model from the served one.
+        #
+        # So a null here does NOT kill the hypothesis — it is equally
+        # consistent with the cap having flattened the very axis being
+        # measured. The decisive test is a `CV_MAX_TRAIN_ROWS` sweep, where
+        # the fold geometry is held fixed and only the training size moves;
+        # this line only says whether q_hat is sensitive to that size at all
+        # over the narrow range the cap leaves.
+        #
+        # Reported only. `q_hat` above is what serves, unchanged.
+        fold_q_hats = [(m["n_train"], m["fold_q_hat"]) for m in cv_metrics if m.get("fold_q_hat") is not None]
+        q_hat_trend = None
+        if len(fold_q_hats) >= 3:
+            _n = np.array([a for a, _ in fold_q_hats], dtype=float)
+            _q = np.array([b for _, b in fold_q_hats], dtype=float)
+            # Spearman: the claim is monotone decline, not a linear slope,
+            # and 3-9 points cannot support a fitted slope anyway.
+            _rho = float(pd.Series(_n).corr(pd.Series(_q), method="spearman"))
+            q_hat_trend = {
+                "spearman_n_train_vs_q_hat": (None if not np.isfinite(_rho) else round(_rho, 3)),
+                "first_fold_q_hat": round(float(_q[0]), 4),
+                "last_fold_q_hat": round(float(_q[-1]), 4),
+                # None, not inf: a fold whose residuals are all zero is a
+                # broken fold, and publishing inf under a ratio key would
+                # read as an extreme confirmation of the hypothesis.
+                "pooled_over_last_fold": (None if _q[-1] <= 0 else round(float(q_hat / _q[-1]), 4)),
+                "n_folds_measured": len(fold_q_hats),
+                # How much range the screen actually had. With the cap
+                # binding, `n_train_distinct` collapses toward 1 and a rho
+                # near zero says nothing about the hypothesis -- it says the
+                # measurement had no x-axis. A reader comparing two runs
+                # needs this beside the rho, not in a separate log line.
+                "n_train_min": int(_n[0]),
+                "n_train_max": int(_n[-1]),
+                "n_train_distinct": len(np.unique(_n)),
+                "cv_max_train_rows": self._cv_max_train_rows(),
+            }
+            logger.info(
+                f"  Expanding-window audit: fold_q_hat "
+                f"{' -> '.join(f'{v:.1f}' for _, v in fold_q_hats)} "
+                f"over n_train {_n[0]:,.0f}->{_n[-1]:,.0f} | "
+                f"spearman(n_train, q_hat)="
+                f"{q_hat_trend['spearman_n_train_vs_q_hat']} over "
+                f"{q_hat_trend['n_train_distinct']} distinct n_train "
+                f"(cap={q_hat_trend['cv_max_train_rows']:,}) | pooled "
+                f"{q_hat:.1f} is {q_hat_trend['pooled_over_last_fold']}x "
+                f"the last fold's. Negative rho + ratio >1 => the pooled fit "
+                f"inherits the early folds' weakness. A rho near 0 with "
+                f"n_train_distinct near 1 is NOT a null -- the cap removed "
+                f"the x-axis; sweep CV_MAX_TRAIN_ROWS instead."
+            )
+
+        return (
+            oof_records, cv_metrics, q_hat, out_of_sample, calibration_source,
+            records_df, exceed_cal_report, sigma_tilt, q_hat_trend,
+            pt_records, pt_records_clf,
+        )
+
+    def _aggregate_cv_metrics(
+        self,
+        horizon: int,
+        cv_metrics: list,
+        q_hat: float,
+        out_of_sample: bool,
+        calibration_source: str,
+        exceed_cal_report,
+        sigma_tilt,
+        q_hat_trend,
+        pt_records: list,
+        pt_records_clf: list,
+        records_df: pd.DataFrame,
+    ) -> None:
+        """Aggregate fold metrics, log invariant #4 diagnostics, build cv_results.
+
+        Stores the result in ``self.cv_results[horizon]`` (side-effect only).
+
+        Extracted from ``_train_horizon_inline`` -- pure structural refactor,
+        zero behavioural change.
+        """
+        # Log CV fold-level metrics
+        fold_accs = [m["directional_accuracy"] for m in cv_metrics]
+        mean_acc = float(np.mean(fold_accs)) if fold_accs else float("nan")
+        std_acc = float(np.std(fold_accs)) if len(fold_accs) > 1 else 0.0
+
+        # Aggregate naive baselines for direct comparison. The model only
+        # has a real directional edge if mean_dir_acc clears these.
+        persist_accs = [m["persistence_accuracy"] for m in cv_metrics if m.get("persistence_accuracy") is not None]
+        mom_accs = [m["momentum_accuracy"] for m in cv_metrics if m.get("momentum_accuracy") is not None]
+        mean_persist = round(float(np.mean(persist_accs)), 1) if persist_accs else None
+        mean_mom = round(float(np.mean(mom_accs)), 1) if mom_accs else None
+        best_baseline = max([b for b in (mean_persist, mean_mom) if b is not None], default=None)
+
+        # The directional classifier is the SERVED signal, so the edge and
+        # the trust warning are judged on it (not the quantile-median sign).
+        clf_accs = [m["classifier_accuracy"] for m in cv_metrics if m.get("classifier_accuracy") is not None]
+        mean_clf = round(float(np.mean(clf_accs)), 1) if clf_accs else None
+        served_acc = mean_clf if mean_clf is not None else mean_acc
+        edge = round(served_acc - best_baseline, 1) if best_baseline is not None else None
+
+        # Reported, never gated on. This is the cohort the production
+        # headline scores (>=$1), so it is the only CV figure comparable to
+        # it; `edge` deliberately stays on the all-tiers number above so
+        # the trust warning and the confidence calibration do not move.
+        # None when no fold had a >=$1 cohort, matching the per-fold rule.
+        clf_ge1 = [m["classifier_accuracy_ge1"] for m in cv_metrics if m.get("classifier_accuracy_ge1") is not None]
+        mean_clf_ge1 = round(float(np.mean(clf_ge1)), 1) if clf_ge1 else None
+
+        # Invariant #4. `edge` above is measured against persistence and
+        # momentum, both of which the constant call beats comfortably — so
+        # a positive `edge` never meant the model was useful. These are the
+        # honest bars.
+        def _mean_of(key, ndigits=2, _cv_metrics=cv_metrics):
+            vals = [m[key] for m in _cv_metrics if m.get(key) is not None]
+            return round(float(np.mean(vals)), ndigits) if vals else None
+
+        mean_constant_call = _mean_of("constant_call_accuracy")
+        mean_down_rate = _mean_of("realised_down_rate")
+        rank_ic_summary = self._summarise_rank_ic(cv_metrics)
+        mean_rank_ic = rank_ic_summary["mean_rank_ic"]
+        mean_naive_rank_ic = rank_ic_summary["mean_naive_rank_ic"]
+        mean_trees = _mean_of("n_trees", 1)
+        # Deliberately measured on the quantile-median sign, NOT on
+        # `served_acc`. `served_acc` falls back from the classifier to the
+        # median sign when CV_DIAGNOSTIC_CLASSIFIER=0, so an edge built on
+        # it would mean one thing in CI and another locally while carrying
+        # the same key. This one is always the median sign, which is also
+        # what `pt` below is computed from, so the two invariant-#4 numbers
+        # always describe the same signal.
+        #
+        # The classifier is what production actually serves, so it gets the
+        # same two numbers under its own keys (below) rather than displacing
+        # these. Publishing both is what lets the pair be compared; making
+        # one key mean either signal is what made the 2026-08-10 diagnostics
+        # run report a q50 verdict under a heading that said "served".
+        edge_vs_constant = (
+            None if (mean_constant_call is None or not fold_accs) else round(mean_acc - mean_constant_call, 2)
+        )
+        # Positive means the model orders items better than "bet against
+        # yesterday's move". On 2026-08-08 it was negative at all four
+        # horizons, which is the bar this project had never measured.
+        rank_ic_edge = rank_ic_summary["rank_ic_edge_vs_naive"]
+
+        # PT is the headline: it tests whether predictions are independent
+        # of outcomes, so unlike DA it cannot be passed by a base rate. Run
+        # on the pooled out-of-fold rows, clustered by forecast date exactly
+        # as backtest/scoring.py does in production.
+        pt = pesaran_timmermann(pt_records, MIN_HEADLINE_DATES)
+
+        # The same test on the SERVED classifier. `mean_constant_call` and
+        # `mean_down_rate` are properties of the outcomes alone, so they are
+        # the same bar for both signals and are not recomputed. None when
+        # CV_DIAGNOSTIC_CLASSIFIER=0 -- visibly absent, never falling back to
+        # the quantile sign.
+        pt_clf = pesaran_timmermann(pt_records_clf, MIN_HEADLINE_DATES) if pt_records_clf else None
+        edge_vs_constant_clf = (
+            None if (mean_constant_call is None or mean_clf is None) else round(mean_clf - mean_constant_call, 2)
+        )
+
+        if cv_metrics:
+            # classifier= pools all tiers and the frame is ~83% tier-0, so
+            # it reads close to the penny-item score. classifier>=$1= is
+            # the one to compare against the production headline.
+            logger.info(
+                f"  CV ({len(cv_metrics)} folds): "
+                f"classifier={mean_clf}% (>=$1: {mean_clf_ge1}%) "
+                f"quantile-sign={mean_acc:.1f}% (sd={std_acc:.1f}%)"
+            )
+            logger.info(
+                f"  Baselines: persistence={mean_persist}% "
+                f"momentum={mean_mom}% -> served(classifier) edge vs best={edge}pp"
+            )
+            # Invariant #4: never on its own. The constant call is the bar
+            # persistence and momentum were standing in for, and it is a
+            # much higher one.
+            logger.info(
+                f"  Invariant #4 [quantile-sign]: "
+                f"constant-call={mean_constant_call}% "
+                f"down-rate={mean_down_rate}% -> edge vs constant call="
+                f"{edge_vs_constant}pp | PT excess={pt['pt_excess_pp']}pp "
+                f"t={pt['pt_t_stat']} verdict={pt['pt_verdict']}"
+            )
+            # The line that describes production. Absent, not substituted,
+            # when the diagnostic classifier did not run.
+            if pt_clf is not None:
+                logger.info(
+                    f"  Invariant #4 [SERVED classifier]: "
+                    f"constant-call={mean_constant_call}% "
+                    f"down-rate={mean_down_rate}% -> edge vs constant call="
+                    f"{edge_vs_constant_clf}pp | PT excess="
+                    f"{pt_clf['pt_excess_pp']}pp t={pt_clf['pt_t_stat']} "
+                    f"verdict={pt_clf['pt_verdict']}"
+                )
+            else:
+                logger.info(
+                    "  Invariant #4 [SERVED classifier]: not measured "
+                    "(CV_DIAGNOSTIC_CLASSIFIER=0) -- the line above "
+                    "describes the q50 sign, NOT what production serves."
+                )
+            logger.info(
+                f"  Cross-sectional (>=$1): rank_ic={mean_rank_ic} vs "
+                f"naive(-return_1d)={mean_naive_rank_ic} -> edge={rank_ic_edge} "
+                f"| mean trees/fold={mean_trees}"
+            )
+            # Printed beside it, never instead of it. The line above is the
+            # contaminated basis every stored A/B was ranked on; this one is
+            # the cohort where `p[d]/S[d]` is 1 and the metric means what it
+            # says. A reader comparing two runs should compare THIS line.
+            tied_edge = rank_ic_summary["rank_ic_edge_vs_naive_tied"]
+            if rank_ic_summary["mean_rank_ic_tied"] is None:
+                logger.info(
+                    "  Cross-sectional (>=$1, CLEAN ANCHOR): not measured -- "
+                    f"{rank_ic_summary['tied_rows']:,} tied served rows over "
+                    f"{rank_ic_summary['tied_dates']} usable dates. Rank an "
+                    "arm on the pooled line above only if you mean to rank "
+                    "it on the anchor wedge."
+                )
+            else:
+                logger.info(
+                    "  Cross-sectional (>=$1, CLEAN ANCHOR): rank_ic="
+                    f"{rank_ic_summary['mean_rank_ic_tied']} vs naive="
+                    f"{rank_ic_summary['mean_naive_rank_ic_tied']} -> "
+                    f"edge={tied_edge} | "
+                    f"{rank_ic_summary['tied_rows']:,} rows, "
+                    f"{rank_ic_summary['tied_dates']} of "
+                    f"{rank_ic_summary['rank_ic_dates']} date-folds. "
+                    "<- RANK ARMS ON THIS LINE."
+                )
+            # C2 lambdarank arm, read on the CLEAN ANCHOR cohort against both
+            # bars: beat the naive baseline AND the q50's own ordering.
+            if rank_ic_summary["mean_lr_rank_ic_tied"] is not None:
+                lr_vs_naive = rank_ic_summary["lr_rank_ic_edge_vs_naive_tied"]
+                lr_vs_q50 = rank_ic_summary["lr_rank_ic_edge_vs_q50_tied"]
+                logger.info(
+                    "  Cross-sectional (>=$1, CLEAN ANCHOR) LAMBDARANK: "
+                    f"rank_ic={rank_ic_summary['mean_lr_rank_ic_tied']} | "
+                    f"edge vs naive={lr_vs_naive}, vs q50={lr_vs_q50} -- "
+                    "PASS needs BOTH > 0."
+                )
+                if not (lr_vs_naive and lr_vs_naive > 0 and lr_vs_q50 and lr_vs_q50 > 0):
+                    logger.warning(
+                        f"  {horizon}d LAMBDARANK does not clear both bars "
+                        f"on the clean-anchor cohort (vs naive={lr_vs_naive}, "
+                        f"vs q50={lr_vs_q50}) -- no served step is licensed."
+                    )
+            if edge_vs_constant is not None and edge_vs_constant <= 0:
+                logger.warning(
+                    f"  {horizon}d quantile sign does NOT beat the constant "
+                    f"call ({edge_vs_constant}pp) -- a single fixed direction "
+                    f"scores {mean_constant_call}% on these folds."
+                )
+            if edge_vs_constant_clf is not None and edge_vs_constant_clf <= 0:
+                logger.warning(
+                    f"  {horizon}d SERVED classifier does NOT beat the "
+                    f"constant call ({edge_vs_constant_clf}pp) -- a single "
+                    f"fixed direction scores {mean_constant_call}% on these "
+                    f"folds. This is the signal production ships."
+                )
+            if rank_ic_edge is not None and rank_ic_edge <= 0:
+                logger.warning(
+                    f"  {horizon}d model does NOT beat ranking by "
+                    f"-return_1d (rank IC {mean_rank_ic} vs "
+                    f"{mean_naive_rank_ic}) -- the ML stack is subtracting "
+                    f"from its own best feature. Measured on the raw-anchor "
+                    f"basis; read the CLEAN ANCHOR edge before acting on it."
+                )
+            if tied_edge is not None and tied_edge <= 0:
+                logger.warning(
+                    f"  {horizon}d model does NOT beat -return_1d on the "
+                    f"CLEAN ANCHOR cohort either ({tied_edge}) -- this is the "
+                    f"basis-free read, so it is the one that counts."
+                )
+            if pt["pt_verdict"] not in ("skill",):
+                logger.warning(
+                    f"  {horizon}d Pesaran-Timmermann verdict is "
+                    f"'{pt['pt_verdict']}' (t={pt['pt_t_stat']}) on the "
+                    f"quantile sign -- that call is not distinguishable "
+                    f"from chance."
+                )
+            if pt_clf is not None and pt_clf["pt_verdict"] not in ("skill",):
+                logger.warning(
+                    f"  {horizon}d Pesaran-Timmermann verdict is "
+                    f"'{pt_clf['pt_verdict']}' (t={pt_clf['pt_t_stat']}) on "
+                    f"the SERVED classifier -- what production ships is not "
+                    f"distinguishable from chance."
+                )
+        self.cv_results[horizon] = {
+            "fold_count": len(cv_metrics),
+            "per_fold": cv_metrics,
+            "mean_dir_acc": round(mean_acc, 1) if fold_accs else 0,
+            "std_dir_acc": round(std_acc, 1) if len(fold_accs) > 1 else 0,
+            "min_dir_acc": round(min(fold_accs), 1) if fold_accs else 0,
+            "max_dir_acc": round(max(fold_accs), 1) if fold_accs else 0,
+            "mean_classifier_acc": mean_clf,
+            "mean_classifier_acc_ge1": mean_clf_ge1,
+            "mean_persistence_acc": mean_persist,
+            "mean_momentum_acc": mean_mom,
+            "edge_vs_best_baseline": edge,
+            # Invariant #4 + the cross-sectional headline.
+            "mean_constant_call_acc": mean_constant_call,
+            "mean_realised_down_rate": mean_down_rate,
+            "edge_vs_constant_call": edge_vs_constant,
+            # Which signal the two lines above describe. Always the median
+            # sign, so the key does not change meaning when the diagnostic
+            # classifier is skipped.
+            "invariant_4_signal": "quantile_sign",
+            # The same pair for the signal production actually serves.
+            # None when CV_DIAGNOSTIC_CLASSIFIER=0. A consumer that wants
+            # the served verdict must read these and handle the None --
+            # falling back to the keys above would silently substitute the
+            # q50 sign, which is the bug this pair exists to prevent.
+            "edge_vs_constant_call_classifier": edge_vs_constant_clf,
+            "pt_classifier": pt_clf,
+            # Pooled and tied, together. The tied pair is the one a new arm
+            # is ranked on; the pooled pair is kept unchanged because it is
+            # the series every historical meta.json holds.
+            **rank_ic_summary,
+            "mean_trees_per_fold": mean_trees,
+            "pt": pt,
+            # Isotonic calibration of the disclosed exceedance probability.
+            # None when the horizon produced no usable OOF (p, y) pairs --
+            # visibly absent, never a zero. Carries Brier raw->cal, ECE
+            # raw->cal, and both reliability curves, so the served
+            # move_odds number is quotable beside its calibration.
+            "exceedance_calibration": exceed_cal_report,
+            # The expanding-window screen. None when fewer than 3 folds
+            # reported a `fold_q_hat` -- visibly absent rather than a rho
+            # over two points. Diagnostic; nothing builds a band from it.
+            "q_hat_trend": q_hat_trend,
+            # The sigma axis. None below MIN_CALIBRATION_ROWS. Read
+            # `elasticity_heldout` first -- the pooled legs fit and score the
+            # exponent on the same rows. Diagnostic; nothing serves from it.
+            "sigma_tilt": sigma_tilt,
+        }
+
     def _train_horizon_inline(
         self, horizon: int, df: pd.DataFrame, max_rows: int = 300_000, per_item_row_sampling: bool = False
     ):
@@ -6464,657 +7207,26 @@ class ItemForecaster:
                 logger.info(f"  Done in {_ens_elapsed:.0f}s — Top features: {fi['feature'].head(5).tolist()}")
                 logger.info(f"  [timing] {horizon}d q{int(q * 100)} ensemble: {_ens_elapsed:.1f}s")
 
-            # Directional classifier: OFFLINE-ONLY (2026-09-19). Routine
-            # production training fits no three-class direction booster; the
-            # served `direction`/`confidence` fields come from the no-classifier
-            # fallback in predict(), and the API discloses neutral. The
-            # reproducible benchmark lives in scripts/direction_benchmark.py.
-            # The fitting and metric helpers are retained for that offline
-            # use, as is the env-gated CV diagnostic.
-            logger.info(f"  Skipping {horizon}d directional classifier (offline-only).")
-
-            # Exceedance head: P(|move| clears the round-trip cost), the band-width
-            # scale for Phase 2. Trains on the same rows as the range model, off the
-            # precomputed one-sided target_exceed_{h}d label (NaN where that label is
-            # voided); reuses the direction head's tree params and served-cohort
-            # reweighting. None where <2 classes survive (a degenerate horizon).
-            #
-            # Trained when EITHER the band uses it as a scale (EXCEEDANCE_SCALE) OR
-            # it is served as a disclosed output (EXCEEDANCE_HEAD). The two are
-            # decoupled: the band's q_hat only becomes exceedance-based when the OOF
-            # exceed_p is computed in the CV path (gated on EXCEEDANCE_SCALE alone,
-            # a matched pair), whereas the served `exceed_p` field needs only a head
-            # in the artifact. With both flags off no head is fit and the artifact is
-            # byte-identical to the pre-Phase-2 one.
-            if self.exceedance_scale_enabled() or self.exceedance_head_enabled():
-                _exc_start = time.time()
-                X_exc = self._exceedance_feature_matrix(train_set, self.feature_cols)
-                X_exc_clean = X_exc.replace([np.inf, -np.inf], np.nan)
-                X_exc = self._impute_features(X_exc_clean, X_exc_clean.median())
-                self.exceedance_models[horizon] = self._fit_exceedance_classifier(
-                    X_exc,
-                    train_set[f"target_exceed_{horizon}d"].to_numpy(),
-                    boosting_type,
-                    self._direction_tree_params(per_quantile_params),
-                    horizon=horizon,
-                    tier_train=(train_set["price_tier"].to_numpy() if "price_tier" in train_set.columns else None),
-                    num_boost_round=boost_rounds,
-                )
-                logger.info(f"  [timing] {horizon}d exceedance classifier: {time.time() - _exc_start:.1f}s")
-
-            # Volatility-ranking GBM: predict |return| to reshape climatology
-            # cross-sectionally. Requires CLIMATOLOGY_SCALE to be on (the base
-            # it modulates). Trained on the same split and features.
-            if self.vol_rank_gbm_enabled() and self.climatology_scale_enabled():
-                _vr_start = time.time()
-                target_col = f"target_return_{horizon}d"
-                y_abs_train = train_set[target_col].abs()
-                y_abs_val = val_set[target_col].abs()
-                self.vol_rank_models[horizon] = self._fit_vol_rank_model(
-                    X_train,
-                    y_abs_train,
-                    X_val,
-                    y_abs_val,
-                    boosting_type,
-                    self._direction_tree_params(per_quantile_params),
-                    horizon=horizon,
-                    num_boost_round=boost_rounds,
-                )
-                logger.info(f"  [timing] {horizon}d vol-rank GBM: {time.time() - _vr_start:.1f}s")
-
-            # Anomaly classifier: P(|return_h| > 2sigma_item). An alert signal,
-            # not a band input. Gate: ANOMALY_GBM=1.
-            if self.anomaly_gbm_enabled():
-                _anom_start = time.time()
-                anom_col = f"target_anomaly_{horizon}d"
-                if anom_col in train_set.columns:
-                    self.anomaly_models[horizon] = self._fit_anomaly_classifier(
-                        X_train,
-                        train_set[anom_col].to_numpy(),
-                        boosting_type,
-                        self._direction_tree_params(per_quantile_params),
-                        horizon=horizon,
-                        tier_train=(train_set["price_tier"].to_numpy() if "price_tier" in train_set.columns else None),
-                        num_boost_round=boost_rounds,
-                    )
-                    logger.info(f"  [timing] {horizon}d anomaly classifier: {time.time() - _anom_start:.1f}s")
-
-                    # Isotonic calibration on holdout predictions. The anomaly
-                    # classifier is trained on train_set; get predictions on
-                    # val_set (the early-stopping holdout) for calibration.
-                    anom_head = self.anomaly_models[horizon]
-                    if anom_head is not None and anom_col in val_set.columns:
-                        anom_val_cols = anom_head.feature_name()
-                        X_anom_val = val_set.reindex(columns=anom_val_cols, fill_value=0).replace([np.inf, -np.inf], np.nan)
-                        if not self.feature_medians.empty:
-                            X_anom_val = self._impute_features(X_anom_val, self.feature_medians.reindex(anom_val_cols))
-                        anom_p_val = np.clip(anom_head.predict(X_anom_val), 1e-3, 1.0)
-                        anom_y_val = val_set[anom_col].to_numpy(dtype=float)
-                        ok = np.isfinite(anom_p_val) & np.isfinite(anom_y_val)
-                        if int(ok.sum()) >= self.MIN_EXCEEDANCE_CALIBRATION_ROWS:
-                            xs, ys = self._isotonic_fit(
-                                np.clip(anom_p_val[ok], 1e-3, 1.0),
-                                anom_y_val[ok].astype(float),
-                            )
-                            self.anomaly_calibrators[horizon] = {
-                                "xs": [float(v) for v in xs],
-                                "ys": [float(v) for v in ys],
-                            }
-                            logger.info(
-                                f"  {horizon}d anomaly isotonic calibration: "
-                                f"{int(ok.sum())} pairs, {len(xs)} steps"
-                            )
-                        else:
-                            logger.warning(
-                                f"  {horizon}d anomaly calibration: only {int(ok.sum())} "
-                                f"usable pairs — serving raw output"
-                            )
-
-            # Ranking head: a LambdaRank model that directly optimizes
-            # within-date ranking (the production evaluation metric). Outputs
-            # ranking scores, not returns — served as `rank_score` alongside the
-            # return-based forecast for cross-sectional ordering.
-            if RANKING_HEAD_ENABLED:
-                _rank_start = time.time()
-                self.ranking_models[horizon] = self._fit_ranking_head(
-                    X_train, y_train, train_set["date"].to_numpy(),
-                    X_val, y_val, val_set["date"].to_numpy(),
-                    self._direction_tree_params(per_quantile_params),
-                    horizon=horizon,
-                    num_boost_round=boost_rounds,
-                )
-                logger.info(f"  [timing] {horizon}d ranking head: {time.time() - _rank_start:.1f}s")
-
-            # Train regime-specific models (default: skipped; set SKIP_REGIMES=0 to enable)
-            #
-            # `_warm_retrain` deliberately does NOT skip these, though it used to.
-            # `predict` at :5584 *prefers* the regime model over the global one
-            # whenever `_detect_current_regime` matches, so an artifact with no
-            # regime models serves a different mid — dropping them is a change to
-            # the forecast, not a cost saving. That was tolerable while warm
-            # retrains only ran locally; it is not once CI restores the model
-            # cache on training runs, which is what makes the warm path
-            # production's steady state. Skipping them is now opt-in only.
-            if os.environ.get("SKIP_REGIMES", "1") != "0":
-                # Drop any regime models this horizon carried in from load_models
-                # so a skip run never re-persists stale regime artifacts.
-                for key in [k for k in self.regime_models if k[1] == horizon]:
-                    del self.regime_models[key]
-                logger.info("  Regime models skipped (SKIP_REGIMES=1)")
-            else:
-                # Clear this horizon's regime models before refitting them. On a
-                # cold run the dict is empty anyway; on a warm one it holds the
-                # restored artifact's, and a regime that now falls below the
-                # minimums below would otherwise keep the *previous* run's model
-                # and re-persist it beside freshly trained global models.
-                for key in [k for k in self.regime_models if k[1] == horizon]:
-                    del self.regime_models[key]
-                for regime in self.REGIMES:
-                    if regime == "global":
-                        continue
-                    r_train = train_set[train_set["_regime"] == regime]
-                    r_val = val_set[val_set["_regime"] == regime]
-                    MIN_REGIME_TRAIN = 500
-                    MIN_REGIME_VAL = 50
-                    if len(r_train) < MIN_REGIME_TRAIN or len(r_val) < MIN_REGIME_VAL:
-                        logger.info(
-                            f"  Skipping {regime} regime ({len(r_train)} train, {len(r_val)} val — below minimum)"
-                        )
-                        continue
-
-                    # Use global HP params (reuse Optuna results from global)
-                    r_X_train = self._impute_features(
-                        r_train[self.feature_cols].replace([np.inf, -np.inf], np.nan), feature_medians
-                    )
-                    r_y_train = r_train[f"target_return_{horizon}d"]
-                    r_X_val = self._impute_features(
-                        r_val[self.feature_cols].replace([np.inf, -np.inf], np.nan), feature_medians
-                    )
-                    r_y_val = r_val[f"target_return_{horizon}d"]
-
-                    r_train_weights = self._compute_sample_weights(r_train, horizon)
-                    r_val_weights = self._compute_sample_weights(r_val, horizon)
-
-                    r_ds_params = {"max_bin": self.MAX_BIN, "feature_pre_filter": False}
-                    r_dtrain_kw = dict(params=r_ds_params)
-                    if r_train_weights is not None:
-                        r_dtrain_kw["weight"] = r_train_weights
-                    r_dval_kw = dict(params=r_ds_params)
-                    if r_val_weights is not None:
-                        r_dval_kw["weight"] = r_val_weights
-                    # The same offset as the global fit. predict() prefers regime
-                    # models over the global one, so a regime booster trained
-                    # without it would be the thing actually served.
-                    r_train_offset = self._naive_offset(r_train)
-                    if r_train_offset is not None:
-                        r_dtrain_kw["init_score"] = r_train_offset
-                        r_dval_kw["init_score"] = self._naive_offset(r_val)
-                    r_dtrain = lgb.Dataset(r_X_train, r_y_train, **r_dtrain_kw)
-                    r_dval = lgb.Dataset(r_X_val, r_y_val, reference=r_dtrain, **r_dval_kw)
-                    # Construct eagerly for the same reason as the global
-                    # dtrain/dval above: avoid concurrent lazy-binning
-                    # across the ensemble ThreadPoolExecutor.
-                    r_dtrain.construct()
-                    r_dval.construct()
-
-                    logger.info(
-                        f"  Training {regime} regime models ({horizon}d, {len(r_train):,} train, {len(r_val):,} val)..."
-                    )
-                    for q in self.QUANTILES:
-                        pq = per_quantile_params[q]
-                        r_ensemble = []
-                        for ei in range(self.N_ENSEMBLES):
-                            p = pq.copy()
-                            p["random_state"] = self.ENSEMBLE_SEEDS[ei]
-                            p["feature_fraction"] = self.ENSEMBLE_FEATURE_FRACTIONS[ei]
-                            p["n_jobs"] = n_jobs
-                            r_ensemble.append(
-                                self._train_ensemble_member(p, r_dtrain, r_dval, boost_rounds, early_stopping=_es)
-                            )
-                        self.regime_models[(regime, horizon, q)] = r_ensemble
-
-                    self.regime_feature_cols[(horizon, regime)] = list(self.feature_cols)
-                    logger.info(
-                        f"  {regime} regime models for {horizon}d done ({len(r_train)} train, {len(r_val)} val)"
-                    )
-
-            # Expanding-window CV. This is NOT optional on the production path,
-            # and the reason is conformal, not metrics.
-            #
-            # Split conformal only guarantees coverage if the calibration
-            # residuals are genuinely unseen. `X_val`/`y_val` is not: it is the
-            # `dval` handed to lgb.early_stopping(50) in _train_ensemble_member
-            # AND the set _optuna_search_params scores hyperparameters on. A
-            # q_hat fitted there is measured on rows the model was selected
-            # against, so its residuals are optimistically small, q_hat comes out
-            # biased low, and the served band under-covers. Only CV's out-of-fold
-            # records are unseen.
-            #
-            # So: SKIP_CV was removed from .github/workflows/price-forecast.yml
-            # (pinned by test_ci_workflow_does_not_skip_cv), and a warm retrain
-            # now reuses cached HP WITHOUT skipping CV. Those were always
-            # separable concerns — HP reuse is the point of a warm retrain,
-            # skipping calibration was collateral — and conflating them is what
-            # put an in-sample q_hat behind the served 3d/7d band.
-            #
-            # SKIP_CV=1 survives as a local/dispatch speedup only. It routes to
-            # the holdout leg, which warns that the band under-covers.
-            _skip_cv = os.environ.get("SKIP_CV") == "1"
-            _cv_feasible = self._cv_can_run(tdf, horizon)
-            if _skip_cv:
-                logger.info("  CV skipped (SKIP_CV=1 — local speedup; not the CI path)")
-                oof_records, cv_metrics, pt_records, pt_records_clf = [], [], [], []
-            elif not _cv_feasible:
-                logger.info(f"  CV cannot run for {horizon}d (<2 expanding-window folds)")
-                oof_records, cv_metrics, pt_records, pt_records_clf = [], [], [], []
-            else:
-                # Timed explicitly: post-minimal-model this is the single
-                # largest phase of a warm retrain, and the only figure on
-                # record for it was a REMAINDER (total minus the phases that
-                # were instrumented), which lumped it with feature engineering
-                # and artifact saving. A fold-count change cannot be attributed
-                # against a remainder.
-                _cv_t0 = time.time()
-                (oof_records, cv_metrics, pt_records, pt_records_clf) = self._cv_evaluate_horizon(
-                    tdf, horizon, per_quantile_params, per_item_row_sampling=per_item_row_sampling
-                )
-                logger.info(
-                    f"  [timing] {horizon}d conformal CV: "
-                    f"{time.time() - _cv_t0:.1f}s "
-                    f"({len(cv_metrics)} folds, {len(oof_records)} OOF rows)"
-                )
-
-            # Calibrate. Order matters: q_hat sets the band width and the
-            # confidence thresholds are fitted on that width, so the conformal
-            # step runs FIRST and _calibrate_confidence always sees a range_pct
-            # on the same scale _compute_confidence will compare against.
-            if oof_records:
-                records_df = pd.DataFrame(oof_records)
-                calibration_source = f"CV-POOLED OOF, {len(cv_metrics)} folds"
-                out_of_sample = True
-            elif _skip_cv or not _cv_feasible:
-                records_df = self._holdout_conformal_records(horizon, X_val, y_val, val_set)
-                calibration_source = "SINGLE HOLDOUT — expect UNDER-COVERAGE"
-                out_of_sample = False
-            else:
-                raise RuntimeError(
-                    f"CV ran for the {horizon}d horizon but produced no OOF "
-                    f"records. This indicates a bug — _cv_evaluate_horizon "
-                    f"should have raised."
-                )
-
-            # `tdf` is the frame every calibration row's `row_index` points
-            # into, and the only reason it is passed: the learned scale needs
-            # the features behind each residual. Ignored when the flag is off.
-            q_hat = self._calibrate_conformal(horizon, records_df, tdf)
-            # The WIDTH, and the exponent it was produced at. Both are here for
-            # one reason: `q_hat` may not be differenced across SIGMA_EXPONENT
-            # (the two arms are ~5.5x apart in units), so a paired read of that
-            # flag has nothing to compare unless the width is reported. Median
-            # half of `range_pct`, on exactly the rows q_hat was fitted on, which
-            # is the basis the 0.87/0.86/0.84/0.77x prediction in
-            # docs/changelog/2026-08-12-sigma-exponent-implemented.md was made on.
-            _half_pct = 50.0 * float(np.nanmedian(records_df["range_pct"].to_numpy(dtype=float)))
-            _cal_msg = (
-                f"  Conformal calibration [{calibration_source}]: "
-                f"q_hat={q_hat:.4f} (dimensionless x sigma), "
-                f"beta={self.band_beta(horizon):.4f}, "
-                f"median half-width={_half_pct:.2f}% of mid, "
-                f"n={len(records_df)}, alpha={conformal.ALPHA}, "
-                f"target coverage={conformal.NOMINAL_COVERAGE * 100:.0f}%, "
-                f"basis={self.conformal_basis.get(horizon, 'unknown')}"
-            )
-            if out_of_sample:
-                logger.info(_cal_msg)
-            else:
-                # WARNING, not INFO: a reader of forecast.log must be able to
-                # tell that this horizon's band carries no coverage guarantee.
-                logger.warning(
-                    _cal_msg + " — q_hat was fitted on X_val, which is also the "
-                    "early-stopping and Optuna scoring set, so those residuals "
-                    "are optimistically small and this band is expected to cover "
-                    "BELOW nominal. Out-of-fold CV records are the only unseen "
-                    "calibration set; run without SKIP_CV=1, or give the horizon "
-                    "enough distinct dates for >=2 folds."
-                )
-            self._calibrate_confidence(horizon=horizon, records_df=records_df)
-
-            # Isotonic calibration of the exceedance head on the same OOF
-            # (p, y) pairs q_hat just used. Ordered AFTER the conformal fit so
-            # the log reads band-then-probability, and it must stay
-            # report-plus-map: the band above is untouched (it serves raw p),
-            # while the disclosed move_odds serves through the map this fits.
-            # None when the horizon has no usable pairs — visibly absent from
-            # cv_results rather than a zero, same rule classifier_accuracy_ge1
-            # follows.
-            exceed_cal_report = self._fit_exceedance_calibrator(horizon, records_df, out_of_sample)
-
-            # The sigma axis, on the real OOF residuals. Ordered AFTER
-            # calibration so it audits the same records q_hat was fitted on, and
-            # it must stay report-only: see _sigma_tilt_audit.
-            sigma_tilt = self._sigma_tilt_audit(horizon, records_df)
-
-            # The expanding-window audit, on one line. `q_hat` above is fitted
-            # on residuals pooled across folds whose models saw 87,224 to
-            # 300,000 rows, while the shipped model trains on the full
-            # TRAIN_FEATURE_ROWS budget — so if weaker fold models are what
-            # makes the served band over-cover (87.2/91.8/90.6/89.0% against
-            # 80%, 2026-08-12), `fold_q_hat` must FALL as `n_train` grows and
-            # the pooled value must sit above the late folds'.
-            #
-            # ⚠️ TWO reasons this is a weak screen, and neither is fixable here.
-            # `n_train` is monotone in fold index by construction, so a negative
-            # rho cannot separate "more training data" from "later market
-            # period" — a calmer regime late in the window produces the same
-            # sign. And `CV_MAX_TRAIN_ROWS` (300,000, shipped 2026-08-09 as
-            # `6b6fc81`) binds on most folds, so the x-axis is heavily tied and
-            # spans at most 87K→300K against the 300K→1.2M gap that actually
-            # separates a fold model from the served one.
-            #
-            # So a null here does NOT kill the hypothesis — it is equally
-            # consistent with the cap having flattened the very axis being
-            # measured. The decisive test is a `CV_MAX_TRAIN_ROWS` sweep, where
-            # the fold geometry is held fixed and only the training size moves;
-            # this line only says whether q_hat is sensitive to that size at all
-            # over the narrow range the cap leaves.
-            #
-            # Reported only. `q_hat` above is what serves, unchanged.
-            fold_q_hats = [(m["n_train"], m["fold_q_hat"]) for m in cv_metrics if m.get("fold_q_hat") is not None]
-            q_hat_trend = None
-            if len(fold_q_hats) >= 3:
-                _n = np.array([a for a, _ in fold_q_hats], dtype=float)
-                _q = np.array([b for _, b in fold_q_hats], dtype=float)
-                # Spearman: the claim is monotone decline, not a linear slope,
-                # and 3-9 points cannot support a fitted slope anyway.
-                _rho = float(pd.Series(_n).corr(pd.Series(_q), method="spearman"))
-                q_hat_trend = {
-                    "spearman_n_train_vs_q_hat": (None if not np.isfinite(_rho) else round(_rho, 3)),
-                    "first_fold_q_hat": round(float(_q[0]), 4),
-                    "last_fold_q_hat": round(float(_q[-1]), 4),
-                    # None, not inf: a fold whose residuals are all zero is a
-                    # broken fold, and publishing inf under a ratio key would
-                    # read as an extreme confirmation of the hypothesis.
-                    "pooled_over_last_fold": (None if _q[-1] <= 0 else round(float(q_hat / _q[-1]), 4)),
-                    "n_folds_measured": len(fold_q_hats),
-                    # How much range the screen actually had. With the cap
-                    # binding, `n_train_distinct` collapses toward 1 and a rho
-                    # near zero says nothing about the hypothesis -- it says the
-                    # measurement had no x-axis. A reader comparing two runs
-                    # needs this beside the rho, not in a separate log line.
-                    "n_train_min": int(_n[0]),
-                    "n_train_max": int(_n[-1]),
-                    "n_train_distinct": len(np.unique(_n)),
-                    "cv_max_train_rows": self._cv_max_train_rows(),
-                }
-                logger.info(
-                    f"  Expanding-window audit: fold_q_hat "
-                    f"{' → '.join(f'{v:.1f}' for _, v in fold_q_hats)} "
-                    f"over n_train {_n[0]:,.0f}→{_n[-1]:,.0f} | "
-                    f"spearman(n_train, q_hat)="
-                    f"{q_hat_trend['spearman_n_train_vs_q_hat']} over "
-                    f"{q_hat_trend['n_train_distinct']} distinct n_train "
-                    f"(cap={q_hat_trend['cv_max_train_rows']:,}) | pooled "
-                    f"{q_hat:.1f} is {q_hat_trend['pooled_over_last_fold']}x "
-                    f"the last fold's. Negative rho + ratio >1 ⇒ the pooled fit "
-                    f"inherits the early folds' weakness. A rho near 0 with "
-                    f"n_train_distinct near 1 is NOT a null — the cap removed "
-                    f"the x-axis; sweep CV_MAX_TRAIN_ROWS instead."
-                )
-
-            # Log CV fold-level metrics
-            fold_accs = [m["directional_accuracy"] for m in cv_metrics]
-            mean_acc = float(np.mean(fold_accs)) if fold_accs else float("nan")
-            std_acc = float(np.std(fold_accs)) if len(fold_accs) > 1 else 0.0
-
-            # Aggregate naive baselines for direct comparison. The model only
-            # has a real directional edge if mean_dir_acc clears these.
-            persist_accs = [m["persistence_accuracy"] for m in cv_metrics if m.get("persistence_accuracy") is not None]
-            mom_accs = [m["momentum_accuracy"] for m in cv_metrics if m.get("momentum_accuracy") is not None]
-            mean_persist = round(float(np.mean(persist_accs)), 1) if persist_accs else None
-            mean_mom = round(float(np.mean(mom_accs)), 1) if mom_accs else None
-            best_baseline = max([b for b in (mean_persist, mean_mom) if b is not None], default=None)
-
-            # The directional classifier is the SERVED signal, so the edge and
-            # the trust warning are judged on it (not the quantile-median sign).
-            clf_accs = [m["classifier_accuracy"] for m in cv_metrics if m.get("classifier_accuracy") is not None]
-            mean_clf = round(float(np.mean(clf_accs)), 1) if clf_accs else None
-            served_acc = mean_clf if mean_clf is not None else mean_acc
-            edge = round(served_acc - best_baseline, 1) if best_baseline is not None else None
-
-            # Reported, never gated on. This is the cohort the production
-            # headline scores (>=$1), so it is the only CV figure comparable to
-            # it; `edge` deliberately stays on the all-tiers number above so
-            # the trust warning and the confidence calibration do not move.
-            # None when no fold had a >=$1 cohort, matching the per-fold rule.
-            clf_ge1 = [m["classifier_accuracy_ge1"] for m in cv_metrics if m.get("classifier_accuracy_ge1") is not None]
-            mean_clf_ge1 = round(float(np.mean(clf_ge1)), 1) if clf_ge1 else None
-
-            # Invariant #4. `edge` above is measured against persistence and
-            # momentum, both of which the constant call beats comfortably — so
-            # a positive `edge` never meant the model was useful. These are the
-            # honest bars.
-            def _mean_of(key, ndigits=2, _cv_metrics=cv_metrics):
-                vals = [m[key] for m in _cv_metrics if m.get(key) is not None]
-                return round(float(np.mean(vals)), ndigits) if vals else None
-
-            mean_constant_call = _mean_of("constant_call_accuracy")
-            mean_down_rate = _mean_of("realised_down_rate")
-            rank_ic_summary = self._summarise_rank_ic(cv_metrics)
-            mean_rank_ic = rank_ic_summary["mean_rank_ic"]
-            mean_naive_rank_ic = rank_ic_summary["mean_naive_rank_ic"]
-            mean_trees = _mean_of("n_trees", 1)
-            # Deliberately measured on the quantile-median sign, NOT on
-            # `served_acc`. `served_acc` falls back from the classifier to the
-            # median sign when CV_DIAGNOSTIC_CLASSIFIER=0, so an edge built on
-            # it would mean one thing in CI and another locally while carrying
-            # the same key. This one is always the median sign, which is also
-            # what `pt` below is computed from, so the two invariant-#4 numbers
-            # always describe the same signal.
-            #
-            # The classifier is what production actually serves, so it gets the
-            # same two numbers under its own keys (below) rather than displacing
-            # these. Publishing both is what lets the pair be compared; making
-            # one key mean either signal is what made the 2026-08-10 diagnostics
-            # run report a q50 verdict under a heading that said "served".
-            edge_vs_constant = (
-                None if (mean_constant_call is None or not fold_accs) else round(mean_acc - mean_constant_call, 2)
-            )
-            # Positive means the model orders items better than "bet against
-            # yesterday's move". On 2026-08-08 it was negative at all four
-            # horizons, which is the bar this project had never measured.
-            rank_ic_edge = rank_ic_summary["rank_ic_edge_vs_naive"]
-
-            # PT is the headline: it tests whether predictions are independent
-            # of outcomes, so unlike DA it cannot be passed by a base rate. Run
-            # on the pooled out-of-fold rows, clustered by forecast date exactly
-            # as backtest/scoring.py does in production.
-            pt = pesaran_timmermann(pt_records, MIN_HEADLINE_DATES)
-
-            # The same test on the SERVED classifier. `mean_constant_call` and
-            # `mean_down_rate` are properties of the outcomes alone, so they are
-            # the same bar for both signals and are not recomputed. None when
-            # CV_DIAGNOSTIC_CLASSIFIER=0 -- visibly absent, never falling back to
-            # the quantile sign.
-            pt_clf = pesaran_timmermann(pt_records_clf, MIN_HEADLINE_DATES) if pt_records_clf else None
-            edge_vs_constant_clf = (
-                None if (mean_constant_call is None or mean_clf is None) else round(mean_clf - mean_constant_call, 2)
+            self._train_auxiliary_heads(
+                horizon, train_set, val_set, X_train, y_train,
+                per_quantile_params, boosting_type, boost_rounds,
+                feature_medians, n_jobs, _es,
             )
 
-            if cv_metrics:
-                # classifier= pools all tiers and the frame is ~83% tier-0, so
-                # it reads close to the penny-item score. classifier>=$1= is
-                # the one to compare against the production headline.
-                logger.info(
-                    f"  CV ({len(cv_metrics)} folds): "
-                    f"classifier={mean_clf}% (>=$1: {mean_clf_ge1}%) "
-                    f"quantile-sign={mean_acc:.1f}% (sd={std_acc:.1f}%)"
-                )
-                logger.info(
-                    f"  Baselines: persistence={mean_persist}% "
-                    f"momentum={mean_mom}% → served(classifier) edge vs best={edge}pp"
-                )
-                # Invariant #4: never on its own. The constant call is the bar
-                # persistence and momentum were standing in for, and it is a
-                # much higher one.
-                logger.info(
-                    f"  Invariant #4 [quantile-sign]: "
-                    f"constant-call={mean_constant_call}% "
-                    f"down-rate={mean_down_rate}% → edge vs constant call="
-                    f"{edge_vs_constant}pp | PT excess={pt['pt_excess_pp']}pp "
-                    f"t={pt['pt_t_stat']} verdict={pt['pt_verdict']}"
-                )
-                # The line that describes production. Absent, not substituted,
-                # when the diagnostic classifier did not run.
-                if pt_clf is not None:
-                    logger.info(
-                        f"  Invariant #4 [SERVED classifier]: "
-                        f"constant-call={mean_constant_call}% "
-                        f"down-rate={mean_down_rate}% → edge vs constant call="
-                        f"{edge_vs_constant_clf}pp | PT excess="
-                        f"{pt_clf['pt_excess_pp']}pp t={pt_clf['pt_t_stat']} "
-                        f"verdict={pt_clf['pt_verdict']}"
-                    )
-                else:
-                    logger.info(
-                        "  Invariant #4 [SERVED classifier]: not measured "
-                        "(CV_DIAGNOSTIC_CLASSIFIER=0) — the line above "
-                        "describes the q50 sign, NOT what production serves."
-                    )
-                logger.info(
-                    f"  Cross-sectional (>=$1): rank_ic={mean_rank_ic} vs "
-                    f"naive(-return_1d)={mean_naive_rank_ic} → edge={rank_ic_edge} "
-                    f"| mean trees/fold={mean_trees}"
-                )
-                # Printed beside it, never instead of it. The line above is the
-                # contaminated basis every stored A/B was ranked on; this one is
-                # the cohort where `p[d]/S[d]` is 1 and the metric means what it
-                # says. A reader comparing two runs should compare THIS line.
-                tied_edge = rank_ic_summary["rank_ic_edge_vs_naive_tied"]
-                if rank_ic_summary["mean_rank_ic_tied"] is None:
-                    logger.info(
-                        "  Cross-sectional (>=$1, CLEAN ANCHOR): not measured — "
-                        f"{rank_ic_summary['tied_rows']:,} tied served rows over "
-                        f"{rank_ic_summary['tied_dates']} usable dates. Rank an "
-                        "arm on the pooled line above only if you mean to rank "
-                        "it on the anchor wedge."
-                    )
-                else:
-                    logger.info(
-                        "  Cross-sectional (>=$1, CLEAN ANCHOR): rank_ic="
-                        f"{rank_ic_summary['mean_rank_ic_tied']} vs naive="
-                        f"{rank_ic_summary['mean_naive_rank_ic_tied']} → "
-                        f"edge={tied_edge} | "
-                        f"{rank_ic_summary['tied_rows']:,} rows, "
-                        f"{rank_ic_summary['tied_dates']} of "
-                        f"{rank_ic_summary['rank_ic_dates']} date-folds. "
-                        "← RANK ARMS ON THIS LINE."
-                    )
-                # C2 lambdarank arm, read on the CLEAN ANCHOR cohort against both
-                # bars: beat the naive baseline AND the q50's own ordering.
-                if rank_ic_summary["mean_lr_rank_ic_tied"] is not None:
-                    lr_vs_naive = rank_ic_summary["lr_rank_ic_edge_vs_naive_tied"]
-                    lr_vs_q50 = rank_ic_summary["lr_rank_ic_edge_vs_q50_tied"]
-                    logger.info(
-                        "  Cross-sectional (>=$1, CLEAN ANCHOR) LAMBDARANK: "
-                        f"rank_ic={rank_ic_summary['mean_lr_rank_ic_tied']} | "
-                        f"edge vs naive={lr_vs_naive}, vs q50={lr_vs_q50} — "
-                        "PASS needs BOTH > 0."
-                    )
-                    if not (lr_vs_naive and lr_vs_naive > 0 and lr_vs_q50 and lr_vs_q50 > 0):
-                        logger.warning(
-                            f"  ⚠ {horizon}d LAMBDARANK does not clear both bars "
-                            f"on the clean-anchor cohort (vs naive={lr_vs_naive}, "
-                            f"vs q50={lr_vs_q50}) — no served step is licensed."
-                        )
-                if edge_vs_constant is not None and edge_vs_constant <= 0:
-                    logger.warning(
-                        f"  ⚠ {horizon}d quantile sign does NOT beat the constant "
-                        f"call ({edge_vs_constant}pp) — a single fixed direction "
-                        f"scores {mean_constant_call}% on these folds."
-                    )
-                if edge_vs_constant_clf is not None and edge_vs_constant_clf <= 0:
-                    logger.warning(
-                        f"  ⚠ {horizon}d SERVED classifier does NOT beat the "
-                        f"constant call ({edge_vs_constant_clf}pp) — a single "
-                        f"fixed direction scores {mean_constant_call}% on these "
-                        f"folds. This is the signal production ships."
-                    )
-                if rank_ic_edge is not None and rank_ic_edge <= 0:
-                    logger.warning(
-                        f"  ⚠ {horizon}d model does NOT beat ranking by "
-                        f"-return_1d (rank IC {mean_rank_ic} vs "
-                        f"{mean_naive_rank_ic}) — the ML stack is subtracting "
-                        f"from its own best feature. Measured on the raw-anchor "
-                        f"basis; read the CLEAN ANCHOR edge before acting on it."
-                    )
-                if tied_edge is not None and tied_edge <= 0:
-                    logger.warning(
-                        f"  ⚠ {horizon}d model does NOT beat -return_1d on the "
-                        f"CLEAN ANCHOR cohort either ({tied_edge}) — this is the "
-                        f"basis-free read, so it is the one that counts."
-                    )
-                if pt["pt_verdict"] not in ("skill",):
-                    logger.warning(
-                        f"  ⚠ {horizon}d Pesaran-Timmermann verdict is "
-                        f"'{pt['pt_verdict']}' (t={pt['pt_t_stat']}) on the "
-                        f"quantile sign — that call is not distinguishable "
-                        f"from chance."
-                    )
-                if pt_clf is not None and pt_clf["pt_verdict"] not in ("skill",):
-                    logger.warning(
-                        f"  ⚠ {horizon}d Pesaran-Timmermann verdict is "
-                        f"'{pt_clf['pt_verdict']}' (t={pt_clf['pt_t_stat']}) on "
-                        f"the SERVED classifier — what production ships is not "
-                        f"distinguishable from chance."
-                    )
-            self.cv_results[horizon] = {
-                "fold_count": len(cv_metrics),
-                "per_fold": cv_metrics,
-                "mean_dir_acc": round(mean_acc, 1) if fold_accs else 0,
-                "std_dir_acc": round(std_acc, 1) if len(fold_accs) > 1 else 0,
-                "min_dir_acc": round(min(fold_accs), 1) if fold_accs else 0,
-                "max_dir_acc": round(max(fold_accs), 1) if fold_accs else 0,
-                "mean_classifier_acc": mean_clf,
-                "mean_classifier_acc_ge1": mean_clf_ge1,
-                "mean_persistence_acc": mean_persist,
-                "mean_momentum_acc": mean_mom,
-                "edge_vs_best_baseline": edge,
-                # Invariant #4 + the cross-sectional headline.
-                "mean_constant_call_acc": mean_constant_call,
-                "mean_realised_down_rate": mean_down_rate,
-                "edge_vs_constant_call": edge_vs_constant,
-                # Which signal the two lines above describe. Always the median
-                # sign, so the key does not change meaning when the diagnostic
-                # classifier is skipped.
-                "invariant_4_signal": "quantile_sign",
-                # The same pair for the signal production actually serves.
-                # None when CV_DIAGNOSTIC_CLASSIFIER=0. A consumer that wants
-                # the served verdict must read these and handle the None --
-                # falling back to the keys above would silently substitute the
-                # q50 sign, which is the bug this pair exists to prevent.
-                "edge_vs_constant_call_classifier": edge_vs_constant_clf,
-                "pt_classifier": pt_clf,
-                # Pooled and tied, together. The tied pair is the one a new arm
-                # is ranked on; the pooled pair is kept unchanged because it is
-                # the series every historical meta.json holds.
-                **rank_ic_summary,
-                "mean_trees_per_fold": mean_trees,
-                "pt": pt,
-                # Isotonic calibration of the disclosed exceedance probability.
-                # None when the horizon produced no usable OOF (p, y) pairs —
-                # visibly absent, never a zero. Carries Brier raw->cal, ECE
-                # raw->cal, and both reliability curves, so the served
-                # move_odds number is quotable beside its calibration.
-                "exceedance_calibration": exceed_cal_report,
-                # The expanding-window screen. None when fewer than 3 folds
-                # reported a `fold_q_hat` — visibly absent rather than a rho
-                # over two points. Diagnostic; nothing builds a band from it.
-                "q_hat_trend": q_hat_trend,
-                # The sigma axis. None below MIN_CALIBRATION_ROWS. Read
-                # `elasticity_heldout` first — the pooled legs fit and score the
-                # exponent on the same rows. Diagnostic; nothing serves from it.
-                "sigma_tilt": sigma_tilt,
-            }
+            (
+                oof_records, cv_metrics, q_hat, out_of_sample,
+                calibration_source, records_df, exceed_cal_report,
+                sigma_tilt, q_hat_trend, pt_records, pt_records_clf,
+            ) = self._cv_and_calibrate(
+                horizon, tdf, per_quantile_params, per_item_row_sampling,
+                X_val, y_val, val_set, _warm_retrain,
+            )
+
+            self._aggregate_cv_metrics(
+                horizon, cv_metrics, q_hat, out_of_sample,
+                calibration_source, exceed_cal_report, sigma_tilt,
+                q_hat_trend, pt_records, pt_records_clf, records_df,
+            )
 
             # Validate feature groups: permutation test on the held-out set.
             # Skip entirely when the validation window is thin (MIN_VAL_ROWS /
@@ -9676,10 +9788,41 @@ class ItemForecaster:
             )
         return public_df, shadows
 
-    def predict(self, item_ids: list[int] | None = None) -> pd.DataFrame:
-        logger.info("Generating forecasts...")
-        self.pending_candidates = []
+    # ------------------------------------------------------------------
+    # predict() helpers — extracted for readability; see predict() below.
+    # ------------------------------------------------------------------
 
+    @dataclass
+    class _PredictContext:
+        """All state produced by feature preparation that the per-horizon
+        prediction loop and the output finalizer need.  Pure data carrier
+        — no methods, no side-effects."""
+
+        df: Any                          # engineered DataFrame (for anchor_date)
+        X_batch: Any                     # feature matrix (DataFrame)
+        latest_rows: Any                 # one row per item (DataFrame)
+        item_id_arr: Any                 # np.ndarray of item ids
+        current_price_arr: Any           # np.ndarray of current prices
+        anchor_clean_arr: Any            # np.ndarray of bools
+        anchor_wedge_arr: Any            # np.ndarray of floats
+        anchor_date: Any                 # date
+        generated_at: Any               # datetime
+        current_regime: str              # regime label
+        sigma_arr: Any                   # np.ndarray of per-item sigmas
+        agg: dict = field(default_factory=dict)  # item_id -> forecast row
+        regime_count: int = 0
+        global_count: int = 0
+
+    def _prepare_predict_features(
+        self,
+        item_ids: list[int] | None = None,
+    ) -> "_PredictContext":
+        """Feature loading, alignment, anchor resolution, regime detection,
+        and result_df initialization.  Returns a context object with
+        everything the per-horizon loop needs.
+
+        Pure extraction from predict() — zero behavioral change.
+        """
         # Live-refresh the served-coverage feedback factor from the panel if the
         # artifact's factor is empty (pre-gate-change artifact) and a DB session
         # is available. This lets predict-only runs pick up the feedback without
@@ -9920,10 +10063,6 @@ class ItemForecaster:
         else:
             logger.info(f"  Current market regime: {current_regime} (using global models)")
 
-        # Track regime vs global model usage for diagnostics
-        regime_count = 0
-        global_count = 0
-
         # One row per item, filled in horizon by horizon.
         # Per ITEM, not per horizon: the anchor is a property of the price
         # frame on the forecast date, and all four horizons are quoted from it.
@@ -9946,228 +10085,257 @@ class ItemForecaster:
         # coverage guarantee does not transfer.
         sigma_arr = self._sigma_for_rows(latest_rows)
 
-        for horizon in self.HORIZONS:
-            h_features = self.horizon_feature_cols.get(horizon, self.feature_cols)
-            X_horizon = X_batch[h_features]
-            preds = {}
-            for q in self.QUANTILES:
-                all_preds = []
+        return self._PredictContext(
+            df=df,
+            X_batch=X_batch,
+            latest_rows=latest_rows,
+            item_id_arr=item_id_arr,
+            current_price_arr=current_price_arr,
+            anchor_clean_arr=anchor_clean_arr,
+            anchor_wedge_arr=anchor_wedge_arr,
+            anchor_date=anchor_date,
+            generated_at=generated_at,
+            current_regime=current_regime,
+            sigma_arr=sigma_arr,
+            agg=agg,
+        )
 
-                # Prefer regime-specific model, fall back to global. Skip any
-                # model whose feature count doesn't match the current matrix
-                # (e.g. stale models left in the dir from a prior feature set)
-                # so a feature-schema change can never crash prediction.
-                regime_key = (current_regime, horizon, q)
-                if current_regime in self.REGIMES and regime_key in self.regime_models:
-                    all_preds = self._predict_ensemble_safe(self.regime_models[regime_key], X_horizon)
-                    if all_preds:
-                        regime_count += 1
-                if not all_preds and (horizon, q) in self.models:
-                    all_preds = self._predict_ensemble_safe(self.models[(horizon, q)], X_horizon)
-                    if all_preds:
-                        global_count += 1
+    def _predict_horizon(self, ctx: "_PredictContext", horizon: int) -> None:
+        """Run prediction for a single horizon, populating ctx.agg in place.
 
+        Mutates ctx.agg (adds per-horizon forecast dicts) and increments
+        ctx.regime_count / ctx.global_count.
+
+        Pure extraction from the ``for horizon in self.HORIZONS`` loop in
+        predict() — zero behavioral change.
+        """
+        h_features = self.horizon_feature_cols.get(horizon, self.feature_cols)
+        X_horizon = ctx.X_batch[h_features]
+        preds = {}
+        for q in self.QUANTILES:
+            all_preds = []
+
+            # Prefer regime-specific model, fall back to global. Skip any
+            # model whose feature count doesn't match the current matrix
+            # (e.g. stale models left in the dir from a prior feature set)
+            # so a feature-schema change can never crash prediction.
+            regime_key = (ctx.current_regime, horizon, q)
+            if ctx.current_regime in self.REGIMES and regime_key in self.regime_models:
+                all_preds = self._predict_ensemble_safe(self.regime_models[regime_key], X_horizon)
                 if all_preds:
-                    preds[q] = np.mean(all_preds, axis=0)
+                    ctx.regime_count += 1
+            if not all_preds and (horizon, q) in self.models:
+                all_preds = self._predict_ensemble_safe(self.models[(horizon, q)], X_horizon)
+                if all_preds:
+                    ctx.global_count += 1
 
-            # Only the median is served. Gating on the presence of 0.5 rather
-            # than on a quantile count keeps this correct whatever QUANTILES
-            # holds — the old three-quantile count check would skip every
-            # horizon once the grid collapses to [0.5].
-            if 0.5 not in preds:
-                continue
+            if all_preds:
+                preds[q] = np.mean(all_preds, axis=0)
 
-            # Models predict percentage returns (e.g. 5.0 means +5%); the
-            # conversion to price levels happens per item further below.
-            p50_ret = preds[0.5]
+        # Only the median is served. Gating on the presence of 0.5 rather
+        # than on a quantile count keeps this correct whatever QUANTILES
+        # holds — the old three-quantile count check would skip every
+        # horizon once the grid collapses to [0.5].
+        if 0.5 not in preds:
+            return
 
-            # N1: a booster fitted with `init_score = -return_1d` emits the
-            # RESIDUAL to that baseline, so the served level is the residual plus
-            # the baseline. Read off the artifact, not the environment — a warm
-            # daily run that lost the env var would otherwise publish residuals
-            # as forecasts with nothing in the output to give it away.
-            # `latest_rows` is X_batch's source frame, so this is positional.
-            naive_offset = self._naive_offset_served(latest_rows)
-            if naive_offset is not None:
-                p50_ret = p50_ret + naive_offset
+        # Models predict percentage returns (e.g. 5.0 means +5%); the
+        # conversion to price levels happens per item further below.
+        p50_ret = preds[0.5]
 
-            # Median from the single p50 model; band from locally-weighted split
-            # conformal (sigma_arr, computed once above). A band symmetric about
-            # the median cannot cross, so the isotonic repair this loop used to
-            # run is unnecessary. That repair is still a static method on this
-            # class for walkforward's baseline arm and the evaluate/ab_test
-            # scripts — do not delete it.
-            #
-            # The band is unbounded below: a wide enough q_hat * sigma puts the
-            # low leg under -100%, i.e. a negative price. _sanitize_forecasts is
-            # what guarantees the served triple stays ordered and positive;
-            # low_ret is deliberately NOT floored here, because truncating one
-            # side would break the symmetry the coverage guarantee rests on.
-            mid_ret_arr = p50_ret
-            q_hat = self.conformal_calibration.get(horizon)
-            if q_hat is None:
-                raise RuntimeError(
-                    f"no conformal calibration for horizon {horizon}d. The band "
-                    f"cannot be constructed without q_hat; refusing to serve a "
-                    f"forecast with a fabricated interval."
-                )
-            # A q_hat from the single-holdout fallback is served too. It is
-            # fitted on the early-stopping/Optuna scoring set, so it is biased
-            # low and the band under-covers — train() logs that at WARNING. A
-            # band that under-covers is still more useful than no band, and the
-            # path is unreachable in production (a 1460-day frame yields 8-9 CV
-            # folds; the fallback needs fewer than 2).
-            # `band_beta` and not `conformal_beta[horizon]`: an artifact written
-            # before 2026-08-12 has no exponent at all, and 1.0 is the value that
-            # reproduces the band it was calibrated for.
-            # `band_scale` returns None on every artifact without a learned
-            # scale model, which is all of them before 2026-08-12 -- and then
-            # `band` divides by `sigma ** beta` exactly as it always has.
-            # Per-horizon rather than loop-invariant like `sigma_arr`: each
-            # horizon's residuals have their own size, so each has its own model.
-            #
-            # `served_qhat_multiplier` is the served-outcome feedback correction: a
-            # scalar that re-solves the asymmetric split-conformal band on the served
-            # panel to the 80% nominal. 1.0 (no-op) below the MIN_FEEDBACK_DATES gate
-            # AND until SIGNED_BAND_SERVING_START is set — every artifact today.
-            # It is orthogonal to beta/scale (it does not change the scale's units), but
-            # NOT a pure width knob on a signed band: the factor is the quantile of the
-            # deviation measured as a fraction of the offset FROM THE q50 MID, so it must
-            # multiply q_lo/q_hi directly (`q_lo*mult, q_hi*mult`). On an asymmetric pair
-            # that also scales the band's centre offset (mult*(q_lo+q_hi)/2) — by design:
-            # that is what keeps coverage at 80%, not a second recentring. Do NOT "fix" it
-            # to hold the centre fixed; that would break the calibration guarantee.
-            # Signed offsets, not one symmetric q_hat: the band recentres on the q50
-            # residual's own median, so an upward-biased q50 no longer forces a symmetric
-            # band inflated by its fat tail. An artifact without the pair yields
-            # (-q_hat, +q_hat) here, i.e. the old band.
-            mult = self.served_qhat_multiplier(horizon)
-            q_lo, q_hi = self.band_offsets(horizon)
-            low_ret_arr, high_ret_arr = conformal.band_signed(
-                mid_ret_arr,
-                sigma_arr,
-                q_lo * mult,
-                q_hi * mult,
-                self.band_beta(horizon),
-                learned_scale=self.band_scale(horizon, latest_rows, sigma_arr),
+        # N1: a booster fitted with `init_score = -return_1d` emits the
+        # RESIDUAL to that baseline, so the served level is the residual plus
+        # the baseline. Read off the artifact, not the environment — a warm
+        # daily run that lost the env var would otherwise publish residuals
+        # as forecasts with nothing in the output to give it away.
+        # `latest_rows` is X_batch's source frame, so this is positional.
+        naive_offset = self._naive_offset_served(ctx.latest_rows)
+        if naive_offset is not None:
+            p50_ret = p50_ret + naive_offset
+
+        # Median from the single p50 model; band from locally-weighted split
+        # conformal (sigma_arr, computed once above). A band symmetric about
+        # the median cannot cross, so the isotonic repair this loop used to
+        # run is unnecessary. That repair is still a static method on this
+        # class for walkforward's baseline arm and the evaluate/ab_test
+        # scripts — do not delete it.
+        #
+        # The band is unbounded below: a wide enough q_hat * sigma puts the
+        # low leg under -100%, i.e. a negative price. _sanitize_forecasts is
+        # what guarantees the served triple stays ordered and positive;
+        # low_ret is deliberately NOT floored here, because truncating one
+        # side would break the symmetry the coverage guarantee rests on.
+        mid_ret_arr = p50_ret
+        q_hat = self.conformal_calibration.get(horizon)
+        if q_hat is None:
+            raise RuntimeError(
+                f"no conformal calibration for horizon {horizon}d. The band "
+                f"cannot be constructed without q_hat; refusing to serve a "
+                f"forecast with a fabricated interval."
+            )
+        # A q_hat from the single-holdout fallback is served too. It is
+        # fitted on the early-stopping/Optuna scoring set, so it is biased
+        # low and the band under-covers — train() logs that at WARNING. A
+        # band that under-covers is still more useful than no band, and the
+        # path is unreachable in production (a 1460-day frame yields 8-9 CV
+        # folds; the fallback needs fewer than 2).
+        # `band_beta` and not `conformal_beta[horizon]`: an artifact written
+        # before 2026-08-12 has no exponent at all, and 1.0 is the value that
+        # reproduces the band it was calibrated for.
+        # `band_scale` returns None on every artifact without a learned
+        # scale model, which is all of them before 2026-08-12 -- and then
+        # `band` divides by `sigma ** beta` exactly as it always has.
+        # Per-horizon rather than loop-invariant like `sigma_arr`: each
+        # horizon's residuals have their own size, so each has its own model.
+        #
+        # `served_qhat_multiplier` is the served-outcome feedback correction: a
+        # scalar that re-solves the asymmetric split-conformal band on the served
+        # panel to the 80% nominal. 1.0 (no-op) below the MIN_FEEDBACK_DATES gate
+        # AND until SIGNED_BAND_SERVING_START is set — every artifact today.
+        # It is orthogonal to beta/scale (it does not change the scale's units), but
+        # NOT a pure width knob on a signed band: the factor is the quantile of the
+        # deviation measured as a fraction of the offset FROM THE q50 MID, so it must
+        # multiply q_lo/q_hi directly (`q_lo*mult, q_hi*mult`). On an asymmetric pair
+        # that also scales the band's centre offset (mult*(q_lo+q_hi)/2) — by design:
+        # that is what keeps coverage at 80%, not a second recentring. Do NOT "fix" it
+        # to hold the centre fixed; that would break the calibration guarantee.
+        # Signed offsets, not one symmetric q_hat: the band recentres on the q50
+        # residual's own median, so an upward-biased q50 no longer forces a symmetric
+        # band inflated by its fat tail. An artifact without the pair yields
+        # (-q_hat, +q_hat) here, i.e. the old band.
+        mult = self.served_qhat_multiplier(horizon)
+        q_lo, q_hi = self.band_offsets(horizon)
+        low_ret_arr, high_ret_arr = conformal.band_signed(
+            mid_ret_arr,
+            ctx.sigma_arr,
+            q_lo * mult,
+            q_hi * mult,
+            self.band_beta(horizon),
+            learned_scale=self.band_scale(horizon, ctx.latest_rows, ctx.sigma_arr),
+        )
+
+        # Directional classifier: OFFLINE-ONLY (2026-09-19). Routine
+        # prediction always takes the no-classifier fallback below;
+        # a legacy artifact's direction boosters are ignored on load.
+        # The reproducible benchmark lives in
+        # scripts/direction_benchmark.py.
+
+        # NOTE: the conformal widening used to be applied here, as a
+        # per-horizon percentage-point addend. It is not missing — q_hat is
+        # now a multiplier of the per-item sigma and is applied where the
+        # band is built above. Do not re-add a widening step at this point.
+
+        # Forecast blending / directional smoothing: blend the current
+        # return-space predictions with the previous day's forecast for the
+        # same item+horizon. Reduces daily direction flip-flopping. No-ops
+        # when no prior forecast exists (first run / retrain).
+        _disabled = self.replay_disabled()
+        if _disabled:
+            logger.warning(
+                f"  REPLAY_DISABLE={sorted(_disabled)}: serving transforms "
+                f"skipped. This is an attribution replay, not a forecast."
+            )
+        if "blend" not in _disabled:
+            prior = self._fetch_prior_forecasts(ctx.item_id_arr, horizon)
+            low_ret_arr, mid_ret_arr, high_ret_arr = self._blend_returns_with_prior(
+                low_ret_arr, mid_ret_arr, high_ret_arr, prior, self.FORECAST_BLEND_WEIGHT
             )
 
-            # Directional classifier: OFFLINE-ONLY (2026-09-19). Routine
-            # prediction always takes the no-classifier fallback below;
-            # a legacy artifact's direction boosters are ignored on load.
-            # The reproducible benchmark lives in
-            # scripts/direction_benchmark.py.
+        # Per-tier bias correction: threshold-based approach (preferred).
+        # Recalibrates classification boundaries to match the true outcome
+        # base rate instead of shifting mid_ret (which pushes predictions
+        # into the flat dead-zone). Falls back to additive correction only
+        # when no threshold data exists for any tier on this horizon.
+        tier_thresholds = self.bias_thresholds.get(horizon, {})
+        fallback_additive = not tier_thresholds
+        corrections = self.bias_corrections.get(horizon, {})
+        if "bias" in _disabled:
+            corrections = {}
+        if corrections and fallback_additive:
+            mid_ret_arr = np.array(mid_ret_arr, dtype=np.float64, copy=True)
+            low_ret_arr = np.array(low_ret_arr, dtype=np.float64, copy=True)
+            high_ret_arr = np.array(high_ret_arr, dtype=np.float64, copy=True)
+            for i, price in enumerate(ctx.current_price_arr):
+                tier = self._get_price_tier(float(price))
+                corr = corrections.get(tier, 0.0)
+                if corr != 0.0:
+                    mid_ret_arr[i] += corr
+                    low_ret_arr[i] += corr
+                    high_ret_arr[i] += corr
 
-            # NOTE: the conformal widening used to be applied here, as a
-            # per-horizon percentage-point addend. It is not missing — q_hat is
-            # now a multiplier of the per-item sigma and is applied where the
-            # band is built above. Do not re-add a widening step at this point.
+        # RANGE STANCE (2026-08-19): the median is no longer recentred on the
+        # 3-class classifier's call. That step moved the mid to ±|mid| after
+        # the band was calibrated around the q50, so the band was not centred
+        # where its coverage was fitted (served-median-comes-from-the-classifier),
+        # and it made this a directional predictor in a product AGENTS.md
+        # defines as a range forecaster. The band's skew now comes from the
+        # signed offsets above, calibrated on the q50 residual — coherent by
+        # construction. The classifier's call still populates the `direction`
+        # / `confidence` fields below; it no longer moves the price.
+        # See docs/superpowers/specs/2026-08-19-signed-conformal-quantile-design.md.
 
-            # Forecast blending / directional smoothing: blend the current
-            # return-space predictions with the previous day's forecast for the
-            # same item+horizon. Reduces daily direction flip-flopping. No-ops
-            # when no prior forecast exists (first run / retrain).
-            _disabled = self.replay_disabled()
-            if _disabled:
-                logger.warning(
-                    f"  REPLAY_DISABLE={sorted(_disabled)}: serving transforms "
-                    f"skipped. This is an attribution replay, not a forecast."
-                )
-            if "blend" not in _disabled:
-                prior = self._fetch_prior_forecasts(item_id_arr, horizon)
-                low_ret_arr, mid_ret_arr, high_ret_arr = self._blend_returns_with_prior(
-                    low_ret_arr, mid_ret_arr, high_ret_arr, prior, self.FORECAST_BLEND_WEIGHT
-                )
+        # Disclosed exceedance probability: P(the h-day move clears the
+        # round-trip cost). Served whenever a head is in the artifact,
+        # independent of the band scale (climatology / sigma / exceedance);
+        # None on a pre-Phase-2 or degenerate-horizon artifact, and then the
+        # field is null. `latest_rows` is aligned to `item_id_arr`, the same
+        # frame band_scale scored above.
+        exceed_p_arr = self.exceedance_probability(horizon, ctx.latest_rows)
+        anomaly_p_arr = self.anomaly_probability(horizon, ctx.latest_rows)
+        rank_score_arr = None
+        rank_clf = self.ranking_models.get(horizon)
+        if rank_clf is not None:
+            rank_score_arr = rank_clf.predict(X_horizon)
 
-            # Per-tier bias correction: threshold-based approach (preferred).
-            # Recalibrates classification boundaries to match the true outcome
-            # base rate instead of shifting mid_ret (which pushes predictions
-            # into the flat dead-zone). Falls back to additive correction only
-            # when no threshold data exists for any tier on this horizon.
-            tier_thresholds = self.bias_thresholds.get(horizon, {})
-            fallback_additive = not tier_thresholds
-            corrections = self.bias_corrections.get(horizon, {})
-            if "bias" in _disabled:
-                corrections = {}
-            if corrections and fallback_additive:
-                mid_ret_arr = np.array(mid_ret_arr, dtype=np.float64, copy=True)
-                low_ret_arr = np.array(low_ret_arr, dtype=np.float64, copy=True)
-                high_ret_arr = np.array(high_ret_arr, dtype=np.float64, copy=True)
-                for i, price in enumerate(current_price_arr):
-                    tier = self._get_price_tier(float(price))
-                    corr = corrections.get(tier, 0.0)
-                    if corr != 0.0:
-                        mid_ret_arr[i] += corr
-                        low_ret_arr[i] += corr
-                        high_ret_arr[i] += corr
+        fallback_n = 0
+        fallback_flat = 0
+        for i, iid in enumerate(ctx.item_id_arr):
+            low_ret, mid_ret, high_ret = (float(low_ret_arr[i]), float(mid_ret_arr[i]), float(high_ret_arr[i]))
+            current_price = float(ctx.current_price_arr[i])
 
-            # RANGE STANCE (2026-08-19): the median is no longer recentred on the
-            # 3-class classifier's call. That step moved the mid to ±|mid| after
-            # the band was calibrated around the q50, so the band was not centred
-            # where its coverage was fitted (served-median-comes-from-the-classifier),
-            # and it made this a directional predictor in a product AGENTS.md
-            # defines as a range forecaster. The band's skew now comes from the
-            # signed offsets above, calibrated on the q50 residual — coherent by
-            # construction. The classifier's call still populates the `direction`
-            # / `confidence` fields below; it no longer moves the price.
-            # See docs/superpowers/specs/2026-08-19-signed-conformal-quantile-design.md.
+            # Convert return predictions to price levels
+            price_low = round(current_price * (1 + low_ret / 100), 2)
+            price_mid = round(current_price * (1 + mid_ret / 100), 2)
+            price_high = round(current_price * (1 + high_ret / 100), 2)
 
-            # Disclosed exceedance probability: P(the h-day move clears the
-            # round-trip cost). Served whenever a head is in the artifact,
-            # independent of the band scale (climatology / sigma / exceedance);
-            # None on a pre-Phase-2 or degenerate-horizon artifact, and then the
-            # field is null. `latest_rows` is aligned to `item_id_arr`, the same
-            # frame band_scale scored above.
-            exceed_p_arr = self.exceedance_probability(horizon, latest_rows)
-            anomaly_p_arr = self.anomaly_probability(horizon, latest_rows)
-            rank_score_arr = None
-            rank_clf = self.ranking_models.get(horizon)
-            if rank_clf is not None:
-                rank_score_arr = rank_clf.predict(X_horizon)
+            # No-classifier fallback (the only production path since
+            # 2026-09-19): threshold-based on mid_ret.
+            tier = self._get_price_tier(float(current_price))
+            th = tier_thresholds.get(tier, {})
+            t_down = th.get("t_down", -DIRECTION_FLAT_TOLERANCE_PCT)
+            t_up = th.get("t_up", DIRECTION_FLAT_TOLERANCE_PCT)
+            if mid_ret > t_up:
+                direction = "up"
+            elif mid_ret < t_down:
+                direction = "down"
+            else:
+                direction = "flat"
+            confidence = self._compute_confidence(
+                price_mid, price_low, price_high, current_price, horizon=horizon
+            )
+            fallback_n += 1
+            fallback_flat += direction == "flat"
 
-            fallback_n = 0
-            fallback_flat = 0
-            for i, iid in enumerate(item_id_arr):
-                low_ret, mid_ret, high_ret = (float(low_ret_arr[i]), float(mid_ret_arr[i]), float(high_ret_arr[i]))
-                current_price = float(current_price_arr[i])
+            ctx.agg[iid]["forecasts"][horizon] = {
+                "low": price_low,
+                "mid": price_mid,
+                "high": price_high,
+                "direction": direction,
+                "confidence": confidence,
+                "exceed_p": (float(exceed_p_arr[i]) if exceed_p_arr is not None else None),
+                "anomaly_p": (float(anomaly_p_arr[i]) if anomaly_p_arr is not None else None),
+                "rank_score": (float(rank_score_arr[i]) if rank_score_arr is not None else None),
+            }
 
-                # Convert return predictions to price levels
-                price_low = round(current_price * (1 + low_ret / 100), 2)
-                price_mid = round(current_price * (1 + mid_ret / 100), 2)
-                price_high = round(current_price * (1 + high_ret / 100), 2)
+        self._warn_no_classifier(horizon, fallback_n, fallback_flat)
 
-                # No-classifier fallback (the only production path since
-                # 2026-09-19): threshold-based on mid_ret.
-                tier = self._get_price_tier(float(current_price))
-                th = tier_thresholds.get(tier, {})
-                t_down = th.get("t_down", -DIRECTION_FLAT_TOLERANCE_PCT)
-                t_up = th.get("t_up", DIRECTION_FLAT_TOLERANCE_PCT)
-                if mid_ret > t_up:
-                    direction = "up"
-                elif mid_ret < t_down:
-                    direction = "down"
-                else:
-                    direction = "flat"
-                confidence = self._compute_confidence(
-                    price_mid, price_low, price_high, current_price, horizon=horizon
-                )
-                fallback_n += 1
-                fallback_flat += direction == "flat"
+    def _finalize_predictions(self, ctx: "_PredictContext") -> pd.DataFrame:
+        """Post-loop: build result DataFrame, sanitize, capture shadow
+        candidates, and log diagnostics.  Returns the final DataFrame.
 
-                agg[iid]["forecasts"][horizon] = {
-                    "low": price_low,
-                    "mid": price_mid,
-                    "high": price_high,
-                    "direction": direction,
-                    "confidence": confidence,
-                    "exceed_p": (float(exceed_p_arr[i]) if exceed_p_arr is not None else None),
-                    "anomaly_p": (float(anomaly_p_arr[i]) if anomaly_p_arr is not None else None),
-                    "rank_score": (float(rank_score_arr[i]) if rank_score_arr is not None else None),
-                }
-
-            self._warn_no_classifier(horizon, fallback_n, fallback_flat)
-
-        result_df = pd.DataFrame([r for r in agg.values() if r["forecasts"]])
+        Pure extraction from predict() — zero behavioral change.
+        """
+        result_df = pd.DataFrame([r for r in ctx.agg.values() if r["forecasts"]])
         if not result_df.empty:
             result_df = self._sanitize_forecasts(result_df)
 
@@ -10180,17 +10348,28 @@ class ItemForecaster:
                 logger.warning("  Shadow candidate capture failed (%s); serving production only.", e)
                 self.pending_candidates = []
 
-        total_used = regime_count + global_count
+        total_used = ctx.regime_count + ctx.global_count
         if total_used > 0:
-            pct = regime_count / total_used * 100
+            pct = ctx.regime_count / total_used * 100
             logger.info(
-                f"  Regime model usage: {regime_count}/{total_used} "
-                f"({pct:.1f}%) regime, {global_count}/{total_used} "
+                f"  Regime model usage: {ctx.regime_count}/{total_used} "
+                f"({pct:.1f}%) regime, {ctx.global_count}/{total_used} "
                 f"({100 - pct:.1f}%) global"
             )
 
         logger.info(f"  Forecasts generated for {len(result_df)} items")
         return result_df
+
+    def predict(self, item_ids: list[int] | None = None) -> pd.DataFrame:
+        logger.info("Generating forecasts...")
+        self.pending_candidates = []
+
+        ctx = self._prepare_predict_features(item_ids)
+
+        for horizon in self.HORIZONS:
+            self._predict_horizon(ctx, horizon)
+
+        return self._finalize_predictions(ctx)
 
     # Floor for a `low` leg that sanitization has to replace, as a fraction of
     # the median. Anchored on `mid` rather than on `current_price` precisely

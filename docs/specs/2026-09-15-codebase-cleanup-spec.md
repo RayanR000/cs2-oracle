@@ -8,7 +8,7 @@ can pick it up without reading the rest.
 
 ## Tier 1 — Correctness (fix immediately)
 
-### 1.1 Double-slicing bug in `get_price_history`
+### 1.1 Double-slicing bug in `get_price_history` ✅ DONE
 
 **File:** `backend/api/routes/items.py:430-441`
 
@@ -21,9 +21,12 @@ iterates `records_slice`, so the endpoint skips `2 * skip` records instead of `s
 **Test:** `GET /items/{id}/price-history?skip=10&limit=5` should return records 10-14,
 not 20-24.
 
+**Resolution:** Pagination moved to SQL `.offset(skip).limit(limit)`;
+`records_slice = records` is now a pass-through.
+
 ---
 
-### 1.2 Direction signal leak on `/opportunities`
+### 1.2 Direction signal leak on `/opportunities` ✅ DONE
 
 **File:** `backend/api/routes/opportunities.py:32`
 
@@ -38,6 +41,10 @@ forecast predicts upward/downward movement" — replace with a range-based expla
 
 **Test:** Verify `/opportunities` never returns a `current_trend` other than "neutral"
 while `DIRECTION_DISCLOSED = False`.
+
+**Resolution:** `current_trend` now routes through `served_direction()`;
+`_reason_for_type` rewritten to range-based language. Test in
+`test_direction_withheld.py::test_opportunities_routes_through_served_direction`.
 
 ---
 
@@ -118,16 +125,22 @@ callers". Remove all three (~130 lines). Also delete `scripts/measure_waci.py`.
 `/items/{item_id}/social-sentiment` serves 0 rows permanently. Remove the endpoint
 and `_social_sentiment_parquet` helper.
 
-### 3.7 Dead bullish/bearish branches in `items.py:659-664`
+### 3.7 Dead bullish/bearish branches in `items.py:659-664` ✅ DONE
 
 `DIRECTION_DISCLOSED = False` means only the neutral branch fires. Simplify to return
 the neutral explanation directly.
 
-### 3.8 `skinport_quantity` fossil
+**Resolution:** `_build_trend_explanation` simplified to a single range-based return;
+dead bullish/bearish branches and unused `current_price` parameter removed.
+
+### 3.8 `skinport_quantity` fossil ✅ DONE
 
 - `database.py:453` — column is 100% NULL for its entire life
 - `forecaster.py:3516` — `np.log1p(df["skinport_quantity"])` always produces 0.0
 - Remove the feature computation. Leave the ORM column (migration cost to drop).
+
+**Resolution:** Removed `skinport_quantity` from `_fetch_supply_snapshots` empty frame,
+column assignment, fillna, drop, and docstrings. ORM column and migration kept.
 
 ### 3.9 `data_validation.py` (379 lines)
 
@@ -212,11 +225,15 @@ resolves itself.
 
 `market.py:40-52` and `schemas.py:204-215`. Keep `schemas.py`, import in `market.py`.
 
-### 5.5 Trends computation — 2 near-identical paths
+### 5.5 Trends computation — 2 near-identical paths ✅ DONE
 
 `items.py:532-578` (parquet) and `items.py:592-656` (DB fallback). Extract the
 SMA/Bollinger/RSI/MACD computation into a shared builder function that takes a price
 list.
+
+**Resolution:** Indicator computation already shared via `_trend_indicators`;
+`TrendAnalysisOut` construction extracted into `_build_trend_response`. Both
+`_trends_parquet` and the DB fallback now delegate to it.
 
 ### 5.6 `score_sentiment` — duplicate definition
 
@@ -227,7 +244,7 @@ module is kept, remove the duplicate.
 
 ## Tier 6 — Code quality
 
-### 6.1 Split `_train_horizon_inline` (975 lines)
+### 6.1 Split `_train_horizon_inline` (975 lines) ✅ DONE
 
 `forecaster.py:6416-7390`. Break into:
 1. HP search + ensemble fit (~300 lines)
@@ -235,12 +252,22 @@ module is kept, remove the duplicate.
 3. CV evaluation + conformal calibration (~200 lines)
 4. Metrics aggregation + logging (~175 lines)
 
-### 6.2 Split `predict()` (508 lines)
+**Resolution:** Extracted 3 methods: `_train_auxiliary_heads` (~265 lines),
+`_cv_and_calibrate` (~209 lines), `_aggregate_cv_metrics` (~275 lines).
+Main method reduced from ~1095 to ~420 lines. 192 tests pass. Opus 5 review
+confirmed correct parameter passing and no lost variables.
+
+### 6.2 Split `predict()` (508 lines) ✅ DONE
 
 `forecaster.py:9642-10150`. Break into:
 1. Feature preparation + anchor resolution
 2. Per-horizon prediction loop
 3. Output construction + sanitization
+
+**Resolution:** Extracted 3 methods + `_PredictContext` dataclass:
+`_prepare_predict_features` (~287 lines), `_predict_horizon` (~229 lines),
+`_finalize_predictions` (~31 lines). `predict()` reduced to a 10-line coordinator.
+192 tests pass. Opus 5 review confirmed correct field propagation.
 
 ### 6.3 Silent `except Exception: pass` blocks
 
@@ -258,20 +285,26 @@ existing `direction_classes()` function (3 lines below it).
 
 `main.py:68` — `@app.on_event("startup")` → `lifespan` context manager.
 
-### 6.6 Hardcoded secret key
+### 6.6 Hardcoded secret key ✅ DONE
 
 `config.py:67` — `secret_key: str = "your-secret-key-for-sessions"`. Add a guard
 that raises in production if the default is unchanged.
+
+**Resolution:** `check_secret_key()` guard at `config.py:75-83` raises `ValueError`
+in production when the default is unchanged.
 
 ### 6.7 Session token in URL query parameter
 
 `auth.py:106` — `redirect_url = f"...?session={token}"`. The token is already set as
 a cookie (lines 110-117), so remove it from the URL.
 
-### 6.8 Unbounded `query.all()` in market summary
+### 6.8 Unbounded `query.all()` in market summary ✅ DONE
 
 `market.py:92-118` — loads all items into memory, paginates in Python. Add a DB-level
 limit.
+
+**Resolution:** Added `.limit(2000)` to the items query in `_build_market_summary`.
+Test in `test_market_summary_bound.py` asserts the bound exists.
 
 ---
 

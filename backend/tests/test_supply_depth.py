@@ -412,7 +412,7 @@ def test_reader_ignores_the_supply_history_sidecar(tmp_path):
     f.archive_dir = tmp_path
     depth = f._fetch_supply_snapshots()
 
-    assert list(depth.columns) == ["item_id", "date", "sell_listings", "skinport_quantity"]
+    assert list(depth.columns) == ["item_id", "date", "sell_listings"]
     assert len(depth) == 1, "the sidecar must not discard the real supply rows"
     assert depth.iloc[0]["item_id"] == "Item"
     assert depth.iloc[0]["sell_listings"] == 5

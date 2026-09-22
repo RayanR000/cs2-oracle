@@ -1,7 +1,7 @@
 # Spec: work plan for the recalibration wait window (2026-09-14 → ~2026-10-12)
 
-**Status:** PROPOSED. Four independent items; none requires a retrain or a serving change
-except where stated. Written while the served-outcome `q_hat` feedback is data-blocked.
+**Status:** Items 1, 2, 4 DONE. Item 3 (q_hat dispersion probe) OPEN — requires a measurement
+harness run, not a code change. Written while the served-outcome `q_hat` feedback is data-blocked.
 
 ## Context
 

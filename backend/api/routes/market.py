@@ -80,7 +80,8 @@ def _build_market_summary(db: Session, type: str | None, q: str | None):
     else:
         query = query.order_by(Item.name)
 
-    items = query.all()
+    _MAX_ITEMS = 2000
+    items = query.limit(_MAX_ITEMS).all()
     if not items:
         return []
 

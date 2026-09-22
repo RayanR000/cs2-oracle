@@ -583,21 +583,15 @@ def _recent_price_points(db: Session, item_db_id: int, n: int = 35) -> list[floa
     return [r.price for r in reversed(rows)]
 
 
-def _trends_parquet(item, item_id: str, db: Session):
-    r = _forecast_parquet(item.id, 7)
-    if r is None:
-        return None
-    trend_dir = served_direction(r.direction, 7)
-    price_points = _recent_price_points(db, item.id)
+def _build_trend_response(item, trend_dir: str, price_points: list) -> TrendAnalysisOut:
     current_price = price_points[-1] if price_points else 0.0
-    explanation = _build_trend_explanation(trend_dir, current_price)
     ind = _trend_indicators(price_points)
     return TrendAnalysisOut(
         item_id=item.id,
         item_name=item.name,
         current_price=current_price,
         trend_direction=trend_dir,
-        explanation=explanation,
+        explanation=_build_trend_explanation(),
         rsi=ind["rsi"],
         bollinger_upper=ind["bollinger_upper"],
         bollinger_middle=ind["bollinger_middle"],
@@ -610,6 +604,15 @@ def _trends_parquet(item, item_id: str, db: Session):
         sma_7=ind["sma_7"],
         sma_30=ind["sma_30"],
     )
+
+
+def _trends_parquet(item, item_id: str, db: Session):
+    r = _forecast_parquet(item.id, 7)
+    if r is None:
+        return None
+    trend_dir = served_direction(r.direction, 7)
+    price_points = _recent_price_points(db, item.id)
+    return _build_trend_response(item, trend_dir, price_points)
 
 
 @router.get("/{item_id}/trends", response_model=TrendAnalysisOut)
@@ -634,40 +637,12 @@ def get_item_trends(item_id: str, db: Session = _DB_DEP):
     )
 
     price_points = _recent_price_points(db, item.id)
-    current_price = price_points[-1] if price_points else 0.0
-
     trend_dir = served_direction(latest_forecast.direction if latest_forecast else None, 7)
-
-    explanation = _build_trend_explanation(trend_dir, current_price)
-
-    ind = _trend_indicators(price_points)
-
-    return TrendAnalysisOut(
-        item_id=item.id,
-        item_name=item.name,
-        current_price=current_price,
-        trend_direction=trend_dir,
-        explanation=explanation,
-        rsi=ind["rsi"],
-        bollinger_upper=ind["bollinger_upper"],
-        bollinger_middle=ind["bollinger_middle"],
-        bollinger_lower=ind["bollinger_lower"],
-        macd=ind["macd"],
-        macd_signal=ind["macd_signal"],
-        support=ind["support"],
-        resistance=ind["resistance"],
-        factors=ind["factors"],
-        sma_7=ind["sma_7"],
-        sma_30=ind["sma_30"],
-    )
+    return _build_trend_response(item, trend_dir, price_points)
 
 
-def _build_trend_explanation(direction: str, current_price) -> str:
-    if direction == "bullish":
-        return "ML forecast predicts upward movement over the next 7 days."
-    elif direction == "bearish":
-        return "ML forecast predicts downward movement over the next 7 days."
-    return "ML forecast predicts a stable price over the next 7 days."
+def _build_trend_explanation() -> str:
+    return "Forecast range covers expected price movement over the next 7 days."
 
 
 def _optional_bool(v):

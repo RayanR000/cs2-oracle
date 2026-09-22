@@ -7,10 +7,18 @@
 
 ## Tier 1: ML Promotion + Quick Wins
 
-### 1a. Exceedance Head → Default ON
+### 1a. Exceedance Head → Default ON — PARTIAL ✅ / BLOCKED
 
-**Current:** Gated behind `EXCEEDANCE_SCALE=1` (line 1565) and `EXCEEDANCE_HEAD=1` (line 1590). Both default OFF.
-**Change:** Flip both `_enabled()` methods to default `True`: `os.environ.get("FLAG", "1") == "1"`.
+**Current:** `EXCEEDANCE_HEAD` already defaults ON (`os.environ.get("EXCEEDANCE_HEAD", "1") == "1"`);
+CI also sets it explicitly. `EXCEEDANCE_SCALE` remains OFF — it is **mutually exclusive** with
+`CLIMATOLOGY_SCALE` (the shipped winner, default ON since 2026-08-19), and `_calibrate_conformal`
+raises if both are set. Flipping the scale default would break production.
+
+**HEAD:** ✅ Already default ON in code and CI.
+**SCALE:** ❌ Blocked by climatology mutual exclusion — not a code change, would require
+choosing between the two band denominators.
+
+**Original spec (outdated):** Both default OFF → flip both. The spec predated CLIMATOLOGY_SCALE winning.
 **Files:** `forecaster.py` (2 method bodies)
 **Constraint:** Retrain required in same PR (CLAUDE.md rule).
 
@@ -20,27 +28,27 @@
 **Change:** Flip default ON. Add isotonic calibration (same pattern as exceedance head: `IsotonicRegression(out_of_bounds='clip').fit(oof_probs, oof_labels)`). Store calibrator in model artifacts.
 **Files:** `forecaster.py` (flag method + training block at ~6508 + predict block at ~7819)
 
-### 2. `skip_unused_groups=True` in Predict
+### 2. `skip_unused_groups=True` in Predict ✅ DONE
 
 **Current:** Training (line 5697) passes the flag. Predict (line 9738) does not. Wastes ~20-40% of predict FE time computing shelved feature groups.
 **Change:** Add `skip_unused_groups=True` to the predict `engineer_features` call.
 **Files:** `forecaster.py` (1 call site)
 **Verify:** No code between `engineer_features` return and column pruning reads a shelved feature.
 
-### 3. Default `SKIP_REGIMES=1`
+### 3. Default `SKIP_REGIMES=1` ✅ DONE
 
 **Current:** `os.environ.get("SKIP_REGIMES") == "1"` (line 6569). Defaults OFF → 12 extra LightGBM fits.
 **Change:** Flip to `os.environ.get("SKIP_REGIMES", "1") != "0"`. Keep all regime code for portfolio value.
 **Files:** `forecaster.py` (1 gate)
 **Note:** predict() at line 9970 prefers regime models when artifacts exist. Must handle gracefully when no regime artifacts are present (already does — falls back to global).
 
-### 4. Mark 3 Unmarked Slow Tests + Recover Fast Tests
+### 4. Mark 3 Unmarked Slow Tests + Recover Fast Tests ✅ DONE
 
 **Recover:** Remove `pytestmark = pytest.mark.slow` from `test_forecaster.py` line 22. Add `@pytest.mark.slow` only to the ~4 test functions/classes that call `lgb.train()` (~lines 487, 535, 600, 2249).
 **Mark slow:** Add `pytestmark = pytest.mark.slow` to `test_ab_harness_trainer.py`, `test_scale_model.py`, `test_ngboost_wiring.py`.
 **Files:** 4 test files
 
-### 5. `addopts` Default
+### 5. `addopts` Default ✅ DONE
 
 **Change:** Add `addopts = "-m 'not slow'"` to `pyproject.toml` `[tool.pytest.ini_options]`.
 **Files:** `pyproject.toml`
@@ -49,31 +57,34 @@
 
 ## Tier 2: Performance Optimization
 
-### 6. Vectorize `_conformal_records`
+### 6. Vectorize `_conformal_records` ✅ DONE
 
 **Current:** Python for-loop at lines 8491-8507, building dicts row by row. Runs 32 times.
 **Change:** Build DataFrame directly from numpy arrays using boolean mask indexing.
 **Files:** `forecaster.py`
 
-### 7. Precompute Sample Weights
+**Resolution:** Already vectorized — uses NumPy array ops with boolean mask `keep`,
+builds a dict-of-arrays, and constructs DataFrame in one call.
+
+### 7. Precompute Sample Weights ✅ DONE
 
 **Current:** `groupby.transform(lambda x: x.pct_change().rolling(30, min_periods=5).std())` at lines 6027-6030. Called ~36 times.
 **Change:** Compute once in `prepare_targets`, store as column `_vol_weight`, slice per fold.
 **Files:** `forecaster.py`
 
-### 8. Cache `present_columns` in archive.py
+### 8. Cache `present_columns` in archive.py ✅ DONE
 
 **Current:** `DESCRIBE SELECT * FROM read_parquet([61 files], union_by_name=true)` on every call.
 **Change:** `@functools.lru_cache` keyed on `(archive_dir, frozenset(file_list))`. Module-level.
 **Files:** `db/archive.py`
 
-### 9. SQL DISTINCT ON for Fallback Price Lookup
+### 9. SQL DISTINCT ON for Fallback Price Lookup ✅ DONE
 
 **Current:** `.all()` + Python first-per-item at lines 624-682. Fetches ~100K rows when ~1K needed.
 **Change:** Raw SQL with `DISTINCT ON (item_id)` for Postgres. SQLite fallback: subquery with `ROW_NUMBER() OVER (PARTITION BY item_id ORDER BY timestamp DESC) = 1`.
 **Files:** `collectors/pipeline.py`
 
-### 10. Skip Shelved Dollar-Scale Features
+### 10. Skip Shelved Dollar-Scale Features ✅ DONE (via item 2)
 
 Already handled by item 2 (`skip_unused_groups=True` in predict). Training already skips them. No separate change needed.
 
@@ -81,7 +92,7 @@ Already handled by item 2 (`skip_unused_groups=True` in predict). Training alrea
 
 ## Tier 3: Test Infrastructure
 
-### 11. Create `conftest.py`
+### 11. Create `conftest.py` ✅ DONE
 
 **Fixtures:**
 - `mock_forecaster(tmp_path)`: `ItemForecaster(db_session=MagicMock(), model_dir=str(tmp_path))` — opt-in, not autouse.
