@@ -6325,30 +6325,6 @@ class ItemForecaster:
             )
             logger.info(f"  [timing] {horizon}d ranking head: {time.time() - _rank_start:.1f}s")
 
-        # NGBoost distributional head: Normal(mean, std) shadow predictions.
-        # Only on h=7 and h=14 — where the IC ceiling headroom is largest.
-        if NGBOOST_HEAD_ENABLED and horizon in (7, 14):
-            try:
-                from models.ngboost_head import train_ngboost
-
-                _ngb_start = time.time()
-                target_col = f"target_return_{horizon}d"
-                ngb_result = train_ngboost(
-                    X_train, train_set[target_col].to_numpy(),
-                    self._impute_features(
-                        val_set[self.feature_cols].replace([np.inf, -np.inf], np.nan), feature_medians
-                    ),
-                    val_set[f"target_return_{horizon}d"].to_numpy(),
-                    horizon=horizon,
-                )
-                self.ngboost_models[horizon] = ngb_result.model
-                logger.info(
-                    f"  [timing] {horizon}d NGBoost head: {time.time() - _ngb_start:.1f}s "
-                    f"(train_nll={ngb_result.train_nll:.4f}, val_nll={ngb_result.val_nll:.4f})"
-                )
-            except Exception:
-                logger.exception(f"  NGBoost {horizon}d head failed — skipping")
-
         # Train regime-specific models (default: skipped; set SKIP_REGIMES=0 to enable)
         #
         # `_warm_retrain` deliberately does NOT skip these, though it used to.
