@@ -125,13 +125,6 @@ class PriceHistory(Base):
     __table_args__ = (Index("idx_price_history_source", "source"),)
 
 
-# Sources whose presence marks an item as "backfilled": it has a real
-# historical price series (from CSMarketAPI STEAMCOMMUNITY data), not just a
-# live snapshot. Kept for backward compat; the canonical filter is now
-# Item.is_backfilled == True.
-BACKFILLED_SOURCES = ("steam_daily",)
-
-
 def backfilled_item_clause():
     """SQLAlchemy filter expression: item has backfilled history.
 
@@ -140,13 +133,6 @@ def backfilled_item_clause():
     by direct link but are not listed.
     """
     return Item.is_backfilled == 1
-
-
-def trainable_item_clause():
-    """Items eligible for the TRAINING universe: pre-2026 history from a
-    non-`buff_iflow` source. Distinct from `backfilled_item_clause()`, which is
-    the wider SERVE universe that includes iflow-backfilled items."""
-    return Item.is_trainable == 1
 
 
 class CollectionRun(Base):

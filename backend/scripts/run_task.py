@@ -45,8 +45,6 @@ ROW_COUNT_FIELDS = (
     "impacts_written",  # scripts/event_correlation_analysis.py
     "patterns_written",  # scripts/event_correlation_analysis.py
     "correlations_written",  # scripts/event_correlation_analysis.py
-    "total_mentions",  # collectors/social_sentiment.py
-    "inserted",  # collectors/social_sentiment.py
     "supply_rows",  # collectors/supply_depth.py
     "volume_rows",  # collectors/sales_volume.py
     "reddit_event_rows",  # collectors/reddit_events.py
@@ -217,15 +215,6 @@ def run_task(task_name):
             result = run_walkforward_report()
             print(f"RESULT: {result}")
 
-        elif task_name == "reddit_social":
-            logger.info("=" * 60)
-            logger.info("TASK: Reddit Social Sentiment Collection")
-            logger.info("=" * 60)
-            from collectors.social_sentiment import run as run_reddit_social
-
-            result = run_reddit_social()
-            print(f"RESULT: {result}")
-
         else:
             logger.error(f"Unknown task: {task_name}")
             sys.exit(1)
@@ -246,7 +235,7 @@ if __name__ == "__main__":
     if len(sys.argv) < 2:
         print("Usage: python run_task.py <task_name>")
         print(
-            "Tasks: aggregate, priority, migrate, backtest, backtest_historical, walkforward_report, event_correlation, reddit_social"
+            "Tasks: aggregate, priority, migrate, backtest, backtest_historical, walkforward_report, event_correlation"
         )
         sys.exit(1)
 

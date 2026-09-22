@@ -111,7 +111,7 @@ def test_integrity_exits_2(tmp_path, monkeypatch):
 
 
 def test_report_never_mutates_champion_config(tmp_path, monkeypatch):
-    from models.centre_policy import CENTRE_CHAMPIONS
+    from models.candidate_predictions import CENTRE_CHAMPIONS
 
     before = dict(CENTRE_CHAMPIONS)
     _run_main(monkeypatch, tmp_path, _frame())

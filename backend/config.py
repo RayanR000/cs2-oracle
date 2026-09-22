@@ -11,7 +11,6 @@ class Settings(BaseSettings):
     database_url: str = "sqlite:///backend/cs2_market.db"
 
     # Application
-    app_name: str = "CS2 Market Intelligence API"
     environment: str = "development"
     debug: bool = True
 
@@ -24,7 +23,6 @@ class Settings(BaseSettings):
     # Daily limit: 100,000 calls per day (https://steamcommunity.com/dev/apiterms)
     # Used for: GetAssetClassInfo, GetSchemaItems, inventory lookups
     steam_api_key: str | None = None
-    cs2sh_api_key: str | None = None
 
     # Steam Community login cookies (for the authenticated /market/pricehistory/ endpoint).
     # Grab from a logged-in browser: DevTools > Application > Cookies > steamcommunity.com.
@@ -85,15 +83,6 @@ class Settings(BaseSettings):
     def is_production(self) -> bool:
         """Return True when the app should avoid demo bootstrap behavior."""
         return self.environment.lower() in {"production", "prod"}
-
-    def demo_bootstrap_enabled(self) -> bool:
-        """
-        Return True when synthetic catalog/history bootstrap should run.
-
-        Demo and development environments keep the synthetic backfill available
-        for local iteration, while production stays on the live collection path.
-        """
-        return not self.is_production()
 
 
 settings = Settings()

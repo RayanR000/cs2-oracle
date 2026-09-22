@@ -181,28 +181,6 @@ def select_momentum(forecasts, items_map, limit):
     return results[:limit]
 
 
-@router.get("/undervalued", response_model=list[OpportunityOut])
-def get_undervalued(
-    horizon_days: int = Query(7, ge=1, le=30),
-    limit: int = Query(10, ge=1, le=100),
-    db: Session = _DB_DEP,
-):
-    forecasts = _latest_forecasts(db, horizon_days)
-    items_map = _load_items([f.item_id for f in forecasts if f.direction is not None], db)
-    return select_opportunities(forecasts, items_map, type_filter="undervalued", limit=limit)
-
-
-@router.get("/overheated", response_model=list[OpportunityOut])
-def get_overheated(
-    horizon_days: int = Query(7, ge=1, le=30),
-    limit: int = Query(10, ge=1, le=100),
-    db: Session = _DB_DEP,
-):
-    forecasts = _latest_forecasts(db, horizon_days)
-    items_map = _load_items([f.item_id for f in forecasts if f.direction is not None], db)
-    return select_opportunities(forecasts, items_map, type_filter="overheated", limit=limit)
-
-
 @router.get("/momentum", response_model=list[OpportunityOut])
 def get_momentum(
     horizon_days: int = Query(7, ge=1, le=30),

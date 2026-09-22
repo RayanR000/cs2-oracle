@@ -1,4 +1,4 @@
-from database import Item, backfilled_item_clause, trainable_item_clause
+from database import Item, backfilled_item_clause
 
 
 def test_item_has_is_trainable_column():
@@ -6,6 +6,5 @@ def test_item_has_is_trainable_column():
     assert Item.__table__.columns["is_trainable"].default.arg == 0
 
 
-def test_trainable_clause_distinct_from_backfilled():
-    assert str(trainable_item_clause()) == "items.is_trainable = :is_trainable_1"
+def test_backfilled_clause():
     assert str(backfilled_item_clause()) == "items.is_backfilled = :is_backfilled_1"

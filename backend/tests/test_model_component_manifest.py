@@ -20,7 +20,7 @@ def test_manifest_present_after_save(tmp_path):
     f = _forecaster(tmp_path)
     f.save_models()
     meta = json.loads((tmp_path / "meta.json").read_text())
-    assert set(meta["components"]) == {"centre", "interval", "anomaly", "exceedance", "ranking", "direction", "ngboost"}
+    assert set(meta["components"]) == {"centre", "interval", "anomaly", "exceedance", "ranking", "direction"}
     assert meta["components"]["centre"] == {"gbm_q50": f.MODEL_ARTIFACT_VERSION}
     assert meta["components"]["direction"] == {}
     assert meta["centre_champions"] == {"3": "gbm_q50", "7": "gbm_q50", "14": "gbm_q50", "30": "gbm_q50"}
@@ -47,7 +47,7 @@ def test_gbm_champion_reports_missing_artifacts(tmp_path):
 
 
 def test_last_price_champion_requires_no_artifact(tmp_path, monkeypatch):
-    from models.centre_policy import CENTRE_CHAMPIONS
+    from models.candidate_predictions import CENTRE_CHAMPIONS
     from models.forecaster import ItemForecaster
 
     monkeypatch.setitem(CENTRE_CHAMPIONS, 7, "last_price")

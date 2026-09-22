@@ -163,13 +163,6 @@ def init_ref_db(conn: sqlite3.Connection):
             currency_name TEXT,
             updated_at TEXT
         );
-
-        CREATE TABLE IF NOT EXISTS player_counts (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            timestamp TEXT,
-            players INTEGER,
-            UNIQUE(timestamp)
-        );
     """)
     conn.commit()
 
@@ -658,12 +651,11 @@ def show_stats():
 
     # Reference DB stats
     ref_exists = REF_DB.exists()
-    ref_markets = ref_currencies = ref_pcount = 0
+    ref_markets = ref_currencies = 0
     if ref_exists:
         ref = connect_db(str(REF_DB))
         ref_markets = ref.execute("SELECT COUNT(*) FROM markets").fetchone()[0]
         ref_currencies = ref.execute("SELECT COUNT(*) FROM currency_rates").fetchone()[0]
-        ref_pcount = ref.execute("SELECT COUNT(*) FROM player_counts").fetchone()[0]
         ref.close()
 
     mkt_dist = {}
@@ -689,7 +681,6 @@ def show_stats():
     print(f"  ── Reference DB ({REF_DB.name}) ──")
     print(f"  Markets:        {ref_markets:>6,}" if ref_exists else "  (not yet fetched)")
     print(f"  Currency rates: {ref_currencies:>6,}" if ref_exists else "")
-    print(f"  Player counts:  {ref_pcount:>6,}" if ref_exists else "")
 
     if mkt_dist:
         print("\n  ── Per-market price rows ──")

@@ -23,7 +23,6 @@ import math
 import os
 import re
 from collections.abc import Iterable
-from functools import lru_cache
 from pathlib import Path
 from typing import Any
 from uuid import uuid4
@@ -307,10 +306,6 @@ def read_table(table: str, columns: list[str] | None = None) -> pd.DataFrame:
         con.close()
 
 
-def table_exists(table: str) -> bool:
-    return _table_path(table).exists()
-
-
 def append_table(table: str, rows: list[dict] | pd.DataFrame, dedup_keys: list[str]):
     """Append rows, deduplicating on *dedup_keys*."""
     if isinstance(rows, list):
@@ -522,12 +517,6 @@ class ParquetQuery:
         return r[0] if r else None
 
 
-def query_table(table: str, sql: str) -> pd.DataFrame:
-    """Run a raw SQL query against *table*'s Parquet file."""
-    with ParquetQuery(table) as q:
-        return q.query(sql)
-
-
 def delete_table(table: str, key_filters: dict[str, Any]):
     """Delete rows matching *key_filters* and rewrite the file."""
     path = _table_path(table)
@@ -542,16 +531,3 @@ def delete_table(table: str, key_filters: dict[str, Any]):
             mask &= df[col] == val
     df = df[~mask]
     _atomic_write(path, df)
-
-
-@lru_cache(maxsize=16)  # covers all ops tables
-def _get_ops_schema(table: str) -> dict | None:
-    path = _table_path(table)
-    if not path.exists():
-        return None
-    con = duckdb.connect()
-    try:
-        cols = con.sql(f"DESCRIBE SELECT * FROM read_parquet('{path}')").fetchall()
-        return {r[0]: r[1] for r in cols}
-    finally:
-        con.close()

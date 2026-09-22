@@ -12,7 +12,6 @@ from __future__ import annotations
 
 import inspect
 
-from models import scale_model
 from models.forecaster import ItemForecaster
 
 
@@ -38,7 +37,7 @@ def test_default_flags_do_not_trip_the_mutual_exclusion_raise(monkeypatch):
         monkeypatch.delenv(other, raising=False)
 
     would_raise = ItemForecaster.climatology_scale_enabled() and (
-        scale_model.enabled() or ItemForecaster.sigma_exponent_enabled() or ItemForecaster.exceedance_scale_enabled()
+        ItemForecaster.sigma_exponent_enabled() or ItemForecaster.exceedance_scale_enabled()
     )
     assert would_raise is False
 

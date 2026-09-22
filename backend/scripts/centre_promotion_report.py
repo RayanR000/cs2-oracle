@@ -38,7 +38,7 @@ from backtest.promotion import (
 )
 from backtest.scoring import HEADLINE_MIN_TIER, excluded_forecast_date, price_tier
 from database import SessionLocal
-from models.centre_policy import HORIZONS, centre_champion
+from models.candidate_predictions import HORIZONS, centre_champion
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s")
 logger = logging.getLogger("centre_promotion_report")

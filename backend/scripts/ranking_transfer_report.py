@@ -34,7 +34,7 @@ from backtest.candidate_scoring import paired_daily_interval
 from backtest.promotion import MIN_BATCH_COMPLETENESS, MIN_SHARED_DATES
 from backtest.scoring import HEADLINE_MIN_TIER, excluded_forecast_date, price_tier
 from database import SessionLocal
-from models.centre_policy import HORIZONS
+from models.candidate_predictions import HORIZONS
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s")
 logger = logging.getLogger("ranking_transfer_report")

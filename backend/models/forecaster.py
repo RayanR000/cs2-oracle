@@ -34,9 +34,8 @@ from backtest.price_resolution import MAX_WINDOW_SPAN_DAYS, SMOOTH_WINDOW
 from backtest.scoring import HEADLINE_MIN_TIER, MIN_HEADLINE_DATES, price_tier
 from sqlalchemy import text
 
-from models import centre_policy, conformal, direction, mlflow_utils, scale_model, served_recalibration
-from models.candidate_predictions import apply_centre_policy
-from models.direction import DIRECTION_FLAT_TOLERANCE_PCT as DIRECTION_FLAT_TOLERANCE_PCT
+from models import conformal, mlflow_utils, served_recalibration
+from models.candidate_predictions import apply_centre_policy, centre_champion
 from models.item_parser import (
     BID_SOURCES,
     CONDITIONAL_STEAM_SOURCES,
@@ -55,10 +54,15 @@ from models.item_parser import (
 # (a ruff --fix removed the bare name in 76e462a and broke test collection).
 from models.item_parser import is_phase_collapsed as is_phase_collapsed
 from models.staleness import stale_run_days
+from scipy.stats import spearmanr
 
 logger = logging.getLogger(__name__)
 
 RNG = np.random.RandomState(42)
+
+#: Flat band (percent) for the legacy fixed-threshold direction bucketing.
+#: Re-exported so `from models.forecaster import DIRECTION_FLAT_TOLERANCE_PCT` keeps working.
+DIRECTION_FLAT_TOLERANCE_PCT = 0.5
 
 # Vol-scaled directional labels (2026-07-27). The flat band is
 # clamp(k_h * sigma_daily * sqrt(h), floor, cap) in percent, replacing the
@@ -175,11 +179,6 @@ CENTRE_OBJECTIVE_MAP = _parse_centre_objectives(_CENTRE_OBJECTIVE_RAW)
 # return predictions. Gated by RANKING_HEAD=1. Served as `rank_score` alongside
 # the return-based forecast.
 RANKING_HEAD_ENABLED = os.environ.get("RANKING_HEAD") == "1"
-
-# NGBoost distributional head: per-prediction mean + std via Normal distribution.
-# Shadow-only — never drives serving or the band. Trained on h=7 and h=14 only
-# (where IC ceiling headroom is largest). Gated by NGBOOST_HEAD=1.
-NGBOOST_HEAD_ENABLED = os.environ.get("NGBOOST_HEAD") == "1"
 
 # Direction upweight: multiplier for positive-return samples during training.
 # Applied in _compute_sample_weights before normalization. Set to 1.0 (neutral)
@@ -1108,9 +1107,6 @@ class ItemForecaster:
         # Same pure-numpy PAV as the exceedance calibrator.
         self.anomaly_calibrators: dict[int, dict[str, list[float]]] = {}
         self.ranking_models: dict[int, lgb.Booster | None] = {}
-        # Per-horizon NGBoost distributional models (Normal): shadow-only,
-        # producing mean + std per prediction. Only h=7 and h=14.
-        self.ngboost_models: dict[int, Any] = {}
         # Exact shadow predictions captured by the latest predict() call:
         # centre challengers plus LambdaRank scores, keyed for
         # db/candidate_store.py. Transient — never mirrored to public
@@ -1192,9 +1188,6 @@ class ItemForecaster:
         self._init_conformal_state()
         # Expanding-window CV results per horizon: {horizon: {fold_count, fold_accs, per_fold, ...}}
         self.cv_results: dict[int, dict] = {}
-        # Shadow CQR calibration results per horizon (CONFORMAL_CQR=1).
-        # Never drives the served band — shadow/candidate data only.
-        self.cqr_shadow: dict[int, dict] = {}
         # Event decay constants (grid-searchable per event type)
         self.horizon_feature_cols: dict[int, list[str]] = {}
         self.event_decay_constants: dict[str, float] = {
@@ -6592,27 +6585,6 @@ class ItemForecaster:
                 )
                 logger.info(f"  [timing] {horizon}d ranking head: {time.time() - _rank_start:.1f}s")
 
-            # NGBoost distributional head: Normal(mean, std) shadow predictions.
-            # Only on h=7 and h=14 — where the IC ceiling headroom is largest.
-            if NGBOOST_HEAD_ENABLED and horizon in (7, 14):
-                try:
-                    from models.ngboost_head import train_ngboost
-
-                    _ngb_start = time.time()
-                    target_col = f"target_return_{horizon}d"
-                    ngb_result = train_ngboost(
-                        X_train, train_set[target_col].to_numpy(),
-                        X_val, val_set[target_col].to_numpy(),
-                        horizon=horizon,
-                    )
-                    self.ngboost_models[horizon] = ngb_result.model
-                    logger.info(
-                        f"  [timing] {horizon}d NGBoost head: {time.time() - _ngb_start:.1f}s "
-                        f"(train_nll={ngb_result.train_nll:.4f}, val_nll={ngb_result.val_nll:.4f})"
-                    )
-                except Exception:
-                    logger.exception(f"  NGBoost {horizon}d head failed — skipping")
-
             # Train regime-specific models (default: skipped; set SKIP_REGIMES=0 to enable)
             #
             # `_warm_retrain` deliberately does NOT skip these, though it used to.
@@ -7267,24 +7239,217 @@ class ItemForecaster:
     # Prediction
     # ------------------------------------------------------------------
 
-    # Direction / rank / band-centre math lives in models/direction.py (pure
-    # functions, extracted 2026-09-15). Aliased here so every self._x and
-    # ItemForecaster._x call site keeps working with zero churn; new code
-    # should import models.direction directly.
-    _directional_accuracy = staticmethod(direction.directional_accuracy)
-    _direction_classes = staticmethod(direction.direction_classes)
-    _demean_returns = staticmethod(direction.demean_returns)
-    _has_date_coverage = staticmethod(direction.has_date_coverage)
-    _direction_threshold = staticmethod(direction.direction_threshold)
-    _served_cohort_multiplier = staticmethod(direction.served_cohort_multiplier)
-    _recenter_on_direction = staticmethod(direction.recenter_on_direction)
-    _fix_quantile_crossing = staticmethod(direction.fix_quantile_crossing)
-    _blend_returns_with_prior = staticmethod(direction.blend_returns_with_prior)
-    _direction_records = staticmethod(direction.direction_records)
-    _direction_records_from_classes = staticmethod(direction.direction_records_from_classes)
-    _summarise_rank_ic = staticmethod(direction.summarise_rank_ic)
-    _within_date_rank_ic = staticmethod(direction.within_date_rank_ic)
-    _within_date_rank_ic_detail = staticmethod(direction.within_date_rank_ic_detail)
+    # Direction / rank / band-centre math — inlined from the deleted
+    # models/direction.py (originally extracted 2026-09-15, re-inlined during
+    # dead-code cleanup).
+
+    @staticmethod
+    def _directional_accuracy(pred_returns, actual_returns) -> float:
+        """Percent of rows whose predicted return direction matches the actual."""
+        tol = DIRECTION_FLAT_TOLERANCE_PCT
+        pred = np.asarray(pred_returns, dtype=float)
+        actual = np.asarray(actual_returns, dtype=float)
+        mask = ~np.isnan(actual)
+        n = int(mask.sum())
+        if not n:
+            return 0.0
+        hits = int(
+            (ItemForecaster._direction_classes(pred[mask], tol) == ItemForecaster._direction_classes(actual[mask], tol)).sum()
+        )
+        return round(hits / n * 100, 1)
+
+    @staticmethod
+    def _direction_classes(returns, threshold=DIRECTION_FLAT_TOLERANCE_PCT) -> np.ndarray:
+        """Bucket % returns into 0=down, 1=flat, 2=up."""
+        r = np.asarray(returns, dtype=float)
+        thr = np.asarray(threshold, dtype=float)
+        return np.where(r > thr, 2, np.where(r < -thr, 0, 1)).astype(int)
+
+    @staticmethod
+    def _demean_returns(returns, factor) -> np.ndarray:
+        """Subtract the market factor from % returns."""
+        r = np.asarray(returns, dtype=float)
+        if factor is None:
+            return r.copy()
+        m = np.asarray(factor, dtype=float)
+        return r - np.nan_to_num(m, nan=0.0)
+
+    @staticmethod
+    def _has_date_coverage(forecast_dates) -> bool:
+        """True when distinct non-null forecast dates reach MIN_HEADLINE_DATES."""
+        distinct = {d for d in forecast_dates if d is not None and not pd.isna(d)}
+        return len(distinct) >= MIN_HEADLINE_DATES
+
+    @staticmethod
+    def _direction_threshold(sigma, horizon: int, k: float, floor: float, cap: float) -> np.ndarray:
+        """Per-row flat-band threshold (percent) = clamp(k * sigma * sqrt(h), floor, cap)."""
+        s = np.atleast_1d(np.asarray(sigma, dtype=float))
+        raw = k * s * np.sqrt(float(horizon))
+        return np.clip(raw, floor, cap)
+
+    @staticmethod
+    def _served_cohort_multiplier(base_weights, tiers, served_share: float) -> float:
+        """Multiplier for served (>= $1) rows so they carry served_share of total weight."""
+        if not 0.0 < served_share < 1.0:
+            raise ValueError(f"served_share must be in (0, 1), got {served_share!r}")
+        w = np.asarray(base_weights, dtype=float)
+        served = np.asarray(tiers) >= HEADLINE_MIN_TIER
+        w_served = float(w[served].sum())
+        w_other = float(w[~served].sum())
+        if w_served <= 0.0 or w_other <= 0.0:
+            return 1.0
+        return served_share * w_other / ((1.0 - served_share) * w_served)
+
+    @staticmethod
+    def _recenter_on_direction(low_ret, mid_ret, high_ret, direction_class):
+        """Recenter forecasts so the median's sign matches the classifier's call."""
+        mid_ret = np.asarray(mid_ret, dtype=float)
+        low_ret = np.asarray(low_ret, dtype=float)
+        high_ret = np.asarray(high_ret, dtype=float)
+        cls_arr = np.asarray(direction_class, dtype=int)
+        low_off = mid_ret - low_ret
+        high_off = high_ret - mid_ret
+        mag = np.abs(mid_ret)
+        new_mid = np.select(
+            [cls_arr == 2, cls_arr == 0, cls_arr == 1],
+            [mag, -mag, 0.0],
+            default=mid_ret,
+        )
+        return new_mid - low_off, new_mid, new_mid + high_off
+
+    @staticmethod
+    def _fix_quantile_crossing(low: np.ndarray, mid: np.ndarray, high: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+        """Enforce low <= mid <= high via isotonic regression (PAV for 3 points)."""
+        v0 = low.copy().astype(np.float64)
+        v1 = mid.copy().astype(np.float64)
+        v2 = high.copy().astype(np.float64)
+        cross_01 = v0 > v1
+        if cross_01.any():
+            pool_01 = (v0[cross_01] + v1[cross_01]) * 0.5
+            v0[cross_01] = pool_01
+            v1[cross_01] = pool_01
+        cross_12 = v1 > v2
+        if cross_12.any():
+            pool_12 = (v1[cross_12] + v2[cross_12]) * 0.5
+            v1[cross_12] = pool_12
+            v2[cross_12] = pool_12
+        recross_01 = v0 > v1
+        if recross_01.any():
+            pool_all = (v0[recross_01] + v1[recross_01] + v2[recross_01]) / 3.0
+            v0[recross_01] = pool_all
+            v1[recross_01] = pool_all
+            v2[recross_01] = pool_all
+        return v0, v2
+
+    @staticmethod
+    def _blend_returns_with_prior(low_ret_arr, mid_ret_arr, high_ret_arr, prior, weight):
+        """Blend current return-space predictions toward the prior day's."""
+        mask = prior["mask"]
+        if not mask.any() or weight <= 0:
+            return low_ret_arr, mid_ret_arr, high_ret_arr
+        mid_ret_arr = np.where(mask, (1 - weight) * mid_ret_arr + weight * prior["mid_ret"], mid_ret_arr)
+        low_ret_arr = np.where(mask, (1 - weight) * low_ret_arr + weight * prior["low_ret"], low_ret_arr)
+        high_ret_arr = np.where(mask, (1 - weight) * high_ret_arr + weight * prior["high_ret"], high_ret_arr)
+        return low_ret_arr, mid_ret_arr, high_ret_arr
+
+    @staticmethod
+    def _direction_records(pred_returns, actual_returns, dates) -> list:
+        """Rows in the shape backtest/directional_test.py expects."""
+        tol = DIRECTION_FLAT_TOLERANCE_PCT
+        p = np.asarray(pred_returns, dtype=float)
+        a = np.asarray(actual_returns, dtype=float)
+        d = pd.to_datetime(pd.Series(dates).to_numpy()).strftime("%Y-%m-%d")
+        pdir = np.where(p > tol, "up", np.where(p < -tol, "down", "flat"))
+        adir = np.where(a > tol, "up", np.where(a < -tol, "down", "flat"))
+        return [
+            {
+                "predicted_direction": str(pd_),
+                "actual_direction": str(ad),
+                "direction_correct": bool(pd_ == ad),
+                "forecast_date": str(fd),
+            }
+            for pd_, ad, fd in zip(pdir, adir, d)
+        ]
+
+    @staticmethod
+    def _direction_records_from_classes(pred_cls, actual_cls, dates) -> list:
+        """Direction records from classifier class labels (0=down, 1=flat, 2=up)."""
+        names = ("down", "flat", "up")
+        p = np.asarray(pred_cls, dtype=int)
+        a = np.asarray(actual_cls, dtype=int)
+        d = pd.to_datetime(pd.Series(dates).to_numpy()).strftime("%Y-%m-%d")
+        return [
+            {
+                "predicted_direction": names[int(pc)],
+                "actual_direction": names[int(ac)],
+                "direction_correct": bool(pc == ac),
+                "forecast_date": str(fd),
+            }
+            for pc, ac, fd in zip(p, a, d)
+        ]
+
+    @staticmethod
+    def _summarise_rank_ic(fold_metrics: list) -> dict:
+        """The rank IC block of cv_results: pooled, tied, and both bars."""
+
+        def _mean(key):
+            vals = [m[key] for m in fold_metrics if m.get(key) is not None]
+            return round(float(np.mean(vals)), 4) if vals else None
+
+        def _edge(model, naive):
+            return None if (model is None or naive is None) else round(model - naive, 4)
+
+        mean_rank_ic = _mean("rank_ic")
+        mean_naive = _mean("naive_rank_ic")
+        mean_tied = _mean("rank_ic_tied")
+        mean_naive_tied = _mean("naive_rank_ic_tied")
+        mean_lr = _mean("lr_rank_ic")
+        mean_lr_tied = _mean("lr_rank_ic_tied")
+        return {
+            "mean_rank_ic": mean_rank_ic,
+            "mean_naive_rank_ic": mean_naive,
+            "rank_ic_edge_vs_naive": _edge(mean_rank_ic, mean_naive),
+            "mean_rank_ic_tied": mean_tied,
+            "mean_naive_rank_ic_tied": mean_naive_tied,
+            "rank_ic_edge_vs_naive_tied": _edge(mean_tied, mean_naive_tied),
+            "mean_lr_rank_ic": mean_lr,
+            "mean_lr_rank_ic_tied": mean_lr_tied,
+            "lr_rank_ic_edge_vs_naive_tied": _edge(mean_lr_tied, mean_naive_tied),
+            "lr_rank_ic_edge_vs_q50_tied": _edge(mean_lr_tied, mean_tied),
+            "tied_rows": sum(int(m.get("n_tied") or 0) for m in fold_metrics),
+            "tied_dates": sum(int(m.get("rank_ic_tied_dates") or 0) for m in fold_metrics),
+            "rank_ic_dates": sum(int(m.get("rank_ic_dates") or 0) for m in fold_metrics),
+        }
+
+    @staticmethod
+    def _within_date_rank_ic(pred, actual, dates, mask=None, min_rows: int = 20) -> "float | None":
+        """Mean within-date Spearman correlation."""
+        return ItemForecaster._within_date_rank_ic_detail(pred, actual, dates, mask, min_rows)[0]
+
+    @staticmethod
+    def _within_date_rank_ic_detail(pred, actual, dates, mask=None, min_rows: int = 20) -> "tuple[float | None, int]":
+        """within_date_rank_ic plus the count of dates actually read."""
+        p = np.asarray(pred, dtype=float)
+        a = np.asarray(actual, dtype=float)
+        d = pd.to_datetime(pd.Series(dates).to_numpy())
+        if mask is not None:
+            m = np.asarray(mask, dtype=bool)
+            p, a, d = p[m], a[m], d[m]
+        if len(p) < min_rows:
+            return None, 0
+        frame = pd.DataFrame({"d": d, "p": p, "a": a})
+        ics = []
+        for _, g in frame.groupby("d"):
+            if len(g) < min_rows:
+                continue
+            if g["p"].nunique() < 2 or g["a"].nunique() < 2:
+                continue
+            ic = spearmanr(g["p"], g["a"]).statistic
+            if np.isfinite(ic):
+                ics.append(float(ic))
+        if not ics:
+            return None, 0
+        return round(float(np.mean(ics)), 4), len(ics)
 
     @staticmethod
     def _select_feature_cols(df, horizons, shelved) -> list[str]:
@@ -7980,14 +8145,6 @@ class ItemForecaster:
 
         # The learned band scale (LEARNED_SCALE=1), and the same matched-pair
         # rule as `conformal_beta`: a q_hat calibrated against a learned scale
-        # is in that scale's units, so serving it against `sigma` gives an
-        # unrelated band rather than a degraded one. All four move together or
-        # none of them do, and an artifact with no scale model falls back to
-        # `sigma ** beta` -- which is what every pre-2026-08-12 artifact is.
-        self.scale_models: dict[int, Any] = {}
-        self.scale_norm: dict[int, float] = {}
-        self.scale_clip: dict[int, tuple] = {}
-        self.scale_features: dict[int, list[str]] = {}
         # The climatology band scale (CLIMATOLOGY_SCALE=1): per horizon a
         # {"table": {item_id: scale}, "tier_pool": {tier: scale}, "global": float}
         # persisted in meta.json and reconstructed at serve — no booster.
@@ -8269,15 +8426,9 @@ class ItemForecaster:
     def band_scale(self, horizon: int, rows: pd.DataFrame, sigma):
         """The learned scale for a set of rows, or None to use `sigma ** beta`.
 
-        THE ONE ACCESSOR, for the same reason `band_beta` is one: a call site
-        that reaches for `scale_models[h]` directly gets a KeyError on an
-        artifact written before this existed, and one that forgets `scale_norm`
-        or the clip serves a scale in different units from the one `q_hat` was
-        calibrated against.
-
-        Returns None -- not NaN, not sigma -- when this horizon has no scale
-        model, so the caller passes `learned_scale=None` and `resolve_scale`
-        takes the pre-existing path.
+        Returns None -- not NaN, not sigma -- when this horizon has no scale,
+        so the caller passes `learned_scale=None` and `resolve_scale` takes
+        the pre-existing path.
         """
         # Climatology scale takes precedence and follows the ARTIFACT, same
         # matched-pair rule: q_hat was calibrated against the per-item table iff
@@ -8299,36 +8450,11 @@ class ItemForecaster:
         # calibrated against sigma * sqrt(p_exceed) iff `_exceedance_scale_served`,
         # so applying it on any other artifact would serve a mismatched q_hat.
         if self._exceedance_scale_served():
-            # RAW probability, deliberately: q_hat was calibrated against
-            # sigma * sqrt(p_raw), so a calibrated p here would serve a
-            # mismatched q_hat. The disclosed exceed_p path calibrates; the
-            # band denominator never does.
             p = self.exceedance_probability(horizon, rows, calibrated=False)
             if p is not None:
                 return np.asarray(sigma, dtype=float) * np.sqrt(p)
-            # Flag on but no head for this horizon (degenerate): fall through to
-            # sigma. q_hat for this horizon was calibrated on plain sigma too,
-            # because `_exceedance_learned_scale` returned None there — coherent.
 
-        booster = self.scale_models.get(horizon)
-        if booster is None:
-            return None
-        X = self._scale_feature_frame(rows, sigma, horizon)
-        want = self.scale_features.get(horizon)
-        if want is not None and list(X.columns) != list(want):
-            # Refuse rather than reindex. A scale model scored against a
-            # different column set returns a plausible number computed from the
-            # wrong features, and the band it produces looks entirely normal.
-            logger.warning(
-                f"  {horizon}d learned scale: served columns do not match the "
-                f"{len(want)} the model was fitted on — falling back to sigma "
-                f"for this batch rather than scoring the wrong features."
-            )
-            return None
-        s = scale_model.predict_scale(
-            booster, X, clip=self.scale_clip.get(horizon), fallback=np.asarray(sigma, dtype=float)
-        )
-        return s * float(self.scale_norm.get(horizon, 1.0))
+        return None
 
     def band_beta(self, horizon: int) -> float:
         """The exponent to build this horizon's band with. Always a finite float.
@@ -8481,11 +8607,9 @@ class ItemForecaster:
         back to `actual_ret`, which is the pre-2026-08-12 behaviour and
         over-covers; see `calibration_target_col`.
 
-        `row_index` is the calibration row's label in the frame it came from,
-        carried so a learned scale can reach the features that produced it
-        (`models/scale_model.py`). It is the row's identity and nothing else:
-        no arithmetic reads it, and `_calibrate_conformal` ignores it entirely
-        unless LEARNED_SCALE is on. Passing it costs one array lookup per row.
+        `row_index` is the calibration row's label in the frame it came from.
+        It is the row's identity and nothing else: no arithmetic reads it.
+        Passing it costs one array lookup per row.
 
         ⚠️ It is positional. Every array reaching this function is aligned to
         the same frame -- in the CV path `fold_p50`, `actual_returns`,
@@ -8751,92 +8875,6 @@ class ItemForecaster:
             f"served from it, and the held-out leg is the one that can fail."
         )
         return out
-
-    def _fit_learned_scale(
-        self, horizon: int, records_df: pd.DataFrame, feature_frame: pd.DataFrame | None, resid, sigma
-    ):
-        """Cross-fitted scale for calibration, plus the model that will serve.
-
-        Returns the per-row scale `q_hat` should be calibrated against, or None
-        to leave the band on `sigma ** beta`.
-
-        **Two different scales come out of this, and conflating them is the
-        whole trap.** `q_hat` is calibrated against the CROSS-FITTED scale --
-        every row scored by a model that never saw its fold -- because a scale
-        fitted on the same residuals it normalises matches them better than it
-        will match a served item's, which makes `q_hat` too small and the band
-        under-cover in production while looking flawless offline. Serving then
-        uses a FINAL model fitted on all folds, which is the better estimator
-        but is not the one `q_hat` was measured against.
-
-        The residual mismatch is a LEVEL, and it is normalised away: `q_hat`
-        absorbs any constant factor on the scale (see `scale_model`), so
-        matching the final model's median to the cross-fitted median leaves only
-        the shape difference, which is the part that is genuinely better. That
-        ratio is persisted as `scale_norm` and applied at serve time.
-        """
-        if not scale_model.enabled():
-            return None
-        if feature_frame is None or "row_index" not in records_df.columns:
-            logger.warning(
-                f"  {horizon}d LEARNED_SCALE=1 but the calibration rows carry "
-                f"no feature reference — falling back to sigma. This is the "
-                f"single-holdout path, which cannot cross-fit anyway."
-            )
-            return None
-        if "fold" not in records_df.columns:
-            logger.warning(
-                f"  {horizon}d LEARNED_SCALE=1 but the calibration rows carry "
-                f"no fold labels, so the scale cannot be cross-fitted and a "
-                f"q_hat fitted against it would be optimistic. Falling back to "
-                f"sigma."
-            )
-            return None
-        if not feature_frame.index.is_unique:
-            # Non-unique labels make `.loc` fan out, silently pairing residuals
-            # with the wrong rows. Unique today because `prepare_targets` ends
-            # in a column merge -- an incidental fact, hence the check.
-            raise RuntimeError(
-                f"the {horizon}d feature frame has a non-unique index, so "
-                f"calibration rows cannot be matched to their features. The "
-                f"learned scale would silently pair residuals with the wrong "
-                f"items; refusing to fit it."
-            )
-
-        idx = records_df["row_index"].to_numpy()
-        rows = feature_frame.loc[idx]
-        X = self._scale_feature_frame(rows, sigma, horizon)
-
-        t0 = time.time()
-        cross, n_models = scale_model.cross_fit(X, resid, records_df["fold"].to_numpy(), fallback=sigma)
-        if n_models == 0:
-            logger.warning(f"  {horizon}d learned scale: no fold produced a usable model; falling back to sigma.")
-            return None
-
-        final = scale_model.fit(X, resid)
-        if final is None:
-            return None
-
-        raw = scale_model.predict_scale(final, X, clip=None, fallback=sigma)
-        ok = np.isfinite(raw) & (raw > 0) & np.isfinite(cross) & (cross > 0)
-        norm = float(np.median(cross[ok]) / np.median(raw[ok])) if ok.any() else 1.0
-        served = raw * norm
-
-        self.scale_models[horizon] = final
-        self.scale_norm[horizon] = norm
-        self.scale_clip[horizon] = scale_model.clip_bounds(served)
-        self.scale_features[horizon] = list(X.columns)
-
-        logger.info(
-            f"  {horizon}d learned scale: {n_models} cross-fit models + 1 "
-            f"serving model on {len(X):,} rows in {time.time() - t0:.1f}s, "
-            f"norm={norm:.4f}, clip="
-            f"[{self.scale_clip[horizon][0]:.5f}, "
-            f"{self.scale_clip[horizon][1]:.5f}]. q_hat is calibrated against "
-            f"the CROSS-FITTED scale and is dimensionally tied to it — never "
-            f"compare it with a sigma-basis q_hat."
-        )
-        return cross
 
     def _exceedance_learned_scale(self, horizon: int, records_df: pd.DataFrame, sigma) -> np.ndarray | None:
         """`sigma * sqrt(p_exceed)` for the calibration rows, or None.
@@ -9210,27 +9248,6 @@ class ItemForecaster:
                 scale = scale * vr_mult
         return scale
 
-    def _scale_feature_frame(self, rows: pd.DataFrame, sigma, horizon: int) -> pd.DataFrame:
-        """The feature matrix the learned scale is fitted on AND served from.
-
-        ONE function with two callers on purpose. A scale model trained on one
-        column set and served against another is the train/serve skew this repo
-        has paid for repeatedly, and the failure is quiet: LightGBM will happily
-        score a frame whose columns mean something else and return a plausible
-        number.
-
-        `sigma` is included as a feature, which makes the learned scale a strict
-        GENERALISATION of the current band rather than a competitor to it — the
-        model can reproduce `s = sigma` if that is genuinely best, so a null
-        result means "sigma was already the right variable" rather than "the
-        model could not see it". That is what makes a null informative here.
-        """
-        cols = self.horizon_feature_cols.get(horizon, self.feature_cols)
-        cols = [c for c in cols if c in rows.columns]
-        X = rows[cols].copy()
-        X["sigma"] = np.asarray(sigma, dtype=float)
-        return X
-
     def _calibrate_conformal(
         self, horizon: int, records_df: pd.DataFrame, feature_frame: pd.DataFrame | None = None
     ) -> float:
@@ -9253,26 +9270,15 @@ class ItemForecaster:
         resid = records_df["residual_pct"].to_numpy(dtype=float)
         sigma = records_df["sigma"].to_numpy(dtype=float)
 
-        if scale_model.enabled() and self.sigma_exponent_enabled():
-            # Caught here rather than deep in `resolve_scale`, so the run dies
-            # at its first calibration instead of after training four horizons.
+        if self.exceedance_scale_enabled() and self.sigma_exponent_enabled():
             raise RuntimeError(
-                "LEARNED_SCALE=1 and SIGMA_EXPONENT=1 are both set. They are "
-                "alternative band denominators, not layers: the exponent damps "
-                "sigma's over-reaction and a fitted scale has none to damp. "
-                "Applying both re-tilts the band the other way — measured in "
-                "docs/changelog/2026-08-12-served-sigma-profile.md. Pick one."
-            )
-        if self.exceedance_scale_enabled() and (scale_model.enabled() or self.sigma_exponent_enabled()):
-            raise RuntimeError(
-                "EXCEEDANCE_SCALE=1 is set alongside LEARNED_SCALE or "
-                "SIGMA_EXPONENT. They are three alternative band denominators, "
-                "not layers — each redefines the scale q_hat is calibrated "
-                "against, and composing them serves a q_hat in the wrong units. "
-                "Pick one."
+                "EXCEEDANCE_SCALE=1 is set alongside SIGMA_EXPONENT. They are "
+                "alternative band denominators, not layers — each redefines the "
+                "scale q_hat is calibrated against, and composing them serves a "
+                "q_hat in the wrong units. Pick one."
             )
         if self.climatology_scale_enabled() and (
-            scale_model.enabled() or self.sigma_exponent_enabled() or self.exceedance_scale_enabled()
+            self.sigma_exponent_enabled() or self.exceedance_scale_enabled()
         ):
             raise RuntimeError(
                 "CLIMATOLOGY_SCALE=1 is set alongside another band-scale flag. "
@@ -9288,16 +9294,9 @@ class ItemForecaster:
         climatology = self._fit_climatology_scale(horizon, records_df, feature_frame)
         # sigma * sqrt(p_exceed), from the OUT-OF-FOLD probabilities the record
         # builder attached (`exceed_p`). It is a full `learned_scale` denominator,
-        # so beta stays neutral below and q_hat is dimensionally tied to it. Takes
-        # precedence over the learned-scale path, which is off by the guard above.
+        # so beta stays neutral below and q_hat is dimensionally tied to it.
         exceedance = None if climatology is not None else self._exceedance_learned_scale(horizon, records_df, sigma)
-        learned = (
-            climatology
-            if climatology is not None
-            else exceedance
-            if exceedance is not None
-            else self._fit_learned_scale(horizon, records_df, feature_frame, resid, sigma)
-        )
+        learned = climatology if climatology is not None else exceedance
 
         # The exponent, fitted on the SAME rows q_hat is, and stored in the same
         # breath. Nothing between these two statements may raise or return, or an
@@ -9381,82 +9380,7 @@ class ItemForecaster:
         # are already dropped by _conformal_records.
         records_df["range_pct"] = (high - low) / 100.0 / (1.0 + mid / 100.0)
 
-        # Shadow CQR calibration — runs ALONGSIDE the production conformal band
-        # when CONFORMAL_CQR=1. Never replaces the served band; logs metrics for
-        # A/B comparison only.
-        self._shadow_cqr_calibration(horizon, records_df, feature_frame)
-
         return q_hat
-
-    def _shadow_cqr_calibration(
-        self, horizon: int, records_df: pd.DataFrame, feature_frame: pd.DataFrame | None = None
-    ) -> None:
-        """Run MAPIE CQR as a shadow calibration alongside production conformal.
-
-        Gated by CONFORMAL_CQR=1. Results are stored in `self.cqr_shadow[horizon]`
-        as candidate data for comparison logging — they NEVER replace the
-        production conformal band from conformal.py.
-
-        The CQR approach conditions interval width on calibration features
-        (sigma, mid_ret) through quantile regressors, producing adaptive
-        intervals that vary with prediction difficulty. This is a fundamentally
-        different conditioning mechanism from the sigma-exponent family.
-        """
-        from models.conformal_cqr import cqr_enabled
-
-        if not cqr_enabled():
-            return
-
-        from models.conformal_cqr import calibrate_cqr
-
-        resid = records_df["residual_pct"].to_numpy(dtype=float)
-        sigma = records_df["sigma"].to_numpy(dtype=float)
-        mid = records_df["mid_ret"].to_numpy(dtype=float)
-
-        # Build a feature matrix from what calibration records carry.
-        # sigma and mid_ret are always present; row_index features would
-        # require feature_frame, which is optional.
-        X_cal = np.column_stack([sigma, mid])
-
-        # If the feature frame is available, pull in a few more columns
-        # for richer conditioning.
-        if feature_frame is not None and "row_index" in records_df.columns:
-            try:
-                idx = records_df["row_index"].to_numpy()
-                rows = feature_frame.iloc[idx]
-                extra_cols = []
-                for col in ["price", "price_std_60d", "return_1d"]:
-                    if col in rows.columns:
-                        vals = rows[col].to_numpy(dtype=float)
-                        vals = np.where(np.isfinite(vals), vals, 0.0)
-                        extra_cols.append(vals)
-                if extra_cols:
-                    X_cal = np.column_stack([X_cal, *extra_cols])
-            except Exception:
-                pass  # fall back to sigma + mid only
-
-        try:
-            result = calibrate_cqr(
-                X_cal=X_cal,
-                y_cal=resid,
-                residuals_pct=resid,
-                sigma=sigma,
-                alpha=conformal.ALPHA,
-            )
-
-            self.cqr_shadow[horizon] = {
-                "coverage": result["coverage"],
-                "mean_width": result["mean_width"],
-                "n_cal": len(resid),
-            }
-
-            logger.info(
-                f"  {horizon}d CQR shadow: coverage={result['coverage']:.3f}, "
-                f"mean_width={result['mean_width']:.4f}, n={len(resid)} "
-                f"(SHADOW ONLY — production band unchanged)"
-            )
-        except Exception as e:
-            logger.warning(f"  {horizon}d CQR shadow failed: {e}")
 
     def _sigma_for_rows(self, rows: pd.DataFrame) -> np.ndarray:
         """Per-item sigma for a feature frame, using the persisted clip bounds.
@@ -9685,7 +9609,7 @@ class ItemForecaster:
         return [
             h
             for h in self.HORIZONS
-            if centre_policy.centre_champion(h) == "gbm_q50"
+            if centre_champion(h) == "gbm_q50"
             and not any(h2 == h and q == 0.5 for (h2, q) in self.models)
         ]
 
@@ -9735,7 +9659,7 @@ class ItemForecaster:
         shadow_counts = Counter((r.horizon_days, r.component) for r in shadows)
         for horizon in self.HORIZONS:
             try:
-                champion = centre_policy.centre_champion(horizon)
+                champion = centre_champion(horizon)
             except ValueError:
                 continue
             challenger = next((c for c in ("gbm_q50", "last_price") if c != champion), None)
@@ -10565,9 +10489,8 @@ class ItemForecaster:
 
             # Fold-level directional accuracy, vectorized. Same ±
             # DIRECTION_FLAT_TOLERANCE_PCT up/flat/down bucketing (percent
-            # scale, 1-dp percent output) as the manual loop it replaces —
-            # see models/direction.py::directional_accuracy.
-            fold_acc = direction.directional_accuracy(fold_p50, actual_returns)
+            # scale, 1-dp percent output) as the manual loop it replaces.
+            fold_acc = self._directional_accuracy(fold_p50, actual_returns)
 
             # Naive baselines on the same val rows, for honest comparison:
             #  - persistence: random walk in price → predict 0% return (flat).
@@ -11010,54 +10933,6 @@ class ItemForecaster:
         X_val = val_df[self.feature_cols].replace([np.inf, -np.inf], np.nan).fillna(med)
         return model.predict(X_val)
 
-    def _fold_q50_scores(self, train_df, val_df, horizon, per_quantile_params):
-        """The q50 twin of `_lambdarank_fold_scores`: same rows, same tree HP,
-        `objective="quantile"` at alpha 0.5, and the SAME sample weights the
-        production fold q50 (`_cv_evaluate_horizon`) applies. That makes the
-        vs-q50 rank-IC delta the serving-transfer read reports comparable to the
-        CV diagnostic, whose q50 baseline is production's weighted fold q50.
-
-        The N1 offset is asserted off: under the shipped default the production
-        fold q50 adds no offset and the ranker takes none either, so the contrast
-        is offset-free on both sides. If NAIVE_INIT_SCORE is ever turned on this
-        must be revisited.
-        """
-        tcol = f"target_return_{horizon}d"
-        assert self._naive_offset(train_df) is None, "_fold_q50_scores assumes the N1 offset is off; it is on"
-        feat = train_df[self.feature_cols].replace([np.inf, -np.inf], np.nan)
-        med = feat.median()
-        X_tr = feat.fillna(med)
-        q50 = per_quantile_params.get(0.5, {})
-        params = {
-            "objective": "quantile",
-            "alpha": 0.5,
-            "metric": "quantile",
-            "boosting_type": self.BOOSTING_TYPE,
-            "max_bin": self.MAX_BIN,
-            "num_leaves": q50.get("num_leaves", 31),
-            "learning_rate": q50.get("learning_rate", 0.03),
-            "max_depth": q50.get("max_depth", 5),
-            "min_data_in_leaf": q50.get("min_data_in_leaf", 15),
-            "lambda_l1": q50.get("lambda_l1", 0.5),
-            "lambda_l2": q50.get("lambda_l2", 0.5),
-            "feature_fraction": q50.get("feature_fraction", 0.7),
-            "verbosity": -1,
-            "n_jobs": -1,
-            "random_state": 42,
-        }
-        train_w = self._compute_sample_weights(train_df, horizon)
-        ds = lgb.Dataset(
-            X_tr,
-            label=train_df[tcol].to_numpy(dtype=float),
-            weight=train_w,
-            params={"max_bin": self.MAX_BIN, "feature_pre_filter": False},
-        )
-        model = lgb.train(
-            params, ds, num_boost_round=self._boost_rounds(horizon, cv=True), callbacks=[lgb.log_evaluation(0)]
-        )
-        X_val = val_df[self.feature_cols].replace([np.inf, -np.inf], np.nan).fillna(med)
-        return model.predict(X_val)
-
     def _calibrate_confidence(self, horizon, records_df):
         """Calibrate confidence thresholds from pre-built calibration records.
 
@@ -11289,24 +11164,6 @@ class ItemForecaster:
                 path = os.path.join(self.model_dir, f"lgb_{horizon}d_q{int(q * 100)}_{regime}.txt")
                 ensemble.save_model(path)
 
-        # Save learned band-scale models. One per horizon, and it travels with
-        # `conformal_calibration` in meta.json as a matched pair: a q_hat
-        # calibrated against a learned scale is in that scale's units, so an
-        # artifact carrying one without the other serves an unrelated band.
-        for horizon, booster in self.scale_models.items():
-            booster.save_model(os.path.join(self.model_dir, f"scale_{horizon}d.txt"))
-        if self.scale_models:
-            logger.info(f"  Saved {len(self.scale_models)} learned scale models")
-        # And remove any that this run did not produce, for the same reason the
-        # regime sweep below exists: a stale scale_*.txt left on disk would be
-        # loaded beside a q_hat calibrated without it.
-        for horizon in self.HORIZONS:
-            if horizon in self.scale_models:
-                continue
-            stale = os.path.join(self.model_dir, f"scale_{horizon}d.txt")
-            if os.path.exists(stale):
-                os.remove(stale)
-
         # Directional classifiers: never persisted by routine training
         # (offline-only since 2026-09-19; see scripts/direction_benchmark.py).
         # Legacy clf_*.txt files on disk are ignored on load, and old
@@ -11331,17 +11188,6 @@ class ItemForecaster:
                 _n_rank += 1
         if _n_rank:
             logger.info(f"  Saved {_n_rank} ranking heads")
-
-        # Save NGBoost distributional heads (joblib serialization).
-        _n_ngb = 0
-        for horizon, model in self.ngboost_models.items():
-            if model is not None:
-                from models.ngboost_head import save_ngboost_model
-
-                save_ngboost_model(model, os.path.join(self.model_dir, f"ngboost_{horizon}d.joblib"))
-                _n_ngb += 1
-        if _n_ngb:
-            logger.info(f"  Saved {_n_ngb} NGBoost heads")
 
         # Save anomaly classifiers.
         _n_anom = 0
@@ -11556,25 +11402,6 @@ class ItemForecaster:
             # MIN_FEEDBACK_DATES gate appear; a missing horizon (all of them today)
             # loads as 1.0, byte-identical to the pre-feedback band.
             "served_coverage_factor": {str(h): float(v) for h, v in self.served_coverage_factor.items()},
-            # The learned scale, and the same matched-pair argument one step
-            # further: `conformal_beta` decides how hard to damp `sigma`, this
-            # decides whether `sigma` is the variable at all. A q_hat calibrated
-            # against a learned scale and served against `sigma` is not a
-            # degraded band, it is an unrelated one — so the norm, the clip and
-            # the column list are all written here beside the booster on disk,
-            # and a horizon missing from this dict falls back to `sigma ** beta`.
-            "learned_scale": {
-                str(h): {
-                    "norm": float(self.scale_norm.get(h, 1.0)),
-                    "clip": [float(self.scale_clip[h][0]), float(self.scale_clip[h][1])],
-                    # The exact column order the booster was fitted on.
-                    # `band_scale` refuses to score a frame that does not match
-                    # it: the wrong columns give a plausible number from the
-                    # wrong features and a band that looks entirely normal.
-                    "features": list(self.scale_features.get(h, [])),
-                }
-                for h in sorted(self.scale_models)
-            },
             # Which mid each q_hat covers — "served" (the classifier-recentred
             # mid predict() publishes) or "q50" (a mid served only when no
             # classifier exists). A coverage figure read without this is
@@ -11603,19 +11430,14 @@ class ItemForecaster:
                 if self.exceedance_models
                 else {},
                 "ranking": {"lambdarank_v1": self.MODEL_ARTIFACT_VERSION} if self.ranking_models else {},
-                "ngboost": {"ngboost_normal_v1": self.MODEL_ARTIFACT_VERSION} if self.ngboost_models else {},
                 "direction": {},
             },
-            "centre_champions": {str(h): centre_policy.centre_champion(h) for h in self.HORIZONS},
+            "centre_champions": {str(h): centre_champion(h) for h in self.HORIZONS},
             "training_window_days": 1460,
             "feature_importance": feature_importance,
             "cv_results": cv_serial,
             "tuned_params": tuned_serial,
             "label_voiding": self.label_voiding,
-            # Shadow CQR calibration metrics per horizon. Present only when
-            # CONFORMAL_CQR=1 was set during training. Never drives serving —
-            # comparison data for evaluating CQR against production conformal.
-            "cqr_shadow": {str(h): v for h, v in self.cqr_shadow.items()} if self.cqr_shadow else {},
         }
 
         def _json_default(o):
@@ -11810,37 +11632,6 @@ class ItemForecaster:
         # artifact before this feature and on every horizon below the data gate, and
         # absence means 1.0 (no correction) through served_qhat_multiplier.
         self.served_coverage_factor = {int(h): float(v) for h, v in meta.get("served_coverage_factor", {}).items()}
-        # The learned scale, restored as a unit. `.get` for the same reason as
-        # `conformal_beta`: absent on every artifact before 2026-08-12, and
-        # absence means "this q_hat was calibrated against sigma", which
-        # `band_scale` reproduces by returning None. A horizon whose booster is
-        # missing from disk is dropped from ALL FOUR dicts rather than kept with
-        # a default, so the pair can never come apart -- an entry here without
-        # its booster would serve `sigma` under a q_hat that is not in sigma's
-        # units, which is the one failure this whole structure exists to stop.
-        self.scale_models, self.scale_norm = {}, {}
-        self.scale_clip, self.scale_features = {}, {}
-        for h, cfg in meta.get("learned_scale", {}).items():
-            path = os.path.join(self.model_dir, f"scale_{int(h)}d.txt")
-            if not os.path.exists(path):
-                logger.warning(
-                    f"  meta.json claims a learned scale for {h}d but "
-                    f"{os.path.basename(path)} is missing. Dropping it — the "
-                    f"band for this horizon falls back to sigma, and its q_hat "
-                    f"is NOT in sigma's units, so treat its width as suspect."
-                )
-                continue
-            self.scale_models[int(h)] = lgb.Booster(model_file=path)
-            self.scale_norm[int(h)] = float(cfg.get("norm", 1.0))
-            clip = cfg.get("clip")
-            self.scale_clip[int(h)] = None if not clip else (float(clip[0]), float(clip[1]))
-            self.scale_features[int(h)] = list(cfg.get("features", []))
-        if self.scale_models:
-            logger.info(
-                f"  Loaded {len(self.scale_models)} learned scale models "
-                f"({sorted(self.scale_models)}d) — these q_hats are in the "
-                f"learned scale's units, not sigma's."
-            )
         # Provenance, so `.get` and not strict: predict() reads the band from
         # conformal_calibration alone, and every artifact written before
         # 2026-08-11 lacks this key. An empty dict means "this artifact does not
@@ -11959,19 +11750,6 @@ class ItemForecaster:
                     logger.warning(f"  Corrupt ranking head {rpath}, skipping: {e}")
         if self.ranking_models:
             logger.info(f"  Loaded {len(self.ranking_models)} ranking heads")
-
-        # Load NGBoost distributional heads (joblib deserialization).
-        for horizon in self.HORIZONS:
-            ngb_path = os.path.join(self.model_dir, f"ngboost_{horizon}d.joblib")
-            if os.path.exists(ngb_path):
-                try:
-                    from models.ngboost_head import load_ngboost_model
-
-                    self.ngboost_models[horizon] = load_ngboost_model(ngb_path)
-                except Exception as e:
-                    logger.warning(f"  Corrupt NGBoost model {ngb_path}, skipping: {e}")
-        if self.ngboost_models:
-            logger.info(f"  Loaded {len(self.ngboost_models)} NGBoost heads")
 
         # Load shrink-K models.
         for horizon in self.HORIZONS:

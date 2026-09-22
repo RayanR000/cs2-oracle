@@ -25,8 +25,34 @@ from typing import Any
 import numpy as np
 import pandas as pd
 
-from models.centre_policy import HORIZONS, centre_champion
 from models.forecast_assembly import assemble_interval, percentage_offsets
+
+# Inlined from the deleted models/centre_policy.py (centre lambda=0, module dead).
+HORIZONS = (3, 7, 14, 30)
+REGISTERED_CENTRES = frozenset({"gbm_q50", "last_price"})
+CENTRE_CHAMPIONS = {3: "gbm_q50", 7: "gbm_q50", 14: "gbm_q50", 30: "gbm_q50"}
+
+
+def _validate_centre_policy() -> None:
+    if set(CENTRE_CHAMPIONS) != set(HORIZONS):
+        raise RuntimeError("centre policy must name every supported horizon exactly once")
+    unknown = set(CENTRE_CHAMPIONS.values()) - REGISTERED_CENTRES
+    if unknown:
+        raise RuntimeError(f"unknown centre champion(s): {sorted(unknown)}")
+
+
+def centre_champion(horizon: int) -> str:
+    if horizon not in HORIZONS:
+        raise ValueError(f"unsupported horizon: {horizon}")
+    return CENTRE_CHAMPIONS[horizon]
+
+
+def centre_challengers(horizon: int) -> tuple[str, ...]:
+    champion = centre_champion(horizon)
+    return tuple(name for name in ("gbm_q50", "last_price") if name != champion)
+
+
+_validate_centre_policy()
 
 logger = logging.getLogger(__name__)
 

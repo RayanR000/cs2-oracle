@@ -32,7 +32,6 @@ import logging
 import os
 import re
 import time
-from dataclasses import dataclass
 from datetime import UTC, date, datetime
 from pathlib import Path
 from typing import Any
@@ -96,13 +95,6 @@ _NARRATIVE_PATTERNS: dict[str, re.Pattern] = {
 
 class RedditEventError(RuntimeError):
     """Auth failed, the API errored, or the payload was unusable."""
-
-
-@dataclass
-class RedditEventResult:
-    rows: pd.DataFrame
-    raw_posts: int
-    elapsed_s: float
 
 
 def _bearer_token(session: requests.Session) -> str:

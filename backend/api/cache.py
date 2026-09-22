@@ -55,7 +55,3 @@ def get_or_build(key: str, ttl_seconds: float, builder):
         value = builder()
         cache.set(key, value, ttl_seconds)
     return value
-
-
-def clear_cache():
-    cache.clear()
