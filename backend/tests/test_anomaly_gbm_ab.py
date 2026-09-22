@@ -15,7 +15,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from scripts.anomaly_gbm_ab import item_rate_predictions
+from scripts.archive.anomaly_gbm_ab import item_rate_predictions
 
 TARGET = "target_anomaly_7d"
 
@@ -95,7 +95,7 @@ class TestCleanAnomalyLabel:
         )
 
     def test_a_later_row_cannot_change_an_earlier_label(self):
-        from scripts.anomaly_gbm_ab import clean_anomaly_label
+        from scripts.archive.anomaly_gbm_ab import clean_anomaly_label
 
         base = self._frame()
         bumped = base.copy()
@@ -106,7 +106,7 @@ class TestCleanAnomalyLabel:
         pd.testing.assert_series_equal(a.iloc[:-1], b.iloc[:-1])
 
     def test_the_row_s_own_return_is_excluded_from_its_threshold(self):
-        from scripts.anomaly_gbm_ab import clean_anomaly_label
+        from scripts.archive.anomaly_gbm_ab import clean_anomaly_label
 
         base = self._frame()
         bumped = base.copy()
@@ -115,7 +115,7 @@ class TestCleanAnomalyLabel:
         assert clean_anomaly_label(base, 7).iloc[i] == clean_anomaly_label(bumped, 7).iloc[i]
 
     def test_rows_without_enough_history_are_nan_not_false(self):
-        from scripts.anomaly_gbm_ab import clean_anomaly_label
+        from scripts.archive.anomaly_gbm_ab import clean_anomaly_label
 
         out = clean_anomaly_label(self._frame(), 7, min_periods=10)
         # shift(1) + min_periods=10 means the first 10 rows cannot form one.
@@ -123,14 +123,14 @@ class TestCleanAnomalyLabel:
         assert out.iloc[15:].notna().any()
 
     def test_a_void_target_stays_void(self):
-        from scripts.anomaly_gbm_ab import clean_anomaly_label
+        from scripts.archive.anomaly_gbm_ab import clean_anomaly_label
 
         df = self._frame()
         df.loc[df.index[20], "target_return_7d"] = np.nan
         assert np.isnan(clean_anomaly_label(df, 7).iloc[20])
 
     def test_thresholds_do_not_bleed_across_items(self):
-        from scripts.anomaly_gbm_ab import clean_anomaly_label
+        from scripts.archive.anomaly_gbm_ab import clean_anomaly_label
 
         a = self._frame(item="A")
         b = self._frame(item="B")
@@ -141,7 +141,7 @@ class TestCleanAnomalyLabel:
         pd.testing.assert_series_equal(alone, joint, check_names=False)
 
     def test_a_missing_return_column_is_a_hard_error(self):
-        from scripts.anomaly_gbm_ab import clean_anomaly_label
+        from scripts.archive.anomaly_gbm_ab import clean_anomaly_label
 
         df = self._frame().drop(columns=["return_7d"])
         with pytest.raises(SystemExit, match="return_7d"):

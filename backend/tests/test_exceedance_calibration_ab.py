@@ -26,7 +26,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from models.forecaster import ItemForecaster, embargo_days
 from scripts.archive.ab_test_item_metadata import _stratified_sample
-from scripts.exceedance_calibration_ab import ARMS, P_CLIP, _brier, _clip
+from scripts.archive.exceedance_calibration_ab import ARMS, P_CLIP, _brier, _clip
 
 
 def _train_frame(n_dates=40, n_items=4):
@@ -54,7 +54,7 @@ def test_stratified_sample_is_pinned_across_arms():
 
 
 def test_inner_split_is_date_disjoint_and_embargoed():
-    from scripts.anomaly_calibration_ab import inner_calibration_split
+    from scripts.archive.anomaly_calibration_ab import inner_calibration_split
 
     df = _train_frame(n_dates=60)
     horizon = 7
@@ -65,7 +65,7 @@ def test_inner_split_is_date_disjoint_and_embargoed():
 
 
 def test_split_refuses_when_the_embargo_eats_the_inner_train():
-    from scripts.anomaly_calibration_ab import inner_calibration_split
+    from scripts.archive.anomaly_calibration_ab import inner_calibration_split
 
     inner, _ = inner_calibration_split(_train_frame(n_dates=12), horizon=30, calib_frac=0.25)
     assert inner is None

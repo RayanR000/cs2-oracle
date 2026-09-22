@@ -44,7 +44,7 @@ inner-train rows whose labels resolve inside the calibration slice would leak
 the very outcomes the map is fitted on.
 
 Usage:
-    python -m scripts.anomaly_calibration_ab --horizon 30 \
+    python -m scripts.archive.anomaly_calibration_ab --horizon 30 \
         --frame-cache /tmp/anom_frame.parquet --out /tmp/anom_cal_h30.json
 """
 
@@ -60,8 +60,6 @@ import numpy as np
 import pandas as pd
 from database import SessionLocal
 from models.forecaster import ItemForecaster
-
-from scripts.anomaly_gbm_ab import clean_anomaly_label, item_rate_predictions
 from scripts.archive.ab_test_item_metadata import (
     ROW_BUDGET,
     STEP_DAYS,
@@ -70,7 +68,8 @@ from scripts.archive.ab_test_item_metadata import (
     assign_items,
     build_frame,
 )
-from scripts.exceedance_meta_ab import TREE_PARAMS, _score, paired_fold_deltas
+from scripts.archive.anomaly_gbm_ab import clean_anomaly_label, item_rate_predictions
+from scripts.archive.exceedance_meta_ab import TREE_PARAMS, _score, paired_fold_deltas
 
 logging.basicConfig(
     level=logging.INFO,

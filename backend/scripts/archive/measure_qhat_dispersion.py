@@ -49,8 +49,8 @@ requires it), fenced `SET TRANSACTION READ ONLY` like the confirm, so an
 accidental write raises instead of landing in prod. Run from `backend/` so
 config reads `backend/.env`:
 
-    venv/bin/python -m scripts.measure_qhat_dispersion --horizons 3,7,14,30
-    venv/bin/python -m scripts.measure_qhat_dispersion --arms control  # pacing: one arm at a time
+    venv/bin/python -m scripts.archive.measure_qhat_dispersion --horizons 3,7,14,30
+    venv/bin/python -m scripts.archive.measure_qhat_dispersion --arms control  # pacing: one arm at a time
 
 Exit codes: 0 = measured (null or candidate — read the verdict table);
 2 = VOID (placebo-unstable grid, or <2 measurable folds at a horizon).
@@ -72,8 +72,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from models import conformal
 from models.forecaster import ItemForecaster
-
-from scripts.confirm_mondrian_oof import readonly_session, train_oof
+from scripts.archive.confirm_mondrian_oof import readonly_session, train_oof
 
 logger = logging.getLogger("qhat_dispersion")
 

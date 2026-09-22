@@ -65,7 +65,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from backtest.paired_mde import NoPairedRows, paired_da_difference
 from models import forecaster as fc
-from scripts import walkforward_backtest as wf
+from scripts.archive import walkforward_backtest as wf
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s")
 logger = logging.getLogger("ab_test_frozen_runs")

@@ -9,15 +9,14 @@ import sys
 from pathlib import Path
 
 import pyarrow.parquet as pq
-
+from scripts.archive.build_bid_panel import SIDECAR_NAME as BID
+from scripts.archive.build_bid_panel import main as bid_main
+from scripts.archive.build_stattrak_panel import SIDECAR_NAME as STATTRAK
+from scripts.archive.build_stattrak_panel import main as st_main
 from scripts.archive.ingest_supply_history import SIDECAR_NAME as SUPPLY
 from scripts.archive.ingest_supply_history import main as supply_main
 from scripts.archive.ingest_volume_panel import SIDECAR_NAME as VOL
 from scripts.archive.ingest_volume_panel import main as volume_main
-from scripts.build_bid_panel import SIDECAR_NAME as BID
-from scripts.build_bid_panel import main as bid_main
-from scripts.build_stattrak_panel import SIDECAR_NAME as STATTRAK
-from scripts.build_stattrak_panel import main as st_main
 
 # Every sidecar this orchestrator can produce, by its known filename -- not a
 # glob. `-panel.parquet` doesn't match `supply-history.parquet`, so a glob

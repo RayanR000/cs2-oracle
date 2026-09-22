@@ -20,8 +20,8 @@ the earlier day). Whole frozen DAYS are barred as anchors; frozen ROWS are never
 verdict spuriously.
 
 Usage:
-    venv/bin/python -m scripts.archive_basis_centre_rank --gate
-    venv/bin/python -m scripts.archive_basis_centre_rank \\
+    venv/bin/python -m scripts.archive.archive_basis_centre_rank --gate
+    venv/bin/python -m scripts.archive.archive_basis_centre_rank \\
         --archive-dir ../price-archive --out /tmp/abcr_h14.json
 """
 
@@ -37,7 +37,6 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 import numpy as np
 import pandas as pd
-
 from scripts.archive.clean_era_centre_ab import bootstrap_ci, paired_delta_ci, per_date_ic
 from scripts.archive.served_centre_rank import DURABLE_ARCHIVE, derive_panel, load_served
 

@@ -35,10 +35,10 @@ Primary cohort is held-out items at h=3/7/14; trained-eval is reported.
 Horizons are never pooled.
 
 Usage:
-    python -m scripts.exceedance_calibration_ab --horizon 7 \\
+    python -m scripts.archive.exceedance_calibration_ab --horizon 7 \\
         --metadata-parquet ../price-archive/item-metadata-bymykel.parquet \\
         --frame-cache /tmp/exc_cal_frame.parquet --out /tmp/exc_cal_h7.json
-    python -m scripts.exceedance_calibration_ab --served-only  # maturity + raw served reliability, no fit
+    python -m scripts.archive.exceedance_calibration_ab --served-only  # maturity + raw served reliability, no fit
 """
 
 import json
@@ -53,9 +53,6 @@ import numpy as np
 import pandas as pd
 from database import SessionLocal
 from models.forecaster import ItemForecaster
-
-from scripts.anomaly_calibration_ab import inner_calibration_split
-from scripts.anomaly_gbm_ab import item_rate_predictions
 from scripts.archive.ab_test_item_metadata import (
     ROW_BUDGET,
     STEP_DAYS,
@@ -64,7 +61,9 @@ from scripts.archive.ab_test_item_metadata import (
     assign_items,
     build_frame,
 )
-from scripts.exceedance_meta_ab import TREE_PARAMS, _score, paired_fold_deltas
+from scripts.archive.anomaly_calibration_ab import inner_calibration_split
+from scripts.archive.anomaly_gbm_ab import item_rate_predictions
+from scripts.archive.exceedance_meta_ab import TREE_PARAMS, _score, paired_fold_deltas
 
 logging.basicConfig(
     level=logging.INFO,

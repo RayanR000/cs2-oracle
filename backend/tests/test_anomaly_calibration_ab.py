@@ -18,7 +18,7 @@ import pandas as pd
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from models.forecaster import ItemForecaster, embargo_days
-from scripts.anomaly_calibration_ab import P_CLIP, _clip, inner_calibration_split
+from scripts.archive.anomaly_calibration_ab import P_CLIP, _clip, inner_calibration_split
 
 
 def _train_frame(n_dates=40, n_items=3):

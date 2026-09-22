@@ -62,7 +62,7 @@ because folds share a fitted model and the absolute level moves far more
 between folds than between arms.
 
 Usage:
-    python -m scripts.exceedance_meta_ab --horizon 7 \
+    python -m scripts.archive.exceedance_meta_ab --horizon 7 \
         --frame-cache /tmp/exc_meta_frame.parquet --out /tmp/exc_meta.json
 """
 
@@ -78,8 +78,6 @@ import numpy as np
 import pandas as pd
 from database import SessionLocal
 from models.forecaster import ItemForecaster
-from sklearn.metrics import log_loss, roc_auc_score
-
 from scripts.archive.ab_test_item_metadata import (
     META_ALL,
     META_STATIC,
@@ -91,6 +89,7 @@ from scripts.archive.ab_test_item_metadata import (
     assign_items,
     build_frame,
 )
+from sklearn.metrics import log_loss, roc_auc_score
 
 logging.basicConfig(
     level=logging.INFO,

@@ -20,11 +20,11 @@ Uses production's data pipeline, feature set, and evaluation methods.
 
 Usage:
     cd backend
-    venv/bin/python -m scripts.objective_comparison_ab \
+    venv/bin/python -m scripts.archive.objective_comparison_ab \
         --horizon 14 --out /tmp/obj_cmp_h14.json
 
     # All horizons:
-    venv/bin/python -m scripts.objective_comparison_ab \
+    venv/bin/python -m scripts.archive.objective_comparison_ab \
         --out /tmp/obj_cmp.json
 """
 

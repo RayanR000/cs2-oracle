@@ -16,8 +16,8 @@ import pandas as pd
 BACKEND = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(BACKEND))
 
-from scripts.build_case_panel import build_case_panel  # noqa: E402
-from scripts.build_sticker_panel import build_sticker_panel, substitute_group  # noqa: E402
+from scripts.archive.build_case_panel import build_case_panel  # noqa: E402
+from scripts.archive.build_sticker_panel import build_sticker_panel, substitute_group  # noqa: E402
 
 
 def _supply(slugs_days: list[tuple[str, str, int]]) -> pd.DataFrame:

@@ -17,7 +17,7 @@ from collectors.price_history_import import (
 )
 from collectors.price_history_sources import cs2_prices_tracker as tracker
 from db.archive import CANONICAL_PRICE_COLUMNS, prices_relation
-from scripts.import_price_history_source import (
+from scripts.archive.import_price_history_source import (
     cached_path,
     daterange,
     load_cached_day,

@@ -24,7 +24,7 @@ overlap at long horizons — accepted as a first read; the paired interval is
 still valid under correlation (conservative), not liberal.
 
 Usage:
-    venv/bin/python -m scripts.clean_label_training_ab \\
+    venv/bin/python -m scripts.archive.clean_label_training_ab \\
         --frame-cache /tmp/skvr_frame.parquet \\
         --metadata-parquet ../price-archive/item-metadata-bymykel.parquet \\
         --out /tmp/clean_label_ab.json
@@ -45,13 +45,12 @@ import pandas as pd
 from api.serving_policy import MIN_SERVED_PRICE_USD
 from database import SessionLocal
 from models.forecaster import ItemForecaster
-
 from scripts.archive.ab_test_item_metadata import (
     assign_items,
     build_frame,
 )
+from scripts.archive.exceedance_meta_ab import paired_fold_deltas
 from scripts.archive.shrink_k_vol_rank_ab import _lookup, matched_width
-from scripts.exceedance_meta_ab import paired_fold_deltas
 
 logging.basicConfig(
     level=logging.INFO,

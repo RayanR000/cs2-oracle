@@ -57,8 +57,8 @@ DB: one read-only session for events metadata only (the frame builder
 requires it). The session is fenced `SET TRANSACTION READ ONLY`, so an
 accidental write raises instead of landing in prod.
 
-    venv/bin/python -m scripts.confirm_mondrian_oof --horizons 7,14
-    venv/bin/python -m scripts.confirm_mondrian_oof --phase score --horizons 7,14
+    venv/bin/python -m scripts.archive.confirm_mondrian_oof --horizons 7,14
+    venv/bin/python -m scripts.archive.confirm_mondrian_oof --phase score --horizons 7,14
 """
 
 from __future__ import annotations
@@ -76,7 +76,6 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from models import conformal
 from models.forecaster import ItemForecaster, embargo_days
-
 from scripts.archive.measure_qhat_bagging_mondrian import (
     CalibPanel,
     evaluate,

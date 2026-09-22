@@ -14,7 +14,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from scripts.exceedance_meta_ab import _score, paired_fold_deltas
+from scripts.archive.exceedance_meta_ab import _score, paired_fold_deltas
 
 
 def _folds(**by_fold):
@@ -104,11 +104,11 @@ class TestFoldTally:
     """
 
     def test_auc_counts_positive_folds(self):
-        from scripts.exceedance_meta_ab import fold_tally
+        from scripts.archive.exceedance_meta_ab import fold_tally
 
         assert fold_tally("heldout_auc", {"wins": 20, "n_folds": 26}) == "better 20/26"
 
     def test_logloss_counts_negative_folds(self):
-        from scripts.exceedance_meta_ab import fold_tally
+        from scripts.archive.exceedance_meta_ab import fold_tally
 
         assert fold_tally("heldout_logloss", {"wins": 4, "n_folds": 26}) == "better 22/26"

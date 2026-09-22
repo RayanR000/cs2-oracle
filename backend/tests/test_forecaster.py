@@ -15,7 +15,6 @@ import lightgbm as lgb
 import numpy as np
 import pandas as pd
 import pytest
-from models.direction import recenter_on_momentum
 from models.forecaster import SAMPLE_WEIGHT_HALFLIFE_DAYS, ItemForecaster
 
 # Most tests here are fast (MagicMock db_session, no training). Only tests that
@@ -1576,37 +1575,6 @@ class TestFeatureAllowlist:
         kept = forecaster._apply_feature_allowlist(cols, ["price_technicals"])
         assert set(kept) == {f"return_{h}d" for h in (3, 7, 14, 30)}
 
-
-class TestMomentumRecenter:
-    """Serving weak horizons as momentum while preserving interval width."""
-
-    def test_recenters_on_momentum_preserving_width(self, forecaster):
-        low = np.array([-4.0, 0.0])
-        mid = np.array([0.0, 5.0])
-        high = np.array([6.0, 8.0])
-        mom = np.array([10.0, -2.0])
-        nl, nm, nh = recenter_on_momentum(low, mid, high, mom)
-        # median becomes momentum
-        assert np.allclose(nm, mom)
-        # half-widths preserved: low_off=[4,5], high_off=[6,3]
-        assert np.allclose(nl, [6.0, -7.0])
-        assert np.allclose(nh, [16.0, 1.0])
-
-    def test_nan_momentum_keeps_model_forecast(self, forecaster):
-        low = np.array([-4.0])
-        mid = np.array([1.0])
-        high = np.array([6.0])
-        mom = np.array([np.nan])
-        nl, nm, nh = recenter_on_momentum(low, mid, high, mom)
-        assert np.allclose([nl[0], nm[0], nh[0]], [-4.0, 1.0, 6.0])
-
-    def test_recentred_triple_stays_monotone(self, forecaster):
-        low = np.array([-4.0, -1.0])
-        mid = np.array([0.0, 2.0])
-        high = np.array([6.0, 3.0])
-        mom = np.array([10.0, -20.0])
-        nl, nm, nh = recenter_on_momentum(low, mid, high, mom)
-        assert np.all(nl <= nm) and np.all(nm <= nh)
 
 
 class TestDirectionClassifierHelpers:

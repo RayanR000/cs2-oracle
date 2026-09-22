@@ -53,9 +53,9 @@ An arm earns a production follow-up only with a negative 95% interval on
 nothing itself.
 
 Usage:
-    python -m scripts.anomaly_band_modulator_ab --horizon 7 \\
+    python -m scripts.archive.anomaly_band_modulator_ab --horizon 7 \\
         --frame-cache /tmp/exc_meta_frame.parquet --out /tmp/anom_mod_h7.json
-    python -m scripts.anomaly_band_modulator_ab --max-folds 2  # recent folds only
+    python -m scripts.archive.anomaly_band_modulator_ab --max-folds 2  # recent folds only
 """
 
 import json
@@ -71,7 +71,6 @@ import pandas as pd
 from api.serving_policy import MIN_SERVED_PRICE_USD
 from database import SessionLocal
 from models.forecaster import ItemForecaster
-
 from scripts.archive.ab_test_item_metadata import (
     ROW_BUDGET,
     STEP_DAYS,
@@ -80,12 +79,12 @@ from scripts.archive.ab_test_item_metadata import (
     assign_items,
     build_frame,
 )
-from scripts.archive.shrink_k_vol_rank_ab import matched_width
-from scripts.exceedance_meta_ab import (
+from scripts.archive.exceedance_meta_ab import (
     TREE_PARAMS,
     _score,
     paired_fold_deltas,
 )
+from scripts.archive.shrink_k_vol_rank_ab import matched_width
 
 logging.basicConfig(
     level=logging.INFO,

@@ -16,7 +16,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from scripts.ingest_bymykel_metadata import (
+from scripts.archive.ingest_bymykel_metadata import (
     CodeBook,
     _earliest,
     build_crate_index,

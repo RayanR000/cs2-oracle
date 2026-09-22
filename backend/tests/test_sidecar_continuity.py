@@ -11,7 +11,7 @@ import pandas as pd
 BACKEND = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(BACKEND))
 
-from scripts.check_sidecar_continuity import audit  # noqa: E402
+from scripts.archive.check_sidecar_continuity import audit  # noqa: E402
 
 
 def _supply_day(tmp_path: Path, day: date, n: int = 3):

@@ -1,6 +1,6 @@
 """Read two `model-diagnostics.yml` runs as one paired table.
 
-    python -m scripts.compare_diagnostics --control 31547391395 --arm 31547400215
+    python -m scripts.archive.compare_diagnostics --control 31547391395 --arm 31547400215
 
 Downloads both runs' `diagnostics-{h}d` artifacts with `gh` and prints the two
 numbers an arm is decided on:
