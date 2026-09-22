@@ -1,7 +1,7 @@
 # Pre-registration: time-adaptive conformal (ACI) vs pooled and rolling q_hat
 
 **Date:** 2026-09-22, written **before any ACI number is computed.**
-**Status:** PROPOSED. Instrument: `backend/scripts/archive/measure_aci.py` (+ `tests/test_measure_aci.py`).
+**Status:** RUN 2026-09-22 — REFUTED (see `changelog/2026-09-22-aci-band-refuted.md`). Instrument: `backend/scripts/archive/measure_aci.py` (+ `tests/test_measure_aci.py`).
 **Follows:** `research/2026-08-09-model-and-data-research.md` §ACI ("ACI is the right
 drift answer"), `research/2026-08-19-deep-model-review.md` item 14 (ACI/DtACI as the
 upgrade to the batch served-feedback scalar, h=3/7 only),
