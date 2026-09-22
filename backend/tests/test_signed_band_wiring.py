@@ -8,11 +8,12 @@ without the pair byte-identical to the old band. They do not run a full train (~
 
 from __future__ import annotations
 
-import inspect
 from unittest.mock import MagicMock
 
 import numpy as np
 from models.forecaster import ItemForecaster
+
+from tests._source import method_closure_source
 
 
 def _forecaster(tmp_path):
@@ -71,6 +72,6 @@ def test_signed_pair_round_trips_through_save_and_load(tmp_path):
 def test_predict_serves_the_signed_band_and_no_longer_recentres_on_direction():
     """The range stance: the served interval comes from the signed pair, and the
     3-class classifier no longer moves the mid after calibration."""
-    src = inspect.getsource(ItemForecaster.predict)
+    src = method_closure_source(ItemForecaster, "predict")
     assert "band_signed(" in src
     assert "self._recenter_on_direction(" not in src

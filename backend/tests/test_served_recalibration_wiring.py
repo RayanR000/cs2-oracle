@@ -22,6 +22,8 @@ from models.served_recalibration import (
     served_coverage_factors,
 )
 
+from tests._source import method_closure_source
+
 
 def _f(tmp_path):
     return ItemForecaster(db_session=MagicMock(), model_dir=str(tmp_path))
@@ -78,7 +80,7 @@ def test_artifact_without_the_key_loads_as_no_op(tmp_path):
 
 
 def test_predict_scales_qhat_by_the_multiplier(_stub=None):
-    src = inspect.getsource(ItemForecaster.predict)
+    src = method_closure_source(ItemForecaster, "predict")
     assert "served_qhat_multiplier(" in src
 
 

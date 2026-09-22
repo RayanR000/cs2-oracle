@@ -29,6 +29,8 @@ import pytest
 from models import conformal
 from models.forecaster import ItemForecaster
 
+from tests._source import method_closure_source
+
 
 def _planted(n=40_000, beta=0.4, seed=0):
     """Residuals whose elasticity to sigma is `beta` by construction."""
@@ -145,10 +147,10 @@ def test_the_audit_reaches_meta_json_and_never_the_band():
     one was standing in for: the AUDIT still cannot move the band, and the band's
     default exponent is still the neutral one.
     """
-    train = inspect.getsource(ItemForecaster._train_horizon_inline)
+    train = method_closure_source(ItemForecaster, "_train_horizon_inline")
     assert '"sigma_tilt": sigma_tilt' in train
 
-    predict = inspect.getsource(ItemForecaster.predict)
+    predict = method_closure_source(ItemForecaster, "predict")
     assert "sigma_tilt" not in predict
     assert "elasticity" not in predict
 

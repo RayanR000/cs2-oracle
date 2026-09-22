@@ -22,6 +22,8 @@ import numpy as np
 import pandas as pd
 from models.forecaster import ItemForecaster
 
+from tests._source import method_closure_source
+
 
 def _forecaster(tmp_path):
     return ItemForecaster(db_session=MagicMock(), model_dir=str(tmp_path))
@@ -105,7 +107,7 @@ def test_band_scale_reuses_exceedance_probability(tmp_path):
 def test_training_fits_head_under_head_flag_without_scale():
     """The production head must train when EXCEEDANCE_HEAD is set even if the band
     uses another scale — otherwise no artifact carries a head to serve exceed_p from."""
-    src = inspect.getsource(ItemForecaster._train_horizon_inline)
+    src = method_closure_source(ItemForecaster, "_train_horizon_inline")
     assert "exceedance_head_enabled" in src
 
 
@@ -113,6 +115,6 @@ def test_training_fits_head_under_head_flag_without_scale():
 
 
 def test_predict_emits_exceed_p_on_forecast_record():
-    src = inspect.getsource(ItemForecaster.predict)
+    src = method_closure_source(ItemForecaster, "predict")
     assert "exceedance_probability(" in src
     assert '"exceed_p"' in src

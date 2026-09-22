@@ -14,6 +14,8 @@ import pandas as pd
 import pytest
 from models.forecaster import ItemForecaster
 
+from tests._source import method_closure_source
+
 
 def _frame(anchor="2026-08-04", lags=(0, 0, 1, 5)):
     """One item per lag, each with three observations ending `lag` days back."""
@@ -95,9 +97,8 @@ def test_the_audit_runs_before_the_base_is_overwritten():
     the property, and a mock would pass against a call site that no longer
     exists.
     """
-    import inspect
 
-    src = inspect.getsource(ItemForecaster.predict)
+    src = method_closure_source(ItemForecaster, "predict")
     audit = src.index("_audit_serving_anchor(df")
     overwrite = src.index('latest_rows["price"], outlier_mask = self._serving_base_price')
     assert audit < overwrite

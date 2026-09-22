@@ -44,6 +44,8 @@ from scripts.replay_serving import (
     sigma_tilt_pp,
 )
 
+from tests._source import method_closure_source
+
 
 def _fc():
     return ItemForecaster.__new__(ItemForecaster)
@@ -159,9 +161,8 @@ def test_the_band_is_not_disablable():
 def test_each_transform_is_actually_guarded():
     """The knob has to reach both call sites, not just parse. `recenter` was
     retired 2026-08-19 when `_recenter_on_direction` left the serving path."""
-    import inspect
 
-    src = inspect.getsource(ItemForecaster.predict)
+    src = method_closure_source(ItemForecaster, "predict")
     assert '"blend" not in _disabled' in src
     assert '"bias" in _disabled' in src
     assert '"recenter"' not in src

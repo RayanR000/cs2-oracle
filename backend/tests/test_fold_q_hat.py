@@ -93,21 +93,23 @@ def test_fold_q_hat_is_reported_per_fold():
 def test_fold_q_hat_never_builds_a_band():
     """It is a diagnostic. `predict` reads `conformal_calibration`, and a fold
     number reaching the served band would be a silent scheme change."""
-    import inspect
 
     from models.forecaster import ItemForecaster
 
-    assert "fold_q_hat" not in inspect.getsource(ItemForecaster.predict)
+    from tests._source import method_closure_source
+
+    assert "fold_q_hat" not in method_closure_source(ItemForecaster, "predict")
 
 
 def test_the_audit_is_reported_as_a_summary_not_only_per_fold():
     """Nine folds x four horizons is 36 log lines. The verdict has to be one
     grep and one `meta.json` key, or the dispatch gets read by eye."""
-    import inspect
 
     from models.forecaster import ItemForecaster
 
-    source = inspect.getsource(ItemForecaster._train_horizon_inline)
+    from tests._source import method_closure_source
+
+    source = method_closure_source(ItemForecaster, "_train_horizon_inline")
     assert '"q_hat_trend": q_hat_trend' in source
     assert "spearman_n_train_vs_q_hat" in source
     assert "pooled_over_last_fold" in source
@@ -124,11 +126,12 @@ def test_the_screens_own_limitation_is_recorded_beside_it():
     evidence against the expanding-window hypothesis — it is a measurement with
     nothing to measure over. Anything that reports the rho must report the range
     too, or the next reader takes a null at face value."""
-    import inspect
 
     from models.forecaster import ItemForecaster
 
-    source = inspect.getsource(ItemForecaster._train_horizon_inline)
+    from tests._source import method_closure_source
+
+    source = method_closure_source(ItemForecaster, "_train_horizon_inline")
     assert "NOT a null" in source
     assert "CV_MAX_TRAIN_ROWS" in source
 
