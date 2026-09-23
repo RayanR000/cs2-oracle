@@ -9,6 +9,7 @@ metadata, so a column that does not exist on the table fails here instead of sil
 
 import datetime as dt
 
+import numpy as np
 import pytest
 from backtest.scoring import HEADLINE_MIN_TIER
 from database import Base, ForecastOutcome
@@ -83,3 +84,67 @@ def test_empty_panel_still_carries_the_derived_column(session):
 
     assert panel.empty
     assert list(panel.columns) == list(PANEL_COLUMNS)
+
+
+# --- band_multiplier: the multiplier each row was SERVED at, joined from item_forecasts ------
+
+
+def _forecast(session, fid, *, fd, mult, h=7):
+    from database import ItemForecast
+
+    session.add(
+        ItemForecast(
+            id=fid,
+            item_id=1,
+            forecast_date=fd,
+            horizon_days=h,
+            price_low=9.0,
+            price_mid=10.0,
+            price_high=11.0,
+            current_price=10.0,
+            band_multiplier=mult,
+        )
+    )
+
+
+def test_band_multiplier_is_joined_from_the_served_forecast(session):
+    _forecast(session, 1, fd=dt.date(2026, 9, 21), mult=0.5385)
+    session.add(_outcome(forecast_id=1, forecast_date=dt.date(2026, 9, 21)))
+    session.commit()
+
+    assert _load_panel(session, [7])["band_multiplier"].iloc[0] == pytest.approx(0.5385)
+
+
+def test_unrecorded_multiplier_is_one_before_first_activation_and_unknown_after(session):
+    _forecast(session, 1, fd=dt.date(2026, 9, 10), mult=None)
+    _forecast(session, 2, fd=dt.date(2026, 9, 21), mult=None)
+    session.add(_outcome(forecast_id=1, forecast_date=dt.date(2026, 9, 10)))
+    session.add(_outcome(forecast_id=2, forecast_date=dt.date(2026, 9, 21)))
+    session.commit()
+
+    m = _load_panel(session, [7]).sort_values("forecast_date")["band_multiplier"].to_numpy()
+    assert m[0] == 1.0
+    assert np.isnan(m[1])
+
+
+def test_outcome_whose_forecast_row_is_gone_is_treated_as_unrecorded(session):
+    session.add(_outcome(forecast_id=999, forecast_date=dt.date(2026, 9, 21)))
+    session.commit()
+
+    assert np.isnan(_load_panel(session, [7])["band_multiplier"].iloc[0])
+
+
+def test_missing_column_degrades_to_unrecorded_rather_than_failing_the_read(session):
+    # The prod migration may lag the code. A failed read returns {} -> multiplier 1.0 -> the
+    # band snaps to full width, the exact failure class of the 2026-08-18 UndefinedColumn bug.
+    from sqlalchemy import text
+
+    session.add(_outcome(forecast_id=1, forecast_date=dt.date(2026, 9, 10)))
+    session.add(_outcome(forecast_id=2, forecast_date=dt.date(2026, 9, 21)))
+    session.commit()
+    session.execute(text("ALTER TABLE item_forecasts DROP COLUMN band_multiplier"))
+    session.commit()
+
+    m = _load_panel(session, [7]).sort_values("forecast_date")["band_multiplier"].to_numpy()
+    assert m[0] == 1.0
+    assert np.isnan(m[1])

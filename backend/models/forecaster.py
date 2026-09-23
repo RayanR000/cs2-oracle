@@ -12,9 +12,9 @@ import logging
 import os
 import sys
 import time
+from dataclasses import dataclass, field
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
-from dataclasses import dataclass, field
 from typing import Any, ClassVar
 
 import lightgbm as lgb
@@ -33,6 +33,7 @@ from backtest.directional_test import (
 from backtest.friction import actionable_threshold
 from backtest.price_resolution import MAX_WINDOW_SPAN_DAYS, SMOOTH_WINDOW
 from backtest.scoring import HEADLINE_MIN_TIER, MIN_HEADLINE_DATES, price_tier
+from scipy.stats import spearmanr
 from sqlalchemy import text
 
 from models import conformal, mlflow_utils, served_recalibration
@@ -55,7 +56,6 @@ from models.item_parser import (
 # (a ruff --fix removed the bare name in 76e462a and broke test collection).
 from models.item_parser import is_phase_collapsed as is_phase_collapsed
 from models.staleness import stale_run_days
-from scipy.stats import spearmanr
 
 logger = logging.getLogger(__name__)
 
@@ -7190,7 +7190,7 @@ class ItemForecaster:
             )
 
             (
-                oof_records, cv_metrics, q_hat, out_of_sample,
+                _oof_records, cv_metrics, q_hat, out_of_sample,
                 calibration_source, records_df, exceed_cal_report,
                 sigma_tilt, q_hat_trend, pt_records, pt_records_clf,
             ) = self._cv_and_calibrate(
@@ -7439,6 +7439,24 @@ class ItemForecaster:
         low_ret_arr = np.where(mask, (1 - weight) * low_ret_arr + weight * prior["low_ret"], low_ret_arr)
         high_ret_arr = np.where(mask, (1 - weight) * high_ret_arr + weight * prior["high_ret"], high_ret_arr)
         return low_ret_arr, mid_ret_arr, high_ret_arr
+
+    @staticmethod
+    def _blended_band_multiplier(mult, prior, weight) -> np.ndarray:
+        """The served-coverage multiplier each row's band is effectively served at after
+        `_blend_returns_with_prior`: `(1 - weight) * mult + weight * prior_mult` where the row
+        blended, `mult` where it did not.
+
+        An unknown prior multiplier (NaN: a pre-column row served after the feedback first
+        activated) is read as `mult`. NaN would be exact but would propagate to every later
+        day through the blend chain; `mult` is off by at most `weight * |mult - prior_mult|`,
+        and only on the first day after a factor change."""
+        mask = prior["mask"]
+        out = np.full(len(mask), float(mult))
+        if not mask.any() or weight <= 0:
+            return out
+        pm = np.asarray(prior.get("band_mult", np.full(len(mask), np.nan)), dtype=float)
+        pm = np.where(np.isfinite(pm), pm, float(mult))
+        return np.where(mask, (1 - weight) * float(mult) + weight * pm, out)
 
     @staticmethod
     def _direction_records(pred_returns, actual_returns, dates) -> list:
@@ -9486,6 +9504,21 @@ class ItemForecaster:
             fallback=self.sigma_clip["fallback"],
         )
 
+    def _item_forecasts_has_band_multiplier(self) -> bool:
+        """Whether item_forecasts has migration 0028's column. Probed once per instance; a
+        failed probe reads as absent, which only costs the prior row's multiplier."""
+        cached = getattr(self, "_band_mult_col", None)
+        if cached is None:
+            try:
+                from sqlalchemy import inspect as sa_inspect
+
+                cols = sa_inspect(self.db.get_bind()).get_columns("item_forecasts")
+                cached = "band_multiplier" in {c["name"] for c in cols}
+            except Exception:
+                cached = False
+            self._band_mult_col = cached
+        return cached
+
     def _fetch_prior_forecasts(self, item_ids: np.ndarray, horizon: int) -> dict[str, np.ndarray]:
         """Fetch the most recent prior-day forecast per item for blending.
 
@@ -9498,6 +9531,7 @@ class ItemForecaster:
             "low_ret": np.full(len(item_ids), np.nan),
             "mid_ret": np.full(len(item_ids), np.nan),
             "high_ret": np.full(len(item_ids), np.nan),
+            "band_mult": np.full(len(item_ids), np.nan),
         }
         if self.db is None:
             return result
@@ -9505,10 +9539,13 @@ class ItemForecaster:
         # before the ANCHOR. Reading real forecasts dated after it would blend
         # the future into a backdated prediction.
         today = self._now().date()
+        # Probed, not assumed: selecting a column the table lacks (migration 0028
+        # not yet applied) would fail the fetch and silently skip the blend.
+        mult_sql = "band_multiplier" if self._item_forecasts_has_band_multiplier() else "NULL AS band_multiplier"
         try:
             rows = self.db.execute(
-                text("""
-                SELECT item_id, price_low, price_mid, price_high, current_price, forecast_date
+                text(f"""
+                SELECT item_id, price_low, price_mid, price_high, current_price, forecast_date, {mult_sql}
                 FROM item_forecasts
                 WHERE horizon_days = :h AND forecast_date < :today
             """),
@@ -9525,7 +9562,7 @@ class ItemForecaster:
         for r in rows:
             iid = int(r.item_id)
             if iid not in best or r.forecast_date > best[iid][4]:
-                best[iid] = (r.price_low, r.price_mid, r.price_high, r.current_price, r.forecast_date)
+                best[iid] = (r.price_low, r.price_mid, r.price_high, r.current_price, r.forecast_date, r.band_multiplier)
 
         # Map Parquet string slugs → integer DB IDs
         try:
@@ -9543,10 +9580,11 @@ class ItemForecaster:
             idx = id_to_idx.get(iid)
             if idx is None:
                 continue
-            low, mid, high, cur, _ = vals
+            low, mid, high, cur, prior_fd, prior_mult = vals
             if not cur or cur <= 0 or mid is None:
                 continue
             result["mask"][idx] = True
+            result["band_mult"][idx] = served_recalibration.resolve_band_multiplier(prior_fd, prior_mult)
             cur_f = float(cur)
             result["mid_ret"][idx] = (float(mid) / cur_f - 1.0) * 100.0
             result["low_ret"][idx] = (float(low) / cur_f - 1.0) * 100.0 if low is not None else result["mid_ret"][idx]
@@ -10211,11 +10249,16 @@ class ItemForecaster:
                 f"  REPLAY_DISABLE={sorted(_disabled)}: serving transforms "
                 f"skipped. This is an attribution replay, not a forecast."
             )
+        # The multiplier each row is SERVED at, recorded so the feedback refit can score it
+        # against the base band. The blend below mixes in the prior day's band, which was
+        # served at the prior row's multiplier, so a transition day records the blend.
+        band_mult_arr = np.full(len(ctx.item_id_arr), float(mult))
         if "blend" not in _disabled:
             prior = self._fetch_prior_forecasts(ctx.item_id_arr, horizon)
             low_ret_arr, mid_ret_arr, high_ret_arr = self._blend_returns_with_prior(
                 low_ret_arr, mid_ret_arr, high_ret_arr, prior, self.FORECAST_BLEND_WEIGHT
             )
+            band_mult_arr = self._blended_band_multiplier(mult, prior, self.FORECAST_BLEND_WEIGHT)
 
         # Per-tier bias correction: threshold-based approach (preferred).
         # Recalibrates classification boundaries to match the true outcome
@@ -10301,6 +10344,7 @@ class ItemForecaster:
                 "exceed_p": (float(exceed_p_arr[i]) if exceed_p_arr is not None else None),
                 "anomaly_p": (float(anomaly_p_arr[i]) if anomaly_p_arr is not None else None),
                 "rank_score": (float(rank_score_arr[i]) if rank_score_arr is not None else None),
+                "band_multiplier": float(band_mult_arr[i]),
             }
 
         self._warn_no_classifier(horizon, fallback_n, fallback_flat)
