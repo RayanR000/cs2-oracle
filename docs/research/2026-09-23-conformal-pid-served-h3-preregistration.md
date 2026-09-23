@@ -61,7 +61,7 @@ when the base width `B` did not move since the prior row. The error is at most a
 `0.15·m_prior·|B_prior/B_today − 1|` per row, and it is largest on the first predict after
 a retrain. The validity check below is what bounds it.
 
-**Replay validity check (void if it fails):** on the 09-17+ dates, the replay's coverage at
+**Replay validity check (void if it fails; SUPERSEDED by Amendment A1):** on the 09-17+ dates, the replay's coverage at
 the recorded multiplier must reproduce observed served coverage to within 0.5pp per date.
 
 ## Population
@@ -122,7 +122,7 @@ regime switches before it touches the served panel.
 - **Primary:** the mean over dates of `|cov_t − 0.80|` (date-dimension error), in pp.
 - **P10 date coverage:** the volatile-date tail.
 - Marginal coverage `M1`, mean multiplier (width proxy), and number of clamp hits.
-- The per-sigma-decile coverage profile, pooled over the window.
+- The per-sigma-decile coverage profile, pooled over the window (deciles defined by Amendment A2).
 
 Inference is date-level. Resample dates in a paired bootstrap (10,000 draws, seed 0) for
 QI − B on the primary metric. Report `n_dates` and the CI on every figure.
@@ -136,7 +136,7 @@ QI **passes** only if all of the following hold:
    below P_QI.
 3. P10 date coverage is ≥ B + 3pp.
 4. Mean multiplier is ≤ 1.05 × B's.
-5. No sigma decile covers more than 5pp below B's coverage in the same decile. This is
+5. No sigma decile (Amendment A2) covers more than 5pp below B's coverage in the same decile. This is
    relative to the incumbent, which corrects the absolute-70% flaw in the ACI prereg.
 
 **Void, not null:**
@@ -160,3 +160,39 @@ and do not call it refuted (`ab-family-was-never-powered`).
 
 An offline or replay pass is still a replay. This repo's pattern is CV-positive and
 serving-negative (`AGENTS.md`), and the flag's first live weeks are the actual confirm.
+
+## Amendments
+
+**2026-09-23, written while building the instrument and before any read of served data.**
+No served outcome, per-date coverage or arm number was computed for any of these.
+Everything was checked on synthetic panels only.
+
+- **A1: the replay validity check is replaced.** As written it cannot fail. The feedback
+  factor's predicate is the dollar band against `actual_price`, and `r_base ≤ m_row` is
+  algebraically the same statement as the stored band containing the actual, so "replay
+  reproduces observed coverage" holds by construction and bounds nothing. It is replaced by
+  a **blend-sensitivity check**. Every row's `r_base` is moved by its blend bound
+  `δ = 0.15 · m_prior · |B_prior / B_today − 1| / m_row`, where `B = half-width / mid / m`
+  comes from the item's latest prior `item_forecasts` row. The whole evaluation is re-run
+  at `r_base·(1 + δ)` and at `r_base·(1 − δ)`. **Void** if QI's verdict differs under
+  either one.
+- **A2: "sigma decile" means the base relative half-width decile.** The served panel
+  stores no sigma. The served scale is `(high − low) / 2 / mid / m_row`, the band's own
+  width with the multiplier removed. Decile edges are pooled over the window, and the same
+  edges are used for every arm.
+- **A3: resolution timing.** A forecast date's outcomes inform serve dates from
+  `target + 1 day` onward (`RESOLUTION_LAG_DAYS = 1`), which is the measured resolution lag.
+  `resolved_at` is not used, because re-resolution runs rewrite it after the fact.
+- **A4: the coverage predicate is the factor's own.** Coverage is the dollar-band test
+  (`r_base ≤ m`), the one `factors_from_panel` calibrates. The rebased `in_interval` that
+  the published headline uses is not substituted for it.
+- **A5: clamp semantics.** Each online arm's *served* value is clipped to [0.5, 2.0]. Its
+  internal state evolves unclipped, as in the reference. Clamp hits are counted per arm.
+- **A6: the Q row of the outcome table** means Q judged against the same bar (1)–(5),
+  including its own paired bootstrap against B.
+
+**Instrument:** `backend/scripts/measure_conformal_pid.py`. It refuses to read prod
+before 2026-10-23. Its 21 synthetic tests are in
+`backend/tests/test_measure_conformal_pid.py`, and a mutation check caught 11 of 11
+deliberate logic breaks.
+
