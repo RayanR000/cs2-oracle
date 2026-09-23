@@ -1,7 +1,7 @@
 # Market-relative labels are refuted — with the market factor removed, the classifier lands below a constant call
 
 **Date:** 2026-08-06
-**Spec:** `docs/superpowers/specs/2026-08-06-market-relative-labels-design.md`
+**Spec:** `docs/specs/2026-08-06-market-relative-labels-design.md`
 (pre-registered in `bc550e0`, before any arm ran)
 **Instrument:** `docs/changelog/2026-08-06-market-relative-labels-instrument.md`
 **Commits:** `444268f` (`market_factor.py`, the driver, the tests), `9a5564b` (the
@@ -276,7 +276,7 @@ different run under a different configuration and does not describe this one.
 * `2026-08-06-market-relative-labels-instrument.md` — what was built, the two design
   decisions the diff does not explain, and the pre-registered rule as it stood before the
   run.
-* `docs/superpowers/specs/2026-08-06-market-relative-labels-design.md` — the design and the
+* `docs/specs/2026-08-06-market-relative-labels-design.md` — the design and the
   rule, now carrying the refutation in its Status block.
 * `2026-08-03-accuracy-is-clustered-by-forecast-date.md` — the finding this experiment acted
   on, and which this result now supplies a mechanism for.

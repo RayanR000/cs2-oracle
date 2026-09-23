@@ -1,6 +1,6 @@
 """The exceedance head is stored on the forecaster and persists across a warm reload.
 
-Task 1 of docs/superpowers/plans/2026-08-16-exceedance-band-scale-phase2-plan.md wires
+Task 1 of docs/plans/2026-08-16-exceedance-band-scale-phase2-plan.md wires
 `_fit_exceedance_classifier` into the training loop beside the direction head and saves the
 boosters beside `clf_{h}d.txt`. A warm retrain restores the artifact, so the head Phase 2's
 band scale reads must survive save/load — a served scale calibrated against a head the reload

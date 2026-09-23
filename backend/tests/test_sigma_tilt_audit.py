@@ -142,7 +142,7 @@ def test_the_audit_reaches_meta_json_and_never_the_band():
     ⚠️ UPDATED 2026-08-12. This test used to assert that `conformal.band` still
     divided by `sigma ** 1` literally, because at the time the exponent was
     measured but deliberately not implemented. It IS implemented now
-    (`SIGMA_EXPONENT`, `docs/superpowers/specs/2026-08-12-sigma-exponent-design.md`),
+    (`SIGMA_EXPONENT`, `docs/specs/2026-08-12-sigma-exponent-design.md`),
     so the assertion moves to the invariant that actually matters and that the old
     one was standing in for: the AUDIT still cannot move the band, and the band's
     default exponent is still the neutral one.

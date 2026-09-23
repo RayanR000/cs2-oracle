@@ -1,6 +1,6 @@
 """The band divides by `sigma ** beta`, and `q_hat` is meaningless without it.
 
-Spec: `docs/superpowers/specs/2026-08-12-sigma-exponent-design.md`.
+Spec: `docs/specs/2026-08-12-sigma-exponent-design.md`.
 Evidence: `changelog/2026-08-12-the-sigma-scale-is-one-exponent-per-horizon.md`.
 
 The defect: `conformal.calibrate` assumes `d log|resid| / d log sigma == 1`, and

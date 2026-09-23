@@ -24,7 +24,7 @@ paths:
   labels and ~0.6% of pre-2024 ones, and it takes **13.7–15.9% of *non-zero* ≥$1 labels** with
   it — it can be net-harmful, which is why `scripts/ab_test_frozen_runs.py` verifies it on
   paired interval **width**, not on a point estimate. See
-  `docs/superpowers/specs/2026-08-08-frozen-price-runs-design.md`.
+  `docs/specs/2026-08-08-frozen-price-runs-design.md`.
 - **The label's denominator is the RAW anchor quote, and that is a measured defect.**
   `prepare_targets` divides by the price observed on the anchor day; `predict` quotes
   against `_smoothed_anchor_prices`' span-bounded median. The same raw quote drives
@@ -88,7 +88,7 @@ paths:
   `conformal_beta` in `meta.json` (missing means 1.0). The per-fold `q_hat` stays at β = 1.0 on
   purpose; `fold_beta` is the new per-fold field.
   `docs/changelog/2026-08-12-sigma-exponent-implemented.md`,
-  `docs/superpowers/specs/2026-08-12-sigma-exponent-design.md`.
+  `docs/specs/2026-08-12-sigma-exponent-design.md`.
 - **The wedge `p[d]/S[d]` is also attackable in the SERVING basis, and that arm is
   `SERVE_OUTLIER_GATED_ANCHOR=1`.** `predict` detects items whose latest quote deviates >10%
   from their local median, logs `using smoothed price` — and then substitutes the median for
@@ -108,7 +108,7 @@ paths:
   mask is **arm-invariant** by construction, so both dispatches size the same cohort; and it
   **must be read on `replay_serving.py`'s DOLLAR ERROR table, deviating row** — rank IC divides
   both legs by the served quote this arm moves, and on the tied cohort both arms serve an
-  identical price. `docs/superpowers/plans/2026-08-11-serving-anchor-freshness.md`.
+  identical price. `docs/plans/2026-08-11-serving-anchor-freshness.md`.
 - **The embargo is `horizon + 13`, not `horizon`.** `models/forecaster.py::embargo_days`
   derives the 13 at call time from `LAG_TOLERANCE_DAYS` (3) + `SMOOTH_WINDOW` (3) +
   `MAX_WINDOW_SPAN_DAYS` (7): the label at `d + horizon` is a **resolved anchor**, not a

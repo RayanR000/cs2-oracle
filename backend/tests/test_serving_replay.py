@@ -315,7 +315,7 @@ def test_a_replay_ignores_the_engineered_cache():
 # main loop divides both the prediction and the realised outcome by the served
 # `current_price` -- so an arm that moves the serving anchor moves the referee
 # with it, and a rank IC compared across arms measures nothing. These tests fix
-# the referee in place. See docs/superpowers/plans/2026-08-11-serving-anchor-freshness.md.
+# the referee in place. See docs/plans/2026-08-11-serving-anchor-freshness.md.
 # ---------------------------------------------------------------------------
 
 
@@ -489,7 +489,7 @@ def test_a_divergence_between_the_pin_and_production_is_reported(monkeypatch, ca
 # `current_price`, so the arm moves the label and the prediction together. The
 # gate is the median absolute dollar error over the DEVIATING cohort, which is
 # basis-free because its denominator is the realised price -- a quantity no arm
-# touches. See docs/superpowers/plans/2026-08-11-serving-anchor-freshness.md.
+# touches. See docs/plans/2026-08-11-serving-anchor-freshness.md.
 # ---------------------------------------------------------------------------
 
 

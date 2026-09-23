@@ -553,7 +553,7 @@ Order matters and is asserted by tests:
 > band's skew now comes from the signed conformal offsets, calibrated on the q50 residual itself.
 > The classifier's call still populates the `direction` / `confidence` fields; it no longer moves
 > the price. `_recenter_on_direction()` (see `_recenter_on_direction`) survives for the CV diagnostic.
-> `docs/superpowers/specs/2026-08-19-signed-conformal-quantile-design.md`.
+> `docs/specs/2026-08-19-signed-conformal-quantile-design.md`.
 
 > ⚠️ **The no-classifier fallback branch is a live hazard, measured 2026-08-11.** When
 > `self.direction_models` has no entry for a horizon, `predict()`'s `else` branch derives direction from `mid_ret` against `t_down` / `t_up`, **defaulting to

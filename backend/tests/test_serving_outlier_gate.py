@@ -11,7 +11,7 @@ every served item rather than the spiky ones.
 That wedge is what contaminates both label bases in opposite directions
 (`docs/changelog/2026-08-11-smoothed-anchor-label-measured.md`), which is why
 the arm attacks it at source in the serving basis instead of in the label.
-Arm A of `docs/superpowers/plans/2026-08-11-serving-anchor-freshness.md`: make
+Arm A of `docs/plans/2026-08-11-serving-anchor-freshness.md`: make
 the substitution conditional on the outlier test the comment already claims.
 """
 

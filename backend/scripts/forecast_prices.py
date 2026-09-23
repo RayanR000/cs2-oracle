@@ -70,7 +70,7 @@ DEFAULT_TRAIN_MIN_MEDIAN_PRICE = 1.0
 # TRAIN_FEATURE_ROWS/SKIP_CV rather than a flag, because this script parses
 # argv as a plain set. Raise it only against a measured gain in
 # mean_classifier_acc_ge1 — see
-# docs/superpowers/specs/2026-08-06-served-cohort-weighting-design.md.
+# docs/specs/2026-08-06-served-cohort-weighting-design.md.
 DEFAULT_SERVED_COHORT_SHARE = None
 
 
@@ -577,7 +577,7 @@ def run_forecast(
             # direction rather than model decay, and the retrain it used to
             # trigger cost a measured 465s of every 835s daily run while
             # making the workflow's Monday-only retrain design fiction.
-            # See docs/superpowers/specs/2026-08-04-remove-accidental-retrain-work-design.md
+            # See docs/specs/2026-08-04-remove-accidental-retrain-work-design.md
             allow_retrain = os.environ.get("ALLOW_DRIFT_RETRAIN") == "1"
             drifted_horizons = []
             for h in ItemForecaster.HORIZONS:

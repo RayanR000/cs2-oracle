@@ -1,8 +1,8 @@
 # A historical price importer is staged, not promoted — and the spec's basis premise was wrong
 
 **Date:** 2026-08-09
-**Spec:** `docs/superpowers/specs/2026-08-08-price-history-source-import-design.md`
-**Plan:** `docs/superpowers/plans/2026-08-08-price-history-source-import.md`
+**Spec:** `docs/specs/2026-08-08-price-history-source-import-design.md`
+**Plan:** `docs/plans/2026-08-08-price-history-source-import.md`
 **Ledger:** `.superpowers/sdd/2026-08-08-price-history-source-import/progress.md`
 **Commits:** `fb6d98c`, `a657db7`, `3355ae6`, `287b070`, `99636e9`, `68890d6`, `52f4b3b` (branch `feat/price-history-import`)
 **Suite:** 1,657 pass, no regressions; 44 new tests in `tests/test_price_history_import.py`

@@ -10,7 +10,7 @@ The probability is a MAGNITUDE signal, never a directional call (invariant 4).
 
 These guard: the flag, the flag-independent serving accessor, the training gate,
 that band_scale reuses the one accessor, and that predict emits the field. Scope:
-docs/superpowers/plans/2026-08-16-exceedance-band-scale-phase2-plan.md.
+docs/plans/2026-08-16-exceedance-band-scale-phase2-plan.md.
 """
 
 from __future__ import annotations

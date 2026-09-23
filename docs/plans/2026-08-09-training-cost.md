@@ -41,7 +41,7 @@
 
 **Tech Stack:** Python 3.13 local / 3.11 CI, LightGBM, Optuna, pandas, pytest. Run everything from `backend/` through `venv/bin/python`.
 
-**Spec:** `docs/superpowers/specs/2026-08-09-training-cost-design.md`
+**Spec:** `docs/specs/2026-08-09-training-cost-design.md`
 
 ## Global Constraints
 

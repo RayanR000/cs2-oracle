@@ -1,6 +1,6 @@
 """EXCEEDANCE_SCALE: the band divides by `sigma * sqrt(p_exceed)` instead of `sigma`.
 
-Task 2 of docs/superpowers/plans/2026-08-16-exceedance-band-scale-phase2-plan.md. The
+Task 2 of docs/plans/2026-08-16-exceedance-band-scale-phase2-plan.md. The
 exceedance probability is passed to conformal as a `learned_scale` array, so beta stays
 neutral (resolve_scale forbids a learned scale beside beta != 1) and q_hat is calibrated
 against the SAME scale it is served against — a matched pair, exactly like SIGMA_EXPONENT's

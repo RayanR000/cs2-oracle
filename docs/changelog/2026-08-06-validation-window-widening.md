@@ -83,7 +83,7 @@ fabricated-day shapes at all four horizons. Full suite 867 passed.
   (`2026-08-06-paired-retrain-measures-no-gain.md`). This fix does not claim
   accuracy; it removes a defect that made the production configuration differ
   from the one that was measured. Whether it moves the number is unmeasured.
-* **`docs/model-review-2026-08-06-plain-english.md` is still superseded** on both
+* **`docs/research/2026-08-06-model-review-plain-english.md` is still superseded** on both
   the "improvement is not proven" framing and the 20-minute estimate.
 * **Side effect 2 is not addressed:** voiding still costs a CV fold at 7d and
   14d, and shifts 3d's last fold window.

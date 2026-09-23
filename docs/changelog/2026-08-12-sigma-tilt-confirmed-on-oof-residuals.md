@@ -23,7 +23,7 @@
 > uses **43 independent refits** at production's cadence, on the model-free panel rather than real
 > OOF residuals. Neither is dominant on both axes, so "the remedy reaches only 3d and 7d" — including
 > this entry's title — should be treated as **unsettled until the paired dispatch**, not as the
-> finding. Design: `docs/superpowers/specs/2026-08-12-sigma-exponent-design.md`.
+> finding. Design: `docs/specs/2026-08-12-sigma-exponent-design.md`.
 
 **Date:** 2026-08-12
 **Run:** `31619383780` (control, `cv_diagnostic_classifier=q50`, all four horizons, commit `58c6cf9`)

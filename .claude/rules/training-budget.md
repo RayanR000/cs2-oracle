@@ -118,7 +118,7 @@ paths:
   measurement the dispute turns on. ✅ **BUILT, gated off as `SIGMA_EXPONENT=1`** with a
   `sigma_exponent` input on `model-diagnostics.yml`
   (`docs/changelog/2026-08-12-sigma-exponent-implemented.md`,
-  `docs/superpowers/specs/2026-08-12-sigma-exponent-design.md`). **Read this before touching it:
+  `docs/specs/2026-08-12-sigma-exponent-design.md`). **Read this before touching it:
   `q_hat` and `conformal_beta` are a MATCHED PAIR** — `sigma` is ~0.07 so `sigma ** 0.4` is ~5×
   larger and `q_hat` absorbs it, measured at **833.43 → 151.18 (5.5×)** between the arms. A `q_hat`
   served at the wrong exponent is wrong by that factor, not partially corrected, so: never difference

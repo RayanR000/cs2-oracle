@@ -12,7 +12,7 @@ history-only forecast, for rebuilding the absolute call). Pure functions over
 DataFrames: no DB, no I/O, no ItemForecaster internals, so the factor can be
 reasoned about and tested without loading a 5,600-line module.
 
-Design: docs/superpowers/specs/2026-08-06-market-relative-labels-design.md
+Design: docs/specs/2026-08-06-market-relative-labels-design.md
 """
 
 import logging

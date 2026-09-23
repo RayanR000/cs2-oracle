@@ -154,7 +154,7 @@ never-`UPDATE`d set — `_REFRESH_VERDICTS_SQL` must not name it, and only `--re
 
 `backtest/scoring.py` currently partitions on `actual_price == base_price`, two buckets. It gains
 a `base_stale_run_days` partition, never pooled, which is what
-`docs/superpowers/specs/2026-08-07-friction-conditioned-tier-scoring-design.md` deferred to this
+`docs/specs/2026-08-07-friction-conditioned-tier-scoring-design.md` deferred to this
 step.
 
 **Fixed bands, not quartiles — a deliberate departure from the deferring spec.** That spec asked

@@ -27,8 +27,10 @@ the modelled-sigma family is the dead end, not band width as such. See
   `aggregator-update.yml`). The local copy also runs *behind* it. Nothing written there is
   committed by this repo.
 - `docs/` — `architecture/`, dated decision records in `changelog/`, `references/`,
-  `research/` (incl. the live action list), `superpowers/{specs,plans}`, and the loose
-  `design.md`, `product.md`, `operations.md`. Indexed in `docs/README.md`.
+  `research/` (incl. the live action list), design docs in `specs/`, execution checklists
+  in `plans/`, plus `PORTFOLIO.md`, `product.md`, `operations.md` and
+  `experiment_log.csv`. Indexed in `docs/README.md`. New specs and plans go in
+  `docs/specs/` and `docs/plans/`, not a tool-named subdirectory.
 - `.claude/rules/` — backend subsystem detail, scoped by path so it loads only when you touch
   the matching files. Indexed in `backend/AGENTS.md`.
 - `.github/workflows/` — daily chain: Aggregator (23:00 UTC) → Price Forecast → Backtest
@@ -68,5 +70,5 @@ Backend, from `backend/`, through the venv (`venv/bin/python`, Python 3.13 local
 1. Backend changes: run the relevant `pytest` files.
 2. Non-trivial decisions get a dated note in `docs/changelog/`.
 3. Shipped/refuted/void arms get a row in `docs/experiment_log.csv` (verdict + link) — the "has this been tried" log; `test_experiment_log.py` enforces the schema.
-4. `docs/design.md` describes the deleted frontend. It is kept as rebuild input only —
+4. `docs/product.md` describes the deleted frontend. It is kept as rebuild input only —
    do not treat it as a spec for anything that currently runs.

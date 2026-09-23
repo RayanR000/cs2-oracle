@@ -25,7 +25,7 @@
 
 ## Global Constraints
 
-- Spec: `docs/superpowers/specs/2026-08-08-price-history-source-import-design.md`. Every value below is copied from it verbatim.
+- Spec: `docs/specs/2026-08-08-price-history-source-import-design.md`. Every value below is copied from it verbatim.
 - Source label is exactly `tracker_steam_24h`. It is **not** added to `BID_SOURCES` — it votes.
 - Date range is **2025-02-17 → 2026-03-31** inclusive.
 - Gap gate is **max interior gap ≤ 7 days** (`MAX_WINDOW_SPAN_DAYS`), measured between consecutive observations inside the imported range. Leading/trailing edges are not penalised.

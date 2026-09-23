@@ -1,8 +1,8 @@
 # Minimal model — measured results
 
 **Date:** 2026-08-05
-**Spec:** `docs/superpowers/specs/2026-08-04-minimal-model-design.md`
-**Plan:** `docs/superpowers/plans/2026-08-04-minimal-model.md`
+**Spec:** `docs/specs/2026-08-04-minimal-model-design.md`
+**Plan:** `docs/plans/2026-08-04-minimal-model.md`
 **Commits:** `1902aab` (grid 40→8), `deddc79` (`--save-records`), `b1bab03` (rig fixes)
 
 ## The headline

@@ -1,6 +1,6 @@
 # The Training Class Prior Is Balanced — the Down-Bias Is Not the Prior (2026-08-03)
 
-`docs/superpowers/specs/2026-08-03-direction-prior-correction-design.md` proposed
+`docs/specs/2026-08-03-direction-prior-correction-design.md` proposed
 correcting the direction classifier's inherited up/down class prior at serve
 time, gated behind a Step 0 diagnostic able to refute the hypothesis in one run.
 **The diagnostic refuted it.** The correction was never built.
@@ -156,7 +156,7 @@ Full suite: **417 passed**, up from a 395 baseline.
 - `docs/changelog/2026-08-03-accuracy-is-clustered-by-forecast-date.md` — the
   down-bias observation this tried and failed to explain, and the source of
   `MIN_FORECAST_DATES`
-- `docs/superpowers/specs/2026-08-03-direction-prior-correction-design.md` —
+- `docs/specs/2026-08-03-direction-prior-correction-design.md` —
   the design, whose Step 0 gate fired
 - `docs/research/accuracy-opportunities.md` — the closed feature/architecture
   roadmap this work stayed clear of

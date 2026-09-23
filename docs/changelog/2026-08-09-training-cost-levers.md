@@ -1,8 +1,8 @@
 # Training cost levers, and what measuring them refuted
 
 **Date:** 2026-08-09
-**Plan:** `docs/superpowers/plans/2026-08-09-training-cost.md` (Phase 1 of
-`docs/superpowers/plans/2026-08-09-master-execution-order.md`)
+**Plan:** `docs/plans/2026-08-09-training-cost.md` (Phase 1 of
+`docs/plans/2026-08-09-master-execution-order.md`)
 **Branch:** `training-cost`
 
 Six changes to the retrain, plus two production bugs the verification retrain

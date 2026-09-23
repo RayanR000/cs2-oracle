@@ -106,7 +106,7 @@ def main():
     year = day_start.year
     # Current-year prices/snapshots are partitioned by month so the hot file
     # stays small (a day belongs to exactly one month). See
-    # docs/superpowers/specs/2026-07-25-monthly-parquet-partitioning-design.md
+    # docs/specs/2026-07-25-monthly-parquet-partitioning-design.md
     ym = f"{year}-{day_start.month:02d}"
     out_dir = Path(args.out_dir) / "price-archive"
     out_dir.mkdir(parents=True, exist_ok=True)

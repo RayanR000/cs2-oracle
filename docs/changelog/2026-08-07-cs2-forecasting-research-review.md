@@ -75,7 +75,7 @@ prices), and **Getmansky, Lo & Makarov (2004), *JFE* 74(3), 529–609**, whose M
 illiquidity-smoothing mechanism is what the calendar-gap lag fills and frozen sub-$1 prices
 are. The tier signature is already measured here: bit-identical `actual_price == base_price`
 runs **37–42% at tier 0 and 0–1.8% at every tier ≥$1**
-(`docs/superpowers/specs/2026-08-05-cv-cohort-parity-design.md`), and by `base_price` band it
+(`docs/specs/2026-08-05-cv-cohort-parity-design.md`), and by `base_price` band it
 runs **71.9% below $0.05** down to **0.2% at ≥$5** (`2026-08-07-training-item-universe.md`).
 
 This is a scoring-module change, no retrain. It reframes every accuracy number the project

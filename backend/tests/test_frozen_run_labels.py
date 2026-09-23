@@ -13,7 +13,7 @@ exact-zero return mass at h=3-14 and 31.2% at h=30; anchor-or-target reaches
 86-91% and 52.0%.
 
 The rule is NOT neutral: 13.7-15.9% of the >=$1 labels it voids carry a
-non-zero return. See `docs/superpowers/specs/2026-08-08-frozen-price-runs-design.md`.
+non-zero return. See `docs/specs/2026-08-08-frozen-price-runs-design.md`.
 """
 
 from __future__ import annotations

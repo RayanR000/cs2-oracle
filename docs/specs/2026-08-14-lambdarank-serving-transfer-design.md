@@ -2,7 +2,7 @@
 
 **Date:** 2026-08-14.
 **Item:** the serving-transfer pre-registration deferred by
-`docs/superpowers/specs/2026-08-13-lambdarank-diagnostic-design.md` and earned by
+`docs/specs/2026-08-13-lambdarank-diagnostic-design.md` and earned by
 `docs/changelog/2026-08-13-lambdarank-clears-the-diagnostic-bar.md`. It is the top-priority
 "change the target" move in `docs/research/2026-08-14-what-moves-skin-prices-web-reconsideration.md`
 (re-test plan item 1) and item 5 of `docs/research/2026-08-13-next-steps.md`.

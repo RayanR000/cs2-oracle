@@ -25,7 +25,7 @@ mean sale prices outright, and `aggregator_sync` and `aggregator_steam_17mafo`
 are `last_24h` with a documented fallback to those same windows, which fires
 precisely on the illiquid items. So a filter built on this catches a 2026 data
 property far more than a 13-year one. See
-`docs/superpowers/specs/2026-08-08-frozen-price-runs-design.md`.
+`docs/specs/2026-08-08-frozen-price-runs-design.md`.
 """
 
 from __future__ import annotations

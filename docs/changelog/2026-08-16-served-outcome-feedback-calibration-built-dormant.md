@@ -2,7 +2,7 @@
 
 **Date:** 2026-08-16. Ships **no-op**; the served band is byte-identical to before until a
 horizon crosses `MIN_FORECAST_DATES = 20` served dates (0–4 exist today).
-**Design:** `docs/superpowers/specs/2026-08-16-served-outcome-feedback-calibration-design.md`.
+**Design:** `docs/specs/2026-08-16-served-outcome-feedback-calibration-design.md`.
 **Motivates:** the served band over-covers (prod panel 87–92% vs 80%), traced this session to a
 scalar `q_hat` pooled over a volatility-regime-mixed calibration window (fold `q_hat` varies
 1.4–1.85× at identical 300K training rows) served on individual dates. The offline conditioning

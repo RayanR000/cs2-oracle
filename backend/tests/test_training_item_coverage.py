@@ -254,7 +254,7 @@ class TestFoldMedianPriceItems:
     through 2026". The effect it was credited with is h=30 only and null at
     3/7/14, which is the signature of survivorship rather than of liquidity —
     so the number cannot adjudicate itself and this helper exists to re-derive
-    it. See docs/superpowers/plans/2026-08-08-per-fold-price-filter.md.
+    it. See docs/plans/2026-08-08-per-fold-price-filter.md.
     """
 
     @staticmethod

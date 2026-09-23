@@ -26,7 +26,7 @@ frozen on `forecast_outcomes`, which is what keeps `--rescore` archive-free.
 
 **Tech Stack:** Python 3.13 local / 3.11 CI, pytest, numpy. No new dependencies.
 
-**Spec:** `docs/superpowers/specs/2026-08-07-friction-conditioned-tier-scoring-design.md`
+**Spec:** `docs/specs/2026-08-07-friction-conditioned-tier-scoring-design.md`
 
 ## Global Constraints
 

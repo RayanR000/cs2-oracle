@@ -111,7 +111,7 @@ which is what keeps this from being a published-number regression.
 
 ## Next
 
-`docs/superpowers/specs/2026-08-12-sigma-exponent-design.md` — the implementation, which is one
+`docs/specs/2026-08-12-sigma-exponent-design.md` — the implementation, which is one
 persisted float per horizon reaching four call sites, gated, plus a paired dispatch on real OOF
 residuals to settle the 14d/30d disagreement above.
 

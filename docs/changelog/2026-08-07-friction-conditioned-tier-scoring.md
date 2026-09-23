@@ -1,8 +1,8 @@
 # 2026-08-07 — Friction-conditioned tier scoring
 
 **Step 3 of `docs/research/2026-08-07-next-steps.md`.** Spec:
-`docs/superpowers/specs/2026-08-07-friction-conditioned-tier-scoring-design.md`. Plan:
-`docs/superpowers/plans/2026-08-07-friction-conditioned-tier-scoring.md`.
+`docs/specs/2026-08-07-friction-conditioned-tier-scoring-design.md`. Plan:
+`docs/plans/2026-08-07-friction-conditioned-tier-scoring.md`.
 
 The scorer now says whether a forecast implies a trade, and it no longer reports one accuracy
 number across populations whose bid–ask spreads differ by a factor of seven. Full suite green

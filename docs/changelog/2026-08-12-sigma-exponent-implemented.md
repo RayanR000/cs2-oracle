@@ -1,7 +1,7 @@
 # The `sigma` exponent is implemented, gated off, and it found a bug in the shipped diagnostic
 
 **Date:** 2026-08-12
-**Spec:** `docs/superpowers/specs/2026-08-12-sigma-exponent-design.md`
+**Spec:** `docs/specs/2026-08-12-sigma-exponent-design.md`
 **Decision:** `changelog/2026-08-12-the-sigma-scale-is-one-exponent-per-horizon.md`
 **Flag:** `SIGMA_EXPONENT=1`, off by default. `model-diagnostics.yml` input `sigma_exponent`.
 **Tests:** `backend/tests/test_sigma_exponent.py` (17), suite 2052 → **2069 passing**

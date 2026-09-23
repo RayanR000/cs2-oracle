@@ -4,7 +4,7 @@
 **Scope:** the serving-write label, and the one API consumer that pinned to it. A correctness
 fix for decoupling **(A)** of the serve-vs-score freshness wedge — **not** a coverage fix.
 **Related:** `docs/changelog/2026-08-15-cs2-oracle-is-a-range-forecaster.md` (the ops/data-
-freshness thread this opens from), `docs/superpowers/plans/2026-08-11-serving-anchor-freshness.md`
+freshness thread this opens from), `docs/plans/2026-08-11-serving-anchor-freshness.md`
 (a *different*, closed wedge — do not conflate), `.claude/rules/backtest-scoring.md`.
 
 ## What changed

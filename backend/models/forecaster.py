@@ -240,7 +240,7 @@ SAMPLE_WEIGHT_HALFLIFE_DAYS = float(os.environ.get("SAMPLE_WEIGHT_HALFLIFE_DAYS"
 # Measured 2026-08-08, 2024+, on the >=$1 cohort: this voids 19.2/18.2/16.0/13.8%
 # of labels at h=3/7/14/30 (39.8/39.5/38.8/38.8% on the whole unfiltered
 # universe). Two things that number hides, both in
-# `docs/superpowers/specs/2026-08-08-frozen-price-runs-design.md`:
+# `docs/specs/2026-08-08-frozen-price-runs-design.md`:
 #
 #   1. It is a 2026 filter. The >=$1 stale rate runs 0.5-0.8% through 2025 and
 #      6-33% across 2026, because no Steam-derived series in the archive is a
@@ -1070,7 +1070,7 @@ class ItemForecaster:
         # >= $1 cohort production serves. None = no tier weighting, which is
         # byte-identical to the pre-2026-08-06 model. Set from
         # TRAIN_SERVED_COHORT_SHARE by scripts/forecast_prices.py. See
-        # docs/superpowers/specs/2026-08-06-served-cohort-weighting-design.md.
+        # docs/specs/2026-08-06-served-cohort-weighting-design.md.
         if served_cohort_share is not None and not 0.0 < served_cohort_share < 1.0:
             raise ValueError(f"served_cohort_share must be in (0, 1) or None, got {served_cohort_share!r}")
         self.served_cohort_share = served_cohort_share
@@ -1286,7 +1286,7 @@ class ItemForecaster:
         the tied cohort both arms serve an identical price.
 
         Set SERVE_OUTLIER_GATED_ANCHOR=1. Off by default and **unmeasured**. See
-        `docs/superpowers/plans/2026-08-11-serving-anchor-freshness.md`.
+        `docs/plans/2026-08-11-serving-anchor-freshness.md`.
         """
         return os.environ.get("SERVE_OUTLIER_GATED_ANCHOR") == "1"
 
@@ -1530,7 +1530,7 @@ class ItemForecaster:
         directions and no 80% claim rests on it.
 
         Set SIGMA_EXPONENT=1. See
-        `docs/superpowers/specs/2026-08-12-sigma-exponent-design.md` and
+        `docs/specs/2026-08-12-sigma-exponent-design.md` and
         `docs/changelog/2026-08-12-the-sigma-scale-is-one-exponent-per-horizon.md`.
         """
         return os.environ.get("SIGMA_EXPONENT") == "1"
@@ -1558,7 +1558,7 @@ class ItemForecaster:
         band denominators, not layers (`_calibrate_conformal` raises if combined).
         Off by default; the served headline stays gated by MIN_HEADLINE_DATES=20.
         Set EXCEEDANCE_SCALE=1. See
-        docs/superpowers/plans/2026-08-16-exceedance-band-scale-phase2-plan.md.
+        docs/plans/2026-08-16-exceedance-band-scale-phase2-plan.md.
         """
         return os.environ.get("EXCEEDANCE_SCALE") == "1"
 
@@ -1583,7 +1583,7 @@ class ItemForecaster:
         head). Off by default. Serving emits `exceed_p` whenever a head is present
         in the artifact — head presence is self-describing, so the cutover follows
         the artifact with no separate meta flag. Set EXCEEDANCE_HEAD=1. See
-        docs/superpowers/plans/2026-08-16-exceedance-band-scale-phase2-plan.md.
+        docs/plans/2026-08-16-exceedance-band-scale-phase2-plan.md.
         """
         return os.environ.get("EXCEEDANCE_HEAD", "1") == "1"
 
@@ -1670,7 +1670,7 @@ class ItemForecaster:
         keeps it on, deliberately, mirroring the training price floor). Serving
         follows the artifact via `_climatology_scale_served`, so the cutover is
         atomic at the next retrain, not the moment this flag flips. See
-        `docs/superpowers/specs/2026-08-19-climatology-band-scale.md`.
+        `docs/specs/2026-08-19-climatology-band-scale.md`.
         """
         return os.environ.get("CLIMATOLOGY_SCALE", "1") != "0"
 
@@ -5312,7 +5312,7 @@ class ItemForecaster:
         # Derived from the FINAL target_return column, so it inherits the ±500%
         # winsorization and every void above (a NaN return yields a NaN label),
         # and the exceedance head trains on exactly the rows the range model does.
-        # See docs/superpowers/plans/2026-08-16-exceedance-band-scale-phase2-plan.md.
+        # See docs/plans/2026-08-16-exceedance-band-scale-phase2-plan.md.
         ret = df[f"target_return_{horizon}d"]
         # Precompute the six per-tier thresholds once (not per row); keep
         # scoring.price_tier as the tier source of truth rather than re-spelling
@@ -5489,7 +5489,7 @@ class ItemForecaster:
         Research use only: `build_training_data` cannot call this, because a
         fold-varying universe would move the market factor and the row budget
         alongside the treatment. See
-        `docs/superpowers/plans/2026-08-08-per-fold-price-filter.md`.
+        `docs/plans/2026-08-08-per-fold-price-filter.md`.
         """
         cutoff = pd.Timestamp(cutoff)
         past = price_df[pd.to_datetime(price_df["date"]) < cutoff]
@@ -7715,7 +7715,7 @@ class ItemForecaster:
         >= $1, so untouched the classifier spends most of its capacity on rows
         no one is served. ``served_share=None`` reproduces the pre-2026-08-06
         weights exactly. See
-        docs/superpowers/specs/2026-08-06-served-cohort-weighting-design.md.
+        docs/specs/2026-08-06-served-cohort-weighting-design.md.
         """
         r = np.asarray(returns, dtype=float)
         thr = np.asarray(threshold, dtype=float)
@@ -7985,7 +7985,7 @@ class ItemForecaster:
         direction head via ``_served_cohort_multiplier``. Returns ``None`` when
         fewer than two classes survive, so a degenerate horizon skips cleanly
         rather than training an unusable constant model.
-        See docs/superpowers/plans/2026-08-16-exceedance-band-scale-phase2-plan.md.
+        See docs/plans/2026-08-16-exceedance-band-scale-phase2-plan.md.
         """
         y = np.asarray(y_train, dtype=float)
         keep = ~np.isnan(y)
@@ -9994,7 +9994,7 @@ class ItemForecaster:
 
         # The served `current_price`, and the only site that sets it. Which of
         # the two prices lands here is arm A of
-        # docs/superpowers/plans/2026-08-11-serving-anchor-freshness.md.
+        # docs/plans/2026-08-11-serving-anchor-freshness.md.
         latest_rows = df.groupby("item_id").last().reset_index()
         latest_rows = latest_rows.merge(smoothed_price, left_on="item_id", right_index=True, how="left")
 
@@ -10291,7 +10291,7 @@ class ItemForecaster:
         # signed offsets above, calibrated on the q50 residual — coherent by
         # construction. The classifier's call still populates the `direction`
         # / `confidence` fields below; it no longer moves the price.
-        # See docs/superpowers/specs/2026-08-19-signed-conformal-quantile-design.md.
+        # See docs/specs/2026-08-19-signed-conformal-quantile-design.md.
 
         # Disclosed exceedance probability: P(the h-day move clears the
         # round-trip cost). Served whenever a head is in the artifact,
@@ -10750,7 +10750,7 @@ class ItemForecaster:
             # the production headline is >=$1 (HEADLINE_MIN_TIER). Comparing
             # the two was comparing populations, and that cohort mismatch is
             # most of the "~20pp train/serve gap" five hypotheses failed to
-            # explain (docs/superpowers/specs/2026-08-05-cv-cohort-parity-design.md).
+            # explain (docs/specs/2026-08-05-cv-cohort-parity-design.md).
             #
             # Additive, never a replacement: mean_classifier_acc feeds the
             # edge-vs-baseline trust gate and the confidence calibration, and
@@ -11051,7 +11051,7 @@ class ItemForecaster:
         rank-IC win is contaminated by the anchor-deviation factor a ranker will
         happily order on, which is what made `xs_rank` a serving mirage. Set
         LAMBDARANK=1. See
-        `docs/superpowers/specs/2026-08-13-lambdarank-diagnostic-design.md`.
+        `docs/specs/2026-08-13-lambdarank-diagnostic-design.md`.
         """
         return os.environ.get("LAMBDARANK") == "1"
 
@@ -11253,7 +11253,7 @@ class ItemForecaster:
         three rows survive that filter, meaning "we cannot tell".
 
         This is an alerting signal only. It must not gate a retrain — see
-        docs/superpowers/specs/2026-08-04-remove-accidental-retrain-work-design.md
+        docs/specs/2026-08-04-remove-accidental-retrain-work-design.md
         """
         threshold = self.DRIFT_DA_THRESHOLD if threshold is None else threshold
         from database import AccuracyAlert

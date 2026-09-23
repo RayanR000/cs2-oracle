@@ -25,7 +25,7 @@
 
 **Tech Stack:** Python 3.13 (3.11 in CI), pandas 2.3.3, numpy, LightGBM, pytest.
 
-**Spec:** `docs/superpowers/specs/2026-08-06-market-relative-labels-design.md`
+**Spec:** `docs/specs/2026-08-06-market-relative-labels-design.md`
 
 ## Global Constraints
 
@@ -58,7 +58,7 @@ Create `backend/tests/test_market_factor.py`:
 ```python
 """Tests for the market factor used by the market-relative label experiment.
 
-See docs/superpowers/specs/2026-08-06-market-relative-labels-design.md.
+See docs/specs/2026-08-06-market-relative-labels-design.md.
 """
 import numpy as np
 import pandas as pd
@@ -213,7 +213,7 @@ history-only forecast, for rebuilding the absolute call). Pure functions over
 DataFrames: no DB, no I/O, no ItemForecaster internals, so the factor can be
 reasoned about and tested without loading a 5,600-line module.
 
-Design: docs/superpowers/specs/2026-08-06-market-relative-labels-design.md
+Design: docs/specs/2026-08-06-market-relative-labels-design.md
 """
 import logging
 from typing import Optional
@@ -638,7 +638,7 @@ Create `backend/tests/test_market_relative_labels.py`:
 ```python
 """Tests for the default-off market-relative label path.
 
-Design: docs/superpowers/specs/2026-08-06-market-relative-labels-design.md
+Design: docs/specs/2026-08-06-market-relative-labels-design.md
 """
 import numpy as np
 import pandas as pd
@@ -713,7 +713,7 @@ and add, immediately after the `self.served_cohort_share = served_cohort_share` 
         # history-only market forecast. False = byte-identical to the
         # pre-2026-08-06 model. Set from TRAIN_MARKET_RELATIVE_LABELS by
         # scripts/forecast_prices.py. See
-        # docs/superpowers/specs/2026-08-06-market-relative-labels-design.md.
+        # docs/specs/2026-08-06-market-relative-labels-design.md.
         self.market_relative_labels = bool(market_relative_labels)
         # Daily chain-linked market index, built by build_training_data when
         # the flag is on. Needed at fold time for the leak-free m_hat, so it
@@ -1169,7 +1169,7 @@ def _market_relative_labels() -> bool:
     Env-configured for the same reason as TRAIN_FEATURE_ROWS: this script
     parses argv as a plain set of flags. Default False keeps production
     byte-identical. See
-    docs/superpowers/specs/2026-08-06-market-relative-labels-design.md.
+    docs/specs/2026-08-06-market-relative-labels-design.md.
     """
     raw = os.environ.get("TRAIN_MARKET_RELATIVE_LABELS")
     if not raw:

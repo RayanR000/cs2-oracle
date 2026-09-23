@@ -11,7 +11,7 @@ drifts with the frame's tier composition and that composition varies fold to
 fold. These tests pin the share semantics, the control arm's byte-identity with
 the old weights, and the degenerate partitions.
 
-See docs/superpowers/specs/2026-08-06-served-cohort-weighting-design.md.
+See docs/specs/2026-08-06-served-cohort-weighting-design.md.
 """
 
 from __future__ import annotations

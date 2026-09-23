@@ -2,7 +2,7 @@
 
 **Date:** 2026-07-25
 **Status:** REMOVED (2026-07-26). Implemented, A/B'd (net-flat), then the feature code was deleted entirely. See Results & Decision.
-**Spec:** docs/superpowers/specs/2026-07-25-quality-spread-features-design.md
+**Spec:** docs/specs/2026-07-25-quality-spread-features-design.md
 
 ## What shipped (code)
 - `_add_quality_spread_features` on `ItemForecaster`: wear-ladder ratio/z60/chg,
@@ -88,6 +88,6 @@ dependency, heavy rolling passes). The ~1pp gains on 7d/14d sit in the magnitude
 band that this project's calibration history repeatedly shows evaporating under
 permutation testing, and no permutation confirmation was run — so the burden of
 proof for keeping the complexity was not met. If revisited, the design lives in
-`docs/superpowers/specs/2026-07-25-quality-spread-features-design.md`; gate on a
+`docs/specs/2026-07-25-quality-spread-features-design.md`; gate on a
 permutation test on the full production model before enabling, and consider a
 7d/14d-only enable via `HORIZON_EXCLUDED_GROUPS` (3d/30d excluded).

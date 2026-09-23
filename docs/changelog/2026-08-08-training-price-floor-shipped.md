@@ -115,7 +115,7 @@ the training universe.
 - **Stage 2 (the anchored per-fold filter) was not shipped**, deliberately. Stage 1 measured the
   look-ahead at **−0.004pp [−0.664, +0.851] at 30d** — real but not load-bearing — so it is a
   cleanliness change and gets its own reviewable diff.
-  `docs/superpowers/plans/2026-08-08-per-fold-price-filter.md` stage 2 stays open.
+  `docs/plans/2026-08-08-per-fold-price-filter.md` stage 2 stays open.
 - **`scripts/paired_retrain_bymykel.py` now inherits all three defaults**, including the floor
   it never passed. That is a change to what a re-run of that harness measures. It tracks
   production by design and the ByMykel result is already refuted, so it was left alone — but a

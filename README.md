@@ -112,7 +112,7 @@ backend/
   migrations/   Alembic revisions
   scripts/      Task runner and batch entrypoints
   tests/        Pytest suite
-docs/           Write-up, architecture, research, changelog, experiment log
+docs/           Write-up, architecture, specs and plans, research, changelog, experiment log
 .github/        Daily chain, freshness, schema drift, lint
 ```
 

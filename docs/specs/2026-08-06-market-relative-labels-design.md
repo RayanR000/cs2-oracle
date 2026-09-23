@@ -336,5 +336,5 @@ social collector.
   cold-retrain methodology reused here, and the "Still open" item this addresses.
 * `docs/changelog/2026-08-06-volume-ab-and-harness-defects.md` — why the arms run
   through the live path rather than a bespoke harness.
-* `docs/superpowers/specs/2026-08-05-cv-cohort-parity-design.md` — origin of
+* `docs/specs/2026-08-05-cv-cohort-parity-design.md` — origin of
   `classifier_accuracy_ge1`.

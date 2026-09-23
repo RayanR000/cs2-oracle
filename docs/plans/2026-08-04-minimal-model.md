@@ -24,7 +24,7 @@
 
 **Tech Stack:** Python 3.13, LightGBM, pandas, numpy, DuckDB over `price-archive/*.parquet`, SQLAlchemy, pytest.
 
-**Spec:** `docs/superpowers/specs/2026-08-04-minimal-model-design.md` (commits `46a2278`, `1a3bdb9`)
+**Spec:** `docs/specs/2026-08-04-minimal-model-design.md` (commits `46a2278`, `1a3bdb9`)
 
 ## Global Constraints
 
@@ -1020,7 +1020,7 @@ what the minimal model's speed claim is measured against."
 
 **Files:**
 - Create: `backend/scripts/compute_mde.py`
-- Modify: `docs/superpowers/specs/2026-08-04-minimal-model-design.md`
+- Modify: `docs/specs/2026-08-04-minimal-model-design.md`
 
 **Interfaces:**
 - Consumes: `run_walkforward(return_records=True)` (Task 3), `paired_da_difference` (Task 2)
@@ -1207,7 +1207,7 @@ Expected: JSON with `mde_pp` and `n_dates` per horizon. If `n_dates < 2` for a h
 
 - [x] **Step 4: Write the bar into the spec**
 
-Add to `docs/superpowers/specs/2026-08-04-minimal-model-design.md`, replacing the prose bar in Task 3 of Part 1:
+Add to `docs/specs/2026-08-04-minimal-model-design.md`, replacing the prose bar in Task 3 of Part 1:
 
 ```markdown
 ### The pre-registered acceptance bar (committed <date>, before any arm was run)
@@ -1234,7 +1234,7 @@ Replace every `_measured_` with the number from Step 3.
 ```bash
 git add backend/scripts/compute_mde.py backend/scripts/walkforward_backtest.py \
         backend/models/forecaster.py \
-        docs/superpowers/specs/2026-08-04-minimal-model-design.md
+        docs/specs/2026-08-04-minimal-model-design.md
 git commit -m "feat: measure the gate's MDE and pre-register the acceptance bar
 
 Estimates the noise floor by running the same design under two seeds and

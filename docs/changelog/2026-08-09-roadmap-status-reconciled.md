@@ -5,7 +5,7 @@
 
 ## Why
 
-Nine of the ten plans in `docs/superpowers/plans/` described work that had already landed, with
+Nine of the ten plans in `docs/plans/` described work that had already landed, with
 every step still an unchecked `- [ ]` and no completion marker anywhere in the file. The live
 roadmap, `docs/research/2026-08-09-next-steps.md`, marked all six Track A items **NOT STARTED**
 hours after all six shipped, and marked Track O and D1 **NOT STARTED** after both were resolved.

@@ -196,8 +196,8 @@ carefully — and the follow-up section has since identified what it is:
 * It is **not** a recommendation to add a date column. Nothing here was shipped.
 * `backend/models/market_factor.py` (uncommitted, appeared in the working tree at 14:46
   today) is a principled attack on exactly this term — a forecast market index applied per
-  horizon, pre-registered in `docs/superpowers/specs/2026-08-06-market-relative-labels-design.md`
-  (commit `bc550e0`) with a plan at `docs/superpowers/plans/2026-08-06-market-relative-labels.md`
+  horizon, pre-registered in `docs/specs/2026-08-06-market-relative-labels-design.md`
+  (commit `bc550e0`) with a plan at `docs/plans/2026-08-06-market-relative-labels.md`
   (`4e6b11e`). That spec's **pre-registered** bar is > +2pp on paired
   `classifier_accuracy_ge1` at two or more horizons and not worse than −1pp at any. This
   result is independent support for that line of work, not a prediction that it clears the
@@ -411,7 +411,7 @@ attribution were written back into **both** of those files.
   ≥$1 universe and the strict metric both of these inherit
 * `docs/changelog/2026-08-03-accuracy-is-clustered-by-forecast-date.md` — the phenomenon
   `date_proxy` is a second reading of
-* `docs/superpowers/specs/2026-08-06-market-relative-labels-design.md` — the pre-registered
+* `docs/specs/2026-08-06-market-relative-labels-design.md` — the pre-registered
   attack on that term
 * `docs/changelog/2026-08-06-market-relative-labels-instrument.md` — `market_factor.py`,
   `_demean_returns` and the flag the follow-up borrows

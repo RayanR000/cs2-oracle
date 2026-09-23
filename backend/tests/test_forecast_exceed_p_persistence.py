@@ -7,7 +7,7 @@ the anchor disclosure (0022/0024): a prod DB predating the column degrades to
 writing without it rather than failing the whole daily batch, and the Parquet
 mirror — which has no schema to violate — keeps it regardless.
 
-Scope: docs/superpowers/plans/2026-08-16-exceedance-band-scale-phase2-plan.md.
+Scope: docs/plans/2026-08-16-exceedance-band-scale-phase2-plan.md.
 """
 
 from __future__ import annotations

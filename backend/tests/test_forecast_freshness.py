@@ -9,7 +9,7 @@ supply scraper and reddit collector (docs/changelog/
 Both stores are asserted because the API reads Parquet first with a DB
 fallback, so a DB-only write still serves nothing.
 
-See docs/superpowers/specs/2026-08-03-served-forecast-surface-design.md.
+See docs/specs/2026-08-03-served-forecast-surface-design.md.
 """
 
 from __future__ import annotations

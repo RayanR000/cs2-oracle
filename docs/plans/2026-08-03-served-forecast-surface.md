@@ -202,7 +202,7 @@ four queries and ranked by it, so it promoted the worst forecasts first. It also
 had no price floor: the newest date offered 1,680 "undervalued" candidates with
 a median price of $0.50.
 
-See docs/superpowers/specs/2026-08-03-served-forecast-surface-design.md.
+See docs/specs/2026-08-03-served-forecast-surface-design.md.
 """
 from __future__ import annotations
 
@@ -452,7 +452,7 @@ predicted return was considered at all. The ``"medium"`` tier it ranked between
 high and low has never been emitted once — 0 rows in the entire forecast
 history.
 
-See docs/superpowers/specs/2026-08-03-served-forecast-surface-design.md.
+See docs/specs/2026-08-03-served-forecast-surface-design.md.
 """
 from __future__ import annotations
 
@@ -552,7 +552,7 @@ unhelpful, it is backwards, so the sentence is removed rather than reworded.
 The ``confidence`` field stays on the response schema — the frontend consumes
 it and removing a field is a breaking change — it is simply no longer narrated.
 
-See docs/superpowers/specs/2026-08-03-served-forecast-surface-design.md.
+See docs/specs/2026-08-03-served-forecast-surface-design.md.
 """
 from __future__ import annotations
 
@@ -701,7 +701,7 @@ supply scraper and reddit collector (docs/changelog/
 Both stores are asserted because the API reads Parquet first with a DB
 fallback, so a DB-only write still serves nothing.
 
-See docs/superpowers/specs/2026-08-03-served-forecast-surface-design.md.
+See docs/specs/2026-08-03-served-forecast-surface-design.md.
 """
 from __future__ import annotations
 
@@ -936,7 +936,7 @@ git commit -m "feat: fail the forecast run when it persists no forecasts"
 
 **Files:**
 - Create: `docs/changelog/2026-08-03-served-forecast-surface.md`
-- Modify: `docs/superpowers/specs/2026-08-03-served-forecast-surface-design.md` (status line only)
+- Modify: `docs/specs/2026-08-03-served-forecast-surface-design.md` (status line only)
 
 - [x] **Step 1: Write the changelog**
 
@@ -950,7 +950,7 @@ Create `docs/changelog/2026-08-03-served-forecast-surface.md` covering, with the
 
 - [x] **Step 2: Flip the spec status**
 
-In `docs/superpowers/specs/2026-08-03-served-forecast-surface-design.md`, change the status line from `**Status:** Approved, not yet implemented` to `**Status:** Implemented 2026-08-03`.
+In `docs/specs/2026-08-03-served-forecast-surface-design.md`, change the status line from `**Status:** Approved, not yet implemented` to `**Status:** Implemented 2026-08-03`.
 
 - [x] **Step 3: Run the whole suite**
 
@@ -963,7 +963,7 @@ Expected: the four new test files pass and no previously-passing test breaks. Re
 - [x] **Step 4: Commit**
 
 ```bash
-git add docs/changelog/2026-08-03-served-forecast-surface.md docs/superpowers/specs/2026-08-03-served-forecast-surface-design.md
+git add docs/changelog/2026-08-03-served-forecast-surface.md docs/specs/2026-08-03-served-forecast-surface-design.md
 git commit -m "docs: record the served forecast surface changes"
 ```
 

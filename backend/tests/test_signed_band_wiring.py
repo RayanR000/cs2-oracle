@@ -1,6 +1,6 @@
 """The served band is two signed conformal offsets, with a symmetric fallback.
 
-`docs/superpowers/specs/2026-08-19-signed-conformal-quantile-design.md`. `conformal.py`
+`docs/specs/2026-08-19-signed-conformal-quantile-design.md`. `conformal.py`
 grew `calibrate_signed`/`band_signed`; these guard the forecaster seam that persists the
 `(q_lo, q_hi)` pair and serves it, plus the symmetric fallback that keeps an artifact
 without the pair byte-identical to the old band. They do not run a full train (~5 min).

@@ -33,7 +33,7 @@ live outcome, not a hypothetical.
 Each regime also reports its own arms' absolute DA. If the point estimate moves
 a lot while the width barely does, that is a **different finding** from the one
 this harness is built to test and must be reported as one rather than folded in
-— see `docs/superpowers/specs/2026-08-08-frozen-price-runs-design.md`.
+— see `docs/specs/2026-08-08-frozen-price-runs-design.md`.
 
 ## Caveats a citation must carry
 

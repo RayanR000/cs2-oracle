@@ -84,7 +84,7 @@ on:
       # `lr_rank_ic_edge_vs_q50_tied`; PASS needs BOTH > 0. HP mirror the q50's,
       # so a positive needs FORCE_HP_SEARCH=1 to size. Diagnostic only, no serving
       # path consumes it. See
-      # docs/superpowers/specs/2026-08-13-lambdarank-diagnostic-design.md.
+      # docs/specs/2026-08-13-lambdarank-diagnostic-design.md.
       lambdarank:
         description: 'Arm: within-date lambdarank ranker (read lr_rank_ic edges on the CLEAN ANCHOR line)'
         required: false

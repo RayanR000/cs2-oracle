@@ -179,7 +179,7 @@ experiment rather than argument.
 
 - **The floor is a judgement call, not a derivation.** $1 is chosen to match
   `HEADLINE_MIN_TIER`, not because $1 is where tick noise stops mattering; the
-  tier table in `docs/superpowers/specs/2026-08-01-deterministic-backtest-design.md`
+  tier table in `docs/specs/2026-08-01-deterministic-backtest-design.md`
   puts the sharp break at $0.50 (27.6% actual-flat below it, ~1% above).
   Coupling it to the
   headline tier is the point — the number shown and the number quoted should

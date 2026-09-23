@@ -2,7 +2,7 @@
 
 Builds the scale the null test found beats the GBM band by 43-47% at matched coverage
 (`docs/research/2026-08-19-climatology-vs-gbm-band.md`,
-`docs/superpowers/specs/2026-08-19-climatology-band-scale.md`). Off by default; the served
+`docs/specs/2026-08-19-climatology-band-scale.md`). Off by default; the served
 headline stays gated by `MIN_FORECAST_DATES=20`.
 
 ## What (`models/forecaster.py`)

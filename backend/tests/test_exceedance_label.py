@@ -3,7 +3,7 @@
 `target_exceed_{h}d = 1[ target_return_{h}d > 100 * actionable_threshold(tier, csfloat) ]`,
 NaN wherever `target_return_{h}d` is NaN (missing target or voided by the snapshot /
 collector-cutover / frozen-run rules), so the exceedance head trains on exactly the rows
-the range model does. Scope: docs/superpowers/plans/2026-08-16-exceedance-band-scale-phase2-plan.md.
+the range model does. Scope: docs/plans/2026-08-16-exceedance-band-scale-phase2-plan.md.
 
 The production change that makes this fail if reverted: the label block appended to
 `prepare_targets` after label voiding.

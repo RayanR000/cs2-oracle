@@ -21,7 +21,7 @@ currently weights folds by `sample_count`, reporting a tighter confidence interv
 than it has earned — and pre-registers the acceptance bar before any arm is run.
 
 This is spec #2 and #1 combined from the sequence recorded in
-`docs/superpowers/specs/2026-08-04-remove-accidental-retrain-work-design.md`
+`docs/specs/2026-08-04-remove-accidental-retrain-work-design.md`
 ("Findings recorded for later specs"). Merging them avoids building the measurement
 rig twice.
 

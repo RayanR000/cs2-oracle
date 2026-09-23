@@ -206,7 +206,7 @@ def staleness_band(run_days) -> str:
 def score_by_staleness(records: list[dict]) -> dict:
     """Directional accuracy per staleness band. Never pooled.
 
-    The axis `docs/superpowers/specs/2026-08-07-friction-conditioned-tier-scoring-design.md`
+    The axis `docs/specs/2026-08-07-friction-conditioned-tier-scoring-design.md`
     deferred to step 6. Reported as a split rather than used as a filter, for
     the same reason the carry-forward partition is: "how much of our accuracy
     is frozen prices" has to stay answerable.

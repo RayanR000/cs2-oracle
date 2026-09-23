@@ -1,7 +1,7 @@
 # Served-feedback q_hat relevelling: verified dormant-correct, wake is dated
 
 **Date:** 2026-09-13. No code change — verification + countdown only.
-**Design:** `docs/superpowers/specs/2026-08-16-served-outcome-feedback-calibration-design.md`.
+**Design:** `docs/specs/2026-08-16-served-outcome-feedback-calibration-design.md`.
 **Mechanism:** `models/served_recalibration.py`, wired `train()` → `meta.json`
 → `served_qhat_multiplier()` at predict (`forecaster.py:6199,8364,10045`).
 

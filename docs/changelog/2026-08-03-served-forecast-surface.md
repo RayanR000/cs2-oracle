@@ -173,8 +173,8 @@ meaning, and `test_serving_policy.py` fails if the two ever diverge.
 
 ## Related
 
-- `docs/superpowers/specs/2026-08-03-served-forecast-surface-design.md` — the design
-- `docs/superpowers/plans/2026-08-03-served-forecast-surface.md` — the plan
+- `docs/specs/2026-08-03-served-forecast-surface-design.md` — the design
+- `docs/plans/2026-08-03-served-forecast-surface.md` — the plan
 - `docs/changelog/2026-07-31-accuracy-work-closed.md` — the collector audit whose
   silent-success shape `check_forecast_freshness.py` is written against
 - `docs/changelog/2026-08-01-deterministic-backtest.md` — the fix that made served

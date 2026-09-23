@@ -156,7 +156,7 @@ The figures still printed, and still current:
 
 ### Why this matters for the cohort-parity work
 
-`docs/superpowers/specs/2026-08-05-cv-cohort-parity-design.md` reports a residual
+`docs/specs/2026-08-05-cv-cohort-parity-design.md` reports a residual
 CV-vs-production gap of 3.6–19.1pp, widening with horizon. The **CV side of that
 comparison is sound** — out-of-fold, and confirmed by retrain (run
 `31048504009`). The **production side is these NO HEADLINE numbers.** So the

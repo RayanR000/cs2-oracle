@@ -8,7 +8,7 @@
 
 **Tech Stack:** MLflow (local file store), Evidently AI, FastAPI, pytest
 
-**Spec:** `docs/superpowers/specs/2026-09-18-ml-upgrade-design.md` (Phase 2 section)
+**Spec:** `docs/specs/2026-09-18-ml-upgrade-design.md` (Phase 2 section)
 
 ## Global Constraints
 

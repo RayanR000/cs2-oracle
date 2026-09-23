@@ -60,4 +60,4 @@ it does not close it. Directional, not publishable — the definitive read is a 
 
 The durable fix is `DIRECTION_UPWEIGHT → 1.0` (unbias the q50 itself), so the band carries no skew
 that has to transfer across regimes. See
-`docs/superpowers/specs/2026-08-19-signed-conformal-quantile-design.md`.
+`docs/specs/2026-08-19-signed-conformal-quantile-design.md`.

@@ -1,7 +1,7 @@
 # C2 lambdarank clears the diagnostic bar at 4/4 — the first arm to beat the q50's own ordering
 
 **Date:** 2026-08-13.
-**Pre-registered:** `docs/superpowers/specs/2026-08-13-lambdarank-diagnostic-design.md` (spec
+**Pre-registered:** `docs/specs/2026-08-13-lambdarank-diagnostic-design.md` (spec
 `d995675`, implementation `343140b`, workflow arm `+1`), on branch `lambdarank-diagnostic`.
 The bar, the tied-cohort primary read, and the point prediction were fixed before the dispatch.
 **Read:** run `31735646130`, `LAMBDARANK=1 cv_diagnostic_classifier=q50`, matrix over 3/7/14/30d.

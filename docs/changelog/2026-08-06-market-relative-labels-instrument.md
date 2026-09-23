@@ -1,8 +1,8 @@
 # An instrument for market-relative direction labels — built, not yet measured
 
 **Date:** 2026-08-06
-**Spec:** `docs/superpowers/specs/2026-08-06-market-relative-labels-design.md`
-**Plan:** `docs/superpowers/plans/2026-08-06-market-relative-labels.md`
+**Spec:** `docs/specs/2026-08-06-market-relative-labels-design.md`
+**Plan:** `docs/plans/2026-08-06-market-relative-labels.md`
 **Commits:** `444268f` (new files); the `forecaster.py` / `forecast_prices.py` edits are
 still uncommitted — see "Commit provenance" below.
 
@@ -246,9 +246,9 @@ absolute levels to "the arms' tree" rather than to a named artifact.
 
 ## Related
 
-* `docs/superpowers/specs/2026-08-06-market-relative-labels-design.md` — the full design and
+* `docs/specs/2026-08-06-market-relative-labels-design.md` — the full design and
   the pre-registered rule.
-* `docs/superpowers/plans/2026-08-06-market-relative-labels.md` — the implementation plan.
+* `docs/plans/2026-08-06-market-relative-labels.md` — the implementation plan.
 * `docs/changelog/2026-08-03-accuracy-is-clustered-by-forecast-date.md` — the finding this
   instrument acts on.
 * `docs/changelog/2026-08-06-served-cohort-weighting-refuted.md` — the paired cold-retrain

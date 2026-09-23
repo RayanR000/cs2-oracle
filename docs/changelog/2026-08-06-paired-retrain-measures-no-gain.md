@@ -197,7 +197,7 @@ entry estimated. That number was the reason the measurement kept being deferred.
 * **No accuracy claim is available, and the earlier framing must change.**
   "The causes are fixed. The improvement is not proven." becomes: *measured, and
   no improvement was detectable at a 3–4pp floor; the point estimates are
-  flat-to-negative.* `docs/model-review-2026-08-06-plain-english.md` carries the
+  flat-to-negative.* `docs/research/2026-08-06-model-review-plain-english.md` carries the
   old wording and the "about a 20-minute job" estimate, both now superseded.
 * **The validation-window collapse in side effect 1 is a defect to fix**, not a
   measurement artifact. Voiding a label is the right call; silently demoting

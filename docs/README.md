@@ -314,7 +314,7 @@ report it rather than working around it.
   |r| < 0.002 reasoning at `:27`/`:142` does not, the free archive source died 2026-04-15, and
   post-2026-03-22 "volume" is a listing count.
 - `competitor-analysis.md` — landscape and differentiators; four inline caveats added 2026-08-09
-- `2026-07-27-direction-label-sweep-raw.txt` — raw sweep output. ⚠️ **It is a crashed run** — dies
+- `research/data/2026-07-27-direction-label-sweep-raw.txt` — raw sweep output. ⚠️ **It is a crashed run** — dies
   on an SSL timeout partway through 14d; 30d never ran and no summary line was printed. Nothing
   cites it. Every treatment arm loses to control on the three completed horizons, which is
   consistent with the vol-scaled branch being dead code (`sigma=None` on both paths).
@@ -352,9 +352,9 @@ their gate rewritten after the result was seen, all on 2026-08-13 — marked bel
   (2022-04 → 2026-05) not yet ingested. Its `count_in_24` is the volume-feed repair that item 2 of
   the live list depends on, and it multiplies backtest episodes ~10×.
 
-## Design docs and plans (`superpowers/`)
+## Design docs and plans (`specs/`, `plans/`)
 
-`specs/` holds designs (23), `plans/` the execution checklists (18). Each shipped change is
+`specs/` holds designs (27), `plans/` the execution checklists (18). Each shipped change is
 also recorded in `changelog/`, which is the durable record. Load-bearing ones:
 
 - `specs/2026-08-12-sigma-exponent-design.md` — **designed, not implemented.** The band divides by
@@ -546,7 +546,7 @@ The newest:
   every arm; reported as a misfire, with the comparison labelled post-hoc. ⚠️ The tilt and width wins
   are stable across both periods; the **marginal win is not** — on the earlier period the exponent
   arms cover 74–77%, so nothing here fixes the level. Spec:
-  `superpowers/specs/2026-08-12-sigma-exponent-design.md`. Nothing shipped.
+  `specs/2026-08-12-sigma-exponent-design.md`. Nothing shipped.
 - `2026-08-12-marginal-over-coverage-is-half-the-sigma-mix.md` — the seventh cause, and the first one
   that **sizes**. The served `sigma` distribution runs **1.28–1.29×** the calibration median
   (measured directly, not implied as `half_pct / q_hat`), and pushing the measured coverage-vs-`sigma`
@@ -636,20 +636,17 @@ reach back into earlier entries:
 
 ## Other
 
-- `code-review-2026-07-21.md` — **Live punch list**, line refs re-verified 2026-08-21. The
+- `research/2026-07-21-code-review.md` — **Live punch list**, line refs re-verified 2026-08-21. The
   security cluster (SQL f-strings, default secret key, session token in a redirect URL) is
   still open verbatim; findings 5, 6, 9 and 11 closed by file deletions. Separates LIVE from
   DORMANT.
-- `model-review-2026-08-06-plain-english.md` — the non-technical companion to the 2026-08-06
+- `research/2026-08-06-model-review-plain-english.md` — the non-technical companion to the 2026-08-06
   scale-free-features audit. ⚠️ **Historical, not current advice.** Its framing is directional
   accuracy, which the 2026-08-15 reclassification retired as a product claim, and its
   "Still open" list is closed.
 - `operations.md` — runbook: workflow schedules, required secrets, load-bearing steps,
   troubleshooting
-- `design.md` — ⚠️ **describes the frontend deleted 2026-08-10.** Visual design system:
-  OKLCH palette, typography, spacing, components. Bannered, and kept as **rebuild input
-  only** — the `frontend/app/*` paths it references no longer exist
-- `product.md` — ⚠️ **same: rebuild input, not a live spec.** Positioning, users, brand
+- `product.md` — ⚠️ **describes the frontend deleted 2026-08-10: rebuild input, not a live spec.** Positioning, users, brand
   personality, design principles, written in the present tense about an interface that
   no longer ships
 

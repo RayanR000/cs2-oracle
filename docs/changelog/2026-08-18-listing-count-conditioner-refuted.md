@@ -42,5 +42,5 @@ present. A live served-panel confirmation cannot repair an absent population.
 **CLOSED. Do not re-run.** The surviving band-calibration lever is the dormant served-outcome
 `q_hat` feedback (`2026-08-16-served-outcome-feedback-calibration-built-dormant.md`; self-activates
 ~2026-09-06), not a listing term. Only reopen if the iflow backfill
-(`superpowers/specs/2026-08-17-iflow-serve-universe-expansion-design.md`) materially grows the
+(`specs/2026-08-17-iflow-serve-universe-expansion-design.md`) materially grows the
 thin-listing ≥$1 cohort — and re-check bucket `n` before spending any more time on it.

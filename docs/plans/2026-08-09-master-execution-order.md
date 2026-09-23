@@ -47,8 +47,8 @@ wasted.
 
 | Plan | Covers |
 |---|---|
-| `docs/superpowers/plans/2026-08-09-training-cost.md` | Phase 1, tasks 1–7 |
-| `docs/superpowers/plans/2026-08-09-label-integrity.md` | Phase 2, tasks 1–4 |
+| `docs/plans/2026-08-09-training-cost.md` | Phase 1, tasks 1–7 |
+| `docs/plans/2026-08-09-label-integrity.md` | Phase 2, tasks 1–4 |
 
 ---
 

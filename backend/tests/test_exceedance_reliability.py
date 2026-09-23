@@ -7,7 +7,7 @@ This is the pre-flip validation: no served `exceed_p` exists yet, so it runs
 through `replay_serving`, which rebuilds forecasts from the archive — exactly how
 band coverage was validated before it was confirmed on served outcomes.
 
-Scope: docs/superpowers/plans/2026-08-16-exceedance-band-scale-phase2-plan.md.
+Scope: docs/plans/2026-08-16-exceedance-band-scale-phase2-plan.md.
 """
 
 from __future__ import annotations

@@ -5,7 +5,7 @@
 `ab_test_training_breadth` measured breadth-vs-depth (GH run `32168044697`) on
 `DA(strict, >=$1)`, held-out items, ~25–26 folds, paired-vs-narrow with dates clustered. This
 answers whether serving *more items* costs accuracy — the question the iflow serve-universe
-expansion (`superpowers/specs/2026-08-17-iflow-serve-universe-expansion-design.md`) turns on.
+expansion (`specs/2026-08-17-iflow-serve-universe-expansion-design.md`) turns on.
 
 ## Result
 

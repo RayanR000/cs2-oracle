@@ -58,7 +58,7 @@ OUTCOME_TOLERANCE_DAYS = 3
 # `backtest.price_resolution` exports `SMOOTH_WINDOW` and `MAX_WINDOW_SPAN_DAYS`
 # and `models.forecaster` re-exports them, so an experiment that changes what
 # price serving quotes from -- arm B of
-# `docs/superpowers/plans/2026-08-11-serving-anchor-freshness.md` moves exactly
+# `docs/plans/2026-08-11-serving-anchor-freshness.md` moves exactly
 # those two constants -- would move the yardstick along with the thing being
 # measured. Importing them here would make the referee follow the arm.
 #

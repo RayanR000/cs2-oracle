@@ -2,7 +2,7 @@
 
 > ## Status — 2026-09-15: items 1 ✅, 2 ✅, 4 ✅, 5 ✅ (published), 6 ✅ resolved; 3 🟡 partly done (local only — canonical still carries all four).
 >
-> **This is the most outstanding plan in `docs/superpowers/plans/`.** Verified against the
+> **This is the most outstanding plan in `docs/plans/`.** Verified against the
 > canonical `RayanR000/cs2-oracle-data` repo, not the local copy.
 >
 > | # | Status |

@@ -3,7 +3,7 @@
 Mirrors the direction classifier but trains on the precomputed one-sided
 `target_exceed_{h}d` labels. Rows with a NaN label are dropped (so it trains on the
 range model's rows); it returns None when fewer than two classes survive.
-Scope: docs/superpowers/plans/2026-08-16-exceedance-band-scale-phase2-plan.md.
+Scope: docs/plans/2026-08-16-exceedance-band-scale-phase2-plan.md.
 """
 
 from __future__ import annotations

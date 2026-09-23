@@ -3,7 +3,7 @@
 Split conformal re-run on the served forecast_outcomes panel — the factor that would have
 made the served (asymmetric, mid-anchored) band cover at the 80% nominal. Gated on
 MIN_FEEDBACK_DATES distinct served dates per horizon, clamped to [0.5, 2.0], no-op (absent)
-below the gate. See docs/superpowers/specs/2026-08-16-served-outcome-feedback-calibration-design.md.
+below the gate. See docs/specs/2026-08-16-served-outcome-feedback-calibration-design.md.
 """
 
 from __future__ import annotations

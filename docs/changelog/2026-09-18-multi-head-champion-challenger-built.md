@@ -2,8 +2,8 @@
 
 **Status:** SHIPPED as a framework. No promotion, no serving change.
 Production output is byte-identical with shadow mode enabled.
-**Spec:** `docs/superpowers/specs/2026-09-18-multi-head-champion-challenger-design.md`.
-**Plan:** `docs/superpowers/plans/2026-09-18-multi-head-champion-challenger.md` (Tasks 1–12).
+**Spec:** `docs/specs/2026-09-18-multi-head-champion-challenger-design.md`.
+**Plan:** `docs/plans/2026-09-18-multi-head-champion-challenger.md` (Tasks 1–12).
 
 ## Production / shadow state
 

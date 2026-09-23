@@ -365,7 +365,7 @@ Formerly listed as remaining, now **abandoned unmeasurable**:
   (3d −0.78 / 7d +1.28 / 14d +0.76 / 30d −0.63pp), and **+77% feature-build
   time**. Helps 7d/14d, hurts 3d/30d. **Feature code removed entirely** the same
   day (net-flat did not justify the build cost + complexity). Design preserved in
-  `docs/superpowers/specs/2026-07-25-quality-spread-features-design.md`; result in
+  `docs/specs/2026-07-25-quality-spread-features-design.md`; result in
   `docs/changelog/2026-07-25-quality-spread-experiment.md`.
 
 ---

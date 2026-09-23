@@ -71,7 +71,7 @@ The CS2 skin market is valued at approximately $4.5-7B (2026). Multiple platform
 |---------|-------------|
 | **Sales volume data** | ~~Feature input for ML models — volume predicts volatility and price momentum~~ — **refuted.** All 13 volume features were shelved 2026-08-06; see `docs/research/volume-data.md` and `docs/changelog/2026-08-06-volume-features-shelved.md` |
 | **Cross-market price spread** | ~~Arbitrage patterns feed into forecasts~~ — the `cross_sectional` group is discarded by `FEATURE_GROUP_ALLOWLIST` before training (`backend/models/forecaster.py:353`) |
-| **Most liquid skins** | ~~Context for prediction reliability (low liquidity = wider confidence intervals)~~ — the confidence gate was removed; the served band is split-conformal and not liquidity-conditioned (`docs/superpowers/specs/2026-08-03-served-forecast-surface-design.md`) |
+| **Most liquid skins** | ~~Context for prediction reliability (low liquidity = wider confidence intervals)~~ — the confidence gate was removed; the served band is split-conformal and not liquidity-conditioned (`docs/specs/2026-08-03-served-forecast-surface-design.md`) |
 
 ### Skip — zero prediction angle
 

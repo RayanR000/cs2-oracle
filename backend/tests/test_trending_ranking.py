@@ -6,7 +6,7 @@ predicted return was considered at all. The ``"medium"`` tier it ranked between
 high and low has never been emitted once — 0 rows in the entire forecast
 history.
 
-See docs/superpowers/specs/2026-08-03-served-forecast-surface-design.md.
+See docs/specs/2026-08-03-served-forecast-surface-design.md.
 """
 
 from __future__ import annotations

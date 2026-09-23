@@ -8,7 +8,7 @@
 
 **Tech Stack:** Python 3.11/3.13, pandas, NumPy, LightGBM, SQLAlchemy, Alembic, PostgreSQL/SQLite, DuckDB, pytest.
 
-**Spec:** `docs/superpowers/specs/2026-09-18-multi-head-champion-challenger-design.md`
+**Spec:** `docs/specs/2026-09-18-multi-head-champion-challenger-design.md`
 
 ## Global Constraints
 

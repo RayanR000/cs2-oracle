@@ -9,7 +9,7 @@ four queries and ranked by it, so it promoted the worst forecasts first. It also
 had no price floor: the newest date offered 1,680 "undervalued" candidates with
 a median price of $0.50.
 
-See docs/superpowers/specs/2026-08-03-served-forecast-surface-design.md.
+See docs/specs/2026-08-03-served-forecast-surface-design.md.
 """
 
 from __future__ import annotations

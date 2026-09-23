@@ -21,7 +21,7 @@
 
 **Tech Stack:** Python 3.11, pandas, DuckDB (archive reads), SQLAlchemy + Alembic, pytest. No new dependencies.
 
-**Spec:** `docs/superpowers/specs/2026-08-01-deterministic-backtest-design.md`
+**Spec:** `docs/specs/2026-08-01-deterministic-backtest-design.md`
 
 ## Global Constraints
 

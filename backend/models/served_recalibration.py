@@ -14,7 +14,7 @@ prior "different populations" refutations (docs/changelog/2026-08-12-served-sigm
 
 Gated on MIN_FEEDBACK_DATES distinct served dates per horizon (data-blocked today: ~0-4 exist),
 so it ships dormant and self-activates. Clamped so a contaminated panel cannot wreck the band.
-Design: docs/superpowers/specs/2026-08-16-served-outcome-feedback-calibration-design.md.
+Design: docs/specs/2026-08-16-served-outcome-feedback-calibration-design.md.
 """
 
 from __future__ import annotations

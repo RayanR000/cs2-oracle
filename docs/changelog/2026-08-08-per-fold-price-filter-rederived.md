@@ -1,7 +1,7 @@
 # The $1 training floor's look-ahead is real and worth −0.004pp; the +3.50pp does not reproduce
 
 **Date:** 2026-08-08
-**Plan:** `docs/superpowers/plans/2026-08-08-per-fold-price-filter.md` — **stage 1 only**
+**Plan:** `docs/plans/2026-08-08-per-fold-price-filter.md` — **stage 1 only**
 **Scope:** research instrument. Production is untouched; `build_training_data` does not call
 anything added here.
 **Branch:** `research/per-fold-price-filter`, uncommitted at time of writing —

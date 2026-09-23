@@ -7,7 +7,7 @@ fold-grid flag + Path A six-anchor spec) is superseded and will not be merged.
 
 The Path A question — does the vs-q50 tied rank IC edge survive onto the serving
 window — was answered the next day by the fuller instrument
-(`docs/superpowers/specs/2026-08-14-lambdarank-serving-transfer-design.md`,
+(`docs/specs/2026-08-14-lambdarank-serving-transfer-design.md`,
 biweekly retrain scoring daily, ~52 anchors) and recorded in
 `docs/changelog/2026-08-14-lambdarank-serving-transfer-measured.md` with a
 same-day durable-archive confirmation: h3 sign-flips (−0.174), h30 sign-flips
@@ -31,7 +31,7 @@ band; `CENTRE_OBJECTIVE=30:regression`) was trained on CV-geometry evidence
 transfer. Its transfer verdict is therefore pending, not assumed: the honest read
 is served `rank_score` vs served q50 on archive-basis outcomes with a 20-date
 paired gate — the shadow `ranking_transfer_report` in
-`docs/superpowers/plans/2026-09-18-multi-head-champion-challenger.md` plus the
+`docs/plans/2026-09-18-multi-head-champion-challenger.md` plus the
 armed archive-basis leg (`docs/changelog/2026-09-13-archive-basis-centre-rank-armed.md`,
 power gate ~09-27). No Path B wiring (rank into direction/band) until that
 report returns SUPPORTED.

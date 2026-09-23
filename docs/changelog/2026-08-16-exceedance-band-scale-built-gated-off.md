@@ -2,7 +2,7 @@
 
 **Date:** 2026-08-16. Nothing shipped; the flag defaults off and no served band changes.
 **Implements:** Phase 2 (Tasks 1–2) of
-`docs/superpowers/plans/2026-08-16-exceedance-band-scale-phase2-plan.md`, off the offline result in
+`docs/plans/2026-08-16-exceedance-band-scale-phase2-plan.md`, off the offline result in
 `docs/changelog/2026-08-16-exceedance-probability-improves-band-conditional-coverage.md`.
 
 ## What it does

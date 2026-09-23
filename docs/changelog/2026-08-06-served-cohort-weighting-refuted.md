@@ -1,7 +1,7 @@
 # Served-cohort weighting is refuted — reweighting the ≥$1 rows moves the classifier ~0.1pp
 
 **Date:** 2026-08-06
-**Spec:** `docs/superpowers/specs/2026-08-06-served-cohort-weighting-design.md`
+**Spec:** `docs/specs/2026-08-06-served-cohort-weighting-design.md`
 **Change:** a served-cohort training weight for the directional classifier, built,
 measured on two paired cold retrains, and **left defaulted off**.
 `DEFAULT_SERVED_COHORT_SHARE = None`, so production behaviour is byte-identical to
@@ -240,7 +240,7 @@ attributed to "the arms' tree", not specifically to the deployed v3 artifact.
 
 ## Related
 
-* `docs/superpowers/specs/2026-08-06-served-cohort-weighting-design.md` — full
+* `docs/specs/2026-08-06-served-cohort-weighting-design.md` — full
   rationale, archive cohort measurement, pre-registered rule.
 * `2026-08-06-volume-features-shelved.md` — the column-level version of the same
   train/serve mismatch, which *was* real.

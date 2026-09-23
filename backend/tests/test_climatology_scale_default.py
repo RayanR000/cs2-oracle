@@ -1,7 +1,7 @@
 """The climatology band scale is the served default since 2026-08-19, and it must
 coexist with the signed-band serving armed the same day.
 
-`docs/superpowers/specs/2026-08-19-climatology-band-scale.md`. These guard the flag
+`docs/specs/2026-08-19-climatology-band-scale.md`. These guard the flag
 default and the one interaction that could break the cutover: the `_calibrate_conformal`
 mutual-exclusion raise (`forecaster.py`, "alternative band denominators, not layers").
 The signed band is a centring / two-quantile change, NOT a scale denominator, so it is

@@ -2,7 +2,7 @@
 
 **Date:** 2026-08-08
 **Step 6** of `docs/research/2026-08-07-next-steps.md`. Review §22 D2, §10 Tier 3 #15.
-**Spec:** `docs/superpowers/specs/2026-08-08-frozen-price-runs-design.md`.
+**Spec:** `docs/specs/2026-08-08-frozen-price-runs-design.md`.
 
 A label measured to or from a bit-identical price run is the Getmansky–Lo–Makarov MA(k)
 artifact, not a market move. `models/staleness.py` now counts those runs, `prepare_targets`
