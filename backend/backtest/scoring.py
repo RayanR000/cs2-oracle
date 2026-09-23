@@ -12,6 +12,7 @@ from collections import defaultdict
 from datetime import date, datetime
 
 import numpy as np
+from models.conformal import ALPHA
 
 from backtest.actionable import actionable_metrics
 from backtest.directional_test import (
@@ -267,6 +268,22 @@ def price_tier(price: float) -> int:
     return 0
 
 
+def interval_score(lower, upper, actual, alpha: float = ALPHA):
+    """The interval (Winkler) score of a central `1 - alpha` band; lower is better.
+
+    Width, plus `2 / alpha` times the distance by which `actual` fell outside
+    `[lower, upper]` (Gneiting & Raftery 2007). Coverage and width reported apart
+    let a band trade one for the other; this prices the trade in one number, and
+    being proper, no uniformly narrower or wider band beats the true quantiles in
+    expectation. Units follow the inputs. Scalars or arrays, elementwise.
+    """
+    lo = np.asarray(lower, dtype=float)
+    hi = np.asarray(upper, dtype=float)
+    y = np.asarray(actual, dtype=float)
+    score = (hi - lo) + (2.0 / alpha) * (np.maximum(lo - y, 0.0) + np.maximum(y - hi, 0.0))
+    return float(score) if score.ndim == 0 else score
+
+
 def bootstrap_ci(values, n_resamples=N_BOOTSTRAP, ci=BOOTSTRAP_CI):
     if len(values) < 10:
         return None, None
@@ -374,6 +391,8 @@ def score_cohort(records: list[dict]) -> tuple[dict, int]:
     low_dir_sum = 0
     high_interval_total = 0
     high_interval_hits = 0
+    iscore_sum = 0.0
+    iscore_n = 0
     tier_sums: dict = defaultdict(float)
     tier_counts: dict = defaultdict(int)
     dir_corrects = []
@@ -402,6 +421,10 @@ def score_cohort(records: list[dict]) -> tuple[dict, int]:
             dollar_hits += r.get("in_interval_dollar", in_int)
             if r.get("interval_basis_served"):
                 interval_n_served_basis += 1
+        iscore = r.get("interval_score_pct")
+        if iscore is not None:
+            iscore_sum += iscore
+            iscore_n += 1
 
         if r["actual_price"] == r["base_price"]:
             n_unchanged += 1
@@ -572,6 +595,9 @@ def score_cohort(records: list[dict]) -> tuple[dict, int]:
         "interval_coverage_dollar_basis": round(interval_coverage_dollar_basis, 2),
         "interval_n_served_basis": interval_n_served_basis,
         "interval_n_fallback_basis": interval_total - interval_n_served_basis,
+        # Mean interval (Winkler) score in return pp on the calibrated basis — see
+        # `interval_score`. None when no row carries one (walkforward records).
+        "interval_score_pct": round(iscore_sum / iscore_n, 2) if iscore_n else None,
         "baseline_directional_accuracy": round(baseline_directional_accuracy, 2),
         "improvement_over_baseline_pp": round(directional_accuracy - baseline_directional_accuracy, 2),
         "baseline_mae": round(baseline_mae, 4),
