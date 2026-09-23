@@ -47,6 +47,7 @@ from backtest.scoring import (
     MIN_HEADLINE_DATES,
     direction_from_return,
     excluded_forecast_date,
+    interval_score,
     price_tier,
     score_by_tier,
     score_cohort,
@@ -215,6 +216,13 @@ def _derive_verdict(base, actual, mid, low, high, direction_predicted, *, quote)
         # between the two IS the anchor wedge, which makes it attributable.
         # Not a stored column; `_verdict_for_storage` drops it.
         "in_interval_dollar": (None if no_band else (1 if low <= actual <= high else 0)),
+        # The interval score on the same calibrated basis as `in_interval`: band and
+        # outcome as returns off `base`, in pp. Reporting-only, like the key above.
+        "interval_score_pct": (
+            None
+            if no_band
+            else interval_score(low * rebase / base - 1, high * rebase / base - 1, actual / base - 1) * 100
+        ),
         "abs_error": abs_error,
         # Divided by the BASE leg, not the actual. Explicit human ruling.
         "pct_error": abs(abs_error / base) * 100,
@@ -708,6 +716,7 @@ def _records_from_frozen_outcomes(db, min_price=0, forecast_ids=None):
                 # breaks at 2026-08-11 — a payload that cannot name its own
                 # convention is not self-describing.
                 "in_interval_dollar": verdict["in_interval_dollar"],
+                "interval_score_pct": verdict["interval_score_pct"],
                 "interval_basis_served": _quote_basis(r.current_price, base) != base,
                 "confidence": r.confidence or "low",
                 "base_price": base,
