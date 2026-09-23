@@ -176,6 +176,8 @@ report it rather than working around it.
 - `steam-api.md` — Steam Market endpoints and response formats, empirically tested.
   The rate-limit envelope applies to **residential IPs only** — hosted CI runners are
   429'd on the first request.
+- `open-source-shortlist.md` — ranked OSS worth adding or reading (2026-09-23): conformal PID,
+  scoringrules, statsforecast; licenses checked; three malware-lure repos flagged
 - `data-sources.md` — per-source status, freshness, known issues
 - `data-inventory.md` — the canonical coverage audit: what is actually on disk, how much of
   the market it covers, and where the history is thin. Companion to `data-sources.md`, which
