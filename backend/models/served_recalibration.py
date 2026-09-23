@@ -89,6 +89,34 @@ CLIMATOLOGY_SERVING_START: str | None = "2026-08-20"  # first clean climatology 
 SHRINK_K_SERVING_START: str | None = "2026-09-06"
 # docs/changelog/2026-08-26-climatology-shrink-k-re-swept.md
 
+# The multiplier itself is a FOURTH band-geometry change, and a recurring one: every refit that
+# moves the factor re-scales the stored half-widths `r` reads. Flooring past each change (the
+# approach above) would restart the date clock every week, so instead each served row records
+# the multiplier it was served at (`item_forecasts.band_multiplier`) and `r` is scaled back to
+# the BASE band before pooling. That makes the refit a fixed point: a panel served at the right
+# factor returns that factor, instead of ~1.0 (the pre-2026-09-23 behaviour, which would have
+# re-widened the h=3 band at the 2026-09-28 retrain and oscillated thereafter).
+#
+# Rows written before the column existed carry NULL. Before this date NO multiplier had served
+# at any horizon, so NULL there is provably 1.0; on or after it NULL is unknown and the row is
+# dropped. First non-empty factor: Price Forecast run 35306325544 (2026-09-18 04:17 UTC, a
+# predict-only live panel read, {3: 0.5251}) serving forecast_date 2026-09-17.
+FEEDBACK_FIRST_SERVED_DATE = "2026-09-17"
+
+
+def resolve_band_multiplier(forecast_date, stored) -> float:
+    """The multiplier a served row was served at, or NaN when it cannot be known.
+
+    A recorded positive finite value wins. NULL before FEEDBACK_FIRST_SERVED_DATE is 1.0 (no
+    multiplier existed); NULL on or after it is NaN, and so is a non-positive or non-finite
+    value -- the caller drops those rows rather than reading an unscaled band as the base."""
+    if stored is not None:
+        m = float(stored)
+        return m if np.isfinite(m) and m > 0 else float("nan")
+    fd = pd.Timestamp(forecast_date)
+    return 1.0 if fd < pd.Timestamp(FEEDBACK_FIRST_SERVED_DATE) else float("nan")
+
+
 # A sentinel distinguishing "caller did not pass since" from an explicit since=None (dormant).
 # Typed Any: the `since: str | None = _UNSET` default below is intentional, and
 # a bare `object()` default would otherwise fail type checking (2026-09-15).
@@ -119,6 +147,7 @@ PANEL_COLUMNS = (
     "predicted_price_mid",
     "predicted_price_high",
     "actual_price",
+    "band_multiplier",
 )
 
 
@@ -152,6 +181,10 @@ def factors_from_panel(
     `since` (ISO date) is the signed-band geometry floor: rows with `forecast_date < since` are
     dropped before anything else, because `r` reads the stored band shape and pre-cutover rows
     carry the old symmetric geometry (see SIGNED_BAND_SERVING_START). None keeps every row.
+
+    A `band_multiplier` column, when present, is the multiplier each row was served at: `r` is
+    multiplied by it to score the row against the BASE band the factor is applied to, and rows
+    where it is NaN (unknown) are dropped. Absent, every row is read as served at 1.0.
     """
     out: dict[int, float] = {}
     if panel is None or panel.empty:
@@ -174,6 +207,10 @@ def factors_from_panel(
         half = np.where(above, high - mid, mid - low)
         with np.errstate(divide="ignore", invalid="ignore"):
             r = np.where(above, actual - mid, mid - actual) / half
+        if "band_multiplier" in rows.columns:
+            # Stored half = mult * base half exactly (band_signed scales q_lo/q_hi by it), so
+            # r * mult is the score against the base band. NaN mult -> NaN r -> dropped below.
+            r = r * rows["band_multiplier"].to_numpy(dtype=float)
         # Drop rows with a degenerate half (<= 0) or any non-finite input.
         keep = np.isfinite(r) & (half > 0)
         r = r[keep]
@@ -300,14 +337,24 @@ def _load_panel(session, horizons: Iterable[int], *, since: str | None = None) -
     """Read the scored forecast_outcomes panel from Postgres (the ops parquet mirrors are
     stale/selected — see backend/AGENTS.md). Read-only, columns narrowed to the estimator's.
     `since` (ISO date), when set, floors forecast_date to the signed-band geometry cutover."""
-    from sqlalchemy import bindparam, text
+    from sqlalchemy import bindparam, inspect, text
 
     hs = [int(h) for h in horizons]
-    where = "WHERE horizon_days IN :horizons AND actual_price IS NOT NULL AND predicted_price_mid IS NOT NULL"
+    where = "WHERE o.horizon_days IN :horizons AND o.actual_price IS NOT NULL AND o.predicted_price_mid IS NOT NULL"
     params: dict = {"horizons": hs}
     if since is not None:
-        where += " AND forecast_date >= :since"
+        where += " AND o.forecast_date >= :since"
         params["since"] = since
+    # The served multiplier lives on the forecast row. Probe for the column rather than let the
+    # SELECT fail: a failed read returns {} -> multiplier 1.0 -> the band snaps to full width.
+    # Without it every row resolves as unrecorded, which drops post-activation rows (safe).
+    has_mult = "band_multiplier" in {c["name"] for c in inspect(session.get_bind()).get_columns("item_forecasts")}
+    mult_sql = "f.band_multiplier" if has_mult else "CAST(NULL AS FLOAT)"
+    if not has_mult:
+        logger.warning(
+            "  served-coverage: item_forecasts has no band_multiplier column (migration 0028 not "
+            f"applied) -- rows served on/after {FEEDBACK_FIRST_SERVED_DATE} are dropped from the refit."
+        )
     # `forecast_outcomes` has no `price_tier` column -- that lives on `prediction_accuracy`
     # (added there by migration 0019). Selecting it here raised UndefinedColumn on every prod
     # run, and `served_coverage_factors` swallows the read failure, so the feedback was silently
@@ -316,10 +363,12 @@ def _load_panel(session, horizons: Iterable[int], *, since: str | None = None) -
     # keeps the >= $1 cohort here identical to the one the headline scores, and works on the rows
     # already in the table instead of only on ones written after a migration.
     sql = text(
-        "SELECT forecast_date, horizon_days, "
-        "COALESCE(base_price, current_price) AS tier_price, "
-        "predicted_price_low, predicted_price_mid, predicted_price_high, actual_price "
-        f"FROM forecast_outcomes {where}"
+        "SELECT o.forecast_date, o.horizon_days, "
+        "COALESCE(o.base_price, o.current_price) AS tier_price, "
+        "o.predicted_price_low, o.predicted_price_mid, o.predicted_price_high, o.actual_price, "
+        f"{mult_sql} AS band_multiplier "
+        "FROM forecast_outcomes o LEFT JOIN item_forecasts f ON f.id = o.forecast_id "
+        f"{where}"
     ).bindparams(bindparam("horizons", expanding=True))
     rows = session.execute(sql, params).mappings().all()
     cols = ["tier_price" if c == "price_tier" else c for c in PANEL_COLUMNS]
@@ -328,6 +377,16 @@ def _load_panel(session, horizons: Iterable[int], *, since: str | None = None) -
     # the same treatment a sub-$1 item gets, which is the conservative side for a band factor.
     px = pd.to_numeric(df["tier_price"], errors="coerce").fillna(0.0).to_numpy(dtype=float)
     df["price_tier"] = [price_tier(float(v)) for v in px]
+    df["band_multiplier"] = [
+        resolve_band_multiplier(fd, None if pd.isna(m) else m)
+        for fd, m in zip(df["forecast_date"], df["band_multiplier"])
+    ]
+    n_unknown = int(np.isnan(df["band_multiplier"].to_numpy(dtype=float)).sum())
+    if n_unknown:
+        logger.warning(
+            f"  served-coverage: {n_unknown:,} served rows have no recorded band_multiplier on/after "
+            f"{FEEDBACK_FIRST_SERVED_DATE}; dropped from the refit (their base-band score is unknown)."
+        )
     return df[list(PANEL_COLUMNS)]
 
 

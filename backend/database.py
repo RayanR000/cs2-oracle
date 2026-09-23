@@ -207,6 +207,13 @@ class ItemForecast(Base):
     # exceedance head (EXCEEDANCE_HEAD off, or a degenerate <2-class horizon).
     exceed_p = Column(Float, nullable=True)
     anomaly_p = Column(Float, nullable=True)
+    # The served-coverage q_hat multiplier this band was served at, AFTER the
+    # prior-day blend (so a transition day records the blended 0.85*m + 0.15*prior,
+    # not m). The feedback refit multiplies each row's score by it to recover the
+    # BASE-band score; without it a refit over rows served at different multipliers
+    # does not converge (docs/changelog/2026-09-23-feedback-factor-refit-composes.md).
+    # NULL means "not recorded" -- see served_recalibration.resolve_band_multiplier.
+    band_multiplier = Column(Float, nullable=True)
     created_at = Column(DateTime, default=utcnow_naive)
 
     item = relationship("Item", back_populates="forecasts")

@@ -355,6 +355,9 @@ def _write_forecasts_to_db(
                     # artifact with no exceedance head. Disclosure field, NULL-safe.
                     "exceed_p": fcast.get("exceed_p"),
                     "anomaly_p": fcast.get("anomaly_p"),
+                    # The served-coverage multiplier the band was served at (post-blend);
+                    # the feedback refit reads it to score the row on the base band.
+                    "band_multiplier": fcast.get("band_multiplier"),
                     "created_at": datetime.now(UTC).replace(tzinfo=None),
                 }
             )
@@ -386,12 +389,17 @@ def _write_forecasts_to_db(
         # recorded" and passes it, so dropping these degrades to the old
         # behaviour rather than to an empty ranked surface.
         db_cols = _get_forecast_cols(bind, table)
-        missing = {c for c in ("anchor_clean", "anchor_wedge_pct", "exceed_p", "anomaly_p") if c not in db_cols}
+        missing = {
+            c
+            for c in ("anchor_clean", "anchor_wedge_pct", "exceed_p", "anomaly_p", "band_multiplier")
+            if c not in db_cols
+        }
         if missing:
             logger.warning(
                 f"  ⚠ item_forecasts is missing {sorted(missing)} — writing "
                 f"forecasts WITHOUT those disclosure fields "
-                f"(clean-anchor 0022/0024, exceed_p, anomaly_p 0025). "
+                f"(clean-anchor 0022/0024, exceed_p, anomaly_p 0025, band_multiplier 0028 -- without "
+                f"it the served-coverage refit drops every post-activation row). "
                 f"/opportunities cannot gate on a column that is not there, so "
                 f"it will rank the deviating cohort as before. Run "
                 f"`venv/bin/python -m alembic upgrade head` from backend/ "
