@@ -208,8 +208,10 @@ def factors_from_panel(
         with np.errstate(divide="ignore", invalid="ignore"):
             r = np.where(above, actual - mid, mid - actual) / half
         if "band_multiplier" in rows.columns:
-            # Stored half = mult * base half exactly (band_signed scales q_lo/q_hi by it), so
-            # r * mult is the score against the base band. NaN mult -> NaN r -> dropped below.
+            # Stored half = mult * base half (band_signed scales q_lo/q_hi by it), so r * mult is
+            # the score against the base band. Exact for an unblended band; the recorded mult on a
+            # blended row (0.85 today + 0.15 prior) is approximate when the base width moved since
+            # the prior row, worst on the first predict after a retrain. NaN mult -> NaN r -> dropped.
             r = r * rows["band_multiplier"].to_numpy(dtype=float)
         # Drop rows with a degenerate half (<= 0) or any non-finite input.
         keep = np.isfinite(r) & (half > 0)
