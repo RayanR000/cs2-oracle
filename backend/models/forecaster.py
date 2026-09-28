@@ -1054,7 +1054,10 @@ class ItemForecaster:
     # item-day, which split-half measurement puts at 0.011-0.059 of lost label
     # reliability -- 17% relative at h=30 -- so every return computed across a
     # v7 frame is measurably noisier than the same day rebuilt under v8.
-    VOTED_CACHE_VERSION = 9
+    # v10: the archive read votes in DuckDB (_multi_source_voting_sql). Same
+    # rule, but medians and std are computed by a different engine, so a v9
+    # frame can differ in the last ulp and is not reused.
+    VOTED_CACHE_VERSION = 10
     VOTED_CACHE_PREFIX = "voted_"
     VOTED_CACHE_MAX_ENTRIES = 3
 
@@ -2407,7 +2410,11 @@ class ItemForecaster:
         import duckdb
 
         cutoff = (self._now() - timedelta(days=days_back)).strftime("%Y-%m-%d")
-        con = duckdb.connect()
+        # DuckDB defaults to 80% of RAM, which leaves pandas no room on a small
+        # runner. Capped, the vote spills to disk instead: the 11.1M-row train
+        # read peaks at 4.6GB process-wide under 2GB (8s) against 6.4GB under
+        # 4GB (5s), with a byte-identical frame.
+        con = duckdb.connect(config={"memory_limit": os.environ.get("VOTED_DUCKDB_MEMORY_LIMIT", "2GB")})
         try:
             # One reader for the whole archive; it handles the pre-2026 files
             # lacking `source` and the TIMESTAMP/TIMESTAMP_NS split. See
@@ -2434,9 +2441,16 @@ class ItemForecaster:
                     f"  REPLAY_ANCHOR={_anchor}: archive read bounded at that "
                     f"date. This is a backdated replay, not a live forecast."
                 )
-            df = con.sql(
+            # Raw rows stay inside DuckDB: materialising them in pandas and
+            # voting there peaked above the CI runner's memory on the 12.4M-row
+            # train read (killed twice on 2026-09-28). Some Parquet years store
+            # mean_price/volume as VARCHAR, hence TRY_CAST.
+            con.execute(
                 f"""
-                SELECT item_slug, day, mean_price AS price, volume, source
+                CREATE TEMP TABLE _raw AS
+                SELECT sub.item_slug AS item_id, CAST(day AS DATE) AS date,
+                       TRY_CAST(mean_price AS DOUBLE) AS price,
+                       TRY_CAST(volume AS DOUBLE) AS volume, source
                 FROM {relation} sub
                 {slug_join}
                 WHERE day >= ?
@@ -2444,31 +2458,22 @@ class ItemForecaster:
                   AND (source IS NULL OR source NOT LIKE 'historical_fallback:%')
                   AND {phase_collapsed_sql_filter("sub.item_slug")}
                   AND {phantom_slug_sql_filter("sub.item_slug")}
-                ORDER BY item_slug, day, source
             """,
-                params=[cutoff],
-            ).fetchdf()
+                [cutoff],
+            )
+            con.execute("DELETE FROM _raw WHERE price IS NULL OR isnan(price)")
+            n_before, n_items, n_sources_before = con.sql(
+                "SELECT COUNT(*), COUNT(DISTINCT item_id), COUNT(DISTINCT source) FROM _raw"
+            ).fetchone()
             logger.info(
-                f"  DuckDB query returned {len(df):,} rows "
+                f"  After parsing: {n_before:,} rows, {n_items:,} items "
                 f"(phase-collapsed names excluded: "
                 f"{', '.join(PHASE_COLLAPSED_SLUG_PATTERNS)}; "
                 f"phantom duplicate keys excluded)"
             )
-            df = df.rename(columns={"item_slug": "item_id", "day": "timestamp"})
-            logger.info("  DataFrame created, converting types...")
-            df["timestamp"] = pd.to_datetime(df["timestamp"])
-            df["date"] = df["timestamp"].dt.date
-            # Some Parquet years store mean_price/volume as VARCHAR; the
-            # glob union then coerces the whole column to string. Force
-            # numeric so multi-source voting (np.median) works.
-            df["price"] = pd.to_numeric(df["price"], errors="coerce")
-            df["volume"] = pd.to_numeric(df["volume"], errors="coerce")
-            df = df.dropna(subset=["price"])
-            logger.info(f"  After parsing: {len(df):,} rows, {df.item_id.nunique():,} items")
-            n_before = len(df)
-            n_sources_before = df["source"].nunique() if "source" in df.columns else 1
-            logger.info(f"  Applying multi-source voting ({n_sources_before} sources)...")
-            df = self._apply_multi_source_voting(df)
+            logger.info(f"  Applying multi-source voting in DuckDB ({n_sources_before} sources)...")
+            df = con.sql(self._multi_source_voting_sql("SELECT * FROM _raw") + " ORDER BY item_id, date").df()
+            df["date"] = pd.to_datetime(df["date"]).dt.date
             n_after = len(df)
             logger.info(
                 f"  {n_after:,} rows (Parquet, voted from {n_before:,} rows "
@@ -2632,6 +2637,65 @@ class ItemForecaster:
         # when one side is empty; n_ask_sources must stay a true integer.
         result["n_ask_sources"] = result["n_ask_sources"].astype("int64")
         return result
+
+    @staticmethod
+    def _multi_source_voting_sql(rows_sql: str) -> str:
+        """`_apply_multi_source_voting` as one DuckDB query over ``rows_sql``.
+
+        ``rows_sql`` yields ``item_id, date, price, volume, source`` with no
+        NULL/NaN price. The pandas method stays the reference -- the DB path and
+        the voting tests use it, and `tests/test_sql_voting.py` holds the two
+        equal on every branch. Rules, in its order: drop bids, trailing-window
+        means and Steam spot; stand ``aggregator_sync`` down where
+        >=MIN_ASKS_TO_DROP_SYNC other sources vote (NULL is one bucket); then
+        median, with sources >2 population-std from it masked out when a group
+        has >=3 rows. NaN volume counts as missing, and an all-missing sum is 0.
+        """
+
+        def _in_list(sources) -> str:
+            return ", ".join("'" + s.replace("'", "''") + "'" for s in sorted(sources))
+
+        excluded = _in_list(BID_SOURCES | TRAILING_WINDOW_SOURCES | STEAM_SPOT_SOURCES)
+        cond = _in_list(CONDITIONAL_STEAM_SOURCES)
+        return f"""
+            WITH src AS (
+                SELECT item_id, date, price,
+                       CASE WHEN isnan(volume) THEN NULL ELSE volume END AS volume,
+                       source, COALESCE(source IN ({cond}), false) AS is_cond
+                FROM ({rows_sql}) r
+                WHERE source IS NULL OR source NOT IN ({excluded})
+            ),
+            n_other AS (
+                SELECT item_id, date, COUNT(DISTINCT COALESCE(source, '__null__')) AS n
+                FROM src WHERE NOT is_cond GROUP BY item_id, date
+            ),
+            kept AS (
+                SELECT s.* FROM src s LEFT JOIN n_other o USING (item_id, date)
+                WHERE NOT (s.is_cond AND COALESCE(o.n, 0) >= {MIN_ASKS_TO_DROP_SYNC})
+            ),
+            centred AS (
+                SELECT *, price - AVG(price) OVER (PARTITION BY item_id, date) AS dev FROM kept
+            ),
+            -- Two-pass population std, as np.std computes it. Cent-rounded
+            -- prints can sit exactly on 2 sigma, and stddev_pop's one-pass
+            -- estimate differs in the last ulp, which flips the mask there.
+            stats AS (
+                SELECT item_id, date, COUNT(*) AS n, median(price) AS med,
+                       sqrt(AVG(dev * dev)) AS sd,
+                       COUNT(DISTINCT COALESCE(source, '__null__')) AS n_ask_sources,
+                       COALESCE(SUM(volume), 0.0) AS volume
+                FROM centred GROUP BY item_id, date
+            )
+            SELECT k.item_id, k.date,
+                   median(k.price) FILTER (
+                       WHERE s.n < 3 OR NOT (isfinite(s.sd) AND s.sd > 0)
+                          OR abs(k.price - s.med) <= 2.0 * s.sd
+                   ) AS price,
+                   any_value(s.volume) AS volume,
+                   any_value(s.n_ask_sources)::BIGINT AS n_ask_sources
+            FROM kept k JOIN stats s USING (item_id, date)
+            GROUP BY k.item_id, k.date
+        """
 
     def fetch_events(self) -> pd.DataFrame:
         if hasattr(self, "_events_cache") and self._events_cache is not None:

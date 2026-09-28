@@ -82,12 +82,22 @@ separate fix per loader.
   and `.github/workflows/price-forecast.yml:131` hashes only `forecaster.py` into the CI cache
   key — so editing a source name into or out of either set is invisible to CI unless the
   version constant (re-exported on `forecaster.py`, which the key does hash) moves too.
-  `VOTED_CACHE=0` disables. Now at **v8**: v2 was the `BID_SOURCES` exclusion, which changed
+  `VOTED_CACHE=0` disables. Now at **v10**: v2 was the `BID_SOURCES` exclusion, which changed
   the consensus level, so any surviving v1 frame holds a displaced price series and would have
   trained the next model on it silently; v3 dropped the phase-collapsed names; v4 dropped the
   phantom slug keys; v5 added `n_ask_sources`; v6 excluded `TRAILING_WINDOW_SOURCES` (Steam's
-  trailing-window means); v7 excluded `STEAM_SPOT_SOURCES`; v8 added orderbook features. A source-set change and a universe
-  change both count as voting changes. ⚠️ The CI key's literal prefix still reads `voted-v6`
+  trailing-window means); v7 excluded `STEAM_SPOT_SOURCES`; v8 added orderbook features; v10
+  moved the archive vote into DuckDB. A source-set change and a universe
+  change both count as voting changes.
+- **The vote has two implementations and they must change together.** The archive read
+  (`_fetch_voted_price_history`) votes in SQL via `_multi_source_voting_sql`, under a
+  `VOTED_DUCKDB_MEMORY_LIMIT` cap (default 2GB, spills to disk); the DB path and the voting
+  tests use the pandas `_apply_multi_source_voting`, which is the reference.
+  `tests/test_sql_voting.py` holds them equal on every branch, and on the 11.1M-row train
+  read they were byte-identical (6,584,167 rows). σ is two-pass on purpose: `stddev_pop`
+  differs from `np.std` in the last ulp and flipped one cent-rounded row sitting exactly on
+  2σ. Why: pandas-side voting stopped fitting the CI runner on 2026-09-28.
+  `docs/changelog/2026-09-28-voting-moved-into-duckdb.md`. ⚠️ The CI key's literal prefix still reads `voted-v6`
   and was not bumped with v8 — it is now 2 versions behind, harmless only because the constant lives in the hashed file.
 - **The TRAIN universe is derived from the archive; the SERVE universe is `is_backfilled` in
   the DB.** `ItemForecaster._resolve_backfilled_slugs(universe=…)` routes them:
