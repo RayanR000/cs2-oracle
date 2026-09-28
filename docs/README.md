@@ -236,14 +236,11 @@ report it rather than working around it.
   smaller than the `14–70` in `AGENTS.md`. Ranks the four surviving ideas (target → `P(|r|>cost)`
   first) and inventories data for each. Flags that four deep-history panels (volume/stattrak/supply/
   bid) exist only locally and are **not** in the data repo.
-- `2026-08-16-next-steps.md` — ⭐ **the live action list.** Supersedes the 08-14 ordering, whose #1
-  item failed on 08-15. Ranks seven items: **decide the R13 cohort question** (a product call —
-  serve 8,691 well-calibrated-but-untradeable forecasts or 1,398 tradeable ones; recommendation is
-  a two-tier label, *not* a floor), **repair the volume feed** (now the largest measured accuracy
-  item open, +1.4–1.9pp), **re-run the nine repaired A/B harnesses** (none were re-run, so nine
-  stored verdicts are unmeasured), ≥$1 over-coverage, cross-market basis, listing count as band
-  width, and two items recovered from 08-07 that were dropped without closing. Carries an explicit
-  **do-not-run** list.
+- `2026-09-28-next-steps.md` — ⭐ **the live action list.** Replaces the August series
+  (`2026-08-07` → `2026-08-16-next-steps.md`), pruned as superseded in `2b5330d`
+  (2026-09-15) without a successor. Recover any of them with
+  `git show 2b5330d^:docs/research/2026-08-16-next-steps.md` (substitute the date);
+  older changelogs and code comments still cite them for provenance.
 - `2026-08-16-r13-cohort-inversion-measured.md` — R13 answered. The inversion is **real and worse**
   (served cohort **16.1% ≥$1**, median served price **$0.09**) and the gate never moved — but its
   premise is **refuted**: sub-$1 is the *best-calibrated tier we have* (0.832/0.822/0.824/0.882 vs
@@ -251,28 +248,6 @@ report it rather than working around it.
   raising the floor costs 84% of the catalogue and makes average calibration *worse*. A
   product-scope decision, not a data-plumbing fix.
 - `2026-08-16-listing-count-floor.md` — see the entry below; ranked as item 6 in the live list.
-- `2026-08-14-next-steps.md` — ⚠️ **ordering superseded** by `2026-08-16-next-steps.md`; its **item
-  1 (Armory `tier × post`) FAILED** both bars on 2026-08-15. Items 2 and 3 carried forward. Re-ranks survivors-first after the
-  2026-08-14 changelog run closed six of the prior list's items (harness repin, supply-rarity null,
-  C1 per-fold, CV grid, recency ships at 30d, **lambdarank refuted for serving**). Only three items
-  are still worth running — the Oct-22-2025 `tier × post` natural experiment (free archive read), a
-  free `q_hat`/PT re-read off the next retrain, and a cheap cross-market basis diagnostic — plus a
-  hygiene tier and an explicit "do not run" list. The web doc's "pivot to a ranker" thesis is closed.
-- `2026-08-13-next-steps.md` — **ordering superseded** by the entry above; still the reference for
-  the item-by-item detail behind the 2026-08-13 audit (the harness-family repair, the six-deep
-  stacked defects, and the cost-hygiene / dead-code lists carried forward unchanged).
-- `2026-08-10-next-steps.md` — **ordering superseded** by the entry above; still the reference for
-  the content of Track N and Track F. Ranked by accuracy-per-minute after the
-  2026-08-10 audit. Adds **Track N** (close the `−return_1d` gap: `init_score`, then a market/rank
-  decomposition, then `lambdarank`) and **Track F** (three cheap fixes that gate what can be
-  published). Deprioritises anything scoped as closing the constant-call gap, and further
-  retrain-cost work — the warm arm64 retrain is **996.6s / 17m48s**, inside the cap, and the
-  bottleneck is now experiment power.
-- `2026-08-09-next-steps.md` — the previous action list; **ordering superseded**, but still the
-  reference for the *content* of every O/G/A/C/D item and its cautions. **Track A is closed
-  (all six cost levers shipped 2026-08-09); D1 answered — the Steam listing page works.** **The gate
-  is lifted** — Tracks C and D are unblocked. ⚠️ Its "loses to a constant call" framing throughout
-  is a comparison to a hindsight-selected baseline.
 - `2026-08-10-training-cost-levers.md` — the cost accounting, measured against CI runs
   `31337078991` and `31356483719`; supersedes the cost tables in
   `changelog/2026-08-09-training-cost-levers.md`. ⚠️ **Read its own corrections banner** — three of
@@ -292,11 +267,6 @@ report it rather than working around it.
   Note what is compared: the contrast is stable-vs-unconditional, because both the
   "changed (present)" and "stable & ≥3 sources" cells are 25 dates at 3d / 19 at 7d and carry no
   number. Both are calendar waits.
-- `2026-08-07-next-steps.md` — **superseded for ordering** by the 2026-08-09 doc; the descriptions
-  remain valid. Steps 1–7 are DONE. Steps 8–11 are NOT STARTED **except** step 10's rank-IC half
-  and step 11's reversal measurement. **Blocker 5d is refuted** — it was a false positive.
-  Read step 5's "not done" list before citing any A/B result: the harnesses were repaired but
-  **none has been re-run**, so every stored A/B number predates the repair.
 - `lis-skins-snapshot-plan.md` — ⚠️ **built, not proposed.** Shipped 2026-08-06 as
   `collectors/supply_depth.py` and runs daily; banner records which fields were dropped.
 - `accuracy-opportunities.md` — closed 2026-07-31, **reopened 2026-08-07** by the review
