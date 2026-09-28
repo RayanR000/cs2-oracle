@@ -190,3 +190,83 @@ def test_shrink_k_cutover_is_armed_to_the_first_k320_serve():
     assert sr._geometry_floor() == "2026-09-06", (
         "the K=320 cutover is the latest band-geometry change, so it must win the floor"
     )
+
+
+# --- Live refresh is per-horizon (2026-09-28) ---------------------------------------------------
+# The 09-28 retrain baked {3: 0.5385, 7: 0.6111}. Under the old all-or-nothing check a non-empty
+# dict blocked the live read, so 14d/30d crossing MIN_FEEDBACK_DATES on a predict-only day stayed
+# at 1.0 until the next retrain. The refresh must fill ONLY the absent horizons and never
+# override a factor the artifact baked.
+
+
+def _recording_factors(returns):
+    calls = []
+
+    def _fake(session, horizons, **kw):
+        hs = list(horizons)
+        calls.append(hs)
+        return {h: v for h, v in returns.items() if h in hs}
+
+    return _fake, calls
+
+
+def test_live_refresh_fills_only_the_horizons_the_artifact_lacks(tmp_path, monkeypatch):
+    f = _f(tmp_path)
+    f.served_coverage_factor = {3: 0.5385, 7: 0.6111}
+    fake, calls = _recording_factors({3: 0.9, 7: 0.9, 14: 0.7})
+    monkeypatch.setattr(sr, "served_coverage_factors", fake)
+
+    f._refresh_served_coverage_factor()
+
+    assert calls == [[14, 30]]  # baked horizons are not even requested
+    assert f.served_coverage_factor == {3: 0.5385, 7: 0.6111, 14: 0.7}  # 30d below the gate -> absent
+
+
+def test_live_refresh_never_overrides_a_baked_factor(tmp_path, monkeypatch):
+    f = _f(tmp_path)
+    f.served_coverage_factor = {3: 0.5385}
+
+    def _returns_everything(session, horizons, **kw):
+        return {3: 1.9, 7: 0.6, 14: 0.7, 30: 0.8}  # misbehaving estimator: ignores `horizons`
+
+    monkeypatch.setattr(sr, "served_coverage_factors", _returns_everything)
+    f._refresh_served_coverage_factor()
+    assert f.served_coverage_factor == {3: 0.5385, 7: 0.6, 14: 0.7, 30: 0.8}
+
+
+def test_live_refresh_skips_the_panel_read_when_every_horizon_is_baked(tmp_path, monkeypatch):
+    f = _f(tmp_path)
+    f.served_coverage_factor = {h: 0.8 for h in f.HORIZONS}
+
+    def _boom(*a, **kw):
+        raise AssertionError("panel read although every horizon is baked")
+
+    monkeypatch.setattr(sr, "served_coverage_factors", _boom)
+    f._refresh_served_coverage_factor()
+    assert f.served_coverage_factor == {h: 0.8 for h in f.HORIZONS}
+
+
+def test_live_refresh_on_an_empty_artifact_requests_every_horizon(tmp_path, monkeypatch):
+    f = _f(tmp_path)
+    fake, calls = _recording_factors({3: 0.54})
+    monkeypatch.setattr(sr, "served_coverage_factors", fake)
+    f._refresh_served_coverage_factor()
+    assert calls == [list(f.HORIZONS)]
+    assert f.served_coverage_factor == {3: 0.54}
+
+
+def test_live_refresh_without_a_session_reads_nothing(tmp_path, monkeypatch):
+    f = ItemForecaster(db_session=None, model_dir=str(tmp_path))
+
+    def _boom(*a, **kw):
+        raise AssertionError("panel read without a DB session")
+
+    monkeypatch.setattr(sr, "served_coverage_factors", _boom)
+    f._refresh_served_coverage_factor()
+    assert f.served_coverage_factor == {}
+
+
+def test_predict_uses_the_per_horizon_refresh():
+    src = inspect.getsource(ItemForecaster._prepare_predict_features)
+    assert "self._refresh_served_coverage_factor()" in src
+    assert "if not self.served_coverage_factor" not in src  # the all-or-nothing gate is gone
