@@ -57,3 +57,29 @@ pandas' nullable `Float64` (no missing values either way), and rows come back or
 The CI memory numbers are inferred, not measured. The runner doesn't log memory, and the
 local figures are macOS RSS on an archive ~10% smaller than CI's. The proof is the next
 `mode=full` run getting past voting.
+
+## Follow-up (same day): the first version failed in CI
+
+The post-merge `mode=full` dispatch (`36470822456`, on `3cc38cd`) failed in 1m39s with
+DuckDB's own `Out of Memory Error: could not allocate block of size 256.0 KiB (1.8 GiB/1.8
+GiB used)` inside the vote. Locally the same query finished even at a 1GB cap, on CI's exact
+input (12,389,757 rows from a clone of the durable archive) with 2 threads. **It reproduced
+exactly only with spilling disabled (`temp_directory=''`)**, so the runner was not spilling.
+Why is not established; the working directory is writable. The fix removes the dependency
+instead of explaining it:
+
+- **Chunked by item hash.** One query per `hash(item_id) % VOTED_CHUNKS` (default 8),
+  streamed from Parquet with no temp table. A group never spans chunks, so the frame cannot
+  depend on the count. With spilling disabled, 2 threads and CI's input, it runs under a
+  **1GB** cap and peaks at **2.8GB process-wide** (old pandas path: 7.4GB), in ~15s.
+- **Exact 2σ ties are kept** (`VOTE_TIE_RTOL = 1e-9`, both implementations). Chunking
+  exposed that the SQL vote was **non-deterministic**: the 2GB and 1GB runs disagreed on a
+  row, because the std's last ulp depends on summation order and cent-rounded prints sit
+  exactly on 2σ. The two-pass σ above did not fix that (it only matched numpy by one
+  ordering's luck), so it was reverted to `stddev_pop`. Output is now identical across chunk
+  counts 1/3/8 and caps 1/2/8GB. Against the old pandas frame, **17 of 6,584,167 rows**
+  change: all ties numpy's rounding dropped, all **sub-$1** penny items ($0.08–0.35), below
+  the $1 training and serving floor.
+- `VOTED_CACHE_VERSION` 10 → 11.
+
+The "byte-identical" claim above is superseded by this: identical except those 17 ties.

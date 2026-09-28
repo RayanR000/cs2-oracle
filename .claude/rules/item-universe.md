@@ -87,16 +87,19 @@ separate fix per loader.
   trained the next model on it silently; v3 dropped the phase-collapsed names; v4 dropped the
   phantom slug keys; v5 added `n_ask_sources`; v6 excluded `TRAILING_WINDOW_SOURCES` (Steam's
   trailing-window means); v7 excluded `STEAM_SPOT_SOURCES`; v8 added orderbook features; v10
-  moved the archive vote into DuckDB. A source-set change and a universe
+  moved the archive vote into DuckDB; v11 kept exact 2σ ties. A source-set change and a universe
   change both count as voting changes.
 - **The vote has two implementations and they must change together.** The archive read
-  (`_fetch_voted_price_history`) votes in SQL via `_multi_source_voting_sql`, under a
-  `VOTED_DUCKDB_MEMORY_LIMIT` cap (default 2GB, spills to disk); the DB path and the voting
-  tests use the pandas `_apply_multi_source_voting`, which is the reference.
-  `tests/test_sql_voting.py` holds them equal on every branch, and on the 11.1M-row train
-  read they were byte-identical (6,584,167 rows). σ is two-pass on purpose: `stddev_pop`
-  differs from `np.std` in the last ulp and flipped one cent-rounded row sitting exactly on
-  2σ. Why: pandas-side voting stopped fitting the CI runner on 2026-09-28.
+  (`_fetch_voted_price_history`) votes in SQL via `_multi_source_voting_sql`, one query per
+  item-hash chunk (`VOTED_CHUNKS`, default 8) under a `VOTED_DUCKDB_MEMORY_LIMIT` cap (default
+  2GB). **Do not rely on DuckDB spilling**: the CI runner did not spill, and a whole-archive
+  query hit the cap there (run `36470822456`), which reproduces locally only with
+  `temp_directory=''`. The DB path and the voting tests use the pandas
+  `_apply_multi_source_voting`, the reference; `tests/test_sql_voting.py` holds them equal.
+  The 2σ cut keeps ties within `VOTE_TIE_RTOL` (1e-9) in **both**: cent-rounded prints sit
+  exactly on 2σ, where the std's last ulp depends on summation order, and without the slack
+  the SQL vote was **non-deterministic across thread/chunk counts**. Against the old pandas
+  frame that changed 17 of 6,584,167 rows, all sub-$1.
   `docs/changelog/2026-09-28-voting-moved-into-duckdb.md`. ⚠️ The CI key's literal prefix still reads `voted-v6`
   and was not bumped with v8 — it is now 2 versions behind, harmless only because the constant lives in the hashed file.
 - **The TRAIN universe is derived from the archive; the SERVE universe is `is_backfilled` in
