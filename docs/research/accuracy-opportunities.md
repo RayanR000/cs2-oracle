@@ -47,8 +47,8 @@ Date: 2026-07-14
 > **The banner below is left intact and still governs item-level feature work.** The reopened
 > directions are aggregation (a date-level factor model), cross-tier structure, and
 > measurement — not new item-level features. ~~The tracked action list is
-> `docs/research/2026-08-07-next-steps.md`~~ — **superseded 2026-08-09: the live list is
-> `docs/research/2026-08-09-next-steps.md`.** The record is
+> `docs/research/2026-08-07-next-steps.md`~~ — **the live list is now
+> `docs/research/2026-09-28-next-steps.md`** (the August series was pruned in `2b5330d`). The record is
 > `docs/changelog/2026-08-07-cs2-forecasting-research-review.md`.
 >
 > **Six things in the tables below have moved since 2026-07-31 and would be re-proposed if you
