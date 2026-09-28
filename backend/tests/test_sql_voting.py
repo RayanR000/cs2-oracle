@@ -83,3 +83,18 @@ def test_sql_vote_all_excluded_returns_no_rows():
     )
     assert len(_sql_vote(df)) == 0
     assert len(ItemForecaster._apply_multi_source_voting(df)) == 0
+
+
+def test_exact_two_sigma_tie_is_kept_by_both():
+    """Souvenir MP9 | Sand Dashed (FT), 2026-08-10: 0.66 sits exactly 0.28 from
+    the median and 2 sigma is 0.28, but only up to the std's last ulp, which
+    depends on summation order. Both implementations must keep it."""
+    day = pd.Timestamp("2026-08-10").date()
+    prices = {"aggregator_buff163": 0.34, "aggregator_csfloat": 0.35, "aggregator_csgotrader": 0.66,
+              "aggregator_skinport": 0.62, "aggregator_youpin": 0.38}
+    df = pd.DataFrame(
+        [("a", day, p, 0.0, s) for s, p in prices.items()],
+        columns=["item_id", "date", "price", "volume", "source"],
+    )
+    assert _sql_vote(df)["price"].tolist() == [0.38]
+    assert ItemForecaster._apply_multi_source_voting(df)["price"].tolist() == [0.38]

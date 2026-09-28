@@ -65,6 +65,12 @@ RNG = np.random.RandomState(42)
 #: Re-exported so `from models.forecaster import DIRECTION_FLAT_TOLERANCE_PCT` keeps working.
 DIRECTION_FLAT_TOLERANCE_PCT = 0.5
 
+#: Relative slack on the voting 2-sigma cut. Cent-rounded prints can sit exactly
+#: on 2 sigma, where the std's last ulp depends on summation order (numpy vs
+#: DuckDB, and DuckDB's thread/chunk order), so the SQL vote flipped such rows
+#: between runs. Ties are kept, as `<=` intends.
+VOTE_TIE_RTOL = 1e-9
+
 # Vol-scaled directional labels (2026-07-27). The flat band is
 # clamp(k_h * sigma_daily * sqrt(h), floor, cap) in percent, replacing the
 # fixed ±DIRECTION_FLAT_TOLERANCE_PCT. sigma_daily is trailing std of
@@ -1057,7 +1063,9 @@ class ItemForecaster:
     # v10: the archive read votes in DuckDB (_multi_source_voting_sql). Same
     # rule, but medians and std are computed by a different engine, so a v9
     # frame can differ in the last ulp and is not reused.
-    VOTED_CACHE_VERSION = 10
+    # v11: exact 2-sigma ties are kept (VOTE_TIE_RTOL); 17 penny item-days of
+    # 6.58M changed on the local archive.
+    VOTED_CACHE_VERSION = 11
     VOTED_CACHE_PREFIX = "voted_"
     VOTED_CACHE_MAX_ENTRIES = 3
 
@@ -2411,9 +2419,8 @@ class ItemForecaster:
 
         cutoff = (self._now() - timedelta(days=days_back)).strftime("%Y-%m-%d")
         # DuckDB defaults to 80% of RAM, which leaves pandas no room on a small
-        # runner. Capped, the vote spills to disk instead: the 11.1M-row train
-        # read peaks at 4.6GB process-wide under 2GB (8s) against 6.4GB under
-        # 4GB (5s), with a byte-identical frame.
+        # runner. Chunked (below), the 12.4M-row train read peaks at 2.8GB
+        # process-wide under this cap with spilling disabled.
         con = duckdb.connect(config={"memory_limit": os.environ.get("VOTED_DUCKDB_MEMORY_LIMIT", "2GB")})
         try:
             # One reader for the whole archive; it handles the pre-2026 files
@@ -2445,25 +2452,22 @@ class ItemForecaster:
             # voting there peaked above the CI runner's memory on the 12.4M-row
             # train read (killed twice on 2026-09-28). Some Parquet years store
             # mean_price/volume as VARCHAR, hence TRY_CAST.
-            con.execute(
-                f"""
-                CREATE TEMP TABLE _raw AS
-                SELECT sub.item_slug AS item_id, CAST(day AS DATE) AS date,
-                       TRY_CAST(mean_price AS DOUBLE) AS price,
-                       TRY_CAST(volume AS DOUBLE) AS volume, source
-                FROM {relation} sub
-                {slug_join}
-                WHERE day >= ?
-                  {_upper_bound}
-                  AND (source IS NULL OR source NOT LIKE 'historical_fallback:%')
-                  AND {phase_collapsed_sql_filter("sub.item_slug")}
-                  AND {phantom_slug_sql_filter("sub.item_slug")}
-            """,
-                [cutoff],
-            )
-            con.execute("DELETE FROM _raw WHERE price IS NULL OR isnan(price)")
-            n_before, n_items, n_sources_before = con.sql(
-                "SELECT COUNT(*), COUNT(DISTINCT item_id), COUNT(DISTINCT source) FROM _raw"
+            rows_sql = f"""
+                SELECT * FROM (
+                    SELECT sub.item_slug AS item_id, CAST(day AS DATE) AS date,
+                           TRY_CAST(mean_price AS DOUBLE) AS price,
+                           TRY_CAST(volume AS DOUBLE) AS volume, source
+                    FROM {relation} sub
+                    {slug_join}
+                    WHERE day >= ?
+                      {_upper_bound}
+                      AND (source IS NULL OR source NOT LIKE 'historical_fallback:%')
+                      AND {phase_collapsed_sql_filter("sub.item_slug")}
+                      AND {phantom_slug_sql_filter("sub.item_slug")}
+                ) WHERE price IS NOT NULL AND NOT isnan(price)
+            """
+            n_before, n_items, n_sources_before = con.execute(
+                f"SELECT COUNT(*), COUNT(DISTINCT item_id), COUNT(DISTINCT source) FROM ({rows_sql})", [cutoff]
             ).fetchone()
             logger.info(
                 f"  After parsing: {n_before:,} rows, {n_items:,} items "
@@ -2471,9 +2475,23 @@ class ItemForecaster:
                 f"{', '.join(PHASE_COLLAPSED_SLUG_PATTERNS)}; "
                 f"phantom duplicate keys excluded)"
             )
-            logger.info(f"  Applying multi-source voting in DuckDB ({n_sources_before} sources)...")
-            df = con.sql(self._multi_source_voting_sql("SELECT * FROM _raw") + " ORDER BY item_id, date").df()
-            df["date"] = pd.to_datetime(df["date"]).dt.date
+            # One query per item-hash chunk. A group never spans chunks, so the
+            # frame is the same for any count; what changes is the working set.
+            # The CI runner did not spill: the whole-archive query hit the
+            # memory cap in run 36470822456, reproduced locally only with
+            # spilling disabled.
+            n_chunks = max(1, int(os.environ.get("VOTED_CHUNKS", "8")))
+            logger.info(
+                f"  Applying multi-source voting in DuckDB ({n_sources_before} sources, {n_chunks} item chunks)..."
+            )
+            parts = []
+            for k in range(n_chunks):
+                chunk_sql = f"SELECT * FROM ({rows_sql}) WHERE hash(item_id) % {n_chunks} = {k}"
+                part = con.execute(self._multi_source_voting_sql(chunk_sql) + " ORDER BY item_id, date", [cutoff]).df()
+                part["date"] = pd.to_datetime(part["date"]).dt.date
+                parts.append(part)
+            df = pd.concat(parts, ignore_index=True)
+            del parts
             n_after = len(df)
             logger.info(
                 f"  {n_after:,} rows (Parquet, voted from {n_before:,} rows "
@@ -2598,7 +2616,7 @@ class ItemForecaster:
             median = consensus
             std = np.std(prices, ddof=0)
             if std > 0:
-                mask = np.abs(prices - median) <= 2.0 * std
+                mask = np.abs(prices - median) <= 2.0 * std * (1 + VOTE_TIE_RTOL)
                 kept = mask.sum()
                 if kept >= 1:
                     consensus = np.median(prices[mask])
@@ -2649,7 +2667,8 @@ class ItemForecaster:
         means and Steam spot; stand ``aggregator_sync`` down where
         >=MIN_ASKS_TO_DROP_SYNC other sources vote (NULL is one bucket); then
         median, with sources >2 population-std from it masked out when a group
-        has >=3 rows. NaN volume counts as missing, and an all-missing sum is 0.
+        has >=3 rows (ties within VOTE_TIE_RTOL kept). NaN volume counts as
+        missing, and an all-missing sum is 0.
         """
 
         def _in_list(sources) -> str:
@@ -2673,23 +2692,17 @@ class ItemForecaster:
                 SELECT s.* FROM src s LEFT JOIN n_other o USING (item_id, date)
                 WHERE NOT (s.is_cond AND COALESCE(o.n, 0) >= {MIN_ASKS_TO_DROP_SYNC})
             ),
-            centred AS (
-                SELECT *, price - AVG(price) OVER (PARTITION BY item_id, date) AS dev FROM kept
-            ),
-            -- Two-pass population std, as np.std computes it. Cent-rounded
-            -- prints can sit exactly on 2 sigma, and stddev_pop's one-pass
-            -- estimate differs in the last ulp, which flips the mask there.
             stats AS (
                 SELECT item_id, date, COUNT(*) AS n, median(price) AS med,
-                       sqrt(AVG(dev * dev)) AS sd,
+                       stddev_pop(price) AS sd,
                        COUNT(DISTINCT COALESCE(source, '__null__')) AS n_ask_sources,
                        COALESCE(SUM(volume), 0.0) AS volume
-                FROM centred GROUP BY item_id, date
+                FROM kept GROUP BY item_id, date
             )
             SELECT k.item_id, k.date,
                    median(k.price) FILTER (
                        WHERE s.n < 3 OR NOT (isfinite(s.sd) AND s.sd > 0)
-                          OR abs(k.price - s.med) <= 2.0 * s.sd
+                          OR abs(k.price - s.med) <= 2.0 * s.sd * (1 + {VOTE_TIE_RTOL})
                    ) AS price,
                    any_value(s.volume) AS volume,
                    any_value(s.n_ask_sources)::BIGINT AS n_ask_sources
