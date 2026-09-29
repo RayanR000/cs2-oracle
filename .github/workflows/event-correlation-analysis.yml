@@ -152,10 +152,13 @@ jobs:
             echo "Archive unchanged (no event impacts written) — nothing to publish."
             exit 0
           fi
+          # Lease on the checked-out SHA: a stale checkout fails the push instead of deleting
+          # whatever landed since (09-19 was lost that way, changelog 2026-09-29).
+          BASE=$(git rev-parse HEAD)
           git checkout --orphan flat
           git add -A
           git commit -m "archive: event impacts $(date -u +%F)"
-          git push --force origin HEAD:main
+          git push --force-with-lease=main:"$BASE" origin HEAD:main
 
 
       - name: Upload logs
