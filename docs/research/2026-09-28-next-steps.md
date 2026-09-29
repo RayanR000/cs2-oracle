@@ -28,15 +28,10 @@ directional product claim, a fourth band-width denominator, or a serving ranker.
 
 ## 1. This week
 
-1. **Run the archive-basis h=14 served-rank gate. It is overdue.** It was armed on 09-13 and due
-   "on or about 2026-09-27", with a one-date margin ("two missed days re-VOID it").
-   - Archive day 09-19 is missing, so run `--gate` first. Under 20 qualifying dates it is VOID,
-     and no statistic may be read.
-   - The script moved to `backend/scripts/archive/archive_basis_centre_rank.py` in the 09-22
-     cleanup, so the prereg's reproduce path is stale.
-   - This feeds the ranking-transfer decision (item 6).
-   - `research/2026-09-13-archive-basis-centre-rank-preregistration.md`,
-     `changelog/2026-09-13-archive-basis-centre-rank-armed.md`.
+1. ~~**Run the archive-basis h=14 served-rank gate.**~~ **DONE 2026-09-28: KILL.** The gate cleared
+   at exactly 20 dates. Model IC is +0.089 [+0.061, +0.117], but model minus naive is +0.026
+   [−0.005, +0.055], which spans zero. Both sensitivities VOID on the primary cohort. Item 6 loses
+   its archive-basis support. `changelog/2026-09-28-archive-basis-centre-rank-h14-kill.md`.
 2. **Decide whether archive day 2026-09-19 can be backfilled, before 10-23.** Until it is, h=3
    forecast dates 09-16/17/18 are unscoreable. The PID prereg excludes those dates rather than
    imputing them, so a backfill before the read restores three dates to its window. The archive
@@ -205,7 +200,7 @@ The full lists live in the cited docs; this is the index.
 
 | Date | Event |
 |---|---|
-| overdue (~09-27) | archive-basis h=14 gate (item 1) |
+| ~~09-27~~ 09-28 | archive-basis h=14 gate: KILL (item 1) |
 | 09-29 | h=3 at 20 post-floor dates |
 | 10-03 | h=7 at 20 post-floor dates |
 | Mon 10-05 | weekly `mode=full` retrain (then 10-12, 10-19, …) |
