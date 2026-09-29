@@ -1,0 +1,113 @@
+name: Archive Restore Day
+
+# One-off repair: put a day that a stale publish deleted back into cs2-oracle-data, from the
+# overwritten commit GitHub still serves by SHA. Appends that day's rows only, and only to
+# files that lack it, so it is idempotent. Dry run unless `apply` is ticked.
+# See docs/changelog/2026-09-29-archive-day-0919-restored.md.
+
+on:
+  workflow_dispatch:
+    inputs:
+      day:
+        description: Day to restore (YYYY-MM-DD)
+        required: true
+      from_ref:
+        description: Full cs2-oracle-data commit SHA that still holds the day
+        required: true
+      files:
+        description: Space-separated price-archive/ files to restore
+        required: true
+        default: prices-2026-09.parquet supply-2026-09.parquet volume-2026-09.parquet exchange-rates-2026.parquet
+      apply:
+        description: Write and publish (unticked = dry run)
+        type: boolean
+        default: false
+
+defaults:
+  run:
+    shell: bash
+
+permissions:
+  contents: read # the data repo is written via CS2_DATA_REPO_TOKEN
+
+jobs:
+  restore:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    concurrency:
+      group: ${{ github.workflow }}
+      cancel-in-progress: false
+    env:
+      DAY: ${{ inputs.day }}
+      FROM_REF: ${{ inputs.from_ref }}
+      FILES: ${{ inputs.files }}
+
+    steps:
+      - name: Validate inputs
+        run: |
+          [[ "$DAY" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}$ ]] || { echo "bad day: $DAY"; exit 1; }
+          [[ "$FROM_REF" =~ ^[0-9a-f]{40}$ ]] || { echo "from_ref must be a full 40-char SHA"; exit 1; }
+          for f in $FILES; do
+            [[ "$f" =~ ^[A-Za-z0-9._-]+\.parquet$ ]] || { echo "bad file name: $f"; exit 1; }
+          done
+
+      - name: Checkout code
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 1
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v6
+        with:
+          python-version: '3.13'
+          enable-cache: true
+
+      - name: Install dependencies
+        run: |
+          uv sync --frozen --no-dev
+          echo "$PWD/.venv/bin" >> $GITHUB_PATH
+
+      - name: Checkout price archive
+        uses: actions/checkout@v7
+        with:
+          repository: RayanR000/cs2-oracle-data
+          ref: main
+          token: ${{ secrets.CS2_DATA_REPO_TOKEN }}
+          path: archive
+          fetch-depth: 1
+
+      - name: Fetch the files as they were at from_ref
+        env:
+          GH_TOKEN: ${{ secrets.CS2_DATA_REPO_TOKEN }}
+        run: |
+          mkdir -p "$RUNNER_TEMP/src"
+          for f in $FILES; do
+            gh api -H 'Accept: application/vnd.github.raw' \
+              "repos/RayanR000/cs2-oracle-data/contents/price-archive/$f?ref=$FROM_REF" > "$RUNNER_TEMP/src/$f"
+            ls -la "$RUNNER_TEMP/src/$f"
+          done
+
+      - name: Restore
+        working-directory: ./backend
+        run: |
+          python -m scripts.restore_archive_day --day "$DAY" \
+            --source-dir "$RUNNER_TEMP/src" --archive-dir ../archive/price-archive \
+            ${{ inputs.apply && '--apply' || '' }} $FILES
+
+      - name: Publish updated archive (flat history)
+        if: inputs.apply
+        working-directory: ./archive
+        run: |
+          if [ -z "$(git status --porcelain)" ]; then
+            echo "Every file already holds $DAY; nothing to publish."
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          # Lease on the checked-out SHA: a stale checkout fails the push instead of deleting
+          # whatever landed since (09-19 was lost that way, changelog 2026-09-29).
+          BASE=$(git rev-parse HEAD)
+          git checkout --orphan flat
+          git add -A
+          git commit -m "archive: restore $DAY from $FROM_REF"
+          git push --force-with-lease=main:"$BASE" origin HEAD:main

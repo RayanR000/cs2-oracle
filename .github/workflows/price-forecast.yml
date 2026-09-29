@@ -336,10 +336,13 @@ jobs:
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
+          # Lease on the checked-out SHA: a stale checkout fails the push instead of deleting
+          # whatever landed since (09-19 was lost that way, changelog 2026-09-29).
+          BASE=$(git rev-parse HEAD)
           git checkout --orphan flat
           git add -A
           git commit -m "archive: item_forecasts $(date -u +%F)"
-          git push --force origin HEAD:main
+          git push --force-with-lease=main:"$BASE" origin HEAD:main
 
       # A run that persists nothing must not report success. item_forecasts
       # accumulated 5 forecast dates in eight months because nothing asserted
