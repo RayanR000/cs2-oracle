@@ -8678,6 +8678,29 @@ class ItemForecaster:
             return 1.0
         return float(np.clip(f, served_recalibration.FACTOR_MIN, served_recalibration.FACTOR_MAX))
 
+    def _refresh_served_coverage_factor(self) -> None:
+        """Live-read the served-coverage factor for every horizon the artifact lacks.
+
+        Lets a predict-only run pick up a horizon that crossed MIN_FEEDBACK_DATES since the
+        last retrain. Per-horizon, not all-or-nothing: until 2026-09-28 the read ran only when
+        the whole dict was empty, so once a retrain baked {3, 7} the 14d/30d factors could not
+        activate before the next retrain. A baked factor is never overridden -- the artifact
+        wins for every horizon it covers.
+        """
+        if self.db is None:
+            return
+        missing = [h for h in self.HORIZONS if h not in self.served_coverage_factor]
+        if not missing:
+            return
+        live = served_recalibration.served_coverage_factors(self.db, missing)
+        live = {h: v for h, v in live.items() if h in missing}
+        if live:
+            self.served_coverage_factor = {**self.served_coverage_factor, **live}
+            logger.info(
+                f"Served-coverage factors (live panel read for {missing}): "
+                f"{ {h: round(v, 4) for h, v in live.items()} }"
+            )
+
     def _check_artifact_version(self, meta: dict) -> None:
         """Fail closed on any artifact not written by this exact scheme.
 
@@ -9914,18 +9937,7 @@ class ItemForecaster:
 
         Pure extraction from predict() — zero behavioral change.
         """
-        # Live-refresh the served-coverage feedback factor from the panel if the
-        # artifact's factor is empty (pre-gate-change artifact) and a DB session
-        # is available. This lets predict-only runs pick up the feedback without
-        # waiting for a retrain to bake it into meta.json.
-        if not self.served_coverage_factor and self.db is not None:
-            live = served_recalibration.served_coverage_factors(self.db, self.HORIZONS)
-            if live:
-                self.served_coverage_factor = live
-                logger.info(
-                    f"Served-coverage factors (live panel read): "
-                    f"{ {h: round(v, 4) for h, v in live.items()} }"
-                )
+        self._refresh_served_coverage_factor()
 
         # Try to load cached engineered features first (major speedup)
         df = self._load_engineered_cache()

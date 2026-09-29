@@ -68,9 +68,14 @@ directional product claim, a fourth band-width denominator, or a serving ranker.
 7. **Post-CSMarketAPI served confirmation at h=14 and h=30**, early to mid October. The ~40%
    narrowing is attributed to the combined PR `ad2d43e`, not to CSMarketAPI alone.
    `changelog/2026-09-22-post-csmarketapi-served-performance.md`.
-8. **h=14 feedback factor.** It wakes when h=14 reaches 8 resolved served dates (the code gate),
-   at the first retrain after that. h=30 follows in November.
-   `changelog/2026-09-13-served-feedback-wake-dated.md`.
+8. **h=14 feedback factor.** It wakes when h=14 reaches 8 resolved served dates (the code gate).
+   Since #72 that happens on the first **predict** run after the gate crosses (7 of 8 dates on
+   09-28, so this week), not at the next retrain. The live refresh now fills any horizon the
+   artifact lacks. h=30 reaches 8 dates around mid-October and wakes the same way. Confirm it
+   in the Price Forecast log: `Served-coverage factors (live panel read for [14, 30])`.
+   ⚠️ Item 7's h=14 coverage read now spans a band-width change, so split it at the activation
+   date. `changelog/2026-09-13-served-feedback-wake-dated.md`,
+   `changelog/2026-09-28-served-feedback-live-refresh-per-horizon.md`.
 9. **Exceedance served-reliability re-check at maturity (`--served-only`).** Watch the h=14 bulk
    bin: 0.032 predicted vs 0.007 realised. If it persists past 20 dates, the fix is "a served
    refit, not a fancier map". The maturity date is not stated.
