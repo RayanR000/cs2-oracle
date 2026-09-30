@@ -7,7 +7,7 @@
 > sound. The accuracy costs are not: they were measured either on the served series (effective
 > sample size 1–2 forecast dates) or on the feature A/B harness, whose noise floor is ~1.15pp at
 > 3d and up to 7.13pp at 30d — wider than most of the per-lever deltas quoted. Run
-> `scripts/compute_mde.py` before treating any sub-1pp figure as real. See
+> `scripts/archive/compute_mde.py` before treating any sub-1pp figure as real. See
 > `docs/changelog/2026-08-03-accuracy-is-clustered-by-forecast-date.md` and
 > `docs/research/accuracy-opportunities.md`.
 
@@ -244,7 +244,7 @@ only trains if the artifact is ≥14 days old or `FORCE_RETRAIN=1`.
 |---|---|---|
 | `scripts/walkforward_backtest.py` | Retrospective walk-forward folds using current tuned params | **Yes** — the fresh-model gate. But it bypasses `fetch_price_history`, so it scores a plain-mean price consensus over a different item universe than production trains on |
 | `scripts/backtest_accuracy.py` | Stored forecasts vs matured actuals | **No** — 3–30 days for maturity, further bounded by archive coverage. This is what CI runs |
-| `scripts/compute_mde.py` | Minimum detectable effect for a proposed A/B | Run this **first** |
+| `scripts/archive/compute_mde.py` | Minimum detectable effect for a proposed A/B | Run this **first** |
 
 ### There are no retention floors
 

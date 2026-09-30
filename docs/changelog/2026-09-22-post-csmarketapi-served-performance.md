@@ -52,3 +52,16 @@ near-zero to positive, and bands narrowed ~40% at matched coverage. The 09-20
 training-time gains (especially the 30d rank IC jump from 0.03 to 0.10) are
 consistent with the served-panel read at shorter horizons. Full confirmation at
 h=14 and h=30 requires waiting for resolution (early to mid October).
+
+## Correction (2026-09-30)
+
+Caveat 1 above says the 09-06 retrain "shipped CSMarketAPI data alongside iflow promotion,
+source weights, and adaptive conformal". **Source weights and adaptive conformal did not ship.**
+`models/source_weight_model.py` never had an importer; `conformal.calibrate_adaptive` /
+`update_adaptive` and `served_recalibration.stratum_factors_from_panel` had no callers in the
+trainer, the predict path, any workflow or any script; `models/data_quality.py` was imported
+only by its own test (spec items 12-14 of `specs/2026-09-19-optimization-ml-promotion-design.md`
+were written but never wired). The combined-effect caveat therefore covers CSMarketAPI data plus
+iflow promotion only. The dead code was deleted 2026-09-30 (see
+`2026-09-30-delete-uncalled-code.md`). The paragraph above is left as written, per the
+changelog's append-only rule.

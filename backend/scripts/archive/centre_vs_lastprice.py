@@ -54,7 +54,7 @@ METHOD (read-only; the archive already holds every number):
   coverage is recomputed. This isolates the centre: any coverage difference is
   the centre's placement alone.
 
-Run: backend/venv/bin/python scripts/centre_vs_lastprice.py
+Run: backend/venv/bin/python scripts/archive/centre_vs_lastprice.py
 """
 
 from __future__ import annotations

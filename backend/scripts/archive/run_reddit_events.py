@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """Reddit event-detector collection — entry point for CI/manual runs.
 
-    venv/bin/python scripts/run_reddit_events.py --dry-run
-    venv/bin/python scripts/run_reddit_events.py
+    venv/bin/python scripts/archive/run_reddit_events.py --dry-run
+    venv/bin/python scripts/archive/run_reddit_events.py
 
 Writes ONLY to price-archive/reddit-events-YYYY-MM.parquet. Without Reddit
 credentials the run reports status=skipped (not a failure, not a success with

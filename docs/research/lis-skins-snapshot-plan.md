@@ -91,7 +91,7 @@ promising.
 ## Revisit
 
 ~6–8 weeks of snapshots (early October 2026). At that point run
-`backend/scripts/compute_mde.py` **first**; if the MDE is above ~2pp, stop — the
+`backend/scripts/archive/compute_mde.py` **first**; if the MDE is above ~2pp, stop — the
 harness cannot resolve the effect being looked for and the accumulated data buys
 nothing measurable. Only if it clears does a **permutation** A/B on the
 change/velocity features follow.

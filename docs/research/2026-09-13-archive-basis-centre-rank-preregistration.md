@@ -141,10 +141,10 @@ command below; run the leg only when it prints ≥ 20.
 
 ```
 # gate only — safe to run any time, prints the date count and nothing else
-venv/bin/python -m scripts.archive_basis_centre_rank --gate
+venv/bin/python -m scripts.archive.archive_basis_centre_rank --gate
 
 # the leg itself; refuses to run and exits VOID below 20 qualifying dates
-venv/bin/python -m scripts.archive_basis_centre_rank \
+venv/bin/python -m scripts.archive.archive_basis_centre_rank \
     --archive-dir ../price-archive --out /tmp/abcr_h14.json
 venv/bin/python -m pytest tests/test_archive_basis_centre_rank.py -q
 ```
@@ -152,3 +152,7 @@ venv/bin/python -m pytest tests/test_archive_basis_centre_rank.py -q
 The durable checkout (`cs2-oracle-data/price-archive`) is at 2026-08-25 locally; the working
 copy carries 2026-09 through 09-08. Pass `--archive-dir` deliberately and record which was
 used — the forward anchor depends on it.
+
+## Erratum (2026-09-30, path-only)
+
+The 2026-09-22 cleanup moved the scripts this document cites into `backend/scripts/archive/`. The cited paths were updated in place to match. No design, threshold, bar or result text was touched; the original paths remain in the file history.

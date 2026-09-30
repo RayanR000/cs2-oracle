@@ -3,7 +3,7 @@
 **Date:** 2026-08-25
 **Type:** decision memo — no new measurement, consolidates four existing results
 **Status:** MEASURED 2026-08-25. The centre loses to a random walk. Nothing here changes serving yet.
-**Script:** `backend/scripts/centre_vs_lastprice.py` (read-only; no artifact, no retrain)
+**Script:** `backend/scripts/archive/centre_vs_lastprice.py` (read-only; no artifact, no retrain)
 
 ## Where the cutover already stands
 
@@ -127,7 +127,7 @@ and if the sign holds, ship the retirement then. `--gate` answers "has it
 matured?" with an exit code, so the re-check is one command and needs no one to
 read the table:
 
-    backend/venv/bin/python backend/scripts/centre_vs_lastprice.py \
+    backend/venv/bin/python backend/scripts/archive/centre_vs_lastprice.py \
         --archive-dir ../cs2-oracle-data/price-archive --gate
 
 It exits 1 while any horizon is short and 0 when all four are ready — which

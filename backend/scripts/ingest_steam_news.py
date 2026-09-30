@@ -11,7 +11,7 @@ archive is keyed on the date alone. This table is.
 
 **No lift is claimed.** `FEATURE_GROUP_ALLOWLIST = ["price_technicals"]` still
 excludes everything here, the served model is untouched, and the MDE gate
-(`scripts/compute_mde.py`, then a *permutation* A/B) has not been run for a
+(`scripts/archive/compute_mde.py`, then a *permutation* A/B) has not been run for a
 date-level feature. Note that a date-level column's effective N is the number of
 distinct dates, not the number of rows, so the existing per-item MDE figures
 (1.15pp at 3d .. 7.13pp at 30d) do **not** transfer -- recompute before believing

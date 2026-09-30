@@ -19,7 +19,7 @@ This collector therefore exists to **accumulate the series that makes the test
 possible**, not because supply depth is believed to work. Collection is the long
 pole (velocity features need consecutive days); the A/B design and whether the
 harness can even resolve +1-2pp are separate questions answered by
-`scripts/compute_mde.py`.
+`scripts/archive/compute_mde.py`.
 
 ## The two grains, and why they are one table
 

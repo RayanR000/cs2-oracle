@@ -117,7 +117,7 @@ The h=14 effect must be **broad**, not carried by a few folds:
 
 ## Query / harness
 
-`scripts/ab_test_volume_features.py` with `IFLOW_VOLUME=1` and the new fold scheme exposed as
+`scripts/archive/ab_test_volume_features.py` with `IFLOW_VOLUME=1` and the new fold scheme exposed as
 run params (`SPLIT_FRACTION=0.50`, `STEP_DAYS=45`, `VAL_WINDOW_DAYS=21`), fingerprinted into the
 frame/verdict cache. Endpoints and arms unchanged from prereg #1. Read-only against the staging
 archive; ships to durable only on a full pass, and even then only after the served-band build.
@@ -152,3 +152,7 @@ promote volume to a candidate band-width conditioner and wire the served/conform
 an automatic ship**, because this is a power re-scope on the same 2022–2026 era, not an
 independent-data replication (iflow ends 2026-05; no holdout exists). The claim is: *the h=14
 volume band-tightening is robust on this era*, not *validated out of sample*.
+
+## Erratum (2026-09-30, path-only)
+
+The 2026-09-22 cleanup moved the scripts this document cites into `backend/scripts/archive/`. The cited paths were updated in place to match. No design, threshold, bar or result text was touched; the original paths remain in the file history.
