@@ -1,4 +1,4 @@
-"""Plumbing for scripts/compute_mde.py: the fold seed and fold step must be
+"""Plumbing for scripts/archive/compute_mde.py: the fold seed and fold step must be
 passable as call arguments (not module globals a caller has to rebind), and
 both must default to the existing module constants so omitting them leaves
 production's behaviour byte-identical.

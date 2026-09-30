@@ -1696,6 +1696,11 @@ class ItemForecaster:
         is preserved and the matched-pair rule holds.
 
         Requires CLIMATOLOGY_SCALE=1 (the base it modulates). Off by default.
+
+        REFUTED (6-12% WIDER, 0/102 folds, 2026-09-10) and the training and
+        calibration branches are DELETED: setting this to 1 no longer trains or
+        applies anything. The env read stays only because `meta["vol_rank_gbm"]`
+        persists it; removal belongs with a retrain PR.
         """
         return os.environ.get("VOLATILITY_RANK_GBM") == "1"
 
@@ -1733,6 +1738,12 @@ class ItemForecaster:
         from item features (count, raw volatility, tier, metadata). The GBM
         is trained to minimize band width at ~80% coverage using cross-validated
         per-item optimal K values. Requires CLIMATOLOGY_SCALE=1. Set SHRINK_K_GBM=1.
+
+        REFUTED (NULL at all four horizons, 2026-09-10) and the training branch is
+        DELETED: setting this to 1 no longer trains anything. The env read stays
+        because `price-forecast.yml` sets it and `meta["shrink_k_gbm"]` persists it
+        (loaded artifacts may carry the key); removal belongs with a retrain PR. See
+        docs/changelog/2026-09-10-shrink-k-gated-off-vol-rank-unwired.md.
         """
         return os.environ.get("SHRINK_K_GBM") == "1"
 
@@ -6313,28 +6324,6 @@ class ItemForecaster:
             )
             logger.info(f"  [timing] {horizon}d exceedance classifier: {time.time() - _exc_start:.1f}s")
 
-        # Volatility-ranking GBM: predict |return| to reshape climatology
-        # cross-sectionally. Requires CLIMATOLOGY_SCALE to be on (the base
-        # it modulates). Trained on the same split and features.
-        if self.vol_rank_gbm_enabled() and self.climatology_scale_enabled():
-            _vr_start = time.time()
-            target_col = f"target_return_{horizon}d"
-            y_abs_train = train_set[target_col].abs()
-            y_abs_val = val_set[target_col].abs()
-            self.vol_rank_models[horizon] = self._fit_vol_rank_model(
-                X_train,
-                y_abs_train,
-                X_val=self._impute_features(
-                    val_set[self.feature_cols].replace([np.inf, -np.inf], np.nan), feature_medians
-                ),
-                y_abs_val=y_abs_val,
-                boosting_type=boosting_type,
-                tree_params=self._direction_tree_params(per_quantile_params),
-                horizon=horizon,
-                num_boost_round=boost_rounds,
-            )
-            logger.info(f"  [timing] {horizon}d vol-rank GBM: {time.time() - _vr_start:.1f}s")
-
         # Anomaly classifier: P(|return_h| > 2sigma_item). An alert signal,
         # not a band input. Gate: ANOMALY_GBM=1.
         if self.anomaly_gbm_enabled():
@@ -9375,17 +9364,6 @@ class ItemForecaster:
                 f"back to sigma. The arm is NOT in effect for this horizon."
             )
             return None
-        if self.shrink_k_gbm_enabled() and horizon not in self.shrink_k_models:
-            _sk_start = time.time()
-            item_stats = self._compute_per_item_optimal_k(feature_frame[["item_id", "price", tcol]], tcol)
-            if not item_stats.empty:
-                self.shrink_k_models[horizon] = self._fit_shrink_k_model(
-                    item_stats, item_stats["optimal_k"].to_numpy(), tree_params={}, boosting_type="gbdt"
-                )
-                logger.info(
-                    f"  [timing] {horizon}d shrink-K GBM: {time.time() - _sk_start:.1f}s ({len(item_stats)} items)"
-                )
-
         if self._shrink_k_gbm_served() and horizon in self.shrink_k_models:
             table, tier_pool, g = self._build_climatology_table_adaptive(
                 feature_frame[["item_id", "price", tcol]], tcol, horizon
@@ -9414,24 +9392,6 @@ class ItemForecaster:
                     f"rows lack ewm_reactive_fast/slow — the reactive multiplier "
                     f"is NOT in effect (static climatology q_hat)."
                 )
-        # Vol-rank GBM modulation: reshape climatology cross-sectionally using
-        # the model's per-row volatility prediction. The multiplier has mean 1.0
-        # by construction, so q_hat's level is preserved.
-        if self.vol_rank_gbm_enabled() and self.climatology_scale_enabled() and horizon in self.vol_rank_models:
-            X_calib = self._vol_rank_feature_frame(rows, horizon, served=False)
-            raw_pred = self._predict_vol_rank(horizon, X_calib.values)
-            if raw_pred is not None:
-                raw_pred = np.clip(raw_pred, 0.01, None)
-                self.vol_rank_norm[horizon] = float(np.mean(raw_pred))
-            vr_mult = self._vol_rank_multiplier(horizon, X_calib.values)
-            if vr_mult is not None:
-                scale = scale * vr_mult
-                logger.info(
-                    f"  {horizon}d vol-rank modulation: mult range "
-                    f"[{float(vr_mult.min()):.3f}, {float(vr_mult.max()):.3f}], "
-                    f"median {float(np.median(vr_mult)):.3f}"
-                )
-
         logger.info(
             f"  {horizon}d climatology scale: {len(table):,} items, "
             f"median {float(np.nanmedian(scale)):.3f} on {scale.size:,} "

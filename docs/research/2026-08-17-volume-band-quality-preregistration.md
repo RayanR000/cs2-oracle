@@ -23,7 +23,7 @@ the sole gate**.
 
 ## Hypothesis and provenance
 
-The 13 shelved volume features (`NEW_PRIMITIVES` in `scripts/ab_test_volume_features.py`) measured
+The 13 shelved volume features (`NEW_PRIMITIVES` in `scripts/archive/ab_test_volume_features.py`) measured
 **+1.50 / +1.88 / +1.44 pp DA** at 3/7/14d, placebo-clean at 4/4 horizons
 (`changelog/2026-08-15-volume-features-remeasured.md`), but on a **dead Kaggle feed** that goes
 identically 0 from 2026-07 on. That is a train/serve gap, not a lack of signal. The iflow backfill
@@ -129,9 +129,9 @@ Anything else = **do not ship**; DA movement alone never overrides this (invaria
 
 ## Query / harness
 
-`scripts/ab_test_volume_features.py` with volume sourced from `iflow-liquidity-*.parquet`,
+`scripts/archive/ab_test_volume_features.py` with volume sourced from `iflow-liquidity-*.parquet`,
 `VOLUME_LIVE_THROUGH=2026-05-20`, endpoints `rel_width` + `in_interval` added to the paired
-contrast. Power check: `scripts/compute_mde.py` on `rel_width`. Read-only against the staging
+contrast. Power check: `scripts/archive/compute_mde.py` on `rel_width`. Read-only against the staging
 archive; ships to durable only on a full pass.
 
 ## Result — scored 2026-08-17
@@ -165,3 +165,7 @@ scheme, which requires a fresh preregistration. Do **not** ship on the h=14 resu
 **Correction to the prereg's premise.** The "~10× episodes" claim was directionally wrong: the
 iflow era is *shorter* than the existing 2013–2026 panel, so it yields *fewer* non-overlapping
 folds, not more. The ~10× held only against a 2026-only baseline, which this harness never used.
+
+## Erratum (2026-09-30, path-only)
+
+The 2026-09-22 cleanup moved the scripts this document cites into `backend/scripts/archive/`. The cited paths were updated in place to match. No design, threshold, bar or result text was touched; the original paths remain in the file history.

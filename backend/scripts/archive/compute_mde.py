@@ -12,8 +12,8 @@ in this one process, and a global rebind would leak between them and make
 each run's actual configuration unclear from its own call site.
 
 Usage:
-    python3 scripts/compute_mde.py --max-items 500
-    python3 scripts/compute_mde.py --max-items 60 --step-days 120
+    python3 scripts/archive/compute_mde.py --max-items 500
+    python3 scripts/archive/compute_mde.py --max-items 60 --step-days 120
 """
 
 from __future__ import annotations

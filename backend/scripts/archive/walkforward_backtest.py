@@ -72,7 +72,7 @@ MIN_VAL_SAMPLES = 50
 # on UNTUNED defaults because meta.json only carries q=0.5.
 QUANTILES = list(ItemForecaster.QUANTILES)
 
-# Seed for the per-fold boosters. scripts/compute_mde.py varies this to
+# Seed for the per-fold boosters. scripts/archive/compute_mde.py varies this to
 # measure the gate's own noise floor: two runs of the same design differ only
 # by seed, so the paired difference is the MDE.
 FOLD_SEED = 42

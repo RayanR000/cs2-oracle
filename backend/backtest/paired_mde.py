@@ -23,7 +23,7 @@ dates' forward-return windows overlap. Resampling 1,569 dates as if they were
 1,569 independent draws, when they came from ~70 fitted models, understates the
 variance by roughly the within-fold correlation.
 
-The failure was demonstrated, not theorised. `scripts/compute_mde.py` at h=3,
+The failure was demonstrated, not theorised. `scripts/archive/compute_mde.py` at h=3,
 300 items, `--step-days 21` compares two arms that differ **only in the
 LightGBM seed** — pure noise by construction, true difference zero:
 

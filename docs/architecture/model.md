@@ -748,7 +748,7 @@ autocorrelation — so the statistic is conservative by construction.
   while surviving as the disclosed `exceed_p`. The width variable is not the lever.
 - **The gate cannot resolve small effects.** The A/B harness has a ~1.15pp noise floor at 3d,
   wider at longer horizons, so anything below ~1pp is unmeasurable by design. Compute the MDE
-  (`scripts/compute_mde.py`) before running one.
+  (`scripts/archive/compute_mde.py`) before running one.
 - **7d q50 early stopping is noise-determined.** The validation curve improves only 0.28% total on
   the production frame, so `early_stopping(50)` trips on noise (stopping-round sd 41 on mean 47).
   Root cause is a regime mismatch: the 30-day validation window has ~2× the return spread of the
@@ -821,7 +821,7 @@ autocorrelation — so the statistic is conservative by construction.
 | `backend/db/parquet.py` | 549 | `price-archive/ops/*.parquet` read/write; JSON-text nested columns |
 | `backend/scripts/walkforward_backtest.py` | 770 | Fresh-model gate (`--max-items 500`, `STEP_DAYS = 60`) |
 | `backend/scripts/append_to_parquet.py` | 285 | Monthly/yearly archive partition writer |
-| `backend/scripts/compute_mde.py` | 74 | Minimum detectable effect for the A/B harness |
+| `backend/scripts/archive/compute_mde.py` | 74 | Minimum detectable effect for the A/B harness |
 | `backend/api/volatility_tags.py` | — | `swing_pct` / `move_odds` / `stability_label` derivation; `CALIBRATED_MOVE_ODDS_HORIZONS = (3, 7)` |
 | `backend/models/served_recalibration.py` | — | The served-outcome `q_hat` feedback factor and its clamps |
 | `backend/collectors/social_sentiment.py` | 345 | FinBERT ONNX INT8 sentiment scorer (workflow deleted; dormant) |

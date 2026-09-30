@@ -18,7 +18,7 @@ features earn a place in production?** It does NOT license un-shelving them
 against the current dead feed.
 
 Usage:
-    python scripts/ab_test_volume_features.py [--max-items 200] [--horizon 14]
+    python scripts/archive/ab_test_volume_features.py [--max-items 200] [--horizon 14]
 
 Embargo (added 2026-08-08):
     This harness had **no purge gap at all** before that date: the fold split
