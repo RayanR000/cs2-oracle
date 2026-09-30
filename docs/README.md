@@ -292,8 +292,10 @@ report it rather than working around it.
 ### Preregistrations
 
 Written before the run, scored after — the repo's strongest discipline artifact, and unindexed
-until 2026-08-16. **All thirteen have a recorded outcome; there are no orphans.** ⚠️ Three had
-their gate rewritten after the result was seen, all on 2026-08-13 — marked below.
+until 2026-08-16. **Nineteen of the twenty have a recorded outcome; the twentieth (2026-09-23,
+conformal PID) is frozen and awaiting its read.** ⚠️ Three had their gate rewritten after the
+result was seen, all on 2026-08-13 — marked below. Rows from 2026-09-13 on were added to the
+index late (2026-09-30); their outcomes are taken from the linked changelog entries only.
 
 | Preregistration | Outcome |
 |---|---|
@@ -310,6 +312,13 @@ their gate rewritten after the result was seen, all on 2026-08-13 — marked bel
 | `2026-08-17-volume-band-quality-preregistration.md` | cluster-starved — `changelog/2026-08-17-volume-band-quality-cluster-starved.md` |
 | `2026-08-17-volume-band-quality-refold-preregistration.md` | passes on refold — `changelog/2026-08-17-volume-band-quality-passes-on-refold.md` |
 | `2026-08-18-listing-count-band-width-conditioner-preregistration.md` | REFUTED 0/3 — `changelog/2026-08-18-listing-count-conditioner-refuted.md` |
+| `2026-09-13-clean-era-centre-preregistration.md` | PASS fails at h=14/30, KILL fires at h=30, h=14 underpowered; CONVERGED stands — `changelog/2026-09-13-clean-era-centre-measured.md` |
+| `2026-09-13-exceedance-calibration-preregistration.md` | CONFIRMED at h=7 only; keep the isotonic layer — `changelog/2026-09-13-exceedance-calibration-measured.md` |
+| `2026-09-13-served-centre-rank-preregistration.md` | **VOID** (18 qualifying dates < 20; quote basis cannot referee ranking) — `changelog/2026-09-13-served-centre-rank-void.md` |
+| `2026-09-13-archive-basis-centre-rank-preregistration.md` | **KILL** at h=14, 2026-09-28 (paired CI spans zero) — `changelog/2026-09-28-archive-basis-centre-rank-h14-kill.md`; armed 09-13 in `changelog/2026-09-13-archive-basis-centre-rank-armed.md` |
+| `2026-09-14-qhat-dispersion-fold-design-preregistration.md` | NULL, no winner — `changelog/2026-09-15-qhat-dispersion-measured.md` |
+| `2026-09-22-adaptive-conformal-preregistration.md` | REFUTED — `changelog/2026-09-22-aci-band-refuted.md` |
+| `2026-09-23-conformal-pid-served-h3-preregistration.md` | **FROZEN 2026-09-23, awaiting read** — no verdict in `changelog/` |
 
 ### Also in `research/`
 
@@ -321,6 +330,33 @@ their gate rewritten after the result was seen, all on 2026-08-13 — marked bel
 - `2026-08-16-refutation-power-tiers-and-iflow-backfill.md` — free ~4yr BUFF+Steam history
   (2022-04 → 2026-05) not yet ingested. Its `count_in_24` is the volume-feed repair that item 2 of
   the live list depends on, and it multiplies backtest episodes ~10×.
+
+- `2026-08-16-cross-venue-basis-steam-buff.md` — the Steam−Buff basis spike. 🔴 **REFUTED
+  2026-08-19 (per the banner added 2026-08-21):** its "strongest predictive signal" verdict is
+  inverted — serving-fair demeaning leaves ~+1pp ΔR², the signal is intermittent, the regime gate is
+  a time confound, and the shared-quote wedge collapses the IC ~70%. **SHELVED; do not build the
+  ingest.** "Buff leads, Steam follows" stands as description only.
+- `2026-08-17-supply-churn-volatility-signal.md` — `|Δlog listing_count|` predicts forward `|return|`
+  (corr +0.11; 1.49× spread on days supply moves) on a 9.56M-row BUFF panel. Built as
+  `SUPPLY_CHURN_FEATURES` (`changelog/2026-08-17-supply-churn-band-width-feature.md`). ❌ **The
+  transfer to the live max-collapsed free-venue panel was KILLED 2026-09-13**
+  (`changelog/2026-09-13-supply-velocity-transfer-killed.md`); do not run the width GBM.
+- `2026-08-19-deep-model-review.md` — whole-product review (ingestion, model, calibration, edge).
+  Finds the price series is ≥5 stitched estimators (fake +26.5% / −13.7% market moves on 07-09 and
+  07-11). Its §12 ranked plan is the live plan per its banner (items 1–12 landed, item 12 —
+  climatology vs GBM — run and the GBM lost; item 14, ACI, since **REFUTED**:
+  `changelog/2026-09-22-aci-band-refuted.md`). §12 lists a fourth band-width scale under "do not do".
+- `2026-08-25-gbm-retirement-decision.md` — decision memo, **MEASURED 2026-08-25**: the GBM centre
+  loses to a random walk; width is already off the GBM (`CLIMATOLOGY_SCALE=1`). No serving change
+  from the memo itself. See `changelog/2026-08-25-centre-shrinks-to-zero-and-the-dollar-band-is-the-wedge.md`
+  (centre's optimal shrinkage is zero).
+- `2026-09-08-next-accuracy-indicators.md` — research note, no change authorized. Ranks five
+  opportunities (Steam order-book dynamics, native Steam volume repair, case supply-consumption,
+  sticker craft velocity, Reddit/social event detection) and argues for the range-first objective
+  and specialized heads. A survey; no verdict, and no outcome is recorded against it.
+- `research/data/` — `2026-09-22-measure-aci.csv` (scored output of the ACI prereg above) and
+  `2026-09-28-archive-basis-centre-rank-h14-{primary,exact,frozen050}.json` (the three reads of
+  the h=14 archive-basis KILL).
 
 ## Design docs and plans (`specs/`, `plans/`)
 
@@ -590,7 +626,8 @@ reach back into earlier entries:
   rank transform (`C1`) is the first arm to beat `−return_1d` on rank IC, at all four horizons,
   and it lifts served PT excess 45–96%. `init_score` (`N1`) does not clear the bar and never
   touches the served classifier; `tier_lead` closes the gap nowhere. Re-ranks
-  `research/2026-08-10-next-steps.md`, which had put Track N first.
+  `research/2026-08-10-next-steps.md` (pruned 2026-09-15 in `2b5330d`; recover with
+  `git show 2b5330d^:docs/research/2026-08-10-next-steps.md`), which had put Track N first.
 - `2026-08-10-rank-transform-reference-cohort.md` — the transform is fitted on 916 items and
   `predict`'s frame holds 5,536, so serving ranked against the wrong population. Fixed by ranking
   every row against the >= $1 cohort's distribution; sub-$1 items keep their unserved forecast
