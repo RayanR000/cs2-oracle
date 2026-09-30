@@ -6,13 +6,25 @@ already handed its ranking to §12 of `2026-08-19-deep-model-review.md`. Recover
 `git show 2b5330d^:docs/research/2026-08-16-next-steps.md`.
 
 It was compiled from every changelog, research note, spec, plan and experiment-log row dated
-2026-08-16 or later. Items marked **(verified 09-28)** were checked against code or CI on the
-day. The rest restate what the cited doc says. Where the docs conflict, the item says so.
+2026-08-16 or later. Items marked **(verified 09-28)** or **(verified 09-30)** were checked against code or CI on
+the day. The rest restate what the cited doc says. Where the docs conflict, the item says so.
 
 **Standing constraint:** this is a range forecaster (`AGENTS.md`). Nothing below proposes a
 directional product claim, a fourth band-width denominator, or a serving ranker. See §7.
 
-## State on 2026-09-28
+## State on 2026-09-30
+
+- **Chunked vote confirmed on a scheduled predict-only run (verified 09-30).** Price Forecast run
+  `36657821345` (02:00Z) logged `Applying multi-source voting in DuckDB (20 sources, 8 item
+  chunks)` and `Wrote 22144 forecasts`. The Monday retrain half is still open (item 3).
+- **h=14 feedback factor is live (verified 09-30).** The same run logged `14d served-coverage
+  factor 0.7059 on 7,169 served rows over 8 dates (>= 8)`. The first forecast date served with it
+  is **2026-09-30**. h=30 is still pending, mid-October (item 8).
+- **Archive day 09-19 is restored (verified 09-30).** #74 (`ca5c21b`) backfilled it. Item 2 is done.
+- **CSMarketAPI access is gone.** The backfill will not resume (item 14), and nothing now adds
+  newly released items to the catalog (item 23).
+
+State on 2026-09-28, still true unless an item below says otherwise:
 
 - **Pipeline green again (verified 09-28).** The Monday `mode=full` retrain was OOM-killed twice
   during multi-source voting. After #69 and #70 (DuckDB voting, item-hash chunks), run
@@ -32,14 +44,19 @@ directional product claim, a fourth band-width denominator, or a serving ranker.
    at exactly 20 dates. Model IC is +0.089 [+0.061, +0.117], but model minus naive is +0.026
    [−0.005, +0.055], which spans zero. Both sensitivities VOID on the primary cohort. Item 6 loses
    its archive-basis support. `changelog/2026-09-28-archive-basis-centre-rank-h14-kill.md`.
-2. **Decide whether archive day 2026-09-19 can be backfilled, before 10-23.** Until it is, h=3
-   forecast dates 09-16/17/18 are unscoreable. The PID prereg excludes those dates rather than
-   imputing them, so a backfill before the read restores three dates to its window. The archive
-   is CI-written only (orphan force-push), so this is a data-repo operation.
+2. ~~**Decide whether archive day 2026-09-19 can be backfilled, before 10-23.**~~ **DONE 2026-09-29.**
+   #74 (`ca5c21b`, "restore lost archive day 09-19 and lease every data-repo push") restored the
+   day. Archive Restore Day runs `36527080625` and `36527193991` succeeded on 09-29. H=3 forecast
+   dates 09-16/17/18 are scoreable again and go back into the PID window (item 4). The prereg
+   excludes them only conditionally ("until 09-19 is backfilled") and
+   `scripts/measure_conformal_pid.py` hard-codes no exclusion, so this is consistent with the
+   frozen prereg, which governs and is not edited. The window is still 09-07..10-18.
    `changelog/2026-09-23-feedback-factor-refit-composes.md`.
-3. **Confirm the first scheduled runs on the chunked vote:** tonight's predict-only and the
-   10-05 Monday retrain. Check the output, not the badge: `forecast_date` advances, and the voting
-   line prints `8 item chunks`.
+3. **Confirm the first scheduled runs on the chunked vote.** The predict-only half is **CONFIRMED
+   (verified 09-30):** run `36657821345` (2026-09-30 02:00Z) logged `Applying multi-source voting
+   in DuckDB (20 sources, 8 item chunks)` and `Wrote 22144 forecasts`. **Still open:** the Mon
+   10-05 `mode=full` retrain. Check the output, not the badge: `forecast_date` advances, and the
+   voting line prints `8 item chunks`.
 
 ## 2. Scheduled reads — do not run early
 
@@ -47,7 +64,7 @@ directional product claim, a fourth band-width denominator, or a serving ranker.
    and the instrument is built (`scripts/measure_conformal_pid.py`). The window is forecast dates
    09-07..10-18, read **once** around **10-23**; the script refuses to read earlier. It is VOID if
    the incumbent's per-date error is under 3pp. 09-28 is out of the window (no forecasts that
-   day). `research/2026-09-23-conformal-pid-served-h3-preregistration.md`.
+   day). Forecast dates 09-16/17/18 are scoreable again after item 2, so they count. `research/2026-09-23-conformal-pid-served-h3-preregistration.md`.
 5. **Centre promotion (last-price vs `gbm_q50`) through the champion–challenger shadow.** It reads
    INSUFFICIENT_EVIDENCE until 20 shared dates. Promotion is a reviewed PR, never automatic
    (invariant 5).
@@ -63,13 +80,14 @@ directional product claim, a fourth band-width denominator, or a serving ranker.
 7. **Post-CSMarketAPI served confirmation at h=14 and h=30**, early to mid October. The ~40%
    narrowing is attributed to the combined PR `ad2d43e`, not to CSMarketAPI alone.
    `changelog/2026-09-22-post-csmarketapi-served-performance.md`.
-8. **h=14 feedback factor.** It wakes when h=14 reaches 8 resolved served dates (the code gate).
-   Since #72 that happens on the first **predict** run after the gate crosses (7 of 8 dates on
-   09-28, so this week), not at the next retrain. The live refresh now fills any horizon the
-   artifact lacks. h=30 reaches 8 dates around mid-October and wakes the same way. Confirm it
-   in the Price Forecast log: `Served-coverage factors (live panel read for [14, 30])`.
-   ⚠️ Item 7's h=14 coverage read now spans a band-width change, so split it at the activation
-   date. `changelog/2026-09-13-served-feedback-wake-dated.md`,
+8. ~~**h=14 feedback factor.**~~ **WOKE 2026-09-30 (verified 09-30).** Price Forecast run
+   `36657821345` logged `14d served-coverage factor 0.7059 on 7,169 served rows over 8 dates
+   (>= 8)` and `Served-coverage factors (live panel read for [14, 30]): {14: 0.7059}`. The first
+   forecast date served with it is **2026-09-30**. It woke on the first **predict** run after the
+   gate crossed (#72), not at a retrain. **Still pending:** h=30 reaches 8 dates around
+   mid-October and wakes the same way. Confirm it in the same log line.
+   ⚠️ Item 7's h=14 coverage read spans a band-width change, so **split it at forecast date
+   2026-09-30**. `changelog/2026-09-13-served-feedback-wake-dated.md`,
    `changelog/2026-09-28-served-feedback-live-refresh-per-horizon.md`.
 9. **Exceedance served-reliability re-check at maturity (`--served-only`).** Watch the h=14 bulk
    bin: 0.032 predicted vs 0.007 realised. If it persists past 20 dates, the fix is "a served
@@ -94,9 +112,17 @@ directional product claim, a fourth band-width denominator, or a serving ranker.
 13. **Case panel, sticker panel and the Reddit event detector: decide whether to wire them or
     drop them.** The builders exist, but **none is in a workflow, so nothing is accumulating**. The
     09-08 note sequences Reddit after the market-flow panels.
-14. **CSMarketAPI backfill resume.** 305 knives/gloves are checkpointed at
-    "★ Ursus Knife | Marble Fade (Factory New)". Run `--only-catalog` when the monthly key resets
-    (no date recorded). `changelog/2026-09-20-csmarketapi-backfill-and-retrain.md`.
+14. ~~**CSMarketAPI backfill resume.**~~ **CLOSED 2026-09-30: will not resume.** The user no
+    longer has CSMarketAPI access. The 305 knives/gloves checkpointed at "★ Ursus Knife | Marble
+    Fade (Factory New)" stay as they are, and the `--only-catalog` run is dropped. The 09-20
+    retrain data is the last CSMarketAPI data there will be.
+    `changelog/2026-09-20-csmarketapi-backfill-and-retrain.md`.
+23. **Decide how newly released items reach the catalog.** This is a decision, not an action.
+    `.github/workflows/discover-new-items.yml` (`disabled_manually`) says new items were meant to
+    arrive via the monthly CSMarketAPI backfill, not Steam discovery. With that gone, **nothing
+    adds newly released items**, so the universe is frozen at today's catalog. The choices are to
+    re-enable Discover New Items (manual trigger is kept there for one-offs) or to find another
+    path.
 
 ## 4. Decide or delete — code and docs that disagree
 
@@ -201,12 +227,15 @@ The full lists live in the cited docs; this is the index.
 | Date | Event |
 |---|---|
 | ~~09-27~~ 09-28 | archive-basis h=14 gate: KILL (item 1) |
+| 09-29 (done) | archive day 09-19 restored (item 2, #74) |
+| 09-30 (done) | h=14 feedback factor live, 0.7059 (item 8); chunked vote confirmed predict-only (item 3) |
 | 09-29 | h=3 at 20 post-floor dates |
 | 10-03 | h=7 at 20 post-floor dates |
-| Mon 10-05 | weekly `mode=full` retrain (then 10-12, 10-19, …) |
+| Mon 10-05 | weekly `mode=full` retrain (then 10-12, 10-19, …); first check of the chunked vote on a retrain (item 3) |
 | ~10-10 | h=14 at 20 post-floor dates |
 | ~10-12 | end of the 09-14 workplan's wait window |
-| early–mid Oct | h=14/h=30 post-CSMarketAPI confirmation (item 7) |
+| early–mid Oct | h=14/h=30 post-CSMarketAPI confirmation (item 7); h=14 read split at 09-30 |
+| mid-Oct | h=30 reaches 8 served dates; its feedback factor wakes (item 8) |
 | mid-Oct at earliest | 20 shared champion–challenger dates (items 5–6) |
 | 10-18 | last forecast date in the PID window |
 | ~10-23 | the single PID read (item 4) |
