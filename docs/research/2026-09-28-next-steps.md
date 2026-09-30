@@ -149,19 +149,18 @@ State on 2026-09-28, still true unless an item below says otherwise:
 
 ## 5. Hygiene
 
-18. **`experiment_log.csv` is missing rows** (Workflow Rule 3):
-    - TFT centre (refuted 09-10, commit `5c94230`, no changelog)
-    - `SHRINK_K_GBM` and vol-rank (09-10)
-    - `CLIMATOLOGY_REACTIVE` (08-20); shrink-K 320 (08-26); centre vs last price (08-25)
-    - clean-era centre, exceedance calibration, anomaly 30d calibration (09-13)
-    - `q_hat` dispersion (09-15); per-horizon objective and ranking head (09-17)
-    - direction withheld (09-10)
-    - NGBoost and CQR (deleted "as refuted" in `ff568ca` with no measurement doc)
-
-    Also check `feature-native-nan`: it is logged as "measured", but it is **on** in
-    `price-forecast.yml`.
-19. **The `docs/README.md` preregistration and research index stops at 08-18.** A dozen research
-    docs since 08-19 are unindexed.
+18. ~~**`experiment_log.csv` is missing rows.**~~ **DONE 2026-09-30 (#78).** 21 rows added,
+    each linked to the note that holds its verdict (TFT links `tft_eval.csv`, since it has no
+    changelog). NGBoost and CQR are logged `void` against
+    `specs/2026-09-18-ml-upgrade-design.md`, because they were deleted with no measurement. The two
+    08-17 volume band-quality notes are a sequence, not a conflict. The 8-fold run is
+    `inconclusive`, the 16-fold refold is `measured` (it passed on the retired q10/q90 band),
+    and `volume-in-scale` already refutes it on the served band. `feature-native-nan` is
+    corrected to `shipped` (on since #30, 08-21). ⚠️ `research/2026-08-19-deep-model-review.md`
+    line 29 still says "Not shipped".
+19. ~~**The `docs/README.md` research index stops at 08-18.**~~ **DONE 2026-09-30 (#77).**
+    Seven preregistrations and five research docs are indexed, with verdicts taken only from
+    changelogs. The README's specs, plans and changelog sections are still selective by design.
 20. **Deep-review §11 relabelling** (`research/2026-08-19-deep-model-review.md`):
     - Put the MDE beside each stored A/B verdict, and relabel underpowered nulls UNRESOLVED.
     - Fix `paired_mde`'s frame-construction nondeterminism.
