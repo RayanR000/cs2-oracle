@@ -126,22 +126,26 @@ State on 2026-09-28, still true unless an item below says otherwise:
 
 ## 4. Decide or delete — code and docs that disagree
 
-15. **Learned source-quality vote weights and the data-quality Isolation Forest (09-19 spec items
-    13–14) have no callers (verified 09-28).**
-    - `models/source_weight_model.py` has no importers. `models/data_quality.py` is imported only
-      by its own test. Spec item 12's `stratum_factors_from_panel` is also uncalled.
-    - Yet `changelog/2026-09-22-post-csmarketapi-served-performance.md` says the retrain
-      "shipped … source weights, and adaptive conformal". Correct the doc, then wire-and-measure
-      or delete.
-    - Adaptive conformal is part of the refuted conditioning family
-      (`research/2026-09-22-adaptive-conformal-preregistration.md`), so deletion is the default
-      for that piece.
-16. **Delete `SHRINK_K_GBM` / vol-rank code.** This was a 09-10 follow-up, and ~12 references
-    remain in `forecaster.py` (`changelog/2026-09-10-shrink-k-gated-off-vol-rank-unwired.md`).
-17. **Fix stale reproduce paths.** The 09-22 cleanup moved `archive_basis_centre_rank.py`,
-    `centre_vs_lastprice.py`, `compute_mde.py`, `ab_test_volume_features.py`,
-    `build_case_panel.py`, `build_sticker_panel.py` and `run_reddit_events.py` into
-    `backend/scripts/archive/`. The preregistrations still cite the old paths.
+15. ~~**Learned source-quality vote weights and the data-quality Isolation Forest have no
+    callers.**~~ **DONE 2026-09-30 (#76): deleted.** Removed `models/source_weight_model.py`,
+    `models/data_quality.py`, `conformal.calibrate_adaptive` / `update_adaptive` and
+    `stratum_factors_from_panel`, each with its tests. Nothing was live. The 09-22 changelog
+    got a dated correction: source weights and adaptive conformal never shipped.
+    `changelog/2026-09-30-delete-uncalled-code.md`.
+16. **`SHRINK_K_GBM` / vol-rank: training branches deleted 2026-09-30 (#76); flag plumbing
+    stays until the next retrain PR.** `price-forecast.yml` sets `SHRINK_K_GBM: "0"`, and
+    `shrink_k_gbm` / `vol_rank_gbm` / `vol_rank_norm` round-trip through the artifact's
+    `meta.json`. Removing the flags without a retrain would break the predict path. Setting
+    either to 1 is now a no-op for training. About 30 references remain: the env reads,
+    the meta write and read, the `_*_served()` accessors, the serve-time vol-rank multiplier,
+    and the helpers the archived replays still call. Remove them in the same PR as a
+    `mode=full` retrain.
+17. ~~**Fix stale reproduce paths.**~~ **DONE 2026-09-30 (#76).** The seven moved scripts are
+    now cited at `backend/scripts/archive/` in architecture, research and code comments.
+    Three frozen preregistrations got the path fix plus a dated path-only erratum.
+    Changelogs were left as written. `run_forecast_local.sh` had been silently skipping
+    its informational centre gate on the old path; it now runs it again (read-only against
+    prod Postgres).
 
 ## 5. Hygiene
 
