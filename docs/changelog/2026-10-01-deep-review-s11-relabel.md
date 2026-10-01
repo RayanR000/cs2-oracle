@@ -68,7 +68,7 @@ Fixing them turned up a larger defect. `fd68af8` (09-15) moved these scripts int
 `scripts/archive/` without re-anchoring their paths. Every `Path(__file__).parent.parent` that
 meant `backend/` now resolved to `backend/scripts/`. `ARCHIVE_DIR` pointed at a
 `backend/price-archive` that does not exist, and the `sys.path` inserts broke direct invocation
-(`python scripts/archive/compute_mde.py --help` failed). All 69 affected files are re-anchored to
+(`python scripts/archive/compute_mde.py --help` failed). All 67 affected files are re-anchored (the two panel builders are left to #83, which deletes them) to
 `Path(__file__).resolve().parents[2]`, and every resolved target was checked to exist. Item 17
 (#76) fixed the cited paths but not these.
 
