@@ -25,6 +25,11 @@ paths:
   it — it can be net-harmful, which is why `scripts/ab_test_frozen_runs.py` verifies it on
   paired interval **width**, not on a point estimate. See
   `docs/specs/2026-08-08-frozen-price-runs-design.md`.
+- **Labels void across two break detectors:** `_collection_shift_dates` (item count) ∪
+  `_composition_break_dates` (≥90% of paired items change source set). The calendar is computed
+  in `fetch_price_history` because `engineer_features` drops `source_set`; `prepare_targets`
+  without a fetch WARNs and uses the item-count rule only.
+  `docs/changelog/2026-09-30-composition-break-calendar.md`.
 - **The label's denominator is the RAW anchor quote, and that is a measured defect.**
   `prepare_targets` divides by the price observed on the anchor day; `predict` quotes
   against `_smoothed_anchor_prices`' span-bounded median. The same raw quote drives
