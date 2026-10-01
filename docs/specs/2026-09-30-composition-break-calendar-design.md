@@ -38,9 +38,18 @@ on both days whose set of voting sources differs:
 
 | Days | Share changed |
 |---|---|
-| 03-22, 04-16, 07-09, 07-10, 07-11 | 0.9989–1.0000 |
+| 01-01, 03-22, 04-16, 07-09, 07-10, 07-11 | 0.9989–1.0000 |
 | Highest ordinary day, train universe | 0.56 (Jan–Feb sit around 0.50 because `aggregator_sync` steps in and out) |
 | Highest ordinary day, full archive | 0.48 |
+
+### Gap 1b: the year boundary (2026-01-01)
+
+Measured after the spec was first drafted, on `prices-2025.parquet` + `prices-2026-01.parquet`:
+every row through 2025-12-31 is NULL-sourced (Steam median-sale), and none is from 2026-01-01
+(`aggregator_sync` and others). The median paired item moves **−4.15%** (1,029 items ≥$1). The
+item-count rule fires there only on the full universe (5,354 → 6,908 items). The 09-28
+train-universe retrain did not log it, so labels spanning New Year train on a −4% basis change.
+The composition rule fires on it (100% changed).
 
 ### Gap 2: lookback features are never checked
 
@@ -71,18 +80,21 @@ question; no rule here.
 
 ### Part A: composition breaks join the label span rule (ships ON)
 
-1. **The vote emits the source set.** `_multi_source_voting_sql` adds one column,
-   `source_set_hash BIGINT`: `hash(string_agg(DISTINCT COALESCE(source, '<null>'), '|' ORDER BY …))`
-   over the `kept` rows, the same rows `n_ask_sources` counts. Only equality is ever compared, so a
-   hash is enough and needs no source registry to maintain. The pandas reference
-   `_apply_multi_source_voting` gets the same column, and `tests/test_sql_voting.py` asserts the two
-   agree, as it already does for every other column. `VOTED_CACHE_VERSION` goes to 12.
+1. **The vote emits the source set.** `_multi_source_voting_sql` adds one column, `source_set`:
+   `string_agg(DISTINCT COALESCE(source, '<null>'), '|' ORDER BY …)` over the `kept` rows, the
+   same rows `n_ask_sources` counts. It is held as a pandas `category`, about 25 MB on the
+   12.4M-row train read against about 1 GB as plain strings. *(Revised from a DuckDB `hash()` on
+   2026-09-30: no pandas function reproduces that hash, so SQL/pandas agreement would have been
+   untestable.)* The pandas reference `_apply_multi_source_voting` gets the same column, and
+   `tests/test_sql_voting.py` asserts the two agree, as it already does for every other column.
+   `VOTED_CACHE_VERSION` goes to 12.
 2. **Detector.** `ItemForecaster._composition_break_dates(voted) -> frozenset[date]`. Day `d` is a
    break when at least `MIN_DEGENERATE_CROSS_SECTION` (25) items are present on both `d−1` and `d`,
    and the share of them whose `source_set_hash` differs is ≥
    `COMPOSITION_BREAK_FRACTION = 0.90`. Like the item-count rule, it is computed from the universe
-   and never from prices, so a real crash cannot trigger it. Pre-2026 rows all hash `<null>`, so
-   they never fire.
+   and never from prices, so a real crash cannot trigger it. Pre-2026 rows are all `<null>`, so
+   they never fire against each other. The `<null>` → labelled switch on 2026-01-01 does fire,
+   correctly (Gap 1b).
 3. **Calendar.** `break_dates = _collection_shift_dates ∪ _composition_break_dates`. It is
    computed in `fetch_price_history` on the voted frame, before `engineer_features` drops the
    column, and stored on the instance (`self.break_dates`). `prepare_targets` uses
@@ -93,7 +105,7 @@ question; no rule here.
 4. **Record.** `label_voiding` (and so `meta.json`) gains `composition_break_dates` next to
    `collection_shift_dates`, plus the union. The "Label voiding" log line names both.
 
-Expected effect: 04-16 joins the five dates already voided. 07-14/07-15 fire the item-count rule
+Expected effect: 01-01 and 04-16 join the five dates already voided. 07-14/07-15 fire the item-count rule
 on the full universe but not on the train universe, and the composition rule doesn't change that.
 No feature, band or serving code changes in Part A.
 
@@ -176,7 +188,7 @@ The workspace rule is met because this PR's merge triggers the 10-05 `mode=full`
   off; the window table covers the allowlist; predict and train apply the same mask.
 - Item 16: an artifact with the old keys still loads and predicts.
 - **Reproduce on the real archive** (in the PR description, not a test): the composition detector
-  on the train universe returns exactly `03-22, 04-16, 07-09, 07-10, 07-11`.
+  on the train universe returns exactly `01-01, 03-22, 04-16, 07-09, 07-10, 07-11`.
 
 ## Verification after merge
 
