@@ -18,7 +18,7 @@ import logging
 import sys
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).parent.parent))
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 import sqlite3
 
@@ -33,8 +33,8 @@ logging.basicConfig(
 )
 logger = logging.getLogger("backfill_supply_metadata")
 
-CATALOG_DB = Path(__file__).parent.parent / "runtime" / "market_catalog.db"
-PRICE_ARCHIVE = Path(__file__).parent.parent.parent / "price-archive"
+CATALOG_DB = Path(__file__).resolve().parents[2] / "runtime" / "market_catalog.db"
+PRICE_ARCHIVE = Path(__file__).resolve().parent.parent.parent.parent / "price-archive"
 OUTPUT_PARQUET = PRICE_ARCHIVE / "item-metadata.parquet"
 
 
@@ -572,7 +572,7 @@ def build_metadata() -> pd.DataFrame:
 
     # Try to get the name mapping from the local DB
     db_name_map: dict[str, str] = {}
-    local_db = Path(__file__).parent.parent / "cs2_market.db"
+    local_db = Path(__file__).resolve().parents[2] / "cs2_market.db"
     if local_db.exists():
         conn = sqlite3.connect(str(local_db))
         try:

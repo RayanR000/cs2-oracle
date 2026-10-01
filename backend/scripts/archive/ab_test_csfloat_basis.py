@@ -85,7 +85,7 @@ import os
 import sys
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).parent.parent))
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 import duckdb
 import lightgbm as lgb
@@ -132,7 +132,7 @@ logging.basicConfig(
 )
 logger = logging.getLogger("ab_test_csfloat_basis")
 
-ARCHIVE_DIR = Path(__file__).parent.parent.parent / "price-archive"
+ARCHIVE_DIR = Path(__file__).resolve().parent.parent.parent.parent / "price-archive"
 
 # Production's item universe, spelled into every archive read this harness
 # makes. Before 2026-08-08 the `ab_test_*` family globbed the Parquet privately
@@ -237,7 +237,7 @@ def build_basis_features(px: pd.DataFrame, cf: pd.DataFrame) -> pd.DataFrame:
 
 
 def _fingerprint(probe_dir: Path) -> str:
-    src = Path(__file__).parent.parent / "models" / "forecaster.py"
+    src = Path(__file__).resolve().parents[2] / "models" / "forecaster.py"
     h = hashlib.sha256(src.read_bytes())
     h.update(repr((MIN_MEDIAN_PRICE, MIN_ITEM_DAYS, CORR_PRUNE_THRESHOLD, CF_ALL, _UNIVERSE)).encode())
     series = probe_dir / "csfloat_probe_series.parquet"
@@ -693,7 +693,7 @@ def print_summary(results):
                 f"{a['da_trained']:>11.2f}% {a['n_trained']:>9,} {a['fold_count']:>6}"
             )
         for label, block in r.get("_paired", {}).items():
-            print(f"\n    {label} (paired, dates clustered):")
+            print(f"\n    {label} (paired, folds clustered):")
             for cohort, p in block.items():
                 ci = (
                     f"[{p['ci_lower_pp']:+.2f}, {p['ci_upper_pp']:+.2f}]" if p.get("ci_lower_pp") is not None else "n/a"

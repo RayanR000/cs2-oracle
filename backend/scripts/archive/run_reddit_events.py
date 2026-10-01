@@ -19,14 +19,14 @@ import sys
 from datetime import date
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).parent.parent))
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from collectors.reddit_events import collect
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s")
 logger = logging.getLogger("run_reddit_events")
 
-DEFAULT_ARCHIVE = Path(__file__).parent.parent.parent / "price-archive"
+DEFAULT_ARCHIVE = Path(__file__).resolve().parent.parent.parent.parent / "price-archive"
 
 
 def main() -> int:

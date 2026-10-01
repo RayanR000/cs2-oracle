@@ -107,7 +107,7 @@ import os
 import sys
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).parent.parent))
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 import lightgbm as lgb
 import numpy as np
@@ -166,7 +166,7 @@ _UNIVERSE = archive_universe_sql_filter(source_column="source")
 
 
 def _frame_fingerprint():
-    src = Path(__file__).parent.parent / "models" / "forecaster.py"
+    src = Path(__file__).resolve().parents[2] / "models" / "forecaster.py"
     h = hashlib.sha256(src.read_bytes())
     h.update(repr((MIN_MEDIAN_PRICE, MIN_ITEM_DAYS, CORR_PRUNE_THRESHOLD, _UNIVERSE)).encode())
     return h.hexdigest()[:16]

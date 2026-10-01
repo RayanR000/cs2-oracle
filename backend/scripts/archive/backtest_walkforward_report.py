@@ -23,7 +23,7 @@ from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 
 # Archived 2026-09-15 (scripts/ -> scripts/archive/): one extra parent.
-sys.path.insert(0, str(Path(__file__).parent.parent.parent))
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 import numpy as np
 from database import PredictionAccuracy, SessionLocal

@@ -37,7 +37,7 @@ import time
 from datetime import UTC, date, datetime
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).parent.parent))
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 import lightgbm as lgb
 import numpy as np
@@ -51,7 +51,7 @@ from models.forecaster import ItemForecaster, archive_universe_sql_filter
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s")
 logger = logging.getLogger("ab_test_ensemble")
 
-ARCHIVE_DIR = Path(__file__).parent.parent.parent / "price-archive"
+ARCHIVE_DIR = Path(__file__).resolve().parent.parent.parent.parent / "price-archive"
 
 # Production's item universe and price consensus, spelled into every archive
 # read this harness makes. These three harnesses (`regime`, `ensemble`,

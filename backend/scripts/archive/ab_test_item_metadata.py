@@ -79,7 +79,7 @@ import os
 import sys
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).parent.parent))
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 import lightgbm as lgb
 import numpy as np
@@ -163,7 +163,7 @@ logging.basicConfig(
 )
 logger = logging.getLogger("ab_test_item_metadata")
 
-ARCHIVE_DIR = Path(__file__).parent.parent.parent / "price-archive"
+ARCHIVE_DIR = Path(__file__).resolve().parent.parent.parent.parent / "price-archive"
 
 # Production's item universe, spelled into every archive read this harness
 # makes. Before 2026-08-08 the `ab_test_*` family globbed the Parquet privately
@@ -176,7 +176,7 @@ DS_PARAMS = {"max_bin": 63, "feature_pre_filter": False}
 
 
 def _frame_fingerprint(metadata_parquet):
-    src = Path(__file__).parent.parent / "models" / "forecaster.py"
+    src = Path(__file__).resolve().parents[2] / "models" / "forecaster.py"
     h = hashlib.sha256(src.read_bytes())
     h.update(repr((MIN_MEDIAN_PRICE, MIN_ITEM_DAYS, N_UNIVERSE, CORR_PRUNE_THRESHOLD, META_ALL, _UNIVERSE)).encode())
     if metadata_parquet:
@@ -716,7 +716,7 @@ def print_summary(results):
                 f"{a['fold_count']:>6}"
             )
         for label, block in r.get("_paired", {}).items():
-            print(f"\n    {label} (paired, dates clustered):")
+            print(f"\n    {label} (paired, folds clustered):")
             for cohort, p in block.items():
                 ci = (
                     f"[{p['ci_lower_pp']:+.2f}, {p['ci_upper_pp']:+.2f}]" if p.get("ci_lower_pp") is not None else "n/a"

@@ -44,7 +44,7 @@ import sys
 import time
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).parent.parent))
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 import lightgbm as lgb
 import models.forecaster as fmod
@@ -57,7 +57,7 @@ from models.forecaster import ItemForecaster, embargo_days
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s")
 logger = logging.getLogger("ab_test_recency_weights")
 
-META_PATH = Path(__file__).parent.parent / "models" / "saved_models" / "meta.json"
+META_PATH = Path(__file__).resolve().parents[2] / "models" / "saved_models" / "meta.json"
 HORIZONS = [3, 7, 14, 30]
 QUANTILES = (0.1, 0.5, 0.9)
 ARMS = {"flat": 0.0, "decay": 365.0}

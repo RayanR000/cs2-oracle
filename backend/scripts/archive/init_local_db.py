@@ -17,7 +17,7 @@ import sys
 from datetime import UTC, datetime
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).parent.parent))
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from database import Event, Item, SessionLocal, init_db
 from sqlalchemy import text
@@ -25,8 +25,8 @@ from sqlalchemy import text
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s")
 logger = logging.getLogger("init_local_db")
 
-ARCHIVE_DIR = Path(__file__).parent.parent.parent / "price-archive"
-EVENTS_FILE = Path(__file__).parent.parent / "data" / "cs2_events.json"
+ARCHIVE_DIR = Path(__file__).resolve().parent.parent.parent.parent / "price-archive"
+EVENTS_FILE = Path(__file__).resolve().parents[2] / "data" / "cs2_events.json"
 
 
 def assert_local_db():

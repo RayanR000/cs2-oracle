@@ -37,7 +37,7 @@ import time
 from datetime import UTC, date, datetime
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).parent.parent))
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 import contextlib
 
@@ -57,7 +57,7 @@ from models.forecaster import (
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s")
 logger = logging.getLogger("walkforward_backtest")
 
-ARCHIVE_DIR = Path(__file__).parent.parent.parent / "price-archive"
+ARCHIVE_DIR = Path(__file__).resolve().parent.parent.parent.parent / "price-archive"
 
 # Walk-forward config
 VAL_WINDOW_DAYS = 21
