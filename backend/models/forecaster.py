@@ -55,6 +55,7 @@ from models.item_parser import (
 # redundant alias marks intentional re-export so F401 never strips it again
 # (a ruff --fix removed the bare name in 76e462a and broke test collection).
 from models.item_parser import is_phase_collapsed as is_phase_collapsed
+from models.lookback_windows import mask_break_lookbacks
 from models.staleness import stale_run_days
 
 logger = logging.getLogger(__name__)
@@ -1156,6 +1157,9 @@ class ItemForecaster:
         # NaN default-direction, so serving it with NaN passed through (or vice
         # versa) is a train/serve mismatch. None = older meta.json, does not say.
         self._artifact_feature_native_nan: bool | None = None
+        # Whether the artifact was trained with BREAK_AWARE_LOOKBACKS; serving
+        # follows it. None = older meta.json, does not say.
+        self._artifact_break_aware_lookbacks: bool | None = None
         # Whether the band was CALIBRATED against sigma * sqrt(p_exceed). Serving
         # must follow this, not the environment: q_hat and the scale are a matched
         # pair, so a plain-sigma artifact reloaded with EXCEEDANCE_SCALE=1 in the
@@ -3367,6 +3371,35 @@ class ItemForecaster:
         if self._artifact_feature_native_nan is not None:
             return self._artifact_feature_native_nan
         return self.feature_native_nan_enabled()
+
+    @staticmethod
+    def break_aware_lookbacks_enabled() -> bool:
+        """NaN a feature whose lookback spans a source-composition break.
+
+        Off by default and unmeasured: with it on, return_90d+ and the 100/200d
+        averages are NaN for every 2026 row after 2026-03-22 until about
+        2027-01. Switched on only after the paired band-quality A/B in
+        docs/specs/2026-09-30-composition-break-calendar-design.md (Part B gate).
+        """
+        return os.environ.get("BREAK_AWARE_LOOKBACKS") == "1"
+
+    def _break_aware_lookbacks_served(self) -> bool:
+        if self._artifact_break_aware_lookbacks is not None:
+            return self._artifact_break_aware_lookbacks
+        return self.break_aware_lookbacks_enabled()
+
+    def _apply_break_mask(self, df: pd.DataFrame, cols: list[str], *, served: bool) -> None:
+        """Apply mask_break_lookbacks when the arm is on (train: env; serve: artifact)."""
+        on = self._break_aware_lookbacks_served() if served else self.break_aware_lookbacks_enabled()
+        if not on:
+            return
+        # A predict on an engineered-cache hit never fetched, so it has no
+        # calendar of its own; the artifact's training calendar is the fallback.
+        breaks = (self.break_dates or frozenset()) | (self._artifact_break_dates if served else frozenset())
+        # Every allowlisted feature is price_technicals today; the coverage test
+        # guarantees each one has a declared window.
+        n = mask_break_lookbacks(df, [c for c in cols if _feature_group(c) == "price_technicals"], breaks)
+        logger.info(f"  BREAK_AWARE_LOOKBACKS: {n:,} feature cells NaN'd across {len(breaks)} break day(s)")
 
     def _impute_features(self, X, medians, served: bool = False):
         """Fill NaN features from `medians`, or pass NaN through under the flag.
@@ -5903,6 +5936,10 @@ class ItemForecaster:
         self._reduce_feature_cols(df)
         self._base_feature_cols = list(self.feature_cols)
 
+        # Before the cross-sectional rank transform, so a masked cell is ranked
+        # as missing rather than ranked and then blanked.
+        self._apply_break_mask(df, self.feature_cols, served=False)
+
         # After the allowlist and the prune, so the transform runs over the ~33
         # surviving columns rather than all 123. Two consequences worth stating:
         # the >0.95 correlation prune therefore decides on RAW values, and
@@ -6301,6 +6338,7 @@ class ItemForecaster:
                 "exceedance_head": self.exceedance_head_enabled(),
                 "anomaly_gbm": self.anomaly_gbm_enabled(),
                 "feature_native_nan": self.feature_native_nan_enabled(),
+                "break_aware_lookbacks": self.break_aware_lookbacks_enabled(),
             }
         ):
             df = self.build_training_data(
@@ -10049,6 +10087,9 @@ class ItemForecaster:
                 # this frame carries.
                 self._save_engineered_cache(df)
 
+        # After the cache write, so the cached frame stays flag-independent.
+        self._apply_break_mask(df, self.feature_cols, served=True)
+
         # Both gated transforms run BEFORE alignment, and must: alignment adds a
         # missing column as NaN and the median fill downstream turns that into a
         # constant, so a frame that reached here without them would be served
@@ -11714,6 +11755,9 @@ class ItemForecaster:
             # instead of median-imputed. Serving must follow this (matched
             # pair): see _feature_native_nan_served.
             "feature_native_nan": self.feature_native_nan_enabled(),
+            # Whether price-technical features spanning a source break were
+            # NaN'd; serving follows it (see _break_aware_lookbacks_served).
+            "break_aware_lookbacks": self.break_aware_lookbacks_enabled(),
             "exceedance_scale": self.exceedance_scale_enabled(),
             "exceedance_meta": self.exceedance_meta_enabled(),
             # The isotonic map raw p -> calibrated p per horizon, fitted on
@@ -11885,6 +11929,7 @@ class ItemForecaster:
         self._artifact_xs_rank_skipped = meta.get("xs_rank_skipped_cols")
         self._artifact_naive_init = meta.get("naive_init_score")
         self._artifact_feature_native_nan = meta.get("feature_native_nan")
+        self._artifact_break_aware_lookbacks = meta.get("break_aware_lookbacks")
         self._artifact_break_dates = frozenset(date.fromisoformat(s) for s in meta.get("break_dates", []))
         self._artifact_exceedance_scale = meta.get("exceedance_scale")
         self._artifact_exceedance_meta = meta.get("exceedance_meta")
