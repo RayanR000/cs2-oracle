@@ -96,6 +96,10 @@ column or it blanks. `scripts/backfill_ops_item_slug.py` fills pre-existing rows
 31,422 `forecast_outcomes` rows point at `item_id`s with no `items` row and keep
 a NULL slug.
 
+**`ops/price_revisions.parquet` is the only record of revised prices.** The archive keeps no git
+history, so the Aggregator logs rows it changed, removed or back-filled in the trailing 14 days
+(`scripts/log_price_revisions.py`, `changelog/2026-10-01-price-revision-log.md`).
+
 **`ops/` is read before the DB.** `db/parquet.py:39` points at `price-archive/ops/` and
 API routes query it first, falling back to Supabase only when the Parquet read returns
 nothing or raises — see `api/routes/items.py:532-586` for the pattern (`_trends_parquet`

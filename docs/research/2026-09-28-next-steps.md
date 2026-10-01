@@ -179,7 +179,10 @@ State on 2026-09-28, still true unless an item below says otherwise:
       `scripts/archive/` (the archive directory, `sys.path`).
     - **Still open: the 1.1607 Steam fee constant.** `runtime/steam_listing_history.db` is gone;
       re-validating means re-scraping 262 items with a Steam session.
-21. **Decide archive history retention.** The orphan force-push keeps no history, so revisions
+21. ~~**Decide archive history retention.**~~ **DECIDED 2026-10-01: no history, log revisions instead.**
+    `changelog/2026-10-01-price-revision-log.md`. First CI run (the 10-01 23:00 UTC Aggregator) is
+    unverified: check that `ops/price_revisions.parquet` appears, or that the step logs a zero count.
+    Original question: The orphan force-push keeps no history, so revisions
     can't be diffed; the 08-25 note says it is "worth deciding deliberately"
     (`changelog/2026-08-25-centre-shrinks-to-zero-and-the-dollar-band-is-the-wedge.md`).
 22. ~~**`mapie` / `scoringrules` in the `dev` extra is blocked.**~~ **DONE 2026-09-30 (#80).**

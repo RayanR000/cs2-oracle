@@ -119,6 +119,16 @@ jobs:
       # Runs BEFORE the append so the day's rows land on the already-compacted
       # schema. The other order also works, but leaves the new rows carrying
       # NULL median/min/max until the compaction strips those columns.
+      # Copy the monthly price files as checked out, before any writer touches them. The
+      # revision log (below) diffs them against the published result, because the data repo
+      # keeps no history to diff against (docs/changelog/2026-10-01-price-revision-log.md).
+      - name: Snapshot prices before writes
+        run: |
+          mkdir -p /tmp/prices-before
+          # Never fail the daily chain over an audit aid: no monthly files means no log today.
+          cp archive/price-archive/prices-????-??.parquet /tmp/prices-before/ \
+            || echo "::warning::No monthly price files to snapshot; revision log will be empty"
+
       - name: Compact the price archive (one-time, manual)
         if: inputs.compact_archive
         working-directory: ./backend
@@ -208,6 +218,18 @@ jobs:
           wait $PID_SUPPLY || { echo "::warning::Supply depth collection failed"; FAIL=1; }
           wait $PID_VOLUME || { echo "::warning::Sales volume collection failed"; FAIL=1; }
           exit $FAIL
+
+      # `continue-on-error`: Price Forecast and Backtest Accuracy chain off this workflow's
+      # success, and the log is an audit aid. A failure here costs a day of revision records,
+      # not a day of forecasts.
+      - name: Log price revisions
+        continue-on-error: true
+        working-directory: ./backend
+        run: >
+          python scripts/log_price_revisions.py
+          --before-dir /tmp/prices-before
+          --archive-dir ../archive/price-archive
+          --run-date "$SNAPSHOT_DATE"
 
       # The parquet files ARE the data (each holds full history), so git history
       # of them has no value and only bloats the repo. Republish the archive as a
