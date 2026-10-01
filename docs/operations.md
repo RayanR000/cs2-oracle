@@ -403,10 +403,6 @@ DDL. Use `alembic stamp 0025` on the snapshot first, then upgrade. Note that a
 rehearsal still rewrites `price-archive/ops/*.parquet`, which is shared — back
 those up first.
 
-The collectors for the two deleted workflows still run locally, where residential IPs are
-not blocked: `python scripts/run_supply_scraper.py` and
-`python scripts/run_task.py reddit_social`. Neither feeds a live feature.
-
 Note: a bare `pytest` from `backend/` now collects cleanly — `scripts/test_social_signal.py`,
 the one-off analysis script that used to abort collection on a missing `thefuzz` import, has
 been deleted. **`pytest tests`** collects **2,427** tests as of 2026-09-15. Do not run the
