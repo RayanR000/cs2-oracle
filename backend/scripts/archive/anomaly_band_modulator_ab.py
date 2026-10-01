@@ -84,7 +84,6 @@ from scripts.archive.exceedance_meta_ab import (
     _score,
     paired_fold_deltas,
 )
-from scripts.archive.shrink_k_vol_rank_ab import matched_width
 
 logging.basicConfig(
     level=logging.INFO,
@@ -109,6 +108,23 @@ MIN_BIN_ROWS = 50
 #: (clip raw at 0.01, mean-1.0, clip to [0.25, 4.0]): a modifier that may only
 #: widen or narrow within the range the served geometry already tolerates.
 F_LO, F_HI = 0.25, 4.0
+
+
+def matched_width(abs_r: np.ndarray, scale: np.ndarray):
+    """(q80, mean half-width) with coverage matched exactly on these rows.
+
+    Same definition as magnitude_vs_climatology._matched_width: each arm is
+    scored at its own q80, so the comparison is width at equal coverage, never
+    coverage at equal width. Returns (nan, nan) when nothing is scoreable so a
+    degenerate fold drops out of the paired mean instead of voting zero.
+    """
+    abs_r = np.asarray(abs_r, dtype=float)
+    scale = np.asarray(scale, dtype=float)
+    ok = np.isfinite(abs_r) & np.isfinite(scale) & (scale > 0)
+    if not ok.any():
+        return float("nan"), float("nan")
+    q = float(np.quantile(abs_r[ok] / scale[ok], TARGET_COVERAGE))
+    return q, q * float(np.mean(scale[ok]))
 
 
 def isotonic_increasing(y, w=None):

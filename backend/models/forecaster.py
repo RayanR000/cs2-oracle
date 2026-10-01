@@ -55,6 +55,7 @@ from models.item_parser import (
 # redundant alias marks intentional re-export so F401 never strips it again
 # (a ruff --fix removed the bare name in 76e462a and broke test collection).
 from models.item_parser import is_phase_collapsed as is_phase_collapsed
+from models.lookback_windows import mask_break_lookbacks
 from models.staleness import stale_run_days
 
 logger = logging.getLogger(__name__)
@@ -70,6 +71,11 @@ DIRECTION_FLAT_TOLERANCE_PCT = 0.5
 #: DuckDB, and DuckDB's thread/chunk order), so the SQL vote flipped such rows
 #: between runs. Ties are kept, as `<=` intends.
 VOTE_TIE_RTOL = 1e-9
+
+#: How a NULL source is spelled inside `source_set`. The pre-2026 series is
+#: NULL-sourced throughout, so every pre-2026 item-day carries this one value
+#: and can never register as a composition change against itself.
+NULL_SOURCE_SET_LABEL = "<null>"
 
 # Vol-scaled directional labels (2026-07-27). The flat band is
 # clamp(k_h * sigma_daily * sqrt(h), floor, cap) in percent, replacing the
@@ -1065,7 +1071,10 @@ class ItemForecaster:
     # frame can differ in the last ulp and is not reused.
     # v11: exact 2-sigma ties are kept (VOTE_TIE_RTOL); 17 penny item-days of
     # 6.58M changed on the local archive.
-    VOTED_CACHE_VERSION = 11
+    # v12: source_set on the voted frame -- the composition-break detector's
+    # input. A v11 frame lacks the column, so a stale cache would silently
+    # disable the detector and fall back to the item-count rule alone.
+    VOTED_CACHE_VERSION = 12
     VOTED_CACHE_PREFIX = "voted_"
     VOTED_CACHE_MAX_ENTRIES = 3
 
@@ -1124,8 +1133,6 @@ class ItemForecaster:
         # db/candidate_store.py. Transient — never mirrored to public
         # outputs, cleared at the start of every predict().
         self.pending_candidates: list = []
-        self.vol_rank_models: dict[int, list[lgb.Booster]] = {}
-        self.vol_rank_norm: dict[int, float] = {}
         self.regime_feature_cols: dict[tuple[int, str], list[str]] = {}
         self.feature_cols: list[str] = []
         self.prune_failed_groups = prune_failed_groups
@@ -1148,6 +1155,9 @@ class ItemForecaster:
         # NaN default-direction, so serving it with NaN passed through (or vice
         # versa) is a train/serve mismatch. None = older meta.json, does not say.
         self._artifact_feature_native_nan: bool | None = None
+        # Whether the artifact was trained with BREAK_AWARE_LOOKBACKS; serving
+        # follows it. None = older meta.json, does not say.
+        self._artifact_break_aware_lookbacks: bool | None = None
         # Whether the band was CALIBRATED against sigma * sqrt(p_exceed). Serving
         # must follow this, not the environment: q_hat and the scale are a matched
         # pair, so a plain-sigma artifact reloaded with EXCEEDANCE_SCALE=1 in the
@@ -1168,10 +1178,7 @@ class ItemForecaster:
         # Whether the band was CALIBRATED with the regime-reactive multiplier on
         # top of the climatology scale. Same matched-pair rule; None = older meta.
         self._artifact_climatology_reactive: bool | None = None
-        self._artifact_vol_rank_gbm: bool | None = None
         self._artifact_anomaly_gbm: bool | None = None
-        self._artifact_shrink_k_gbm: bool | None = None
-        self.shrink_k_models: dict[int, lgb.Booster | None] = {}
         # The median-price floor the artifact was TRAINED under. Load-bearing
         # only when the rank transform is on, and then it is load-bearing
         # absolutely: the transform's output depends on which items are in the
@@ -1225,6 +1232,15 @@ class ItemForecaster:
         # is how a 2026-08-09 audit re-reported the handled 2026-07-09/10
         # cutover as a new finding.
         self.label_voiding: dict = {}
+        # The break calendar for the frame this process fetched: the item-count
+        # rule's cutovers plus the composition rule's switches, computed in
+        # fetch_price_history on the VOTED frame -- engineer_features drops
+        # source_set, so prepare_targets cannot compute it itself. None means
+        # no fetch ran (a harness building its own frame).
+        self.break_dates: frozenset | None = None
+        self.composition_break_dates: frozenset = frozenset()
+        self.collection_shift_dates: frozenset = frozenset()
+        self._artifact_break_dates: frozenset = frozenset()
 
     @staticmethod
     def _smoothed_anchor_prices(df: "pd.DataFrame", anchor) -> dict[Any, float]:
@@ -1685,25 +1701,6 @@ class ItemForecaster:
         """
         return os.environ.get("CLIMATOLOGY_SCALE", "1") != "0"
 
-    @staticmethod
-    def vol_rank_gbm_enabled() -> bool:
-        """Whether to train a volatility-ranking GBM that modulates climatology.
-
-        Trains a regression GBM on |target_return_{h}d| per horizon, then uses
-        its cross-sectional predictions to reshape the climatology scale: items
-        the model predicts as more volatile get wider bands, less volatile get
-        narrower. The mean multiplier is 1.0 by construction, so q_hat's level
-        is preserved and the matched-pair rule holds.
-
-        Requires CLIMATOLOGY_SCALE=1 (the base it modulates). Off by default.
-
-        REFUTED (6-12% WIDER, 0/102 folds, 2026-09-10) and the training and
-        calibration branches are DELETED: setting this to 1 no longer trains or
-        applies anything. The env read stays only because `meta["vol_rank_gbm"]`
-        persists it; removal belongs with a retrain PR.
-        """
-        return os.environ.get("VOLATILITY_RANK_GBM") == "1"
-
     #: Horizons whose anomaly head may be DISCLOSED as `anomaly_p`. Measured
     #: 2026-09-09 (docs/changelog/2026-09-09-anomaly-head-beats-its-null.md):
     #: held-out log loss beats the featureless null at 3/7/14d but is a dead
@@ -1729,34 +1726,6 @@ class ItemForecaster:
         if self._artifact_anomaly_gbm is not None:
             return self._artifact_anomaly_gbm
         return self.anomaly_gbm_enabled()
-
-    @staticmethod
-    def shrink_k_gbm_enabled() -> bool:
-        """Whether to train a per-item shrinkage K predictor.
-
-        Replaces the global CLIMATOLOGY_SHRINK_K with a per-item K predicted
-        from item features (count, raw volatility, tier, metadata). The GBM
-        is trained to minimize band width at ~80% coverage using cross-validated
-        per-item optimal K values. Requires CLIMATOLOGY_SCALE=1. Set SHRINK_K_GBM=1.
-
-        REFUTED (NULL at all four horizons, 2026-09-10) and the training branch is
-        DELETED: setting this to 1 no longer trains anything. The env read stays
-        because `price-forecast.yml` sets it and `meta["shrink_k_gbm"]` persists it
-        (loaded artifacts may carry the key); removal belongs with a retrain PR. See
-        docs/changelog/2026-09-10-shrink-k-gated-off-vol-rank-unwired.md.
-        """
-        return os.environ.get("SHRINK_K_GBM") == "1"
-
-    def _shrink_k_gbm_served(self) -> bool:
-        if self._artifact_shrink_k_gbm is not None:
-            return self._artifact_shrink_k_gbm
-        return self.shrink_k_gbm_enabled()
-
-    def _vol_rank_gbm_served(self) -> bool:
-        """Whether predict() serves the vol-rank-modulated climatology."""
-        if self._artifact_vol_rank_gbm is not None:
-            return self._artifact_vol_rank_gbm
-        return self.vol_rank_gbm_enabled()
 
     def _climatology_scale_served(self) -> bool:
         """Whether predict() serves the climatology scale, following the artifact.
@@ -2322,6 +2291,7 @@ class ItemForecaster:
             cache_key = self._voted_cache_key(days_back, backfilled_only, backfilled_slugs, universe)
             cached = self._load_voted_cache(cache_key)
             if cached is not None:
+                self._record_break_dates(cached)
                 return cached
 
             df = self._fetch_voted_price_history(
@@ -2330,6 +2300,7 @@ class ItemForecaster:
                 backfilled_slugs=backfilled_slugs,
             )
             self._save_voted_cache(cache_key, df)
+            self._record_break_dates(df)
             return df
 
         cutoff = self._now() - timedelta(days=days_back)
@@ -2360,7 +2331,18 @@ class ItemForecaster:
             f"across {n_sources_before} sources), "
             f"{df.item_id.nunique():,} items"
         )
+        self._record_break_dates(df)
         return df
+
+    def _record_break_dates(self, df: pd.DataFrame) -> None:
+        """Store this frame's break calendar; see `self.break_dates`."""
+        self.composition_break_dates = self._composition_break_dates(df)
+        self.collection_shift_dates = self._collection_shift_dates(df)
+        self.break_dates = self.collection_shift_dates | self.composition_break_dates
+        logger.info(
+            f"  Break calendar: {sorted(d.isoformat() for d in self.break_dates)} "
+            f"(composition: {sorted(d.isoformat() for d in self.composition_break_dates)})"
+        )
 
     def _archive_universe_slugs(self, exclude_iflow: bool) -> set:
         """Slugs carrying the pre-2026 backfill, read straight from the archive.
@@ -2506,7 +2488,14 @@ class ItemForecaster:
                 chunk_sql = f"SELECT * FROM ({rows_sql}) WHERE hash(item_id) % {n_chunks} = {k}"
                 part = con.execute(self._multi_source_voting_sql(chunk_sql) + " ORDER BY item_id, date", [cutoff]).df()
                 part["date"] = pd.to_datetime(part["date"]).dt.date
+                part["source_set"] = part["source_set"].astype("category")
                 parts.append(part)
+            # Categoricals with different categories concat to `object`: about
+            # 1 GB of strings on the 12.4M-row train read, which is the memory
+            # this chunking exists to save. Align the categories first.
+            cats = sorted(set().union(*(p["source_set"].cat.categories for p in parts)))
+            for p in parts:
+                p["source_set"] = p["source_set"].cat.set_categories(cats)
             df = pd.concat(parts, ignore_index=True)
             del parts
             n_after = len(df)
@@ -2590,8 +2579,8 @@ class ItemForecaster:
             # they drop out rather than falling back to a bid or a stale
             # window, because a series whose basis alternates fabricates the
             # wedge, or the time-basis change, as a return.
-            return pd.DataFrame(columns=["item_id", "date", "price", "volume", "n_ask_sources"]).astype(
-                {"n_ask_sources": "int64"}
+            return pd.DataFrame(columns=["item_id", "date", "price", "volume", "n_ask_sources", "source_set"]).astype(
+                {"n_ask_sources": "int64", "source_set": "category"}
             )
 
         # Speedup: split into single-source (≤1 row per item/date) and multi-source groups.
@@ -2604,6 +2593,7 @@ class ItemForecaster:
             # exactly one ask source voted, by construction.
             out = df.drop(columns=["source"], errors="ignore")
             out["n_ask_sources"] = 1
+            out["source_set"] = df["source"].fillna(NULL_SOURCE_SET_LABEL).astype("category")
             return out
 
         multi_keys = multi_groups[["item_id", "date"]].drop_duplicates()
@@ -2619,6 +2609,7 @@ class ItemForecaster:
             # hold duplicate rows from the same source. NaN sources collapse
             # to one bucket via fillna so a NULL-source group still counts 1.
             n_ask_sources = int(group["source"].fillna("__null__").nunique())
+            source_set = "|".join(sorted(set(group["source"].fillna(NULL_SOURCE_SET_LABEL))))
 
             consensus = np.median(prices)
             if n_sources < 3:
@@ -2627,6 +2618,7 @@ class ItemForecaster:
                         "price": consensus,
                         "volume": group["volume"].sum() if "volume" in group.columns else 0,
                         "n_ask_sources": n_ask_sources,
+                        "source_set": source_set,
                     }
                 )
 
@@ -2647,6 +2639,7 @@ class ItemForecaster:
                     "price": consensus,
                     "volume": group["volume"].sum() if "volume" in group.columns else 0,
                     "n_ask_sources": n_ask_sources,
+                    "source_set": source_set,
                 }
             )
 
@@ -2656,21 +2649,23 @@ class ItemForecaster:
             result_single = single_df.groupby(["item_id", "date"], as_index=False).agg(
                 price=("price", "mean"),
                 volume=("volume", "sum"),
+                source_set=("source", "first"),
             )
             result_single["n_ask_sources"] = 1
         else:
-            result_single = pd.DataFrame(columns=["item_id", "date", "price", "volume", "n_ask_sources"])
+            result_single = pd.DataFrame(columns=["item_id", "date", "price", "volume", "n_ask_sources", "source_set"])
 
         # Slow path: multi-source rows (small subset, typically <2% of groups)
         if len(multi_df) > 0:
             result_multi = multi_df.groupby(["item_id", "date"], as_index=False).apply(vote).reset_index(drop=True)
         else:
-            result_multi = pd.DataFrame(columns=["item_id", "date", "price", "volume", "n_ask_sources"])
+            result_multi = pd.DataFrame(columns=["item_id", "date", "price", "volume", "n_ask_sources", "source_set"])
 
         result = pd.concat([result_single, result_multi], ignore_index=True)
         # Concatenating single- and multi-source frames can upcast to float
         # when one side is empty; n_ask_sources must stay a true integer.
         result["n_ask_sources"] = result["n_ask_sources"].astype("int64")
+        result["source_set"] = result["source_set"].fillna(NULL_SOURCE_SET_LABEL).astype("category")
         return result
 
     @staticmethod
@@ -2713,6 +2708,8 @@ class ItemForecaster:
                 SELECT item_id, date, COUNT(*) AS n, median(price) AS med,
                        stddev_pop(price) AS sd,
                        COUNT(DISTINCT COALESCE(source, '__null__')) AS n_ask_sources,
+                       string_agg(DISTINCT COALESCE(source, '{NULL_SOURCE_SET_LABEL}'), '|'
+                                  ORDER BY COALESCE(source, '{NULL_SOURCE_SET_LABEL}')) AS source_set,
                        COALESCE(SUM(volume), 0.0) AS volume
                 FROM kept GROUP BY item_id, date
             )
@@ -2722,7 +2719,8 @@ class ItemForecaster:
                           OR abs(k.price - s.med) <= 2.0 * s.sd * (1 + {VOTE_TIE_RTOL})
                    ) AS price,
                    any_value(s.volume) AS volume,
-                   any_value(s.n_ask_sources)::BIGINT AS n_ask_sources
+                   any_value(s.n_ask_sources)::BIGINT AS n_ask_sources,
+                   any_value(s.source_set) AS source_set
             FROM kept k JOIN stats s USING (item_id, date)
             GROUP BY k.item_id, k.date
         """
@@ -3321,6 +3319,35 @@ class ItemForecaster:
         if self._artifact_feature_native_nan is not None:
             return self._artifact_feature_native_nan
         return self.feature_native_nan_enabled()
+
+    @staticmethod
+    def break_aware_lookbacks_enabled() -> bool:
+        """NaN a feature whose lookback spans a source-composition break.
+
+        Off by default and unmeasured: with it on, return_90d+ and the 100/200d
+        averages are NaN for every 2026 row after 2026-03-22 until about
+        2027-01. Switched on only after the paired band-quality A/B in
+        docs/specs/2026-09-30-composition-break-calendar-design.md (Part B gate).
+        """
+        return os.environ.get("BREAK_AWARE_LOOKBACKS") == "1"
+
+    def _break_aware_lookbacks_served(self) -> bool:
+        if self._artifact_break_aware_lookbacks is not None:
+            return self._artifact_break_aware_lookbacks
+        return self.break_aware_lookbacks_enabled()
+
+    def _apply_break_mask(self, df: pd.DataFrame, cols: list[str], *, served: bool) -> None:
+        """Apply mask_break_lookbacks when the arm is on (train: env; serve: artifact)."""
+        on = self._break_aware_lookbacks_served() if served else self.break_aware_lookbacks_enabled()
+        if not on:
+            return
+        # A predict on an engineered-cache hit never fetched, so it has no
+        # calendar of its own; the artifact's training calendar is the fallback.
+        breaks = (self.break_dates or frozenset()) | (self._artifact_break_dates if served else frozenset())
+        # Every allowlisted feature is price_technicals today; the coverage test
+        # guarantees each one has a declared window.
+        n = mask_break_lookbacks(df, [c for c in cols if _feature_group(c) == "price_technicals"], breaks)
+        logger.info(f"  BREAK_AWARE_LOOKBACKS: {n:,} feature cells NaN'd across {len(breaks)} break day(s)")
 
     def _impute_features(self, X, medians, served: bool = False):
         """Fill NaN features from `medians`, or pass NaN through under the flag.
@@ -5213,6 +5240,42 @@ class ItemForecaster:
         hits = counts.index[change > cls.COLLECTION_SHIFT_FRACTION]
         return frozenset(ts.date() for ts in hits)
 
+    #: Share of items, present on both d-1 and d, whose voting source set
+    #: changed. Break days measured 0.9989-1.0000 (01-01, 03-22, 04-16,
+    #: 07-09/10/11); the highest ordinary day 0.56 on the train universe
+    #: (Jan-Feb, where aggregator_sync steps in and out). 2026-09-30 probe,
+    #: docs/specs/2026-09-30-composition-break-calendar-design.md.
+    COMPOSITION_BREAK_FRACTION = 0.90
+
+    @classmethod
+    def _composition_break_dates(cls, df: pd.DataFrame) -> frozenset:
+        """Dates on which the whole cross-section's source set switched.
+
+        The item-count rule misses a switch that keeps the count flat, which
+        2026-04-16 did (+0.02% items, 100% of sets changed, median return
+        -1.92%). Like that rule, this reads the universe, never prices, so a
+        real crash cannot fire it. Only items observed on both days are judged;
+        a new item is not a changed one.
+        """
+        if df.empty or not {"item_id", "date", "source_set"} <= set(df.columns):
+            return frozenset()
+        d = df[["item_id", "date", "source_set"]].drop_duplicates(["item_id", "date"]).copy()
+        d["date"] = pd.to_datetime(d["date"])
+        # One categorical for both legs, so the codes compare as the sets do.
+        # The voted frame already carries one; converting it via str would
+        # materialise millions of strings for nothing.
+        if not isinstance(d["source_set"].dtype, pd.CategoricalDtype):
+            d["source_set"] = d["source_set"].astype("category")
+        prev = d.copy()
+        prev["date"] = prev["date"] + pd.to_timedelta(1, unit="D")
+        m = d.merge(prev, on=["item_id", "date"], suffixes=("", "_prev"))
+        if m.empty:
+            return frozenset()
+        m["changed"] = m["source_set"].cat.codes.to_numpy() != m["source_set_prev"].cat.codes.to_numpy()
+        agg = m.groupby("date")["changed"].agg(["mean", "size"])
+        hits = agg[(agg["mean"] >= cls.COMPOSITION_BREAK_FRACTION) & (agg["size"] >= cls.MIN_DEGENERATE_CROSS_SECTION)]
+        return frozenset(ts.date() for ts in hits.index)
+
     def prepare_targets(self, df: pd.DataFrame, horizon: int) -> pd.DataFrame:
         logger.info(f"Preparing {horizon}d targets...")
         df = df.sort_values(["item_id", "date"])
@@ -5304,7 +5367,17 @@ class ItemForecaster:
             bad |= anchor.isin(snap)
             bad |= (anchor + h_delta).isin(snap)
 
-        shifts = self._collection_shift_dates(df)
+        if self.break_dates is None:
+            shifts = self._collection_shift_dates(df)
+            count_shifts = shifts
+            logger.warning(
+                "  No break calendar on this forecaster (fetch_price_history did not "
+                "run); voiding on the item-count rule only -- composition switches "
+                "such as 2026-04-16 are NOT voided on this frame."
+            )
+        else:
+            shifts = self.break_dates
+            count_shifts = self.collection_shift_dates
         if shifts:
             # Span rule: the basis changes somewhere inside (anchor, anchor+h],
             # so the two legs of the return are quoted on different sources.
@@ -5377,8 +5450,8 @@ class ItemForecaster:
             )
             logger.info(
                 f"  Voided {n_bad} {horizon}d targets spanning "
-                f"{len(snapshots)} snapshot day(s) / {len(shifts)} collector "
-                f"cutover(s); {frozen_note}"
+                f"{len(snapshots)} snapshot day(s) / {len(shifts)} break "
+                f"day(s); {frozen_note}"
             )
 
         voided = int(df[f"target_return_{horizon}d"].isna().sum() - pre_void_na)
@@ -5395,7 +5468,9 @@ class ItemForecaster:
         frozen_run_labels[horizon] = n_stale
         self.label_voiding = {
             "snapshot_dates": sorted(d.isoformat() for d in snapshots),
-            "collection_shift_dates": sorted(d.isoformat() for d in shifts),
+            "collection_shift_dates": sorted(d.isoformat() for d in count_shifts),
+            "composition_break_dates": sorted(d.isoformat() for d in self.composition_break_dates),
+            "break_dates": sorted(d.isoformat() for d in shifts),
             "voided_labels_by_horizon": counts,
             "frozen_run_labels": frozen_run_labels,
             "frame_date_range": [
@@ -5406,8 +5481,9 @@ class ItemForecaster:
         logger.info(
             f"  Label voiding (h={horizon}): {voided:,} labels voided "
             f"({n_stale:,} of them for a frozen price run, "
-            f"{len(shifts)} collector cutovers, {len(snapshots)} snapshot days); "
-            f"cutovers: {sorted(d.isoformat() for d in shifts)}"
+            f"{len(shifts)} break days, {len(snapshots)} snapshot days); "
+            f"breaks: {sorted(d.isoformat() for d in shifts)} "
+            f"(composition: {sorted(d.isoformat() for d in self.composition_break_dates)})"
         )
 
         # One-sided exceedance label for the band-scale head (Phase 2): does the
@@ -5817,6 +5893,10 @@ class ItemForecaster:
         self._reduce_feature_cols(df)
         self._base_feature_cols = list(self.feature_cols)
 
+        # Before the cross-sectional rank transform, so a masked cell is ranked
+        # as missing rather than ranked and then blanked.
+        self._apply_break_mask(df, self.feature_cols, served=False)
+
         # After the allowlist and the prune, so the transform runs over the ~33
         # surviving columns rather than all 123. Two consequences worth stating:
         # the >0.95 correlation prune therefore decides on RAW values, and
@@ -6215,6 +6295,7 @@ class ItemForecaster:
                 "exceedance_head": self.exceedance_head_enabled(),
                 "anomaly_gbm": self.anomaly_gbm_enabled(),
                 "feature_native_nan": self.feature_native_nan_enabled(),
+                "break_aware_lookbacks": self.break_aware_lookbacks_enabled(),
             }
         ):
             df = self.build_training_data(
@@ -7953,99 +8034,6 @@ class ItemForecaster:
             callbacks.insert(0, lgb.early_stopping(20))
         return lgb.train(params, dtrain, num_boost_round=num_boost_round, valid_sets=valid_sets, callbacks=callbacks)
 
-    def _fit_vol_rank_model(
-        self,
-        X_train,
-        y_abs_train,
-        X_val,
-        y_abs_val,
-        boosting_type: str,
-        tree_params: dict,
-        horizon: int,
-        num_boost_round: int = 200,
-    ) -> list[lgb.Booster]:
-        """Train a regression GBM on |return| to rank items by volatility.
-
-        Returns an ensemble of boosters whose mean prediction is the expected
-        absolute move per item. The caller normalises predictions to a mean-1
-        multiplier on climatology.
-        """
-        ds_params = {"max_bin": self.MAX_BIN, "feature_pre_filter": False}
-        dtrain = lgb.Dataset(X_train, y_abs_train, params=ds_params)
-        dval = lgb.Dataset(X_val, y_abs_val, reference=dtrain, params=ds_params)
-        dtrain.construct()
-        dval.construct()
-
-        # Tree structure params are objective-agnostic; reusing direction's.
-        base = dict(tree_params)
-        base.update(
-            {
-                "objective": "regression",
-                "metric": "mae",
-                "boosting_type": boosting_type,
-                "verbosity": -1,
-                "n_jobs": -1,
-                "max_bin": self.MAX_BIN,
-                "feature_pre_filter": False,
-                "min_gain_to_split": 0.1,
-            }
-        )
-
-        ensemble = []
-        for ei in range(self.N_ENSEMBLES):
-            p = base.copy()
-            p["random_state"] = self.ENSEMBLE_SEEDS[ei]
-            p["feature_fraction"] = self.ENSEMBLE_FEATURE_FRACTIONS[ei]
-            cbs = [lgb.log_evaluation(0)]
-            if self._early_stopping_enabled():
-                cbs.insert(0, lgb.early_stopping(20))
-            model = lgb.train(
-                p,
-                dtrain,
-                num_boost_round=num_boost_round,
-                valid_sets=[dval],
-                callbacks=cbs,
-            )
-            ensemble.append(model)
-        return ensemble
-
-    def _predict_vol_rank(self, horizon: int, X) -> np.ndarray | None:
-        """Mean ensemble prediction from the vol-rank model, or None."""
-        models = self.vol_rank_models.get(horizon)
-        if not models:
-            return None
-        preds = [m.predict(X) for m in models]
-        return np.mean(preds, axis=0)
-
-    def _vol_rank_multiplier(self, horizon: int, X) -> np.ndarray | None:
-        """Normalised vol-rank multiplier (mean 1.0), or None if no model."""
-        raw = self._predict_vol_rank(horizon, X)
-        if raw is None:
-            return None
-        raw = np.clip(raw, 0.01, None)
-        norm = self.vol_rank_norm.get(horizon)
-        if norm is None or norm <= 0:
-            norm = float(np.mean(raw))
-        if norm <= 0:
-            return None
-        mult = raw / norm
-        return np.clip(mult, 0.25, 4.0)
-
-    def _vol_rank_feature_frame(
-        self,
-        rows: pd.DataFrame,
-        horizon: int,
-        *,
-        served: bool = False,
-    ) -> pd.DataFrame:
-        """Prepare features for the vol-rank model, shared by calibration and serving."""
-        cols = self.horizon_feature_cols.get(horizon, self.feature_cols)
-        cols = [c for c in cols if c in rows.columns]
-        X = rows[cols].replace([np.inf, -np.inf], np.nan)
-        if not self.feature_medians.empty:
-            X = self._impute_features(X, self.feature_medians, served=served)
-        return X
-
     def _fit_exceedance_classifier(
         self,
         X_train,
@@ -9156,167 +9144,6 @@ class ItemForecaster:
             table[str(iid)] = float(w * raw + (1.0 - w) * pool)
         return table, tier_pool, global_std
 
-    @classmethod
-    def _compute_per_item_optimal_k(
-        cls, df: pd.DataFrame, tcol: str, k_grid=None, target_coverage: float = 0.80
-    ) -> pd.DataFrame:
-        """Find per-item optimal K via normalized-residual calibration.
-
-        For each item, the band is `q_hat * scale(K)`. A global q_hat absorbs
-        the level, so the K that makes this item's normalized |return|/scale(K)
-        distribution closest to the cross-sectional average is optimal — it
-        means a single q_hat works well for this item. The metric is the p80
-        of |return_i| / scale_i(K); the K that minimizes it wins (the item
-        needs the least q_hat to reach 80% coverage).
-
-        Items with < 15 observations get the global CLIMATOLOGY_SHRINK_K.
-        """
-        if k_grid is None:
-            k_grid = [10, 20, 50, 100, 200, 320, 500, 1000]
-
-        d = df[np.isfinite(df[tcol].to_numpy())].copy()
-        if d.empty:
-            return pd.DataFrame()
-        d["tier"] = cls._price_tier_array(d["price"].to_numpy())
-        global_std = float(d[tcol].std())
-        tier_std = d.groupby("tier")[tcol].std()
-        tier_pool = {int(t): (float(v) if np.isfinite(v) and v > 0 else global_std) for t, v in tier_std.items()}
-
-        agg = d.groupby("item_id").agg(
-            raw_std=(tcol, "std"),
-            count=(tcol, "count"),
-            median_price=("price", "median"),
-        )
-        agg["tier"] = cls._price_tier_array(agg["median_price"].to_numpy())
-        agg["pool_std"] = agg["tier"].map(lambda t: tier_pool.get(int(t), global_std))
-
-        item_returns = d.groupby("item_id")[tcol].apply(np.array)
-
-        results = []
-        default_k = float(cls.CLIMATOLOGY_SHRINK_K)
-        for iid, row in agg.iterrows():
-            n = float(row["count"])
-            raw = row["raw_std"]
-            pool = row["pool_std"]
-            if not np.isfinite(raw) or raw <= 0:
-                raw = pool
-
-            rets = item_returns.get(iid)
-            if rets is None or len(rets) < 15:
-                results.append(
-                    {
-                        "item_id": iid,
-                        "optimal_k": default_k,
-                        "count": n,
-                        "raw_std": raw,
-                        "tier": int(row["tier"]),
-                        "pool_std": pool,
-                        "std_ratio": raw / pool if pool > 0 else 1.0,
-                    }
-                )
-                continue
-
-            abs_rets = np.abs(rets)
-            best_k = default_k
-            best_q = float("inf")
-            for k in k_grid:
-                w = n / (n + k)
-                shrunk = w * raw + (1.0 - w) * pool
-                if shrunk <= 0:
-                    continue
-                normalized = abs_rets / shrunk
-                q80 = float(np.quantile(normalized, target_coverage))
-                if q80 < best_q:
-                    best_q = q80
-                    best_k = k
-
-            results.append(
-                {
-                    "item_id": iid,
-                    "optimal_k": best_k,
-                    "count": n,
-                    "raw_std": raw,
-                    "tier": int(row["tier"]),
-                    "pool_std": pool,
-                    "std_ratio": raw / pool if pool > 0 else 1.0,
-                }
-            )
-        return pd.DataFrame(results)
-
-    def _fit_shrink_k_model(
-        self,
-        item_features: pd.DataFrame,
-        target_k: np.ndarray,
-        tree_params: dict,
-        boosting_type: str = "gbdt",
-        num_boost_round: int = 100,
-    ) -> lgb.Booster:
-        """Train a regression GBM to predict per-item optimal K from features."""
-        feature_cols = ["count", "raw_std", "tier", "pool_std", "std_ratio"]
-        X = item_features[feature_cols].values
-        y = np.log1p(target_k.astype(float))
-
-        ds = {"max_bin": 63, "feature_pre_filter": False}
-        dtrain = lgb.Dataset(X, y, params=ds, feature_name=feature_cols)
-        params = dict(tree_params) if tree_params else {}
-        params.update(
-            {
-                "objective": "regression",
-                "metric": "mae",
-                "boosting_type": boosting_type,
-                "verbosity": -1,
-                "n_jobs": -1,
-                "num_leaves": 15,
-                "min_data_in_leaf": 20,
-                "learning_rate": 0.05,
-            }
-        )
-        return lgb.train(params, dtrain, num_boost_round=num_boost_round, callbacks=[lgb.log_evaluation(0)])
-
-    def predict_shrink_k(self, horizon: int, item_stats: pd.DataFrame) -> np.ndarray:
-        """Predict per-item K from the loaded shrink-K model.
-
-        item_stats must have columns: count, raw_std, tier, pool_std, std_ratio.
-        Returns an array of K values (one per row), clipped to [5, 2000].
-        """
-        model = self.shrink_k_models.get(horizon)
-        if model is None:
-            return np.full(len(item_stats), float(self.CLIMATOLOGY_SHRINK_K))
-        feature_cols = ["count", "raw_std", "tier", "pool_std", "std_ratio"]
-        X = item_stats[feature_cols].fillna(0).values
-        log_k = model.predict(X)
-        return np.clip(np.expm1(log_k), 5, 2000)
-
-    def _build_climatology_table_adaptive(self, df: pd.DataFrame, tcol: str, horizon: int):
-        """Like _build_climatology_table but with per-item K from the GBM."""
-        d = df[np.isfinite(df[tcol].to_numpy())].copy()
-        if d.empty:
-            return {}, {}, float("nan")
-        d["tier"] = self._price_tier_array(d["price"].to_numpy())
-        global_std = float(d[tcol].std())
-        tier_std = d.groupby("tier")[tcol].std()
-        tier_pool = {int(t): (float(v) if np.isfinite(v) and v > 0 else global_std) for t, v in tier_std.items()}
-        agg = d.groupby("item_id").agg(
-            raw_std=(tcol, "std"),
-            count=(tcol, "count"),
-            median_price=("price", "median"),
-        )
-        agg["tier"] = self._price_tier_array(agg["median_price"].to_numpy())
-        agg["pool_std"] = agg["tier"].map(lambda t: tier_pool.get(int(t), global_std))
-        agg["std_ratio"] = agg["raw_std"] / agg["pool_std"].replace(0, 1)
-
-        k_arr = self.predict_shrink_k(horizon, agg)
-        table = {}
-        for (iid, row), k in zip(agg.iterrows(), k_arr):
-            n = float(row["count"])
-            pool = row["pool_std"]
-            raw = row["raw_std"]
-            if not np.isfinite(raw) or raw <= 0:
-                raw = pool
-            w = n / (n + k)
-            table[str(iid)] = float(w * raw + (1.0 - w) * pool)
-        return table, tier_pool, global_std
-
     def _climatology_lookup(self, horizon: int, item_ids, prices):
         """Per-row climatology scale from the persisted table, tier-pool fallback
         for unseen items, global fallback for unseen tiers. None if no table."""
@@ -9379,12 +9206,7 @@ class ItemForecaster:
                 f"back to sigma. The arm is NOT in effect for this horizon."
             )
             return None
-        if self._shrink_k_gbm_served() and horizon in self.shrink_k_models:
-            table, tier_pool, g = self._build_climatology_table_adaptive(
-                feature_frame[["item_id", "price", tcol]], tcol, horizon
-            )
-        else:
-            table, tier_pool, g = self._build_climatology_table(feature_frame[["item_id", "price", tcol]], tcol)
+        table, tier_pool, g = self._build_climatology_table(feature_frame[["item_id", "price", tcol]], tcol)
         if not table:
             logger.warning(
                 f"  {horizon}d climatology scale: no usable h-day return dispersion — falling back to sigma."
@@ -9421,13 +9243,7 @@ class ItemForecaster:
             return None
         if "item_id" not in rows.columns or "price" not in rows.columns:
             return None
-        scale = self._climatology_lookup(horizon, rows["item_id"].to_numpy(), rows["price"].to_numpy())
-        if self._vol_rank_gbm_served() and horizon in self.vol_rank_models:
-            X = self._vol_rank_feature_frame(rows, horizon, served=True)
-            vr_mult = self._vol_rank_multiplier(horizon, X.values)
-            if vr_mult is not None:
-                scale = scale * vr_mult
-        return scale
+        return self._climatology_lookup(horizon, rows["item_id"].to_numpy(), rows["price"].to_numpy())
 
     def _calibrate_conformal(
         self, horizon: int, records_df: pd.DataFrame, feature_frame: pd.DataFrame | None = None
@@ -9962,6 +9778,9 @@ class ItemForecaster:
                 # which is narrower still than the PREDICT_TAIL_ITEM_DAYS window
                 # this frame carries.
                 self._save_engineered_cache(df)
+
+        # After the cache write, so the cached frame stays flag-independent.
+        self._apply_break_mask(df, self.feature_cols, served=True)
 
         # Both gated transforms run BEFORE alignment, and must: alignment adds a
         # missing column as NaN and the median fill downstream turns that into a
@@ -11500,31 +11319,11 @@ class ItemForecaster:
         if _n_anom:
             logger.info(f"  Saved {_n_anom} anomaly classifiers")
 
-        # Save shrink-K models.
-        _n_sk = 0
-        for horizon, model in self.shrink_k_models.items():
-            if model is not None:
-                model.save_model(os.path.join(self.model_dir, f"shrink_k_{horizon}d.txt"))
-                _n_sk += 1
-        if _n_sk:
-            logger.info(f"  Saved {_n_sk} shrink-K models")
-
-        # Save vol-rank models (one ensemble per horizon).
-        _n_vr = 0
-        for horizon, ensemble in self.vol_rank_models.items():
-            for ei, model in enumerate(ensemble):
-                path = os.path.join(self.model_dir, f"vol_rank_{horizon}d_e{ei}.txt")
-                model.save_model(path)
-            _n_vr += 1
-        if _n_vr:
-            logger.info(f"  Saved {_n_vr} vol-rank models")
-        for horizon in self.HORIZONS:
-            if horizon in self.vol_rank_models:
-                continue
-            for ei in range(self.N_ENSEMBLES):
-                stale = os.path.join(self.model_dir, f"vol_rank_{horizon}d_e{ei}.txt")
-                if os.path.exists(stale):
-                    os.remove(stale)
+        # SHRINK_K_GBM and VOLATILITY_RANK_GBM were refuted (2026-09-10) and
+        # removed (2026-10-05 retrain PR). Clear any boosters an older artifact
+        # left behind so nothing on disk suggests they serve.
+        for stale in [*Path(self.model_dir).glob("shrink_k_*d.txt"), *Path(self.model_dir).glob("vol_rank_*d_e*.txt")]:
+            stale.unlink()
 
         # Remove orphaned regime-model files: any lgb_*_{regime}_*.txt on disk
         # that isn't in the current self.regime_models. Without this, a
@@ -11628,6 +11427,9 @@ class ItemForecaster:
             # instead of median-imputed. Serving must follow this (matched
             # pair): see _feature_native_nan_served.
             "feature_native_nan": self.feature_native_nan_enabled(),
+            # Whether price-technical features spanning a source break were
+            # NaN'd; serving follows it (see _break_aware_lookbacks_served).
+            "break_aware_lookbacks": self.break_aware_lookbacks_enabled(),
             "exceedance_scale": self.exceedance_scale_enabled(),
             "exceedance_meta": self.exceedance_meta_enabled(),
             # The isotonic map raw p -> calibrated p per horizon, fitted on
@@ -11661,9 +11463,6 @@ class ItemForecaster:
                 for h, cal in self.anomaly_calibrators.items()
             },
             "anomaly_gbm": self.anomaly_gbm_enabled(),
-            "shrink_k_gbm": self.shrink_k_gbm_enabled(),
-            "vol_rank_gbm": self.vol_rank_gbm_enabled(),
-            "vol_rank_norm": {str(h): v for h, v in self.vol_rank_norm.items()},
             "climatology_scale_tables": {str(h): cfg for h, cfg in self.climatology_scale.items()},
             # WHICH K built those tables. Deliberately NOT folded into
             # MODEL_ARTIFACT_VERSION: an artifact written before this key is
@@ -11740,6 +11539,8 @@ class ItemForecaster:
             "cv_results": cv_serial,
             "tuned_params": tuned_serial,
             "label_voiding": self.label_voiding,
+            "break_dates": sorted(d.isoformat() for d in (self.break_dates or frozenset())),
+            "composition_break_dates": sorted(d.isoformat() for d in self.composition_break_dates),
         }
 
         def _json_default(o):
@@ -11797,6 +11598,8 @@ class ItemForecaster:
         self._artifact_xs_rank_skipped = meta.get("xs_rank_skipped_cols")
         self._artifact_naive_init = meta.get("naive_init_score")
         self._artifact_feature_native_nan = meta.get("feature_native_nan")
+        self._artifact_break_aware_lookbacks = meta.get("break_aware_lookbacks")
+        self._artifact_break_dates = frozenset(date.fromisoformat(s) for s in meta.get("break_dates", []))
         self._artifact_exceedance_scale = meta.get("exceedance_scale")
         self._artifact_exceedance_meta = meta.get("exceedance_meta")
         # The isotonic calibrators. `.get` default {} for the same reason as
@@ -11868,9 +11671,6 @@ class ItemForecaster:
                 f"calibrators ({sorted(self.anomaly_calibrators)}d)"
             )
         self._artifact_anomaly_gbm = meta.get("anomaly_gbm")
-        self._artifact_shrink_k_gbm = meta.get("shrink_k_gbm")
-        self._artifact_vol_rank_gbm = meta.get("vol_rank_gbm")
-        self.vol_rank_norm = {int(h): float(v) for h, v in meta.get("vol_rank_norm", {}).items()}
         # Rebuild the climatology lookup with the int keys the accessors expect
         # (JSON coerces tier keys to strings; item keys are already strings).
         self.climatology_scale = {
@@ -12052,32 +11852,6 @@ class ItemForecaster:
                     logger.warning(f"  Corrupt ranking head {rpath}, skipping: {e}")
         if self.ranking_models:
             logger.info(f"  Loaded {len(self.ranking_models)} ranking heads")
-
-        # Load shrink-K models.
-        for horizon in self.HORIZONS:
-            spath = os.path.join(self.model_dir, f"shrink_k_{horizon}d.txt")
-            if os.path.exists(spath):
-                try:
-                    self.shrink_k_models[horizon] = lgb.Booster(model_file=spath)
-                except (lgb.basic.LightGBMError, Exception) as e:
-                    logger.warning(f"  Corrupt shrink-K model {spath}, skipping: {e}")
-        if self.shrink_k_models:
-            logger.info(f"  Loaded {len(self.shrink_k_models)} shrink-K models")
-
-        # Load vol-rank models (one ensemble per horizon, where saved).
-        for horizon in self.HORIZONS:
-            ensemble = []
-            for ei in range(self.N_ENSEMBLES):
-                vpath = os.path.join(self.model_dir, f"vol_rank_{horizon}d_e{ei}.txt")
-                if os.path.exists(vpath):
-                    try:
-                        ensemble.append(lgb.Booster(model_file=vpath))
-                    except (lgb.basic.LightGBMError, Exception) as e:
-                        logger.warning(f"  Corrupt vol-rank model {vpath}, skipping: {e}")
-            if ensemble:
-                self.vol_rank_models[horizon] = ensemble
-        if self.vol_rank_models:
-            logger.info(f"  Loaded {len(self.vol_rank_models)} vol-rank models")
 
         # Build per-horizon feature sets from the loaded models.
         # Each model internally stores the feature names it was trained with.

@@ -9,7 +9,7 @@ The tests that matter are the leak tests: a replay that can see past its own
 anchor scores a forecast against data it already had.
 """
 
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta
 
 import numpy as np
 import pandas as pd
@@ -39,6 +39,7 @@ from scripts.replay_serving import (
     _sigma_line,
     _tied_mask,
     audit_anchor_feed,
+    composition_cutovers,
     cutovers_from_counts,
     cutovers_in_outcome_window,
     sigma_tilt_pp,
@@ -1179,3 +1180,24 @@ def test_a_cutover_on_the_anchor_itself_is_the_feed_audit_s_job_not_this_one():
     """
     assert cutovers_in_outcome_window(date(2026, 3, 22), [3, 7], [date(2026, 3, 22)]) == {}
     assert cutovers_in_outcome_window(date(2026, 3, 19), [3], [date(2026, 3, 22)]) == {3: [date(2026, 3, 22)]}
+
+
+def test_a_composition_switch_with_a_flat_universe_is_a_cutover(tmp_path):
+    """2026-04-16: every item changed source set with the item count flat. The
+    label path voids across it (`_composition_break_dates`), so the replay must
+    refuse to score across it too -- the count rule alone cannot see it."""
+    rows = []
+    for i in range(60):
+        for k in range(6):
+            day = date(2026, 4, 13) + timedelta(days=k)
+            if day < date(2026, 4, 16):
+                rows += [(f"Item {i}", day, 10.0, 1, "aggregator_buff163"), (f"Item {i}", day, 10.1, 1, "aggregator_youpin")]
+            else:
+                rows.append((f"Item {i}", day, 9.8, 1, "aggregator_steam_17mafo"))
+    archive = tmp_path / "price-archive"
+    archive.mkdir()
+    pd.DataFrame(rows, columns=["item_slug", "day", "mean_price", "volume", "source"]).assign(
+        day=lambda d: pd.to_datetime(d["day"])
+    ).to_parquet(archive / "prices-2026.parquet")
+
+    assert composition_cutovers(date(2026, 4, 14), archive_dir=archive, window=4) == [date(2026, 4, 16)]

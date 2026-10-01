@@ -141,14 +141,10 @@ State on 2026-09-28, still true unless an item below says otherwise:
     `stratum_factors_from_panel`, each with its tests. Nothing was live. The 09-22 changelog
     got a dated correction: source weights and adaptive conformal never shipped.
     `changelog/2026-09-30-delete-uncalled-code.md`.
-16. **`SHRINK_K_GBM` / vol-rank: training branches deleted 2026-09-30 (#76); flag plumbing
-    stays until the next retrain PR.** `price-forecast.yml` sets `SHRINK_K_GBM: "0"`, and
-    `shrink_k_gbm` / `vol_rank_gbm` / `vol_rank_norm` round-trip through the artifact's
-    `meta.json`. Removing the flags without a retrain would break the predict path. Setting
-    either to 1 is now a no-op for training. About 30 references remain: the env reads,
-    the meta write and read, the `_*_served()` accessors, the serve-time vol-rank multiplier,
-    and the helpers the archived replays still call. Remove them in the same PR as a
-    `mode=full` retrain.
+16. ~~**`SHRINK_K_GBM` / vol-rank flag plumbing.**~~ **DONE 2026-09-30, ships with the 10-05
+    retrain.** The env reads, `meta.json` keys, `_*_served()` accessors, serve-time vol-rank
+    multiplier, workflow key and the archived replays that called them are removed. Old
+    artifacts still load. `changelog/2026-09-30-composition-break-calendar.md`.
 17. ~~**Fix stale reproduce paths.**~~ **DONE 2026-09-30 (#76).** The seven moved scripts are
     now cited at `backend/scripts/archive/` in architecture, research and code comments.
     Three frozen preregistrations got the path fix plus a dated path-only erratum.
@@ -198,11 +194,11 @@ State on 2026-09-28, still true unless an item below says otherwise:
 
 ## 6. Unstarted and unranked — open ideas, not commitments
 
-- **Composition-break calendar (deep review §12.8).** Persist `n_ask_sources` plus a source
-  bitmask, and exclude windows that span a consensus break. There's no record it landed, and the
-  vote now spans 20 sources. Two breaks are already known: 2026-03-22 (cash venues outvote a
-  lone Steam feed) and 2026-07-09 (feed substitution). If anything here gets promoted, this is
-  the candidate: it is data integrity, not another model arm.
+- ~~**Composition-break calendar (deep review §12.8).**~~ **DONE 2026-09-30, ships with the 10-05
+  retrain.** Labels now void across source-composition breaks too, which adds 2026-01-01 and
+  2026-04-16 to the voided days. Break-aware lookbacks (`BREAK_AWARE_LOOKBACKS`) are built but
+  off, pending the paired A/B in the spec's Part B gate. Per-item source churn is still open.
+  `changelog/2026-09-30-composition-break-calendar.md`.
 - A cross-venue FX ratio monitor (§12.11, about 2h).
 - R14 mechanical supply-position features and the hedonic market index. Both carry over from
   08-16, untouched.
@@ -256,7 +252,7 @@ The full lists live in the cited docs; this is the index.
 | 09-30 (done) | h=14 feedback factor live, 0.7059 (item 8); chunked vote confirmed predict-only (item 3); new releases served at h=3 (item 23) |
 | 09-29 | h=3 at 20 post-floor dates |
 | 10-03 | h=7 at 20 post-floor dates |
-| Mon 10-05 | weekly `mode=full` retrain (then 10-12, 10-19, …); first check of the chunked vote on a retrain (item 3) |
+| Mon 10-05 | weekly `mode=full` retrain (then 10-12, 10-19, …); first check of the chunked vote on a retrain (item 3); first retrain with the composition-break calendar and item 16 removed (check the `(composition: …)` list includes 04-16) |
 | ~10-10 | h=14 at 20 post-floor dates |
 | ~10-12 | end of the 09-14 workplan's wait window |
 | early–mid Oct | h=14/h=30 post-CSMarketAPI confirmation (item 7); h=14 read split at 09-30 |
