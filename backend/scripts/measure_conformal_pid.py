@@ -416,8 +416,11 @@ def load_prod_panel(session) -> pd.DataFrame:
     fc = pd.DataFrame(
         session.execute(
             text(
-                "SELECT item_id, forecast_date, predicted_price_low, predicted_price_mid, "
-                "predicted_price_high, band_multiplier FROM item_forecasts "
+                # item_forecasts names these price_low/mid/high; only forecast_outcomes
+                # carries the predicted_price_* spelling attach_priors reads.
+                "SELECT item_id, forecast_date, price_low AS predicted_price_low, "
+                "price_mid AS predicted_price_mid, price_high AS predicted_price_high, "
+                "band_multiplier FROM item_forecasts "
                 "WHERE horizon_days = :h AND forecast_date BETWEEN :a AND :b"
             ),
             {"h": HORIZON, "a": lo, "b": WINDOW[1]},
