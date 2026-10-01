@@ -32,6 +32,10 @@ metadata failed. Four arms:
                 Guards capacity inflation, which is a live risk here: crate and
                 collection are categorical with ~110-300 levels over 870 items,
                 so a tree can memorise per-item baselines through them.
+    age_placebo: + the age_only pair, permuted the same way. The capacity-
+                matched control for age_only (added 2026-10-01, deep review
+                §11): `placebo` carries nine columns, so it cannot say whether
+                age_only's two beat two columns of noise.
 
 Scored on TWO cohorts, because production does both:
   - held-out items, in no arm's training set -- does metadata generalise to an
@@ -458,6 +462,7 @@ def run_evaluation(df, pruned, meta_present, horizon_filter=None, n_jobs=None, m
         "treatment": meta_all,
         "age_only": meta_age,
         "placebo": meta_all,
+        "age_placebo": meta_age,
         "static_only": [c for c in META_STATIC if c in meta_present],
         "date_proxy": [DATE_PROXY_COL],
     }
@@ -535,7 +540,7 @@ def run_evaluation(df, pruned, meta_present, horizon_filter=None, n_jobs=None, m
                         continue
                     train_df = _stratified_sample(train_df, train_items, ROW_BUDGET, fold_idx)
 
-                    if arm == "placebo" and extra:
+                    if arm in ("placebo", "age_placebo") and extra:
                         rng = np.random.default_rng(PLACEBO_SEED)
                         train_df = train_df.copy()
                         val_df = val_df.copy()
@@ -670,7 +675,7 @@ def run_evaluation(df, pruned, meta_present, horizon_filter=None, n_jobs=None, m
             base = results[horizon].get("baseline")
             if base:
                 results[horizon]["_paired"] = {}
-                for arm in ("treatment", "age_only", "placebo", "static_only", "date_proxy"):
+                for arm in ("treatment", "age_only", "placebo", "age_placebo", "static_only", "date_proxy"):
                     if arm not in results[horizon]:
                         continue
                     results[horizon]["_paired"][arm] = {
@@ -691,6 +696,16 @@ def run_evaluation(df, pruned, meta_present, horizon_filter=None, n_jobs=None, m
                         )
                         for cohort in ("heldout", "trained")
                     }
+                # The same control for the age pair, at its own width.
+                if "age_only" in results[horizon] and "age_placebo" in results[horizon]:
+                    results[horizon]["_paired"]["age_only_vs_age_placebo"] = {
+                        cohort: paired_da_difference(
+                            results[horizon]["age_placebo"]["records"][cohort],
+                            results[horizon]["age_only"]["records"][cohort],
+                            cluster_key="fold_id",
+                        )
+                        for cohort in ("heldout", "trained")
+                    }
         return results
     finally:
         db.close()
@@ -705,7 +720,7 @@ def print_summary(results):
         print(f"\n  {h}d horizon")
         print(f"    {'arm':<12} {'feats':>6} {'held-out DA':>12} {'n':>9} {'trained DA':>12} {'n':>9} {'folds':>6}")
         print(f"    {'-' * 72}")
-        for arm in ("baseline", "treatment", "age_only", "placebo", "static_only", "date_proxy"):
+        for arm in ("baseline", "treatment", "age_only", "placebo", "age_placebo", "static_only", "date_proxy"):
             a = r.get(arm)
             if not a:
                 continue
