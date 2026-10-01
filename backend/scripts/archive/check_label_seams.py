@@ -74,7 +74,6 @@ from models.item_parser import (
     STEAM_SPOT_SOURCES,
     TRAILING_WINDOW_SOURCES,
 )
-
 from scripts.archive.measure_composition_stability import (
     ARCHIVE_ROOT,
     NULL_SOURCE_LABEL,
