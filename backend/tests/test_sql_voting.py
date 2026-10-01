@@ -98,3 +98,76 @@ def test_exact_two_sigma_tie_is_kept_by_both():
     )
     assert _sql_vote(df)["price"].tolist() == [0.38]
     assert ItemForecaster._apply_multi_source_voting(df)["price"].tolist() == [0.38]
+
+
+def _canon_sets(df: pd.DataFrame) -> pd.DataFrame:
+    out = df[["item_id", "date", "source_set"]].copy()
+    out["source_set"] = out["source_set"].astype(str)
+    return out.sort_values(["item_id", "date"]).reset_index(drop=True)
+
+
+@pytest.mark.parametrize("seed", range(8))
+def test_source_set_matches_between_sql_and_pandas(seed):
+    df = _random_rows(seed)
+    expected = _canon_sets(ItemForecaster._apply_multi_source_voting(df.copy()))
+    actual = _canon_sets(_sql_vote(df))
+    pd.testing.assert_frame_equal(actual, expected)
+
+
+def test_source_set_is_the_kept_sources_sorted_and_deduplicated():
+    day = pd.Timestamp("2026-04-16").date()
+    df = pd.DataFrame(
+        [
+            ("a", day, 10.0, 1.0, "aggregator_youpin"),
+            ("a", day, 10.1, 1.0, "aggregator_buff163"),
+            ("a", day, 10.2, 1.0, "aggregator_buff163"),  # duplicate source
+            ("a", day, 10.3, 1.0, sorted(CONDITIONAL_STEAM_SOURCES)[0]),  # stands down: 2 other asks
+            ("a", day, 9.0, 1.0, sorted(BID_SOURCES)[0]),  # bids never vote
+            ("b", day, 5.0, 1.0, None),
+        ],
+        columns=["item_id", "date", "price", "volume", "source"],
+    )
+    for out in (ItemForecaster._apply_multi_source_voting(df.copy()), _sql_vote(df)):
+        sets = dict(zip(out["item_id"], out["source_set"].astype(str)))
+        assert sets == {"a": "aggregator_buff163|aggregator_youpin", "b": "<null>"}
+        assert (out["source_set"].astype(str).str.count(r"\|") + 1 == out["n_ask_sources"]).all()
+
+
+def test_pandas_vote_emits_category_dtype():
+    out = ItemForecaster._apply_multi_source_voting(_random_rows(0))
+    assert isinstance(out["source_set"].dtype, pd.CategoricalDtype)
+
+
+def test_aligned_categories_survive_concat():
+    a = pd.DataFrame({"source_set": pd.Categorical(["x"])})
+    b = pd.DataFrame({"source_set": pd.Categorical(["y"])})
+    cats = sorted(set().union(*(p["source_set"].cat.categories for p in (a, b))))
+    for p in (a, b):
+        p["source_set"] = p["source_set"].cat.set_categories(cats)
+    assert isinstance(pd.concat([a, b], ignore_index=True)["source_set"].dtype, pd.CategoricalDtype)
+
+
+def test_chunked_archive_read_keeps_source_set_categorical(tmp_path, monkeypatch):
+    """Each item-hash chunk sees different source sets, so its categories differ.
+    Unaligned, pd.concat falls back to `object` -- ~1 GB on the train read."""
+    from datetime import UTC, date, datetime, timedelta
+    from unittest.mock import MagicMock
+
+    archive = tmp_path / "price-archive"
+    archive.mkdir()
+    rows = []
+    for i in range(40):
+        for k in range(3):
+            rows.append((f"Item {i}", date(2026, 7, 10) + timedelta(days=k), 10.0 + k, 1, ASKS[i % len(ASKS)]))
+    pd.DataFrame(rows, columns=["item_slug", "day", "mean_price", "volume", "source"]).assign(
+        day=lambda d: pd.to_datetime(d["day"])
+    ).to_parquet(archive / "prices-2026.parquet")
+    monkeypatch.setenv("VOTED_CHUNKS", "4")
+    f = ItemForecaster(db_session=MagicMock(), model_dir=str(tmp_path / "m"))
+    f.archive_dir = archive
+    f._now = lambda: datetime(2026, 7, 20, tzinfo=UTC)
+
+    out = f._fetch_voted_price_history(days_back=30, backfilled_only=False)
+
+    assert isinstance(out["source_set"].dtype, pd.CategoricalDtype)
+    assert set(out["source_set"].astype(str)) == set(ASKS)

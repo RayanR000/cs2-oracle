@@ -71,6 +71,11 @@ DIRECTION_FLAT_TOLERANCE_PCT = 0.5
 #: between runs. Ties are kept, as `<=` intends.
 VOTE_TIE_RTOL = 1e-9
 
+#: How a NULL source is spelled inside `source_set`. The pre-2026 series is
+#: NULL-sourced throughout, so every pre-2026 item-day carries this one value
+#: and can never register as a composition change against itself.
+NULL_SOURCE_SET_LABEL = "<null>"
+
 # Vol-scaled directional labels (2026-07-27). The flat band is
 # clamp(k_h * sigma_daily * sqrt(h), floor, cap) in percent, replacing the
 # fixed ±DIRECTION_FLAT_TOLERANCE_PCT. sigma_daily is trailing std of
@@ -1065,7 +1070,10 @@ class ItemForecaster:
     # frame can differ in the last ulp and is not reused.
     # v11: exact 2-sigma ties are kept (VOTE_TIE_RTOL); 17 penny item-days of
     # 6.58M changed on the local archive.
-    VOTED_CACHE_VERSION = 11
+    # v12: source_set on the voted frame -- the composition-break detector's
+    # input. A v11 frame lacks the column, so a stale cache would silently
+    # disable the detector and fall back to the item-count rule alone.
+    VOTED_CACHE_VERSION = 12
     VOTED_CACHE_PREFIX = "voted_"
     VOTED_CACHE_MAX_ENTRIES = 3
 
@@ -2506,7 +2514,14 @@ class ItemForecaster:
                 chunk_sql = f"SELECT * FROM ({rows_sql}) WHERE hash(item_id) % {n_chunks} = {k}"
                 part = con.execute(self._multi_source_voting_sql(chunk_sql) + " ORDER BY item_id, date", [cutoff]).df()
                 part["date"] = pd.to_datetime(part["date"]).dt.date
+                part["source_set"] = part["source_set"].astype("category")
                 parts.append(part)
+            # Categoricals with different categories concat to `object`: about
+            # 1 GB of strings on the 12.4M-row train read, which is the memory
+            # this chunking exists to save. Align the categories first.
+            cats = sorted(set().union(*(p["source_set"].cat.categories for p in parts)))
+            for p in parts:
+                p["source_set"] = p["source_set"].cat.set_categories(cats)
             df = pd.concat(parts, ignore_index=True)
             del parts
             n_after = len(df)
@@ -2590,8 +2605,8 @@ class ItemForecaster:
             # they drop out rather than falling back to a bid or a stale
             # window, because a series whose basis alternates fabricates the
             # wedge, or the time-basis change, as a return.
-            return pd.DataFrame(columns=["item_id", "date", "price", "volume", "n_ask_sources"]).astype(
-                {"n_ask_sources": "int64"}
+            return pd.DataFrame(columns=["item_id", "date", "price", "volume", "n_ask_sources", "source_set"]).astype(
+                {"n_ask_sources": "int64", "source_set": "category"}
             )
 
         # Speedup: split into single-source (≤1 row per item/date) and multi-source groups.
@@ -2604,6 +2619,7 @@ class ItemForecaster:
             # exactly one ask source voted, by construction.
             out = df.drop(columns=["source"], errors="ignore")
             out["n_ask_sources"] = 1
+            out["source_set"] = df["source"].fillna(NULL_SOURCE_SET_LABEL).astype("category")
             return out
 
         multi_keys = multi_groups[["item_id", "date"]].drop_duplicates()
@@ -2619,6 +2635,7 @@ class ItemForecaster:
             # hold duplicate rows from the same source. NaN sources collapse
             # to one bucket via fillna so a NULL-source group still counts 1.
             n_ask_sources = int(group["source"].fillna("__null__").nunique())
+            source_set = "|".join(sorted(set(group["source"].fillna(NULL_SOURCE_SET_LABEL))))
 
             consensus = np.median(prices)
             if n_sources < 3:
@@ -2627,6 +2644,7 @@ class ItemForecaster:
                         "price": consensus,
                         "volume": group["volume"].sum() if "volume" in group.columns else 0,
                         "n_ask_sources": n_ask_sources,
+                        "source_set": source_set,
                     }
                 )
 
@@ -2647,6 +2665,7 @@ class ItemForecaster:
                     "price": consensus,
                     "volume": group["volume"].sum() if "volume" in group.columns else 0,
                     "n_ask_sources": n_ask_sources,
+                    "source_set": source_set,
                 }
             )
 
@@ -2656,21 +2675,23 @@ class ItemForecaster:
             result_single = single_df.groupby(["item_id", "date"], as_index=False).agg(
                 price=("price", "mean"),
                 volume=("volume", "sum"),
+                source_set=("source", "first"),
             )
             result_single["n_ask_sources"] = 1
         else:
-            result_single = pd.DataFrame(columns=["item_id", "date", "price", "volume", "n_ask_sources"])
+            result_single = pd.DataFrame(columns=["item_id", "date", "price", "volume", "n_ask_sources", "source_set"])
 
         # Slow path: multi-source rows (small subset, typically <2% of groups)
         if len(multi_df) > 0:
             result_multi = multi_df.groupby(["item_id", "date"], as_index=False).apply(vote).reset_index(drop=True)
         else:
-            result_multi = pd.DataFrame(columns=["item_id", "date", "price", "volume", "n_ask_sources"])
+            result_multi = pd.DataFrame(columns=["item_id", "date", "price", "volume", "n_ask_sources", "source_set"])
 
         result = pd.concat([result_single, result_multi], ignore_index=True)
         # Concatenating single- and multi-source frames can upcast to float
         # when one side is empty; n_ask_sources must stay a true integer.
         result["n_ask_sources"] = result["n_ask_sources"].astype("int64")
+        result["source_set"] = result["source_set"].fillna(NULL_SOURCE_SET_LABEL).astype("category")
         return result
 
     @staticmethod
@@ -2713,6 +2734,8 @@ class ItemForecaster:
                 SELECT item_id, date, COUNT(*) AS n, median(price) AS med,
                        stddev_pop(price) AS sd,
                        COUNT(DISTINCT COALESCE(source, '__null__')) AS n_ask_sources,
+                       string_agg(DISTINCT COALESCE(source, '{NULL_SOURCE_SET_LABEL}'), '|'
+                                  ORDER BY COALESCE(source, '{NULL_SOURCE_SET_LABEL}')) AS source_set,
                        COALESCE(SUM(volume), 0.0) AS volume
                 FROM kept GROUP BY item_id, date
             )
@@ -2722,7 +2745,8 @@ class ItemForecaster:
                           OR abs(k.price - s.med) <= 2.0 * s.sd * (1 + {VOTE_TIE_RTOL})
                    ) AS price,
                    any_value(s.volume) AS volume,
-                   any_value(s.n_ask_sources)::BIGINT AS n_ask_sources
+                   any_value(s.n_ask_sources)::BIGINT AS n_ask_sources,
+                   any_value(s.source_set) AS source_set
             FROM kept k JOIN stats s USING (item_id, date)
             GROUP BY k.item_id, k.date
         """
