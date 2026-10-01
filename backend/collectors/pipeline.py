@@ -468,6 +468,19 @@ class DataPipeline:
                     fallback_items_collected,
                 )
 
+            # 4b. Add newly released items to the catalog (collectors/new_item_discovery.py).
+            # After the prices are saved and isolated from them: a failure here must
+            # not cost the day's collection.
+            new_items_discovered = 0
+            if limit is None:
+                try:
+                    from collectors.new_item_discovery import discover_new_items
+
+                    new_items_discovered = discover_new_items(self.db_session, aggregator._raw_sources, snapshot_day)
+                except Exception as disc_err:
+                    self.db_session.rollback()
+                    logger.warning("New-item discovery failed (collection unaffected): %s", disc_err)
+
             # 5. Record collection run for monitoring
             end_time = datetime.utcnow()
             duration_seconds = (end_time - start_time).total_seconds()
@@ -546,6 +559,7 @@ class DataPipeline:
                 "errors": errors_count,
                 "fallback_items_collected": fallback_items_collected,
                 "fallback_stale_declined": len(fallback_stale_items),
+                "new_items_discovered": new_items_discovered,
                 "duplicate_names": duplicate_name_count,
                 "duplicate_name_sample": duplicate_name_sample,
                 "missing_name_sample": missing_names[:20],

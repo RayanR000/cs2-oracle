@@ -27,6 +27,7 @@ import numpy as np
 import pandas as pd
 from backtest.scoring import HEADLINE_MIN_TIER, MIN_FEEDBACK_DATES, price_tier
 
+from models import serve_universe
 from models.conformal import ALPHA
 
 logger = logging.getLogger(__name__)
@@ -274,6 +275,9 @@ def _load_panel(session, horizons: Iterable[int], *, since: str | None = None) -
         "o.predicted_price_low, o.predicted_price_mid, o.predicted_price_high, o.actual_price, "
         f"{mult_sql} AS band_multiplier "
         "FROM forecast_outcomes o LEFT JOIN item_forecasts f ON f.id = o.forecast_id "
+        # Established items only: young releases are served at h=3 on a band this
+        # factor did not size, and refitting on them would move it for everyone.
+        f"JOIN items i ON i.id = o.item_id AND {serve_universe.established_sql('i')} "
         f"{where}"
     ).bindparams(bindparam("horizons", expanding=True))
     rows = session.execute(sql, params).mappings().all()

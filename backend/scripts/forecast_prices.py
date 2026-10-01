@@ -27,6 +27,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 import contextlib
 
 from database import ItemForecast, SessionLocal
+from models import serve_universe
 from models.forecaster import IncompatibleModelArtifact, ItemForecaster
 from sqlalchemy import text
 
@@ -653,10 +654,16 @@ def run_forecast(
             logger.error("No models available for prediction.")
             return {"status": "error", "message": "No trained models"}
 
-        # Map item slugs to integer IDs
-        slug_rows = db.execute(text("SELECT id, item_id FROM items WHERE is_backfilled = 1")).fetchall()
-        slug_to_id = {r.item_id: r.id for r in slug_rows}
-        logger.info(f"Loaded {len(slug_to_id)} slug->ID mappings from DB")
+        # Map item slugs to integer IDs: the served universe (established plus
+        # young releases, `models/serve_universe.py`). Shadows keep the
+        # established map, so the champion-challenger panel never sees a young item.
+        served = serve_universe.served_items(db, forecaster._now())
+        slug_to_id = serve_universe.slug_to_id(served)
+        shadow_slug_to_id = serve_universe.slug_to_id(served, established_only=True)
+        logger.info(
+            f"Loaded {len(slug_to_id)} slug->ID mappings from DB "
+            f"({len(slug_to_id) - len(shadow_slug_to_id)} young releases)"
+        )
         override = os.environ.get("FORECAST_DATE_OVERRIDE")
         override_date = date.fromisoformat(override) if override else None
         # `today` keeps its old meaning for the post-forecast backtest cutoff;
@@ -686,7 +693,7 @@ def run_forecast(
         if compare_regime:
             shadow_counts = (0, 0, 0, 0)
         else:
-            shadow_counts = _write_shadow_candidates(db, forecaster, slug_to_id, override_date)
+            shadow_counts = _write_shadow_candidates(db, forecaster, shadow_slug_to_id, override_date)
 
         # Update bias corrections from outcomes if requested
         if update_bias:
@@ -716,7 +723,7 @@ def run_forecast(
                 forecast_date_override=override_date,
             )
             logger.info(f"Wrote {n_global} forecasts (global-only config) to item_forecasts table")
-            shadow_counts = _write_shadow_candidates(db, forecaster, slug_to_id, override_date)
+            shadow_counts = _write_shadow_candidates(db, forecaster, shadow_slug_to_id, override_date)
 
             # Run backtest on both configs. They no longer score as separate
             # cohorts, and they never were separate rows: the second write

@@ -12,7 +12,7 @@ import datetime as dt
 import numpy as np
 import pytest
 from backtest.scoring import HEADLINE_MIN_TIER
-from database import Base, ForecastOutcome
+from database import Base, ForecastOutcome, Item
 from models.served_recalibration import PANEL_COLUMNS, _load_panel
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
@@ -23,7 +23,20 @@ from sqlalchemy.pool import StaticPool
 def session():
     engine = create_engine("sqlite://", connect_args={"check_same_thread": False}, poolclass=StaticPool)
     Base.metadata.create_all(engine)
-    yield sessionmaker(bind=engine)()
+    s = sessionmaker(bind=engine)()
+    # The panel reads established items only (models/serve_universe.py), so the
+    # outcomes below need one to belong to.
+    s.add(
+        Item(
+            id=1,
+            item_id="AK-47 | Redline (Field-Tested)",
+            name="AK-47 | Redline (Field-Tested)",
+            type="skin",
+            is_backfilled=1,
+        )
+    )
+    s.commit()
+    yield s
     engine.dispose()
 
 
@@ -148,3 +161,26 @@ def test_missing_column_degrades_to_unrecorded_rather_than_failing_the_read(sess
     m = _load_panel(session, [7]).sort_values("forecast_date")["band_multiplier"].to_numpy()
     assert m[0] == 1.0
     assert np.isnan(m[1])
+
+
+# --- young releases: served at h=3, never in the panel that sizes the established band -------
+
+
+def test_young_release_outcomes_are_excluded_from_the_panel(session):
+    session.add(
+        Item(
+            id=2,
+            item_id="AK-47 | AUTOEXEC (Field-Tested)",
+            name="AK-47 | AUTOEXEC (Field-Tested)",
+            type="skin",
+            is_backfilled=0,
+            release_date=dt.datetime(2026, 7, 17),
+        )
+    )
+    session.add(_outcome(item_id=1))
+    session.add(_outcome(item_id=2))
+    session.commit()
+
+    panel = _load_panel(session, [7])
+
+    assert len(panel) == 1
