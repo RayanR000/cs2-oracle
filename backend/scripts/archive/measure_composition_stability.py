@@ -93,7 +93,7 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from db.archive import prices_relation
 from models.item_parser import (
@@ -126,7 +126,7 @@ NULL_SOURCE_LABEL = "<null>"
 #: set; `n_ask_sources` is only its cardinality.
 COMPOSITION_COLUMN = {"set": "source_mask", "count": "n_ask_sources"}
 
-ARCHIVE_ROOT = Path(__file__).resolve().parent.parent.parent / "price-archive"
+ARCHIVE_ROOT = Path(__file__).resolve().parent.parent.parent.parent / "price-archive"
 
 # Day zero for the integer day index the window arithmetic runs on. Any fixed
 # date before the archive starts (2013-08-14) works; this one is round.

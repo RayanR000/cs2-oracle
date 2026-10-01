@@ -31,7 +31,7 @@ from pathlib import Path
 
 import requests
 
-sys.path.insert(0, str(Path(__file__).parent.parent))
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 import duckdb
 from collectors.price_history_import import (

@@ -44,7 +44,7 @@ import os
 import sys
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).parent.parent))
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 import lightgbm as lgb
 import numpy as np
@@ -98,7 +98,7 @@ MIN_MEDIAN_PRICE = 1.0
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s")
 logger = logging.getLogger("ab_test_volume_features")
 
-ARCHIVE_DIR = Path(__file__).parent.parent.parent / "price-archive"
+ARCHIVE_DIR = Path(__file__).resolve().parent.parent.parent.parent / "price-archive"
 
 # Feed-repair arm (docs/research/2026-08-17-volume-band-quality-preregistration.md).
 # With IFLOW_VOLUME=1 the `volume` column is sourced from the iflow BUFF backfill's
@@ -110,7 +110,7 @@ ARCHIVE_DIR = Path(__file__).parent.parent.parent / "price-archive"
 # which series populates `volume` changes; baseline/treatment/placebo still differ
 # solely by whether the volume *columns* are dropped/shuffled downstream.
 IFLOW_VOLUME = os.getenv("IFLOW_VOLUME") == "1"
-IFLOW_VOLUME_DIR = Path(__file__).parent.parent.parent / "buff-iflow-staging" / "price-archive"
+IFLOW_VOLUME_DIR = Path(__file__).resolve().parent.parent.parent.parent / "buff-iflow-staging" / "price-archive"
 # iflow count_in_24 spans 2022-04-18 .. 2026-05-20; restrict the eval panel to
 # that era so the volume features are live across every row they are scored on.
 IFLOW_ERA_FROM = "2022-04-18"
@@ -181,7 +181,7 @@ def _frame_fingerprint():
     worker. Covers this script's own frame-shaping constants too — they are
     baked into the cached column set just as much as forecaster.py is.
     """
-    src = Path(__file__).parent.parent / "models" / "forecaster.py"
+    src = Path(__file__).resolve().parents[2] / "models" / "forecaster.py"
     h = hashlib.sha256(src.read_bytes())
     h.update(
         repr(

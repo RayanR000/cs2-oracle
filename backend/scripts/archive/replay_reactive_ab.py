@@ -16,7 +16,7 @@ import re
 import subprocess
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parents[2]
+ROOT = Path(__file__).resolve().parents[3]
 SB = ROOT / "backend" / "models" / "saved_models"
 CTRL = ROOT / "backend" / "models" / "saved_models_ctrl"
 ARM = ROOT / "backend" / "models" / "saved_models_arm"

@@ -61,7 +61,7 @@ import logging
 import sys
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).parent.parent))
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from backtest.paired_mde import NoPairedRows, paired_da_difference
 from models import forecaster as fc

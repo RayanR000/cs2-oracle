@@ -112,9 +112,14 @@ State on 2026-09-28, still true unless an item below says otherwise:
     - `ob_churn` promotion is forbidden (`changelog/2026-09-13-supply-velocity-transfer-killed.md`).
     - Slope, depth concentration, inflow, age and turnover were never explicitly closed.
     - Bid-side features (spread, imbalance, price impact) have no free source.
-13. **Case panel, sticker panel and the Reddit event detector: decide whether to wire them or
-    drop them.** The builders exist, but **none is in a workflow, so nothing is accumulating**. The
-    09-08 note sequences Reddit after the market-flow panels.
+13. ~~**Case panel, sticker panel and the Reddit event detector: decide whether to wire them or
+    drop them.**~~ **DONE 2026-09-30: dropped.** The two panels are derived views over the
+    daily `supply-*.parquet`, so they never needed a workflow to accumulate. Run on the live
+    archive, the case panel populated only visible supply (status 100% `unknown`, EV/openings
+    0%), and the sticker panel matched **0** of 12,185 sticker names (slug-format mismatch).
+    Reddit has no credentials in the repo. A case-only or sticker-only study rebuilds its panel
+    from the archive when it is preregistered.
+    `changelog/2026-09-30-drop-case-sticker-reddit-builders.md`.
 14. ~~**CSMarketAPI backfill resume.**~~ **CLOSED 2026-09-30: will not resume.** The user no
     longer has CSMarketAPI access. The 305 knives/gloves checkpointed at "★ Ursus Knife | Marble
     Fade (Factory New)" stay as they are, and the `--only-catalog` run is dropped. The 09-20
@@ -161,12 +166,19 @@ State on 2026-09-28, still true unless an item below says otherwise:
 19. ~~**The `docs/README.md` research index stops at 08-18.**~~ **DONE 2026-09-30 (#77).**
     Seven preregistrations and five research docs are indexed, with verdicts taken only from
     changelogs. The README's specs, plans and changelog sections are still selective by design.
-20. **Deep-review §11 relabelling** (`research/2026-08-19-deep-model-review.md`):
-    - Put the MDE beside each stored A/B verdict, and relabel underpowered nulls UNRESOLVED.
-    - Fix `paired_mde`'s frame-construction nondeterminism.
-    - Run one capacity-matched `age_only` placebo.
-    - Fix three stale console labels.
-    - Re-validate the synthetic 1.1607 Steam fee constant (about half a day).
+20. ~~**Deep-review §11 relabelling.**~~ **DONE 2026-10-01, except the fee constant.**
+    `changelog/2026-10-01-deep-review-s11-relabel.md`.
+    - `experiment_log.csv` has an `mde` column. ByMykel is relabelled `inconclusive`, and seven
+      §11 arms got rows.
+    - The `paired_mde` nondeterminism was reproduced (16 rows between two identical builds) and
+      fixed. The order of duplicate rows flipped the last bit of the daily mean, and with it the
+      bit-exact frozen-run voiding.
+    - The capacity-matched `age_only` placebo is **refuted**: null at all four horizons held-out,
+      and the 08-08 positives don't reproduce on the honest trainer.
+    - The stale labels are fixed. So is the 09-15 move, which had broken every path in
+      `scripts/archive/` (the archive directory, `sys.path`).
+    - **Still open: the 1.1607 Steam fee constant.** `runtime/steam_listing_history.db` is gone;
+      re-validating means re-scraping 262 items with a Steam session.
 21. **Decide archive history retention.** The orphan force-push keeps no history, so revisions
     can't be diffed; the 08-25 note says it is "worth deciding deliberately"
     (`changelog/2026-08-25-centre-shrinks-to-zero-and-the-dollar-band-is-the-wedge.md`).

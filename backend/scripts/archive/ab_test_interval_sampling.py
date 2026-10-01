@@ -76,7 +76,7 @@ import sys
 import time
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).parent.parent))
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 import lightgbm as lgb
 import numpy as np
@@ -101,7 +101,7 @@ ARCHIVE_DIR = ARCHIVE_ROOT
 # them. See `models/item_parser.py`.
 _UNIVERSE = phase_collapsed_sql_filter()
 
-META_PATH = Path(__file__).parent.parent / "models" / "saved_models" / "meta.json"
+META_PATH = Path(__file__).resolve().parents[2] / "models" / "saved_models" / "meta.json"
 
 HORIZONS = [3, 7, 14, 30]
 LOW_Q, HIGH_Q = 0.1, 0.9

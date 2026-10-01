@@ -73,7 +73,7 @@ import sys
 from datetime import UTC, date, datetime
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).parent.parent))
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 import pandas as pd
 import requests
@@ -87,8 +87,8 @@ logger = logging.getLogger("ingest_fx_history")
 # Frankfurter proxies the ECB reference rates. Free, no key, no quota published;
 # the whole 2013-present range is one ~190 KB call in about a second.
 FRANKFURTER_URL = "https://api.frankfurter.dev/v1"
-CACHE_DIR = Path(__file__).parent.parent / "runtime" / "fx"
-PRICE_ARCHIVE = Path(__file__).parent.parent.parent / "price-archive"
+CACHE_DIR = Path(__file__).resolve().parents[2] / "runtime" / "fx"
+PRICE_ARCHIVE = Path(__file__).resolve().parent.parent.parent.parent / "price-archive"
 OUTPUT_PARQUET = PRICE_ARCHIVE / "exchange-rates-history.parquet"
 
 # CNY is the one with a mechanism (above). EUR and GBP are the other two currencies

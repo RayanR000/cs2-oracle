@@ -43,6 +43,6 @@ def test_reports_days_gaps_and_runs(tmp_path):
 
 
 def test_missing_table_is_zero_not_error(tmp_path):
-    rep = audit(tmp_path)["reddit-events"]
+    rep = audit(tmp_path)["volume"]
     assert rep["days"] == 0
     assert rep["latest"] is None

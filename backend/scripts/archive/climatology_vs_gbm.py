@@ -43,10 +43,10 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
-ARTIFACT = Path(__file__).resolve().parent.parent / "models" / "saved_models"
-ARCHIVE_DIR = Path(__file__).resolve().parent.parent.parent / "price-archive"
+ARTIFACT = Path(__file__).resolve().parents[2] / "models" / "saved_models"
+ARCHIVE_DIR = Path(__file__).resolve().parent.parent.parent.parent / "price-archive"
 SERVED_MIN_PRICE = 1.0  # the >=$1 cohort the band is actually served on
 HORIZONS = (3, 7, 14, 30)
 TARGET_COVERAGE = 0.80

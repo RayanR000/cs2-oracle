@@ -25,7 +25,7 @@ from pathlib import Path
 import pandas as pd
 from dotenv import load_dotenv
 
-BACKEND = Path(__file__).resolve().parent.parent
+BACKEND = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(BACKEND))
 load_dotenv(BACKEND / ".env")
 

@@ -23,7 +23,7 @@ from pathlib import Path
 import duckdb
 import numpy as np
 
-sys.path.insert(0, str(Path(__file__).parent.parent))
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from db.archive import prices_relation
 from models.item_parser import archive_universe_sql_filter

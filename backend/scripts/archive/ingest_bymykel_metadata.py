@@ -54,7 +54,7 @@ import sys
 from datetime import date
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).parent.parent))
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 import pandas as pd
 import requests
@@ -67,8 +67,8 @@ logging.basicConfig(
 logger = logging.getLogger("ingest_bymykel_metadata")
 
 BASE_URL = "https://raw.githubusercontent.com/ByMykel/CSGO-API/main/public/api/en"
-CACHE_DIR = Path(__file__).parent.parent / "runtime" / "bymykel"
-PRICE_ARCHIVE = Path(__file__).parent.parent.parent / "price-archive"
+CACHE_DIR = Path(__file__).resolve().parents[2] / "runtime" / "bymykel"
+PRICE_ARCHIVE = Path(__file__).resolve().parent.parent.parent.parent / "price-archive"
 OUTPUT_PARQUET = PRICE_ARCHIVE / "item-metadata-bymykel.parquet"
 CODE_BOOK = PRICE_ARCHIVE / "item-metadata-bymykel-codes.json"
 
