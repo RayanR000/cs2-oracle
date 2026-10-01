@@ -253,6 +253,37 @@ def cutovers_from_counts(counts: pd.Series) -> list:
     return [d for d, hit in zip(c.index, change > ItemForecaster.COLLECTION_SHIFT_FRACTION) if bool(hit)]
 
 
+def composition_cutovers(anchor: date, archive_dir: Path | None = None, window: int = ANCHOR_NEIGHBOURHOOD_DAYS) -> list:
+    """Composition breaks within `window` days of `anchor`, by the label path's rule.
+
+    `cutovers_from_counts` sees only a change in universe SIZE; 2026-04-16 kept
+    the size flat while every item switched source set, and `prepare_targets`
+    voids across it through `_composition_break_dates`. That rule needs per-item
+    source sets, so this votes the window with production's own SQL rather than
+    restating either rule.
+    """
+    lo = anchor - timedelta(days=window + 1)
+    hi = anchor + timedelta(days=window)
+    con = duckdb.connect()
+    try:
+        relation = prices_relation(con, archive_dir, columns=["item_slug", "day", "mean_price", "volume", "source"])
+        rows_sql = f"""
+            SELECT * FROM (
+                SELECT sub.item_slug AS item_id, CAST(day AS DATE) AS date,
+                       TRY_CAST(mean_price AS DOUBLE) AS price,
+                       TRY_CAST(volume AS DOUBLE) AS volume, source
+                FROM {relation} sub
+                WHERE day >= DATE '{lo.isoformat()}' AND day <= DATE '{hi.isoformat()}'
+                  AND (source IS NULL OR source NOT LIKE 'historical_fallback:%')
+                  AND {archive_universe_sql_filter("sub.item_slug", "sub.source")}
+            ) WHERE price IS NOT NULL AND NOT isnan(price)
+        """
+        voted = con.execute(ItemForecaster._multi_source_voting_sql(rows_sql)).df()
+    finally:
+        con.close()
+    return sorted(ItemForecaster._composition_break_dates(voted))
+
+
 def cutovers_in_outcome_window(anchor: date, horizons, cutovers) -> dict:
     """{horizon: cutovers inside `(anchor, anchor + horizon]`}.
 
@@ -982,9 +1013,13 @@ def main() -> int:
     # of the 2026-03-22 consensus break.
     audit_horizons = sorted(want) if want else sorted(DEFAULT_AUDIT_HORIZONS)
     span = _feed_profile(anchor, window=max(audit_horizons))
-    spanned = cutovers_in_outcome_window(
-        anchor, audit_horizons, cutovers_from_counts(span.set_index(pd.to_datetime(span["day"]).dt.date)["items"])
+    # Both of the label path's rules: the universe-size rule off the profile,
+    # and the source-composition rule, which needs the window voted.
+    cutovers = sorted(
+        set(cutovers_from_counts(span.set_index(pd.to_datetime(span["day"]).dt.date)["items"]))
+        | set(composition_cutovers(anchor, window=max(audit_horizons)))
     )
+    spanned = cutovers_in_outcome_window(anchor, audit_horizons, cutovers)
     if spanned:
         for h, cuts in sorted(spanned.items()):
             logger.warning(

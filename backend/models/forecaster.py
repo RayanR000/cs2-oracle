@@ -1233,6 +1233,15 @@ class ItemForecaster:
         # is how a 2026-08-09 audit re-reported the handled 2026-07-09/10
         # cutover as a new finding.
         self.label_voiding: dict = {}
+        # The break calendar for the frame this process fetched: the item-count
+        # rule's cutovers plus the composition rule's switches, computed in
+        # fetch_price_history on the VOTED frame -- engineer_features drops
+        # source_set, so prepare_targets cannot compute it itself. None means
+        # no fetch ran (a harness building its own frame).
+        self.break_dates: frozenset | None = None
+        self.composition_break_dates: frozenset = frozenset()
+        self.collection_shift_dates: frozenset = frozenset()
+        self._artifact_break_dates: frozenset = frozenset()
 
     @staticmethod
     def _smoothed_anchor_prices(df: "pd.DataFrame", anchor) -> dict[Any, float]:
@@ -2330,6 +2339,7 @@ class ItemForecaster:
             cache_key = self._voted_cache_key(days_back, backfilled_only, backfilled_slugs, universe)
             cached = self._load_voted_cache(cache_key)
             if cached is not None:
+                self._record_break_dates(cached)
                 return cached
 
             df = self._fetch_voted_price_history(
@@ -2338,6 +2348,7 @@ class ItemForecaster:
                 backfilled_slugs=backfilled_slugs,
             )
             self._save_voted_cache(cache_key, df)
+            self._record_break_dates(df)
             return df
 
         cutoff = self._now() - timedelta(days=days_back)
@@ -2368,7 +2379,18 @@ class ItemForecaster:
             f"across {n_sources_before} sources), "
             f"{df.item_id.nunique():,} items"
         )
+        self._record_break_dates(df)
         return df
+
+    def _record_break_dates(self, df: pd.DataFrame) -> None:
+        """Store this frame's break calendar; see `self.break_dates`."""
+        self.composition_break_dates = self._composition_break_dates(df)
+        self.collection_shift_dates = self._collection_shift_dates(df)
+        self.break_dates = self.collection_shift_dates | self.composition_break_dates
+        logger.info(
+            f"  Break calendar: {sorted(d.isoformat() for d in self.break_dates)} "
+            f"(composition: {sorted(d.isoformat() for d in self.composition_break_dates)})"
+        )
 
     def _archive_universe_slugs(self, exclude_iflow: bool) -> set:
         """Slugs carrying the pre-2026 backfill, read straight from the archive.
@@ -5355,7 +5377,17 @@ class ItemForecaster:
             bad |= anchor.isin(snap)
             bad |= (anchor + h_delta).isin(snap)
 
-        shifts = self._collection_shift_dates(df)
+        if self.break_dates is None:
+            shifts = self._collection_shift_dates(df)
+            count_shifts = shifts
+            logger.warning(
+                "  No break calendar on this forecaster (fetch_price_history did not "
+                "run); voiding on the item-count rule only -- composition switches "
+                "such as 2026-04-16 are NOT voided on this frame."
+            )
+        else:
+            shifts = self.break_dates
+            count_shifts = self.collection_shift_dates
         if shifts:
             # Span rule: the basis changes somewhere inside (anchor, anchor+h],
             # so the two legs of the return are quoted on different sources.
@@ -5428,8 +5460,8 @@ class ItemForecaster:
             )
             logger.info(
                 f"  Voided {n_bad} {horizon}d targets spanning "
-                f"{len(snapshots)} snapshot day(s) / {len(shifts)} collector "
-                f"cutover(s); {frozen_note}"
+                f"{len(snapshots)} snapshot day(s) / {len(shifts)} break "
+                f"day(s); {frozen_note}"
             )
 
         voided = int(df[f"target_return_{horizon}d"].isna().sum() - pre_void_na)
@@ -5446,7 +5478,9 @@ class ItemForecaster:
         frozen_run_labels[horizon] = n_stale
         self.label_voiding = {
             "snapshot_dates": sorted(d.isoformat() for d in snapshots),
-            "collection_shift_dates": sorted(d.isoformat() for d in shifts),
+            "collection_shift_dates": sorted(d.isoformat() for d in count_shifts),
+            "composition_break_dates": sorted(d.isoformat() for d in self.composition_break_dates),
+            "break_dates": sorted(d.isoformat() for d in shifts),
             "voided_labels_by_horizon": counts,
             "frozen_run_labels": frozen_run_labels,
             "frame_date_range": [
@@ -5457,8 +5491,9 @@ class ItemForecaster:
         logger.info(
             f"  Label voiding (h={horizon}): {voided:,} labels voided "
             f"({n_stale:,} of them for a frozen price run, "
-            f"{len(shifts)} collector cutovers, {len(snapshots)} snapshot days); "
-            f"cutovers: {sorted(d.isoformat() for d in shifts)}"
+            f"{len(shifts)} break days, {len(snapshots)} snapshot days); "
+            f"breaks: {sorted(d.isoformat() for d in shifts)} "
+            f"(composition: {sorted(d.isoformat() for d in self.composition_break_dates)})"
         )
 
         # One-sided exceedance label for the band-scale head (Phase 2): does the
@@ -11791,6 +11826,8 @@ class ItemForecaster:
             "cv_results": cv_serial,
             "tuned_params": tuned_serial,
             "label_voiding": self.label_voiding,
+            "break_dates": sorted(d.isoformat() for d in (self.break_dates or frozenset())),
+            "composition_break_dates": sorted(d.isoformat() for d in self.composition_break_dates),
         }
 
         def _json_default(o):
@@ -11848,6 +11885,7 @@ class ItemForecaster:
         self._artifact_xs_rank_skipped = meta.get("xs_rank_skipped_cols")
         self._artifact_naive_init = meta.get("naive_init_score")
         self._artifact_feature_native_nan = meta.get("feature_native_nan")
+        self._artifact_break_dates = frozenset(date.fromisoformat(s) for s in meta.get("break_dates", []))
         self._artifact_exceedance_scale = meta.get("exceedance_scale")
         self._artifact_exceedance_meta = meta.get("exceedance_meta")
         # The isotonic calibrators. `.get` default {} for the same reason as

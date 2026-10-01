@@ -7,7 +7,10 @@ NULL-sourced legacy series ends. See
 docs/specs/2026-09-30-composition-break-calendar-design.md.
 """
 
+import json
+import logging
 from datetime import date, timedelta
+from unittest.mock import MagicMock
 
 import pandas as pd
 from models.forecaster import ItemForecaster
@@ -77,3 +80,87 @@ def test_a_price_crash_with_a_stable_source_set_does_not_fire():
     df = _frame(100, [["a|b"], ["a|b"]])
     df.loc[df["date"] == D0 + timedelta(days=1), "price"] = 0.5
     assert ItemForecaster._composition_break_dates(df) == frozenset()
+
+
+# -- the calendar: fetch -> prepare_targets -> meta.json ----------------------
+
+
+def _priced(n_items: int, days: int, switch_day: int | None) -> pd.DataFrame:
+    rows = []
+    for k in range(days):
+        s = "c" if switch_day is not None and k >= switch_day else "a|b"
+        for i in range(n_items):
+            rows.append(
+                {"item_id": f"i{i}", "date": D0 + timedelta(days=k), "price": 10.0 + i + 0.01 * k, "volume": 1.0, "source_set": s}
+            )
+    df = pd.DataFrame(rows)
+    df["source_set"] = df["source_set"].astype("category")
+    return df
+
+
+def _fc(tmp_path):
+    return ItemForecaster(db_session=MagicMock(), model_dir=str(tmp_path))
+
+
+def _saveable(f):
+    f.feature_cols = ["a"]
+    f.feature_medians = pd.Series({"a": 0.0})
+    f.conformal_calibration = {h: 1.0 for h in f.HORIZONS}
+    return f
+
+
+def test_record_break_dates_is_the_union(tmp_path):
+    fc = _fc(tmp_path)
+    fc._record_break_dates(_priced(100, 6, switch_day=3))
+    assert fc.break_dates == frozenset({D0 + timedelta(days=3)})
+    assert fc.composition_break_dates == frozenset({D0 + timedelta(days=3)})
+    assert fc.collection_shift_dates == frozenset()
+
+
+def test_label_spanning_a_composition_break_is_voided(tmp_path):
+    fc = _fc(tmp_path)
+    df = _priced(100, 10, switch_day=5)
+    fc._record_break_dates(df)
+    out = fc.prepare_targets(df.drop(columns=["source_set"]), horizon=3)
+    anchor = pd.to_datetime(out["date"])
+    b = pd.Timestamp(D0 + timedelta(days=5))
+    spans = (anchor < b) & (b <= anchor + pd.to_timedelta(3, unit="D"))
+    assert spans.any()
+    assert out.loc[spans, "target_return_3d"].isna().all()
+    assert out.loc[~spans & out["target_3d"].notna(), "target_return_3d"].notna().all()
+    assert fc.label_voiding["composition_break_dates"] == [str(D0 + timedelta(days=5))]
+    assert fc.label_voiding["break_dates"] == [str(D0 + timedelta(days=5))]
+    assert fc.label_voiding["collection_shift_dates"] == []
+
+
+def test_without_a_fetch_prepare_targets_falls_back_and_warns(tmp_path, caplog):
+    fc = _fc(tmp_path)
+    assert fc.break_dates is None
+    with caplog.at_level(logging.WARNING, logger="models.forecaster"):
+        out = fc.prepare_targets(_priced(100, 10, switch_day=5).drop(columns=["source_set"]), horizon=3)
+    assert "item-count rule only" in caplog.text
+    assert out["target_return_3d"].notna().any()  # the composition switch is NOT voided on this path
+
+
+def test_break_dates_round_trip_through_meta_json(tmp_path):
+    f = _saveable(_fc(tmp_path))
+    f.break_dates = frozenset({date(2026, 4, 16)})
+    f.composition_break_dates = frozenset({date(2026, 4, 16)})
+    f.save_models()
+    meta = json.loads((tmp_path / "meta.json").read_text())
+    assert meta["break_dates"] == ["2026-04-16"]
+    assert meta["composition_break_dates"] == ["2026-04-16"]
+    g = _fc(tmp_path)
+    g.load_models()
+    assert g._artifact_break_dates == frozenset({date(2026, 4, 16)})
+
+
+def test_artifact_without_break_dates_loads_empty(tmp_path):
+    f = _saveable(_fc(tmp_path))
+    f.save_models()
+    meta = json.loads((tmp_path / "meta.json").read_text())
+    meta.pop("break_dates", None)
+    (tmp_path / "meta.json").write_text(json.dumps(meta))
+    g = _fc(tmp_path)
+    g.load_models()
+    assert g._artifact_break_dates == frozenset()
