@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Continuity audit for accumulation sidecars (supply/volume/reddit-events).
+"""Continuity audit for accumulation sidecars (supply/volume).
 
 Research-note Phase 1: the Sep-08 doc gates every order-book/volume test on
 "enough independent forecast dates". This script answers that question without
@@ -37,7 +37,6 @@ import pandas as pd
 WATCHED = {
     "supply": ("supply-[0-9][0-9][0-9][0-9]-[0-9][0-9].parquet", "snapshot_day", "source"),
     "volume": ("volume-[0-9][0-9][0-9][0-9]-[0-9][0-9].parquet", "day", "source"),
-    "reddit-events": ("reddit-events-[0-9][0-9][0-9][0-9]-[0-9][0-9].parquet", "snapshot_day", "source"),
 }
 
 
