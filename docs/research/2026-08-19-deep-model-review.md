@@ -26,8 +26,11 @@
 > **One of the review's own recommendations has been probed and did not replicate as stated:**
 > §10.4's median-impute "bull prior" was built as `FEATURE_NATIVE_NAN` (gated off, `4d3e681`);
 > the served effect is modest and **downward** (mean-reversion), the opposite of the review's
-> claim (`changelog/2026-08-21-feature-native-nan-built-gated-off.md`). Not shipped; a retrain
-> is the go/no-go.
+> claim (`changelog/2026-08-21-feature-native-nan-built-gated-off.md`). ~~Not shipped; a retrain
+> is the go/no-go.~~ **Update 2026-09-30:** shipped 2026-08-21 in #30 (`FEATURE_NATIVE_NAN: "1"` in
+> `price-forecast.yml`, on for the nightly retrain; `experiment_log.csv` verdict `shipped`). The paired
+> retrain showed no regression (coverage/width identical within 0.2pp / 0.06%) and the benefit is
+> within noise (DA higher in 5/6 cells, centre flat).
 
 
 **Date:** 2026-08-19 · **Revision 2** (supersedes revision 1 of the same day; §0b lists what changed
