@@ -5228,6 +5228,42 @@ class ItemForecaster:
         hits = counts.index[change > cls.COLLECTION_SHIFT_FRACTION]
         return frozenset(ts.date() for ts in hits)
 
+    #: Share of items, present on both d-1 and d, whose voting source set
+    #: changed. Break days measured 0.9989-1.0000 (01-01, 03-22, 04-16,
+    #: 07-09/10/11); the highest ordinary day 0.56 on the train universe
+    #: (Jan-Feb, where aggregator_sync steps in and out). 2026-09-30 probe,
+    #: docs/specs/2026-09-30-composition-break-calendar-design.md.
+    COMPOSITION_BREAK_FRACTION = 0.90
+
+    @classmethod
+    def _composition_break_dates(cls, df: pd.DataFrame) -> frozenset:
+        """Dates on which the whole cross-section's source set switched.
+
+        The item-count rule misses a switch that keeps the count flat, which
+        2026-04-16 did (+0.02% items, 100% of sets changed, median return
+        -1.92%). Like that rule, this reads the universe, never prices, so a
+        real crash cannot fire it. Only items observed on both days are judged;
+        a new item is not a changed one.
+        """
+        if df.empty or not {"item_id", "date", "source_set"} <= set(df.columns):
+            return frozenset()
+        d = df[["item_id", "date", "source_set"]].drop_duplicates(["item_id", "date"]).copy()
+        d["date"] = pd.to_datetime(d["date"])
+        # One categorical for both legs, so the codes compare as the sets do.
+        # The voted frame already carries one; converting it via str would
+        # materialise millions of strings for nothing.
+        if not isinstance(d["source_set"].dtype, pd.CategoricalDtype):
+            d["source_set"] = d["source_set"].astype("category")
+        prev = d.copy()
+        prev["date"] = prev["date"] + pd.to_timedelta(1, unit="D")
+        m = d.merge(prev, on=["item_id", "date"], suffixes=("", "_prev"))
+        if m.empty:
+            return frozenset()
+        m["changed"] = m["source_set"].cat.codes.to_numpy() != m["source_set_prev"].cat.codes.to_numpy()
+        agg = m.groupby("date")["changed"].agg(["mean", "size"])
+        hits = agg[(agg["mean"] >= cls.COMPOSITION_BREAK_FRACTION) & (agg["size"] >= cls.MIN_DEGENERATE_CROSS_SECTION)]
+        return frozenset(ts.date() for ts in hits.index)
+
     def prepare_targets(self, df: pd.DataFrame, horizon: int) -> pd.DataFrame:
         logger.info(f"Preparing {horizon}d targets...")
         df = df.sort_values(["item_id", "date"])
