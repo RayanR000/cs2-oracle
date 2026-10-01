@@ -170,12 +170,19 @@ State on 2026-09-28, still true unless an item below says otherwise:
 19. ~~**The `docs/README.md` research index stops at 08-18.**~~ **DONE 2026-09-30 (#77).**
     Seven preregistrations and five research docs are indexed, with verdicts taken only from
     changelogs. The README's specs, plans and changelog sections are still selective by design.
-20. **Deep-review §11 relabelling** (`research/2026-08-19-deep-model-review.md`):
-    - Put the MDE beside each stored A/B verdict, and relabel underpowered nulls UNRESOLVED.
-    - Fix `paired_mde`'s frame-construction nondeterminism.
-    - Run one capacity-matched `age_only` placebo.
-    - Fix three stale console labels.
-    - Re-validate the synthetic 1.1607 Steam fee constant (about half a day).
+20. ~~**Deep-review §11 relabelling.**~~ **DONE 2026-10-01, except the fee constant.**
+    `changelog/2026-10-01-deep-review-s11-relabel.md`.
+    - `experiment_log.csv` has an `mde` column. ByMykel is relabelled `inconclusive`, and seven
+      §11 arms got rows.
+    - The `paired_mde` nondeterminism was reproduced (16 rows between two identical builds) and
+      fixed. The order of duplicate rows flipped the last bit of the daily mean, and with it the
+      bit-exact frozen-run voiding.
+    - The capacity-matched `age_only` placebo is **refuted**: null at all four horizons held-out,
+      and the 08-08 positives don't reproduce on the honest trainer.
+    - The stale labels are fixed. So is the 09-15 move, which had broken every path in
+      `scripts/archive/` (the archive directory, `sys.path`).
+    - **Still open: the 1.1607 Steam fee constant.** `runtime/steam_listing_history.db` is gone;
+      re-validating means re-scraping 262 items with a Steam session.
 21. **Decide archive history retention.** The orphan force-push keeps no history, so revisions
     can't be diffed; the 08-25 note says it is "worth deciding deliberately"
     (`changelog/2026-08-25-centre-shrinks-to-zero-and-the-dollar-band-is-the-wedge.md`).

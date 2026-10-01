@@ -23,7 +23,7 @@ import numpy as np
 import pandas as pd
 import requests
 
-sys.path.insert(0, str(Path(__file__).parent.parent))
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from db.archive import ARCHIVE_ROOT
 from db.parquet import append_monthly

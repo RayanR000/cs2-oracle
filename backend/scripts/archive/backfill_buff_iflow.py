@@ -44,7 +44,7 @@ import numpy as np
 import pandas as pd
 import requests
 
-sys.path.insert(0, str(Path(__file__).parent.parent))
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from collections import defaultdict
 
@@ -55,8 +55,8 @@ from db.parquet import append_monthly
 SOURCE = "buff_iflow"
 LIST_URL = "https://api.iflow.work/export/list?dir_name=priority_archive"
 DL_URL = "https://api.iflow.work/export/download?dir_name=priority_archive&file_name={}"
-ARCHIVE = Path(__file__).parent.parent.parent / "price-archive"
-CACHE = Path(__file__).parent.parent / "runtime" / "iflow_cache"
+ARCHIVE = Path(__file__).resolve().parent.parent.parent.parent / "price-archive"
+CACHE = Path(__file__).resolve().parents[2] / "runtime" / "iflow_cache"
 RESTRUCTURE = date(2024, 2, 13)  # schema boundary
 MIN_USD = 0.50  # drop junk below this; the >=$1 training gate is downstream
 _SESSION = requests.Session()

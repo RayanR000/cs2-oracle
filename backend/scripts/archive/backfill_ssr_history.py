@@ -31,20 +31,20 @@ from collections import defaultdict
 from datetime import UTC, datetime
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).parent.parent))
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 import requests
 from config import settings
 
 # Ensure runtime directory exists before setting up file logging
-(Path(__file__).parent.parent / "runtime").mkdir(parents=True, exist_ok=True)
+(Path(__file__).resolve().parents[2] / "runtime").mkdir(parents=True, exist_ok=True)
 
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(message)s",
     handlers=[
         logging.StreamHandler(),
-        logging.FileHandler(str(Path(__file__).parent.parent / "runtime" / "ssr_backfill.log")),
+        logging.FileHandler(str(Path(__file__).resolve().parents[2] / "runtime" / "ssr_backfill.log")),
     ],
 )
 logger = logging.getLogger("ssr_backfill")
@@ -53,16 +53,16 @@ logger = logging.getLogger("ssr_backfill")
 # Config
 # ---------------------------------------------------------------------------
 
-LOCAL_DB_PATH = Path(__file__).parent.parent / "runtime" / "ssr_history.db"
-CATALOG_LOCAL_DB_PATH = Path(__file__).parent.parent / "runtime" / "ssr_history_catalog.db"
-CATALOG_DB_PATH = Path(__file__).parent.parent / "runtime" / "market_catalog.db"
+LOCAL_DB_PATH = Path(__file__).resolve().parents[2] / "runtime" / "ssr_history.db"
+CATALOG_LOCAL_DB_PATH = Path(__file__).resolve().parents[2] / "runtime" / "ssr_history_catalog.db"
+CATALOG_DB_PATH = Path(__file__).resolve().parents[2] / "runtime" / "market_catalog.db"
 
 # Price archive (repo root) — used by --modeled-only to find deep-history items
-PRICE_ARCHIVE_DIR = Path(__file__).parent.parent.parent / "price-archive"
+PRICE_ARCHIVE_DIR = Path(__file__).resolve().parent.parent.parent.parent / "price-archive"
 # "Deep-history backbone": items with >= 1 year of distinct days in the archive.
 # These are the ~4.8K items the forecaster most relies on (long-lookback features work).
 MODELED_MIN_HISTORY_DAYS = 365
-PROGRESS_FILE = Path(__file__).parent.parent / "runtime" / "ssr_backfill_progress.json"
+PROGRESS_FILE = Path(__file__).resolve().parents[2] / "runtime" / "ssr_backfill_progress.json"
 
 REQUEST_DELAY = 4.0  # seconds between API calls (~15 req/min — ArchiSteamFarm-safe rate)
 RETRY_ATTEMPTS = 5  # retries for genuine network errors (not 429s)
@@ -962,7 +962,7 @@ def print_status(source: str = "prod"):
     logger.info(f"  Updated: {progress.get('updated_at', 'N/A')}")
 
     # Parse recent log entries for health metrics
-    log_path = Path(__file__).parent.parent / "runtime" / "ssr_backfill.log"
+    log_path = Path(__file__).resolve().parents[2] / "runtime" / "ssr_backfill.log"
     if log_path.exists():
         try:
             lines = log_path.read_text().strip().split("\n")

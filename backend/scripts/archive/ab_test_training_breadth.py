@@ -80,7 +80,7 @@ import os
 import sys
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).parent.parent))
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 import lightgbm as lgb
 import numpy as np
@@ -154,7 +154,7 @@ logging.basicConfig(
 )
 logger = logging.getLogger("ab_test_training_breadth")
 
-ARCHIVE_DIR = Path(__file__).parent.parent.parent / "price-archive"
+ARCHIVE_DIR = Path(__file__).resolve().parent.parent.parent.parent / "price-archive"
 
 # Production's item universe, spelled into every archive read this harness
 # makes. Before 2026-08-08 the `ab_test_*` family globbed the Parquet privately
@@ -182,7 +182,7 @@ def _frame_fingerprint():
     cannot see a change to `_compute_price_features`, and a stale frame would
     silently answer a different question.
     """
-    src = Path(__file__).parent.parent / "models" / "forecaster.py"
+    src = Path(__file__).resolve().parents[2] / "models" / "forecaster.py"
     h = hashlib.sha256(src.read_bytes())
     h.update(
         repr(
@@ -702,7 +702,7 @@ def print_summary(results):
             )
         paired = r.get("_paired_vs_narrow", {})
         if paired:
-            print("\n    paired vs narrow (dates clustered, held-out items):")
+            print("\n    paired vs narrow (folds clustered, held-out items):")
             for arm, p in paired.items():
                 ci = (
                     f"[{p['ci_lower_pp']:+.2f}, {p['ci_upper_pp']:+.2f}]" if p.get("ci_lower_pp") is not None else "n/a"

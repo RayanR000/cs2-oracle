@@ -23,7 +23,7 @@ import logging
 import sys
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).parent.parent))
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 import numpy as np
 import pandas as pd
@@ -46,7 +46,7 @@ MIN_DATES = 20
 MIN_COHORT_SHARE = 0.15
 CLEAN_COVERAGE_GATE = 0.70
 
-DURABLE_ARCHIVE = Path(__file__).parent.parent.parent.parent / "cs2-oracle-data" / "price-archive"
+DURABLE_ARCHIVE = Path(__file__).resolve().parents[4] / "cs2-oracle-data" / "price-archive"
 
 
 def derive_panel(df):

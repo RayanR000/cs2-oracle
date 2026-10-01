@@ -37,17 +37,17 @@ import urllib.parse
 from datetime import UTC, datetime
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).parent.parent))
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 import requests
 from scripts.archive.backfill_ssr_history import USER_AGENTS, HealthMonitor
 
-RUNTIME = Path(__file__).parent.parent / "runtime"
+RUNTIME = Path(__file__).resolve().parents[2] / "runtime"
 RUNTIME.mkdir(parents=True, exist_ok=True)
 
 DB_PATH = RUNTIME / "steam_listing_history.db"
 PROGRESS_FILE = RUNTIME / "steam_listing_progress.json"
-PRICE_ARCHIVE_DIR = Path(__file__).parent.parent.parent / "price-archive"
+PRICE_ARCHIVE_DIR = Path(__file__).resolve().parent.parent.parent.parent / "price-archive"
 
 # force=True: importing backfill_ssr_history already called basicConfig, which
 # makes a second call a silent no-op — this run's log file would stay empty.

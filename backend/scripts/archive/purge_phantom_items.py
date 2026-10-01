@@ -54,7 +54,7 @@ logger = logging.getLogger("purge_phantom_items")
 # read have to be the same set, or the model and the database disagree about
 # which items exist. Also the predicate the Steam backfill uses to keep these
 # keys out of its target list (`backfill_steam_listing_history.py:195-199`).
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 from db.archive import ARCHIVE_ROOT  # noqa: E402
 from models.item_parser import is_phantom_slug as is_mangled_key  # noqa: E402
 

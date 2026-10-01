@@ -68,7 +68,7 @@ import numpy as np
 import pandas as pd
 
 # Archived 2026-09-15 (scripts/ -> scripts/archive/): one extra parent.
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from backtest.scoring import MIN_HEADLINE_DATES, excluded_forecast_date
 

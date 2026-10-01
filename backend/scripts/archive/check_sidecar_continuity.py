@@ -28,7 +28,7 @@ import sys
 from datetime import date
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).parent.parent))
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 import itertools
 
@@ -136,7 +136,7 @@ def audit(archive_dir: Path) -> dict:
 
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__)
-    ap.add_argument("--archive-dir", type=Path, default=Path(__file__).parent.parent.parent / "price-archive")
+    ap.add_argument("--archive-dir", type=Path, default=Path(__file__).resolve().parent.parent.parent.parent / "price-archive")
     ap.add_argument("--gate", action="store_true")
     ap.add_argument("--min-days", type=int, default=45)
     ap.add_argument("--max-staleness-days", type=int, default=7)

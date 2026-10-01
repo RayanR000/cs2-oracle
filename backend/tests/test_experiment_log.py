@@ -16,7 +16,7 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 LOG = REPO_ROOT / "docs" / "experiment_log.csv"
 
-COLUMNS = ["date", "name", "hypothesis", "metric", "estimate", "ci_lo", "ci_hi", "n", "verdict", "link"]
+COLUMNS = ["date", "name", "hypothesis", "metric", "estimate", "ci_lo", "ci_hi", "mde", "n", "verdict", "link"]
 VERDICTS = {"shipped", "refuted", "void", "measured", "inconclusive"}
 
 

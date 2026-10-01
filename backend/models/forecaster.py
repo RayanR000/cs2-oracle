@@ -5103,6 +5103,15 @@ class ItemForecaster:
         # _select_feature_cols, which no longer relies on this being the only
         # thing stopping it from leaking into feature_cols.
         if "date" in price_df.columns:
+            # A float mean depends on summation order, and loaders that skip the
+            # vote leave several rows per item-day in no particular order. The
+            # last-bit difference flips `stale_run_days`, which compares prices
+            # bit-for-bit, so frozen-run voiding — and the paired frame — moved
+            # between identical runs (deep review §11). Sorting by value makes
+            # the collapse a function of the multiset. The voted path has one
+            # row per item-day and skips the sort.
+            if price_df.duplicated(["item_id", "date"]).any():
+                price_df = price_df.sort_values(["item_id", "date", "price", "volume"], kind="stable")
             daily = price_df.groupby(["item_id", "date"], as_index=False).agg(
                 price=("price", "mean"),
                 volume=("volume", "sum"),
