@@ -156,8 +156,8 @@ State on 2026-09-28, still true unless an item below says otherwise:
     08-17 volume band-quality notes are a sequence, not a conflict. The 8-fold run is
     `inconclusive`, the 16-fold refold is `measured` (it passed on the retired q10/q90 band),
     and `volume-in-scale` already refutes it on the served band. `feature-native-nan` is
-    corrected to `shipped` (on since #30, 08-21). ⚠️ `research/2026-08-19-deep-model-review.md`
-    line 29 still says "Not shipped".
+    corrected to `shipped` (on since #30, 08-21), and `research/2026-08-19-deep-model-review.md`
+    carries a dated update saying so (#79).
 19. ~~**The `docs/README.md` research index stops at 08-18.**~~ **DONE 2026-09-30 (#77).**
     Seven preregistrations and five research docs are indexed, with verdicts taken only from
     changelogs. The README's specs, plans and changelog sections are still selective by design.
@@ -170,9 +170,15 @@ State on 2026-09-28, still true unless an item below says otherwise:
 21. **Decide archive history retention.** The orphan force-push keeps no history, so revisions
     can't be diffed; the 08-25 note says it is "worth deciding deliberately"
     (`changelog/2026-08-25-centre-shrinks-to-zero-and-the-dollar-band-is-the-wedge.md`).
-22. **`mapie` / `scoringrules` in the `dev` extra is blocked:** `requests==2.31.0` conflicts with
-    `evidently>=0.5` in `uv lock`. Also unstarted: a statsforecast outside baseline for
-    `PORTFOLIO.md` (`references/open-source-shortlist.md`).
+22. ~~**`mapie` / `scoringrules` in the `dev` extra is blocked.**~~ **DONE 2026-09-30 (#80).**
+    The exact `requests==2.31.0` pin had no recorded reason (it dates from the original
+    pin-everything `requirements.txt`) and is now `>=2.31,<3`. `uv lock` had been failing on
+    main since `evidently` landed in #59, so `uv.lock` was stale; CI never noticed because it
+    syncs `--frozen`. Runtime changes: requests 2.34.2, and protobuf drops 7.36.1 → 6.33.6
+    through the universal resolution (an mlflow/evidently cap). Only `onnxruntime` pulls
+    protobuf at runtime, and nothing in `backend/` imports it. The MAPIE oracle and
+    interval-score tests now run in the gate. Still unstarted: a statsforecast outside baseline
+    for `PORTFOLIO.md` (`references/open-source-shortlist.md`).
 
 ## 6. Unstarted and unranked — open ideas, not commitments
 
