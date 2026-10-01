@@ -36,7 +36,7 @@ from backtest.scoring import HEADLINE_MIN_TIER, MIN_HEADLINE_DATES, price_tier
 from scipy.stats import spearmanr
 from sqlalchemy import text
 
-from models import conformal, mlflow_utils, served_recalibration
+from models import conformal, mlflow_utils, serve_universe, served_recalibration
 from models.candidate_predictions import apply_centre_policy, centre_champion
 from models.item_parser import (
     BID_SOURCES,
@@ -2412,9 +2412,15 @@ class ItemForecaster:
             return slugs
 
         try:
-            slug_rows = self.db.execute(text("SELECT item_id FROM items WHERE is_backfilled = 1")).fetchall()
-            slugs = {r[0] for r in slug_rows}
-            logger.info(f"  Serve universe filter (is_backfilled): {len(slugs)} items from DB")
+            # Established (is_backfilled) plus discovered releases old enough to
+            # serve -- `models/serve_universe.py` is the one definition.
+            served = serve_universe.served_items(self.db, self._now())
+            slugs = set(served)
+            n_young = len(serve_universe.young_slugs(served))
+            logger.info(
+                f"  Serve universe filter: {len(slugs)} items from DB "
+                f"({len(slugs) - n_young} established, {n_young} young releases)"
+            )
             return slugs
         except Exception as e:
             logger.warning(f"  Could not fetch is_backfilled items from DB, deriving from archive: {e}")
@@ -9626,8 +9632,7 @@ class ItemForecaster:
 
         # Map Parquet string slugs → integer DB IDs
         try:
-            slug_rows = self.db.execute(text("SELECT id, item_id FROM items WHERE is_backfilled = 1")).fetchall()
-            slug_to_id = {r.item_id: r.id for r in slug_rows}
+            slug_to_id = serve_universe.slug_to_id(serve_universe.served_items(self.db, self._now()))
         except Exception:
             slug_to_id = {}
 
@@ -10398,13 +10403,49 @@ class ItemForecaster:
 
         self._warn_no_classifier(horizon, fallback_n, fallback_flat)
 
+    def _young_serve_slugs(self) -> set[str]:
+        """Young releases served today (`models/serve_universe.py`). Empty on any
+        DB failure, which serves them at no horizon rather than at all of them."""
+        if self.db is None:
+            return set()
+        try:
+            return serve_universe.young_slugs(serve_universe.served_items(self.db, self._now()))
+        except Exception as e:
+            logger.warning(f"  Could not read young releases ({e}); none get the h=3-only treatment")
+            return set()
+
+    @staticmethod
+    def _restrict_young_horizons(result_df: pd.DataFrame, young: set[str]) -> pd.DataFrame:
+        """Drop every horizon outside `YOUNG_SERVED_HORIZONS` from young items.
+
+        Measured: young items cover ~82% at h=3 but 70-75% at h=7/h=14, so the
+        longer bands are withheld rather than published under-covering."""
+        if result_df.empty or not young:
+            return result_df
+        keep = serve_universe.YOUNG_SERVED_HORIZONS
+        is_young = result_df["item_id"].astype(str).isin(young)
+        if not is_young.any():
+            return result_df
+        result_df = result_df.copy()
+        result_df.loc[is_young, "forecasts"] = result_df.loc[is_young, "forecasts"].map(
+            lambda fs: {h: v for h, v in (fs or {}).items() if h in keep}
+        )
+        out = result_df[result_df["forecasts"].map(bool)].reset_index(drop=True)
+        logger.info(
+            f"  Young releases: {int(is_young.sum())} items served at h={sorted(keep)} only "
+            f"({int(is_young.sum()) - int(out['item_id'].astype(str).isin(young).sum())} had no h=3 forecast)"
+        )
+        return out
+
     def _finalize_predictions(self, ctx: "_PredictContext") -> pd.DataFrame:
         """Post-loop: build result DataFrame, sanitize, capture shadow
         candidates, and log diagnostics.  Returns the final DataFrame.
 
         Pure extraction from predict() — zero behavioral change.
         """
+        young = self._young_serve_slugs()
         result_df = pd.DataFrame([r for r in ctx.agg.values() if r["forecasts"]])
+        result_df = self._restrict_young_horizons(result_df, young)
         if not result_df.empty:
             result_df = self._sanitize_forecasts(result_df)
 
@@ -10416,6 +10457,10 @@ class ItemForecaster:
             except Exception as e:
                 logger.warning("  Shadow candidate capture failed (%s); serving production only.", e)
                 self.pending_candidates = []
+        # The champion-challenger panel judges the established universe; a young
+        # cohort joining mid-window would change what its 20 shared dates mean.
+        if young and self.pending_candidates:
+            self.pending_candidates = [c for c in self.pending_candidates if str(c.item_id) not in young]
 
         total_used = ctx.regime_count + ctx.global_count
         if total_used > 0:

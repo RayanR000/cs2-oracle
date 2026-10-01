@@ -53,7 +53,7 @@ import pandas as pd
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from backtest.scoring import HEADLINE_MIN_TIER, MIN_FEEDBACK_DATES
-from models import served_recalibration
+from models import serve_universe, served_recalibration
 
 logger = logging.getLogger("measure_conformal_pid")
 
@@ -407,6 +407,10 @@ def load_prod_panel(session) -> pd.DataFrame:
             "o.predicted_price_low, o.predicted_price_mid, o.predicted_price_high, o.actual_price, "
             "f.band_multiplier "
             "FROM forecast_outcomes o JOIN item_forecasts f ON f.id = o.forecast_id "
+            # The prereg's population is the established served panel. Young releases
+            # began serving at h=3 inside the window (2026-10-01); this join keeps them
+            # out rather than letting a mid-window cohort change what is measured.
+            f"JOIN items i ON i.id = o.item_id AND {serve_universe.established_sql('i')} "
             "WHERE o.horizon_days = :h AND o.forecast_date BETWEEN :a AND :b "
             "AND o.actual_price IS NOT NULL AND o.predicted_price_mid IS NOT NULL"
         ),
@@ -416,8 +420,11 @@ def load_prod_panel(session) -> pd.DataFrame:
     fc = pd.DataFrame(
         session.execute(
             text(
-                "SELECT item_id, forecast_date, predicted_price_low, predicted_price_mid, "
-                "predicted_price_high, band_multiplier FROM item_forecasts "
+                # item_forecasts names these price_low/mid/high; only forecast_outcomes
+                # carries the predicted_price_* spelling attach_priors reads.
+                "SELECT item_id, forecast_date, price_low AS predicted_price_low, "
+                "price_mid AS predicted_price_mid, price_high AS predicted_price_high, "
+                "band_multiplier FROM item_forecasts "
                 "WHERE horizon_days = :h AND forecast_date BETWEEN :a AND :b"
             ),
             {"h": HORIZON, "a": lo, "b": WINDOW[1]},

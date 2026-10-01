@@ -277,3 +277,66 @@ def test_evaluate_runs_end_to_end_on_a_synthetic_window():
 
 def test_main_refuses_to_read_prod_before_the_read_date():
     assert mcp.main([], today=date(2026, 10, 22)) == 2
+
+
+def test_load_prod_panel_runs_against_the_real_schema():
+    """Both queries against tables built from the ORM. The prior-row read selected
+    `predicted_price_*` from item_forecasts, whose columns are `price_low/mid/high`,
+    so the single 10-23 read would have raised before scoring anything."""
+    import datetime as dt
+
+    from database import Base, ForecastOutcome, Item, ItemForecast
+    from sqlalchemy import create_engine
+    from sqlalchemy.orm import sessionmaker
+    from sqlalchemy.pool import StaticPool
+
+    engine = create_engine("sqlite://", connect_args={"check_same_thread": False}, poolclass=StaticPool)
+    Base.metadata.create_all(engine)
+    s = sessionmaker(bind=engine)()
+    s.add(
+        Item(
+            id=1,
+            item_id="AK-47 | Redline (Field-Tested)",
+            name="AK-47 | Redline (Field-Tested)",
+            type="skin",
+            is_backfilled=1,
+        )
+    )
+    for fid, fd in ((1, dt.date(2026, 9, 10)), (2, dt.date(2026, 9, 11))):
+        s.add(
+            ItemForecast(
+                id=fid,
+                item_id=1,
+                forecast_date=fd,
+                horizon_days=3,
+                price_low=9.0,
+                price_mid=10.0,
+                price_high=11.0,
+                current_price=10.0,
+                band_multiplier=1.0,
+            )
+        )
+        s.add(
+            ForecastOutcome(
+                forecast_id=fid,
+                item_id=1,
+                forecast_date=fd,
+                horizon_days=3,
+                target_date=fd + dt.timedelta(days=3),
+                base_price=10.0,
+                current_price=10.0,
+                predicted_price_low=9.0,
+                predicted_price_mid=10.0,
+                predicted_price_high=11.0,
+                actual_price=10.5,
+                direction_correct=0,
+                abs_error=0.5,
+            )
+        )
+    s.commit()
+
+    panel = mcp.load_prod_panel(s)
+
+    assert len(panel) == 2
+    assert panel.sort_values("forecast_date")["prior_width_ratio"].tolist() == [1.0, 1.0]
+    engine.dispose()

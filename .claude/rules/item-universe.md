@@ -102,12 +102,18 @@ separate fix per loader.
   frame that changed 17 of 6,584,167 rows, all sub-$1.
   `docs/changelog/2026-09-28-voting-moved-into-duckdb.md`. ⚠️ The CI key's literal prefix still reads `voted-v6`
   and was not bumped with v8 — it is now 2 versions behind, harmless only because the constant lives in the hashed file.
-- **The TRAIN universe is derived from the archive; the SERVE universe is `is_backfilled` in
-  the DB.** `ItemForecaster._resolve_backfilled_slugs(universe=…)` routes them:
+- **The TRAIN universe is derived from the archive; the SERVE universe is
+  `models/serve_universe.py` over the DB.** `ItemForecaster._resolve_backfilled_slugs(universe=…)` routes them:
   `universe="train"` calls `_archive_universe_slugs(exclude_iflow=True)` — distinct slugs with a
   `day < 2026-01-01` row from a source other than `buff_iflow`, read through `prices_relation` +
-  `archive_universe_sql_filter` — and `universe="serve"` reads `SELECT item_id FROM items WHERE
-  is_backfilled = 1`, falling back to the same archive derivation. **`Item.is_trainable` /
+  `archive_universe_sql_filter` — and `universe="serve"` reads `serve_universe.served_items`,
+  falling back to the archive derivation. Since 2026-09-30 that is **established** items
+  (`is_backfilled = 1`, every horizon) plus **young releases** (`release_date` set by
+  `collectors/new_item_discovery.py`, 60+ days of history, **h=3 only**). Never write a fourth
+  `WHERE is_backfilled = 1` into a serving lookup; read `served_items`. And any panel that sizes or
+  judges the established band must join `serve_universe.established_sql()`, as the feedback refit
+  and the PID loader do, or a young cohort moves it.
+  `docs/changelog/2026-09-30-serve-new-releases-at-h3.md`. **`Item.is_trainable` /
   `trainable_item_clause()` (`database.py:73,130`, migration `0023`) are NOT the authority for
   the train universe** and no loader reads them: the managed Postgres lacked the column when the
   split was built (migration `0023` added it later), so the DB read threw and fell back to

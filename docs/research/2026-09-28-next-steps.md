@@ -64,7 +64,10 @@ State on 2026-09-28, still true unless an item below says otherwise:
    and the instrument is built (`scripts/measure_conformal_pid.py`). The window is forecast dates
    09-07..10-18, read **once** around **10-23**; the script refuses to read earlier. It is VOID if
    the incumbent's per-date error is under 3pp. 09-28 is out of the window (no forecasts that
-   day). Forecast dates 09-16/17/18 are scoreable again after item 2, so they count. `research/2026-09-23-conformal-pid-served-h3-preregistration.md`.
+   day). Forecast dates 09-16/17/18 are scoreable again after item 2, so they count.
+   ⚠️ **Fixed 2026-09-30:** the loader's prior-row read selected columns `item_forecasts` does not
+   have and would have raised at the read. Young releases (item 23) are joined out, so the panel
+   stays the established one the prereg froze. `research/2026-09-23-conformal-pid-served-h3-preregistration.md`.
 5. **Centre promotion (last-price vs `gbm_q50`) through the champion–challenger shadow.** It reads
    INSUFFICIENT_EVIDENCE until 20 shared dates. Promotion is a reviewed PR, never automatic
    (invariant 5).
@@ -117,12 +120,13 @@ State on 2026-09-28, still true unless an item below says otherwise:
     Fade (Factory New)" stay as they are, and the `--only-catalog` run is dropped. The 09-20
     retrain data is the last CSMarketAPI data there will be.
     `changelog/2026-09-20-csmarketapi-backfill-and-retrain.md`.
-23. **Decide how newly released items reach the catalog.** This is a decision, not an action.
-    `.github/workflows/discover-new-items.yml` (`disabled_manually`) says new items were meant to
-    arrive via the monthly CSMarketAPI backfill, not Steam discovery. With that gone, **nothing
-    adds newly released items**, so the universe is frozen at today's catalog. The choices are to
-    re-enable Discover New Items (manual trigger is kept there for one-offs) or to find another
-    path.
+23. ~~**Decide how newly released items reach the catalog.**~~ **DONE 2026-09-30.** The
+    Aggregator now inserts newly priced names (`collectors/new_item_discovery.py`), and
+    `models/serve_universe.py` serves a discovered release **at h=3 only** once it has 60 days of
+    history. Replayed on the 2026-07-08 release, h=3 covered 81–83% but h=7/h=14 covered 70–75%,
+    so the longer horizons are withheld. Young rows are excluded from the feedback refit and the
+    PID panel (item 4). **Re-read h=7/h=14 at ~120 days, mid-November.**
+    `changelog/2026-09-30-serve-new-releases-at-h3.md`.
 
 ## 4. Decide or delete — code and docs that disagree
 
@@ -237,7 +241,7 @@ The full lists live in the cited docs; this is the index.
 |---|---|
 | ~~09-27~~ 09-28 | archive-basis h=14 gate: KILL (item 1) |
 | 09-29 (done) | archive day 09-19 restored (item 2, #74) |
-| 09-30 (done) | h=14 feedback factor live, 0.7059 (item 8); chunked vote confirmed predict-only (item 3) |
+| 09-30 (done) | h=14 feedback factor live, 0.7059 (item 8); chunked vote confirmed predict-only (item 3); new releases served at h=3 (item 23) |
 | 09-29 | h=3 at 20 post-floor dates |
 | 10-03 | h=7 at 20 post-floor dates |
 | Mon 10-05 | weekly `mode=full` retrain (then 10-12, 10-19, …); first check of the chunked vote on a retrain (item 3) |
@@ -248,6 +252,7 @@ The full lists live in the cited docs; this is the index.
 | mid-Oct at earliest | 20 shared champion–challenger dates (items 5–6) |
 | 10-18 | last forecast date in the PID window |
 | ~10-23 | the single PID read (item 4) |
+| ~11-15 | young-release h=7/h=14 re-read at ~120 days (item 23) |
 | November | h=30 at 20 post-floor dates |
 
 ## Carry-over from the 08-16 list

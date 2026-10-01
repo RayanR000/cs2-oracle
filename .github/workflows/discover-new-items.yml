@@ -1,9 +1,10 @@
 name: Discover New Items
 
 on:
-  # Schedule disabled 2026-07-08: the catalog intentionally contains only
-  # backfilled items; new items are added by the monthly CSMarketAPI
-  # backfill runs, not by Steam discovery. Manual trigger kept for one-offs.
+  # Superseded 2026-09-30: the Aggregator adds new releases itself
+  # (backend/collectors/new_item_discovery.py) from the price dumps it already
+  # downloads. The CSMarketAPI backfill that used to add them is gone. This
+  # workflow stays a stub; see docs/changelog/2026-09-30-serve-new-releases-at-h3.md.
   workflow_dispatch:
 
 defaults:
@@ -46,9 +47,8 @@ jobs:
           DEBUG: false
         run: |
           echo "Discovery is disabled: scripts/discover_steam_items.py was removed"
-          echo "2026-09-15 (codebase cleanup — it imported the long-deleted"
-          echo "collectors.real_data_collector). New items arrive via the monthly"
-          echo "CSMarketAPI backfill, not Steam discovery."
+          echo "2026-09-15 (codebase cleanup). New releases are added by the"
+          echo "Aggregator (backend/collectors/new_item_discovery.py) since 2026-09-30."
           exit 1
 
 
