@@ -47,9 +47,6 @@ ROW_COUNT_FIELDS = (
     "correlations_written",  # scripts/event_correlation_analysis.py
     "supply_rows",  # collectors/supply_depth.py
     "volume_rows",  # collectors/sales_volume.py
-    "reddit_event_rows",  # collectors/reddit_events.py
-    "case_panel_rows",  # scripts/archive/build_case_panel.py
-    "sticker_panel_rows",  # scripts/archive/build_sticker_panel.py
     "forecasts_written",  # scripts/forecast_prices.py (production rows stay fatal at zero)
 )
 
