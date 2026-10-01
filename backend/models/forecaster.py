@@ -1133,8 +1133,6 @@ class ItemForecaster:
         # db/candidate_store.py. Transient — never mirrored to public
         # outputs, cleared at the start of every predict().
         self.pending_candidates: list = []
-        self.vol_rank_models: dict[int, list[lgb.Booster]] = {}
-        self.vol_rank_norm: dict[int, float] = {}
         self.regime_feature_cols: dict[tuple[int, str], list[str]] = {}
         self.feature_cols: list[str] = []
         self.prune_failed_groups = prune_failed_groups
@@ -1180,10 +1178,7 @@ class ItemForecaster:
         # Whether the band was CALIBRATED with the regime-reactive multiplier on
         # top of the climatology scale. Same matched-pair rule; None = older meta.
         self._artifact_climatology_reactive: bool | None = None
-        self._artifact_vol_rank_gbm: bool | None = None
         self._artifact_anomaly_gbm: bool | None = None
-        self._artifact_shrink_k_gbm: bool | None = None
-        self.shrink_k_models: dict[int, lgb.Booster | None] = {}
         # The median-price floor the artifact was TRAINED under. Load-bearing
         # only when the rank transform is on, and then it is load-bearing
         # absolutely: the transform's output depends on which items are in the
@@ -1706,25 +1701,6 @@ class ItemForecaster:
         """
         return os.environ.get("CLIMATOLOGY_SCALE", "1") != "0"
 
-    @staticmethod
-    def vol_rank_gbm_enabled() -> bool:
-        """Whether to train a volatility-ranking GBM that modulates climatology.
-
-        Trains a regression GBM on |target_return_{h}d| per horizon, then uses
-        its cross-sectional predictions to reshape the climatology scale: items
-        the model predicts as more volatile get wider bands, less volatile get
-        narrower. The mean multiplier is 1.0 by construction, so q_hat's level
-        is preserved and the matched-pair rule holds.
-
-        Requires CLIMATOLOGY_SCALE=1 (the base it modulates). Off by default.
-
-        REFUTED (6-12% WIDER, 0/102 folds, 2026-09-10) and the training and
-        calibration branches are DELETED: setting this to 1 no longer trains or
-        applies anything. The env read stays only because `meta["vol_rank_gbm"]`
-        persists it; removal belongs with a retrain PR.
-        """
-        return os.environ.get("VOLATILITY_RANK_GBM") == "1"
-
     #: Horizons whose anomaly head may be DISCLOSED as `anomaly_p`. Measured
     #: 2026-09-09 (docs/changelog/2026-09-09-anomaly-head-beats-its-null.md):
     #: held-out log loss beats the featureless null at 3/7/14d but is a dead
@@ -1750,34 +1726,6 @@ class ItemForecaster:
         if self._artifact_anomaly_gbm is not None:
             return self._artifact_anomaly_gbm
         return self.anomaly_gbm_enabled()
-
-    @staticmethod
-    def shrink_k_gbm_enabled() -> bool:
-        """Whether to train a per-item shrinkage K predictor.
-
-        Replaces the global CLIMATOLOGY_SHRINK_K with a per-item K predicted
-        from item features (count, raw volatility, tier, metadata). The GBM
-        is trained to minimize band width at ~80% coverage using cross-validated
-        per-item optimal K values. Requires CLIMATOLOGY_SCALE=1. Set SHRINK_K_GBM=1.
-
-        REFUTED (NULL at all four horizons, 2026-09-10) and the training branch is
-        DELETED: setting this to 1 no longer trains anything. The env read stays
-        because `price-forecast.yml` sets it and `meta["shrink_k_gbm"]` persists it
-        (loaded artifacts may carry the key); removal belongs with a retrain PR. See
-        docs/changelog/2026-09-10-shrink-k-gated-off-vol-rank-unwired.md.
-        """
-        return os.environ.get("SHRINK_K_GBM") == "1"
-
-    def _shrink_k_gbm_served(self) -> bool:
-        if self._artifact_shrink_k_gbm is not None:
-            return self._artifact_shrink_k_gbm
-        return self.shrink_k_gbm_enabled()
-
-    def _vol_rank_gbm_served(self) -> bool:
-        """Whether predict() serves the vol-rank-modulated climatology."""
-        if self._artifact_vol_rank_gbm is not None:
-            return self._artifact_vol_rank_gbm
-        return self.vol_rank_gbm_enabled()
 
     def _climatology_scale_served(self) -> bool:
         """Whether predict() serves the climatology scale, following the artifact.
@@ -8077,99 +8025,6 @@ class ItemForecaster:
             callbacks.insert(0, lgb.early_stopping(20))
         return lgb.train(params, dtrain, num_boost_round=num_boost_round, valid_sets=valid_sets, callbacks=callbacks)
 
-    def _fit_vol_rank_model(
-        self,
-        X_train,
-        y_abs_train,
-        X_val,
-        y_abs_val,
-        boosting_type: str,
-        tree_params: dict,
-        horizon: int,
-        num_boost_round: int = 200,
-    ) -> list[lgb.Booster]:
-        """Train a regression GBM on |return| to rank items by volatility.
-
-        Returns an ensemble of boosters whose mean prediction is the expected
-        absolute move per item. The caller normalises predictions to a mean-1
-        multiplier on climatology.
-        """
-        ds_params = {"max_bin": self.MAX_BIN, "feature_pre_filter": False}
-        dtrain = lgb.Dataset(X_train, y_abs_train, params=ds_params)
-        dval = lgb.Dataset(X_val, y_abs_val, reference=dtrain, params=ds_params)
-        dtrain.construct()
-        dval.construct()
-
-        # Tree structure params are objective-agnostic; reusing direction's.
-        base = dict(tree_params)
-        base.update(
-            {
-                "objective": "regression",
-                "metric": "mae",
-                "boosting_type": boosting_type,
-                "verbosity": -1,
-                "n_jobs": -1,
-                "max_bin": self.MAX_BIN,
-                "feature_pre_filter": False,
-                "min_gain_to_split": 0.1,
-            }
-        )
-
-        ensemble = []
-        for ei in range(self.N_ENSEMBLES):
-            p = base.copy()
-            p["random_state"] = self.ENSEMBLE_SEEDS[ei]
-            p["feature_fraction"] = self.ENSEMBLE_FEATURE_FRACTIONS[ei]
-            cbs = [lgb.log_evaluation(0)]
-            if self._early_stopping_enabled():
-                cbs.insert(0, lgb.early_stopping(20))
-            model = lgb.train(
-                p,
-                dtrain,
-                num_boost_round=num_boost_round,
-                valid_sets=[dval],
-                callbacks=cbs,
-            )
-            ensemble.append(model)
-        return ensemble
-
-    def _predict_vol_rank(self, horizon: int, X) -> np.ndarray | None:
-        """Mean ensemble prediction from the vol-rank model, or None."""
-        models = self.vol_rank_models.get(horizon)
-        if not models:
-            return None
-        preds = [m.predict(X) for m in models]
-        return np.mean(preds, axis=0)
-
-    def _vol_rank_multiplier(self, horizon: int, X) -> np.ndarray | None:
-        """Normalised vol-rank multiplier (mean 1.0), or None if no model."""
-        raw = self._predict_vol_rank(horizon, X)
-        if raw is None:
-            return None
-        raw = np.clip(raw, 0.01, None)
-        norm = self.vol_rank_norm.get(horizon)
-        if norm is None or norm <= 0:
-            norm = float(np.mean(raw))
-        if norm <= 0:
-            return None
-        mult = raw / norm
-        return np.clip(mult, 0.25, 4.0)
-
-    def _vol_rank_feature_frame(
-        self,
-        rows: pd.DataFrame,
-        horizon: int,
-        *,
-        served: bool = False,
-    ) -> pd.DataFrame:
-        """Prepare features for the vol-rank model, shared by calibration and serving."""
-        cols = self.horizon_feature_cols.get(horizon, self.feature_cols)
-        cols = [c for c in cols if c in rows.columns]
-        X = rows[cols].replace([np.inf, -np.inf], np.nan)
-        if not self.feature_medians.empty:
-            X = self._impute_features(X, self.feature_medians, served=served)
-        return X
-
     def _fit_exceedance_classifier(
         self,
         X_train,
@@ -9280,167 +9135,6 @@ class ItemForecaster:
             table[str(iid)] = float(w * raw + (1.0 - w) * pool)
         return table, tier_pool, global_std
 
-    @classmethod
-    def _compute_per_item_optimal_k(
-        cls, df: pd.DataFrame, tcol: str, k_grid=None, target_coverage: float = 0.80
-    ) -> pd.DataFrame:
-        """Find per-item optimal K via normalized-residual calibration.
-
-        For each item, the band is `q_hat * scale(K)`. A global q_hat absorbs
-        the level, so the K that makes this item's normalized |return|/scale(K)
-        distribution closest to the cross-sectional average is optimal — it
-        means a single q_hat works well for this item. The metric is the p80
-        of |return_i| / scale_i(K); the K that minimizes it wins (the item
-        needs the least q_hat to reach 80% coverage).
-
-        Items with < 15 observations get the global CLIMATOLOGY_SHRINK_K.
-        """
-        if k_grid is None:
-            k_grid = [10, 20, 50, 100, 200, 320, 500, 1000]
-
-        d = df[np.isfinite(df[tcol].to_numpy())].copy()
-        if d.empty:
-            return pd.DataFrame()
-        d["tier"] = cls._price_tier_array(d["price"].to_numpy())
-        global_std = float(d[tcol].std())
-        tier_std = d.groupby("tier")[tcol].std()
-        tier_pool = {int(t): (float(v) if np.isfinite(v) and v > 0 else global_std) for t, v in tier_std.items()}
-
-        agg = d.groupby("item_id").agg(
-            raw_std=(tcol, "std"),
-            count=(tcol, "count"),
-            median_price=("price", "median"),
-        )
-        agg["tier"] = cls._price_tier_array(agg["median_price"].to_numpy())
-        agg["pool_std"] = agg["tier"].map(lambda t: tier_pool.get(int(t), global_std))
-
-        item_returns = d.groupby("item_id")[tcol].apply(np.array)
-
-        results = []
-        default_k = float(cls.CLIMATOLOGY_SHRINK_K)
-        for iid, row in agg.iterrows():
-            n = float(row["count"])
-            raw = row["raw_std"]
-            pool = row["pool_std"]
-            if not np.isfinite(raw) or raw <= 0:
-                raw = pool
-
-            rets = item_returns.get(iid)
-            if rets is None or len(rets) < 15:
-                results.append(
-                    {
-                        "item_id": iid,
-                        "optimal_k": default_k,
-                        "count": n,
-                        "raw_std": raw,
-                        "tier": int(row["tier"]),
-                        "pool_std": pool,
-                        "std_ratio": raw / pool if pool > 0 else 1.0,
-                    }
-                )
-                continue
-
-            abs_rets = np.abs(rets)
-            best_k = default_k
-            best_q = float("inf")
-            for k in k_grid:
-                w = n / (n + k)
-                shrunk = w * raw + (1.0 - w) * pool
-                if shrunk <= 0:
-                    continue
-                normalized = abs_rets / shrunk
-                q80 = float(np.quantile(normalized, target_coverage))
-                if q80 < best_q:
-                    best_q = q80
-                    best_k = k
-
-            results.append(
-                {
-                    "item_id": iid,
-                    "optimal_k": best_k,
-                    "count": n,
-                    "raw_std": raw,
-                    "tier": int(row["tier"]),
-                    "pool_std": pool,
-                    "std_ratio": raw / pool if pool > 0 else 1.0,
-                }
-            )
-        return pd.DataFrame(results)
-
-    def _fit_shrink_k_model(
-        self,
-        item_features: pd.DataFrame,
-        target_k: np.ndarray,
-        tree_params: dict,
-        boosting_type: str = "gbdt",
-        num_boost_round: int = 100,
-    ) -> lgb.Booster:
-        """Train a regression GBM to predict per-item optimal K from features."""
-        feature_cols = ["count", "raw_std", "tier", "pool_std", "std_ratio"]
-        X = item_features[feature_cols].values
-        y = np.log1p(target_k.astype(float))
-
-        ds = {"max_bin": 63, "feature_pre_filter": False}
-        dtrain = lgb.Dataset(X, y, params=ds, feature_name=feature_cols)
-        params = dict(tree_params) if tree_params else {}
-        params.update(
-            {
-                "objective": "regression",
-                "metric": "mae",
-                "boosting_type": boosting_type,
-                "verbosity": -1,
-                "n_jobs": -1,
-                "num_leaves": 15,
-                "min_data_in_leaf": 20,
-                "learning_rate": 0.05,
-            }
-        )
-        return lgb.train(params, dtrain, num_boost_round=num_boost_round, callbacks=[lgb.log_evaluation(0)])
-
-    def predict_shrink_k(self, horizon: int, item_stats: pd.DataFrame) -> np.ndarray:
-        """Predict per-item K from the loaded shrink-K model.
-
-        item_stats must have columns: count, raw_std, tier, pool_std, std_ratio.
-        Returns an array of K values (one per row), clipped to [5, 2000].
-        """
-        model = self.shrink_k_models.get(horizon)
-        if model is None:
-            return np.full(len(item_stats), float(self.CLIMATOLOGY_SHRINK_K))
-        feature_cols = ["count", "raw_std", "tier", "pool_std", "std_ratio"]
-        X = item_stats[feature_cols].fillna(0).values
-        log_k = model.predict(X)
-        return np.clip(np.expm1(log_k), 5, 2000)
-
-    def _build_climatology_table_adaptive(self, df: pd.DataFrame, tcol: str, horizon: int):
-        """Like _build_climatology_table but with per-item K from the GBM."""
-        d = df[np.isfinite(df[tcol].to_numpy())].copy()
-        if d.empty:
-            return {}, {}, float("nan")
-        d["tier"] = self._price_tier_array(d["price"].to_numpy())
-        global_std = float(d[tcol].std())
-        tier_std = d.groupby("tier")[tcol].std()
-        tier_pool = {int(t): (float(v) if np.isfinite(v) and v > 0 else global_std) for t, v in tier_std.items()}
-        agg = d.groupby("item_id").agg(
-            raw_std=(tcol, "std"),
-            count=(tcol, "count"),
-            median_price=("price", "median"),
-        )
-        agg["tier"] = self._price_tier_array(agg["median_price"].to_numpy())
-        agg["pool_std"] = agg["tier"].map(lambda t: tier_pool.get(int(t), global_std))
-        agg["std_ratio"] = agg["raw_std"] / agg["pool_std"].replace(0, 1)
-
-        k_arr = self.predict_shrink_k(horizon, agg)
-        table = {}
-        for (iid, row), k in zip(agg.iterrows(), k_arr):
-            n = float(row["count"])
-            pool = row["pool_std"]
-            raw = row["raw_std"]
-            if not np.isfinite(raw) or raw <= 0:
-                raw = pool
-            w = n / (n + k)
-            table[str(iid)] = float(w * raw + (1.0 - w) * pool)
-        return table, tier_pool, global_std
-
     def _climatology_lookup(self, horizon: int, item_ids, prices):
         """Per-row climatology scale from the persisted table, tier-pool fallback
         for unseen items, global fallback for unseen tiers. None if no table."""
@@ -9503,12 +9197,7 @@ class ItemForecaster:
                 f"back to sigma. The arm is NOT in effect for this horizon."
             )
             return None
-        if self._shrink_k_gbm_served() and horizon in self.shrink_k_models:
-            table, tier_pool, g = self._build_climatology_table_adaptive(
-                feature_frame[["item_id", "price", tcol]], tcol, horizon
-            )
-        else:
-            table, tier_pool, g = self._build_climatology_table(feature_frame[["item_id", "price", tcol]], tcol)
+        table, tier_pool, g = self._build_climatology_table(feature_frame[["item_id", "price", tcol]], tcol)
         if not table:
             logger.warning(
                 f"  {horizon}d climatology scale: no usable h-day return dispersion — falling back to sigma."
@@ -9545,13 +9234,7 @@ class ItemForecaster:
             return None
         if "item_id" not in rows.columns or "price" not in rows.columns:
             return None
-        scale = self._climatology_lookup(horizon, rows["item_id"].to_numpy(), rows["price"].to_numpy())
-        if self._vol_rank_gbm_served() and horizon in self.vol_rank_models:
-            X = self._vol_rank_feature_frame(rows, horizon, served=True)
-            vr_mult = self._vol_rank_multiplier(horizon, X.values)
-            if vr_mult is not None:
-                scale = scale * vr_mult
-        return scale
+        return self._climatology_lookup(horizon, rows["item_id"].to_numpy(), rows["price"].to_numpy())
 
     def _calibrate_conformal(
         self, horizon: int, records_df: pd.DataFrame, feature_frame: pd.DataFrame | None = None
@@ -11627,31 +11310,11 @@ class ItemForecaster:
         if _n_anom:
             logger.info(f"  Saved {_n_anom} anomaly classifiers")
 
-        # Save shrink-K models.
-        _n_sk = 0
-        for horizon, model in self.shrink_k_models.items():
-            if model is not None:
-                model.save_model(os.path.join(self.model_dir, f"shrink_k_{horizon}d.txt"))
-                _n_sk += 1
-        if _n_sk:
-            logger.info(f"  Saved {_n_sk} shrink-K models")
-
-        # Save vol-rank models (one ensemble per horizon).
-        _n_vr = 0
-        for horizon, ensemble in self.vol_rank_models.items():
-            for ei, model in enumerate(ensemble):
-                path = os.path.join(self.model_dir, f"vol_rank_{horizon}d_e{ei}.txt")
-                model.save_model(path)
-            _n_vr += 1
-        if _n_vr:
-            logger.info(f"  Saved {_n_vr} vol-rank models")
-        for horizon in self.HORIZONS:
-            if horizon in self.vol_rank_models:
-                continue
-            for ei in range(self.N_ENSEMBLES):
-                stale = os.path.join(self.model_dir, f"vol_rank_{horizon}d_e{ei}.txt")
-                if os.path.exists(stale):
-                    os.remove(stale)
+        # SHRINK_K_GBM and VOLATILITY_RANK_GBM were refuted (2026-09-10) and
+        # removed (2026-10-05 retrain PR). Clear any boosters an older artifact
+        # left behind so nothing on disk suggests they serve.
+        for stale in [*Path(self.model_dir).glob("shrink_k_*d.txt"), *Path(self.model_dir).glob("vol_rank_*d_e*.txt")]:
+            stale.unlink()
 
         # Remove orphaned regime-model files: any lgb_*_{regime}_*.txt on disk
         # that isn't in the current self.regime_models. Without this, a
@@ -11791,9 +11454,6 @@ class ItemForecaster:
                 for h, cal in self.anomaly_calibrators.items()
             },
             "anomaly_gbm": self.anomaly_gbm_enabled(),
-            "shrink_k_gbm": self.shrink_k_gbm_enabled(),
-            "vol_rank_gbm": self.vol_rank_gbm_enabled(),
-            "vol_rank_norm": {str(h): v for h, v in self.vol_rank_norm.items()},
             "climatology_scale_tables": {str(h): cfg for h, cfg in self.climatology_scale.items()},
             # WHICH K built those tables. Deliberately NOT folded into
             # MODEL_ARTIFACT_VERSION: an artifact written before this key is
@@ -12002,9 +11662,6 @@ class ItemForecaster:
                 f"calibrators ({sorted(self.anomaly_calibrators)}d)"
             )
         self._artifact_anomaly_gbm = meta.get("anomaly_gbm")
-        self._artifact_shrink_k_gbm = meta.get("shrink_k_gbm")
-        self._artifact_vol_rank_gbm = meta.get("vol_rank_gbm")
-        self.vol_rank_norm = {int(h): float(v) for h, v in meta.get("vol_rank_norm", {}).items()}
         # Rebuild the climatology lookup with the int keys the accessors expect
         # (JSON coerces tier keys to strings; item keys are already strings).
         self.climatology_scale = {
@@ -12186,32 +11843,6 @@ class ItemForecaster:
                     logger.warning(f"  Corrupt ranking head {rpath}, skipping: {e}")
         if self.ranking_models:
             logger.info(f"  Loaded {len(self.ranking_models)} ranking heads")
-
-        # Load shrink-K models.
-        for horizon in self.HORIZONS:
-            spath = os.path.join(self.model_dir, f"shrink_k_{horizon}d.txt")
-            if os.path.exists(spath):
-                try:
-                    self.shrink_k_models[horizon] = lgb.Booster(model_file=spath)
-                except (lgb.basic.LightGBMError, Exception) as e:
-                    logger.warning(f"  Corrupt shrink-K model {spath}, skipping: {e}")
-        if self.shrink_k_models:
-            logger.info(f"  Loaded {len(self.shrink_k_models)} shrink-K models")
-
-        # Load vol-rank models (one ensemble per horizon, where saved).
-        for horizon in self.HORIZONS:
-            ensemble = []
-            for ei in range(self.N_ENSEMBLES):
-                vpath = os.path.join(self.model_dir, f"vol_rank_{horizon}d_e{ei}.txt")
-                if os.path.exists(vpath):
-                    try:
-                        ensemble.append(lgb.Booster(model_file=vpath))
-                    except (lgb.basic.LightGBMError, Exception) as e:
-                        logger.warning(f"  Corrupt vol-rank model {vpath}, skipping: {e}")
-            if ensemble:
-                self.vol_rank_models[horizon] = ensemble
-        if self.vol_rank_models:
-            logger.info(f"  Loaded {len(self.vol_rank_models)} vol-rank models")
 
         # Build per-horizon feature sets from the loaded models.
         # Each model internally stores the feature names it was trained with.

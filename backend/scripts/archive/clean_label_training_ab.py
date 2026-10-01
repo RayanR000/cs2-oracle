@@ -16,7 +16,7 @@ split they use to build the climatology table:
                  (a recency control — same depth as clean_2025 but more recent)
 
 Metric: paired per-fold delta on log-width at matched 80% coverage, same as
-shrink_k_vol_rank_ab.py. Negative = narrower = better.
+the retired shrink_k_vol_rank_ab.py. Negative = narrower = better.
 
 Because the 2026 eval window is only ~250 days, we use a 14-day step (not the
 family's default 60) to get enough folds for a paired interval. Eval windows
@@ -49,8 +49,8 @@ from scripts.archive.ab_test_item_metadata import (
     assign_items,
     build_frame,
 )
+from scripts.archive.anomaly_band_modulator_ab import _lookup_scale, matched_width
 from scripts.archive.exceedance_meta_ab import paired_fold_deltas
-from scripts.archive.shrink_k_vol_rank_ab import _lookup, matched_width
 
 logging.basicConfig(
     level=logging.INFO,
@@ -160,7 +160,7 @@ def run(df, horizon_filter=None, max_folds=None):
                     if not table:
                         per_fold[arm].append(dict(row, width=None, log_width=None, n_fit=len(arm_fit)))
                         continue
-                    scale = _lookup(
+                    scale = _lookup_scale(
                         forecaster, horizon, {"table": table, "tier_pool": pool, "global": g}, val_ids, val_px
                     )
                     forecaster.climatology_scale.pop(horizon, None)

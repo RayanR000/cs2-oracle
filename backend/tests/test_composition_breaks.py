@@ -164,3 +164,30 @@ def test_artifact_without_break_dates_loads_empty(tmp_path):
     g = _fc(tmp_path)
     g.load_models()
     assert g._artifact_break_dates == frozenset()
+
+
+def test_an_artifact_with_the_retired_shrink_k_and_vol_rank_keys_still_loads(tmp_path):
+    f = _fc(tmp_path)
+    f.feature_cols = ["a"]
+    f.feature_medians = pd.Series({"a": 0.0})
+    f.conformal_calibration = {h: 1.0 for h in f.HORIZONS}
+    f.save_models()
+    meta = json.loads((tmp_path / "meta.json").read_text())
+    meta.update({"shrink_k_gbm": True, "vol_rank_gbm": True, "vol_rank_norm": {"3": 1.2}})
+    (tmp_path / "meta.json").write_text(json.dumps(meta))
+    (tmp_path / "shrink_k_3d.txt").write_text("not a booster")
+    (tmp_path / "vol_rank_3d_e0.txt").write_text("not a booster")
+    g = _fc(tmp_path)
+    g.load_models()  # must not raise, must not try to parse the stale files
+    assert not hasattr(g, "shrink_k_models") and not hasattr(g, "vol_rank_models")
+
+
+def test_save_removes_stale_retired_booster_files(tmp_path):
+    (tmp_path / "shrink_k_7d.txt").write_text("x")
+    (tmp_path / "vol_rank_7d_e1.txt").write_text("x")
+    f = _fc(tmp_path)
+    f.feature_cols = ["a"]
+    f.feature_medians = pd.Series({"a": 0.0})
+    f.conformal_calibration = {h: 1.0 for h in f.HORIZONS}
+    f.save_models()
+    assert not list(tmp_path.glob("shrink_k_*.txt")) and not list(tmp_path.glob("vol_rank_*.txt"))
