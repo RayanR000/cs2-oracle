@@ -950,7 +950,6 @@ git commit -m "chore: remove the refuted SHRINK_K_GBM / vol-rank plumbing (next-
 - Modify:
   - `docs/research/2026-09-28-next-steps.md` (§6 composition-break bullet, item 16, calendar row for 10-05)
   - `.claude/rules/labels-and-embargo.md` (one bullet)
-  - `docs/specs/2026-09-30-composition-break-calendar-design.md` (`source_set_hash` → `source_set`)
 
 - [ ] **Step 1: Full suite.**
   Run: `venv/bin/python -m pytest tests -q -m "not slow"`
