@@ -23,9 +23,9 @@ harness can even resolve +1-2pp are separate questions answered by
 
 ## The two grains, and why they are one table
 
-The four scalar feeds return a single integer per item — and they are *one
-feature, not four*: Spearman 0.65-0.82 between them (2026-08-06). Collecting all
-four buys **coverage breadth** (~72% of the >=$1 cohort vs ~65% for the best
+The scalar feeds return a single integer per item — and they are *one
+feature, not several*: Spearman 0.65-0.82 between them (2026-08-06). Collecting all
+of them buys **coverage breadth** (~72% of the >=$1 cohort vs ~65% for the best
 single feed), not independent signal.
 
 lis-skins is qualitatively different: 2.3M individual listings with `price` and
@@ -339,30 +339,6 @@ def parse_market_csgo(payload: Any, snapshot_day: date, collected_at: datetime) 
     )
 
 
-def parse_bitskins(payload: Any, snapshot_day: date, collected_at: datetime) -> pd.DataFrame:
-    """api.bitskins.com/market/insell/730 -> `quantity` per item.
-
-    Bitskins quotes prices in thousandths of a dollar, normalised here for the
-    same reason as Waxpeer.
-    """
-    items = payload.get("list", payload) if isinstance(payload, dict) else payload
-
-    def _price(it: dict) -> float | None:
-        raw = _coerce_float(it.get("price_min"))
-        return None if raw is None else raw / 1000.0
-
-    return _scalar_rows(
-        (
-            (it.get("name") or it.get("market_hash_name"), _coerce_int(it.get("quantity")), _price(it))
-            for it in items
-            if isinstance(it, dict)
-        ),
-        "bitskins",
-        snapshot_day,
-        collected_at,
-    )
-
-
 def _parse_created_at(raw: Any) -> pd.Timestamp | None:
     if not raw:
         return None
@@ -528,7 +504,6 @@ SCALAR_FEEDS: tuple[Feed, ...] = (
     Feed("skinport", "https://api.skinport.com/v1/items?app_id=730&currency=USD", parse_skinport),
     Feed("waxpeer", "https://api.waxpeer.com/v1/prices?game=csgo", parse_waxpeer),
     Feed("market_csgo", "https://market.csgo.com/api/v2/prices/USD.json", parse_market_csgo),
-    Feed("bitskins", "https://api.bitskins.com/market/insell/730", parse_bitskins),
 )
 
 LIS_SKINS_URL = "https://lis-skins.com/market_export_json/api_csgo_full.json"
@@ -636,7 +611,7 @@ def collect(
     Returns a dict carrying `supply_rows` — a name registered in
     `scripts/run_task.py::ROW_COUNT_FIELDS`, so a run that stores nothing exits
     non-zero instead of going green. Per-feed counts are reported alongside it
-    because a single dead feed among five would otherwise hide behind a healthy
+    because a single dead feed among four would otherwise hide behind a healthy
     total, which is the same shape as the 2026-07-16 supply-scraper failure.
 
     A feed that fails is logged and skipped; the run still succeeds provided at
