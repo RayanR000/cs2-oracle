@@ -12,6 +12,14 @@ the day. The rest restate what the cited doc says. Where the docs conflict, the 
 **Standing constraint:** this is a range forecaster (`AGENTS.md`). Nothing below proposes a
 directional product claim, a fourth band-width denominator, or a serving ranker. See §7.
 
+## State on 2026-10-02
+
+- **Bitskins supply feed dropped (verified 10-02).** Its public export has been empty upstream
+  since ~08-24 (last archived day 08-23), and every run logged it as a failed feed while staying
+  green. No feature reads it. Three scalar feeds plus the lis-skins ladder remain (items 11–12).
+  `changelog/2026-10-02-drop-bitskins-supply-feed.md`.
+- **Item 21's first CI run is verified:** zero revisions on a populated snapshot.
+
 ## State on 2026-09-30
 
 - **Chunked vote confirmed on a scheduled predict-only run (verified 09-30).** Price Forecast run
@@ -180,8 +188,10 @@ State on 2026-09-28, still true unless an item below says otherwise:
     - **Still open: the 1.1607 Steam fee constant.** `runtime/steam_listing_history.db` is gone;
       re-validating means re-scraping 262 items with a Steam session.
 21. ~~**Decide archive history retention.**~~ **DECIDED 2026-10-01: no history, log revisions instead.**
-    `changelog/2026-10-01-price-revision-log.md`. First CI run (the 10-01 23:00 UTC Aggregator) is
-    unverified: check that `ops/price_revisions.parquet` appears, or that the step logs a zero count.
+    `changelog/2026-10-01-price-revision-log.md`. **First CI run verified 10-02:** Aggregator run
+    `36954043078` (snapshot date 10-01) logged `{"revisions": 0, "logged_rows": 0, "wrote": false}`.
+    The before-snapshot was populated (no "No monthly price files to snapshot" warning), so the
+    zero is a real zero, not an empty input.
     Original question: The orphan force-push keeps no history, so revisions
     can't be diffed; the 08-25 note says it is "worth deciding deliberately"
     (`changelog/2026-08-25-centre-shrinks-to-zero-and-the-dollar-band-is-the-wedge.md`).

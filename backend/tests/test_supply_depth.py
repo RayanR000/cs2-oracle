@@ -17,7 +17,6 @@ from collectors.supply_depth import (
     SupplyFeedError,
     aggregate_lis_skins,
     collect,
-    parse_bitskins,
     parse_market_csgo,
     parse_skinport,
     parse_waxpeer,
@@ -63,12 +62,6 @@ def test_waxpeer_normalises_millicent_price():
     """Waxpeer quotes `min` in thousandths; `min_ask` must mean USD everywhere."""
     rows = parse_waxpeer({"items": [{"name": "Kilowatt Case", "count": 900, "min": 420}]}, DAY, NOW)
     assert rows.iloc[0]["min_ask"] == pytest.approx(0.42)
-
-
-def test_bitskins_normalises_millicent_price():
-    rows = parse_bitskins({"list": [{"name": "Kilowatt Case", "quantity": 55, "price_min": 420}]}, DAY, NOW)
-    assert rows.iloc[0]["min_ask"] == pytest.approx(0.42)
-    assert rows.iloc[0]["listing_count"] == 55
 
 
 def test_unparseable_count_is_dropped_not_zero_filled():
@@ -240,7 +233,7 @@ def test_collect_raises_when_every_feed_fails(tmp_path, monkeypatch):
         lambda day, now, session=None: sd.FeedResult("lis_skins", error="boom"),
     )
 
-    with pytest.raises(SupplyFeedError, match="all 5 supply feeds failed"):
+    with pytest.raises(SupplyFeedError, match="all 4 supply feeds failed"):
         collect(tmp_path, snapshot_day=DAY)
 
 
@@ -249,8 +242,8 @@ def test_collect_survives_one_dead_feed_but_reports_it(tmp_path, monkeypatch):
     import collectors.supply_depth as sd
 
     def fake_fetch(feed, day, now, session=None):
-        if feed.source == "bitskins":
-            return sd.FeedResult("bitskins", error="HTTP 503")
+        if feed.source == "waxpeer":
+            return sd.FeedResult("waxpeer", error="HTTP 503")
         return sd.FeedResult(
             feed.source,
             rows=parse_skinport([{"market_hash_name": "Item", "quantity": 3}], day, now).assign(source=feed.source),
@@ -267,8 +260,8 @@ def test_collect_survives_one_dead_feed_but_reports_it(tmp_path, monkeypatch):
     summary = collect(tmp_path, snapshot_day=DAY)
     assert summary["status"] == "success"
     assert summary["supply_rows"] > 0
-    assert "bitskins" in summary["feeds_failed"]
-    assert "bitskins" not in summary["feeds_ok"]
+    assert "waxpeer" in summary["feeds_failed"]
+    assert "waxpeer" not in summary["feeds_ok"]
 
 
 def test_snapshot_day_matches_the_aggregator_not_the_wall_clock(tmp_path, monkeypatch):
@@ -322,7 +315,7 @@ def test_collect_reports_row_count_field_for_the_guard(tmp_path, monkeypatch):
         lambda day, now, session=None: sd.FeedResult("lis_skins", error="skipped"),
     )
     summary = collect(tmp_path, snapshot_day=DAY)
-    assert summary["supply_rows"] == 4
+    assert summary["supply_rows"] == len(sd.SCALAR_FEEDS)
 
 
 # ── Ladder aggregation throughput ─────────────────────────────────────────────
