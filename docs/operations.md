@@ -199,11 +199,12 @@ even when Supabase is current.
   and are meaningless now. ⚠️ Those two figures also predate `EXCEEDANCE_HEAD=1`
   (`price-forecast.yml:218`, ~4 extra boosters / ~65s per the workflow comment) and
   `FEATURE_NATIVE_NAN=1` (`:228`), both now set on the nightly retrain.
-- **Monday `mode=full` does NOT guarantee a retrain.** `full` trains only if the model is
-  ≥14 days old (`RETRAIN_INTERVAL_DAYS`, `forecast_prices.py:476`; the age gate itself is
-  `forecast_prices.py:496-505`, reading `_model_age_days` at `:249`) or `FORCE_RETRAIN=1`.
-  A fresh model plus `mode=full` predicts and exits. Drift is report-only unless
-  `ALLOW_DRIFT_RETRAIN=1`.
+- **In CI, Monday `mode=full` always retrains.** `price-forecast.yml:205` sets
+  `FORCE_RETRAIN=1` whenever the mode is `full`, which bypasses the age gate (confirmed by
+  the 2026-09-28 dispatch, run 36473131841). Without `FORCE_RETRAIN` (e.g. a local run),
+  `full` trains only if the model is ≥14 days old (`RETRAIN_INTERVAL_DAYS`,
+  `forecast_prices.py:545`; gate `:561-574`, `_model_age_days` at `:256`); a fresh model
+  then predicts and exits. Drift is report-only unless `ALLOW_DRIFT_RETRAIN=1`.
 - `SKIP_CV=1` is deliberately not set in CI (`price-forecast.yml:155`) — it biases the
   conformal `q_hat` low and the served band under-covers. Never add it to buy CI minutes.
 - Backtest chains off forecast automatically, ~1-2 min
