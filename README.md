@@ -12,7 +12,6 @@
   <a href="docs/PORTFOLIO.md">Write-up</a> ·
   <a href="#quickstart">Quickstart</a> ·
   <a href="#how-it-works">How it works</a> ·
-  <a href="#limitations">Limitations</a> ·
   <a href="#documentation">Docs</a>
 </p>
 
@@ -149,15 +148,6 @@ the archive covers the target date.
 
 Live figures are served at `GET /accuracy/summary`. No headline accuracy is quoted here
 until the served series has the ≥20 distinct forecast dates the test needs.
-
-## Limitations
-
-- **The band over-covers.** Served coverage runs above the 80% target. Served-outcome feedback corrects this one horizon at a time as data matures.
-- **No directional or trading edge.** Once the market factor is removed, no per-item directional signal remains. A paper-trading audit selects zero trades after costs.
-- **The centre adds no skill.** It doesn't beat last price, so the band is the product.
-- **Small training universe.** A $1 price floor and a 1.2M-row budget limit training to about 900 of ~5,500 items.
-- **Walk-forward ≠ production.** The walk-forward loader skips multi-source voting, so it only works as a relative gate.
-- **Single-seed models.** A 3-seed ensemble gained less than the accuracy gate can resolve.
 
 ## Documentation
 
