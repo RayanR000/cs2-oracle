@@ -203,7 +203,7 @@ even when Supabase is current.
   `FORCE_RETRAIN=1` whenever the mode is `full`, which bypasses the age gate (confirmed by
   the 2026-09-28 dispatch, run 36473131841). Without `FORCE_RETRAIN` (e.g. a local run),
   `full` trains only if the model is ≥14 days old (`RETRAIN_INTERVAL_DAYS`,
-  `forecast_prices.py:476`; age gate `:496-505`, `_model_age_days` at `:249`); a fresh model
+  `forecast_prices.py:545`; gate `:561-574`, `_model_age_days` at `:256`); a fresh model
   then predicts and exits. Drift is report-only unless `ALLOW_DRIFT_RETRAIN=1`.
 - `SKIP_CV=1` is deliberately not set in CI (`price-forecast.yml:155`) — it biases the
   conformal `q_hat` low and the served band under-covers. Never add it to buy CI minutes.
