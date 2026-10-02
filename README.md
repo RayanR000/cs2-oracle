@@ -149,10 +149,26 @@ the archive covers the target date.
 Live figures are served at `GET /accuracy/summary`. No headline accuracy is quoted here
 until the served series has the ≥20 distinct forecast dates the test needs.
 
+## Workflows
+
+| Workflow | Status | Role |
+|----------|--------|------|
+| Aggregator Market Update | active | Daily price collection (23:00 UTC) |
+| Price Forecast | active | Train and forecast, chained from the Aggregator |
+| Backtest Accuracy | active | Resolves matured forecasts, chained from the forecast |
+| Forecast Freshness Check | active | Alerts when no forecast landed |
+| Schema Drift Check | active | Pre-merge gate: ORM models vs. Alembic migrations |
+| Lint & Smoke Test | active | `ruff`, `mypy`, fast tests |
+| Archive Restore Day | active | Manual one-off repair of a deleted archive day |
+| Discover New Items, Event Correlation, Model Diagnostics, A/B harness | disabled | Kept for manual runs |
+
+Enable state lives in GitHub, not git. Check it with `gh workflow list`. The runbook is
+[`docs/operations.md`](docs/operations.md).
+
 ## Documentation
 
 - [`docs/PORTFOLIO.md`](docs/PORTFOLIO.md): project write-up
-- [`docs/`](docs/README.md): architecture notes and index
-- [`docs/changelog/`](docs/changelog/): 200+ dated decision records with measured effects
+- [`docs/`](docs/README.md): index, architecture notes and runbook
+- [`docs/changelog/`](docs/changelog/): 220+ dated decision records with measured effects
 - [`docs/research/`](docs/research/): preregistrations and research notes
 - [`docs/experiment_log.csv`](docs/experiment_log.csv): every shipped, refuted and void experiment, negative results included
