@@ -1,7 +1,19 @@
+<p align="center">
+  <img src="docs/assets/cs2-oracle-logo-mark.png" width="140" alt="CS2 Oracle logo">
+</p>
+
 <h1 align="center">CS2 Oracle</h1>
 
 <p align="center">
   Calibrated price-range forecasts for the Counter-Strike 2 skin market.
+</p>
+
+<p align="center">
+  <a href="docs/PORTFOLIO.md">Write-up</a> ·
+  <a href="#quickstart">Quickstart</a> ·
+  <a href="#how-it-works">How it works</a> ·
+  <a href="#limitations">Limitations</a> ·
+  <a href="#documentation">Docs</a>
 </p>
 
 <p align="center">
@@ -69,16 +81,19 @@ uv run python scripts/run_task.py migrate
 uv run uvicorn main:app --port 8000 --reload
 ```
 
-> [!NOTE]
-> On an **empty** database, create the Alembic version table first. Some revision IDs are
-> longer than Alembic's default 32 characters:
->
-> ```sql
-> CREATE TABLE alembic_version (
->   version_num VARCHAR(255) NOT NULL,
->   CONSTRAINT alembic_version_pkc PRIMARY KEY (version_num)
-> );
-> ```
+<details>
+<summary><b>Empty database?</b> Create the Alembic version table first</summary>
+
+Some revision IDs are longer than Alembic's default 32 characters:
+
+```sql
+CREATE TABLE alembic_version (
+  version_num VARCHAR(255) NOT NULL,
+  CONSTRAINT alembic_version_pkc PRIMARY KEY (version_num)
+);
+```
+
+</details>
 
 ### API
 
