@@ -43,6 +43,9 @@ probabilistic = [
 torch = [
     "torch>=2.0.0",
 ]
+baseline = [
+    "statsforecast>=2.0",
+]
 dev = [
     "pytest>=7.0",
     "ruff>=0.11.0",
