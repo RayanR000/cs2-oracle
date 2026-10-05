@@ -60,11 +60,15 @@ State on 2026-09-28, still true unless an item below says otherwise:
    `scripts/measure_conformal_pid.py` hard-codes no exclusion, so this is consistent with the
    frozen prereg, which governs and is not edited. The window is still 09-07..10-18.
    `changelog/2026-09-23-feedback-factor-refit-composes.md`.
-3. **Confirm the first scheduled runs on the chunked vote.** The predict-only half is **CONFIRMED
-   (verified 09-30):** run `36657821345` (2026-09-30 02:00Z) logged `Applying multi-source voting
-   in DuckDB (20 sources, 8 item chunks)` and `Wrote 22144 forecasts`. **Still open:** the Mon
-   10-05 `mode=full` retrain. Check the output, not the badge: `forecast_date` advances, and the
-   voting line prints `8 item chunks`.
+3. ~~**Confirm the first scheduled runs on the chunked vote.**~~ **DONE 2026-10-05 (verified
+   10-05).** The predict-only half was confirmed 09-30: run `36657821345` logged `Applying
+   multi-source voting in DuckDB (20 sources, 8 item chunks)` and `Wrote 22144 forecasts`. The
+   Mon 10-05 `mode=full` retrain, Price Forecast run `37252926432` (`FORCE_RETRAIN: 1`), logged
+   the same voting line on both the train and the predict pass, `TRAINING COMPLETE in 1320s
+   (22.0min)` and `Wrote 22499 forecasts`. The extra rows are young releases: `355 items served at
+   h=[3] only (0 had no h=3 forecast)`. Both stores carry forecast date 2026-10-04. The same run
+   is the first retrain on the composition-break calendar: the break list includes 2026-01-01
+   and 2026-04-16, and every horizon voided across `7 break days`.
 
 ## 2. Scheduled reads — do not run early
 
@@ -90,15 +94,19 @@ State on 2026-09-28, still true unless an item below says otherwise:
    `changelog/2026-09-18-lambdarank-transfer-screen-closed.md`.
 7. **Post-CSMarketAPI served confirmation at h=14 and h=30**, early to mid October. The ~40%
    narrowing is attributed to the combined PR `ad2d43e`, not to CSMarketAPI alone.
-   `changelog/2026-09-22-post-csmarketapi-served-performance.md`.
+   ⚠️ The h=14 band width changed twice, so **split the h=14 read at forecast dates 2026-09-30 and
+   2026-10-05** (item 8). `changelog/2026-09-22-post-csmarketapi-served-performance.md`.
 8. ~~**h=14 feedback factor.**~~ **WOKE 2026-09-30 (verified 09-30).** Price Forecast run
    `36657821345` logged `14d served-coverage factor 0.7059 on 7,169 served rows over 8 dates
    (>= 8)` and `Served-coverage factors (live panel read for [14, 30]): {14: 0.7059}`. The first
    forecast date served with it is **2026-09-30**. It woke on the first **predict** run after the
    gate crossed (#72), not at a retrain. **Still pending:** h=30 reaches 8 dates around
    mid-October and wakes the same way. Confirm it in the same log line.
-   ⚠️ Item 7's h=14 coverage read spans a band-width change, so **split it at forecast date
-   2026-09-30**. `changelog/2026-09-13-served-feedback-wake-dated.md`,
+   **Refit at the 10-05 retrain (verified 10-05):** run `37252926432` logged `{3: 0.5385, 7:
+   0.5812, 14: 0.6757}`. h=3 is unchanged; h=7 moved 0.6111 → 0.5812 (19 dates) and h=14 moved
+   0.7059 → 0.6757 (12 dates). Bands at h=7 and h=14 narrow again from forecast date 2026-10-05.
+   ⚠️ Item 7's h=14 coverage read now spans two band-width changes, so **split it at forecast
+   dates 2026-09-30 and 2026-10-05**. `changelog/2026-09-13-served-feedback-wake-dated.md`,
    `changelog/2026-09-28-served-feedback-live-refresh-per-horizon.md`.
 9. **Exceedance served-reliability re-check at maturity (`--served-only`).** Watch the h=14 bulk
    bin: 0.032 predicted vs 0.007 realised. If it persists past 20 dates, the fix is "a served
@@ -265,10 +273,10 @@ The full lists live in the cited docs; this is the index.
 | 09-30 (done) | h=14 feedback factor live, 0.7059 (item 8); chunked vote confirmed predict-only (item 3); new releases served at h=3 (item 23) |
 | 09-29 | h=3 at 20 post-floor dates |
 | 10-03 | h=7 at 20 post-floor dates |
-| Mon 10-05 | weekly `mode=full` retrain (then 10-12, 10-19, …); first check of the chunked vote on a retrain (item 3); first retrain with the composition-break calendar and item 16 removed (check the `(composition: …)` list includes 04-16) |
+| Mon 10-05 (done) | weekly `mode=full` retrain verified (item 3): chunked vote, composition-break calendar incl. 04-16, item 16 removed; factors refit to h=7 0.5812, h=14 0.6757 (item 8). Band-era break: split h=14 reads (item 7) and the h=7 outside-baseline re-read (item 22) at forecast date 10-05. Next retrains 10-12, 10-19, … |
 | ~10-10 | h=14 at 20 post-floor dates |
 | ~10-12 | end of the 09-14 workplan's wait window |
-| early–mid Oct | h=14/h=30 post-CSMarketAPI confirmation (item 7); h=14 read split at 09-30 |
+| early–mid Oct | h=14/h=30 post-CSMarketAPI confirmation (item 7); h=14 read split at 09-30 and 10-05 |
 | mid-Oct | h=30 reaches 8 served dates; its feedback factor wakes (item 8) |
 | mid-Oct at earliest | 20 shared champion–challenger dates (items 5–6) |
 | 10-18 | last forecast date in the PID window |
