@@ -231,9 +231,15 @@ State on 2026-09-28, still true unless an item below says otherwise:
 
 - ~~**Composition-break calendar (deep review §12.8).**~~ **DONE 2026-09-30, ships with the 10-05
   retrain.** Labels now void across source-composition breaks too, which adds 2026-01-01 and
-  2026-04-16 to the voided days. Break-aware lookbacks (`BREAK_AWARE_LOOKBACKS`) are built but
-  off, pending the paired A/B in the spec's Part B gate. Per-item source churn is still open.
+  2026-04-16 to the voided days. Per-item source churn is still open.
   `changelog/2026-09-30-composition-break-calendar.md`.
+- ~~**Break-aware lookbacks (`BREAK_AWARE_LOOKBACKS`), Part B gate.**~~ **MEASURED 2026-10-05:
+  inconclusive, flag stays off.** Matched width moved −0.28/−0.70/−0.88/−4.43% at h=3/7/14/30,
+  and interval score +0.33/+0.61/+0.18/−0.98%. Every CI spans zero, so the gate (SUPPORTED at
+  h=14 and h=30) fails. The achieved half-widths (4.3% at h=14, 11% at h=30) are above the ~2%
+  bar, so this is not a refutation. Re-read only with more folds past 07-12 from a fresh
+  data-repo archive. The masks lift around 2027-01 anyway.
+  `changelog/2026-10-05-break-aware-lookbacks-ab-inconclusive.md`.
 - A cross-venue FX ratio monitor (§12.11, about 2h).
 - R14 mechanical supply-position features and the hedonic market index. Both carry over from
   08-16, untouched.
@@ -287,7 +293,7 @@ The full lists live in the cited docs; this is the index.
 | 09-30 (done) | h=14 feedback factor live, 0.7059 (item 8); chunked vote confirmed predict-only (item 3); new releases served at h=3 (item 23) |
 | 09-29 | h=3 at 20 post-floor dates |
 | 10-03 | h=7 at 20 post-floor dates |
-| Mon 10-05 (done) | weekly `mode=full` retrain verified (item 3): chunked vote, composition-break calendar incl. 04-16, item 16 removed; factors refit to h=7 0.5812, h=14 0.6757 (item 8). Band-era break: split h=14 reads (item 7) and the h=7 outside-baseline re-read (item 22) at forecast date 10-05. Next retrains 10-12, 10-19, … |
+| Mon 10-05 (done) | weekly `mode=full` retrain verified (item 3): chunked vote, composition-break calendar incl. 04-16, item 16 removed; factors refit to h=7 0.5812, h=14 0.6757 (item 8). Band-era break: split h=14 reads (item 7) and the h=7 outside-baseline re-read (item 22) at forecast date 10-05. Break-aware lookbacks Part B gate: inconclusive, flag stays off (§6). Next retrains 10-12, 10-19, … |
 | ~10-10 | h=14 at 20 post-floor dates |
 | ~10-12 | end of the 09-14 workplan's wait window |
 | early–mid Oct | h=14/h=30 post-CSMarketAPI confirmation (item 7); h=14 read split at 09-30 and 10-05 |
