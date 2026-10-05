@@ -240,7 +240,13 @@ State on 2026-09-28, still true unless an item below says otherwise:
   bar, so this is not a refutation. Re-read only with more folds past 07-12 from a fresh
   data-repo archive. The masks lift around 2027-01 anyway.
   `changelog/2026-10-05-break-aware-lookbacks-ab-inconclusive.md`.
-- A cross-venue FX ratio monitor (§12.11, about 2h).
+- ~~**A cross-venue FX ratio monitor (§12.11).**~~ **DONE 2026-10-05, warn-only.** The
+  Aggregator's "FX ratio monitor" step compares median buff163/csfloat and youpin/csfloat with
+  their trailing 14-day medians and warns past 3% (`fx_signature` when both CNY venues move and
+  the USD controls don't). It never fails the run. Replayed from 03-22 it raised zero alarms;
+  the largest CNY move, +2.9% on 07-11, is the composition break.
+  **First CI run to check:** the step prints `"status": "ok"` with `baseline_days` ≥ 13.
+  `changelog/2026-10-05-fx-ratio-monitor.md`.
 - R14 mechanical supply-position features and the hedonic market index. Both carry over from
   08-16, untouched.
 - Re-score boost rounds and the Optuna objective on width at matched coverage (§12.15, to be

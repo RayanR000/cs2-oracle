@@ -231,6 +231,15 @@ jobs:
           --archive-dir ../archive/price-archive
           --run-date "$SNAPSHOT_DATE"
 
+      # BUFF163 and youpin are CNY venues converted upstream at an unrecorded rate. A
+      # `::warning::` here means one of them moved >3% against csfloat versus its trailing
+      # 14-day median ("fx_signature" when both moved together and the USD venues did not).
+      # Warn-only, and `continue-on-error`, for the same chaining reason as above.
+      - name: FX ratio monitor
+        continue-on-error: true
+        working-directory: ./backend
+        run: python scripts/check_fx_ratios.py --archive-dir ../archive/price-archive
+
       # The parquet files ARE the data (each holds full history), so git history
       # of them has no value and only bloats the repo. Republish the archive as a
       # single squashed commit each run via an orphan branch + force-push.
