@@ -12,6 +12,11 @@ the day. The rest restate what the cited doc says. Where the docs conflict, the 
 **Standing constraint:** this is a range forecaster (`AGENTS.md`). Nothing below proposes a
 directional product claim, a fourth band-width denominator, or a serving ranker. See §7.
 
+## State on 2026-10-04
+
+- **musickit watch closed (item 10).** Its h=3 under-coverage is the known width tilt, not a
+  family effect. `changelog/2026-10-04-musickit-h3-is-the-width-tilt.md`.
+
 ## State on 2026-10-02
 
 - **Bitskins supply feed dropped (verified 10-02).** Its public export has been empty upstream
@@ -112,8 +117,11 @@ State on 2026-09-28, still true unless an item below says otherwise:
    bin: 0.032 predicted vs 0.007 realised. If it persists past 20 dates, the fix is "a served
    refit, not a fancier map". The maturity date is not stated.
    `changelog/2026-09-13-exceedance-calibration-measured.md`.
-10. **Conditions to watch, not actions:** `musickit` h=3 under-coverage (84.7%) gets a re-read at
-    20 dates (`changelog/2026-09-09-conditional-coverage-by-stratum.md`). `DIRECTION_DISCLOSED`
+10. **Conditions to watch, not actions:** ~~`musickit` h=3 under-coverage (84.7%) gets a re-read at
+    20 dates.~~ **CLOSED 2026-10-04: it is the width tilt.** At 38 dates musickit reads 83.3%, but
+    52% of its rows sit in the narrow-band tertile. Width-matched, it is within the CIs of the
+    other families in the narrow and mid tertiles. No family arm.
+    `changelog/2026-10-04-musickit-h3-is-the-width-tilt.md`. `DIRECTION_DISCLOSED`
     reopens only on a positive PT at 20 or more dates
     (`changelog/2026-09-10-served-direction-withheld.md`).
 
