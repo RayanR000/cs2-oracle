@@ -37,17 +37,19 @@ SCRIPTS = Path(__file__).resolve().parents[1] / "scripts" / "archive"
 
 #: Every harness, and whether it reads the price archive at all.
 #:
-#: Two modules issue no archive query and so have nothing to filter:
-#: `recency_weights` takes a pre-built frame on `--frame`, and `frozen_runs`
+#: Three modules issue no archive query and so have nothing to filter:
+#: `recency_weights` takes a pre-built frame on `--frame`, `frozen_runs`
 #: delegates every read to `walkforward_backtest.run_walkforward`, which
-#: already routes through `archive_universe_sql_filter`.
+#: already routes through `archive_universe_sql_filter`, and
+#: `break_aware_lookbacks` builds its frame through production's
+#: `build_training_data`, whose `fetch_price_history` applies the same filter.
 #:
 #: Adding a name here is a claim that the module contains no archive read.
 #: `test_the_exempt_harnesses_really_do_not_read_the_archive` enforces it, so
 #: an exemption cannot be used to smuggle an unfiltered glob past the checks
 #: below.
 HARNESSES = sorted(p.stem for p in SCRIPTS.glob("ab_test_*.py"))
-NO_ARCHIVE_READ = {"ab_test_recency_weights", "ab_test_frozen_runs"}
+NO_ARCHIVE_READ = {"ab_test_break_aware_lookbacks", "ab_test_recency_weights", "ab_test_frozen_runs"}
 READS_ARCHIVE = [n for n in HARNESSES if n not in NO_ARCHIVE_READ]
 
 
