@@ -58,6 +58,32 @@ is "80% of outcomes land in this band," and the backtest checks that claim every
 | **Anomaly head** (`anomaly_p`) | The **only gradient-boosted model in the project that beat a featureless baseline**: held-out AUC **+0.13 to +0.16** over the null at every horizon, all intervals clear of zero. Served at 3/7/14d only, because the 30d head ranks well but isn't calibrated. |
 | **Served-outcome feedback** | Re-runs conformal calibration on the forecasts the system actually served, gated on ≥20 resolved dates per horizon. It activated at 3d on 2026-09-21. |
 
+## Against an off-the-shelf baseline
+
+The obvious reviewer question is whether all this beats what you'd build in an afternoon.
+`scripts/outside_baseline.py` scores the served band, on the same served rows and against the
+same resolved prices, against two outside 80% intervals fitted only on past prices:
+
+- **naive**: a random walk with the item's own trailing 10th–90th percentile returns
+- **AutoETS** from statsforecast, with conformal intervals
+
+The yardstick is the interval score (Gneiting & Raftery), which prices width and misses
+together.
+
+| Forecast dates | h=3 | h=7 | h=14 | h=30 |
+|---|---|---|---|---|
+| Up to 09-14 (old band) | loses to naive | loses | loses | loses |
+| Since 09-21 (current band) | **ties**: narrowly beats naive, level with AutoETS | loses (6 dates) | no data yet | no data yet |
+
+**The old band lost to both baselines at every horizon.** It was wider on average and
+missed on the downside twice as often. The current h=3 band, after the September retrain
+and served-outcome feedback, has caught up. That is 10 dates, so it's directional until 20.
+The finding is consistent with the climatology result above: a featureless per-item
+quantile is a strong band, and the gains came from removing what the model added on top of
+it. It's reported because it's the honest comparison, and it has a scheduled re-read. A
+loss at 20 dates would make a naive-quantile band the next preregistered arm.
+`changelog/2026-10-04-outside-baseline-statsforecast.md`.
+
 ## How experiments are run
 
 Of the 63 experiments in [`experiment_log.csv`](experiment_log.csv), **33 were refuted,

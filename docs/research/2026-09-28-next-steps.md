@@ -202,8 +202,14 @@ State on 2026-09-28, still true unless an item below says otherwise:
     syncs `--frozen`. Runtime changes: requests 2.34.2, and protobuf drops 7.36.1 → 6.33.6
     through the universal resolution (an mlflow/evidently cap). Only `onnxruntime` pulls
     protobuf at runtime, and nothing in `backend/` imports it. The MAPIE oracle and
-    interval-score tests now run in the gate. Still unstarted: a statsforecast outside baseline
-    for `PORTFOLIO.md` (`references/open-source-shortlist.md`).
+    interval-score tests now run in the gate. ~~Still unstarted: a statsforecast outside baseline
+    for `PORTFOLIO.md`.~~ **MEASURED 2026-10-04.** `scripts/outside_baseline.py` scores the
+    served band against a naive empirical-quantile band and AutoETS + conformal. Pooled over
+    every date, both baselines beat it at all four horizons, but that pools band eras. Since
+    09-21, h=3 ties: narrowly better than naive and level with ETS (10 dates). h=7 still loses
+    (6 dates, mostly from before its feedback factor). **Re-read with `--since 2026-09-28` at
+    20 dates per horizon. If h=7 still loses, preregister a naive-quantile band arm.**
+    `changelog/2026-10-04-outside-baseline-statsforecast.md`.
 
 ## 6. Unstarted and unranked — open ideas, not commitments
 
@@ -273,6 +279,7 @@ The full lists live in the cited docs; this is the index.
 | mid-Oct at earliest | 20 shared champion–challenger dates (items 5–6) |
 | 10-18 | last forecast date in the PID window |
 | ~10-23 | the single PID read (item 4) |
+| ~10-23 / late Oct | outside-baseline re-read, `--since 2026-09-28`, h=3 then h=7 at 20 dates (item 22) |
 | ~11-15 | young-release h=7/h=14 re-read at ~120 days (item 23) |
 | November | h=30 at 20 post-floor dates |
 
