@@ -3,6 +3,7 @@ name = "cs2-oracle"
 version = "0.1.0"
 description = "Calibrated price-range forecasts for the Counter-Strike 2 skin market"
 requires-python = ">=3.11"
+license = "MIT"
 dependencies = [
     "sqlalchemy>=2.0.30",
     "alembic==1.13.1",

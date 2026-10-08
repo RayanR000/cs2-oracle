@@ -19,6 +19,7 @@
   <a href="https://github.com/RayanR000/cs2-oracle/actions/workflows/price-forecast.yml"><img src="https://img.shields.io/github/actions/workflow/status/RayanR000/cs2-oracle/price-forecast.yml?label=forecast&style=flat-square&logo=github" alt="Forecast"></a>
   <a href="https://github.com/RayanR000/cs2-oracle/actions/workflows/backtest-accuracy.yml"><img src="https://img.shields.io/github/actions/workflow/status/RayanR000/cs2-oracle/backtest-accuracy.yml?label=backtest&style=flat-square&logo=github" alt="Backtest"></a>
   <img src="https://img.shields.io/badge/python-3.11+-3776AB?logo=python&logoColor=white&style=flat-square" alt="Python 3.11+">
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue?style=flat-square" alt="MIT license"></a>
 </p>
 
 CS2 skins trade across a dozen marketplaces with no consolidated price feed. CS2 Oracle
@@ -28,9 +29,6 @@ calibrated price range at 3, 7, 14 and 30 days.
 It runs unattended on GitHub Actions. Most of the engineering went into the evaluation
 harness, because on this problem an impressive-looking number is easy to produce and
 usually wrong.
-
-**→ [Project write-up](docs/PORTFOLIO.md)**: what was built, what was found, and the
-refuted experiments behind it.
 
 **Stack:** Python · LightGBM · split-conformal prediction · DuckDB over Parquet ·
 PostgreSQL (Supabase) · FastAPI · GitHub Actions
@@ -151,16 +149,16 @@ until the served series has the ≥20 distinct forecast dates the test needs.
 
 ## Workflows
 
-| Workflow | Status | Role |
-|----------|--------|------|
-| Aggregator Market Update | active | Daily price collection (23:00 UTC) |
-| Price Forecast | active | Train and forecast, chained from the Aggregator |
-| Backtest Accuracy | active | Resolves matured forecasts, chained from the forecast |
-| Forecast Freshness Check | active | Alerts when no forecast landed |
-| Schema Drift Check | active | Pre-merge gate: ORM models vs. Alembic migrations |
-| Lint & Smoke Test | active | `ruff`, `mypy`, fast tests |
-| Archive Restore Day | active | Manual one-off repair of a deleted archive day |
-| Discover New Items, Event Correlation, Model Diagnostics, A/B harness | disabled | Kept for manual runs |
+| Workflow | Role |
+|----------|------|
+| Aggregator Market Update | Daily price collection (23:00 UTC) |
+| Price Forecast | Train and forecast, chained from the Aggregator |
+| Backtest Accuracy | Resolves matured forecasts, chained from the forecast |
+| Forecast Freshness Check | Alerts when no forecast landed |
+| Schema Drift Check | Pre-merge gate: ORM models vs. Alembic migrations |
+| Lint & Smoke Test | `ruff`, `mypy`, fast tests |
+| Archive Restore Day | Manual one-off repair of a deleted archive day |
+| Discover New Items, Event Correlation, Model Diagnostics, A/B harness | Auxiliary; run on demand |
 
 Enable state lives in GitHub, not git. Check it with `gh workflow list`. The runbook is
 [`docs/operations.md`](docs/operations.md).
@@ -172,3 +170,7 @@ Enable state lives in GitHub, not git. Check it with `gh workflow list`. The run
 - [`docs/changelog/`](docs/changelog/): 220+ dated decision records with measured effects
 - [`docs/research/`](docs/research/): preregistrations and research notes
 - [`docs/experiment_log.csv`](docs/experiment_log.csv): every shipped, refuted and void experiment, negative results included
+
+## License
+
+[MIT](LICENSE)
