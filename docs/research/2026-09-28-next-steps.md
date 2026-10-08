@@ -122,8 +122,16 @@ State on 2026-09-28, still true unless an item below says otherwise:
     52% of its rows sit in the narrow-band tertile. Width-matched, it is within the CIs of the
     other families in the narrow and mid tertiles. No family arm.
     `changelog/2026-10-04-musickit-h3-is-the-width-tilt.md`. `DIRECTION_DISCLOSED`
-    reopens only on a positive PT at 20 or more dates
-    (`changelog/2026-09-10-served-direction-withheld.md`).
+    reopens only under the 10-08 preregistration (item 24), which replaced the 09-10 rule
+    ("positive PT at 20 or more dates").
+24. **Direction reopening gate, h=3 and h=7 (preregistered 2026-10-08).** Window: the first 20
+    usable forecast dates ≥ 2026-10-05 per horizon, read once. Bar: PT t ≥ 3.0, DA ≥
+    `realised_down_rate`, and a drop-one-date guard. The instrument
+    `scripts/measure_direction_reopen.py` is **not yet written**; write and unit-test it before
+    the first read. Expected reads ~10-29 (h=3) and ~11-02 (h=7). Power at the observed effect is
+    ~60%, so a miss is probably "unresolved". h=14 and h=30 are reported only.
+    `research/2026-10-08-direction-reopening-preregistration.md`,
+    `changelog/2026-10-08-direction-reopening-bar-tightened.md`.
 
 ## 3. Accumulating — built, gated off, waiting on data
 
@@ -308,6 +316,8 @@ The full lists live in the cited docs; this is the index.
 | 10-18 | last forecast date in the PID window |
 | ~10-23 | the single PID read (item 4) |
 | ~10-23 / late Oct | outside-baseline re-read, `--since 2026-09-28`, h=3 then h=7 at 20 dates (item 22) |
+| ~10-29 | direction reopening gate, h=3, 20 dates ≥ 10-05 (item 24) |
+| ~11-02 | direction reopening gate, h=7 (item 24) |
 | ~11-15 | young-release h=7/h=14 re-read at ~120 days (item 23) |
 | November | h=30 at 20 post-floor dates |
 
