@@ -1,7 +1,7 @@
 [project]
 name = "cs2-oracle"
 version = "0.1.0"
-description = "CS2 Market Intelligence — price forecasting and band calibration"
+description = "Calibrated price-range forecasts for the Counter-Strike 2 skin market"
 requires-python = ">=3.11"
 dependencies = [
     "sqlalchemy>=2.0.30",
