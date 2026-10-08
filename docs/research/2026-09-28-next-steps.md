@@ -113,9 +113,16 @@ State on 2026-09-28, still true unless an item below says otherwise:
    ⚠️ Item 7's h=14 coverage read now spans two band-width changes, so **split it at forecast
    dates 2026-09-30 and 2026-10-05**. `changelog/2026-09-13-served-feedback-wake-dated.md`,
    `changelog/2026-09-28-served-feedback-live-refresh-per-horizon.md`.
-9. **Exceedance served-reliability re-check at maturity (`--served-only`).** Watch the h=14 bulk
-   bin: 0.032 predicted vs 0.007 realised. If it persists past 20 dates, the fix is "a served
-   refit, not a fancier map". The maturity date is not stated.
+9. ~~**Exceedance served-reliability re-check at maturity (`--served-only`).**~~ **READ 2026-10-08:
+   matured, and the overstatement persists.** h=3/7/14 sit at 30/28/22 dates. The h=14 bulk bin
+   reads 0.024 predicted vs 0.004 realised (was 0.032 vs 0.007). **But a served level refit is not
+   recommended.** The realised base rate swings more than 30× between eras (h=3: 1.0%,
+   0.03%, 0.32%) while mean `exceed_p` moves under 2×, so a scalar fitted on the calm window would
+   under-state in a volatile one. h=7 is overstated 3–8× in every era. **Open decision (product):**
+   `move_odds` is published at h=3 and h=7 on an absolute ECE bar (~1.3pp) that a 0.2% base rate
+   passes while the bulk bin is several times too high. Narrowing `CALIBRATED_MOVE_ODDS_HORIZONS`
+   to h=3, or adding a relative-error test, is the lever; nothing was changed.
+   `changelog/2026-10-08-exceedance-served-reliability-matured.md`,
    `changelog/2026-09-13-exceedance-calibration-measured.md`.
 10. **Conditions to watch, not actions:** ~~`musickit` h=3 under-coverage (84.7%) gets a re-read at
     20 dates.~~ **CLOSED 2026-10-04: it is the width tilt.** At 38 dates musickit reads 83.3%, but
