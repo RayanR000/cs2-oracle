@@ -57,6 +57,8 @@ from typing import Any
 import pandas as pd
 import requests
 
+from collectors.http import retrying_session
+
 logger = logging.getLogger(__name__)
 
 SKINPORT_SALES_URL = "https://api.skinport.com/v1/sales/history"
@@ -232,7 +234,7 @@ def fetch_sales_history(
 ) -> SalesVolumeResult:
     """Pull the whole-catalogue sales history in one call."""
     _probe_brotli()
-    sess = session or requests.Session()
+    sess = session or retrying_session()
     started = time.monotonic()
     try:
         resp = sess.get(
