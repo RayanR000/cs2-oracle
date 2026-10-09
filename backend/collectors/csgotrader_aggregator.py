@@ -9,7 +9,7 @@ import unicodedata
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import UTC, datetime
 
-import requests
+from collectors.http import retrying_session
 
 logger = logging.getLogger(__name__)
 
@@ -38,7 +38,7 @@ class CSGOTraderAggregator:
     EXCHANGE_RATES_URL = "https://prices.csgotrader.app/latest/exchange_rates.json"
 
     def __init__(self):
-        self.session = requests.Session()
+        self.session = retrying_session()
         self.session.headers.update({"User-Agent": "Mozilla/5.0 (compatible; CS2Analyzer/1.0)"})
         self._raw_sources: dict[str, dict[str, dict]] = {}
         self._price_cache: dict[str, float] = {}

@@ -85,6 +85,7 @@ import numpy as np
 import pandas as pd
 import requests
 
+from collectors.http import retrying_session
 from collectors.snapshot_date import resolve_snapshot_date
 
 logger = logging.getLogger(__name__)
@@ -176,7 +177,7 @@ def _probe_brotli() -> None:
 def _get_json(url: str, timeout: int, session: requests.Session | None = None) -> Any:
     """GET and decode JSON, raising on anything that is not a usable payload."""
     owns_session = session is None
-    sess = session or requests.Session()
+    sess = session or retrying_session()
     try:
         resp = sess.get(
             url,
@@ -636,7 +637,7 @@ def collect(
     from concurrent.futures import ThreadPoolExecutor
 
     def _fetch_with_own_session(feed: Feed) -> FeedResult:
-        with requests.Session() as s:
+        with retrying_session() as s:
             return fetch_feed(feed, snapshot_day, collected_at, s)
 
     if feeds:
@@ -645,7 +646,7 @@ def collect(
     else:
         results = []
     if include_ladder:
-        with requests.Session() as ladder_session:
+        with retrying_session() as ladder_session:
             results.append(fetch_lis_skins(snapshot_day, collected_at, ladder_session))
 
     good = [r for r in results if r.ok and r.row_count]
