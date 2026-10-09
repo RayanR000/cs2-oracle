@@ -14,6 +14,13 @@ directional product claim, a fourth band-width denominator, or a serving ranker.
 
 ## State on 2026-10-08
 
+- **h=7 naive-quantile band arm preregistered (item 22).** Written before the re-read, so the
+  re-read is the preregistered read: first 20 scoreable h=7 forecast dates from **09-27**, read
+  ~10-25. `research/2026-10-08-naive-quantile-band-h7-preregistration.md`.
+- **h=7's feedback factor first served at forecast date 09-27, not 09-28 (verified 10-08).**
+  Prod `item_forecasts.band_multiplier` at h=7 reads 1.0 through 09-26, then 0.6694 (blended),
+  and the 10-05 refit first lands at forecast date **10-04** (0.5827). The 10-04 outside-baseline
+  read's 6 h=7 dates were therefore all pre-factor, not "mostly".
 - **FX ratio monitor's first CI run is verified (verified 10-08).** Aggregator run `37718787002`
   (snapshot date 10-07) printed `"status": "ok"`, `baseline_days: 14`, `breached: []`. The largest
   move was youpin at +1.74%, under the 3% threshold. Item §6's "first CI run to check" is closed.
@@ -254,6 +261,11 @@ State on 2026-09-28, still true unless an item below says otherwise:
     (6 dates, mostly from before its feedback factor). **Re-read with `--since 2026-09-28` at
     20 dates per horizon. If h=7 still loses, preregister a naive-quantile band arm.**
     `changelog/2026-10-04-outside-baseline-statsforecast.md`.
+    **PREREGISTERED 2026-10-08,** ahead of the re-read, so the h=7 re-read *is* that arm's
+    read. The window starts at forecast date 09-27 (the first h=7 date with a recorded
+    multiplier below 1), not `--since 2026-09-28`. It is the first 20 scoreable dates, split at
+    10-04 as a guard, and reads ~10-25. A PASS writes a design spec; it never changes serving.
+    `research/2026-10-08-naive-quantile-band-h7-preregistration.md`.
 
 ## 6. Unstarted and unranked — open ideas, not commitments
 
@@ -336,7 +348,8 @@ The full lists live in the cited docs; this is the index.
 | mid-Oct at earliest | 20 shared champion–challenger dates (items 5–6) |
 | 10-18 | last forecast date in the PID window |
 | ~10-23 | the single PID read (item 4) |
-| ~10-23 / late Oct | outside-baseline re-read, `--since 2026-09-28`, h=3 then h=7 at 20 dates (item 22) |
+| ~10-23 | outside-baseline h=3 re-read, `--since 2026-09-28`, reported only (item 22) |
+| ~10-25 | **h=7 naive-quantile band prereg read**: first 20 dates from 09-27, deadline 11-30 (item 22) |
 | ~10-29 | direction reopening gate, h=3, 20 dates ≥ 10-05 (item 24) |
 | ~11-02 | direction reopening gate, h=7 (item 24) |
 | ~11-15 | young-release h=7/h=14 re-read at ~120 days (item 23) |
