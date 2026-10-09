@@ -82,15 +82,15 @@ Also, smaller:
 
 ### 5. Dead or redundant workflow work
 
-- ✔ "Run drift detection" (`price-forecast.yml:293`) needs `evidently`, which only the `mlops`
+- ✔ **Done 10-09.** "Run drift detection" (`price-forecast.yml:293`) needs `evidently`, which only the `mlops`
   extra installs; it ImportErrors daily behind `continue-on-error`. Its output has no consumer.
-- The voted-frame Actions cache (`price-forecast.yml:124`) can never hit: the in-code key holds
+- **Done 10-09 (removed).** The voted-frame Actions cache (`price-forecast.yml:124`) can never hit: the in-code key holds
   the cutoff date and the archive row counts, which change daily.
-- The backtest weekday cron re-freezes what the chained run already did (~25 runner-min/day).
+- **Done 10-09.** The backtest weekday cron re-freezes what the chained run already did (~25 runner-min/day).
   Replace it with an early exit, since it is also the fallback when Price Forecast fails.
-- The Aggregator could run supply and volume collection in parallel with aggregate/append
+- **Timeout done 10-09.** The Aggregator could run supply and volume collection in parallel with aggregate/append
   (est. 1–1.5 min), and needs `timeout-minutes` on the supply step.
-- The Aggregator installs ML/serving dependencies it never imports (scipy, onnxruntime,
+- **Unused imports dropped 10-09.** The Aggregator installs ML/serving dependencies it never imports (scipy, onnxruntime,
   transformers, lightgbm, optuna, fastapi). `transformers`, `onnxruntime`, `huggingface_hub`,
   `joblib`, `beautifulsoup4` and `apscheduler` are imported nowhere.
 
@@ -108,7 +108,7 @@ Also, smaller:
   `objective="quantile"` at every horizon (`forecaster.py:10558`), while `CENTRE_OBJECTIVE`
   trains the served 30d centre as regression. The 30d OOF residuals behind `q_hat` and the
   calibrators therefore come from an MAE model. **Needs a retrain plus a coverage check.**
-- `pg_trgm` is created by no migration, yet `api/routes/market.py:70` calls `similarity()`.
+- **Done 10-09 (installed by hand; migration 0029).** `pg_trgm` is created by no migration, yet `api/routes/market.py:70` calls `similarity()`.
   Either it was installed by hand (schema drift) or the `q` path errors in prod.
 - `_fetch_prior_forecasts` has no recency cap; a prior of any age is blended at weight 0.15.
 - `_engineer_features_chunked` never writes the engineered cache, so with more than 1,000

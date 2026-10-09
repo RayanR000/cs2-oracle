@@ -21,6 +21,11 @@ directional product claim, a fourth band-width denominator, or a serving ranker.
   wider than the iid ones. `research/2026-10-09-date-overlap-sensitivity.md`.
 - **30d CV objective fixed (#107), ships with the 10-12 retrain.** Split h=30 reads at forecast
   date 10-11. `changelog/2026-10-09-cv-trains-the-served-centre-objective.md`.
+- **pg_trgm gets a migration; dead workflow work removed (performance review §5).** Prod had
+  pg_trgm installed by hand; `0029` makes it reproducible. The daily drift step (ImportError),
+  the voted-frame cache (could never hit) and the backtest cron's duplicate run are gone, the
+  supply step has a timeout, and six unused dependencies are dropped.
+  `changelog/2026-10-09-pg-trgm-migration-and-workflow-cleanup.md`.
 
 ## State on 2026-10-08
 

@@ -13,8 +13,6 @@ dependencies = [
     "requests>=2.31,<3",
     "brotli>=1.1.0",
     "httpx==0.27.2",
-    "beautifulsoup4==4.12.2",
-    "apscheduler==3.10.4",
     "numpy>=1.24.3,<3",
     "pandas>=2.1.0,<3",
     "scipy>=1.11.3,<2",
@@ -26,10 +24,6 @@ dependencies = [
     "duckdb>=0.10.0",
     "optuna>=3.6.0",
     "optuna-integration[lightgbm]>=4.0.0",
-    "joblib>=1.3.0",
-    "huggingface_hub>=0.24.0",
-    "onnxruntime>=1.18.0",
-    "transformers>=4.36.0",
 ]
 
 [project.optional-dependencies]

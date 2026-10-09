@@ -204,6 +204,9 @@ jobs:
       # egress (AS13335), so this can pass from CI and fail from a laptop on WARP.
       - name: Collect supply depth + sales volume (parallel)
         continue-on-error: true
+        # The lis-skins ladder takes ~7 min. Without a cap a hung collector would hold the
+        # job to its 60-min limit and fail the run; the cap fails only this step.
+        timeout-minutes: 15
         working-directory: ./backend
         env:
           AGGREGATOR_SNAPSHOT_DATE: ${{ env.SNAPSHOT_DATE }}

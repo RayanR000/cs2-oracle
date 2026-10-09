@@ -25,9 +25,36 @@ permissions:
   contents: read # required by actions/checkout; without it the token is contents:none and checkout 404s
 
 jobs:
-  backtest:
-    # Run on: manual trigger, chained from forecast, or standalone cron (08:00 UTC)
+  # The 08:00 cron is the fallback for a day the chain broke. When today's chained
+  # run already succeeded it re-froze the same forecasts (~25 runner-min/day), so
+  # it now exits here. Performance review 2026-10-08 §5.
+  gate:
+    # Run on: manual trigger, chained from a successful forecast, or the cron.
+    # A chained run after a failed forecast skips every job, so its run never
+    # concludes success and cannot satisfy the check below.
     if: github.event_name == 'workflow_dispatch' || github.event_name == 'schedule' || github.event.workflow_run.conclusion == 'success'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      actions: read
+    outputs:
+      run: ${{ steps.check.outputs.run }}
+    steps:
+      - name: Skip the cron if today's chained run succeeded
+        id: check
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if [ "${{ github.event_name }}" != "schedule" ]; then
+            echo "run=true" >> "$GITHUB_OUTPUT"; exit 0
+          fi
+          n=$(gh api "repos/${{ github.repository }}/actions/workflows/backtest-accuracy.yml/runs?event=workflow_run&status=success&created=>=$(date -u +%F)" --jq .total_count) || n=0  # on an API error, run the fallback
+          echo "Chained successes today (UTC): $n"
+          if [ "$n" -gt 0 ]; then echo "run=false" >> "$GITHUB_OUTPUT"; else echo "run=true" >> "$GITHUB_OUTPUT"; fi
+
+  backtest:
+    needs: gate
+    if: needs.gate.outputs.run == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 60
 
