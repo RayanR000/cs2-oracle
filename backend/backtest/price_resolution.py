@@ -202,7 +202,16 @@ def load_voted_prices(
     behaviour — warn and return {} — produced a green run that evaluated zero
     forecasts, which is exactly the silent-success shape commit 324cfff was
     written to eliminate.
+
+    Votes in DuckDB (``ItemForecaster._multi_source_voting_sql``), one query
+    per item-hash chunk, as the forecaster's archive read has since
+    2026-09-28. The pandas vote cost 96% of this function (36.7s of 38.4s on
+    2.4M raw rows) and ran once per (horizon, model) group, ~5.7 min each in
+    run 37877462648. A group never spans chunks, so the frame does not depend
+    on the chunk count.
     """
+    import os
+
     import duckdb
     from models.forecaster import ItemForecaster
 
@@ -215,31 +224,35 @@ def load_voted_prices(
 
     lookback_start = min_date - pd.to_timedelta(int(max_span_days), unit="D")
 
-    con = duckdb.connect()
+    con = duckdb.connect(config={"memory_limit": os.environ.get("VOTED_DUCKDB_MEMORY_LIMIT", "2GB")})
     try:
         relation = prices_relation(con, archive_dir, columns=["item_slug", "day", "mean_price", "source", "volume"])
 
         con.register("wanted_slugs", pd.DataFrame({"item_slug": slugs}))
-        rows = con.sql(
-            f"""
-            SELECT s.item_slug, s.day, s.mean_price AS price, s.source, s.volume
-            FROM {relation} s
-            JOIN wanted_slugs w ON w.item_slug = s.item_slug
-            WHERE s.day BETWEEN DATE '{lookback_start}' AND DATE '{max_date}'
-            """
-        ).fetchall()
+        # TRY_CAST and the NULL/NaN drop are pd.to_numeric(errors="coerce") +
+        # dropna: some Parquet years store mean_price/volume as VARCHAR.
+        rows_sql = f"""
+            SELECT * FROM (
+                SELECT s.item_slug AS item_id, CAST(s.day AS DATE) AS date,
+                       TRY_CAST(s.mean_price AS DOUBLE) AS price,
+                       TRY_CAST(s.volume AS DOUBLE) AS volume, s.source
+                FROM {relation} s
+                JOIN wanted_slugs w ON w.item_slug = s.item_slug
+                WHERE s.day BETWEEN DATE '{lookback_start}' AND DATE '{max_date}'
+            ) WHERE price IS NOT NULL AND NOT isnan(price)
+        """
+        n_chunks = max(1, int(os.environ.get("VOTED_CHUNKS", "8")))
+        parts = []
+        for k in range(n_chunks):
+            chunk_sql = f"SELECT * FROM ({rows_sql}) WHERE hash(item_id) % {n_chunks} = {k}"
+            parts.append(
+                con.sql(f"SELECT item_id, date, price FROM ({ItemForecaster._multi_source_voting_sql(chunk_sql)})").df()
+            )
     finally:
         con.close()
 
-    if not rows:
+    df = pd.concat(parts, ignore_index=True)
+    if df.empty:
         return pd.DataFrame(columns=["item_id", "date", "price"])
-
-    df = pd.DataFrame(rows, columns=["item_id", "timestamp", "price", "source", "volume"])
-    df["timestamp"] = pd.to_datetime(df["timestamp"])
-    df["date"] = df["timestamp"].dt.date
-    df["price"] = pd.to_numeric(df["price"], errors="coerce")
-    df = df.dropna(subset=["price"])
-
-    df = ItemForecaster._apply_multi_source_voting(df)
-
-    return df[["item_id", "date", "price"]].reset_index(drop=True)
+    df["date"] = pd.to_datetime(df["date"]).dt.date
+    return df.sort_values(["item_id", "date"]).reset_index(drop=True)
