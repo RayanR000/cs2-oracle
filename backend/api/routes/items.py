@@ -155,30 +155,37 @@ def _build_trending(db: Session, limit: int):
         .subquery()
     )
 
+    # An inner join: an item with no fresh h=7 forecast has no ratio and is not
+    # trending. The outer join it replaced sorted those NULL ratios FIRST on
+    # Postgres (DESC defaults to NULLS FIRST; SQLite puts them last, so the
+    # tests never saw it) and on 2026-10-09 the whole prod list was items with
+    # no forecast at all, 1,805 of 2,376 listed. nulls_last() still covers a
+    # NULL price_mid on a forecast row.
+    ratio = subq.c.price_mid / func.nullif(subq.c.current_price, 0)
     items = (
-        db.query(Item, subq.c.direction, subq.c.price_mid, subq.c.current_price)
-        .outerjoin(subq, Item.id == subq.c.item_id)
+        db.query(Item, subq.c.current_price)
+        .join(subq, Item.id == subq.c.item_id)
         .filter(Item.icon_url.isnot(None), backfilled_item_clause())
-        .order_by(desc(subq.c.price_mid / func.nullif(subq.c.current_price, 0)))
+        .order_by(desc(ratio).nulls_last(), Item.id)
         .limit(limit)
         .all()
     )
-    item_ids = [i.Item.id for i in items]
-    latest_prices = _latest_prices(db, item_ids) if item_ids else {}
 
-    result = [
+    # The price is the forecast's own quote, which the floor already holds at
+    # >= $1. price_history is not written by the aggregator (it stopped at
+    # 2026-07-11, 7,139 rows), so reading it here returned a months-old price
+    # or none, and a missing one dropped the row AFTER the LIMIT.
+    return [
         TrendingItemOut(
             id=row.Item.id,
             item_id=row.Item.item_id,
             name=row.Item.name,
             type=row.Item.type,
             icon_url=row.Item.icon_url,
-            latest_price=latest_prices.get(row.Item.id, 0.0),
+            latest_price=float(row.current_price),
         )
         for row in items
-        if latest_prices.get(row.Item.id, 0.0) > 0
     ]
-    return result[:limit]
 
 
 @router.get("/volatility", response_model=list[VolatilityRankOut])
