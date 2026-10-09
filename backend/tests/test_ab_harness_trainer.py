@@ -292,5 +292,5 @@ def test_the_non_training_harnesses_really_train_nothing(name):
 def test_the_family_is_covered():
     """Guards against the parametrize silently going empty — a `glob` typo or
     a rename would make every test above pass by not running."""
-    assert len(TRAINS) == 13, f"expected 13 training harnesses, found {TRAINS}"
+    assert len(TRAINS) == 14, f"expected 14 training harnesses, found {TRAINS}"
     assert set(NO_TRAIN) == {"ab_test_direction_labels", "ab_test_frozen_runs"}

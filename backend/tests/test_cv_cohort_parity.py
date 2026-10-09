@@ -28,6 +28,14 @@ pytestmark = pytest.mark.slow
 
 
 @pytest.fixture(autouse=True)
+def _exceedance_head_off(monkeypatch):
+    """These tests build minimal frames without `target_exceed_*` columns.
+    EXCEEDANCE_HEAD has defaulted on since 2026-09-19 (ad2d43e), and with it on
+    the CV path raises rather than train a head on a missing target."""
+    monkeypatch.setenv("EXCEEDANCE_HEAD", "0")
+
+
+@pytest.fixture(autouse=True)
 def _diagnostic_classifier_on(monkeypatch):
     """Every test here scores the per-fold directional classifier, which has
     been off by default since 2026-08-09 (932s, 52% of a retrain, feeding no
