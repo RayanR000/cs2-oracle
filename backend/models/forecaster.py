@@ -5082,11 +5082,32 @@ class ItemForecaster:
         "supply-history.parquet": ["buff_listing_count"],
     }
 
+    def _sidecar_needed(self, fname: str, include_volume_panel: bool) -> bool:
+        """Whether any feature this run computes reads ``fname``'s columns.
+
+        The raw sidecar columns are never selectable (``_select_feature_cols``
+        excludes them by name), so a sidecar is read only for the one flag-gated
+        feature derived from it. Skipping the rest is column-only: no sidecar
+        has duplicate (item_id, date) keys, so the left merge never added rows.
+        Measured 2026-10-09: the four reads cost ~14s of each ~20s chunk call in
+        Price Forecast run 37876868155, 12 calls per predict.
+        """
+        if fname == "volume-panel.parquet":
+            return include_volume_panel
+        if fname == "bid-panel.parquet":
+            return self._bid_features_enabled()
+        if fname == "stattrak-panel.parquet":
+            return self._stattrak_feature_enabled()
+        if fname == "supply-history.parquet":
+            return self._supply_churn_features_enabled()
+        return True
+
     def _attach_sidecars(self, daily: pd.DataFrame, include_volume_panel: bool = True) -> pd.DataFrame:
         for fname, cols in self._SIDECARS.items():
             # The volume panel only feeds shelved volume features; skip its read
             # and merge on the production build, where nothing consumes them.
-            if fname == "volume-panel.parquet" and not include_volume_panel:
+            # The other three feed only their flag-gated features.
+            if not self._sidecar_needed(fname, include_volume_panel):
                 continue
             path = self.archive_dir / fname
             if not path.exists():
