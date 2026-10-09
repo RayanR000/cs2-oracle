@@ -302,3 +302,43 @@ def test_slug_with_apostrophe_round_trips(tmp_path):
     assert len(out) == 1
     assert out.iloc[0]["item_id"] == slug
     assert out.iloc[0]["price"] == 3.5
+
+
+@pytest.mark.parametrize("chunks", ["1", "3"])
+def test_sql_vote_matches_the_pandas_reference(tmp_path, monkeypatch, chunks):
+    """`load_voted_prices` votes in DuckDB; `_apply_multi_source_voting` stays
+    the reference. Random multi-source item-days (outliers, VARCHAR prices,
+    excluded and conditional sources) must vote to the same price, whatever the
+    chunk count."""
+    import numpy as np
+    from models.forecaster import ItemForecaster
+    from models.item_parser import BID_SOURCES, CONDITIONAL_STEAM_SOURCES
+
+    rng = np.random.default_rng(7)
+    sources = [None, "aggregator_buff163", "aggregator_skinport", "aggregator_csfloat"]
+    sources += sorted(BID_SOURCES) + sorted(CONDITIONAL_STEAM_SOURCES) * 2
+    rows = []
+    for g in range(300):
+        slug, day = f"item-{g % 11}", date(2026, 6, 1) + timedelta(days=g // 11)
+        base = float(rng.uniform(0.5, 300))
+        for _ in range(int(rng.choice([1, 2, 3, 4, 7]))):
+            price = base * float(rng.normal(1, 0.05)) * (5.0 if rng.random() < 0.1 else 1.0)
+            rows.append((slug, pd.Timestamp(day), str(round(price, 2)), 3.0, sources[int(rng.integers(len(sources)))]))
+    raw = pd.DataFrame(rows, columns=["item_slug", "day", "mean_price", "volume", "source"])
+    archive = tmp_path / "price-archive"
+    archive.mkdir()
+    raw.to_parquet(archive / "prices-2026.parquet")
+
+    monkeypatch.setenv("VOTED_CHUNKS", chunks)
+    slugs = sorted(raw.item_slug.unique())
+    out = load_voted_prices(archive, slugs, date(2026, 6, 8), date(2026, 6, 30))
+
+    ref = raw.rename(columns={"item_slug": "item_id"}).assign(
+        date=raw.day.dt.date, price=pd.to_numeric(raw.mean_price, errors="coerce")
+    )
+    ref = ref[(ref.date >= date(2026, 6, 8) - timedelta(days=MAX_WINDOW_SPAN_DAYS)) & (ref.date <= date(2026, 6, 30))]
+    ref = ItemForecaster._apply_multi_source_voting(ref.dropna(subset=["price"]))
+    ref = ref[["item_id", "date", "price"]].sort_values(["item_id", "date"]).reset_index(drop=True)
+
+    assert len(out) > 100
+    pd.testing.assert_frame_equal(out, ref, check_dtype=False)
