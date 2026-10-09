@@ -12,6 +12,19 @@ the day. The rest restate what the cited doc says. Where the docs conflict, the 
 **Standing constraint:** this is a range forecaster (`AGENTS.md`). Nothing below proposes a
 directional product claim, a fourth band-width denominator, or a serving ranker. See §7.
 
+## State on 2026-10-08
+
+- **FX ratio monitor's first CI run is verified (verified 10-08).** Aggregator run `37718787002`
+  (snapshot date 10-07) printed `"status": "ok"`, `baseline_days: 14`, `breached: []`. The largest
+  move was youpin at +1.74%, under the 3% threshold. Item §6's "first CI run to check" is closed.
+- **Daily chain green through 10-08 ~02:47Z.** Aggregator, Price Forecast (22,506 forecasts) and
+  Backtest all succeeded, and Lint & Smoke passed on #95 and the licence commit. No open PRs or
+  issues.
+- **h=30 feedback factor has not woken yet (verified 10-08).** The 10-08 predict-only run logs no
+  `Served-coverage factors` line. That is expected, not a regression: the 10-05 retrain baked
+  h=3/7/14, so `_refresh_served_coverage_factor` only reads h=30 live and logs only when that read
+  returns a value. The line appears on the first predict run after h=30 reaches 8 dates (item 8).
+
 ## State on 2026-10-04
 
 - **musickit watch closed (item 10).** Its h=3 under-coverage is the known width tilt, not a
@@ -245,7 +258,8 @@ State on 2026-09-28, still true unless an item below says otherwise:
   their trailing 14-day medians and warns past 3% (`fx_signature` when both CNY venues move and
   the USD controls don't). It never fails the run. Replayed from 03-22 it raised zero alarms;
   the largest CNY move, +2.9% on 07-11, is the composition break.
-  **First CI run to check:** the step prints `"status": "ok"` with `baseline_days` ≥ 13.
+  **First CI run verified 10-08:** Aggregator run `37718787002` printed `"status": "ok"` with
+  `baseline_days: 14`.
   `changelog/2026-10-05-fx-ratio-monitor.md`.
 - R14 mechanical supply-position features and the hedonic market index. Both carry over from
   08-16, untouched.
