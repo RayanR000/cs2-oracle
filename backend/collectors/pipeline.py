@@ -88,7 +88,7 @@ class DataPipeline:
         If limit is None, updates ALL items in the database.
         Records execution to collection_runs table for monitoring.
         """
-        from database import CollectionRun, Item, PriceHistory
+        from database import CollectionRun, Item
 
         from collectors.csgotrader_aggregator import CSGOTraderAggregator
 
@@ -160,7 +160,9 @@ class DataPipeline:
                 "youpin": "aggregator_youpin",
             }
 
-            # 3. Store results
+            # 3. Store results. Plain dicts, not PriceHistory rows: nothing persists
+            # them (the aggregator writes Parquet only), and ~380k ORM objects cost
+            # 2.1 s and +457 MB a run (performance review 2026-10-08 §4).
             price_records = []
             now = datetime.utcnow()
             # `now` timestamps the observation; `snapshot_day` says which day's
@@ -179,13 +181,13 @@ class DataPipeline:
                             db_source = SOURCE_LABELS.get(src_key, f"aggregator_{src_key}")
                             for item in matched_items:
                                 price_records.append(
-                                    PriceHistory(
-                                        item_id=item.id,
-                                        timestamp=now,
-                                        price=price,
-                                        volume=volume,
-                                        source=db_source,
-                                    )
+                                    {
+                                        "item_id": item.id,
+                                        "timestamp": now,
+                                        "price": price,
+                                        "volume": volume,
+                                        "source": db_source,
+                                    }
                                 )
                             if src_key == "steam":
                                 has_primary = True
@@ -240,13 +242,13 @@ class DataPipeline:
 
                     for item in matched_items:
                         price_records.append(
-                            PriceHistory(
-                                item_id=item.id,
-                                timestamp=now,
-                                price=recovered_row.price,
-                                volume=recovered_row.volume,
-                                source=_historical_fallback_source(recovered_row.source),
-                            )
+                            {
+                                "item_id": item.id,
+                                "timestamp": now,
+                                "price": recovered_row.price,
+                                "volume": recovered_row.volume,
+                                "source": _historical_fallback_source(recovered_row.source),
+                            }
                         )
                         fallback_items_collected += 1
 
@@ -274,17 +276,6 @@ class DataPipeline:
                 id_to_slug = {row.id: row.item_id for row in all_items}
                 hist_item_ids = {row.id for row in all_items if row.is_backfilled == 1}
 
-                rows_as_dicts = [
-                    {
-                        "item_id": r.item_id,
-                        "timestamp": r.timestamp,
-                        "price": r.price,
-                        "volume": r.volume,
-                        "source": r.source,
-                    }
-                    for r in price_records
-                ]
-
                 agg_date = snapshot_day.strftime("%Y-%m-%d")
 
                 # ── Write ALL sources to snapshot CSV for Parquet archive ──
@@ -292,13 +283,13 @@ class DataPipeline:
                 with open(snapshot_csv_path, "w", newline="") as f:
                     writer = csv.writer(f)
                     writer.writerow(["item_slug", "day", "source", "price", "volume"])
-                    for d in rows_as_dicts:
+                    for d in price_records:
                         slug = id_to_slug.get(d["item_id"])
                         if slug:
                             writer.writerow(
                                 [slug, agg_date, d["source"], d["price"], d.get("volume", VOLUME_NOT_OBSERVED)]
                             )
-                logger.info("Wrote %s snapshot rows to %s (all sources)", len(rows_as_dicts), snapshot_csv_path)
+                logger.info("Wrote %s snapshot rows to %s (all sources)", len(price_records), snapshot_csv_path)
 
                 # ── Append ALL raw CSGOTrader items (even those not matched to a DB Item) ──
                 # This captures every item CSGOTrader tracks, using its own key as the
@@ -307,7 +298,7 @@ class DataPipeline:
                 from collectors.csgotrader_aggregator import _get_safe as _agg_get_safe
 
                 written = {
-                    (id_to_slug[d["item_id"]], d["source"]) for d in rows_as_dicts if id_to_slug.get(d["item_id"])
+                    (id_to_slug[d["item_id"]], d["source"]) for d in price_records if id_to_slug.get(d["item_id"])
                 }
 
                 raw_count = 0
@@ -379,7 +370,7 @@ class DataPipeline:
                 logger.info("Appended %s raw CSGOTrader item-source pairs to snapshot CSV", raw_count)
 
                 # ── Write all sources for backfilled items to CSV (for OHLCV Parquet) ──
-                backfilled_dicts = [d for d in rows_as_dicts if d["item_id"] in hist_item_ids]
+                backfilled_dicts = [d for d in price_records if d["item_id"] in hist_item_ids]
                 if backfilled_dicts:
                     csv_path = f"/tmp/aggregator-backfilled-{agg_date}.csv"
                     with open(csv_path, "w", newline="") as f:
@@ -491,7 +482,7 @@ class DataPipeline:
             # append fail its cast — swallowed by the `except` below, so the
             # Parquet copy would silently stop updating. Stale-fallback counts
             # go in the returned dict and the log line instead.
-            source_counts = Counter(r.source for r in price_records)
+            source_counts = Counter(r["source"] for r in price_records)
             source_breakdown = {
                 "aggregator": primary_items_collected,
                 "historical_fallback": fallback_items_collected,

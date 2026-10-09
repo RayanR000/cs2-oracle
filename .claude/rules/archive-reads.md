@@ -26,8 +26,9 @@ paths:
   claim. `append_to_parquet.py` stamps the run's wall clock, not `--date`, so re-exporting an
   old day records an old `day` with a present-day arrival — the truth. **First-arrival
   preservation is a property of that one writer, not of the archive.** `append_to_parquet.py`
-  keeps the first arrival explicitly, with a `groupby(dedup_keys)["ingested_at"].transform("min")`
-  before its dedup (`:267-270`), so a corrected price does not date the whole month forward.
+  keeps the first arrival explicitly: its DuckDB merge stamps each incoming row with
+  `least(new, min(existing))` on `ingested_at` (its own `_append_parquet`; a pandas `groupby` `min`
+  until 2026-10-09), so a corrected price does not date the whole month forward.
   **`db/parquet.py::append_monthly` does NOT** — `_append_parquet` selects `_new`
   unconditionally and keeps an existing row only `WHERE NOT EXISTS` a match (`:250-262`), so a
   re-append takes the *new* row's `ingested_at`. Every caller of `append_monthly` that cares

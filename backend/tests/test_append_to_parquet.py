@@ -324,3 +324,68 @@ class TestVolumeAbsenceIsNull:
         pq = tmp_path / "price-archive" / "prices-2026-10.parquet"
         vol = duckdb.connect().sql(f"SELECT volume FROM read_parquet('{pq}')").fetchone()[0]
         assert vol == 5
+
+
+class TestDuckDBMerge:
+    """`_append_parquet` merges in DuckDB (2026-10-09). These pin the pandas
+    `concat` + `drop_duplicates(keep="last")` semantics it replaced."""
+
+    @staticmethod
+    def _frame(rows, ingested="2026-10-09 12:00:00"):
+        df = pd.DataFrame(rows, columns=["item_slug", "day", "source", "mean_price", "volume"])
+        df["day"] = pd.to_datetime(df["day"])
+        df["volume"] = df["volume"].astype("Int64")
+        df["ingested_at"] = pd.Timestamp(ingested)
+        return df
+
+    @staticmethod
+    def _rows(pq):
+        return duckdb.connect().sql(f"SELECT * FROM read_parquet('{pq}')").fetchall()
+
+    def test_last_duplicate_in_a_batch_wins(self, tmp_path):
+        from scripts.append_to_parquet import PRICE_KEYS, _append_parquet
+
+        pq = tmp_path / "p.parquet"
+        batch = self._frame([("a", "2026-10-01", "s", 1.0, None), ("a", "2026-10-01", "s", 2.0, None)])
+        _append_parquet(pq, batch, PRICE_KEYS)
+        assert [r[3] for r in self._rows(pq)] == [2.0]
+
+    def test_null_keys_match_each_other(self, tmp_path):
+        """`dropna=False`: a NULL-source row is replaced by its re-run, not duplicated."""
+        from scripts.append_to_parquet import PRICE_KEYS, _append_parquet
+
+        pq = tmp_path / "p.parquet"
+        _append_parquet(pq, self._frame([("a", "2025-12-01", None, 1.0, 3)], "2026-10-01"), PRICE_KEYS)
+        _append_parquet(pq, self._frame([("a", "2025-12-01", None, 2.0, 3)], "2026-10-09"), PRICE_KEYS)
+        rows = self._rows(pq)
+        assert len(rows) == 1
+        assert rows[0][3] == 2.0
+        assert str(rows[0][5]) == "2026-10-01 00:00:00", "first arrival must survive the replacement"
+
+    def test_a_file_predating_source_reads_it_as_null(self, tmp_path):
+        from scripts.append_to_parquet import PRICE_KEYS, _append_parquet
+
+        pq = tmp_path / "p.parquet"
+        duckdb.connect().sql(
+            f"COPY (SELECT 'a' AS item_slug, DATE '2025-12-01' AS day, 1.0 AS mean_price, "
+            f"3::BIGINT AS volume, NULL::TIMESTAMP AS ingested_at) TO '{pq}' (FORMAT PARQUET)"
+        )
+        _append_parquet(
+            pq, self._frame([("a", "2025-12-01", None, 2.0, 3), ("b", "2025-12-01", "s", 5.0, 1)]), PRICE_KEYS
+        )
+        rows = sorted(self._rows(pq), key=lambda r: r[0])
+        assert [(r[0], r[2], r[3]) for r in rows] == [("a", None, 2.0), ("b", "s", 5.0)]
+        assert str(rows[0][5]) == "2026-10-09 12:00:00", "an unknown arrival takes the new stamp"
+
+    def test_written_zstd_and_sorted_on_the_key(self, tmp_path):
+        from scripts.append_to_parquet import PRICE_KEYS, _append_parquet
+
+        pq = tmp_path / "p.parquet"
+        _append_parquet(
+            pq, self._frame([("b", "2026-10-02", "y", 1.0, None), ("a", "2026-10-01", "z", 1.0, None)]), PRICE_KEYS
+        )
+        _append_parquet(pq, self._frame([("c", "2026-10-03", "x", 1.0, None)]), PRICE_KEYS)
+        con = duckdb.connect()
+        codecs = {r[0] for r in con.sql(f"SELECT DISTINCT compression FROM parquet_metadata('{pq}')").fetchall()}
+        assert codecs == {"ZSTD"}
+        assert [r[2] for r in self._rows(pq)] == ["x", "y", "z"]
