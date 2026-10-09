@@ -3512,8 +3512,7 @@ class ItemForecaster:
         if hasattr(self, "_supply_meta_cache") and self._supply_meta_cache is not None:
             return self._supply_meta_cache
 
-        archive_dir = Path(__file__).parent.parent.parent / "price-archive"
-        meta_path = archive_dir / "item-metadata.parquet"
+        meta_path = self.archive_dir / "item-metadata.parquet"
 
         if meta_path.exists():
             try:

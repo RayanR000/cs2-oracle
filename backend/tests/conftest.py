@@ -1,7 +1,7 @@
 """Shared test fixtures for the backend test suite.
 
-Both fixtures are opt-in (not autouse) -- tests that need them request them by
-name in their function signature.
+`_hermetic_archive` is autouse; the others are opt-in -- tests that need them
+request them by name in their function signature.
 """
 
 from unittest.mock import MagicMock
@@ -12,6 +12,25 @@ from models.forecaster import ItemForecaster
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
+
+
+@pytest.fixture(autouse=True)
+def _hermetic_archive(monkeypatch, tmp_path_factory):
+    """Point every ItemForecaster's ``archive_dir`` at an empty temp dir.
+
+    The default is the real, gitignored ``price-archive/``. CI has no checkout
+    of it, but a local run read its sidecars on every ``engineer_features``
+    call (~3 s each), so local and CI ran different code paths. Tests that
+    need an archive build one and assign ``archive_dir`` after construction,
+    which still wins.
+    """
+    original = ItemForecaster.__init__
+
+    def init(self, *args, **kwargs):
+        original(self, *args, **kwargs)
+        self.archive_dir = tmp_path_factory.mktemp("price-archive")
+
+    monkeypatch.setattr(ItemForecaster, "__init__", init)
 
 
 @pytest.fixture

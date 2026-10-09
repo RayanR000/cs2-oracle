@@ -54,6 +54,7 @@ dev = [
     "mypy>=1.15",
     "mapie>=0.9",
     "scoringrules",
+    "pytest-xdist>=3.5",
 ]
 
 [tool.ruff]
