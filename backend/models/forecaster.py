@@ -1607,7 +1607,7 @@ class ItemForecaster:
         This flag decouples the head's COMPUTATION from the band-scale flag, so
         the probability can be served as its own product signal while the band
         stays on climatology. `EXCEEDANCE_SCALE` implies it (the scale needs the
-        head). Off by default. Serving emits `exceed_p` whenever a head is present
+        head). On by default since 2026-09-19 (ad2d43e). Serving emits `exceed_p` whenever a head is present
         in the artifact — head presence is self-describing, so the cutover follows
         the artifact with no separate meta flag. Set EXCEEDANCE_HEAD=1. See
         docs/plans/2026-08-16-exceedance-band-scale-phase2-plan.md.

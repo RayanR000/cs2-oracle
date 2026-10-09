@@ -29,6 +29,14 @@ from models.forecaster import ItemForecaster
 pytestmark = pytest.mark.slow
 
 
+@pytest.fixture(autouse=True)
+def _exceedance_head_off(monkeypatch):
+    """These tests build minimal frames without `target_exceed_*` columns.
+    EXCEEDANCE_HEAD has defaulted on since 2026-09-19 (ad2d43e), and with it on
+    the CV path raises rather than train a head on a missing target."""
+    monkeypatch.setenv("EXCEEDANCE_HEAD", "0")
+
+
 def test_sigma_clip_defaults_are_present_and_finite():
     f = ItemForecaster.__new__(ItemForecaster)
     ItemForecaster._init_conformal_state(f)
@@ -1711,7 +1719,10 @@ def test_cv_results_publish_both_invariant_4_signals():
     contract on the keys it writes: two distinct signal-labelled names, and no
     path that lets the served verdict fall back to the quantile sign.
     """
-    src = inspect.getsource(ItemForecaster._train_horizon_inline)
+    # The block was extracted from `_train_horizon_inline` into
+    # `_aggregate_cv_metrics` (21eaf4e); pin both the delegation and the block.
+    assert "self._aggregate_cv_metrics(" in inspect.getsource(ItemForecaster._train_horizon_inline)
+    src = inspect.getsource(ItemForecaster._aggregate_cv_metrics)
 
     # Both signals published, under names that say which is which.
     assert '"invariant_4_signal": "quantile_sign"' in src
