@@ -26,6 +26,7 @@ one test here holds the two against each other on the same panel.
 
 from __future__ import annotations
 
+import copy
 from datetime import date, timedelta
 from unittest.mock import MagicMock
 
@@ -229,9 +230,24 @@ def _tdf(n_items=60, n_dates=80, horizon=3, seed=3, with_tied=True, tied_price=5
     return pd.DataFrame(rows)
 
 
+_CV_FOLDS: dict[tuple, list[dict]] = {}
+
+
+def _fold_metrics(tmp_path, **kw):
+    """CV fold metrics for `_tdf(**kw)`, fitted once per distinct kwargs.
+
+    Six tests read the default frame. The fit is deterministic and the tests
+    only read its output, so they share one copy instead of refitting.
+    """
+    key = tuple(sorted(kw.items()))
+    if key not in _CV_FOLDS:
+        f = _cv_forecaster(tmp_path)
+        _CV_FOLDS[key] = f._cv_evaluate_horizon(_tdf(**kw), 3, {0.5: {}})[1]
+    return copy.deepcopy(_CV_FOLDS[key])
+
+
 def _run_cv(tmp_path, **kw):
-    f = _cv_forecaster(tmp_path)
-    _, fold_metrics = f._cv_evaluate_horizon(_tdf(**kw), 3, {0.5: {}})[:2]
+    fold_metrics = _fold_metrics(tmp_path, **kw)
     assert len(fold_metrics) >= 2
     return fold_metrics
 
@@ -260,7 +276,7 @@ def test_the_naive_baseline_is_scored_on_the_same_cohort(tmp_path):
 def test_the_tied_cohort_is_intersected_with_the_served_one(tmp_path):
     """A penny item is not served, so a tied penny row cannot enter the number
     the product is ranked on. `n_tied` counts the intersection."""
-    served = _run_cv(tmp_path, tied_price=5.0)
+    served = _run_cv(tmp_path)  # tied_price=5.0 is the default
     penny = _run_cv(tmp_path, tied_price=0.30)
 
     assert all(m["n_tied"] > 0 for m in served)
@@ -299,7 +315,7 @@ def test_cv_results_publish_the_tied_edge(tmp_path):
     is measured on the contaminated basis. The tied edge is the one that means
     what it says, and it has to reach `meta.json` to be readable at all."""
     f = _cv_forecaster(tmp_path)
-    fold_metrics = f._cv_evaluate_horizon(_tdf(), 3, {0.5: {}})[1]
+    fold_metrics = _fold_metrics(tmp_path)
     summary = f._summarise_rank_ic(fold_metrics)
 
     assert summary["mean_rank_ic_tied"] is not None
@@ -339,7 +355,7 @@ def test_the_pooled_series_is_unchanged(tmp_path):
     historical `meta.json` holds and the trust warning reads; the tied cohort
     sits beside it."""
     f = _cv_forecaster(tmp_path)
-    fold_metrics = f._cv_evaluate_horizon(_tdf(), 3, {0.5: {}})[1]
+    fold_metrics = _fold_metrics(tmp_path)
     summary = f._summarise_rank_ic(fold_metrics)
 
     pooled = [m["rank_ic"] for m in fold_metrics if m["rank_ic"] is not None]

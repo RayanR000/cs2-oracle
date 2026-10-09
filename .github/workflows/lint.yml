@@ -7,11 +7,13 @@ on:
       - 'backend/**'
       - 'pyproject.toml'
       - 'uv.lock'
+      - '.github/workflows/**'
   pull_request:
     paths:
       - 'backend/**'
       - 'pyproject.toml'
       - 'uv.lock'
+      - '.github/workflows/**'
 
 defaults:
   run:
@@ -100,11 +102,15 @@ jobs:
         # faulthandler_timeout: the gate runs in ~1 min, but it has hung
         # intermittently on CI until the job timeout, and a cancelled job keeps
         # no log. Any single test past 120s now dumps every thread's stack.
+        # -n 4 with OMP_NUM_THREADS=1: four xdist workers, one BLAS/LightGBM
+        # thread each, so they do not oversubscribe the runner's cores. The
+        # gate's sqlite file is never written, so workers can share it.
         env:
           DATABASE_URL: sqlite:////tmp/ci-gate.db
           ENVIRONMENT: test
+          OMP_NUM_THREADS: '1'
         run: |
-          pytest backend/tests -m "not slow" -q -o faulthandler_timeout=120
+          pytest backend/tests -m "not slow" -q -n 4 -o faulthandler_timeout=120
 
   typecheck:
     runs-on: ubuntu-latest
