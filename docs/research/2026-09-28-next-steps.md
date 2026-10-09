@@ -12,6 +12,16 @@ the day. The rest restate what the cited doc says. Where the docs conflict, the 
 **Standing constraint:** this is a range forecaster (`AGENTS.md`). Nothing below proposes a
 directional product claim, a fourth band-width denominator, or a serving ranker. See §7.
 
+## State on 2026-10-09
+
+- **Date-overlap sensitivity is fixed ahead of the October reads (items 4 and 22).** The frozen
+  iid date bootstraps stay. `scripts/date_dependence_sensitivity.py` adds moving-block and HAC
+  rows beside them under a downgrade-only rule. Measured on pre-window dates, the h=7
+  served − naive IS series has lag-1 ACF +0.86, and the robust intervals are ~1.35–1.7×
+  wider than the iid ones. `research/2026-10-09-date-overlap-sensitivity.md`.
+- **30d CV objective fixed (#107), ships with the 10-12 retrain.** Split h=30 reads at forecast
+  date 10-11. `changelog/2026-10-09-cv-trains-the-served-centre-objective.md`.
+
 ## State on 2026-10-08
 
 - **h=7 naive-quantile band arm preregistered (item 22).** Written before the re-read, so the
@@ -105,6 +115,8 @@ State on 2026-09-28, still true unless an item below says otherwise:
    ⚠️ **Fixed 2026-09-30:** the loader's prior-row read selected columns `item_forecasts` does not
    have and would have raised at the read. Young releases (item 23) are joined out, so the panel
    stays the established one the prereg froze. `research/2026-09-23-conformal-pid-served-h3-preregistration.md`.
+   **At the read, also run `scripts/date_dependence_sensitivity.py pid`** and report its row
+   under `research/2026-10-09-date-overlap-sensitivity.md`'s rule.
 5. **Centre promotion (last-price vs `gbm_q50`) through the champion–challenger shadow.** It reads
    INSUFFICIENT_EVIDENCE until 20 shared dates. Promotion is a reviewed PR, never automatic
    (invariant 5).
@@ -154,8 +166,8 @@ State on 2026-09-28, still true unless an item below says otherwise:
 24. **Direction reopening gate, h=3 and h=7 (preregistered 2026-10-08).** Window: the first 20
     usable forecast dates ≥ 2026-10-05 per horizon, read once. Bar: PT t ≥ 3.0, DA ≥
     `realised_down_rate`, and a drop-one-date guard. The instrument
-    `scripts/measure_direction_reopen.py` is **not yet written**; write and unit-test it before
-    the first read. Expected reads ~10-29 (h=3) and ~11-02 (h=7). Power at the observed effect is
+    `scripts/measure_direction_reopen.py` and its tests shipped with the prereg in #97
+    (verified 10-09). Expected reads ~10-29 (h=3) and ~11-02 (h=7). Power at the observed effect is
     ~60%, so a miss is probably "unresolved". h=14 and h=30 are reported only.
     `research/2026-10-08-direction-reopening-preregistration.md`,
     `changelog/2026-10-08-direction-reopening-bar-tightened.md`.
@@ -265,7 +277,10 @@ State on 2026-09-28, still true unless an item below says otherwise:
     read. The window starts at forecast date 09-27 (the first h=7 date with a recorded
     multiplier below 1), not `--since 2026-09-28`. It is the first 20 scoreable dates, split at
     10-04 as a guard, and reads ~10-25. A PASS writes a design spec; it never changes serving.
-    `research/2026-10-08-naive-quantile-band-h7-preregistration.md`.
+    `research/2026-10-08-naive-quantile-band-h7-preregistration.md`. **At the read, also run
+    `scripts/date_dependence_sensitivity.py outside-baseline --horizon 7`** with the same
+    window. The 10-08 prereg governs; `research/2026-10-09-date-overlap-sensitivity.md` adds
+    the row.
 
 ## 6. Unstarted and unranked — open ideas, not commitments
 
