@@ -108,25 +108,11 @@ jobs:
           restore-keys: |
             forecast-models-
 
-      # The voted price frame (backend/data/voted_*.parquet, gitignored). Worth
-      # ~48s a run — 21.1s DuckDB read + 27.2s multi-source voting — on the
-      # daily predict path as well as the retrain. Until 2026-08-09 the key
-      # embedded each archive file's st_mtime_ns, and CI checks the archive out
-      # fresh every run, so the key changed unconditionally and this could
-      # never have hit; _archive_fingerprint is content-derived now.
-      #
-      # Bumped from v6 to v7 to match ItemForecaster.VOTED_CACHE_VERSION (v7
-      # excluded STEAM_SPOT_SOURCES). The version is hashed into the frame's
-      # own filename by _voted_cache_key/_voted_cache_path, so a v7 reader
-      # never finds a v6 file and recomputes — the lagging key meant the cache
-      # could never hit. One cold run after this bump, then every subsequent
-      # run saves ~48s (21.1s DuckDB read + 27.2s multi-source voting).
-      - name: Cache voted price frame
-        uses: actions/cache@v4
-        with:
-          path: backend/data
-          key: voted-v7-${{ hashFiles('backend/models/forecaster.py') }}
-          restore-keys: voted-v7-
+      # No Actions cache for the voted price frame (backend/data/voted_*.parquet).
+      # _voted_cache_key hashes the cutoff date and the archive fingerprint, and
+      # both change every day, so a restored frame never matched: run 37877462648
+      # restored 53 MB, rebuilt both frames anyway, and saved nothing back because
+      # the hashFiles key was an exact hit. Performance review 2026-10-08 §5.
 
       # Fail loudly here rather than 60s later with the opaque "No models
       # available for prediction" that hid this breakage for 17 days.
@@ -289,15 +275,6 @@ jobs:
               python scripts/forecast_prices.py 2>&1 | tee forecast.log
               ;;
           esac
-
-      - name: Run drift detection
-        if: steps.mode.outputs.mode == 'predict-only'
-        working-directory: backend
-        run: |
-          python -m scripts.run_drift_check --output-dir data/drift_reports
-        env:
-          DRIFT_REPORT_DIR: data/drift_reports
-        continue-on-error: true
 
       # forecast_prices.py writes the item_forecasts Parquet mirror into the
       # ephemeral archive/ checkout, so without this step every CI run's mirror

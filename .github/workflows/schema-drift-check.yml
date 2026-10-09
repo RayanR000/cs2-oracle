@@ -82,6 +82,10 @@ jobs:
           python -c "import os, psycopg2; c = psycopg2.connect(os.environ['DATABASE_URL']); c.autocommit = True; c.cursor().execute('CREATE TABLE IF NOT EXISTS alembic_version (version_num VARCHAR(255) NOT NULL, CONSTRAINT alembic_version_pkc PRIMARY KEY (version_num))')"
           alembic upgrade head
 
+      # Extensions are invisible to compare_metadata; probe the one the API calls.
+      - name: Check that the migrations provide similarity()
+        run: python -c "import os, psycopg2; c = psycopg2.connect(os.environ['DATABASE_URL']); cur = c.cursor(); cur.execute(\"SELECT similarity('redline', 'red line')\"); print('pg_trgm ok', cur.fetchone()[0])"
+
       - name: Compare Base.metadata against the migrated schema
         working-directory: ./backend
         run: python scripts/check_schema_drift.py
