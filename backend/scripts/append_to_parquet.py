@@ -172,7 +172,7 @@ def main():
         daily["volume"] = daily["volume"].astype("Int64")
         daily["day"] = pd.to_datetime(daily["day"])
         daily["ingested_at"] = arrived
-        _append_parquet(out_dir / f"prices-{ym}.parquet", daily, ["item_slug", "day", "source"])
+        _append_parquet(out_dir / f"prices-{ym}.parquet", daily, PRICE_KEYS)
         print(f"Appended {len(daily)} OHLCV rows to prices-{ym}.parquet")
 
     if legacy_frames:
@@ -188,7 +188,7 @@ def main():
         daily["volume"] = daily["volume"].astype("Int64")
         daily["day"] = pd.to_datetime(daily["day"])
         daily["ingested_at"] = arrived
-        _append_parquet(out_dir / f"prices-{ym}.parquet", daily, ["item_slug", "day", "source"])
+        _append_parquet(out_dir / f"prices-{ym}.parquet", daily, PRICE_KEYS)
         print(f"Appended {len(daily)} OHLCV rows to prices-{ym}.parquet (legacy path)")
 
     # ── Write exchange-rates-YYYY.parquet ────────────────────────────
@@ -212,6 +212,10 @@ def main():
     print(f"Done: {args.date}")
 
 
+#: Dedup key of the price files, in sort order: grouping a source's rows together
+#: is what lets ZSTD compress the slugs and prices (see `_write_parquet`).
+PRICE_KEYS = ["source", "item_slug", "day"]
+
 #: Written as Parquet DATE, not TIMESTAMP. Every `day` in the archive is
 #: midnight-truncated, so the time component was only ever a source of type
 #: drift between files — `prices-2013..2025` hold TIMESTAMP and the monthly
@@ -219,64 +223,92 @@ def main():
 DATE_COLUMNS = ("day",)
 
 
-def _write_parquet(con, path: Path, frame: pd.DataFrame):
-    """Write *frame* in canonical column order with DATE-typed day columns.
+def _write_parquet(con, path: Path, relation: str, columns: list[str], order_by: list[str]):
+    """COPY *relation* to *path* in canonical column order with DATE-typed day columns.
 
-    Goes through DuckDB rather than `DataFrame.to_parquet` because pandas has
-    no date dtype: a datetime64 column always lands as TIMESTAMP. Written to a
-    temp file and moved into place so a crash mid-write cannot truncate the
-    month's archive.
+    `day` is cast to DATE because pandas has no date dtype: a datetime64 column
+    always lands as TIMESTAMP. Rows are sorted on *order_by* and written ZSTD:
+    `ORDER BY source, item_slug, day` with ZSTD measured 168 MB -> 104 MB across
+    the price files, against SNAPPY unsorted (performance review 2026-10-08 §4).
+    Readers never depend on row order. Written to a temp file and moved into
+    place so a crash mid-write cannot truncate the month's archive.
     """
-    ordered = canonical_order(frame.columns)
+    ordered = canonical_order(columns)
     projection = ", ".join(f'CAST("{c}" AS DATE) AS "{c}"' if c in DATE_COLUMNS else f'"{c}"' for c in ordered)
+    order = ", ".join(f'"{c}"' for c in order_by)
     tmp = path.with_suffix(".parquet.tmp")
     escaped = str(tmp).replace("'", "''")
-    con.register("_append_out", frame[ordered])
     try:
-        con.sql(f"COPY (SELECT {projection} FROM _append_out) TO '{escaped}' (FORMAT PARQUET, COMPRESSION SNAPPY)")
+        con.sql(
+            f"COPY (SELECT {projection} FROM ({relation}) ORDER BY {order}) "
+            f"TO '{escaped}' (FORMAT PARQUET, COMPRESSION ZSTD)"
+        )
         os.replace(tmp, path)
     finally:
-        con.unregister("_append_out")
         tmp.unlink(missing_ok=True)
 
 
 def _append_parquet(path: Path, new_data: pd.DataFrame, dedup_keys: list):
-    """Append new_data to an existing Parquet file, deduplicating on dedup_keys."""
+    """Append new_data to an existing Parquet file, deduplicating on dedup_keys.
+
+    The merge runs in DuckDB: existing rows with no match in the batch, plus the
+    batch. Until 2026-10-09 it round-tripped the whole month through pandas,
+    which measured 6.4 s and 5.7 GB peak against 0.7 s and 0.46 GB for this
+    anti-join, with an identical row set; peak memory neared 7 GB at month end.
+
+    Semantics are the pandas version's `concat` + `drop_duplicates(keep="last")`:
+    a batch row replaces a matching existing row wholesale, the last of any
+    duplicates within the batch wins, and keys match NULL to NULL
+    (`dropna=False`), hence `IS NOT DISTINCT FROM`.
+
+    First arrival wins on `ingested_at`. Replacing the row wholesale is right for
+    a corrected price and wrong for `ingested_at`: the value being corrected
+    still became knowable on the day it first landed, and re-stamping it would
+    date the whole month forward on any re-run. `least` skips NULL, so a row that
+    predates the column takes the new timestamp rather than staying unknown.
+    """
     con = duckdb.connect()
     try:
-        if path.exists():
-            existing = con.sql(f"SELECT * FROM read_parquet('{path}')").fetchdf()
-            # Migrate old schema: materialise source if the file predates it.
-            # NULL, not a label: `init_local_db.py` derives is_backfilled from
-            # the equivalence of `source IS NULL` and `day < '2026-01-01'`, and
-            # `normalize_price_schema.py` fills the column the same way.
-            if "source" not in existing.columns and "source" in new_data.columns:
-                existing["source"] = None
-            # Both sides through the same conversion before the dedup: an
-            # existing DATE column comes back as datetime.date objects while
-            # new_data holds Timestamps, and those never compare equal, so the
-            # dedup would keep both copies of every re-run row.
-            for col in DATE_COLUMNS:
-                if col in existing.columns:
-                    existing[col] = pd.to_datetime(existing[col])
-                if col in new_data.columns:
-                    new_data[col] = pd.to_datetime(new_data[col])
-            combined = pd.concat([existing, new_data], ignore_index=True)
-            # First arrival wins, before the dedup drops the row that carries
-            # it. `keep="last"` replaces an existing row wholesale, which is
-            # right for a corrected price and wrong for `ingested_at`: the
-            # value being corrected still became knowable on the day it first
-            # landed, and re-stamping it would date the whole month forward on
-            # any re-run. `min` skips NaT, so a row that predates the column
-            # takes the new timestamp rather than staying unknown.
-            if "ingested_at" in combined.columns:
-                combined["ingested_at"] = combined.groupby(dedup_keys, dropna=False)["ingested_at"].transform("min")
-            combined = combined.drop_duplicates(subset=dedup_keys, keep="last")
-            _write_parquet(con, path, combined)
-            print(f"  {path.name}: {len(new_data)} appended, {len(combined)} total")
-        else:
-            _write_parquet(con, path, new_data)
+        new_cols = list(new_data.columns)
+        # Position column: "last in the batch wins" needs the input order, which a
+        # parallel scan does not guarantee to preserve.
+        con.register("_new_raw", new_data.assign(_pos=range(len(new_data))))
+        keys = ", ".join(f'"{k}"' for k in dedup_keys)
+        day_casts = ", ".join(f'CAST("{c}" AS DATE) AS "{c}"' for c in DATE_COLUMNS if c in new_cols)
+        replace = f" REPLACE ({day_casts})" if day_casts else ""
+        con.sql(
+            f"CREATE TEMP TABLE _new AS SELECT *{replace} FROM _new_raw "
+            f"QUALIFY row_number() OVER (PARTITION BY {keys} ORDER BY _pos DESC) = 1"
+        )
+        con.unregister("_new_raw")
+
+        if not path.exists():
+            _write_parquet(con, path, "SELECT * EXCLUDE (_pos) FROM _new", new_cols, dedup_keys)
             print(f"  {path.name}: {len(new_data)} written (new file)")
+            return
+
+        escaped = str(path).replace("'", "''")
+        con.sql(f"CREATE TEMP VIEW _old AS SELECT * FROM read_parquet('{escaped}')")
+        old_cols = [r[0] for r in con.sql("DESCRIBE _old").fetchall()]
+
+        # A key the file predates (`source`, before normalize_price_schema.py) reads
+        # as NULL, the value the pandas version materialised for it. NULL, not a
+        # label: `init_local_db.py` derives is_backfilled from the equivalence of
+        # `source IS NULL` and `day < '2026-01-01'`.
+        def old_key(k):
+            return f'o."{k}"' if k in old_cols else "NULL"
+
+        match = " AND ".join(f'{old_key(k)} IS NOT DISTINCT FROM n."{k}"' for k in dedup_keys)
+        kept = f"SELECT o.* FROM _old o WHERE NOT EXISTS (SELECT 1 FROM _new n WHERE {match})"
+        if "ingested_at" in new_cols and "ingested_at" in old_cols:
+            first = f"least(n.ingested_at, (SELECT min(o.ingested_at) FROM _old o WHERE {match}))"
+            incoming = f"SELECT n.* EXCLUDE (_pos) REPLACE ({first} AS ingested_at) FROM _new n"
+        else:
+            incoming = "SELECT n.* EXCLUDE (_pos) FROM _new n"
+        columns = old_cols + [c for c in new_cols if c not in old_cols]
+        _write_parquet(con, path, f"{kept} UNION ALL BY NAME {incoming}", columns, dedup_keys)
+        total = con.sql(f"SELECT count(*) FROM read_parquet('{escaped}')").fetchone()[0]
+        print(f"  {path.name}: {len(new_data)} appended, {total} total")
     finally:
         con.close()
 

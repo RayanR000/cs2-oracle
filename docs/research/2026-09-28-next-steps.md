@@ -14,6 +14,10 @@ directional product claim, a fourth band-width denominator, or a serving ranker.
 
 ## State on 2026-10-09
 
+- **The daily archive append merges in DuckDB (performance review §4).** On the real
+  September file, the old and new outputs are identical, at 0.99 s vs 2.67 s, half the peak memory and a 61%
+  smaller file (ZSTD, sorted). It ships ahead of the 10-31 month-end peak.
+  `changelog/2026-10-09-archive-append-in-duckdb.md`.
 - **Date-overlap sensitivity is fixed ahead of the October reads (items 4 and 22).** The frozen
   iid date bootstraps stay. `scripts/date_dependence_sensitivity.py` adds moving-block and HAC
   rows beside them under a downgrade-only rule. Measured on pre-window dates, the h=7

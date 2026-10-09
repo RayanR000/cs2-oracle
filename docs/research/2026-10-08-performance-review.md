@@ -72,12 +72,12 @@ Also, smaller:
 
 ### 4. Archive writes
 
-- `scripts/append_to_parquet.py:243-281` rewrites the month through pandas. Measured 6.4 s /
+- **Done 10-09.** `scripts/append_to_parquet.py:243-281` rewrites the month through pandas. Measured 6.4 s /
   5.7 GB → 0.7 s / 0.46 GB with a DuckDB anti-join, identical row set. Use `least()` on
   `ingested_at` to keep first-arrival. Peak memory reaches ~7 GB at month end.
-- ZSTD plus `ORDER BY source, item_slug, day`: measured 168 MB → 104 MB (−38%) across the
+- **Done 10-09 for files the daily writer rewrites.** ZSTD plus `ORDER BY source, item_slug, day`: measured 168 MB → 104 MB (−38%) across the
   price files. ZSTD alone, with no reordering risk, is −26%.
-- `collectors/pipeline.py:181-189`, `:243-250` build ~380k `PriceHistory` ORM objects that are
+- **Done 10-09.** `collectors/pipeline.py:181-189`, `:243-250` build ~380k `PriceHistory` ORM objects that are
   never persisted. Measured 2.1 s and +457 MB.
 
 ### 5. Dead or redundant workflow work
