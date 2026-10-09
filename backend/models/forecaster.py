@@ -1594,6 +1594,22 @@ class ItemForecaster:
         return RANKING_HEAD_ENABLED
 
     @staticmethod
+    def _centre_objective_params(horizon: int, quantile: float) -> dict:
+        """The centre booster's loss at `horizon`, from `CENTRE_OBJECTIVE_MAP`.
+
+        The one definition every centre fit reads: Optuna, the HP-reuse and
+        fresh-search production paths, and the CV fold loop. CV used to force
+        quantile at every horizon, so the 30d OOF residuals behind `q_hat` came
+        from an MAE model while the served 30d centre was MSE.
+        """
+        hz_obj = CENTRE_OBJECTIVE_MAP.get(horizon, "quantile")
+        if hz_obj == "regression":
+            return {"objective": "regression", "metric": "l2"}
+        if hz_obj == "huber":
+            return {"objective": "huber", "alpha": 1.0, "metric": "huber"}
+        return {"objective": "quantile", "alpha": quantile, "metric": "quantile"}
+
+    @staticmethod
     def exceedance_head_enabled() -> bool:
         """Whether to TRAIN the exceedance head as a disclosed per-item output,
         independent of whether the band uses it as a width scale.
@@ -4987,13 +5003,7 @@ class ItemForecaster:
             else:
                 _max_depth = trial.suggest_int("max_depth", 3, 8)
                 _lambda_l2 = trial.suggest_float("lambda_l2", 0.0, 2.0, step=0.5)
-            hz_obj = CENTRE_OBJECTIVE_MAP.get(horizon, "quantile")
-            if hz_obj == "regression":
-                obj_params = {"objective": "regression", "metric": "l2"}
-            elif hz_obj == "huber":
-                obj_params = {"objective": "huber", "alpha": 1.0, "metric": "huber"}
-            else:
-                obj_params = {"objective": "quantile", "alpha": quantile, "metric": "quantile"}
+            obj_params = self._centre_objective_params(horizon, quantile)
             params = {
                 "feature_pre_filter": False,
                 **obj_params,
@@ -7219,19 +7229,8 @@ class ItemForecaster:
                     bp["feature_pre_filter"] = False
                     bp["device"] = "cuda" if _gpu_available() else "cpu"
                     bp["boosting_type"] = boosting_type
-                    hz_obj = CENTRE_OBJECTIVE_MAP.get(horizon, "quantile")
-                    if hz_obj == "regression":
-                        bp["objective"] = "regression"
-                        bp["metric"] = "l2"
-                        bp.pop("alpha", None)
-                    elif hz_obj == "huber":
-                        bp["objective"] = "huber"
-                        bp["alpha"] = 1.0
-                        bp["metric"] = "huber"
-                    else:
-                        bp["objective"] = "quantile"
-                        bp["alpha"] = q
-                        bp["metric"] = "quantile"
+                    bp.pop("alpha", None)
+                    bp.update(self._centre_objective_params(horizon, q))
                     # Rewrites row sampling from the current strategy and drops
                     # any GOSS keys a pre-2026-07-29 meta.json cached for q50.
                     self._apply_row_sampling(bp, q)
@@ -7244,13 +7243,7 @@ class ItemForecaster:
 
                 base_params_by_q = {}
                 for q in self.QUANTILES:
-                    hz_obj = CENTRE_OBJECTIVE_MAP.get(horizon, "quantile")
-                    if hz_obj == "regression":
-                        obj_params = {"objective": "regression", "metric": "l2"}
-                    elif hz_obj == "huber":
-                        obj_params = {"objective": "huber", "alpha": 1.0, "metric": "huber"}
-                    else:
-                        obj_params = {"objective": "quantile", "alpha": q, "metric": "quantile"}
+                    obj_params = self._centre_objective_params(horizon, q)
                     base_params_by_q[q] = {
                         "device": device,
                         "feature_pre_filter": False,
@@ -10577,9 +10570,10 @@ class ItemForecaster:
 
                 # LGB
                 params = per_quantile_params.get(q, {}).copy()
-                params["objective"] = "quantile"
-                params["alpha"] = q
-                params["metric"] = "quantile"
+                # The served centre's loss, not a hard-coded quantile: these
+                # fold predictions are the OOF residuals `q_hat` is fitted on.
+                params.pop("alpha", None)
+                params.update(self._centre_objective_params(horizon, q))
                 params["verbosity"] = -1
                 params["n_jobs"] = -1
                 params["random_state"] = 42
