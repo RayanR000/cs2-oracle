@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import sys
 from datetime import date, datetime, timedelta
 from pathlib import Path
 
@@ -921,7 +922,6 @@ def test_reresolve_overrides_the_freeze(session, monkeypatch):
     assert bt._store_forecast_outcomes(session, [revised], reresolve=True, considered_ids={8}) == 1
 
     assert session.query(ForecastOutcome).filter_by(forecast_id=8).one().actual_price == 99.0
-
 
 
 def test_tier_rows_partition_the_all_row():
@@ -2069,7 +2069,7 @@ def test_the_refresh_streams_in_bounded_flushes_and_never_re_reads_a_row(session
     monkeypatch.setattr(backtest_accuracy, "REFRESH_FLUSH", 5)
     # Read pages smaller than the flush size, to prove flushes land on batch
     # boundaries and the keyset walk survives the commits in between.
-    monkeypatch.setattr(backtest_accuracy, "CHUNK", 3)
+    monkeypatch.setattr(backtest_accuracy, "OUTCOME_PAGE", 3)
 
     selects = []
     conn = session.connection().engine
@@ -2090,7 +2090,7 @@ def test_the_refresh_streams_in_bounded_flushes_and_never_re_reads_a_row(session
     flushed = [len(rows_) for _, rows_, _ in calls]
     assert flushed == [6, 6]
     assert sum(flushed) == 12
-    assert all(n <= backtest_accuracy.REFRESH_FLUSH + backtest_accuracy.CHUNK for n in flushed)
+    assert all(n <= backtest_accuracy.REFRESH_FLUSH + backtest_accuracy.OUTCOME_PAGE for n in flushed)
 
     # The write side re-reads nothing. Only the keyset walk selects: 12 rows at
     # 3 per page is 4 pages plus the terminating empty page.
@@ -2128,6 +2128,105 @@ def test_the_rescore_walk_does_not_materialize_the_whole_table(session, tmp_path
 
     assert sorted(seen) == list(range(1, 13))
     assert len(seen) == len(set(seen))
+
+
+def _twelve_frozen(session, tmp_path, monkeypatch):
+    rows = []
+    for i in range(12):
+        rows += [(f"ak{i}", date(2026, 7, d), 3.0) for d in range(3, 9)]
+        _seed(session, i + 1, f"ak{i}", current_price=3.0, price_mid=3.0)
+    session.commit()
+    _run_backtest(session, _write_archive(tmp_path, rows), monkeypatch)
+
+
+def test_a_restricted_walk_filters_each_page_and_skips_empty_ones(session, tmp_path, monkeypatch):
+    """The id restriction is applied per keyset page in Python, not as IN
+    lists. Every kept row comes back once, and a page with nothing kept is not
+    yielded as an empty batch."""
+    from scripts import backtest_accuracy
+
+    _twelve_frozen(session, tmp_path, monkeypatch)
+    keep = {2, 3, 11}
+
+    batches = list(backtest_accuracy._iter_outcome_rows(session, forecast_ids=keep, batch=3))
+
+    assert all(batches), "an empty page was yielded"
+    assert sorted(r.forecast_id for b in batches for r in b) == sorted(keep)
+
+
+def test_restricted_scoring_records_match_the_unrestricted_read_filtered(session, tmp_path, monkeypatch):
+    """The paged read keeps exactly the rows the old IN-list read did, in
+    `forecast_outcomes.id` order, across page boundaries."""
+    from scripts import backtest_accuracy
+
+    _twelve_frozen(session, tmp_path, monkeypatch)
+    monkeypatch.setattr(backtest_accuracy, "OUTCOME_PAGE", 5)
+    keep = {1, 4, 5, 6, 12}
+
+    def flat(groups):
+        return {k: [r["item_id"] for r in v] for k, v in groups.items()}
+
+    restricted = flat(backtest_accuracy._records_from_frozen_outcomes(session, forecast_ids=keep))
+    full = backtest_accuracy._records_from_frozen_outcomes(session)
+    filtered = {k: [r["item_id"] for r in v if r["item_id"] in keep] for k, v in full.items()}
+
+    assert restricted == {k: v for k, v in filtered.items() if v}
+    assert sum(len(v) for v in restricted.values()) == len(keep)
+
+
+def test_the_daily_run_hands_only_new_outcomes_to_the_freeze(session, tmp_path, monkeypatch):
+    """Frozen rows used to be passed to the freeze only to be filtered out
+    again, by an existence re-check over the whole mature cohort. A second run
+    with one new forecast must hand the freeze that one outcome."""
+    from scripts import backtest_accuracy
+
+    rows = []
+    for i in range(4):
+        rows += [(f"ak{i}", date(2026, 7, d), 3.0) for d in range(3, 9)]
+    for i in range(3):
+        _seed(session, i + 1, f"ak{i}", current_price=3.0, price_mid=3.0)
+    session.commit()
+    archive = _write_archive(tmp_path, rows)
+    _run_backtest(session, archive, monkeypatch)
+    assert session.query(ForecastOutcome).count() == 3
+
+    _seed(session, 4, "ak3", current_price=3.0, price_mid=3.0)
+    session.commit()
+
+    handed = []
+    real_store = backtest_accuracy._store_forecast_outcomes
+
+    def store(db, outcomes, **kw):
+        handed.append([o["forecast_id"] for o in outcomes])
+        return real_store(db, outcomes, **kw)
+
+    monkeypatch.setattr(backtest_accuracy, "_store_forecast_outcomes", store)
+    _run_backtest(session, archive, monkeypatch)
+
+    assert handed == [[4]]
+    assert session.query(ForecastOutcome).count() == 4
+
+
+def test_bias_update_is_off_unless_asked_for(monkeypatch):
+    """CI never restores saved_models, so the fit's output was discarded with
+    the runner. It runs only on --update-bias."""
+    from scripts import backtest_accuracy
+
+    seen = {}
+
+    def run_backtest(types, **kw):
+        seen.update(kw)
+        return {"status": "success"}
+
+    monkeypatch.setattr(backtest_accuracy, "run_backtest", run_backtest)
+
+    monkeypatch.setattr(sys, "argv", ["backtest_accuracy.py", "--type", "forecast"])
+    backtest_accuracy.main()
+    assert seen["update_bias"] is False
+
+    monkeypatch.setattr(sys, "argv", ["backtest_accuracy.py", "--type", "forecast", "--update-bias"])
+    backtest_accuracy.main()
+    assert seen["update_bias"] is True
 
 
 def test_the_refreshed_mirror_row_replaces_the_stale_one_in_a_real_parquet_file(session, tmp_path, monkeypatch):

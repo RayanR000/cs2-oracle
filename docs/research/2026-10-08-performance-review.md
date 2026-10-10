@@ -30,7 +30,8 @@ The longest step in the daily chain. Cost is O(all history) per day for ~22K new
 - ✔ `update_bias = True` by default (`:1519`). The job never restores `saved_models`, and the
   `bias_corrections.json` it writes is discarded with the runner.
 
-Fix: anti-join to fetch only unfrozen mature forecasts and unresolved candidates; one streamed
+**Done 10-10 for the outcome reads and `update_bias`** (`changelog/2026-10-10-backtest-outcome-reads-paged.md`);
+candidate resolution is still open. Fix: anti-join to fetch only unfrozen mature forecasts and unresolved candidates; one streamed
 refresh-and-score read; vote once via DuckDB for the union window, then slice back per group
 before `stale_run_lookup`; default `update_bias` off. The SQL vote differs from pandas on 17 of
 6.58M rows, all sub-$1 — needs an equivalence test and a changelog note.

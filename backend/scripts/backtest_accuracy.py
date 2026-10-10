@@ -55,7 +55,7 @@ from backtest.scoring import (
 )
 from database import PredictionAccuracy, SessionLocal
 from models.staleness import stale_run_lookup
-from sqlalchemy import bindparam, select, text
+from sqlalchemy import select, text
 
 # Re-exported so the gate's threshold has one definition. The gate itself —
 # and the reason it needs two ratios rather than one — lives in
@@ -65,6 +65,11 @@ MAX_UNRESOLVABLE_PCT = _MAX_UNRESOLVABLE_PCT
 # SQLite's bind-parameter cap is 999; every chunked statement in this file uses
 # the same conservative batch size.
 CHUNK = 900
+# Keyset page size for whole-table walks of forecast_outcomes. A restricted read
+# used to send its id set as 900-id IN lists, ~1,000 round trips per read against
+# a ~930k-row table, and the daily run made four of them (~6.5 min in run
+# 38016621198). A walk filtered in Python reads the same rows in ~20 pages.
+OUTCOME_PAGE = 50_000
 
 # The verdict columns: derived from the frozen actuals, never observations in
 # their own right. Task 8c refreshes exactly these (plus evaluated_at) whenever
@@ -294,32 +299,33 @@ def _iter_outcome_rows(db, forecast_ids=None, batch=None):
     plain strings, which would then be written into the Parquet mirror as
     VARCHAR against the existing TIMESTAMP columns.
 
-    With no id restriction the table is walked by keyset pagination on the
-    primary key rather than materialized whole — --rescore covers every row
-    ever resolved. The refresh never writes `id`, so the keyset is stable
-    across the commits that happen mid-walk.
+    The table is walked by keyset pagination on the primary key rather than
+    materialized whole — --rescore covers every row ever resolved. The refresh
+    never writes `id`, so the keyset is stable across the commits that happen
+    mid-walk.
+
+    A *forecast_ids* restriction is applied in Python to each page, not as SQL
+    IN lists. The daily caller passes every mature forecast, which is nearly the
+    whole table, and 900-id IN lists made that ~1,000 round trips. A page whose
+    rows all fall outside the restriction is skipped, never yielded empty.
     """
     from database import ForecastOutcome
 
     tbl = ForecastOutcome.__table__
-    batch = batch or CHUNK
+    batch = batch or OUTCOME_PAGE
+    keep = None if forecast_ids is None else set(forecast_ids)
 
-    if forecast_ids is None:
-        last_id = -1
-        while True:
-            rows = db.execute(select(tbl).where(tbl.c.id > last_id).order_by(tbl.c.id).limit(batch)).fetchall()
-            if not rows:
-                return
-            last_id = rows[-1].id
-            yield rows
-            if len(rows) < batch:
-                return
-    else:
-        ids = list(forecast_ids)
-        for i in range(0, len(ids), batch):
-            rows = db.execute(select(tbl).where(tbl.c.forecast_id.in_(ids[i : i + batch]))).fetchall()
-            if rows:
-                yield rows
+    last_id = -1
+    while True:
+        rows = db.execute(select(tbl).where(tbl.c.id > last_id).order_by(tbl.c.id).limit(batch)).fetchall()
+        if not rows:
+            return
+        last_id = rows[-1].id
+        page = rows if keep is None else [r for r in rows if r.forecast_id in keep]
+        if page:
+            yield page
+        if len(rows) < batch:
+            return
 
 
 def _id_to_slug(db) -> dict:
@@ -597,7 +603,12 @@ def _store_forecast_outcomes(db, outcomes, reresolve: bool = False, considered_i
 
     append_table("forecast_outcomes", mirror, ["forecast_id"])
 
-    logger.info(f"  Resolved {len(to_write):,} new outcomes ({len(outcomes) - len(to_write):,} already frozen)")
+    n_skipped = len(outcomes) - len(to_write)
+    # The daily caller passes only unfrozen forecasts, so a non-zero skip means
+    # an outcome was frozen between the caller's read and this one.
+    logger.info(
+        f"  Resolved {len(to_write):,} new outcomes" + (f" ({n_skipped:,} already frozen)" if n_skipped else "")
+    )
     return len(to_write)
 
 
@@ -618,8 +629,9 @@ def _records_from_frozen_outcomes(db, min_price=0, forecast_ids=None):
     `confidence` is not on ForecastOutcome, so it is joined back from
     item_forecasts.
 
-    forecast_ids: optional restriction to a set of forecast ids, applied as a
-        chunked SQL IN list (900 per batch, under the SQLite bind-parameter cap).
+    forecast_ids: optional restriction to a set of forecast ids, applied in
+        Python to each keyset page (see _iter_outcome_rows for why not IN lists).
+        Rows come back in `forecast_outcomes.id` order either way.
 
     Rows that cannot be scored — a missing or non-positive base_price or
     actual_price, or a missing predicted_price_mid — are dropped, but never
@@ -630,23 +642,29 @@ def _records_from_frozen_outcomes(db, min_price=0, forecast_ids=None):
     log and not a raise — legacy rows predate the freeze and must not block the
     backfill.
     """
-    select_sql = """
-        SELECT o.forecast_id, o.item_id, o.horizon_days, o.model_version,
+    page_sql = text("""
+        SELECT o.id, o.forecast_id, o.item_id, o.horizon_days, o.model_version,
                o.forecast_date, o.base_price, o.actual_price, o.current_price,
                o.predicted_price_low, o.predicted_price_mid,
                o.predicted_price_high, o.direction_predicted, f.confidence,
                f.model_version AS forecast_model_version
         FROM forecast_outcomes o
         LEFT JOIN item_forecasts f ON f.id = o.forecast_id
-    """
-    if forecast_ids is None:
-        rows = db.execute(text(select_sql)).fetchall()
-    else:
-        stmt = text(select_sql + " WHERE o.forecast_id IN :ids").bindparams(bindparam("ids", expanding=True))
-        ids = list(forecast_ids)
-        rows = []
-        for i in range(0, len(ids), 900):
-            rows.extend(db.execute(stmt, {"ids": ids[i : i + 900]}).fetchall())
+        WHERE o.id > :last_id
+        ORDER BY o.id
+        LIMIT :page
+    """)
+    keep = None if forecast_ids is None else set(forecast_ids)
+    rows = []
+    last_id = -1
+    while True:
+        page = db.execute(page_sql, {"last_id": last_id, "page": OUTCOME_PAGE}).fetchall()
+        if not page:
+            break
+        last_id = page[-1].id
+        rows.extend(page if keep is None else (r for r in page if r.forecast_id in keep))
+        if len(page) < OUTCOME_PAGE:
+            break
 
     n_unusable = 0
     n_below_min_price = 0
@@ -818,7 +836,9 @@ def _resolve_candidates(db, today, archive_dir, reresolve=False, rescore=False):
     from backtest.candidate_resolution import resolve_candidate_outcomes
 
     try:
-        return resolve_candidate_outcomes(db, today=today, archive_dir=archive_dir, reresolve=reresolve, rescore=rescore)
+        return resolve_candidate_outcomes(
+            db, today=today, archive_dir=archive_dir, reresolve=reresolve, rescore=rescore
+        )
     except RuntimeError:
         raise
     except Exception as e:
@@ -1011,12 +1031,11 @@ def _score_groups(groups, today):
 
 
 def _outcome_to_mapping(row):
-    """An already-frozen ForecastOutcome ORM row as an outcome dict.
+    """A stored forecast_outcomes row as an outcome dict: the whole row.
 
-    The whole mature cohort — frozen rows included — is handed to
-    _store_forecast_outcomes each run so that the freeze is enforced in exactly
-    one place and its "already frozen" count is the truth. Only the rows the
-    freeze lets through are written.
+    The verdict refresh builds each refreshed row's Parquet mirror entry from
+    it, and append_table replaces whole rows, so every stored column has to be
+    carried through.
     """
     return {
         "forecast_id": row.forecast_id,
@@ -1137,8 +1156,6 @@ def backtest_forecasts(db, today=None, min_price=0, reresolve=False, rescore=Fal
 
     logger.info(f"  Found {len(mature)} mature forecasts to evaluate")
 
-    from database import ForecastOutcome
-
     mature_ids = [r.id for r in mature]
 
     # Forecasts that already have a frozen outcome are NOT re-resolved. Their
@@ -1146,12 +1163,16 @@ def backtest_forecasts(db, today=None, min_price=0, reresolve=False, rescore=Fal
     # the archive is only read for what is genuinely new. --reresolve is the
     # deliberate exception: it re-reads the archive for the whole cohort and
     # overwrites, which is what Task 9's backfill needs.
-    frozen_rows = []
+    #
+    # One read of the id column, intersected here. It used to fetch every
+    # frozen row as an ORM object in 900-id IN lists (97 s in run 38016621198),
+    # only to hand them to the freeze, which filtered them straight back out.
+    frozen_ids = set()
     if not reresolve:
-        for i in range(0, len(mature_ids), 900):
-            batch = mature_ids[i : i + 900]
-            frozen_rows.extend(db.query(ForecastOutcome).filter(ForecastOutcome.forecast_id.in_(batch)).all())
-    frozen_ids = {o.forecast_id for o in frozen_rows}
+        mature_set = set(mature_ids)
+        frozen_ids = {
+            fid for (fid,) in db.execute(text("SELECT forecast_id FROM forecast_outcomes")) if fid in mature_set
+        }
     to_resolve = [r for r in mature if r.id not in frozen_ids]
     logger.info(f"  {len(frozen_ids):,} already frozen, {len(to_resolve):,} to resolve")
 
@@ -1408,10 +1429,12 @@ def backtest_forecasts(db, today=None, min_price=0, reresolve=False, rescore=Fal
     if not gate.ok:
         raise RuntimeError(gate.reason)
 
-    # The whole mature cohort goes through the freeze, which writes only what is
-    # new. Passing the frozen rows too keeps the freeze the single gate on the
-    # table, and the table is what gets scored below.
-    all_outcomes = [_outcome_to_mapping(o) for o in frozen_rows] + new_outcomes
+    # Only the new outcomes go through the freeze. It is still the single gate
+    # on the table: it re-checks each id for an existing row and writes only
+    # what has none. The frozen rows used to be passed too, and that existence
+    # re-check over ~930k ids was most of the store step's 89 s; every one of
+    # them was filtered out, since `to_resolve` already excludes frozen ids.
+    all_outcomes = new_outcomes
     # Under --reresolve there is work to do even with nothing resolved: the
     # considered forecasts still have stale stored rows to remove.
     if all_outcomes or (reresolve and considered_ids):
@@ -1516,7 +1539,10 @@ def main():
     args = list(sys.argv[1:])
     types = None
     min_price = 0.0
-    update_bias = True
+    # Off by default. CI never restores saved_models, so the fit wrote
+    # bias_corrections.json to a runner that is then discarded (run
+    # 38016621198: "No saved models found"). Pass --update-bias to fit locally.
+    update_bias = False
     reresolve = "--reresolve" in args
     rescore = "--rescore" in args
     i = 0
