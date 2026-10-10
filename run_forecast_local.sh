@@ -180,7 +180,7 @@ esac
 
 if [ "$RUN_BACKTEST" -eq 1 ] && [ "$MODE" != "train-only" ]; then
   echo "== [4/6] Resolve matured forecasts (backtest) =="
-  "$PY" scripts/backtest_accuracy.py --type forecast 2>&1 | tee backtest.log
+  "$PY" scripts/backtest_accuracy.py --type forecast --update-bias 2>&1 | tee backtest.log
   # Read-only against prod Postgres. The script moved to scripts/archive/ in the
   # 09-22 cleanup; the old path skipped this gate silently until 2026-09-30.
   # Absent is still not a failure, so say so and carry on.
