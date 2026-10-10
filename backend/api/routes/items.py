@@ -35,7 +35,13 @@ from api.schemas import (
     VolatilityRankOut,
     parse_item_name,
 )
-from api.serving_policy import MIN_SERVED_PRICE_USD, SERVED_HORIZONS, price_floor_clause, served_direction
+from api.serving_policy import (
+    MAX_ARCHIVE_LAG_DAYS,
+    MIN_SERVED_PRICE_USD,
+    SERVED_HORIZONS,
+    price_floor_clause,
+    served_direction,
+)
 from api.volatility_tags import (
     CALIBRATED_MOVE_ODDS_HORIZONS,
     build_ranking,
@@ -50,13 +56,6 @@ router = APIRouter(prefix="/items", tags=["items"])
 _DB_DEP = Depends(get_db)
 
 logger = logging.getLogger(__name__)
-
-# How far behind the calendar a forecast's anchor day may sit before the
-# trending list treats it as stale. Forecasts are stamped with the day the band
-# was anchored on (the newest archived day), which lags `date.today()` because
-# the daily dump lands ~22:00 UTC; this window absorbs that lag plus a missed
-# run or two. Mirrors the archive's own staleness span (MAX_WINDOW_SPAN_DAYS).
-MAX_ARCHIVE_LAG_DAYS = 7
 
 
 def _resolve_item(item_id: str, db: Session) -> Item:
