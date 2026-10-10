@@ -12,6 +12,17 @@ the day. The rest restate what the cited doc says. Where the docs conflict, the 
 **Standing constraint:** this is a range forecaster (`AGENTS.md`). Nothing below proposes a
 directional product claim, a fourth band-width denominator, or a serving ranker. See §7.
 
+## State on 2026-10-10
+
+- **API read paths (performance review, API section).** Migration 0030 drops the duplicate
+  `idx_forecast_item_date` and adds `(horizon_days, forecast_date DESC) INCLUDE (item_id)` and
+  an `evaluated_at` index on `forecast_outcomes`. `/opportunities` gets the 7-day freshness floor
+  `/items/trending` already had, `/momentum` is cached and rejects unserved horizons, and
+  responses are gzipped at level 5. No forecast or band change.
+  `changelog/2026-10-10-api-read-indexes-and-gzip.md`.
+- **h=30 feedback factor still asleep (verified 10-10).** The 10-10 predict run logs no
+  `Served-coverage factors` line (item 8).
+
 ## State on 2026-10-09
 
 - **The daily archive append merges in DuckDB (performance review §4).** On the real

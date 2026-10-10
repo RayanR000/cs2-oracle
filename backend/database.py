@@ -219,8 +219,12 @@ class ItemForecast(Base):
     item = relationship("Item", back_populates="forecasts")
 
     __table_args__ = (
-        Index("idx_forecast_item_date", "item_id", "forecast_date", "horizon_days"),
         UniqueConstraint("item_id", "forecast_date", "horizon_days", name="uq_item_forecast_date_horizon"),
+        # Serves "latest forecast per item at horizon h" (the API's distinct-on
+        # reads). The unique constraint leads on item_id, so it cannot. The
+        # DESC/INCLUDE spelling lives in migration 0030; the model keeps the
+        # portable column list.
+        Index("idx_forecast_horizon_date", "horizon_days", "forecast_date"),
     )
 
 
@@ -416,6 +420,7 @@ class ForecastOutcome(Base):
     __table_args__ = (
         Index("idx_outcome_item_eval", "item_id", "evaluated_at"),
         Index("idx_outcome_correct", "direction_correct", "evaluated_at"),
+        Index("idx_outcome_evaluated_at", "evaluated_at"),
     )
 
 

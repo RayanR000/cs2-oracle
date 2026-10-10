@@ -10,6 +10,7 @@ from config import settings
 from database import init_db
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.middleware.gzip import GZipMiddleware
 
 
 @asynccontextmanager
@@ -35,6 +36,9 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+# /accuracy/summary is ~1.7 MB of JSON raw, ~120 KB gzipped. Level 5 measured 6 ms
+# against 29 ms at level 9 for nearly the same size (performance review 2026-10-08).
+app.add_middleware(GZipMiddleware, minimum_size=1000, compresslevel=5)
 
 app.include_router(items.router)
 app.include_router(opportunities.router)
@@ -53,7 +57,7 @@ async def cache_control_middleware(request, call_next):
         return response
     # Data changes once daily (collection 23:00 UTC, analysis ~03:00 UTC);
     # let browsers reuse responses across navigation instead of refetching.
-    if path.startswith(("/items/", "/market/", "/events/", "/opportunities/")):
+    if path.startswith(("/items/", "/market/", "/events/", "/opportunities/", "/accuracy/")):
         response.headers["Cache-Control"] = "public, max-age=300, stale-while-revalidate=600"
     elif path == "/health":
         response.headers["Cache-Control"] = "public, max-age=5"
