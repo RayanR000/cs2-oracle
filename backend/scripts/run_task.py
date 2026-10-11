@@ -20,9 +20,29 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(name)s - %(level
 logger = logging.getLogger("task_runner")
 
 
+def _postgres_read_only() -> bool:
+    """True only when the configured database is Postgres and reports read-only."""
+    from database import engine
+    from sqlalchemy import text
+
+    if engine.dialect.name != "postgresql":
+        return False
+    with engine.connect() as conn:
+        return conn.execute(text("SHOW default_transaction_read_only")).scalar() == "on"
+
+
 def run_migrations(revision="head"):
     """Run Alembic migrations using the current Python interpreter."""
     cmd = [sys.executable, "-m", "alembic", "upgrade", revision]
+
+    # A read-only Postgres fails every DDL, and this is the Aggregator's first step,
+    # so it would stop the day's collection and the Price Forecast chained off it.
+    # Skip loudly instead (db/read_only.py).
+    if _postgres_read_only():
+        from db.read_only import report_read_only
+
+        report_read_only(f"alembic upgrade {revision}")
+        return {"status": "success", "revision": revision, "skipped_read_only": True}
 
     try:
         logger.info(f"Running migrations: {' '.join(cmd)}")

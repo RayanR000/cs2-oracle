@@ -11173,6 +11173,19 @@ class ItemForecaster:
     # Concept drift monitoring
     # ------------------------------------------------------------------
 
+    def _commit_alert(self, what: str) -> None:
+        """Commit a drift alert; a read-only Postgres skips it rather than failing the run
+        before predict (db/read_only.py)."""
+        from db.read_only import is_read_only_error, report_read_only
+
+        try:
+            self.db.commit()
+        except Exception as e:
+            if not is_read_only_error(e):
+                raise
+            self.db.rollback()
+            report_read_only(what)
+
     def check_concept_drift(
         self, horizon: int = 7, sliding_window: int = 7, threshold: float | None = None
     ) -> dict | None:
@@ -11254,7 +11267,7 @@ class ItemForecaster:
             )
             if open_alert:
                 open_alert.resolved_at = datetime.now(UTC).replace(tzinfo=None)
-                self.db.commit()
+                self._commit_alert("the accuracy_alerts resolve")
                 logger.info(f"  Drift resolved: accuracy back to {recent_avg:.1f}%")
             return {"drifted": False, "accuracy": recent_avg, "threshold": threshold}
 
@@ -11270,7 +11283,7 @@ class ItemForecaster:
             details={"window_accuracies": accuracies},
         )
         self.db.add(alert)
-        self.db.commit()
+        self._commit_alert("the accuracy_alerts insert")
         logger.warning(f"  DRIFT DETECTED ({horizon}d): accuracy={recent_avg:.1f}% below threshold={threshold:.1f}%")
         return {"drifted": True, "accuracy": recent_avg, "threshold": threshold}
 

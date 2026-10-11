@@ -27,6 +27,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 import contextlib
 
 from database import ItemForecast, SessionLocal
+from db.read_only import is_read_only_error, report_read_only
 from models import serve_universe
 from models.forecaster import IncompatibleModelArtifact, ItemForecaster
 from sqlalchemy import text
@@ -364,6 +365,24 @@ def _write_forecasts_to_db(
             )
 
     if forecast_rows:
+        # The Parquet mirror carries the slug as well as the surrogate id. The
+        # price archive keys on item_slug, so without it a forecast cannot be
+        # joined to its own price history without a round-trip to Supabase.
+        # Mirror only: `forecast_rows` is the DB payload below and ItemForecast
+        # has no such column.
+        #
+        # Written BEFORE Postgres: prod Supabase is over its free-tier cap and can
+        # go read-only, and a forecast written nowhere cannot be recreated
+        # (db/read_only.py).
+        id_to_slug = {v: k for k, v in slug_to_id.items()}
+        from db.parquet import append_table
+
+        append_table(
+            "item_forecasts",
+            [{**r, "item_slug": id_to_slug.get(r["item_id"]), "model_config": model_config} for r in forecast_rows],
+            ["item_id", "forecast_date", "horizon_days"],
+        )
+
         # Verify DB connection is still alive before the batch insert loop.
         # Training can take >1h, and the connection may have gone stale.
         try:
@@ -414,7 +433,10 @@ def _write_forecasts_to_db(
         )
 
         batch_size = 90 if is_sqlite else 5000
+        read_only = False
         for i in range(0, len(db_rows), batch_size):
+            if read_only:
+                break
             batch = db_rows[i : i + batch_size]
             stmt = insert_stmt(table).values(batch)
             excluded = stmt.excluded
@@ -435,6 +457,11 @@ def _write_forecasts_to_db(
                     db.commit()
                     break
                 except Exception as e:
+                    if is_read_only_error(e):
+                        db.rollback()
+                        report_read_only(f"the item_forecasts write ({len(db_rows)} rows)")
+                        read_only = True
+                        break
                     if attempt < max_retries - 1:
                         logger.warning(
                             f"  Batch insert failed (attempt {attempt + 1}/{max_retries}), reconnecting and retrying: {e}"
@@ -448,20 +475,6 @@ def _write_forecasts_to_db(
                         logger.error(f"  Batch insert failed after {max_retries} attempts: {e}")
                         db.rollback()
                         raise
-
-        # The Parquet mirror carries the slug as well as the surrogate id. The
-        # price archive keys on item_slug, so without it a forecast cannot be
-        # joined to its own price history without a round-trip to Supabase.
-        # Mirror only: `forecast_rows` is the DB payload above and ItemForecast
-        # has no such column.
-        id_to_slug = {v: k for k, v in slug_to_id.items()}
-        from db.parquet import append_table
-
-        append_table(
-            "item_forecasts",
-            [{**r, "item_slug": id_to_slug.get(r["item_id"]), "model_config": model_config} for r in forecast_rows],
-            ["item_id", "forecast_date", "horizon_days"],
-        )
 
     return len(forecast_rows)
 
@@ -496,7 +509,14 @@ def _write_shadow_candidates(db, forecaster, slug_to_id, forecast_date_override=
         remapped.append(record)
     if not remapped:
         return 0, 0, 0, 0
-    result = write_candidate_batches(db, remapped)
+    try:
+        result = write_candidate_batches(db, remapped)
+    except Exception as e:
+        if not is_read_only_error(e):
+            raise
+        db.rollback()
+        report_read_only(f"the forecast_candidates write ({len(remapped)} shadow rows; no Parquet mirror)")
+        return 0, 0, 0, 0
     logger.info(
         f"Wrote {result.centre_written} centre + {result.ranking_written} ranking shadow candidates "
         f"({result.batches_written}/{result.batches_expected} batches)"
