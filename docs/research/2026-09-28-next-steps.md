@@ -20,6 +20,11 @@ directional product claim, a fourth band-width denominator, or a serving ranker.
   `/items/trending` already had, `/momentum` is cached and rejects unserved horizons, and
   responses are gzipped at level 5. No forecast or band change.
   `changelog/2026-10-10-api-read-indexes-and-gzip.md`.
+- **Backtest outcome reads paged (performance review §1).** The frozen check, the store, and
+  the verdict-refresh and scoring reads no longer send ~1,000 900-id `IN` lists each, and
+  `update_bias` is off by default (its output never left the runner). Checked against prod:
+  identical frozen ids, records and every point metric; only the iid bootstrap bounds move
+  (row order). `changelog/2026-10-10-backtest-outcome-reads-paged.md`.
 - **h=30 feedback factor still asleep (verified 10-10).** The 10-10 predict run logs no
   `Served-coverage factors` line (item 8).
 
