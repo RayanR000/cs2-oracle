@@ -119,16 +119,18 @@ Also, smaller:
 Every route is a sync `def`, so nothing blocks the event loop, and there is no N+1.
 `price_history` is stale (the aggregator writes Parquet only), so those routes' costs are latent.
 
-- ✔ `idx_forecast_item_date` duplicates `uq_item_forecast_date_horizon` (`database.py:222-223`).
+- **Done 10-10 (migration 0030).** ✔ `idx_forecast_item_date` duplicates `uq_item_forecast_date_horizon` (`database.py:222-223`).
   Drop it, and add `(horizon_days, forecast_date DESC) INCLUDE (item_id)`.
   `_latest_forecasts` in `opportunities.py:68-96` also has no date floor.
-- `/opportunities/momentum` is uncached, and accepts horizons with no rows.
+- **Done 10-10.** `/opportunities/momentum` is uncached, and accepts horizons with no rows.
 - `get_or_build` has no single-flight lock, and the TTL is 300–600 s for data that changes daily.
   Key the cache on a data version instead.
 - The accuracy routes fetch 500–2,000 rows to keep ~4. `/summary` is 1.7 MB raw (~120 KB
-  gzipped), and `/accuracy/` is missing from the Cache-Control prefixes.
+  gzipped), and `/accuracy/` is missing from the Cache-Control prefixes. **Prefix done 10-10;
+  the over-fetch is still open.**
 - There is no `GZipMiddleware` and no ETag/304. Use level 5: measured 6 ms vs 29 ms at level 9.
-- `forecast_outcomes` has no index leading on `evaluated_at`.
+  **Gzip done 10-10; ETag still open.**
+- **Done 10-10 (migration 0030).** `forecast_outcomes` has no index leading on `evaluated_at`.
 
 ## Open-source projects
 

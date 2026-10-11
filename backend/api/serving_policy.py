@@ -42,6 +42,13 @@ MIN_SERVED_PRICE_USD = 1.0
 #: request for it is rejected rather than served as a silently-empty list.
 SERVED_HORIZONS = (3, 7, 14, 30)
 
+#: How far behind the calendar a forecast's anchor day may sit before a ranked
+#: surface treats it as stale. Forecasts are stamped with the day the band was
+#: anchored on (the newest archived day), which lags `date.today()` because the
+#: daily dump lands ~22:00 UTC; this window absorbs that lag plus a missed run or
+#: two. Mirrors the archive's own staleness span (MAX_WINDOW_SPAN_DAYS).
+MAX_ARCHIVE_LAG_DAYS = 7
+
 
 class Tradeability(NamedTuple):
     """Whether acting on a served forecast can clear its trading costs.

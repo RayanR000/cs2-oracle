@@ -1,5 +1,7 @@
+from datetime import date, timedelta
+
 from database import Item, ItemForecast, get_db
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 from models.item_parser import is_phantom_slug, is_phase_collapsed
 from sqlalchemy import desc
 from sqlalchemy.orm import Session
@@ -7,6 +9,8 @@ from sqlalchemy.orm import Session
 from api.cache import get_or_build
 from api.schemas import OpportunityOut
 from api.serving_policy import (
+    MAX_ARCHIVE_LAG_DAYS,
+    SERVED_HORIZONS,
     anchor_clean_clause,
     meets_anchor_gate,
     meets_price_floor,
@@ -66,13 +70,23 @@ def _load_items(item_ids: list[int], db: Session) -> dict[int, Item]:
 
 
 def _latest_forecasts(db: Session, horizon_days: int = 7):
-    """Get the latest forecast per item for a given horizon."""
+    """Get the latest forecast per item for a given horizon.
+
+    Only forecasts anchored within ``MAX_ARCHIVE_LAG_DAYS`` count, as on
+    `/items/trending`. Without the floor the distinct-on walked every forecast
+    ever written at the horizon, and an item that dropped out of the forecast
+    universe kept ranking on its last, months-old band.
+    """
+    freshness_floor = date.today() - timedelta(days=MAX_ARCHIVE_LAG_DAYS)
     subq = (
         db.query(
             ItemForecast.item_id,
             ItemForecast.forecast_date,
         )
-        .filter(ItemForecast.horizon_days == horizon_days)
+        .filter(
+            ItemForecast.horizon_days == horizon_days,
+            ItemForecast.forecast_date >= freshness_floor,
+        )
         .distinct(ItemForecast.item_id)
         .order_by(
             ItemForecast.item_id,
@@ -187,6 +201,19 @@ def get_momentum(
     limit: int = Query(10, ge=1, le=100),
     db: Session = _DB_DEP,
 ):
+    if horizon_days not in SERVED_HORIZONS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"horizon_days must be one of {', '.join(map(str, SERVED_HORIZONS))}; got {horizon_days}",
+        )
+    return get_or_build(
+        f"momentum:{horizon_days}:{limit}",
+        300,
+        lambda: _build_momentum(db, horizon_days, limit),
+    )
+
+
+def _build_momentum(db: Session, horizon_days: int, limit: int):
     forecasts = _latest_forecasts(db, horizon_days)
     items_map = _load_items([f.item_id for f in forecasts if f.direction is not None], db)
     return select_momentum(forecasts, items_map, limit)

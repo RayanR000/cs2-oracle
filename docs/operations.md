@@ -306,8 +306,8 @@ empty but the model metadata is fresh, use `FORCE_RETRAIN=1` or `mode=train-only
 ### Data not saving
 
 - Verify `SUPABASE_DATABASE_URL` is correct
-- Check `alembic current` matches the latest migration (head is **0025**,
-  `migrations/versions/0025_add_forecast_anomaly_p.py`)
+- Check `alembic current` matches the latest migration (head is **0030**,
+  `migrations/versions/0030_forecast_and_outcome_read_indexes.py`)
 - Run `python scripts/run_task.py migrate` manually
 
 ### Workflows without concurrency / failure notification
