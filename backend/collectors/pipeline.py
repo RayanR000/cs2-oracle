@@ -509,7 +509,19 @@ class DataPipeline:
                 source_breakdown=source_breakdown,
             )
             self.db_session.add(collection_run)
-            self.db_session.commit()
+            try:
+                self.db_session.commit()
+            except Exception as commit_err:
+                # A read-only Postgres must not fail the run: the prices are already
+                # in Parquet, and Price Forecast only runs on an Aggregator success
+                # (db/read_only.py). The Parquet row below keeps a NULL id.
+                from db.read_only import is_read_only_error, report_read_only
+
+                if not is_read_only_error(commit_err):
+                    raise
+                self.db_session.rollback()
+                report_read_only("the collection_runs insert")
+                collection_run.id = None
 
             try:
                 import json
