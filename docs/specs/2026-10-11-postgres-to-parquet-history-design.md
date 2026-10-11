@@ -83,11 +83,48 @@ The data repo is a single force-pushed orphan commit, so a bad write replaces th
 That is how archive day 09-19 was lost. For the forecast record:
 
 1. **Closed months are immutable.** The writer refuses to touch one without an explicit flag.
-2. **Second copy.** Each closed month is also uploaded as a GitHub Release asset on
-   `cs2-oracle-data` (free, outside the force-pushed tree, versioned by tag). Open question:
-   Release assets or a free object-store bucket.
+2. **Second copy: GitHub Release assets on `cs2-oracle-data`** (decided 2026-10-11). See
+   "Second and third copies" below.
 3. **Row-count guard.** Before the push, each writer asserts that no partition lost rows against
    the checked-out copy, the same pattern as `run_task.py`'s zero-row guard.
+
+### Second and third copies
+
+**When a month closes.** Month M is closed once every forecast in it has matured: its last
+forecast date + 30 + 13 days (the h=30 horizon plus the embargo carry). September 2026 closes
+on 11-12. Nothing writes a closed month again.
+
+**Release per closed month.** A final step in Backtest Accuracy (the last job in the chain,
+after outcomes are written) does, for each closed month:
+
+- **No release yet:** create tag `ops-YYYY-MM` on `cs2-oracle-data` with that month's file from
+  each partitioned table plus a `SHA256SUMS`, then publish it.
+- **Release exists:** compare the tree's files with its `SHA256SUMS`. A mismatch **fails the
+  run**: a closed month was rewritten, which is the bad-write case this exists to catch. The
+  step never replaces an asset.
+
+So the release is both the backup and the immutability check. Restore one month with
+`gh release download ops-YYYY-MM -R RayanR000/cs2-oracle-data`.
+
+**Why Release assets.** They are free, need no new account, and live outside the git history,
+so an orphan force-push cannot touch them. Creating a release needs `contents: write`, the
+permission the data-repo pushes already use. **To verify in Phase 1:** that
+`CS2_DATA_REPO_TOKEN` carries it for releases, and whether the repository setting for
+immutable releases is available. If it is, enable it so published assets cannot be edited or
+deleted.
+
+**Known weakness.** The release lives on the same GitHub account, and the same token can
+delete it. Separate storage (for example Cloudflare R2's free tier) would remove that, at the
+cost of a new account, a new secret and new upload code. Not worth it for this project: the
+real risk is a bad write, not a compromised account.
+
+**Third copy, off GitHub.** Once a month, the local Mac pulls every `ops-*` release it doesn't
+have into `~/personal-projects/cs2-analyzer/ops-releases/` and checks `SHA256SUMS`. It can run
+as a launchd job or by hand. It is the one copy GitHub cannot delete, and it costs nothing.
+
+**Phase 1 seeds it.** The backup of 2026-10-11 covers December 2025 through August 2026, all
+of which are already closed. Those months are released as part of the Phase 1 backfill, and
+the first local pull runs right after.
 
 ## What has to change
 
@@ -122,6 +159,8 @@ Inventory from grep on 2026-10-11 (excluding `tests/`, `scripts/archive/` and mi
 1. Write the backup into the target partitions in the data repo, so history the mirror never
    had becomes durable. The local mirror of 09-20 has `item_forecasts` only from 08-04 (31 dates
    against Postgres's 60), and the shadow tables and `items` were never mirrored.
+   Release the already-closed months (December 2025 through August 2026), add the release
+   step to Backtest Accuracy, and run the first local pull.
 2. Every writer writes both stores. Postgres stays the read source.
 3. A nightly parity check (rows per date and table, and the verdict-refresh deltas) runs for
    ≥7 nights.
@@ -154,7 +193,8 @@ schema-drift workflow, and delete the Supabase project after a final backup.
 
 ## Open questions
 
-1. Second copy: GitHub Release assets or object storage.
+1. ~~Second copy: GitHub Release assets or object storage.~~ **Decided 2026-10-11: Release
+   assets, plus a monthly local pull** ("Second and third copies").
 2. Should `forecast_candidates` keep full history once the champion–challenger read resolves,
    or only the shared-date window the gate uses?
 3. `outside_baseline.py` (item 22, read ~10-25) reads the Parquet mirror today. Confirm the
