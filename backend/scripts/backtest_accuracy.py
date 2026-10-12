@@ -352,6 +352,40 @@ def _with_item_slug(rows, id_to_slug):
     return [{**r, "item_slug": id_to_slug.get(r["item_id"])} for r in rows]
 
 
+def _outcome_partitions(db, forecast_ids, drop=None) -> bool:
+    """Write committed outcome rows to the monthly partitions (Phase 1.2 dual-write).
+
+    Runs AFTER the DB commit, so the rows carry Postgres's ids; the single-file mirror keeps its
+    mirror-first order above. *drop*: forecast ids whose stored outcome a --reresolve removed.
+    A refused closed month is logged, never raised; tonight's parity check names it.
+    """
+    from db import ops_partitions, ops_readback
+
+    def _write():
+        frame = ops_readback.outcomes(db, forecast_ids=list(forecast_ids))
+        if drop is not None:
+            ops_partitions.replace("forecast_outcomes", "forecast_id", drop, frame)
+        else:
+            ops_partitions.upsert("forecast_outcomes", frame)
+
+    return ops_partitions.dual_write("forecast_outcomes", _write)
+
+
+def _refreshed_outcome_partitions(mirror) -> bool:
+    """Write a verdict-refresh batch to the monthly partitions, from the rows already in hand.
+
+    The refresh never changes an id and must not re-read rows on its write side (see
+    test_the_refresh_streams_in_bounded_flushes_and_never_re_reads_a_row), so there is no
+    read-back here: the mirror rows carry no `id`, and an upsert keeps the stored one.
+    """
+    import pandas as pd
+    from db import ops_partitions
+
+    return ops_partitions.dual_write(
+        "forecast_outcomes (verdict refresh)", lambda: ops_partitions.upsert("forecast_outcomes", pd.DataFrame(mirror))
+    )
+
+
 def _flush_verdict_refresh(db, updates, mirror):
     """Write one batch of refreshed verdicts to the Parquet mirror, then the DB.
 
@@ -383,6 +417,7 @@ def _flush_verdict_refresh(db, updates, mirror):
     for i in range(0, len(updates), CHUNK):
         db.execute(_REFRESH_VERDICTS_SQL, updates[i : i + CHUNK])
     db.commit()
+    _refreshed_outcome_partitions(mirror)
 
 
 def _refresh_verdict_columns(db, forecast_ids=None) -> int:
@@ -586,6 +621,7 @@ def _store_forecast_outcomes(db, outcomes, reresolve: bool = False, considered_i
         if to_write:
             db.bulk_insert_mappings(ForecastOutcome, to_write)
         db.commit()
+        _outcome_partitions(db, [o["forecast_id"] for o in to_write], drop=delete_ids)
 
         orphaned = deleted - len(to_write)
         logger.info(
@@ -602,6 +638,7 @@ def _store_forecast_outcomes(db, outcomes, reresolve: bool = False, considered_i
     from db.parquet import append_table
 
     append_table("forecast_outcomes", mirror, ["forecast_id"])
+    _outcome_partitions(db, [o["forecast_id"] for o in to_write])
 
     n_skipped = len(outcomes) - len(to_write)
     # The daily caller passes only unfrozen forecasts, so a non-zero skip means
