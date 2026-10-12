@@ -156,12 +156,9 @@ def discover_new_items(session, raw_sources: dict[str, dict], snapshot_day: date
         ],
     )
     session.commit()
-    # Phase 1.2 dual-write: the new rows with the ids Postgres issued. Never fails the run.
-    from db import ops_partitions, ops_readback
-
-    ops_partitions.dual_write(
-        "items", lambda: ops_partitions.upsert("items", ops_readback.items(session, [name for name, _ in new]))
-    )
+    # No partition write here: this runs inside the Aggregator task, before the data checkout,
+    # so it would land in a throwaway directory. aggregator-update.yml syncs ops/items.parquet
+    # from Postgres after the checkout (scripts/ops_sync_from_postgres.py --tables items).
     logger.info(
         "New-item discovery: inserted %s items (%s from the 2026-07-08 seed, %s new this run). Sample: %s",
         len(new),

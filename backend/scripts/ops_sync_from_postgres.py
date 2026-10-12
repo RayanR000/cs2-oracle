@@ -9,6 +9,8 @@ Phase 1.2 of docs/specs/2026-10-11-postgres-to-parquet-history-design.md. Two us
   (item_id, forecast_date, horizon_days). Columns Postgres lacks (model_config, item_slug for
   candidate rows, pg_deleted) keep their stored values.
 * REPAIR: a night whose partition write failed (`dual_write` logged it, parity failed).
+* CATALOG: `--tables items` copies the whole `items` table (no dates). The Aggregator runs it
+  nightly after the data checkout, because new-item discovery runs before that checkout exists.
 
 Writes only rows Postgres holds; never deletes. Dry run unless --apply. Closed months need
 --allow-closed. Run by dispatching ops-sync.yml: only CI writes the data repo.
@@ -31,13 +33,15 @@ from db import ops_partitions, ops_readback
 
 logger = logging.getLogger("ops_sync_from_postgres")
 
-TABLES = ("item_forecasts", "forecast_outcomes", "forecast_candidates", "forecast_candidate_outcomes")
+DATED = ("item_forecasts", "forecast_outcomes", "forecast_candidates", "forecast_candidate_outcomes")
+TABLES = (*DATED, "items")
 
 _READ = {
     "item_forecasts": lambda db, ds: ops_readback.forecasts(db, ds),
     "forecast_outcomes": lambda db, ds: ops_readback.outcomes(db, dates=ds),
     "forecast_candidates": lambda db, ds: ops_readback.candidates(db, ds),
     "forecast_candidate_outcomes": lambda db, ds: ops_readback.candidate_outcomes(db, dates=ds),
+    "items": lambda db, ds: ops_readback.items(db),  # the whole catalog; it has no dates
 }
 
 
@@ -58,12 +62,14 @@ def sync(db, dates, *, tables, apply, allow_closed=False, root=None, today=None)
 def main(argv: Sequence[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[1])
     ap.add_argument("--archive-dir", type=Path, required=True, help="The data checkout's price-archive/ directory.")
-    ap.add_argument("--dates", nargs="+", type=date.fromisoformat, required=True)
-    ap.add_argument("--tables", nargs="+", choices=TABLES, default=list(TABLES))
+    ap.add_argument("--dates", nargs="*", type=date.fromisoformat, default=[])
+    ap.add_argument("--tables", nargs="+", choices=TABLES, default=list(DATED))
     ap.add_argument("--apply", action="store_true")
     ap.add_argument("--allow-closed", action="store_true")
     args = ap.parse_args(argv)
     logging.basicConfig(level=logging.INFO, format="%(message)s")
+    if any(t in DATED for t in args.tables) and not args.dates:
+        ap.error("--dates is required for " + ", ".join(t for t in args.tables if t in DATED))
 
     from database import SessionLocal
 

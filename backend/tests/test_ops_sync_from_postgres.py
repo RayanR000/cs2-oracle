@@ -67,3 +67,16 @@ def test_apply_fills_ids_keeps_mirror_columns_and_adds_nothing_postgres_lacks(tm
     assert got["model_config"].tolist() == ["global-only", "global-only"]
     outcomes = duckdb.sql(f"SELECT id FROM read_parquet('{tmp_path}/forecast_outcomes/2026-10.parquet')").df()
     assert outcomes["id"].tolist() == [20]
+
+
+def test_items_sync_needs_no_dates_and_takes_string_catalog_fields(tmp_path):
+    from database import Item
+    from scripts.ops_sync_from_postgres import sync
+
+    db = _session()
+    _seed(db)
+    db.query(Item).filter_by(id=1).update({"instanceid": "3946324730", "rarity": "Covert", "weapon_type": "rifle"})
+    db.commit()
+    assert sync(db, [], tables=["items"], apply=True, root=tmp_path, today=TODAY) == {"items": 1}
+    got = duckdb.sql(f"SELECT instanceid, rarity, weapon_type FROM read_parquet('{tmp_path}/items.parquet')").fetchall()
+    assert got == [("3946324730", "Covert", "rifle")]

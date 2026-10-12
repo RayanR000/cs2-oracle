@@ -243,6 +243,17 @@ jobs:
         working-directory: ./backend
         run: python scripts/check_fx_ratios.py --archive-dir ../archive/price-archive
 
+      # Phase 1.2 dual-write for the catalog: new-item discovery runs inside the Aggregator task,
+      # before the data checkout exists, so it cannot write ops/items.parquet itself. Copy the
+      # whole `items` table from Postgres instead (~32k rows; reads work on a read-only DB).
+      # continue-on-error, like every dual-write: Postgres still holds the catalog.
+      - name: Sync item catalog to ops/items.parquet
+        continue-on-error: true
+        working-directory: ./backend
+        env:
+          DATABASE_URL: ${{ secrets.SUPABASE_DATABASE_URL }}
+        run: python scripts/ops_sync_from_postgres.py --archive-dir ../archive/price-archive --tables items --apply
+
       # The parquet files ARE the data (each holds full history), so git history
       # of them has no value and only bloats the repo. Republish the archive as a
       # single squashed commit each run via an orphan branch + force-push.

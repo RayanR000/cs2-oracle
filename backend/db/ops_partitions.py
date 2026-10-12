@@ -61,7 +61,9 @@ class Spec:
     part_col: str | None  # None: one file, ops/<table>.parquet
 
 
-# Column lists and types are what the 2026-10-12 backfill wrote (DESCRIBE on the data repo).
+# Column lists and types are what the 2026-10-12 backfill wrote (DESCRIBE on the data repo), except
+# items.instanceid / rarity / weapon_type: the backfill saw only NULLs and typed them INTEGER, but
+# the ORM columns are strings (an instanceid of 3946324730 does not fit INTEGER).
 SPECS: dict[str, Spec] = {
     "item_forecasts": Spec(
         FORECAST_KEY,
@@ -172,11 +174,11 @@ SPECS: dict[str, Spec] = {
             "updated_at": _TS,
             "icon_url": "VARCHAR",
             "classid": "VARCHAR",
-            "instanceid": "INTEGER",
+            "instanceid": "VARCHAR",
             "is_backfilled": "BIGINT",
-            "rarity": "INTEGER",
+            "rarity": "VARCHAR",
             "rarity_rank": "INTEGER",
-            "weapon_type": "INTEGER",
+            "weapon_type": "VARCHAR",
             "is_trainable": "BIGINT",
         },
         None,
