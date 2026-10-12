@@ -1,0 +1,93 @@
+name: Ops Sync From Postgres
+
+# Phase 1.2 of docs/specs/2026-10-11-postgres-to-parquet-history-design.md: copy the named
+# forecast dates from Postgres into ops/<table>/YYYY-MM.parquet in cs2-oracle-data, ids included
+# (scripts/ops_sync_from_postgres.py). Fills the ids the single-file mirror never had (10-11) and
+# repairs a night whose partition write failed. Writes only rows Postgres holds; never deletes.
+# Dry run unless `apply` is ticked; closed months need `allow_closed`.
+# Dispatch between Backtest Accuracy finishing and the 23:00 UTC Aggregator; the push
+# lease fails it rather than lose a concurrent write.
+
+on:
+  workflow_dispatch:
+    inputs:
+      dates:
+        description: Forecast dates to copy, space-separated YYYY-MM-DD
+        type: string
+        required: true
+      allow_closed:
+        description: Allow writing closed months
+        type: boolean
+        default: false
+      apply:
+        description: Write and publish (unticked = dry run)
+        type: boolean
+        default: false
+
+defaults:
+  run:
+    shell: bash
+
+permissions:
+  contents: read # the data repo is written via CS2_DATA_REPO_TOKEN
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    concurrency:
+      group: ${{ github.workflow }}
+      cancel-in-progress: false
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 1
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v7
+        with:
+          python-version: '3.13'
+          enable-cache: true
+
+      - name: Install dependencies
+        run: |
+          uv sync --frozen --no-dev
+          echo "$PWD/.venv/bin" >> $GITHUB_PATH
+
+      - name: Checkout price archive
+        uses: actions/checkout@v7
+        with:
+          repository: RayanR000/cs2-oracle-data
+          ref: main
+          token: ${{ secrets.CS2_DATA_REPO_TOKEN }}
+          path: archive
+          fetch-depth: 1
+
+      - name: Sync
+        working-directory: ./backend
+        env:
+          DATABASE_URL: ${{ secrets.SUPABASE_DATABASE_URL }}
+          DATES: ${{ inputs.dates }} # via env, never interpolated into the script
+        run: |
+          # shellcheck disable=SC2086  # word-splitting DATES into one argument per date is intended
+          python scripts/ops_sync_from_postgres.py --archive-dir ../archive/price-archive \
+            --dates $DATES \
+            ${{ inputs.apply && '--apply' || '' }} ${{ inputs.allow_closed && '--allow-closed' || '' }}
+
+      - name: Publish updated archive (flat history)
+        if: inputs.apply
+        working-directory: ./archive
+        env:
+          DATES: ${{ inputs.dates }}
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          # Lease on the checked-out SHA: a stale checkout fails the push instead of deleting
+          # whatever landed since (09-19 was lost that way, changelog 2026-09-29).
+          BASE=$(git rev-parse HEAD)
+          git checkout --orphan flat
+          git add -A
+          git commit -m "archive: ops partitions synced from Postgres ($DATES)"
+          git push --force-with-lease=main:"$BASE" origin HEAD:main

@@ -1,0 +1,89 @@
+#!/usr/bin/env python3
+"""
+Copy named forecast dates from Postgres into the monthly ops partitions, ids included.
+
+Phase 1.2 of docs/specs/2026-10-11-postgres-to-parquet-history-design.md. Two uses:
+
+* FILL: the 22,507 forecasts dated 2026-10-11 reached the partitions from the single-file
+  mirror, which has no id. Postgres has them; this writes Postgres's rows over them by
+  (item_id, forecast_date, horizon_days). Columns Postgres lacks (model_config, item_slug for
+  candidate rows, pg_deleted) keep their stored values.
+* REPAIR: a night whose partition write failed (`dual_write` logged it, parity failed).
+
+Writes only rows Postgres holds; never deletes. Dry run unless --apply. Closed months need
+--allow-closed. Run by dispatching ops-sync.yml: only CI writes the data repo.
+
+Usage:
+    python scripts/ops_sync_from_postgres.py --archive-dir ../archive/price-archive --dates 2026-10-11
+    python scripts/ops_sync_from_postgres.py --archive-dir ... --dates 2026-10-11 --apply
+"""
+
+import argparse
+import logging
+import sys
+from collections.abc import Sequence
+from datetime import date
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
+from db import ops_partitions, ops_readback
+
+logger = logging.getLogger("ops_sync_from_postgres")
+
+TABLES = ("item_forecasts", "forecast_outcomes", "forecast_candidates", "forecast_candidate_outcomes")
+
+_READ = {
+    "item_forecasts": lambda db, ds: ops_readback.forecasts(db, ds),
+    "forecast_outcomes": lambda db, ds: ops_readback.outcomes(db, dates=ds),
+    "forecast_candidates": lambda db, ds: ops_readback.candidates(db, ds),
+    "forecast_candidate_outcomes": lambda db, ds: ops_readback.candidate_outcomes(db, dates=ds),
+}
+
+
+def sync(db, dates, *, tables, apply, allow_closed=False, root=None, today=None) -> dict[str, int]:
+    plan = {}
+    for t in tables:
+        frame = _READ[t](db, dates)
+        plan[t] = len(frame)
+        logger.info("%s: %d rows in Postgres for %s", t, len(frame), ", ".join(map(str, dates)))
+        if apply and not frame.empty:
+            out = ops_partitions.upsert(t, frame, allow_closed=allow_closed, root=root, today=today)
+            logger.info("%s: wrote %s", t, out)
+    if not apply:
+        logger.info("dry run; pass --apply to write")
+    return plan
+
+
+def main(argv: Sequence[str] | None = None) -> int:
+    ap = argparse.ArgumentParser(description=__doc__.split("\n")[1])
+    ap.add_argument("--archive-dir", type=Path, required=True, help="The data checkout's price-archive/ directory.")
+    ap.add_argument("--dates", nargs="+", type=date.fromisoformat, required=True)
+    ap.add_argument("--tables", nargs="+", choices=TABLES, default=list(TABLES))
+    ap.add_argument("--apply", action="store_true")
+    ap.add_argument("--allow-closed", action="store_true")
+    args = ap.parse_args(argv)
+    logging.basicConfig(level=logging.INFO, format="%(message)s")
+
+    from database import SessionLocal
+
+    db = SessionLocal()
+    try:
+        sync(
+            db,
+            args.dates,
+            tables=args.tables,
+            apply=args.apply,
+            allow_closed=args.allow_closed,
+            root=args.archive_dir / "ops",
+        )
+    except ops_partitions.PartitionError as e:
+        logger.error("%s", e)
+        return 1
+    finally:
+        db.close()
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
