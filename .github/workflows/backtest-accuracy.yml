@@ -167,6 +167,17 @@ jobs:
           git commit -m "archive: forecast outcomes + accuracy $(date -u +%F)"
           git push --force-with-lease=main:"$BASE" origin HEAD:main
 
+      # Last in the chain, after the tree is final and pushed: each closed ops month
+      # (calendar end + 43 days) gets one release `ops-YYYY-MM` with a SHA256SUMS, and a
+      # month that already has one is checked against it. A mismatch fails the run: a
+      # closed month was rewritten. Assets are never replaced. scripts/ops_releases.py.
+      - name: Release closed ops months
+        if: success()
+        working-directory: ./backend
+        env:
+          GH_TOKEN: ${{ secrets.CS2_DATA_REPO_TOKEN }}
+        run: python scripts/ops_releases.py publish --archive-dir ../archive/price-archive
+
 
       - name: Upload backtest logs
         if: always()
