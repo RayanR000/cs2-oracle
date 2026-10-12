@@ -175,10 +175,12 @@ Inventory from grep on 2026-10-11 (excluding `tests/`, `scripts/archive/` and mi
 
 #### Phase 1.2: dual-write (designed 2026-10-12)
 
-**Starting state.** Postgres is still writable: on 10-12 it took 22,507 forecasts. Those are
-the difference between the backfill's dry run (22,043 mirror-only forecasts with no id) and its
-applied run (44,550). So every id-less row in the partitions has an id in Postgres, recoverable
-by `(item_id, forecast_date, horizon_days)`.
+**Starting state.** Postgres is still writable: on 10-12 it took 22,507 forecasts (dated
+10-11). Those are the difference between the backfill's dry run (22,043 id-less forecasts) and
+its applied run (44,550). Measured on the applied partitions: the 22,507 dated 10-11 have an id
+in Postgres, recoverable by `(item_id, forecast_date, horizon_days)`; the other 22,043 are
+`pg_deleted` rows of 08-04 and 08-05 whose id no outcome names, so no id exists to recover and
+they stay NULL. Parity excludes `pg_deleted` rows, so they do not count against it.
 
 **Ids come from Postgres, read back after the commit.** Each writer keeps its Postgres write
 exactly as it is, commits, then re-selects the ids it just wrote by natural key and writes the
@@ -187,7 +189,7 @@ frozen reads depend on; the read-back is one night's keys per table. Rejected al
 a nightly export from Postgres (makes parity circular, none of it survives into Phase 2, and
 re-reading ~1.2M open-month rows twice a night exhausts the free tier's 5 GB/month egress), and
 partition-issued ids written into Postgres explicitly (moves the Postgres sequences and collides
-with the 44,550 id-less rows until they are filled).
+with the 10-11 id-less rows until they are filled).
 
 **Read-only fallback.** On SQLSTATE 25006 (`db/read_only.py`), the writer issues ids as
 `max(id) + 1` over the partitions, under the archive push lease the workflow already holds, and
@@ -204,8 +206,10 @@ the copy that survives a crash before either store lands.
 - Guards, all raising: a closed month (`ops_releases.closes_on`) is refused without an explicit
   flag; a month never loses rows except through `replace` with named keys; a column the
   backfill's schema does not have fails instead of being dropped.
-- `backfill_ops_partitions.py`'s partition writing moves here, so the seed and the nightly
-  writers share one path.
+- The keys, sort orders and schema the backfill wrote live here, and `ops_releases.closes_on`
+  moves here; the one-off backfill keeps its own (already-run) write path.
+- A column the write does not carry keeps its stored value (`model_config`, `pg_deleted`), so a
+  Postgres read-back never blanks a mirror-only column.
 
 **Writers.**
 
@@ -214,7 +218,7 @@ the copy that survives a crash before either store lands.
 | `scripts/forecast_prices.py` | read back ids by `(item_id, forecast_date, horizon_days)`; `upsert` `item_forecasts` |
 | `db/candidate_store.py` | read back ids by the candidate identity; `upsert` `forecast_candidates` |
 | `scripts/backtest_accuracy.py`, daily outcomes | read back outcome ids by `forecast_id`; `upsert` `forecast_outcomes` |
-| `scripts/backtest_accuracy.py`, verdict refresh and `--reresolve` | `replace` in the affected months, in the order `_flush_verdict_refresh` already uses (Parquet, then the DB commit) |
+| `scripts/backtest_accuracy.py`, verdict refresh and `--reresolve` | after the DB commit, read back by `forecast_id` and `upsert` / `replace` in the affected months; the single-file mirror keeps its mirror-first order |
 | `backtest/candidate_resolution.py` | `upsert` `forecast_candidate_outcomes` |
 | `collectors/new_item_discovery.py` | `upsert` `items.parquet` (workflow `disabled_manually`; the path gets the write anyway) |
 
@@ -228,10 +232,11 @@ instead.
 
 **Fill and repair: `scripts/ops_sync_from_postgres.py --dates …`.** Copies the named dates from
 Postgres into the partitions, ids included, and adds no row Postgres does not hold. Dry run
-unless `--apply`; run by hand, never scheduled. Its first use fills the 44,550 missing ids.
+unless `--apply`; run only by dispatching `ops-sync.yml` (only CI writes the data repo), never scheduled. Its first use fills the 22,507 missing ids of 10-11.
 
-**Parity: `scripts/ops_parity.py`, the last step of Backtest Accuracy (after the release
-publish).**
+**Parity: `scripts/ops_parity.py`, in Backtest Accuracy before the archive publish** (so its
+record is pushed), with `continue-on-error`; a last step fails the run on a mismatch, so the
+closed-month release still runs.
 
 - Per table and `forecast_date`, both stores compute the same summary: row count, `count(id)`,
   `sum(id)`, and sums of the value columns (forecasts: `price_low`, `price_mid`, `price_high`,
