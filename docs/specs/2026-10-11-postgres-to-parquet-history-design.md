@@ -169,7 +169,7 @@ Inventory from grep on 2026-10-11 (excluding `tests/`, `scripts/archive/` and mi
    with `pg_deleted` (`changelog/2026-10-11-ops-partition-backfill.md`). Dual-write must
    compare against Postgres, not the single-file mirror.
 2. Every writer writes both stores. Postgres stays the read source. Design below
-   ("Phase 1.2: dual-write").
+   ("Phase 1.2: dual-write"). **Built 2026-10-12** (`changelog/2026-10-12-ops-dual-write.md`).
 3. A nightly parity check (rows per date and table, and the verdict-refresh deltas) runs for
    ≥7 nights. Design below.
 
@@ -232,7 +232,7 @@ instead.
 
 **Fill and repair: `scripts/ops_sync_from_postgres.py --dates …`.** Copies the named dates from
 Postgres into the partitions, ids included, and adds no row Postgres does not hold. Dry run
-unless `--apply`; run only by dispatching `ops-sync.yml` (only CI writes the data repo), never scheduled. Its first use fills the 22,507 missing ids of 10-11.
+unless `--apply`; run only by dispatching `ops-sync.yml` (only CI writes the data repo), never scheduled. Its first use fills the dates the first parity run names: the 22,507 forecasts of 10-11, outcomes the 10-12 night wrote through the mirror (09-11, 09-27, 10-04, 10-08), and that night's shadow candidates and candidate outcomes.
 
 **Parity: `scripts/ops_parity.py`, in Backtest Accuracy before the archive publish** (so its
 record is pushed), with `continue-on-error`; a last step fails the run on a mismatch, so the

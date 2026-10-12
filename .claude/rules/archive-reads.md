@@ -41,6 +41,15 @@ paths:
   `median_price` / `min_price` / `max_price` are gone from disk entirely. The **column** is
   therefore present everywhere; the **value** is NULL on all but ~723K of 22.2M rows, which is
   the point above, not a failed migration.
+- **The forecast record is dual-written to monthly partitions since 2026-10-12** —
+  `ops/{item_forecasts,forecast_outcomes,forecast_candidates,forecast_candidate_outcomes}/YYYY-MM.parquet`
+  and `ops/items.parquet`. `db/ops_partitions.py` is their only writer; every DB writer calls it
+  **after** its Postgres commit with rows from `db/ops_readback.py`, so the partitions carry the
+  ids Postgres issued, inside `dual_write`, which logs and never fails a run. Closed months
+  (calendar end + 43 days) are refused without `allow_closed`. Postgres is still the read source;
+  `scripts/ops_parity.py` (Backtest Accuracy) proves the stores agree per date, and
+  `ops-sync.yml` repairs. Tests get a temp `OPS_DIR` from conftest's `_hermetic_ops_dir`.
+  `changelog/2026-10-12-ops-dual-write.md`.
 - **Operational tables live in `price-archive/ops/*.parquet`.** API routes read Parquet
   first with a DB fallback. See `db/parquet.py`.
 - ⚠️ **NEITHER copy of `ops/forecast_outcomes.parquet` is the full scored panel, and the LOCAL
