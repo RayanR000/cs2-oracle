@@ -164,3 +164,11 @@ def test_dual_write_logs_and_returns_false(capsys, caplog):
     assert "::error title=Ops partition write failed::" in capsys.readouterr().out
     assert "boom" in caplog.text
     assert dual_write("item_forecasts", lambda: None) is True
+
+
+def test_tests_never_write_the_real_ops_dir():
+    """conftest's autouse fixture: a writer a test forgot to redirect must not land in price-archive/ops."""
+    from db import parquet
+    from db.ops_partitions import ops_dir
+
+    assert ops_dir() != parquet.ARCHIVE_ROOT / "ops"
