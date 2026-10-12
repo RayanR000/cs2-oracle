@@ -168,9 +168,96 @@ Inventory from grep on 2026-10-11 (excluding `tests/`, `scripts/archive/` and mi
    shared row, the mirror adds only what Postgres lacks, and rows Postgres deleted are kept
    with `pg_deleted` (`changelog/2026-10-11-ops-partition-backfill.md`). Dual-write must
    compare against Postgres, not the single-file mirror.
-2. Every writer writes both stores. Postgres stays the read source.
+2. Every writer writes both stores. Postgres stays the read source. Design below
+   ("Phase 1.2: dual-write").
 3. A nightly parity check (rows per date and table, and the verdict-refresh deltas) runs for
-   ≥7 nights.
+   ≥7 nights. Design below.
+
+#### Phase 1.2: dual-write (designed 2026-10-12)
+
+**Starting state.** Postgres is still writable: on 10-12 it took 22,507 forecasts. Those are
+the difference between the backfill's dry run (22,043 mirror-only forecasts with no id) and its
+applied run (44,550). So every id-less row in the partitions has an id in Postgres, recoverable
+by `(item_id, forecast_date, horizon_days)`.
+
+**Ids come from Postgres, read back after the commit.** Each writer keeps its Postgres write
+exactly as it is, commits, then re-selects the ids it just wrote by natural key and writes the
+partitions with them. Changing the inserts to `RETURNING` would touch the Postgres paths the
+frozen reads depend on; the read-back is one night's keys per table. Rejected alternatives:
+a nightly export from Postgres (makes parity circular, none of it survives into Phase 2, and
+re-reading ~1.2M open-month rows twice a night exhausts the free tier's 5 GB/month egress), and
+partition-issued ids written into Postgres explicitly (moves the Postgres sequences and collides
+with the 44,550 id-less rows until they are filled).
+
+**Read-only fallback.** On SQLSTATE 25006 (`db/read_only.py`), the writer issues ids as
+`max(id) + 1` over the partitions, under the archive push lease the workflow already holds, and
+still writes the partitions. The single-file mirror stays written first, unchanged: it remains
+the copy that survives a crash before either store lands.
+
+**One module: `db/ops_partitions.py`.**
+
+- `upsert(table, rows, key)`: routes each row to `ops/<table>/YYYY-MM.parquet` by
+  `forecast_date` (candidate outcomes by their candidate's `forecast_date`), replaces rows with
+  the same key, and writes each month to a temp file swapped in with `os.replace`.
+- `replace(table, key_col, keys, rows)`: the delete-and-reinsert the verdict refresh and
+  `--reresolve` need, applied to the months the keys fall in.
+- Guards, all raising: a closed month (`ops_releases.closes_on`) is refused without an explicit
+  flag; a month never loses rows except through `replace` with named keys; a column the
+  backfill's schema does not have fails instead of being dropped.
+- `backfill_ops_partitions.py`'s partition writing moves here, so the seed and the nightly
+  writers share one path.
+
+**Writers.**
+
+| Writer | After its Postgres commit |
+|---|---|
+| `scripts/forecast_prices.py` | read back ids by `(item_id, forecast_date, horizon_days)`; `upsert` `item_forecasts` |
+| `db/candidate_store.py` | read back ids by the candidate identity; `upsert` `forecast_candidates` |
+| `scripts/backtest_accuracy.py`, daily outcomes | read back outcome ids by `forecast_id`; `upsert` `forecast_outcomes` |
+| `scripts/backtest_accuracy.py`, verdict refresh and `--reresolve` | `replace` in the affected months, in the order `_flush_verdict_refresh` already uses (Parquet, then the DB commit) |
+| `backtest/candidate_resolution.py` | `upsert` `forecast_candidate_outcomes` |
+| `collectors/new_item_discovery.py` | `upsert` `items.parquet` (workflow `disabled_manually`; the path gets the write anyway) |
+
+Not touched: readers, the single-file mirror, frozen instruments, and the workflows (their
+archive pushes already include `price-archive/ops/`).
+
+**A failed partition write does not fail the run.** It logs ERROR and the run continues: by
+then Postgres and the single-file mirror hold the night, so nothing is lost, and failing Price
+Forecast after its commit only endangers the Backtest chain. The parity check fails that night
+instead.
+
+**Fill and repair: `scripts/ops_sync_from_postgres.py --dates …`.** Copies the named dates from
+Postgres into the partitions, ids included, and adds no row Postgres does not hold. Dry run
+unless `--apply`; run by hand, never scheduled. Its first use fills the 44,550 missing ids.
+
+**Parity: `scripts/ops_parity.py`, the last step of Backtest Accuracy (after the release
+publish).**
+
+- Per table and `forecast_date`, both stores compute the same summary: row count, `count(id)`,
+  `sum(id)`, and sums of the value columns (forecasts: `price_low`, `price_mid`, `price_high`,
+  `current_price`, direction counts; outcomes: `actual_price`, `base_price`, `abs_error`,
+  `pct_error`, counts of `direction_correct` and `in_interval`; candidates: `centre_price`,
+  `predicted_price_low`, `predicted_price_high`, `score`; candidate outcomes, which have no
+  `forecast_date` of their own and are grouped by their candidate's: `count(candidate_id)`,
+  `sum(candidate_id)`, `actual_price`, `absolute_error`, `percentage_error`, `in_interval` count).
+- Postgres returns only the aggregate rows (a few KB a night). The partitions run the same query
+  in DuckDB, excluding `pg_deleted` rows.
+- Pass: counts equal exactly; sums within 1e-9 relative (the float8 noise measured on 10-11).
+  The verdict refresh's rewrites show up as verdict-sum deltas.
+- A mismatch fails the run and names the table, date and summary that differ.
+- Each night appends to `ops/parity_runs.parquet`, so "≥7 clean nights in a row" is counted,
+  not remembered. Night one is the first run of the merged code after the fill is applied.
+
+**Tests (written first).**
+
+- `ops_partitions` on temp directories: month routing, closed-month refusal, the no-row-loss
+  guard, unknown-column failure, and an interrupted write leaving the old file intact.
+- Each writer against the SQLite fixture: partition rows equal the DB rows, ids included.
+- Read-only fallback, using #114's 25006 simulation: ids come from the partitions and none
+  collide.
+- Parity: identical stores pass; a missing row, a wrong id and a changed verdict each fail with
+  the right message.
+- Sync: the dry run writes nothing; `--apply` fills ids and adds no row Postgres lacks.
 
 ### Phase 2: switch readers that no frozen read depends on
 
