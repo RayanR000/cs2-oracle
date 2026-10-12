@@ -16,7 +16,7 @@ on:
         type: string
         required: true
       allow_closed:
-        description: Allow writing closed months
+        description: Allow writing closed months that have no ops-YYYY-MM release yet (released months are always refused)
         type: boolean
         default: false
       apply:
@@ -70,6 +70,7 @@ jobs:
         env:
           DATABASE_URL: ${{ secrets.SUPABASE_DATABASE_URL }}
           DATES: ${{ inputs.dates }} # via env, never interpolated into the script
+          GH_TOKEN: ${{ secrets.CS2_DATA_REPO_TOKEN }} # lists ops-* releases for --allow-closed
         run: |
           # shellcheck disable=SC2086  # word-splitting DATES into one argument per date is intended
           python scripts/ops_sync_from_postgres.py --archive-dir ../archive/price-archive \

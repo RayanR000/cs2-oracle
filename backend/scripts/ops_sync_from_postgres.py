@@ -45,7 +45,12 @@ _READ = {
 }
 
 
-def sync(db, dates, *, tables, apply, allow_closed=False, root=None, today=None) -> dict[str, int]:
+def sync(db, dates, *, tables, apply, allow_closed=False, released=None, root=None, today=None) -> dict[str, int]:
+    """*released*: months (YYYY-MM) that already have an ops-YYYY-MM release. Never rewritten, even
+    with *allow_closed*: a changed file fails ops_releases.publish every night after."""
+    hit = sorted({f"{d:%Y-%m}" for d in dates} & set(released or ()))
+    if allow_closed and hit:
+        raise ops_partitions.PartitionError(f"refusing released month(s) {hit}: their files are frozen in a release")
     plan = {}
     for t in tables:
         frame = _READ[t](db, dates)
@@ -73,6 +78,12 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     from database import SessionLocal
 
+    released = None
+    if args.allow_closed:
+        from scripts.ops_releases import TAG_PREFIX, release_tags
+
+        released = {t.removeprefix(TAG_PREFIX) for t in release_tags()}
+
     db = SessionLocal()
     try:
         sync(
@@ -81,6 +92,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             tables=args.tables,
             apply=args.apply,
             allow_closed=args.allow_closed,
+            released=released,
             root=args.archive_dir / "ops",
         )
     except ops_partitions.PartitionError as e:

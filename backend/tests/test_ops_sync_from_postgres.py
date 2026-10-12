@@ -80,3 +80,28 @@ def test_items_sync_needs_no_dates_and_takes_string_catalog_fields(tmp_path):
     assert sync(db, [], tables=["items"], apply=True, root=tmp_path, today=TODAY) == {"items": 1}
     got = duckdb.sql(f"SELECT instanceid, rarity, weapon_type FROM read_parquet('{tmp_path}/items.parquet')").fetchall()
     assert got == [("3946324730", "Covert", "rifle")]
+
+
+def test_allow_closed_still_refuses_a_released_month(tmp_path):
+    import pytest
+    from db.ops_partitions import PartitionError
+    from scripts.ops_sync_from_postgres import sync
+
+    db = _session()
+    _seed(db)
+    late = date(2026, 12, 20)  # October closed on 12-13
+    with pytest.raises(PartitionError, match="released"):
+        sync(
+            db,
+            [D],
+            tables=["item_forecasts"],
+            apply=True,
+            allow_closed=True,
+            released={"2026-10"},
+            root=tmp_path,
+            today=late,
+        )
+    assert not (tmp_path / "item_forecasts").exists()
+    assert sync(
+        db, [D], tables=["item_forecasts"], apply=True, allow_closed=True, released=set(), root=tmp_path, today=late
+    ) == {"item_forecasts": 2}
