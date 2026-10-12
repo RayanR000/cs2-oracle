@@ -122,8 +122,9 @@ real risk is a bad write, not a compromised account.
 have into `~/personal-projects/cs2-analyzer/ops-releases/` and checks `SHA256SUMS`. It can run
 as a launchd job or by hand. It is the one copy GitHub cannot delete, and it costs nothing.
 
-**Phase 1 seeds it.** The backup of 2026-10-11 covers December 2025 through August 2026, all
-of which are already closed. Those months are released as part of the Phase 1 backfill, and
+**Phase 1 seeds it.** The backup of 2026-10-11 holds forecasts for 2025-12 (one date), 2026-07
+(five) and 2026-08 (twenty, last 08-27, closed 10-09), all already closed, plus open September
+and October. Those months are released as part of the Phase 1 backfill, and
 the first local pull runs right after.
 
 ## What has to change
@@ -159,8 +160,13 @@ Inventory from grep on 2026-10-11 (excluding `tests/`, `scripts/archive/` and mi
 1. Write the backup into the target partitions in the data repo, so history the mirror never
    had becomes durable. The local mirror of 09-20 has `item_forecasts` only from 08-04 (31 dates
    against Postgres's 60), and the shadow tables and `items` were never mirrored.
-   Release the already-closed months (December 2025 through August 2026), add the release
+   Release the already-closed months (2025-12, 2026-07, 2026-08), add the release
    step to Backtest Accuracy, and run the first local pull.
+   **Seed built 2026-10-11** (`ops-partition-backfill.yml`, from release
+   `supabase-backup-2026-10-11`). The mirror turned out not to be a copy: Postgres wins every
+   shared row, the mirror adds only what Postgres lacks, and rows Postgres deleted are kept
+   with `pg_deleted` (`changelog/2026-10-11-ops-partition-backfill.md`). Dual-write must
+   compare against Postgres, not the single-file mirror.
 2. Every writer writes both stores. Postgres stays the read source.
 3. A nightly parity check (rows per date and table, and the verdict-refresh deltas) runs for
    ≥7 nights.
@@ -197,6 +203,8 @@ schema-drift workflow, and delete the Supabase project after a final backup.
    assets, plus a monthly local pull** ("Second and third copies").
 2. Should `forecast_candidates` keep full history once the champion–challenger read resolves,
    or only the shared-date window the gate uses?
-3. `outside_baseline.py` (item 22, read ~10-25) reads the Parquet mirror today. Confirm the
-   durable mirror covers h=7 forecast dates from 09-27 before that read, independent of this
-   migration.
+3. ~~`outside_baseline.py` (item 22, read ~10-25) reads the Parquet mirror today. Confirm the
+   durable mirror covers h=7 forecast dates from 09-27 before that read.~~ **Confirmed
+   2026-10-11:** every h=7 date 09-20 to 10-10 holds 5,536 rows in both stores, with
+   identical bands and direction (float8 noise <=5e-16 elsewhere). It keeps reading the
+   single-file mirror until after its read.
