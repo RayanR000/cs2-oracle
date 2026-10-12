@@ -28,11 +28,21 @@ Postgres stays the read source; no reader changes.
   | `scripts/backtest_accuracy.py` daily outcomes and `--reresolve` | `forecast_outcomes` |
   | `scripts/backtest_accuracy.py::_flush_verdict_refresh` | `forecast_outcomes`, from the rows already in hand (see below) |
   | `backtest/candidate_resolution.py` (resolve and `--rescore`) | `forecast_candidate_outcomes`, routed by the candidate's `forecast_date` |
-  | `collectors/new_item_discovery.py` | `items.parquet` |
+  | Aggregator step "Sync item catalog" (`ops_sync_from_postgres.py --tables items`) | `items.parquet`, the whole table, after the data checkout. Discovery runs before that checkout exists, so it cannot write the file itself |
 
 - **Read-only nights.** On SQLSTATE 25006 the forecast and shadow-candidate writers still land
-  the partitions, with ids from `assign_ids`: a key already stored keeps its id, the rest get
-  `max(id) + 1` upward. Outcomes are recomputable from prices and get no fallback.
+  the partitions. Batches that committed before the error keep the ids Postgres gave them (read
+  back; reads still work), a key already stored keeps its id, and the rest are issued from
+  `READ_ONLY_ID_BASE = 2**40` up, a range the Postgres sequence never reaches. Outcomes are
+  recomputable from prices and get no fallback.
+- **A failed partition write rolls back the writer's session** (`dual_write(..., db=db)`): a
+  failed read-back leaves a Postgres transaction aborted, and the next writer on that session
+  would otherwise raise `InFailedSqlTransaction` and fail the run.
+- **Closed months.** A batch that touches a closed month still writes its open months, then
+  raises (logged by `dual_write`). Parity reports closed-month differences as a `::warning` and in
+  `n_closed_mismatches`, not as a failure: a released month can never be synced (`ops-sync`
+  refuses released months even with `allow_closed`), so failing on it would stall the
+  clean-night count forever.
 - **The verdict refresh does not read back.** `test_the_refresh_streams_in_bounded_flushes_and_never_re_reads_a_row`
   forbids write-side SELECTs, and the refresh never changes an id, so it upserts its mirror rows
   (no `id`) and the stored id is kept.
@@ -40,7 +50,8 @@ Postgres stays the read source; no reader changes.
   `forecast_date`, Postgres and the partitions compute the same summary (count, `count(id)`,
   `sum(id)`, value-column sums). Postgres returns only the aggregates. Counts and id sums must be
   exact, float sums within 1e-9 relative; `pg_deleted` rows are excluded. Each night appends to
-  `ops/parity_runs.parquet` and logs the clean-night streak. The step is `continue-on-error`, so
+  `ops/parity_runs.parquet` and logs the clean-night streak. It also fails on any id repeated
+  across a table, which no per-date aggregate can see. The step is `continue-on-error`, so
   the closed-month release still runs; "Fail on parity mismatch" turns the run red at the end.
 - `scripts/ops_sync_from_postgres.py` via `ops-sync.yml` (dispatch only; dry run unless `apply`):
   copies named dates from Postgres into the partitions. It fills ids and repairs a failed night,

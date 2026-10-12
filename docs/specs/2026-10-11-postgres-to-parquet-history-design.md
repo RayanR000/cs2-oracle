@@ -220,7 +220,7 @@ the copy that survives a crash before either store lands.
 | `scripts/backtest_accuracy.py`, daily outcomes | read back outcome ids by `forecast_id`; `upsert` `forecast_outcomes` |
 | `scripts/backtest_accuracy.py`, verdict refresh and `--reresolve` | after the DB commit, read back by `forecast_id` and `upsert` / `replace` in the affected months; the single-file mirror keeps its mirror-first order |
 | `backtest/candidate_resolution.py` | `upsert` `forecast_candidate_outcomes` |
-| `collectors/new_item_discovery.py` | `upsert` `items.parquet` (workflow `disabled_manually`; the path gets the write anyway) |
+| `collectors/new_item_discovery.py` | none: it runs inside the Aggregator task, before the data checkout. The Aggregator syncs `items.parquet` from Postgres after the checkout (amended 2026-10-12 at review) |
 
 Not touched: readers, the single-file mirror, frozen instruments, and the workflows (their
 archive pushes already include `price-archive/ops/`).
