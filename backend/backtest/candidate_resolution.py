@@ -84,11 +84,10 @@ def _rescore_candidate_outcomes(db) -> dict:
         return {"rescored": 0}
     candidates = {
         c.id: c
-        for c in db.query(ForecastCandidate)
-        .filter(ForecastCandidate.id.in_([o.candidate_id for o in outcomes]))
-        .all()
+        for c in db.query(ForecastCandidate).filter(ForecastCandidate.id.in_([o.candidate_id for o in outcomes])).all()
     }
     rescored = 0
+    changed_ids: set[int] = set()
     for outcome in outcomes:
         candidate = candidates.get(outcome.candidate_id)
         if candidate is None:
@@ -101,14 +100,14 @@ def _rescore_candidate_outcomes(db) -> dict:
                 changed = True
         if changed:
             rescored += 1
+            changed_ids.add(outcome.candidate_id)
     db.commit()
+    _candidate_outcome_partitions(db, changed_ids)
     logger.info(f"  Candidate rescore: refreshed derived metrics on {rescored} outcome(s)")
     return {"rescored": rescored}
 
 
-def resolve_candidate_outcomes(
-    db, *, today, archive_dir=None, reresolve: bool = False, rescore: bool = False
-) -> dict:
+def resolve_candidate_outcomes(db, *, today, archive_dir=None, reresolve: bool = False, rescore: bool = False) -> dict:
     """Resolve mature shadow candidates against frozen outcome legs.
 
     Prefers an existing frozen production outcome for each shared
@@ -124,6 +123,7 @@ def resolve_candidate_outcomes(
         raise ValueError("archive_dir is required unless rescore=True")
     archive_dir = Path(archive_dir)
     today = _as_date(today)
+    touched: set[int] = set()
 
     coverage_end = archive_max_day(archive_dir)
     cutoff = min(today, coverage_end)
@@ -161,7 +161,9 @@ def resolve_candidate_outcomes(
             continue
         prod = prod_map.get((candidate.item_id, fdate, candidate.horizon_days))
         if prod is not None and not reresolve:
-            _create_or_update(db, existing, candidate, prod.base_price, prod.actual_price, prod.resolved_at, stats)
+            _create_or_update(
+                db, existing, candidate, prod.base_price, prod.actual_price, prod.resolved_at, stats, touched
+            )
             continue
         need_archive.setdefault((candidate.item_id, fdate, candidate.horizon_days), []).append(candidate)
 
@@ -170,7 +172,7 @@ def resolve_candidate_outcomes(
         slugs: set[str] = set()
         anchors: set[tuple[str, date]] = set()
         key_slugs: dict[tuple, str | None] = {}
-        for (item_id, fdate, horizon) in need_archive:
+        for item_id, fdate, horizon in need_archive:
             slug = id_to_slug.get(item_id)
             key_slugs[(item_id, fdate, horizon)] = slug
             if slug is None:
@@ -195,7 +197,14 @@ def resolve_candidate_outcomes(
                     # current legs rather than leaving the batch unresolved.
                     for candidate in group:
                         _create_or_update(
-                            db, existing, candidate, prod.base_price, prod.actual_price, prod.resolved_at, stats
+                            db,
+                            existing,
+                            candidate,
+                            prod.base_price,
+                            prod.actual_price,
+                            prod.resolved_at,
+                            stats,
+                            touched,
                         )
                 else:
                     stats["unresolvable"] += len(group)
@@ -230,9 +239,10 @@ def resolve_candidate_outcomes(
                     f"({prod.base_price}, {prod.actual_price})"
                 )
             for candidate in group:
-                _create_or_update(db, existing, candidate, base, actual, None, stats)
+                _create_or_update(db, existing, candidate, base, actual, None, stats, touched)
 
     db.commit()
+    _candidate_outcome_partitions(db, touched)
     logger.info(
         "  Candidate outcomes: "
         f"{stats['resolved']} resolved, {stats['reresolved']} re-resolved, "
@@ -242,11 +252,29 @@ def resolve_candidate_outcomes(
     return stats
 
 
-def _create_or_update(db, existing, candidate, base, actual, resolved_at, stats):
+def _candidate_outcome_partitions(db, candidate_ids) -> bool:
+    """Write committed candidate outcomes to the monthly partitions (Phase 1.2 dual-write).
+
+    Routed by the candidate's forecast_date (`_part`), not the resolution date. Never raises.
+    """
+    from db import ops_partitions, ops_readback
+
+    ids = sorted(candidate_ids)
+    if not ids:
+        return True
+
+    def _write():
+        ops_partitions.upsert("forecast_candidate_outcomes", ops_readback.candidate_outcomes(db, candidate_ids=ids))
+
+    return ops_partitions.dual_write("forecast_candidate_outcomes", _write)
+
+
+def _create_or_update(db, existing, candidate, base, actual, resolved_at, stats, touched):
     """Create or refresh one candidate outcome row with derived metrics."""
     from database import ForecastCandidateOutcome, utcnow_naive
 
     derived = _derived_metrics(candidate, base, actual)
+    touched.add(candidate.id)
     outcome = existing.get(candidate.id)
     if outcome is None:
         db.add(
