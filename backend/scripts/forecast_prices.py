@@ -476,6 +476,26 @@ def _write_forecasts_to_db(
                         db.rollback()
                         raise
 
+        # Phase 1.2 dual-write (docs/specs/2026-10-11-postgres-to-parquet-history-design.md):
+        # AFTER the Postgres commit, so the partitions carry the ids Postgres issued. Read back
+        # only this batch's keys: regime and global rows share a date and differ in model_config.
+        # On a read-only night the ids come from the partitions instead. Never fails the run.
+        from db import ops_partitions, ops_readback
+
+        def _partitions():
+            import pandas as pd
+
+            if read_only:
+                frame = ops_partitions.assign_ids("item_forecasts", pd.DataFrame(forecast_rows))
+                frame["item_slug"] = frame["item_id"].map(id_to_slug)
+            else:
+                keys = {(r["item_id"], r["forecast_date"], r["horizon_days"]) for r in forecast_rows}
+                frame = ops_readback.forecasts(db, {r["forecast_date"] for r in forecast_rows}, keys)
+            frame["model_config"] = model_config
+            ops_partitions.upsert("item_forecasts", frame)
+
+        ops_partitions.dual_write("item_forecasts", _partitions)
+
     return len(forecast_rows)
 
 
