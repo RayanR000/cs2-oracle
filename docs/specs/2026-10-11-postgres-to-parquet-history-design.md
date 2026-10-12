@@ -90,8 +90,9 @@ That is how archive day 09-19 was lost. For the forecast record:
 
 ### Second and third copies
 
-**When a month closes.** Month M is closed once every forecast in it has matured: its last
-forecast date + 30 + 13 days (the h=30 horizon plus the embargo carry). September 2026 closes
+**When a month closes.** Month M is closed once every forecast in it has matured: its
+calendar end + 30 + 13 days (the h=30 horizon plus the embargo carry). Calendar end, not the
+last forecast date, so a row added late cannot reopen a month. September 2026 closes
 on 11-12. Nothing writes a closed month again.
 
 **Release per closed month.** A final step in Backtest Accuracy (the last job in the chain,
@@ -123,8 +124,7 @@ have into `~/personal-projects/cs2-analyzer/ops-releases/` and checks `SHA256SUM
 as a launchd job or by hand. It is the one copy GitHub cannot delete, and it costs nothing.
 
 **Phase 1 seeds it.** The backup of 2026-10-11 holds forecasts for 2025-12 (one date), 2026-07
-(five) and 2026-08 (twenty, last 08-27, closed 10-09), all already closed, plus open September
-and October. Those months are released as part of the Phase 1 backfill, and
+(five) and 2026-08 (twenty; closes 10-13), plus open September and October. Those months are released as part of the Phase 1 backfill, and
 the first local pull runs right after.
 
 ## What has to change
@@ -160,8 +160,9 @@ Inventory from grep on 2026-10-11 (excluding `tests/`, `scripts/archive/` and mi
 1. Write the backup into the target partitions in the data repo, so history the mirror never
    had becomes durable. The local mirror of 09-20 has `item_forecasts` only from 08-04 (31 dates
    against Postgres's 60), and the shadow tables and `items` were never mirrored.
-   Release the already-closed months (2025-12, 2026-07, 2026-08), add the release
-   step to Backtest Accuracy, and run the first local pull.
+   Release the closed months (2025-12, 2026-07, then 2026-08 from 10-13), add the release
+   step to Backtest Accuracy, and run the first local pull. **Built 2026-10-12:**
+   `scripts/ops_releases.py` (`publish` in Backtest Accuracy, `pull` on the Mac, by hand).
    **Seed built 2026-10-11** (`ops-partition-backfill.yml`, from release
    `supabase-backup-2026-10-11`). The mirror turned out not to be a copy: Postgres wins every
    shared row, the mirror adds only what Postgres lacks, and rows Postgres deleted are kept
