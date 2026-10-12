@@ -356,16 +356,18 @@ def _apply(table, frame, drop, allow_closed, root, today) -> dict[str, int]:
     if drop is not None and spec.part_col is not None:
         targets |= _months_holding(table, drop[0], list(drop[1]), root)
     today = today or datetime.now(UTC).date()
-    closed = sorted(m for m in targets if m and closes_on(m) <= today)
-    if closed and not allow_closed:
-        raise PartitionError(f"{table}: refusing to write closed month(s) {closed}; pass allow_closed")
+    closed = [] if allow_closed else sorted(m for m in targets if m and closes_on(m) <= today)
     out: dict[str, int] = {}
     con = duckdb.connect()
     try:
-        for m in sorted(targets):
+        # Open months are written even when the batch also touches a closed one: a verdict-refresh
+        # flush or a late-resolving outcome must not take that night's open months down with it.
+        for m in sorted(targets - set(closed)):
             out[m or "all"] = _merge(con, table, spec, _path(table, m, root), frame[months == m], drop)
     finally:
         con.close()
+    if closed:
+        raise PartitionError(f"{table}: refused closed month(s) {closed} (pass allow_closed); wrote {out}")
     return out
 
 

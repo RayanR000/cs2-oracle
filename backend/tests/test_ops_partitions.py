@@ -191,3 +191,13 @@ def test_dual_write_rolls_back_the_session_it_was_given():
 
     assert dual_write("item_forecasts", fail, db=db) is False
     assert db.rolled_back
+
+
+def test_a_closed_month_row_does_not_block_the_open_months(tmp_path):
+    from db.ops_partitions import PartitionError, upsert
+
+    frame = pd.DataFrame([_fc(1, date(2026, 8, 5), id_=1), _fc(1, date(2026, 10, 1), id_=2)])
+    with pytest.raises(PartitionError, match="2026-08"):
+        upsert("item_forecasts", frame, root=tmp_path, today=date(2026, 10, 13))
+    assert _read(tmp_path / "item_forecasts" / "2026-10.parquet")["id"].tolist() == [2]
+    assert not (tmp_path / "item_forecasts" / "2026-08.parquet").exists()

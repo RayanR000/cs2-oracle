@@ -27,7 +27,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import duckdb
 import pandas as pd
-from db.ops_partitions import SPECS, month_files, ops_dir
+from db.ops_partitions import SPECS, closes_on, month_files, ops_dir
 from sqlalchemy import text
 
 logger = logging.getLogger("ops_parity")
@@ -141,16 +141,32 @@ def run_parity(db, root=None) -> list[Mismatch]:
     return out
 
 
+def _closed(m: Mismatch, today: date) -> bool:
+    return closes_on(m.forecast_date.strftime("%Y-%m")) <= today
+
+
+def failing(mismatches: list[Mismatch], today: date) -> list[Mismatch]:
+    """The mismatches that fail the night: those in open months.
+
+    A closed month is immutable in the partitions and released, so a later Postgres change there
+    (a verdict refresh after a scoring change) can never be synced without breaking the release
+    check. It is reported every night, apart, and does not stall the clean-night count.
+    """
+    return [m for m in mismatches if not _closed(m, today)]
+
+
 def record(mismatches: list[Mismatch], run_date: date, root=None) -> None:
     from db.parquet import append_table
 
     now = datetime.now(UTC).replace(tzinfo=None)
+    bad = failing(mismatches, run_date)
     rows = [
         {
             "run_date": run_date,
             "table": t,
-            "n_mismatches": sum(1 for m in mismatches if m.table == t),
-            "ok": not any(m.table == t for m in mismatches),
+            "n_mismatches": sum(1 for m in bad if m.table == t),
+            "n_closed_mismatches": sum(1 for m in mismatches if m.table == t) - sum(1 for m in bad if m.table == t),
+            "ok": not any(m.table == t for m in bad),
             "run_at": now,
         }
         for t in SUMMARY
@@ -185,14 +201,25 @@ def main(argv: Sequence[str] | None = None) -> int:
         mismatches = run_parity(db)
     finally:
         db.close()
-    record(mismatches, datetime.now(UTC).date())
-    for m in mismatches[:50]:
+    today = datetime.now(UTC).date()
+    record(mismatches, today)
+    bad = failing(mismatches, today)
+    closed = [m for m in mismatches if m not in bad]
+    for m in bad[:50]:
         logger.error("%s %s %s: postgres=%s partitions=%s", m.table, m.forecast_date, m.field, m.postgres, m.partitions)
-    if len(mismatches) > 50:
-        logger.error("... and %d more", len(mismatches) - 50)
+    if len(bad) > 50:
+        logger.error("... and %d more", len(bad) - 50)
+    if closed:
+        months = sorted({f"{m.table} {m.forecast_date:%Y-%m}" for m in closed})
+        print(f"::warning title=Ops parity (closed months)::Postgres differs in closed month(s): {months}", flush=True)
     streak = clean_streak()
-    logger.info("parity: %d mismatches; clean nights in a row: %d (Phase 1 needs 7)", len(mismatches), streak)
-    return 1 if mismatches else 0
+    logger.info(
+        "parity: %d open-month mismatches, %d in closed months; clean nights in a row: %d (Phase 1 needs 7)",
+        len(bad),
+        len(closed),
+        streak,
+    )
+    return 1 if bad else 0
 
 
 if __name__ == "__main__":

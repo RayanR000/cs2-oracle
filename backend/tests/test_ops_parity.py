@@ -79,3 +79,16 @@ def test_streak_counts_consecutive_clean_nights(tmp_path, monkeypatch):
     record([], date(2026, 10, 13))
     record([], date(2026, 10, 14))
     assert clean_streak() == 2
+
+
+def test_closed_month_divergence_is_reported_apart_and_does_not_fail_the_night(tmp_path, monkeypatch):
+    from scripts.ops_parity import Mismatch, clean_streak, failing, record
+
+    monkeypatch.setattr("db.parquet.OPS_DIR", tmp_path)
+    closed = Mismatch("forecast_outcomes", date(2026, 8, 5), "n_in_interval", 3, 2)
+    open_ = Mismatch("forecast_outcomes", date(2026, 10, 1), "n", 1, 0)
+    today = date(2026, 10, 14)
+    assert failing([closed], today) == []
+    assert failing([closed, open_], today) == [open_]
+    record([closed], today)
+    assert clean_streak() == 1
