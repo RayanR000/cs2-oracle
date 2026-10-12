@@ -125,8 +125,7 @@ def write_candidate_batches(db, records: list) -> CandidateWriteResult:
             if not e.connection_invalidated:
                 raise
             logger.warning(
-                "  candidate batch %s/%s/%s unwritten (transient DB error); "
-                "left absent for retry",
+                "  candidate batch %s/%s/%s unwritten (transient DB error); left absent for retry",
                 forecast_date,
                 horizon_days,
                 component,
@@ -140,4 +139,31 @@ def write_candidate_batches(db, records: list) -> CandidateWriteResult:
         result.batches_written += 1
 
     db.commit()
+    # Phase 1.2 dual-write: after the commit, with the ids Postgres issued. Never fails the run.
+    from db import ops_partitions, ops_readback
+
+    def _partitions():
+        frame = ops_readback.candidates(db, {r.forecast_date for r in records}, {_identity(r) for r in records})
+        ops_partitions.upsert("forecast_candidates", frame)
+
+    ops_partitions.dual_write("forecast_candidates", _partitions)
     return result
+
+
+def write_candidate_partitions_read_only(records: list) -> None:
+    """A read-only night: land the shadow candidates in the partitions with partition-issued ids."""
+    from dataclasses import asdict
+
+    import pandas as pd
+    from database import utcnow_naive
+
+    from db import ops_partitions
+
+    def _partitions():
+        cols = ops_partitions.SPECS["forecast_candidates"].columns
+        rows = [{k: v for k, v in asdict(r).items() if k in cols} for r in records]
+        frame = ops_partitions.assign_ids("forecast_candidates", pd.DataFrame(rows))
+        frame["created_at"] = utcnow_naive()
+        ops_partitions.upsert("forecast_candidates", frame)
+
+    ops_partitions.dual_write("forecast_candidates (read-only)", _partitions)

@@ -535,7 +535,10 @@ def _write_shadow_candidates(db, forecaster, slug_to_id, forecast_date_override=
         if not is_read_only_error(e):
             raise
         db.rollback()
-        report_read_only(f"the forecast_candidates write ({len(remapped)} shadow rows; no Parquet mirror)")
+        report_read_only(f"the forecast_candidates write ({len(remapped)} shadow rows; partitions only)")
+        from db.candidate_store import write_candidate_partitions_read_only
+
+        write_candidate_partitions_read_only(remapped)
         return 0, 0, 0, 0
     logger.info(
         f"Wrote {result.centre_written} centre + {result.ranking_written} ranking shadow candidates "
