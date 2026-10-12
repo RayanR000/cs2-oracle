@@ -162,7 +162,9 @@ def write_candidate_partitions_read_only(records: list) -> None:
     def _partitions():
         cols = ops_partitions.SPECS["forecast_candidates"].columns
         rows = [{k: v for k, v in asdict(r).items() if k in cols} for r in records]
-        frame = ops_partitions.assign_ids("forecast_candidates", pd.DataFrame(rows))
+        frame = ops_partitions.assign_ids(
+            "forecast_candidates", pd.DataFrame(rows), base=ops_partitions.READ_ONLY_ID_BASE
+        )
         frame["created_at"] = utcnow_naive()
         ops_partitions.upsert("forecast_candidates", frame)
 

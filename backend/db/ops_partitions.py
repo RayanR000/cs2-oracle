@@ -47,6 +47,10 @@ def closes_on(month: str) -> date:
     return date(y, m, calendar.monthrange(y, m)[1]) + timedelta(days=CLOSE_AFTER_DAYS)
 
 
+#: Ids issued on a read-only night start above this: Postgres's sequences will never reach it, so
+#: a partition-issued id cannot collide with one Postgres issues if it becomes writable again.
+READ_ONLY_ID_BASE = 2**40
+
 FORECAST_KEY = ("item_id", "forecast_date", "horizon_days")
 CANDIDATE_KEY = (*FORECAST_KEY, "component", "candidate_name", "candidate_version")
 
@@ -392,8 +396,8 @@ def replace(
     return _apply(table, frame, (key_col, list(keys)), allow_closed, root, today)
 
 
-def assign_ids(table: str, frame: pd.DataFrame, *, root=None) -> pd.DataFrame:
-    """Ids for a read-only night: a key already stored keeps its id; the rest get max(id) + 1 upward."""
+def assign_ids(table: str, frame: pd.DataFrame, *, root=None, base: int = 0) -> pd.DataFrame:
+    """Ids for a read-only night: a key already stored keeps its id; the rest get max(id, base) + 1 upward."""
     spec = SPECS[table]
     out = _coerce(spec, frame.drop(columns=["id"], errors="ignore"))
     hit: dict[int, int] = {}
@@ -412,6 +416,7 @@ def assign_ids(table: str, frame: pd.DataFrame, *, root=None) -> pd.DataFrame:
             top = con.execute(f"SELECT coalesce(max(id), 0) FROM {rel}").fetchone()[0]
         finally:
             con.close()
+    top = max(int(top), base)
     ids = []
     for pos in range(len(out)):
         if pos in hit:

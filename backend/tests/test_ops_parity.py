@@ -92,3 +92,21 @@ def test_closed_month_divergence_is_reported_apart_and_does_not_fail_the_night(t
     assert failing([closed, open_], today) == [open_]
     record([closed], today)
     assert clean_streak() == 1
+
+
+def test_repeated_ids_in_the_partitions_fail(tmp_path):
+    from db.ops_partitions import upsert
+    from scripts.ops_parity import failing, run_parity
+
+    db = _session()
+    _seed(db)
+    _mirror_postgres(db, tmp_path)
+    upsert(
+        "item_forecasts",
+        pd.DataFrame([{"id": 10, "item_id": 5, "forecast_date": D, "horizon_days": 7}]),
+        root=tmp_path,
+        today=TODAY,
+    )
+    got = [m for m in run_parity(db, root=tmp_path) if m.field == "duplicate_ids"]
+    assert [(m.table, m.partitions) for m in got] == [("item_forecasts", 1)]
+    assert failing(got, TODAY) == got

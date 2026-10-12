@@ -47,6 +47,8 @@ def test_read_only_candidates_land_with_partition_ids(tmp_path, monkeypatch):
     monkeypatch.setattr("db.parquet.OPS_DIR", tmp_path)
     day = date.today()
     write_candidate_partitions_read_only([replace(_record(item_id=1), forecast_date=day)])
+    from db.ops_partitions import READ_ONLY_ID_BASE
+
     got = _part(tmp_path, day)
-    assert got["id"].tolist() == [1]
+    assert got["id"].tolist() == [READ_ONLY_ID_BASE + 1]
     assert got["created_at"].notna().all()

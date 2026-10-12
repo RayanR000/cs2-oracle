@@ -98,6 +98,8 @@ def test_a_read_only_night_issues_ids_from_the_partitions(tmp_path, monkeypatch)
             ]
 
     ro = _DB(_read_only_exc(), [])
+    # The fake read-only session cannot read; nothing of this batch committed before the 25006.
+    monkeypatch.setattr("db.ops_readback.forecasts", lambda *a, **k: pd.DataFrame())
     with (
         patch("sqlalchemy.inspect", return_value=_Inspector()),
         patch("sqlalchemy.dialects.postgresql.insert") as ins,
@@ -105,8 +107,11 @@ def test_a_read_only_night_issues_ids_from_the_partitions(tmp_path, monkeypatch)
     ):
         ins.return_value.values.return_value.on_conflict_do_update.return_value = "stmt"
         _write_forecasts_to_db(ro, _results(day, ("ak_2",)), "v", {"ak_2": 2}, day)
+    from db.ops_partitions import READ_ONLY_ID_BASE
+
     got = _partition(tmp_path, day)
-    assert got.loc[got.item_id == 2, "id"].item() == stored + 1
+    assert got.loc[got.item_id == 1, "id"].item() == stored
+    assert got.loc[got.item_id == 2, "id"].item() == READ_ONLY_ID_BASE + 1
 
 
 def test_a_partition_failure_does_not_fail_the_write(tmp_path, monkeypatch, capsys):
@@ -117,3 +122,22 @@ def test_a_partition_failure_does_not_fail_the_write(tmp_path, monkeypatch, caps
     day = date.today()
     assert _write_forecasts_to_db(_session(), _results(day), "v", {"ak_1": 1}, day) == 1
     assert "::error title=Ops partition write failed::item_forecasts" in capsys.readouterr().out
+
+
+def test_a_night_that_goes_read_only_midway_keeps_the_committed_ids(tmp_path, monkeypatch):
+    from database import ItemForecast
+    from db.ops_partitions import READ_ONLY_ID_BASE
+    from scripts.forecast_prices import _read_only_forecast_frame
+
+    monkeypatch.setattr("db.parquet.OPS_DIR", tmp_path)
+    day = date.today()
+    db = _session()
+    db.add(ItemForecast(id=500, item_id=1, forecast_date=day, horizon_days=3, price_mid=10.0))  # batch 1 committed
+    db.commit()
+    rows = [
+        {"item_id": 1, "forecast_date": day, "horizon_days": 3, "price_mid": 10.0},
+        {"item_id": 2, "forecast_date": day, "horizon_days": 3, "price_mid": 11.0},  # batch 2 hit 25006
+    ]
+    frame = _read_only_forecast_frame(db, rows, {1: "ak_1", 2: "ak_2"})
+    assert frame.set_index("item_id")["id"].to_dict() == {1: 500, 2: READ_ONLY_ID_BASE + 1}
+    assert frame.set_index("item_id")["item_slug"].to_dict() == {1: "ak_1", 2: "ak_2"}

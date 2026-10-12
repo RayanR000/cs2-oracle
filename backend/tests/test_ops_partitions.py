@@ -201,3 +201,12 @@ def test_a_closed_month_row_does_not_block_the_open_months(tmp_path):
         upsert("item_forecasts", frame, root=tmp_path, today=date(2026, 10, 13))
     assert _read(tmp_path / "item_forecasts" / "2026-10.parquet")["id"].tolist() == [2]
     assert not (tmp_path / "item_forecasts" / "2026-08.parquet").exists()
+
+
+def test_assign_ids_can_issue_from_a_disjoint_base(tmp_path):
+    from db.ops_partitions import READ_ONLY_ID_BASE, assign_ids
+
+    got = assign_ids(
+        "item_forecasts", pd.DataFrame([_fc(1, date(2026, 10, 11))]), root=tmp_path, base=READ_ONLY_ID_BASE
+    )
+    assert got["id"].tolist() == [READ_ONLY_ID_BASE + 1]

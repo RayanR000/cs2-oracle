@@ -483,11 +483,9 @@ def _write_forecasts_to_db(
         from db import ops_partitions, ops_readback
 
         def _partitions():
-            import pandas as pd
 
             if read_only:
-                frame = ops_partitions.assign_ids("item_forecasts", pd.DataFrame(forecast_rows))
-                frame["item_slug"] = frame["item_id"].map(id_to_slug)
+                frame = _read_only_forecast_frame(db, forecast_rows, id_to_slug)
             else:
                 keys = {(r["item_id"], r["forecast_date"], r["horizon_days"]) for r in forecast_rows}
                 frame = ops_readback.forecasts(db, {r["forecast_date"] for r in forecast_rows}, keys)
@@ -497,6 +495,35 @@ def _write_forecasts_to_db(
         ops_partitions.dual_write("item_forecasts", _partitions, db=db)
 
     return len(forecast_rows)
+
+
+def _read_only_forecast_frame(db, forecast_rows, id_to_slug):
+    """Partition rows for a night Postgres turned read-only partway through.
+
+    Batches committed before the SQLSTATE 25006 keep the ids Postgres gave them (reads still
+    work). The rest get ids from READ_ONLY_ID_BASE up, a range the Postgres sequence never
+    reaches, so the two cannot collide if Postgres becomes writable again.
+    """
+    import pandas as pd
+    from db import ops_partitions, ops_readback
+
+    def key(item_id, forecast_date, horizon):
+        return (item_id, pd.Timestamp(forecast_date).date(), horizon)
+
+    keys = {(r["item_id"], r["forecast_date"], r["horizon_days"]) for r in forecast_rows}
+    committed = ops_readback.forecasts(db, {r["forecast_date"] for r in forecast_rows}, keys)
+    done = {key(r.item_id, r.forecast_date, r.horizon_days): r.id for r in committed.itertuples()}
+    frame = pd.DataFrame(forecast_rows)
+    hit = [key(r["item_id"], r["forecast_date"], r["horizon_days"]) in done for r in forecast_rows]
+    kept = frame[hit].copy()
+    kept["id"] = [done[key(r.item_id, r.forecast_date, r.horizon_days)] for r in kept.itertuples()]
+    issued = ops_partitions.assign_ids(
+        "item_forecasts", frame[[not h for h in hit]], base=ops_partitions.READ_ONLY_ID_BASE
+    )
+    parts = [f for f in (kept, issued) if not f.empty]
+    out = pd.concat(parts, ignore_index=True) if len(parts) > 1 else parts[0].reset_index(drop=True)
+    out["item_slug"] = out["item_id"].map(id_to_slug)
+    return out
 
 
 def _write_shadow_candidates(db, forecaster, slug_to_id, forecast_date_override=None):

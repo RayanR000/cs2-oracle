@@ -70,7 +70,7 @@ PG_REL = {
 @dataclass(frozen=True)
 class Mismatch:
     table: str
-    forecast_date: date
+    forecast_date: date | None  # None: a whole-table check
     field: str
     postgres: float | None
     partitions: float | None
@@ -134,15 +134,27 @@ def compare(table, pg: pd.DataFrame, pq: pd.DataFrame) -> list[Mismatch]:
     return out
 
 
+def _duplicate_ids(table, root) -> int:
+    """Rows sharing an id across the whole table: an aggregate per date cannot see two rows
+    on different dates carrying one id (a read-only night's ids meeting Postgres's)."""
+    src = _files(table, root)
+    if src is None or "id" not in SPECS[table].columns:
+        return 0
+    return duckdb.sql(f"SELECT count(id) - count(DISTINCT id) FROM {src}").fetchone()[0]
+
+
 def run_parity(db, root=None) -> list[Mismatch]:
     out = []
     for table in SUMMARY:
         out += compare(table, *_summaries(db, table, root))
+        dup = _duplicate_ids(table, root)
+        if dup:
+            out.append(Mismatch(table, None, "duplicate_ids", 0.0, float(dup)))
     return out
 
 
 def _closed(m: Mismatch, today: date) -> bool:
-    return closes_on(m.forecast_date.strftime("%Y-%m")) <= today
+    return m.forecast_date is not None and closes_on(m.forecast_date.strftime("%Y-%m")) <= today
 
 
 def failing(mismatches: list[Mismatch], today: date) -> list[Mismatch]:
@@ -210,7 +222,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     if len(bad) > 50:
         logger.error("... and %d more", len(bad) - 50)
     if closed:
-        months = sorted({f"{m.table} {m.forecast_date:%Y-%m}" for m in closed})
+        months = sorted({f"{m.table} {m.forecast_date:%Y-%m}" for m in closed if m.forecast_date})
         print(f"::warning title=Ops parity (closed months)::Postgres differs in closed month(s): {months}", flush=True)
     streak = clean_streak()
     logger.info(
