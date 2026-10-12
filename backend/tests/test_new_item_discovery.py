@@ -114,3 +114,12 @@ def test_a_flood_of_new_names_inserts_nothing(session, monkeypatch):
 
     assert nid.discover_new_items(session, _sources(flood), DAY) == 0
     assert session.query(Item).count() == 1
+
+
+def test_inserted_items_land_in_items_parquet(session, tmp_path, monkeypatch):
+    import duckdb
+
+    monkeypatch.setattr("db.parquet.OPS_DIR", tmp_path)
+    assert nid.discover_new_items(session, _sources({NEW: 2}), DAY) == 1
+    got = duckdb.sql(f"SELECT id, item_id FROM read_parquet('{tmp_path}/items.parquet')").fetchall()
+    assert got == [(session.query(Item).filter_by(item_id=NEW).one().id, NEW)]
