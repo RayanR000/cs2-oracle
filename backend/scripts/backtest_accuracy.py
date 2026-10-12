@@ -368,7 +368,7 @@ def _outcome_partitions(db, forecast_ids, drop=None) -> bool:
         else:
             ops_partitions.upsert("forecast_outcomes", frame)
 
-    return ops_partitions.dual_write("forecast_outcomes", _write)
+    return ops_partitions.dual_write("forecast_outcomes", _write, db=db)
 
 
 def _refreshed_outcome_partitions(mirror) -> bool:

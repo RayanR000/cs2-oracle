@@ -494,7 +494,7 @@ def _write_forecasts_to_db(
             frame["model_config"] = model_config
             ops_partitions.upsert("item_forecasts", frame)
 
-        ops_partitions.dual_write("item_forecasts", _partitions)
+        ops_partitions.dual_write("item_forecasts", _partitions, db=db)
 
     return len(forecast_rows)
 

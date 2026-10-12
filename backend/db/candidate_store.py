@@ -146,7 +146,7 @@ def write_candidate_batches(db, records: list) -> CandidateWriteResult:
         frame = ops_readback.candidates(db, {r.forecast_date for r in records}, {_identity(r) for r in records})
         ops_partitions.upsert("forecast_candidates", frame)
 
-    ops_partitions.dual_write("forecast_candidates", _partitions)
+    ops_partitions.dual_write("forecast_candidates", _partitions, db=db)
     return result
 
 

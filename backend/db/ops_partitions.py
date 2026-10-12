@@ -419,16 +419,23 @@ def assign_ids(table: str, frame: pd.DataFrame, *, root=None) -> pd.DataFrame:
     return out
 
 
-def dual_write(what: str, fn: Callable[[], object]) -> bool:
+def dual_write(what: str, fn: Callable[[], object], db=None) -> bool:
     """Run one partition write; log a failure instead of raising.
 
     By the time this runs, Postgres and the single-file mirror hold the rows, so nothing is lost,
     and failing the run after its commit would only endanger the rest of the chain. The nightly
-    parity check fails the same night instead.
+    parity check fails the same night instead. Pass the writer's *db* so a failure rolls it back.
     """
     try:
         fn()
     except Exception:
+        if db is not None:
+            # A failed read-back leaves a Postgres transaction aborted, and the caller's next
+            # statement on this session would raise InFailedSqlTransaction. Its commit is done.
+            try:
+                db.rollback()
+            except Exception:
+                logger.exception("ops partitions: rollback after the %s failure also failed", what)
         logger.exception("ops partitions: %s write failed; Postgres holds the rows, parity will fail tonight", what)
         print(f"::error title=Ops partition write failed::{what}", flush=True)
         return False

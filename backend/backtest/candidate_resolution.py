@@ -266,7 +266,7 @@ def _candidate_outcome_partitions(db, candidate_ids) -> bool:
     def _write():
         ops_partitions.upsert("forecast_candidate_outcomes", ops_readback.candidate_outcomes(db, candidate_ids=ids))
 
-    return ops_partitions.dual_write("forecast_candidate_outcomes", _write)
+    return ops_partitions.dual_write("forecast_candidate_outcomes", _write, db=db)
 
 
 def _create_or_update(db, existing, candidate, base, actual, resolved_at, stats, touched):
