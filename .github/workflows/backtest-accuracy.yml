@@ -133,6 +133,13 @@ jobs:
       - name: Centre-vs-last-price maturity gate
         continue-on-error: true
         working-directory: ./backend
+        # It reads prod Postgres. Without this env it fell back to config.py's default
+        # sqlite:///backend/cs2_market.db, which does not exist under ./backend, so every run
+        # died with "unable to open database file" and the gate could never announce anything.
+        env:
+          DATABASE_URL: ${{ secrets.SUPABASE_DATABASE_URL }}
+          ENVIRONMENT: production
+          DEBUG: false
         run: |
           python scripts/archive/centre_vs_lastprice.py --gate 2>&1 | tee centre_gate.log
 
