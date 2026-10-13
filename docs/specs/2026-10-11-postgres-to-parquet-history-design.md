@@ -139,7 +139,7 @@ Inventory from grep on 2026-10-11 (excluding `tests/`, `scripts/archive/` and mi
 | Forecast write | `scripts/forecast_prices.py` | Partitions only; issue ids |
 | Shadow write | `db/candidate_store.py` | Partitions only |
 | Outcome scoring and refresh | `scripts/backtest_accuracy.py`, `backtest/candidate_resolution.py` | Read and write partitions; refresh rewrites open months |
-| Feedback factors, drift | `models/served_recalibration.py`, `models/forecaster.py` (live panel read, `accuracy_alerts`) | DuckDB over partitions |
+| Feedback factors, blending | `models/served_recalibration.py`, `models/forecaster.py` (prior-day blend, bias corrections, item metadata; the drift check reads `prediction_accuracy`, not this record) | DuckDB over partitions |
 | Freshness check | `scripts/check_forecast_freshness.py` | Newest partition |
 | Instruments | `measure_conformal_pid.py`, `ranking_transfer_report.py`, `centre_promotion_report.py`, `measure_direction_reopen.py`, `date_dependence_sensitivity.py` | Phase 3 rule below |
 | API | `api/routes/items.py`, `opportunities.py`, `accuracy.py` | Parquet only (already its first read) |
@@ -265,6 +265,8 @@ closed-month release still runs.
 - Sync: the dry run writes nothing; `--apply` fills ids and adds no row Postgres lacks.
 
 ### Phase 2: switch readers that no frozen read depends on
+
+Designed 2026-10-13: `docs/specs/2026-10-13-ops-readers-switch-design.md` (six PRs, risk order).
 
 The API, freshness check, drift check, backtest scoring and refresh, catalog and feedback
 factors move one PR at a time. The feedback factors change served bands, so their PR must show
