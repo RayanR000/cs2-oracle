@@ -146,9 +146,7 @@ def _present_columns_cached(file_paths: tuple[str, ...]) -> set[str]:
 
     file_list_sql = "[" + ", ".join("'" + p.replace("'", "''") + "'" for p in file_paths) + "]"
     with duckdb.connect() as tmp_con:
-        rows = tmp_con.sql(
-            f"DESCRIBE SELECT * FROM read_parquet({file_list_sql}, union_by_name = true)"
-        ).fetchall()
+        rows = tmp_con.sql(f"DESCRIBE SELECT * FROM read_parquet({file_list_sql}, union_by_name = true)").fetchall()
     return {r[0] for r in rows}
 
 

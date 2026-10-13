@@ -1,11 +1,11 @@
 """Tests for the drift check CI script."""
 
 
-
 class TestDriftCheckScript:
     def test_module_imports(self):
         """The drift check script should be importable."""
         from scripts import run_drift_check
+
         assert hasattr(run_drift_check, "main")
 
     def test_reference_snapshot_roundtrip(self, tmp_path):
@@ -15,10 +15,12 @@ class TestDriftCheckScript:
         from scripts.run_drift_check import load_reference, save_reference
 
         rng = np.random.default_rng(42)
-        ref = pd.DataFrame({
-            "price": rng.normal(100, 10, 100),
-            "return_1d": rng.normal(0, 0.02, 100),
-        })
+        ref = pd.DataFrame(
+            {
+                "price": rng.normal(100, 10, 100),
+                "return_1d": rng.normal(0, 0.02, 100),
+            }
+        )
         path = str(tmp_path / "ref.parquet")
 
         save_reference(ref, path)

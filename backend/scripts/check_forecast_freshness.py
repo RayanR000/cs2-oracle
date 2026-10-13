@@ -99,9 +99,11 @@ def _shadow_batches():
 
     db = SessionLocal()
     try:
-        rows = db.query(
-            ForecastCandidate.forecast_date, ForecastCandidate.horizon_days, ForecastCandidate.component
-        ).distinct().all()
+        rows = (
+            db.query(ForecastCandidate.forecast_date, ForecastCandidate.horizon_days, ForecastCandidate.component)
+            .distinct()
+            .all()
+        )
         return {(_as_date(r[0]), r[1], r[2]) for r in rows}
     finally:
         db.close()

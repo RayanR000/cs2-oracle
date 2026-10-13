@@ -110,6 +110,7 @@ def _tier_clause(price_tier: int | None, column: str = "price_tier") -> str:
         return f"{column} IS NULL"
     return f"{column} = {int(price_tier)}"
 
+
 _PA_HAS_PRICE_TIER: bool | None = None
 
 

@@ -57,7 +57,9 @@ from models.item_parser import archive_universe_sql_filter
 
 def _lazy_ab_imports():
     from scripts.archive.ab_test_item_metadata import _stratified_sample, assign_items
+
     return _stratified_sample, assign_items
+
 
 logging.basicConfig(
     level=logging.INFO,

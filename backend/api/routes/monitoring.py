@@ -55,12 +55,23 @@ def get_model_info():
         meta = json.load(f)
 
     safe_keys = [
-        "model_artifact_version", "trained_at", "climatology_scale",
-        "exceedance_scale", "anomaly_gbm", "feature_native_nan",
-        "naive_init_score", "conformal_calibration", "conformal_beta",
-        "conformal_q_lo", "conformal_q_hi", "feature_importance",
-        "cv_results", "training_window_days", "n_ensembles",
-        "sigma_clip", "served_coverage_factor",
+        "model_artifact_version",
+        "trained_at",
+        "climatology_scale",
+        "exceedance_scale",
+        "anomaly_gbm",
+        "feature_native_nan",
+        "naive_init_score",
+        "conformal_calibration",
+        "conformal_beta",
+        "conformal_q_lo",
+        "conformal_q_hi",
+        "feature_importance",
+        "cv_results",
+        "training_window_days",
+        "n_ensembles",
+        "sigma_clip",
+        "served_coverage_factor",
     ]
     filtered = {k: meta[k] for k in safe_keys if k in meta}
 

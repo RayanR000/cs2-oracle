@@ -86,9 +86,7 @@ def _load_parquet_items(con, backfilled_only=True):
     # scripts/normalize_price_schema.py has run. See db/archive.py.
     from db.archive import prices_relation
 
-    relation = prices_relation(
-        con, ARCHIVE_DIR, columns=["item_slug", "day", "mean_price", "volume", "source"]
-    )
+    relation = prices_relation(con, ARCHIVE_DIR, columns=["item_slug", "day", "mean_price", "volume", "source"])
 
     # Apply the universe here as well as in _load_all_prices, so the
     # `max_items` budget is not spent selecting items the price loader will

@@ -253,7 +253,9 @@ def cutovers_from_counts(counts: pd.Series) -> list:
     return [d for d, hit in zip(c.index, change > ItemForecaster.COLLECTION_SHIFT_FRACTION) if bool(hit)]
 
 
-def composition_cutovers(anchor: date, archive_dir: Path | None = None, window: int = ANCHOR_NEIGHBOURHOOD_DAYS) -> list:
+def composition_cutovers(
+    anchor: date, archive_dir: Path | None = None, window: int = ANCHOR_NEIGHBOURHOOD_DAYS
+) -> list:
     """Composition breaks within `window` days of `anchor`, by the label path's rule.
 
     `cutovers_from_counts` sees only a change in universe SIZE; 2026-04-16 kept

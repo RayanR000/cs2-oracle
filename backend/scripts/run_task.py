@@ -147,12 +147,7 @@ def check_results(task_name, results) -> None:
             continue
         expected = r.get("candidate_batches_expected")
         written = r.get("candidate_batches_written")
-        if (
-            isinstance(expected, int)
-            and isinstance(written, int)
-            and expected > 0
-            and written < expected
-        ):
+        if isinstance(expected, int) and isinstance(written, int) and expected > 0 and written < expected:
             logger.warning(
                 f"⚠️  TASK '{task_name}' wrote production but shadow collection is "
                 f"incomplete ({written}/{expected} batches). "

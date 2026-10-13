@@ -1561,6 +1561,7 @@ def test_a_conformal_band_wide_enough_to_go_negative_stays_ordered(tmp_path):
 
     def to_price(r):
         return round(cur * (1 + r / 100.0), 2)
+
     result = _one_row_result(cur, to_price(low_ret[0]), to_price(mid_ret), to_price(high_ret[0]))
     assert result.iloc[0]["forecasts"][7]["low"] == pytest.approx(-40.0)
 

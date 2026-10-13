@@ -31,7 +31,7 @@ harness, because on this problem an impressive-looking number is easy to produce
 usually wrong.
 
 **Stack:** Python · LightGBM · split-conformal prediction · DuckDB over Parquet ·
-PostgreSQL (Supabase) · FastAPI · GitHub Actions
+PostgreSQL (Supabase, being retired for Parquet) · FastAPI · GitHub Actions
 
 ## What it serves
 
@@ -128,9 +128,9 @@ docs/           Write-up, architecture, specs and plans, research, changelog, ex
 .github/        Daily chain, freshness, schema drift, lint
 ```
 
-The price archive lives in a separate repo,
-[`cs2-oracle-data`](https://github.com/RayanR000/cs2-oracle-data). Only CI writes to it.
-The local `price-archive/` directory is a gitignored, read-only copy.
+The price archive and the forecast record live in a separate private repo, `cs2-oracle-data`.
+Only CI writes to it, and closed months are also published as checksummed releases. The local
+`price-archive/` directory is a gitignored, read-only copy.
 
 ## Evaluation protocol
 
@@ -157,8 +157,9 @@ until the served series has the ≥20 distinct forecast dates the test needs.
 | Forecast Freshness Check | Alerts when no forecast landed |
 | Schema Drift Check | Pre-merge gate: ORM models vs. Alembic migrations |
 | Lint & Smoke Test | `ruff`, `mypy`, fast tests |
-| Archive Restore Day | Manual one-off repair of a deleted archive day |
-| Discover New Items, Event Correlation, Model Diagnostics, A/B harness | Auxiliary; run on demand |
+| Model Diagnostics | On-demand model scoring and A/B arms, one job per horizon |
+| Ops Sync From Postgres | On-demand repair of the monthly forecast-record partitions |
+| Archive Restore Day | On-demand repair of a deleted archive day |
 
 Enable state lives in GitHub, not git. Check it with `gh workflow list`. The runbook is
 [`docs/operations.md`](docs/operations.md).
@@ -167,7 +168,7 @@ Enable state lives in GitHub, not git. Check it with `gh workflow list`. The run
 
 - [`docs/PORTFOLIO.md`](docs/PORTFOLIO.md): project write-up
 - [`docs/`](docs/README.md): index, architecture notes and runbook
-- [`docs/changelog/`](docs/changelog/): 220+ dated decision records with measured effects
+- [`docs/changelog/`](docs/changelog/): 240+ dated decision records with measured effects
 - [`docs/research/`](docs/research/): preregistrations and research notes
 - [`docs/experiment_log.csv`](docs/experiment_log.csv): every shipped, refuted and void experiment, negative results included
 

@@ -1,27 +1,30 @@
 # Data Collection Pipelines
 
-One collector feeds the archive. Everything else is chained off it or runs on its own
-cron. Ten workflows exist in `.github/workflows/`:
+One collector feeds the archive. Everything else is chained off it, runs on its own cron, or
+is dispatched by hand. Nine workflows exist in `.github/workflows/` (2026-10-13):
 
 | Workflow | Trigger | What it does | Writes |
 |----------|---------|--------------|--------|
-| `aggregator-update.yml` | cron `0 23 * * *` | Fetch 7 CSGOTrader price endpoints + exchange rates | `prices-YYYY-MM.parquet`, `exchange-rates-YYYY.parquet`, `collection_runs` |
-| `price-forecast.yml` | `workflow_run` on *Aggregator Market Update* | Predict, and retrain when the model is ≥14 days old | `ops/item_forecasts.parquet` |
-| `backtest-accuracy.yml` | `workflow_run` on *Price Forecast*, plus cron `0 8 * * 1-6` | Resolve matured forecasts, score them | `ops/forecast_outcomes.parquet`, `ops/prediction_accuracy.parquet`, `ops/accuracy_alerts.parquet` |
-| `event-correlation-analysis.yml` | cron `0 4 * * 0` | Rebuild event/item impact correlations | `ops/events.parquet`, `ops/event_impacts_denorm.parquet` |
-| `model-diagnostics.yml` | cron `0 2 * * 0` | Score the served classifier — one matrix job per horizon, `--train-only`, artifacts discarded | nothing |
-| `discover-new-items.yml` | `workflow_dispatch` only | Steam item discovery — **broken at import**, see below | nothing |
+| `aggregator-update.yml` | cron `0 23 * * *` | Fetch 7 CSGOTrader price endpoints + exchange rates; apply migrations | `prices-YYYY-MM.parquet`, `exchange-rates-YYYY.parquet`, `collection_runs`, `ops/items.parquet` |
+| `price-forecast.yml` | `workflow_run` on *Aggregator Market Update* | Predict, and retrain when the model is ≥14 days old | `ops/item_forecasts.parquet`, `ops/item_forecasts/YYYY-MM.parquet`, `ops/forecast_candidates/YYYY-MM.parquet` |
+| `backtest-accuracy.yml` | `workflow_run` on *Price Forecast*, plus cron `0 8 * * 1-6` | Resolve matured forecasts, score them, check Postgres/partition parity, publish closed months as releases | `ops/forecast_outcomes{.parquet,/YYYY-MM.parquet}`, `ops/forecast_candidate_outcomes/YYYY-MM.parquet`, `ops/prediction_accuracy.parquet`, `ops/accuracy_alerts.parquet` |
 | `forecast-freshness-check.yml` | cron `0 12 * * *` | Independent of the chain: turns "no forecast landed today" into a red run, even on a night the forecast job never ran | nothing |
 | `schema-drift-check.yml` | `pull_request` / `push` to main (paths-filtered) | Pre-merge gate: applies the migrations to a throwaway Postgres and diffs against `Base.metadata`, so an ORM column with no migration fails before merge | nothing |
-| `ab-harness-batch.yml` | `workflow_dispatch` only | Re-runs the `scripts/ab_test_*.py` harnesses as one matrix job each; uploads each log as an artifact | nothing |
-| `lint.yml` | `pull_request` / `push` to main | Linting and style checks | nothing |
+| `lint.yml` | `pull_request` / `push` to main | `ruff`, `mypy`, import smoke test, fast test gate | nothing |
+| `model-diagnostics.yml` | `workflow_dispatch` only | Score the served classifier — one matrix job per horizon, `--train-only`, artifacts discarded. A dispatch with default inputs is the control arm | nothing |
+| `ops-sync.yml` | `workflow_dispatch` only | Copy named forecast dates from Postgres into the monthly partitions (fill ids, repair a failed night) | `ops/<table>/YYYY-MM.parquet` |
+| `archive-restore-day.yml` | `workflow_dispatch` only | One-off repair of a deleted archive day | `prices-YYYY-MM.parquet` |
 
-All four archive-writing workflows check out `RayanR000/cs2-oracle-data` and force-push it
-back as a squashed orphan commit. **`CS2_DATA_REPO_TOKEN` is a required secret** for all
-four (`aggregator-update.yml:113`, `price-forecast.yml:70`, `backtest-accuracy.yml:54`,
-`event-correlation-analysis.yml:51`); without it the checkout fails before any work runs.
-Three more workflows check the archive out read-only with the same secret and never push it
-(`ab-harness-batch.yml:60`, `forecast-freshness-check.yml:58`, `model-diagnostics.yml:429`).
+Every archive-writing workflow checks out `RayanR000/cs2-oracle-data` and force-pushes it back
+as a squashed orphan commit with `--force-with-lease`, so a concurrent writer fails rather than
+being overwritten. **`CS2_DATA_REPO_TOKEN` is a required secret** for each of them; without it
+the checkout fails before any work runs. `forecast-freshness-check.yml` and
+`model-diagnostics.yml` check the archive out read-only with the same secret.
+
+Retired 2026-10-13: `event-correlation-analysis.yml`, `discover-new-items.yml` (broken at
+import), `ab-harness-batch.yml` (all paused since 2026-08-23 for Actions minutes) and the
+one-off `ops-partition-backfill.yml` (applied 2026-10-12). Their scripts remain; git history
+keeps the YAML.
 
 ---
 
@@ -141,14 +144,12 @@ Parquet the API reads. Independent of the daily chain.
 
 ---
 
-## Discover New Items
+## Discover New Items (retired 2026-10-13)
 
-Dispatch-only; the schedule was removed 2026-07-08. **It cannot run**:
-`scripts/discover_steam_items.py:20` imports `from collectors.real_data_collector import
-get_collector` and no `real_data_collector.py` exists, so a dispatch dies with
-`ImportError` before any Steam request. There is currently no working path to add items to
-the catalog — the CSMarketAPI backfill that was supposed to be the alternative has a
-permanently exhausted free-key quota.
+The workflow was deleted: its script imported a `collectors.real_data_collector` that no longer
+existed, so every dispatch died with `ImportError`. Catalog growth now runs through
+`collectors/new_item_discovery.py` inside the Aggregator, and the CSMarketAPI backfill (free-key
+quota resets monthly).
 
 ---
 

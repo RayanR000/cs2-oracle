@@ -515,9 +515,7 @@ def score_cohort(records: list[dict]) -> tuple[dict, int]:
     high_dir_acc = high_dir_sum / high_n * 100 if high_n else 0
     low_dir_acc = low_dir_sum / low_n * 100 if low_n else 0
 
-    high_int_cov = (
-        round(high_interval_hits / high_interval_total * 100, 2) if high_interval_total else 0
-    )
+    high_int_cov = round(high_interval_hits / high_interval_total * 100, 2) if high_interval_total else 0
 
     # The bootstraps average the raw 0/1 direction_correct indicators, so their
     # bounds come back as FRACTIONS while directional_accuracy is a PERCENT.
@@ -550,9 +548,7 @@ def score_cohort(records: list[dict]) -> tuple[dict, int]:
     # Absent, not empty, when no record carries the raw label — an empty dict
     # reads as "pooled nothing", absent reads as "this payload does not say",
     # which is what a pre-2026-08-11 record can support.
-    dir_ci_cl_lower, dir_ci_cl_upper = _as_percent(
-        block_bootstrap_ci(dir_corrects, forecast_dates)
-    )
+    dir_ci_cl_lower, dir_ci_cl_upper = _as_percent(block_bootstrap_ci(dir_corrects, forecast_dates))
 
     # Serial-correlation-robust Pesaran-Timmermann, computed per forecast date
     # with a t-stat over dates. THIS is the headline; DA is context for it. See

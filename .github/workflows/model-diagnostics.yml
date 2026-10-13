@@ -31,10 +31,9 @@ name: Model Diagnostics
 #   * --train-only writes no forecasts.
 
 on:
-  schedule:
-    # 02:00 UTC Sundays — clear of the daily chain (Aggregator 23:00 -> Forecast
-    # -> Backtest) so the two do not contend for a runner or the voted cache.
-    - cron: '0 2 * * 0'
+  # Dispatch only since 2026-10-13 (the Sunday 02:00 cron was paused for Actions minutes). A
+  # dispatch with every input at its default is the control arm the scheduled run used to be;
+  # run it clear of the daily chain (Aggregator 23:00 -> Forecast -> Backtest).
   workflow_dispatch:
     inputs:
       horizons:

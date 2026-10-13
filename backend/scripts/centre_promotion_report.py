@@ -58,8 +58,9 @@ def load_horizon_frame(db, horizon: int) -> dict:
     """
     from sqlalchemy import text
 
-    rows = db.execute(
-        text("""
+    rows = (
+        db.execute(
+            text("""
         SELECT c.item_id, c.forecast_date,
                c.candidate_name, c.candidate_version, c.config_fingerprint,
                c.centre_price AS c_mid, c.predicted_price_low AS c_low,
@@ -78,8 +79,11 @@ def load_horizon_frame(db, horizon: int) -> dict:
          AND o.horizon_days = c.horizon_days
         WHERE c.horizon_days = :h AND c.component = 'centre'
         """),
-        {"h": horizon},
-    ).mappings().all()
+            {"h": horizon},
+        )
+        .mappings()
+        .all()
+    )
 
     production, candidate = [], []
     seen_prod = set()
@@ -128,20 +132,26 @@ def load_horizon_frame(db, horizon: int) -> dict:
     if first is None:
         expected, observed = 0, 0
     else:
-        expected = db.execute(
-            text("""
+        expected = (
+            db.execute(
+                text("""
             SELECT COUNT(DISTINCT forecast_date) FROM item_forecasts
             WHERE horizon_days = :h AND forecast_date >= :first
             """),
-            {"h": horizon, "first": first},
-        ).scalar() or 0
-        observed = db.execute(
-            text("""
+                {"h": horizon, "first": first},
+            ).scalar()
+            or 0
+        )
+        observed = (
+            db.execute(
+                text("""
             SELECT COUNT(DISTINCT forecast_date) FROM forecast_candidates
             WHERE horizon_days = :h AND component = 'centre'
             """),
-            {"h": horizon},
-        ).scalar() or 0
+                {"h": horizon},
+            ).scalar()
+            or 0
+        )
     return {
         "production": production,
         "candidate": candidate,
@@ -282,7 +292,9 @@ def render_markdown(report: dict) -> str:
     ]
     if report["delta_mae"]:
         m = report["delta_mae"]
-        lines.append(f"delta_mae (last - gbm): {m['point']:.4f} [90% CI {m['lower']}, {m['upper']}] over {m['n_dates']} dates")
+        lines.append(
+            f"delta_mae (last - gbm): {m['point']:.4f} [90% CI {m['lower']}, {m['upper']}] over {m['n_dates']} dates"
+        )
     if report["delta_coverage"]:
         c = report["delta_coverage"]
         lines.append(f"delta_coverage (last - gbm): {c['point']:.4f} [90% CI {c['lower']}, {c['upper']}]")
@@ -335,7 +347,10 @@ def main(argv=None) -> int:
     if len(horizons) == 1:
         markdown = render_markdown(payload)
     else:
-        markdown = "\n".join(render_markdown(r) if "challenger" in r else f"# h={h}\n\nError: {r.get('reasons')}" for h, r in reports.items())
+        markdown = "\n".join(
+            render_markdown(r) if "challenger" in r else f"# h={h}\n\nError: {r.get('reasons')}"
+            for h, r in reports.items()
+        )
     with open(args.markdown_out, "w") as f:
         f.write(markdown)
     return max(_exit_code(r.get("verdict", DATA_INTEGRITY_FAILURE)) for r in reports.values())

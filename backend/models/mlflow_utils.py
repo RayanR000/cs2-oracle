@@ -99,9 +99,7 @@ def promote_model(model_name: str, version: int, alias: str = "production"):
 
     client = mlflow.tracking.MlflowClient()
     try:
-        client.set_registered_model_alias(
-            name=model_name, alias=alias, version=str(version)
-        )
+        client.set_registered_model_alias(name=model_name, alias=alias, version=str(version))
         logger.info(f"Set alias '{alias}' on {model_name} v{version}")
         return True
     except Exception as e:

@@ -16,12 +16,12 @@ There is **no hang protection except one job-level timeout** — see
 
 | Secret | Used by | If unset |
 |---|---|---|
-| `SUPABASE_DATABASE_URL` | eight of the nine workflows (all but `schema-drift-check`, which stands up its own throwaway Postgres) | every DB step fails |
-| `CS2_DATA_REPO_TOKEN` | `aggregator-update`, `price-forecast`, `backtest-accuracy`, `event-correlation-analysis`, `model-diagnostics`, `ab-harness-batch`, `forecast-freshness-check` | the **archive checkout fails before any collection or forecasting runs** — the job dies at `Checkout data archive` / `Checkout price archive` |
+| `SUPABASE_DATABASE_URL` | every workflow that touches the DB (all but `schema-drift-check`, which stands up its own throwaway Postgres, and `lint`) | every DB step fails |
+| `CS2_DATA_REPO_TOKEN` | `aggregator-update`, `price-forecast`, `backtest-accuracy`, `ops-sync`, `archive-restore-day`, `model-diagnostics`, `forecast-freshness-check` | the **archive checkout fails before any collection or forecasting runs** — the job dies at `Checkout data archive` / `Checkout price archive` |
 
 `CS2_DATA_REPO_TOKEN` must be able to read *and* force-push
 `RayanR000/cs2-oracle-data` (`aggregator-update.yml:225`, `price-forecast.yml:325`,
-`backtest-accuracy.yml:118`, `event-correlation-analysis.yml:156`). `STEAM_API_KEY` and the `CSMARKETAPI_*` keys are optional;
+`backtest-accuracy.yml:118`, `ops-sync.yml:94`). `STEAM_API_KEY` and the `CSMARKETAPI_*` keys are optional;
 nothing in the daily pipeline reads them.
 
 ## Workflows
@@ -31,19 +31,21 @@ nothing in the daily pipeline reads them.
 | `aggregator-update` | 23:00 UTC daily | Full item data collection from CSGOTrader (~11 source labels per day) | Parquet archive (`cs2-oracle-data` repo), `collection_runs` |
 | `price-forecast` | Chained off aggregator | ML price predictions (Monday sets `mode=full`) | `item_forecasts` + its Parquet mirror |
 | `backtest-accuracy` | Chained off forecast + 08:00 UTC Mon-Sat | Evaluate forecast accuracy, detect concept drift | `prediction_accuracy`, `forecast_outcomes`, `accuracy_alerts` |
-| `event-correlation-analysis` | Weekly Sun 04:00 UTC | Quantifies market-event price impacts | `event_correlations`, `event_impacts` |
-| `model-diagnostics` | Weekly Sun 02:00 UTC | Scores the served signal and replays serving — one matrix job per horizon, `--train-only`, measurement only; `workflow_dispatch` inputs carry the gated A/B arms (`climatology_scale`, `climatology_reactive`, `exceedance_scale`, `feature_native_nan`, …) | nothing (artifacts die with the runner) |
+| `model-diagnostics` | Manual dispatch only (Sunday cron paused 2026-10-13) | Scores the served signal and replays serving — one matrix job per horizon, `--train-only`, measurement only; `workflow_dispatch` inputs carry the gated A/B arms (`climatology_scale`, `climatology_reactive`, `exceedance_scale`, `feature_native_nan`, …) | nothing (artifacts die with the runner) |
 | `forecast-freshness-check` | 12:00 UTC daily | Independent monitor: fails loudly when yesterday's forecast never landed | nothing |
 | `schema-drift-check` | On PR / push to `main` (paths-filtered) | Pre-merge gate: applies migrations to a throwaway Postgres and diffs against `Base.metadata` | nothing |
-| `ab-harness-batch` | Manual dispatch only | Re-runs the nine repaired `ab_test_*` harnesses, one matrix job each | nothing (log artifacts only) |
-| `discover-new-items` | Manual dispatch only | **Broken at import — cannot run** | nothing |
+| `lint` | On PR / push to `main` | `ruff`, `mypy`, import smoke test, fast test gate (`-n 4`) | nothing |
+| `ops-sync` | Manual dispatch only | Copies named forecast dates from Postgres into `ops/<table>/YYYY-MM.parquet`: fills ids, repairs a night whose partition write failed. Dry run unless `apply` | `cs2-oracle-data` |
+| `archive-restore-day` | Manual dispatch only | One-off repair of a deleted archive day | `cs2-oracle-data` |
 
-`discover-new-items` is not merely dormant: `scripts/discover_steam_items.py:20` imports
-`collectors.real_data_collector`, a module that does not exist. Any dispatch dies with
-`ImportError` before a single Steam request. **Item onboarding has no working path today** —
-Steam discovery is broken. CSMarketAPI keys reset monthly (1,000 calls each); 988 items
-were backfilled on 2026-09-20 (see changelog). 305 knives/gloves are checkpointed —
-resume with `--only-catalog` when the key resets.
+**Retired 2026-10-13:** `discover-new-items` (broken at import: it needed a
+`collectors.real_data_collector` that no longer exists), `event-correlation-analysis` and
+`ab-harness-batch` (paused since 2026-08-23 for Actions minutes), and the one-off
+`ops-partition-backfill` (applied 2026-10-12). Their scripts remain; git history keeps the
+YAML. Catalog growth goes through `collectors/new_item_discovery.py` in the Aggregator and the
+CSMarketAPI backfill: keys reset monthly (1,000 calls each); 988 items were backfilled on
+2026-09-20 (see changelog), and 305 knives/gloves are checkpointed — resume with
+`--only-catalog` when the key resets.
 
 **Deleted 2026-07-31, do not resurrect from CI.** `supply-scraper` (Steam 429s runner
 IPs on the first request) and `reddit-sentiment` (`old.reddit.com` returns 403 to
@@ -60,8 +62,6 @@ repairable from hosted runners, and both served features already dropped. See
               └─▶ Backtest Accuracy (chained) → prediction_accuracy
                                                   forecast_outcomes
                                                   accuracy_alerts
-
-Sun 04:00  Event Correlation Analysis → event_correlations, event_impacts
 ```
 
 ### Load-bearing steps that can each fail a run
@@ -74,9 +74,9 @@ These three are easy to miss in a log and each one is a hard failure:
    starting at 00:08) stamped the pipeline and the append step from two different clock
    reads, silently losing `2026-07-27`, `2026-07-30` and `2026-08-03` from the archive.
    If a day is missing from the archive, check this step's logged value first.
-2. **`Publish updated archive (flat history)`** — present in all four archive-writing
-   workflows (`aggregator-update.yml:217`, `price-forecast.yml:316`,
-   `backtest-accuracy.yml:109`, `event-correlation-analysis.yml:143`). Each job checks out `cs2-oracle-data` into an ephemeral `archive/`, so
+2. **`Publish updated archive (flat history)`** — present in every archive-writing
+   workflow (`aggregator-update.yml:217`, `price-forecast.yml:316`,
+   `backtest-accuracy.yml:109`, `ops-sync.yml:94`). Each job checks out `cs2-oracle-data` into an ephemeral `archive/`, so
    without this step the run's Parquet writes are discarded at teardown. This is exactly
    how `item_forecasts.parquet` froze at 2026-07-29 while Supabase kept advancing. It
    runs `if: always()` (except `train-only`) and force-pushes an orphan commit, so a red
@@ -139,7 +139,7 @@ any instruction mentioning one is dead.
 
 Every writing workflow does the same three things (`aggregator-update.yml:108-116,217-225`;
 `price-forecast.yml:65-75,316-325`; `backtest-accuracy.yml:49-59,109-118`;
-`event-correlation-analysis.yml:46-56,143-156`):
+`ops-sync.yml`):
 
 1. `actions/checkout@v7` of `RayanR000/cs2-oracle-data` at `ref: main`, `path: archive`,
    `fetch-depth: 1`, authenticated with `CS2_DATA_REPO_TOKEN`
@@ -318,14 +318,11 @@ empty but the model metadata is fresh, use `FORCE_RETRAIN=1` or `mode=train-only
 | `forecast-freshness-check` | ✅ absent | — |
 | `model-diagnostics` | ✅ absent | ✅ absent |
 | `schema-drift-check` | ✅ absent | ✅ absent |
-| `ab-harness-batch` | ✅ absent | ✅ absent |
 
-`schema-drift-check` and `ab-harness-batch` are PR- or dispatch-only, so a missing
-notification there is not a monitoring hole. **`model-diagnostics` is different: it is
-scheduled (Sun 02:00 UTC) and has no failure notification**, so a broken weekly diagnostic
-run goes unannounced. It writes nothing, so the blast radius is measurement only.
+`schema-drift-check` and `model-diagnostics` are PR- or dispatch-only (the diagnostics cron
+was paused 2026-10-13), so a missing notification there is not a monitoring hole: whoever
+dispatches the run reads it.
 
-`discover-new-items` has a failure notification step with a `schedule` trigger condition, but the workflow has no schedule trigger — the step can never fire.
 
 ## Manual testing
 

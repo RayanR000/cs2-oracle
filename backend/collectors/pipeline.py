@@ -710,12 +710,7 @@ class DataPipeline:
         else:
             # SQLite (tests): fetch all ordered rows; _split_fresh_and_stale
             # already picks the first per item_id.
-            rows = (
-                session.query(PriceHistory)
-                .filter(*all_filters)
-                .order_by(PriceHistory.item_id, *order_cols)
-                .all()
-            )
+            rows = session.query(PriceHistory).filter(*all_filters).order_by(PriceHistory.item_id, *order_cols).all()
 
         return rows
 

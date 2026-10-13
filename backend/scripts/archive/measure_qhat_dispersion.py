@@ -240,8 +240,8 @@ def report(summary: pd.DataFrame, verdict: dict) -> None:
             r["horizon"],
             r["n_folds"],
             r["q_hats"],
-            f'{r["max_min_ratio"]:.3f}' if r["max_min_ratio"] is not None else "n/a",
-            f'{r["cv"]:.3f}' if r["cv"] is not None else "n/a",
+            f"{r['max_min_ratio']:.3f}" if r["max_min_ratio"] is not None else "n/a",
+            f"{r['cv']:.3f}" if r["cv"] is not None else "n/a",
             r["n_trains"],
         )
     logger.info("")
@@ -253,7 +253,7 @@ def report(summary: pd.DataFrame, verdict: dict) -> None:
         logger.info(
             "  h=%2d control-vs-placebo CV gap=%s -> %s",
             h,
-            f'{g["gap"]:.3f}' if g["gap"] not in (None, float("inf")) else str(g["gap"]),
+            f"{g['gap']:.3f}" if g["gap"] not in (None, float("inf")) else str(g["gap"]),
             "stable" if g["stable"] else "UNSTABLE",
         )
     logger.info("BAR 1 (>=30%% below control at >=3/4 horizons, none +10%% worse):")
@@ -289,9 +289,12 @@ def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--horizons", default="3,7,14,30")
     ap.add_argument("--arms", default=",".join(ARMS))
-    ap.add_argument("--seed-b", type=int, default=7,
-                    help="placebo CV_ROW_SEED. Arbitrary but fixed; the only "
-                    "requirement is != 42. Fixed here, not tuned.")
+    ap.add_argument(
+        "--seed-b",
+        type=int,
+        default=7,
+        help="placebo CV_ROW_SEED. Arbitrary but fixed; the only requirement is != 42. Fixed here, not tuned.",
+    )
     ap.add_argument("--workdir", default="/tmp/qhat_dispersion")
     ap.add_argument("--out", default="/tmp/qhat_dispersion.csv")
     args = ap.parse_args()
@@ -308,8 +311,7 @@ def main() -> int:
     os.makedirs(args.workdir, exist_ok=True)
 
     logger.info(
-        "env footing: FEATURE_NATIVE_NAN=%s EXCEEDANCE_HEAD=%s "
-        "CV_DIAGNOSTIC_CLASSIFIER=%s CV_ROW_SEED(placebo)=%s",
+        "env footing: FEATURE_NATIVE_NAN=%s EXCEEDANCE_HEAD=%s CV_DIAGNOSTIC_CLASSIFIER=%s CV_ROW_SEED(placebo)=%s",
         os.environ.get("FEATURE_NATIVE_NAN"),
         os.environ.get("EXCEEDANCE_HEAD"),
         os.environ.get("CV_DIAGNOSTIC_CLASSIFIER"),
@@ -342,8 +344,9 @@ def main() -> int:
         if v["pass"] and not verdict["void"]:
             phase_b_instructions(arm)
     if verdict["void"]:
-        logger.error("VOID: control-vs-placebo unstable — re-run control/placebo once; "
-                     "if still unstable, void and report.")
+        logger.error(
+            "VOID: control-vs-placebo unstable — re-run control/placebo once; if still unstable, void and report."
+        )
         return 2
     return 0
 

@@ -383,8 +383,7 @@ def _upsert_event_impacts(
     # ~5.5k round-trips per event against Supabase).
     event_ids = sorted({r["event_id"] for r in impacts})
     existing = {
-        (r.event_id, r.item_id): r
-        for r in db.query(EventImpact).filter(EventImpact.event_id.in_(event_ids)).all()
+        (r.event_id, r.item_id): r for r in db.query(EventImpact).filter(EventImpact.event_id.in_(event_ids)).all()
     }
 
     written = 0
@@ -459,8 +458,7 @@ def _compute_and_upsert_patterns(db, event_type: str, impacts: list[dict]):
     # Batch-fetch existing patterns for this event type in one query
     # (was one SELECT per item).
     existing_by_item = {
-        p.item_id: p
-        for p in db.query(EventPattern).filter(EventPattern.event_type == event_type).all()
+        p.item_id: p for p in db.query(EventPattern).filter(EventPattern.event_type == event_type).all()
     }
     to_insert: list[dict] = []
 

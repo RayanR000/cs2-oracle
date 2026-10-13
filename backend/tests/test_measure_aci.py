@@ -34,7 +34,9 @@ def _panel(horizon: int = 3, regime: bool = False, seed: int = 0, block: int = 3
         phase = (np.arange(N_DATES) // block) % 2
         scale = np.repeat(np.where(phase == 1, vol, 1.0), ROWS_PER_DATE)
     resid = rng.normal(size=date.size) * sigma * scale
-    frame = pd.DataFrame({"date": date, "item_id": np.tile(np.arange(ROWS_PER_DATE), N_DATES), "resid": resid, "sigma": sigma})
+    frame = pd.DataFrame(
+        {"date": date, "item_id": np.tile(np.arange(ROWS_PER_DATE), N_DATES), "resid": resid, "sigma": sigma}
+    )
     return CalibPanel(frame, horizon)
 
 
@@ -139,7 +141,13 @@ def test_aci_beats_pooled_on_date_error_under_regime_shift():
 
 
 def _m(err=5.0, m1=0.80, p10=0.70, width=1.0, dec=0.75):
-    return {"M2lm_cond_err_pp": err, "M1_marginal": m1, "p10_date_cov_lm": p10, "mean_width_lm": width, "min_decile_cov_lm": dec}
+    return {
+        "M2lm_cond_err_pp": err,
+        "M1_marginal": m1,
+        "p10_date_cov_lm": p10,
+        "mean_width_lm": width,
+        "min_decile_cov_lm": dec,
+    }
 
 
 def test_judge_applies_every_preregistered_condition():

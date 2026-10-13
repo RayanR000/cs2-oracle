@@ -11,6 +11,7 @@ def _completed(result):
     f.set_result(result)
     return f
 
+
 def test_fetch_uses_parallel_execution():
     agg = CSGOTraderAggregator()
     with patch("collectors.csgotrader_aggregator.ThreadPoolExecutor") as mock_pool:
@@ -22,6 +23,7 @@ def test_fetch_uses_parallel_execution():
         with contextlib.suppress(Exception):
             agg.fetch_all_market_data()
         assert mock_executor.submit.call_count >= 1
+
 
 def test_aggregator_context_manager():
     agg = CSGOTraderAggregator()

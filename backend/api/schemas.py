@@ -269,5 +269,3 @@ class FeatureImportanceOut(BaseModel):
     item_id: str
     item_name: str
     horizons: dict[str, list[FeatureImportanceItem]]
-
-

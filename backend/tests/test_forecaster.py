@@ -152,6 +152,7 @@ class TestFeatureEngineering:
 
         def row(d):
             return df[df["date"] == base + timedelta(days=d)].iloc[0]
+
         # day 45: return_14d looks for day 31 (inside the gap) -> NaN, NOT +100%
         assert pd.isna(row(45)["return_14d"])
         # within the post-gap block, day 45 vs day 44 (both present, price 20) -> 0%
@@ -960,7 +961,10 @@ class TestFeaturePipeline:
                 ]
             )
 
-        with patch.object(forecaster, "fetch_price_history", mock_fetch), patch.object(forecaster, "fetch_events", mock_events):
+        with (
+            patch.object(forecaster, "fetch_price_history", mock_fetch),
+            patch.object(forecaster, "fetch_events", mock_events),
+        ):
             df = forecaster.build_training_data(days_back=200, backfilled_only=False)
 
         # Price/technical categories must be present...
@@ -1047,7 +1051,10 @@ class TestFeaturePipeline:
                 ]
             )
 
-        with patch.object(forecaster, "fetch_price_history", mock_fetch), patch.object(forecaster, "fetch_events", mock_events):
+        with (
+            patch.object(forecaster, "fetch_price_history", mock_fetch),
+            patch.object(forecaster, "fetch_events", mock_events),
+        ):
             _df = forecaster.build_training_data(days_back=200, backfilled_only=False)
 
         n_features = len(forecaster.feature_cols)
@@ -1232,12 +1239,17 @@ class TestConformalCalibration:
 class TestPredictEdgeCases:
     def test_predict_empty_results_no_items(self, forecaster):
         """predict() should handle empty item list gracefully."""
-        with patch.object(
-            forecaster, "fetch_price_history", return_value=pd.DataFrame(columns=["item_id", "date", "price", "volume"])
-        ), patch.object(
-            forecaster,
-            "fetch_events",
-            return_value=pd.DataFrame(columns=["id", "type", "timestamp", "description"]),
+        with (
+            patch.object(
+                forecaster,
+                "fetch_price_history",
+                return_value=pd.DataFrame(columns=["item_id", "date", "price", "volume"]),
+            ),
+            patch.object(
+                forecaster,
+                "fetch_events",
+                return_value=pd.DataFrame(columns=["id", "type", "timestamp", "description"]),
+            ),
         ):
             result = forecaster.predict()
             assert result.empty
@@ -1256,10 +1268,13 @@ class TestPredictEdgeCases:
                     }
                 )
         price_df = pd.DataFrame(rows)
-        with patch.object(forecaster, "fetch_price_history", return_value=price_df), patch.object(
-            forecaster,
-            "fetch_events",
-            return_value=pd.DataFrame(columns=["id", "type", "timestamp", "description"]),
+        with (
+            patch.object(forecaster, "fetch_price_history", return_value=price_df),
+            patch.object(
+                forecaster,
+                "fetch_events",
+                return_value=pd.DataFrame(columns=["id", "type", "timestamp", "description"]),
+            ),
         ):
             result = forecaster.predict()
             # Should not crash; may be empty if no models loaded
@@ -1282,10 +1297,13 @@ class TestPredictEdgeCases:
         rows[-1] = {**rows[-1], "price": 200.0}
 
         price_df = pd.DataFrame(rows)
-        with patch.object(forecaster, "fetch_price_history", return_value=price_df), patch.object(
-            forecaster,
-            "fetch_events",
-            return_value=pd.DataFrame(columns=["id", "type", "timestamp", "description"]),
+        with (
+            patch.object(forecaster, "fetch_price_history", return_value=price_df),
+            patch.object(
+                forecaster,
+                "fetch_events",
+                return_value=pd.DataFrame(columns=["id", "type", "timestamp", "description"]),
+            ),
         ):
             result = forecaster.predict()
             # Should not crash
@@ -1576,7 +1594,6 @@ class TestFeatureAllowlist:
         assert set(kept) == {f"return_{h}d" for h in (3, 7, 14, 30)}
 
 
-
 class TestDirectionClassifierHelpers:
     """Pure helpers backing the 3-class directional classifier."""
 
@@ -1858,7 +1875,10 @@ class TestPredictEnsembleSafe:
         def mock_events(*args, **kwargs):
             return pd.DataFrame(columns=["id", "type", "timestamp", "description", "date"])
 
-        with patch.object(forecaster, "fetch_price_history", mock_fetch), patch.object(forecaster, "fetch_events", mock_events):
+        with (
+            patch.object(forecaster, "fetch_price_history", mock_fetch),
+            patch.object(forecaster, "fetch_events", mock_events),
+        ):
             df = forecaster.build_training_data(days_back=300, backfilled_only=False)
 
         years = pd.DatetimeIndex(df["date"]).year
@@ -1957,7 +1977,9 @@ class TestForecastBlending:
             "mid_ret": np.array([15.0, 5.0]),
             "high_ret": np.array([15.0, 5.0]),
         }
-        _low, mid, _high = forecaster._blend_returns_with_prior(current.copy(), current.copy(), current.copy(), prior, w)
+        _low, mid, _high = forecaster._blend_returns_with_prior(
+            current.copy(), current.copy(), current.copy(), prior, w
+        )
         # Blended value lies strictly between current and prior (toward prior).
         assert np.all(mid > current) and np.all(mid < prior["mid_ret"])
         # With weight 0 the prediction is unchanged.
@@ -2102,7 +2124,10 @@ class TestRegimeSwitching:
                 ]
             )
 
-        with patch.object(forecaster, "fetch_price_history", mock_fetch), patch.object(forecaster, "fetch_events", mock_events):
+        with (
+            patch.object(forecaster, "fetch_price_history", mock_fetch),
+            patch.object(forecaster, "fetch_events", mock_events),
+        ):
             df = forecaster.build_training_data(days_back=200, backfilled_only=False)
 
         # Simulate the train() flow: prepare targets and check _regime column
@@ -2171,9 +2196,7 @@ class TestRegimeSwitching:
                 "_fetch_supply_metadata",
                 return_value=pd.DataFrame(columns=["item_id", "rarity", "rarity_rank", "weapon_type"]),
             ),
-            patch.object(
-                f, "_fetch_item_metadata", return_value=pd.DataFrame(columns=["item_id", "name", "type"])
-            ),
+            patch.object(f, "_fetch_item_metadata", return_value=pd.DataFrame(columns=["item_id", "name", "type"])),
             patch.dict("os.environ", {"SKIP_CV": "1", "FORCE_HP_SEARCH": "1"}),
         ):
             f.train(max_rows=100_000)
@@ -2195,12 +2218,17 @@ class TestRegimeSwitching:
 
     def test_predict_falls_back_to_global_when_no_regime_model(self, forecaster):
         """When no regime models exist, predict should use global models."""
-        with patch.object(
-            forecaster, "fetch_price_history", return_value=pd.DataFrame(columns=["item_id", "date", "price", "volume"])
-        ), patch.object(
-            forecaster,
-            "fetch_events",
-            return_value=pd.DataFrame(columns=["id", "type", "timestamp", "description"]),
+        with (
+            patch.object(
+                forecaster,
+                "fetch_price_history",
+                return_value=pd.DataFrame(columns=["item_id", "date", "price", "volume"]),
+            ),
+            patch.object(
+                forecaster,
+                "fetch_events",
+                return_value=pd.DataFrame(columns=["id", "type", "timestamp", "description"]),
+            ),
         ):
             # No regime models loaded, should use global (which are also empty)
             result = forecaster.predict()

@@ -75,9 +75,7 @@ def test_reresolve_moves_legs(monkeypatch):
 
     session.query(ForecastOutcome).delete()
     _prod(session, actual=45.0)
-    stats = cr.resolve_candidate_outcomes(
-        session, today=date(2026, 10, 1), archive_dir="unused", reresolve=True
-    )
+    stats = cr.resolve_candidate_outcomes(session, today=date(2026, 10, 1), archive_dir="unused", reresolve=True)
 
     out = session.query(ForecastCandidateOutcome).one()
     assert out.actual_price == 45.0

@@ -86,21 +86,14 @@ def test_mixed_valid_invalid_group_leaves_zero_rows():
     with pytest.raises(IntegrityError):
         write_candidate_batches(session, [_record(item_id=1), bad])
     session.rollback()
-    assert (
-        session.query(ForecastCandidate)
-        .filter(ForecastCandidate.forecast_date == date(2026, 9, 18))
-        .count()
-        == 0
-    )
+    assert session.query(ForecastCandidate).filter(ForecastCandidate.forecast_date == date(2026, 9, 18)).count() == 0
 
 
 def test_centre_and_ranking_batches_counted_separately():
     from db.candidate_store import write_candidate_batches
 
     session = _session()
-    result = write_candidate_batches(
-        session, [_record(item_id=1), _record(item_id=2, component="ranking")]
-    )
+    result = write_candidate_batches(session, [_record(item_id=1), _record(item_id=2, component="ranking")])
     assert result.batches_expected == 2
     assert result.batches_written == 2
     assert result.centre_written == 1

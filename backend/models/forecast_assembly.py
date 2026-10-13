@@ -27,9 +27,7 @@ def percentage_offsets(low: np.ndarray, mid: np.ndarray, high: np.ndarray) -> Si
     return SignedIntervalOffsets(lower_pct=lower_pct, upper_pct=upper_pct)
 
 
-def assemble_interval(
-    centre: np.ndarray, offsets: SignedIntervalOffsets
-) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+def assemble_interval(centre: np.ndarray, offsets: SignedIntervalOffsets) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     centre_arr = np.asarray(centre, dtype=float)
     lower = np.asarray(offsets.lower_pct, dtype=float)
     upper = np.asarray(offsets.upper_pct, dtype=float)

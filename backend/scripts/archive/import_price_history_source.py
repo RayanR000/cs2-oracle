@@ -204,9 +204,7 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="report the promotion-gate numbers for an existing staging import and exit, fetching nothing",
     )
-    ap.add_argument(
-        "--archive-dir", default=ARCHIVE_ROOT, help="the real archive, compared against for the seam read"
-    )
+    ap.add_argument("--archive-dir", default=ARCHIVE_ROOT, help="the real archive, compared against for the seam read")
     ap.add_argument(
         "--min-median-price",
         type=float,
