@@ -413,7 +413,8 @@ def assign_ids(table: str, frame: pd.DataFrame, *, root=None, base: int = 0) -> 
                     f"SELECT n._pos, e.id FROM n JOIN (SELECT * FROM {rel} WHERE id IS NOT NULL) e ON {_on(spec)}"
                 ).fetchall()
             )
-            top = con.execute(f"SELECT coalesce(max(id), 0) FROM {rel}").fetchone()[0]
+            row = con.execute(f"SELECT coalesce(max(id), 0) FROM {rel}").fetchone()
+            top = row[0] if row else 0
         finally:
             con.close()
     top = max(int(top), base)

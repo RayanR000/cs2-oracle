@@ -12,13 +12,16 @@ from __future__ import annotations
 from collections.abc import Iterable
 
 import pandas as pd
-from sqlalchemy import inspect, select
+import sqlalchemy
+from sqlalchemy import select
 
 CHUNK = 900
 
 
 def _columns(db, table) -> list:
-    present = {c["name"] for c in inspect(db.get_bind()).get_columns(table.name)}
+    # Looked up at call time: a test patching sqlalchemy.inspect while this module first imports
+    # would otherwise pin the fake inspector here for the rest of the worker.
+    present = {c["name"] for c in sqlalchemy.inspect(db.get_bind()).get_columns(table.name)}
     return [c for c in table.c if c.name in present]
 
 
