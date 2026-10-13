@@ -64,22 +64,18 @@ def merge_parquet(src: Path, dst: Path):
         combined = pd.concat([dst_df, src_df], ignore_index=True)
 
         if "ingested_at" in combined.columns:
-            combined["ingested_at"] = (
-                combined.groupby(DEDUP_KEYS, dropna=False)["ingested_at"]
-                .transform("min")
-            )
+            combined["ingested_at"] = combined.groupby(DEDUP_KEYS, dropna=False)["ingested_at"].transform("min")
 
         combined = combined.drop_duplicates(subset=DEDUP_KEYS, keep="last")
 
-        cols = [c for c in ["item_slug", "day", "source", "mean_price", "volume", "ingested_at"] if c in combined.columns]
+        cols = [
+            c for c in ["item_slug", "day", "source", "mean_price", "volume", "ingested_at"] if c in combined.columns
+        ]
         extra = [c for c in combined.columns if c not in cols]
         ordered = cols + extra
         combined = combined[ordered]
 
-        projection = ", ".join(
-            f'CAST("{c}" AS DATE) AS "{c}"' if c == "day" else f'"{c}"'
-            for c in ordered
-        )
+        projection = ", ".join(f'CAST("{c}" AS DATE) AS "{c}"' if c == "day" else f'"{c}"' for c in ordered)
         tmp = dst.with_suffix(".parquet.tmp")
         con.register("_merged", combined)
         con.sql(f"COPY (SELECT {projection} FROM _merged) TO '{tmp}' (FORMAT PARQUET, COMPRESSION SNAPPY)")
@@ -124,8 +120,7 @@ def main():
         )
         print()
 
-    local_files = sorted(f for f in os.listdir(LOCAL_ARCHIVE)
-                         if f.startswith("prices-") and f.endswith(".parquet"))
+    local_files = sorted(f for f in os.listdir(LOCAL_ARCHIVE) if f.startswith("prices-") and f.endswith(".parquet"))
 
     to_copy = []
     to_merge = []
@@ -195,15 +190,10 @@ def main():
     )
 
     steps = [
-        ("checkout --orphan flat",
-         ["git", "-C", str(DATA_REPO), "checkout", "--orphan", "flat"]),
-        ("add -A",
-         ["git", "-C", str(DATA_REPO), "add", "-A"]),
-        ("commit",
-         ["git", "-C", str(DATA_REPO), "commit", "-m",
-          f"archive: add csmarketapi backfill {today}"]),
-        ("push --force origin HEAD:main",
-         ["git", "-C", str(DATA_REPO), "push", "--force", "origin", "HEAD:main"]),
+        ("checkout --orphan flat", ["git", "-C", str(DATA_REPO), "checkout", "--orphan", "flat"]),
+        ("add -A", ["git", "-C", str(DATA_REPO), "add", "-A"]),
+        ("commit", ["git", "-C", str(DATA_REPO), "commit", "-m", f"archive: add csmarketapi backfill {today}"]),
+        ("push --force origin HEAD:main", ["git", "-C", str(DATA_REPO), "push", "--force", "origin", "HEAD:main"]),
     ]
     for label, cmd in steps:
         print(f"  $ git {label}")

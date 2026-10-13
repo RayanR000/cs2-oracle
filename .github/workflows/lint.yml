@@ -41,20 +41,12 @@ jobs:
           uv sync --frozen --extra dev
           echo "$PWD/.venv/bin" >> $GITHUB_PATH
 
-      - name: Ruff lint (changed files)
+      - name: Ruff lint and format
+        # Whole repo since 2026-10-13, when the last pre-existing findings were fixed and
+        # backend/ was formatted; it used to lint only the files a push changed.
         run: |
-          if [ "${{ github.event_name }}" = "pull_request" ]; then
-            BASE=${{ github.event.pull_request.base.sha }}
-          else
-            BASE=${{ github.event.before }}
-          fi
-          FILES=$(git diff --name-only --diff-filter=ACMR "$BASE" HEAD -- 'backend/**.py' | tr '\n' ' ')
-          if [ -n "$FILES" ]; then
-            echo "Linting: $FILES"
-            ruff check $FILES
-          else
-            echo "No Python files changed."
-          fi
+          ruff check .
+          ruff format --check backend --exclude backend/migrations
 
   test:
     runs-on: ubuntu-latest

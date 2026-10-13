@@ -142,12 +142,20 @@ def evaluate_centre_promotion(
         widths_gbm.append(float(mate["width_pct"]))
 
     delta_mae = paired_daily_interval(
-        paired_last_err, paired_gbm_err, pair_dates,
-        ci=PROMOTION_CI, n_resamples=BOOTSTRAP_RESAMPLES, seed=BOOTSTRAP_SEED,
+        paired_last_err,
+        paired_gbm_err,
+        pair_dates,
+        ci=PROMOTION_CI,
+        n_resamples=BOOTSTRAP_RESAMPLES,
+        seed=BOOTSTRAP_SEED,
     )
     delta_coverage = paired_daily_interval(
-        paired_last_cov, paired_gbm_cov, pair_dates,
-        ci=PROMOTION_CI, n_resamples=BOOTSTRAP_RESAMPLES, seed=BOOTSTRAP_SEED,
+        paired_last_cov,
+        paired_gbm_cov,
+        pair_dates,
+        ci=PROMOTION_CI,
+        n_resamples=BOOTSTRAP_RESAMPLES,
+        seed=BOOTSTRAP_SEED,
     )
     median_last = float(np.median(widths_last)) if widths_last else None
     median_gbm = float(np.median(widths_gbm)) if widths_gbm else None

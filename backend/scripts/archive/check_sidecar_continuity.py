@@ -136,7 +136,9 @@ def audit(archive_dir: Path) -> dict:
 
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__)
-    ap.add_argument("--archive-dir", type=Path, default=Path(__file__).resolve().parent.parent.parent.parent / "price-archive")
+    ap.add_argument(
+        "--archive-dir", type=Path, default=Path(__file__).resolve().parent.parent.parent.parent / "price-archive"
+    )
     ap.add_argument("--gate", action="store_true")
     ap.add_argument("--min-days", type=int, default=45)
     ap.add_argument("--max-staleness-days", type=int, default=7)

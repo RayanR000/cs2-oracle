@@ -11,9 +11,7 @@ from backtest.scoring import block_bootstrap_ci, bootstrap_ci
 
 
 def test_bootstrap_ci_deterministic():
-    arr = np.array(
-        [1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0, 11.0, 12.0]
-    )
+    arr = np.array([1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0, 11.0, 12.0])
     lo, hi = bootstrap_ci(arr, n_resamples=1000)
     # Re-run — same fixed seed, must match exactly
     lo2, hi2 = bootstrap_ci(arr, n_resamples=1000)

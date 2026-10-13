@@ -27,8 +27,15 @@ def test_zero_production_fails():
     with pytest.raises(SystemExit):
         check_results(
             "forecast",
-            [_forecast_result(forecasts_written=0, centre_candidates_written=0, ranking_candidates_written=0,
-                              candidate_batches_expected=0, candidate_batches_written=0)],
+            [
+                _forecast_result(
+                    forecasts_written=0,
+                    centre_candidates_written=0,
+                    ranking_candidates_written=0,
+                    candidate_batches_expected=0,
+                    candidate_batches_written=0,
+                )
+            ],
         )
 
 
@@ -36,8 +43,7 @@ def test_production_without_shadow_warns_but_passes(caplog):
     with caplog.at_level(logging.WARNING):
         check_results(
             "forecast",
-            [_forecast_result(centre_candidates_written=0, ranking_candidates_written=0,
-                              candidate_batches_written=0)],
+            [_forecast_result(centre_candidates_written=0, ranking_candidates_written=0, candidate_batches_written=0)],
         )
     assert any("shadow" in r.message.lower() for r in caplog.records)
 

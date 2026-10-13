@@ -14,11 +14,13 @@ class TestDriftDetection:
         from monitoring.drift import detect_drift
 
         rng = np.random.default_rng(42)
-        df = pd.DataFrame({
-            "price": rng.normal(100, 10, 1000),
-            "return_1d": rng.normal(0, 0.02, 1000),
-            "volume": rng.poisson(50, 1000).astype(float),
-        })
+        df = pd.DataFrame(
+            {
+                "price": rng.normal(100, 10, 1000),
+                "return_1d": rng.normal(0, 0.02, 1000),
+                "volume": rng.poisson(50, 1000).astype(float),
+            }
+        )
 
         report = detect_drift(
             reference=df,
@@ -32,14 +34,18 @@ class TestDriftDetection:
         from monitoring.drift import detect_drift
 
         rng = np.random.default_rng(42)
-        ref = pd.DataFrame({
-            "price": rng.normal(100, 10, 1000),
-            "return_1d": rng.normal(0, 0.02, 1000),
-        })
-        cur = pd.DataFrame({
-            "price": rng.normal(200, 10, 1000),
-            "return_1d": rng.normal(0.1, 0.02, 1000),
-        })
+        ref = pd.DataFrame(
+            {
+                "price": rng.normal(100, 10, 1000),
+                "return_1d": rng.normal(0, 0.02, 1000),
+            }
+        )
+        cur = pd.DataFrame(
+            {
+                "price": rng.normal(200, 10, 1000),
+                "return_1d": rng.normal(0.1, 0.02, 1000),
+            }
+        )
 
         report = detect_drift(
             reference=ref,
@@ -69,14 +75,18 @@ class TestDriftDetection:
         from monitoring.drift import detect_drift
 
         rng = np.random.default_rng(42)
-        ref = pd.DataFrame({
-            "stable": rng.normal(0, 1, 1000),
-            "drifted": rng.normal(0, 1, 1000),
-        })
-        cur = pd.DataFrame({
-            "stable": rng.normal(0, 1, 1000),
-            "drifted": rng.normal(10, 1, 1000),
-        })
+        ref = pd.DataFrame(
+            {
+                "stable": rng.normal(0, 1, 1000),
+                "drifted": rng.normal(0, 1, 1000),
+            }
+        )
+        cur = pd.DataFrame(
+            {
+                "stable": rng.normal(0, 1, 1000),
+                "drifted": rng.normal(10, 1, 1000),
+            }
+        )
 
         report = detect_drift(reference=ref, current=cur, output_dir=str(tmp_path))
         assert "drifted" in report.drifted_features

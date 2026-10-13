@@ -1,6 +1,6 @@
 """The market summary builder must not load unbounded rows from the DB."""
 
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 
 from api.routes.market import _build_market_summary
 

@@ -350,9 +350,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         help="Which side to purge. Default 'db' -- that alone stops the daily "
         "leak, since the aggregator re-reads items every run.",
     )
-    ap.add_argument(
-        "--archive-dir", type=Path, default=ARCHIVE_ROOT, help="Directory holding prices-*.parquet."
-    )
+    ap.add_argument("--archive-dir", type=Path, default=ARCHIVE_ROOT, help="Directory holding prices-*.parquet.")
     args = ap.parse_args(argv)
 
     if args.target in ("db", "both"):

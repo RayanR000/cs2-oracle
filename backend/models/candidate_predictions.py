@@ -135,9 +135,7 @@ def candidate_records(
         gbm_mid = float(row["gbm_mid"])
         gbm_high = float(row["gbm_high"])
 
-        offsets = percentage_offsets(
-            low=np.array([gbm_low]), mid=np.array([gbm_mid]), high=np.array([gbm_high])
-        )
+        offsets = percentage_offsets(low=np.array([gbm_low]), mid=np.array([gbm_mid]), high=np.array([gbm_high]))
 
         if champion == "last_price":
             shadow_name = "gbm_q50"
@@ -233,7 +231,7 @@ def apply_centre_policy(
     if horizons is None:
         seen: set[int] = set()
         for rec in records:
-            for key in (rec.get("forecasts") or {}):
+            for key in rec.get("forecasts") or {}:
                 try:
                     seen.add(int(key))
                 except (TypeError, ValueError):

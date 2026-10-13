@@ -103,8 +103,6 @@ def test_stalled_source_error_is_raisable_with_the_groups():
         raise StalledSourceError([[date(2026, 7, 27), date(2026, 7, 28)]])
 
 
-
-
 def _series(name, days, price=1.0):
     """Records for *name* on the given day offsets from 2025-06-01."""
     return [(name, date(2025, 6, 1) + timedelta(days=d), price) for d in days]

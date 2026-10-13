@@ -1191,7 +1191,10 @@ def test_a_composition_switch_with_a_flat_universe_is_a_cutover(tmp_path):
         for k in range(6):
             day = date(2026, 4, 13) + timedelta(days=k)
             if day < date(2026, 4, 16):
-                rows += [(f"Item {i}", day, 10.0, 1, "aggregator_buff163"), (f"Item {i}", day, 10.1, 1, "aggregator_youpin")]
+                rows += [
+                    (f"Item {i}", day, 10.0, 1, "aggregator_buff163"),
+                    (f"Item {i}", day, 10.1, 1, "aggregator_youpin"),
+                ]
             else:
                 rows.append((f"Item {i}", day, 9.8, 1, "aggregator_steam_17mafo"))
     archive = tmp_path / "price-archive"

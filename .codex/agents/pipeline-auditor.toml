@@ -49,11 +49,13 @@ and compare against the calendar span.
 - `reddit-sentiment.yml` and `supply-scraper.yml` were **deleted**. Reddit and Steam both 403
   / 429 GitHub runner IPs. Prod `social_mentions` holds 0 rows all-time. This is a decision,
   not a break; don't propose rebuilding either.
-- `discover-new-items.yml` and `ab-harness-batch.yml` are `workflow_dispatch`-only by design.
-- Nine workflows exist as of 2026-08-21: the three chain legs, plus `forecast-freshness-check`
+- `event-correlation-analysis`, `discover-new-items`, `ab-harness-batch` and
+  `ops-partition-backfill` were **deleted** 2026-10-13 (paused for Actions minutes, broken at
+  import, or one-off and applied). Not a regression.
+- Nine workflows exist as of 2026-10-13: the three chain legs, `forecast-freshness-check`
   (cron 12:00 daily — an independent monitor of the Price Forecast leg, so read it before
-  concluding a forecast gap yourself), `model-diagnostics` (Sun 02:00),
-  `event-correlation-analysis` (Sun 04:00), `schema-drift-check` and the two dispatch-only ones.
+  concluding a forecast gap yourself), `schema-drift-check`, `lint`, and three dispatch-only
+  ones: `model-diagnostics`, `ops-sync`, `archive-restore-day`.
   `.github/workflows/` is the source of truth.
 
 ## Safety

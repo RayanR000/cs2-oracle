@@ -5,7 +5,7 @@ It runs unattended every day, and most of the work went into the part that decid
 number can be trusted.
 
 **Stack:** Python · LightGBM · split-conformal prediction · DuckDB over Parquet · PostgreSQL
-(Supabase) · FastAPI · GitHub Actions · pytest (~2,600 tests)
+(Supabase, being retired for Parquet) · FastAPI · GitHub Actions · pytest (~2,900 tests)
 
 ---
 

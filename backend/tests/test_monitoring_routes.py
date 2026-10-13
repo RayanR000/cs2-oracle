@@ -14,6 +14,7 @@ def client(tmp_path, monkeypatch):
     monkeypatch.setenv("MODEL_DIR", str(tmp_path / "models"))
     monkeypatch.setenv("DRIFT_REPORT_DIR", str(tmp_path / "drift"))
     from main import app
+
     return TestClient(app)
 
 

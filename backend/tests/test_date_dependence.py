@@ -45,9 +45,7 @@ def test_iid_matches_the_frozen_instruments_bootstrap():
 
     rng = np.random.default_rng(3)
     d = _dates(20)
-    df = pd.DataFrame(
-        [{"forecast_date": dd, "a": rng.normal(), "b": rng.normal()} for dd in d for _ in range(5)]
-    )
+    df = pd.DataFrame([{"forecast_date": dd, "a": rng.normal(), "b": rng.normal()} for dd in d for _ in range(5)])
     est, lo, hi = ob.paired_date_diff(df, "a", "b")
     per = df.assign(_d=df["a"] - df["b"]).groupby("forecast_date")["_d"].mean().to_numpy()
     assert iid_ci(per, 0.90, 2000, ob.RNG_SEED) == pytest.approx((lo, hi))

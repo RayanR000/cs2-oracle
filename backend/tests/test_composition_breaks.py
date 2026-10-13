@@ -22,7 +22,9 @@ def _frame(n_items: int, sets_by_day: list[list[str]]) -> pd.DataFrame:
     rows = []
     for k, sets in enumerate(sets_by_day):
         for i in range(n_items):
-            rows.append({"item_id": f"i{i}", "date": D0 + timedelta(days=k), "price": 1.0, "source_set": sets[i % len(sets)]})
+            rows.append(
+                {"item_id": f"i{i}", "date": D0 + timedelta(days=k), "price": 1.0, "source_set": sets[i % len(sets)]}
+            )
     df = pd.DataFrame(rows)
     df["source_set"] = df["source_set"].astype("category")
     return df
@@ -91,7 +93,13 @@ def _priced(n_items: int, days: int, switch_day: int | None) -> pd.DataFrame:
         s = "c" if switch_day is not None and k >= switch_day else "a|b"
         for i in range(n_items):
             rows.append(
-                {"item_id": f"i{i}", "date": D0 + timedelta(days=k), "price": 10.0 + i + 0.01 * k, "volume": 1.0, "source_set": s}
+                {
+                    "item_id": f"i{i}",
+                    "date": D0 + timedelta(days=k),
+                    "price": 10.0 + i + 0.01 * k,
+                    "volume": 1.0,
+                    "source_set": s,
+                }
             )
     df = pd.DataFrame(rows)
     df["source_set"] = df["source_set"].astype("category")

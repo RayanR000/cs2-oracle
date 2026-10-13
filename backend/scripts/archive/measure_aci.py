@@ -253,9 +253,7 @@ def run_horizon(p: CalibPanel, grid_dates: frozenset) -> dict:
 
     # Paired: score only dates every arm served, with enough rows.
     scored = [
-        d
-        for d in dates
-        if d in s0_q and d in roll_q and (p.rows_on(d).stop - p.rows_on(d).start) >= MIN_ROWS_PER_DATE
+        d for d in dates if d in s0_q and d in roll_q and (p.rows_on(d).stop - p.rows_on(d).start) >= MIN_ROWS_PER_DATE
     ]
     cut = len(scored) // 3
     tune, test = scored[:cut], scored[cut:]

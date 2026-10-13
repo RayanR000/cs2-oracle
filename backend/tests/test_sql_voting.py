@@ -67,9 +67,7 @@ def test_sql_vote_matches_pandas_reference(seed):
     actual = _canon(_sql_vote(df))
 
     assert len(actual) == len(expected)
-    pd.testing.assert_frame_equal(
-        actual[["item_id", "date"]], expected[["item_id", "date"]], check_dtype=False
-    )
+    pd.testing.assert_frame_equal(actual[["item_id", "date"]], expected[["item_id", "date"]], check_dtype=False)
     np.testing.assert_array_equal(actual["n_ask_sources"].to_numpy(), expected["n_ask_sources"].to_numpy())
     assert actual["n_ask_sources"].dtype == np.int64
     np.testing.assert_allclose(actual["price"], expected["price"], rtol=1e-12)
@@ -90,8 +88,13 @@ def test_exact_two_sigma_tie_is_kept_by_both():
     the median and 2 sigma is 0.28, but only up to the std's last ulp, which
     depends on summation order. Both implementations must keep it."""
     day = pd.Timestamp("2026-08-10").date()
-    prices = {"aggregator_buff163": 0.34, "aggregator_csfloat": 0.35, "aggregator_csgotrader": 0.66,
-              "aggregator_skinport": 0.62, "aggregator_youpin": 0.38}
+    prices = {
+        "aggregator_buff163": 0.34,
+        "aggregator_csfloat": 0.35,
+        "aggregator_csgotrader": 0.66,
+        "aggregator_skinport": 0.62,
+        "aggregator_youpin": 0.38,
+    }
     df = pd.DataFrame(
         [("a", day, p, 0.0, s) for s, p in prices.items()],
         columns=["item_id", "date", "price", "volume", "source"],

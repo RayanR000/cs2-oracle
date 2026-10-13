@@ -422,7 +422,10 @@ def forecaster_with_models(tmp_path):
 
 def _predict(f, price_df):
     empty_events = pd.DataFrame(columns=["id", "type", "timestamp", "description"])
-    with patch.object(f, "fetch_price_history", return_value=price_df), patch.object(f, "fetch_events", return_value=empty_events):
+    with (
+        patch.object(f, "fetch_price_history", return_value=price_df),
+        patch.object(f, "fetch_events", return_value=empty_events),
+    ):
         result = f.predict()
     assert not result.empty, "fixture produced no forecasts"
     return result

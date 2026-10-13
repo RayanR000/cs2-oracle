@@ -186,10 +186,7 @@ class CSGOTraderAggregator:
         # requests.Session is thread-safe for concurrent GET reads; parsing and
         # cache mutation stay on this thread via as_completed.
         with ThreadPoolExecutor(max_workers=max(1, len(endpoints))) as pool:
-            futures = {
-                pool.submit(self._fetch_one, name, url): (name, url)
-                for name, url in endpoints.items()
-            }
+            futures = {pool.submit(self._fetch_one, name, url): (name, url) for name, url in endpoints.items()}
             for future in as_completed(futures):
                 source_name, url = futures[future]
                 try:

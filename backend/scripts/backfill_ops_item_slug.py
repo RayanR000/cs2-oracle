@@ -160,9 +160,7 @@ def backfill(archive_dir: Path, tables: Sequence[str], id_to_slug: dict, apply: 
 
 def main(argv: Sequence[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[1])
-    ap.add_argument(
-        "--archive-dir", type=Path, default=ARCHIVE_ROOT, help="Archive root; ops/ lives under it."
-    )
+    ap.add_argument("--archive-dir", type=Path, default=ARCHIVE_ROOT, help="Archive root; ops/ lives under it.")
     ap.add_argument(
         "--tables",
         nargs="+",

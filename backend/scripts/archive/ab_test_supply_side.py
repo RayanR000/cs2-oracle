@@ -600,9 +600,9 @@ def main():
     json_str = json.dumps(
         without_records(
             {
-                'control': results_without,
-                'treatment': results_with,
-                'placebo': results_placebo,
+                "control": results_without,
+                "treatment": results_with,
+                "placebo": results_placebo,
             }
         ),
         indent=2,

@@ -361,7 +361,7 @@ def run_backfill(dry_run: bool = False, limit: int = 0, only_catalog: bool = Fal
     if limit:
         log.info(f"  Limit:            {limit} items (test mode)")
     if only_catalog:
-        log.info(f"  Mode:             only-catalog (ignoring API items table)")
+        log.info("  Mode:             only-catalog (ignoring API items table)")
 
     if not settings.csmarketapi_keys:
         log.error("No API keys in .env. Set CSMARKETAPI_KEY_N / CSMARKETAPI_ACCOUNT_N")
@@ -755,11 +755,11 @@ def main():
     parser.add_argument(
         "--reset", action="store_true", help="Reset backfill checkpoint (data kept, restart from beginning)"
     )
-    parser.add_argument(
-        "--refresh-ref", action="store_true", help="Re-fetch reference data (markets, currency_rates)"
-    )
+    parser.add_argument("--refresh-ref", action="store_true", help="Re-fetch reference data (markets, currency_rates)")
     parser.add_argument("--limit", type=int, default=0, help="Max items to fetch this session (for testing)")
-    parser.add_argument("--only-catalog", action="store_true", help="Fetch only items in market_catalog.db, ignore API catalog")
+    parser.add_argument(
+        "--only-catalog", action="store_true", help="Fetch only items in market_catalog.db, ignore API catalog"
+    )
     args = parser.parse_args()
 
     if args.stats:

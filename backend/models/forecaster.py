@@ -2851,10 +2851,7 @@ class ItemForecaster:
             # one row) instead of a Series, and `df[col] = <DataFrame>` raises.
             # Production frames always carry thousands of items, so this only
             # ever fired on single-item fixtures — until it did.
-            parts = [
-                g["r"].ewm(halflife=pd.Timedelta(hl), times=g["d"]).mean()
-                for _, g in _tmp.groupby("item_id")
-            ]
+            parts = [g["r"].ewm(halflife=pd.Timedelta(hl), times=g["d"]).mean() for _, g in _tmp.groupby("item_id")]
             ewm = pd.concat(parts) if parts else pd.Series(dtype=float)
             df[col] = ewm.reindex(df.index)
 
@@ -6489,13 +6486,11 @@ class ItemForecaster:
                             "ys": [float(v) for v in ys],
                         }
                         logger.info(
-                            f"  {horizon}d anomaly isotonic calibration: "
-                            f"{int(ok.sum())} pairs, {len(xs)} steps"
+                            f"  {horizon}d anomaly isotonic calibration: {int(ok.sum())} pairs, {len(xs)} steps"
                         )
                     else:
                         logger.warning(
-                            f"  {horizon}d anomaly calibration: only {int(ok.sum())} "
-                            f"usable pairs — serving raw output"
+                            f"  {horizon}d anomaly calibration: only {int(ok.sum())} usable pairs — serving raw output"
                         )
 
         # Ranking head: a LambdaRank model that directly optimizes
@@ -6505,10 +6500,10 @@ class ItemForecaster:
         if RANKING_HEAD_ENABLED:
             _rank_start = time.time()
             self.ranking_models[horizon] = self._fit_ranking_head(
-                X_train, y_train, train_set["date"].to_numpy(),
-                self._impute_features(
-                    val_set[self.feature_cols].replace([np.inf, -np.inf], np.nan), feature_medians
-                ),
+                X_train,
+                y_train,
+                train_set["date"].to_numpy(),
+                self._impute_features(val_set[self.feature_cols].replace([np.inf, -np.inf], np.nan), feature_medians),
                 val_set[f"target_return_{horizon}d"],
                 val_set["date"].to_numpy(),
                 self._direction_tree_params(per_quantile_params),
@@ -6549,9 +6544,7 @@ class ItemForecaster:
                 MIN_REGIME_TRAIN = 500
                 MIN_REGIME_VAL = 50
                 if len(r_train) < MIN_REGIME_TRAIN or len(r_val) < MIN_REGIME_VAL:
-                    logger.info(
-                        f"  Skipping {regime} regime ({len(r_train)} train, {len(r_val)} val — below minimum)"
-                    )
+                    logger.info(f"  Skipping {regime} regime ({len(r_train)} train, {len(r_val)} val — below minimum)")
                     continue
 
                 # Use global HP params (reuse Optuna results from global)
@@ -6606,9 +6599,7 @@ class ItemForecaster:
                     self.regime_models[(regime, horizon, q)] = r_ensemble
 
                 self.regime_feature_cols[(horizon, regime)] = list(self.feature_cols)
-                logger.info(
-                    f"  {regime} regime models for {horizon}d done ({len(r_train)} train, {len(r_val)} val)"
-                )
+                logger.info(f"  {regime} regime models for {horizon}d done ({len(r_train)} train, {len(r_val)} val)")
 
     def _cv_and_calibrate(
         self,
@@ -6815,9 +6806,17 @@ class ItemForecaster:
             )
 
         return (
-            oof_records, cv_metrics, q_hat, out_of_sample, calibration_source,
-            records_df, exceed_cal_report, sigma_tilt, q_hat_trend,
-            pt_records, pt_records_clf,
+            oof_records,
+            cv_metrics,
+            q_hat,
+            out_of_sample,
+            calibration_source,
+            records_df,
+            exceed_cal_report,
+            sigma_tilt,
+            q_hat_trend,
+            pt_records,
+            pt_records_clf,
         )
 
     def _aggregate_cv_metrics(
@@ -7359,24 +7358,54 @@ class ItemForecaster:
                 logger.info(f"  [timing] {horizon}d q{int(q * 100)} ensemble: {_ens_elapsed:.1f}s")
 
             self._train_auxiliary_heads(
-                horizon, train_set, val_set, X_train, y_train,
-                per_quantile_params, boosting_type, boost_rounds,
-                feature_medians, n_jobs, _es,
+                horizon,
+                train_set,
+                val_set,
+                X_train,
+                y_train,
+                per_quantile_params,
+                boosting_type,
+                boost_rounds,
+                feature_medians,
+                n_jobs,
+                _es,
             )
 
             (
-                _oof_records, cv_metrics, q_hat, out_of_sample,
-                calibration_source, records_df, exceed_cal_report,
-                sigma_tilt, q_hat_trend, pt_records, pt_records_clf,
+                _oof_records,
+                cv_metrics,
+                q_hat,
+                out_of_sample,
+                calibration_source,
+                records_df,
+                exceed_cal_report,
+                sigma_tilt,
+                q_hat_trend,
+                pt_records,
+                pt_records_clf,
             ) = self._cv_and_calibrate(
-                horizon, tdf, per_quantile_params, per_item_row_sampling,
-                X_val, y_val, val_set, _warm_retrain,
+                horizon,
+                tdf,
+                per_quantile_params,
+                per_item_row_sampling,
+                X_val,
+                y_val,
+                val_set,
+                _warm_retrain,
             )
 
             self._aggregate_cv_metrics(
-                horizon, cv_metrics, q_hat, out_of_sample,
-                calibration_source, exceed_cal_report, sigma_tilt,
-                q_hat_trend, pt_records, pt_records_clf, records_df,
+                horizon,
+                cv_metrics,
+                q_hat,
+                out_of_sample,
+                calibration_source,
+                exceed_cal_report,
+                sigma_tilt,
+                q_hat_trend,
+                pt_records,
+                pt_records_clf,
+                records_df,
             )
 
             # Validate feature groups: permutation test on the held-out set.
@@ -7489,12 +7518,15 @@ class ItemForecaster:
                 f"range=[{cv.get('min_dir_acc', '?'):}%, {cv.get('max_dir_acc', '?'):}%]"
             )
 
-        mlflow_utils.log_horizon_metrics(horizon, {
-            "mae": self.cv_results.get(horizon, {}).get("mae", 0),
-            "q_hat": self.conformal_calibration.get(horizon, 0),
-            "q_lo": float(self.conformal_q_lo.get(horizon, 0)),
-            "q_hi": float(self.conformal_q_hi.get(horizon, 0)),
-        })
+        mlflow_utils.log_horizon_metrics(
+            horizon,
+            {
+                "mae": self.cv_results.get(horizon, {}).get("mae", 0),
+                "q_hat": self.conformal_calibration.get(horizon, 0),
+                "q_lo": float(self.conformal_q_lo.get(horizon, 0)),
+                "q_hi": float(self.conformal_q_hi.get(horizon, 0)),
+            },
+        )
 
         del tdf
 
@@ -7517,7 +7549,10 @@ class ItemForecaster:
         if not n:
             return 0.0
         hits = int(
-            (ItemForecaster._direction_classes(pred[mask], tol) == ItemForecaster._direction_classes(actual[mask], tol)).sum()
+            (
+                ItemForecaster._direction_classes(pred[mask], tol)
+                == ItemForecaster._direction_classes(actual[mask], tol)
+            ).sum()
         )
         return round(hits / n * 100, 1)
 
@@ -8123,6 +8158,7 @@ class ItemForecaster:
         and trains with the lambdarank objective. Outputs ranking scores that
         are better at cross-sectional ordering than the q50 return predictions.
         """
+
         def _to_relevance(returns, dates, n_bins=10):
             frame = pd.DataFrame({"r": returns, "d": dates})
             frame["rel"] = 0
@@ -8132,9 +8168,7 @@ class ItemForecaster:
                     continue
                 nb = min(n_bins, len(g))
                 try:
-                    frame.loc[g.index, "rel"] = pd.qcut(
-                        g["r"], nb, labels=False, duplicates="drop"
-                    )
+                    frame.loc[g.index, "rel"] = pd.qcut(g["r"], nb, labels=False, duplicates="drop")
                 except ValueError:
                     frame.loc[g.index, "rel"] = np.argsort(np.argsort(g["r"])) * (n_bins - 1) // len(g)
             return frame["rel"].astype(int).to_numpy()
@@ -8173,8 +8207,11 @@ class ItemForecaster:
         )
 
         booster = lgb.train(
-            params, dtrain, num_boost_round=num_boost_round,
-            valid_sets=[dval], callbacks=[lgb.log_evaluation(0)],
+            params,
+            dtrain,
+            num_boost_round=num_boost_round,
+            valid_sets=[dval],
+            callbacks=[lgb.log_evaluation(0)],
         )
         logger.info(f"  {horizon}d ranking head trained ({num_boost_round} rounds)")
         return booster
@@ -9287,9 +9324,7 @@ class ItemForecaster:
                 "scale q_hat is calibrated against, and composing them serves a "
                 "q_hat in the wrong units. Pick one."
             )
-        if self.climatology_scale_enabled() and (
-            self.sigma_exponent_enabled() or self.exceedance_scale_enabled()
-        ):
+        if self.climatology_scale_enabled() and (self.sigma_exponent_enabled() or self.exceedance_scale_enabled()):
             raise RuntimeError(
                 "CLIMATOLOGY_SCALE=1 is set alongside another band-scale flag. "
                 "They are alternative band denominators, not layers — each "
@@ -9466,7 +9501,14 @@ class ItemForecaster:
         for r in rows:
             iid = int(r.item_id)
             if iid not in best or r.forecast_date > best[iid][4]:
-                best[iid] = (r.price_low, r.price_mid, r.price_high, r.current_price, r.forecast_date, r.band_multiplier)
+                best[iid] = (
+                    r.price_low,
+                    r.price_mid,
+                    r.price_high,
+                    r.current_price,
+                    r.forecast_date,
+                    r.band_multiplier,
+                )
 
         # Map Parquet string slugs → integer DB IDs
         try:
@@ -9638,8 +9680,7 @@ class ItemForecaster:
         return [
             h
             for h in self.HORIZONS
-            if centre_champion(h) == "gbm_q50"
-            and not any(h2 == h and q == 0.5 for (h2, q) in self.models)
+            if centre_champion(h) == "gbm_q50" and not any(h2 == h and q == 0.5 for (h2, q) in self.models)
         ]
 
     def _capture_shadow_candidates(self, result_df: pd.DataFrame) -> tuple[pd.DataFrame, list]:
@@ -9683,7 +9724,7 @@ class ItemForecaster:
         elapsed = (datetime.now() - _start).total_seconds()
         prod_counts = Counter()
         for forecasts in result_df["forecasts"].tolist():
-            for horizon in (forecasts or {}):
+            for horizon in forecasts or {}:
                 prod_counts[horizon] += 1
         shadow_counts = Counter((r.horizon_days, r.component) for r in shadows)
         for horizon in self.HORIZONS:
@@ -9692,9 +9733,7 @@ class ItemForecaster:
             except ValueError:
                 continue
             challenger = next((c for c in ("gbm_q50", "last_price") if c != champion), None)
-            prefixes = sorted(
-                {r.config_fingerprint[:8] for r in shadows if r.horizon_days == horizon}
-            )
+            prefixes = sorted({r.config_fingerprint[:8] for r in shadows if r.horizon_days == horizon})
             logger.info(
                 f"  Shadow {horizon}d: champion={champion} challenger={challenger} "
                 f"v1 artifact={self.MODEL_ARTIFACT_VERSION} "
@@ -9715,17 +9754,17 @@ class ItemForecaster:
         prediction loop and the output finalizer need.  Pure data carrier
         — no methods, no side-effects."""
 
-        df: Any                          # engineered DataFrame (for anchor_date)
-        X_batch: Any                     # feature matrix (DataFrame)
-        latest_rows: Any                 # one row per item (DataFrame)
-        item_id_arr: Any                 # np.ndarray of item ids
-        current_price_arr: Any           # np.ndarray of current prices
-        anchor_clean_arr: Any            # np.ndarray of bools
-        anchor_wedge_arr: Any            # np.ndarray of floats
-        anchor_date: Any                 # date
-        generated_at: Any               # datetime
-        current_regime: str              # regime label
-        sigma_arr: Any                   # np.ndarray of per-item sigmas
+        df: Any  # engineered DataFrame (for anchor_date)
+        X_batch: Any  # feature matrix (DataFrame)
+        latest_rows: Any  # one row per item (DataFrame)
+        item_id_arr: Any  # np.ndarray of item ids
+        current_price_arr: Any  # np.ndarray of current prices
+        anchor_clean_arr: Any  # np.ndarray of bools
+        anchor_wedge_arr: Any  # np.ndarray of floats
+        anchor_date: Any  # date
+        generated_at: Any  # datetime
+        current_regime: str  # regime label
+        sigma_arr: Any  # np.ndarray of per-item sigmas
         agg: dict = field(default_factory=dict)  # item_id -> forecast row
         regime_count: int = 0
         global_count: int = 0
@@ -9775,7 +9814,9 @@ class ItemForecaster:
             if self._predict_chunk_items and len(eligible) > self._predict_chunk_items:
                 df = self._engineer_features_chunked(price_df, events_df, eligible, item_first_dates=item_first_dates)
             else:
-                df = self.engineer_features(price_df, events_df, item_first_dates=item_first_dates, skip_unused_groups=True)
+                df = self.engineer_features(
+                    price_df, events_df, item_first_dates=item_first_dates, skip_unused_groups=True
+                )
 
                 # Add cross-sectional features (same as training)
                 df = self._add_cross_sectional_features(df)
@@ -10224,9 +10265,7 @@ class ItemForecaster:
                 direction = "down"
             else:
                 direction = "flat"
-            confidence = self._compute_confidence(
-                price_mid, price_low, price_high, current_price, horizon=horizon
-            )
+            confidence = self._compute_confidence(price_mid, price_low, price_high, current_price, horizon=horizon)
             fallback_n += 1
             fallback_flat += direction == "flat"
 
@@ -11554,9 +11593,7 @@ class ItemForecaster:
                 "centre": {"gbm_q50": self.MODEL_ARTIFACT_VERSION},
                 "interval": {"signed_conformal_climatology": self.MODEL_ARTIFACT_VERSION},
                 "anomaly": {"anomaly_gbm_v1": self.MODEL_ARTIFACT_VERSION} if self.anomaly_models else {},
-                "exceedance": {"exceedance_gbm_v1": self.MODEL_ARTIFACT_VERSION}
-                if self.exceedance_models
-                else {},
+                "exceedance": {"exceedance_gbm_v1": self.MODEL_ARTIFACT_VERSION} if self.exceedance_models else {},
                 "ranking": {"lambdarank_v1": self.MODEL_ARTIFACT_VERSION} if self.ranking_models else {},
                 "direction": {},
             },
@@ -11686,16 +11723,12 @@ class ItemForecaster:
                 or min(ys) < 0.0
                 or max(ys) > 1.0
             ):
-                logger.warning(
-                    f"  Dropping corrupt anomaly calibrator for {h_str}d "
-                    f"— serving the raw head output."
-                )
+                logger.warning(f"  Dropping corrupt anomaly calibrator for {h_str}d — serving the raw head output.")
                 continue
             self.anomaly_calibrators[h] = {"xs": xs, "ys": ys}
         if self.anomaly_calibrators:
             logger.info(
-                f"  Loaded {len(self.anomaly_calibrators)} anomaly "
-                f"calibrators ({sorted(self.anomaly_calibrators)}d)"
+                f"  Loaded {len(self.anomaly_calibrators)} anomaly calibrators ({sorted(self.anomaly_calibrators)}d)"
             )
         self._artifact_anomaly_gbm = meta.get("anomaly_gbm")
         # Rebuild the climatology lookup with the int keys the accessors expect

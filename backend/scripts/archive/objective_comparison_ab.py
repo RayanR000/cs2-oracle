@@ -217,7 +217,9 @@ def run(horizon_filter=None, out_path=None):
         boost_rounds = ItemForecaster._boost_rounds(horizon, cv=False)
 
         # Naive baseline (-return_1d as ranking predictor)
-        naive_val_pred = -val_set["return_1d"].to_numpy(dtype=float) if "return_1d" in val_set.columns else np.zeros_like(y_val)
+        naive_val_pred = (
+            -val_set["return_1d"].to_numpy(dtype=float) if "return_1d" in val_set.columns else np.zeros_like(y_val)
+        )
         naive_ics = _within_date_rank_ic(naive_val_pred, y_val, val_dates)
         naive_da = _directional_accuracy(naive_val_pred, y_val)
 
@@ -244,9 +246,7 @@ def run(horizon_filter=None, out_path=None):
                             continue
                         n_bins = min(10, len(g))
                         try:
-                            frame.loc[g.index, "rel"] = pd.qcut(
-                                g["r"], n_bins, labels=False, duplicates="drop"
-                            )
+                            frame.loc[g.index, "rel"] = pd.qcut(g["r"], n_bins, labels=False, duplicates="drop")
                         except ValueError:
                             frame.loc[g.index, "rel"] = np.argsort(np.argsort(g["r"])) * 9 // len(g)
                     return frame["rel"].astype(int).to_numpy()
@@ -271,8 +271,11 @@ def run(horizon_filter=None, out_path=None):
                 dtrain.construct()
                 dval.construct()
                 booster = lgb.train(
-                    params, dtrain, num_boost_round=boost_rounds,
-                    valid_sets=[dval], callbacks=[lgb.log_evaluation(0)],
+                    params,
+                    dtrain,
+                    num_boost_round=boost_rounds,
+                    valid_sets=[dval],
+                    callbacks=[lgb.log_evaluation(0)],
                 )
                 pred_val = booster.predict(X_val)
             elif arm == "binary":
@@ -282,8 +285,11 @@ def run(horizon_filter=None, out_path=None):
                 dtrain.construct()
                 dval_bin.construct()
                 booster = lgb.train(
-                    params, dtrain, num_boost_round=boost_rounds,
-                    valid_sets=[dval_bin], callbacks=[lgb.log_evaluation(0)],
+                    params,
+                    dtrain,
+                    num_boost_round=boost_rounds,
+                    valid_sets=[dval_bin],
+                    callbacks=[lgb.log_evaluation(0)],
                 )
                 pred_val = booster.predict(X_val)
             else:
@@ -292,8 +298,11 @@ def run(horizon_filter=None, out_path=None):
                 dtrain.construct()
                 dval.construct()
                 booster = lgb.train(
-                    params, dtrain, num_boost_round=boost_rounds,
-                    valid_sets=[dval], callbacks=[lgb.log_evaluation(0)],
+                    params,
+                    dtrain,
+                    num_boost_round=boost_rounds,
+                    valid_sets=[dval],
+                    callbacks=[lgb.log_evaluation(0)],
                 )
                 pred_val = booster.predict(X_val)
 
@@ -304,10 +313,16 @@ def run(horizon_filter=None, out_path=None):
             ic_summary = bootstrap_ci(per_date_ics)
             paired_naive = paired_delta_ci(per_date_ics, naive_ics) if naive_ics else None
 
-            fi = pd.DataFrame({
-                "feature": feats,
-                "gain": booster.feature_importance(importance_type="gain"),
-            }).sort_values("gain", ascending=False).head(10)
+            fi = (
+                pd.DataFrame(
+                    {
+                        "feature": feats,
+                        "gain": booster.feature_importance(importance_type="gain"),
+                    }
+                )
+                .sort_values("gain", ascending=False)
+                .head(10)
+            )
 
             arm_results[arm] = {
                 "rank_ic": ic_summary,
@@ -319,7 +334,11 @@ def run(horizon_filter=None, out_path=None):
             }
             arm_ics[arm] = per_date_ics
 
-            ic_str = f"IC={ic_summary['mean']:.4f} [{ic_summary['ci_low']:.4f}, {ic_summary['ci_high']:.4f}]" if ic_summary else "IC=None"
+            ic_str = (
+                f"IC={ic_summary['mean']:.4f} [{ic_summary['ci_low']:.4f}, {ic_summary['ci_high']:.4f}]"
+                if ic_summary
+                else "IC=None"
+            )
             da_str = f"DA={da:.1%}" if da is not None else "DA=None"
             logger.info(f"    {ic_str}  {da_str}  ({elapsed:.1f}s)")
 

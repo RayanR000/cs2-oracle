@@ -62,8 +62,9 @@ def load_horizon_frame(db, horizon: int) -> dict:
     """
     from sqlalchemy import text
 
-    rows = db.execute(
-        text("""
+    rows = (
+        db.execute(
+            text("""
         SELECT c.item_id, c.forecast_date, c.score,
                c.candidate_version, c.config_fingerprint,
                co.base_price AS c_base, co.actual_price AS c_actual,
@@ -79,8 +80,11 @@ def load_horizon_frame(db, horizon: int) -> dict:
          AND o.horizon_days = c.horizon_days
         WHERE c.horizon_days = :h AND c.component = 'ranking'
         """),
-        {"h": horizon},
-    ).mappings().all()
+            {"h": horizon},
+        )
+        .mappings()
+        .all()
+    )
 
     out = []
     for r in rows:
@@ -116,20 +120,26 @@ def load_horizon_frame(db, horizon: int) -> dict:
     if first is None:
         expected, observed = 0, 0
     else:
-        expected = db.execute(
-            text("""
+        expected = (
+            db.execute(
+                text("""
             SELECT COUNT(DISTINCT forecast_date) FROM item_forecasts
             WHERE horizon_days = :h AND forecast_date >= :first
             """),
-            {"h": horizon, "first": first},
-        ).scalar() or 0
-        observed = db.execute(
-            text("""
+                {"h": horizon, "first": first},
+            ).scalar()
+            or 0
+        )
+        observed = (
+            db.execute(
+                text("""
             SELECT COUNT(DISTINCT forecast_date) FROM forecast_candidates
             WHERE horizon_days = :h AND component = 'ranking'
             """),
-            {"h": horizon},
-        ).scalar() or 0
+                {"h": horizon},
+            ).scalar()
+            or 0
+        )
     return {"rows": out, "expected_batches": int(expected), "observed_batches": int(observed)}
 
 
@@ -168,12 +178,24 @@ def build_ranking_report(horizon: int, frame: dict) -> dict:
 
     versions = {r["version"] for r in rows}
     fingerprints = {r["fingerprint"] for r in rows}
-    completeness = (frame.get("observed_batches", 0) / frame["expected_batches"]) if frame.get("expected_batches") else 0.0
+    completeness = (
+        (frame.get("observed_batches", 0) / frame["expected_batches"]) if frame.get("expected_batches") else 0.0
+    )
     resolution_ok = all(r.get("legs_match", True) for r in rows)
 
     if len(per_date) < MIN_SHARED_DATES:
-        return _report(horizon, INSUFFICIENT_EVIDENCE, per_date, dropped, versions, fingerprints, completeness, frame,
-                       paired=None, reasons=(f"only {len(per_date)} qualifying dates < {MIN_SHARED_DATES}",))
+        return _report(
+            horizon,
+            INSUFFICIENT_EVIDENCE,
+            per_date,
+            dropped,
+            versions,
+            fingerprints,
+            completeness,
+            frame,
+            paired=None,
+            reasons=(f"only {len(per_date)} qualifying dates < {MIN_SHARED_DATES}",),
+        )
     integrity = []
     if len(versions) != 1:
         integrity.append(f"mixed candidate versions: {sorted(versions)}")
@@ -184,8 +206,18 @@ def build_ranking_report(horizon: int, frame: dict) -> dict:
     if not resolution_ok:
         integrity.append("candidate/production resolution mismatch")
     if integrity:
-        return _report(horizon, DATA_INTEGRITY_FAILURE, per_date, dropped, versions, fingerprints, completeness, frame,
-                       paired=None, reasons=tuple(integrity))
+        return _report(
+            horizon,
+            DATA_INTEGRITY_FAILURE,
+            per_date,
+            dropped,
+            versions,
+            fingerprints,
+            completeness,
+            frame,
+            paired=None,
+            reasons=tuple(integrity),
+        )
 
     paired = paired_daily_interval(
         [d["ic_rank"] for d in per_date], [d["ic_q50"] for d in per_date], [d["date"] for d in per_date]
@@ -196,8 +228,9 @@ def build_ranking_report(horizon: int, frame: dict) -> dict:
         verdict, reasons = REJECTED, ("shadow rank underperforms the q50 ordering",)
     else:
         verdict, reasons = UNRESOLVED, ("transfer evidence does not establish either direction",)
-    return _report(horizon, verdict, per_date, dropped, versions, fingerprints, completeness, frame,
-                   paired=paired, reasons=reasons)
+    return _report(
+        horizon, verdict, per_date, dropped, versions, fingerprints, completeness, frame, paired=paired, reasons=reasons
+    )
 
 
 def _report(horizon, verdict, per_date, dropped, versions, fingerprints, completeness, frame, paired, reasons):
@@ -284,7 +317,8 @@ def main(argv=None) -> int:
         markdown = render_markdown(payload)
     else:
         markdown = "\n".join(
-            render_markdown(r) if "per_date" in r else f"# h={h}\n\nError: {r.get('reasons')}" for h, r in reports.items()
+            render_markdown(r) if "per_date" in r else f"# h={h}\n\nError: {r.get('reasons')}"
+            for h, r in reports.items()
         )
     with open(args.markdown_out, "w") as f:
         f.write(markdown)

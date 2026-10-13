@@ -24,12 +24,8 @@ def db():
     # Two price points per item; latest must win.
     prices = {1: (10.0, 11.5), 2: (20.0, 19.0), 3: (5.0, 7.25)}
     for item_id, (old, new) in prices.items():
-        session.add(
-            PriceHistory(item_id=item_id, timestamp=now - timedelta(days=2), price=old, source="steam")
-        )
-        session.add(
-            PriceHistory(item_id=item_id, timestamp=now - timedelta(days=1), price=new, source="steam")
-        )
+        session.add(PriceHistory(item_id=item_id, timestamp=now - timedelta(days=2), price=old, source="steam"))
+        session.add(PriceHistory(item_id=item_id, timestamp=now - timedelta(days=1), price=new, source="steam"))
     session.commit()
     yield session
     session.close()

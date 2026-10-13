@@ -513,9 +513,7 @@ class ForecastCandidateOutcome(Base):
 
     __tablename__ = "forecast_candidate_outcomes"
 
-    candidate_id = Column(
-        Integer, ForeignKey("forecast_candidates.id", ondelete="CASCADE"), primary_key=True
-    )
+    candidate_id = Column(Integer, ForeignKey("forecast_candidates.id", ondelete="CASCADE"), primary_key=True)
     base_price = Column(Float, nullable=False)
     actual_price = Column(Float, nullable=False)
     resolved_at = Column(DateTime, nullable=False)

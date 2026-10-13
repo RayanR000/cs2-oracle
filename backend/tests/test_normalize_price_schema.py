@@ -84,9 +84,11 @@ def archive(tmp_path):
 
 
 def test_target_columns_puts_range_after_canonical():
-    assert target_columns(
-        ["item_slug", "day", "mean_price", "volume", "min_price", "max_price", "source"]
-    ) == [*CANONICAL, "min_price", "max_price"]
+    assert target_columns(["item_slug", "day", "mean_price", "volume", "min_price", "max_price", "source"]) == [
+        *CANONICAL,
+        "min_price",
+        "max_price",
+    ]
 
 
 def test_target_columns_preserves_an_unknown_column():

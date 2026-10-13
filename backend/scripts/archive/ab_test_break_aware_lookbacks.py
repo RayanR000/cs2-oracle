@@ -223,7 +223,9 @@ def run(frames, feature_cols, horizon, mode, n_jobs):
                 continue
             cfg = {"table": table, "tier_pool": pool, "global": g}
             scale = np.asarray(
-                _lookup_scale(fc, horizon, cfg, val_rows["item_id"].to_numpy(), val_rows["price"].to_numpy(dtype=float)),
+                _lookup_scale(
+                    fc, horizon, cfg, val_rows["item_id"].to_numpy(), val_rows["price"].to_numpy(dtype=float)
+                ),
                 dtype=float,
             )
             y_fit = fit_rows[tcol].to_numpy(dtype=float)
