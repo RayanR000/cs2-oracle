@@ -153,6 +153,18 @@ jobs:
       # workflow is triggered by Price Forecast *completion* (after that
       # workflow's own publish step) or by the 08:00 cron, both disjoint from the
       # 23:00 aggregator. Adding a third writer would need that revisited.
+      # Phase 1.2 parity (docs/specs/2026-10-11-postgres-to-parquet-history-design.md): per table
+      # and forecast_date, Postgres and the monthly partitions must agree. Before the publish so
+      # ops/parity_runs.parquet is pushed; continue-on-error so a mismatch does not block the
+      # closed-month release. "Fail on parity mismatch" at the end turns the run red.
+      - name: Ops parity
+        id: parity
+        continue-on-error: true
+        working-directory: ./backend
+        env:
+          DATABASE_URL: ${{ secrets.SUPABASE_DATABASE_URL }}
+        run: python scripts/ops_parity.py
+
       - name: Publish updated archive (flat history)
         if: always()
         working-directory: ./archive
@@ -177,6 +189,12 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.CS2_DATA_REPO_TOKEN }}
         run: python scripts/ops_releases.py publish --archive-dir ../archive/price-archive
+
+      - name: Fail on parity mismatch
+        if: steps.parity.outcome == 'failure'
+        run: |
+          echo "::error title=Ops parity::Postgres and the ops partitions disagree; see the Ops parity step"
+          exit 1
 
 
       - name: Upload backtest logs

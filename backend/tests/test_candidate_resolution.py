@@ -130,3 +130,18 @@ def test_unresolvable_without_production_or_archive(monkeypatch):
 
     assert session.query(ForecastCandidateOutcome).count() == 0
     assert stats["unresolvable"] == 1
+
+
+def test_resolution_writes_partitions_for_touched_candidates(monkeypatch):
+    import backtest.candidate_resolution as cr
+
+    calls = []
+    monkeypatch.setattr(cr, "_candidate_outcome_partitions", lambda db, ids: calls.append(set(ids)))
+    session = _db()
+    _prod(session)
+    cand = _cand(session)
+    _mature(monkeypatch)
+
+    cr.resolve_candidate_outcomes(session, today=date(2026, 10, 1), archive_dir="unused")
+
+    assert calls == [{cand.id}]

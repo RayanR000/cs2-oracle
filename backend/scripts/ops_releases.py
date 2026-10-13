@@ -33,7 +33,6 @@ Usage:
 """
 
 import argparse
-import calendar
 import hashlib
 import json
 import logging
@@ -43,24 +42,20 @@ import subprocess
 import sys
 import tempfile
 from collections.abc import Sequence
-from datetime import date, timedelta
+from datetime import date
 from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
+from db.ops_partitions import CLOSE_AFTER_DAYS, closes_on  # noqa: F401  (re-exported for callers and tests)
 
 logger = logging.getLogger("ops_releases")
 
 REPO = "RayanR000/cs2-oracle-data"
 TABLES = ("item_forecasts", "forecast_outcomes", "forecast_candidates", "forecast_candidate_outcomes")
-#: Longest horizon (30) plus the embargo carry (13): the last day anything matures.
-CLOSE_AFTER_DAYS = 43
 TAG_PREFIX = "ops-"
 SUMS = "SHA256SUMS"
 _MONTH = re.compile(r"^(\d{4})-(\d{2})\.parquet$")
-
-
-def closes_on(month: str) -> date:
-    """The first day month *month* (``YYYY-MM``) counts as closed."""
-    y, m = map(int, month.split("-"))
-    return date(y, m, calendar.monthrange(y, m)[1]) + timedelta(days=CLOSE_AFTER_DAYS)
 
 
 def month_files(ops_dir: Path) -> dict[str, dict[str, Path]]:

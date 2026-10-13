@@ -1,6 +1,6 @@
 """Shared test fixtures for the backend test suite.
 
-`_hermetic_archive` is autouse; the others are opt-in -- tests that need them
+`_hermetic_ops_dir` and `_hermetic_archive` are autouse; the others are opt-in -- tests that need them
 request them by name in their function signature.
 """
 
@@ -12,6 +12,17 @@ from models.forecaster import ItemForecaster
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
+
+
+@pytest.fixture(autouse=True)
+def _hermetic_ops_dir(monkeypatch, tmp_path_factory):
+    """Point ``db.parquet.OPS_DIR`` at an empty temp dir for every test.
+
+    Since the Phase 1.2 dual-write, every DB writer also writes the monthly ops partitions, so
+    a test that exercises a writer without redirecting ``OPS_DIR`` would land rows in the real,
+    gitignored ``price-archive/ops``. Tests that set ``OPS_DIR`` themselves still win.
+    """
+    monkeypatch.setattr("db.parquet.OPS_DIR", tmp_path_factory.mktemp("ops"))
 
 
 @pytest.fixture(autouse=True)

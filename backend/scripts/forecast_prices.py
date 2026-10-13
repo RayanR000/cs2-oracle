@@ -476,7 +476,54 @@ def _write_forecasts_to_db(
                         db.rollback()
                         raise
 
+        # Phase 1.2 dual-write (docs/specs/2026-10-11-postgres-to-parquet-history-design.md):
+        # AFTER the Postgres commit, so the partitions carry the ids Postgres issued. Read back
+        # only this batch's keys: regime and global rows share a date and differ in model_config.
+        # On a read-only night the ids come from the partitions instead. Never fails the run.
+        from db import ops_partitions, ops_readback
+
+        def _partitions():
+
+            if read_only:
+                frame = _read_only_forecast_frame(db, forecast_rows, id_to_slug)
+            else:
+                keys = {(r["item_id"], r["forecast_date"], r["horizon_days"]) for r in forecast_rows}
+                frame = ops_readback.forecasts(db, {r["forecast_date"] for r in forecast_rows}, keys)
+            frame["model_config"] = model_config
+            ops_partitions.upsert("item_forecasts", frame)
+
+        ops_partitions.dual_write("item_forecasts", _partitions, db=db)
+
     return len(forecast_rows)
+
+
+def _read_only_forecast_frame(db, forecast_rows, id_to_slug):
+    """Partition rows for a night Postgres turned read-only partway through.
+
+    Batches committed before the SQLSTATE 25006 keep the ids Postgres gave them (reads still
+    work). The rest get ids from READ_ONLY_ID_BASE up, a range the Postgres sequence never
+    reaches, so the two cannot collide if Postgres becomes writable again.
+    """
+    import pandas as pd
+    from db import ops_partitions, ops_readback
+
+    def key(item_id, forecast_date, horizon):
+        return (item_id, pd.Timestamp(forecast_date).date(), horizon)
+
+    keys = {(r["item_id"], r["forecast_date"], r["horizon_days"]) for r in forecast_rows}
+    committed = ops_readback.forecasts(db, {r["forecast_date"] for r in forecast_rows}, keys)
+    done = {key(r.item_id, r.forecast_date, r.horizon_days): r.id for r in committed.itertuples()}
+    frame = pd.DataFrame(forecast_rows)
+    hit = [key(r["item_id"], r["forecast_date"], r["horizon_days"]) in done for r in forecast_rows]
+    kept = frame[hit].copy()
+    kept["id"] = [done[key(r.item_id, r.forecast_date, r.horizon_days)] for r in kept.itertuples()]
+    issued = ops_partitions.assign_ids(
+        "item_forecasts", frame[[not h for h in hit]], base=ops_partitions.READ_ONLY_ID_BASE
+    )
+    parts = [f for f in (kept, issued) if not f.empty]
+    out = pd.concat(parts, ignore_index=True) if len(parts) > 1 else parts[0].reset_index(drop=True)
+    out["item_slug"] = out["item_id"].map(id_to_slug)
+    return out
 
 
 def _write_shadow_candidates(db, forecaster, slug_to_id, forecast_date_override=None):
@@ -515,7 +562,10 @@ def _write_shadow_candidates(db, forecaster, slug_to_id, forecast_date_override=
         if not is_read_only_error(e):
             raise
         db.rollback()
-        report_read_only(f"the forecast_candidates write ({len(remapped)} shadow rows; no Parquet mirror)")
+        report_read_only(f"the forecast_candidates write ({len(remapped)} shadow rows; partitions only)")
+        from db.candidate_store import write_candidate_partitions_read_only
+
+        write_candidate_partitions_read_only(remapped)
         return 0, 0, 0, 0
     logger.info(
         f"Wrote {result.centre_written} centre + {result.ranking_written} ranking shadow candidates "
