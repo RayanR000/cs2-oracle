@@ -171,7 +171,8 @@ Inventory from grep on 2026-10-11 (excluding `tests/`, `scripts/archive/` and mi
 2. Every writer writes both stores. Postgres stays the read source. Design below
    ("Phase 1.2: dual-write"). **Built 2026-10-12** (`changelog/2026-10-12-ops-dual-write.md`).
 3. A nightly parity check (rows per date and table, and the verdict-refresh deltas) runs for
-   ≥7 nights. Design below.
+   ≥7 nights. Design below. (Phase 2 starts after 3 clean nights instead:
+   `2026-10-13-ops-readers-switch-design.md`, "PR sequence and gates".)
 
 #### Phase 1.2: dual-write (designed 2026-10-12)
 
