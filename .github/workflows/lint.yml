@@ -8,12 +8,10 @@ on:
       - 'pyproject.toml'
       - 'uv.lock'
       - '.github/workflows/**'
+  # No paths filter on pull_request: lint, test and typecheck are required checks on main,
+  # and a path-filtered workflow never reports on a docs-only PR, leaving it stuck on
+  # "Expected - Waiting". Pushes to main stay filtered.
   pull_request:
-    paths:
-      - 'backend/**'
-      - 'pyproject.toml'
-      - 'uv.lock'
-      - '.github/workflows/**'
 
 defaults:
   run:
