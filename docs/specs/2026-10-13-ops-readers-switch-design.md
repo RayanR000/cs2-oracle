@@ -120,6 +120,8 @@ metrics per horizon.
 
 ### PR 2: candidate resolution
 
+**Shipped** 2026-10-30, after PR 4 (`changelog/2026-10-30-candidate-resolution-reads-ops-partitions.md`).
+
 `backtest/candidate_resolution.py` reads candidates, their outcomes and the production
 outcomes it pairs against from the store. It is its own PR because its output feeds the frozen
 champion–challenger read. The PR shows that the candidate-outcome rows it writes are identical
