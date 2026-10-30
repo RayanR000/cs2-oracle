@@ -114,3 +114,119 @@ def test_a_flood_of_new_names_inserts_nothing(session, monkeypatch):
 
     assert nid.discover_new_items(session, _sources(flood), DAY) == 0
     assert session.query(Item).count() == 1
+
+
+# --- a Postgres that cannot take the insert (Phase 2 PR 5) -------------------
+
+OTHER = "USP-S | Another New Finish (Factory New)"
+
+
+class _PgError(Exception):
+    def __init__(self, msg, pgcode=None):
+        super().__init__(msg)
+        self.pgcode = pgcode
+
+
+def _refuse_inserts(session, monkeypatch):
+    from db.read_only import READ_ONLY_SQLSTATE
+    from sqlalchemy.exc import InternalError
+
+    real = session.execute
+
+    def execute(stmt, *a, **k):
+        if "INSERT" in str(stmt):
+            raise InternalError("INSERT ...", {}, _PgError("read-only transaction", READ_ONLY_SQLSTATE))
+        return real(stmt, *a, **k)
+
+    monkeypatch.setattr(session, "execute", execute)
+
+
+def _catalog(ops):
+    from db import ops_store
+
+    return {r.item_id: r for r in ops_store.reader(("items",), root=ops)("SELECT * FROM items")}
+
+
+@pytest.fixture()
+def ops(tmp_path):
+    """An ops dir holding the session's one established item, as the nightly sync leaves it."""
+    import pandas as pd
+    from db import ops_partitions
+
+    d = tmp_path / "ops"
+    ops_partitions.upsert(
+        "items",
+        pd.DataFrame(
+            [{"id": 1, "item_id": "AK-47 | Redline (Field-Tested)", "name": "AK-47 | Redline (Field-Tested)"}]
+        ),
+        root=d,
+    )
+    return d
+
+
+def test_a_read_only_postgres_lands_new_items_in_the_partitions(session, ops, monkeypatch, capsys):
+    from db.ops_partitions import READ_ONLY_ID_BASE
+
+    _refuse_inserts(session, monkeypatch)
+    assert nid.discover_new_items(session, _sources({NEW: 2}), DAY, ops_root=ops) == 1
+
+    row = _catalog(ops)[NEW]
+    assert row.id == READ_ONLY_ID_BASE + 1
+    assert (row.name, row.type, row.is_backfilled, row.is_trainable) == (NEW, "skin", 0, 0)
+    assert row.release_date == dt.datetime(2026, 11, 20)
+    assert "::warning" in capsys.readouterr().out
+    assert session.query(Item).count() == 1
+
+
+def test_a_partition_only_item_is_not_rediscovered_and_keeps_its_release_date(session, ops, monkeypatch):
+    _refuse_inserts(session, monkeypatch)
+    nid.discover_new_items(session, _sources({NEW: 2}), DAY, ops_root=ops)
+    later = DAY + dt.timedelta(days=1)
+
+    assert nid.discover_new_items(session, _sources({NEW: 2}), later, ops_root=ops) == 0
+    assert _catalog(ops)[NEW].release_date == dt.datetime(2026, 11, 20)
+
+
+def test_partition_ids_continue_upward_across_nights(session, ops, monkeypatch):
+    from db.ops_partitions import READ_ONLY_ID_BASE
+
+    _refuse_inserts(session, monkeypatch)
+    nid.discover_new_items(session, _sources({NEW: 2}), DAY, ops_root=ops)
+    nid.discover_new_items(session, _sources({NEW: 2, OTHER: 2}), DAY + dt.timedelta(days=1), ops_root=ops)
+
+    cat = _catalog(ops)
+    assert (cat[NEW].id, cat[OTHER].id) == (READ_ONLY_ID_BASE + 1, READ_ONLY_ID_BASE + 2)
+    assert cat["AK-47 | Redline (Field-Tested)"].id == 1
+
+
+def test_partition_only_items_do_not_count_against_the_flood_cap(session, ops, monkeypatch):
+    _refuse_inserts(session, monkeypatch)
+    nid.discover_new_items(session, _sources({NEW: 2, OTHER: 2}), DAY, ops_root=ops)
+    monkeypatch.setattr(nid, "MAX_NEW_PER_RUN", 1)
+    third = "Glock-18 | Third New Finish (Factory New)"
+
+    assert nid.discover_new_items(session, _sources({NEW: 2, OTHER: 2, third: 2}), DAY, ops_root=ops) == 1
+    assert third in _catalog(ops)
+
+
+def test_a_writable_postgres_leaves_the_partitions_to_the_nightly_sync(session, ops):
+    assert nid.discover_new_items(session, _sources({NEW: 2}), DAY, ops_root=ops) == 1
+    assert session.query(Item).filter_by(item_id=NEW).count() == 1
+    assert NEW not in _catalog(ops)
+
+
+def test_without_an_ops_dir_a_read_only_postgres_inserts_nothing(session, monkeypatch):
+    _refuse_inserts(session, monkeypatch)
+    assert nid.discover_new_items(session, _sources({NEW: 2}), DAY) == 0
+
+
+def test_the_nightly_items_sync_keeps_partition_only_items(session, ops, monkeypatch):
+    from scripts.ops_sync_from_postgres import sync
+
+    with monkeypatch.context() as m:
+        _refuse_inserts(session, m)
+        nid.discover_new_items(session, _sources({NEW: 2}), DAY, ops_root=ops)
+    sync(session, [], tables=["items"], apply=True, root=ops)
+
+    cat = _catalog(ops)
+    assert NEW in cat and "AK-47 | Redline (Field-Tested)" in cat
