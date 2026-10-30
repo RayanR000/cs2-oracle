@@ -110,3 +110,51 @@ def test_repeated_ids_in_the_partitions_fail(tmp_path):
     got = [m for m in run_parity(db, root=tmp_path) if m.field == "duplicate_ids"]
     assert [(m.table, m.partitions) for m in got] == [("item_forecasts", 1)]
     assert failing(got, TODAY) == got
+
+
+class _DeadPostgres:
+    """A session standing in for the retired Supabase: read-only, or out of disk on a big read."""
+
+    def __init__(self, read_only="off", fail=None):
+        self.read_only, self.fail, self.closed = read_only, fail, False
+
+    def execute(self, stmt, *a, **k):
+        if "transaction_read_only" in str(stmt):
+            return type("R", (), {"scalar": lambda _self: self.read_only})()
+        raise self.fail
+
+    def close(self):
+        self.closed = True
+
+
+def _disk_full():
+    import psycopg2.errors
+    from sqlalchemy.exc import OperationalError
+
+    return OperationalError("SELECT ...", {}, psycopg2.errors.DiskFull("No space left on device"))
+
+
+@pytest.mark.parametrize(
+    ("db", "reason"),
+    [(_DeadPostgres(read_only="on"), "read-only"), (_DeadPostgres(fail=_disk_full()), "out of disk")],
+    ids=["read-only", "disk-full"],
+)
+def test_a_dead_postgres_skips_parity_with_a_warning(db, reason, monkeypatch, tmp_path, capsys):
+    monkeypatch.setattr("db.parquet.OPS_DIR", tmp_path)
+    monkeypatch.setattr("database.SessionLocal", lambda: db)
+    from scripts import ops_parity
+
+    assert ops_parity.main([]) == 0
+    out = capsys.readouterr().out
+    assert "::warning title=Ops parity skipped::" in out and reason in out
+    assert not (tmp_path / "parity_runs.parquet").exists()  # a skipped night is not a clean night
+    assert db.closed
+
+
+def test_any_other_postgres_error_still_fails(monkeypatch, tmp_path):
+    monkeypatch.setattr("db.parquet.OPS_DIR", tmp_path)
+    monkeypatch.setattr("database.SessionLocal", lambda: _DeadPostgres(fail=ValueError("bad sql")))
+    from scripts import ops_parity
+
+    with pytest.raises(ValueError):
+        ops_parity.main([])
