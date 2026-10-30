@@ -116,7 +116,11 @@ def _differ(a, b, tol: float) -> bool:
 def _diffs(pg_value, parquet_value, tol: float) -> list[tuple]:
     if isinstance(pg_value, dict) and isinstance(parquet_value, dict):
         keys = sorted(set(pg_value) | set(parquet_value), key=str)
-        return [(k, pg_value.get(k), parquet_value.get(k)) for k in keys if _differ(pg_value.get(k), parquet_value.get(k), tol)]
+        return [
+            (k, pg_value.get(k), parquet_value.get(k))
+            for k in keys
+            if _differ(pg_value.get(k), parquet_value.get(k), tol)
+        ]
     return [("value", pg_value, parquet_value)] if _differ(pg_value, parquet_value, tol) else []
 
 
@@ -135,11 +139,16 @@ def compare(name: str, pg: Callable[[], object], parquet_value, *, tol: float = 
             except Exception:
                 logger.exception("read twice %s: rollback after the failed Postgres read also failed", name)
         logger.warning("read twice %s: Postgres read failed (%s); the partitions' value is used", name, e)
-        print(f"::warning title=Read twice: {name}::Postgres read failed ({type(e).__name__}); the partitions' value is used", flush=True)
+        print(
+            f"::warning title=Read twice: {name}::Postgres read failed ({type(e).__name__}); the partitions' value is used",
+            flush=True,
+        )
         return False
     diffs = _diffs(pg_value, parquet_value, tol)
     if isinstance(parquet_value, dict):
-        logger.info("read twice %s: %d keys, %d differ", name, len(set(pg_value or {}) | set(parquet_value)), len(diffs))
+        logger.info(
+            "read twice %s: %d keys, %d differ", name, len(set(pg_value or {}) | set(parquet_value)), len(diffs)
+        )
     else:
         logger.info("read twice %s: postgres=%r partitions=%r", name, pg_value, parquet_value)
     if not diffs:

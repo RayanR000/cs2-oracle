@@ -34,6 +34,7 @@ def ops_mirror(request, monkeypatch):
     module. Tests where the two stores must differ use ``tests._ops_mirror`` directly instead.
     """
     import db.ops_store as store
+
     from tests._ops_mirror import mirror_session_to_ops
 
     session = request.getfixturevalue("session")

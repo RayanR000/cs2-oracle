@@ -10,6 +10,7 @@ from db import ops_store
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
+
 from tests._ops_mirror import mirror_session_to_ops
 
 
@@ -26,8 +27,15 @@ def _seed(session):
     session.add(ItemForecast(id=10, item_id=1, forecast_date=date(2026, 7, 1), horizon_days=3, price_mid=3.0))
     session.add(
         ForecastOutcome(
-            id=20, forecast_id=10, item_id=1, forecast_date=date(2026, 7, 1), horizon_days=3,
-            target_date=date(2026, 7, 4), predicted_price_mid=3.0, actual_price=3.1, abs_error=0.1,
+            id=20,
+            forecast_id=10,
+            item_id=1,
+            forecast_date=date(2026, 7, 1),
+            horizon_days=3,
+            target_date=date(2026, 7, 4),
+            predicted_price_mid=3.0,
+            actual_price=3.1,
+            abs_error=0.1,
         )
     )
 
@@ -35,7 +43,9 @@ def _seed(session):
 def test_seeded_rows_read_back_through_the_store(session):
     _seed(session)  # not committed: pending rows count
     mirror_session_to_ops(session)
-    rows = ops_store.reader()("SELECT o.id, f.price_mid, i.item_id FROM forecast_outcomes o JOIN item_forecasts f ON f.id = o.forecast_id JOIN items i ON i.id = o.item_id")
+    rows = ops_store.reader()(
+        "SELECT o.id, f.price_mid, i.item_id FROM forecast_outcomes o JOIN item_forecasts f ON f.id = o.forecast_id JOIN items i ON i.id = o.item_id"
+    )
     assert [(r.id, r.price_mid, r.item_id) for r in rows] == [(20, 3.0, "ak")]
 
 

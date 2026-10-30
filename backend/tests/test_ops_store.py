@@ -125,7 +125,7 @@ def test_a_reader_sees_files_written_after_it_was_made(tmp_path):
 def test_check_columns_raises_when_a_required_column_is_all_null(tmp_path):
     _write("forecast_outcomes", [{"forecast_id": 10, "item_id": 1, "forecast_date": DAY, "horizon_days": 3}], tmp_path)
     read = ops_store.reader(("forecast_outcomes",), tmp_path)
-    with pytest.raises(ops_store.MissingTable, match="forecast_outcomes.id"):
+    with pytest.raises(ops_store.MissingTable, match=r"forecast_outcomes\.id"):
         ops_store.check_columns(read, "forecast_outcomes", ["id", "forecast_id"])
     ops_store.check_columns(read, "forecast_outcomes", ["forecast_id"])
 
@@ -133,7 +133,9 @@ def test_check_columns_raises_when_a_required_column_is_all_null(tmp_path):
 def test_check_columns_accepts_an_empty_table(tmp_path):
     d = tmp_path / "forecast_outcomes"
     d.mkdir()
-    duckdb.sql(f"COPY (SELECT 1::BIGINT AS id, 1::BIGINT AS forecast_id WHERE false) TO '{d / '2026-09.parquet'}' (FORMAT PARQUET)")
+    duckdb.sql(
+        f"COPY (SELECT 1::BIGINT AS id, 1::BIGINT AS forecast_id WHERE false) TO '{d / '2026-09.parquet'}' (FORMAT PARQUET)"
+    )
     ops_store.check_columns(ops_store.reader(("forecast_outcomes",), tmp_path), "forecast_outcomes", ["id"])
 
 
@@ -151,7 +153,10 @@ def test_a_difference_is_a_warning_naming_the_reader_and_both_values(capsys):
 
 
 def test_dicts_compare_key_by_key_and_name_each_differing_key(capsys):
-    assert ops_store.compare("per date", lambda: {"2026-10-01": 5, "2026-10-02": 6}, {"2026-10-01": 5, "2026-10-03": 6}) is False
+    assert (
+        ops_store.compare("per date", lambda: {"2026-10-01": 5, "2026-10-02": 6}, {"2026-10-01": 5, "2026-10-03": 6})
+        is False
+    )
     out = capsys.readouterr().out
     assert "2026-10-02: postgres=6 partitions=None" in out
     assert "2026-10-03: postgres=None partitions=6" in out
