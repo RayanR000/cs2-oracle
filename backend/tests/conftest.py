@@ -25,6 +25,28 @@ def _hermetic_ops_dir(monkeypatch, tmp_path_factory):
     monkeypatch.setattr("db.parquet.OPS_DIR", tmp_path_factory.mktemp("ops"))
 
 
+@pytest.fixture()
+def ops_mirror(request, monkeypatch):
+    """Opt-in: before every ``ops_store.connect``, copy the test's ``session`` into ``OPS_DIR``.
+
+    Since Phase 2 the backtest reads the forecast record from the partitions; this keeps tests
+    that seed SQLite through the ORM meaning what they meant. Needs a ``session`` fixture in the
+    module. Tests where the two stores must differ use ``tests._ops_mirror`` directly instead.
+    """
+    import db.ops_store as store
+
+    from tests._ops_mirror import mirror_session_to_ops
+
+    session = request.getfixturevalue("session")
+    real = store.connect
+
+    def connect(root=None, tables=store.TABLES):
+        mirror_session_to_ops(session, root, tables)
+        return real(root, tables)
+
+    monkeypatch.setattr(store, "connect", connect)
+
+
 @pytest.fixture(autouse=True)
 def _hermetic_archive(monkeypatch, tmp_path_factory):
     """Point every ItemForecaster's ``archive_dir`` at an empty temp dir.

@@ -46,7 +46,11 @@ paths:
   and `ops/items.parquet`. `db/ops_partitions.py` is their only writer; every DB writer calls it
   **after** its Postgres commit with rows from `db/ops_readback.py`, so the partitions carry the
   ids Postgres issued, inside `dual_write`, which logs and never fails a run. Closed months
-  (calendar end + 43 days) are refused without `allow_closed`. Postgres is still the read source;
+  (calendar end + 43 days) are refused without `allow_closed`. Since Phase 2 PR 1
+  (`changelog/2026-10-30-backtest-reads-ops-partitions.md`) the backtest reads them through
+  `db/ops_store.py` (views named like the Postgres tables, `pg_deleted` hidden, a table with no
+  files raises) and logs each switched value beside Postgres's (`ops_store.compare`). Every other
+  reader still reads Postgres until its PR (`specs/2026-10-13-ops-readers-switch-design.md`);
   `scripts/ops_parity.py` (Backtest Accuracy) proves the stores agree per date, and
   `ops-sync.yml` repairs. Tests get a temp `OPS_DIR` from conftest's `_hermetic_ops_dir`.
   `changelog/2026-10-12-ops-dual-write.md`.

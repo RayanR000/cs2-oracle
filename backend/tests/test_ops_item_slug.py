@@ -24,9 +24,13 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 from database import Base, ForecastOutcome, Item
 from scripts.backtest_accuracy import (
     _id_to_slug,
+    _pg_read,
     _store_forecast_outcomes,
     _with_item_slug,
 )
+
+# Since Phase 2 the backtest reads the partitions; mirror each test's SQLite rows into them.
+pytestmark = pytest.mark.usefixtures("ops_mirror")
 
 
 @pytest.fixture
@@ -78,7 +82,7 @@ def _outcome(forecast_id, item_id):
 
 
 def test_id_to_slug_reads_the_items_table(session):
-    assert _id_to_slug(session) == {
+    assert _id_to_slug(_pg_read(session)) == {
         1: "AK-47 | Redline (Field-Tested)",
         2: "AWP | Asiimov (Field-Tested)",
     }
@@ -86,7 +90,7 @@ def test_id_to_slug_reads_the_items_table(session):
 
 def test_with_item_slug_adds_the_column_without_touching_the_rest(session):
     row = _outcome(1, 1)
-    (stamped,) = _with_item_slug([row], _id_to_slug(session))
+    (stamped,) = _with_item_slug([row], _id_to_slug(_pg_read(session)))
     assert stamped["item_slug"] == "AK-47 | Redline (Field-Tested)"
     assert {k: v for k, v in stamped.items() if k != "item_slug"} == row
 
@@ -95,12 +99,12 @@ def test_with_item_slug_leaves_the_input_rows_alone(session):
     """`to_write` goes to bulk_insert_mappings, which errors on an unmapped
     key. The projection must not mutate it in place."""
     row = _outcome(1, 1)
-    _with_item_slug([row], _id_to_slug(session))
+    _with_item_slug([row], _id_to_slug(_pg_read(session)))
     assert "item_slug" not in row
 
 
 def test_an_unmapped_item_id_gets_a_null_slug_not_a_crash(session):
-    (stamped,) = _with_item_slug([_outcome(1, 999)], _id_to_slug(session))
+    (stamped,) = _with_item_slug([_outcome(1, 999)], _id_to_slug(_pg_read(session)))
     assert stamped["item_slug"] is None
 
 
