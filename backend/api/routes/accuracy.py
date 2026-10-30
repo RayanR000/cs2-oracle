@@ -1,8 +1,10 @@
 """
 Accuracy metrics API — serves backtest results and per-forecast outcomes.
 
-Reads from Parquet (ops/prediction_accuracy.parquet, ops/forecast_outcomes.parquet)
-with SQLAlchemy fallback.
+Reads the ops store only (Phase 2 PR 6): ``ops/prediction_accuracy.parquet``, which the
+backtest writes before Postgres, and the monthly ``forecast_outcomes`` partitions
+(``db/ops_store.py``), not the old single-file mirror. No route falls back to Postgres: a
+missing store raises.
 """
 
 import json
@@ -11,16 +13,11 @@ import logging
 import pandas as pd
 from backtest.directional_test import PT_T_HURDLE
 from backtest.scoring import HEADLINE_TIER, MIN_HEADLINE_DATES
-from database import ForecastOutcome, PredictionAccuracy, get_db
-from fastapi import APIRouter, Depends, Query
-from sqlalchemy import desc, func, text
-from sqlalchemy.orm import Session
+from fastapi import APIRouter, Query
 
 from api.serving_policy import MIN_SERVED_PRICE_USD
 
 router = APIRouter(prefix="/accuracy", tags=["accuracy"])
-
-_DB_DEP = Depends(get_db)
 
 logger = logging.getLogger(__name__)
 
@@ -36,46 +33,13 @@ def _json_safe(value):
     return value
 
 
-def _row_to_dict(row: PredictionAccuracy) -> dict:
-    return _json_safe(
-        {
-            "id": row.id,
-            "prediction_type": row.prediction_type,
-            "evaluation_date": row.evaluation_date.isoformat() if row.evaluation_date else None,
-            "horizon_days": row.horizon_days,
-            "model_version": row.model_version,
-            "price_tier": row.price_tier,
-            "evaluation_window_days": row.evaluation_window_days,
-            "sample_count": row.sample_count,
-            "metrics": row.metrics,
-            "created_at": row.created_at.isoformat() if row.created_at else None,
-        }
-    )
-
-
-def _dict_to_row(d: dict) -> dict:
-    return {
-        "id": d.get("id"),
-        "prediction_type": d.get("prediction_type"),
-        "evaluation_date": str(d.get("evaluation_date")) if d.get("evaluation_date") else None,
-        "horizon_days": d.get("horizon_days"),
-        "model_version": d.get("model_version"),
-        "price_tier": d.get("price_tier"),
-        "evaluation_window_days": d.get("evaluation_window_days"),
-        "sample_count": d.get("sample_count"),
-        "metrics": d.get("metrics"),
-        "created_at": str(d.get("created_at")) if d.get("created_at") else None,
-    }
-
-
 def _metrics_from_mirror(value):
     """The mirror's ``metrics`` cell as a dict.
 
     ``db.parquet`` stores nested values as JSON text — DuckDB's type inference
     over a column of Python dicts is data-dependent and could not be appended
     to, see the _jsonify_nested comment there. The HTTP contract is unchanged:
-    callers have always received an object, and the DB fallback path returns one
-    from its JSON column, so the two legs must not disagree.
+    callers have always received an object.
 
     Rows written before that change come back as a dict (or, from a file whose
     struct has not been rewritten yet, something dict-like), so both shapes are
@@ -127,49 +91,44 @@ def _query_prediction_accuracy(
     prediction_type: str | None = None,
     limit: int = 200,
     price_tier: int | None = None,
-) -> list[dict] | None:
+) -> list[dict]:
     from db.parquet import ParquetQuery
 
-    try:
-        with ParquetQuery("prediction_accuracy") as q:
-            has_tier = _has_price_tier(q)
-            clauses = []
-            if prediction_type:
-                pt = prediction_type.replace("'", "''")
-                clauses.append(f"prediction_type = '{pt}'")
-            # A mirror written before migration 0019 has no price_tier column.
-            # Such a file holds only all-tiers rows, so an unqualified request
-            # is still correct; a request for a specific cohort is not, and
-            # returning None falls the caller back to the DB.
-            if has_tier:
-                clauses.append(_tier_clause(price_tier))
-            elif price_tier is not None:
-                return None
-            where = " AND ".join(clauses) or "1=1"
-            df = q.query(f"SELECT * FROM prediction_accuracy WHERE {where} ORDER BY evaluation_date DESC LIMIT {limit}")
-            if df.empty:
-                return []
-            result = []
-            for r in df.itertuples():
-                tier = getattr(r, "price_tier", None)
-                d = {
-                    "id": int(getattr(r, "id", 0)),
-                    "prediction_type": str(getattr(r, "prediction_type", "")),
-                    "evaluation_date": str(getattr(r, "evaluation_date", "")),
-                    "horizon_days": getattr(r, "horizon_days", None),
-                    "model_version": str(getattr(r, "model_version", ""))
-                    if getattr(r, "model_version", None)
-                    else None,
-                    "price_tier": None if pd.isna(tier) else int(tier),
-                    "evaluation_window_days": getattr(r, "evaluation_window_days", None),
-                    "sample_count": int(getattr(r, "sample_count", 0)),
-                    "metrics": _metrics_from_mirror(getattr(r, "metrics", None)) or {},
-                    "created_at": str(getattr(r, "created_at", "")),
-                }
-                result.append(d)
-            return [_json_safe(d) for d in result]
-    except Exception:
-        return None
+    with ParquetQuery("prediction_accuracy") as q:
+        _ = q.con  # raises FileNotFoundError when the store holds no file, rather than serving nothing
+        has_tier = _has_price_tier(q)
+        clauses = []
+        if prediction_type:
+            pt = prediction_type.replace("'", "''")
+            clauses.append(f"prediction_type = '{pt}'")
+        # A mirror written before migration 0019 has no price_tier column.
+        # Such a file holds only all-tiers rows, so an unqualified request
+        # is still correct; a request for a specific cohort has no rows.
+        if has_tier:
+            clauses.append(_tier_clause(price_tier))
+        elif price_tier is not None:
+            return []
+        where = " AND ".join(clauses) or "1=1"
+        df = q.query(f"SELECT * FROM prediction_accuracy WHERE {where} ORDER BY evaluation_date DESC LIMIT {limit}")
+        if df.empty:
+            return []
+        result = []
+        for r in df.itertuples():
+            tier = getattr(r, "price_tier", None)
+            d = {
+                "id": int(getattr(r, "id", 0)),
+                "prediction_type": str(getattr(r, "prediction_type", "")),
+                "evaluation_date": str(getattr(r, "evaluation_date", "")),
+                "horizon_days": getattr(r, "horizon_days", None),
+                "model_version": str(getattr(r, "model_version", "")) if getattr(r, "model_version", None) else None,
+                "price_tier": None if pd.isna(tier) else int(tier),
+                "evaluation_window_days": getattr(r, "evaluation_window_days", None),
+                "sample_count": int(getattr(r, "sample_count", 0)),
+                "metrics": _metrics_from_mirror(getattr(r, "metrics", None)) or {},
+                "created_at": str(getattr(r, "created_at", "")),
+            }
+            result.append(d)
+        return [_json_safe(d) for d in result]
 
 
 PRICE_TIER_QUERY = Query(
@@ -192,69 +151,23 @@ def list_accuracy(
     prediction_type: str | None = Query(None),
     limit: int = Query(50, ge=1, le=200),
     price_tier: int | None = PRICE_TIER_QUERY,
-    db: Session = _DB_DEP,
 ):
-    try:
-        rows = _query_prediction_accuracy(prediction_type, limit, price_tier)
-        if rows is not None:
-            return rows
-    except Exception as e:
-        logger.debug("parquet accuracy read failed, falling back to DB: %s", e)
-
-    q = db.query(PredictionAccuracy).order_by(desc(PredictionAccuracy.evaluation_date))
-    if prediction_type:
-        q = q.filter(PredictionAccuracy.prediction_type == prediction_type)
-    q = q.filter(
-        PredictionAccuracy.price_tier.is_(None) if price_tier is None else PredictionAccuracy.price_tier == price_tier
-    )
-    rows_st = q.limit(limit).all()
-    return [_row_to_dict(r) for r in rows_st]
+    return _query_prediction_accuracy(prediction_type, limit, price_tier)
 
 
 @router.get("/latest")
 def get_latest_accuracy(
     prediction_type: str | None = Query(None),
     price_tier: int | None = PRICE_TIER_QUERY,
-    db: Session = _DB_DEP,
 ):
     """Get the most recent accuracy record for each prediction type."""
-    try:
-        rows = _query_prediction_accuracy(prediction_type, 500, price_tier)
-        if rows is not None:
-            latest = {}
-            for r in rows:
-                key = r["prediction_type"]
-                if key not in latest:
-                    latest[key] = r
-            if prediction_type:
-                return latest.get(prediction_type)
-            return latest
-    except Exception:
-        pass
-
-    rows_st = (
-        db.query(PredictionAccuracy)
-        .filter(
-            PredictionAccuracy.price_tier.is_(None)
-            if price_tier is None
-            else PredictionAccuracy.price_tier == price_tier
-        )
-        .order_by(
-            PredictionAccuracy.prediction_type,
-            desc(PredictionAccuracy.evaluation_date),
-        )
-        .all()
-    )
-
     latest = {}
-    for r in rows_st:
-        key = r.prediction_type
+    for r in _query_prediction_accuracy(prediction_type, 500, price_tier):
+        key = r["prediction_type"]
         if key not in latest:
-            latest[key] = _row_to_dict(r)
-
+            latest[key] = r
     if prediction_type:
         return latest.get(prediction_type)
-
     return latest
 
 
@@ -300,7 +213,7 @@ def _headline_entry(row: dict) -> dict:
 
 
 @router.get("/headline")
-def get_headline(db: Session = _DB_DEP):
+def get_headline():
     """The published accuracy claim, per horizon, as a significance test.
 
     This is the endpoint the product surfaces are meant to render. It exists
@@ -312,25 +225,10 @@ def get_headline(db: Session = _DB_DEP):
     Always the >=$1 cohort (HEADLINE_TIER), because that is the population the
     product actually serves; see MIN_SERVED_PRICE_USD in api/serving_policy.py.
     """
-    rows = None
-    try:
-        rows = _query_prediction_accuracy("forecast", 2000, HEADLINE_TIER)
-    except Exception:
-        rows = None
-
-    if not rows:
-        q = (
-            db.query(PredictionAccuracy)
-            .filter(
-                PredictionAccuracy.prediction_type == "forecast",
-                PredictionAccuracy.price_tier == HEADLINE_TIER,
-            )
-            .order_by(desc(PredictionAccuracy.evaluation_date))
-        )
-        rows = [_row_to_dict(r) for r in q.limit(2000).all()]
+    rows = _query_prediction_accuracy("forecast", 2000, HEADLINE_TIER)
 
     # One entry per horizon, from that horizon's most recent evaluation. Rows
-    # arrive newest-first from both legs, so the first sighting wins.
+    # arrive newest-first, so the first sighting wins.
     latest: dict = {}
     for r in rows:
         key = r.get("horizon_days")
@@ -356,27 +254,9 @@ def get_headline(db: Session = _DB_DEP):
 def get_accuracy_summary(
     prediction_type: str | None = Query(None),
     price_tier: int | None = PRICE_TIER_QUERY,
-    db: Session = _DB_DEP,
 ):
     """Returns aggregated summary across all available accuracy records."""
-    try:
-        rows = _query_prediction_accuracy(prediction_type, 2000, price_tier)
-        if rows is None:
-            rows = []
-    except Exception:
-        rows = []
-
-    if not rows:
-        q = db.query(PredictionAccuracy)
-        if prediction_type:
-            q = q.filter(PredictionAccuracy.prediction_type == prediction_type)
-        q = q.filter(
-            PredictionAccuracy.price_tier.is_(None)
-            if price_tier is None
-            else PredictionAccuracy.price_tier == price_tier
-        )
-        rows_st = q.order_by(PredictionAccuracy.evaluation_date).all()
-        rows = [_row_to_dict(r) for r in rows_st]
+    rows = _query_prediction_accuracy(prediction_type, 2000, price_tier)
 
     summary = {}
     for r in rows:
@@ -404,30 +284,6 @@ def get_accuracy_summary(
 # ---------------------------------------------------------------------------
 # Per-forecast outcomes
 # ---------------------------------------------------------------------------
-
-
-def _outcome_to_dict(o: ForecastOutcome) -> dict:
-    return _json_safe(
-        {
-            "id": o.id,
-            "forecast_id": o.forecast_id,
-            "item_id": o.item_id,
-            "forecast_date": o.forecast_date.isoformat() if o.forecast_date else None,
-            "horizon_days": o.horizon_days,
-            "target_date": o.target_date.isoformat() if o.target_date else None,
-            "current_price": o.current_price,
-            "predicted_price_mid": o.predicted_price_mid,
-            "actual_price": o.actual_price,
-            "direction_predicted": o.direction_predicted,
-            "direction_actual": o.direction_actual,
-            "direction_correct": bool(o.direction_correct),
-            "in_interval": bool(o.in_interval) if o.in_interval is not None else None,
-            "abs_error": o.abs_error,
-            "pct_error": o.pct_error,
-            "model_version": o.model_version,
-            "evaluated_at": o.evaluated_at.isoformat() if o.evaluated_at else None,
-        }
-    )
 
 
 def _outcome_dict_from_row(r) -> dict:
@@ -460,30 +316,34 @@ def _outcome_dict_from_row(r) -> dict:
     )
 
 
+def _outcomes_frame(sql: str) -> pd.DataFrame:
+    """*sql* over the ``forecast_outcomes`` partitions as a DataFrame (NULLs as NaN, as the
+    row shaping expects). Raises ``ops_store.MissingTable`` when no partition exists."""
+    from db import ops_store
+
+    con = ops_store.connect(tables=("forecast_outcomes",))
+    try:
+        return con.execute(sql).df()
+    finally:
+        con.close()
+
+
 def _query_outcomes(
     item_id: int | None = None,
     horizon_days: int | None = None,
     correct: bool | None = None,
     limit: int = 500,
-) -> list[dict] | None:
-    from db.parquet import ParquetQuery
-
-    try:
-        with ParquetQuery("forecast_outcomes") as q:
-            clauses = []
-            if item_id is not None:
-                clauses.append(f"item_id = {item_id}")
-            if horizon_days is not None:
-                clauses.append(f"horizon_days = {horizon_days}")
-            if correct is not None:
-                clauses.append(f"direction_correct = {1 if correct else 0}")
-            where = " AND ".join(clauses) if clauses else "1=1"
-            df = q.query(f"SELECT * FROM forecast_outcomes WHERE {where} ORDER BY evaluated_at DESC LIMIT {limit}")
-            if df.empty:
-                return []
-            return [_json_safe(_outcome_dict_from_row(r)) for r in df.itertuples()]
-    except Exception:
-        return None
+) -> list[dict]:
+    clauses = []
+    if item_id is not None:
+        clauses.append(f"item_id = {int(item_id)}")
+    if horizon_days is not None:
+        clauses.append(f"horizon_days = {int(horizon_days)}")
+    if correct is not None:
+        clauses.append(f"direction_correct = {1 if correct else 0}")
+    where = " AND ".join(clauses) if clauses else "1=1"
+    df = _outcomes_frame(f"SELECT * FROM forecast_outcomes WHERE {where} ORDER BY evaluated_at DESC LIMIT {int(limit)}")
+    return [_json_safe(_outcome_dict_from_row(r)) for r in df.itertuples()]
 
 
 @router.get("/outcomes")
@@ -492,91 +352,24 @@ def list_outcomes(
     horizon_days: int | None = Query(None),
     correct: bool | None = Query(None),
     limit: int = Query(50, ge=1, le=500),
-    db: Session = _DB_DEP,
 ):
     """Query individual forecast outcomes — was each prediction right or wrong?"""
-    try:
-        rows = _query_outcomes(item_id, horizon_days, correct, limit)
-        if rows is not None:
-            return rows
-    except Exception:
-        pass
-
-    q = db.query(ForecastOutcome).order_by(desc(ForecastOutcome.evaluated_at))
-    if item_id is not None:
-        q = q.filter(ForecastOutcome.item_id == item_id)
-    if horizon_days is not None:
-        q = q.filter(ForecastOutcome.horizon_days == horizon_days)
-    if correct is not None:
-        q = q.filter(ForecastOutcome.direction_correct == (1 if correct else 0))
-    rows_st = q.limit(limit).all()
-    return [_outcome_to_dict(r) for r in rows_st]
+    return _query_outcomes(item_id, horizon_days, correct, limit)
 
 
 @router.get("/outcomes/stats")
-def outcome_stats(
-    db: Session = _DB_DEP,
-):
+def outcome_stats():
     """Aggregated stats from forecast outcomes — accuracy, error distribution."""
-    try:
-        from db.parquet import ParquetQuery
-
-        with ParquetQuery("forecast_outcomes") as q:
-            total = q.scalar("SELECT COUNT(*) FROM forecast_outcomes") or 0
-            if total == 0:
-                return {"total_outcomes": 0}
-            correct = q.scalar("SELECT COUNT(*) FROM forecast_outcomes WHERE direction_correct = 1") or 0
-            avg_error = q.scalar("SELECT AVG(abs_error) FROM forecast_outcomes") or 0
-            avg_pct = q.scalar("SELECT AVG(pct_error) FROM forecast_outcomes") or 0
-            ph_df = q.query("""
-                SELECT horizon_days, COUNT(*) AS total,
-                       SUM(direction_correct) AS correct,
-                       ROUND(AVG(abs_error), 4) AS avg_abs_error,
-                       ROUND(AVG(pct_error), 2) AS avg_pct_error
-                FROM forecast_outcomes
-                GROUP BY horizon_days
-                ORDER BY horizon_days
-            """)
-            return {
-                "total_outcomes": int(total),
-                "overall_accuracy": round(correct / total * 100, 2) if total > 0 else 0,
-                "mean_abs_error": round(float(avg_error), 4),
-                "mean_pct_error": round(float(avg_pct), 2),
-                "per_horizon": [
-                    {
-                        "horizon_days": int(r.horizon_days),
-                        "total": int(r.total),
-                        "correct": int(r.correct),
-                        "accuracy": round(r.correct / r.total * 100, 2) if r.total > 0 else 0,
-                        "avg_abs_error": float(r.avg_abs_error),
-                        "avg_pct_error": float(r.avg_pct_error),
-                    }
-                    for r in ph_df.itertuples()
-                ],
-            }
-    except Exception:
-        pass
-
-    row = db.query(
-        func.count(ForecastOutcome.id),
-        func.sum(ForecastOutcome.direction_correct),
-        func.avg(ForecastOutcome.abs_error),
-        func.avg(ForecastOutcome.pct_error),
-    ).one()
-    total_st, correct_st, avg_error_st, avg_pct_st = row
-    total_st = total_st or 0
-    if total_st == 0:
+    totals = _outcomes_frame(
+        "SELECT COUNT(*) AS total, SUM(direction_correct) AS correct, "
+        "AVG(abs_error) AS avg_error, AVG(pct_error) AS avg_pct FROM forecast_outcomes"
+    ).iloc[0]
+    total = int(totals["total"] or 0)
+    if total == 0:
         return {"total_outcomes": 0}
-
-    correct_st = correct_st or 0
-
-    avg_error_st = avg_error_st or 0
-    avg_pct_st = avg_pct_st or 0
-
-    per_horizon_st = db.execute(
-        text("""
-        SELECT horizon_days,
-               COUNT(*) AS total,
+    correct = float(totals["correct"] or 0)
+    ph_df = _outcomes_frame("""
+        SELECT horizon_days, COUNT(*) AS total,
                SUM(direction_correct) AS correct,
                ROUND(AVG(abs_error), 4) AS avg_abs_error,
                ROUND(AVG(pct_error), 2) AS avg_pct_error
@@ -584,22 +377,20 @@ def outcome_stats(
         GROUP BY horizon_days
         ORDER BY horizon_days
     """)
-    ).fetchall()
-
     return {
-        "total_outcomes": total_st,
-        "overall_accuracy": round(correct_st / total_st * 100, 2) if total_st > 0 else 0,
-        "mean_abs_error": round(avg_error_st, 4),
-        "mean_pct_error": round(avg_pct_st, 2),
+        "total_outcomes": total,
+        "overall_accuracy": round(correct / total * 100, 2),
+        "mean_abs_error": round(float(totals["avg_error"] or 0), 4),
+        "mean_pct_error": round(float(totals["avg_pct"] or 0), 2),
         "per_horizon": [
             {
-                "horizon_days": r.horizon_days,
-                "total": r.total,
-                "correct": r.correct,
+                "horizon_days": int(r.horizon_days),
+                "total": int(r.total),
+                "correct": int(r.correct),
                 "accuracy": round(r.correct / r.total * 100, 2) if r.total > 0 else 0,
-                "avg_abs_error": r.avg_abs_error,
-                "avg_pct_error": r.avg_pct_error,
+                "avg_abs_error": float(r.avg_abs_error),
+                "avg_pct_error": float(r.avg_pct_error),
             }
-            for r in per_horizon_st
+            for r in ph_df.itertuples()
         ],
     }
