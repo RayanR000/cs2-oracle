@@ -24,6 +24,9 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
+# Since Phase 2 the backtest reads the partitions; mirror each test's SQLite rows into them.
+pytestmark = pytest.mark.usefixtures("ops_mirror")
+
 
 def smoothed_prices(voted, anchors, **kwargs):
     """resolve_anchors projected to prices. See the note in
@@ -1586,7 +1589,7 @@ def test_the_unusable_hint_does_not_promise_reresolve_will_recover_them(session,
 
     caplog.clear()
     with caplog.at_level(logging.WARNING, logger="backtest_accuracy"):
-        backtest_accuracy._records_from_frozen_outcomes(session)
+        backtest_accuracy._records_from_frozen_outcomes(backtest_accuracy._panel_read())
 
     msg = next(r.message for r in caplog.records if "UNUSABLE" in r.message)
     assert "1 frozen outcome(s) UNUSABLE" in msg
@@ -1598,10 +1601,8 @@ def test_the_unusable_hint_does_not_promise_reresolve_will_recover_them(session,
     assert "target_date" in msg
 
 
-def test_frozen_outcome_query_is_restricted_in_sql_not_in_python(session, tmp_path, monkeypatch):
-    """The forecast_ids restriction must be a chunked SQL IN list, not a full
-    table scan filtered afterwards — forecast_outcomes is the largest table in
-    the daily path."""
+def test_frozen_outcome_query_honours_the_forecast_id_restriction(session, tmp_path, monkeypatch):
+    """The forecast_ids restriction returns exactly the requested forecasts, including past the old 999-parameter IN-list cap."""
     from scripts import backtest_accuracy
 
     rows = [("ak", date(2026, 7, d), 3.0) for d in (3, 4, 5)]
@@ -1611,14 +1612,16 @@ def test_frozen_outcome_query_is_restricted_in_sql_not_in_python(session, tmp_pa
     session.commit()
     _run_backtest(session, archive, monkeypatch)
 
-    groups = backtest_accuracy._records_from_frozen_outcomes(session, forecast_ids=[])
+    groups = backtest_accuracy._records_from_frozen_outcomes(backtest_accuracy._panel_read(), forecast_ids=[])
     assert groups == {}
 
-    groups = backtest_accuracy._records_from_frozen_outcomes(session, forecast_ids=[1])
+    groups = backtest_accuracy._records_from_frozen_outcomes(backtest_accuracy._panel_read(), forecast_ids=[1])
     assert sum(len(v) for v in groups.values()) == 1
 
     # 2,000 ids is past the SQLite 999-parameter cap; the chunking must hold.
-    groups = backtest_accuracy._records_from_frozen_outcomes(session, forecast_ids=list(range(1, 2001)))
+    groups = backtest_accuracy._records_from_frozen_outcomes(
+        backtest_accuracy._panel_read(), forecast_ids=list(range(1, 2001))
+    )
     assert sum(len(v) for v in groups.values()) == 1
 
 
@@ -1639,7 +1642,7 @@ def test_frozen_outcome_records_carry_the_prediction_leg_and_the_horizon(session
     session.commit()
     _run_backtest(session, archive, monkeypatch)
 
-    groups = backtest_accuracy._records_from_frozen_outcomes(session)
+    groups = backtest_accuracy._records_from_frozen_outcomes(backtest_accuracy._panel_read())
     records = [r for rs in groups.values() for r in rs]
     assert records, "fixture produced no records"
     for r in records:
@@ -2106,11 +2109,11 @@ def test_the_refresh_streams_in_bounded_flushes_and_never_re_reads_a_row(session
     assert all(o.actual_price == pytest.approx(3.01) for o in stored)
 
 
-def test_the_rescore_walk_does_not_materialize_the_whole_table(session, tmp_path, monkeypatch):
-    """The unrestricted (--rescore) read is a keyset walk over the primary key,
-    not `SELECT *` into memory. Paging at 3 rows over 12 outcomes must still
-    visit every row exactly once — the keyset is stable because the refresh
-    never writes `id`."""
+def test_the_rescore_walk_visits_every_row_once_in_pages(session, tmp_path, monkeypatch):
+    """The unrestricted (--rescore) walk pages the whole table: paging at 3 rows over 12
+    outcomes visits every row exactly once. Since Phase 2 the table is read whole before the
+    first page (the refresh rewrites partition files between pages); pages only bound the
+    refresh's flushes."""
     from scripts import backtest_accuracy
 
     rows = []
@@ -2122,7 +2125,7 @@ def test_the_rescore_walk_does_not_materialize_the_whole_table(session, tmp_path
     _run_backtest(session, archive, monkeypatch)
 
     seen = []
-    for batch in backtest_accuracy._iter_outcome_rows(session, batch=3):
+    for batch in backtest_accuracy._iter_outcome_rows(backtest_accuracy._store_read("forecast_outcomes"), batch=3):
         assert len(batch) <= 3
         seen.extend(r.forecast_id for r in batch)
 
@@ -2140,7 +2143,7 @@ def _twelve_frozen(session, tmp_path, monkeypatch):
 
 
 def test_a_restricted_walk_filters_each_page_and_skips_empty_ones(session, tmp_path, monkeypatch):
-    """The id restriction is applied per keyset page in Python, not as IN
+    """The id restriction is applied per page in Python, not as IN
     lists. Every kept row comes back once, and a page with nothing kept is not
     yielded as an empty batch."""
     from scripts import backtest_accuracy
@@ -2148,7 +2151,11 @@ def test_a_restricted_walk_filters_each_page_and_skips_empty_ones(session, tmp_p
     _twelve_frozen(session, tmp_path, monkeypatch)
     keep = {2, 3, 11}
 
-    batches = list(backtest_accuracy._iter_outcome_rows(session, forecast_ids=keep, batch=3))
+    batches = list(
+        backtest_accuracy._iter_outcome_rows(
+            backtest_accuracy._store_read("forecast_outcomes"), forecast_ids=keep, batch=3
+        )
+    )
 
     assert all(batches), "an empty page was yielded"
     assert sorted(r.forecast_id for b in batches for r in b) == sorted(keep)
@@ -2166,8 +2173,10 @@ def test_restricted_scoring_records_match_the_unrestricted_read_filtered(session
     def flat(groups):
         return {k: [r["item_id"] for r in v] for k, v in groups.items()}
 
-    restricted = flat(backtest_accuracy._records_from_frozen_outcomes(session, forecast_ids=keep))
-    full = backtest_accuracy._records_from_frozen_outcomes(session)
+    restricted = flat(
+        backtest_accuracy._records_from_frozen_outcomes(backtest_accuracy._panel_read(), forecast_ids=keep)
+    )
+    full = backtest_accuracy._records_from_frozen_outcomes(backtest_accuracy._panel_read())
     filtered = {k: [r["item_id"] for r in v if r["item_id"] in keep] for k, v in full.items()}
 
     assert restricted == {k: v for k, v in filtered.items() if v}
@@ -2260,7 +2269,9 @@ def test_the_refreshed_mirror_row_replaces_the_stale_one_in_a_real_parquet_file(
     seed_row = backtest_accuracy._outcome_to_mapping(frozen)
     seed_row["evaluated_at"] = frozen.evaluated_at
     seed_row["resolved_at"] = frozen.resolved_at
-    (seed_row,) = backtest_accuracy._with_item_slug([seed_row], backtest_accuracy._id_to_slug(session))
+    (seed_row,) = backtest_accuracy._with_item_slug(
+        [seed_row], backtest_accuracy._id_to_slug(backtest_accuracy._pg_read(session))
+    )
     real_append("forecast_outcomes", [seed_row], ["forecast_id"])
 
     stored = parquet_mod.read_table("forecast_outcomes")
@@ -3044,7 +3055,7 @@ def test_scoring_merges_two_configs_into_one_cohort(session, tmp_path, monkeypat
     session.commit()
     _run_backtest(session, archive, monkeypatch)
 
-    groups = backtest_accuracy._records_from_frozen_outcomes(session)
+    groups = backtest_accuracy._records_from_frozen_outcomes(backtest_accuracy._panel_read())
     keys = [k for k in groups if k[0] == HORIZON]
     assert keys == [(HORIZON, "lgbm-v3")], f"cohort still forked: {sorted(groups)}"
 
@@ -3156,7 +3167,7 @@ def test_the_dead_band_date_is_resolved_but_never_scored(session, tmp_path, monk
     frozen = session.query(ForecastOutcome).all()
     assert {o.forecast_id for o in frozen} == {1, 2}
 
-    groups = backtest_accuracy._records_from_frozen_outcomes(session)
+    groups = backtest_accuracy._records_from_frozen_outcomes(backtest_accuracy._panel_read())
     # str(), because the driver decides the type: SQLite yields an ISO string
     # here and psycopg2 a date. The exclusion normalises both; the assertion
     # must not depend on which one arrived.
@@ -3173,6 +3184,6 @@ def test_score_all_dates_restores_the_excluded_row(session, tmp_path, monkeypatc
     _run_backtest(session, archive, monkeypatch, today=date(2026, 7, 26))
 
     monkeypatch.setenv("SCORE_ALL_DATES", "1")
-    groups = backtest_accuracy._records_from_frozen_outcomes(session)
+    groups = backtest_accuracy._records_from_frozen_outcomes(backtest_accuracy._panel_read())
     dates = {str(r["forecast_date"]) for rs in groups.values() for r in rs}
     assert {"2026-07-17", "2026-07-19"} <= dates

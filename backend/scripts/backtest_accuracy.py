@@ -55,7 +55,7 @@ from backtest.scoring import (
 )
 from database import PredictionAccuracy, SessionLocal
 from models.staleness import stale_run_lookup
-from sqlalchemy import select, text
+from sqlalchemy import text
 
 # Re-exported so the gate's threshold has one definition. The gate itself —
 # and the reason it needs two ratios rather than one — lives in
@@ -286,57 +286,73 @@ _REFRESH_VERDICTS_SQL = text("""
 REFRESH_FLUSH = 10_000
 
 
-def _iter_outcome_rows(db, forecast_ids=None, batch=None):
-    """Yield pages of at most *batch* forecast_outcomes rows.
+def _pg_read(db):
+    """Postgres as a `sql -> rows` reader. Since Phase 2 it is only the read-twice side."""
+    return lambda sql: db.execute(text(sql)).fetchall()
 
-    Core selects over the mapped table, NOT ORM entities. Deliberate on both
-    counts: plain Rows have no identity map to grow across a 65k-row refresh,
-    and — unlike ORM instances under SessionLocal's default
-    expire_on_commit=True — they are not expired by the commits this walk
-    interleaves with, so nothing read from them afterwards can fire a per-row
-    SELECT. Core rather than raw text() because the table's column types come
-    with it: on SQLite a raw text() SELECT hands back dates and datetimes as
-    plain strings, which would then be written into the Parquet mirror as
-    VARCHAR against the existing TIMESTAMP columns.
 
-    The table is walked by keyset pagination on the primary key rather than
-    materialized whole — --rescore covers every row ever resolved. The refresh
-    never writes `id`, so the keyset is stable across the commits that happen
-    mid-walk.
+def _store_read(*tables, required=None):
+    """The monthly ops partitions as a `sql -> rows` reader (db/ops_store.py).
 
-    A *forecast_ids* restriction is applied in Python to each page, not as SQL
-    IN lists. The daily caller passes every mature forecast, which is nearly the
-    whole table, and 900-id IN lists made that ~1,000 round trips. A page whose
-    rows all fall outside the restriction is skipped, never yielded empty.
+    *required*: {table: columns} that must not be NULL on every row; checked on the first call.
     """
-    from database import ForecastOutcome
+    from db import ops_store
 
-    tbl = ForecastOutcome.__table__
+    read = ops_store.reader(tables)
+    if not required:
+        return read
+    checked = False
+
+    def checked_read(sql):
+        nonlocal checked
+        if not checked:
+            for table, cols in required.items():
+                ops_store.check_columns(read, table, cols)
+            checked = True
+        return read(sql)
+
+    return checked_read
+
+
+def _panel_read():
+    """The scoring panel's store reader; an outcome id that is NULL everywhere fails loudly."""
+    return _store_read("forecast_outcomes", "item_forecasts", required={"forecast_outcomes": ["id", "forecast_id"]})
+
+
+def _as_date(value) -> date:
+    return value if isinstance(value, date) else date.fromisoformat(str(value)[:10])
+
+
+def _iter_outcome_rows(read, forecast_ids=None, batch=None):
+    """Yield pages of at most *batch* forecast_outcomes rows, in id order.
+
+    *read* is a `sql -> rows` reader (`_store_read`). The table is read whole BEFORE the first
+    page is yielded: the refresh rewrites partition files between pages, and a scan still open
+    on those files could see the new ones mid-walk. Pages only bound how much the refresh
+    accumulates before a flush.
+
+    A *forecast_ids* restriction is applied in Python, not as SQL IN lists: the daily caller
+    passes every mature forecast, which is nearly the whole table. A page whose rows all fall
+    outside the restriction is skipped, never yielded empty.
+    """
     batch = batch or OUTCOME_PAGE
     keep = None if forecast_ids is None else set(forecast_ids)
-
-    last_id = -1
-    while True:
-        rows = db.execute(select(tbl).where(tbl.c.id > last_id).order_by(tbl.c.id).limit(batch)).fetchall()
-        if not rows:
-            return
-        last_id = rows[-1].id
-        page = rows if keep is None else [r for r in rows if r.forecast_id in keep]
+    rows = read("SELECT * FROM forecast_outcomes ORDER BY id")
+    for i in range(0, len(rows), batch):
+        page = rows[i : i + batch]
+        if keep is not None:
+            page = [r for r in page if r.forecast_id in keep]
         if page:
             yield page
-        if len(rows) < batch:
-            return
 
 
-def _id_to_slug(db) -> dict:
-    """Postgres surrogate `items.id` -> `items.item_id`, the market_hash_name slug.
+def _id_to_slug(read) -> dict:
+    """Surrogate `items.id` -> `items.item_id`, the market_hash_name slug.
 
-    The price archive keys on `item_slug`; the ops tables key on `item_id`. With
-    no bridge between them, an outcome in `ops/forecast_outcomes.parquet` cannot
-    be joined to its own price history without a round-trip to Supabase, which
-    is the network hop the Parquet store exists to avoid.
+    The price archive keys on `item_slug`; the ops tables key on `item_id`. *read* is a
+    `sql -> rows` reader; the backtest passes `_store_read("items")`.
     """
-    return {r.id: r.item_id for r in db.execute(text("SELECT id, item_id FROM items")).fetchall()}
+    return {r.id: r.item_id for r in read("SELECT id, item_id FROM items")}
 
 
 def _with_item_slug(rows, id_to_slug):
@@ -450,6 +466,9 @@ def _refresh_verdict_columns(db, forecast_ids=None) -> int:
     moment it is diffed — before any commit — so the flush cannot come back to
     re-read it.
 
+    The stored verdicts are read from the partitions (Phase 2); the UPDATE still goes to Postgres by id,
+    and is a no-op for a partition-only id.
+
     Returns the number of rows refreshed.
     """
     now = datetime.now(UTC).replace(tzinfo=None)
@@ -458,9 +477,9 @@ def _refresh_verdict_columns(db, forecast_ids=None) -> int:
     # Read once for the whole walk. The mirror row must carry item_slug or the
     # refresh would blank it on every row it touches — append_table replaces
     # the whole row, it does not merge columns.
-    id_to_slug = _id_to_slug(db)
+    id_to_slug = _id_to_slug(_store_read("items"))
 
-    for batch in _iter_outcome_rows(db, forecast_ids):
+    for batch in _iter_outcome_rows(_store_read("forecast_outcomes"), forecast_ids):
         for r in batch:
             base, actual, mid = r.base_price, r.actual_price, r.predicted_price_mid
             if base is None or base <= 0 or actual is None or actual <= 0 or mid is None:
@@ -592,7 +611,7 @@ def _store_forecast_outcomes(db, outcomes, reresolve: bool = False, considered_i
     # slug. `to_write` is handed to bulk_insert_mappings below and an unmapped
     # key there is an error, so the two payloads have to diverge here.
     if id_to_slug is None:
-        id_to_slug = _id_to_slug(db)
+        id_to_slug = _id_to_slug(_store_read("items"))
     mirror = _with_item_slug(to_write, id_to_slug)
 
     if delete_ids:
@@ -649,7 +668,33 @@ def _store_forecast_outcomes(db, outcomes, reresolve: bool = False, considered_i
     return len(to_write)
 
 
-def _records_from_frozen_outcomes(db, min_price=0, forecast_ids=None):
+_FROZEN_PANEL_SQL = """
+    SELECT o.id, o.forecast_id, o.item_id, o.horizon_days, o.model_version,
+           o.forecast_date, o.base_price, o.actual_price, o.current_price,
+           o.predicted_price_low, o.predicted_price_mid,
+           o.predicted_price_high, o.direction_predicted, f.confidence,
+           f.model_version AS forecast_model_version
+    FROM forecast_outcomes o
+    LEFT JOIN item_forecasts f ON f.id = o.forecast_id
+    ORDER BY o.id
+"""
+
+
+_FORECASTS_SQL = """
+    SELECT f.id, f.item_id, f.forecast_date, f.horizon_days,
+           f.price_low, f.price_mid, f.price_high,
+           f.current_price, f.direction, f.confidence, f.model_version
+    FROM item_forecasts f
+    WHERE f.price_mid IS NOT NULL
+"""
+
+
+def _mature(rows, cutoff):
+    """The forecasts whose forecast_date + horizon is on or before *cutoff*."""
+    return [r for r in rows if _as_date(r.forecast_date) + timedelta(days=r.horizon_days) <= cutoff]
+
+
+def _records_from_frozen_outcomes(read, min_price=0, forecast_ids=None):
     """Rebuild scoring records from stored outcomes, without the archive.
 
     Every metric input is *derived* here from the frozen base_price /
@@ -666,9 +711,13 @@ def _records_from_frozen_outcomes(db, min_price=0, forecast_ids=None):
     `confidence` is not on ForecastOutcome, so it is joined back from
     item_forecasts.
 
-    forecast_ids: optional restriction to a set of forecast ids, applied in
-        Python to each keyset page (see _iter_outcome_rows for why not IN lists).
-        Rows come back in `forecast_outcomes.id` order either way.
+    read: a `sql -> rows` reader — `_panel_read()` for the
+        published figure, `_pg_read(db)` for the read-twice comparison. One query, no
+        parameters, so the same SQL runs on both.
+
+    forecast_ids: optional restriction to a set of forecast ids, applied in Python (an IN list
+        over nearly the whole table is the slow path #113 removed). Rows come back in
+        `forecast_outcomes.id` order either way.
 
     Rows that cannot be scored — a missing or non-positive base_price or
     actual_price, or a missing predicted_price_mid — are dropped, but never
@@ -679,29 +728,10 @@ def _records_from_frozen_outcomes(db, min_price=0, forecast_ids=None):
     log and not a raise — legacy rows predate the freeze and must not block the
     backfill.
     """
-    page_sql = text("""
-        SELECT o.id, o.forecast_id, o.item_id, o.horizon_days, o.model_version,
-               o.forecast_date, o.base_price, o.actual_price, o.current_price,
-               o.predicted_price_low, o.predicted_price_mid,
-               o.predicted_price_high, o.direction_predicted, f.confidence,
-               f.model_version AS forecast_model_version
-        FROM forecast_outcomes o
-        LEFT JOIN item_forecasts f ON f.id = o.forecast_id
-        WHERE o.id > :last_id
-        ORDER BY o.id
-        LIMIT :page
-    """)
     keep = None if forecast_ids is None else set(forecast_ids)
-    rows = []
-    last_id = -1
-    while True:
-        page = db.execute(page_sql, {"last_id": last_id, "page": OUTCOME_PAGE}).fetchall()
-        if not page:
-            break
-        last_id = page[-1].id
-        rows.extend(page if keep is None else (r for r in page if r.forecast_id in keep))
-        if len(page) < OUTCOME_PAGE:
-            break
+    rows = read(_FROZEN_PANEL_SQL)
+    if keep is not None:
+        rows = [r for r in rows if r.forecast_id in keep]
 
     n_unusable = 0
     n_below_min_price = 0
@@ -1130,7 +1160,7 @@ def backtest_forecasts(db, today=None, min_price=0, reresolve=False, rescore=Fal
         logger.info("  --rescore: scoring from frozen outcomes, archive not read")
         _refresh_verdict_columns(db)
         _resolve_candidates(db, today, archive_dir=None, reresolve=False, rescore=True)
-        groups = _records_from_frozen_outcomes(db, min_price=min_price)
+        groups = _records_from_frozen_outcomes(_panel_read(), min_price=min_price)
         results = _score_groups(groups, today)
         if results:
             _upsert_accuracy(db, results)
@@ -1168,24 +1198,8 @@ def backtest_forecasts(db, today=None, min_price=0, reresolve=False, rescore=Fal
             f"({(today - coverage_end).days}d of lag)"
         )
 
-    # Fetch all forecasts with a midpoint price, filter for maturity in Python
-    rows = db.execute(
-        text("""
-        SELECT f.id, f.item_id, f.forecast_date, f.horizon_days,
-               f.price_low, f.price_mid, f.price_high,
-               f.current_price, f.direction, f.confidence, f.model_version
-        FROM item_forecasts f
-        WHERE f.price_mid IS NOT NULL
-    """)
-    ).fetchall()
-
-    # Filter for mature forecasts (forecast_date + horizon <= cutoff)
-    mature = []
-    for r in rows:
-        forecast_date = r.forecast_date if isinstance(r.forecast_date, date) else date.fromisoformat(r.forecast_date)
-        maturity_date = forecast_date + timedelta(days=r.horizon_days)
-        if maturity_date <= cutoff:
-            mature.append(r)
+    # Every forecast with a midpoint price, from the partitions; maturity is filtered in Python.
+    mature = _mature(_store_read("item_forecasts", required={"item_forecasts": ["id"]})(_FORECASTS_SQL), cutoff)
 
     if not mature:
         logger.info("  No mature forecasts to evaluate.")
@@ -1204,11 +1218,17 @@ def backtest_forecasts(db, today=None, min_price=0, reresolve=False, rescore=Fal
     # One read of the id column, intersected here. It used to fetch every
     # frozen row as an ORM object in 900-id IN lists (97 s in run 38016621198),
     # only to hand them to the freeze, which filtered them straight back out.
+    #
+    # Frozen means frozen in the partitions. An outcome Postgres holds but the partitions lack is
+    # resolved again here and written to the partitions from Postgres by `_store_forecast_outcomes`,
+    # never re-inserted.
     frozen_ids = set()
     if not reresolve:
         mature_set = set(mature_ids)
         frozen_ids = {
-            fid for (fid,) in db.execute(text("SELECT forecast_id FROM forecast_outcomes")) if fid in mature_set
+            r.forecast_id
+            for r in _store_read("forecast_outcomes")("SELECT forecast_id FROM forecast_outcomes")
+            if r.forecast_id in mature_set
         }
     to_resolve = [r for r in mature if r.id not in frozen_ids]
     logger.info(f"  {len(frozen_ids):,} already frozen, {len(to_resolve):,} to resolve")
@@ -1225,10 +1245,7 @@ def backtest_forecasts(db, today=None, min_price=0, reresolve=False, rescore=Fal
         key = (r.horizon_days, served_identity(r.model_version))
         groups[key].append(r)
 
-    id_to_slug = {}
-    if to_resolve:
-        slug_rows = db.execute(text("SELECT id, item_id FROM items")).fetchall()
-        id_to_slug = {r.id: r.item_id for r in slug_rows}
+    id_to_slug = _id_to_slug(_store_read("items")) if to_resolve else {}
 
     new_outcomes = []
     # Unresolvable failures are split by whether the archive has already moved
@@ -1513,7 +1530,7 @@ def backtest_forecasts(db, today=None, min_price=0, reresolve=False, rescore=Fal
     # that has already been reported. That separation is the point of the plan:
     # before it, the same 5,512-forecast cohort scored 61.76%, 33.74%, 61.54%
     # and 57.91% on four consecutive evaluation dates.
-    groups = _records_from_frozen_outcomes(db, min_price=min_price, forecast_ids=mature_ids)
+    groups = _records_from_frozen_outcomes(_panel_read(), min_price=min_price, forecast_ids=mature_ids)
     results = _score_groups(groups, today)
 
     if results:
