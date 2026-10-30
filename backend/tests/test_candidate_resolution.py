@@ -1,5 +1,6 @@
 from datetime import date, datetime
 
+import pytest
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
@@ -7,12 +8,36 @@ D = date(2026, 9, 1)
 T = datetime(2026, 9, 8, 12, 0, 0)
 
 
+_SESSIONS: list = []
+
+
 def _db():
     from database import Base
 
     engine = create_engine("sqlite://")
     Base.metadata.create_all(engine)
-    return sessionmaker(bind=engine)()
+    session = sessionmaker(bind=engine)()
+    _SESSIONS.append(session)
+    return session
+
+
+@pytest.fixture(autouse=True)
+def mirror_latest_session(monkeypatch):
+    """Since Phase 2 PR 2 resolution plans from the partitions: copy the test's SQLite into them
+    before every store read, so these tests keep seeding through the ORM."""
+    import db.ops_store as store
+
+    from tests._ops_mirror import mirror_session_to_ops
+
+    _SESSIONS.clear()
+    real = store.connect
+
+    def connect(root=None, tables=store.TABLES):
+        if _SESSIONS:
+            mirror_session_to_ops(_SESSIONS[-1], root, tables)
+        return real(root, tables)
+
+    monkeypatch.setattr(store, "connect", connect)
 
 
 def _prod(session, item_id=5, base=40.0, actual=42.0, resolved_at=T):

@@ -1,6 +1,6 @@
 from datetime import date
 
-from tests.test_candidate_resolution import D, _cand, _db, _prod
+from tests.test_candidate_resolution import D, _cand, _db, _prod, mirror_latest_session  # noqa: F401
 
 
 class _Legs:

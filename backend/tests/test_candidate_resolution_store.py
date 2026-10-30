@@ -144,3 +144,125 @@ def test_plan_mismatch_raises(monkeypatch):
 
     with pytest.raises(RuntimeError, match="mismatch"):
         _plan(_store(), reresolve=True)
+
+
+# --- Task 3: the write step ---------------------------------------------------
+
+
+def _resolve(session, **kw):
+    import backtest.candidate_resolution as cr
+
+    return cr.resolve_candidate_outcomes(session, today=TODAY, archive_dir="unused", **kw)
+
+
+def _partition_outcomes():
+    return {int(r.candidate_id): r for r in _store()("SELECT * FROM forecast_candidate_outcomes")}
+
+
+def _pg_outcome_ids(session):
+    from database import ForecastCandidateOutcome
+
+    return {o.candidate_id for o in session.query(ForecastCandidateOutcome).all()}
+
+
+def _mixed_night(monkeypatch):
+    """One ordinary candidate and one partition-only candidate, both mature, sharing production legs."""
+    _stub_archive(monkeypatch)
+    session = _db()
+    _with_slug(session)
+    _prod(session)
+    cand = _cand(session)
+    mirror_session_to_ops(session)
+    _partition_candidate(HIGH + 3)
+    return session, cand
+
+
+def _unwritable(session, monkeypatch, pgcode):
+    from sqlalchemy.exc import InternalError
+
+    from tests.test_read_only_postgres import _PgError
+
+    def commit():
+        raise InternalError("INSERT ...", {}, _PgError("rejected", pgcode))
+
+    monkeypatch.setattr(session, "commit", commit)
+
+
+def test_read_only_lands_every_row_in_the_partitions(monkeypatch, capsys):
+    session, cand = _mixed_night(monkeypatch)
+    _unwritable(session, monkeypatch, "25006")
+
+    stats = _resolve(session)
+
+    assert set(_partition_outcomes()) == {cand.id, HIGH + 3}
+    assert _pg_outcome_ids(session) == set()
+    assert stats["resolved"] == 2
+    assert "::warning title=Postgres read-only::" in capsys.readouterr().out
+
+
+def test_disk_full_is_treated_as_unwritable(monkeypatch):
+    session, cand = _mixed_night(monkeypatch)
+    _unwritable(session, monkeypatch, "53100")
+
+    _resolve(session)
+
+    assert set(_partition_outcomes()) == {cand.id, HIGH + 3}
+
+
+def test_partition_only_candidates_skip_postgres(monkeypatch):
+    session, cand = _mixed_night(monkeypatch)
+
+    _resolve(session)
+
+    assert _pg_outcome_ids(session) == {cand.id}
+    outcomes = _partition_outcomes()
+    assert set(outcomes) == {cand.id, HIGH + 3}
+    assert outcomes[HIGH + 3].actual_price == 42.0
+
+
+def test_rerun_is_idempotent(monkeypatch):
+    session, _ = _mixed_night(monkeypatch)
+
+    _resolve(session)
+    second = _resolve(session)
+
+    assert len(_store()("SELECT * FROM forecast_candidate_outcomes")) == 2
+    assert second["skipped_frozen"] == 2
+
+
+def test_read_twice_logs_outcomes_per_date(monkeypatch, caplog):
+    import logging
+
+    session, _ = _mixed_night(monkeypatch)
+
+    with caplog.at_level(logging.INFO, logger=ops_store.logger.name):
+        _resolve(session)
+
+    assert "read twice candidate outcomes per forecast date" in caplog.text
+
+
+def test_rescore_reads_the_partitions(monkeypatch):
+    _stub_archive(monkeypatch)
+    session = _db()
+    _with_slug(session)
+    cand = _cand(session, centre=41.0)
+    mirror_session_to_ops(session)
+    ops_partitions.upsert(
+        "forecast_candidate_outcomes",
+        pd.DataFrame(
+            [
+                {
+                    "candidate_id": cand.id,
+                    "base_price": 40.0,
+                    "actual_price": 42.0,
+                    "absolute_error": 99.0,  # stale
+                    "resolution_version": "v1",
+                    "_part": D,
+                }
+            ]
+        ),
+        allow_closed=True,
+    )
+
+    assert _resolve(session, rescore=True) == {"rescored": 1}
+    assert _partition_outcomes()[cand.id].absolute_error == pytest.approx(1.0)
