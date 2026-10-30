@@ -135,3 +135,52 @@ def test_check_columns_accepts_an_empty_table(tmp_path):
     d.mkdir()
     duckdb.sql(f"COPY (SELECT 1::BIGINT AS id, 1::BIGINT AS forecast_id WHERE false) TO '{d / '2026-09.parquet'}' (FORMAT PARQUET)")
     ops_store.check_columns(ops_store.reader(("forecast_outcomes",), tmp_path), "forecast_outcomes", ["id"])
+
+
+def test_equal_values_compare_quietly(capsys):
+    assert ops_store.compare("n", lambda: 3, 3) is True
+    assert "::warning" not in capsys.readouterr().out
+
+
+def test_a_difference_is_a_warning_naming_the_reader_and_both_values(capsys):
+    assert ops_store.compare("matured forecasts", lambda: 3, 4) is False
+    out = capsys.readouterr().out
+    assert "::warning title=Read twice: matured forecasts::" in out
+    assert "postgres=3" in out and "partitions=4" in out
+    assert "Postgres was read-only" in out
+
+
+def test_dicts_compare_key_by_key_and_name_each_differing_key(capsys):
+    assert ops_store.compare("per date", lambda: {"2026-10-01": 5, "2026-10-02": 6}, {"2026-10-01": 5, "2026-10-03": 6}) is False
+    out = capsys.readouterr().out
+    assert "2026-10-02: postgres=6 partitions=None" in out
+    assert "2026-10-03: postgres=None partitions=6" in out
+    assert "2026-10-01" not in out
+
+
+def test_tol_absorbs_float_noise_but_not_none():
+    assert ops_store.compare("x", lambda: 1.0, 1.0 + 1e-12, tol=1e-9) is True
+    assert ops_store.compare("x", lambda: 1.0, 1.1, tol=1e-9) is False
+    assert ops_store.compare("x", lambda: None, 0.0, tol=1.0) is False
+
+
+def test_a_failed_postgres_read_is_a_warning_and_rolls_back(capsys):
+    class _DB:
+        rolled_back = False
+
+        def rollback(self):
+            self.rolled_back = True
+
+    db = _DB()
+
+    def pg():
+        raise RuntimeError("server closed the connection")
+
+    assert ops_store.compare("n", pg, 3, db=db) is False
+    assert db.rolled_back
+    assert "::warning title=Read twice: n::Postgres read failed (RuntimeError)" in capsys.readouterr().out
+
+
+def test_more_than_ten_differences_are_truncated(capsys):
+    ops_store.compare("d", lambda: {i: 0 for i in range(15)}, {i: 1 for i in range(15)})
+    assert "(+5 more)" in capsys.readouterr().out

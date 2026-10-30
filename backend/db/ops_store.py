@@ -97,3 +97,58 @@ def check_columns(read: Callable[[str], list], table: str, columns: Iterable[str
     empty = [c for c in columns if getattr(row, c) == 0]
     if empty:
         raise MissingTable(f"ops_store: {', '.join(f'{table}.{c}' for c in empty)} is NULL on all {row.n_rows:,} rows")
+
+
+_STALE_NOTE = (
+    "The partitions' value is used. On a night Postgres was read-only, Postgres is the stale store "
+    "and this is expected; on any other night it blocks the next reader switch until explained."
+)
+
+
+def _differ(a, b, tol: float) -> bool:
+    if a is None or b is None:
+        return a is not b
+    if isinstance(a, int | float) and isinstance(b, int | float) and not isinstance(a, bool):
+        return abs(float(a) - float(b)) > tol
+    return a != b
+
+
+def _diffs(pg_value, parquet_value, tol: float) -> list[tuple]:
+    if isinstance(pg_value, dict) and isinstance(parquet_value, dict):
+        keys = sorted(set(pg_value) | set(parquet_value), key=str)
+        return [(k, pg_value.get(k), parquet_value.get(k)) for k in keys if _differ(pg_value.get(k), parquet_value.get(k), tol)]
+    return [("value", pg_value, parquet_value)] if _differ(pg_value, parquet_value, tol) else []
+
+
+def compare(name: str, pg: Callable[[], object], parquet_value, *, tol: float = 0.0, db=None) -> bool:
+    """Log a switched reader's Parquet value beside Postgres's; warn on a difference. Never raises.
+
+    *pg* is called here, so a failed Postgres read is a warning too; *db* is rolled back after
+    one, or the caller's next statement would hit an aborted transaction. Removed in Phase 4.
+    """
+    try:
+        pg_value = pg()
+    except Exception as e:
+        if db is not None:
+            try:
+                db.rollback()
+            except Exception:
+                logger.exception("read twice %s: rollback after the failed Postgres read also failed", name)
+        logger.warning("read twice %s: Postgres read failed (%s); the partitions' value is used", name, e)
+        print(f"::warning title=Read twice: {name}::Postgres read failed ({type(e).__name__}); the partitions' value is used", flush=True)
+        return False
+    diffs = _diffs(pg_value, parquet_value, tol)
+    if isinstance(parquet_value, dict):
+        logger.info("read twice %s: %d keys, %d differ", name, len(set(pg_value or {}) | set(parquet_value)), len(diffs))
+    else:
+        logger.info("read twice %s: postgres=%r partitions=%r", name, pg_value, parquet_value)
+    if not diffs:
+        return True
+    if isinstance(parquet_value, dict):
+        shown = "; ".join(f"{k}: postgres={a!r} partitions={b!r}" for k, a, b in diffs[:10])
+        more = f" (+{len(diffs) - 10} more)" if len(diffs) > 10 else ""
+    else:
+        shown, more = f"postgres={pg_value!r} partitions={parquet_value!r}", ""
+    logger.warning("read twice %s differs: %s%s", name, shown, more)
+    print(f"::warning title=Read twice: {name}::{shown}{more}. {_STALE_NOTE}", flush=True)
+    return False
