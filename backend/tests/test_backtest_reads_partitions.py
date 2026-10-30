@@ -167,3 +167,50 @@ def test_an_all_null_outcome_id_fails_loudly(session):
     )
     with pytest.raises(MissingTable, match=r"forecast_outcomes\.id"):
         ba._records_from_frozen_outcomes(ba._panel_read())
+
+
+def test_matured_counts_match_when_the_stores_agree(session, capsys):
+    from scripts import backtest_accuracy as ba
+
+    _seed(session)
+    mirror_session_to_ops(session)
+    ba._read_twice_matured(session, DAY + timedelta(days=5))
+    assert "::warning" not in capsys.readouterr().out
+
+
+def test_a_forecast_only_postgres_holds_is_named_by_date(session, capsys):
+    from scripts import backtest_accuracy as ba
+
+    _seed(session, n=2)
+    mirror_session_to_ops(session)
+    session.add(Item(id=9, item_id="item_9", name="item 9", type="skin"))
+    session.add(ItemForecast(id=109, item_id=9, forecast_date=DAY, horizon_days=3, price_mid=3.0))
+    session.commit()
+    ba._read_twice_matured(session, DAY + timedelta(days=5))
+    out = capsys.readouterr().out
+    assert "::warning title=Read twice: matured forecasts per forecast date::" in out
+    assert f"{DAY}: postgres=3 partitions=2" in out
+
+
+def test_headlines_match_when_the_stores_agree(session, capsys):
+    from scripts import backtest_accuracy as ba
+
+    _seed(session)
+    mirror_session_to_ops(session)
+    results = ba._score_groups(ba._records_from_frozen_outcomes(ba._panel_read()), DAY)
+    ba._read_twice_headlines(session, results, 0, None)
+    assert "::warning" not in capsys.readouterr().out
+
+
+def test_a_headline_difference_is_named(session, capsys):
+    from scripts import backtest_accuracy as ba
+
+    _seed(session)
+    mirror_session_to_ops(session)
+    results = ba._score_groups(ba._records_from_frozen_outcomes(ba._panel_read()), DAY)
+    session.query(ForecastOutcome).filter(ForecastOutcome.id == 201).delete()
+    session.commit()
+    ba._read_twice_headlines(session, results, 0, None)
+    out = capsys.readouterr().out
+    assert "::warning title=Read twice: headline metrics per horizon::" in out
+    assert "3d/lgbm-test n: postgres=2 partitions=3" in out

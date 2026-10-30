@@ -17,6 +17,7 @@ import logging
 import os
 import sys
 from collections import defaultdict
+from contextlib import contextmanager
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 
@@ -694,6 +695,79 @@ def _mature(rows, cutoff):
     return [r for r in rows if _as_date(r.forecast_date) + timedelta(days=r.horizon_days) <= cutoff]
 
 
+def _per_date(rows) -> dict:
+    """Row count per forecast date, keyed by ISO date: the matured-forecast read-twice value."""
+    out = defaultdict(int)
+    for r in rows:
+        out[_as_date(r.forecast_date).isoformat()] += 1
+    return dict(out)
+
+
+def _read_twice_matured(db, cutoff, mature=None) -> None:
+    """Matured forecasts per forecast date, partitions beside Postgres."""
+    from db import ops_store
+
+    if mature is None:
+        mature = _mature(_store_read("item_forecasts")(_FORECASTS_SQL), cutoff)
+    ops_store.compare(
+        "matured forecasts per forecast date",
+        lambda: _per_date(_mature(_pg_read(db)(_FORECASTS_SQL), cutoff)),
+        _per_date(mature),
+        db=db,
+    )
+
+
+_HEADLINE_METRICS = ("directional_accuracy", "interval_coverage")
+
+
+def _headline_values(results) -> dict:
+    """The headline tier's sample count and metrics per horizon and cohort, flattened for compare."""
+    out = {}
+    for r in results:
+        if r["price_tier"] != HEADLINE_TIER:
+            continue
+        key = f"{r['horizon_days']}d/{r['model_version']}"
+        out[f"{key} n"] = r["sample_count"]
+        for m in _HEADLINE_METRICS:
+            out[f"{key} {m}"] = r["metrics"].get(m)
+    return out
+
+
+@contextmanager
+def _quiet():
+    """Silence this module's logger: the Postgres side of read twice must not repeat the run's log."""
+    level = logger.level
+    logger.setLevel(logging.ERROR)
+    try:
+        yield
+    finally:
+        logger.setLevel(level)
+
+
+def _pg_headlines(db, min_price, forecast_ids) -> dict:
+    with _quiet():
+        groups = _records_from_frozen_outcomes(_pg_read(db), min_price=min_price, forecast_ids=forecast_ids)
+        rows = [
+            {"horizon_days": h, "model_version": mv, "price_tier": t, "sample_count": n, "metrics": m}
+            for (h, mv), records in sorted(groups.items())
+            for t, m, n in score_by_tier(records)
+        ]
+    return _headline_values(rows)
+
+
+def _read_twice_headlines(db, results, min_price, forecast_ids) -> None:
+    """The stored headline per horizon, partitions beside Postgres."""
+    from db import ops_store
+
+    ops_store.compare(
+        "headline metrics per horizon",
+        lambda: _pg_headlines(db, min_price, forecast_ids),
+        _headline_values(results),
+        tol=1e-9,
+        db=db,
+    )
+
+
 def _records_from_frozen_outcomes(read, min_price=0, forecast_ids=None):
     """Rebuild scoring records from stored outcomes, without the archive.
 
@@ -1162,6 +1236,7 @@ def backtest_forecasts(db, today=None, min_price=0, reresolve=False, rescore=Fal
         _resolve_candidates(db, today, archive_dir=None, reresolve=False, rescore=True)
         groups = _records_from_frozen_outcomes(_panel_read(), min_price=min_price)
         results = _score_groups(groups, today)
+        _read_twice_headlines(db, results, min_price, None)
         if results:
             _upsert_accuracy(db, results)
             logger.info(f"  Stored {len(results)} forecast accuracy records")
@@ -1200,6 +1275,7 @@ def backtest_forecasts(db, today=None, min_price=0, reresolve=False, rescore=Fal
 
     # Every forecast with a midpoint price, from the partitions; maturity is filtered in Python.
     mature = _mature(_store_read("item_forecasts", required={"item_forecasts": ["id"]})(_FORECASTS_SQL), cutoff)
+    _read_twice_matured(db, cutoff, mature)
 
     if not mature:
         logger.info("  No mature forecasts to evaluate.")
@@ -1532,6 +1608,7 @@ def backtest_forecasts(db, today=None, min_price=0, reresolve=False, rescore=Fal
     # and 57.91% on four consecutive evaluation dates.
     groups = _records_from_frozen_outcomes(_panel_read(), min_price=min_price, forecast_ids=mature_ids)
     results = _score_groups(groups, today)
+    _read_twice_headlines(db, results, min_price, mature_ids)
 
     if results:
         _upsert_accuracy(db, results)
