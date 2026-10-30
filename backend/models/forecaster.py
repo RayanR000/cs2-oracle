@@ -2035,8 +2035,11 @@ class ItemForecaster:
             # backtest_forecasts() — which refreshes — and only then calls this,
             # in the same process, so the labels fitted here are the ones the
             # headline just reported.
-            rows = self.db.execute(
-                text("""
+            # Since Phase 2 PR 4 from the ops partitions: the backtest writes outcomes there
+            # even on a night Postgres is read-only.
+            from db import ops_store
+
+            rows = ops_store.reader(("forecast_outcomes",))("""
                 SELECT fo.horizon_days, fo.current_price, fo.predicted_price_mid,
                        fo.direction_actual, fo.forecast_date
                 FROM forecast_outcomes fo
@@ -2044,9 +2047,8 @@ class ItemForecaster:
                   AND fo.current_price > 0
                   AND fo.direction_actual IS NOT NULL
             """)
-            ).fetchall()
         except Exception as e:
-            logger.warning(f"  Could not query outcomes for bias update: {e}")
+            logger.warning(f"  Could not query outcomes from the ops partitions for bias update: {e}")
             return
 
         if not rows:
