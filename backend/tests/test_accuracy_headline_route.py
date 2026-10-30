@@ -9,7 +9,6 @@ evaluation rather than whichever row happened to sort first.
 
 from __future__ import annotations
 
-import pytest
 from api.routes import accuracy as route
 from backtest.directional_test import PT_T_HURDLE
 from backtest.scoring import HEADLINE_TIER, MIN_HEADLINE_DATES
@@ -57,7 +56,7 @@ def _patch_rows(monkeypatch, rows):
 def test_the_verdict_and_the_triple_are_served_together(monkeypatch):
     """DA must never be reachable without the two numbers that make it readable."""
     _patch_rows(monkeypatch, [_row(7, "2026-08-07")])
-    payload = route.get_headline(db=None)
+    payload = route.get_headline()
 
     assert payload["price_tier"] == HEADLINE_TIER
     assert payload["hurdle_t"] == PT_T_HURDLE
@@ -80,7 +79,7 @@ def test_a_row_predating_the_test_reads_untested_not_no_skill(monkeypatch):
     report a measurement nobody made.
     """
     _patch_rows(monkeypatch, [{"horizon_days": 7, "metrics": {"directional_accuracy": 61.8}}])
-    entry = route.get_headline(db=None)["horizons"][0]
+    entry = route.get_headline()["horizons"][0]
 
     assert entry["verdict"] == "untested"
     assert entry["pt_t_stat"] is None
@@ -97,7 +96,7 @@ def test_each_horizon_is_served_from_its_own_latest_evaluation(monkeypatch):
             _row(7, "2026-07-01", pt_t_stat=9.9, pt_verdict="skill"),
         ],
     )
-    horizons = route.get_headline(db=None)["horizons"]
+    horizons = route.get_headline()["horizons"]
 
     assert [h["horizon_days"] for h in horizons] == [7, 30]
     assert horizons[0]["pt_t_stat"] == 4.1
@@ -108,47 +107,19 @@ def test_the_cohort_label_names_the_serving_floor(monkeypatch):
     from api.serving_policy import MIN_SERVED_PRICE_USD
 
     _patch_rows(monkeypatch, [_row(7, "2026-08-07")])
-    assert route.get_headline(db=None)["cohort"] == f">=${MIN_SERVED_PRICE_USD:.0f}"
+    assert route.get_headline()["cohort"] == f">=${MIN_SERVED_PRICE_USD:.0f}"
 
 
 def test_non_json_floats_do_not_break_the_response(monkeypatch):
     """NaN reaches the mirror through DuckDB and is not valid JSON."""
     _patch_rows(monkeypatch, [_row(7, "2026-08-07", pt_t_stat=float("nan"))])
-    assert route.get_headline(db=None)["horizons"][0]["pt_t_stat"] is None
+    assert route.get_headline()["horizons"][0]["pt_t_stat"] is None
 
 
-@pytest.mark.parametrize("rows", [[], None])
-def test_no_parquet_rows_falls_through_to_the_database(monkeypatch, rows):
-    """Both "empty" and "could not read" must reach the SQLAlchemy leg.
-
-    An empty list from the mirror is not evidence that there is no headline —
-    a mirror written before price_tier existed holds no HEADLINE_TIER row at
-    all while the DB still does.
-    """
-    monkeypatch.setattr(route, "_query_prediction_accuracy", lambda *a, **k: rows)
-    calls = []
-
-    class _Q:
-        def filter(self, *a):
-            calls.append("filter")
-            return self
-
-        def order_by(self, *a):
-            return self
-
-        def limit(self, *a):
-            return self
-
-        def all(self):
-            return []
-
-    class _DB:
-        def query(self, *a):
-            calls.append("query")
-            return _Q()
-
-    assert route.get_headline(db=_DB())["horizons"] == []
-    assert "query" in calls
+def test_no_rows_is_an_empty_headline_not_a_database_read(monkeypatch):
+    """Since Phase 2 PR 6 the route reads the ops store only: no rows serves no horizons."""
+    monkeypatch.setattr(route, "_query_prediction_accuracy", lambda *a, **k: [])
+    assert route.get_headline()["horizons"] == []
 
 
 def test_price_tier_query_admits_every_cohort_score_by_tier_emits():
