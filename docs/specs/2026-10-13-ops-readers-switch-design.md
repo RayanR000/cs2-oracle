@@ -220,6 +220,21 @@ in either store, and each night's rediscovery would restamp `release_date` later
 missing from the parent's inventory) lose their Postgres fallback; they already read
 Parquet first. No read twice; the API is not deployed. Route tests run on a hermetic `OPS_DIR`.
 
+**Amended 2026-10-30: only `accuracy.py` moves.** The premise above holds for `accuracy.py`
+alone. `items.py` (24 Postgres queries, 29 `PriceHistory` references), `opportunities.py` (3)
+and `market.py` (2, plus `PriceHistory`) are Postgres-native, and `PriceHistory` no longer
+receives the daily collection (prices go to the archive), so those routes were already serving
+stale prices. Moving them is a rewrite onto the price archive, not a lost fallback. They stay
+on Postgres and are decided with Phase 4: rewritten or retired. They stop working when Postgres
+is deleted.
+
+`accuracy.py` reads `ops/prediction_accuracy.parquet` (written by the backtest before Postgres)
+and the `forecast_outcomes` **partitions** through `ops_store`, not the single-file
+`ops/forecast_outcomes.parquet` mirror, which was 60,737 rows short of the partitions on
+2026-10-30. A missing store raises.
+
+**Shipped** 2026-10-30 (`changelog/2026-10-30-accuracy-routes-read-ops-store.md`).
+
 ## Errors
 
 - A switched reader whose store read cannot find a table, or finds a required column all NULL,
