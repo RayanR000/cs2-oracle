@@ -25,6 +25,7 @@ from datetime import date
 import pytest
 from backtest.resolution_gate import (
     MAX_UNRESOLVABLE_PCT,
+    MIN_FRESH_FAILURES,
     classify_chronic,
     evaluate_gate,
 )
@@ -99,6 +100,15 @@ class TestDilutionIsStillCaught:
         )
         assert not r.ok
 
+    def test_a_single_full_breakage_at_the_floor_fails(self):
+        """MIN_FRESH_FAILURES all failing is a breakage, not noise."""
+        r = evaluate_gate(
+            n_mature=75195,
+            n_attempted=MIN_FRESH_FAILURES,
+            n_unresolvable_fresh=MIN_FRESH_FAILURES,
+        )
+        assert not r.ok
+
     def test_mass_shrinkage_fails_on_coverage(self):
         """The 2026-08-01 shape: 30,859 of 80,737 mature and unresolvable."""
         r = evaluate_gate(
@@ -161,6 +171,32 @@ class TestBoundaries:
         )
         assert r.ok
         assert r.fresh_rate_pct == pytest.approx(225 / 60962 * 100)
+
+    def test_a_drained_queue_does_not_fail_on_a_handful_of_stragglers(self):
+        """The 2026-10-30 14:39 numbers (run 41073606292). An earlier dispatch
+        had resolved everything up to the archive edge, leaving 3 fresh
+        attempts; all 3 failed and the run died at "3 of 3 (100.0%)". Three
+        illiquid items are not a resolver regression."""
+        r = evaluate_gate(
+            n_mature=1460536,
+            n_attempted=83297,
+            n_unresolvable_fresh=3,
+            n_unresolvable_chronic=83294,
+        )
+        assert r.ok, r.reason
+        assert r.warn
+        assert r.fresh_rate_pct == pytest.approx(100.0)
+        assert "3 of 3" in r.reason
+
+    def test_the_floor_note_survives_the_gap_branch(self):
+        r = evaluate_gate(
+            n_mature=100000,
+            n_attempted=500,
+            n_unresolvable_fresh=2,
+            n_unresolvable_gap=498,
+        )
+        assert r.ok and r.warn
+        assert "2 of 2" in r.reason
 
     def test_failure_reason_names_both_numbers(self):
         r = evaluate_gate(
