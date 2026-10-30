@@ -852,6 +852,9 @@ def test_a_gap_population_does_not_excuse_a_real_resolution_failure(session, tmp
 
     archive = _write_archive(tmp_path, rows)
 
+    # Pins the fresh-rate wiring, not MIN_FRESH_FAILURES: 2 failures sit under
+    # the production floor, which test_unresolvable_gate_denominator.py covers.
+    monkeypatch.setattr("backtest.resolution_gate.MIN_FRESH_FAILURES", 1)
     with pytest.raises(RuntimeError, match="resolution rate"):
         _run_backtest(session, archive, monkeypatch)
     assert session.query(ForecastOutcome).count() == 0
@@ -1496,6 +1499,9 @@ def test_gate_is_not_diluted_by_the_frozen_majority(session, tmp_path, monkeypat
     session.commit()
     _revise_archive(archive, rows)
 
+    # Pins the fresh-rate wiring, not MIN_FRESH_FAILURES: 2 failures sit under
+    # the production floor, which test_unresolvable_gate_denominator.py covers.
+    monkeypatch.setattr("backtest.resolution_gate.MIN_FRESH_FAILURES", 1)
     with pytest.raises(RuntimeError, match="could not be resolved"):
         _run_backtest(session, archive, monkeypatch)
 

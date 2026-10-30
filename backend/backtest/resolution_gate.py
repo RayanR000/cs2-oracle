@@ -117,6 +117,16 @@ from datetime import timedelta
 # shrunken cohort. Applied to both ratios below.
 MAX_UNRESOLVABLE_PCT = 10.0
 
+# The fresh rate fails the run only once at least this many fresh forecasts
+# failed. This is a floor on the rate's numerator, not the chronic/fresh
+# discriminator the module docstring rejects: it keeps a drained queue from
+# deciding the run on a handful of illiquid items. Run 41073606292
+# (2026-10-30 14:39) had 3 fresh attempts left after an earlier dispatch had
+# resolved everything to the archive edge; all 3 failed and the run died at
+# "3 of 3 (100.0%)". Kept low enough that 20 of 20 still fails, and a broken
+# resolver below it is caught by the next nightly run's full fresh cohort.
+MIN_FRESH_FAILURES = 10
+
 
 @dataclass(frozen=True)
 class GateResult:
@@ -194,7 +204,8 @@ def evaluate_gate(
             gap_pct=gap_pct,
         )
 
-    if fresh_rate_pct is not None and fresh_rate_pct > max_pct:
+    fresh_over_cap = fresh_rate_pct is not None and fresh_rate_pct > max_pct
+    if fresh_over_cap and n_unresolvable_fresh >= MIN_FRESH_FAILURES:
         return GateResult(
             ok=False,
             reason=(
@@ -210,6 +221,17 @@ def evaluate_gate(
             fresh_rate_pct=fresh_rate_pct,
             gap_pct=gap_pct,
         )
+
+    # Over the cap but under the floor: reported, never fatal. Appended to
+    # whichever passing reason follows so the gap and chronic notes survive.
+    floor_note = (
+        f" Fresh resolution rate {n_unresolvable_fresh:,} of "
+        f"{n_attempted_fresh:,} ({fresh_rate_pct:.1f}%) is over the {max_pct}% "
+        f"cap, but fewer than {MIN_FRESH_FAILURES} fresh forecasts failed, too "
+        f"few to call a resolver regression."
+        if fresh_over_cap
+        else ""
+    )
 
     # Reported before chronic because it is the larger and more surprising
     # population when present, and because it names a fixable upstream cause.
@@ -260,6 +282,7 @@ def evaluate_gate(
                 f"scoreable cohort and not the metric's denominator — the count "
                 f"actually scored is reported by the frozen-outcome scoring step "
                 f"below, which drops rows this gate cannot see."
+                f"{floor_note}"
             ),
             coverage_pct=coverage_pct,
             fresh_rate_pct=fresh_rate_pct,
@@ -277,6 +300,7 @@ def evaluate_gate(
                 f"{coverage_pct:.1f}% of the {n_mature:,}-forecast cohort and are "
                 f"re-attempted every run because a forecast that cannot resolve "
                 f"never earns a frozen outcome. Reporting anyway."
+                f"{floor_note}"
             ),
             coverage_pct=coverage_pct,
             fresh_rate_pct=fresh_rate_pct,
@@ -290,7 +314,8 @@ def evaluate_gate(
         parts.append(f"fresh rate {n_unresolvable_fresh:,}/{n_attempted_fresh:,} ({fresh_rate_pct:.1f}%)")
     return GateResult(
         ok=True,
-        reason="; ".join(parts) or "nothing mature to resolve",
+        warn=bool(floor_note),
+        reason=("; ".join(parts) or "nothing mature to resolve") + floor_note,
         coverage_pct=coverage_pct,
         fresh_rate_pct=fresh_rate_pct,
         gap_pct=gap_pct,
