@@ -87,6 +87,13 @@ def reader(tables: Iterable[str] = TABLES, root=None) -> Callable[[str], list]:
     return read
 
 
+def pg_reader(session) -> Callable[[str], list]:
+    """Postgres as a `sql -> rows` reader, the read-twice side of a switched reader."""
+    from sqlalchemy import text
+
+    return lambda sql: session.execute(text(sql)).fetchall()
+
+
 def check_columns(read: Callable[[str], list], table: str, columns: Iterable[str]) -> None:
     """Raise MissingTable when *table* has rows and one of *columns* is NULL on all of them."""
     columns = list(columns)
