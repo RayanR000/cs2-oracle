@@ -191,6 +191,27 @@ drift" is corrected to say so.
 `items.parquet`. Read twice: the size of the
 established set and of the young set.
 
+**Amended 2026-10-30: the discovery write moves too.** Postgres is read-only, so
+`discover_new_items`'s `INSERT INTO items` fails (caught, logged, collection unaffected) and
+`ops/items.parquet`, synced from Postgres, freezes with it: no new release enters the catalog
+in either store, and each night's rediscovery would restamp `release_date` later.
+
+- **Order.** The Aggregator checks out `cs2-oracle-data` *before* the aggregate step and passes
+  its ops dir as `AGGREGATOR_OPS_DIR`. `price-archive` is not linked there, so nothing else in
+  the aggregate step starts writing to the archive.
+- **Known set.** Postgres's names and slugs plus `items.parquet`'s. Without the partitions,
+  every partition-only item would be "new" again each night and count against
+  `MAX_NEW_PER_RUN`.
+- **Write.** Postgres first, as today; the nightly items sync copies it to the partitions. When
+  Postgres cannot take it (`is_unwritable_error`: 25006 or 53100), the rows go to
+  `items.parquet` only, ids from `max(id, READ_ONLY_ID_BASE) + 1`, with a `::warning`.
+  Without `AGGREGATOR_OPS_DIR` (local runs) the partition side is skipped.
+- **Accepted:** a partition-only item never reaches Postgres. If Postgres became writable again,
+  its forecasts' `item_id` (≥ 2^40) would not fit Postgres's int32 FK; Postgres is being
+  retired, so this is not handled.
+- **Readers.** `served_items(as_of, read=None)` reads `items` from the partitions by default.
+  The served-universe sizes are read twice in `forecast_prices.py`.
+
 ### PR 6: API
 
 `api/routes/items.py`, `opportunities.py`, `accuracy.py` and `market.py` (its `Item` query,
