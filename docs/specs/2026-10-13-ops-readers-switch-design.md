@@ -152,6 +152,9 @@ condition for a storage change under a frozen read. Read twice: rows written per
 date (it passes today only when both stores do). Postgres's newest date is still reported; if
 Postgres is behind the partitions, that is a `::notice`, not a failure.
 
+**Shipped** 2026-10-30 (`changelog/2026-10-30-freshness-reads-ops-partitions.md`). The
+warn-only shadow readiness check moved to the partitions with it.
+
 ### PR 4: feedback factors and prior-day blending
 
 **Shipped** 2026-10-30, ahead of PR 2 and PR 3: Postgres went read-only after the 10-30 forecast
