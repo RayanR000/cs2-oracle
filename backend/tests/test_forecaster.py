@@ -1948,11 +1948,12 @@ class TestForecastBlending:
             ),
             allow_closed=True,
         )
+        # The slug map is the served catalog, read from items.parquet (Phase 2 PR 5).
+        ops_partitions.upsert(
+            "items",
+            pd.DataFrame([{"id": i, "item_id": str(i), "name": str(i), "is_backfilled": 1} for i in (1, 2)]),
+        )
         forecaster.db = MagicMock()
-        forecaster.db.execute.return_value.fetchall.return_value = [
-            MagicMock(item_id="1", id=1),
-            MagicMock(item_id="2", id=2),
-        ]
         forecaster._now = lambda: datetime(2026, 7, 16)
         out = forecaster._fetch_prior_forecasts(np.array(["1", "2", "3"]), horizon=7)
 

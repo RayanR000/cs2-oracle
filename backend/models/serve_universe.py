@@ -21,15 +21,13 @@ Young items are a SERVING cohort only. They never enter the train universe
 judge the established band (the feedback refit, the PID prereg) exclude them
 through ``ESTABLISHED_ITEM_SQL``.
 
-Pure SQL over a session, no `database` import: that module builds the
+Pure SQL over a ``sql -> rows`` reader, no `database` import: that module builds the
 production engine at import time.
 """
 
 from __future__ import annotations
 
 from datetime import date, datetime, timedelta
-
-from sqlalchemy import text
 
 #: History a discovered release needs before it is served, counted from its
 #: ``release_date`` (the first day the archive holds a price for it). The
@@ -61,17 +59,29 @@ def young_cutoff(as_of: date | datetime) -> datetime:
     return datetime(d.year, d.month, d.day)
 
 
-def served_items(session, as_of: date | datetime) -> dict[str, tuple[int, bool]]:
-    """``{slug: (items.id, is_young)}`` for every item served on ``as_of``."""
-    rows = session.execute(
-        text(
-            "SELECT id, item_id, is_backfilled FROM items "
-            "WHERE is_backfilled = 1 "
-            "OR (release_date IS NOT NULL AND release_date < :cutoff)"
-        ),
-        {"cutoff": young_cutoff(as_of)},
-    ).fetchall()
-    return {r.item_id: (r.id, r.is_backfilled != 1) for r in rows}
+def served_items(as_of: date | datetime, read=None) -> dict[str, tuple[int, bool]]:
+    """``{slug: (items.id, is_young)}`` for every item served on ``as_of``.
+
+    *read* is a ``sql -> rows`` reader; the default is the ops partitions' ``items.parquet``
+    (Phase 2 PR 5). ``ops_store.pg_reader(session)`` gives Postgres's side for read twice.
+    The cutoff is a literal, so the one SQL runs unchanged on DuckDB, Postgres and SQLite."""
+    if read is None:
+        from db import ops_store
+
+        read = ops_store.reader(("items",))
+    cutoff = young_cutoff(as_of).strftime("%Y-%m-%d %H:%M:%S")
+    rows = read(
+        "SELECT id, item_id, is_backfilled FROM items "
+        "WHERE is_backfilled = 1 "
+        f"OR (release_date IS NOT NULL AND release_date < '{cutoff}')"
+    )
+    return {r.item_id: (int(r.id), r.is_backfilled != 1) for r in rows}
+
+
+def universe_sizes(served: dict[str, tuple[int, bool]]) -> dict[str, int]:
+    """The read-twice value for the catalog: how many established and young items are served."""
+    n_young = len(young_slugs(served))
+    return {"established": len(served) - n_young, "young": n_young}
 
 
 def young_slugs(served: dict[str, tuple[int, bool]]) -> set[str]:

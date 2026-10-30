@@ -55,28 +55,28 @@ def session():
     engine.dispose()
 
 
-def test_served_items_is_established_plus_young_releases_past_the_history_gate(session):
-    served = serve_universe.served_items(session, dt.date(2026, 10, 1))
+def test_served_items_is_established_plus_young_releases_past_the_history_gate(session, ops_mirror):
+    served = serve_universe.served_items(dt.date(2026, 10, 1))
 
     assert served == {ESTABLISHED: (1, False), YOUNG_OLD_ENOUGH: (2, True)}
 
 
-def test_the_history_gate_is_inclusive_at_exactly_sixty_days(session):
+def test_the_history_gate_is_inclusive_at_exactly_sixty_days(session, ops_mirror):
     on_the_day = dt.date(2026, 7, 17) + dt.timedelta(days=serve_universe.YOUNG_MIN_HISTORY_DAYS)
 
-    assert YOUNG_OLD_ENOUGH in serve_universe.served_items(session, on_the_day)
-    assert YOUNG_OLD_ENOUGH not in serve_universe.served_items(session, on_the_day - dt.timedelta(days=1))
+    assert YOUNG_OLD_ENOUGH in serve_universe.served_items(on_the_day)
+    assert YOUNG_OLD_ENOUGH not in serve_universe.served_items(on_the_day - dt.timedelta(days=1))
 
 
-def test_a_release_date_on_an_established_item_does_not_make_it_young(session):
+def test_a_release_date_on_an_established_item_does_not_make_it_young(session, ops_mirror):
     session.get(Item, 1).release_date = dt.datetime(2026, 9, 29)
     session.commit()
 
-    assert serve_universe.served_items(session, dt.date(2026, 10, 1))[ESTABLISHED] == (1, False)
+    assert serve_universe.served_items(dt.date(2026, 10, 1))[ESTABLISHED] == (1, False)
 
 
-def test_slug_maps_split_established_from_young(session):
-    served = serve_universe.served_items(session, dt.date(2026, 10, 1))
+def test_slug_maps_split_established_from_young(session, ops_mirror):
+    served = serve_universe.served_items(dt.date(2026, 10, 1))
 
     assert serve_universe.slug_to_id(served) == {ESTABLISHED: 1, YOUNG_OLD_ENOUGH: 2}
     assert serve_universe.slug_to_id(served, established_only=True) == {ESTABLISHED: 1}
@@ -151,3 +151,29 @@ def test_the_pid_prereg_panel_excludes_young_releases(session):
     panel = load_prod_panel(session)
 
     assert set(panel["item_id"]) == {1}
+
+
+def test_served_items_reads_the_partitions_not_postgres(session):
+    """Since Phase 2 PR 5 the catalog is read from items.parquet: a release only the partitions
+    hold (discovered on a read-only night) is served; Postgres's copy is not consulted."""
+    from tests._ops_mirror import mirror_session_to_ops
+
+    mirror_session_to_ops(session)
+    session.query(Item).filter(Item.id == 2).delete()
+    session.commit()
+    assert YOUNG_OLD_ENOUGH in serve_universe.served_items(dt.date(2026, 10, 1))
+
+
+def test_served_items_is_the_same_from_either_store(session):
+    from db import ops_store
+
+    from tests._ops_mirror import mirror_session_to_ops
+
+    mirror_session_to_ops(session)
+    for day in (dt.date(2026, 9, 14), dt.date(2026, 9, 15), dt.date(2026, 10, 1)):
+        assert serve_universe.served_items(day) == serve_universe.served_items(day, ops_store.pg_reader(session))
+
+
+def test_universe_sizes_count_established_and_young(session, ops_mirror):
+    served = serve_universe.served_items(dt.date(2026, 10, 1))
+    assert serve_universe.universe_sizes(served) == {"established": 1, "young": 1}

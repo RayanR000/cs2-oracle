@@ -57,14 +57,17 @@ def test_blend_recursion_reproduces_the_observed_2026_09_17_transition():
 
 
 def _forecaster_with_prior_rows(rows):
-    """Prior rows in the ops partitions (Phase 2 PR 4); the slug map still comes from the db."""
+    """Prior rows (Phase 2 PR 4) and the slug map's catalog (PR 5), both in the ops partitions."""
     import pandas as pd
     from db import ops_partitions
 
     ops_partitions.upsert("item_forecasts", pd.DataFrame(rows), allow_closed=True)
+    ops_partitions.upsert(
+        "items",
+        pd.DataFrame([{"id": i, "item_id": s, "name": s, "is_backfilled": 1} for i, s in ((1, "a"), (2, "b"))]),
+    )
     f = ItemForecaster.__new__(ItemForecaster)
     f.db = MagicMock()
-    f.db.execute.return_value.fetchall.return_value = [MagicMock(id=1, item_id="a"), MagicMock(id=2, item_id="b")]
     f._now = lambda: __import__("datetime").datetime(2026, 9, 25)
     return f
 
