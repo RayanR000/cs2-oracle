@@ -1920,42 +1920,40 @@ class TestForecastBlending:
         assert np.all(np.isnan(out["mid_ret"]))
 
     def test_prior_forecast_parses_return_space(self, forecaster):
+        import pandas as pd
+        from db import ops_partitions
+
+        def row(fid, item_id, fd, low, mid, high, cur):
+            return dict(
+                id=fid,
+                item_id=item_id,
+                forecast_date=fd,
+                horizon_days=7,
+                price_low=low,
+                price_mid=mid,
+                price_high=high,
+                current_price=cur,
+            )
+
+        # Since Phase 2 PR 4 the prior day comes from the ops partitions.
+        ops_partitions.upsert(
+            "item_forecasts",
+            pd.DataFrame(
+                [
+                    row(1, 1, date(2026, 7, 15), 11.0, 12.0, 13.0, 10.0),
+                    # Older forecast for the same item — must be ignored.
+                    row(2, 1, date(2026, 7, 14), 10.5, 11.0, 12.5, 10.0),
+                    row(3, 2, date(2026, 7, 15), 9.0, 10.0, 11.0, 20.0),
+                ]
+            ),
+            allow_closed=True,
+        )
         forecaster.db = MagicMock()
-        rows = [
-            MagicMock(
-                item_id=1,
-                price_low=11.0,
-                price_mid=12.0,
-                price_high=13.0,
-                current_price=10.0,
-                forecast_date=date(2026, 7, 15),
-            ),
-            # Older forecast for the same item — must be ignored.
-            MagicMock(
-                item_id=1,
-                price_low=10.5,
-                price_mid=11.0,
-                price_high=12.5,
-                current_price=10.0,
-                forecast_date=date(2026, 7, 14),
-            ),
-            MagicMock(
-                item_id=2,
-                price_low=9.0,
-                price_mid=10.0,
-                price_high=11.0,
-                current_price=20.0,
-                forecast_date=date(2026, 7, 15),
-            ),
-        ]
-        slug_rows = [
+        forecaster.db.execute.return_value.fetchall.return_value = [
             MagicMock(item_id="1", id=1),
             MagicMock(item_id="2", id=2),
         ]
-        forecaster.db.execute.side_effect = [
-            MagicMock(fetchall=lambda: rows),
-            MagicMock(fetchall=lambda: slug_rows),
-        ]
+        forecaster._now = lambda: datetime(2026, 7, 16)
         out = forecaster._fetch_prior_forecasts(np.array(["1", "2", "3"]), horizon=7)
 
         assert out["mask"][0] and out["mask"][1] and not out["mask"][2]

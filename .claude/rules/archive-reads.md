@@ -49,7 +49,9 @@ paths:
   (calendar end + 43 days) are refused without `allow_closed`. Since Phase 2 PR 1
   (`changelog/2026-10-30-backtest-reads-ops-partitions.md`) the backtest reads them through
   `db/ops_store.py` (views named like the Postgres tables, `pg_deleted` hidden, a table with no
-  files raises) and logs each switched value beside Postgres's (`ops_store.compare`). Every other
+  files raises) and logs each switched value beside Postgres's (`ops_store.compare`). Since PR 4
+  (`changelog/2026-10-30-feedback-and-blend-read-ops-partitions.md`) so do the served-coverage
+  feedback panel, the prior-day blend and the tier bias fit. Every other
   reader still reads Postgres until its PR (`specs/2026-10-13-ops-readers-switch-design.md`);
   `scripts/ops_parity.py` (Backtest Accuracy) proves the stores agree per date, and
   `ops-sync.yml` repairs. Tests get a temp `OPS_DIR` from conftest's `_hermetic_ops_dir`.
@@ -57,7 +59,9 @@ paths:
 - **Operational tables live in `price-archive/ops/*.parquet`.** API routes read Parquet
   first with a DB fallback. See `db/parquet.py`.
 - ⚠️ **NEITHER copy of `ops/forecast_outcomes.parquet` is the full scored panel, and the LOCAL
-  one is biased. Query prod Postgres read-only for any panel figure.** Measured 2026-08-12,
+  one is biased. Query prod Postgres read-only for any panel figure.** (Since Postgres went
+  read-only on 2026-10-30, read the monthly partitions through `db/ops_store.py` instead; this
+  warning is about the single file.) Measured 2026-08-12,
   all three stores at once:
   - **Postgres: 121,699 rows / 12 forecast dates** — the only complete source.
   - **Durable (`RayanR000/cs2-oracle-data`, CI-written): fresh but SHALLOW.** 70,409 rows / 10

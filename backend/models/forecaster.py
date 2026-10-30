@@ -2035,8 +2035,11 @@ class ItemForecaster:
             # backtest_forecasts() — which refreshes — and only then calls this,
             # in the same process, so the labels fitted here are the ones the
             # headline just reported.
-            rows = self.db.execute(
-                text("""
+            # Since Phase 2 PR 4 from the ops partitions: the backtest writes outcomes there
+            # even on a night Postgres is read-only.
+            from db import ops_store
+
+            rows = ops_store.reader(("forecast_outcomes",))("""
                 SELECT fo.horizon_days, fo.current_price, fo.predicted_price_mid,
                        fo.direction_actual, fo.forecast_date
                 FROM forecast_outcomes fo
@@ -2044,9 +2047,8 @@ class ItemForecaster:
                   AND fo.current_price > 0
                   AND fo.direction_actual IS NOT NULL
             """)
-            ).fetchall()
         except Exception as e:
-            logger.warning(f"  Could not query outcomes for bias update: {e}")
+            logger.warning(f"  Could not query outcomes from the ops partitions for bias update: {e}")
             return
 
         if not rows:
@@ -9443,21 +9445,6 @@ class ItemForecaster:
             fallback=self.sigma_clip["fallback"],
         )
 
-    def _item_forecasts_has_band_multiplier(self) -> bool:
-        """Whether item_forecasts has migration 0028's column. Probed once per instance; a
-        failed probe reads as absent, which only costs the prior row's multiplier."""
-        cached = getattr(self, "_band_mult_col", None)
-        if cached is None:
-            try:
-                from sqlalchemy import inspect as sa_inspect
-
-                cols = sa_inspect(self.db.get_bind()).get_columns("item_forecasts")
-                cached = "band_multiplier" in {c["name"] for c in cols}
-            except Exception:
-                cached = False
-            self._band_mult_col = cached
-        return cached
-
     def _fetch_prior_forecasts(self, item_ids: np.ndarray, horizon: int) -> dict[str, np.ndarray]:
         """Fetch the most recent prior-day forecast per item for blending.
 
@@ -9478,21 +9465,37 @@ class ItemForecaster:
         # before the ANCHOR. Reading real forecasts dated after it would blend
         # the future into a backdated prediction.
         today = self._now().date()
-        # Probed, not assumed: selecting a column the table lacks (migration 0028
-        # not yet applied) would fail the fetch and silently skip the blend.
-        mult_sql = "band_multiplier" if self._item_forecasts_has_band_multiplier() else "NULL AS band_multiplier"
+        # Since Phase 2 PR 4 the ops partitions, not Postgres: on a read-only night yesterday's
+        # forecast exists only there. The view always carries band_multiplier (NULL in a month
+        # that lacks it). Inlined, not bound: DuckDB runs it, and int()/isoformat() are the guard.
+        from db import ops_store
+
+        where = f"WHERE horizon_days = {int(horizon)} AND forecast_date < '{today.isoformat()}'"
         try:
-            rows = self.db.execute(
-                text(f"""
-                SELECT item_id, price_low, price_mid, price_high, current_price, forecast_date, {mult_sql}
-                FROM item_forecasts
-                WHERE horizon_days = :h AND forecast_date < :today
-            """),
-                {"h": horizon, "today": today},
-            ).fetchall()
-        except Exception as e:
-            logger.warning(f"  Prior-forecast fetch failed ({e}); skipping blend.")
+            rows = ops_store.reader(("item_forecasts",))(
+                "SELECT item_id, price_low, price_mid, price_high, current_price, forecast_date, band_multiplier "
+                f"FROM item_forecasts {where}"
+            )
+        except ops_store.MissingTable as e:
+            # Loud, not fatal: a crash here would serve no forecasts at all tonight.
+            logger.error(f"  Prior-forecast fetch: {e}; skipping blend.")
+            print(f"::error title=Prior-day blend::{e}; blend skipped", flush=True)
             return result
+        except Exception as e:
+            logger.warning(f"  Prior-forecast fetch failed from the ops partitions ({e}); skipping blend.")
+            return result
+        ops_store.compare(
+            f"prior-day forecasts h={horizon}",
+            lambda: dict(
+                zip(
+                    ("rows", "sum price_mid"),
+                    ops_store.pg_reader(self.db)(f"SELECT count(*), sum(price_mid) FROM item_forecasts {where}")[0],
+                )
+            ),
+            {"rows": len(rows), "sum price_mid": sum(float(r.price_mid) for r in rows if r.price_mid is not None)},
+            tol=0.01,
+            db=self.db,
+        )
         if not rows:
             return result
 

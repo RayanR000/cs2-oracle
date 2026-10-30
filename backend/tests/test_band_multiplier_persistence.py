@@ -56,46 +56,48 @@ def test_blend_recursion_reproduces_the_observed_2026_09_17_transition():
     assert out[0] == pytest.approx(0.5963, abs=1e-4)
 
 
-def _forecaster_with_prior_rows(rows, *, has_col):
+def _forecaster_with_prior_rows(rows):
+    """Prior rows in the ops partitions (Phase 2 PR 4); the slug map still comes from the db."""
+    import pandas as pd
+    from db import ops_partitions
+
+    ops_partitions.upsert("item_forecasts", pd.DataFrame(rows), allow_closed=True)
     f = ItemForecaster.__new__(ItemForecaster)
     f.db = MagicMock()
-    f._band_mult_col = has_col
-    f.db.execute.side_effect = [
-        MagicMock(fetchall=lambda: rows),
-        MagicMock(fetchall=lambda: [MagicMock(id=1, item_id="a"), MagicMock(id=2, item_id="b")]),
-    ]
+    f.db.execute.return_value.fetchall.return_value = [MagicMock(id=1, item_id="a"), MagicMock(id=2, item_id="b")]
     f._now = lambda: __import__("datetime").datetime(2026, 9, 25)
     return f
 
 
-def _row(item_id, fd, mult):
-    return MagicMock(
-        item_id=item_id,
-        price_low=9.0,
-        price_mid=10.0,
-        price_high=11.0,
-        current_price=10.0,
-        forecast_date=fd,
-        band_multiplier=mult,
-    )
+def _row(fid, item_id, fd, mult):
+    return {
+        "id": fid,
+        "item_id": item_id,
+        "horizon_days": 3,
+        "price_low": 9.0,
+        "price_mid": 10.0,
+        "price_high": 11.0,
+        "current_price": 10.0,
+        "forecast_date": fd,
+        "band_multiplier": mult,
+    }
 
 
 def test_prior_fetch_resolves_each_items_latest_multiplier():
     rows = [
-        _row(1, date(2026, 9, 24), 0.5385),
-        _row(1, date(2026, 9, 23), 0.9),  # older, ignored
-        _row(2, date(2026, 9, 10), None),  # pre-activation NULL -> 1.0
+        _row(1, 1, date(2026, 9, 24), 0.5385),
+        _row(2, 1, date(2026, 9, 23), 0.9),  # older, ignored
+        _row(3, 2, date(2026, 9, 10), None),  # pre-activation NULL -> 1.0
     ]
-    out = _forecaster_with_prior_rows(rows, has_col=True)._fetch_prior_forecasts(np.array(["a", "b"]), 3)
+    out = _forecaster_with_prior_rows(rows)._fetch_prior_forecasts(np.array(["a", "b"]), 3)
     assert out["band_mult"][0] == pytest.approx(0.5385)
     assert out["band_mult"][1] == pytest.approx(1.0)
 
 
-def test_prior_fetch_selects_a_null_placeholder_when_the_column_is_missing():
-    f = _forecaster_with_prior_rows([_row(1, date(2026, 9, 24), None)], has_col=False)
-    out = f._fetch_prior_forecasts(np.array(["a", "b"]), 3)
-    sql = str(f.db.execute.call_args_list[0].args[0])
-    assert "NULL AS band_multiplier" in sql
+def test_prior_fetch_post_activation_null_multiplier_is_unknown():
+    out = _forecaster_with_prior_rows([_row(1, 1, date(2026, 9, 24), None)])._fetch_prior_forecasts(
+        np.array(["a", "b"]), 3
+    )
     assert out["mask"][0] and np.isnan(out["band_mult"][0])  # post-activation NULL: unknown
 
 
