@@ -336,9 +336,19 @@ def served_coverage_factors(
             "no q_hat correction applied."
         )
         return {}
+
+    def pg_factors() -> dict[int, float]:
+        # Silenced: the Postgres side must not repeat the factor and clamp lines in the run's log.
+        level = logger.level
+        logger.setLevel(logging.ERROR)
+        try:
+            return factors(ops_store.pg_reader(session))
+        finally:
+            logger.setLevel(level)
+
     ops_store.compare(
         "served-coverage factor per horizon",
-        lambda: factors(ops_store.pg_reader(session)),
+        pg_factors,
         out,
         tol=1e-9,
         db=session,

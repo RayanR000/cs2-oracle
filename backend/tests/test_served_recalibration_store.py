@@ -183,3 +183,13 @@ def test_read_twice_logs_factor_per_horizon(session, caplog):
         sr.served_coverage_factors(session, [7], min_dates=1, since=SINCE)
 
     assert "read twice served-coverage factor per horizon: 1 keys, 0 differ" in caplog.text
+
+
+def test_postgres_side_does_not_repeat_the_factor_log(session, caplog):
+    _seed(session)
+    mirror_session_to_ops(session)
+
+    with caplog.at_level(logging.INFO, logger=sr.logger.name):
+        sr.served_coverage_factors(session, [7], min_dates=1, since=SINCE)
+
+    assert caplog.text.count("7d served-coverage factor") == 1
