@@ -89,6 +89,8 @@ because there is no longer a live Postgres to stay equal to.
 
 ### PR 1: `ops_store`, backtest scoring and verdict refresh
 
+**Shipped** in #122 (2026-10-30).
+
 `scripts/backtest_accuracy.py` reads from the store: the matured forecasts (the
 `FROM item_forecasts f` query in `backtest_forecasts`), the frozen-id set beside it, the scoring
 panel (`_records_from_frozen_outcomes`), the verdict refresh (`_iter_outcome_rows` under

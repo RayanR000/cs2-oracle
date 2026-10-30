@@ -226,7 +226,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         print(f"::warning title=Ops parity (closed months)::Postgres differs in closed month(s): {months}", flush=True)
     streak = clean_streak()
     logger.info(
-        "parity: %d open-month mismatches, %d in closed months; clean nights in a row: %d (Phase 1 needs 7)",
+        "parity: %d open-month mismatches, %d in closed months; clean nights in a row: %d (Phase 2 starts at 3)",
         len(bad),
         len(closed),
         streak,
