@@ -212,6 +212,8 @@ in either store, and each night's rediscovery would restamp `release_date` later
 - **Readers.** `served_items(as_of, read=None)` reads `items` from the partitions by default.
   The served-universe sizes are read twice in `forecast_prices.py`.
 
+**Shipped** 2026-10-30 (`changelog/2026-10-30-catalog-reads-and-discovery-write-ops-partitions.md`).
+
 ### PR 6: API
 
 `api/routes/items.py`, `opportunities.py`, `accuracy.py` and `market.py` (its `Item` query,
