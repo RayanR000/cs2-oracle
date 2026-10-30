@@ -12,6 +12,10 @@ measured on 2026-10-11). The verdict refresh's rewrites show up as verdict-sum d
 
 Each night appends one row per table to ops/parity_runs.parquet, so "seven clean nights in a
 row" is counted, not remembered. Exit 1 on any mismatch.
+
+A Postgres that is read-only or out of disk (Supabase over its free-tier cap, 2026-10-29) skips
+the check with a warning and records nothing: it can no longer take the nightly writes, so the
+partitions are the current store and a mismatch against it means nothing.
 """
 
 import argparse
@@ -201,6 +205,28 @@ def clean_streak(root=None) -> int:
     return streak
 
 
+DISK_FULL_SQLSTATE = "53100"
+
+
+def _dead_postgres_reason(db) -> str | None:
+    """Why Postgres cannot be compared against tonight, or None when it can."""
+    if str(db.execute(text("SHOW transaction_read_only")).scalar()).lower() == "on":
+        return "Postgres is read-only"
+    return None
+
+
+def _is_disk_full(exc: BaseException) -> bool:
+    pgcode = getattr(getattr(exc, "orig", None), "pgcode", None)
+    return pgcode == DISK_FULL_SQLSTATE or "No space left on device" in str(exc)
+
+
+def _skip(reason: str) -> int:
+    msg = f"{reason}; parity not checked and no night recorded. The partitions are the current store."
+    logger.warning(msg)
+    print(f"::warning title=Ops parity skipped::{msg}", flush=True)
+    return 0
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[1])
     ap.parse_args(argv)
@@ -210,7 +236,15 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     db = SessionLocal()
     try:
-        mismatches = run_parity(db)
+        reason = _dead_postgres_reason(db)
+        if reason:
+            return _skip(reason)
+        try:
+            mismatches = run_parity(db)
+        except Exception as e:
+            if not _is_disk_full(e):
+                raise
+            return _skip("Postgres is out of disk")
     finally:
         db.close()
     today = datetime.now(UTC).date()
