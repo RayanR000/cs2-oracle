@@ -107,6 +107,145 @@ def _rescore_candidate_outcomes(db) -> dict:
     return {"rescored": rescored}
 
 
+# The views the plan reads (db/ops_store.py). Since Phase 2 PR 2 the partitions, not Postgres:
+# on a read-only night the shadow candidates exist only there.
+CANDIDATE_TABLES = ("forecast_candidates", "forecast_candidate_outcomes", "forecast_outcomes", "items")
+
+
+def _planned_row(candidate, base: float, actual: float, resolved_at) -> dict:
+    """One candidate outcome as its partition row. `resolved_at` None is stamped at write time."""
+    return {
+        "candidate_id": int(candidate.id),
+        "base_price": base,
+        "actual_price": actual,
+        "resolved_at": resolved_at,
+        "resolution_version": RESOLUTION_VERSION,
+        **_derived_metrics(candidate, base, actual),
+        "_part": _as_date(candidate.forecast_date),
+    }
+
+
+def plan_candidate_outcomes(read, *, today, archive_dir, reresolve: bool = False) -> tuple[list[dict], dict]:
+    """The candidate outcomes to write tonight, read through *read* (a `sql -> rows` reader).
+
+    Prefers an existing frozen production outcome for each shared (item, date, horizon); the
+    archive is read only where production has no row. A production outcome whose legs differ
+    from a fresh archive resolution raises RuntimeError. Writes nothing and reads no clock, so
+    the same night planned from two stores can be compared row for row.
+    """
+    archive_dir = Path(archive_dir)
+    today = _as_date(today)
+    stats = {"resolved": 0, "reresolved": 0, "skipped_frozen": 0, "skipped_immature": 0, "unresolvable": 0}
+    rows: list[dict] = []
+
+    coverage_end = archive_max_day(archive_dir)
+    cutoff = min(today, coverage_end)
+
+    candidates = read(
+        "SELECT id, item_id, forecast_date, horizon_days, component, centre_price, "
+        "predicted_price_low, predicted_price_high FROM forecast_candidates ORDER BY id"
+    )
+    if not candidates:
+        return rows, stats
+    frozen = {int(r.candidate_id) for r in read("SELECT candidate_id FROM forecast_candidate_outcomes")}
+
+    item_ids = sorted({int(c.item_id) for c in candidates})
+    prod_map: dict[tuple, Any] = {}
+    for i in range(0, len(item_ids), CHUNK):
+        batch = ", ".join(str(v) for v in item_ids[i : i + CHUNK])
+        for row in read(
+            "SELECT item_id, forecast_date, horizon_days, base_price, actual_price, resolved_at "
+            f"FROM forecast_outcomes WHERE item_id IN ({batch})"
+        ):
+            prod_map.setdefault((int(row.item_id), _as_date(row.forecast_date), int(row.horizon_days)), row)
+
+    id_to_slug = {int(r.id): r.item_id for r in read("SELECT id, item_id FROM items")}
+
+    def add(candidate, base, actual, resolved_at):
+        rows.append(_planned_row(candidate, base, actual, resolved_at))
+        stats["reresolved" if int(candidate.id) in frozen else "resolved"] += 1
+
+    # Unique (item, date, horizon) keys still needing archive legs.
+    need_archive: dict[tuple, list] = {}
+    for candidate in candidates:
+        fdate = _as_date(candidate.forecast_date)
+        horizon = int(candidate.horizon_days)
+        if fdate is None or fdate + timedelta(days=horizon) > cutoff:
+            stats["skipped_immature"] += 1
+            continue
+        if int(candidate.id) in frozen and not reresolve:
+            stats["skipped_frozen"] += 1
+            continue
+        key = (int(candidate.item_id), fdate, horizon)
+        prod = prod_map.get(key)
+        if prod is not None and not reresolve:
+            add(candidate, prod.base_price, prod.actual_price, prod.resolved_at)
+            continue
+        need_archive.setdefault(key, []).append(candidate)
+
+    if need_archive:
+        covered_days = archive_covered_days(archive_dir)
+        slugs: set[str] = set()
+        anchors: set[tuple[str, date]] = set()
+        key_slugs: dict[tuple, str | None] = {}
+        for item_id, fdate, horizon in need_archive:
+            slug = id_to_slug.get(item_id)
+            key_slugs[(item_id, fdate, horizon)] = slug
+            if slug is None:
+                continue
+            slugs.add(slug)
+            anchors.add((slug, fdate))
+            anchors.add((slug, fdate + timedelta(days=horizon)))
+        prices: dict = {}
+        if anchors:
+            anchor_dates = [a[1] for a in anchors]
+            voted = load_voted_prices(archive_dir, sorted(slugs), min(anchor_dates), max(anchor_dates))
+            prices = resolve_anchors(voted, anchors)
+
+        for key, group in need_archive.items():
+            item_id, fdate, horizon = key
+            slug = key_slugs[key]
+            prod = prod_map.get(key)
+            if slug is None:
+                if reresolve and prod is not None:
+                    # No archive identity to verify against; track production's
+                    # current legs rather than leaving the batch unresolved.
+                    for candidate in group:
+                        add(candidate, prod.base_price, prod.actual_price, prod.resolved_at)
+                else:
+                    stats["unresolvable"] += len(group)
+                continue
+            target_date = fdate + timedelta(days=horizon)
+            chronic = classify_chronic(target_date, coverage_end, MAX_WINDOW_SPAN_DAYS)
+            gap = classify_archive_gap(
+                fdate, target_date, covered_days, SMOOTH_WINDOW, staleness_days=MAX_WINDOW_SPAN_DAYS
+            ) or classify_base_gap(fdate, covered_days, SMOOTH_WINDOW, staleness_days=MAX_WINDOW_SPAN_DAYS)
+            base_res = prices.get((slug, fdate))
+            actual_res = prices.get((slug, target_date))
+            if not (
+                gap is None
+                and not chronic
+                and base_res is not None
+                and actual_res is not None
+                and base_res.price > 0
+                and actual_res.price > 0
+                and actual_res.oldest_observation > fdate
+            ):
+                stats["unresolvable"] += len(group)
+                continue
+            base, actual = base_res.price, actual_res.price
+            if prod is not None and (prod.base_price != base or prod.actual_price != actual):
+                raise RuntimeError(
+                    "candidate/production resolution mismatch at "
+                    f"(item_id={item_id}, forecast_date={fdate}, horizon={horizon}): "
+                    f"archive ({base}, {actual}) != production "
+                    f"({prod.base_price}, {prod.actual_price})"
+                )
+            for candidate in group:
+                add(candidate, base, actual, None)
+    return rows, stats
+
+
 def resolve_candidate_outcomes(db, *, today, archive_dir=None, reresolve: bool = False, rescore: bool = False) -> dict:
     """Resolve mature shadow candidates against frozen outcome legs.
 
