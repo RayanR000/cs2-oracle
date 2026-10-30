@@ -272,7 +272,7 @@ def _read_twice_per_date(db) -> None:
     from db import ops_store
 
     def per_date(rows) -> dict:
-        return {_as_date(r.d).isoformat(): int(r.n) for r in rows}
+        return {str(_as_date(r.d)): int(r.n) for r in rows}
 
     try:
         store = per_date(ops_store.reader(("forecast_candidates", "forecast_candidate_outcomes"))(_PER_DATE_SQL))
