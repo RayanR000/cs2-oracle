@@ -21,7 +21,9 @@ returns the same answer and later dates never enter it.
 
 Records come from `scripts/backtest_accuracy.py::_records_from_frozen_outcomes` (>= $1, the
 documented date exclusions applied), the backtest's own derivation, so they cannot drift from
-the published scorer. The prod read runs in a READ ONLY transaction.
+the published scorer. They are read from the monthly ops partitions through the backtest's own
+`_panel_read()` (prereg Amendment 2026-10-30): Postgres went read-only on 2026-10-30 and does not
+hold the outcomes resolved after it. The read never writes.
 
 The scorer constants the prereg froze (FROZEN_CONSTANTS) are checked first. If one moved the
 window is void and nothing is scored.
@@ -210,19 +212,10 @@ def report_line(res: dict) -> str:
 
 
 def load_records() -> dict[int, list[dict]]:
-    """Scored >=$1 outcomes by horizon, all served identities pooled. Read-only."""
-    from database import SessionLocal
-    from sqlalchemy import text
+    """Scored >=$1 outcomes by horizon, all served identities pooled, from the ops partitions."""
+    from scripts.backtest_accuracy import _panel_read, _records_from_frozen_outcomes
 
-    from scripts.backtest_accuracy import _records_from_frozen_outcomes
-
-    db = SessionLocal()
-    try:
-        db.execute(text("SET TRANSACTION READ ONLY"))
-        groups = _records_from_frozen_outcomes(db, min_price=1.0)
-        db.rollback()
-    finally:
-        db.close()
+    groups = _records_from_frozen_outcomes(_panel_read(), min_price=1.0)
     by_horizon: dict[int, list[dict]] = defaultdict(list)
     for (horizon, _identity), recs in groups.items():
         by_horizon[int(horizon)].extend(recs)

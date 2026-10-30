@@ -291,3 +291,69 @@ def test_main_is_void_when_a_scorer_constant_drifted(monkeypatch, caplog):
     assert code == 4
     assert "FLAT_TOLERANCE" in caplog.text
     assert "PASS" not in caplog.text
+
+
+# ------------------------------------------------------------------ load_records (the prod path)
+
+
+def test_load_records_scores_the_partitions_and_never_opens_postgres(monkeypatch):
+    """The real loader, not an injected one: since #122 the scorer takes a `sql -> rows` reader,
+    and a loader that still passed a Session raised before reading anything."""
+    from database import Base, ForecastOutcome, Item, ItemForecast
+    from sqlalchemy import create_engine
+    from sqlalchemy.orm import sessionmaker
+    from sqlalchemy.pool import StaticPool
+
+    from tests._ops_mirror import mirror_session_to_ops
+
+    engine = create_engine("sqlite://", connect_args={"check_same_thread": False}, poolclass=StaticPool)
+    Base.metadata.create_all(engine)
+    session = sessionmaker(bind=engine)()
+    day = date.today() - timedelta(days=10)
+    for k, horizon in ((1, 3), (2, 7), (3, 7)):
+        session.add(Item(id=k, item_id=f"item_{k}", name=f"item {k}", type="skin"))
+        common = dict(item_id=k, forecast_date=day, horizon_days=horizon, model_version="lgbm-test")
+        session.add(
+            ItemForecast(
+                id=100 + k,
+                price_low=2.5,
+                price_mid=3.2,
+                price_high=3.6,
+                current_price=3.0,
+                direction="up",
+                confidence="high",
+                **common,
+            )
+        )
+        session.add(
+            ForecastOutcome(
+                id=200 + k,
+                forecast_id=100 + k,
+                target_date=day + timedelta(days=horizon),
+                current_price=3.0,
+                base_price=3.0,
+                predicted_price_low=2.5,
+                predicted_price_mid=3.2,
+                predicted_price_high=3.6,
+                actual_price=3.3,
+                direction_predicted="up",
+                direction_actual="up",
+                direction_correct=1,
+                in_interval=1,
+                abs_error=0.1,
+                pct_error=3.0,
+                **common,
+            )
+        )
+    session.commit()
+    mirror_session_to_ops(session)
+    session.close()
+    engine.dispose()
+
+    def no_postgres(*a, **k):
+        raise AssertionError("load_records opened Postgres")
+
+    monkeypatch.setattr("database.SessionLocal", no_postgres)
+    by_horizon = mdr.load_records()
+    assert {h: len(v) for h, v in by_horizon.items()} == {3: 1, 7: 2}
+    assert all(r["forecast_date"] == day for v in by_horizon.values() for r in v)
