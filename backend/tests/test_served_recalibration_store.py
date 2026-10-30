@@ -93,7 +93,16 @@ def test_panel_joins_partition_only_forecast_multiplier(session):
     ops_partitions.upsert(
         "item_forecasts",
         pd.DataFrame(
-            [{"id": fid, "item_id": 1, "forecast_date": fd, "horizon_days": 7, "price_mid": 10.0, "band_multiplier": 0.5385}]
+            [
+                {
+                    "id": fid,
+                    "item_id": 1,
+                    "forecast_date": fd,
+                    "horizon_days": 7,
+                    "price_mid": 10.0,
+                    "band_multiplier": 0.5385,
+                }
+            ]
         ),
         allow_closed=True,
     )

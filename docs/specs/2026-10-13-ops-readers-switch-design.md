@@ -134,6 +134,12 @@ Postgres is behind the partitions, that is a `::notice`, not a failure.
 
 ### PR 4: feedback factors and prior-day blending
 
+**Shipped** 2026-10-30, ahead of PR 2 and PR 3: Postgres went read-only after the 10-30 forecast
+write, and these are the readers that move served numbers
+(`changelog/2026-10-30-feedback-and-blend-read-ops-partitions.md`). One departure from § Errors:
+a missing `item_forecasts` store skips the blend with a `::error` annotation instead of failing
+the run, which would serve nothing.
+
 Both change served numbers, so both carry the parent spec's proof: the PR description quotes
 each value from both stores on the same night, equal to `1e-9`.
 

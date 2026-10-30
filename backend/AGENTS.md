@@ -74,7 +74,9 @@ re-injected after `/compact` — **read the rule yourself before starting work i
   skipped `_apply_feature_allowlist` (measuring a 138–180-column model where production serves 28)
   now apply it. → `changelog/2026-08-13-the-null-verdicts-were-not-all-tested.md`
 - **Neither copy of `ops/forecast_outcomes.parquet` is the full scored panel — query prod
-  Postgres read-only for any panel figure.** The **durable** archive that CI writes is fresh
+  Postgres read-only for any panel figure.** (Postgres is read-only since 2026-10-30; the monthly
+  partitions under `ops/forecast_outcomes/`, read through `db/ops_store.py`, are now the panel.
+  This warning is about the single file.) The **durable** archive that CI writes is fresh
   and its cells are complete, but shallow: 70,409 rows over 10 dates, with 2025-12-01 and
   2026-07-17 absent entirely. Your **local working copy** is the dangerous one — deep but stale
   since 2026-08-02, missing 36% of the ≥$1 rows, and its surviving rows in a deficient cell are
