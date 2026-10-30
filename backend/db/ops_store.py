@@ -69,7 +69,7 @@ def connect(root=None, tables: Iterable[str] = TABLES) -> duckdb.DuckDBPyConnect
 def fetch(con, sql: str) -> list:
     """Run *sql* and return named tuples, so `r.base_price` reads as on a SQLAlchemy row."""
     cur = con.execute(sql)
-    row = namedtuple("Row", [d[0] for d in cur.description])
+    row = namedtuple("Row", [d[0] for d in cur.description])  # type: ignore[misc]  # fields come from the query
     return [row(*r) for r in cur.fetchall()]
 
 
@@ -154,7 +154,10 @@ def compare(name: str, pg: Callable[[], object], parquet_value, *, tol: float = 
     diffs = _diffs(pg_value, parquet_value, tol)
     if isinstance(parquet_value, dict):
         logger.info(
-            "read twice %s: %d keys, %d differ", name, len(set(pg_value or {}) | set(parquet_value)), len(diffs)
+            "read twice %s: %d keys, %d differ",
+            name,
+            len(set(pg_value if isinstance(pg_value, dict) else {}) | set(parquet_value)),
+            len(diffs),
         )
     else:
         logger.info("read twice %s: postgres=%r partitions=%r", name, pg_value, parquet_value)
