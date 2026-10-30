@@ -115,4 +115,27 @@ from `_records_from_frozen_outcomes`, so it cannot drift from the published scor
 
 ## Amendments
 
-None yet. Any amendment is dated and written before the first in-window read.
+Any amendment is dated and written before the first in-window read.
+
+### 2026-10-30: the cohort is read from the ops partitions, not Postgres
+
+Written before any in-window number is computed. Neither horizon has been read.
+
+- **What changes:** where `forecast_outcomes` is read from. The instrument now hands
+  `_records_from_frozen_outcomes` the backtest's own `_panel_read()` (the monthly ops
+  partitions in cs2-oracle-data, `db/ops_store.py`) instead of a Postgres session.
+- **Why:** prod Postgres hit DiskFull on 2026-10-29 and went read-only on 2026-10-30. Outcomes
+  resolved since then are written only to the partitions (PR #122), so a Postgres read cannot
+  reach 20 window dates, and the panel JOIN no longer runs there. Separately, since #122 the
+  scorer takes a `sql -> rows` reader, and the Postgres loader raised before reading anything.
+- **What does not change:** the scorer's derivation (`_records_from_frozen_outcomes`, same
+  SQL, same ≥$1 floor, same `EXCLUDED_FORECAST_DATES`), the direction rule, `FLAT_TOLERANCE`,
+  the PT code and every number in the bar. The *Truncation* rule names none of these as
+  changed, so the window is neither truncated nor void.
+- **Evidence the two stores hold the same rows:** the partitions were reconciled to Postgres in
+  Phase 1 (Postgres wins every shared row); the nightly aggregate parity check was clean for 15
+  nights through 2026-10-28; and the first partition-read backtest (2026-10-30) compared matured
+  forecasts per forecast date from both stores and found 0 differences. That last check compares
+  row counts, not values. `tests/test_backtest_reads_partitions.py` shows the derivation scores
+  identical rows identically from either store. Rows resolved after 2026-10-30 exist only in the
+  partitions and are scored by the same derivation.
