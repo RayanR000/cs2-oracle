@@ -467,7 +467,12 @@ class DataPipeline:
                 try:
                     from collectors.new_item_discovery import discover_new_items
 
-                    new_items_discovered = discover_new_items(self.db_session, aggregator._raw_sources, snapshot_day)
+                    new_items_discovered = discover_new_items(
+                        self.db_session,
+                        aggregator._raw_sources,
+                        snapshot_day,
+                        ops_root=os.environ.get("AGGREGATOR_OPS_DIR") or None,
+                    )
                 except Exception as disc_err:
                     self.db_session.rollback()
                     logger.warning("New-item discovery failed (collection unaffected): %s", disc_err)

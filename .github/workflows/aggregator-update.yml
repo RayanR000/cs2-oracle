@@ -91,22 +91,14 @@ jobs:
           echo "Snapshot day resolved to $SNAPSHOT_DATE (runner clock: $(date -u +%FT%TZ))"
           echo "SNAPSHOT_DATE=$SNAPSHOT_DATE" >> "$GITHUB_ENV"
 
-      - name: Run Aggregator Task
-        working-directory: ./backend
-        env:
-          DATABASE_URL: ${{ secrets.SUPABASE_DATABASE_URL }}
-          ENVIRONMENT: production
-          DEBUG: false
-          # Pins the pipeline to the same day the append step will use.
-          AGGREGATOR_SNAPSHOT_DATE: ${{ env.SNAPSHOT_DATE }}
-        run: |
-          echo "🚀 Starting aggregator market update..."
-          set -o pipefail
-          python scripts/run_task.py aggregate 2>&1 | tee aggregator.log
-
       # Snapshot-tier items keep only their latest row in Supabase, so each
       # day's collection is dumped to the cs2-oracle-data repo as the durable
       # record of their price history.
+      #
+      # Checked out BEFORE the aggregate step so new-item discovery can read and write
+      # ops/items.parquet (AGGREGATOR_OPS_DIR below) on a night Postgres refuses the insert.
+      # price-archive is deliberately not linked here: nothing else in the aggregate step
+      # writes to the archive (docs/specs/2026-10-13-ops-readers-switch-design.md, PR 5).
       - name: Checkout data archive
         uses: actions/checkout@v7
         with:
@@ -115,6 +107,20 @@ jobs:
           token: ${{ secrets.CS2_DATA_REPO_TOKEN }}
           path: archive
           fetch-depth: 1
+
+      - name: Run Aggregator Task
+        working-directory: ./backend
+        env:
+          DATABASE_URL: ${{ secrets.SUPABASE_DATABASE_URL }}
+          ENVIRONMENT: production
+          DEBUG: false
+          # Pins the pipeline to the same day the append step will use.
+          AGGREGATOR_SNAPSHOT_DATE: ${{ env.SNAPSHOT_DATE }}
+          AGGREGATOR_OPS_DIR: ${{ github.workspace }}/archive/price-archive/ops
+        run: |
+          echo "🚀 Starting aggregator market update..."
+          set -o pipefail
+          python scripts/run_task.py aggregate 2>&1 | tee aggregator.log
 
       # Runs BEFORE the append so the day's rows land on the already-compacted
       # schema. The other order also works, but leaves the new rows carrying
@@ -243,10 +249,10 @@ jobs:
         working-directory: ./backend
         run: python scripts/check_fx_ratios.py --archive-dir ../archive/price-archive
 
-      # Phase 1.2 dual-write for the catalog: new-item discovery runs inside the Aggregator task,
-      # before the data checkout exists, so it cannot write ops/items.parquet itself. Copy the
-      # whole `items` table from Postgres instead (~32k rows; reads work on a read-only DB).
-      # continue-on-error, like every dual-write: Postgres still holds the catalog.
+      # Phase 1.2 dual-write for the catalog: rows Postgres took are copied from the whole `items`
+      # table (~32k rows; reads work on a read-only DB). The copy upserts by id, so rows discovery
+      # wrote to ops/items.parquet alone on a read-only night (ids >= 2**40) are kept.
+      # continue-on-error, like every dual-write.
       - name: Sync item catalog to ops/items.parquet
         continue-on-error: true
         working-directory: ./backend

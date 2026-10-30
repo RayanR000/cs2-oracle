@@ -2414,16 +2414,16 @@ class ItemForecaster:
         try:
             # Established (is_backfilled) plus discovered releases old enough to
             # serve -- `models/serve_universe.py` is the one definition.
-            served = serve_universe.served_items(self.db, self._now())
+            served = serve_universe.served_items(self._now())
             slugs = set(served)
             n_young = len(serve_universe.young_slugs(served))
             logger.info(
-                f"  Serve universe filter: {len(slugs)} items from DB "
+                f"  Serve universe filter: {len(slugs)} items from the partitions "
                 f"({len(slugs) - n_young} established, {n_young} young releases)"
             )
             return slugs
         except Exception as e:
-            logger.warning(f"  Could not fetch is_backfilled items from DB, deriving from archive: {e}")
+            logger.warning(f"  Could not read the served catalog from the partitions, deriving from archive: {e}")
             return self._archive_universe_slugs(exclude_iflow=False)
 
     def _fetch_voted_price_history(
@@ -3170,11 +3170,9 @@ class ItemForecaster:
         if hasattr(self, "_item_meta_cache") and self._item_meta_cache is not None:
             return self._item_meta_cache
         try:
-            rows = self.db.execute(
-                text("""
-                SELECT item_id, name, type FROM items
-            """)
-            ).fetchall()
+            from db import ops_store
+
+            rows = ops_store.reader(("items",))("SELECT item_id, name, type FROM items")
             df = pd.DataFrame(rows, columns=["item_id", "name", "type"])
         except Exception:
             self._item_meta_cache = pd.DataFrame(columns=["item_id", "name", "type"])
@@ -3503,10 +3501,10 @@ class ItemForecaster:
         return df
 
     def _fetch_supply_metadata(self) -> pd.DataFrame:
-        """Load supply-side metadata (rarity, weapon_type) from Parquet or DB.
+        """Load supply-side metadata (rarity, weapon_type) from Parquet.
 
         Tries price-archive/item-metadata.parquet first, then falls back
-        to the items table in the database.
+        to the catalog in the ops partitions (items.parquet).
         """
         if hasattr(self, "_supply_meta_cache") and self._supply_meta_cache is not None:
             return self._supply_meta_cache
@@ -3524,15 +3522,13 @@ class ItemForecaster:
                 logger.warning(f"  Failed to load supply metadata from Parquet: {e}")
 
         try:
-            rows = self.db.execute(
-                text("""
-                SELECT item_id, rarity, rarity_rank, weapon_type FROM items
-            """)
-            ).fetchall()
+            from db import ops_store
+
+            rows = ops_store.reader(("items",))("SELECT item_id, rarity, rarity_rank, weapon_type FROM items")
             df = pd.DataFrame(rows, columns=["item_id", "rarity", "rarity_rank", "weapon_type"])
-            logger.info(f"  supply metadata: {len(df)} items loaded from DB")
+            logger.info(f"  supply metadata: {len(df)} items loaded from the ops partitions")
         except Exception:
-            logger.warning("  Could not fetch supply metadata from DB; using empty DataFrame")
+            logger.warning("  Could not read supply metadata from the ops partitions; using empty DataFrame")
             df = pd.DataFrame(columns=["item_id", "rarity", "rarity_rank", "weapon_type"])
 
         self._supply_meta_cache = df
@@ -9515,7 +9511,7 @@ class ItemForecaster:
 
         # Map Parquet string slugs → integer DB IDs
         try:
-            slug_to_id = serve_universe.slug_to_id(serve_universe.served_items(self.db, self._now()))
+            slug_to_id = serve_universe.slug_to_id(serve_universe.served_items(self._now()))
         except Exception:
             slug_to_id = {}
 
@@ -10288,11 +10284,9 @@ class ItemForecaster:
 
     def _young_serve_slugs(self) -> set[str]:
         """Young releases served today (`models/serve_universe.py`). Empty on any
-        DB failure, which serves them at no horizon rather than at all of them."""
-        if self.db is None:
-            return set()
+        catalog read failure, which serves them at no horizon rather than at all of them."""
         try:
-            return serve_universe.young_slugs(serve_universe.served_items(self.db, self._now()))
+            return serve_universe.young_slugs(serve_universe.served_items(self._now()))
         except Exception as e:
             logger.warning(f"  Could not read young releases ({e}); none get the h=3-only treatment")
             return set()

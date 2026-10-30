@@ -36,6 +36,7 @@ def session():
 
 @pytest.fixture()
 def forecaster(session):
+    mirror_session_to_ops(session, tables=("items",))  # the slug map's catalog (Phase 2 PR 5)
     f = ItemForecaster.__new__(ItemForecaster)
     f.db = session
     f._now = lambda: ANCHOR

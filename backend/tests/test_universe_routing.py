@@ -76,9 +76,11 @@ def test_resolve_slugs_train_universe_reads_archive_not_db(fc):
     assert capturing_db.captured_sql is None
 
 
-def test_resolve_slugs_routes_to_is_backfilled_for_serve_universe(fc):
-    capturing_db = _CapturingDB()
-    fc.db = capturing_db
+def test_resolve_slugs_routes_to_is_backfilled_for_serve_universe(fc, monkeypatch):
+    # The serve universe is read from items.parquet since Phase 2 PR 5: capture the store SQL.
+    captured = []
+    monkeypatch.setattr("db.ops_store.reader", lambda tables, root=None: lambda sql: captured.append(sql) or [])
+    fc.db = _CapturingDB()
     fc._resolve_backfilled_slugs(universe="serve")
-    assert "is_backfilled" in capturing_db.captured_sql
-    assert "is_trainable" not in capturing_db.captured_sql
+    assert "is_backfilled" in captured[0]
+    assert "is_trainable" not in captured[0]

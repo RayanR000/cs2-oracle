@@ -727,11 +727,21 @@ def run_forecast(
         # Map item slugs to integer IDs: the served universe (established plus
         # young releases, `models/serve_universe.py`). Shadows keep the
         # established map, so the champion-challenger panel never sees a young item.
-        served = serve_universe.served_items(db, forecaster._now())
+        served = serve_universe.served_items(forecaster._now())
+        from db import ops_store
+
+        ops_store.compare(
+            "served universe (established, young)",
+            lambda: serve_universe.universe_sizes(
+                serve_universe.served_items(forecaster._now(), ops_store.pg_reader(db))
+            ),
+            serve_universe.universe_sizes(served),
+            db=db,
+        )
         slug_to_id = serve_universe.slug_to_id(served)
         shadow_slug_to_id = serve_universe.slug_to_id(served, established_only=True)
         logger.info(
-            f"Loaded {len(slug_to_id)} slug->ID mappings from DB "
+            f"Loaded {len(slug_to_id)} slug->ID mappings from the partitions "
             f"({len(slug_to_id) - len(shadow_slug_to_id)} young releases)"
         )
         override = os.environ.get("FORECAST_DATE_OVERRIDE")

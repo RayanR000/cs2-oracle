@@ -115,12 +115,39 @@ def find_new_items(raw_sources: dict[str, dict], known: set[str], snapshot_day: 
     return sorted(out)
 
 
-def discover_new_items(session, raw_sources: dict[str, dict], snapshot_day: date) -> int:
-    """Insert newly released items. Returns how many were inserted."""
+def _partition_catalog(ops_root) -> list:
+    """``items.parquet``'s rows under *ops_root*; empty when it holds none yet."""
+    from db import ops_store
+
+    try:
+        return ops_store.reader(("items",), root=ops_root)("SELECT id, name, item_id FROM items")
+    except ops_store.MissingTable:
+        return []
+
+
+def _write_partitions_only(rows: list[dict], ops_root, existing: list) -> None:
+    """A night Postgres cannot take the insert: the rows go to ``items.parquet`` alone, with ids
+    from ``max(id, READ_ONLY_ID_BASE) + 1`` so they can never collide with a Postgres id."""
+    import pandas as pd
+    from db import ops_partitions
+
+    top = max([int(r.id) for r in existing if r.id is not None] + [ops_partitions.READ_ONLY_ID_BASE])
+    frame = pd.DataFrame([{**r, "id": top + k} for k, r in enumerate(rows, start=1)])
+    frame = frame.rename(columns={"now": "created_at"}).assign(updated_at=frame["now"], is_trainable=0)
+    ops_partitions.upsert("items", frame, root=ops_root)
+
+
+def discover_new_items(session, raw_sources: dict[str, dict], snapshot_day: date, ops_root=None) -> int:
+    """Insert newly released items. Returns how many were inserted.
+
+    *ops_root*: the data checkout's ops dir (``AGGREGATOR_OPS_DIR``). Its ``items.parquet`` joins
+    the known set, and when Postgres cannot take the insert (read-only or out of disk) the rows
+    land there instead. Without it a refused insert inserts nothing."""
     if not raw_sources:
         return 0
     known: set[str] = set()
-    for r in session.execute(text("SELECT name, item_id FROM items")).fetchall():
+    partition_rows = _partition_catalog(ops_root) if ops_root is not None else []
+    for r in [*session.execute(text("SELECT name, item_id FROM items")).fetchall(), *partition_rows]:
         known.add(r.name)
         known.add(r.item_id)
     new = find_new_items(raw_sources, known, snapshot_day)
@@ -138,27 +165,40 @@ def discover_new_items(session, raw_sources: dict[str, dict], snapshot_day: date
     if not new:
         return 0
     now = datetime.utcnow()
-    session.execute(
-        text(
-            "INSERT INTO items (item_id, name, type, release_date, created_at, updated_at, "
-            "is_backfilled, is_trainable) "
-            "VALUES (:item_id, :name, :type, :release_date, :now, :now, 0, 0)"
-        ),
-        [
-            {
-                "item_id": name,
-                "name": name,
-                "type": item_type(name),
-                "release_date": datetime(d.year, d.month, d.day),
-                "now": now,
-            }
-            for name, d in new
-        ],
-    )
-    session.commit()
-    # No partition write here: this runs inside the Aggregator task, before the data checkout,
-    # so it would land in a throwaway directory. aggregator-update.yml syncs ops/items.parquet
-    # from Postgres after the checkout (scripts/ops_sync_from_postgres.py --tables items).
+    rows = [
+        {
+            "item_id": name,
+            "name": name,
+            "type": item_type(name),
+            "release_date": datetime(d.year, d.month, d.day),
+            "now": now,
+            "is_backfilled": 0,
+        }
+        for name, d in new
+    ]
+    try:
+        session.execute(
+            text(
+                "INSERT INTO items (item_id, name, type, release_date, created_at, updated_at, "
+                "is_backfilled, is_trainable) "
+                "VALUES (:item_id, :name, :type, :release_date, :now, :now, :is_backfilled, 0)"
+            ),
+            rows,
+        )
+        session.commit()
+        # A row Postgres took reaches the partitions through the nightly items sync
+        # (aggregator-update.yml, scripts/ops_sync_from_postgres.py --tables items).
+    except Exception as e:
+        from db.read_only import is_unwritable_error, report_read_only
+
+        session.rollback()
+        if not is_unwritable_error(e):
+            raise
+        if ops_root is None:
+            report_read_only("the new-item insert (no AGGREGATOR_OPS_DIR, so nothing was inserted)")
+            return 0
+        report_read_only("the new-item insert; the rows went to ops/items.parquet")
+        _write_partitions_only(rows, ops_root, partition_rows)
     logger.info(
         "New-item discovery: inserted %s items (%s from the 2026-07-08 seed, %s new this run). Sample: %s",
         len(new),
