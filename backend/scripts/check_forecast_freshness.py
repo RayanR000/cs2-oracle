@@ -7,8 +7,10 @@ reported success while storing zero rows. ``item_forecasts`` accumulated only 5
 distinct forecast dates in eight months for the same reason: nothing asserted
 the output.
 
-Both stores are checked because ``api/routes`` reads the Parquet mirror first
-and falls back to the DB, so a DB row without a mirror row serves nothing.
+The verdict reads the monthly ops partitions (``db/ops_store.py``), the store every scoring
+and serving reader uses since Phase 2. Postgres went read-only on 2026-10-30, so its newest
+date is reported for comparison only: behind the partitions, or unreadable, is a ``::notice``.
+Missing partitions are a stale verdict, not a crash.
 
 Usage:
     python scripts/check_forecast_freshness.py
@@ -25,7 +27,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from collectors.snapshot_date import resolve_snapshot_date
 from database import ItemForecast, SessionLocal
-from db.parquet import ParquetQuery
+from db import ops_store
 from sqlalchemy import func
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
@@ -40,22 +42,25 @@ def newest_forecast_date(dates):
     return max(present)
 
 
-def freshness_verdict(db_newest, parquet_newest, expected):
-    """Decide whether both stores carry a forecast for *expected* or later."""
-    problems = []
+def freshness_verdict(store_newest, expected):
+    """Decide whether the ops partitions carry a forecast for *expected* or later."""
+    if store_newest is None:
+        return False, "the item_forecasts partitions hold no forecasts at all"
+    if store_newest < expected:
+        return False, f"the item_forecasts partitions' newest forecast_date is {store_newest}, expected {expected}"
+    return True, f"The partitions carry forecasts for {expected} (newest {store_newest})."
+
+
+def postgres_note(db_newest, store_newest):
+    """A ``::notice`` when Postgres is unreadable or behind the partitions, else None. Never a failure."""
     if db_newest is None:
-        problems.append("item_forecasts (DB) holds no forecasts at all")
-    elif db_newest < expected:
-        problems.append(f"item_forecasts (DB) newest forecast_date is {db_newest}, expected {expected}")
-    if parquet_newest is None:
-        problems.append("the item_forecasts Parquet mirror holds no forecasts at all")
-    elif parquet_newest < expected:
-        problems.append(
-            f"the item_forecasts Parquet mirror newest forecast_date is {parquet_newest}, expected {expected}"
+        return "::notice title=Postgres::item_forecasts (Postgres) could not be read; the verdict reads the partitions"
+    if store_newest is not None and db_newest < store_newest:
+        return (
+            f"::notice title=Postgres::item_forecasts (Postgres) newest forecast_date is {db_newest}, "
+            f"behind the partitions' {store_newest}; Postgres is read-only and the verdict reads the partitions"
         )
-    if problems:
-        return False, "; ".join(problems)
-    return True, f"Both stores carry forecasts for {expected} (DB {db_newest}, Parquet {parquet_newest})."
+    return None
 
 
 def _as_date(value):
@@ -93,48 +98,37 @@ def shadow_collection_readiness(production_dates, candidate_batches, horizons=(3
     return {"shadow_collection_ready": True, "gap": None}
 
 
-def _shadow_batches():
-    """Distinct (forecast_date, horizon, component) candidate batches, or None."""
-    from database import ForecastCandidate
-
-    db = SessionLocal()
-    try:
-        rows = (
-            db.query(ForecastCandidate.forecast_date, ForecastCandidate.horizon_days, ForecastCandidate.component)
-            .distinct()
-            .all()
-        )
-        return {(_as_date(r[0]), r[1], r[2]) for r in rows}
-    finally:
-        db.close()
-
-
-def _recent_production_dates(limit=10):
-    db = SessionLocal()
-    try:
-        rows = (
-            db.query(ItemForecast.forecast_date)
-            .distinct()
-            .order_by(ItemForecast.forecast_date.desc())
-            .limit(limit)
-            .all()
-        )
-        return [_as_date(r[0]) for r in rows]
-    finally:
-        db.close()
+def _shadow_inputs(limit=10):
+    """(recent production forecast dates, distinct candidate batches) from the partitions."""
+    read = ops_store.reader(("item_forecasts", "forecast_candidates"))
+    dates = read(
+        f"SELECT DISTINCT forecast_date AS d FROM item_forecasts ORDER BY forecast_date DESC LIMIT {int(limit)}"
+    )
+    batches = read("SELECT DISTINCT forecast_date AS d, horizon_days AS h, component AS c FROM forecast_candidates")
+    return [_as_date(r.d) for r in dates], {(_as_date(r.d), int(r.h), r.c) for r in batches}
 
 
 def _db_newest():
-    db = SessionLocal()
+    """Postgres's newest forecast date, for comparison only; None when it cannot be read."""
     try:
-        return _as_date(db.query(func.max(ItemForecast.forecast_date)).scalar())
-    finally:
-        db.close()
+        db = SessionLocal()
+        try:
+            return _as_date(db.query(func.max(ItemForecast.forecast_date)).scalar())
+        finally:
+            db.close()
+    except Exception as e:
+        logger.warning(f"item_forecasts (Postgres) could not be read: {e}")
+        return None
 
 
-def _parquet_newest():
-    with ParquetQuery("item_forecasts") as q:
-        return _as_date(q.scalar("SELECT max(forecast_date) FROM item_forecasts"))
+def _store_newest():
+    """The partitions' newest forecast date; None when they hold none (or none exist)."""
+    try:
+        rows = ops_store.reader(("item_forecasts",))("SELECT max(forecast_date) AS d FROM item_forecasts")
+    except ops_store.MissingTable as e:
+        logger.error(str(e))
+        return None
+    return _as_date(rows[0].d) if rows else None
 
 
 def main():
@@ -156,7 +150,13 @@ def main():
     # persistence failure that did not happen.
     expected = datetime.fromisoformat(args.expected_date).date() if args.expected_date else resolve_snapshot_date()
 
-    ok, message = freshness_verdict(_db_newest(), _parquet_newest(), expected)
+    store_newest = _store_newest()
+    db_newest = _db_newest()
+    logger.info(f"Newest forecast_date: partitions {store_newest}, Postgres {db_newest} (comparison only).")
+    note = postgres_note(db_newest, store_newest)
+    if note:
+        print(note, flush=True)
+    ok, message = freshness_verdict(store_newest, expected)
     if ok:
         logger.info(message)
     else:
@@ -169,9 +169,9 @@ def main():
 
     # Shadow collection health: loud but non-fatal. A fresh collection reads
     # INSUFFICIENT_EVIDENCE for weeks, which is expected, not broken. A
-    # database without migration 0027 reports unknown rather than failing.
+    # store without candidate partitions reports unknown rather than failing.
     try:
-        readiness = shadow_collection_readiness(_recent_production_dates(), _shadow_batches())
+        readiness = shadow_collection_readiness(*_shadow_inputs())
     except Exception as e:
         logger.warning(f"Shadow collection status unknown ({e}); skipping the readiness check.")
         readiness = {"shadow_collection_ready": False, "gap": "unknown"}
