@@ -55,6 +55,7 @@ from backtest.scoring import (
     served_identity,
 )
 from database import PredictionAccuracy, SessionLocal
+from db.read_only import is_read_only_error, report_read_only
 from models.staleness import stale_run_lookup
 from sqlalchemy import text
 
@@ -121,30 +122,38 @@ def _upsert_accuracy(db, rows):
             ["prediction_type", "evaluation_date", "horizon_days", "model_version", "price_tier"],
         )
 
-    for row in rows:
-        filters = {
-            "prediction_type": row["prediction_type"],
-            "evaluation_date": row["evaluation_date"],
-        }
-        if row.get("horizon_days") is not None:
-            filters["horizon_days"] = row["horizon_days"]
-        else:
-            filters["horizon_days"] = None
-        if row.get("model_version") is not None:
-            filters["model_version"] = row["model_version"]
-        else:
-            filters["model_version"] = None
-        filters["price_tier"] = row.get("price_tier")
+    try:
+        for row in rows:
+            filters = {
+                "prediction_type": row["prediction_type"],
+                "evaluation_date": row["evaluation_date"],
+            }
+            if row.get("horizon_days") is not None:
+                filters["horizon_days"] = row["horizon_days"]
+            else:
+                filters["horizon_days"] = None
+            if row.get("model_version") is not None:
+                filters["model_version"] = row["model_version"]
+            else:
+                filters["model_version"] = None
+            filters["price_tier"] = row.get("price_tier")
 
-        existing = db.query(PredictionAccuracy).filter_by(**filters).first()
-        if existing:
-            existing.sample_count = row["sample_count"]
-            existing.metrics = row["metrics"]
-            existing.evaluation_window_days = row.get("evaluation_window_days")
-            existing.created_at = row["created_at"]
-        else:
-            db.add(PredictionAccuracy(**row))
-    db.commit()
+            existing = db.query(PredictionAccuracy).filter_by(**filters).first()
+            if existing:
+                existing.sample_count = row["sample_count"]
+                existing.metrics = row["metrics"]
+                existing.evaluation_window_days = row.get("evaluation_window_days")
+                existing.created_at = row["created_at"]
+            else:
+                db.add(PredictionAccuracy(**row))
+        db.commit()
+    except Exception as e:
+        if not is_read_only_error(e):
+            raise
+        db.rollback()
+        # prediction_accuracy has no partition yet (parent spec, "Run records"); the single-file
+        # Parquet copy above already landed.
+        report_read_only(f"{len(rows):,} prediction_accuracy upserts")
 
 
 # ---------------------------------------------------------------------------
@@ -403,6 +412,25 @@ def _refreshed_outcome_partitions(mirror) -> bool:
     )
 
 
+def _partition_only_outcomes(rows, what) -> bool:
+    """Write outcomes Postgres cannot take straight to the partitions, ids from READ_ONLY_ID_BASE.
+
+    Two cases: a read-only night (SQLSTATE 25006), and forecasts that exist only in the
+    partitions (id >= READ_ONLY_ID_BASE, issued on an earlier read-only night) — Postgres's
+    forecast_id is a 32-bit foreign key and cannot hold them. A stored outcome keeps its id.
+    """
+    import pandas as pd
+    from db import ops_partitions
+
+    def _write():
+        frame = ops_partitions.assign_ids(
+            "forecast_outcomes", pd.DataFrame(rows), base=ops_partitions.READ_ONLY_ID_BASE
+        )
+        ops_partitions.upsert("forecast_outcomes", frame)
+
+    return ops_partitions.dual_write(what, _write)
+
+
 def _flush_verdict_refresh(db, updates, mirror):
     """Write one batch of refreshed verdicts to the Parquet mirror, then the DB.
 
@@ -431,9 +459,15 @@ def _flush_verdict_refresh(db, updates, mirror):
 
     append_table("forecast_outcomes", mirror, ["forecast_id"])
 
-    for i in range(0, len(updates), CHUNK):
-        db.execute(_REFRESH_VERDICTS_SQL, updates[i : i + CHUNK])
-    db.commit()
+    try:
+        for i in range(0, len(updates), CHUNK):
+            db.execute(_REFRESH_VERDICTS_SQL, updates[i : i + CHUNK])
+        db.commit()
+    except Exception as e:
+        if not is_read_only_error(e):
+            raise
+        db.rollback()
+        report_read_only(f"{len(updates):,} verdict refresh updates")
     _refreshed_outcome_partitions(mirror)
 
 
@@ -597,6 +631,15 @@ def _store_forecast_outcomes(db, outcomes, reresolve: bool = False, considered_i
             rows = db.query(ForecastOutcome.forecast_id).filter(ForecastOutcome.forecast_id.in_(batch)).all()
             existing_ids.update(r[0] for r in rows)
         to_write = [o for o in outcomes if o["forecast_id"] not in existing_ids]
+        if existing_ids:
+            # Frozen in Postgres but missing from the partitions (a failed partition write on an
+            # earlier night): the caller resolved them again because it reads the partitions.
+            # Postgres wins — its frozen row goes to the partitions, tonight's values are dropped.
+            _outcome_partitions(db, sorted(existing_ids))
+            logger.warning(
+                f"  {len(existing_ids):,} outcome(s) Postgres holds were missing from the ops "
+                f"partitions; written there from Postgres"
+            )
 
         if not to_write:
             db.commit()
@@ -652,13 +695,31 @@ def _store_forecast_outcomes(db, outcomes, reresolve: bool = False, considered_i
         )
         return len(to_write)
 
-    db.bulk_insert_mappings(ForecastOutcome, to_write)
-    db.commit()
-
+    from db.ops_partitions import READ_ONLY_ID_BASE
     from db.parquet import append_table
 
+    to_postgres = [o for o in to_write if o["forecast_id"] < READ_ONLY_ID_BASE]
+    partition_only = [m for m in mirror if m["forecast_id"] >= READ_ONLY_ID_BASE]
+    read_only = False
+    if to_postgres:
+        try:
+            db.bulk_insert_mappings(ForecastOutcome, to_postgres)
+            db.commit()
+        except Exception as e:
+            if not is_read_only_error(e):
+                raise
+            db.rollback()
+            report_read_only(f"{len(to_postgres):,} forecast_outcomes inserts")
+            read_only = True
+
     append_table("forecast_outcomes", mirror, ["forecast_id"])
-    _outcome_partitions(db, [o["forecast_id"] for o in to_write])
+    if read_only:
+        _partition_only_outcomes(mirror, "forecast_outcomes (read-only night)")
+    else:
+        if to_postgres:
+            _outcome_partitions(db, [o["forecast_id"] for o in to_postgres])
+        if partition_only:
+            _partition_only_outcomes(partition_only, "forecast_outcomes (partition-only forecasts)")
 
     n_skipped = len(outcomes) - len(to_write)
     # The daily caller passes only unfrozen forecasts, so a non-zero skip means
@@ -983,6 +1044,10 @@ def _resolve_candidates(db, today, archive_dir, reresolve=False, rescore=False):
     except RuntimeError:
         raise
     except Exception as e:
+        try:
+            db.rollback()  # a failed insert leaves the transaction aborted for production scoring
+        except Exception:
+            logger.exception("  rollback after the candidate failure also failed")
         logger.warning(f"  Candidate resolution skipped ({e}); production scoring continues.")
         return {}
 
