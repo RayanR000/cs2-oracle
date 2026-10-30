@@ -35,6 +35,28 @@ def is_read_only_error(exc: BaseException | None) -> bool:
     return False
 
 
+DISK_FULL_SQLSTATE = "53100"  # disk_full: Supabase over its cap, 2026-10-29
+
+
+def is_disk_full_error(exc: BaseException | None) -> bool:
+    """True when `exc`, or anything in its cause chain, is an out-of-disk rejection."""
+    seen = set()
+    while exc is not None and id(exc) not in seen:
+        seen.add(id(exc))
+        for e in (exc, getattr(exc, "orig", None)):
+            if e is not None and getattr(e, "pgcode", None) == DISK_FULL_SQLSTATE:
+                return True
+        if "No space left on device" in str(exc):
+            return True
+        exc = exc.__cause__ or exc.__context__
+    return False
+
+
+def is_unwritable_error(exc: BaseException | None) -> bool:
+    """Postgres cannot take this write: read-only (25006) or out of disk (53100)."""
+    return is_read_only_error(exc) or is_disk_full_error(exc)
+
+
 def report_read_only(what: str) -> None:
     """Log the skipped write and annotate the GitHub Actions run."""
     msg = f"Postgres is read-only; skipped {what}. The Parquet output still lands."
