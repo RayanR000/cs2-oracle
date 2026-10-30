@@ -217,3 +217,37 @@ def test_migrate_runs_when_writable():
     ):
         assert run_task.run_migrations("head")["status"] == "success"
     run.assert_called_once()
+
+
+# --- out of disk counts as unwritable (53100, Supabase DiskFull) ------------
+
+
+def test_disk_full_pgcode_matches():
+    from db.read_only import DISK_FULL_SQLSTATE, is_disk_full_error
+
+    assert is_disk_full_error(InternalError("INSERT ...", {}, _PgError("could not extend file", DISK_FULL_SQLSTATE)))
+
+
+def test_disk_full_message_matches_through_the_cause_chain():
+    from db.read_only import is_disk_full_error
+    from sqlalchemy.exc import OperationalError
+
+    try:
+        try:
+            raise OperationalError("SELECT ...", {}, _PgError('could not write to file "x": No space left on device'))
+        except OperationalError as inner:
+            raise RuntimeError("batch failed") from inner
+    except RuntimeError as outer:
+        assert is_disk_full_error(outer)
+
+
+def test_unrelated_error_is_writable():
+    from db.read_only import is_unwritable_error
+
+    assert not is_unwritable_error(ValueError("bad row"))
+
+
+def test_read_only_is_unwritable():
+    from db.read_only import is_unwritable_error
+
+    assert is_unwritable_error(_read_only_exc())

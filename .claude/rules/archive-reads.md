@@ -51,7 +51,9 @@ paths:
   `db/ops_store.py` (views named like the Postgres tables, `pg_deleted` hidden, a table with no
   files raises) and logs each switched value beside Postgres's (`ops_store.compare`). Since PR 4
   (`changelog/2026-10-30-feedback-and-blend-read-ops-partitions.md`) so do the served-coverage
-  feedback panel, the prior-day blend and the tier bias fit. Every other
+  feedback panel, the prior-day blend and the tier bias fit, and since PR 2
+  (`changelog/2026-10-30-candidate-resolution-reads-ops-partitions.md`) candidate resolution,
+  which also writes the partitions directly when Postgres cannot take writes. Every other
   reader still reads Postgres until its PR (`specs/2026-10-13-ops-readers-switch-design.md`);
   `scripts/ops_parity.py` (Backtest Accuracy) proves the stores agree per date, and
   `ops-sync.yml` repairs. Tests get a temp `OPS_DIR` from conftest's `_hermetic_ops_dir`.

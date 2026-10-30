@@ -120,11 +120,31 @@ metrics per horizon.
 
 ### PR 2: candidate resolution
 
+**Shipped** 2026-10-30, after PR 4 (`changelog/2026-10-30-candidate-resolution-reads-ops-partitions.md`).
+
 `backtest/candidate_resolution.py` reads candidates, their outcomes and the production
 outcomes it pairs against from the store. It is its own PR because its output feeds the frozen
 champion–challenger read. The PR shows that the candidate-outcome rows it writes are identical
 from both stores on one night (same rows, same values), which is the parent spec's Phase 3
 condition for a storage change under a frozen read. Read twice: rows written per date.
+
+**Amended 2026-10-30 (Postgres read-only since that morning):**
+
+- **The writes move too.** Since 10-30 the shadow candidates land only in the partitions (ids
+  from `READ_ONLY_ID_BASE`), and the ORM read-modify-write fails on its first insert, which the
+  backtest swallows. Switching the reads alone would still resolve nothing. Resolution therefore
+  splits into a pure **plan** (reads through a `sql -> rows` reader, returns the rows to write
+  and the stats) and a **write**. The write tries Postgres for candidates with ids below
+  `READ_ONLY_ID_BASE`, then dual-writes the partitions as today (Postgres wins). On a read-only
+  (25006) or out-of-disk (53100) rejection it rolls back and writes every planned row straight to
+  the partitions, keyed on `candidate_id`. Partition-only candidates never go to Postgres,
+  because its `candidate_id` is a foreign key. `--rescore` follows the same split.
+- **The production/candidate mismatch check** (the `RuntimeError`) compares against the
+  production outcomes in the partitions.
+- **The proof is a dry run.** Postgres cannot be written to, so the PR runs the plan from both
+  stores for one night on or before 10-28, when the stores agreed, and shows the planned rows
+  are identical: the same rows with the same values. Each store's candidate outcomes resolved
+  that night or later are hidden first, so that night's resolution is recomputed.
 
 ### PR 3: freshness check
 

@@ -20,8 +20,6 @@ from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
-from sqlalchemy import text
-
 from backtest.price_resolution import (
     MAX_WINDOW_SPAN_DAYS,
     SMOOTH_WINDOW,
@@ -76,96 +74,102 @@ def _derived_metrics(candidate, base: float, actual: float) -> dict:
 
 
 def _rescore_candidate_outcomes(db) -> dict:
-    """Recompute derived metrics from frozen legs. Never reads the archive."""
-    from database import ForecastCandidate, ForecastCandidateOutcome
+    """Recompute derived metrics from frozen legs, read from the partitions. Never reads the archive."""
+    from db import ops_store
 
-    outcomes = db.query(ForecastCandidateOutcome).all()
-    if not outcomes:
-        return {"rescored": 0}
-    candidates = {
-        c.id: c
-        for c in db.query(ForecastCandidate).filter(ForecastCandidate.id.in_([o.candidate_id for o in outcomes])).all()
+    frozen = ops_store.reader(("forecast_candidates", "forecast_candidate_outcomes"))(
+        "SELECT o.candidate_id AS id, o.base_price, o.actual_price, o.resolved_at, o.resolution_version, "
+        "o.absolute_error, o.percentage_error, o.in_interval, c.forecast_date, c.component, "
+        "c.centre_price, c.predicted_price_low, c.predicted_price_high "
+        "FROM forecast_candidate_outcomes o JOIN forecast_candidates c ON c.id = o.candidate_id"
+    )
+    changed = []
+    for o in frozen:
+        derived = _derived_metrics(o, o.base_price, o.actual_price)
+        if any(getattr(o, k) != v for k, v in derived.items()):
+            row = _planned_row(o, o.base_price, o.actual_price, o.resolved_at)
+            row["resolution_version"] = o.resolution_version
+            changed.append(row)
+    _write_candidate_outcomes(db, changed)
+    logger.info(f"  Candidate rescore: refreshed derived metrics on {len(changed)} outcome(s)")
+    return {"rescored": len(changed)}
+
+
+# The views the plan reads (db/ops_store.py). Since Phase 2 PR 2 the partitions, not Postgres:
+# on a read-only night the shadow candidates exist only there.
+CANDIDATE_TABLES = ("forecast_candidates", "forecast_candidate_outcomes", "forecast_outcomes", "items")
+
+
+def _planned_row(candidate, base: float, actual: float, resolved_at) -> dict:
+    """One candidate outcome as its partition row. `resolved_at` None is stamped at write time."""
+    return {
+        "candidate_id": int(candidate.id),
+        "base_price": base,
+        "actual_price": actual,
+        "resolved_at": resolved_at,
+        "resolution_version": RESOLUTION_VERSION,
+        **_derived_metrics(candidate, base, actual),
+        "_part": _as_date(candidate.forecast_date),
     }
-    rescored = 0
-    changed_ids: set[int] = set()
-    for outcome in outcomes:
-        candidate = candidates.get(outcome.candidate_id)
-        if candidate is None:
-            continue
-        derived = _derived_metrics(candidate, outcome.base_price, outcome.actual_price)
-        changed = False
-        for key, value in derived.items():
-            if getattr(outcome, key) != value:
-                setattr(outcome, key, value)
-                changed = True
-        if changed:
-            rescored += 1
-            changed_ids.add(outcome.candidate_id)
-    db.commit()
-    _candidate_outcome_partitions(db, changed_ids)
-    logger.info(f"  Candidate rescore: refreshed derived metrics on {rescored} outcome(s)")
-    return {"rescored": rescored}
 
 
-def resolve_candidate_outcomes(db, *, today, archive_dir=None, reresolve: bool = False, rescore: bool = False) -> dict:
-    """Resolve mature shadow candidates against frozen outcome legs.
+def plan_candidate_outcomes(read, *, today, archive_dir, reresolve: bool = False) -> tuple[list[dict], dict]:
+    """The candidate outcomes to write tonight, read through *read* (a `sql -> rows` reader).
 
-    Prefers an existing frozen production outcome for each shared
-    (item, date, horizon); the archive is read only where production has no
-    row. A production outcome whose legs differ from a fresh archive
-    resolution raises RuntimeError. Returns count stats.
+    Prefers an existing frozen production outcome for each shared (item, date, horizon); the
+    archive is read only where production has no row. A production outcome whose legs differ
+    from a fresh archive resolution raises RuntimeError. Writes nothing and reads no clock, so
+    the same night planned from two stores can be compared row for row.
     """
-    from database import ForecastCandidate, ForecastCandidateOutcome, ForecastOutcome
-
-    if rescore:
-        return _rescore_candidate_outcomes(db)
-    if archive_dir is None:
-        raise ValueError("archive_dir is required unless rescore=True")
     archive_dir = Path(archive_dir)
     today = _as_date(today)
-    touched: set[int] = set()
+    stats = {"resolved": 0, "reresolved": 0, "skipped_frozen": 0, "skipped_immature": 0, "unresolvable": 0}
+    rows: list[dict] = []
 
     coverage_end = archive_max_day(archive_dir)
     cutoff = min(today, coverage_end)
 
-    candidates = db.query(ForecastCandidate).all()
-    stats = {"resolved": 0, "reresolved": 0, "skipped_frozen": 0, "skipped_immature": 0, "unresolvable": 0}
+    candidates = read(
+        "SELECT id, item_id, forecast_date, horizon_days, component, centre_price, "
+        "predicted_price_low, predicted_price_high FROM forecast_candidates ORDER BY id"
+    )
     if not candidates:
-        return stats
+        return rows, stats
+    frozen = {int(r.candidate_id) for r in read("SELECT candidate_id FROM forecast_candidate_outcomes")}
 
-    existing = {o.candidate_id: o for o in db.query(ForecastCandidateOutcome).all()}
-
-    item_ids = list({c.item_id for c in candidates})
-    prod_rows = []
-    for i in range(0, len(item_ids), CHUNK):
-        batch = item_ids[i : i + CHUNK]
-        prod_rows.extend(db.query(ForecastOutcome).filter(ForecastOutcome.item_id.in_(batch)).all())
+    item_ids = sorted({int(c.item_id) for c in candidates})
     prod_map: dict[tuple, Any] = {}
-    for row in prod_rows:
-        key = (row.item_id, _as_date(row.forecast_date), row.horizon_days)
-        prod_map.setdefault(key, row)
+    for i in range(0, len(item_ids), CHUNK):
+        batch = ", ".join(str(v) for v in item_ids[i : i + CHUNK])
+        for row in read(
+            "SELECT item_id, forecast_date, horizon_days, base_price, actual_price, resolved_at "
+            f"FROM forecast_outcomes WHERE item_id IN ({batch})"
+        ):
+            prod_map.setdefault((int(row.item_id), _as_date(row.forecast_date), int(row.horizon_days)), row)
 
-    slug_rows = db.execute(text("SELECT id, item_id FROM items")).fetchall()
-    id_to_slug = {r.id: r.item_id for r in slug_rows}
+    id_to_slug = {int(r.id): r.item_id for r in read("SELECT id, item_id FROM items")}
+
+    def add(candidate, base, actual, resolved_at):
+        rows.append(_planned_row(candidate, base, actual, resolved_at))
+        stats["reresolved" if int(candidate.id) in frozen else "resolved"] += 1
 
     # Unique (item, date, horizon) keys still needing archive legs.
     need_archive: dict[tuple, list] = {}
     for candidate in candidates:
         fdate = _as_date(candidate.forecast_date)
-        if fdate is None or fdate + timedelta(days=candidate.horizon_days) > cutoff:
+        horizon = int(candidate.horizon_days)
+        if fdate is None or fdate + timedelta(days=horizon) > cutoff:
             stats["skipped_immature"] += 1
             continue
-        outcome = existing.get(candidate.id)
-        if outcome is not None and not reresolve:
+        if int(candidate.id) in frozen and not reresolve:
             stats["skipped_frozen"] += 1
             continue
-        prod = prod_map.get((candidate.item_id, fdate, candidate.horizon_days))
+        key = (int(candidate.item_id), fdate, horizon)
+        prod = prod_map.get(key)
         if prod is not None and not reresolve:
-            _create_or_update(
-                db, existing, candidate, prod.base_price, prod.actual_price, prod.resolved_at, stats, touched
-            )
+            add(candidate, prod.base_price, prod.actual_price, prod.resolved_at)
             continue
-        need_archive.setdefault((candidate.item_id, fdate, candidate.horizon_days), []).append(candidate)
+        need_archive.setdefault(key, []).append(candidate)
 
     if need_archive:
         covered_days = archive_covered_days(archive_dir)
@@ -188,7 +192,6 @@ def resolve_candidate_outcomes(db, *, today, archive_dir=None, reresolve: bool =
 
         for key, group in need_archive.items():
             item_id, fdate, horizon = key
-            assert fdate is not None  # narrowed at insertion site above
             slug = key_slugs[key]
             prod = prod_map.get(key)
             if slug is None:
@@ -196,16 +199,7 @@ def resolve_candidate_outcomes(db, *, today, archive_dir=None, reresolve: bool =
                     # No archive identity to verify against; track production's
                     # current legs rather than leaving the batch unresolved.
                     for candidate in group:
-                        _create_or_update(
-                            db,
-                            existing,
-                            candidate,
-                            prod.base_price,
-                            prod.actual_price,
-                            prod.resolved_at,
-                            stats,
-                            touched,
-                        )
+                        add(candidate, prod.base_price, prod.actual_price, prod.resolved_at)
                 else:
                     stats["unresolvable"] += len(group)
                 continue
@@ -216,8 +210,7 @@ def resolve_candidate_outcomes(db, *, today, archive_dir=None, reresolve: bool =
             ) or classify_base_gap(fdate, covered_days, SMOOTH_WINDOW, staleness_days=MAX_WINDOW_SPAN_DAYS)
             base_res = prices.get((slug, fdate))
             actual_res = prices.get((slug, target_date))
-            legs = None
-            if (
+            if not (
                 gap is None
                 and not chronic
                 and base_res is not None
@@ -226,11 +219,9 @@ def resolve_candidate_outcomes(db, *, today, archive_dir=None, reresolve: bool =
                 and actual_res.price > 0
                 and actual_res.oldest_observation > fdate
             ):
-                legs = (base_res.price, actual_res.price)
-            if legs is None:
                 stats["unresolvable"] += len(group)
                 continue
-            base, actual = legs
+            base, actual = base_res.price, actual_res.price
             if prod is not None and (prod.base_price != base or prod.actual_price != actual):
                 raise RuntimeError(
                     "candidate/production resolution mismatch at "
@@ -239,10 +230,28 @@ def resolve_candidate_outcomes(db, *, today, archive_dir=None, reresolve: bool =
                     f"({prod.base_price}, {prod.actual_price})"
                 )
             for candidate in group:
-                _create_or_update(db, existing, candidate, base, actual, None, stats, touched)
+                add(candidate, base, actual, None)
+    return rows, stats
 
-    db.commit()
-    _candidate_outcome_partitions(db, touched)
+
+def resolve_candidate_outcomes(db, *, today, archive_dir=None, reresolve: bool = False, rescore: bool = False) -> dict:
+    """Resolve mature shadow candidates against frozen outcome legs and write them.
+
+    Plans from the ops partitions (`plan_candidate_outcomes`), writes Postgres when it can and
+    the partitions always (`_write_candidate_outcomes`), then logs the outcomes per forecast
+    date from both stores. Returns count stats.
+    """
+    from db import ops_store
+
+    if rescore:
+        return _rescore_candidate_outcomes(db)
+    if archive_dir is None:
+        raise ValueError("archive_dir is required unless rescore=True")
+    rows, stats = plan_candidate_outcomes(
+        ops_store.reader(CANDIDATE_TABLES), today=today, archive_dir=archive_dir, reresolve=reresolve
+    )
+    _write_candidate_outcomes(db, rows)
+    _read_twice_per_date(db)
     logger.info(
         "  Candidate outcomes: "
         f"{stats['resolved']} resolved, {stats['reresolved']} re-resolved, "
@@ -250,6 +259,89 @@ def resolve_candidate_outcomes(db, *, today, archive_dir=None, reresolve: bool =
         f"{stats['unresolvable']} unresolvable"
     )
     return stats
+
+
+_PER_DATE_SQL = (
+    "SELECT c.forecast_date AS d, count(*) AS n FROM forecast_candidate_outcomes o "
+    "JOIN forecast_candidates c ON c.id = o.candidate_id GROUP BY c.forecast_date"
+)
+
+
+def _read_twice_per_date(db) -> None:
+    """Candidate outcomes per candidate forecast date, partitions beside Postgres."""
+    from db import ops_store
+
+    def per_date(rows) -> dict:
+        return {str(_as_date(r.d)): int(r.n) for r in rows}
+
+    try:
+        store = per_date(ops_store.reader(("forecast_candidates", "forecast_candidate_outcomes"))(_PER_DATE_SQL))
+    except ops_store.MissingTable as e:
+        logger.warning(f"  read twice candidate outcomes per forecast date: {e}")
+        return
+    ops_store.compare(
+        "candidate outcomes per forecast date", lambda: per_date(ops_store.pg_reader(db)(_PER_DATE_SQL)), store, db=db
+    )
+
+
+def _write_candidate_outcomes(db, rows: list[dict]) -> str:
+    """Write planned outcomes: Postgres when it can take them, the partitions always.
+
+    Candidates with ids from READ_ONLY_ID_BASE go straight to the partitions; Postgres's
+    candidate_id is a foreign key to a row it never got. On a read-only or out-of-disk rejection
+    every row goes straight to the partitions. Returns "postgres" or "partitions".
+    """
+    from database import ForecastCandidateOutcome, utcnow_naive
+    from db.ops_partitions import READ_ONLY_ID_BASE
+    from db.read_only import is_unwritable_error, report_read_only
+
+    if not rows:
+        return "postgres"
+    now = utcnow_naive()
+    rows = [{**r, "resolved_at": now if r["resolved_at"] is None else r["resolved_at"]} for r in rows]
+    to_postgres = [r for r in rows if r["candidate_id"] < READ_ONLY_ID_BASE]
+    partition_only = [r for r in rows if r["candidate_id"] >= READ_ONLY_ID_BASE]
+    try:
+        if to_postgres:
+            ids = [r["candidate_id"] for r in to_postgres]
+            existing = {}
+            for i in range(0, len(ids), CHUNK):
+                q = db.query(ForecastCandidateOutcome).filter(
+                    ForecastCandidateOutcome.candidate_id.in_(ids[i : i + CHUNK])
+                )
+                existing.update({o.candidate_id: o for o in q.all()})
+            for r in to_postgres:
+                values = {k: v for k, v in r.items() if k != "_part"}
+                outcome = existing.get(r["candidate_id"])
+                if outcome is None:
+                    db.add(ForecastCandidateOutcome(**values))
+                else:
+                    for k, v in values.items():
+                        setattr(outcome, k, v)
+            db.commit()
+    except Exception as e:
+        if not is_unwritable_error(e):
+            raise
+        db.rollback()
+        report_read_only(f"{len(rows):,} candidate outcome writes")
+        _upsert_partitions(rows)
+        return "partitions"
+    _candidate_outcome_partitions(db, {r["candidate_id"] for r in to_postgres})
+    _upsert_partitions(partition_only)
+    return "postgres"
+
+
+def _upsert_partitions(rows: list[dict]) -> bool:
+    """Write planned rows straight to the partitions, routed by `_part`. Never raises."""
+    import pandas as pd
+    from db import ops_partitions
+
+    if not rows:
+        return True
+    return ops_partitions.dual_write(
+        "forecast_candidate_outcomes (partitions only)",
+        lambda: ops_partitions.upsert("forecast_candidate_outcomes", pd.DataFrame(rows)),
+    )
 
 
 def _candidate_outcome_partitions(db, candidate_ids) -> bool:
@@ -267,31 +359,3 @@ def _candidate_outcome_partitions(db, candidate_ids) -> bool:
         ops_partitions.upsert("forecast_candidate_outcomes", ops_readback.candidate_outcomes(db, candidate_ids=ids))
 
     return ops_partitions.dual_write("forecast_candidate_outcomes", _write, db=db)
-
-
-def _create_or_update(db, existing, candidate, base, actual, resolved_at, stats, touched):
-    """Create or refresh one candidate outcome row with derived metrics."""
-    from database import ForecastCandidateOutcome, utcnow_naive
-
-    derived = _derived_metrics(candidate, base, actual)
-    touched.add(candidate.id)
-    outcome = existing.get(candidate.id)
-    if outcome is None:
-        db.add(
-            ForecastCandidateOutcome(
-                candidate_id=candidate.id,
-                base_price=base,
-                actual_price=actual,
-                resolved_at=resolved_at if resolved_at is not None else utcnow_naive(),
-                resolution_version=RESOLUTION_VERSION,
-                **derived,
-            )
-        )
-        stats["resolved"] += 1
-    else:
-        outcome.base_price = base
-        outcome.actual_price = actual
-        outcome.resolved_at = resolved_at if resolved_at is not None else utcnow_naive()
-        for key, value in derived.items():
-            setattr(outcome, key, value)
-        stats["reresolved"] += 1

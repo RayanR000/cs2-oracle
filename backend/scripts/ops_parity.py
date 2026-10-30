@@ -32,6 +32,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 import duckdb
 import pandas as pd
 from db.ops_partitions import SPECS, closes_on, month_files, ops_dir
+from db.read_only import is_disk_full_error
 from sqlalchemy import text
 
 logger = logging.getLogger("ops_parity")
@@ -205,19 +206,11 @@ def clean_streak(root=None) -> int:
     return streak
 
 
-DISK_FULL_SQLSTATE = "53100"
-
-
 def _dead_postgres_reason(db) -> str | None:
     """Why Postgres cannot be compared against tonight, or None when it can."""
     if str(db.execute(text("SHOW transaction_read_only")).scalar()).lower() == "on":
         return "Postgres is read-only"
     return None
-
-
-def _is_disk_full(exc: BaseException) -> bool:
-    pgcode = getattr(getattr(exc, "orig", None), "pgcode", None)
-    return pgcode == DISK_FULL_SQLSTATE or "No space left on device" in str(exc)
 
 
 def _skip(reason: str) -> int:
@@ -242,7 +235,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         try:
             mismatches = run_parity(db)
         except Exception as e:
-            if not _is_disk_full(e):
+            if not is_disk_full_error(e):
                 raise
             return _skip("Postgres is out of disk")
     finally:
