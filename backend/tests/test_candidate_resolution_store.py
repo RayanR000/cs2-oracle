@@ -19,6 +19,16 @@ TODAY = date(2026, 10, 1)
 HIGH = ops_partitions.READ_ONLY_ID_BASE
 
 
+@pytest.fixture(autouse=True)
+def _open_months(monkeypatch):
+    """The fixtures are September 2026, which closes on 2026-11-12. The production writers do not
+    pass allow_closed, so without this the partition assertions would fail from that date."""
+    real = ops_partitions.upsert
+    monkeypatch.setattr(
+        ops_partitions, "upsert", lambda table, frame, **kw: real(table, frame, **{"allow_closed": True, **kw})
+    )
+
+
 def _plan(read, **kw):
     import backtest.candidate_resolution as cr
 
