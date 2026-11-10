@@ -3,7 +3,7 @@
 **Spec:** `docs/specs/2026-11-09-delete-postgres-design.md` (approved 2026-11-09)
 **Rule for every PR:** one worktree, one PR, `pytest -n 4` as its own step before commit, one
 commit per logical step, no attribution trailers. Merge order is the numbering. Nightly must be
-green for **2 nights** between PRs 1 and 2, and **7 nights** between PR 6 and PR 7.
+green for **2 nights** between PR 1 and PR 2a, and between 2a and 2b, and **7 nights** between PR 6 and PR 7.
 
 **Before PR 1:** #133, #134, #135 and #136 merged.
 
@@ -25,19 +25,38 @@ Files: `scripts/forecast_prices.py`, `db/candidate_store.py`, `db/ops_readback.p
 6. First production night after merge: check `item_forecasts/<month>.parquet` row count equals the
    forecast count, ids unique, no id below the old max reused.
 
-## PR 2: run records, discovery and aggregator steps
+## PR 2a: run records and the dead fallback
 
-Files: `collectors/pipeline.py`, `scripts/run_task.py`, `scripts/backfill_ops_item_slug.py`
-(delete), `aggregator-update.yml`, `append_to_parquet.py` (drop `DATABASE_URL`).
+Files: `collectors/pipeline.py`, `scripts/run_task.py`, tests.
 
-1. `collection_runs`: drop the `CollectionRun` insert and keep the Parquet write (already first-class).
+1. `collection_runs`: drop the `CollectionRun` insert (success and failure paths, L506-530 and L597-612)
+   and keep the Parquet write, which is already first-class. Remove the read-only branch there.
 2. Delete `_load_latest_prices`, `_load_latest_non_aggregator_prices`, `_latest_per_item`,
-   `_split_fresh_and_stale` and the fallback block (spec Q3). Keep `FALLBACK_MAX_AGE_DAYS` out too.
-3. `run_task.py`: build `DataPipeline` without a session.
-4. Workflow: remove `DATABASE_URL` from "Run Aggregator Task", "Append to Parquet archive", the
-   one-time slug backfill step (delete the step), and "Sync item catalog" if it only syncs from PG.
-   Keep "Database Migration" until PR 6.
-5. Tests: the pipeline tests that assert a `CollectionRun` row now assert the Parquet row.
+   `_split_fresh_and_stale` and the fallback block (spec Q3). Drop `FALLBACK_MAX_AGE_DAYS`.
+3. Tests: the pipeline tests that assert a `CollectionRun` row now assert the Parquet row.
+
+## PR 2b: the aggregator's catalog comes from `items.parquet` (found 2026-11-09, not in the spec)
+
+The pipeline still reads its item list from Postgres: `db_session.query(Item)` (L113) and
+`query(Item.id, Item.item_id, Item.is_backfilled)` (L275), and `discover_new_items(session, ...)` still
+inserts new releases into Postgres `items` (L180) and builds its known set from both stores. A dead
+Postgres would stop the Aggregator, the head of the whole chain, so this is the real blocker for PR 6.
+
+1. Load the catalog from `items.parquet` through `ops_store` / `serve_universe.served_items`-style
+   reader (id, slug, `is_backfilled`). The Aggregator workflow already checks the data repo out before
+   aggregating (`AGGREGATOR_OPS_DIR`, Phase 2 PR 5), so the file is present.
+2. `discover_new_items`: known set from `items.parquet` only; new items get ids from `assign_ids`
+   (>= 2**40, as on a read-only night) and are written to `items.parquet` only. Delete the Postgres insert.
+3. `ItemRepository.get_top_items` (the `limit=` branch, used by the unscheduled `priority` task): the
+   `repositories` module no longer exists, so that branch already raises. Delete it and the
+   `priority` task.
+4. `run_task.py`: build `DataPipeline` without a session.
+5. Workflow: remove `DATABASE_URL` from "Run Aggregator Task", "Append to Parquet archive",
+   "Sync item catalog to ops/items.parquet" (delete the step if it only syncs from Postgres) and the
+   one-time slug backfill step (delete it and `scripts/backfill_ops_item_slug.py`). Keep
+   "Database Migration" until PR 6.
+6. Gate: a local Aggregator run against the scratch partitions (`--no-db` style, no `DATABASE_URL`)
+   produces the same snapshot CSV as main for the same input.
 
 ## PR 3: parity, sync and reconcile deleted
 
