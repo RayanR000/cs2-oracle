@@ -18,19 +18,14 @@ import sys
 from datetime import UTC, date, datetime
 from pathlib import Path
 
-import sqlalchemy
-from sqlalchemy.dialects import postgresql as pg_dialect
-from sqlalchemy.dialects import sqlite as sqlite_dialect
-
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 import contextlib
 
-from database import ItemForecast, SessionLocal
+from database import SessionLocal
 from db.read_only import is_read_only_error, report_read_only
 from models import serve_universe
 from models.forecaster import IncompatibleModelArtifact, ItemForecaster
-from sqlalchemy import text
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s")
 logger = logging.getLogger("forecast_prices")
@@ -274,22 +269,6 @@ def _model_age_days(forecaster) -> int | None:
     return (datetime.now(UTC) - trained).days
 
 
-# Introspected once per (bind, table): the prod schema lags its migrations, so
-# the writer probes for the disclosure columns — but a probe per call is pure
-# overhead on a hot batch path. Keyed rather than a bare global so tests (and
-# reconnects) that present different schemas never read a stale answer.
-_FORECAST_DB_COLS: dict[tuple[str, str], set[str]] = {}
-
-
-def _get_forecast_cols(bind, table) -> set[str]:
-    key = (str(bind), table.name)
-    cols = _FORECAST_DB_COLS.get(key)
-    if cols is None:
-        cols = {c["name"] for c in sqlalchemy.inspect(bind).get_columns(table.name)}
-        _FORECAST_DB_COLS[key] = cols
-    return cols
-
-
 def _build_forecast_rows(results, model_version, slug_to_id, today, forecast_date_override=None) -> list[dict]:
     """One dict per (item, horizon) in the item_forecasts column order. Shared by every writer."""
     forecast_rows = []
@@ -350,10 +329,8 @@ def _build_forecast_rows(results, model_version, slug_to_id, today, forecast_dat
     return forecast_rows
 
 
-def _write_forecasts_to_db(
-    db, results, model_version, slug_to_id, today, model_config=None, forecast_date_override=None
-):
-    """Write forecast results to the item_forecasts table. Returns count.
+def _write_forecasts(results, model_version, slug_to_id, today, model_config=None, forecast_date_override=None):
+    """Write forecast results to the ops partitions (and the single-file mirror). Returns count.
 
     `model_version` is the served artifact's IDENTITY and nothing else.
     `model_config` names the serving configuration that produced the row and
@@ -371,15 +348,8 @@ def _write_forecasts_to_db(
     forecast_rows = _build_forecast_rows(results, model_version, slug_to_id, today, forecast_date_override)
 
     if forecast_rows:
-        # The Parquet mirror carries the slug as well as the surrogate id. The
-        # price archive keys on item_slug, so without it a forecast cannot be
-        # joined to its own price history without a round-trip to Supabase.
-        # Mirror only: `forecast_rows` is the DB payload below and ItemForecast
-        # has no such column.
-        #
-        # Written BEFORE Postgres: prod Supabase is over its free-tier cap and can
-        # go read-only, and a forecast written nowhere cannot be recreated
-        # (db/read_only.py).
+        # The single-file mirror carries the slug as well as the surrogate id: the price archive
+        # keys on item_slug, so a forecast joins to its price history without a database.
         id_to_slug = {v: k for k, v in slug_to_id.items()}
         from db.parquet import append_table
 
@@ -388,117 +358,8 @@ def _write_forecasts_to_db(
             [{**r, "item_slug": id_to_slug.get(r["item_id"]), "model_config": model_config} for r in forecast_rows],
             ["item_id", "forecast_date", "horizon_days"],
         )
-
-        # Verify DB connection is still alive before the batch insert loop.
-        # Training can take >1h, and the connection may have gone stale.
-        try:
-            db.execute(text("SELECT 1"))
-        except Exception:
-            logger.warning("  DB connection stale, reconnecting...")
-            db.close()
-            from database import SessionLocal
-
-            db = SessionLocal()
-
-        bind = db.get_bind()
-        is_sqlite = bind is not None and bind.dialect.name == "sqlite"
-        insert_stmt = sqlite_dialect.insert if is_sqlite else pg_dialect.insert
-        table = ItemForecast.__table__
-        # This repo's prod schema runs behind its migrations -- `daily_analysis`
-        # was dropped by 0015 and is still there -- so the model declaring a
-        # column is not evidence that the table has one. An INSERT naming a
-        # column the table lacks fails the whole batch, which would take the
-        # daily forecast run down for what is a disclosure field.
-        #
-        # LOUD, never silent: a quiet skip is how this project has repeatedly
-        # ended up with a green run and no data. The gate reads NULL as "not
-        # recorded" and passes it, so dropping these degrades to the old
-        # behaviour rather than to an empty ranked surface.
-        db_cols = _get_forecast_cols(bind, table)
-        missing = {
-            c
-            for c in ("anchor_clean", "anchor_wedge_pct", "exceed_p", "anomaly_p", "band_multiplier")
-            if c not in db_cols
-        }
-        if missing:
-            logger.warning(
-                f"  ⚠ item_forecasts is missing {sorted(missing)} — writing "
-                f"forecasts WITHOUT those disclosure fields "
-                f"(clean-anchor 0022/0024, exceed_p, anomaly_p 0025, band_multiplier 0028 -- without "
-                f"it the served-coverage refit drops every post-activation row). "
-                f"/opportunities cannot gate on a column that is not there, so "
-                f"it will rank the deviating cohort as before. Run "
-                f"`venv/bin/python -m alembic upgrade head` from backend/ "
-                f"(the `venv/bin/alembic` shim carries a stale shebang)."
-            )
-        # Only the DB payload is narrowed. The Parquet mirror below has no
-        # schema to violate and `_append_parquet` widens on write, so the
-        # disclosure still lands there and the ops read works either way.
-        db_rows = (
-            [{k: v for k, v in r.items() if k not in missing} for r in forecast_rows] if missing else forecast_rows
-        )
-
-        batch_size = 90 if is_sqlite else 5000
-        read_only = False
-        for i in range(0, len(db_rows), batch_size):
-            if read_only:
-                break
-            batch = db_rows[i : i + batch_size]
-            stmt = insert_stmt(table).values(batch)
-            excluded = stmt.excluded
-            update_cols = {
-                col.name: getattr(excluded, col.name)
-                for col in table.columns
-                if col.name not in {"id", "item_id", "forecast_date", "horizon_days", "created_at"}
-                and col.name not in missing
-            }
-            stmt = stmt.on_conflict_do_update(
-                index_elements=["item_id", "forecast_date", "horizon_days"],
-                set_=update_cols,
-            )
-            max_retries = 3
-            for attempt in range(max_retries):
-                try:
-                    db.execute(stmt)
-                    db.commit()
-                    break
-                except Exception as e:
-                    if is_read_only_error(e):
-                        db.rollback()
-                        report_read_only(f"the item_forecasts write ({len(db_rows)} rows)")
-                        read_only = True
-                        break
-                    if attempt < max_retries - 1:
-                        logger.warning(
-                            f"  Batch insert failed (attempt {attempt + 1}/{max_retries}), reconnecting and retrying: {e}"
-                        )
-                        db.rollback()
-                        db.close()
-                        from database import SessionLocal
-
-                        db = SessionLocal()
-                    else:
-                        logger.error(f"  Batch insert failed after {max_retries} attempts: {e}")
-                        db.rollback()
-                        raise
-
-        # Phase 1.2 dual-write (docs/specs/2026-10-11-postgres-to-parquet-history-design.md):
-        # AFTER the Postgres commit, so the partitions carry the ids Postgres issued. Read back
-        # only this batch's keys: regime and global rows share a date and differ in model_config.
-        # On a read-only night the ids come from the partitions instead. Never fails the run.
-        from db import ops_partitions, ops_readback
-
-        def _partitions():
-
-            if read_only:
-                frame = _read_only_forecast_frame(db, forecast_rows, id_to_slug)
-            else:
-                keys = {(r["item_id"], r["forecast_date"], r["horizon_days"]) for r in forecast_rows}
-                frame = ops_readback.forecasts(db, {r["forecast_date"] for r in forecast_rows}, keys)
-            frame["model_config"] = model_config
-            ops_partitions.upsert("item_forecasts", frame)
-
-        ops_partitions.dual_write("item_forecasts", _partitions, db=db)
+        # Phase 4: the partitions are the only store, and a failure here fails the run.
+        _write_forecasts_partitions(forecast_rows, id_to_slug, model_config)
 
     return len(forecast_rows)
 
@@ -521,35 +382,6 @@ def _write_forecasts_partitions(forecast_rows, id_to_slug, model_config) -> int:
     issued = ops_partitions.assign_ids("item_forecasts", frame, base=ops_partitions.READ_ONLY_ID_BASE)
     ops_partitions.upsert("item_forecasts", issued)
     return len(issued)
-
-
-def _read_only_forecast_frame(db, forecast_rows, id_to_slug):
-    """Partition rows for a night Postgres turned read-only partway through.
-
-    Batches committed before the SQLSTATE 25006 keep the ids Postgres gave them (reads still
-    work). The rest get ids from READ_ONLY_ID_BASE up, a range the Postgres sequence never
-    reaches, so the two cannot collide if Postgres becomes writable again.
-    """
-    import pandas as pd
-    from db import ops_partitions, ops_readback
-
-    def key(item_id, forecast_date, horizon):
-        return (item_id, pd.Timestamp(forecast_date).date(), horizon)
-
-    keys = {(r["item_id"], r["forecast_date"], r["horizon_days"]) for r in forecast_rows}
-    committed = ops_readback.forecasts(db, {r["forecast_date"] for r in forecast_rows}, keys)
-    done = {key(r.item_id, r.forecast_date, r.horizon_days): r.id for r in committed.itertuples()}
-    frame = pd.DataFrame(forecast_rows)
-    hit = [key(r["item_id"], r["forecast_date"], r["horizon_days"]) in done for r in forecast_rows]
-    kept = frame[hit].copy()
-    kept["id"] = [done[key(r.item_id, r.forecast_date, r.horizon_days)] for r in kept.itertuples()]
-    issued = ops_partitions.assign_ids(
-        "item_forecasts", frame[[not h for h in hit]], base=ops_partitions.READ_ONLY_ID_BASE
-    )
-    parts = [f for f in (kept, issued) if not f.empty]
-    out = pd.concat(parts, ignore_index=True) if len(parts) > 1 else parts[0].reset_index(drop=True)
-    out["item_slug"] = out["item_id"].map(id_to_slug)
-    return out
 
 
 def _write_shadow_candidates(db, forecaster, slug_to_id, forecast_date_override=None):
@@ -789,10 +621,10 @@ def run_forecast(
         # has one, which is exactly why this has to be observed rather than
         # assumed.
         config_a = "regime" if forecaster.regime_models else "global-only"
-        n_regime = _write_forecasts_to_db(
-            db, results, MODEL_VERSION, slug_to_id, today, model_config=config_a, forecast_date_override=override_date
+        n_regime = _write_forecasts(
+            results, MODEL_VERSION, slug_to_id, today, model_config=config_a, forecast_date_override=override_date
         )
-        logger.info(f"Wrote {n_regime} forecasts ({config_a} config) to item_forecasts table")
+        logger.info(f"Wrote {n_regime} forecasts ({config_a} config) to the ops partitions")
         # Shadows describe the stored production rows. In compare mode Run B
         # overwrites Run A on the (item, date, horizon) key, so only Run B's
         # shadows are persisted — alongside Run B's production write below.
@@ -819,8 +651,7 @@ def run_forecast(
             logger.info(f"  Cleared {n_cleared} regime model groups")
 
             results_global = forecaster.predict()
-            n_global = _write_forecasts_to_db(
-                db,
+            n_global = _write_forecasts(
                 results_global,
                 MODEL_VERSION,
                 slug_to_id,
@@ -828,7 +659,7 @@ def run_forecast(
                 model_config="global-only",
                 forecast_date_override=override_date,
             )
-            logger.info(f"Wrote {n_global} forecasts (global-only config) to item_forecasts table")
+            logger.info(f"Wrote {n_global} forecasts (global-only config) to the ops partitions")
             shadow_counts = _write_shadow_candidates(db, forecaster, shadow_slug_to_id, override_date)
 
             # Run backtest on both configs. They no longer score as separate

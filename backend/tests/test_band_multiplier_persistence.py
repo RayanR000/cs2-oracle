@@ -4,8 +4,7 @@
 day's band in, so the stored band is `(0.85 * m + 0.15 * m_prior) x` the base band. The
 feedback refit needs that product to score a row against the base band
 (tests/test_served_recalibration_band_multiplier.py). This file pins the serving half:
-the blended value, the prior fetch that feeds it, and the write behind the same
-missing-column guard as the other item_forecasts additions.
+the blended value, the prior fetch that feeds it, and the write.
 """
 
 from __future__ import annotations
@@ -17,7 +16,7 @@ import numpy as np
 import pytest
 from models.forecaster import ItemForecaster
 
-from tests.test_forecast_exceed_p_persistence import _BASE_DB_COLS, _capture_rows, _result
+from tests.test_forecast_exceed_p_persistence import _capture_rows, _result
 
 W = ItemForecaster.FORECAST_BLEND_WEIGHT
 
@@ -107,13 +106,8 @@ def test_prior_fetch_post_activation_null_multiplier_is_unknown():
 _FCAST = {"low": 9.0, "mid": 10.5, "high": 12.0, "direction": "up", "confidence": "low", "band_multiplier": 0.5385}
 
 
-def test_band_multiplier_is_written_when_the_column_exists():
-    rows = _capture_rows(_result(dict(_FCAST)), db_columns=_BASE_DB_COLS | {"band_multiplier"})
-    assert rows[0]["band_multiplier"] == pytest.approx(0.5385)
-
-
-def test_write_without_the_column_still_succeeds_and_mirrors_it():
-    rows = _capture_rows(_result(dict(_FCAST)), db_columns=_BASE_DB_COLS)
+def test_band_multiplier_is_written_and_mirrored():
+    rows = _capture_rows(_result(dict(_FCAST)))
     assert rows[0]["band_multiplier"] == pytest.approx(0.5385)
 
 

@@ -1745,7 +1745,7 @@ def test_predict_smoke_writes_nothing():
     """The point of the mode: exercise predict() without touching the DB.
 
     A price-forecast.yml dispatch reaches the same code and then calls
-    _write_forecasts_to_db under MODEL_VERSION + "-regime" -- the same string
+    _write_forecasts under MODEL_VERSION + "-regime" -- the same string
     production writes -- so its rows are indistinguishable from real ones and
     are frozen into outcomes. This mode must return before any writer.
     """
@@ -1756,11 +1756,11 @@ def test_predict_smoke_writes_nothing():
     src = inspect.getsource(forecast_prices.run_forecast)
     smoke = src.split("if predict_smoke:")[1].split("if train_only:")[0]
     assert "forecaster.predict()" in smoke, "the mode does not run predict()"
-    assert "_write_forecasts_to_db" not in smoke
+    assert "_write_forecasts" not in smoke
     assert "return" in smoke, "the mode must return before the writer below it"
     # And it has to be positioned ahead of the writer, not merely avoid calling
     # it: falling through would write.
-    assert src.index("if predict_smoke:") < src.index("_write_forecasts_to_db")
+    assert src.index("if predict_smoke:") < src.index("_write_forecasts")
 
 
 def test_predict_smoke_is_off_unless_asked():

@@ -105,44 +105,6 @@ class _DB:
         return type("_Bind", (), {"dialect": type("_D", (), {"name": "postgresql"})()})()
 
 
-def _drive(db, events):
-    from scripts.forecast_prices import _write_forecasts_to_db
-
-    class _Inspector:
-        def get_columns(self, name):
-            return [
-                {"name": c} for c in ("anchor_clean", "anchor_wedge_pct", "exceed_p", "anomaly_p", "band_multiplier")
-            ]
-
-    with (
-        patch("db.parquet.append_table", side_effect=lambda *a, **k: events.append("parquet")),
-        patch("sqlalchemy.inspect", return_value=_Inspector()),
-        patch("sqlalchemy.dialects.postgresql.insert") as ins,
-        patch("database.SessionLocal", return_value=db),
-    ):
-        ins.return_value.values.return_value.on_conflict_do_update.return_value = "stmt"
-        return _write_forecasts_to_db(db, _results(), "lgbm-v3", {"ak_1": 1}, date(2026, 10, 11))
-
-
-def test_read_only_forecast_write_lands_parquet_and_does_not_raise(capsys):
-    events = []
-    db = _DB(_read_only_exc(), events)
-    n = _drive(db, events)
-    assert n == 1
-    assert events == ["parquet", "db"]  # mirror first, one DB attempt, no retries
-    assert db.rolled_back
-    assert "::warning title=Postgres read-only::" in capsys.readouterr().out
-
-
-def test_other_forecast_write_errors_still_raise_after_the_mirror():
-    events = []
-    db = _DB(RuntimeError("connection reset"), events)
-    with pytest.raises(RuntimeError):
-        _drive(db, events)
-    assert events[0] == "parquet"
-    assert events.count("db") == 3  # the existing retry loop is unchanged
-
-
 # --- shadow candidates -----------------------------------------------------
 
 

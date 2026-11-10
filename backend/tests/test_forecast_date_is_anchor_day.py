@@ -53,48 +53,16 @@ def test_predict_exposes_the_anchor_day(forecaster_with_models):
 
 
 def _write_and_capture_forecast_date(results, *, today, override=None):
-    """Drive `_write_forecasts_to_db` and return the `forecast_date` it stamped
-    onto the first row handed to the Parquet mirror."""
-    from scripts.forecast_prices import _write_forecasts_to_db
+    """Drive `_write_forecasts` and return the `forecast_date` it stamped
+    onto the first row handed to the single-file mirror."""
+    from scripts.forecast_prices import _write_forecasts
 
     captured = {}
-    db_columns = {
-        "item_id",
-        "forecast_date",
-        "horizon_days",
-        "price_low",
-        "price_mid",
-        "price_high",
-        "current_price",
-        "direction",
-        "confidence",
-        "model_version",
-        "created_at",
-        "anchor_clean",
-        "anchor_wedge_pct",
-    }
-
-    class _DB:
-        def execute(self, stmt, *a, **k):
-            return None
-
-        def commit(self):
-            return None
-
-        def get_bind(self):
-            return type("_Bind", (), {"dialect": type("_D", (), {"name": "postgresql"})()})()
-
-    class _Inspector:
-        def get_columns(self, name):
-            return [{"name": c} for c in db_columns]
-
     with (
         patch("db.parquet.append_table", side_effect=lambda name, rows, keys: captured.update(rows=rows)),
-        patch("sqlalchemy.inspect", return_value=_Inspector()),
-        patch("sqlalchemy.dialects.postgresql.insert") as ins,
+        patch("scripts.forecast_prices._write_forecasts_partitions"),  # row construction only
     ):
-        (ins.return_value.values.return_value.on_conflict_do_update.return_value) = "stmt"
-        _write_forecasts_to_db(_DB(), results, "lgbm-v3", {"ak_1": 1}, today, forecast_date_override=override)
+        _write_forecasts(results, "lgbm-v3", {"ak_1": 1}, today, forecast_date_override=override)
     return captured["rows"][0]["forecast_date"]
 
 
