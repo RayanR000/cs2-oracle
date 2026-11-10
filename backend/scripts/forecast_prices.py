@@ -23,7 +23,6 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 import contextlib
 
 from database import SessionLocal
-from db.read_only import is_read_only_error, report_read_only
 from models import serve_universe
 from models.forecaster import IncompatibleModelArtifact, ItemForecaster
 
@@ -384,14 +383,13 @@ def _write_forecasts_partitions(forecast_rows, id_to_slug, model_config) -> int:
     return len(issued)
 
 
-def _write_shadow_candidates(db, forecaster, slug_to_id, forecast_date_override=None):
+def _write_shadow_candidates(forecaster, slug_to_id, forecast_date_override=None):
     """Persist pending shadow candidates after the production write.
 
     Slugs are remapped to integer item ids; unknown slugs are skipped like
     production. A FORECAST_DATE_OVERRIDE relabels records to the stored
-    production label. Integrity conflicts propagate (failing the run after
-    the production write); transient DB failures log inside the store and
-    leave batches absent for retry. Returns
+    production label. Fingerprint conflicts and write failures propagate (failing the run after
+    the production write). Returns
     (centre_written, ranking_written, batches_expected, batches_written).
     """
     from dataclasses import replace
@@ -414,17 +412,7 @@ def _write_shadow_candidates(db, forecaster, slug_to_id, forecast_date_override=
         remapped.append(record)
     if not remapped:
         return 0, 0, 0, 0
-    try:
-        result = write_candidate_batches(db, remapped)
-    except Exception as e:
-        if not is_read_only_error(e):
-            raise
-        db.rollback()
-        report_read_only(f"the forecast_candidates write ({len(remapped)} shadow rows; partitions only)")
-        from db.candidate_store import write_candidate_partitions_read_only
-
-        write_candidate_partitions_read_only(remapped)
-        return 0, 0, 0, 0
+    result = write_candidate_batches(remapped)
     logger.info(
         f"Wrote {result.centre_written} centre + {result.ranking_written} ranking shadow candidates "
         f"({result.batches_written}/{result.batches_expected} batches)"
@@ -631,7 +619,7 @@ def run_forecast(
         if compare_regime:
             shadow_counts = (0, 0, 0, 0)
         else:
-            shadow_counts = _write_shadow_candidates(db, forecaster, shadow_slug_to_id, override_date)
+            shadow_counts = _write_shadow_candidates(forecaster, shadow_slug_to_id, override_date)
 
         # Update bias corrections from outcomes if requested
         if update_bias:
@@ -660,7 +648,7 @@ def run_forecast(
                 forecast_date_override=override_date,
             )
             logger.info(f"Wrote {n_global} forecasts (global-only config) to the ops partitions")
-            shadow_counts = _write_shadow_candidates(db, forecaster, shadow_slug_to_id, override_date)
+            shadow_counts = _write_shadow_candidates(forecaster, shadow_slug_to_id, override_date)
 
             # Run backtest on both configs. They no longer score as separate
             # cohorts, and they never were separate rows: the second write

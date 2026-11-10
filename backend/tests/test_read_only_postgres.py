@@ -105,33 +105,6 @@ class _DB:
         return type("_Bind", (), {"dialect": type("_D", (), {"name": "postgresql"})()})()
 
 
-# --- shadow candidates -----------------------------------------------------
-
-
-def _shadow(error):
-    from scripts.forecast_prices import _write_shadow_candidates
-
-    record = MagicMock(item_id="ak_1", forecast_date=date(2026, 10, 10))
-    forecaster = MagicMock(pending_candidates=[record])
-    db = MagicMock()
-    with (
-        patch("db.candidate_store.write_candidate_batches", side_effect=error),
-        patch("dataclasses.replace", side_effect=lambda r, **k: r),
-    ):
-        return _write_shadow_candidates(db, forecaster, {"ak_1": 1}), db
-
-
-def test_read_only_shadow_write_is_skipped():
-    counts, db = _shadow(_read_only_exc())
-    assert counts == (0, 0, 0, 0)
-    db.rollback.assert_called_once()
-
-
-def test_other_shadow_write_errors_still_raise():
-    with pytest.raises(DBAPIError):
-        _shadow(DBAPIError("INSERT ...", {}, _PgError("conflict", "23505")))
-
-
 # --- drift alert -----------------------------------------------------------
 
 
