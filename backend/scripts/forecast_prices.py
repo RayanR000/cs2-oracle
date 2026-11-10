@@ -290,24 +290,8 @@ def _get_forecast_cols(bind, table) -> set[str]:
     return cols
 
 
-def _write_forecasts_to_db(
-    db, results, model_version, slug_to_id, today, model_config=None, forecast_date_override=None
-):
-    """Write forecast results to the item_forecasts table. Returns count.
-
-    `model_version` is the served artifact's IDENTITY and nothing else.
-    `model_config` names the serving configuration that produced the row and
-    goes to the Parquet mirror only — the same split as `item_slug` below.
-
-    Encoding the configuration in `model_version` is what F3 removed. The two
-    were one string (`lgbm-v3-regime` / `lgbm-v3-global-only`), and
-    `backtest/scoring.py::score_cohort` keys the cohort on it, so a config flag
-    forked the date panel and no cohort could reach MIN_HEADLINE_DATES. The
-    suffix bought nothing in exchange: item_forecasts is unique on
-    (item_id, forecast_date, horizon_days), so two configs writing the same day
-    never coexisted as rows — the second overwrote the first and only relabelled
-    it. See docs/changelog/2026-08-11-model-version-is-not-a-config.md.
-    """
+def _build_forecast_rows(results, model_version, slug_to_id, today, forecast_date_override=None) -> list[dict]:
+    """One dict per (item, horizon) in the item_forecasts column order. Shared by every writer."""
     forecast_rows = []
     for row in results.itertuples(index=False):
         slug = str(row.item_id)
@@ -363,6 +347,28 @@ def _write_forecasts_to_db(
                     "created_at": datetime.now(UTC).replace(tzinfo=None),
                 }
             )
+    return forecast_rows
+
+
+def _write_forecasts_to_db(
+    db, results, model_version, slug_to_id, today, model_config=None, forecast_date_override=None
+):
+    """Write forecast results to the item_forecasts table. Returns count.
+
+    `model_version` is the served artifact's IDENTITY and nothing else.
+    `model_config` names the serving configuration that produced the row and
+    goes to the Parquet mirror only — the same split as `item_slug` below.
+
+    Encoding the configuration in `model_version` is what F3 removed. The two
+    were one string (`lgbm-v3-regime` / `lgbm-v3-global-only`), and
+    `backtest/scoring.py::score_cohort` keys the cohort on it, so a config flag
+    forked the date panel and no cohort could reach MIN_HEADLINE_DATES. The
+    suffix bought nothing in exchange: item_forecasts is unique on
+    (item_id, forecast_date, horizon_days), so two configs writing the same day
+    never coexisted as rows — the second overwrote the first and only relabelled
+    it. See docs/changelog/2026-08-11-model-version-is-not-a-config.md.
+    """
+    forecast_rows = _build_forecast_rows(results, model_version, slug_to_id, today, forecast_date_override)
 
     if forecast_rows:
         # The Parquet mirror carries the slug as well as the surrogate id. The
@@ -495,6 +501,26 @@ def _write_forecasts_to_db(
         ops_partitions.dual_write("item_forecasts", _partitions, db=db)
 
     return len(forecast_rows)
+
+
+def _write_forecasts_partitions(forecast_rows, id_to_slug, model_config) -> int:
+    """Phase 4: the partitions are the only store. A key already stored keeps its id; new keys take
+    max(id, READ_ONLY_ID_BASE) + 1 upward, the range Postgres never reaches.
+
+    Raises on failure. The dual-write swallowed a partition error because Postgres held the rows;
+    with no Postgres, swallowing it would write the forecast nowhere.
+    """
+    import pandas as pd
+    from db import ops_partitions
+
+    if not forecast_rows:
+        return 0
+    frame = pd.DataFrame(forecast_rows)
+    frame["item_slug"] = frame["item_id"].map(id_to_slug)
+    frame["model_config"] = model_config
+    issued = ops_partitions.assign_ids("item_forecasts", frame, base=ops_partitions.READ_ONLY_ID_BASE)
+    ops_partitions.upsert("item_forecasts", issued)
+    return len(issued)
 
 
 def _read_only_forecast_frame(db, forecast_rows, id_to_slug):
