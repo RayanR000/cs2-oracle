@@ -28,12 +28,9 @@ import numpy as np
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-import contextlib
-
 from backtest.candidate_scoring import paired_daily_interval
 from backtest.promotion import MIN_BATCH_COMPLETENESS, MIN_SHARED_DATES
 from backtest.scoring import HEADLINE_MIN_TIER, excluded_forecast_date, price_tier
-from database import SessionLocal
 from models.candidate_predictions import HORIZONS
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s")
@@ -53,18 +50,17 @@ DATA_INTEGRITY_FAILURE = "DATA_INTEGRITY_FAILURE"
 MIN_ITEMS_PER_DATE = 100
 
 
-def load_horizon_frame(db, horizon: int) -> dict:
+def load_horizon_frame(read, horizon: int) -> dict:
     """Load shadow scores with canonical realised returns for one horizon.
 
     Joins ranking candidates to their frozen outcomes and the shared
     production outcome legs. Applies the >=$1 cohort and the excluded
     forecast dates here.
     """
-    from sqlalchemy import text
-
-    rows = (
-        db.execute(
-            text("""
+    rows = [
+        r._asdict()
+        for r in read(
+            f"""
         SELECT c.item_id, c.forecast_date, c.score,
                c.candidate_version, c.config_fingerprint,
                co.base_price AS c_base, co.actual_price AS c_actual,
@@ -78,13 +74,10 @@ def load_horizon_frame(db, horizon: int) -> dict:
           ON o.item_id = c.item_id
          AND o.forecast_date = c.forecast_date
          AND o.horizon_days = c.horizon_days
-        WHERE c.horizon_days = :h AND c.component = 'ranking'
-        """),
-            {"h": horizon},
+        WHERE c.horizon_days = {horizon} AND c.component = 'ranking'
+        """
         )
-        .mappings()
-        .all()
-    )
+    ]
 
     out = []
     for r in rows:
@@ -113,33 +106,18 @@ def load_horizon_frame(db, horizon: int) -> dict:
             }
         )
 
-    first = db.execute(
-        text("SELECT MIN(forecast_date) FROM forecast_candidates WHERE horizon_days = :h"),
-        {"h": horizon},
-    ).scalar()
+    (first,) = read(f"SELECT MIN(forecast_date) AS d FROM forecast_candidates WHERE horizon_days = {horizon}")[0]
     if first is None:
         expected, observed = 0, 0
     else:
-        expected = (
-            db.execute(
-                text("""
-            SELECT COUNT(DISTINCT forecast_date) FROM item_forecasts
-            WHERE horizon_days = :h AND forecast_date >= :first
-            """),
-                {"h": horizon, "first": first},
-            ).scalar()
-            or 0
-        )
-        observed = (
-            db.execute(
-                text("""
-            SELECT COUNT(DISTINCT forecast_date) FROM forecast_candidates
-            WHERE horizon_days = :h AND component = 'ranking'
-            """),
-                {"h": horizon},
-            ).scalar()
-            or 0
-        )
+        expected = read(
+            f"SELECT COUNT(DISTINCT forecast_date) AS n FROM item_forecasts "
+            f"WHERE horizon_days = {horizon} AND forecast_date >= '{first}'"
+        )[0].n
+        observed = read(
+            f"SELECT COUNT(DISTINCT forecast_date) AS n FROM forecast_candidates "
+            f"WHERE horizon_days = {horizon} AND component = 'ranking'"
+        )[0].n
     return {"rows": out, "expected_batches": int(expected), "observed_batches": int(observed)}
 
 
@@ -296,19 +274,19 @@ def main(argv=None) -> int:
     args = parser.parse_args(argv)
 
     horizons = list(HORIZONS) if args.horizon == "all" else [int(args.horizon)]
-    db = SessionLocal()
-    try:
-        reports = {}
-        for horizon in horizons:
-            try:
-                frame = load_horizon_frame(db, horizon)
-                reports[str(horizon)] = build_ranking_report(horizon, frame)
-            except Exception as e:
-                logger.error("  h=%s report failed: %s", horizon, e)
-                reports[str(horizon)] = {"horizon": horizon, "verdict": DATA_INTEGRITY_FAILURE, "reasons": [str(e)]}
-    finally:
-        with contextlib.suppress(Exception):
-            db.close()
+    from db import ops_store
+
+    read = ops_store.reader(
+        ("item_forecasts", "forecast_outcomes", "forecast_candidates", "forecast_candidate_outcomes")
+    )
+    reports = {}
+    for horizon in horizons:
+        try:
+            frame = load_horizon_frame(read, horizon)
+            reports[str(horizon)] = build_ranking_report(horizon, frame)
+        except Exception as e:
+            logger.error("  h=%s report failed: %s", horizon, e)
+            reports[str(horizon)] = {"horizon": horizon, "verdict": DATA_INTEGRITY_FAILURE, "reasons": [str(e)]}
 
     payload = reports[str(horizons[0])] if len(horizons) == 1 else {"horizons": reports}
     with open(args.json_out, "w") as f:

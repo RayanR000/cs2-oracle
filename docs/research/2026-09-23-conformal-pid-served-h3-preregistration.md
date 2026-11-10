@@ -196,3 +196,11 @@ before 2026-10-23. Its 21 synthetic tests are in
 `backend/tests/test_measure_conformal_pid.py`, and a mutation check caught 11 of 11
 deliberate logic breaks.
 
+
+- **A7 (2026-11-09, storage only, written before the read): the panel is read from the monthly ops
+  partitions.** Postgres has been read-only or out of disk since 2026-10-30. `load_prod_panel` now
+  takes a `sql -> rows` reader and runs the same two queries over `db/ops_store.py` (views named
+  like the Postgres tables). The window, the arms, the bar, the void conditions and the
+  derivation are unchanged. Before the read, `measure_conformal_pid.py --prove-equal` must show the
+  panel identical from both stores (it scores nothing and prints no PID number); the read is
+  void if it does not.

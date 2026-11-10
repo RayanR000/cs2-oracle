@@ -148,7 +148,12 @@ def test_the_pid_prereg_panel_excludes_young_releases(session):
         )
     session.commit()
 
-    panel = load_prod_panel(session)
+    from db import ops_store
+
+    from tests._ops_mirror import mirror_session_to_ops
+
+    mirror_session_to_ops(session)
+    panel = load_prod_panel(ops_store.reader(("item_forecasts", "forecast_outcomes", "items")))
 
     assert set(panel["item_id"]) == {1}
 

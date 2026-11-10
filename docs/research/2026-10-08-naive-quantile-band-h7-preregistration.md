@@ -151,4 +151,9 @@ Read only the h=7 rows of each. The other horizons in the same output are report
 
 ## Amendments
 
-None.
+- **A1 (2026-11-09, storage only, written before the read): the panel is read from the monthly
+  ops partitions.** `outside_baseline.py::load_panel` read the single-file mirror
+  `ops/forecast_outcomes.parquet`, which is 60,737 rows short of the partitions. It now reads
+  `ops/forecast_outcomes/*.parquet` through `db/ops_store.py`. The window, the arms, the bar and
+  the void conditions are unchanged. The "Reproduce" extraction must pull `ops/forecast_outcomes/`
+  (the partitions), not the single file.

@@ -279,8 +279,8 @@ def test_main_refuses_to_read_prod_before_the_read_date():
     assert mcp.main([], today=date(2026, 10, 22)) == 2
 
 
-def test_load_prod_panel_runs_against_the_real_schema():
-    """Both queries against tables built from the ORM. The prior-row read selected
+def _seeded_session():
+    """Tables built from the ORM, two h=3 forecast dates for one established item. The prior-row read selected
     `predicted_price_*` from item_forecasts, whose columns are `price_low/mid/high`,
     so the single 10-23 read would have raised before scoring anything."""
     import datetime as dt
@@ -335,8 +335,37 @@ def test_load_prod_panel_runs_against_the_real_schema():
         )
     s.commit()
 
-    panel = mcp.load_prod_panel(s)
+    return s, engine
+
+
+def test_load_prod_panel_runs_against_the_real_schema():
+    """Both queries against the ops partitions, mirrored from tables built from the ORM. The
+    prior-row read selected `predicted_price_*` from item_forecasts, whose columns are
+    `price_low/mid/high`, so the single 10-23 read would have raised before scoring anything."""
+    s, engine = _seeded_session()
+    from db import ops_store
+
+    from tests._ops_mirror import mirror_session_to_ops
+
+    mirror_session_to_ops(s)
+    panel = mcp.load_prod_panel(ops_store.reader(("item_forecasts", "forecast_outcomes", "items")))
 
     assert len(panel) == 2
     assert panel.sort_values("forecast_date")["prior_width_ratio"].tolist() == [1.0, 1.0]
+    engine.dispose()
+
+
+def test_prove_equal_passes_when_the_stores_match_and_fails_when_one_row_differs(monkeypatch):
+    import database
+
+    from tests._ops_mirror import mirror_session_to_ops
+
+    s, engine = _seeded_session()
+    mirror_session_to_ops(s)
+    monkeypatch.setattr(database, "SessionLocal", lambda: s)
+    assert mcp.prove_equal() == 0
+
+    s.execute(database.ForecastOutcome.__table__.update().values(actual_price=99.0))
+    s.commit()
+    assert mcp.prove_equal() == 1
     engine.dispose()
