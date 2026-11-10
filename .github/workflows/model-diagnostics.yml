@@ -299,7 +299,7 @@ on:
       # folds are already cohort-filtered, so they take reference_mask=None.
       # This runs predict() after training and writes NOTHING, which is the
       # difference between it and a price-forecast.yml dispatch: that one calls
-      # _write_forecasts_to_db under the same model_version production uses.
+      # _write_forecasts under the same model_version production uses.
       predict_smoke:
         description: 'Run predict() after training and write nothing (path check)'
         required: false

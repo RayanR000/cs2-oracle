@@ -258,106 +258,22 @@ def test_the_write_path_carries_both_columns():
         ]
     )
 
-    rows = _write_and_capture(
-        results,
-        db_columns={
-            "item_id",
-            "forecast_date",
-            "horizon_days",
-            "price_low",
-            "price_mid",
-            "price_high",
-            "current_price",
-            "direction",
-            "confidence",
-            "model_version",
-            "created_at",
-            "anchor_clean",
-            "anchor_wedge_pct",
-        },
-    )
+    rows = _write_and_capture(results)
 
     assert rows[0]["anchor_clean"] is False
     assert rows[0]["anchor_wedge_pct"] == pytest.approx(-13.5)
 
 
-def test_an_unmigrated_table_does_not_take_the_forecast_run_down(caplog):
-    """This repo's prod schema runs behind its migrations — `daily_analysis`
-    was dropped by 0015 and is still in prod. An INSERT naming a column the
-    table lacks fails the whole batch, so a disclosure field would have taken
-    out the daily forecast run.
-
-    It degrades, and it says so: a silent skip is how this project has ended up
-    with a green run and no data more than once.
-    """
-    results = pd.DataFrame(
-        [
-            {
-                "item_id": "ak_1",
-                "current_price": 10.0,
-                "anchor_clean": False,
-                "anchor_wedge_pct": -13.5,
-                "forecasts": {7: {"low": 9.0, "mid": 10.5, "high": 12.0, "direction": "up", "confidence": "low"}},
-            }
-        ]
-    )
-
-    with caplog.at_level("WARNING"):
-        rows = _write_and_capture(
-            results,
-            db_columns={
-                "item_id",
-                "forecast_date",
-                "horizon_days",
-                "price_low",
-                "price_mid",
-                "price_high",
-                "current_price",
-                "direction",
-                "confidence",
-                "model_version",
-                "created_at",
-            },
-        )
-
-    # The mirror keeps them; only the DB payload is narrowed.
-    assert rows[0]["anchor_clean"] is False
-    assert "anchor_clean" in caplog.text and "alembic upgrade head" in caplog.text
-
-
-def _write_and_capture(results, db_columns):
-    """Drive `_write_forecasts_to_db` against a table with `db_columns`,
-    returning the rows it handed to the Parquet mirror."""
-    from scripts.forecast_prices import _write_forecasts_to_db
+def _write_and_capture(results):
+    """Drive `_write_forecasts` and return the rows it handed to the single-file mirror."""
+    from scripts.forecast_prices import _write_forecasts
 
     captured = {}
-    inserted = []
-
-    class _DB:
-        def execute(self, stmt, *a, **k):
-            inserted.append(stmt)
-
-        def commit(self):
-            return None
-
-        def get_bind(self):
-            return type("_Bind", (), {"dialect": type("_D", (), {"name": "postgresql"})()})()
-
-    class _Inspector:
-        def get_columns(self, name):
-            return [{"name": c} for c in db_columns]
-
     with (
         patch("db.parquet.append_table", side_effect=lambda name, rows, keys: captured.update(rows=rows)),
-        patch("sqlalchemy.inspect", return_value=_Inspector()),
-        patch("sqlalchemy.dialects.postgresql.insert") as ins,
+        patch("scripts.forecast_prices._write_forecasts_partitions"),  # row construction only
     ):
-        (ins.return_value.values.return_value.on_conflict_do_update.return_value) = "stmt"
-        _write_forecasts_to_db(_DB(), results, "lgbm-v3", {"ak_1": 1}, date(2026, 8, 11))
-        values_call = ins.return_value.values.call_args
-    batch = values_call[0][0]
-    for column in ("anchor_clean", "anchor_wedge_pct"):
-        assert (column in batch[0]) == (column in db_columns), f"{column} in the DB payload but not in the table"
+        _write_forecasts(results, "lgbm-v3", {"ak_1": 1}, date(2026, 8, 11))
     return captured["rows"]
 
 

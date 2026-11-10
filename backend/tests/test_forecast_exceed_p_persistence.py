@@ -1,7 +1,7 @@
 """Phase C: the served exceedance probability `exceed_p` is persisted.
 
 `predict()` emits `exceed_p` on each forecast — P(the h-day UPSIDE move clears
-the round-trip cost), one-sided. `_write_forecasts_to_db` must carry it to
+the round-trip cost), one-sided. `_write_forecasts` must carry it to
 `item_forecasts` and the Parquet mirror, behind the SAME missing-column guard as
 the anchor disclosure (0022/0024): a prod DB predating the column degrades to
 writing without it rather than failing the whole daily batch, and the Parquet

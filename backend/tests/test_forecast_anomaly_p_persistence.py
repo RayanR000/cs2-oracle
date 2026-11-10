@@ -2,7 +2,7 @@
 
 `predict()` emits `anomaly_p` on each forecast at the disclosed horizons
 (`ItemForecaster.ANOMALY_SERVED_HORIZONS` = 3/7/14; 30d is None because its head
-ranks without calibrating). `_write_forecasts_to_db` has always put the value in
+ranks without calibrating). `_write_forecasts` has always put the value in
 its payload, but `anomaly_p` was absent from the missing-column probe that
 narrows the SQL leg — so on a prod schema predating migration 0025 the INSERT
 names a column the table lacks and the WHOLE daily batch raises after three
