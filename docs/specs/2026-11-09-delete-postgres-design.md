@@ -22,7 +22,8 @@ Nothing here changes a forecast, a band or a score. Storage and plumbing only.
 | Shadow write | `db/candidate_store.py` | Postgres then partitions | Partitions only |
 | Id read-back, parity | `db/ops_readback.py`, `scripts/ops_parity.py`, `ops_sync_from_postgres.py`, `backfill_*` | Exist to reconcile the two stores | Delete (nothing to reconcile) |
 | Run records | `collectors/pipeline.py` (`CollectionRun`, a `PriceHistory` count at ~L653), `run_task.py` | Postgres insert, then `collection_runs.parquet` | Parquet only. The `PriceHistory` read is a stale check, see Q3. |
-| Prior-day blend fallback | `models/forecaster.py` ~L2759 (`events` reconnect) | Reads the `events` table | `events.parquet`, or drop with the event features, see Q2 |
+| Forecaster events | `models/forecaster.py` `fetch_events` (L2746), called at L5880 and L9804 | Reads the `events` table, builds a frame no served feature uses (Q2, answered) | Return an empty frame; delete the reconnect fallback |
+| Forecaster other DB reads | `forecaster.py` L2325 (`price_history`, legacy path), L6374 and L8735 (`served_coverage_factors(self.db, ...)`), L9488 (`pg_reader` read-twice), L11218-11321 (`AccuracyAlert` write) | Postgres sessions inside the model class | Not yet audited: PR 4 starts by listing which are live and which are Postgres-only fallbacks |
 | Events | `sync_events_from_news.py`, `event_correlation_analysis.py` (workflow disabled) | Postgres | Retire or Parquet, see Q2 |
 | Replay | `scripts/replay_serving.py` (model-diagnostics) | Postgres | `ops_store` reader |
 | Migrations | `run_task.py migrate`, `migrations/`, `alembic.ini`, `check_schema_drift.py`, `schema-drift-check.yml` | Nightly `alembic upgrade head` | Delete |
@@ -83,13 +84,22 @@ irreversible step, and it waits at least 7 nightly cycles after PR 6.
 1. **API.** Retire `main.py` and all routes (the API is not deployed, there is no frontend), or keep
    `accuracy` on the ops store and drop the rest? Recommended: retire everything; `accuracy` has no
    consumer. `auth.py` and the `users` table go with it.
-2. **Events.** `events` and `event_impacts` are mirrored to Parquet, but the event features,
-   `sync_events_from_news.py` and `event_correlation_analysis.py` (workflow `disabled_manually`) still
-   read Postgres. Does any served feature depend on events? If not, retire the scripts and
-   point the forecaster's reconnect fallback at `events.parquet`. This needs a read of
-   `models/forecaster.py` before the plan, since a served feature is a band change.
-3. **`PriceHistory` stale check in `pipeline.py`** (~L653): what does it guard? `price_history` has
-   been frozen since 2026-07-11, so it can only be reading dead data. Confirm and delete.
+2. ~~**Events.**~~ **Answered 2026-11-09: no served feature uses them.** `FEATURE_GROUP_ALLOWLIST` is
+   `["price_technicals"]`, so `_skipped_feature_groups()` includes `events` and
+   `_add_event_features` never runs on the production frame. `fetch_events()` is still called at
+   L5880 (training) and L9804 (serving), and its frame only reaches `engineer_features`, where it is
+   ignored. Making `fetch_events` return an empty frame cannot move a band. Caveat: the 14d horizon's
+   `HORIZON_EXCLUDED_GROUPS` comment says events help 14d (+2.0pp), but the global allowlist overrides
+   it, so that is history. Re-admitting the group would need the events table back; that is a
+   modelling decision, not a Phase 4 one. The `sync_events_from_news.py` and
+   `event_correlation_analysis.py` scripts feed nothing served and are retired with the API.
+3. ~~**`PriceHistory` stale check in `pipeline.py`.**~~ **Answered 2026-11-09: it is a dead fallback.**
+   `_load_latest_prices` and `_load_latest_non_aggregator_prices` recover an item missing from the
+   day's scrape from `price_history`, but only if its newest row is within `FALLBACK_MAX_AGE_DAYS`
+   (7). The table has been frozen since 2026-07-11, so every lookup is stale and recovers nothing; the
+   item lands in `still_missing_names` and is counted as an error exactly as if the fallback were
+   absent. Delete both loaders and the fallback block. The only visible change is the "declined N
+   items" warning going away.
 4. **Supabase deletion.** Delete the project, or pause it and let it lapse? Pausing is reversible for
    a while and costs nothing; deleting is not. Recommended: pause after PR 6, delete at the monthly
    pull after the final backup verifies.
