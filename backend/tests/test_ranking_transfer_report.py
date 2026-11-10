@@ -43,8 +43,7 @@ def _frame(n_dates=20, mode="supported", items=100):
 def _run_main(monkeypatch, tmp_path, frame):
     import scripts.ranking_transfer_report as rep
 
-    monkeypatch.setattr(rep, "load_horizon_frame", lambda db, h: frame)
-    monkeypatch.setattr(rep, "SessionLocal", lambda: object())
+    monkeypatch.setattr(rep, "load_horizon_frame", lambda read, h: frame)
     json_out = str(tmp_path / "ranking.json")
     md_out = str(tmp_path / "ranking.md")
     code = rep.main(["--horizon", "7", "--json-out", json_out, "--markdown-out", md_out])

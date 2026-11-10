@@ -111,7 +111,6 @@ jobs:
         continue-on-error: true
         working-directory: ./backend
         env:
-          DATABASE_URL: ${{ secrets.SUPABASE_DATABASE_URL }}
           ENVIRONMENT: production
           DEBUG: false
         run: |

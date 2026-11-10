@@ -58,8 +58,7 @@ def _frame(n_dates=20, cand_err=1.0, prod_err=2.0, cand_cov=True, prod_cov=True,
 def _run_main(monkeypatch, tmp_path, frame, horizon=7):
     import scripts.centre_promotion_report as rep
 
-    monkeypatch.setattr(rep, "load_horizon_frame", lambda db, h: frame)
-    monkeypatch.setattr(rep, "SessionLocal", lambda: object())
+    monkeypatch.setattr(rep, "load_horizon_frame", lambda read, h: frame)
     json_out = str(tmp_path / "centre.json")
     md_out = str(tmp_path / "centre.md")
     code = rep.main(["--horizon", str(horizon), "--json-out", json_out, "--markdown-out", md_out])
