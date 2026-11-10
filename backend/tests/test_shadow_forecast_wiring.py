@@ -60,7 +60,7 @@ def test_writer_receives_no_ranking_field():
 
     import scripts.forecast_prices as fp
 
-    assert "rank_score" not in inspect.getsource(fp._write_forecasts_to_db)
+    assert "rank_score" not in inspect.getsource(fp._write_forecasts)
 
 
 def test_public_schemas_carry_no_shadow():

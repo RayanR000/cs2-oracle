@@ -19,7 +19,7 @@ and the observation that produces the configuration label.
 
 import inspect
 import sys
-from datetime import date
+from datetime import date, timedelta
 from pathlib import Path
 
 import duckdb
@@ -35,7 +35,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 from database import Base, Item, ItemForecast
 from scripts.forecast_prices import (
     MODEL_VERSION,
-    _write_forecasts_to_db,
+    _write_forecasts,
     run_forecast,
 )
 
@@ -73,25 +73,26 @@ def _results():
     )
 
 
+DAY = date.today() - timedelta(days=5)  # an open month: the partitions refuse closed ones
+
+
 def _write(session, config):
-    return _write_forecasts_to_db(
-        session,
-        _results(),
-        MODEL_VERSION,
-        {"ak": 1},
-        date(2026, 8, 11),
-        model_config=config,
-    )
+    return _write_forecasts(_results(), MODEL_VERSION, {"ak": 1}, DAY, model_config=config)
 
 
-def test_the_db_row_carries_the_identity_and_not_the_config(session, ops):
+def _stored(ops):
+    files = ", ".join(f"'{f}'" for f in sorted((ops / "item_forecasts").glob("*.parquet")))
+    return duckdb.sql(f"SELECT * FROM read_parquet([{files}])").df()
+
+
+def test_the_row_carries_the_identity_and_not_the_config(session, ops):
     """The scoring key. A suffix here is what forked the panel."""
     assert _write(session, "regime") == 1
 
-    stored = session.query(ItemForecast).one()
-    assert stored.model_version == "lgbm-v3"
-    assert "regime" not in stored.model_version
-    assert "global-only" not in stored.model_version
+    stored = _stored(ops)
+    assert stored["model_version"].tolist() == ["lgbm-v3"]
+    assert "regime" not in stored["model_version"].iloc[0]
+    assert "global-only" not in stored["model_version"].iloc[0]
 
 
 def test_two_configs_write_one_identity(session, ops):
@@ -101,17 +102,17 @@ def test_two_configs_write_one_identity(session, ops):
     _write(session, "regime")
     _write(session, "global-only")
 
-    rows = session.query(ItemForecast).all()
-    assert len(rows) == 1, "the unique key stopped collapsing the two writes"
-    assert rows[0].model_version == "lgbm-v3"
+    stored = _stored(ops)
+    assert len(stored) == 1, "the unique key stopped collapsing the two writes"
+    assert stored["model_version"].tolist() == ["lgbm-v3"]
 
 
-def test_the_config_reaches_the_mirror(session, ops):
-    """Mirror-only, the same split `item_slug` already follows: the ops store is
-    where the archive is analysed, and the DB carries only what is served."""
+def test_the_config_reaches_the_partitions(session, ops):
+    """Partition-only, the same split `item_slug` already follows: the ops store is
+    where the archive is analysed, and `model_version` carries only what is served."""
     _write(session, "global-only")
 
-    df = duckdb.sql(f"SELECT * FROM read_parquet('{ops / 'item_forecasts.parquet'}')").df()
+    df = _stored(ops)
     assert df["model_version"].tolist() == ["lgbm-v3"]
     assert df["model_config"].tolist() == ["global-only"]
 

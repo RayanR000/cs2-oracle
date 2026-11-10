@@ -1,17 +1,18 @@
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 
+import duckdb
 import pytest
-from sqlalchemy import create_engine
-from sqlalchemy.exc import IntegrityError
-from sqlalchemy.orm import sessionmaker
+from db.ops_partitions import READ_ONLY_ID_BASE
+
+DAY = date.today() - timedelta(days=3)  # an open month: the partitions refuse closed ones
 
 
-def _session():
-    from database import Base
-
-    engine = create_engine("sqlite://")
-    Base.metadata.create_all(engine)
-    return sessionmaker(bind=engine)()
+def _stored(tmp_path):
+    files = sorted(tmp_path.glob("forecast_candidates/*.parquet"))
+    if not files:
+        return duckdb.sql("SELECT 1 AS id WHERE false").df()
+    lst = ", ".join(f"'{f}'" for f in files)
+    return duckdb.sql(f"SELECT * FROM read_parquet([{lst}]) ORDER BY id").df()
 
 
 def _record(item_id=1, component="centre", candidate_name="last_price", fingerprint="a" * 64, **overrides):
@@ -19,7 +20,7 @@ def _record(item_id=1, component="centre", candidate_name="last_price", fingerpr
 
     payload = dict(
         item_id=item_id,
-        forecast_date=date(2026, 9, 18),
+        forecast_date=DAY,
         horizon_days=7,
         component=component,
         candidate_name=candidate_name,
@@ -29,7 +30,7 @@ def _record(item_id=1, component="centre", candidate_name="last_price", fingerpr
         predicted_price_high=50.0 if component == "centre" else None,
         score=0.7 if component == "ranking" else None,
         anchor_price=40.0,
-        feature_cutoff_at=datetime(2026, 9, 18, 12, 0, 0),
+        feature_cutoff_at=datetime.combine(DAY, datetime.min.time()),
         artifact_version="a123",
         config_fingerprint=fingerprint,
     )
@@ -39,62 +40,76 @@ def _record(item_id=1, component="centre", candidate_name="last_price", fingerpr
     return CandidateRecord(**payload)
 
 
-def test_new_writes_persist_with_counts():
-    from database import ForecastCandidate
+@pytest.fixture(autouse=True)
+def _ops(tmp_path, monkeypatch):
+    monkeypatch.setattr("db.parquet.OPS_DIR", tmp_path)
+
+
+def test_new_writes_persist_with_counts(tmp_path):
     from db.candidate_store import write_candidate_batches
 
-    session = _session()
     records = [_record(item_id=1), _record(item_id=2), _record(item_id=1, component="ranking")]
-    result = write_candidate_batches(session, records)
+    result = write_candidate_batches(records)
     assert result.centre_written == 2
     assert result.ranking_written == 1
     assert result.batches_expected == 2
     assert result.batches_written == 2
-    assert session.query(ForecastCandidate).count() == 3
+    stored = _stored(tmp_path)
+    assert len(stored) == 3
+    assert stored["id"].is_unique and stored["id"].min() > READ_ONLY_ID_BASE
+    assert stored["created_at"].notna().all()
 
 
-def test_identical_retry_is_idempotent():
-    from database import ForecastCandidate
+def test_identical_retry_is_idempotent(tmp_path):
     from db.candidate_store import write_candidate_batches
 
-    session = _session()
     records = [_record(item_id=1), _record(item_id=1, component="ranking")]
-    first = write_candidate_batches(session, records)
+    first = write_candidate_batches(records)
     assert first.batches_written == 2
-    second = write_candidate_batches(session, records)
+    ids = _stored(tmp_path)["id"].tolist()
+    second = write_candidate_batches(records)
     assert second.centre_written == 0
     assert second.ranking_written == 0
     assert second.batches_written == 2
-    assert session.query(ForecastCandidate).count() == 2
+    assert _stored(tmp_path)["id"].tolist() == ids
 
 
-def test_conflicting_fingerprint_raises():
+def test_conflicting_fingerprint_raises(tmp_path):
     from db.candidate_store import CandidateFingerprintConflict, write_candidate_batches
 
-    session = _session()
-    write_candidate_batches(session, [_record(item_id=1)])
+    write_candidate_batches([_record(item_id=1)])
     with pytest.raises(CandidateFingerprintConflict):
-        write_candidate_batches(session, [_record(item_id=1, fingerprint="b" * 64)])
-
-
-def test_mixed_valid_invalid_group_leaves_zero_rows():
-    from database import ForecastCandidate
-    from db.candidate_store import write_candidate_batches
-
-    session = _session()
-    bad = _record(item_id=2, score=0.5)  # centre carrying a score violates the payload check
-    with pytest.raises(IntegrityError):
-        write_candidate_batches(session, [_record(item_id=1), bad])
-    session.rollback()
-    assert session.query(ForecastCandidate).filter(ForecastCandidate.forecast_date == date(2026, 9, 18)).count() == 0
+        write_candidate_batches([_record(item_id=1, fingerprint="b" * 64)])
+    assert len(_stored(tmp_path)) == 1
 
 
 def test_centre_and_ranking_batches_counted_separately():
     from db.candidate_store import write_candidate_batches
 
-    session = _session()
-    result = write_candidate_batches(session, [_record(item_id=1), _record(item_id=2, component="ranking")])
+    result = write_candidate_batches([_record(item_id=1), _record(item_id=2, component="ranking")])
     assert result.batches_expected == 2
     assert result.batches_written == 2
     assert result.centre_written == 1
     assert result.ranking_written == 1
+
+
+def test_a_partition_failure_raises(monkeypatch):
+    from db import ops_partitions
+    from db.candidate_store import write_candidate_batches
+
+    def boom(*a, **k):
+        raise RuntimeError("disk full")
+
+    monkeypatch.setattr(ops_partitions, "upsert", boom)
+    with pytest.raises(RuntimeError, match="disk full"):
+        write_candidate_batches([_record(item_id=1)])
+
+
+def test_a_closed_month_is_refused_loudly():
+    from datetime import date as _date
+
+    from db.candidate_store import write_candidate_batches
+    from db.ops_partitions import PartitionError
+
+    with pytest.raises(PartitionError, match="closed"):
+        write_candidate_batches([_record(item_id=1, forecast_date=_date(2026, 8, 11))])
