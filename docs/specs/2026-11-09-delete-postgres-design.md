@@ -1,6 +1,6 @@
 # Phase 4: delete Postgres
 
-**Date:** 2026-11-09 · **Status:** draft, awaiting review
+**Date:** 2026-11-09 · **Status:** approved 2026-11-09 (Q1 and Q4 decided as recommended; plan: `docs/plans/2026-11-09-delete-postgres.md`)
 **Parent:** `2026-10-11-postgres-to-parquet-history-design.md` (Phase 4) · **Follows:**
 `2026-10-13-ops-readers-switch-design.md` (Phase 2, done) and Phase 3 (frozen instruments, PR #133)
 
@@ -81,7 +81,7 @@ irreversible step, and it waits at least 7 nightly cycles after PR 6.
 
 ## Open questions (need an answer before the plan)
 
-1. **API.** Retire `main.py` and all routes (the API is not deployed, there is no frontend), or keep
+1. ~~**API.**~~ **Decided 2026-11-09: retire everything.** Retire `main.py` and all routes (the API is not deployed, there is no frontend), or keep
    `accuracy` on the ops store and drop the rest? Recommended: retire everything; `accuracy` has no
    consumer. `auth.py` and the `users` table go with it.
 2. ~~**Events.**~~ **Answered 2026-11-09: no served feature uses them.** `FEATURE_GROUP_ALLOWLIST` is
@@ -100,7 +100,7 @@ irreversible step, and it waits at least 7 nightly cycles after PR 6.
    item lands in `still_missing_names` and is counted as an error exactly as if the fallback were
    absent. Delete both loaders and the fallback block. The only visible change is the "declined N
    items" warning going away.
-4. **Supabase deletion.** Delete the project, or pause it and let it lapse? Pausing is reversible for
+4. ~~**Supabase deletion.**~~ **Decided 2026-11-09: pause after PR 6, delete after the final backup verifies.** Delete the project, or pause it and let it lapse? Pausing is reversible for
    a while and costs nothing; deleting is not. Recommended: pause after PR 6, delete at the monthly
    pull after the final backup verifies.
 
