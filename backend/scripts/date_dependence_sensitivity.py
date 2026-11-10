@@ -8,7 +8,7 @@ per-date series each one resamples, reproduces its iid interval, and prints a
 moving-block and a HAC interval beside it. How the rows are read is fixed in
 `docs/research/2026-10-09-date-overlap-sensitivity.md`, written before both reads.
 
-    # PID read (h=3, served panel, prod read-only), not before 2026-10-23:
+    # PID read (h=3, served panel, ops partitions), not before 2026-10-23:
     venv/bin/python scripts/date_dependence_sensitivity.py pid
 
     # outside-baseline reads; same --archive-dir/--since/--until as the read itself:
@@ -65,15 +65,9 @@ def run_pid(args, today: date) -> int:
     if today < pid.READ_NOT_BEFORE:
         print(f"REFUSED: the PID panel is not read before {pid.READ_NOT_BEFORE} (its prereg's single read).")
         return 2
-    from database import SessionLocal
-    from sqlalchemy import text
+    from db import ops_store
 
-    db = SessionLocal()
-    try:
-        db.execute(text("SET TRANSACTION READ ONLY"))
-        panel = pid.build_panel(pid.load_prod_panel(db))
-    finally:
-        db.close()
+    panel = pid.build_panel(pid.load_prod_panel(ops_store.reader(("item_forecasts", "forecast_outcomes", "items"))))
     scores = pid.evaluate(panel)["scores"]
     a, b = scores["QI"]["cov_by_date"], scores["B"]["cov_by_date"]
     diff = (np.abs(a - (1 - pid.ALPHA)) - np.abs(b - (1 - pid.ALPHA))) * 100
