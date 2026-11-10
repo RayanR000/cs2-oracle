@@ -122,22 +122,24 @@ def paired_date_diff(df: pd.DataFrame, col_a: str, col_b: str, n_boot: int = 200
 
 def load_panel(archive_dir: Path) -> pd.DataFrame:
     """Served cohort, exclusions applied, served band rebased to the model's quote."""
-    import duckdb
+    from db import ops_store
 
-    ops = archive_dir / "ops" / "forecast_outcomes.parquet"
-    df = (
-        duckdb.connect()
-        .sql(
-            f"""
-            SELECT item_slug, forecast_date, horizon_days, base_price, current_price, actual_price,
-                   predicted_price_low, predicted_price_mid, predicted_price_high
-            FROM read_parquet('{ops}')
-            WHERE actual_price > 0 AND base_price >= {SERVED_MIN_PRICE}
-              AND predicted_price_low IS NOT NULL AND predicted_price_mid IS NOT NULL
-              AND predicted_price_high IS NOT NULL
-            """
-        )
-        .fetchdf()
+    # The monthly partitions, not the single-file mirror (prereg storage amendment 2026-11-09):
+    # the mirror is 60,737 rows short of them and is never read.
+    df = pd.DataFrame(
+        [
+            r._asdict()
+            for r in ops_store.reader(("forecast_outcomes",), root=archive_dir / "ops")(
+                f"""
+                SELECT item_slug, forecast_date, horizon_days, base_price, current_price, actual_price,
+                       predicted_price_low, predicted_price_mid, predicted_price_high
+                FROM forecast_outcomes
+                WHERE actual_price > 0 AND base_price >= {SERVED_MIN_PRICE}
+                  AND predicted_price_low IS NOT NULL AND predicted_price_mid IS NOT NULL
+                  AND predicted_price_high IS NOT NULL
+                """
+            )
+        ]
     )
     df["forecast_date"] = pd.to_datetime(df["forecast_date"]).dt.date
     df = df[df["forecast_date"].map(excluded_forecast_date).isna()].reset_index(drop=True)
