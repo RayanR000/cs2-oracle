@@ -41,12 +41,11 @@ re-injected after `/compact` — **read the rule yourself before starting work i
 | Rule | Covers | Loads on |
 |---|---|---|
 | `archive-reads` | archive schema, `ingested_at`, ops mirror, nested columns | `db/`, `collectors/`, the Parquet scripts |
-| `item-universe` | universe filter, bid exclusion, phase collapse, voted cache | `models/item_parser.py`, `forecaster.py`, `api/`, harnesses |
+| `item-universe` | universe filter, bid exclusion, phase collapse, voted cache | `models/item_parser.py`, `forecaster.py`, harnesses |
 | `labels-and-embargo` | frozen price runs, the H+13 embargo, walkforward's loader | `models/staleness.py`, `forecaster.py`, forecast/walkforward scripts |
 | `ab-statistics` | paired intervals, `walkforward_records`, why win counts are not tests | `backtest/paired_mde.py`, `ab_test_*.py` |
 | `backtest-scoring` | resolution, maturity, PT test, tiers, staleness bands, actionable | `backtest/`, `backtest_accuracy.py` |
 | `training-budget` | `TRAIN_FEATURE_ROWS`, the seed, `TRAIN_PER_ITEM_ROWS` | `models/forecaster.py`, `forecast_prices.py` |
-| `serving-policy` | `MIN_SERVED_PRICE_USD` and the headline tier it tracks | `api/` |
 
 ## Gotchas
 

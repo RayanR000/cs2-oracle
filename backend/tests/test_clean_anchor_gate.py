@@ -34,7 +34,6 @@ import lightgbm as lgb
 import numpy as np
 import pandas as pd
 import pytest
-from api.serving_policy import anchor_clean_clause, meets_anchor_gate
 from models.forecaster import ItemForecaster
 
 # Slow: full feature-engineering frames per test (see docs/changelog/2026-09-15-ci-test-gate.md). The fast
@@ -42,30 +41,6 @@ from models.forecaster import ItemForecaster
 pytestmark = pytest.mark.slow
 
 # --------------------------------------------------------------- the predicate
-
-
-def test_a_clean_anchor_passes_and_a_deviating_one_does_not():
-    assert meets_anchor_gate(True) is True
-    assert meets_anchor_gate(False) is False
-
-
-def test_an_unknown_anchor_passes():
-    """NULL is 'not recorded', which is every row written before the column
-    existed. Excluding those would empty the ranked surfaces the moment the
-    migration lands and refill them only after the next forecast run -- an
-    outage caused by a disclosure change."""
-    assert meets_anchor_gate(None) is True
-
-
-def test_the_sql_clause_and_the_python_predicate_agree():
-    """Two filters, one rule. `_latest_forecasts` filters in SQL and
-    `select_opportunities` re-filters in Python, exactly as the price floor
-    does; a disagreement between them would silently change the cohort with the
-    query plan."""
-    from database import ItemForecast
-
-    clause = str(anchor_clean_clause(ItemForecast.anchor_clean).compile(compile_kwargs={"literal_binds": True}))
-    assert "IS NULL" in clause.upper(), f"the SQL leg drops unknown rows where the Python leg keeps them: {clause}"
 
 
 # ------------------------------------------------------- what predict computes
@@ -152,93 +127,7 @@ def _items(ids):
     return {i: Item(id=i, name=f"AK-47 | Skin {i}", item_id=f"ak_{i}") for i in ids}
 
 
-def test_a_deviating_item_is_not_ranked():
-    from api.routes.opportunities import select_opportunities
-
-    forecasts = [_forecast(1, 20.0, clean=False), _forecast(2, 11.0, clean=True)]
-    out = select_opportunities(forecasts, _items([1, 2]), None, 10)
-
-    assert [o.item_id for o in out] == [2], "the deviating item scored the larger move and would top the list"
-
-
-def test_an_unknown_anchor_is_still_ranked():
-    """Every row written before the column existed carries NULL. The gate must
-    degrade to today's behaviour, not to an empty list."""
-    from api.routes.opportunities import select_opportunities
-
-    forecasts = [_forecast(1, 20.0, clean=None), _forecast(2, 11.0, clean=True)]
-    out = select_opportunities(forecasts, _items([1, 2]), None, 10)
-
-    assert [o.item_id for o in out] == [1, 2]
-
-
-def test_the_gate_applies_before_the_limit():
-    """`limit=2` must return two CLEAN items, not two minus the ones dropped.
-    Filtering after the truncation would make the list shorter the more
-    deviating items happened to rank highest."""
-    from api.routes.opportunities import select_opportunities
-
-    forecasts = [_forecast(i, 30.0 - i, clean=(i >= 3)) for i in range(1, 6)]
-    out = select_opportunities(forecasts, _items(range(1, 6)), None, 2)
-
-    assert len(out) == 2
-    assert all(o.item_id >= 3 for o in out)
-
-
-def test_the_query_filters_on_the_column_too():
-    """The Python predicate alone would pull every forecast out of Postgres and
-    discard two thirds in the API process."""
-    import inspect
-
-    from api.routes import opportunities
-
-    src = inspect.getsource(opportunities._latest_forecasts)
-    assert "anchor_clean_clause" in src
-
-
 # ------------------------------------------------------------ the item lookup
-
-
-def test_a_missing_flag_reads_as_unknown_not_as_clean():
-    """The trap: a Parquet NULL arrives from DuckDB as `nan`, and `bool(nan)`
-    is True. Coerced naively, every row the mirror predates would publish
-    itself as clean -- the one wrong answer, since those rows are exactly the
-    ones nothing is known about."""
-    from api.routes.items import _optional_bool, _optional_float
-
-    assert _optional_bool(None) is None
-    assert _optional_bool(float("nan")) is None
-    assert _optional_bool(False) is False
-    assert _optional_bool(True) is True
-    assert _optional_float(float("nan")) is None
-    assert _optional_float(-13.5) == pytest.approx(-13.5)
-
-
-def test_the_item_lookup_serves_a_deviating_forecast_and_says_so():
-    """Gated on ranking, disclosed on lookup. Suppressing a forecast someone
-    asked for by name goes past what was measured -- rank IC is an ordering
-    statistic."""
-    from api.routes import items as items_route
-
-    item = type("I", (), {"id": 7, "name": "AK-47 | Redline"})()
-    row = items_route._DictObj(
-        {
-            "current_price": 10.0,
-            "price_low": 9.0,
-            "price_mid": 11.0,
-            "price_high": 13.0,
-            "direction": "up",
-            "confidence": "low",
-            "anchor_clean": False,
-            "anchor_wedge_pct": -13.5,
-        }
-    )
-    with patch.object(items_route, "_forecast_parquet", return_value=row):
-        out = items_route._prediction_parquet(item, "7_days", 7)
-
-    assert out.forecast_mid == pytest.approx(11.0)
-    assert out.anchor_clean is False
-    assert out.anchor_wedge_pct == pytest.approx(-13.5)
 
 
 # --------------------------------------------------------------- the write path

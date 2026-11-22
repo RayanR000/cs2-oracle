@@ -60,9 +60,6 @@ def run_migrations(revision="head"):
 ROW_COUNT_FIELDS = (
     "items_collected",  # collectors/pipeline.py
     "total_records",  # scripts/backtest_accuracy.py
-    "impacts_written",  # scripts/event_correlation_analysis.py
-    "patterns_written",  # scripts/event_correlation_analysis.py
-    "correlations_written",  # scripts/event_correlation_analysis.py
     "supply_rows",  # collectors/supply_depth.py
     "volume_rows",  # collectors/sales_volume.py
     "forecasts_written",  # scripts/forecast_prices.py (production rows stay fatal at zero)
@@ -72,9 +69,9 @@ ROW_COUNT_FIELDS = (
 # "this task produced nothing because it is broken". Deliberately a tiny
 # allowlist: every status not on it flows into the guards below, so a new
 # no-op-shaped outcome has to be added here consciously rather than inheriting
-# a green run. `no_events_in_window` is event_correlation_analysis.py's — see
-# NO_EVENTS_STATUS there for why an empty event window is a calendar fact.
-NO_OP_STATUSES = ("no_events_in_window",)
+# a green run. Empty since Phase 4 PR 5: its one member, event correlation's
+# `no_events_in_window`, went with that task.
+NO_OP_STATUSES: tuple[str, ...] = ()
 
 
 def check_results(task_name, results) -> None:
@@ -114,10 +111,9 @@ def check_results(task_name, results) -> None:
         counts = [r[f] for f in ROW_COUNT_FIELDS if isinstance(r.get(f), (int, float))]
         return bool(counts) and not any(counts)
 
-    # Treat zero-row results as failures (all endpoints likely down). For
-    # event_correlation specifically this is the guard that must STAY fatal:
-    # "events exist but zero impacts were written" is the price_history bug
-    # (2026-07-19 -> 2026-08-02, green the whole time), not an empty calendar.
+    # Treat zero-row results as failures (all endpoints likely down). A task that
+    # writes nothing and stays green is how the price_history bug ran unnoticed
+    # from 2026-07-19 to 2026-08-02.
     zero_rows = [r for r in results if _zero_row(r)]
     if zero_rows:
         logger.error(
@@ -201,15 +197,6 @@ def run_task(task_name):
             result = run_backtest(types=["historical"])
             print(f"RESULT: {result}")
 
-        elif task_name == "event_correlation":
-            logger.info("=" * 60)
-            logger.info("TASK: Event Correlation Analysis")
-            logger.info("=" * 60)
-            from scripts.event_correlation_analysis import run_analysis
-
-            result = run_analysis(days_back=90)
-            print(f"RESULT: {result}")
-
         elif task_name == "walkforward_report":
             logger.info("=" * 60)
             logger.info("TASK: Walk-Forward Backtest Report (Per-Horizon)")
@@ -236,7 +223,7 @@ def run_task(task_name):
 if __name__ == "__main__":
     if len(sys.argv) < 2:
         print("Usage: python run_task.py <task_name>")
-        print("Tasks: aggregate, migrate, backtest, backtest_historical, walkforward_report, event_correlation")
+        print("Tasks: aggregate, migrate, backtest, backtest_historical, walkforward_report")
         sys.exit(1)
 
     run_task(sys.argv[1])
