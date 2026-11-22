@@ -132,7 +132,6 @@ jobs:
       - name: Run ML price forecasting
         working-directory: ./backend
         env:
-          DATABASE_URL: ${{ secrets.SUPABASE_DATABASE_URL }}
           ENVIRONMENT: production
           DEBUG: false
           # SKIP_CV is deliberately NOT set. The conformal band's q_hat is
