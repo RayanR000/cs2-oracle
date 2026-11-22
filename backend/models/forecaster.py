@@ -34,7 +34,6 @@ from backtest.friction import actionable_threshold
 from backtest.price_resolution import MAX_WINDOW_SPAN_DAYS, SMOOTH_WINDOW
 from backtest.scoring import HEADLINE_MIN_TIER, MIN_HEADLINE_DATES, price_tier
 from scipy.stats import spearmanr
-from sqlalchemy import text
 
 from models import conformal, mlflow_utils, serve_universe, served_recalibration
 from models.candidate_predictions import apply_centre_policy, centre_champion
@@ -1080,12 +1079,17 @@ class ItemForecaster:
 
     def __init__(
         self,
-        db_session,
         model_dir: str | None = None,
         prune_failed_groups: bool = True,
         served_cohort_share: float | None = None,
+        *,
+        serving_reads: bool = False,
     ):
-        self.db = db_session
+        # Whether to read last night's served record from the ops partitions: the prior-day
+        # blend and the served-coverage feedback. Production (forecast_prices, replay) sets it;
+        # harnesses leave it off so their bands are not pulled toward what was served. It
+        # replaced the Postgres session in Phase 4 PR 4, whose None-ness was the same switch.
+        self.serving_reads = serving_reads
         # Share of the directional classifier's training weight to place on the
         # >= $1 cohort production serves. None = no tier weighting, which is
         # byte-identical to the pre-2026-08-06 model. Set from
@@ -2321,36 +2325,12 @@ class ItemForecaster:
             self._record_break_dates(df)
             return df
 
-        cutoff = self._now() - timedelta(days=days_back)
-        rows = self.db.execute(
-            text("""
-            SELECT item_id, date(timestamp) AS day, source, AVG(price) AS price, SUM(volume) AS volume
-            FROM price_history
-            WHERE timestamp >= :cutoff
-              AND source NOT LIKE 'synthetic_demo'
-              AND source NOT LIKE 'historical_fallback:%'
-            GROUP BY item_id, date(timestamp), source
-            ORDER BY item_id, day
-        """),
-            {"cutoff": cutoff},
-        ).fetchall()
-        if not rows:
-            logger.info("  No DB price history rows found")
-            return pd.DataFrame(columns=["item_id", "timestamp", "price", "volume", "date"])
-        df = pd.DataFrame(rows, columns=["item_id", "timestamp", "price", "volume", "source"])
-        df["timestamp"] = pd.to_datetime(df["timestamp"])
-        df["date"] = df["timestamp"].dt.date
-        n_before = len(df)
-        n_sources_before = df["source"].nunique() if "source" in df.columns else 1
-        df = self._apply_multi_source_voting(df)
-        n_after = len(df)
-        logger.info(
-            f"  {n_after:,} rows (DB, voted from {n_before:,} rows "
-            f"across {n_sources_before} sources), "
-            f"{df.item_id.nunique():,} items"
+        # The Postgres `price_history` path that stood here was deleted in Phase 4 PR 4: the table
+        # froze on 2026-07-11, and every caller asks for more than 14 days of a present archive.
+        raise RuntimeError(
+            f"fetch_price_history needs the price archive at {self.archive_dir} and days_back > 14 "
+            f"(got exists={self.archive_dir.exists()}, days_back={days_back})"
         )
-        self._record_break_dates(df)
-        return df
 
     def _record_break_dates(self, df: pd.DataFrame) -> None:
         """Store this frame's break calendar; see `self.break_dates`."""
@@ -2744,34 +2724,21 @@ class ItemForecaster:
         """
 
     def fetch_events(self) -> pd.DataFrame:
-        if hasattr(self, "_events_cache") and self._events_cache is not None:
-            return self._events_cache
-        try:
-            rows = self.db.execute(
-                text("""
-                SELECT id, type, timestamp, description
-                FROM events
-                ORDER BY timestamp
-            """)
-            ).fetchall()
-        except Exception:
-            logger.warning("  DB connection lost, reconnecting...")
-            from database import SessionLocal
+        """An empty events frame. Phase 4 PR 4 (spec Q2): no served feature reads events.
 
-            self.db = SessionLocal()
-            rows = self.db.execute(
-                text("""
-                SELECT id, type, timestamp, description
-                FROM events
-                ORDER BY timestamp
-            """)
-            ).fetchall()
-        df = pd.DataFrame(rows, columns=["id", "type", "timestamp", "description"])
-        df["timestamp"] = pd.to_datetime(df["timestamp"])
-        df["date"] = df["timestamp"].dt.date
-        self._events_cache = df
-        logger.info(f"  events: {len(df)}")
-        return df
+        ``FEATURE_GROUP_ALLOWLIST`` is ``["price_technicals"]``, so the ``events`` group is skipped and
+        ``_add_event_features`` never runs on the production frame; the Postgres ``events`` read this
+        replaced built a frame nothing used. Re-admitting the group would need the table back.
+        """
+        return pd.DataFrame(
+            {
+                "id": pd.Series(dtype="int64"),
+                "type": pd.Series(dtype="object"),
+                "timestamp": pd.Series(dtype="datetime64[ns]"),
+                "description": pd.Series(dtype="object"),
+                "date": pd.Series(dtype="object"),
+            }
+        )
 
     # ------------------------------------------------------------------
     # Feature engineering
@@ -6371,7 +6338,9 @@ class ItemForecaster:
             # are set, giving the per-horizon multiplier that pulls realized served coverage
             # to 80%. Empty below the MIN_FEEDBACK_DATES gate (the case today), leaving the
             # band byte-identical; the read is best-effort and never fails a retrain.
-            self.served_coverage_factor = served_recalibration.served_coverage_factors(self.db, self.HORIZONS)
+            self.served_coverage_factor = (
+                served_recalibration.served_coverage_factors(self.HORIZONS) if self.serving_reads else {}
+            )
             if self.served_coverage_factor:
                 logger.info(
                     f"Served-coverage factors (q_hat multipliers): "
@@ -8727,12 +8696,12 @@ class ItemForecaster:
         activate before the next retrain. A baked factor is never overridden -- the artifact
         wins for every horizon it covers.
         """
-        if self.db is None:
+        if not self.serving_reads:
             return
         missing = [h for h in self.HORIZONS if h not in self.served_coverage_factor]
         if not missing:
             return
-        live = served_recalibration.served_coverage_factors(self.db, missing)
+        live = served_recalibration.served_coverage_factors(missing)
         live = {h: v for h, v in live.items() if h in missing}
         if live:
             self.served_coverage_factor = {**self.served_coverage_factor, **live}
@@ -9455,7 +9424,7 @@ class ItemForecaster:
             "high_ret": np.full(len(item_ids), np.nan),
             "band_mult": np.full(len(item_ids), np.nan),
         }
-        if self.db is None:
+        if not self.serving_reads:
             return result
         # _now(), not date.today(): under a replay the "prior" day is the day
         # before the ANCHOR. Reading real forecasts dated after it would blend
@@ -9480,18 +9449,6 @@ class ItemForecaster:
         except Exception as e:
             logger.warning(f"  Prior-forecast fetch failed from the ops partitions ({e}); skipping blend.")
             return result
-        ops_store.compare(
-            f"prior-day forecasts h={horizon}",
-            lambda: dict(
-                zip(
-                    ("rows", "sum price_mid"),
-                    ops_store.pg_reader(self.db)(f"SELECT count(*), sum(price_mid) FROM item_forecasts {where}")[0],
-                )
-            ),
-            {"rows": len(rows), "sum price_mid": sum(float(r.price_mid) for r in rows if r.price_mid is not None)},
-            tol=0.01,
-            db=self.db,
-        )
         if not rows:
             return result
 
@@ -11209,19 +11166,6 @@ class ItemForecaster:
     # Concept drift monitoring
     # ------------------------------------------------------------------
 
-    def _commit_alert(self, what: str) -> None:
-        """Commit a drift alert; a read-only Postgres skips it rather than failing the run
-        before predict (db/read_only.py)."""
-        from db.read_only import is_read_only_error, report_read_only
-
-        try:
-            self.db.commit()
-        except Exception as e:
-            if not is_read_only_error(e):
-                raise
-            self.db.rollback()
-            report_read_only(what)
-
     def check_concept_drift(
         self, horizon: int = 7, sliding_window: int = 7, threshold: float | None = None
     ) -> dict | None:
@@ -11229,8 +11173,10 @@ class ItemForecaster:
 
         Queries the last `sliding_window` days of forecast backtest results and
         compares directional accuracy against the threshold, defaulting to
-        DRIFT_DA_THRESHOLD. Logs an alert to the accuracy_alerts table if drift
-        is detected.
+        DRIFT_DA_THRESHOLD. Reads ``ops/prediction_accuracy.parquet``; drift is
+        reported as a log line and a ``::warning`` annotation. Until Phase 4 PR 4
+        it read Postgres (frozen since 2026-10-30, so it returned None every
+        night) and wrote an ``accuracy_alerts`` row that nothing read.
 
         Rows that do not report `date_coverage_sufficient` are **ignored**, not
         averaged: a cohort spanning 1-2 forecast dates describes those dates'
@@ -11241,21 +11187,26 @@ class ItemForecaster:
         docs/specs/2026-08-04-remove-accidental-retrain-work-design.md
         """
         threshold = self.DRIFT_DA_THRESHOLD if threshold is None else threshold
-        from database import AccuracyAlert
+        from db.parquet import read_table
 
-        cutoff = (self._now() - timedelta(days=sliding_window * 2)).strftime("%Y-%m-%d")
-        records = self.db.execute(
-            text("""
-            SELECT evaluation_date, metrics
-            FROM prediction_accuracy
-            WHERE prediction_type = 'forecast'
-              AND horizon_days = :horizon
-              AND evaluation_date >= :cutoff
-            ORDER BY evaluation_date DESC
-            LIMIT :limit
-        """),
-            {"horizon": horizon, "cutoff": cutoff, "limit": sliding_window},
-        ).fetchall()
+        cutoff = pd.Timestamp(self._now().date() - timedelta(days=sliding_window * 2))
+        try:
+            pa = read_table("prediction_accuracy", ["prediction_type", "horizon_days", "evaluation_date", "metrics"])
+        except Exception as e:  # an alerting signal must never fail the forecast
+            logger.warning(f"  Drift check ({horizon}d): prediction_accuracy unreadable ({e}); skipped")
+            return None
+        if pa.empty:
+            return None
+        pa = pa[
+            (pa["prediction_type"] == "forecast")
+            & (pa["horizon_days"] == horizon)
+            & (pd.to_datetime(pa["evaluation_date"]) >= cutoff)
+        ]
+        records = list(
+            pa.sort_values("evaluation_date", ascending=False, kind="stable")
+            .head(sliding_window)
+            .itertuples(index=False)
+        )
 
         if not records:
             return None
@@ -11291,36 +11242,14 @@ class ItemForecaster:
         )
 
         if recent_avg >= threshold:
-            # Resolve any open alert
-            open_alert = (
-                self.db.query(AccuracyAlert)
-                .filter(
-                    AccuracyAlert.prediction_type == "forecast",
-                    AccuracyAlert.horizon_days == horizon,
-                    AccuracyAlert.resolved_at.is_(None),
-                )
-                .first()
-            )
-            if open_alert:
-                open_alert.resolved_at = datetime.now(UTC).replace(tzinfo=None)
-                self._commit_alert("the accuracy_alerts resolve")
-                logger.info(f"  Drift resolved: accuracy back to {recent_avg:.1f}%")
             return {"drifted": False, "accuracy": recent_avg, "threshold": threshold}
 
-        # Trigger alert
-        alert = AccuracyAlert(
-            prediction_type="forecast",
-            horizon_days=horizon,
-            sliding_window_days=sliding_window,
-            current_accuracy=round(recent_avg, 2),
-            threshold_accuracy=threshold,
-            sample_count=len(accuracies),
-            triggered_at=datetime.now(UTC).replace(tzinfo=None),
-            details={"window_accuracies": accuracies},
-        )
-        self.db.add(alert)
-        self._commit_alert("the accuracy_alerts insert")
         logger.warning(f"  DRIFT DETECTED ({horizon}d): accuracy={recent_avg:.1f}% below threshold={threshold:.1f}%")
+        print(
+            f"::warning title=Concept drift {horizon}d::accuracy {recent_avg:.1f}% below {threshold:.1f}% "
+            f"over {len(accuracies)} windows (alerting only; never gates a retrain)",
+            flush=True,
+        )
         return {"drifted": True, "accuracy": recent_avg, "threshold": threshold}
 
     # ------------------------------------------------------------------

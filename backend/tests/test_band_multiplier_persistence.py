@@ -10,7 +10,6 @@ the blended value, the prior fetch that feeds it, and the write.
 from __future__ import annotations
 
 from datetime import date
-from unittest.mock import MagicMock
 
 import numpy as np
 import pytest
@@ -66,7 +65,7 @@ def _forecaster_with_prior_rows(rows):
         pd.DataFrame([{"id": i, "item_id": s, "name": s, "is_backfilled": 1} for i, s in ((1, "a"), (2, "b"))]),
     )
     f = ItemForecaster.__new__(ItemForecaster)
-    f.db = MagicMock()
+    f.serving_reads = True
     f._now = lambda: __import__("datetime").datetime(2026, 9, 25)
     return f
 

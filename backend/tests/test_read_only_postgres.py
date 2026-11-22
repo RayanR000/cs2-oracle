@@ -105,29 +105,6 @@ class _DB:
         return type("_Bind", (), {"dialect": type("_D", (), {"name": "postgresql"})()})()
 
 
-# --- drift alert -----------------------------------------------------------
-
-
-def test_read_only_drift_alert_commit_is_skipped():
-    from models.forecaster import ItemForecaster
-
-    f = ItemForecaster.__new__(ItemForecaster)
-    f.db = MagicMock()
-    f.db.commit.side_effect = _read_only_exc()
-    f._commit_alert("the accuracy_alerts insert")
-    f.db.rollback.assert_called_once()
-
-
-def test_other_drift_alert_errors_still_raise():
-    from models.forecaster import ItemForecaster
-
-    f = ItemForecaster.__new__(ItemForecaster)
-    f.db = MagicMock()
-    f.db.commit.side_effect = RuntimeError("boom")
-    with pytest.raises(RuntimeError):
-        f._commit_alert("the accuracy_alerts insert")
-
-
 # --- migration step --------------------------------------------------------
 
 

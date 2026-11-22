@@ -9,7 +9,7 @@ and injecting them directly into the methods under test.
 import logging
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 import lightgbm as lgb
 import numpy as np
@@ -33,7 +33,7 @@ def forecaster(tmp_path_factory):
     anything that persists — train(), save_models() — would otherwise clobber
     production artifacts, which are gitignored and so unrecoverable.
     """
-    f = ItemForecaster(db_session=MagicMock(), model_dir=str(tmp_path_factory.mktemp("saved_models")))
+    f = ItemForecaster(serving_reads=True, model_dir=str(tmp_path_factory.mktemp("saved_models")))
     return f
 
 
@@ -1078,58 +1078,46 @@ class TestFeaturePipeline:
 
 
 class TestConceptDrift:
-    def _make_mock_record(self, metrics_dict):
-        """Create a mock DB result row with .metrics attribute and .fetchall().
+    @staticmethod
+    def _write(das):
+        """``prediction_accuracy.parquet`` in the hermetic OPS_DIR, one covered row per day.
 
-        Defaults date_coverage_sufficient to True. check_concept_drift ignores
-        rows that do not report sufficient forecast-date coverage — see
-        tests/test_drift_retrain_guard.py, which owns that behaviour. The tests
-        in this class are about the threshold comparison, so they opt in to
-        being treated as evidence. Pass the key explicitly to override.
+        Rows default to date_coverage_sufficient=True; tests/test_drift_retrain_guard.py owns
+        the coverage filter. These are about the threshold comparison.
         """
-        record = MagicMock()
-        record.metrics = {"date_coverage_sufficient": True, **metrics_dict}
-        return record
+        import json
 
-    def _make_mock_execute(self, records):
-        """Mock db.execute to return an object with .fetchall()."""
-        mock_result = MagicMock()
-        mock_result.fetchall.return_value = records
-        mock_execute = MagicMock(return_value=mock_result)
-        return mock_execute
+        from db import parquet
+
+        today = datetime.now(UTC).date()
+        pd.DataFrame(
+            [
+                {
+                    "prediction_type": "forecast",
+                    "horizon_days": 7,
+                    "evaluation_date": pd.Timestamp(today - timedelta(days=i)),
+                    "metrics": json.dumps({"date_coverage_sufficient": True, "directional_accuracy": da}),
+                }
+                for i, da in enumerate(das)
+            ]
+        ).to_parquet(parquet.ensure_ops_dir() / "prediction_accuracy.parquet")
 
     def test_drift_detected_when_accuracy_low(self, forecaster):
-        mock_records = [
-            self._make_mock_record({"directional_accuracy": 45.0}),
-            self._make_mock_record({"directional_accuracy": 42.0}),
-            self._make_mock_record({"directional_accuracy": 48.0}),
-        ]
-        forecaster.db.execute = self._make_mock_execute(mock_records)
-        with patch.object(forecaster.db, "query") as mock_query:
-            mock_query.return_value.filter.return_value.first.return_value = None
-            result = forecaster.check_concept_drift(horizon=7, sliding_window=7, threshold=60.0)
-            assert result is not None
-            assert result["drifted"] is True
-            assert result["accuracy"] == 45.0
+        self._write([45.0, 42.0, 48.0])
+        result = forecaster.check_concept_drift(horizon=7, sliding_window=7, threshold=60.0)
+        assert result is not None
+        assert result["drifted"] is True
+        assert result["accuracy"] == 45.0
 
     def test_no_drift_when_accuracy_high(self, forecaster):
-        mock_records = [
-            self._make_mock_record({"directional_accuracy": 85.0}),
-            self._make_mock_record({"directional_accuracy": 88.0}),
-            self._make_mock_record({"directional_accuracy": 82.0}),
-        ]
-        forecaster.db.execute = self._make_mock_execute(mock_records)
+        self._write([85.0, 88.0, 82.0])
         result = forecaster.check_concept_drift(horizon=7, sliding_window=7, threshold=60.0)
         assert result is not None
         assert result["drifted"] is False
 
     def test_insufficient_records_returns_none(self, forecaster):
-        mock_records = [
-            self._make_mock_record({"directional_accuracy": 85.0}),
-        ]
-        forecaster.db.execute = self._make_mock_execute(mock_records)
-        result = forecaster.check_concept_drift(horizon=7, sliding_window=7, threshold=60.0)
-        assert result is None
+        self._write([85.0])
+        assert forecaster.check_concept_drift(horizon=7, sliding_window=7, threshold=60.0) is None
 
 
 # ---------------------------------------------------------------------------
@@ -1351,7 +1339,7 @@ class TestModelPersistence:
         forecaster.feature_cols = ["a", "b"]
         forecaster.save_models()
         # Load back in a new forecaster
-        f2 = ItemForecaster(db_session=MagicMock(), model_dir=str(tmp_path))
+        f2 = ItemForecaster(serving_reads=True, model_dir=str(tmp_path))
         f2.load_models()
         assert f2.confidence_thresholds[3]["high_range"] == 0.15
         assert f2.confidence_thresholds[7]["high_accuracy"] == 99.7
@@ -1366,7 +1354,7 @@ class TestModelPersistence:
             30: {0.9: {"objective": "quantile", "alpha": 0.9, "max_bin": 63, "num_leaves": 23, "learning_rate": 0.05}},
         }
         forecaster.save_models()
-        f2 = ItemForecaster(db_session=MagicMock(), model_dir=str(tmp_path))
+        f2 = ItemForecaster(serving_reads=True, model_dir=str(tmp_path))
         # load_models returns False (no model .txt files) but still restores meta.
         f2.load_models()
         assert 7 in f2.tuned_params and 30 in f2.tuned_params
@@ -1912,8 +1900,7 @@ class TestForecastBlending:
         assert forecaster.MAX_BIN == 63
 
     def test_prior_forecast_empty_when_no_rows(self, forecaster):
-        forecaster.db = MagicMock()
-        forecaster.db.execute.return_value.fetchall.return_value = []
+        forecaster.serving_reads = True
         out = forecaster._fetch_prior_forecasts(np.array([1, 2, 3]), horizon=7)
         assert out["mask"].shape == (3,)
         assert not out["mask"].any()
@@ -1953,7 +1940,7 @@ class TestForecastBlending:
             "items",
             pd.DataFrame([{"id": i, "item_id": str(i), "name": str(i), "is_backfilled": 1} for i in (1, 2)]),
         )
-        forecaster.db = MagicMock()
+        forecaster.serving_reads = True
         forecaster._now = lambda: datetime(2026, 7, 16)
         out = forecaster._fetch_prior_forecasts(np.array(["1", "2", "3"]), horizon=7)
 
@@ -2151,7 +2138,7 @@ class TestRegimeSwitching:
         models/saved_models/ (which is gitignored, so unrecoverable) with
         models fit on the 5 synthetic items below.
         """
-        f = ItemForecaster(db_session=MagicMock(), model_dir=str(tmp_path))
+        f = ItemForecaster(serving_reads=True, model_dir=str(tmp_path))
         f._supply_meta_cache = pd.DataFrame(columns=["item_id", "rarity", "rarity_rank", "weapon_type"])
 
         def mock_fetch(*args, **kwargs):
@@ -2264,7 +2251,7 @@ class TestRegimeSwitching:
         forecaster.save_models()
 
         # Load into a new forecaster
-        f2 = ItemForecaster(db_session=MagicMock(), model_dir=str(tmp_path))
+        f2 = ItemForecaster(serving_reads=True, model_dir=str(tmp_path))
         f2.load_models()
 
         assert ("range", 7, 0.5) in f2.regime_models
