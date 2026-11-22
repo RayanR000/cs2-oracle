@@ -44,6 +44,10 @@ def ops_mirror(request, monkeypatch):
 
     monkeypatch.setattr(store, "connect", connect)
 
+    from tests._ops_mirror import write_back
+
+    write_back(monkeypatch, lambda: session)
+
 
 @pytest.fixture(autouse=True)
 def _hermetic_archive(monkeypatch, tmp_path_factory):

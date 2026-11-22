@@ -8,10 +8,9 @@ Layout (docs/specs/2026-10-11-postgres-to-parquet-history-design.md):
     ops/forecast_candidate_outcomes/YYYY-MM.parquet  (by the candidate's forecast_date, passed as `_part`)
     ops/items.parquet
 
-The partitions are the store of record since Postgres went read-only (2026-10-30). Writers that
-still dual-write call `upsert` after their Postgres commit with rows read back from Postgres
-(db/ops_readback.py), inside `dual_write`, so a failure here never fails the run. The nightly
-parity check that used to catch such a failure was deleted in Phase 4 PR 3.
+The partitions are the store of record since Postgres went read-only (2026-10-30), and the only
+store since Phase 4. Writers call `upsert` inside `dual_write`, so a failure is logged as an
+`::error` and never fails the run.
 
 Guards, all raising PartitionError: a closed month (calendar end + 43 days) is refused without
 `allow_closed`; a column outside the schema the 2026-10-12 backfill wrote fails instead of being
@@ -430,24 +429,17 @@ def assign_ids(table: str, frame: pd.DataFrame, *, root=None, base: int = 0) -> 
     return out
 
 
-def dual_write(what: str, fn: Callable[[], object], db=None) -> bool:
-    """Run one partition write; log a failure instead of raising.
+def dual_write(what: str, fn: Callable[[], object]) -> bool:
+    """Run one backtest partition write; log a failure as an `::error` instead of raising.
 
-    By the time this runs, Postgres and the single-file mirror hold the rows, so nothing is lost,
-    and failing the run after its commit would only endanger the rest of the chain. The nightly
-    parity check fails the same night instead. Pass the writer's *db* so a failure rolls it back.
+    The backtest's writers use it: an outcome that fails to land stays unresolved in the
+    partitions, so the next night resolves it again, and failing the run would only stop the
+    accuracy rows that follow. The forecast writers raise instead (`db/candidate_store.py`).
     """
     try:
         fn()
     except Exception:
-        if db is not None:
-            # A failed read-back leaves a Postgres transaction aborted, and the caller's next
-            # statement on this session would raise InFailedSqlTransaction. Its commit is done.
-            try:
-                db.rollback()
-            except Exception:
-                logger.exception("ops partitions: rollback after the %s failure also failed", what)
-        logger.exception("ops partitions: %s write failed; Postgres holds the rows, parity will fail tonight", what)
+        logger.exception("ops partitions: %s write failed; the next run resolves those rows again", what)
         print(f"::error title=Ops partition write failed::{what}", flush=True)
         return False
     return True

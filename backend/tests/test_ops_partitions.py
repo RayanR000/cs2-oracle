@@ -174,23 +174,14 @@ def test_tests_never_write_the_real_ops_dir():
     assert ops_dir() != parquet.ARCHIVE_ROOT / "ops"
 
 
-def test_dual_write_rolls_back_the_session_it_was_given():
-    """A failed read-back leaves a Postgres transaction aborted; the next writer must not inherit it."""
+def test_dual_write_logs_a_failure_instead_of_raising(capsys):
     from db.ops_partitions import dual_write
 
-    class _DB:
-        rolled_back = False
-
-        def rollback(self):
-            self.rolled_back = True
-
-    db = _DB()
-
     def fail():
-        raise RuntimeError("statement timeout")
+        raise RuntimeError("disk full")
 
-    assert dual_write("item_forecasts", fail, db=db) is False
-    assert db.rolled_back
+    assert dual_write("forecast_outcomes", fail) is False
+    assert "::error title=Ops partition write failed::forecast_outcomes" in capsys.readouterr().out
 
 
 def test_a_closed_month_row_does_not_block_the_open_months(tmp_path):

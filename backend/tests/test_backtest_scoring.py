@@ -389,7 +389,7 @@ def _run_backtest(session, archive, monkeypatch, today=EVAL_DATE, **kwargs):
     monkeypatch.setattr(backtest_accuracy, "archive_covered_days", covered_days)
     _stub_parquet_writes(monkeypatch)
 
-    return backtest_accuracy.backtest_forecasts(session, today=today, **kwargs)
+    return backtest_accuracy.backtest_forecasts(today=today, **kwargs)
 
 
 def test_maturity_is_bounded_by_archive_coverage_not_the_calendar(session, tmp_path, monkeypatch):
@@ -887,12 +887,12 @@ def test_resolution_is_insert_only(session, monkeypatch):
         "pct_error": 10.0,
         "model_version": "lgbm-v3-regime",
     }
-    assert bt._store_forecast_outcomes(session, [dict(outcome)]) == 1
+    assert bt._store_forecast_outcomes([dict(outcome)]) == 1
 
     # The archive is revised: the same forecast now resolves to a different
     # actual. Freezing means the stored row does not move.
     revised = dict(outcome, actual_price=99.0, direction_actual="down", direction_correct=0)
-    assert bt._store_forecast_outcomes(session, [revised]) == 0
+    assert bt._store_forecast_outcomes([revised]) == 0
 
     stored = session.query(ForecastOutcome).filter_by(forecast_id=7).one()
     assert stored.actual_price == 1.2
@@ -923,9 +923,9 @@ def test_reresolve_overrides_the_freeze(session, monkeypatch):
         "pct_error": 10.0,
         "model_version": "lgbm-v3-regime",
     }
-    bt._store_forecast_outcomes(session, [dict(outcome)])
+    bt._store_forecast_outcomes([dict(outcome)])
     revised = dict(outcome, actual_price=99.0)
-    assert bt._store_forecast_outcomes(session, [revised], reresolve=True, considered_ids={8}) == 1
+    assert bt._store_forecast_outcomes([revised], reresolve=True, considered_ids={8}) == 1
 
     assert session.query(ForecastOutcome).filter_by(forecast_id=8).one().actual_price == 99.0
 
@@ -1121,7 +1121,7 @@ def test_rescore_path_emits_the_same_tier_rows_as_the_normal_path(session, tmp_p
     import db.parquet as parquet_mod
 
     monkeypatch.setattr(parquet_mod, "append_table", lambda *a, **k: None)
-    rescore_results = backtest_accuracy.backtest_forecasts(session, today=EVAL_DATE, rescore=True)
+    rescore_results = backtest_accuracy.backtest_forecasts(today=EVAL_DATE, rescore=True)
 
     def shape(results):
         return {(r["horizon_days"], r["model_version"], r["price_tier"]): r["sample_count"] for r in results}
@@ -1404,7 +1404,7 @@ def test_archive_is_not_read_when_every_mature_forecast_is_frozen(session, tmp_p
 
     monkeypatch.setattr(parquet_mod, "append_table", lambda *a, **k: None)
 
-    after = backtest_accuracy.backtest_forecasts(session, today=EVAL_DATE)
+    after = backtest_accuracy.backtest_forecasts(today=EVAL_DATE)
 
     def shape(results):
         return {
@@ -1450,7 +1450,7 @@ def test_a_scoring_fix_lands_on_frozen_rows_without_touching_the_archive(session
     monkeypatch.setattr(parquet_mod, "append_table", lambda *a, **k: None)
     monkeypatch.setattr(scoring, "FLAT_TOLERANCE", 0.001)
 
-    after = backtest_accuracy.backtest_forecasts(session, today=EVAL_DATE)
+    after = backtest_accuracy.backtest_forecasts(today=EVAL_DATE)
     all_after = next(r for r in after if r["price_tier"] is None)
     assert all_after["metrics"]["directional_accuracy"] == 0.0
 
@@ -1771,7 +1771,7 @@ def test_a_scoring_change_refreshes_the_stored_verdict_columns(session, tmp_path
     _capture_append(monkeypatch)
     monkeypatch.setattr(scoring, "FLAT_TOLERANCE", 0.001)
 
-    backtest_accuracy.backtest_forecasts(session, today=EVAL_DATE)
+    backtest_accuracy.backtest_forecasts(today=EVAL_DATE)
 
     session.expire_all()
     after = session.query(ForecastOutcome).filter_by(forecast_id=1).one()
@@ -1806,16 +1806,16 @@ def test_the_verdict_refresh_is_idempotent(session, tmp_path, monkeypatch):
     calls = _capture_append(monkeypatch)
 
     # First pass under the new scoring: one row reclassifies.
-    assert backtest_accuracy._refresh_verdict_columns(session) == 1
+    assert backtest_accuracy._refresh_verdict_columns() == 1
     assert [c[0] for c in calls] == ["forecast_outcomes"]
 
     # Second pass, same scoring: nothing to do, and no write at all.
     calls.clear()
-    assert backtest_accuracy._refresh_verdict_columns(session) == 0
+    assert backtest_accuracy._refresh_verdict_columns() == 0
     assert calls == []
 
     # A third pass restricted to the same ids agrees.
-    assert backtest_accuracy._refresh_verdict_columns(session, forecast_ids=[1]) == 0
+    assert backtest_accuracy._refresh_verdict_columns(forecast_ids=[1]) == 0
 
 
 def test_the_refresh_cannot_move_the_frozen_actuals(session, tmp_path, monkeypatch):
@@ -1842,7 +1842,7 @@ def test_the_refresh_cannot_move_the_frozen_actuals(session, tmp_path, monkeypat
     row.pct_error = 999.0
     session.commit()
 
-    assert backtest_accuracy._refresh_verdict_columns(session) == 1
+    assert backtest_accuracy._refresh_verdict_columns() == 1
 
     session.expire_all()
     after = session.query(ForecastOutcome).filter_by(forecast_id=1).one()
@@ -1877,7 +1877,7 @@ def test_the_refresh_updates_the_parquet_mirror_with_the_frozen_actuals_intact(s
 
     calls = _capture_append(monkeypatch)
     monkeypatch.setattr(scoring, "FLAT_TOLERANCE", 0.001)
-    assert backtest_accuracy._refresh_verdict_columns(session) == 1
+    assert backtest_accuracy._refresh_verdict_columns() == 1
 
     assert len(calls) == 1
     table, rows, dedup_keys = calls[0]
@@ -1916,7 +1916,7 @@ def test_the_rescore_path_also_refreshes_the_stored_verdicts(session, tmp_path, 
 
     monkeypatch.setattr(backtest_accuracy, "load_voted_prices", explode)
 
-    results = backtest_accuracy.backtest_forecasts(session, today=EVAL_DATE, rescore=True)
+    results = backtest_accuracy.backtest_forecasts(today=EVAL_DATE, rescore=True)
     assert next(r for r in results if r["price_tier"] is None)["metrics"]["directional_accuracy"] == 0.0
 
     session.expire_all()
@@ -1944,14 +1944,14 @@ def test_reresolve_writes_current_verdicts_so_the_refresh_is_a_no_op(session, tm
     calls = []
     real_refresh = backtest_accuracy._refresh_verdict_columns
 
-    def spy(db, forecast_ids=None):
-        n = real_refresh(db, forecast_ids=forecast_ids)
+    def spy(forecast_ids=None):
+        n = real_refresh(forecast_ids=forecast_ids)
         calls.append(n)
         return n
 
     monkeypatch.setattr(backtest_accuracy, "_refresh_verdict_columns", spy)
 
-    backtest_accuracy.backtest_forecasts(session, today=EVAL_DATE, reresolve=True)
+    backtest_accuracy.backtest_forecasts(today=EVAL_DATE, reresolve=True)
 
     assert calls == [0]
     assert session.query(ForecastOutcome).count() == 1
@@ -1970,13 +1970,13 @@ def test_the_refresh_logs_a_non_zero_count_legibly_and_is_quiet_at_zero(session,
 
     caplog.clear()
     with caplog.at_level(logging.INFO, logger="backtest_accuracy"):
-        assert backtest_accuracy._refresh_verdict_columns(session) == 0
+        assert backtest_accuracy._refresh_verdict_columns() == 0
     assert "Refreshed verdict columns" not in caplog.text
 
     monkeypatch.setattr(scoring, "FLAT_TOLERANCE", 0.001)
     caplog.clear()
     with caplog.at_level(logging.INFO, logger="backtest_accuracy"):
-        assert backtest_accuracy._refresh_verdict_columns(session) == 1
+        assert backtest_accuracy._refresh_verdict_columns() == 1
     assert "Refreshed verdict columns on 1 frozen outcome(s)" in caplog.text
     assert "were NOT touched" in caplog.text
 
@@ -1995,7 +1995,7 @@ def test_the_refresh_skips_rows_it_cannot_derive_a_verdict_for(session, tmp_path
     row.direction_actual = "down"
     session.commit()
 
-    assert backtest_accuracy._refresh_verdict_columns(session) == 0
+    assert backtest_accuracy._refresh_verdict_columns() == 0
 
     session.expire_all()
     after = session.query(ForecastOutcome).filter_by(forecast_id=1).one()
@@ -2029,16 +2029,15 @@ def test_a_failed_mirror_write_leaves_the_refresh_able_to_re_converge(session, t
     monkeypatch.setattr(parquet_mod, "append_table", boom)
 
     with pytest.raises(RuntimeError, match="parquet mirror exploded"):
-        backtest_accuracy._refresh_verdict_columns(session)
+        backtest_accuracy._refresh_verdict_columns()
 
-    # The DB did not run ahead of the mirror, so the difference still exists.
-    session.rollback()
+    # The partitions did not run ahead of the mirror, so the difference still exists.
     session.expire_all()
     assert session.query(ForecastOutcome).filter_by(forecast_id=1).one().direction_actual == "flat"
 
     # The retry converges both copies.
     calls = _capture_append(monkeypatch)
-    assert backtest_accuracy._refresh_verdict_columns(session) == 1
+    assert backtest_accuracy._refresh_verdict_columns() == 1
     assert len(calls) == 1
     assert calls[0][1][0]["direction_actual"] == "up"
 
@@ -2089,7 +2088,7 @@ def test_the_refresh_streams_in_bounded_flushes_and_never_re_reads_a_row(session
             selects.append(statement)
 
     try:
-        assert backtest_accuracy._refresh_verdict_columns(session) == 12
+        assert backtest_accuracy._refresh_verdict_columns() == 12
     finally:
         event.remove(conn, "before_cursor_execute", count)
 
@@ -2211,9 +2210,9 @@ def test_the_daily_run_hands_only_new_outcomes_to_the_freeze(session, tmp_path, 
     handed = []
     real_store = backtest_accuracy._store_forecast_outcomes
 
-    def store(db, outcomes, **kw):
+    def store(outcomes, **kw):
         handed.append([o["forecast_id"] for o in outcomes])
-        return real_store(db, outcomes, **kw)
+        return real_store(outcomes, **kw)
 
     monkeypatch.setattr(backtest_accuracy, "_store_forecast_outcomes", store)
     _run_backtest(session, archive, monkeypatch)
@@ -2276,7 +2275,7 @@ def test_the_refreshed_mirror_row_replaces_the_stale_one_in_a_real_parquet_file(
     seed_row["evaluated_at"] = frozen.evaluated_at
     seed_row["resolved_at"] = frozen.resolved_at
     (seed_row,) = backtest_accuracy._with_item_slug(
-        [seed_row], backtest_accuracy._id_to_slug(backtest_accuracy._pg_read(session))
+        [seed_row], backtest_accuracy._id_to_slug(backtest_accuracy._store_read("items"))
     )
     real_append("forecast_outcomes", [seed_row], ["forecast_id"])
 
@@ -2285,7 +2284,7 @@ def test_the_refreshed_mirror_row_replaces_the_stale_one_in_a_real_parquet_file(
     assert stored.iloc[0]["direction_actual"] == "flat"
 
     monkeypatch.setattr(scoring, "FLAT_TOLERANCE", 0.001)
-    assert backtest_accuracy._refresh_verdict_columns(session) == 1
+    assert backtest_accuracy._refresh_verdict_columns() == 1
 
     stored = parquet_mod.read_table("forecast_outcomes")
     # Replaced, not appended.
@@ -2393,7 +2392,7 @@ def _run_with_real_mirror(session, archive, monkeypatch, today=EVAL_DATE, **kwar
 
     monkeypatch.setattr(backtest_accuracy, "archive_covered_days", covered_days)
 
-    return backtest_accuracy.backtest_forecasts(session, today=today, **kwargs)
+    return backtest_accuracy.backtest_forecasts(today=today, **kwargs)
 
 
 def test_reresolve_deletes_the_row_of_a_forecast_that_no_longer_resolves(session, tmp_path, monkeypatch):
@@ -2520,11 +2519,11 @@ def test_the_default_path_does_not_delete_even_when_handed_a_considered_set(sess
         "pct_error": 10.0,
         "model_version": "lgbm-v3-regime",
     }
-    assert bt._store_forecast_outcomes(session, [dict(stored)]) == 1
+    assert bt._store_forecast_outcomes([dict(stored)]) == 1
 
     other = dict(stored, forecast_id=8)
     # 7 was considered and did not resolve; 8 did. Insert-only means 7 survives.
-    assert bt._store_forecast_outcomes(session, [other], reresolve=False, considered_ids={7, 8}) == 1
+    assert bt._store_forecast_outcomes([other], reresolve=False, considered_ids={7, 8}) == 1
 
     assert session.query(ForecastOutcome).filter_by(forecast_id=7).one().actual_price == 1.2
     assert session.query(ForecastOutcome).count() == 2
@@ -2560,7 +2559,7 @@ def test_a_considered_forecast_that_never_had_a_row_is_harmless(session, tmp_pat
     _stub_parquet_writes(monkeypatch)
 
     # Direct: an id with no stored row at all.
-    assert bt._store_forecast_outcomes(session, [], reresolve=True, considered_ids={999}) == 0
+    assert bt._store_forecast_outcomes([], reresolve=True, considered_ids={999}) == 0
     assert session.query(ForecastOutcome).count() == 0
 
     # End to end: ak0 is broken from the very first run, so --reresolve
@@ -2586,7 +2585,7 @@ def test_reresolve_refuses_to_run_without_the_considered_set(session, monkeypatc
     _stub_parquet_writes(monkeypatch)
 
     with pytest.raises(ValueError, match="considered_ids"):
-        bt._store_forecast_outcomes(session, [], reresolve=True)
+        bt._store_forecast_outcomes([], reresolve=True)
 
 
 def test_reresolve_leaves_min_price_filtered_rows_alone(session, tmp_path, monkeypatch):

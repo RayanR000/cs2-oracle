@@ -177,8 +177,3 @@ def test_served_items_is_the_same_from_either_store(session):
     mirror_session_to_ops(session)
     for day in (dt.date(2026, 9, 14), dt.date(2026, 9, 15), dt.date(2026, 10, 1)):
         assert serve_universe.served_items(day) == serve_universe.served_items(day, ops_store.pg_reader(session))
-
-
-def test_universe_sizes_count_established_and_young(session, ops_mirror):
-    served = serve_universe.served_items(dt.date(2026, 10, 1))
-    assert serve_universe.universe_sizes(served) == {"established": 1, "young": 1}

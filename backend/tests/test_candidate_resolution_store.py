@@ -2,7 +2,7 @@
 
 docs/specs/2026-10-13-ops-readers-switch-design.md § PR 2 and its 2026-10-30 amendment: since
 Postgres went read-only the shadow candidates land only in the partitions, so the plan reads them
-there and the write lands in the partitions when Postgres cannot take it.
+there. Since Phase 4 the write lands only in the partitions.
 """
 
 from datetime import date
@@ -162,7 +162,7 @@ def test_plan_mismatch_raises(monkeypatch):
 def _resolve(session, **kw):
     import backtest.candidate_resolution as cr
 
-    return cr.resolve_candidate_outcomes(session, today=TODAY, archive_dir="unused", **kw)
+    return cr.resolve_candidate_outcomes(today=TODAY, archive_dir="unused", **kw)
 
 
 def _partition_outcomes():
@@ -187,47 +187,16 @@ def _mixed_night(monkeypatch):
     return session, cand
 
 
-def _unwritable(session, monkeypatch, pgcode):
-    from sqlalchemy.exc import InternalError
-
-    from tests.test_read_only_postgres import _PgError
-
-    def commit():
-        raise InternalError("INSERT ...", {}, _PgError("rejected", pgcode))
-
-    monkeypatch.setattr(session, "commit", commit)
-
-
-def test_read_only_lands_every_row_in_the_partitions(monkeypatch, capsys):
+def test_every_row_lands_in_the_partitions_and_none_in_postgres(monkeypatch):
     session, cand = _mixed_night(monkeypatch)
-    _unwritable(session, monkeypatch, "25006")
 
     stats = _resolve(session)
 
-    assert set(_partition_outcomes()) == {cand.id, HIGH + 3}
     assert _pg_outcome_ids(session) == set()
-    assert stats["resolved"] == 2
-    assert "::warning title=Postgres read-only::" in capsys.readouterr().out
-
-
-def test_disk_full_is_treated_as_unwritable(monkeypatch):
-    session, cand = _mixed_night(monkeypatch)
-    _unwritable(session, monkeypatch, "53100")
-
-    _resolve(session)
-
-    assert set(_partition_outcomes()) == {cand.id, HIGH + 3}
-
-
-def test_partition_only_candidates_skip_postgres(monkeypatch):
-    session, cand = _mixed_night(monkeypatch)
-
-    _resolve(session)
-
-    assert _pg_outcome_ids(session) == {cand.id}
     outcomes = _partition_outcomes()
     assert set(outcomes) == {cand.id, HIGH + 3}
     assert outcomes[HIGH + 3].actual_price == 42.0
+    assert stats["resolved"] == 2
 
 
 def test_rerun_is_idempotent(monkeypatch):
@@ -238,17 +207,6 @@ def test_rerun_is_idempotent(monkeypatch):
 
     assert len(_store()("SELECT * FROM forecast_candidate_outcomes")) == 2
     assert second["skipped_frozen"] == 2
-
-
-def test_read_twice_logs_outcomes_per_date(monkeypatch, caplog):
-    import logging
-
-    session, _ = _mixed_night(monkeypatch)
-
-    with caplog.at_level(logging.INFO, logger=ops_store.logger.name):
-        _resolve(session)
-
-    assert "read twice candidate outcomes per forecast date" in caplog.text
 
 
 def test_rescore_reads_the_partitions(monkeypatch):

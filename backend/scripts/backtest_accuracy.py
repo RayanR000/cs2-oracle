@@ -17,7 +17,6 @@ import logging
 import os
 import sys
 from collections import defaultdict
-from contextlib import contextmanager
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 
@@ -54,10 +53,7 @@ from backtest.scoring import (
     score_cohort,
     served_identity,
 )
-from database import PredictionAccuracy, SessionLocal
-from db.read_only import is_read_only_error, report_read_only
 from models.staleness import stale_run_lookup
-from sqlalchemy import text
 
 # Re-exported so the gate's threshold has one definition. The gate itself —
 # and the reason it needs two ratios rather than one — lives in
@@ -94,66 +90,21 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(name)s - %(level
 logger = logging.getLogger("backtest_accuracy")
 
 
-def _upsert_accuracy(db, rows):
-    """Replace existing accuracy rows for the same key then insert new ones.
+def _upsert_accuracy(rows):
+    """Write accuracy rows to `ops/prediction_accuracy.parquet`, replacing any with the same key.
 
-    ORDER IS LOAD-BEARING: Parquet first, DB commit second — the same discipline
-    _flush_verdict_refresh and the --reresolve path already follow, for the same
-    reason.
-
-    Under the reverse order every failing append left the DB rows committed and
-    the mirror untouched, and the run then exited 1. The API reads Parquet first
-    and falls back to the DB only on None or an exception, so a
-    present-but-stale mirror WINS over a current DB: the divergence is served,
-    not detected, and each failed run widened it. That is exactly what the
-    2026-08-05 append failures did, twice.
-
-    Written first, the worst case is a mirror briefly AHEAD of the DB. The next
-    run recomputes the same rows from the same frozen outcomes and rewrites
-    both, so it converges; and the append dedups on the full key, so rewriting a
-    row is a replace rather than a duplicate.
+    The append dedups on the full key, so rewriting a row is a replace rather than a duplicate.
+    Backtest Accuracy commits the file to the data repo. Postgres is gone from this path (Phase 4).
     """
-    if rows:
-        from db.parquet import append_table
+    if not rows:
+        return
+    from db.parquet import append_table
 
-        append_table(
-            "prediction_accuracy",
-            rows,
-            ["prediction_type", "evaluation_date", "horizon_days", "model_version", "price_tier"],
-        )
-
-    try:
-        for row in rows:
-            filters = {
-                "prediction_type": row["prediction_type"],
-                "evaluation_date": row["evaluation_date"],
-            }
-            if row.get("horizon_days") is not None:
-                filters["horizon_days"] = row["horizon_days"]
-            else:
-                filters["horizon_days"] = None
-            if row.get("model_version") is not None:
-                filters["model_version"] = row["model_version"]
-            else:
-                filters["model_version"] = None
-            filters["price_tier"] = row.get("price_tier")
-
-            existing = db.query(PredictionAccuracy).filter_by(**filters).first()
-            if existing:
-                existing.sample_count = row["sample_count"]
-                existing.metrics = row["metrics"]
-                existing.evaluation_window_days = row.get("evaluation_window_days")
-                existing.created_at = row["created_at"]
-            else:
-                db.add(PredictionAccuracy(**row))
-        db.commit()
-    except Exception as e:
-        if not is_read_only_error(e):
-            raise
-        db.rollback()
-        # prediction_accuracy has no partition yet (parent spec, "Run records"); the single-file
-        # Parquet copy above already landed.
-        report_read_only(f"{len(rows):,} prediction_accuracy upserts")
+    append_table(
+        "prediction_accuracy",
+        rows,
+        ["prediction_type", "evaluation_date", "horizon_days", "model_version", "price_tier"],
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -272,33 +223,11 @@ def _verdicts_differ(stored_row, derived):
     return False
 
 
-# The refresh statement. The SET clause names the five verdict columns and
-# evaluated_at and NOTHING else: base_price, actual_price and resolved_at are
-# the frozen actuals plus the freeze timestamp, and this operation is
-# structurally incapable of moving them. Only --reresolve may.
-_REFRESH_VERDICTS_SQL = text("""
-    UPDATE forecast_outcomes
-       SET direction_actual = :direction_actual,
-           direction_correct = :direction_correct,
-           in_interval = :in_interval,
-           abs_error = :abs_error,
-           pct_error = :pct_error,
-           evaluated_at = :evaluated_at
-     WHERE id = :id
-""")
-
-
-# How many refreshed rows accumulate before they are flushed to Parquet and the
-# DB. Bounds peak memory on the one-off historical refresh (~65k rows) without
+# How many refreshed rows accumulate before they are flushed to Parquet. Bounds peak memory on the one-off historical refresh (~65k rows) without
 # rewriting the whole Parquet file once per read page — append_table rewrites
 # the file wholesale, so the flush wants to be much coarser than the read and
 # UPDATE batching.
 REFRESH_FLUSH = 10_000
-
-
-def _pg_read(db):
-    """Postgres as a `sql -> rows` reader. Since Phase 2 it is only the read-twice side."""
-    return lambda sql: db.execute(text(sql)).fetchall()
 
 
 def _store_read(*tables, required=None):
@@ -366,35 +295,14 @@ def _id_to_slug(read) -> dict:
 
 
 def _with_item_slug(rows, id_to_slug):
-    """The Parquet projection of outcome rows: the DB payload plus `item_slug`.
+    """Outcome rows plus `item_slug`, the archive's key for the item.
 
-    Applied to the mirror only. The column is deliberately NOT added to the
-    Postgres table — that side already has `items` to join against, and a
-    denormalised copy there would be a second thing to keep true. Every writer
+    Every writer
     of `ops/forecast_outcomes.parquet` must go through this, because
     `append_table` dedups on `forecast_id` and REPLACES the whole row: a writer
     that omitted the column would blank it on every row it refreshed.
     """
     return [{**r, "item_slug": id_to_slug.get(r["item_id"])} for r in rows]
-
-
-def _outcome_partitions(db, forecast_ids, drop=None) -> bool:
-    """Write committed outcome rows to the monthly partitions (Phase 1.2 dual-write).
-
-    Runs AFTER the DB commit, so the rows carry Postgres's ids; the single-file mirror keeps its
-    mirror-first order above. *drop*: forecast ids whose stored outcome a --reresolve removed.
-    A refused closed month is logged, never raised; tonight's parity check names it.
-    """
-    from db import ops_partitions, ops_readback
-
-    def _write():
-        frame = ops_readback.outcomes(db, forecast_ids=list(forecast_ids))
-        if drop is not None:
-            ops_partitions.replace("forecast_outcomes", "forecast_id", drop, frame)
-        else:
-            ops_partitions.upsert("forecast_outcomes", frame)
-
-    return ops_partitions.dual_write("forecast_outcomes", _write, db=db)
 
 
 def _refreshed_outcome_partitions(mirror) -> bool:
@@ -412,66 +320,47 @@ def _refreshed_outcome_partitions(mirror) -> bool:
     )
 
 
-def _partition_only_outcomes(rows, what) -> bool:
-    """Write outcomes Postgres cannot take straight to the partitions, ids from READ_ONLY_ID_BASE.
+def _stored_forecast_ids() -> set:
+    """Every forecast_id with a stored outcome in the partitions; empty when there are none yet."""
+    from db import ops_store
 
-    Two cases: a read-only night (SQLSTATE 25006), and forecasts that exist only in the
-    partitions (id >= READ_ONLY_ID_BASE, issued on an earlier read-only night) — Postgres's
-    forecast_id is a 32-bit foreign key and cannot hold them. A stored outcome keeps its id.
-    """
+    try:
+        return {r.forecast_id for r in _store_read("forecast_outcomes")("SELECT forecast_id FROM forecast_outcomes")}
+    except ops_store.MissingTable:
+        return set()
+
+
+def _new_outcome_ids(rows):
+    """Outcome rows as a frame with ids: a stored forecast_id keeps its id, the rest get new ones
+    from READ_ONLY_ID_BASE upward (the scheme every night has used since Postgres went read-only)."""
     import pandas as pd
     from db import ops_partitions
 
-    def _write():
-        frame = ops_partitions.assign_ids(
-            "forecast_outcomes", pd.DataFrame(rows), base=ops_partitions.READ_ONLY_ID_BASE
-        )
-        ops_partitions.upsert("forecast_outcomes", frame)
-
-    return ops_partitions.dual_write(what, _write)
+    return ops_partitions.assign_ids("forecast_outcomes", pd.DataFrame(rows), base=ops_partitions.READ_ONLY_ID_BASE)
 
 
-def _flush_verdict_refresh(db, updates, mirror):
-    """Write one batch of refreshed verdicts to the Parquet mirror, then the DB.
+def _write_outcome_partitions(rows, what) -> bool:
+    """Write new outcomes to the monthly partitions. A failure is logged, not raised: the
+    forecasts stay unfrozen there, so the next night resolves them again."""
+    from db import ops_partitions
 
-    ORDER IS LOAD-BEARING: Parquet first, DB commit second.
+    return ops_partitions.dual_write(what, lambda: ops_partitions.upsert("forecast_outcomes", _new_outcome_ids(rows)))
 
-    Idempotence keys off a DB-vs-derived diff. Under the reverse order, an
-    append_table that raised — or a process killed between the commit and the
-    write — would leave the DB refreshed and the served Parquet copy stale, and
-    the *next* run would compute zero differences, issue no write, and never
-    re-converge. That is the same "served copy disagrees with the headline"
-    failure this function exists to close, reached through a crash instead of a
-    scoring change, and it would be silent and permanent.
 
-    Written first, the worst case is a mirror that is briefly AHEAD of the DB:
-    the DB still holds the old verdict, so the next run recomputes the same
-    difference and rewrites both. Being ahead is benign in content, too — the
-    mirror would hold exactly the verdict the headline already reports, since
-    the reported metric is derived from the frozen actuals and never read from
-    these columns.
+def _flush_verdict_refresh(mirror):
+    """Write one batch of refreshed verdicts to the single-file mirror, then the partitions.
 
-    append_table dedups on forecast_id, so the refreshed row REPLACES the stale
-    one and the whole row must be supplied; re-writing the same row on a retry
-    is a replace, not a duplicate.
+    append_table dedups on forecast_id, so the refreshed row REPLACES the stale one and the
+    whole row must be supplied; re-writing the same row on a retry is a replace, not a duplicate.
+    Idempotent: the next run diffs against the partitions and rewrites anything that did not land.
     """
     from db.parquet import append_table
 
     append_table("forecast_outcomes", mirror, ["forecast_id"])
-
-    try:
-        for i in range(0, len(updates), CHUNK):
-            db.execute(_REFRESH_VERDICTS_SQL, updates[i : i + CHUNK])
-        db.commit()
-    except Exception as e:
-        if not is_read_only_error(e):
-            raise
-        db.rollback()
-        report_read_only(f"{len(updates):,} verdict refresh updates")
     _refreshed_outcome_partitions(mirror)
 
 
-def _refresh_verdict_columns(db, forecast_ids=None) -> int:
+def _refresh_verdict_columns(forecast_ids=None) -> int:
     """Bring the stored verdict columns back in line with current scoring.
 
     The actuals (base_price, actual_price) are frozen observations; the verdict
@@ -495,19 +384,17 @@ def _refresh_verdict_columns(db, forecast_ids=None) -> int:
     before — a blanket bump would drag the whole 65k-row history into it.
 
     Work is streamed in batches: rows are read by keyset pages, and the
-    refreshed ones accumulate only until REFRESH_FLUSH before being written and
-    committed. Nothing proportional to the whole table is held at once, and the
+    refreshed ones accumulate only until REFRESH_FLUSH before being written. Nothing proportional to the whole table is held at once, and the
     mirror row for each refreshed row is snapshotted into a plain dict at the
-    moment it is diffed — before any commit — so the flush cannot come back to
+    moment it is diffed, so the flush cannot come back to
     re-read it.
 
-    The stored verdicts are read from the partitions (Phase 2); the UPDATE still goes to Postgres by id,
-    and is a no-op for a partition-only id.
+    The stored verdicts are read from and written back to the partitions (Phase 4).
 
     Returns the number of rows refreshed.
     """
     now = datetime.now(UTC).replace(tzinfo=None)
-    updates, mirror = [], []
+    mirror = []
     total = 0
     # Read once for the whole walk. The mirror row must carry item_slug or the
     # refresh would blank it on every row it touches — append_table replaces
@@ -533,11 +420,9 @@ def _refresh_verdict_columns(db, forecast_ids=None) -> int:
             if not _verdicts_differ(r, derived):
                 continue
 
-            updates.append(dict(derived, id=r.id, evaluated_at=now))
             # The mirror row is built HERE, from the row already in hand. The
             # frozen columns are carried through verbatim — this function does
-            # not touch them — and building it now rather than after the commit
-            # is what keeps the write side free of a per-row re-read.
+            # not touch them — and building it now is what keeps the write side free of a per-row re-read.
             mirror_row = _outcome_to_mapping(r)
             mirror_row.update(derived)
             mirror_row["evaluated_at"] = now
@@ -546,14 +431,14 @@ def _refresh_verdict_columns(db, forecast_ids=None) -> int:
             mirror.append(mirror_row)
 
         # Flush only on a batch boundary, never mid-batch.
-        if len(updates) >= REFRESH_FLUSH:
-            _flush_verdict_refresh(db, updates, mirror)
-            total += len(updates)
-            updates, mirror = [], []
+        if len(mirror) >= REFRESH_FLUSH:
+            _flush_verdict_refresh(mirror)
+            total += len(mirror)
+            mirror = []
 
-    if updates:
-        _flush_verdict_refresh(db, updates, mirror)
-        total += len(updates)
+    if mirror:
+        _flush_verdict_refresh(mirror)
+        total += len(mirror)
 
     if not total:
         # The normal case. Quiet on purpose — a daily run says nothing here.
@@ -570,7 +455,7 @@ def _refresh_verdict_columns(db, forecast_ids=None) -> int:
     return total
 
 
-def _store_forecast_outcomes(db, outcomes, reresolve: bool = False, considered_ids=None, id_to_slug=None) -> int:
+def _store_forecast_outcomes(outcomes, reresolve: bool = False, considered_ids=None, id_to_slug=None) -> int:
     """Persist per-forecast outcomes. Insert-only unless *reresolve*.
 
     Resolved actuals are frozen: a forecast_id that already has a row keeps
@@ -606,8 +491,6 @@ def _store_forecast_outcomes(db, outcomes, reresolve: bool = False, considered_i
             "the delete set must cover every forecast considered this run, not "
             "just the ones that resolved."
         )
-    from database import ForecastOutcome
-
     if reresolve:
         # Every considered forecast loses its stored row; the ones that
         # resolved get a freshly written one back. Includes ids with no
@@ -624,25 +507,12 @@ def _store_forecast_outcomes(db, outcomes, reresolve: bool = False, considered_i
         delete_ids = set()
         if not outcomes:
             return 0
-        all_fids = [o["forecast_id"] for o in outcomes]
-        existing_ids = set()
-        for i in range(0, len(all_fids), CHUNK):
-            batch = all_fids[i : i + CHUNK]
-            rows = db.query(ForecastOutcome.forecast_id).filter(ForecastOutcome.forecast_id.in_(batch)).all()
-            existing_ids.update(r[0] for r in rows)
-        to_write = [o for o in outcomes if o["forecast_id"] not in existing_ids]
-        if existing_ids:
-            # Frozen in Postgres but missing from the partitions (a failed partition write on an
-            # earlier night): the caller resolved them again because it reads the partitions.
-            # Postgres wins — its frozen row goes to the partitions, tonight's values are dropped.
-            _outcome_partitions(db, sorted(existing_ids))
-            logger.warning(
-                f"  {len(existing_ids):,} outcome(s) Postgres holds were missing from the ops "
-                f"partitions; written there from Postgres"
-            )
-
+        # The freeze itself: a forecast_id the partitions already hold keeps its row. The daily
+        # caller passes only unfrozen forecasts, so this drops nothing unless one was frozen
+        # between the caller's read and this one.
+        stored = _stored_forecast_ids()
+        to_write = [o for o in outcomes if o["forecast_id"] not in stored]
         if not to_write:
-            db.commit()
             logger.info(f"  All {len(outcomes):,} outcomes already resolved (frozen)")
             return 0
 
@@ -651,79 +521,38 @@ def _store_forecast_outcomes(db, outcomes, reresolve: bool = False, considered_i
         o["evaluated_at"] = resolved_at
         o["resolved_at"] = resolved_at
 
-    # The DB payload stays exactly as built; only the Parquet mirror gains the
-    # slug. `to_write` is handed to bulk_insert_mappings below and an unmapped
-    # key there is an error, so the two payloads have to diverge here.
     if id_to_slug is None:
         id_to_slug = _id_to_slug(_store_read("items"))
     mirror = _with_item_slug(to_write, id_to_slug)
 
     if delete_ids:
+        import pandas as pd
+        from db import ops_partitions
         from db.parquet import replace_rows
 
-        # ORDER IS LOAD-BEARING, same discipline as _flush_verdict_refresh:
-        # the Parquet mirror — the copy the API serves — is written first, in a
-        # single atomic delete-and-insert, and the DB follows. A crash between
-        # them leaves the mirror already corrected while the DB still holds the
-        # pre-run rows, i.e. the run simply has not landed yet; re-running
-        # --reresolve recomputes the same considered set and converges both.
-        # Under the reverse order the same crash would leave the DB clean and
-        # the SERVED copy holding orphans that no daily run can ever remove,
-        # because the daily path is insert-only by design. Nothing detects that
-        # state, and only a second --reresolve would fix it.
+        # The single-file mirror first, in one atomic delete-and-insert, then the partitions.
+        # A crash between them leaves the partitions holding the pre-run rows, i.e. the run
+        # has not landed; re-running --reresolve recomputes the same considered set and
+        # converges both. Unlike the daily path a failure here raises: an operator is watching.
         replace_rows("forecast_outcomes", "forecast_id", delete_ids, mirror)
+        removed = len(_stored_forecast_ids() & delete_ids)
+        frame = _new_outcome_ids(mirror) if mirror else pd.DataFrame()
+        ops_partitions.replace("forecast_outcomes", "forecast_id", delete_ids, frame)
 
-        deleted = 0
-        ids = sorted(delete_ids)
-        for i in range(0, len(ids), CHUNK):
-            deleted += (
-                db.query(ForecastOutcome)
-                .filter(ForecastOutcome.forecast_id.in_(ids[i : i + CHUNK]))
-                .delete(synchronize_session=False)
-            )
-        if to_write:
-            db.bulk_insert_mappings(ForecastOutcome, to_write)
-        db.commit()
-        _outcome_partitions(db, [o["forecast_id"] for o in to_write], drop=delete_ids)
-
-        orphaned = deleted - len(to_write)
+        orphaned = removed - len(to_write)
         logger.info(
             f"  --reresolve: rewrote {len(to_write):,} outcome(s) over "
             f"{len(delete_ids):,} considered forecast(s); {max(orphaned, 0):,} "
             f"stored row(s) whose forecast no longer resolves were REMOVED "
-            f"from the DB and the Parquet mirror."
+            f"from the partitions and the Parquet mirror."
         )
         return len(to_write)
 
-    from db.ops_partitions import READ_ONLY_ID_BASE
     from db.parquet import append_table
 
-    to_postgres = [o for o in to_write if o["forecast_id"] < READ_ONLY_ID_BASE]
-    partition_only = [m for m in mirror if m["forecast_id"] >= READ_ONLY_ID_BASE]
-    read_only = False
-    if to_postgres:
-        try:
-            db.bulk_insert_mappings(ForecastOutcome, to_postgres)
-            db.commit()
-        except Exception as e:
-            if not is_read_only_error(e):
-                raise
-            db.rollback()
-            report_read_only(f"{len(to_postgres):,} forecast_outcomes inserts")
-            read_only = True
-
     append_table("forecast_outcomes", mirror, ["forecast_id"])
-    if read_only:
-        _partition_only_outcomes(mirror, "forecast_outcomes (read-only night)")
-    else:
-        if to_postgres:
-            _outcome_partitions(db, [o["forecast_id"] for o in to_postgres])
-        if partition_only:
-            _partition_only_outcomes(partition_only, "forecast_outcomes (partition-only forecasts)")
-
+    _write_outcome_partitions(mirror, "forecast_outcomes")
     n_skipped = len(outcomes) - len(to_write)
-    # The daily caller passes only unfrozen forecasts, so a non-zero skip means
-    # an outcome was frozen between the caller's read and this one.
     logger.info(
         f"  Resolved {len(to_write):,} new outcomes" + (f" ({n_skipped:,} already frozen)" if n_skipped else "")
     )
@@ -756,79 +585,6 @@ def _mature(rows, cutoff):
     return [r for r in rows if _as_date(r.forecast_date) + timedelta(days=r.horizon_days) <= cutoff]
 
 
-def _per_date(rows) -> dict:
-    """Row count per forecast date, keyed by ISO date: the matured-forecast read-twice value."""
-    out = defaultdict(int)
-    for r in rows:
-        out[_as_date(r.forecast_date).isoformat()] += 1
-    return dict(out)
-
-
-def _read_twice_matured(db, cutoff, mature=None) -> None:
-    """Matured forecasts per forecast date, partitions beside Postgres."""
-    from db import ops_store
-
-    if mature is None:
-        mature = _mature(_store_read("item_forecasts")(_FORECASTS_SQL), cutoff)
-    ops_store.compare(
-        "matured forecasts per forecast date",
-        lambda: _per_date(_mature(_pg_read(db)(_FORECASTS_SQL), cutoff)),
-        _per_date(mature),
-        db=db,
-    )
-
-
-_HEADLINE_METRICS = ("directional_accuracy", "interval_coverage")
-
-
-def _headline_values(results) -> dict:
-    """The headline tier's sample count and metrics per horizon and cohort, flattened for compare."""
-    out = {}
-    for r in results:
-        if r["price_tier"] != HEADLINE_TIER:
-            continue
-        key = f"{r['horizon_days']}d/{r['model_version']}"
-        out[f"{key} n"] = r["sample_count"]
-        for m in _HEADLINE_METRICS:
-            out[f"{key} {m}"] = r["metrics"].get(m)
-    return out
-
-
-@contextmanager
-def _quiet():
-    """Silence this module's logger: the Postgres side of read twice must not repeat the run's log."""
-    level = logger.level
-    logger.setLevel(logging.ERROR)
-    try:
-        yield
-    finally:
-        logger.setLevel(level)
-
-
-def _pg_headlines(db, min_price, forecast_ids) -> dict:
-    with _quiet():
-        groups = _records_from_frozen_outcomes(_pg_read(db), min_price=min_price, forecast_ids=forecast_ids)
-        rows = [
-            {"horizon_days": h, "model_version": mv, "price_tier": t, "sample_count": n, "metrics": m}
-            for (h, mv), records in sorted(groups.items())
-            for t, m, n in score_by_tier(records)
-        ]
-    return _headline_values(rows)
-
-
-def _read_twice_headlines(db, results, min_price, forecast_ids) -> None:
-    """The stored headline per horizon, partitions beside Postgres."""
-    from db import ops_store
-
-    ops_store.compare(
-        "headline metrics per horizon",
-        lambda: _pg_headlines(db, min_price, forecast_ids),
-        _headline_values(results),
-        tol=1e-9,
-        db=db,
-    )
-
-
 def _records_from_frozen_outcomes(read, min_price=0, forecast_ids=None):
     """Rebuild scoring records from stored outcomes, without the archive.
 
@@ -846,9 +602,7 @@ def _records_from_frozen_outcomes(read, min_price=0, forecast_ids=None):
     `confidence` is not on ForecastOutcome, so it is joined back from
     item_forecasts.
 
-    read: a `sql -> rows` reader — `_panel_read()` for the
-        published figure, `_pg_read(db)` for the read-twice comparison. One query, no
-        parameters, so the same SQL runs on both.
+    read: a `sql -> rows` reader, `_panel_read()` for the published figure.
 
     forecast_ids: optional restriction to a set of forecast ids, applied in Python (an IN list
         over nearly the whole table is the slow path #113 removed). Rows come back in
@@ -1027,27 +781,20 @@ def _records_from_frozen_outcomes(read, min_price=0, forecast_ids=None):
     return groups
 
 
-def _resolve_candidates(db, today, archive_dir, reresolve=False, rescore=False):
+def _resolve_candidates(today, archive_dir, reresolve=False, rescore=False):
     """Resolve shadow candidate outcomes after the production refresh.
 
     Candidate failures never fail production scoring — except a
     production/candidate resolution mismatch, which is an invariant
-    violation and propagates. A database without migration 0027 logs and
-    continues until the migration lands.
+    violation and propagates.
     """
     from backtest.candidate_resolution import resolve_candidate_outcomes
 
     try:
-        return resolve_candidate_outcomes(
-            db, today=today, archive_dir=archive_dir, reresolve=reresolve, rescore=rescore
-        )
+        return resolve_candidate_outcomes(today=today, archive_dir=archive_dir, reresolve=reresolve, rescore=rescore)
     except RuntimeError:
         raise
     except Exception as e:
-        try:
-            db.rollback()  # a failed insert leaves the transaction aborted for production scoring
-        except Exception:
-            logger.exception("  rollback after the candidate failure also failed")
         logger.warning(f"  Candidate resolution skipped ({e}); production scoring continues.")
         return {}
 
@@ -1269,7 +1016,7 @@ def _outcome_to_mapping(row):
     }
 
 
-def backtest_forecasts(db, today=None, min_price=0, reresolve=False, rescore=False):
+def backtest_forecasts(today=None, min_price=0, reresolve=False, rescore=False):
     """Compare mature ML forecasts against actual prices.
 
     Stores both aggregate accuracy metrics (prediction_accuracy) and
@@ -1297,13 +1044,12 @@ def backtest_forecasts(db, today=None, min_price=0, reresolve=False, rescore=Fal
 
     if rescore:
         logger.info("  --rescore: scoring from frozen outcomes, archive not read")
-        _refresh_verdict_columns(db)
-        _resolve_candidates(db, today, archive_dir=None, reresolve=False, rescore=True)
+        _refresh_verdict_columns()
+        _resolve_candidates(today, archive_dir=None, reresolve=False, rescore=True)
         groups = _records_from_frozen_outcomes(_panel_read(), min_price=min_price)
         results = _score_groups(groups, today)
-        _read_twice_headlines(db, results, min_price, None)
         if results:
-            _upsert_accuracy(db, results)
+            _upsert_accuracy(results)
             logger.info(f"  Stored {len(results)} forecast accuracy records")
         return results
 
@@ -1340,7 +1086,6 @@ def backtest_forecasts(db, today=None, min_price=0, reresolve=False, rescore=Fal
 
     # Every forecast with a midpoint price, from the partitions; maturity is filtered in Python.
     mature = _mature(_store_read("item_forecasts", required={"item_forecasts": ["id"]})(_FORECASTS_SQL), cutoff)
-    _read_twice_matured(db, cutoff, mature)
 
     if not mature:
         logger.info("  No mature forecasts to evaluate.")
@@ -1360,9 +1105,7 @@ def backtest_forecasts(db, today=None, min_price=0, reresolve=False, rescore=Fal
     # frozen row as an ORM object in 900-id IN lists (97 s in run 38016621198),
     # only to hand them to the freeze, which filtered them straight back out.
     #
-    # Frozen means frozen in the partitions. An outcome Postgres holds but the partitions lack is
-    # resolved again here and written to the partitions from Postgres by `_store_forecast_outcomes`,
-    # never re-inserted.
+    # Frozen means frozen in the partitions.
     frozen_ids = set()
     if not reresolve:
         mature_set = set(mature_ids)
@@ -1646,7 +1389,6 @@ def backtest_forecasts(db, today=None, min_price=0, reresolve=False, rescore=Fal
         # can discriminate a "default path deletes" mutation. Verified: that
         # mutation fails that test alone.
         _store_forecast_outcomes(
-            db,
             all_outcomes,
             reresolve=reresolve,
             considered_ids=considered_ids,
@@ -1657,13 +1399,13 @@ def backtest_forecasts(db, today=None, min_price=0, reresolve=False, rescore=Fal
 
     # Shadow candidates resolve against the same frozen legs production just
     # wrote, preferring those rows so both arms share byte-identical outcomes.
-    _resolve_candidates(db, today, archive_dir, reresolve=reresolve)
+    _resolve_candidates(today, archive_dir, reresolve=reresolve)
 
     # The actuals are frozen; the verdict columns are not, because they are
     # metrics. Bring any that the current scoring logic disagrees with back in
     # line before scoring. Under --reresolve the rows were just rewritten from
     # this same derivation, so this is a no-op there rather than a double write.
-    _refresh_verdict_columns(db, forecast_ids=mature_ids)
+    _refresh_verdict_columns(forecast_ids=mature_ids)
 
     # Score the persisted cohort, not the freshly resolved values. Metrics are
     # re-derived every run from the frozen base/actual, so a scoring fix still
@@ -1673,10 +1415,9 @@ def backtest_forecasts(db, today=None, min_price=0, reresolve=False, rescore=Fal
     # and 57.91% on four consecutive evaluation dates.
     groups = _records_from_frozen_outcomes(_panel_read(), min_price=min_price, forecast_ids=mature_ids)
     results = _score_groups(groups, today)
-    _read_twice_headlines(db, results, min_price, mature_ids)
 
     if results:
-        _upsert_accuracy(db, results)
+        _upsert_accuracy(results)
         logger.info(f"  Stored {len(results)} forecast accuracy records")
 
     return results
@@ -1688,7 +1429,6 @@ def backtest_forecasts(db, today=None, min_price=0, reresolve=False, rescore=Fal
 
 
 def run_backtest(types=None, min_price=0, update_bias=False, reresolve=False, rescore=False):
-    db = SessionLocal()
     today = date.today()
     allowed = ["forecast"]
     types = types or allowed
@@ -1698,7 +1438,7 @@ def run_backtest(types=None, min_price=0, update_bias=False, reresolve=False, re
         for t in types:
             if t == "forecast":
                 results["forecast"] = backtest_forecasts(
-                    db, today, min_price=min_price, reresolve=reresolve, rescore=rescore
+                    today, min_price=min_price, reresolve=reresolve, rescore=rescore
                 )
             else:
                 logger.warning(f"Unknown backtest type: {t}")
@@ -1724,11 +1464,7 @@ def run_backtest(types=None, min_price=0, update_bias=False, reresolve=False, re
 
     except Exception as e:
         logger.error(f"Backtest failed: {e}", exc_info=True)
-        db.rollback()
         return {"status": "error", "message": str(e)}
-
-    finally:
-        db.close()
 
 
 def main():

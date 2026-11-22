@@ -12,7 +12,6 @@ from __future__ import annotations
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import ClassVar
-from unittest.mock import MagicMock
 
 import pandas as pd
 import pytest
@@ -232,10 +231,7 @@ def _fake_forecast_env(monkeypatch, tmp_path, *, drifted, trained_days_ago=0):
         def predict(self):
             return pd.DataFrame()
 
-    fake_db = MagicMock()
-    fake_db.execute.return_value.fetchall.return_value = []
     monkeypatch.setattr(fp, "ItemForecaster", FakeForecaster)
-    monkeypatch.setattr(fp, "SessionLocal", lambda: fake_db)
     monkeypatch.delenv("ALLOW_DRIFT_RETRAIN", raising=False)
     monkeypatch.delenv("FORCE_RETRAIN", raising=False)
     return FakeForecaster

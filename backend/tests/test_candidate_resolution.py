@@ -27,7 +27,7 @@ def mirror_latest_session(monkeypatch):
     before every store read, so these tests keep seeding through the ORM."""
     import db.ops_store as store
 
-    from tests._ops_mirror import mirror_session_to_ops
+    from tests._ops_mirror import mirror_session_to_ops, write_back
 
     _SESSIONS.clear()
     real = store.connect
@@ -38,6 +38,7 @@ def mirror_latest_session(monkeypatch):
         return real(root, tables)
 
     monkeypatch.setattr(store, "connect", connect)
+    write_back(monkeypatch, lambda: _SESSIONS[-1] if _SESSIONS else None)
 
 
 def _prod(session, item_id=5, base=40.0, actual=42.0, resolved_at=T):
@@ -110,7 +111,7 @@ def test_shared_legs_are_byte_identical(monkeypatch):
     cand = _cand(session)
     _mature(monkeypatch)
 
-    stats = cr.resolve_candidate_outcomes(session, today=date(2026, 10, 1), archive_dir="unused")
+    stats = cr.resolve_candidate_outcomes(today=date(2026, 10, 1), archive_dir="unused")
 
     out = session.query(ForecastCandidateOutcome).one()
     assert out.candidate_id == cand.id
@@ -132,7 +133,7 @@ def test_ranking_rows_store_legs_with_null_metrics(monkeypatch):
     _cand(session, component="ranking", name="lambdarank_v1")
     _mature(monkeypatch)
 
-    cr.resolve_candidate_outcomes(session, today=date(2026, 10, 1), archive_dir="unused")
+    cr.resolve_candidate_outcomes(today=date(2026, 10, 1), archive_dir="unused")
 
     out = session.query(ForecastCandidateOutcome).one()
     assert out.base_price == 40.0
@@ -151,7 +152,7 @@ def test_unresolvable_without_production_or_archive(monkeypatch):
     monkeypatch.setattr(cr, "archive_max_day", lambda archive_dir: date(2026, 10, 1))
     monkeypatch.setattr(cr, "archive_covered_days", lambda archive_dir: set())
 
-    stats = cr.resolve_candidate_outcomes(session, today=date(2026, 10, 1), archive_dir="unused")
+    stats = cr.resolve_candidate_outcomes(today=date(2026, 10, 1), archive_dir="unused")
 
     assert session.query(ForecastCandidateOutcome).count() == 0
     assert stats["unresolvable"] == 1
@@ -161,12 +162,12 @@ def test_resolution_writes_partitions_for_touched_candidates(monkeypatch):
     import backtest.candidate_resolution as cr
 
     calls = []
-    monkeypatch.setattr(cr, "_candidate_outcome_partitions", lambda db, ids: calls.append(set(ids)))
+    monkeypatch.setattr(cr, "_upsert_partitions", lambda rows: calls.append({r["candidate_id"] for r in rows}))
     session = _db()
     _prod(session)
     cand = _cand(session)
     _mature(monkeypatch)
 
-    cr.resolve_candidate_outcomes(session, today=date(2026, 10, 1), archive_dir="unused")
+    cr.resolve_candidate_outcomes(today=date(2026, 10, 1), archive_dir="unused")
 
     assert calls == [{cand.id}]

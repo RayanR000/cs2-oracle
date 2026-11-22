@@ -20,9 +20,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-import contextlib
 
-from database import SessionLocal
 from models import serve_universe
 from models.forecaster import IncompatibleModelArtifact, ItemForecaster
 
@@ -432,7 +430,6 @@ def run_forecast(
     update_bias: bool = False,
     predict_smoke: bool = False,
 ):
-    db = SessionLocal()
     try:
         forecaster = ItemForecaster(
             serving_reads=True,
@@ -528,11 +525,6 @@ def run_forecast(
                 per_item_row_sampling=_train_per_item_rows(),
             )
             has_models = True
-            # The session went stale over a long retrain; reopen it for the in-run backtest.
-            # The forecaster itself holds none since Phase 4 PR 4.
-            with contextlib.suppress(Exception):
-                db.close()
-            db = SessionLocal()
 
         if predict_smoke:
             # Exercises the predict PATH and writes nothing. It exists because
@@ -577,16 +569,6 @@ def run_forecast(
         # young releases, `models/serve_universe.py`). Shadows keep the
         # established map, so the champion-challenger panel never sees a young item.
         served = serve_universe.served_items(forecaster._now())
-        from db import ops_store
-
-        ops_store.compare(
-            "served universe (established, young)",
-            lambda: serve_universe.universe_sizes(
-                serve_universe.served_items(forecaster._now(), ops_store.pg_reader(db))
-            ),
-            serve_universe.universe_sizes(served),
-            db=db,
-        )
         slug_to_id = serve_universe.slug_to_id(served)
         shadow_slug_to_id = serve_universe.slug_to_id(served, established_only=True)
         logger.info(
@@ -663,7 +645,7 @@ def run_forecast(
             try:
                 from scripts.backtest_accuracy import backtest_forecasts
 
-                bt_results = backtest_forecasts(db, today)
+                bt_results = backtest_forecasts(today)
                 logger.info(f"Backtest complete: {len(bt_results or [])} accuracy records")
             except Exception as e:
                 logger.error(f"Backtest failed: {e}", exc_info=True)
@@ -701,12 +683,7 @@ def run_forecast(
 
     except Exception as e:
         logger.error(f"Forecast failed: {e}", exc_info=True)
-        db.rollback()
         return {"status": "error", "message": str(e)}
-
-    finally:
-        with contextlib.suppress(Exception):
-            db.close()
 
 
 def main():

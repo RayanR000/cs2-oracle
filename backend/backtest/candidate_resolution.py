@@ -16,7 +16,7 @@ archive.
 from __future__ import annotations
 
 import logging
-from datetime import date, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -73,7 +73,7 @@ def _derived_metrics(candidate, base: float, actual: float) -> dict:
     return {"absolute_error": None, "percentage_error": None, "in_interval": None}
 
 
-def _rescore_candidate_outcomes(db) -> dict:
+def _rescore_candidate_outcomes() -> dict:
     """Recompute derived metrics from frozen legs, read from the partitions. Never reads the archive."""
     from db import ops_store
 
@@ -90,7 +90,7 @@ def _rescore_candidate_outcomes(db) -> dict:
             row = _planned_row(o, o.base_price, o.actual_price, o.resolved_at)
             row["resolution_version"] = o.resolution_version
             changed.append(row)
-    _write_candidate_outcomes(db, changed)
+    _write_candidate_outcomes(changed)
     logger.info(f"  Candidate rescore: refreshed derived metrics on {len(changed)} outcome(s)")
     return {"rescored": len(changed)}
 
@@ -234,24 +234,22 @@ def plan_candidate_outcomes(read, *, today, archive_dir, reresolve: bool = False
     return rows, stats
 
 
-def resolve_candidate_outcomes(db, *, today, archive_dir=None, reresolve: bool = False, rescore: bool = False) -> dict:
+def resolve_candidate_outcomes(*, today, archive_dir=None, reresolve: bool = False, rescore: bool = False) -> dict:
     """Resolve mature shadow candidates against frozen outcome legs and write them.
 
-    Plans from the ops partitions (`plan_candidate_outcomes`), writes Postgres when it can and
-    the partitions always (`_write_candidate_outcomes`), then logs the outcomes per forecast
-    date from both stores. Returns count stats.
+    Plans from the ops partitions (`plan_candidate_outcomes`) and writes them back there
+    (`_write_candidate_outcomes`). Returns count stats.
     """
     from db import ops_store
 
     if rescore:
-        return _rescore_candidate_outcomes(db)
+        return _rescore_candidate_outcomes()
     if archive_dir is None:
         raise ValueError("archive_dir is required unless rescore=True")
     rows, stats = plan_candidate_outcomes(
         ops_store.reader(CANDIDATE_TABLES), today=today, archive_dir=archive_dir, reresolve=reresolve
     )
-    _write_candidate_outcomes(db, rows)
-    _read_twice_per_date(db)
+    _write_candidate_outcomes(rows)
     logger.info(
         "  Candidate outcomes: "
         f"{stats['resolved']} resolved, {stats['reresolved']} re-resolved, "
@@ -261,74 +259,17 @@ def resolve_candidate_outcomes(db, *, today, archive_dir=None, reresolve: bool =
     return stats
 
 
-_PER_DATE_SQL = (
-    "SELECT c.forecast_date AS d, count(*) AS n FROM forecast_candidate_outcomes o "
-    "JOIN forecast_candidates c ON c.id = o.candidate_id GROUP BY c.forecast_date"
-)
+def _write_candidate_outcomes(rows: list[dict]) -> bool:
+    """Write planned outcomes to the partitions, routed by the candidate's forecast date (`_part`).
 
-
-def _read_twice_per_date(db) -> None:
-    """Candidate outcomes per candidate forecast date, partitions beside Postgres."""
-    from db import ops_store
-
-    def per_date(rows) -> dict:
-        return {str(_as_date(r.d)): int(r.n) for r in rows}
-
-    try:
-        store = per_date(ops_store.reader(("forecast_candidates", "forecast_candidate_outcomes"))(_PER_DATE_SQL))
-    except ops_store.MissingTable as e:
-        logger.warning(f"  read twice candidate outcomes per forecast date: {e}")
-        return
-    ops_store.compare(
-        "candidate outcomes per forecast date", lambda: per_date(ops_store.pg_reader(db)(_PER_DATE_SQL)), store, db=db
-    )
-
-
-def _write_candidate_outcomes(db, rows: list[dict]) -> str:
-    """Write planned outcomes: Postgres when it can take them, the partitions always.
-
-    Candidates with ids from READ_ONLY_ID_BASE go straight to the partitions; Postgres's
-    candidate_id is a foreign key to a row it never got. On a read-only or out-of-disk rejection
-    every row goes straight to the partitions. Returns "postgres" or "partitions".
+    Postgres is gone from this path (Phase 4); a planned row with no `resolved_at` is stamped now.
     """
-    from database import ForecastCandidateOutcome, utcnow_naive
-    from db.ops_partitions import READ_ONLY_ID_BASE
-    from db.read_only import is_unwritable_error, report_read_only
-
     if not rows:
-        return "postgres"
-    now = utcnow_naive()
-    rows = [{**r, "resolved_at": now if r["resolved_at"] is None else r["resolved_at"]} for r in rows]
-    to_postgres = [r for r in rows if r["candidate_id"] < READ_ONLY_ID_BASE]
-    partition_only = [r for r in rows if r["candidate_id"] >= READ_ONLY_ID_BASE]
-    try:
-        if to_postgres:
-            ids = [r["candidate_id"] for r in to_postgres]
-            existing = {}
-            for i in range(0, len(ids), CHUNK):
-                q = db.query(ForecastCandidateOutcome).filter(
-                    ForecastCandidateOutcome.candidate_id.in_(ids[i : i + CHUNK])
-                )
-                existing.update({o.candidate_id: o for o in q.all()})
-            for r in to_postgres:
-                values = {k: v for k, v in r.items() if k != "_part"}
-                outcome = existing.get(r["candidate_id"])
-                if outcome is None:
-                    db.add(ForecastCandidateOutcome(**values))
-                else:
-                    for k, v in values.items():
-                        setattr(outcome, k, v)
-            db.commit()
-    except Exception as e:
-        if not is_unwritable_error(e):
-            raise
-        db.rollback()
-        report_read_only(f"{len(rows):,} candidate outcome writes")
-        _upsert_partitions(rows)
-        return "partitions"
-    _candidate_outcome_partitions(db, {r["candidate_id"] for r in to_postgres})
-    _upsert_partitions(partition_only)
-    return "postgres"
+        return True
+    now = datetime.now(UTC).replace(tzinfo=None)
+    return _upsert_partitions(
+        [{**r, "resolved_at": now if r["resolved_at"] is None else r["resolved_at"]} for r in rows]
+    )
 
 
 def _upsert_partitions(rows: list[dict]) -> bool:
@@ -342,20 +283,3 @@ def _upsert_partitions(rows: list[dict]) -> bool:
         "forecast_candidate_outcomes (partitions only)",
         lambda: ops_partitions.upsert("forecast_candidate_outcomes", pd.DataFrame(rows)),
     )
-
-
-def _candidate_outcome_partitions(db, candidate_ids) -> bool:
-    """Write committed candidate outcomes to the monthly partitions (Phase 1.2 dual-write).
-
-    Routed by the candidate's forecast_date (`_part`), not the resolution date. Never raises.
-    """
-    from db import ops_partitions, ops_readback
-
-    ids = sorted(candidate_ids)
-    if not ids:
-        return True
-
-    def _write():
-        ops_partitions.upsert("forecast_candidate_outcomes", ops_readback.candidate_outcomes(db, candidate_ids=ids))
-
-    return ops_partitions.dual_write("forecast_candidate_outcomes", _write, db=db)

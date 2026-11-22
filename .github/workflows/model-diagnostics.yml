@@ -456,7 +456,6 @@ jobs:
       - name: Run CV with the served classifier scored
         working-directory: ./backend
         env:
-          DATABASE_URL: ${{ secrets.SUPABASE_DATABASE_URL }}
           ENVIRONMENT: production
           DEBUG: false
           # The entire point of this workflow -- and since 2026-08-11 it also
