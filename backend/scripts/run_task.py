@@ -5,6 +5,7 @@ Used by GitHub Actions to trigger specific pipeline tasks.
 """
 
 import logging
+import os
 import subprocess
 import sys
 from datetime import datetime
@@ -12,9 +13,6 @@ from pathlib import Path
 
 # Add project root to path
 sys.path.insert(0, str(Path(__file__).parent.parent))
-
-from collectors.pipeline import DataPipeline
-from database import SessionLocal
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s")
 logger = logging.getLogger("task_runner")
@@ -157,9 +155,6 @@ def check_results(task_name, results) -> None:
 
 
 def run_task(task_name):
-    db = SessionLocal()
-    pipeline = DataPipeline(db_session=db)
-
     try:
         start_time = datetime.now()
         result = None
@@ -168,6 +163,10 @@ def run_task(task_name):
             logger.info("=" * 60)
             logger.info("TASK: Full Aggregator Scrape (All items)")
             logger.info("=" * 60)
+            from collectors.pipeline import DataPipeline
+
+            # The catalog is the data checkout's items.parquet (Phase 4 PR 2b); no database.
+            pipeline = DataPipeline(ops_root=os.environ.get("AGGREGATOR_OPS_DIR") or None)
             result = pipeline.run_full_aggregator_collection()
 
             if isinstance(result, dict):
@@ -175,13 +174,6 @@ def run_task(task_name):
                 logger.info(f"  Errors: {result.get('errors', 0)}")
                 logger.info(f"  Duration: {result.get('duration_seconds', 'N/A')}s")
 
-            print(f"RESULT: {result}")
-
-        elif task_name == "priority":
-            logger.info("=" * 60)
-            logger.info("TASK: Priority Aggregator Scrape (Top 2000)")
-            logger.info("=" * 60)
-            result = pipeline.run_priority_collection()
             print(f"RESULT: {result}")
 
         elif task_name == "migrate":
@@ -239,16 +231,12 @@ def run_task(task_name):
     except Exception as e:
         logger.error(f"❌ TASK FAILED: {e}", exc_info=True)
         sys.exit(1)
-    finally:
-        db.close()
 
 
 if __name__ == "__main__":
     if len(sys.argv) < 2:
         print("Usage: python run_task.py <task_name>")
-        print(
-            "Tasks: aggregate, priority, migrate, backtest, backtest_historical, walkforward_report, event_correlation"
-        )
+        print("Tasks: aggregate, migrate, backtest, backtest_historical, walkforward_report, event_correlation")
         sys.exit(1)
 
     run_task(sys.argv[1])

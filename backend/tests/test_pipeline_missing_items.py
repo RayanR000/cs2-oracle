@@ -1,17 +1,12 @@
 from __future__ import annotations
 
-from datetime import datetime, timedelta
 from types import SimpleNamespace
 from typing import ClassVar
 
 import collectors.csgotrader_aggregator as aggregator_module
-import database as database_module
-import pytest
+import pandas as pd
 from collectors.pipeline import DataPipeline
-from database import CollectionRun, Item, PriceHistory
-from sqlalchemy import create_engine
-from sqlalchemy.orm import sessionmaker
-from sqlalchemy.pool import StaticPool
+from db import ops_partitions
 
 
 class FakeAggregator:
@@ -27,67 +22,32 @@ class FakeAggregator:
         return []
 
 
-@pytest.fixture(scope="module", autouse=True)
-def setup_db():
-    test_engine = create_engine(
-        "sqlite://",
-        connect_args={"check_same_thread": False},
-        poolclass=StaticPool,
-    )
-    test_session_factory = sessionmaker(autocommit=False, autoflush=False, bind=test_engine)
-
-    database_module.engine = test_engine
-    database_module.SessionLocal = test_session_factory
-    database_module.Base.metadata.create_all(bind=test_engine)
-    yield
-
-
-def test_missing_item_is_not_recovered_from_price_history(monkeypatch):
-    """No historical fallback: a fresh `price_history` row does not stand in.
+def test_a_missing_item_counts_as_an_error(monkeypatch, tmp_path):
+    """No historical fallback: an item missing from the day's dumps is an error.
 
     The fallback read Postgres `price_history`, frozen since 2026-07-11, so it
-    recovered nothing in production. Phase 4 deleted it; an item missing from the
-    day's dumps counts as an error, and nothing is written to Postgres.
+    recovered nothing in production; Phase 4 deleted it.
     """
-    db = database_module.SessionLocal()
-    try:
-        item = Item(
-            item_id="sticker-yekindar-holo-shanghai-2024",
-            name="Sticker | YEKINDAR (Holo) | Shanghai 2024",
-            type="sticker",
-            release_date=datetime(2024, 1, 1),
-        )
-        db.add(item)
-        db.commit()
+    name = "Sticker | YEKINDAR (Holo) | Shanghai 2024"
+    ops = tmp_path / "ops"
+    ops_partitions.upsert(
+        "items",
+        pd.DataFrame([{"id": 1, "item_id": "sticker-yekindar", "name": name, "type": "sticker", "is_backfilled": 1}]),
+        root=ops,
+    )
+    monkeypatch.setattr(aggregator_module, "CSGOTraderAggregator", FakeAggregator)
 
-        db.add(
-            PriceHistory(
-                item_id=item.id,
-                timestamp=datetime.utcnow() - timedelta(days=1),
-                price=22.5,
-                volume=7,
-                source="steam_batch",
-            )
-        )
-        db.commit()
+    result = DataPipeline(ops_root=ops).run_full_aggregator_collection()
 
-        monkeypatch.setattr(aggregator_module, "CSGOTraderAggregator", FakeAggregator)
-
-        result = DataPipeline(db_session=db).run_full_aggregator_collection()
-
-        assert result["status"] == "success"
-        assert result["items_collected"] == 0
-        assert result["errors"] == 1
-        assert result["missing_name_sample"] == ["Sticker | YEKINDAR (Holo) | Shanghai 2024"]
-        assert "fallback_items_collected" not in result
-        assert db.query(PriceHistory).filter(PriceHistory.item_id == item.id).count() == 1
-        assert db.query(CollectionRun).count() == 0
-    finally:
-        db.close()
+    assert result["status"] == "success"
+    assert result["items_collected"] == 0
+    assert result["errors"] == 1
+    assert result["missing_name_sample"] == [name]
+    assert "fallback_items_collected" not in result
 
 
 def test_missing_name_report_groups_by_conservative_pattern():
-    pipeline = DataPipeline(db_session=None)
+    pipeline = DataPipeline()
     item_map = {
         "Sticker | YEKINDAR (Holo) | Shanghai 2024": [SimpleNamespace(type="skin")],
         "Sticker Slab | Team Liquid (Gold) | Budapest 2025": [SimpleNamespace(type="other")],
