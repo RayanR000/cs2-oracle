@@ -25,8 +25,9 @@ could be the same tilt under another name. The width control below separates the
 
 - **Source:** `forecast_outcomes` partitions through `db/ops_store.py`, served cohort ≥$1,
   `in_interval` non-null, `excluded_forecast_date` applied.
-- **Confirmatory window:** forecast dates **≥ 2026-11-19**, for every horizon. Earlier dates are
-  excluded, including every date used in the exploratory table.
+- **Confirmatory window:** the **first 20 scoreable forecast dates on or after 2026-11-19**, per horizon.
+  Earlier dates are excluded, including every date used in the exploratory table. Later dates never
+  enter, so a re-run returns the same answer.
 - **Tiers:** `backtest.scoring.price_tier`: tier 1 = $1–5, tier 2 = $5–20, tier 3 = $20–100.
   Tiers 4–5 (≥$100) are reported and excluded from every bar (thin: n ≈ 100 per horizon).
 - **Horizons:** h=3 and h=7 are primary. h=14 is secondary. h=30 is reported descriptively
@@ -72,8 +73,8 @@ matched marginal coverage. Nothing here touches serving.
 
 ## Instrument
 
-`backend/scripts/tier_coverage_read.py`, written and tested on synthetic panels (known gradient,
-known null, placebo) before the first read. It reads the partitions, refuses to run before 20
+`backend/scripts/tier_coverage_read.py` (+ `tests/test_tier_coverage_read.py`), written and tested on
+synthetic panels (known gradient, known null, width-tilt-only gradient, placebo) before the first read. It reads the partitions, refuses to run before 20
 dates in the window, prints G, G_w, per-tier coverage and the placebo, and writes no artifact.
 One run per horizon; a re-run after seeing the number is not part of this protocol.
 
