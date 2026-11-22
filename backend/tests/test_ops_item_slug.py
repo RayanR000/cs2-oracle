@@ -24,8 +24,8 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 from database import Base, ForecastOutcome, Item
 from scripts.backtest_accuracy import (
     _id_to_slug,
-    _pg_read,
     _store_forecast_outcomes,
+    _store_read,
     _with_item_slug,
 )
 
@@ -82,7 +82,7 @@ def _outcome(forecast_id, item_id):
 
 
 def test_id_to_slug_reads_the_items_table(session):
-    assert _id_to_slug(_pg_read(session)) == {
+    assert _id_to_slug(_store_read("items")) == {
         1: "AK-47 | Redline (Field-Tested)",
         2: "AWP | Asiimov (Field-Tested)",
     }
@@ -90,21 +90,20 @@ def test_id_to_slug_reads_the_items_table(session):
 
 def test_with_item_slug_adds_the_column_without_touching_the_rest(session):
     row = _outcome(1, 1)
-    (stamped,) = _with_item_slug([row], _id_to_slug(_pg_read(session)))
+    (stamped,) = _with_item_slug([row], _id_to_slug(_store_read("items")))
     assert stamped["item_slug"] == "AK-47 | Redline (Field-Tested)"
     assert {k: v for k, v in stamped.items() if k != "item_slug"} == row
 
 
 def test_with_item_slug_leaves_the_input_rows_alone(session):
-    """`to_write` goes to bulk_insert_mappings, which errors on an unmapped
-    key. The projection must not mutate it in place."""
+    """The projection must not mutate the caller's rows in place."""
     row = _outcome(1, 1)
-    _with_item_slug([row], _id_to_slug(_pg_read(session)))
+    _with_item_slug([row], _id_to_slug(_store_read("items")))
     assert "item_slug" not in row
 
 
 def test_an_unmapped_item_id_gets_a_null_slug_not_a_crash(session):
-    (stamped,) = _with_item_slug([_outcome(1, 999)], _id_to_slug(_pg_read(session)))
+    (stamped,) = _with_item_slug([_outcome(1, 999)], _id_to_slug(_store_read("items")))
     assert stamped["item_slug"] is None
 
 
@@ -112,7 +111,7 @@ def test_an_unmapped_item_id_gets_a_null_slug_not_a_crash(session):
 
 
 def test_stored_outcomes_land_in_parquet_with_a_slug(session, ops):
-    assert _store_forecast_outcomes(session, [_outcome(1, 1), _outcome(2, 2)]) == 2
+    assert _store_forecast_outcomes([_outcome(1, 1), _outcome(2, 2)]) == 2
 
     import db.parquet as parquet_mod
 
@@ -126,12 +125,12 @@ def test_stored_outcomes_land_in_parquet_with_a_slug(session, ops):
 def test_the_db_row_does_not_gain_the_column(session, ops):
     """Denormalised onto the mirror only — the DB has `items` to join against,
     and a second copy there would be another thing to keep true."""
-    _store_forecast_outcomes(session, [_outcome(1, 1)])
+    _store_forecast_outcomes([_outcome(1, 1)])
     assert not hasattr(session.query(ForecastOutcome).one(), "item_slug")
 
 
 def test_the_frozen_actuals_are_unaffected(session, ops):
-    _store_forecast_outcomes(session, [_outcome(1, 1)])
+    _store_forecast_outcomes([_outcome(1, 1)])
     row = session.query(ForecastOutcome).one()
     assert (row.base_price, row.actual_price) == (3.0, 3.01)
 
@@ -142,7 +141,7 @@ def test_the_frozen_actuals_are_unaffected(session, ops):
 def test_the_mirror_joins_to_the_price_archive_with_no_database(session, ops, tmp_path):
     """The whole reason for the column: an outcome and its price history in one
     DuckDB query, with `items` nowhere in it."""
-    _store_forecast_outcomes(session, [_outcome(1, 1)])
+    _store_forecast_outcomes([_outcome(1, 1)])
 
     prices = tmp_path / "prices-2026-07.parquet"
     pd.DataFrame(
@@ -179,8 +178,8 @@ def test_a_second_write_does_not_blank_the_slug(session, ops):
     Every mirror writer has to carry the column."""
     import db.parquet as parquet_mod
 
-    _store_forecast_outcomes(session, [_outcome(1, 1)])
-    _store_forecast_outcomes(session, [_outcome(2, 2)])
+    _store_forecast_outcomes([_outcome(1, 1)])
+    _store_forecast_outcomes([_outcome(2, 2)])
 
     stored = parquet_mod.read_table("forecast_outcomes")
     assert stored["item_slug"].notna().all()

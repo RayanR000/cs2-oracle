@@ -72,9 +72,9 @@ def write_candidate_batches(records: list) -> CandidateWriteResult:
     stored keeps its id). Failures raise: with no Postgres a swallowed error loses the batch.
     """
     from dataclasses import asdict
+    from datetime import UTC, datetime
 
     import pandas as pd
-    from database import utcnow_naive
 
     from db import ops_partitions
 
@@ -103,7 +103,7 @@ def write_candidate_batches(records: list) -> CandidateWriteResult:
             continue
         frame = pd.DataFrame([{k: v for k, v in asdict(r).items() if k in cols} for r in missing])
         frame = ops_partitions.assign_ids("forecast_candidates", frame, base=ops_partitions.READ_ONLY_ID_BASE)
-        frame["created_at"] = utcnow_naive()
+        frame["created_at"] = datetime.now(UTC).replace(tzinfo=None)
         ops_partitions.upsert("forecast_candidates", frame)
         for record in missing:
             if record.component == "centre":

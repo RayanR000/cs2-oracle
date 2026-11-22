@@ -78,12 +78,6 @@ def served_items(as_of: date | datetime, read=None) -> dict[str, tuple[int, bool
     return {r.item_id: (int(r.id), r.is_backfilled != 1) for r in rows}
 
 
-def universe_sizes(served: dict[str, tuple[int, bool]]) -> dict[str, int]:
-    """The read-twice value for the catalog: how many established and young items are served."""
-    n_young = len(young_slugs(served))
-    return {"established": len(served) - n_young, "young": n_young}
-
-
 def young_slugs(served: dict[str, tuple[int, bool]]) -> set[str]:
     return {slug for slug, (_, young) in served.items() if young}
 

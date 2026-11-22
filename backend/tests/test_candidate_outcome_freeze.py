@@ -49,12 +49,12 @@ def test_frozen_legs_do_not_move(monkeypatch):
     _with_slug(session)
     _stub_archive(monkeypatch)
 
-    cr.resolve_candidate_outcomes(session, today=date(2026, 10, 1), archive_dir="unused")
+    cr.resolve_candidate_outcomes(today=date(2026, 10, 1), archive_dir="unused")
     from database import ForecastOutcome
 
     session.query(ForecastOutcome).delete()
     _prod(session, actual=99.0)
-    cr.resolve_candidate_outcomes(session, today=date(2026, 10, 1), archive_dir="unused")
+    cr.resolve_candidate_outcomes(today=date(2026, 10, 1), archive_dir="unused")
 
     out = session.query(ForecastCandidateOutcome).one()
     assert out.actual_price == 42.0
@@ -70,12 +70,12 @@ def test_reresolve_moves_legs(monkeypatch):
     _with_slug(session)
     _stub_archive(monkeypatch)
 
-    cr.resolve_candidate_outcomes(session, today=date(2026, 10, 1), archive_dir="unused")
+    cr.resolve_candidate_outcomes(today=date(2026, 10, 1), archive_dir="unused")
     from database import ForecastOutcome
 
     session.query(ForecastOutcome).delete()
     _prod(session, actual=45.0)
-    stats = cr.resolve_candidate_outcomes(session, today=date(2026, 10, 1), archive_dir="unused", reresolve=True)
+    stats = cr.resolve_candidate_outcomes(today=date(2026, 10, 1), archive_dir="unused", reresolve=True)
 
     out = session.query(ForecastCandidateOutcome).one()
     assert out.actual_price == 45.0
@@ -93,7 +93,7 @@ def test_reresolve_rejects_production_mismatch(monkeypatch):
     _stub_archive(monkeypatch, actual=46.0)
 
     with pytest.raises(RuntimeError, match="mismatch"):
-        cr.resolve_candidate_outcomes(session, today=date(2026, 10, 1), archive_dir="unused", reresolve=True)
+        cr.resolve_candidate_outcomes(today=date(2026, 10, 1), archive_dir="unused", reresolve=True)
 
 
 def test_rescore_refreshes_derived_without_the_archive(monkeypatch):
@@ -104,7 +104,7 @@ def test_rescore_refreshes_derived_without_the_archive(monkeypatch):
     _prod(session)
     _cand(session)
     monkeypatch.setattr(cr, "archive_max_day", lambda archive_dir: date(2026, 10, 1))
-    cr.resolve_candidate_outcomes(session, today=date(2026, 10, 1), archive_dir="unused")
+    cr.resolve_candidate_outcomes(today=date(2026, 10, 1), archive_dir="unused")
 
     out = session.query(ForecastCandidateOutcome).one()
     out.absolute_error = -999.0
@@ -116,7 +116,7 @@ def test_rescore_refreshes_derived_without_the_archive(monkeypatch):
     monkeypatch.setattr(cr, "archive_max_day", _no_archive)
     monkeypatch.setattr(cr, "archive_covered_days", _no_archive)
     monkeypatch.setattr(cr, "load_voted_prices", _no_archive)
-    stats = cr.resolve_candidate_outcomes(session, today=date(2026, 10, 1), archive_dir=None, rescore=True)
+    stats = cr.resolve_candidate_outcomes(today=date(2026, 10, 1), archive_dir=None, rescore=True)
 
     out = session.query(ForecastCandidateOutcome).one()
     assert out.absolute_error == 1.0
